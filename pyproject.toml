@@ -44,6 +44,7 @@ packages = ["src/chc"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+extend-exclude = ["runtime"]  # the Rust crate has its own tooling
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]

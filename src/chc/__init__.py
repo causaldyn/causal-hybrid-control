@@ -8,7 +8,12 @@ identification, pessimism, MPC, and the benchmark are on the roadmap.
 from __future__ import annotations
 
 from chc.adjoint import control_gradient_adjoint
-from chc.causal import ConfoundedLinearSystem, estimate_control_effect
+from chc.causal import (
+    ConfoundedLinearSystem,
+    estimate_control_effect,
+    estimate_effect_iv,
+    sensitivity_analysis,
+)
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
@@ -52,6 +57,7 @@ __all__ = [
     "control_gradient_adjoint",
     "dlqr_feedback_controls",
     "estimate_control_effect",
+    "estimate_effect_iv",
     "exact_linear_flow",
     "finite_horizon_dlqr",
     "fit_behavior_policy",
@@ -72,6 +78,7 @@ __all__ = [
     "rk4_step",
     "rollout",
     "rollout_mse",
+    "sensitivity_analysis",
     "strang_marchuk_step",
     "thomas_solve",
     "total_cost",
