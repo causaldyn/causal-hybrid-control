@@ -35,3 +35,4 @@ wandb/
 .idea/
 .DS_Store
 .ipynb_checkpoints/
+.coq-native/
