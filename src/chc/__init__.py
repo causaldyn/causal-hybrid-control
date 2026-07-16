@@ -20,6 +20,7 @@ from chc.lqr import (
     linearize_continuous,
     linearize_discrete,
 )
+from chc.mpc import mpc_control
 from chc.residual import MLPResidual, ZeroResidual
 
 __version__ = "0.0.1"
@@ -40,6 +41,7 @@ __all__ = [
     "finite_horizon_dlqr",
     "linearize_continuous",
     "linearize_discrete",
+    "mpc_control",
     "project_box",
     "projected_gradient_control",
     "rk4_step",
