@@ -25,6 +25,12 @@ dependencies = [
     "scipy>=1.13",
 ]
 
+[project.optional-dependencies]
+# gradient-boosted surrogate dynamics for Track A/B baselines (chc.surrogate). Optional: the core
+# library is pure-JAX. econml/dowhy are deliberately NOT here -- they do not resolve on Python 3.12 +
+# pandas 3, so their adapters (chc.estimators) are lazy-import, bring-your-own-env instead.
+trees = ["lightgbm>=4", "catboost>=1.2", "scikit-learn>=1.4"]  # lightgbm's sklearn API needs sklearn
+
 [project.urls]
 Homepage = "https://github.com/ilgrad/causal-hybrid-control"
 Issues = "https://github.com/ilgrad/causal-hybrid-control/issues"
