@@ -1,7 +1,8 @@
 """LQR / AKOR: the r_θ→0 closed-form optimum and Riccati cross-checks.
 
 For the linear(-ised) known system this is the analytic control optimum the learned controller
-must approach (a correctness limit), cross-validated in Octave / Maxima (see ``validation/``).
+must approach (a correctness limit). Maxima (exact symbolic) is the authority; scipy is the
+float64 numeric, cross-checked against PARI high-precision and Octave (see ``validation/``).
 """
 
 from __future__ import annotations

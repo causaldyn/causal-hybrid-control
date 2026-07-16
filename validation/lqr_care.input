@@ -1,0 +1,6 @@
+-- FriCAS: second independent symbolic/exact check of the scalar continuous ARE.
+-- Run: fricas -nox < validation/lqr_care.input   (NB: FriCAS cold-start is slow, ~minutes;
+-- for the fast loop Maxima + PARI already give the authoritative high-precision value.)
+digits(50)
+numeric((sqrt(101) - 1)/10)
+)quit

@@ -1,18 +1,31 @@
-/* Symbolic cross-check of the scalar continuous ARE in Maxima.
-   Scalar system a=-1/10, b=1, q=1, r=1:  2 a p - (b^2/r) p^2 + q = 0.
-   The stabilizing (positive) root must match scipy's solve_continuous_are. */
+/* Maxima is the AUTHORITATIVE symbolic reference for the continuous ARE (chc.lqr.continuous_lqr).
+   scipy is verified against this, not the other way around; bfloat gives precision beyond float64. */
 
+/* --- scalar system a=-1/10, b=1, q=1, r=1:  2 a p - (b^2/r) p^2 + q = 0 --- */
 a : -1/10$
 b : 1$
 q : 1$
 r : 1$
-
-eq : 2*a*p - (b^2/r)*p^2 + q = 0$
-sols : solve(eq, p)$
-print("symbolic roots p =", sols)$
-print("numeric roots p =", float(map(rhs, sols)))$
-
-/* closed-form stabilizing root */
+sols : solve(2*a*p - (b^2/r)*p^2 + q = 0, p)$
+print("scalar symbolic roots p =", sols)$
 pstab : (a + sqrt(a^2 + b^2*q/r)) * r / b^2$
-print("stabilizing P (scalar) =", float(pstab))$
-print("gain K = (b/r) P =", float((b/r)*pstab))$
+print("scalar P exact =", pstab)$
+fpprec : 40$
+print("scalar P (40 digits) =", bfloat(pstab))$
+
+/* --- 2x2 oscillator omega=1, zeta=1/10 --- */
+A : matrix([0, 1], [-1, -1/5])$
+B : matrix([0], [1])$
+Qm : ident(2)$
+G : B . transpose(B)$   /* R = 1 */
+/* Exact solution of the CARE, verified by residual (do NOT trust algsys numeric roots). The equation
+   decouples: (1,1) gives P12, (2,2) gives P22 given P12, (1,2) gives P11. */
+y2 : sqrt(2) - 1$                                        /* P12: y^2 + 2y - 1 = 0 */
+z2 : (-2/5 + sqrt((2/5)^2 + 4*(2*y2 + 1)))/2$           /* P22: z^2 + (2/5)z - (2y+1) = 0 */
+x2 : (1/5)*y2 + z2 + y2*z2$                              /* P11: x = (1/5)y + z + yz */
+Pexact : matrix([x2, y2], [y2, z2])$
+Rres : ratsimp(transpose(A) . Pexact + Pexact . A - Pexact . G . Pexact + Qm)$
+print("2x2 CARE residual (must be 0) =", bfloat(Rres))$
+print("2x2 P (40 digits): P11 =", bfloat(x2))$
+print("                   P12 =", bfloat(y2))$
+print("                   P22 =", bfloat(z2))$
