@@ -31,7 +31,7 @@ from chc.splitting import (
     strang_marchuk_step,
 )
 from chc.support import SupportModel, pessimistic_control
-from chc.train import fit_residual, one_step_mse
+from chc.train import fit_residual, fit_residual_multistep, one_step_mse, rollout_mse
 
 __version__ = "0.0.1"
 
@@ -56,6 +56,7 @@ __all__ = [
     "finite_horizon_dlqr",
     "fit_behavior_policy",
     "fit_residual",
+    "fit_residual_multistep",
     "lie_trotter_step",
     "linearize_continuous",
     "linearize_discrete",
@@ -69,6 +70,7 @@ __all__ = [
     "residual_flow",
     "rk4_step",
     "rollout",
+    "rollout_mse",
     "strang_marchuk_step",
     "thomas_solve",
     "total_cost",
