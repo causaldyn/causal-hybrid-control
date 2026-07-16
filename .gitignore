@@ -24,6 +24,10 @@ uv.lock.bak
 .*.aux
 .lia.cache
 
+# Rust runtime build artifacts
+runtime/target/
+*.rs.bk
+
 # JAX / experiment artifacts
 *.npz
 *.pkl

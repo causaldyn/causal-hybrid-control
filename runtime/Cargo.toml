@@ -1,0 +1,18 @@
+[package]
+name = "chc-runtime"
+version = "0.0.1"
+edition = "2021"
+description = "Rust runtime for Causal Hybrid Control: RK4 + discrete adjoint + projected-gradient OC."
+license = "MIT"
+
+[lib]
+name = "chc_runtime"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nalgebra = "0.33"
+pyo3 = { version = "0.23", optional = true, features = ["extension-module", "abi3-py312"] }
+
+[features]
+# `cargo test` runs the pure-Rust core (no Python linkage); `maturin build` enables `python`.
+python = ["dep:pyo3"]
