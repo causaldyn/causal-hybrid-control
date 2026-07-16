@@ -8,12 +8,14 @@ conditioning the residual on the adjustment set recovers the true interventional
 Sequential-ignorability setting with history ``H = (x, z)``: with ``z`` in the adjustment set the
 backdoor path ``u <- z -> x'`` is blocked and the effect is identified; omit ``z`` and it is not.
 When ``z`` is *latent*, an instrument ``w`` identifies the effect via 2SLS; a Cinelli-Hazlett
-robustness value bounds how much hidden confounding a control decision could tolerate.
+robustness value bounds how much hidden confounding a control decision could tolerate. Double ML
+recovers the effect under *nonlinear* confounding via cross-fitted residualisation.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import combinations_with_replacement
 
 import jax
 import jax.numpy as jnp
@@ -121,3 +123,56 @@ def sensitivity_analysis(
         "std_error": float(se[1]),
         "robustness_value": float(rv),
     }
+
+
+def _polynomial_features(x: Array, degree: int) -> Array:
+    """Monomials of ``x`` (n, d) up to total ``degree`` (with cross terms), plus a bias column."""
+    n, d = x.shape
+    features = [jnp.ones(n)]
+    for deg in range(1, degree + 1):
+        for combo in combinations_with_replacement(range(d), deg):
+            term = jnp.ones(n)
+            for idx in combo:
+                term = term * x[:, idx]
+            features.append(term)
+    return jnp.stack(features, axis=1)
+
+
+def _ridge_predict(x_train: Array, y_train: Array, x_test: Array, alpha: float) -> Array:
+    p = x_train.shape[1]
+    beta = jnp.linalg.solve(x_train.T @ x_train + alpha * jnp.eye(p), x_train.T @ y_train)
+    return x_test @ beta
+
+
+def estimate_effect_dml(
+    data: dict[str, Array],
+    covariates: tuple[str, ...] = ("x", "z"),
+    degree: int = 3,
+    folds: int = 2,
+    ridge: float = 1e-2,
+    seed: int = 0,
+) -> Array:
+    """Double / debiased ML estimate of ``∂x_next/∂u`` via cross-fitted residual-on-residual.
+
+    Partials flexible (polynomial-ridge) predictions of ``x_next`` and ``u`` out of the covariates,
+    then regresses the residuals. This is Neyman-orthogonal, so it recovers the effect even under
+    *nonlinear* confounding, where the linear :func:`estimate_control_effect` adjustment is biased.
+    """
+    y, u = data["x_next"], data["u"]
+    covs = jnp.stack([data[c] for c in covariates], axis=1)
+    n = y.shape[0]
+    chunks = jnp.array_split(jax.random.permutation(jax.random.key(seed), n), folds)
+
+    y_res = jnp.zeros(n)
+    u_res = jnp.zeros(n)
+    for k in range(folds):
+        test = chunks[k]
+        train = jnp.concatenate([chunks[j] for j in range(folds) if j != k])
+        phi_train = _polynomial_features(covs[train], degree)
+        phi_test = _polynomial_features(covs[test], degree)
+        y_res = y_res.at[test].set(y[test] - _ridge_predict(phi_train, y[train], phi_test, ridge))
+        u_res = u_res.at[test].set(u[test] - _ridge_predict(phi_train, u[train], phi_test, ridge))
+
+    return jnp.sum(y_res * u_res) / jnp.sum(
+        u_res * u_res
+    )  # residual-on-residual through the origin

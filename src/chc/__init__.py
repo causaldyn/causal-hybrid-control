@@ -11,6 +11,7 @@ from chc.adjoint import control_gradient_adjoint
 from chc.causal import (
     ConfoundedLinearSystem,
     estimate_control_effect,
+    estimate_effect_dml,
     estimate_effect_iv,
     sensitivity_analysis,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "control_gradient_adjoint",
     "dlqr_feedback_controls",
     "estimate_control_effect",
+    "estimate_effect_dml",
     "estimate_effect_iv",
     "exact_linear_flow",
     "finite_horizon_dlqr",

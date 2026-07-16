@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from chc.causal import (
     ConfoundedLinearSystem,
     estimate_control_effect,
+    estimate_effect_dml,
     estimate_effect_iv,
     sensitivity_analysis,
 )
@@ -55,3 +56,20 @@ def test_sensitivity_robustness_value() -> None:
         assert 0.0 <= report["robustness_value"] <= 1.0
     assert robust["robustness_value"] > 0.8  # the true effect is hard to explain away
     assert fragile["robustness_value"] < 0.4  # the confounded estimate is fragile
+
+
+def test_dml_recovers_effect_under_nonlinear_confounding() -> None:
+    k = jax.random.split(jax.random.key(1), 4)
+    n = 20_000
+    x = jax.random.normal(k[0], (n,))
+    z = jax.random.normal(k[1], (n,))
+    eta = jax.random.normal(k[2], (n,))
+    noise = 0.1 * jax.random.normal(k[3], (n,))
+    u = z**2 + eta  # action depends nonlinearly on the confounder
+    y = 0.5 * x + 1.0 * u + 1.5 * z**2 + noise  # confounding enters through z^2
+    data = {"x": x, "z": z, "u": u, "x_next": y}
+
+    b_adjust = float(estimate_control_effect(data, adjust_for=("z",)))
+    b_dml = float(estimate_effect_dml(data, covariates=("x", "z"), degree=3))
+    assert abs(b_adjust - 1.0) > 0.3  # linear adjustment is biased by the z^2 confounding
+    assert abs(b_dml - 1.0) < 0.1  # DML recovers the true effect
