@@ -1,6 +1,6 @@
 """Benchmark gate: causal control is near-oracle on pricing; predictive is catastrophic."""
 
-from chc.benchmark import PricingTask, leaderboard
+from chc.benchmark import InventoryTask, PricingTask, leaderboard
 
 
 def test_pricing_benchmark_ranks_causal_above_predictive() -> None:
@@ -27,3 +27,12 @@ def test_no_confounding_predictive_is_fine() -> None:
     results = {r.controller: r for r in PricingTask(kappa=0.0).run()}
     assert results["predictive"].regret < 1.0
     assert results["predictive"].constraint_violations == 0.0
+
+
+def test_inventory_benchmark_ranks_causal_above_predictive() -> None:
+    results = {r.controller: r for r in InventoryTask().run()}
+    assert results["oracle"].regret == 0.0
+    assert results["causal-CHC"].regret < 0.2  # near oracle
+    assert results["predictive"].regret > 0.5  # confounded demand estimate costs more
+    assert results["predictive"].constraint_violations > 0.5  # frequent stockouts (under-orders)
+    assert results["causal-CHC"].constraint_violations < 0.4  # near the optimal newsvendor fractile

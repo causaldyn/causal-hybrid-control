@@ -5,12 +5,14 @@ Run: uv run python scripts/run_benchmark.py
 
 from __future__ import annotations
 
-from chc.benchmark import PricingTask, leaderboard
+from chc.benchmark import InventoryTask, PricingTask, leaderboard
 
 
 def main() -> None:
     print("== pricing (confounded linear steering) ==")
     print(leaderboard(PricingTask().run()))
+    print("\n== inventory (confounded demand, newsvendor ordering) ==")
+    print(leaderboard(InventoryTask().run()))
 
 
 if __name__ == "__main__":

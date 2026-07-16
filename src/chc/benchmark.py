@@ -3,8 +3,8 @@
 Each task ships a confounded offline dataset, a true plant with a computable oracle controller, and
 an evaluation reporting **regret vs oracle**, **constraint violations**, and **out-of-support action
 rate**. The point is to measure *where* causal control beats predictive control — and to be honest
-where it does not. v0 has the pricing task (confounded linear steering); more tasks slot into the
-same ``TaskResult`` / ``leaderboard`` shape.
+where it does not. v0 has pricing (confounded steering) and inventory (newsvendor) tasks; more slot
+into the same ``TaskResult`` / ``leaderboard`` shape.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
+import jax.scipy.stats
 from jax import Array
 
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
@@ -98,6 +99,65 @@ class PricingTask:
             self._score(system, name, b_hat, oracle_cost, u_support, key)
             for name, b_hat in controllers.items()
         ]
+
+
+@dataclass(frozen=True)
+class InventoryTask:
+    """Newsvendor ordering under a confounded demand-response model (holding / stockout costs).
+
+    A fixed-intensity promo lifts demand; in the logs the promo was correlated with a demand driver
+    ``z`` (a confounder), so the promo effect is biased. The retailer orders to a newsvendor fractile
+    from its estimated demand model, so a wrong estimate systematically over- or under-orders.
+    """
+
+    d0: float = 5.0  # base demand
+    promo: float = 1.0  # fixed promo intensity
+    sigma_d: float = 1.0  # demand noise std
+    holding: float = 0.5  # per-unit holding cost
+    stockout: float = 2.0  # per-unit stockout cost (asymmetric: shortages hurt more)
+    kappa: float = -1.0  # confounding strength (sign chosen so the naive fit under-orders)
+    n_data: int = 20_000
+    n_eval: int = 5000
+
+    def _order(self, b_hat: float) -> float:
+        critical_ratio = self.stockout / (self.stockout + self.holding)
+        z = float(jax.scipy.stats.norm.ppf(critical_ratio))
+        return self.d0 + b_hat * self.promo + self.sigma_d * z
+
+    def run(self, seed_data: int = 0, seed_eval: int = 1) -> list[TaskResult]:
+        """Estimate demand response (oracle / causal / predictive) and score the induced order."""
+        system = ConfoundedLinearSystem(a=0.0, b_true=1.0, c=2.0, kappa=self.kappa)
+        data = system.sample(self.n_data, jax.random.key(seed_data))
+        demand = (
+            self.d0
+            + system.b_true * self.promo
+            + self.sigma_d * jax.random.normal(jax.random.key(seed_eval), (self.n_eval,))
+        )
+
+        def cost_of(order: float) -> float:
+            over = jnp.maximum(order - demand, 0.0)
+            under = jnp.maximum(demand - order, 0.0)
+            return float(jnp.mean(self.holding * over + self.stockout * under))
+
+        oracle_cost = cost_of(self._order(system.b_true))
+        controllers = {
+            "oracle": system.b_true,
+            "causal-CHC": float(estimate_control_effect(data, adjust_for=("z",))),
+            "predictive": float(estimate_control_effect(data, adjust_for=())),
+        }
+        results = []
+        for name, b_hat in controllers.items():
+            order = self._order(b_hat)
+            results.append(
+                TaskResult(
+                    controller=name,
+                    cost=cost_of(order),
+                    regret=cost_of(order) - oracle_cost,
+                    constraint_violations=float(jnp.mean(demand > order)),  # stockout rate
+                    ood_rate=0.0,  # single fixed-promo order; action support not applicable
+                )
+            )
+        return results
 
 
 def leaderboard(results: list[TaskResult]) -> str:
