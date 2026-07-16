@@ -23,6 +23,7 @@ from chc.lqr import (
 from chc.mpc import mpc_control
 from chc.residual import MLPResidual, ZeroResidual
 from chc.support import SupportModel, pessimistic_control
+from chc.train import fit_residual, one_step_mse
 
 __version__ = "0.0.1"
 
@@ -41,9 +42,11 @@ __all__ = [
     "dlqr_feedback_controls",
     "estimate_control_effect",
     "finite_horizon_dlqr",
+    "fit_residual",
     "linearize_continuous",
     "linearize_discrete",
     "mpc_control",
+    "one_step_mse",
     "pessimistic_control",
     "project_box",
     "projected_gradient_control",
