@@ -20,3 +20,10 @@ def test_leaderboard_is_sorted_by_regret() -> None:
     assert lines[0].startswith("controller")
     assert lines[-1].split()[0] == "predictive"  # worst regret is last (unambiguous)
     assert lines[1].split()[0] in {"oracle", "causal-CHC"}  # a near-oracle controller ranks first
+
+
+def test_no_confounding_predictive_is_fine() -> None:
+    """Honesty: with no confounding (kappa=0), predictive is near-oracle too."""
+    results = {r.controller: r for r in PricingTask(kappa=0.0).run()}
+    assert results["predictive"].regret < 1.0
+    assert results["predictive"].constraint_violations == 0.0

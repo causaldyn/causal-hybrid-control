@@ -42,6 +42,7 @@ class PricingTask:
     x_safe: float = 6.0  # state constraint |x| <= x_safe
     control_weight: float = 0.01
     n_data: int = 20_000
+    kappa: float = -1.5  # confounding strength; 0.0 = randomised logs (no confounding)
 
     def _closed_loop_cost(
         self, system: ConfoundedLinearSystem, b_hat: float, key: Array
@@ -80,7 +81,7 @@ class PricingTask:
 
     def run(self, seed_data: int = 0, seed_eval: int = 1) -> list[TaskResult]:
         """Fit the effect (oracle / causal / predictive) from logs and score each controller."""
-        system = ConfoundedLinearSystem()
+        system = ConfoundedLinearSystem(kappa=self.kappa)
         data = system.sample(self.n_data, jax.random.key(seed_data))
         u_support = (
             float(jnp.quantile(data["u"], 0.01)),
