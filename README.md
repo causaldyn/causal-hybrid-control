@@ -54,6 +54,20 @@ xs, us = mpc_control(model, jnp.array([1.0, 0.0]), cost, dt=0.1,
                      horizon=20, u_lo=-5.0, u_hi=5.0, n_steps=40)   # closed-loop MPC
 ```
 
+## Example notebooks
+
+Worked, executed notebooks (figures + tables) under [`notebooks/`](notebooks/) — open in JupyterLab
+(`uv sync --group notebooks && uv run --group notebooks jupyter lab`) or read on GitHub:
+
+| notebook | what it shows |
+|---|---|
+| [`01_causal_vs_predictive_control`](notebooks/01_causal_vs_predictive_control.ipynb) | the headline: predictive control diverges under confounding, causal control matches the oracle |
+| [`02_learn_hidden_physics`](notebooks/02_learn_hidden_physics.ipynb) | hybrid dynamics + system ID: recover an omitted cubic term; multi-step training cuts drift |
+| [`03_causal_inference_toolkit`](notebooks/03_causal_inference_toolkit.ipynb) | adjustment · IV/2SLS · Double ML · sensitivity · refutation, side by side |
+| [`04_epidemic_and_pessimism`](notebooks/04_epidemic_and_pessimism.ipynb) | flatten an epidemic curve under a capacity cap; pessimism vs a greedy controller |
+
+Sources are paired `.py` (jupytext) next to each `.ipynb`.
+
 ## What's inside
 
 | area | module | what it does |

@@ -32,6 +32,14 @@ Issues = "https://github.com/ilgrad/causal-hybrid-control/issues"
 [dependency-groups]
 dev = ["pytest>=8", "hypothesis>=6.100", "ruff>=0.6"]
 viz = ["matplotlib>=3.8"]
+notebooks = [
+    "jupyterlab>=4.0",
+    "nbconvert>=7",
+    "ipykernel>=6",
+    "jupytext>=1.16",
+    "matplotlib>=3.8",
+    "pandas>=2.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -44,7 +52,7 @@ packages = ["src/chc"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
-extend-exclude = ["runtime"]  # the Rust crate has its own tooling
+extend-exclude = ["runtime", "notebooks"]  # Rust crate / notebook sources have their own tooling
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
