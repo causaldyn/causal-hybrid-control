@@ -3,8 +3,8 @@
 Each task ships a confounded offline dataset, a true plant with a computable oracle controller, and
 an evaluation reporting **regret vs oracle**, **constraint violations**, and **out-of-support action
 rate**. The point is to measure *where* causal control beats predictive control — and to be honest
-where it does not. v0 has the pricing task (confounded linear steering); more tasks slot into the same
-``TaskResult`` / ``leaderboard`` shape.
+where it does not. v0 has the pricing task (confounded linear steering); more tasks slot into the
+same ``TaskResult`` / ``leaderboard`` shape.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ class TaskResult:
 
 @dataclass(frozen=True)
 class PricingTask:
-    """Confounded linear steering: drive x to a target; the effect of u is confounded in the logs."""
+    """Confounded linear steering: drive x to a target; effect of u is confounded in the logs."""
 
     x0: float = 0.0
     x_target: float = 2.0
