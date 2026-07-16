@@ -3,21 +3,27 @@
 Each task ships a confounded offline dataset, a true plant with a computable oracle controller, and
 an evaluation reporting **regret vs oracle**, **constraint violations**, and **out-of-support action
 rate**. The point is to measure *where* causal control beats predictive control — and to be honest
-where it does not. v0 has pricing (confounded steering) and inventory (newsvendor) tasks; more slot
-into the same ``TaskResult`` / ``leaderboard`` shape.
+where it does not. v0 has pricing (steering), inventory (newsvendor), and support-shift (pessimism)
+tasks, all in the same ``TaskResult`` / ``leaderboard`` shape.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.scipy.stats
 from jax import Array
 
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
+from chc.control import projected_gradient_control
+from chc.cost import QuadraticCost, total_cost
+from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.flagship import closed_loop
+from chc.residual import ZeroResidual
+from chc.support import SupportModel, pessimistic_control
 
 
 @dataclass(frozen=True)
@@ -158,6 +164,106 @@ class InventoryTask:
                 )
             )
         return results
+
+
+class _BumpActuator(eqx.Module):
+    """Plant whose control effectiveness peaks then decays: ``effect(u) = u·exp(-(u/u_sat)^2)``.
+
+    Near ``u=0`` the effect is ~linear (a linear model is right on-support); for ``|u| >> u_sat``
+    the actuator loses effectiveness, so extrapolating to large actions yields almost no effect.
+    """
+
+    a_matrix: Array
+    b_matrix: Array
+    u_sat: float
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        effect = u * jnp.exp(-((u / self.u_sat) ** 2))
+        return self.a_matrix @ x + self.b_matrix @ effect
+
+
+@dataclass(frozen=True)
+class SupportShiftTask:
+    """Model exploitation under support shift — where *pessimism*, not causality, is the safeguard.
+
+    A linear model matches the true plant on the offline action support, but the plant's control
+    effectiveness collapses for large actions. The greedy controller extrapolates off-support to
+    chase gains the model promises and stalls; pessimism keeps actions in-support and stays safe.
+    """
+
+    x0: float = 2.0  # start far from target so the controller wants a big push
+    x_target: float = 0.0
+    dt: float = 0.1
+    horizon: int = 25
+    u_lo: float = -8.0
+    u_hi: float = 8.0
+    u_sat: float = 0.8  # actuator sweet-spot scale
+    control_weight: float = 0.001
+    lam_supp: float = 5.0
+    n_data: int = 4000
+    inner_steps: int = 300
+
+    def run(self, seed_data: int = 0) -> list[TaskResult]:
+        """Optimise on the model (greedy/pessimistic) and the plant (oracle); score on the plant."""
+        a = jnp.array([[0.0, 1.0], [-1.0, -0.2]])
+        b = jnp.array([[0.0], [1.0]])
+        model = HybridDynamics(
+            known=LinearDynamics(a_matrix=a, b_matrix=b), residual=ZeroResidual(2)
+        )
+        plant = _BumpActuator(a_matrix=a, b_matrix=b, u_sat=self.u_sat)
+
+        k_x, k_u = jax.random.split(jax.random.key(seed_data))
+        xs_data = jax.random.normal(k_x, (self.n_data, 2))
+        us_data = 0.4 * jax.random.normal(k_u, (self.n_data, 1))  # narrow action support
+        support = SupportModel.fit(xs_data, us_data)
+        u_support = float(jnp.quantile(jnp.abs(us_data), 0.99))
+
+        cost = QuadraticCost(
+            Q=jnp.diag(jnp.array([1.0, 0.0])),
+            R=jnp.array([[self.control_weight]]),
+            Qf=jnp.diag(jnp.array([10.0, 1.0])),
+            x_target=jnp.array([self.x_target, 0.0]),
+        )
+        x0 = jnp.array([self.x0, 0.0])
+        us0 = jnp.zeros((self.horizon, 1))
+
+        us_greedy, _ = projected_gradient_control(
+            model, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
+        )
+        us_pess, _ = pessimistic_control(
+            model,
+            x0,
+            us0,
+            self.dt,
+            cost,
+            support,
+            self.lam_supp,
+            self.u_lo,
+            self.u_hi,
+            steps=self.inner_steps,
+        )
+        us_oracle, _ = projected_gradient_control(
+            plant, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
+        )
+
+        def true_cost(us: Array) -> float:
+            return float(total_cost(plant, x0, us, self.dt, cost))
+
+        def ood(us: Array) -> float:
+            return float(jnp.mean(jnp.abs(us) > u_support))
+
+        oracle_cost = true_cost(us_oracle)
+        controllers = (("oracle", us_oracle), ("pessimistic", us_pess), ("greedy", us_greedy))
+        return [
+            TaskResult(
+                controller=name,
+                cost=true_cost(us),
+                regret=true_cost(us) - oracle_cost,
+                constraint_violations=0.0,
+                ood_rate=ood(us),
+            )
+            for name, us in controllers
+        ]
 
 
 def leaderboard(results: list[TaskResult]) -> str:

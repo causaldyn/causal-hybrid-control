@@ -1,6 +1,6 @@
 """Benchmark gate: causal control is near-oracle on pricing; predictive is catastrophic."""
 
-from chc.benchmark import InventoryTask, PricingTask, leaderboard
+from chc.benchmark import InventoryTask, PricingTask, SupportShiftTask, leaderboard
 
 
 def test_pricing_benchmark_ranks_causal_above_predictive() -> None:
@@ -36,3 +36,11 @@ def test_inventory_benchmark_ranks_causal_above_predictive() -> None:
     assert results["predictive"].regret > 0.5  # confounded demand estimate costs more
     assert results["predictive"].constraint_violations > 0.5  # frequent stockouts (under-orders)
     assert results["causal-CHC"].constraint_violations < 0.4  # near the optimal newsvendor fractile
+
+
+def test_support_shift_pessimism_beats_greedy() -> None:
+    results = {r.controller: r for r in SupportShiftTask().run()}
+    assert results["oracle"].regret == 0.0
+    assert results["pessimistic"].regret < 0.7 * results["greedy"].regret  # pessimism helps
+    assert results["greedy"].ood_rate > 0.3  # greedy exploits the model off-support
+    assert results["pessimistic"].ood_rate < 0.1  # pessimism stays in-support
