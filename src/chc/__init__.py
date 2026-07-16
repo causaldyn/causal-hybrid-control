@@ -13,6 +13,7 @@ from chc.causal import (
     estimate_control_effect,
     estimate_effect_dml,
     estimate_effect_iv,
+    refute_effect,
     sensitivity_analysis,
 )
 from chc.control import project_box, projected_gradient_control
@@ -76,6 +77,7 @@ __all__ = [
     "poisson_2d",
     "project_box",
     "projected_gradient_control",
+    "refute_effect",
     "residual_flow",
     "rk4_step",
     "rollout",

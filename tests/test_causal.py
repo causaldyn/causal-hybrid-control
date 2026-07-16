@@ -8,6 +8,7 @@ from chc.causal import (
     estimate_control_effect,
     estimate_effect_dml,
     estimate_effect_iv,
+    refute_effect,
     sensitivity_analysis,
 )
 
@@ -73,3 +74,12 @@ def test_dml_recovers_effect_under_nonlinear_confounding() -> None:
     b_dml = float(estimate_effect_dml(data, covariates=("x", "z"), degree=3))
     assert abs(b_adjust - 1.0) > 0.3  # linear adjustment is biased by the z^2 confounding
     assert abs(b_dml - 1.0) < 0.1  # DML recovers the true effect
+
+
+def test_refutation_passes_for_adjusted_estimate() -> None:
+    data = ConfoundedLinearSystem().sample(20_000, jax.random.key(0))
+    report = refute_effect(data, adjust_for=("z",))
+    assert report["passes"]
+    assert abs(report["placebo"]) < 0.05  # permuting the treatment collapses the effect
+    assert abs(report["random_common_cause"] - report["original"]) < 0.05  # stable
+    assert abs(report["subset"] - report["original"]) < 0.1  # stable

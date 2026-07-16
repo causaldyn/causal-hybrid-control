@@ -176,3 +176,47 @@ def estimate_effect_dml(
     return jnp.sum(y_res * u_res) / jnp.sum(
         u_res * u_res
     )  # residual-on-residual through the origin
+
+
+def refute_effect(
+    data: dict[str, Array],
+    adjust_for: tuple[str, ...] = ("z",),
+    subset_fraction: float = 0.5,
+    seed: int = 0,
+) -> dict[str, float | bool]:
+    """DoWhy-style refutation tests for the adjusted effect estimate (a robustness gate).
+
+    - **placebo**: permute the treatment — the effect must collapse toward 0 (else it is spurious);
+    - **random common cause**: add an irrelevant covariate — the effect must stay stable;
+    - **subset**: re-estimate on a random subsample — the effect must stay stable.
+
+    Returns the estimates and ``passes`` (placebo near 0, the others near the original).
+    """
+    k_perm, k_rcc, k_sub = jax.random.split(jax.random.key(seed), 3)
+    n = data["x"].shape[0]
+    original = float(estimate_control_effect(data, adjust_for))
+
+    placebo_data = {**data, "u": data["u"][jax.random.permutation(k_perm, n)]}
+    placebo = float(estimate_control_effect(placebo_data, adjust_for))
+
+    rcc_data = {**data, "_rcc": jax.random.normal(k_rcc, (n,))}
+    rcc = float(estimate_control_effect(rcc_data, (*adjust_for, "_rcc")))
+
+    idx = jax.random.permutation(k_sub, n)[: int(subset_fraction * n)]
+    subset = float(
+        estimate_control_effect({key: val[idx] for key, val in data.items()}, adjust_for)
+    )
+
+    scale = abs(original) + 1e-9
+    passes = (
+        abs(placebo) < 0.1 * scale
+        and abs(rcc - original) < 0.1 * scale
+        and abs(subset - original) < 0.15 * scale
+    )
+    return {
+        "original": original,
+        "placebo": placebo,
+        "random_common_cause": rcc,
+        "subset": subset,
+        "passes": passes,
+    }
