@@ -61,10 +61,10 @@ xs, us = mpc_control(model, jnp.array([1.0, 0.0]), cost, dt=0.1,
 | dynamics | `dynamics`, `residual`, `integrate` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / linear residuals; RK4 |
 | sensitivity | `adjoint` | discrete adjoint (verified == autodiff == finite differences) |
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
-| identification | `train`, `causal` | fit the residual (system ID, one-step & multi-step); the **interventional** effect |
+| identification | `train`, `causal` | system ID (one/multi-step); interventional effect — adjustment, **IV/2SLS**, sensitivity |
 | control | `control`, `mpc`, `splitting` | projected-gradient OC; receding-horizon MPC; **Strang–Marchuk** splitting |
 | offline safety | `support`, `offpolicy` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate |
-| evaluation | `benchmark`, `flagship` | pricing + inventory oracle-regret tasks + leaderboard; the causal-vs-predictive demo |
+| evaluation | `benchmark`, `flagship` | pricing / inventory / **support-shift** oracle-regret tasks + leaderboard |
 | scientific / PDE | `epidemic`, `galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka) |
 
 ## Validation
@@ -84,10 +84,12 @@ the identity of the framework. See `plans/` for the full analysis and roadmap.
 
 ## Status
 
-Early (`v0.0.1`), single-author, research code with 31 tests. Working: hybrid dynamics + adjoint, LQR,
-system ID (one-/multi-step), causal identification, pessimism, MPC, Strang–Marchuk splitting, off-policy
-gate, KAN backend, two benchmark tasks (pricing, inventory), two flagships (pricing, epidemic), and 1D/2D
-Galerkin FEM. Roadmap: more tasks, a Rust runtime for real-time deployment, and the Medium/paper writeups.
+Early (`v0.0.1`), single-author, research code (34 Python tests + a Rust runtime). Working: hybrid
+dynamics + adjoint, LQR, system ID (one-/multi-step), causal identification (adjustment / IV / sensitivity),
+pessimism, MPC, Strang–Marchuk splitting, off-policy gate, KAN backend, three benchmark tasks (pricing,
+inventory, support-shift), two flagships (pricing, epidemic), 1D/2D Galerkin FEM, and a golden-parity Rust
+runtime. All demonstrations are on synthetic/semi-synthetic problems — real-data validation is the next
+credibility step. Roadmap: real-data case study, more tasks, and the Medium/paper writeups.
 
 ## License
 
