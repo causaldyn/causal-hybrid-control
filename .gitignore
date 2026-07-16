@@ -30,6 +30,9 @@ uv.lock.bak
 outputs/
 wandb/
 
+# datasets (notebooks download to a local cache; never commit data)
+data/
+
 # editors / OS
 .vscode/
 .idea/

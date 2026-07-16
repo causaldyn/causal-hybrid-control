@@ -67,6 +67,7 @@ Worked, executed notebooks (figures + tables) under [`notebooks/`](notebooks/) �
 | [`04_epidemic_and_pessimism`](notebooks/04_epidemic_and_pessimism.ipynb) | flatten an epidemic curve under a capacity cap; pessimism vs a greedy controller |
 | [`05_benchmark_scoreboard`](notebooks/05_benchmark_scoreboard.ipynb) | the scoreboard: regret vs oracle across every task — CHC lands next to the oracle, the baseline blows up |
 | [`06_cruise_control_confounded`](notebooks/06_cruise_control_confounded.ipynb) | relatable end-to-end: adaptive cruise control from confounded fleet logs (Simpson's paradox → IV → control) |
+| [`07_real_data_lalonde`](notebooks/07_real_data_lalonde.ipynb) | **real data, experimental ground truth**: on LaLonde NSW the naive estimate flips sign (−$8.5k), Double ML recovers the randomised truth (+$1.8k, within $234) |
 
 Sources are paired `.py` (jupytext) next to each `.ipynb`.
 
@@ -103,10 +104,12 @@ the identity of the framework. See `plans/` for the full analysis and roadmap.
 Early (`v0.0.1`), single-author, research code (36 tests). Working: hybrid dynamics + adjoint, LQR,
 system ID (one-/multi-step), causal identification (adjustment / IV / DML / sensitivity / refutation),
 pessimism, MPC, Strang–Marchuk splitting, off-policy gate, KAN backend, three benchmark tasks (pricing,
-inventory, support-shift), two flagships (pricing, epidemic), and 1D/2D Galerkin FEM. All demonstrations
-are on synthetic/semi-synthetic problems — real-data validation is the next credibility step. Roadmap: a
-real-data case study, more tasks, the Medium/paper writeups, and — only if a real-time/edge deployment
-target appears — a compiled runtime.
+inventory, support-shift), two flagships (pricing, epidemic), and 1D/2D Galerkin FEM. The **causal
+identification core is now validated on real data with an experimental ground truth** (notebook 07,
+LaLonde NSW: the naive estimate flips sign, Double ML recovers the randomised benchmark); the *control
+loop* is still exercised on synthetic dynamics, so validating it on a real dynamical system is the next
+credibility step. Roadmap: a real dynamical-control case study, more tasks, the Medium/paper writeups, and
+— only if a real-time/edge deployment target appears — a compiled runtime.
 
 ## License
 
