@@ -106,7 +106,7 @@ class InventoryTask:
     """Newsvendor ordering under a confounded demand-response model (holding / stockout costs).
 
     A fixed-intensity promo lifts demand; in the logs the promo was correlated with a demand driver
-    ``z`` (a confounder), so the promo effect is biased. The retailer orders to a newsvendor fractile
+    ``z`` (a confounder), so the promo effect is biased. The retailer orders to a newsvendor level
     from its estimated demand model, so a wrong estimate systematically over- or under-orders.
     """
 
