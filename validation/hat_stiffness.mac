@@ -1,0 +1,9 @@
+/* Maxima confirms the 1D hat-function stiffness stencil used by chc.galerkin.poisson_1d.
+   On a uniform mesh with step h, the hat basis derivative is +-1/h per element; the stiffness
+   integrals give the tridiagonal stencil (1/h)[-1, 2, -1]. */
+
+assume(h > 0)$
+K_diag : integrate((1/h)^2, x, 0, h) + integrate((-1/h)^2, x, 0, h)$
+K_off : integrate((1/h) * (-1/h), x, 0, h)$
+print("hat stiffness diagonal =", K_diag)$   /* expect 2/h */
+print("hat stiffness off-diag =", K_off)$    /* expect -1/h */
