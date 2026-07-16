@@ -81,7 +81,7 @@ def estimate_effect_iv(data: dict[str, Array], instrument: str = "w") -> Array:
     """Two-stage least squares for ``∂x_next/∂u`` using an instrument for a *latent* confounder.
 
     Stage 1 regresses ``u`` on ``[x, instrument]``; stage 2 regresses ``x_next`` on ``[x, û]``. The
-    instrument must drive ``u``, be independent of the confounder, and affect ``x_next`` only through
+    instrument must drive ``u``, be independent of the confounder, and affect ``x_next`` only via
     ``u`` — then the effect is recovered even when the confounder ``z`` is unobserved.
     """
     x, u, w, y = data["x"], data["u"], data[instrument], data["x_next"]
