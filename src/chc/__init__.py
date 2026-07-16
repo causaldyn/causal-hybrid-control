@@ -8,6 +8,7 @@ identification, pessimism, MPC, and the benchmark are on the roadmap.
 from __future__ import annotations
 
 from chc.adjoint import control_gradient_adjoint
+from chc.causal import ConfoundedLinearSystem, estimate_control_effect
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics
@@ -24,6 +25,7 @@ from chc.residual import MLPResidual, ZeroResidual
 __version__ = "0.0.1"
 
 __all__ = [
+    "ConfoundedLinearSystem",
     "DampedOscillator",
     "Dynamics",
     "HybridDynamics",
@@ -34,6 +36,7 @@ __all__ = [
     "continuous_lqr",
     "control_gradient_adjoint",
     "dlqr_feedback_controls",
+    "estimate_control_effect",
     "finite_horizon_dlqr",
     "linearize_continuous",
     "linearize_discrete",
