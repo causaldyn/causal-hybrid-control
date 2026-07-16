@@ -11,7 +11,7 @@ from chc.adjoint import control_gradient_adjoint
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
-from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics
+from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step, rollout
 from chc.lqr import (
     continuous_lqr,
@@ -23,6 +23,12 @@ from chc.lqr import (
 from chc.mpc import mpc_control
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.residual import MLPResidual, ZeroResidual
+from chc.splitting import (
+    exact_linear_flow,
+    lie_trotter_step,
+    residual_flow,
+    strang_marchuk_step,
+)
 from chc.support import SupportModel, pessimistic_control
 from chc.train import fit_residual, one_step_mse
 
@@ -34,6 +40,7 @@ __all__ = [
     "Dynamics",
     "GaussianPolicy",
     "HybridDynamics",
+    "LinearDynamics",
     "MLPResidual",
     "QuadraticCost",
     "SupportModel",
@@ -43,9 +50,11 @@ __all__ = [
     "control_gradient_adjoint",
     "dlqr_feedback_controls",
     "estimate_control_effect",
+    "exact_linear_flow",
     "finite_horizon_dlqr",
     "fit_behavior_policy",
     "fit_residual",
+    "lie_trotter_step",
     "linearize_continuous",
     "linearize_discrete",
     "mpc_control",
@@ -54,7 +63,9 @@ __all__ = [
     "pessimistic_control",
     "project_box",
     "projected_gradient_control",
+    "residual_flow",
     "rk4_step",
     "rollout",
+    "strang_marchuk_step",
     "total_cost",
 ]

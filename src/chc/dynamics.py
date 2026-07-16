@@ -34,6 +34,16 @@ class DampedOscillator(eqx.Module):
         return jnp.stack([vel, acc])
 
 
+class LinearDynamics(eqx.Module):
+    """Known linear system ``ẋ = A x + B u``; the exactly-integrable part used in splitting."""
+
+    a_matrix: Array  # (n, n)
+    b_matrix: Array  # (n, m)
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.a_matrix @ x + self.b_matrix @ u
+
+
 class HybridDynamics(eqx.Module):
     """``f(x, u, t) = f_known(x, u, t) + r_θ(x, u, t)``.
 

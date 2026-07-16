@@ -1,0 +1,10 @@
+/* Maxima is authoritative for the exact linear flow expm(A*dt) used by chc.splitting.
+   Oscillator A = [[0,1],[-1,-1/5]], dt = 1/10; compared against jax.scipy.linalg.expm (float64). */
+
+load("diag")$
+A : matrix([0, 1], [-1, -1/5])$
+dt : 1/10$
+E : mat_function(exp, A*dt)$
+Ereal : ratsimp(realpart(rectform(E)))$   /* complex eigenpair -> real matrix */
+fpprec : 30$
+print("expm(A*dt) real (30 digits) =", bfloat(Ereal))$
