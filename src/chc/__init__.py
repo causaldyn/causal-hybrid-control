@@ -21,6 +21,7 @@ from chc.lqr import (
     linearize_discrete,
 )
 from chc.mpc import mpc_control
+from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.residual import MLPResidual, ZeroResidual
 from chc.support import SupportModel, pessimistic_control
 from chc.train import fit_residual, one_step_mse
@@ -31,6 +32,7 @@ __all__ = [
     "ConfoundedLinearSystem",
     "DampedOscillator",
     "Dynamics",
+    "GaussianPolicy",
     "HybridDynamics",
     "MLPResidual",
     "QuadraticCost",
@@ -42,10 +44,12 @@ __all__ = [
     "dlqr_feedback_controls",
     "estimate_control_effect",
     "finite_horizon_dlqr",
+    "fit_behavior_policy",
     "fit_residual",
     "linearize_continuous",
     "linearize_discrete",
     "mpc_control",
+    "off_policy_value",
     "one_step_mse",
     "pessimistic_control",
     "project_box",
