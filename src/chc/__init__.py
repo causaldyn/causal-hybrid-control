@@ -12,6 +12,13 @@ from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics
 from chc.integrate import rk4_step, rollout
+from chc.lqr import (
+    continuous_lqr,
+    dlqr_feedback_controls,
+    finite_horizon_dlqr,
+    linearize_continuous,
+    linearize_discrete,
+)
 from chc.residual import MLPResidual, ZeroResidual
 
 __version__ = "0.0.1"
@@ -24,7 +31,12 @@ __all__ = [
     "QuadraticCost",
     "ZeroResidual",
     "__version__",
+    "continuous_lqr",
     "control_gradient_adjoint",
+    "dlqr_feedback_controls",
+    "finite_horizon_dlqr",
+    "linearize_continuous",
+    "linearize_discrete",
     "project_box",
     "projected_gradient_control",
     "rk4_step",

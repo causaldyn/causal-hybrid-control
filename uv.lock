@@ -26,6 +26,7 @@ dependencies = [
     { name = "numpy" },
     { name = "optax" },
     { name = "optimistix" },
+    { name = "scipy" },
 ]
 
 [package.dev-dependencies]
@@ -43,6 +44,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "optax", specifier = ">=0.2.3" },
     { name = "optimistix", specifier = ">=0.0.9" },
+    { name = "scipy", specifier = ">=1.13" },
 ]
 
 [package.metadata.requires-dev]
