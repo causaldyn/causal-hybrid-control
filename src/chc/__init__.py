@@ -1,8 +1,9 @@
 """Causal Hybrid Control: hybrid dynamics + a learned causal residual + constrained control.
 
 Current spine (v0.0.1): hybrid dynamics, RK4 rollout, a hand-written discrete adjoint (verified
-against autodiff and finite differences), and projected-gradient optimal control. Causal
-identification, pessimism, MPC, and the benchmark are on the roadmap.
+against autodiff and finite differences), projected-gradient optimal control, MPC, causal
+identification behind a pluggable estimator interface, pessimism/support, off-policy evaluation,
+and the oracle-regret benchmark.
 """
 
 from __future__ import annotations
@@ -19,6 +20,14 @@ from chc.causal import (
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
+from chc.estimators import (
+    IV2SLS,
+    BackdoorOLS,
+    CausalEffectEstimator,
+    DoubleML,
+    EconMLDoubleML,
+    EffectEstimate,
+)
 from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
 from chc.integrate import rk4_step, rollout
 from chc.lqr import (
@@ -43,9 +52,15 @@ from chc.train import fit_residual, fit_residual_multistep, one_step_mse, rollou
 __version__ = "0.0.1"
 
 __all__ = [
+    "IV2SLS",
+    "BackdoorOLS",
+    "CausalEffectEstimator",
     "ConfoundedLinearSystem",
     "DampedOscillator",
+    "DoubleML",
     "Dynamics",
+    "EconMLDoubleML",
+    "EffectEstimate",
     "GaussianPolicy",
     "HybridDynamics",
     "KANResidual",
