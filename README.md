@@ -98,12 +98,13 @@ the identity of the framework. See `plans/` for the full analysis and roadmap.
 
 ## Status
 
-Early (`v0.0.1`), single-author, research code (34 Python tests + a Rust runtime). Working: hybrid
-dynamics + adjoint, LQR, system ID (one-/multi-step), causal identification (adjustment / IV / sensitivity),
+Early (`v0.0.1`), single-author, research code (36 tests). Working: hybrid dynamics + adjoint, LQR,
+system ID (one-/multi-step), causal identification (adjustment / IV / DML / sensitivity / refutation),
 pessimism, MPC, Strang–Marchuk splitting, off-policy gate, KAN backend, three benchmark tasks (pricing,
-inventory, support-shift), two flagships (pricing, epidemic), 1D/2D Galerkin FEM, and a golden-parity Rust
-runtime. All demonstrations are on synthetic/semi-synthetic problems — real-data validation is the next
-credibility step. Roadmap: real-data case study, more tasks, and the Medium/paper writeups.
+inventory, support-shift), two flagships (pricing, epidemic), and 1D/2D Galerkin FEM. All demonstrations
+are on synthetic/semi-synthetic problems — real-data validation is the next credibility step. Roadmap: a
+real-data case study, more tasks, the Medium/paper writeups, and — only if a real-time/edge deployment
+target appears — a compiled runtime.
 
 ## License
 

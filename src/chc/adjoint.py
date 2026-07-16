@@ -2,8 +2,8 @@
 
 Local Jacobians ``∂F/∂x``, ``∂F/∂u`` and the stage-cost gradients come from autodiff, but the
 backward recursion is assembled explicitly. That is deliberate: it is the object the gradient-check
-gate verifies against autodiff and finite differences, and it is the reference the eventual Rust
-runtime will mirror (where no autodiff is available).
+gate verifies against autodiff and finite differences, and the reference a hand-coded (no-autodiff)
+port would mirror.
 """
 
 from __future__ import annotations
