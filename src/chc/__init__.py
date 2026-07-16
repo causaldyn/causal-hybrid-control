@@ -12,7 +12,7 @@ from chc.causal import ConfoundedLinearSystem, estimate_control_effect
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
-from chc.galerkin import poisson_1d, thomas_solve
+from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
 from chc.integrate import rk4_step, rollout
 from chc.lqr import (
     continuous_lqr,
@@ -65,6 +65,7 @@ __all__ = [
     "one_step_mse",
     "pessimistic_control",
     "poisson_1d",
+    "poisson_2d",
     "project_box",
     "projected_gradient_control",
     "residual_flow",

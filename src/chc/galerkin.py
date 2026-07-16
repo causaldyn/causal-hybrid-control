@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import jax.numpy as jnp
+import numpy as np
 from jax import Array, lax
 
 
@@ -53,3 +54,42 @@ def poisson_1d(f: Callable[[Array], Array], n: int) -> tuple[Array, Array]:
     rhs = f(interior) * h  # lumped load, O(h^2) like the FEM itself
     u_interior = thomas_solve(sub, diag, sup, rhs)
     return nodes, jnp.concatenate([jnp.zeros(1), u_interior, jnp.zeros(1)])
+
+
+# Q1 bilinear element stiffness for the 2D Laplacian on a square (scale-invariant in 2D).
+_Q1_STIFFNESS = (1.0 / 6.0) * np.array(
+    [[4, -1, -2, -1], [-1, 4, -1, -2], [-2, -1, 4, -1], [-1, -2, -1, 4]], dtype=float
+)
+
+
+def poisson_2d(f: Callable[[Array, Array], Array], n: int) -> tuple[Array, Array]:
+    """FEM solution of ``-Δu = f`` on ``[0,1]^2``, ``u=0`` on the boundary, bilinear (Q1) elements.
+
+    The 2D analogue of the user's coursework (``plans/11`` §5): a bilinear tensor-product basis
+    assembled element-by-element on an ``n x n`` grid; ``f`` is vectorised over the grids.
+    Returns the 1D node coordinates and the ``(n+1, n+1)`` nodal solution.
+    """
+    h = 1.0 / n
+    m = n - 1  # interior nodes per axis
+    coords = np.linspace(0.0, 1.0, n + 1)
+
+    def gidx(i: int, j: int) -> int:
+        return (i - 1) * m + (j - 1)
+
+    stiffness = np.zeros((m * m, m * m))
+    for ex in range(n):
+        for ey in range(n):
+            corners = [(ex, ey), (ex + 1, ey), (ex + 1, ey + 1), (ex, ey + 1)]
+            for a, (ia, ja) in enumerate(corners):
+                if 1 <= ia <= n - 1 and 1 <= ja <= n - 1:
+                    for b, (ib, jb) in enumerate(corners):
+                        if 1 <= ib <= n - 1 and 1 <= jb <= n - 1:
+                            stiffness[gidx(ia, ja), gidx(ib, jb)] += _Q1_STIFFNESS[a, b]
+
+    xs, ys = np.meshgrid(coords[1:-1], coords[1:-1], indexing="ij")
+    load = (np.asarray(f(jnp.asarray(xs), jnp.asarray(ys))) * h**2).reshape(m * m)
+    u_interior = np.linalg.solve(stiffness, load).reshape(m, m)
+
+    u = np.zeros((n + 1, n + 1))
+    u[1:-1, 1:-1] = u_interior
+    return jnp.asarray(coords), jnp.asarray(u)
