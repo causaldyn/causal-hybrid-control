@@ -16,6 +16,14 @@ uv.lock.bak
 .mypy_cache/
 .ty_cache/
 
+# Rocq / Coq build artifacts
+*.vo
+*.vok
+*.vos
+*.glob
+.*.aux
+.lia.cache
+
 # JAX / experiment artifacts
 *.npz
 *.pkl
