@@ -1,0 +1,51 @@
+[project]
+name = "causal-hybrid-control"
+version = "0.0.1"
+description = "Physics-structured dynamics with a learned causal residual, controlled by constrained optimal control / MPC."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Ilia Gradina", email = "ilia.gradina@gmail.com" }]
+keywords = [
+    "causal-inference",
+    "optimal-control",
+    "mpc",
+    "scientific-machine-learning",
+    "hybrid-models",
+    "system-identification",
+    "jax",
+]
+dependencies = [
+    "jax>=0.4.30",
+    "diffrax>=0.6",
+    "optax>=0.2.3",
+    "equinox>=0.11.4",
+    "optimistix>=0.0.9",
+    "numpy>=1.26",
+]
+
+[project.urls]
+Homepage = "https://github.com/ilgrad/causal-hybrid-control"
+Issues = "https://github.com/ilgrad/causal-hybrid-control/issues"
+
+[dependency-groups]
+dev = ["pytest>=8", "hypothesis>=6.100", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chc"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

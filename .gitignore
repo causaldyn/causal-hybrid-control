@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# uv / venv
+.venv/
+uv.lock.bak
+
+# tooling caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.ty_cache/
+
+# JAX / experiment artifacts
+*.npz
+*.pkl
+outputs/
+wandb/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+.ipynb_checkpoints/
