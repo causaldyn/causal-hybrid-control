@@ -22,7 +22,7 @@ from chc.lqr import (
 )
 from chc.mpc import mpc_control
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
-from chc.residual import MLPResidual, ZeroResidual
+from chc.residual import KANResidual, MLPResidual, ZeroResidual
 from chc.splitting import (
     exact_linear_flow,
     lie_trotter_step,
@@ -40,6 +40,7 @@ __all__ = [
     "Dynamics",
     "GaussianPolicy",
     "HybridDynamics",
+    "KANResidual",
     "LinearDynamics",
     "MLPResidual",
     "QuadraticCost",
