@@ -22,6 +22,7 @@ from chc.lqr import (
 )
 from chc.mpc import mpc_control
 from chc.residual import MLPResidual, ZeroResidual
+from chc.support import SupportModel, pessimistic_control
 
 __version__ = "0.0.1"
 
@@ -32,6 +33,7 @@ __all__ = [
     "HybridDynamics",
     "MLPResidual",
     "QuadraticCost",
+    "SupportModel",
     "ZeroResidual",
     "__version__",
     "continuous_lqr",
@@ -42,6 +44,7 @@ __all__ = [
     "linearize_continuous",
     "linearize_discrete",
     "mpc_control",
+    "pessimistic_control",
     "project_box",
     "projected_gradient_control",
     "rk4_step",
