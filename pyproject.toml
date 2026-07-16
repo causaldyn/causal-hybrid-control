@@ -31,6 +31,7 @@ Issues = "https://github.com/ilgrad/causal-hybrid-control/issues"
 
 [dependency-groups]
 dev = ["pytest>=8", "hypothesis>=6.100", "ruff>=0.6"]
+viz = ["matplotlib>=3.8"]
 
 [build-system]
 requires = ["hatchling"]
