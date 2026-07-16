@@ -21,6 +21,7 @@ from chc.causal import ConfoundedLinearSystem, estimate_control_effect
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
+from chc.estimators import BackdoorOLS, CausalEffectEstimator
 from chc.flagship import closed_loop
 from chc.residual import ZeroResidual
 from chc.support import SupportModel, pessimistic_control
@@ -86,8 +87,19 @@ class PricingTask:
             ood_rate=float(jnp.mean((us < lo) | (us > hi))),
         )
 
-    def run(self, seed_data: int = 0, seed_eval: int = 1) -> list[TaskResult]:
-        """Fit the effect (oracle / causal / predictive) from logs and score each controller."""
+    def run(
+        self,
+        seed_data: int = 0,
+        seed_eval: int = 1,
+        estimator: CausalEffectEstimator | None = None,
+    ) -> list[TaskResult]:
+        """Fit the effect (oracle / causal / predictive) from logs and score each controller.
+
+        The CHC controller uses the pluggable ``estimator`` (default ``BackdoorOLS``, the linear
+        adjustment); pass ``DoubleML()`` / ``EconMLDoubleML()`` to swap the causal backend. The
+        predictive baseline stays the fixed naive (unadjusted) fit.
+        """
+        estimator = estimator or BackdoorOLS()
         system = ConfoundedLinearSystem(kappa=self.kappa)
         data = system.sample(self.n_data, jax.random.key(seed_data))
         u_support = (
@@ -98,7 +110,7 @@ class PricingTask:
         _, _, oracle_cost = self._closed_loop_cost(system, system.b_true, key)
         controllers = {
             "oracle": system.b_true,
-            "causal-CHC": float(estimate_control_effect(data, adjust_for=("z",))),
+            "causal-CHC": float(estimator.estimate(data, covariates=("x", "z")).effect),
             "predictive": float(estimate_control_effect(data, adjust_for=())),
         }
         return [
@@ -130,8 +142,17 @@ class InventoryTask:
         z = float(jax.scipy.stats.norm.ppf(critical_ratio))
         return self.d0 + b_hat * self.promo + self.sigma_d * z
 
-    def run(self, seed_data: int = 0, seed_eval: int = 1) -> list[TaskResult]:
-        """Estimate demand response (oracle / causal / predictive) and score the induced order."""
+    def run(
+        self,
+        seed_data: int = 0,
+        seed_eval: int = 1,
+        estimator: CausalEffectEstimator | None = None,
+    ) -> list[TaskResult]:
+        """Estimate demand response (oracle / causal / predictive) and score the induced order.
+
+        ``estimator`` is the pluggable causal backend for the CHC order (default ``BackdoorOLS``).
+        """
+        estimator = estimator or BackdoorOLS()
         system = ConfoundedLinearSystem(a=0.0, b_true=1.0, c=2.0, kappa=self.kappa)
         data = system.sample(self.n_data, jax.random.key(seed_data))
         demand = (
@@ -148,7 +169,7 @@ class InventoryTask:
         oracle_cost = cost_of(self._order(system.b_true))
         controllers = {
             "oracle": system.b_true,
-            "causal-CHC": float(estimate_control_effect(data, adjust_for=("z",))),
+            "causal-CHC": float(estimator.estimate(data, covariates=("x", "z")).effect),
             "predictive": float(estimate_control_effect(data, adjust_for=())),
         }
         results = []

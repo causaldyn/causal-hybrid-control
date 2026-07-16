@@ -16,6 +16,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
+from chc.estimators import BackdoorOLS, CausalEffectEstimator
 
 
 def certainty_equivalent_control(
@@ -59,12 +60,18 @@ def run_flagship(
     u_hi: float = 10.0,
     seed_data: int = 0,
     seed_run: int = 1,
+    estimator: CausalEffectEstimator | None = None,
 ) -> dict[str, Any]:
-    """Estimate the effect two ways from confounded logs, then control the true plant with each."""
+    """Estimate the effect two ways from confounded logs, then control the true plant with each.
+
+    ``estimator`` is the pluggable causal backend for the adjusted (causal) effect; the naive effect
+    is always the fixed unadjusted fit. Default ``BackdoorOLS`` reproduces the linear adjustment.
+    """
+    estimator = estimator or BackdoorOLS()
     system = ConfoundedLinearSystem()
     data = system.sample(n_data, jax.random.key(seed_data))
     b_naive = float(estimate_control_effect(data, adjust_for=()))
-    b_causal = float(estimate_control_effect(data, adjust_for=("z",)))
+    b_causal = float(estimator.estimate(data, covariates=("x", "z")).effect)
     run = jax.random.key(seed_run)
     xs_naive, us_naive = closed_loop(
         system, b_naive, jnp.asarray(x0), x_target, n_steps, u_lo, u_hi, run

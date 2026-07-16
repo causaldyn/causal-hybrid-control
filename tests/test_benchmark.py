@@ -1,6 +1,7 @@
 """Benchmark gate: causal control is near-oracle on pricing; predictive is catastrophic."""
 
 from chc.benchmark import InventoryTask, PricingTask, SupportShiftTask, leaderboard
+from chc.estimators import DoubleML
 
 
 def test_pricing_benchmark_ranks_causal_above_predictive() -> None:
@@ -20,6 +21,13 @@ def test_leaderboard_is_sorted_by_regret() -> None:
     assert lines[0].startswith("controller")
     assert lines[-1].split()[0] == "predictive"  # worst regret is last (unambiguous)
     assert lines[1].split()[0] in {"oracle", "causal-CHC"}  # a near-oracle controller ranks first
+
+
+def test_pricing_benchmark_runs_over_a_pluggable_estimator() -> None:
+    """The control loop consumes a swappable causal backend, not a hardwired estimator."""
+    results = {r.controller: r for r in PricingTask().run(estimator=DoubleML())}
+    assert results["causal-CHC"].regret < 1.0  # the DoubleML backend also lands near-oracle
+    assert results["predictive"].regret > 100.0  # naive baseline is unchanged
 
 
 def test_no_confounding_predictive_is_fine() -> None:
