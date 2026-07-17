@@ -19,6 +19,7 @@ from chc.causal import (
 )
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
+from chc.deep_galerkin import ScalarMLP, solve_poisson_dgm
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
 from chc.estimators import (
     IV2SLS,
@@ -76,6 +77,7 @@ __all__ = [
     "MLPResidual",
     "MeanFieldControl",
     "QuadraticCost",
+    "ScalarMLP",
     "SupportModel",
     "ZeroResidual",
     "__version__",
@@ -112,6 +114,7 @@ __all__ = [
     "rollout_mse",
     "sensitivity_analysis",
     "softmax_congestion_equilibrium",
+    "solve_poisson_dgm",
     "stackelberg_allocation",
     "strang_marchuk_step",
     "thomas_solve",
