@@ -56,6 +56,7 @@ from chc.splitting import (
 )
 from chc.support import SupportModel, pessimistic_control
 from chc.train import fit_residual, fit_residual_multistep, one_step_mse, rollout_mse
+from chc.transport import MeanFieldTransport, solve_transport, transport_step
 
 __version__ = "0.0.1"
 
@@ -80,6 +81,7 @@ __all__ = [
     "LinearDynamics",
     "MLPResidual",
     "MeanFieldControl",
+    "MeanFieldTransport",
     "QuadraticCost",
     "ScalarMLP",
     "SupportModel",
@@ -122,8 +124,10 @@ __all__ = [
     "sensitivity_analysis",
     "softmax_congestion_equilibrium",
     "solve_poisson_dgm",
+    "solve_transport",
     "stackelberg_allocation",
     "strang_marchuk_step",
     "thomas_solve",
     "total_cost",
+    "transport_step",
 ]
