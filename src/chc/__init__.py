@@ -39,6 +39,7 @@ from chc.lqr import (
     linearize_discrete,
 )
 from chc.mpc import mpc_control
+from chc.network_causal import ConfoundedNetworkSystem, estimate_network_effects
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.residual import KANResidual, MLPResidual, ZeroResidual
 from chc.splitting import (
@@ -57,6 +58,7 @@ __all__ = [
     "BackdoorOLS",
     "CausalEffectEstimator",
     "ConfoundedLinearSystem",
+    "ConfoundedNetworkSystem",
     "DampedOscillator",
     "DoWhyEstimator",
     "DoubleML",
@@ -78,6 +80,7 @@ __all__ = [
     "estimate_control_effect",
     "estimate_effect_dml",
     "estimate_effect_iv",
+    "estimate_network_effects",
     "exact_linear_flow",
     "finite_horizon_dlqr",
     "fit_behavior_policy",
