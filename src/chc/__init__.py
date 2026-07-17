@@ -40,6 +40,7 @@ from chc.lqr import (
     linearize_continuous,
     linearize_discrete,
 )
+from chc.meanfield import MeanFieldControl
 from chc.mpc import mpc_control
 from chc.network_causal import ConfoundedNetworkSystem, estimate_network_effects
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
@@ -73,6 +74,7 @@ __all__ = [
     "KoopmanModel",
     "LinearDynamics",
     "MLPResidual",
+    "MeanFieldControl",
     "QuadraticCost",
     "SupportModel",
     "ZeroResidual",
