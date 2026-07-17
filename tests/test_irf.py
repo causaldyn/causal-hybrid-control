@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from chc.irf import innovations, local_projection_irf, structured_irf
+from chc.irf import innovations, irf_control_sequence, local_projection_irf, structured_irf
 from chc.toeplitz import levinson_durbin, sample_autocorrelation
 
 # x_{t+1} = a x_t + b u_t + c z_t + noise, with the policy u_t = kappa z_t + eta (confounded by z).
@@ -69,3 +69,40 @@ def test_biased_autocorrelation_keeps_levinson_stable_on_few_samples() -> None:
     _ar, reflection, error = levinson_durbin(sample_autocorrelation(x, 8))
     assert np.all(np.abs(reflection) < 1.0)  # biased (PSD) autocorrelation -> stable Levinson
     assert error > 0.0  # positive innovation power
+
+
+def _distributed_lag_state(kernel: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """State of a delayed plant: x_t = sum_k kernel[k] u_{t-1-k} (the effect starts at h=1)."""
+    n = u.shape[0]
+    x = np.zeros(n)
+    for t in range(n):
+        x[t] = sum(kernel[k] * u[t - 1 - k] for k in range(kernel.shape[0]) if t - 1 - k >= 0)
+    return x
+
+
+def _tracking_error(kernel: np.ndarray, control: np.ndarray, target: np.ndarray) -> float:
+    padded = np.concatenate([control, np.zeros(kernel.shape[0])])  # let the carryover finish
+    achieved = _distributed_lag_state(kernel, padded)[1 : target.shape[0] + 1]  # x_{t+1}
+    return float(np.max(np.abs(achieved - target)))
+
+
+def test_irf_control_tracks_where_one_step_overshoots_a_delayed_plant() -> None:
+    kernel = np.array([1.0, 0.6, 0.3, 0.1])  # steady-state gain 2.0, spread over 4 lags
+    irf = np.concatenate([[0.0], kernel])
+    target = np.ones(30)
+    err_irf = _tracking_error(kernel, irf_control_sequence(irf, target), target)
+    err_one_step = _tracking_error(kernel, target / irf[1], target)  # inverts only g_1
+    assert err_irf < 0.05  # deconvolving the whole response tracks
+    assert err_one_step > 0.5  # ...while ignoring carryover overshoots (to sum g_h / g_1)
+
+
+def test_estimated_irf_control_beats_one_step_end_to_end() -> None:
+    kernel = np.array([1.0, 0.6, 0.3, 0.1])
+    rng = np.random.default_rng(0)
+    u = rng.standard_normal(6000)  # randomised exploration -> the IRF is identified, no confounding
+    x = _distributed_lag_state(kernel, u) + 0.02 * rng.standard_normal(6000)
+    irf = np.asarray(local_projection_irf({"x": x, "u": u}, horizon=6, adjust_for=()))
+    target = np.ones(30)
+    err_irf = _tracking_error(kernel, irf_control_sequence(irf, target), target)
+    err_one_step = _tracking_error(kernel, target / irf[1], target)
+    assert err_irf < 0.2 * err_one_step  # the estimated IRF still tracks far better than one-step

@@ -35,7 +35,12 @@ from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
 from chc.games import project_simplex, softmax_congestion_equilibrium, stackelberg_allocation
 from chc.independence import partial_corr_test
 from chc.integrate import rk4_step, rollout
-from chc.irf import innovations, local_projection_irf, structured_irf
+from chc.irf import (
+    innovations,
+    irf_control_sequence,
+    local_projection_irf,
+    structured_irf,
+)
 from chc.koopman import KoopmanModel, koopman_controller, koopman_lqr_gain
 from chc.lqr import (
     continuous_lqr,
@@ -113,6 +118,7 @@ __all__ = [
     "gohberg_semencul_apply",
     "gohberg_semencul_generators",
     "innovations",
+    "irf_control_sequence",
     "koopman_controller",
     "koopman_lqr_gain",
     "levinson_durbin",

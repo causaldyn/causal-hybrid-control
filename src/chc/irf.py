@@ -17,7 +17,7 @@ from jax import Array
 from numpy.typing import ArrayLike
 
 from chc.causal import _ols_with_intercept
-from chc.toeplitz import levinson_durbin, sample_autocorrelation
+from chc.toeplitz import levinson_durbin, sample_autocorrelation, solve_toeplitz
 
 
 def local_projection_irf(
@@ -82,3 +82,22 @@ def structured_irf(
     for h in range(2, horizon + 1):
         response[h] = sum(ar[i - 1] * response[h - i] for i in range(1, min(order, h) + 1))
     return response
+
+
+def irf_control_sequence(irf: ArrayLike, target: ArrayLike) -> np.ndarray:
+    """Feed-forward control to track a target output, by deconvolving the impulse response.
+
+    The output is the causal convolution of the control with the IRF (``x = G u``, ``G`` lower-tri
+    Toeplitz of the response), so achieving a target trajectory ``x*`` is the deconvolution
+    ``u = G^{-1} x*`` -- solved with the Toeplitz machinery. This makes the *whole* dynamic effect
+    actionable: it accounts for carryover, where a one-step controller that inverts only ``g_1``
+    over-actuates on a delayed plant (steady-state error ``sum_h g_h / g_1``). See ``plans/18``.
+    """
+    kernel = np.asarray(irf, dtype=np.float64)[1:]  # drop g_0 = 0; the causal impulse response
+    target = np.asarray(target, dtype=np.float64)
+    horizon = target.shape[0]
+    first_col = np.zeros(horizon)
+    first_col[: min(kernel.shape[0], horizon)] = kernel[:horizon]
+    first_row = np.zeros(horizon)
+    first_row[0] = first_col[0]
+    return solve_toeplitz(first_col, first_row, target)
