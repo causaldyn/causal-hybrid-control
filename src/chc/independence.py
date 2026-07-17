@@ -7,36 +7,43 @@ the estimator, so unrelated series look linked. Conditioning on the lagged paren
 *momentary conditional independence*) whitens the residuals and restores calibration. This is the CI
 primitive ``chc.discovery`` screens lagged parents with; see ``plans/17``. The method (partial
 correlation) is standard; only the autocorrelation-aware *usage* is borrowed -- no tigramite code.
+
+Computed in NumPy float64, not JAX: a p-value threshold is precision-sensitive near ``alpha``, and a
+statistical test must not silently depend on the global ``jax_enable_x64`` flag (float32 would flip
+borderline edges in discovery). It is not on any differentiated or jitted path.
 """
 
 from __future__ import annotations
 
-import jax.numpy as jnp
-from jax import Array
-from jax.scipy.special import erfc
+import math
+
+import numpy as np
+from numpy.typing import ArrayLike
 
 _EPS = 1e-12
 
 
-def _residualize(target: Array, conditioning: Array | None) -> tuple[Array, int]:
+def _residualize(target: ArrayLike, conditioning: ArrayLike | None) -> tuple[np.ndarray, int]:
     """Residual of ``target`` after linear regression on ``[1, conditioning]``; returns (resid, k).
 
     ``k`` is the number of conditioning columns (0 when ``conditioning`` is ``None``) -- the
     degrees-of-freedom correction for the Fisher-z statistic. A ``(n,)`` or ``(n, k)`` conditioning
     set is accepted; a ``(k, n)`` one is transposed to rows-are-samples.
     """
-    target = jnp.asarray(target, dtype=float).ravel()
+    target = np.asarray(target, dtype=np.float64).ravel()
     if conditioning is None:
         return target - target.mean(), 0
-    cond = jnp.atleast_2d(jnp.asarray(conditioning, dtype=float))
+    cond = np.atleast_2d(np.asarray(conditioning, dtype=np.float64))
     if cond.shape[0] != target.shape[0]:
         cond = cond.T
-    design = jnp.concatenate([jnp.ones((target.shape[0], 1)), cond], axis=1)
-    coeffs, *_ = jnp.linalg.lstsq(design, target, rcond=None)
+    design = np.column_stack([np.ones(target.shape[0]), cond])
+    coeffs, *_ = np.linalg.lstsq(design, target, rcond=None)
     return target - design @ coeffs, cond.shape[1]
 
 
-def partial_corr_test(x: Array, y: Array, z: Array | None = None) -> tuple[Array, Array]:
+def partial_corr_test(
+    x: ArrayLike, y: ArrayLike, z: ArrayLike | None = None
+) -> tuple[float, float]:
     """Test ``x ⊥ y | z`` by partial correlation + Fisher-z; returns ``(partial_corr, p_value)``.
 
     With ``z=None`` this is the plain marginal-correlation test -- the miscalibrated one under
@@ -46,9 +53,10 @@ def partial_corr_test(x: Array, y: Array, z: Array | None = None) -> tuple[Array
     residual_x, k = _residualize(x, z)
     residual_y, _ = _residualize(y, z)
     n = residual_x.shape[0]
-    denom = jnp.sqrt(jnp.sum(residual_x**2) * jnp.sum(residual_y**2)) + _EPS
-    rho = jnp.clip(jnp.sum(residual_x * residual_y) / denom, -1.0 + _EPS, 1.0 - _EPS)
-    dof = jnp.maximum(n - k - 3, 1)  # Fisher-z uses sqrt(n - |z| - 3)
-    stat = jnp.arctanh(rho) * jnp.sqrt(dof)
-    p_value = erfc(jnp.abs(stat) / jnp.sqrt(2.0))  # = 2 * (1 - Phi(|stat|)), two-sided
+    denom = math.sqrt(float(np.sum(residual_x**2)) * float(np.sum(residual_y**2))) + _EPS
+    rho = float(np.sum(residual_x * residual_y)) / denom
+    rho = min(max(rho, -1.0 + _EPS), 1.0 - _EPS)
+    dof = max(n - k - 3, 1)  # Fisher-z uses sqrt(n - |z| - 3)
+    stat = math.atanh(rho) * math.sqrt(dof)
+    p_value = math.erfc(abs(stat) / math.sqrt(2.0))  # = 2 * (1 - Phi(|stat|)), two-sided
     return rho, p_value
