@@ -30,6 +30,7 @@ from chc.estimators import (
     EffectEstimate,
 )
 from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
+from chc.games import project_simplex, softmax_congestion_equilibrium, stackelberg_allocation
 from chc.integrate import rk4_step, rollout
 from chc.koopman import KoopmanModel, koopman_controller, koopman_lqr_gain
 from chc.lqr import (
@@ -100,6 +101,7 @@ __all__ = [
     "poisson_1d",
     "poisson_2d",
     "project_box",
+    "project_simplex",
     "projected_gradient_control",
     "refute_effect",
     "residual_flow",
@@ -107,6 +109,8 @@ __all__ = [
     "rollout",
     "rollout_mse",
     "sensitivity_analysis",
+    "softmax_congestion_equilibrium",
+    "stackelberg_allocation",
     "strang_marchuk_step",
     "thomas_solve",
     "total_cost",
