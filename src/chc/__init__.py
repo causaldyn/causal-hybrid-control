@@ -35,6 +35,7 @@ from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
 from chc.games import project_simplex, softmax_congestion_equilibrium, stackelberg_allocation
 from chc.independence import partial_corr_test
 from chc.integrate import rk4_step, rollout
+from chc.irf import innovations, local_projection_irf, structured_irf
 from chc.koopman import KoopmanModel, koopman_controller, koopman_lqr_gain
 from chc.lqr import (
     continuous_lqr,
@@ -55,6 +56,14 @@ from chc.splitting import (
     strang_marchuk_step,
 )
 from chc.support import SupportModel, pessimistic_control
+from chc.toeplitz import (
+    gohberg_semencul_apply,
+    gohberg_semencul_generators,
+    levinson_durbin,
+    sample_autocorrelation,
+    solve_toeplitz,
+    toeplitz_matvec,
+)
 from chc.train import fit_residual, fit_residual_multistep, one_step_mse, rollout_mse
 from chc.transport import MeanFieldTransport, solve_transport, transport_step
 
@@ -101,11 +110,16 @@ __all__ = [
     "fit_behavior_policy",
     "fit_residual",
     "fit_residual_multistep",
+    "gohberg_semencul_apply",
+    "gohberg_semencul_generators",
+    "innovations",
     "koopman_controller",
     "koopman_lqr_gain",
+    "levinson_durbin",
     "lie_trotter_step",
     "linearize_continuous",
     "linearize_discrete",
+    "local_projection_irf",
     "mpc_control",
     "off_policy_value",
     "one_step_mse",
@@ -121,13 +135,17 @@ __all__ = [
     "rk4_step",
     "rollout",
     "rollout_mse",
+    "sample_autocorrelation",
     "sensitivity_analysis",
     "softmax_congestion_equilibrium",
     "solve_poisson_dgm",
+    "solve_toeplitz",
     "solve_transport",
     "stackelberg_allocation",
     "strang_marchuk_step",
+    "structured_irf",
     "thomas_solve",
+    "toeplitz_matvec",
     "total_cost",
     "transport_step",
 ]
