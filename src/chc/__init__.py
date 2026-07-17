@@ -20,6 +20,7 @@ from chc.causal import (
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.deep_galerkin import ScalarMLP, solve_poisson_dgm
+from chc.discovery import LaggedGraph, discover_lagged_parents
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
 from chc.estimators import (
     IV2SLS,
@@ -32,6 +33,7 @@ from chc.estimators import (
 )
 from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
 from chc.games import project_simplex, softmax_congestion_equilibrium, stackelberg_allocation
+from chc.independence import partial_corr_test
 from chc.integrate import rk4_step, rollout
 from chc.koopman import KoopmanModel, koopman_controller, koopman_lqr_gain
 from chc.lqr import (
@@ -74,6 +76,7 @@ __all__ = [
     "HybridDynamics",
     "KANResidual",
     "KoopmanModel",
+    "LaggedGraph",
     "LinearDynamics",
     "MLPResidual",
     "MeanFieldControl",
@@ -84,6 +87,7 @@ __all__ = [
     "__version__",
     "continuous_lqr",
     "control_gradient_adjoint",
+    "discover_lagged_parents",
     "dlqr_feedback_controls",
     "estimate_control_effect",
     "estimate_effect_dml",
@@ -102,6 +106,7 @@ __all__ = [
     "mpc_control",
     "off_policy_value",
     "one_step_mse",
+    "partial_corr_test",
     "pessimistic_control",
     "poisson_1d",
     "poisson_2d",
