@@ -173,3 +173,48 @@ class EconMLDoubleML:
             effect=float(np.mean(est.effect(x))),
             cate=lambda xq: jnp.asarray(est.effect(np.asarray(xq))),
         )
+
+
+_DOWHY_HINT = (
+    "DoWhyEstimator requires the 'dowhy' package, which is NOT a chc dependency. "
+    "Install it in a compatible environment: pip install dowhy."
+)
+
+
+@dataclass(frozen=True)
+class DoWhyEstimator:
+    """Adapter over DoWhy's identify -> estimate workflow (lazy import; requires dowhy installed).
+
+    Builds a ``CausalModel`` with ``common_causes = covariates``, identifies the estimand, and
+    estimates it (backdoor linear regression by default). Pass another ``method_name`` for a
+    different DoWhy estimator (e.g. propensity-score matching / weighting).
+    """
+
+    method_name: str = "backdoor.linear_regression"
+
+    def estimate(
+        self,
+        data: Data,
+        *,
+        treatment: str = "u",
+        outcome: str = "x_next",
+        covariates: tuple[str, ...] = ("x", "z"),
+    ) -> EffectEstimate:
+        try:
+            import pandas as pd
+            from dowhy import CausalModel
+        except ImportError as exc:  # pragma: no cover - exercised only without dowhy
+            raise ImportError(_DOWHY_HINT) from exc
+        frame = pd.DataFrame(
+            {
+                treatment: np.asarray(data[treatment]),
+                outcome: np.asarray(data[outcome]),
+                **{c: np.asarray(data[c]) for c in covariates},
+            }
+        )
+        model = CausalModel(
+            data=frame, treatment=treatment, outcome=outcome, common_causes=list(covariates)
+        )
+        estimand = model.identify_effect(proceed_when_unidentifiable=True)
+        estimate = model.estimate_effect(estimand, method_name=self.method_name)
+        return EffectEstimate(effect=float(estimate.value))

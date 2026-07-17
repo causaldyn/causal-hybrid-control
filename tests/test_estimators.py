@@ -9,6 +9,7 @@ from chc.estimators import (
     BackdoorOLS,
     CausalEffectEstimator,
     DoubleML,
+    DoWhyEstimator,
     EconMLDoubleML,
     EffectEstimate,
 )
@@ -57,3 +58,9 @@ def test_econml_adapter_raises_actionable_error_when_uninstalled() -> None:
     """The optional adapter must fail loudly with an install hint, never a hard dependency."""
     with pytest.raises(ImportError, match="econml"):
         EconMLDoubleML().estimate(_data())
+
+
+def test_dowhy_adapter_raises_actionable_error_when_uninstalled() -> None:
+    """The DoWhy adapter is lazy-imported too: fail loudly with a hint, never a hard dependency."""
+    with pytest.raises(ImportError, match="dowhy"):
+        DoWhyEstimator().estimate(_data())

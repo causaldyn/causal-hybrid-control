@@ -25,6 +25,7 @@ from chc.estimators import (
     BackdoorOLS,
     CausalEffectEstimator,
     DoubleML,
+    DoWhyEstimator,
     EconMLDoubleML,
     EffectEstimate,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "CausalEffectEstimator",
     "ConfoundedLinearSystem",
     "DampedOscillator",
+    "DoWhyEstimator",
     "DoubleML",
     "Dynamics",
     "EconMLDoubleML",

@@ -78,7 +78,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | dynamics | `dynamics`, `residual`, `integrate` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / linear residuals; RK4 |
 | sensitivity | `adjoint` | discrete adjoint (verified == autodiff == finite differences) |
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
-| identification | `train`, `causal` | system ID (one/multi-step); effect — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation |
+| identification | `train`, `causal`, `estimators` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters |
 | control | `control`, `mpc`, `splitting` | projected-gradient OC; receding-horizon MPC; **Strang–Marchuk** splitting |
 | offline safety | `support`, `offpolicy` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate |
 | evaluation | `benchmark`, `flagship` | pricing / inventory / **support-shift** oracle-regret tasks + leaderboard |
