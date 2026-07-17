@@ -31,6 +31,7 @@ from chc.estimators import (
 )
 from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
 from chc.integrate import rk4_step, rollout
+from chc.koopman import KoopmanModel, koopman_controller, koopman_lqr_gain
 from chc.lqr import (
     continuous_lqr,
     dlqr_feedback_controls,
@@ -68,6 +69,7 @@ __all__ = [
     "GaussianPolicy",
     "HybridDynamics",
     "KANResidual",
+    "KoopmanModel",
     "LinearDynamics",
     "MLPResidual",
     "QuadraticCost",
@@ -86,6 +88,8 @@ __all__ = [
     "fit_behavior_policy",
     "fit_residual",
     "fit_residual_multistep",
+    "koopman_controller",
+    "koopman_lqr_gain",
     "lie_trotter_step",
     "linearize_continuous",
     "linearize_discrete",
