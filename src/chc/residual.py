@@ -110,3 +110,40 @@ class KANResidual(eqx.Module):
 
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
         return self.layer(jnp.concatenate([x, u]))
+
+
+class GraphResidual(eqx.Module):
+    """Message-passing residual over a fixed graph -- a GNN backend for networked/spatial dynamics.
+
+    The state is ``n_nodes`` blocks of ``node_dim``. Each node's update is an MLP of its features,
+    the mean of its neighbours' encoded features (one message-passing round), and the control. It is
+    permutation-equivariant and parameter-shared, learning a coupling a pointwise MLP re-learns per
+    node. The adjacency is frozen (``stop_gradient``); see ``plans/16``.
+    """
+
+    adjacency: Array
+    n_nodes: int = eqx.field(static=True)
+    node_dim: int = eqx.field(static=True)
+    encoder: eqx.nn.MLP
+    message: eqx.nn.MLP
+
+    def __init__(
+        self, adjacency: Array, node_dim: int, control_dim: int, hidden: int = 16, *, key: Array
+    ) -> None:
+        k_enc, k_msg = jax.random.split(key)
+        degree = jnp.sum(adjacency, axis=1, keepdims=True)
+        self.adjacency = adjacency / jnp.maximum(degree, 1.0)  # row-normalised (mean aggregation)
+        self.n_nodes = adjacency.shape[0]
+        self.node_dim = node_dim
+        self.encoder = eqx.nn.MLP(node_dim, hidden, hidden, 1, activation=jax.nn.tanh, key=k_enc)
+        self.message = eqx.nn.MLP(
+            node_dim + hidden + control_dim, node_dim, hidden, 1, activation=jax.nn.tanh, key=k_msg
+        )
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        adjacency = jax.lax.stop_gradient(self.adjacency)  # graph structure is fixed, not trained
+        nodes = x.reshape(self.n_nodes, self.node_dim)
+        messages = adjacency @ jax.vmap(self.encoder)(nodes)
+        control = jnp.broadcast_to(u, (self.n_nodes, u.shape[0]))
+        update = jax.vmap(self.message)(jnp.concatenate([nodes, messages, control], axis=1))
+        return update.reshape(-1)
