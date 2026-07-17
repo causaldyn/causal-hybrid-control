@@ -20,7 +20,7 @@ from chc.causal import (
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.deep_galerkin import ScalarMLP, solve_poisson_dgm
-from chc.discovery import LaggedGraph, discover_lagged_parents
+from chc.discovery import LaggedGraph, TigramiteDiscovery, discover_lagged_parents
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
 from chc.estimators import (
     IV2SLS,
@@ -83,6 +83,7 @@ __all__ = [
     "QuadraticCost",
     "ScalarMLP",
     "SupportModel",
+    "TigramiteDiscovery",
     "ZeroResidual",
     "__version__",
     "continuous_lqr",

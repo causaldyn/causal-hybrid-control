@@ -16,6 +16,7 @@ algorithms (PCMCI+/LPCMCI) stay a lazy, opt-in tigramite adapter; the point here
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
@@ -134,3 +135,60 @@ def discover_lagged_parents(
 
     control_out = None if control_parents is None else jnp.asarray(control_parents)
     return LaggedGraph(jnp.asarray(state_parents), control_out, max_lag)
+
+
+_TIGRAMITE_HINT = (
+    "TigramiteDiscovery requires 'tigramite' (and 'joblib'), which is NOT a chc dependency: "
+    "tigramite is GPL-3.0, so it can never be pinned here. Install it in your own environment: "
+    "pip install tigramite joblib."
+)
+
+
+@dataclass(frozen=True)
+class TigramiteDiscovery:
+    """Adapter over tigramite's PCMCI (lazy import; requires tigramite installed).
+
+    A drop-in for :func:`discover_lagged_parents` returning the same :class:`LaggedGraph`, but with
+    PCMCI + a tigramite conditional-independence test doing the work. Reach for it when the native
+    minimal PC1 is not enough -- dense coupling, or nonlinear dependencies via a nonparametric test
+    (``cond_ind_test=GPDC()``/``CMIknn()``). tigramite is GPL-3.0, so it stays bring-your-own-env
+    and is never a chc dependency; see ``plans/17``.
+    """
+
+    pc_alpha: float = 0.01
+    cond_ind_test: Any = None  # a tigramite CI-test instance; defaults to ParCorr
+
+    def discover(
+        self, series: Array, controls: Array | None = None, max_lag: int = 3
+    ) -> LaggedGraph:
+        """Run PCMCI on ``[series, controls]`` and return the state components' lagged parents."""
+        try:
+            from tigramite import data_processing as pp
+            from tigramite.independence_tests.parcorr import ParCorr
+            from tigramite.pcmci import PCMCI
+        except ImportError as exc:  # pragma: no cover - exercised only without tigramite
+            raise ImportError(_TIGRAMITE_HINT) from exc
+
+        series = np.asarray(series, dtype=float)
+        d_state = series.shape[1]
+        controls = None if controls is None else np.asarray(controls, dtype=float)
+        stacked = series if controls is None else np.column_stack([series, controls])
+        test = self.cond_ind_test if self.cond_ind_test is not None else ParCorr()
+        pcmci = PCMCI(dataframe=pp.DataFrame(stacked), cond_ind_test=test, verbosity=0)
+        graph = pcmci.run_pcmci(tau_max=max_lag, pc_alpha=self.pc_alpha)["graph"]
+
+        d_control = stacked.shape[1] - d_state
+        state_parents = np.zeros((d_state, d_state, max_lag), dtype=bool)
+        control_parents = np.zeros((d_state, d_control, max_lag), dtype=bool) if d_control else None
+        for target in range(d_state):  # only state components are targets; controls are exogenous
+            for source in range(stacked.shape[1]):
+                for lag in range(1, max_lag + 1):
+                    if graph[source, target, lag] != "-->":  # x^source_{t-lag} -> x^target_t
+                        continue
+                    if source < d_state:
+                        state_parents[target, source, lag - 1] = True
+                    else:
+                        control_parents[target, source - d_state, lag - 1] = True  # type: ignore[index]
+
+        control_out = None if control_parents is None else jnp.asarray(control_parents)
+        return LaggedGraph(jnp.asarray(state_parents), control_out, max_lag)
