@@ -59,24 +59,26 @@ class MeanFieldControl:
         _, costs = jax.lax.scan(step, rho0, u_seq)
         return jnp.sum(costs)
 
-    def _myopic_cost(self) -> float:
-        """Closed-loop myopic policy: each tick spend the budget on the current demand deficit."""
+    def _myopic_plan(self) -> Array:
+        """Myopic policy: each tick spend the budget on the deficit; returns its open-loop plan."""
         target, attract = self._target_attract()
 
         def step(rho: Array, _: int) -> tuple[Array, Array]:
             deficit = jnp.maximum(target - rho, 0.0)
             u = self.budget * deficit / (jnp.sum(deficit) + 1e-8)
-            rho_next = self._response(rho, u, attract)
-            cost = jnp.sum((rho_next - target) ** 2) + self.control_weight * jnp.sum(u**2)
-            return rho_next, cost
+            return self._response(rho, u, attract), u
 
         rho0 = jnp.full(self.n_zones, self.mass / self.n_zones)
-        _, costs = jax.lax.scan(step, rho0, jnp.arange(self.horizon))
-        return float(jnp.sum(costs))
+        _, u_seq = jax.lax.scan(step, rho0, jnp.arange(self.horizon))
+        return u_seq
 
-    def plan(self, steps: int = 400, lr: float = 0.05) -> Array:
-        """Projected-gradient MPC: optimise the whole ``u_seq`` through the migration rollout."""
-        u = jnp.full((self.horizon, self.n_zones), self.budget / self.n_zones)
+    def plan(self, steps: int = 400, lr: float = 0.05, init: Array | None = None) -> Array:
+        """Projected-gradient MPC on ``u_seq`` through the rollout (warm-start from ``init``)."""
+        u = (
+            init
+            if init is not None
+            else jnp.full((self.horizon, self.n_zones), self.budget / self.n_zones)
+        )
         grad_fn = jax.jit(jax.grad(self.rollout_cost))
         cost_fn = jax.jit(self.rollout_cost)
         project = jax.vmap(lambda row: project_simplex(row, self.budget))
@@ -92,12 +94,17 @@ class MeanFieldControl:
         return best_u
 
     def regrets(self, steps: int = 400) -> dict[str, float]:
-        """Regret vs a well-planned oracle for no-control / myopic / planned mean-field control."""
+        """Regret vs a well-planned oracle for no-control / myopic / planned mean-field control.
+
+        The planner warm-starts from the myopic open-loop plan, so it refines (never worsens) it.
+        """
+        myopic_seq = self._myopic_plan()
         no_control = float(self.rollout_cost(jnp.zeros((self.horizon, self.n_zones))))
-        planned = float(self.rollout_cost(self.plan(steps=steps)))
-        oracle = float(self.rollout_cost(self.plan(steps=steps * 3)))
+        myopic = float(self.rollout_cost(myopic_seq))
+        planned = float(self.rollout_cost(self.plan(steps=steps, init=myopic_seq)))
+        oracle = float(self.rollout_cost(self.plan(steps=steps * 3, init=myopic_seq)))
         return {
             "no-control": no_control - oracle,
-            "myopic": self._myopic_cost() - oracle,
+            "myopic": myopic - oracle,
             "planned-CHC": planned - oracle,
         }
