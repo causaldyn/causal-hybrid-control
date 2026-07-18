@@ -89,8 +89,10 @@ def regret_scaling(
     skipped. Theory (Dean et al.) predicts an exponent of 2.
     """
     rng = np.random.default_rng(seed)
-    median_errors, median_gaps = [], []
-    log_err, log_gap = [], []
+    median_errors: list[float] = []
+    median_gaps: list[float] = []
+    log_err: list[float] = []
+    log_gap: list[float] = []
     for eps in errors:
         errs, gaps = [], []
         for _ in range(n_samples):

@@ -52,7 +52,7 @@ class KoopmanModel:
         return self
 
     def predict(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
-        if self._a is None:
+        if self._a is None or self._b is None:
             raise RuntimeError("call fit() before predict()")
         phi = _lift(x, self.degree)
         phi_next = phi @ self._a.T + np.atleast_2d(u) @ self._b.T
@@ -71,6 +71,8 @@ class KoopmanModel:
 def koopman_lqr_gain(model: KoopmanModel, q_state: np.ndarray, r: np.ndarray) -> np.ndarray:
     """Infinite-horizon discrete-LQR gain in the lifted space (state cost via the decode slice)."""
     a, b = model._a, model._b
+    if a is None or b is None:
+        raise RuntimeError("fit the model before computing an LQR gain")
     n_feat = a.shape[0]
     lift_q = np.zeros((n_feat, n_feat))
     lift_q[: model.state_dim, : model.state_dim] = np.asarray(

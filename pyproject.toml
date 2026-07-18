@@ -45,7 +45,12 @@ Homepage = "https://github.com/ilgrad/causal-hybrid-control"
 Issues = "https://github.com/ilgrad/causal-hybrid-control/issues"
 
 [dependency-groups]
-dev = ["pytest>=8", "hypothesis>=6.100", "ruff>=0.6"]
+dev = [
+    "pytest>=8",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "mypy>=2.3.0",
+]
 viz = ["matplotlib>=3.8"]
 notebooks = [
     "jupyterlab>=4.0",
@@ -75,3 +80,10 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PERF", "PIE", "PT", "PT
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/chc"]
+ignore_missing_imports = true  # jax / equinox / diffrax / scipy ship no complete stubs
+warn_redundant_casts = true
+warn_unused_ignores = true

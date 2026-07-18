@@ -101,8 +101,8 @@ def _select_parents(
 
 
 def discover_lagged_parents(
-    series: Array,
-    controls: Array | None = None,
+    series: np.ndarray,
+    controls: np.ndarray | None = None,
     max_lag: int = 3,
     alpha: float = 0.01,
     max_parents: int | None = None,
@@ -159,7 +159,7 @@ class TigramiteDiscovery:
     cond_ind_test: Any = None  # a tigramite CI-test instance; defaults to ParCorr
 
     def discover(
-        self, series: Array, controls: Array | None = None, max_lag: int = 3
+        self, series: np.ndarray, controls: np.ndarray | None = None, max_lag: int = 3
     ) -> LaggedGraph:
         """Run PCMCI on ``[series, controls]`` and return the state components' lagged parents."""
         try:

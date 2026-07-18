@@ -12,6 +12,8 @@ exploitation is bounded, not merely discouraged.
 
 from __future__ import annotations
 
+from typing import cast
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -142,7 +144,8 @@ class SplitConformal(eqx.Module):
         alpha: float = 0.1,
         eps: float = 1e-6,
     ) -> SplitConformal:
-        known, ensemble = model.known, model.residual
+        known = model.known
+        ensemble = cast(EnsembleResidual, model.residual)  # calibrate is only called on ensembles
 
         def score(x: Array, u: Array, x_next: Array) -> Array:
             mean = jnp.mean(_member_next_states(known, ensemble, x, u, dt), axis=0)
@@ -156,12 +159,14 @@ class SplitConformal(eqx.Module):
 
     def interval_width(self, x: Array, u: Array) -> Array:
         """Calibrated prediction-interval half-width ``q_hat * (sigma(x,u) + eps)`` (scalar)."""
-        sigma = _predictive_std(self.model.known, self.model.residual, x, u, self.dt)
+        ensemble = cast(EnsembleResidual, self.model.residual)
+        sigma = _predictive_std(self.model.known, ensemble, x, u, self.dt)
         return self.q_hat * (sigma + self.eps)
 
     def coverage(self, data: dict[str, Array]) -> float:
         """Empirical coverage on ``data``: fraction of true next-states within the interval."""
-        known, ensemble = self.model.known, self.model.residual
+        known = self.model.known
+        ensemble = cast(EnsembleResidual, self.model.residual)
 
         def covered(x: Array, u: Array, x_next: Array) -> Array:
             mean = jnp.mean(_member_next_states(known, ensemble, x, u, self.dt), axis=0)

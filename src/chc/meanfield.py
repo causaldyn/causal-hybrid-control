@@ -63,7 +63,7 @@ class MeanFieldControl:
         """Myopic policy: each tick spend the budget on the deficit; returns its open-loop plan."""
         target, attract = self._target_attract()
 
-        def step(rho: Array, _: int) -> tuple[Array, Array]:
+        def step(rho: Array, _: Array) -> tuple[Array, Array]:
             deficit = jnp.maximum(target - rho, 0.0)
             u = self.budget * deficit / (jnp.sum(deficit) + 1e-8)
             return self._response(rho, u, attract), u

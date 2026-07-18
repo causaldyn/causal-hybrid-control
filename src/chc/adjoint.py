@@ -67,7 +67,8 @@ def total_cost_diffrax(
     the fixed-step RK4 of ``chc.integrate.rollout`` -- accuracy set by ``(rtol, atol)``, and the
     continuous ``BacksolveAdjoint`` available (via :func:`control_gradient_diffrax`).
     """
-    term = diffrax.ODETerm(lambda t, x, u: dyn(t, x, u))
+    # diffrax types the vector-field time as RealScalarLike; Dynamics takes the scalar at runtime
+    term = diffrax.ODETerm(lambda t, x, u: dyn(t, x, u))  # type: ignore[arg-type]
     solver, controller = diffrax.Tsit5(), diffrax.PIDController(rtol=rtol, atol=atol)
     adjoint = diffrax.RecursiveCheckpointAdjoint() if adjoint is None else adjoint
 

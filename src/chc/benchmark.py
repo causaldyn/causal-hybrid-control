@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 import equinox as eqx
 import jax
@@ -29,7 +29,7 @@ from chc.flagship import closed_loop
 from chc.integrate import rk4_step
 from chc.residual import ZeroResidual
 from chc.support import SupportModel, pessimistic_control
-from chc.uncertainty import EnsembleUncertainty, fit_ensemble
+from chc.uncertainty import EnsembleResidual, EnsembleUncertainty, fit_ensemble
 
 
 @dataclass(frozen=True)
@@ -366,7 +366,7 @@ class ModelUncertaintyTask:
         model_ens, _ = fit_ensemble(
             known, data, self.dt, n_members=self.n_members, steps=self.fit_steps, seed=seed_data + 1
         )
-        uncertainty = EnsembleUncertainty(ensemble=model_ens.residual)
+        uncertainty = EnsembleUncertainty(ensemble=cast(EnsembleResidual, model_ens.residual))
 
         cost = QuadraticCost(
             Q=jnp.diag(jnp.array([1.0, 0.0])),
