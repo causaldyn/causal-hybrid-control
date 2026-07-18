@@ -20,6 +20,7 @@ from chc.causal import (
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.deep_galerkin import ScalarMLP, solve_poisson_dgm
+from chc.did import GroupTimeATT, callaway_santanna, twoway_fixed_effects_att
 from chc.discovery import LaggedGraph, TigramiteDiscovery, discover_lagged_parents
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
 from chc.estimators import (
@@ -98,6 +99,7 @@ __all__ = [
     "EnsembleUncertainty",
     "GaussianPolicy",
     "GraphResidual",
+    "GroupTimeATT",
     "HybridDynamics",
     "KANResidual",
     "KoopmanModel",
@@ -114,6 +116,7 @@ __all__ = [
     "TigramiteDiscovery",
     "ZeroResidual",
     "__version__",
+    "callaway_santanna",
     "continuous_lqr",
     "control_gradient_adjoint",
     "control_gradient_diffrax",
@@ -170,4 +173,5 @@ __all__ = [
     "total_cost",
     "total_cost_diffrax",
     "transport_step",
+    "twoway_fixed_effects_att",
 ]
