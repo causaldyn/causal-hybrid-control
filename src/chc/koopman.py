@@ -22,9 +22,11 @@ def _lift(x: np.ndarray, degree: int) -> np.ndarray:
     x = np.atleast_2d(np.asarray(x, float))
     _, d = x.shape
     feats = [x[:, j] for j in range(d)]  # raw state components first -> decoding is a slice
-    for deg in range(2, degree + 1):
-        for combo in combinations_with_replacement(range(d), deg):
-            feats.append(np.prod([x[:, j] for j in combo], axis=0))
+    feats.extend(
+        np.prod([x[:, j] for j in combo], axis=0)
+        for deg in range(2, degree + 1)
+        for combo in combinations_with_replacement(range(d), deg)
+    )
     return np.column_stack(feats)
 
 

@@ -188,7 +188,6 @@ dependencies = [
     { name = "jax" },
     { name = "numpy" },
     { name = "optax" },
-    { name = "optimistix" },
     { name = "scipy" },
 ]
 
@@ -226,7 +225,6 @@ requires-dist = [
     { name = "lightgbm", marker = "extra == 'trees'", specifier = ">=4" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "optax", specifier = ">=0.2.3" },
-    { name = "optimistix", specifier = ">=0.0.9" },
     { name = "scikit-learn", marker = "extra == 'trees'", specifier = ">=1.4" },
     { name = "scipy", specifier = ">=1.13" },
 ]

@@ -28,7 +28,8 @@ def test_backdoor_ols_recovers_effect_when_adjusting_for_confounder() -> None:
     result = BackdoorOLS().estimate(_data(), covariates=("x", "z"))
     assert isinstance(result, EffectEstimate)
     assert abs(result.effect - 1.0) < 0.05  # true b_true = +1.0
-    assert result.std_error is not None and result.std_error > 0.0
+    assert result.std_error is not None
+    assert result.std_error > 0.0
 
 
 def test_backdoor_ols_is_confounded_without_the_confounder() -> None:

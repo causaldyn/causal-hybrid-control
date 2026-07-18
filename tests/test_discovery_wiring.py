@@ -54,7 +54,8 @@ def test_node_adjacency_collapses_component_blocks_to_nodes() -> None:
     state_parents[3, 0, 0] = True  # node1 velocity has node0 position as a lagged parent
     graph = LaggedGraph(jnp.asarray(state_parents), None, max_lag=1)
     node_adjacency = np.asarray(graph.node_adjacency(2))
-    assert node_adjacency[1, 0] == 1.0 and node_adjacency[0, 1] == 0.0  # node0 -> node1 only
+    assert node_adjacency[1, 0] == 1.0  # node0 -> node1
+    assert node_adjacency[0, 1] == 0.0  # but not the reverse
 
 
 def test_graph_residual_consumes_a_discovered_adjacency() -> None:

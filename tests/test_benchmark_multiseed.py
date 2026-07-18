@@ -31,7 +31,8 @@ def test_leaderboard_multiseed_sorts_by_mean_regret_and_shows_cis(results: list)
     lines = leaderboard_multiseed(results).splitlines()
     assert "95% CI" in lines[0]  # header advertises the interval
     assert lines[-1].startswith("predictive")  # the worst mean regret sorts last
-    assert "[" in lines[-1] and "]" in lines[-1]  # each row prints a CI
+    assert "[" in lines[-1]  # each row prints a CI
+    assert "]" in lines[-1]
 
 
 def test_single_seed_gives_a_degenerate_interval() -> None:

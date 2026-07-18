@@ -22,4 +22,5 @@ def test_optimal_npi_flattens_the_curve() -> None:
     assert peak_uncontrolled > 2 * I_MAX  # uncontrolled epidemic overshoots capacity
     assert peak_controlled <= I_MAX * 1.15  # control flattens the curve to ~capacity
     assert float(jnp.sum(us)) > 0.0  # it actually intervenes
-    assert bool((us >= 0.0).all()) and bool((us <= U_MAX + 1e-6).all())
+    assert bool((us >= 0.0).all())  # within the lower box bound
+    assert bool((us <= U_MAX + 1e-6).all())  # within the upper box bound
