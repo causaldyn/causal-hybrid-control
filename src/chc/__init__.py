@@ -63,6 +63,7 @@ from chc.splitting import (
 from chc.support import SupportModel, pessimistic_control
 from chc.toeplitz import (
     gohberg_semencul_apply,
+    gohberg_semencul_covariance,
     gohberg_semencul_generators,
     levinson_durbin,
     sample_autocorrelation,
@@ -116,6 +117,7 @@ __all__ = [
     "fit_residual",
     "fit_residual_multistep",
     "gohberg_semencul_apply",
+    "gohberg_semencul_covariance",
     "gohberg_semencul_generators",
     "innovations",
     "irf_control_sequence",

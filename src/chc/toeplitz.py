@@ -114,6 +114,29 @@ def gohberg_semencul_generators(
     return x, y
 
 
+def gohberg_semencul_covariance(
+    snapshots: ArrayLike, order: int, size: int | None = None
+) -> np.ndarray:
+    """Few-sample Toeplitz covariance estimate via AR / Gohberg-Semencul (arXiv:2311.14995).
+
+    Averages the biased autocovariance over ``snapshots`` (rows), fits an AR(``order``) by Levinson
+    (the paper's closed-form projected-least-squares estimator ``a = R_w^{-1} r``), and extends it
+    to the maximum-entropy Toeplitz covariance. The estimate is **positive definite and full rank
+    even when the sample covariance is singular** (``N < size``). Its inverse is the GS precision
+    with generator ``alpha = (1/sigma^2) [1, -a]`` (the AR whitening filter, Eq 40), recoverable via
+    :func:`gohberg_semencul_generators`. Distils the paper's PLS estimator.
+    """
+    rows = np.atleast_2d(np.asarray(snapshots, dtype=np.float64))
+    size = rows.shape[1] if size is None else size
+    autocov = np.mean([sample_autocorrelation(row, order) for row in rows], axis=0)
+    ar, _reflection, _error = levinson_durbin(autocov)
+    extended = np.zeros(size)
+    extended[: min(order + 1, size)] = autocov[: min(order + 1, size)]
+    for lag in range(order + 1, size):
+        extended[lag] = sum(ar[i - 1] * extended[lag - i] for i in range(1, order + 1))
+    return _dense_toeplitz(extended)
+
+
 def gohberg_semencul_apply(x: ArrayLike, y: ArrayLike, v: ArrayLike) -> np.ndarray:
     """Apply ``T^{-1} v`` in ``O(L log L)`` from the generators ``x, y`` (Gohberg-Semencul).
 
