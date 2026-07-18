@@ -5,7 +5,13 @@ Run: uv run python scripts/run_benchmark.py
 
 from __future__ import annotations
 
-from chc.benchmark import InventoryTask, PricingTask, SupportShiftTask, leaderboard
+from chc.benchmark import (
+    InventoryTask,
+    ModelUncertaintyTask,
+    PricingTask,
+    SupportShiftTask,
+    leaderboard,
+)
 
 
 def main() -> None:
@@ -15,6 +21,8 @@ def main() -> None:
     print(leaderboard(InventoryTask().run()))
     print("\n== support-shift (model exploitation; pessimism vs greedy) ==")
     print(leaderboard(SupportShiftTask().run()))
+    print("\n== model-uncertainty (calibrated pessimism vs greedy) ==")
+    print(leaderboard(ModelUncertaintyTask().run()))
 
 
 if __name__ == "__main__":

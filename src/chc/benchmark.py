@@ -23,8 +23,10 @@ from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.estimators import BackdoorOLS, CausalEffectEstimator
 from chc.flagship import closed_loop
+from chc.integrate import rk4_step
 from chc.residual import ZeroResidual
 from chc.support import SupportModel, pessimistic_control
+from chc.uncertainty import EnsembleUncertainty, fit_ensemble
 
 
 @dataclass(frozen=True)
@@ -275,6 +277,109 @@ class SupportShiftTask:
 
         oracle_cost = true_cost(us_oracle)
         controllers = (("oracle", us_oracle), ("pessimistic", us_pess), ("greedy", us_greedy))
+        return [
+            TaskResult(
+                controller=name,
+                cost=true_cost(us),
+                regret=true_cost(us) - oracle_cost,
+                constraint_violations=0.0,
+                ood_rate=ood(us),
+            )
+            for name, us in controllers
+        ]
+
+
+class _CubicDragActuator(eqx.Module):
+    """Plant whose control effect saturates then reverses: ``effect(u) = u - drag·u^3``.
+
+    Near ``u=0`` the effect is ~linear (the known model is right on the offline support); for large
+    ``|u|`` the cubic drag dominates and the effect turns negative, so a controller that trusts a
+    linear extrapolation and pushes hard backfires on the true plant.
+    """
+
+    a_matrix: Array
+    b_matrix: Array
+    drag: float
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.a_matrix @ x + self.b_matrix @ (u - self.drag * u**3)
+
+
+@dataclass(frozen=True)
+class ModelUncertaintyTask:
+    """Model exploitation where the safeguard is calibrated model uncertainty, not support distance.
+
+    A residual is fit from offline data on a narrow action support; its deep-ensemble members agree
+    there and **disagree** off it. The greedy controller trusts the ensemble mean and pushes into
+    that high-uncertainty region, where the true plant's cubic drag backfires; calibrated pessimism
+    penalises the ensemble disagreement and stays where the learned model is trustworthy -- the
+    ``chc.uncertainty`` ``U`` term, complementing the density-distance ``D`` of ``SupportShift``.
+    """
+
+    x0: float = 2.0
+    x_target: float = 0.0
+    dt: float = 0.1
+    horizon: int = 25
+    u_lo: float = -8.0
+    u_hi: float = 8.0
+    drag: float = 0.15
+    control_weight: float = 0.001
+    lam_unc: float = 1000.0
+    n_data: int = 2000
+    n_members: int = 5
+    fit_steps: int = 1000
+    inner_steps: int = 300
+
+    def run(self, seed_data: int = 0) -> list[TaskResult]:
+        """Fit an ensemble on the support, then score greedy/calibrated/oracle on the plant."""
+        a = jnp.array([[0.0, 1.0], [-1.0, -0.2]])
+        b = jnp.array([[0.0], [1.0]])
+        known = HybridDynamics(
+            known=LinearDynamics(a_matrix=a, b_matrix=b), residual=ZeroResidual(2)
+        )
+        plant = _CubicDragActuator(a_matrix=a, b_matrix=b, drag=self.drag)
+
+        k_x, k_u = jax.random.split(jax.random.key(seed_data))
+        xs_data = jax.random.normal(k_x, (self.n_data, 2))
+        us_data = 0.4 * jax.random.normal(k_u, (self.n_data, 1))  # narrow action support
+        x_next = jax.vmap(lambda x, u: rk4_step(plant, 0.0, x, u, self.dt))(xs_data, us_data)
+        data = {"x": xs_data, "u": us_data, "x_next": x_next}
+        support = SupportModel.fit(xs_data, us_data)
+        u_support = float(jnp.quantile(jnp.abs(us_data), 0.99))
+
+        model_ens, _ = fit_ensemble(
+            known, data, self.dt, n_members=self.n_members, steps=self.fit_steps, seed=seed_data + 1
+        )
+        uncertainty = EnsembleUncertainty(ensemble=model_ens.residual)
+
+        cost = QuadraticCost(
+            Q=jnp.diag(jnp.array([1.0, 0.0])),
+            R=jnp.array([[self.control_weight]]),
+            Qf=jnp.diag(jnp.array([10.0, 1.0])),
+            x_target=jnp.array([self.x_target, 0.0]),
+        )
+        x0 = jnp.array([self.x0, 0.0])
+        us0 = jnp.zeros((self.horizon, 1))
+
+        us_greedy, _ = projected_gradient_control(
+            model_ens, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
+        )
+        us_cal, _ = pessimistic_control(
+            model_ens, x0, us0, self.dt, cost, support, 0.0, self.u_lo, self.u_hi,
+            steps=self.inner_steps, uncertainty=uncertainty, lam_unc=self.lam_unc,
+        )
+        us_oracle, _ = projected_gradient_control(
+            plant, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
+        )
+
+        def true_cost(us: Array) -> float:
+            return float(total_cost(plant, x0, us, self.dt, cost))
+
+        def ood(us: Array) -> float:
+            return float(jnp.mean(jnp.abs(us) > u_support))
+
+        oracle_cost = true_cost(us_oracle)
+        controllers = (("oracle", us_oracle), ("calibrated", us_cal), ("greedy", us_greedy))
         return [
             TaskResult(
                 controller=name,

@@ -1,12 +1,16 @@
 """Support / pessimism: keep offline-trained control inside the region the data justifies.
 
 ``SupportModel`` scores how far a state-action pair ``(x, u)`` sits from the offline data cloud
-(squared Mahalanobis distance); ``pessimistic_control`` penalises leaving that support, so the
+(squared Mahalanobis distance ``D``); ``pessimistic_control`` penalises leaving that support, so the
 controller does not exploit the model where it was never trained. This is the offline-safety layer
-(``plans/02`` §3) in a minimal first form — density-distance only; ensembles / DAREK bounds later.
+(``plans/02`` §3): the objective is ``J_task + λ_unc·Σ U + λ_supp·Σ D``, where the calibrated
+predictive-uncertainty term ``U`` comes from ``chc.uncertainty`` (deep ensemble / conformal) and
+this module supplies ``D`` and the controller that combines them through the ``PenaltyModel``.
 """
 
 from __future__ import annotations
+
+from typing import Protocol
 
 import equinox as eqx
 import jax
@@ -16,6 +20,16 @@ from jax import Array
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
+
+
+class PenaltyModel(Protocol):
+    """Anything that scores a trajectory penalty ``penalty_trajectory(xs, us) -> scalar``.
+
+    Both ``SupportModel`` (density distance ``D``) and the ``chc.uncertainty`` scorers (calibrated
+    predictive uncertainty ``U``) satisfy it, so they are interchangeable penalty channels.
+    """
+
+    def penalty_trajectory(self, xs: Array, us: Array) -> Array: ...
 
 
 class SupportModel(eqx.Module):
@@ -55,12 +69,16 @@ def pessimistic_control(
     steps: int = 200,
     lr0: float = 0.2,
     tol: float = 1e-9,
+    uncertainty: PenaltyModel | None = None,
+    lam_unc: float = 0.0,
 ) -> tuple[Array, Array]:
-    """Projected-gradient OC with a support penalty ``λ·Σ D²(x, u)``.
+    """Projected-gradient OC with an offline-safety penalty ``λ_supp·Σ D + λ_unc·Σ U``.
 
+    ``support`` supplies the density-distance term ``D``; the optional ``uncertainty`` scorer gives
+    the calibrated predictive-uncertainty term ``U`` (a ``chc.uncertainty`` ensemble/conformal).
     Uses autodiff for the augmented-objective gradient (validated equal to the discrete adjoint in
-    ``01 §4.1``). Returns the optimised controls and the **task**-cost history (penalty excluded, so
-    runs at different ``lam_supp`` are comparable).
+    ``01 §4.1``). Returns the optimised controls and the **task**-cost history (penalties excluded,
+    so runs at different weights are comparable).
     """
 
     def task(us: Array) -> Array:
@@ -68,7 +86,10 @@ def pessimistic_control(
 
     def augmented(us: Array) -> Array:
         xs = rollout(model, x0, us, dt)
-        return task(us) + lam_supp * support.penalty_trajectory(xs[:-1], us)
+        penalty = lam_supp * support.penalty_trajectory(xs[:-1], us)
+        if uncertainty is not None:
+            penalty = penalty + lam_unc * uncertainty.penalty_trajectory(xs[:-1], us)
+        return task(us) + penalty
 
     grad_aug = eqx.filter_jit(jax.grad(augmented))
     aug = eqx.filter_jit(augmented)

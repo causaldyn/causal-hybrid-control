@@ -72,6 +72,12 @@ from chc.toeplitz import (
 )
 from chc.train import fit_residual, fit_residual_multistep, one_step_mse, rollout_mse
 from chc.transport import MeanFieldTransport, solve_transport, transport_step
+from chc.uncertainty import (
+    EnsembleResidual,
+    EnsembleUncertainty,
+    SplitConformal,
+    fit_ensemble,
+)
 
 __version__ = "0.0.1"
 
@@ -87,6 +93,8 @@ __all__ = [
     "Dynamics",
     "EconMLDoubleML",
     "EffectEstimate",
+    "EnsembleResidual",
+    "EnsembleUncertainty",
     "GaussianPolicy",
     "GraphResidual",
     "HybridDynamics",
@@ -99,6 +107,7 @@ __all__ = [
     "MeanFieldTransport",
     "QuadraticCost",
     "ScalarMLP",
+    "SplitConformal",
     "SupportModel",
     "TigramiteDiscovery",
     "ZeroResidual",
@@ -114,6 +123,7 @@ __all__ = [
     "exact_linear_flow",
     "finite_horizon_dlqr",
     "fit_behavior_policy",
+    "fit_ensemble",
     "fit_residual",
     "fit_residual_multistep",
     "gohberg_semencul_apply",
