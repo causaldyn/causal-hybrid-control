@@ -3,7 +3,7 @@
 Run: uv run python scripts/run_benchmark.py
 """
 
-from __future__ import annotations
+import urllib.error
 
 from chc.benchmark import (
     InventoryTask,
@@ -13,6 +13,8 @@ from chc.benchmark import (
     leaderboard_multiseed,
     run_multiseed,
 )
+from chc.estimators import BackdoorOLS, DoubleML
+from chc.lalonde import lalonde_report, load_lalonde
 
 FAST_SEEDS = range(12)
 SLOW_SEEDS = range(6)  # the ensemble-fitting task is ~12s/seed; keep it tractable
@@ -27,6 +29,15 @@ def main() -> None:
     print(leaderboard_multiseed(run_multiseed(SupportShiftTask(), FAST_SEEDS)))
     print("\n== model-uncertainty (calibrated pessimism vs greedy) ==")
     print(leaderboard_multiseed(run_multiseed(ModelUncertaintyTask(), SLOW_SEEDS)))
+
+    print("\n== LaLonde-DW (external: recover the randomized ATE from CPS-confounded data) ==")
+    try:
+        data = load_lalonde()
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"skipped (data unavailable offline): {exc}")
+    else:
+        estimators = {"backdoor-OLS": BackdoorOLS(), "double-ML": DoubleML(degree=3)}
+        print(lalonde_report(data, estimators))
 
 
 if __name__ == "__main__":
