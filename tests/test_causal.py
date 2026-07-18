@@ -5,6 +5,7 @@ import jax.numpy as jnp
 
 from chc.causal import (
     ConfoundedLinearSystem,
+    e_value,
     estimate_control_effect,
     estimate_effect_dml,
     estimate_effect_iv,
@@ -57,6 +58,26 @@ def test_sensitivity_robustness_value() -> None:
         assert 0.0 <= report["robustness_value"] <= 1.0
     assert robust["robustness_value"] > 0.8  # the true effect is hard to explain away
     assert fragile["robustness_value"] < 0.4  # the confounded estimate is fragile
+
+
+def test_e_value_grows_with_effect_and_bottoms_out_at_null() -> None:
+    assert e_value(0.0)["e_value"] == 1.0  # a null effect needs no confounding to explain away
+    assert e_value(1.0)["e_value"] > e_value(0.3)["e_value"] > e_value(0.0)["e_value"]  # monotone
+
+
+def test_e_value_ci_is_one_when_the_interval_covers_the_null() -> None:
+    wide = e_value(0.2, std_error=0.5)  # 95% interval spans the null
+    tight = e_value(0.6, std_error=0.05)  # interval clears the null
+    assert wide["e_value_ci"] == 1.0  # confounding need not be invoked
+    assert tight["e_value_ci"] > 1.0  # a genuine bound survives the confidence limit
+    assert tight["e_value_ci"] < tight["e_value"]  # the CI limit is the more conservative bound
+
+
+def test_sensitivity_analysis_reports_the_e_value() -> None:
+    data = ConfoundedLinearSystem(gamma=1.0).sample(40_000, jax.random.key(0))
+    robust = sensitivity_analysis(data, adjust_for=("z",))
+    assert robust["e_value"] > 1.0  # the adjusted effect resists confounding (risk-ratio scale)
+    assert robust["e_value_ci"] >= 1.0  # confidence-limit E-value is always defined
 
 
 def test_dml_recovers_effect_under_nonlinear_confounding() -> None:

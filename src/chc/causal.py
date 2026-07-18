@@ -14,6 +14,7 @@ recovers the effect under *nonlinear* confounding via cross-fitted residualisati
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from itertools import combinations_with_replacement
 
@@ -118,11 +119,40 @@ def sensitivity_analysis(
     t_stat = jnp.abs(beta[1] / se[1])
     f = q * t_stat / jnp.sqrt(float(dof))
     rv = 0.5 * (jnp.sqrt(f**4 + 4.0 * f**2) - f**2)
-    return {
+    scale = float(jnp.std(data["u"]) / (jnp.std(data["x_next"]) + 1e-12))  # to standardised units
+    report = {
         "effect": float(beta[1]),
         "std_error": float(se[1]),
         "robustness_value": float(rv),
     }
+    report.update(e_value(float(beta[1]) * scale, float(se[1]) * scale))
+    return report
+
+
+_Z95 = 1.959964  # standard-normal 97.5th percentile: the 95% two-sided confidence multiplier
+
+
+def e_value(standardized_effect: float, std_error: float | None = None) -> dict[str, float]:
+    """VanderWeele-Ding E-value: the confounding strength needed to explain the effect away.
+
+    The E-value is the minimum association (on the risk-ratio scale) an unmeasured confounder would
+    need with *both* treatment and outcome, beyond the measured covariates, to reduce the estimate
+    to the null. Larger = more robust. For a standardised (Cohen's d-scale) effect it maps
+    ``d -> RR = exp(0.91 * |d|)`` (VanderWeele & Ding, 2017) then ``E = RR + sqrt(RR (RR - 1))``.
+    ``std_error`` (same standardised scale) adds ``e_value_ci`` for the 95% confidence limit nearest
+    the null -- ``1.0`` when the interval covers the null, i.e. no confounding need be invoked.
+    """
+
+    def _e(effect: float) -> float:
+        rr = math.exp(0.91 * abs(effect))
+        rr = rr if rr >= 1.0 else 1.0 / rr
+        return rr + math.sqrt(rr * (rr - 1.0))
+
+    report = {"e_value": _e(standardized_effect)}
+    if std_error is not None:
+        limit = abs(standardized_effect) - _Z95 * std_error
+        report["e_value_ci"] = _e(limit) if limit > 0.0 else 1.0
+    return report
 
 
 def _polynomial_features(x: Array, degree: int) -> Array:
