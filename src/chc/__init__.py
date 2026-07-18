@@ -30,6 +30,7 @@ from chc.estimators import (
     DoWhyEstimator,
     EconMLDoubleML,
     EffectEstimate,
+    RLearner,
 )
 from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
 from chc.games import project_simplex, softmax_congestion_equilibrium, stackelberg_allocation
@@ -106,6 +107,7 @@ __all__ = [
     "MeanFieldControl",
     "MeanFieldTransport",
     "QuadraticCost",
+    "RLearner",
     "ScalarMLP",
     "SplitConformal",
     "SupportModel",

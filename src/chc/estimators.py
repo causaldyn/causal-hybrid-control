@@ -22,11 +22,18 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from chc.causal import _ols_with_se, estimate_effect_dml, estimate_effect_iv
+from chc.causal import (
+    _ols_with_se,
+    _polynomial_features,
+    _ridge_predict,
+    estimate_effect_dml,
+    estimate_effect_iv,
+)
 
 Data = Mapping[str, Array]
 
@@ -132,6 +139,59 @@ class DoubleML:
             )
         )
         return EffectEstimate(effect)
+
+
+@dataclass(frozen=True)
+class RLearner:
+    """Nie-Wager R-learner for heterogeneous effects ``tau(x)`` (built-in; continuous treatment).
+
+    Cross-fits nuisances ``m(x)=E[outcome|x]`` and ``e(x)=E[treatment|x]`` (polynomial-ridge), then
+    fits a linear-in-features ``tau`` minimising the R-loss ``sum (y_res - tau(x)*t_res)^2`` on the
+    residualised data -- Neyman-orthogonal, so it recovers the CATE even under *nonlinear*
+    confounding where a naive treatment-on-outcome regression is biased. Returns the average effect
+    as ``effect`` and ``tau(x)`` as ``cate`` (call it on the covariate matrix). ``cate_degree=1`` is
+    linear heterogeneity; raise it for nonlinear ``tau``.
+    """
+
+    degree: int = 3  # nuisance flexibility
+    cate_degree: int = 1  # tau(x) feature degree
+    folds: int = 2
+    ridge: float = 1e-2
+    seed: int = 0
+
+    def estimate(
+        self,
+        data: Data,
+        *,
+        treatment: str = "u",
+        outcome: str = "x_next",
+        covariates: tuple[str, ...] = ("x", "z"),
+    ) -> EffectEstimate:
+        y = jnp.asarray(data[outcome])
+        t = jnp.asarray(data[treatment])
+        covs = jnp.stack([jnp.asarray(data[c]) for c in covariates], axis=1)
+        n = y.shape[0]
+        chunks = jnp.array_split(jax.random.permutation(jax.random.key(self.seed), n), self.folds)
+        y_res, t_res = jnp.zeros(n), jnp.zeros(n)
+        for k in range(self.folds):  # cross-fit the nuisances out of fold k
+            test = chunks[k]
+            train = jnp.concatenate([chunks[j] for j in range(self.folds) if j != k])
+            phi_tr = _polynomial_features(covs[train], self.degree)
+            phi_te = _polynomial_features(covs[test], self.degree)
+            m_hat = _ridge_predict(phi_tr, y[train], phi_te, self.ridge)
+            e_hat = _ridge_predict(phi_tr, t[train], phi_te, self.ridge)
+            y_res = y_res.at[test].set(y[test] - m_hat)
+            t_res = t_res.at[test].set(t[test] - e_hat)
+
+        features = _polynomial_features(covs, self.cate_degree)
+        design = features * t_res[:, None]  # R-loss: regress y_res on tau-features scaled by t_res
+        theta = jnp.linalg.solve(
+            design.T @ design + self.ridge * jnp.eye(design.shape[1]), design.T @ y_res
+        )
+        return EffectEstimate(
+            effect=float(jnp.mean(features @ theta)),
+            cate=lambda covs_q: _polynomial_features(jnp.asarray(covs_q), self.cate_degree) @ theta,
+        )
 
 
 _ECONML_HINT = (
