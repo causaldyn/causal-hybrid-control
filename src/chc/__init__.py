@@ -56,6 +56,13 @@ from chc.meanfield import MeanFieldControl
 from chc.mpc import mpc_control
 from chc.network_causal import ConfoundedNetworkSystem, estimate_network_effects
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
+from chc.regret import (
+    RegretCurve,
+    certainty_equivalence_gap,
+    closed_loop_cost,
+    dlqr,
+    regret_scaling,
+)
 from chc.residual import GraphResidual, KANResidual, MLPResidual, ZeroResidual
 from chc.scm import SyntheticControlResult, augmented_synthetic_control, synthetic_control
 from chc.splitting import (
@@ -112,6 +119,7 @@ __all__ = [
     "MeanFieldTransport",
     "QuadraticCost",
     "RLearner",
+    "RegretCurve",
     "ScalarMLP",
     "SplitConformal",
     "SupportModel",
@@ -121,10 +129,13 @@ __all__ = [
     "__version__",
     "augmented_synthetic_control",
     "callaway_santanna",
+    "certainty_equivalence_gap",
+    "closed_loop_cost",
     "continuous_lqr",
     "control_gradient_adjoint",
     "control_gradient_diffrax",
     "discover_lagged_parents",
+    "dlqr",
     "dlqr_feedback_controls",
     "e_value",
     "estimate_control_effect",
@@ -160,6 +171,7 @@ __all__ = [
     "project_simplex",
     "projected_gradient_control",
     "refute_effect",
+    "regret_scaling",
     "residual_flow",
     "rk4_step",
     "rollout",
