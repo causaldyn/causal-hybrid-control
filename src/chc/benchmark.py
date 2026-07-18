@@ -9,12 +9,15 @@ tasks, all in the same ``TaskResult`` / ``leaderboard`` shape.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.scipy.stats
+import numpy as np
 from jax import Array
 
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
@@ -38,6 +41,19 @@ class TaskResult:
     regret: float  # cost - oracle_cost (>= 0; the oracle knows the true effect)
     constraint_violations: float  # fraction of steps outside the safe state set
     ood_rate: float  # fraction of actions outside the logged action support
+
+
+@dataclass(frozen=True)
+class MultiSeedResult:
+    """One controller's regret aggregated across seeds, with a bootstrap confidence interval."""
+
+    controller: str
+    regret_mean: float
+    regret_lo: float  # 95% percentile-bootstrap CI lower bound
+    regret_hi: float  # 95% percentile-bootstrap CI upper bound
+    regret_std: float  # across-seed standard deviation
+    ood_mean: float  # mean out-of-support action rate (the safety signal)
+    n_seeds: int
 
 
 @dataclass(frozen=True)
@@ -399,5 +415,65 @@ def leaderboard(results: list[TaskResult]) -> str:
         f"{r.controller:<14}{r.cost:>12.2f}{r.regret:>12.2f}"
         f"{r.constraint_violations:>8.2f}{r.ood_rate:>8.2f}"
         for r in sorted(results, key=lambda r: r.regret)
+    ]
+    return "\n".join([header, *rows])
+
+
+class BenchmarkTask(Protocol):
+    """A benchmark task: one data seed in, one :class:`TaskResult` per controller out."""
+
+    def run(self, seed_data: int = ...) -> list[TaskResult]: ...
+
+
+def _bootstrap_ci(
+    values: np.ndarray, *, level: float = 0.95, n_boot: int = 10_000, seed: int = 0
+) -> tuple[float, float]:
+    """Percentile-bootstrap confidence interval for the mean of ``values`` (NumPy only)."""
+    if values.size < 2:
+        point = float(values.mean()) if values.size else float("nan")
+        return point, point
+    rng = np.random.default_rng(seed)
+    resampled = values[rng.integers(0, values.size, size=(n_boot, values.size))]
+    alpha = (1.0 - level) / 2.0
+    lo, hi = np.quantile(resampled.mean(axis=1), [alpha, 1.0 - alpha])
+    return float(lo), float(hi)
+
+
+def run_multiseed(task: BenchmarkTask, seeds: Sequence[int]) -> list[MultiSeedResult]:
+    """Aggregate ``task`` across seeds into per-controller regret with a bootstrap CI.
+
+    ``task.run(seed_data=s)`` is called once per seed and the results grouped by controller. The
+    interval is a percentile bootstrap over the seeds -- honest error bars on "does this controller
+    actually win", replacing a single-seed point regret that could be luck of the draw.
+    """
+    regrets: dict[str, list[float]] = {}
+    oods: dict[str, list[float]] = {}
+    order: list[str] = []
+    for seed in seeds:
+        for result in task.run(seed_data=int(seed)):
+            if result.controller not in regrets:
+                regrets[result.controller], oods[result.controller] = [], []
+                order.append(result.controller)
+            regrets[result.controller].append(result.regret)
+            oods[result.controller].append(result.ood_rate)
+    summaries = []
+    for controller in order:
+        arr = np.asarray(regrets[controller], dtype=np.float64)
+        lo, hi = _bootstrap_ci(arr)
+        std = float(arr.std(ddof=1)) if arr.size > 1 else 0.0
+        ood = float(np.mean(oods[controller]))
+        summaries.append(
+            MultiSeedResult(controller, float(arr.mean()), lo, hi, std, ood, arr.size)
+        )
+    return summaries
+
+
+def leaderboard_multiseed(results: list[MultiSeedResult]) -> str:
+    """Format multi-seed results sorted by mean regret (best first), with 95% bootstrap CIs."""
+    header = f"{'controller':<14}{'regret':>10}{'95% CI':>20}{'ood':>7}{'seeds':>7}"
+    rows = [
+        f"{r.controller:<14}{r.regret_mean:>10.2f}"
+        f"{f'[{r.regret_lo:.2f}, {r.regret_hi:.2f}]':>20}{r.ood_mean:>7.2f}{r.n_seeds:>7d}"
+        for r in sorted(results, key=lambda r: r.regret_mean)
     ]
     return "\n".join([header, *rows])
