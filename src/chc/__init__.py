@@ -8,7 +8,7 @@ and the oracle-regret benchmark.
 
 from __future__ import annotations
 
-from chc.adjoint import control_gradient_adjoint
+from chc.adjoint import control_gradient_adjoint, control_gradient_diffrax, total_cost_diffrax
 from chc.causal import (
     ConfoundedLinearSystem,
     estimate_control_effect,
@@ -116,6 +116,7 @@ __all__ = [
     "__version__",
     "continuous_lqr",
     "control_gradient_adjoint",
+    "control_gradient_diffrax",
     "discover_lagged_parents",
     "dlqr_feedback_controls",
     "estimate_control_effect",
@@ -167,5 +168,6 @@ __all__ = [
     "thomas_solve",
     "toeplitz_matvec",
     "total_cost",
+    "total_cost_diffrax",
     "transport_step",
 ]
