@@ -56,6 +56,7 @@ from chc.mpc import mpc_control
 from chc.network_causal import ConfoundedNetworkSystem, estimate_network_effects
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.residual import GraphResidual, KANResidual, MLPResidual, ZeroResidual
+from chc.scm import SyntheticControlResult, augmented_synthetic_control, synthetic_control
 from chc.splitting import (
     exact_linear_flow,
     lie_trotter_step,
@@ -113,9 +114,11 @@ __all__ = [
     "ScalarMLP",
     "SplitConformal",
     "SupportModel",
+    "SyntheticControlResult",
     "TigramiteDiscovery",
     "ZeroResidual",
     "__version__",
+    "augmented_synthetic_control",
     "callaway_santanna",
     "continuous_lqr",
     "control_gradient_adjoint",
@@ -168,6 +171,7 @@ __all__ = [
     "stackelberg_allocation",
     "strang_marchuk_step",
     "structured_irf",
+    "synthetic_control",
     "thomas_solve",
     "toeplitz_matvec",
     "total_cost",
