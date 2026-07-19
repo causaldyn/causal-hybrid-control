@@ -32,8 +32,8 @@ acts entirely out of the logged support. Reproduce: `uv run python scripts/run_b
 ## Install
 
 ```bash
-uv sync            # JAX + Diffrax + Equinox + Optax + SciPy
-uv run pytest      # 25 tests
+uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.12–3.14)
+uv run pytest      # 129 tests
 ```
 
 ## Quickstart
@@ -80,9 +80,14 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
 | identification | `train`, `causal`, `estimators` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters |
 | control | `control`, `mpc`, `splitting` | projected-gradient OC; receding-horizon MPC; **Strang–Marchuk** splitting |
-| offline safety | `support`, `offpolicy` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate |
-| evaluation | `benchmark`, `flagship` | pricing / inventory / **support-shift** oracle-regret tasks + leaderboard |
-| scientific / PDE | `epidemic`, `galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka) |
+| offline safety | `support`, `offpolicy`, `uncertainty` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate; **calibrated** deep-ensemble + split-conformal uncertainty |
+| guarantee | `regret` | LQ certainty-equivalence suboptimality bound — quadratic in model error (Dean–Mania–Tu–Recht–Matni) |
+| causal frontier | `did`, `scm`, `estimators`, `causal` | Callaway–Sant'Anna staggered **DiD**; **augmented synthetic control**; **R-learner** CATE; **E-values** beside Cinelli–Hazlett |
+| dynamic effects | `irf`, `toeplitz` | impulse-response / local-projection dynamic effects; Toeplitz / Levinson–Durbin / Gohberg–Semencul operators |
+| structure discovery | `discovery`, `independence`, `network_causal` | lagged-parent discovery; MCI partial-correlation test; network/spillover orthogonal DML |
+| advanced control | `koopman`, `meanfield`, `transport`, `games`, `mintime` | Koopman-LQR; mean-field control; optimal transport; differentiable Stackelberg games; PMP time-optimal bang-bang |
+| evaluation | `benchmark`, `flagship`, `lalonde`, `metrics` | pricing / inventory / support-shift / **model-uncertainty** oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; real-data **LaLonde** validation; step-response quality metrics |
+| scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka); Deep Galerkin HJB |
 
 ## Validation
 
@@ -101,15 +106,22 @@ the identity of the framework. See `plans/` for the full analysis and roadmap.
 
 ## Status
 
-Early (`v0.0.1`), single-author, research code (36 tests). Working: hybrid dynamics + adjoint, LQR,
-system ID (one-/multi-step), causal identification (adjustment / IV / DML / sensitivity / refutation),
-pessimism, MPC, Strang–Marchuk splitting, off-policy gate, KAN backend, three benchmark tasks (pricing,
-inventory, support-shift), two flagships (pricing, epidemic), and 1D/2D Galerkin FEM. The **causal
-identification core is now validated on real data with an experimental ground truth** (notebook 07,
-LaLonde NSW: the naive estimate flips sign, Double ML recovers the randomised benchmark); the *control
-loop* is still exercised on synthetic dynamics, so validating it on a real dynamical system is the next
-credibility step. Roadmap: a real dynamical-control case study, more tasks, the Medium/paper writeups, and
-— only if a real-time/edge deployment target appears — a compiled runtime.
+Early (`v0.0.1`), single-author, research code (129 tests; Python 3.12–3.14, astral `ruff` + `ty`).
+Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
+causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
+Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**
+pessimism (deep ensemble + split conformal) and an LQ certainty-equivalence regret guarantee; MPC,
+Strang–Marchuk splitting, off-policy gate, KAN/MLP/Graph residual backends; advanced control backends
+(Koopman-LQR, mean-field, optimal transport, differentiable Stackelberg games, PMP time-optimal
+bang-bang); dynamic-effect IRFs + structured Toeplitz/Levinson/Gohberg–Semencul operators; lagged
+structure discovery; four benchmark tasks (pricing, inventory, support-shift, model-uncertainty) with
+multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin + Deep Galerkin FEM; and
+step-response quality metrics. The **causal identification core is validated on real data with an
+experimental ground truth** (notebook 07, LaLonde NSW: the naive estimate flips sign, Double ML recovers
+the randomised benchmark); the *control loop* is still exercised on synthetic dynamics, so validating it
+on a real dynamical system is the next credibility step. Roadmap: a real dynamical-control case study,
+more tasks, the Medium/paper writeups, and — only if a real-time/edge deployment target appears — a
+compiled runtime.
 
 ## License
 
