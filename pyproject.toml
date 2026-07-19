@@ -1,6 +1,6 @@
 [project]
 name = "causal-hybrid-control"
-version = "0.0.1"
+version = "0.1.0"
 description = "Physics-structured dynamics with a learned causal residual, controlled by constrained optimal control / MPC."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -43,7 +43,9 @@ trees = ["lightgbm>=4", "catboost>=1.2", "scikit-learn>=1.4"]  # lightgbm's skle
 
 [project.urls]
 Homepage = "https://github.com/ilgrad/causal-hybrid-control"
+Repository = "https://github.com/ilgrad/causal-hybrid-control"
 Issues = "https://github.com/ilgrad/causal-hybrid-control/issues"
+Changelog = "https://github.com/ilgrad/causal-hybrid-control/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [

@@ -106,7 +106,7 @@ the identity of the framework. See `plans/` for the full analysis and roadmap.
 
 ## Status
 
-Early (`v0.0.1`), single-author, research code (129 tests; Python 3.12–3.14, astral `ruff` + `ty`).
+Early (`v0.1.0`), single-author, research code (140 tests; Python 3.12–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**

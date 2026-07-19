@@ -1,6 +1,6 @@
 """Causal Hybrid Control: hybrid dynamics + a learned causal residual + constrained control.
 
-Current spine (v0.0.1): hybrid dynamics, RK4 rollout, a hand-written discrete adjoint (verified
+Current spine (v0.1.0): hybrid dynamics, RK4 rollout, a hand-written discrete adjoint (verified
 against autodiff and finite differences), projected-gradient optimal control, MPC, causal
 identification behind a pluggable estimator interface, pessimism/support, off-policy evaluation,
 and the oracle-regret benchmark.
@@ -105,7 +105,7 @@ from chc.uncertainty import (
     fit_ensemble,
 )
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 __all__ = [
     "IV2SLS",
