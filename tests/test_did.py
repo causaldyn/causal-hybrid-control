@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from chc.did import callaway_santanna, twoway_fixed_effects_att
+from chc.did import callaway_santanna, de_chaisemartin, twoway_fixed_effects_att
 
 DELTA = 0.5  # per-period dynamic effect: ATT(g,t) = DELTA * (t - g + 1) for t >= g
 
@@ -67,3 +67,9 @@ def test_callaway_santanna_beats_biased_twoway_fixed_effects() -> None:
     assert abs(cs_overall - true_avg_post) < 0.05  # CS recovers the true average post effect
     assert abs(twfe - true_avg_post) > 0.15  # TWFE contaminated by forbidden controls
     assert abs(cs_overall - true_avg_post) < abs(twfe - true_avg_post)  # CS strictly less biased
+
+
+def test_de_chaisemartin_recovers_the_instantaneous_effect() -> None:
+    outcomes, group, _ = _staggered_panel(seed=5)
+    instantaneous = de_chaisemartin(outcomes, group)
+    assert abs(instantaneous - DELTA) < 0.1  # DID_M targets the e=0 first-exposure effect (DELTA)

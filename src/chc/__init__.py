@@ -21,7 +21,7 @@ from chc.causal import (
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.deep_galerkin import ScalarMLP, solve_poisson_dgm
-from chc.did import GroupTimeATT, callaway_santanna, twoway_fixed_effects_att
+from chc.did import GroupTimeATT, callaway_santanna, de_chaisemartin, twoway_fixed_effects_att
 from chc.discovery import LaggedGraph, TigramiteDiscovery, discover_lagged_parents
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
 from chc.estimators import (
@@ -146,6 +146,7 @@ __all__ = [
     "continuous_lqr",
     "control_gradient_adjoint",
     "control_gradient_diffrax",
+    "de_chaisemartin",
     "discover_lagged_parents",
     "dlqr",
     "dlqr_feedback_controls",

@@ -126,3 +126,31 @@ def twoway_fixed_effects_att(
         msg = "no treatment variation after two-way demeaning"
         raise ValueError(msg)
     return float(np.sum(y_d * d_d) / denom)
+
+
+def de_chaisemartin(outcomes: Panel, group: Groups, *, never_treated: int = -1) -> float:
+    """de Chaisemartin-d'Haultfoeuille DID_M -- the average instantaneous (first-exposure) effect.
+
+    A switcher-count-weighted average, over consecutive-period 2x2 DiDs, of the outcome change of
+    units first treated at ``t`` minus that of units still untreated at ``t`` (untreated stayers).
+    Like :func:`callaway_santanna` it is heterogeneity-robust where TWFE is not, but its estimand is
+    the effect at the moment of switching (relative time ``e = 0``), not the size-weighted average
+    over post periods -- a growing effect yields the first-period impact, not the overall ATT.
+    """
+    outcomes = np.asarray(outcomes, dtype=np.float64)
+    group = np.asarray(group, dtype=np.int64)
+    n_periods = int(outcomes.shape[1])
+    numerator = denominator = 0.0
+    for t in range(1, n_periods):
+        switchers = group == t  # untreated at t-1, treated at t (a 0 -> 1 switch)
+        stayers = (group == never_treated) | (group > t)  # untreated at both t-1 and t
+        if switchers.any() and stayers.any():
+            change_switch = float((outcomes[switchers, t] - outcomes[switchers, t - 1]).mean())
+            change_stay = float((outcomes[stayers, t] - outcomes[stayers, t - 1]).mean())
+            weight = int(switchers.sum())
+            numerator += weight * (change_switch - change_stay)
+            denominator += weight
+    if denominator == 0.0:
+        msg = "no treatment switches found in the panel"
+        raise ValueError(msg)
+    return numerator / denominator
