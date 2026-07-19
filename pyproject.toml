@@ -49,7 +49,7 @@ dev = [
     "pytest>=8",
     "hypothesis>=6.100",
     "ruff>=0.6",
-    "mypy>=2.3.0",
+    "ty>=0.0.61",
 ]
 viz = ["matplotlib>=3.8"]
 notebooks = [
@@ -81,9 +81,13 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PERF", "PIE", "PT", "PT
 testpaths = ["tests"]
 addopts = "-q"
 
-[tool.mypy]
-python_version = "3.12"
-files = ["src/chc"]
-ignore_missing_imports = true  # jax / equinox / diffrax / scipy ship no complete stubs
-warn_redundant_casts = true
-warn_unused_ignores = true
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+include = ["src/chc"]
+
+[tool.ty.rules]
+# the optional bring-your-own-env adapters (econml / dowhy / tigramite / lightgbm / catboost / pandas)
+# are intentionally uninstalled; their imports are lazy and ImportError-guarded, not bugs to flag
+unresolved-import = "ignore"

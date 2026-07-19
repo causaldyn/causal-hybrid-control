@@ -147,7 +147,7 @@ class MeanFieldTransport:
         best_v, best_cost = v, float(cost_fn(v))
         for _ in range(steps):
             updates, state = optimizer.update(grad_fn(v), state)
-            v = optax.apply_updates(v, updates)
+            v = jnp.asarray(optax.apply_updates(v, updates))
             cost = float(cost_fn(v))
             if cost < best_cost:
                 best_v, best_cost = v, cost

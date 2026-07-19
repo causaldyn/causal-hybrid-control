@@ -131,7 +131,8 @@ def discover_lagged_parents(
             if kind == "state":
                 state_parents[target_index, source_index, lag - 1] = True
             else:
-                control_parents[target_index, source_index, lag - 1] = True  # type: ignore[index]
+                assert control_parents is not None  # a control parent implies d_control > 0
+                control_parents[target_index, source_index, lag - 1] = True
 
     control_out = None if control_parents is None else jnp.asarray(control_parents)
     return LaggedGraph(jnp.asarray(state_parents), control_out, max_lag)
@@ -188,7 +189,8 @@ class TigramiteDiscovery:
                     if source < d_state:
                         state_parents[target, source, lag - 1] = True
                     else:
-                        control_parents[target, source - d_state, lag - 1] = True  # type: ignore[index]
+                        assert control_parents is not None  # a control parent implies d_control > 0
+                        control_parents[target, source - d_state, lag - 1] = True
 
         control_out = None if control_parents is None else jnp.asarray(control_parents)
         return LaggedGraph(jnp.asarray(state_parents), control_out, max_lag)

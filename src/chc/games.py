@@ -69,7 +69,7 @@ def stackelberg_allocation(
     best_u, best_val = u, float(value_fn(u))
     for _ in range(steps):
         updates, state = optimizer.update(grad_fn(u), state)
-        u = project_simplex(optax.apply_updates(u, updates), budget)
+        u = project_simplex(jnp.asarray(optax.apply_updates(u, updates)), budget)
         val = float(value_fn(u))
         if val > best_val:
             best_u, best_val = u, val
