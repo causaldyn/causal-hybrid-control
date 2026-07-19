@@ -3,7 +3,7 @@ name = "causal-hybrid-control"
 version = "0.0.1"
 description = "Physics-structured dynamics with a learned causal residual, controlled by constrained optimal control / MPC."
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12,<3.15"
 license = { text = "MIT" }
 authors = [{ name = "Ilia Gradina", email = "ilia.gradina@gmail.com" }]
 keywords = [
@@ -22,6 +22,7 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
