@@ -53,6 +53,7 @@ from chc.lqr import (
     linearize_discrete,
 )
 from chc.meanfield import MeanFieldControl
+from chc.metrics import overshoot, rise_time, settling_time, steady_state_error
 from chc.mpc import mpc_control
 from chc.network_causal import ConfoundedNetworkSystem, estimate_network_effects
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
@@ -163,6 +164,7 @@ __all__ = [
     "mpc_control",
     "off_policy_value",
     "one_step_mse",
+    "overshoot",
     "partial_corr_test",
     "pessimistic_control",
     "poisson_1d",
@@ -173,16 +175,19 @@ __all__ = [
     "refute_effect",
     "regret_scaling",
     "residual_flow",
+    "rise_time",
     "rk4_step",
     "rollout",
     "rollout_mse",
     "sample_autocorrelation",
     "sensitivity_analysis",
+    "settling_time",
     "softmax_congestion_equilibrium",
     "solve_poisson_dgm",
     "solve_toeplitz",
     "solve_transport",
     "stackelberg_allocation",
+    "steady_state_error",
     "strang_marchuk_step",
     "structured_irf",
     "synthetic_control",
