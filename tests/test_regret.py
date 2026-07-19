@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import jax.numpy as jnp
 import numpy as np
 
+from chc.dynamics import DampedOscillator
+from chc.lqr import linearize_discrete, linearized_regret_certificate
 from chc.regret import certainty_equivalence_gap, closed_loop_cost, dlqr, regret_scaling
 
 A = np.array([[1.0, 0.1], [0.0, 0.95]])
@@ -38,3 +41,25 @@ def test_regret_scales_quadratically_with_model_error() -> None:
     curve = regret_scaling(A, B, Q, R, X0, n_samples=300, seed=0)
     assert 1.7 < curve.exponent < 2.3  # Dean et al.: quadratic suboptimality (theory exponent 2)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks monotonically as the error level drops
+
+
+def test_linearized_certificate_zero_at_truth_and_positive_under_model_error() -> None:
+    dyn = DampedOscillator(omega=1.0, zeta=0.15)
+    x_star, u_star = jnp.zeros(2), jnp.zeros(1)
+    exact = linearized_regret_certificate(dyn, dyn, x_star, u_star, Q, R, X0, 0.1)
+    wrong = DampedOscillator(omega=1.3, zeta=0.05)
+    certificate = linearized_regret_certificate(dyn, wrong, x_star, u_star, Q, R, X0, 0.1)
+    assert abs(exact) < 1e-8  # a correct model implies no certainty-equivalence regret
+    assert certificate > 0.0  # a wrong model implies a positive local suboptimality certificate
+
+
+def test_linearized_certificate_matches_the_lq_gap_on_the_linearisation() -> None:
+    dyn, dyn_hat = DampedOscillator(omega=1.0, zeta=0.15), DampedOscillator(omega=1.2, zeta=0.1)
+    x_star, u_star = jnp.zeros(2), jnp.zeros(1)
+    a, b = linearize_discrete(dyn, x_star, u_star, 0.1)
+    a_hat, b_hat = linearize_discrete(dyn_hat, x_star, u_star, 0.1)
+    direct = certainty_equivalence_gap(
+        np.asarray(a), np.asarray(b), Q, R, np.asarray(a_hat), np.asarray(b_hat), X0
+    )
+    cert = linearized_regret_certificate(dyn, dyn_hat, x_star, u_star, Q, R, X0, 0.1)
+    assert np.isclose(cert, direct)  # the helper just linearises, then calls the LQ gap

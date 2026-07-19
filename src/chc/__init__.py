@@ -52,6 +52,7 @@ from chc.lqr import (
     finite_horizon_dlqr,
     linearize_continuous,
     linearize_discrete,
+    linearized_regret_certificate,
 )
 from chc.meanfield import MeanFieldControl
 from chc.metrics import overshoot, rise_time, settling_time, steady_state_error
@@ -180,6 +181,7 @@ __all__ = [
     "lie_trotter_step",
     "linearize_continuous",
     "linearize_discrete",
+    "linearized_regret_certificate",
     "local_projection_irf",
     "mpc_control",
     "naive_pooled_effect",
