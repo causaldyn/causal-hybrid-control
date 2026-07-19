@@ -36,6 +36,7 @@ from chc.estimators import (
 )
 from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
 from chc.games import project_simplex, softmax_congestion_equilibrium, stackelberg_allocation
+from chc.gmethods import naive_pooled_effect, sequential_g_formula
 from chc.independence import partial_corr_test
 from chc.integrate import rk4_step, rollout
 from chc.irf import (
@@ -173,6 +174,7 @@ __all__ = [
     "linearize_discrete",
     "local_projection_irf",
     "mpc_control",
+    "naive_pooled_effect",
     "off_policy_value",
     "one_step_mse",
     "overshoot",
@@ -192,6 +194,7 @@ __all__ = [
     "rollout_mse",
     "sample_autocorrelation",
     "sensitivity_analysis",
+    "sequential_g_formula",
     "settling_time",
     "softmax_congestion_equilibrium",
     "solve_poisson_dgm",
