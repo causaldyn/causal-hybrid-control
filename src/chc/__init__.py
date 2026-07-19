@@ -63,7 +63,12 @@ from chc.mintime import (
     switching_function,
 )
 from chc.mpc import mpc_control
-from chc.network_causal import ConfoundedNetworkSystem, estimate_network_effects
+from chc.network_causal import (
+    ConfoundedNetworkSystem,
+    NeighbourMessagePassing,
+    estimate_network_effects,
+    estimate_network_effects_gnn,
+)
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.regret import (
     RegretCurve,
@@ -127,6 +132,7 @@ __all__ = [
     "MLPResidual",
     "MeanFieldControl",
     "MeanFieldTransport",
+    "NeighbourMessagePassing",
     "QuadraticCost",
     "RLearner",
     "RegretCurve",
@@ -156,6 +162,7 @@ __all__ = [
     "estimate_effect_dml",
     "estimate_effect_iv",
     "estimate_network_effects",
+    "estimate_network_effects_gnn",
     "exact_linear_flow",
     "finite_horizon_dlqr",
     "fit_behavior_policy",
