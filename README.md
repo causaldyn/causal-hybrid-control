@@ -87,7 +87,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | structure discovery | `discovery`, `independence`, `network_causal` | lagged-parent discovery; MCI partial-correlation test; network/spillover orthogonal DML |
 | advanced control | `koopman`, `meanfield`, `transport`, `games`, `mintime` | Koopman-LQR; mean-field control; optimal transport; differentiable Stackelberg games; PMP time-optimal bang-bang |
 | evaluation | `benchmark`, `flagship`, `lalonde`, `metrics` | pricing / inventory / support-shift / **model-uncertainty** oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; real-data **LaLonde** validation; step-response quality metrics |
-| scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka); Deep Galerkin HJB |
+| scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka); mesh-free **Deep Galerkin** neural Poisson solver |
 
 ## Validation
 
@@ -115,8 +115,8 @@ Strang–Marchuk splitting, off-policy gate, KAN/MLP/Graph residual backends; ad
 (Koopman-LQR, mean-field, optimal transport, differentiable Stackelberg games, PMP time-optimal
 bang-bang); dynamic-effect IRFs + structured Toeplitz/Levinson/Gohberg–Semencul operators; lagged
 structure discovery; four benchmark tasks (pricing, inventory, support-shift, model-uncertainty) with
-multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin + Deep Galerkin FEM; and
-step-response quality metrics. The **causal identification core is validated on real data with an
+multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin FEM + a mesh-free Deep
+Galerkin neural Poisson solver; and step-response quality metrics. The **causal identification core is validated on real data with an
 experimental ground truth** (notebook 07, LaLonde NSW: the naive estimate flips sign, Double ML recovers
 the randomised benchmark); the *control loop* is still exercised on synthetic dynamics, so validating it
 on a real dynamical system is the next credibility step. Roadmap: a real dynamical-control case study,
