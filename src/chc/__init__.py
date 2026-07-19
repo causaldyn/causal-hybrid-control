@@ -54,6 +54,13 @@ from chc.lqr import (
 )
 from chc.meanfield import MeanFieldControl
 from chc.metrics import overshoot, rise_time, settling_time, steady_state_error
+from chc.mintime import (
+    BangBangResult,
+    bang_bang_control,
+    bang_bang_rollout,
+    double_integrator_min_time,
+    switching_function,
+)
 from chc.mpc import mpc_control
 from chc.network_causal import ConfoundedNetworkSystem, estimate_network_effects
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
@@ -96,6 +103,7 @@ __version__ = "0.0.1"
 __all__ = [
     "IV2SLS",
     "BackdoorOLS",
+    "BangBangResult",
     "CausalEffectEstimator",
     "ConfoundedLinearSystem",
     "ConfoundedNetworkSystem",
@@ -129,6 +137,8 @@ __all__ = [
     "ZeroResidual",
     "__version__",
     "augmented_synthetic_control",
+    "bang_bang_control",
+    "bang_bang_rollout",
     "callaway_santanna",
     "certainty_equivalence_gap",
     "closed_loop_cost",
@@ -138,6 +148,7 @@ __all__ = [
     "discover_lagged_parents",
     "dlqr",
     "dlqr_feedback_controls",
+    "double_integrator_min_time",
     "e_value",
     "estimate_control_effect",
     "estimate_effect_dml",
@@ -190,6 +201,7 @@ __all__ = [
     "steady_state_error",
     "strang_marchuk_step",
     "structured_irf",
+    "switching_function",
     "synthetic_control",
     "thomas_solve",
     "toeplitz_matvec",
