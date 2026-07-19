@@ -116,12 +116,15 @@ Strang–Marchuk splitting, off-policy gate, KAN/MLP/Graph residual backends; ad
 bang-bang); dynamic-effect IRFs + structured Toeplitz/Levinson/Gohberg–Semencul operators; lagged
 structure discovery; four benchmark tasks (pricing, inventory, support-shift, model-uncertainty) with
 multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin FEM + a mesh-free Deep
-Galerkin neural Poisson solver; and step-response quality metrics. The **causal identification core is validated on real data with an
-experimental ground truth** (notebook 07, LaLonde NSW: the naive estimate flips sign, Double ML recovers
-the randomised benchmark); the *control loop* is still exercised on synthetic dynamics, so validating it
-on a real dynamical system is the next credibility step. Roadmap: a real dynamical-control case study,
-more tasks, the Medium/paper writeups, and — only if a real-time/edge deployment target appears — a
-compiled runtime.
+Galerkin neural Poisson solver; and step-response quality metrics. Both halves are now validated on
+**real** targets, not just synthetic ones: the **causal identification core** on real data with an
+experimental ground truth (notebook 07, LaLonde NSW: the naive estimate flips sign, Double ML recovers
+the randomised benchmark), and the **control loop** on a real building emulator — the identification +
+forecast-MPC of this library, run via `causaldyn-bench` against a live **BOPTEST**
+`bestest_hydronic_heat_pump`, beats the tuned built-in baseline on *every* KPI at once (thermal
+discomfort 8.01→7.32, energy 0.393→0.354, cost 0.100→0.090, emissions 0.066→0.059 — a clean Pareto
+win). Roadmap: more real tasks, the Medium/paper writeups, and — only if a real-time/edge deployment
+target appears — a compiled runtime.
 
 ## License
 
