@@ -13,6 +13,7 @@ from chc.regret import (
     closed_loop_cost,
     dlqr,
     dynamic_causal_regret_certificate,
+    finite_horizon_pl_certificate,
     interference_convexity_certificate,
     interference_orthogonal_certificate,
     interference_regret_certificate,
@@ -61,6 +62,16 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_finite_horizon_pl_bound_holds_over_the_trajectory() -> None:
+    # finite-horizon PL bound (proofs/nonlinear_regret.v pl_mode_bound): over the full horizon the
+    # self-certifying bound ‖∇J‖²/(2·λ_min(H)) upper-bounds the true regret and is tight along the
+    # min-curvature eigenvector; the strong-convexity constant does not degrade with the horizon
+    curve = finite_horizon_pl_certificate()
+    assert (curve.bound_slack >= -1e-7).all()  # PL bound valid (upper-bounds regret) at every T
+    assert np.allclose(curve.worst_mode_ratio, 1.0, atol=1e-6)  # tight in the min-curvature mode
+    assert (curve.mu_min > 0.5).all()  # lambda_min bounded away from 0 (horizon-robust)
 
 
 def test_interference_tightens_the_self_certifying_bound() -> None:

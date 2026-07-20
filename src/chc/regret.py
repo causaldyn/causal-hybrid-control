@@ -234,6 +234,75 @@ def pessimism_variance_certificate(
 
 
 @dataclass(frozen=True)
+class FiniteHorizonPLCurve:
+    """PL self-certifying bound valid over a full finite horizon at mu = lambda_min(Hessian)."""
+
+    horizons: Vector  # horizon lengths T
+    mu_min: Vector  # lambda_min of the horizon-objective Hessian (the strong-convexity constant)
+    bound_slack: Vector  # min over samples of (PL bound - true regret) -- non-negative = valid
+    worst_mode_ratio: Vector  # PL bound / regret along the min-curvature eigenvector (~1, tight)
+
+
+def finite_horizon_pl_certificate(
+    *,
+    a: float = 0.9,
+    b: float = 1.0,
+    q: float = 1.0,
+    r: float = 0.5,
+    qf: float = 5.0,
+    x0: float = 1.0,
+    horizons: Sequence[int] = (3, 5, 8, 13, 21),
+    n_samples: int = 200,
+    seed: int = 0,
+) -> FiniteHorizonPLCurve:
+    """Finite-horizon (multivariate) version of the PL self-certifying regret bound (result #3),
+    without the steady-state / setpoint simplification of the dynamic result 1d. For the *full*
+    finite-horizon LQ objective ``J(U)``, ``U = (u_0,...,u_{T-1})``, the regret admits the bound
+    ``grad^2 / (2*lambda_min(H))`` (``H`` the Hessian) -- self-certified from the achieved gradient
+    over the whole trajectory, no optimum needed. Justified per-eigenmode by
+    ``proofs/nonlinear_regret.v`` (`pl_mode_bound`): the min-curvature mode is tight, stiffer modes
+    slack. Verifies the bound is valid (upper-bounds the true regret) for random controls and tight
+    along the min-curvature eigenvector, across horizons.
+    """
+    rng = np.random.default_rng(seed)
+    hs = np.asarray(horizons, dtype=np.float64)
+    mu_min = np.zeros(hs.size)
+    slack = np.zeros(hs.size)
+    wmr = np.zeros(hs.size)
+    for i, tf in enumerate(horizons):
+        t = int(tf)
+        idx = np.arange(t)
+        lag = idx[:, None] - idx[None, :]  # row - col
+        g_map = b * np.where(lag >= 0, a ** np.abs(lag), 0.0)  # controllability map (lower-tri)
+        free = a ** (idx + 1) * x0  # free response of x_{row+1}
+        q_bar = np.diag([q] * (t - 1) + [qf])
+        hess = 2 * (g_map.T @ q_bar @ g_map + r * np.eye(t))
+        lin = 2 * g_map.T @ q_bar @ free
+        u_star = np.linalg.solve(hess, -lin)
+        evals, evecs = np.linalg.eigh(hess)
+        mu = float(evals[0])
+        mu_min[i] = mu
+
+        def cost(
+            u: np.ndarray, gm: np.ndarray = g_map, fr: np.ndarray = free, qb: np.ndarray = q_bar
+        ) -> float:
+            x = fr + gm @ u
+            return float(x @ qb @ x + r * (u @ u))
+
+        j_star = cost(u_star)
+        worst = np.inf
+        for _ in range(n_samples):
+            u = u_star + rng.standard_normal(t)
+            grad = hess @ (u - u_star)
+            worst = min(worst, grad @ grad / (2 * mu) - (cost(u) - j_star))
+        slack[i] = float(worst)
+        u = u_star + 0.3 * evecs[:, 0]  # perturb along the min-curvature eigenvector
+        grad = hess @ (u - u_star)
+        wmr[i] = float((grad @ grad / (2 * mu)) / (cost(u) - j_star))
+    return FiniteHorizonPLCurve(hs, mu_min, slack, wmr)
+
+
+@dataclass(frozen=True)
 class InterferenceConvexityCurve:
     """Cannibalising interference raises the convexity, so the self-certifying PL bound tightens."""
 
