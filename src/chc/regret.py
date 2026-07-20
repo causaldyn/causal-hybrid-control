@@ -183,6 +183,57 @@ def orthogonal_control_certificate(
 
 
 @dataclass(frozen=True)
+class PessimismCurve:
+    """Optimal optimality-condition pessimism equals the effect-estimate variance; beats greedy."""
+
+    variances: Vector  # effect-estimate variance s^2 grid
+    optimal_rho: Vector  # empirical expected-regret-minimising pessimism (~ s^2)
+    ce_regret: Vector  # expected regret of the certainty-equivalent control (rho = 0)
+    pessimistic_regret: Vector  # expected regret of the pessimistic control at rho = s^2
+
+
+def pessimism_variance_certificate(
+    *,
+    b0: float = 1.0,
+    rr: float = 1.0,
+    target: float = 1.0,
+    variances: Sequence[float] = (0.05, 0.1, 0.2, 0.4),
+    n: int = 200_000,
+    rho_max: float = 1.2,
+    rho_points: int = 61,
+    seed: int = 0,
+) -> PessimismCurve:
+    """Certificate that pessimism belongs in the optimality condition, calibrated to the uncertainty
+    (derived in ``validation/pessimistic_optimality.mac``, proved in
+    ``proofs/pessimistic_optimality.v``). The estimated effect is ``b0``; the true effect is
+    ``b0 + e`` with ``e`` of variance ``s^2``. The pessimistic control ``target b0/(b0^2+rr+rho)``
+    adds an effective-effort ``rho`` (distrust) to the stationarity condition. Sweeping ``rho`` per
+    ``s^2``, the expected-regret-minimising ``rho*`` tracks ``s^2`` (optimal pessimism = estimate
+    variance -- no tuning), and the pessimistic control's expected regret is below the
+    certainty-equivalent (``rho = 0``) one.
+    """
+    rng = np.random.default_rng(seed)
+    rho_grid = np.linspace(0.0, rho_max, rho_points)
+    s2 = np.asarray(variances, dtype=np.float64)
+    opt_rho = np.zeros(s2.size)
+    ce_reg = np.zeros(s2.size)
+    pess_reg = np.zeros(s2.size)
+    for i, var in enumerate(s2):
+        b = b0 + np.sqrt(var) * rng.standard_normal(n)  # true effect = estimate + uncertainty
+        u_opt = target * b / (b**2 + rr)  # oracle action for the realised true effect
+
+        def exp_regret(rho: float, b: Vector = b, u_opt: Vector = u_opt) -> float:
+            return float(np.mean((b**2 + rr) * (target * b0 / (b0**2 + rr + rho) - u_opt) ** 2))
+
+        expected = np.array([exp_regret(rho) for rho in rho_grid])
+        opt_rho[i] = float(rho_grid[int(np.argmin(expected))])
+        ce_reg[i] = float(expected[0])  # rho = 0 (certainty equivalence)
+        u_pess = target * b0 / (b0**2 + rr + var)  # rho = s^2 (the theorem's optimum)
+        pess_reg[i] = float(np.mean((b**2 + rr) * (u_pess - u_opt) ** 2))
+    return PessimismCurve(s2, opt_rho, ce_reg, pess_reg)
+
+
+@dataclass(frozen=True)
 class CausalControlCurve:
     """Predictive control plateaus at a confounding floor; causal control reaches the oracle."""
 

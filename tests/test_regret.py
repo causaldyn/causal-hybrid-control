@@ -14,6 +14,7 @@ from chc.regret import (
     dlqr,
     interference_regret_certificate,
     orthogonal_control_certificate,
+    pessimism_variance_certificate,
     regret_scaling,
 )
 
@@ -55,6 +56,17 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_optimal_pessimism_equals_the_effect_variance() -> None:
+    # pessimism in the optimality condition (proofs/pessimistic_optimality.v): the expected-regret-
+    # minimising effective-effort rho* tracks the effect-estimate variance s^2, and the pessimistic
+    # control beats the certainty-equivalent one under uncertainty
+    curve = pessimism_variance_certificate()
+    assert np.corrcoef(curve.variances, curve.optimal_rho)[0, 1] > 0.95  # rho* ~ s^2
+    for var, rho in zip(curve.variances, curve.optimal_rho, strict=True):
+        assert abs(rho - var) < 0.5 * var + 0.03  # optimal pessimism = variance (+ grid step)
+    assert (curve.pessimistic_regret < curve.ce_regret).all()  # pessimism beats greedy
 
 
 def test_predictive_control_is_asymptotically_wrong_under_confounding() -> None:

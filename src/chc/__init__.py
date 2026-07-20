@@ -86,6 +86,7 @@ from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.regret import (
     CausalControlCurve,
     OrthogonalControlCurve,
+    PessimismCurve,
     RegretCurve,
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
@@ -93,6 +94,7 @@ from chc.regret import (
     dlqr,
     interference_regret_certificate,
     orthogonal_control_certificate,
+    pessimism_variance_certificate,
     regret_scaling,
 )
 from chc.residual import GraphResidual, KANResidual, MLPResidual, ZeroResidual
@@ -156,6 +158,7 @@ __all__ = [
     "MeanFieldTransport",
     "NeighbourMessagePassing",
     "OrthogonalControlCurve",
+    "PessimismCurve",
     "QuadraticCost",
     "RLearner",
     "RegretCurve",
@@ -223,6 +226,7 @@ __all__ = [
     "orthogonal_control_certificate",
     "overshoot",
     "partial_corr_test",
+    "pessimism_variance_certificate",
     "pessimistic_control",
     "pessimistic_equilibrium_allocation",
     "poisson_1d",

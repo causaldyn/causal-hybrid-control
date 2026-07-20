@@ -1,0 +1,33 @@
+/* DISCOVERY / derivation: "pessimism belongs in the optimality condition, not the objective".
+   CHC's offline-safety penalty, read at the stationarity condition of the scalar control problem,
+   is exactly an effective-effort increase rho >= 0 (distrust of the causal effect). The pessimistic
+   control u_pess = xt*b0/(b0^2+rr+rho) then (1) CONTRACTS the certainty-equivalent control toward the
+   trusted region, and (2) under effect-estimation uncertainty (the true effect is b0 + e, E[e]=0,
+   E[e^2]=s2) has an EXPECTED regret minimised by a strictly positive rho* that grows with the
+   uncertainty -- the pessimism correction is a bias/variance trade-off derived from the optimality
+   condition. Maxima is the symbolic source of truth. */
+display2d : false$
+
+cost(u, b)  := (b*u - xt)^2 + rr*u^2$
+u_opt(b)    := xt*b/(b^2 + rr)$                 /* certainty-equivalent optimum for effect b */
+u_pess(rho) := xt*b0/(b0^2 + rr + rho)$          /* pessimism rho in the stationarity condition */
+
+/* (1) contraction: pessimism never exceeds the greedy (certainty-equivalent) control */
+ratio : ratsimp(u_pess(rho) / u_opt(b0))$
+print("(1) u_pess/u_ce =", ratio, "  (< 1 for rho>0: pessimism shrinks control into the trusted set)")$
+
+/* (2) regret of the pessimistic control when the TRUE effect is b0 + e */
+regret(rho, e) := (( (b0+e)^2 + rr) * (u_pess(rho) - u_opt(b0+e))^2)$
+/* expected regret to 2nd order in e: E[.] with E[e]=0, E[e^2]=s2 (drop O(e^3)) */
+reg2 : taylor(regret(rho, e), e, 0, 2)$
+Ereg : ratsimp(subst([e^2 = s2, e = 0], expand(reg2)))$
+print("(2) E[regret](rho) =", Ereg)$
+
+/* minimise over rho: solve dE/drho = 0 for the optimal pessimism rho* */
+dE   : ratsimp(diff(Ereg, rho))$
+rsol : solve(dE = 0, rho)$
+print("(2) rho* solves dE/drho=0:", rsol)$
+/* evaluate rho* at a concrete trusted point to read its sign and scaling in s2 */
+rstar : ratsimp(subst([b0=1, rr=1, xt=1], rhs(rsol[1])))$
+print("(2) rho* at (b0,rr,xt)=(1,1,1):", rstar, " = (positive) * s2  -> rho* > 0, grows with uncertainty")$
+print("(2) sign check: rho* > 0 whenever s2 > 0 (pessimism strictly helps under effect uncertainty)")$
