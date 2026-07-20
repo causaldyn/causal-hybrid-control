@@ -174,19 +174,16 @@ def _ridge_predict(x_train: Array, y_train: Array, x_test: Array, alpha: float) 
     return x_test @ beta
 
 
-def estimate_effect_dml(
+def _dml_residuals(
     data: dict[str, Array],
-    covariates: tuple[str, ...] = ("x", "z"),
-    degree: int = 3,
-    folds: int = 2,
-    ridge: float = 1e-2,
-    seed: int = 0,
-) -> Array:
-    """Double / debiased ML estimate of ``∂x_next/∂u`` via cross-fitted residual-on-residual.
-
-    Partials flexible (polynomial-ridge) predictions of ``x_next`` and ``u`` out of the covariates,
-    then regresses the residuals. This is Neyman-orthogonal, so it recovers the effect even under
-    *nonlinear* confounding, where the linear :func:`estimate_control_effect` adjustment is biased.
+    covariates: tuple[str, ...],
+    degree: int,
+    folds: int,
+    ridge: float,
+    seed: int,
+) -> tuple[Array, Array]:
+    """Cross-fitted partialling-out residuals ``(y_res, u_res)`` -- the shared core of the DML point
+    estimate and its influence-function SE. Nuisances are polynomial-ridge, fit out of fold.
     """
     y, u = data["x_next"], data["u"]
     covs = jnp.stack([data[c] for c in covariates], axis=1)
@@ -202,10 +199,49 @@ def estimate_effect_dml(
         phi_test = _polynomial_features(covs[test], degree)
         y_res = y_res.at[test].set(y[test] - _ridge_predict(phi_train, y[train], phi_test, ridge))
         u_res = u_res.at[test].set(u[test] - _ridge_predict(phi_train, u[train], phi_test, ridge))
+    return y_res, u_res
 
-    return jnp.sum(y_res * u_res) / jnp.sum(
-        u_res * u_res
-    )  # residual-on-residual through the origin
+
+def estimate_effect_dml(
+    data: dict[str, Array],
+    covariates: tuple[str, ...] = ("x", "z"),
+    degree: int = 3,
+    folds: int = 2,
+    ridge: float = 1e-2,
+    seed: int = 0,
+) -> Array:
+    """Double / debiased ML estimate of ``∂x_next/∂u`` via cross-fitted residual-on-residual.
+
+    Partials flexible (polynomial-ridge) predictions of ``x_next`` and ``u`` out of the covariates,
+    then regresses the residuals. This is Neyman-orthogonal, so it recovers the effect even under
+    *nonlinear* confounding, where the linear :func:`estimate_control_effect` adjustment is biased.
+    """
+    y_res, u_res = _dml_residuals(data, covariates, degree, folds, ridge, seed)
+    return jnp.sum(y_res * u_res) / jnp.sum(u_res * u_res)  # residual-on-residual through origin
+
+
+def dml_point_and_se(
+    data: dict[str, Array],
+    covariates: tuple[str, ...] = ("x", "z"),
+    degree: int = 3,
+    folds: int = 2,
+    ridge: float = 1e-2,
+    seed: int = 0,
+) -> tuple[float, float]:
+    """DML point estimate ``theta`` and its heteroskedastic influence-function standard error.
+
+    For the partially-linear score ``psi = u_res*(y_res - theta*u_res)`` the estimator is
+    ``theta = <u_res, y_res>/<u_res, u_res>`` and the (robust, HC-style) SE is
+    ``sqrt(sum u_res^2 * eps^2) / sum u_res^2`` with ``eps = y_res - theta*u_res`` -- the sandwich
+    variance of the Neyman-orthogonal moment. Ships EconML-grade uncertainty with the cross-fit
+    effect (a 95% CI is ``theta +/- 1.96*se``).
+    """
+    y_res, u_res = _dml_residuals(data, covariates, degree, folds, ridge, seed)
+    denom = jnp.sum(u_res * u_res)
+    theta = jnp.sum(y_res * u_res) / denom
+    eps = y_res - theta * u_res
+    se = jnp.sqrt(jnp.sum(u_res**2 * eps**2)) / denom
+    return float(theta), float(se)
 
 
 def refute_effect(

@@ -31,7 +31,7 @@ from chc.causal import (
     _ols_with_se,
     _polynomial_features,
     _ridge_predict,
-    estimate_effect_dml,
+    dml_point_and_se,
     estimate_effect_iv,
 )
 
@@ -129,16 +129,18 @@ class DoubleML:
         outcome: str = "x_next",
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
-        effect = float(
-            estimate_effect_dml(
-                _alias(data, treatment, outcome),
-                covariates=covariates,
-                degree=self.degree,
-                folds=self.folds,
-                ridge=self.ridge,
-            )
+        effect, se = dml_point_and_se(
+            _alias(data, treatment, outcome),
+            covariates=covariates,
+            degree=self.degree,
+            folds=self.folds,
+            ridge=self.ridge,
         )
-        return EffectEstimate(effect)
+        lo, hi = effect - 1.96 * se, effect + 1.96 * se
+        t_stat = effect / se if se > 0.0 else float("inf")
+        return EffectEstimate(
+            effect, std_error=se, diagnostics={"t_stat": t_stat, "ci95_low": lo, "ci95_high": hi}
+        )
 
 
 @dataclass(frozen=True)

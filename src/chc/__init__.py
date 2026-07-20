@@ -11,6 +11,7 @@ from __future__ import annotations
 from chc.adjoint import control_gradient_adjoint, control_gradient_diffrax, total_cost_diffrax
 from chc.causal import (
     ConfoundedLinearSystem,
+    dml_point_and_se,
     e_value,
     estimate_control_effect,
     estimate_effect_dml,
@@ -178,6 +179,7 @@ __all__ = [
     "discover_lagged_parents",
     "dlqr",
     "dlqr_feedback_controls",
+    "dml_point_and_se",
     "double_integrator_min_time",
     "e_value",
     "estimate_control_effect",

@@ -3,7 +3,7 @@
 import jax
 import pytest
 
-from chc.causal import ConfoundedLinearSystem
+from chc.causal import ConfoundedLinearSystem, dml_point_and_se
 from chc.estimators import (
     IV2SLS,
     BackdoorOLS,
@@ -40,6 +40,23 @@ def test_backdoor_ols_is_confounded_without_the_confounder() -> None:
 def test_double_ml_recovers_effect() -> None:
     result = DoubleML().estimate(_data(), covariates=("x", "z"))
     assert abs(result.effect - 1.0) < 0.1
+
+
+def test_double_ml_reports_a_covering_confidence_interval() -> None:
+    result = DoubleML().estimate(_data(), covariates=("x", "z"))
+    assert result.std_error is not None  # ships an influence-function SE
+    assert result.std_error > 0.0
+    lo, hi = result.diagnostics["ci95_low"], result.diagnostics["ci95_high"]
+    assert lo < 1.0 < hi  # the 95% CI covers the true effect b_true = 1.0
+
+
+def test_dml_influence_function_ci_has_near_nominal_coverage() -> None:
+    trials, covered = 30, 0
+    for s in range(trials):
+        data = ConfoundedLinearSystem().sample(4000, jax.random.key(100 + s))
+        theta, se = dml_point_and_se(data, covariates=("x", "z"), degree=2, folds=5)
+        covered += abs(theta - 1.0) < 1.96 * se
+    assert covered >= 0.8 * trials  # the sandwich influence-function CI ~ nominal 95% coverage
 
 
 def test_iv_recovers_effect_with_latent_confounder() -> None:
