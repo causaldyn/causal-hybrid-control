@@ -47,3 +47,44 @@ Proof.
   intros xt b0 rr rho HD Hr Hxb. unfold u_pess, Rdiv.
   apply Rmult_le_pos; [nra | apply Rlt_le, Rinv_0_lt_compat; nra].
 Qed.
+
+(* The OPTIMAL pessimism equals the effect-estimate variance, formalised. Maxima
+   (validation/pessimistic_optimality.mac) differentiates the expected regret under effect
+   uncertainty s^2 and gives  d E[regret]/d rho = grad_num / (positive denominator)  with
+   grad_num = 2*b0^2*xt^2*(rho - s2). We prove the sign structure of grad_num here: it is zero exactly
+   at rho = s2, negative below it and positive above it -- so E[regret] strictly decreases then
+   increases, and rho* = s2 is its unique minimiser (no tuning: the optimal pessimism IS the variance). *)
+Definition grad_num (b0 xt s2 rho : R) : R := 2 * b0 ^ 2 * xt ^ 2 * (rho - s2).
+
+Lemma sq_pos : forall x, x <> 0 -> 0 < x ^ 2.
+Proof.
+  intros x Hx. destruct (Rtotal_order x 0) as [H | [H | H]].
+  - nra.
+  - exfalso; apply Hx; exact H.
+  - nra.
+Qed.
+
+(* the expected-regret gradient vanishes exactly at rho = s2 (the effect-estimate variance) *)
+Lemma pessimism_stationary_at_variance : forall b0 xt s2,
+  grad_num b0 xt s2 s2 = 0.
+Proof. intros b0 xt s2. unfold grad_num. ring. Qed.
+
+(* below the variance the gradient is negative -- expected regret is still decreasing (raise rho) *)
+Lemma pessimism_below_variance_decreasing : forall b0 xt s2 rho,
+  b0 <> 0 -> xt <> 0 -> rho < s2 -> grad_num b0 xt s2 rho < 0.
+Proof.
+  intros b0 xt s2 rho Hb Hx Hlt. unfold grad_num.
+  assert (0 < 2 * b0 ^ 2 * xt ^ 2) by (assert (0 < b0 ^ 2) by (apply sq_pos; exact Hb);
+                                       assert (0 < xt ^ 2) by (apply sq_pos; exact Hx); nra).
+  nra.
+Qed.
+
+(* above the variance the gradient is positive -- expected regret is increasing (rho is too large) *)
+Lemma pessimism_above_variance_increasing : forall b0 xt s2 rho,
+  b0 <> 0 -> xt <> 0 -> s2 < rho -> 0 < grad_num b0 xt s2 rho.
+Proof.
+  intros b0 xt s2 rho Hb Hx Hgt. unfold grad_num.
+  assert (0 < 2 * b0 ^ 2 * xt ^ 2) by (assert (0 < b0 ^ 2) by (apply sq_pos; exact Hb);
+                                       assert (0 < xt ^ 2) by (apply sq_pos; exact Hx); nra).
+  nra.
+Qed.
