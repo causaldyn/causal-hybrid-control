@@ -112,3 +112,53 @@ def regret_scaling(
             log_gap.extend(np.log(gaps))
     exponent = float(np.polyfit(log_err, log_gap, 1)[0]) if log_err else float("nan")
     return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent)
+
+
+def interference_regret_certificate(
+    a: Matrix,
+    b: Matrix,
+    q: Matrix,
+    r: Matrix,
+    x0: Vector,
+    *,
+    interference_ratio: float = 1.0,
+    errors: Sequence[float] = _DEFAULT_ERRORS,
+    n_samples: int = 400,
+    seed: int = 0,
+) -> RegretCurve:
+    """Interference-aware regret certificate: CE suboptimality is quadratic in the *total* error
+    ``eid + eint`` -- the sum of an identification error ``eid`` of the autonomous dynamics (``dA``)
+    and an interference / exposure-map error ``eint`` of the actuation channel (``dB``).
+
+    This is the empirical twin of the machine-checked bound in ``proofs/interference_regret.v``
+    (``regret <= (kappa C^2 / 2) (eid + eint)^2``) and the plans/20 §A theorem: the interference
+    error enters *additively* inside the square, so ignoring it under-states the regret. Sets
+    ``eint = interference_ratio * eid``; the recorded error is the additive ``||dA|| + ||dB||`` (not
+    the Euclidean norm), so the fitted slope tests the quadratic-in-total law directly (~2).
+    """
+    rng = np.random.default_rng(seed)
+    median_errors: list[float] = []
+    median_gaps: list[float] = []
+    log_err: list[float] = []
+    log_gap: list[float] = []
+    for eps in errors:
+        eid, eint = eps, interference_ratio * eps
+        errs, gaps = [], []
+        for _ in range(n_samples):
+            d_a = eid * rng.normal(size=a.shape)  # identification error (autonomous dynamics)
+            d_b = eint * rng.normal(size=b.shape)  # interference / exposure-map error (actuation)
+            try:
+                gap = certainty_equivalence_gap(a, b, q, r, a + d_a, b + d_b, x0)
+            except (np.linalg.LinAlgError, ValueError):
+                continue
+            total = float(np.sqrt(np.sum(d_a**2)) + np.sqrt(np.sum(d_b**2)))  # additive eid + eint
+            if np.isfinite(gap) and gap > 0.0 and total > 0.0:
+                errs.append(total)
+                gaps.append(gap)
+        if errs:
+            median_errors.append(float(np.median(errs)))
+            median_gaps.append(float(np.median(gaps)))
+            log_err.extend(np.log(errs))
+            log_gap.extend(np.log(gaps))
+    exponent = float(np.polyfit(log_err, log_gap, 1)[0]) if log_err else float("nan")
+    return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent)

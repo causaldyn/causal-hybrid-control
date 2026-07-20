@@ -7,7 +7,13 @@ import numpy as np
 
 from chc.dynamics import DampedOscillator
 from chc.lqr import linearize_discrete, linearized_regret_certificate
-from chc.regret import certainty_equivalence_gap, closed_loop_cost, dlqr, regret_scaling
+from chc.regret import (
+    certainty_equivalence_gap,
+    closed_loop_cost,
+    dlqr,
+    interference_regret_certificate,
+    regret_scaling,
+)
 
 A = np.array([[1.0, 0.1], [0.0, 0.95]])
 B = np.array([[0.5], [1.0]])
@@ -41,6 +47,20 @@ def test_regret_scales_quadratically_with_model_error() -> None:
     curve = regret_scaling(A, B, Q, R, X0, n_samples=300, seed=0)
     assert 1.7 < curve.exponent < 2.3  # Dean et al.: quadratic suboptimality (theory exponent 2)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks monotonically as the error level drops
+
+
+def test_interference_regret_is_quadratic_in_the_total_error() -> None:
+    curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
+    assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
+    assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_interference_strictly_increases_the_regret() -> None:
+    # the empirical mirror of the Rocq lemma interference_strictly_worse: adding the exposure-map
+    # error channel (eint > 0) enlarges the certificate over the interference-blind (eint = 0) case
+    blind = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=0.0, n_samples=300)
+    aware = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
+    assert aware.gaps[0] > blind.gaps[0]  # interference is not free
 
 
 def test_linearized_certificate_zero_at_truth_and_positive_under_model_error() -> None:

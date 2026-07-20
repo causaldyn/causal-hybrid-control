@@ -87,6 +87,7 @@ from chc.regret import (
     certainty_equivalence_gap,
     closed_loop_cost,
     dlqr,
+    interference_regret_certificate,
     regret_scaling,
 )
 from chc.residual import GraphResidual, KANResidual, MLPResidual, ZeroResidual
@@ -195,6 +196,7 @@ __all__ = [
     "gohberg_semencul_generators",
     "innovations",
     "interference_bias",
+    "interference_regret_certificate",
     "irf_control_sequence",
     "koopman_controller",
     "koopman_lqr_gain",

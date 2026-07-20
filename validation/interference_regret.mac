@@ -1,0 +1,33 @@
+/* Symbolic derivation of the interference-aware certainty-equivalence regret bound behind
+   chc.regret.interference_regret_certificate and proofs/interference_regret.v (plans/20 section A).
+
+   A kappa-smooth cost J with minimiser p_star (so J'(p_star) = 0) admits the second-order upper
+   bound  J(p_hat) - J(p_star) <= (kappa/2) (p_hat - p_star)^2.  Certainty equivalence makes the plan
+   error Lipschitz in the model error, |p_hat - p_star| <= C*(eid + eint), where eid is the
+   identification error of the dynamics and eint the interference / exposure-map error.  Substituting
+   shows the regret is quadratic in the TOTAL error, with interference entering additively. */
+
+/* kappa-smooth quadratic surrogate with minimiser p_star */
+J(p) := Jstar + (kappa/2) * (p - p_star)^2$
+
+/* first-order optimality and constant curvature */
+grad_at_star : ''(diff(J(p), p)), p = p_star$
+curvature    : diff(J(p), p, 2)$
+print("J'(p_star)   =", ratsimp(subst(p = p_star, diff(J(p), p))), "  (stationary)")$
+print("J''(p)       =", curvature, "  (= kappa, constant)")$
+
+/* regret at a plan error d = p_hat - p_star */
+regret(d) := ratsimp(J(p_star + d) - Jstar)$
+print("regret(d)    =", regret(d), "  (the kappa/2 * d^2 descent bound)")$
+
+/* substitute the controllability bound d = C*(eid + eint): total-error form, then expand */
+bound      : ratsimp(regret(C * (eid + eint)))$
+expanded   : expand(bound)$
+print("bound (total)=", bound)$
+print("expanded     =", expanded, "  (eid^2, cross 2*eid*eint, eint^2)")$
+
+/* the interference-blind (eint = 0) bound and the excess that ignoring interference hides */
+blind      : ratsimp(subst(eint = 0, bound))$
+excess     : ratsimp(bound - blind)$
+print("blind (eint=0)=", blind)$
+print("interference excess =", factor(excess), "  (>= 0 for eid,eint >= 0: interference is not free)")$
