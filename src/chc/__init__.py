@@ -54,6 +54,16 @@ from chc.lqr import (
     linearize_discrete,
     linearized_regret_certificate,
 )
+from chc.marketplace import (
+    ExposureResponse,
+    SharedStateMarket,
+    calibrate_naive_causal,
+    calibrate_predictive,
+    calibrate_shared_state,
+    interference_bias,
+    pessimistic_equilibrium_allocation,
+    sutva_allocation,
+)
 from chc.matching import MarketplaceMatching, SinkhornResult, marketplace_report, sinkhorn
 from chc.meanfield import MeanFieldControl
 from chc.metrics import overshoot, rise_time, settling_time, steady_state_error
@@ -124,6 +134,7 @@ __all__ = [
     "EffectEstimate",
     "EnsembleResidual",
     "EnsembleUncertainty",
+    "ExposureResponse",
     "GaussianPolicy",
     "GraphResidual",
     "GroupTimeATT",
@@ -141,6 +152,7 @@ __all__ = [
     "RLearner",
     "RegretCurve",
     "ScalarMLP",
+    "SharedStateMarket",
     "SinkhornResult",
     "SplitConformal",
     "SupportModel",
@@ -152,6 +164,9 @@ __all__ = [
     "augmented_synthetic_control",
     "bang_bang_control",
     "bang_bang_rollout",
+    "calibrate_naive_causal",
+    "calibrate_predictive",
+    "calibrate_shared_state",
     "callaway_santanna",
     "certainty_equivalence_gap",
     "closed_loop_cost",
@@ -179,6 +194,7 @@ __all__ = [
     "gohberg_semencul_covariance",
     "gohberg_semencul_generators",
     "innovations",
+    "interference_bias",
     "irf_control_sequence",
     "koopman_controller",
     "koopman_lqr_gain",
@@ -196,6 +212,7 @@ __all__ = [
     "overshoot",
     "partial_corr_test",
     "pessimistic_control",
+    "pessimistic_equilibrium_allocation",
     "poisson_1d",
     "poisson_2d",
     "project_box",
@@ -221,6 +238,7 @@ __all__ = [
     "steady_state_error",
     "strang_marchuk_step",
     "structured_irf",
+    "sutva_allocation",
     "switching_function",
     "synthetic_control",
     "thomas_solve",
