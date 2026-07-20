@@ -1,0 +1,46 @@
+/* DISCOVERY / derivation: "orthogonal (debiased) certainty-equivalence control".
+   Claim: a controller built on a Neyman-orthogonal (Double ML) estimate of the causal effect has
+   control regret of order eps^4 in the nuisance-estimation error eps, vs eps^2 for a plug-in
+   (regression-adjustment) controller -- a DOUBLE debiasing: once from DML (eps -> eps^2 in the
+   effect), once from certainty-equivalence control (square of the effect error in regret).
+   Maxima is the symbolic source of truth; verify here before implementing. */
+display2d : false$   /* inline output so exponents/fractions read cleanly */
+
+/* ---- Part 1: the DML (partially-linear / Robinson) moment is Neyman-orthogonal ---------------
+   Structural: y_tilde = b*u_tilde + e, with the true-nuisance conditions E[e|z]=0, E[u_tilde|z]=0.
+   Perturb the nuisances by eps in directions r_u (for m_u) and r_y (for m_y):
+   u_hat = u_tilde - eps*r_u,  y_hat = y_tilde - eps*r_y.  Moment psi = (y_hat - b*u_hat)*u_hat. */
+psi : (y_tilde - eps*r_y - b*(u_tilde - eps*r_u)) * (u_tilde - eps*r_u)$
+/* raw integrand derivative at eps=0 (before taking expectations) */
+draw : expand(subst(eps = 0, diff(psi, eps)))$
+/* apply E[.] via the orthogonality moment conditions (E[e|z]=E[u_tilde|z]=0 => these cross-terms
+   vanish for ANY nuisance direction r_u(z), r_y(z)):  E[r_u*u_tilde]=E[r_y*u_tilde]=E[r_u*y_tilde]=0 */
+d_orth : ratsubst(0, r_u*y_tilde,
+           ratsubst(0, r_y*u_tilde,
+             ratsubst(0, r_u*u_tilde, draw)))$
+print("Part 1  d E[psi_orth]/d eps |_0 =", d_orth, "  (0 => Neyman-orthogonal => effect error O(eps^2))")$
+
+/* a NAIVE single-residualisation moment (partial y on z, but use u RAW) is first-order sensitive:
+   E[r_y*u_raw] != 0 because u_raw is not residualised on z */
+psi_naive : (y_tilde - eps*r_y - b*u_raw) * u_raw$
+d_naive : expand(subst(eps = 0, diff(psi_naive, eps)))$
+print("Part 1  d E[psi_naive]/d eps|_0 =", d_naive, "  (nonzero: E[r_y*u_raw]!=0 => effect error O(eps))")$
+
+/* ---- Part 2: certainty-equivalence control regret is quadratic in the effect error -----------
+   Static causal control: action u moves state by x=b*u; cost to reach target xt with effort r.
+   Use the action optimal for an ESTIMATED effect bh on the TRUE plant b; expand the regret. */
+cost(u, bb) := (bb*u - xt)^2 + rr*u^2$
+ustar(bb)  := xt*bb / (bb^2 + rr)$                    /* argmin_u cost(u,bb) */
+regret(bh, b) := ratsimp(cost(ustar(bh), b) - cost(ustar(b), b))$
+reg_taylor : taylor(regret(b + e, b), e, 0, 3)$        /* expand in the effect error e = bh - b */
+print("Part 2  regret(b+e,b) =", reg_taylor, "  (leading term ~ C*e^2: quadratic in effect error)")$
+
+/* ---- Part 3: compose. Effect error e scales with the nuisance error eps ---------------------- */
+lead : ratsimp(coeff(expand(taylor(regret(b + e, b), e, 0, 2)), e, 2))$   /* C in C*e^2 */
+print("Part 3  regret ~ C*e^2, C =", lead)$
+/* plug-in: e = k*eps (first-order) -> regret ~ C*k^2*eps^2 ; orthogonal: e = k*eps^2 -> eps^4 */
+reg_plugin : expand(lead * (k*eps)^2)$
+reg_orth   : expand(lead * (k*eps^2)^2)$
+print("Part 3  plug-in  regret =", reg_plugin, " ->  O(eps^2)")$
+print("Part 3  orthogonal regret =", reg_orth,   " ->  O(eps^4)")$
+print("Part 3  ratio orth/plugin =", ratsimp(reg_orth/reg_plugin), " (= eps^2 -> 0: orthogonal wins)")$

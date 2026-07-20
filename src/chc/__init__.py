@@ -84,11 +84,13 @@ from chc.network_causal import (
 )
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.regret import (
+    OrthogonalControlCurve,
     RegretCurve,
     certainty_equivalence_gap,
     closed_loop_cost,
     dlqr,
     interference_regret_certificate,
+    orthogonal_control_certificate,
     regret_scaling,
 )
 from chc.residual import GraphResidual, KANResidual, MLPResidual, ZeroResidual
@@ -150,6 +152,7 @@ __all__ = [
     "MeanFieldControl",
     "MeanFieldTransport",
     "NeighbourMessagePassing",
+    "OrthogonalControlCurve",
     "QuadraticCost",
     "RLearner",
     "RegretCurve",
@@ -213,6 +216,7 @@ __all__ = [
     "naive_pooled_effect",
     "off_policy_value",
     "one_step_mse",
+    "orthogonal_control_certificate",
     "overshoot",
     "partial_corr_test",
     "pessimistic_control",

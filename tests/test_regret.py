@@ -12,6 +12,7 @@ from chc.regret import (
     closed_loop_cost,
     dlqr,
     interference_regret_certificate,
+    orthogonal_control_certificate,
     regret_scaling,
 )
 
@@ -53,6 +54,17 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_orthogonal_control_is_doubly_debiased() -> None:
+    # novel result (proofs/orthogonal_control.v): a controller built on the Neyman-orthogonal DML
+    # effect has regret ~ eps^4 in the nuisance error, vs ~ eps^2 for a single-residualisation
+    # plug-in -- the DML orthogonality compounds with the certainty-equivalence quadratic regret map
+    curve = orthogonal_control_certificate(n=200_000, n_seeds=4)
+    assert 1.8 < curve.single_exponent < 2.7  # plug-in control regret ~ eps^2
+    assert curve.orthogonal_exponent > 3.3  # orthogonal DML control regret ~ eps^4
+    assert curve.orthogonal_exponent > curve.single_exponent + 1.0  # the double-debiasing gap
+    assert curve.orthogonal_regret[0] < 0.05 * curve.single_regret[0]  # far lower regret at top eps
 
 
 def test_interference_strictly_increases_the_regret() -> None:

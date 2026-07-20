@@ -114,6 +114,74 @@ def regret_scaling(
     return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent)
 
 
+@dataclass(frozen=True)
+class OrthogonalControlCurve:
+    """Double-debiasing certificate: control regret vs nuisance error, plug-in vs orthogonal."""
+
+    errors: Vector  # nuisance-estimation error levels eps
+    single_regret: Vector  # median control regret from a single-residualisation (plug-in) effect
+    orthogonal_regret: Vector  # median control regret from the Neyman-orthogonal (DML) effect
+    single_exponent: float  # fitted log-log slope ~2 (plug-in regret ~ eps^2)
+    orthogonal_exponent: float  # fitted log-log slope ~4 (orthogonal regret ~ eps^4)
+
+
+def orthogonal_control_certificate(
+    *,
+    b_true: float = 2.0,
+    alpha: float = 1.0,
+    gamma: float = 1.5,
+    target: float = 1.0,
+    effort: float = 0.5,
+    errors: Sequence[float] = (0.2, 0.1, 0.05, 0.025, 0.0125),
+    n: int = 400_000,
+    n_seeds: int = 6,
+    noise: float = 0.05,
+) -> OrthogonalControlCurve:
+    """The DOUBLE debiasing of orthogonal certainty-equivalence control -- a novel result derived in
+    ``validation/orthogonal_control.mac`` and proved in ``proofs/orthogonal_control.v``.
+
+    A confounder ``z`` drives both the action (``u = alpha z + noise``) and the outcome
+    (``y = b_true u + gamma z + noise``). A controller hits ``target`` using its estimate of the
+    causal effect ``b = dy/du``, scored by regret on the true plant. Under nuisance error ``eps``,
+    a **single-residualisation** (non-orthogonal) effect is ``O(eps)``-biased, so its control regret
+    is ``O(eps^2)``; the **orthogonal Double ML** effect is ``O(eps^2)``-biased, so -- through the
+    same certainty-equivalence quadraticity -- its regret is ``O(eps^4)``. The estimator's
+    orthogonality compounds with the quadratic regret map: two debiasings, statistics and control.
+    Fits the two log-log slopes (~2 vs ~4).
+    """
+    opt = target * b_true / (b_true**2 + effort)
+    opt_cost = (b_true * opt - target) ** 2 + effort * opt**2
+
+    def regret(b_hat: float) -> float:
+        u = target * b_hat / (b_hat**2 + effort)  # action optimal for the estimated effect
+        return (b_true * u - target) ** 2 + effort * u**2 - opt_cost
+
+    err = np.asarray(errors, dtype=np.float64)
+    single = np.zeros((n_seeds, err.size))
+    orth = np.zeros((n_seeds, err.size))
+    for s in range(n_seeds):
+        rng = np.random.default_rng(s)
+        for j, eps in enumerate(err):
+            z = rng.standard_normal(n)
+            u = alpha * z + rng.standard_normal(n)
+            y = b_true * u + gamma * z + noise * rng.standard_normal(n)
+            m_y = (b_true * alpha + gamma) * z + eps * z  # misspecified outcome nuisance
+            m_u = alpha * z + eps * z  # misspecified treatment nuisance
+            u_res = u - m_u
+            b_single = float(np.dot(u_res, y) / np.dot(u_res, u))  # single residualisation
+            b_orth = float(np.dot(u_res, y - m_y) / np.dot(u_res, u_res))  # orthogonal DML
+            single[s, j], orth[s, j] = regret(b_single), regret(b_orth)
+    single_med, orth_med = np.median(single, axis=0), np.median(orth, axis=0)
+    log_e = np.log(err)
+    return OrthogonalControlCurve(
+        err,
+        single_med,
+        orth_med,
+        float(np.polyfit(log_e, np.log(np.abs(single_med)), 1)[0]),
+        float(np.polyfit(log_e, np.log(np.abs(orth_med)), 1)[0]),
+    )
+
+
 def interference_regret_certificate(
     a: Matrix,
     b: Matrix,
