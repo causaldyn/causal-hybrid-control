@@ -233,6 +233,52 @@ def pessimism_variance_certificate(
     return PessimismCurve(s2, opt_rho, ce_reg, pess_reg)
 
 
+@dataclass(frozen=True)
+class DynamicCausalCurve:
+    """Confounded tracking regret grows linearly with the horizon; causal control plateaus."""
+
+    horizons: Vector  # swept horizon lengths T
+    predictive_regret: Vector  # cumulative predictive-vs-causal tracking regret (grows ~ linearly)
+    causal_cost: Vector  # cumulative causal tracking cost (bounded: transient only)
+    growth_slope: float  # fitted linear slope of predictive_regret vs T (= per-step floor)
+
+
+def dynamic_causal_regret_certificate(
+    *,
+    a: float = 0.7,
+    b: float = 1.0,
+    beta: float = 0.5,
+    x_ref: float = 1.0,
+    x0: float = 0.0,
+    q: float = 1.0,
+    horizons: Sequence[int] = (10, 20, 40, 80, 160),
+) -> DynamicCausalCurve:
+    """The DYNAMIC confounding theorem (proofs/dynamic_causal_mpc.v, derived in
+    ``validation/dynamic_causal_mpc.mac``): a tracking controller ``x' = a x + b u`` using a
+    confounded effect estimate ``b_obs = b + beta`` settles at a persistent steady-state offset and
+    pays a per-step floor ``q*offset^2`` every step, so its cumulative regret grows *linearly in the
+    horizon T* (unbounded), while the causal controller (effect ``b``) tracks exactly and its
+    cumulative cost is bounded (the transient only). The fitted growth slope equals the per-step
+    floor ``q*(x_ref*beta/b_obs)^2``.
+    """
+    b_obs = b + beta
+
+    def cumulative_cost(b_hat: float, horizon: int) -> float:
+        u_ss = (1.0 - a) * x_ref / b_hat  # feedforward to hold x_ref if the effect were b_hat
+        x, cost = x0, 0.0
+        for _ in range(horizon):
+            cost += q * (x - x_ref) ** 2
+            x = a * x + b * u_ss  # true plant
+        return cost
+
+    hs = np.asarray(horizons, dtype=np.float64)
+    predictive = np.array([cumulative_cost(b_obs, int(t)) for t in hs])
+    causal = np.array([cumulative_cost(b, int(t)) for t in hs])
+    regret = predictive - causal
+    slope = float(np.polyfit(hs, regret, 1)[0])
+    return DynamicCausalCurve(hs, regret, causal, slope)
+
+
 def strong_convexity_regret_bound(grad_norm_sq: float, mu: float) -> float:
     """Self-certifying regret upper bound ``||grad J(u)||^2 / (2 mu)`` for a ``mu``-strongly-convex
     cost -- GLOBAL (beyond the local linearisation), computed from the achieved gradient alone,

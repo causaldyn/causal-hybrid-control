@@ -12,6 +12,7 @@ from chc.regret import (
     certainty_equivalence_gap,
     closed_loop_cost,
     dlqr,
+    dynamic_causal_regret_certificate,
     interference_regret_certificate,
     nonlinear_regret_certificate,
     orthogonal_control_certificate,
@@ -58,6 +59,18 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_confounded_control_regret_grows_with_the_horizon() -> None:
+    # dynamic confounding theorem (proofs/dynamic_causal_mpc.v): a confounded effect estimate leaves
+    # a steady-state offset paid every step, so cumulative regret grows linearly in T (slope =
+    # per-step floor q*offset^2); the causal controller's cumulative cost stays bounded
+    curve = dynamic_causal_regret_certificate()
+    floor = 1.0 * (1.0 * 0.5 / 1.5) ** 2  # q * (x_ref*beta/b_obs)^2
+    assert curve.growth_slope > 0.0
+    assert abs(curve.growth_slope - floor) < 0.1 * floor  # slope equals the per-step floor
+    assert curve.predictive_regret[-1] > 5 * curve.predictive_regret[0]  # grows (unbounded in T)
+    assert abs(curve.causal_cost[-1] - curve.causal_cost[-2]) < 0.01  # causal cost bounded
 
 
 def test_strong_convexity_regret_bound_holds_beyond_linearisation() -> None:

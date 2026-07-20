@@ -85,6 +85,7 @@ from chc.network_causal import (
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.regret import (
     CausalControlCurve,
+    DynamicCausalCurve,
     NonlinearRegretCurve,
     OrthogonalControlCurve,
     PessimismCurve,
@@ -93,6 +94,7 @@ from chc.regret import (
     certainty_equivalence_gap,
     closed_loop_cost,
     dlqr,
+    dynamic_causal_regret_certificate,
     interference_regret_certificate,
     nonlinear_regret_certificate,
     orthogonal_control_certificate,
@@ -141,6 +143,7 @@ __all__ = [
     "DampedOscillator",
     "DoWhyEstimator",
     "DoubleML",
+    "DynamicCausalCurve",
     "Dynamics",
     "EconMLDoubleML",
     "EffectEstimate",
@@ -195,6 +198,7 @@ __all__ = [
     "dlqr_feedback_controls",
     "dml_point_and_se",
     "double_integrator_min_time",
+    "dynamic_causal_regret_certificate",
     "e_value",
     "estimate_control_effect",
     "estimate_effect_dml",

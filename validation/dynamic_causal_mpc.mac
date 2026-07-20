@@ -1,0 +1,26 @@
+/* DISCOVERY / derivation: the DYNAMIC (horizon) version of "predictive control is wrong under
+   confounding" (proofs/causal_mpc.v was static). A setpoint-tracking controller x' = a*x + b*u aims
+   at xref using its estimate of the control effect b. A confounded estimate b_obs = b + beta leaves
+   a persistent STEADY-STATE OFFSET, paid at every step, so the cumulative regret grows LINEARLY in
+   the horizon T -- unbounded as T -> inf -- while the causal controller (beta = 0) tracks exactly and
+   its cumulative regret stays at zero. Maxima is the symbolic source of truth. */
+display2d : false$
+
+/* feedforward control that would hold x at xref IF the effect were b_obs: b_obs*u = (1-a)*xref */
+u_ff(bobs) := (1 - a) * xref / bobs$
+/* the realised steady state on the TRUE plant x' = a*x + b*u_ff (solve x = a*x + b*u_ff) */
+xinf(bobs) := ratsimp(rhs(solve(x = a*x + b*u_ff(bobs), x)[1]))$
+offset(bobs) := ratsimp(xref - xinf(bobs))$
+
+print("x_inf(b_obs) =", xinf(bobs))$
+print("steady-state offset xref - x_inf =", offset(bobs))$
+/* substitute the confounded estimate b_obs = b + beta */
+off_conf : ratsimp(subst(bobs = b + beta, offset(bobs)))$
+print("offset at b_obs = b + beta   =", off_conf, "  (systematic: ~ xref*beta/(b+beta), fixed in n)")$
+print("offset at beta = 0 (causal)  =", ratsimp(subst(beta = 0, off_conf)), "  (exact tracking)")$
+
+/* per-step steady-state tracking cost q*offset^2, and the cumulative cost over T steps ~ T*that */
+per_step : ratsimp(q * off_conf^2)$
+print("per-step steady cost q*offset^2 =", per_step, " > 0 for beta != 0")$
+print("cumulative regret over T steps ~ T * (q*offset^2)  -> grows LINEARLY in T, unbounded")$
+print("causal cumulative regret = T * 0 = 0  (only causal identification closes the horizon gap)")$
