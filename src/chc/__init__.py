@@ -85,6 +85,7 @@ from chc.network_causal import (
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.regret import (
     CausalControlCurve,
+    NonlinearRegretCurve,
     OrthogonalControlCurve,
     PessimismCurve,
     RegretCurve,
@@ -93,9 +94,11 @@ from chc.regret import (
     closed_loop_cost,
     dlqr,
     interference_regret_certificate,
+    nonlinear_regret_certificate,
     orthogonal_control_certificate,
     pessimism_variance_certificate,
     regret_scaling,
+    strong_convexity_regret_bound,
 )
 from chc.residual import GraphResidual, KANResidual, MLPResidual, ZeroResidual
 from chc.scm import SyntheticControlResult, augmented_synthetic_control, synthetic_control
@@ -157,6 +160,7 @@ __all__ = [
     "MeanFieldControl",
     "MeanFieldTransport",
     "NeighbourMessagePassing",
+    "NonlinearRegretCurve",
     "OrthogonalControlCurve",
     "PessimismCurve",
     "QuadraticCost",
@@ -221,6 +225,7 @@ __all__ = [
     "marketplace_report",
     "mpc_control",
     "naive_pooled_effect",
+    "nonlinear_regret_certificate",
     "off_policy_value",
     "one_step_mse",
     "orthogonal_control_certificate",
@@ -253,6 +258,7 @@ __all__ = [
     "stackelberg_allocation",
     "steady_state_error",
     "strang_marchuk_step",
+    "strong_convexity_regret_bound",
     "structured_irf",
     "sutva_allocation",
     "switching_function",

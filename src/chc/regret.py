@@ -233,6 +233,40 @@ def pessimism_variance_certificate(
     return PessimismCurve(s2, opt_rho, ce_reg, pess_reg)
 
 
+def strong_convexity_regret_bound(grad_norm_sq: float, mu: float) -> float:
+    """Self-certifying regret upper bound ``||grad J(u)||^2 / (2 mu)`` for a ``mu``-strongly-convex
+    cost -- GLOBAL (beyond the local linearisation), computed from the achieved gradient alone,
+    without knowing the optimum. Proved in ``proofs/nonlinear_regret.v`` (the Polyak-Lojasiewicz /
+    strong-convexity bound, control-first): ``2*mu*(J(u) - J*) <= ||grad J(u)||^2``.
+    """
+    return grad_norm_sq / (2.0 * mu)
+
+
+@dataclass(frozen=True)
+class NonlinearRegretCurve:
+    """A strong-convexity bound stays valid globally where a linearised estimate under-states."""
+
+    control: Vector  # action grid u (distance from the optimum at 0)
+    true_regret: Vector  # J(u) - J*
+    pl_bound: Vector  # the self-certifying strong-convexity bound grad^2/(2 mu)
+    linearized_estimate: Vector  # a fixed-Hessian local estimate -- under-states away from optimum
+
+
+def nonlinear_regret_certificate(
+    *, mu: float = 1.0, kappa: float = 0.5, u_max: float = 2.0, points: int = 25
+) -> NonlinearRegretCurve:
+    """On the genuinely nonlinear cost ``J(u) = mu/2 u^2 + kappa u^4`` (minimum at ``u = 0``) the
+    strong-convexity bound ``grad^2/(2 mu)`` upper-bounds the true regret *everywhere* (beyond the
+    linearisation), while the fixed-Hessian local estimate ``mu/2 u^2`` under-states it away from
+    the optimum -- an unsafe certificate exactly where a valid one is needed. Verifies
+    ``proofs/nonlinear_regret.v`` and ``validation/nonlinear_regret.mac`` numerically.
+    """
+    u = np.linspace(0.0, u_max, points)
+    true_regret = mu / 2 * u**2 + kappa * u**4
+    grad = mu * u + 4 * kappa * u**3
+    return NonlinearRegretCurve(u, true_regret, grad**2 / (2 * mu), mu / 2 * u**2)
+
+
 @dataclass(frozen=True)
 class CausalControlCurve:
     """Predictive control plateaus at a confounding floor; causal control reaches the oracle."""

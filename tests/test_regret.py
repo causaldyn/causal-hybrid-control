@@ -13,9 +13,11 @@ from chc.regret import (
     closed_loop_cost,
     dlqr,
     interference_regret_certificate,
+    nonlinear_regret_certificate,
     orthogonal_control_certificate,
     pessimism_variance_certificate,
     regret_scaling,
+    strong_convexity_regret_bound,
 )
 
 A = np.array([[1.0, 0.1], [0.0, 0.95]])
@@ -56,6 +58,17 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_strong_convexity_regret_bound_holds_beyond_linearisation() -> None:
+    # proofs/nonlinear_regret.v: for a mu-strongly-convex cost the self-certifying grad^2/(2 mu)
+    # upper-bounds the true regret globally, while a fixed-Hessian estimate under-states it far out
+    curve = nonlinear_regret_certificate()
+    assert (curve.pl_bound + 1e-9 >= curve.true_regret).all()  # valid GLOBAL upper bound everywhere
+    assert curve.linearized_estimate[-1] < curve.true_regret[-1]  # linearised under-states (unsafe)
+    assert strong_convexity_regret_bound(0.0, mu=1.0) == 0.0  # zero gradient certifies zero regret
+    tight = curve.pl_bound[1] / curve.true_regret[1]  # tight near the optimum (first nonzero point)
+    assert tight < 1.3
 
 
 def test_optimal_pessimism_equals_the_effect_variance() -> None:

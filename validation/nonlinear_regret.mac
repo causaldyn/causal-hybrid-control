@@ -1,0 +1,27 @@
+/* DISCOVERY / derivation: a regret certificate BEYOND the local linearisation (control-first #3).
+   For a mu-strongly-convex control cost the regret has a GLOBAL, self-certifying upper bound
+   grad^2/(2 mu) (Polyak-Lojasiewicz), computed from the achieved gradient without knowing the
+   optimum. Here on a genuinely nonlinear cost J(u) = mu/2 u^2 + kappa u^4 (min at u=0) we show
+   (a) the PL bound holds with a non-negative gap, and (b) the fixed-Hessian LINEARISED estimate
+   mu/2 u^2 UNDER-states the true regret -- unsafe far from the optimum, where the certificate is not.
+   Maxima is the symbolic source of truth; verify before implementing. */
+display2d : false$
+
+/* general PL step (what proofs/nonlinear_regret.v encodes): the strong-convexity slack, scaled by
+   2*mu and completed to a square, is exactly grad^2 - 2*mu*regret >= 0. */
+sc_identity : ratsimp((jp^2 - 2*mu*reg) - (2*mu*(jp*d - mu/2*d^2 - reg) + (jp - mu*d)^2))$
+print("(gen) jp^2 - 2*mu*reg - [2*mu*slack + (jp-mu*d)^2] =", sc_identity, " (=0: the SOS identity)")$
+
+/* nonlinear example: J(u) = mu/2 u^2 + kappa u^4, minimiser u=0, J*=0 */
+J(u)  := mu/2*u^2 + kappa*u^4$
+Jp(u) := diff(J(u), u)$
+true_regret : ratsimp(J(u) - J(0))$                       /* = mu/2 u^2 + kappa u^4 */
+pl_bound    : ratsimp(Jp(u)^2 / (2*mu))$                    /* the self-certifying bound grad^2/(2mu) */
+lin_est     : ratsimp(mu/2 * u^2)$                          /* fixed-Hessian (J''(0)=mu) local estimate */
+
+print("(ex) true regret      =", true_regret)$
+print("(ex) PL bound         =", pl_bound)$
+print("(ex) PL gap = bound - true =", factor(ratsimp(pl_bound - true_regret)),
+      " (>= 0: the certificate is a valid GLOBAL upper bound)")$
+print("(ex) linearised gap = lin_est - true =", ratsimp(lin_est - true_regret),
+      " (< 0 for u!=0: the linearised estimate UNDER-states regret -- unsafe)")$
