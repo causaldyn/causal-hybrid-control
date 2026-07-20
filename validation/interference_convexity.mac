@@ -1,0 +1,33 @@
+/* DISCOVERY / derivation: strong convexity UNDER interference -- combines result #3 (the
+   Polyak-Lojasiewicz self-certifying regret bound) with section A (interference). Marketplace
+   interference is congestion/cannibalisation: the benefit of incentivising saturates (concave
+   benefit), which -- subtracted from a convex effort cost -- ADDS convexity. So the effective
+   strong-convexity of the control objective RISES, mu_eff = mu + kappa_int (kappa_int >= 0 the
+   cannibalisation curvature), and the self-certifying PL bound grad^2/(2 mu_eff) gets TIGHTER, even
+   though section A shows interference makes identification harder. A genuine curse-and-blessing:
+   interference hurts the estimator but helps the control certificate. Maxima is the source of truth. */
+display2d : false$
+
+/* net-value control objective: effort cost minus a benefit that saturates by cannibalisation */
+benefit(u) := a*u - (kappa_int/2)*u^2$          /* linear response minus congestion/cannibalisation */
+J(u)       := (mu/2)*u^2 - benefit(u)$           /* minimise J = maximise net value */
+Jexp : ratsimp(J(u))$
+print("J(u) =", Jexp)$
+
+/* the effective strong-convexity is the second derivative */
+mu_eff : diff(J(u), u, 2)$
+print("mu_eff = J''(u) =", mu_eff, "  = mu + kappa_int  (interference ADDS convexity, kappa_int>=0)")$
+
+/* PL self-certifying bound grad^2/(2 mu_eff); tight for this quadratic (equals the true regret) */
+ustar : rhs(solve(diff(J(u), u) = 0, u)[1])$
+grad(u) := diff(J(u), u)$
+true_regret : ratsimp(J(u) - subst(u = ustar, J(u)))$
+pl_bound    : ratsimp(grad(u)^2 / (2*mu_eff))$
+print("PL bound grad^2/(2*mu_eff) - true regret =", ratsimp(pl_bound - true_regret),
+      "  (= 0: the bound is exact/tight for the quadratic objective)")$
+
+/* the interference-blind bound uses mu (ignores cannibalisation); it is looser by the ratio */
+blind_bound : ratsimp(grad(u)^2 / (2*mu))$
+print("interference-blind / interference-aware bound ratio =",
+      ratsimp(blind_bound / pl_bound), " = (mu+kappa_int)/mu >= 1  (blind bound is LOOSER)")$
+print("=> cannibalising interference TIGHTENS the self-certifying PL regret certificate")$

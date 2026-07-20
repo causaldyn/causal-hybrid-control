@@ -234,6 +234,43 @@ def pessimism_variance_certificate(
 
 
 @dataclass(frozen=True)
+class InterferenceConvexityCurve:
+    """Cannibalising interference raises the convexity, so the self-certifying PL bound tightens."""
+
+    cannibalisation: Vector  # kappa_int grid (interference / congestion curvature)
+    mu_eff: Vector  # effective strong-convexity mu + kappa_int
+    aware_bound: Vector  # interference-aware PL bound grad^2/(2*mu_eff) -- exact for the quadratic
+    blind_bound: Vector  # interference-blind PL bound grad^2/(2*mu) -- over-states, loose
+    true_regret: Vector  # actual J(u) - J*
+
+
+def interference_convexity_certificate(
+    *,
+    mu: float = 1.0,
+    a: float = 1.0,
+    u_eval: float = 1.5,
+    cannibalisations: Sequence[float] = (0.0, 0.5, 1.0, 2.0, 4.0),
+) -> InterferenceConvexityCurve:
+    """Strong convexity under interference (combines the PL bound of ``nonlinear_regret`` with the
+    interference of §A; derived in ``validation/interference_convexity.mac``, proved in
+    ``proofs/interference_convexity.v``). Marketplace interference cannibalises: the benefit of
+    incentivising saturates, adding convexity, so the effective strong-convexity rises to
+    ``mu + kappa_int``. Since the PL self-certifying bound ``grad^2/(2 mu)`` is antitone in the
+    convexity, cannibalising interference makes the certificate **tighter** -- a curse-and-blessing
+    duality (interference hurts identification but helps the control certificate). The
+    interference-aware bound (using ``mu + kappa_int``) is exact for the quadratic; the blind one
+    (using ``mu``) over-states the regret by the growing ratio ``(mu + kappa_int)/mu``.
+    """
+    k = np.asarray(cannibalisations, dtype=np.float64)
+    mu_eff = mu + k
+    d = u_eval - a / mu_eff  # deviation of the fixed action from the (interference-shifted) optimum
+    grad = mu_eff * d
+    aware = grad**2 / (2 * mu_eff)  # interference-aware bound (exact for the quadratic)
+    blind = grad**2 / (2 * mu)  # interference-blind bound (over-states, loosens with kappa)
+    return InterferenceConvexityCurve(k, mu_eff, aware, blind, 0.5 * mu_eff * d**2)
+
+
+@dataclass(frozen=True)
 class InterferenceOrthogonalCurve:
     """Under interference you must debias BOTH channels: a half measure stays O(eps^2)."""
 

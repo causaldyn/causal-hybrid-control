@@ -13,6 +13,7 @@ from chc.regret import (
     closed_loop_cost,
     dlqr,
     dynamic_causal_regret_certificate,
+    interference_convexity_certificate,
     interference_orthogonal_certificate,
     interference_regret_certificate,
     nonlinear_regret_certificate,
@@ -60,6 +61,19 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_interference_tightens_the_self_certifying_bound() -> None:
+    # strong convexity under interference (proofs/interference_convexity.v): cannibalisation raises
+    # the effective convexity mu_eff = mu + kappa, and the PL bound is antitone in it, so the
+    # interference-aware bound is exact while the blind one over-states (more with kappa)
+    curve = interference_convexity_certificate()
+    assert np.allclose(curve.mu_eff, 1.0 + curve.cannibalisation)  # adds convexity
+    assert np.allclose(curve.aware_bound, curve.true_regret)  # PL bound exact for the quadratic
+    assert (curve.blind_bound + 1e-9 >= curve.true_regret).all()  # blind valid (upper bound)
+    assert (curve.aware_bound <= curve.blind_bound + 1e-9).all()  # aware tighter than blind (Rocq)
+    ratio = curve.blind_bound / curve.aware_bound
+    assert ratio[-1] > ratio[0] + 0.5  # blind over-states more as interference grows
 
 
 def test_interference_forces_double_debiasing() -> None:
