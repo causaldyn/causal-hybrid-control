@@ -13,6 +13,7 @@ from chc.regret import (
     closed_loop_cost,
     dlqr,
     dynamic_causal_regret_certificate,
+    interference_orthogonal_certificate,
     interference_regret_certificate,
     nonlinear_regret_certificate,
     orthogonal_control_certificate,
@@ -59,6 +60,17 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_interference_forces_double_debiasing() -> None:
+    # interference x orthogonality (proofs/interference_orthogonal.v): under spillover you must
+    # orthogonalise BOTH channels -- debiasing only the direct effect leaves the spillover error at
+    # O(eps), so regret stays O(eps^2); only full double-debiasing reaches O(eps^4)
+    curve = interference_orthogonal_certificate()
+    assert 1.7 < curve.plugin_exponent < 2.7  # plug-in both -> O(eps^2)
+    assert 1.7 < curve.half_orthogonal_exponent < 2.7  # orth direct only: spillover dominates
+    assert curve.full_orthogonal_exponent > 3.3  # orth both channels -> O(eps^4)
+    assert curve.full_orthogonal_exponent > curve.half_orthogonal_exponent + 1.0  # the gap
 
 
 def test_confounded_control_regret_grows_with_the_horizon() -> None:

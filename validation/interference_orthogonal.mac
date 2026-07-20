@@ -1,0 +1,28 @@
+/* DISCOVERY / derivation: interference x orthogonality (combines proofs/interference_regret.v and
+   proofs/orthogonal_control.v). Under interference the control-relevant effect is B = b_direct +
+   b_interference (direct + spillover), so the certainty-equivalence regret is quadratic in the TOTAL
+   estimation error (e_id + e_int) (the section-A bound). Double ML makes a channel's error O(eps^2)
+   instead of O(eps). The non-obvious consequence: you must orthogonalise BOTH channels -- debiasing
+   only the direct effect leaves the spillover error at O(eps), which then dominates the regret at
+   O(eps^2); only double orthogonalisation reaches O(eps^4). Maxima is the source of truth. */
+display2d : false$
+
+/* certainty-equivalence regret is quadratic in the total effect error (section-A form) */
+regret(e_id, e_int) := (e_id + e_int)^2$
+
+/* arm 1 -- plug-in both channels: e_id ~ eps, e_int ~ eps */
+a1 : hipow(expand(taylor(regret(eps, eps), eps, 0, 6)), eps)$
+lo1 : lopow(expand(taylor(regret(eps, eps), eps, 0, 6)), eps)$
+print("arm 1  plug-in / plug-in      : leading eps power =", lo1, " -> O(eps^2)")$
+
+/* arm 2 -- orthogonalise the DIRECT channel only: e_id ~ eps^2, e_int ~ eps (spillover still plug-in) */
+lo2 : lopow(expand(taylor(regret(eps^2, eps), eps, 0, 6)), eps)$
+print("arm 2  orth direct / plug-in  : leading eps power =", lo2,
+      " -> STILL O(eps^2): the spillover error dominates")$
+
+/* arm 3 -- orthogonalise BOTH channels: e_id ~ eps^2, e_int ~ eps^2 */
+lo3 : lopow(expand(taylor(regret(eps^2, eps^2), eps, 0, 6)), eps)$
+print("arm 3  orth direct / orth int : leading eps power =", lo3, " -> O(eps^4)")$
+
+/* the domination: for eps in (0,1], the half-orthogonal regret is >= the full-orthogonal one */
+print("(order) eps^4 <= eps^2 for eps in (0,1] : full double-debiasing dominates the half measure")$

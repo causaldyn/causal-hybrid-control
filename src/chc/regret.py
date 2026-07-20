@@ -234,6 +234,90 @@ def pessimism_variance_certificate(
 
 
 @dataclass(frozen=True)
+class InterferenceOrthogonalCurve:
+    """Under interference you must debias BOTH channels: a half measure stays O(eps^2)."""
+
+    errors: Vector  # nuisance-estimation error levels eps
+    plugin_exponent: float  # ~2: plug-in both the direct and the spillover effect
+    half_orthogonal_exponent: float  # ~2: orthogonalise the direct channel only (spillover wins)
+    full_orthogonal_exponent: float  # ~4: orthogonalise both direct and spillover channels
+
+
+def _channel_effect(
+    rng: np.random.Generator,
+    n: int,
+    eps: float,
+    b: float,
+    alpha: float,
+    gamma: float,
+    noise: float,
+    *,
+    orthogonal: bool,
+) -> float:
+    """Estimate one confounded channel's effect; single residualisation is O(eps)-biased in the
+    nuisance error, double residualisation (orthogonal DML) is O(eps^2)-biased.
+    """
+    z = rng.standard_normal(n)
+    u = alpha * z + rng.standard_normal(n)
+    y = b * u + gamma * z + noise * rng.standard_normal(n)
+    m_y = (b * alpha + gamma) * z + eps * z
+    m_u = alpha * z + eps * z
+    u_res = u - m_u
+    if orthogonal:
+        return float(np.dot(u_res, y - m_y) / np.dot(u_res, u_res))
+    return float(np.dot(u_res, y) / np.dot(u_res, u))
+
+
+def interference_orthogonal_certificate(
+    *,
+    b_direct: float = 2.0,
+    b_int: float = 1.5,
+    rr: float = 0.5,
+    target: float = 1.0,
+    errors: Sequence[float] = (0.2, 0.1, 0.05, 0.025, 0.0125),
+    n: int = 300_000,
+    n_seeds: int = 6,
+    alpha: float = 1.0,
+    gamma: float = 1.5,
+    noise: float = 0.05,
+) -> InterferenceOrthogonalCurve:
+    """Interference x orthogonality (combines ``proofs/interference_regret.v`` and
+    ``proofs/orthogonal_control.v``; derived in ``validation/interference_orthogonal.mac``). Under
+    interference the control effect is ``B = b_direct + b_interference`` (direct + spillover), so
+    control regret is quadratic in the total estimation error. Double ML makes a channel's error
+    ``O(eps^2)``. The non-obvious consequence: you must orthogonalise **both** channels -- debiasing
+    only the direct effect leaves the spillover error at ``O(eps)``, which then dominates the regret
+    at ``O(eps^2)``; only double orthogonalisation reaches ``O(eps^4)``. Fits the three slopes
+    (~2, ~2, ~4).
+    """
+    b_total = b_direct + b_int
+
+    def cost(u: float) -> float:
+        return (b_total * u - target) ** 2 + rr * u**2
+
+    opt_cost = cost(target * b_total / (b_total**2 + rr))
+
+    def regret(b_hat: float) -> float:
+        return cost(target * b_hat / (b_hat**2 + rr)) - opt_cost
+
+    err = np.asarray(errors, dtype=np.float64)
+    arms = {"plugin": (False, False), "half": (True, False), "full": (True, True)}
+    slopes: dict[str, float] = {}
+    for name, (orth_d, orth_i) in arms.items():
+        med = np.zeros(err.size)
+        for j, eps in enumerate(err):
+            regs = []
+            for s in range(n_seeds):
+                rng = np.random.default_rng(1000 * s + j)
+                bd = _channel_effect(rng, n, eps, b_direct, alpha, gamma, noise, orthogonal=orth_d)
+                bi = _channel_effect(rng, n, eps, b_int, alpha, gamma, noise, orthogonal=orth_i)
+                regs.append(regret(bd + bi))
+            med[j] = float(np.median(regs))
+        slopes[name] = float(np.polyfit(np.log(err), np.log(np.abs(med)), 1)[0])
+    return InterferenceOrthogonalCurve(err, slopes["plugin"], slopes["half"], slopes["full"])
+
+
+@dataclass(frozen=True)
 class DynamicCausalCurve:
     """Confounded tracking regret grows linearly with the horizon; causal control plateaus."""
 
