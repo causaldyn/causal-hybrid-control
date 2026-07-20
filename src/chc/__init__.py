@@ -103,6 +103,7 @@ from chc.uncertainty import (
     EnsembleResidual,
     EnsembleUncertainty,
     SplitConformal,
+    WassersteinPenalty,
     fit_ensemble,
 )
 
@@ -145,6 +146,7 @@ __all__ = [
     "SupportModel",
     "SyntheticControlResult",
     "TigramiteDiscovery",
+    "WassersteinPenalty",
     "ZeroResidual",
     "__version__",
     "augmented_synthetic_control",

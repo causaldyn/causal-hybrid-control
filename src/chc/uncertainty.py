@@ -8,6 +8,11 @@ on the same offline data, extrapolate apart), and split conformal turns it into 
 a finite-sample coverage guarantee. Both plug into the same penalty channel of
 :func:`chc.support.pessimistic_control` via ``penalty_trajectory(xs, us) -> scalar``, so model
 exploitation is bounded, not merely discouraged.
+
+A third scorer, :class:`WassersteinPenalty`, targets the *deployment-shift* failure mode rather than
+in-distribution epistemic spread: a Wasserstein-1 distributionally-robust margin
+(``radius * Sigma ||d r / d x||``) that keeps control where a small shift of the state distribution
+cannot move the learned dynamics much (plans/20 §B).
 """
 
 from __future__ import annotations
@@ -177,3 +182,36 @@ class SplitConformal(eqx.Module):
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
         """Total calibrated interval width over the visited ``(x, u)`` pairs (a penalty)."""
         return jnp.sum(jax.vmap(self.interval_width)(xs, us))
+
+
+class WassersteinPenalty(eqx.Module):
+    """Wasserstein-1 distributionally-robust penalty on the learned residual (plans/20 §B).
+
+    Where ``SupportModel`` scores *in-distribution* density distance ``D`` and the ensemble scores
+    epistemic *spread* ``U``, this scores robustness to a *distribution shift* of the states.
+    By Kantorovich-Rubinstein W1 duality the worst-case cost over a Wasserstein-1 ball of radius
+    ``radius`` equals the empirical cost plus ``radius`` times the cost's Lipschitz constant
+    (Gao-Kleywegt; Blanchet-Kang-Murthy; Shafieezadeh-Abadeh-Esfahani-Kuhn). The fragile quantity is
+    the *learned* residual ``r`` (the known physics ``f_known`` is trusted, hence excluded), so the
+    penalty is ``radius * Sigma_t ||d r / d x||`` -- a gradient-norm margin that steers control away
+    from states where a small deployment shift moves the learned dynamics a lot. Satisfies the
+    ``PenaltyModel`` protocol, so it drops into the ``lam_unc`` channel of
+    :func:`chc.support.pessimistic_control` unchanged; ``radius`` is the distribution-shift budget.
+    """
+
+    residual: Dynamics
+    radius: float = eqx.field(static=True)
+
+    @classmethod
+    def from_model(cls, model: HybridDynamics, radius: float) -> WassersteinPenalty:
+        """Penalise the learned residual of a hybrid model (``f_known`` is trusted, so excluded)."""
+        return cls(residual=model.residual, radius=radius)
+
+    def local_lipschitz(self, x: Array, u: Array) -> Array:
+        """Local Lipschitz constant of the residual in ``x``: Frobenius norm of ``d r / d x``."""
+        jac = jax.jacobian(lambda z: self.residual(0.0, z, u))(x)
+        return jnp.linalg.norm(jac)  # ||dr/dx||_F; = |grad r| for a scalar residual
+
+    def penalty_trajectory(self, xs: Array, us: Array) -> Array:
+        """W1-DRO margin ``radius * Sigma_t ||d r/d x||`` over the visited ``(x, u)`` pairs."""
+        return self.radius * jnp.sum(jax.vmap(self.local_lipschitz)(xs, us))

@@ -1,0 +1,22 @@
+/* Symbolic confirmation of the scalar W1-DRO worst-case identity behind
+   chc.uncertainty.WassersteinPenalty: for a linear loss c(z) = w*z, the worst case over a
+   Wasserstein-1 ball of radius eps around z0 is  c(z0) + eps*|w| = mean + eps * Lipschitz(c).
+   Since W1(Q, delta_z0) = E_Q|z - z0|, the sup is attained by a point mass at z0 +/- eps. */
+
+assume(eps > 0)$                            /* radius is a positive shift budget */
+c(z) := w * z$
+
+/* the two boundary candidates of the radius-ball around z0 */
+excess_hi : ratsimp(c(z0 + eps) - c(z0))$   /*  =  eps*w  */
+excess_lo : ratsimp(c(z0 - eps) - c(z0))$   /*  = -eps*w  */
+
+lipschitz : abs(diff(c(z), z))$             /*  = |w|, the Lipschitz constant of c */
+
+print("excess at z0 + eps       =", excess_hi)$
+print("excess at z0 - eps       =", excess_lo)$
+print("max excess = eps*|w|     =", ratsimp(eps * lipschitz))$
+print("Lipschitz(c) = |dc/dz|   =", lipschitz)$
+
+/* the boundary excess magnitude equals eps*Lipschitz, so worst_case = mean + eps*Lipschitz */
+identity : is(ratsimp(abs(excess_hi) - eps * lipschitz) = 0)$
+print("|boundary excess| = eps*Lipschitz  holds:", identity)$
