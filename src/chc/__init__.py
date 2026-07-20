@@ -54,6 +54,7 @@ from chc.lqr import (
     linearize_discrete,
     linearized_regret_certificate,
 )
+from chc.matching import MarketplaceMatching, SinkhornResult, marketplace_report, sinkhorn
 from chc.meanfield import MeanFieldControl
 from chc.metrics import overshoot, rise_time, settling_time, steady_state_error
 from chc.mintime import (
@@ -131,6 +132,7 @@ __all__ = [
     "LaggedGraph",
     "LinearDynamics",
     "MLPResidual",
+    "MarketplaceMatching",
     "MeanFieldControl",
     "MeanFieldTransport",
     "NeighbourMessagePassing",
@@ -138,6 +140,7 @@ __all__ = [
     "RLearner",
     "RegretCurve",
     "ScalarMLP",
+    "SinkhornResult",
     "SplitConformal",
     "SupportModel",
     "SyntheticControlResult",
@@ -183,6 +186,7 @@ __all__ = [
     "linearize_discrete",
     "linearized_regret_certificate",
     "local_projection_irf",
+    "marketplace_report",
     "mpc_control",
     "naive_pooled_effect",
     "off_policy_value",
@@ -206,6 +210,7 @@ __all__ = [
     "sensitivity_analysis",
     "sequential_g_formula",
     "settling_time",
+    "sinkhorn",
     "softmax_congestion_equilibrium",
     "solve_poisson_dgm",
     "solve_toeplitz",

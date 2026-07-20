@@ -85,7 +85,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | causal frontier | `did`, `scm`, `estimators`, `causal` | Callaway–Sant'Anna staggered **DiD**; **augmented synthetic control**; **R-learner** CATE; **E-values** beside Cinelli–Hazlett |
 | dynamic effects | `irf`, `toeplitz` | impulse-response / local-projection dynamic effects; Toeplitz / Levinson–Durbin / Gohberg–Semencul operators |
 | structure discovery | `discovery`, `independence`, `network_causal` | lagged-parent discovery; MCI partial-correlation test; network/spillover orthogonal DML |
-| advanced control | `koopman`, `meanfield`, `transport`, `games`, `mintime` | Koopman-LQR; mean-field control; optimal transport; differentiable Stackelberg games; PMP time-optimal bang-bang |
+| advanced control | `koopman`, `meanfield`, `transport`, `matching`, `games`, `mintime` | Koopman-LQR; mean-field control; continuum + discrete **Kantorovich OT** (driver↔rider matching → **dual surge prices**); differentiable Stackelberg games; PMP time-optimal bang-bang |
 | evaluation | `benchmark`, `flagship`, `lalonde`, `metrics` | pricing / inventory / support-shift / **model-uncertainty** oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; real-data **LaLonde** validation; step-response quality metrics |
 | scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka); mesh-free **Deep Galerkin** neural Poisson solver |
 
