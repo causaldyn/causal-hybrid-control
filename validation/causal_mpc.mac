@@ -1,0 +1,37 @@
+/* DISCOVERY / derivation: "predictive control is asymptotically wrong under confounding".
+   The headline of CHC (notebook 01) hardened into a theorem. A controller that optimises the
+   OBSERVATIONAL cost (effect fit from confounded logs) inherits a SYSTEMATIC bias (omitted-variable
+   bias beta) that does NOT vanish with sample size, so its control regret is bounded below by a
+   positive floor. A controller that optimises the INTERVENTIONAL cost (the causal effect) has zero
+   regret. Maxima is the symbolic source of truth; verify before implementing. */
+display2d : false$
+
+/* ---- Part 1: the observational effect carries a fixed omitted-variable bias (population, no n) ---
+   Confounded plant: z confounds -- u = alpha*z + nu,  x' = b*u + gamma*z.  The observational
+   regression slope of x' on u is Cov(x',u)/Var(u); with E[nu]=E[z]=0, nu indep z: */
+Cov_xu : b*(alpha^2*Vz + Vnu) + gamma*alpha*Vz$   /* Cov(x',u) = b*Var(u) + gamma*Cov(z,u) */
+Var_u  : alpha^2*Vz + Vnu$
+b_obs  : ratsimp(Cov_xu / Var_u)$                  /* observational (predictive) effect */
+beta   : ratsimp(b_obs - b)$                       /* the systematic bias = b_obs - b_causal */
+print("Part 1  b_obs =", b_obs)$
+print("Part 1  OVB beta = b_obs - b =", beta, "  (a POPULATION constant: independent of n)")$
+
+/* ---- Part 2: control regret of using an effect estimate bh on the true plant b -----------------
+   static causal control: action u moves x = b*u; cost to reach target xt with effort r. */
+cost(u, bb) := (bb*u - xt)^2 + rr*u^2$
+ustar(bb)  := xt*bb/(bb^2 + rr)$
+regret(bh, b) := ratsimp(cost(ustar(bh), b) - cost(ustar(b), b))$
+
+/* causal control uses bh = b (the interventional effect) -> exactly zero regret */
+print("Part 2  causal regret  = regret(b, b) =", regret(b, b), "  (interventional cost -> oracle)")$
+
+/* predictive control uses bh = b_obs = b + beta -> a positive floor, function of beta only (no n) */
+reg_pred : ratsimp(regret(b + beta_s, b))$          /* beta_s := the fixed bias, abstract */
+print("Part 2  predictive regret = regret(b+beta,b) =", reg_pred)$
+print("Part 2  at beta=0:", ratsimp(subst(beta_s = 0, reg_pred)), "  (no confounding -> no gap)")$
+lead : ratsimp(coeff(expand(taylor(regret(b + beta_s, b), beta_s, 0, 2)), beta_s, 2))$
+print("Part 2  predictive regret ~ C*beta^2, C =", lead, " > 0  (floor grows with confounding, fixed in n)")$
+
+/* ---- Part 3: the separation. Predictive regret is bounded BELOW away from zero; causal is zero. */
+print("Part 3  predictive floor = C*beta^2 > 0 iff beta != 0 (confounding present);")$
+print("        causal regret = 0. Gap does NOT close with more data -- only causal identification closes it.")$

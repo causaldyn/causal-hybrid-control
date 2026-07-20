@@ -182,6 +182,72 @@ def orthogonal_control_certificate(
     )
 
 
+@dataclass(frozen=True)
+class CausalControlCurve:
+    """Predictive control plateaus at a confounding floor; causal control reaches the oracle."""
+
+    sample_sizes: Vector  # swept dataset sizes n
+    predictive_regret: Vector  # median regret of the observational (confounded) controller
+    causal_regret: Vector  # median regret of the interventional (de-confounded) controller
+    predictive_floor: float  # analytic confounding floor (b^2+rr)*(u*(b+beta)-u*(b))^2, fixed in n
+
+
+def causal_vs_predictive_certificate(
+    *,
+    b_true: float = 1.0,
+    alpha: float = 1.0,
+    gamma: float = 1.0,
+    target: float = 1.0,
+    effort: float = 0.5,
+    sample_sizes: Sequence[int] = (500, 2000, 8000, 32000, 128000),
+    n_seeds: int = 8,
+    noise: float = 0.3,
+) -> CausalControlCurve:
+    """Empirical proof that predictive control is asymptotically wrong under confounding, while the
+    causal controller is consistent (the theorem in ``proofs/causal_mpc.v``, derived in
+    ``validation/causal_mpc.mac``; the hardened notebook-01 headline).
+
+    A confounder ``z`` drives both action and outcome (``u = alpha z + noise``,
+    ``y = b_true u + gamma z + noise``). The controller hits ``target`` from its estimate of the
+    control effect ``b``. The **predictive** controller regresses ``y`` on ``u`` (observational, so
+    confounded): as ``n -> inf`` it converges to ``b + beta`` (a fixed omitted-variable bias),
+    and its control regret converges to a positive floor that does **not** vanish. The
+    **causal** controller partials ``z`` out (backdoor), so its estimate converges to ``b_true`` and
+    its regret ``-> 0``. Only causal identification closes the gap.
+    """
+
+    def u_star(b: float) -> float:
+        return target * b / (b**2 + effort)
+
+    def cost(u: float, b: float) -> float:
+        return (b * u - target) ** 2 + effort * u**2
+
+    u_opt = u_star(b_true)
+
+    def regret(b_hat: float) -> float:
+        return cost(u_star(b_hat), b_true) - cost(u_opt, b_true)
+
+    beta = gamma * alpha / (alpha**2 + 1.0)  # population OVB with Var(z)=Var(noise_u)=1
+    floor = regret(b_true + beta)
+
+    sizes = np.asarray(sample_sizes)
+    pred = np.zeros((n_seeds, sizes.size))
+    caus = np.zeros((n_seeds, sizes.size))
+    for s in range(n_seeds):
+        rng = np.random.default_rng(s)
+        for j, n in enumerate(sizes):
+            z = rng.standard_normal(n)
+            u = alpha * z + rng.standard_normal(n)
+            y = b_true * u + gamma * z + noise * rng.standard_normal(n)
+            b_pred = float(np.dot(u, y) / np.dot(u, u))  # observational: confounded
+            zc = z - z.mean()
+            u_res = u - (np.dot(u, zc) / np.dot(zc, zc)) * zc  # partial z out of u (backdoor)
+            y_res = y - (np.dot(y, zc) / np.dot(zc, zc)) * zc
+            b_caus = float(np.dot(u_res, y_res) / np.dot(u_res, u_res))
+            pred[s, j], caus[s, j] = regret(b_pred), regret(b_caus)
+    return CausalControlCurve(sizes, np.median(pred, axis=0), np.median(caus, axis=0), float(floor))
+
+
 def interference_regret_certificate(
     a: Matrix,
     b: Matrix,

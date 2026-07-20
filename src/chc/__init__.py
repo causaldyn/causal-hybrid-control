@@ -84,8 +84,10 @@ from chc.network_causal import (
 )
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.regret import (
+    CausalControlCurve,
     OrthogonalControlCurve,
     RegretCurve,
+    causal_vs_predictive_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
     dlqr,
@@ -127,6 +129,7 @@ __all__ = [
     "IV2SLS",
     "BackdoorOLS",
     "BangBangResult",
+    "CausalControlCurve",
     "CausalEffectEstimator",
     "ConfoundedLinearSystem",
     "ConfoundedNetworkSystem",
@@ -173,6 +176,7 @@ __all__ = [
     "calibrate_predictive",
     "calibrate_shared_state",
     "callaway_santanna",
+    "causal_vs_predictive_certificate",
     "certainty_equivalence_gap",
     "closed_loop_cost",
     "continuous_lqr",

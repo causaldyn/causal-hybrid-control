@@ -8,6 +8,7 @@ import numpy as np
 from chc.dynamics import DampedOscillator
 from chc.lqr import linearize_discrete, linearized_regret_certificate
 from chc.regret import (
+    causal_vs_predictive_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
     dlqr,
@@ -54,6 +55,18 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_predictive_control_is_asymptotically_wrong_under_confounding() -> None:
+    # notebook-01 hardened into a theorem (proofs/causal_mpc.v): the observational (predictive)
+    # controller inherits a systematic omitted-variable bias, so its regret plateaus at a positive
+    # floor that does not vanish with n; the interventional (causal) controller converges to oracle
+    curve = causal_vs_predictive_certificate(n_seeds=6)
+    floor = curve.predictive_floor
+    assert floor > 0.0  # confounding creates a positive control-regret floor
+    assert curve.predictive_regret[-1] > 0.7 * floor  # predictive plateaus at it (never vanishes)
+    assert curve.causal_regret[-1] < 0.1 * floor  # causal regret vanishes toward the oracle
+    assert curve.predictive_regret[-1] > 10 * curve.causal_regret[-1] + 1e-3  # ID closes it
 
 
 def test_orthogonal_control_is_doubly_debiased() -> None:
