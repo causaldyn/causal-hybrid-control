@@ -283,6 +283,83 @@ def information_lower_bound_certificate(
 
 
 @dataclass(frozen=True)
+class OptimalExplorationCurve:
+    """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
+
+    exploration_grid: Vector  # injected exploration variance v
+    total_cost: Vector  # A*v + C*Var(b_hat): explore cost + estimation-driven control regret
+    explore_cost: Vector  # A*v, A = b^2 + rr (the control-cost curvature)
+    estimation_cost: Vector  # C*Var(b_hat) ~ B/v, B = C*sigma^2/n (the Cramer-Rao floor, Result 10)
+    total_cost_confounded: Vector  # same curve when confounding steals signal (B -> B/kappa)
+    vstar_theory: float  # sqrt(B/A): the AM-GM optimum
+    vstar_empirical: float  # argmin of the simulated total cost
+    vstar_confounded_theory: float  # sqrt(B/(kappa*A)) > vstar_theory
+    vstar_confounded_empirical: float  # argmin under confounding (>= the experimental one)
+    floor_theory: float  # 2*sqrt(A*B): the irreducible minimal excess cost
+
+
+def optimal_exploration_certificate(
+    *,
+    b: float = 0.3,
+    rr: float = 0.2,
+    xt: float = 1.0,
+    sigma: float = 1.0,
+    n: int = 30,
+    kappa_conf: float = 0.4,
+    grid_lo: float = 0.02,
+    grid_hi: float = 3.0,
+    n_grid: int = 15,
+    n_seeds: int = 1000,
+) -> OptimalExplorationCurve:
+    """Optimal exploration for causal control -- the actionable DUAL of the Cramer-Rao lower bound
+    (Result 10; derived in ``validation/optimal_exploration.mac``, proved in
+    ``proofs/optimal_exploration.v``). Injecting exploration variance ``v`` buys identifying
+    information (shrinking the estimation floor ``B/v``, ``B=C*sigma^2/n``) but is itself an action
+    error costing ``A*v`` control (``A=b^2+rr``, by completing-the-square). The total excess
+    ``A*v + B/v`` is minimal at ``v* = sqrt(B/A)``, irreducible cost ``2*sqrt(A*B)`` (AM-GM). The
+    optimum is interior -- pure exploitation is never optimal -- and confounding raises ``B``
+    (here via a fraction ``kappa`` of identifying signal), lifting BOTH ``v*`` and the floor. The
+    estimation term is Monte-Carlo; the ``A*v`` term is the proven CE cost of the injected variance.
+    """
+    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
+    a_curv = b**2 + rr
+    grid = np.geomspace(grid_lo, grid_hi, n_grid)
+
+    def estimation_arm(noise: float) -> Vector:
+        est = np.zeros(grid.size)
+        for i, v in enumerate(grid):
+            sq = np.empty(n_seeds)
+            for s in range(n_seeds):
+                rng = np.random.default_rng(7919 * s + int(1e6 * v))
+                u = np.sqrt(v) * rng.standard_normal(n)
+                y = b * u + noise * rng.standard_normal(n)
+                sq[s] = (np.dot(u, y) / np.dot(u, u) - b) ** 2
+            est[i] = coeff * float(np.mean(sq))
+        return est
+
+    est_exp = estimation_arm(sigma)
+    est_conf = estimation_arm(sigma / np.sqrt(kappa_conf))  # less identifying signal <=> more noise
+    explore = a_curv * grid
+    total_exp = explore + est_exp
+    total_conf = explore + est_conf
+    b_floor = coeff * sigma**2 / n
+    vstar = float(np.sqrt(b_floor / a_curv))
+    vstar_conf = float(np.sqrt(b_floor / (kappa_conf * a_curv)))
+    return OptimalExplorationCurve(
+        grid,
+        total_exp,
+        explore,
+        est_exp,
+        total_conf,
+        vstar,
+        float(grid[int(np.argmin(total_exp))]),
+        vstar_conf,
+        float(grid[int(np.argmin(total_conf))]),
+        float(2.0 * np.sqrt(a_curv * b_floor)),
+    )
+
+
+@dataclass(frozen=True)
 class PartialIdControlCurve:
     """Partial-ID control: worst-case regret ~ Delta^2; action sign robust iff Delta < |b|."""
 

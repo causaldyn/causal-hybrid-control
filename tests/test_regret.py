@@ -21,6 +21,7 @@ from chc.regret import (
     interference_orthogonal_certificate,
     interference_regret_certificate,
     nonlinear_regret_certificate,
+    optimal_exploration_certificate,
     orthogonal_control_certificate,
     partial_id_control_certificate,
     pessimism_variance_certificate,
@@ -114,6 +115,23 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_optimal_exploration_balances_control_and_identification() -> None:
+    # explore-exploit (proofs/optimal_exploration.v): excess = A*v + B/v, minimum at v* = sqrt(B/A)
+    # -- interior (pure exploitation never optimal); confounding lifts both v* and the floor. Dual
+    # of Result 10 (B is the CR floor exploration buys down).
+    curve = optimal_exploration_certificate(n_seeds=400)
+    i = int(np.argmin(curve.total_cost))
+    assert 0 < i < curve.exploration_grid.size - 1  # interior optimum, not a boundary
+    nearest = int(np.argmin(np.abs(np.log(curve.exploration_grid) - np.log(curve.vstar_theory))))
+    assert i == nearest  # empirical argmin lands on the grid point closest to v* = sqrt(B/A)
+    assert np.isclose(curve.total_cost.min(), curve.floor_theory, rtol=0.1)  # min ~ 2*sqrt(A*B)
+    assert curve.vstar_confounded_theory > curve.vstar_theory  # confounding demands more exploring
+    assert curve.vstar_confounded_empirical >= curve.vstar_empirical  # ... empirically too
+    assert curve.total_cost_confounded.min() > curve.total_cost.min()  # ... at a higher floor
+    assert (np.diff(curve.explore_cost) > 0).all()  # explore cost A*v rises with v
+    assert (np.diff(curve.estimation_cost) < 0).all()  # estimation floor B/v falls with v
 
 
 def test_finite_horizon_pl_bound_holds_over_the_trajectory() -> None:

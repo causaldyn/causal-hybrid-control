@@ -1,0 +1,48 @@
+/* DISCOVERY / derivation: the OPTIMAL EXPLORATION law for causal control -- the actionable DUAL of the
+   Cramer-Rao lower bound (Result 10). Result 10 says: given identifying action variance V_id, the
+   control-regret floor is C*sigma^2/(n*V_id). But you BUY V_id by injecting exploration variance v into
+   the action -- and exploration itself costs control (it is action error, penalised by certainty-
+   equivalence quadraticity). So there is an OPTIMAL exploration variance balancing the two. This is the
+   explore-exploit tradeoff (design of experiments / bandits) made exact for causal control. Maxima is
+   the source of truth. */
+display2d : false$
+
+/* per-round EXCESS cost as a function of injected exploration variance v >= 0:
+   - direct exploration cost: injecting e ~ N(0,v) is an action error; by completing-the-square (star)
+     its control cost is A*v with A = b^2 + rr (the curvature of the control cost).
+   - estimation-driven control regret: exploration raises identifying variance to (V0 + v), so after n
+     rounds Var(b_hat) = sigma^2/(n*(V0+v)) and the CE control regret is C*Var(b_hat) = B/(V0+v) with
+     B = C*sigma^2/n (C = xt^2*(rr-b^2)^2/(rr+b^2)^3 from causal_mpc.mac). */
+A : b^2 + rr$
+Cc : xt^2*(rr - b^2)^2 / (rr + b^2)^3$
+B : Cc*sigma^2/n$
+g(v) := A*v + B/(V0 + v)$
+print("excess(v) = A*v + B/(V0+v),  A = b^2+rr (explore cost),  B = C*sigma^2/n (estimation floor)")$
+
+/* stationarity: g'(v) = A - B/(V0+v)^2 = 0  =>  (V0+v)^2 = B/A  =>  v* = sqrt(B/A) - V0 */
+gp : diff(g(v), v)$
+vstar : rhs(solve(gp = 0, v)[2])$    /* the positive root */
+print("g'(v) =", gp, "  => optimal exploration v* =", vstar, " (= sqrt(B/A) - V0)")$
+
+/* second-order: g''(v) = 2B/(V0+v)^3 > 0, so v* is the unique interior MINIMUM (convex in v). */
+print("g''(v) =", ratsimp(diff(g(v), v, 2)), " > 0  => convex, v* is the unique minimum")$
+
+/* pure-exploration case V0 = 0 (all identifying variance comes from exploration): the AM-GM law. */
+g0(v) := A*v + B/v$
+vstar0 : sqrt(B/A)$
+floor0 : ratsimp(subst(v = vstar0, g0(v)))$
+print("V0=0:  v* = sqrt(B/A) =", vstar0, "   minimal excess = g(v*) =", floor0, " = 2*sqrt(A*B)")$
+
+/* the KEY sum-of-squares identity used in the Rocq proof (no sqrt needed): with the minimiser
+   characterised by A*vs^2 = B, the excess GAP over the optimum is a clean square. */
+gap : ratsimp( (A*v + (A*vs^2)/v) - (A*vs + (A*vs^2)/vs) )$    /* B replaced by A*vs^2 */
+print("excess(v) - excess(v*) =", gap, "  = A*(v - vs)^2 / v  >= 0   (SOS; proves optimality)")$
+print("check A*(v-vs)^2/v - gap =", ratsimp(A*(v - vs)^2/v - gap), " (0 confirms the identity)")$
+
+/* CONSEQUENCE (ties to Result 10): confounding raises the estimation floor B (less identifying info /
+   an added bias term), so BOTH the optimal exploration v* = sqrt(B/A) and the irreducible cost
+   2*sqrt(A*B) INCREASE monotonically in B. You must explore MORE, and pay MORE irreducibly, to
+   control a confounded plant. */
+print("dv*/dBsym =", diff(sqrt(Bsym/Asym), Bsym), " > 0 ;  d(2*sqrt(Asym*Bsym))/dBsym =",
+      diff(2*sqrt(Asym*Bsym), Bsym), " > 0  => confounding (larger B) raises v* AND the floor")$
+print("floor(B) = 2*sqrt(A*B) = 2*A*v*  (since 2*sqrt(A*B)=2*sqrt(A*A*vs^2)=2*A*vs) -- linear in v*")$
