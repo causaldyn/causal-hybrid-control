@@ -13,6 +13,7 @@ from chc.regret import (
     certainty_equivalence_gap,
     closed_loop_cost,
     dlqr,
+    doubly_robust_control_certificate,
     dynamic_causal_regret_certificate,
     finite_horizon_pl_certificate,
     interference_convexity_certificate,
@@ -63,6 +64,19 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_doubly_robust_control_vanishes_if_either_model_correct() -> None:
+    # DR version of result 0 (proofs/doubly_robust.v): the AIPW control effect's bias is the product
+    # of the outcome and propensity errors, so regret -> 0 if EITHER model is correct (double
+    # robustness), unlike outcome-regression (needs the outcome) or IPW (needs the propensity)
+    curve = doubly_robust_control_certificate(n_seeds=16)
+    assert curve.dr_outcome_ok < 1e-4  # outcome model correct -> AIPW consistent
+    assert curve.dr_propensity_ok < 1e-4  # propensity model correct -> AIPW consistent
+    assert curve.outcome_reg_fails > 0.05  # outcome-regression fails when its model is wrong
+    assert curve.ipw_fails > 0.005  # IPW fails when its model is wrong
+    assert curve.dr_propensity_ok < 0.01 * curve.outcome_reg_fails  # AIPW robust here
+    assert curve.dr_slope > 2.7  # product-quartic (super-quadratic): beyond the single-robust rate
 
 
 def test_online_causal_control_has_log_regret() -> None:

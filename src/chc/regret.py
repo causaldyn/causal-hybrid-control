@@ -234,6 +234,77 @@ def pessimism_variance_certificate(
 
 
 @dataclass(frozen=True)
+class DoublyRobustCurve:
+    """The AIPW control effect is doubly robust: regret vanishes if either model is correct."""
+
+    errors: Vector  # delta grid (both nuisances misspecified by delta together)
+    dr_regret_both: Vector  # AIPW control regret when both nuisances err (~ (delta^2)^2 = delta^4)
+    dr_slope: float  # log-log slope of dr_regret_both (~4: product-quartic)
+    dr_outcome_ok: float  # AIPW regret with the outcome model correct, propensity wrong (-> 0)
+    dr_propensity_ok: float  # AIPW regret with the propensity model correct, outcome wrong (-> 0)
+    outcome_reg_fails: float  # outcome-regression regret when its outcome model is wrong (> 0)
+    ipw_fails: float  # IPW regret when its propensity model is wrong (> 0)
+
+
+def _aipw_effect(
+    rng: np.random.Generator, n: int, theta: float, dmu: float, de: float, kind: str
+) -> float:
+    """Estimate a binary-intervention effect from n samples with outcome error ``dmu`` and
+    propensity error ``de``; ``kind`` is outcome-regression, IPW, or the doubly-robust AIPW.
+    """
+    x = rng.standard_normal(n)
+    e = 1.0 / (1.0 + np.exp(-0.8 * x))  # true propensity
+    d = (rng.random(n) < e).astype(float)
+    mu0 = 0.5 * x
+    mu1 = mu0 + theta  # true outcome means; ATE = theta
+    y = np.where(d > 0.5, mu1, mu0) + 0.3 * rng.standard_normal(n)
+    mu1_hat = mu1 + dmu  # misspecified outcome model
+    e_hat = e + de * (0.5 - e)  # misspecified propensity (shrink toward 0.5; bounded in (0,1))
+    if kind == "outcome":
+        return float(np.mean(mu1_hat - mu0))
+    if kind == "ipw":
+        return float(np.mean(d * y / e_hat - (1.0 - d) * y / (1.0 - e_hat)))
+    aug = d * (y - mu1_hat) / e_hat - (1.0 - d) * (y - mu0) / (1.0 - e_hat)
+    return float(np.mean((mu1_hat - mu0) + aug))  # AIPW / doubly robust
+
+
+def doubly_robust_control_certificate(
+    *,
+    theta: float = 1.0,
+    n: int = 100_000,
+    n_seeds: int = 8,
+    errors: Sequence[float] = (0.4, 0.2, 0.1, 0.05),
+    seed: int = 0,
+) -> DoublyRobustCurve:
+    """The doubly-robust version of result 0 (derived in ``validation/doubly_robust.mac``, proved in
+    ``proofs/doubly_robust.v``). For a binary intervention the AIPW estimator's bias is the PRODUCT
+    of the outcome-model error and the propensity error, ``dmu*de/(e+de)`` -- so the regret is
+    ``O((dmu*de)^2)`` and vanishes if EITHER nuisance model is correct (double robustness), unlike
+    outcome-regression (needs the outcome model) or IPW (needs the propensity model).
+    """
+
+    def regret(dmu: float, de: float, kind: str) -> float:
+        # systematic bias isolated from sampling noise by averaging the signed error over seeds;
+        # control regret = kappa*(bias)^2, kappa = 1
+        biases = [_aipw_effect(np.random.default_rng(1000 * s + 1), n, theta, dmu, de, kind) - theta
+                  for s in range(n_seeds)]
+        return float(np.mean(biases)) ** 2
+
+    err = np.asarray(errors, dtype=np.float64)
+    both = np.array([regret(d, d, "aipw") for d in err])  # both nuisances err by delta
+    slope = float(np.polyfit(np.log(err), np.log(both), 1)[0])
+    return DoublyRobustCurve(
+        err,
+        both,
+        slope,
+        regret(0.0, 0.4, "aipw"),  # outcome correct -> AIPW ~ 0
+        regret(0.4, 0.0, "aipw"),  # propensity correct -> AIPW ~ 0
+        regret(0.4, 0.0, "outcome"),  # outcome model wrong -> outcome-regression fails
+        regret(0.0, 0.4, "ipw"),  # propensity model wrong -> IPW fails
+    )
+
+
+@dataclass(frozen=True)
 class BanditCausalCurve:
     """Online causal control has O(log T) cumulative regret; confounded control has Theta(T)."""
 

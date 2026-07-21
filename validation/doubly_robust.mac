@@ -1,0 +1,25 @@
+/* DISCOVERY / derivation: the DOUBLY-ROBUST version of result 0. For a binary intervention (e.g.
+   "incentivise a zone or not") the AIPW / doubly-robust estimator of the effect has a bias that is
+   the PRODUCT of the outcome-model error dmu and the propensity error de -- so it is exactly zero if
+   EITHER model is correct (double robustness), and the control regret is O((dmu*de)^2). This refines
+   result 0 (which took both nuisances at one rate): the DR bias vanishes if either nuisance is right,
+   and is at most the outcome-regression (single-robust) bias in magnitude. Maxima derives the bias
+   for one covariate stratum (propensity e; outcomes mu_1, mu_0), perturbing the estimates. */
+display2d : false$
+
+/* AIPW moment E[psi] in one stratum: E[psi] = (muh_1 - muh_0)
+   + E[D (Y - muh_1)] / eh  -  E[(1-D)(Y - muh_0)] / (1 - eh)  -  (mu_1 - mu_0).
+   Estimates: muh_1 = mu_1 + dmu (outcome error), muh_0 = mu_0, eh = e + de (propensity error).
+   With P(D=1)=e:  E[D (Y - muh_1)] = e*(mu_1 - muh_1) = -e*dmu ;  E[(1-D)(Y - muh_0)] = 0. */
+Epsi : (mu_1 + dmu - mu_0) + (-e*dmu)/(e + de) - 0 - (mu_1 - mu_0)$
+bias : ratsimp(Epsi)$
+print("AIPW bias E[psi] =", bias, "  = dmu*de/(e+de): the PRODUCT of the two nuisance errors")$
+
+/* double robustness: the bias is exactly zero if EITHER nuisance is correct */
+print("bias at dmu = 0 (outcome model correct)   =", ratsimp(subst(dmu = 0, bias)))$
+print("bias at de  = 0 (propensity model correct) =", ratsimp(subst(de  = 0, bias)))$
+
+/* control regret = kappa * bias^2 = O((dmu*de)^2); the outcome-regression (single-robust) plug-in
+   has bias dmu, so the DR bias is smaller by the factor de/(e+de) in [0,1) */
+print("control regret ~ kappa*bias^2 =", ratsimp(kappa*bias^2), " = O((dmu*de)^2)")$
+print("DR bias / outcome-regression bias = |de/(e+de)| <= 1  (DR never worse; zero if either right)")$
