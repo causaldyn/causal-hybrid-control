@@ -500,6 +500,55 @@ def composition_transfer_certificate(
 
 
 @dataclass(frozen=True)
+class MultivariateTransferCurve:
+    """Transfer theorem in MULTIVARIATE LQ: effect-matrix error delta^p -> LQ regret delta^(2p)."""
+
+    deltas: Vector  # effect-matrix (input matrix B) error scale delta
+    regret_order1: Vector  # LQ regret with ||dB|| ~ delta^1 (plug-in): ~ delta^2
+    regret_order2: Vector  # LQ regret with ||dB|| ~ delta^2 (orthogonal/DML): ~ delta^4
+    slope_order1: float  # log-log slope of regret_order1 vs delta (~2)
+    slope_order2: float  # log-log slope of regret_order2 vs delta (~4)
+
+
+def multivariate_transfer_certificate(
+    *,
+    delta_lo: float = 0.005,
+    delta_hi: float = 0.1,
+    n_delta: int = 10,
+) -> MultivariateTransferCurve:
+    """The transfer theorem (Result 18 / Contribution 1) in the MULTIVARIATE, DYNAMIC LQ setting --
+    addressing the "needs multivariate/dynamic" gap. On a stable 2-state/1-input LQ plant the exact
+    certainty-equivalence regret (Dean-Mania-Tu-Recht-Matni gap, ``certainty_equivalence_gap``) is
+    quadratic in the effect-matrix (input matrix ``B``) error; composing an order-``p`` estimator
+    (``||dB|| ~ delta^p``) gives regret ``~ delta^(2p)`` -- the SAME order-doubling as scalar
+    Result 18, now for matrices. Rocq core shared (``regret_order_2p`` is abstract in the error).
+    """
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
+    b_mat = np.array([[0.5], [1.0]])
+    q_mat = np.eye(2)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5])
+    db_dir = np.array([[1.0], [-0.5]])
+    db_dir = db_dir / np.linalg.norm(db_dir)  # unit-norm effect-matrix perturbation direction
+    ds = np.geomspace(delta_lo, delta_hi, n_delta)
+    reg1 = np.array(
+        [
+            certainty_equivalence_gap(a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d * db_dir, x0)
+            for d in ds
+        ]
+    )
+    reg2 = np.array(
+        [
+            certainty_equivalence_gap(a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * db_dir, x0)
+            for d in ds
+        ]
+    )
+    slope1 = float(np.polyfit(np.log(ds), np.log(reg1), 1)[0])
+    slope2 = float(np.polyfit(np.log(ds), np.log(reg2), 1)[0])
+    return MultivariateTransferCurve(ds, reg1, reg2, slope1, slope2)
+
+
+@dataclass(frozen=True)
 class MultiChannelControlCurve:
     """Debias EVERY interference channel: regret order set by the least-orthogonalised one."""
 

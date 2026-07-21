@@ -28,6 +28,7 @@ from chc.regret import (
     interference_orthogonal_certificate,
     interference_regret_certificate,
     multichannel_control_certificate,
+    multivariate_transfer_certificate,
     nonlinear_regret_certificate,
     optimal_exploration_certificate,
     orthogonal_control_certificate,
@@ -151,6 +152,19 @@ def test_multichannel_control_needs_every_channel_orthogonalised() -> None:
     assert curve.full_slope > 3.0  # full-orth: both channels debiased -> ~O(delta^4)
     assert curve.full_slope > curve.half_slope + 1.0  # orthogonalising every channel lifts order
     assert -0.75 < curve.cluster_se_slope < -0.35  # estimate concentrates at ~1/sqrt(G) (cluster n)
+
+
+def test_transfer_theorem_holds_in_multivariate_lq() -> None:
+    # Contribution 1, multivariate (shares proofs/composition_transfer.v, error-agnostic): on a
+    # 2-state/1-input LQ plant the exact Dean et al. certainty-equivalence gap is quadratic in the
+    # effect-matrix error, so an order-p estimator (||dB||~delta^p) gives LQ regret ~ delta^(2p) --
+    # the same order-doubling as the scalar transfer, now for matrices.
+    curve = multivariate_transfer_certificate()
+    assert np.isclose(curve.slope_order1, 2.0, atol=0.2)  # ||dB|| ~ delta -> LQ regret ~ delta^2
+    assert np.isclose(curve.slope_order2, 4.0, atol=0.3)  # ||dB|| ~ delta^2 -> LQ regret ~ delta^4
+    assert (
+        curve.slope_order2 > curve.slope_order1 + 1.5
+    )  # order doubling in the multivariate setting
 
 
 def test_control_map_doubles_the_estimator_order() -> None:
