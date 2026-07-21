@@ -234,6 +234,68 @@ def pessimism_variance_certificate(
 
 
 @dataclass(frozen=True)
+class BanditCausalCurve:
+    """Online causal control has O(log T) cumulative regret; confounded control has Theta(T)."""
+
+    rounds: Vector  # cumulative-horizon checkpoints T
+    deconfounded_regret: Vector  # cumulative online regret, de-confounded estimator (~ log T)
+    confounded_regret: Vector  # cumulative online regret, confounded estimator (~ linear T)
+    deconfounded_doubling: float  # cum(T)/cum(T/2) for de-confounded (-> 1: sublinear)
+    confounded_doubling: float  # cum(T)/cum(T/2) for confounded (-> 2: linear)
+
+
+def bandit_causal_certificate(
+    *,
+    b_true: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    alpha: float = 1.0,
+    gamma: float = 1.0,
+    noise: float = 0.5,
+    n_rounds: int = 1500,
+    n_seeds: int = 12,
+    ridge: float = 1e-3,
+) -> BanditCausalCurve:
+    """The bandit / adaptive-control version (derived in ``validation/bandit_causal.mac``, proved in
+    ``proofs/bandit_causal.v``): learn the causal effect ONLINE while controlling. Per round the
+    control regret is the certainty-equivalence coefficient ``C`` times the squared estimation err.
+    A **de-confounded** online estimator (backdoor on ``z``) is consistent, ``err^2 ~ sigma^2/t``,
+    so cumulative regret grows like ``log T`` (sublinear); a **confounded** one has err^2 -> beta^2
+    (systematic), a per-round floor, so cumulative regret is linear in ``T``. The doubling
+    ratio ``cum(T)/cum(T/2)`` separates them: ``-> 1`` (log) vs ``-> 2`` (linear).
+    """
+    coeff = xt**2 * (rr - b_true**2) ** 2 / (rr + b_true**2) ** 3  # per-round regret / error^2
+    half = n_rounds // 2  # last two checkpoints are T/2 and T, an exact horizon doubling
+    grid = np.geomspace(20, half, 10).astype(int)
+    checkpoints = np.unique(np.concatenate([grid, [half, n_rounds]]))
+    deconf = np.zeros((n_seeds, checkpoints.size))
+    conf = np.zeros((n_seeds, checkpoints.size))
+    for s in range(n_seeds):
+        rng = np.random.default_rng(s)
+        gram = ridge * np.eye(3)  # running Gram of features [1, u, z]
+        xy = np.zeros(3)  # running [1,u,z] . y
+        cum_d, cum_c, j = 0.0, 0.0, 0
+        for t in range(1, n_rounds + 1):
+            z = rng.standard_normal()
+            u = alpha * z + rng.standard_normal()  # confounded excitation
+            y = b_true * u + gamma * z + noise * rng.standard_normal()
+            feat = np.array([1.0, u, z])
+            gram += np.outer(feat, feat)
+            xy += feat * y
+            b_deconf = np.linalg.solve(gram, xy)[1]  # controls z (backdoor): consistent
+            b_conf = np.linalg.solve(gram[:2, :2], xy[:2])[1]  # ignores z: confounded
+            cum_d += coeff * (b_deconf - b_true) ** 2
+            cum_c += coeff * (b_conf - b_true) ** 2
+            if j < checkpoints.size and t == checkpoints[j]:
+                deconf[s, j], conf[s, j] = cum_d, cum_c
+                j += 1
+    d_med, c_med = np.median(deconf, axis=0), np.median(conf, axis=0)
+    d_double = float(d_med[-1] / d_med[-2])
+    c_double = float(c_med[-1] / c_med[-2])
+    return BanditCausalCurve(checkpoints.astype(float), d_med, c_med, d_double, c_double)
+
+
+@dataclass(frozen=True)
 class FiniteHorizonPLCurve:
     """PL self-certifying bound valid over a full finite horizon at mu = lambda_min(Hessian)."""
 

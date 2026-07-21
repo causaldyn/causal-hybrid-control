@@ -1,0 +1,30 @@
+/* DISCOVERY / derivation: the BANDIT / adaptive-control version -- regret over T rounds when the
+   causal effect is LEARNED ONLINE while controlling. At round t the controller acts u*(b_hat_t) from
+   its current estimate; the per-round control regret is the certainty-equivalence coefficient C
+   (from causal_mpc.mac) times the squared estimation error. A de-confounded online estimator is
+   consistent, err^2 ~ sigma^2/t, so cumulative regret ~ C*sigma^2 * H_T ~ C*sigma^2 * log(T)
+   (SUBLINEAR); a confounded one has err^2 -> beta^2 (systematic), so cumulative regret ~ C*beta^2 * T
+   (LINEAR). Online causal control has O(log T) regret; online confounded control has Theta(T).
+   Maxima is the source of truth. */
+display2d : false$
+
+/* per-round regret coefficient C = xt^2 (rr - b^2)^2 / (rr + b^2)^3 (the causal_mpc floor coeff) */
+C : xt^2*(rr - b^2)^2 / (rr + b^2)^3$
+print("C (per-round regret / error^2) =", C)$
+
+/* de-confounded online estimator: consistent, squared error ~ sigma^2 / t */
+per_round_deconf(t) := C * sigma2 / t$
+cum_deconf(T) := C * sigma2 * sum(1/t, t, 1, T)$        /* harmonic partial sum H_T */
+print("per-round (deconf) =", per_round_deconf(t), "  -> 0 as t -> inf")$
+print("cumulative (deconf) = C*sigma2 * H_T ; H_T asymptotics:",
+      "sum(1/t,1,T) ~ log(T) + gamma  =>  cumulative ~ C*sigma2*log(T)  (SUBLINEAR)")$
+
+/* confounded online estimator: biased, squared error -> beta^2 (systematic, fixed in t) */
+per_round_conf   : C * beta2$
+cum_conf(T) := C * beta2 * T$
+print("per-round (conf)   =", per_round_conf, "  = C*beta^2 > 0 (floor, does not vanish)")$
+print("cumulative (conf)  =", cum_conf(T), "  = C*beta2*T  (LINEAR)")$
+
+/* the separation: de-confounded per-round eventually falls below the confounded floor */
+print("deconf per-round < conf floor  <=>  sigma2/t < beta2  <=>  t > sigma2/beta2")$
+print("=> cumulative ratio conf/deconf ~ (beta2*T)/(sigma2*log T) -> inf : identification pays off")$

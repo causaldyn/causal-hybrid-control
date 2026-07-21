@@ -84,6 +84,7 @@ from chc.network_causal import (
 )
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.regret import (
+    BanditCausalCurve,
     CausalControlCurve,
     DynamicCausalCurve,
     FiniteHorizonPLCurve,
@@ -93,6 +94,7 @@ from chc.regret import (
     OrthogonalControlCurve,
     PessimismCurve,
     RegretCurve,
+    bandit_causal_certificate,
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
@@ -141,6 +143,7 @@ __version__ = "0.1.0"
 __all__ = [
     "IV2SLS",
     "BackdoorOLS",
+    "BanditCausalCurve",
     "BangBangResult",
     "CausalControlCurve",
     "CausalEffectEstimator",
@@ -189,6 +192,7 @@ __all__ = [
     "ZeroResidual",
     "__version__",
     "augmented_synthetic_control",
+    "bandit_causal_certificate",
     "bang_bang_control",
     "bang_bang_rollout",
     "calibrate_naive_causal",

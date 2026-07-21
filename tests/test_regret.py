@@ -8,6 +8,7 @@ import numpy as np
 from chc.dynamics import DampedOscillator
 from chc.lqr import linearize_discrete, linearized_regret_certificate
 from chc.regret import (
+    bandit_causal_certificate,
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
@@ -62,6 +63,16 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_online_causal_control_has_log_regret() -> None:
+    # bandit / adaptive (proofs/bandit_causal.v): learning the effect online, de-confounded control
+    # has O(log T) cumulative regret (doubling cum(T)/cum(T/2) -> 1); confounded has Theta(T) (-> 2)
+    curve = bandit_causal_certificate()
+    assert curve.deconfounded_doubling < 1.4  # sublinear (log T)
+    assert curve.confounded_doubling > 1.7  # linear (Theta T)
+    assert curve.confounded_regret[-1] > 10 * curve.deconfounded_regret[-1]  # confounded explodes
+    assert (np.diff(curve.deconfounded_regret) >= -1e-9).all()  # cumulative regret nondecreasing
 
 
 def test_finite_horizon_pl_bound_holds_over_the_trajectory() -> None:
