@@ -847,6 +847,7 @@ def adaptive_exploration_certificate(
     xt: float = 1.0,
     sigma: float = 0.5,
     m0: float = 1.0,
+    eta: float = 1.0,
     static_v: float = 0.05,
     horizons: Sequence[int] = (50, 150, 500, 1500, 5000),
     schedule_horizon: int = 400,
@@ -854,24 +855,29 @@ def adaptive_exploration_certificate(
     """CONTRIBUTION 3 -- ADAPTIVE information-exploration duality (derived in
     ``validation/adaptive_exploration.mac``, proved in ``proofs/adaptive_exploration.v``). At round
     ``t`` the controller injects ``v_t`` that raises accumulated Fisher information
-    ``m_t = m0 + sum_{s<t} v_s`` for FUTURE rounds; the per-round regret is ``A*v_t + C/m_t``, where
-    ``C/m_t`` is the van-Trees (Bayesian Cramer-Rao) floor -- valid for adaptive data, unlike
-    ordinary Cramer-Rao (its algebraic core is proved in ``proofs/van_trees.v``). The RATE-OPTIMAL
-    schedule ``v_t = kappa/sqrt(t)`` achieves cumulative regret ``Theta(sqrt(T))``, matching the
-    ``Theta(sqrt(T))`` lower bound on this objective ``>= 2*sqrt(A*C*T) - A*m0`` -- a SEQUENCE
-    inequality (Rocq ``reduced_objective_lower_bound``), NOT a corollary of the per-round floor.
-    Greedy is ``Theta(T)``; the static ``v*`` of Result 11 over-explores (``~ T``). SCOPE: the
-    ``t^{-1/2}`` schedule, the ``sqrt(T)`` rate and van-Trees ``sqrt(T)`` adaptive-LQR lower bounds
-    are all KNOWN (Ziemann-Sandberg; Wagenmaker et al.); a confounding-specific minimax constant
-    would be the only novelty and is not proved. The myopic ``max(0, sqrt(K/A)-m_t)`` rule is a
-    DIFFERENT (one-shot) object.
+    ``m_t = m0 + eta*sum_{s<t} v_s`` for FUTURE rounds, where ``eta`` in (0,1] is the identifying
+    information PER UNIT exploration (``eta=1`` identified, ``eta->0`` confounded). The per-round
+    regret is ``A*v_t + C/m_t``, ``C/m_t`` the van-Trees (Bayesian Cramer-Rao) floor -- valid for
+    adaptive data, unlike ordinary Cramer-Rao (algebraic core in ``proofs/van_trees.v``). The
+    RATE-OPTIMAL schedule ``v_t = kappa/sqrt(t)`` achieves ``Theta(sqrt(T))``, matching the
+    ``Theta(sqrt(T))`` sequence lower bound ``>= 2*sqrt(A*C*T/eta) - A*m0/eta`` (Rocq
+    ``reduced_objective_lower_bound`` with ``a=A/eta``), NOT a corollary of the per-round floor.
+    The leading term scales as ``1/sqrt(eta)``: confounding (smaller ``eta``) provably raises the
+    floor (Rocq ``confounding_raises_sequence_floor``) -- this ``1/sqrt(eta)`` IS a
+    confounding-specific constant, the causal content the generic bound lacked. Greedy is
+    ``Theta(T)``; the static ``v*`` of Result 11 over-explores. SCOPE: the ``t^{-1/2}`` schedule,
+    ``sqrt(T)`` rate and van-Trees ``sqrt(T)`` lower bounds are KNOWN in adaptive LQR
+    (Ziemann-Sandberg; Wagenmaker et al.); the FULL minimax-optimal causal constant with a matching
+    policy is still open. Conditions: ``m0=O(1)``; exploitation adds no identifying information;
+    exploration information is linear in ``v_t`` (else greedy need not be ``Theta(T)``). The myopic
+    ``max(0, sqrt(K/A)-m_t)`` rule is a DIFFERENT (one-shot) object.
     """
     a_curv = b * b + rr
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
-    kappa = np.sqrt(coeff / a_curv)  # tapering scale: v_t = kappa / sqrt(t), total ~ sqrt(T)
+    kappa = np.sqrt(coeff / (a_curv * eta))  # tapering scale (eta-aware): v_t = kappa / sqrt(t)
 
     def cumulative(horizon: int, sched: np.ndarray) -> float:
-        m = m0 + np.concatenate([[0.0], np.cumsum(sched)[:-1]])  # info BEFORE round t
+        m = m0 + eta * np.concatenate([[0.0], np.cumsum(sched)[:-1]])  # info BEFORE round t
         return float(np.sum(a_curv * sched + coeff / m))
 
     hs = np.asarray(horizons, dtype=np.float64)
@@ -883,7 +889,7 @@ def adaptive_exploration_certificate(
         adaptive[i] = cumulative(horizon, kappa / np.sqrt(t))
         greedy[i] = cumulative(horizon, np.zeros(horizon))
         static[i] = cumulative(horizon, np.full(horizon, static_v))
-    lb = 2.0 * np.sqrt(a_curv * coeff * hs)
+    lb = 2.0 * np.sqrt(a_curv * coeff * hs / eta)  # 2*sqrt(A*C*T/eta): 1/sqrt(eta) causal factor
     adaptive_slope = float(np.polyfit(np.log(hs), np.log(adaptive), 1)[0])
     greedy_slope = float(np.polyfit(np.log(hs), np.log(greedy), 1)[0])
     sched = kappa / np.sqrt(np.arange(1, schedule_horizon + 1, dtype=np.float64))

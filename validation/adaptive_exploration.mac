@@ -44,6 +44,16 @@ print("sequence AM-GM SOS check: A*x + K*T/x - 2*s - A*(x-s/A)^2/x =", gAMGM,
       " (0 confirms reduced g(x) >= 2*sqrt(A*K*T); Rocq: reduced_objective_lower_bound)")$
 print("=> sequential regret >= 2*sqrt(A*K*T) - A*m0 = Theta(sqrt(T)), matched by v_t = kappa/sqrt(t)")$
 
+/* CONFOUNDING-SPECIFIC constant (eta): identifying info per unit exploration is eta in (0,1] (eta=1 fully
+   identified, eta->0 confounded), so m_t = I0 + eta*sum_{s<t}v_s <= I0 + eta*M. The reduction with
+   a := A/eta gives sum[A*v_t + K/m_t] >= (A/eta)*x + K*T/x - (A/eta)*I0 for x = I0+eta*M, i.e. the floor
+   2*sqrt(A*K*T/eta) - A*I0/eta. The LEADING term scales as 1/sqrt(eta): confounding (small eta) raises it
+   (Rocq: confounding_raises_sequence_floor). This IS the confounding-specific constant. SOS check
+   sqrt-free with se^2 = (A/eta)*K*T, i.e. K*T = se^2*eta/A. */
+gEta : ratsimp( (A/eta)*x + (se^2*eta/A)/x - 2*se - (A/eta)*(x - eta*se/A)^2/x )$
+print("eta-scaled SOS check =", gEta,
+      " (0 confirms floor 2*sqrt(A*K*T/eta) - A*I0/eta; the 1/sqrt(eta) factor = confounding constant)")$
+
 /* van Trees floor is ANTITONE in accumulated info: more exploration so far => lower estimation floor. */
 print("van-Trees floor K/(m0 + I) is antitone in accumulated info I (Rocq: van_trees_floor_antitone)")$
 
