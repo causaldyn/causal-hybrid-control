@@ -31,6 +31,7 @@ from chc.regret import (
     pessimism_variance_certificate,
     regret_scaling,
     strong_convexity_regret_bound,
+    transportability_regret_certificate,
 )
 
 A = np.array([[1.0, 0.1], [0.0, 0.95]])
@@ -119,6 +120,18 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_transportability_regret_is_quadratic_in_wasserstein_distance() -> None:
+    # transportability (proofs/transportability_regret.v): a source-optimal controller deployed on a
+    # target has ZERO regret if the effect is recoverable (transportable), else a residual quadratic
+    # in W1(P,P'); a W-DRO radius covers it. Connects to chc.uncertainty.WassersteinPenalty.
+    curve = transportability_regret_certificate()
+    assert (curve.transportable_regret == 0).all()  # transportability => zero regret, any distance
+    assert np.isclose(curve.nontransport_slope, 2.0)  # CE-quadratic regret ~ W1^2
+    assert 1.7 < curve.exact_slope < 2.4  # the simulated cost-gap is also quadratic in W1
+    assert (curve.nontransport_regret <= curve.wdro_bound + 1e-12).all()  # W-DRO covers d<=eps
+    assert (np.diff(curve.nontransport_regret) > 0).all()  # regret grows with the domain shift
 
 
 def test_regret_band_holds_with_high_probability() -> None:

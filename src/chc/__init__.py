@@ -102,6 +102,7 @@ from chc.regret import (
     PartialIdControlCurve,
     PessimismCurve,
     RegretCurve,
+    TransportabilityCurve,
     bandit_causal_certificate,
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
@@ -125,6 +126,7 @@ from chc.regret import (
     pessimism_variance_certificate,
     regret_scaling,
     strong_convexity_regret_bound,
+    transportability_regret_certificate,
 )
 from chc.residual import GraphResidual, KANResidual, MLPResidual, ZeroResidual
 from chc.scm import SyntheticControlResult, augmented_synthetic_control, synthetic_control
@@ -212,6 +214,7 @@ __all__ = [
     "SupportModel",
     "SyntheticControlResult",
     "TigramiteDiscovery",
+    "TransportabilityCurve",
     "WassersteinPenalty",
     "ZeroResidual",
     "__version__",
@@ -320,5 +323,6 @@ __all__ = [
     "total_cost",
     "total_cost_diffrax",
     "transport_step",
+    "transportability_regret_certificate",
     "twoway_fixed_effects_att",
 ]

@@ -334,6 +334,65 @@ def highprob_regret_certificate(
 
 
 @dataclass(frozen=True)
+class TransportabilityCurve:
+    """Deployment regret = transportable part (zero) + W1 residual (quadratic in W1)."""
+
+    w1_distances: Vector  # W1(P, P') distance between source and target domains
+    transportable_regret: Vector  # regret when the effect is recoverable on target (b_tgt = b_src)
+    nontransport_regret: Vector  # CE-quadratic regret C*Lip^2*d^2 when b_tgt = b_src + Lip*d
+    exact_regret: Vector  # the simulated cost-gap (cross-checks the quadratic-in-W1 scaling)
+    wdro_bound: float  # C*Lip^2*eps^2 for the W-DRO radius eps: covers all d <= eps
+    nontransport_slope: float  # log-log slope of the CE-quadratic regret vs W1 (= 2)
+    exact_slope: float  # log-log slope of the simulated regret vs W1 (~ 2)
+
+
+def transportability_regret_certificate(
+    *,
+    b_src: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    lip: float = 1.0,
+    d_lo: float = 0.005,
+    d_hi: float = 0.15,
+    n_d: int = 12,
+    wdro_radius: float = 0.15,
+) -> TransportabilityCurve:
+    """Transportability regret -- a controller trained on source domain P, deployed on target P'
+    (Bareinboim, Causal AI, Ch 9). Derived in ``validation/transportability_regret.mac``, proved in
+    ``proofs/transportability_regret.v``. Deployment regret ``C*(b_src-b_tgt)^2`` splits into: (A) a
+    TRANSPORTABLE part -- if the effect is recoverable on target (``b_tgt=b_src``) regret is ZERO at
+    ANY distributional distance; (B) a non-transportable residual ``C*Lip^2*d^2`` when the effect
+    shifts Lipschitz in ``d = W1(P,P')`` -- quadratic in the W1 distance that
+    ``chc.uncertainty.WassersteinPenalty`` penalises; (C) a W-DRO controller for radius ``eps``
+    covers the realized regret when ``d <= eps``. The robust radius is a transportability budget.
+    """
+    coeff = xt**2 * (rr - b_src**2) ** 2 / (rr + b_src**2) ** 3
+    ds = np.geomspace(d_lo, d_hi, n_d)
+    transportable = np.zeros(n_d)  # b_tgt = b_src: recoverable, zero regret at any distance
+    nontransport = coeff * lip**2 * ds**2  # b_tgt = b_src + Lip*d: CE-quadratic regret
+
+    def exact(b_tgt: float) -> float:
+        u_src = b_src * xt / (b_src**2 + rr)  # source-optimal control
+        u_tgt = b_tgt * xt / (b_tgt**2 + rr)  # target-optimal control
+        c_src = (b_tgt * u_src - xt) ** 2 + rr * u_src**2  # deploy source control on target
+        c_tgt = (b_tgt * u_tgt - xt) ** 2 + rr * u_tgt**2  # target-optimal cost
+        return c_src - c_tgt
+
+    exact_reg = np.array([exact(b_src + lip * d) for d in ds])
+    slope = float(np.polyfit(np.log(ds), np.log(nontransport), 1)[0])
+    exact_slope = float(np.polyfit(np.log(ds), np.log(exact_reg), 1)[0])
+    return TransportabilityCurve(
+        ds,
+        transportable,
+        nontransport,
+        exact_reg,
+        float(coeff * lip**2 * wdro_radius**2),
+        slope,
+        exact_slope,
+    )
+
+
+@dataclass(frozen=True)
 class OptimalExplorationCurve:
     """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
 

@@ -1,0 +1,35 @@
+/* DISCOVERY / derivation: a TRANSPORTABILITY regret bound for causal control -- controller trained on a
+   source domain P, deployed on a target P' (Bareinboim, "Causal AI", Ch 9: transportability). The
+   decision-relevant question: how much regret does a source-optimal controller incur on the target? It
+   splits into a TRANSPORTABLE part (if the causal effect is recoverable on the target, regret = 0 no
+   matter the distributional distance) and a NON-transportable residual bounded by the Wasserstein-1
+   distance W1(P,P') via Kantorovich-Rubinstein duality -- the exact object chc.WassersteinPenalty
+   penalises. Maxima is the source of truth. */
+display2d : false$
+
+C : xt^2*(rr - b^2)^2 / (rr + b^2)^3$
+/* deployment regret of the source-optimal control when the target effect is b_tgt = b_src + db */
+b_src : b$
+R : C*db^2$
+print("deployment regret R = C*(b_tgt - b_src)^2 = C*db^2,  C =", C)$
+
+/* (A) TRANSPORTABLE: if the effect is recoverable on the target (db = 0), regret = 0 for ANY
+   distributional distance -- transportability, not closeness, is what kills the regret. */
+print("(A) transportable (db=0): R =", subst(db=0, R), "  (zero regret, any W1 distance)")$
+
+/* (B) NON-transportable: the effect shifts Lipschitz in the transport distance, db = Lip*d,
+   d = W1(P,P'); then R = C*Lip^2*d^2 -- quadratic in the Wasserstein-1 distance. */
+Rnt : subst(db = Lip*d, R)$
+print("(B) non-transportable (db = Lip*d): R =", Rnt, " = C*Lip^2*d^2 (quadratic in W1)")$
+
+/* Kantorovich-Rubinstein: W1(P,Q) = sup_{f 1-Lipschitz} |E_P f - E_Q f|, so for a Lip-Lipschitz cost
+   the deployment cost gap is <= Lip*W1(P,Q). This is the same W1 that chc.WassersteinPenalty uses:
+   worst-case over a W1-ball of radius eps = empirical + eps*Lipschitz (Gao-Kleywegt). */
+print("KR duality: |E_P' cost - E_P cost| <= Lip*W1(P,P') ; W-DRO worst-case = empirical + eps*Lip")$
+
+/* (C) W-DRO COVERAGE: a robust controller planned for a W1-ball of radius eps has a worst-case regret
+   bound C*Lip^2*eps^2; if the true shift d <= eps, this bound COVERS the realized regret C*Lip^2*d^2. */
+bound : C*Lip^2*eps^2$
+print("(C) W-DRO regret bound(eps) = C*Lip^2*eps^2 ; covers realized when d <= eps:")$
+print("    bound(eps) - R_nontransport =", ratsimp(bound - Rnt), " = C*Lip^2*(eps^2 - d^2) >= 0 for eps>=d")$
+print("    factor = C*Lip^2*(eps-d)*(eps+d) >= 0 : the robust radius is a transportability budget")$
