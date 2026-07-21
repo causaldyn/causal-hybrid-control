@@ -1,0 +1,63 @@
+/* DISCOVERY / derivation: an H-INFINITY / DIFFERENTIAL-GAME ROBUST regret certificate for causal
+   control -- from Geering, "Optimal Control with Engineering Applications" (2007), Ch 4 (H-inf via
+   differential games, indefinite Riccati). The idea: model the CONFOUNDING-induced uncertainty in the
+   causal effect b as an ADVERSARY w that perturbs the gain, b -> b + w, penalised by an energy budget
+   gamma^2. The robust controller solves a zero-sum game min_u max_w. This UNIFIES the program's
+   pessimism=variance result (#2) with min-max / tube MPC: robustness = caution = pessimism, and the
+   pessimism level is gamma^-2. Maxima is the source of truth. */
+display2d : false$
+
+/* scalar control cost with the effect perturbed by an adversary w (b is the estimate b_hat):
+   cost(u,w) = ((b+w)*u - xt)^2 + rr*u^2 - g2*w^2,  g2 = gamma^2 (the adversary's energy penalty). */
+e : b*u - xt$                       /* nominal tracking error */
+cost : (e + w*u)^2 + rr*u^2 - g2*w^2$
+print("game cost(u,w) = (e + w*u)^2 + rr*u^2 - gamma^2 w^2,  e = b*u - xt")$
+
+/* INNER MAX over the adversary w: stationarity and the worst-case value (complete the square in w). */
+wstar : rhs(solve(diff(cost, w) = 0, w)[1])$
+print("worst-case perturbation w* =", ratsimp(wstar), " (= e*u/(gamma^2 - u^2))")$
+value : ratsimp(subst(w = wstar, cost))$
+print("robust value V(u) = max_w cost =", value, " (= gamma^2 e^2/(gamma^2 - u^2) + rr u^2)")$
+
+/* the SOS identity used in the Rocq proof: cost is a downward parabola in w, so
+   value - cost = (gamma^2 - u^2)*(w - w*)^2 >= 0  iff  gamma^2 > u^2 (concavity => genuine max). */
+gap : ratsimp(value - cost)$
+print("V(u) - cost(u,w) =", gap, "  should equal (gamma^2 - u^2)*(w - w*)^2")$
+print("check gap - (g2-u^2)*(w-wstar)^2 =", ratsimp(gap - (g2 - u^2)*(w - wstar)^2), " (0 confirms SOS)")$
+
+/* (A) ROBUSTNESS INFLATES THE COST (pessimism): V(u) >= nominal(u) = e^2 + rr u^2, since
+   gamma^2/(gamma^2 - u^2) >= 1 for gamma^2 > u^2. The inflation factor is the pessimism. */
+nominal : e^2 + rr*u^2$
+print("V(u) - nominal(u) =", ratsimp(value - nominal), " = e^2 u^2/(gamma^2 - u^2) >= 0  (pessimism)")$
+
+/* (B) NOMINAL LIMIT: as gamma -> infinity the factor gamma^2/(gamma^2-u^2) -> 1, so the robust
+   controller -> the certainty-equivalence controller (no pessimism). Antitone in gamma^2:
+   larger gamma => less inflation => less caution. */
+factor : g2/(g2 - u^2)$
+print("inflation factor gamma^2/(gamma^2-u^2) =", factor, " -> 1 as gamma->inf ; d/d(g2) =",
+      ratsimp(diff(factor, g2)), " < 0 (antitone: more budget gamma => less pessimism)")$
+
+/* (C) THRESHOLD (identifiability-vs-robustness limit): the value blows up as gamma^2 -> u^2 from above
+   (the adversary's problem becomes unbounded); below gamma = |u| there is NO robust control. This is
+   Geering's "gamma large enough => Riccati solution finite" in scalar form. */
+print("as gamma^2 -> u^2+, V(u) -> +infinity (e != 0): the robust game is unbounded below gamma=|u|")$
+
+/* (D) ROBUST MINIMISER and CAUTION: minimise V(u). Stationarity factors nicely. */
+Vp : ratsimp(diff(value, u))$
+print("V'(u) =", Vp)$
+stat : ratsimp(num(Vp))$                 /* numerator: 2 g2 (b u - xt)(b g2 - xt u) + 2 rr u (g2-u^2)^2 ... */
+print("stationarity numerator (set = 0) =", stat)$
+/* certainty-equivalence optimum (gamma -> inf) for reference */
+uCE : xt*b/(b^2 + rr)$
+print("certainty-equivalence u_CE =", uCE, " ; robust u_rob(gamma) shrinks toward 0 as gamma decreases")$
+
+/* (E) PESSIMISM CORRESPONDENCE (ties to result #2, optimal pessimism = variance rho*=s^2):
+   first-order in 1/gamma^2, V(u) ~ nominal(u) + e^2 u^2/gamma^2, an EXTRA caution term ~ 1/gamma^2.
+   So gamma^-2 plays the role of the pessimism level rho: gamma->inf (rho->0) is nominal; decreasing
+   gamma (rho up) shrinks the gain, exactly as adding pessimism rho does in result #2. The empirical
+   certificate picks the gamma* that minimises expected robust regret under effect variance s^2 and
+   shows its gain matches the pessimistic control at rho* = s^2. */
+/* V = e^2/(1 - u^2/g2) + rr u^2 = e^2*(1 + u^2/g2 + ...) + rr u^2; the O(1/g2) term is the caution. */
+extra : ratsimp((value - nominal) - e^2*u^2/g2)$   /* residual after subtracting the 1/g2 pessimism term */
+print("V - nominal - e^2 u^2/gamma^2 =", extra, " = O(1/gamma^4): the leading caution term is e^2 u^2/gamma^2")$
+print("=> gamma^-2 is the pessimism knob; unifies H-inf robustness with pessimism=variance (#2)")$

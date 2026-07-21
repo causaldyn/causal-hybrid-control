@@ -16,6 +16,7 @@ from chc.regret import (
     doubly_robust_control_certificate,
     dynamic_causal_regret_certificate,
     finite_horizon_pl_certificate,
+    hinf_robust_regret_certificate,
     information_lower_bound_certificate,
     interference_convexity_certificate,
     interference_orthogonal_certificate,
@@ -115,6 +116,24 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_hinf_robustness_is_pessimism_with_gamma_as_the_knob() -> None:
+    # H-inf robust control (proofs/hinf_robust_regret.v): confounding as an adversary on the gain,
+    # budget gamma^2. Robustness INFLATES cost above nominal (= pessimism), antitone in gamma (gamma
+    # -> inf recovers CE); at the regret-optimal gamma* the robust gain reproduces the variance-
+    # optimal pessimistic control (Result 2) -- two roads to the same cautious control.
+    curve = hinf_robust_regret_certificate()
+    assert (np.diff(curve.inflation_at_uce) < 0).all()  # antitone in the budget gamma (Rocq C)
+    assert (curve.inflation_at_uce >= curve.nominal_at_uce - 1e-9).all()  # inflates (Rocq B)
+    assert np.isclose(curve.inflation_at_uce[-1], curve.nominal_at_uce, rtol=0.03)  # -> nominal
+    assert np.isclose(curve.robust_gain[-1], curve.u_ce, rtol=0.02)  # robust -> CE as gamma -> inf
+    assert curve.u_pess_star < curve.u_ce  # pessimism shrinks the gain below certainty equivalence
+    i = int(np.argmin(curve.expected_regret))
+    assert 0 < i < curve.gamma_grid.size - 1  # interior regret-optimal robustness level gamma*
+    span = abs(curve.u_ce - curve.u_pess_star)
+    assert abs(curve.gain_at_gamma_star - curve.u_pess_star) < 0.15 * span  # ~ variance-optimal
+    assert curve.expected_regret_min < 0.1 * curve.ce_expected_regret  # robust tuned beats naive CE
 
 
 def test_optimal_exploration_balances_control_and_identification() -> None:

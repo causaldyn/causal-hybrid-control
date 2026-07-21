@@ -360,6 +360,76 @@ def optimal_exploration_certificate(
 
 
 @dataclass(frozen=True)
+class HInfRobustCurve:
+    """H-inf robust control = pessimism with min-max; gamma^-2 is the pessimism knob."""
+
+    gamma_grid: Vector  # adversary energy budget gamma (robustness level)
+    robust_gain: Vector  # u_rob(gamma): the cautious control; -> u_ce as gamma -> inf
+    inflation_at_uce: Vector  # robust value at fixed u_ce: >= nominal, antitone in gamma (Rocq B,C)
+    expected_regret: Vector  # regret of u_rob(gamma) under effect variance s^2 (U-shaped in gamma)
+    u_ce: float  # certainty-equivalence gain b*xt/(b^2+rr)
+    u_pess_star: float  # variance-optimal gain b*xt/(b^2+rr+s^2) (Result 2 pessimism=variance)
+    nominal_at_uce: float  # nominal cost at u_ce (the gamma -> inf limit of inflation_at_uce)
+    gamma_star: float  # argmin of the expected regret
+    gain_at_gamma_star: float  # robust gain at gamma* -- matches u_pess_star (the unification)
+    expected_regret_min: float  # ~ 0: the robust optimum reaches the variance-pessimism optimum
+    ce_expected_regret: float  # regret of the (under-cautious) CE control; > expected_regret_min
+
+
+def hinf_robust_regret_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    s: float = 0.6,
+    gamma_lo: float = 0.72,
+    gamma_hi: float = 8.0,
+    n_gamma: int = 40,
+    n_u: int = 4000,
+) -> HInfRobustCurve:
+    """H-infinity / differential-game robust control (Geering 2007, Ch 4). Derived in
+    ``validation/hinf_robust_regret.mac``, proved in ``proofs/hinf_robust_regret.v``. Confounding
+    uncertainty in the effect ``b`` is an adversary perturbing the gain, penalised by budget
+    ``gamma^2``; the robust controller solves ``min_u max_w``. Unification: the EXPECTED cost under
+    variance ``s^2`` is the pessimistic objective ``(b*u-xt)^2+(rr+s^2)u^2`` (Result 2), optimum at
+    ``u_pess=b*xt/(b^2+rr+s^2)``. The robust gain ``u_rob(gamma)`` relaxes to ``u_ce`` as ``gamma``
+    grows, and at the regret-optimal ``gamma*`` reproduces ``u_pess``: statistical pessimism and
+    game-theoretic robustness are two roads to the same cautious control (knob ``gamma^-2``).
+    """
+    s2 = s * s
+    u_ce = b * xt / (b * b + rr)
+    u_pess = b * xt / (b * b + rr + s2)  # variance-optimal control (Result 2)
+    nominal_uce = (b * u_ce - xt) ** 2 + rr * u_ce * u_ce
+    oracle = (b * u_pess - xt) ** 2 + (rr + s2) * u_pess * u_pess  # min expected cost, Var(b)=s^2
+    gammas = np.geomspace(gamma_lo, gamma_hi, n_gamma)
+    robust_gain = np.zeros(n_gamma)
+    inflation = np.zeros(n_gamma)
+    exp_regret = np.zeros(n_gamma)
+    for i, g in enumerate(gammas):
+        g2 = g * g
+        us = np.linspace(0.0, 0.999 * g, n_u)  # feasible region |u| < gamma
+        j_rob = g2 * (b * us - xt) ** 2 / (g2 - us * us) + rr * us * us
+        u_r = float(us[int(np.argmin(j_rob))])
+        robust_gain[i] = u_r
+        inflation[i] = g2 * (b * u_ce - xt) ** 2 / (g2 - u_ce * u_ce) + rr * u_ce * u_ce
+        exp_regret[i] = (b * u_r - xt) ** 2 + (rr + s2) * u_r * u_r - oracle
+    k = int(np.argmin(exp_regret))
+    return HInfRobustCurve(
+        gammas,
+        robust_gain,
+        inflation,
+        exp_regret,
+        float(u_ce),
+        float(u_pess),
+        float(nominal_uce),
+        float(gammas[k]),
+        float(robust_gain[k]),
+        float(exp_regret[k]),
+        float((b * u_ce - xt) ** 2 + (rr + s2) * u_ce * u_ce - oracle),
+    )
+
+
+@dataclass(frozen=True)
 class PartialIdControlCurve:
     """Partial-ID control: worst-case regret ~ Delta^2; action sign robust iff Delta < |b|."""
 
