@@ -26,6 +26,7 @@ from chc.regret import (
     interference_convexity_certificate,
     interference_orthogonal_certificate,
     interference_regret_certificate,
+    multichannel_control_certificate,
     nonlinear_regret_certificate,
     optimal_exploration_certificate,
     orthogonal_control_certificate,
@@ -122,6 +123,18 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_multichannel_control_needs_every_channel_orthogonalised() -> None:
+    # Contribution 2 (proofs/multichannel_control.v): on a clustered network the total effect
+    # B=b_d+b_s has two interference channels. Cross-fit Robinson DML: orthogonalising only the
+    # direct caps regret at O(delta^2) (spillover bottleneck); orthogonalising both -> ~delta^4.
+    # The effective sample size is the number of clusters G (estimate concentrates at 1/sqrt(G)).
+    curve = multichannel_control_certificate()
+    assert 1.6 < curve.half_slope < 2.5  # half-orth: spillover plug-in bottleneck -> O(delta^2)
+    assert curve.full_slope > 3.0  # full-orth: both channels debiased -> ~O(delta^4)
+    assert curve.full_slope > curve.half_slope + 1.0  # orthogonalising every channel lifts order
+    assert -0.75 < curve.cluster_se_slope < -0.35  # estimate concentrates at ~1/sqrt(G) (cluster n)
 
 
 def test_control_map_doubles_the_estimator_order() -> None:

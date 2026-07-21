@@ -500,6 +500,128 @@ def composition_transfer_certificate(
 
 
 @dataclass(frozen=True)
+class MultiChannelControlCurve:
+    """Debias EVERY interference channel: regret order set by the least-orthogonalised one."""
+
+    deltas: Vector  # nuisance error delta
+    half_orth_regret: Vector  # direct debiased, spillover plug-in: regret ~ delta^2 (bottleneck)
+    full_orth_regret: Vector  # both channels debiased: regret ~ delta^4
+    half_slope: float  # log-log slope of half-orth regret vs delta (~2)
+    full_slope: float  # log-log slope of full-orth regret vs delta (~4)
+    cluster_counts: Vector  # number of network clusters G swept (cluster-robustness arm)
+    estimation_sd: Vector  # sd of the total-effect estimate across seeds, per G (~ 1/sqrt(G))
+    cluster_se_slope: float  # log-log slope of estimation_sd vs G (~ -0.5: effective n = clusters)
+
+
+def _dml_two_channel(
+    z: np.ndarray,
+    u: np.ndarray,
+    g: np.ndarray,
+    y: np.ndarray,
+    delta: float,
+    orth_spillover: bool,
+    fold: np.ndarray,
+) -> float:
+    """Cross-fit Robinson (partially-linear) DML for two channels (direct u, spillover g). Nuisances
+    E[.|z] are fit by OLS on the held-out fold with an added ``delta*z`` systematic error. The
+    spillover uses the ORTHOGONAL moment (residualise BOTH treatment & outcome -> O(delta^2) bias)
+    when ``orth_spillover``, else PLUG-IN (residualise treatment but NOT outcome -> O(delta)
+    bias). The direct channel is always orthogonal. Returns b_d + b_s.
+    """
+
+    def resid(t: np.ndarray) -> np.ndarray:
+        r = t.astype(np.float64).copy()
+        for f in (0, 1):
+            tr, te = fold != f, fold == f
+            slope, intercept = np.polyfit(z[tr], t[tr], 1)  # cross-fit nuisance E[t|z]
+            r[te] = t[te] - ((slope + delta) * z[te] + intercept)  # + delta*z nuisance error
+        return r
+
+    u_t, g_t, y_t = resid(u), resid(g), resid(y)
+    beta, *_ = np.linalg.lstsq(np.column_stack([u_t, g_t]), y_t, rcond=None)  # joint Robinson
+    b_d_hat = float(beta[0])  # direct: always orthogonal, O(delta^2)
+    if orth_spillover:
+        b_s_hat = float(beta[1])  # spillover orthogonal (outcome residualised): O(delta^2)
+    else:
+        y1 = y - b_d_hat * u  # direct-adjusted RAW outcome (NOT residualised on z)
+        b_s_hat = float(np.dot(g_t, y1) / np.dot(g_t, g_t))  # plug-in: O(delta) bias
+    return b_d_hat + b_s_hat
+
+
+def multichannel_control_certificate(
+    *,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    alpha_u: float = 1.0,
+    alpha_g: float = 0.8,
+    gamma: float = 1.0,
+    n_clusters: int = 40,
+    cluster_size: int = 10,
+    tau: float = 0.5,
+    noise: float = 0.5,
+    deltas: Sequence[float] = (0.02, 0.04, 0.07, 0.12, 0.2, 0.3),
+    cluster_grid: Sequence[int] = (10, 20, 40, 80, 160),
+    n_seeds: int = 60,
+) -> MultiChannelControlCurve:
+    """CONTRIBUTION 2 -- MULTI-CHANNEL orthogonal control on a network (the serious form of 4x0;
+    derived in ``validation/multichannel_control.mac``; proved: ``multichannel_control.v``).
+    The control-relevant total effect of a uniform action is ``B = b_d + b_s`` (direct + spillover):
+    two interference channels, each with its own Neyman-orthogonal moment. Using real cross-fit
+    Robinson DML on a clustered network: orthogonalising ONLY the direct channel caps the control
+    regret at ``O(delta^2)`` (the un-orthogonalised spillover bottleneck), while orthogonalising
+    BOTH reaches ``O(delta^4)`` -- regret order is ``2*min`` over channel orders. Cluster-robust:
+    the effective sample size is the number of clusters ``G``, so the total-effect estimate
+    concentrates at ``1/sqrt(G)`` (not ``1/sqrt(n)``).
+    """
+    b_total = b_d + b_s
+    coeff = xt**2 * (rr - b_total**2) ** 2 / (rr + b_total**2) ** 3
+    ds = np.asarray(deltas, dtype=np.float64)
+    half = np.zeros(ds.size)
+    full = np.zeros(ds.size)
+
+    def simulate(rng: np.random.Generator, gclust: int) -> tuple[np.ndarray, ...]:
+        cid = np.repeat(np.arange(gclust), cluster_size)
+        n = cid.size
+        z = rng.standard_normal(n)
+        a = (tau * rng.standard_normal(gclust))[cid]  # cluster random effect (within-cluster dep.)
+        u = alpha_u * z + 0.7 * rng.standard_normal(n)
+        g = alpha_g * z + 0.7 * rng.standard_normal(n)  # confounded spillover exposure
+        y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
+        return z, u, g, y, np.mod(np.arange(n), 2)
+
+    for i, delta in enumerate(ds):
+        err_half = np.empty(n_seeds)
+        err_full = np.empty(n_seeds)
+        for s in range(n_seeds):
+            rng = np.random.default_rng(6151 * s + int(1e5 * delta))
+            z, u, g, y, fold = simulate(rng, n_clusters)
+            err_half[s] = _dml_two_channel(z, u, g, y, delta, False, fold) - b_total
+            err_full[s] = _dml_two_channel(z, u, g, y, delta, True, fold) - b_total
+        # systematic bias^2 (mean over seeds isolates the delta-order bias from the sampling
+        # variance, which is measured separately in the cluster-robustness arm below)
+        half[i] = coeff * float(np.mean(err_half)) ** 2
+        full[i] = coeff * float(np.mean(err_full)) ** 2
+    half_slope = float(np.polyfit(np.log(ds), np.log(half), 1)[0])
+    full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
+
+    gs = np.asarray(cluster_grid, dtype=np.float64)
+    est_sd = np.zeros(gs.size)
+    for i, gclust in enumerate(cluster_grid):
+        ests = np.empty(n_seeds)
+        for s in range(n_seeds):
+            rng = np.random.default_rng(9377 * s + gclust)
+            z, u, g, y, fold = simulate(rng, gclust)
+            ests[s] = _dml_two_channel(z, u, g, y, 0.05, True, fold)
+        est_sd[i] = float(np.std(ests))
+    se_slope = float(np.polyfit(np.log(gs), np.log(est_sd), 1)[0])
+    return MultiChannelControlCurve(
+        ds, half, full, half_slope, full_slope, gs, est_sd, se_slope
+    )
+
+
+@dataclass(frozen=True)
 class OptimalExplorationCurve:
     """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
 

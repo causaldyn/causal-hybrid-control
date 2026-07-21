@@ -1,0 +1,44 @@
+/* DISCOVERY / derivation (CONTRIBUTION 2): MULTI-CHANNEL orthogonal control -- the serious form of
+   result 4x0, which was the arithmetic (eps^2+eps)^2 vs (eps^2+eps^2)^2. Real model: on a network the
+   control-relevant TOTAL effect of a uniform action is B = b_d + b_s (direct + spillover/exposure
+   effect), each an interference channel with its own causal estimand and its own Neyman-orthogonal
+   moment. Claim: the control-regret order is set by the LEAST-orthogonalized channel -- orthogonalising
+   only the direct channel is useless at the regret order if the spillover channel stays first-order
+   biased. This is the multi-channel generalisation of the transfer theorem (composition_transfer.mac):
+   regret order = 2 * min_k(channel orders). Maxima is the source of truth. */
+display2d : false$
+
+/* total effect of a uniform action u (everyone plays u): B = b_d + b_s ; optimal action and curvature */
+B : b_d + b_s$
+us(BB) := xt*BB/(BB^2 + rr)$
+C : xt^2*(rr - B^2)^2 / (rr + B^2)^3$
+print("total control effect B = b_d + b_s ; u*(B) = xt*B/(B^2+rr) ; curvature coeff C =", C)$
+
+/* the estimated total effect and the EXACT control regret (quadratic in the total-effect error) */
+Bhat : b_d + e_d + (b_s + e_s)$          /* channel estimates b_d+e_d, b_s+e_s */
+err : ratsimp(Bhat - B)$
+print("total-effect error Bhat - B =", err, " = e_d + e_s (channel errors add: triangle)")$
+R : C*(e_d + e_s)^2$
+print("control regret R = C*(Bhat-B)^2 = C*(e_d + e_s)^2")$
+
+/* ORDER BOTTLENECK: channel k orthogonalised to order p_k has e_k = O(delta^{p_k}). Then
+   |e_d + e_s| <= delta^{p_d} + delta^{p_s} <= 2*delta^{min(p_d,p_s)}, so R = O(delta^{2*min}). The
+   regret order DOUBLES the WORST channel's order. */
+print("|e_d+e_s| <= delta^p_d + delta^p_s <= 2 delta^min => R = O(delta^{2*min(p_d,p_s)})")$
+print("=> the LEAST-orthogonalised channel caps the regret order (bottleneck)")$
+
+/* two policies, recovering result 4x0 as instances: */
+/* (i) HALF-orthogonal: direct debiased (p_d=2), spillover plug-in (p_s=1) => min=1 => R=O(delta^2) */
+Rhalf : subst([e_d = kd*delta^2, e_s = ks*delta^1], R)$
+print("(i) half-orth (p_d=2,p_s=1): R =", ratsimp(Rhalf), " -> O(delta^2) (spillover bottleneck)")$
+/* (ii) FULL-orthogonal: both debiased (p_d=p_s=2) => min=2 => R=O(delta^4) */
+Rfull : subst([e_d = kd*delta^2, e_s = ks*delta^2], R)$
+print("(ii) full-orth (p_d=p_s=2): R =", ratsimp(Rfull), " -> O(delta^4) (both debiased)")$
+print("leading orders: half ~ delta^2, full ~ delta^4 : orthogonalise EVERY channel or lose the order")$
+
+/* CLUSTER-ROBUSTNESS (network dependence): observations within a cluster are dependent, so the
+   orthogonal-moment estimator's variance scales with the number of CLUSTERS G, not units n=G*m. The
+   effective sample size is G; with cross-fitting the own-nuisance bias is removed. So the finite-sample
+   channel error is e_k = O(delta^{p_k} + 1/sqrt(G)); composed: R = O(delta^{2min} + 1/G) w.h.p. */
+print("cluster-robust: Var(moment) ~ 1/G (G clusters), so e_k = O(delta^p_k + 1/sqrt(G))")$
+print("=> nonasymptotic: R = O(delta^{2*min} + 1/G) with high probability (cross-fit removes own bias)")$
