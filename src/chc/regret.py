@@ -616,9 +616,7 @@ def multichannel_control_certificate(
             ests[s] = _dml_two_channel(z, u, g, y, 0.05, True, fold)
         est_sd[i] = float(np.std(ests))
     se_slope = float(np.polyfit(np.log(gs), np.log(est_sd), 1)[0])
-    return MultiChannelControlCurve(
-        ds, half, full, half_slope, full_slope, gs, est_sd, se_slope
-    )
+    return MultiChannelControlCurve(ds, half, full, half_slope, full_slope, gs, est_sd, se_slope)
 
 
 @dataclass(frozen=True)
@@ -1066,8 +1064,10 @@ def doubly_robust_control_certificate(
     def regret(dmu: float, de: float, kind: str) -> float:
         # systematic bias isolated from sampling noise by averaging the signed error over seeds;
         # control regret = kappa*(bias)^2, kappa = 1
-        biases = [_aipw_effect(np.random.default_rng(1000 * s + 1), n, theta, dmu, de, kind) - theta
-                  for s in range(n_seeds)]
+        biases = [
+            _aipw_effect(np.random.default_rng(1000 * s + 1), n, theta, dmu, de, kind) - theta
+            for s in range(n_seeds)
+        ]
         return float(np.mean(biases)) ** 2
 
     err = np.asarray(errors, dtype=np.float64)

@@ -46,6 +46,10 @@ def test_mismatched_horizon_raises() -> None:
     data = _time_varying_confounded(200, seed=3)
     with pytest.raises(ValueError, match="horizon"):
         sequential_g_formula(
-            data, treatments=("a0", "a1"), confounders=(("l0",),), outcome="y",
-            regime=(1.0, 1.0), baseline=(0.0, 0.0),
+            data,
+            treatments=("a0", "a1"),
+            confounders=(("l0",),),
+            outcome="y",
+            regime=(1.0, 1.0),
+            baseline=(0.0, 0.0),
         )

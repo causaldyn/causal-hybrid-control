@@ -92,8 +92,18 @@ def _regulate_toward_the_fragile_target() -> tuple[
 
 def _run(model, cost, x0, us0, support, penalty, lam_unc) -> tuple[float, float]:
     us, _ = pessimistic_control(
-        model, x0, us0, DT, cost, support, lam_supp=0.0, u_lo=-5.0, u_hi=5.0,
-        steps=150, uncertainty=penalty, lam_unc=lam_unc,
+        model,
+        x0,
+        us0,
+        DT,
+        cost,
+        support,
+        lam_supp=0.0,
+        u_lo=-5.0,
+        u_hi=5.0,
+        steps=150,
+        uncertainty=penalty,
+        lam_unc=lam_unc,
     )
     xs = rollout(model, x0, us, DT)
     settled = float(jnp.mean(jnp.abs(xs[H // 2 :, 0])))  # how close it settles to the fragile x0=0

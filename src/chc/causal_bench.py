@@ -58,10 +58,16 @@ def _did_rows(rng: np.random.Generator, delta: float = 0.5) -> list[CausalBenchR
     post = [delta * (t - g + 1) for i, g in enumerate(group) if g >= 0 for t in range(g, n_periods)]
     twfe = twoway_fixed_effects_att(outcomes, group)
     return [
-        CausalBenchRow("Callaway-Sant'Anna", "TWFE", float(np.mean(post)),
-                       callaway_santanna(outcomes, group).overall, twfe),
-        CausalBenchRow("de Chaisemartin DID_M", "TWFE", delta,
-                       de_chaisemartin(outcomes, group), twfe),
+        CausalBenchRow(
+            "Callaway-Sant'Anna",
+            "TWFE",
+            float(np.mean(post)),
+            callaway_santanna(outcomes, group).overall,
+            twfe,
+        ),
+        CausalBenchRow(
+            "de Chaisemartin DID_M", "TWFE", delta, de_chaisemartin(outcomes, group), twfe
+        ),
     ]
 
 
@@ -104,8 +110,12 @@ def _gformula_row(rng: np.random.Generator) -> CausalBenchRow:
     data = {"a0": a0, "a1": a1, "l0": l0, "l1": l1, "y": y}
     treatments, confounders = ("a0", "a1"), (("l0",), ("l1",))
     g = sequential_g_formula(
-        data, treatments=treatments, confounders=confounders, outcome="y",
-        regime=(1.0, 1.0), baseline=(0.0, 0.0),
+        data,
+        treatments=treatments,
+        confounders=confounders,
+        outcome="y",
+        regime=(1.0, 1.0),
+        baseline=(0.0, 0.0),
     )
     naive = naive_pooled_effect(data, treatments=treatments, confounders=confounders, outcome="y")
     return CausalBenchRow("g-formula", "naive pooled", 3.3, g, naive)

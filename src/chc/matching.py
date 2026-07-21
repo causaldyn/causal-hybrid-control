@@ -151,12 +151,14 @@ def marketplace_report(matching: MarketplaceMatching) -> str:
     total = float(jnp.sum(matching.demand))
     saved = (reroute - opt.transport_cost) / reroute * 100
     stranded = (1.0 - coverage) * total
-    return "\n".join([
-        f"Kantorovich OT: 100% served at min travel cost {opt.transport_cost:.2f} + surge prices.",
-        f"naive local-only dispatch strands {stranded:.1f} of {total:.1f} riders "
-        f"({(1.0 - coverage) * 100:.0f}%) where demand exceeds local supply.",
-        f"naive myopic reroute (100% served): cost {reroute:.2f} -> OT is {saved:.1f}% cheaper.",
-        f"surge -> driver reallocation cuts supply-demand imbalance {before:.2f} -> {after:.2f} "
-        f"({(before - after) / before * 100:.0f}%).",
-        f"Kantorovich-Rubinstein strong-duality gap = {opt.duality_gap:.2e} (surge = free dual).",
-    ])
+    return "\n".join(
+        [
+            f"Kantorovich OT: 100% served at min cost {opt.transport_cost:.2f} + surge prices.",
+            f"naive local-only dispatch strands {stranded:.1f} of {total:.1f} riders "
+            f"({(1.0 - coverage) * 100:.0f}%) where demand exceeds local supply.",
+            f"naive reroute (100% served): cost {reroute:.2f} -> OT is {saved:.1f}% cheaper.",
+            f"surge -> driver reallocation cuts imbalance {before:.2f} -> {after:.2f} "
+            f"({(before - after) / before * 100:.0f}%).",
+            f"Kantorovich-Rubinstein duality gap = {opt.duality_gap:.2e} (surge = free dual).",
+        ]
+    )

@@ -112,6 +112,7 @@ def _member_next_states(
     known: Dynamics, ensemble: EnsembleResidual, x: Array, u: Array, dt: float
 ) -> Array:
     """Per-member one-step next-state predictions -> shape ``(K, n)``."""
+
     def step(member: Dynamics) -> Array:
         return rk4_step(HybridDynamics(known=known, residual=member), 0.0, x, u, dt)
 

@@ -74,9 +74,17 @@ def total_cost_diffrax(
     def step(carry: tuple[Array, Array], u: Array) -> tuple[tuple[Array, Array], Array]:
         t, x = carry
         solution = diffrax.diffeqsolve(
-            term, solver, t, t + dt, dt0=dt / 5, y0=x, args=u,
-            stepsize_controller=controller, adjoint=adjoint,
-            saveat=diffrax.SaveAt(t1=True), max_steps=10000,
+            term,
+            solver,
+            t,
+            t + dt,
+            dt0=dt / 5,
+            y0=x,
+            args=u,
+            stepsize_controller=controller,
+            adjoint=adjoint,
+            saveat=diffrax.SaveAt(t1=True),
+            max_steps=10000,
         )
         return (t + dt, solution.ys[-1]), x  # emit the pre-decision state x_k
 

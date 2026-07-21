@@ -101,9 +101,7 @@ def callaway_santanna(
     return GroupTimeATT(att, event_study, overall, treated_groups, n_periods)
 
 
-def twoway_fixed_effects_att(
-    outcomes: Panel, group: Groups, *, never_treated: int = -1
-) -> float:
+def twoway_fixed_effects_att(outcomes: Panel, group: Groups, *, never_treated: int = -1) -> float:
     """The single two-way fixed-effects treatment coefficient -- the biased baseline CS beats.
 
     Regresses the twice-demeaned outcome on the twice-demeaned treatment indicator

@@ -53,7 +53,13 @@ class ConfoundedNetworkSystem:
         noise = self.noise_scale * jax.random.normal(k_noise, (self.n,))
         y = self.a * x + self.b_direct * u + self.b_spillover * e + self.c * z + noise
         return {
-            "x": x, "z": z, "u": u, "e": e, "x_nb": x_nb, "z_nb": z_nb, "x_next": y,
+            "x": x,
+            "z": z,
+            "u": u,
+            "e": e,
+            "x_nb": x_nb,
+            "z_nb": z_nb,
+            "x_next": y,
             "neighbours": neighbours,  # (n, degree) graph, for the GNN-nuisance estimator
         }
 
@@ -103,10 +109,14 @@ class NeighbourMessagePassing(eqx.Module):
     def __init__(self, in_dim: int, hidden: int, *, key: Array):
         keys = jax.random.split(key, 5)
         self.layers = (
-            (eqx.nn.Linear(in_dim, hidden, key=keys[0]),
-             eqx.nn.Linear(in_dim, hidden, key=keys[1])),
-            (eqx.nn.Linear(hidden, hidden, key=keys[2]),
-             eqx.nn.Linear(hidden, hidden, key=keys[3])),
+            (
+                eqx.nn.Linear(in_dim, hidden, key=keys[0]),
+                eqx.nn.Linear(in_dim, hidden, key=keys[1]),
+            ),
+            (
+                eqx.nn.Linear(hidden, hidden, key=keys[2]),
+                eqx.nn.Linear(hidden, hidden, key=keys[3]),
+            ),
         )
         self.readout = eqx.nn.Linear(hidden, 1, key=keys[4])
 
@@ -119,8 +129,15 @@ class NeighbourMessagePassing(eqx.Module):
 
 
 def _fit_gnn_nuisance(
-    feats: Array, neighbours: Array, target: Array, mask: Array, *, hidden: int, steps: int,
-    lr: float, key: Array,
+    feats: Array,
+    neighbours: Array,
+    target: Array,
+    mask: Array,
+    *,
+    hidden: int,
+    steps: int,
+    lr: float,
+    key: Array,
 ) -> Array:
     """Fit a message-passing regressor to ``target`` on the masked (train) nodes; predict all."""
     model = NeighbourMessagePassing(feats.shape[1], hidden, key=key)

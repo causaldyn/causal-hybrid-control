@@ -381,8 +381,18 @@ class ModelUncertaintyTask:
             model_ens, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
         )
         us_cal, _ = pessimistic_control(
-            model_ens, x0, us0, self.dt, cost, support, 0.0, self.u_lo, self.u_hi,
-            steps=self.inner_steps, uncertainty=uncertainty, lam_unc=self.lam_unc,
+            model_ens,
+            x0,
+            us0,
+            self.dt,
+            cost,
+            support,
+            0.0,
+            self.u_lo,
+            self.u_hi,
+            steps=self.inner_steps,
+            uncertainty=uncertainty,
+            lam_unc=self.lam_unc,
         )
         us_oracle, _ = projected_gradient_control(
             plant, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
@@ -462,9 +472,7 @@ def run_multiseed(task: BenchmarkTask, seeds: Sequence[int]) -> list[MultiSeedRe
         lo, hi = _bootstrap_ci(arr)
         std = float(arr.std(ddof=1)) if arr.size > 1 else 0.0
         ood = float(np.mean(oods[controller]))
-        summaries.append(
-            MultiSeedResult(controller, float(arr.mean()), lo, hi, std, ood, arr.size)
-        )
+        summaries.append(MultiSeedResult(controller, float(arr.mean()), lo, hi, std, ood, arr.size))
     return summaries
 
 
