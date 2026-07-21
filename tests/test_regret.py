@@ -8,6 +8,7 @@ import numpy as np
 from chc.dynamics import DampedOscillator
 from chc.lqr import linearize_discrete, linearized_regret_certificate
 from chc.regret import (
+    adaptive_exploration_certificate,
     bandit_causal_certificate,
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
@@ -123,6 +124,21 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
+    # Contribution 3 (proofs/adaptive_exploration.v): control with online effect learning.
+    # A tapering schedule v_t ~ 1/sqrt(t) reaches cumulative regret Theta(sqrt(T)) -- matching the
+    # van-Trees sqrt(T) lower bound -- while greedy (no explore) is Theta(T) and the static v* of
+    # Result 11 over-explores (~T). The optimal schedule decreases; not a static rule.
+    curve = adaptive_exploration_certificate()
+    assert 0.4 < curve.adaptive_slope < 0.65  # tapering schedule -> sqrt(T) cumulative regret
+    assert curve.greedy_slope > 0.9  # never exploring -> linear (Theta T)
+    assert curve.adaptive_regret[-1] < curve.greedy_regret[-1]  # adaptive beats greedy at large T
+    assert curve.adaptive_regret[-1] < curve.static_regret[-1]  # ... and the over-exploring static
+    assert (np.diff(curve.schedule) < 0).all()  # the optimal schedule TAPERS (decreasing)
+    assert (curve.adaptive_regret >= curve.lower_bound - 1e-9).all()  # van-Trees lower bound
+    assert 1.0 <= curve.adaptive_over_bound < 2.5  # matches the lower bound up to a constant
 
 
 def test_multichannel_control_needs_every_channel_orthogonalised() -> None:

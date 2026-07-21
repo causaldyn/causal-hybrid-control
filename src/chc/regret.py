@@ -699,6 +699,76 @@ def optimal_exploration_certificate(
 
 
 @dataclass(frozen=True)
+class AdaptiveExplorationCurve:
+    """Adaptive exploration: a tapering schedule reaches the van-Trees sqrt(T) rate."""
+
+    horizons: Vector  # horizon T grid
+    adaptive_regret: Vector  # cumulative regret of the tapering schedule (v_t ~ 1/sqrt(t)): sqrt(T)
+    greedy_regret: Vector  # cumulative regret with no exploration: ~ T (linear)
+    static_regret: Vector  # cumulative regret of a constant-v schedule (Result 11 static): ~ T
+    lower_bound: Vector  # 2*sqrt(A*C*T): the van-Trees sqrt(T) lower bound
+    adaptive_slope: float  # log-log slope of adaptive regret vs T (~0.5)
+    greedy_slope: float  # log-log slope of greedy regret vs T (~1)
+    schedule: Vector  # the tapering exploration schedule v_t (decreasing)
+    adaptive_over_bound: float  # adaptive / van-Trees bound at the largest T (>= 1, ~ constant)
+
+
+def adaptive_exploration_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    sigma: float = 0.5,
+    m0: float = 1.0,
+    static_v: float = 0.05,
+    horizons: Sequence[int] = (50, 150, 500, 1500, 5000),
+    schedule_horizon: int = 400,
+) -> AdaptiveExplorationCurve:
+    """CONTRIBUTION 3 -- ADAPTIVE information-exploration duality (rigorous SEQUENTIAL upgrade of
+    Results 10/11; derived in ``validation/adaptive_exploration.mac``, proved in
+    ``proofs/adaptive_exploration.v``). At round ``t`` the controller injects ``v_t`` that raises
+    accumulated Fisher information ``m_t`` for FUTURE rounds; the current-round regret is
+    ``A*v_t + C/m_t`` (exploration cost + the van-Trees estimation floor, which applies to adaptive
+    observations unlike ordinary Cramer-Rao). A TAPERING schedule ``v_t ~ 1/sqrt(t)`` (total explore
+    ``~ sqrt(T)``) achieves cumulative regret ``Theta(sqrt(T))`` -- matching the van-Trees
+    ``sqrt(T)`` lower bound ``2*sqrt(A*C*T)`` -- whereas greedy (no explore) is ``Theta(T)`` and the
+    static ``v*`` of Result 11 over-explores (also ``~ T``). Not a static rule: it tapers.
+    """
+    a_curv = b * b + rr
+    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
+    kappa = np.sqrt(coeff / a_curv)  # tapering scale: v_t = kappa / sqrt(t), total ~ sqrt(T)
+
+    def cumulative(horizon: int, sched: np.ndarray) -> float:
+        m = m0 + np.concatenate([[0.0], np.cumsum(sched)[:-1]])  # info BEFORE round t
+        return float(np.sum(a_curv * sched + coeff / m))
+
+    hs = np.asarray(horizons, dtype=np.float64)
+    adaptive = np.zeros(hs.size)
+    greedy = np.zeros(hs.size)
+    static = np.zeros(hs.size)
+    for i, horizon in enumerate(horizons):
+        t = np.arange(1, horizon + 1)
+        adaptive[i] = cumulative(horizon, kappa / np.sqrt(t))
+        greedy[i] = cumulative(horizon, np.zeros(horizon))
+        static[i] = cumulative(horizon, np.full(horizon, static_v))
+    lb = 2.0 * np.sqrt(a_curv * coeff * hs)
+    adaptive_slope = float(np.polyfit(np.log(hs), np.log(adaptive), 1)[0])
+    greedy_slope = float(np.polyfit(np.log(hs), np.log(greedy), 1)[0])
+    sched = kappa / np.sqrt(np.arange(1, schedule_horizon + 1, dtype=np.float64))
+    return AdaptiveExplorationCurve(
+        hs,
+        adaptive,
+        greedy,
+        static,
+        lb,
+        adaptive_slope,
+        greedy_slope,
+        sched,
+        float(adaptive[-1] / lb[-1]),
+    )
+
+
+@dataclass(frozen=True)
 class HInfRobustCurve:
     """H-inf robustness = pessimistic contraction, calibratable to ~ the variance-optimal action."""
 
