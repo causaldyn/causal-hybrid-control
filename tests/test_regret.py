@@ -21,6 +21,7 @@ from chc.regret import (
     interference_regret_certificate,
     nonlinear_regret_certificate,
     orthogonal_control_certificate,
+    partial_id_control_certificate,
     pessimism_variance_certificate,
     regret_scaling,
     strong_convexity_regret_bound,
@@ -64,6 +65,18 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     curve = interference_regret_certificate(A, B, Q, R, X0, interference_ratio=1.0, n_samples=300)
     assert 1.7 < curve.exponent < 2.3  # regret ~ (eid + eint)^2 (proofs/interference_regret.v)
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
+
+
+def test_control_evalue_and_partial_id_robust_control() -> None:
+    # partial-ID control (proofs/partial_id_control.v): the action direction is robust iff Delta<|b|
+    # (the control E-value); worst-case regret grows with the interval; the minimax action beats CE
+    curve = partial_id_control_certificate()
+    assert curve.control_evalue == 1.0  # = |b_hat|
+    below = curve.half_widths < curve.control_evalue
+    assert curve.sign_identified[below].all()  # action direction robust below the E-value
+    assert not curve.sign_identified[~below].any()  # no longer identified at/above the E-value
+    assert (curve.robust_worst_regret <= curve.ce_worst_regret + 1e-9).all()  # minimax beats CE
+    assert (np.diff(curve.ce_worst_regret) > 0).all()  # worst-case regret grows with the interval
 
 
 def test_doubly_robust_control_vanishes_if_either_model_correct() -> None:

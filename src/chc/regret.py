@@ -234,6 +234,56 @@ def pessimism_variance_certificate(
 
 
 @dataclass(frozen=True)
+class PartialIdControlCurve:
+    """Partial-ID control: worst-case regret ~ Delta^2; action sign robust iff Delta < |b|."""
+
+    half_widths: Vector  # partial-ID / confounding-budget interval half-widths Delta
+    ce_worst_regret: Vector  # worst-case regret of the certainty-equivalent action
+    robust_worst_regret: Vector  # worst-case regret of the minimax-robust action (<= the CE one)
+    control_evalue: float  # = |b_hat|: the half-width where the action direction is unidentified
+    sign_identified: Vector  # per-Delta: is the action direction robust (interval excludes 0)?
+
+
+def partial_id_control_certificate(
+    *,
+    b_hat: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    half_widths: Sequence[float] = (0.2, 0.5, 0.8, 1.0, 1.5),
+    u_points: int = 401,
+    b_points: int = 101,
+) -> PartialIdControlCurve:
+    """Control under PARTIAL IDENTIFICATION and the control E-value (derived in
+    ``validation/partial_id_control.mac``, proved in ``proofs/partial_id_control.v``; grounded in
+    Bareinboim's partial-ID and the sensitivity literature). When the effect is only interval-
+    identified, ``b in [b_hat - Delta, b_hat + Delta]``: (1) the certainty-equivalent action's
+    worst-case regret grows like ``Delta^2``, and the minimax action reduces it; (2) the optimal
+    action has the sign of ``b``, so its **direction** is identified iff the interval excludes 0 --
+    iff ``Delta < |b_hat|``. The critical width ``Delta* = |b_hat|`` is the **control E-value**.
+    """
+
+    def u_star(b: np.ndarray) -> np.ndarray:
+        return xt * b / (b**2 + rr)
+
+    u_ce = float(u_star(np.array(b_hat)))
+    span = abs(u_ce) + 0.5
+    u_grid = np.linspace(u_ce - span, u_ce + span, u_points)
+    widths = np.asarray(half_widths, dtype=np.float64)
+    ce_wc = np.zeros(widths.size)
+    robust_wc = np.zeros(widths.size)
+    sign_ok = np.zeros(widths.size, dtype=bool)
+    for i, delta in enumerate(widths):
+        b_grid = np.linspace(b_hat - delta, b_hat + delta, b_points)
+        u_opt_b = u_star(b_grid)  # per-effect optimum
+        curv = b_grid**2 + rr  # regret(u, b) = curv * (u - u_opt(b))^2
+        ce_wc[i] = float(np.max(curv * (u_ce - u_opt_b) ** 2))  # CE action's worst case
+        reg = curv[None, :] * (u_grid[:, None] - u_opt_b[None, :]) ** 2  # (u, b)
+        robust_wc[i] = float(np.min(np.max(reg, axis=1)))  # minimax over the action
+        sign_ok[i] = bool((b_grid > 0).all() if b_hat > 0 else (b_grid < 0).all())
+    return PartialIdControlCurve(widths, ce_wc, robust_wc, abs(b_hat), sign_ok)
+
+
+@dataclass(frozen=True)
 class DoublyRobustCurve:
     """The AIPW control effect is doubly robust: regret vanishes if either model is correct."""
 

@@ -1,0 +1,27 @@
+/* DISCOVERY / derivation: control under PARTIAL IDENTIFICATION, and the "control E-value".
+   Grounded in Bareinboim (Causal AI, Ch 5.6 Optimization-based / Partial ID) and the sensitivity
+   literature (Rosenbaum; VanderWeele-Ding E-value; Manski bounds). When the effect b is not
+   point-identified but only bounded, b in [b_hat - Delta, b_hat + Delta] (Delta the partial-ID /
+   confounding-budget half-width), two things follow: (1) the certainty-equivalent action's worst-case
+   regret is O(Delta^2); (2) the optimal action u*(b) = x_t b/(b^2+rr) has the SIGN of b, so the
+   action DIRECTION is identified iff the interval excludes 0, i.e. Delta < |b_hat|. The critical
+   half-width Delta* = |b_hat| is the CONTROL E-VALUE: the identification uncertainty at which the
+   optimal decision could reverse -- a decision-relevant sensitivity measure. Maxima is source of truth. */
+display2d : false$
+
+u_opt(b) := xt*b/(b^2 + rr)$
+cost(u, b) := (b*u - xt)^2 + rr*u^2$
+regret(u, b) := ratsimp(cost(u, b) - cost(u_opt(b), b))$
+
+/* (1) worst-case regret of the certainty-equivalent action u_opt(b_hat) when b = b_hat + e, |e|<=Delta.
+   To leading order in e it is (1/2) d^2/de^2 [regret] * e^2 = C * e^2, maximised at |e| = Delta. */
+reg_ce : regret(u_opt(b_hat), b_hat + e)$
+C : ratsimp(subst(e = 0, diff(reg_ce, e, 2)) / 2)$   /* the per-unit worst-case coefficient */
+print("worst-case coeff C = (1/2) d^2 regret/de^2 |_0 =", C)$
+print("=> worst-case control regret <= C * Delta^2  (quadratic in the partial-ID half-width)")$
+
+/* (2) the control E-value: action sign = sign(b); direction robust iff 0 not in [b_hat-Delta, b_hat+Delta] */
+print("u_opt(b) sign:", "u_opt(b) = xt*b/(b^2+rr), so sign(u_opt) = sign(b) for xt>0")$
+print("control E-value Delta* = |b_hat|  (the interval [b_hat-Delta, b_hat+Delta] excludes 0 iff Delta < |b_hat|)")$
+/* at Delta = |b_hat| the lower endpoint hits zero, where the optimal action is u_opt(0) = 0 (no action) */
+print("at Delta = b_hat (>0): lower endpoint b = 0, u_opt(0) =", u_opt(0), " (the 'act' decision reverses)")$
