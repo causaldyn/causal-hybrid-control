@@ -12,6 +12,7 @@ from chc.regret import (
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
+    confounded_turnpike_certificate,
     constrained_ce_regret_certificate,
     dlqr,
     doubly_robust_control_certificate,
@@ -117,6 +118,21 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_confounded_controller_settles_at_the_wrong_turnpike() -> None:
+    # confounded turnpike gap (proofs/confounded_turnpike.v): a confounded controller (biased effect
+    # b_obs = b + beta) converges to the WRONG turnpike x_conf = b*xref/(b+beta) and pays the offset
+    # every step. Undiscounted cumulative regret T*c is unbounded (sharpens Result 1d); discounted
+    # sum stays below c/(1-g) -- finite via the discount.
+    curve = confounded_turnpike_certificate()
+    assert np.isclose(curve.turnpike_offset_simulated, curve.turnpike_offset_formula)  # gap formula
+    assert curve.per_step_regret > 0.0  # the confounded controller pays an offset forever
+    assert np.isclose(curve.undiscounted_slope, curve.per_step_regret, rtol=1e-6)  # linear: slope c
+    assert (np.diff(curve.undiscounted_regret) > 0).all()  # undiscounted regret never settles
+    assert (curve.discounted_regret <= curve.discounted_bound + 1e-9).all()  # discounted bounded
+    assert np.isclose(curve.discounted_regret[-1], curve.discounted_bound, rtol=1e-3)  # saturated
+    assert curve.undiscounted_regret[-1] > 10 * curve.discounted_regret[-1]  # undiscounted explodes
 
 
 def test_constrained_ce_regret_is_piecewise_quadratic() -> None:

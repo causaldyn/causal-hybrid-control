@@ -1,0 +1,42 @@
+/* DISCOVERY / derivation: the CONFOUNDED TURNPIKE GAP -- from Weber, "Optimal Control Theory with
+   Applications in Economics" (2011), Sec 3.5 (infinite-horizon control: turnpike, current-value
+   Hamiltonian). A long-horizon optimal trajectory spends almost all its time near a static "turnpike"
+   (the Hamiltonian equilibrium / optimal steady state). A CONFOUNDED controller, using the biased
+   effect b_obs = b + beta (omitted-variable bias), converges to the WRONG turnpike and pays a per-step
+   offset FOREVER. This upgrades result #1d (dynamic horizon regret, previously hand-argued) to a proper
+   turnpike argument, and yields a NEW discounted-regret certificate via the current-value Hamiltonian.
+   Maxima is the source of truth. */
+display2d : false$
+
+/* setpoint tracking x_{t+1} = b*u_t ; to hold x = xref the control must be u = xref/b. The confounded
+   controller believes the effect is b_obs = b + beta and applies u_conf = xref/b_obs, so the state
+   SETTLES at the biased turnpike x_conf = b*u_conf. */
+bobs : b + beta$
+uconf : xref/bobs$
+xconf : b*uconf$
+print("true turnpike x_true = xref ; confounded turnpike x_conf = b*xref/(b+beta) =", ratsimp(xconf))$
+
+/* TURNPIKE GAP: the offset the confounded controller pays every step. */
+offset : ratsimp(xref - xconf)$
+print("turnpike gap offset = xref - x_conf =", offset, " = xref*beta/(b+beta) = O(beta)")$
+print("check offset - xref*beta/(b+beta) =", ratsimp(offset - xref*beta/(b+beta)), " (0 confirms)")$
+
+/* per-step regret at the biased turnpike (quadratic tracking weight q); the causal controller pays 0. */
+c : q*offset^2$
+print("per-step regret c = q*offset^2 =", c, " (paid every step; causal controller pays 0)")$
+
+/* (B) UNDISCOUNTED cumulative regret over horizon T = T*c -> infinity (LINEAR, turnpike-grounded).
+   This sharpens result #1d: the confounded trajectory is near x_conf for Theta(T) steps (turnpike
+   property), each costing c, so cumulative regret grows without bound. */
+print("undiscounted cumulative regret R(T) = T*c -> infinity (linear in the horizon)")$
+
+/* (C) DISCOUNTED cumulative regret via the current-value Hamiltonian (discount factor g in (0,1)):
+   sum_{t=0}^{T-1} g^t * c = c*(1 - g^T)/(1 - g)  <=  c/(1-g)  < infinity.  So discounting makes the
+   confounded regret FINITE even though the undiscounted version is unbounded -- a new certificate. */
+Dclosed : c*(1 - g^T)/(1 - g)$
+print("discounted R_g(T) = sum g^t c = c*(1-g^T)/(1-g) =", Dclosed, " <= c/(1-g) (finite)")$
+/* verify the geometric-sum identity symbolically for a few T */
+Dsum(TT) := sum(g^t * c, t, 0, TT-1)$
+print("check T=3: sum - closed =", ratsimp(Dsum(3) - subst(T=3, Dclosed)), " (0 confirms geometric sum)")$
+print("check T=5: sum - closed =", ratsimp(Dsum(5) - subst(T=5, Dclosed)), " (0 confirms)")$
+print("limit T->inf of R_g = c/(1-g) =", ratsimp(limit(Dclosed, T, inf)), " (assuming 0<g<1)")$

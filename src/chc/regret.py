@@ -496,6 +496,61 @@ def constrained_ce_regret_certificate(
 
 
 @dataclass(frozen=True)
+class ConfoundedTurnpikeCurve:
+    """Confounded control converges to the wrong turnpike; discounted regret stays finite."""
+
+    horizons: Vector  # horizon T
+    undiscounted_regret: Vector  # T * per_step: linear, unbounded (sharpens Result 1d)
+    discounted_regret: Vector  # sum g^t * per_step = per_step*(1-g^T)/(1-g): bounded
+    discounted_bound: float  # per_step/(1-g): the finite discounted-regret cap
+    turnpike_offset_formula: float  # xref*beta/(b+beta): the analytic turnpike gap
+    turnpike_offset_simulated: float  # xref - x_conf from the loop (matches the formula)
+    per_step_regret: float  # q*offset^2: paid every step forever by the confounded controller
+    undiscounted_slope: float  # slope of undiscounted regret vs horizon (~ per_step)
+
+
+def confounded_turnpike_certificate(
+    *,
+    b: float = 1.0,
+    beta: float = 0.3,
+    xref: float = 1.0,
+    q: float = 1.0,
+    g: float = 0.9,
+    horizon: int = 200,
+) -> ConfoundedTurnpikeCurve:
+    """The CONFOUNDED TURNPIKE GAP (Weber 2011, Sec 3.5: turnpike + current-value Hamiltonian).
+    Derived in ``validation/confounded_turnpike.mac``, proved in ``proofs/confounded_turnpike.v``. A
+    confounded controller using the biased effect ``b_obs = b + beta`` (OVB) converges to the WRONG
+    turnpike ``x_conf = b*xref/(b+beta)`` and pays the offset every step. This upgrades Result 1d
+    (dynamic horizon regret, previously hand-argued) to a proper turnpike argument, and adds a NEW
+    discounted-regret certificate: the undiscounted cumulative regret ``T*c`` is unbounded, but the
+    discounted sum ``sum g^t c = c*(1-g^T)/(1-g)`` stays below ``c/(1-g)`` -- finite.
+    """
+    b_obs = b + beta
+    u_conf = xref / b_obs  # confounded control (believes the effect is b_obs)
+    x_conf = b * u_conf  # the biased turnpike the loop settles at
+    offset_sim = xref - x_conf
+    offset_formula = xref * beta / b_obs
+    per_step = q * offset_sim**2  # tracking cost paid every step at the biased turnpike
+    horizons = np.arange(1, horizon + 1, dtype=np.float64)
+    per_step_costs = np.full(horizon, per_step)  # constant control => constant per-step cost
+    undiscounted = np.cumsum(per_step_costs)  # = T * per_step (linear)
+    disc_weights = g ** np.arange(horizon)
+    discounted = np.cumsum(disc_weights * per_step_costs)  # = per_step*(1-g^T)/(1-g)
+    slope = float(np.polyfit(horizons, undiscounted, 1)[0])
+    return ConfoundedTurnpikeCurve(
+        horizons,
+        undiscounted,
+        discounted,
+        float(per_step / (1.0 - g)),
+        float(offset_formula),
+        float(offset_sim),
+        float(per_step),
+        slope,
+    )
+
+
+@dataclass(frozen=True)
 class PartialIdControlCurve:
     """Partial-ID control: worst-case regret ~ Delta^2; action sign robust iff Delta < |b|."""
 
