@@ -669,6 +669,61 @@ def multichannel_control_certificate(
 
 
 @dataclass(frozen=True)
+class MultivariateInterferenceCurve:
+    """Multi-channel bottleneck in MULTIVARIATE LQ: debias every channel or lose the order."""
+
+    deltas: Vector  # nuisance error delta
+    half_orth_regret: Vector  # direct channel debiased, spillover plug-in: LQ regret ~ delta^2
+    full_orth_regret: Vector  # both channels debiased: LQ regret ~ delta^4
+    half_slope: float  # log-log slope of the half-orth LQ regret (~2)
+    full_slope: float  # log-log slope of the full-orth LQ regret (~4)
+
+
+def multivariate_interference_certificate(
+    *,
+    delta_lo: float = 0.01,
+    delta_hi: float = 0.15,
+    n_delta: int = 10,
+) -> MultivariateInterferenceCurve:
+    """Contribution 2 in the MULTIVARIATE, DYNAMIC LQ setting -- composing multi-channel bottleneck
+    (Result 19) with the multivariate LQ gap (Result 21). The total effect is an input MATRIX
+    ``B = B_d + B_s`` (two interference channels, each a direction of ``B``). Using the exact
+    Dean-Mania-Tu-Recht-Matni LQ regret (``certainty_equivalence_gap``), quadratic in the total
+    input-matrix error: orthogonalising ONLY direct (spillover plug-in, ``O(delta)``) caps the
+    LQ regret at ``O(delta^2)`` -- spillover is the bottleneck; orthogonalising BOTH (each
+    ``O(delta^2)``) reaches ``O(delta^4)``. The scalar order-composition is proved in
+    ``proofs/multichannel_control.v``; here it is shown in the multivariate LQ regret.
+    """
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
+    b_mat = np.array([[0.5], [1.0]])
+    q_mat = np.eye(2)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5])
+    dir_d = np.array([[1.0], [0.0]])  # direct-channel direction of the input matrix B
+    dir_s = np.array([[0.0], [1.0]])  # spillover-channel direction
+    ds = np.geomspace(delta_lo, delta_hi, n_delta)
+    half = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * dir_d + d * dir_s, x0
+            )
+            for d in ds
+        ]
+    )  # direct O(delta^2), spillover plug-in O(delta)
+    full = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * (dir_d + dir_s), x0
+            )
+            for d in ds
+        ]
+    )  # both channels O(delta^2)
+    half_slope = float(np.polyfit(np.log(ds), np.log(half), 1)[0])
+    full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
+    return MultivariateInterferenceCurve(ds, half, full, half_slope, full_slope)
+
+
+@dataclass(frozen=True)
 class OptimalExplorationCurve:
     """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
 
@@ -813,6 +868,51 @@ def adaptive_exploration_certificate(
         sched,
         float(adaptive[-1] / lb[-1]),
     )
+
+
+@dataclass(frozen=True)
+class VanTreesCurve:
+    """Van Trees: Bayes MSE hits the floor 1/(I_prior+n*I_data); confounding lifts the floor."""
+
+    sample_sizes: Vector  # number of observations n
+    empirical_mse: Vector  # Monte-Carlo Bayes risk of the posterior-mean estimator
+    van_trees_bound: Vector  # 1/(I_prior + n*I_data): the van-Trees lower bound
+    confounded_bound: Vector  # 1/(I_prior + n*Vid*I_data): the (higher) floor under confounding
+    tight_ratio: float  # empirical MSE / van-Trees bound at the largest n (~1: tight for Gaussian)
+
+
+def van_trees_certificate(
+    *,
+    tau: float = 2.0,
+    sigma: float = 1.0,
+    v_id: float = 0.4,
+    sample_sizes: Sequence[int] = (5, 10, 20, 50, 100, 200),
+    n_trials: int = 6000,
+) -> VanTreesCurve:
+    """The FORMAL van Trees (Bayesian Cramer-Rao) inequality that Result 20 assumed (derived in
+    ``validation/van_trees.mac``, proved in ``proofs/van_trees.v``). For a Gaussian conjugate model
+    (prior ``N(0,tau^2)``, ``n`` obs ``x = theta + N(0,sigma^2)``) Bayes risk of ANY estimator is
+    at least ``1/(I_prior + n*I_data)``, ``I_prior = 1/tau^2``, ``I_data = 1/sigma^2`` -- and the
+    posterior-mean estimator HITS it (van Trees is tight for the Gaussian). Confounding reduces the
+    per-obs identifying information (fraction ``v_id < 1``), lifting the floor -- the Bayesian /
+    sequential analogue of the CR floor of Results 10/12 and the ``C/m_t`` term of Result 20.
+    """
+    j_prior = 1.0 / tau**2
+    i_data = 1.0 / sigma**2
+    ns = np.asarray(sample_sizes, dtype=np.float64)
+    bound = 1.0 / (j_prior + ns * i_data)
+    conf_bound = 1.0 / (j_prior + ns * v_id * i_data)
+    mse = np.zeros(ns.size)
+    for k, n_obs in enumerate(sample_sizes):
+        errs = np.empty(n_trials)
+        for t in range(n_trials):
+            rng = np.random.default_rng(8263 * t + n_obs)
+            theta = tau * rng.standard_normal()  # draw from the prior
+            x = theta + sigma * rng.standard_normal(n_obs)  # observations
+            post_mean = np.sum(x) / (1.0 / tau**2 + n_obs / sigma**2)  # Bayes estimator (mu0 = 0)
+            errs[t] = (post_mean - theta) ** 2
+        mse[k] = float(np.mean(errs))
+    return VanTreesCurve(ns, mse, bound, conf_bound, float(mse[-1] / bound[-1]))
 
 
 @dataclass(frozen=True)

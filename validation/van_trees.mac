@@ -1,0 +1,38 @@
+/* DISCOVERY / derivation (CONTRIBUTION 3, publishable upgrade): the FORMAL van Trees (Bayesian
+   Cramer-Rao) inequality that result 20 ASSUMED. Van Trees: for a Bayesian model (prior pi on theta,
+   observations X ~ p(x|theta)) and ANY estimator theta_hat, the Bayes risk obeys
+       E[(theta_hat - theta)^2] >= 1 / (I_data + I_prior),
+   where I_prior = prior Fisher information, I_data = E_theta[Fisher info of the likelihood]. Unlike
+   ordinary Cramer-Rao, this applies to SEQUENTIAL/adaptive designs and to ANY (even biased) estimator.
+   Proof: Cauchy-Schwarz on the Bayesian score psi = d/dtheta log(pi(theta) p(X|theta)) --
+   1 = (E[psi*Delta])^2 <= E[psi^2] E[Delta^2] = (I_data+I_prior) * MSE, Delta = theta_hat - theta. This
+   is the floor C/m_t of result 20, now proved (the m_t is exactly I_prior + accumulated I_data). Maxima
+   is the source of truth. */
+display2d : false$
+
+/* Gaussian-Gaussian conjugate instance where van Trees is TIGHT: prior theta ~ N(mu0, tau^2), n obs
+   x_i = theta + N(0,sigma^2). Prior info J = 1/tau^2, per-obs info I = 1/sigma^2. */
+J : 1/tau^2$
+Ipe : 1/sigma^2$
+total : J + n*Ipe$
+vtbound : 1/total$
+print("prior info J = 1/tau^2 ; per-obs info I = 1/sigma^2 ; total info after n obs =", total)$
+print("van Trees bound 1/(I_data + I_prior) =", ratsimp(vtbound))$
+
+/* the Gaussian-Gaussian posterior variance (the Bayes-optimal MSE) equals the van Trees bound: TIGHT */
+postvar : 1/(1/tau^2 + n/sigma^2)$
+print("Gaussian posterior variance (Bayes MSE) =", ratsimp(postvar))$
+print("tightness check: vtbound - postvar =", ratsimp(vtbound - postvar), " (0 => van Trees is TIGHT)")$
+
+/* the Cauchy-Schwarz core (proved in Rocq): with the score identity E[psi*Delta] = 1 and the info
+   decomposition E[psi^2] = total, MSE >= 1^2 / total = 1/(I_data + I_prior). */
+print("Cauchy-Schwarz: (E[psi*Delta])^2 <= E[psi^2] * E[Delta^2] ; E[psi*Delta]=1, E[psi^2]=total")$
+print("=> 1 <= total * MSE => MSE >= 1/total  (Rocq: cauchy_schwarz + van_trees_inequality)")$
+
+/* CONFOUNDING reduces the per-obs IDENTIFYING information (fraction Vid<1 of the variation identifies
+   the causal effect), so I_data drops to n*Vid/sigma^2 and the floor 1/(J + n*Vid/sigma^2) is HIGHER
+   -- the Bayesian/sequential analogue of results 10 and 12. */
+Iconf : Vid/sigma^2$
+print("confounded per-obs info = Vid/sigma^2 (Vid<1) => floor 1/(J + n*Vid/sigma^2) HIGHER")$
+print("floor ratio confounded/experimental =",
+      ratsimp((1/(J + n*Iconf))/(1/(J + n*Ipe))), " >= 1 for Vid <= 1")$

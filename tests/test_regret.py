@@ -28,6 +28,7 @@ from chc.regret import (
     interference_orthogonal_certificate,
     interference_regret_certificate,
     multichannel_control_certificate,
+    multivariate_interference_certificate,
     multivariate_transfer_certificate,
     nonlinear_regret_certificate,
     optimal_exploration_certificate,
@@ -37,6 +38,7 @@ from chc.regret import (
     regret_scaling,
     strong_convexity_regret_bound,
     transportability_regret_certificate,
+    van_trees_certificate,
 )
 
 A = np.array([[1.0, 0.1], [0.0, 0.95]])
@@ -127,6 +129,20 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
 
 
+def test_van_trees_inequality_is_tight_for_the_gaussian_conjugate() -> None:
+    # Contribution 3, formal (proofs/van_trees.v): the van-Trees (Bayesian CR) inequality that
+    # Result 20 assumed. Bayes risk >= 1/(I_prior + n*I_data); the posterior-mean estimator hits it
+    # (tight for Gaussian). Confounding shrinks the identifying info, raising the floor.
+    curve = van_trees_certificate()
+    assert (curve.empirical_mse >= 0.9 * curve.van_trees_bound).all()  # van Trees is a lower bound
+    assert np.allclose(
+        curve.empirical_mse, curve.van_trees_bound, rtol=0.15
+    )  # tight for the Gaussian
+    assert (curve.confounded_bound > curve.van_trees_bound).all()  # confounding raises the floor
+    assert np.isclose(curve.tight_ratio, 1.0, atol=0.15)  # Bayes MSE hits the bound
+    assert (np.diff(curve.empirical_mse) < 0).all()  # MSE falls with more observations
+
+
 def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     # Contribution 3 (proofs/adaptive_exploration.v): control with online effect learning.
     # A tapering schedule v_t ~ 1/sqrt(t) reaches cumulative regret Theta(sqrt(T)) -- matching the
@@ -152,6 +168,20 @@ def test_multichannel_control_needs_every_channel_orthogonalised() -> None:
     assert curve.full_slope > 3.0  # full-orth: both channels debiased -> ~O(delta^4)
     assert curve.full_slope > curve.half_slope + 1.0  # orthogonalising every channel lifts order
     assert -0.75 < curve.cluster_se_slope < -0.35  # estimate concentrates at ~1/sqrt(G) (cluster n)
+
+
+def test_multivariate_interference_needs_every_channel_orthogonalised() -> None:
+    # Contribution 2, multivariate (composes proofs/multichannel_control.v with multivariate LQ):
+    # the total effect is an input MATRIX B = B_d + B_s. On a 2-state/1-input LQ, orthogonalising
+    # only direct (spillover plug-in) caps the LQ regret at O(delta^2); both -> O(delta^4).
+    curve = multivariate_interference_certificate()
+    assert np.isclose(
+        curve.half_slope, 2.0, atol=0.2
+    )  # spillover plug-in bottleneck -> LQ ~ delta^2
+    assert np.isclose(curve.full_slope, 4.0, atol=0.3)  # both channels debiased -> LQ ~ delta^4
+    assert (
+        curve.full_slope > curve.half_slope + 1.5
+    )  # order-bottleneck in the multivariate LQ setting
 
 
 def test_transfer_theorem_holds_in_multivariate_lq() -> None:

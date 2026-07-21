@@ -100,6 +100,7 @@ from chc.regret import (
     InterferenceConvexityCurve,
     InterferenceOrthogonalCurve,
     MultiChannelControlCurve,
+    MultivariateInterferenceCurve,
     MultivariateTransferCurve,
     NonlinearRegretCurve,
     OptimalExplorationCurve,
@@ -108,6 +109,7 @@ from chc.regret import (
     PessimismCurve,
     RegretCurve,
     TransportabilityCurve,
+    VanTreesCurve,
     adaptive_exploration_certificate,
     bandit_causal_certificate,
     causal_vs_predictive_certificate,
@@ -128,6 +130,7 @@ from chc.regret import (
     interference_orthogonal_certificate,
     interference_regret_certificate,
     multichannel_control_certificate,
+    multivariate_interference_certificate,
     multivariate_transfer_certificate,
     nonlinear_regret_certificate,
     optimal_exploration_certificate,
@@ -137,6 +140,7 @@ from chc.regret import (
     regret_scaling,
     strong_convexity_regret_bound,
     transportability_regret_certificate,
+    van_trees_certificate,
 )
 from chc.residual import GraphResidual, KANResidual, MLPResidual, ZeroResidual
 from chc.scm import SyntheticControlResult, augmented_synthetic_control, synthetic_control
@@ -212,6 +216,7 @@ __all__ = [
     "MeanFieldControl",
     "MeanFieldTransport",
     "MultiChannelControlCurve",
+    "MultivariateInterferenceCurve",
     "MultivariateTransferCurve",
     "NeighbourMessagePassing",
     "NonlinearRegretCurve",
@@ -230,6 +235,7 @@ __all__ = [
     "SyntheticControlResult",
     "TigramiteDiscovery",
     "TransportabilityCurve",
+    "VanTreesCurve",
     "WassersteinPenalty",
     "ZeroResidual",
     "__version__",
@@ -296,6 +302,7 @@ __all__ = [
     "marketplace_report",
     "mpc_control",
     "multichannel_control_certificate",
+    "multivariate_interference_certificate",
     "multivariate_transfer_certificate",
     "naive_pooled_effect",
     "nonlinear_regret_certificate",
@@ -345,4 +352,5 @@ __all__ = [
     "transport_step",
     "transportability_regret_certificate",
     "twoway_fixed_effects_att",
+    "van_trees_certificate",
 ]
