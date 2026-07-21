@@ -18,6 +18,7 @@ from chc.regret import (
     doubly_robust_control_certificate,
     dynamic_causal_regret_certificate,
     finite_horizon_pl_certificate,
+    highprob_regret_certificate,
     hinf_robust_regret_certificate,
     information_lower_bound_certificate,
     interference_convexity_certificate,
@@ -118,6 +119,18 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_regret_band_holds_with_high_probability() -> None:
+    # high-prob regret bound (proofs/highprob_regret.v): the sub-Gaussian upgrade of Result 10 (in
+    # expectation). With prob >= 1-delta, regret <= 2*log(2/delta) * the CR floor; confounding
+    # (smaller V_id) widens the band. Concentration checked by Monte-Carlo coverage.
+    curve = highprob_regret_certificate()
+    assert (curve.empirical_coverage >= 1 - curve.deltas).all()  # coverage >= 1-delta
+    assert np.allclose(curve.band_over_floor, 2 * np.log(2 / curve.deltas))  # band = 2*log(2/delta)
+    assert (np.diff(curve.band_over_floor) > 0).all()  # smaller delta (more confidence) => wider
+    assert (curve.confounded_bands > curve.highprob_bands).all()  # confounding widens the band
+    assert curve.cr_floor > 0.0  # the Result 10 in-expectation floor exists
 
 
 def test_confounded_controller_settles_at_the_wrong_turnpike() -> None:

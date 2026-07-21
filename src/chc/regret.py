@@ -283,6 +283,57 @@ def information_lower_bound_certificate(
 
 
 @dataclass(frozen=True)
+class HighProbRegretCurve:
+    """High-probability regret band: w.p. >= 1-delta, regret <= 2*log(2/delta) * the CR floor."""
+
+    deltas: Vector  # confidence levels delta (band holds with probability >= 1-delta)
+    highprob_bands: Vector  # C*2*sigma^2*log(2/delta)/(n*V_exp): the finite-sample band
+    empirical_coverage: Vector  # MC fraction of trials with regret <= band (should be >= 1-delta)
+    confounded_bands: Vector  # the (wider) band under confounding (residual V_conf < V_exp)
+    band_over_floor: Vector  # band / CR-floor = 2*log(2/delta): the log(1/delta) confidence price
+    cr_floor: float  # the Result 10 in-expectation floor C*sigma^2/(n*V_exp)
+
+
+def highprob_regret_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    sigma: float = 0.5,
+    n: int = 500,
+    v_exp: float = 2.0,
+    v_conf: float = 1.0,
+    deltas: Sequence[float] = (0.5, 0.25, 0.1, 0.05, 0.01),
+    n_trials: int = 4000,
+) -> HighProbRegretCurve:
+    """High-probability regret band -- the sub-Gaussian upgrade of the Cramer-Rao lower bound
+    (Result 10, in expectation; derived in ``validation/highprob_regret.mac``, proved in
+    ``proofs/highprob_regret.v``). The effect estimator concentrates: ``|b_hat-b| <= r(delta)`` with
+    probability ``>= 1-delta``, ``r(delta)^2 = 2*sigma^2*log(2/delta)/(n*V_id)``. Composing with
+    certainty-equivalence quadraticity ``regret = C*(b_hat-b)^2`` gives, w.p. ``>= 1-delta``,
+    ``regret <= 2*log(2/delta) * floor`` -- the finite-sample band is a ``log(1/delta)`` multiple of
+    the in-expectation floor, and confounding (smaller ``V_id``) widens it. The concentration is
+    checked here by Monte-Carlo coverage; the deterministic implication is proved in Rocq.
+    """
+    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
+    ds = np.asarray(deltas, dtype=np.float64)
+    logs = np.log(2.0 / ds)
+    floor = coeff * sigma**2 / (n * v_exp)
+    bands = coeff * 2.0 * sigma**2 * logs / (n * v_exp)
+    conf_bands = coeff * 2.0 * sigma**2 * logs / (n * v_conf)
+    coverage = np.zeros(ds.size)
+    regrets = np.empty(n_trials)
+    for t in range(n_trials):
+        rng = np.random.default_rng(4241 * t + n)
+        u = np.sqrt(v_exp) * rng.standard_normal(n)
+        y = b * u + sigma * rng.standard_normal(n)
+        regrets[t] = coeff * (np.dot(u, y) / np.dot(u, u) - b) ** 2
+    for i, band in enumerate(bands):
+        coverage[i] = float(np.mean(regrets <= band))
+    return HighProbRegretCurve(ds, bands, coverage, conf_bands, bands / floor, float(floor))
+
+
+@dataclass(frozen=True)
 class OptimalExplorationCurve:
     """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
 

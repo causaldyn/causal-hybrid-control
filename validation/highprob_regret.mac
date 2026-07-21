@@ -1,0 +1,33 @@
+/* DISCOVERY / derivation: a HIGH-PROBABILITY finite-sample regret bound -- the sub-Gaussian upgrade of
+   the Cramer-Rao lower bound (Result 10, which is in EXPECTATION). Instead of E[regret] >= floor, we
+   want: with probability >= 1 - delta, regret <= band(delta). The effect estimator b_hat concentrates:
+   b_hat - b is sub-Gaussian with variance proxy sigma^2/(n*V_id), so |b_hat - b| <= r(delta) with prob
+   >= 1 - delta, r(delta) = sigma*sqrt(2*log(2/delta)/(n*V_id)). Composing with certainty-equivalence
+   quadraticity regret = C*(b_hat-b)^2 gives a high-probability band = 2*log(2/delta) times the
+   Cramer-Rao floor. Maxima is the source of truth. */
+display2d : false$
+
+C : xt^2*(rr - b^2)^2 / (rr + b^2)^3$
+L : log(2/delta)$                          /* the log-confidence factor */
+
+/* sub-Gaussian radius on the effect error and the resulting high-probability regret band */
+r2 : 2*sigma^2*L/(n*Vid)$                  /* r(delta)^2: with prob >= 1-delta, (b_hat-b)^2 <= r2 */
+band : C*r2$
+print("high-prob band(delta) = C*r^2 =", band, " = C*2*sigma^2*log(2/delta)/(n*Vid)")$
+
+/* the Cramer-Rao floor from Result 10 (in expectation) and the ratio band/floor */
+floor : C*sigma^2/(n*Vid)$
+print("Cramer-Rao floor (Result 10) = C*sigma^2/(n*Vid) =", floor)$
+print("ratio band/floor =", ratsimp(band/floor), " = 2*log(2/delta) : the log(1/delta) confidence price")$
+
+/* the tail: regret = C*(b_hat-b)^2, and P(regret > band) = P(|Z| > sqrt(2L)) <= 2*exp(-L) = delta
+   (Gaussian/sub-Gaussian tail with L = log(2/delta)), so coverage P(regret <= band) >= 1 - delta. */
+print("tail bound P(|Z| > sqrt(2L)) <= 2*exp(-L) =", ratsimp(2*exp(-L)), " = delta  => coverage >= 1-delta")$
+
+/* CONFOUNDING widens the band: V_id drops from experimental Vu to residual Vu - Cuz^2/Vz < Vu, so the
+   band (antitone in V_id) is WIDER -- the high-probability analogue of result 10's higher floor. */
+Vexp : Vu$
+Vconf : Vu - Cuz^2/Vz$
+print("V_id experimental =", Vexp, " ; confounded =", Vconf, " (< experimental)")$
+print("band ratio confounded/experimental =", ratsimp(subst(Vid=Vconf,band)/subst(Vid=Vexp,band)),
+      " = Vu/(Vu - Cuz^2/Vz) >= 1 : confounding WIDENS the high-probability band")$
