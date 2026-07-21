@@ -749,6 +749,109 @@ def multivariate_interference_certificate(
 
 
 @dataclass(frozen=True)
+class EndToEndC2Curve:
+    """C2 END-TO-END on a clustered LQ network: regret ~ 1/G (sampling floor) + (sum delta^p)^2."""
+
+    g_grid: Vector  # cluster counts G (delta-sweep held at delta_small)
+    regret_vs_g: Vector  # mean multivariate-LQ regret from REAL cross-fit DML: ~ 1/G
+    g_slope: float  # log-log slope of regret vs G (~ -1: the statistical 1/G floor)
+    deltas: Vector  # nuisance error delta (deterministic bias-order sweep, sampling fixed)
+    half_regret: Vector  # half-orth (spillover plug-in) LQ regret: ~ delta^2 (bottleneck)
+    full_regret: Vector  # full-orth LQ regret: ~ delta^4
+    half_slope: float  # ~ 2
+    full_slope: float  # ~ 4
+    floor_g: float  # regret at the largest G (small delta): the irreducible sampling floor
+
+
+def end_to_end_c2_certificate(
+    *,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    alpha_u: float = 1.0,
+    alpha_g: float = 0.8,
+    gamma: float = 1.0,
+    cluster_size: int = 10,
+    tau: float = 0.5,
+    noise: float = 0.5,
+    delta_small: float = 0.002,
+    g_grid: Sequence[int] = (10, 20, 40, 80, 160),
+    deltas: Sequence[float] = (0.02, 0.04, 0.07, 0.12, 0.2),
+    n_seeds: int = 60,
+) -> EndToEndC2Curve:
+    """CONTRIBUTION 2, END-TO-END: ``multichannel causal estimation -> bottleneck rate -> dynamic
+    control regret`` on a clustered network with a multivariate LQ plant (derived in
+    ``validation/c2_end_to_end.mac``, control-side reduction proved in ``proofs/c2_end_to_end.v``).
+    The cross-fit two-channel Robinson-DML total-effect error is ``||B_hat - B|| = O_p(G^{-1/2} +
+    delta_d^{p_d} + delta_s^{p_s})`` (cluster sampling + two nuisance remainders); through the MTR
+    local quadratic gap the regret is ``R = O_p[G^{-1} + (delta_d^{p_d} + delta_s^{p_s})^2]``. Two
+    regimes are shown:
+    (1) a **G-sweep** with REAL cross-fit DML at tiny ``delta`` (sampling-dominated, ``R ~ 1/G``);
+    (2) a deterministic **delta-sweep** (half-orth ``~ delta^2``, full-orth ``~ delta^4``).
+    Rocq proves the composition (the ``s + e_d + e_s`` reduction); the per-channel cluster cross-fit
+    RATES are statistical assumptions (Chernozhukov; Robinson; Hays & Raghavan), not proved.
+    """
+    b_total = b_d + b_s
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
+    b_mat = np.array([[0.5], [1.0]])
+    q_mat = np.eye(2)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5])
+    dir_d = np.array([[1.0], [0.0]])  # direct-channel direction of the input matrix B
+    dir_s = np.array([[0.0], [1.0]])  # spillover-channel direction
+    unit = (dir_d - 0.5 * dir_s) / np.linalg.norm(dir_d - 0.5 * dir_s)  # scalar-error -> matrix map
+
+    def simulate(rng: np.random.Generator, gclust: int) -> tuple[np.ndarray, ...]:
+        cid = np.repeat(np.arange(gclust), cluster_size)
+        n = cid.size
+        z = rng.standard_normal(n)
+        a = (tau * rng.standard_normal(gclust))[cid]  # within-cluster dependence
+        u = alpha_u * z + 0.7 * rng.standard_normal(n)
+        g = alpha_g * z + 0.7 * rng.standard_normal(n)
+        y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
+        return z, u, g, y, np.mod(np.arange(n), 2)
+
+    def lq_regret(effect_err: float) -> float:
+        return certainty_equivalence_gap(
+            a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + effect_err * unit, x0
+        )
+
+    # (1) G-sweep: real cross-fit DML (full-orth, tiny delta) -> sampling-dominated regret ~ 1/G
+    gs = np.asarray(g_grid, dtype=np.float64)
+    reg_g = np.zeros(gs.size)
+    for i, gc in enumerate(g_grid):
+        errs = np.empty(n_seeds)
+        for s in range(n_seeds):
+            z, u, g, y, fold = simulate(np.random.default_rng(9001 * s + gc), gc)
+            errs[s] = _dml_two_channel(z, u, g, y, delta_small, True, fold) - b_total
+        reg_g[i] = float(np.mean([lq_regret(e) for e in errs]))  # mean regret ~ Var(err) ~ 1/G
+    g_slope = float(np.polyfit(np.log(gs), np.log(reg_g), 1)[0])
+
+    # (2) delta-sweep: deterministic bias order (sampling fixed) -> half ~ delta^2, full ~ delta^4
+    ds = np.asarray(deltas, dtype=np.float64)
+    half = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * dir_d + d * dir_s, x0
+            )
+            for d in ds
+        ]
+    )
+    full = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * (dir_d + dir_s), x0
+            )
+            for d in ds
+        ]
+    )
+    half_slope = float(np.polyfit(np.log(ds), np.log(half), 1)[0])
+    full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
+    return EndToEndC2Curve(
+        gs, reg_g, g_slope, ds, half, full, half_slope, full_slope, float(reg_g[-1])
+    )
+
+
+@dataclass(frozen=True)
 class OptimalExplorationCurve:
     """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
 

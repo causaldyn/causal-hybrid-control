@@ -1,0 +1,34 @@
+/* DISCOVERY / derivation (CONTRIBUTION 2, END-TO-END): compose the cluster-SAMPLING error with the two
+   nuisance channels into the downstream control regret. On a clustered network with G clusters, the
+   cross-fit two-channel Robinson-DML total-effect estimate obeys
+       ||B_hat - B|| <= s + e_d + e_s,
+   where s = O_p(1/sqrt(G)) is the cluster-robust SAMPLING term and e_d, e_s are the two channels'
+   nuisance-induced REMAINDERS (e_j = O(delta_j^{p_j})). The certainty-equivalent controller's regret
+   obeys the MTR local quadratic bound R <= cc*||B_hat - B||^2 (cc the LQ curvature, small-error +
+   stabilising). Compose:
+       R <= cc*(s + e_d + e_s)^2 <= 3*cc*(s^2 + e_d^2 + e_s^2),
+   and with s^2 = O(1/G):
+       full-orth (e_d, e_s = O(delta^2))       => R = O_p(1/G + delta^4),
+       half-orth (e_s = O(delta), bottleneck)  => R = O_p(1/G + delta^2).
+   The control-side reduction (the two displays) is proved in proofs/c2_end_to_end.v; the per-channel
+   cluster cross-fit RATES (s ~ 1/sqrt(G), e_j ~ delta_j^{p_j}) are the statistical assumptions -- cited
+   (Chernozhukov et al. DML; Robinson; Hays & Raghavan shared-state interference) and certified
+   empirically. Maxima is the source of truth for the algebra. */
+display2d : false$
+
+/* (i) the three-term SOS: (a+b+c)^2 <= 3*(a^2+b^2+c^2). Residual = a sum of three squares. */
+sos3 : ratsimp( 3*(a^2+b^2+c^2) - (a+b+c)^2 - ((a-b)^2+(b-c)^2+(c-a)^2) )$
+print("three-term SOS check: 3(a^2+b^2+c^2)-(a+b+c)^2 - [(a-b)^2+(b-c)^2+(c-a)^2] =", sos3,
+      " (0 confirms (a+b+c)^2 <= 3(a^2+b^2+c^2); Rocq: sum3_sq_bound)")$
+
+/* (ii) END-TO-END, full-orthogonal: s^2 = fG (the 1/G cluster floor), e_d = e_s = delta^2. */
+Rfull : ratsimp( 3*(fG + (d^2)^2 + (d^2)^2) )$
+print("full-orth end-to-end: R/cc <= 3*(fG + 2*delta^4) =", Rfull, " = O(1/G + delta^4)")$
+
+/* (iii) END-TO-END, half-orthogonal: e_s = delta (spillover plug-in -- the bottleneck), e_d = delta^2. */
+Rhalf : ratsimp( 3*(fG + (d^2)^2 + d^2) )$
+print("half-orth end-to-end: R/cc <= 3*(fG + delta^4 + delta^2) =", Rhalf, " = O(1/G + delta^2)")$
+
+/* the two regimes. */
+print("=> two regimes: nuisance-dominated R ~ delta^(2*min channel order); sampling-dominated R ~ 1/G")$
+print("bottleneck: the regret delta-order is 2*min over channels (half -> 2, full -> 4)")$

@@ -19,6 +19,7 @@ from chc.regret import (
     dlqr,
     doubly_robust_control_certificate,
     dynamic_causal_regret_certificate,
+    end_to_end_c2_certificate,
     ensemble_control_certificate,
     finite_horizon_pl_certificate,
     highprob_regret_certificate,
@@ -182,6 +183,20 @@ def test_multivariate_interference_needs_every_channel_orthogonalised() -> None:
     assert (
         curve.full_slope > curve.half_slope + 1.5
     )  # order-bottleneck in the multivariate LQ setting
+
+
+def test_end_to_end_c2_two_regimes() -> None:
+    # Contribution 2, END-TO-END (proofs/c2_end_to_end.v): multichannel causal estimation ->
+    # bottleneck rate -> dynamic control regret on a clustered LQ network, R = O_p[G^-1 +
+    # (sum delta^p)^2]. Two regimes: real cross-fit DML G-sweep (sampling-dominated, ~1/G) and a
+    # deterministic delta-sweep (half ~ delta^2, full ~ delta^4).
+    curve = end_to_end_c2_certificate()
+    assert -1.3 < curve.g_slope < -0.6  # sampling floor: regret ~ 1/G with real cross-fit DML
+    assert curve.regret_vs_g[-1] < curve.regret_vs_g[0]  # regret falls as clusters grow
+    assert curve.floor_g > 0.0  # the 1/G sampling floor is irreducible (cluster_floor_irreducible)
+    assert np.isclose(curve.half_slope, 2.0, atol=0.2)  # half-orth: spillover bottleneck -> delta^2
+    assert np.isclose(curve.full_slope, 4.0, atol=0.3)  # full-orth -> delta^4
+    assert curve.full_slope > curve.half_slope + 1.5  # every channel debiased lifts the order
 
 
 def test_transfer_theorem_holds_in_multivariate_lq() -> None:
