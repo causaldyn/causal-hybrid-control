@@ -13,6 +13,7 @@ from chc.regret import (
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
+    clustered_lower_bound_certificate,
     composition_transfer_certificate,
     confounded_turnpike_certificate,
     constrained_ce_regret_certificate,
@@ -197,6 +198,21 @@ def test_end_to_end_c2_two_regimes() -> None:
     assert np.isclose(curve.half_slope, 2.0, atol=0.2)  # half-orth: spillover bottleneck -> delta^2
     assert np.isclose(curve.full_slope, 4.0, atol=0.3)  # full-orth -> delta^4
     assert curve.full_slope > curve.half_slope + 1.5  # every channel debiased lifts the order
+
+
+def test_clustered_lower_bound_makes_the_sampling_floor_irreducible() -> None:
+    # Contribution 2, the LOWER bound (proofs/clustered_van_trees.v): the G^-1 sampling regret is
+    # IRREDUCIBLE, not just an upper bound. Clustered van Trees (effective info I0 + G*Ic) + the
+    # lower-Lipschitz regret map give G*E[R] >= kappa0/(I0+Ic) > 0 for all G, up to kappa0/Ic.
+    # Empirically G*regret is a flat, positive plateau -> regret ~ 1/G on BOTH sides (tight).
+    curve = clustered_lower_bound_certificate()
+    assert (
+        curve.floor_positive > 0.0
+    )  # uniform positive lower bound (regret_floor_uniform_positive)
+    assert curve.c0_estimate > 0.0  # the kappa0/Ic plateau constant
+    assert abs(curve.plateau_slope) < 0.3  # G*regret flat => regret ~ 1/G exactly, not o(1/G)
+    ratio = float(np.max(curve.g_times_regret) / np.min(curve.g_times_regret))
+    assert ratio < 2.0  # G*regret stays within a bounded band (a genuine plateau, not decay)
 
 
 def test_transfer_theorem_holds_in_multivariate_lq() -> None:

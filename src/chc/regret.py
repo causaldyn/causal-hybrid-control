@@ -638,7 +638,7 @@ def multichannel_control_certificate(
     The control-relevant total effect of a uniform action is ``B = b_d + b_s`` (direct + spillover):
     two interference channels, each with its own Neyman-orthogonal moment. The NOVELTY is the
     downstream control-regret consequence of incomplete orthogonalisation (DML *under interference*
-    is not itself new -- Munro-Kuang-Wager, Wager-Xu): orthogonalising ONLY the direct channel caps
+    is not itself new -- Munro-Xu-Wager, Wager-Xu): orthogonalising ONLY the direct channel caps
     the control regret at ``O(delta^2)`` (the un-orthogonalised spillover bottleneck), while
     orthogonalising BOTH reaches ``O(delta^4)`` -- regret order is ``2*min`` over channel orders.
     ONLY this order-bottleneck is proved in Rocq; the per-channel cross-fit RATES that would make
@@ -848,6 +848,78 @@ def end_to_end_c2_certificate(
     full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
     return EndToEndC2Curve(
         gs, reg_g, g_slope, ds, half, full, half_slope, full_slope, float(reg_g[-1])
+    )
+
+
+@dataclass(frozen=True)
+class ClusteredLowerBoundCurve:
+    """Clustered van-Trees LOWER bound: G*regret -> c0 > 0, so the 1/G rate is TIGHT (two-sided)."""
+
+    g_grid: Vector  # cluster counts G
+    mean_regret: Vector  # mean multivariate-LQ regret from real cross-fit DML at tiny delta
+    g_times_regret: Vector  # G * mean_regret: bounded below by a positive c0 (irreducible)
+    plateau_slope: float  # log-log slope of G*regret vs G (~0: flat => regret ~ 1/G on BOTH sides)
+    c0_estimate: float  # largest-G plateau value (the kappa0/Ic constant)
+    floor_positive: float  # min over G of G*regret (> 0: the uniform positive lower bound)
+
+
+def clustered_lower_bound_certificate(
+    *,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    alpha_u: float = 1.0,
+    alpha_g: float = 0.8,
+    gamma: float = 1.0,
+    cluster_size: int = 10,
+    tau: float = 0.5,
+    noise: float = 0.5,
+    delta_small: float = 0.002,
+    g_grid: Sequence[int] = (20, 40, 80, 160, 320),
+    n_seeds: int = 80,
+) -> ClusteredLowerBoundCurve:
+    """CONTRIBUTION 2, the LOWER bound (proofs/clustered_van_trees.v): the ``1/G`` sampling regret
+    is IRREDUCIBLE, not just an upper bound. By clustered van Trees the effective Fisher info is
+    ``I0 + G*Ic``, so ``E[(Bhat-B)^2] >= 1/(I0+G*Ic)``; composing with the lower-Lipschitz regret
+    map ``R >= kappa0*(Bhat-B)^2`` gives ``G*E[R] >= kappa0/(I0+Ic) > 0`` for all ``G``, increasing
+    toward ``kappa0/Ic`` (Maxima limit). This certificate confirms it: with REAL cross-fit DML (tiny
+    ``delta``, sampling-dominated), ``G*regret`` is roughly CONSTANT and bounded below by a positive
+    ``c0`` -- so regret ``~ 1/G`` on BOTH sides (tight rate), not ``o(1/G)``. Contrast
+    ``end_to_end_c2_certificate``, whose G-sweep showed only the ``~1/G`` upper trend.
+    """
+    b_total = b_d + b_s
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
+    b_mat = np.array([[0.5], [1.0]])
+    q_mat = np.eye(2)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5])
+    unit = np.array([[1.0], [-0.5]])
+    unit = unit / np.linalg.norm(unit)
+
+    def simulate(rng: np.random.Generator, gclust: int) -> tuple[np.ndarray, ...]:
+        cid = np.repeat(np.arange(gclust), cluster_size)
+        n = cid.size
+        z = rng.standard_normal(n)
+        a = (tau * rng.standard_normal(gclust))[cid]
+        u = alpha_u * z + 0.7 * rng.standard_normal(n)
+        g = alpha_g * z + 0.7 * rng.standard_normal(n)
+        y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
+        return z, u, g, y, np.mod(np.arange(n), 2)
+
+    def lq_regret(err: float) -> float:
+        return certainty_equivalence_gap(a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + err * unit, x0)
+
+    gs = np.asarray(g_grid, dtype=np.float64)
+    reg = np.zeros(gs.size)
+    for i, gc in enumerate(g_grid):
+        errs = np.empty(n_seeds)
+        for s in range(n_seeds):
+            z, u, g, y, fold = simulate(np.random.default_rng(4127 * s + gc), gc)
+            errs[s] = _dml_two_channel(z, u, g, y, delta_small, True, fold) - b_total
+        reg[i] = float(np.mean([lq_regret(e) for e in errs]))
+    g_times = gs * reg
+    plateau_slope = float(np.polyfit(np.log(gs), np.log(g_times), 1)[0])
+    return ClusteredLowerBoundCurve(
+        gs, reg, g_times, plateau_slope, float(g_times[-1]), float(np.min(g_times))
     )
 
 

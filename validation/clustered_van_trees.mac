@@ -1,0 +1,36 @@
+/* DISCOVERY (CONTRIBUTION 2, the LOWER bound): the clustered van-Trees lower bound that makes the
+   G^{-1} control-regret rate IRREDUCIBLE. The end-to-end theorem (Result 24) proved only R <= c/G at
+   zero nuisance error -- an UPPER bound. Here we establish the matching LOWER bound
+       liminf_{G->inf} G * E[R] >= kappa0 / Ic = c0 > 0,
+   so no estimator (biased or not) makes the sampling regret decay faster than 1/G. Ingredients:
+   (i) the van-Trees (Bayesian Cramer-Rao) MSE floor with the effective information I0 + G*Ic (G
+   independent clusters each contributing per-cluster info Ic; prior info I0); (ii) a LOWER-Lipschitz
+   regret map R >= kappa0*(bhat-b)^2 (the optimal action is a diffeomorphism with derivative bounded
+   below away from the knife-edge). Maxima is the source of truth for the algebra. */
+display2d : false$
+
+/* (i) the regret map and its LOWER-Lipschitz constant. u*(b) = xt*b/(b^2+rr); the exact regret is
+   (b^2+rr)*(u*(bhat)-u*(b))^2. The action derivative du*/db is nonzero away from the knife-edge
+   b^2 = rr, so on any interval avoiding it |u*(bhat)-u*(b)| >= L_min*|bhat-b| and hence
+   regret >= (b^2+rr)*L_min^2*(bhat-b)^2 =: kappa0*(bhat-b)^2. */
+us(b) := xt*b/(b^2+rr)$
+dusdb : ratsimp(diff(us(b), b))$
+print("du*/db =", dusdb, "  (nonzero away from b^2=rr => lower-Lipschitz L_min>0)")$
+
+/* (ii) van-Trees clustered MSE floor and its limit. G independent clusters => total Fisher information
+   I0 + G*Ic; van Trees: E[(bhat-b)^2] >= 1/(I0+G*Ic). Hence G*MSE >= G/(I0+G*Ic). */
+floorG : G/(I0 + G*Ic)$
+print("G*MSE >= G/(I0+G*Ic); limit G->inf =", limit(floorG, G, inf),
+      "  = 1/Ic > 0  => the 1/G rate is IRREDUCIBLE (not o(1/G))")$
+print("d/dG [G/(I0+G*Ic)] =", ratsimp(diff(floorG, G)),
+      "  (= I0/(I0+G*Ic)^2 >= 0: increasing in G toward 1/Ic)")$
+
+/* uniform positive floor for all G>=1 (so G*MSE never vanishes): G/(I0+G*Ic) - 1/(I0+Ic) has sign of
+   (G-1)*I0 >= 0. */
+gap1 : ratsimp( (G/(I0+G*Ic) - 1/(I0+Ic)) * (I0+G*Ic)*(I0+Ic) )$
+print("uniform-floor check: [G/(I0+G*Ic) - 1/(I0+Ic)]*(I0+G*Ic)*(I0+Ic) =", gap1,
+      "  (= (G-1)*I0 >= 0 for G>=1: G*MSE >= 1/(I0+Ic) > 0 uniformly; Rocq: clustered_floor_positive)")$
+
+/* (iii) composed control-regret LOWER bound. E[R] >= kappa0*E[(bhat-b)^2] >= kappa0/(I0+G*Ic), so
+   G*E[R] >= kappa0*G/(I0+G*Ic) -> kappa0/Ic = c0 > 0. */
+print("=> liminf_G G*E[R] >= kappa0/Ic = c0 > 0 : matching lower bound, the G^{-1} rate is TIGHT")$

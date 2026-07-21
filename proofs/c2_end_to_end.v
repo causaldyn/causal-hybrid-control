@@ -76,9 +76,11 @@ Proof.
   nra.
 Qed.
 
-(* The cluster floor is irreducible: even with PERFECT nuisances (e_d = e_s = 0) the regret keeps the
-   O(1/G) sampling term -- debiasing cannot beat the statistical rate. *)
-Theorem cluster_floor_irreducible : forall cc s r_s fG,
+(* Perfect-nuisance sampling term: with PERFECT nuisances (e_d = e_s = 0) the regret is bounded ABOVE by
+   the sampling scale cc*fG -- debiasing cannot remove the O(1/G) term. This is only an UPPER bound; the
+   matching LOWER bound (that the 1/G rate is IRREDUCIBLE) is proved separately by the clustered van-Trees
+   argument in proofs/clustered_van_trees.v (regret_floor_uniform_positive). *)
+Theorem perfect_nuisance_sampling_bound : forall cc s r_s fG,
   0 <= cc -> Rabs s <= r_s -> r_s ^ 2 <= fG ->
   c2_regret cc s 0 0 <= cc * fG.
 Proof.
