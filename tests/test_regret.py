@@ -22,6 +22,7 @@ from chc.regret import (
     dynamic_causal_regret_certificate,
     end_to_end_c2_certificate,
     ensemble_control_certificate,
+    exposure_map_certificate,
     finite_horizon_pl_certificate,
     highprob_regret_certificate,
     hinf_robust_regret_certificate,
@@ -213,6 +214,23 @@ def test_clustered_lower_bound_makes_the_sampling_floor_irreducible() -> None:
     assert abs(curve.plateau_slope) < 0.3  # G*regret flat => regret ~ 1/G exactly, not o(1/G)
     ratio = float(np.max(curve.g_times_regret) / np.min(curve.g_times_regret))
     assert ratio < 2.0  # G*regret stays within a bounded band (a genuine plateau, not decay)
+
+
+def test_exposure_map_has_three_channel_bottleneck() -> None:
+    # Contribution 2, exposure-map generalization (proofs/exposure_map_c2.v): the marketplace plant
+    # x_{t+1}=A x_t + (B_d + B_s W)u_t + eps has three effect channels (direct, spillover-coeff, and
+    # exposure map W). R = O_p[G^-1 + (r_d+r_s+r_W)^2]. Orthogonalising all three -> delta^4; else
+    # the exposure map W plug-in (r_W ~ delta) makes it the bottleneck -> ~delta^2.
+    curve = exposure_map_certificate()
+    assert np.isclose(
+        curve.full_slope, 4.0, atol=0.3
+    )  # all three channels orthogonalised -> delta^4
+    assert np.isclose(
+        curve.wbottleneck_slope, 2.0, atol=0.2
+    )  # W left plug-in -> delta^2 bottleneck
+    assert (
+        curve.full_slope > curve.wbottleneck_slope + 1.5
+    )  # r_W must be orthogonalised (Hays-Raghavan)
 
 
 def test_transfer_theorem_holds_in_multivariate_lq() -> None:

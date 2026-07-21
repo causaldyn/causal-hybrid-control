@@ -1,0 +1,30 @@
+/* DISCOVERY (CONTRIBUTION 2, exposure-map generalization): the marketplace network model
+       x_{t+1} = A x_t + (B_d + B_s W) u_t + eps,     B_eff(W) = B_d + B_s W,
+   with a zonal exposure/migration matrix W (Aronow-Samii 2017 exposure map; Bramoulle-Djebbari-Fortin
+   2009 SAR / linear-in-means; Munro, Xu & Wager 2025 and Wager & Xu 2021 market equilibrium; Hays &
+   Raghavan 2025 shared-state DML). Estimating (B_d, B_s, W) gives THREE effect channels; with the
+   cluster-sampling term s that is FOUR error sources. The bilinear term expands by the EXACT product rule
+       B_s_hat W_hat - B_s W = (B_s_hat - B_s) W + B_s (W_hat - W) + (B_s_hat - B_s)(W_hat - W),
+   so (submultiplicative norms)  ||B_eff_hat - B_eff|| <= r_d + r_s + r_W + cross, with
+       r_d = ||dB_d||,   r_s = ||W|| * ||dB_s||,   r_W = ||B_s|| * ||dW||.
+   With the cluster sampling term s:  R <= cc*(s + r_d + r_s + r_W)^2 <= 4*cc*(s^2 + r_d^2 + r_s^2 + r_W^2),
+   the square absorbing the cross term. Full-orth (s^2=fG, r_d=r_s=r_W=delta^2) => R = O_p(1/G + delta^4).
+   LOAD-BEARING (Hays-Raghavan): r_W enters SQUARED only if W is orthogonalised/cross-fit; else linearly,
+   degrading the bound to O_p(1/G + r_W + (r_d+r_s)^2). Maxima is the source of truth. */
+display2d : false$
+
+/* (i) the 4-term SOS: 4(a^2+b^2+c^2+d^2) - (a+b+c+d)^2 = sum of the 6 pairwise squares >= 0. */
+sos4 : ratsimp( 4*(a^2+b^2+c^2+d^2) - (a+b+c+d)^2
+                - ((a-b)^2+(a-c)^2+(a-d)^2+(b-c)^2+(b-d)^2+(c-d)^2) )$
+print("4-term SOS check =", sos4,
+      " (0 confirms (a+b+c+d)^2 <= 4(a^2+b^2+c^2+d^2); Rocq: sum4_sq_bound)")$
+
+/* (ii) the exact product-rule identity for the bilinear spillover term B_s*W (scalar surrogate). */
+prod : ratsimp( (bsh*wh - bs*w) - ((bsh-bs)*w + bs*(wh-w) + (bsh-bs)*(wh-w)) )$
+print("product-rule check: (bsh*wh - bs*w) - [(dbs)*w + bs*(dw) + (dbs)(dw)] =", prod,
+      " (0 confirms the exact expansion; Rocq: bilinear_product_rule)")$
+
+/* (iii) full-orth exposure end-to-end: s^2=fG, r_d=r_s=r_W=delta^2 => R/cc <= 4*(fG + 3*delta^4). */
+Rexp : ratsimp( 4*(fG + (d^2)^2 + (d^2)^2 + (d^2)^2) )$
+print("exposure full-orth: R/cc <= 4*(fG + 3*delta^4) =", Rexp, " = O(1/G + delta^4)")$
+print("=> three-channel bottleneck R = O_p[1/G + (r_d + r_s + r_W)^2], r_W squared iff W orthogonalised")$

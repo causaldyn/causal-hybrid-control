@@ -924,6 +924,65 @@ def clustered_lower_bound_certificate(
 
 
 @dataclass(frozen=True)
+class ExposureMapCurve:
+    """Exposure-map C2: three channels (direct, spillover, exposure-map W); r_W squared iff orth."""
+
+    deltas: Vector  # nuisance error delta
+    full_regret: Vector  # all three channels orthogonalised (each O(delta^2)): LQ regret ~ delta^4
+    wbottleneck_regret: (
+        Vector  # exposure map W left plug-in (r_W ~ delta): the bottleneck ~ delta^2
+    )
+    full_slope: float  # ~ 4
+    wbottleneck_slope: float  # ~ 2 (an un-orthogonalised W dominates the regret order)
+
+
+def exposure_map_certificate(
+    *,
+    delta_lo: float = 0.01,
+    delta_hi: float = 0.15,
+    n_delta: int = 10,
+) -> ExposureMapCurve:
+    """CONTRIBUTION 2, exposure-map generalisation (derived in ``validation/exposure_map_c2.mac``,
+    proved in ``proofs/exposure_map_c2.v``). The marketplace network plant
+    ``x_{t+1} = A x_t + (B_d + B_s W) u_t + eps`` has effective effect ``B_eff(W) = B_d + B_s W``;
+    estimating ``(B_d, B_s, W)`` gives THREE channels ``r_d, r_s, r_W`` (the last from the exposure
+    map ``W``). Through the MTR gap, ``R = O_p[G^{-1} + (r_d + r_s + r_W)^2]``. Shown
+    deterministically on a 3-state/1-input LQ plant (three orthogonal input-matrix directions):
+    orthogonalising ALL three (each ``O(delta^2)``) gives ``~ delta^4``; leaving the exposure map
+    ``W`` plug-in (``r_W ~ delta``) makes it the **bottleneck**, ``~ delta^2`` -- the load-bearing
+    point (Hays & Raghavan) that ``r_W`` enters squared only if ``W`` is orthogonalised/cross-fit.
+    """
+    a_mat = np.array([[1.0, 0.1, 0.0], [0.0, 0.95, 0.1], [0.0, 0.0, 0.9]])
+    b_mat = np.array([[0.5], [1.0], [0.7]])
+    q_mat = np.eye(3)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5, 0.3])
+    dir_d = np.array([[1.0], [0.0], [0.0]])  # direct-effect channel
+    dir_s = np.array([[0.0], [1.0], [0.0]])  # spillover-coefficient channel
+    dir_w = np.array([[0.0], [0.0], [1.0]])  # exposure-map (W) channel
+    ds = np.geomspace(delta_lo, delta_hi, n_delta)
+    full = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * (dir_d + dir_s + dir_w), x0
+            )
+            for d in ds
+        ]
+    )  # all three channels O(delta^2)
+    wbn = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * (dir_d + dir_s) + d * dir_w, x0
+            )
+            for d in ds
+        ]
+    )  # exposure map W plug-in: r_W ~ delta is the bottleneck
+    full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
+    wbn_slope = float(np.polyfit(np.log(ds), np.log(wbn), 1)[0])
+    return ExposureMapCurve(ds, full, wbn, full_slope, wbn_slope)
+
+
+@dataclass(frozen=True)
 class OptimalExplorationCurve:
     """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
 
