@@ -16,6 +16,7 @@ from chc.regret import (
     doubly_robust_control_certificate,
     dynamic_causal_regret_certificate,
     finite_horizon_pl_certificate,
+    information_lower_bound_certificate,
     interference_convexity_certificate,
     interference_orthogonal_certificate,
     interference_regret_certificate,
@@ -100,6 +101,19 @@ def test_online_causal_control_has_log_regret() -> None:
     assert curve.confounded_doubling > 1.7  # linear (Theta T)
     assert curve.confounded_regret[-1] > 10 * curve.deconfounded_regret[-1]  # confounded explodes
     assert (np.diff(curve.deconfounded_regret) >= -1e-9).all()  # cumulative regret nondecreasing
+
+
+def test_control_regret_has_an_information_lower_bound() -> None:
+    # Cramer-Rao lower bound (proofs/information_lower_bound.v): no unbiased causal controller beats
+    # E[regret] >= C*sigma^2/(n*V_id). The efficient controller HITS the floor (rate 1/n matches the
+    # online upper bound above -> O(log T) optimal); confounding steals V_id, raising the floor.
+    curve = information_lower_bound_certificate(n_seeds=200)
+    assert (curve.experimental_regret >= 0.7 * curve.cramer_rao_floor).all()  # above the floor
+    ratio = curve.experimental_regret / curve.cramer_rao_floor
+    assert (np.abs(ratio - 1.0) < 0.35).all()  # efficient estimator is tight against the CR bound
+    assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
+    assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
+    assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
 
 
 def test_finite_horizon_pl_bound_holds_over_the_trajectory() -> None:

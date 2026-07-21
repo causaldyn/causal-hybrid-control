@@ -1,0 +1,34 @@
+/* DISCOVERY / derivation: an INFORMATION-THEORETIC LOWER BOUND on control regret (Cramer-Rao applied
+   to control) -- the first *lower* bound / impossibility in the program, using statistics/information
+   theory. "You cannot control better than your information about the effect allows." Any unbiased
+   estimator of the causal effect b has variance >= 1/(n*I) (Cramer-Rao, I the Fisher information per
+   sample); composing with certainty-equivalence quadraticity (regret = C*(b_hat-b)^2) gives
+   E[regret] >= C/(n*I). Two consequences: (1) the 1/n rate MATCHES the online upper bound (Result 7),
+   so the O(log T) cumulative rate is OPTIMAL; (2) confounding REDUCES the Fisher information about the
+   causal effect (the confounder steals identifying variation), so the lower bound is HIGHER -- a
+   fundamental reason causal control is harder. Maxima is the source of truth. */
+display2d : false$
+
+/* per-unit regret coefficient C (from causal_mpc.mac) and expected regret of an unbiased CE controller */
+C : xt^2*(rr - b^2)^2 / (rr + b^2)^3$
+print("E[regret] = C * Var(b_hat),  C =", C)$
+
+/* Cramer-Rao: Var(b_hat) >= 1/(n*I). Fisher information for b in x' = b*u + Normal(0, sigma^2),
+   estimated from a regressor with identifying variance V_id, is I = V_id / sigma^2 per sample. */
+I_of(Vid) := Vid / sigma^2$
+crlb(Vid) := 1 / (n * I_of(Vid))$
+print("Cramer-Rao lower bound Var(b_hat) >= 1/(n*I) =", crlb(Vid), " = sigma^2/(n*Vid)")$
+print("=> E[regret] >= C * sigma^2/(n*Vid)  (information lower bound on control; rate 1/n)")$
+
+/* (1) rate match: the online upper bound (Result 7) is per-round C*sigma^2/t -- same 1/t form -- so
+   the lower and upper bounds agree up to constants and the O(log T) cumulative rate is optimal. */
+print("(1) upper (Result 7) per-round = C*sigma^2/t ; lower (Cramer-Rao) = C*sigma^2/(t*Vid_experimental)")$
+print("    same 1/t rate => cumulative Theta(log T) is OPTIMAL for online causal control")$
+
+/* (2) confounding reduces the identifying variance: experimental uses Var(u), confounded only the
+   residual Var(u|z) = Var(u) - Cov(u,z)^2/Var(z) < Var(u), so I_conf < I_exp and the floor is higher */
+Vexp : Vu$
+Vconf : Vu - Cuz^2/Vz$
+print("(2) V_id experimental =", Vexp, " ; V_id confounded =", Vconf, " (< experimental)")$
+print("    lower-bound ratio confounded/experimental =", ratsimp(crlb(Vconf)/crlb(Vexp)),
+      " = Vu/(Vu - Cuz^2/Vz) >= 1 : confounding RAISES the information floor")$

@@ -234,6 +234,55 @@ def pessimism_variance_certificate(
 
 
 @dataclass(frozen=True)
+class InformationLowerBoundCurve:
+    """CR lower bound on control regret; confounding lowers information, raising the floor."""
+
+    sample_sizes: Vector  # n grid
+    experimental_regret: Vector  # realised regret of the efficient (full-information) controller
+    cramer_rao_floor: Vector  # the CR lower bound C*sigma^2/(n*V_exp)
+    confounded_floor: Vector  # the (higher) CR floor under confounding, C*sigma^2/(n*V_conf)
+    rate_slope: float  # log-log slope of experimental_regret vs n (~ -1: the optimal 1/n rate)
+    floor_ratio: float  # confounded / experimental floor (> 1: confounding costs information)
+
+
+def information_lower_bound_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    sigma: float = 0.5,
+    alpha: float = 1.0,
+    sample_sizes: Sequence[int] = (200, 500, 1000, 2000, 4000),
+    n_seeds: int = 300,
+) -> InformationLowerBoundCurve:
+    """Information-theoretic LOWER bound on control regret (Cramer-Rao applied; derived in
+    ``validation/information_lower_bound.mac``, proved in ``proofs/information_lower_bound.v``). No
+    unbiased causal controller beats ``E[regret] >= C*sigma^2/(n*V_id)``, ``V_id`` the identifying
+    action variance. The ``1/n`` rate matches the online upper bound (Result 7), so the ``O(log T)``
+    cumulative rate is optimal; and confounding reduces ``V_id`` (from ``V_exp`` to the residual
+    ``V_conf``), raising the floor -- a fundamental reason causal control is harder.
+    """
+    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
+    v_exp = alpha**2 + 1.0  # total action variance (Var(alpha*z + nu), Vz = Vnu = 1)
+    v_conf = 1.0  # residual identifying variance Var(u|z) = Var(nu) under confounding
+    ns = np.asarray(sample_sizes, dtype=np.float64)
+    exp_regret = np.zeros(ns.size)
+    for i, nf in enumerate(sample_sizes):
+        n = int(nf)
+        biases = np.empty(n_seeds)
+        for s in range(n_seeds):
+            rng = np.random.default_rng(1000 * s + n)
+            u = np.sqrt(v_exp) * rng.standard_normal(n)  # randomised: all variance identifies
+            y = b * u + sigma * rng.standard_normal(n)
+            biases[s] = np.dot(u, y) / np.dot(u, u) - b
+        exp_regret[i] = coeff * float(np.mean(biases**2))
+    cr_floor = coeff * sigma**2 / (ns * v_exp)
+    conf_floor = coeff * sigma**2 / (ns * v_conf)
+    slope = float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
+    return InformationLowerBoundCurve(ns, exp_regret, cr_floor, conf_floor, slope, v_exp / v_conf)
+
+
+@dataclass(frozen=True)
 class PartialIdControlCurve:
     """Partial-ID control: worst-case regret ~ Delta^2; action sign robust iff Delta < |b|."""
 

@@ -21,6 +21,7 @@ uv.lock.bak
 *.vok
 *.vos
 *.glob
+.nra.cache
 .*.aux
 .lia.cache
 
