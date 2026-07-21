@@ -447,6 +447,54 @@ def ensemble_control_certificate(
 
 
 @dataclass(frozen=True)
+class CompositionTransferCurve:
+    """Order-p effect estimator -> order-2p control regret: the control map doubles the order."""
+
+    deltas: Vector  # nuisance error delta
+    orders: Vector  # estimator orders p (1 = plug-in, 2 = orthogonal/DML, 3 = higher-order)
+    regrets: Vector  # exact regret per (order, delta): shape (len(orders), len(deltas))
+    slopes: Vector  # measured log-log slope of regret vs delta, per order (~ 2p)
+    expected_slopes: Vector  # 2*p: the predicted order-doubling
+
+
+def composition_transfer_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    orders: Sequence[int] = (1, 2, 3),
+    delta_lo: float = 0.01,
+    delta_hi: float = 0.2,
+    n_delta: int = 12,
+) -> CompositionTransferCurve:
+    """The general orthogonal-to-control regret TRANSFER theorem -- the general form of Result 0
+    (which only stated the p=1 and p=2 instances). Derived in
+    ``validation/composition_transfer.mac``, proved in ``proofs/composition_transfer.v``. If the
+    effect estimator has error of order ``delta^p`` (``p`` the orthogonality order: 1 plug-in, 2
+    Neyman-orthogonal/DML, higher for higher-order), the certainty-equivalence control regret is
+    order ``delta^(2p)`` -- the control map DOUBLES the estimator's order for EVERY ``p``, because
+    regret is quadratic in the ACTION error (the exact map ``(b^2+rr)*(u*(bhat)-u*(b))^2``, not a
+    linearisation) and ``u*`` is Lipschitz in the effect. A composition theorem, not the
+    ``O(delta^4)`` coincidence of Result 0; its plug-in (``p=1 -> 2``) and DML (``p=2 -> 4``) are
+    two instances.
+    """
+
+    def u_star(bv: float) -> float:
+        return bv * xt / (bv * bv + rr)
+
+    curv = b * b + rr
+    deltas = np.geomspace(delta_lo, delta_hi, n_delta)
+    ps = np.asarray(orders, dtype=np.float64)
+    regrets = np.zeros((len(orders), n_delta))
+    slopes = np.zeros(len(orders))
+    for i, p in enumerate(orders):
+        # an order-p estimator: effect error delta^p; use the EXACT regret map (not C*(bhat-b)^2)
+        regrets[i] = np.array([curv * (u_star(b + d**p) - u_star(b)) ** 2 for d in deltas])
+        slopes[i] = float(np.polyfit(np.log(deltas), np.log(regrets[i]), 1)[0])
+    return CompositionTransferCurve(deltas, ps, regrets, slopes, 2.0 * ps)
+
+
+@dataclass(frozen=True)
 class OptimalExplorationCurve:
     """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
 

@@ -12,6 +12,7 @@ from chc.regret import (
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
+    composition_transfer_certificate,
     confounded_turnpike_certificate,
     constrained_ce_regret_certificate,
     dlqr,
@@ -121,6 +122,15 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_control_map_doubles_the_estimator_order() -> None:
+    # general orthogonal-to-control transfer (proofs/composition_transfer.v): an order-p effect
+    # estimator (error delta^p) yields order-2p control regret -- the control map doubles the order,
+    # for every p. Generalises Result 0 (p=1 -> 2 plug-in; p=2 -> 4 DML). Uses the exact regret map.
+    curve = composition_transfer_certificate()
+    assert np.allclose(curve.slopes, curve.expected_slopes, atol=0.35)  # regret slope ~ 2p
+    assert (np.diff(curve.slopes) > 1.5).all()  # each higher order is ~2 steeper (order doubling)
 
 
 def test_one_control_over_a_heterogeneous_population_pays_a_floor() -> None:
