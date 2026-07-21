@@ -76,14 +76,14 @@ def test_interference_regret_is_quadratic_in_the_total_error() -> None:
     assert (np.diff(curve.gaps) < 0).all()  # gap shrinks as the total error drops
 
 
-def test_control_evalue_and_partial_id_robust_control() -> None:
+def test_sign_identification_threshold_and_partial_id_robust_control() -> None:
     # partial-ID control (proofs/partial_id_control.v): the action direction is robust iff Delta<|b|
-    # (the control E-value); worst-case regret grows with the interval; the minimax action beats CE
+    # (the sign-identification threshold); worst-case regret grows; minimax beats CE
     curve = partial_id_control_certificate()
-    assert curve.control_evalue == 1.0  # = |b_hat|
-    below = curve.half_widths < curve.control_evalue
-    assert curve.sign_identified[below].all()  # action direction robust below the E-value
-    assert not curve.sign_identified[~below].any()  # no longer identified at/above the E-value
+    assert curve.sign_id_threshold == 1.0  # = |b_hat|
+    below = curve.half_widths < curve.sign_id_threshold
+    assert curve.sign_identified[below].all()  # action direction robust below the threshold
+    assert not curve.sign_identified[~below].any()  # no longer identified at/above the threshold
     assert (curve.robust_worst_regret <= curve.ce_worst_regret + 1e-9).all()  # minimax beats CE
     assert (np.diff(curve.ce_worst_regret) > 0).all()  # worst-case regret grows with the interval
 

@@ -184,7 +184,7 @@ def orthogonal_control_certificate(
 
 @dataclass(frozen=True)
 class PessimismCurve:
-    """Optimal optimality-condition pessimism equals the effect-estimate variance; beats greedy."""
+    """Scalar one-step: uncertainty regularizer equals the effect variance (not general)."""
 
     variances: Vector  # effect-estimate variance s^2 grid
     optimal_rho: Vector  # empirical expected-regret-minimising pessimism (~ s^2)
@@ -255,12 +255,17 @@ def information_lower_bound_certificate(
     sample_sizes: Sequence[int] = (200, 500, 1000, 2000, 4000),
     n_seeds: int = 300,
 ) -> InformationLowerBoundCurve:
-    """Information-theoretic LOWER bound on control regret (Cramer-Rao applied; derived in
-    ``validation/information_lower_bound.mac``, proved in ``proofs/information_lower_bound.v``). No
-    unbiased causal controller beats ``E[regret] >= C*sigma^2/(n*V_id)``, ``V_id`` the identifying
-    action variance. The ``1/n`` rate matches the online upper bound (Result 7), so the ``O(log T)``
-    cumulative rate is optimal; and confounding reduces ``V_id`` (from ``V_exp`` to the residual
-    ``V_conf``), raising the floor -- a fundamental reason causal control is harder.
+    """Information-theoretic lower bound for UNBIASED effect estimators (Cramer-Rao;
+    derived in ``validation/information_lower_bound.mac``, proved in
+    ``proofs/information_lower_bound.v``). The EXACT regret map is
+    ``R = (b^2+rr)*(u*(bhat)-u*(b))^2`` (nonlinear in b); to first order in the effect error this is
+    ``C*(bhat-b)^2``, and Cramer-Rao on the (unbiased) estimator gives the local floor
+    ``E[regret] >= C*sigma^2/(n*V_id)``, ``V_id`` the identifying variance. Scope caveats: a *local*
+    (delta-method) bound for unbiased estimators, NOT a global minimax lower bound (a full version
+    needs local-asymptotic-minimax / van Trees for the estimand ``u*(b)``); and at the knife edge
+    ``rr = b^2`` the coefficient ``C`` vanishes, so the leading order is higher. The ``1/n`` rate
+    matches the online upper bound (Result 7) in this scalar model; confounding reduces ``V_id``
+    (``V_exp`` -> residual ``V_conf``), raising the floor.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     v_exp = alpha**2 + 1.0  # total action variance (Var(alpha*z + nu), Vz = Vnu = 1)
@@ -573,17 +578,17 @@ def optimal_exploration_certificate(
 
 @dataclass(frozen=True)
 class HInfRobustCurve:
-    """H-inf robust control = pessimism with min-max; gamma^-2 is the pessimism knob."""
+    """H-inf robustness = pessimistic contraction, calibratable to ~ the variance-optimal action."""
 
     gamma_grid: Vector  # adversary energy budget gamma (robustness level)
     robust_gain: Vector  # u_rob(gamma): the cautious control; -> u_ce as gamma -> inf
     inflation_at_uce: Vector  # robust value at fixed u_ce: >= nominal, antitone in gamma (Rocq B,C)
     expected_regret: Vector  # regret of u_rob(gamma) under effect variance s^2 (U-shaped in gamma)
     u_ce: float  # certainty-equivalence gain b*xt/(b^2+rr)
-    u_pess_star: float  # variance-optimal gain b*xt/(b^2+rr+s^2) (Result 2 pessimism=variance)
+    u_pess_star: float  # variance-optimal gain b*xt/(b^2+rr+s^2) (Result 2, scalar one-step)
     nominal_at_uce: float  # nominal cost at u_ce (the gamma -> inf limit of inflation_at_uce)
     gamma_star: float  # argmin of the expected regret
-    gain_at_gamma_star: float  # robust gain at gamma* -- matches u_pess_star (the unification)
+    gain_at_gamma_star: float  # robust gain at gamma*: ~ u_pess_star (approx, not an identity)
     expected_regret_min: float  # ~ 0: the robust optimum reaches the variance-pessimism optimum
     ce_expected_regret: float  # regret of the (under-cautious) CE control; > expected_regret_min
 
@@ -602,11 +607,13 @@ def hinf_robust_regret_certificate(
     """H-infinity / differential-game robust control (Geering 2007, Ch 4). Derived in
     ``validation/hinf_robust_regret.mac``, proved in ``proofs/hinf_robust_regret.v``. Confounding
     uncertainty in the effect ``b`` is an adversary perturbing the gain, penalised by budget
-    ``gamma^2``; the robust controller solves ``min_u max_w``. Unification: the EXPECTED cost under
-    variance ``s^2`` is the pessimistic objective ``(b*u-xt)^2+(rr+s^2)u^2`` (Result 2), optimum at
-    ``u_pess=b*xt/(b^2+rr+s^2)``. The robust gain ``u_rob(gamma)`` relaxes to ``u_ce`` as ``gamma``
-    grows, and at the regret-optimal ``gamma*`` reproduces ``u_pess``: statistical pessimism and
-    game-theoretic robustness are two roads to the same cautious control (knob ``gamma^-2``).
+    ``gamma^2``; the robust controller solves ``min_u max_w``. This is a *correspondence*, not an
+    identity: the worst-case objective ``gamma^2*e^2/(gamma^2-u^2)+rr*u^2`` and the expected
+    quadratic objective ``(b*u-xt)^2+(rr+s^2)u^2`` (Result 2, optimum ``u_pess=b*xt/(b^2+rr+s^2)``)
+    are different functions. Robustness INDUCES a pessimistic contraction (``u_rob -> u_ce`` as
+    ``gamma`` grows), and the regret-optimal ``gamma*`` can be CALIBRATED so ``u_rob(gamma*)``
+    approximates ``u_pess`` (0.5415 vs 0.538) -- game-theoretic robustness and statistical pessimism
+    as two roads to a similar cautious control, not a proven equality.
     """
     s2 = s * s
     u_ce = b * xt / (b * b + rr)
@@ -769,7 +776,7 @@ class PartialIdControlCurve:
     half_widths: Vector  # partial-ID / confounding-budget interval half-widths Delta
     ce_worst_regret: Vector  # worst-case regret of the certainty-equivalent action
     robust_worst_regret: Vector  # worst-case regret of the minimax-robust action (<= the CE one)
-    control_evalue: float  # = |b_hat|: the half-width where the action direction is unidentified
+    sign_id_threshold: float  # = |b_hat|: the sign-identification threshold (interval excludes 0)
     sign_identified: Vector  # per-Delta: is the action direction robust (interval excludes 0)?
 
 
@@ -782,13 +789,15 @@ def partial_id_control_certificate(
     u_points: int = 401,
     b_points: int = 101,
 ) -> PartialIdControlCurve:
-    """Control under PARTIAL IDENTIFICATION and the control E-value (derived in
+    """Control under PARTIAL IDENTIFICATION: the sign-identification threshold (derived in
     ``validation/partial_id_control.mac``, proved in ``proofs/partial_id_control.v``; grounded in
-    Bareinboim's partial-ID and the sensitivity literature). When the effect is only interval-
+    Manski partial-ID / Rosenbaum-VanderWeele-Ding sensitivity). When the effect is only interval-
     identified, ``b in [b_hat - Delta, b_hat + Delta]``: (1) the certainty-equivalent action's
     worst-case regret grows like ``Delta^2``, and the minimax action reduces it; (2) the optimal
     action has the sign of ``b``, so its **direction** is identified iff the interval excludes 0 --
-    iff ``Delta < |b_hat|``. The critical width ``Delta* = |b_hat|`` is the **control E-value**.
+    iff ``Delta < |b_hat|``. The critical width ``Delta* = |b_hat|`` is the **sign-identification
+    threshold** (a directional identification margin; NOT the sensitivity E-value, whose name it
+    deliberately avoids).
     """
 
     def u_star(b: np.ndarray) -> np.ndarray:
@@ -885,7 +894,7 @@ def doubly_robust_control_certificate(
 
 @dataclass(frozen=True)
 class BanditCausalCurve:
-    """Online causal control has O(log T) cumulative regret; confounded control has Theta(T)."""
+    """Scalar persistently-identified model: deconfounded O(log T) vs confounded Theta(T) regret."""
 
     rounds: Vector  # cumulative-horizon checkpoints T
     deconfounded_regret: Vector  # cumulative online regret, de-confounded estimator (~ log T)
@@ -912,7 +921,10 @@ def bandit_causal_certificate(
     A **de-confounded** online estimator (backdoor on ``z``) is consistent, ``err^2 ~ sigma^2/t``,
     so cumulative regret grows like ``log T`` (sublinear); a **confounded** one has err^2 -> beta^2
     (systematic), a per-round floor, so cumulative regret is linear in ``T``. The doubling
-    ratio ``cum(T)/cum(T/2)`` separates them: ``-> 1`` (log) vs ``-> 2`` (linear).
+    ratio ``cum(T)/cum(T/2)`` separates them: ``-> 1`` (log) vs ``-> 2`` (linear). Scope: the
+    ``O(log T)`` rate is specific to this scalar, persistently-identified setting -- NOT universal
+    for adaptive control, where uninformative systems admit ``sqrt(T)`` lower bounds
+    (Simchowitz-Foster; Ziemann et al.). The content is the deconfounded-vs-confounded separation.
     """
     coeff = xt**2 * (rr - b_true**2) ** 2 / (rr + b_true**2) ** 3  # per-round regret / error^2
     half = n_rounds // 2  # last two checkpoints are T/2 and T, an exact horizon doubling
@@ -1206,8 +1218,9 @@ def nonlinear_regret_certificate(
     """On the genuinely nonlinear cost ``J(u) = mu/2 u^2 + kappa u^4`` (minimum at ``u = 0``) the
     strong-convexity bound ``grad^2/(2 mu)`` upper-bounds the true regret *everywhere* (beyond the
     linearisation), while the fixed-Hessian local estimate ``mu/2 u^2`` under-states it away from
-    the optimum -- an unsafe certificate exactly where a valid one is needed. Verifies
-    ``proofs/nonlinear_regret.v`` and ``validation/nonlinear_regret.mac`` numerically.
+    the optimum -- an unsafe certificate exactly where a valid one is needed. This is a control
+    specialization of the STANDARD strong-convexity / Polyak-Lojasiewicz certificate, not a new PL
+    result. Verifies ``proofs/nonlinear_regret.v`` and ``validation/nonlinear_regret.mac``.
     """
     u = np.linspace(0.0, u_max, points)
     true_regret = mu / 2 * u**2 + kappa * u**4
