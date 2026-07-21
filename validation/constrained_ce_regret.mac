@@ -1,0 +1,50 @@
+/* DISCOVERY / derivation: CONSTRAINED certainty-equivalence regret is PIECEWISE-QUADRATIC -- from
+   Gros & Diehl, "Numerical Optimal Control" (2022), Ch 16 (Parametric Nonlinear Optimization: the
+   active-set / KKT sensitivity of the optimizer u*(theta)). The program's clean O(eps^2) CE regret
+   (results 0/2/5) holds only WITHIN one active-set cell. A budget / safety constraint u <= umax clips
+   the control; the constrained optimum u_opt(b) is CONTINUOUS but its slope JUMPS at the activation
+   threshold (from the interior sensitivity to 0), so the regret curvature jumps -- it is only
+   piecewise-quadratic. Consequence: under partial identification (b in an interval that straddles the
+   threshold, cf. result #9) the pessimism budget must cover the active-set transition. Maxima is truth. */
+display2d : false$
+
+/* scalar control cost c(u,b) = (b*u - xt)^2 + rr*u^2; unconstrained optimum and its sensitivity */
+ustar(b) := b*xt/(b^2 + rr)$
+dustar : ratsimp(diff(ustar(b), b))$
+print("unconstrained optimum u*(b) =", ustar(b), " ; sensitivity du*/db =", dustar,
+      " = xt(rr - b^2)/(b^2+rr)^2")$
+
+/* constrained optimum with a budget/safety cap u <= umax: u_opt(b) = min(u*(b), umax). The activation
+   threshold b_t solves u*(b_t) = umax. */
+print("constrained u_opt(b) = min(u*(b), umax); active (u_opt=umax) iff u*(b) >= umax")$
+bt : solve(ustar(b) = umax, b)$
+print("activation threshold(s) b_t solve u*(b_t) = umax :", bt)$
+
+/* THE KINK: the two one-sided slopes of u_opt at the threshold differ.
+   inactive side: du_opt/db = du*/db (nonzero) ; active side: du_opt/db = 0 (u_opt == umax, frozen). */
+print("KINK at b_t: inactive-side slope = du*/db =", dustar, " != 0 ;  active-side slope = 0 (frozen)")$
+print("=> u_opt is C^0 but not C^1 at b_t: the regret is PIECEWISE-quadratic, not quadratic")$
+
+/* certainty-equivalence regret from completing the square (causal_mpc.mac):
+   R(bh,b) = (b^2+rr)*(u_opt(bh) - u_opt(b))^2.  Two active-set cells: */
+print("R(bh,b) = (b^2+rr)*(u_opt(bh) - u_opt(b))^2  (CE gap, completing the square)")$
+/* (i) both INACTIVE: u_opt = u*, ordinary quadratic regret with curvature ~ (b^2+rr)*(du*/db)^2 */
+Rin : (b^2+rr)*(ustar(bh) - ustar(b))^2$
+print("(i) both inactive: R =", Rin, "  -> O((bh-b)^2), curvature (b^2+rr)*(du*/db)^2 > 0")$
+/* (ii) both ACTIVE: u_opt(bh)=u_opt(b)=umax => R = 0 identically: the curvature COLLAPSES to 0 */
+print("(ii) both active: u_opt(bh)=u_opt(b)=umax => R = 0  (control frozen: curvature collapses to 0)")$
+/* (iii) STRADDLING (truth active, estimate inactive): R = (b^2+rr)*(u*(bh) - umax)^2, still quadratic in
+   (u*(bh)-umax) but measured to the CLIP, not to u*(b): a distinct branch with its own curvature. */
+Rstr : (b^2+rr)*(ustar(bh) - umax)^2$
+print("(iii) straddle (truth active): R =", Rstr, " = (b^2+rr)(u*(bh)-umax)^2 -- the active-set branch")$
+
+/* NON-EXPANSIVE bound: clipping never increases the CE regret, since |min(a,c)-min(b,c)| <= |a-b|.
+   So constrained regret <= unconstrained regret everywhere (the constraint can only help). */
+print("clipping is non-expansive: (u_opt(bh)-u_opt(b))^2 <= (u*(bh)-u*(b))^2")$
+print("=> constrained regret <= unconstrained regret (Rocq: constrained_regret_le_unconstrained)")$
+
+/* DECISION CONSEQUENCE (ties to result #9 partial-ID and the marketplace budget): with b only known to
+   an interval straddling b_t, a naive controller that assumes INACTIVE applies u*(bh) and pays up to
+   Rstr if the truth is active; the conservative controller that assumes ACTIVE applies umax and pays 0
+   when the truth is active. The pessimism budget to prefer the safe (active) branch is that regret gap. */
+print("pessimism budget lambda >= (b^2+rr)*(u*(bh) - umax)^2 : cover the active-set transition")$

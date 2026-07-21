@@ -12,6 +12,7 @@ from chc.regret import (
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
+    constrained_ce_regret_certificate,
     dlqr,
     doubly_robust_control_certificate,
     dynamic_causal_regret_certificate,
@@ -116,6 +117,20 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_constrained_ce_regret_is_piecewise_quadratic() -> None:
+    # constrained CE regret (proofs/constrained_ce_regret.v): a budget cap u <= umax clips control.
+    # True effect at the activation threshold: quadratic regret on the inactive side, ZERO on active
+    # (control freezes at umax -> curvature collapses = the kink). Clipping is non-expansive
+    # (constrained <= unconstrained); a naive controller pays the active-set gap.
+    curve = constrained_ce_regret_certificate()
+    assert 1.8 < curve.inactive_slope < 2.4  # quadratic within the inactive active-set cell
+    assert curve.active_regret_max < 1e-9  # frozen on the active side: curvature collapses to 0
+    assert curve.max_constrained_ratio <= 1.0 + 1e-9  # clipping is non-expansive (Rocq)
+    assert (np.diff(curve.regret_inactive) > 0).all()  # regret grows with the effect-estimate error
+    assert curve.pessimism_budget > 0.0  # a budget is needed to cover the active-set transition
+    assert 0.0 < curve.threshold < 1.0  # a well-defined activation threshold b_t exists
 
 
 def test_hinf_robustness_is_pessimism_with_gamma_as_the_knob() -> None:

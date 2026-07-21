@@ -430,6 +430,72 @@ def hinf_robust_regret_certificate(
 
 
 @dataclass(frozen=True)
+class ConstrainedRegretCurve:
+    """Constrained CE regret is piecewise-quadratic; frozen (zero) on the active side."""
+
+    deltas: Vector  # |effect-estimate error| from the activation threshold
+    regret_inactive: Vector  # regret when the estimate is inactive-side: quadratic in delta
+    regret_active: Vector  # regret when the estimate is active-side: ~0 (control frozen at umax)
+    regret_unconstrained: Vector  # unconstrained regret at the same estimates (for the <= check)
+    threshold: float  # activation threshold b_t where u*(b_t) = umax
+    inactive_slope: float  # log-log slope of regret vs delta on the inactive side (~2: quadratic)
+    active_regret_max: float  # max regret on the active side (~0: curvature collapses)
+    max_constrained_ratio: float  # max(constrained / unconstrained) <= 1 (clipping non-expansive)
+    pessimism_budget: float  # regret a naive controller pays if truth active but underestimated
+
+
+def constrained_ce_regret_certificate(
+    *,
+    xt: float = 1.0,
+    rr: float = 1.0,
+    umax: float = 0.45,
+    delta_lo: float = 0.005,
+    delta_hi: float = 0.15,
+    n_delta: int = 12,
+    active_offset: float = 0.1,
+) -> ConstrainedRegretCurve:
+    """Constrained certainty-equivalence regret is PIECEWISE-QUADRATIC (Gros & Diehl 2022, Ch 16).
+    Derived: ``validation/constrained_ce_regret.mac``; proved: ``proofs/constrained_ce_regret.v``.
+    A budget/safety cap ``u <= umax`` clips the control to ``u_opt(b) = min(u*(b), umax)``. With the
+    true effect at the activation threshold ``b_t`` (``u*(b_t) = umax``): on the INACTIVE side the
+    regret is quadratic in the effect-estimate error; on the ACTIVE side the control freezes at
+    ``umax`` so the regret is ZERO -- the curvature collapses, the source of the kink. Clipping is
+    non-expansive: constrained regret never exceeds unconstrained. Consequence (ties to Result 9
+    partial-ID and the marketplace budget): when the effect interval straddles ``b_t`` the
+    pessimism budget must cover the active-set transition -- a naive controller that assumes the
+    constraint inactive pays that gap.
+    """
+
+    def u_star(bv: float) -> float:
+        return bv * xt / (bv * bv + rr)
+
+    def u_opt(bv: float) -> float:
+        return min(u_star(bv), umax)
+
+    b_t = (xt - np.sqrt(xt * xt - 4.0 * rr * umax * umax)) / (2.0 * umax)  # lower activation root
+    curv = b_t * b_t + rr  # (b^2+rr): the CE-regret curvature prefactor
+    deltas = np.geomspace(delta_lo, delta_hi, n_delta)
+    reg_in = np.array([curv * (u_opt(b_t - d) - u_opt(b_t)) ** 2 for d in deltas])
+    reg_act = np.array([curv * (u_opt(b_t + d) - u_opt(b_t)) ** 2 for d in deltas])
+    reg_unc = np.array([curv * (u_star(b_t - d) - u_star(b_t)) ** 2 for d in deltas])
+    slope = float(np.polyfit(np.log(deltas), np.log(reg_in), 1)[0])
+    ratio_in = reg_in / np.where(reg_unc > 0, reg_unc, 1.0)
+    b0 = b_t + active_offset  # true effect in the active region (optimal control = umax)
+    naive_regret = np.array([(b0 * b0 + rr) * (u_star(b_t - d) - umax) ** 2 for d in deltas])
+    return ConstrainedRegretCurve(
+        deltas,
+        reg_in,
+        reg_act,
+        reg_unc,
+        float(b_t),
+        slope,
+        float(reg_act.max()),
+        float(ratio_in.max()),
+        float(naive_regret.max()),
+    )
+
+
+@dataclass(frozen=True)
 class PartialIdControlCurve:
     """Partial-ID control: worst-case regret ~ Delta^2; action sign robust iff Delta < |b|."""
 
