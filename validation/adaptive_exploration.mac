@@ -1,12 +1,15 @@
-/* DISCOVERY / derivation (CONTRIBUTION 3): the ADAPTIVE information-exploration duality -- the rigorous
-   SEQUENTIAL upgrade of results 10 (static Cramer-Rao) and 11 (static Av+B/v rule). At round t the
-   controller injects exploration variance v_t; the accumulated Fisher information about the effect is
-   I_t = m0 + sum_{s<=t} v_s/sigma^2 (each round adds v_s/sigma^2, m0 the prior/van-Trees info). The
-   VAN TREES (Bayesian Cramer-Rao) inequality bounds the Bayes risk of the effect estimate BELOW by
-   1/I_t even for SEQUENTIAL/adaptive observations (ordinary CR does not apply to adaptive designs), so
-   the per-round estimation regret is >= C/I_t. Any schedule pays cumulative regret >= sum_t [A*v_t +
-   C/I_t]. Minimising it gives a DECREASING optimal schedule that stops once the information threshold is
-   reached -- not the static single v* of result 11. Maxima is the source of truth. */
+/* DISCOVERY / derivation (CONTRIBUTION 3): the ADAPTIVE information-exploration duality, the SEQUENTIAL
+   analogue of results 10 (static Cramer-Rao) and 11 (static Av+B/v rule). At round t the controller
+   injects exploration variance v_t; the accumulated Fisher information about the effect is
+   m_t = m0 + sum_{s<t} v_s (variance units, m0 the prior/van-Trees info). The VAN TREES (Bayesian
+   Cramer-Rao) inequality bounds the Bayes risk of the effect estimate BELOW by K/m_t even for
+   SEQUENTIAL/adaptive observations (ordinary CR does not apply to adaptive designs), so any schedule
+   pays cumulative regret >= sum_t [A*v_t + K/m_t]. TWO DISTINCT objects, kept separate below: (i) the
+   MYOPIC one-step rule v* = sqrt(K/A) - m (a one-shot terminal-estimation optimum); (ii) the RATE-OPTIMAL
+   sequential SCHEDULE v_t = kappa/sqrt(t), which achieves cumulative Theta(sqrt(T)) matched by the
+   sequence LOWER bound sum_t[...] >= 2*sqrt(A*K*T) - A*m0. The t^{-1/2} schedule / sqrt(T) rate / van-Trees
+   sqrt(T) lower bound are KNOWN in adaptive LQR (Ziemann-Sandberg; Wagenmaker et al.); only a
+   confounding-specific constant would be new, and is NOT derived here. Maxima is the source of truth. */
 display2d : false$
 
 /* per-round tradeoff at accumulated info level m (=I before this round, in variance units): exploration
@@ -26,12 +29,20 @@ print("f(v)-f(v*) SOS check: A*(v-vs)^2/(m+v) - gap_form =",
       ratsimp(A*(v - vs)^2/(m + v) - ((A*v + A*(m+vs)^2/(m+v)) - (A*vs + A*(m+vs)^2/(m+vs)))),
       " (0 confirms f(v)-f(v*) = A*(v-vs)^2/(m+v))")$
 
-/* THE SCHEDULE: at round t the accumulated info is m_t (increasing in t), and the optimal increment is
-   v_t* = max(0, sqrt(K/A) - m_t). Since m_t increases, v_t* DECREASES, and hits 0 once
-   m_t >= sqrt(K/A) -- the information THRESHOLD after which exploration is no longer optimal. */
-print("optimal schedule v_t* = max(0, sqrt(K/A) - m_t) : DECREASING in t (m_t increases)")$
-print("stops when m_t >= sqrt(K/A) : the information threshold (learned enough)")$
-print("=> a DECREASING schedule, not the static single v* of result 11")$
+/* THE MYOPIC RULE (one-shot): if v could lower THIS round's floor, the one-step optimum is
+   v* = max(0, sqrt(K/A) - m), decreasing in m, stopping at the threshold m >= sqrt(K/A). This is a
+   terminal-estimation object -- NOT the sequential schedule (in the sequential objective v_t lowers only
+   FUTURE floors, so the myopic per-round v_t is 0). Kept only to characterise the threshold. */
+print("MYOPIC one-step rule v* = max(0, sqrt(K/A) - m) : distinct from the sequential schedule")$
+
+/* THE SEQUENCE LOWER BOUND (the actual sqrt(T)): with total budget M = sum_t v_t and m_t = m0+sum_{s<t}v_s
+   <= m0+M, sum_t[A*v_t + K/m_t] >= A*M + K*T/(m0+M) = A*x + K*T/x - A*m0 for x = m0+M. Reduced scalar
+   objective g(x) = A*x + K*T/x is minimised at x = sqrt(K*T/A) with value 2*sqrt(A*K*T); AM-GM SOS check
+   (sqrt-free with s^2 = A*K*T): A*x + K*T/x - 2*s = A*(x - s/A)^2/x >= 0. */
+gAMGM : ratsimp( A*x + (s^2/A)/x - 2*s - A*(x - s/A)^2/x )$   /* K*T = s^2/A since s^2 = A*K*T */
+print("sequence AM-GM SOS check: A*x + K*T/x - 2*s - A*(x-s/A)^2/x =", gAMGM,
+      " (0 confirms reduced g(x) >= 2*sqrt(A*K*T); Rocq: reduced_objective_lower_bound)")$
+print("=> sequential regret >= 2*sqrt(A*K*T) - A*m0 = Theta(sqrt(T)), matched by v_t = kappa/sqrt(t)")$
 
 /* van Trees floor is ANTITONE in accumulated info: more exploration so far => lower estimation floor. */
 print("van-Trees floor K/(m0 + I) is antitone in accumulated info I (Rocq: van_trees_floor_antitone)")$

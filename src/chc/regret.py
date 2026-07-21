@@ -2,10 +2,13 @@
 
 For a linear-quadratic problem the certainty-equivalent controller (solve the LQR for an *estimated*
 model, then apply that gain to the true plant) has a suboptimality gap that is **quadratic** in the
-model error: ``J(K_hat) - J* = O(||[dA, dB]||^2)`` in the small-error regime (Dean-Mania-Tu-Recht-
-Matni, 2018/2020). This is the analysable special case of CHC's pessimism story -- small model error
-costs almost nothing, but the penalty grows with error, which is exactly what the calibrated
-uncertainty penalty (:mod:`chc.uncertainty`) is there to price in offline.
+model error: ``J(K_hat) - J* <= O(||[dA, dB]||^2)`` in the small-error regime, *provided* the
+estimated controller stabilises the true plant. This LOCAL quadratic bound is Mania, Tu & Recht
+(2019), which improved the earlier LINEAR-in-error robust-synthesis bound of Dean, Mania, Matni,
+Recht & Tu (2018); it is a small-error suboptimality bound, not a global equality. This is the
+analysable special case of CHC's pessimism story -- small model error costs almost nothing, but the
+penalty grows with error, which is exactly what the calibrated uncertainty penalty
+(:mod:`chc.uncertainty`) is there to price in offline.
 
 A NumPy/scipy analysis tool (like :mod:`chc.did` / :mod:`chc.scm`), independent of the JAX ``x64``
 flag. The infinite-horizon discrete LQR is solved via the DARE; a controller's true-plant cost via
@@ -86,7 +89,7 @@ def regret_scaling(
     At each target magnitude ``eps`` draws ``n_samples`` Gaussian model perturbations ``(dA, dB)``
     scaled by ``eps``, records the :func:`certainty_equivalence_gap`, and fits the log-log slope of
     gap vs realised error over all samples. Perturbations that make the estimate unstabilisable are
-    skipped. Theory (Dean et al.) predicts an exponent of 2.
+    skipped. Theory (Mania, Tu & Recht 2019, the local quadratic CE bound) predicts exponent 2.
     """
     rng = np.random.default_rng(seed)
     median_errors: list[float] = []
@@ -289,7 +292,7 @@ def information_lower_bound_certificate(
 
 @dataclass(frozen=True)
 class HighProbRegretCurve:
-    """High-probability regret band: w.p. >= 1-delta, regret <= 2*log(2/delta) * the CR floor."""
+    """Finite-sample high-probability UPPER bound on scalar CE regret (w.p. >= 1-delta)."""
 
     deltas: Vector  # confidence levels delta (band holds with probability >= 1-delta)
     highprob_bands: Vector  # C*2*sigma^2*log(2/delta)/(n*V_exp): the finite-sample band
@@ -311,14 +314,18 @@ def highprob_regret_certificate(
     deltas: Sequence[float] = (0.5, 0.25, 0.1, 0.05, 0.01),
     n_trials: int = 4000,
 ) -> HighProbRegretCurve:
-    """High-probability regret band -- the sub-Gaussian upgrade of the Cramer-Rao lower bound
-    (Result 10, in expectation; derived in ``validation/highprob_regret.mac``, proved in
-    ``proofs/highprob_regret.v``). The effect estimator concentrates: ``|b_hat-b| <= r(delta)`` with
-    probability ``>= 1-delta``, ``r(delta)^2 = 2*sigma^2*log(2/delta)/(n*V_id)``. Composing with
-    certainty-equivalence quadraticity ``regret = C*(b_hat-b)^2`` gives, w.p. ``>= 1-delta``,
-    ``regret <= 2*log(2/delta) * floor`` -- the finite-sample band is a ``log(1/delta)`` multiple of
-    the in-expectation floor, and confounding (smaller ``V_id``) widens it. The concentration is
-    checked here by Monte-Carlo coverage; the deterministic implication is proved in Rocq.
+    """Finite-sample high-probability UPPER bound on scalar CE regret (derived in
+    ``validation/highprob_regret.mac``, proved in ``proofs/highprob_regret.v``). NOTE: this is NOT a
+    "high-probability version" of the Result-10 Cramer-Rao bound -- CR is an *expected LOWER* bound
+    on estimator variance (hence a regret floor), this is a *high-probability UPPER* bound on
+    realised regret; the two point in opposite directions and are complementary. The effect
+    estimator concentrates (sub-Gaussian): ``|b_hat-b| <= r(delta)`` w.p. ``>= 1-delta``,
+    ``r(delta)^2 = 2*sigma^2*log(2/delta)/(n*V_id)``. Composing with the LOCAL quadratic
+    ``regret = C*(b_hat-b)^2`` gives, w.p. ``>= 1-delta``, ``regret <= 2*log(2/delta) * band-scale``
+    -- a ``log(1/delta)`` multiple of ``C*sigma^2/(n*V_id)``; confounding (smaller ``V_id``) widens
+    it. A fully rigorous upper bound replaces ``C`` by the Lipschitz constant of ``u*`` on the
+    confidence region (``regret = (b^2+rr)(u*(b_hat)-u*(b))^2 <= (b^2+rr) L^2 r(delta)^2``); locally
+    ``L^2 -> C``. Concentration checked by Monte-Carlo coverage; the implication proved in Rocq.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     ds = np.asarray(deltas, dtype=np.float64)
@@ -363,13 +370,18 @@ def transportability_regret_certificate(
     wdro_radius: float = 0.15,
 ) -> TransportabilityCurve:
     """Transportability regret -- a controller trained on source domain P, deployed on target P'
-    (Bareinboim, Causal AI, Ch 9). Derived in ``validation/transportability_regret.mac``, proved in
+    (Bareinboim, Causal AI, Ch 9). CONCEPTUAL proposition (not a self-contained theorem): the bounds
+    below hold UNDER the stated assumption, they do not follow from Kantorovich-Rubinstein alone.
+    Derived in ``validation/transportability_regret.mac``, proved in
     ``proofs/transportability_regret.v``. Deployment regret ``C*(b_src-b_tgt)^2`` splits into: (A) a
-    TRANSPORTABLE part -- if the effect is recoverable on target (``b_tgt=b_src``) regret is ZERO at
-    ANY distributional distance; (B) a non-transportable residual ``C*Lip^2*d^2`` when the effect
-    shifts Lipschitz in ``d = W1(P,P')`` -- quadratic in the W1 distance that
-    ``chc.uncertainty.WassersteinPenalty`` penalises; (C) a W-DRO controller for radius ``eps``
-    covers the realized regret when ``d <= eps``. The robust radius is a transportability budget.
+    TRANSPORTABLE part -- if the effect is recoverable on target (``b_tgt=b_src``) regret is ZERO
+    at ANY distributional distance; (B) a non-transportable residual ``C*Lip^2*d^2`` -- this
+    REQUIRES the identified effect functional ``b(.)`` to admit a Lipschitz representation
+    (e.g. ``b(P)=E_P[phi]``, ``phi`` Lipschitz), so ``|b(P')-b(P)| <= Lip*W1(P,P')``; then the
+    regret is quadratic in ``d = W1(P,P')``, the distance ``chc.uncertainty.WassersteinPenalty``
+    penalises; (C) a W-DRO controller for radius ``eps`` covers this residual when ``d <= eps`` --
+    conditional on the DRO ambiguity set being the W1-ball over the law that ``b`` is Lipschitz in.
+    The robust radius is a transportability budget.
     """
     coeff = xt**2 * (rr - b_src**2) ** 2 / (rr + b_src**2) ** 3
     ds = np.geomspace(d_lo, d_hi, n_d)
@@ -425,8 +437,9 @@ def ensemble_control_certificate(
     heterogeneity), a single control ``u`` serves all. Even with perfect per-context knowledge, one
     control pays an irreducible regret = the curvature-weighted VARIANCE of the per-context optimal
     actions, ``R(u_ens) = W*Var_w(u*)``, quadratic in the heterogeneity and zero for a homogeneous
-    population. The ensemble-optimal control is the curvature-weighted mean of per-context optima,
-    beating the naive ``u*(mean effect)`` control.
+    population. The ensemble-optimal control is the curvature-weighted mean of per-context optima;
+    it WEAKLY beats the naive ``u*(mean effect)`` control (they coincide when curvature is uniform
+    across contexts), and strictly beats it under heterogeneous curvature.
     """
     spreads = np.geomspace(spread_lo, spread_hi, n_spread)
     floor = np.zeros(n_spread)
@@ -472,16 +485,20 @@ def composition_transfer_certificate(
     delta_hi: float = 0.2,
     n_delta: int = 12,
 ) -> CompositionTransferCurve:
-    """The general orthogonal-to-control regret TRANSFER theorem -- the general form of Result 0
-    (which only stated the p=1 and p=2 instances). Derived in
-    ``validation/composition_transfer.mac``, proved in ``proofs/composition_transfer.v``. If the
-    effect estimator has error of order ``delta^p`` (``p`` the orthogonality order: 1 plug-in, 2
-    Neyman-orthogonal/DML, higher for higher-order), the certainty-equivalence control regret is
-    order ``delta^(2p)`` -- the control map DOUBLES the estimator's order for EVERY ``p``, because
-    regret is quadratic in the ACTION error (the exact map ``(b^2+rr)*(u*(bhat)-u*(b))^2``, not a
-    linearisation) and ``u*`` is Lipschitz in the effect. A composition theorem, not the
-    ``O(delta^4)`` coincidence of Result 0; its plug-in (``p=1 -> 2``) and DML (``p=2 -> 4``) are
-    two instances.
+    """The general orthogonal-to-control order-transfer LEMMA -- the general form of Result 0 (which
+    only stated p=1 and p=2). Derived in ``validation/composition_transfer.mac``, proved in
+    ``proofs/composition_transfer.v``. If the effect estimator has error of order ``delta^p`` (``p``
+    the orthogonality order: 1 plug-in, 2 Neyman-orthogonal/DML, higher for higher-order), the
+    certainty-equivalence control regret is order ``delta^(2p)`` -- the control map DOUBLES the
+    estimator's order for EVERY ``p``, because regret is quadratic in the ACTION error (exact map
+    ``(b^2+rr)*(u*(bhat)-u*(b))^2``, not a linearisation) and ``u*`` is Lipschitz in the effect.
+    HONEST SCOPE: an immediate COMPOSITION (Lipschitz action-map + quadratic regret), not a deep
+    theorem -- the p->2p arithmetic restates known facts (4th-order-under-orthogonality:
+    Foster-Syrgkanis Orthogonal Statistical Learning; quadratic LQR CE gap: Mania-Tu-Recht). Its
+    value is unifying them for control. The genuine open theorem is the full END-TO-END statement
+    (cross-fit causal estimator -> dynamics-error rate -> stabilising controller -> finite-sample
+    control regret with explicit constants), of which this is one link. Plug-in (``p=1 -> 2``) and
+    DML (``p=2 -> 4``) are instances.
     """
 
     def u_star(bv: float) -> float:
@@ -517,11 +534,13 @@ def multivariate_transfer_certificate(
     n_delta: int = 10,
 ) -> MultivariateTransferCurve:
     """The transfer theorem (Result 18 / Contribution 1) in the MULTIVARIATE, DYNAMIC LQ setting --
-    addressing the "needs multivariate/dynamic" gap. On a stable 2-state/1-input LQ plant the exact
-    certainty-equivalence regret (Dean-Mania-Tu-Recht-Matni gap, ``certainty_equivalence_gap``) is
-    quadratic in the effect-matrix (input matrix ``B``) error; composing an order-``p`` estimator
-    (``||dB|| ~ delta^p``) gives regret ``~ delta^(2p)`` -- the SAME order-doubling as scalar
-    Result 18, now for matrices. Rocq core shared (``regret_order_2p`` is abstract in the error).
+    addressing the "needs multivariate/dynamic" gap. On a stable 2-state/1-input LQ plant the LOCAL
+    quadratic certainty-equivalence suboptimality (Mania, Tu & Recht 2019, small-error/stabilising;
+    ``certainty_equivalence_gap``) is quadratic in the effect-matrix (input matrix ``B``) error;
+    composing an order-``p`` estimator (``||dB|| ~ delta^p``) gives regret ``~ delta^(2p)`` -- the
+    SAME order-doubling as scalar Result 18, now for matrices. Rocq core shared (``regret_order_2p``
+    is abstract in the error norm). This lifts the order-transfer to matrices; it is NOT the full
+    finite-sample end-to-end theorem (which additionally needs nuisance rates + a stability margin).
     """
     a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
     b_mat = np.array([[0.5], [1.0]])
@@ -617,12 +636,16 @@ def multichannel_control_certificate(
     """CONTRIBUTION 2 -- MULTI-CHANNEL orthogonal control on a network (the serious form of 4x0;
     derived in ``validation/multichannel_control.mac``; proved: ``multichannel_control.v``).
     The control-relevant total effect of a uniform action is ``B = b_d + b_s`` (direct + spillover):
-    two interference channels, each with its own Neyman-orthogonal moment. Using real cross-fit
-    Robinson DML on a clustered network: orthogonalising ONLY the direct channel caps the control
-    regret at ``O(delta^2)`` (the un-orthogonalised spillover bottleneck), while orthogonalising
-    BOTH reaches ``O(delta^4)`` -- regret order is ``2*min`` over channel orders. Cluster-robust:
-    the effective sample size is the number of clusters ``G``, so the total-effect estimate
-    concentrates at ``1/sqrt(G)`` (not ``1/sqrt(n)``).
+    two interference channels, each with its own Neyman-orthogonal moment. The NOVELTY is the
+    downstream control-regret consequence of incomplete orthogonalisation (DML *under interference*
+    is not itself new -- Munro-Kuang-Wager, Wager-Xu): orthogonalising ONLY the direct channel caps
+    the control regret at ``O(delta^2)`` (the un-orthogonalised spillover bottleneck), while
+    orthogonalising BOTH reaches ``O(delta^4)`` -- regret order is ``2*min`` over channel orders.
+    ONLY this order-bottleneck is proved in Rocq; the per-channel cross-fit RATES that would make
+    ``||b_j-b_j hat|| ~ delta^{p_j}`` rigorous are demonstrated EMPIRICALLY here, not proved.
+    Cluster-robust: with roughly balanced, weakly-dependent clusters the effective sample size is
+    the number of clusters ``G``, so the total effect concentrates at ``1/sqrt(G)``; this depends
+    on the cluster count/size/balance and cross-cluster independence, and is not a universal rate.
     """
     b_total = b_d + b_s
     coeff = xt**2 * (rr - b_total**2) ** 2 / (rr + b_total**2) ** 3
@@ -687,12 +710,14 @@ def multivariate_interference_certificate(
 ) -> MultivariateInterferenceCurve:
     """Contribution 2 in the MULTIVARIATE, DYNAMIC LQ setting -- composing multi-channel bottleneck
     (Result 19) with the multivariate LQ gap (Result 21). The total effect is an input MATRIX
-    ``B = B_d + B_s`` (two interference channels, each a direction of ``B``). Using the exact
-    Dean-Mania-Tu-Recht-Matni LQ regret (``certainty_equivalence_gap``), quadratic in the total
-    input-matrix error: orthogonalising ONLY direct (spillover plug-in, ``O(delta)``) caps the
-    LQ regret at ``O(delta^2)`` -- spillover is the bottleneck; orthogonalising BOTH (each
-    ``O(delta^2)``) reaches ``O(delta^4)``. The scalar order-composition is proved in
-    ``proofs/multichannel_control.v``; here it is shown in the multivariate LQ regret.
+    ``B = B_d + B_s`` (two interference channels, each a direction of ``B``). Using the LOCAL
+    quadratic LQ suboptimality (Mania, Tu & Recht 2019, small-error + stabilising;
+    ``certainty_equivalence_gap``), quadratic in the total input-matrix error: orthogonalising ONLY
+    direct (spillover plug-in, ``O(delta)``) caps LQ regret at ``O(delta^2)`` -- spillover is the
+    bottleneck; orthogonalising BOTH (each ``O(delta^2)``) reaches ``O(delta^4)``. The scalar
+    order-composition is proved in ``proofs/multichannel_control.v``; shown numerically here in
+    the multivariate LQ regret. The network cross-fit estimator rates that would make
+    ``||dB_j|| ~ delta^{p_j}`` rigorous are NOT proved.
     """
     a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
     b_mat = np.array([[0.5], [1.0]])
@@ -808,7 +833,7 @@ class AdaptiveExplorationCurve:
     adaptive_regret: Vector  # cumulative regret of the tapering schedule (v_t ~ 1/sqrt(t)): sqrt(T)
     greedy_regret: Vector  # cumulative regret with no exploration: ~ T (linear)
     static_regret: Vector  # cumulative regret of a constant-v schedule (Result 11 static): ~ T
-    lower_bound: Vector  # 2*sqrt(A*C*T): the van-Trees sqrt(T) lower bound
+    lower_bound: Vector  # 2*sqrt(A*C*T): leading term of the proved sequence lower bound
     adaptive_slope: float  # log-log slope of adaptive regret vs T (~0.5)
     greedy_slope: float  # log-log slope of greedy regret vs T (~1)
     schedule: Vector  # the tapering exploration schedule v_t (decreasing)
@@ -826,15 +851,20 @@ def adaptive_exploration_certificate(
     horizons: Sequence[int] = (50, 150, 500, 1500, 5000),
     schedule_horizon: int = 400,
 ) -> AdaptiveExplorationCurve:
-    """CONTRIBUTION 3 -- ADAPTIVE information-exploration duality (rigorous SEQUENTIAL upgrade of
-    Results 10/11; derived in ``validation/adaptive_exploration.mac``, proved in
-    ``proofs/adaptive_exploration.v``). At round ``t`` the controller injects ``v_t`` that raises
-    accumulated Fisher information ``m_t`` for FUTURE rounds; the current-round regret is
-    ``A*v_t + C/m_t`` (exploration cost + the van-Trees estimation floor, which applies to adaptive
-    observations unlike ordinary Cramer-Rao). A TAPERING schedule ``v_t ~ 1/sqrt(t)`` (total explore
-    ``~ sqrt(T)``) achieves cumulative regret ``Theta(sqrt(T))`` -- matching the van-Trees
-    ``sqrt(T)`` lower bound ``2*sqrt(A*C*T)`` -- whereas greedy (no explore) is ``Theta(T)`` and the
-    static ``v*`` of Result 11 over-explores (also ``~ T``). Not a static rule: it tapers.
+    """CONTRIBUTION 3 -- ADAPTIVE information-exploration duality (derived in
+    ``validation/adaptive_exploration.mac``, proved in ``proofs/adaptive_exploration.v``). At round
+    ``t`` the controller injects ``v_t`` that raises accumulated Fisher information
+    ``m_t = m0 + sum_{s<t} v_s`` for FUTURE rounds; the per-round regret is ``A*v_t + C/m_t``, where
+    ``C/m_t`` is the van-Trees (Bayesian Cramer-Rao) floor -- valid for adaptive data, unlike
+    ordinary Cramer-Rao (its algebraic core is proved in ``proofs/van_trees.v``). The RATE-OPTIMAL
+    schedule ``v_t = kappa/sqrt(t)`` achieves cumulative regret ``Theta(sqrt(T))``, matching the
+    ``Theta(sqrt(T))`` lower bound on this objective ``>= 2*sqrt(A*C*T) - A*m0`` -- a SEQUENCE
+    inequality (Rocq ``reduced_objective_lower_bound``), NOT a corollary of the per-round floor.
+    Greedy is ``Theta(T)``; the static ``v*`` of Result 11 over-explores (``~ T``). SCOPE: the
+    ``t^{-1/2}`` schedule, the ``sqrt(T)`` rate and van-Trees ``sqrt(T)`` adaptive-LQR lower bounds
+    are all KNOWN (Ziemann-Sandberg; Wagenmaker et al.); a confounding-specific minimax constant
+    would be the only novelty and is not proved. The myopic ``max(0, sqrt(K/A)-m_t)`` rule is a
+    DIFFERENT (one-shot) object.
     """
     a_curv = b * b + rr
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3

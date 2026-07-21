@@ -5,8 +5,13 @@
    Cauchy-Schwarz on the Bayesian score psi: with the van-Trees identity E[psi*Delta] = 1 and the
    information decomposition E[psi^2] = I_data + I_prior, 1 <= (I_data+I_prior)*MSE, so
    MSE >= 1/(I_data+I_prior). Derived in validation/van_trees.mac (tight for the Gaussian conjugate).
-   Here we prove the algebraic core: Cauchy-Schwarz, the resulting bound, and that confounding (less
-   data information) raises the floor. *)
+   HONEST SCOPE: the two premises -- the score identity E[psi*Delta]=1 and the information decomposition
+   -- are exactly where the sequential/adaptive statistical content lives (joint trajectory law,
+   conditional likelihoods, a martingale score decomposition, differentiation under the integral). We do
+   NOT formalise that measure-theoretic model; we take those two identities as HYPOTHESES (cov=1, vx=total)
+   and prove the ALGEBRAIC core from them: Cauchy-Schwarz, the resulting 1/I bound, and that confounding
+   (less data information) raises the floor. So this certifies the algebra of van Trees, not its sequential
+   validity, which is cited. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.

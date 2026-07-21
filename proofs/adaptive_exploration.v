@@ -1,12 +1,18 @@
-(* Rocq (CONTRIBUTION 3): the ADAPTIVE information-exploration duality -- the rigorous SEQUENTIAL upgrade
-   of results 10 (static Cramer-Rao) and 11 (static Av+B/v). At round t the controller injects
-   exploration variance v_t; the accumulated Fisher information is m_t (in variance units). The VAN TREES
-   (Bayesian Cramer-Rao) inequality bounds the estimation floor by K/(m_t + v_t) even for adaptive
-   observations, so the per-round cost is A*v + K/(m+v). Three facts: (A) the floor is ANTITONE in
-   accumulated information (more exploration so far => lower floor); (B) the per-round tradeoff has an
-   interior optimum with the sum-of-squares gap A*(v-vstar)^2/(m+v) (van-Trees analog of result 11 with
-   an information shift m); (C) the optimal schedule TAPERS -- vstar = sqrt(K/A) - m decreases as info
-   accumulates, unlike the static single vstar of result 11. Derived in validation/adaptive_exploration.mac. *)
+(* Rocq (CONTRIBUTION 3): the ADAPTIVE information-exploration duality, the SEQUENTIAL analogue of
+   results 10 (static Cramer-Rao) and 11 (static Av+B/v). At round t the controller injects exploration
+   variance v_t; the accumulated Fisher information is m_t (in variance units). The VAN TREES (Bayesian
+   Cramer-Rao) inequality bounds the estimation floor by K/m_t even for adaptive observations (its
+   algebraic core is proved in van_trees.v), so the per-round cost is A*v_t + K/m_t. Facts: (A) the floor
+   is ANTITONE in accumulated information (more exploration so far => lower floor). (B)+(C) the MYOPIC
+   one-step tradeoff min_v A*v + K/(m+v) has the interior optimum vstar = sqrt(K/A) - m with the
+   sum-of-squares gap A*(v-vstar)^2/(m+v), and that myopic increment tapers/stops as info accumulates.
+   NOTE (honest scope): this myopic threshold rule is NOT the rate-optimal schedule -- in the SEQUENTIAL
+   objective v_t only lowers FUTURE floors, so myopically v_t=0. The Theta(sqrt(T)) rate comes from the
+   rate-optimal v_t = kappa/sqrt(t) schedule (certificate) together with (D) below, the sequence LOWER
+   bound: it is a separate inequality, not a corollary of the per-round floor. The t^{-1/2} schedule, the
+   sqrt(T) rate, and van-Trees sqrt(T) adaptive-LQR lower bounds are all KNOWN (Ziemann-Sandberg;
+   Wagenmaker-Simchowitz-Jamieson); a confounding-specific minimax constant would be the only novelty and
+   is NOT proved here. Derived in validation/adaptive_exploration.mac. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
@@ -62,4 +68,25 @@ Proof.
   intros k a m vstar Ha Hm Hchar Hthr.
   assert (Hle : (m + vstar) ^ 2 <= m ^ 2) by nra.
   nra.
+Qed.
+
+(* (D) The sqrt(T) LOWER bound needs a SEQUENCE inequality, not the per-round floor. Reduction (done in
+   the certificate, elementary): with total budget M = sum_t v_t and m_t = m0 + sum_{s<t} v_s <= m0 + M,
+   the sequential objective sum_t (a*v_t + c/m_t) >= a*M + c*T/(m0+M) = a*x + c*T/x - a*m0 for x = m0+M.
+   Here we prove the nontrivial scalar core: the reduced single-variable objective is bounded below by
+   the balanced-point value 2*sqrt(a*c*T). With s = sqrt(a*c*T) (i.e. s*s = a*c*T) the gap factors as a
+   nonnegative square, a*x + c*T/x - 2*s = a*(x - s/a)^2 / x >= 0. Composed with the reduction, the
+   sequential regret is >= 2*sqrt(a*c*T) - a*m0 = Theta(sqrt(T)), matched by the v_t ~ 1/sqrt(t)
+   schedule. *)
+Theorem reduced_objective_lower_bound : forall a c t x s,
+  0 < a -> 0 < x -> s * s = a * c * t -> 2 * s <= a * x + c * t / x.
+Proof.
+  intros a c t x s Ha Hx Hs.
+  assert (Hgap : a * x + c * t / x - 2 * s = a * (x - s / a) ^ 2 / x).
+  { replace (c * t) with (s * s / a) by (rewrite Hs; field; lra). field; lra. }
+  assert (Hpos : 0 <= a * (x - s / a) ^ 2 / x).
+  { apply Rmult_le_pos.
+    - apply Rmult_le_pos; [lra | apply pow2_ge_0].
+    - left; apply Rinv_0_lt_compat; exact Hx. }
+  lra.
 Qed.
