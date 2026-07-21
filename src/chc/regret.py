@@ -393,6 +393,60 @@ def transportability_regret_certificate(
 
 
 @dataclass(frozen=True)
+class EnsembleControlCurve:
+    """One control over a heterogeneous population pays a curvature-weighted Var(u*) floor."""
+
+    spreads: Vector  # heterogeneity level (spread of the effect across the population)
+    ensemble_floor: Vector  # R(u_ens): the irreducible regret of one control, ~ spread^2
+    naive_mean_regret: Vector  # regret of the naive u*(mean effect) control: >= the ensemble floor
+    floor_slope: float  # log-log slope of the floor vs heterogeneity (~2: quadratic)
+    homogeneous_floor: float  # floor at the smallest spread (~0: one control serves a uniform pop)
+    naive_excess_max: float  # max(naive - ensemble): the value of curvature-weighting over the mean
+
+
+def ensemble_control_certificate(
+    *,
+    b0: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    n_ctx: int = 21,
+    spread_lo: float = 0.02,
+    spread_hi: float = 0.5,
+    n_spread: int = 12,
+) -> EnsembleControlCurve:
+    """The ENSEMBLE (heterogeneity) control regret floor -- one control over a heterogeneous causal
+    population (Li & Khaneja 2006 ensemble control; derived in ``validation/ensemble_control.mac``,
+    proved in ``proofs/ensemble_control.v``). When the effect ``b`` varies across contexts (CATE
+    heterogeneity), a single control ``u`` serves all. Even with perfect per-context knowledge, one
+    control pays an irreducible regret = the curvature-weighted VARIANCE of the per-context optimal
+    actions, ``R(u_ens) = W*Var_w(u*)``, quadratic in the heterogeneity and zero for a homogeneous
+    population. The ensemble-optimal control is the curvature-weighted mean of per-context optima,
+    beating the naive ``u*(mean effect)`` control.
+    """
+    spreads = np.geomspace(spread_lo, spread_hi, n_spread)
+    floor = np.zeros(n_spread)
+    naive = np.zeros(n_spread)
+    for i, s in enumerate(spreads):
+        bs = np.linspace(b0 - s, b0 + s, n_ctx)  # heterogeneous effects across the population
+        ks = bs**2 + rr  # per-context curvature
+        us = bs * xt / ks  # per-context optimal action
+        w = ks / n_ctx  # curvature weight (uniform population weight 1/n)
+        u_ens = float(np.sum(w * us) / np.sum(w))  # ensemble-optimal: curvature-weighted mean
+        floor[i] = float(np.sum(w * (u_ens - us) ** 2))
+        u_naive = b0 * xt / (b0**2 + rr)  # naive: optimal for the mean effect b0
+        naive[i] = float(np.sum(w * (u_naive - us) ** 2))
+    slope = float(np.polyfit(np.log(spreads), np.log(floor), 1)[0])
+    return EnsembleControlCurve(
+        spreads,
+        floor,
+        naive,
+        slope,
+        float(floor[0]),
+        float(np.max(naive - floor)),
+    )
+
+
+@dataclass(frozen=True)
 class OptimalExplorationCurve:
     """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
 

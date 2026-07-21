@@ -1,0 +1,41 @@
+/* DISCOVERY / derivation: the ENSEMBLE (heterogeneity) control regret floor -- the causal-control
+   analogue of ensemble control (Li & Khaneja, "Control of inhomogeneous quantum ensembles", PRA 73
+   030302, 2006: one control robust across a continuum of systems). Here the "ensemble" is a
+   HETEROGENEOUS causal population: the effect b varies across contexts/units (CATE heterogeneity), and
+   a single control u must serve all of them. Even with PERFECT knowledge of every context's effect, one
+   control pays an irreducible regret = the curvature-weighted VARIANCE of the per-context optimal
+   actions. Homogeneous population => zero floor. Maxima is the source of truth. */
+display2d : false$
+
+/* per-context optimal action u*(b) = b*xt/(b^2+rr) and curvature k(b) = b^2+rr (from causal_mpc.mac).
+   Two-context ensemble with population weights p1,p2; the effective weight is curvature-weighted. */
+us(bb) := bb*xt/(bb^2 + rr)$
+k(bb) := bb^2 + rr$
+w1 : p1*k(b1)$
+w2 : p2*k(b2)$
+u1 : us(b1)$
+u2 : us(b2)$
+
+/* ensemble regret of a single control u: R(u) = sum_i p_i*k_i*(u - u*_i)^2 = sum_i w_i*(u-u*_i)^2 */
+R : w1*(u - u1)^2 + w2*(u - u2)^2$
+print("ensemble regret R(u) = w1*(u-u1)^2 + w2*(u-u2)^2,  w_i = p_i*(b_i^2+rr)")$
+
+/* ensemble-optimal control: the curvature-weighted average of the per-context optima */
+uens : ratsimp(rhs(solve(diff(R, u) = 0, u)[1]))$
+print("ensemble-optimal u_ens =", uens, " = (w1*u1 + w2*u2)/(w1+w2) : curvature-weighted mean")$
+
+/* SOS optimality: R(u) - R(u_ens) = (w1+w2)*(u - u_ens)^2 >= 0 */
+floor_val : ratsimp(subst(u = uens, R))$
+gap : ratsimp(R - floor_val)$
+print("R(u) - R(u_ens) =", gap, "  should equal (w1+w2)*(u-u_ens)^2")$
+print("check gap - (w1+w2)*(u-uens)^2 =", ratsimp(gap - (w1+w2)*(u - uens)^2), " (0 confirms SOS optimum)")$
+
+/* THE HETEROGENEITY FLOOR: R(u_ens) = w1*w2*(u1-u2)^2/(w1+w2) = W * Var_w(u*) -- total curvature times
+   the curvature-weighted variance of the optimal actions. The irreducible price of one control over a
+   heterogeneous causal population, paid even with perfect per-context knowledge. */
+print("heterogeneity floor R(u_ens) =", floor_val)$
+print("  = w1*w2*(u1-u2)^2/(w1+w2) ; check:", ratsimp(floor_val - w1*w2*(u1-u2)^2/(w1+w2)), " (0 confirms)")$
+
+/* HOMOGENEOUS population (b1 = b2 => u1 = u2): the floor VANISHES -- one control is perfect. */
+print("homogeneous (u1=u2): floor =", ratsimp(subst(b2=b1, floor_val)), " (0: one control serves all)")$
+print("=> heterogeneity, not estimation error, is what forces the ensemble floor (Var of u* across b)")$

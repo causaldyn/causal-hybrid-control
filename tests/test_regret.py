@@ -17,6 +17,7 @@ from chc.regret import (
     dlqr,
     doubly_robust_control_certificate,
     dynamic_causal_regret_certificate,
+    ensemble_control_certificate,
     finite_horizon_pl_certificate,
     highprob_regret_certificate,
     hinf_robust_regret_certificate,
@@ -120,6 +121,18 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
+
+
+def test_one_control_over_a_heterogeneous_population_pays_a_floor() -> None:
+    # ensemble/heterogeneity floor (proofs/ensemble_control.v): one control over a heterogeneous
+    # effect population pays an irreducible regret = curvature-weighted Var(u*), quadratic in the
+    # heterogeneity and zero for a homogeneous population; weighted mean beats the naive u*(mean).
+    curve = ensemble_control_certificate()
+    assert 1.8 < curve.floor_slope < 2.2  # floor ~ heterogeneity^2
+    assert curve.homogeneous_floor < 0.01 * curve.ensemble_floor[-1]  # vanishes when homogeneous
+    assert (curve.ensemble_floor <= curve.naive_mean_regret + 1e-12).all()  # weighted mean optimal
+    assert curve.naive_excess_max > 0.0  # curvature-weighting beats the naive mean
+    assert (np.diff(curve.ensemble_floor) > 0).all()  # more heterogeneity => higher floor
 
 
 def test_transportability_regret_is_quadratic_in_wasserstein_distance() -> None:
