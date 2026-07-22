@@ -94,10 +94,11 @@ Qed.
 (* (E) CONFOUNDING-SPECIFIC constant. Let eta in (0,1] be the identifying information per unit
    exploration (eta = 1 fully identified, eta -> 0 confounded). Then m_t = I0 + eta*sum_{s<t} v_s, and the
    reduction (D) instantiated with a := A/eta gives the sequence floor 2*sqrt(A*C*T/eta) - A*I0/eta: the
-   leading term scales as 1/sqrt(eta). This corollary proves that floor is ANTITONE in eta -- more
-   confounding (smaller eta) provably raises it -- which is the causal content the generic (D) lacked.
+   leading term scales as 1/sqrt(eta). This corollary proves that floor is ANTITONE in eta -- lower
+   injected-exploration efficiency (smaller eta) provably raises it -- the causal content (D) lacked.
+   eta is the identification efficiency (attenuation, not necessarily confounding).
    (Stated sqrt-free with the balanced-point value s, s^2 = A*C*T/eta = q/eta.) *)
-Corollary confounding_raises_sequence_floor : forall q e1 e2 s1 s2,
+Corollary lower_efficiency_raises_sequence_floor : forall q e1 e2 s1 s2,
   0 < q -> 0 < e1 -> e1 <= e2 -> 0 <= s1 -> 0 <= s2 ->
   s1 * s1 = q / e1 -> s2 * s2 = q / e2 -> s2 <= s1.
 Proof.
