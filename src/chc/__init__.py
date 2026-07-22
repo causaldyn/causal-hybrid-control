@@ -156,6 +156,7 @@ from chc.regret import (
     van_trees_certificate,
 )
 from chc.residual import (
+    ContractiveResidual,
     DampingInjectionCertificate,
     GraphResidual,
     KANResidual,
@@ -189,11 +190,14 @@ from chc.toeplitz import (
 from chc.train import fit_residual, fit_residual_multistep, one_step_mse, rollout_mse
 from chc.transport import MeanFieldTransport, solve_transport, transport_step
 from chc.uncertainty import (
+    ContractiveRolloutCertificate,
     EnsembleResidual,
     EnsembleUncertainty,
     LipschitzRolloutCertificate,
     SplitConformal,
     WassersteinPenalty,
+    contractive_rollout_bound,
+    contractive_rollout_certificate,
     fit_ensemble,
     lipschitz_rollout_bound,
     lipschitz_rollout_certificate,
@@ -216,6 +220,8 @@ __all__ = [
     "ConfoundedNetworkSystem",
     "ConfoundedTurnpikeCurve",
     "ConstrainedRegretCurve",
+    "ContractiveResidual",
+    "ContractiveRolloutCertificate",
     "DampedOscillator",
     "DampingInjectionCertificate",
     "DoWhyEstimator",
@@ -299,6 +305,8 @@ __all__ = [
     "confounded_turnpike_certificate",
     "constrained_ce_regret_certificate",
     "continuous_lqr",
+    "contractive_rollout_bound",
+    "contractive_rollout_certificate",
     "control_gradient_adjoint",
     "control_gradient_diffrax",
     "damping_injection_certificate",

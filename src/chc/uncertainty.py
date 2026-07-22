@@ -27,7 +27,7 @@ from jax import Array
 
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step
-from chc.residual import LipschitzResidual, MLPResidual
+from chc.residual import ContractiveResidual, LipschitzResidual, MLPResidual
 from chc.train import fit_residual
 
 
@@ -311,4 +311,88 @@ def lipschitz_rollout_certificate(
         certified_bound=bound,
         measured_deviation=measured,
         ok=measured <= bound + 1e-9,
+    )
+
+
+def contractive_rollout_bound(
+    contraction_rate: float, model_error: float, dt: float, horizon: int
+) -> float:
+    """UNIFORMLY BOUNDED rollout-error radius for a CONTRACTING field (log-norm mu = -rate < 0).
+
+    With ``a = 1 + mu*dt = 1 - rate*dt`` in ``[0, 1)`` under the CFL step ``dt <= 1/rate``, the
+    discrete Gronwall bound ``e_H <= model_error*(1 - a^H)/rate`` grows but is capped at
+    ``model_error/rate`` for ALL horizons -- no ``e^{L*T}`` blow-up. This is the payoff of a
+    :class:`~chc.residual.ContractiveResidual`'s certified negative log-norm over the non-negative
+    ``||.||``-Lipschitz of :class:`~chc.residual.LipschitzResidual`. Machine-checked in
+    ``proofs/lipschitz_rollout.v`` (``gronwall_bounded``: ``0<=a<1 => gronwall a b k <= b/(1-a)``).
+    Returns ``+inf`` if the CFL step is violated (``rate*dt >= 1``), where Euler overshoots.
+    """
+    step = 1.0 - contraction_rate * dt
+    if contraction_rate <= 0.0 or step < 0.0:  # not contracting, or CFL violated -> bound invalid
+        return float("inf")
+    return model_error * (1.0 - step**horizon) / contraction_rate
+
+
+@dataclass(frozen=True)
+class ContractiveRolloutCertificate:
+    """Evidence a contractive residual has log-norm mu<0 and a flat (bounded) rollout radius."""
+
+    contraction_rate: float  # certified |mu| = min softplus(eta) > 0
+    empirical_one_sided: (
+        float  # max_t <dr, dx>/||dx||^2 -- must be <= -contraction_rate (contracting)
+    )
+    measured_deviation: float  # ||x_H - x~_H|| under the contractive Euler rollout
+    bounded_radius: float  # model_error/rate -- the horizon-independent ceiling (vs e^{L*T})
+    lipschitz_blowup: (
+        float  # the norm-Lipschitz radius at the same horizon (what contraction avoids)
+    )
+    ok: bool
+
+
+def contractive_rollout_certificate(
+    seed: int = 0, state_dim: int = 3, horizon: int = 60, dt: float = 0.05, model_error: float = 0.1
+) -> ContractiveRolloutCertificate:
+    """Confirm a :class:`~chc.residual.ContractiveResidual` contracts and its radius stays flat.
+
+    Checks (i) the empirical one-sided Lipschitz ``<r(x)-r(y),x-y>/||x-y||^2 <= -rate`` (certified
+    contraction), and (ii) the perturbed-rollout deviation stays under the BOUNDED radius
+    ``model_error/rate`` even as the horizon grows -- contrasted with the ``e^{L*T}`` that a
+    norm-Lipschitz residual would incur (``lipschitz_blowup``).
+    """
+    k_model, k_x, k_p, k_a, k_b = jax.random.split(jax.random.PRNGKey(seed), 5)
+    model = ContractiveResidual(state_dim, 1, key=k_model)
+    rate = float(model.contraction_rate())
+
+    def residual(x: Array) -> Array:
+        return model(0.0, x, jnp.zeros(1))
+
+    a = jax.random.normal(k_a, (200, state_dim))
+    b = jax.random.normal(k_b, (200, state_dim))
+    delta = a - b
+    inner = jax.vmap(lambda p, q, d: (residual(p) - residual(q)) @ d)(a, b, delta)
+    one_sided = float(jnp.max(inner / (jnp.sum(delta**2, axis=1) + 1e-12)))
+
+    field = HybridDynamics(
+        LinearDynamics(jnp.zeros((state_dim, state_dim)), jnp.zeros((state_dim, 1))), model
+    )
+    direction = jax.random.normal(k_p, (state_dim,))
+    perturb = model_error * direction / jnp.linalg.norm(direction)
+    perturbed = _PerturbedField(field, perturb)
+    x0 = jax.random.normal(k_x, (state_dim,))
+    us = jnp.zeros((horizon, 1))
+    deviation = jnp.linalg.norm(
+        _euler_rollout(field, x0, us, dt) - _euler_rollout(perturbed, x0, us, dt), axis=1
+    )
+    measured = float(jnp.max(deviation))
+    ceiling = contractive_rollout_bound(rate, model_error, dt, horizon)
+    blowup = lipschitz_rollout_bound(
+        rate + 1.0, model_error, dt, horizon
+    )  # a norm-Lipschitz analogue
+    return ContractiveRolloutCertificate(
+        contraction_rate=rate,
+        empirical_one_sided=one_sided,
+        measured_deviation=measured,
+        bounded_radius=ceiling,
+        lipschitz_blowup=blowup,
+        ok=one_sided <= -rate + 1e-6 and measured <= ceiling + 1e-6,
     )

@@ -6,7 +6,12 @@ Ties the shipped LipschitzResidual's certified constant to a machine-checked pes
 import numpy as np
 import pytest
 
-from chc.uncertainty import lipschitz_rollout_bound, lipschitz_rollout_certificate
+from chc.uncertainty import (
+    contractive_rollout_bound,
+    contractive_rollout_certificate,
+    lipschitz_rollout_bound,
+    lipschitz_rollout_certificate,
+)
 
 
 def test_certificate_deviation_stays_under_the_bound() -> None:
@@ -28,6 +33,27 @@ def test_bound_is_not_vacuous_on_a_short_horizon() -> None:
     cert = lipschitz_rollout_certificate(seed=1, horizon=8, dt=0.05)
     # short horizon / bounded L: the certified radius is within an order of magnitude of the truth
     assert cert.measured_deviation >= 0.2 * cert.certified_bound
+
+
+def test_contractive_certificate_confirms_negative_log_norm_and_flat_radius() -> None:
+    cert = contractive_rollout_certificate(seed=0)
+    assert cert.ok
+    assert cert.contraction_rate > 0.0  # certified |mu| > 0
+    assert cert.empirical_one_sided <= -cert.contraction_rate + 1e-6  # genuinely contracting
+    assert cert.measured_deviation <= cert.bounded_radius + 1e-6  # under the flat ceiling
+    assert cert.bounded_radius < cert.lipschitz_blowup  # contraction beats the e^{L*T} envelope
+
+
+def test_contractive_radius_stays_capped_while_lipschitz_explodes() -> None:
+    # the contraction ceiling is eps/rate for ALL horizons, unlike the norm-Lipschitz e^{L*T}
+    contractive = contractive_rollout_bound(1.0, 0.1, 0.05, 400)
+    lipschitz = lipschitz_rollout_bound(1.0, 0.1, 0.05, 400)
+    assert contractive <= 0.1 / 1.0 + 1e-9  # capped at eps/rate, horizon-independent
+    assert contractive < 1e-4 * lipschitz  # while the norm-Lipschitz bound blows up exponentially
+
+
+def test_contractive_bound_returns_inf_when_cfl_violated() -> None:
+    assert contractive_rollout_bound(1.0, 0.1, 5.0, 8) == float("inf")  # rate*dt = 5 >= 1
 
 
 def test_vanishing_lipschitz_gives_the_linear_envelope() -> None:

@@ -258,6 +258,64 @@ class LipschitzResidual(eqx.Module):
         return self.lipschitz_constant() * z
 
 
+class ContractiveResidual(eqx.Module):
+    """Residual with a CERTIFIED negative one-sided Lipschitz (log-norm) mu < 0 -- contracting.
+
+    ``r(x,u) = -(rate + softplus(eta)) * x + rate * g(x,u)`` with ``g`` a Schur-normalized tanh-MLP
+    (``||dg/dx||_2 <= 1``, as in :class:`LipschitzResidual`). By subadditivity of the log-norm and
+    ``mu_2(-D) = -min_i D_ii``, the state-Jacobian obeys ``mu_2(J_r) <= -(rate + min softplus(eta))
+    + rate = -min softplus(eta) < 0`` -- a certified contraction rate, not a penalty.
+    Unlike the non-negative ``||.||``-Lipschitz ``L`` of :class:`LipschitzResidual` (whose rollout
+    bound is ``e^{L*T}``), a negative log-norm makes ``1 + mu*dt`` in ``(0, 1)`` under the CFL step
+    ``dt <= 1/|mu|``, so the same discrete Gronwall gives a UNIFORMLY BOUNDED rollout radius
+    ``eps/|mu|`` -- removing the blow-up (see ``chc.uncertainty.contractive_rollout_bound`` and Rocq
+    ``gronwall_bounded``). ``mu`` bounds only the residual's contribution; total-system contraction
+    needs ``mu_2(J_known) + margin < 0`` (a gate to check offline). Pure matmuls; the L2/eigenvalue
+    bound is exact, general-n verification would use the L-inf (Gershgorin) variant.
+    """
+
+    weights: list[Array]  # Schur-normalized -> each layer is 1-Lipschitz; g is 1-Lipschitz
+    biases: list[Array]
+    log_drift: Array  # eta: the contraction margin per state coord is softplus(eta) > 0
+    rate: float = eqx.field(static=True)  # the bounded-coupling scale (the 1-Lipschitz cap on g)
+    state_dim: int = eqx.field(static=True)
+
+    def __init__(
+        self,
+        state_dim: int,
+        control_dim: int,
+        width: int = 16,
+        depth: int = 2,
+        rate: float = 1.0,
+        *,
+        key: Array,
+    ) -> None:
+        sizes = [state_dim + control_dim] + [width] * depth + [state_dim]
+        keys = jax.random.split(key, len(sizes) - 1)
+        self.weights = [
+            s_in**-0.5 * jax.random.normal(k, (s_out, s_in))
+            for k, s_in, s_out in zip(keys, sizes[:-1], sizes[1:], strict=True)
+        ]
+        self.biases = [jnp.zeros(s_out) for s_out in sizes[1:]]
+        self.log_drift = jnp.zeros(state_dim)
+        self.rate = rate
+        self.state_dim = state_dim
+
+    def contraction_rate(self) -> Array:
+        """The certified contraction rate ``|mu| = min_i softplus(eta_i) > 0``."""
+        return jnp.min(jax.nn.softplus(self.log_drift))
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        z = jnp.concatenate([x, u])
+        for weight, bias in zip(self.weights[:-1], self.biases[:-1], strict=True):
+            z = jnp.tanh(LipschitzResidual._spectral_normalized(weight) @ z + bias)
+        bounded = self.rate * (
+            LipschitzResidual._spectral_normalized(self.weights[-1]) @ z + self.biases[-1]
+        )
+        drift = -(self.rate + jax.nn.softplus(self.log_drift)) * x  # -D x, D = diag(rate+softplus)
+        return drift + bounded
+
+
 @dataclass(frozen=True)
 class PortHamiltonianCertificate:
     """Numeric evidence that a :class:`PortHamiltonianResidual` is passive (Lyapunov-stable)."""

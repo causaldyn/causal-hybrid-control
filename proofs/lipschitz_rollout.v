@@ -47,6 +47,24 @@ Proof.
   rewrite gronwall_closed_mul. field. exact Hd.
 Qed.
 
+(* CONTRACTION payoff: for a CONTRACTING step 0 <= a < 1 (a = 1 + mu*dt, one-sided Lipschitz mu < 0),
+   the Gronwall bound is UNIFORMLY BOUNDED by b/(1-a) for all horizons k -- no e^{L*T} blow-up. With
+   b = dt*eps and 1-a = |mu|*dt this is eps/|mu|: a flat certified pessimism radius. *)
+Lemma gronwall_bounded : forall (a b : R) (k : nat),
+  0 <= a -> a < 1 -> 0 <= b -> gronwall a b k <= b / (1 - a).
+Proof.
+  intros a b k Ha Ha1 Hb.
+  assert (H1a : 0 < 1 - a) by lra.
+  assert (Hak0 : 0 <= a ^ k) by (apply pow_le; lra).
+  assert (Hak1 : a ^ k <= 1) by (rewrite <- (pow1 k); apply pow_incr; lra).
+  apply Rmult_le_reg_r with (r := 1 - a); [lra |].
+  replace (b / (1 - a) * (1 - a)) with b by (field; lra).
+  (* gronwall a b k * (1-a) = -(a-1)*gronwall = -(b*(a^k-1)) = b*(1-a^k) <= b *)
+  assert (Hmul : gronwall a b k * (1 - a) = b * (1 - a ^ k)).
+  { pose proof (gronwall_closed_mul a b k) as Hc. nra. }
+  rewrite Hmul. nra.
+Qed.
+
 (* THE discrete Gronwall bound: any sequence obeying the one-step inequality stays under gronwall. *)
 Lemma gronwall_comparison : forall (a b : R) (d : nat -> R) (k : nat),
   0 <= a ->
