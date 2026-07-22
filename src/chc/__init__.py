@@ -83,6 +83,13 @@ from chc.network_causal import (
     estimate_network_effects_gnn,
 )
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
+from chc.pathway import (
+    CausalPathway,
+    PathwayCertificate,
+    PathwayEdge,
+    causal_pathway,
+    causal_pathway_certificate,
+)
 from chc.regret import (
     AdaptiveExplorationCurve,
     BanditCausalCurve,
@@ -186,6 +193,7 @@ __all__ = [
     "BangBangResult",
     "CausalControlCurve",
     "CausalEffectEstimator",
+    "CausalPathway",
     "ClusteredLowerBoundCurve",
     "CompositionTransferCurve",
     "ConfoundedLinearSystem",
@@ -232,6 +240,8 @@ __all__ = [
     "OptimalExplorationCurve",
     "OrthogonalControlCurve",
     "PartialIdControlCurve",
+    "PathwayCertificate",
+    "PathwayEdge",
     "PessimismCurve",
     "QuadraticCost",
     "RLearner",
@@ -257,6 +267,8 @@ __all__ = [
     "calibrate_predictive",
     "calibrate_shared_state",
     "callaway_santanna",
+    "causal_pathway",
+    "causal_pathway_certificate",
     "causal_vs_predictive_certificate",
     "certainty_equivalence_gap",
     "closed_loop_cost",

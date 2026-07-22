@@ -1,0 +1,36 @@
+/* DISCOVERY (temporal causal pathway laws): the algebra behind chc.pathway's causal_pathway(target) --
+   discover the lagged graph, estimate the dynamic effect (IRF) along each path, rank + truncate. Three
+   laws, each machine-checked in proofs/causal_pathway.v:
+
+   (L1) IRF PATH-SUM. For a stable AR(p)/SVAR the impulse response g_h (= d target_{t+h}/d shock_t) obeys
+        the recursion g_h = sum_{i=1}^p a_i g_{h-i}, g_0=1, and equals the SUM OVER LAGGED WALKS of length
+        h (compositions of h into parts {1..p}) of the product of edge weights -- the "which paths, of what
+        sign, reach the target" decomposition (Lutkepohl, MA(inf) representation).
+   (L2) GEOMETRIC HORIZON-TRUNCATION. For a stable pathway (companion spectral radius rho<1),
+        sum_{h=0}^n rho^h = (1-rho^{n+1})/(1-rho) <= 1/(1-rho), and the tail rho^{H+1}/(1-rho) decays
+        geometrically -- so truncating the pathway at a finite horizon H loses geometrically little.
+   (L3) WEAKEST-LINK / multiplicative bottleneck. A path's contribution is the PRODUCT of its edge
+        magnitudes, so a path with one weak (near-zero) edge contributes negligibly: |a*b*c| = |a||b||c|,
+        and |a|<=eps ==> |a*b*c| <= eps*|b||c|. The temporal-path analogue of the C2 channel bottleneck. */
+display2d : false$
+simpsum  : true$  /* let Maxima evaluate the symbolic geometric sum to its closed form (L2) */
+
+/* (L1) AR(2) IRF recursion vs the walk-sum (compositions of h into parts {1,2}). */
+g[0] : 1$  g[1] : a1$  g[h] := a1*g[h-1] + a2*g[h-2]$
+print("L1 g2 - (a1^2+a2)             =", expand(g[2] - (a1^2 + a2)),
+      "  (walks of length 2: [1,1],[2])")$
+print("L1 g3 - (a1^3+2*a1*a2)        =", expand(g[3] - (a1^3 + 2*a1*a2)),
+      "  (walks: [1,1,1],[1,2],[2,1])")$
+print("L1 g4 - (a1^4+3*a1^2*a2+a2^2) =", expand(g[4] - (a1^4 + 3*a1^2*a2 + a2^2)),
+      "  (walks: 1x[1,1,1,1], 3x length-3-with-one-2, 1x[2,2])")$
+
+/* (L2) geometric partial-sum closed form and the decreasing tail. */
+S : sum(rho^k, k, 0, n)$
+print("L2 (1-rho)*sum_{0}^{n} rho^k - (1-rho^(n+1)) =", ratsimp( (1-rho)*S - (1-rho^(n+1)) ),
+      "  (=> partial sum <= 1/(1-rho); Rocq: geo_sum_closed / geo_sum_bounded)")$
+print("L2 tail ratio T_{H+1}/T_H - rho =", ratsimp( (rho^(H+2)/(1-rho)) / (rho^(H+1)/(1-rho)) - rho ),
+      "  (=0: tail decays by factor rho<1 each step; Rocq: geometric_tail_decreasing)")$
+
+/* (L3) weakest-link product identity. */
+print("L3 abs-product: |a*b*c| = |a||b||c| (sign-free) and |a|<=eps => path <= eps*|b||c|",
+      " (Rocq: weakest_link_product / weak_edge_caps_path)")$
