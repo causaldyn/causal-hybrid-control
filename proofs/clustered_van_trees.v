@@ -14,7 +14,11 @@
        information additivity are the CITED measure-theoretic inputs.
    (2) a LOWER-Lipschitz regret map: the optimal action u*(b)=xt*b/(b^2+rr) is a diffeomorphism with
        |du*/db| >= L_min > 0 away from the knife-edge b^2=rr, so R = (b^2+rr)*(u*(Bhat)-u*(B))^2
-       >= (b^2+rr)*L_min^2*(Bhat-B)^2 =: kappa0*(Bhat-B)^2, hence E[R] >= kappa0*mse.
+       >= (b^2+rr)*L_min^2*(Bhat-B)^2 =: kappa0*(Bhat-B)^2, hence E[R] >= kappa0*mse. (SCALAR case.)
+       MULTIVARIATE (the matrix-B Result 24 setting): R = (1/2)(Bhat-B)^T M (Bhat-B) + o, M = DK*^T H_K DK*,
+       so the bound holds on the DECISION-SENSITIVE subspace M > 0 with kappa0 = (1/2)*lambda_min(M);
+       decision-irrelevant directions of Bhat-B (singular M) contribute nothing. The composition below is
+       generic in (kappa0, mse), so it covers the multivariate case on that subspace -- NOT globally.
    Composing: G*E[R] >= kappa0 * G/(I0+G*Ic) >= kappa0/(I0+Ic) > 0 for all G>=1 (clustered_floor_positive),
    nondecreasing in G (clustered_floor_increasing) toward the limit kappa0/Ic (Maxima: limit = 1/Ic).
    So the 1/G rate is TIGHT.

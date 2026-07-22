@@ -1,0 +1,34 @@
+/* DISCOVERY (CONTRIBUTION 2, §26 remainder structure): the EXACT orthogonal-DML remainder for the
+   Robinson double-residual moment. External review: the remainder is NOT only the product of nuisance
+   errors -- it also carries a same-channel SQUARE term. This file verifies that structure symbolically.
+
+   Residualised model: Yt = b0*Dt + eps, with E[eps|Z]=0, E[Dt|Z]=0. Nuisance errors dl = lhat - l0 and
+   dm = mhat - m0 are Z-measurable. Estimated residuals Yhat = Yt - dl, Dhat = Dt - dm. The orthogonal
+   moment is psi = (Yhat - b0*Dhat)*Dhat. Taking E[.|Z], every term carrying a lone Dt or an eps vanishes
+   (E[Dt|Z]=0, E[eps|Z]=0), leaving the BIAS
+       E[psi] = E[dl*dm] - b0*E[dm^2]  =  O(||dl||*||dm||  +  ||dm||^2).
+   So the correct rate is ||B_hat - B|| = O_p(G^{-1/2} + ||dl||*||dm|| + ||dm||^2), and per channel the
+   +||dm||^2 becomes delta_{m,d}^2, delta_{m,s}^2 and a cross term delta_{m,d}*delta_{m,s}. At equal
+   nuisance rates this is still O(delta^2), so the C2 bottleneck is unchanged -- but the theorem formula
+   must include the square, not only the product. */
+display2d : false$
+
+/* expand the orthogonal moment and substitute the true model Yt = b0*Dt + eps */
+psi     : expand( (Yt - dl - b0*(Dt - dm)) * (Dt - dm) )$
+psi_exp : expand( subst([Yt = b0*Dt + eps], psi) )$
+print("orthogonal moment psi =", psi_exp)$
+
+/* terms that SURVIVE E[.|Z] (products of the Z-measurable dl, dm only) */
+survive  : dl*dm - b0*dm^2$
+/* terms killed by E[.|Z] (each carries a lone Dt or an eps) */
+meanzero : eps*Dt - eps*dm - dl*Dt + b0*dm*Dt$
+
+resid : expand(psi_exp - meanzero - survive)$
+print("structure check: psi - meanzero - (dl*dm - b0*dm^2) =", resid,
+      " (0 confirms the orthogonal remainder = product dl*dm PLUS square -b0*dm^2)")$
+
+/* contrast: the PLUG-IN moment (outcome NOT residualised) keeps l0 and hence a LINEAR term -l0*dm,
+   i.e. bias O(||dm||) = O(delta) -- one order worse. */
+psi_naive : expand( subst([Yt = b0*Dt + eps], (l0 + b0*Dt + eps - b0*(Dt - dm)) * (Dt - dm)) )$
+print("plug-in moment psi_naive =", psi_naive,
+      " (the -l0*dm term is O(||dm||)=O(delta): the linear, un-orthogonalised bias)")$
