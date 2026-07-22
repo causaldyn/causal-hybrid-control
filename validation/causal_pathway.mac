@@ -6,9 +6,10 @@
         the recursion g_h = sum_{i=1}^p a_i g_{h-i}, g_0=1, and equals the SUM OVER LAGGED WALKS of length
         h (compositions of h into parts {1..p}) of the product of edge weights -- the "which paths, of what
         sign, reach the target" decomposition (Lutkepohl, MA(inf) representation).
-   (L2) GEOMETRIC HORIZON-TRUNCATION. For a stable pathway (companion spectral radius rho<1),
-        sum_{h=0}^n rho^h = (1-rho^{n+1})/(1-rho) <= 1/(1-rho), and the tail rho^{H+1}/(1-rho) decays
-        geometrically -- so truncating the pathway at a finite horizon H loses geometrically little.
+   (L2) GEOMETRIC HORIZON-TRUNCATION. Under a CONTRACTING operator norm ||A||=q<1 (from spectral
+        radius rho<1 alone one gets only ||A^h||<=C_q q^h for q in (rho,1), Gelfand; C_q may exceed 1
+        for non-normal/Jordan A), sum_{h=0}^n q^h = (1-q^{n+1})/(1-q) <= 1/(1-q) and the tail
+        q^{H+1}/(1-q) decays geometrically -- so truncating at a finite horizon H loses little.
    (L3) WEAKEST-LINK / multiplicative bottleneck. A path's contribution is the PRODUCT of its edge
         magnitudes, so a path with one weak (near-zero) edge contributes negligibly: |a*b*c| = |a||b||c|,
         and |a|<=eps ==> |a*b*c| <= eps*|b||c|. The temporal-path analogue of the C2 channel bottleneck. */

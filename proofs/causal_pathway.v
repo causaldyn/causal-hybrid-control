@@ -6,9 +6,11 @@
         obeys g_h = a1*g_{h-1} + a2*g_{h-2}, g_0=1, g_1=a1, and equals the SUM OVER LAGGED WALKS of
         length h (compositions of h into parts {1,2}) of the product of edge weights: g2 = a1^2+a2,
         g3 = a1^3+2*a1*a2, g4 = a1^4+3*a1^2*a2+a2^2. "Which paths, of what sign, reach the target."
-   (L2) GEOMETRIC HORIZON-TRUNCATION. For a stable pathway (companion spectral radius r<1),
-        (1-r)*sum_{k=0}^{n} r^k = 1 - r^{n+1}, so the partial sum <= 1/(1-r) and the per-step tail
-        shrinks by the factor r each horizon -- truncating at finite H loses geometrically little.
+   (L2) GEOMETRIC HORIZON-TRUNCATION. Under a CONTRACTING operator norm ||A|| = q < 1
+        (submultiplicative; from spectral radius rho(A)<1 alone one gets only ||A^h|| <= C_q q^h for
+        any q in (rho,1) by Gelfand -- the constant C_q may exceed 1 for non-normal / Jordan A), the
+        scalar geometric sum (1-q)*sum_{k=0}^{n} q^k = 1 - q^{n+1} gives partial sum <= 1/(1-q) and a
+        per-step tail shrinking by q each horizon -- so truncating at finite H loses geometrically little.
    (L3) WEAKEST-LINK / multiplicative bottleneck. A path's contribution is the PRODUCT of edge
         magnitudes: |a*b*c| = |a|*|b|*|c|, and one weak edge (|a|<=eps) caps the whole path at
         eps*|b|*|c|. The temporal-path analogue of the C2 channel bottleneck. *)

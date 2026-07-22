@@ -8,7 +8,8 @@ chains, sequentially drive a target over time -- and which are actionable levers
 1. **Discover** the lagged graph (:func:`chc.discovery.discover_lagged_parents`) -- the direct
    ``x^i_{t-tau} -> x^j_t`` edges, cleaned by conditioning on already-selected parents.
 2. **Reach** every *ancestor* of the target by walking the graph backward (transitive closure over
-   the directed lag-edges), recording each source's shortest onset lag -- the walk-sum support (L1).
+   the directed lag-edges), recording each source's shortest onset lag -- the walk-sum *candidate*
+   support (L1; distinct path products can cancel, so this bounds, not equals, the nonzero support).
 3. **Estimate** each ancestor's signed *total* dynamic effect via Jorda local projections
    (:func:`chc.irf.local_projection_irf`) -- a signed impulse response, not a presence flag; the
    total effect does not condition on mediators, so an indirect lever's whole chain counts.
@@ -25,10 +26,11 @@ HONESTY -- what the signs mean. This is regime (b) of the sign-credibility ladde
 target's own state only; that identifies the total effect of an exogenous / randomised lever and of
 direct parents (Jorda conditional exogeneity), but a hidden confounder, a contemporaneous common
 cause, or a discovery error that admits a collider can silently flip a sign -- add the confounder to
-the trajectory and it is picked up, omit it and it stays confounded. And by Plagborg-Moller & Wolf
-(2021), the LP and VAR impulse responses coincide only out to horizon ~ the lag length, so trust the
-pathway's reliable horizon near ``max_lag`` and read longer horizons as extrapolation. A composed
-estimator -- no new dependency, no new estimator.
+the trajectory and it is picked up, omit it and it stays confounded. LP and a suitably-specified VAR
+target the *same* population impulse responses (Plagborg-Moller & Wolf 2021); finite-lag
+implementations differ by truncation and finite-sample regularisation, so read horizons well beyond
+``max_lag`` as increasingly variance-dominated extrapolation. A composed estimator -- no new
+dependency, no new estimator.
 """
 
 from __future__ import annotations
@@ -96,7 +98,8 @@ def _ancestor_onsets(
     """Backward BFS over the lag-graph: each ancestor of ``target`` -> its shortest onset lag.
 
     ``edges`` are ``(target, source, lag, kind)`` direct edges. Walking backward from the target and
-    summing lags gives the support of the IRF walk-sum (Law L1); the shortest cumulative lag is the
+    summing lags gives the *candidate* support of the IRF walk-sum (Law L1) -- path products can
+    cancel, so it bounds, not equals, the nonzero support; the shortest cumulative lag is the
     onset -- the first horizon a source's influence can reach the target. Controls are exogenous
     leaves (no parents), so the walk terminates; the strict ``<`` guard makes any lag-cycle converge
     (lags are positive, so a node is revisited only while its onset strictly decreases).
