@@ -155,7 +155,18 @@ from chc.regret import (
     transportability_regret_certificate,
     van_trees_certificate,
 )
-from chc.residual import GraphResidual, KANResidual, MLPResidual, ZeroResidual
+from chc.residual import (
+    GraphResidual,
+    KANResidual,
+    LipschitzCertificate,
+    LipschitzResidual,
+    MLPResidual,
+    PortHamiltonianCertificate,
+    PortHamiltonianResidual,
+    ZeroResidual,
+    lipschitz_certificate,
+    port_hamiltonian_certificate,
+)
 from chc.scm import SyntheticControlResult, augmented_synthetic_control, synthetic_control
 from chc.splitting import (
     exact_linear_flow,
@@ -228,6 +239,8 @@ __all__ = [
     "KoopmanModel",
     "LaggedGraph",
     "LinearDynamics",
+    "LipschitzCertificate",
+    "LipschitzResidual",
     "MLPResidual",
     "MarketplaceMatching",
     "MeanFieldControl",
@@ -243,6 +256,8 @@ __all__ = [
     "PathwayCertificate",
     "PathwayEdge",
     "PessimismCurve",
+    "PortHamiltonianCertificate",
+    "PortHamiltonianResidual",
     "QuadraticCost",
     "RLearner",
     "RegretCurve",
@@ -322,6 +337,7 @@ __all__ = [
     "linearize_continuous",
     "linearize_discrete",
     "linearized_regret_certificate",
+    "lipschitz_certificate",
     "local_projection_irf",
     "marketplace_report",
     "mpc_control",
@@ -342,6 +358,7 @@ __all__ = [
     "pessimistic_equilibrium_allocation",
     "poisson_1d",
     "poisson_2d",
+    "port_hamiltonian_certificate",
     "project_box",
     "project_simplex",
     "projected_gradient_control",

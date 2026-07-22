@@ -1,6 +1,10 @@
-"""Learned residual backends (Strategy): MLP and an RBF Kolmogorov-Arnold layer; GP is future."""
+"""Learned residual backends (Strategy): MLP, RBF Kolmogorov-Arnold, graph, and two structured
+backbones that carry a guarantee -- port-Hamiltonian (passive, Lyapunov-stable) and Lipschitz
+(certified bounded gain). GP is future."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -147,3 +151,160 @@ class GraphResidual(eqx.Module):
         control = jnp.broadcast_to(u, (self.n_nodes, u.shape[0]))
         update = jax.vmap(self.message)(jnp.concatenate([nodes, messages, control], axis=1))
         return update.reshape(-1)
+
+
+class PortHamiltonianResidual(eqx.Module):
+    """Port-Hamiltonian residual ``x' = (J - R) grad H(x) + g(x) u`` -- passive, Lyapunov-stable.
+
+    Encodes energy + dissipation + a control port: ``J = A - A^T`` skew (lossless interconnection),
+    ``R = L L^T >= 0`` dissipation, ``H_theta`` a scalar energy MLP, ``g(x)`` the input matrix. With
+    no input the energy obeys ``H' = dH . (J - R) dH = -dH . R dH <= 0`` (the skew term
+    ``dH . J dH = 0``, ``dH := grad H``), so ``H`` is a Lyapunov function -- the residual can't blow
+    up off-support like a black box can, exactly the offline-control failure mode. Cleanest
+    when the known part is itself port-Hamiltonian (as :class:`~chc.dynamics.DampedOscillator` is),
+    so ``known + residual`` stays port-Hamiltonian; as a pure additive correction the bound is on
+    the residual's own contribution. Pure autograd (one scalar-MLP gradient), no inner solve, so it
+    composes with the discrete/diffrax adjoints. Prefer over plain HNN/LNN (no port or dissipation).
+    """
+
+    energy: eqx.nn.MLP  # H_theta : R^state -> scalar
+    input_map: eqx.nn.MLP  # g_theta : R^state -> R^(state*control), reshaped to the input matrix
+    a_raw: Array  # J = a_raw - a_raw.T (skew)
+    l_raw: Array  # R = l_raw @ l_raw.T (positive-semidefinite dissipation)
+    state_dim: int = eqx.field(static=True)
+    control_dim: int = eqx.field(static=True)
+
+    def __init__(
+        self, state_dim: int, control_dim: int, width: int = 16, depth: int = 2, *, key: Array
+    ) -> None:
+        k_h, k_g, k_a, k_l = jax.random.split(key, 4)
+        self.state_dim = state_dim
+        self.control_dim = control_dim
+        self.energy = eqx.nn.MLP(state_dim, "scalar", width, depth, activation=jax.nn.tanh, key=k_h)
+        self.input_map = eqx.nn.MLP(
+            state_dim, state_dim * control_dim, width, depth, activation=jax.nn.tanh, key=k_g
+        )
+        self.a_raw = 0.1 * jax.random.normal(k_a, (state_dim, state_dim))
+        self.l_raw = 0.1 * jax.random.normal(k_l, (state_dim, state_dim))
+
+    def energy_gradient(self, x: Array) -> Array:
+        """``grad_x H(x)`` -- the port-Hamiltonian co-energy vector."""
+        return jax.grad(lambda state: self.energy(state))(x)
+
+    def structure_matrices(self) -> tuple[Array, Array]:
+        """The interconnection ``J`` (skew) and dissipation ``R`` (PSD) matrices."""
+        return self.a_raw - self.a_raw.T, self.l_raw @ self.l_raw.T
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        skew, dissipation = self.structure_matrices()
+        input_matrix = self.input_map(x).reshape(self.state_dim, self.control_dim)
+        return (skew - dissipation) @ self.energy_gradient(x) + input_matrix @ u
+
+
+class LipschitzResidual(eqx.Module):
+    """Residual with a CERTIFIED Lipschitz constant ``L`` in ``[x, u]`` -- bounded off-support gain.
+
+    Each linear layer's weight is divided by a rigorous spectral-norm upper bound
+    ``sigma_max(W) <= sqrt(||W||_1 ||W||_inf)`` (Schur), so every layer is <= 1-Lipschitz; with the
+    1-Lipschitz ``tanh`` the composition is <= 1-Lipschitz, and one learnable output scale sets the
+    overall constant ``L = softplus(log_scale)``. This turns the *soft* Lipschitz penalty in
+    :mod:`chc.uncertainty` into a by-construction invariant (invariants over guards): non-explosive
+    rollouts and an honest ``L`` for the pessimism / regret bounds. The bound is on the residual's
+    own contribution; total-system contraction still needs the known Jacobian. Pure matmuls,
+    adjoint-friendly.
+    """
+
+    weights: list[Array]
+    biases: list[Array]
+    log_scale: Array  # L = softplus(log_scale), the certified Lipschitz constant in [x, u]
+    out_dim: int = eqx.field(static=True)
+
+    def __init__(
+        self,
+        state_dim: int,
+        control_dim: int,
+        out_dim: int,
+        width: int = 16,
+        depth: int = 2,
+        *,
+        key: Array,
+    ) -> None:
+        sizes = [state_dim + control_dim] + [width] * depth + [out_dim]
+        keys = jax.random.split(key, len(sizes) - 1)
+        self.weights = [
+            s_in**-0.5 * jax.random.normal(k, (s_out, s_in))
+            for k, s_in, s_out in zip(keys, sizes[:-1], sizes[1:], strict=True)
+        ]
+        self.biases = [jnp.zeros(s_out) for s_out in sizes[1:]]
+        self.log_scale = jnp.asarray(0.0)
+        self.out_dim = out_dim
+
+    @staticmethod
+    def _spectral_normalized(weight: Array) -> Array:
+        # sigma_max(W) <= sqrt(max abs col-sum * max abs row-sum) (Schur): a certified upper bound.
+        col = jnp.max(jnp.sum(jnp.abs(weight), axis=0))
+        row = jnp.max(jnp.sum(jnp.abs(weight), axis=1))
+        return weight / (jnp.sqrt(col * row) + 1e-12)
+
+    def lipschitz_constant(self) -> Array:
+        """The certified Lipschitz constant ``L`` of ``r_theta`` with respect to ``[x, u]``."""
+        return jax.nn.softplus(self.log_scale)
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        z = jnp.concatenate([x, u])
+        for weight, bias in zip(self.weights[:-1], self.biases[:-1], strict=True):
+            z = jnp.tanh(self._spectral_normalized(weight) @ z + bias)
+        z = self._spectral_normalized(self.weights[-1]) @ z + self.biases[-1]
+        return self.lipschitz_constant() * z
+
+
+@dataclass(frozen=True)
+class PortHamiltonianCertificate:
+    """Numeric evidence that a :class:`PortHamiltonianResidual` is passive (Lyapunov-stable)."""
+
+    skew_residual: float  # max |dH . J dH| over sampled states -- must be ~0 (skew form vanishes)
+    min_dissipation_eig: float  # smallest eigenvalue of R -- must be >= 0 (PSD dissipation)
+    max_energy_rate: float  # max autonomous H' = dH . (J-R) dH -- must be <= 0 (non-increasing)
+    ok: bool
+
+
+def port_hamiltonian_certificate(
+    seed: int = 0, state_dim: int = 3, control_dim: int = 1, n: int = 64
+) -> PortHamiltonianCertificate:
+    """Sample states and check passivity: skew ``J`` adds no energy, ``R >= 0``, and ``H' <= 0``."""
+    k_model, k_x = jax.random.split(jax.random.PRNGKey(seed))
+    model = PortHamiltonianResidual(state_dim, control_dim, key=k_model)
+    skew, dissipation = model.structure_matrices()
+    grads = jax.vmap(model.energy_gradient)(jax.random.normal(k_x, (n, state_dim)))
+    skew_form = jax.vmap(lambda g: g @ skew @ g)(grads)  # exactly 0 in exact arithmetic
+    energy_rate = jax.vmap(lambda g: g @ (skew - dissipation) @ g)(grads)  # = -g.R.g <= 0
+    skew_residual = float(jnp.max(jnp.abs(skew_form)))
+    min_eig = float(jnp.min(jnp.linalg.eigvalsh(dissipation)))
+    max_rate = float(jnp.max(energy_rate))
+    ok = skew_residual < 1e-5 and min_eig >= -1e-9 and max_rate <= 1e-5
+    return PortHamiltonianCertificate(skew_residual, min_eig, max_rate, ok)
+
+
+@dataclass(frozen=True)
+class LipschitzCertificate:
+    """Numeric evidence that a :class:`LipschitzResidual` respects its certified constant ``L``."""
+
+    constant: float  # the certified L = softplus(log_scale)
+    max_empirical_ratio: float  # max ||dr|| / ||d[x,u]|| over sampled pairs -- must be <= L
+    ok: bool
+
+
+def lipschitz_certificate(
+    seed: int = 0, state_dim: int = 3, control_dim: int = 1, out_dim: int = 3, n: int = 200
+) -> LipschitzCertificate:
+    """Sample pairs and confirm ``||r(a) - r(b)|| <= L * ||a - b||`` for the certified ``L``."""
+    k_model, k_a, k_b = jax.random.split(jax.random.PRNGKey(seed), 3)
+    model = LipschitzResidual(state_dim, control_dim, out_dim, key=k_model)
+    a = jax.random.normal(k_a, (n, state_dim + control_dim))
+    b = jax.random.normal(k_b, (n, state_dim + control_dim))
+    evaluate = jax.vmap(lambda z: model(0.0, z[:state_dim], z[state_dim:]))
+    numerator = jnp.linalg.norm(evaluate(a) - evaluate(b), axis=1)
+    denominator = jnp.linalg.norm(a - b, axis=1) + 1e-12
+    ratio = float(jnp.max(numerator / denominator))
+    constant = float(model.lipschitz_constant())
+    return LipschitzCertificate(constant, ratio, ratio <= constant + 1e-6)

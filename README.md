@@ -75,7 +75,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 
 | area | module | what it does |
 |---|---|---|
-| dynamics | `dynamics`, `residual`, `integrate` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / linear residuals; RK4 |
+| dynamics | `dynamics`, `residual`, `integrate` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / graph / **port-Hamiltonian** (passive, Lyapunov-stable) / **Lipschitz-certified** residuals; RK4 |
 | sensitivity | `adjoint` | discrete adjoint (verified == autodiff == finite differences) |
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
 | identification | `train`, `causal`, `estimators` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters |
