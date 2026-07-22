@@ -1099,8 +1099,8 @@ def adaptive_exploration_certificate(
     The leading term scales as ``1/sqrt(eta)``, where ``eta`` is the INJECTED-EXPLORATION efficiency
     (information per unit exploration variance, distinct from an observational residual fraction):
     smaller ``eta`` provably raises the floor (Rocq ``lower_efficiency_raises_sequence_floor``) --
-    this ``1/sqrt(eta)`` is an IDENTIFICATION-EFFICIENCY-specific constant (attenuation: noncompliance /
-    dilution / partial observability / interference -- NOT necessarily confounding; ``eta=1`` for
+    this ``1/sqrt(eta)`` is identification-efficiency-specific (attenuation: noncompliance,
+    dilution, partial observability, interference -- NOT necessarily confounding; ``eta=1`` for
     clean directly-observed randomisation), the causal content the generic bound lacked. Greedy is
     ``Theta(T)``; the static ``v*`` of Result 11 over-explores. SCOPE: the ``t^{-1/2}`` schedule,
     ``sqrt(T)`` rate and van-Trees ``sqrt(T)`` lower bounds are KNOWN in adaptive LQR
