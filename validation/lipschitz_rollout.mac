@@ -1,0 +1,43 @@
+/* DISCOVERY (certified-Lipschitz rollout-error bound): turn the CERTIFIED Lipschitz constant L of the
+   shipped chc.residual.LipschitzResidual into a CERTIFIED trajectory-error / pessimism radius via the
+   discrete Gronwall inequality. Two Euler rollouts of a hybrid field, one with a per-step model error
+   <= eps, deviate by e_k with
+
+       e_{k+1} <= (1 + L*dt)*e_k + dt*eps,   e_0 = 0,   L = x-Lipschitz const of f = f_known + r.
+
+   Closed form (this file) and machine-checked in proofs/lipschitz_rollout.v:
+
+       e_H <= dt*eps * sum_{j=0}^{H-1} (1+L*dt)^j = eps * ((1+L*dt)^H - 1) / L    (L > 0),
+
+   with the continuous limit eps*(exp(L*T)-1)/L (T=H*dt) and the L->0 limit eps*T (linear, no blow-up).
+   HONEST SCOPE: the bound is exp(L*T) -- USEFUL for small L*T (bounded-gain residual, short horizon,
+   safety-critical); LOOSE for large L*T. A negative log-norm (contraction metric) would avoid the
+   exponential; the Schur spectral-norm certificate gives ||.|| >= 0, not a one-sided mu < 0, so the
+   plain Gronwall exponential is what a certified ||.||-Lipschitz constant buys. */
+display2d : false$
+simpsum   : true$
+
+/* (1) geometric-sum closed form of the Gronwall bound (a = 1 + L*dt). */
+a : 1 + L*dt$
+S : dt*eps*sum(a^j, j, 0, H-1)$
+print("Gronwall closed form residual =", ratsimp( S - eps*(a^H - 1)/L ),
+      "  (=0: e_H <= eps*((1+L*dt)^H - 1)/L)")$
+
+/* (2) recurrence solution: e[0]=0, e[k]=(1+L*dt)*e[k-1]+dt*eps matches the closed form. */
+e[0] : 0$
+e[k] := (1 + L*dt)*e[k-1] + dt*eps$
+print("recurrence e[3] - closed[3]   =", ratsimp( e[3] - eps*(a^3 - 1)/L ),
+      "  (=0: the recurrence solves to the closed form)")$
+
+/* (3) continuous-time limit dt->0 with H = T/dt: (1+L*dt)^H -> exp(L*T). */
+print("continuous limit (1+L*T/n)^n  =", limit((1 + L*T/n)^n, n, inf),
+      "  (=> e_T <= eps*(exp(L*T)-1)/L)")$
+
+/* (4) vanishing-Lipschitz limit L->0: the bound degrades gracefully to the LINEAR eps*dt*H. */
+print("L->0 limit of eps*((1+L*dt)^H-1)/L =", limit(eps*((1 + L*dt)^H - 1)/L, L, 0),
+      "  (= eps*dt*H = eps*T: no exponential when L=0)")$
+
+/* (5) monotone in model error eps and in horizon H (bound is a valid, growing envelope). */
+B(ee, HH) := ee*((1 + L*dt)^HH - 1)/L$
+print("d bound / d eps               =", ratsimp( diff(B(eps,H), eps) ),
+      "  (>0: larger model error -> larger certified radius)")$

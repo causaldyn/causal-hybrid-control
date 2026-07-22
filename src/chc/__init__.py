@@ -189,9 +189,12 @@ from chc.transport import MeanFieldTransport, solve_transport, transport_step
 from chc.uncertainty import (
     EnsembleResidual,
     EnsembleUncertainty,
+    LipschitzRolloutCertificate,
     SplitConformal,
     WassersteinPenalty,
     fit_ensemble,
+    lipschitz_rollout_bound,
+    lipschitz_rollout_certificate,
 )
 
 __version__ = "0.1.0"
@@ -241,6 +244,7 @@ __all__ = [
     "LinearDynamics",
     "LipschitzCertificate",
     "LipschitzResidual",
+    "LipschitzRolloutCertificate",
     "MLPResidual",
     "MarketplaceMatching",
     "MeanFieldControl",
@@ -338,6 +342,8 @@ __all__ = [
     "linearize_discrete",
     "linearized_regret_certificate",
     "lipschitz_certificate",
+    "lipschitz_rollout_bound",
+    "lipschitz_rollout_certificate",
     "local_projection_irf",
     "marketplace_report",
     "mpc_control",

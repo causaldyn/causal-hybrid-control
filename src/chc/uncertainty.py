@@ -17,6 +17,7 @@ cannot move the learned dynamics much (plans/20 §B).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import cast
 
 import equinox as eqx
@@ -24,9 +25,9 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from chc.dynamics import Dynamics, HybridDynamics
+from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step
-from chc.residual import MLPResidual
+from chc.residual import LipschitzResidual, MLPResidual
 from chc.train import fit_residual
 
 
@@ -216,3 +217,98 @@ class WassersteinPenalty(eqx.Module):
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
         """W1-DRO margin ``radius * Sigma_t ||d r/d x||`` over the visited ``(x, u)`` pairs."""
         return self.radius * jnp.sum(jax.vmap(self.local_lipschitz)(xs, us))
+
+
+def lipschitz_rollout_bound(lipschitz: float, model_error: float, dt: float, horizon: int) -> float:
+    """Certified H-step trajectory-error bound from a Lipschitz field via discrete Gronwall.
+
+    Two Euler rollouts of an ``L``-Lipschitz field, one perturbed per step by ``<= model_error``,
+    deviate by ``e_k`` obeying ``e_{k+1} <= (1 + L*dt)*e_k + dt*model_error``, ``e_0 = 0``, so
+
+        ``e_H <= model_error * ((1 + L*dt)^H - 1) / L``   (``L>0``; the ``L->0`` limit is linear,
+        ``model_error * dt * H``, no blow-up).
+
+    Turns the CERTIFIED constant ``L`` of :class:`~chc.residual.LipschitzResidual` (plus the trusted
+    known-field norm) into a *certified* pessimism radius -- a guarantee, not the estimated density
+    distance of :class:`chc.support.SupportModel`. Machine-checked in ``proofs/lipschitz_rollout.v``
+    (``rollout_error_bound``); derived in ``validation/lipschitz_rollout.mac``.
+    HONEST SCOPE: the bound is ``exp(L*T)`` (``T = H*dt``) -- tight for small ``L*T`` (bounded-gain
+    residual, short horizon, safety-critical), loose otherwise; a contraction metric (one-sided
+    log-norm ``mu<0``) would remove the exponential, which a norm-based Lipschitz constant does not.
+    """
+    growth = 1.0 + lipschitz * dt
+    if lipschitz <= 0.0:  # L -> 0: the Gronwall closed form degrades to the linear envelope
+        return model_error * dt * horizon
+    return model_error * (growth**horizon - 1.0) / lipschitz
+
+
+class _PerturbedField(eqx.Module):
+    """A field with a fixed additive per-step error -- a model-error stand-in for the cert."""
+
+    field: Dynamics
+    perturb: Array
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.field(t, x, u) + self.perturb
+
+
+@dataclass(frozen=True)
+class LipschitzRolloutCertificate:
+    """Numeric evidence: the measured rollout deviation stays under the certified Gronwall bound."""
+
+    lipschitz: float  # L = ||A||_2 (trusted known field) + certified residual constant
+    model_error: float  # per-step field error eps injected into the learned part
+    certified_bound: float  # Gronwall e_H <= eps*((1+L*dt)^H - 1)/L
+    measured_deviation: float  # actual ||x_H - x~_H|| under Euler rollout from a shared start
+    ok: bool  # measured <= certified bound (the guarantee holds)
+
+
+def _euler_rollout(dyn: Dynamics, x0: Array, us: Array, dt: float) -> Array:
+    """Explicit-Euler rollout ``x_{k+1}=x_k+dt*f`` -- matches the proven Gronwall recurrence."""
+    x = x0
+    states = [x0]
+    for k in range(us.shape[0]):
+        x = x + dt * dyn(0.0, x, us[k])
+        states.append(x)
+    return jnp.stack(states)
+
+
+def lipschitz_rollout_certificate(
+    seed: int = 0, state_dim: int = 2, horizon: int = 8, dt: float = 0.05, model_error: float = 0.1
+) -> LipschitzRolloutCertificate:
+    """Roll two fields differing by a bounded per-step error; confirm the deviation obeys the bound.
+
+    The field is ``f_known + r`` with ``f_known`` a linear map of known spectral norm and ``r`` a
+    :class:`~chc.residual.LipschitzResidual` with certified constant ``L_r``; ``L = ||A||_2 + L_r``
+    upper-bounds its ``x``-Lipschitz constant. A fixed error of norm ``model_error`` is added each
+    step (the learned part is the fragile one); the Euler deviation from a shared start stays under
+    ``lipschitz_rollout_bound(L, model_error, dt, horizon)``.
+    """
+    k_a, k_res, k_x, k_p = jax.random.split(jax.random.PRNGKey(seed), 4)
+    a_raw = jax.random.normal(k_a, (state_dim, state_dim))
+    a_matrix = 0.5 * a_raw / jnp.linalg.norm(a_raw, 2)  # a known field with ||A||_2 = 0.5
+    known = LinearDynamics(a_matrix, jnp.zeros((state_dim, 1)))
+    residual = LipschitzResidual(state_dim, 1, state_dim, key=k_res)
+    lipschitz = float(jnp.linalg.norm(a_matrix, 2)) + float(residual.lipschitz_constant())
+    field = HybridDynamics(known, residual)
+
+    direction = jax.random.normal(k_p, (state_dim,))
+    perturb = (
+        model_error * direction / jnp.linalg.norm(direction)
+    )  # per-step error, norm = model_error
+    perturbed = _PerturbedField(field, perturb)
+
+    x0 = jax.random.normal(k_x, (state_dim,))
+    us = jnp.zeros((horizon, 1))
+    deviation = jnp.linalg.norm(
+        _euler_rollout(field, x0, us, dt) - _euler_rollout(perturbed, x0, us, dt), axis=1
+    )
+    measured = float(jnp.max(deviation))  # e is monotone, so the max is e_H
+    bound = lipschitz_rollout_bound(lipschitz, model_error, dt, horizon)
+    return LipschitzRolloutCertificate(
+        lipschitz=lipschitz,
+        model_error=model_error,
+        certified_bound=bound,
+        measured_deviation=measured,
+        ok=measured <= bound + 1e-9,
+    )
