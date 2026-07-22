@@ -1,0 +1,50 @@
+/* DISCOVERY (closed-loop stability of the port-Hamiltonian residual): under DAMPING INJECTION
+   u = -kappa * g^T gradH, the energy V = H is a Lyapunov function of the residual field
+   xdot = (J - R) gradH + g u. The skew term cancels EXACTLY (gradH^T J gradH = 0), and the control
+   ADDS dissipation -kappa*(g^T gradH)^2 on top of the -gradH^T R gradH the residual already has:
+
+       Vdot = gradH^T (J - R) gradH - kappa*(g^T gradH)^2 = -gradH^T R gradH - kappa*(g^T gradH)^2 <= 0.
+
+   This is the CLOSED LOOP (control applied), unlike port_hamiltonian_certificate (autonomous, u=0).
+   Scalar + 2x2/quadratic-H cases; machine-checked in proofs/port_hamiltonian_lyapunov.v.
+   HONEST SCOPE: (i) this is the RESIDUAL field -- for the FULL hybrid f_known + r the whole-system
+   claim needs f_known MATCHING (IDA-PBC PDE f_known = (Jk-Rk) gradH) or ENERGY-ORTHOGONALITY
+   gradH^T f_known <= 0, else the cross term gradH^T f_known can dominate. (ii) R>=0 gives MARGINAL
+   (Lyapunov) stability; asymptotic needs R>0 or damping + zero-state detectability. (iii) H must be
+   positive-definite / radially unbounded -- an unconstrained MLP H is not, so convergence is to
+   argmin H, not necessarily 0. */
+display2d : false$
+
+/* (1) scalar: H = p*x^2/2, J = 0, R = r, g = b, damping u = -kappa*b*gradH. */
+gradH : p*x$
+u     : -k*b*gradH$
+xdot  : (0 - r)*gradH + b*u$          /* = -(r + k*b^2)*p*x */
+Vdot  : gradH * xdot$
+print("scalar xdot + (r+k*b^2)*p*x       =", ratsimp(xdot + (r + k*b^2)*p*x))$
+print("scalar Vdot + (r+k*b^2)*p^2*x^2   =", ratsimp(Vdot + (r + k*b^2)*p^2*x^2),
+      "  (=0: Vdot = -(r+k*b^2)*p^2*x^2 <= 0)")$
+print("damping margin  Vdot - (-r*p^2*x^2) =", ratsimp(Vdot - (-r*p^2*x^2)),
+      "  (= -k*b^2*p^2*x^2 <= 0: the control adds dissipation beyond R alone)")$
+
+/* (2) 2x2 skew energy-neutrality: v^T J v = 0 exactly (antisymmetry), v = gradH.
+       J = [[0, w], [-w, 0]], written as an explicit scalar quadratic form. */
+skewform : v1*(0*v1 + w*v2) + v2*(-w*v1 + 0*v2)$
+print("2x2 skew  v^T J v                 =", ratsimp(skewform),
+      "  (=0 by antisymmetry: the interconnection is lossless)")$
+
+/* (3) quadratic-H closed loop: Vdot = -v^T R v - kappa*(g^T v)^2 after the skew cancels.
+       (J-R) = [[-r11, w-r12], [-w-r12, -r22]]; g^T v = ga*v1 + gb*v2. */
+gv    : ga*v1 + gb*v2$
+vJRv  : v1*((-r11)*v1 + (w - r12)*v2) + v2*((-w - r12)*v1 + (-r22)*v2)$
+vRv   : v1*(r11*v1 + r12*v2) + v2*(r12*v1 + r22*v2)$
+Vdot2 : vJRv - k*gv^2$
+target: -vRv - k*gv^2$
+print("quadratic-H  Vdot - target        =", ratsimp(Vdot2 - target),
+      "  (=0: skew cancels, leaving -v^T R v - k*(g^T v)^2)")$
+
+/* (4) explicit-Euler discrete decrease: H(x+) - H(x) <= 0 iff dt < 2/c, c = (r+k*b^2)*p. */
+c  : (r + k*b^2)*p$
+xp : x + dt*xdot$                     /* xdot = -c*x */
+dH : p*xp^2/2 - p*x^2/2$
+print("Euler dH - (p*x^2/2)*(dt*c)*(dt*c-2) =", ratsimp(dH - (p*x^2/2)*(dt*c)*(dt*c - 2)),
+      "  (=0: H(x+)-H(x) = (p*x^2/2)*dt*c*(dt*c-2) <= 0 iff 0 < dt*c < 2)")$

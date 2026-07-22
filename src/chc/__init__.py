@@ -156,6 +156,7 @@ from chc.regret import (
     van_trees_certificate,
 )
 from chc.residual import (
+    DampingInjectionCertificate,
     GraphResidual,
     KANResidual,
     LipschitzCertificate,
@@ -164,6 +165,7 @@ from chc.residual import (
     PortHamiltonianCertificate,
     PortHamiltonianResidual,
     ZeroResidual,
+    damping_injection_certificate,
     lipschitz_certificate,
     port_hamiltonian_certificate,
 )
@@ -215,6 +217,7 @@ __all__ = [
     "ConfoundedTurnpikeCurve",
     "ConstrainedRegretCurve",
     "DampedOscillator",
+    "DampingInjectionCertificate",
     "DoWhyEstimator",
     "DoubleML",
     "DoublyRobustCurve",
@@ -298,6 +301,7 @@ __all__ = [
     "continuous_lqr",
     "control_gradient_adjoint",
     "control_gradient_diffrax",
+    "damping_injection_certificate",
     "de_chaisemartin",
     "discover_lagged_parents",
     "dlqr",

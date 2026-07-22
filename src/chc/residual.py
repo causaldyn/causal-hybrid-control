@@ -308,3 +308,67 @@ def lipschitz_certificate(
     ratio = float(jnp.max(numerator / denominator))
     constant = float(model.lipschitz_constant())
     return LipschitzCertificate(constant, ratio, ratio <= constant + 1e-6)
+
+
+@dataclass(frozen=True)
+class DampingInjectionCertificate:
+    """Evidence that damping injection makes the port-Hamiltonian residual dissipate energy."""
+
+    max_energy_rate: float  # max_t closed-loop Hdot = -dH^T R dH - kappa*y^2 -- must be <= 0
+    damping_dissipation: (
+        float  # min_t kappa*y_t^2 -- the extra dissipation the control injects (>= 0)
+    )
+    energy_dissipated: float  # H(x_0) - H(x_final) over the closed-loop Euler rollout (>= 0)
+    ok: bool
+
+
+def damping_injection_certificate(
+    seed: int = 0, state_dim: int = 3, kappa: float = 1.0, horizon: int = 40, dt: float = 0.02
+) -> DampingInjectionCertificate:
+    """Apply u = -kappa*g^T dH to a :class:`PortHamiltonianResidual` and confirm the energy decays.
+
+    The shipped ``port_hamiltonian_certificate`` checks only AUTONOMOUS (u=0) passivity. Here the
+    control adds dissipation: the closed-loop rate ``Hdot = dH^T (J-R) dH - kappa*(g^T dH)^2 =
+    -dH^T R dH - kappa*(g^T dH)^2 <= 0`` (skew term exactly 0), so ``H`` strictly decays along the
+    closed loop. Machine-checked in ``proofs/port_hamiltonian_lyapunov.v`` (scalar/2x2 case).
+    HONEST SCOPE: this is the RESIDUAL field's closed loop, and ``H`` (an MLP) is not enforced
+    positive-definite, so it decays to ``argmin H``, not necessarily 0 -- convergence to the origin
+    needs a PD energy; for the full hybrid ``f_known + r`` the whole-system claim needs ``f_known``
+    matching or energy-orthogonality (see the proof header).
+    """
+    k_model, k_x = jax.random.split(jax.random.PRNGKey(seed))
+    model = PortHamiltonianResidual(state_dim, control_dim=1, key=k_model)
+
+    def damping_control(x: Array) -> Array:
+        grad_h = model.energy_gradient(x)
+        input_matrix = model.input_map(x).reshape(state_dim, 1)
+        return -kappa * (input_matrix.T @ grad_h)  # u = -kappa * g^T dH, shape (1,)
+
+    def closed_field(x: Array) -> Array:
+        return model(0.0, x, damping_control(x))
+
+    def energy_rate(x: Array) -> Array:
+        return model.energy_gradient(x) @ closed_field(x)  # closed-loop Hdot
+
+    def output_power(x: Array) -> Array:
+        input_matrix = model.input_map(x).reshape(state_dim, 1)
+        y = input_matrix.T @ model.energy_gradient(x)
+        return kappa * (y @ y)  # kappa * y^2, the control's injected dissipation
+
+    x = jax.random.normal(k_x, (state_dim,))
+    states = [x]
+    for _ in range(horizon):
+        x = x + dt * closed_field(x)  # explicit-Euler closed-loop rollout
+        states.append(x)
+    trajectory = jnp.stack(states)
+    rates = jax.vmap(energy_rate)(trajectory)
+    energies = jax.vmap(model.energy)(trajectory)
+    max_rate = float(jnp.max(rates))
+    damping = float(jnp.min(jax.vmap(output_power)(trajectory)))
+    dissipated = float(energies[0] - energies[-1])
+    return DampingInjectionCertificate(
+        max_energy_rate=max_rate,
+        damping_dissipation=damping,
+        energy_dissipated=dissipated,
+        ok=max_rate <= 1e-5 and damping >= -1e-9 and dissipated >= -1e-6,
+    )

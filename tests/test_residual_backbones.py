@@ -10,6 +10,7 @@ from chc.integrate import rollout
 from chc.residual import (
     LipschitzResidual,
     PortHamiltonianResidual,
+    damping_injection_certificate,
     lipschitz_certificate,
     port_hamiltonian_certificate,
 )
@@ -36,6 +37,20 @@ def test_port_hamiltonian_output_has_state_shape_and_composes() -> None:
     assert model(0.0, x, u).shape == (2,)  # a state-dimension vector field
     hybrid = HybridDynamics(DampedOscillator(1.0, 0.1), model)
     assert hybrid(0.0, x, u).shape == (2,)  # slots into the additive hybrid unchanged
+
+
+def test_damping_injection_certificate_dissipates_closed_loop_energy() -> None:
+    cert = damping_injection_certificate(seed=0)
+    assert cert.ok
+    assert cert.max_energy_rate <= 1e-5  # closed-loop Hdot = -dH^T R dH - kappa*y^2 <= 0
+    assert cert.damping_dissipation >= -1e-9  # kappa*y^2 >= 0 (control injects dissipation)
+    assert cert.energy_dissipated >= -1e-6  # H strictly decays along the closed loop
+
+
+def test_damping_injection_holds_across_seeds() -> None:
+    for seed in range(5):
+        cert = damping_injection_certificate(seed=seed)
+        assert cert.max_energy_rate <= 1e-5  # the closed-loop decay is not seed-luck
 
 
 def test_lipschitz_certificate_respects_the_constant() -> None:
