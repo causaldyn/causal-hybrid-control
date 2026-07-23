@@ -9,6 +9,7 @@ import pytest
 from chc.regret import (
     certainty_equivalence_control,
     confounding_robust_control,
+    confounding_robust_control_benchmark,
     confounding_robust_control_certificate,
     worst_case_asymmetric_loss,
 )
@@ -52,3 +53,29 @@ def test_worst_case_loss_is_the_max_of_the_weighted_tails() -> None:
     w = worst_case_asymmetric_loss(1.0, 1.3, 0.25, 1.0, 4.0, 1.0)
     over = 4.0 * ((1.3 + 0.25) * 1.0 - 1.0)  # alpha * overshoot at b_hat+D
     assert w == pytest.approx(over)
+
+
+# --- Result 37: grounding on a synthetic marketplace task (full estimate -> control pipeline) ---
+
+
+def test_benchmark_robust_bounds_the_downside_and_wins_under_confounding() -> None:
+    curve = confounding_robust_control_benchmark()
+    assert curve.ok
+    assert curve.robust_worst_case < curve.ce_worst_case  # pessimism bounds the worst-case cost
+    assert curve.savings_at_target_pct > 0.0  # robust wins where confounding is real
+
+
+def test_benchmark_ce_cost_degrades_with_confounding() -> None:
+    curve = confounding_robust_control_benchmark()
+    ce = curve.ce_costs
+    # CE trusts the biased estimate: its realised cost climbs as the confounding grows
+    assert ce[0] < ce[-1]
+    assert all(ce[i] <= ce[i + 1] + 1e-9 for i in range(len(ce) - 1))
+
+
+def test_benchmark_pays_an_honest_premium_when_unconfounded() -> None:
+    curve = confounding_robust_control_benchmark()
+    zero_idx = list(curve.confounding_levels).index(0.0)
+    # no confounding: the conservative robust controller over-serves, costing more than CE (honest)
+    assert curve.robust_costs[zero_idx] >= curve.ce_costs[zero_idx]
+    assert curve.unconfounded_premium_pct > 0.0

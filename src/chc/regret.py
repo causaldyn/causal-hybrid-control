@@ -2260,3 +2260,122 @@ def confounding_regret_floor_certificate(
         analytic_ratio=float(analytic_ratio),
         ok=ok,
     )
+
+
+# --- Result 37: grounding §35 on a synthetic marketplace task (estimate -> control pipeline) ---
+
+
+def _asymmetric_cost(
+    outcome: float, target: float, overshoot_penalty: float, undershoot_penalty: float
+) -> float:
+    """Realised asymmetric business cost of a completion ``outcome`` vs the service ``target``."""
+    return overshoot_penalty * max(0.0, outcome - target) + undershoot_penalty * max(
+        0.0, target - outcome
+    )
+
+
+def _confounded_effect_estimate(
+    b_true: float,
+    confounding: float,
+    incentive_demand_corr: float,
+    action_noise: float,
+    n: int,
+    rng: np.random.Generator,
+) -> float:
+    """Naive OLS incentive->completions slope on confounded switchback logs (biased by demand).
+
+    A demand shock ``z`` drives the historical incentive (``u = corr*z + noise``, past policy raises
+    incentive on busy periods) AND completions (``y = b_true*u + confounding*z + noise``).
+    Regressing ``y`` on ``u`` ignoring ``z`` returns an effect biased upward by the confounding.
+    """
+    z = rng.standard_normal(n)
+    u = incentive_demand_corr * z + action_noise * rng.standard_normal(n)
+    y = b_true * u + confounding * z + action_noise * rng.standard_normal(n)
+    return float(np.cov(u, y)[0, 1] / np.var(u))
+
+
+@dataclass(frozen=True)
+class MarketplaceControlCurve:
+    """§35 robust controller vs CE on realised marketplace cost across a confounding grid."""
+
+    confounding_levels: Vector  # swept true (unknown) confounding strengths
+    ce_costs: Vector  # mean realised asymmetric cost of the CE controller at each level
+    robust_costs: Vector  # ...of the §35 confounding-robust controller
+    ce_worst_case: float  # max CE cost over the sweep (its downside)
+    robust_worst_case: (
+        float  # max robust cost over the sweep (<< CE: pessimism bounds the downside)
+    )
+    savings_at_target_pct: float  # cost reduction at the realistic target confounding level
+    unconfounded_premium_pct: float  # robust's extra cost at zero confounding, vs the CE downside
+    ok: bool
+
+
+def confounding_robust_control_benchmark(
+    b_true: float = 2.0,
+    target: float = 1.0,
+    overshoot_penalty: float = 1.0,
+    undershoot_penalty: float = 4.0,
+    sensitivity_gamma: float = 2.5,
+    target_confounding: float = 0.8,
+    confounding_levels: Sequence[float] = (0.0, 0.4, 0.8, 1.2),
+    incentive_demand_corr: float = 1.0,
+    action_noise: float = 0.6,
+    n_markets: int = 300,
+    n_periods: int = 400,
+    seed: int = 0,
+) -> MarketplaceControlCurve:
+    """Ground §35: does the confounding-robust controller beat CE on a full marketplace pipeline?
+
+    Synthetic switchback marketplace: a demand confounder biases the naive effect estimate, so the
+    CE controller (trusting it) under-incentivises and misses completions -- expensive when churn
+    (``undershoot_penalty``) dominates budget waste (``overshoot_penalty``). The §35 controller uses
+    an assumed sensitivity ``Gamma`` (half-width via the §32 map ``(Gamma-1)/(Gamma+1)*b_hat``) to
+    shift the incentive and hedge the costlier error. Reports realised cost across a confounding
+    sweep: the robust controller bounds the WORST-CASE cost (pessimism), wins where confounding is
+    real, and pays only a bounded premium when there is none -- the honest robustness trade-off.
+    """
+    from chc.uncertainty import (
+        confounding_robust_inflation,  # §32 half-width; local to keep JAX out
+    )
+
+    rng = np.random.default_rng(seed)
+    ce_costs: list[float] = []
+    robust_costs: list[float] = []
+    for conf in confounding_levels:
+        ce_acc: list[float] = []
+        rob_acc: list[float] = []
+        for _ in range(n_markets):
+            b_hat = _confounded_effect_estimate(
+                b_true, conf, incentive_demand_corr, action_noise, n_periods, rng
+            )
+            halfwidth = confounding_robust_inflation(b_hat, 0.0, sensitivity_gamma)
+            u_ce = certainty_equivalence_control(b_hat, target)
+            u_rob = confounding_robust_control(
+                b_hat, halfwidth, target, overshoot_penalty, undershoot_penalty
+            )
+            ce_acc.append(
+                _asymmetric_cost(b_true * u_ce, target, overshoot_penalty, undershoot_penalty)
+            )
+            rob_acc.append(
+                _asymmetric_cost(b_true * u_rob, target, overshoot_penalty, undershoot_penalty)
+            )
+        ce_costs.append(float(np.mean(ce_acc)))
+        robust_costs.append(float(np.mean(rob_acc)))
+
+    levels = list(confounding_levels)
+    ce_worst = max(ce_costs)
+    robust_worst = max(robust_costs)
+    ti = levels.index(target_confounding)
+    savings = 100.0 * (1.0 - robust_costs[ti] / ce_costs[ti]) if ce_costs[ti] > 0 else 0.0
+    zi = levels.index(0.0)
+    premium = 100.0 * (robust_costs[zi] - ce_costs[zi]) / ce_worst if ce_worst > 0 else 0.0
+    return MarketplaceControlCurve(
+        confounding_levels=np.array(levels),
+        ce_costs=np.array(ce_costs),
+        robust_costs=np.array(robust_costs),
+        ce_worst_case=ce_worst,
+        robust_worst_case=robust_worst,
+        savings_at_target_pct=savings,
+        unconfounded_premium_pct=premium,
+        ok=(robust_worst < ce_worst and savings > 0.0),
+    )
