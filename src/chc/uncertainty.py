@@ -322,22 +322,27 @@ def lipschitz_rollout_certificate(
 
 
 def contractive_rollout_bound(
-    contraction_rate: float, model_error: float, dt: float, horizon: int
+    contraction_rate: float, lipschitz: float, model_error: float, dt: float, horizon: int
 ) -> float:
-    """UNIFORMLY BOUNDED rollout-error radius for a CONTRACTING field (log-norm mu = -rate < 0).
+    """UNIFORMLY BOUNDED explicit-Euler rollout radius for a CONTRACTING field (log-norm mu=-c<0).
 
-    With ``a = 1 + mu*dt = 1 - rate*dt`` in ``[0, 1)`` under the CFL step ``dt <= 1/rate``, the
-    discrete Gronwall bound ``e_H <= model_error*(1 - a^H)/rate`` grows but is capped at
-    ``model_error/rate`` for ALL horizons -- no ``e^{L*T}`` blow-up. This is the payoff of a
-    :class:`~chc.residual.ContractiveResidual`'s certified negative log-norm over the non-negative
-    ``||.||``-Lipschitz of :class:`~chc.residual.LipschitzResidual`. Machine-checked in
-    ``proofs/lipschitz_rollout.v`` (``gronwall_bounded``: ``0<=a<1 => gronwall a b k <= b/(1-a)``).
-    Returns ``+inf`` if the CFL step is violated (``rate*dt >= 1``), where Euler overshoots.
+    The discrete Euler contraction factor is ``q = sqrt(1+2*mu*dt+L^2*dt^2)`` (NOT ``1+mu*dt``;
+    ``L`` = the full Lipschitz constant), since two Euler steps deviate by
+    ``|d+dt*(f(x)-f(y))|^2 <= (1+2*mu*dt+L^2*dt^2)|d|^2`` (Maxima ``contractive_euler.mac``; Rocq
+    ``contractive_euler.v``). Contraction (``q<1``) needs the SHARP step ``dt<2c/L^2``; under it the
+    discrete Gronwall bound ``e_H <= model_error*dt*(1 - q^H)/(1 - q)`` is capped at
+    ``model_error*dt/(1-q)`` for ALL horizons -- no ``e^{L*T}`` blow-up -- tends to the continuous
+    radius ``model_error/c`` as ``dt -> 0``. The payoff of a certified negative log-norm
+    (:class:`~chc.residual.ContractiveResidual`) over the non-negative ``||.||``-Lipschitz of
+    :class:`~chc.residual.LipschitzResidual`; the ``q < 1`` cap uses ``gronwall_bounded``. Returns
+    ``+inf`` if not contracting or the step is too large (``dt >= 2c/L^2``), where Euler overshoots.
     """
-    step = 1.0 - contraction_rate * dt
-    if contraction_rate <= 0.0 or step < 0.0:  # not contracting, or CFL violated -> bound invalid
+    c = contraction_rate
+    q_squared = 1.0 - 2.0 * c * dt + lipschitz**2 * dt**2  # = 1 + 2*mu*dt + L^2*dt^2, mu = -c
+    if c <= 0.0 or q_squared >= 1.0 or q_squared < 0.0:  # not contracting / step too large
         return float("inf")
-    return model_error * (1.0 - step**horizon) / contraction_rate
+    q = q_squared**0.5
+    return model_error * dt * (1.0 - q**horizon) / (1.0 - q)
 
 
 @dataclass(frozen=True)
@@ -349,7 +354,9 @@ class ContractiveRolloutCertificate:
         float  # max_t <dr, dx>/||dx||^2 -- must be <= -contraction_rate (contracting)
     )
     measured_deviation: float  # ||x_H - x~_H|| under the contractive Euler rollout
-    bounded_radius: float  # model_error/rate -- the horizon-independent ceiling (vs e^{L*T})
+    bounded_radius: (
+        float  # eps*dt/(1-q) -- horizon-independent ceiling (-> eps/c as dt->0, vs e^{L*T})
+    )
     lipschitz_blowup: (
         float  # the norm-Lipschitz radius at the same horizon (what contraction avoids)
     )
@@ -362,9 +369,9 @@ def contractive_rollout_certificate(
     """Confirm a :class:`~chc.residual.ContractiveResidual` contracts and its radius stays flat.
 
     Checks (i) the empirical one-sided Lipschitz ``<r(x)-r(y),x-y>/||x-y||^2 <= -rate`` (certified
-    contraction), and (ii) the perturbed-rollout deviation stays under the BOUNDED radius
-    ``model_error/rate`` even as the horizon grows -- contrasted with the ``e^{L*T}`` that a
-    norm-Lipschitz residual would incur (``lipschitz_blowup``).
+    contraction), and (ii) the perturbed-rollout deviation stays under the BOUNDED explicit-Euler
+    radius ``eps*dt/(1-q)`` (sharp step ``dt<2c/L^2``) even as the horizon grows -- contrasted with
+    the ``e^{L*T}`` that the same field's norm-Lipschitz ``L`` would incur (``lipschitz_blowup``).
     """
     k_model, k_x, k_p, k_a, k_b = jax.random.split(jax.random.PRNGKey(seed), 5)
     model = ContractiveResidual(state_dim, 1, key=k_model)
@@ -391,10 +398,11 @@ def contractive_rollout_certificate(
         _euler_rollout(field, x0, us, dt) - _euler_rollout(perturbed, x0, us, dt), axis=1
     )
     measured = float(jnp.max(deviation))
-    ceiling = contractive_rollout_bound(rate, model_error, dt, horizon)
-    blowup = lipschitz_rollout_bound(
-        rate + 1.0, model_error, dt, horizon
-    )  # a norm-Lipschitz analogue
+    lipschitz = float(model.lipschitz_constant())
+    ceiling = contractive_rollout_bound(rate, lipschitz, model_error, dt, horizon)
+    blowup = lipschitz_rollout_bound(  # the same field's norm-Lipschitz e^{L*T} envelope
+        lipschitz, model_error, dt, horizon
+    )
     return ContractiveRolloutCertificate(
         contraction_rate=rate,
         empirical_one_sided=one_sided,
@@ -546,12 +554,14 @@ def _top_tail_mean(outcomes: NDArray[np.float64], tau: float) -> float:
 def confounding_robust_inflation(cvar_upper: float, cvar_lower: float, gamma: float) -> float:
     """MSM confounding inflation ``(Gamma-1)/(Gamma+1) * (CVaR_up - CVaR_lo)`` over a point effect.
 
-    Under Tan's marginal sensitivity model the density-ratio weight lies in ``[1/Gamma, Gamma]``
-    with mean 1; the sharp worst-case ``E[wY]`` puts ``w=Gamma`` on the top-``tau`` tail
-    (``tau=1/(Gamma+1)``, mean-preserving) and ``w=1/Gamma`` elsewhere. The gap over the nominal
-    mean is this closed form (Maxima ``confounding_robust_cvar.mac``; Rocq ``msm_inflation_*``):
-    ``0`` at ``Gamma=1`` (point ID), nonnegative, monotone in ``Gamma``. Dorn-Guo (2023); Oprescu
-    et al., B-Learner (2023); Tan (2006).
+    Under a BOUNDED DENSITY-RATIO sensitivity model (the weight lies in ``[1/Gamma, Gamma]`` with
+    mean 1 -- a marginal, covariate-unconditional special case of Tan's MSM, whose full form
+    constrains the treatment-assignment odds with propensity/covariate-dependent bounds) the sharp
+    worst-case ``E[wY]`` puts ``w=Gamma`` on the top-``tau`` tail (``tau=1/(Gamma+1)``,
+    mean-preserving) and ``w=1/Gamma`` elsewhere. The gap over the nominal mean is this closed form
+    (Maxima ``confounding_robust_cvar.mac``; Rocq ``msm_inflation_*``): ``0`` at ``Gamma=1`` (point
+    ID), nonnegative, monotone in ``Gamma``. Dorn-Guo (2023); Oprescu et al., B-Learner (2023); Tan
+    (2006).
     """
     if gamma < 1.0:
         raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {gamma}")
@@ -646,6 +656,7 @@ def confounding_robust_closed_loop_bound(
     control_lip: float,
     policy_lip: float,
     base_error: float,
+    control_magnitude: float,
     cvar_gap: float,
     gamma: float,
     dt: float,
@@ -654,13 +665,15 @@ def confounding_robust_closed_loop_bound(
     """Closed-loop rollout radius (Result 31) with the per-step budget inflated by MSM confounding.
 
     Composes the confounding radius (§32) with the closed-loop replan tube (§31): the growth rate is
-    ``L_x + L_u*L_pi`` (re-planning feeds state error through an ``L_pi``-Lipschitz policy) and the
-    per-step model error ``base_error`` is widened by the §32 half-width
-    ``confounding_robust_inflation(cvar_gap, 0, gamma)``, an irreducible bias budget under hidden
-    confounding. ``gamma=1`` recovers the plain closed-loop tube. Rocq
-    ``closed_loop_confounding_monotone``: the tube is monotone in the confounding at every horizon.
+    ``L_x + L_u*L_pi`` (re-planning feeds state error through an ``L_pi``-Lipschitz policy). The §32
+    half-width ``Delta_B = confounding_robust_inflation(cvar_gap, 0, gamma)`` is an *effect* (``B``)
+    error; the per-step *state-transition* error it induces is ``||Delta_B * u_k|| <=
+    control_magnitude*Delta_B``, so the budget is ``eps_k = base_error + control_magnitude*Delta_B``
+    (the action multiplier makes the units match -- effect error times control is a state error).
+    ``gamma=1`` recovers the plain closed-loop tube. Rocq ``closed_loop_confounding_monotone``: the
+    tube is monotone in the confounding at every horizon.
     """
-    inflated = base_error + confounding_robust_inflation(cvar_gap, 0.0, gamma)
+    inflated = base_error + control_magnitude * confounding_robust_inflation(cvar_gap, 0.0, gamma)
     return closed_loop_rollout_bound(state_lip, control_lip, policy_lip, inflated, dt, horizon)
 
 
@@ -687,12 +700,12 @@ def confounding_robust_closed_loop_certificate(
     confounding-inflated tube eats the margin sooner, so the safe planning horizon contracts.
     """
     state_lip, control_lip, policy_lip = 1.0, 0.5, 1.5  # L_cl = 1.0 + 0.5*1.5 = 1.75
-    base_error, cvar_gap = 0.05, 0.4
+    base_error, cvar_gap, control_magnitude = 0.05, 0.4, 0.8  # ||u_k||: effect error -> state error
     nominal_g, lipschitz_g = -0.6, 1.0  # margin 0.6 to the constraint g <= 0
     l_cl = state_lip + control_lip * policy_lip
 
     def tube_and_safe(g: float) -> tuple[float, int]:
-        inflated = base_error + confounding_robust_inflation(cvar_gap, 0.0, g)
+        inflated = base_error + control_magnitude * confounding_robust_inflation(cvar_gap, 0.0, g)
         tube = time_varying_rollout_bound([l_cl] * horizon, [inflated] * horizon, dt)
         margins = constraint_margin(nominal_g * jnp.ones(horizon + 1), lipschitz_g, tube)
         safe = int(jnp.argmax(margins > 0.0)) if bool(jnp.any(margins > 0.0)) else horizon + 1

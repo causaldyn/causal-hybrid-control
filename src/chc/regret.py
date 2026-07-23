@@ -1983,12 +1983,13 @@ def confounding_robust_lq_regret(
 ) -> float:
     """Confounding-robust LQ regret bound ``L_reg*(eps_stat + Delta)^2`` (Rocq ``cr_regret``).
 
-    ``Delta`` is the MSM confounding half-width on the effect estimate -- the §32 inflation
+    ``Delta`` is the confounding half-width on the effect estimate -- the §32 inflation
     (:func:`chc.uncertainty.confounding_robust_inflation`), an *irreducible* bias floor that does
     not vanish with sample size. Pushed through the order-doubling regret map it becomes a
-    control-regret floor ``L_reg*Delta^2`` -- SECOND order in the confounding, so control is
-    quadratically more robust to confounding than effect estimation (Rocq ``floor_below_linear``).
-    ``Delta=0`` (``Gamma=1``, point identification) recovers the statistical regret ``L_reg*eps^2``.
+    control-regret floor ``L_reg*Delta^2``: the LOCAL LQ control regret is SECOND-order in the
+    confounding-induced effect bias (Rocq ``floor_below_linear``: ``L_reg*Delta^2<=L_reg*Delta`` on
+    ``[0,1]``) -- a local-toy statement, not a general robustness claim. ``Delta=0`` (``Gamma=1``,
+    point identification) recovers the statistical regret ``L_reg*eps^2``.
     """
     return regret_sensitivity * (stat_error + confounding_halfwidth) ** 2
 
@@ -2100,6 +2101,11 @@ def confounding_robust_control(
     ``kappa = (alpha-beta)/((alpha+beta)*b_hat)`` -- the pessimism radius ``D`` SHIFTS the gain
     (Rocq ``shift_factor_nonneg`` / ``robust_gain_conservative``): more conservative when overshoot
     is the costlier error. Reduces to CE when the loss is symmetric (``alpha=beta`` -> ``kappa=0``).
+
+    SCOPE: a minimax STATIC tracking toy, not a general robust controller -- assumes
+    ``b_hat > halfwidth > 0`` (the effect interval has an identified sign, so the denominator is
+    positive), ``target > 0``, ``alpha, beta > 0``, and NO effort/control penalty (pure outcome
+    tracking). The dynamic/effort-penalised case is out of scope.
     """
     return (
         (overshoot_penalty + undershoot_penalty)

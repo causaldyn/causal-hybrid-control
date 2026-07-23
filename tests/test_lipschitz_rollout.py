@@ -45,15 +45,17 @@ def test_contractive_certificate_confirms_negative_log_norm_and_flat_radius() ->
 
 
 def test_contractive_radius_stays_capped_while_lipschitz_explodes() -> None:
-    # the contraction ceiling is eps/rate for ALL horizons, unlike the norm-Lipschitz e^{L*T}
-    contractive = contractive_rollout_bound(1.0, 0.1, 0.05, 400)
-    lipschitz = lipschitz_rollout_bound(1.0, 0.1, 0.05, 400)
-    assert contractive <= 0.1 / 1.0 + 1e-9  # capped at eps/rate, horizon-independent
-    assert contractive < 1e-4 * lipschitz  # while the norm-Lipschitz bound blows up exponentially
+    # the explicit-Euler ceiling eps*dt/(1-q) is horizon-INDEPENDENT, unlike norm-Lipschitz e^{L*T}
+    short = contractive_rollout_bound(1.0, 2.0, 0.1, 0.05, 800)  # rate=1, L=2, dt<2c/L^2=0.5
+    long = contractive_rollout_bound(1.0, 2.0, 0.1, 0.05, 5000)
+    lipschitz = lipschitz_rollout_bound(2.0, 0.1, 0.05, 5000)
+    assert long == pytest.approx(short, rel=1e-6)  # both saturated: the cap is horizon-independent
+    assert long < 1e-6 * lipschitz  # while the norm-Lipschitz bound blows up exponentially
 
 
-def test_contractive_bound_returns_inf_when_cfl_violated() -> None:
-    assert contractive_rollout_bound(1.0, 0.1, 5.0, 8) == float("inf")  # rate*dt = 5 >= 1
+def test_contractive_bound_returns_inf_when_step_too_large() -> None:
+    # dt >= 2c/L^2 breaks the explicit-Euler contraction (q >= 1); the bound is invalid
+    assert contractive_rollout_bound(1.0, 2.0, 0.1, 5.0, 8) == float("inf")  # dt=5 >> 2c/L^2
 
 
 def test_vanishing_lipschitz_gives_the_linear_envelope() -> None:

@@ -265,13 +265,16 @@ class ContractiveResidual(eqx.Module):
     (``||dg/dx||_2 <= 1``, as in :class:`LipschitzResidual`). By subadditivity of the log-norm and
     ``mu_2(-D) = -min_i D_ii``, the state-Jacobian obeys ``mu_2(J_r) <= -(rate + min softplus(eta))
     + rate = -min softplus(eta) < 0`` -- a certified contraction rate, not a penalty.
-    Unlike the non-negative ``||.||``-Lipschitz ``L`` of :class:`LipschitzResidual` (whose rollout
-    bound is ``e^{L*T}``), a negative log-norm makes ``1 + mu*dt`` in ``(0, 1)`` under the CFL step
-    ``dt <= 1/|mu|``, so the same discrete Gronwall gives a UNIFORMLY BOUNDED rollout radius
-    ``eps/|mu|`` -- removing the blow-up (see ``chc.uncertainty.contractive_rollout_bound`` and Rocq
-    ``gronwall_bounded``). ``mu`` bounds only the residual's contribution; total-system contraction
-    needs ``mu_2(J_known) + margin < 0`` (a gate to check offline). Pure matmuls; the L2/eigenvalue
-    bound is exact, general-n verification would use the L-inf (Gershgorin) variant.
+    Unlike the non-negative ``||.||``-Lipschitz ``L`` of :class:`LipschitzResidual` (rollout bound
+    ``e^{L*T}``), a negative log-norm ``mu = -c`` gives a UNIFORMLY BOUNDED CONTINUOUS-time radius
+    ``eps/c`` (no ``e^{L*T}``). For EXPLICIT EULER the discrete contraction factor is
+    ``q = sqrt(1 + 2*mu*dt + L^2*dt^2)`` (NOT ``1+mu*dt``; ``L=lipschitz_constant()`` the full
+    Lipschitz constant), so contraction needs the sharp step ``dt < 2c/L^2``; under it the discrete
+    rollout radius stays bounded and tends to ``eps/c`` as ``dt -> 0`` (see
+    ``chc.uncertainty.contractive_rollout_bound``; Rocq ``contractive_euler.v``).
+    ``mu`` bounds only the residual's contribution; total-system contraction needs
+    ``mu_2(J_known)+margin < 0`` (a gate to check offline). Pure matmuls; the L2/eigen bound is
+    exact, general-n verification would use the L-inf (Gershgorin) variant.
     """
 
     weights: list[Array]  # Schur-normalized -> each layer is 1-Lipschitz; g is 1-Lipschitz
@@ -302,8 +305,17 @@ class ContractiveResidual(eqx.Module):
         self.state_dim = state_dim
 
     def contraction_rate(self) -> Array:
-        """The certified contraction rate ``|mu| = min_i softplus(eta_i) > 0``."""
+        """The certified contraction rate ``c = |mu| = min_i softplus(eta_i) > 0``."""
         return jnp.min(jax.nn.softplus(self.log_drift))
+
+    def lipschitz_constant(self) -> Array:
+        """Full Lipschitz constant ``L`` of ``r`` in ``x`` (needed for the explicit-Euler CFL).
+
+        ``||J_r|| <= ||-(rate + softplus(eta)) I|| + rate*||dg/dx|| <= (rate + max softplus(eta)) +
+        rate`` since ``g`` is 1-Lipschitz -- so ``L = 2*rate + max softplus(eta)``. Sets the sharp
+        contraction step ``dt < 2c/L^2`` in :func:`chc.uncertainty.contractive_rollout_bound`.
+        """
+        return 2.0 * self.rate + jnp.max(jax.nn.softplus(self.log_drift))
 
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
         z = jnp.concatenate([x, u])

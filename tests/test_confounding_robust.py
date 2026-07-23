@@ -74,13 +74,14 @@ def test_robust_radius_grows_from_the_nominal_and_is_monotone() -> None:
 def test_closed_loop_bound_recovers_the_plain_tube_at_gamma_one() -> None:
     # Gamma=1: no confounding inflation, so it equals the plain §31 closed-loop tube exactly
     args = (1.0, 0.5, 1.5, 0.05, 0.05, 25)  # state_lip, control_lip, policy_lip, error, dt, horizon
-    robust = confounding_robust_closed_loop_bound(1.0, 0.5, 1.5, 0.05, 0.4, 1.0, 0.05, 25)
+    # (state_lip, control_lip, policy_lip, base_error, control_mag, cvar_gap, gamma, dt, horizon)
+    robust = confounding_robust_closed_loop_bound(1.0, 0.5, 1.5, 0.05, 0.8, 0.4, 1.0, 0.05, 25)
     assert robust == pytest.approx(closed_loop_rollout_bound(*args))
 
 
 def test_closed_loop_bound_widens_monotonically_with_gamma() -> None:
     def bound(g: float) -> float:
-        return confounding_robust_closed_loop_bound(1.0, 0.5, 1.5, 0.05, 0.4, g, 0.05, 25)
+        return confounding_robust_closed_loop_bound(1.0, 0.5, 1.5, 0.05, 0.8, 0.4, g, 0.05, 25)
 
     vals = [bound(g) for g in (1.0, 1.5, 2.0, 3.0, 5.0)]
     assert all(

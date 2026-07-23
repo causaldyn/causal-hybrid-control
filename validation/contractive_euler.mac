@@ -1,0 +1,38 @@
+/* FIX (Result 30, reviewer-7): the explicit-Euler contraction factor. A negative one-sided Lipschitz
+   (log-norm) mu = mu_2(J_r) <= -c < 0 gives the CONTINUOUS bound e(t) <= e^{-c t} e(0) + (eps/c)(1-e^{-c t}),
+   radius eps/c. But for EXPLICIT EULER one CANNOT just use a = 1 + mu*dt: with d = x - y and the
+   one-sided condition <d, f(x)-f(y)> <= mu |d|^2 and the full Lipschitz |f(x)-f(y)| <= L |d|,
+       |d + dt(f(x)-f(y))|^2 = |d|^2 + 2 dt <d, f(x)-f(y)> + dt^2 |f(x)-f(y)|^2
+                            <= (1 + 2 mu dt + L^2 dt^2) |d|^2,
+   so the sharp discrete factor is q(dt) = sqrt(1 + 2 mu dt + L^2 dt^2), NOT 1 + mu*dt. This file
+   verifies the expansion, the step condition for contraction, the discriminant (q is always real), and
+   that the discrete radius recovers the continuous eps/c as dt -> 0. proofs/contractive_euler.v proves
+   the two sign facts. (The old CFL dt <= 1/|mu| and radius eps/|mu| were optimistic -- corrected here.) */
+display2d : false$
+
+/* (1) the exact squared step-map expansion (inner = <d, f(x)-f(y)>, nf2 = |f(x)-f(y)|^2). */
+step_sq : d2 + 2*dt*inner + dt^2*nf2$   /* |d + dt(f(x)-f(y))|^2, with d2 = |d|^2 */
+/* bound inner <= mu*d2 and nf2 <= L^2*d2 (one-sided + full Lipschitz): */
+bound_sq : (1 + 2*mu*dt + L^2*dt^2)*d2$
+print("(1) squared factor  subst(inner=mu*d2, nf2=L^2*d2, step_sq) - bound_sq =",
+      ratsimp( subst([inner = mu*d2, nf2 = L^2*d2], step_sq) - bound_sq ), "  (=0)")$
+
+/* (2) contraction: q^2 < 1 iff 1 + 2 mu dt + L^2 dt^2 < 1 iff dt(2 mu + L^2 dt) < 0 iff dt < -2 mu/L^2
+   (for mu < 0, dt > 0). At the boundary dt = -2 mu/L^2 the factor equals 1 exactly. */
+qsq : 1 + 2*mu*dt + L^2*dt^2$
+print("(2) boundary  subst(dt = -2*mu/L^2, qsq) - 1 =", ratsimp( subst(dt = -2*mu/L^2, qsq) - 1 ),
+      "  (=0: factor=1 at the step boundary)")$
+print("    qsq - 1 = dt*(2*mu + L^2*dt) ?", ratsimp( (qsq - 1) - dt*(2*mu + L^2*dt) ), "  (=0)")$
+
+/* (3) q is ALWAYS real: the quadratic L^2 dt^2 + 2 mu dt + 1 in dt has discriminant 4(mu^2 - L^2) <= 0
+   because |mu| <= L (the full Lipschitz dominates the one-sided constant), so qsq >= 0 for all dt. */
+print("(3) discriminant  (2*mu)^2 - 4*L^2*1 - 4*(mu^2 - L^2) =",
+      ratsimp( (2*mu)^2 - 4*L^2*1 - 4*(mu^2 - L^2) ), "  (=0; = 4(mu^2-L^2) <= 0 since |mu|<=L)")$
+
+/* (4) discrete radius recovers the continuous eps/c as dt -> 0. Recurrence e_{k+1} <= q e_k + dt*eps
+   has fixed point e_inf = dt*eps/(1 - q). With c = -mu > 0, expand q = sqrt(1 - 2c dt + L^2 dt^2): the
+   leading term of dt/(1 - q) as dt -> 0 is 1/c, so e_inf -> eps/c (the continuous contraction radius). */
+q : sqrt(1 - 2*c*dt + L^2*dt^2)$
+radius : dt*eps/(1 - q)$
+print("(4) dt->0 radius limit  limit(radius, dt, 0, plus) =", limit(radius, dt, 0, plus),
+      "  (= eps/c, the continuous bound)")$
