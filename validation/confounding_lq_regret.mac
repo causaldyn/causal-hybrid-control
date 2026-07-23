@@ -1,0 +1,49 @@
+/* DISCOVERY (CVaR -> LQ regret): push the MSM confounding radius (validation/confounding_robust_cvar)
+   THROUGH the certainty-equivalence order-doubling to a CONTROL-REGRET floor. Scalar LQ toy (the repo's
+   canonical control, cf. orthogonal_control.mac): outcome y=b*u, cost J_b(u)=(b*u-target)^2 + r*u^2.
+   The controller applies the optimum for its effect estimate bhat; regret is measured on the true b.
+   Under Tan's MSM the effect estimate carries an irreducible bias half-width Delta(Gamma) = the §32
+   inflation. The point: control regret is SECOND order in the effect error, so the confounding regret
+   floor is Delta(Gamma)^2 -- downstream control is QUADRATICALLY more robust to confounding than effect
+   estimation (the same order-doubling that powers C1/C2/orthogonal, now damping confounding bias).
+   proofs/confounding_lq_regret.v proves the control-relevant properties. */
+display2d : false$
+
+/* optimal static control for effect b: u*(b) = argmin (b*u-target)^2 + r*u^2. */
+ustar(bb) := bb*target/(bb^2 + r)$
+print("(1) stationarity  diff(J,u)=0 at u*(b) ? residual =",
+      ratsimp( subst(u = ustar(b), diff((b*u - target)^2 + r*u^2, u)) ), "  (=0)")$
+
+/* curvature of J_b in u is 2*kappa, kappa = b^2 + r; regret = kappa*(u_applied - u*(b))^2 exactly. */
+kappa : b^2 + r$
+regret_exact(bh) := kappa*(ustar(bh) - ustar(b))^2$
+
+/* (2) ORDER-DOUBLING: leading term of the regret in the effect error delta = bhat - b is L_reg*delta^2,
+   L_reg = target^2*(r - b^2)^2/(b^2 + r)^3 (a linear effect error -> a QUADRATIC control regret). */
+L_reg : target^2*(r - b^2)^2/(b^2 + r)^3$
+lead : ratsimp( taylor(regret_exact(b + delta), delta, 0, 2) )$
+print("(2) regret leading term  coeff(delta^2) - L_reg =",
+      ratsimp( coeff(expand(lead), delta, 2) - L_reg ), "  (=0)")$
+print("    (and coeff(delta^0)=", coeff(expand(lead), delta, 0),
+      ", coeff(delta^1)=", coeff(expand(lead), delta, 1), " : regret is O(delta^2))")$
+
+/* (3) confounding-robust regret bound R(Gamma) = L_reg*(eps + infl)^2, infl = (Gamma-1)/(Gamma+1)*gap,
+   eps = vanishing statistical effect error. At Gamma=1 (point ID) it recovers the pure statistical
+   L_reg*eps^2 -- no confounding penalty. */
+infl : (Gam - 1)/(Gam + 1)*gap$
+R(g_) := L_reg*(eps + subst(Gam = g_, infl))^2$
+print("(3) Gamma=1 recovers statistical  R(1) - L_reg*eps^2 =", ratsimp( R(1) - L_reg*eps^2 ), "  (=0)")$
+
+/* (4) monotone in Gamma: dR/dGamma = 2*L_reg*(eps+infl)*d(infl)/dGamma, d(infl)/dGamma = 2*gap/(Gam+1)^2
+   >= 0, so R is nondecreasing in the assumed confounding. */
+print("(4) monotone  diff(R(Gam),Gam) - 2*L_reg*(eps+infl)*2*gap/(Gam+1)^2 =",
+      ratsimp( diff(L_reg*(eps + infl)^2, Gam) - 2*L_reg*(eps + infl)*2*gap/(Gam + 1)^2 ),
+      "  (=0; factor >=0)")$
+
+/* (5) SECOND-ORDER robustness / confounding floor: in the large-sample limit eps->0 the regret floor is
+   R = L_reg*infl^2 = L_reg*((Gam-1)/(Gam+1))^2*gap^2 -- QUADRATIC in the confounding half-width, and
+   dR/d(gap)|_{gap=0} = 0. A Gamma that biases the EFFECT by Delta biases the REGRET by only Delta^2. */
+Rfloor : subst(eps = 0, L_reg*(eps + infl)^2)$
+print("(5) pure-confounding floor  R|_{eps=0} - L_reg*((Gam-1)/(Gam+1))^2*gap^2 =",
+      ratsimp( Rfloor - L_reg*((Gam - 1)/(Gam + 1))^2*gap^2 ), "  (=0: quadratic in gap)")$
+print("    d/dgap at gap=0 :", subst(gap = 0, diff(Rfloor, gap)), "  (=0: first-order-insensitive)")$

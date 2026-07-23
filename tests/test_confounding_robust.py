@@ -8,7 +8,10 @@ import numpy as np
 import pytest
 
 from chc.uncertainty import (
+    closed_loop_rollout_bound,
     confounding_robust_certificate,
+    confounding_robust_closed_loop_bound,
+    confounding_robust_closed_loop_certificate,
     confounding_robust_inflation,
     confounding_robust_radius,
     msm_worst_case_mean,
@@ -63,3 +66,33 @@ def test_robust_radius_grows_from_the_nominal_and_is_monotone() -> None:
     r3 = confounding_robust_radius(base, y, 5.0)
     assert r1 == pytest.approx(base)  # Gamma=1: radius unchanged
     assert base <= r2 <= r3  # never below nominal; wider with more assumed confounding
+
+
+# --- Result 34: confounding-robust CLOSED LOOP (§32 radius x §31 replan-tube) ---
+
+
+def test_closed_loop_bound_recovers_the_plain_tube_at_gamma_one() -> None:
+    # Gamma=1: no confounding inflation, so it equals the plain §31 closed-loop tube exactly
+    args = (1.0, 0.5, 1.5, 0.05, 0.05, 25)  # state_lip, control_lip, policy_lip, error, dt, horizon
+    robust = confounding_robust_closed_loop_bound(1.0, 0.5, 1.5, 0.05, 0.4, 1.0, 0.05, 25)
+    assert robust == pytest.approx(closed_loop_rollout_bound(*args))
+
+
+def test_closed_loop_bound_widens_monotonically_with_gamma() -> None:
+    def bound(g: float) -> float:
+        return confounding_robust_closed_loop_bound(1.0, 0.5, 1.5, 0.05, 0.4, g, 0.05, 25)
+
+    vals = [bound(g) for g in (1.0, 1.5, 2.0, 3.0, 5.0)]
+    assert all(
+        vals[i] <= vals[i + 1] for i in range(len(vals) - 1)
+    )  # more confounding -> wider tube
+    assert bound(3.0) > bound(1.0)  # strictly wider under real confounding
+
+
+def test_certificate_confirms_shrinking_safe_horizon() -> None:
+    cert = confounding_robust_closed_loop_certificate(gamma=3.0)
+    assert cert.ok
+    assert cert.robust_radius >= cert.nominal_radius  # Gamma=1 recovers §31; Gamma>1 is wider
+    assert cert.robust_safe_step <= cert.nominal_safe_step  # confounding erodes the safe horizon
+    assert cert.radius_monotone  # tube nondecreasing over the Gamma grid
+    assert cert.horizon_monotone  # safe horizon nonincreasing over the Gamma grid

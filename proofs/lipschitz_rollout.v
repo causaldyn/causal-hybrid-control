@@ -98,6 +98,22 @@ Proof.
     + exact Hb.
 Qed.
 
+(* Result 34 (confounding-robust closed loop): the §32 MSM confounding inflation, added to the per-step
+   error budget, widens the §31 CLOSED-LOOP tube (rate a = 1 + (L_x + L_u*L_pi)*dt) monotonically. More
+   assumed confounding -> a weakly larger rollout radius at every horizon, hence a shorter
+   certified-safe horizon. Reuses gronwall_monotone_error; infl1 <= infl2 is §32 msm_inflation_monotone
+   output, so this composes the confounding radius (§32) with the closed-loop replan tube (§31). *)
+Lemma closed_loop_confounding_monotone :
+  forall (Lcl dt base infl1 infl2 : R) (k : nat),
+    0 <= Lcl -> 0 <= dt -> infl1 <= infl2 ->
+    gronwall (1 + Lcl * dt) (dt * (base + infl1)) k
+      <= gronwall (1 + Lcl * dt) (dt * (base + infl2)) k.
+Proof.
+  intros Lcl dt base i1 i2 k HL Hdt Hi. apply gronwall_monotone_error.
+  - assert (0 <= Lcl * dt) by (apply Rmult_le_pos; assumption). lra.
+  - apply Rmult_le_compat_l; lra.
+Qed.
+
 (* Capstone: the rollout deviation with a = 1 + L*dt, b = dt*eps. *)
 Lemma rollout_error_bound : forall (L dt eps : R) (e : nat -> R) (H : nat),
   0 <= L -> 0 <= dt ->

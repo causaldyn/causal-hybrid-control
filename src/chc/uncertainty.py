@@ -639,3 +639,82 @@ def confounding_robust_certificate(
         monotone=monotone,
         ok=ok,
     )
+
+
+def confounding_robust_closed_loop_bound(
+    state_lip: float,
+    control_lip: float,
+    policy_lip: float,
+    base_error: float,
+    cvar_gap: float,
+    gamma: float,
+    dt: float,
+    horizon: int,
+) -> float:
+    """Closed-loop rollout radius (Result 31) with the per-step budget inflated by MSM confounding.
+
+    Composes the confounding radius (§32) with the closed-loop replan tube (§31): the growth rate is
+    ``L_x + L_u*L_pi`` (re-planning feeds state error through an ``L_pi``-Lipschitz policy) and the
+    per-step model error ``base_error`` is widened by the §32 half-width
+    ``confounding_robust_inflation(cvar_gap, 0, gamma)``, an irreducible bias budget under hidden
+    confounding. ``gamma=1`` recovers the plain closed-loop tube. Rocq
+    ``closed_loop_confounding_monotone``: the tube is monotone in the confounding at every horizon.
+    """
+    inflated = base_error + confounding_robust_inflation(cvar_gap, 0.0, gamma)
+    return closed_loop_rollout_bound(state_lip, control_lip, policy_lip, inflated, dt, horizon)
+
+
+@dataclass(frozen=True)
+class ConfoundingRobustClosedLoopCertificate:
+    """Evidence confounding widens the closed-loop tube and shortens the certified-safe horizon."""
+
+    nominal_radius: float  # Gamma=1: the plain §31 closed-loop tube (no confounding)
+    robust_radius: float  # Gamma>1: a wider tube
+    nominal_safe_step: int  # certified-safe horizon with no confounding
+    robust_safe_step: int  # <= nominal: confounding erodes the safe horizon
+    radius_monotone: bool  # tube nondecreasing over a Gamma grid
+    horizon_monotone: bool  # safe horizon nonincreasing over a Gamma grid
+    ok: bool
+
+
+def confounding_robust_closed_loop_certificate(
+    gamma: float = 3.0, horizon: int = 25, dt: float = 0.05
+) -> ConfoundingRobustClosedLoopCertificate:
+    """Show the §32-inflated §31 closed-loop tube widens and its safe horizon shrinks with Gamma.
+
+    A re-planning controller (``L_pi``-Lipschitz policy) on an ``L_x``/``L_u`` plant, a nominal
+    margin to a constraint ``g <= 0``: as the assumed MSM sensitivity ``Gamma`` grows the
+    confounding-inflated tube eats the margin sooner, so the safe planning horizon contracts.
+    """
+    state_lip, control_lip, policy_lip = 1.0, 0.5, 1.5  # L_cl = 1.0 + 0.5*1.5 = 1.75
+    base_error, cvar_gap = 0.05, 0.4
+    nominal_g, lipschitz_g = -0.6, 1.0  # margin 0.6 to the constraint g <= 0
+    l_cl = state_lip + control_lip * policy_lip
+
+    def tube_and_safe(g: float) -> tuple[float, int]:
+        inflated = base_error + confounding_robust_inflation(cvar_gap, 0.0, g)
+        tube = time_varying_rollout_bound([l_cl] * horizon, [inflated] * horizon, dt)
+        margins = constraint_margin(nominal_g * jnp.ones(horizon + 1), lipschitz_g, tube)
+        safe = int(jnp.argmax(margins > 0.0)) if bool(jnp.any(margins > 0.0)) else horizon + 1
+        return float(tube[-1]), safe
+
+    nominal_radius, nominal_safe = tube_and_safe(1.0)
+    robust_radius, robust_safe = tube_and_safe(gamma)
+    grid = [1.0, 1.5, 2.0, 3.0, 5.0]
+    radii, safes = zip(*(tube_and_safe(g) for g in grid), strict=True)
+    radius_monotone = all(radii[i] <= radii[i + 1] + 1e-9 for i in range(len(radii) - 1))
+    horizon_monotone = all(safes[i] >= safes[i + 1] for i in range(len(safes) - 1))
+    return ConfoundingRobustClosedLoopCertificate(
+        nominal_radius=nominal_radius,
+        robust_radius=robust_radius,
+        nominal_safe_step=nominal_safe,
+        robust_safe_step=robust_safe,
+        radius_monotone=radius_monotone,
+        horizon_monotone=horizon_monotone,
+        ok=(
+            robust_radius >= nominal_radius - 1e-9
+            and robust_safe <= nominal_safe
+            and radius_monotone
+            and horizon_monotone
+        ),
+    )

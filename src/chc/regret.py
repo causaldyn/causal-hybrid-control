@@ -1956,3 +1956,104 @@ def interference_regret_certificate(
             log_gap.extend(np.log(gaps))
     exponent = float(np.polyfit(log_err, log_gap, 1)[0]) if log_err else float("nan")
     return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent)
+
+
+# --- Result 33: confounding-robust LQ regret (MSM -> CVaR radius -> control-regret floor) ---
+
+
+def _lq_static_optimum(effect: float, effort: float, target: float) -> float:
+    """Optimal static control ``u*(b) = b*target/(b^2 + r)`` for ``(b*u - target)^2 + r*u^2``."""
+    return effect * target / (effect**2 + effort)
+
+
+def lq_regret_sensitivity(effect: float, effort: float, target: float) -> float:
+    """Second-order regret sensitivity ``L_reg = target^2*(r-b^2)^2/(b^2+r)^3`` of the LQ toy.
+
+    The leading coefficient of the certainty-equivalence regret in the effect error: applying the
+    optimum for a wrong effect ``b_hat = b + delta`` costs ``L_reg*delta^2 + O(delta^3)`` on the
+    true plant (order-doubling -- linear effect error, quadratic control regret). Verified against
+    the exact regret in ``validation/confounding_lq_regret.mac`` / the certificate below.
+    Nonnegative; zero at the degenerate ``r = b^2`` (where ``u*`` is locally flat in the effect).
+    """
+    return target**2 * (effort - effect**2) ** 2 / (effect**2 + effort) ** 3
+
+
+def confounding_robust_lq_regret(
+    regret_sensitivity: float, stat_error: float, confounding_halfwidth: float
+) -> float:
+    """Confounding-robust LQ regret bound ``L_reg*(eps_stat + Delta)^2`` (Rocq ``cr_regret``).
+
+    ``Delta`` is the MSM confounding half-width on the effect estimate -- the §32 inflation
+    (:func:`chc.uncertainty.confounding_robust_inflation`), an *irreducible* bias floor that does
+    not vanish with sample size. Pushed through the order-doubling regret map it becomes a
+    control-regret floor ``L_reg*Delta^2`` -- SECOND order in the confounding, so control is
+    quadratically more robust to confounding than effect estimation (Rocq ``floor_below_linear``).
+    ``Delta=0`` (``Gamma=1``, point identification) recovers the statistical regret ``L_reg*eps^2``.
+    """
+    return regret_sensitivity * (stat_error + confounding_halfwidth) ** 2
+
+
+@dataclass(frozen=True)
+class ConfoundingRobustLQRegretCurve:
+    """Evidence the confounding regret bound order-doubles effect error and floors at Delta^2."""
+
+    gammas: Vector  # swept MSM sensitivities Gamma
+    regret_bounds: Vector  # R(Gamma) = L_reg*(eps + Delta(Gamma))^2
+    statistical: float  # R(Gamma=1) = L_reg*eps^2 (no confounding penalty)
+    floor_quadratic_ratio: float  # floor(2*Delta)/floor(Delta): ~4.0 => quadratic in the width
+    order_doubling_ratio: float  # exact regret / (L_reg*delta^2) at small delta: ~1.0
+    ok: bool
+
+
+def confounding_robust_lq_regret_certificate(
+    effect: float = 1.3,
+    effort: float = 0.4,
+    target: float = 1.0,
+    stat_error: float = 0.02,
+    cvar_gap: float = 0.5,
+    gammas: Sequence[float] = (1.0, 1.5, 2.0, 3.0, 5.0),
+) -> ConfoundingRobustLQRegretCurve:
+    """Confirm ``L_reg`` matches the exact toy regret and the Gamma sweep floors quadratically.
+
+    Grounds the analytic ``lq_regret_sensitivity`` against the exact static-LQ regret
+    ``kappa*(u*(b_hat) - u*(b))^2`` at a small perturbation (ratio -> 1 proves the coefficient),
+    then maps each ``Gamma`` to its confounding half-width via the §32 inflation and checks the
+    bound is monotone, recovers the statistical regret at ``Gamma=1``, and floors at ``Delta^2``.
+    """
+    from chc.uncertainty import (
+        confounding_robust_inflation,  # §32 half-width; local to keep JAX out
+    )
+
+    l_reg = lq_regret_sensitivity(effect, effort, target)
+
+    # order-doubling: exact regret vs the quadratic coefficient at a small effect perturbation
+    delta = 1e-4
+    kappa = effect**2 + effort
+    u_hat = _lq_static_optimum(effect + delta, effort, target)
+    u_star = _lq_static_optimum(effect, effort, target)
+    exact = kappa * (u_hat - u_star) ** 2
+    order_doubling_ratio = exact / (l_reg * delta**2)
+
+    halfwidths = [confounding_robust_inflation(cvar_gap, 0.0, g) for g in gammas]
+    bounds = [confounding_robust_lq_regret(l_reg, stat_error, d) for d in halfwidths]
+    statistical = confounding_robust_lq_regret(l_reg, stat_error, 0.0)
+
+    base = confounding_robust_lq_regret(l_reg, 0.0, cvar_gap)  # pure-confounding floor at width=gap
+    doubled = confounding_robust_lq_regret(l_reg, 0.0, 2.0 * cvar_gap)
+    floor_ratio = doubled / base
+
+    monotone = all(bounds[i] <= bounds[i + 1] + 1e-15 for i in range(len(bounds) - 1))
+    ok = (
+        abs(order_doubling_ratio - 1.0) < 1e-3  # L_reg is the true leading coefficient
+        and abs(bounds[0] - statistical) < 1e-15  # Gamma=1 recovers the statistical regret
+        and monotone
+        and abs(floor_ratio - 4.0) < 1e-9  # floor is quadratic in the confounding half-width
+    )
+    return ConfoundingRobustLQRegretCurve(
+        gammas=np.array(gammas),
+        regret_bounds=np.array(bounds),
+        statistical=statistical,
+        floor_quadratic_ratio=float(floor_ratio),
+        order_doubling_ratio=float(order_doubling_ratio),
+        ok=ok,
+    )
