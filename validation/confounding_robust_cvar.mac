@@ -1,0 +1,42 @@
+/* DISCOVERY (confounding-robust pessimistic control): close the OPEN gap Gamma -> CVaR -> control.
+   Under Tan's marginal sensitivity model (MSM) the true/nominal propensity odds ratio lies in the box
+   [1/Lam, Lam], i.e. the density-ratio weight w has mean 1 and w in [1/Lam, Lam]. The SHARP worst-case
+   of E[w Y] is a QUANTILE-BALANCED (CVaR / superquantile) mixture (Dorn-Guo 2023; Oprescu et al.
+   B-Learner 2023): put w = Lam on the top tail of Y (fraction tau) and w = 1/Lam on the rest, with tau
+   fixed by mean-preservation. This file verifies the closed forms; proofs/confounding_robust_cvar.v
+   proves the control-relevant properties (nonneg inflation, tight at Lam=1, monotone in Lam). CHC then
+   inflates the pessimism radius by this Gamma-scaled CVaR gap -- a confounding-robust control bound.
+   HONEST: the MSM bound is CONDITIONAL on the (unfalsifiable) Gamma and on correctly-specified
+   nominal propensity/outcome nuisances; a single scalar policy-Gamma aggregates over x. */
+display2d : false$
+
+/* (1) mean-preservation: tau = 1/(Lam+1) makes the [1/Lam, Lam] weights average to 1. */
+tau : 1/(Lam + 1)$
+print("(1) mean-preservation  tau*Lam + (1-tau)/Lam - 1 =",
+      ratsimp( tau*Lam + (1 - tau)/Lam - 1 ), "  (=0)")$
+
+/* (2) worst-case upper bound U(Lam) as the CVaR mixture, and the closed-form inflation over the mean.
+   m_hi = mean of the top-tau tail (= CVaR_tau, the superquantile); m_lo = mean of the bottom 1-tau.
+   E[w] = 1 (by (1)), so U = E[wY] = Lam*tau*m_hi + (1/Lam)*(1-tau)*m_lo; mu = tau*m_hi + (1-tau)*m_lo. */
+U  : Lam*tau*mhi + (1/Lam)*(1 - tau)*mlo$
+mu : tau*mhi + (1 - tau)*mlo$
+print("(2) U(Lam) = (Lam*mhi + mlo)/(Lam+1) ? residual =",
+      ratsimp( U - (Lam*mhi + mlo)/(Lam + 1) ), "  (=0)")$
+print("    mu    = (mhi + Lam*mlo)/(Lam+1) ? residual =",
+      ratsimp( mu - (mhi + Lam*mlo)/(Lam + 1) ), "  (=0)")$
+
+/* (3) the confounding-robust INFLATION over the point estimate: U - mu = (Lam-1)/(Lam+1)*(mhi-mlo). */
+infl : U - mu$
+print("(3) inflation  U - mu - (Lam-1)/(Lam+1)*(mhi-mlo) =",
+      ratsimp( infl - (Lam - 1)/(Lam + 1)*(mhi - mlo) ), "  (=0)")$
+
+/* (4) tight at Lam=1 (point identification: no confounding, bound = mean). */
+print("(4) Lam=1 tightness  subst(Lam=1, U - mu) =", ratsimp( subst(Lam = 1, infl) ), "  (=0)")$
+
+/* (5) monotone in Lam: d/dLam (U - mu) = 2*(mhi-mlo)/(Lam+1)^2 >= 0 (more confounding -> wider). */
+print("(5) monotone  diff(U-mu, Lam) - 2*(mhi-mlo)/(Lam+1)^2 =",
+      ratsimp( diff(infl, Lam) - 2*(mhi - mlo)/(Lam + 1)^2 ), "  (=0)")$
+
+/* (6) B-Learner convex-combination form: U = Lam/(Lam+1)*mhi + 1/(Lam+1)*mlo = (1-1/(Lam+1))*CVaR + .. */
+print("(6) convex-combo  U - (Lam/(Lam+1)*mhi + 1/(Lam+1)*mlo) =",
+      ratsimp( U - (Lam/(Lam + 1)*mhi + 1/(Lam + 1)*mlo) ), "  (=0: weights sum to 1)")$

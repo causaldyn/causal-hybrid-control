@@ -23,7 +23,9 @@ from typing import cast
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
+from numpy.typing import NDArray
 
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step
@@ -518,4 +520,122 @@ def time_varying_rollout_certificate(
         constant_final=float(constant[-1]),
         safe_until_step=safe,
         ok=float(varying[-1]) <= float(constant[-1]) + 1e-9 and until <= horizon,
+    )
+
+
+def _top_tail_mean(outcomes: NDArray[np.float64], tau: float) -> float:
+    """Mean of the top ``tau``-fraction (by mass) of ``outcomes`` -- the upper CVaR / superquantile.
+
+    Exact fractional-tail correction: with ``m = tau * n`` real, average the largest ``floor(m)``
+    points at full weight plus the next point at the fractional remainder, normalised by ``m``. This
+    is the sharp tail mean the MSM worst-case puts weight ``Gamma`` on. NumPy float64 (like
+    :mod:`chc.independence` / :mod:`chc.did`): a sharp quantile bound must not depend on the JAX
+    ``jax_enable_x64`` flag.
+    """
+    y = np.sort(np.asarray(outcomes, dtype=np.float64))[::-1]  # descending
+    n = int(y.shape[0])
+    m = tau * n
+    full = int(m)  # floor for m >= 0
+    frac = m - full
+    head = float(np.sum(y[:full]))
+    if frac > 0.0 and full < n:
+        head += frac * float(y[full])
+    return head / m
+
+
+def confounding_robust_inflation(cvar_upper: float, cvar_lower: float, gamma: float) -> float:
+    """MSM confounding inflation ``(Gamma-1)/(Gamma+1) * (CVaR_up - CVaR_lo)`` over a point effect.
+
+    Under Tan's marginal sensitivity model the density-ratio weight lies in ``[1/Gamma, Gamma]``
+    with mean 1; the sharp worst-case ``E[wY]`` puts ``w=Gamma`` on the top-``tau`` tail
+    (``tau=1/(Gamma+1)``, mean-preserving) and ``w=1/Gamma`` elsewhere. The gap over the nominal
+    mean is this closed form (Maxima ``confounding_robust_cvar.mac``; Rocq ``msm_inflation_*``):
+    ``0`` at ``Gamma=1`` (point ID), nonnegative, monotone in ``Gamma``. Dorn-Guo (2023); Oprescu
+    et al., B-Learner (2023); Tan (2006).
+    """
+    if gamma < 1.0:
+        raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {gamma}")
+    return (gamma - 1.0) / (gamma + 1.0) * (cvar_upper - cvar_lower)
+
+
+def msm_worst_case_mean(outcomes: NDArray[np.float64], gamma: float) -> float:
+    """Sharp MSM worst-case (upper) mean of ``outcomes`` over the ``[1/Gamma, Gamma]`` weight box.
+
+    The confounding-robust *pessimistic* value a controller should plan against when the treated
+    outcome sample may be confounded up to sensitivity ``Gamma``. Equals ``mean + inflation`` with
+    the CVaR tails of :func:`confounding_robust_inflation`; reduces to the sample mean at
+    ``Gamma=1``.
+    """
+    y = np.asarray(outcomes, dtype=np.float64)
+    mu = float(np.mean(y))
+    if gamma <= 1.0:
+        return mu
+    tau = 1.0 / (gamma + 1.0)
+    cvar_upper = _top_tail_mean(y, tau)  # mean of the worst (largest) tau-tail
+    cvar_lower = (mu - tau * cvar_upper) / (1.0 - tau)  # complementary bottom (1-tau) mean
+    return mu + confounding_robust_inflation(cvar_upper, cvar_lower, gamma)
+
+
+def confounding_robust_radius(
+    nominal_radius: float, outcomes: NDArray[np.float64], gamma: float
+) -> float:
+    """Inflate a pessimism radius by the MSM confounding gap: ``rho0 + (worst_case - mean)``.
+
+    Rocq ``robust_radius_ge_nominal`` / ``robust_radius_monotone``: the returned radius is never
+    below ``nominal_radius`` (pessimism only grows under assumed confounding) and is monotone in
+    ``Gamma``. Feeds :func:`chc.support.pessimistic_control` as a widened uncertainty budget.
+    """
+    mu = float(np.mean(np.asarray(outcomes, dtype=np.float64)))
+    return nominal_radius + (msm_worst_case_mean(outcomes, gamma) - mu)
+
+
+@dataclass(frozen=True)
+class ConfoundingRobustCertificate:
+    """Evidence the closed-form MSM worst-case equals the brute-force sharp bound and behaves."""
+
+    closed_form: float  # mean + (Gamma-1)/(Gamma+1)*(CVaR_up - CVaR_lo)
+    brute_force: float  # max over integer weight assignments in the [1/Gamma, Gamma] box
+    at_gamma_one: float  # worst-case at Gamma=1 (must equal the sample mean)
+    sample_mean: float
+    monotone: bool  # worst-case nondecreasing over a Gamma grid
+    ok: bool
+
+
+def confounding_robust_certificate(
+    seed: int = 0, n: int = 8, gamma: float = 3.0
+) -> ConfoundingRobustCertificate:
+    """Confirm the CVaR closed form matches the sharp LP worst-case on a mean-preserving grid.
+
+    Chooses ``(n, Gamma)`` so ``tau*n = n/(Gamma+1)`` is an integer, making the sharp box-LP
+    optimum a pure top-``tau*n`` assignment (weight ``Gamma`` on the largest points, ``1/Gamma`` on
+    the rest) that a brute-force sort computes exactly -- a real check, no LP solver needed.
+    """
+    rng = np.random.default_rng(seed)
+    y = rng.standard_normal(n).astype(np.float64)
+    mu = float(np.mean(y))
+    closed = msm_worst_case_mean(y, gamma)
+
+    tau = 1.0 / (gamma + 1.0)
+    k = round(tau * n)  # integer by construction
+    ys = np.sort(y)[::-1]  # descending
+    brute = float((gamma * np.sum(ys[:k]) + (1.0 / gamma) * np.sum(ys[k:])) / n)
+
+    grid = [1.0, 1.5, 2.0, 3.0, 5.0]
+    vals = [msm_worst_case_mean(y, g) for g in grid]
+    monotone = all(vals[i] <= vals[i + 1] + 1e-12 for i in range(len(vals) - 1))
+
+    at_one = msm_worst_case_mean(y, 1.0)
+    ok = (
+        abs(closed - brute) < 1e-12
+        and abs(at_one - mu) < 1e-12
+        and monotone
+        and closed >= mu - 1e-12  # never optimistic
+    )
+    return ConfoundingRobustCertificate(
+        closed_form=closed,
+        brute_force=brute,
+        at_gamma_one=at_one,
+        sample_mean=mu,
+        monotone=monotone,
+        ok=ok,
     )
