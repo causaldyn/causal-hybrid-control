@@ -2098,9 +2098,11 @@ def confounding_robust_control(
     not know ``b`` in the confounding interval. The minimax ``u`` balances the two weighted worst
     tails (``validation/confounding_robust_control.mac``): ``u = (alpha+beta)*target /
     (alpha*(b_hat+D) + beta*(b_hat-D))``. Equals ``u_CE/(1 + kappa*D)`` with
-    ``kappa = (alpha-beta)/((alpha+beta)*b_hat)`` -- the pessimism radius ``D`` SHIFTS the gain
-    (Rocq ``shift_factor_nonneg`` / ``robust_gain_conservative``): more conservative when overshoot
-    is the costlier error. Reduces to CE when the loss is symmetric (``alpha=beta`` -> ``kappa=0``).
+    ``kappa = (alpha-beta)/((alpha+beta)*b_hat)`` -- the pessimism radius ``D`` SHIFTS the gain, a
+    sign DICHOTOMY (Rocq): ``a>=b`` -> ``kappa>=0`` -> ``u_rob<=u_CE``, conservative
+    (``shift_factor_nonneg`` / ``robust_gain_conservative``); ``a<=b`` -> ``kappa<=0`` ->
+    ``u_rob>=u_CE``, aggressive (``shift_factor_nonpos`` / ``robust_gain_aggressive``). CE when
+    symmetric (``a=b`` -> ``kappa=0``). Here ``a=overshoot_penalty``, ``b=undershoot_penalty``.
 
     SCOPE: a minimax STATIC tracking toy, not a general robust controller -- assumes
     ``b_hat > halfwidth > 0`` (the effect interval has an identified sign, so the denominator is
@@ -2312,7 +2314,7 @@ def _confounded_effect_estimate(
     n: int,
     rng: np.random.Generator,
 ) -> float:
-    """Naive OLS incentive->completions slope on confounded switchback logs (biased by demand).
+    """Naive OLS incentive->completions slope on confounded observational logs (biased by demand).
 
     A demand shock ``z`` drives the historical incentive (``u = corr*z + noise``, past policy raises
     incentive on busy periods) AND completions (``y = b_true*u + confounding*z + noise``).
@@ -2356,7 +2358,9 @@ def confounding_robust_control_benchmark(
 ) -> MarketplaceControlCurve:
     """Ground §35: does the confounding-robust controller beat CE on a full marketplace pipeline?
 
-    Synthetic switchback marketplace: a demand confounder biases the naive effect estimate, so the
+    Synthetic OBSERVATIONAL confounded marketplace (not a randomised switchback -- the action
+    follows the demand confounder z, so this is confounded logging, not an experiment): the naive
+    effect estimate is biased, so the
     CE controller (trusting it) under-incentivises and misses completions -- expensive when churn
     (``undershoot_penalty``) dominates budget waste (``overshoot_penalty``). The §35 controller uses
     an assumed sensitivity ``Gamma`` and a half-width ``D``. **Calibration (named):** §32 gives

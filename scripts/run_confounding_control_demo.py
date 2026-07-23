@@ -1,6 +1,7 @@
 """Grounding §35: confounding-robust controller vs certainty-equivalence on a marketplace task.
 
-A synthetic switchback marketplace where a demand confounder biases the naive effect estimate. The
+A synthetic OBSERVATIONAL confounded marketplace (the action follows the demand confounder z --
+confounded logging, not a randomised switchback) where the naive effect estimate is biased. The
 certainty-equivalence controller trusts it and under-incentivises (missing completions -- expensive
 when rider churn outweighs budget waste); the §35 confounding-robust controller uses an assumed
 sensitivity to shift the incentive and hedge the costlier error. Full estimate->control pipeline.
@@ -15,7 +16,7 @@ from chc.regret import confounding_robust_control_benchmark
 
 def main() -> None:
     curve = confounding_robust_control_benchmark()
-    print("== confounding-robust control on a synthetic switchback marketplace ==")
+    print("== confounding-robust control on a synthetic observational confounded marketplace ==")
     print("   (churn cost 4x budget-waste; controller assumes sensitivity Gamma=2.5)\n")
     print(f"   {'true confounding':>18} {'CE cost':>10} {'robust cost':>12} {'robust wins':>12}")
     for conf, ce, rob in zip(

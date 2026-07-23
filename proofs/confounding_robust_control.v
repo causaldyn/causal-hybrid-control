@@ -32,6 +32,29 @@ Proof.
   unfold Rdiv. rewrite Rmult_assoc, Rinv_l by lra. rewrite Rmult_1_r. nra.
 Qed.
 
+(* Reviewer-9: the sign is a full DICHOTOMY. For undershoot-dominant loss (be >= al) the shift factor is
+   NONPOSITIVE and the robust gain is AGGRESSIVE (>= CE) -- the mirror of the overshoot-dominant case. *)
+Lemma shift_factor_nonpos :
+  forall al be bhat : R, 0 < al -> al <= be -> 0 < bhat -> shift_factor al be bhat <= 0.
+Proof.
+  intros al be bhat Hal Hle Hbhat. unfold shift_factor, Rdiv.
+  assert (Hinv : 0 <= / ((al + be) * bhat)).
+  { left. apply Rinv_0_lt_compat. apply Rmult_lt_0_compat; lra. }
+  assert (Hx : 0 <= (be - al) * / ((al + be) * bhat)) by (apply Rmult_le_pos; [ lra | exact Hinv ]).
+  replace ((al - be) * / ((al + be) * bhat)) with (- ((be - al) * / ((al + be) * bhat))) by ring.
+  lra.
+Qed.
+
+Lemma robust_gain_aggressive :
+  forall u_ce s D : R,
+    0 <= u_ce -> s <= 0 -> 0 <= D -> 0 < 1 + s * D -> u_ce <= u_ce / (1 + s * D).
+Proof.
+  intros u_ce s D Hu Hs HD Hpos.
+  assert (HsD : s * D <= 0) by nra.
+  apply Rmult_le_reg_r with (r := 1 + s * D); [ exact Hpos |].
+  unfold Rdiv. rewrite Rmult_assoc, Rinv_l by lra. rewrite Rmult_1_r. nra.
+Qed.
+
 (* The worst-case-loss improvement of the robust controller over CE (Maxima gap). *)
 Definition rob_gap (al be tau bhat D : R) : R :=
   al * tau * D * (al - be) * (bhat + D) / (bhat * ((al + be) * bhat + (al - be) * D)).
