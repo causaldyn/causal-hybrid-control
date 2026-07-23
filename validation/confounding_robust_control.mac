@@ -1,0 +1,41 @@
+/* DISCOVERY (§35 minimax confounding-robust CONTROLLER): §33 showed that under a SYMMETRIC quadratic
+   regret the certainty-equivalence (CE) controller is already minimax over the symmetric MSM interval
+   [bhat-D, bhat+D] -- pessimism = the interval CENTRE, so the confounding radius does NOT move the
+   control. Here we show that under an ASYMMETRIC loss (overshoot penalty al > undershoot penalty be)
+   the picture changes: the minimax controller SHIFTS the gain by the pessimism radius and STRICTLY
+   beats CE. The controller aims the outcome y = b*u at target tau; realised y ranges over
+   [(bhat-D)u, (bhat+D)u] as b sweeps the MSM box. proofs/confounding_robust_control.v proves the
+   control-relevant sign facts. HONEST: scalar static toy; al,be,D,Gamma are the analyst's inputs. */
+display2d : false$
+
+u_ce : tau/bhat$                                   /* certainty-equivalence: centre outcome at tau */
+/* minimax controller balances the two weighted worst tails: al*(worst overshoot)=be*(worst undershoot) */
+u_rob : (al + be)*tau / (al*(bhat + D) + be*(bhat - D))$
+
+/* (1) balance condition: at u_rob the alpha-weighted overshoot equals the beta-weighted undershoot. */
+print("(1) tail balance  al*((bhat+D)u_rob - tau) - be*(tau - (bhat-D)u_rob) =",
+      ratsimp( al*((bhat + D)*u_rob - tau) - be*(tau - (bhat - D)*u_rob) ), "  (=0)")$
+
+/* (2) the pessimism radius SHIFTS the gain: u_rob = u_ce/(1 + kap*D), kap = (al-be)/((al+be)*bhat).
+   kap > 0 iff al > be (overshoot worse) -> u_rob < u_ce (more conservative). kap = 0 iff al = be. */
+kap : (al - be)/((al + be)*bhat)$
+print("(2) gain shift  u_rob - u_ce/(1 + kap*D) =", ratsimp( u_rob - u_ce/(1 + kap*D) ), "  (=0)")$
+
+/* (3) symmetric loss (al = be) recovers CE exactly -- the §33 honesty (pessimism = centre). */
+print("(3) symmetric recovers CE  subst(be=al, u_rob) - u_ce =",
+      ratsimp( subst(be = al, u_rob) - u_ce ), "  (=0)")$
+
+/* (4) worst-case losses. For u>0 the outcome is monotone in b, so the worst overshoot is at b=bhat+D
+   and worst undershoot at b=bhat-D. CE (u_ce): both raw tails equal tau*D/bhat, so the al-weighted
+   overshoot dominates -> W_ce = al*tau*D/bhat. Robust (u_rob): the two weighted tails are balanced. */
+W_ce  : al*tau*D/bhat$
+W_rob : ratsimp( al*((bhat + D)*u_rob - tau) )$      /* = the balanced minimax value */
+print("(4a) W_rob closed form  W_rob - 2*al*be*tau*D/((al+be)*bhat + (al-be)*D) =",
+      ratsimp( W_rob - 2*al*be*tau*D/((al + be)*bhat + (al - be)*D) ), "  (=0)")$
+
+/* (5) the STRICT improvement: gap = W_ce - W_rob = al*tau*D*(al-be)*(bhat+D)/(bhat*denom) > 0 for
+   al>be, D>0 -- a product of positives; and = 0 at al=be (recovers §33: no gain from pessimism). */
+gap : ratsimp( W_ce - W_rob )$
+print("(5a) improvement  gap - al*tau*D*(al-be)*(bhat+D)/(bhat*((al+be)*bhat+(al-be)*D)) =",
+      ratsimp( gap - al*tau*D*(al - be)*(bhat + D)/(bhat*((al + be)*bhat + (al - be)*D)) ), "  (=0)")$
+print("(5b) symmetric no gain  subst(be=al, gap) =", ratsimp( subst(be = al, gap) ), "  (=0)")$

@@ -1993,6 +1993,23 @@ def confounding_robust_lq_regret(
     return regret_sensitivity * (stat_error + confounding_halfwidth) ** 2
 
 
+def confounding_robust_lq_regret_matrix(
+    curvature: Matrix, stat_error: Matrix, confounding: Matrix
+) -> float:
+    """Matrix confounding-robust LQ regret ``tr(E^T H E)``, ``E = stat + confounding``.
+
+    The Frobenius lift of the scalar bound via the §21 matrix order-doubling (Rocq
+    ``regret_order_2p``): for a positive-semidefinite LQ regret curvature ``H`` and effect-error
+    matrix ``E``, the regret is the quadratic form ``tr(E^T H E) = O(||E||_F^2)``. The confounding
+    floor (``stat = 0``) is ``tr(Delta^T H Delta)`` -- SECOND order in the Frobenius norm of the
+    matrix confounding half-width, the same second-order robustness as the scalar §33. Reduces to
+    :func:`confounding_robust_lq_regret` in the ``1x1`` case.
+    """
+    e = np.asarray(stat_error, dtype=np.float64) + np.asarray(confounding, dtype=np.float64)
+    h = np.asarray(curvature, dtype=np.float64)
+    return float(np.trace(e.T @ h @ e))
+
+
 @dataclass(frozen=True)
 class ConfoundingRobustLQRegretCurve:
     """Evidence the confounding regret bound order-doubles effect error and floors at Delta^2."""
@@ -2055,5 +2072,191 @@ def confounding_robust_lq_regret_certificate(
         statistical=statistical,
         floor_quadratic_ratio=float(floor_ratio),
         order_doubling_ratio=float(order_doubling_ratio),
+        ok=ok,
+    )
+
+
+# --- Result 35: minimax confounding-robust controller under asymmetric loss ---
+
+
+def certainty_equivalence_control(effect_estimate: float, target: float) -> float:
+    """CE control ``u = target/b_hat`` -- centres the outcome ``b*u`` at target under ``b_hat``."""
+    return target / effect_estimate
+
+
+def confounding_robust_control(
+    effect_estimate: float,
+    halfwidth: float,
+    target: float,
+    overshoot_penalty: float,
+    undershoot_penalty: float,
+) -> float:
+    """Minimax control over the MSM effect interval ``[b_hat +/- halfwidth]`` under asymmetric loss.
+
+    Loss ``alpha*(y-target)_+ + beta*(target-y)_+`` on the outcome ``y = b*u``; the controller does
+    not know ``b`` in the confounding interval. The minimax ``u`` balances the two weighted worst
+    tails (``validation/confounding_robust_control.mac``): ``u = (alpha+beta)*target /
+    (alpha*(b_hat+D) + beta*(b_hat-D))``. Equals ``u_CE/(1 + kappa*D)`` with
+    ``kappa = (alpha-beta)/((alpha+beta)*b_hat)`` -- the pessimism radius ``D`` SHIFTS the gain
+    (Rocq ``shift_factor_nonneg`` / ``robust_gain_conservative``): more conservative when overshoot
+    is the costlier error. Reduces to CE when the loss is symmetric (``alpha=beta`` -> ``kappa=0``).
+    """
+    return (
+        (overshoot_penalty + undershoot_penalty)
+        * target
+        / (
+            overshoot_penalty * (effect_estimate + halfwidth)
+            + undershoot_penalty * (effect_estimate - halfwidth)
+        )
+    )
+
+
+def worst_case_asymmetric_loss(
+    control: float,
+    effect_estimate: float,
+    halfwidth: float,
+    target: float,
+    overshoot_penalty: float,
+    undershoot_penalty: float,
+) -> float:
+    """Worst-case asymmetric loss of applying ``control`` over the MSM effect interval.
+
+    For ``u > 0`` the outcome is monotone in ``b``, so the worst overshoot is at ``b_hat+D`` and the
+    worst undershoot at ``b_hat-D``; the worst-case loss is the max of the two weighted tails.
+    """
+    overshoot = max(0.0, (effect_estimate + halfwidth) * control - target)
+    undershoot = max(0.0, target - (effect_estimate - halfwidth) * control)
+    return max(overshoot_penalty * overshoot, undershoot_penalty * undershoot)
+
+
+@dataclass(frozen=True)
+class ConfoundingRobustControlCurve:
+    """Evidence the pessimism radius shifts the gain and strictly beats CE under asymmetric loss."""
+
+    u_certainty_equivalence: float
+    u_robust: float  # shifted by the pessimism radius (< u_CE when overshoot is costlier)
+    worst_case_loss_ce: float
+    worst_case_loss_robust: float  # < CE: pessimism strictly helps under asymmetry
+    numeric_argmin: float  # grid-search argmin of the worst-case loss (matches u_robust)
+    symmetric_equals_ce: bool  # alpha=beta -> robust control == CE (recovers §33)
+    ok: bool
+
+
+def confounding_robust_control_certificate(
+    effect_estimate: float = 1.3,
+    halfwidth: float = 0.25,
+    target: float = 1.0,
+    overshoot_penalty: float = 3.0,
+    undershoot_penalty: float = 1.0,
+) -> ConfoundingRobustControlCurve:
+    """Confirm the closed-form minimax control is the numeric argmin and strictly beats CE.
+
+    Grid-searches the worst-case loss over ``u`` (the analytic ``u_robust`` should be its argmin),
+    then checks the robust control is shifted below CE and its worst-case loss is strictly smaller,
+    while a symmetric loss reproduces CE exactly.
+    """
+    u_ce = certainty_equivalence_control(effect_estimate, target)
+    u_rob = confounding_robust_control(
+        effect_estimate, halfwidth, target, overshoot_penalty, undershoot_penalty
+    )
+    w_ce = worst_case_asymmetric_loss(
+        u_ce, effect_estimate, halfwidth, target, overshoot_penalty, undershoot_penalty
+    )
+    w_rob = worst_case_asymmetric_loss(
+        u_rob, effect_estimate, halfwidth, target, overshoot_penalty, undershoot_penalty
+    )
+
+    grid = np.linspace(0.5 * u_rob, 1.5 * u_ce, 40_001)
+    losses = [
+        worst_case_asymmetric_loss(
+            float(u), effect_estimate, halfwidth, target, overshoot_penalty, undershoot_penalty
+        )
+        for u in grid
+    ]
+    numeric_argmin = float(grid[int(np.argmin(losses))])
+
+    u_sym = confounding_robust_control(effect_estimate, halfwidth, target, 1.0, 1.0)
+    symmetric_equals_ce = abs(u_sym - u_ce) < 1e-12
+
+    ok = (
+        abs(u_rob - numeric_argmin) < 1e-3  # the closed form is the minimax control
+        and u_rob < u_ce  # overshoot costlier -> shift the gain down
+        and w_rob < w_ce  # pessimism strictly reduces the worst-case loss
+        and symmetric_equals_ce
+    )
+    return ConfoundingRobustControlCurve(
+        u_certainty_equivalence=u_ce,
+        u_robust=u_rob,
+        worst_case_loss_ce=w_ce,
+        worst_case_loss_robust=w_rob,
+        numeric_argmin=numeric_argmin,
+        symmetric_equals_ce=symmetric_equals_ce,
+        ok=ok,
+    )
+
+
+# --- Result 36: empirical confounding-regret floor (the §33 Delta^2 floor on synthetic data) ---
+
+
+@dataclass(frozen=True)
+class ConfoundingRegretFloorCurve:
+    """Empirical certificate: control regret vs confounding bias, and its log-log slope (~2)."""
+
+    biases: Vector  # realised confounding bias |b_hat - b_true| at each confounding level
+    regrets: Vector  # realised control regret of the CE controller on the true plant
+    exponent: float  # fitted log-log slope of regret vs bias (~2.0 => the Delta^2 floor)
+    analytic_ratio: float  # empirical regret / (L_reg * bias^2) at the cleanest level (~1.0)
+    ok: bool
+
+
+def confounding_regret_floor_certificate(
+    b_true: float = 1.3,
+    effort: float = 0.4,
+    target: float = 1.0,
+    confounding_levels: Sequence[float] = (0.02, 0.04, 0.06, 0.08, 0.10),
+    action_noise: float = 0.6,
+    n: int = 200_000,
+    seed: int = 0,
+) -> ConfoundingRegretFloorCurve:
+    """Show the §33 ``Delta^2`` regret floor emerges from real confounded data, not just algebra.
+
+    A confounder ``z`` drives both the action (``u = z + noise``) and the outcome
+    (``y = b_true*u + gamma*z + noise``). Naive OLS of ``y`` on ``u`` returns an effect biased by
+    the confounding ``gamma`` -- an *irreducible* ``Delta`` that does NOT vanish with ``n``. The CE
+    controller uses that biased effect on the true plant, and its measured regret scales as
+    ``Delta^2`` (log-log slope ~2), matching the analytic ``L_reg*Delta^2`` -- the floor.
+    """
+    rng = np.random.default_rng(seed)
+    kappa = b_true**2 + effort
+    l_reg = lq_regret_sensitivity(b_true, effort, target)
+    biases: list[float] = []
+    regrets: list[float] = []
+    for gamma in confounding_levels:
+        z = rng.standard_normal(n)
+        u = z + action_noise * rng.standard_normal(n)  # confounder drives the action
+        y = b_true * u + gamma * z + action_noise * rng.standard_normal(n)  # ...and the outcome
+        b_hat = float(np.cov(u, y)[0, 1] / np.var(u))  # naive OLS slope: biased by the confounding
+        bias = abs(b_hat - b_true)
+        regret = (
+            kappa
+            * (
+                _lq_static_optimum(b_hat, effort, target)
+                - _lq_static_optimum(b_true, effort, target)
+            )
+            ** 2
+        )
+        biases.append(bias)
+        regrets.append(regret)
+
+    exponent = float(np.polyfit(np.log(biases), np.log(regrets), 1)[0])
+    analytic_ratio = regrets[-1] / (
+        l_reg * biases[-1] ** 2
+    )  # cleanest (largest, least relative noise)
+    ok = abs(exponent - 2.0) < 0.15 and abs(analytic_ratio - 1.0) < 0.1
+    return ConfoundingRegretFloorCurve(
+        biases=np.array(biases),
+        regrets=np.array(regrets),
+        exponent=exponent,
+        analytic_ratio=float(analytic_ratio),
         ok=ok,
     )
