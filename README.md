@@ -80,8 +80,9 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
 | identification | `train`, `causal`, `estimators` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters |
 | control | `control`, `mpc`, `splitting` | projected-gradient OC; receding-horizon MPC; **Strang–Marchuk** splitting |
-| offline safety | `support`, `offpolicy`, `uncertainty` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate; **calibrated** deep-ensemble + split-conformal uncertainty; **Wasserstein-1 DRO** distribution-shift margin |
+| offline safety | `support`, `offpolicy`, `uncertainty` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate; **calibrated** deep-ensemble + split-conformal uncertainty; **Wasserstein-1 DRO** distribution-shift margin; **certified rollout tubes** (Lipschitz / contractive-log-norm Grönwall bounds → time-varying uncertainty tube, safety-tightening, certified-safe horizon), **Rocq-proved** |
 | guarantee | `regret` | LQ certainty-equivalence bound — quadratic in model error (Dean–Mania–Tu–Recht–Matni); **interference-aware regret certificate** (extra exposure-map-error term), **machine-checked in Rocq** |
+| sensitivity-aware control | `regret`, `uncertainty` | **control under HIDDEN CONFOUNDING**: bounded-density-ratio (MSM) CVaR worst-case → pessimism-radius inflation; the confounding-regret floor is *second-order* in the effect bias; a **minimax controller** that shifts the gain under asymmetric (over/under-shoot) loss and beats certainty-equivalence on a synthetic confounded-marketplace task — all **Rocq-certified** |
 | causal frontier | `did`, `scm`, `estimators`, `causal` | Callaway–Sant'Anna staggered **DiD**; **augmented synthetic control**; **R-learner** CATE; **E-values** beside Cinelli–Hazlett; **influence-function CIs** on cross-fit DML |
 | dynamic effects | `irf`, `toeplitz` | impulse-response / local-projection dynamic effects; Toeplitz / Levinson–Durbin / Gohberg–Semencul operators |
 | structure discovery | `discovery`, `independence`, `network_causal`, `pathway` | lagged-parent discovery; MCI partial-correlation test; network/spillover orthogonal DML; **ranked temporal causal pathway** — which lagged variables & multi-step chains drive a target, signed + actionable (Rocq-certified walk-sum / geometric-truncation / weakest-link laws) |
@@ -107,7 +108,7 @@ the identity of the framework. See `plans/` for the full analysis and roadmap.
 
 ## Status
 
-Early (`v0.1.0`), single-author, research code (140 tests; Python 3.12–3.14, astral `ruff` + `ty`).
+Early (`v0.1.0`), single-author, research code (251 tests; Python 3.12–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**
