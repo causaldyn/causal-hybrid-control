@@ -229,12 +229,17 @@ def lipschitz_rollout_bound(lipschitz: float, model_error: float, dt: float, hor
         ``model_error * dt * H``, no blow-up).
 
     Turns the CERTIFIED constant ``L`` of :class:`~chc.residual.LipschitzResidual` (plus the trusted
-    known-field norm) into a *certified* pessimism radius -- a guarantee, not the estimated density
-    distance of :class:`chc.support.SupportModel`. Machine-checked in ``proofs/lipschitz_rollout.v``
-    (``rollout_error_bound``); derived in ``validation/lipschitz_rollout.mac``.
-    HONEST SCOPE: the bound is ``exp(L*T)`` (``T = H*dt``) -- tight for small ``L*T`` (bounded-gain
-    residual, short horizon, safety-critical), loose otherwise; a contraction metric (one-sided
-    log-norm ``mu<0``) would remove the exponential, which a norm-based Lipschitz constant does not.
+    known-field norm) into a *certified* pessimism radius that propagates a per-step error BUDGET
+    through time. This COMPLEMENTS (does not replace) :class:`chc.support.SupportModel`: the support
+    density-distance scores WHERE the one-step error ``model_error`` is large (off-support), and
+    the bound propagates it (see :func:`support_calibrated_error`). ``model_error`` should be a
+    one-step bound (a conformal upper quantile or a bounded-disturbance envelope), not a validation
+    average. Machine-checked in ``proofs/lipschitz_rollout.v`` (``rollout_error_bound``); derived in
+    ``validation/lipschitz_rollout.mac``. HONEST SCOPE: the bound is ``exp(L*T)`` (``T = H*dt``) --
+    tight for small ``L*T`` (bounded-gain residual, short horizon, safety-critical), loose else; a
+    contraction metric (:class:`~chc.residual.ContractiveResidual`, log-norm ``mu<0``) removes the
+    exponential; the open loop assumes a FIXED action sequence -- for re-planning use
+    :func:`closed_loop_rollout_bound`; for per-step ``L_k`` use :func:`time_varying_rollout_bound`.
     """
     growth = 1.0 + lipschitz * dt
     if lipschitz <= 0.0:  # L -> 0: the Gronwall closed form degrades to the linear envelope
@@ -395,4 +400,122 @@ def contractive_rollout_certificate(
         bounded_radius=ceiling,
         lipschitz_blowup=blowup,
         ok=one_sided <= -rate + 1e-6 and measured <= ceiling + 1e-6,
+    )
+
+
+# ---- Result 28 UPGRADES (review): time-varying budget, safety tightening, closed loop. ----
+
+
+def time_varying_rollout_bound(
+    lipschitz: list[float], model_error: list[float], dt: float
+) -> Array:
+    """Per-step certified error tube ``e_0..e_H`` for time-varying ``L_k`` and BUDGET ``eps_k``.
+
+    ``e_{k+1} = (1+L_k*dt) e_k + dt*eps_k``, ``e_0 = 0`` (Rocq ``gronwall_var_comparison``). Unlike
+    the constant-``L`` :func:`lipschitz_rollout_bound`, this exposes WHICH step / channel drives the
+    growth -- feed :func:`certified_horizon` for the honest ``certified_until_step``. ``eps_k`` is a
+    *budget*: it should be a CERTIFIED per-step bound (a conformal quantile, a bounded-disturbance
+    envelope, or :func:`support_calibrated_error` combining a base error with
+    :class:`chc.support.SupportModel`), not a validation-set average.
+    """
+    e = 0.0
+    tube = [0.0]
+    for lk, ek in zip(lipschitz, model_error, strict=True):
+        e = (1.0 + lk * dt) * e + dt * ek
+        tube.append(e)
+    return jnp.asarray(tube)
+
+
+def certified_horizon(
+    lipschitz: list[float], model_error: list[float], dt: float, tolerance: float
+) -> int:
+    """The largest step ``H`` whose certified error ``e_H`` stays within ``tolerance``.
+
+    Past it the plan is flagged uncertain; ``e`` is monotone, so this is the first crossing.
+    """
+    e = 0.0
+    for h in range(len(lipschitz)):
+        e = (1.0 + lipschitz[h] * dt) * e + dt * model_error[h]
+        if e > tolerance:
+            return h  # e_h <= tolerance but e_{h+1} > tolerance: certified through h steps
+    return len(lipschitz)
+
+
+def closed_loop_rollout_bound(
+    state_lipschitz: float,
+    control_lipschitz: float,
+    policy_lipschitz: float,
+    model_error: float,
+    dt: float,
+    horizon: int,
+) -> float:
+    """Closed-loop rollout radius when the plan is RE-PLANNED each step by an ``L_pi``-Lipschitz pi.
+
+    A state error perturbs the action, which perturbs the next state, so the growth rate is
+    ``L_x + L_u*L_pi`` (not ``L_x`` alone): ``e_{k+1} <= (1 + dt(L_x + L_u*L_pi)) e_k + dt*eps``.
+    Reduces to :func:`lipschitz_rollout_bound` with the combined constant. CAVEAT: for a clipping /
+    active-set / threshold MPC ``L_pi`` may be unbounded (not globally Lipschitz); use this only
+    where the controller is Lipschitz (a fixed feedback gain, or a smooth relaxation).
+    """
+    return lipschitz_rollout_bound(
+        state_lipschitz + control_lipschitz * policy_lipschitz, model_error, dt, horizon
+    )
+
+
+def support_calibrated_error(base_error: float, scale: float, support_distances: Array) -> Array:
+    """Per-step error BUDGET ``eps_k = base_error + scale * D(x_k, u_k)`` from a support distance.
+
+    This COMBINES (does not replace) :class:`chc.support.SupportModel`: the certified rollout bound
+    propagates a per-step budget through time, and the SupportModel says WHERE that budget is large
+    (off-support, where the one-step model error grows). SupportModel scores the local risk, the
+    Gronwall tube propagates it.
+    """
+    return base_error + scale * jnp.asarray(support_distances)
+
+
+def constraint_margin(nominal_g: Array, lipschitz_g: float, error_radii: Array) -> Array:
+    """Tightened constraint margin ``g(x_hat_k) + L_g * e_k`` for an ``L_g``-Lipschitz constraint.
+
+    By Rocq ``constraint_tightening``, if this margin is ``<= 0`` at step ``k`` then the TRUE
+    trajectory (within the certified radius ``e_k`` of the nominal ``x_hat_k``) satisfies
+    ``g(x_k) <= 0`` -- the tube becomes a *robust feasibility* check. Admissible while all ``<= 0``.
+    """
+    return jnp.asarray(nominal_g) + lipschitz_g * jnp.asarray(error_radii)
+
+
+@dataclass(frozen=True)
+class TimeVaryingRolloutCertificate:
+    """Evidence the time-varying tube is a valid, tighter-than-constant envelope with a cutoff."""
+
+    certified_until_step: int  # largest k with e_k <= tolerance (honest planning horizon)
+    varying_final: float  # e_H under the per-step budget
+    constant_final: float  # e_H under the constant max-L bound (>= varying_final)
+    safe_until_step: int  # largest k with the tightened constraint g(x_hat)+L_g*e_k <= 0
+    ok: bool
+
+
+def time_varying_rollout_certificate(
+    seed: int = 0, horizon: int = 20, dt: float = 0.05, tolerance: float = 0.3
+) -> TimeVaryingRolloutCertificate:
+    """Rising per-step ``L_k`` + a bumpy budget: the tube stays under the constant-max-L bound.
+
+    Identifies ``certified_until_step`` and the safety margin gives a ``safe_until_step`` cutoff.
+    """
+    key = jax.random.PRNGKey(seed)
+    ramp = jnp.linspace(0.5, 3.0, horizon)  # L_k rising over the horizon
+    lipschitz = [float(v) for v in ramp]
+    budget = [float(0.05 + 0.05 * jnp.abs(jnp.sin(3.0 * v))) for v in ramp]  # eps_k, a bumpy budget
+    varying = time_varying_rollout_bound(lipschitz, budget, dt)
+    constant = time_varying_rollout_bound([max(lipschitz)] * horizon, budget, dt)
+    until = certified_horizon(lipschitz, budget, dt, tolerance)
+    nominal_g = -0.5 * jnp.ones(horizon + 1)  # a nominal margin of 0.5 to the constraint g <= 0
+    margins = constraint_margin(nominal_g, 1.0, varying)  # L_g = 1
+    safe = int(jnp.argmax(margins > 0.0)) if bool(jnp.any(margins > 0.0)) else horizon + 1
+    _ = key
+    return TimeVaryingRolloutCertificate(
+        certified_until_step=until,
+        varying_final=float(varying[-1]),
+        constant_final=float(constant[-1]),
+        safe_until_step=safe,
+        ok=float(varying[-1]) <= float(constant[-1]) + 1e-9 and until <= horizon,
     )

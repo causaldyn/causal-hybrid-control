@@ -81,3 +81,41 @@ def test_bound_grows_exponentially_with_lipschitz_horizon_product() -> None:
     long_horizon = lipschitz_rollout_bound(2.0, 0.1, 0.05, 200)  # L*T = 2*10 = 20
     assert long_horizon > 100.0 * short  # exponential premium at large L*T
     assert np.isfinite(long_horizon)
+
+
+def test_time_varying_certificate_is_tighter_than_constant_and_has_a_cutoff() -> None:
+    from chc.uncertainty import time_varying_rollout_certificate
+
+    cert = time_varying_rollout_certificate(seed=0)
+    assert cert.ok
+    assert cert.varying_final <= cert.constant_final + 1e-9  # per-step L is never looser than max-L
+    assert cert.certified_until_step >= 0  # a valid honest planning horizon
+    assert cert.safe_until_step >= 1  # some prefix of the plan is robustly feasible
+
+
+def test_certified_horizon_shrinks_as_tolerance_tightens() -> None:
+    from chc.uncertainty import certified_horizon
+
+    lipschitz = [1.0] * 40
+    error = [0.1] * 40
+    loose = certified_horizon(lipschitz, error, 0.05, tolerance=1.0)
+    tight = certified_horizon(lipschitz, error, 0.05, tolerance=0.1)
+    assert tight <= loose  # a stricter tolerance certifies fewer steps
+
+
+def test_constraint_tightening_flags_the_true_trajectory_safe() -> None:
+    from chc.uncertainty import constraint_margin
+
+    # nominal margin -0.3 to g<=0, L_g=1, growing error radius: safe until the tube eats the margin
+    radii = np.array([0.0, 0.1, 0.2, 0.35, 0.5])
+    margin = constraint_margin(-0.3 * np.ones(5), 1.0, radii)
+    assert bool(margin[0] <= 0.0)  # at k=0 the true trajectory is certified feasible
+    assert bool(margin[-1] > 0.0)  # once L_g*e_k exceeds the nominal margin, feasibility is lost
+
+
+def test_closed_loop_radius_exceeds_open_loop_when_replanning() -> None:
+    from chc.uncertainty import closed_loop_rollout_bound
+
+    open_loop = lipschitz_rollout_bound(1.0, 0.1, 0.05, 10)
+    closed = closed_loop_rollout_bound(1.0, 0.5, 2.0, 0.1, 0.05, 10)  # L_pi=2 policy sensitivity
+    assert closed > open_loop  # re-planning feeds state error through the policy -> larger tube

@@ -109,3 +109,44 @@ Proof.
   apply gronwall_comparison; try assumption.
   assert (0 <= L * dt) by (apply Rmult_le_pos; assumption). lra.
 Qed.
+
+(* ---- TIME-VARYING extension (Result 28 upgrade): per-step L_k and eps_k. ---- *)
+(* The bound sequence with per-step coefficients a k = 1 + L_k*dt, b k = dt*eps_k. Shows WHICH step
+   and WHICH channel dominates the accumulated uncertainty -- the basis for `certified_until_step`. *)
+Fixpoint gronwall_var (a b : nat -> R) (k : nat) : R :=
+  match k with
+  | O => 0
+  | S j => a j * gronwall_var a b j + b j
+  end.
+
+Lemma gronwall_var_comparison : forall (a b : nat -> R) (d : nat -> R) (k : nat),
+  (forall j : nat, 0 <= a j) ->
+  d 0%nat <= 0 ->
+  (forall j : nat, d (S j) <= a j * d j + b j) ->
+  d k <= gronwall_var a b k.
+Proof.
+  intros a b d k Ha H0 Hstep. induction k as [| k IH].
+  - simpl. exact H0.
+  - simpl gronwall_var.
+    eapply Rle_trans; [apply Hstep |].
+    apply Rplus_le_compat_r.
+    apply Rmult_le_compat_l; [apply Ha | exact IH].
+Qed.
+
+Lemma gronwall_var_nonneg : forall (a b : nat -> R) (k : nat),
+  (forall j : nat, 0 <= a j) -> (forall j : nat, 0 <= b j) -> 0 <= gronwall_var a b k.
+Proof.
+  intros a b k Ha Hb. induction k as [| k IH].
+  - simpl. lra.
+  - simpl. apply Rplus_le_le_0_compat; [apply Rmult_le_pos; [apply Ha | exact IH] | apply Hb].
+Qed.
+
+(* ---- SAFETY-CONSTRAINT tightening (Result 28 upgrade): the error tube -> a safe plan. ---- *)
+(* If g is L_g-Lipschitz and the NOMINAL trajectory satisfies the TIGHTENED constraint
+   g(x_hat) + L_g*e <= 0 (e = the certified error radius), then the TRUE trajectory is feasible:
+   g(x) <= g(x_hat) + L_g*||x - x_hat|| <= g(x_hat) + L_g*e <= 0. *)
+Lemma constraint_tightening : forall gx ghat lg e : R,
+  gx <= ghat + lg * e ->  (* Lipschitz upper bound with ||x - x_hat|| <= e *)
+  ghat + lg * e <= 0 ->   (* the tightened nominal constraint *)
+  gx <= 0.
+Proof. intros gx ghat lg e Hlip Htight. lra. Qed.
