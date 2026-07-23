@@ -85,3 +85,55 @@ Proof.
   assert (H0 : al * tau * D * (al - al) * (bhat + D) = 0) by ring.
   rewrite H0. unfold Rdiv. rewrite Rmult_0_l. reflexivity.
 Qed.
+
+(* UNDERSHOOT-DOMINANT branch (reviewer-8): the improvement gap is PIECEWISE in max(al,be). The first
+   branch (rob_gap, al>=be) has W_ce = al*tau*D/bhat; for be >= al -- undershoot costlier, e.g. Result
+   37's churn = 4x waste -- W_ce = be*tau*D/bhat and the sharp improvement is this SECOND branch. Both
+   are nonneg for bhat > D > 0 (identified effect sign) and strictly positive for D > 0, al <> be. *)
+Definition rob_gap_under (al be tau bhat D : R) : R :=
+  be * tau * D * (be - al) * (bhat - D) / (bhat * ((al + be) * bhat + (al - be) * D)).
+
+Lemma rob_gap_under_denom_pos :
+  forall al be bhat D : R,
+    0 < al -> al <= be -> 0 < D -> D < bhat ->
+    0 < bhat * ((al + be) * bhat + (al - be) * D).
+Proof.
+  intros al be bhat D Hal Hle HD Hbd.
+  apply Rmult_lt_0_compat; [ lra |].
+  assert (Hid : (al + be) * bhat + (al - be) * D = (al + be) * (bhat - D) + 2 * al * D) by ring.
+  rewrite Hid. apply Rplus_le_lt_0_compat; [ apply Rmult_le_pos; lra | nra ].
+Qed.
+
+Lemma rob_gap_under_nonneg :
+  forall al be tau bhat D : R,
+    0 < al -> al <= be -> 0 <= tau -> 0 < D -> D < bhat ->
+    0 <= rob_gap_under al be tau bhat D.
+Proof.
+  intros al be tau bhat D Hal Hle Htau HD Hbd. unfold rob_gap_under, Rdiv.
+  apply Rmult_le_pos.
+  - apply Rmult_le_pos.
+    + apply Rmult_le_pos.
+      * apply Rmult_le_pos; [ apply Rmult_le_pos; [ lra | exact Htau ] | lra ].
+      * lra.
+    + lra.
+  - left. apply Rinv_0_lt_compat. apply rob_gap_under_denom_pos; assumption.
+Qed.
+
+Lemma rob_gap_under_pos :
+  forall al be tau bhat D : R,
+    0 < al -> al < be -> 0 < tau -> 0 < D -> D < bhat ->
+    0 < rob_gap_under al be tau bhat D.
+Proof.
+  intros al be tau bhat D Hal Hlt Htau HD Hbd. unfold rob_gap_under, Rdiv.
+  apply Rmult_lt_0_compat.
+  - repeat apply Rmult_lt_0_compat; lra.
+  - apply Rinv_0_lt_compat. apply rob_gap_under_denom_pos; lra.
+Qed.
+
+Lemma rob_gap_under_symmetric_zero :
+  forall al tau bhat D : R, rob_gap_under al al tau bhat D = 0.
+Proof.
+  intros al tau bhat D. unfold rob_gap_under.
+  assert (H0 : al * tau * D * (al - al) * (bhat - D) = 0) by ring.
+  rewrite H0. unfold Rdiv. rewrite Rmult_0_l. reflexivity.
+Qed.

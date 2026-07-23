@@ -269,7 +269,7 @@ class ContractiveResidual(eqx.Module):
     ``e^{L*T}``), a negative log-norm ``mu = -c`` gives a UNIFORMLY BOUNDED CONTINUOUS-time radius
     ``eps/c`` (no ``e^{L*T}``). For EXPLICIT EULER the discrete contraction factor is
     ``q = sqrt(1 + 2*mu*dt + L^2*dt^2)`` (NOT ``1+mu*dt``; ``L=lipschitz_constant()`` the full
-    Lipschitz constant), so contraction needs the sharp step ``dt < 2c/L^2``; under it the discrete
+    Lipschitz constant), so contraction needs the step ``dt < 2c/L^2`` (sufficient); under it the
     rollout radius stays bounded and tends to ``eps/c`` as ``dt -> 0`` (see
     ``chc.uncertainty.contractive_rollout_bound``; Rocq ``contractive_euler.v``).
     ``mu`` bounds only the residual's contribution; total-system contraction needs
@@ -312,7 +312,7 @@ class ContractiveResidual(eqx.Module):
         """Full Lipschitz constant ``L`` of ``r`` in ``x`` (needed for the explicit-Euler CFL).
 
         ``||J_r|| <= ||-(rate + softplus(eta)) I|| + rate*||dg/dx|| <= (rate + max softplus(eta)) +
-        rate`` since ``g`` is 1-Lipschitz -- so ``L = 2*rate + max softplus(eta)``. Sets the sharp
+        rate`` since ``g`` is 1-Lipschitz -- so ``L = 2*rate + max softplus(eta)``. Sets the Euler
         contraction step ``dt < 2c/L^2`` in :func:`chc.uncertainty.contractive_rollout_bound`.
         """
         return 2.0 * self.rate + jnp.max(jax.nn.softplus(self.log_drift))

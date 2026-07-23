@@ -7,12 +7,21 @@ pessimism radius shifts the gain and strictly beats CE (Rocq ``confounding_robus
 import pytest
 
 from chc.regret import (
+    asymmetric_control_improvement,
     certainty_equivalence_control,
     confounding_robust_control,
     confounding_robust_control_benchmark,
     confounding_robust_control_certificate,
     worst_case_asymmetric_loss,
 )
+
+
+def _numeric_improvement(bhat: float, d: float, tau: float, a: float, b: float) -> float:
+    u_ce = certainty_equivalence_control(bhat, tau)
+    u_rob = confounding_robust_control(bhat, d, tau, a, b)
+    w_ce = worst_case_asymmetric_loss(u_ce, bhat, d, tau, a, b)
+    w_rob = worst_case_asymmetric_loss(u_rob, bhat, d, tau, a, b)
+    return w_ce - w_rob
 
 
 def test_certificate_confirms_shift_and_strict_improvement() -> None:
@@ -53,6 +62,19 @@ def test_worst_case_loss_is_the_max_of_the_weighted_tails() -> None:
     w = worst_case_asymmetric_loss(1.0, 1.3, 0.25, 1.0, 4.0, 1.0)
     over = 4.0 * ((1.3 + 0.25) * 1.0 - 1.0)  # alpha * overshoot at b_hat+D
     assert w == pytest.approx(over)
+
+
+def test_piecewise_improvement_matches_numeric_in_both_regimes() -> None:
+    # reviewer-8: the analytic gap is piecewise in max(alpha,beta); it must match the numeric
+    # W_CE - W_rob in BOTH the overshoot-dominant (alpha>beta) and undershoot-dominant (beta>alpha,
+    # Result 37's regime) branches -- the old single formula only covered alpha>=beta
+    over = asymmetric_control_improvement(1.3, 0.25, 1.0, 4.0, 1.0)  # alpha>beta
+    under = asymmetric_control_improvement(1.3, 0.25, 1.0, 1.0, 4.0)  # beta>alpha (churn 4x)
+    assert over == pytest.approx(_numeric_improvement(1.3, 0.25, 1.0, 4.0, 1.0), abs=1e-12)
+    assert under == pytest.approx(_numeric_improvement(1.3, 0.25, 1.0, 1.0, 4.0), abs=1e-12)
+    assert over > 0.0  # overshoot-dominant branch strictly beats CE
+    assert under > 0.0  # undershoot-dominant branch (Result 37 regime) strictly beats CE too
+    assert asymmetric_control_improvement(1.3, 0.25, 1.0, 2.0, 2.0) == pytest.approx(0.0)  # a=b
 
 
 # --- Result 37: grounding on a synthetic marketplace task (full estimate -> control pipeline) ---

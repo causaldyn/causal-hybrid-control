@@ -2135,6 +2135,30 @@ def worst_case_asymmetric_loss(
     return max(overshoot_penalty * overshoot, undershoot_penalty * undershoot)
 
 
+def asymmetric_control_improvement(
+    effect_estimate: float,
+    halfwidth: float,
+    target: float,
+    overshoot_penalty: float,
+    undershoot_penalty: float,
+) -> float:
+    """Piecewise worst-case-loss improvement ``W_CE - W_rob`` of the §35 robust controller over CE.
+
+    ``W_rob = 2*a*b*target*D/Q`` (branch-free, ``Q = (a+b)*b_hat + (a-b)*D``), but
+    ``W_CE = max(a,b)*target*D/b_hat``, so the improvement is PIECEWISE (reviewer-8): the
+    OVERSHOOT-dominant branch ``a*target*D*(a-b)*(b_hat+D)/(b_hat*Q)`` for ``a >= b`` and the
+    UNDERSHOOT-dominant branch ``b*target*D*(b-a)*(b_hat-D)/(b_hat*Q)`` for ``b >= a`` (Rocq
+    ``rob_gap_*`` / ``rob_gap_under_*``). Both are ``>= 0`` for ``b_hat > D > 0`` and ``> 0`` iff
+    ``a != b`` and ``D > 0`` -- the old single formula only covered ``a >= b`` (missing Result 37's
+    ``b = 4*a`` regime). Here ``a = overshoot_penalty``, ``b = undershoot_penalty``.
+    """
+    a, b, bhat, d = overshoot_penalty, undershoot_penalty, effect_estimate, halfwidth
+    q = (a + b) * bhat + (a - b) * d
+    if a >= b:
+        return a * target * d * (a - b) * (bhat + d) / (bhat * q)
+    return b * target * d * (b - a) * (bhat - d) / (bhat * q)
+
+
 @dataclass(frozen=True)
 class ConfoundingRobustControlCurve:
     """Evidence the pessimism radius shifts the gain and strictly beats CE under asymmetric loss."""
@@ -2335,10 +2359,15 @@ def confounding_robust_control_benchmark(
     Synthetic switchback marketplace: a demand confounder biases the naive effect estimate, so the
     CE controller (trusting it) under-incentivises and misses completions -- expensive when churn
     (``undershoot_penalty``) dominates budget waste (``overshoot_penalty``). The §35 controller uses
-    an assumed sensitivity ``Gamma`` (half-width via the §32 map ``(Gamma-1)/(Gamma+1)*b_hat``) to
-    shift the incentive and hedge the costlier error. Reports realised cost across a confounding
-    sweep: the robust controller bounds the WORST-CASE cost (pessimism), wins where confounding is
-    real, and pays only a bounded premium when there is none -- the honest robustness trade-off.
+    an assumed sensitivity ``Gamma`` and a half-width ``D``. **Calibration (named):** §32 gives
+    ``D = (Gamma-1)/(Gamma+1)*(CVaR_up - CVaR_lo)``; for THIS synthetic benchmark we calibrate the
+    sensitivity gap to the estimate, ``CVaR_up - CVaR_lo := b_hat``, so ``D = (Gamma-1)/(Gamma+1)*
+    b_hat`` -- a benchmark assumption, not a general consequence of §32.
+
+    Reports realised cost across a confounding sweep: the robust controller bounds the WORST-CASE
+    cost (pessimism) and wins **beyond a problem-dependent confounding threshold**, while paying a
+    measurable premium **near zero confounding** (its conservatism then costs more than it saves) --
+    the honest robustness trade-off, not a universal win.
     """
     from chc.uncertainty import (
         confounding_robust_inflation,  # §32 half-width; local to keep JAX out

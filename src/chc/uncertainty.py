@@ -329,8 +329,9 @@ def contractive_rollout_bound(
     The discrete Euler contraction factor is ``q = sqrt(1+2*mu*dt+L^2*dt^2)`` (NOT ``1+mu*dt``;
     ``L`` = the full Lipschitz constant), since two Euler steps deviate by
     ``|d+dt*(f(x)-f(y))|^2 <= (1+2*mu*dt+L^2*dt^2)|d|^2`` (Maxima ``contractive_euler.mac``; Rocq
-    ``contractive_euler.v``). Contraction (``q<1``) needs the SHARP step ``dt<2c/L^2``; under it the
-    discrete Gronwall bound ``e_H <= model_error*dt*(1 - q^H)/(1 - q)`` is capped at
+    ``contractive_euler.v``). Contraction (``q<1``) needs the step ``dt<2c/L^2`` (sufficient, from
+    the worst-case ``(mu,L)`` bounds); under it the discrete Gronwall bound
+    ``e_H <= model_error*dt*(1 - q^H)/(1 - q)`` is capped at
     ``model_error*dt/(1-q)`` for ALL horizons -- no ``e^{L*T}`` blow-up -- tends to the continuous
     radius ``model_error/c`` as ``dt -> 0``. The payoff of a certified negative log-norm
     (:class:`~chc.residual.ContractiveResidual`) over the non-negative ``||.||``-Lipschitz of
@@ -370,7 +371,7 @@ def contractive_rollout_certificate(
 
     Checks (i) the empirical one-sided Lipschitz ``<r(x)-r(y),x-y>/||x-y||^2 <= -rate`` (certified
     contraction), and (ii) the perturbed-rollout deviation stays under the BOUNDED explicit-Euler
-    radius ``eps*dt/(1-q)`` (sharp step ``dt<2c/L^2``) even as the horizon grows -- contrasted with
+    radius ``eps*dt/(1-q)`` (step ``dt<2c/L^2``) even as the horizon grows -- contrasted with
     the ``e^{L*T}`` that the same field's norm-Lipschitz ``L`` would incur (``lipschitz_blowup``).
     """
     k_model, k_x, k_p, k_a, k_b = jax.random.split(jax.random.PRNGKey(seed), 5)

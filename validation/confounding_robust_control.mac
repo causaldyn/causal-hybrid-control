@@ -39,3 +39,19 @@ gap : ratsimp( W_ce - W_rob )$
 print("(5a) improvement  gap - al*tau*D*(al-be)*(bhat+D)/(bhat*((al+be)*bhat+(al-be)*D)) =",
       ratsimp( gap - al*tau*D*(al - be)*(bhat + D)/(bhat*((al + be)*bhat + (al - be)*D)) ), "  (=0)")$
 print("(5b) symmetric no gain  subst(be=al, gap) =", ratsimp( subst(be = al, gap) ), "  (=0)")$
+
+/* (6) UNDERSHOOT-DOMINANT branch (reviewer-8): the CE worst tail is W_ce = max(al,be)*tau*D/bhat. For
+   be >= al (undershoot costlier, e.g. Result 37's churn = 4x waste) W_ce = be*tau*D/bhat and the sharp
+   improvement is the SECOND branch gap_u = be*tau*D*(be-al)*(bhat-D)/(bhat*Q), nonneg for bhat>D>0 and
+   strictly positive for D>0, al<be. (The old single formula only covered al>=be.) */
+W_ce_under : be*tau*D/bhat$
+gap_under : ratsimp( W_ce_under - W_rob )$
+print("(6a) undershoot improvement  gap_u - be*tau*D*(be-al)*(bhat-D)/(bhat*((al+be)*bhat+(al-be)*D)) =",
+      ratsimp( gap_under - be*tau*D*(be - al)*(bhat - D)/(bhat*((al + be)*bhat + (al - be)*D)) ),
+      "  (=0)")$
+print("(6b) undershoot symmetric no gain  subst(be=al, gap_u) =", ratsimp( subst(be = al, gap_under) ),
+      "  (=0)")$
+/* both branches meet at al=be (gap=0); W_rob = 2*al*be*tau*D/Q is branch-independent. */
+print("(6c) W_ce is max-based: overshoot W_ce=al*tau*D/bhat, undershoot W_ce_under=be*tau*D/bhat;",
+      "W_rob (branch-free) - 2*al*be*tau*D/Q =",
+      ratsimp( W_rob - 2*al*be*tau*D/((al + be)*bhat + (al - be)*D) ), "  (=0)")$
