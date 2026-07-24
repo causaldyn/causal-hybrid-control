@@ -67,6 +67,7 @@ from chc.regret import (
 from chc.uncertainty import (
     ConfoundingRobustCertificate,
     ConfoundingRobustClosedLoopCertificate,
+    ConfoundingRobustPenalty,
     confounding_robust_certificate,
     confounding_robust_closed_loop_bound,
     confounding_robust_closed_loop_certificate,
@@ -81,6 +82,7 @@ __all__ = [
     "ConfoundingRobustClosedLoopCertificate",
     "ConfoundingRobustControlCurve",
     "ConfoundingRobustLQRegretCurve",
+    "ConfoundingRobustPenalty",
     "DynamicConfoundingCurve",
     "MarketplaceControlCurve",
     "asymmetric_control_improvement",

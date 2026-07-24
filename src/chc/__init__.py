@@ -210,6 +210,7 @@ from chc.transport import MeanFieldTransport, solve_transport, transport_step
 from chc.uncertainty import (
     ConfoundingRobustCertificate,
     ConfoundingRobustClosedLoopCertificate,
+    ConfoundingRobustPenalty,
     ContractiveRolloutCertificate,
     EnsembleResidual,
     EnsembleUncertainty,
@@ -257,6 +258,7 @@ __all__ = [
     "ConfoundingRobustClosedLoopCertificate",
     "ConfoundingRobustControlCurve",
     "ConfoundingRobustLQRegretCurve",
+    "ConfoundingRobustPenalty",
     "ConstrainedRegretCurve",
     "ContractiveResidual",
     "ContractiveRolloutCertificate",
