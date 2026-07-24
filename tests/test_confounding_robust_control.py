@@ -12,6 +12,8 @@ from chc.regret import (
     confounding_robust_control,
     confounding_robust_control_benchmark,
     confounding_robust_control_certificate,
+    confounding_robust_tracking_benchmark,
+    confounding_robust_tracking_loop,
     worst_case_asymmetric_loss,
 )
 
@@ -101,3 +103,41 @@ def test_benchmark_pays_an_honest_premium_when_unconfounded() -> None:
     # no confounding: the conservative robust controller over-serves, costing more than CE (honest)
     assert curve.robust_costs[zero_idx] >= curve.ce_costs[zero_idx]
     assert curve.unconfounded_premium_pct > 0.0
+
+
+# --- Result 38: DYNAMIC grounding -- a real closed-loop controller on a confounded plant ---
+
+
+def test_tracking_loop_halfwidth_zero_is_the_ce_baseline() -> None:
+    # the §35 formula collapses to tau/b_hat at halfwidth=0, so a zero-radius loop IS CE
+    _, us, _ = confounding_robust_tracking_loop(0.6, 2.0, 2.5, 0.0, 1.0, 1.0, 4.0, n_steps=5)
+    # first step: tau_0 = x_target - a*x0 = 1 - 0 = 1, u_0 = tau_0 / b_hat = 1/2.5
+    assert us[0] == pytest.approx(certainty_equivalence_control(2.5, 1.0))
+
+
+def test_tracking_loop_robust_pushes_the_gain_up_under_undershoot_cost() -> None:
+    # biased b_hat (2.5 > b_true) makes CE under-actuate; with churn 4x the robust loop pushes u up
+    _, us_ce, cost_ce = confounding_robust_tracking_loop(
+        0.6, 2.0, 2.5, 0.0, 1.0, 1.0, 4.0, n_steps=30
+    )
+    _, us_rob, cost_rob = confounding_robust_tracking_loop(
+        0.6, 2.0, 2.5, 1.0, 1.0, 1.0, 4.0, n_steps=30
+    )
+    assert us_rob[0] > us_ce[0]  # radius shifts the per-step gain up to hedge costlier undershoot
+    assert cost_rob < cost_ce  # ...cutting the accumulated closed-loop asymmetric cost
+
+
+def test_dynamic_benchmark_robust_bounds_the_closed_loop_downside() -> None:
+    curve = confounding_robust_tracking_benchmark()
+    assert curve.ok
+    assert curve.robust_worst_case < curve.ce_worst_case  # pessimism bounds the worst-case cost
+    assert curve.savings_at_target_pct > 0.0  # robust wins in closed loop where confounding is real
+
+
+def test_dynamic_benchmark_ce_cost_climbs_and_premium_is_bounded() -> None:
+    curve = confounding_robust_tracking_benchmark()
+    ce = curve.ce_costs
+    assert ce[0] < ce[-1]  # CE trusts the biased estimate: closed-loop cost climbs with confounding
+    assert all(ce[i] <= ce[i + 1] + 1e-9 for i in range(len(ce) - 1))
+    zero_idx = list(curve.confounding_levels).index(0.0)
+    assert curve.robust_costs[zero_idx] >= curve.ce_costs[zero_idx]  # honest premium at zero conf.

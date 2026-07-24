@@ -2418,3 +2418,150 @@ def confounding_robust_control_benchmark(
         unconfounded_premium_pct=premium,
         ok=(robust_worst < ce_worst and savings > 0.0),
     )
+
+
+# --- Result 38: DYNAMIC grounding of §35 -- a real closed-loop controller on a confounded plant ---
+
+
+def confounding_robust_tracking_loop(
+    a: float,
+    b_true: float,
+    b_hat: float,
+    halfwidth: float,
+    x_target: float,
+    overshoot_penalty: float,
+    undershoot_penalty: float,
+    x0: float = 0.0,
+    n_steps: int = 30,
+    noise_scale: float = 0.05,
+    seed: int = 0,
+) -> tuple[Vector, Vector, float]:
+    """Roll the confounded scalar plant ``x' = a*x + b_true*u + noise`` under the §35 controller.
+
+    Lifts the STATIC §35 minimax into a receding-horizon CLOSED LOOP (the reviewers' recurring
+    critique): each step aims the one-step target ``tau_t = x_target - a*x_t`` with
+    :func:`confounding_robust_control` trusting the biased offline ``b_hat`` while the TRUE plant
+    uses ``b_true`` (the model/plant split of :func:`chc.flagship.closed_loop`, in NumPy to keep
+    this module x64-flag-independent). ``halfwidth = 0`` recovers certainty-equivalence exactly (the
+    §35 formula collapses to ``tau/b_hat``); ``halfwidth > 0`` (the §32 radius) is the robust
+    controller. Returns the realised trajectory, the applied controls, and the accumulated
+    ASYMMETRIC stage cost ``Sum_t [alpha*(x_t - x_target)_+ + beta*(x_target - x_t)_+]``.
+    """
+    rng = np.random.default_rng(seed)
+    x = x0
+    xs = [x0]
+    us: list[float] = []
+    cost = 0.0
+    for _ in range(n_steps):
+        tau = x_target - a * x  # the one-step target change the controller must produce via b*u
+        u = confounding_robust_control(b_hat, halfwidth, tau, overshoot_penalty, undershoot_penalty)
+        x = a * x + b_true * u + noise_scale * float(rng.standard_normal())
+        cost += _asymmetric_cost(x, x_target, overshoot_penalty, undershoot_penalty)
+        xs.append(x)
+        us.append(u)
+    return np.array(xs), np.array(us), cost
+
+
+@dataclass(frozen=True)
+class DynamicConfoundingCurve:
+    """§35 robust vs CE on realised CLOSED-LOOP cost across a confounding grid (the dynamic §37)."""
+
+    confounding_levels: Vector  # swept true (unknown) confounding strengths
+    ce_costs: Vector  # mean realised closed-loop asymmetric cost of the CE controller
+    robust_costs: Vector  # ...of the §35 confounding-robust controller
+    ce_worst_case: float  # max CE cost over the sweep
+    robust_worst_case: float  # max robust cost over the sweep (<= CE: pessimism bounds downside)
+    savings_at_target_pct: float  # closed-loop cost reduction at the realistic confounding level
+    unconfounded_premium_pct: float  # robust's extra cost at zero confounding, vs the CE downside
+    ok: bool
+
+
+def confounding_robust_tracking_benchmark(
+    a: float = 0.6,
+    b_true: float = 2.0,
+    x_target: float = 1.0,
+    overshoot_penalty: float = 1.0,
+    undershoot_penalty: float = 4.0,
+    sensitivity_gamma: float = 2.5,
+    target_confounding: float = 0.8,
+    confounding_levels: Sequence[float] = (0.0, 0.4, 0.8, 1.2),
+    incentive_demand_corr: float = 1.0,
+    action_noise: float = 0.6,
+    n_steps: int = 30,
+    noise_scale: float = 0.05,
+    n_markets: int = 200,
+    n_periods: int = 400,
+    seed: int = 0,
+) -> DynamicConfoundingCurve:
+    """The DYNAMIC §37: does the confounding-robust controller beat CE in CLOSED LOOP over time?
+
+    Same honest story as :func:`confounding_robust_control_benchmark`, now closed-loop over
+    ``n_steps`` on the confounded plant ``x' = a*x + b_true*u + noise``: a demand confounder biases
+    the offline ``b_hat``, the CE controller under-actuates and undershoots ``x_target`` (expensive
+    when churn = ``undershoot_penalty`` dominates budget waste), the §35 controller uses the §32
+    radius (calibrated ``D = (Gamma-1)/(Gamma+1)*b_hat``, a benchmark assumption) to hedge. Reports
+    mean realised closed-loop cost across a confounding sweep: robust bounds the worst case and wins
+    beyond a problem-dependent threshold, paying a bounded premium near zero confounding.
+    """
+    from chc.uncertainty import (
+        confounding_robust_inflation,  # §32 half-width; local to keep JAX out
+    )
+
+    rng = np.random.default_rng(seed)
+    ce_costs: list[float] = []
+    robust_costs: list[float] = []
+    for conf in confounding_levels:
+        ce_acc: list[float] = []
+        rob_acc: list[float] = []
+        for market in range(n_markets):
+            b_hat = _confounded_effect_estimate(
+                b_true, conf, incentive_demand_corr, action_noise, n_periods, rng
+            )
+            halfwidth = confounding_robust_inflation(b_hat, 0.0, sensitivity_gamma)
+            # same plant-noise seed for CE and robust so the comparison is paired
+            _, _, ce_cost = confounding_robust_tracking_loop(
+                a,
+                b_true,
+                b_hat,
+                0.0,
+                x_target,
+                overshoot_penalty,
+                undershoot_penalty,
+                n_steps=n_steps,
+                noise_scale=noise_scale,
+                seed=market,
+            )
+            _, _, rob_cost = confounding_robust_tracking_loop(
+                a,
+                b_true,
+                b_hat,
+                halfwidth,
+                x_target,
+                overshoot_penalty,
+                undershoot_penalty,
+                n_steps=n_steps,
+                noise_scale=noise_scale,
+                seed=market,
+            )
+            ce_acc.append(ce_cost)
+            rob_acc.append(rob_cost)
+        ce_costs.append(float(np.mean(ce_acc)))
+        robust_costs.append(float(np.mean(rob_acc)))
+
+    levels = list(confounding_levels)
+    ce_worst = max(ce_costs)
+    robust_worst = max(robust_costs)
+    ti = levels.index(target_confounding)
+    savings = 100.0 * (1.0 - robust_costs[ti] / ce_costs[ti]) if ce_costs[ti] > 0 else 0.0
+    zi = levels.index(0.0)
+    premium = 100.0 * (robust_costs[zi] - ce_costs[zi]) / ce_worst if ce_worst > 0 else 0.0
+    return DynamicConfoundingCurve(
+        confounding_levels=np.array(levels),
+        ce_costs=np.array(ce_costs),
+        robust_costs=np.array(robust_costs),
+        ce_worst_case=ce_worst,
+        robust_worst_case=robust_worst,
+        savings_at_target_pct=savings,
+        unconfounded_premium_pct=premium,
+        ok=(robust_worst < ce_worst and savings > 0.0),
+    )
