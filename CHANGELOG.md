@@ -5,6 +5,73 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the API stabilises (pre-1.0 it may
 still change).
 
+## [Unreleased]
+
+Work landed on `main` since `v0.1.0`. The theme is **guarantees**: most of it is a machine-checked
+result line at the causal↔control seam (Maxima derivation → Rocq proof → numeric certificate), with the
+matching runtime primitives shipped alongside. See `discoveries/theorems.md` (local research log) for
+the statements, scopes and proof names.
+
+### Added
+
+- **Sensitivity-aware control under hidden confounding** (`chc.sensitivity`, a facade over
+  `chc.regret` + `chc.uncertainty`). Bounded-density-ratio (marginal MSM) worst-case effect as a CVaR
+  mixture → pessimism-radius inflation (`confounding_robust_inflation`, `msm_worst_case_mean`,
+  `confounding_robust_radius`); the confounding regret floor is *second order* in the effect bias
+  (`confounding_robust_lq_regret`, plus a matrix Frobenius lift); a **minimax controller** whose gain
+  the radius shifts under asymmetric over/under-shoot loss (`confounding_robust_control`, sign
+  dichotomy, piecewise improvement gap); the radius inside the replanning tube
+  (`confounding_robust_closed_loop_bound`). Grounded on a synthetic observational confounded
+  marketplace, then lifted into a genuine receding-horizon **closed loop** on a confounded plant
+  (`confounding_robust_tracking_loop`, `confounding_robust_tracking_benchmark`).
+- **`ConfoundingRobustPenalty`** (`chc.uncertainty`) — a `PenaltyModel` carrying the sensitivity radius
+  into the general pessimistic-control stack (`radius·Σ‖u_t‖`, from the bound `‖Δ_B·u_t‖ ≤
+  radius·‖u_t‖`), and **`ConfoundingRobustTask`** (`chc.benchmark`), its leaderboard row: under a
+  *hidden* confounder no estimator can help, and the radius still cuts regret ~40% vs
+  certainty-equivalence with separated multi-seed CIs.
+- **Certified planning** (`chc.uncertainty`, `chc.residual`) — certified-Lipschitz rollout-error tubes
+  via discrete Grönwall feeding the pessimism radius, with time-varying tubes, constraint tightening,
+  a certified-safe horizon and a closed-loop (replanning) variant; **`ContractiveResidual`** with a
+  certified negative log-norm, which replaces the `e^{LT}` growth with a bounded radius; a
+  **port-Hamiltonian** residual with a machine-checked damping-injection Lyapunov certificate;
+  **`WassersteinPenalty`**, a W1-DRO distribution-shift margin.
+- **`chc.pathway`** — one `causal_pathway(target)` API over the temporal causal graph, with
+  Rocq-certified walk-sum / geometric-truncation / weakest-link structural laws.
+- **Marketplace layer** — `chc.matching` (Kantorovich OT dispatch with dual surge prices) and
+  `chc.marketplace` (offline causal control under equilibrium interference, where naive and MOPO-style
+  baselines go negative); influence-function standard errors and CIs on the cross-fit DML effect.
+- **Regret / guarantee line** — the orthogonal-to-control transfer theorem (order `p` → `2p`, scalar
+  and multivariate-LQ), multi-channel network control (debias *every* channel), the adaptive
+  information-exploration duality with its `√T` lower bound, the C2 end-to-end theorem with a clustered
+  van-Trees lower bound and an exposure-map generalisation, plus a batch of scoped propositions and
+  corollaries (doubly-robust control, H∞-as-pessimism, constrained piecewise-quadratic regret,
+  confounded turnpike, transportability, ensemble heterogeneity, partial-identification sign threshold).
+
+### Changed
+
+- Ten rounds of external review folded in as **scope and honesty corrections**, not new claims: the
+  explicit-Euler contraction factor was wrong (`√(1+2μΔt+L²Δt²)`, sufficient step `Δt < 2c/L²`); the
+  confounding effect error needed the control magnitude to be dimensionally right; the `§35`
+  improvement gap is piecewise (the undershoot-dominant branch was unproved while the benchmark ran in
+  it); `§32` is the bounded-density-ratio *marginal* special case of Tan's MSM, not the full model, and
+  its monotonicity argument is feasible-set nesting; the confounded-marketplace benchmark is
+  *observational*, not a randomised switchback. Several results were relabelled to their honest status
+  (order-transfer *lemma*, local-not-global, scalar-not-universal, `≈`-not-`=`).
+- Documentation counts corrected after an audit found a silently drifting entry count in the research
+  log; the README test count was stale by two releases.
+
+### Fixed
+
+- `ConfoundingRobustPenalty` used `‖u‖`, whose gradient is NaN at `u = 0` — exactly where the solver
+  starts — so `0·NaN` poisoned every step and the control stayed pinned at zero. Now a smoothed
+  `√(‖u‖²+ε)`, which zeroes the gradient at the origin and preserves the linear bound.
+
+### Notes
+
+Version and tag are deliberately untouched: `pyproject.toml` still declares `0.1.0`, and the `v0.1.0`
+tag has not been pushed. Publishing is a separate, explicit decision — pushing any `v*` tag triggers
+`release.yml` and a PyPI upload.
+
 ## [0.1.0] — 2026-07-19
 
 First tagged release. `chc` is a small JAX library that fuses **physics-structured hybrid dynamics**,
