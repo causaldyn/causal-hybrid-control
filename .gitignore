@@ -37,6 +37,7 @@ data/
 # editors / OS
 .vscode/
 .idea/
+.zed/
 .DS_Store
 .ipynb_checkpoints/
 .coq-native/
