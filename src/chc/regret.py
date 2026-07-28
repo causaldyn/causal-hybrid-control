@@ -1958,7 +1958,7 @@ def interference_regret_certificate(
     return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent)
 
 
-# --- Result 33: confounding-robust LQ regret (MSM -> CVaR radius -> control-regret floor) ---
+# --- Result 33: confounding-robust LQ regret (bounded density ratio -> CVaR radius -> floor) ---
 
 
 def _lq_static_optimum(effect: float, effort: float, target: float) -> float:
@@ -2015,7 +2015,7 @@ def confounding_robust_lq_regret_matrix(
 class ConfoundingRobustLQRegretCurve:
     """Evidence the confounding regret bound order-doubles effect error and floors at Delta^2."""
 
-    gammas: Vector  # swept MSM sensitivities Gamma
+    gammas: Vector  # swept §32 sensitivity levels Gamma
     regret_bounds: Vector  # R(Gamma) = L_reg*(eps + Delta(Gamma))^2
     statistical: float  # R(Gamma=1) = L_reg*eps^2 (no confounding penalty)
     floor_quadratic_ratio: float  # floor(2*Delta)/floor(Delta): ~4.0 => quadratic in the width
@@ -2092,7 +2092,7 @@ def confounding_robust_control(
     overshoot_penalty: float,
     undershoot_penalty: float,
 ) -> float:
-    """Minimax control over the MSM effect interval ``[b_hat +/- halfwidth]`` under asymmetric loss.
+    """Minimax control over the §32 effect interval ``[b_hat +/- halfwidth]`` under asymmetric loss.
 
     Loss ``alpha*(y-target)_+ + beta*(target-y)_+`` on the outcome ``y = b*u``; the controller does
     not know ``b`` in the confounding interval. The minimax ``u`` balances the two weighted worst
@@ -2127,7 +2127,7 @@ def worst_case_asymmetric_loss(
     overshoot_penalty: float,
     undershoot_penalty: float,
 ) -> float:
-    """Worst-case asymmetric loss of applying ``control`` over the MSM effect interval.
+    """Worst-case asymmetric loss of applying ``control`` over the §32 effect interval.
 
     For ``u > 0`` the outcome is monotone in ``b``, so the worst overshoot is at ``b_hat+D`` and the
     worst undershoot at ``b_hat-D``; the worst-case loss is the max of the two weighted tails.
@@ -2170,7 +2170,7 @@ class ConfoundingRobustControlCurve:
     worst_case_loss_ce: float
     worst_case_loss_robust: float  # < CE: pessimism strictly helps under asymmetry
     numeric_argmin: float  # grid-search argmin of the worst-case loss (matches u_robust)
-    symmetric_equals_ce: bool  # alpha=beta -> robust control == CE (recovers §33)
+    symmetric_equals_ce: bool  # alpha=beta -> robust control == target/b_hat, THIS loss's CE action
     ok: bool
 
 
@@ -2338,7 +2338,10 @@ class MarketplaceControlCurve:
         float  # max robust cost over the sweep (<< CE: pessimism bounds the downside)
     )
     savings_at_target_pct: float  # cost reduction at the realistic target confounding level
-    unconfounded_premium_pct: float  # robust's extra cost at zero confounding, vs the CE downside
+    unconfounded_premium_pct: float  # extra cost at zero confounding, normalised by the CE
+    # DOWNSIDE (ce_worst_case), not by the unconfounded CE cost -- against that near-zero
+    # baseline the same gap is an order of magnitude larger. Both fields are here; divide
+    # by whichever the claim needs and say which.
     ok: bool
 
 
@@ -2472,7 +2475,10 @@ class DynamicConfoundingCurve:
     ce_worst_case: float  # max CE cost over the sweep
     robust_worst_case: float  # max robust cost over the sweep (<= CE: pessimism bounds downside)
     savings_at_target_pct: float  # closed-loop cost reduction at the realistic confounding level
-    unconfounded_premium_pct: float  # robust's extra cost at zero confounding, vs the CE downside
+    unconfounded_premium_pct: float  # extra cost at zero confounding, normalised by the CE
+    # DOWNSIDE (ce_worst_case), not by the unconfounded CE cost -- against that near-zero
+    # baseline the same gap is an order of magnitude larger. Both fields are here; divide
+    # by whichever the claim needs and say which.
     ok: bool
 
 

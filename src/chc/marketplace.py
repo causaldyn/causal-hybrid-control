@@ -54,10 +54,11 @@ class SharedStateMarket:
         attract = 1.5 * demand + 0.3 * jax.random.normal(k[1], (self.n_zones,))
         return demand, attract
 
-    def _equilibrium(self, attract: Array, u: Array, iters: int = 150) -> Array:
-        return softmax_congestion_equilibrium(
-            attract, u, self.congestion, self.mass, self.beta, iters
-        )
+    def _equilibrium(self, attract: Array, u: Array) -> Array:
+        """Solved driver distribution. ``beta*congestion = 5 < 6`` here, so the map is certified
+        contracting (:func:`chc.games.congestion_contraction_certificate`) and the solve converges.
+        """
+        return softmax_congestion_equilibrium(attract, u, self.congestion, self.mass, self.beta).x
 
     def completions(self, u: Array) -> Array:
         """Total realised rides = sum_i min(demand_i, drivers_i) at the equilibrium."""

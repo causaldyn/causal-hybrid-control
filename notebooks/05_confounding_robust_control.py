@@ -102,7 +102,7 @@ print(f"savings at realistic confounding : {curve.savings_at_target_pct:.0f}%")
 print(f"premium when unconfounded        : {curve.unconfounded_premium_pct:.0f}% of the CE downside")
 
 # %%
-# Optional plot (needs the `viz` extra: uv sync --extra viz). Text table above works without it.
+# Optional plot (needs the `viz` group: uv sync --group viz). Text table above works without it.
 try:
     import matplotlib.pyplot as plt
 
@@ -115,7 +115,7 @@ try:
     ax.legend()
     fig.tight_layout()
 except ModuleNotFoundError:
-    print("(install the `viz` extra for the plot: uv sync --extra viz)")
+    print("(install the `viz` group for the plot: uv sync --group viz)")
 
 # %% [markdown]
 # ## Honest caveats

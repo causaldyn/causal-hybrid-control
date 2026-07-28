@@ -1,4 +1,4 @@
-"""Sensitivity-aware robust control under HIDDEN CONFOUNDING -- a facade over the §32-§37 line.
+"""Sensitivity-aware robust control under HIDDEN CONFOUNDING -- a facade over the §32-§40 line.
 
 Offline pessimism (``chc.support``, ``chc.uncertainty``) assumes the observed transitions identify
 the causal effect. Under hidden confounding they do not: the effect is only *partially* identified
@@ -22,7 +22,17 @@ The pipeline, estimate -> sensitivity radius -> robust control -> validation:
    worst-case-loss gain, :func:`worst_case_asymmetric_loss` the loss itself.
 4. **Closed loop (§34).** :func:`confounding_robust_closed_loop_bound` -- the radius feeds the
    replan-tube (``L_x + L_u*L_pi``), the effect error scaled by the control magnitude.
-5. **Validation.** :func:`confounding_robust_control_benchmark` grounds it on a synthetic
+5. **Safety (§40).** The same radius, spent on a constraint instead of on the objective.
+   :func:`robust_barrier_margin` is the best barrier derivative guaranteed against every effect in
+   the identified set, :func:`robust_safe_action` its maximiser -- exactly zero once the radius
+   swallows the control channel -- :func:`identification_radius_threshold` the sharp radius at which
+   certification dies and :func:`barrier_gamma_star` the ``Gamma`` it corresponds to -- the largest
+   *sensitivity-model level* under which the barrier stays certified, not a measured amount of
+   hidden confounding. The accounting differs from step 2 by an
+   order: performance regret is *second* order in the effect bias, safety margin is *first*.
+   :func:`certify_safety` applies all of that along a finished :class:`chc.plan.CausalPlan` --
+   the plan-level ``Gamma*`` is the *weakest step's*, so one uncertifiable step sinks the plan.
+6. **Validation.** :func:`confounding_robust_control_benchmark` grounds it on a synthetic
    observational confounded marketplace and :func:`confounding_robust_tracking_benchmark` on a
    confounded dynamic plant in **closed loop**; :class:`ConfoundingRobustTask` carries the same
    radius into the main ``chc.benchmark`` leaderboard (regret vs oracle, multi-seed CIs) through
@@ -43,12 +53,26 @@ Worked example (the calibration is explicit -- NOT baked in)::
 
 HONEST: ``Gamma`` and the CVaR-gap calibration are the analyst's inputs; the sign-identification
 constraint ``b_hat > D > 0`` must hold. These robustify pessimism, they do NOT test for confounding.
-See ``discoveries/theorems.md`` §32-§37 for the proofs and scope.
+See ``discoveries/theorems.md`` §32-§40 for the proofs and scope.
 """
 
 from __future__ import annotations
 
+from chc.barrier import (
+    BarrierConfoundingCurve,
+    SafetyFilterBenchmark,
+    admissible_action_interval,
+    barrier_confounding_certificate,
+    barrier_gamma_star,
+    control_channel,
+    identification_radius_threshold,
+    robust_barrier_margin,
+    robust_safe_action,
+    robust_safety_filter,
+    safety_filter_benchmark,
+)
 from chc.benchmark import ConfoundingRobustTask
+from chc.plan import SafetyCertificate, certify_safety
 from chc.regret import (
     ConfoundingRegretFloorCurve,
     ConfoundingRobustControlCurve,
@@ -81,6 +105,7 @@ from chc.uncertainty import (
 )
 
 __all__ = [
+    "BarrierConfoundingCurve",
     "ConfoundingRegretFloorCurve",
     "ConfoundingRobustCertificate",
     "ConfoundingRobustClosedLoopCertificate",
@@ -90,8 +115,14 @@ __all__ = [
     "ConfoundingRobustTask",
     "DynamicConfoundingCurve",
     "MarketplaceControlCurve",
+    "SafetyCertificate",
+    "SafetyFilterBenchmark",
+    "admissible_action_interval",
     "asymmetric_control_improvement",
+    "barrier_confounding_certificate",
+    "barrier_gamma_star",
     "certainty_equivalence_control",
+    "certify_safety",
     "confounding_regret_floor_certificate",
     "confounding_robust_certificate",
     "confounding_robust_closed_loop_bound",
@@ -105,7 +136,13 @@ __all__ = [
     "confounding_robust_radius",
     "confounding_robust_tracking_benchmark",
     "confounding_robust_tracking_loop",
+    "control_channel",
+    "identification_radius_threshold",
     "lq_regret_sensitivity",
     "msm_worst_case_mean",
+    "robust_barrier_margin",
+    "robust_safe_action",
+    "robust_safety_filter",
+    "safety_filter_benchmark",
     "worst_case_asymmetric_loss",
 ]

@@ -228,33 +228,40 @@ class ConfoundingRobustPenalty(eqx.Module):
     multivariate hybrid solver. Under hidden confounding the control-effect matrix ``B`` is only
     partially identified: the offline estimate ``B_hat`` sits within a sensitivity half-width
     ``radius`` (the §32 ``Delta(Gamma)``) of the truth. By the §34 dimensional insight a per-step
-    control ``u_t`` then carries a transition error ``||Delta_B @ u_t|| <= radius * ||u_t||``, so
-    the certified worst-case degradation the confounded effect can inject over a trajectory is
-    ``radius * Sigma_t ||u_t||``. Penalising that steers control away from *exploiting* a
-    partially-identified effect with large actions -- the confounding analogue of
-    :class:`WassersteinPenalty`'s deployment-shift margin. Satisfies the ``PenaltyModel`` protocol
+    control ``u_t`` then carries a per-step **transition** error
+    ``||Delta_B @ u_t|| <= radius * ||u_t||``, and ``radius * Sigma_t ||u_t||`` accumulates that
+    over a trajectory. Penalising it steers control away from *exploiting* a partially-identified
+    effect with large actions -- the confounding analogue of :class:`WassersteinPenalty`'s
+    deployment-shift margin. Satisfies the ``PenaltyModel`` protocol
     (``penalty_trajectory(xs, us) -> scalar``), so it drops into the ``lam_unc`` channel of
     :func:`chc.support.pessimistic_control` unchanged.
 
-    HONEST SCOPE: this is a control-magnitude penalty whose COEFFICIENT is derived from the §32
-    sensitivity (not an arbitrary actuation budget); ``Gamma`` and the CVaR-gap calibration remain
-    the analyst's inputs. It bounds the confounded effect's linear transition error; it does NOT
-    test for confounding.
+    HONEST SCOPE: this is an **identification-radius regulariser**, not a certified cost bound. The
+    §34 inequality bounds the *state-transition* error; converting it into a bound on the objective
+    needs a sensitivity multiplier -- ``Delta J <= Sigma_t L_{V,t+1} * radius * ||u_t||`` with
+    ``L_{V,t+1}`` the Lipschitz constant of the cost-to-go (locally, the adjoint norm
+    ``||lambda_{t+1}||``) -- which is *not* supplied here, so ``lam_unc`` absorbs it as an
+    unidentified scale rather than deriving it. The COEFFICIENT is nonetheless derived from the §32
+    sensitivity rather than being an arbitrary actuation budget; ``Gamma`` and the CVaR-gap
+    calibration remain the analyst's inputs. It does NOT test for confounding.
     """
 
     radius: float = eqx.field(static=True)
 
     @classmethod
     def from_sensitivity(cls, cvar_gap: float, gamma: float) -> ConfoundingRobustPenalty:
-        """Radius = the §32 MSM inflation ``(Gamma-1)/(Gamma+1) * cvar_gap`` (effect halfwidth)."""
+        """Radius = the §32 bounded-density-ratio inflation ``(Gamma-1)/(Gamma+1) * cvar_gap``."""
         return cls(radius=confounding_robust_inflation(cvar_gap, 0.0, gamma))
 
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
         """Confounding pessimism ``radius * Sigma_t ||u_t||`` over the controls (``xs`` unused)."""
         del xs  # the confounded effect error scales with the ACTION magnitude (§34), not the state
-        # smoothed L2 norm: ||u|| is non-differentiable at u=0 (NaN grad), and the solver starts
-        # from us0=0 exactly on that singularity -- the eps floor makes the origin gradient 0.
-        per_step = jnp.sqrt(jnp.sum(us**2, axis=-1) + 1e-12)
+        # smoothed L2 norm sqrt(||u||^2 + eps^2): ||u|| is non-differentiable at u=0 (NaN grad) and
+        # the solver starts from us0=0 exactly on that singularity, so the floor is squared -- it
+        # lives in ||u||^2 units, smoothing over a length scale eps=1e-6. Stays ABOVE ||u||, which
+        # is what the §34 upper bound needs; the price is a constant eps per step at u=0, which
+        # shifts the reported objective by lam_unc*radius*T*eps without moving the optimiser.
+        per_step = jnp.sqrt(jnp.sum(us**2, axis=-1) + 1e-6**2)
         return self.radius * jnp.sum(per_step)
 
 

@@ -1,0 +1,151 @@
+/* Result 40 -- SAFETY under a partially identified control effect: the first-order/second-order
+   dichotomy, and the sharp confounding level at which a safety certificate dies.
+
+   Setting. Control-affine plant xdot = f(x) + B u, safe set {h(x) >= 0}, class-K margin alpha*h.
+   The control-effect matrix B is NOT known: it was estimated from confounded observational logs,
+   so a marginal sensitivity model at level Gamma leaves it only SET-identified inside a ball of
+   radius Delta(Gamma) (that radius is §32; it is 0 at Gamma = 1 and increases in Gamma).
+
+   The robust CBF condition is standard (Jankovic 2018; Kolathaya-Ames ISSf 2019): matched
+   uncertainty of size Delta subtracts Delta*||grad h||*||u|| from the barrier derivative. What is
+   NOT standard, and is the point of this file, is what happens when that radius is a CAUSAL
+   IDENTIFICATION radius rather than a disturbance bound:
+
+     (1) the achievable robust margin is  a + (|g| - d)_+ * U   with a = grad h . f, g = the control
+         channel grad h . B, d = Delta*||grad h||, U the actuation limit;
+     (2) so the retained control authority is (1 - d/|g|)_+ -- LINEAR in the effect error WHILE
+         AUTHORITY LASTS (the margin lost is U*min(d,|g|), which saturates; see block 7), and the
+         optimal robust action is EXACTLY ZERO once d >= |g| (the channel's sign is unidentified);
+     (3) safety is certifiable iff d <= d* = |g| - D/U, where D = -alpha*h - a is the safety deficit
+         the drift leaves for the controller to cover -- a SHARP threshold, hence a sharp Gamma*,
+         but only in the regime 0 < D <= U*|g|; blocks 8 and 9 enumerate the degenerate ones;
+     (4) and the contrast that makes it a result rather than an inequality: the SAME effect error
+         costs performance regret only at SECOND order (§33: R = L_reg*e^2), because an interior
+         optimum has a vanishing gradient (envelope), while a BINDING CONSTRAINT has no envelope
+         protection and pays at FIRST order. Objectives are protected; constraints are not.
+
+   Cross-checked numerically in validation/barrier_feasibility.py, proved in
+   proofs/barrier_feasibility.v, measured by chc.barrier.barrier_confounding_certificate. */
+display2d : false$
+assume(U > 0, d >= 0, g > 0, alpha > 0, hval > 0, Lreg > 0, e > 0, gap > 0, nh > 0)$
+
+/* ------------------------------------------------ (1) the robust margin, as an exact scalar max */
+/* Worst case over the interval effect g' in [g - d, g + d] of the barrier derivative a + g'*u. The
+   adversary picks the endpoint that hurts, which is -d*|u| whatever the sign of u. */
+margin(a, u) := a + g*u - d*abs(u)$
+
+/* Branch A: the channel dominates the uncertainty (d < g). Then the margin is increasing in u on
+   u >= 0 with slope g - d > 0, so the maximiser is the actuation bound. */
+branchA : ratsimp(margin(a, U) - (a + (g - d)*U));
+/* Branch B: the uncertainty dominates (d >= g). Then g - d <= 0 on u >= 0 and -(g + d) < 0 on
+   u <= 0, so BOTH one-sided slopes are non-positive away from the origin: u = 0 is optimal. */
+dmargin     : diff(margin(a, u), u)$
+slope_right : ratsimp(subst(1, u, dmargin));   /* g - d */
+slope_left  : ratsimp(subst(-1, u, dmargin));  /* g + d */
+print("(1) branch A residual (must be 0):", branchA)$
+print("    right slope g-d, left slope g+d:", slope_right, ",", slope_left)$
+print("    => u=0 optimal exactly when g-d <= 0, i.e. the sign of the channel is unidentified")$
+
+/* ------------------------------------------------------ (2) authority retained, and its ORDER */
+authority(dd) := (g - dd)/g$
+print("(2) retained authority at d=0:", ratsimp(authority(0)),
+      " derivative in d:", ratsimp(diff(authority(d), d)))$
+/* First order in d: the derivative is a nonzero constant -1/g, uniformly. Contrast the §33
+   performance regret, whose derivative at e = 0 VANISHES. */
+regret(ee) := Lreg*ee^2$
+print("    performance regret derivative at e=0:", ratsimp(subst(0, ee, diff(regret(ee), ee))),
+      " <- vanishes: second order")$
+print("    safety margin derivative in d:", ratsimp(diff((g - d)*U, d)),
+      " <- constant: FIRST order")$
+
+/* --------------------------------------------------------------- (3) the sharp threshold d* */
+/* Certifiable iff a + (g - d)*U >= -alpha*h, i.e. (g - d)*U >= D with D = -alpha*h - a. */
+deficit : -alpha*hval - a$
+dstar   : rhs(first(solve((g - dd)*U = deficit, dd)));
+print("(3) d* =", ratsimp(dstar));
+check_dstar : ratsimp((g - dstar)*U - deficit);
+print("    feasibility holds with equality at d* (residual must be 0):", check_dstar)$
+/* Sanity: with no deficit (the drift alone already satisfies the barrier) the threshold is the full
+   channel |g| -- safety survives ANY identification radius short of losing the sign. */
+print("    d* when D = 0:", ratsimp(subst(-alpha*hval, a, dstar)))$
+
+/* --------------------------------------------------- (4) inverting the threshold to a Gamma* */
+/* §32: Delta(Gamma) = (Gamma-1)/(Gamma+1)*gap, increasing, zero at Gamma = 1. With d = nh*Delta,
+   the critical Gamma solves nh*(G-1)/(G+1)*gap = dstar. */
+gstar : rhs(first(solve(nh*(G - 1)/(G + 1)*gap = ds, G)));
+print("(4) Gamma* =", ratsimp(gstar));
+check_gstar : ratsimp(nh*(gstar - 1)/(gstar + 1)*gap - ds);
+print("    residual (must be 0):", check_gstar)$
+/* Gamma* > 1 exactly when the threshold radius is positive, i.e. when the nominal design has slack.
+   Rewrite as (1+c)/(1-c) with c = ds/(nh*gap) to see it directly. */
+print("    as (1+c)/(1-c) with c = ds/(nh*gap), residual:",
+      ratsimp(gstar - (1 + ds/(nh*gap))/(1 - ds/(nh*gap))))$
+
+/* --------------------------------------------- (5) the multivariate lift is EXACT, not a bound */
+/* max over ||u|| <= U of (w . u - dm*||u||) with w = B^T grad h and dm = Delta*||grad h||.
+   Cauchy-Schwarz is tight at u = U*w/||w||, so the max is (||w|| - dm)_+ * U -- the scalar formula
+   with |g| replaced by ||B^T grad h||. Verified here in 2D by direct maximisation over the circle. */
+w1 : 3$ w2 : 4$  /* ||w|| = 5 */
+obj(t) := U*(w1*cos(t) + w2*sin(t)) - dm*U$
+tstar : atan2(w2, w1)$
+print("(5) 2D max at the Cauchy-Schwarz point:", ratsimp(obj(tstar)),
+      " vs closed form:", ratsimp((sqrt(w1^2 + w2^2) - dm)*U))$
+print("    residual (must be 0):", ratsimp(obj(tstar) - (sqrt(w1^2 + w2^2) - dm)*U))$
+
+/* ------------------------------------------- (6) the dichotomy on one line, at a shared error e */
+/* Same effect error e enters both. Safety loses U*e of margin (linear); performance loses
+   Lreg*e^2 (quadratic). Their ratio diverges as e -> 0: for SMALL confounding, safety is the
+   binding concern by an unbounded factor, which is the operational content of the result. */
+print("(6) safety loss / performance loss =", ratsimp((U*e)/(Lreg*e^2)),
+      " -> infinity as e -> 0")$
+
+/* -------------------------- (7) the first-order claim SATURATES: the loss is U*min(d,|g|), not U*d */
+/* M(d) = a + (g-d)_+ * U. Relative to a perfectly identified channel the loss is U*(g - (g-d)_+),
+   which is U*d only on d <= g and constant U*g above it. Writing "affine in d, constant slope U"
+   without that qualifier is wrong globally -- past d = g the guarantee is already gone and there is
+   nothing left to lose. The order dichotomy against §33 therefore lives on d < g, which is also the
+   only band where a controller is usable at all. */
+loss_lo : ratsimp(U*g - (g - d)*U);              /* d <= g branch: the (.)_+ is inactive */
+loss_hi : ratsimp(U*g - 0);                      /* d >= g branch: the (.)_+ has clipped */
+print("(7) loss on d <= g:", loss_lo, " (= U*d)   loss on d >= g:", loss_hi, " (= U*g, flat)")$
+print("    residual vs U*min(d,g) on the low branch:", ratsimp(loss_lo - U*d),
+      "  on the high branch:", ratsimp(loss_hi - U*g))$
+print("    slope in d above the kink:", ratsimp(diff(U*g, d)), " <- zero: NOT affine globally")$
+
+/* ------------------------------------------ (8) the threshold is PIECEWISE in the drift deficit D */
+/* Certification asks (g - d)_+ * U >= D. Three regimes, and only the third has a finite d*:
+     D <= 0        the drift alone satisfies the barrier; u = 0 works at every radius; d* = +inf.
+     D >  U*g      even a perfectly identified channel at full authority falls short; NOTHING is
+                   certified, not even at d = 0 -- so "largest admissible radius" is the EMPTY set,
+                   and the bare formula g - D/U returning a negative number is a trap.
+     0 < D <= U*g  d* = g - D/U lands in [0, g) and certification holds iff d <= d*. */
+print("(8) d* = g - D/U at D = U*g (lower end of the useful regime):",
+      ratsimp(subst(U*g, DD, g - DD/U)), " <- 0, so d* >= 0 exactly when D <= U*g")$
+print("    margin at d = 0 minus the requirement, at D > U*g (take D = U*g + s, s > 0):",
+      ratsimp(subst(U*g + s, DD, g*U - DD)), " <- -s < 0: infeasible before any radius is spent")$
+
+/* --------------------- (9) Gamma* is piecewise too, because Delta(Gamma) saturates at the gap */
+/* Delta(Gamma) = (Gamma-1)/(Gamma+1)*gap increases from 0 to gap as Gamma: 1 -> inf. With
+   c = dstar/nh (nh = ||grad h||) the four cases are genuinely different answers, not noise:
+     c < 0          no Gamma >= 1 certifies (the design is broken at exact identification);
+     c = 0          only Gamma = 1;
+     0 < c < gap    the finite ceiling (gap + c)/(gap - c) computed in block 4;
+     c >= gap       Delta never reaches the threshold: Gamma* = +inf.
+   The formula's denominator changes sign at c = gap, which is why the case split has to be in the
+   code and not only in the prose. */
+print("(9) limit of Delta(Gamma) as Gamma -> inf:", limit((G - 1)/(G + 1)*gap, G, inf),
+      " <- saturates at the gap, hence the c >= gap case")$
+print("    Gamma* denominator gap - c at c = gap:", ratsimp(gap - gap),
+      " <- zero: the formula is only valid on 0 < c < gap")$
+
+/* ------------------- (10) the ASYMMETRIC interval: the zero-action rule in its general form */
+/* Blocks 1-9 assume a symmetric ball g' in [g - d, g + d]. For an asymmetric identified interval
+   [g - dlo, g + dhi] the worst-case coefficient still sits at an endpoint, but a DIFFERENT one on
+   each side, so the two branch slopes stop being +-d apart. */
+print("(10) asymmetric branch slopes: right =", g - dlo, ", left =", g + dhi)$
+print("     u = 0 is optimal iff right <= 0 AND left >= 0, i.e. -dhi <= g <= dlo,")$
+print("     i.e. exactly when the identified interval CONTAINS ZERO. The symmetric rule d >= |g|")$
+print("     is the dlo = dhi = d special case.")$
+
+print("")$
+print("ALL RESIDUALS ABOVE MUST BE 0.")$

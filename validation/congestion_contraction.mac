@@ -1,0 +1,81 @@
+/* Result 39 §B -- the contraction / uniqueness certificate for the damped logit congestion map.
+
+   chc.games solves the agent equilibrium by iterating the DAMPED best-response map
+
+       T(x) = x/2 + (m/2) * softmax( beta*(a + u - c*x/m) ),    sum(x) = m,
+
+   for a FIXED trip count, with no convergence test. Measured: at beta*c = 8 the iteration
+   2-cycles and the returned point has fixed-point residual 0.53 (mass 6.0); at beta*c = 25*8
+   the residual is 3.21 and the allocation is qualitatively INVERTED (most mass on the least
+   attractive zone). This file derives the condition under which that cannot happen.
+
+   The chain: (1) T'(x) = I/2 - (beta*c/2)*J with J = diag(s) - s s^T the softmax Jacobian;
+   (2) v^T J v = Var_s(v), so by Popoviciu lam_max(J) <= 1/2, SHARP at s=(1/2,1/2,0..);
+   (3) T' is symmetric, so ||T'||_2 = spectral radius = max |1/2 - (beta*c/2)*lam| over
+   lam in [0, 1/2], giving ||T'||_2 <= max(1/2, beta*c/4 - 1/2) and the SUFFICIENT contraction
+   condition beta*c < 6 with modulus mu = 1 - ||T'||_2.
+
+   Sufficient, NOT necessary: the bound uses the worst-case lam_max = 1/2, attained only at a
+   two-point uniform s. Measured, the map still converges at beta*c = 7. proofs/congestion_contraction.v
+   proves the scalar inequality; validation/congestion_contraction.py is the numeric cross-check. */
+display2d : false$
+assume(beta > 0, cc > 0, m > 0)$
+
+/* ---------------------------------------------------------------- (1) the Jacobian identity */
+n : 3$
+vlist : makelist( beta*(aa[i] + uu[i] - cc*xx[i]/m), i, 1, n)$
+den   : sum( exp(vlist[j]), j, 1, n)$
+slist : makelist( exp(vlist[i])/den, i, 1, n)$
+Tlist : makelist( xx[i]/2 + (m/2)*slist[i], i, 1, n)$
+
+Jac   : genmatrix( lambda([i,j], diff(Tlist[i], xx[j])), n, n)$
+/* the claim: T' = I/2 - (beta*cc/2)*(diag(s) - s s^T) */
+Jsm   : genmatrix( lambda([i,j], if i=j then slist[i] - slist[i]*slist[j]
+                                        else            - slist[i]*slist[j]), n, n)$
+claim : (1/2)*ident(n) - (beta*cc/2)*Jsm$
+print("(1) T' - claim =", ratsimp( Jac - claim ), "  (= zero matrix)")$
+
+/* ---------------------------------------------------- (2) v^T J v is the variance of v under s */
+sv : makelist( ss[i], i, 1, n)$
+vv : makelist( w[i],  i, 1, n)$
+Jgen : genmatrix( lambda([i,j], if i=j then sv[i] - sv[i]*sv[j] else - sv[i]*sv[j]), n, n)$
+quad : ratsimp( sum( sum( Jgen[i,j]*vv[i]*vv[j], j, 1, n), i, 1, n) )$
+varS : sum( sv[i]*vv[i]^2, i, 1, n) - ( sum( sv[i]*vv[i], i, 1, n) )^2$
+print("(2) v^T J v - Var_s(v) =", ratsimp( quad - varS ), "  (=0: J is the covariance operator)")$
+/* J annihilates the constants: sum(s)=1 implies J*1 = 0, so the mass constraint is preserved. */
+print("    J*1 (with sum s = 1) =",
+      ratsimp( subst( ss[n] = 1 - sum(ss[i], i, 1, n-1),
+                      makelist( sum( Jgen[i,j], j, 1, n), i, 1, n) ) ), "  (= zero vector)")$
+
+/* ------------------------------------- (3) Popoviciu: Var_s(v) <= (max v - min v)^2/4 <= 1/2 */
+/* With ||v||_2 = 1 and a = max v, b = min v: a^2 + b^2 <= 1, and (a-b)^2 <= 2(a^2+b^2) <= 2,
+   hence Var <= (a-b)^2/4 <= 1/2. Both steps are equalities at v = (1,-1,0,..)/sqrt(2). */
+print("(3) (a-b)^2 <= 2(a^2+b^2) gap  2*(a^2+b^2) - (a-b)^2 =", ratsimp( 2*(a^2+b^2) - (a-b)^2 ),
+      "  (= (a+b)^2 >= 0)")$
+/* sharpness: n=2, s = (p, 1-p), the nonzero eigenvalue of J is 2 p (1-p), maximal 1/2 at p = 1/2 */
+J2 : matrix([p - p^2, -p*(1-p)], [-p*(1-p), (1-p) - (1-p)^2])$
+ev2 : ratsimp( eigenvalues(J2)[1] )$
+print("    n=2 eigenvalues of J =", ev2, "  (0 and 2p(1-p))")$
+print("    max over p of 2p(1-p) at p =", rhs(solve( diff(2*p*(1-p), p) = 0, p)[1]),
+      " value =", ratsimp( subst(p = 1/2, 2*p*(1-p)) ), "  (= 1/2, the sharp lam_max)")$
+
+/* ------------------------------------------------- (4) the contraction threshold beta*cc < 6 */
+/* T' is symmetric, so ||T'||_2 = max over lam in spec(J) of |1/2 - (beta*cc/2)*lam|, and
+   spec(J) is contained in [0, 1/2]. The map lam -> 1/2 - (kappa/2)*lam is decreasing, so the
+   extremes are at lam = 0 (value 1/2) and lam = 1/2 (value 1/2 - kappa/4). */
+kappa : beta*cc$
+lo : 1/2 - kappa/4$
+print("(4) T' eigenvalue at lam=1/2 is", lo, "; contraction needs it > -1")$
+print("    solve(1/2 - kappa/4 = -1, kappa) =", rhs(solve( 1/2 - kk/4 = -1, kk)[1]),
+      "  (= 6: the SUFFICIENT threshold beta*cc < 6)")$
+/* the operator-norm bound and the contraction modulus */
+print("    ||T'||_2 <= max(1/2, kappa/4 - 1/2);  mu = 1 - ||T'||_2")$
+for k in [2.5, 5.0, 6.0, 7.0, 8.0] do
+  print("    beta*cc =", k, " ||T'|| bound =", float(max(1/2, k/4 - 1/2)),
+        " mu =", float(1 - max(1/2, k/4 - 1/2)))$
+
+/* the two shipped configurations, for the record */
+print("(5) chc.games default (beta=2.5, congestion=1.0): kappa =", float(2.5*1.0),
+      " -> certified, mu =", float(1 - max(1/2, 2.5/4 - 1/2)))$
+print("    SharedStateMarket   (beta=2.5, congestion=2.0): kappa =", float(2.5*2.0),
+      " -> certified, mu =", float(1 - max(1/2, 5.0/4 - 1/2)))$

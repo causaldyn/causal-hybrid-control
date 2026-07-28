@@ -25,8 +25,9 @@ the statements, scopes and proof names.
   marketplace, then lifted into a genuine receding-horizon **closed loop** on a confounded plant
   (`confounding_robust_tracking_loop`, `confounding_robust_tracking_benchmark`).
 - **`ConfoundingRobustPenalty`** (`chc.uncertainty`) — a `PenaltyModel` carrying the sensitivity radius
-  into the general pessimistic-control stack (`radius·Σ‖u_t‖`, from the bound `‖Δ_B·u_t‖ ≤
-  radius·‖u_t‖`), and **`ConfoundingRobustTask`** (`chc.benchmark`), its leaderboard row: under a
+  into the general pessimistic-control stack (`radius·Σ‖u_t‖`, from the *transition*-error bound
+  `‖Δ_B·u_t‖ ≤ radius·‖u_t‖`; an identification-radius regulariser rather than a certified cost bound,
+  since the latter needs a cost-to-go Lipschitz multiplier `lam_unc` currently absorbs), and **`ConfoundingRobustTask`** (`chc.benchmark`), its leaderboard row: under a
   *hidden* confounder no estimator can help, and the radius still cuts regret ~40% vs
   certainty-equivalence with separated multi-seed CIs.
 - **Certified planning** (`chc.uncertainty`, `chc.residual`) — certified-Lipschitz rollout-error tubes
@@ -40,6 +41,60 @@ the statements, scopes and proof names.
 - **Marketplace layer** — `chc.matching` (Kantorovich OT dispatch with dual surge prices) and
   `chc.marketplace` (offline causal control under equilibrium interference, where naive and MOPO-style
   baselines go negative); influence-function standard errors and CIs on the cross-fit DML effect.
+- **Certified strategic layer** (`chc.games`) — `fixed_point`, a differentiable equilibrium solver that
+  iterates to a *relative* residual and returns an `EquilibriumSolution` carrying `residual` and
+  `converged`, with the backward pass as the implicit-function VJP (`jax.custom_vjp`, adjoint solved as
+  its own fixed point) rather than an unrolled loop; `congestion_contraction_modulus` /
+  `congestion_damping` / `congestion_contraction_certificate` to certify or refuse a configuration
+  before it runs (`spec(J) ⊆ [0, ½]` sharp ⟹ the uniform Jacobian bound is below 1 iff
+  `0 < d < 4/(2+κ)` — sharp over the class of congestion maps, sufficient for any one game — with
+  `d* = 4/(4+κ)` certifying every `κ`); `equilibrium_transfer_certificate`, which measures the equilibrium's
+  *local* conditioning — exactly 1 in the ambient norm uniformly in `κ` (attained only along the mass
+  direction that mass conservation never excites) and strictly below 1 on the fixed-mass tangent space
+  where displacements actually live — while the naive contraction constant `1/μ` is loose by up to
+  100×. So a `C/μ²` regret bound must not take its constant from *this* solver's contraction margin.
+- **`chc.barrier`** — the sensitivity radius spent on a *constraint* instead of on the objective:
+  the robust control-barrier margin guaranteed against every effect in the identified set
+  (`robust_barrier_margin`), its maximiser — exactly zero once the radius swallows the control
+  channel, which is optimal and not conservatism (`robust_safe_action`), the closed-form certified
+  action set and the least-restrictive filter that clips a nominal action into it
+  (`admissible_action_interval`, `robust_safety_filter`), the sharp radius at which certification
+  dies (`identification_radius_threshold`) and the sensitivity level it corresponds to
+  (`barrier_gamma_star`) — *the largest sensitivity-model level under which the barrier stays
+  certified* (a model parameter, not a measured amount of hidden confounding). Both
+  thresholds are **case-split** rather than one formula: a self-satisfying drift gives `inf`, a
+  deficit beyond what a perfectly identified channel delivers gives an empty set, and `Δ(Γ)`
+  saturating at the CVaR gap gives `Γ* = inf`. The measured consequence: safety margin degrades at
+  **first** order in the effect bias — until the radius swallows the channel, past which the loss
+  saturates at `U·|g|` — while performance regret degrades at second, because the envelope theorem
+  protects an interior optimum and not a binding constraint. `safety_filter_benchmark` pays that argument in a closed loop on an
+  unstable plant whose reference sits past the limit: the radius spent on the constraint never
+  leaves the safe set, the same-sized budget spent the regret way violates on 93% of steps.
+  Re-exported through `chc.sensitivity`.
+- **`chc.plan.causal_plan`** — the one-call spine: a `CausalPlan` carrying the actions *together with*
+  the certified error tube and the `certified_actions` prefix, so a caller cannot take the plan and
+  leave the certificate behind. With no safety arguments it is exactly `projected_gradient_control`;
+  each safety argument switches on one existing layer, and an uncertainty penalty without a support
+  model is rejected rather than silently ignored.
+- **`chc.plan.certify_safety`** — the other half of the spine: §40 evaluated along a finished plan, so
+  the safety result has a consumer instead of staying an orphan primitive. Returns the certified
+  *prefix* (does the action the planner chose still clear the barrier at this `Γ`?) next to the plan's
+  `Γ*` (could **any** admissible action have, and up to which level?) — two questions that come apart
+  in both directions and are diagnostic together. The plan-level `Γ*` is the minimum over steps and is
+  *attained*: `Δ(Γ)` is increasing, so each step certifies on a down-set and the plan certifies on
+  their intersection; a step that certifies at no `Γ` empties it and reports `nan` rather than being
+  skipped. A separate call on a finished plan rather than a planner argument — it audits, it does not
+  silently change the actions. Re-exported through `chc.sensitivity`.
+- **`chc.spine`** (`scripts/spine_demo.py`) — the four layers on one decision, because until now every
+  layer had its own demo and none of them ran end to end. Two zones of a mobile driver pool, one
+  incentive lever whose `[+b, -b]` column *is* driver conservation, and a supply floor in the zone the
+  lever drains: an effect fitted from confounded logs (naively and with the backdoor adjustment), a
+  constrained plan with its Grönwall tube, a `certify_safety` audit of that plan, and finally the same
+  plan executed on the **true** plant so the offline numbers can be checked against what happened. The
+  confounded arm plans a cost of 13.6 and pays 38.5; `Γ*` separates the two arms *before either acts*
+  (7.46 vs 1.18) with no access to ground truth. Deliberately control-affine — `certify_safety` reads
+  the channel off the Jacobian at `u = 0`, which is exact for an affine plant and only a linearisation
+  otherwise, so the softmax-equilibrium market of `chc.marketplace` is the wrong plant to certify.
 - **Regret / guarantee line** — the orthogonal-to-control transfer theorem (order `p` → `2p`, scalar
   and multivariate-LQ), multi-channel network control (debias *every* channel), the adaptive
   information-exploration duality with its `√T` lower bound, the C2 end-to-end theorem with a clustered
@@ -49,14 +104,20 @@ the statements, scopes and proof names.
 
 ### Changed
 
-- Ten rounds of external review folded in as **scope and honesty corrections**, not new claims: the
+- Eleven rounds of external review folded in as **scope and honesty corrections**, not new claims: the
   explicit-Euler contraction factor was wrong (`√(1+2μΔt+L²Δt²)`, sufficient step `Δt < 2c/L²`); the
   confounding effect error needed the control magnitude to be dimensionally right; the `§35`
   improvement gap is piecewise (the undershoot-dominant branch was unproved while the benchmark ran in
   it); `§32` is the bounded-density-ratio *marginal* special case of Tan's MSM, not the full model, and
   its monotonicity argument is feasible-set nesting; the confounded-marketplace benchmark is
   *observational*, not a randomised switchback. Several results were relabelled to their honest status
-  (order-transfer *lemma*, local-not-global, scalar-not-universal, `≈`-not-`=`).
+  (order-transfer *lemma*, local-not-global, scalar-not-universal, `≈`-not-`=`). Round eleven: the
+  equilibrium conditioning of `1` is an *ambient*-norm statement saturated by the mass-conservation
+  direction, and the binding number on the fixed-mass tangent space is strictly smaller; the safety
+  margin loss is `U·min(d,|g|)` and so first-order only while control authority lasts; the zero-action
+  rule in general reads "the identified interval contains zero", the symmetric ball being one case;
+  and the `§38` premium is quoted with both normalisations because they differ by an order of
+  magnitude.
 - Documentation counts corrected after an audit found a silently drifting entry count in the research
   log; the README test count was stale by two releases.
 
@@ -65,6 +126,16 @@ the statements, scopes and proof names.
 - `ConfoundingRobustPenalty` used `‖u‖`, whose gradient is NaN at `u = 0` — exactly where the solver
   starts — so `0·NaN` poisoned every step and the control stayed pinned at zero. Now a smoothed
   `√(‖u‖²+ε)`, which zeroes the gradient at the origin and preserves the linear bound.
+- The congestion equilibrium ran a fixed trip count and returned whatever point it reached. Outside
+  the contraction region that is a 2-cycle, not an equilibrium: at `βc = 200` it returned a point with
+  residual 3.21 on a mass of 6.0 and most of the mass on the *least* attractive zone, and no caller
+  could tell. The solver now reports convergence; the root cause was the hard-coded damping `d = ½`,
+  whose ceiling is `βc < 6`, so `congestion_damping` supplies the modulus-optimal `d*` that contracts
+  for every `βc`. Both shipped users (`chc.marketplace`, causaldyn-bench Track H) sit at `βc = 5`,
+  inside the certified region, and their docstrings now say so executably.
+- The convergence tolerance was absolute while the residual carries the units of the state, so a
+  float32 solve at the shipped mass could not reach `1e-8` and reported failure at a residual of
+  3.8e-07. The residual is now relative (`‖x−T(x)‖ / max(1, ‖x‖)`).
 
 ### Notes
 

@@ -1,0 +1,76 @@
+/* Result 39 -- estimation error -> equilibrium error -> leader control regret, for the logit
+   congestion game of chc.games.
+
+   The claim under test (proposed externally as a new central theorem):
+
+       ||zhat - z*|| <= ||Fhat - F|| / mu   and   R <= C ||zhat - z*||^2
+       ==> R <= (C/mu^2) ||Fhat - F||^2 = O_p(delta^4)   for an orthogonal estimator.
+
+   The ORDER survives; the CONSTANT does not. Four corrections, derived below:
+
+   (i)   1/mu is not the conditioning. With S the undamped best response, the exact sensitivity is
+         ||(I - S')^{-1}||. Here S' = -kappa*J with J = diag(s) - s s^T PSD, so I - S' = I + kappa*J
+         has spectrum in [1, 1 + kappa/2] and ||(I - S')^{-1}||_2 = 1 EXACTLY, uniformly in kappa.
+         The contraction modulus mu of the DAMPED iteration overstates it by 1/mu -- measured 200x
+         at kappa = 5.99, and infinite past kappa = 6 where the iteration stops converging while the
+         equilibrium stays perfectly conditioned. Conditioning and convergence speed are DECOUPLED:
+         the extreme eigenvalue of T' is NEGATIVE, and slow oscillation is not fragility.
+
+   (ii)  The variance term is dropped. Neyman orthogonality kills the first-order nuisance BIAS, not
+         the sampling error: ||Fhat - F|| = O_p(n^(-1/2) + delta^2), so R = O_p(n^(-1) + delta^4),
+         with the delta^4 regime reachable only when delta <~ n^(-1/4) (the DML rate condition).
+         Same correction already applied to C1/§18.
+
+   (iii) The quadratic step needs an INTERIOR leader optimum (implicit-function-theorem regularity).
+         Measured: interior -> slope 1.97; with an active budget-simplex constraint -> slope 0.9
+         (the active-set curvature collapse of the constrained-CE-regret result); at a vertex the
+         regret is identically 0 because the argmax is locally constant.
+
+   (iv)  What is left is therefore NOT a new central theorem but §18's order transfer composed
+         through a fixed-point perturbation bound -- with the useful news that the composition costs
+         NOTHING asymptotically, because the equilibrium map is perfectly conditioned.
+
+   Cross-checked in validation/equilibrium_transfer.py; proofs/equilibrium_transfer.v proves the
+   spectral facts; chc.games.equilibrium_transfer_certificate is the measured evidence. */
+display2d : false$
+assume(mu > 0, n > 0, delta > 0, C > 0, Lpi > 0, kappa > 0, lam >= 0, theta > 0)$
+
+/* ------------------------------------------ (1) the perturbation step, as scalar spectral algebra */
+/* Undamped best response S, damped iterate T_theta = (1-theta)*x + theta*S(x). Same fixed points.
+   S' = -kappa*J, so I - T_theta' = theta*(I + kappa*J): the damping is a SCALAR multiple and
+   cancels between the injected perturbation and the inverse. Work with I - S' = I + kappa*J. */
+print("(1) eigenvalue of (I - S') at a J-eigenvalue lam:", 1 + kappa*lam,
+      "  -> min at lam = 0 (J annihilates the constants, so mass is conserved)")$
+print("    ||(I - S')^-1||_2 = 1/(1 + kappa*lam_min) = 1/(1+kappa*0) =",
+      subst(lam = 0, 1/(1 + kappa*lam)), "  EXACTLY 1, for every kappa >= 0")$
+print("    contrast: the damped T' has eigenvalues", (1-theta) - theta*kappa*lam,
+      " which leave (-1,1) once theta*(1 + kappa/2) >= 2")$
+print("    solve for the damping that still contracts:", solve( theta*(1 + kappa/2) = 2, theta ),
+      "  -> theta < 4/(2+kappa); at theta = 1/2 this is exactly kappa < 6 (§B)")$
+
+/* -------------------------------------- (2) how loose the naive 1/mu contraction constant is */
+/* §B: at theta = 1/2 and kappa > 4 the modulus is mu = 3/2 - kappa/4. The naive bound uses 1/mu
+   where the truth is 1; the ratio is the looseness factor. */
+mu_kappa : 3/2 - kappa/4$
+print("(2) looseness  (1/mu)/1 =", ratsimp( 1/mu_kappa ), " = 4/(6-kappa)")$
+print("    check ratsimp(1/mu - 4/(6-kappa)) =", ratsimp( 1/mu_kappa - 4/(6-kappa) ), "  (=0)")$
+for k in [5.0, 5.5, 5.8, 5.96, 5.99] do
+  print("    kappa =", k, " mu =", float(subst(kappa = k, mu_kappa)),
+        " naive 1/mu =", float(subst(kappa = k, 1/mu_kappa)), " true conditioning = 1")$
+
+/* -------------------------------------------- (3) the composed regret bound and its constant */
+/* d = ||zhat - z*|| <= 1 * e with e = ||Shat(z*) - S(z*)||; ||uhat - u*|| <= Lpi*d (IFT
+   regularity); R <= (C/2)*||uhat - u*||^2. The equilibrium layer contributes a factor of ONE. */
+print("(3) R <= ", ratsimp( (C/2)*(Lpi*e)^2 ),
+      "  -- no 1/mu^2, because the equilibrium conditioning is 1")$
+
+/* ---------------------------------------------- (4) the statistical rate and its crossover */
+e_rate : n^(-1/2) + delta^2$
+print("(4) e^2 =", ratsimp( expand( e_rate^2 ) ), "  (note the cross term 2*delta^2/sqrt(n))")$
+print("    with s = n^(-1/2):  s^2 + delta^4 - 2*delta^2*s =", factor( s^2 + delta^4 - 2*delta^2*s ),
+      "  >= 0, so e^2 <= 2*(n^(-1) + delta^4)")$
+print("    crossover  subst(delta = n^(-1/4), delta^4) - 1/n =",
+      ratsimp( subst(delta = n^(-1/4), delta^4) - 1/n ),
+      "  (=0: the two terms are EQUAL at delta = n^(-1/4))")$
+print("    at delta = n^(-1/2):  delta^4 =", ratsimp( subst(delta = n^(-1/2), delta^4) ),
+      " vs n^(-1) -> the variance term dominates by a factor n, orthogonality buys nothing here")$
