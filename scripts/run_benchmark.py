@@ -6,6 +6,7 @@ Run: uv run python scripts/run_benchmark.py
 import urllib.error
 
 from chc.benchmark import (
+    ConfoundingRobustTask,
     InventoryTask,
     ModelUncertaintyTask,
     PricingTask,
@@ -29,6 +30,8 @@ def main() -> None:
     print(leaderboard_multiseed(run_multiseed(SupportShiftTask(), FAST_SEEDS)))
     print("\n== model-uncertainty (calibrated pessimism vs greedy) ==")
     print(leaderboard_multiseed(run_multiseed(ModelUncertaintyTask(), SLOW_SEEDS)))
+    print("\n== confounding-robust (HIDDEN confounder; sensitivity radius vs certainty-equiv) ==")
+    print(leaderboard_multiseed(run_multiseed(ConfoundingRobustTask(), FAST_SEEDS)))
 
     print("\n== LaLonde-DW (external: recover the randomized ATE from CPS-confounded data) ==")
     try:

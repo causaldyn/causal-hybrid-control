@@ -23,7 +23,10 @@ The pipeline, estimate -> sensitivity radius -> robust control -> validation:
 4. **Closed loop (§34).** :func:`confounding_robust_closed_loop_bound` -- the radius feeds the
    replan-tube (``L_x + L_u*L_pi``), the effect error scaled by the control magnitude.
 5. **Validation.** :func:`confounding_robust_control_benchmark` grounds it on a synthetic
-   observational confounded marketplace; the ``*_certificate`` functions are the machine-checked
+   observational confounded marketplace and :func:`confounding_robust_tracking_benchmark` on a
+   confounded dynamic plant in **closed loop**; :class:`ConfoundingRobustTask` carries the same
+   radius into the main ``chc.benchmark`` leaderboard (regret vs oracle, multi-seed CIs) through
+   :class:`ConfoundingRobustPenalty`; the ``*_certificate`` functions are the machine-checked
    evidence.
 
 Worked example (the calibration is explicit -- NOT baked in)::
@@ -45,6 +48,7 @@ See ``discoveries/theorems.md`` §32-§37 for the proofs and scope.
 
 from __future__ import annotations
 
+from chc.benchmark import ConfoundingRobustTask
 from chc.regret import (
     ConfoundingRegretFloorCurve,
     ConfoundingRobustControlCurve,
@@ -83,6 +87,7 @@ __all__ = [
     "ConfoundingRobustControlCurve",
     "ConfoundingRobustLQRegretCurve",
     "ConfoundingRobustPenalty",
+    "ConfoundingRobustTask",
     "DynamicConfoundingCurve",
     "MarketplaceControlCurve",
     "asymmetric_control_improvement",

@@ -3,8 +3,9 @@
 Each task ships a confounded offline dataset, a true plant with a computable oracle controller, and
 an evaluation reporting **regret vs oracle**, **constraint violations**, and **out-of-support action
 rate**. The point is to measure *where* causal control beats predictive control — and to be honest
-where it does not. v0 has pricing (steering), inventory (newsvendor), and support-shift (pessimism)
-tasks, all in the same ``TaskResult`` / ``leaderboard`` shape.
+where it does not. v0 has pricing (steering), inventory (newsvendor), support-shift (pessimism),
+model-uncertainty (calibrated ensemble) and confounding-robust (sensitivity radius under a *hidden*
+confounder) tasks, all in the same ``TaskResult`` / ``leaderboard`` shape.
 """
 
 from __future__ import annotations
@@ -26,10 +27,15 @@ from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.estimators import BackdoorOLS, CausalEffectEstimator
 from chc.flagship import closed_loop
-from chc.integrate import rk4_step
+from chc.integrate import rk4_step, rollout
 from chc.residual import ZeroResidual
 from chc.support import SupportModel, pessimistic_control
-from chc.uncertainty import EnsembleResidual, EnsembleUncertainty, fit_ensemble
+from chc.uncertainty import (
+    ConfoundingRobustPenalty,
+    EnsembleResidual,
+    EnsembleUncertainty,
+    fit_ensemble,
+)
 
 
 @dataclass(frozen=True)
@@ -412,6 +418,133 @@ class ModelUncertaintyTask:
                 cost=true_cost(us),
                 regret=true_cost(us) - oracle_cost,
                 constraint_violations=0.0,
+                ood_rate=ood(us),
+            )
+            for name, us in controllers
+        ]
+
+
+@dataclass(frozen=True)
+class ConfoundingRobustTask:
+    """Control under HIDDEN confounding: the safeguard is a sensitivity radius, not adjustment.
+
+    The actuator gain is calibrated from an observational log whose action was driven by a
+    **latent** disturbance that also moved the transition. It is never recorded and there is no
+    instrument, so the gain is only *partially identified* -- the adjustment fix of ``PricingTask``
+    is unavailable by construction, which is why this task takes no estimator argument. Here the
+    confounding **attenuates** the gain, so the greedy plan believes a weak actuator, over-commands,
+    overshoots the target on the true plant, and demands actions far outside the logged range. The
+    safeguard is ``chc.uncertainty.ConfoundingRobustPenalty`` in the ``lam_unc`` channel: the
+    partial-identification radius times the action magnitude, bounding the transition error a
+    confounded gain can inject per step.
+
+    HONEST TRAPS. (1) The penalty is ONE-SIDED -- it can only shrink actions, so it rescues an
+    understated gain and strictly *hurts* when the confounding inflates it instead (a test pins
+    this). (2) ``gamma`` and the ``cvar_gap := b_hat`` calibration are the analyst's inputs, not
+    learned; the row scores the controller at the *assumed* sensitivity, not an oracle one.
+    (3) With no confounding the robust controller pays a strict premium, and it only wins beyond a
+    problem-dependent confounding threshold -- at half the default confounding it still loses.
+    (4) This is an OPEN-LOOP plan scored on the plant; the closed-loop counterpart is
+    ``chc.sensitivity.confounding_robust_tracking_benchmark``.
+    """
+
+    x0: float = 2.0
+    x_target: float = 0.0
+    dt: float = 0.1
+    horizon: int = 25
+    u_lo: float = -8.0
+    u_hi: float = 8.0
+    b_gain: float = 1.0  # TRUE actuator gain; the log's b_true
+    kappa: float = -0.5  # behaviour policy's response to the LATENT driver (<0 attenuates b_hat)
+    confounding: float = 1.0  # the latent driver's direct push on the logged transition
+    gamma: float = 5.0  # assumed sensitivity -- the ONE safeguard knob (covers the default bias)
+    # Units bridge, not a tuned constant: the penalty bounds a VECTOR-FIELD error, so a step injects
+    # dt*radius*||u||, and the quadratic cost converts a position error e at rate dJ/de ~ 2|x0-x*|.
+    # Hence lam_unc ~ dt * 2|x0 - x*| = 0.1 * 4 ~ 0.2 (order of magnitude; the row is sensitive to
+    # it -- the mechanism helps across ~[0.02, 0.4] and over-shrinks into a loss by 1.0).
+    lam_unc: float = 0.2
+    control_weight: float = 0.001
+    overshoot_tol: float = 0.25  # blowing this far past the target counts as a violation
+    n_data: int = 4000
+    inner_steps: int = 300
+
+    def run(self, seed_data: int = 0) -> list[TaskResult]:
+        """Calibrate the gain on a confounded log, then score greedy/robust/oracle on the plant."""
+        a = jnp.array([[0.0, 1.0], [-1.0, -0.2]])
+        unit_b = jnp.array([[0.0], [1.0]])
+        plant = HybridDynamics(
+            known=LinearDynamics(a_matrix=a, b_matrix=self.b_gain * unit_b),
+            residual=ZeroResidual(2),
+        )
+
+        # the log is the actuator channel (u enters only the velocity row) as a scalar response
+        system = ConfoundedLinearSystem(
+            a=0.0, b_true=self.b_gain, c=self.confounding, kappa=self.kappa, eta_scale=1.0
+        )
+        sampled = system.sample(self.n_data, jax.random.key(seed_data))
+        logs = {name: sampled[name] for name in ("x", "u", "x_next")}  # z LATENT: never logged
+        b_hat = float(estimate_control_effect(logs, adjust_for=()))  # float: hashable static field
+
+        model = HybridDynamics(
+            known=LinearDynamics(a_matrix=a, b_matrix=b_hat * unit_b), residual=ZeroResidual(2)
+        )
+        penalty = ConfoundingRobustPenalty.from_sensitivity(cvar_gap=b_hat, gamma=self.gamma)
+
+        # inert at lam_supp=0.0 but evaluated unconditionally, so it must stay shape-valid
+        support = SupportModel.fit(
+            jax.random.normal(jax.random.key(seed_data + 1), (self.n_data, 2)),
+            logs["u"][:, None],
+        )
+        u_support = float(jnp.quantile(jnp.abs(logs["u"]), 0.99))
+
+        cost = QuadraticCost(
+            Q=jnp.diag(jnp.array([1.0, 0.0])),
+            R=jnp.array([[self.control_weight]]),
+            Qf=jnp.diag(jnp.array([10.0, 1.0])),
+            x_target=jnp.array([self.x_target, 0.0]),
+        )
+        x0 = jnp.array([self.x0, 0.0])
+        us0 = jnp.zeros((self.horizon, 1))
+
+        us_greedy, _ = projected_gradient_control(
+            model, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
+        )
+        us_robust, _ = pessimistic_control(
+            model,
+            x0,
+            us0,
+            self.dt,
+            cost,
+            support,
+            0.0,
+            self.u_lo,
+            self.u_hi,
+            steps=self.inner_steps,
+            uncertainty=penalty,
+            lam_unc=self.lam_unc,
+        )
+        us_oracle, _ = projected_gradient_control(
+            plant, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
+        )
+
+        def true_cost(us: Array) -> float:
+            return float(total_cost(plant, x0, us, self.dt, cost))
+
+        def overshoot(us: Array) -> float:
+            xs = rollout(plant, x0, us, self.dt)
+            return float(jnp.mean(xs[:, 0] < self.x_target - self.overshoot_tol))
+
+        def ood(us: Array) -> float:
+            return float(jnp.mean(jnp.abs(us) > u_support))
+
+        oracle_cost = true_cost(us_oracle)
+        controllers = (("oracle", us_oracle), ("robust", us_robust), ("greedy", us_greedy))
+        return [
+            TaskResult(
+                controller=name,
+                cost=true_cost(us),
+                regret=true_cost(us) - oracle_cost,
+                constraint_violations=overshoot(us),
                 ood_rate=ood(us),
             )
             for name, us in controllers

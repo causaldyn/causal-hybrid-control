@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from chc.benchmark import InventoryTask, leaderboard_multiseed, run_multiseed
+from chc.benchmark import (
+    ConfoundingRobustTask,
+    InventoryTask,
+    leaderboard_multiseed,
+    run_multiseed,
+)
 
 SEEDS = range(5)
 
@@ -33,6 +38,12 @@ def test_leaderboard_multiseed_sorts_by_mean_regret_and_shows_cis(results: list)
     assert lines[-1].startswith("predictive")  # the worst mean regret sorts last
     assert "[" in lines[-1]  # each row prints a CI
     assert "]" in lines[-1]
+
+
+def test_confounding_robust_win_separates_across_seeds() -> None:
+    """The sensitivity radius beats certainty-equivalence repeatably, not on one lucky log."""
+    by_name = {r.controller: r for r in run_multiseed(ConfoundingRobustTask(), SEEDS)}
+    assert by_name["robust"].regret_hi < by_name["greedy"].regret_lo
 
 
 def test_single_seed_gives_a_degenerate_interval() -> None:

@@ -1,6 +1,14 @@
 """Benchmark gate: causal control is near-oracle on pricing; predictive is catastrophic."""
 
-from chc.benchmark import InventoryTask, PricingTask, SupportShiftTask, leaderboard
+import pytest
+
+from chc.benchmark import (
+    ConfoundingRobustTask,
+    InventoryTask,
+    PricingTask,
+    SupportShiftTask,
+    leaderboard,
+)
 from chc.estimators import DoubleML
 
 
@@ -52,3 +60,44 @@ def test_support_shift_pessimism_beats_greedy() -> None:
     assert results["pessimistic"].regret < 0.7 * results["greedy"].regret  # pessimism helps
     assert results["greedy"].ood_rate > 0.3  # greedy exploits the model off-support
     assert results["pessimistic"].ood_rate < 0.1  # pessimism stays in-support
+
+
+def test_confounding_robust_sensitivity_radius_beats_greedy() -> None:
+    """Under HIDDEN confounding no estimator can help; the sensitivity radius still can."""
+    results = {r.controller: r for r in ConfoundingRobustTask().run()}
+    assert results["oracle"].regret == 0.0
+    assert results["robust"].regret < 0.7 * results["greedy"].regret  # the radius pays
+    assert results["robust"].regret > 0.0  # ...but is NOT the oracle (task is not degenerate)
+    # the attenuated gain makes greedy over-command: it blows past the target and leaves the log
+    assert results["greedy"].constraint_violations > results["robust"].constraint_violations
+    assert results["greedy"].ood_rate > results["robust"].ood_rate
+
+
+def test_confounding_robust_greedy_degrades_with_hidden_confounding() -> None:
+    """The task is genuinely about confounding: greedy regret grows with the latent driver."""
+    regrets = [
+        {r.controller: r for r in ConfoundingRobustTask(confounding=c).run()}["greedy"].regret
+        for c in (0.0, 0.5, 1.0)
+    ]
+    assert regrets[0] < regrets[1] < regrets[2]
+    assert regrets[0] < 1e-2  # no confounding -> the calibrated gain is right -> greedy is oracle
+
+
+def test_confounding_robust_point_identification_recovers_greedy() -> None:
+    """Gamma=1 is point identification: the radius is 0, so the penalty channel is inert."""
+    results = {r.controller: r for r in ConfoundingRobustTask(gamma=1.0).run()}
+    assert results["robust"].cost == pytest.approx(results["greedy"].cost, rel=1e-3)
+
+
+def test_confounding_robust_pays_a_premium_when_unconfounded() -> None:
+    """Honesty: with no confounding (kappa=0) the pessimism is pure cost."""
+    results = {r.controller: r for r in ConfoundingRobustTask(kappa=0.0).run()}
+    assert results["greedy"].regret < 1e-2  # unbiased log -> certainty-equivalence is near-oracle
+    assert results["robust"].regret > results["greedy"].regret  # robustness is not free
+
+
+def test_confounding_robust_one_sided_hedge_hurts_when_the_gain_is_inflated() -> None:
+    """Honesty: the penalty only SHRINKS actions, so it is the wrong hedge for an inflated gain."""
+    results = {r.controller: r for r in ConfoundingRobustTask(kappa=0.5).run()}
+    assert results["greedy"].regret > 0.0  # the inflated estimate still costs something
+    assert results["robust"].regret > results["greedy"].regret  # ...and shrinking makes it worse

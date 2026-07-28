@@ -33,7 +33,7 @@ acts entirely out of the logged support. Reproduce: `uv run python scripts/run_b
 
 ```bash
 uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.12–3.14)
-uv run pytest      # 274 tests
+uv run pytest      # 280 tests
 ```
 
 ## Quickstart
@@ -88,7 +88,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | structure discovery | `discovery`, `independence`, `network_causal`, `pathway` | lagged-parent discovery; MCI partial-correlation test; network/spillover orthogonal DML; **ranked temporal causal pathway** — which lagged variables & multi-step chains drive a target, signed + actionable (Rocq-certified walk-sum / geometric-truncation / weakest-link laws) |
 | advanced control | `koopman`, `meanfield`, `transport`, `matching`, `games`, `mintime` | Koopman-LQR; mean-field control; continuum + discrete **Kantorovich OT** (driver↔rider matching → **dual surge prices**); differentiable Stackelberg games; PMP time-optimal bang-bang |
 | marketplace moat | `marketplace` | **offline causal control under equilibrium interference**: learn incentives from confounded switchback logs where SUTVA fails — de-confounded + equilibrium-aware + W-DRO-pessimistic control recovers the oracle where MOPO / naive-causal go *negative* |
-| evaluation | `benchmark`, `flagship`, `lalonde`, `metrics` | pricing / inventory / support-shift / **model-uncertainty** oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; real-data **LaLonde** validation; step-response quality metrics |
+| evaluation | `benchmark`, `flagship`, `lalonde`, `metrics` | pricing / inventory / support-shift / **model-uncertainty** / **confounding-robust** oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; real-data **LaLonde** validation; step-response quality metrics |
 | scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka); mesh-free **Deep Galerkin** neural Poisson solver |
 
 ## Validation
@@ -108,7 +108,7 @@ the identity of the framework. See `plans/` for the full analysis and roadmap.
 
 ## Status
 
-Early (`v0.1.0`), single-author, research code (274 tests; Python 3.12–3.14, astral `ruff` + `ty`).
+Early (`v0.1.0`), single-author, research code (280 tests; Python 3.12–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**
@@ -116,8 +116,8 @@ pessimism (deep ensemble + split conformal) and an LQ certainty-equivalence regr
 Strang–Marchuk splitting, off-policy gate, KAN/MLP/Graph residual backends; advanced control backends
 (Koopman-LQR, mean-field, optimal transport, differentiable Stackelberg games, PMP time-optimal
 bang-bang); dynamic-effect IRFs + structured Toeplitz/Levinson/Gohberg–Semencul operators; lagged
-structure discovery; four benchmark tasks (pricing, inventory, support-shift, model-uncertainty) with
-multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin FEM + a mesh-free Deep
+structure discovery; five benchmark tasks (pricing, inventory, support-shift, model-uncertainty,
+confounding-robust) with multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin FEM + a mesh-free Deep
 Galerkin neural Poisson solver; and step-response quality metrics. Both halves are now validated on
 **real** targets, not just synthetic ones: the **causal identification core** on real data with an
 experimental ground truth (notebook 07, LaLonde NSW: the naive estimate flips sign, Double ML recovers
