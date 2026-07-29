@@ -111,6 +111,107 @@ class EnsembleUncertainty(eqx.Module):
         return jnp.sum(jax.vmap(lambda x, u: self.ensemble.disagreement(0.0, x, u))(xs, us))
 
 
+def cvar_upper(values: Array, alpha: float) -> Array:
+    """Upper CVaR (superquantile) of equally-weighted ``values`` at level ``alpha``.
+
+    Mean of the worst ``alpha`` fraction, with the exact fractional-tail weight rather than a
+    rounded count, so it agrees with :func:`_top_tail_mean`'s convention and is continuous in
+    ``alpha``. Differentiable: ``jnp.sort`` is a permutation, so this is a fixed linear functional
+    of the order statistics almost everywhere. ``alpha = 1`` gives the mean, ``alpha -> 0`` the max.
+    """
+    n = values.shape[0]
+    ordered = jnp.sort(values)[::-1]
+    mass = alpha * n
+    weights = jnp.clip(mass - jnp.arange(n), 0.0, 1.0)
+    return jnp.sum(weights * ordered) / mass
+
+
+class NestedCVaRPenalty(eqx.Module):
+    """Time-consistent (nested) CVaR of the ensemble's disagreement, as a ``PenaltyModel``.
+
+    :class:`EnsembleUncertainty` sums the member *variance* along the trajectory, which is a risk
+    *neutral* aggregation: one very bad step averages away against many quiet ones. This replaces
+    the aggregation with a nested conditional risk measure, ``rho_t = c_t + CVaR_alpha[rho_{t+1}]``
+    (Ruszczynski 2010; Shapiro-Dentcheva-Ruszczynski 2021), evaluated on the per-member deviations
+    ``||r_k - mean_k r_k||``. Same ``penalty_trajectory(xs, us) -> scalar`` shape, so it drops into
+    the ``lam_unc`` channel of :func:`chc.support.pessimistic_control` unchanged.
+
+    The distinction that matters is **which adversary the number prices**, and both are available:
+
+    * ``penalty_trajectory`` (nested) -- the adversary re-picks the worst ``alpha`` fraction of
+      members *at every step*, so a model may be wrong here and a different one wrong there.
+    * ``static_penalty_trajectory`` -- the adversary must commit to one member for the whole
+      horizon, then the tail is taken once over those horizon-summed scenarios.
+
+    Nested is therefore never smaller (subadditivity of CVaR,
+    ``Sum_t CVaR[c_t] >= CVaR[Sum_t c_t]`` -- a standard coherence property, not a result of this
+    repo), and the gap is the price of time consistency. Time consistency is the reason to pay it:
+    a plan optimal for the *static* measure at ``t = 0`` need not be the plan you would re-choose at
+    ``t = 1`` after seeing the first step, so a receding-horizon controller that re-solves -- which
+    is what :func:`chc.mpc.mpc_control` does -- can chase its own tail. The nested measure has no
+    such gap by construction.
+
+    HONEST SCOPE: with the members re-evaluated independently at each visited pair, the recursion
+    collapses to ``Sum_t CVaR_alpha[c_t]``; this is the *aggregation* rule made risk-averse, not a
+    dynamic-programming solve of a nested-risk MDP, and it does not certify a bound on the cost.
+    """
+
+    ensemble: EnsembleResidual
+    alpha: float = eqx.field(static=True, default=0.2)
+
+    def member_costs(self, xs: Array, us: Array) -> Array:
+        """``(H, K)`` per-member deviation from the ensemble mean field at each visited pair."""
+
+        def step(x: Array, u: Array) -> Array:
+            outputs = self.ensemble.member_outputs(0.0, x, u)
+            return jnp.linalg.norm(outputs - jnp.mean(outputs, axis=0), axis=-1)
+
+        return jax.vmap(step)(xs, us)
+
+    def penalty_trajectory(self, xs: Array, us: Array) -> Array:
+        """Nested: the tail is taken per step, so the worst members may differ across steps."""
+        per_step = self.member_costs(xs, us)
+        return jnp.sum(jax.vmap(lambda c: cvar_upper(c, self.alpha))(per_step))
+
+    def static_penalty_trajectory(self, xs: Array, us: Array) -> Array:
+        """Static: one tail over horizon-summed per-member scenarios (time-INCONSISTENT)."""
+        return cvar_upper(jnp.sum(self.member_costs(xs, us), axis=0), self.alpha)
+
+
+@dataclass(frozen=True)
+class NestedRiskCertificate:
+    """Numeric evidence that the nested measure dominates the static one, and by how much."""
+
+    nested: float
+    static: float
+    risk_neutral: float  # the same aggregation at alpha = 1, where every arm must coincide
+    gap: float  # nested - static >= 0: the price of time consistency
+    ok: bool
+
+
+def nested_risk_certificate(
+    xs: Array, us: Array, ensemble: EnsembleResidual, alpha: float = 0.2
+) -> NestedRiskCertificate:
+    """Check ``nested >= static >= risk-neutral``, and that ``alpha = 1`` collapses the three."""
+    penalty = NestedCVaRPenalty(ensemble=ensemble, alpha=alpha)
+    nested = float(penalty.penalty_trajectory(xs, us))
+    static = float(penalty.static_penalty_trajectory(xs, us))
+    neutral = NestedCVaRPenalty(ensemble=ensemble, alpha=1.0)
+    mean_nested = float(neutral.penalty_trajectory(xs, us))
+    mean_static = float(neutral.static_penalty_trajectory(xs, us))
+    return NestedRiskCertificate(
+        nested=nested,
+        static=static,
+        risk_neutral=mean_nested,
+        gap=nested - static,
+        ok=(
+            nested >= static - 1e-6
+            and static >= mean_nested - 1e-6
+            and abs(mean_nested - mean_static) <= 1e-4 * max(1.0, abs(mean_nested))
+        ),
+    )
+
+
 def _member_next_states(
     known: Dynamics, ensemble: EnsembleResidual, x: Array, u: Array, dt: float
 ) -> Array:

@@ -5,13 +5,22 @@ coverage, and penalising that uncertainty avoids the model exploitation a greedy
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
 from jax import Array
 
 from chc import SplitConformal, fit_ensemble
 from chc.benchmark import ModelUncertaintyTask
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step
-from chc.residual import ZeroResidual
+from chc.residual import MLPResidual, ZeroResidual
+from chc.uncertainty import (
+    EnsembleResidual,
+    NestedCVaRPenalty,
+    _top_tail_mean,
+    cvar_upper,
+    nested_risk_certificate,
+)
 
 DT = 0.1
 
@@ -75,3 +84,42 @@ def test_calibrated_pessimism_avoids_model_exploitation() -> None:
     assert results["calibrated"].regret < 0.1 * results["greedy"].regret  # penalising U avoids it
     assert results["greedy"].ood_rate > 0.3  # greedy pushes into the high-uncertainty region
     assert results["calibrated"].ood_rate < 0.1  # calibrated stays where the model is trustworthy
+
+
+def _toy_ensemble(n_members: int = 6) -> EnsembleResidual:
+    return EnsembleResidual(
+        members=tuple(
+            MLPResidual(state_dim=2, control_dim=1, out_dim=2, width=8, key=jax.random.key(i))
+            for i in range(n_members)
+        )
+    )
+
+
+def test_cvar_upper_matches_the_exact_numpy_tail_mean() -> None:
+    values = jnp.asarray([0.3, -1.2, 2.5, 0.9, -0.4, 1.7, 0.1])
+    for alpha in (0.2, 0.35, 0.5, 1.0):  # 0.2*7 = 1.4 exercises the fractional weight
+        reference = _top_tail_mean(np.asarray(values, dtype=np.float64), alpha)
+        assert float(cvar_upper(values, alpha)) == pytest.approx(reference, abs=1e-6)
+
+
+def test_nesting_the_tail_per_step_never_scores_below_committing_to_one_scenario() -> None:
+    xs = jax.random.normal(jax.random.key(10), (12, 2))
+    us = jax.random.normal(jax.random.key(11), (12, 1))
+    ensemble = _toy_ensemble()
+    strict = nested_risk_certificate(xs, us, ensemble, alpha=0.2)
+    assert strict.ok
+    assert strict.gap > 0.0  # subadditivity is strict here: the worst members differ across steps
+    assert strict.nested > strict.risk_neutral  # and both are above the risk-neutral aggregation
+    # alpha = 1 is the mean, where the nested and static aggregations must coincide exactly
+    neutral = nested_risk_certificate(xs, us, ensemble, alpha=1.0)
+    assert neutral.gap == pytest.approx(0.0, abs=1e-5)
+
+
+def test_the_nested_penalty_is_differentiable_at_the_solver_start() -> None:
+    # pessimistic_control starts from us0 = 0; a NaN gradient there would kill the solve
+    xs = jnp.zeros((5, 2))
+    us = jnp.zeros((5, 1))
+    grad = jax.grad(
+        lambda u: NestedCVaRPenalty(ensemble=_toy_ensemble(), alpha=0.3).penalty_trajectory(xs, u)
+    )(us)
+    assert bool(jnp.all(jnp.isfinite(grad)))

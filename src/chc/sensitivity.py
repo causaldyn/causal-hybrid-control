@@ -32,6 +32,10 @@ The pipeline, estimate -> sensitivity radius -> robust control -> validation:
    order: performance regret is *second* order in the effect bias, safety margin is *first*.
    :func:`certify_safety` applies all of that along a finished :class:`chc.plan.CausalPlan` --
    the plan-level ``Gamma*`` is the *weakest step's*, so one uncertifiable step sinks the plan.
+   :func:`barrier_reachability_gap` prices that certificate against the Hamilton-Jacobi answer it
+   approximates: where the condition holds on *all* of ``{h >= 0}`` the reachable tube is that whole
+   set, and where it only holds pointwise ``certified_but_unreachable`` says how much the per-step
+   reading over-promises -- a filter, not a proof.
 6. **Validation.** :func:`confounding_robust_control_benchmark` grounds it on a synthetic
    observational confounded marketplace and :func:`confounding_robust_tracking_benchmark` on a
    confounded dynamic plant in **closed loop**; :class:`ConfoundingRobustTask` carries the same
@@ -73,6 +77,7 @@ from chc.barrier import (
 )
 from chc.benchmark import ConfoundingRobustTask
 from chc.plan import SafetyCertificate, certify_safety
+from chc.reachability import BarrierReachabilityGap, barrier_reachability_gap
 from chc.regret import (
     ConfoundingRegretFloorCurve,
     ConfoundingRobustControlCurve,
@@ -106,6 +111,7 @@ from chc.uncertainty import (
 
 __all__ = [
     "BarrierConfoundingCurve",
+    "BarrierReachabilityGap",
     "ConfoundingRegretFloorCurve",
     "ConfoundingRobustCertificate",
     "ConfoundingRobustClosedLoopCertificate",
@@ -121,6 +127,7 @@ __all__ = [
     "asymmetric_control_improvement",
     "barrier_confounding_certificate",
     "barrier_gamma_star",
+    "barrier_reachability_gap",
     "certainty_equivalence_control",
     "certify_safety",
     "confounding_regret_floor_certificate",

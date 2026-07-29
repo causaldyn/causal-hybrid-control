@@ -95,6 +95,16 @@ the statements, scopes and proof names.
   (7.46 vs 1.18) with no access to ground truth. Deliberately control-affine — `certify_safety` reads
   the channel off the Jacobian at `u = 0`, which is exact for an affine plant and only a linearisation
   otherwise, so the softmax-equilibrium market of `chc.marketplace` is the wrong plant to certify.
+- **`chc.reachability`** — a Hamilton–Jacobi backward reachable tube whose adversary is the §32
+  identification radius: `V(x,T) = max_u min_{ΔB} min_s h(ξ(s))` by Lax–Friedrichs on a 2-D grid, with
+  the same robust-margin algebra as `chc.barrier` but `p = ∇V` solved for rather than assumed. It
+  exists to price the barrier certificate, and `barrier_reachability_gap` is that price:
+  `valid_cbf` makes the CBF theorem executable (condition on all of `{h ≥ 0}` ⟹ the tube **is**
+  `{h ≥ 0}`, checked to a cell), and `certified_but_unreachable` measures where the *pointwise* §40
+  check certifies a state no controller can hold — on a relative-degree-2 barrier the §40 verdict is
+  identical at every radius while the true tube shrinks. Verified against two analytic solutions (a
+  rigidly sliding level set to `1e-5`; the double-integrator braking parabola to 100% off-boundary
+  agreement), with a CFL guard that refuses rather than reporting an optimistic safe set.
 - **Regret / guarantee line** — the orthogonal-to-control transfer theorem (order `p` → `2p`, scalar
   and multivariate-LQ), multi-channel network control (debias *every* channel), the adaptive
   information-exploration duality with its `√T` lower bound, the C2 end-to-end theorem with a clustered

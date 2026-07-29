@@ -33,7 +33,7 @@ acts entirely out of the logged support. Reproduce: `uv run python scripts/run_b
 
 ```bash
 uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.12–3.14)
-uv run pytest      # 333 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
+uv run pytest      # 353 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
 ```
 
 ## Quickstart
@@ -66,6 +66,7 @@ Worked, executed notebooks (figures + tables) under [`notebooks/`](notebooks/) �
 | [`03_causal_inference_toolkit`](notebooks/03_causal_inference_toolkit.ipynb) | adjustment · IV/2SLS · Double ML · sensitivity · refutation, side by side |
 | [`04_epidemic_and_pessimism`](notebooks/04_epidemic_and_pessimism.ipynb) | flatten an epidemic curve under a capacity cap; pessimism vs a greedy controller |
 | [`05_benchmark_scoreboard`](notebooks/05_benchmark_scoreboard.ipynb) | the scoreboard: regret vs oracle across every task — CHC lands next to the oracle, the baseline blows up |
+| [`05_confounding_robust_control`](notebooks/05_confounding_robust_control.ipynb) | when **no adjustment set exists**: a sensitivity level `Γ` → identification radius → minimax action. Worst-case cost 1.23 → 0.35; 96% cheaper at realistic confounding, and the price is a 26%-of-the-CE-downside premium when there is none |
 | [`06_cruise_control_confounded`](notebooks/06_cruise_control_confounded.ipynb) | relatable end-to-end: adaptive cruise control from confounded fleet logs (Simpson's paradox → IV → control) |
 | [`07_real_data_lalonde`](notebooks/07_real_data_lalonde.ipynb) | **real data, experimental ground truth**: on LaLonde NSW the naive estimate flips sign (−$8.5k), Double ML recovers the randomised truth (+$1.8k, within $234) |
 
@@ -84,6 +85,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | guarantee | `regret` | LQ certainty-equivalence bound — quadratic in model error (Dean–Mania–Tu–Recht–Matni); **interference-aware regret certificate** (extra exposure-map-error term), **machine-checked in Rocq** |
 | sensitivity-aware control | `sensitivity` (facade over `regret`, `uncertainty`, `barrier`) | **control under HIDDEN CONFOUNDING**: bounded-density-ratio (MSM) CVaR worst-case → pessimism-radius inflation; the confounding-regret floor is *second-order* in the effect bias; a **minimax controller** that shifts the gain under asymmetric (over/under-shoot) loss and beats certainty-equivalence — now a **closed-loop** controller on a confounded dynamic plant (bounds the worst-case downside, 82% cheaper over 30 steps), plus a `ConfoundingRobustPenalty` that carries the sensitivity radius into the general pessimistic-control stack — all **Rocq-certified**. `chc.sensitivity` is the one-import surface (estimate→radius→control) |
 | safety under partial ID | `barrier`, `plan` | the same sensitivity radius spent on a **constraint**: robust control-barrier margin, a least-restrictive safety filter (closed-form certified action interval, no QP), and `Gamma*` — **the largest sensitivity-model level under which the barrier stays certified** (a model parameter, not measured confounding). Safety degrades at *first* order in the effect bias (until the radius swallows the channel and the loss saturates) where performance regret degrades at second (the envelope theorem protects objectives, not binding constraints), **Rocq-certified**; in closed loop a regret-sized budget violates the limit on 93% of steps where the constraint-sized one never does. `certify_safety` audits a finished plan against all of it — the certified prefix next to the plan's `Gamma*` (the weakest step's, exactly) |
+| what the certificate is worth | `reachability` | the **Hamilton–Jacobi** answer the barrier only approximates: `V(x,T) = max_u min_{ΔB} min_s h(ξ(s))` on a Lax–Friedrichs grid, with the §32 identification radius as the adversary. Same robust-margin algebra as `barrier`, but `p = ∇V` is *solved for* rather than assumed. Turns the CBF theorem into an executable check (condition on all of `{h ≥ 0}` ⟹ the tube **is** `{h ≥ 0}`) and prices what pointwise certification misses — on a relative-degree-2 barrier the §40 verdict is identical at every radius while the true tube shrinks, so `certify_safety`'s per-step prefix is a filter, not a proof |
 | end to end | `spine` | all four layers on **one** decision — confounded logs → causal gain → constrained plan → `Gamma*` certificate → the same plan run on the *true* plant. Two zones of a mobile driver pool, one incentive lever whose `[+b, -b]` column is driver conservation, a supply floor in the zone it drains. The confounded arm plans 13.6 and pays 38.5; `Gamma*` tells the two arms apart (7.46 vs 1.18) **before either acts**, without ground truth. `uv run python scripts/spine_demo.py` |
 | causal frontier | `did`, `scm`, `estimators`, `causal` | Callaway–Sant'Anna staggered **DiD**; **augmented synthetic control**; **R-learner** CATE; **E-values** beside Cinelli–Hazlett; **influence-function CIs** on cross-fit DML |
 | dynamic effects | `irf`, `toeplitz` | impulse-response / local-projection dynamic effects; Toeplitz / Levinson–Durbin / Gohberg–Semencul operators |
@@ -110,7 +112,7 @@ the identity of the framework. See `plans/` for the full analysis and roadmap.
 
 ## Status
 
-Early (`v0.1.0`), single-author, research code (334 collected tests; Python 3.12–3.14, astral `ruff` + `ty`).
+Early (`v0.1.0`), single-author, research code (354 collected tests; Python 3.12–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**
