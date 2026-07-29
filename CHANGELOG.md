@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-29
+
 Work landed on `main` since `v0.1.0`. The theme is **guarantees**: most of it is a machine-checked
 result line at the causal↔control seam (Maxima derivation → Rocq proof → numeric certificate), with the
 matching runtime primitives shipped alongside. The proof scripts themselves are in `proofs/` and the
@@ -159,15 +161,16 @@ symbolic derivations in `validation/`.
 
 ### Notes
 
-Version and tag are deliberately untouched: `pyproject.toml` still declares `0.1.0`, and the `v0.1.0`
-tag has not been pushed. Publishing is a separate, explicit decision — pushing any `v*` tag triggers
-`release.yml` and a PyPI upload.
+The repository moved to the `causaldyn` organisation and is public as of this release; all project
+URLs point there. This is the **first version published to PyPI** — `0.1.0` below was prepared and
+tagged locally, then overtaken by 71 commits before it was ever pushed, so it never reached an index.
 
 ## [0.1.0] — 2026-07-19
 
-First tagged release. `chc` is a small JAX library that fuses **physics-structured hybrid dynamics**,
-**causal identification**, and **constrained optimal control**, made safe on offline/confounded data by
-an explicit **pessimism/support** layer — evaluating decisions as interventions, not correlations.
+Prepared but never published; superseded by `0.2.0`. `chc` is a small JAX library that fuses
+**physics-structured hybrid dynamics**, **causal identification**, and **constrained optimal control**,
+made safe on offline/confounded data by an explicit **pessimism/support** layer — evaluating decisions
+as interventions, not correlations.
 
 ### Added
 
@@ -204,4 +207,5 @@ an explicit **pessimism/support** layer — evaluating decisions as intervention
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.2.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.2.0
 [0.1.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.1.0

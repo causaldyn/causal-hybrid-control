@@ -111,12 +111,12 @@ and idempotence (`box_projection.v`) to the interference-aware regret certificat
 (MOPO/MOReL/Delphic), sequential causal identification (g-methods / dynamic treatment regimes),
 differentiable control (Neuromancer). The contribution is the *integration behind one API* plus a
 benchmark with ground-truth interventional effects. KAN is **one interpretable residual backend**, not
-the identity of the framework. What has landed since `v0.1.0`, scope corrections included, is in
+the identity of the framework. The release-by-release record, scope corrections included, is in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Status
 
-Early (`v0.1.0`), single-author, research code (354 collected tests; Python 3.12–3.14, astral `ruff` + `ty`).
+Early (`v0.2.0`), single-author, research code (354 collected tests; Python 3.12–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**
