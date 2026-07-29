@@ -204,4 +204,4 @@ an explicit **pessimism/support** layer — evaluating decisions as intervention
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
-[0.1.0]: https://github.com/ilgrad/causal-hybrid-control/releases/tag/v0.1.0
+[0.1.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.1.0
