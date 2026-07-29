@@ -9,8 +9,8 @@ still change).
 
 Work landed on `main` since `v0.1.0`. The theme is **guarantees**: most of it is a machine-checked
 result line at the causal↔control seam (Maxima derivation → Rocq proof → numeric certificate), with the
-matching runtime primitives shipped alongside. See `discoveries/theorems.md` (local research log) for
-the statements, scopes and proof names.
+matching runtime primitives shipped alongside. The proof scripts themselves are in `proofs/` and the
+symbolic derivations in `validation/`.
 
 ### Added
 
@@ -36,6 +36,16 @@ the statements, scopes and proof names.
   certified negative log-norm, which replaces the `e^{LT}` growth with a bounded radius; a
   **port-Hamiltonian** residual with a machine-checked damping-injection Lyapunov certificate;
   **`WassersteinPenalty`**, a W1-DRO distribution-shift margin.
+- **`NestedCVaRPenalty`** (`chc.uncertainty`) — a time-consistent aggregation of ensemble
+  disagreement in the same `PenaltyModel` slot. `EnsembleUncertainty` *sums* member variance along the
+  trajectory, so one very bad step averages away against many quiet ones; this replaces the sum with
+  `rho_t = c_t + CVaR_alpha[rho_{t+1}]`, and `static_penalty_trajectory` keeps the other adversary
+  (commit to one member for the whole horizon) so the two are comparable. `nested_risk_certificate`
+  checks the ordering that must hold — nested ≥ static ≥ risk-neutral, collapsing at `alpha = 1` — and
+  the gap is the price of time consistency, which is what a receding-horizon controller needs if it is
+  not to chase its own tail across re-solves. Scoped honestly: with the members re-evaluated
+  independently the recursion collapses to `Sum_t CVaR_alpha[c_t]`, a risk-averse *aggregation* rule
+  rather than a dynamic-programming solve of a nested-risk MDP.
 - **`chc.pathway`** — one `causal_pathway(target)` API over the temporal causal graph, with
   Rocq-certified walk-sum / geometric-truncation / weakest-link structural laws.
 - **Marketplace layer** — `chc.matching` (Kantorovich OT dispatch with dual surge prices) and

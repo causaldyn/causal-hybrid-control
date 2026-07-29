@@ -18,16 +18,18 @@ On a confounded offline log, fitting the effect of the action *without* adjustin
 flips its sign (true `+1.0` → naive `-0.2`). Control the true system with each estimate:
 
 ```
-controller          cost      regret    viol     ood
-oracle              4.59        0.00    0.00    0.00
-causal-CHC          4.59       -0.00    0.00    0.00
-predictive      13740.08    13735.49    0.97    1.00
+controller            cost      regret    viol     ood
+causal-CHC            4.59       -0.00    0.00    0.00
+oracle                4.59        0.00    0.00    0.00
+predictive        13740.08    13735.49    0.97    1.00
 ```
 
 The **causal** controller matches the oracle; the **predictive** one is catastrophic on every metric —
 it drives the state the wrong way (`x → -20` for target `+2`), violates constraints 97% of the time, and
-acts entirely out of the logged support. Reproduce: `uv run python scripts/run_benchmark.py`, or
-`uv run --group viz python scripts/flagship_demo.py` for the figure.
+acts entirely out of the logged support. That is one seed, with the constraint and support columns;
+`uv run python scripts/run_benchmark.py` runs this task and four others over 12 seeds with bootstrap
+CIs (predictive regret `13734.15 [13732.55, 13735.31]`), and
+`uv run --group viz python scripts/flagship_demo.py` draws the figure.
 
 ## Install
 
@@ -68,7 +70,7 @@ Worked, executed notebooks (figures + tables) under [`notebooks/`](notebooks/) �
 | [`05_benchmark_scoreboard`](notebooks/05_benchmark_scoreboard.ipynb) | the scoreboard: regret vs oracle across every task — CHC lands next to the oracle, the baseline blows up |
 | [`05_confounding_robust_control`](notebooks/05_confounding_robust_control.ipynb) | when **no adjustment set exists**: a sensitivity level `Γ` → identification radius → minimax action. Worst-case cost 1.23 → 0.35; 96% cheaper at realistic confounding, and the price is a 26%-of-the-CE-downside premium when there is none |
 | [`06_cruise_control_confounded`](notebooks/06_cruise_control_confounded.ipynb) | relatable end-to-end: adaptive cruise control from confounded fleet logs (Simpson's paradox → IV → control) |
-| [`07_real_data_lalonde`](notebooks/07_real_data_lalonde.ipynb) | **real data, experimental ground truth**: on LaLonde NSW the naive estimate flips sign (−$8.5k), Double ML recovers the randomised truth (+$1.8k, within $234) |
+| [`07_real_data_lalonde`](notebooks/07_real_data_lalonde.ipynb) | **real data, experimental ground truth**: on LaLonde NSW the naive estimate flips sign (−$8.5k), Double ML recovers the randomised truth — +$1.6k against the experiment's +$1.8k, within $234 |
 
 Sources are paired `.py` (jupytext) next to each `.ipynb`.
 
@@ -79,9 +81,9 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | dynamics | `dynamics`, `residual`, `integrate` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / graph / **port-Hamiltonian** (passive, Lyapunov-stable) / **Lipschitz-certified** residuals; RK4 |
 | sensitivity | `adjoint` | discrete adjoint (verified == autodiff == finite differences) |
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
-| identification | `train`, `causal`, `estimators` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters |
-| control | `control`, `mpc`, `splitting`, `plan` | projected-gradient OC; receding-horizon MPC; **Strang–Marchuk** splitting; `causal_plan` — the one-call spine returning a plan *with* its uncertainty tube and certified horizon attached |
-| offline safety | `support`, `offpolicy`, `uncertainty` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate; **calibrated** deep-ensemble + split-conformal uncertainty; **Wasserstein-1 DRO** distribution-shift margin; **certified rollout tubes** (Lipschitz / contractive-log-norm Grönwall bounds → time-varying uncertainty tube, safety-tightening, certified-safe horizon), **Rocq-proved** |
+| identification | `train`, `causal`, `estimators`, `gmethods` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters; Robins' **g-formula** (cross-fitted) for a treatment *sequence* under time-varying confounding |
+| control | `cost`, `control`, `mpc`, `splitting`, `plan` | Bolza objective; projected-gradient OC; receding-horizon MPC; **Strang–Marchuk** splitting; `causal_plan` — the one-call spine returning a plan *with* its uncertainty tube and certified horizon attached |
+| offline safety | `support`, `offpolicy`, `uncertainty` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate; **calibrated** deep-ensemble + split-conformal uncertainty; a **time-consistent nested-CVaR** aggregation of that disagreement (the risk-neutral sum averages one very bad step away); **Wasserstein-1 DRO** distribution-shift margin; **certified rollout tubes** (Lipschitz / contractive-log-norm Grönwall bounds → time-varying uncertainty tube, safety-tightening, certified-safe horizon), **Rocq-proved** |
 | guarantee | `regret` | LQ certainty-equivalence bound — quadratic in model error (Dean–Mania–Tu–Recht–Matni); **interference-aware regret certificate** (extra exposure-map-error term), **machine-checked in Rocq** |
 | sensitivity-aware control | `sensitivity` (facade over `regret`, `uncertainty`, `barrier`) | **control under HIDDEN CONFOUNDING**: bounded-density-ratio (MSM) CVaR worst-case → pessimism-radius inflation; the confounding-regret floor is *second-order* in the effect bias; a **minimax controller** that shifts the gain under asymmetric (over/under-shoot) loss and beats certainty-equivalence — now a **closed-loop** controller on a confounded dynamic plant (bounds the worst-case downside, 82% cheaper over 30 steps), plus a `ConfoundingRobustPenalty` that carries the sensitivity radius into the general pessimistic-control stack — all **Rocq-certified**. `chc.sensitivity` is the one-import surface (estimate→radius→control) |
 | safety under partial ID | `barrier`, `plan` | the same sensitivity radius spent on a **constraint**: robust control-barrier margin, a least-restrictive safety filter (closed-form certified action interval, no QP), and `Gamma*` — **the largest sensitivity-model level under which the barrier stays certified** (a model parameter, not measured confounding). Safety degrades at *first* order in the effect bias (until the radius swallows the channel and the loss saturates) where performance regret degrades at second (the envelope theorem protects objectives, not binding constraints), **Rocq-certified**; in closed loop a regret-sized budget violates the limit on 93% of steps where the constraint-sized one never does. `certify_safety` audits a finished plan against all of it — the certified prefix next to the plan's `Gamma*` (the weakest step's, exactly) |
@@ -92,15 +94,16 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | structure discovery | `discovery`, `independence`, `network_causal`, `pathway` | lagged-parent discovery; MCI partial-correlation test; network/spillover orthogonal DML; **ranked temporal causal pathway** — which lagged variables & multi-step chains drive a target, signed + actionable (Rocq-certified walk-sum / geometric-truncation / weakest-link laws) |
 | advanced control | `koopman`, `meanfield`, `transport`, `matching`, `games`, `mintime` | Koopman-LQR; mean-field control; continuum + discrete **Kantorovich OT** (driver↔rider matching → **dual surge prices**); differentiable Stackelberg games over a **certified** congestion equilibrium (implicit-function gradients, contraction certificate, optimal damping — the solver reports its residual instead of silently returning a non-equilibrium); PMP time-optimal bang-bang |
 | marketplace moat | `marketplace` | **offline causal control under equilibrium interference**: learn incentives from confounded switchback logs where SUTVA fails — de-confounded + equilibrium-aware + W-DRO-pessimistic control recovers the oracle where MOPO / naive-causal go *negative* |
-| evaluation | `benchmark`, `flagship`, `lalonde`, `metrics` | pricing / inventory / support-shift / **model-uncertainty** / **confounding-robust** oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; real-data **LaLonde** validation; step-response quality metrics |
+| evaluation | `benchmark`, `causal_bench`, `flagship`, `lalonde`, `metrics`, `surrogate` | pricing / inventory / support-shift / **model-uncertainty** / **confounding-robust** oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; a causal-methods table scoring every frontier estimator against the naive baseline it is meant to beat; real-data **LaLonde** validation; step-response quality metrics; a gradient-boosted tree surrogate as the tabular prediction competitor (optional `trees` extra) |
 | scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka); mesh-free **Deep Galerkin** neural Poisson solver |
 
 ## Validation
 
 Correctness is cross-checked in independent tools, symbolic first (`validation/`): the ARE / matrix
 exponential are verified **Maxima**-authoritative (exact + high-precision `bfloat`) against **PARI/GP**
-(50-digit) and **Octave**, with SciPy used only as the fast float64 numeric. Control invariants
-(box-projection bounds + idempotence) are **formally proved in Rocq** (`proofs/box_projection.v`).
+(50-digit) and **Octave**, with SciPy used only as the fast float64 numeric. The control and guarantee
+invariants are **formally proved in Rocq** — 37 files under `proofs/`, from the box-projection bounds
+and idempotence (`box_projection.v`) to the interference-aware regret certificate.
 
 ## Honest positioning
 
@@ -108,7 +111,8 @@ exponential are verified **Maxima**-authoritative (exact + high-precision `bfloa
 (MOPO/MOReL/Delphic), sequential causal identification (g-methods / dynamic treatment regimes),
 differentiable control (Neuromancer). The contribution is the *integration behind one API* plus a
 benchmark with ground-truth interventional effects. KAN is **one interpretable residual backend**, not
-the identity of the framework. See `plans/` for the full analysis and roadmap.
+the identity of the framework. What has landed since `v0.1.0`, scope corrections included, is in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## Status
 
