@@ -3,6 +3,7 @@
 import pytest
 
 from chc.benchmark import (
+    CausalDynamicsTask,
     ConfoundingRobustTask,
     InventoryTask,
     PricingTask,
@@ -101,3 +102,31 @@ def test_confounding_robust_one_sided_hedge_hurts_when_the_gain_is_inflated() ->
     results = {r.controller: r for r in ConfoundingRobustTask(kappa=0.5).run()}
     assert results["greedy"].regret > 0.0  # the inflated estimate still costs something
     assert results["robust"].regret > results["greedy"].regret  # ...and shrinking makes it worse
+
+
+def test_causal_dynamics_identification_beats_prediction_error_fitting() -> None:
+    """Three tiers, not two: adjusted, instrumented, and not identified at all.
+
+    The IV row is deliberately *not* held to the adjusted row's bar. Its shifter explains ~18% of
+    the action's variance, so it pays a real variance premium — an order of magnitude more channel
+    error, and ~10x the regret. Asserting it near-oracle would mean tuning the sample size until a
+    weak instrument looked free.
+    """
+    results = {r.controller: r for r in CausalDynamicsTask().run()}
+    assert results["oracle"].regret == 0.0
+    assert results["causal-id"].regret < 0.05  # measured 0.014
+    assert results["causal-iv"].regret < 0.3  # measured 0.132 — identified, but noisier
+    assert results["mse-id"].regret > 1.0  # measured 6.41 against a 6.10 oracle cost
+    assert results["causal-iv"].regret < 0.1 * results["mse-id"].regret
+
+
+def test_causal_dynamics_failure_is_invisible_to_the_safety_columns() -> None:
+    """The honest trap: a mis-scaled channel under-actuates, so viol and ood stay clean.
+
+    Worth a test of its own -- it is the case where a reader would otherwise conclude from a green
+    constraint column that the plan was fine.
+    """
+    results = {r.controller: r for r in CausalDynamicsTask().run()}
+    assert results["mse-id"].constraint_violations == 0.0
+    assert results["mse-id"].ood_rate == 0.0
+    assert results["mse-id"].regret > results["causal-id"].regret

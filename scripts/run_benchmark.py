@@ -6,6 +6,7 @@ Run: uv run python scripts/run_benchmark.py
 import urllib.error
 
 from chc.benchmark import (
+    CausalDynamicsTask,
     ConfoundingRobustTask,
     InventoryTask,
     ModelUncertaintyTask,
@@ -32,6 +33,8 @@ def main() -> None:
     print(leaderboard_multiseed(run_multiseed(ModelUncertaintyTask(), SLOW_SEEDS)))
     print("\n== confounding-robust (HIDDEN confounder; sensitivity radius vs certainty-equiv) ==")
     print(leaderboard_multiseed(run_multiseed(ConfoundingRobustTask(), FAST_SEEDS)))
+    print("\n== causal-dynamics (the confounding is in the plant's own control channel) ==")
+    print(leaderboard_multiseed(run_multiseed(CausalDynamicsTask(), FAST_SEEDS)))
 
     print("\n== LaLonde-DW (external: recover the randomized ATE from CPS-confounded data) ==")
     try:

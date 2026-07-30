@@ -5,7 +5,8 @@ an evaluation reporting **regret vs oracle**, **constraint violations**, and **o
 rate**. The point is to measure *where* causal control beats predictive control — and to be honest
 where it does not. v0 has pricing (steering), inventory (newsvendor), support-shift (pessimism),
 model-uncertainty (calibrated ensemble) and confounding-robust (sensitivity radius under a *hidden*
-confounder) tasks, all in the same ``TaskResult`` / ``leaderboard`` shape.
+confounder) tasks, plus causal-dynamics (the confounding sits in the plant's own control channel),
+all in the same ``TaskResult`` / ``leaderboard`` shape.
 """
 
 from __future__ import annotations
@@ -25,10 +26,11 @@ from chc.causal import ConfoundedLinearSystem, estimate_control_effect
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
+from chc.dynamics_id import ConfoundedControlAffineSystem, fit_causal_residual
 from chc.estimators import BackdoorOLS, CausalEffectEstimator
 from chc.flagship import closed_loop
 from chc.integrate import rk4_step, rollout
-from chc.residual import ZeroResidual
+from chc.residual import ControlAffineResidual, ZeroResidual
 from chc.support import SupportModel, pessimistic_control
 from chc.uncertainty import (
     ConfoundingRobustPenalty,
@@ -548,6 +550,118 @@ class ConfoundingRobustTask:
                 ood_rate=ood(us),
             )
             for name, us in controllers
+        ]
+
+
+@dataclass(frozen=True)
+class CausalDynamicsTask:
+    """Confounding inside the *dynamics model*, not beside it -- the ``chc.dynamics_id`` consumer.
+
+    Every other task here estimates a scalar effect and hands it to a controller. In this one the
+    confounded object is the plant's own control channel: the log's action was chosen from a
+    covariate that also moved the state rate, so a residual fitted by prediction error learns the
+    *observational* response and the planner inherits it. Three ways in, scored on the same plant:
+
+    * ``mse-id`` -- unadjusted, which is where ``chc.train``'s prediction-error fit lands.
+    * ``causal-id`` -- the confounder is logged and adjusted for (the orthogonal moment).
+    * ``causal-iv`` -- the confounder is *latent*; only an exogenous action shifter is available.
+
+    HONEST TRAPS. (1) The failure is **silent on the safety channels**. The confounding attenuates
+    the channel to ~0.02 of its true 1.0, so ``mse-id`` prices the actuator as useless against the
+    ``control_weight`` penalty and gives up: measured ``max|u|`` 0.22 against the oracle's 2.49, so
+    it reaches ``x = 0.12`` instead of 0.71. It never approaches the box, never leaves the logged
+    action support (99th percentile of ``|u|`` is 4.4), and reports ``viol = ood = 0`` while
+    conceding most of the achievable improvement. Regret is the only column that sees it -- a
+    reminder that constraint and support diagnostics do not detect a mis-scaled channel. Shrinking
+    ``control_weight`` flips the same bias into over-commanding, where those columns *do* fire.
+    (2) The two identified rows are **not interchangeable**. Adjusting for a logged confounder gives
+    regret 0.014; the instrument gives 0.132, because it explains only ~18% of the action's variance
+    and identification rides on that share alone. Both beat the 6.41 of not identifying at all, but
+    an instrument is a weaker substitute for the confounder than the word "identified" suggests.
+    (3) Only the **channel** is identified; ``a_θ`` stays an observational-conditional drift, so
+    this row scores planning, not forecasting. (4) The plant is control-affine by construction,
+    which is the class the estimator and :func:`chc.plan.certify_safety` share -- a general
+    nonlinear residual gets no orthogonality guarantee and no row here.
+    """
+
+    x_target: float = 1.0
+    dt: float = 0.05
+    horizon: int = 25
+    u_lo: float = -5.0
+    u_hi: float = 5.0
+    x_safe: float = 2.5  # |x[0]| <= x_safe; saturating on a mis-scaled channel blows through it
+    control_weight: float = 0.1
+    n_data: int = 4000
+    inner_steps: int = 150
+
+    def run(self, seed_data: int = 0) -> list[TaskResult]:
+        """Fit the channel three ways from one confounded log, then score each plan on the plant."""
+        drift = jnp.array([[-0.5, 0.1], [0.0, -0.3]])
+        channel = jnp.array([[1.0], [0.5]])
+        system = ConfoundedControlAffineSystem(
+            drift=drift,
+            channel=channel,
+            confounder_to_rate=jnp.array([[2.0], [1.0]]),
+            confounder_to_action=jnp.array([[-1.5]]),
+            instrument_to_action=jnp.array([[0.8]]),
+            dt=self.dt,
+        )
+
+        def known(t: float | Array, x: Array, u: Array) -> Array:
+            return jnp.zeros_like(x)
+
+        data = system.sample(self.n_data, jax.random.key(seed_data), known)
+        u_support = float(jnp.quantile(jnp.abs(data["u"]), 0.99))
+
+        plant = HybridDynamics(
+            known=known,
+            residual=ControlAffineResidual(
+                drift=jnp.concatenate([jnp.zeros((2, 1)), drift], axis=1),
+                channel=jnp.concatenate([channel[:, :, None], jnp.zeros((2, 1, 2))], axis=2),
+            ),
+        )
+        cost = QuadraticCost(
+            Q=jnp.eye(2),
+            R=self.control_weight * jnp.eye(1),
+            Qf=5.0 * jnp.eye(2),
+            x_target=jnp.array([self.x_target, 0.0]),
+        )
+        x0, us0 = jnp.zeros(2), jnp.zeros((self.horizon, 1))
+
+        def plan(model: HybridDynamics) -> Array:
+            us, _ = projected_gradient_control(
+                model, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
+            )
+            return us
+
+        def fitted(
+            *, adjust_for: tuple[str, ...] = (), instrument: str | None = None
+        ) -> HybridDynamics:
+            fit = fit_causal_residual(
+                known, data, self.dt, adjust_for=adjust_for, instrument=instrument
+            )
+            return HybridDynamics(known=known, residual=fit.residual)
+
+        plans = {
+            "oracle": plan(plant),
+            "causal-id": plan(fitted(adjust_for=("z",))),
+            "causal-iv": plan(fitted(instrument="w")),
+            "mse-id": plan(fitted()),
+        }
+        costs = {
+            name: float(total_cost(plant, x0, us, self.dt, cost)) for name, us in plans.items()
+        }
+        return [
+            TaskResult(
+                controller=name,
+                cost=costs[name],
+                regret=costs[name] - costs["oracle"],
+                constraint_violations=float(
+                    jnp.mean(jnp.abs(rollout(plant, x0, us, self.dt)[:, 0]) > self.x_safe)
+                ),
+                ood_rate=float(jnp.mean(jnp.abs(us) > u_support)),
+            )
+            for name, us in plans.items()
         ]
 
 
