@@ -1,10 +1,11 @@
-"""Learned residual backends (Strategy): MLP, RBF Kolmogorov-Arnold, graph, and two structured
-backbones that carry a guarantee -- port-Hamiltonian (passive, Lyapunov-stable) and Lipschitz
-(certified bounded gain). GP is future."""
+"""Learned residual backends (Strategy): MLP, RBF Kolmogorov-Arnold, graph, control-affine, and two
+structured backbones that carry a guarantee -- port-Hamiltonian (passive, Lyapunov-stable) and
+Lipschitz (certified bounded gain). GP is future."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import combinations_with_replacement
 
 import equinox as eqx
 import jax
@@ -51,6 +52,54 @@ class MLPResidual(eqx.Module):
 
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
         return self.mlp(jnp.concatenate([x, u]))
+
+
+def control_affine_features(x: Array, degree: int) -> Array:
+    """Monomials of a *single* state up to total ``degree``, bias first.
+
+    Owned here rather than shared with :mod:`chc.causal`'s batch version because it indexes the
+    parameters of :class:`ControlAffineResidual`: the estimator that fits those parameters
+    (:func:`chc.dynamics_id.fit_causal_residual`) has to use this exact basis, and a second
+    implementation is a silent way for the two to disagree about what a coefficient means.
+    """
+    terms = [jnp.ones(())]
+    for deg in range(1, degree + 1):
+        terms.extend(
+            jnp.prod(jnp.stack([x[i] for i in combo]))
+            for combo in combinations_with_replacement(range(x.shape[0]), deg)
+        )
+    return jnp.stack(terms)
+
+
+class ControlAffineResidual(eqx.Module):
+    """``r_θ(x, u) = a_θ(x) + B_θ(x) u``, both coefficients linear in ``control_affine_features``.
+
+    This is the plant class the rest of the library already speaks about:
+    :func:`chc.plan.certify_safety` reads the control channel off the Jacobian at ``u = 0`` and
+    :mod:`chc.spine` requires a control-affine plant, so identifying a residual *in this class* puts
+    the identification layer and the safety layer on the same object rather than on two different
+    linearisations of it.
+
+    It is also the class in which the control channel is a **parameter** rather than a derivative of
+    a black box, which is what makes it estimable by a partialling-out moment: see
+    :func:`chc.dynamics_id.fit_causal_residual`. A general ``r_θ(x, u)`` fitted by prediction error
+    has no such guarantee -- under a confounded logging policy it learns the observational response.
+
+    ``degree = 1`` gives a constant channel (the case the orthogonality results §18/§19 cover);
+    higher degrees make the channel state-dependent at the cost of leaving that scope.
+    """
+
+    drift: Array  # (out_dim, n_features)
+    channel: Array  # (out_dim, control_dim, n_features)
+    degree: int = eqx.field(static=True, default=1)
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        phi = control_affine_features(x, self.degree)
+        return self.drift @ phi + (self.channel @ phi) @ u
+
+    def control_channel(self, x: Array) -> Array:
+        """``B_θ(x)`` -- the ``(out_dim, control_dim)`` response of the state rate to the action."""
+        return self.channel @ control_affine_features(x, self.degree)
 
 
 class RBFKANLayer(eqx.Module):

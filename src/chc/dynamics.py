@@ -47,9 +47,13 @@ class LinearDynamics(eqx.Module):
 class HybridDynamics(eqx.Module):
     """``f(x, u, t) = f_known(x, u, t) + r_θ(x, u, t)``.
 
-    The residual carries only the unknown part; restricting its inputs (a feature map) is where
-    causal design will live. With a :class:`~chc.residual.ZeroResidual` this reduces exactly to the
-    known dynamics.
+    The residual carries only the unknown part. With a :class:`~chc.residual.ZeroResidual` this
+    reduces exactly to the known dynamics.
+
+    Fitting the residual by prediction error (:mod:`chc.train`) makes its control channel the
+    *observational* response, which is the wrong object under a confounded logging policy;
+    :func:`chc.dynamics_id.fit_causal_residual` is the identified alternative, restricted to a
+    control-affine residual.
     """
 
     known: Dynamics

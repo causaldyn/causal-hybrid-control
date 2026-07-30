@@ -6,6 +6,11 @@ identification behind a pluggable estimator interface, pessimism/support, off-po
 and the oracle-regret benchmark. On top of it: control under hidden confounding, the safety
 layer that spends the identification radius on a constraint, and `chc.spine`, which runs the
 whole chain -- confounded logs to certified plan -- as one decision.
+
+A distinction the API deliberately keeps visible rather than smoothing over: fitting a residual by
+prediction error is not identifying it. Under a confounded logging policy that recovers the
+observational control response, and `chc.dynamics_id` is the module that recovers the interventional
+one.
 """
 
 from __future__ import annotations
@@ -40,6 +45,12 @@ from chc.deep_galerkin import ScalarMLP, solve_poisson_dgm
 from chc.did import GroupTimeATT, callaway_santanna, de_chaisemartin, twoway_fixed_effects_att
 from chc.discovery import LaggedGraph, TigramiteDiscovery, discover_lagged_parents
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
+from chc.dynamics_id import (
+    CausalDynamicsFit,
+    ConfoundedControlAffineSystem,
+    fit_causal_residual,
+    solve_channel_moment,
+)
 from chc.estimators import (
     IV2SLS,
     BackdoorOLS,
@@ -210,6 +221,7 @@ from chc.regret import (
 )
 from chc.residual import (
     ContractiveResidual,
+    ControlAffineResidual,
     DampingInjectionCertificate,
     GraphResidual,
     KANResidual,
@@ -219,6 +231,7 @@ from chc.residual import (
     PortHamiltonianCertificate,
     PortHamiltonianResidual,
     ZeroResidual,
+    control_affine_features,
     damping_injection_certificate,
     lipschitz_certificate,
     port_hamiltonian_certificate,
@@ -286,11 +299,13 @@ __all__ = [
     "BarrierConfoundingCurve",
     "BarrierReachabilityGap",
     "CausalControlCurve",
+    "CausalDynamicsFit",
     "CausalEffectEstimator",
     "CausalPathway",
     "CausalPlan",
     "ClusteredLowerBoundCurve",
     "CompositionTransferCurve",
+    "ConfoundedControlAffineSystem",
     "ConfoundedLinearSystem",
     "ConfoundedNetworkSystem",
     "ConfoundedTurnpikeCurve",
@@ -304,6 +319,7 @@ __all__ = [
     "ConstrainedRegretCurve",
     "ContractiveResidual",
     "ContractiveRolloutCertificate",
+    "ControlAffineResidual",
     "DampedOscillator",
     "DampingInjectionCertificate",
     "DoWhyEstimator",
@@ -428,6 +444,7 @@ __all__ = [
     "continuous_lqr",
     "contractive_rollout_bound",
     "contractive_rollout_certificate",
+    "control_affine_features",
     "control_channel",
     "control_gradient_adjoint",
     "control_gradient_diffrax",
@@ -455,6 +472,7 @@ __all__ = [
     "finite_horizon_dlqr",
     "finite_horizon_pl_certificate",
     "fit_behavior_policy",
+    "fit_causal_residual",
     "fit_ensemble",
     "fit_residual",
     "fit_residual_multistep",
@@ -526,6 +544,7 @@ __all__ = [
     "settling_time",
     "sinkhorn",
     "softmax_congestion_equilibrium",
+    "solve_channel_moment",
     "solve_poisson_dgm",
     "solve_toeplitz",
     "solve_transport",
