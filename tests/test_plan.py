@@ -43,19 +43,45 @@ def test_bare_plan_matches_projected_gradient_control() -> None:
 
 def test_tube_and_certified_horizon_cut_the_plan_where_the_error_leaves_tolerance() -> None:
     plan = causal_plan(*_ARGS, lipschitz=0.8, model_error=0.05, tolerance=0.03)
+    assert plan.uncertainty_tube is not None
+    assert plan.certified_horizon is not None
     assert plan.uncertainty_tube.shape == (13,)
     assert float(plan.uncertainty_tube[0]) == 0.0
     assert bool(jnp.all(jnp.diff(plan.uncertainty_tube) >= 0.0))  # the tube only grows
     assert 0 < plan.certified_horizon < 12  # a real cut, not all-or-nothing
+    assert plan.certificate_status == "partial"
     assert plan.certified_actions.shape == (plan.certified_horizon, 1)
     assert float(plan.uncertainty_tube[plan.certified_horizon]) <= 0.03
 
 
-def test_no_error_model_certifies_everything_and_says_so_via_a_zero_tube() -> None:
-    """Left at the defaults the tube is identically zero: "no error model", not "proved safe"."""
+def test_no_error_model_reports_not_evaluated_instead_of_a_full_horizon_pass() -> None:
+    """The footgun this replaces: a zero tube used to certify all 12 steps having proved nothing."""
     plan = causal_plan(*_ARGS, tolerance=1e-9)
-    assert float(jnp.max(plan.uncertainty_tube)) == 0.0
+    assert plan.certificate_status == "not_evaluated"
+    assert plan.uncertainty_tube is None
+    assert plan.certified_horizon is None
+    with pytest.raises(ValueError, match="no error model"):
+        _ = plan.certified_actions
+
+
+def test_an_error_model_inside_tolerance_certifies_the_whole_plan() -> None:
+    """ "certified" must stay reachable -- the fix must not make every plan look unevaluated."""
+    plan = causal_plan(*_ARGS, lipschitz=0.8, model_error=1e-6, tolerance=1.0)
+    assert plan.certificate_status == "certified"
     assert plan.certified_horizon == 12
+    assert plan.certified_actions.shape == (12, 1)
+
+
+def test_an_error_model_that_busts_tolerance_immediately_certifies_nothing() -> None:
+    plan = causal_plan(*_ARGS, lipschitz=0.8, model_error=10.0, tolerance=1e-6)
+    assert plan.certificate_status == "uncertified"
+    assert plan.certified_horizon == 0
+    assert plan.certified_actions.shape == (0, 1)
+
+
+def test_a_negative_error_budget_is_rejected_rather_than_shrinking_the_tube() -> None:
+    with pytest.raises(ValueError, match="cannot be negative"):
+        causal_plan(*_ARGS, lipschitz=0.8, model_error=-0.05)
 
 
 def test_support_penalty_pulls_the_plan_toward_the_logged_cloud() -> None:

@@ -16,17 +16,29 @@ With no safety arguments this is exactly :func:`chc.control.projected_gradient_c
 trajectory and cost packaged; each safety argument switches on one existing layer, so the defaults
 promise nothing that was not asked for.
 
-:func:`certify_safety` closes the other half: given a barrier and a sensitivity level ``Gamma``, it
-prices an existing plan against §40 -- where along the plan the safety guarantee survives unmeasured
-confounding, and the largest ``Gamma`` the whole plan tolerates. Deliberately a separate call on a
-finished plan rather than an argument to the planner: it *audits*, it does not silently change the
-actions.
+**Three modes, deliberately named apart, because "safety" alone does not say which one you get:**
+
+* **plan** -- :func:`causal_plan`. Box constraints in the solve, plus an *a-priori* Gronwall error
+  tube that says how far ahead the plan may be trusted. The tube is computed from ``lipschitz`` and
+  ``model_error``; it does not enter the objective and does not move a single action.
+* **audit** -- :func:`certify_safety`. Given a barrier and a sensitivity level ``Gamma``, it prices
+  a *finished* plan against §40: where along it the safety guarantee survives unmeasured
+  confounding, and the largest ``Gamma`` the whole plan tolerates. Read-only by construction.
+* **filter** -- :func:`chc.barrier.robust_safety_filter`. The only mode that changes an action: it
+  clips one nominal action into the certified interval at one state, online, scalar control.
+
+What does **not** exist here is a state-constrained solve: no barrier, tube or ``h(x) >= 0``
+requirement is imposed *inside* the optimisation, so :func:`causal_plan` can return a plan whose
+audit fails and whose tube leaves tolerance at step 3. That is why the audit is a separate call and
+why :attr:`CausalPlan.certified_actions` exists -- the enforcement happens after the fact, by
+truncation or by the filter, not by the planner. A CBF-QP or barrier-penalised solve is future work.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -45,20 +57,53 @@ from chc.uncertainty import (
     time_varying_rollout_bound,
 )
 
+CertificateStatus = Literal["not_evaluated", "uncertified", "partial", "certified"]
+
 
 @dataclass(frozen=True)
 class CausalPlan:
-    """A control sequence together with the certificate that says how far to trust it."""
+    """A control sequence together with the certificate that says how far to trust it.
+
+    ``None`` in the certificate fields means *no error model was supplied*, which is a different
+    statement from a certificate that came back empty: the first is "unknown", the second is
+    "checked, and nothing holds". Earlier versions returned an all-zero tube and a full
+    ``certified_horizon`` in the first case, which reads as a proof of safety over the whole plan
+    when nothing was proved at all. Read :attr:`certificate_status` before either field.
+    """
 
     actions: Array  # (horizon, m)
     trajectory: Array  # (horizon + 1, n) nominal rollout under the planning model
     task_cost: float  # cost of the plan, penalties excluded, so weights stay comparable
-    uncertainty_tube: Array  # (horizon + 1,) certified per-step error radius, 0 if uncertified
-    certified_horizon: int  # last step whose tube is inside ``tolerance``; 0 if never certified
+    uncertainty_tube: Array | None  # (horizon + 1,) per-step error radius; None if not evaluated
+    certified_horizon: int | None  # last step inside ``tolerance``; None if not evaluated
+
+    @property
+    def certificate_status(self) -> CertificateStatus:
+        """Whether the tube was evaluated at all, and if so how much of the plan it covers.
+
+        Derived rather than stored: a status field that can disagree with the horizon it summarises
+        is a worse footgun than the one this replaces.
+        """
+        if self.certified_horizon is None:
+            return "not_evaluated"
+        if self.certified_horizon == 0:
+            return "uncertified"
+        return "certified" if self.certified_horizon == self.actions.shape[0] else "partial"
 
     @property
     def certified_actions(self) -> Array:
-        """The prefix of the plan the tube still covers -- what a cautious caller should execute."""
+        """The prefix of the plan the tube still covers -- what a cautious caller should execute.
+
+        Raises:
+            ValueError: if no error model was supplied. Slicing by ``None`` would hand back the
+                whole sequence, and an empty one would claim the plan had been checked and failed;
+                neither is true, so the question has no answer to return.
+        """
+        if self.certified_horizon is None:
+            raise ValueError(
+                "no error model was supplied, so no prefix is certified; pass model_error to "
+                "causal_plan (see CausalPlan.certificate_status)"
+            )
         return self.actions[: self.certified_horizon]
 
 
@@ -88,16 +133,24 @@ def causal_plan(
         uncertainty: a ``PenaltyModel`` (ensemble, Wasserstein, confounding radius) weighted by
             ``lam_unc``. Requires ``support`` -- the pessimistic solver evaluates both terms.
         lipschitz, model_error: feed the discrete-Gronwall tube ``e_{k+1} = (1+L*dt)e_k + dt*eps``.
-            Left at 0 the tube is identically zero and every step counts as certified, which is the
-            honest reading of "no error model was supplied", not a safety claim.
+            ``model_error`` is what switches certification on: left at its default the tube would be
+            identically zero, so the plan reports ``certificate_status == "not_evaluated"`` and both
+            certificate fields come back ``None`` rather than a vacuous full-horizon pass. A
+            negative ``lipschitz`` is allowed and meaningful -- it is a contractive log-norm (§30),
+            and the tube then shrinks.
         tolerance: tube radius above which the plan stops being certified.
 
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
-            silently drop it -- the pessimistic solver is the only consumer of that argument.
+            silently drop it -- the pessimistic solver is the only consumer of that argument; or if
+            ``model_error`` is negative, which is not an error budget.
     """
     if uncertainty is not None and support is None:
         raise ValueError("uncertainty penalty requires a support model; it is unused without one")
+    if model_error < 0.0:
+        raise ValueError(
+            f"model_error is a per-step error budget and cannot be negative: {model_error}"
+        )
 
     guess = jnp.zeros((horizon, cost.R.shape[0]))
     if support is None:
@@ -118,14 +171,17 @@ def causal_plan(
             lam_unc=lam_unc,
         )
 
-    tube = time_varying_rollout_bound([lipschitz] * horizon, [model_error] * horizon, dt)
+    lipschitz_seq, error_seq = [lipschitz] * horizon, [model_error] * horizon
+    evaluated = model_error > 0.0
     return CausalPlan(
         actions=actions,
         trajectory=rollout(model, x0, actions, dt),
         task_cost=float(total_cost(model, x0, actions, dt, cost)),
-        uncertainty_tube=tube,
-        certified_horizon=certified_horizon(
-            [lipschitz] * horizon, [model_error] * horizon, dt, tolerance
+        uncertainty_tube=(
+            time_varying_rollout_bound(lipschitz_seq, error_seq, dt) if evaluated else None
+        ),
+        certified_horizon=(
+            certified_horizon(lipschitz_seq, error_seq, dt, tolerance) if evaluated else None
         ),
     )
 

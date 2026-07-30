@@ -7,10 +7,12 @@ and the oracle-regret benchmark. On top of it: control under hidden confounding,
 layer that spends the identification radius on a constraint, and `chc.spine`, which runs the
 whole chain -- confounded logs to certified plan -- as one decision.
 
-A distinction the API deliberately keeps visible rather than smoothing over: fitting a residual by
-prediction error is not identifying it. Under a confounded logging policy that recovers the
+Two distinctions the API deliberately keeps visible rather than smoothing over. Fitting a residual
+by prediction error is not identifying it: under a confounded logging policy that recovers the
 observational control response, and `chc.dynamics_id` is the module that recovers the interventional
-one.
+one. And "safety" names three different operations -- **plan** (`causal_plan`), **audit**
+(`certify_safety`), **filter** (`robust_safety_filter`) -- of which only the last changes an action;
+see `chc.plan` for what that does and does not promise.
 """
 
 from __future__ import annotations
@@ -128,7 +130,13 @@ from chc.pathway import (
     causal_pathway,
     causal_pathway_certificate,
 )
-from chc.plan import CausalPlan, SafetyCertificate, causal_plan, certify_safety
+from chc.plan import (
+    CausalPlan,
+    CertificateStatus,
+    SafetyCertificate,
+    causal_plan,
+    certify_safety,
+)
 from chc.reachability import (
     BarrierReachabilityGap,
     ReachableTube,
@@ -303,6 +311,7 @@ __all__ = [
     "CausalEffectEstimator",
     "CausalPathway",
     "CausalPlan",
+    "CertificateStatus",
     "ClusteredLowerBoundCurve",
     "CompositionTransferCurve",
     "ConfoundedControlAffineSystem",
