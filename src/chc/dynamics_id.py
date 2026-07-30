@@ -23,7 +23,11 @@ HONEST SCOPE, three limits worth stating before the code:
 * Only the **channel** ``B_θ`` is interventional. ``a_θ`` is fitted on the remainder and therefore
   absorbs whatever the omitted confounder contributes to the drift in-sample, so it is an
   *observational-conditional* drift. Planning is unbiased in the direction the optimiser moves;
-  the predicted trajectory *level* still shifts if the confounder's distribution does.
+  the predicted trajectory *level* still shifts if the confounder's distribution does. On real
+  data this bites harder than it sounds: a confounder that trends *with* the state gets charged to
+  positive feedback in ``x``, so the fitted drift can come back **unstable** even where the channel
+  is clean -- and an MPC uses the drift too. Check the drift's spectrum, and give measured exogenous
+  drivers a place in the drift as regressors instead of leaving them only in ``adjust_for``.
 * The residual must be control-affine (:class:`chc.residual.ControlAffineResidual`). A general
   ``r_θ(x, u)`` has no partialling-out moment and gets no guarantee here.
 * With no adjustment set and no instrument nothing in the log identifies the channel. The
@@ -117,6 +121,12 @@ class CausalDynamicsFit:
     # ``iv`` path with a weak first stage it runs optimistic -- measured ~1.25x at N=4000 with a
     # first-stage R^2 of 0.18. A test pins the calibration band; do not read it as exact.
     channel_error: float | None
+    # Root-mean diagonal of the drift stage's own homoskedastic OLS covariance, or None when the
+    # channel is not identified (the drift is then conditional on a meaningless channel). It is a
+    # DIFFERENT object from ``channel_error``: conditional on the fitted channel, whose uncertainty
+    # it does not propagate, and homoskedastic -- a scale, not coverage. Reported because on a real
+    # plant the drift, not the channel, dominated closed-loop cost.
+    drift_error: float | None
     action_residual_variance: (
         float  # overlap proxy: 0 => a deterministic policy, nothing to regress
     )
@@ -133,6 +143,33 @@ def _r_squared(target: Array, prediction: Array) -> float:
     return float(1.0 - jnp.sum((target - prediction) ** 2) / total)
 
 
+def _standardised(covariates: Array) -> Array:
+    """Centre and scale each covariate, so the nuisance basis is conditioned in any caller's units.
+
+    Without this the polynomial basis inherits whatever units the caller happened to use, and the
+    ridge penalises each monomial accordingly -- ``ridge=1e-6`` means something entirely different
+    against a column of order 1 than against its square of order 400. Measured on a 20-day log from
+    a real building emulator (``causaldyn-bench`` Track D-causal), where the zone enters in Celsius
+    at ~21 and the weather columns are already standardised: the degree-2 Gram came out at condition
+    number **1.4e11**, past what float32 can carry, and the fit returned ``nan``. The same rows in
+    float64 fitted fine, which is what identified this as conditioning rather than data. Scaling
+    first drops it to order 10 -- on a reproducible stand-in with that geometry (768 rows, zone at
+    21 +- 0.9 beside three standardised columns) the degree-2 Gram goes from ``2.7e10`` to
+    ``2.4e1`` -- and removes the precision dependence.
+
+    Full-sample statistics rather than per-fold ones. Centring and scaling the *inputs* is a linear
+    reparametrisation, so the span of the fitted basis -- and hence the partialled-out residual --
+    is unchanged by it; only the ridge's meaning moves, and pinning that to the data's own scale is
+    the point. Per-fold statistics would make the penalty fold-dependent for no gain.
+
+    A zero-variance column keeps scale 1, because dividing a constant column by its own zero spread
+    is how a conditioning fix becomes a ``nan`` of its own.
+    """
+    centre = jnp.mean(covariates, axis=0, keepdims=True)
+    spread = jnp.std(covariates, axis=0, keepdims=True)
+    return (covariates - centre) / jnp.where(spread > 1e-12, spread, 1.0)
+
+
 def _cross_fit_residuals(
     target: Array,
     action: Array,
@@ -147,8 +184,9 @@ def _cross_fit_residuals(
 
     Kept separate rather than generalising that function: it has three callers on a scalar
     contract, and :func:`chc.causal._ridge_predict` already accepts a matrix target, so the only
-    thing this adds is the fold bookkeeping over two dimensions.
+    thing this adds is the fold bookkeeping over two dimensions -- and the standardisation below.
     """
+    covariates = _standardised(covariates)
     n = target.shape[0]
     chunks = jnp.array_split(jax.random.permutation(jax.random.key(seed), n), folds)
     target_hat = jnp.zeros_like(target)
@@ -218,6 +256,21 @@ def _sandwich_error(
     sigma2 = jnp.sum(score**2) / (max(n - n_coeff, 1) * state_residual.shape[1])
     bread = jnp.linalg.inv(instrument.T @ regressor + ridge * jnp.eye(n_coeff))
     covariance = sigma2 * bread @ (instrument.T @ instrument) @ bread.T
+    return float(jnp.sqrt(jnp.mean(jnp.diag(covariance))))
+
+
+def _ols_error(target: Array, design: Array, coeffs: Array, ridge: float) -> float:
+    """Root-mean diagonal of ``sigma^2 (X'X)^-1`` -- the plain homoskedastic OLS covariance.
+
+    Used for the drift stage, and deliberately not the sandwich :func:`_sandwich_error` computes:
+    the drift is fitted by least squares on the remainder, so there is no instrument and no
+    endogenous regressor to sandwich against. What it does share is the caveat that it is a scale
+    rather than a coverage statement.
+    """
+    n, n_coeff = design.shape
+    score = target - design @ coeffs
+    sigma2 = jnp.sum(score**2) / (max(n - n_coeff, 1) * target.shape[1])
+    covariance = sigma2 * jnp.linalg.inv(design.T @ design + ridge * jnp.eye(n_coeff))
     return float(jnp.sqrt(jnp.mean(jnp.diag(covariance))))
 
 
@@ -346,6 +399,7 @@ def fit_causal_residual(
 
     score = y_res - regressor @ coeffs
     error = _sandwich_error(y_res, regressor, moment, coeffs, ridge) if identified else None
+    drift_scale = _ols_error(y - fitted, phi_x, drift.T, ridge) if identified else None
 
     return CausalDynamicsFit(
         residual=residual,
@@ -353,6 +407,7 @@ def fit_causal_residual(
         method=method,
         folds=folds,
         channel_error=error,
+        drift_error=drift_scale,
         action_residual_variance=float(jnp.mean(u_res**2)),
         nuisance_r2_state=_r_squared(y, y_hat),
         nuisance_r2_action=_r_squared(u, u_hat),

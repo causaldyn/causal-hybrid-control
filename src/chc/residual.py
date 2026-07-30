@@ -101,6 +101,18 @@ class ControlAffineResidual(eqx.Module):
         """``B_θ(x)`` -- the ``(out_dim, control_dim)`` response of the state rate to the action."""
         return self.channel @ control_affine_features(x, self.degree)
 
+    def drift_jacobian(self, x: Array) -> Array:
+        """``∂a_θ/∂x`` at ``x`` -- the ``(out_dim, n)`` local linearisation of the *drift*.
+
+        The companion to :meth:`control_channel`, and it exists because an MPC plans on both halves
+        of ``a_θ(x) + B_θ(x) u`` while only the second is identified causally by
+        :func:`chc.dynamics_id.fit_causal_residual`. A fit whose drift Jacobian has a non-negative
+        eigenvalue describes a plant that runs away on its own, and no amount of channel accuracy
+        rescues a horizon planned against it -- so the spectrum is worth reading before planning,
+        not after the trajectory diverges.
+        """
+        return jax.jacobian(lambda z: self.drift @ control_affine_features(z, self.degree))(x)
+
 
 class RBFKANLayer(eqx.Module):
     """One Kolmogorov-Arnold layer with RBF edge functions (FastKAN-style).

@@ -33,6 +33,18 @@ still change).
   attenuated channel makes the biased planner under-actuate (`max|u|` 0.22 against the oracle's 2.49),
   so it never touches the box or leaves the logged action support and reports `viol = ood = 0` while
   conceding most of the achievable improvement. Regret is the only column that sees it.
+- **Two ways to read the half of the fit that is *not* identified causally.**
+  `ControlAffineResidual.drift_jacobian(x)` returns `∂a_θ/∂x`, the companion to the existing
+  `control_channel(x)`, and `CausalDynamicsFit.drift_error` carries the drift stage's own
+  homoskedastic OLS scale beside `channel_error`. Both exist because of a failure on a real building
+  emulator (`causaldyn-bench` Track D-causal), where three of four arms came back with a **positive**
+  thermal pole: a trending outdoor temperature, present in `adjust_for` but absent from the drift's
+  own regressors, gets charged to positive feedback in the state, and the fitted plant heats itself.
+  An MPC plans on `a_θ(x) + B_θ(x) u` and only the second term is interventional, so a drift with a
+  non-negative eigenvalue describes a plant that runs away on its own and no channel accuracy
+  rescues the horizon. `drift_error` is deliberately a *different* object from `channel_error` —
+  conditional on the fitted channel, whose uncertainty it does not propagate, and homoskedastic: a
+  scale, not coverage.
 
 ### Changed
 
@@ -55,6 +67,21 @@ still change).
 
 ### Fixed
 
+- **The nuisance stage is now scale-invariant, and was silently not.** `_cross_fit_residuals` built
+  its degree-2 polynomial basis on the caller's raw covariates, so `ridge=1e-6` penalised a column of
+  order 1 and its square of order 400 by the same absolute amount, and the Gram inherited whatever
+  units the caller happened to log in. Found on a real building emulator (`causaldyn-bench` Track
+  D-causal), where the zone enters in Celsius at ~21 beside already-standardised weather: condition
+  number **1.4e11**, past what float32 carries, and the fit returned `nan` — while the same rows in
+  float64 fitted fine, which is what identified it as conditioning rather than data. Standardising
+  the covariates first drops the condition number to order 10 — on a reproducible stand-in with that
+  geometry (768 rows, zone at 21 ± 0.9 beside three standardised columns) the degree-2 Gram goes
+  from `2.7e10` to `2.4e1` — makes float32 reproduce float64 to 4 decimals, and makes the estimate
+  *exactly* invariant to the units and origin of the adjustment set. Two things this exposed are
+  worth stating: reverting the fix, an offset of `1e5` returns a **finite** channel wrong by 1.34
+  against a baseline error of 0.009 — silently wrong is the worse failure — and `tests/conftest.py`
+  enables `jax_enable_x64`, so **no test in this suite can fail from float32 conditioning**, which is
+  how the defect survived all of them.
 - `fit_causal_residual`'s `folds` documentation no longer claims that own-sample residualisation
   reintroduces bias. Measured across ten regimes, `folds=1` is never worse than cross-fitting and at
   small `N` is 5–10× better: residualising `y` and `u` by the same linear projection whose span

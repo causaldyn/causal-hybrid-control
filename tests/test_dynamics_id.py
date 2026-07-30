@@ -5,6 +5,8 @@ actually confounded, so each recovery test also pins down what the *un*-adjusted
 same rows.
 """
 
+import itertools
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -216,7 +218,97 @@ def test_reports_non_identification_when_nothing_in_the_log_identifies_the_chann
     assert fit.identified is False
     assert fit.method == "observational"
     assert fit.channel_error is None  # no standard error on an unidentified quantity
+    assert fit.drift_error is None  # nor on a drift conditional on a channel that means nothing
     assert fit.action_residual_variance > 0.0  # diagnostics still populated for comparison
+
+
+def test_the_fit_does_not_depend_on_the_units_the_caller_logged_in() -> None:
+    """A ridge on an unstandardised polynomial basis penalises each monomial by the caller's units.
+
+    Not a hypothetical. On a 20-day log from a real building emulator (``causaldyn-bench`` Track
+    D-causal) the zone entered in Celsius at ~21 beside already-standardised weather columns; the
+    degree-2 nuisance Gram came out at condition number 1.4e11, past what float32 carries, and the
+    fit returned ``nan`` -- while the same rows in float64 fitted fine, which is what identified it
+    as conditioning rather than data.
+
+    Offsetting a covariate reproduces both failure modes in float32: reverting the standardisation,
+    ``z + 1e4`` returns ``nan`` and ``z + 1e5`` returns a *finite* channel wrong by 1.34 against a
+    baseline error of 0.009 -- a silently wrong answer, which no caller can detect.
+
+    This suite cannot assert that directly, and the reason is worth knowing: ``tests/conftest.py``
+    turns on ``jax_enable_x64``, so **no test here can fail from float32 conditioning**, which is
+    exactly how the defect survived the whole suite. What float64 still shows is the underlying
+    cause -- the unstandardised fit drifts by 2e-4 to 4.5e-4 as the offset grows, because the ridge
+    is penalising monomials of order ``1e10``. Standardising makes the estimate *exactly* invariant,
+    so that is what this asserts, at a tolerance 20x under the drift it is there to catch.
+    """
+    system = _system()
+    data = system.sample(3000, jax.random.key(0), _known)
+    baseline = _channel_of(fit_causal_residual(_known, data, system.dt, adjust_for=("z",)))
+    assert _error(baseline) < 0.05  # the fit has to be good before invariance means anything
+
+    for name, shifted in (
+        ("kelvin-like offset", {**data, "z": data["z"] + 273.15}),
+        ("milli-unit rescale", {**data, "z": data["z"] * 1e3}),
+        ("offset that returned nan", {**data, "z": data["z"] + 1e4}),
+        ("offset that returned a silently wrong channel", {**data, "z": data["z"] + 1e5}),
+    ):
+        moved = _channel_of(fit_causal_residual(_known, shifted, system.dt, adjust_for=("z",)))
+        assert jnp.all(jnp.isfinite(moved)), name
+        assert float(jnp.linalg.norm(moved - baseline)) < 1e-5, name
+
+
+def test_the_drift_carries_its_own_scale_and_it_shrinks_like_root_n() -> None:
+    """``drift_error`` has to be a standard error, not a decorative number.
+
+    A real one falls as ``1/sqrt(N)``. This pins that, because the drift scale exists so a consumer
+    can compare it against ``channel_error`` and see which half of the model its horizon is really
+    waiting on -- a comparison that is worthless if either side is arbitrary.
+    """
+    system = _system()
+    errors = []
+    for n in (2000, 8000, 32_000):
+        data = system.sample(n, jax.random.key(0), _known)
+        fit = fit_causal_residual(_known, data, system.dt, adjust_for=("z",))
+        assert fit.drift_error is not None
+        errors.append(fit.drift_error)
+
+    for coarse, fine in itertools.pairwise(errors):
+        ratio = coarse / fine
+        assert 1.6 < ratio < 2.5, errors  # 4x the sample should halve it
+
+
+def test_the_drift_jacobian_reads_the_drift_where_control_channel_reads_the_channel() -> None:
+    """The two accessors must index the same parameter block the estimator wrote."""
+    drift = jnp.array([[0.7, -0.3, 0.1], [-0.2, 0.4, -0.5]])  # columns: bias, x0, x1
+    residual = ControlAffineResidual(drift=drift, channel=jnp.zeros((2, 1, 3)), degree=1)
+    x = jnp.array([1.5, -2.0])
+
+    assert jnp.allclose(residual.drift_jacobian(x), drift[:, 1:])  # constant at degree 1
+    assert residual.drift_jacobian(x).shape == (2, 2)
+
+    quadratic = ControlAffineResidual(
+        drift=jnp.array([[0.0, 0.0, 1.0]]), channel=jnp.zeros((1, 1, 3)), degree=2
+    )  # features [1, x, x^2] on a single state, so the drift is x^2 and the Jacobian is 2x
+    assert jnp.allclose(quadratic.drift_jacobian(jnp.array([3.0])), jnp.array([[6.0]]))
+
+
+def test_a_fitted_residual_exposes_the_stability_its_horizon_depends_on() -> None:
+    """The failure mode Track D-causal hit on a real building, reduced to an assertion.
+
+    The estimator identifies the channel and leaves the drift to least squares, so nothing stops a
+    fitted drift from being unstable. That is documented scope, not a bug -- but it has to be
+    *visible*, because an MPC plans on the drift too.
+    """
+    system = _system()
+    data = system.sample(4000, jax.random.key(0), _known)
+    fit = fit_causal_residual(_known, data, system.dt, adjust_for=("z",))
+
+    jacobian = fit.residual.drift_jacobian(jnp.zeros(2))
+    assert jacobian.shape == (2, 2)
+    recovered = float(jnp.max(jnp.real(jnp.linalg.eigvals(jacobian))))
+    truth = float(jnp.max(jnp.real(jnp.linalg.eigvals(DRIFT))))
+    assert abs(recovered - truth) < 0.15 * abs(truth)  # the spectrum is the drift's, not noise
 
 
 def test_the_two_fits_agree_when_there_is_nothing_to_correct() -> None:
