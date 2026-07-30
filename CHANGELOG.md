@@ -7,6 +7,64 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **Causal identification of the residual's control channel** (`chc.dynamics_id`). Until now every
+  residual in the library was fitted by prediction error, which under a confounded logging policy
+  learns the **observational** control response — measured, the trained channel is `0.02` where the
+  truth is `1.0`, and the planner inherits that. `fit_causal_residual` estimates it instead from the
+  Robinson moment lifted from a scalar effect to a state-dependent matrix, with cross-fitting:
+  channel error `0.002`. Control payoff on the same plant: regret `0.014` against the
+  prediction-error fit's `6.41`. When the confounder is never logged, a 2SLS variant identifies the
+  channel from an exogenous action shifter instead — consistent, but at a **variance premium** worth
+  stating rather than burying: `0.10` channel error and `0.13` regret, because the shifter explains
+  only ~18% of the action's variance.
+  `solve_channel_moment` exposes the moment alone, so `g` and `m` may come from any learner rather
+  than only the built-in ridge-polynomial default. With neither an adjustment set nor an instrument
+  the fit reports `identified=False` and points at `chc.sensitivity` instead of returning a confident
+  wrong answer.
+- **`ControlAffineResidual`** (`chc.residual`) — `r_θ(x, u) = a_θ(x) + B_θ(x) u`, the plant class
+  `chc.plan.certify_safety` and `chc.spine` already assume. Restricting identification to it puts the
+  identification and safety layers on the same object: `control_channel(x)` is bit-identical to
+  `∂r/∂u`, which is what `certify_safety` differentiates out. A general nonlinear residual has no
+  partialling-out moment and gets no guarantee from this estimator.
+- **`CausalDynamicsTask`** (`chc.benchmark`) — the leaderboard row, with `oracle` / `causal-id` /
+  `causal-iv` / `mse-id`. Its honest trap is that the failure is **silent on the safety columns**: the
+  attenuated channel makes the biased planner under-actuate (`max|u|` 0.22 against the oracle's 2.49),
+  so it never touches the box or leaves the logged action support and reports `viol = ood = 0` while
+  conceding most of the achievable improvement. Regret is the only column that sees it.
+
+### Changed
+
+- **`CausalPlan` no longer certifies a plan it never checked.** With no error model supplied
+  (`model_error` left at its default) the Gronwall tube is identically zero, and the old code reported
+  that as `certified_horizon == horizon` — a full-horizon safety pass obtained by proving nothing.
+  `uncertainty_tube` and `certified_horizon` are now `None` in that case, a new
+  `CausalPlan.certificate_status` property distinguishes `"not_evaluated"` from `"uncertified"` /
+  `"partial"` / `"certified"`, and `certified_actions` raises rather than handing back the whole
+  sequence via a `None` slice. **Breaking** for any caller that indexed those two fields
+  unconditionally. `causal_plan` also rejects a negative `model_error`, which is not an error budget.
+- **The three safety modes are named apart** in `chc.plan`'s documentation and in the README, because
+  the word "safety" was doing the work of all three: **plan** (`causal_plan` — box constraints in the
+  solve), **audit** (`certify_safety` — read-only on a finished plan), **filter**
+  (`robust_safety_filter` — the only one that changes an action). Stated plainly: no barrier or tube
+  enters the objective, so `causal_plan` can return a plan that fails its own audit. A
+  state-constrained (CBF-QP) solve does not exist yet.
+- CI gates the formal claims too: a `proofs` job compiles all 37 `proofs/*.v` under Rocq 9.2, pinned
+  because the proofs use the post-rename `From Stdlib Require Import`.
+
+### Fixed
+
+- `fit_causal_residual`'s `folds` documentation no longer claims that own-sample residualisation
+  reintroduces bias. Measured across ten regimes, `folds=1` is never worse than cross-fitting and at
+  small `N` is 5–10× better: residualising `y` and `u` by the same linear projection whose span
+  contains both nuisances is Frisch–Waugh–Lovell, so it is exactly unbiased and out-of-fold prediction
+  only adds variance. Cross-fitting is insurance against nuisance learners that are adaptive to the
+  sample or saturated (1-NN including the row itself sends the channel to exactly zero), and the
+  tests now assert that case rather than the false one.
+- `HybridDynamics`'s docstring said causal design "will live" in the residual's feature map. It does
+  now, in `chc.dynamics_id`, and the docstring points there.
+
 ## [0.2.0] — 2026-07-29
 
 Work landed on `main` since `v0.1.0`. The theme is **guarantees**: most of it is a machine-checked

@@ -8,9 +8,11 @@ module lets that number come from whichever backend is best, behind a single int
 * **built-ins** (``BackdoorOLS``, ``IV2SLS``, ``DoubleML``) — zero-dependency, thin wrappers over
   ``chc.causal``; the default when you do not want extra installs;
 * **adapters** over mature libraries (``EconMLDoubleML`` -> EconML) — *lazy-imported*, never a hard
-  dependency. They are heavy and resolver-hostile in a modern stack (EconML 0.16 will not resolve
-  on Python 3.12 + pandas 3 -- it pulls numba 0.53, capped at <3.10), so ``chc`` never pins them:
-  install them yourself in a compatible environment and pass the class in.
+  dependency. They are heavy and hostile to a modern stack: ``econml>=0.16`` with ``pandas>=3``
+  *resolves* fine on 3.12 and 3.14 and then fails to **install**, because resolution picks
+  ``numba 0.53.1`` (via ``econml -> sparse 0.19 -> numba``) whose build refuses anything outside
+  ``>=3.6,<3.10``. Pinning it would therefore break the lockfile rather than the import, so ``chc``
+  does not: install it yourself in a compatible environment and pass the class in.
 
 Richer backends may also return a heterogeneous ``cate(x)`` and ``diagnostics``; the controller
 ignores what it does not need, so every backend is swappable without touching the control code.

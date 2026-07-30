@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: "causal-hybrid-control"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  - given-names: Ilia
+    family-names: Gradina
+    email: ilia.gradina@gmail.com
+repository-code: "https://github.com/causaldyn/causal-hybrid-control"
+license: MIT
+version: 0.2.0
+date-released: "2026-07-29"
+abstract: >-
+  Physics-structured dynamics with a learned causal residual, controlled by constrained optimal
+  control and MPC, and made safe on offline confounded data by an explicit pessimism and support
+  layer. Includes causal identification of a control-affine residual's control channel from
+  confounded logs, sensitivity-aware control under hidden confounding, control-barrier certification
+  under a partially identified effect, and a machine-checked (Rocq) result line at the causal/control
+  seam.
+keywords:
+  - causal inference
+  - optimal control
+  - model predictive control
+  - system identification
+  - scientific machine learning
+  - hybrid models
+  - offline reinforcement learning
+  - jax

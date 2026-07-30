@@ -1,5 +1,10 @@
 # causal-hybrid-control
 
+[![ci](https://github.com/causaldyn/causal-hybrid-control/actions/workflows/ci.yml/badge.svg)](https://github.com/causaldyn/causal-hybrid-control/actions/workflows/ci.yml)
+[![pypi](https://img.shields.io/pypi/v/causal-hybrid-control)](https://pypi.org/project/causal-hybrid-control/)
+[![python](https://img.shields.io/pypi/pyversions/causal-hybrid-control)](https://pypi.org/project/causal-hybrid-control/)
+[![license](https://img.shields.io/pypi/l/causal-hybrid-control)](LICENSE)
+
 Physics-structured dynamics with a **learned causal residual**, controlled by **constrained optimal
 control / MPC**, and made safe on offline, confounded data by an explicit **pessimism / support** layer.
 
@@ -11,6 +16,24 @@ u* = argmin_u  J_task(u) + λ_unc·U(x,u) + λ_supp·D((x,u), 𝒟)   # pessimis
 Most data science stops at prediction. The value is in *decisions* — and a decision changes the future,
 so it must be evaluated as an **intervention**, not a correlation, and chosen by **optimal control**, not
 by argmax over a predictive score. `chc` is a small JAX library for that step.
+
+## Why the usual stacks do not close this
+
+Each of the three obvious approaches solves a different problem and leaves the same gap:
+
+- **Forecast + argmax.** Optimises a correlation. Under a confounded logging policy the fitted action
+  response *is* the observational one — measured on the synthetic plant below, a control channel of
+  `0.02` where the truth is `1.0`, so the planner barely acts and never notices.
+- **Causal effect estimation alone** (DML, staggered DiD, synthetic control, causal forests). Returns
+  an effect, not a decision: no dynamics, no actuation limits, no horizon, no notion of a state the
+  action must not reach. `chc` treats these as *backends* (`chc.estimators`) rather than rivals.
+- **Offline RL / MPC on a learned model.** Fits the dynamics by residual MSE, which is not
+  identification, and calibrates its pessimism to sampling noise rather than to unmeasured
+  confounding — so the uncertainty penalty shrinks with `N` while the bias does not.
+
+What is here is the seam: identify the *interventional* control channel from confounded logs
+(`chc.dynamics_id`), plan against it under constraints, and price what unmeasured confounding can do
+to the plan's performance (`chc.sensitivity`) and to its safety (`chc.barrier`).
 
 ## The one result
 
@@ -35,7 +58,7 @@ CIs (predictive regret `13734.15 [13732.55, 13735.31]`), and
 
 ```bash
 uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.12–3.14)
-uv run pytest      # 353 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
+uv run pytest      # 369 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
 ```
 
 ## Quickstart
@@ -78,11 +101,11 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 
 | area | module | what it does |
 |---|---|---|
-| dynamics | `dynamics`, `residual`, `integrate` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / graph / **port-Hamiltonian** (passive, Lyapunov-stable) / **Lipschitz-certified** residuals; RK4 |
+| dynamics | `dynamics`, `residual`, `integrate` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / graph / **control-affine** (`a_θ(x) + B_θ(x)u`, the class the identification and safety layers share) / **port-Hamiltonian** (passive, Lyapunov-stable) / **Lipschitz-certified** residuals; RK4 |
 | sensitivity | `adjoint` | discrete adjoint (verified == autodiff == finite differences) |
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
-| identification | `train`, `causal`, `estimators`, `gmethods` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters; Robins' **g-formula** (cross-fitted) for a treatment *sequence* under time-varying confounding |
-| control | `cost`, `control`, `mpc`, `splitting`, `plan` | Bolza objective; projected-gradient OC; receding-horizon MPC; **Strang–Marchuk** splitting; `causal_plan` — the one-call spine returning a plan *with* its uncertainty tube and certified horizon attached |
+| identification | `train`, `dynamics_id`, `causal`, `estimators`, `gmethods` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters; Robins' **g-formula** (cross-fitted) for a treatment *sequence* under time-varying confounding. `dynamics_id` is the one that makes the *plant* causal: prediction-error fitting learns the **observational** control channel, so under a confounded logging policy the planner inherits the bias (measured: channel `0.02` where the truth is `1.0`). `fit_causal_residual` estimates it by Robinson partialling-out lifted to a state-dependent matrix — channel error `0.002`, control regret `0.014` against the biased fit's `6.41` — or by 2SLS when the confounder is never logged, at a real variance premium (`0.10` error, regret `0.13`, because the shifter explains only 18% of the action). Reports `identified=False` instead of a confident wrong answer when nothing in the log can pin it down. `uv run python scripts/dynamics_id_demo.py` |
+| control | `cost`, `control`, `mpc`, `splitting`, `plan` | Bolza objective; projected-gradient OC; receding-horizon MPC; **Strang–Marchuk** splitting; `causal_plan` — the one-call spine returning a plan *with* its uncertainty tube and certified horizon attached. Three modes are named apart on purpose: **plan** (`causal_plan`, box constraints in the solve), **audit** (`certify_safety`, read-only on a finished plan), **filter** (`robust_safety_filter`, the only one that changes an action). No barrier or tube enters the *objective*, so a plan can come back and fail its own audit; with no error model supplied the certificate reports `not_evaluated` rather than a vacuous full-horizon pass |
 | offline safety | `support`, `offpolicy`, `uncertainty` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate; **calibrated** deep-ensemble + split-conformal uncertainty; a **time-consistent nested-CVaR** aggregation of that disagreement (the risk-neutral sum averages one very bad step away); **Wasserstein-1 DRO** distribution-shift margin; **certified rollout tubes** (Lipschitz / contractive-log-norm Grönwall bounds → time-varying uncertainty tube, safety-tightening, certified-safe horizon), **Rocq-proved** |
 | guarantee | `regret` | LQ certainty-equivalence bound — quadratic in model error (Dean–Mania–Tu–Recht–Matni); **interference-aware regret certificate** (extra exposure-map-error term), **machine-checked in Rocq** |
 | sensitivity-aware control | `sensitivity` (facade over `regret`, `uncertainty`, `barrier`) | **control under HIDDEN CONFOUNDING**: bounded-density-ratio (MSM) CVaR worst-case → pessimism-radius inflation; the confounding-regret floor is *second-order* in the effect bias; a **minimax controller** that shifts the gain under asymmetric (over/under-shoot) loss and beats certainty-equivalence — now a **closed-loop** controller on a confounded dynamic plant (bounds the worst-case downside, 82% cheaper over 30 steps), plus a `ConfoundingRobustPenalty` that carries the sensitivity radius into the general pessimistic-control stack — all **Rocq-certified**. `chc.sensitivity` is the one-import surface (estimate→radius→control) |
@@ -94,7 +117,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | structure discovery | `discovery`, `independence`, `network_causal`, `pathway` | lagged-parent discovery; MCI partial-correlation test; network/spillover orthogonal DML; **ranked temporal causal pathway** — which lagged variables & multi-step chains drive a target, signed + actionable (Rocq-certified walk-sum / geometric-truncation / weakest-link laws) |
 | advanced control | `koopman`, `meanfield`, `transport`, `matching`, `games`, `mintime` | Koopman-LQR; mean-field control; continuum + discrete **Kantorovich OT** (driver↔rider matching → **dual surge prices**); differentiable Stackelberg games over a **certified** congestion equilibrium (implicit-function gradients, contraction certificate, optimal damping — the solver reports its residual instead of silently returning a non-equilibrium); PMP time-optimal bang-bang |
 | marketplace moat | `marketplace` | **offline causal control under equilibrium interference**: learn incentives from confounded switchback logs where SUTVA fails — de-confounded + equilibrium-aware + W-DRO-pessimistic control recovers the oracle where MOPO / naive-causal go *negative* |
-| evaluation | `benchmark`, `causal_bench`, `flagship`, `lalonde`, `metrics`, `surrogate` | pricing / inventory / support-shift / **model-uncertainty** / **confounding-robust** oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; a causal-methods table scoring every frontier estimator against the naive baseline it is meant to beat; real-data **LaLonde** validation; step-response quality metrics; a gradient-boosted tree surrogate as the tabular prediction competitor (optional `trees` extra) |
+| evaluation | `benchmark`, `causal_bench`, `flagship`, `lalonde`, `metrics`, `surrogate` | pricing / inventory / support-shift / **model-uncertainty** / **confounding-robust** / **causal-dynamics** (the confounding is in the plant's own channel; the failure is invisible to the constraint and support columns) oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; a causal-methods table scoring every frontier estimator against the naive baseline it is meant to beat; real-data **LaLonde** validation; step-response quality metrics; a gradient-boosted tree surrogate as the tabular prediction competitor (optional `trees` extra) |
 | scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka); mesh-free **Deep Galerkin** neural Poisson solver |
 
 ## Validation
@@ -111,12 +134,21 @@ and idempotence (`box_projection.v`) to the interference-aware regret certificat
 (MOPO/MOReL/Delphic), sequential causal identification (g-methods / dynamic treatment regimes),
 differentiable control (Neuromancer). The contribution is the *integration behind one API* plus a
 benchmark with ground-truth interventional effects. KAN is **one interpretable residual backend**, not
-the identity of the framework. The release-by-release record, scope corrections included, is in
-[`CHANGELOG.md`](CHANGELOG.md).
+the identity of the framework.
+
+Worth knowing before you rely on a fitted model: **a low residual MSE is not causal identification.**
+Fitting `r_θ` by prediction error recovers the *observational* control response, which is the wrong
+one whenever the logged action was chosen from something that also moved the state — on the synthetic
+plant the trained channel is `0.02` where the truth is `1.0`, and no amount of extra training fixes
+it because it is not a fitting problem. `chc.dynamics_id` is the identified route, and it is
+restricted to control-affine residuals; outside that class this library offers a sensitivity radius
+(`chc.sensitivity`), not an unbiased estimate.
+
+The release-by-release record, scope corrections included, is in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Status
 
-Early (`v0.2.0`), single-author, research code (354 collected tests; Python 3.12–3.14, astral `ruff` + `ty`).
+Early (`v0.2.0`), single-author, research code (371 collected tests; Python 3.12–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**
@@ -124,8 +156,8 @@ pessimism (deep ensemble + split conformal) and an LQ certainty-equivalence regr
 Strang–Marchuk splitting, off-policy gate, KAN/MLP/Graph residual backends; advanced control backends
 (Koopman-LQR, mean-field, optimal transport, differentiable Stackelberg games, PMP time-optimal
 bang-bang); dynamic-effect IRFs + structured Toeplitz/Levinson/Gohberg–Semencul operators; lagged
-structure discovery; five benchmark tasks (pricing, inventory, support-shift, model-uncertainty,
-confounding-robust) with multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin FEM + a mesh-free Deep
+structure discovery; six benchmark tasks (pricing, inventory, support-shift, model-uncertainty,
+confounding-robust, causal-dynamics) with multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin FEM + a mesh-free Deep
 Galerkin neural Poisson solver; and step-response quality metrics. Both halves are now validated on
 **real** targets, not just synthetic ones: the **causal identification core** on real data with an
 experimental ground truth (notebook 07, LaLonde NSW: the naive estimate flips sign, Double ML recovers
@@ -135,6 +167,12 @@ forecast-MPC of this library, run via `causaldyn-bench` against a live **BOPTEST
 discomfort 8.01→7.32, energy 0.393→0.354, cost 0.100→0.090, emissions 0.066→0.059 — a clean Pareto
 win). Roadmap: more real tasks, the Medium/paper writeups, and — only if a real-time/edge deployment
 target appears — a compiled runtime.
+
+## Contributing and citation
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) lists the gates a change has to pass — ruff, `ty`, the pytest
+suite, and `rocq compile` over `proofs/*.v`. Citation metadata is in
+[`CITATION.cff`](CITATION.cff).
 
 ## License
 
