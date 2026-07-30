@@ -39,3 +39,21 @@ jobs:
         run: uv sync --group dev
       - name: Tests
         run: uv run pytest
+
+  # The formal claims are gated like the Python ones: every docstring that cites a Rocq lemma is only
+  # as good as the file still compiling. Pinned to 9.2 because the proofs use the post-rename
+  # `From Stdlib Require Import`, which does not exist before Rocq 9.0.
+  proofs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile every proof
+        # Read-only mount, sources copied into the container's /tmp: the image runs as uid 1000
+        # while the runner owns the workspace, and `rocq compile` writes .vo/.glob next to its input.
+        # `bash -lc` is required -- rocq lives in the image's opam switch, not on the default PATH.
+        run: |
+          docker run --rm -v "$PWD/proofs:/proofs:ro" rocq/rocq-prover:9.2 bash -lc '
+            set -euo pipefail
+            mkdir /tmp/proofs && cp /proofs/*.v /tmp/proofs/ && cd /tmp/proofs
+            for f in *.v; do rocq compile -q "$f"; done
+            echo "compiled $(ls -1 *.vo | wc -l) proofs"'
