@@ -14,7 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v9
+        # Pinned to a full version, not `@v9`: setup-uv dropped its moving major/minor tags in
+        # v8.0.0, so `@v9` does not resolve. The other actions here still publish them.
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
       - name: Build sdist + wheel
