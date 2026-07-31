@@ -1,0 +1,69 @@
+/* Result 41: the drift spectrum of a control-affine fit is not invariant to the actuator's
+   coordinate origin, while the closed-loop decay at a stated action is.
+
+   Motivation is empirical. `causaldyn-bench` Track D-causal reported a *positive* thermal pole --
+   a building heating itself without bound -- on both BOPTEST cases whose actuator reports a
+   setpoint in [15, 25] C, and a negative one on the case that modulates on [0, 1]. Nothing about
+   the buildings differs that way. What differs is where the actuator's zero sits.
+
+   Everything below is derived from the model class, not asserted about it.
+
+   Run: timeout 120 maxima --very-quiet -b validation/actuator_reparametrisation.mac  */
+
+ratprint : false$
+
+/* --- 1. The class is closed under an affine change of actuator coordinates, and the map --- */
+
+rate_u : a*T + d + cz + (b0 + b1*T)*u$
+rate_v : expand(subst(u = alpha*v + beta, rate_u))$
+
+new_a  : ratsimp(coeff(expand(rate_v), T, 1) - coeff(coeff(expand(rate_v), T, 1), v, 1)*v)$
+new_d  : ratsimp(subst([T = 0, v = 0], rate_v) - cz)$
+new_b0 : ratsimp(coeff(subst(T = 0, expand(rate_v)), v, 1))$
+new_b1 : ratsimp(coeff(coeff(expand(rate_v), T, 1), v, 1))$
+
+print("a  ->", new_a, "  d  ->", new_d, "  b0 ->", new_b0, "  b1 ->", new_b1)$
+print("closure residual (must be 0):",
+      ratsimp(rate_v - (new_a*T + new_d + cz + (new_b0 + new_b1*T)*v)))$
+
+/* --- 2. What is invariant and what is not --- */
+
+/* Authority per unit of PHYSICAL actuator travel: one unit of v is alpha units of u. */
+print("authority residual (must be 0):",
+      ratsimp(subst(T = T0, new_b0 + new_b1*T)/alpha - (b0 + b1*T0)))$
+
+/* The drift coefficient is NOT invariant: it shifts by the action's origin times the
+   state-dependent part of the channel. */
+print("pole shift a_new - a =", ratsimp(new_a - a))$
+
+/* The decay at a fixed physical actuator position IS. With ubar = alpha*vbar + beta: */
+print("decay invariance residual (must be 0):",
+      ratsimp(subst(ubar = alpha*vbar + beta, a + ubar*b1) - subst(ubar = vbar, new_a + ubar*new_b1)))$
+
+/* --- 3. Why a small b1 is not a small effect: the shift is scaled by the actuator's origin --- */
+print("shift at beta=15, b1=-0.3779 (BOPTEST hydronic):", float(subst([beta = 15, b1 = -0.3779], new_a - a)))$
+print("shift at beta=15, b1=-0.3146 (BOPTEST air):     ", float(subst([beta = 15, b1 = -0.3146], new_a - a)))$
+
+/* --- 4. Where the fitted drift coefficient comes from: Frisch-Waugh-Lovell ---------------
+   The harness fits the drift by least squares on (1, T, z) after subtracting the identified
+   channel. The coefficient on T is then a ratio of two PARTIAL moments, and the denominator is
+   the state's own identifying budget -- the mirror image of the overlap budget the harness
+   already reports for the action, and which it never reported for the state.                */
+
+Sigma_W : matrix([vW1, c12], [c12, vW2])$
+c_TW    : matrix([c1, c2])$
+c_WR    : matrix([r1], [r2])$
+G       : matrix([vTT, c1, c2], [c1, vW1, c12], [c2, c12, vW2])$
+beta_ols: invert(G) . matrix([r0], [r1], [r2])$
+
+partial_num : ratsimp((matrix([r0]) - c_TW . invert(Sigma_W) . c_WR)[1][1])$
+partial_den : ratsimp((matrix([vTT]) - c_TW . invert(Sigma_W) . transpose(c_TW))[1][1])$
+print("FWL identity residual (must be 0):",
+      ratsimp(beta_ols[1][1] - partial_num/partial_den))$
+
+/* partial_den = var(T) * (1 - Rsq of T on W): the state's identifying budget, named rather
+   than assumed. So the fitted pole is a ratio whose DENOMINATOR is exactly the quantity the
+   harness reports for the action and never reported for the state. */
+explained : (c1^2*vW2 - 2*c1*c2*c12 + c2^2*vW1) / (vW1*vW2 - c12^2)$   /* written out by hand */
+print("partial var - vTT*(1 - explained/vTT) (must be 0):",
+      ratsimp(partial_den - vTT*(1 - explained/vTT)))$

@@ -9,6 +9,17 @@ still change).
 
 ### Added
 
+- **`ControlAffineResidual.closed_loop_jacobian(x, u)`** (`chc.residual`) — `∂(a_θ + B_θ u)/∂x`, the
+  linearisation an MPC horizon actually follows. `drift_jacobian` is the drift at `u = 0` and its
+  docstring claimed a non-negative eigenvalue meant "the plant runs away on its own"; that holds only
+  at `degree = 0`. With a state-dependent channel the fitted class is closed under an affine change
+  of actuator coordinates `u = alpha v + beta` with `a -> a + beta b1`, so the drift spectrum reports
+  where the actuator's units put their zero rather than whether the plant decays. Found on BOPTEST: a
+  zone whose actuator is a setpoint in `[15, 25] °C` read `+6.42` from the drift and `-1.40` from the
+  closed loop at the setpoint it actually held. The claim is corrected; the stability question to ask
+  is `sup` over the admissible action set, which for an affine decay is attained at a box endpoint.
+  Derivation and cross-checks in `validation/actuator_reparametrisation.{mac,py}`.
+
 - **Causal identification of the residual's control channel** (`chc.dynamics_id`). Until now every
   residual in the library was fitted by prediction error, which under a confounded logging policy
   learns the **observational** control response — measured, the trained channel is `0.02` where the

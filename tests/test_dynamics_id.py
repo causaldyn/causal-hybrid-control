@@ -293,6 +293,35 @@ def test_the_drift_jacobian_reads_the_drift_where_control_channel_reads_the_chan
     assert jnp.allclose(quadratic.drift_jacobian(jnp.array([3.0])), jnp.array([[6.0]]))
 
 
+def test_the_drift_jacobian_alone_does_not_decide_stability_when_the_channel_moves() -> None:
+    """A plant that decays everywhere its actuator can reach, reported as runaway by the drift.
+
+    The coefficients are the ones BOPTEST's ``bestest_hydronic`` produced: an actuator that reports
+    its action as a setpoint in ``[15, 25] °C`` puts the drift's zero 15 K outside the range the
+    plant ever visits, and the drift absorbs that offset times the state-dependent channel. So
+    ``drift_jacobian`` reads ``+6.42`` while the vector field the horizon integrates decays at
+    ``-1.40`` at the setpoint actually held, and at every setpoint above 17.0 °C.
+    """
+    residual = ControlAffineResidual(
+        drift=jnp.array([[0.0, 6.4197]]),
+        channel=jnp.array([[[9.2965, -0.3779]]]),
+        degree=1,
+    )
+    x = jnp.array([21.0])
+
+    assert float(residual.drift_jacobian(x)[0, 0]) > 0.0
+    held = float(residual.closed_loop_jacobian(x, jnp.array([20.685]))[0, 0])
+    assert abs(held + 1.397) < 1e-3
+    assert float(residual.closed_loop_jacobian(x, jnp.array([15.0]))[0, 0]) > 0.0  # low end grows
+
+    constant = ControlAffineResidual(
+        drift=jnp.array([[0.0, -0.05]]), channel=jnp.array([[[1.2, 0.0]]]), degree=1
+    )  # a channel that does not move with the state: the two questions coincide again
+    assert jnp.allclose(
+        constant.drift_jacobian(x), constant.closed_loop_jacobian(x, jnp.array([20.685]))
+    )
+
+
 def test_a_fitted_residual_exposes_the_stability_its_horizon_depends_on() -> None:
     """The failure mode Track D-causal hit on a real building, reduced to an assertion.
 

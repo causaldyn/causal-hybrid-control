@@ -106,12 +106,31 @@ class ControlAffineResidual(eqx.Module):
 
         The companion to :meth:`control_channel`, and it exists because an MPC plans on both halves
         of ``a_θ(x) + B_θ(x) u`` while only the second is identified causally by
-        :func:`chc.dynamics_id.fit_causal_residual`. A fit whose drift Jacobian has a non-negative
-        eigenvalue describes a plant that runs away on its own, and no amount of channel accuracy
-        rescues a horizon planned against it -- so the spectrum is worth reading before planning,
-        not after the trajectory diverges.
+        :func:`chc.dynamics_id.fit_causal_residual`.
+
+        This is the drift at ``u = 0`` and **nothing else**: at ``degree >= 1`` the channel depends
+        on the state, so the vector field the MPC integrates has Jacobian
+        ``∂a_θ/∂x + ∂(B_θ(x) u)/∂x`` and this method returns only the first term. Reading stability
+        off it is then a statement about where the actuator's coordinates put their zero rather than
+        about the plant: under ``u = alpha v + beta`` the fitted class is closed and the drift
+        absorbs ``beta`` times the state-dependent part of the channel, so a plant that decays
+        everywhere its actuator can reach can still show a positive drift eigenvalue. On BOPTEST, a
+        setpoint-actuated zone reporting its action in ``[15, 25] °C`` came back at ``+6.42`` here
+        while :meth:`closed_loop_jacobian` at the setpoint it actually held read ``-1.40``.
+
+        For a stability check use :meth:`closed_loop_jacobian` over the admissible action set.
         """
         return jax.jacobian(lambda z: self.drift @ control_affine_features(z, self.degree))(x)
+
+    def closed_loop_jacobian(self, x: Array, u: Array) -> Array:
+        """``∂(a_θ + B_θ u)/∂x`` at ``(x, u)`` -- the linearisation the horizon actually follows.
+
+        Equals :meth:`drift_jacobian` exactly at ``degree = 0``, where the channel is constant and
+        the two questions coincide. Everywhere else the difference is the whole of the coordinate
+        dependence described above, and it is the difference that decides whether a plan is being
+        integrated against a decaying model or an extrapolation.
+        """
+        return jax.jacobian(lambda z: self(0.0, z, u))(x)
 
 
 class RBFKANLayer(eqx.Module):
