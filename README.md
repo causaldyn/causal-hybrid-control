@@ -57,8 +57,8 @@ CIs (predictive regret `13734.15 [13732.55, 13735.31]`), and
 ## Install
 
 ```bash
-uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.12–3.14)
-uv run pytest      # 369 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
+uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.11–3.14)
+uv run pytest      # 384 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
 ```
 
 ## Quickstart
@@ -181,4 +181,4 @@ suite, and `rocq compile` over `proofs/*.v`. Citation metadata is in
 
 ## License
 
-MIT
+MIT © Ilia Gradina
