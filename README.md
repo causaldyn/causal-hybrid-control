@@ -176,8 +176,23 @@ target appears — a compiled runtime.
 ## Contributing and citation
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) lists the gates a change has to pass — ruff, `ty`, the pytest
-suite, and `rocq compile` over `proofs/*.v`. Citation metadata is in
-[`CITATION.cff`](CITATION.cff).
+suite, and `rocq compile` over `proofs/*.v`. Machine-readable citation metadata is in
+[`CITATION.cff`](CITATION.cff); every release is archived on Zenodo.
+
+```bibtex
+@software{gradina_causal_hybrid_control,
+  author  = {Gradina, Ilia},
+  title   = {causal-hybrid-control: physics-structured dynamics with a learned causal residual},
+  year    = {2026},
+  version = {0.3.0},
+  doi     = {10.5281/zenodo.21737789},
+  license = {MIT},
+  url     = {https://github.com/causaldyn/causal-hybrid-control}
+}
+```
+
+The `doi` is the *concept* DOI: it resolves to the newest release rather than freezing at the
+`version` above, so a reader following the citation lands on current code.
 
 ## License
 
