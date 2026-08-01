@@ -18,7 +18,9 @@ jobs:
         # v8.0.0, so `@v9` does not resolve. The other actions here still publish them.
         uses: astral-sh/setup-uv@v9.0.0
         with:
-          python-version: "3.12"
+          # the floor, not the newest: the wheel is `py3-none-any`, so the build interpreter does not
+          # reach the artefact, and building on the oldest supported one is what keeps that true
+          python-version: "3.11"
       - name: Build sdist + wheel
         run: uv build
       - name: Check metadata

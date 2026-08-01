@@ -33,7 +33,7 @@ def overshoot(signal: Signal, target: float, *, initial: float | None = None) ->
     step = target - x0
     if step == 0.0:
         return 0.0
-    peak = float(s.max()) if step > 0 else float(s.min())
+    peak = float(np.max(s)) if step > 0 else float(np.min(s))
     return max((peak - target) / step, 0.0)
 
 

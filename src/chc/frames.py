@@ -16,7 +16,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 import numpy as np
-from numpy.typing import ArrayLike
 
 
 class ColumnFrame(Protocol):
@@ -32,8 +31,12 @@ ColumnData = Mapping[str, Any] | ColumnFrame
 """What every chc entry point that takes named data accepts."""
 
 
-def as_columns(data: ColumnData) -> dict[str, ArrayLike]:
+def as_columns(data: ColumnData) -> dict[str, Any]:
     """Normalise ``data`` to ``{name: column}`` from a mapping or any columnar frame.
+
+    The values are ``Any`` rather than ``ArrayLike`` and that is the honest type, not a shortcut: a
+    mapping's columns come back exactly as they went in, so their type is the caller's, and every
+    consumer here re-asserts it with the `asarray` its own precision contract requires.
 
     A mapping passes through **unconverted**, which is what keeps this cheap enough to sit on every
     entry point: the library's own callers hand over JAX arrays, and `np.asarray` on those would

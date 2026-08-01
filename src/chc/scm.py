@@ -48,7 +48,7 @@ def _scm_weights(donor_pre: Panel, treated_pre: Vector, steps: int) -> Vector:
     n_donors = donor_pre.shape[0]
     gram = donor_pre @ donor_pre.T  # (J, J)
     target = donor_pre @ treated_pre  # (J,)
-    lr = 1.0 / max(float(np.linalg.eigvalsh(gram).max()), 1e-9)
+    lr = 1.0 / max(float(np.max(np.linalg.eigvalsh(gram))), 1e-9)
     w = np.full(n_donors, 1.0 / n_donors)
     for _ in range(steps):
         w = _project_simplex(w - lr * (gram @ w - target))
