@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-01
+
 ### Added
 
 - **Named data enters as a mapping, a pandas frame or a polars frame** (`chc.frames`). The
@@ -314,5 +316,6 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.3.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.3.0
 [0.2.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.2.0
 [0.1.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.1.0

@@ -3,6 +3,12 @@ name: release
 # Cut a release by pushing an annotated tag: `git tag -a v0.1.0 -m ... && git push origin v0.1.0`.
 # Publishing uses PyPI Trusted Publishing (OIDC) -- no stored token. One-time PyPI-side setup:
 # add this repo + the `release.yml` workflow + the `pypi` environment as a trusted publisher.
+#
+# The `github-release` job exists because Zenodo archives on GitHub's `release` event and ignores tag
+# pushes entirely. Without it the tag reaches PyPI, no Release object is ever created, and the
+# Zenodo hook stays silent -- so the DOI the preprint cites would never be minted. It runs last, on
+# purpose: a Release is the claim that this version is actually out, and PyPI is the step that can
+# still fail.
 
 on:
   push:
@@ -43,3 +49,22 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # create the Release object; Zenodo's webhook keys off it
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes "See CHANGELOG.md for what changed in $GITHUB_REF_NAME."

@@ -1,6 +1,6 @@
 [project]
 name = "causal-hybrid-control"
-version = "0.2.0"
+version = "0.3.0"
 description = "Physics-structured dynamics with a learned causal residual, controlled by constrained optimal control / MPC."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"

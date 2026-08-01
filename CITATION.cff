@@ -6,10 +6,11 @@ authors:
   - given-names: Ilia
     family-names: Gradina
     email: ilia.gradina@gmail.com
+    orcid: "https://orcid.org/0009-0008-0911-8765"
 repository-code: "https://github.com/causaldyn/causal-hybrid-control"
 license: MIT
-version: 0.2.0
-date-released: "2026-07-29"
+version: 0.3.0
+date-released: "2026-08-01"
 abstract: >-
   Physics-structured dynamics with a learned causal residual, controlled by constrained optimal
   control and MPC, and made safe on offline confounded data by an explicit pessimism and support
