@@ -63,6 +63,7 @@ from chc.estimators import (
     EffectEstimate,
     RLearner,
 )
+from chc.frames import ColumnData, ColumnFrame, as_columns
 from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
 from chc.games import (
     CongestionContractionCertificate,
@@ -313,6 +314,8 @@ __all__ = [
     "CausalPlan",
     "CertificateStatus",
     "ClusteredLowerBoundCurve",
+    "ColumnData",
+    "ColumnFrame",
     "CompositionTransferCurve",
     "ConfoundedControlAffineSystem",
     "ConfoundedLinearSystem",
@@ -405,6 +408,7 @@ __all__ = [
     "__version__",
     "adaptive_exploration_certificate",
     "admissible_action_interval",
+    "as_columns",
     "asymmetric_control_improvement",
     "augmented_synthetic_control",
     "backward_reachable_tube",

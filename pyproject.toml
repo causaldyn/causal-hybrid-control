@@ -3,7 +3,7 @@ name = "causal-hybrid-control"
 version = "0.2.0"
 description = "Physics-structured dynamics with a learned causal residual, controlled by constrained optimal control / MPC."
 readme = "README.md"
-requires-python = ">=3.12,<3.15"
+requires-python = ">=3.11,<3.15"
 license = { text = "MIT" }
 authors = [{ name = "Ilia Gradina", email = "ilia.gradina@gmail.com" }]
 keywords = [
@@ -20,6 +20,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -53,6 +54,10 @@ dev = [
     "hypothesis>=6.100",
     "ruff>=0.6",
     "ty>=0.0.61",
+    # chc.frames accepts either frame library structurally and depends on neither; both are here so
+    # tests/test_frames.py can prove the two agree with each other and with a plain mapping.
+    "pandas>=2.0",
+    "polars>=1.0",
 ]
 viz = ["matplotlib>=3.8"]
 notebooks = [
@@ -73,7 +78,7 @@ packages = ["src/chc"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"
 src = ["src", "tests"]
 extend-exclude = ["notebooks"]  # notebook sources carry cell magics / non-import layout
 
@@ -85,12 +90,12 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.ty.environment]
-python-version = "3.12"
+python-version = "3.11"
 
 [tool.ty.src]
 include = ["src/chc"]
 
 [tool.ty.rules]
-# the optional bring-your-own-env adapters (econml / dowhy / tigramite / lightgbm / catboost / pandas)
-# are intentionally uninstalled; their imports are lazy and ImportError-guarded, not bugs to flag
+# the optional bring-your-own-env adapters (econml / dowhy / tigramite / lightgbm / catboost) are
+# intentionally uninstalled; their imports are lazy and ImportError-guarded, not bugs to flag
 unresolved-import = "ignore"

@@ -72,11 +72,16 @@ model = HybridDynamics(
     known=DampedOscillator(omega=1.0, zeta=0.1),
     residual=KANResidual(state_dim=2, control_dim=1, out_dim=2, key=jax.random.key(0)),
 )
-cost = QuadraticCost(Q=jnp.diag(jnp.array([1.0, 0.1])), R=jnp.array([[0.05]]),
-                     Qf=jnp.diag(jnp.array([5.0, 1.0])), x_target=jnp.zeros(2))
+cost = QuadraticCost(
+    Q=jnp.diag(jnp.array([1.0, 0.1])),
+    R=jnp.array([[0.05]]),
+    Qf=jnp.diag(jnp.array([5.0, 1.0])),
+    x_target=jnp.zeros(2),
+)
 
-xs, us = mpc_control(model, jnp.array([1.0, 0.0]), cost, dt=0.1,
-                     horizon=20, u_lo=-5.0, u_hi=5.0, n_steps=40)   # closed-loop MPC
+xs, us = mpc_control(
+    model, jnp.array([1.0, 0.0]), cost, dt=0.1, horizon=20, u_lo=-5.0, u_hi=5.0, n_steps=40
+)  # closed-loop MPC
 ```
 
 ## Example notebooks
@@ -104,7 +109,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | dynamics | `dynamics`, `residual`, `integrate` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / graph / **control-affine** (`a_θ(x) + B_θ(x)u`, the class the identification and safety layers share) / **port-Hamiltonian** (passive, Lyapunov-stable) / **Lipschitz-certified** residuals; RK4 |
 | sensitivity | `adjoint` | discrete adjoint (verified == autodiff == finite differences) |
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
-| identification | `train`, `dynamics_id`, `causal`, `estimators`, `gmethods` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters; Robins' **g-formula** (cross-fitted) for a treatment *sequence* under time-varying confounding. `dynamics_id` is the one that makes the *plant* causal: prediction-error fitting learns the **observational** control channel, so under a confounded logging policy the planner inherits the bias (measured: channel `0.02` where the truth is `1.0`). `fit_causal_residual` estimates it by Robinson partialling-out lifted to a state-dependent matrix — channel error `0.002`, control regret `0.014` against the biased fit's `6.41` — or by 2SLS when the confounder is never logged, at a real variance premium (`0.10` error, regret `0.13`, because the shifter explains only 18% of the action). Reports `identified=False` instead of a confident wrong answer when nothing in the log can pin it down. `uv run python scripts/dynamics_id_demo.py` |
+| identification | `train`, `dynamics_id`, `causal`, `estimators`, `gmethods`, `frames` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters; Robins' **g-formula** (cross-fitted) for a treatment *sequence* under time-varying confounding. `dynamics_id` is the one that makes the *plant* causal: prediction-error fitting learns the **observational** control channel, so under a confounded logging policy the planner inherits the bias (measured: channel `0.02` where the truth is `1.0`). `fit_causal_residual` estimates it by Robinson partialling-out lifted to a state-dependent matrix — channel error `0.002`, control regret `0.014` against the biased fit's `6.41` — or by 2SLS when the confounder is never logged, at a real variance premium (`0.10` error, regret `0.13`, because the shifter explains only 18% of the action). Reports `identified=False` instead of a confident wrong answer when nothing in the log can pin it down. Data goes in as a mapping of arrays, a **pandas** frame or a **polars** frame — `frames.as_columns` recognises a frame structurally and normalises once at the boundary, so neither library is a dependency of the wheel. `uv run python scripts/dynamics_id_demo.py` |
 | control | `cost`, `control`, `mpc`, `splitting`, `plan` | Bolza objective; projected-gradient OC; receding-horizon MPC; **Strang–Marchuk** splitting; `causal_plan` — the one-call spine returning a plan *with* its uncertainty tube and certified horizon attached. Three modes are named apart on purpose: **plan** (`causal_plan`, box constraints in the solve), **audit** (`certify_safety`, read-only on a finished plan), **filter** (`robust_safety_filter`, the only one that changes an action). No barrier or tube enters the *objective*, so a plan can come back and fail its own audit; with no error model supplied the certificate reports `not_evaluated` rather than a vacuous full-horizon pass |
 | offline safety | `support`, `offpolicy`, `uncertainty` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate; **calibrated** deep-ensemble + split-conformal uncertainty; a **time-consistent nested-CVaR** aggregation of that disagreement (the risk-neutral sum averages one very bad step away); **Wasserstein-1 DRO** distribution-shift margin; **certified rollout tubes** (Lipschitz / contractive-log-norm Grönwall bounds → time-varying uncertainty tube, safety-tightening, certified-safe horizon), **Rocq-proved** |
 | guarantee | `regret` | LQ certainty-equivalence bound — quadratic in model error (Dean–Mania–Tu–Recht–Matni); **interference-aware regret certificate** (extra exposure-map-error term), **machine-checked in Rocq** |

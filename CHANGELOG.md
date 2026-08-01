@@ -9,6 +9,17 @@ still change).
 
 ### Added
 
+- **Named data enters as a mapping, a pandas frame or a polars frame** (`chc.frames`). The
+  estimators (`chc.estimators`) and the g-methods (`chc.gmethods`) used to spread whatever they were
+  handed with `{**data}` / `for name in data`. That reads a pandas frame correctly and a polars one
+  **silently wrong**: `dict(frame)` and iteration both yield polars' columns as *values*, so code
+  keying on column names received column data and nothing raised. `as_columns` now normalises once
+  at the entry point and recognises a frame structurally — `.columns` plus `frame[name]` — so
+  neither library becomes a dependency of the wheel. A mapping passes through **unconverted**, which
+  keeps the library's own JAX arrays on the device and leaves the entry points usable under
+  `jax.jit`; only the frame branch materialises, and it stops at NumPy so the caller keeps deciding
+  precision.
+
 - **`ControlAffineResidual.closed_loop_jacobian(x, u)`** (`chc.residual`) — `∂(a_θ + B_θ u)/∂x`, the
   linearisation an MPC horizon actually follows. `drift_jacobian` is the drift at `u = 0` and its
   docstring claimed a non-negative eigenvalue meant "the plant runs away on its own"; that holds only

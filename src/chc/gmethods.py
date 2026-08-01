@@ -17,8 +17,15 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-Data = dict[str, NDArray[np.float64]]
+from chc.frames import ColumnData, as_columns
+
+Data = ColumnData
 Vector = NDArray[np.float64]
+
+
+def _float64_columns(data: Data) -> dict[str, Vector]:
+    """Any accepted frame as float64 columns -- this module's contract, whatever the x64 flag."""
+    return {name: np.asarray(column, dtype=np.float64) for name, column in as_columns(data).items()}
 
 
 def _ridge_fit(design: NDArray[np.float64], target: Vector, ridge: float) -> Vector:
@@ -61,9 +68,9 @@ def sequential_g_formula(
         msg = "treatments, confounders, regime, and baseline must share one length (the horizon)"
         raise ValueError(msg)
     horizon = len(treatments)
-    n = int(np.asarray(data[outcome]).shape[0])
+    columns = _float64_columns(data)
+    n = int(columns[outcome].shape[0])
     fold_indices = _folds(n, folds, seed)
-    columns = {name: np.asarray(data[name], dtype=np.float64) for name in data}
 
     def g_value(values: tuple[float, ...]) -> float:
         pseudo = columns[outcome].copy()
@@ -95,7 +102,7 @@ def naive_pooled_effect(
     summing the treatment coefficients. Wrong under time-varying confounding -- it conditions on the
     post-treatment confounders that the g-formula standardises over.
     """
-    columns = {name: np.asarray(data[name], dtype=np.float64) for name in data}
+    columns = _float64_columns(data)
     treat = [columns[a] for a in treatments]
     covariates = [columns[c] for block in confounders for c in block]
     beta = _ridge_fit(np.column_stack([*treat, *covariates]), columns[outcome], 1e-6)

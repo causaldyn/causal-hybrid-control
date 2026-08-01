@@ -36,8 +36,9 @@ from chc.causal import (
     dml_point_and_se,
     estimate_effect_iv,
 )
+from chc.frames import ColumnData, as_columns
 
-Data = Mapping[str, Array]
+Data = ColumnData
 
 
 @dataclass(frozen=True)
@@ -72,9 +73,15 @@ class CausalEffectEstimator(Protocol):
     ) -> EffectEstimate: ...
 
 
+def _columns(data: Data) -> dict[str, Array]:
+    """Any accepted frame as JAX arrays -- the estimators' dtype, which follows the x64 flag."""
+    return {name: jnp.asarray(column) for name, column in as_columns(data).items()}
+
+
 def _alias(data: Data, treatment: str, outcome: str) -> dict[str, Array]:
     """View of ``data`` with ``treatment``/``outcome`` also exposed as builtin ``u``/``x_next``."""
-    return {**data, "u": data[treatment], "x_next": data[outcome]}
+    cols = _columns(data)
+    return {**cols, "u": cols[treatment], "x_next": cols[outcome]}
 
 
 @dataclass(frozen=True)
@@ -89,8 +96,9 @@ class BackdoorOLS:
         outcome: str = "x_next",
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
-        cols = [jnp.asarray(data[treatment])] + [jnp.asarray(data[c]) for c in covariates]
-        beta, se, _ = _ols_with_se(jnp.stack(cols, axis=1), jnp.asarray(data[outcome]))
+        columns = _columns(data)
+        design = [columns[treatment]] + [columns[c] for c in covariates]
+        beta, se, _ = _ols_with_se(jnp.stack(design, axis=1), columns[outcome])
         effect, stderr = float(beta[0]), float(se[0])  # treatment is column 0
         return EffectEstimate(effect, stderr, diagnostics={"t_stat": effect / stderr})
 
@@ -171,9 +179,9 @@ class RLearner:
         outcome: str = "x_next",
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
-        y = jnp.asarray(data[outcome])
-        t = jnp.asarray(data[treatment])
-        covs = jnp.stack([jnp.asarray(data[c]) for c in covariates], axis=1)
+        columns = _columns(data)
+        y, t = columns[outcome], columns[treatment]
+        covs = jnp.stack([columns[c] for c in covariates], axis=1)
         n = y.shape[0]
         chunks = jnp.array_split(jax.random.permutation(jax.random.key(self.seed), n), self.folds)
         y_res, t_res = jnp.zeros(n), jnp.zeros(n)
@@ -228,9 +236,10 @@ class EconMLDoubleML:
             from econml.dml import LinearDML
         except ImportError as exc:  # pragma: no cover - exercised only without econml
             raise ImportError(_ECONML_HINT) from exc
-        y = np.asarray(data[outcome])
-        t = np.asarray(data[treatment])
-        x = np.column_stack([np.asarray(data[c]) for c in covariates])
+        columns = as_columns(data)
+        y = np.asarray(columns[outcome])
+        t = np.asarray(columns[treatment])
+        x = np.column_stack([np.asarray(columns[c]) for c in covariates])
         est = self.model if self.model is not None else LinearDML(random_state=0)
         est.fit(y, t, X=x)
         return EffectEstimate(
@@ -269,11 +278,12 @@ class DoWhyEstimator:
             from dowhy import CausalModel
         except ImportError as exc:  # pragma: no cover - exercised only without dowhy
             raise ImportError(_DOWHY_HINT) from exc
+        columns = as_columns(data)
         frame = pd.DataFrame(
             {
-                treatment: np.asarray(data[treatment]),
-                outcome: np.asarray(data[outcome]),
-                **{c: np.asarray(data[c]) for c in covariates},
+                treatment: np.asarray(columns[treatment]),
+                outcome: np.asarray(columns[outcome]),
+                **{c: np.asarray(columns[c]) for c in covariates},
             }
         )
         model = CausalModel(
