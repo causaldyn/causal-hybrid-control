@@ -8,6 +8,8 @@ authors:
     email: ilia.gradina@gmail.com
     orcid: "https://orcid.org/0009-0008-0911-8765"
 repository-code: "https://github.com/causaldyn/causal-hybrid-control"
+# the concept DOI, which resolves to the newest release rather than to one version
+doi: "10.5281/zenodo.21737789"
 license: MIT
 version: 0.3.0
 date-released: "2026-08-01"
