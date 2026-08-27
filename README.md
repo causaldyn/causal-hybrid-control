@@ -4,6 +4,7 @@
 [![pypi](https://img.shields.io/pypi/v/causal-hybrid-control)](https://pypi.org/project/causal-hybrid-control/)
 [![python](https://img.shields.io/pypi/pyversions/causal-hybrid-control)](https://pypi.org/project/causal-hybrid-control/)
 [![license](https://img.shields.io/pypi/l/causal-hybrid-control)](LICENSE)
+[![doi](https://zenodo.org/badge/DOI/10.5281/zenodo.21737789.svg)](https://doi.org/10.5281/zenodo.21737789)
 
 Physics-structured dynamics with a **learned causal residual**, controlled by **constrained optimal
 control / MPC**, and made safe on offline, confounded data by an explicit **pessimism / support** layer.
