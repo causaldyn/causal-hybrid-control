@@ -1067,7 +1067,7 @@ class AdaptiveExplorationCurve:
     adaptive_regret: Vector  # cumulative regret of the tapering schedule (v_t ~ 1/sqrt(t)): sqrt(T)
     greedy_regret: Vector  # cumulative regret with no exploration: ~ T (linear)
     static_regret: Vector  # cumulative regret of a constant-v schedule (Result 11 static): ~ T
-    lower_bound: Vector  # 2*sqrt(A*C*T): leading term of the proved sequence lower bound
+    lower_bound: Vector  # 2*sqrt(A*K*T/eta), K = C*sigma^2: the proved sequence lower bound
     adaptive_slope: float  # log-log slope of adaptive regret vs T (~0.5)
     greedy_slope: float  # log-log slope of greedy regret vs T (~1)
     schedule: Vector  # the tapering exploration schedule v_t (decreasing)
@@ -1091,11 +1091,14 @@ def adaptive_exploration_certificate(
     ``t`` the controller injects ``v_t`` that raises accumulated Fisher information
     ``m_t = m0 + eta*sum_{s<t} v_s`` for FUTURE rounds, where ``eta`` in (0,1] is the identifying
     information PER UNIT exploration (``eta=1`` identified, ``eta->0`` confounded). The per-round
-    regret is ``A*v_t + C/m_t``, ``C/m_t`` the van-Trees (Bayesian Cramer-Rao) floor -- valid for
-    adaptive data, unlike ordinary Cramer-Rao (algebraic core in ``proofs/van_trees.v``). The
-    RATE-OPTIMAL schedule ``v_t = kappa/sqrt(t)`` achieves ``Theta(sqrt(T))``, matching the
-    ``Theta(sqrt(T))`` sequence lower bound ``>= 2*sqrt(A*C*T/eta) - A*m0/eta`` (Rocq
-    ``reduced_objective_lower_bound`` with ``a=A/eta``), NOT a corollary of the per-round floor.
+    regret is ``A*v_t + K/m_t``, ``K/m_t`` the van-Trees (Bayesian Cramer-Rao) floor -- valid for
+    adaptive data, unlike ordinary Cramer-Rao (algebraic core in ``proofs/van_trees.v``). Its
+    numerator is ``K = C*sigma^2`` with ``C = A*(du*/db)^2``, the convention
+    ``validation/adaptive_exploration.mac`` states in its first line: the observation noise enters
+    it, so ``sigma`` moves both the bound and the schedule scale. The RATE-OPTIMAL schedule
+    ``v_t = kappa/sqrt(t)`` achieves ``Theta(sqrt(T))``, matching the ``Theta(sqrt(T))`` sequence
+    lower bound ``>= 2*sqrt(A*K*T/eta) - A*m0/eta`` (Rocq ``reduced_objective_lower_bound`` with
+    ``a=A/eta``, where the Rocq ``C`` is this ``K``), NOT a corollary of the per-round floor.
     The leading term scales as ``1/sqrt(eta)``, where ``eta`` is the INJECTED-EXPLORATION efficiency
     (information per unit exploration variance, distinct from an observational residual fraction):
     smaller ``eta`` provably raises the floor (Rocq ``lower_efficiency_raises_sequence_floor``) --
@@ -1104,18 +1107,20 @@ def adaptive_exploration_certificate(
     clean directly-observed randomisation), the causal content the generic bound lacked. Greedy is
     ``Theta(T)``; the static ``v*`` of Result 11 over-explores. SCOPE: the ``t^{-1/2}`` schedule,
     ``sqrt(T)`` rate and van-Trees ``sqrt(T)`` lower bounds are KNOWN in adaptive LQR
-    (Ziemann-Sandberg; Wagenmaker et al.); the FULL minimax-optimal causal constant with a matching
-    policy is still open. Conditions: ``m0=O(1)``; exploitation adds no identifying information;
-    exploration information is linear in ``v_t`` (else greedy need not be ``Theta(T)``). The myopic
-    ``max(0, sqrt(K/A)-m_t)`` rule is a DIFFERENT (one-shot) object.
+    (Ziemann-Sandberg; Wagenmaker et al.); the FULL minimax constant is no longer open --
+    :func:`minimax_exploration_certificate` proves it over ALL policies and shows this schedule pays
+    a factor sqrt(2) over that floor. Conditions: ``m0=O(1)``; exploitation adds no identifying
+    information; exploration information is linear in ``v_t`` (else greedy need not be
+    ``Theta(T)``). The myopic ``max(0, sqrt(K/A)-m_t)`` rule is a DIFFERENT (one-shot) object.
     """
     a_curv = b * b + rr
-    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
-    kappa = np.sqrt(coeff / (a_curv * eta))  # tapering scale (eta-aware): v_t = kappa / sqrt(t)
+    c_curv = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3  # C = A*(du*/db)^2
+    k_vt = c_curv * sigma**2  # K = C*sigma^2: the van-Trees floor NUMERATOR, not C alone
+    kappa = np.sqrt(k_vt / (a_curv * eta))  # tapering scale (eta-aware): v_t = kappa / sqrt(t)
 
     def cumulative(horizon: int, sched: np.ndarray) -> float:
         m = m0 + eta * np.concatenate([[0.0], np.cumsum(sched)[:-1]])  # info BEFORE round t
-        return float(np.sum(a_curv * sched + coeff / m))
+        return float(np.sum(a_curv * sched + k_vt / m))
 
     hs = np.asarray(horizons, dtype=np.float64)
     adaptive = np.zeros(hs.size)
@@ -1126,7 +1131,7 @@ def adaptive_exploration_certificate(
         adaptive[i] = cumulative(horizon, kappa / np.sqrt(t))
         greedy[i] = cumulative(horizon, np.zeros(horizon))
         static[i] = cumulative(horizon, np.full(horizon, static_v))
-    lb = 2.0 * np.sqrt(a_curv * coeff * hs / eta)  # 2*sqrt(A*C*T/eta): 1/sqrt(eta) causal factor
+    lb = 2.0 * np.sqrt(a_curv * k_vt * hs / eta)  # 2*sqrt(A*K*T/eta): 1/sqrt(eta) causal factor
     adaptive_slope = float(np.polyfit(np.log(hs), np.log(adaptive), 1)[0])
     greedy_slope = float(np.polyfit(np.log(hs), np.log(greedy), 1)[0])
     sched = kappa / np.sqrt(np.arange(1, schedule_horizon + 1, dtype=np.float64))

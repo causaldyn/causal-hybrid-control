@@ -160,6 +160,12 @@ def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     assert (np.diff(curve.schedule) < 0).all()  # the optimal schedule TAPERS (decreasing)
     assert (curve.adaptive_regret >= curve.lower_bound - 1e-9).all()  # van-Trees lower bound
     assert 1.0 <= curve.adaptive_over_bound < 2.5  # matches the lower bound up to a constant
+    # REGRESSION: the van-Trees numerator is K = C*sigma^2, so the bound is linear in sigma. The
+    # certificate once computed C and used it as K, silently pinning sigma^2 = 1; this catches that.
+    assert np.allclose(
+        adaptive_exploration_certificate(sigma=1.0).lower_bound,
+        2.0 * adaptive_exploration_certificate(sigma=0.5).lower_bound,
+    )
 
 
 def test_minimax_exploration_floor_is_valid_sharp_and_causal() -> None:
