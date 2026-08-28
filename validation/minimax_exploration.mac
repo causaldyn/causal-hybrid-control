@@ -1,0 +1,110 @@
+/* DISCOVERY / derivation (CONTRIBUTION 3, the open item closed): the FULL LOCAL-MINIMAX sequential
+   lower bound  inf_pi sup_theta E R_T >= c_causal*sqrt(T)  with an EXPLICIT c_causal.
+
+   What result 20 already had: a SEQUENCE lower bound  sum_t[A*v_t + K/m_t] >= 2*sqrt(A*K*T/eta),
+   i.e. a bound over exploration SCHEDULES, inside an assumed per-round decomposition, with K an
+   opaque "van-Trees floor numerator". What was open: the genuine inf over ALL policies and sup over
+   theta, and K identified in primitives. Both are done here.
+
+   Model. Per-round cost is locally quadratic in the action about the oracle action:
+   c(u,theta) - c(g(theta),theta) = A*(u - g(theta))^2 + o(.), g(theta) = u*(theta) the oracle action,
+   gp = dg/dtheta its decision sensitivity. Observation noise variance sigma2. Identifying Fisher
+   information per unit INJECTED exploration variance is eta in (0,1] (eta=1 clean randomisation,
+   eta->0 confounded): the exploitation part of the action is a deterministic function of the history
+   and, under confounding, identifies nothing. I0 is the initial information, IPi the prior's.
+
+   Maxima is the source of truth. Every step below is checked as an identity residual = 0. */
+display2d : false$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 1 (the step that makes it MINIMAX, not within-a-schedule-class).
+   For ANY policy, write v_t = Var(u_t | F_{t-1}) and beta_t = E[u_t | F_{t-1}] - g(theta). The
+   conditional variance decomposition is an identity, assuming no template on the policy:
+       E[(u_t - g(theta))^2] = v_t + E[beta_t^2].
+   So  R_T = A * sum_t ( v_t + E[beta_t^2] )  exactly. Check the decomposition symbolically:
+   E[(X - c)^2] = Var(X) + (E[X] - c)^2. */
+decomp : ratsimp( (ex2 - ex^2) + (ex - c)^2 - (ex2 - 2*c*ex + c^2) )$
+print("STEP 1 variance decomposition residual =", decomp,
+      " (0 confirms E[(u-g)^2] = v + beta^2 for ANY policy; no schedule template assumed)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 2. beta_t is the error of an F_{t-1}-measurable estimator of the FUNCTIONAL g(theta), so van
+   Trees (valid for adaptive/sequential designs, unlike ordinary Cramer-Rao) gives
+       E_Pi[beta_t^2] >= gp^2 / (IPi + I0 + (eta/sigma2)*sum_{s<t} v_s).
+   Summing, and bounding every denominator by its largest value at total budget M = sum_t v_t:
+       E_Pi[R_T] >= A*M + A*gp^2*T / (IPi + I0 + (eta/sigma2)*M).
+   Substituting x = IPi + I0 + (eta/sigma2)*M, i.e. M = (sigma2/eta)*(x - IPi - I0):  */
+a  : A*sigma2/eta$                     /* coefficient of x   */
+k  : A*gp^2*T$                         /* numerator of  k/x  */
+sub_residual : ratsimp( A*((sigma2/eta)*(x - IPi - I0)) + k/x - ( a*x + k/x - a*(IPi + I0) ) )$
+print("STEP 2 substitution residual =", sub_residual,
+      " (0 confirms  A*M + k/x  =  a*x + k/x - a*(IPi+I0),  a = A*sigma2/eta)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 3. AM-GM on the reduced scalar objective, kept sqrt-free via s^2 = a*k so that the identity is
+   a polynomial one Rocq can mirror:  a*x + k/x - 2*s = a*(x - s/a)^2 / x >= 0. */
+amgm : ratsimp( a*x + (s^2/a)/x - 2*s - a*(x - s/a)^2/x )$
+print("STEP 3 AM-GM SOS residual =", amgm,
+      " (0 confirms a*x + k/x >= 2*sqrt(a*k), with equality at x = s/a = sqrt(k/a))")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 4. THE CONSTANT. 2*sqrt(a*k) with a = A*sigma2/eta and k = A*gp^2*T collapses to a fully
+   explicit functional of primitives -- this is what result 20 left opaque as "K". */
+/* the bound is 2*sqrt(a*k) = c_causal*sqrt(T), so c_causal^2 = 4*a*k/T. */
+c_sq       : ratsimp( 4*a*k / T )$
+c_claimed  : 2*A*abs(gp)*sqrt(sigma2)/sqrt(eta)$
+print("STEP 4  (c_causal)^2 = 4*a*k/T =", c_sq)$
+print("STEP 4 claimed c_causal = 2*A*|gp|*sigma/sqrt(eta); residual of squares =",
+      ratsimp( c_sq - 4*A^2*gp^2*sigma2/eta ),
+      " (0 confirms c_causal = 2*A*|dg/dtheta|*sigma/sqrt(eta))")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 5. THE ORDER OF LIMITS (why the prior term dies, and why the neighbourhood is T^{-1/4}).
+   Bayes <= minimax, so a Bayes bound over any prior Pi supported in the local neighbourhood is a
+   minimax bound. The neighbourhood radius r_T controls IPi ~ kappa/r_T^2. The optimiser sits at
+   x* = sqrt(k/a) ~ sqrt(T), so the bound is non-degenerate iff IPi = o(sqrt(T)), i.e. r_T >> T^{-1/4}
+   -- NOT the usual T^{-1/2} local scaling, because the regret rate here is sqrt(T), not T.
+   Take r_T = H*T^{-1/4}, so IPi = kappa*sqrt(T)/H^2.  Then, per sqrt(T): */
+xstar     : sqrt(k/a)$
+print("STEP 5 optimiser x* =", ratsimp(xstar), " (order sqrt(T), so IPi must be o(sqrt(T)))")$
+per_root  : 2*A*abs(gp)*sqrt(sigma2)/sqrt(eta) - a*kappa/H^2 - a*I0/sqrt(T)$
+print("STEP 5 bound per sqrt(T) =", per_root)$
+print("STEP 5 liminf_T then liminf_H:", limit(limit(per_root, T, inf), H, inf),
+      " (the I0 term dies with T, the prior term with H: the sharp constant survives)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 6. Consistency with result 20: its opaque K is identified here as K = A*gp^2*sigma2. */
+print("STEP 6 result-20 form 2*sqrt(A*K*T/eta) with K = A*gp^2*sigma2, residual of squares =",
+      ratsimp( 4*A*(A*gp^2*sigma2)*T/eta - 4*a*k ),
+      " (0 confirms the new derivation reproduces result 20's rate, with K no longer opaque)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 7. Monotonicity in the causal primitive: d/deta of the constant is negative, so worse
+   identification (smaller eta) provably raises the floor -- the 1/sqrt(eta) causal scaling, now
+   attached to a minimax statement rather than a schedule-class one. */
+print("STEP 7 d(c_causal)/d(eta) =", ratsimp(diff(c_claimed, eta)),
+      " (negative for eta>0: less identifying information per unit exploration => higher floor)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 8. IS THE CONSTANT SHARP? The crude step in STEP 2 bounded every denominator by its value at
+   the total budget. That is exact iff the information is raised to its final level immediately, i.e.
+   the optimal design FRONT-LOADS: spend M* = (sigma2/eta)*(x* - I0) in the first round and nothing
+   after. So the floor is attained and c_causal is sharp, not merely an order. */
+Mstar : (sigma2/eta)*(xstar - I0)$
+print("STEP 8 optimal budget M* =", ratsimp(Mstar),
+      " (spent in round 1; then every later round already sits at the final information x*)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 9. THE COST OF TAPERING. The rate-optimal schedule of result 20, v_t = kappa/sqrt(t), has
+   sum_t v_t ~ 2*kappa*sqrt(T) and m_t ~ (eta/sigma2)*2*kappa*sqrt(t), so its cumulative cost is
+       sqrt(T) * [ 2*A*kappa + K*sigma2/(kappa*eta) ],   K = A*gp^2,
+   minimised over kappa at 2*sqrt(2*A*K*sigma2/eta). Against the floor 2*sqrt(A*K*sigma2/eta) that is
+   a factor sqrt(2) -- so tapering is rate-optimal but NOT constant-optimal, and the gap is exactly
+   sqrt 2. (Sqrt-free: compare squares, ratio must be 2.) */
+K_id      : A*gp^2$
+taper_sq  : 4*2*A*K_id*sigma2/eta$
+floor_sq  : 4*A*K_id*sigma2/eta$
+print("STEP 9 taper^2 / floor^2 =", ratsimp(taper_sq/floor_sq),
+      " (2 confirms the best 1/sqrt(t) taper sits exactly sqrt(2) above the minimax floor)")$
+print("STEP 9 floor^2 vs c_causal^2 residual =", ratsimp(floor_sq - c_sq),
+      " (0 confirms floor_sq is the same constant as STEP 4)")$

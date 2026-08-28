@@ -1144,6 +1144,114 @@ def adaptive_exploration_certificate(
 
 
 @dataclass(frozen=True)
+class MinimaxExplorationCurve:
+    """The sequential minimax floor: no policy beats it, a front-loaded design attains it."""
+
+    horizons: Vector  # horizon T grid
+    floor: Vector  # c_causal*sqrt(T) - (A*sigma^2/eta)*I0, the local-minimax lower bound
+    burst_regret: Vector  # front-loaded design: whole budget in round 1 -- attains the floor
+    taper_regret: Vector  # the 1/sqrt(t) schedule at its own optimal scale -- sqrt(2) above
+    greedy_regret: Vector  # no exploration: linear in T
+    constant_regret: Vector  # a fixed per-round v: linear in T
+    c_causal: float  # 2*A*|du*/db|*sigma/sqrt(eta), the explicit minimax constant
+    min_policy_ratio: float  # min regret/floor over policies and horizons; < 1 falsifies the floor
+    burst_over_floor: (
+        float  # burst/floor at the largest T (-> 1: the constant is SHARP, not a rate)
+    )
+    taper_over_floor: float  # taper/floor at the largest T (-> sqrt(2): tapering costs a constant)
+    eta_slope: float  # log-log slope of c_causal vs eta (-> -0.5: the 1/sqrt(eta) causal scaling)
+
+
+def minimax_exploration_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    sigma: float = 0.7,
+    i0: float = 1.0,
+    eta: float = 0.6,
+    constant_v: float = 0.01,
+    horizons: Sequence[int] = (10**3, 10**4, 10**5, 10**6, 10**7),
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.4, 0.7, 1.0),
+) -> MinimaxExplorationCurve:
+    """CONTRIBUTION 3 -- the FULL LOCAL-MINIMAX sequential lower bound with an EXPLICIT constant
+    (derived in ``validation/minimax_exploration.mac``, proved in ``proofs/minimax_exploration.v``).
+
+    :func:`adaptive_exploration_certificate` gave a *sequence* bound: over exploration schedules,
+    inside an assumed per-round decomposition, with an opaque floor numerator ``K``. This closes
+    both gaps. Splitting any policy's action into its conditional mean and conditional variance is
+    an identity (Rocq ``action_variance_decomposition``), so the ``inf`` runs over ALL policies, not
+    schedules; and van Trees on the *functional* ``u*(theta)`` identifies the numerator as
+    ``K = A*(du*/db)^2*sigma^2``. The result is
+
+        ``inf_pi sup_theta E R_T >= c_causal*sqrt(T) - O(1)``,
+        ``c_causal = 2*A*|du*/db|*sigma/sqrt(eta)``,
+
+    with ``A`` the local cost curvature in the action, ``du*/db`` the decision sensitivity of the
+    oracle action, ``sigma^2`` the noise, and ``eta`` in (0,1] the identifying information per unit
+    injected exploration variance. The ``sup`` is over a shrinking neighbourhood of radius
+    ``H*T^(-1/4)`` -- *not* the usual ``T^(-1/2)``, since the optimiser sits at order ``sqrt(T)``
+    and a ``T^(-1/2)`` prior would swamp the data information -- with the limits taken ``T -> inf``
+    first, then ``H -> inf``, as in the clustered result.
+
+    Two things this certificate shows that the rate alone does not. The floor is **attained**:
+    the crude step (every denominator at the total budget) is an equality exactly when information
+    is raised immediately, so a front-loaded burst hits it and ``burst_over_floor -> 1`` -- the
+    constant is sharp. And **tapering costs a constant factor**: the ``1/sqrt(t)`` schedule, even at
+    its own optimal scale, sits at ``sqrt(2)`` times the floor (Rocq ``taper_gap_is_sqrt_two``). The
+    burst is optimal *in this model*, where exploration cost is linear in the injected variance and
+    unbounded per round; a per-round action cap is what makes a taper the right shape.
+
+    SCOPE, as elsewhere in this line: Rocq proves the algebra. The van Trees score identity for a
+    functional under an adaptive design, and Fisher-information additivity along the trajectory, are
+    cited (Gill-Levit 1995; Gassiat-Stoltz 2024), not formalised. The model assumes exploitation
+    contributes no identifying information -- that is what ``eta`` encodes.
+    """
+    a_curv = b * b + rr
+    gp = -xt * (rr - b * b) / (rr + b * b) ** 2  # du*/db for u*(b) = -b*xt/(b^2+rr)
+    k_id = a_curv * gp * gp  # regret numerator A*(du*/db)^2; the van-Trees floor carries sigma^2
+    c_causal = 2.0 * a_curv * abs(gp) * sigma / np.sqrt(eta)
+
+    def cumulative(sched: np.ndarray) -> float:
+        info = i0 + (eta / sigma**2) * np.concatenate([[0.0], np.cumsum(sched)[:-1]])
+        return float(np.sum(a_curv * sched + k_id / info))
+
+    hs = np.asarray(horizons, dtype=np.float64)
+    floor = c_causal * np.sqrt(hs) - (a_curv * sigma**2 / eta) * i0
+    kappa = sigma * np.sqrt(k_id / (2.0 * a_curv * eta))  # optimal scale for the 1/sqrt(t) family
+    burst = np.zeros(hs.size)
+    taper = np.zeros(hs.size)
+    greedy = np.zeros(hs.size)
+    constant = np.zeros(hs.size)
+    for i, horizon in enumerate(horizons):
+        t = np.arange(1, horizon + 1, dtype=np.float64)
+        x_star = abs(gp) * np.sqrt(horizon * eta) / sigma  # optimal final information level
+        one_shot = np.zeros(horizon)
+        one_shot[0] = max(0.0, (sigma**2 / eta) * (x_star - i0))
+        burst[i] = cumulative(one_shot)
+        taper[i] = cumulative(kappa / np.sqrt(t))
+        greedy[i] = cumulative(np.zeros(horizon))
+        constant[i] = cumulative(np.full(horizon, constant_v))
+
+    ratios = np.concatenate([burst / floor, taper / floor, greedy / floor, constant / floor])
+    etas = np.asarray(eta_grid, dtype=np.float64)
+    consts = 2.0 * a_curv * abs(gp) * sigma / np.sqrt(etas)
+    return MinimaxExplorationCurve(
+        hs,
+        floor,
+        burst,
+        taper,
+        greedy,
+        constant,
+        float(c_causal),
+        float(np.min(ratios)),
+        float(burst[-1] / floor[-1]),
+        float(taper[-1] / floor[-1]),
+        float(np.polyfit(np.log(etas), np.log(consts), 1)[0]),
+    )
+
+
+@dataclass(frozen=True)
 class VanTreesCurve:
     """Van Trees: Bayes MSE hits the floor 1/(I_prior+n*I_data); confounding lifts the floor."""
 

@@ -30,6 +30,7 @@ from chc.regret import (
     interference_convexity_certificate,
     interference_orthogonal_certificate,
     interference_regret_certificate,
+    minimax_exploration_certificate,
     multichannel_control_certificate,
     multivariate_interference_certificate,
     multivariate_transfer_certificate,
@@ -159,6 +160,27 @@ def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     assert (np.diff(curve.schedule) < 0).all()  # the optimal schedule TAPERS (decreasing)
     assert (curve.adaptive_regret >= curve.lower_bound - 1e-9).all()  # van-Trees lower bound
     assert 1.0 <= curve.adaptive_over_bound < 2.5  # matches the lower bound up to a constant
+
+
+def test_minimax_exploration_floor_is_valid_sharp_and_causal() -> None:
+    # Contribution 3, the open item closed (proofs/minimax_exploration.v): the sequential bound is
+    # now an inf over ALL policies, not over schedules, and its constant is explicit --
+    # c_causal = 2*A*|du*/db|*sigma/sqrt(eta). Three separate claims, checked separately.
+    curve = minimax_exploration_certificate()
+    # (1) VALID: it is a lower bound, so no policy in the family may fall below it.
+    assert curve.min_policy_ratio >= 1.0
+    assert (curve.burst_regret >= curve.floor - 1e-9).all()
+    assert (curve.greedy_regret >= curve.floor).all()
+    assert (curve.constant_regret >= curve.floor).all()
+    # (2) SHARP: the front-loaded design attains it, so the constant is not merely an order.
+    assert 1.0 <= curve.burst_over_floor < 1.001
+    # (3) TAPERING COSTS A CONSTANT: the 1/sqrt(t) schedule, at its own optimal scale, sits at
+    # sqrt(2) times the floor -- rate-optimal but not constant-optimal (Rocq taper_gap_is_sqrt_two).
+    assert abs(curve.taper_over_floor - np.sqrt(2.0)) < 0.01
+    # and the causal content: the constant scales as eta^{-1/2} in the identification efficiency.
+    assert abs(curve.eta_slope + 0.5) < 1e-6
+    # greedy is linear in T, so it loses to the sqrt(T) designs by a growing margin
+    assert curve.greedy_regret[-1] / curve.burst_regret[-1] > 100.0
 
 
 def test_multichannel_control_needs_every_channel_orthogonalised() -> None:
