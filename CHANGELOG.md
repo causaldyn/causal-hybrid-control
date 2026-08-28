@@ -7,6 +7,33 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`minimax_exploration_certificate`** (`chc.regret`) — the sequential exploration lower bound as an
+  infimum over **policies**, not over a schedule class, with the constant written out:
+  `c_causal = 2·A·|du*/dθ|·σ/√η_exp`. `adaptive_exploration_certificate` bounded an assumed
+  `1/√t` family and carried its numerator as an opaque `K`; replacing the schedule template with the
+  conditional-variance identity `E[(u_t − u*)²] = Var(u_t | F_{t−1}) + (E[u_t | F_{t−1}] − u*)²`,
+  which holds for every policy, removes the template and names `K = A·(du*/dθ)²·σ²`. The bound is
+  taken over a `T^{-1/4}` neighbourhood; a `T^{-1/2}` one carries prior information of order `T` and
+  is vacuous. Two things follow from making it tight rather than merely valid: a front-loaded design
+  **attains** the floor (to 4e-5), and the best `1/√t` taper sits at exactly `√2` above it, so the
+  taper is optimal only when a per-round action cap forbids the burst. Derived in
+  `validation/minimax_exploration.mac`, machine-checked in `proofs/minimax_exploration.v`.
+
+### Fixed
+
+- **`adaptive_exploration_certificate` ignored its `sigma` argument** (`chc.regret`), so its returned
+  `lower_bound`, `schedule` and cumulative-regret arrays are all different now. The van-Trees floor
+  numerator is `K = C·σ²` with `C = A·(du*/db)²`; the function computed `C` under the name `coeff`
+  and consumed it where `K` belongs, silently pinning `σ² = 1` while its signature advertised
+  `sigma=0.5`. The cause was a name rather than a missing multiplication — the two quantities are
+  spelled apart in `validation/adaptive_exploration.mac` but the Rocq file calls the numerator `C`,
+  and the code followed the Rocq spelling while implementing the Maxima quantity. They are now named
+  apart in the code too (`c_curv` vs `k_vt`). Nothing symbolic changed: the derivation and the proofs
+  were already correct. Passing `sigma=1.0` reproduces the old output exactly. A test asserts the
+  bound is linear in `σ`, since `ruff` does not flag an unused keyword argument.
+
 ## [0.3.0] — 2026-08-01
 
 ### Added
