@@ -254,11 +254,15 @@ from chc.residual import (
     MLPResidual,
     PortHamiltonianCertificate,
     PortHamiltonianResidual,
+    SpectralResidual,
+    SpectralResidualCurve,
     ZeroResidual,
     control_affine_features,
     damping_injection_certificate,
+    fit_spectral_residual,
     lipschitz_certificate,
     port_hamiltonian_certificate,
+    spectral_residual_certificate,
 )
 from chc.scm import SyntheticControlResult, augmented_synthetic_control, synthetic_control
 from chc.splitting import (
@@ -278,6 +282,9 @@ from chc.symbolic import (
     symbolic_extraction_certificate,
 )
 from chc.toeplitz import (
+    circulant_matvec,
+    circulant_operator_norm,
+    circulant_symbol,
     gohberg_semencul_apply,
     gohberg_semencul_covariance,
     gohberg_semencul_generators,
@@ -287,7 +294,17 @@ from chc.toeplitz import (
     toeplitz_matvec,
 )
 from chc.train import fit_residual, fit_residual_multistep, one_step_mse, rollout_mse
-from chc.transport import MeanFieldTransport, solve_transport, transport_step
+from chc.transport import (
+    MeanFieldTransport,
+    advection_diffusion_field,
+    advection_diffusion_kernel,
+    advection_diffusion_propagator,
+    advection_diffusion_symbol,
+    periodic_smoothing_kernel,
+    periodic_wavenumbers,
+    solve_transport,
+    transport_step,
+)
 from chc.uncertainty import (
     ConfoundingRobustCertificate,
     ConfoundingRobustClosedLoopCertificate,
@@ -424,6 +441,8 @@ __all__ = [
     "ScalarMLP",
     "SharedStateMarket",
     "SinkhornResult",
+    "SpectralResidual",
+    "SpectralResidualCurve",
     "SplitConformal",
     "SupportModel",
     "SymbolicEdge",
@@ -438,6 +457,10 @@ __all__ = [
     "__version__",
     "adaptive_exploration_certificate",
     "admissible_action_interval",
+    "advection_diffusion_field",
+    "advection_diffusion_kernel",
+    "advection_diffusion_propagator",
+    "advection_diffusion_symbol",
     "as_columns",
     "asymmetric_control_improvement",
     "augmented_synthetic_control",
@@ -461,6 +484,9 @@ __all__ = [
     "certainty_equivalence_gap",
     "certified_horizon",
     "certify_safety",
+    "circulant_matvec",
+    "circulant_operator_norm",
+    "circulant_symbol",
     "closed_loop_cost",
     "closed_loop_rollout_bound",
     "cluster_fold_leakage_certificate",
@@ -527,6 +553,7 @@ __all__ = [
     "fit_ensemble",
     "fit_residual",
     "fit_residual_multistep",
+    "fit_spectral_residual",
     "fixed_point",
     "gohberg_semencul_apply",
     "gohberg_semencul_covariance",
@@ -571,6 +598,8 @@ __all__ = [
     "overshoot",
     "partial_corr_test",
     "partial_id_control_certificate",
+    "periodic_smoothing_kernel",
+    "periodic_wavenumbers",
     "pessimism_variance_certificate",
     "pessimistic_control",
     "pessimistic_equilibrium_allocation",
@@ -602,6 +631,7 @@ __all__ = [
     "solve_poisson_dgm",
     "solve_toeplitz",
     "solve_transport",
+    "spectral_residual_certificate",
     "stackelberg_allocation",
     "steady_state_error",
     "strang_marchuk_step",

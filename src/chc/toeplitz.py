@@ -38,6 +38,44 @@ def toeplitz_matvec(first_col: Array, first_row: Array, x: Array) -> Array:
     return jnp.real(convolved[:n])
 
 
+def circulant_symbol(kernel: Array) -> Array:
+    """Eigenvalues of the circulant whose first column is ``kernel``, as a half spectrum.
+
+    A circulant is diagonalised EXACTLY by the DFT: ``C = F* diag(lambda) F`` with ``lambda`` the
+    DFT of its first column (``validation/spectral_circulant.mac`` STEP 1, verified symbolically at
+    ``n = 4`` and ``n = 6``). For a real kernel the spectrum is Hermitian, so the ``n//2 + 1`` bins
+    returned here carry all of it -- the missing bins are conjugates and have the same modulus.
+    """
+    return jnp.fft.rfft(jnp.asarray(kernel))
+
+
+def circulant_matvec(kernel: Array, x: Array) -> Array:
+    """Circulant matvec ``C x`` in ``O(n log n)``, with ``C``'s first column given by ``kernel``.
+
+    This is :func:`toeplitz_matvec` without the embedding: a Toeplitz matrix needs a
+    ``2n``-circulant to hold it, but a circulant is already one, so the ``n``-point transform is
+    exact and half the work. ``irfft`` also makes the output real by construction rather than by
+    discarding an imaginary part that ought to be zero. Tested against the dense product and
+    against the embedded route.
+    """
+    x = jnp.asarray(x)
+    n = x.shape[0]
+    return jnp.fft.irfft(circulant_symbol(kernel) * jnp.fft.rfft(x), n=n)
+
+
+def circulant_operator_norm(kernel: Array) -> Array:
+    """Exact spectral norm ``||C||_2 = max_k |lambda_k|`` -- attained, not bounded.
+
+    Circulants are normal (they commute with their adjoint, being polynomials in the cyclic shift),
+    so their singular values are the moduli of their eigenvalues and the maximum is achieved on the
+    corresponding Fourier mode. Contrast :meth:`chc.residual.LipschitzResidual.lipschitz_constant`,
+    which rests on the Schur bound ``sigma_max(W) <= sqrt(||W||_1 ||W||_inf)``: an inequality with
+    no witness. Proved in ``proofs/spectral_circulant.v`` (``two_mode_bounded`` for ``<=``,
+    ``two_mode_norm_attained`` for the equality).
+    """
+    return jnp.max(jnp.abs(circulant_symbol(kernel)))
+
+
 def sample_autocorrelation(x: ArrayLike, max_lag: int) -> np.ndarray:
     """Biased sample autocorrelation ``r[0..max_lag]`` -- always PSD, so Levinson stays safe.
 

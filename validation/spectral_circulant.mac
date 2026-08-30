@@ -1,0 +1,165 @@
+/* SPECTRAL (CIRCULANT) RESIDUALS: why a translation-invariant plant deserves a Fourier symbol, and
+   what that buys that a Lipschitz-constrained MLP cannot.
+
+   chc.residual.LipschitzResidual gets its constant from a Schur UPPER BOUND
+   sigma_max(W) <= sqrt(||W||_1 ||W||_inf), so lipschitz_certificate can only confirm that the bound
+   is not violated -- never that it is tight.  On a PERIODIC, TRANSLATION-INVARIANT plant the
+   operator is circulant, the DFT diagonalises it exactly, and its operator norm is
+   max_k |lambda_k|: not a bound, the attained value.
+
+   Everything below is derived: the diagonalisation, the real two-dimensional action on each mode,
+   the exact gain, the composition law, the advection-diffusion dispersion relation, and the reason
+   a product of circulants is STRICTLY tighter than the product of their norms.
+
+   Certificate: chc.residual.spectral_residual_certificate; proofs/spectral_circulant.v. */
+
+linel : 110$
+
+/* ===== STEP 1: the DFT diagonalises every circulant ===== */
+
+print("=== STEP 1: circulant eigen-decomposition ===")$
+
+nn : 4$
+w  : exp(2*%pi*%i/nn)$
+Cm : genmatrix(lambda([i,j], c[mod(i-j, nn)]), nn, nn)$
+print("STEP 1a circulant with first column (c0,c1,c2,c3) =", Cm)$
+
+/* Eigenvector v^(k)_j = w^(j k), eigenvalue lambda_k = sum_m c_m w^(-m k) -- the DFT of c. */
+eigvec(k) := transpose(matrix(makelist(w^((j-1)*k), j, 1, nn)))$
+lam(k)    := sum(c[m]*w^(-m*k), m, 0, nn-1)$
+
+resid1 : makelist(ratsimp(rectform(Cm . eigvec(k) - lam(k)*eigvec(k))), k, 0, nn-1)$
+print("STEP 1b residual C v^(k) - lambda_k v^(k) for k = 0..3 =", resid1, " (four zero vectors)")$
+print("STEP 1c so lambda_k is exactly the DFT of the first column; a learned SYMBOL is a learned")$
+print("        circulant, with no approximation anywhere in the parameterisation")$
+
+/* A second size, so the identity is not an artefact of w = %i. */
+nn6 : 6$
+w6  : exp(2*%pi*%i/nn6)$
+C6  : genmatrix(lambda([i,j], c[mod(i-j, nn6)]), nn6, nn6)$
+ev6(k) := transpose(matrix(makelist(w6^((j-1)*k), j, 1, nn6)))$
+lm6(k) := sum(c[m]*w6^(-m*k), m, 0, nn6-1)$
+print("STEP 1d same at n = 6, k = 1 and k = 4:",
+      ratsimp(rectform(C6 . ev6(1) - lm6(1)*ev6(1))), ratsimp(rectform(C6 . ev6(4) - lm6(4)*ev6(4))),
+      " (zero vectors)")$
+
+/* ===== STEP 2: the REAL two-dimensional action on one mode ===== */
+
+print("=== STEP 2: what a symbol does to a real signal ===")$
+
+/* Real data live in the span of cos(theta j) and sin(theta j) for theta = 2 pi k / n.  Multiplying
+   the complex amplitude by lambda = p + i q rotates and scales that plane. */
+declare([p, q, a, b, th], real)$
+zin  : (a - %i*b)/2$                       /* complex amplitude of a cos(th j) + b sin(th j) */
+zout : ratsimp((p + %i*q) * zin)$
+aout : ratsimp(2*realpart(zout))$
+bout : ratsimp(-2*imagpart(zout))$
+print("STEP 2a (a,b) -> (", aout, ",", bout, ") -- the real 2x2 block M(p,q) = [[p,q],[-q,p]]")$
+print("STEP 2b residual against that matrix =",
+      ratsimp(matrix([aout],[bout]) - matrix([p,q],[-q,p]) . matrix([a],[b])), " (zero vector)")$
+print("STEP 2c the sign of the off-diagonal is a CONVENTION, fixed by writing the mode as")$
+print("        a cos + b sin and stacking (a,b): multiplying the e^(i th j) amplitude by a phase")$
+print("        shifts the wave backwards in j, so the rotation runs the other way.  Nothing below")$
+print("        depends on it -- the gain, the commuting and the composition law are identical for")$
+print("        the transpose -- but writing the wrong one is how a sign error enters a kernel")$
+
+/* ===== STEP 3: the gain on a mode is EXACT, not a bound ===== */
+
+print("=== STEP 3: the exact gain ===")$
+
+gain2 : ratsimp(aout^2 + bout^2 - (p^2 + q^2)*(a^2 + b^2))$
+print("STEP 3a ||M v||^2 - (p^2+q^2) ||v||^2 =", gain2,
+      " (0) -- the gain sqrt(p^2+q^2) = |lambda| holds for EVERY input, not just the worst one")$
+print("STEP 3b so the operator norm of the whole circulant is max_k |lambda_k|, and it is ATTAINED")$
+print("        on the maximising Fourier mode.  Contrast the Schur bound in LipschitzResidual,")$
+print("        sigma_max(W) <= sqrt(||W||_1 ||W||_inf), which is an inequality with no witness")$
+
+/* ===== STEP 4: symbols multiply, and gains multiply exactly ===== */
+
+print("=== STEP 4: composition ===")$
+
+declare([p2, q2], real)$
+pc : ratsimp(p*p2 - q*q2)$
+qc : ratsimp(p*q2 + q*p2)$
+print("STEP 4a (p + iq)(p2 + iq2) = ", pc, " + i(", qc, ")")$
+print("STEP 4b Brahmagupta-Fibonacci: (pc^2 + qc^2) - (p^2+q^2)(p2^2+q2^2) =",
+      ratsimp(pc^2 + qc^2 - (p^2+q^2)*(p2^2+q2^2)), " (0)")$
+print("STEP 4c the blocks compose by multiplying symbols: M(p,q) M(p2,q2) - M(pc,qc) =",
+      ratsimp(matrix([p,q],[-q,p]) . matrix([p2,q2],[-q2,p2]) - matrix([pc,qc],[-qc,pc])),
+      " (zero matrix)")$
+print("STEP 4d and they COMMUTE: M(p,q) M(p2,q2) - M(p2,q2) M(p,q) =",
+      ratsimp(matrix([p,q],[-q,p]) . matrix([p2,q2],[-q2,p2])
+            - matrix([p2,q2],[-q2,p2]) . matrix([p,q],[-q,p])), " (zero matrix)")$
+
+/* THE TIGHTNESS ARGUMENT.  For a PRODUCT of circulants the exact norm is max_k prod_m |lambda^m_k|,
+   whereas bounding each factor separately gives prod_m max_k |lambda^m_k|.  These differ whenever
+   the argmax modes differ, and the difference is not small. */
+g1 : [3, 1]$   /* |lambda| of operator 1 on modes 0 and 1 */
+g2 : [1, 3]$   /* operator 2: the maximising mode is the OTHER one */
+print("STEP 4e exact norm of the product = max_k g1_k g2_k =",
+      max(g1[1]*g2[1], g1[2]*g2[2]),
+      " vs the product of the two norms =", max(g1[1],g1[2])*max(g2[1],g2[2]),
+      " -- a factor of", float(max(g1[1],g1[2])*max(g2[1],g2[2])/max(g1[1]*g2[1], g1[2]*g2[2])),
+      "of pure conservatism, per composition")$
+
+/* ===== STEP 5: the plant.  Periodic advection-diffusion and its dispersion relation ===== */
+
+print("=== STEP 5: the advection-diffusion symbol ===")$
+
+assume(nu > 0, cc > 0)$
+uu : exp(%i*(k*x - om*t))$
+pde : ratsimp( diff(uu, t) + cc*diff(uu, x) - nu*diff(uu, x, 2) )$
+print("STEP 5a substituting u = exp(i(kx - om t)) into u_t + c u_x - nu u_xx = 0 gives",
+      ratsimp(pde/uu), " = 0")$
+omsol : rhs(solve(ratsimp(pde/uu) = 0, om)[1])$
+print("STEP 5b so om(k) =", omsol, " = c k - i nu k^2")$
+print("STEP 5c PHASE SPEED = Re(om)/k =", ratsimp(realpart(omsol)/k),
+      " -- equal to c for EVERY k, i.e. NON-DISPERSIVE; all the k-dependence is in the decay")$
+print("STEP 5d amplitude factor over a step dt = exp(imagpart(om) dt) = exp(-nu k^2 dt), so the")$
+print("        one-step propagator symbol is lambda_k = exp(-i c k dt - nu k^2 dt)")$
+print("STEP 5e |lambda_k| =", ratsimp(exp(-nu*k^2*dt)),
+      " so ||propagator|| = max_k |lambda_k| = 1, attained at k = 0 (mass is conserved), and")$
+print("        PURE ADVECTION (nu = 0) is an ISOMETRY: |lambda_k| = 1 for every mode")$
+
+/* Verify the propagator really solves the PDE, rather than asserting it. */
+usol : exp(%i*k*x)*exp(-%i*cc*k*t - nu*k^2*t)$
+print("STEP 5f residual of u_t + c u_x - nu u_xx at that solution =",
+      ratsimp( diff(usol,t) + cc*diff(usol,x) - nu*diff(usol,x,2) ), " (0)")$
+
+/* ===== STEP 6: the semigroup, and why the T-step tube is exact ===== */
+
+print("=== STEP 6: rollout ===")$
+
+print("STEP 6a lambda_k(t1) lambda_k(t2) - lambda_k(t1+t2) =",
+      ratsimp( exp(-%i*cc*k*t1 - nu*k^2*t1)*exp(-%i*cc*k*t2 - nu*k^2*t2)
+             - exp(-%i*cc*k*(t1+t2) - nu*k^2*(t1+t2)) ), " (0) -- a genuine semigroup")$
+print("STEP 6b so the T-step gain is max_k |lambda_k|^T EXACTLY.  The Lipschitz rollout tube of")$
+print("        Results 28/30 multiplies per-step UPPER bounds; for a circulant residual the")$
+print("        per-step constant is the attained norm, so the tube is tight rather than merely")$
+print("        valid -- that is the guarantee this backbone adds over LipschitzResidual")$
+
+/* ===== STEP 7: the Nyquist obstruction, and why zeroing it is the RIGHT answer ===== */
+
+print("=== STEP 7: odd derivatives at the Nyquist mode ===")$
+
+/* A real circulant has a REAL eigenvalue at the Nyquist bin, because that eigenvector is (-1)^m. */
+lamN : sum(c[m]*(-1)^m, m, 0, nn-1)$
+print("STEP 7a for real c the Nyquist eigenvalue is", lamN,
+      " -- visibly real, so a symbol with a nonzero imaginary part there has NO real circulant")$
+print("STEP 7b residual lambda_(n/2) - sum c_m (-1)^m =", ratsimp(rectform(lam(nn/2) - lamN)), " (0)")$
+
+/* The continuous symbol of d/dx is i k, which at k_N = pi n / L is NOT real.  The resolution is not
+   a patch: the sampled derivative of the Nyquist mode is identically zero. */
+declare(jj, integer)$
+kN : %pi*nnn/LL$
+xj : jj*LL/nnn$
+print("STEP 7c the Nyquist mode sampled on the grid is cos(k_N x_j) =",
+      ratsimp(cos(kN*xj)), " = (-1)^j")$
+print("STEP 7d its exact derivative sampled on the same grid is -k_N sin(k_N x_j) =",
+      ratsimp(-kN*sin(kN*xj)), " (0 at EVERY grid point)")$
+print("STEP 7e so the correct discrete symbol of d/dx at Nyquist is 0, not i k_N.  Zeroing it is")$
+print("        the right numerical answer AND what keeps the operator a real circulant; the two")$
+print("        requirements agree, which is the sign that neither is a hack.  Even derivatives are")$
+print("        unaffected: -nu k^2 is real at every bin, including Nyquist")$
+print("STEP 7f the same check for the SECOND derivative, -k_N^2 cos(k_N x_j) =",
+      ratsimp(-kN^2*cos(kN*xj)), " -- nonzero, so diffusion keeps its Nyquist bin")$

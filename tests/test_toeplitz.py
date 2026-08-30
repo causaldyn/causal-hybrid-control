@@ -3,10 +3,14 @@
 Structured-operator primitives for the dynamic-effect route (plans/18).
 """
 
+import jax.numpy as jnp
 import numpy as np
-from scipy.linalg import toeplitz
+from scipy.linalg import circulant, toeplitz
 
 from chc.toeplitz import (
+    circulant_matvec,
+    circulant_operator_norm,
+    circulant_symbol,
     gohberg_semencul_apply,
     gohberg_semencul_covariance,
     gohberg_semencul_generators,
@@ -90,3 +94,56 @@ def test_gohberg_semencul_covariance_beats_the_sample_covariance_from_few_snapsh
         scm_errors.append(nmse(snapshots.T @ snapshots / n_snapshots))
         assert np.all(np.linalg.eigvalsh(estimate) > 0)  # PD though the sample covariance isn't
     assert np.mean(gs_errors) < 0.3 * np.mean(scm_errors)  # the structured estimate crushes the SCM
+
+
+def test_circulant_matvec_matches_dense_and_the_toeplitz_embedding() -> None:
+    # Three independent routes to the same product. The embedded route is the existing primitive
+    # applied to the circulant's own first row, so agreement also pins the row convention.
+    rng = np.random.default_rng(0)
+    n = 24
+    kernel, x = rng.normal(size=n), rng.normal(size=n)
+    dense = circulant(kernel) @ x
+    embedded = toeplitz_matvec(
+        jnp.asarray(kernel),
+        jnp.asarray(np.concatenate([kernel[:1], kernel[1:][::-1]])),
+        jnp.asarray(x),
+    )
+    direct = np.asarray(circulant_matvec(jnp.asarray(kernel), jnp.asarray(x)))
+    assert np.allclose(direct, dense, atol=1e-4)
+    assert np.allclose(np.asarray(embedded), dense, atol=1e-4)
+
+
+def test_circulant_operator_norm_is_the_exact_spectral_norm() -> None:
+    # proofs/spectral_circulant.v two_mode_bounded + two_mode_norm_attained: max_k |lambda_k| is the
+    # operator norm, not an upper bound on it. Checked against a dense SVD.
+    rng = np.random.default_rng(1)
+    for n in (8, 16, 17):
+        kernel = rng.normal(size=n)
+        exact = float(circulant_operator_norm(jnp.asarray(kernel)))
+        assert abs(exact - np.linalg.norm(circulant(kernel), 2)) < 1e-4 * exact
+
+
+def test_circulant_symbols_multiply_under_composition() -> None:
+    # gain_multiplies (Brahmagupta-Fibonacci): composing circulants multiplies symbols exactly, so
+    # the gains multiply too. This is what makes a composed bound tight rather than merely valid.
+    rng = np.random.default_rng(2)
+    n = 32
+    a, b = rng.normal(size=n), rng.normal(size=n)
+    composed = circulant_matvec(jnp.asarray(a), jnp.asarray(b))
+    product = circulant_symbol(jnp.asarray(a)) * circulant_symbol(jnp.asarray(b))
+    assert np.allclose(np.asarray(circulant_symbol(composed)), np.asarray(product), atol=1e-4)
+
+
+def test_composed_norm_is_strictly_below_the_product_of_norms() -> None:
+    # product_bound_is_strictly_loose: two operators peaking on different modes. Bounding each
+    # factor separately pays this ratio at every step of a rollout; composing symbols does not.
+    n = 32
+    low = np.zeros(n)
+    low[:3] = [0.4, 0.3, 0.3]  # a smoother: peaks at k = 0
+    high = np.zeros(n)
+    high[0], high[1] = 1.0, -1.0  # a difference: peaks at the highest wavenumber
+    exact = float(circulant_operator_norm(circulant_matvec(jnp.asarray(low), jnp.asarray(high))))
+    separate = float(circulant_operator_norm(jnp.asarray(low))) * float(
+        circulant_operator_norm(jnp.asarray(high))
+    )
+    assert separate > 1.5 * exact

@@ -165,3 +165,76 @@ class MeanFieldTransport:
             "uncontrolled": float(jnp.sum((no_control - target) ** 2) * self.dx),
             "controlled-CHC": float(jnp.sum((rho_final - target) ** 2) * self.dx),
         }
+
+
+def periodic_wavenumbers(n: int, length: float) -> Array:
+    """Real-FFT wavenumbers ``k_m = 2*pi*m/length`` for ``m = 0 .. n//2``."""
+    return 2.0 * jnp.pi * jnp.arange(n // 2 + 1) / length
+
+
+def advection_diffusion_symbol(n: int, length: float, *, speed: float, viscosity: float) -> Array:
+    """Symbol of the translation-invariant vector field ``-c u_x + nu u_xx``: ``-i c k - nu k^2``.
+
+    Derived in ``validation/spectral_circulant.mac`` STEP 5: substituting ``exp(i(kx - wt))`` gives
+    ``w(k) = c k - i nu k^2``, so the phase speed is ``c`` at every wavenumber -- the advection is
+    NON-dispersive and all the ``k``-dependence sits in the ``exp(-nu k^2 t)`` decay.
+
+    On an even grid the Nyquist bin is set to zero for the advection part, and that is the correct
+    discrete answer rather than a patch: the Nyquist mode is ``cos(pi j) = (-1)^j``, whose exact
+    derivative ``-pi sin(pi j)`` vanishes at every grid point, so the sampled first derivative of
+    that mode is identically zero (STEP 7). It is also what keeps the operator a REAL circulant --
+    a real first column forces a real eigenvalue at Nyquist, which ``-i c k`` is not.
+    """
+    k = periodic_wavenumbers(n, length)
+    advection = -1j * speed * k
+    if n % 2 == 0:
+        advection = advection.at[-1].set(0.0)
+    return advection - viscosity * k**2
+
+
+def advection_diffusion_kernel(n: int, length: float, *, speed: float, viscosity: float) -> Array:
+    """First column of the circulant realising that vector field -- the truth to be recovered.
+
+    A :class:`chc.residual.SpectralResidual` parameterises exactly this vector, so on this plant the
+    truth lies IN the hypothesis class. That is deliberate: it makes a failure to recover it a
+    failure of the fit rather than of the model, which is what the comparison against an MLP is
+    supposed to isolate.
+    """
+    return jnp.fft.irfft(
+        advection_diffusion_symbol(n, length, speed=speed, viscosity=viscosity), n=n
+    )
+
+
+def advection_diffusion_field(u: Array, length: float, *, speed: float, viscosity: float) -> Array:
+    """Apply ``-c d_x + nu d_xx`` to a periodic field, spectrally and therefore exactly."""
+    n = u.shape[0]
+    symbol = advection_diffusion_symbol(n, length, speed=speed, viscosity=viscosity)
+    return jnp.fft.irfft(symbol * jnp.fft.rfft(u), n=n)
+
+
+def advection_diffusion_propagator(
+    u: Array, length: float, *, speed: float, viscosity: float, dt: float
+) -> Array:
+    """The EXACT solution operator over ``dt``: ``exp(-i c k dt - nu k^2 dt)`` applied spectrally.
+
+    Exact in time as well as in space, so it introduces no discretisation error of its own -- unlike
+    :func:`transport_step`, whose upwind flux and Strang split are second-order at best. The price
+    is that it only exists because the operator is linear and translation-invariant, which is
+    precisely the structure :class:`chc.residual.SpectralResidual` is built to exploit.
+    """
+    n = u.shape[0]
+    symbol = advection_diffusion_symbol(n, length, speed=speed, viscosity=viscosity)
+    return jnp.fft.irfft(jnp.exp(symbol * dt) * jnp.fft.rfft(u), n=n)
+
+
+def periodic_smoothing_kernel(n: int, length: float, width: float) -> Array:
+    """A periodic Gaussian convolution kernel, unit gain at ``k = 0`` -- a NONLOCAL actuator.
+
+    Control applied in one cell spreads to its neighbours. A diagonal control matrix cannot express
+    that and a circulant can, which is why the certificate gives the control channel its own kernel
+    rather than a scalar.
+    """
+    offsets = jnp.arange(n)
+    signed = jnp.where(offsets > n // 2, offsets - n, offsets) * (length / n)
+    kernel = jnp.exp(-0.5 * (signed / width) ** 2)
+    return kernel / jnp.sum(kernel)

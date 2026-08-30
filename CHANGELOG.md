@@ -9,6 +9,30 @@ still change).
 
 ### Added
 
+- **`chc.residual.SpectralResidual` + the periodic plant in `chc.transport`** — `plans/18` E was
+  skipped under a kill-criterion whose sole reopening condition was tying a learned spectral
+  operator into `chc.transport`, so both halves land together and the criterion stays live.
+  `advection_diffusion_field` / `advection_diffusion_propagator` give a translation-invariant plant
+  with an exact spectral solution operator; `SpectralResidual` IS a circulant on that grid,
+  parameterised by its first column (a bijection, unlike a free half-spectrum, whose imaginary parts
+  at DC and Nyquist are an unidentified gauge). What it buys over `LipschitzResidual`: its operator
+  norm `max_k |lambda_k|` is ATTAINED on a named Fourier mode rather than bounded -- measured ratio
+  1.000000, against a generic input's 0.607 and a Schur bound measured 113x slack -- and gains
+  multiply exactly under composition, so the Result 28/30 rollout tube is tight rather than merely
+  valid (the product-of-norms bound is 32.3x larger on this plant's own two operators). It also
+  beats an MLP with 130x more parameters by ten orders of magnitude on held-out one-step error, and
+  is translation-equivariant to machine precision where the MLP is off by 0.50 -- a structural gap
+  no further training closes. Two findings recorded rather than hidden: fitted by Adam on the MLP's
+  own budget the circulant LOSES, because its kernel entries are O(nu n^2 / L^2) = 134.8 away from a
+  small initialisation and 400 steps at lr 0.02 travel 8 -- the right estimator is the closed-form
+  per-mode least squares in `fit_spectral_residual`, since a circulant is linear in its kernel; and
+  the Nyquist bin of a first derivative must be zeroed on an even grid, which is not a patch but the
+  correct discrete answer, since the sampled derivative of `(-1)^j` vanishes everywhere. Derived in
+  `validation/spectral_circulant.mac`, machine-checked in `proofs/spectral_circulant.v`, with the
+  circulant matvec cross-checked against a dense product and the existing `toeplitz_matvec`
+  embedding. `chc.toeplitz` gains `circulant_symbol` / `circulant_matvec` /
+  `circulant_operator_norm`.
+
 - **Convection-diffusion in `chc.galerkin`** — the module solved only `-u'' = f`, a symmetric
   positive-definite operator where testing with the trial space is optimal by Céa's lemma. The whole
   point of a Petrov-Galerkin method is the case where that fails. `convection_diffusion_1d` adds the
