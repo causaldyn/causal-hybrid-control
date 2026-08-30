@@ -1,0 +1,146 @@
+/* DISCOVERY / derivation (CONTRIBUTION 2): what row-level cross-fitting COSTS on a clustered design.
+   The C2 write-up assumes A8 -- "K >= 2 folds of whole clusters" -- while the certificates split
+   folds by ROW PARITY, so every cluster sits in both folds. This file prices that violation. The
+   cited literature cannot: CCDDHNR assume i.i.d. rows (folds are then automatically valid),
+   Hansen-Lee assume independent cluster scores as a PRIMITIVE, Chiang-Kato-Ma-Sasaki assume folds
+   are already cluster-level. None of them prices a VIOLATED fold structure.
+   Model: Y = beta*D + f(Z) + a_g + eps, D = m0(Z) + V, V independent of (a,eps), cluster size m,
+   K folds, k = m*(K-1)/K own-cluster training rows per held-out row (k = 0 under cluster folds).
+   The headline is that there is NO BIAS -- the damage is a change of ESTIMATOR, visible only in the
+   second moment. Maxima is the source of truth. */
+display2d : false$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 1. The Frisch-Waugh-Lovell cancellation, exactly: the cross-fold hat matrix reproduces the
+   design it is applied to, H_BA*Z_A = Z_B, whenever Z_A'Z_A is invertible. This is why f(Z) drops
+   out identically FOR ANY FOLD ASSIGNMENT, and is the clustered restatement of the own-sample
+   partialling-out finding already recorded in the log. Explicit 3-column design, 4+4 split. */
+ZA : matrix([1,z1,c1],[1,z2,c2],[1,z3,c3],[1,z4,c4])$
+ZB : matrix([1,w1,d1],[1,w2,d2],[1,w3,d3],[1,w4,d4])$
+HBA : ZB . invert(transpose(ZA) . ZA) . transpose(ZA)$
+fwl_residual : ratsimp( HBA . ZA - ZB )$
+print("STEP 1 FWL residual H_BA*Z_A - Z_B =", fwl_residual,
+      " (zero matrix confirms f(Z) cancels identically, for ANY fold assignment)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 2. With that cancellation the residualised outcome carries ONLY noise:
+   Ytil_B - beta*Dtil_B = (a_B - H*a_A) + (eps_B - H*eps_A),  Dtil_B = V_B - H*V_A.
+   Symbolic check on the scalar shadow (H acting as a scalar h on one held-out row). */
+Ytil : beta*(V - h*VA) + (a - h*aA) + (e - h*eA)$
+Dtil : V - h*VA$
+noise_only : ratsimp( Ytil - beta*Dtil - ((a - h*aA) + (e - h*eA)) )$
+print("STEP 2 residualised-outcome residual =", noise_only,
+      " (0 confirms the f(Z) and beta*D parts are exactly removed; only a and eps remain)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 3. NO BIAS, for any fold assignment. E[Dtil*(Ytil - beta*Dtil)] expands into cross moments
+   of V against (a,eps); V is independent of both and all are mean zero, so every term vanishes.
+   Encode the independence as the moment rules and expand. */
+moment : expand( Dtil * (Ytil - beta*Dtil) )$
+/* E[.]: V,VA,a,aA,e,eA all mean zero; V,VA independent of a,aA,e,eA => every product below is a
+   cross moment of independent mean-zero factors, hence zero. */
+/* ratsubst, not subst: subst matches syntactic subterms, so it misses V*a inside V*a*h^2. */
+Emoment : moment$
+for pr in [V*a, V*aA, V*e, V*eA, VA*a, VA*aA, VA*e, VA*eA] do
+    Emoment : ratsubst(0, pr, Emoment)$
+print("STEP 3 E[Dtil*(Ytil - beta*Dtil)] =", ratsimp(Emoment),
+      " (0 confirms Result 43(a): row-level folds do NOT bias B-hat)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 4. The second moment, where the damage IS. Write the within-cluster residual maker under row
+   folds as M = I - S, S_ij = 1/k if j is in a different fold of the same cluster, else 0: with a
+   cluster-aware nuisance the held-out row's cluster effect is estimated from its OWN cluster's k
+   training rows and cancels exactly, leaving e = M*eps. The SAME M hits the treatment, Dtil = M*V,
+   which is the half a first pass misses -- and it changes the answer, so both are carried here.
+
+   Var(B-hat) = sum_g E[xi_g^2] / (sum_i E[Dtil_i^2])^2 with xi_g = Dtil_g' e_g.
+   Row folds:      xi = V'M'M eps  =>  E[xi^2] = sv2*sig2*tr((M'M)^2),  sum E[Dtil^2] = sv2*tr(M'M).
+   Cluster folds:  M = I and the cluster effect SURVIVES: e = a_g*1 + eps, Dtil = V, so
+                   E[xi^2] = sv2*m*(tau2 + sig2)  and  sum E[Dtil^2] = sv2*m.
+
+   S has the closed block form S = (m*E - q*F)/(m - q) with q = m/K rows per fold, E = 11'/m the
+   grand-mean projector and F the fold-mean projector, satisfying E^2=E, F^2=F, E*F=F*E=E. Then
+   M = I - alpha*E + beta*F is a polynomial in two commuting projectors and every trace is exact. */
+q_of    : m/K$
+alpha_c : m/(m - q_of)$
+beta_c  : q_of/(m - q_of)$
+/* M^2 = I + a*E + b*F and M^4 = I + (a^2+2a+2ab)*E + (b^2+2b)*F, using E^2=E, F^2=F, E*F=E */
+a_c : ratsimp( alpha_c^2 - 2*alpha_c - 2*alpha_c*beta_c )$
+b_c : ratsimp( beta_c^2 + 2*beta_c )$
+tr_M2 : ratsimp( m + a_c + K*b_c )$                        /* tr E = 1, tr F = K */
+tr_M4 : ratsimp( m + (a_c^2 + 2*a_c + 2*a_c*b_c) + K*(b_c^2 + 2*b_c) )$
+print("STEP 4a tr(M'M) =", tr_M2, " ; tr((M'M)^2) =", tr_M4)$
+print("STEP 4b at K=2: tr(M'M) =", ratsimp(subst([K = 2], tr_M2)),
+      " (= m+2) ; tr((M'M)^2) =", ratsimp(subst([K = 2], tr_M4)), " (= m+14)")$
+print("STEP 4c K=2 residuals: ", ratsimp(subst([K = 2], tr_M2) - (m + 2)), " and ",
+      ratsimp(subst([K = 2], tr_M4) - (m + 14)),
+      " (0,0 confirm the two closed forms against the projector algebra)")$
+
+/* independent check of the projector algebra against explicit matrices, m=4 and m=6 at K=2 */
+S4 : matrix([0,1/2,0,1/2],[1/2,0,1/2,0],[0,1/2,0,1/2],[1/2,0,1/2,0])$
+M4 : ident(4) - S4$   A4 : transpose(M4) . M4$
+S6 : matrix([0,1/3,0,1/3,0,1/3],[1/3,0,1/3,0,1/3,0],[0,1/3,0,1/3,0,1/3],
+            [1/3,0,1/3,0,1/3,0],[0,1/3,0,1/3,0,1/3],[1/3,0,1/3,0,1/3,0])$
+M6 : ident(6) - S6$   A6 : transpose(M6) . M6$
+print("STEP 4d explicit m=4: tr =", mat_trace(A4), " tr^2 =", mat_trace(A4 . A4),
+      " ; residuals vs formula ", ratsimp(mat_trace(A4) - subst([m=4,K=2], tr_M2)), " ",
+      ratsimp(mat_trace(A4 . A4) - subst([m=4,K=2], tr_M4)))$
+print("STEP 4e explicit m=6: tr =", mat_trace(A6), " tr^2 =", mat_trace(A6 . A6),
+      " ; residuals vs formula ", ratsimp(mat_trace(A6) - subst([m=6,K=2], tr_M2)), " ",
+      ratsimp(mat_trace(A6 . A6) - subst([m=6,K=2], tr_M4)))$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 5. The leakage ratio Psi := Var_row/Var_cluster. The treatment-side factor tr(M'M) enters
+   SQUARED in the denominator, which is why pricing only the outcome side understates it. */
+var_row     : sig2*tr_M4 / tr_M2^2$
+var_cluster : (tau2 + sig2) / m$
+Psi  : ratsimp( var_row / var_cluster )$
+c_mK : ratsimp( subst([tau2 = 0], Psi) )$
+print("STEP 5a Psi(rho,m,K) =", Psi)$
+print("STEP 5b c(m,K) := Psi at tau2=0 =", c_mK,
+      " = m*tr((M'M)^2)/tr(M'M)^2 ; residual =", ratsimp(c_mK - m*tr_M4/tr_M2^2))$
+print("STEP 5c c(m,2) =", ratsimp(subst([K = 2], c_mK)),
+      " (= m*(m+14)/(m+2)^2 ; residual ", ratsimp(subst([K=2], c_mK) - m*(m+14)/(m+2)^2),
+      ") -- m=4 -> 2, m=10 -> 5/3, m=40 -> 1.2245")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 6. THE LAW. rho_ICC enters ONLY through the outcome-side factor sig2/(tau2+sig2); every
+   fold-geometry factor lives in c(m,K) and cancels on normalising. So the normalised law is EXACT
+   in m and K, not asymptotic -- which is what makes it testable at any cluster size. */
+Psi_norm      : ratsimp( Psi / c_mK )$
+one_minus_icc : ratsimp( 1 - tau2/(tau2 + sig2) )$
+print("STEP 6 Psi/c(m,K) =", Psi_norm, " ; 1 - rho_ICC =", one_minus_icc,
+      " ; residual =", ratsimp(Psi_norm - one_minus_icc),
+      " (0 confirms Result 43(b): the normalised leakage law is EXACTLY 1 - rho_ICC)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 7. Limits, monotonicity and domain. The construction needs at least one training row and one
+   held-out row per cluster, i.e. m >= K >= 2; at m = 1 a cluster cannot be split at all and the two
+   schemes COINCIDE (Psi = 1 by definition, not by this formula -- do not read m=1 off it). */
+print("STEP 7a limit c(m,K) as m -> inf =", limit(c_mK, m, inf),
+      " (1: the own-cluster-noise inflation vanishes for large clusters)")$
+print("STEP 7b Psi/c at tau2 = 0 =", ratsimp(subst([tau2 = 0], Psi_norm)),
+      " (1: no cluster effect => nothing to leak)")$
+print("STEP 7c dPsi/d(tau2) =", ratsimp(diff(Psi, tau2)),
+      " (negative for sig2>0: more intra-cluster correlation => row folds understate more)")$
+print("STEP 7d c(m,K) at m=K (one held-out row per cluster) =", ratsimp(subst([m = K], c_mK)))$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 8. The Hansen-Lee hypothesis violation. Under CLUSTER folds distinct cluster scores are
+   exactly uncorrelated. Under ROW folds they are coupled only through the shared global nuisance
+   coefficients, estimated from all G clusters, so the coupling is O(1/G) -- which is why the
+   conclusions survive for a fixed correctly-specified linear span even though the HYPOTHESIS of
+   Hansen-Lee Thm 2 (and of CCDDHNR Lemma 6.1) fails. Scalar shadow: two clusters sharing one
+   estimated coefficient whose sampling error is O(1/sqrt(G)). */
+cov_gg : ratsimp( (cbar/sqrt(G))^2 )$
+print("STEP 8 Cov(xi_g, xi_g') under row folds ~", cov_gg,
+      " = O(1/G) (the independence hypothesis fails, but only at order 1/G)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 9. Where (a) genuinely FAILS: a saturated learner. If the nuisance basis can interpolate the
+   held-out row from its own cluster's training rows, the residualised treatment collapses to zero
+   and the moment is 0/0 rather than unbiased. Scalar shadow: h -> 1 in STEP 2's Dtil. */
+Dtil_sat : ratsimp( subst([h = 1, VA = V], Dtil) )$
+print("STEP 9 Dtil under a saturating own-cluster fit =", Dtil_sat,
+      " (0: the treatment residual is annihilated, so the channel is unidentified -- this is the",
+      "regime where row folds DO break the estimator, and where cluster folds are mandatory)")$

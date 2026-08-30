@@ -9,6 +9,18 @@ still change).
 
 ### Added
 
+- **`cluster_fold_leakage_certificate`** (`chc.regret`) — prices what a *violated* cross-fitting
+  assumption costs on a clustered design, which none of the cited theorems do: CCDDHNR assume i.i.d.
+  rows, Hansen–Lee assume independent cluster scores as a primitive, Chiang–Kato–Ma–Sasaki assume
+  folds are already cluster-level. Splitting folds by row rather than by cluster is **not** a bias —
+  Frisch–Waugh–Lovell cancels for any fold assignment — it silently substitutes a within-cluster
+  estimator whose variance obeys `Psi = c(m,K)*(1 - rho_ICC)` with `c(m,2) = m*(m+14)/(m+2)^2`, so
+  every constant derived from the cluster-robust variance belongs to a different estimator and a
+  sandwich computed after row folds under-covers. For a cluster-*measurable* exposure — which is what
+  a partial-interference spillover is — the channel is annihilated outright and the estimate loses
+  exactly that coefficient. Derived in `validation/cluster_fold_leakage.mac`, machine-checked in
+  `proofs/cluster_fold_leakage.v`.
+
 - **`minimax_exploration_certificate`** (`chc.regret`) — the sequential exploration lower bound as an
   infimum over **policies**, not over a schedule class, with the constant written out:
   `c_causal = 2·A·|du*/dθ|·σ/√η_exp`. `adaptive_exploration_certificate` bounded an assumed
@@ -22,6 +34,16 @@ still change).
   `validation/minimax_exploration.mac`, machine-checked in `proofs/minimax_exploration.v`.
 
 ### Fixed
+
+- **The C2 certificates did not implement assumption A8** (`chc.regret`), so the values returned by
+  `multichannel_control_certificate`, `end_to_end_c2_certificate` and `clustered_lower_bound_certificate`
+  have all moved. A8 asks for `K >= 2` folds of **whole clusters**; all three built folds as
+  `np.mod(np.arange(n), 2)` — row parity — while the cluster id sat one line above, unused, leaving
+  every cluster in both folds. `validation/clustered_rate_check.R` had the identical construction, so
+  the independent-stack cross-check reproduced the same fold rather than catching it. Folds are now
+  `np.mod(cid, 2)`. No order and no qualitative conclusion changed (the leak is not a bias); the
+  measured constants did: full-orth slope 3.53 -> 3.82, cluster-SE -0.58 -> -0.55, G-sweep
+  -0.89 -> -1.08, the `G^{-1}` plateau `c0` 0.18 -> 0.19, and the R cross-check -0.502 -> -0.541.
 
 - **`adaptive_exploration_certificate` ignored its `sigma` argument** (`chc.regret`), so its returned
   `lower_bound`, `schedule` and cumulative-regret arrays are all different now. The van-Trees floor

@@ -30,7 +30,7 @@ simulate_cluster <- function(G, m = 10, b_d = 1.0, b_s = 0.6,
   u <- au * z + 0.7 * rnorm(n)
   g <- ag * z + 0.7 * rnorm(n)
   y <- b_d * u + b_s * g + gamma * z + a + noise * rnorm(n)
-  list(z = z, u = u, g = g, y = y, fold = (seq_len(n) %% 2))
+  list(z = z, u = u, g = g, y = y, fold = (cid %% 2))   # A8: whole clusters held out
 }
 
 Gs <- c(20, 40, 80, 160, 320); n_seed <- 80; b_total <- 1.6

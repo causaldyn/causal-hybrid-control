@@ -13,6 +13,7 @@ from chc.regret import (
     causal_vs_predictive_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
+    cluster_fold_leakage_certificate,
     clustered_lower_bound_certificate,
     composition_transfer_certificate,
     confounded_turnpike_certificate,
@@ -166,6 +167,48 @@ def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
         adaptive_exploration_certificate(sigma=1.0).lower_bound,
         2.0 * adaptive_exploration_certificate(sigma=0.5).lower_bound,
     )
+
+
+def test_cluster_fold_leakage_prices_the_a8_violation() -> None:
+    # Contribution 2, Result 43 (proofs/cluster_fold_leakage.v): assumption A8 asks for folds of
+    # WHOLE clusters; the certificates used to split by row parity, leaving every cluster in both
+    # folds. The finding is NOT a bias -- it is a change of estimator, visible only in the second
+    # moment. Each block below can fail on its own.
+    curve = cluster_fold_leakage_certificate()
+    # (1) NO BIAS, either scheme, either nuisance class. Falsifies Result 43(a) if it fails.
+    assert np.abs(curve.lin_bias_row).max() < 0.02
+    assert np.abs(curve.lin_bias_cluster).max() < 0.02
+    assert np.abs(curve.aware_bias_row).max() < 0.02
+    assert np.abs(curve.aware_bias_cluster).max() < 0.02
+    # (2) For the library's OWN linear nuisance the fold scheme washes out as G grows -- which is
+    # what licenses the C2 numbers published before the fold was corrected.
+    assert curve.lin_sd_ratio[-1] > 0.95
+    assert curve.lin_sd_ratio[-1] > curve.lin_sd_ratio[0]
+    # (3) THE A8 DISCRIMINATOR. With a cluster-aware nuisance, row folds estimate each cluster's
+    # own effect from its own training rows and subtract it, annihilating the residual ICC;
+    # whole-cluster folds cannot see the held-out cluster's effect, so they preserve it. This is
+    # the assertion that makes this a test OF A8 rather than one that happens to pass under it.
+    assert curve.resid_icc_row.max() < 0.02
+    assert curve.resid_icc_cluster[-1] > 0.8 * curve.icc_grid[-1]
+    assert np.all(np.diff(curve.resid_icc_cluster) > 0)  # tracks rho_ICC
+    # (4) The fold-geometry constant, from the projector algebra: c(m,2) = m*(m+14)/(m+2)^2.
+    assert abs(curve.c_fold_measured / curve.c_fold_predicted - 1.0) < 0.15
+    # (5) THE LAW psi/c = 1 - rho_ICC is exact; a finite sample adds only the O(1/G) coupling
+    # through the shared global nuisance, so the deviation must SHRINK with G. Antitone in rho.
+    assert curve.law_maxdev < curve.law_maxdev_half_g  # the O(1/G) term, vanishing
+    assert curve.law_maxdev < 0.15
+    assert np.all(
+        np.diff(curve.psi_normalised) < 0
+    )  # antitone in rho_ICC (Rocq: leak_ratio_antitone)
+    # (6) A genuine cluster-MEASURABLE exposure -- what a partial-interference spillover actually
+    # is -- is reproduced exactly from the held-out row's own cluster, so row folds annihilate the
+    # channel: it loses its variation entirely (Result 43(c)).
+    assert curve.exposure_resid_var_row < 0.02 * curve.exposure_resid_var_cluster
+    # (7) ... and the consequence is a bias of EXACTLY the annihilated coefficient, -b_s. This is
+    # the one regime where the leak is not merely a variance question; cluster folds fix it.
+    assert abs(curve.annihilated_bias_row - curve.annihilated_bias_predicted) < 0.05
+    assert abs(curve.annihilated_bias_cluster) < 0.05
+    assert abs(curve.annihilated_bias_row) > 20.0 * abs(curve.annihilated_bias_cluster)
 
 
 def test_minimax_exploration_floor_is_valid_sharp_and_causal() -> None:

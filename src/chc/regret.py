@@ -661,7 +661,7 @@ def multichannel_control_certificate(
         u = alpha_u * z + 0.7 * rng.standard_normal(n)
         g = alpha_g * z + 0.7 * rng.standard_normal(n)  # confounded spillover exposure
         y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
-        return z, u, g, y, np.mod(np.arange(n), 2)
+        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
 
     for i, delta in enumerate(ds):
         err_half = np.empty(n_seeds)
@@ -808,7 +808,7 @@ def end_to_end_c2_certificate(
         u = alpha_u * z + 0.7 * rng.standard_normal(n)
         g = alpha_g * z + 0.7 * rng.standard_normal(n)
         y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
-        return z, u, g, y, np.mod(np.arange(n), 2)
+        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
 
     def lq_regret(effect_err: float) -> float:
         return certainty_equivalence_gap(
@@ -903,7 +903,7 @@ def clustered_lower_bound_certificate(
         u = alpha_u * z + 0.7 * rng.standard_normal(n)
         g = alpha_g * z + 0.7 * rng.standard_normal(n)
         y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
-        return z, u, g, y, np.mod(np.arange(n), 2)
+        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
 
     def lq_regret(err: float) -> float:
         return certainty_equivalence_gap(a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + err * unit, x0)
@@ -980,6 +980,223 @@ def exposure_map_certificate(
     full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
     wbn_slope = float(np.polyfit(np.log(ds), np.log(wbn), 1)[0])
     return ExposureMapCurve(ds, full, wbn, full_slope, wbn_slope)
+
+
+@dataclass(frozen=True)
+class ClusterFoldLeakageCurve:
+    """What row-level cross-fitting costs on a clustered design: no bias, a different estimator."""
+
+    icc_grid: Vector  # intra-cluster correlation rho_ICC = tau^2/(tau^2+sigma^2) swept
+    # ARM 1 -- the library's own LINEAR-in-z nuisance. Must show the fold scheme is asymptotically
+    # irrelevant here, which is what licenses the previously published C2 numbers.
+    lin_cluster_grid: Vector  # cluster counts G
+    lin_bias_row: Vector  # bias under row-parity folds (~0)
+    lin_bias_cluster: Vector  # bias under whole-cluster folds (~0)
+    lin_sd_ratio: Vector  # sd_row/sd_cluster -> 1 as G grows (the O(1/G) leak)
+    # ARM 2 -- a CLUSTER-AWARE nuisance. This is the arm that actually tests A8.
+    aware_bias_row: Vector  # still ~0: the leak does NOT bias (Result 43(a))
+    aware_bias_cluster: Vector
+    resid_icc_row: Vector  # ~0: row folds ANNIHILATE the residual ICC
+    resid_icc_cluster: Vector  # ~rho_ICC: whole-cluster folds preserve it
+    psi: Vector  # Var_row/Var_cluster
+    psi_normalised: Vector  # psi / psi(rho=0) -- must equal 1 - rho_ICC (Result 43(b))
+    c_fold_measured: float  # psi at rho_ICC = 0, the fold-geometry constant
+    c_fold_predicted: float  # m*(m+14)/(m+2)^2 at K=2, from the projector algebra
+    law_maxdev: float  # max |psi_normalised - (1 - rho_ICC)| at n_clusters
+    law_maxdev_half_g: float  # ... and at half as many clusters: must be LARGER (the O(1/G) term)
+    # ARM 3 -- a genuine cluster-measurable exposure (a spillover really is cluster-level).
+    # This is the regime where the leak stops being a variance question: the channel is ANNIHILATED,
+    # and the total-effect estimate loses exactly the coefficient it carried.
+    exposure_resid_var_row: float  # ~0: nothing of the exposure survives residualisation
+    exposure_resid_var_cluster: float
+    annihilated_bias_row: float  # ~ -b_s: the whole spillover coefficient goes missing
+    annihilated_bias_cluster: float  # ~0
+    annihilated_bias_predicted: float  # -b_s, the exact prediction
+
+
+def cluster_fold_leakage_certificate(
+    *,
+    n_clusters: int = 60,
+    cluster_size: int = 8,
+    noise: float = 0.5,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    icc_grid: Sequence[float] = (0.0, 0.3, 0.6, 0.9),
+    lin_cluster_grid: Sequence[int] = (20, 80, 320),
+    n_seeds: int = 240,
+) -> ClusterFoldLeakageCurve:
+    """CONTRIBUTION 2 -- the price of violating assumption A8 (derived in
+    ``validation/cluster_fold_leakage.mac``, proved in ``proofs/cluster_fold_leakage.v``).
+
+    A8 asks for ``K >= 2`` folds of WHOLE CLUSTERS. Splitting folds by row instead leaves every
+    cluster in both folds, so the nuisance is fit on rows of the very cluster it must then predict.
+    None of the cited theorems prices that: CCDDHNR assume i.i.d. rows (folds are then automatically
+    valid), Hansen-Lee assume independent cluster scores as a PRIMITIVE, Chiang-Kato-Ma-Sasaki
+    assume folds are already cluster-level.
+
+    The finding is NOT a bias. The cross-fold hat reproduces the design it is applied to, so
+    ``f(Z)`` cancels identically and the moment stays exactly orthogonal for ANY fold assignment
+    (ARM 1 and the ``aware_bias_*`` fields). The damage is a change of ESTIMATOR, visible only in
+    the second moment: with a cluster-aware nuisance, row folds estimate each cluster's own effect
+    from its own training rows and subtract it, so the residual ICC is annihilated
+    (``resid_icc_row -> 0`` against ``resid_icc_cluster -> rho_ICC``) and a within-cluster estimator
+    is silently substituted for the cluster-robust one. Its variance obeys
+    ``psi = c(m,K)*(1 - rho_ICC)`` with ``c(m,2) = m*(m+14)/(m+2)^2`` from the projector algebra, so
+    the NORMALISED law ``psi/c = 1 - rho_ICC`` is exact in ``m`` and ``K`` rather than asymptotic.
+    Everything derived from the cluster-robust variance -- interval width, the ``c0`` plateau of
+    Result 25, the regret constant -- then belongs to a different estimator, and a sandwich computed
+    after row folds is too SMALL, so intervals under-cover.
+
+    The one regime where it is NOT merely a variance question is a cluster-measurable regressor
+    (ARM 3). A partial-interference exposure is cluster-measurable by construction, and a
+    cluster-aware nuisance can then reproduce it exactly from the held-out row's own cluster: the
+    channel is annihilated (``exposure_resid_var_row -> 0``) and the total-effect estimate loses
+    exactly the coefficient that channel carried, ``annihilated_bias_row -> -b_s``. That is
+    unidentification, not a broken moment -- ``validation/cluster_fold_leakage.mac`` STEP 9 with
+    ``h -> 1`` gives ``Dtil = 0`` -- but it is a bias in the reported number.
+
+    SCOPE: for a fixed correctly-specified linear span the leak is ``O(1/G)`` and the published C2
+    conclusions survive (ARM 1) -- what does not survive is the claim that the code implements A8.
+    The C2 certificates' own ``G_exp`` varies i.i.d. WITHIN cluster, which is not what a
+    partial-interference exposure looks like, so they sit in the benign regime by accident.
+    """
+
+    def simulate(
+        rng: np.random.Generator, gclust: int, m: int, tau: float, cluster_exposure: bool = False
+    ) -> tuple[np.ndarray, ...]:
+        cid = np.repeat(np.arange(gclust), m)
+        n = cid.size
+        z = rng.standard_normal(n)
+        a = (tau * rng.standard_normal(gclust))[cid]
+        u = z + 0.7 * rng.standard_normal(n)
+        if cluster_exposure:  # a spillover is cluster-MEASURABLE by construction
+            g = 0.8 * z.reshape(gclust, m).mean(1)[cid] + 0.5 * (rng.standard_normal(gclust))[cid]
+        else:
+            g = 0.8 * z + 0.7 * rng.standard_normal(n)
+        y = b_d * u + b_s * g + z + a + noise * rng.standard_normal(n)
+        return cid, z, u, g, y
+
+    def robinson(
+        design: np.ndarray, z: np.ndarray, cols: Sequence[np.ndarray], fold: np.ndarray
+    ) -> tuple[np.ndarray, ...]:
+        out = []
+        for col in cols:
+            r = col.astype(np.float64).copy()
+            for f in (0, 1):
+                tr, te = fold != f, fold == f
+                coef, *_ = np.linalg.lstsq(design[tr], col[tr], rcond=None)
+                r[te] = col[te] - design[te] @ coef
+            out.append(r)
+        return tuple(out)
+
+    def fit(design: np.ndarray, cid: np.ndarray, z, u, g, y, fold) -> tuple[float, np.ndarray]:
+        ut, gt, yt = robinson(design, z, (u, g, y), fold)
+        v = np.column_stack([ut, gt])
+        beta, *_ = np.linalg.lstsq(v, yt, rcond=None)
+        return float(beta[0] + beta[1]), yt - v @ beta
+
+    def residual_icc(e: np.ndarray, gclust: int, m: int) -> float:
+        blocks = e.reshape(gclust, m)
+        grand = blocks.mean()
+        msb = m * float(((blocks.mean(1) - grand) ** 2).sum()) / (gclust - 1)
+        msw = float(((blocks - blocks.mean(1, keepdims=True)) ** 2).sum()) / (gclust * (m - 1))
+        return max(0.0, (msb - msw) / (msb + (m - 1) * msw))
+
+    def linear_design(z: np.ndarray, cid: np.ndarray, gclust: int) -> np.ndarray:
+        return np.column_stack([np.ones_like(z), z])
+
+    def aware_design(z: np.ndarray, cid: np.ndarray, gclust: int) -> np.ndarray:
+        dummies = np.zeros((z.size, gclust))
+        dummies[np.arange(z.size), cid] = 1.0
+        return np.column_stack([np.ones_like(z), z, dummies])
+
+    b_total = b_d + b_s
+    row_fold = lambda cid: np.mod(np.arange(cid.size), 2)  # noqa: E731 -- paired with cl_fold
+    cl_fold = lambda cid: np.mod(cid, 2)  # noqa: E731
+
+    # ARM 1: the library's own linear nuisance -- the fold scheme must wash out as G grows.
+    gs = np.asarray(lin_cluster_grid, dtype=np.float64)
+    lin_b_row, lin_b_cl, lin_ratio = (np.zeros(gs.size) for _ in range(3))
+    for i, gclust in enumerate(lin_cluster_grid):
+        er, ec = np.empty(n_seeds), np.empty(n_seeds)
+        for s in range(n_seeds):
+            cid, z, u, g, y = simulate(np.random.default_rng(6151 * s + gclust), gclust, 10, 0.5)
+            d = linear_design(z, cid, gclust)
+            er[s] = fit(d, cid, z, u, g, y, row_fold(cid))[0] - b_total
+            ec[s] = fit(d, cid, z, u, g, y, cl_fold(cid))[0] - b_total
+        lin_b_row[i], lin_b_cl[i] = float(er.mean()), float(ec.mean())
+        lin_ratio[i] = float(er.std() / ec.std())
+
+    # ARM 2: a cluster-aware nuisance -- the arm that actually tests A8.
+    iccs = np.asarray(icc_grid, dtype=np.float64)
+
+    def aware_arm(gclust: int, seeds: int) -> tuple[np.ndarray, ...]:
+        ab_r, ab_c, ic_r, ic_c, ps = (np.zeros(iccs.size) for _ in range(5))
+        for i, rho in enumerate(iccs):
+            tau = noise * np.sqrt(rho / (1.0 - rho)) if rho < 1.0 else 0.0
+            stats = {}
+            for name, mk in (("row", row_fold), ("cluster", cl_fold)):
+                errs, ii = np.empty(seeds), np.empty(seeds)
+                for s in range(seeds):
+                    rng = np.random.default_rng(4242 * s + int(1000 * rho) + 7 * gclust)
+                    cid, z, u, g, y = simulate(rng, gclust, cluster_size, tau)
+                    b, e = fit(aware_design(z, cid, gclust), cid, z, u, g, y, mk(cid))
+                    errs[s], ii[s] = b - b_total, residual_icc(e, gclust, cluster_size)
+                stats[name] = (float(errs.mean()), float(errs.std()), float(ii.mean()))
+            ab_r[i], ic_r[i] = stats["row"][0], stats["row"][2]
+            ab_c[i], ic_c[i] = stats["cluster"][0], stats["cluster"][2]
+            ps[i] = (stats["row"][1] / stats["cluster"][1]) ** 2
+        return ab_r, ab_c, ic_r, ic_c, ps
+
+    ab_row, ab_cl, ic_row, ic_cl, psi = aware_arm(n_clusters, n_seeds)
+    c_measured = float(psi[0])
+    m_f = float(cluster_size)
+    c_predicted = m_f * (m_f + 14.0) / (m_f + 2.0) ** 2
+
+    # The law is EXACT; what a finite sample adds is the O(1/G) coupling through the shared global
+    # nuisance coefficients (the same term that breaks the Hansen-Lee independence hypothesis). So
+    # the deviation from 1 - rho_ICC must SHRINK with G -- measured at half the clusters to check.
+    dev = float(np.abs(psi / psi[0] - (1.0 - iccs)).max())
+    psi_half = aware_arm(max(4, n_clusters // 2), n_seeds)[4]
+    dev_half = float(np.abs(psi_half / psi_half[0] - (1.0 - iccs)).max())
+
+    # ARM 3: a cluster-measurable exposure. A cluster-aware nuisance reproduces it exactly from the
+    # held-out row's own cluster, so under row folds the channel is annihilated and the total effect
+    # loses precisely the coefficient it carried. Under whole-cluster folds the nuisance never sees
+    # the held-out cluster and the channel survives.
+    ex_row, ex_cl = np.empty(n_seeds), np.empty(n_seeds)
+    an_row, an_cl = np.empty(n_seeds), np.empty(n_seeds)
+    for s in range(n_seeds):
+        rng = np.random.default_rng(777 * s + 3)
+        cid, z, u, g, y = simulate(rng, n_clusters, cluster_size, 0.5, cluster_exposure=True)
+        d = aware_design(z, cid, n_clusters)
+        ex_row[s] = float(np.var(robinson(d, z, (g,), row_fold(cid))[0]))
+        ex_cl[s] = float(np.var(robinson(d, z, (g,), cl_fold(cid))[0]))
+        an_row[s] = fit(d, cid, z, u, g, y, row_fold(cid))[0] - b_total
+        an_cl[s] = fit(d, cid, z, u, g, y, cl_fold(cid))[0] - b_total
+
+    return ClusterFoldLeakageCurve(
+        iccs,
+        gs,
+        lin_b_row,
+        lin_b_cl,
+        lin_ratio,
+        ab_row,
+        ab_cl,
+        ic_row,
+        ic_cl,
+        psi,
+        psi / psi[0],
+        c_measured,
+        c_predicted,
+        dev,
+        dev_half,
+        float(ex_row.mean()),
+        float(ex_cl.mean()),
+        float(an_row.mean()),
+        float(an_cl.mean()),
+        -b_s,
+    )
 
 
 @dataclass(frozen=True)
