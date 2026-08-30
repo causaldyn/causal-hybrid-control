@@ -1,0 +1,125 @@
+/* SYMBOLIC EXTRACTION FROM A KOLMOGOROV-ARNOLD LAYER: what is identified, and what cannot be.
+
+   chc.residual.RBFKANLayer advertises each edge as "an extractable 1D curve".  chc.symbolic is the
+   extraction.  Two structural facts decide whether the extracted formula means anything, and both
+   are derived here rather than asserted in a docstring.
+
+   (1) GAUGE.  The layer computes bias + sum_i phi_i(z_i).  Adding a constant to one edge and
+       subtracting it from the bias leaves the layer unchanged, so an individual edge is identified
+       only up to an additive constant -- only the TOTAL constant is pinned down.  Any claim about
+       a single edge's intercept is therefore a claim about a convention, not about the data.
+
+   (2) SEPARABILITY.  A single layer represents only additively separable functions.  On a target
+       with a genuine interaction the fit does not fail loudly, it returns the best additive
+       approximation.  The MIXED SECOND DIFFERENCE annihilates every additive function, which turns
+       "cannot fit" into a quantitative floor: sup error >= |mixed difference| / 4.
+
+   The certificate is chc.symbolic.symbolic_extraction_certificate; the machine-checked core is
+   proofs/symbolic_kan.v.  Numbers quoted below in the STEP 6 arm come from that certificate. */
+
+/* ===== STEP 1: the layer is exactly additive in the edges ===== */
+
+layer(z0, z1) := bias + phi0(z0) + phi1(z1)$
+
+print("=== STEP 1: gauge freedom of the additive decomposition ===")$
+
+gauged : subst([bias = bias - k0 - k1], bias + (phi0(z0) + k0) + (phi1(z1) + k1))$
+print("STEP 1a shifting edge j by k_j and the bias by -sum k_j, residual =",
+      ratsimp(gauged - layer(z0, z1)),
+      " (0: the layer cannot distinguish the shifted edges from the originals)")$
+
+/* What IS identified: the total constant.  Evaluate at a reference point. */
+print("STEP 1b the identified combination is bias + phi0(a) + phi1(a) =",
+      ratsimp(layer(a, a)),
+      " -- a single number, not a per-edge intercept.  chc.symbolic reports each edge's own",
+      "offset AND checks their sum against the bias, which is the only part with content")$
+
+/* ===== STEP 2: the extracted formula against the true generating function ===== */
+
+print("=== STEP 2: does the extracted formula reproduce the truth? ===")$
+
+truth(z0, z1) := 0.7 + 0.5*z0^2 - 1.2*sin(z1)$
+
+/* The certificate's measured extraction (chc.symbolic, seed 0, num_grid = 16, grid_range = 3):
+   edge (0,0) -> 0.499995*z^2 - 5.824355, edge (0,1) -> -1.200015*sin(z) + 0.326296, and the fitted
+   bias makes the three constants sum to 0.7 to within 2.74e-6.  The residual below is what the
+   extracted formula is wrong by, symbolically, as a function of z0 and z1. */
+c_quad : 0.499995$
+c_sin  : -1.200015$
+gauge_defect : 2.740132795553407e-6$   /* bias + sum of offsets - 0.7, as measured */
+
+extracted(z0, z1) := (0.7 + gauge_defect) + c_quad*z0^2 + c_sin*sin(z1)$
+
+/* expand, NOT ratsimp: ratsimp turns the float coefficients into one exact rational fraction and
+   coeff() can then no longer pick the z0^2 and sin(z1) terms out of it. */
+err : expand(extracted(z0, z1) - truth(z0, z1))$
+print("STEP 2a extracted - truth =", err)$
+d_quad  : abs(coeff(err, z0, 2))$
+d_sin   : abs(coeff(err, sin(z1), 1))$
+print("STEP 2b term by term: |dc_quad| =", float(d_quad), ", |dc_sin| =", float(d_sin),
+      ", gauge defect =", float(gauge_defect))$
+print("STEP 2c worst |error| over the grid range |z0| <= 3, |z1| <= 3 =",
+      float(d_quad*9 + d_sin + gauge_defect),
+      " (each term bounded separately: |z0^2| <= 9, |sin z1| <= 1)")$
+print("STEP 2d the coefficients are recovered, not fitted to noise: the quadratic term is off by",
+      float(abs(c_quad - 0.5)), "and the sine term by", float(abs(c_sin + 1.2)))$
+
+/* ===== STEP 3: the mixed second difference annihilates every additive function ===== */
+
+print("=== STEP 3: the operator that detects non-separability ===")$
+
+mixed(F, x0, x1, y0, y1) := F(x1, y1) - F(x1, y0) - F(x0, y1) + F(x0, y0)$
+
+additive(x, y) := bb + f(x) + g(y)$
+print("STEP 3a mixed second difference of ANY additive b + f(x) + g(y) =",
+      ratsimp(mixed(additive, x0, x1, y0, y1)),
+      " (0 for every f, g and every rectangle -- no smoothness assumed, only evaluation)")$
+
+product(x, y) := x*y$
+print("STEP 3b the same operator on the bilinear x*y =",
+      factor(mixed(product, x0, x1, y0, y1)),
+      " (= (x1-x0)(y1-y0): nonzero on every nondegenerate rectangle)")$
+
+/* ===== STEP 4: from "cannot represent" to a QUANTITATIVE floor ===== */
+
+print("=== STEP 4: the approximation floor ===")$
+
+print("STEP 4a the operator has four terms, so |mixed(F)| = |mixed(F) - mixed(A)| <= 4*sup|F - A|",
+      "for every additive A.  Hence sup|F - A| >= |mixed(F)|/4 -- a LOWER bound on the error of",
+      "the best additive approximation, valid for every A at once")$
+
+r : 'r$
+floor_expr : ratsimp( factor(mixed(product, -r, r, -r, r)) / 4 )$
+print("STEP 4b on the square [-r, r]^2 with F = x*y, the floor is |mixed|/4 =", floor_expr,
+      " (= r^2)")$
+print("STEP 4c at the certificate's grid_range r = 3, the floor is",
+      float(subst([r = 3], floor_expr)),
+      " -- no additive model, KAN or otherwise, can approximate x*y on [-3,3]^2 better than that,",
+      "and x*y itself only ranges over [-9, 9], so the additive fit is worthless by a factor of 1")$
+
+/* ===== STEP 5: why the fitted R^2 goes to zero, not merely "gets worse" ===== */
+
+print("=== STEP 5: the best additive approximation of x*y is exactly the zero function ===")$
+
+/* With independent inputs uniform on [-r, r], the L2 projection of x*y onto the additive class is
+   its functional-ANOVA main-effect part, and both main effects vanish by symmetry. */
+main_x  : ratsimp( integrate(x*y, y, -r, r) / (2*r) )$
+main_y  : ratsimp( integrate(x*y, x, -r, r) / (2*r) )$
+grand   : ratsimp( integrate(integrate(x*y, y, -r, r), x, -r, r) / (4*r^2) )$
+print("STEP 5a E[x*y | x] =", main_x, ", E[x*y | y] =", main_y, ", E[x*y] =", grand,
+      " (all 0: the interaction carries NO main effect at all)")$
+print("STEP 5b so the L2-optimal additive approximation is the zero function, and the additive",
+      "model's R^2 against x*y tends to 0 as the sample grows -- not to some smaller positive",
+      "number.  The certificate measures 0.014 at n = 4000, which is the finite-sample residue")$
+
+/* ===== STEP 6: the extrapolation boundary is a property of the BASIS, not of the formula ===== */
+
+print("=== STEP 6: outside the grid ===")$
+
+print("STEP 6a an RBF edge is sum_g c_g exp(-((z - grid_g)/h)^2) + w*silu(z).  Beyond the grid every",
+      "Gaussian has decayed, so the edge tends to w*silu(z) ~ w*z: the layer becomes LINEAR")$
+print("STEP 6b against a quadratic truth, the layer's error therefore grows like 0.5*z^2 - w*z,",
+      "i.e. Theta(z^2), while the EXTRACTED formula 0.5*z^2 + const carries no grid and stays",
+      "exact.  Extraction is not merely interpretation here -- it strictly extends the domain.")$
+print("STEP 6c measured: on [2r, 3r] the layer is off by 34.65 and the extracted formula by",
+      "4.22e-4, a factor of 8.2e4.  The direction of that inequality is the falsifiable claim")$

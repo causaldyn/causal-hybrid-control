@@ -107,7 +107,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 
 | area | module | what it does |
 |---|---|---|
-| dynamics | `dynamics`, `residual`, `integrate` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / graph / **control-affine** (`a_θ(x) + B_θ(x)u`, the class the identification and safety layers share) / **port-Hamiltonian** (passive, Lyapunov-stable) / **Lipschitz-certified** residuals; RK4 |
+| dynamics | `dynamics`, `residual`, `integrate`, `symbolic` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / graph / **control-affine** (`a_θ(x) + B_θ(x)u`, the class the identification and safety layers share) / **port-Hamiltonian** (passive, Lyapunov-stable) / **Lipschitz-certified** residuals; RK4. `symbolic` turns a fitted RBF-KAN edge back into a closed form and states what that is worth: the intercept is a gauge (only the total is identified), the layer is additive so an interaction has a *proved* error floor `r²` on `[−r,r]²`, and the extracted formula extrapolates where the layer (RBF support gone) does not — 4.22e-4 against 34.65 |
 | sensitivity | `adjoint` | discrete adjoint (verified == autodiff == finite differences) |
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
 | identification | `train`, `dynamics_id`, `causal`, `estimators`, `gmethods`, `frames` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters; Robins' **g-formula** (cross-fitted) for a treatment *sequence* under time-varying confounding. `dynamics_id` is the one that makes the *plant* causal: prediction-error fitting learns the **observational** control channel, so under a confounded logging policy the planner inherits the bias (measured: channel `0.02` where the truth is `1.0`). `fit_causal_residual` estimates it by Robinson partialling-out lifted to a state-dependent matrix — channel error `0.002`, control regret `0.014` against the biased fit's `6.41` — or by 2SLS when the confounder is never logged, at a real variance premium (`0.10` error, regret `0.13`, because the shifter explains only 18% of the action). Reports `identified=False` instead of a confident wrong answer when nothing in the log can pin it down. Data goes in as a mapping of arrays, a **pandas** frame or a **polars** frame — `frames.as_columns` recognises a frame structurally and normalises once at the boundary, so neither library is a dependency of the wheel. `uv run python scripts/dynamics_id_demo.py` |
@@ -131,7 +131,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 Correctness is cross-checked in independent tools, symbolic first (`validation/`): the ARE / matrix
 exponential are verified **Maxima**-authoritative (exact + high-precision `bfloat`) against **PARI/GP**
 (50-digit) and **Octave**, with SciPy used only as the fast float64 numeric. The control and guarantee
-invariants are **formally proved in Rocq** — 41 files under `proofs/`, from the box-projection bounds
+invariants are **formally proved in Rocq** — 42 files under `proofs/`, from the box-projection bounds
 and idempotence (`box_projection.v`) to the interference-aware regret certificate.
 
 ## Honest positioning
@@ -140,7 +140,8 @@ and idempotence (`box_projection.v`) to the interference-aware regret certificat
 (MOPO/MOReL/Delphic), sequential causal identification (g-methods / dynamic treatment regimes),
 differentiable control (Neuromancer). The contribution is the *integration behind one API* plus a
 benchmark with ground-truth interventional effects. KAN is **one interpretable residual backend**, not
-the identity of the framework.
+the identity of the framework — and `chc.symbolic` makes "interpretable" checkable rather than
+asserted, including the two places where the interpretation stops being valid.
 
 Worth knowing before you rely on a fitted model: **a low residual MSE is not causal identification.**
 Fitting `r_θ` by prediction error recovers the *observational* control response, which is the wrong

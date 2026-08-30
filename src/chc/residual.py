@@ -139,6 +139,12 @@ class RBFKANLayer(eqx.Module):
     Each input-output edge is a learnable 1D map ``phi(x) = sum_g c_g rbf_g(x) + w silu(x)`` over a
     fixed radial-basis grid; the output is ``bias_j + sum_i phi_{ji}(z_i)``. Each edge is an
     extractable 1D curve (interpretable) and cheap to evaluate.
+
+    ``chc.symbolic`` performs that extraction, and carries the two caveats it needs: an edge's
+    intercept is a gauge (a constant moves freely between an edge and the bias, so only the total is
+    identified), and this layer represents only additively separable functions -- for an interaction
+    it silently returns the best additive fit, whose error is bounded BELOW by ``r^2`` on
+    ``[-r, r]^2``.
     """
 
     in_dim: int = eqx.field(static=True)

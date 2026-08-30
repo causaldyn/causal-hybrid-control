@@ -9,6 +9,22 @@ still change).
 
 ### Added
 
+- **`chc.symbolic`** — the extraction `RBFKANLayer` was already promising. Its docstring advertised
+  each edge as "an extractable 1D curve (interpretable)" with no API behind it, and an
+  interpretability claim with no way to exercise it is not a feature. `kan_edge` returns the exact
+  scalar edge map (reconstruction tested to 1e-12), `extract_symbolic_edge` fits it against a
+  nine-function library by EXHAUSTIVE best-subset (a greedy path can lock in a wrong first term --
+  `sin z` and `z - z^3/6` are close on a short range), and `symbolic_extraction_certificate` plants
+  a known formula and recovers it. Two structural facts the API now states rather than assumes: an
+  edge's intercept is a GAUGE, since a constant moves freely between an edge and the bias, so only
+  the total is identified and centring makes the decomposition unique; and a single layer represents
+  only additively separable functions, which the mixed second difference turns into a PROVED error
+  floor `sup|F - A| >= |mixed F|/4`, equal to `r^2` for `x*y` on `[-r,r]^2` -- measured 9.72 against
+  the proved 9.00. The extracted formula also extrapolates where the layer cannot: outside the grid
+  the RBFs have decayed and the layer degenerates to its silu term, 34.65 error against the
+  formula's 4.22e-4. Derived in `validation/symbolic_kan.mac`, machine-checked in
+  `proofs/symbolic_kan.v`.
+
 - **`conjugate_time_certificate`** (`chc.regret`) — bounds the horizon on which every other constant
   in this module is valid. `confounded_turnpike_certificate` reads as "a long horizon is benign", and
   that is true only for a POSITIVE-DEFINITE stage cost; its hypothesis was never priced. Under an

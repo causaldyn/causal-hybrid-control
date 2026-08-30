@@ -259,6 +259,15 @@ from chc.splitting import (
     strang_marchuk_step,
 )
 from chc.support import SupportModel, pessimistic_control
+from chc.symbolic import (
+    LIBRARY,
+    SymbolicEdge,
+    SymbolicExtractionCurve,
+    extract_symbolic,
+    extract_symbolic_edge,
+    kan_edge,
+    symbolic_extraction_certificate,
+)
 from chc.toeplitz import (
     gohberg_semencul_apply,
     gohberg_semencul_covariance,
@@ -307,6 +316,7 @@ __version__ = "0.3.0"
 
 __all__ = [
     "IV2SLS",
+    "LIBRARY",
     "AdaptiveExplorationCurve",
     "BackdoorOLS",
     "BanditCausalCurve",
@@ -406,6 +416,8 @@ __all__ = [
     "SinkhornResult",
     "SplitConformal",
     "SupportModel",
+    "SymbolicEdge",
+    "SymbolicExtractionCurve",
     "SyntheticControlResult",
     "TigramiteDiscovery",
     "TimeVaryingRolloutCertificate",
@@ -493,6 +505,8 @@ __all__ = [
     "estimate_network_effects_gnn",
     "exact_linear_flow",
     "exposure_map_certificate",
+    "extract_symbolic",
+    "extract_symbolic_edge",
     "finite_horizon_dlqr",
     "finite_horizon_pl_certificate",
     "fit_behavior_policy",
@@ -514,6 +528,7 @@ __all__ = [
     "interference_orthogonal_certificate",
     "interference_regret_certificate",
     "irf_control_sequence",
+    "kan_edge",
     "koopman_controller",
     "koopman_lqr_gain",
     "levinson_durbin",
@@ -581,6 +596,7 @@ __all__ = [
     "support_calibrated_error",
     "sutva_allocation",
     "switching_function",
+    "symbolic_extraction_certificate",
     "synthetic_control",
     "thomas_solve",
     "time_varying_rollout_bound",
