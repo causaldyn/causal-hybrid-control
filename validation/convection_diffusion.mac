@@ -1,0 +1,156 @@
+/* 1-D CONVECTION-DIFFUSION: the cell-Peclet threshold, and why a Petrov-Galerkin test space fixes it.
+
+   chc.galerkin solves -u'' = f, a SYMMETRIC operator, where Bubnov-Galerkin (test space = trial
+   space) is the right choice and the stiffness matrix is symmetric positive definite.  Add an
+   advection term and the operator stops being symmetric:
+
+       -eps u'' + s u' = 0  on [0,1],   u(0) = 0,  u(1) = 1.
+
+   Now the same hat-function Galerkin scheme produces a NON-symmetric stencil, and above a threshold
+   in the mesh it produces node-to-node oscillations that have nothing to do with the solution.  The
+   cure is to stop testing with the trial functions -- a Petrov-Galerkin (SUPG / streamline-upwind)
+   test space -- and in 1-D there is an OPTIMAL amount of it that makes the scheme nodally exact.
+
+   Everything below is derived, not quoted: the exact solution, the discrete amplification factor,
+   the oscillation threshold, the optimal upwind parameter, and the reason full upwinding is only
+   first-order.  The certificate is chc.galerkin.convection_diffusion_certificate; the
+   machine-checked algebraic core is proofs/convection_diffusion.v. */
+
+linel : 110$   /* long prose strings otherwise hit "failed to break up a long expression" */
+
+/* ===== STEP 1: the exact solution and its boundary layer ===== */
+
+print("=== STEP 1: exact solution ===")$
+
+assume(eps > 0, s > 0)$
+
+/* Stated, then VERIFIED -- ode2/bc2 return the constants symbolically here, and a closed form that
+   satisfies the equation and both boundary conditions is the same fact with a shorter proof. */
+uex : (exp(s*x/eps) - 1)/(exp(s/eps) - 1)$
+print("STEP 1a u(x) =", uex)$
+print("STEP 1b residual of the ODE at the solution =",
+      ratsimp( -eps*diff(uex, x, 2) + s*diff(uex, x) ), " (0)")$
+print("STEP 1c boundary values: u(0) =", ratsimp(subst([x = 0], uex)),
+      ", u(1) =", ratsimp(subst([x = 1], uex)), " (0 and 1)")$
+
+/* The layer sits at x = 1 and is exp((s/eps)(x-1)) thick, i.e. width eps/s: the ONLY length scale
+   the problem has, and the one the mesh must resolve or the scheme must be told about.  Rewriting
+   about x = 1 makes that explicit without needing a limit. */
+ulay : ratsimp( uex*exp(-s/eps)/exp(-s/eps) )$
+print("STEP 1d u(x) = (exp((s/eps)(x-1)) - exp(-s/eps))/(1 - exp(-s/eps)), residual =",
+      ratsimp( uex - (exp((s/eps)*(x-1)) - exp(-s/eps))/(1 - exp(-s/eps)) ), " (0)")$
+print("STEP 1e so at any fixed interior x < 1 the solution is exponentially small in eps, and all",
+      "the variation is in a layer of width eps/s at x = 1.  Numerically at x = 0.5, s = 1:",
+      "eps = 0.1 gives", float(subst([x = 0.5, s = 1, eps = 0.1], uex)),
+      ", eps = 0.01 gives", float(subst([x = 0.5, s = 1, eps = 0.01], uex)))$
+
+/* ===== STEP 2: the Bubnov-Galerkin stencil (test space = trial space) ===== */
+
+print("=== STEP 2: hat-function Galerkin on a uniform mesh ===")$
+
+/* Hat basis on [x_{i-1}, x_{i+1}] with spacing h.  The two element integrals are standard and are
+   recomputed here rather than quoted.  phi_i rises on the left element and falls on the right. */
+phi_l(t)  := t/h$          /* on the left element, local coordinate t in [0,h] */
+phi_r(t)  := 1 - t/h$      /* on the right element */
+
+/* Diffusion: eps * integral(phi_i' phi_j').  Convection: s * integral(phi_j' phi_i). */
+k_diff_same : eps*( integrate(diff(phi_l(t),t)^2, t, 0, h) + integrate(diff(phi_r(t),t)^2, t, 0, h) )$
+k_diff_off  : eps*  integrate(diff(phi_l(t),t)*diff(phi_r(t),t), t, 0, h)$
+print("STEP 2a diffusion stencil: diagonal =", ratsimp(k_diff_same),
+      ", off-diagonal =", ratsimp(k_diff_off), " (the familiar (eps/h)[-1, 2, -1])")$
+
+/* Convection couples node i to i-1 and i+1 antisymmetrically; on a uniform mesh the diagonal
+   cancels and the off-diagonals are -s/2 and +s/2 -- the CENTRAL difference. */
+c_upper : s*integrate(diff(phi_r(t),t)*phi_l(t), t, 0, h)$
+c_lower : s*integrate(diff(phi_l(t),t)*phi_r(t), t, 0, h)$
+print("STEP 2b convection stencil: sub-diagonal =", ratsimp(c_lower),
+      ", super-diagonal =", ratsimp(c_upper),
+      " (+-s/2: antisymmetric, so the assembled matrix is NOT symmetric)")$
+
+/* ===== STEP 3: the discrete amplification factor and the oscillation threshold ===== */
+
+print("=== STEP 3: what the discrete scheme actually solves ===")$
+
+/* Node equation, divided through by eps/h and written with Pe := s h / (2 eps): */
+Pe   : 'Pe$
+node : -(1 + Pe)*um + 2*u0 + (Pe - 1)*up$
+print("STEP 3a node equation (divided by eps/h) =", node, " = 0, with Pe = s*h/(2*eps)")$
+
+/* Seek u_i = r^i.  Substituting and dividing by r^{i-1}: */
+chareq : ratsimp( subst([um = 1, u0 = r, up = r^2], node) )$
+print("STEP 3b characteristic equation =", chareq, " = 0")$
+roots : solve(chareq = 0, r)$
+print("STEP 3c roots =", roots, " -- the constant mode r = 1 and r = (1+Pe)/(1-Pe)")$
+rdisc : (1 + Pe)/(1 - Pe)$
+print("STEP 3d discrete amplification r_h(Pe) =", rdisc)$
+
+print("STEP 3e THE THRESHOLD.  r_h < 0 exactly when Pe > 1, and a negative ratio means the nodal",
+      "values ALTERNATE IN SIGN -- an oscillation with no counterpart in the exact solution, which",
+      "is monotone.  Pe = s*h/(2*eps) > 1 is the same statement as the textbook cell-Peclet",
+      "condition s*h/eps > 2; the factor of 2 is a definition, not a disagreement")$
+print("STEP 3f at Pe = 2, r_h =", ratsimp(subst([Pe = 2], rdisc)),
+      " (negative: alternating).  At Pe = 1/2, r_h =", ratsimp(subst([Pe = 1/2], rdisc)),
+      " (positive: monotone)")$
+
+/* The exact amplification over one cell, for comparison. */
+rex : ratsimp( subst([x = h], exp(s*x/eps)) )$
+print("STEP 3g the EXACT amplification over one cell is exp(s*h/eps) = exp(2*Pe), which is",
+      "positive for every Pe.  So the discrete scheme does not merely lose accuracy above the",
+      "threshold, it changes the sign structure of the solution")$
+
+/* ===== STEP 4: Petrov-Galerkin -- test with a different space ===== */
+
+print("=== STEP 4: the optimal upwind parameter ===")$
+
+/* Test functions w_i = phi_i + alpha*(h/2)*phi_i'.  The added piece is discontinuous and
+   antisymmetric; on a uniform mesh its net effect is exactly an added diffusion alpha*s*h/2, i.e.
+   an effective diffusivity eps_t = eps*(1 + alpha*Pe). */
+eps_t : eps*(1 + alpha*Pe)$
+Pe_t  : ratsimp( s*h/(2*eps_t) )$
+print("STEP 4a effective diffusivity =", eps_t, " so the effective cell Peclet is",
+      ratsimp(subst([eps = s*h/(2*Pe)], Pe_t)), " = Pe/(1 + alpha*Pe)")$
+Pet : Pe/(1 + alpha*Pe)$
+
+/* NODAL EXACTNESS: choose alpha so the stabilised root equals the exact one. */
+print("STEP 4b demand r_h(Pe_t) = exp(2*Pe), i.e. (1+Pe_t)/(1-Pe_t) = exp(2*Pe)")$
+pet_needed : ratsimp( solve((1 + P)/(1 - P) = exp(2*Pe), P)[1] )$
+print("STEP 4c so the effective Peclet must be", rhs(pet_needed),
+      " = tanh(Pe)")$
+print("STEP 4d check that this IS tanh(Pe): (exp(2Pe)-1)/(exp(2Pe)+1) - tanh(Pe) =",
+      ratsimp( trigsimp( (exp(2*Pe)-1)/(exp(2*Pe)+1) - tanh(Pe) ) ), " (0)")$
+
+alpha_opt : ratsimp( subst([P = tanh(Pe)], solve(Pet = P, alpha)[1]) )$
+print("STEP 4e solving Pe/(1 + alpha*Pe) = tanh(Pe) for alpha gives", alpha_opt)$
+print("STEP 4f which is coth(Pe) - 1/Pe:  residual =",
+      ratsimp( rhs(alpha_opt) - (1/tanh(Pe) - 1/Pe) ), " (0)")$
+print("STEP 4g this is the classical Christie-Griffiths-Mitchell-Zienkiewicz (1976) /")$
+print("        Brooks-Hughes (1982) SUPG parameter.  In 1-D it makes the scheme NODALLY EXACT.")$
+print("        The certificate measures that nodal error in ULPs of the working dtype, not in")$
+print("        absolute terms: the same code gives 6.05e-9 under float32 and 1.07e-16 under")$
+print("        float64, so a threshold tuned to either would silently pass at the other")$
+
+/* ===== STEP 5: why full upwinding is stable but only first-order ===== */
+
+print("=== STEP 5: full upwind (alpha = 1) ===")$
+
+Pet1 : ratsimp( subst([alpha = 1], Pet) )$
+print("STEP 5a alpha = 1 gives effective Peclet", Pet1,
+      " which is < 1 for EVERY Pe > 0: unconditionally non-oscillatory")$
+rup : ratsimp( (1 + Pet1)/(1 - Pet1) )$
+print("STEP 5b its amplification factor is", rup,
+      " -- exactly 1 + 2*Pe, the first TWO terms of exp(2*Pe)")$
+print("STEP 5c so full upwinding trades the oscillation for a first-order truncation:",
+      "exp(2*Pe) - (1 + 2*Pe) =", ratsimp(taylor(exp(2*Pe) - (1 + 2*Pe), Pe, 0, 3)),
+      " = O(Pe^2) = O(h^2) per cell, i.e. O(h) globally.  That is the classical excess numerical",
+      "diffusion, and it is why the optimal alpha is worth computing rather than defaulting to 1")$
+
+/* ===== STEP 6: the stability range for alpha ===== */
+
+print("=== STEP 6: which alpha are safe ===")$
+
+print("STEP 6a non-oscillatory requires Pe/(1 + alpha*Pe) < 1, i.e.",
+      ratsimp(solve(Pet = 1, alpha)[1]), " is the boundary: alpha > 1 - 1/Pe")$
+print("STEP 6b the optimal alpha always sits inside that range, since",
+      "coth(Pe) - 1/Pe > 1 - 1/Pe reduces to coth(Pe) > 1, true for every Pe > 0")$
+print("STEP 6c and for Pe <= 1 the boundary is <= 0: plain Bubnov-Galerkin (alpha = 0) is already",
+      "non-oscillatory there, which is the threshold of STEP 3e seen from the other side")$

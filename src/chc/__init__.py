@@ -64,7 +64,16 @@ from chc.estimators import (
     RLearner,
 )
 from chc.frames import ColumnData, ColumnFrame, as_columns
-from chc.galerkin import poisson_1d, poisson_2d, thomas_solve
+from chc.galerkin import (
+    ConvectionDiffusionCurve,
+    convection_diffusion_1d,
+    convection_diffusion_certificate,
+    convection_diffusion_exact,
+    optimal_upwind,
+    poisson_1d,
+    poisson_2d,
+    thomas_solve,
+)
 from chc.games import (
     CongestionContractionCertificate,
     EquilibriumSolution,
@@ -350,6 +359,7 @@ __all__ = [
     "ContractiveResidual",
     "ContractiveRolloutCertificate",
     "ControlAffineResidual",
+    "ConvectionDiffusionCurve",
     "DampedOscillator",
     "DampingInjectionCertificate",
     "DoWhyEstimator",
@@ -484,6 +494,9 @@ __all__ = [
     "control_channel",
     "control_gradient_adjoint",
     "control_gradient_diffrax",
+    "convection_diffusion_1d",
+    "convection_diffusion_certificate",
+    "convection_diffusion_exact",
     "cvar_upper",
     "damping_injection_certificate",
     "de_chaisemartin",
@@ -553,6 +566,7 @@ __all__ = [
     "off_policy_value",
     "one_step_mse",
     "optimal_exploration_certificate",
+    "optimal_upwind",
     "orthogonal_control_certificate",
     "overshoot",
     "partial_corr_test",

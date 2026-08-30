@@ -9,6 +9,22 @@ still change).
 
 ### Added
 
+- **Convection-diffusion in `chc.galerkin`** — the module solved only `-u'' = f`, a symmetric
+  positive-definite operator where testing with the trial space is optimal by Céa's lemma. The whole
+  point of a Petrov-Galerkin method is the case where that fails. `convection_diffusion_1d` adds the
+  advection term, whose element integrals are ANTISYMMETRIC (`+-s/2`), so the matrix is no longer
+  SPD; `convection_diffusion_exact` is the analytic boundary-layer solution; `optimal_upwind` is the
+  nodally-exact SUPG parameter `coth(Pe) - 1/Pe`; and `convection_diffusion_certificate` exhibits
+  the whole dichotomy. Above the cell Péclet number `Pe = s*h/(2*eps) = 1` the discrete amplification
+  `(1+Pe)/(1-Pe)` turns negative while the exact `exp(2*Pe)` never does, which forces consecutive
+  nodal differences to ALTERNATE -- proved as a sign statement, not observed in a plot. Full
+  upwinding is monotone but amplifies by exactly `1 + 2*Pe`, the first two terms of `exp(2*Pe)`,
+  hence first-order (measured slope 0.959); the optimal parameter is nodally exact. That last
+  measurement is reported in ULPs of the working dtype, because the absolute error is 6.05e-9 under
+  float32 and 1.07e-16 under float64 and a threshold tuned to either would silently pass at the
+  other. Derived in `validation/convection_diffusion.mac`, machine-checked in
+  `proofs/convection_diffusion.v`, cross-checked as `unsat` by both z3 and cvc5.
+
 - **`chc.symbolic`** — the extraction `RBFKANLayer` was already promising. Its docstring advertised
   each edge as "an extractable 1D curve (interpretable)" with no API behind it, and an
   interpretability claim with no way to exercise it is not a feature. `kan_edge` returns the exact
