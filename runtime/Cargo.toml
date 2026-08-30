@@ -1,0 +1,21 @@
+[package]
+name = "chc-runtime"
+version = "0.0.1"
+edition = "2021"
+description = "Latency measurement for Milestone J: RK4 + discrete adjoint + projected-gradient OC."
+license = "MIT"
+publish = false
+
+[lib]
+name = "chc_runtime"
+
+[[bin]]
+name = "mpc-latency"
+path = "src/main.rs"
+
+[dependencies]
+nalgebra = "0.33"
+
+[profile.release]
+lto = true
+codegen-units = 1

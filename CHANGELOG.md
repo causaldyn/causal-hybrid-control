@@ -9,6 +9,33 @@ still change).
 
 ### Added
 
+- **Milestone J closed as *measured, not needed* (`runtime/`, outside the wheel)** -- the crate that
+  once lived here was deleted (`367a52f`) for being an unmeasured reimplementation, and the
+  milestone's own gate was a *measurement* nobody had taken: "identical closed-loop results on
+  golden trajectories; single-binary MPC step within the latency budget". Both halves are now taken.
+  `runtime/` is a `nalgebra`-only mirror of the control loop (RK4, discrete adjoint,
+  projected-gradient OC over a box); `hatchling` packages only `src/chc`, so the published wheel is
+  untouched and no dependency is added.
+
+  *Parity, exactly.* `runtime/parity_check.py` compares three arms on the same LQ instance -- the
+  Rust binary, `chc.control` as shipped, and the same recursion compiled into one XLA program. All
+  three return cost `3.686190095`, first control `-2.965207777`; worst gap **0.00e+00**. The timings
+  are therefore of programs doing identical arithmetic, which is the only thing that makes them
+  comparable at all.
+
+  *Latency, and the verdict.* Steady state per solve on an idle machine, alternated across two
+  rounds: Rust **2.99 / 2.99 ms**, compiled JAX **3.48 / 3.49 ms**, `chc.control` as shipped
+  **114.6 / 113.9 ms**. Rust beats a compiled JAX runtime by **1.16x** -- the same order, and not a
+  margin that justifies maintaining the control loop twice in two languages. Cold start, `hyperfine`
+  in both orderings (476x and 510x, so not startup drift): 4.7 ms against 2.28 s, which is
+  interpreter and JAX import cost and is answered by a warm process rather than a rewrite.
+
+  *The finding is about Python, not Rust.* The 38x that looked like a language gap is
+  `projected_gradient_control` being a Python loop that spends one dispatch per gradient and one per
+  backtracking trial, up to 41 per outer step. Compiling the identical recursion recovers 33x of it
+  inside JAX -- see `runtime/mpc_latency.py`'s `steady-jit` arm, whose answer is bit-identical to the
+  shipped path.
+
 - **A bound-constrained quasi-Newton beside the projected gradient (`chc.control`)** -- `plans/10`
   §4 asked for a bespoke NLP solver, which is the wrong call for the reason `plans/03` already
   gives (acados and Clarabel occupy that slot). The weak link is the hand-rolled solver every

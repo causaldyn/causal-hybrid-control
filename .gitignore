@@ -41,3 +41,7 @@ data/
 .DS_Store
 .ipynb_checkpoints/
 .coq-native/
+
+# Rust runtime build artifacts
+runtime/target/
+*.rs.bk
