@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -25,10 +26,74 @@ from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics
 from chc.residual import MLPResidual, ZeroResidual
 
+_MAX_BACKTRACK = 40
+
 
 def project_box(us: Array, lo: float, hi: float) -> Array:
     """Euclidean projection onto the box ``[lo, hi]`` (elementwise clip)."""
     return jnp.clip(us, lo, hi)
+
+
+@eqx.filter_jit
+def _projected_gradient_scan(
+    dyn: Dynamics,
+    x0: Array,
+    us0: Array,
+    dt: float,
+    cost: QuadraticCost,
+    u_lo: float,
+    u_hi: float,
+    steps: int,
+    lr0: float,
+    tol: float,
+) -> tuple[Array, Array, Array]:
+    """The whole descent as one XLA program: ``scan`` over steps, ``while_loop`` over backtracking.
+
+    Module level rather than a closure inside the caller, because ``filter_jit`` caches on the
+    wrapped function object: a wrapper rebuilt per call is recompiled per call and never amortises.
+
+    The fixed-length scan is *equivalent* to the Python ``break``, not an approximation. Failure of
+    the line search is deterministic in the iterate, so once a step fails the iterate is frozen and
+    every later attempt from it fails identically; ``done`` skips that work instead of repeating it.
+    """
+    us = project_box(us0, u_lo, u_hi)
+    initial = total_cost(dyn, x0, us, dt, cost)
+
+    def attempt(us: Array, current: Array) -> tuple[Array, Array, Array]:
+        grad = control_gradient_adjoint(dyn, x0, us, dt, cost)
+
+        def searching(state: tuple[Array, Array, Array, Array, Array]) -> Array:
+            trial, _, _, _, accepted = state
+            return jnp.logical_and(trial < _MAX_BACKTRACK, jnp.logical_not(accepted))
+
+        def halve(
+            state: tuple[Array, Array, Array, Array, Array],
+        ) -> tuple[Array, Array, Array, Array, Array]:
+            trial, lr, _, _, _ = state
+            candidate = project_box(us - lr * grad, u_lo, u_hi)
+            value = total_cost(dyn, x0, candidate, dt, cost)
+            return trial + 1, lr * 0.5, candidate, value, value < current - tol
+
+        _, _, candidate, value, accepted = jax.lax.while_loop(
+            searching,
+            halve,
+            (jnp.asarray(0), jnp.asarray(lr0, dtype=us.dtype), us, current, jnp.asarray(False)),
+        )
+        return jnp.where(accepted, candidate, us), jnp.where(accepted, value, current), accepted
+
+    def step(
+        carry: tuple[Array, Array, Array], _: None
+    ) -> tuple[tuple[Array, Array, Array], tuple[Array, Array]]:
+        us, current, done = carry
+        us, current, accepted = jax.lax.cond(
+            done, lambda: (us, current, jnp.asarray(False)), lambda: attempt(us, current)
+        )
+        return (us, current, jnp.logical_or(done, jnp.logical_not(accepted))), (current, accepted)
+
+    (optimised, _, _), (values, accepted) = jax.lax.scan(
+        step, (us, initial, jnp.asarray(False)), None, length=steps
+    )
+    return optimised, jnp.concatenate([initial[None], values]), accepted
 
 
 def projected_gradient_control(
@@ -48,30 +113,17 @@ def projected_gradient_control(
     Uses the discrete adjoint (:func:`chc.adjoint.control_gradient_adjoint`) for the gradient and
     backtracking line search, so every accepted step strictly decreases the cost. Returns the
     optimised controls and the cost history (length ``1 + accepted steps``).
+
+    The descent runs inside a single compiled program (:func:`_projected_gradient_scan`); only the
+    trim to the accepted prefix happens on the host, so the return shape stays what a Python loop
+    would have produced. ``dt``, the box and the line-search scalars are static to the compilation,
+    the same convention :func:`chc.cost.total_cost` already uses for ``dt``.
     """
-    us = project_box(us0, u_lo, u_hi)
-    current = total_cost(dyn, x0, us, dt, cost)
-    history = [float(current)]
-
-    for _ in range(steps):
-        grad = control_gradient_adjoint(dyn, x0, us, dt, cost)
-        lr = lr0
-        improved = False
-        candidate = us
-        candidate_cost = current
-        for _ls in range(40):
-            candidate = project_box(us - lr * grad, u_lo, u_hi)
-            candidate_cost = total_cost(dyn, x0, candidate, dt, cost)
-            if candidate_cost < current - tol:
-                improved = True
-                break
-            lr *= 0.5
-        if not improved:
-            break
-        us, current = candidate, candidate_cost
-        history.append(float(current))
-
-    return us, jnp.asarray(history)
+    optimised, values, accepted = _projected_gradient_scan(
+        dyn, x0, us0, dt, cost, u_lo, u_hi, steps, lr0, tol
+    )
+    taken = int(jnp.sum(accepted))
+    return optimised, jnp.asarray(np.asarray(values)[: taken + 1].tolist())
 
 
 def lbfgs_box_control(

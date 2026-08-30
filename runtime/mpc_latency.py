@@ -4,12 +4,13 @@
 reports per-solve time after a warm-up solve, which is what a control loop pays; bare invocation
 does one solve and exits, which is what ``hyperfine`` times as the deployable cold path.
 
-Two Python arms, because comparing Rust against only the library path would answer the wrong
-question. ``chc.control.projected_gradient_control`` is a *Python* loop: one dispatch per gradient
-and one per backtracking trial, up to 41 per outer step. ``steady-jit`` runs the identical
-recursion as a single compiled program -- ``lax.scan`` over the outer steps, ``lax.while_loop``
-over the backtracking -- so the comparison is runtime against runtime rather than a compiled binary
-against Python orchestration. Milestone J's gate is about the former.
+Two Python arms, and what separates them has changed. When this harness was written
+``chc.control.projected_gradient_control`` was a *Python* loop paying one dispatch per gradient and
+one per backtracking trial, so ``steady`` measured Python orchestration rather than a runtime and
+``steady-jit`` existed to supply the honest comparator. The library now compiles that recursion
+itself, so both arms are single XLA programs and the remaining gap is the shipped path's host-side
+work: it syncs the accepted-step count and copies the cost history back so the return shape stays
+what the Python loop produced. ``steady-jit`` is the same solve without that contract.
 """
 
 from __future__ import annotations
@@ -52,11 +53,12 @@ DT, LO, HI, TOL, LR0, OUTER, BACKTRACK = 0.1, -5.0, 5.0, 1e-9, 0.2, 400, 40
 
 @jax.jit
 def solve_compiled() -> tuple[jnp.ndarray, jnp.ndarray]:
-    """The same recursion as one XLA program, so the measurement compares runtimes.
+    """The same recursion as one XLA program, returning the full history rather than its prefix.
 
     The Python original breaks out of the outer loop when no backtracked step improves. A fixed
     ``OUTER``-length scan is equivalent, not an approximation: failure is deterministic in ``us``,
-    so once a step fails every later step from the same iterate fails identically.
+    so once a step fails every later step from the same iterate fails identically. On this instance
+    every step is accepted, so the two arms run the same 400 gradients and differ only in the trim.
     """
     dyn = LinearDynamics(A, B)
 

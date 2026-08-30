@@ -220,6 +220,48 @@ still change).
   taper is optimal only when a per-round action cap forbids the burst. Derived in
   `validation/minimax_exploration.mac`, machine-checked in `proofs/minimax_exploration.v`.
 
+### Changed
+
+- **Both projected-gradient solvers now run inside one compiled program** (`chc.control`,
+  `chc.support`) -- `scan` over the outer steps, `while_loop` over the backtracking, `cond` to skip
+  a frozen iterate. The fixed-length scan is *equivalent* to the Python `break`, not an
+  approximation: failure of the line search is deterministic in the iterate, so once a step fails
+  every later attempt from it fails identically. Signatures, semantics and the
+  `1 + accepted steps` history length are unchanged; only the trim to the accepted prefix still
+  happens on the host.
+
+  *Verified against the loop it replaced, not asserted.* `tests/test_control.py` and
+  `tests/test_support.py` keep a plain Python oracle -- deliberately not imported from `chc`, since
+  an oracle sharing the implementation under test cannot detect it changing -- and check agreement
+  in **ULP of float64** across all nine `chc.residual` backends plus the penalised objective. Worst
+  gap **19 ULP** over 200 outer steps; accepted-step counts identical everywhere, including an
+  instance that converges in 6 of 400 steps. On the Milestone-J LQ instance the shipped path is now
+  bit-identical to the Rust binary as well (`runtime/parity_check.py`, worst gap `0.00e+00`).
+
+  *Not bit-identical at float32, and the difference is visible downstream.* One fused program does
+  not reduce in the same order as separately-dispatched calls, so at float32 the iterate drifts by a
+  rounding step and, over a couple of hundred iterations, the answer moves in its last few digits.
+  Measured, not inferred: on `causaldyn-bench`'s D-control and D-planner instances the old and new
+  solvers agree to all 16 printed digits at float64 and differ in the 4th significant figure of a
+  *regret* at float32 (2.4177742 -> 2.4169483, 1.58024e-3 -> 1.57833e-3) -- a regret being a
+  difference of costs, which amplifies the underlying ~1e-5 relative shift. Nothing semantic
+  changed; the float64 oracle test is what pins that down, which is why it is the gate.
+
+  *Measured, same script before and after, idle machine.* Warm solve, 200 steps, MLP residual:
+  `projected_gradient_control` **106 ms -> 26 ms** (4.1x), `pessimistic_control` **943 ms -> 48 ms**
+  (19.7x). Cold, compilation included: 828 -> 651 ms and 1259 -> 944 ms, so there is no
+  cold-versus-warm trade-off to weigh -- the fused program compiles cheaper than the three separate
+  jits it replaced. Milestone J's `chc.control` arm falls from **114 ms to 4.5 ms**, which changes
+  its margin (Rust 3.28 ms, so 1.38x) without changing its verdict.
+
+- **`pessimistic_control` recompiled its augmented objective on every call** (`chc.support`) --
+  `eqx.filter_jit` caches on the wrapped function object, and the jitted objective, its gradient and
+  the task cost were built *inside* the function body, so each call got an empty cache. Three
+  identical back-to-back solves cost 1259 / 959 / 943 ms: the second call was not cheaper than the
+  first, which is the signature of a cache that never survives. The compiled kernel is now a
+  module-level function whose captured values are arguments; the same three solves cost
+  944 / 48 / 49 ms. Every `chc.benchmark` task that sweeps a penalty weight paid this per solve.
+
 ### Fixed
 
 - **`regret_scaling` and `interference_regret_certificate` silently conditioned on the stabilising

@@ -15,6 +15,7 @@ from typing import Protocol
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from chc.cost import QuadraticCost, total_cost
@@ -56,6 +57,87 @@ class SupportModel(eqx.Module):
         return jnp.sum(jax.vmap(self.squared_distance)(xs, us))
 
 
+_MAX_BACKTRACK = 40
+
+
+@eqx.filter_jit
+def _pessimistic_scan(
+    model: Dynamics,
+    x0: Array,
+    us0: Array,
+    dt: float,
+    cost: QuadraticCost,
+    support: SupportModel,
+    lam_supp: float,
+    u_lo: float,
+    u_hi: float,
+    steps: int,
+    lr0: float,
+    tol: float,
+    uncertainty: PenaltyModel | None,
+    lam_unc: float,
+) -> tuple[Array, Array, Array]:
+    """The penalised descent as one XLA program, mirroring :func:`chc.control._pg_scan`'s shape.
+
+    Module level for the same reason: the jitted objective and its gradient used to be built inside
+    :func:`pessimistic_control`, so each call got an empty compilation cache and recompiled the
+    augmented gradient every solve instead of once per problem shape.
+
+    Acceptance is on the *augmented* cost and the recorded history is the *task* cost, so both are
+    carried through the scan -- runs at different penalty weights stay comparable.
+    """
+
+    def task(us: Array) -> Array:
+        return total_cost(model, x0, us, dt, cost)
+
+    def augmented(us: Array) -> Array:
+        xs = rollout(model, x0, us, dt)
+        penalty = lam_supp * support.penalty_trajectory(xs[:-1], us)
+        if uncertainty is not None:
+            penalty = penalty + lam_unc * uncertainty.penalty_trajectory(xs[:-1], us)
+        return task(us) + penalty
+
+    grad_aug = jax.grad(augmented)
+    start = jnp.clip(us0, u_lo, u_hi)
+    initial = augmented(start)
+
+    def attempt(us: Array, current: Array) -> tuple[Array, Array, Array]:
+        grad = grad_aug(us)
+
+        def searching(state: tuple[Array, Array, Array, Array, Array]) -> Array:
+            trial, _, _, _, accepted = state
+            return jnp.logical_and(trial < _MAX_BACKTRACK, jnp.logical_not(accepted))
+
+        def halve(
+            state: tuple[Array, Array, Array, Array, Array],
+        ) -> tuple[Array, Array, Array, Array, Array]:
+            trial, lr, _, _, _ = state
+            candidate = jnp.clip(us - lr * grad, u_lo, u_hi)
+            value = augmented(candidate)
+            return trial + 1, lr * 0.5, candidate, value, value < current - tol
+
+        _, _, candidate, value, accepted = jax.lax.while_loop(
+            searching,
+            halve,
+            (jnp.asarray(0), jnp.asarray(lr0, dtype=us.dtype), us, current, jnp.asarray(False)),
+        )
+        return jnp.where(accepted, candidate, us), jnp.where(accepted, value, current), accepted
+
+    def step(
+        carry: tuple[Array, Array, Array], _: None
+    ) -> tuple[tuple[Array, Array, Array], tuple[Array, Array]]:
+        us, current, done = carry
+        us, current, accepted = jax.lax.cond(
+            done, lambda: (us, current, jnp.asarray(False)), lambda: attempt(us, current)
+        )
+        return (us, current, jnp.logical_or(done, jnp.logical_not(accepted))), (task(us), accepted)
+
+    (optimised, _, _), (values, accepted) = jax.lax.scan(
+        step, (start, initial, jnp.asarray(False)), None, length=steps
+    )
+    return optimised, jnp.concatenate([task(start)[None], values]), accepted
+
+
 def pessimistic_control(
     model: Dynamics,
     x0: Array,
@@ -81,40 +163,21 @@ def pessimistic_control(
     so runs at different weights are comparable).
     """
 
-    def task(us: Array) -> Array:
-        return total_cost(model, x0, us, dt, cost)
-
-    def augmented(us: Array) -> Array:
-        xs = rollout(model, x0, us, dt)
-        penalty = lam_supp * support.penalty_trajectory(xs[:-1], us)
-        if uncertainty is not None:
-            penalty = penalty + lam_unc * uncertainty.penalty_trajectory(xs[:-1], us)
-        return task(us) + penalty
-
-    grad_aug = eqx.filter_jit(jax.grad(augmented))
-    aug = eqx.filter_jit(augmented)
-    task_jit = eqx.filter_jit(task)
-
-    us = jnp.clip(us0, u_lo, u_hi)
-    current = aug(us)
-    history = [float(task_jit(us))]
-
-    for _ in range(steps):
-        grad = grad_aug(us)
-        lr = lr0
-        improved = False
-        candidate = us
-        candidate_cost = current
-        for _ls in range(40):
-            candidate = jnp.clip(us - lr * grad, u_lo, u_hi)
-            candidate_cost = aug(candidate)
-            if candidate_cost < current - tol:
-                improved = True
-                break
-            lr *= 0.5
-        if not improved:
-            break
-        us, current = candidate, candidate_cost
-        history.append(float(task_jit(us)))
-
-    return us, jnp.asarray(history)
+    optimised, values, accepted = _pessimistic_scan(
+        model,
+        x0,
+        us0,
+        dt,
+        cost,
+        support,
+        lam_supp,
+        u_lo,
+        u_hi,
+        steps,
+        lr0,
+        tol,
+        uncertainty,
+        lam_unc,
+    )
+    taken = int(jnp.sum(accepted))
+    return optimised, jnp.asarray(np.asarray(values)[: taken + 1].tolist())
