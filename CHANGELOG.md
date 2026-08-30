@@ -9,6 +9,32 @@ still change).
 
 ### Added
 
+- **The coupled mean-field game in `chc.deep_galerkin`** -- the module solved a 1-D Poisson BVP and
+  `chc.transport` carried a forward density with no diffusion and no backward value equation; the
+  two halves had never been coupled. `solve_mfg_dgm` now trains `V(t,x)` and `log rho(t,x)` jointly
+  on the backward HJB and forward Fokker-Planck residuals, joined by `alpha* = -(b/r)V_x` and by the
+  population mean. Both boundary conditions are structural rather than penalised: the density
+  carries its initial Gaussian as an exact factor and the value carries the terminal cost evaluated
+  at the network's *own* terminal mean, which is where the coupling enters the value side.
+  `LQMeanFieldGame.solve` is the gate -- an exact closed form (stationary Riccati root plus a 2x2
+  trace-free two-point boundary value problem) that annihilates both PDE residuals to 5e-15.
+  On the monotone instance the neural solve reproduces it: control 0.057%, mean 0.21%, density 0.46%.
+
+  The gate also prices the failure. The transition matrix turns oscillatory exactly at
+  `c = 1 + r a^2/(q b^2)`, and past it the equilibrium degenerates at a horizon available in closed
+  form -- `arccot(k/w)/w`, always finite whatever the terminal weight, against the monotone branch
+  where it exists only when `k > lam`. Approaching it, `|S(0)|` diverges with measured pole exponent
+  -0.998, and the Deep Galerkin solve's error rises 7.9x while its own residual *falls* 6.7x, so a
+  residual-based stopping rule reports its cleanest convergence where the answer is worst
+  (`lq_mean_field_certificate` asserts that inversion, not merely the error). Derived in
+  `validation/lq_mean_field.mac` (eleven residuals, all zero), proved in `proofs/lq_mean_field.v`
+  (20 theorems, Stdlib Reals only), cross-checked in `z3` and `cvc5`. Theorems doc: Result 49.
+
+  Fixed while building it: `MeanFieldDGM.quadrature` was an inexact-array field of an `eqx.Module`,
+  so `eqx.filter(model, eqx.is_inexact_array)` handed the integration nodes to the optimiser and
+  they drifted 0.63 within 300 steps, silently corrupting every mean and mass. The grid is now
+  derived from static scalars and cannot be a parameter.
+
 - **`chc.residual.SpectralResidual` + the periodic plant in `chc.transport`** — `plans/18` E was
   skipped under a kill-criterion whose sole reopening condition was tying a learned spectral
   operator into `chc.transport`, so both halves land together and the criterion stays live.

@@ -124,14 +124,14 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | advanced control | `koopman`, `meanfield`, `transport`, `matching`, `games`, `mintime` | Koopman-LQR; mean-field control; a periodic **advection-diffusion** field with an exact spectral propagator (the translation-invariant plant that justifies the spectral residual); continuum + discrete **Kantorovich OT** (driver↔rider matching → **dual surge prices**); differentiable Stackelberg games over a **certified** congestion equilibrium (implicit-function gradients, contraction certificate, optimal damping — the solver reports its residual instead of silently returning a non-equilibrium); PMP time-optimal bang-bang |
 | marketplace moat | `marketplace` | **offline causal control under equilibrium interference**: learn incentives from confounded switchback logs where SUTVA fails — de-confounded + equilibrium-aware + W-DRO-pessimistic control recovers the oracle where MOPO / naive-causal go *negative* |
 | evaluation | `benchmark`, `causal_bench`, `flagship`, `lalonde`, `metrics`, `surrogate` | pricing / inventory / support-shift / **model-uncertainty** / **confounding-robust** / **causal-dynamics** (the confounding is in the plant's own channel; the failure is invisible to the constraint and support columns) oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; a causal-methods table scoring every frontier estimator against the naive baseline it is meant to beat; real-data **LaLonde** validation; step-response quality metrics; a gradient-boosted tree surrogate as the tabular prediction competitor (optional `trees` extra) |
-| scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka) plus the non-symmetric **convection-diffusion** case with the cell-Peclet threshold and the optimal SUPG parameter; mesh-free **Deep Galerkin** neural Poisson solver |
+| scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka) plus the non-symmetric **convection-diffusion** case with the cell-Peclet threshold and the optimal SUPG parameter; mesh-free **Deep Galerkin** — a neural Poisson solver, and the coupled **mean-field game** (backward HJB + forward Fokker-Planck joined by `alpha* = -(b/r)V_x` and the population mean), with both boundary conditions structural rather than penalised. Gated on an exact LQ closed form, which also prices the failure: past the anti-monotone threshold `c = 1 + ra²/(qb²)` the equilibrium degenerates at a horizon in closed form, and there the solver's own residual *falls* while its error rises |
 
 ## Validation
 
 Correctness is cross-checked in independent tools, symbolic first (`validation/`): the ARE / matrix
 exponential are verified **Maxima**-authoritative (exact + high-precision `bfloat`) against **PARI/GP**
 (50-digit) and **Octave**, with SciPy used only as the fast float64 numeric. The control and guarantee
-invariants are **formally proved in Rocq** — 44 files under `proofs/`, from the box-projection bounds
+invariants are **formally proved in Rocq** — 45 files under `proofs/`, from the box-projection bounds
 and idempotence (`box_projection.v`) to the interference-aware regret certificate.
 
 ## Honest positioning

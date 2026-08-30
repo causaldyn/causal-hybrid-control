@@ -43,7 +43,17 @@ from chc.causal import (
 )
 from chc.control import project_box, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
-from chc.deep_galerkin import ScalarMLP, solve_poisson_dgm
+from chc.deep_galerkin import (
+    FieldMLP,
+    LQMeanFieldGame,
+    MeanFieldCurve,
+    MeanFieldDGM,
+    MeanFieldSolution,
+    ScalarMLP,
+    lq_mean_field_certificate,
+    solve_mfg_dgm,
+    solve_poisson_dgm,
+)
 from chc.did import GroupTimeATT, callaway_santanna, de_chaisemartin, twoway_fixed_effects_att
 from chc.discovery import LaggedGraph, TigramiteDiscovery, discover_lagged_parents
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
@@ -395,6 +405,7 @@ __all__ = [
     "EquilibriumTransferCertificate",
     "ExposureMapCurve",
     "ExposureResponse",
+    "FieldMLP",
     "FiniteHorizonPLCurve",
     "GaussianPolicy",
     "GraphResidual",
@@ -407,6 +418,7 @@ __all__ = [
     "InterferenceOrthogonalCurve",
     "KANResidual",
     "KoopmanModel",
+    "LQMeanFieldGame",
     "LaggedGraph",
     "LinearDynamics",
     "LipschitzCertificate",
@@ -416,6 +428,9 @@ __all__ = [
     "MarketplaceControlCurve",
     "MarketplaceMatching",
     "MeanFieldControl",
+    "MeanFieldCurve",
+    "MeanFieldDGM",
+    "MeanFieldSolution",
     "MeanFieldTransport",
     "MultiChannelControlCurve",
     "MultivariateInterferenceCurve",
@@ -580,6 +595,7 @@ __all__ = [
     "lipschitz_rollout_bound",
     "lipschitz_rollout_certificate",
     "local_projection_irf",
+    "lq_mean_field_certificate",
     "lq_regret_sensitivity",
     "marketplace_report",
     "minimax_exploration_certificate",
@@ -628,6 +644,7 @@ __all__ = [
     "sinkhorn",
     "softmax_congestion_equilibrium",
     "solve_channel_moment",
+    "solve_mfg_dgm",
     "solve_poisson_dgm",
     "solve_toeplitz",
     "solve_transport",

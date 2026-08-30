@@ -1,0 +1,167 @@
+/* THE LINEAR-QUADRATIC MEAN-FIELD GAME: the coupled HJB / Fokker-Planck system has a CLOSED FORM,
+   the fixed point is AFFINE, and it can fail to have one at all.
+
+   chc.deep_galerkin solves a 1-D Poisson BVP; chc.transport carries a forward density with no
+   diffusion and no backward value equation.  Neither half is a mean-field game.  Coupling them
+   gives the forward-backward system
+
+       HJB (backward):  V_t + a x V_x - (b^2/2r) V_x^2 + (s^2/2) V_xx + (q/2)(x - c m)^2 = 0
+       FP  (forward):   rho_t + d/dx((a x + b alpha*) rho) - (s^2/2) rho_xx = 0,  alpha* = -(b/r) V_x
+       consistency:     m(t) = integral x rho(x,t) dx
+
+   which is what a Deep Galerkin solver must actually satisfy.  Everything below is derived: the
+   quadratic ansatz, the three coefficient ODEs, the Gaussian moments, the 2x2 forward-backward
+   system, its EXACT solution, and the determinant whose vanishing is an obstruction of the same
+   family as Result 45's conjugate time.
+
+   Certificate: chc.deep_galerkin.lq_mean_field_certificate; proofs/lq_mean_field.v. */
+
+linel : 110$
+display2d : false$   /* residuals must be readable inline, not as 2-D art */
+
+/* ===== STEP 1: the quadratic ansatz reduces the HJB to three ODEs ===== */
+
+print("=== STEP 1: HJB under V = P x^2/2 + S x + Z ===")$
+
+assume(r > 0, q > 0, s > 0)$
+V   : P(t)*x^2/2 + S(t)*x + Z(t)$
+hjb : diff(V,t) + a*x*diff(V,x) - (b^2/(2*r))*diff(V,x)^2 + (s^2/2)*diff(V,x,2)
+      + (q/2)*(x - c*m(t))^2$
+hjbe : expand(hjb)$
+print("STEP 1a coefficient of x^2 =", coeff(hjbe, x, 2), " = 0")$
+print("STEP 1b coefficient of x^1 =", coeff(hjbe, x, 1), " = 0")$
+print("STEP 1c coefficient of x^0 =", coeff(hjbe, x, 0), " = 0")$
+
+/* Read them off as explicit ODEs and CHECK that substituting them annihilates the residual. */
+dP : -2*a*P(t) + (b^2/r)*P(t)^2 - q$
+dS : -(a - (b^2/r)*P(t))*S(t) + q*c*m(t)$
+dZ : (b^2/(2*r))*S(t)^2 - (s^2/2)*P(t) - (q/2)*c^2*m(t)^2$
+resid1 : ratsimp( subst([ 'diff(P(t),t) = dP, 'diff(S(t),t) = dS, 'diff(Z(t),t) = dZ ], hjbe) )$
+print("STEP 1d residual of the HJB at those three ODEs =", resid1, " (0) -- the ansatz is EXACT,")$
+print("        not an approximation: a quadratic value function closes under this HJB")$
+print("STEP 1e P obeys a Riccati DECOUPLED from the population: P' =", dP)$
+print("STEP 1f writing A(t) = a - b^2 P(t)/r, S obeys S' = -A S + q c m and the optimal feedback")$
+print("        is alpha* = -(b/r)(P x + S): linear in x, with the mean entering only through S")$
+
+/* ===== STEP 2: the Fokker-Planck half keeps the density Gaussian ===== */
+
+print("=== STEP 2: Gaussian moments ===")$
+
+/* Under a linear drift A x + B and constant diffusion, a Gaussian stays Gaussian.  Verify by
+   substituting rho = N(m, v) into the Fokker-Planck equation and matching. */
+rho : exp(-(x - m(t))^2/(2*v(t)))/sqrt(2*%pi*v(t))$
+drift : AA*x + BB$
+fp : diff(rho,t) + diff(drift*rho, x) - (s^2/2)*diff(rho,x,2)$
+fpr : ratsimp( subst([ 'diff(m(t),t) = AA*m(t) + BB, 'diff(v(t),t) = 2*AA*v(t) + s^2 ], fp) / rho )$
+print("STEP 2a residual of Fokker-Planck at m' = A m + B, v' = 2 A v + s^2 =", ratsimp(fpr), " (0)")$
+print("STEP 2b so the density never leaves the Gaussian family, and with A = a - b^2 P/r,")$
+print("        B = -b^2 S/r the mean obeys m' = A m - (b^2/r) S")$
+print("STEP 2c the VARIANCE equation v' = 2 A v + s^2 contains neither m nor S: the spread of the")$
+print("        population does not feed back into its mean.  That is a structural feature of the")$
+print("        LQ case and the reason the fixed point below is only two-dimensional")$
+
+/* ===== STEP 3: pin the Riccati at its steady state to get an exact transition matrix ===== */
+
+print("=== STEP 3: the stationary-Riccati specialisation ===")$
+
+Pbar : rhs(solve((b^2/r)*P^2 - 2*a*P - q = 0, P)[2])$
+print("STEP 3a the Riccati has the steady state P_bar =", Pbar)$
+print("STEP 3b residual (b^2/r) P_bar^2 - 2 a P_bar - q =",
+      ratsimp( (b^2/r)*Pbar^2 - 2*a*Pbar - q ), " (0)")$
+Abar : ratsimp( a - (b^2/r)*Pbar )$
+print("STEP 3c so choosing the terminal weight q_T = P_bar freezes P, and A becomes the CONSTANT")$
+print("        A_bar =", Abar, ".  The general case is the same structure with a time-varying")$
+print("        transition matrix; freezing it is what makes the gate below exact rather than")$
+print("        itself a numerical solve")$
+print("STEP 3d A_bar = -sqrt(a^2 + q b^2/r), residual =",
+      ratsimp( Abar + sqrt(a^2 + q*b^2/r) ), " (0) -- STRICTLY NEGATIVE, so the closed loop is")$
+print("        stable whatever the sign of a: the individual problem is well posed and anything")$
+print("        that goes wrong below is the mean-field coupling, not the dynamics")$
+
+/* ===== STEP 4: the forward-backward pair is a 2x2 linear system ===== */
+
+print("=== STEP 4: the (m, S) two-point boundary value problem ===")$
+
+M : matrix([AA, -b^2/r], [q*c, -AA])$
+print("STEP 4a with y = (m, S), y' = M y and M =", M)$
+print("STEP 4b trace M =", ratsimp(mat_trace(M)), " (0) and det M =", ratsimp(determinant(M)),
+      " so the eigenvalues are +-lambda with lambda^2 = A^2 - q c b^2/r")$
+lam2 : ratsimp( AA^2 - q*c*b^2/r )$
+print("STEP 4c lambda^2 =", lam2)$
+print("STEP 4d THE DICHOTOMY.  For q c b^2/r < A^2 the eigenvalues are REAL and the transition")$
+print("        matrix is built from cosh and sinh -- monotone, no zeros.  For q c b^2/r > A^2 they")$
+print("        are IMAGINARY and it is built from cos and sin, which oscillate.  The mean-field")$
+print("        coupling strength q c b^2/r against the individual closed-loop rate A^2 is what")$
+print("        decides which, and that is the Lasry-Lions monotonicity condition in this case")$
+
+/* ===== STEP 5: solve it exactly, and expose the obstruction ===== */
+
+print("=== STEP 5: the exact fixed point, and when it fails to exist ===")$
+
+/* For a TRACE-FREE 2x2 matrix, exp(M T) = cosh(lam T) I + sinh(lam T)/lam * M with lam^2 = -det M.
+   Verify that directly rather than quoting it. */
+Eg  : cosh(lam*T)*ident(2) + (sinh(lam*T)/lam)*M$
+chk : ratsimp( diff(Eg, T) - M . Eg )$
+chk : ratsimp( subst([AA^2 = lam^2 + q*c*b^2/r], chk) )$
+print("STEP 5a residual d/dT exp(MT) - M exp(MT) =", chk, " (zero matrix, using lam^2 = A^2 - qcb^2/r)")$
+print("STEP 5b and exp(M*0) =", ratsimp(subst([T = 0], Eg)), " (the identity)")$
+
+/* The boundary condition S(T) = -q_T c_T m(T) is ONE linear equation for the unknown S(0). */
+e11 : Eg[1][1]$  e12 : Eg[1][2]$  e21 : Eg[2][1]$  e22 : Eg[2][2]$
+den : ratsimp( e22 + qT*cT*e12 )$
+num : ratsimp( e21 + qT*cT*e11 )$
+print("STEP 5c imposing S(T) = -q_T c_T m(T) gives  S(0) * (", den, ") = -m0 * (", num, ")")$
+print("STEP 5d THE FIXED POINT IS AFFINE in S(0): the mean-field consistency condition is one")$
+print("        linear equation, solved EXACTLY, with no iteration and no tolerance.  A Deep")$
+print("        Galerkin solve of the same system therefore has a ground truth to be checked")$
+print("        against -- which is why the gate is built before the solver")$
+
+/* Factor the denominator into the form that exposes the obstruction. */
+kk  : ratsimp( AA + qT*cT*b^2/r )$
+denk : ratsimp( den - (cosh(lam*T) - kk*sinh(lam*T)/lam) )$
+print("STEP 5e with k := A + q_T c_T b^2/r =", kk, " the denominator is exactly")$
+print("        cosh(lam T) - k sinh(lam T)/lam;  residual =", denk, " (0)")$
+
+print("=== STEP 6: the exact existence criterion ===")$
+
+/* lam^2 under the stationary-Riccati choice.  A^2 = a^2 + q b^2/r by STEP 3d, so */
+lam2s : ratsimp( subst([AA = -sqrt(a^2 + q*b^2/r)], AA^2 - q*c*b^2/r) )$
+print("STEP 6a under q_T = P_bar, lam^2 = A^2 - q c b^2/r =", lam2s,
+      " = a^2 + (q b^2/r)(1 - c);  residual =",
+      ratsimp( lam2s - (a^2 + (q*b^2/r)*(1 - c)) ), " (0)")$
+print("STEP 6b so the branch is decided by c ALONE, against the ratio r a^2/(q b^2):")$
+print("        lam^2 > 0  (real, cosh/sinh)      iff  c < 1 + r a^2/(q b^2)")$
+print("        lam^2 < 0  (imaginary, cos/sin)   iff  c > 1 + r a^2/(q b^2)")$
+print("        and c > 1 means the running cost (q/2)(x - c m)^2 penalises deviation from an")$
+print("        AMPLIFIED mean -- an incentive to beat the average by more than the average.")$
+print("        That is the anti-monotone coupling of Lasry-Lions, here with an exact threshold")$
+
+/* REAL BRANCH: coth(lam T) = k/lam has a root iff k > lam, since coth maps (0,inf) onto (1,inf). */
+print("STEP 6c REAL BRANCH.  den = 0 iff coth(lam T) = k/lam.  coth maps (0,inf) ONTO (1,inf)")$
+print("        monotonically, so there is a horizon where the fixed point fails to exist iff")$
+print("        k > lam, and then it is unique: T* = artanh(lam/k)/lam")$
+Treal : atanh(lam/kk_)/lam$
+denr  : cosh(lam*T) - kk_*sinh(lam*T)/lam$
+print("STEP 6d residual of den at T = artanh(lam/k)/lam =",
+      ratsimp( subst([T = Treal], denr) ), " (0) -- so that horizon is exact, not asymptotic")$
+print("STEP 6e and for k <= 0 the denominator is cosh + |k| sinh/lam >= 1 > 0 at EVERY horizon:")$
+print("        the mean-field game is then solvable for all T.  With q_T = P_bar,")$
+print("        k = a c_T + A (1 - c_T), so c_T <= 1 together with a <= 0 gives k <= 0")$
+
+/* IMAGINARY BRANCH: cot(w T) = k/w ALWAYS has a root in (0, pi), so the obstruction is unavoidable. */
+print("STEP 6f IMAGINARY BRANCH (lam = i w).  den becomes cos(wT) - k sin(wT)/w, and den = 0 iff")$
+print("        cot(wT) = k/w.  cot maps (0, pi) ONTO all of R, so a first obstruction horizon")$
+print("        ALWAYS exists, for every k: T* = arccot(k/w)/w in (0, pi/w)")$
+denw : ratsimp( subst([lam = %i*w], denr) )$
+print("STEP 6g den at lam = i w =", denw, " = cos(wT) - k sin(wT)/w;  residual =",
+      ratsimp( denw - (cos(w*T) - kk_*sin(w*T)/w) ), " (0)")$
+Timag : (%pi/2 - atan(kk_/w))/w$
+print("STEP 6h residual of den at T = arccot(k/w)/w =",
+      ratsimp( trigsimp( subst([T = Timag], cos(w*T) - kk_*sin(w*T)/w) ) ), " (0)")$
+print("STEP 6i THE OBSTRUCTION.  Past that horizon the mean-field fixed point has no solution, or")$
+print("        a continuum of them.  It is the same shape as Result 45's conjugate time -- a")$
+print("        determinant crossing zero and a constant blowing up like 1/(T* - T) -- but here in")$
+print("        the mean-field coupling rather than the single-agent second variation, and with an")$
+print("        exact threshold in c.  A Deep Galerkin solver run past T* is fitting a system with")$
+print("        no solution, and will report a small residual anyway: that is what the certificate")$
+print("        is built to catch")$
