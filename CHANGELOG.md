@@ -9,6 +9,33 @@ still change).
 
 ### Added
 
+- **A bound-constrained quasi-Newton beside the projected gradient (`chc.control`)** -- `plans/10`
+  §4 asked for a bespoke NLP solver, which is the wrong call for the reason `plans/03` already
+  gives (acados and Clarabel occupy that slot). The weak link is the hand-rolled solver every
+  `plan`/`mpc`/`benchmark` call site uses, and SciPy is already a core dependency, so the item is
+  reframed: `lbfgs_box_control` hands the *same* discrete-adjoint gradient to L-BFGS-B, which
+  curves the step with a limited-memory secant approximation and takes the box natively. Same
+  signature, same `(controls, cost history)` return, so it is a drop-in.
+
+  A correction to the item's premise while it is being closed: the existing
+  `projected_gradient_control` is steepest descent with a *backtracking line search*, not Adam.
+
+  `nlp_solver_certificate` measures the difference instead of asserting it, and `box_stationarity`
+  -- the residual `||u - P_box(u - grad J)||`, zero exactly at a KKT point -- makes the comparison
+  independent of both a reference solution and a wall clock. Sweeping the control weight, which is
+  what sets the conditioning of the reduced Hessian: at `R = 0.001` the first-order solver exhausts
+  its 150-step budget at stationarity 1.2e-01 and **19.2%** above the optimum; at `R = 0.01`,
+  4.7%; at `R = 0.1` it is fine, 0.003%. L-BFGS-B reaches stationarity below 1.2e-04 everywhere, in
+  18-82 iterations. SLSQP and trust-constr were measured too and agree with L-BFGS-B to six digits
+  on every instance, so neither is shipped: their extra capability is general nonlinear constraints,
+  which this problem does not have, and trust-constr costs 5-10x the wall clock for the same answer.
+
+  The certificate asserts *both* directions -- a gap above 5% on the ill-conditioned instance and
+  below 0.5% on the well-conditioned one -- so it fails if the difference stops being about
+  conditioning. **Call sites are deliberately unchanged**: swapping the solver under
+  `benchmark`/`mpc`/`plan` would move every published leaderboard and regret number at once, which
+  is a separate decision with its own blast radius, not a side effect of adding a solver.
+
 - **The deep ensemble trains as one sharded program (`chc.uncertainty.fit_ensemble`)** -- it was a
   Python loop calling `fit_residual` K times, so a K-member ensemble cost K x `steps` device
   dispatches and used exactly one core no matter how many were free. The members are now a single

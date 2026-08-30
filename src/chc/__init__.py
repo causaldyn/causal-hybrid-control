@@ -41,7 +41,15 @@ from chc.causal import (
     refute_effect,
     sensitivity_analysis,
 )
-from chc.control import project_box, projected_gradient_control
+from chc.control import (
+    NLPSolverCertificate,
+    SolverComparison,
+    box_stationarity,
+    lbfgs_box_control,
+    nlp_solver_certificate,
+    project_box,
+    projected_gradient_control,
+)
 from chc.cost import QuadraticCost, total_cost
 from chc.deep_galerkin import (
     FieldMLP,
@@ -437,6 +445,7 @@ __all__ = [
     "MultiChannelControlCurve",
     "MultivariateInterferenceCurve",
     "MultivariateTransferCurve",
+    "NLPSolverCertificate",
     "NeighbourMessagePassing",
     "NestedCVaRPenalty",
     "NestedRiskCertificate",
@@ -459,6 +468,7 @@ __all__ = [
     "ShardedEnsembleCertificate",
     "SharedStateMarket",
     "SinkhornResult",
+    "SolverComparison",
     "SpectralResidual",
     "SpectralResidualCurve",
     "SplitConformal",
@@ -489,6 +499,7 @@ __all__ = [
     "barrier_confounding_certificate",
     "barrier_gamma_star",
     "barrier_reachability_gap",
+    "box_stationarity",
     "calibrate_naive_causal",
     "calibrate_predictive",
     "calibrate_shared_state",
@@ -589,6 +600,7 @@ __all__ = [
     "kan_edge",
     "koopman_controller",
     "koopman_lqr_gain",
+    "lbfgs_box_control",
     "levinson_durbin",
     "lie_trotter_step",
     "linearize_continuous",
@@ -608,6 +620,7 @@ __all__ = [
     "multivariate_interference_certificate",
     "multivariate_transfer_certificate",
     "naive_pooled_effect",
+    "nlp_solver_certificate",
     "nonlinear_regret_certificate",
     "off_policy_value",
     "one_step_mse",
