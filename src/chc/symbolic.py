@@ -105,7 +105,10 @@ def _best_subset(
     for size in range(1, max_terms + 1):
         for subset in combinations(range(n_terms), size):
             columns = (0, *(i + 1 for i in subset))
-            solution, *_ = np.linalg.lstsq(design[:, columns], target, rcond=None)
+            fit, *_ = np.linalg.lstsq(design[:, columns], target, rcond=None)
+            # lstsq is only typed as `floating[Any]`, and numpy's stubs disagree about it across
+            # the versions the resolver forks on at the 3.11 floor. Normalise at the boundary once.
+            solution = np.asarray(fit, dtype=np.float64)
             residual = target - design[:, columns] @ solution
             r2 = 1.0 - float(residual @ residual) / total if total > 0.0 else 1.0
             if best is None or r2 > best[2]:
@@ -180,7 +183,8 @@ def _fit_layer(spec: RBFKANLayer, inputs: Vector, targets: Vector) -> RBFKANLaye
     rbf = np.exp(-(((inputs[:, :, None] - grid[None, None, :]) * inv_h) ** 2))
     silu = inputs / (1.0 + np.exp(-inputs))
     design = np.column_stack([rbf.reshape(inputs.shape[0], -1), silu, np.ones(inputs.shape[0])])
-    solution, *_ = np.linalg.lstsq(design, targets, rcond=None)
+    fit, *_ = np.linalg.lstsq(design, targets, rcond=None)
+    solution = np.asarray(fit, dtype=np.float64)
     n_rbf = spec.in_dim * spec.num_grid
     coeff = solution[:n_rbf].T.reshape(spec.out_dim, spec.in_dim, spec.num_grid)
     base = solution[n_rbf : n_rbf + spec.in_dim].T.reshape(spec.out_dim, spec.in_dim)
