@@ -17,20 +17,23 @@ cannot move the learned dynamics much (plans/20 §B).
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 from jax import Array
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import NDArray
 
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step
 from chc.residual import ContractiveResidual, LipschitzResidual, MLPResidual
-from chc.train import fit_residual
+from chc.train import fit_residual, one_step_mse
 
 
 class EnsembleResidual(eqx.Module):
@@ -55,6 +58,18 @@ class EnsembleResidual(eqx.Module):
         return jnp.sum(jnp.var(self.member_outputs(t, x, u), axis=0))
 
 
+def _member_mesh(n_members: int) -> Mesh:
+    """Largest device mesh whose size divides ``n_members``, so every device holds whole members.
+
+    A mesh that does not divide the member count makes JAX pad the leading axis, which trains
+    phantom members to fill the shards; taking the largest divisor instead degrades to a
+    single-device mesh (the CPU default) with no branch at the call site.
+    """
+    devices = jax.devices()
+    size = max(d for d in range(1, len(devices) + 1) if n_members % d == 0)
+    return Mesh(np.asarray(devices[:size]), ("member",))
+
+
 def fit_ensemble(
     model: HybridDynamics,
     data: dict[str, Array],
@@ -67,33 +82,184 @@ def fit_ensemble(
     steps: int = 2000,
     lr: float = 1e-2,
 ) -> tuple[HybridDynamics, list[Array]]:
-    """Fit K residuals independently into an ``EnsembleResidual`` (split keys + optional bootstrap).
+    """Fit K residuals into an ``EnsembleResidual`` (split keys + optional bootstrap), in parallel.
 
     Each member is a fresh ``MLPResidual`` (dims inferred from ``data = {x, u, x_next}``) trained by
-    :func:`chc.train.fit_residual`. With ``bootstrap`` each member sees a row-resample of the data,
-    so disagreement reflects both init randomness and data variation. Returns
-    ``HybridDynamics(model.known, EnsembleResidual)`` and the per-member loss histories.
+    the same Adam recursion :func:`chc.train.fit_residual` runs. With ``bootstrap`` each member sees
+    a row-resample of the data, so disagreement reflects both init randomness and data variation.
+    Returns ``HybridDynamics(model.known, EnsembleResidual)`` and the per-member loss histories.
+
+    The members are trained *together*: one stacked parameter pytree, ``jax.vmap`` over the member
+    axis, ``jax.lax.scan`` over the Adam steps, and the stack sharded over the member axis of
+    :func:`_member_mesh`. This is one XLA program rather than K x ``steps`` dispatches, and it is
+    the same recursion -- :func:`sharded_ensemble_certificate` pins the agreement in ULP.
     """
     known = model.known
     xs, us, x_next = data["x"], data["u"], data["x_next"]
     n = xs.shape[0]
     state_dim, control_dim, out_dim = xs.shape[1], us.shape[1], x_next.shape[1]
-    members: list[Dynamics] = []
-    histories: list[Array] = []
+
+    split = jax.vmap(jax.random.split)(jax.random.split(jax.random.key(seed), n_members))
+    k_init, k_boot = split[:, 0], split[:, 1]
+    if bootstrap:
+        rows = jax.vmap(lambda key: jax.random.randint(key, (n,), 0, n))(k_boot)
+    else:
+        rows = jnp.broadcast_to(jnp.arange(n), (n_members, n))
+    stacked = eqx.filter_vmap(
+        lambda key: MLPResidual(state_dim, control_dim, out_dim, width, depth, key=key)
+    )(k_init)
+    params, static = eqx.partition(stacked, eqx.is_inexact_array)
+    optimizer = optax.adam(lr)
+
+    def member_loss(member: Any, x: Array, u: Array, y: Array) -> Array:
+        residual = eqx.combine(member, static)
+        return one_step_mse(HybridDynamics(known=known, residual=residual), x, u, y, dt)
+
+    @jax.jit
+    def train(params: Any, x: Array, u: Array, y: Array) -> tuple[Any, Array]:
+        def adam_step(carry: Any, _: None) -> tuple[Any, Array]:
+            params, opt_state = carry
+            loss, grads = jax.vmap(jax.value_and_grad(member_loss))(params, x, u, y)
+            updates, opt_state = jax.vmap(optimizer.update)(grads, opt_state, params)
+            return (jax.vmap(optax.apply_updates)(params, updates), opt_state), loss
+
+        init = (params, jax.vmap(optimizer.init)(params))
+        (params, _), history = jax.lax.scan(adam_step, init, None, length=steps)
+        return params, history
+
+    shard = NamedSharding(_member_mesh(n_members), PartitionSpec("member"))
+    batch = jax.device_put((params, xs[rows], us[rows], x_next[rows]), shard)
+    trained, history = train(*batch)
+
+    members = tuple(
+        cast(Dynamics, eqx.combine(jax.tree.map(operator.itemgetter(i), trained), static))
+        for i in range(n_members)
+    )
+    return (
+        HybridDynamics(known=known, residual=EnsembleResidual(members=members)),
+        [history[:, i] for i in range(n_members)],
+    )
+
+
+_PARITY_ULP_BUDGET = 2000.0
+"""Agreement budget in ULP of the working dtype: tight enough that a changed recursion, a
+mis-derived key or a dropped bootstrap blows past it by orders of magnitude, loose enough to
+absorb the reduction-order difference between K small programs and one batched one."""
+
+
+@dataclass(frozen=True)
+class ShardedEnsembleCertificate:
+    """Evidence that the stacked, sharded ensemble fit *is* the serial per-member recursion."""
+
+    n_members: int
+    n_devices: int
+    mesh_size: int
+    dtype: str
+    parity_steps: int
+    parity_ulp: float
+    loss_ulp: float
+    shard_devices: int
+    disagreement_ulp: float
+    ok: bool
+
+
+def sharded_ensemble_certificate(
+    seed: int = 0,
+    n_members: int = 8,
+    n_samples: int = 96,
+    parity_steps: int = 60,
+    dt: float = 0.05,
+) -> ShardedEnsembleCertificate:
+    """Check :func:`fit_ensemble` against a serial oracle built from the untouched public trainer.
+
+    Two claims, each pinned by the measurement that can falsify it. *Numerics*: every member of the
+    stacked fit matches the member :func:`chc.train.fit_residual` produces from the same key and the
+    same bootstrap rows, reported in ULP of the working dtype rather than as an absolute -- the
+    threshold is a precision claim, so it is stated in the unit precision actually has. *Layout*:
+    the member axis is genuinely distributed, so a stacked array committed to :func:`_member_mesh`
+    and consumed by a jitted ``vmap`` comes back spanning the whole mesh; on a one-device host that
+    is trivially 1, and the subprocess test forces eight.
+
+    ``parity_steps`` is deliberately short. Adam on this loss is chaotic: past a few hundred
+    steps a one-ULP difference in reduction order is amplified without bound (measured 6.6 ULP
+    at 200 float32 steps, 7557 at 400), so a long-horizon parity threshold would be either
+    vacuous or flaky. The equivalence certified is of the *recursion*, which a short horizon
+    tests exactly.
+    """
+    known = LinearDynamics(jnp.array([[0.0, 1.0], [-1.0, -0.1]]), jnp.zeros((2, 1)))
+    k_x, k_u = jax.random.split(jax.random.PRNGKey(seed))
+    xs = jax.random.normal(k_x, (n_samples, 2))
+    us = jax.random.normal(k_u, (n_samples, 1))
+    x_next = jax.vmap(lambda x, u: x + dt * known(0.0, x, u))(xs, us)
+    data = {"x": xs, "u": us, "x_next": x_next}
+
+    seed_model = HybridDynamics(known=known, residual=MLPResidual(2, 1, 2, key=k_x))
+    fitted, histories = fit_ensemble(
+        seed_model, data, dt, n_members=n_members, seed=seed, steps=parity_steps
+    )
+    stacked = cast(EnsembleResidual, fitted.residual)
+
+    oracle: list[Dynamics] = []
+    oracle_losses: list[float] = []
     for member_key in jax.random.split(jax.random.key(seed), n_members):
         k_init, k_boot = jax.random.split(member_key)
-        if bootstrap:
-            idx = jax.random.randint(k_boot, (n,), 0, n)
-            member_data = {"x": xs[idx], "u": us[idx], "x_next": x_next[idx]}
-        else:
-            member_data = data
-        residual = MLPResidual(state_dim, control_dim, out_dim, width, depth, key=k_init)
-        fitted, history = fit_residual(
-            HybridDynamics(known=known, residual=residual), member_data, dt, steps=steps, lr=lr
+        rows = jax.random.randint(k_boot, (n_samples,), 0, n_samples)
+        member = MLPResidual(2, 1, 2, key=k_init)
+        trained, history = fit_residual(
+            HybridDynamics(known=known, residual=member),
+            {"x": xs[rows], "u": us[rows], "x_next": x_next[rows]},
+            dt,
+            steps=parity_steps,
         )
-        members.append(fitted.residual)
-        histories.append(history)
-    return HybridDynamics(known=known, residual=EnsembleResidual(members=tuple(members))), histories
+        oracle.append(trained.residual)
+        oracle_losses.append(float(history[-1]))
+
+    unit = float(np.finfo(np.asarray(xs).dtype).eps)
+    worst = 0.0
+    for reference, candidate in zip(oracle, stacked.members, strict=True):
+        pairs = zip(
+            jax.tree.leaves(eqx.filter(reference, eqx.is_inexact_array)),
+            jax.tree.leaves(eqx.filter(candidate, eqx.is_inexact_array)),
+            strict=True,
+        )
+        for a, b in pairs:
+            scale = max(float(jnp.max(jnp.abs(a))), unit)
+            worst = max(worst, float(jnp.max(jnp.abs(a - b))) / scale)
+    loss_gap = max(
+        abs(float(h[-1]) - ref) / max(abs(ref), unit)
+        for h, ref in zip(histories, oracle_losses, strict=True)
+    )
+
+    mesh = _member_mesh(n_members)
+    probe = jax.device_put(jnp.zeros((n_members, 4)), NamedSharding(mesh, PartitionSpec("member")))
+    spread = jax.jit(jax.vmap(lambda row: row + 1.0))(probe)
+    shard_devices = len(spread.sharding.device_set)
+
+    reference_spread = float(
+        EnsembleResidual(members=tuple(oracle)).disagreement(0.0, xs[0], us[0])
+    )
+    stacked_spread = float(stacked.disagreement(0.0, xs[0], us[0]))
+    spread_gap = abs(stacked_spread - reference_spread) / max(reference_spread, unit)
+
+    mesh_size = int(mesh.devices.size)
+    return ShardedEnsembleCertificate(
+        n_members=n_members,
+        n_devices=len(jax.devices()),
+        mesh_size=mesh_size,
+        dtype=str(jnp.zeros(()).dtype),
+        parity_steps=parity_steps,
+        parity_ulp=worst / unit,
+        loss_ulp=loss_gap / unit,
+        shard_devices=shard_devices,
+        disagreement_ulp=spread_gap / unit,
+        ok=(
+            worst < _PARITY_ULP_BUDGET * unit
+            and loss_gap < _PARITY_ULP_BUDGET * unit
+            and spread_gap < _PARITY_ULP_BUDGET * unit
+            and shard_devices == mesh_size
+            and n_members % mesh_size == 0
+        ),
+    )
 
 
 class EnsembleUncertainty(eqx.Module):

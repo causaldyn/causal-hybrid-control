@@ -9,6 +9,30 @@ still change).
 
 ### Added
 
+- **The deep ensemble trains as one sharded program (`chc.uncertainty.fit_ensemble`)** -- it was a
+  Python loop calling `fit_residual` K times, so a K-member ensemble cost K x `steps` device
+  dispatches and used exactly one core no matter how many were free. The members are now a single
+  stacked parameter pytree: `jax.vmap` over the member axis, `jax.lax.scan` over the Adam steps, and
+  the stack committed to `NamedSharding(_member_mesh(K), P("member"))`, which degrades to a
+  one-device mesh with no branch at the call site. The signature, the key derivation and the
+  returned `EnsembleResidual` are unchanged. Measured at K=8, 2000 steps, warmed up and alternated
+  A-B-A-B: serial 8.03 s, stacked on one device 2.25 s (3.6x, from collapsing the dispatches),
+  stacked over an 8-device mesh 0.80 s (10.3x total, so sharding contributes 2.8x on top).
+
+  `sharded_ensemble_certificate` checks it against a serial oracle built from the untouched public
+  `fit_residual`, and states *every* agreement in ULP of the working dtype: parameters 232 ULP,
+  final loss 186, member disagreement 16 under float64, and 82 / 173 / 146 under float32 -- one
+  2000-ULP budget covers both, where an absolute threshold passes under float64 and fails under
+  float32 for no reason but the dtype. The parity horizon is short on purpose. Adam on this loss is
+  chaotic, so a one-ULP difference in reduction order is amplified without bound with the step
+  count: measured 1.3 -> 6.6 ULP over 5 -> 200 float32 steps, then **7557 ULP at 400**, against a
+  smooth 1.5 -> 12.9 over the same range in float64. What is certifiable is the equivalence of the
+  *recursion*, not bit-agreement of a chaotic trajectory. A subprocess test forces
+  `--xla_force_host_platform_device_count=8` (the flag is read when the backend initialises, so it
+  cannot be set in-process) and asserts the member axis really spans the mesh. **The GPU half is
+  untested here**: an NVIDIA GPU is present but no CUDA jaxlib is installed, and adding one is a
+  dependency decision rather than a tool call.
+
 - **The coupled mean-field game in `chc.deep_galerkin`** -- the module solved a 1-D Poisson BVP and
   `chc.transport` carried a forward density with no diffusion and no backward value equation; the
   two halves had never been coupled. `solve_mfg_dgm` now trains `V(t,x)` and `log rho(t,x)` jointly

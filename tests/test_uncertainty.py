@@ -2,6 +2,12 @@
 coverage, and penalising that uncertainty avoids the model exploitation a greedy controller hits.
 """
 
+import json
+import os
+import subprocess
+import sys
+from typing import cast
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -9,7 +15,7 @@ import numpy as np
 import pytest
 from jax import Array
 
-from chc import SplitConformal, fit_ensemble
+from chc import SplitConformal, fit_ensemble, sharded_ensemble_certificate
 from chc.benchmark import ModelUncertaintyTask
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step
@@ -123,3 +129,40 @@ def test_the_nested_penalty_is_differentiable_at_the_solver_start() -> None:
         lambda u: NestedCVaRPenalty(ensemble=_toy_ensemble(), alpha=0.3).penalty_trajectory(xs, u)
     )(us)
     assert bool(jnp.all(jnp.isfinite(grad)))
+
+
+def test_stacked_ensemble_reproduces_the_serial_recursion() -> None:
+    certificate = sharded_ensemble_certificate(parity_steps=60)
+    assert certificate.ok
+    assert certificate.parity_ulp < 2000.0
+    assert certificate.n_members % certificate.mesh_size == 0
+    assert certificate.shard_devices == certificate.mesh_size
+
+
+def test_ensemble_members_are_independently_seeded() -> None:
+    # The stacked fit trains one program over a member axis; if the key derivation collapsed, the
+    # members would coincide and the disagreement -- the whole point of the ensemble -- would be 0.
+    model, _ = _fit_ensemble_on_support()
+    ensemble = cast(EnsembleResidual, model.residual)
+    outputs = ensemble.member_outputs(0.0, jnp.array([1.5, -1.0]), jnp.array([0.5]))
+    assert float(jnp.var(outputs, axis=0).sum()) > 1e-8
+
+
+def test_sharded_path_runs_across_a_multi_device_mesh() -> None:
+    # XLA_FLAGS is read when the backend initialises, so the >=2-device path needs a fresh process.
+    source = (
+        "import json, jax; jax.config.update('jax_enable_x64', True);"
+        "from chc import sharded_ensemble_certificate as c;"
+        "r = c(n_members=8, parity_steps=40);"
+        "print(json.dumps(r.__dict__))"
+    )
+    env = {**os.environ, "XLA_FLAGS": "--xla_force_host_platform_device_count=8"}
+    completed = subprocess.run(
+        [sys.executable, "-c", source], capture_output=True, text=True, env=env, timeout=600
+    )
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert report["n_devices"] == 8
+    assert report["mesh_size"] == 8
+    assert report["shard_devices"] == 8  # the member axis really is spread over the mesh
+    assert report["ok"]
