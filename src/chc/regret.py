@@ -37,6 +37,9 @@ class RegretCurve:
     errors: Vector  # median realised model-error magnitude ||[dA, dB]|| at each swept level
     gaps: Vector  # median certainty-equivalence suboptimality gap at each level
     exponent: float  # fitted log-log slope of gap vs error (~2.0 => quadratic suboptimality)
+    infinite_fraction: Vector  # share of draws with UNBOUNDED regret at each level (see the
+    # docstring: the exponent is conditional on the complement of this event, which is why it is
+    # reported rather than dropped -- ce_explicit_constant_certificate prices the same event)
 
 
 def dlqr(a: Matrix, b: Matrix, q: Matrix, r: Matrix) -> tuple[Matrix, Matrix]:
@@ -88,33 +91,50 @@ def regret_scaling(
 
     At each target magnitude ``eps`` draws ``n_samples`` Gaussian model perturbations ``(dA, dB)``
     scaled by ``eps``, records the :func:`certainty_equivalence_gap`, and fits the log-log slope of
-    gap vs realised error over all samples. Perturbations that make the estimate unstabilisable are
-    skipped. Theory (Mania, Tu & Recht 2019, the local quadratic CE bound) predicts exponent 2.
+    gap vs realised error over all samples. Theory predicts exponent 2 -- and by
+    ``proofs/ce_explicit_constants.v`` that is now an EXACT identity in the gain error rather than
+    Mania-Tu-Recht's local bound, which stays only as a comparison point.
+
+    TWO WAYS A DRAW HAS UNBOUNDED REGRET, and both are reported rather than silently dropped: the
+    perturbed model can be unstabilisable (no certainty-equivalent gain exists), or its gain can
+    fail to stabilise the TRUE plant (cost ``+inf``). There ``E[R]`` does not exist at all, so the
+    ``exponent`` here is a quantity CONDITIONAL on its complement -- ``infinite_fraction`` is what
+    makes that visible. It shrinks to 0 as ``eps`` does; ``ce_explicit_constant_certificate`` gives
+    the explicit radius ``rho`` inside which it is 0 by construction, and a safeguarded policy
+    (fall back to a known stabilising gain when the checkable Lyapunov test fails) is what restores
+    an unconditional finite expectation.
     """
     rng = np.random.default_rng(seed)
     median_errors: list[float] = []
     median_gaps: list[float] = []
     log_err: list[float] = []
     log_gap: list[float] = []
+    inf_frac: list[float] = []
     for eps in errors:
         errs, gaps = [], []
+        unbounded = 0
         for _ in range(n_samples):
             d_a, d_b = eps * rng.normal(size=a.shape), eps * rng.normal(size=b.shape)
             try:
                 gap = certainty_equivalence_gap(a, b, q, r, a + d_a, b + d_b, x0)
             except (np.linalg.LinAlgError, ValueError):
-                continue  # estimate not stabilisable: no certainty-equivalent gain exists
+                unbounded += 1  # estimate not stabilisable: no certainty-equivalent gain exists
+                continue
             err = float(np.sqrt(np.sum(d_a**2) + np.sum(d_b**2)))
-            if np.isfinite(gap) and gap > 0.0:
+            if not np.isfinite(gap):
+                unbounded += 1  # the CE gain does not stabilise the TRUE plant: regret is +inf
+                continue
+            if gap > 0.0:
                 errs.append(err)
                 gaps.append(gap)
+        inf_frac.append(unbounded / n_samples)
         if errs:
             median_errors.append(float(np.median(errs)))
             median_gaps.append(float(np.median(gaps)))
             log_err.extend(np.log(errs))
             log_gap.extend(np.log(gaps))
     exponent = float(np.polyfit(log_err, log_gap, 1)[0]) if log_err else float("nan")
-    return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent)
+    return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent, np.array(inf_frac))
 
 
 @dataclass(frozen=True)
@@ -495,10 +515,10 @@ def composition_transfer_certificate(
     HONEST SCOPE: an immediate COMPOSITION (Lipschitz action-map + quadratic regret), not a deep
     theorem -- the p->2p arithmetic restates known facts (4th-order-under-orthogonality:
     Foster-Syrgkanis Orthogonal Statistical Learning; quadratic LQR CE gap: Mania-Tu-Recht). Its
-    value is unifying them for control. The genuine open theorem is the full END-TO-END statement
-    (cross-fit causal estimator -> dynamics-error rate -> stabilising controller -> finite-sample
-    control regret with explicit constants), of which this is one link. Plug-in (``p=1 -> 2``) and
-    DML (``p=2 -> 4``) are instances.
+    value is unifying them for control. The END-TO-END statement this left open -- cross-fit causal
+    estimator -> dynamics-error rate -> stabilising controller -> finite-sample control regret with
+    explicit constants -- is closed by ``ce_explicit_constant_certificate``, which computes both the
+    stabilising ball and the constant. Plug-in (``p=1 -> 2``) and DML (``p=2 -> 4``) are instances.
     """
 
     def u_star(bv: float) -> float:
@@ -1277,6 +1297,312 @@ def optimal_exploration_certificate(
 
 
 @dataclass(frozen=True)
+class CeExplicitConstantCurve:
+    """C1 END-TO-END: the certified ball, the explicit constant, and how conservative both are."""
+
+    eta: float  # lmin(Q + K'RK)/lmax(P): the nominal loop's decay rate in the P metric
+    theta: float  # 1 - sqrt(1 - eta): the contraction MARGIN the whole result is written in
+    beta_b: float  # ||P^(1/2) B||/sqrt(lmin(P)): how hard the input channel pushes on that metric
+    kappa_p: float  # lmax(P)/lmin(P): the P-metric-to-Euclidean conversion in the state energy
+    rk_norm: float  # ||R + B'PB||: the curvature of the exact gain-gap quadratic form
+    l_k_local: float  # ||dK/dB|| measured at the plant (the derivative)
+    l_k_ball: (
+        float  # sup of ||dK||/||dB|| over the CERTIFIED ball -- the cited hypothesis, measured
+    )
+    rho: float  # theta/(2 beta_B L_K): the radius on which stabilisation is GUARANTEED
+    c_const: float  # 2 kappa_P ||R_K|| L_K^2 ||x0||^2 / theta: the explicit constant
+    identity_residual: float  # max |LHS - RHS| of the exact gain-gap identity over random gains
+    radius_multiples: Vector  # ||dB|| swept as multiples of rho
+    worst_gap: Vector  # worst realised J(Khat) - J* at each level
+    bound: Vector  # C ||dB||^2 at each level
+    worst_lyapunov: Vector  # worst ||P^(-1/2)(A-BKhat)'P(A-BKhat)P^(-1/2)||
+    lyapunov_ceiling: float  # (1 - theta/2)^2: the certified ceiling inside the ball
+    unstable_fraction: Vector  # fraction of draws whose CE controller destabilises the TRUE plant
+    empirical_radius: float  # smallest swept ||dB|| at which any draw destabilises
+    conservatism: float  # empirical_radius / rho: how much the certificate gives away
+
+
+def ce_explicit_constant_certificate(
+    *,
+    a_mat: Matrix | None = None,
+    b_mat: Matrix | None = None,
+    q_mat: Matrix | None = None,
+    r_mat: Matrix | None = None,
+    x0: Vector | None = None,
+    multiples: Sequence[float] = (0.25, 1.0, 4.0, 10.0, 20.0, 40.0, 80.0),
+    n_dirs: int = 240,
+    seed: int = 11,
+) -> CeExplicitConstantCurve:
+    """CONTRIBUTION 1 -- the finite-sample end-to-end constants (derived in
+    ``validation/ce_explicit_constants.mac``, proved in ``proofs/ce_explicit_constants.v``).
+
+    Every C1 statement so far took ``regret <= cc*||dB||^2`` as a HYPOTHESIS -- ``c2_end_to_end.v``
+    quantifies over an arbitrary ``0 <= cc`` -- and cited Mania-Tu-Recht's LOCAL quadratic bound.
+    Nothing computed the ball on which it holds, and nothing computed ``cc``. Both are here.
+
+    The lever is that the Lyapunov increment is an EXACT perfect square in the gain error,
+
+        Q + K'`RK' + (A - BK')`P(A - BK') - P = (K' - K)'R_K(K' - K),   R_K := R + B'PB,
+
+    with no smallness assumed, so "quadratic in the gain error" is an algebraic identity rather than
+    a local approximation and the Mania-Tu-Recht citation leaves the regret half entirely. Summing
+    it along the perturbed loop turns the suboptimality into a state-energy sum, and the P-metric
+    triangle inequality bounds that: ``||P^(1/2)(A - B Khat)P^(-1/2)|| <= sqrt(1 - eta) + beta_B
+    ||dK||``, so spending half the margin gives the certified ball
+
+        rho = theta/(2 beta_B L_K),   C = 2 kappa_P ||R_K|| L_K^2 ||x0||^2 / theta,
+
+    with ``eta = lmin(Q + K'RK)/lmax(P)``, ``theta = 1 - sqrt(1 - eta)``. Inside ``rho`` the
+    certainty-equivalent gain provably stabilises the TRUE plant with the checkable Lyapunov
+    certificate ``(A - B Khat)'P(A - B Khat) <= (1 - theta/2)^2 P``, and the regret is at most
+    ``C ||dB||^2``. Composed with Result 26's ``||B_hat - B|| = O_p(a_G)`` that is the end-to-end
+    statement the C1 line recorded as open.
+
+    The sweep runs past the ball on purpose: the certificate must be able to exhibit the failure it
+    protects against, so ``unstable_fraction`` has to become positive at large multiples of ``rho``
+    or the ball is not doing any work. ``conservatism`` records the price of the guarantee. Note
+    that ``worst_gap`` beyond the ball is a maximum over the FINITE draws only -- once
+    ``unstable_fraction > 0`` the true worst case is ``+inf`` and the comparison against ``bound``
+    there is vacuous, which is exactly why the guarantee is stated on ``rho`` and not on the sweep.
+
+    SCOPE: one citation remains on the control side -- uniform validity of the gain map's Lipschitz
+    constant on the ball (Konstantinov-Petkov-Christov-Angelova 1993; Sun 1998). It is not assumed
+    away: ``l_k_ball`` measures it over the certified ball against the derivative ``l_k_local``.
+    """
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]]) if a_mat is None else a_mat
+    b_mat = np.array([[0.5], [1.0]]) if b_mat is None else b_mat
+    q_mat = np.eye(a_mat.shape[0]) if q_mat is None else q_mat
+    r_mat = np.array([[0.5]]) if r_mat is None else r_mat
+    x0 = np.array([1.0, 0.5]) if x0 is None else x0
+
+    k_star, p_mat = dlqr(a_mat, b_mat, q_mat, r_mat)
+    rk_mat = r_mat + b_mat.T @ p_mat @ b_mat
+    ev_p = np.linalg.eigvalsh(p_mat)
+    lmin_p, lmax_p = float(np.min(ev_p)), float(np.max(ev_p))
+    eta = float(np.min(np.linalg.eigvalsh(q_mat + k_star.T @ r_mat @ k_star))) / lmax_p
+    theta = 1.0 - float(np.sqrt(1.0 - eta))
+    kappa_p = lmax_p / lmin_p
+    rk_norm = float(np.linalg.norm(rk_mat, 2))
+    p_half = np.linalg.cholesky(p_mat).T  # P = p_half' p_half
+    p_half_inv = np.linalg.inv(p_half)
+    beta_b = float(np.linalg.norm(p_half @ b_mat, 2)) / float(np.sqrt(lmin_p))
+
+    rng = np.random.default_rng(seed)
+
+    def gain(db: np.ndarray) -> Matrix:
+        return dlqr(a_mat, b_mat + db, q_mat, r_mat)[0]
+
+    def sup_ratio(radius: float, n: int) -> float:
+        out = 0.0
+        for _ in range(n):
+            d = rng.normal(size=b_mat.shape)
+            d *= radius / float(np.linalg.norm(d))
+            try:
+                out = max(out, float(np.linalg.norm(gain(d) - k_star, 2)) / radius)
+            except (np.linalg.LinAlgError, ValueError):
+                continue  # (A, B + dB) unstabilisable: no CE gain exists to be Lipschitz about
+        return out
+
+    # The derivative, then the SUP over the ball rho_0 it induces: the cited uniform-Lipschitz
+    # hypothesis, measured rather than assumed. rho_0 breaks the circularity (rho needs L_K).
+    l_k_local = max(sup_ratio(s, 60) for s in (1e-7, 1e-6, 1e-5))
+    rho0 = theta / (2.0 * beta_b * l_k_local)
+    l_k_ball = max(sup_ratio(rho0 * f, 120) for f in (0.25, 0.5, 1.0))
+    rho = theta / (2.0 * beta_b * max(l_k_local, l_k_ball))
+    c_const = 2.0 * kappa_p * rk_norm * max(l_k_local, l_k_ball) ** 2 * float(x0 @ x0) / theta
+
+    # The identity is EXACT -- check it on gains far from optimal, not on a small neighbourhood.
+    ident = 0.0
+    for _ in range(200):
+        kp = k_star + rng.normal(size=k_star.shape)
+        lhs = q_mat + kp.T @ r_mat @ kp + (a_mat - b_mat @ kp).T @ p_mat @ (a_mat - b_mat @ kp)
+        ident = max(
+            ident, float(np.abs(lhs - p_mat - (kp - k_star).T @ rk_mat @ (kp - k_star)).max())
+        )
+
+    mults = np.asarray(multiples, dtype=np.float64)
+    j_star = closed_loop_cost(a_mat, b_mat, k_star, q_mat, r_mat, x0)
+    gaps, lyaps, unst = (np.zeros(mults.size) for _ in range(3))
+    for i, mult in enumerate(mults):
+        d = rho * mult
+        bad = 0
+        for _ in range(n_dirs):
+            u = rng.normal(size=b_mat.shape)
+            u *= d / float(np.linalg.norm(u))
+            try:
+                k_hat = gain(u)
+            except (np.linalg.LinAlgError, ValueError):
+                bad += 1  # DEFECT 3: an unstabilisable draw is a failure, not a sample to drop
+                continue
+            a_cl = a_mat - b_mat @ k_hat
+            m = p_half_inv.T @ (a_cl.T @ p_mat @ a_cl) @ p_half_inv
+            lyaps[i] = max(lyaps[i], float(np.linalg.norm(m, 2)))
+            gap = closed_loop_cost(a_mat, b_mat, k_hat, q_mat, r_mat, x0) - j_star
+            if not np.isfinite(gap):
+                bad += 1
+                continue
+            gaps[i] = max(gaps[i], gap)
+        unst[i] = bad / n_dirs
+
+    hit = np.flatnonzero(unst > 0.0)
+    empirical = float(mults[hit[0]] * rho) if hit.size else float(mults[-1] * rho)
+    return CeExplicitConstantCurve(
+        eta,
+        theta,
+        beta_b,
+        kappa_p,
+        rk_norm,
+        l_k_local,
+        l_k_ball,
+        rho,
+        c_const,
+        ident,
+        mults,
+        gaps,
+        c_const * (rho * mults) ** 2,
+        lyaps,
+        (1.0 - theta / 2.0) ** 2,
+        unst,
+        empirical,
+        empirical / rho,
+    )
+
+
+@dataclass(frozen=True)
+class ConjugateTimeCurve:
+    """The horizon past which every chc.regret constant ceases to exist, and how it diverges."""
+
+    t_conj: float  # (pi/2 + phi0)/mu: the finite escape time of the backward Riccati solution
+    mu: float  # sqrt(-(a^2 + (b^2/r) q)): the rotation speed of the Riccati phase
+    margins: Vector  # eps = t_conj - T, swept toward 0
+    value: Vector  # p(0) at each horizon: the cost-to-go coefficient
+    value_residue: Vector  # eps*p(0) -> -r/b^2 (a SIMPLE pole; the residue is free of a, q, sT)
+    sensitivity: Vector  # |dk/db| at t=0 -- the object every regret constant is built on
+    sensitivity_residue: Vector  # eps^2*|dk/db| -> a nonzero constant (a DOUBLE pole)
+    regret_coefficient: Vector  # measured [J(khat) - J*]/(db)^2 at each horizon
+    value_slope: float  # log-log slope of |p(0)| against 1/eps: 1
+    sensitivity_slope: float  # ... of |dk/db|: 2
+    regret_slope: float  # ... of the realised regret coefficient: 4 (Result 44 has C ~ L_K^2)
+    authority_shrinks_horizon: (
+        float  # t_conj(2b)/t_conj(b) < 1: more authority, EARLIER obstruction
+    )
+    definite_sensitivity: float  # the POSITIVE-DEFINITE control arm at 10*t_conj: finite
+    definite_sensitivity_growth: (
+        float  # its ratio from 10*t_conj to 100*t_conj: ~1 (tanh saturates)
+    )
+
+
+def conjugate_time_certificate(
+    *,
+    a: float = 0.3,
+    b: float = 1.0,
+    q: float = -4.0,
+    r: float = 1.0,
+    s_t: float = 0.0,
+    x0: float = 1.0,
+    margins: Sequence[float] = (1e-1, 1e-2, 1e-3, 1e-4, 1e-5),
+    delta_b: float = 1e-6,
+) -> ConjugateTimeCurve:
+    """THE CONJUGATE-TIME OBSTRUCTION (derived in ``validation/conjugate_time.mac``, proved in
+    ``proofs/conjugate_time.v``): the third member of the family of Result 13 (the active-set kink)
+    and Result 14 (the confounded turnpike gap) -- places where the smooth machinery every regret
+    bound assumes quietly stops applying.
+
+    Result 14 says a long horizon is BENIGN: the discounted confounded gap stays finite. That
+    holds for a POSITIVE-DEFINITE stage cost. For an INDEFINITE one -- a state that is rewarded
+    rather than penalised, as in a growth or market-share objective -- the second-order sufficient
+    fails at a FINITE horizon, and past it no constant in ``chc.regret`` exists at all. The two are
+    the two sides of the definiteness hypothesis; only one of them had been written down.
+
+    Continuous-time scalar LQ ``x' = a x + b u``, ``J = int_0^T (q x^2 + r u^2) dt + sT x(T)^2``.
+    With ``c := b^2/r`` the reverse-time Riccati flow is a UNIFORM ROTATION of the phase
+    ``arctan(c(p - a/c)/mu)`` at speed ``mu := sqrt(-(a^2 + c q))``, real exactly when
+    ``a^2 + c q < 0``. The phase falls from ``phi0`` to ``-pi/2`` in finite time:
+
+        ``t_conj = (pi/2 + phi0)/mu``,   ``phi0 = arctan(c(sT - a/c)/mu)``.
+
+    Flip the sign of ``q`` and ``tan`` becomes ``tanh``: the same one-line solution, bounded for
+    every horizon. That is the whole dichotomy, and it is why the positive-definite arm here is a
+    control rather than a separate model.
+
+    THE COUNTER-INTUITIVE PART: ``mu`` GROWS with the control authority ``c``, so ``t_conj``
+    SHRINKS. A stronger actuator brings the obstruction closer.
+
+    Three orders, measured separately because they are three claims: the cost-to-go has a SIMPLE
+    pole with residue ``-r/b^2`` (free of ``a``, ``q`` and the terminal weight); the SENSITIVITY
+    ``dk/db`` -- which is Result 44's ``L_K`` and Results 18/20's ``du_star/db`` -- has a DOUBLE
+    pole, because differentiating the closed form turns the tangent into a ``sec^2``; and since
+    Result 44 has ``C`` proportional to ``L_K^2``, the regret constant has a FOURTH-order pole. The
+    last is measured from realised certainty-equivalence regret, not inferred from the first two.
+    """
+    c_auth = b * b / r
+
+    def indefinite(horizon: float, bb: float) -> float:
+        c = bb * bb / r
+        mu = float(np.sqrt(-(a * a + c * q)))
+        phi0 = float(np.arctan(c * (s_t - a / c) / mu))
+        return a / c + (mu / c) * float(np.tan(phi0 - mu * horizon))
+
+    def definite(horizon: float, bb: float, qq: float) -> float:
+        c = bb * bb / r
+        nu = float(np.sqrt(a * a + c * qq))  # the SAME algebra with the sign flipped: tan -> tanh
+        psi0 = float(np.arctanh(c * (s_t - a / c) / nu))
+        return a / c + (nu / c) * float(np.tanh(nu * horizon + psi0))
+
+    def escape(bb: float) -> float:
+        c = bb * bb / r
+        mu = float(np.sqrt(-(a * a + c * q)))
+        return (np.pi / 2.0 + float(np.arctan(c * (s_t - a / c) / mu))) / mu
+
+    mu = float(np.sqrt(-(a * a + c_auth * q)))
+    tc = escape(b)
+    eps = np.asarray(margins, dtype=np.float64)
+    val, sens, regc = (np.zeros(eps.size) for _ in range(3))
+    for i, e in enumerate(eps):
+        horizon = tc - e
+        val[i] = indefinite(horizon, b)
+
+        def gain(bb: float, h: float = horizon) -> float:
+            return bb * indefinite(h, bb) / r
+
+        sens[i] = abs(gain(b + delta_b) - gain(b - delta_b)) / (2.0 * delta_b)
+        # The realised CE regret coefficient, through the exact quadratic form of Result 44's
+        # identity: the gain fitted for b + delta_b, on the true plant, costs r*(dk)^2*x0^2.
+        dk = gain(b + delta_b) - gain(b)
+        regc[i] = r * dk * dk * x0 * x0 / (delta_b * delta_b)
+
+    inv = np.log(1.0 / eps)
+
+    def slope(y: np.ndarray) -> float:
+        return float(np.polyfit(inv, np.log(np.abs(y)), 1)[0])
+
+    def def_sens(h: float) -> float:
+        qq = abs(q)
+        return (
+            abs(definite(h, b + delta_b, qq) - definite(h, b - delta_b, qq))
+            * b
+            / (r * 2.0 * delta_b)
+        )
+
+    return ConjugateTimeCurve(
+        tc,
+        mu,
+        eps,
+        val,
+        eps * val,
+        sens,
+        eps * eps * sens,
+        regc,
+        slope(val),
+        slope(sens),
+        slope(regc),
+        escape(2.0 * b) / tc,
+        def_sens(10.0 * tc),
+        def_sens(100.0 * tc) / def_sens(10.0 * tc),
+    )
+
+
+@dataclass(frozen=True)
 class AdaptiveExplorationCurve:
     """Adaptive exploration: a tapering schedule reaches the van-Trees sqrt(T) rate."""
 
@@ -1686,6 +2012,10 @@ def confounded_turnpike_certificate(
     (dynamic horizon regret, previously hand-argued) to a proper turnpike argument, and adds a NEW
     discounted-regret certificate: the undiscounted cumulative regret ``T*c`` is unbounded, but the
     discounted sum ``sum g^t c = c*(1-g^T)/(1-g)`` stays below ``c/(1-g)`` -- finite.
+
+    That "a long horizon is benign" holds because ``q > 0``. Under an INDEFINITE stage cost the
+    horizon is bounded outright and no constant survives past the first conjugate point -- see
+    ``conjugate_time_certificate``, the other side of the same definiteness hypothesis.
     """
     b_obs = b + beta
     u_conf = xref / b_obs  # confounded control (believes the effect is b_obs)
@@ -2265,27 +2595,34 @@ def interference_regret_certificate(
     median_gaps: list[float] = []
     log_err: list[float] = []
     log_gap: list[float] = []
+    inf_frac: list[float] = []
     for eps in errors:
         eid, eint = eps, interference_ratio * eps
         errs, gaps = [], []
+        unbounded = 0
         for _ in range(n_samples):
             d_a = eid * rng.normal(size=a.shape)  # identification error (autonomous dynamics)
             d_b = eint * rng.normal(size=b.shape)  # interference / exposure-map error (actuation)
             try:
                 gap = certainty_equivalence_gap(a, b, q, r, a + d_a, b + d_b, x0)
             except (np.linalg.LinAlgError, ValueError):
+                unbounded += 1
                 continue
             total = float(np.sqrt(np.sum(d_a**2)) + np.sqrt(np.sum(d_b**2)))  # additive eid + eint
-            if np.isfinite(gap) and gap > 0.0 and total > 0.0:
+            if not np.isfinite(gap):
+                unbounded += 1
+                continue
+            if gap > 0.0 and total > 0.0:
                 errs.append(total)
                 gaps.append(gap)
+        inf_frac.append(unbounded / n_samples)
         if errs:
             median_errors.append(float(np.median(errs)))
             median_gaps.append(float(np.median(gaps)))
             log_err.extend(np.log(errs))
             log_gap.extend(np.log(gaps))
     exponent = float(np.polyfit(log_err, log_gap, 1)[0]) if log_err else float("nan")
-    return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent)
+    return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent, np.array(inf_frac))
 
 
 # --- Result 33: confounding-robust LQ regret (bounded density ratio -> CVaR radius -> floor) ---

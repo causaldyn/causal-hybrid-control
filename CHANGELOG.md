@@ -9,6 +9,33 @@ still change).
 
 ### Added
 
+- **`conjugate_time_certificate`** (`chc.regret`) — bounds the horizon on which every other constant
+  in this module is valid. `confounded_turnpike_certificate` reads as "a long horizon is benign", and
+  that is true only for a POSITIVE-DEFINITE stage cost; its hypothesis was never priced. Under an
+  indefinite one -- a state that is rewarded rather than penalised, as a growth or market-share
+  objective is -- the reverse-time Riccati solution is a uniform rotation of its phase and escapes at
+  `t_conj = (pi/2 + phi0)/mu` with `mu = sqrt(-(a^2 + (b^2/r) q))`. Three objects blow up at three
+  DIFFERENT orders there: the cost-to-go has a simple pole with residue `-r/b^2` (free of `a`, `q`
+  and the terminal weight), the gain sensitivity `L_K` a DOUBLE one, and the regret constant
+  `C ~ L_K^2` a fourth-order one -- so inspecting the cost alone understates the obstruction by two
+  orders. And `d t_conj/db < 0`: more control authority moves the obstruction EARLIER. The certificate
+  carries a positive-definite arm where the same algebra runs with `tanh` and nothing diverges.
+  Derived in `validation/conjugate_time.mac`, machine-checked in `proofs/conjugate_time.v`.
+
+- **`ce_explicit_constant_certificate`** (`chc.regret`) — computes the two constants every earlier C1
+  statement took as a hypothesis. `proofs/c2_end_to_end.v` universally quantifies over an arbitrary
+  `0 <= cc` in `regret <= cc*||dB||^2` and cites Mania-Tu-Recht's LOCAL quadratic bound; nothing
+  computed the ball on which a certainty-equivalent gain stabilises the TRUE plant, and nothing
+  computed `cc`. The lever is that the Lyapunov increment is an EXACT perfect square in the gain
+  error, `Q + K'RK' + (A-BK')'P(A-BK') - P = (K'-K)'R_K(K'-K)` with `R_K = R + B'PB`, for every gain
+  and with no smallness assumed -- so the Mania-Tu-Recht citation leaves the regret half entirely and
+  stays only as a comparison point. Summing it along the perturbed loop gives
+  `rho = theta/(2 beta_B L_K)` and `C = 2 kappa_P ||R_K|| L_K^2 ||x0||^2 / theta` with
+  `theta = 1 - sqrt(1 - eta)`, `eta = lmin(Q + K'RK)/lmax(P)`. Inside `rho` the controller provably
+  stabilises with the checkable Lyapunov certificate `(A-BKhat)'P(A-BKhat) <= (1-theta/2)^2 P`; the
+  sweep runs past `rho` on purpose and shows the controller really does destabilise there. Derived in
+  `validation/ce_explicit_constants.mac`, machine-checked in `proofs/ce_explicit_constants.v`.
+
 - **`cluster_fold_leakage_certificate`** (`chc.regret`) — prices what a *violated* cross-fitting
   assumption costs on a clustered design, which none of the cited theorems do: CCDDHNR assume i.i.d.
   rows, Hansen–Lee assume independent cluster scores as a primitive, Chiang–Kato–Ma–Sasaki assume
@@ -34,6 +61,14 @@ still change).
   `validation/minimax_exploration.mac`, machine-checked in `proofs/minimax_exploration.v`.
 
 ### Fixed
+
+- **`regret_scaling` and `interference_regret_certificate` silently conditioned on the stabilising
+  event** (`chc.regret`); both now return an `infinite_fraction` array, so `RegretCurve` has a fourth
+  field. Each `continue`d past draws where the perturbed model is unstabilisable, and dropped draws
+  whose gain fails to stabilise the TRUE plant via an `np.isfinite` filter. Regret is `+inf` on that
+  event, so `E[R]` does not exist and the reported `exponent` was a quantity conditional on the
+  complement -- presented as if it were unconditional. The share is now reported rather than deleted.
+  `ce_explicit_constant_certificate` gives the explicit radius inside which it is 0 by construction.
 
 - **The C2 certificates did not implement assumption A8** (`chc.regret`), so the values returned by
   `multichannel_control_certificate`, `end_to_end_c2_certificate` and `clustered_lower_bound_certificate`

@@ -1,0 +1,108 @@
+/* THE CONJUGATE-TIME OBSTRUCTION: the horizon past which every chc.regret constant ceases to exist.
+   Third member of the family of Result 13 (the active-set kink) and Result 14 (the turnpike gap) --
+   places where the smooth machinery the regret bounds assume quietly stops applying.
+
+   Result 14 says long horizons are BENIGN (a turnpike): the discounted confounded gap stays finite.
+   That is true for a POSITIVE-DEFINITE cost.  For an indefinite one -- a state that is REWARDED, as
+   in a growth or market-share objective -- the second-order sufficient condition fails at a finite
+   horizon, the Riccati solution escapes to infinity there, and every constant built on the smooth
+   sensitivity du_star/db blows up with it.  So "longer horizon" is not uniformly safe, and the boundary
+   is computable in closed form rather than being a regularity caveat.
+
+   Continuous-time scalar LQ on [0, T]:  x' = a x + b u,  J = int_0^T (q x^2 + r u^2) dt + sT x(T)^2.
+   Backward Riccati:  -p' = 2 a p - (b^2/r) p^2 + q,   p(T) = sT.
+   Write c := b^2/r (the control authority) and reverse time tau := T - t. */
+
+print("=== STEP 1: reverse-time Riccati and its equilibria ===")$
+c_of  : b^2/r$
+rhs_p : q + 2*a*p - c*p^2$                       /* dp/dtau, with c abbreviating b^2/r */
+eqs   : solve(rhs_p = 0, p)$
+print("STEP 1a dp/dtau = ", rhs_p)$
+print("STEP 1b equilibria p_pm =", eqs)$
+disc  : ratsimp( a^2 + c*q )$
+print("STEP 1c discriminant a^2 + c q =", disc,
+      " (>0: two real equilibria, the solution is trapped and NO escape occurs;",
+      "<0: none, so the solution sweeps all of R in FINITE time -- that is the conjugate point)")$
+print("STEP 1d THE CONDITION.  A conjugate point exists iff a^2 + (b^2/r) q < 0, i.e. q < -a^2 r/b^2:",
+      "the cost must be INDEFINITE, and indefinite by more than the open-loop instability can absorb")$
+
+print("=== STEP 2: the closed-form solution, and the finite escape time ===")$
+/* Complete the square: dp/dtau = -c (p - a/c)^2 - mu^2/c with mu := sqrt(-(a^2 + c q)) > 0. */
+mu_sq : ratsimp( -(a^2 + c*q) )$
+print("STEP 2a mu^2 := -(a^2 + c q) =", mu_sq, " (positive exactly in the conjugate regime)")$
+print("STEP 2b completing the square, residual =",
+      ratsimp( rhs_p - ( -c*(p - a/c)^2 - mu_sq/c ) ), " (0)")$
+/* d/dtau arctan(c(p - a/c)/mu) = -mu, so the phase is exactly linear in reverse time. */
+phase  : atan( c*(p - a/c)/mu )$
+dphase : ratsimp( diff(phase, p) * ( -c*(p - a/c)^2 - mu^2/c ) )$
+print("STEP 2c d/dtau arctan(c(p - a/c)/mu) =", dphase,
+      " (= -mu EXACTLY: the Riccati flow is a uniform rotation of the phase)")$
+phi0   : atan( c*(sT - a/c)/mu )$
+p_sol  : a/c + (mu/c)*tan(phi0 - mu*tau)$
+print("STEP 2d p(tau) =", p_sol)$
+print("STEP 2e terminal check p(0) - sT =", ratsimp( subst([tau = 0], p_sol) - sT ), " (0)")$
+/* ratsimp leaves mu^2 tan^2 - mu^2 sec^2 - c q - a^2; trigsimp knows sec^2 = 1 + tan^2. */
+print("STEP 2f Riccati residual =",
+      ratsimp( ratsubst(mu_sq, mu^2,
+               trigsimp( diff(p_sol, tau) - subst([p = p_sol], q + 2*a*p - c*p^2) )) ),
+      " (0: the closed form solves the equation, not merely the boundary condition)")$
+t_conj : (%pi/2 + phi0)/mu$
+print("STEP 3a t_conj =", t_conj,
+      " with mu = sqrt(-(a^2 + (b^2/r) q)) -- the phase runs from phi0 down to -pi/2 at speed mu")$
+print("STEP 3b at a = 0, sT = 0, q = -w^2, b = r = 1:  t_conj =",
+      ratsimp( subst([a = 0, sT = 0, q = -w^2, c = 1, mu = w], t_conj) ),
+      " (= pi/(2w): the Jacobi conjugate point of the harmonic oscillator, as it must be)")$
+print("STEP 3c dt_conj/db at a = 0, sT = 0 (so phi0 = 0) =",
+      ratsimp( diff( (%pi/2)/sqrt(-(b^2/r)*q), b ) ),
+      " (NEGATIVE for q < 0: MORE control authority brings the conjugate point CLOSER, which is the",
+      "opposite of the intuition that a stronger actuator can only help)")$
+
+print("=== STEP 4: the order of the blow-up -- the value has a SIMPLE pole ===")$
+/* Substitute T = t_conj - eps and expand.  phi0 - mu*T = mu*eps - pi/2. */
+p_at0 : a/c + (mu/c)*tan(mu*eps - %pi/2)$
+print("STEP 4a p(0) at T = t_conj - eps =", p_at0, " (tan(x - pi/2) = -cot x)")$
+lau   : taylor(p_at0, eps, 0, 1)$
+print("STEP 4b Laurent expansion in eps =", lau)$
+print("STEP 4c residue = lim eps*p(0) =", ratsimp( limit(eps*p_at0, eps, 0) ),
+      " (= -1/c = -r/b^2: a SIMPLE pole whose residue depends on NEITHER a, NOR q, NOR sT --",
+      "only on the control authority)")$
+
+print("=== STEP 5: the SENSITIVITY has a DOUBLE pole -- this is what kills the regret constant ===")$
+/* Every chc.regret constant is built on L_K = |dk/db| with k(0) = (b/r) p(0).  Differentiate the
+   closed form at FIXED T; the tan picks up a sec^2, so the pole order doubles. */
+c_b   : b^2/r$
+mu_b  : sqrt( -(a^2 + c_b*q) )$
+phi_b : atan( c_b*(sT - a/c_b)/mu_b )$
+p0_b  : a/c_b + (mu_b/c_b)*tan(phi_b - mu_b*Tf)$
+k0_b  : (b/r)*p0_b$
+dk    : diff(k0_b, b)$
+print("STEP 5a L_K = dk/db at fixed horizon Tf, evaluated numerically at the certificate's plant")$
+vals  : [a = 3/10, r = 1, q = -4, sT = 0, b = 1]$
+tcn   : float( subst(vals, (%pi/2 + atan((b^2/r*(sT - a/(b^2/r)))/sqrt(-(a^2 + b^2/r*q))))
+                            /sqrt(-(a^2 + b^2/r*q)) ) )$
+print("STEP 5b t_conj at that plant =", tcn)$
+for e in [1/100, 1/1000, 1/10000] do
+  print("   eps =", float(e),
+        "  eps*p(0) =", float( subst(append(vals, [Tf = tcn - e]), p0_b) )*float(e),
+        "  eps^2*L_K =", float( subst(append(vals, [Tf = tcn - e]), dk) )*float(e)^2 )$
+print("STEP 5c eps*p(0) -> -1 (simple pole, STEP 4c) while eps^2*L_K tends to a NONZERO constant:",
+      "the sensitivity has a DOUBLE pole. The sec^2 from differentiating tan is the whole mechanism")$
+/* The double-pole coefficient in closed form: near the pole sec^2(phi - mu T) ~ 1/(mu eps)^2. */
+dmu   : ratsimp( diff(mu_b, b) )$
+dphi  : ratsimp( diff(phi_b, b) )$
+coef2 : ratsimp( (b/r)*(mu_b/c_b)*(1/mu_b^2)*(dphi - Tf*dmu) )$
+print("STEP 5d closed-form double-pole coefficient  L_K ~ coef2/eps^2  with coef2 =", coef2)$
+print("STEP 5e coef2 at the certificate's plant (Tf -> t_conj) =",
+      float( subst(append(vals, [Tf = tcn]), coef2) ))$
+
+print("=== STEP 6: the consequence for the regret constant ===")$
+/* Result 44: C is proportional to L_K^2.  A double pole in L_K is a FOURTH-order pole in C. */
+print("STEP 6a Result 44 has C proportional to L_K^2, so C(T) ~ (t_conj - T)^(-4)")$
+print("STEP 6b C(T) as a Laurent series:  C = kap*L_K^2 with L_K = coef2/eps^2 gives",
+      ratsimp( kap*(coef/eps^2)^2 ), " -- a FOURTH-order pole, and",
+      "log C = 4 log(1/eps) + log(kap coef^2), so a log-log fit of C against 1/eps has slope 4")$
+print("STEP 6c CONTRAST WITH RESULT 14. The turnpike says a long horizon is benign and the",
+      "discounted confounded gap stays FINITE. That holds for a positive-definite cost. Here the",
+      "cost is indefinite and the horizon is BOUNDED: sup{T : the constant exists} = t_conj < inf.",
+      "The two are not in conflict -- they are the two sides of the definiteness hypothesis, and",
+      "only one of them was written down before")$

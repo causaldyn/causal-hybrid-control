@@ -131,7 +131,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 Correctness is cross-checked in independent tools, symbolic first (`validation/`): the ARE / matrix
 exponential are verified **Maxima**-authoritative (exact + high-precision `bfloat`) against **PARI/GP**
 (50-digit) and **Octave**, with SciPy used only as the fast float64 numeric. The control and guarantee
-invariants are **formally proved in Rocq** — 39 files under `proofs/`, from the box-projection bounds
+invariants are **formally proved in Rocq** — 41 files under `proofs/`, from the box-projection bounds
 and idempotence (`box_projection.v`) to the interference-aware regret certificate.
 
 ## Honest positioning

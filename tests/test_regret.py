@@ -11,12 +11,14 @@ from chc.regret import (
     adaptive_exploration_certificate,
     bandit_causal_certificate,
     causal_vs_predictive_certificate,
+    ce_explicit_constant_certificate,
     certainty_equivalence_gap,
     closed_loop_cost,
     cluster_fold_leakage_certificate,
     clustered_lower_bound_certificate,
     composition_transfer_certificate,
     confounded_turnpike_certificate,
+    conjugate_time_certificate,
     constrained_ce_regret_certificate,
     dlqr,
     doubly_robust_control_certificate,
@@ -209,6 +211,86 @@ def test_cluster_fold_leakage_prices_the_a8_violation() -> None:
     assert abs(curve.annihilated_bias_row - curve.annihilated_bias_predicted) < 0.05
     assert abs(curve.annihilated_bias_cluster) < 0.05
     assert abs(curve.annihilated_bias_row) > 20.0 * abs(curve.annihilated_bias_cluster)
+
+
+def test_ce_explicit_constants_certify_a_ball_and_a_constant() -> None:
+    # Contribution 1, Result 44 (proofs/ce_explicit_constants.v): every earlier C1 statement took
+    # "regret <= cc*||dB||^2" as a HYPOTHESIS and cited Mania-Tu-Recht's LOCAL bound. Here the ball
+    # and the constant are both computed. Each block below can fail on its own.
+    curve = ce_explicit_constant_certificate()
+    # (1) THE EXACT GAIN-GAP IDENTITY. Checked on gains FAR from optimal -- if it only held near the
+    # optimum it would be the local bound again, not the identity that replaces it.
+    assert curve.identity_residual < 1e-10
+    # (2) The plant constants are well-posed: eta is a genuine decay rate, theta a genuine margin.
+    assert 0.0 < curve.eta <= 1.0
+    assert 0.0 < curve.theta < 1.0
+    assert curve.rho > 0.0
+    assert curve.c_const > 0.0
+    # (3) THE CITED HYPOTHESIS, MEASURED. Uniform validity of the gain map's Lipschitz constant on
+    # the ball (Konstantinov et al.; Sun) is the one citation left on the control side, so the sup
+    # over the certified ball is measured against the derivative rather than assumed.
+    assert curve.l_k_ball <= 1.2 * curve.l_k_local
+    # (4) INSIDE the ball: the Lyapunov certificate holds, nothing destabilises, the bound binds.
+    inside = curve.radius_multiples <= 1.0
+    assert (curve.worst_lyapunov[inside] <= curve.lyapunov_ceiling).all()
+    assert (curve.unstable_fraction[inside] == 0.0).all()
+    assert (curve.worst_gap[inside] <= curve.bound[inside]).all()
+    # (5) IT MUST BE ABLE TO FAIL. Far outside the ball the certainty-equivalent controller really
+    # does destabilise the true plant, and the Lyapunov certificate really is violated -- otherwise
+    # the ball would be doing no work and the certificate would prove nothing.
+    assert curve.unstable_fraction[-1] > 0.0
+    assert curve.worst_lyapunov[-1] > curve.lyapunov_ceiling
+    # (6) The guarantee is conservative, but not vacuously so.
+    assert 1.0 < curve.conservatism < 100.0
+
+
+def test_regret_scaling_reports_the_unbounded_event_it_conditions_on() -> None:
+    # Defect fixed with Result 44: regret_scaling used to `continue` past both unstabilisable
+    # draws and draws whose CE gain destabilises the TRUE plant. There regret is +inf and E[R] does
+    # not exist, so the reported exponent is CONDITIONAL -- the share is now returned, not dropped.
+    a = np.array([[1.0, 0.1], [0.0, 0.95]])
+    b = np.array([[0.5], [1.0]])
+    q, r, x0 = np.eye(2), np.array([[0.5]]), np.array([1.0, 0.5])
+    small = regret_scaling(a, b, q, r, x0, n_samples=200, seed=0)
+    assert small.infinite_fraction.shape == small.errors.shape
+    assert (small.infinite_fraction == 0.0).all()  # inside the certified regime: no unbounded draw
+    # A perturbation far outside the certified ball DOES produce unbounded draws, and they are now
+    # visible instead of silently deleted.
+    big = regret_scaling(a, b, q, r, x0, errors=(4.0, 2.0), n_samples=200, seed=1)
+    assert big.infinite_fraction.max() > 0.0
+
+
+def test_conjugate_time_bounds_the_horizon_every_regret_constant_lives_on() -> None:
+    # Result 45 (proofs/conjugate_time.v): Result 14's turnpike says a long horizon is BENIGN, but
+    # only for a positive-definite stage cost. Under an indefinite one the backward Riccati solution
+    # escapes in finite time, and every constant in this module is built on an object that stops
+    # existing there. Three distinct pole orders are the claim, so they are checked separately.
+    curve = conjugate_time_certificate()
+    # (1) The conjugate point exists and is finite: an indefinite cost is what creates it.
+    assert curve.mu > 0.0
+    assert 0.0 < curve.t_conj < np.inf
+    # (2) THE VALUE HAS A SIMPLE POLE whose residue is -r/b^2 -- free of a, q and the terminal
+    # weight. Both the exponent and the constant are predictions, so both are checked.
+    assert abs(curve.value_slope - 1.0) < 0.05
+    assert abs(curve.value_residue[-1] - (-1.0)) < 1e-3
+    # (3) THE SENSITIVITY POLE IS DOUBLE, not simple: differentiating the tangent squares the
+    # secant. This is the order that actually prices the regret bound, and it is strictly worse
+    # than the value's -- an inspection of the cost-to-go alone would understate the blow-up.
+    assert abs(curve.sensitivity_slope - 2.0) < 0.05
+    assert curve.sensitivity_slope > curve.value_slope + 0.5
+    assert curve.sensitivity_residue[-1] > 0.1
+    # (4) Result 44 has C ~ L_K^2, so the realised regret coefficient must carry FOURTH order.
+    assert abs(curve.regret_slope - 4.0) < 0.1
+    assert (np.diff(curve.regret_coefficient) > 0.0).all()
+    # (5) THE COUNTER-INTUITIVE DIRECTION, and the reason this is an obstruction rather than a
+    # curiosity: more control authority raises mu, so it moves the conjugate point EARLIER. A
+    # stronger actuator buys a shorter certifiable horizon, not a longer one.
+    assert curve.authority_shrinks_horizon < 1.0
+    # (6) IT MUST BE ABLE TO NOT HAPPEN. With the sign of q flipped the same algebra runs with tanh
+    # in place of tan: the solution saturates, so the sensitivity is finite and stops growing.
+    # Without this arm the blow-up above could be an artefact of the sweep rather than of the cost.
+    assert np.isfinite(curve.definite_sensitivity)
+    assert abs(curve.definite_sensitivity_growth - 1.0) < 1e-3
 
 
 def test_minimax_exploration_floor_is_valid_sharp_and_causal() -> None:
