@@ -1,0 +1,205 @@
+/* ==============================================================================================
+   THE NON-SEPARABLE HALF OF THE DELAYED-EXPOSURE GATE.
+
+   validation/delayed_exposure_gate.mac STEP 7 showed a delay is FREE under a separable covariance
+   Sigma = Sigma_u (x) T with unit-level folds: tr(T) cancels and Result 43 transfers verbatim. It
+   named two escape routes. This file takes the second one -- a NON-separable Sigma, where the delay
+   interacts with the network -- and derives the law there.
+
+   MODEL (stationary on Z, windowed to t = 1..p, so Sigma is a covariance by construction):
+
+       x_i(t) = sum_{d=0}^{D} gamma_d * sum_{j : dist(i,j) = d} z_j(t - delta*d),
+       Cov(z_j(t), z_k(s)) = 1{j=k} * phi^|t-s|.
+
+   A shell-d neighbour's influence arrives with propagation lag delta*d. Hence
+
+       Sigma = sum_{d,e} gamma_d gamma_e (S_d S_e) (x) T_{d-e},   T_l[t,s] = phi^|(t-s) - delta*l|,
+
+   which is separable only at delta = 0. S_d is the 0/1 distance-d indicator matrix.
+
+   Psi := N^2 * tr(A Sigma A) / (tr(A)^2 * tr(Sigma)),  A = A_u (x) I_p,  A_u = M'M,
+   the same sandwich functional STEP 6 of the gate file forced. M = I - F_opp is the cross-fit
+   residualiser: each row is demeaned by the folds it is NOT in. ============================== */
+
+load(lrats)$
+ratprint : false$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 1. A_u is a WEIGHTED PROJECTOR, and that is the whole story.
+   With r := K/(K-1), E := J/m (grand mean) and F := (K/m)*1{same fold} (fold mean),
+   F_opp = r*E - (r-1)*F, so M = I - r*E + (r-1)*F and A_u = M'M = M^2 = I - r^2*E + (r^2-1)*F.
+   Because E^2 = E, F^2 = F, EF = FE = E, the algebra <I,E,F> is closed and A_u diagonalises with
+   eigenvalue 0 on span(1), r^2 on the K-1 fold contrasts, and 1 on the m-K within-fold contrasts.
+   Row-level cross-fitting therefore OVER-WEIGHTS the fold-contrast subspace by exactly r^2 (and
+   r^4 once squared inside the sandwich). Nothing else in this file is doing any work. */
+mm : 6$ KK : 2$ pp : 3$ DD : 2$ dl : 1$
+fold : makelist(mod(i-1, KK), i, 1, mm)$
+Id : ident(mm)$
+Em : genmatrix(lambda([i,j], 1/mm), mm, mm)$
+Fm : genmatrix(lambda([i,j], if fold[i] = fold[j] then KK/mm else 0), mm, mm)$
+rr : KK/(KK - 1)$
+Mop : ratsimp(Id - rr*Em + (rr - 1)*Fm)$
+Au  : ratsimp(transpose(Mop) . Mop)$
+one : transpose(matrix(makelist(1, i, 1, mm)))$
+print("STEP 1a  M.1 =", transpose(ratsimp(Mop . one)), " (zero: the cross-fit residualiser kills the mean)")$
+print("STEP 1b  A_u - (I - r^2 E + (r^2-1) F) =",
+      ratsimp(Au - (Id - rr^2*Em + (rr^2 - 1)*Fm)), " (zero)")$
+Pf : ratsimp(Fm - Em)$  Pw : ratsimp(Id - Fm)$
+print("STEP 1c  A_u - (r^2 P_fold + P_within) =", ratsimp(Au - (rr^2*Pf + Pw)), " (zero)")$
+print("STEP 1d  tr(A_u) =", ratsimp(mat_trace(Au)), " vs m - r^2 + (r^2-1)K =",
+      ratsimp(mm - rr^2 + (rr^2 - 1)*KK))$
+print("STEP 1e  tr(A_u^2) =", ratsimp(mat_trace(Au . Au)), " vs m - r^4 + (r^4-1)K =",
+      ratsimp(mm - rr^4 + (rr^4 - 1)*KK))$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 2. THE STRUCTURAL LEMMA that makes the denominator delay-blind.
+   (S_d S_e)[i,i] = |S_d(i) cap S_e(i)|, and a vertex cannot sit at two distinct distances from i,
+   so tr(S_d S_e) = 0 whenever d != e. Every off-diagonal band of Sigma is therefore traceless, and
+   tr(Sigma) sees only the d = e terms -- where T_{d-e} = T_0 carries no delay at all. */
+cyc(m) := genmatrix(lambda([i,j], min(abs(i-j), m - abs(i-j))), m, m)$
+Dm : cyc(mm)$
+Sh : makelist(genmatrix(lambda([i,j], if Dm[i,j] = d then 1 else 0), mm, mm), d, 0, DD)$
+print("STEP 2  tr(S_d S_e), d != e =",
+      makelist(makelist(mat_trace(Sh[d+1] . Sh[e+1]), e, 0, DD), d, 0, DD),
+      " (off-diagonal entries all 0)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 3. Psi is a POLYNOMIAL in x := phi^delta, of degree D (the spillover truncation), NOT of
+   degree the graph diameter. Built here by brute force from the (m*p) x (m*p) covariance and
+   compared with the closed form. */
+gam : [1, 7/10, 2/5]$
+Ip : ident(pp)$
+Tl(l) := genmatrix(lambda([t,s], phi^abs((t - s) - dl*l)), pp, pp)$
+Sig : ratsimp(sum(sum(gam[d+1]*gam[e+1]
+        * kronecker_product(Sh[d+1] . Sh[e+1], Tl(d - e)), e, 0, DD), d, 0, DD))$
+Ak  : kronecker_product(Au, Ip)$
+psi_direct : ratsimp((mm*pp)^2 * mat_trace(Ak . Sig . Ak)
+                     / (mat_trace(Ak)^2 * mat_trace(Sig)))$
+uu : makelist(ratsimp(sum(sum(if abs(d-e) = l then gam[d+1]*gam[e+1]
+        * mat_trace(Au . Sh[d+1] . Sh[e+1] . Au) else 0, e, 0, DD), d, 0, DD)), l, 0, DD)$
+v0 : ratsimp(sum(gam[d+1]^2 * mat_trace(Sh[d+1] . Sh[d+1]), d, 0, DD))$
+psi_poly : ratsimp(mm^2 * sum(uu[l+1] * phi^(dl*l), l, 0, DD) / (mat_trace(Au)^2 * v0))$
+print("STEP 3a  u =", uu, "   v0 =", v0)$
+print("STEP 3b  Psi (direct, from the m*p square) =", psi_direct)$
+print("STEP 3c  Psi_direct - Psi_poly =", ratsimp(psi_direct - psi_poly), " (zero)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 4. u_l closed in GRAPH x FOLD invariants. Using A_u^2 = I - r^4 E + (r^4-1) F and
+   tr(E X) = (1/m) n_d' n_e with n_d := S_d 1 (works for non-regular graphs too),
+   tr(F X) = (K/m) W_de with W_de := #{(i,k) : f_i = f_k} weighted by (S_d S_e)[i,k]:
+
+       u_l = sum_{|d-e|=l} g_d g_e [ tr(S_d S_e) - r^4 n_d'n_e/m + (r^4-1)(K/m) W_de ].
+
+   The fold partition enters ONLY through W_de. Everything else is graph geometry. */
+nvec : makelist(Sh[d+1] . one, d, 0, DD)$
+same : genmatrix(lambda([i,j], if fold[i] = fold[j] then 1 else 0), mm, mm)$
+Wde(d, e) := block([X : Sh[d+1] . Sh[e+1]],
+  sum(sum(same[i,j] * X[i,j], j, 1, mm), i, 1, mm))$
+uu_cf : makelist(ratsimp(sum(sum(if abs(d-e) = l then gam[d+1]*gam[e+1]
+    * (mat_trace(Sh[d+1] . Sh[e+1])
+       - rr^4 * sum(nvec[d+1][i,1] * nvec[e+1][i,1], i, 1, mm) / mm
+       + (rr^4 - 1)*(KK/mm)*Wde(d, e)) else 0, e, 0, DD), d, 0, DD)), l, 0, DD)$
+print("STEP 4  u (closed form) - u (traces) =", ratsimp(uu_cf - uu), " (zero)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 5. delta = 0 must recover the separable law: Sigma collapses to (sum_d g_d S_d)^2 (x) T,
+   x = phi^0 = 1, and Psi loses phi entirely. This is STEP 7 of the gate file, reached from the
+   opposite direction. */
+Sig0 : ratsimp(sum(sum(gam[d+1]*gam[e+1]
+         * kronecker_product(Sh[d+1] . Sh[e+1], Tl(0)), e, 0, DD), d, 0, DD))$
+psi0 : ratsimp((mm*pp)^2 * mat_trace(Ak . Sig0 . Ak) / (mat_trace(Ak)^2 * mat_trace(Sig0)))$
+print("STEP 5a  Psi at delta = 0 =", psi0, "   d/dphi =", ratsimp(diff(psi0, phi)), " (zero)")$
+print("STEP 5b  Psi(delta=0) - Psi_poly at x = 1 =",
+      ratsimp(psi0 - subst(phi = 1, psi_poly)), " (zero)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 6. The complete graph with delta = 0 must be Result 43 EXACTLY, with an explicit
+   fold-geometry constant c(m,K) = m tr(A_u^2)/tr(A_u)^2 -- the quantity the shipped certificate
+   currently only MEASURES as c_fold_measured. At K = 2 it is m(m+14)/(m+2)^2. */
+c_fold(m, K) := block([r : K/(K-1)], m*(m - r^4 + (r^4-1)*K) / (m - r^2 + (r^2-1)*K)^2)$
+Jm : genmatrix(lambda([i,j], 1), mm, mm)$
+Sexc : tau2*Jm + sig2*Id$
+psi_exc : ratsimp(mm^2 * mat_trace(Au . Sexc . Au) / (mat_trace(Au)^2 * mat_trace(Sexc)))$
+print("STEP 6a  Psi_exch / c(m,K) - (1 - rho_ICC) =",
+      ratsimp(psi_exc/c_fold(mm, KK) - (1 - tau2/(tau2 + sig2))), " (zero: Result 43)")$
+print("STEP 6b  c(m,2) - m(m+14)/(m+2)^2 =",
+      ratsimp(c_fold(m, 2) - m*(m + 14)/(m + 2)^2), " (zero: matches the shipped prediction)")$
+print("STEP 6c  c(m,K) at K = 2,3,4 and m = 8 :",
+      makelist(c_fold(8, K), K, 2, 4), "  -> 1 as m grows")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 7. THE DESIGN LAW. For nearest-neighbour spillover (g_d = 0 for d >= 2), u_1 is EXACTLY
+   AFFINE in the same-fold edge fraction theta := e_in/|E|, and its root is
+
+       theta*(K) = r^4 / ((r^4 - 1) K),   r = K/(K-1),
+
+   independent of the graph. A random balanced partition sits at ~1/K, which is BELOW theta* for
+   every K, so u_1 < 0 generically: a network delay drives Psi DOWN, i.e. it makes the row-fold
+   sandwich understate further, and intervals under-cover more. */
+u1_of(theta, m, K, Ecount, g0, g1) := block([r : K/(K-1)],
+  2*g0*g1*(2/m)*(-r^4*Ecount + (r^4 - 1)*K*theta*Ecount))$
+theta_star(K) := block([r : K/(K-1)], r^4/((r^4 - 1)*K))$
+print("STEP 7a  root of u_1 in theta, symbolic in K:",
+      ratsimp(solve(u1_of(th, m, K, Ecount, g0, g1) = 0, th)))$
+print("STEP 7b  theta*(K) at K = 2,3,4,6,10 =", makelist(theta_star(K), K, [2,3,4,6,10]),
+      "  = ", makelist(float(theta_star(K)), K, [2,3,4,6,10]))$
+print("STEP 7c  theta*(2) = 8/15; random balanced folds -> 1/K = 1/2 < 8/15, gap =",
+      ratsimp(theta_star(2) - 1/2))$
+print("STEP 7d  limit of theta*(K) as K -> infinity =", limit(theta_star(K), K, inf))$
+/* the quantisation obstruction: exact delay-proofness needs theta*(K)*|E| to be an integer. */
+print("STEP 7e  theta*(2)*|E| on cycles C_m (|E| = m):",
+      makelist([m, ratsimp(theta_star(2)*m)], m, [6, 8, 10, 12, 15, 30]),
+      "  integer only when 15 | m")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 8. THE OBSTRUCTION: Psi can leave the interval spanned by its own endpoints. Checking
+   phi = 0 and phi = 1 does NOT bound the row-fold variance penalty -- there is an interior
+   worst-case serial correlation. Exact rationals, on C_6 with alternating folds and
+   gamma = (1, 1/5, 1/2): u_2 > 0 and 0 < -u_1 < 2 u_2, so the parabola opens upward with its
+   vertex strictly inside (0,1). */
+gam8 : [1, 1/5, 1/2]$
+u8 : makelist(ratsimp(sum(sum(if abs(d-e) = l then gam8[d+1]*gam8[e+1]
+       * mat_trace(Au . Sh[d+1] . Sh[e+1] . Au) else 0, e, 0, DD), d, 0, DD)), l, 0, DD)$
+v08 : ratsimp(sum(gam8[d+1]^2 * mat_trace(Sh[d+1] . Sh[d+1]), d, 0, DD))$
+k8 : ratsimp(mm^2 / (mat_trace(Au)^2 * v08))$
+P8(x) := k8 * (u8[1] + u8[2]*x + u8[3]*x^2)$
+xstar : ratsimp(-u8[2]/(2*u8[3]))$
+print("STEP 8a  u =", u8, "   x* = -u_1/(2 u_2) =", xstar, "=", float(xstar),
+      "   strictly inside (0,1):", is(0 < xstar and xstar < 1))$
+print("STEP 8b  Psi(0) =", ratsimp(P8(0)), "  Psi(x*) =", ratsimp(P8(xstar)),
+      "  Psi(1) =", ratsimp(P8(1)))$
+print("STEP 8c  Psi(x*) < min(Psi(0), Psi(1)) :",
+      is(ratsimp(P8(xstar) - P8(0)) < 0 and ratsimp(P8(xstar) - P8(1)) < 0),
+      "  relative dip =", ratsimp(1 - P8(xstar)/P8(0)), "=", float(1 - P8(xstar)/P8(0)))$
+print("STEP 8d  Psi >= 0 on [0,1] is FORCED (A Sigma A is PSD); discriminant =",
+      ratsimp(u8[2]^2 - 4*u8[1]*u8[3]), " < 0, so no real root at all")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 9. THE QUANTISATION OBSTRUCTION, and its constructive resolution.
+   For nearest-neighbour spillover u_1 = 0 needs e_in = theta*(K)*|E| same-fold edges, an INTEGER
+   constraint. On C_m at K = 2 that is (8/15)*m, integral only when 15 | m. C_30 therefore admits
+   an exactly delay-proof balanced partition and C_6, C_8, C_10, C_12 do not.
+   Closed form used: tr(A_u^2 S_1) = tr(S_1) - r^4 (1'S_1 1)/m + (r^4-1)(K/m) W_01,
+   with tr(S_1) = 0, 1'S_1 1 = 2|E| and W_01 = 2 e_in. */
+u1_closed(m, K, Ecount, ein) := block([r : K/(K-1)],
+  -r^4*2*Ecount/m + (r^4 - 1)*(K/m)*2*ein)$
+print("STEP 9a  u_1/(2 g0 g1) on C_m, K=2, as a function of e_in:",
+      ratsimp(u1_closed(m, 2, m, ein)), " -> zero at e_in =",
+      rhs(first(solve(u1_closed(m, 2, m, ein) = 0, ein))))$
+print("STEP 9b  e_in* = 8m/15 is an integer for m in [6,8,10,12,15,30]? ",
+      makelist([m, ratsimp(8*m/15), integerp(ratsimp(8*m/15))], m, [6,8,10,12,15,30]))$
+/* the explicit C_30 witness: arcs 3,3,2,2,2,2,2,2,2,2,2,2,2,2 -- 14 colour changes, 15/15 split */
+m30 : 30$
+f30 : append([0,0,0,1,1,1], flatten(makelist([0,0,1,1], i, 1, 6)))$
+E30 : genmatrix(lambda([i,j], 1/m30), m30, m30)$
+F30 : genmatrix(lambda([i,j], if f30[i] = f30[j] then 2/m30 else 0), m30, m30)$
+A30 : ratsimp(ident(m30) - 4*E30 + 3*F30)$
+S30 : genmatrix(lambda([i,j], if min(abs(i-j), m30 - abs(i-j)) = 1 then 1 else 0), m30, m30)$
+ein30 : ratsimp(sum(sum(if f30[i] = f30[j] then S30[i,j] else 0, j, 1, m30), i, 1, m30)/2)$
+print("STEP 9c  C_30 witness: balanced =", is(apply("+", f30) = m30/2),
+      " ; same-fold edges =", ein30, " ; target 8m/15 =", ratsimp(8*m30/15))$
+print("STEP 9d  tr(A_u^2 S_1) on that witness =", ratsimp(mat_trace(A30 . A30 . S30)),
+      " (zero: the nearest-neighbour delay costs NOTHING) ; alternating folds instead give",
+      ratsimp(mat_trace(block([Aa : ident(m30) - 4*E30
+        + 3*genmatrix(lambda([i,j], if mod(i-j,2) = 0 then 2/m30 else 0), m30, m30)],
+        Aa . Aa . S30))))$

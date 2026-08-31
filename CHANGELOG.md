@@ -9,6 +9,28 @@ still change).
 
 ### Added
 
+- **Result 51 -- the non-separable half of the delayed-exposure gate** (`validation/delayed_network_exposure.mac`,
+  `proofs/delayed_network_exposure.v`). Derivation and proof only; no API change. Result 43 priced a
+  violated fold structure on an exchangeable cluster, and `delayed_exposure_gate.mac` STEP 7 showed a
+  delay is FREE under a separable covariance with unit-level folds (`tr(T)` cancels, `dPsi/dphi = 0`).
+  The remaining route is a delay that PROPAGATES THROUGH THE NETWORK -- shell-`d` neighbours arriving at
+  lag `delta*d` -- and there `Psi` is a POLYNOMIAL in `phi^delta` of degree the spillover truncation:
+
+  ```
+  Psi = (m^2/(tr(Au)^2 v0)) * sum_l u_l phi^(delta l),  Au = r^2 P_fold + P_within,  r = K/(K-1)
+  u_l = sum_{|d-e|=l} g_d g_e [ tr(S_d S_e) - r^4 n_d'n_e/m + (r^4-1)(K/m) W_de ]
+  ```
+
+  Row-level cross-fitting over-weights the fold-contrast subspace by exactly `r^4` (16 at `K=2`, 5.06
+  at `K=3`, 1.52 at `K=10`), so MORE FOLDS is the primary lever -- one Result 43's exchangeable law
+  cannot see. Three consequences with numbers: the delay-proof same-fold edge fraction is
+  `theta*(K) = K^3/(4K^3-6K^2+4K-1)`, graph-free and always above `1/K`, so random folds undershoot
+  and the delay drives `Psi` down monotonically; exact delay-proofness is an INTEGER constraint
+  (`8m/15` on `C_m` at `K=2`, so `15 | m`, with a verified `C_30` witness); and `Psi` can dip `14.7%`
+  BELOW both endpoints, so checking `phi = 0` and `phi = 1` does not bound the penalty. Reduces to
+  STEP 7 at `delta = 0` and to Result 43 on a complete graph, with `c(m,K)` now closed-form and its
+  excess exactly `(10m-4)/(m+2)^2` at `K = 2`.
+
 - **`DelayOscillationTask` -- the leaderboard row where ignoring a delay is a *bifurcation*, not a
   tuning error.** An incentive moves supply `tau` later, so the plant is `x' = channel*u(t - tau)`;
   proportional feedback closes it to `x' = -channel*K*x(t - tau)`, whose exact boundary is
