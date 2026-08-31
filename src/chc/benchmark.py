@@ -25,11 +25,13 @@ from jax import Array
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
+from chc.delay import exact_delayed_rollout, robust_delay_design
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import ConfoundedControlAffineSystem, fit_causal_residual
 from chc.estimators import BackdoorOLS, CausalEffectEstimator
 from chc.flagship import closed_loop
 from chc.integrate import rk4_step, rollout
+from chc.irf import delay_estimate
 from chc.residual import ControlAffineResidual, ZeroResidual
 from chc.support import SupportModel, pessimistic_control
 from chc.uncertainty import (
@@ -662,6 +664,146 @@ class CausalDynamicsTask:
                 ood_rate=float(jnp.mean(jnp.abs(us) > u_support)),
             )
             for name, us in plans.items()
+        ]
+
+
+@dataclass(frozen=True)
+class DelayOscillationTask:
+    """A delay-blind controller walks into a Hopf bifurcation -- ``chc.delay``'s consumer.
+
+    Generic marketplace shape: an incentive moves supply, but participants respond ``tau`` later, so
+    the plant is ``x' = channel * u(t - tau)`` -- the delay sits on the **actuation** path. Under
+    proportional feedback ``u = -K x`` that closes to ``x' = -channel*K*x(t - tau)``, whose exact
+    stability boundary is ``channel*K*tau = pi/2`` (:func:`chc.delay.delay_margin` at pole 0). Three
+    controllers, all minimising the *same* quadratic cost by the *same* grid search, differing only
+    in the delay they assume:
+
+    * ``delay-blind`` -- assumes ``tau = 0``. Its optimum is the memoryless ``sqrt(q/r)``, which for
+      the shipped weights is ``3.10`` against an analytic ``sqrt(q/r) = 3.162`` -- the 2% gap is
+      explicit Euler, whose effective decay ``-ln(1 - dt K)/dt`` exceeds ``K`` and so shifts the
+      optimum down. The arm fails on its own terms, not because it was handed a bad gain:
+      ``3.10 * channel * tau`` is **1.97x past** ``pi/2``, so the loop rings up instead of down.
+    * ``delay-aware`` -- estimates the delay from the log with :func:`chc.irf.delay_estimate`, turns
+      the interval into a design with :func:`chc.delay.robust_delay_design`, then runs the same grid
+      search at that delay.
+    * ``oracle`` -- the same grid search at the true ``tau``.
+
+    HONEST NOTES. (1) **This is a row where the safety columns fire.** ``CausalDynamicsTask``
+    documents the opposite trap -- a mis-scaled channel that concedes regret while reporting
+    ``viol = ood = 0``. Here the failure is loud: the blind arm leaves the safe set and the logged
+    action support on most steps. Both traps are real; neither column is a general detector.
+    (2) The blind arm's **cost magnitude is an artefact of ``state_cap``**, which clips the
+    diverging trajectory so the number stays finite and precision-independent. Read it as a verdict,
+    not a quantity; the ordering and the constraint columns carry the content.
+    (3) The delay is estimated from the **rate**, not the level. This plant is an integrator, so the
+    level's impulse response is a *step* -- a plateau with no peak, on which ``delay_estimate``
+    correctly returns an interval spanning it rather than inventing a mode. Differencing turns the
+    step back into a spike. That is a modelling obligation on the caller, not a fallback.
+    (4) The log is sampled every ``observe_every`` plant steps, putting ``tau`` at 3.33 samples --
+    deliberately **off** the observation grid, because an on-grid delay makes the estimate exact and
+    the row uninformative. That is also the case ``peak_lag(refine=True)`` exists for, so this task
+    turns it on; it recovers ``0.947`` of a true ``1.0`` where the integer argmax can only say
+    ``0.900``. The residual 5.3% is not noise -- it is the parabola's documented shrinkage, which
+    for a fraction ``f = 1/3`` predicts ``0.950``.
+    (5) The estimate lands **below** the truth, which by ``chc.delay.delay_ball`` is the
+    destabilising direction. It is harmless here only because that ball has 76% of relative slack;
+    on a plant with a tighter one the same 5.3% would matter.
+    """
+
+    tau: float = 1.0
+    channel: float = 1.0
+    dt: float = 0.01  # plant integration step
+    observe_every: int = 30  # log sampling: tau is 3.33 samples, off the grid on purpose
+    score_horizon: float = 30.0
+    state_weight: float = 1.0
+    control_weight: float = 0.1
+    n_obs: int = 1200
+    log_noise: float = 0.4
+    x_safe: float = 3.0
+    state_cap: float = 20.0  # the plant saturates; keeps the diverging row finite and legible
+    gain_grid: int = 400
+
+    def _log(self, seed: int) -> tuple[np.ndarray, np.ndarray]:
+        """Open-loop log under a zero-order-held random incentive, observed coarsely."""
+        rng = np.random.default_rng(seed)
+        lag, steps = round(self.tau / self.dt), self.n_obs * self.observe_every
+        coarse = rng.standard_normal(self.n_obs)
+        held = np.repeat(coarse, self.observe_every)
+        x = np.zeros(steps + 1)
+        noise = self.log_noise * np.sqrt(self.dt) * rng.standard_normal(steps)
+        for t in range(steps):
+            drive = self.channel * held[t - lag] if t >= lag else 0.0
+            x[t + 1] = x[t] + self.dt * drive + noise[t]
+        return coarse, x[:: self.observe_every][: self.n_obs]
+
+    def _sweep(self, gains: np.ndarray, tau: float) -> tuple[np.ndarray, np.ndarray]:
+        """Closed-loop states and actions for every gain, on a plant with delay ``tau``.
+
+        ``tau = 0`` gives ``lag = 0``, where ``exact_delayed_rollout`` reads the delayed state as
+        the current one -- the memoryless plant, under the *same* Euler scheme as every other arm.
+        The blind controller is therefore not handed a different numerical model, only a different
+        assumed delay.
+        """
+        lag, steps = round(tau / self.dt), int(self.score_horizon / self.dt)
+
+        def core(t: float | Array, x: Array, x_delayed: Array, u: Array) -> Array:
+            return (
+                -self.channel * u[0] * x_delayed
+            )  # the gain rides in as data, so one trace serves
+
+        def one(gain: Array) -> Array:
+            return exact_delayed_rollout(
+                core, jnp.array([1.0]), jnp.full((steps, 1), gain), self.dt, lag
+            )[:, 0]
+
+        states = np.asarray(jax.vmap(one)(jnp.asarray(gains)))
+        states = np.clip(np.nan_to_num(states, nan=self.state_cap), -self.state_cap, self.state_cap)
+        # the controller pays for what it ISSUES, u(t) = -K x(t), which is also what ``ood_rate``
+        # compares against -- the log records issued incentives, not the ones arriving tau later
+        return states, -gains[:, None] * states[:, :steps]
+
+    def _costs(self, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        return self.dt * (
+            self.state_weight * np.sum(states[:, :-1] ** 2, axis=1)
+            + self.control_weight * np.sum(actions**2, axis=1)
+        )
+
+    def _best_gain(self, assumed_tau: float) -> float:
+        """The gain minimising the cost, computed on a plant with the ASSUMED delay."""
+        grid = np.geomspace(0.05, 6.0, self.gain_grid)
+        return float(grid[int(np.argmin(self._costs(*self._sweep(grid, assumed_tau))))])
+
+    def run(self, seed_data: int = 0) -> list[TaskResult]:
+        """Estimate the delay from one log, then score three gains on the true delayed plant."""
+        coarse, observed = self._log(seed_data)
+        estimate = delay_estimate(
+            {"x": np.diff(observed), "u": coarse[:-1]},
+            horizon=12,
+            dt=self.dt * self.observe_every,
+            adjust_for=(),
+            refine=True,  # the delay is off the observation grid -- what refinement is for
+            seed=seed_data,
+        )
+        design = robust_delay_design(max(estimate.lo, self.dt), estimate.hi)
+
+        gains = {
+            "delay-blind": self._best_gain(0.0),
+            "delay-aware": self._best_gain(design.tau_design),
+            "oracle": self._best_gain(self.tau),
+        }
+        states, actions = self._sweep(np.array(list(gains.values())), self.tau)
+        costs = self._costs(states, actions)
+        support = float(np.quantile(np.abs(coarse), 0.99))
+        oracle_cost = float(costs[-1])
+        return [
+            TaskResult(
+                controller=name,
+                cost=float(costs[row]),
+                regret=float(costs[row] - oracle_cost),
+                constraint_violations=float(np.mean(np.abs(states[row]) > self.x_safe)),
+                ood_rate=float(np.mean(np.abs(actions[row]) > support)),
+            )
+            for row, name in enumerate(gains)
         ]
 
 

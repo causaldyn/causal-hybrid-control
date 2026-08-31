@@ -11,6 +11,7 @@ the one-step estimate does. The dynamic sibling of :func:`chc.causal.estimate_co
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import jax.numpy as jnp
@@ -23,7 +24,7 @@ from chc.toeplitz import levinson_durbin, sample_autocorrelation, solve_toeplitz
 
 
 def _projection_design(
-    data: dict[str, Array],
+    data: Mapping[str, ArrayLike],
     horizon: int,
     treatment: str,
     outcome: str,
@@ -65,7 +66,7 @@ def _irf_from_design(features: Array, responses: Array) -> Array:
 
 
 def local_projection_irf(
-    data: dict[str, Array],
+    data: Mapping[str, ArrayLike],
     horizon: int,
     treatment: str = "u",
     outcome: str = "x",
@@ -165,7 +166,7 @@ def _irf_from_rows(features: np.ndarray, responses: np.ndarray) -> np.ndarray:
 
 
 def delay_estimate(
-    data: dict[str, Array],
+    data: Mapping[str, ArrayLike],
     horizon: int,
     dt: float = 1.0,
     treatment: str = "u",
@@ -271,7 +272,7 @@ def innovations(series: ArrayLike, order: int) -> np.ndarray:
 
 
 def structured_irf(
-    data: dict[str, Array],
+    data: Mapping[str, ArrayLike],
     horizon: int,
     order: int = 4,
     treatment: str = "u",

@@ -164,8 +164,8 @@ pessimism (deep ensemble + split conformal) and an LQ certainty-equivalence regr
 Strang–Marchuk splitting, off-policy gate, KAN/MLP/Graph residual backends; advanced control backends
 (Koopman-LQR, mean-field, optimal transport, differentiable Stackelberg games, PMP time-optimal
 bang-bang); dynamic-effect IRFs + structured Toeplitz/Levinson/Gohberg–Semencul operators; lagged
-structure discovery; six benchmark tasks (pricing, inventory, support-shift, model-uncertainty,
-confounding-robust, causal-dynamics) with multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin FEM + a mesh-free Deep
+structure discovery; seven benchmark tasks (pricing, inventory, support-shift, model-uncertainty,
+confounding-robust, causal-dynamics, delay-oscillation) with multi-seed bootstrap CIs; two flagships (pricing, epidemic); 1D/2D Galerkin FEM + a mesh-free Deep
 Galerkin neural Poisson solver; and step-response quality metrics. Both halves are now validated on
 **real** targets, not just synthetic ones: the **causal identification core** on real data with an
 experimental ground truth (notebook 07, LaLonde NSW: the naive estimate flips sign, Double ML recovers

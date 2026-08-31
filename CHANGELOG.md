@@ -9,6 +9,47 @@ still change).
 
 ### Added
 
+- **`DelayOscillationTask` -- the leaderboard row where ignoring a delay is a *bifurcation*, not a
+  tuning error.** An incentive moves supply `tau` later, so the plant is `x' = channel*u(t - tau)`;
+  proportional feedback closes it to `x' = -channel*K*x(t - tau)`, whose exact boundary is
+  `channel*K*tau = pi/2` (`chc.delay.delay_margin` at pole 0). Three arms minimise the **same** cost
+  by the **same** grid search on the **same** Euler scheme, differing only in the delay they assume:
+
+  ```
+  controller            cost      regret    viol     ood
+  oracle                0.57        0.00    0.00    0.00
+  delay-aware           0.57        0.01    0.00    0.00
+  delay-blind       18954.07    18953.50    0.90    0.97
+  ```
+
+  *The blind arm fails on its own terms.* It is handed no penalty -- only no delay -- so its optimum
+  is the memoryless `sqrt(q/r)`: `3.1013` on the shipped weights against an analytic `3.1623`, the
+  2% gap being explicit Euler's `-ln(1 - dt K)/dt > K`. That gain is **1.97x past `pi/2`**, so the
+  loop rings up. `delay-aware` closes the whole gap by estimating the delay from the log
+  (`chc.irf.delay_estimate`) and turning the interval into a design (`chc.delay.robust_delay_design`)
+  -- the first place the two halves of this line run as one chain.
+
+  *The gate is the measured boundary, not the claim.* Sweeping gains on the true plant, the largest
+  decaying is `1.5543` and the smallest growing `1.5647` against `pi/2 = 1.5708` -- a relative gap of
+  `-0.39%` bracketing the `-1/(2m) = -0.50%` at `m = tau/dt = 100` derived for explicit Euler with an
+  exact integer lag. The row therefore *re-measures* a closed form from elsewhere in the package.
+
+  HONEST NOTES. (1) **The safety columns fire here**, which is the mirror image of
+  `CausalDynamicsTask`, where a mis-scaled channel concedes regret while `viol = ood = 0`. Both traps
+  are real; neither column is a general detector. (2) The blind arm's *cost magnitude* is an artefact
+  of `state_cap` clipping a divergent trajectory -- read the ordering and the constraint columns, not
+  the number. (3) The delay is estimated from the **rate**: the plant is an integrator, so the level's
+  impulse response is a *step*, and `delay_estimate` correctly returns an interval spanning the
+  plateau rather than inventing a mode. (4) `tau` sits at 3.33 observation samples, deliberately off
+  the grid, which is what `peak_lag(refine=True)` exists for -- it recovers `0.947` of a true `1.0`
+  where the integer argmax can only say `0.900`, and the residual 5.3% is not noise but the derived
+  shrinkage `f/(4-6f)`, which at `f = 1/3` predicts `0.950`. (5) **That bias has a sign.** Across six
+  logs every estimate lands *below* the truth -- the destabilising direction -- so seeds do not
+  average it away; the realised 7.7% shortfall is harmless only against the ball's tolerable 76.6%, a
+  factor of 10. (6) Scored on a **single seed** on purpose: the closed loop is deterministic given the
+  gain, and the ~1% seed spread in the estimate is quantised away by the gain grid, so a multi-seed CI
+  would be degenerate rather than informative.
+
 - **`delay_ball`, `delay_design_loss` and `robust_delay_design` -- what Result 44 does *not* survive
   when the uncertain quantity is the delay (Result 50).** Result 44 gives a symmetric ball in the
   dynamics error with a regret quadratic in its radius. Ask the same question about an estimated
@@ -380,6 +421,12 @@ still change).
   `validation/minimax_exploration.mac`, machine-checked in `proofs/minimax_exploration.v`.
 
 ### Changed
+
+- **`chc.irf` accepts array-likes, which is what it always did.** `_projection_design`,
+  `local_projection_irf`, `delay_estimate` and `structured_irf` annotated `data` as
+  `dict[str, Array]` while their bodies only ever call `jnp.asarray` on the values. `dict` is
+  invariant in its value type, so a perfectly valid `{"x": np.diff(...), "u": ...}` was rejected.
+  Widened to `Mapping[str, ArrayLike]`, which is both the real contract and covariant.
 
 - **The solver budget is now a cap the stopping rule can reach, not a bill paid per step** --
   `steps` defaults to `10_000` in `projected_gradient_control`, `pessimistic_control` and

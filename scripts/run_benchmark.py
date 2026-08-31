@@ -8,10 +8,12 @@ import urllib.error
 from chc.benchmark import (
     CausalDynamicsTask,
     ConfoundingRobustTask,
+    DelayOscillationTask,
     InventoryTask,
     ModelUncertaintyTask,
     PricingTask,
     SupportShiftTask,
+    leaderboard,
     leaderboard_multiseed,
     run_multiseed,
 )
@@ -35,6 +37,12 @@ def main() -> None:
     print(leaderboard_multiseed(run_multiseed(ConfoundingRobustTask(), FAST_SEEDS)))
     print("\n== causal-dynamics (the confounding is in the plant's own control channel) ==")
     print(leaderboard_multiseed(run_multiseed(CausalDynamicsTask(), FAST_SEEDS)))
+
+    # single seed on purpose: the closed loop is deterministic given the gain, and the only
+    # seed-dependent piece -- the estimated delay -- varies by ~1%, which the gain grid quantises
+    # away. A multi-seed CI here would be degenerate rather than informative.
+    print("\n== delay-oscillation (a delay-blind gain walks into a Hopf; single seed) ==")
+    print(leaderboard(DelayOscillationTask().run(0)))
 
     print("\n== LaLonde-DW (external: recover the randomized ATE from CPS-confounded data) ==")
     try:

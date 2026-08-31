@@ -1,16 +1,20 @@
 """Benchmark gate: causal control is near-oracle on pricing; predictive is catastrophic."""
 
+import numpy as np
 import pytest
 
 from chc.benchmark import (
     CausalDynamicsTask,
     ConfoundingRobustTask,
+    DelayOscillationTask,
     InventoryTask,
     PricingTask,
     SupportShiftTask,
     leaderboard,
 )
+from chc.delay import STABILISING_RATIO_FLOOR, delay_margin, robust_delay_design
 from chc.estimators import DoubleML
+from chc.irf import delay_estimate
 
 
 def test_pricing_benchmark_ranks_causal_above_predictive() -> None:
@@ -130,3 +134,72 @@ def test_causal_dynamics_failure_is_invisible_to_the_safety_columns() -> None:
     assert results["mse-id"].constraint_violations == 0.0
     assert results["mse-id"].ood_rate == 0.0
     assert results["mse-id"].regret > results["causal-id"].regret
+
+
+def test_a_delay_blind_controller_walks_into_the_hopf() -> None:
+    """Same cost, same grid search, only the assumed delay differs -- and one arm diverges."""
+    results = {r.controller: r for r in DelayOscillationTask().run(0)}
+    blind, aware, oracle = results["delay-blind"], results["delay-aware"], results["oracle"]
+    assert blind.regret > 1e3 * max(aware.regret, 1e-3)  # six orders, not a tuning difference
+    assert aware.regret < 0.05  # estimating the delay recovers essentially the oracle
+    assert oracle.regret == 0.0
+
+
+def test_the_delay_failure_is_loud_on_the_safety_columns() -> None:
+    """The opposite of CausalDynamicsTask's trap, where the same columns stay silent."""
+    results = {r.controller: r for r in DelayOscillationTask().run(0)}
+    assert results["delay-blind"].constraint_violations > 0.5
+    assert results["delay-blind"].ood_rate > 0.5
+    for identified in ("delay-aware", "oracle"):
+        assert results[identified].constraint_violations == 0.0
+        assert results[identified].ood_rate == 0.0
+
+
+def test_the_blind_arm_fails_on_its_own_terms_not_by_construction() -> None:
+    """Its gain is the memoryless optimum sqrt(q/r); it is handed no penalty, only no delay."""
+    task = DelayOscillationTask()
+    memoryless = task._best_gain(0.0)
+    analytic = np.sqrt(task.state_weight / task.control_weight)
+    # explicit Euler decays at -ln(1 - dt K)/dt > K, which shifts the optimum a little down
+    assert 0.94 * analytic < memoryless < analytic
+    assert memoryless * task.channel * task.tau > np.pi / 2  # ...and lands past the boundary
+
+
+def test_the_measured_oscillation_onset_matches_the_closed_form() -> None:
+    """The gate: where the loop actually turns, against ``delay_margin`` at pole 0."""
+    task = DelayOscillationTask()
+    grid = np.geomspace(0.8, 3.0, 200)
+    states, _ = task._sweep(grid, task.tau)
+    steps = states.shape[1]
+    early = np.max(np.abs(states[:, : steps // 4]), axis=1)
+    late = np.max(np.abs(states[:, 3 * steps // 4 :]), axis=1)
+    onset = float(grid[late >= early].min())
+    boundary_gain = np.pi / (2.0 * task.channel * task.tau)
+    # the same number the other way round: at that gain, delay_margin returns exactly this tau
+    assert delay_margin(0.0, task.channel * boundary_gain) == pytest.approx(task.tau, rel=1e-12)
+    # explicit Euler with an exact integer lag sits ~1/(2m) BELOW the continuous boundary,
+    # m = tau/dt = 100, so the measured onset must be just under it -- and it must be close.
+    assert 0.985 * boundary_gain < onset < boundary_gain
+
+
+def test_the_estimated_delay_is_biased_low_which_is_the_destabilising_side() -> None:
+    """The refinement's shrinkage has a sign, so more seeds do not average it away."""
+    task = DelayOscillationTask()
+    designs = []
+    for seed in range(6):
+        coarse, observed = task._log(seed)
+        estimate = delay_estimate(
+            {"x": np.diff(observed), "u": coarse[:-1]},
+            horizon=12,
+            dt=task.dt * task.observe_every,
+            adjust_for=(),
+            refine=True,
+            seed=seed,
+        )
+        designs.append(robust_delay_design(max(estimate.lo, task.dt), estimate.hi).tau_design)
+    ratios = np.array(designs) / task.tau
+    assert np.all(ratios < 1.0)  # every seed, not most -- the bias is deterministic in sign
+    assert np.ptp(ratios) < 0.05  # ...and small, so the run-to-run spread is not what carries it
+    # harmless only because chc.delay's ball tolerates a 76.6% shortfall on this side, against a
+    # realised worst of 7.7% -- a factor of 10. The same 7.7% bites on a plant with a tighter ball.
+    assert 1.0 - ratios.min() < 0.15 * (1.0 - STABILISING_RATIO_FLOOR)
