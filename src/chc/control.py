@@ -2,15 +2,20 @@
 
 Both minimise the same Bolza objective from the same discrete adjoint
 (:func:`chc.adjoint.control_gradient_adjoint`); they differ only in how they use it.
-:func:`projected_gradient_control` takes backtracked steepest-descent steps, which is monotone
-and dependency-free but first-order: on an ill-conditioned instance it exhausts its iteration
-budget far from stationarity. :func:`lbfgs_box_control` hands the same gradient to SciPy's
-L-BFGS-B, which curves the step with a limited-memory secant approximation and handles the box
-natively. :func:`nlp_solver_certificate` measures the gap rather than asserting it in prose.
+:func:`projected_gradient_control` takes backtracked steepest-descent steps, which is monotone and
+dependency-free but first-order, so an ill-conditioned instance needs *many* of them -- thousands,
+not hundreds. Its ``steps`` is therefore a cap rather than a bill: the descent runs inside one
+compiled program that stops the moment the line search fails, so an unused step costs nothing and
+the default is loose enough for the stopping rule to decide. :func:`lbfgs_box_control` hands the
+same gradient to SciPy's L-BFGS-B, which curves the step with a limited-memory secant
+approximation and reaches stationarity in tens of iterations rather than thousands -- but crosses
+the Python boundary on each one, so it cannot be compiled and is the reference rather than the
+workhorse. :func:`nlp_solver_certificate` measures the gap rather than asserting it in prose.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import equinox as eqx
@@ -34,8 +39,40 @@ def project_box(us: Array, lo: float, hi: float) -> Array:
     return jnp.clip(us, lo, hi)
 
 
+def _backtrack(
+    us: Array,
+    current: Array,
+    grad: Array,
+    u_lo: float,
+    u_hi: float,
+    lr0: float,
+    tol: float,
+    value_of: Callable[[Array], Array],
+) -> tuple[Array, Array, Array]:
+    """Halve the step until it strictly decreases ``value_of``; report whether one ever did."""
+
+    def searching(state: tuple[Array, Array, Array, Array, Array]) -> Array:
+        trial, _, _, _, accepted = state
+        return jnp.logical_and(trial < _MAX_BACKTRACK, jnp.logical_not(accepted))
+
+    def halve(
+        state: tuple[Array, Array, Array, Array, Array],
+    ) -> tuple[Array, Array, Array, Array, Array]:
+        trial, lr, _, _, _ = state
+        candidate = jnp.clip(us - lr * grad, u_lo, u_hi)
+        value = value_of(candidate)
+        return trial + 1, lr * 0.5, candidate, value, value < current - tol
+
+    _, _, candidate, value, accepted = jax.lax.while_loop(
+        searching,
+        halve,
+        (jnp.asarray(0), jnp.asarray(lr0, dtype=us.dtype), us, current, jnp.asarray(False)),
+    )
+    return jnp.where(accepted, candidate, us), jnp.where(accepted, value, current), accepted
+
+
 @eqx.filter_jit
-def _projected_gradient_scan(
+def _projected_gradient_loop(
     dyn: Dynamics,
     x0: Array,
     us0: Array,
@@ -47,53 +84,50 @@ def _projected_gradient_scan(
     lr0: float,
     tol: float,
 ) -> tuple[Array, Array, Array]:
-    """The whole descent as one XLA program: ``scan`` over steps, ``while_loop`` over backtracking.
+    """The whole descent as one XLA program, outer ``while_loop`` and inner ``while_loop``.
 
     Module level rather than a closure inside the caller, because ``filter_jit`` caches on the
     wrapped function object: a wrapper rebuilt per call is recompiled per call and never amortises.
 
-    The fixed-length scan is *equivalent* to the Python ``break``, not an approximation. Failure of
-    the line search is deterministic in the iterate, so once a step fails the iterate is frozen and
-    every later attempt from it fails identically; ``done`` skips that work instead of repeating it.
+    The outer loop is a ``while_loop``, not a ``scan``, so ``steps`` is a *cap* rather than a bill:
+    the descent stops the moment the line search fails, exactly where the Python ``break`` did, and
+    an unused step costs nothing at all. That is what lets the default budget be loose enough for
+    the stopping rule -- not the caller's guess -- to decide when the solve is finished. The cost
+    history is written into a preallocated buffer, so a real early exit keeps the ``1 + accepted
+    steps`` return shape.
     """
     us = project_box(us0, u_lo, u_hi)
     initial = total_cost(dyn, x0, us, dt, cost)
+    values = jnp.zeros((steps + 1,), dtype=initial.dtype).at[0].set(initial)
 
-    def attempt(us: Array, current: Array) -> tuple[Array, Array, Array]:
+    def descending(carry: tuple[Array, Array, Array, Array, Array]) -> Array:
+        taken, _, _, _, alive = carry
+        return jnp.logical_and(taken < steps, alive)
+
+    def descend(
+        carry: tuple[Array, Array, Array, Array, Array],
+    ) -> tuple[Array, Array, Array, Array, Array]:
+        taken, us, current, values, _ = carry
         grad = control_gradient_adjoint(dyn, x0, us, dt, cost)
-
-        def searching(state: tuple[Array, Array, Array, Array, Array]) -> Array:
-            trial, _, _, _, accepted = state
-            return jnp.logical_and(trial < _MAX_BACKTRACK, jnp.logical_not(accepted))
-
-        def halve(
-            state: tuple[Array, Array, Array, Array, Array],
-        ) -> tuple[Array, Array, Array, Array, Array]:
-            trial, lr, _, _, _ = state
-            candidate = project_box(us - lr * grad, u_lo, u_hi)
-            value = total_cost(dyn, x0, candidate, dt, cost)
-            return trial + 1, lr * 0.5, candidate, value, value < current - tol
-
-        _, _, candidate, value, accepted = jax.lax.while_loop(
-            searching,
-            halve,
-            (jnp.asarray(0), jnp.asarray(lr0, dtype=us.dtype), us, current, jnp.asarray(False)),
+        us, current, accepted = _backtrack(
+            us,
+            current,
+            grad,
+            u_lo,
+            u_hi,
+            lr0,
+            tol,
+            lambda candidate: total_cost(dyn, x0, candidate, dt, cost),
         )
-        return jnp.where(accepted, candidate, us), jnp.where(accepted, value, current), accepted
+        # On rejection ``taken`` does not advance and the write lands back on its own slot, so the
+        # buffer holds exactly the accepted prefix whichever way the step went.
+        taken = jnp.where(accepted, taken + 1, taken)
+        return taken, us, current, values.at[taken].set(current), accepted
 
-    def step(
-        carry: tuple[Array, Array, Array], _: None
-    ) -> tuple[tuple[Array, Array, Array], tuple[Array, Array]]:
-        us, current, done = carry
-        us, current, accepted = jax.lax.cond(
-            done, lambda: (us, current, jnp.asarray(False)), lambda: attempt(us, current)
-        )
-        return (us, current, jnp.logical_or(done, jnp.logical_not(accepted))), (current, accepted)
-
-    (optimised, _, _), (values, accepted) = jax.lax.scan(
-        step, (us, initial, jnp.asarray(False)), None, length=steps
+    taken, optimised, _, values, _ = jax.lax.while_loop(
+        descending, descend, (jnp.asarray(0), us, initial, values, jnp.asarray(True))
     )
-    return optimised, jnp.concatenate([initial[None], values]), accepted
+    return optimised, values, taken
 
 
 def projected_gradient_control(
@@ -104,7 +138,7 @@ def projected_gradient_control(
     cost: QuadraticCost,
     u_lo: float,
     u_hi: float,
-    steps: int = 200,
+    steps: int = 10_000,
     lr0: float = 0.2,
     tol: float = 1e-9,
 ) -> tuple[Array, Array]:
@@ -119,11 +153,10 @@ def projected_gradient_control(
     would have produced. ``dt``, the box and the line-search scalars are static to the compilation,
     the same convention :func:`chc.cost.total_cost` already uses for ``dt``.
     """
-    optimised, values, accepted = _projected_gradient_scan(
+    optimised, values, taken = _projected_gradient_loop(
         dyn, x0, us0, dt, cost, u_lo, u_hi, steps, lr0, tol
     )
-    taken = int(jnp.sum(accepted))
-    return optimised, jnp.asarray(np.asarray(values)[: taken + 1].tolist())
+    return optimised, jnp.asarray(np.asarray(values)[: int(taken) + 1].tolist())
 
 
 def lbfgs_box_control(
@@ -209,6 +242,7 @@ class NLPSolverCertificate:
     worst_relative_gap: float
     best_relative_gap: float
     worst_lbfgs_stationarity: float
+    least_stationarity_ratio: float  # min over instances of PG stationarity / L-BFGS-B's
     box_respected: bool
     ok: bool
 
@@ -220,10 +254,15 @@ def nlp_solver_certificate(
 
     The instances differ only in ``R``, which sets the conditioning of the reduced Hessian: a large
     control weight makes the objective well conditioned and steepest descent adequate, a small one
-    makes it ill conditioned and the fixed step budget nowhere near enough. Asserting *both* is the
+    makes it ill conditioned and a short step budget nowhere near enough. Asserting *both* is the
     point -- the certificate fails if the well-conditioned instance develops a gap (the comparison
     would be measuring something other than conditioning) and equally if the ill-conditioned one
     stops showing one (the reframing would no longer be justified).
+
+    ``pg_steps`` is deliberately far below the shipped default: the effect being exhibited is what
+    a *short* first-order budget costs on an ill-conditioned instance, and at the shipped cap the
+    projected gradient runs to its own stopping rule and the gap closes to a few hundredths of a
+    percent. This measures the conditioning, not the library's behaviour.
     """
     x0 = jnp.array([1.0, 0.0])
     u_lo, u_hi = -5.0, 5.0
@@ -231,7 +270,7 @@ def nlp_solver_certificate(
     instances = (
         ("ill-conditioned, linear", 0.001, ZeroResidual(out_dim=2)),
         (
-            "ill-conditioned, learned residual",
+            "intermediate, learned residual",
             0.01,
             MLPResidual(2, 1, 2, 16, 2, key=jax.random.key(seed)),
         ),
@@ -274,17 +313,24 @@ def nlp_solver_certificate(
         )
 
     gaps = [comparison.relative_gap for comparison in comparisons]
-    worst_stationarity = max(comparison.lbfgs_stationarity for comparison in comparisons)
+    ratios = [
+        comparison.projected_gradient_stationarity / comparison.lbfgs_stationarity
+        for comparison in comparisons
+    ]
     return NLPSolverCertificate(
         comparisons=tuple(comparisons),
         worst_relative_gap=max(gaps),
         best_relative_gap=min(gaps),
-        worst_lbfgs_stationarity=worst_stationarity,
+        worst_lbfgs_stationarity=max(c.lbfgs_stationarity for c in comparisons),
+        least_stationarity_ratio=min(ratios),
         box_respected=box_ok,
         ok=(
             box_ok
-            and worst_stationarity < 1e-3  # the quasi-Newton arm actually converged
-            and min(gaps) > -1e-9  # and is never worse than the first-order one
+            # Comparative, not absolute: the floor on a stationarity residual is set by the working
+            # dtype, so "< 1e-3" would pass at float64 and fail at float32 for no reason but the
+            # arithmetic. The claim is that one solver arrives and the other stops short.
+            and min(ratios) > 10.0
+            and min(gaps) > -1e-9  # and the quasi-Newton arm is never worse
             and max(gaps) > 0.05  # ill-conditioned: the first-order budget is not enough
             and min(gaps) < 0.005  # well-conditioned: it is, so the gap is about conditioning
         ),

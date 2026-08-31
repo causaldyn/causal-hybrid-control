@@ -58,7 +58,9 @@ def test_lbfgs_matches_the_projected_gradient_objective_and_beats_it() -> None:
     certificate = nlp_solver_certificate()
     assert certificate.ok
     assert certificate.box_respected
-    assert certificate.worst_lbfgs_stationarity < 1e-3
+    # Comparative rather than absolute: an absolute residual threshold is a claim about the
+    # working dtype, not about the solvers, and would fail under float32 alone.
+    assert certificate.least_stationarity_ratio > 10.0
     # Both directions: the first-order budget is short where the problem is ill conditioned and
     # adequate where it is not, so the gap is a statement about conditioning, not about the plant.
     assert certificate.worst_relative_gap > 0.05

@@ -30,6 +30,7 @@ class SIRDynamics(eqx.Module):
         return jnp.stack([-force, force - self.gamma * i])
 
 
+@eqx.filter_jit
 def epidemic_cost(
     model: SIRDynamics,
     x0: Array,
@@ -46,6 +47,20 @@ def epidemic_cost(
     return w_peak * over_capacity + w_npi * intervention
 
 
+@eqx.filter_jit
+def _epidemic_cost_grad(
+    model: SIRDynamics,
+    x0: Array,
+    us: Array,
+    dt: float,
+    i_max: float,
+    w_npi: float,
+    w_peak: float,
+) -> Array:
+    """``d/dus`` of :func:`epidemic_cost`, jitted at module level so the cache outlives the call."""
+    return jax.grad(epidemic_cost, argnums=2)(model, x0, us, dt, i_max, w_npi, w_peak)
+
+
 def optimal_npi(
     model: SIRDynamics,
     x0: Array,
@@ -60,11 +75,11 @@ def optimal_npi(
 ) -> Array:
     """Open-loop optimal NPI: least intervention that keeps ``I <= i_max`` (projected gradient)."""
 
-    def objective(us: Array) -> Array:
+    def obj(us: Array) -> Array:
         return epidemic_cost(model, x0, us, dt, i_max, w_npi, w_peak)
 
-    grad_fn = eqx.filter_jit(jax.grad(objective))
-    obj = eqx.filter_jit(objective)
+    def grad_fn(us: Array) -> Array:
+        return _epidemic_cost_grad(model, x0, us, dt, i_max, w_npi, w_peak)
 
     us = jnp.zeros((horizon, 1))
     current = obj(us)

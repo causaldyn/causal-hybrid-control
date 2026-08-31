@@ -20,6 +20,7 @@ gates that make it trustworthy rather than merely elegant.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -89,6 +90,23 @@ def _gaussian(x: Array, center: float, width: float) -> Array:
     return jnp.exp(-0.5 * ((x - center) / width) ** 2)
 
 
+@partial(jax.jit, static_argnums=0)
+def _transport_cost(planner: MeanFieldTransport, v_seq: Array) -> Array:
+    """``planner.rollout_cost`` jitted at module level, so the cache is not rebuilt per call.
+
+    The planner is a frozen dataclass of scalars, hence hashable, hence a legal static argument;
+    binding it with ``jax.jit`` inside :meth:`MeanFieldTransport.plan` gave every call an
+    empty cache and recompiled the rollout on every plan.
+    """
+    return planner.rollout_cost(v_seq)
+
+
+@partial(jax.jit, static_argnums=0)
+def _transport_grad(planner: MeanFieldTransport, v_seq: Array) -> Array:
+    """``d/dv_seq`` of :func:`_transport_cost`, jitted at module level for the same reason."""
+    return jax.grad(lambda plan: planner.rollout_cost(plan))(v_seq)
+
+
 @dataclass(frozen=True)
 class MeanFieldTransport:
     """Steer a density ``rho(x,t)`` to a target by choosing the velocity field (continuum MFC).
@@ -140,8 +158,8 @@ class MeanFieldTransport:
     def plan(self, steps: int = 300, lr: float = 0.05) -> Array:
         """Adam on the velocity field through the conservative solver; keep the best-seen plan."""
         v = jnp.zeros((self.horizon, self.n_cells))
-        grad_fn = jax.jit(jax.grad(self.rollout_cost))
-        cost_fn = jax.jit(self.rollout_cost)
+        grad_fn = partial(_transport_grad, self)
+        cost_fn = partial(_transport_cost, self)
         optimizer = optax.adam(lr)
         state = optimizer.init(v)
         best_v, best_cost = v, float(cost_fn(v))

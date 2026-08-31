@@ -123,7 +123,7 @@ def causal_plan(
     lipschitz: float = 0.0,
     model_error: float = 0.0,
     tolerance: float = float("inf"),
-    steps: int = 200,
+    steps: int = 10_000,
 ) -> CausalPlan:
     """Plan under box constraints, optional offline pessimism, and a certified error tube.
 

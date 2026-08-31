@@ -18,6 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from chc.control import _backtrack
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
@@ -57,11 +58,8 @@ class SupportModel(eqx.Module):
         return jnp.sum(jax.vmap(self.squared_distance)(xs, us))
 
 
-_MAX_BACKTRACK = 40
-
-
 @eqx.filter_jit
-def _pessimistic_scan(
+def _pessimistic_loop(
     model: Dynamics,
     x0: Array,
     us0: Array,
@@ -77,14 +75,14 @@ def _pessimistic_scan(
     uncertainty: PenaltyModel | None,
     lam_unc: float,
 ) -> tuple[Array, Array, Array]:
-    """The penalised descent as one XLA program, mirroring :func:`chc.control._pg_scan`'s shape.
+    """The penalised descent as one XLA program, mirroring :func:`chc.control`'s shape exactly.
 
     Module level for the same reason: the jitted objective and its gradient used to be built inside
     :func:`pessimistic_control`, so each call got an empty compilation cache and recompiled the
     augmented gradient every solve instead of once per problem shape.
 
     Acceptance is on the *augmented* cost and the recorded history is the *task* cost, so both are
-    carried through the scan -- runs at different penalty weights stay comparable.
+    carried through the loop -- runs at different penalty weights stay comparable.
     """
 
     def task(us: Array) -> Array:
@@ -98,44 +96,28 @@ def _pessimistic_scan(
         return task(us) + penalty
 
     grad_aug = jax.grad(augmented)
-    start = jnp.clip(us0, u_lo, u_hi)
-    initial = augmented(start)
+    us = jnp.clip(us0, u_lo, u_hi)
+    initial = augmented(us)
+    values = jnp.zeros((steps + 1,), dtype=initial.dtype).at[0].set(task(us))
 
-    def attempt(us: Array, current: Array) -> tuple[Array, Array, Array]:
-        grad = grad_aug(us)
+    def descending(carry: tuple[Array, Array, Array, Array, Array]) -> Array:
+        taken, _, _, _, alive = carry
+        return jnp.logical_and(taken < steps, alive)
 
-        def searching(state: tuple[Array, Array, Array, Array, Array]) -> Array:
-            trial, _, _, _, accepted = state
-            return jnp.logical_and(trial < _MAX_BACKTRACK, jnp.logical_not(accepted))
-
-        def halve(
-            state: tuple[Array, Array, Array, Array, Array],
-        ) -> tuple[Array, Array, Array, Array, Array]:
-            trial, lr, _, _, _ = state
-            candidate = jnp.clip(us - lr * grad, u_lo, u_hi)
-            value = augmented(candidate)
-            return trial + 1, lr * 0.5, candidate, value, value < current - tol
-
-        _, _, candidate, value, accepted = jax.lax.while_loop(
-            searching,
-            halve,
-            (jnp.asarray(0), jnp.asarray(lr0, dtype=us.dtype), us, current, jnp.asarray(False)),
+    def descend(
+        carry: tuple[Array, Array, Array, Array, Array],
+    ) -> tuple[Array, Array, Array, Array, Array]:
+        taken, us, current, values, _ = carry
+        us, current, accepted = _backtrack(
+            us, current, grad_aug(us), u_lo, u_hi, lr0, tol, augmented
         )
-        return jnp.where(accepted, candidate, us), jnp.where(accepted, value, current), accepted
+        taken = jnp.where(accepted, taken + 1, taken)
+        return taken, us, current, values.at[taken].set(task(us)), accepted
 
-    def step(
-        carry: tuple[Array, Array, Array], _: None
-    ) -> tuple[tuple[Array, Array, Array], tuple[Array, Array]]:
-        us, current, done = carry
-        us, current, accepted = jax.lax.cond(
-            done, lambda: (us, current, jnp.asarray(False)), lambda: attempt(us, current)
-        )
-        return (us, current, jnp.logical_or(done, jnp.logical_not(accepted))), (task(us), accepted)
-
-    (optimised, _, _), (values, accepted) = jax.lax.scan(
-        step, (start, initial, jnp.asarray(False)), None, length=steps
+    taken, optimised, _, values, _ = jax.lax.while_loop(
+        descending, descend, (jnp.asarray(0), us, initial, values, jnp.asarray(True))
     )
-    return optimised, jnp.concatenate([task(start)[None], values]), accepted
+    return optimised, values, taken
 
 
 def pessimistic_control(
@@ -148,7 +130,7 @@ def pessimistic_control(
     lam_supp: float,
     u_lo: float,
     u_hi: float,
-    steps: int = 200,
+    steps: int = 10_000,
     lr0: float = 0.2,
     tol: float = 1e-9,
     uncertainty: PenaltyModel | None = None,
@@ -163,7 +145,7 @@ def pessimistic_control(
     so runs at different weights are comparable).
     """
 
-    optimised, values, accepted = _pessimistic_scan(
+    optimised, values, taken = _pessimistic_loop(
         model,
         x0,
         us0,
@@ -179,5 +161,4 @@ def pessimistic_control(
         uncertainty,
         lam_unc,
     )
-    taken = int(jnp.sum(accepted))
-    return optimised, jnp.asarray(np.asarray(values)[: taken + 1].tolist())
+    return optimised, jnp.asarray(np.asarray(values)[: int(taken) + 1].tolist())

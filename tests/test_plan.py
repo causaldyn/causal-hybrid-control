@@ -33,8 +33,10 @@ _ARGS = (_MODEL, _X0, _COST, 0.1, 12, -5.0, 5.0)
 def test_bare_plan_matches_projected_gradient_control() -> None:
     """With no safety arguments the spine must be the existing solver, not a new one."""
     plan = causal_plan(*_ARGS)
+    # Both at their own default budget: pinning one of them here would test the budgets agreeing
+    # rather than the solvers being the same solver, which is what the claim is.
     reference, _ = projected_gradient_control(
-        _MODEL, _X0, jnp.zeros((12, 1)), 0.1, _COST, -5.0, 5.0, steps=200
+        _MODEL, _X0, jnp.zeros((12, 1)), 0.1, _COST, -5.0, 5.0
     )
     assert float(jnp.max(jnp.abs(plan.actions - reference))) < 1e-6
     assert plan.trajectory.shape == (13, 2)
@@ -136,7 +138,10 @@ def test_a_wider_sensitivity_only_ever_shrinks_the_guarantee() -> None:
     assert radii == sorted(radii)
     assert radii[0] < radii[-1]
     assert steps == sorted(steps, reverse=True)
-    assert steps[0] == 4  # a real cut at both ends, not all-or-nothing
+    # A real cut at both ends, not all-or-nothing. The exact count is a property of the plan, not
+    # of the guarantee: a better-converged plan drives harder, leaves tolerance sooner and certifies
+    # fewer steps, so pinning the number would make this a test of the solver's budget.
+    assert 0 < steps[0] < 12
     assert steps[-1] == 0
     for lo, hi in pairwise(certs):
         assert bool(jnp.all(hi.guaranteed_derivative <= lo.guaranteed_derivative + 1e-9))

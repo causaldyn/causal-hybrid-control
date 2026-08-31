@@ -222,13 +222,55 @@ still change).
 
 ### Changed
 
+- **The solver budget is now a cap the stopping rule can reach, not a bill paid per step** --
+  `steps` defaults to `10_000` in `projected_gradient_control`, `pessimistic_control` and
+  `causal_plan`, and `inner_steps` to `10_000` in every `chc.benchmark` control task. This is the
+  answer to "should `lbfgs_box_control` replace the projected gradient at the call sites", and the
+  answer is no: the measured defect was **under-solving, not the algorithm**.
+
+  *The evidence.* On the instances the control benchmarks actually solve, the old 300-step budget
+  left the *model* arms 6.3% and 7.5% above their own optimum while the *oracle* arms were within
+  0.001% and 0.007%. That asymmetry sat inside every published regret -- the two things being
+  compared were not equally solved. Given its own stopping rule the same projected gradient
+  converges at 3973 and 5821 steps to within **0.045%** of L-BFGS-B, which is 60-110x slower in
+  wall clock and cannot be compiled at all (SciPy crosses the Python boundary on every iteration,
+  which would end `chc.mpc` as a real-time loop). So the reference solver stays the reference and
+  the workhorse gets a budget it can finish in.
+
+  *What made a loose cap safe.* The outer loop is a `while_loop` rather than a fixed-length `scan`,
+  with the cost history written into a preallocated buffer, so the descent stops exactly where the
+  Python `break` did. An instance that converges in 6 steps costs the same at a cap of 300 and of
+  12000 (0.40 ms vs 0.40 ms; under the scan it was 0.59 -> 4.01 ms). No benchmark solve reaches the
+  new cap -- the largest uses 5821 of 10000 -- so no published number is budget-dependent any more.
+
+  *What moved, and why it is the right direction.* Solved properly, the **greedy baseline gets
+  worse**: it exploits the learned model further, so its regret on the true plant rises
+  (`causaldyn-bench` D-control `support-shift/greedy` 5.557 -> 6.799). Truncation had been
+  regularising the baseline by accident. Every conclusion keeps its sign and the margins widen: the
+  12-seed `run_multiseed` gate was re-run and every CHC controller's regret CI is still disjoint
+  from its baseline's -- support-shift pessimistic 2.40 [2.34, 2.45] vs greedy 6.80, up from 5.56.
+  `chc.mpc` is the deliberate exception and keeps `inner_steps = 40`: there the budget is a
+  per-decision latency choice, priced in its docstring at 0.3-0.4% of closed-loop cost for 1.5-2.4x
+  less time, because a warm start hands each replan a nearly-optimal iterate.
+
+- **Three more per-call `jit` caches hoisted to module level** (`chc.epidemic`, `chc.meanfield`,
+  `chc.transport`) -- the same defect as `pessimistic_control`, found by auditing for the pattern
+  rather than waiting for it to resurface. Measured as three identical back-to-back calls, where a
+  cache that never survives shows up as a second call no cheaper than the first: `optimal_npi`
+  397 -> 143 ms, `MeanFieldControl.plan` 1160 -> 430 ms, `MeanFieldTransport.plan` 372 -> 83 ms.
+  The two planners are frozen dataclasses of scalars, hence hashable, hence legal static arguments;
+  `epidemic_cost` and its gradient are jitted where they are defined. Bit-identical -- these are
+  the same jitted functions with a cache that now outlives the call. `chc.games` was audited too
+  and does *not* recompile, so it is left alone.
+
 - **Both projected-gradient solvers now run inside one compiled program** (`chc.control`,
-  `chc.support`) -- `scan` over the outer steps, `while_loop` over the backtracking, `cond` to skip
-  a frozen iterate. The fixed-length scan is *equivalent* to the Python `break`, not an
-  approximation: failure of the line search is deterministic in the iterate, so once a step fails
-  every later attempt from it fails identically. Signatures, semantics and the
-  `1 + accepted steps` history length are unchanged; only the trim to the accepted prefix still
-  happens on the host.
+  `chc.support`) -- nested `while_loop`s, the outer over the descent steps and the inner over the
+  backtracking, with the cost history written into a preallocated buffer. Signatures, semantics and
+  the `1 + accepted steps` history length are unchanged; only the trim to the accepted prefix still
+  happens on the host. (This entry first shipped a fixed-length `scan` with a `done` flag, which is
+  *equivalent* to the Python `break` -- line-search failure is deterministic in the iterate -- but
+  still paid for every skipped step. The entry above replaced it, because only a `while_loop` makes
+  an unused step free, and that is what a loose default budget needs.)
 
   *Verified against the loop it replaced, not asserted.* `tests/test_control.py` and
   `tests/test_support.py` keep a plain Python oracle -- deliberately not imported from `chc`, since
@@ -248,11 +290,14 @@ still change).
   changed; the float64 oracle test is what pins that down, which is why it is the gate.
 
   *Measured, same script before and after, idle machine.* Warm solve, 200 steps, MLP residual:
-  `projected_gradient_control` **106 ms -> 26 ms** (4.1x), `pessimistic_control` **943 ms -> 48 ms**
-  (19.7x). Cold, compilation included: 828 -> 651 ms and 1259 -> 944 ms, so there is no
+  `projected_gradient_control` **106 ms -> 30 ms** (3.5x), `pessimistic_control` **943 ms -> 50 ms**
+  (18.9x). Cold, compilation included: 828 -> 716 ms and 1259 -> 954 ms, so there is no
   cold-versus-warm trade-off to weigh -- the fused program compiles cheaper than the three separate
-  jits it replaced. Milestone J's `chc.control` arm falls from **114 ms to 4.5 ms**, which changes
-  its margin (Rust 3.28 ms, so 1.38x) without changing its verdict.
+  jits it replaced. (Figures re-taken on the shipped `while_loop`; the superseded `scan` was 26 and
+  48 ms warm, 651 and 944 cold -- faster on this instance, because a 200-step cap it can never
+  exceed is the one case a fixed-length scan is built for.) Milestone J's `chc.control` arm falls
+  from **114 ms to 4.5 ms**, which changes its margin (Rust 3.28 ms, so 1.38x) without changing its
+  verdict.
 
 - **`pessimistic_control` recompiled its augmented objective on every call** (`chc.support`) --
   `eqx.filter_jit` caches on the wrapped function object, and the jitted objective, its gradient and
@@ -260,7 +305,20 @@ still change).
   identical back-to-back solves cost 1259 / 959 / 943 ms: the second call was not cheaper than the
   first, which is the signature of a cache that never survives. The compiled kernel is now a
   module-level function whose captured values are arguments; the same three solves cost
-  944 / 48 / 49 ms. Every `chc.benchmark` task that sweeps a penalty weight paid this per solve.
+  954 / 53 / 50 ms. Every `chc.benchmark` task that sweeps a penalty weight paid this per solve.
+
+- **`nlp_solver_certificate` made a precision claim in the wrong unit** (`chc.control`) -- it
+  asserted `worst_lbfgs_stationarity < 1e-3`, an absolute threshold on a residual whose floor is
+  set by the working dtype. It passed at float64 (1.15e-04) and reported `ok=False` at float32
+  (5.03e-03) for no reason but the arithmetic, and no test caught it because `conftest.py` forces
+  float64. The claim being made is comparative, so it is now stated comparatively:
+  `least_stationarity_ratio > 10`, the projected gradient's stationarity over L-BFGS-B's, which
+  holds at both precisions (24x at float32, 242x at float64).
+
+- **The `R = 0.01` instance in `nlp_solver_certificate` was labelled "ill-conditioned"** when its
+  4.7% gap sits between the certificate's own thresholds (`> 5%` and `< 0.5%`). It is the
+  intermediate case and now says so. A previous changelog entry claimed this rename had been made;
+  `git log -S` shows the string was never committed, so the claim was wrong and this is the fix.
 
 ### Fixed
 

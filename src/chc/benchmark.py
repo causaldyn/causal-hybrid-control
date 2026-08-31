@@ -248,7 +248,7 @@ class SupportShiftTask:
     control_weight: float = 0.001
     lam_supp: float = 5.0
     n_data: int = 4000
-    inner_steps: int = 300
+    inner_steps: int = 10_000
 
     def run(self, seed_data: int = 0) -> list[TaskResult]:
         """Optimise on the model (greedy/pessimistic) and the plant (oracle); score on the plant."""
@@ -352,7 +352,7 @@ class ModelUncertaintyTask:
     n_data: int = 2000
     n_members: int = 5
     fit_steps: int = 1000
-    inner_steps: int = 300
+    inner_steps: int = 10_000
 
     def run(self, seed_data: int = 0) -> list[TaskResult]:
         """Fit an ensemble on the support, then score greedy/calibrated/oracle on the plant."""
@@ -468,7 +468,7 @@ class ConfoundingRobustTask:
     control_weight: float = 0.001
     overshoot_tol: float = 0.25  # blowing this far past the target counts as a violation
     n_data: int = 4000
-    inner_steps: int = 300
+    inner_steps: int = 10_000
 
     def run(self, seed_data: int = 0) -> list[TaskResult]:
         """Calibrate the gain on a confounded log, then score greedy/robust/oracle on the plant."""
@@ -592,7 +592,7 @@ class CausalDynamicsTask:
     x_safe: float = 2.5  # |x[0]| <= x_safe; saturating on a mis-scaled channel blows through it
     control_weight: float = 0.1
     n_data: int = 4000
-    inner_steps: int = 150
+    inner_steps: int = 10_000
 
     def run(self, seed_data: int = 0) -> list[TaskResult]:
         """Fit the channel three ways from one confounded log, then score each plan on the plant."""

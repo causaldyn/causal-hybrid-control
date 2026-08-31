@@ -9,6 +9,7 @@ Builds on the game response in ``chc.games``. See ``plans/16`` (Phase 3).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +17,23 @@ import optax
 from jax import Array
 
 from chc.games import project_simplex
+
+
+@partial(jax.jit, static_argnums=0)
+def _meanfield_cost(planner: MeanFieldControl, u_seq: Array) -> Array:
+    """``planner.rollout_cost`` jitted at module level, so the cache is not rebuilt per call.
+
+    The planner is a frozen dataclass of scalars, hence hashable, hence a legal static argument;
+    binding it with ``jax.jit`` inside :meth:`MeanFieldControl.plan` gave every call an
+    empty cache and recompiled the rollout on every plan.
+    """
+    return planner.rollout_cost(u_seq)
+
+
+@partial(jax.jit, static_argnums=0)
+def _meanfield_grad(planner: MeanFieldControl, u_seq: Array) -> Array:
+    """``d/du_seq`` of :func:`_meanfield_cost`, jitted at module level for the same reason."""
+    return jax.grad(lambda plan: planner.rollout_cost(plan))(u_seq)
 
 
 @dataclass(frozen=True)
@@ -79,8 +97,8 @@ class MeanFieldControl:
             if init is not None
             else jnp.full((self.horizon, self.n_zones), self.budget / self.n_zones)
         )
-        grad_fn = jax.jit(jax.grad(self.rollout_cost))
-        cost_fn = jax.jit(self.rollout_cost)
+        grad_fn = partial(_meanfield_grad, self)
+        cost_fn = partial(_meanfield_cost, self)
         project = jax.vmap(lambda row: project_simplex(row, self.budget))
         optimizer = optax.adam(lr)
         state = optimizer.init(u)
