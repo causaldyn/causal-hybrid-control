@@ -55,6 +55,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from scipy.optimize import brentq
+from scipy.special import lambertw
 
 from chc.cost import QuadraticCost
 
@@ -297,3 +299,274 @@ def delay_margin_certificate(
         # non-empty -- a sweep where nothing destabilised would prove nothing about the margin.
         ok=bool(stable) and bool(unstable) and largest_stable < 1.0 < smallest_unstable,
     )
+
+
+# Design constant of the decay-rate-optimal scalar delayed feedback: K* = _OPTIMAL_GAIN_CONSTANT/tau
+# maximises the spectral abscissa of x' = -K x(t - tau), giving sigma* = 1/tau. Classical; what is
+# derived in validation/delay_ball.mac is everything that follows from the root there being DOUBLE.
+_OPTIMAL_GAIN_CONSTANT = float(1.0 / np.e)
+
+# The design stabilises the true plant iff K* tau < pi/2, i.e. iff tau_hat/tau exceeds this.
+STABILISING_RATIO_FLOOR = float(2.0 / (np.pi * np.e))
+
+
+@dataclass(frozen=True)
+class DelayBall:
+    """The set of delay estimates that still stabilise the true plant. It is a **half-line**.
+
+    ``ratio_floor`` is the smallest ``tau_hat/tau`` that stabilises; there is no ceiling, so the
+    field is named for what it is rather than paired with an absent ``ratio_ceiling``. In absolute
+    terms the admissible estimates are ``(shortest_safe_estimate, inf)``.
+
+    Contrast the ball in dynamics error that Result 44 gives, which is symmetric and pairs with a
+    regret quadratic in its radius. Neither property survives the move to delay space, and both fail
+    for the same reason: the decay-optimal design sits at a *defective* characteristic root.
+    """
+
+    tau: float
+    gain: float
+    ratio_floor: float
+    shortest_safe_estimate: float
+    relative_radius: float
+
+
+def optimal_delay_gain(tau: float) -> float:
+    """Gain maximising the decay rate of ``x' = -K x(t - tau)``: ``K* = 1/(e tau)``.
+
+    The decay rate it achieves is ``sigma* = 1/tau``, and no gain does better.
+
+    At this gain the characteristic root ``s = -1`` (in ``s = lambda tau``) is **double**. That is
+    the source of every asymmetry in :func:`delay_ball` and :func:`delay_design_loss`: perturbing a
+    parameter away from a defective root moves it like a square root, not linearly.
+    """
+    if tau <= 0.0:
+        raise ValueError(f"tau must be positive; got {tau}")
+    return _OPTIMAL_GAIN_CONSTANT / tau
+
+
+def delay_ball(tau: float) -> DelayBall:
+    """Which delay estimates keep the true ``tau``-plant stable under the decay-optimal design.
+
+    Designing ``K_hat = 1/(e tau_hat)`` and running it against the true delay ``tau`` puts the loop
+    gain at ``kappa = K_hat tau = 1/(e r)`` with ``r = tau_hat/tau``. The exact boundary is
+    ``kappa = pi/2`` (``delay_margin`` at ``a = 0``), and ``kappa`` is antitone in ``r``, so the
+    admissible set is ``r > 2/(pi e) = 0.2342``: **under**-estimating the delay by more than 76% of
+    it destabilises, and **over**-estimating never does, at any magnitude.
+
+    That asymmetry is not a modelling choice -- it follows from the boundary being an upper bound on
+    loop gain while the design's gain is inversely proportional to the assumed delay. Its practical
+    reading is uncomfortable: the safe direction for stability is the expensive one for performance
+    (see :func:`delay_design_loss`), so "be conservative about the delay" is not free advice.
+
+    No Lyapunov-Krasovskii functional is constructed, deliberately. An LKF would deliver a
+    *sufficient* condition with an unquantified gap; the characteristic equation gives the exact
+    boundary, so an LKF here would be strictly weaker evidence, not stronger.
+    """
+    if tau <= 0.0:
+        raise ValueError(f"tau must be positive; got {tau}")
+    return DelayBall(
+        tau=tau,
+        gain=optimal_delay_gain(tau),
+        ratio_floor=STABILISING_RATIO_FLOOR,
+        shortest_safe_estimate=STABILISING_RATIO_FLOOR * tau,
+        relative_radius=1.0 - STABILISING_RATIO_FLOOR,
+    )
+
+
+def delay_design_loss(ratio: float) -> float:
+    """Decay rate given up by designing for ``tau_hat`` when the true delay is ``tau``.
+
+    ``ratio`` is ``tau_hat/tau``; the return is ``tau * (sigma* - sigma)``, dimensionless, zero at
+    ``ratio = 1`` and ``1.0`` at the stability boundary. Computed from the exact rightmost
+    characteristic root, not from the expansion -- the expansion is what explains the shape, the
+    exact root is what a caller should be given.
+
+    **The two sides are not the same order.** Writing ``eps = (ratio - 1)/ratio``, the root's real
+    part near the optimum is ``sqrt(2 eps) - 2 eps/3`` for an over-estimate and ``-2 eps/3`` for an
+    under-estimate (``validation/delay_ball.mac``, matched to the exact root to ``1e-3`` at
+    ``|eps| = 0.05``). Over-estimating opens as a **square root**, under-estimating only linearly,
+    so at ``|eps| = 0.05`` -- the same absolute error either way -- an over-estimate costs ``0.287``
+    against an under-estimate's ``0.033``, 8.8 times as much. No symmetric radius can describe both,
+    which is why :class:`DelayBall` carries a floor and no ceiling and this is not a norm of
+    ``eps``.
+
+    So the two failure directions want opposite things: stability wants ``tau_hat`` large, the decay
+    rate wants it small. :func:`robust_delay_design` resolves that against an interval.
+    """
+    if ratio <= 0.0:
+        raise ValueError(f"ratio must be positive; got {ratio}")
+    if ratio <= STABILISING_RATIO_FLOOR:
+        return float("inf")  # the design does not stabilise the plant at all; no rate to give up
+    kappa = _OPTIMAL_GAIN_CONSTANT / ratio
+    if abs(kappa - _OPTIMAL_GAIN_CONSTANT) < 1e-14:
+        return 0.0  # the double root itself, where both branches meet
+    if kappa < _OPTIMAL_GAIN_CONSTANT:  # real branch: two real roots, the rightmost is a Lambert W
+        return float(1.0 + np.real(lambertw(-kappa, 0)))
+    # complex branch: s = p + i q with p = -q cot(q) from the imaginary part, and the real part then
+    # collapsing to kappa = exp(p) q / sin(q). Both exact; derived in validation/delay_ball.mac.
+    q = brentq(
+        lambda y: np.exp(-y * np.cos(y) / np.sin(y)) * y / np.sin(y) - kappa,
+        1e-12,
+        np.pi / 2 - 1e-12,
+    )
+    return float(1.0 - q * np.cos(q) / np.sin(q))  # Re u = 1 + Re s, Re s = -q cot q
+
+
+@dataclass(frozen=True)
+class RobustDelayDesign:
+    """The delay to design for, given only an interval containing the true one."""
+
+    tau_design: float
+    gain: float
+    worst_case_loss: float
+    stabilises_interval: bool
+
+
+def robust_delay_design(lo: float, hi: float) -> RobustDelayDesign:
+    """Minimax delay design over an interval: which ``tau_hat`` to build the controller for.
+
+    Feed it the ends of a delay interval -- :attr:`chc.irf.DelayEstimate.lo` and ``.hi`` are exactly
+    that -- and it returns the ``tau_hat`` minimising the worst-case :func:`delay_design_loss` over
+    every true delay the interval allows. Because the loss is unimodal in ``tau_hat/tau``, the worst
+    case is attained at an end of the interval, and the minimax equalises the two ends.
+
+    **The answer is not the centre of the interval.** Over-estimating costs a square root and
+    under-estimating only a linear term, so equalising the two ends pushes the design *down*: on
+    ``[0.8, 1.25]`` the minimax lands at ``0.837`` against a geometric mean of ``1.0``, a 16% shift,
+    and it halves the worst-case loss, ``0.528`` to ``0.270``. Designing for the middle of a delay
+    interval is a symmetric answer to an asymmetric problem.
+
+    The shift is downward only while the interval is informative. The ratio depends on ``hi/lo``
+    alone (the problem is scale-free in ``tau``), it deepens to ``0.754`` of the geometric mean near
+    ``hi/lo = 3.2``, then relaxes and **crosses back above at hi/lo = 13.25**: past there the low
+    end is close to the stabilising floor, its loss saturates near 1, and it dominates instead. A
+    13x-wide delay interval is barely information, so the rule holds wherever it is worth applying
+    -- but it is a regime, not a law, and the crossover is where it ends.
+
+    The direction is worth naming because it opposes the safety instinct: a *longer* assumed delay
+    buys stability margin (:func:`delay_ball`), a *shorter* one buys decay rate. Both are exact, and
+    only the interval decides the trade.
+
+    Do not pass a censored estimate. :attr:`chc.irf.DelayEstimate.censored` means the peak sat on
+    the edge of the horizon, so ``hi`` bounds nothing -- the true delay may be far larger, and that
+    is the direction :func:`delay_ball` says is unsafe to under-shoot.
+    """
+    if not 0.0 < lo <= hi:
+        raise ValueError(f"need 0 < lo <= hi; got lo={lo}, hi={hi}")
+    if lo == hi:
+        return RobustDelayDesign(lo, optimal_delay_gain(lo), 0.0, True)
+    # L(t/hi) - L(t/lo) is positive at t = lo (only the far end is mis-specified) and negative at
+    # t = hi, so the equalising design is bracketed by the interval itself. The lower end is lifted
+    # off the stabilising floor first, for an interval wider than the ball's dynamic range.
+    left = max(lo, hi * STABILISING_RATIO_FLOOR * (1.0 + 1e-9))
+    gap = brentq(lambda t: delay_design_loss(t / hi) - delay_design_loss(t / lo), left, hi)
+    return RobustDelayDesign(
+        tau_design=float(gap),
+        gain=optimal_delay_gain(float(gap)),
+        worst_case_loss=float(delay_design_loss(gap / hi)),
+        stabilises_interval=bool(gap / hi > STABILISING_RATIO_FLOOR),
+    )
+
+
+@dataclass(frozen=True)
+class DelayBallCertificate:
+    """Evidence that the delay ball's floor is where the derivation says, and that the loss is too.
+
+    ``largest_unstable`` and ``smallest_stable`` are multiples of the derived floor, so they bracket
+    where the loop *actually* changes behaviour: the derivation is confirmed when the bracket
+    straddles 1. Result 44's ball came from a Lyapunov *sufficient* condition and ran 15.5x
+    conservative; this one comes from the exact characteristic equation, so the bracket is tight to
+    the sweep grid and there is no slack to report.
+    """
+
+    tau: float
+    ratio_floor: float
+    stable_ratios: tuple[float, ...]
+    unstable_ratios: tuple[float, ...]
+    largest_unstable: float
+    smallest_stable: float
+    worst_loss_error: float
+    ok: bool
+
+
+def delay_ball_certificate(
+    tau: float = 1.0,
+    dt: float = 0.001,
+    ratios: tuple[float, ...] = (0.25, 0.6, 0.9, 1.1, 1.6, 3.0, 6.0),
+    loss_ratios: tuple[float, ...] = (0.8, 0.9, 0.95, 1.05, 1.1, 1.25),
+    horizon: float = 60.0,
+) -> DelayBallCertificate:
+    """Sweep the delay estimate across :func:`delay_ball`'s floor and check both halves of it.
+
+    ``ratios`` are multiples of the floor ``2/(pi e)``, so they run from a quarter of it to six
+    times; ``loss_ratios`` are values of ``tau_hat/tau`` near 1, where the derived
+    :func:`delay_design_loss` is checked against the decay rate the simulation actually shows.
+
+    Simulated with :func:`exact_delayed_rollout` for the same reason as
+    :func:`delay_margin_certificate`: explicit Euler's own boundary sits *below* the continuous one,
+    so instability it reports past the floor is evidence rather than discretisation.
+
+    The certificate can fail in four independent ways: no ratio destabilises, no ratio stabilises,
+    the floor does not separate them, or the measured loss departs from the closed form by more than
+    the discretisation can account for.
+    """
+    if tau <= 0.0:
+        raise ValueError(f"tau must be positive; got {tau}")
+    floor = STABILISING_RATIO_FLOOR
+    x0 = jnp.array([1.0])
+    steps = int(horizon / dt)
+    lag = max(1, round(tau / dt))
+
+    def simulate(ratio: float) -> Array:
+        gain = optimal_delay_gain(ratio * tau)  # designed for tau_hat, run against tau
+
+        def core(t: float | Array, x: Array, x_delayed: Array, u: Array) -> Array:
+            return -gain * x_delayed
+
+        return exact_delayed_rollout(core, x0, jnp.zeros((steps, 1)), dt, lag)
+
+    stable: list[float] = []
+    unstable: list[float] = []
+    for ratio in ratios:
+        xs = simulate(ratio * floor)
+        early = float(jnp.max(jnp.abs(xs[: steps // 4])))
+        late = float(jnp.max(jnp.abs(xs[-steps // 4 :])))
+        (unstable if late > early else stable).append(ratio)
+
+    worst_loss_error = 0.0
+    for ratio in loss_ratios:
+        xs = np.asarray(simulate(ratio))[:, 0]
+        measured = 1.0 - tau * _envelope_decay_rate(xs, dt)
+        worst_loss_error = max(worst_loss_error, abs(measured - delay_design_loss(ratio)))
+
+    largest_unstable = max(unstable) if unstable else 0.0
+    smallest_stable = min(stable) if stable else float("inf")
+    return DelayBallCertificate(
+        tau=tau,
+        ratio_floor=floor,
+        stable_ratios=tuple(stable),
+        unstable_ratios=tuple(unstable),
+        largest_unstable=largest_unstable,
+        smallest_stable=smallest_stable,
+        worst_loss_error=worst_loss_error,
+        ok=bool(
+            stable
+            and unstable
+            and largest_unstable < 1.0 < smallest_stable
+            # explicit Euler costs 0.93 * dt/tau of decay rate, measured flat over an 8x range of
+            # dt; twice that leaves margin for the fit without admitting a genuine gap
+            and worst_loss_error < 2.0 * dt / tau
+        ),
+    )
+
+
+def _envelope_decay_rate(xs: np.ndarray, dt: float) -> float:
+    """Spectral abscissa read off the tail of ``|x|``, through its peaks when the response rings."""
+    envelope = np.abs(xs)
+    half = xs.size // 2
+    peaks = np.where((envelope[1:-1] > envelope[:-2]) & (envelope[1:-1] >= envelope[2:]))[0] + 1
+    peaks = peaks[(peaks > half) & (envelope[peaks] > 0.0)]
+    if peaks.size < 2:  # monotone decay: no ringing to track, so the tail itself is the envelope
+        peaks = np.array([half, xs.size - 1])
+    times = peaks * dt
+    return float(-np.polyfit(times, np.log(envelope[peaks]), 1)[0])

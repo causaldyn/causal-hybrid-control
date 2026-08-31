@@ -9,6 +9,50 @@ still change).
 
 ### Added
 
+- **`delay_ball`, `delay_design_loss` and `robust_delay_design` -- what Result 44 does *not* survive
+  when the uncertain quantity is the delay (Result 50).** Result 44 gives a symmetric ball in the
+  dynamics error with a regret quadratic in its radius. Ask the same question about an estimated
+  *delay* and **both halves fail, for the same reason**: the decay-optimal design sits at a
+  **defective** characteristic root.
+
+  *The ball is a half-line.* Designing `K^ = 1/(e tauhat)` and running it against the true `tau`
+  puts the loop gain at `kappa = 1/(e r)`, `r = tauhat/tau`, and the exact boundary caps `kappa` at
+  `pi/2`. Since `kappa` is antitone in `r`, the admissible set is `r > 2/(pi e) = 0.23420`:
+  under-estimating a delay by more than 76% of it destabilises, **over-estimating never does, at any
+  magnitude**. The radius is relative -- a fraction of `tau`, with no length scale -- where Result
+  44's `0.0555` is an absolute norm bound.
+
+  *The loss is a square root on one side and linear on the other.* Substituting `s = -1 + u` turns
+  the characteristic equation into `(u - 1)e^u + 1 = eps`, whose left side has a vanishing first
+  derivative -- the double root. One inverted series `u = w - w^2/3`, `w = sqrt(2 eps)`, covers both
+  regimes by which way `w` points: `sqrt(2 eps) - 2eps/3` over-estimating (two real roots) and
+  `2|eps|/3` under-estimating (a complex pair leaving the axis). At the same `|eps| = 0.05` those
+  are `0.287` and `0.033` -- **8.8x apart from the identical absolute error**. No exponent describes
+  both sides, so `J - J* <= C |dtau|^2` has no analogue and `DelayBall` carries a floor with no
+  ceiling.
+
+  *So the two directions want opposite things, and the interval decides.* `robust_delay_design`
+  takes the ends of a delay interval -- `chc.irf.DelayEstimate.lo` and `.hi` are exactly that -- and
+  returns the minimax `tauhat`. Because the loss is asymmetric the answer is **not the centre**: on
+  `[0.8, 1.25]` it lands at `0.837` against a geometric mean of `1.0` and halves the worst case,
+  `0.528` to `0.270`. The rule has a stated domain -- the shift depends on `hi/lo` alone, deepens to
+  `0.754` near `hi/lo = 3.2`, then **crosses back above the mean at `hi/lo = 13.25`**, where the low
+  end nears the stabilising floor and its saturating loss takes over. It is a regime, not a law.
+
+  *Verified three ways.* `validation/delay_ball.mac`: the root's multiplicity, the substitution
+  residual `0`, the inversion coefficient `-1/3`, the exact complex branch `p = -q cot q` with
+  trigonometric residual `0`. `proofs/delay_ball.v` (Stdlib Reals, standard axioms only) leaves the
+  design constant and the boundary **abstract**, so what is machine-checked is that *any* rule with
+  gain inversely proportional to the assumed delay has this shape -- including `no_upper_radius`, the
+  half-line stated as an unbounded-above existence claim. `delay_ball_certificate` brackets the
+  floor in `(0.9, 1.1)` of its derived value with the loop genuinely diverging below it, and matches
+  the derived loss to the simulated decay rate within `0.93 * dt/tau`, measured flat over an 8x
+  range of `dt`.
+
+  *No Lyapunov-Krasovskii functional, deliberately.* An LKF gives a sufficient condition with an
+  unquantified gap; the characteristic equation gives the exact boundary. That is also why there is
+  no conservatism figure to report against Result 44's 15.5x -- there is no slack to measure.
+
 - **`delay_estimate` -- the shipped IRF turned into a delay with an interval around it.** A lagged
   edge in a causal graph is a claim nobody can check without one. `chc.irf.delay_estimate` locates
   the peak of the identified local-projection IRF and prices it by a **moving-block percentile

@@ -1,0 +1,111 @@
+/* Maxima is the AUTHORITATIVE reference for the stabilising ball in DELAY space.
+
+   Result 44 gives a ball in the dynamics error ||dB||: symmetric, with a regret quadratic in the
+   radius.  This file asks the same question about the DELAY of a plant whose model of it is an
+   estimate.  Both halves of the answer come out different, and they point opposite ways.
+
+   Plant:      x'(t) = -K x(t - tau)                       (a = 0 branch of delay_margin.mac)
+   Design:     the decay-rate-optimal gain for the ESTIMATED delay, K^ = 1/(e tauhat)
+   Applied to: the TRUE delay tau
+
+   Characteristic equation, in s = lambda tau and kappa = K tau:   s exp(s) + kappa = 0.
+   The design puts kappa = K^ tau = 1/(e r) with r = tauhat/tau. */
+
+kappa_of_r(r) := 1/(%e*r)$
+g(s, kappa) := s*exp(s) + kappa$
+
+print("=== 1. the optimum is a DOUBLE root, which is the whole story ===")$
+print("g(-1, 1/e)      =", ratsimp(g(-1, exp(-1))),        " (must be 0)")$
+print("dg/ds  at s=-1  =", ratsimp(subst(s = -1, diff(g(s, kappa), s))), " (must be 0)")$
+print("d2g/ds2 at s=-1 =", ratsimp(subst(s = -1, diff(g(s, kappa), s, 2))),
+      " (must be 1/e, so the root is exactly double)")$
+print("  => the fastest scalar delayed feedback is K* = 1/(e tau), decay rate sigma* = 1/tau,")$
+print("     and it sits at a DEFECTIVE root.  Sensitivity there is sqrt, not quadratic.")$
+
+print("")$
+print("=== 2. the stabilising ball is ONE-SIDED ===")$
+/* delay_margin.mac: the a = 0 boundary is kappa = pi/2. */
+rmin : ratsimp(solve(kappa_of_r(r) = %pi/2, r)[1])$
+print("kappa(r) < pi/2  <=>  r > ", rhs(rmin))$
+fpprec : 25$
+print("  r_min = 2/(pi e) =", bfloat(rhs(rmin)), " -- an UNDER-estimate of tau by more than")$
+print("  rho_minus = 1 - 2/(pi e) =", bfloat(1 - rhs(rmin)), " of tau destabilises the true plant.")$
+print("  r_max = +inf: OVER-estimating the delay never destabilises, at any magnitude,")$
+print("  because kappa = 1/(e r) is antitone in r and the boundary is an upper bound on kappa.")$
+print("  This is where the delay ball parts company with Result 44's symmetric ||dB|| ball.")$
+
+print("")$
+print("=== 3. the rightmost root near the optimum: one series, two regimes ===")$
+/* s = -1 + u and kappa = (1 - eps)/e turn the characteristic equation into h(u) = eps. */
+h(u) := (u - 1)*exp(u) + 1$
+print("substitution check: g(-1+u, (1-eps)/e)*e =",
+      ratsimp(expand(g(-1 + u, (1 - eps)/exp(1))*exp(1)) - (h(u) - eps)), " (must be 0)")$
+hser : taylor(h(u), u, 0, 5)$
+print("h(u) =", hser, " -- h(0) = h'(0) = 0, h''(0) = 1: the double root again")$
+
+/* Invert h(u) = eps as a series in w, where w^2 = 2 eps.  One series covers both branches:
+   for eps > 0 w is real, for eps < 0 it is imaginary, and realpart(u) reads off each case. */
+uapprox : w + c2*w^2$
+eqs : taylor(subst(u = uapprox, h(u)) - w^2/2, w, 0, 3)$
+coefs : solve(coeff(eqs, w, 3), c2)$
+print("order-w^2 inversion coefficient:", coefs, " (the w^1 term is fixed by h''(0) = 1)")$
+uw : subst(coefs[1], uapprox)$
+print("u(w) =", uw, "   with w = sqrt(2 eps)")$
+
+print("")$
+print("--- over-estimated delay (eps > 0): w real, the root stays real ---")$
+print("Re u =", uw, " = sqrt(2 eps) - 2 eps/3 + O(eps^(3/2))")$
+print("  the loss opens as a SQUARE ROOT of the delay error -- the defective root's signature")$
+
+print("")$
+print("--- under-estimated delay (eps < 0): w imaginary, the pair leaves the real axis ---")$
+uneg : ratsimp(realpart(subst(w = %i*v, uw)))$
+print("Re u(i v) =", uneg, "  with v^2 = -2 eps = 2|eps|")$
+print("  = 2|eps|/3: LINEAR in the delay error, and the root also acquires an")$
+print("  imaginary part ~ sqrt(2|eps|), i.e. the response starts to ring before it destabilises")$
+
+print("")$
+print("=== 4. the asymmetry, stated as an inequality ===")$
+print("loss(+eps) - loss(-eps) = sqrt(2 eps) - 2eps/3 - 2eps/3 =",
+      ratsimp(sqrt(2*eps) - 2*eps/3 - 2*eps/3))$
+print("  > 0 exactly when sqrt(2 eps) > 4 eps/3, i.e. eps < 9/8 -- so on the whole")$
+print("  neighbourhood where the expansion is valid, OVER-estimating costs strictly more.")$
+print("  Stability says be conservative; performance says do not.  Both are exact.")$
+
+print("")$
+print("=== 5. numeric cross-check of the series against the exact rightmost root ===")$
+/* eps = (r-1)/r, and the exact rightmost root is a Lambert W branch of -kappa. */
+print("eps(r) residual =", ratsimp((1 - %e*kappa_of_r(r)) - (r-1)/r), " (must be 0)")$
+/* Real branch (kappa <= 1/e) is a Lambert W.  Complex branch: writing s = p + i q, the imaginary
+   part of s exp(s) = -kappa forces p = -q cot(q), and the real part then collapses to
+   kappa = exp(p) q / sin(q).  Both are exact, not fitted. */
+print("complex-branch identity, (p cos q - q sin q) + q/sin(q) at p = -q cot q =",
+      trigsimp(subst(p = -q*cos(q)/sin(q), p*cos(q) - q*sin(q)) + q/sin(q)), " (must be 0)")$
+complex_re(kk) := block([q],
+    q : find_root(lambda([y], exp(-y*cos(y)/sin(y))*y/sin(y) - kk), 1e-9, float(%pi/2)),
+    -q*cos(q)/sin(q))$
+print("  r      eps        Re u exact     Re u series    difference")$
+for rr in [0.5, 0.8, 0.9, 0.95, 1.05, 1.1, 1.25, 1.6] do block(
+    [kk : float(1/(%e*rr)), ee : float((rr-1)/rr), ex, se],
+    ex : if kk <= float(1/%e) then 1 + float(lambert_w(-kk)) else 1 + complex_re(kk),
+    se : float(subst(w = sqrt(2*ee), uw)),
+    if ee < 0 then se : float(subst(v = sqrt(-2*ee), uneg)),
+    print("  ", rr, "  ", ee, "  ", ex, "  ", se, "  ", ex - se))$
+
+print("")$
+print("=== 6. the asymmetry in numbers: equal |delay error|, unequal cost ===")$
+loss_over(e)  := sqrt(2*e) - 2*e/3$
+loss_under(e) := 2*e/3$
+print("  |eps|     loss(over-estimate)   loss(under-estimate)   ratio")$
+for ee in [0.01, 0.02, 0.05, 0.1, 0.2] do
+    print("  ", ee, "   ", float(loss_over(ee)), "   ", float(loss_under(ee)),
+          "   ", float(loss_over(ee)/loss_under(ee)))$
+print("  the ratio diverges as 3/sqrt(2 eps) -- the two branches are not the same order,")$
+print("  so no symmetric ball can describe both.")$
+print("")$
+print("=== 7. what this says to a caller holding an INTERVAL for tau ===")$
+print("  stability wants the largest tau in the interval (over-estimate is free);")$
+print("  performance wants the smallest (over-estimate costs sqrt).  The two disagree,")$
+print("  and the disagreement is exactly why a point estimate of a delay is not enough.")$
+print("  A CENSORED estimate is a LOWER bound on tau, which is the destabilising direction:")$
+print("  designing on it can leave the true plant outside r > 2/(pi e).")$

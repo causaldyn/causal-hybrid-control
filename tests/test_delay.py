@@ -11,16 +11,22 @@ from chc.cost import total_cost
 from chc.delay import (
     DelayedDynamics,
     augment_state,
+    delay_ball,
+    delay_ball_certificate,
+    delay_design_loss,
     delay_margin,
     delay_margin_certificate,
     delayed_of,
     exact_delayed_rollout,
     lift_cost,
     max_stages,
+    optimal_delay_gain,
+    robust_delay_design,
     stages_for_spread,
     state_of,
     state_trajectory,
 )
+from chc.irf import delay_estimate
 
 _TAU, _DT = 1.0, 0.02
 _LAG = round(_TAU / _DT)
@@ -201,3 +207,106 @@ def test_the_margin_certificate_shows_the_loop_actually_destabilising() -> None:
         assert certificate.unstable_delays
         assert certificate.largest_stable_ratio < 1.0 < certificate.smallest_unstable_ratio
         assert abs(certificate.critical_delay - delay_margin(pole, gain)) < 1e-12
+
+
+# --- the stabilising ball in delay space (validation/delay_ball.mac, proofs/delay_ball.v) ---
+
+
+def _ratio_for(eps: float) -> float:
+    """The tau_hat/tau giving a signed relative error eps = (r - 1)/r."""
+    return 1.0 / (1.0 - eps)
+
+
+def test_the_optimal_gain_sits_at_the_double_root() -> None:
+    assert optimal_delay_gain(2.0) == pytest.approx(1.0 / (np.e * 2.0), rel=1e-15)
+    assert delay_design_loss(1.0) == 0.0  # designing for the truth gives up nothing
+
+
+def test_the_stabilising_ball_is_a_half_line_not_a_ball() -> None:
+    ball = delay_ball(3.0)
+    assert ball.ratio_floor == pytest.approx(2.0 / (np.pi * np.e), rel=1e-15)
+    assert ball.shortest_safe_estimate == pytest.approx(ball.ratio_floor * 3.0, rel=1e-15)
+    assert ball.relative_radius == pytest.approx(0.7658006739, abs=1e-9)
+    assert delay_design_loss(0.9 * ball.ratio_floor) == float("inf")  # below the floor: no rate
+    assert np.isfinite(delay_design_loss(1e6))  # ...and no ceiling, at any over-estimate
+
+
+def test_over_estimating_a_delay_costs_far_more_than_under_estimating_it() -> None:
+    """The same |eps| either way: 0.287 against 0.033. No symmetric radius can describe both."""
+    over, under = delay_design_loss(_ratio_for(0.05)), delay_design_loss(_ratio_for(-0.05))
+    assert over == pytest.approx(0.287, abs=5e-3)
+    assert under == pytest.approx(0.033, abs=5e-3)
+    assert over / under > 8.0
+
+
+def test_the_loss_is_square_root_one_side_and_linear_the_other() -> None:
+    """The orders differ because the design sits at a DEFECTIVE root -- the whole result."""
+    for eps, tolerance in ((1e-2, 0.05), (1e-4, 5e-3), (1e-6, 5e-4)):
+        assert delay_design_loss(_ratio_for(eps)) / np.sqrt(2.0 * eps) == pytest.approx(
+            1.0, abs=tolerance
+        )
+        assert delay_design_loss(_ratio_for(-eps)) / (2.0 * eps / 3.0) == pytest.approx(
+            1.0, abs=tolerance
+        )
+
+
+def test_the_ball_certificate_shows_the_loop_actually_destabilising() -> None:
+    certificate = delay_ball_certificate(dt=0.004, horizon=40.0)
+    assert certificate.ok
+    assert certificate.unstable_ratios  # ...and it can fail: both sides must be populated
+    assert certificate.stable_ratios
+    assert certificate.largest_unstable < 1.0 < certificate.smallest_stable
+    assert certificate.worst_loss_error < 2.0 * 0.004  # the derived loss IS the simulated one
+
+
+def test_the_minimax_design_sits_below_the_centre_of_an_informative_interval() -> None:
+    design = robust_delay_design(0.8, 1.25)
+    geometric_mean = np.sqrt(0.8 * 1.25)
+    assert design.tau_design == pytest.approx(0.8366, abs=1e-3)
+    assert design.tau_design < geometric_mean  # asymmetric loss, asymmetric answer
+    naive = max(delay_design_loss(geometric_mean / 1.25), delay_design_loss(geometric_mean / 0.8))
+    assert design.worst_case_loss < naive / 1.8  # and it nearly halves the worst case
+    assert design.stabilises_interval
+
+
+def test_the_minimax_shift_reverses_once_the_interval_stops_being_informative() -> None:
+    """Past hi/lo = 13.25 the low end nears the stabilising floor and dominates instead."""
+    narrow = robust_delay_design(1.0 / np.sqrt(8.0), np.sqrt(8.0))
+    wide = robust_delay_design(1.0 / np.sqrt(20.0), np.sqrt(20.0))
+    assert narrow.tau_design < 1.0 < wide.tau_design  # geometric mean is 1.0 in both
+
+
+def test_a_delay_interval_that_is_empty_or_inverted_is_rejected() -> None:
+    with pytest.raises(ValueError, match="0 < lo <= hi"):
+        robust_delay_design(1.0, 0.5)
+    with pytest.raises(ValueError, match="0 < lo <= hi"):
+        robust_delay_design(0.0, 1.0)
+    with pytest.raises(ValueError, match="ratio must be positive"):
+        delay_design_loss(0.0)
+    with pytest.raises(ValueError, match="tau must be positive"):
+        delay_ball(-1.0)
+    with pytest.raises(ValueError, match="tau must be positive"):
+        optimal_delay_gain(0.0)
+
+
+def test_a_degenerate_interval_designs_for_the_point_it_names() -> None:
+    design = robust_delay_design(1.5, 1.5)
+    assert design.tau_design == 1.5
+    assert design.worst_case_loss == 0.0
+
+
+def test_an_estimated_delay_interval_drives_the_robust_design() -> None:
+    """The bridge: chc.irf prices the delay, chc.delay decides what to build for it."""
+    rng = np.random.default_rng(0)
+    n, lag, dt = 1200, 6, 0.05
+    u = rng.standard_normal(n)
+    x = np.zeros(n)
+    for t in range(1, n):
+        x[t] = 0.7 * x[t - 1] + (u[t - lag] if t >= lag else 0.0) + 0.3 * rng.standard_normal()
+    estimate = delay_estimate({"x": x, "u": u}, horizon=14, dt=dt)
+    assert not estimate.censored
+    assert estimate.lo <= lag * dt <= estimate.hi
+
+    design = robust_delay_design(max(estimate.lo, 1e-6), estimate.hi)
+    assert design.stabilises_interval
+    assert estimate.lo <= design.tau_design <= estimate.hi
