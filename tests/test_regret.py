@@ -20,6 +20,7 @@ from chc.regret import (
     confounded_turnpike_certificate,
     conjugate_time_certificate,
     constrained_ce_regret_certificate,
+    delayed_network_certificate,
     dlqr,
     doubly_robust_control_certificate,
     dynamic_causal_regret_certificate,
@@ -627,3 +628,38 @@ def test_linearized_certificate_matches_the_lq_gap_on_the_linearisation() -> Non
     )
     cert = linearized_regret_certificate(dyn, dyn_hat, x_star, u_star, Q, R, X0, 0.1)
     assert np.isclose(cert, direct)  # the helper just linearises, then calls the LQ gap
+
+
+def test_delayed_network_law_and_the_limit_of_its_design_rule() -> None:
+    # Result 51 (proofs/delayed_network_exposure.v): once a delay PROPAGATES THROUGH THE NETWORK,
+    # Sigma stops being separable and Psi becomes a polynomial in phi^delta. Everything below is
+    # measured against trajectories drawn from the generative definition, not from the formula.
+    curve = delayed_network_certificate(n_draws=20_000)
+
+    # 1. the polynomial predicts the simulated ratio, on both fold partitions
+    for law, sim in (
+        (curve.psi_law_parity, curve.psi_sim_parity),
+        (curve.psi_law_block, curve.psi_sim_block),
+    ):
+        assert np.all(np.abs(sim - law) < 5.0 * curve.sim_stderr)
+
+    # 2. the damage is a DESIGN question, not a sample-size one: alternating folds put every
+    #    neighbour across the boundary and the delay moves Psi 4x further than for aligned folds
+    assert curve.swing_parity > 4.0 * curve.swing_block
+    assert curve.swing_parity > 3.0  # the misaligned arm loses a factor of several on Psi
+
+    # 3. the theta* law holds in ITS OWN regime and is overturned outside it. With only
+    #    nearest-neighbour spillover the sign is decided by which side of theta* the partition sits;
+    #    the shell-1<->shell-2 term is larger than the D=1 term on the aligned arm and flips it
+    #    back.
+    assert curve.theta_parity < curve.theta_star < curve.theta_block
+    assert curve.u1_nearest_parity < 0.0 < curve.u1_nearest_block
+    assert abs(curve.u1_cross_block) > abs(curve.u1_nearest_block)
+    assert curve.u_block[1] < 0.0  # so the aligned arm's u_1 is negative after all
+    assert curve.theta_star > 0.5  # strictly above the 1/K a random balanced partition achieves
+
+    # 4. delta = 0 must lose phi entirely -- STEP 7 of the gate file, reached from this side
+    assert abs(curve.separable_spread) < 1e-12
+
+    # 5. the exchangeable limit is Result 43's fold-geometry constant, unchanged
+    assert abs(curve.c_fold_measured / curve.c_fold_predicted - 1.0) < 1e-12

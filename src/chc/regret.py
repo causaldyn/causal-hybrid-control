@@ -1220,6 +1220,222 @@ def cluster_fold_leakage_certificate(
 
 
 @dataclass(frozen=True)
+class DelayedNetworkCurve:
+    """Result 51: what a delay PROPAGATING THROUGH THE NETWORK does to row-level cross-fitting."""
+
+    phi_grid: Vector  # serial correlation of the innovations
+    psi_law_parity: Vector  # the polynomial in phi^delta, folds ALTERNATING around the cycle
+    psi_sim_parity: Vector  # the same quantity measured on simulated trajectories
+    psi_law_block: Vector  # ... and with CONTIGUOUS-BLOCK folds, which align with the graph
+    psi_sim_block: Vector
+    sim_stderr: Vector  # the LARGER of the two arms' Monte-Carlo standard errors at each phi
+    swing_parity: float  # psi(phi=0)/psi(phi=max): how far the delay moves the misaligned arm
+    swing_block: float  # ... and the aligned one. The gap IS the design law
+    u_parity: Vector  # polynomial coefficients; u_1 < 0 is the direction of the leak
+    u_block: Vector
+    theta_parity: float  # same-fold edge fraction of each partition
+    theta_block: float
+    theta_star: float  # K^3/(4K^3-6K^2+4K-1): where u_1 would vanish at D = 1. Always above 1/K
+    u1_nearest_parity: float  # u_1 with the far shells switched off: the theta* law's own regime
+    u1_nearest_block: float  # ... POSITIVE here, because block folds sit above theta*
+    u1_cross_block: float  # ... and the shell-1<->shell-2 term that flips it negative again
+    separable_spread: float  # at delta = 0 the law must lose phi entirely -- this must be ~0
+    c_fold_measured: float  # exchangeable limit: m*tr(Au^2)/tr(Au)^2 read off the projector
+    c_fold_predicted: float  # m(m+14)/(m+2)^2 at K=2 -- the same constant Result 43 uses
+
+
+def _cycle_shells(m: int, dmax: int) -> list[NDArray[np.float64]]:
+    """0/1 distance-d indicator matrices of the cycle C_m."""
+    i = np.arange(m)
+    gap = np.abs(i[:, None] - i[None, :])
+    dist = np.minimum(gap, m - gap)
+    return [(dist == d).astype(float) for d in range(dmax + 1)]
+
+
+def _fold_sandwich(m: int, k_folds: int, fold: NDArray[np.int_]) -> NDArray[np.float64]:
+    """A_u = M'M for the cross-fit residualiser M = I - F_opp, in closed form.
+
+    E^2 = E, F^2 = F and EF = FE = E, so <I,E,F> is closed and A_u = I - r^2 E + (r^2-1) F with
+    r = K/(K-1). Its eigenvalues are 0 on span(1), r^2 on the K-1 fold contrasts and 1 within folds:
+    row-level cross-fitting over-weights the fold-contrast subspace by exactly r^2, and by r^4 once
+    squared inside the sandwich. That factor is the whole of Result 51.
+    """
+    grand = np.full((m, m), 1.0 / m)
+    within = (fold[:, None] == fold[None, :]) * (k_folds / m)
+    r = k_folds / (k_folds - 1)
+    return np.eye(m) - r**2 * grand + (r**2 - 1) * within
+
+
+def delayed_network_certificate(
+    *,
+    cluster_size: int = 6,
+    n_times: int = 5,
+    lag: int = 1,
+    gammas: Sequence[float] = (1.0, 0.7, 0.4),
+    phi_grid: Sequence[float] = (0.0, 0.3, 0.6, 0.9),
+    n_draws: int = 40_000,
+    burn_in: int = 40,
+    seed: int = 20260830,
+) -> DelayedNetworkCurve:
+    """RESULT 51 -- the non-separable half of the delayed-exposure gate (derived in
+    ``validation/delayed_network_exposure.mac``, proved in ``proofs/delayed_network_exposure.v``).
+
+    ``validation/delayed_exposure_gate.mac`` STEP 7 showed that a delay costs NOTHING under a
+    separable covariance ``Sigma = Sigma_u (x) T`` with unit-level folds: ``tr(T)`` cancels between
+    numerator and denominator and Result 43 transfers verbatim, with ``dPsi/dphi = 0``. The only
+    remaining route is a delay that INTERACTS WITH THE NETWORK -- a shell-``d`` neighbour's
+    influence arriving at lag ``delta*d``::
+
+        x_i(t) = sum_d g_d sum_{j : dist(i,j)=d} z_j(t - delta d)
+        Cov(z_j(t), z_k(s)) = 1{j=k} phi^|t-s|
+
+    so ``Sigma = sum_{d,e} g_d g_e (S_d S_e) (x) T_{d-e}``, separable only at ``delta = 0``. Because
+    ``tr(S_d S_e) = 0`` for ``d != e`` -- a vertex cannot sit at two distinct distances from
+    ``i`` -- the DENOMINATOR of the sandwich is delay-blind, and ``Psi`` is a POLYNOMIAL in
+    ``x = phi^delta`` of degree the spillover truncation, NOT of degree the graph diameter.
+
+    What this certificate can fail on, in the order it would matter:
+
+    1. ``psi_sim_*`` is measured on trajectories drawn from the GENERATIVE definition, never from
+       the Kronecker formula, so a wrong covariance model shows up as a mismatch with ``psi_law_*``.
+    2. The two fold partitions differ only in how they ALIGN with the cycle -- alternating folds put
+       every neighbour across the fold boundary, contiguous blocks keep most of them inside. If the
+       delay's damage were a sample-size question rather than a design question, the two swings
+       would agree; they do not.
+    3. The ``theta*`` design law and ITS LIMIT, in the same run. With only nearest-neighbour
+       spillover, ``u_1`` is exactly affine in the same-fold edge fraction with root
+       ``theta*(K) = K^3/(4K^3-6K^2+4K-1)``, so ``u1_nearest_parity < 0 < u1_nearest_block``:
+       alternating folds sit at ``theta = 0`` and contiguous blocks at ``2/3``, on opposite sides of
+       ``theta* = 8/15``. Switching the second shell back on adds ``u1_cross_block``, which is
+       LARGER in magnitude than ``u1_nearest_block`` and drags the block arm's ``u_1`` negative
+       again. So the fold-alignment rule is a ``D = 1`` rule, and longer-range spillover can defeat
+       it -- a limit measured here rather than asserted.
+    4. ``separable_spread`` re-derives STEP 7 from this side: at ``delta = 0`` the law must lose
+       ``phi`` entirely.
+
+    HONEST SCOPE. ``Psi`` here is the sandwich functional
+    ``N^2 tr(A Sigma A)/(tr(A)^2 tr(Sigma))`` that
+    ``validation/delayed_exposure_gate.mac`` STEP 6 forced, evaluated with the fold operator
+    held fixed while ``Sigma`` varies. It is not a re-derived estimator, and
+    ``ConfoundedNetworkSystem`` is cross-sectional, so ``phi`` and ``delta`` are model parameters
+    rather than fitted ones. What this gives the code today is a fold-assignment rule with a
+    number attached.
+    """
+    m, p, k_folds = int(cluster_size), int(n_times), 2
+    gam = np.asarray(gammas, dtype=float)
+    dmax = gam.size - 1
+    phis = np.asarray(phi_grid, dtype=float)
+    shells = _cycle_shells(m, dmax)
+    adjacency = shells[1]
+
+    def coefficients(au: NDArray[np.float64]) -> tuple[NDArray[np.float64], float]:
+        u = np.zeros(dmax + 1)
+        v0 = 0.0
+        for d in range(dmax + 1):
+            for e in range(dmax + 1):
+                u[abs(d - e)] += gam[d] * gam[e] * float(np.trace(au @ shells[d] @ shells[e] @ au))
+            v0 += gam[d] ** 2 * float(np.trace(shells[d] @ shells[d]))
+        return u, v0
+
+    def law(au: NDArray[np.float64], u: NDArray[np.float64], v0: float, phi: float) -> float:
+        powers = phi ** (lag * np.arange(dmax + 1))
+        return float(m**2 * (u * powers).sum() / (np.trace(au) ** 2 * v0))
+
+    def simulate(rng: np.random.Generator, phi: float) -> NDArray[np.float64]:
+        span = burn_in + p + lag * dmax
+        z = np.empty((n_draws, m, span))
+        z[:, :, 0] = rng.standard_normal((n_draws, m))
+        innov = np.sqrt(max(0.0, 1.0 - phi**2))
+        for t in range(1, span):
+            z[:, :, t] = phi * z[:, :, t - 1] + innov * rng.standard_normal((n_draws, m))
+        base = burn_in + lag * dmax
+        x = np.zeros((n_draws, m, p))
+        for d in range(dmax + 1):
+            start = base - lag * d
+            x += gam[d] * np.einsum("ij,njt->nit", shells[d], z[:, :, start : start + p])
+        return x.reshape(n_draws, m * p)
+
+    partitions = {
+        "parity": np.arange(m) % k_folds,
+        "block": (np.arange(m) >= m // k_folds).astype(int),
+    }
+    laws: dict[str, NDArray[np.float64]] = {}
+    sims: dict[str, NDArray[np.float64]] = {}
+    coefs: dict[str, NDArray[np.float64]] = {}
+    thetas: dict[str, float] = {}
+    errs: list[float] = []
+    for name, fold in partitions.items():
+        au = _fold_sandwich(m, k_folds, fold)
+        big = np.kron(au, np.eye(p))
+        gram = big @ big
+        u, v0 = coefficients(au)
+        coefs[name] = u
+        same = (fold[:, None] == fold[None, :]).astype(float)
+        thetas[name] = float((same * adjacency).sum() / adjacency.sum())
+        laws[name] = np.array([law(au, u, v0, float(phi)) for phi in phis])
+        measured = np.empty(phis.size)
+        for i, phi in enumerate(phis):
+            x = simulate(np.random.default_rng(seed + 101 * i), float(phi))
+            num = np.einsum("ni,ij,nj->n", x, gram, x) / np.trace(big) ** 2
+            den = np.einsum("ni,ni->n", x, x) / (m * p) ** 2
+            ratio = float(num.mean() / den.mean())
+            measured[i] = ratio
+            cov = float(np.cov(num, den)[0, 1])
+            rel = (
+                num.var(ddof=1) / num.mean() ** 2
+                + den.var(ddof=1) / den.mean() ** 2
+                - 2.0 * cov / (num.mean() * den.mean())
+            )
+            errs.append(abs(ratio) * float(np.sqrt(max(rel, 0.0)) / np.sqrt(n_draws)))
+        sims[name] = measured
+
+    # The theta* design law lives at D = 1; isolate it by switching the far shells off, and keep
+    # the shell-1<->shell-2 term that overturns it on the aligned partition.
+    def u1_parts(fold: NDArray[np.int_]) -> tuple[float, float]:
+        au = _fold_sandwich(m, k_folds, fold)
+        nearest = 2.0 * gam[0] * gam[1] * float(np.trace(au @ shells[0] @ shells[1] @ au))
+        cross = (
+            2.0 * gam[1] * gam[2] * float(np.trace(au @ shells[1] @ shells[2] @ au))
+            if dmax >= 2
+            else 0.0
+        )
+        return nearest, cross
+
+    nn_parity, _ = u1_parts(partitions["parity"])
+    nn_block, cross_block = u1_parts(partitions["block"])
+
+    # delta = 0: every band carries the same time kernel, so phi must drop out of the law entirely.
+    au_parity = _fold_sandwich(m, k_folds, partitions["parity"])
+    u_par, v0_par = coefficients(au_parity)
+    flat = [float(m**2 * u_par.sum() / (np.trace(au_parity) ** 2 * v0_par)) for _ in phis]
+    # the exchangeable limit is Result 43's fold-geometry constant, read off the same projector
+    m_f = float(m)
+    r = k_folds / (k_folds - 1)
+    c_measured = m_f * float(np.trace(au_parity @ au_parity)) / float(np.trace(au_parity)) ** 2
+    return DelayedNetworkCurve(
+        phis,
+        laws["parity"],
+        sims["parity"],
+        laws["block"],
+        sims["block"],
+        np.maximum(np.array(errs[: phis.size]), np.array(errs[phis.size :])),
+        float(laws["parity"][0] / laws["parity"][-1]),
+        float(laws["block"][0] / laws["block"][-1]),
+        coefs["parity"],
+        coefs["block"],
+        thetas["parity"],
+        thetas["block"],
+        float(k_folds**3 / (4 * k_folds**3 - 6 * k_folds**2 + 4 * k_folds - 1)),
+        nn_parity,
+        nn_block,
+        cross_block,
+        float(np.ptp(flat)),
+        c_measured,
+        m_f * (m_f + 14.0) / (m_f + 2.0) ** 2 if r == 2.0 else float("nan"),
+    )
+
+
+@dataclass(frozen=True)
 class OptimalExplorationCurve:
     """Explore-exploit for causal control: excess(v) = A*v + B/v is minimised at v* = sqrt(B/A)."""
 

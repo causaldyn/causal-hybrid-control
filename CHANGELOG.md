@@ -31,6 +31,13 @@ still change).
   STEP 7 at `delta = 0` and to Result 43 on a complete graph, with `c(m,K)` now closed-form and its
   excess exactly `(10m-4)/(m+2)^2` at `K = 2`.
 
+  Certified by `chc.regret.delayed_network_certificate`, which measures `Psi` on trajectories drawn
+  from the GENERATIVE definition rather than from the Kronecker formula (all eight cells within 1.5
+  Monte-Carlo standard errors at 4e5 draws), and which also measures the design law's LIMIT: the
+  `theta*` rule is a `D = 1` statement, and on `C_6` the shell-1<->shell-2 term (`-13.44`) is larger
+  than the `+11.20` an aligned partition buys, so alignment SHRINKS the damage (6.57x swing vs 1.34x
+  on the certificate's grid) rather than removing it.
+
 - **`DelayOscillationTask` -- the leaderboard row where ignoring a delay is a *bifurcation*, not a
   tuning error.** An incentive moves supply `tau` later, so the plant is `x' = channel*u(t - tau)`;
   proportional feedback closes it to `x' = -channel*K*x(t - tau)`, whose exact boundary is
