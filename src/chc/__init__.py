@@ -123,9 +123,12 @@ from chc.gmethods import naive_pooled_effect, sequential_g_formula
 from chc.independence import partial_corr_test
 from chc.integrate import rk4_step, rollout
 from chc.irf import (
+    DelayEstimate,
+    delay_estimate,
     innovations,
     irf_control_sequence,
     local_projection_irf,
+    peak_lag,
     structured_irf,
 )
 from chc.koopman import KoopmanModel, koopman_controller, koopman_lqr_gain
@@ -413,6 +416,7 @@ __all__ = [
     "ConvectionDiffusionCurve",
     "DampedOscillator",
     "DampingInjectionCertificate",
+    "DelayEstimate",
     "DelayMarginCertificate",
     "DelayedDynamics",
     "DoWhyEstimator",
@@ -572,6 +576,7 @@ __all__ = [
     "cvar_upper",
     "damping_injection_certificate",
     "de_chaisemartin",
+    "delay_estimate",
     "delay_margin",
     "delay_margin_certificate",
     "delayed_of",
@@ -653,6 +658,7 @@ __all__ = [
     "overshoot",
     "partial_corr_test",
     "partial_id_control_certificate",
+    "peak_lag",
     "periodic_smoothing_kernel",
     "periodic_wavenumbers",
     "pessimism_variance_certificate",

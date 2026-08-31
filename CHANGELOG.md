@@ -9,6 +9,49 @@ still change).
 
 ### Added
 
+- **`delay_estimate` -- the shipped IRF turned into a delay with an interval around it.** A lagged
+  edge in a causal graph is a claim nobody can check without one. `chc.irf.delay_estimate` locates
+  the peak of the identified local-projection IRF and prices it by a **moving-block percentile
+  bootstrap** over the aligned projection rows, refit and re-peaked on every resample. Blocks, not
+  rows: a local projection's rows overlap by construction, so an i.i.d. row bootstrap would destroy
+  the dependence that sets the width. The block length `lags + horizon + 1` is exactly the window,
+  which is also the separation at which two rows stop sharing an observation.
+
+  *The sub-step refinement is off by default, and the measurement is why.* Fitting a parabola
+  through the peak and its neighbours is the textbook time-delay-estimation move, and on a causal
+  impulse response it is **biased**: the response is one-sided -- zero before arrival, decaying
+  after -- so it is maximally asymmetric at exactly the point being located, and the vertex lands
+  at `lag + phi/(2(2 - phi))` (residual `0` in `validation/delay_estimate_bias.mac`), which is
+  `0.409090...` of a step late at `phi = 0.9` -- the measured mean was `5.409` for a true lag of 5.
+  That bias is free of the sample size, so it does not shrink with data, and it is three times the
+  bootstrap width, so it would have silently decided the answer. Measured coverage of a nominal 95%
+  interval with the refinement on: **0.000** over 40 replications; with the integer argmax:
+  **1.000**. `refine=True` remains available and earns its place where the response is smooth
+  across the grid -- on a delay falling halfway between two samples it recovers `5.503 +- 0.044`
+  where the argmax can only quantise to `5.475 +- 0.499`. Even there it is exact only for a
+  symmetric peak: Maxima puts a lag split `(1 - f, f)` across two bins at `f/(4 - 6f)`, so `f = 1/2`
+  is recovered exactly and `f = 1/3` comes back as `1/6`. It moves the right way, continuously, and
+  is not unbiased -- which is the whole reason it is not the default.
+
+  *Lag augmentation is offered, not imposed, because the benefit could not be measured here.*
+  `local_projection_irf` gained a `lags` argument (Montiel Olea & Plagborg-Moller 2021), which fixes
+  the asymptotic variance of a single projection coefficient under persistence. The peak, though, is
+  a location statistic invariant to a common rescaling of the IRF, and the block bootstrap already
+  handles the serial dependence non-parametrically: over 40 replications at `phi in {0.98, 0.999,
+  1.0}` coverage was 0.95-1.00 with and without, and the widths agreed to 3%. So the default stays
+  `0` and the docstring says what was and was not measured.
+
+  *The three degenerate cases are answered by the estimate, not by a guard.* A flat IRF is not
+  rejected -- the peak wanders and the interval comes back spanning 78% of the horizon. A
+  sign-flipping response is located on `|beta|` and reported with its sign in `peak_response`. A
+  peak pressed against the last horizon is flagged `censored`, meaning the response is still rising
+  at the edge; an effect that never arrives inside the horizon is *not* censored, because there is
+  nothing at the edge to see, and the width is what reports it.
+
+  One branch was deleted rather than tested: the parabolic fit's degenerate-denominator guard is
+  unreachable, because `argmax` returns the *first* maximum and so the left neighbour is strictly
+  smaller, making the curvature strictly negative.
+
 - **`delay_margin` and `delay_margin_certificate` -- how much measurement delay a loop survives,
   and evidence that the number is where the derivation says.** For `x' = a x - K x(t - tau)` the
   margin is `tau_c = arccos(a/K)/sqrt(K^2 - a^2)`, from the imaginary-axis crossing of

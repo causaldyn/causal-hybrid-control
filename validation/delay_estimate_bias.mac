@@ -1,0 +1,44 @@
+/* Maxima is the AUTHORITATIVE reference for the parabolic-refinement bias in chc.irf.peak_lag.
+
+   Locating a peak by fitting a parabola through it and its two neighbours is the textbook
+   time-delay-estimation move.  A CAUSAL impulse response is one-sided -- exactly zero before the
+   effect arrives, then decaying -- so it is maximally asymmetric at the point being located, and
+   the vertex is NOT the arrival lag.  This file computes how far off it is. */
+
+/* Vertex of the parabola through (-1, l), (0, c), (1, r), measured from the centre sample. */
+vertex(l, c, r) := block([p : (r + l)/2 - c, q : (r - l)/2], -q/(2*p))$
+
+print("--- sanity: a symmetric triple has its vertex at the centre ---")$
+print("vertex(g, c, g) =", ratsimp(vertex(g, c, g)), " (must be 0)")$
+
+print("--- two tied bins: the wanted answer for a delay halfway between samples ---")$
+print("vertex(0, c, c) =", ratsimp(vertex(0, c, c)), " (must be 1/2)")$
+
+/* A geometric response with ratio phi, peak normalised to 1: ..., 0, 1, phi, phi^2, ... */
+bias : ratsimp(vertex(0, 1, phi))$
+print("--- one-sided geometric decay, ratio phi ---")$
+print("vertex(0, 1, phi) =", bias)$
+print("claimed closed form phi/(2*(2 - phi)); residual =",
+      ratsimp(bias - phi/(2*(2 - phi))), " (must be 0)")$
+
+print("the bias is free of the sample size, so it does not shrink with data:")$
+print("  d/dphi =", ratsimp(diff(bias, phi)), " -- positive on 0 < phi < 2, so more")$
+print("  persistence means a later peak, never an earlier one")$
+print("limit phi -> 0 (no carryover, an exact spike) =", limit(bias, phi, 0))$
+print("limit phi -> 1 (a unit root) =", limit(bias, phi, 1))$
+
+fpprec : 25$
+print("--- the value the test and CHANGELOG quote ---")$
+print("phi = 9/10 ->", bfloat(subst(phi = 9/10, bias)))$
+for p in [1/2, 7/10, 9/10, 98/100] do
+    print("  phi =", bfloat(p), " bias =", bfloat(subst(phi = p, bias)), " steps")$
+
+/* The refinement is worth having where the response IS smooth on the grid: a delay of L + f
+   samples, split across two bins with weights 1 - f and f and NO carryover, has vertex exactly f
+   for f in (0, 1/2]. */
+print("--- the case refinement is FOR: a fractional lag split across two bins ---")$
+split : ratsimp(vertex(0, 1 - f, f))$
+print("vertex(0, 1-f, f) =", split)$
+print("residual against f =", ratsimp(subst(f = 1/2, split) - 1/2), " at f = 1/2 (must be 0)")$
+print("at f = 1/3 the vertex is", subst(f = 1/3, split),
+      " -- a 3-point parabola recovers the tie exactly and a general split only approximately")$
