@@ -9,6 +9,38 @@ still change).
 
 ### Added
 
+- **`delay_margin` and `delay_margin_certificate` -- how much measurement delay a loop survives,
+  and evidence that the number is where the derivation says.** For `x' = a x - K x(t - tau)` the
+  margin is `tau_c = arccos(a/K)/sqrt(K^2 - a^2)`, from the imaginary-axis crossing of
+  `lambda - a + K exp(-lambda tau)`; both real and imaginary residuals are exactly `0` in Maxima
+  (`validation/delay_margin.mac`), and the Python agrees with the 30-digit table to `5e-11`. At
+  `a = 0` this is the textbook `K tau = pi/2`.
+
+  *Two facts that fall out of the formula rather than being cited.* Margin is antitone in gain, so
+  every unit of loop gain is bought with delay tolerance; and `tau_c -> 1/a` as `K -> a+` while
+  decreasing in `K` from there, which recovers the classical single-real-unstable-pole limitation
+  -- an unstable pole `a` admits **no** controller past `tau = 1/a`.
+
+  *Computed from the exact characteristic equation, deliberately not from the delay line.* The two
+  available discretisations err in opposite directions, both derived: the `m`-stage chain of
+  `DelayedDynamics` sits `+pi^2/(8m)` **above** the true boundary (optimistic), and explicit Euler
+  with an exact integer lag sits `-1/(2m)` **below** it (conservative; series `pi/2 - pi e/4` in
+  `e = 1/m`). `pi^2/8 = 1.23` against `1/2`, so the optimistic error is also the larger one. The
+  certificate therefore simulates with `exact_delayed_rollout`: a conservative simulator that still
+  destabilises past `tau_c` is evidence, an optimistic one staying stable just inside it would not
+  be. Its `ratios` step over the `~1/(2m)` band where the discretisation rather than the plant
+  decides, and it brackets the boundary in `(0.95, 1.05) * tau_c` on all three test plants -- with
+  the far side actually unstable, so the certificate can fail.
+
+  *Rocq* (`proofs/delay_margin.v`, Stdlib Reals only, no axioms beyond the standard three): the
+  algebraic core -- `a^2 + w^2 = K^2`, `(a/K, w/K)` on the unit circle (which is what makes a
+  simultaneous `cos = a/K`, `sin = w/K` possible at all), positivity of the crossing frequency, and
+  the `a = 0` branch with its antitonicity. The transcendental half -- that `tau_c` is the
+  *smallest* positive crossing, and the `1/a` limit -- stays in Maxima and the certificate, which
+  is the same scoping the rest of `proofs/` uses. One lemma was stated strictly (`w < K`) and is
+  false at `a = 0`, where the two coincide; it ships non-strict, with the strict version guarded on
+  `0 < a`.
+
 - **`chc.delay` -- a delayed plant that every existing solver already knows how to solve.** A
   discrete delay `x(t - tau)` is not a finite-dimensional vector field, so it cannot be a
   `chc.dynamics.Dynamics`. The `m`-stage linear chain is one: `x' = f(t, x, b_m, u)` with

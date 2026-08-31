@@ -48,10 +48,12 @@ rather than tuned into.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from chc.cost import QuadraticCost
@@ -205,3 +207,93 @@ def exact_delayed_rollout(
 
     _, xs = jax.lax.scan(body, (jnp.asarray(t0), history), us)
     return jnp.concatenate([x0[None, :], xs], axis=0)
+
+
+@dataclass(frozen=True)
+class DelayMarginCertificate:
+    """Evidence that the delay margin is where the closed form says it is, on both sides."""
+
+    pole: float
+    gain: float
+    critical_delay: float
+    stable_delays: tuple[float, ...]  # multiples of the critical delay that stayed bounded
+    unstable_delays: tuple[float, ...]  # multiples that grew
+    largest_stable_ratio: float  # the biggest tau/tau_c that stayed bounded
+    smallest_unstable_ratio: float  # the smallest that did not
+    ok: bool
+
+
+def delay_margin(pole: float, gain: float) -> float:
+    """Largest measurement delay the loop ``x' = pole*x - gain*x(t - tau)`` tolerates.
+
+    ``tau_c = arccos(pole/gain) / sqrt(gain^2 - pole^2)``, from the imaginary-axis crossing of
+    ``lambda - pole + gain exp(-lambda tau)`` (``validation/delay_margin.mac``; both real and
+    imaginary residuals are exactly ``0``). At ``pole = 0`` this is ``pi/(2 gain)``, the textbook
+    ``K tau = pi/2``.
+
+    Computed from the *exact* characteristic equation, deliberately not from the delay line of
+    :class:`DelayedDynamics`: the chain's own boundary sits **above** this one by ``pi^2/(8m)``,
+    so reading a margin off the simulator would call a loop safe past the point where it is not.
+
+    ``gain <= pole`` raises: with ``pole > 0`` a gain that small does not stabilise the loop even
+    at zero delay, so "the largest tolerable delay" names nothing. The formula also carries its own
+    fundamental limit -- ``tau_c -> 1/pole`` as ``gain -> pole+``, and it *decreases* in ``gain``
+    from there, so an unstable pole admits **no** gain past ``tau = 1/pole``.
+    """
+    if gain <= abs(pole):
+        raise ValueError(
+            f"gain must exceed |pole| for the delay-free loop to be stable; got gain={gain}, "
+            f"pole={pole}"
+        )
+    return float(np.arccos(pole / gain) / np.sqrt(gain**2 - pole**2))
+
+
+def delay_margin_certificate(
+    pole: float = 0.0,
+    gain: float = 1.0,
+    dt: float = 0.002,
+    ratios: tuple[float, ...] = (0.5, 0.8, 0.95, 1.05, 1.3, 2.0),
+    horizon: float = 400.0,
+) -> DelayMarginCertificate:
+    """Sweep ``tau`` across :func:`delay_margin` and check the loop really changes behaviour there.
+
+    Simulated with :func:`exact_delayed_rollout` rather than the chain, for two reasons: the lag is
+    exact at ``tau/dt`` steps, and explicit Euler errs *conservative* -- its own boundary sits
+    ``1/(2m)`` **below** the continuous one, against the chain's ``+pi^2/(8m)`` above. A
+    conservative simulator that still shows instability past ``tau_c`` is evidence; an optimistic
+    one showing stability just inside it would not be.
+
+    That leaves a band of width ``~1/(2m)`` around ``tau_c`` where the discretisation, not the
+    plant, decides the verdict, so ``ratios`` deliberately steps over it rather than into it.
+    """
+    critical = delay_margin(pole, gain)
+
+    def core(t: float | Array, x: Array, x_delayed: Array, u: Array) -> Array:
+        return pole * x - gain * x_delayed
+
+    x0 = jnp.array([1.0])
+    stable: list[float] = []
+    unstable: list[float] = []
+    for ratio in ratios:
+        tau = ratio * critical
+        lag = max(1, round(tau / dt))
+        steps = int(horizon / dt)
+        xs = exact_delayed_rollout(core, x0, jnp.zeros((steps, 1)), dt, lag)
+        early = float(jnp.max(jnp.abs(xs[: steps // 4])))
+        late = float(jnp.max(jnp.abs(xs[-steps // 4 :])))
+        (unstable if late > early else stable).append(ratio)
+
+    largest_stable = max(stable) if stable else 0.0
+    smallest_unstable = min(unstable) if unstable else float("inf")
+    return DelayMarginCertificate(
+        pole=pole,
+        gain=gain,
+        critical_delay=critical,
+        stable_delays=tuple(stable),
+        unstable_delays=tuple(unstable),
+        largest_stable_ratio=largest_stable,
+        smallest_unstable_ratio=smallest_unstable,
+        # The boundary must sit inside (largest stable, smallest unstable), and both sides must be
+        # non-empty -- a sweep where nothing destabilised would prove nothing about the margin.
+        ok=bool(stable) and bool(unstable) and largest_stable < 1.0 < smallest_unstable,
+    )

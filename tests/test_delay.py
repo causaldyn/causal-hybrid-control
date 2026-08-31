@@ -11,6 +11,8 @@ from chc.cost import total_cost
 from chc.delay import (
     DelayedDynamics,
     augment_state,
+    delay_margin,
+    delay_margin_certificate,
     delayed_of,
     exact_delayed_rollout,
     lift_cost,
@@ -164,3 +166,38 @@ def test_a_plant_with_no_delay_is_rejected_rather_than_silently_accepted() -> No
         DelayedDynamics(_core, tau=1.0, stages=4, state_dim=0)
     with pytest.raises(ValueError, match="lag must be non-negative"):
         exact_delayed_rollout(_core, jnp.array([1.0]), jnp.zeros((3, 1)), _DT, lag=-1)
+
+
+def test_the_delay_margin_matches_the_closed_form() -> None:
+    """``arccos(a/K)/sqrt(K^2 - a^2)``, against the values Maxima printed at 30 digits."""
+    for pole, gain, expected in (
+        (0.0, 1.0, 1.5707963267948966),
+        (0.0, 4.0, 0.39269908169872415),
+        (0.5, 1.0, 1.2091995761561452),
+        (0.9, 4.0, 0.34480453734404234),
+    ):
+        assert abs(delay_margin(pole, gain) - expected) < 1e-9
+    # more gain always costs margin, and an unstable pole caps every controller at 1/pole
+    assert delay_margin(0.9, 4.0) < delay_margin(0.9, 2.0) < delay_margin(0.9, 1.0)
+    assert delay_margin(0.9, 0.9 + 1e-6) < 1.0 / 0.9
+    assert delay_margin(0.9, 0.9 + 1e-6) > 0.999 / 0.9
+    for gain in (0.9, 0.5):
+        with pytest.raises(ValueError, match="gain must exceed"):
+            delay_margin(0.9, gain)
+
+
+def test_the_margin_certificate_shows_the_loop_actually_destabilising() -> None:
+    """A margin nothing ever violates is not evidence that the margin is real.
+
+    Simulated with the exact lag rather than the chain: explicit Euler errs *conservative* (its own
+    boundary sits ``1/(2m)`` below the continuous one) while the chain errs optimistic by
+    ``pi^2/(8m)``, so a conservative simulator still showing instability past ``tau_c`` is the
+    stronger evidence.
+    """
+    for pole, gain in ((0.0, 1.0), (0.5, 1.0), (0.9, 2.0)):
+        certificate = delay_margin_certificate(pole=pole, gain=gain)
+        assert certificate.ok
+        assert certificate.stable_delays
+        assert certificate.unstable_delays
+        assert certificate.largest_stable_ratio < 1.0 < certificate.smallest_unstable_ratio
+        assert abs(certificate.critical_delay - delay_margin(pole, gain)) < 1e-12

@@ -64,7 +64,10 @@ from chc.deep_galerkin import (
 )
 from chc.delay import (
     DelayedDynamics,
+    DelayMarginCertificate,
     augment_state,
+    delay_margin,
+    delay_margin_certificate,
     delayed_of,
     exact_delayed_rollout,
     lift_cost,
@@ -410,6 +413,7 @@ __all__ = [
     "ConvectionDiffusionCurve",
     "DampedOscillator",
     "DampingInjectionCertificate",
+    "DelayMarginCertificate",
     "DelayedDynamics",
     "DoWhyEstimator",
     "DoubleML",
@@ -568,6 +572,8 @@ __all__ = [
     "cvar_upper",
     "damping_injection_certificate",
     "de_chaisemartin",
+    "delay_margin",
+    "delay_margin_certificate",
     "delayed_of",
     "discover_lagged_parents",
     "dlqr",

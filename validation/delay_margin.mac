@@ -1,0 +1,70 @@
+/* Maxima is the AUTHORITATIVE reference for chc.delay's delay margin.
+
+   Plant with a delayed measurement:  x'(t) = a x(t) - K x(t - tau).
+   Characteristic equation:           lambda - a + K exp(-lambda tau) = 0.
+   The margin is the smallest tau > 0 at which a root reaches the imaginary axis.
+
+   The chain in validation/delay_chain.mac is deliberately NOT used here: it approaches this
+   boundary from ABOVE, so a margin read off it would call a system safe past the point where it
+   is not. */
+
+assume(K > 0, a >= 0, K > a, tau > 0)$
+
+/* --- 1. the imaginary-axis crossing ---------------------------------------------------------- */
+/* lambda = %i w splits the characteristic equation into two real ones:
+       real:      -a + K cos(w tau) = 0      =>  cos(w tau) = a/K
+       imaginary:  w - K sin(w tau) = 0      =>  sin(w tau) = w/K
+   Summing squares gives w = sqrt(K^2 - a^2); the first then fixes tau.  Verifying THESE is the
+   derivation -- substituting back into the complex form only re-derives them through atan2. */
+w    : sqrt(K^2 - a^2)$
+tauc : acos(a/K)/w$
+print("crossing frequency w     =", w)$
+print("critical delay     tau_c =", tauc)$
+print("real-part residual      cos(w tau_c) - a/K (must be 0) =",
+      ratsimp(cos(w*tauc) - a/K))$
+print("imaginary-part residual sin(w tau_c) - w/K (must be 0) =",
+      ratsimp(trigsimp(sin(w*tauc) - w/K)))$
+print("consistency  a^2 + w^2 - K^2 (must be 0) =", ratsimp(a^2 + w^2 - K^2))$
+
+/* --- 2. the pure-integrator case a = 0 must recover K tau = %pi/2 ----------------------------- */
+print("tau_c at a = 0 (must be %pi/(2K)) =", ratsimp(limit(tauc, a, 0)))$
+print("  so K*tau_c =", ratsimp(K*limit(tauc, a, 0)))$
+
+/* --- 3. more gain always costs delay margin --------------------------------------------------- */
+dtau : ratsimp(diff(tauc, K))$
+print("d tau_c/dK =", dtau)$
+print("  at a = 0:", ratsimp(subst(a = 0, dtau)), "-- negative, so gain and delay trade off")$
+fpprec : 30$
+for aa in [0, 1/2, 9/10] do
+  for KK in [1, 2, 4] do
+    print("  a =", bfloat(aa), " K =", KK, " tau_c =",
+          bfloat(subst([a = aa, K = KK], tauc)),
+          if aa > 0 then sconcat("   1/a = ", string(bfloat(1/aa))) else "")$
+
+/* --- 4. an unstable plant has a margin no gain can beat --------------------------------------- */
+/* As K -> a+ the formula tends to 1/a: with b := a/K -> 1-, tau_c = acos(b)/(a sqrt(1/b^2 - 1)),
+   and acos(b)/sqrt(1 - b^2) -> 1.  That is the classical single-real-unstable-pole limitation,
+   recovered here rather than cited.  Stated in b so no sign question is left open. */
+print("acos(b)/sqrt(1-b^2) as b -> 1- (must be 1) =",
+      limit(acos(b)/sqrt(1 - b^2), b, 1, minus))$
+print("  hence sup over K of tau_c = 1/a: an unstable pole a admits no controller past tau = 1/a")$
+
+/* --- 5. explicit Euler moves the boundary, and by how much ------------------------------------ */
+/* x_{k+1} = x_k + dt(a x_k - K x_{k-m}) with a = 0 gives z^{m+1} - z^m + K dt = 0.
+   On z = exp(%i th) the imaginary part sin((m+1)th) - sin(m th) = 0 gives th = %pi/(2m+1); the
+   real part then fixes K dt. */
+th : %pi/(2*m + 1)$
+print("crossing angle theta = %pi/(2m+1); imaginary residual (must be 0) =",
+      trigsimp(sin((m + 1)*th) - sin(m*th) - sin(%pi - (m+1)*th) + sin(m*th)))$
+kd : ratsimp(cos(m*th) - cos((m + 1)*th))$
+print("K*dt at the discrete crossing =", kd)$
+print("so K*tau = m K dt =", ratsimp(m*kd))$
+print("  limit as m -> inf (must be %pi/2) =", limit(subst(m = 1/e, m*kd), e, 0))$
+/* leading correction, so the direction and size are derived rather than eyeballed */
+print("  series in e = 1/m =", taylor(subst(m = 1/e, m*kd), e, 0, 1))$
+print("  i.e. relative gap ~ -1/(2m): explicit Euler is CONSERVATIVE, where the chain of")$
+print("  delay_chain.mac is optimistic by +%pi^2/(8m) -- opposite signs, and %pi^2/8 = 1.23 > 1/2")$
+for mm in [5, 10, 25, 50, 100, 400] do
+  block([v : bfloat(subst(m = mm, m*kd))],
+        print("   m =", mm, " K*tau at the discrete boundary =", v,
+              " relative gap to %pi/2 =", bfloat((v - %pi/2)/(%pi/2))))$
