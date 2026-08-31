@@ -1,0 +1,61 @@
+/* Maxima is the AUTHORITATIVE reference for the delay line used by chc.delay.
+
+   A discrete delay x(t-tau) is not a finite-dimensional vector field, so it cannot be a chc
+   Dynamics.  The m-stage linear chain -- equivalently, first-order upwind transport along the
+   delay line -- IS one.  This file prices exactly what that costs: which kernel it really
+   applies, and in which direction it gets the stability boundary wrong. */
+
+assume(tau > 0, m > 1, s > 0)$
+
+/* --- 1. transfer function of the m-stage chain, per-stage constant theta = tau/m ------------- */
+H : (1 + s*tau/m)^(-m)$
+print("H_m(s) =", H)$
+/* log H -> -s*tau as m -> inf; take it in 1/m so the limit is at a point, not at infinity */
+loglim : limit(subst(m = 1/e, log(H)), e, 0)$
+print("lim log H_m(s) (must be -s*tau) =", loglim)$
+
+/* --- 2. moments straight off the transfer function: H IS the kernel's Laplace transform ------ */
+/* mean = -H'(0), E[z^2] = H''(0) -- no integration, and it is the same derivation either way */
+m1 : -subst(s = 0, diff(H, s))$
+m2 :  subst(s = 0, diff(H, s, 2))$
+print("kernel mass H(0) (must be 1)      =", subst(s = 0, H))$
+print("kernel mean (must be tau)         =", ratsimp(m1))$
+print("kernel variance (must be tau^2/m) =", ratsimp(m2 - m1^2))$
+/* so the chain applies a delay of mean tau with relative spread 1/sqrt(m) */
+
+/* --- 3. Hopf boundary of  x' = -a * (chain output of x) -------------------------------------- */
+/* characteristic equation  lambda*(1 + lambda*tau/m)^m + a = 0.  Claimed imaginary-axis root,
+   with phi := %pi/(2*m):   w = m*tan(phi)/tau,  a = w*sec(phi)^m.  Verify by substitution --
+   do not trust solve() on a transcendental family. */
+phi : %pi/(2*m)$
+wc  : m*tan(phi)/tau$
+ac  : wc*sec(phi)^m$
+/* the one step that carries the argument: 1 + %i*tan(phi) = exp(%i*phi)*sec(phi).
+   sec and tan are written out, or ratsimp leaves them opaque and the check proves nothing. */
+ident : ratsimp((cos(phi) + %i*sin(phi))/cos(phi) - (1 + %i*sin(phi)/cos(phi)))$
+print("identity 1 + %i*tan(phi) - exp(%i*phi)*sec(phi) (must be 0) =", ident)$
+/* hence (1 + %i*w*tau/m)^m = exp(%i*m*phi)*sec(phi)^m = %i*sec(phi)^m exactly */
+resid : ratsimp(%i*wc*(%i*sec(phi)^m) + ac)$
+print("characteristic residual at the claimed root (must be 0) =", resid)$
+
+crit : m*tan(%pi/(2*m))*sec(%pi/(2*m))^m$
+print("critical a*tau for the m-stage chain =", crit)$
+
+/* --- 4. leading correction: the chain OVER-states the margin, by about %pi^2/(8 m) ------------ */
+lg   : subst(m = 1/e, log(crit))$
+ser  : taylor(lg, e, 0, 1)$
+print("log(a*tau_crit) series in e = 1/m =", ser)$
+print("  => a*tau_crit ~ (%pi/2) * exp(%pi^2 e / 8), i.e. relative excess ~ %pi^2/(8m)")$
+print("check: lim of log(a*tau_crit) (must be log(%pi/2)) =", limit(lg, e, 0))$
+
+/* --- 5. numbers, against the exact discrete-delay boundary a*tau = %pi/2 --------------------- */
+fpprec : 30$
+print("exact discrete delay: a*tau = %pi/2 =", bfloat(%pi/2))$
+/* m = 1 is omitted deliberately: sec(%pi/2) is undefined because a single first-order lag has
+   no phase crossover, so a one-stage chain cannot destabilise this loop at any gain. */
+for mm in [2, 4, 10, 50, 100, 200, 400] do
+  block([c : bfloat(subst(m = mm, crit))],
+        print("  m =", mm, " a*tau_crit =", c,
+              " relative excess =", bfloat((c - %pi/2)/(%pi/2)),
+              " predicted %pi^2/(8m) =", bfloat(%pi^2/(8*mm)),
+              " delay sd/tau =", bfloat(1/sqrt(mm))))$

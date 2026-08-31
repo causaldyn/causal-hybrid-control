@@ -9,6 +9,46 @@ still change).
 
 ### Added
 
+- **`chc.delay` -- a delayed plant that every existing solver already knows how to solve.** A
+  discrete delay `x(t - tau)` is not a finite-dimensional vector field, so it cannot be a
+  `chc.dynamics.Dynamics`. The `m`-stage linear chain is one: `x' = f(t, x, b_m, u)` with
+  `b_i' = (b_{i-1} - b_i) m/tau`, which is also the first-order upwind discretisation of transport
+  along the delay line. `DelayedDynamics` presents that as an ordinary vector field on
+  `z = [x, b_1, ..., b_m]`, with `augment_state` / `state_of` / `delayed_of` / `state_trajectory`
+  to move between the two views and `lift_cost` to embed a cost on `x` into one on `z`.
+
+  *Why augmentation rather than a DDE solver.* A method-of-steps solver would have needed the
+  discrete adjoint, both projected-gradient solvers, the barrier and the pessimism radius rebuilt
+  against it, and `diffrax` -- already a dependency -- does not solve DDEs. Augmenting instead
+  makes the claim testable rather than architectural, and it is tested: on a delayed plant the
+  discrete adjoint agrees with autodiff to **1.7e-16**, and `projected_gradient_control`,
+  `causal_plan` and `mpc_control` run with no delayed variant of anything.
+
+  *What the approximation costs, derived and not asserted* (`validation/delay_chain.mac`; the
+  chain's transfer function `(1 + s tau/m)^-m` is its kernel's Laplace transform, so the moments
+  come straight off it). The applied delay is Erlang `(m, m/tau)`: mean exactly `tau`, but variance
+  `tau^2/m`, so it is *smeared* with relative spread `1/sqrt(m)`. On `x' = -a x(t - tau)` the
+  chain's Hopf boundary is `a tau = m tan(pi/2m) sec^m(pi/2m)` -- characteristic residual exactly
+  `0` in Maxima -- tending to the true `pi/2` from **above** with relative excess `pi^2/(8m)`
+  (measured against the closed form to `1e-6` at `m = 10` and `8e-6` at `m = 50`).
+
+  The direction of that second error is why the delay margin is not read off this object: the chain
+  is **optimistic** about stability. It is the right tool for simulating a delayed plant and the
+  wrong one for certifying it. The two errors also converge at different speeds -- `O(1/m)` for the
+  margin against `O(1/sqrt m)` for the kernel -- so a stability question needs far fewer stages
+  than a reproduce-the-waveform question; `stages_for_spread` sizes the second.
+
+  *A cap that an eigenvalue argument gets wrong by exactly a factor of two.* The buffer block is
+  defective -- one Jordan block, the eigenvalue `-m/tau` repeated `m` times -- so its spectrum says
+  little about what an explicit integrator does to it. Read as advection, the upwind symbol covers a
+  disc of radius `m/tau` centred at `-m/tau` and so reaches `-2m/tau`, giving a CFL condition
+  `m dt/tau <= 1.3926` rather than RK4's real-axis limit `2.7853`. `max_stages` returns the CFL
+  bound. The first implementation here used the eigenvalue and would have permitted twice as many
+  stages as are safe; the failure it would have caused is silent then catastrophic -- at
+  `tau/dt = 50` the buffer is bounded through `m = 75`, reaches `2.4e1` at `m = 80` and `8.8e30` at
+  `m = 100`. `tests/test_delay.py` asserts both sides of that cliff, so a cap that stopped being
+  real would fail the suite.
+
 - **Milestone J closed as *measured, not needed* (`runtime/`, outside the wheel)** -- the crate that
   once lived here was deleted (`367a52f`) for being an unmeasured reimplementation, and the
   milestone's own gate was a *measurement* nobody had taken: "identical closed-loop results on
