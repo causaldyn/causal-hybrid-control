@@ -422,6 +422,37 @@ still change).
 
 ### Changed
 
+- **A gradient-learned delay was built, measured, and *not shipped* -- it fails its own
+  kill-criterion.** `plans/24` F proposed a `DelayResidual` carrying `tau = softplus(alpha)`, to be
+  kept only if it (a) recovered `tau` inside `chc.irf.delay_estimate`'s interval **and** (b) beat an
+  unconstrained lag-`m` residual at equal parameter count. It passes (b) and fails (a).
+
+  *One design note first, because it removes the usual machinery.* The interpolation trick these
+  methods use (arXiv 2304.01329) exists to differentiate through a **discrete** history buffer.
+  `DelayedDynamics` has no discrete buffer: `tau` enters as the chain rate `stages/tau`, which is
+  already smooth, so the learnable version is one scalar and no interpolation at all.
+
+  *(b) passes, and not narrowly.* On a nonlinear delayed plant, a structured arm (62 parameters, one
+  of them `tau`) reaches test rollout MSE `5.9e-4` against `1.04e-3`-`2.91e-3` for an unconstrained
+  arm that sees the whole buffer at a matched 65 parameters -- 1.8x to 4.9x better. The structured
+  arm is also **flat in the nominal delay** (`5.83`-`5.94e-4` across a 4x range of it) where the
+  unconstrained arm degrades 2.8x once the nominal is wrong. The inductive bias is real.
+
+  *(a) fails, for two independent reasons.* On an actuation-delay plant where both routes estimate
+  the *same* `tau`, `delay_estimate` returns `0.9995` with interval `[0.9991, 1.0003]` -- 0.12% of
+  `tau` wide. The gradient recovers `1.0399`/`1.0406` from initial guesses `0.4`/`1.0`, a **4% bias**
+  that no seed averages away, and `3.6594` from an initial `2.2` -- a **local minimum** at 3.7x the
+  truth carrying 2.3x the training loss. So it is dominated as an estimator: biased where the
+  statistical route is exact, basin-dependent, and offering a point where the other offers an
+  interval. (Notably the *state*-delay variant showed no local minima across a 8x range of
+  initialisations; the basin problem appears when the delay moves to the actuation path.)
+
+  *The one gap that would reopen it.* `delay_estimate` reads `d x_{t+h} / d u_t`, so it sees
+  **actuation** delay only; asked about a plant whose delay sits on the state-feedback path it
+  correctly returns `0` with `censored=True`. The chain's `tau` has no such restriction. A learned
+  delay earns its place if and only if the target is a state delay, where there is no statistical
+  competitor -- not as a second way to estimate an actuation delay.
+
 - **`chc.irf` accepts array-likes, which is what it always did.** `_projection_design`,
   `local_projection_irf`, `delay_estimate` and `structured_irf` annotated `data` as
   `dict[str, Array]` while their bodies only ever call `jnp.asarray` on the values. `dict` is
