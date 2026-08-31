@@ -1,0 +1,55 @@
+/* plans/24 G gate: does the C2 network result (Result 43) survive a DELAYED exposure map, or does
+   it reduce to Result 43 with lags?
+
+   Answer: two of the three parts reduce, one does not, and the obstruction is exact.
+
+   (a) no-bias and (c) channel-death reduce by inspection -- (a) is Frisch-Waugh-Lovell on the
+   design, so lagged columns merely enlarge the nuisance span; and a delayed partial-interference
+   exposure is still CLUSTER-MEASURABLE, being a function of the same cluster's treatments at
+   earlier times.
+
+   (b) the variance law does NOT reduce. Its exactness rests on M annihilating the WHOLE cluster
+   effect, so that sig2 factors out of M'.Sigma.M. That holds iff 1 is an eigenvector of the
+   within-cluster covariance -- true for the exchangeable tau2*J + sig2*I of a static exposure,
+   false for the Toeplitz covariance a delay induces. This file exhibits both. */
+
+m : 4$ K : 2$ q : m/K$
+Id : ident(4)$
+E  : matrix([1,1,1,1],[1,1,1,1],[1,1,1,1],[1,1,1,1])/4$      /* grand-mean projector */
+F  : matrix([1,1,0,0],[1,1,0,0],[0,0,1,1],[0,0,1,1])/2$      /* fold-mean projector, folds {12}{34} */
+S  : ratsimp((m*E - q*F)/(m - q))$                            /* the cross-fold hat of Result 43 */
+M  : ratsimp(Id - S)$
+A  : ratsimp(transpose(M) . M)$
+J  : matrix([1,1,1,1],[1,1,1,1],[1,1,1,1],[1,1,1,1])$
+
+print("STEP 1 (static exposure, exchangeable) M'.(tau2*J + sig2*I).M - sig2*A =",
+      ratsimp(transpose(M) . (tau2*J + sig2*Id) . M - sig2*A),
+      " (zero: the cluster effect lives along 1, M kills it, sig2 factors out -- 43(b) is exact)")$
+
+/* A delayed exposure correlates a cluster's rows ACROSS TIME, not exchangeably. */
+T : genmatrix(lambda([i,j], phi^abs(i-j)), 4, 4)$
+one4 : matrix([1],[1],[1],[1])$
+print("STEP 2 T.1 =", ratsimp(T . one4),
+      " -- NOT proportional to 1, so 1 is not an eigenvector of a Toeplitz covariance")$
+print("STEP 2b interior-minus-edge row sum =", factor(ratsimp((T . one4)[2][1] - (T . one4)[1][1])),
+      " ; zero only at phi =", solve(ratsimp((T . one4)[2][1] - (T . one4)[1][1]) = 0, phi))$
+
+MTM : ratsimp(transpose(M) . T . M)$
+lam : ratsimp(MTM[1][1] / A[1][1])$
+print("STEP 3 (delayed exposure) M'.T.M - lam*A =", ratsimp(MTM - lam*A),
+      " (NOT the zero matrix: no scalar makes M'.Sigma.M proportional to A)")$
+print("STEP 3b its (1,3) entry =", factor(ratsimp((MTM - lam*A)[1][3])),
+      " ; zero only at phi =", solve(ratsimp((MTM - lam*A)[1][3]) = 0, phi),
+      " -- i.e. only when the delay induces no serial correlation (phi=0) or the cluster is",
+      "perfectly correlated (phi=1), the two cases where a delay carries no information")$
+print("STEP 3c relative size at phi = 1/2 :",
+      float(subst([phi = 1/2], ratsimp((MTM - lam*A)[1][3]/lam))))$
+
+/* A vacuous check, recorded so it is not mistaken for evidence: matching the AVERAGE off-diagonal
+   correlation matches the cluster-mean variance IDENTICALLY, because 1'.Sigma.1 depends on Sigma
+   only through its mean entry. The break is in the numerator, not the denominator. */
+rho_bar : ratsimp((sum(sum(phi^abs(i-j), i, 1, 4), j, 1, 4) - 4) / (4*3))$
+quad : ratsimp(sum(sum(phi^abs(i-j), i, 1, 4), j, 1, 4))$   /* = 1'.T.1 */
+print("STEP 4 (1 + (m-1)*rho_bar)/m - 1'.T.1/m^2 =",
+      ratsimp((1 + (m-1)*rho_bar)/m - quad/m^2),
+      " (zero BY CONSTRUCTION -- the denominators agree, so this proves nothing either way)")$
