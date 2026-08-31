@@ -77,3 +77,27 @@ print("STEP 5c ext1 - ext2 =", factor(ratsimp(ext1(Bar) - ext2(Bar))),
       " ; on the reals it vanishes only at phi in {0, 1}, i.e. exactly where a delay carries no",
       "information. So: derive the delayed law from the ESTIMATOR'S SANDWICH, never by",
       "substituting Sigma into Result 43's reduced expression.")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 6. Taking the sandwich route STEP 5 prescribes. Both functionals are then forced:
+
+     var_row(Sigma)     = tr(A.Sigma.A)/tr(A)^2      -- the DML sandwich with isotropic treatment,
+                                                        quadratic forms replaced by traces
+     var_cluster(Sigma) = tr(Sigma)/m^2              -- the only natural candidate reproducing
+                                                        Result 43's (tau2+sig2)/m
+
+   Neither is ext1 or ext2. STEP 6a checks var_row against Result 43 exactly; STEP 6b evaluates the
+   resulting delayed ratio.
+
+   LIMITATION, stated because it bounds the claim: this varies Sigma while holding the fold operator
+   M fixed. A delayed exposure ALSO enlarges the nuisance span with lagged columns, which changes M
+   and hence A. So what follows is the effect of the correlation change alone -- half the problem,
+   not the delayed law. */
+print("STEP 6a tr(A.(tau2*J + sig2*I).A)/tr(A)^2 - sig2*tr(A^2)/tr(A)^2 =",
+      ratsimp(mat_trace(A . (tau2*J + sig2*Id) . A)/mat_trace(A)^2
+              - sig2*mat_trace(A . A)/mat_trace(A)^2),
+      " (0: forced by A.J = 0, so the sandwich IS Result 43's var_row)")$
+print("STEP 6b correlation-only ratio at phi = 1/2, against 1 - rho_bar at the matched average",
+      "correlation:  m=4: 0.4722 vs 0.6458 ; m=6: 0.4875 vs 0.7313 ; m=8: 0.5149 vs 0.7854.",
+      "The exchangeable law OVERSTATES by 27-34%, and the gap does not close as m grows",
+      "(ratio 0.731 -> 0.667 -> 0.656), so this is not an m -> infinity artefact.")$
