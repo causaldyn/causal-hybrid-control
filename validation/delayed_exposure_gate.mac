@@ -53,3 +53,27 @@ quad : ratsimp(sum(sum(phi^abs(i-j), i, 1, 4), j, 1, 4))$   /* = 1'.T.1 */
 print("STEP 4 (1 + (m-1)*rho_bar)/m - 1'.T.1/m^2 =",
       ratsimp((1 + (m-1)*rho_bar)/m - quad/m^2),
       " (zero BY CONSTRUCTION -- the denominators agree, so this proves nothing either way)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 5. What the open work actually needs -- and the route that does NOT work.
+
+   The tempting next move is to substitute a Toeplitz Sigma into Result 43's
+   var_row = sig2*tr(A^2)/tr(A)^2. It is not well defined. That formula is the value of some
+   statistical functional AT the exchangeable design, and the design's degeneracy (M'.Sigma.M is
+   then proportional to A) collapses several distinct functionals onto it. Off that design they
+   disagree, so the reduced formula does not determine its own generalisation. */
+trA : mat_trace(A)$  trA2 : mat_trace(A . A)$
+ext1(B) := mat_trace(B)*trA2/trA^3$          /* scale read off tr(B)/tr(A)  */
+ext2(B) := mat_trace(B . B)/(mat_trace(B)*trA)$ /* scale read off tr(B^2)/tr(B) */
+Bex : ratsimp(transpose(M) . (tau2*J + sig2*Id) . M)$
+print("STEP 5a on the EXCHANGEABLE design both reduce exactly: ext1 - var_row =",
+      ratsimp(ext1(Bex) - sig2*trA2/trA^2), " ; ext2 - var_row =",
+      ratsimp(ext2(Bex) - sig2*trA2/trA^2))$
+Bar : ratsimp(transpose(M) . T . M)$
+print("STEP 5b on AR(1) they do not: at phi=1/2, ext1 =",
+      float(subst([phi=1/2], ratsimp(ext1(Bar)))), " vs ext2 =",
+      float(subst([phi=1/2], ratsimp(ext2(Bar)))), " -- a 32% gap")$
+print("STEP 5c ext1 - ext2 =", factor(ratsimp(ext1(Bar) - ext2(Bar))),
+      " ; on the reals it vanishes only at phi in {0, 1}, i.e. exactly where a delay carries no",
+      "information. So: derive the delayed law from the ESTIMATOR'S SANDWICH, never by",
+      "substituting Sigma into Result 43's reduced expression.")$
