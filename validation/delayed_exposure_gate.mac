@@ -101,3 +101,44 @@ print("STEP 6b correlation-only ratio at phi = 1/2, against 1 - rho_bar at the m
       "correlation:  m=4: 0.4722 vs 0.6458 ; m=6: 0.4875 vs 0.7313 ; m=8: 0.5149 vs 0.7854.",
       "The exchangeable law OVERSTATES by 27-34%, and the gap does not close as m grows",
       "(ratio 0.731 -> 0.667 -> 0.656), so this is not an m -> infinity artefact.")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 7. The answer that reframes the whole question, and it is a cancellation.
+
+   Model the delayed design honestly: a cluster is m units x p time points, the covariance is
+   SEPARABLE, Sigma = Sigma_u (x) T (a group effect across units, serial correlation across time),
+   and folds split UNITS -- whole clusters -- never cutting time. Then M = M_u (x) I, so A factors
+   as A_u (x) I, and
+
+     tr(A.Sigma.A) = tr(A_u.Sigma_u.A_u) * tr(T),    tr(Sigma) = tr(Sigma_u) * tr(T),
+
+   so tr(T) CANCELS between var_row and var_cluster. Psi is exactly Result 43's, with dPsi/dphi = 0:
+   the delay costs NOTHING. Verified at m=4, p=3 below.
+
+   So the delayed law departs from Result 43 only when that structure breaks, and there are exactly
+   two ways for it to break:
+     (i)  the folds cut across time -- which is what STEP 6 priced, at 27-34%;
+     (ii) Sigma is non-separable, i.e. the delay interacts with the network (the spillover kernel's
+          time profile varies with neighbour distance).
+   (i) is a coding rule, not a theorem: keep whole clusters AND whole time-blocks in one fold.
+   (ii) is where a genuinely new law would live, and it is now a narrow, well-posed question. */
+load(lrats)$
+mm : 4$ pp : 3$ qq : mm/2$
+Idm : ident(mm)$ Idp : ident(pp)$
+Em : genmatrix(lambda([i,j], 1/mm), mm, mm)$
+Fm : genmatrix(lambda([i,j], if mod(i-j,2)=0 then 2/mm else 0), mm, mm)$
+Mu : ratsimp(Idm - (mm*Em - qq*Fm)/(mm - qq))$
+Au : ratsimp(transpose(Mu) . Mu)$
+Jm : genmatrix(lambda([i,j], 1), mm, mm)$
+Sig_u : tau2*Jm + sig2*Idm$
+Tp : genmatrix(lambda([i,j], phi^abs(i-j)), pp, pp)$
+Mk : kronecker_product(Mu, Idp)$
+Ak : ratsimp(transpose(Mk) . Mk)$
+Sk : kronecker_product(Sig_u, Tp)$
+psi_panel : ratsimp((mm*pp)^2*mat_trace(Ak . Sk . Ak)/(mat_trace(Ak)^2*mat_trace(Sk)))$
+psi_cross : ratsimp(mm^2*mat_trace(Au . Sig_u . Au)/(mat_trace(Au)^2*mat_trace(Sig_u)))$
+print("STEP 7a A - A_u (x) I =", ratsimp(Ak - kronecker_product(Au, Idp)), " (zero: A factors)")$
+print("STEP 7b Psi_panel =", psi_panel, " ; Psi_cross (Result 43) =", psi_cross,
+      " ; difference =", ratsimp(psi_panel - psi_cross))$
+print("STEP 7c dPsi_panel/dphi =", ratsimp(diff(psi_panel, phi)),
+      " (zero: phi does not appear at all -- the delay is FREE under this structure)")$
