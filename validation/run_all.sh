@@ -22,7 +22,8 @@ for f in validation/*.mac; do
   if grep -qE "$broken" "$outdir/$name.out"; then
     fail=$((fail + 1))
     echo "FAIL $f"
-    grep -nE "$broken" "$outdir/$name.out" | head -3 | sed 's/^/       /'
+    # -B4: the marker line alone says only "-- an error.", which is not diagnosable from a CI log.
+    grep -nE -B4 "$broken" "$outdir/$name.out" | head -15 | sed 's/^/       /'
   fi
 done
 
