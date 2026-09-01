@@ -258,3 +258,108 @@ Proof.
   assert (Hp : 0 < (10 * m - 4) / (m + 2) ^ 2) by (apply Rdiv_lt_0_compat; nra).
   lra.
 Qed.
+
+(* ------------------------------------------------------------------------------------------- *)
+(* THE DESIGN CROSSOVER. Two fold partitions of the same graph do not have a fixed ranking: the
+   one that is better at low persistence is worse at high persistence, and they swap at a single
+   point. That point is a root of the DIFFERENCE of their coefficient vectors, with no
+   normalisation surviving -- which is what the next two lemmas establish. *)
+
+(* tr(A_u) = 0*1 + r^2*(K-1) + 1*(m-K) counts eigenvalue MULTIPLICITIES, so it sees how many folds
+   there are and never which unit went into which. Both partitions therefore share the normaliser,
+   and delayed_network_certificate measures the gap as exactly 0. *)
+Theorem fold_trace_partition_free : forall m r K,
+  r ^ 2 * (K - 1) + (m - K) = m - r ^ 2 + (r ^ 2 - 1) * K.
+Proof. intros m r K. ring. Qed.
+
+(* Psi = c * (u . x^l) with c = m^2/(tr(Au)^2 v0) shared, so equal Psi is a root of the difference
+   and nothing else. Stated on the value of the polynomial, which is all the scalar shadow needs. *)
+Theorem crossover_is_difference_root : forall c p1 p2,
+  c <> 0 -> (c * p1 = c * p2 <-> p1 - p2 = 0).
+Proof.
+  intros c p1 p2 Hc. split; intro H.
+  - apply Rminus_diag_eq. apply (Rmult_eq_reg_l c); assumption.
+  - apply Rminus_diag_uniq in H. rewrite H. reflexivity.
+Qed.
+
+(* The C_6 instance with gammas = (1, 7/10, 2/5) and K = 2, from validation/delayed_network_
+   exposure.mac: u_parity - u_block = (26, -392/5, 32), whose root in (0,1) is exactly this. *)
+Definition x_star : R := (49 - sqrt 1101) / 40.
+
+Lemma sqrt_1101_bounds : 9 < sqrt 1101 < 49.
+Proof.
+  assert (H0 : 0 <= sqrt 1101) by apply sqrt_pos.
+  assert (Hs : sqrt 1101 * sqrt 1101 = 1101) by (apply sqrt_sqrt; lra).
+  split; nra.
+Qed.
+
+Theorem x_star_is_the_crossover : 32 * x_star ^ 2 - (392 / 5) * x_star + 26 = 0.
+Proof.
+  unfold x_star.
+  assert (Hs : sqrt 1101 * sqrt 1101 = 1101) by (apply sqrt_sqrt; lra).
+  field_simplify. nra.
+Qed.
+
+Theorem x_star_in_unit_interval : 0 < x_star < 1.
+Proof.
+  destruct sqrt_1101_bounds as [Hlo Hhi]. unfold x_star. split; lra.
+Qed.
+
+(* The operational half. The crossover is a threshold on x = phi^delta, NOT on phi, so the same
+   persistence lands on opposite sides of it at different delays: phi^delta shrinks as delta grows,
+   pushing a longer-delay design toward the ALIGNED partition at a persistence where the
+   shorter-delay one wants the alternating partition. This is why delta has to be estimated and not
+   assumed -- chc.network_causal.estimate_propagation is what supplies it. *)
+Theorem longer_delay_favours_alignment : forall phi d,
+  0 < phi < 1 -> phi ^ d < x_star -> phi ^ S d < x_star.
+Proof.
+  intros phi d [Hlo Hhi] H. simpl.
+  assert (Hp : 0 < phi ^ d) by (apply pow_lt; assumption).
+  nra.
+Qed.
+
+(* And it never escapes the interval where a crossover can exist at all. *)
+Theorem crossover_threshold_below_one : forall d, (1 <= d)%nat -> x_star ^ d < 1.
+Proof.
+  intros d Hd. destruct x_star_in_unit_interval as [Hlo Hhi].
+  apply pow_lt_1_compat; [lra | lia].
+Qed.
+
+(* ------------------------------------------------------------------------------------------- *)
+(* THE D = 1 CROSSOVER IN CLOSED FORM. The natural conjecture -- that x* is graph-free, as theta*
+   is -- is FALSE, and the algebra says why. What survives the difference is a ratio of two
+   fold-overlap counts that the graph, not the fold sizes, decides. *)
+
+(* A_u^2 has eigenvalue 0 on span(1), r^4 on the K-1 fold contrasts and 1 on the m-K within-fold
+   contrasts, so like tr(A_u) its trace counts multiplicities and never the assignment. That is
+   what makes the whole d = 0 block cancel from the difference of two partitions. *)
+Theorem sandwich_trace_partition_free : forall m r K,
+  r ^ 4 * (K - 1) + (m - K) = m - r ^ 4 + (r ^ 4 - 1) * K.
+Proof. intros m r K. ring. Qed.
+
+(* With that block gone, Delta u_0 = g1^2 c dW11 and Delta u_1 = 4 g0 g1 c de_in share the factor
+   c = (r^4 - 1) K / m, so r, K and m all cancel from x* = -Delta u_0 / Delta u_1. *)
+Theorem crossover_D1_closed_form : forall g0 g1 c dW de,
+  g0 <> 0 -> g1 <> 0 -> c <> 0 -> de <> 0 ->
+  - (g1 ^ 2 * c * dW) / (4 * g0 * g1 * c * de) = - (g1 / (4 * g0)) * (dW / de).
+Proof. intros g0 g1 c dW de Hg0 Hg1 Hc Hde. field. repeat split; assumption. Qed.
+
+(* So the crossover is exactly LINEAR in the spillover decay ratio: the graph and the two fold
+   partitions contribute only the integer ratio dW/de, and scaling g1 scales x* by the same factor.
+   This is the sense in which x* is NOT graph-free -- same-fold EDGES do not determine same-fold
+   2-WALKS, so two graphs can share (theta_1, theta_2) and disagree on x*, which they do:
+   validation/delayed_network_exposure.mac STEP 11 and the C_10 / P_6 clash measured in
+   tests/test_network_causal.py. *)
+Theorem crossover_linear_in_spillover_decay : forall g0 g1 k dW de,
+  - (k * g1 / (4 * g0)) * (dW / de) = k * (- (g1 / (4 * g0)) * (dW / de)).
+Proof. intros g0 g1 k dW de. unfold Rdiv. ring. Qed.
+
+(* And it inherits the delay threshold of (h): x* is a bound on phi^delta, so a longer delay still
+   pushes the design the same way whatever the graph put into dW/de. *)
+Theorem crossover_D1_threshold_shifts : forall phi d g0 g1 dW de,
+  0 < phi < 1 -> phi ^ d < - (g1 / (4 * g0)) * (dW / de) ->
+  phi ^ S d < - (g1 / (4 * g0)) * (dW / de).
+Proof.
+  intros phi d g0 g1 dW de [Hlo Hhi] H. simpl.
+  assert (Hp : 0 < phi ^ d) by (apply pow_lt; assumption). nra.
+Qed.

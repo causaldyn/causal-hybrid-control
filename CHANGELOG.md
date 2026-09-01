@@ -38,6 +38,84 @@ still change).
   than the `+11.20` an aligned partition buys, so alignment SHRINKS the damage (6.57x swing vs 1.34x
   on the certificate's grid) rather than removing it.
 
+- **The panel that makes Result 51's `delta` and `phi` FITTED, and the crossover law that needs them
+  both** (`chc.network_causal.DelayedNetworkPanel`, `estimate_propagation`, `within_ar1`;
+  `chc.regret.delayed_network_certificate` gains `crossover` and `trace_gap`).
+
+  *The new law.* `tr(Au) = r^2(K-1) + (m-K)` counts eigenvalue multiplicities and `v0` never sees the
+  fold operator, so both normalisers are partition-free (`trace_gap` measures exactly 0) and equal
+  `Psi` between two partitions is a bare root of `sum_l (u1_l - u2_l) x^l`. Those coefficients carry no
+  `delta` -- on `C_6` with `gammas = (1, 7/10, 2/5)` they are `(26, -392/5, 32)` identically at
+  `delta = 1,2,3,4` -- so the design crossover is fixed in `x = phi^delta`, at
+  `x* = (49 - sqrt(1101))/40 = 0.3954669988481472` (Maxima; the certificate matches to 15 digits).
+  Below `x*` ALIGNED folds win, above it ALTERNATING ones do. The `phi` threshold is `x*^(1/delta)`:
+  `0.3955` at `delta = 1` but `0.6289` at `delta = 2` -- **the same persistence flips the
+  recommendation when the delay changes**, which is why reading `phi` off a panel is not enough.
+  Proved in `proofs/delayed_network_exposure.v` (`fold_trace_partition_free`,
+  `crossover_is_difference_root`, `x_star_is_the_crossover`, `longer_delay_favours_alignment`).
+
+  *At `D = 1` it closes, and closing it REFUTES the obvious generalisation.* `tr(Au^2) = m - r^4 +
+  (r^4-1)K` counts eigenvalue multiplicities just as `tr(Au)` does, so the whole `d = 0` block is
+  partition-free and cancels, taking `r`, `K` and `m` with it:
+
+  ```
+  x*(D=1) = -(g1 / 4 g0) * Delta W_11 / Delta e_in
+  ```
+
+  with `W_11` the same-fold length-2 walk count and `e_in` the same-fold edge count -- verified to
+  `1.6e-15` over 72480 partition pairs across `C_6, C_8, C_10, P_6, P_8, K_6` at three values of
+  `g1`. So the crossover is exactly LINEAR in the spillover decay ratio, the graph contributing only
+  an integer ratio. And unlike the graph-free `theta*`, **`x*` is graph-DEPENDENT**: same-fold edges
+  do not determine same-fold 2-walks, and `C_10` and `P_6` carry partition pairs at identical
+  `(theta_1, theta_2)` that disagree on `x*`. Tested as a refutation, not left as an open question.
+
+  *The estimator.* `estimate_propagation` runs a shell-resolved panel local projection whose rows are
+  cut inside one unit's trajectory, and regresses the peak lag on shell distance through the origin.
+  It recovers `delta` exactly (`1.000 / 2.000 / 3.000` at truths `1 / 2 / 3`, degenerate intervals,
+  not censored) and reads the spillover truncation off the flat tail (`D_hat = 2`); a shell past the
+  truncation has no direct edge, so its peak stops advancing, and including that point halved the
+  slope. `within_ar1` inverts the Nickell bias of the within transform, `(1+phi)/(p-1)`: raw `0.5580`
+  against `0.6` at `p = 40`, corrected `0.599 / 0.600 / 0.603`. The lag matters -- building the
+  exposure at lag 0 instead of the true 2 costs 69% of the spillover estimate (`0.599 -> 0.187`) and
+  inflates the direct effect (`1.001 -> 1.413`).
+
+  *`Psi` is an estimator's variance, under conditions.* For `theta_hat = u'A eps / u'A u` with an
+  isotropic regressor and a disturbance carrying `Sigma`, the two partitions' variance ratio measured
+  `0.7195 +- 0.0032` against the law's `0.7150` -- the first time `Psi` has been tied to an estimator
+  rather than to a process. But two conditions decide whether it bites, and both were measured: with
+  i.i.d. outcome noise the ratio is `1.0028 +- 0.1003` (the fold assignment cannot matter at all --
+  hence the new `disturbance_scale` knob, the analogue of Result 43's cluster random effect), and with
+  the shipped degree-2 ridge nuisance it is `0.986 +- 0.099` (rank 15 against 5760 rows is nowhere near
+  `Au (x) I_p`). Swapping in the residualiser whose Gram IS `Au (x) I_p` moves the direct coefficient's
+  variance ratio to `0.59-0.66` -- a 34-41% reduction from the partition alone.
+
+  *And it moves realised COVERAGE.* On the premise-matched design (60 clusters, 4000 replications,
+  `M'M = Au (x) I_p` verified exactly) the cross-fit hat leaves BOTH arms unbiased (`+9e-5`,
+  `+3.7e-4`) while a textbook standard error understates the realised spread in both -- and by
+  different amounts, so a nominal 95% interval realises `0.862 +- 0.006` under alternating folds
+  against `0.820 +- 0.006` under aligned ones. At `phi = 0.6, delta = 1`, `x = 0.6` is above `x*`,
+  where the law says ALTERNATING wins, and it does: choosing the partition by the crossover law is
+  worth **4.2 points of interval coverage** (5.1 sigma). The realised variance ratio
+  `(0.01612/0.01920)^2 = 0.705` independently reproduces the law's `0.7150`.
+
+- **`fold_groups` on `estimate_network_effects`** -- opt-in graph-aware cross-fitting. `None`
+  reproduces the historical row permutation byte-for-byte; a supplied labelling permutes and chunks
+  the distinct labels instead, keeping each group whole. The default is deliberately untouched: the
+  function is public API in 0.2.0 and moving every existing user's numbers silently is not a fix.
+  Random rows sit at `theta ~ 1/K`, always on the undershooting side of `theta*` at `D = 1`.
+
+- **`fold_groups` on `estimate_network_effects_gnn` as well -- kept because it was measured, and
+  measured to do something the law does not predict.** 400 paired replications on
+  `DelayedNetworkPanel` (both designs share each draw; arm correlation 0.88 / 0.97, so the ratio is
+  bootstrapped over seeds): parity-vs-block unit folds move the DIRECT effect's variance to
+  `0.887` [0.803, 0.976] and the SPILLOVER effect's to `0.999` [0.950, 1.052]. The direct channel
+  gains ~11%; the spillover channel is inert; Result 51's scalar `0.715` falls outside BOTH
+  intervals. A scalar `Psi` cannot be channel-dependent by construction, so this is the measurement
+  that makes the two-column sandwich necessary rather than merely sharper -- Result 51 (j). The
+  obvious mechanism (the exposure is a neighbour average and so carries no fold-contrast energy) was
+  tested and rejected: the design moves `frac_fold(u)` 0.0015 -> 0.0030 and `frac_fold(e)`
+  0.00006 -> 0.00183, differences far too similar to explain 11.3% against 0.07%.
+
 - **`DelayOscillationTask` -- the leaderboard row where ignoring a delay is a *bifurcation*, not a
   tuning error.** An incentive moves supply `tau` later, so the plant is `x' = channel*u(t - tau)`;
   proportional feedback closes it to `x' = -channel*K*x(t - tau)`, whose exact boundary is

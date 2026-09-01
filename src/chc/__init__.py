@@ -171,9 +171,11 @@ from chc.mintime import (
 from chc.mpc import mpc_control
 from chc.network_causal import (
     ConfoundedNetworkSystem,
+    DelayedNetworkPanel,
     NeighbourMessagePassing,
     estimate_network_effects,
     estimate_network_effects_gnn,
+    estimate_propagation,
 )
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.pathway import (
@@ -430,6 +432,7 @@ __all__ = [
     "DelayEstimate",
     "DelayMarginCertificate",
     "DelayedDynamics",
+    "DelayedNetworkPanel",
     "DoWhyEstimator",
     "DoubleML",
     "DoublyRobustCurve",
@@ -612,6 +615,7 @@ __all__ = [
     "estimate_effect_iv",
     "estimate_network_effects",
     "estimate_network_effects_gnn",
+    "estimate_propagation",
     "exact_delayed_rollout",
     "exact_linear_flow",
     "exposure_map_certificate",

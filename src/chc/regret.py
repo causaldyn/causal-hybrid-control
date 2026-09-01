@@ -24,6 +24,8 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
 
+from chc.network_causal import ar1_innovations, cycle_shells, propagate_shells
+
 Matrix = NDArray[np.float64]
 Vector = NDArray[np.float64]
 
@@ -1242,14 +1244,8 @@ class DelayedNetworkCurve:
     separable_spread: float  # at delta = 0 the law must lose phi entirely -- this must be ~0
     c_fold_measured: float  # exchangeable limit: m*tr(Au^2)/tr(Au)^2 read off the projector
     c_fold_predicted: float  # m(m+14)/(m+2)^2 at K=2 -- the same constant Result 43 uses
-
-
-def _cycle_shells(m: int, dmax: int) -> list[NDArray[np.float64]]:
-    """0/1 distance-d indicator matrices of the cycle C_m."""
-    i = np.arange(m)
-    gap = np.abs(i[:, None] - i[None, :])
-    dist = np.minimum(gap, m - gap)
-    return [(dist == d).astype(float) for d in range(dmax + 1)]
+    crossover: float  # x = phi^delta where the two partitions swap ranking; nan if they never do
+    trace_gap: float  # tr(Au) is partition-free, which is what makes `crossover` well defined
 
 
 def _fold_sandwich(m: int, k_folds: int, fold: NDArray[np.int_]) -> NDArray[np.float64]:
@@ -1264,6 +1260,22 @@ def _fold_sandwich(m: int, k_folds: int, fold: NDArray[np.int_]) -> NDArray[np.f
     within = (fold[:, None] == fold[None, :]) * (k_folds / m)
     r = k_folds / (k_folds - 1)
     return np.eye(m) - r**2 * grand + (r**2 - 1) * within
+
+
+def _design_crossover(difference: NDArray[np.float64]) -> float:
+    """Where two fold partitions swap ranking, as a root of their coefficient difference.
+
+    ``Psi = m^2 (u . x^l) / (tr(Au)^2 v0)`` and BOTH normalisers are partition-free: ``v0`` never
+    sees the fold operator, and ``tr(Au) = r^2 (K-1) + (m-K)`` counts eigenvalue multiplicities, so
+    it depends on how many folds there are and not on which unit went where. Equal ``Psi`` therefore
+    reduces to a root of ``sum_l (u1_l - u2_l) x^l`` with no normalisation left in it -- a degree-D
+    polynomial in ``x = phi^delta``, whose coefficients carry no ``delta`` at all.
+
+    Returns the unique root in ``(0, 1)``, or NaN when the partitions never swap over that range.
+    """
+    roots = np.roots(difference[::-1])
+    inside = [float(z.real) for z in roots if abs(z.imag) < 1e-12 and 0.0 < z.real < 1.0]
+    return inside[0] if len(inside) == 1 else float("nan")
 
 
 def delayed_network_certificate(
@@ -1325,7 +1337,7 @@ def delayed_network_certificate(
     gam = np.asarray(gammas, dtype=float)
     dmax = gam.size - 1
     phis = np.asarray(phi_grid, dtype=float)
-    shells = _cycle_shells(m, dmax)
+    shells = cycle_shells(m, dmax)
     adjacency = shells[1]
 
     def coefficients(au: NDArray[np.float64]) -> tuple[NDArray[np.float64], float]:
@@ -1343,17 +1355,8 @@ def delayed_network_certificate(
 
     def simulate(rng: np.random.Generator, phi: float) -> NDArray[np.float64]:
         span = burn_in + p + lag * dmax
-        z = np.empty((n_draws, m, span))
-        z[:, :, 0] = rng.standard_normal((n_draws, m))
-        innov = np.sqrt(max(0.0, 1.0 - phi**2))
-        for t in range(1, span):
-            z[:, :, t] = phi * z[:, :, t - 1] + innov * rng.standard_normal((n_draws, m))
-        base = burn_in + lag * dmax
-        x = np.zeros((n_draws, m, p))
-        for d in range(dmax + 1):
-            start = base - lag * d
-            x += gam[d] * np.einsum("ij,njt->nit", shells[d], z[:, :, start : start + p])
-        return x.reshape(n_draws, m * p)
+        z = ar1_innovations(rng, (n_draws, m), span, phi)
+        return propagate_shells(z, shells, gam, lag, p).reshape(n_draws, m * p)
 
     partitions = {
         "parity": np.arange(m) % k_folds,
@@ -1432,6 +1435,8 @@ def delayed_network_certificate(
         float(np.ptp(flat)),
         c_measured,
         m_f * (m_f + 14.0) / (m_f + 2.0) ** 2 if r == 2.0 else float("nan"),
+        _design_crossover(coefs["parity"] - coefs["block"]),
+        abs(float(np.trace(au_parity) - np.trace(_fold_sandwich(m, k_folds, partitions["block"])))),
     )
 
 
