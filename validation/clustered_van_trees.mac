@@ -10,7 +10,7 @@
 display2d : false$
 
 /* (i) the regret map and its LOWER-Lipschitz constant. u*(b) = xt*b/(b^2+rr); the exact regret is
-   (b^2+rr)*(u*(bhat)-u*(b))^2. The action derivative du*/db is nonzero away from the knife-edge
+   (b^2+rr)*(u*(bhat)-u*(b))^2. The action derivative dustar/db is nonzero away from the knife-edge
    b^2 = rr, so on any interval avoiding it |u*(bhat)-u*(b)| >= L_min*|bhat-b| and hence
    regret >= (b^2+rr)*L_min^2*(bhat-b)^2 =: kappa0*(bhat-b)^2. */
 us(b) := xt*b/(b^2+rr)$

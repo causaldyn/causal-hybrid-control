@@ -39,4 +39,6 @@ print("discounted R_g(T) = sum g^t c = c*(1-g^T)/(1-g) =", Dclosed, " <= c/(1-g)
 Dsum(TT) := sum(g^t * c, t, 0, TT-1)$
 print("check T=3: sum - closed =", ratsimp(Dsum(3) - subst(T=3, Dclosed)), " (0 confirms geometric sum)")$
 print("check T=5: sum - closed =", ratsimp(Dsum(5) - subst(T=5, Dclosed)), " (0 confirms)")$
+/* the discount factor is a genuine discount: the limit below is otherwise a question, not a value. */
+assume(g > 0, g < 1)$
 print("limit T->inf of R_g = c/(1-g) =", ratsimp(limit(Dclosed, T, inf)), " (assuming 0<g<1)")$

@@ -2160,13 +2160,18 @@ def constrained_ce_regret_certificate(
     """Constrained certainty-equivalence regret is PIECEWISE-QUADRATIC (Gros & Diehl 2022, Ch 16).
     Derived: ``validation/constrained_ce_regret.mac``; proved: ``proofs/constrained_ce_regret.v``.
     A budget/safety cap ``u <= umax`` clips the control to ``u_opt(b) = min(u*(b), umax)``. With the
-    true effect at the activation threshold ``b_t`` (``u*(b_t) = umax``): on the INACTIVE side the
+    true effect at an activation threshold (``u*(b_t) = umax``): on the INACTIVE side the
     regret is quadratic in the effect-estimate error; on the ACTIVE side the control freezes at
     ``umax`` so the regret is ZERO -- the curvature collapses, the source of the kink. Clipping is
     non-expansive: constrained regret never exceeds unconstrained. Consequence (ties to Result 9
-    partial-ID and the marketplace budget): when the effect interval straddles ``b_t`` the
+    partial-ID and the marketplace budget): when the effect interval straddles a threshold the
     pessimism budget must cover the active-set transition -- a naive controller that assumes the
     constraint inactive pays that gap.
+
+    ``u*`` is unimodal in ``b`` (peak ``xt/(2*sqrt(rr))`` at ``b = sqrt(rr)``), so ``u*(b) = umax``
+    has TWO roots and the cap binds on the bounded interval between them, with ``b_lo*b_hi = rr``;
+    the cap never binds at all when ``umax > xt/(2*sqrt(rr))``. This certificate probes the lower
+    root, and its ``delta_hi`` sweep stays inside the active interval, so ``reg_act`` is exactly 0.
     """
 
     def u_star(bv: float) -> float:

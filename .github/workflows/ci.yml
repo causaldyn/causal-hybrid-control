@@ -67,3 +67,18 @@ jobs:
             mkdir /tmp/proofs && cp /proofs/*.v /tmp/proofs/ && cd /tmp/proofs
             for f in *.v; do rocq compile -q "$f"; done
             echo "compiled $(ls -1 *.vo | wc -l) proofs"'
+
+  # The CAS half of every result was gated exactly once -- by hand, in the session that wrote it.
+  # Three derivations were consequently dead from their first commit to 2026-09-01. `maxima -b` exits 0
+  # on a parse error and still echoes the batch filename, so `run_all.sh` greps the output instead.
+  # The runner's apt Maxima is older than the 5.50 used locally; the check is completion-only, not an
+  # output comparison, so minor version drift is tolerated -- and a version-induced failure is itself
+  # worth surfacing.
+  derivations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Maxima
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends maxima
+      - name: Run every derivation
+        run: ./validation/run_all.sh

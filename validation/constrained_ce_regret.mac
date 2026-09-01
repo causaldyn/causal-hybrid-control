@@ -21,14 +21,14 @@ bt : solve(ustar(b) = umax, b)$
 print("activation threshold(s) b_t solve u*(b_t) = umax :", bt)$
 
 /* THE KINK: the two one-sided slopes of u_opt at the threshold differ.
-   inactive side: du_opt/db = du*/db (nonzero) ; active side: du_opt/db = 0 (u_opt == umax, frozen). */
+   inactive side: du_opt/db = dustar/db (nonzero) ; active side: du_opt/db = 0 (u_opt == umax, frozen). */
 print("KINK at b_t: inactive-side slope = du*/db =", dustar, " != 0 ;  active-side slope = 0 (frozen)")$
 print("=> u_opt is C^0 but not C^1 at b_t: the regret is PIECEWISE-quadratic, not quadratic")$
 
 /* certainty-equivalence regret from completing the square (causal_mpc.mac):
    R(bh,b) = (b^2+rr)*(u_opt(bh) - u_opt(b))^2.  Two active-set cells: */
 print("R(bh,b) = (b^2+rr)*(u_opt(bh) - u_opt(b))^2  (CE gap, completing the square)")$
-/* (i) both INACTIVE: u_opt = u*, ordinary quadratic regret with curvature ~ (b^2+rr)*(du*/db)^2 */
+/* (i) both INACTIVE: u_opt = u*, ordinary quadratic regret with curvature ~ (b^2+rr)*(dustar/db)^2 */
 Rin : (b^2+rr)*(ustar(bh) - ustar(b))^2$
 print("(i) both inactive: R =", Rin, "  -> O((bh-b)^2), curvature (b^2+rr)*(du*/db)^2 > 0")$
 /* (ii) both ACTIVE: u_opt(bh)=u_opt(b)=umax => R = 0 identically: the curvature COLLAPSES to 0 */
@@ -48,3 +48,31 @@ print("=> constrained regret <= unconstrained regret (Rocq: constrained_regret_l
    Rstr if the truth is active; the conservative controller that assumes ACTIVE applies umax and pays 0
    when the truth is active. The pessimism budget to prefer the safe (active) branch is that regret gap. */
 print("pessimism budget lambda >= (b^2+rr)*(u*(bh) - umax)^2 : cover the active-set transition")$
+
+/* THE ACTIVE SET IS AN INTERVAL, NOT A HALF-LINE. u*(b) = xt*b/(b^2+rr) is unimodal in b, so
+   u*(b) = umax has TWO positive roots and the cap binds on the bounded interval between them.
+   Both are kinks. This was never checked before: the derivation above stops after naming bt. */
+assume(xt > 0, rr > 0, umax > 0)$
+bm : rhs(bt[1])$  bp : rhs(bt[2])$
+print("STEP 4a two activation thresholds: b^- =", bm, " ; b^+ =", bp)$
+print("STEP 4b Vieta: b^-*b^+ =", ratsimp(bm*bp), " (= rr) ; b^-+b^+ =", ratsimp(bm+bp), " (= xt/umax)")$
+print("STEP 4c real roots exist iff the discriminant xt^2-4*rr*umax^2 >= 0, i.e. iff",
+      "umax <= xt/(2*sqrt(rr)) = max_b u*(b) =", ratsimp(subst(b=sqrt(rr), ustar(b))),
+      " -- a cap above the peak never binds")$
+/* the interior sensitivity vanishes only at b = sqrt(rr), and b^-*b^+ = rr with 0 < b^- <= b^+
+   forces b^-^2 <= rr <= b^+^2: the zero of dustar/db sits INSIDE the active interval, never on a
+   threshold. So both kinks have a nonzero inactive-side slope, and the two have OPPOSITE signs. */
+print("STEP 4d du*/db vanishes only at b =", map(rhs, solve(ratsimp(diff(ustar(b),b)) = 0, b)),
+      " ; sign of du*/db is the sign of (rr-b^2)")$
+gap : ratsimp(bp - bm)$
+print("STEP 4e b^+ - b^- =", gap, " >= 0 ; and rr - b^2 factors through it:")$
+print("        rr - (b^-)^2 - b^-*(b^+ - b^-) =", ratsimp(rr - bm^2 - bm*gap), " (0: rr-(b^-)^2 = b^-*gap > 0)")$
+print("        rr - (b^+)^2 + b^+*(b^+ - b^-) =", ratsimp(rr - bp^2 + bp*gap), " (0: rr-(b^+)^2 = -b^+*gap < 0)")$
+print("        => inactive-side slope > 0 at b^-, < 0 at b^+: both nonzero, opposite signs")$
+chk : [xt = 1, rr = 1/4, umax = 4/5]$
+print("STEP 4f at xt=1, rr=1/4, umax=4/5: b^- =", float(subst(chk, bm)), " b^+ =", float(subst(chk, bp)),
+      " sqrt(rr) =", float(subst(chk, sqrt(rr))), " ; slopes",
+      float(subst(chk, subst(b=bm, ratsimp(diff(ustar(b),b))))), "and",
+      float(subst(chk, subst(b=bp, ratsimp(diff(ustar(b),b))))))$
+print("STEP 4g CONSEQUENCE: the doc's single 'activation threshold b_t' is the LOWER root; the",
+      "active-side zero slope is d(u_opt)/db = 0 (frozen), NOT du*/db -> 0 (which is nonzero there)")$

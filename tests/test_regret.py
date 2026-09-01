@@ -474,6 +474,28 @@ def test_constrained_ce_regret_is_piecewise_quadratic() -> None:
     assert 0.0 < curve.threshold < 1.0  # a well-defined activation threshold b_t exists
 
 
+def test_the_frozen_active_side_holds_only_inside_the_bounded_active_interval() -> None:
+    # u*(b) = xt*b/(b^2+rr) is unimodal, so u*(b) = umax has TWO roots and the cap binds on the
+    # bounded interval between them, with b_lo*b_hi = rr (validation/constrained_ce_regret.mac,
+    # STEPs 4a-4g). The certificate probes the LOWER root, and "active-side regret is exactly 0"
+    # is a consequence of its sweep staying inside that interval -- not a property of the sweep.
+    xt, rr, umax = 1.0, 1.0, 0.45
+    disc = np.sqrt(xt * xt - 4.0 * rr * umax * umax)
+    b_lo, b_hi = (xt - disc) / (2.0 * umax), (xt + disc) / (2.0 * umax)
+    assert np.isclose(b_lo * b_hi, rr)  # Vieta: the roots are reciprocal about sqrt(rr)
+    assert b_lo < np.sqrt(rr) < b_hi  # du*/db vanishes INSIDE, so both thresholds are real kinks
+
+    inside = constrained_ce_regret_certificate(xt=xt, rr=rr, umax=umax, delta_hi=0.15)
+    assert np.isclose(inside.threshold, b_lo)  # the certificate probes the lower root
+    assert inside.threshold + 0.15 < b_hi  # its widest probe stays active
+    assert inside.active_regret_max < 1e-9  # ... hence frozen
+
+    # Push the sweep past b_hi and the control un-freezes: the zero above is load-bearing, not luck.
+    outside = constrained_ce_regret_certificate(xt=xt, rr=rr, umax=umax, delta_hi=1.2)
+    assert outside.threshold + 1.2 > b_hi
+    assert outside.active_regret_max > 1e-6
+
+
 def test_hinf_robustness_is_pessimism_with_gamma_as_the_knob() -> None:
     # H-inf robust control (proofs/hinf_robust_regret.v): confounding as an adversary on the gain,
     # budget gamma^2. Robustness INFLATES cost above nominal (= pessimism), antitone in gamma (gamma

@@ -588,6 +588,23 @@ still change).
 
 ### Fixed
 
+- **Three Maxima derivations had never run to completion, and nothing checked.** `maxima -b` exits 0
+  after a parse error -- and still echoes the batch filename on the way out -- so neither the exit code
+  nor the last output line detects an aborted batch. CI compiles every `proofs/*.v` on each push but ran
+  no `validation/*.mac`, so the CAS half of a result was verified once by hand and never again.
+  `constrained_ce_regret.mac` (dead since `b503cdf`, 3 of 12 `print`s ran) and `clustered_van_trees.mac`
+  (dead since `ce39593`, 0 of 5 ran) both contained `du*/db` inside a `/* */` comment, whose `*/` closed
+  the comment early; `confounded_turnpike.mac` hit EOF on `limit`'s "Is `|g|-1` positive, negative or
+  zero?" for want of an `assume`. All three fixed and re-run under Maxima 5.50: **every previously
+  published formula is confirmed** -- see the provenance notes on Results 13, 14 and 25 in
+  `discoveries/theorems.md`. The newly executing part of `constrained_ce_regret.mac` added STEPs 4a-4g:
+  the active set is the bounded interval `[b^-, b^+]` with `b^-*b^+ = rr`, not a half-line, and the
+  interior sensitivity's zero `b = sqrt(rr)` sits strictly inside it, so both thresholds are genuine
+  kinks with opposite-signed inactive-side slopes.
+- **`validation/run_all.sh`** runs all 56 derivations in ~4 s and greps the output for
+  `incorrect syntax`, Maxima's `-- an error.` banner, a Lisp error or a dropped `MAXIMA>` prompt.
+  Mutation-tested: reintroducing the original `clustered_van_trees.mac` defect makes it exit 1.
+
 - **`regret_scaling` and `interference_regret_certificate` silently conditioned on the stabilising
   event** (`chc.regret`); both now return an `infinite_fraction` array, so `RegretCurve` has a fourth
   field. Each `continue`d past draws where the perturbed model is unstabilisable, and dropped draws
