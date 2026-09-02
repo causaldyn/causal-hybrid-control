@@ -1,0 +1,116 @@
+/* DISCOVERY / derivation: the JENSEN GAP in Result 51's Omega-generalisation is itself a TRACE
+   FORMULA. Result 51 records `Var(theta) ~ tr(A Sigma A Om)/tr(A Om)^2` as directionally right but
+   measurably loose, and blames E[X/Y^2] != E[X]/E[Y]^2 -- a scope note, not a law. The exact scalar
+   quantity is X/Y^2 with X = R'(A'Sigma A)R and Y = R'(A'A)R, both quadratic forms in the RANDOM
+   regressor R. Expanding to second order and using the Gaussian quadratic-form moments turns the
+   correction into traces of the SAME matrices the law already needs, so it costs nothing extra.
+   Maxima is the source of truth; the numeric cross-check lives in the research log.
+   References (each identity is VERIFIED below before being used, the citation is provenance only):
+   Isserlis (1918) for the Gaussian fourth moments; Magnus (1986), "The exact moments of a ratio of
+   quadratic forms in normal variables", for the resolvent representation in STEPs 5-7. */
+display2d : false$
+
+/* (1) second-order delta expansion of f(X,Y) = X/Y^2 about (mx, my). */
+f(X, Y) := X/Y^2$
+ex  : taylor(f(mx + dx, my + dy), [dx, dy], 0, 2)$
+pol : expand(ratdisrep(ex))$
+/* Read the Hessian coefficients off with coeff(). subst() would be WRONG here: it is syntactic and
+   does not match dx*dy inside -2*dx*dy/my^3, so it silently DROPS the cross term instead of
+   replacing it -- and the resulting formula then passes a careless eyeball check. */
+cxx  : coeff(coeff(pol, dx, 2), dy, 0)$
+cxy_ : coeff(coeff(pol, dx, 1), dy, 1)$
+cyy  : coeff(coeff(pol, dx, 0), dy, 2)$
+print("STEP 1a  Hessian coefficients: dx^2 ->", cxx, "  dx*dy ->", cxy_, "  dy^2 ->", cyy)$
+avg : mx/my^2 + cxx*vx + cxy_*cxy + cyy*vy$
+print("STEP 1b  E[X/Y^2] =", ratsimp(avg), "  (vx, vy, cxy the second moments of dx, dy)")$
+rel : ratsimp(avg/(mx/my^2) - 1)$
+print("STEP 1c  relative gap =", rel, " ; equals -2*cxy/(mx*my) + 3*vy/my^2 ?",
+      ratsimp(rel - (-2*cxy/(mx*my) + 3*vy/my^2)), " (0 confirms)")$
+print("STEP 1d  the dx^2 coefficient is", cxx,
+      ": X enters LINEARLY, so Var(X) does not appear -- only Cov(X,Y) and Var(Y) do")$
+
+/* (2) Gaussian quadratic-form moments, VERIFIED by Isserlis rather than cited. R ~ N(0, Om),
+   X = R'B R, Y = R'C R with B, C symmetric. Done at n = 2, which is enough to pin the identities:
+   they are polynomial in the entries and the pattern is forced by Isserlis, not by the dimension. */
+Om : matrix([o11, o12], [o12, o22])$
+B  : matrix([b11, b12], [b12, b22])$
+C  : matrix([c11, c12], [c12, c22])$
+EQ(Mm)      := sum(sum(Mm[i,j] * Om[i,j], j, 1, 2), i, 1, 2)$
+EQQ(Mm, Nn) := sum(sum(sum(sum(Mm[i,j] * Nn[k,l] *
+    (Om[i,j]*Om[k,l] + Om[i,k]*Om[j,l] + Om[i,l]*Om[j,k]), l, 1, 2), k, 1, 2), j, 1, 2), i, 1, 2)$
+print("STEP 2a  E[Y] - tr(C Om) =", ratsimp(EQ(C) - mat_trace(C . Om)), " (0 confirms)")$
+print("STEP 2b  Cov(X,Y) - 2*tr(B Om C Om) =",
+      ratsimp(EQQ(B, C) - EQ(B)*EQ(C) - 2*mat_trace(B . Om . C . Om)), " (0 confirms)")$
+print("STEP 2c  Var(Y) - 2*tr(C Om C Om) =",
+      ratsimp(EQQ(C, C) - EQ(C)^2 - 2*mat_trace(C . Om . C . Om)), " (0 confirms)")$
+
+/* (3) substitute (2) into (1c): the correction is a ratio of traces of B = A'Sigma A and C = A'A. */
+tr_form : -4*tBOCO/(tBO*tCO) + 6*tCOCO/tCO^2$
+print("STEP 3a  relative gap = -4*tr(B Om C Om)/(tr(B Om)*tr(C Om)) + 6*tr(C Om C Om)/tr(C Om)^2")$
+print("STEP 3b  substitution residual =",
+      ratsimp(subst([cxy = 2*tBOCO, vy = 2*tCOCO, mx = tBO, my = tCO], rel) - tr_form),
+      " (0 confirms)")$
+/* (4) the sign is not free: the two terms pull opposite ways, so the plug-in formula can be
+   optimistic OR pessimistic depending on how B Om and C Om overlap. */
+print("STEP 4   sign: the Cov term enters NEGATIVE and the Var(Y) term POSITIVE, so the plug-in",
+      "law is not conservative by construction -- its direction is a property of Sigma and Om")$
+print("         B = C (i.e. Sigma = I) collapses it to", ratsimp(subst([tBOCO = tCOCO, tBO = tCO],
+      tr_form)), "= 2*tr(C Om C Om)/tr(C Om)^2 > 0: always OPTIMISTIC there")$
+
+/* (5) beyond the delta method: the EXACT E[X/Y^2] is a one-dimensional resolvent integral
+   (the Magnus-1986 exact-moment representation). Kernel identity, verified not cited:
+   1/Y^2 = integrate(t*exp(-t*Y), t, 0, inf) for Y > 0. */
+assume(yy > 0)$
+print("STEP 5a  1/Y^2 - integrate(t e^{-tY}) =",
+      ratsimp(integrate(t*exp(-t*yy), t, 0, inf) - 1/yy^2), " (0 confirms)")$
+
+/* (6) the tilted-Gaussian moment: E[(R'BR) e^{-t R'CR}] = det(I+2t Om C)^(-1/2)
+   * tr(B (I+2t Om C)^(-1) Om). Verified at n=1 and n=2 (diagonal Om, C; SYMMETRIC B with a
+   cross term, which must integrate to zero) by direct Gaussian integration. */
+assume(om1 > 0, om2 > 0, cc1 > 0, cc2 > 0, tt > 0)$
+g1 : exp(-r1^2/(2*om1))/sqrt(2*%pi*om1)$
+lhs1 : integrate(bb1*r1^2*exp(-tt*cc1*r1^2)*g1, r1, minf, inf)$
+rhs1 : bb1*om1*(1+2*tt*cc1*om1)^(-3/2)$
+print("STEP 6a  n=1 residual =", ratsimp(lhs1 - rhs1), " (0 confirms)")$
+g2  : exp(-r2^2/(2*om2))/sqrt(2*%pi*om2)$
+qf  : bb1*r1^2 + 2*bb12*r1*r2 + bb2*r2^2$
+lhs2 : integrate(integrate(qf*exp(-tt*(cc1*r1^2+cc2*r2^2))*g1*g2, r1, minf, inf), r2, minf, inf)$
+rhs2 : ((1+2*tt*om1*cc1)*(1+2*tt*om2*cc2))^(-1/2)
+       * (bb1*om1/(1+2*tt*om1*cc1) + bb2*om2/(1+2*tt*om2*cc2))$
+print("STEP 6b  n=2 residual =", ratsimp(lhs2 - rhs2),
+      " (0 confirms; the bb12 cross term integrates to zero)")$
+
+/* (7) the integral converges iff n > 2: the integrand's tail is t^(1 - n/2 - 1) = t^(-n/2).
+   At n = 2 the tail is 1/t and E[X/Y^2] = +inf -- the delta-method number exists at every n,
+   which is exactly why a truncation can be quoted where the moment it approximates does not. */
+integrand2 : tt*rhs2$
+print("STEP 7   n=2 tail: limit t*integrand =",
+      factor(limit(tt*integrand2, tt, inf)),
+      " (nonzero constant => 1/t tail => log-divergent at n = 2; n >= 3 converges)")$
+
+/* (8) beyond Gaussian, two ways. (a) ELLIPTICAL R with kurtosis parameter kap (Muirhead's
+   convention: every fourth moment is the Gaussian one times (1+kap)): the second-order gap
+   transforms AFFINELY -- rel_ell = (1+kap)*rel_gauss + kap. Verified at n = 2. */
+EQQe(Mm, Nn) := (1+kap)*EQQ(Mm, Nn)$
+rel_g  : -2*(EQQ(B,C) - EQ(B)*EQ(C))/(EQ(B)*EQ(C)) + 3*(EQQ(C,C) - EQ(C)^2)/EQ(C)^2$
+rel_e  : -2*(EQQe(B,C) - EQ(B)*EQ(C))/(EQ(B)*EQ(C)) + 3*(EQQe(C,C) - EQ(C)^2)/EQ(C)^2$
+print("STEP 8a  rel_elliptical - ((1+kap)*rel_gauss + kap) =",
+      ratsimp(rel_e - ((1+kap)*rel_g + kap)), " (0 confirms: kurtosis enters affinely)")$
+/* (b) SCALE MIXTURES R = sqrt(nu/W)*G, G Gaussian, W independent (multivariate t included):
+   X/Y^2 is degree -2 in the scale, so E[X/Y^2] = E[W/nu] * E_gauss[X/Y^2] EXACTLY -- for t_nu
+   E[W] = nu and the exact moment of STEP 5 is UNCHANGED at a fixed scale matrix. The kurtosis
+   only enters through the Var-vs-scale parameterisation, not through the moment itself. */
+print("STEP 8b  scale-mixture transport: E[X/Y^2] = E[W/nu]*E_gauss, exact by homogeneity;",
+      "numeric t_10 check in the research log")$
+
+/* (9) the design consequence (Result 51 (m)). At Om = I both fold operators share the spectrum
+   {0, r^2, 1} and P_fold + P_within = I - P_mean is partition-free, so the loading differences
+   obey d_r + d_1 = 0 while the plug-in crossover imposes r^4 d_r + d_1 = 0: both vanish, and the
+   plug-in crossover is EXACT (no Jensen shift). The exact-vs-plug-in comparison never flips sign
+   either, because the resolvent bracket is strictly positive. Mirrored in proofs/omega_jensen_gap.v
+   (isotropic_loading_differences_vanish, isotropic_bracket_positive). */
+sol : solve([dr + d1 = 0, r^4*dr + d1 = 0], [dr, d1])$
+print("STEP 9a  loading differences at the Om = I crossover:", sol,
+      " (dr = d1 = 0 is the ONLY solution when r^4 # 1)")$
+print("STEP 9b  resolvent bracket factors:", factor(r^4*(1+2*t) - (1+2*t*r^2)),
+      " (> 0 for r > 1, t >= 0: exact and plug-in NEVER disagree in sign at Om = I)")$

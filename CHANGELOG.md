@@ -113,8 +113,105 @@ still change).
   intervals. A scalar `Psi` cannot be channel-dependent by construction, so this is the measurement
   that makes the two-column sandwich necessary rather than merely sharper -- Result 51 (j). The
   obvious mechanism (the exposure is a neighbour average and so carries no fold-contrast energy) was
-  tested and rejected: the design moves `frac_fold(u)` 0.0015 -> 0.0030 and `frac_fold(e)`
-  0.00006 -> 0.00183, differences far too similar to explain 11.3% against 0.07%.
+  first tested through a crude proxy and rejected there: the design moves `frac_fold(u)`
+  0.0015 -> 0.0030 and `frac_fold(e)` 0.00006 -> 0.00183, differences far too similar to explain
+  11.3% against 0.07%. Result 51 (j') below withdraws that rejection -- what failed was the proxy,
+  not the idea, which survives in its quadratic-form version.
+
+- **The matrix sandwich behind the channel asymmetry, and the coupling hypothesis REJECTED** --
+  Result 51 (j'). Derivation and measurement only; no API change. For the *linear* cross-fit the
+  residualisation is an explicit linear map (`A[test,test] = I`,
+  `A[test,train] = -phi_te (phi_tr' phi_tr + lam I)^-1 phi_tr'`), so
+  `theta_hat = (R0' M R0)^-1 R0' M y` with `M = A'A`, and
+  `Cov(theta_hat | draw) = (R0' M R0)^-1 R0' M Sigma M R0 (R0' M R0)^-1` exactly. On 200 paired draws
+  it predicts **both** channels -- direct `0.9099` against a measured `0.8904` [0.8033, 0.9812],
+  spillover `0.9826` against `0.9814` [0.9182, 1.0531] -- while the scalar `Psi = 0.715` falls outside
+  both. The operator was checked against the shipped estimator's own coefficients (`3.8e-7`, the
+  float32/float64 gap) and `Sigma` against 40000 draws of the generative disturbance (2%, the
+  Monte-Carlo error at that count).
+
+  *Two candidate mechanisms killed by measurement.* Nuisance leakage measures **six orders** below the
+  noise term (`1e-8` against `7e-2`), and zeroing the off-diagonal of `R0' M R0` moves the prediction
+  only `0.9099 -> 0.9088` and `0.9826 -> 0.9802` -- so the asymmetry is **not** the cross-channel
+  coupling. With the bread decoupled each channel is `r'M Sigma M r / (r'M r)^2` for its **own**
+  regressor, which is the `Omega`-generalisation applied per channel: the exposure is a neighbour
+  average and overlaps `M` and `Sigma` differently from the unit-level treatment. That withdraws the
+  earlier `frac_fold` rejection above -- the proxy failed, the idea did not.
+
+  *Scope.* Exact for the linear cross-fit only. The GNN figures come from a learned nuisance for which
+  no such `A` exists; the linear estimator on the same panel measures `0.890 / 0.981`, so the
+  qualitative asymmetry is shared but the numbers are not interchangeable. A first 150-replication run
+  with an independent-arm standard error put everything within `1.0-1.7 sigma` and could decide
+  nothing -- the pairing is what makes the comparison identified at all.
+
+- **The Jensen gap in Result 51's `Omega`-generalisation: the free trace correction, the EXACT
+  resolvent-integral moment, and the attribution it settles** (`validation/omega_jensen_gap.mac`,
+  `proofs/omega_jensen_gap.v`). Derivation only; no API change. Result 51 (i) blamed
+  the `7-11%` looseness of `Var(theta) ~ tr(A Sigma A Om)/tr(A Om)^2` on `E[X/Y^2] != E[X]/E[Y]^2`
+  "growing with `Om`'s conditioning". Both halves are now measured. The effect itself is a **trace
+  formula in the same two matrices the law already forms**, so it costs nothing:
+
+  ```
+  E[X/Y^2] / (tr(B Om)/tr(C Om)^2) - 1 = -4 tr(B Om C Om)/(tr(B Om) tr(C Om)) + 6 tr(C Om C Om)/tr(C Om)^2
+  ```
+
+  with `B = A' Sigma A`, `C = A'A`. `Var(X)` never enters -- the `dx^2` coefficient of the delta
+  expansion is exactly 0, because `X` appears linearly. Every residual in the file is 0 and the
+  Isserlis moments are *verified* at `n = 2` rather than cited. The sign is not free: the `Cov` term
+  enters negative and the `Var(Y)` term positive, so the plug-in is **not conservative by
+  construction**, and at `Sigma = I` it collapses to `+2 tr(C Om C Om)/tr(C Om)^2 > 0`.
+
+  *Measured.* Sixteen single-arm configurations at `4e5` draws on the panel's exact
+  `Om = I (x) ((kappa^2 QQ' + I) (x) T)`: on all thirteen where the gap is resolved (`>= 9 sigma`) the
+  formula has the right sign, `measured/predicted` lands in `[0.77, 1.14]`, and it predicts the
+  `phi = 0.95, K = 2` row where the gap **reverses sign** (`+2.07%` measured, `+2.18%` predicted).
+  Twelve of the thirteen sit below 1, so the second-order form OVER-states the gap by `10-30%` --
+  a truncation whose neglected terms carry the opposite sign.
+
+  *At ratio level the effect is operator-dependent.* The law is quoted as a RATIO of two fold
+  designs, where a gap common to both arms cancels. On the ridge cross-fit operator it does: across
+  `cond(Om)` from `1.1e1` to `7.8e4` the plug-in ratio errs `+0.05% / +0.06% / +0.08%` (all
+  `~1 sigma`) for `cond <= 2.8e2` even though the single-arm gaps there reach `2.3%`; it becomes
+  resolvable only past `cond ~ 1e3`, is **not monotone** (`-1.75%` at `1.2e3` but `+0.20%` at
+  `7.3e3`), and reaches `+4.1%` at `3.8e4`, where the correction cuts it `4x`. So "growing with
+  `Om`'s conditioning" is not a safe summary -- Result 51 (k).
+
+  *And the EXACT moment closes the question* -- Result 51 (l). `1/Y^2 = int_0^inf t e^{-tY} dt` plus
+  the tilted-Gaussian moment `E[(R'BR)e^{-tR'CR}] = det(I+2t Om C)^{-1/2} tr(B (I+2t Om C)^{-1} Om)`
+  turn `E[X/Y^2]` into a one-dimensional resolvent integral (Magnus 1986); both identities are
+  verified in STEPs 5-6 (residual 0 at `n = 1, 2`, the symmetric cross term integrating to zero),
+  and STEP 7 pins the tail `t^{-n/2}` -- the moment is INFINITE at `n = 2` while the delta-method
+  number exists at every `n`. On Result 51 (i)'s actual geometry (`A = A_u (x) I_p`) the integral
+  matches a fresh 300k-draw run in every cell (five of six per-arm cells within `0.8 sigma`, worst
+  `2.2 sigma`; all three ratios within `1.2 sigma`) and explains the recorded `7-11%` COMPLETELY: exact ratios `0.7187 / 0.3374 / 0.4004` against plug-in
+  `0.7150 / 0.3036 / 0.3721` and re-measured `0.7221 / 0.3377 / 0.3986` (`+-0.0031 / 0.0012 /
+  0.0015`). Per arm the gaps carry OPPOSITE signs (`+6.9%` parity vs `-3.8%` block at
+  `Om = I (x) T_0`), so in the ratio they COMPOUND to `+11.1% / +7.6%` -- while on (k)'s ridge
+  operator they were nearly equal and cancelled. The ratio-level effect is the DIFFERENCE of two
+  per-arm gaps; whether it cancels is a property of the fold-operator pair. So (i)'s original
+  attribution was RIGHT; an earlier draft of (k) withdrew it on a cross-geometry transplant and was
+  re-scoped. The `Om`-generalisation now has an exact quantitative form, with the trace correction
+  as its free `~1%` approximation (always from above here). Isserlis (1918) and Magnus (1986) are
+  the citations; both identities enter the file verified, not cited.
+
+  *The design consequence* -- Result 51 (m). At `Om = I` the plug-in crossover `x*` is EXACT to all
+  orders: both fold operators share the spectrum `{0, r^2, 1}` and `P_fold + P_within = I - P_mean`
+  is partition-free, so the two spectral loading differences satisfy `d_1 = -d_r` while the plug-in
+  crossover imposes `r^4 d_r + d_1 = 0` -- both vanish (STEP 9a), and the resolvent bracket factors
+  as `(r-1)(r+1)(2 r^2 t + r^2 + 1) > 0` (STEP 9b), so exact and plug-in NEVER disagree in sign
+  there: the (h) rule picks the right partition at every `phi`, proved in
+  `proofs/omega_jensen_gap.v` (`isotropic_loading_differences_vanish`,
+  `isotropic_bracket_positive`, `plug_in_and_exact_agree_in_sign`; Stdlib Reals only) and measured
+  as a `0.0000` crossover shift at both `delta = 1` and `delta = 2`. At `Om != I` the crossover
+  SHIFTS toward later switching and there is a wrong-partition band: `phi in [0.1993, 0.2075]`
+  (`I (x) T_0`) and `[0.1899, 0.1953]` (panel) at `delta = 1`, widening to `[0.3925, 0.4079]` and
+  `[0.3822, 0.3960]` at `delta = 2` -- inside it the plug-in law recommends the partition the exact
+  variance disfavours, and the remedy costs one `eigh` plus a scalar quadrature. Non-Gaussianity is
+  priced too: elliptical kurtosis moves the second-order gap AFFINELY, `(1+kap)*rel + kap`
+  (STEP 8a, Rocq `elliptical_gap_affine`), and for scale mixtures (multivariate t) homogeneity
+  gives `E[X/Y^2] = E[W/nu] * E_gauss` EXACTLY -- `t_10` draws agree with the Gaussian integral at
+  `0.3 / 1.6 sigma`, while parameterising by the variance instead of the scale errs by exactly
+  `-2/nu = -20%`. The trap is the bookkeeping, not the tails.
 
 - **`DelayOscillationTask` -- the leaderboard row where ignoring a delay is a *bifurcation*, not a
   tuning error.** An incentive moves supply `tau` later, so the plant is `x' = channel*u(t - tau)`;
