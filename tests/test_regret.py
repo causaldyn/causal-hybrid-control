@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from chc.dynamics import DampedOscillator
 from chc.lqr import linearize_discrete, linearized_regret_certificate
+from chc.network_causal import cycle_shells
 from chc.regret import (
     adaptive_exploration_certificate,
     bandit_causal_certificate,
+    capped_exploration_policy,
     causal_vs_predictive_certificate,
     ce_explicit_constant_certificate,
     certainty_equivalence_gap,
@@ -26,6 +29,8 @@ from chc.regret import (
     dynamic_causal_regret_certificate,
     end_to_end_c2_certificate,
     ensemble_control_certificate,
+    exact_matrix_ratio_moment,
+    exact_ratio_moment,
     exposure_map_certificate,
     finite_horizon_pl_certificate,
     highprob_regret_certificate,
@@ -40,6 +45,7 @@ from chc.regret import (
     multivariate_transfer_certificate,
     nonlinear_regret_certificate,
     optimal_exploration_certificate,
+    optimal_fold_partition,
     orthogonal_control_certificate,
     partial_id_control_certificate,
     pessimism_variance_certificate,
@@ -134,6 +140,14 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (np.abs(ratio - 1.0) < 0.35).all()  # efficient estimator is tight against the CR bound
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
+    # Result 57: the unbiased CR floor is beatable AT a point -- a Hodges estimator drives the
+    # regret there to exactly zero -- which is why it was never a minimax statement. The van Trees
+    # floor, which assumes nothing about bias, is not beatable, and it separates the superefficient
+    # estimator from the efficient one instead of being vacuous for both.
+    assert curve.hodges_pointwise_ratio < 1e-6
+    assert curve.hodges_bayes_ratio > 10.0
+    assert 1.0 < curve.plugin_bayes_ratio < 0.1 * curve.hodges_bayes_ratio
+    assert curve.van_trees_action_floor > 0.0
     assert -1.25 < curve.rate_slope < -0.75  # ~ 1/n rate: matches the online upper bound (optimal)
 
 
@@ -652,6 +666,185 @@ def test_linearized_certificate_matches_the_lq_gap_on_the_linearisation() -> Non
     assert np.isclose(cert, direct)  # the helper just linearises, then calls the LQ gap
 
 
+def test_capped_exploration_front_loads_and_does_not_become_a_taper() -> None:
+    # Result 56, validation/capped_exploration.mac, proofs/capped_exploration.v.
+
+    # 1. against a projected-gradient solve of the full convex program: the front-loaded block is
+    #    the GLOBAL optimum, not a heuristic. The objective is convex, so the reference is exact.
+    horizon, cap = 400, 0.05
+    b, rr, xt, sigma, i0, eta = 1.0, 0.5, 1.0, 0.7, 1.0, 0.6
+    curvature = b * b + rr
+    sensitivity = -xt * (rr - b * b) / (rr + b * b) ** 2
+    numerator = curvature * sensitivity * sensitivity
+    info_rate = eta / sigma**2
+
+    def cumulative(schedule: np.ndarray) -> float:
+        info = i0 + info_rate * np.concatenate([[0.0], np.cumsum(schedule)[:-1]])
+        return float(np.sum(curvature * schedule + numerator / info))
+
+    def gradient(schedule: np.ndarray) -> np.ndarray:
+        info = i0 + info_rate * np.concatenate([[0.0], np.cumsum(schedule)[:-1]])
+        weights = numerator / info**2
+        tail = np.concatenate([np.cumsum(weights[::-1])[::-1][1:], [0.0]])
+        return curvature - info_rate * tail
+
+    guess = np.full(horizon, 1e-3)
+    step, best = 1.0, cumulative(guess)
+    for _ in range(4000):
+        trial = np.clip(guess - step * gradient(guess), 0.0, cap)
+        value = cumulative(trial)
+        if value < best:
+            guess, best, step = trial, value, step * 1.05
+        else:
+            step *= 0.5
+            if step < 1e-14:
+                break
+    policy = capped_exploration_policy(horizon=horizon, cap=cap)
+    assert policy.cost == pytest.approx(best, rel=1e-3)
+    assert (guess > 0.999 * cap).sum() == pytest.approx(policy.block_rounds, abs=2)
+
+    # 2. the conjecture the log recorded -- that a cap makes the taper the right shape -- is false
+    assert policy.taper_cost > 1.2 * policy.cost
+
+    # 3. the cap's price is ADDITIVE and logarithmic, so the ratio to the uncapped floor falls
+    ratios = [
+        capped_exploration_policy(horizon=t, cap=0.03).cost
+        / capped_exploration_policy(horizon=t, cap=0.03).uncapped_floor
+        for t in (10**3, 10**4, 10**5)
+    ]
+    assert ratios[0] > ratios[1] > ratios[2] > 1.0
+    # ... while the block length GROWS like sqrt(T): a tighter deadline is not a gentler one
+    lengths = [capped_exploration_policy(horizon=t, cap=0.03).block_rounds for t in (10**3, 10**5)]
+    assert lengths[1] / lengths[0] == pytest.approx(10.0, rel=0.25)
+
+    with pytest.raises(ValueError, match="at least one round"):
+        capped_exploration_policy(horizon=0, cap=0.1)
+    with pytest.raises(ValueError, match="cap must be positive"):
+        capped_exploration_policy(horizon=10, cap=0.0)
+
+
+def test_exact_matrix_ratio_moment_matches_the_haar_law_and_prices_the_two_channel_gap() -> None:
+    # Result 54, validation/matrix_ratio_moment.mac, proofs/matrix_ratio_moment.v.
+
+    # 1. Wishart: A = Sigma = I and Om = I_2n makes the object E[(X'X)^-1] = I/(n - 3)
+    wishart = exact_matrix_ratio_moment(np.eye(6), np.eye(6), np.eye(12), nodes=32)
+    assert np.allclose(wishart, np.eye(2) / 3.0, atol=1e-5)
+
+    # 2. a CORRELATED numerator still has a closed form: X = UR with Haar U independent of R
+    #    turns the sandwich into R^-1 U' Sigma U R^-T, and E[U' Sigma U] = (tr Sigma / n) I, so
+    #    the answer is (tr Sigma / n) / (n - 3) times the identity -- an anchor the quadrature
+    #    can only hit by getting the tilt and the three-form moment both right
+    n = 7
+    lags = np.arange(n)[:, None] - np.arange(n)[None, :]
+    sigma = 0.5 ** np.abs(lags)
+    haar = exact_matrix_ratio_moment(sigma, np.eye(n), np.eye(2 * n), nodes=32)
+    assert np.allclose(haar, np.eye(2) * float(np.trace(sigma)) / n / (n - 3), atol=1e-5)
+
+    # 3. existence is the inverse-Wishart threshold n >= q + 2 and is ENFORCED -- below it the
+    #    integral diverges while a plug-in sandwich still quotes a number
+    with pytest.raises(ValueError, match="inverse-Wishart"):
+        exact_matrix_ratio_moment(np.eye(3), np.eye(3), np.eye(6), nodes=16)
+    with pytest.raises(ValueError, match="2n-by-2n"):
+        exact_matrix_ratio_moment(np.eye(4), np.eye(4), np.eye(4), nodes=16)
+
+    # 4. the application: a SINGULAR Om, because the spillover column is a deterministic map of
+    #    the own column. The delayed-network panel on C_4, two shells, phi = 0.5.
+    m, p_t, phi = 4, 2, 0.5
+    gammas = np.array([1.0, 0.6])
+    shells = [np.asarray(s) for s in cycle_shells(m, 1)]
+    t_gap = np.arange(p_t)[:, None] - np.arange(p_t)[None, :]
+    sig = np.zeros((m * p_t, m * p_t))
+    for d in range(2):
+        for e in range(2):
+            block = phi ** np.abs(t_gap - (d - e))
+            sig += gammas[d] * gammas[e] * np.kron(shells[d] @ shells[e], block)
+    spillover = np.kron(shells[1] / 2.0, np.eye(p_t))
+    om = np.block([[sig, sig @ spillover.T], [spillover @ sig, spillover @ sig @ spillover.T]])
+    assert np.linalg.matrix_rank(om) == m * p_t  # rank n out of 2n: nothing may invert Om
+
+    exact = exact_matrix_ratio_moment(sig, np.eye(m * p_t), om, nodes=36)
+    coarse = exact_matrix_ratio_moment(sig, np.eye(m * p_t), om, nodes=24)
+    assert np.allclose(exact, exact.T)
+    assert np.allclose(exact, coarse, rtol=0.01)  # converged, unlike the divergent regime
+
+    moments = np.empty((2, 2, 2))
+    for which, op in enumerate((np.eye(m * p_t), sig)):
+        for i in range(2):
+            for j in range(2):
+                selector = np.zeros((2, 2))
+                selector[i, j] = 1.0
+                moments[which, i, j] = np.trace(np.kron(selector.T, op) @ om)
+    inverse = np.linalg.inv(moments[0])
+    plug = inverse @ moments[1] @ inverse
+    # the matrix Jensen gap has a sign: the plug-in sandwich UNDERSTATES both channel variances
+    assert np.all(np.diag(exact) > np.diag(plug))
+
+
+def test_exact_ratio_moment_closed_forms_tail_condition_and_crossover_immunity() -> None:
+    # Result 51 (l)/(m), validation/omega_jensen_gap.mac, proofs/omega_jensen_gap.v.
+
+    # 1. chi-square closed forms: B = C = I, Om = I gives E[1/chi2_n] = 1/(n - 2)
+    assert abs(exact_ratio_moment(np.eye(3), np.eye(3), np.eye(3)) - 1.0) < 1e-9
+    assert abs(exact_ratio_moment(np.eye(5), np.eye(5), np.eye(5)) - 1.0 / 3.0) < 1e-9
+
+    # 2. numerator mass on the denominator's null space splits off an independent chi-square:
+    #    E[X/Y^2] = E[1/chi2_5] + E[chi2_1] E[1/chi2_5^2] = 1/3 + 1/((5-2)(5-4)) = 2/3
+    c_null = np.diag([1.0] * 5 + [0.0])
+    assert abs(exact_ratio_moment(np.eye(6), c_null, np.eye(6)) - 2.0 / 3.0) < 1e-9
+
+    # 3. existence is a tail exponent and is ENFORCED: k = 2 diverges, and null-space mass
+    #    raises the bar from 3 to 5 -- the plug-in number exists in both cases, the moment does not
+    with pytest.raises(ValueError, match="diverges"):
+        exact_ratio_moment(np.eye(2), np.eye(2), np.eye(2))
+    with pytest.raises(ValueError, match="null space"):
+        exact_ratio_moment(np.eye(5), np.diag([1.0] * 4 + [0.0]), np.eye(5))
+
+    # 4. Result 51 (m): at Om = I the plug-in crossover is EXACT. Build the delayed-network
+    #    Sigma on C_6, close A_u from its closed form, bisect the plug-in ratio to its root in
+    #    phi, and the exact ratio must equal 1 there -- no Jensen shift.
+    m, p_t, k_folds, lag, d_max = 6, 5, 2, 1, 2
+    gammas = np.array([1.0, 0.7, 0.4])
+    shells = [np.asarray(s) for s in cycle_shells(m, d_max)]
+    t_gap = np.arange(p_t)[:, None] - np.arange(p_t)[None, :]
+
+    def sigma_of(phi: float) -> np.ndarray:
+        return sum(
+            gammas[d]
+            * gammas[e]
+            * np.kron(shells[d] @ shells[e], phi ** np.abs(t_gap - lag * (d - e)))
+            for d in range(d_max + 1)
+            for e in range(d_max + 1)
+        )
+
+    r = k_folds / (k_folds - 1)
+    operators = {}
+    for name, fold in (("parity", np.arange(m) % 2), ("block", (np.arange(m) >= m // 2))):
+        within = (fold[:, None] == fold[None, :]) * (k_folds / m)
+        a_u = np.eye(m) - r**2 * np.full((m, m), 1.0 / m) + (r**2 - 1) * within
+        operators[name] = np.kron(a_u, np.eye(p_t))
+
+    def plug_ratio(phi: float) -> float:
+        sig = sigma_of(phi)
+        v = {n: np.trace(a @ sig @ a) / np.trace(a) ** 2 for n, a in operators.items()}
+        return v["parity"] / v["block"]
+
+    lo, hi = 0.1, 0.8
+    assert (plug_ratio(lo) - 1.0) * (plug_ratio(hi) - 1.0) < 0.0
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if (plug_ratio(lo) - 1.0) * (plug_ratio(mid) - 1.0) <= 0.0:
+            hi = mid
+        else:
+            lo = mid
+    phi_star = 0.5 * (lo + hi)
+    assert abs(phi_star**lag - 0.3954669988481472) < 1e-3  # the (h) closed form, same gammas
+
+    sig = sigma_of(phi_star)
+    omega = np.eye(m * p_t)
+    exact = {n: exact_ratio_moment(a @ sig @ a, a, omega) for n, a in operators.items()}
+    assert abs(exact["parity"] / exact["block"] - 1.0) < 1e-7
+
+
 def test_delayed_network_law_and_the_limit_of_its_design_rule() -> None:
     # Result 51 (proofs/delayed_network_exposure.v): once a delay PROPAGATES THROUGH THE NETWORK,
     # Sigma stops being separable and Psi becomes a polynomial in phi^delta. Everything below is
@@ -685,3 +878,64 @@ def test_delayed_network_law_and_the_limit_of_its_design_rule() -> None:
 
     # 5. the exchangeable limit is Result 43's fold-geometry constant, unchanged
     assert abs(curve.c_fold_measured / curve.c_fold_predicted - 1.0) < 1e-12
+
+
+def test_optimal_fold_partition_recovers_the_stripe_law_and_certifies() -> None:
+    # Result 52, validation/fold_spectrum_law.mac, proofs/fold_spectrum_law.v.
+    import itertools
+
+    gammas = (1.0, 0.7, 0.4)
+
+    def brute(m: int, shells: list[np.ndarray], phi: float) -> float:
+        x = phi
+        q = np.zeros((m, m))
+        for d in range(3):
+            for e in range(3):
+                q += gammas[d] * gammas[e] * x ** abs(d - e) * (shells[d] @ shells[e])
+        best = np.inf
+        for cmb in itertools.combinations(range(1, m), m // 2 - 1):
+            fold = np.ones(m, dtype=int)
+            fold[0] = 0
+            fold[list(cmb)] = 0
+            same = fold[:, None] == fold[None, :]
+            best = min(best, float(q[same].sum()))
+        return best
+
+    # 1. C_8 exhaustive: stripes below g1/g0 = 0.7, parity inside (0.7, 0.875), stripes above.
+    shells8 = [np.asarray(sh, dtype=float) for sh in cycle_shells(8, 2)]
+    for phi, expect_edges in ((0.5, 4), (0.8, 0), (0.95, 4)):
+        design = optimal_fold_partition(shells8, gammas, phi, lag=1)
+        assert design.exhaustive
+        assert abs(design.objective - brute(8, shells8, phi)) < 1e-9
+        assert design.lower_bound <= design.objective + 1e-9
+        edges = sum(design.fold[i] == design.fold[(i + 1) % 8] for i in range(8))
+        assert edges == expect_edges  # 0 = alternating, 4 = width-2 stripes
+
+    # 2. local search (exhaustive_limit forced down) still finds the C_12 global optimum.
+    shells12 = [np.asarray(sh, dtype=float) for sh in cycle_shells(12, 2)]
+    for phi in (0.3, 0.8):
+        design = optimal_fold_partition(shells12, gammas, phi, lag=1, exhaustive_limit=10)
+        assert not design.exhaustive
+        assert abs(design.objective - brute(12, shells12, phi)) < 1e-9
+
+    # 3. K = 3 on C_6: matches brute force over all balanced 3-colourings.
+    shells6 = [np.asarray(sh, dtype=float) for sh in cycle_shells(6, 2)]
+    x = 0.4
+    q6 = np.zeros((6, 6))
+    for d in range(3):
+        for e in range(3):
+            q6 += gammas[d] * gammas[e] * x ** abs(d - e) * (shells6[d] @ shells6[e])
+    best3 = np.inf
+    for assign in itertools.product(range(3), repeat=6):
+        fold = np.asarray(assign)
+        if np.bincount(fold, minlength=3).tolist() != [2, 2, 2]:
+            continue
+        same = fold[:, None] == fold[None, :]
+        best3 = min(best3, float(q6[same].sum()))
+    design3 = optimal_fold_partition(shells6, gammas, 0.4, lag=1, k_folds=3)
+    assert abs(design3.objective - best3) < 1e-9
+    assert design3.lower_bound <= design3.objective + 1e-9
+
+    # 4. equal fold sizes are a precondition of the law, not a silent approximation.
+    with pytest.raises(ValueError, match="divisible"):
+        optimal_fold_partition(shells6, gammas, 0.4, lag=1, k_folds=4)

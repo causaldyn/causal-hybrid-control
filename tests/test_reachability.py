@@ -8,7 +8,12 @@ import pytest
 from jax import Array
 
 from chc.barrier import robust_barrier_margin
-from chc.reachability import backward_reachable_tube, barrier_reachability_gap, robust_hamiltonian
+from chc.reachability import (
+    backward_reachable_tube,
+    barrier_reachability_gap,
+    higher_order_barrier_gap,
+    robust_hamiltonian,
+)
 
 # The plant `chc.spine` plans on: two zones, one incentive column that moves drivers between them.
 # `h = x1 + 0.4` is a supply floor on the second zone.
@@ -264,3 +269,38 @@ def test_interpolation_reproduces_grid_values_and_scores_states_off_grid() -> No
     between = float(tube.interpolate(jnp.array([mid, tube.axes[1][40]])))
     ends = sorted([float(tube.final[17, 40]), float(tube.final[18, 40])])
     assert ends[0] - 1e-6 <= between <= ends[1] + 1e-6
+
+
+def test_higher_order_condition_sees_the_radius_the_first_order_one_cannot() -> None:
+    # The recorded relative-degree-2 trap, then its closure. Double integrator, h = 1 - pos^2:
+    # B^T grad h == 0 everywhere, so the SS 40 condition is radius-invariant by construction.
+    barrier = lambda x: 1.0 - x[0] ** 2  # noqa: E731
+    drift = lambda x: jnp.array([x[1], 0.0])  # noqa: E731
+    b_matrix = jnp.array([[0.0], [1.0]])
+    box = {
+        "lower": (-1.5, -1.2),
+        "upper": (1.5, 1.2),
+        "resolution": (61, 61),
+        "horizon": 0.6,
+        "steps": 150,
+    }
+
+    first_0 = barrier_reachability_gap(barrier, drift, b_matrix, u_max=2.0, radius=0.0, **box)
+    first_8 = barrier_reachability_gap(barrier, drift, b_matrix, u_max=2.0, radius=0.8, **box)
+    # the trap in two lines: identical pointwise verdicts, shrinking truth
+    assert first_0.barrier_fraction == first_8.barrier_fraction
+    assert first_8.reachable_fraction < first_0.reachable_fraction
+
+    second = {
+        r: higher_order_barrier_gap(barrier, drift, b_matrix, u_max=2.0, radius=r, **box)
+        for r in (0.0, 0.8, 5.0)
+    }
+    # the closure: the lifted channel B^T grad psi1 != 0 puts the radius back in the verdict;
+    # past the swallow point the verdict saturates at the drift-only one (the SS 40 zero-action
+    # rule on the lifted channel), so the tail is monotone rather than strict
+    assert second[0.8].barrier_fraction < second[0.0].barrier_fraction
+    assert second[5.0].barrier_fraction <= second[0.8].barrier_fraction
+    for gap in second.values():
+        assert gap.working_fraction <= gap.safe_fraction + 1e-12
+        assert gap.barrier_fraction <= gap.working_fraction + 1e-12
+        assert gap.certified_but_unreachable >= 0.0

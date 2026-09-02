@@ -9,6 +9,7 @@ import pytest
 
 from chc.deep_galerkin import (
     LQMeanFieldGame,
+    dual_weighted_error_estimate,
     lq_mean_field_certificate,
     solve_mfg_dgm,
     solve_poisson_dgm,
@@ -119,6 +120,31 @@ def test_quadrature_nodes_are_not_trainable() -> None:
     assert float(model.mean(jnp.asarray(0.0))) == pytest.approx(game.mean_initial, abs=1e-9)
 
 
+def test_dual_weighted_estimate_recovers_the_error_without_the_closed_form() -> None:
+    # Result 55: a deliberately under-trained model, so the error is large and the estimate has
+    # something to find. The estimator sees only the network and the cost parameters.
+    game = LQMeanFieldGame(
+        a=-0.5,
+        b=1.0,
+        q=1.0,
+        r=1.0,
+        coupling=3.0,
+        terminal_coupling=3.0,
+        sigma=0.7,
+        horizon=0.5,
+        mean_initial=1.0,
+        variance_initial=0.25,
+    )
+    model = solve_mfg_dgm(game, steps=150, half_width=10.0, seed=0)
+    mean_terminal = model.mean(jnp.asarray(game.horizon))
+    fitted = float(
+        jax.grad(lambda x: model.value_at(jnp.asarray(0.0), x, mean_terminal))(jnp.asarray(0.0))
+    )
+    truth = abs(fitted - float(game.solve().value_s[0]))
+    assert truth > 0.1  # the model really is wrong, so the estimate is not trivially zero
+    assert dual_weighted_error_estimate(game, model) == pytest.approx(truth, rel=0.1)
+
+
 def test_lq_mean_field_certificate_holds() -> None:
     curve = lq_mean_field_certificate()
     assert curve.ok
@@ -133,3 +159,9 @@ def test_lq_mean_field_certificate_holds() -> None:
     assert curve.near_control_error > 5.0 * curve.far_control_error
     assert curve.near_residual < curve.far_residual
     assert curve.residual_blindness > 5.0
+    # Result 55: the dual-weighted estimator, built from the model's own linearisation and never
+    # from the closed form, recovers the error the raw residual inverts -- and does so to within
+    # a few percent at a horizon where the true error is two orders larger.
+    assert curve.near_value_error > 5.0 * curve.far_value_error
+    assert curve.near_dual_weighted > curve.far_dual_weighted
+    assert curve.dual_weighted_accuracy < 0.1

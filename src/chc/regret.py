@@ -17,12 +17,16 @@ the discrete Lyapunov equation.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import comb
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.integrate import quad
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
+from scipy.special import psi
 
 from chc.network_causal import ar1_innovations, cycle_shells, propagate_shells
 
@@ -268,6 +272,10 @@ class InformationLowerBoundCurve:
     confounded_floor: Vector  # the (higher) CR floor under confounding, C*sigma^2/(n*V_conf)
     rate_slope: float  # log-log slope of experimental_regret vs n (~ -1: the optimal 1/n rate)
     floor_ratio: float  # confounded / experimental floor (> 1: confounding costs information)
+    van_trees_action_floor: float  # (E_lambda psi')^2/(n I1 + I(lambda)): holds for ANY estimator
+    hodges_pointwise_ratio: float  # superefficient estimator vs the UNBIASED CR floor at b: << 1
+    hodges_bayes_ratio: float  # the same estimator against the van Trees floor: >> 1
+    plugin_bayes_ratio: float  # the efficient plug-in against it: > 1, and far below Hodges
 
 
 def information_lower_bound_certificate(
@@ -285,12 +293,30 @@ def information_lower_bound_certificate(
     ``proofs/information_lower_bound.v``). The EXACT regret map is
     ``R = (b^2+rr)*(u*(bhat)-u*(b))^2`` (nonlinear in b); to first order in the effect error this is
     ``C*(bhat-b)^2``, and Cramer-Rao on the (unbiased) estimator gives the local floor
-    ``E[regret] >= C*sigma^2/(n*V_id)``, ``V_id`` the identifying variance. Scope caveats: a *local*
-    (delta-method) bound for unbiased estimators, NOT a global minimax lower bound (a full version
-    needs local-asymptotic-minimax / van Trees for the estimand ``u*(b)``); and at the knife edge
-    ``rr = b^2`` the coefficient ``C`` vanishes, so the leading order is higher. The ``1/n`` rate
+    ``E[regret] >= C*sigma^2/(n*V_id)``, ``V_id`` the identifying variance. The ``1/n`` rate
     matches the online upper bound (Result 7) in this scalar model; confounding reduces ``V_id``
     (``V_exp`` -> residual ``V_conf``), raising the floor.
+
+    RESULT 57 -- the van Trees arm, which removes two of the three scope caveats. The one-step LQ
+    regret is EXACTLY ``(b^2+rr)(u - u*(b))^2``, a squared error in the ACTION with no
+    linearisation (``validation/action_van_trees.mac`` STEP 1), so applying van Trees to the
+    estimand ``psi(b) = u*(b)`` -- an inequality that holds for EVERY estimator, biased or not --
+    and multiplying by that exact curvature gives
+
+        ``n E[regret] >= n (b^2+rr) (E_lambda psi')^2 / (n V_id/sigma^2 + I(lambda))``
+
+    whose limit is ``C sigma^2/V_id``: the SAME constant, with the unbiasedness hypothesis and the
+    delta method both deleted. The arm that can fail uses a HODGES estimator, which snaps to ``b``
+    whenever the fit lands within ``n^(-1/4)``. It drives the regret at ``b`` to exactly zero --
+    ``hodges_pointwise_ratio = 0``, infinitely below the unbiased Cramer-Rao floor, which is the
+    concrete reason that floor was never a minimax statement -- while its Bayes action error sits
+    ``~146x`` ABOVE the van Trees floor, the price superefficiency pays off-centre. The efficient
+    plug-in clears the same floor by ``~2.8x``, so the bound separates the two rather than being
+    vacuous for both.
+
+    The caveat that SURVIVES is the knife edge: at ``rr = b^2`` the optimal action is stationary
+    in ``b``, so ``psi'`` and with it the leading floor vanish. That is a property of the problem,
+    not of the inequality used.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     v_exp = alpha**2 + 1.0  # total action variance (Var(alpha*z + nu), Vz = Vnu = 1)
@@ -309,7 +335,50 @@ def information_lower_bound_certificate(
     cr_floor = coeff * sigma**2 / (ns * v_exp)
     conf_floor = coeff * sigma**2 / (ns * v_conf)
     slope = float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
-    return InformationLowerBoundCurve(ns, exp_regret, cr_floor, conf_floor, slope, v_exp / v_conf)
+
+    # Result 57's arm, in ACTION space, where the regret identity is exact.
+    prior_width = 0.25
+    prior_info = 1.0 / prior_width**2
+    n_probe = int(sample_sizes[-1])
+    standard_error = sigma / np.sqrt(n_probe * v_exp)
+
+    def optimal_action(effect: NDArray[np.float64] | float) -> NDArray[np.float64]:
+        return -np.asarray(effect) * xt / (np.asarray(effect) ** 2 + rr)
+
+    def sensitivity(effect: NDArray[np.float64]) -> NDArray[np.float64]:
+        return -xt * (rr - effect**2) / (rr + effect**2) ** 2
+
+    def hodges(fitted: NDArray[np.float64]) -> NDArray[np.float64]:
+        # snaps to b whenever the estimate is within n^(-1/4): superefficient AT b, bad near it
+        return np.where(np.abs(fitted - b) <= n_probe**-0.25, b, fitted)
+
+    rng = np.random.default_rng(7_000_003)
+    draws = 40 * n_seeds
+    # 1. superefficiency: the UNBIASED floor is beatable at a point, so it was never minimax
+    at_b = b + standard_error * rng.standard_normal(draws)
+    hodges_pointwise = float(
+        np.mean((b**2 + rr) * (optimal_action(hodges(at_b)) - optimal_action(b)) ** 2)
+    )
+    # 2. and the van Trees floor, which is not
+    drawn = b + prior_width * rng.standard_normal(draws)
+    fitted_drawn = drawn + standard_error * rng.standard_normal(draws)
+    vt_floor = float(np.mean(sensitivity(drawn))) ** 2 / (n_probe * v_exp / sigma**2 + prior_info)
+    hodges_bayes = float(
+        np.mean((optimal_action(hodges(fitted_drawn)) - optimal_action(drawn)) ** 2)
+    )
+    plugin_bayes = float(np.mean((optimal_action(fitted_drawn) - optimal_action(drawn)) ** 2))
+    return InformationLowerBoundCurve(
+        ns,
+        exp_regret,
+        cr_floor,
+        conf_floor,
+        slope,
+        v_exp / v_conf,
+        vt_floor,
+        hodges_pointwise / float(cr_floor[-1]),
+        hodges_bayes / vt_floor,
+        plugin_bayes / vt_floor,
+    )
 
 
 @dataclass(frozen=True)
@@ -1278,6 +1347,370 @@ def _design_crossover(difference: NDArray[np.float64]) -> float:
     return inside[0] if len(inside) == 1 else float("nan")
 
 
+def exact_ratio_moment(
+    numerator: NDArray[np.float64],
+    denominator: NDArray[np.float64],
+    regressor_cov: NDArray[np.float64],
+) -> float:
+    """``E[(R'BR) / (R'CR)^2]`` for ``R ~ N(0, Omega)``, exactly -- Result 51 (l) and (m).
+
+    The variance of the scalar cross-fit estimator ``theta_hat = u'A eps / u'A u`` with a
+    correlated regressor ``u`` is ``E[u'(A Sigma A)u / (u'Au)^2]``: call with
+    ``numerator = A Sigma A`` and ``denominator = A``. The plug-in law ``tr(B Om)/tr(C Om)^2``
+    mis-prices that expectation by the expectation-of-a-ratio gap -- ``+10.7% / +6.7%`` on the
+    panel geometries of Result 51 (i), enough to move the fold-design crossover and open a
+    wrong-partition band at ``Om != I`` (Result 51 (m)). This is the exact replacement: with
+    ``1/Y^2 = int_0^inf t e^{-tY} dt`` and the tilted-Gaussian moment, the expectation is one
+    resolvent quadrature (Magnus 1986)::
+
+        E[X/Y^2] = int_0^inf t det(I + 2t Om C)^(-1/2) tr(B (I + 2t Om C)^(-1) Om) dt
+
+    -- an ``eigh`` plus ``scipy.integrate.quad``. Both identities are verified, not cited, in
+    ``validation/omega_jensen_gap.mac`` (residual 0 at ``n = 1, 2``); the design consequences --
+    the ``Om = I`` crossover is exact and sign-safe, the ``Om != I`` one is not -- are proved in
+    ``proofs/omega_jensen_gap.v``.
+
+    Scope. Exact for GAUSSIAN ``R``. Scale mixtures ``R = sqrt(nu/W) G`` (multivariate t) rescale
+    the moment by ``E[W/nu]`` -- equal to 1 for ``t_nu`` at a fixed SCALE matrix, so heavy tails
+    per se change nothing here, while parameterising by the variance instead of the scale silently
+    costs ``-2/nu``. Existence is a tail condition, checked rather than assumed: with ``k`` nonzero
+    eigenvalues of ``Om^(1/2) C Om^(1/2)`` the integrand decays like ``t^(-k/2)`` when the
+    numerator carries no mass on the denominator's null space (finite iff ``k >= 3``) and like
+    ``t^(1-k/2)`` when it does (``k >= 5``) -- the plug-in number exists at every ``k``, which is
+    exactly how a truncation gets quoted where the moment it approximates does not.
+    """
+    b = np.asarray(numerator, dtype=np.float64)
+    c = np.asarray(denominator, dtype=np.float64)
+    om = np.asarray(regressor_cov, dtype=np.float64)
+    n = om.shape[0]
+    if b.shape != (n, n) or c.shape != (n, n) or om.shape != (n, n):
+        raise ValueError("numerator, denominator and regressor_cov must be square, same shape")
+    root = np.linalg.cholesky(om)  # not PD -> LinAlgError at the boundary, not deep in quad
+    eigenvalues, vectors = np.linalg.eigh(root.T @ c @ root)
+    tol = n * float(np.finfo(np.float64).eps) * max(float(eigenvalues[-1]), 1.0)
+    if float(eigenvalues[0]) < -tol:
+        raise ValueError("denominator must be PSD on the regressor support: R'CR changes sign")
+    loadings = np.diag(vectors.T @ (root.T @ b @ root) @ vectors).copy()
+    live = eigenvalues > tol
+    k = int(np.count_nonzero(live))
+    null_mass = float(loadings[~live].sum())
+    has_null_mass = abs(null_mass) > tol * max(float(np.abs(loadings).max()), 1.0)
+    if k < (5 if has_null_mass else 3):
+        raise ValueError(
+            f"E[X/Y^2] diverges: {k} nonzero denominator eigenvalue(s), and the tail exponent "
+            f"needs {'5 (numerator loads on the null space)' if has_null_mass else '3'}"
+        )
+    d_live = eigenvalues[live]
+    b_live = loadings[live]
+    constant = null_mass if has_null_mass else 0.0
+
+    def integrand(t: float) -> float:
+        weights = 1.0 + 2.0 * t * d_live
+        return (
+            t
+            * float(np.exp(-0.5 * np.log(weights).sum()))
+            * (float((b_live / weights).sum()) + constant)
+        )
+
+    value, _ = quad(integrand, 0.0, np.inf, limit=400)
+    return float(value)
+
+
+# Signed triple products building each entry of adj(M) N adj(M) for q = 2: with
+# adj(M) = [[m22, -m12], [-m12, m11]], entry (0,0) is m22^2 n11 - 2 m12 m22 n12 + m12^2 n22 and
+# so on (proofs/matrix_ratio_moment.v, sandwich_entry_*). Indices 0..2 name the quadratic forms
+# m11, m12, m22 of M = X'AX and 3..5 those of N = X'(A Sigma A)X; each tuple is
+# (coefficient, form, form, form).
+_SANDWICH_TRIPLES: dict[tuple[int, int], list[tuple[int, int, int, int]]] = {
+    (0, 0): [(1, 2, 2, 3), (-2, 1, 2, 4), (1, 1, 1, 5)],
+    (0, 1): [(-1, 1, 2, 3), (1, 0, 2, 4), (1, 1, 1, 4), (-1, 0, 1, 5)],
+    (1, 1): [(1, 1, 1, 3), (-2, 0, 1, 4), (1, 0, 0, 5)],
+}
+
+
+def _quadratic_form_kernels(p_full: NDArray[np.float64], n: int) -> list[NDArray[np.float64]]:
+    """Kernels of the three quadratic forms X'BX under the tilt, from one block product.
+
+    ``(X'BX)_{ij} = vec(X)' K_{ij} vec(X)`` with ``K_11 = e11 (x) B``, ``K_22 = e22 (x) B`` and
+    ``K_12`` the symmetrised cross block. Multiplying each by the tilted covariance ``S`` is what
+    every trace in the three-form moment consumes, and all six products come from the two block
+    rows of ``(I_2 (x) B) S`` -- assembled here instead of six kron-then-matmul passes.
+    """
+    top, bottom = p_full[:, :n, :], p_full[:, n:, :]
+    zeros = np.zeros_like(top)
+    return [
+        np.concatenate([top, zeros], axis=1),
+        0.5 * np.concatenate([bottom, top], axis=1),
+        np.concatenate([zeros, bottom], axis=1),
+    ]
+
+
+def _sandwich_entries(
+    kernels: list[NDArray[np.float64]],
+) -> dict[tuple[int, int], NDArray[np.float64]]:
+    """The three upper-triangular sandwich entries at every quadrature node.
+
+    Each is a signed sum of ``E[q_i q_j q_k]`` over the tilted Gaussian, which Isserlis' 15
+    pairings collapse to ``t_i t_j t_k + 2 sum t_i c_jk + 4 (d_ijk + d_ikj)`` in traces of the
+    kernels (``validation/matrix_ratio_moment.mac`` STEP 3). Pairs and triples are shared across
+    entries -- the caches are what keep the node loop linear in the number of distinct traces.
+    """
+    traces = [np.einsum("bii->b", kernel) for kernel in kernels]
+    pair_cache: dict[tuple[int, int], NDArray[np.float64]] = {}
+    product_cache: dict[tuple[int, int], NDArray[np.float64]] = {}
+    triple_cache: dict[tuple[int, int, int], NDArray[np.float64]] = {}
+
+    def pair(i: int, j: int) -> NDArray[np.float64]:
+        key = (min(i, j), max(i, j))
+        if key not in pair_cache:
+            pair_cache[key] = np.einsum("bij,bji->b", kernels[key[0]], kernels[key[1]])
+        return pair_cache[key]
+
+    def triple(i: int, j: int, k: int) -> NDArray[np.float64]:
+        if (i, j, k) not in triple_cache:
+            if (i, j) not in product_cache:
+                product_cache[(i, j)] = kernels[i] @ kernels[j]
+            triple_cache[(i, j, k)] = np.einsum("bij,bji->b", product_cache[(i, j)], kernels[k])
+        return triple_cache[(i, j, k)]
+
+    entries = {}
+    for which, terms in _SANDWICH_TRIPLES.items():
+        value = np.zeros(traces[0].shape)
+        for coefficient, i, j, k in terms:
+            value += coefficient * (
+                traces[i] * traces[j] * traces[k]
+                + 2.0 * (traces[i] * pair(j, k) + traces[j] * pair(i, k) + traces[k] * pair(i, j))
+                + 4.0 * (triple(i, j, k) + triple(i, k, j))
+            )
+        entries[which] = value
+    return entries
+
+
+def exact_matrix_ratio_moment(
+    numerator: NDArray[np.float64],
+    denominator: NDArray[np.float64],
+    regressor_cov: NDArray[np.float64],
+    nodes: int = 40,
+) -> NDArray[np.float64]:
+    """``E[(X'CX)^-1 (X'BX) (X'CX)^-1]`` for a Gaussian n-by-2 block ``X``, exactly -- Result 54.
+
+    The matrix companion of :func:`exact_ratio_moment`: the exact sampling covariance of the
+    TWO-channel (direct, spillover) cross-fit estimate is ``E[(X'AX)^-1 X'A Sigma A X (X'AX)^-1]``
+    -- call with ``numerator = A Sigma A``, ``denominator = A``, and ``regressor_cov`` the 2n-by-2n
+    covariance of ``vec(X)`` (own-process block, cross block, spillover block). ``regressor_cov``
+    may be SINGULAR -- a spillover column that is deterministic given the own column is the normal
+    case, and nothing here inverts it.
+
+    Route (all derived, not cited, in ``validation/matrix_ratio_moment.mac``): ``M^-1 =
+    adj(M)/det(M)`` turns each entry into signed sums of THREE quadratic forms; the Ingham--Siegel
+    identity ``det(M)^-2 = (2/pi) int_{T>0} det(T)^(1/2) etr(-TM) dT`` replaces the determinant by
+    a Gaussian tilt; the tilted law has covariance ``(I + 2 Om (T (x) C))^-1 Om``; and the Isserlis
+    three-form moment ``E[q1 q2 q3] = t1 t2 t3 + 2(t1 c23 + t2 c13 + t3 c12) + 4(d123 + d132)``
+    closes each entry. The cone integral runs in Cholesky coordinates (which cannot leave the
+    cone -- ``proofs/matrix_ratio_moment.v``) on a tensor Gauss--Legendre grid: cost is one
+    ``slogdet`` + ``solve`` of size 2n per node, ``nodes**3`` nodes -- seconds at ``n = 30``,
+    not a hot-path tool.
+
+    Anchors: the Ingham--Siegel constant to 8 digits, Wishart ``E[W^-1] = I/(n-3)`` to 6, a
+    10^6-draw Monte Carlo within 1.6 SE. Existence is the inverse-Wishart threshold, enforced:
+    per-channel effective rank at least ``q + 2 = 4``, below which the integral diverges (visible
+    as node-count instability, measured at ``n = 3``) while a plug-in sandwich still quotes a
+    number. Scope: ``q = 2`` channels only -- the adjugate route is what keeps the polynomial
+    degree manageable.
+    """
+    b = np.asarray(numerator, dtype=np.float64)
+    c = np.asarray(denominator, dtype=np.float64)
+    om = np.asarray(regressor_cov, dtype=np.float64)
+    n = c.shape[0]
+    if b.shape != (n, n) or c.shape != (n, n):
+        raise ValueError("numerator and denominator must be square and of the same shape")
+    if om.shape != (2 * n, 2 * n):
+        raise ValueError("regressor_cov must be 2n-by-2n: the covariance of vec(X), X n-by-2")
+    om_values, om_vectors = np.linalg.eigh(om)
+    tol = 2 * n * float(np.finfo(np.float64).eps) * max(float(om_values[-1]), 1.0)
+    if float(om_values[0]) < -tol:
+        raise ValueError("regressor_cov must be PSD")
+    root = om_vectors * np.sqrt(np.clip(om_values, 0.0, None))
+    big_c = np.kron(np.eye(2), c)
+    support = np.linalg.eigvalsh(root.T @ big_c @ root)
+    if float(support[0]) < -tol:
+        raise ValueError("denominator must be PSD on the regressor support: X'CX changes sign")
+    k_eff = int(np.count_nonzero(support > tol))
+    if k_eff < 8:
+        raise ValueError(
+            f"E[(X'CX)^-1 ...] diverges: per-channel effective rank {k_eff / 2:g} < 4, the "
+            "inverse-Wishart existence threshold n >= q + 2"
+        )
+    big_b = np.kron(np.eye(2), b)
+    eye = np.eye(2 * n)
+
+    # Deterministic probe for the integrand's own scale: the mass of a divergence-free cone
+    # integral concentrates where the tilted determinant and the traces balance, and a grid that
+    # misses that shoulder converges to a wrong answer with a straight face.
+    best, scale = -np.inf, 1.0
+    for probe in np.geomspace(1e-3, 1e3, 61):
+        tilt = eye + 2.0 * probe**2 * om @ big_c
+        sign, logdet = np.linalg.slogdet(tilt)
+        if sign <= 0:
+            continue
+        tilted = np.linalg.solve(tilt, om)
+        magnitude = (
+            probe**5 * float(np.exp(-0.5 * logdet)) * abs(float(np.trace(c @ tilted[:n, :n]))) ** 2
+        )
+        if magnitude > best:
+            best, scale = magnitude, probe
+
+    points, weights = np.polynomial.legendre.leggauss(nodes)
+    half_points = scale * (0.5 * (points + 1)) / (1 - 0.5 * (points + 1))
+    half_jacobian = scale * 0.5 / (1 - 0.5 * (points + 1)) ** 2 * weights
+    full_points = scale * points / (1 - points**2)
+    full_jacobian = scale * (1 + points**2) / (1 - points**2) ** 2 * weights
+
+    grid = np.meshgrid(half_points, half_points, full_points, indexing="ij")
+    aa, bb, cc = (axis.ravel() for axis in grid)
+    ww = np.einsum("i,j,k->ijk", half_jacobian, half_jacobian, full_jacobian).ravel()
+
+    chunk = max(64, min(4096, int(2.0e8 // (32 * n * n))))
+    out = dict.fromkeys(_SANDWICH_TRIPLES, 0.0)
+    for start in range(0, aa.size, chunk):
+        sl = slice(start, start + chunk)
+        a_c, b_c, c_c = aa[sl], bb[sl], cc[sl]
+        t_mat = np.empty((a_c.size, 2, 2))
+        t_mat[:, 0, 0] = a_c * a_c
+        t_mat[:, 0, 1] = t_mat[:, 1, 0] = a_c * c_c
+        t_mat[:, 1, 1] = c_c * c_c + b_c * b_c
+        w_op = np.einsum("bij,kl->bikjl", t_mat, c).reshape(-1, 2 * n, 2 * n)
+        tilt = eye[None] + 2.0 * om[None] @ w_op
+        sign, logdet = np.linalg.slogdet(tilt)
+        tilted = np.linalg.solve(tilt, np.broadcast_to(om, tilt.shape))
+        kernels = _quadratic_form_kernels(big_c[None] @ tilted, n) + _quadratic_form_kernels(
+            big_b[None] @ tilted, n
+        )
+        prefactor = np.where(sign > 0, np.exp(-0.5 * logdet), 0.0)
+        base = (2.0 / np.pi) * (a_c * b_c) * prefactor * 4.0 * a_c * a_c * b_c * ww[sl]
+        for which, value in _sandwich_entries(kernels).items():
+            out[which] += float((base * value).sum())
+    return np.array([[out[(0, 0)], out[(0, 1)]], [out[(0, 1)], out[(1, 1)]]])
+
+
+@dataclass(frozen=True)
+class FoldDesign:
+    """A fold partition with its Result 52 objective and an optimality certificate.
+
+    ``objective`` is the partition-dependent part of the sandwich, the same-fold weighted 2-walk
+    count ``sum_f 1_f' Q(x) 1_f`` -- ``Psi`` is affine in it with positive weight, so smaller is
+    better. ``lower_bound`` is the Ky Fan spectral bound (exact eigensolve, no relaxation error on
+    the bound side), and ``gap = (objective - lower_bound) / max(|lower_bound|, 1)``. When
+    ``exhaustive`` is True the returned fold is the global optimum regardless of the gap -- the
+    gap then measures the looseness of the spectral bound, not of the design.
+    """
+
+    fold: NDArray[np.int_]
+    objective: float
+    lower_bound: float
+    gap: float
+    exhaustive: bool
+
+
+def optimal_fold_partition(
+    shells: Sequence[NDArray[np.float64]],
+    gammas: Sequence[float],
+    phi: float,
+    lag: int = 1,
+    k_folds: int = 2,
+    exhaustive_limit: int = 20000,
+    restarts: int = 8,
+    seed: int = 0,
+) -> FoldDesign:
+    """Variance-optimal balanced fold partition under delayed network interference -- Result 52.
+
+    The fold partition enters the cross-fit sandwich only through the same-fold weighted 2-walk
+    count with positive weight ``r^4 - 1`` (``validation/fold_spectrum_law.mac``,
+    ``proofs/fold_spectrum_law.v``), so the design problem is the minimum-weight balanced
+    ``k_folds``-cut of the graph weighted by ``Q(x) = sum_{d,e} g_d g_e x^|d-e| S_d S_e``,
+    ``x = phi**lag``. On a cycle the answer is a spectral stripe design: width-2 stripes below
+    ``x = g1/g0``, alternating folds between ``g1/g0`` and ``g1/(2 g2)`` -- and NEVER the
+    contiguous blocks that ``delayed_network_certificate`` compares, which cost up to +55% of
+    ``Psi`` at small ``x``.
+
+    Small problems (``k_folds = 2`` and at most ``exhaustive_limit`` balanced bisections) are
+    enumerated exactly. Larger ones run Fiedler-style spectral rounding plus balanced-swap local
+    search from ``restarts`` starts; the certificate is the Ky Fan bound
+    ``(m/K) (1'Q1/m + sum of the K-1 smallest eigenvalues of Q on the mean-free subspace)``,
+    which every balanced partition obeys. A large gap on the local-search path is an honest
+    "could not certify", not a silent success.
+
+    The objective is the PLUG-IN law's. Near a design boundary the exact moment shifts thresholds
+    (Result 52 (e)); rank the shortlisted designs with :func:`exact_ratio_moment` when it matters.
+    """
+    gam = np.asarray(gammas, dtype=np.float64)
+    mats = [np.asarray(sh, dtype=np.float64) for sh in shells]
+    if len(mats) != gam.size:
+        raise ValueError("shells and gammas must have the same length")
+    m = mats[0].shape[0]
+    if m % k_folds != 0:
+        raise ValueError("m must be divisible by k_folds: the law is derived for equal fold sizes")
+    x = float(phi) ** int(lag)
+    q = np.zeros((m, m))
+    for d in range(gam.size):
+        for e in range(gam.size):
+            q += gam[d] * gam[e] * x ** abs(d - e) * (mats[d] @ mats[e])
+
+    def objective(fold: NDArray[np.int_]) -> float:
+        same = fold[:, None] == fold[None, :]
+        return float(q[same].sum())
+
+    # Ky Fan lower bound: sum_f 1_f' Q 1_f = (m/K) tr(U'QU) over an orthonormal K-frame whose
+    # span contains the all-ones direction.
+    basis = np.linalg.svd(np.ones((1, m)))[2][1:].T
+    reduced = np.linalg.eigvalsh(basis.T @ q @ basis)
+    lower = (m / k_folds) * (
+        float(np.ones(m) @ q @ np.ones(m)) / m + float(reduced[: k_folds - 1].sum())
+    )
+
+    size = m // k_folds
+    best: NDArray[np.int_] | None = None
+    best_val = np.inf
+    n_bisections = comb(m - 1, size - 1)
+    exhaustive = k_folds == 2 and n_bisections <= exhaustive_limit
+    if exhaustive:
+        for chosen in itertools.combinations(range(1, m), size - 1):
+            fold = np.ones(m, dtype=np.int_)
+            fold[0] = 0
+            fold[list(chosen)] = 0
+            val = objective(fold)
+            if val < best_val:
+                best, best_val = fold, val
+    else:
+        rng = np.random.default_rng(seed)
+        fiedler = np.argsort(basis @ np.linalg.eigh(basis.T @ q @ basis)[1][:, 0])
+        for trial in range(restarts):
+            order = fiedler if trial == 0 else rng.permutation(m)
+            fold = np.empty(m, dtype=np.int_)
+            fold[order] = np.arange(m) % k_folds if trial % 2 == 0 else np.arange(m) // size
+            val = objective(fold)
+            improved = True
+            while improved:
+                improved = False
+                for i in range(m):
+                    for j in range(i + 1, m):
+                        if fold[i] == fold[j]:
+                            continue
+                        fold[i], fold[j] = fold[j], fold[i]
+                        trial_val = objective(fold)
+                        if trial_val < val - 1e-12:
+                            val, improved = trial_val, True
+                        else:
+                            fold[i], fold[j] = fold[j], fold[i]
+            if val < best_val:
+                best, best_val = fold.copy(), val
+    assert best is not None
+    gap = (best_val - lower) / max(abs(lower), 1.0)
+    return FoldDesign(
+        fold=best, objective=best_val, lower_bound=lower, gap=float(gap), exhaustive=exhaustive
+    )
+
+
 def delayed_network_certificate(
     *,
     cluster_size: int = 6,
@@ -1931,6 +2364,146 @@ class MinimaxExplorationCurve:
     eta_slope: float  # log-log slope of c_causal vs eta (-> -0.5: the 1/sqrt(eta) causal scaling)
 
 
+@dataclass(frozen=True)
+class CappedExplorationPolicy:
+    """The optimal exploration schedule under a per-round action cap -- Result 56.
+
+    The policy is two numbers: explore at ``cap`` for ``block_rounds`` rounds, then stop. It is
+    not an approximation -- the objective is convex and depends on the schedule only through its
+    prefix sums, so front-loading as hard as the box allows is globally optimal.
+    """
+
+    cap: float
+    block_rounds: int
+    cost: float
+    uncapped_floor: float
+    taper_cost: float
+    excess: float  # cost - uncapped_floor: additive, and logarithmic in T
+    predicted_excess: float  # (K/(2 c cap)) ln T, the derived leading form of that excess
+
+
+def _capped_block_cost(
+    rounds: NDArray[np.float64],
+    *,
+    cap: float,
+    curvature: float,
+    numerator: float,
+    info_rate: float,
+    prior_info: float,
+    horizon: int,
+) -> NDArray[np.float64]:
+    """Cost of exploring at ``cap`` for ``rounds`` rounds and then stopping.
+
+    The estimation term inside the block is a harmonic sum with step ``info_rate*cap``, which is
+    a difference of digammas -- so the whole curve is O(1) per candidate length and the search
+    below never has to materialise a schedule.
+    """
+    offset = prior_info / (info_rate * cap)
+    inside = (psi(offset + rounds) - psi(offset)) / (info_rate * cap)
+    after = (horizon - rounds) / (prior_info + info_rate * cap * rounds)
+    return curvature * cap * rounds + numerator * (inside + after)
+
+
+def capped_exploration_policy(
+    *,
+    horizon: int,
+    cap: float,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    sigma: float = 0.7,
+    i0: float = 1.0,
+    eta: float = 0.6,
+) -> CappedExplorationPolicy:
+    """The matching causal policy under a per-round action cap -- Result 56.
+
+    :func:`minimax_exploration_certificate` showed that a front-loaded BURST attains the minimax
+    floor while a ``1/sqrt(t)`` taper sits ``sqrt(2)`` above it, and conjectured that a per-round
+    action cap -- which every real actuator has -- is what would make the taper the right shape.
+    It is not. The regret
+
+        ``F(v) = A sum_t v_t + K sum_t 1/(I0 + c S_{t-1})``,  ``S`` the prefix sum,
+        ``c = eta/sigma^2``
+
+    depends on the schedule only through its prefix sums and is strictly decreasing in each of
+    them, so moving exploration from a later round to an earlier one at equal budget STRICTLY
+    lowers it (``proofs/capped_exploration.v``, ``earlier_is_strictly_cheaper``) -- an argument
+    that never mentions the cap. The Hessian is a sum of rank-one PSD terms, so the objective is
+    convex and the exchange argument gives a GLOBAL optimum: saturate the cap on a prefix, then
+    stop. A clipped burst, not a taper.
+
+    The price of the cap is ADDITIVE and LOGARITHMIC, not a constant factor. The optimal block
+    length is ``n* = sqrt(K T/(A c))/cap``, and at it the leading term is ``2 sqrt(A K T/c)``,
+    which with ``K = A (du*/db)^2`` and ``c = eta/sigma^2`` is EXACTLY the uncapped constant
+    ``c_causal sqrt(T)`` (``capped_leading_term_is_the_uncapped_floor``). What is left over is the
+    harmonic sum, ``(K/(2 c cap)) ln T + O(1)`` -- so the ratio to the uncapped floor tends to 1
+    for every fixed cap, while the taper's ``sqrt(2)`` does not. A tighter actuator explores for
+    LONGER, not more gently.
+
+    ``block_rounds`` is found by an exact search over the convex block-cost curve, which digamma
+    makes O(1) per candidate; ``cost`` is the true cost of that schedule and agrees with a
+    projected-gradient solve of the full convex program to seven decimals. ``taper_cost`` is the
+    clipped ``1/sqrt(t)`` schedule at its own optimal scale, for comparison -- at ``T = 1e5`` and
+    ``cap = 0.03`` the block costs ``196.11`` against the taper's ``266.81``, a ``36%`` gap that
+    does not close.
+
+    ``predicted_excess`` carries only the LEADING log term; its ``O(1)`` is not modelled, so read
+    it as a slope rather than a level. Per decade of ``T`` at ``cap = 0.03`` it predicts ``2.32``
+    against a measured ``2.20`` then ``2.29`` -- converging, which is the claim.
+
+    Scope: as in :func:`minimax_exploration_certificate` -- the van Trees score identity for a
+    functional under an adaptive design and Fisher-information additivity are cited, not
+    formalised, and exploitation is assumed to contribute no identifying information.
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be at least one round")
+    if cap <= 0.0:
+        raise ValueError("cap must be positive: a zero cap forbids exploration entirely")
+    curvature = b * b + rr
+    sensitivity = -xt * (rr - b * b) / (rr + b * b) ** 2
+    numerator = curvature * sensitivity * sensitivity
+    info_rate = eta / sigma**2
+    c_causal = 2.0 * curvature * abs(sensitivity) * sigma / np.sqrt(eta)
+    floor = c_causal * np.sqrt(horizon) - curvature * i0 / info_rate
+
+    def cost_of(rounds: NDArray[np.float64]) -> NDArray[np.float64]:
+        return _capped_block_cost(
+            rounds,
+            cap=cap,
+            curvature=curvature,
+            numerator=numerator,
+            info_rate=info_rate,
+            prior_info=i0,
+            horizon=horizon,
+        )
+
+    predicted = np.sqrt(numerator * horizon / (curvature * info_rate)) / cap
+    # Convex in the block length, so a coarse geometric bracket plus a local sweep is exact.
+    coarse = np.unique(
+        np.clip(np.round(predicted * np.geomspace(0.05, 20.0, 61)), 1.0, float(horizon))
+    )
+    centre = float(coarse[int(np.argmin(cost_of(coarse)))])
+    window = np.unique(np.clip(np.arange(centre - 64.0, centre + 65.0), 1.0, float(horizon)))
+    best = window[int(np.argmin(cost_of(window)))]
+    cost = float(cost_of(np.array([best]))[0])
+
+    scale = sigma * np.sqrt(numerator / (2.0 * curvature * eta))
+    steps = np.arange(1, horizon + 1, dtype=np.float64)
+    taper = np.minimum(scale / np.sqrt(steps), cap)
+    info = i0 + info_rate * np.concatenate([[0.0], np.cumsum(taper)[:-1]])
+    taper_cost = float(np.sum(curvature * taper + numerator / info))
+
+    return CappedExplorationPolicy(
+        cap=float(cap),
+        block_rounds=int(best),
+        cost=cost,
+        uncapped_floor=float(floor),
+        taper_cost=taper_cost,
+        excess=cost - float(floor),
+        predicted_excess=float(numerator * np.log(horizon) / (2.0 * info_rate * cap)),
+    )
+
+
 def minimax_exploration_certificate(
     *,
     b: float = 1.0,
@@ -1969,7 +2542,9 @@ def minimax_exploration_certificate(
     constant is sharp. And **tapering costs a constant factor**: the ``1/sqrt(t)`` schedule, even at
     its own optimal scale, sits at ``sqrt(2)`` times the floor (Rocq ``taper_gap_is_sqrt_two``). The
     burst is optimal *in this model*, where exploration cost is linear in the injected variance and
-    unbounded per round; a per-round action cap is what makes a taper the right shape.
+    unbounded per round. A per-round action cap does NOT rescue the taper -- Result 56 shows the
+    capped optimum is a cap-saturating BLOCK, still front-loaded, whose price over this floor is
+    an additive logarithm; see :func:`capped_exploration_policy`.
 
     SCOPE, as elsewhere in this line: Rocq proves the algebra. The van Trees score identity for a
     functional under an adaptive design, and Fisher-information additivity along the trajectory, are

@@ -292,3 +292,102 @@ def barrier_reachability_gap(
         radius=radius,
         ok=(not valid_cbf) or reachable >= safe - tolerance,
     )
+
+
+@dataclass(frozen=True)
+class HigherOrderBarrierGap:
+    """The §40 check lifted one derivative, so a relative-degree-2 barrier can see the radius.
+
+    At pure relative degree 2 (``B^T grad h == 0`` on the safe set) the first-order robust
+    condition degenerates: the control term -- which is where the identification radius lives --
+    vanishes, and :func:`barrier_reachability_gap` returns the *same* verdict at every ``radius``
+    while the true tube shrinks. The recorded trap of the honest-scope note, now closed: define
+    ``psi1 = grad h . f + alpha1 * h`` (the true ``hdot + alpha1 h`` -- control-free exactly
+    because of the degeneracy) and certify the robust margin of ``psi1`` on the working set
+    ``{h >= 0} & {psi1 >= 0}`` instead. ``B^T grad psi1`` is generically nonzero, so the radius
+    is back in the verdict.
+    """
+
+    safe_fraction: float  # grid fraction with h >= 0
+    working_fraction: float  # {h >= 0} & {psi1 >= 0} -- the set the HOCBF theorem is about
+    barrier_fraction: float  # working set where the second-order robust condition holds
+    valid_cbf: bool  # the condition holds at EVERY working-set point, so the theorem applies
+    certified_but_unreachable: float  # second-order-certified yet outside the tube
+    radius: float
+    ok: bool  # valid_cbf implies the tube must contain the working set
+
+
+def higher_order_barrier_gap(
+    barrier: Callable[[Array], Array],
+    drift: Callable[[Array], Array],
+    b_matrix: Array,
+    *,
+    lower: tuple[float, float],
+    upper: tuple[float, float],
+    resolution: tuple[int, int] = (81, 81),
+    horizon: float = 1.0,
+    steps: int = 200,
+    u_max: float = 1.0,
+    radius: float = 0.0,
+    alpha1: float = 1.0,
+    alpha2: float = 1.0,
+    tolerance: float = 0.02,
+) -> HigherOrderBarrierGap:
+    """Second-order (exponential/higher-order CBF) robust condition against the same tube.
+
+    The condition asks ``max_u min_{Delta_B} grad psi1 . (f + (B + Delta_B) u) >= -alpha2 psi1``
+    on the working set ``{h >= 0} & {psi1 >= 0}``, with ``psi1 = grad h . f + alpha1 h`` and the
+    same operator-norm identification ball as §40 -- so the margin is
+    :func:`robust_hamiltonian` with ``grad psi1`` in place of ``grad h``, and the §40 zero-action
+    rule applies to the LIFTED channel: once ``radius * ||grad psi1|| >= ||B^T grad psi1||`` the
+    verdict collapses to the drift's, now visibly rather than silently. If the condition holds
+    everywhere on the working set, that set is forward invariant (Xiao & Belta's HOCBF argument
+    with the worst-case effect substituted), so the tube must contain it -- ``ok`` checks exactly
+    that and stays honest under Lax-Friedrichs erosion via ``tolerance``.
+
+    Scope: PURE relative degree 2. Where ``B^T grad h != 0`` the true ``hdot`` has a control term
+    that ``psi1`` drops, and this condition is a different certificate, not a sharper one -- use
+    :func:`barrier_reachability_gap` there.
+    """
+    tube = backward_reachable_tube(
+        barrier,
+        drift,
+        b_matrix,
+        lower=lower,
+        upper=upper,
+        resolution=resolution,
+        horizon=horizon,
+        steps=steps,
+        u_max=u_max,
+        radius=radius,
+    )
+    mesh = jnp.stack(jnp.meshgrid(*tube.axes, indexing="ij"), axis=-1)
+
+    def scalar(z: Array) -> Array:
+        return jnp.squeeze(barrier(z))
+
+    def psi1(z: Array) -> Array:
+        return jnp.dot(jax.grad(scalar)(z), drift(z)) + alpha1 * scalar(z)
+
+    def condition(x: Array) -> Array:
+        margin = robust_hamiltonian(jax.grad(psi1)(x), drift(x), b_matrix, u_max, radius)
+        return margin >= -alpha2 * psi1(x)
+
+    safe_mask = tube.initial >= 0.0
+    working_mask = safe_mask & (jax.vmap(jax.vmap(psi1))(mesh) >= 0.0)
+    holds = jax.vmap(jax.vmap(condition))(mesh)
+    barrier_mask = working_mask & holds
+    reachable_mask = tube.final >= 0.0
+
+    working = float(jnp.mean(working_mask))
+    reachable = tube.safe_fraction()
+    valid_cbf = bool(jnp.all(~working_mask | holds))
+    return HigherOrderBarrierGap(
+        safe_fraction=float(jnp.mean(safe_mask)),
+        working_fraction=working,
+        barrier_fraction=float(jnp.mean(barrier_mask)),
+        valid_cbf=valid_cbf,
+        certified_but_unreachable=float(jnp.mean(barrier_mask & ~reachable_mask)),
+        radius=radius,
+        ok=(not valid_cbf) or reachable >= working - tolerance,
+    )

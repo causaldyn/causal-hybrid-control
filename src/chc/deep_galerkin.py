@@ -529,6 +529,11 @@ class MeanFieldCurve:
     far_residual: float
     near_residual: float
     residual_blindness: float
+    far_value_error: float  # |S_hat(0) - S(0)|, the quantity the dual-weighted estimator targets
+    near_value_error: float
+    far_dual_weighted: float  # the estimator, computed WITHOUT the closed form
+    near_dual_weighted: float
+    dual_weighted_accuracy: float  # worst relative discrepancy against the true error
     ok: bool
 
 
@@ -586,6 +591,108 @@ def _dgm_residual(game: LQMeanFieldGame, model: MeanFieldDGM, n_time: int = 21) 
     deviation = jnp.asarray(grid_x) - game.coupling * mean_t[:, None]
     scale = float(jnp.max(game.q / 2.0 * deviation**2))
     return float(jnp.sqrt(jnp.mean(hjb**2) + jnp.mean(fokker_planck**2))) / scale
+
+
+def _model_traces(
+    game: LQMeanFieldGame, model: MeanFieldDGM, n_time: int
+) -> tuple[np.ndarray, ...]:
+    """``(t, S, m, S', m', A)`` read off the trained model along the axis ``x = 0``.
+
+    ``V = P x^2/2 + S x + Z`` makes ``S(t) = V_x(t, 0)`` and ``P(t) = V_xx(t, 0)``, so the whole
+    reduced state and its own closed-loop rate ``A = a - b^2 P/r`` come from the network by
+    differentiation -- no reference solution anywhere.
+    """
+    mean_terminal = model.mean(jnp.asarray(game.horizon))
+
+    def value_slope(t: Array) -> Array:
+        return jax.grad(lambda x: model.value_at(t, x, mean_terminal))(jnp.asarray(0.0))
+
+    def value_curvature(t: Array) -> Array:
+        return jax.grad(jax.grad(lambda x: model.value_at(t, x, mean_terminal)))(jnp.asarray(0.0))
+
+    times = jnp.linspace(0.0, game.horizon, n_time)
+    curvature = np.asarray(jax.vmap(value_curvature)(times))
+    return (
+        np.asarray(times),
+        np.asarray(jax.vmap(value_slope)(times)),
+        np.asarray(jax.vmap(model.mean)(times)),
+        np.asarray(jax.vmap(jax.grad(value_slope))(times)),
+        np.asarray(jax.vmap(jax.grad(model.mean))(times)),
+        game.a - game.b**2 * curvature / game.r,
+    )
+
+
+def dual_weighted_error_estimate(
+    game: LQMeanFieldGame, model: MeanFieldDGM, n_time: int = 401
+) -> float:
+    """An a-posteriori estimate of ``|S_hat(0) - S(0)|`` from the model alone -- Result 55.
+
+    Result 49 measured a residual that FALLS as the answer degrades near the mean-field
+    obstruction, so a residual-based stopping rule reports its cleanest convergence exactly where
+    the solution is worst. The remedy is not a bigger residual budget but the right functional.
+    Because the reduced fixed point is AFFINE, the error is an exact quotient
+    (``validation/mean_field_dwr.mac`` STEP 2, ``proofs/mean_field_dwr.v``)::
+
+        S_hat(0) - S(0) = (eps - int_0^T z(s).g(s) ds) / den(T),   z(s) = Phi(T-s)^T v / den(T)
+
+    with ``g = y' - M y`` the reduced defect of the model's own ``y = (m, S)``, ``eps = v.y(T)``
+    the terminal-consistency defect (structurally zero here), and ``z`` the exact ADJOINT
+    solution. Everything is read from the trained network and the cost parameters: the transition
+    matrix is integrated from the model's OWN closed-loop rate ``A = a - b^2 V_xx/r``, never from
+    the reference solution, so this is an estimator and not an oracle comparison.
+
+    Two facts make it work where the raw residual does not. The dual weight carries ``1/den(T)``
+    and nothing else that can blow up, so it diverges exactly at the obstruction; and the reduced
+    residual is homogeneous of degree 1 in ``(m, S)``, so a bounded approximator facing a
+    diverging solution keeps a small residual by construction. Conditioning the residual by
+    ``1/|den|`` alone is NOT enough -- measured rank correlation with the error ``0.41`` against
+    ``-0.67`` for the raw residual and ``1.00`` for this estimator; what matters is the projection
+    onto the adjoint mode, not the scalar rescaling.
+
+    Scope: the estimate is exact for this affine family up to quadrature and autodiff error
+    (measured within ``6%`` at a horizon where the error is ``72`` and the raw residual is at its
+    smallest). For a non-quadratic problem the same construction is the standard dual-weighted
+    residual and is first-order, not exact.
+    """
+    times, slope, mean, slope_rate, mean_rate, rate = _model_traces(game, model, n_time)
+    b2r = game.b**2 / game.r
+    coupling = game.q * game.coupling
+    terminal_weight = game.riccati_root * game.terminal_coupling
+
+    def reduced(index: int) -> np.ndarray:
+        return np.array([[rate[index], -b2r], [coupling, -rate[index]]])
+
+    transition = np.empty((times.size, 2, 2))
+    transition[0] = np.eye(2)
+    for i in range(times.size - 1):
+        step = times[i + 1] - times[i]
+        k1 = reduced(i) @ transition[i]
+        k2 = reduced(i) @ (transition[i] + 0.5 * step * k1)
+        k3 = reduced(i) @ (transition[i] + 0.5 * step * k2)
+        k4 = reduced(i + 1) @ (transition[i] + step * k3)
+        transition[i + 1] = transition[i] + step / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+    functional = np.array([terminal_weight, 1.0])
+    denominator = float(functional @ transition[-1] @ np.array([0.0, 1.0]))
+    if denominator == 0.0:
+        return math.inf  # the obstruction itself: no fixed point, hence no finite error
+    weights = np.einsum("i,ij,sjk->sk", functional, transition[-1], np.linalg.inv(transition))
+    defect_mean = mean_rate - (rate * mean - b2r * slope)
+    defect_slope = slope_rate - (coupling * mean - rate * slope)
+    interior = float(
+        np.trapezoid(weights[:, 0] * defect_mean + weights[:, 1] * defect_slope, times)
+    )
+    terminal = float(terminal_weight * mean[-1] + slope[-1])
+    return abs(terminal - interior) / abs(denominator)
+
+
+def _value_slope_error(game: LQMeanFieldGame, model: MeanFieldDGM) -> float:
+    """``|S_hat(0) - S(0)|`` against the closed form -- the truth the estimator is scored on."""
+    mean_terminal = model.mean(jnp.asarray(game.horizon))
+    fitted = float(
+        jax.grad(lambda x: model.value_at(jnp.asarray(0.0), x, mean_terminal))(jnp.asarray(0.0))
+    )
+    return abs(fitted - float(game.solve().value_s[0]))
 
 
 def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurve:
@@ -661,6 +768,15 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
     near_residual = _dgm_residual(near, near_model)
     blindness = (near_error / far_error) / (near_residual / far_residual)
 
+    # --- arm 4: the dual-weighted estimator sees what the raw residual cannot -------------
+    far_value_error = _value_slope_error(far, far_model)
+    near_value_error = _value_slope_error(near, near_model)
+    far_dual = dual_weighted_error_estimate(far, far_model)
+    near_dual = dual_weighted_error_estimate(near, near_model)
+    dual_accuracy = max(
+        abs(far_dual / far_value_error - 1.0), abs(near_dual / near_value_error - 1.0)
+    )
+
     ok = bool(
         hjb_residual < 1e-10
         and fp_residual < 1e-10
@@ -679,6 +795,9 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
         and near_error > 5.0 * far_error
         and near_residual < far_residual
         and blindness > 5.0
+        and near_value_error > 5.0 * far_value_error
+        and near_dual > far_dual  # the estimator ORDERS the two horizons the residual inverts
+        and dual_accuracy < 0.1
     )
     return MeanFieldCurve(
         closed_form_hjb_residual=hjb_residual,
@@ -701,5 +820,10 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
         far_residual=far_residual,
         near_residual=near_residual,
         residual_blindness=blindness,
+        far_value_error=far_value_error,
+        near_value_error=near_value_error,
+        far_dual_weighted=far_dual,
+        near_dual_weighted=near_dual,
+        dual_weighted_accuracy=dual_accuracy,
         ok=ok,
     )

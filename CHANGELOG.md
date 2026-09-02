@@ -144,6 +144,182 @@ still change).
   with an independent-arm standard error put everything within `1.0-1.7 sigma` and could decide
   nothing -- the pairing is what makes the comparison identified at all.
 
+- **`chc.regret.exact_ratio_moment`** -- the exact `E[(R'BR)/(R'CR)^2]` for `R ~ N(0, Om)` as one
+  resolvent quadrature (an `eigh` plus `scipy.integrate.quad`), Result 51 (l)/(m)'s consumer. Call
+  with `numerator = A Sigma A`, `denominator = A` to get the exact variance of the scalar cross-fit
+  estimator where the plug-in trace law is 7-11% off and opens a wrong-partition band. Existence is
+  a tail exponent and is ENFORCED, not assumed: `k >= 3` nonzero denominator eigenvalues, `k >= 5`
+  when the numerator loads on the denominator's null space -- the plug-in number exists in both
+  divergent cases, which is exactly how a truncation gets quoted where the moment does not exist.
+  Tested against chi-square closed forms (`E[1/chi2_n] = 1/(n-2)`, the split-off null-space case
+  `2/3`), both divergence guards, and the (m) immunity: the plug-in crossover bisected in `phi`
+  lands the exact ratio on `1` to `1e-7` at `Om = I`.
+
+- **The fold-spectrum law (Result 52)** (`validation/fold_spectrum_law.mac`,
+  `proofs/fold_spectrum_law.v`). Derivation only; no API change. The fold partition enters Result
+  51's sandwich only through `tr(A^2 S_d S_e)`, and `A^2 = I - r^4 E + (r^4-1) F` -- squaring the
+  cross-fit residualiser promotes `r^2` to `r^4` and nothing else -- so `Psi` is AFFINE in the
+  same-fold weighted 2-walk count with positive weight: the variance-optimal fold design is the
+  MINIMUM-weight balanced graph bisection under delay-dependent weights
+  `Q(x) = sum g_d g_e x^|d-e| S_d S_e`. On a cycle this diagonalises over Fourier modes: the
+  optimal fold frequency is `cos(theta_star) = -g0 x/(2 g1)`, width-2 stripes beat BOTH partitions
+  `delayed_network_certificate` compares (by up to +55% of `Psi` at small `phi`; contiguous blocks
+  are never optimal for `m >= 8`), and
+  `lambda_parity - lambda_stripes = 4 (g0 x - g1)(2 g2 x - g1)` puts parity exactly between
+  `x = g1/g0` and `x = g1/(2 g2)` -- `7/10` and `7/8` at the docstring gammas. At the estimator
+  level the plug-in thresholds are panel-length-invariant (the time block enters the trace through
+  its diagonal), while `exact_ratio_moment` moves the lower threshold up (`0.70 -> 0.76-0.86`
+  across tested panels) and erases the upper, re-entrant one entirely: the plug-in law predicts a
+  design regime the exact moment does not have.
+
+- **The time-fold law (Result 53)** (`validation/time_fold_law.mac`, `proofs/time_fold_law.v`).
+  Derivation only; no API change. Folds that cut TIME under AR(1): the partition enters the
+  sandwich only through the same-fold `phi`-weighted pair count, and the mode score is the AR(1)
+  spectral density `(1-phi^2)/(1-2 phi c + phi^2)` -- strictly increasing in `c = cos theta` for
+  every `phi`, so the variance-optimal time-fold design ALTERNATES time points between folds at
+  every `phi`; the contiguous half-split (the default of most panel pipelines) is the WORST
+  balanced design, exhaustively over all partitions at `p <= 14`, with a plug-in price up to 6.9x
+  and an exact-moment price of 2.46x at `phi = 0.99` (quote the exact one -- the plug-in headline
+  is itself Jensen-inflated). No thresholds, unlike the spatial fold-spectrum law: the time kernel
+  is completely monotone in the lag (second difference `phi^r (1-phi)^2`), which places the
+  alternating optimum in the Hubbard most-homogeneous family and extends the law to any
+  convex-decreasing correlation profile. Scope: nuisance cross-fitting variance, NOT forecasting
+  model evaluation -- blocked/hv-CV keeps time contiguous to stop evaluation leakage, and this law
+  prices that choice instead of overruling it.
+
+- **The van Trees arm on `information_lower_bound_certificate` -- Result 10's `needs LAM` caveat,
+  discharged** (`validation/action_van_trees.mac`, `proofs/action_van_trees.v`). Result 10's own
+  scope note recorded that its Cramer-Rao floor is a delta-method statement for UNBIASED estimators
+  and that a rigorous version needs local-asymptotic-minimax or van Trees on the estimand `u*(b)`.
+  Both caveats dissolve, and the constant does not move.
+
+  The one-step LQ regret is EXACTLY `(b^2+rr)(u - u*(b))^2` -- a squared error in the ACTION, for
+  every `u`, with nothing linearised. Result 10 reached a squared error in the EFFECT by linearising
+  `u*(b)`, and that step is what forced the "local" caveat. Applying van Trees (already formalised
+  for this line in Result 42) to `psi(b) = u*(b)` and multiplying by that exact curvature gives
+  `n E[regret] >= n (b^2+rr)(E_lambda psi')^2/(n V_id/sigma^2 + I(lambda))`, whose limit is
+  `C sigma^2/V_id` -- the SAME constant, for every estimator, biased or not. The finite-`n`
+  shortfall is explicit and `O(1/n)`.
+
+  The new arm is the one that shows this was worth doing. A Hodges estimator drives the regret AT
+  `b` to exactly `0` -- ratio `0.000000` against the unbiased Cramer-Rao floor, which is the
+  concrete reason that floor was never a minimax statement -- while sitting `144.7x` above the van
+  Trees floor, the price superefficiency pays off-centre; the efficient plug-in clears the same
+  floor by `2.73x`. The bound separates the two by ~53x instead of being vacuous for both. The
+  knife-edge caveat `rr = b^2` survives, `psi'` vanishing there being a property of the problem.
+  New fields: `van_trees_action_floor`, `hodges_pointwise_ratio`, `hodges_bayes_ratio`,
+  `plugin_bayes_ratio`.
+
+- **`chc.regret.capped_exploration_policy` -- the capped exploration policy, and a REFUTATION of the
+  conjecture that a cap makes tapering right** (`validation/capped_exploration.mac`,
+  `proofs/capped_exploration.v`). `minimax_exploration_certificate` left one item open ("a matching
+  causal policy under a per-round action cap is still open") and one conjecture unchecked ("a
+  per-round action cap -- which every real actuator has -- is what makes a taper the right shape").
+  The conjecture is wrong, and its docstring is corrected in the same commit.
+
+  The regret `A sum_t v_t + K sum_t 1/(I0 + c S_{t-1})` depends on the schedule only through its
+  PREFIX sums and is strictly decreasing in them, so moving exploration earlier at equal budget
+  strictly lowers it -- an exchange argument that never mentions the cap. The Hessian is a sum of
+  rank-one PSD terms, so the objective is convex and that argument yields a GLOBAL optimum: saturate
+  the cap on a prefix, then stop. A clipped burst.
+
+  The optimal block length is `n* = sqrt(K T/(A c))/cap`, and the leading cost there is
+  `2 sqrt(A K T/c)` -- with `K = A (du*/db)^2` and `c = eta/sigma^2`, EXACTLY the uncapped constant
+  `c_causal sqrt(T)`. So the cap's entire price is the harmonic sum `(K/(2 c cap)) ln T + O(1)`:
+  ADDITIVE and logarithmic against a `sqrt(T)` floor, not a constant factor. Measured at
+  `cap = 0.03`, the ratio to the uncapped floor falls `1.131 -> 1.077 -> 1.036` over three decades
+  of `T` while the clipped taper stays `36%` above the optimum; the shipped block matches a
+  projected-gradient solve of the full convex program to seven decimals at every cell. The
+  counter-intuitive part, and the reason the conjecture failed: `n*` grows like `sqrt(T)/cap`, so a
+  TIGHTER actuator explores for LONGER, not more gently -- a cap is a rate constraint, and the
+  response to a rate constraint is duration, not shape.
+
+  Cross-checked: eight Maxima residuals all 0, six Rocq lemmas (including the AM-GM floor and its
+  equality case), and four `QF_NRA` negations returning `unsat` from z3 AND cvc5.
+
+- **`chc.deep_galerkin.dual_weighted_error_estimate` -- Result 49's blind residual, fixed**
+  (`validation/mean_field_dwr.mac`, `proofs/mean_field_dwr.v`; a fourth arm on
+  `lq_mean_field_certificate`). Result 49 measured a Deep Galerkin solve whose own residual FALLS
+  as its answer degrades near the mean-field obstruction, and could only advise gating neural
+  solvers on closed forms -- useless outside the LQ family, where no closed form exists. Because
+  the reduced fixed point is affine, the error is an EXACT quotient rather than a first-order
+  estimate::
+
+      S_hat(0) - S(0) = (eps - int_0^T z(s).g(s) ds) / den(T),   z(s) = Phi(T-s)^T v / den(T)
+
+  with `g` the model's own reduced defect and `z` the exact adjoint solution, `z(T) = v/den(T)`.
+  Since `Phi` is entire, the determinant is the ONLY factor that can blow up, and its zero is
+  SIMPLE -- so Result 49's pole exponent, fitted as `-0.998`, is exactly `-1`.
+
+  The estimator reads `S`, `m` and `P = V_xx` off the trained network by differentiation and
+  integrates the transition matrix from the model's OWN closed-loop rate, never calling
+  `game.solve()`. Measured over eight horizons on the anti-monotone instance, rank correlation
+  with the true error: raw residual `-0.667`, residual conditioned by `1/|den|` `+0.405`, this
+  estimator `+1.000` with worst relative discrepancy `6%` -- at a horizon where the error is `72`
+  and the raw residual is near its smallest. The middle number is the part worth keeping: scalar
+  conditioning is necessary but NOT sufficient; what carries the information is the projection of
+  the defect onto the adjoint mode. The anti-correlation itself is forced rather than
+  architectural -- the reduced residual is homogeneous of degree 1 in `(m, S)`, so a bounded
+  approximator facing a diverging solution keeps a small residual by construction.
+
+  Cross-checked on five independent systems: Maxima (five residuals, all 0), Rocq (six lemmas),
+  giac (same identities, independent route), z3 AND cvc5 (four `QF_NRA` negations, `unsat` from
+  both), Octave (the identity from `expm`/`trapz` with an arbitrary wrong trajectory, `9.6e-14`
+  relative), and PARI/GP at 60 digits (`den'(T*)` against its closed form, agreeing in every
+  digit; residue `1.000000...`). Scope: exact for the affine family; for a non-quadratic game the
+  same construction is the standard dual-weighted residual and is first-order.
+
+- **`chc.regret.exact_matrix_ratio_moment` -- the exact MATRIX ratio moment, and Result 54 with it**
+  (`validation/matrix_ratio_moment.mac`, `proofs/matrix_ratio_moment.v`). `exact_ratio_moment`
+  priced the SCALAR cross-fit estimator exactly; the two-channel (direct, spillover) estimator needs
+  `V = E[(X'AX)^-1 X'A Sigma A X (X'AX)^-1]` for a Gaussian `n x 2` block `X`, which Result 51 (j')
+  recorded as blocked. Route, derived rather than cited: `M^-1 = adj(M)/det(M)` turns every sandwich
+  entry into signed sums of THREE quadratic forms, the Ingham--Siegel identity
+  `det(M)^-2 = (2/pi) int_{T>0} det(T)^(1/2) etr(-TM) dT` replaces the determinant by a Gaussian
+  tilt with covariance `(I + 2 Om (T (x) A))^-1 Om` -- so a SINGULAR `Om` (the normal case: the
+  spillover column is a deterministic map of the own column) is handled natively, nothing inverts
+  `Om` -- and the Isserlis three-form moment closes each entry. The cone integral runs in Cholesky
+  coordinates, which cannot leave the cone.
+
+  Anchored three ways, each able to fail: the Ingham--Siegel constant to 8 digits; the Wishart law
+  `E[(X'X)^-1] = I/(n-3)` and its Haar generalisation `(tr Sigma / n) I/(n-3)` for a correlated
+  numerator, both to 6; and a 10^6-draw Monte Carlo on a correlated-channel geometry within 1.6
+  standard errors. Existence is the inverse-Wishart threshold `n >= q + 2` and is ENFORCED -- below
+  it the integral diverges (visible as node-count disagreement, `7.57` vs `8.50` at `n = 3`) while a
+  plug-in sandwich still quotes a number.
+
+  What it measures. On the delayed-network panel (`C_6`, `p = 5`, `phi = 0.6`) the matrix Jensen gap
+  is `13-23%` -- LARGER than the scalar `7-11%` on the same family, because the determinant couples
+  the channels, reaching `+41.5%` under strong channel correlation. The plug-in sandwich OVERSTATES
+  the alternating design's advantage by 2-3 points of the per-channel ratio (direct `0.827` exact vs
+  `0.808` plug-in; spillover `0.895` vs `0.868`) while keeping the ordering: as in Results 52 and 53,
+  plug-in ORDERINGS are sturdier than plug-in MAGNITUDES. Scope: `q = 2` channels (the adjugate route
+  is what keeps the degree manageable) and Gaussian `X`; cost is `O(nodes^3 (2n)^3)`, seconds at
+  `n = 30`, not a hot-path tool.
+
+- **`chc.regret.optimal_fold_partition` -- Result 52's design law as a solver with a certificate.**
+  The fold partition enters the sandwich only through the same-fold weighted 2-walk count with
+  positive weight, so the variance-optimal design is the minimum-weight BALANCED `K`-cut under
+  `Q(x) = sum g_d g_e x^|d-e| S_d S_e`. Small instances (`K = 2`, at most `exhaustive_limit`
+  balanced bisections) are enumerated exactly; larger ones run Fiedler-style spectral rounding plus
+  balanced-swap local search from several starts. Every result carries the Ky Fan spectral lower
+  bound `(m/K)(1'Q1/m + sum of the K-1 smallest eigenvalues on the mean-free subspace)` and the
+  relative gap to it, so a local-search answer that cannot be certified says so instead of passing
+  silently. Returns a frozen `FoldDesign`.
+
+- **`chc.reachability.higher_order_barrier_gap` -- the relative-degree-2 hole in the pointwise
+  barrier check, closed.** `barrier_reachability_gap` recorded a trap: at PURE relative degree 2
+  (`B'grad h == 0`) the first-order condition contains no `B` at all, so its verdict is INVARIANT to
+  the disturbance radius while the true backward-reachable tube shrinks -- the filter certifies a
+  set the plant cannot hold. The higher-order lift `psi1 = grad h . f + alpha1 h` is control-free by
+  exactly that degeneracy, and testing
+  `robust_hamiltonian(grad psi1, f, B, u_max, radius) >= -alpha2 psi1` on `{h >= 0} and {psi1 >= 0}`
+  puts the radius back in through `B'grad psi1 != 0`. Measured on the double integrator: the
+  first-order barrier fraction is IDENTICAL at radius `0` and `0.8` while the reachable fraction
+  falls, and the second-order one is strictly smaller at `0.8` -- then saturates at the drift-only
+  verdict once the radius swallows the lifted channel, which is the zero-action rule reappearing one
+  level up. Returns a frozen `HigherOrderBarrierGap`.
+
 - **The Jensen gap in Result 51's `Omega`-generalisation: the free trace correction, the EXACT
   resolvent-integral moment, and the attribution it settles** (`validation/omega_jensen_gap.mac`,
   `proofs/omega_jensen_gap.v`). Derivation only; no API change. Result 51 (i) blamed
