@@ -1,0 +1,116 @@
+/* THE CONDITIONED RESIDUAL: what a Deep Galerkin solver must divide by before it may believe
+   its own residual near the mean-field obstruction.
+
+   Result 49 measured a residual that FALLS as the answer degrades: on the anti-monotone LQ
+   mean-field game the control error grows to 111% while the normalised interior residual drops
+   6.7x, so a residual-based stopping rule reports its cleanest convergence exactly where the
+   solution is worst.  It recorded that as a warning and left the remedy open.
+
+   This file closes it.  The fixed point is AFFINE (lq_mean_field.mac STEP 5), which is stronger
+   than the usual dual-weighted-residual setting: the error is not approximated to first order, it
+   is an EXACT quotient
+
+       error at t = 0  =  total defect / den(T),        den(T) = cosh(lam T) - k sinh(lam T)/lam
+
+   and the dual weight z(s) = Phi(T-s)^T v / den(T) is the exact adjoint solution.  Since
+   z(T) = v/den(T) and Phi is bounded on [0,T], the ONLY divergent factor in the error is
+   1/|den(T)| -- so the conditioned estimator residual/|den| is equivalent to the error up to
+   horizon-continuous constants, two-sided, while the raw residual is not an estimator at all.
+
+   The last step derives what Result 49 could only measure: den has a SIMPLE zero at T*, so the
+   pole is exactly of order 1 -- the -0.998 exponent it fitted.
+
+   Certificate: chc.deep_galerkin.lq_mean_field_certificate; proofs/mean_field_dwr.v. */
+
+linel : 110$
+display2d : false$
+
+M  : matrix([AA, -b^2/r], [q*c, -AA])$
+Eg : cosh(lam*T)*ident(2) + (sinh(lam*T)/lam)*M$
+Es : subst([T = T - s], Eg)$          /* Phi(T-s) */
+v  : matrix([qT*cT, 1])$              /* the terminal consistency functional: v.y(T) = 0 */
+den : ratsimp( (v . Eg)[1][2] )$
+num : ratsimp( (v . Eg)[1][1] )$
+
+/* ===== STEP 1: variation of constants solves the PERTURBED forward-backward system ===== */
+
+print("=== STEP 1: the perturbed two-point boundary value problem ===")$
+print("STEP 1a a numerical solve does not satisfy y' = M y; it satisfies y' = M y + g(t) for its")$
+print("        own defect g, with the INITIAL mean exact (the density carries rho(0,.) as a")$
+print("        structural factor -- Result 49 (e)), and the terminal consistency only up to eps")$
+
+/* Verify variation of constants on a constant defect g, where the integral is in closed form. */
+g    : matrix([g1], [g2])$
+conv : ratsimp( integrate( Es . g, s, 0, T ) )$
+yhat : ratsimp( Eg . matrix([m0], [S0h]) + conv )$
+ode  : ratsimp( diff( ratsimp(subst([T = t], Eg . matrix([m0], [S0h])
+                                    + ratsimp(integrate( subst([T=t], Es) . g, s, 0, t)))), t)
+                - M . ratsimp(subst([T = t], Eg . matrix([m0], [S0h])
+                                    + ratsimp(integrate( subst([T=t], Es) . g, s, 0, t)))) - g )$
+ode : ratsimp( subst([AA^2 = lam^2 + q*c*b^2/r], expand(ode)) )$
+print("STEP 1b residual of y' - M y - g at the variation-of-constants solution =", ode,
+      " (zero vector)")$
+
+/* ===== STEP 2: the error is the defect DIVIDED BY den -- exactly, not to first order ===== */
+
+print("=== STEP 2: the exact error identity ===")$
+S0  : -m0*num/den$                                  /* the exact fixed point */
+eps : v . yhat$        /* 1x2 . 2x1 collapses to a SCALAR in Maxima, so no [1][1] here */                             /* what the solve leaves at t = T */
+delta : eps - v . conv$                     /* the defect stripped of the interior part */
+print("STEP 2a with the total defect  d := eps - v . int_0^T Phi(T-s) g(s) ds, the perturbed")$
+print("        consistency reads  num m0 + den S0hat = d,  while the exact one reads")$
+print("        num m0 + den S0 = 0")$
+shape : ratsimp( delta - (num*m0 + den*S0h) )$
+print("STEP 2b residual of  d - (num m0 + den S0hat) =", shape,
+      " (0) -- the interior defect cancels exactly against its own contribution to eps")$
+err : ratsimp( (S0h - S0) - (num*m0 + den*S0h)/den )$
+print("STEP 2c residual of  (S0hat - S0) - d/den =", err, " (0) -- EXACT, because the fixed")$
+print("        point is affine: no linearisation, no remainder, no small-residual hypothesis")$
+
+/* ===== STEP 3: the dual weight is the adjoint solution, and it is where the pole lives ===== */
+
+print("=== STEP 3: the dual-weighted-residual form ===")$
+z    : ratsimp( transpose( Es ) . transpose(v) / den )$
+zdot : ratsimp( diff(z, s) + transpose(M) . z )$
+zdot : ratsimp( subst([AA^2 = lam^2 + q*c*b^2/r], expand(zdot)) )$
+print("STEP 3a z(s) := Phi(T-s)^T v / den(T) satisfies the ADJOINT equation z' = -M^T z:")$
+print("        residual =", zdot, " (zero vector)")$
+print("STEP 3b z(T) =", ratsimp(subst([s = T], z)), " = v/den(T) exactly, since Phi(0) = I")$
+print("STEP 3c so the error is  e = eps/den - int_0^T z(s).g(s) ds  -- a dual-weighted residual")$
+print("        whose weight carries 1/den and NOTHING ELSE that can blow up: Phi(T-s) is an")$
+print("        entire matrix function of the horizon, bounded on every compact")$
+print("STEP 3d TWO-SIDED.  |v|/|den| = |z(T)| <= sup_s |z(s)| <= (sup_s |Phi(T-s)|) |v| / |den|,")$
+print("        and the outer factor is horizon-continuous with no zero and no pole.  So the")$
+print("        CONDITIONED estimator  residual / |den(T)|  is equivalent to the error, while the")$
+print("        raw residual differs from it by a factor that diverges at T*")$
+
+/* ===== STEP 4: why the raw residual FALLS -- the residual is homogeneous, the error is not ===== */
+
+print("=== STEP 4: the anti-correlation is forced, not incidental ===")$
+/* The x^1 coefficient of the HJB under V = P x^2/2 + S x + Z, at the stationary Riccati. */
+hjb1 : Sd + AA*S - q*c*m$
+scaled : ratsimp( subst([S = kap*S, m = kap*m, Sd = kap*Sd], hjb1) - kap*hjb1 )$
+print("STEP 4a the x^1 coefficient of the HJB residual is S' + A S - q c m, HOMOGENEOUS of")$
+print("        degree 1 in (m, S): residual under (m,S) -> kappa (m,S) minus kappa*residual =",
+      scaled, " (0)")$
+print("STEP 4b the exact solution's amplitude |S(0)| = |num m0 / den| DIVERGES at T*, while a")$
+print("        trained network of finite capacity stays bounded.  By STEP 4a its residual then")$
+print("        stays bounded too -- and in practice SHRINKS, because the flattest function in the")$
+print("        family is the one the optimiser reaches.  Error up, residual down: the sign of the")$
+print("        correlation is decided by the homogeneity, not by the architecture")$
+
+/* ===== STEP 5: the pole is SIMPLE -- Result 49's fitted -0.998 is exactly -1 ===== */
+
+print("=== STEP 5: the order of the pole ===")$
+kk   : AA + qT*cT*b^2/r$
+denw : cos(w*T) - kk*sin(w*T)/w$      /* oscillatory branch, lam = i w */
+dprime : ratsimp( diff(denw, T) )$
+/* At T* the defining relation is cos(w T*) = (k/w) sin(w T*). Substitute it into den'. */
+atstar : ratsimp( subst([cos(w*T) = kk*sin(w*T)/w], dprime) )$
+print("STEP 5a den(T) = cos(wT) - k sin(wT)/w and den'(T) =", dprime)$
+print("STEP 5b at the obstruction cot(w T*) = k/w, so den'(T*) =", atstar,
+      " = -sin(w T*) (w^2 + k^2)/w")$
+print("STEP 5c sin(w T*) is nonzero there (cot is finite), and w^2 + k^2 > 0, so den has a SIMPLE")$
+print("        zero: |e| ~ C/|T* - T|.  Result 49 FITTED the pole exponent as -0.998 on a")$
+print("        five-point log-log regression; it is exactly -1, and the conditioned estimator")$
+print("        inherits the same simple pole -- which is why it tracks")$

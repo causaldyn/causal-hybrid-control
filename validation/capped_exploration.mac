@@ -1,0 +1,105 @@
+/* THE PER-ROUND ACTION CAP: what it actually does to the optimal exploration schedule.
+
+   Result 20 / the minimax exploration bound left one item open and one conjecture unchecked:
+   "a per-round action cap -- which every real actuator has -- is what makes a taper the right
+   shape", and "a matching causal policy under a per-round action cap is still open".
+
+   This file settles both, and the conjecture is WRONG.  The capped problem is CONVEX, and a
+   convex objective that depends on the schedule only through its PREFIX SUMS is minimised by
+   front-loading: the optimum saturates the cap for the first n rounds and then stops.  A clipped
+   BURST, not a taper.  The cap does not change the rate and does not change the constant; it adds
+   an additive logarithm.
+
+       F(v) = A sum_t v_t + K sum_t 1/(I0 + c S_{t-1}),   S_{t-1} = sum_{s<t} v_s,  c = eta/sigma^2
+
+   Certificate: chc.regret.capped_exploration_schedule and the capped arm of
+   chc.regret.minimax_exploration_certificate; proofs/capped_exploration.v. */
+
+linel : 110$
+display2d : false$
+assume(A > 0, K > 0, T > 0, c > 0, vcap > 0, I0 > 0, g > 0, sg > 0, et > 0)$
+
+/* ===== STEP 1: the objective sees the schedule only through its prefix sums ===== */
+
+print("=== STEP 1: prefix-sum structure and the exchange argument ===")$
+F3 : A*(v1+v2+v3) + K/I0 + K/(I0+c*v1) + K/(I0+c*(v1+v2))$
+print("STEP 1a at T = 3 the objective is", F3)$
+print("STEP 1b every denominator is a PREFIX sum, so F depends on the schedule only through the")$
+print("        partial sums -- and each 1/(I0 + c S) is strictly DECREASING in S")$
+d1 : ratsimp( diff(F3, v1) )$
+d2 : ratsimp( diff(F3, v2) )$
+print("STEP 1c dF/dv1 =", d1)$
+print("STEP 1d dF/dv2 =", d2)$
+print("STEP 1e residual of (dF/dv1 - dF/dv2) + K*c/(I0+c*v1)^2 =",
+      ratsimp( (d1 - d2) + K*c/(I0+c*v1)^2 ), " (0)")$
+print("STEP 1f so dF/dv1 < dF/dv2 STRICTLY whenever K c > 0: an earlier round is always the")$
+print("        cheaper place to put the same exploration.  Moving mass from a later round to an")$
+print("        earlier one at equal total budget strictly decreases F -- the EXCHANGE argument.")$
+print("        Under a box constraint 0 <= v_t <= vcap its consequence is exact: the optimum")$
+print("        saturates the cap on a PREFIX and is zero after it")$
+
+/* ===== STEP 2: the objective is CONVEX, so the exchange argument gives a GLOBAL optimum ===== */
+
+print("=== STEP 2: convexity ===")$
+H : ratsimp( matrix([diff(F3,v1,2), diff(diff(F3,v1),v2)],
+                    [diff(diff(F3,v2),v1), diff(F3,v2,2)]) )$
+print("STEP 2a the Hessian in (v1, v2) is", H)$
+print("STEP 2b residual of det(H) - 4 K^2 c^4/((I0+c v1)^3 (I0+c(v1+v2))^3) =",
+      ratsimp( determinant(H) - 4*K^2*c^4/((I0+c*v1)^3*(I0+c*(v1+v2))^3) ), " (0)")$
+print("STEP 2c the diagonal entries are", ratsimp(H[1][1] - 2*K*c^2*(1/(I0+c*v1)^3 + 1/(I0+c*(v1+v2))^3)),
+      " and", ratsimp(H[2][2] - 2*K*c^2/(I0+c*(v1+v2))^3), " away from")$
+print("        2 K c^2 sum_{t > j} 1/(I0 + c S_{t-1})^3 (both 0).  In general")$
+print("        H = sum_t w_t u_t u_t^T with u_t the indicator of {j < t} and w_t > 0: a sum of")$
+print("        rank-one PSD terms, so H is PSD at every schedule -- and STRICTLY positive")$
+print("        definite here, the determinant above being positive for K, c > 0")$
+print("STEP 2d so F is CONVEX and the front-loaded block found by the exchange argument is the")$
+print("        GLOBAL optimum rather than a local one")$
+
+/* ===== STEP 3: the cost of a cap-saturating block of length n ===== */
+
+print("=== STEP 3: the block cost and its optimal length ===")$
+print("STEP 3a with v_t = vcap for t <= n and 0 after, S_{t-1} = vcap (t-1) inside the block and")$
+print("        vcap n after it, so")$
+print("        F(n) = A vcap n + K sum_{t=1}^{n} 1/(I0 + c vcap (t-1)) + K (T-n)/(I0 + c vcap n)")$
+print("STEP 3b the middle sum is harmonic with step c vcap, hence (K/(c vcap)) ln(n) + O(1):")$
+print("        that is where the logarithm comes from, and it is the ONLY place it appears")$
+blk : A*vcap*n + K*T/(c*vcap*n)$
+foc : ratsimp( diff(blk, n) )$
+print("STEP 3c dropping the log term, F(n) ~", blk, " with dF/dn =", foc)$
+nstar : sqrt(K*T/(A*c))/vcap$
+print("STEP 3d the first-order condition A vcap = K T/(c vcap n^2) has the root n* =", nstar)$
+print("STEP 3e residual of dF/dn at n* :", ratsimp( subst([n = nstar], foc) ), " (0)")$
+print("STEP 3f n* grows like sqrt(T) and shrinks like 1/vcap: a tighter actuator explores for")$
+print("        LONGER, not more gently")$
+
+/* ===== STEP 4: the leading term is EXACTLY the uncapped floor ===== */
+
+print("=== STEP 4: the cap costs a logarithm, not a constant ===")$
+lead : ratsimp( subst([n = nstar], blk) )$
+print("STEP 4a F at n* (log term aside) =", lead)$
+print("STEP 4b residual of that minus 2*sqrt(A*K*T/c) =",
+      radcan( lead - 2*sqrt(A*K*T/c) ), " (0)")$
+sq1 : ratsimp( (2*sqrt(A*K*T/c))^2 )$
+sq2 : ratsimp( (2*A*g*sg*sqrt(T)/sqrt(et))^2 )$
+print("STEP 4c (2 sqrt(A K T/c))^2 =", sq1, " and (c_causal sqrt(T))^2 =", sq2)$
+print("STEP 4d with the model's K = A g^2 and c = et/sg^2 the residual is",
+      ratsimp( subst([K = A*g^2, c = et/sg^2], sq1) - sq2 ), " (0)")$
+print("STEP 4e SO: the capped optimum carries the SAME leading constant as the uncapped floor.")$
+print("        The entire price of the cap is the harmonic sum, (K/(2 c vcap)) ln(T) + O(1),")$
+print("        since ln(n*) = (1/2) ln(T) + O(1).  ADDITIVE and LOGARITHMIC against a sqrt(T)")$
+print("        floor -- so the ratio to the floor tends to 1 as T grows, for every fixed cap")$
+
+/* ===== STEP 5: the taper is not rescued ===== */
+
+print("=== STEP 5: the conjecture, refuted ===")$
+print("STEP 5a a cap makes the UNCAPPED burst infeasible, which is what made the taper look like")$
+print("        its natural replacement.  But the exchange argument of STEP 1 does not mention the")$
+print("        cap: it says put mass as early as the constraint allows, which is the CAP-")$
+print("        SATURATING block, not a decaying profile")$
+print("STEP 5b a 1/sqrt(t) taper spreads its budget over Theta(T) rounds instead of Theta(sqrt(T)),")$
+print("        so its information at round t grows like sqrt(t) instead of t and its estimation")$
+print("        term stays Theta(sqrt(T)) with a strictly larger constant -- the sqrt(2) gap of the")$
+print("        uncapped analysis, which the cap does not remove")$
+print("STEP 5c measured (chc.regret): at T = 10^5 and vcap = 0.03 the convex optimum is 196.11,")$
+print("        the front-loaded block 196.16, the clipped taper 266.81, the uncapped floor 189.29")$
+print("        -- the block is within 0.03% of the optimum and the taper is 36% above it")$

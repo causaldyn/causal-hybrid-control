@@ -1,0 +1,74 @@
+/* DISCOVERY / derivation: the EXACT MATRIX RATIO MOMENT (Result 54). Result 51 (l) computed
+   E[X/Y^2] for the SCALAR cross-fit estimator exactly and (j') recorded the two-channel
+   estimator as blocked: the object there is the MATRIX V = E[(X'AX)^{-1} X'A Sigma A X
+   (X'AX)^{-1}] for a Gaussian n x 2 regressor block X -- the exact sampling variance of the
+   two-channel (direct + spillover) DML point estimate at fixed design size. The route that
+   unblocks it: (i) for q = 2, M^{-1} = adj(M)/det(M), so V = E[adj(M) N adj(M)/det(M)^2] with
+   every adj entry a QUADRATIC FORM in vec(X) (STEPs 1-2); (ii) det(M)^{-2} has the
+   Ingham-Siegel representation det(M)^{-2} = (2/pi) int_{T>0} det(T)^{1/2} etr(-TM) dT over the
+   2x2 positive-definite cone -- the matrix generalisation of the scalar resolvent
+   1/y^2 = int t e^{-ty} dt that (l) is built on (STEPs 4-5); (iii) under the tilt etr(-TM) the
+   law of vec(X) stays Gaussian, so each entry needs only the Gaussian moment of a PRODUCT OF
+   THREE quadratic forms, derived from Isserlis' 15 pairings rather than cited (STEP 3):
+       E[q1 q2 q3] = t1 t2 t3 + 2(t1 c23 + t2 c13 + t3 c12) + 4(tr(K1 S K2 S K3 S)
+                     + tr(K1 S K3 S K2 S)),
+   t_i = tr(K_i S), c_ij = tr(K_i S K_j S). The numeric evaluator and its anchors (Ingham-Siegel
+   constant to 8 digits, Wishart E[M^{-1}] = I/(n-3), 1M-draw MC within 1.6 SE) live in the
+   research log. Maxima is the source of truth for the algebra. */
+display2d : false$
+
+/* STEP 1: the 2x2 adjugate cancels M exactly: adj(M) . M = det(M) I. */
+M : matrix([m11, m12], [m12, m22])$
+adjM : matrix([m22, -m12], [-m12, m11])$
+res1 : ratsimp(adjM . M - determinant(M) * ident(2))$
+print("STEP 1   adj(M).M - det(M) I =", res1, "  (zero matrix confirms)")$
+
+/* STEP 2: the sandwich entries the evaluator expands -- each a signed product of THREE
+   quadratic forms in vec(X). */
+N : matrix([n11, n12], [n12, n22])$
+R : ratsimp(adjM . N . adjM)$
+res2a : ratsimp(R[1, 1] - (m22^2*n11 - 2*m12*m22*n12 + m12^2*n22))$
+res2b : ratsimp(R[1, 2] - (-m12*m22*n11 + m11*m22*n12 + m12^2*n12 - m11*m12*n22))$
+res2c : ratsimp(R[2, 2] - (m12^2*n11 - 2*m11*m12*n12 + m11^2*n22))$
+print("STEP 2   entry expansions (11, 12, 22):", res2a, res2b, res2c, "  (0 0 0 confirms)")$
+
+/* STEP 3: the three-quadratic-form Gaussian moment from Isserlis' 15 pairings, at n = 2 --
+   the identities are polynomial in the entries, so n = 2 pins the pattern. */
+S  : matrix([s11, s12], [s12, s22])$
+K1 : matrix([a11, a12], [a12, a22])$
+K2 : matrix([b11, b12], [b12, b22])$
+K3 : matrix([c11, c12], [c12, c22])$
+pairs3(l) := block([head : l[1], tail : rest(l), out : []],
+  /* all pairings of 6 labels: pick head's partner, then pair the remaining 4 */
+  for i : 1 thru length(tail) do block([partner : tail[i], others : delete(tail[i], tail)],
+    for j : 2 thru length(others) do
+      out : cons([[head, partner], [others[1], others[j]],
+                  delete(others[j], rest(others))], out)),
+  out)$
+PAIRINGS : pairs3([1, 2, 3, 4, 5, 6])$  /* 15 pairings of POSITIONS, computed once */
+E6(a, b, c, d, e, f) := block([labs : [a, b, c, d, e, f], tot : 0],
+  for pr in PAIRINGS do
+    tot : tot + S[labs[pr[1][1]], labs[pr[1][2]]]
+              * S[labs[pr[2][1]], labs[pr[2][2]]]
+              * S[labs[pr[3][1]], labs[pr[3][2]]],
+  tot)$
+lhs3 : sum(sum(sum(sum(sum(sum(
+  K1[a, b]*K2[c, d]*K3[e, f]*E6(a, b, c, d, e, f), f, 1, 2), e, 1, 2), d, 1, 2),
+  c, 1, 2), b, 1, 2), a, 1, 2)$
+mytr(X) := X[1, 1] + X[2, 2]$
+t1 : mytr(K1 . S)$  t2 : mytr(K2 . S)$  t3 : mytr(K3 . S)$
+c12_ : mytr(K1 . S . K2 . S)$  c13_ : mytr(K1 . S . K3 . S)$  c23_ : mytr(K2 . S . K3 . S)$
+d123 : mytr(K1 . S . K2 . S . K3 . S)$  d132 : mytr(K1 . S . K3 . S . K2 . S)$
+rhs3 : t1*t2*t3 + 2*(t1*c23_ + t2*c13_ + t3*c12_) + 4*(d123 + d132)$
+res3 : ratsimp(lhs3 - rhs3)$
+print("STEP 3   Isserlis(15 pairings) minus trace formula =", res3, "  (0 confirms)")$
+
+/* STEP 4: the q = 1 Ingham-Siegel is the scalar resolvent of Result 51 (l). */
+assume(y > 0)$
+res4 : ratsimp(integrate(t * exp(-t * y), t, 0, inf) - 1/y^2)$
+print("STEP 4   int t e^{-ty} dt - 1/y^2 =", res4, "  (0 confirms the (l) kernel is the q=1 case)")$
+
+/* STEP 5: the q = 2 normalising constant Gamma_2(2) = sqrt(pi) Gamma(2) Gamma(3/2) = pi/2,
+   hence the prefactor 2/pi in the evaluator. */
+res5 : ratsimp(sqrt(%pi) * gamma(2) * gamma(3/2) - %pi/2)$
+print("STEP 5   Gamma_2(2) - pi/2 =", res5, "  (0 confirms the 2/pi prefactor)")$

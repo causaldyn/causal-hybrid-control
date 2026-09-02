@@ -1,0 +1,83 @@
+/* DISCOVERY / derivation: the FOLD-SPECTRUM LAW (Result 52). Result 51 (h) compares two NAMED
+   fold partitions (alternating vs contiguous) and finds their crossover; this file solves the
+   design problem those two were sampled from. The route: the fold partition enters the sandwich
+   Psi only through tr(A^2 S_d S_e); the square of the cross-fit residualiser stays inside the
+   idempotent algebra <I, E, F> -- squaring promotes r^2 to r^4 and nothing else (STEP 1); what
+   multiplies the partition is the same-fold indicator with POSITIVE weight (r^4-1) K/m, so Psi is
+   AFFINE in the same-fold weighted 2-walk counts (STEP 2). For K = 2 the objective is the
+   quadratic form s'Q(x)s in the fold sign vector, Q(x) = sum_{d,e} g_d g_e x^|d-e| S_d S_e:
+   fold design IS minimum-weight balanced graph bisection with delay-dependent weights. On a
+   cycle Q is circulant and diagonalises over Fourier modes (STEP 3); the two PURE spectral
+   designs -- parity, all mass at cos(theta) = -1, and width-2 stripes, all mass at
+   cos(theta) = 0 (m divisible by 4) -- obey an exact factored two-threshold law (STEP 4):
+       lambda_parity - lambda_stripes = 4 (g0 x - g1)(2 g2 x - g1),
+   roots x = g1/g0 and x = g1/(2 g2), so parity is optimal exactly BETWEEN the thresholds and
+   stripes outside them; g2 -> 0 leaves the single D = 1 threshold g1/g0. Enumeration of ALL
+   balanced partitions (research log, Result 52) confirms these are the global argmins on their
+   sides, and the exact resolvent moment of Result 51 (l) prices how the estimator-level
+   thresholds move off these plug-in values. Maxima is the source of truth for the algebra. */
+display2d : false$
+
+mytrace(M) := sum(M[i, i], i, 1, length(M))$
+
+/* STEP 1: the idempotent algebra. E = J/m (grand mean), F = fold averager: E^2 = E, F^2 = F,
+   E F = F E = E. A = I - r^2 E + (r^2-1) F, so A^2 must be I - r^4 E + (r^4-1) F. */
+sq : expand((1 + a*e + b*f)^2)$
+sq : ratsubst(e, e^2, sq)$
+sq : ratsubst(f, f^2, sq)$
+sq : ratsubst(e, e*f, sq)$
+sq : ratsimp(subst([a = -r^2, b = r^2 - 1], sq))$
+res1 : ratsimp(sq - (1 - r^4*e + (r^4 - 1)*f))$
+print("STEP 1   A^2 - (I - r^4 E + (r^4-1) F) =", res1, "  (0 confirms: squaring only promotes r^2 -> r^4)")$
+
+/* STEP 2: Psi is affine in the same-fold quadratic form, coefficient kappa = m (r^4-1)/(tr(A)^2 v0)
+   at K = 2. Checked fully symbolically (x, g0, g1, g2 free) on C_6 across three partitions:
+   alternating, contiguous, and a mixed run-pattern -- one kappa fits all differences. */
+m : 6$  K : 2$  r : 2$
+dist(i, j) := min(mod(i - j, m), mod(j - i, m))$
+shell(d) := genmatrix(lambda([i, j], if dist(i, j) = d then 1 else 0), m, m)$
+Sl : [shell(0), shell(1), shell(2)]$
+g : [g0, g1, g2]$
+v0 : sum(g[d + 1]^2 * mytrace(Sl[d + 1] . Sl[d + 1]), d, 0, 2)$
+Au(fold) := ident(m) - (r^2/m) * genmatrix(lambda([i, j], 1), m, m)
+          + (r^2 - 1) * (K/m) * genmatrix(lambda([i, j], if fold[i] = fold[j] then 1 else 0), m, m)$
+psi(fold) := block([A : Au(fold)],
+  m^2 * sum(sum(g[d + 1] * g[e + 1] * x^abs(d - e)
+                * mytrace(A . Sl[d + 1] . Sl[e + 1] . A), e, 0, 2), d, 0, 2)
+      / (mytrace(Au(fold))^2 * v0))$
+Q : sum(sum(g[d + 1] * g[e + 1] * x^abs(d - e) * (Sl[d + 1] . Sl[e + 1]), e, 0, 2), d, 0, 2)$
+qform(s) := sum(sum(s[i] * Q[i, j] * s[j], j, 1, m), i, 1, m)$
+kappa : m * (r^4 - 1) / (mytrace(Au([0, 1, 0, 1, 0, 1]))^2 * v0)$
+sgn(fold) := makelist(1 - 2 * fold[i], i, 1, m)$
+parity : [0, 1, 0, 1, 0, 1]$  blockp : [0, 0, 0, 1, 1, 1]$  mixed : [0, 0, 1, 1, 0, 1]$
+res2a : ratsimp(psi(parity) - psi(blockp) - kappa * (qform(sgn(parity)) - qform(sgn(blockp))))$
+res2b : ratsimp(psi(parity) - psi(mixed) - kappa * (qform(sgn(parity)) - qform(sgn(mixed))))$
+print("STEP 2   affine residuals on C_6 (parity-block, parity-mixed):", res2a, res2b, "  (0 0 confirms)")$
+
+/* STEP 3: Fourier scores of the two pure designs on C_8. Parity has all spectral mass at
+   cos(theta) = -1 (sigma_1 = -2, sigma_2 = 2), stripes at cos(theta) = 0 (sigma_1 = 0,
+   sigma_2 = -2, and the shell-1 <-> shell-2 cross term dies with sigma_1). */
+m : 8$
+Sl : [shell(0), shell(1), shell(2)]$
+Q : sum(sum(g[d + 1] * g[e + 1] * x^abs(d - e) * (Sl[d + 1] . Sl[e + 1]), e, 0, 2), d, 0, 2)$
+spar : [1, -1, 1, -1, 1, -1, 1, -1]$
+srun : [1, 1, -1, -1, 1, 1, -1, -1]$
+lam_par : g0^2 + 4*g1^2 + 4*g2^2 - 4*g0*g1*x - 8*g1*g2*x + 4*g0*g2*x^2$
+lam_run : g0^2 + 4*g2^2 - 4*g0*g2*x^2$
+res3a : ratsimp(qform(spar) - m * lam_par)$
+res3b : ratsimp(qform(srun) - m * lam_run)$
+print("STEP 3   C_8 Fourier scores: parity residual", res3a, ", stripes residual", res3b, "  (0 0 confirms)")$
+
+/* STEP 4: the two-threshold law, division-free, and its D = 1 and vertex corollaries. */
+dlam : ratsimp(lam_par - lam_run)$
+res4a : ratsimp(dlam - 4*(g0*x - g1)*(2*g2*x - g1))$
+print("STEP 4a  lambda_parity - lambda_stripes - 4(g0 x - g1)(2 g2 x - g1) =", res4a, "  (0 confirms)")$
+print("STEP 4b  thresholds:", solve(dlam = 0, x), "  -- parity optimal strictly between them")$
+res4c : ratsimp(subst(g2 = 0, dlam) - 4*g1*(g1 - g0*x))$
+print("STEP 4c  D=1 limit residual", res4c, "  (0 confirms the single threshold x = g1/g0)")$
+lamc : g0^2 + 4*g1^2*c^2 + 4*g0*g1*x*c$
+res4d : ratsimp(lamc - (g0^2 - (g0*x)^2 + (2*g1*c + g0*x)^2))$
+print("STEP 4d  completed square residual", res4d,
+      "  (0 confirms the optimal fold frequency cos(theta*) = -g0 x/(2 g1))")$
+print("STEP 4e  gammas (1, 7/10, 2/5):", solve(subst([g0 = 1, g1 = 7/10, g2 = 2/5], dlam) = 0, x),
+      "  -- the enumerated transition points")$

@@ -1,0 +1,62 @@
+/* DISCOVERY / derivation: the TIME-FOLD LAW (Result 53). Result 44 priced folds that cut across
+   time under AR(1) at a 27-34% overstatement of the exchangeable law and left the design question
+   open ("a coding rule, not a theorem"). This file closes the design question. The affine
+   reduction of Result 52 is graph-free, and on the time axis the sandwich is LINEAR in the
+   covariance: the partition enters Psi_time = tr(A Sigma A)/tr(A)^2 only through
+   (r^4-1)(K/p) tr(F0 Sigma), Sigma[t,s] = phi^|t-s| -- the same-fold phi-weighted PAIR count
+   (STEP 1). The mode score of the stationary kernel is the AR(1) spectral density
+   lambda(c) = (1-phi^2)/(1-2 phi c + phi^2), c = cos theta, STRICTLY INCREASING in c for every
+   phi in (0,1) (STEPs 2-3): unlike Result 52's spatial kernel there is NO threshold and NO stripe
+   regime -- all spectral mass belongs at c = -1, i.e. ALTERNATE time points between folds, at
+   every phi. The kernel is convex in the lag (STEP 4, second difference phi^r (1-phi)^2), so the
+   alternating optimum is the density-1/2 case of Hubbard's most-homogeneous ground states for
+   convex 1D repulsion (Hubbard 1978; Pokrovsky-Uimin 1978) -- cited as context, while the
+   finite-path statement is established by exhaustive enumeration in the research log: parity is
+   the argmin and the contiguous half-split the argmax among ALL balanced partitions at every phi
+   tested, p <= 14, with the plug-in price of the default contiguous split reaching 5.9x
+   (and 2.5x under the exact moment of Result 51 (l)). Maxima is the source of truth here. */
+display2d : false$
+
+mytrace(M) := sum(M[i, i], i, 1, length(M))$
+
+/* STEP 1: the affine identity on the p = 6 path, phi symbolic. Psi differences across three
+   partitions are one kappa times the same-fold weighted pair-count differences. */
+p : 6$  K : 2$  r : 2$
+Sig : genmatrix(lambda([i, j], phi^abs(i - j)), p, p)$
+Au(fold) := ident(p) - (r^2/p) * genmatrix(lambda([i, j], 1), p, p)
+          + (r^2 - 1) * (K/p) * genmatrix(lambda([i, j], if fold[i] = fold[j] then 1 else 0), p, p)$
+psi(fold) := block([A : Au(fold)], mytrace(A . Sig . A) / mytrace(A)^2)$
+cnt(fold) := sum(sum(if fold[i] = fold[j] then Sig[i, j] else 0, j, 1, p), i, 1, p)$
+kappa : (r^4 - 1) * (K/p) / mytrace(Au([0, 1, 0, 1, 0, 1]))^2$
+parity : [0, 1, 0, 1, 0, 1]$  blockp : [0, 0, 0, 1, 1, 1]$  mixed : [0, 0, 1, 1, 0, 1]$
+res1a : ratsimp(psi(parity) - psi(blockp) - kappa * (cnt(parity) - cnt(blockp)))$
+res1b : ratsimp(psi(parity) - psi(mixed) - kappa * (cnt(parity) - cnt(mixed)))$
+print("STEP 1   affine residuals on the p=6 path (parity-block, parity-mixed):", res1a, res1b,
+      "  (0 0 confirms: the design objective is the same-fold phi-weighted pair count)")$
+
+/* STEP 2: the stationary mode score is the AR(1) spectral density. The geometric sum is
+   machine-verified on the reals; its value at z = phi e^{i theta}, |z| < 1, is the textbook
+   analytic continuation, and the passage to the real part is verified by rectform below. */
+assume(ph > 0, ph < 1)$
+res2geo : ratsimp(ev(sum(ph^l, l, 1, inf), simpsum) - ph/(1 - ph))$
+print("STEP 2a  geometric sum residual =", res2geo, "  (0 confirms sum z^l = z/(1-z))")$
+z : ph * exp(%i * th)$
+f : 1 + 2 * realpart(z / (1 - z))$
+f : ratsimp(rectform(f))$
+target : (1 - ph^2) / (1 - 2 * ph * cos(th) + ph^2)$
+res2 : trigsimp(ratsimp(f - target))$
+print("STEP 2b  mode score minus (1-phi^2)/(1-2 phi cos(theta)+phi^2) =", res2, "  (0 confirms)")$
+
+/* STEP 3: strict monotonicity in c = cos(theta): the derivative is 2 phi (1-phi^2) over a square,
+   and the denominator is bounded below by (1-phi)^2 > 0 on |c| <= 1. */
+lam : (1 - ph^2) / (1 - 2 * ph * c + ph^2)$
+res3a : ratsimp(diff(lam, c) - 2 * ph * (1 - ph^2) / (1 - 2 * ph * c + ph^2)^2)$
+res3b : ratsimp((1 - 2 * ph * c + ph^2) - (1 - ph)^2 - 2 * ph * (1 - c))$
+print("STEP 3   derivative residual", res3a, "; denominator floor residual", res3b,
+      "  (0 0 confirms: lambda strictly increasing in c, so ALL mass belongs at c = -1 --",
+      "no threshold, unlike the spatial law of Result 52)")$
+
+/* STEP 4: the kernel is convex in the lag -- Hubbard's hypothesis holds for AR(1). */
+res4 : ratsimp(ph^(q + 2) - 2 * ph^(q + 1) + ph^q - ph^q * (1 - ph)^2)$
+print("STEP 4   second difference minus phi^r (1-phi)^2 =", res4,
+      "  (0 confirms convexity; alternating = the density-1/2 most-homogeneous configuration)")$

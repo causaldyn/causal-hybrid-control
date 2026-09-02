@@ -1,0 +1,88 @@
+/* THE ACTION-SIDE VAN TREES BOUND: Result 10's two scope caveats, removed at no cost.
+
+   Result 10 gives a Cramer-Rao floor on control regret for UNBIASED effect estimators, and flags
+   two caveats in its own scope note: the regret map is linearised (a delta-method statement,
+   because u*(b) is nonlinear), and the bound applies only to unbiased estimators, so it is not a
+   minimax statement -- "a rigorous version needs local-asymptotic-minimax or a van Trees
+   inequality on the estimand u*(b)".
+
+   Both dissolve, and the constant does not move.  The key observation is that for the one-step LQ
+   problem the regret is EXACTLY a squared error in the ACTION,
+
+       J(u, b) - J(u*(b), b) = (b^2 + rr) (u - u*(b))^2,
+
+   with no approximation at all.  So instead of Cramer-Rao on b plus a delta method, apply van
+   Trees -- already formalised for this line in validation/van_trees.mac and Result 42 -- directly
+   to the estimand psi(b) = u*(b).  Van Trees holds for EVERY estimator, biased or not, which is
+   exactly the hypothesis Result 10 had to assume away.
+
+   Certificate: chc.regret.information_lower_bound_certificate (van Trees arm);
+   proofs/action_van_trees.v. */
+
+linel : 110$
+display2d : false$
+assume(rr > 0, b > 0, sg > 0, vid > 0, n > 0, il >= 0)$
+
+/* ===== STEP 1: the regret is EXACTLY a squared error in the action ===== */
+
+print("=== STEP 1: no delta method is needed ===")$
+J : (xt + b*u)^2 + rr*u^2$
+ustar : ratsimp( rhs(solve(diff(J, u) = 0, u)[1]) )$
+print("STEP 1a the one-step LQ cost is", J, " minimised at u*(b) =", ustar)$
+gap : ratsimp( J - subst([u = ustar], J) - (b^2 + rr)*(u - ustar)^2 )$
+print("STEP 1b residual of  J(u) - J(u*) - (b^2+rr)(u - u*)^2 =", gap,
+      " (0) -- EXACT for every u, not to leading order")$
+print("STEP 1c so regret is a squared error in the ACTION.  Result 10 reached a squared error in")$
+print("        the EFFECT by linearising u*(b); that step is what forced the 'local' caveat, and")$
+print("        it is unnecessary")$
+
+/* ===== STEP 2: the sensitivity, and the constant Result 10 already carries ===== */
+
+print("=== STEP 2: the constant ===")$
+dpsi : ratsimp( diff(ustar, b) )$
+print("STEP 2a psi(b) = u*(b) has psi'(b) =", dpsi)$
+coeff : ratsimp( (b^2 + rr)*dpsi^2 )$
+print("STEP 2b (b^2+rr) psi'^2 =", coeff)$
+print("STEP 2c residual against Result 10's C = xt^2 (rr-b^2)^2/(rr+b^2)^3 :",
+      ratsimp( coeff - xt^2*(rr - b^2)^2/(rr + b^2)^3 ), " (0)")$
+
+/* ===== STEP 3: van Trees on the ACTION, and its large-sample limit ===== */
+
+print("=== STEP 3: the van Trees floor for ANY estimator ===")$
+print("STEP 3a van Trees (validation/van_trees.mac, Result 42) for an estimand psi under a prior")$
+print("        lambda with Fisher information I(lambda) and n iid observations of information")$
+print("        I1 = vid/sg^2 each:   E[(psihat - psi)^2] >= (E_lambda psi')^2/(n I1 + I(lambda))")$
+print("STEP 3b multiplying by the exact curvature (b^2+rr) of STEP 1 gives the ACTION floor")$
+vt : n*(b^2 + rr)*dp^2/(n*vid/sg^2 + il)$
+print("STEP 3c n E[regret] >=", vt)$
+lim : ratsimp( limit(vt, n, inf) )$
+print("STEP 3d as n -> inf that is", lim, " = (b^2+rr) psi'^2 sg^2/vid")$
+print("STEP 3e residual against Result 10's C sg^2/vid with psi' substituted :",
+      ratsimp( subst([dp = dpsi], lim) - coeff*sg^2/vid ), " (0)")$
+print("STEP 3f SO: the same constant, with the unbiasedness hypothesis DELETED and the")$
+print("        linearisation DELETED.  The prior information il drops out in the limit, which is")$
+print("        the standard van Trees -> local-minimax passage (Result 42 STEP 4, Result 25)")$
+
+/* ===== STEP 4: the gap to the limit is monotone, so the bound is not vacuous at finite n ===== */
+
+print("=== STEP 4: finite n ===")$
+gapn : ratsimp( coeff*sg^2/vid - subst([dp = dpsi], vt) )$
+print("STEP 4a the shortfall of the finite-n floor below its limit is", gapn)$
+print("STEP 4b residual against C sg^4 il/(vid (n vid + il sg^2)) :",
+      ratsimp( gapn - coeff*sg^4*il/(vid*(n*vid + il*sg^2)) ), " (0)")$
+print("STEP 4c it is positive and O(1/n): the prior costs information at finite n and nothing")$
+print("        asymptotically, so the floor is honest at every n rather than only in the limit")$
+
+/* ===== STEP 5: what still does NOT go away ===== */
+
+print("=== STEP 5: the caveat that survives ===")$
+print("STEP 5a at the knife edge rr = b^2 the sensitivity psi'(b) vanishes:",
+      ratsimp( subst([rr = b^2], dpsi) ), " (0)")$
+print("STEP 5b so the leading van Trees term vanishes there too, exactly as Result 10 recorded.")$
+print("        That caveat is a property of the PROBLEM -- the optimal action is stationary in b")$
+print("        at the knife edge -- and no change of inequality removes it")$
+print("STEP 5c confounding still raises the floor, now for EVERY estimator rather than only")$
+print("        unbiased ones: the floor is antitone in vid, and confounding replaces vid = V_exp")$
+print("        by the residual V_conf <= V_exp")$
+print("STEP 5d d/dvid of the limit floor =", ratsimp( diff(coeff*sg^2/vid, vid) ),
+      " (negative: less identifying variance, higher floor)")$
