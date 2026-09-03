@@ -30,6 +30,7 @@ from jax import Array
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import NDArray
 
+from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step
 from chc.residual import ContractiveResidual, LipschitzResidual, MLPResidual
@@ -503,25 +504,81 @@ class ConfoundingRobustPenalty(eqx.Module):
     (``penalty_trajectory(xs, us) -> scalar``), so it drops into the ``lam_unc`` channel of
     :func:`chc.support.pessimistic_control` unchanged.
 
-    HONEST SCOPE: this is an **identification-radius regulariser**, not a certified cost bound. The
-    §34 inequality bounds the *state-transition* error; converting it into a bound on the objective
-    needs a sensitivity multiplier -- ``Delta J <= Sigma_t L_{V,t+1} * radius * ||u_t||`` with
-    ``L_{V,t+1}`` the Lipschitz constant of the cost-to-go (locally, the adjoint norm
-    ``||lambda_{t+1}||``) -- which is *not* supplied here, so ``lam_unc`` absorbs it as an
-    unidentified scale rather than deriving it. The COEFFICIENT is nonetheless derived from the §32
-    sensitivity rather than being an arbitrary actuation budget; ``Gamma`` and the CVaR-gap
-    calibration remain the analyst's inputs. It does NOT test for confounding.
+    HONEST SCOPE, and it now depends on which constructor was used. Plain
+    ``ConfoundingRobustPenalty(radius=...)`` is an **identification-radius regulariser**: the §34
+    inequality bounds the *state-transition* error, and converting that into a bound on the
+    objective needs the sensitivity multiplier ``Delta J <= Sigma_t L_{V,t+1} * radius * ||u_t||``,
+    which this path does not supply -- so ``lam_unc`` absorbs it as an unidentified scale.
+    :meth:`certified` supplies it -- the adjoint norm ``||lambda_{t+1}||``, the RK4 injection gain
+    and a second-order deviation tube -- and on that path ``lam_unc = 1`` *is* the bound rather than
+    a knob. :func:`confounding_cost_bound_certificate` is the gate that can fail it.
+
+    Either way the COEFFICIENT is derived from the §32 sensitivity rather than being an arbitrary
+    actuation budget; ``Gamma`` and the CVaR-gap calibration remain the analyst's inputs, and it
+    does NOT test for confounding.
     """
 
     radius: float = eqx.field(static=True)
+    cost_to_go: Array | None = None  # (H,) ||lambda_{t+1}||; None keeps the unweighted regulariser
 
     @classmethod
     def from_sensitivity(cls, cvar_gap: float, gamma: float) -> ConfoundingRobustPenalty:
         """Radius = the §32 bounded-density-ratio inflation ``(Gamma-1)/(Gamma+1) * cvar_gap``."""
         return cls(radius=confounding_robust_inflation(cvar_gap, 0.0, gamma))
 
+    @classmethod
+    def certified(
+        cls,
+        radius: float,
+        dyn: Dynamics,
+        x0: Array,
+        us_reference: Array,
+        dt: float,
+        cost: QuadraticCost,
+    ) -> ConfoundingRobustPenalty:
+        """Supply the missing multiplier, so ``lam_unc = 1`` *is* the bound rather than a free knob.
+
+        The §34 inequality bounds the per-step transition error; turning it into a bound on the
+        objective needs ``Delta J <= Sigma_t L_{V,t+1} * radius * ||u_t||``, and ``L_{V,t+1}`` is
+        locally the adjoint norm ``||lambda_{t+1}||``. That is a quantity the planner already
+        computes, so leaving it to be absorbed by ``lam_unc`` was throwing away information, not
+        avoiding an assumption. :func:`chc.adjoint.costate_norms` returns it along ``us_reference``.
+
+        The first-order term alone is *not* an upper bound, and measuring rather than assuming is
+        what showed it: at the optimum the Cauchy-Schwarz step is nearly tight, so the dropped
+        curvature term -- positive, O(radius^2) -- pushes the realised worst case above it at every
+        radius: an adversary reaches 1.014 of it at radius 0.005 and 1.69 at 0.2 on a two-lever
+        oscillator, while the weights below hold at 0.995 and 0.953.
+        :func:`chc.adjoint.perturbation_cost_weights` therefore carries the deviation tube and the
+        cost curvature as well, which is why ``radius`` is an argument here: a second-order term
+        cannot be folded into a radius-free weight.
+
+        Three things this is and is not:
+
+        * **Second order, exact for LQ.** For a linear plant with a quadratic cost the objective is
+          exactly quadratic along a perturbation direction, so the expansion closes and the only
+          slack left is Cauchy-Schwarz. Nonlinear plants keep an ``O(radius^3)`` remainder;
+          :func:`confounding_cost_bound_certificate` measures whether it matters.
+        * **At a reference.** The weights are frozen at ``us_reference``, which breaks the
+          circularity of weights that depend on the plan that depends on the weights. Iterating
+          (re-solve, re-weight) is available to the caller and is not done here, because a fixed
+          point is a different claim from a bound at a named trajectory.
+        * **Not a confounding test.** ``radius`` still comes from an assumed ``Gamma``.
+        """
+        from chc.adjoint import perturbation_cost_weights
+
+        return cls(
+            radius=radius,
+            cost_to_go=perturbation_cost_weights(dyn, x0, us_reference, dt, cost, radius),
+        )
+
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
-        """Confounding pessimism ``radius * Sigma_t ||u_t||`` over the controls (``xs`` unused)."""
+        """Confounding pessimism ``radius * Sigma_t L_t ||u_t||`` (``xs`` unused).
+
+        ``L_t`` is 1 when no weights were supplied -- the identification-radius regulariser -- and
+        :func:`chc.adjoint.perturbation_cost_weights` when they were, on which path the sum is a
+        certified upper bound on the cost gap rather than a scale-free direction.
+        """
         del xs  # the confounded effect error scales with the ACTION magnitude (§34), not the state
         # smoothed L2 norm sqrt(||u||^2 + eps^2): ||u|| is non-differentiable at u=0 (NaN grad) and
         # the solver starts from us0=0 exactly on that singularity, so the floor is squared -- it
@@ -529,6 +586,8 @@ class ConfoundingRobustPenalty(eqx.Module):
         # is what the §34 upper bound needs; the price is a constant eps per step at u=0, which
         # shifts the reported objective by lam_unc*radius*T*eps without moving the optimiser.
         per_step = jnp.sqrt(jnp.sum(us**2, axis=-1) + 1e-6**2)
+        if self.cost_to_go is not None:
+            per_step = per_step * self.cost_to_go
         return self.radius * jnp.sum(per_step)
 
 
@@ -1042,4 +1101,115 @@ def confounding_robust_closed_loop_certificate(
             and radius_monotone
             and horizon_monotone
         ),
+    )
+
+
+class _ControlChannelOffset(eqx.Module):
+    """``f(t, x, u) + M u`` -- the support model's admissible field error, made concrete.
+
+    ``||M u|| <= ||M||_2 ||u||``, so a spectral-norm ball of radius ``r`` around zero is exactly the
+    set the §34 inequality allows. Distinct from :class:`_PerturbedField`, whose offset is constant
+    in ``u`` and therefore models a *drift*, not a mis-identified effect.
+    """
+
+    field: Dynamics
+    offset: Array  # (n, m)
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.field(t, x, u) + self.offset @ u
+
+
+def _project_spectral(matrix: Array, radius: float) -> Array:
+    """Nearest point of ``{M : ||M||_2 <= radius}`` -- singular values clipped, vectors kept."""
+    u, s, vt = jnp.linalg.svd(matrix, full_matrices=False)
+    return (u * jnp.clip(s, 0.0, radius)) @ vt
+
+
+@dataclass(frozen=True)
+class ConfoundingBoundCurve:
+    """Predicted vs adversarially realised cost gap, radius by radius. ``ok`` iff none exceeded."""
+
+    radii: tuple[float, ...]
+    predicted: tuple[float, ...]
+    realised: tuple[float, ...]
+    ratio: tuple[float, ...]  # realised / predicted; > 1 is the bound failing
+    first_order_ratio: tuple[float, ...]  # the same against the first-order term alone
+    worst_ratio: float
+    ok: bool
+
+
+def confounding_cost_bound_certificate(
+    radii: tuple[float, ...] = (0.005, 0.01, 0.02, 0.05, 0.1, 0.2),
+    horizon: int = 20,
+    dt: float = 0.05,
+    restarts: int = 6,
+    ascent_steps: int = 250,
+    seed: int = 0,
+) -> ConfoundingBoundCurve:
+    """Try to break :meth:`ConfoundingRobustPenalty.certified`, and report where it bends.
+
+    A two-lever damped oscillator, planned to optimality, then *attacked*: the adversary picks the
+    control-channel error ``M`` with ``||M||_2 <= radius`` that moves the objective most, by
+    projected gradient ascent from several starts on both signs of ``Delta J``. Random sampling was
+    the first version and it is not good enough -- in four parameters it underestimates the worst
+    case by enough to hide a violated bound.
+
+    Two ratios are reported because they answer different questions. ``ratio`` is the certificate:
+    realised over the full second-order weight, and ``ok`` demands every entry stay at or below one.
+    ``first_order_ratio`` is the diagnostic that motivated the second-order term: it exceeds one at
+    every radius, which is why ``||lambda||`` alone was a calibrated *estimate*, not a bound.
+    """
+    system = LinearDynamics(a_matrix=jnp.array([[0.0, 1.0], [-1.0, -0.2]]), b_matrix=jnp.eye(2))
+    cost = QuadraticCost(
+        Q=jnp.eye(2), R=0.05 * jnp.eye(2), Qf=5.0 * jnp.eye(2), x_target=jnp.zeros(2)
+    )
+    x0 = jnp.array([1.0, -0.5])
+
+    from chc.adjoint import perturbation_cost_weights
+    from chc.control import projected_gradient_solve
+    from chc.cost import total_cost
+
+    us = projected_gradient_solve(
+        system, x0, jnp.zeros((horizon, 2)), dt, cost, -3.0, 3.0, steps=30_000
+    ).actions
+    base = total_cost(system, x0, us, dt, cost)
+    # radius 0 zeroes the tube, so the weights collapse to exactly the first-order term.
+    first_order = perturbation_cost_weights(system, x0, us, dt, cost, 0.0)
+
+    def gap(offset: Array) -> Array:
+        return (
+            total_cost(_ControlChannelOffset(field=system, offset=offset), x0, us, dt, cost) - base
+        )
+
+    @eqx.filter_jit
+    def attack(start: Array, radius: float, sign: float) -> Array:
+        step = radius / 5.0
+
+        def ascend(offset: Array, _: None) -> tuple[Array, None]:
+            grad = jax.grad(lambda m: sign * gap(m))(offset)
+            scale = jnp.maximum(jnp.linalg.norm(grad), 1e-12)
+            return _project_spectral(offset + step * grad / scale, radius), None
+
+        final, _ = jax.lax.scan(ascend, _project_spectral(start, radius), None, length=ascent_steps)
+        return jnp.abs(gap(final))
+
+    key = jax.random.key(seed)
+    starts = jax.random.normal(key, (restarts, 2, 2))
+    predicted, realised, first_ratio = [], [], []
+    for radius in radii:
+        weights = perturbation_cost_weights(system, x0, us, dt, cost, radius)
+        per_step = radius * jnp.linalg.norm(us, axis=1)
+        predicted.append(float(jnp.sum(weights * per_step)))
+        worst = max(float(attack(start, radius, sign)) for start in starts for sign in (1.0, -1.0))
+        realised.append(worst)
+        first_ratio.append(worst / float(jnp.sum(first_order * per_step)))
+    ratio = tuple(r / p for r, p in zip(realised, predicted, strict=True))
+    return ConfoundingBoundCurve(
+        radii=tuple(radii),
+        predicted=tuple(predicted),
+        realised=tuple(realised),
+        ratio=ratio,
+        first_order_ratio=tuple(first_ratio),
+        worst_ratio=max(ratio),
+        ok=max(ratio) <= 1.0,
     )

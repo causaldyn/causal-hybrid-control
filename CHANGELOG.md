@@ -9,6 +9,32 @@ still change).
 
 ### Added
 
+- **`lam_unc = 1` is now a bound, not a knob** (`chc.adjoint.costate_norms`,
+  `chc.adjoint.perturbation_cost_weights`, `ConfoundingRobustPenalty.certified`,
+  `chc.uncertainty.confounding_cost_bound_certificate`). Result 38 (b) recorded that the §34
+  inequality bounds the per-step *transition* error while the objective needs a cost-to-go
+  multiplier `L_{V,t+1}`, and that `lam_unc` was absorbing it as an unidentified scale. The
+  multiplier is now supplied, so the penalty at `lam_unc = 1` is an upper bound on what a
+  mis-identified control channel can cost, in units of cost.
+
+  It took three pieces, and the middle one only appeared because the certificate was written to
+  fail. The adjoint norm `||lambda_{t+1}||` is the first-order sensitivity; the exact RK4 input map
+  `dt (I + dtJ/2 + (dtJ)^2/6 + (dtJ)^3/24)` converts a *field* error into a *state* error (its
+  spectral norm is 0.99990 on the shipped certificate, near `dt` but not `dt`, and it is not always
+  on that side); and a second-order deviation tube closes the Taylor expansion. Without the third,
+  the bound **fails at every radius** -- at the optimum the Cauchy-Schwarz step is nearly tight, so
+  the positive `O(radius^2)` curvature the first-order expression drops is enough to break it. An
+  adversary reaches 1.014 of the first-order term at radius 0.005 and 1.69 at 0.2, while the shipped
+  weights hold at 0.995 and 0.953. `||lambda||` alone was a calibrated estimate, not a bound.
+
+  `confounding_cost_bound_certificate` is the gate, and it attacks rather than samples: projected
+  gradient ascent on the control-channel error over the spectral-norm ball, from several starts and
+  both signs. Random sampling was the first version and hid a violation -- in four parameters it
+  underestimates the worst case by more than the margin being tested. The bound is exact for a
+  linear plant with a quadratic cost (the objective is exactly quadratic along a perturbation
+  direction) and carries an `O(radius^3)` remainder otherwise; `radius = 0` returns the first-order
+  weights, which is how the certificate reports both.
+
 - **Per-lever action bounds** (`chc.control.Bound`, `broadcast_box`, `check_box`). `u_lo` / `u_hi`
   on `projected_gradient_control`, `lbfgs_box_control`, `box_stationarity`, `pessimistic_control`,
   `causal_plan` and `mpc_control` now take a scalar, a per-lever `(m,)` array, or a full

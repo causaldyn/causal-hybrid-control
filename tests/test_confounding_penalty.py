@@ -95,3 +95,64 @@ def test_more_confounding_shrinks_the_closed_loop_action() -> None:
     strong = _action_magnitude(model, cost, x0, us0, support, radius=1.0)
     # a wider sensitivity radius = more distrust of the confounded effect = smaller, safer actions
     assert strong < mild < none
+
+
+def _oscillator_reference() -> tuple[HybridDynamics, Array, Array, QuadraticCost]:
+    """A two-lever plant planned to optimality -- the trajectory the weights are frozen at."""
+    from chc.control import projected_gradient_solve
+    from chc.dynamics import LinearDynamics
+
+    dyn = LinearDynamics(a_matrix=jnp.array([[0.0, 1.0], [-1.0, -0.2]]), b_matrix=jnp.eye(2))
+    cost = QuadraticCost(
+        Q=jnp.eye(2), R=0.05 * jnp.eye(2), Qf=5.0 * jnp.eye(2), x_target=jnp.zeros(2)
+    )
+    x0 = jnp.array([1.0, -0.5])
+    us = projected_gradient_solve(
+        dyn, x0, jnp.zeros((12, 2)), 0.05, cost, -3.0, 3.0, steps=5000
+    ).actions
+    return dyn, x0, us, cost
+
+
+def test_certified_weights_collapse_to_the_first_order_term_at_zero_radius() -> None:
+    from chc.adjoint import costate_norms, perturbation_cost_weights
+
+    dyn, x0, us, cost = _oscillator_reference()
+    weights = perturbation_cost_weights(dyn, x0, us, 0.05, cost, 0.0)
+    # At radius 0 the tube is empty, so the curvature term vanishes and only ||lambda|| times the
+    # RK4 injection gain survives. On a linear plant that gain is one number for every step, and it
+    # sits near dt without being dt -- measured 0.049995 here, i.e. slightly contracting.
+    lam = costate_norms(dyn, x0, us, 0.05, cost)
+    gains = weights / lam
+    assert jnp.allclose(gains, gains[0], rtol=1e-6)
+    assert 0.9 * 0.05 <= float(gains[0]) <= 1.1 * 0.05  # a dropped dt would be off by 20x
+
+
+def test_the_certified_penalty_at_lam_unc_one_is_the_weighted_sum() -> None:
+    from chc.adjoint import perturbation_cost_weights
+
+    dyn, x0, us, cost = _oscillator_reference()
+    radius = 0.05
+    pen = ConfoundingRobustPenalty.certified(radius, dyn, x0, us, 0.05, cost)
+    weights = perturbation_cost_weights(dyn, x0, us, 0.05, cost, radius)
+    expected = radius * jnp.sum(weights * jnp.linalg.norm(us, axis=1))
+    assert jnp.allclose(pen.penalty_trajectory(jnp.zeros((12, 2)), us), expected, rtol=1e-5)
+    # The unweighted constructor is untouched: it is still radius * Sigma ||u_t||.
+    plain = ConfoundingRobustPenalty(radius=radius)
+    assert jnp.allclose(
+        plain.penalty_trajectory(jnp.zeros((12, 2)), us),
+        radius * jnp.sum(jnp.linalg.norm(us, axis=1)),
+        rtol=1e-5,
+    )
+
+
+def test_an_adversary_cannot_beat_the_certified_bound_but_beats_the_first_order_one() -> None:
+    from chc.uncertainty import confounding_cost_bound_certificate
+
+    curve = confounding_cost_bound_certificate(
+        radii=(0.01, 0.1), horizon=12, restarts=2, ascent_steps=80
+    )
+    assert curve.ok, dict(zip(curve.radii, curve.ratio, strict=True))
+    assert curve.worst_ratio > 0.8  # a bound this loose would not be worth calling certified
+    # The point of the second-order term: the first-order expression is asymptotically tight, so
+    # the curvature it drops makes it fail as an upper bound at every radius, not only large ones.
+    assert all(r > 1.0 for r in curve.first_order_ratio)

@@ -17,7 +17,13 @@ see `chc.plan` for what that does and does not promise.
 
 from __future__ import annotations
 
-from chc.adjoint import control_gradient_adjoint, control_gradient_diffrax, total_cost_diffrax
+from chc.adjoint import (
+    control_gradient_adjoint,
+    control_gradient_diffrax,
+    costate_norms,
+    perturbation_cost_weights,
+    total_cost_diffrax,
+)
 from chc.barrier import (
     BarrierConfoundingCurve,
     SafetyFilterBenchmark,
@@ -367,6 +373,7 @@ from chc.transport import (
     transport_step,
 )
 from chc.uncertainty import (
+    ConfoundingBoundCurve,
     ConfoundingRobustCertificate,
     ConfoundingRobustClosedLoopCertificate,
     ConfoundingRobustPenalty,
@@ -382,6 +389,7 @@ from chc.uncertainty import (
     WassersteinPenalty,
     certified_horizon,
     closed_loop_rollout_bound,
+    confounding_cost_bound_certificate,
     confounding_robust_certificate,
     confounding_robust_closed_loop_bound,
     confounding_robust_closed_loop_certificate,
@@ -429,6 +437,7 @@ __all__ = [
     "ConfoundedLinearSystem",
     "ConfoundedNetworkSystem",
     "ConfoundedTurnpikeCurve",
+    "ConfoundingBoundCurve",
     "ConfoundingRegretFloorCurve",
     "ConfoundingRobustCertificate",
     "ConfoundingRobustClosedLoopCertificate",
@@ -581,6 +590,7 @@ __all__ = [
     "clustered_lower_bound_certificate",
     "composition_transfer_certificate",
     "confounded_turnpike_certificate",
+    "confounding_cost_bound_certificate",
     "confounding_regret_floor_certificate",
     "confounding_robust_certificate",
     "confounding_robust_closed_loop_bound",
@@ -611,6 +621,7 @@ __all__ = [
     "convection_diffusion_1d",
     "convection_diffusion_certificate",
     "convection_diffusion_exact",
+    "costate_norms",
     "cvar_upper",
     "damping_injection_certificate",
     "de_chaisemartin",
@@ -712,6 +723,7 @@ __all__ = [
     "peak_lag",
     "periodic_smoothing_kernel",
     "periodic_wavenumbers",
+    "perturbation_cost_weights",
     "pessimism_variance_certificate",
     "pessimistic_control",
     "pessimistic_equilibrium_allocation",
