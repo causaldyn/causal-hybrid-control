@@ -61,10 +61,35 @@ jobs:
         with:
           name: dist
           path: dist/
+      # The notes are the changelog section for this version, not a pointer to it. A release page
+      # that says "see CHANGELOG.md" makes the reader leave to find out what they just installed,
+      # and the Zenodo record -- which copies this body -- would archive the pointer rather than
+      # the content. Extracted rather than hand-written so the two cannot drift.
+      - name: Build the release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="## [$version]" '
+            index($0, v) == 1 { found = 1 }
+            found && /^## \[/ && index($0, v) != 1 { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no '## [$version]' section -- refusing to publish empty notes"
+            exit 1
+          fi
+          # GitHub caps a release body at 125 000 characters and rejects the call outright above it.
+          if [ "$(wc -c < notes.md)" -gt 120000 ]; then
+            head -c 119000 notes.md > notes.trimmed
+            printf '\n\n_Truncated; the full entry is in [CHANGELOG.md](CHANGELOG.md)._\n' \
+              >> notes.trimmed
+            mv notes.trimmed notes.md
+          fi
+          wc -c notes.md
+
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "$GITHUB_REF_NAME" \
-            --notes "See CHANGELOG.md for what changed in $GITHUB_REF_NAME."
+            --notes-file notes.md
