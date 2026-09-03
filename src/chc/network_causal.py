@@ -39,6 +39,49 @@ def cycle_shells(m: int, dmax: int) -> list[NDArray[np.float64]]:
     return [(dist == d).astype(float) for d in range(dmax + 1)]
 
 
+def graph_shells(adjacency: NDArray[np.float64], dmax: int) -> list[NDArray[np.float64]]:
+    """0/1 distance-``d`` indicator matrices of an arbitrary undirected graph, ``d = 0..dmax``.
+
+    The generalisation of :func:`cycle_shells` off the vertex-transitive case, and the piece
+    Result 52 needs before its design law can be *applied* to a real topology: the law itself is
+    closed-form only on vertex-transitive graphs, but the objective it minimises --
+    ``sum_f 1_f' Q(x) 1_f`` -- is defined for any shell decomposition, so
+    :func:`chc.regret.optimal_fold_partition` runs on whatever this returns.
+
+    Distances come from repeated boolean matrix products rather than a queue: ``dmax`` is the
+    spillover truncation and is small, so ``dmax`` sparse-ish multiplies beat a Python BFS and keep
+    the whole thing in NumPy. Vertices farther than ``dmax``, and vertices in another component,
+    simply appear in no shell -- which is the right reading, since a spillover model truncated at
+    ``dmax`` says nothing about them.
+
+    The shells partition the reachable set, so ``tr(S_d S_e) = 0`` for ``d != e`` -- the structural
+    lemma Result 51 rests on -- and that holds here for the same reason it does on a cycle: a
+    vertex sits at exactly one distance from ``i``.
+
+    Raises:
+        ValueError: if ``adjacency`` is not square, not symmetric, or carries a self-loop. Each
+            would break the partition property silently rather than loudly.
+    """
+    a = np.asarray(adjacency, dtype=np.float64)
+    if a.ndim != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError(f"adjacency must be square; got shape {a.shape}")
+    if not np.allclose(a, a.T):
+        raise ValueError("adjacency must be symmetric: shells are undirected distances")
+    if np.any(np.diag(a) != 0.0):
+        raise ValueError("adjacency must have no self-loops: distance 0 is the vertex itself")
+
+    m = a.shape[0]
+    reachable = np.eye(m, dtype=bool)
+    hop = a != 0
+    shells = [np.eye(m)]
+    frontier = reachable.copy()
+    for _ in range(dmax):
+        frontier = (frontier @ hop) & ~reachable
+        shells.append(frontier.astype(float))
+        reachable = reachable | frontier
+    return shells
+
+
 def propagate_shells(
     innovations: NDArray[np.float64],
     shells: Sequence[NDArray[np.float64]],

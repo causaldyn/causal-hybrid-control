@@ -14,10 +14,13 @@ from chc import (
     QuadraticCost,
     SupportModel,
     ZeroResidual,
+    box_stationarity,
     lbfgs_box_control,
     nlp_solver_certificate,
     pessimistic_control,
+    pessimistic_solve,
     projected_gradient_control,
+    projected_gradient_solve,
     rollout,
 )
 from chc.adjoint import control_gradient_adjoint
@@ -344,3 +347,60 @@ def test_pessimistic_control_takes_a_per_lever_box_too() -> None:
     )
     assert float(jnp.abs(us[:, 1]).max()) <= 0.2 + 1e-6
     assert float(jnp.abs(us[:, 0]).max()) > 0.2
+
+
+def test_the_solver_reports_why_it_stopped_not_only_where() -> None:
+    dyn, cost, x0, us0 = _two_lever_problem()
+
+    # No budget at all: the answer IS the caller's guess, and saying "converged" would be a lie.
+    none = projected_gradient_solve(dyn, x0, us0, DT, cost, -5.0, 5.0, steps=0)
+    assert none.status == "no_progress"
+    assert none.iterations == 0
+    assert bool((none.actions == us0).all())
+
+    # Budget exhausted: the descent is wherever it happened to be, not at its stopping rule.
+    short = projected_gradient_solve(dyn, x0, us0, DT, cost, -5.0, 5.0, steps=3)
+    assert short.status == "max_iterations"
+    assert short.iterations == 3
+
+    # This instance needs 5 574 steps under float64. At 5 000 the residual is already down to
+    # 1e-4 and the answer looks finished -- and it is not. That gap is the whole reason the status
+    # exists: a small residual is not evidence that the solver reached its stopping rule.
+    truncated = projected_gradient_solve(dyn, x0, us0, DT, cost, -5.0, 5.0, steps=5000)
+    assert truncated.status == "max_iterations"
+    assert truncated.stationarity < 1e-3
+
+    # The line search stalls first: this is the method's own stopping rule.
+    full = projected_gradient_solve(dyn, x0, us0, DT, cost, -5.0, 5.0, steps=20_000)
+    assert full.status == "converged"
+    assert 0 < full.iterations < 20_000
+    assert full.stationarity < truncated.stationarity
+
+    # The status is a claim about steps; the residual is what makes it checkable, and it has to
+    # separate the coarse cases by orders of magnitude or the label is decoration.
+    assert full.stationarity < 0.01 * short.stationarity
+    assert short.stationarity < none.stationarity
+
+
+def test_the_rich_solve_and_the_compact_one_are_the_same_solve() -> None:
+    # The tuple-returning function is a wrapper, not a second implementation: same numbers.
+    dyn, cost, x0, us0 = _two_lever_problem()
+    result = projected_gradient_solve(dyn, x0, us0, DT, cost, -1.0, 1.0, steps=400)
+    actions, history = projected_gradient_control(dyn, x0, us0, DT, cost, -1.0, 1.0, steps=400)
+    assert bool((result.actions == actions).all())
+    assert bool((result.cost_history == history).all())
+    assert result.iterations == len(history) - 1
+
+
+def test_pessimistic_stationarity_is_measured_on_what_was_minimised() -> None:
+    # The descent minimises task + penalties, so a residual on the task alone would be non-zero
+    # exactly where the solver was right to stop -- and would read as a failure.
+    dyn, cost, x0, us0 = _two_lever_problem()
+    logged_x = jax.random.normal(jax.random.key(0), (256, 2))
+    logged_u = 0.5 * jax.random.normal(jax.random.key(1), (256, 2))
+    support = SupportModel.fit(logged_x, logged_u)
+
+    result = pessimistic_solve(dyn, x0, us0, DT, cost, support, 1.0, -5.0, 5.0, steps=5000)
+    assert result.status == "converged"
+    task_only = box_stationarity(dyn, x0, result.actions, DT, cost, -5.0, 5.0)
+    assert result.stationarity < 0.1 * task_only

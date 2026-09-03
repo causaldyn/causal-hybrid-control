@@ -45,11 +45,14 @@ from chc.control import (
     Bound,
     NLPSolverCertificate,
     SolverComparison,
+    SolverResult,
+    SolverStatus,
     box_stationarity,
     lbfgs_box_control,
     nlp_solver_certificate,
     project_box,
     projected_gradient_control,
+    projected_gradient_solve,
 )
 from chc.cost import QuadraticCost, total_cost
 from chc.deep_galerkin import (
@@ -178,6 +181,7 @@ from chc.network_causal import (
     estimate_network_effects,
     estimate_network_effects_gnn,
     estimate_propagation,
+    graph_shells,
 )
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.pathway import (
@@ -224,6 +228,7 @@ from chc.regret import (
     ExposureMapCurve,
     FiniteHorizonPLCurve,
     FoldDesign,
+    FoldHeuristicCurve,
     HighProbRegretCurve,
     HInfRobustCurve,
     InformationLowerBoundCurve,
@@ -275,6 +280,7 @@ from chc.regret import (
     exact_ratio_moment,
     exposure_map_certificate,
     finite_horizon_pl_certificate,
+    fold_heuristic_certificate,
     highprob_regret_certificate,
     hinf_robust_regret_certificate,
     information_lower_bound_certificate,
@@ -326,7 +332,7 @@ from chc.splitting import (
     residual_flow,
     strang_marchuk_step,
 )
-from chc.support import SupportModel, pessimistic_control
+from chc.support import SupportModel, pessimistic_control, pessimistic_solve
 from chc.symbolic import (
     LIBRARY,
     SymbolicEdge,
@@ -463,6 +469,7 @@ __all__ = [
     "FieldMLP",
     "FiniteHorizonPLCurve",
     "FoldDesign",
+    "FoldHeuristicCurve",
     "GaussianPolicy",
     "GraphResidual",
     "GroupTimeATT",
@@ -517,6 +524,8 @@ __all__ = [
     "SharedStateMarket",
     "SinkhornResult",
     "SolverComparison",
+    "SolverResult",
+    "SolverStatus",
     "SpectralResidual",
     "SpectralResidualCurve",
     "SplitConformal",
@@ -647,9 +656,11 @@ __all__ = [
     "fit_residual_multistep",
     "fit_spectral_residual",
     "fixed_point",
+    "fold_heuristic_certificate",
     "gohberg_semencul_apply",
     "gohberg_semencul_covariance",
     "gohberg_semencul_generators",
+    "graph_shells",
     "higher_order_barrier_gap",
     "highprob_regret_certificate",
     "hinf_robust_regret_certificate",
@@ -704,12 +715,14 @@ __all__ = [
     "pessimism_variance_certificate",
     "pessimistic_control",
     "pessimistic_equilibrium_allocation",
+    "pessimistic_solve",
     "poisson_1d",
     "poisson_2d",
     "port_hamiltonian_certificate",
     "project_box",
     "project_simplex",
     "projected_gradient_control",
+    "projected_gradient_solve",
     "refute_effect",
     "regret_scaling",
     "residual_flow",

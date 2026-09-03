@@ -46,11 +46,11 @@ import numpy as np
 from jax import Array
 
 from chc.barrier import barrier_gamma_star, identification_radius_threshold
-from chc.control import Bound, projected_gradient_control
+from chc.control import Bound, SolverStatus, projected_gradient_solve
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
-from chc.support import PenaltyModel, SupportModel, pessimistic_control
+from chc.support import PenaltyModel, SupportModel, pessimistic_solve
 from chc.uncertainty import (
     certified_horizon,
     confounding_robust_inflation,
@@ -69,6 +69,12 @@ class CausalPlan:
     "checked, and nothing holds". Earlier versions returned an all-zero tube and a full
     ``certified_horizon`` in the first case, which reads as a proof of safety over the whole plan
     when nothing was proved at all. Read :attr:`certificate_status` before either field.
+
+    :attr:`solver_status` answers a *different* question from :attr:`certificate_status`, and the
+    two are independent. The certificate is about the model: how far the plan can be trusted given
+    the error budget. The solver status is about the optimisation: whether the descent reached its
+    own stopping rule or merely ran out of budget. A fully certified plan built on an unfinished
+    solve is a trustworthy tube around a suboptimal action, and nothing in the tube says so.
     """
 
     actions: Array  # (horizon, m)
@@ -76,6 +82,8 @@ class CausalPlan:
     task_cost: float  # cost of the plan, penalties excluded, so weights stay comparable
     uncertainty_tube: Array | None  # (horizon + 1,) per-step error radius; None if not evaluated
     certified_horizon: int | None  # last step inside ``tolerance``; None if not evaluated
+    solver_status: SolverStatus  # why the descent stopped -- see :data:`chc.control.SolverStatus`
+    solver_iterations: int  # accepted descent steps
 
     @property
     def certificate_status(self) -> CertificateStatus:
@@ -154,9 +162,9 @@ def causal_plan(
 
     guess = jnp.zeros((horizon, cost.R.shape[0]))
     if support is None:
-        actions, _ = projected_gradient_control(model, x0, guess, dt, cost, u_lo, u_hi, steps=steps)
+        solve = projected_gradient_solve(model, x0, guess, dt, cost, u_lo, u_hi, steps=steps)
     else:
-        actions, _ = pessimistic_control(
+        solve = pessimistic_solve(
             model,
             x0,
             guess,
@@ -170,6 +178,7 @@ def causal_plan(
             uncertainty=uncertainty,
             lam_unc=lam_unc,
         )
+    actions = solve.actions
 
     lipschitz_seq, error_seq = [lipschitz] * horizon, [model_error] * horizon
     evaluated = model_error > 0.0
@@ -183,6 +192,8 @@ def causal_plan(
         certified_horizon=(
             certified_horizon(lipschitz_seq, error_seq, dt, tolerance) if evaluated else None
         ),
+        solver_status=solve.status,
+        solver_iterations=solve.iterations,
     )
 
 

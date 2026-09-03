@@ -26,6 +26,55 @@ still change).
   The box also stopped being static to the compilation: it enters the jitted program as an array, so
   a caller sweeping boxes compiles once rather than once per box value.
 
+- **The solver says why it stopped, not only where it landed** (`chc.control.SolverResult`,
+  `SolverStatus`, `projected_gradient_solve`, `chc.support.pessimistic_solve`). The tuple-returning
+  `projected_gradient_control` / `pessimistic_control` could not distinguish a descent that reached
+  its stopping rule from one that ran out of budget, so a planner acting on the second was acting on
+  an unfinished solve with nothing to warn it. Three states: `converged` (the backtracking line
+  search could not lower the cost by more than `tol` -- the method's own stopping rule),
+  `max_iterations` (the budget ran out first), `no_progress` (not one step was accepted, so the
+  answer *is* the caller's guess).
+
+  The status deliberately does not claim optimality. A stalled line search is a statement about
+  steps, not about gradients, so the stationarity residual `||u - P_box(u - grad J)||` is returned
+  beside it and the caller judges. It is measured on the **augmented** objective for
+  `pessimistic_solve`, since the penalties are what that descent actually minimised.
+
+  Worth stating because it is the case the feature exists for: on the two-lever instance in the
+  tests, a 5 000-step budget leaves the residual at `1e-4` -- an answer that looks finished -- while
+  the descent in fact needs 5 574 steps under float64. A small residual is not evidence that the
+  solve completed.
+
+  `CausalPlan` gained `solver_status` and `solver_iterations`, which answer a **different** question
+  from `certificate_status`: the certificate is about the model (how far the plan can be trusted
+  given the error budget), the solver status is about the optimisation. A fully certified plan built
+  on a truncated solve is a trustworthy tube around a suboptimal action, and nothing in the tube
+  said so. The two existing functions are unchanged thin wrappers, so no caller has to move.
+
+- **Fold design off the cycle** (`chc.network_causal.graph_shells`,
+  `chc.regret.fold_heuristic_certificate`, `FoldHeuristicCurve`). `optimal_fold_partition` always
+  took a shell decomposition, but the only way to *build* one was `cycle_shells`, so Result 52's
+  design law could not be applied to a real topology. `graph_shells` computes distance shells for
+  any undirected graph by repeated boolean products -- `dmax` is the spillover truncation and is
+  small, so this beats a Python BFS and stays in NumPy. It reproduces `cycle_shells` exactly on
+  cycles, preserves the partition property `tr(S_d S_e) = 0` that Result 51 rests on, and leaves
+  out-of-range and out-of-component vertices in no shell, which is the right reading of a
+  truncated spillover model rather than an invented distance.
+
+  `fold_heuristic_certificate` then measures the thing Result 52's honest-scope note left open. The
+  note says the design law is closed-form only on vertex-transitive graphs and that beyond them the
+  problem "degrades to combinatorial search". **Measured, and it degrades in the closed form, not
+  in the answer:** on nine topologies -- cycle, path, star, barbell, grid and four Erdos-Renyi
+  graphs -- at both `m = 12` and `m = 16`, the spectral-plus-swap fallback returns the *exact*
+  enumerated optimum on all eighteen instances, ratio `1.0` to machine precision. The random arm is
+  there on purpose: the structured graphs all have a cut a human can see, which is the case a
+  spectral relaxation is built for, so on their own they would flatter the heuristic.
+
+  The Ky Fan gap is reported beside the ratio because the two are different quantities: at the true
+  optimum the bound is still loose by 0.5-3.4%, so a large gap says the *certificate* is weak, not
+  the design. And the comparison stops being available exactly where a design would be used -- at
+  an `m` too large to enumerate -- which the certificate says rather than hides.
+
 ### Fixed
 
 - **`projected_gradient_control` and `pessimistic_control` crashed outright on float32 actions

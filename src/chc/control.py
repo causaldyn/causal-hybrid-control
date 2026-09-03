@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import equinox as eqx
 import jax
@@ -190,6 +190,74 @@ def _projected_gradient_loop(
     return optimised, values, taken
 
 
+SolverStatus = Literal["converged", "max_iterations", "no_progress"]
+"""Why the descent stopped -- reported, because "it stopped" and "it arrived" are different claims.
+
+``converged`` is the method's own stopping rule: the backtracking line search could not find a step
+that lowered the cost by more than ``tol``. ``max_iterations`` means the budget ran out first, so
+the answer is wherever the descent happened to be. ``no_progress`` means not one step was accepted,
+so the result *is* the caller's initial guess -- which is either an already-optimal guess or a badly
+scaled problem, and :attr:`SolverResult.stationarity` is what tells the two apart.
+
+The status deliberately does not claim optimality. A stalled line search is a statement about steps,
+not about gradients, and on an ill-scaled instance the two come apart; the stationarity residual is
+returned beside it so the caller judges rather than trusts a label.
+"""
+
+
+@dataclass(frozen=True)
+class SolverResult:
+    """A finished box-constrained solve, with the evidence for how far to trust it."""
+
+    actions: Array
+    cost_history: Array  # task cost per accepted step, length 1 + iterations
+    status: SolverStatus
+    iterations: int  # accepted steps, not gradient evaluations
+    stationarity: float  # ||u - P_box(u - grad J)||, zero exactly at a KKT point
+
+
+def _status(iterations: int, steps: int) -> SolverStatus:
+    if iterations == 0:
+        return "no_progress"
+    return "max_iterations" if iterations >= steps else "converged"
+
+
+def projected_gradient_solve(
+    dyn: Dynamics,
+    x0: Array,
+    us0: Array,
+    dt: float,
+    cost: QuadraticCost,
+    u_lo: Bound,
+    u_hi: Bound,
+    steps: int = 10_000,
+    lr0: float = 0.2,
+    tol: float = 1e-9,
+) -> SolverResult:
+    """:func:`projected_gradient_control`, returning why it stopped as well as where.
+
+    Same solve, same numbers; the tuple-returning function below is a thin wrapper on this one.
+    It exists because the compact form cannot distinguish a descent that reached its stopping rule
+    from one that ran out of budget, and a planner that acts on the second without knowing is
+    acting on an unfinished solve. Costs one extra gradient evaluation, for the stationarity
+    residual -- negligible against the thousands the descent already spent.
+    """
+    lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
+    hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
+    check_box(lo, hi)
+    optimised, values, taken = _projected_gradient_loop(
+        dyn, x0, us0, dt, cost, lo, hi, steps, lr0, tol
+    )
+    iterations = int(taken)
+    return SolverResult(
+        actions=optimised,
+        cost_history=jnp.asarray(np.asarray(values)[: iterations + 1].tolist()),
+        status=_status(iterations, steps),
+        iterations=iterations,
+        stationarity=box_stationarity(dyn, x0, optimised, dt, cost, lo, hi),
+    )
+
+
 def projected_gradient_control(
     dyn: Dynamics,
     x0: Array,
@@ -217,6 +285,9 @@ def projected_gradient_control(
     program as *arrays*, so a caller sweeping boxes compiles once rather than once per box value.
     ``dt``, ``steps`` and the line-search scalars stay static to the compilation, the same
     convention :func:`chc.cost.total_cost` already uses for ``dt``.
+
+    Returns only where the descent landed. :func:`projected_gradient_solve` returns *why it
+    stopped* as well, which is what a caller needs before acting on the answer.
     """
     lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
     hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)

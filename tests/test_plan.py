@@ -11,7 +11,7 @@ from jax import Array
 from chc.barrier import robust_barrier_margin
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost
-from chc.dynamics import HybridDynamics, LinearDynamics
+from chc.dynamics import DampedOscillator, HybridDynamics, LinearDynamics
 from chc.plan import causal_plan, certify_safety
 from chc.residual import ZeroResidual
 from chc.support import SupportModel
@@ -216,3 +216,30 @@ def test_a_plan_that_never_acts_names_itself_rather_than_the_inner_threshold() -
     idle = causal_plan(_MODEL, jnp.zeros(2), _COST, 0.1, 12, -5.0, 5.0)
     with pytest.raises(ValueError, match="it never acts"):
         certify_safety(idle, _MODEL, _mixed, 0.1)
+
+
+def test_a_plan_says_whether_its_own_solve_finished() -> None:
+    # The certificate is about the model; the solver status is about the optimisation. A fully
+    # certified plan built on a truncated solve is a trustworthy tube around a suboptimal action,
+    # and before this the plan had no way to say so.
+    model = HybridDynamics(
+        known=DampedOscillator(omega=1.0, zeta=0.1), residual=ZeroResidual(out_dim=2)
+    )
+    cost = QuadraticCost(
+        Q=jnp.eye(2),
+        R=jnp.array([[0.01]]),
+        Qf=10.0 * jnp.eye(2),
+        x_target=jnp.zeros(2),
+    )
+    x0 = jnp.array([1.0, 0.0])
+
+    truncated = causal_plan(model, x0, cost, 0.1, 15, -5.0, 5.0, steps=4)
+    assert truncated.solver_status == "max_iterations"
+    assert truncated.solver_iterations == 4
+
+    finished = causal_plan(model, x0, cost, 0.1, 15, -5.0, 5.0, steps=50_000)
+    assert finished.solver_status == "converged"
+    assert finished.task_cost < truncated.task_cost
+
+    # Independent axes: both plans carry the same certificate verdict, and only one is optimised.
+    assert truncated.certificate_status == finished.certificate_status == "not_evaluated"

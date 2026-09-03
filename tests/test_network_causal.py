@@ -4,6 +4,7 @@ import itertools
 
 import jax
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 
 from chc.estimators import DoubleML
@@ -15,9 +16,10 @@ from chc.network_causal import (
     estimate_network_effects,
     estimate_network_effects_gnn,
     estimate_propagation,
+    graph_shells,
     within_ar1,
 )
-from chc.regret import _fold_sandwich, delayed_network_certificate
+from chc.regret import _fold_sandwich, delayed_network_certificate, fold_heuristic_certificate
 
 
 def _data() -> dict[str, jax.Array]:
@@ -316,3 +318,55 @@ def test_the_crossover_is_graph_dependent_unlike_theta_star() -> None:
         if len(values) == 2 and abs(values[0] - values[1]) > 1e-6:
             clashes.append((left, right, values))
     assert clashes, "no (theta_1, theta_2) pair separated the two graphs -- check the sweep"
+
+
+def test_graph_shells_reproduces_the_cycle_and_partitions_any_graph() -> None:
+    for m, dmax in ((6, 2), (8, 3), (12, 4)):
+        adjacency = np.zeros((m, m))
+        i = np.arange(m)
+        adjacency[i, (i + 1) % m] = adjacency[(i + 1) % m, i] = 1.0
+        general = graph_shells(adjacency, dmax)
+        special = cycle_shells(m, dmax)
+        assert all(np.array_equal(a, b) for a, b in zip(general, special, strict=True))
+
+    # A path is the simplest non-vertex-transitive case: the ends see one neighbour, the interior
+    # two, which is exactly the symmetry Result 52's closed form assumes and a path does not have.
+    m = 6
+    path = np.zeros((m, m))
+    for i in range(m - 1):
+        path[i, i + 1] = path[i + 1, i] = 1.0
+    shells = graph_shells(path, 2)
+    assert list(shells[1].sum(1)) == [1.0, 2.0, 2.0, 2.0, 2.0, 1.0]
+    # The structural lemma Result 51 rests on: a vertex sits at exactly one distance from i.
+    for d in range(3):
+        for e in range(3):
+            if d != e:
+                assert abs(float(np.trace(shells[d] @ shells[e]))) < 1e-12
+
+    # A vertex in another component belongs to no shell -- a truncated spillover model says
+    # nothing about it, and inventing a distance would be worse than omitting it.
+    split = np.zeros((4, 4))
+    split[0, 1] = split[1, 0] = split[2, 3] = split[3, 2] = 1.0
+    assert float(graph_shells(split, 2)[2].sum()) == 0.0
+
+    for bad, message in (
+        (np.zeros((2, 3)), "square"),
+        (np.array([[0.0, 1.0], [0.0, 0.0]]), "symmetric"),
+        (np.eye(2), "self-loops"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            graph_shells(bad, 1)
+
+
+def test_the_fold_heuristic_finds_the_exact_optimum_off_the_cycle() -> None:
+    # Result 52's design law is closed-form only on vertex-transitive graphs, and its honest-scope
+    # note says the problem "degrades to combinatorial search" beyond them. It degrades in the
+    # closed form, not in the answer: on nine topologies -- eight non-transitive, four random --
+    # the spectral-plus-swap fallback returns exactly what enumeration does.
+    certificate = fold_heuristic_certificate(m=12)
+    assert certificate.ok
+    assert len(certificate.names) == 9
+    assert certificate.worst_ratio == pytest.approx(1.0, abs=1e-9)
+    # The Ky Fan bound is a separate quantity and is loose even at the true optimum; conflating
+    # "the design is optimal" with "the certificate is tight" is the easy mistake here.
+    assert float(certificate.kyfan_gap.min()) > 0.0

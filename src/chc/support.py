@@ -18,7 +18,15 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from chc.control import Bound, _backtrack, broadcast_box, check_box
+from chc.control import (
+    Bound,
+    SolverResult,
+    _backtrack,
+    _status,
+    broadcast_box,
+    check_box,
+    project_box,
+)
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
@@ -118,6 +126,53 @@ def _pessimistic_loop(
         descending, descend, (jnp.asarray(0), us, initial, values, jnp.asarray(True))
     )
     return optimised, values, taken
+
+
+def pessimistic_solve(
+    model: Dynamics,
+    x0: Array,
+    us0: Array,
+    dt: float,
+    cost: QuadraticCost,
+    support: SupportModel,
+    lam_supp: float,
+    u_lo: Bound,
+    u_hi: Bound,
+    steps: int = 10_000,
+    lr0: float = 0.2,
+    tol: float = 1e-9,
+    uncertainty: PenaltyModel | None = None,
+    lam_unc: float = 0.0,
+) -> SolverResult:
+    """:func:`pessimistic_control`, returning why it stopped as well as where.
+
+    The stationarity residual is of the **augmented** objective, not the task cost: the penalties
+    are what the descent actually minimised, so a residual measured on the task alone would be
+    non-zero at the very point the solver was right to stop.
+    """
+    lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
+    hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
+    check_box(lo, hi)
+    optimised, values, taken = _pessimistic_loop(
+        model, x0, us0, dt, cost, support, lam_supp, lo, hi, steps, lr0, tol, uncertainty, lam_unc
+    )
+    iterations = int(taken)
+
+    def augmented(us: Array) -> Array:
+        xs = rollout(model, x0, us, dt)
+        penalty = lam_supp * support.penalty_trajectory(xs[:-1], us)
+        if uncertainty is not None:
+            penalty = penalty + lam_unc * uncertainty.penalty_trajectory(xs[:-1], us)
+        return total_cost(model, x0, us, dt, cost) + penalty
+
+    gradient = jax.grad(augmented)(optimised)
+    return SolverResult(
+        actions=optimised,
+        cost_history=jnp.asarray(np.asarray(values)[: iterations + 1].tolist()),
+        status=_status(iterations, steps),
+        iterations=iterations,
+        stationarity=float(jnp.linalg.norm(optimised - project_box(optimised - gradient, lo, hi))),
+    )
 
 
 def pessimistic_control(
