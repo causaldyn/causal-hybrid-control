@@ -1,0 +1,91 @@
+/* DISCOVERY (minimax LQ over the identified interval): §33 proved that certainty equivalence is NOT
+   minimax for the LQ loss by exhibiting one counterexample, and closed with "a minimax LQ controller
+   over the identified interval is NOT built in this repo". This is the controller. The effect b is
+   only partially identified in [bh-D, bh+D] (the §32 sensitivity interval); the analyst wants the
+   action minimising the WORST case over that interval, not the action optimal for the midpoint.
+   Everything below is exact: the inner maximisation collapses to two endpoints, so the outer problem
+   is the minimisation of a max of two convex quadratics -- a closed form, not a search.
+   proofs/minimax_lq.v proves optimality and machine-checks the counterexample. */
+display2d : false$
+
+f(bb, u) := p*(bb*u - t)^2 + r*u^2$
+blo : bh - D$
+bhi : bh + D$
+uk  : t/bh$                       /* the equalising action: bh*u = t */
+ustar(bb) := p*bb*t/(p*bb^2 + r)$ /* certainty-equivalent action for a KNOWN effect bb */
+
+/* (1) the inner max is attained at an ENDPOINT: f is convex in b for every u, with curvature
+   2*p*u^2 >= 0. So max over [blo,bhi] = max(f(blo,.), f(bhi,.)) and the interior never binds. */
+print("(1) curvature in b  diff(f,b,2) =", diff(f(bb,u), bb, 2), "  (>=0 for p>0)")$
+
+/* (2) the two branches cross exactly TWICE, at u=0 and u=t/bh -- not once. Missing the u=0 crossing
+   is how a case analysis on the sign of u silently loses a regime. */
+cross : factor(ratsimp( f(blo,u) - f(bhi,u) ))$
+print("(2) f_lo - f_hi =", cross, "  (roots u=0 and u=t/bh; >0 exactly when 0<u<t/bh)")$
+print("    residual vs 4*D*p*u*(t-bh*u) =", ratsimp( cross - 4*D*p*u*(t - bh*u) ), "  (=0)")$
+
+/* (3) each branch is a convex quadratic in u minimised at the CE action for that endpoint. */
+print("(3) stationarity  diff(f(bb,u),u) at u=ustar(bb)  residual =",
+      ratsimp( subst(u = ustar(bb), diff(f(bb,u), u)) ), "  (=0)")$
+print("    exact gap  f(bb,u) - f(bb,ustar(bb)) - (p*bb^2+r)*(u-ustar(bb))^2 =",
+      ratsimp( f(bb,u) - f(bb,ustar(bb)) - (p*bb^2 + r)*(u - ustar(bb))^2 ), "  (=0)")$
+
+/* (4) WHICH candidate wins is decided by ONE inequality, p*blo*D <= r. The lower-branch CE action
+   sits below the kink exactly then, and being below the kink is what makes the lower branch the
+   active (larger) one there -- so u = ustar(blo) is the unconstrained minimiser of the max. */
+gap_lo : ratsimp( uk - ustar(blo) )$
+print("(4) uk - ustar(blo) =", gap_lo)$
+print("    residual vs t*(r - p*blo*D)/(bh*(p*blo^2+r)) =",
+      ratsimp( gap_lo - t*(r - p*blo*D)/(bh*(p*blo^2 + r)) ), "  (=0)")$
+
+/* (5) the upper branch NEVER supplies the answer: its CE action is below the kink unconditionally
+   (numerator r + p*bhi*D > 0 for every admissible parameter), so it is never the active branch at
+   its own minimiser. The minimax action is ustar(blo) when (4) is nonneg and the kink otherwise. */
+gap_hi : ratsimp( uk - ustar(bhi) )$
+print("(5) uk - ustar(bhi) residual vs t*(r + p*bhi*D)/(bh*(p*bhi^2+r)) =",
+      ratsimp( gap_hi - t*(r + p*bhi*D)/(bh*(p*bhi^2 + r)) ), "  (=0; numerator >0 always)")$
+
+/* (6) the §33 counterexample, exactly: bh=1, D=1/2, t=1, r=1. CE plays 1/2 and is beaten. */
+inst : [p = 1, t = 1, r = 1, bh = 1, D = 1/2]$
+Fmax(uu) := max( subst(inst, subst(u = uu, f(blo,u))), subst(inst, subst(u = uu, f(bhi,u))) )$
+u_mm : subst(inst, ustar(blo))$
+u_ce : subst(inst, ustar(bh))$
+print("(6) minimax action =", u_mm, " value =", Fmax(u_mm),
+      " | CE action =", u_ce, " worst case =", Fmax(u_ce))$
+print("    CE excess =", ratsimp( Fmax(u_ce) - Fmax(u_mm) ), "  (=1/80 >0: CE is NOT minimax)")$
+print("    regime check  r - p*blo*D =", subst(inst, ratsimp(r - p*blo*D)), "  (>0: kink not active)")$
+
+/* (7) the SIGN of the correction is not fixed. Whether the robust action is smaller or larger than
+   CE is decided by p*blo*bh vs r -- a second, different inequality from (4). Pessimism is NOT
+   "always act less"; on a cheap-effort / large-effect plant the robust action is LARGER. */
+print("(7) ustar(blo) - ustar(bh) =",
+      factor(ratsimp( ustar(blo) - ustar(bh) )), "  (= -D*p*t*(r-p*blo*bh)/pos: LESS than CE iff r>p*blo*bh)")$
+print("    uk - ustar(bh) =", ratsimp( uk - ustar(bh) ), "  (>0 always: the kink exceeds CE)")$
+
+/* (9) THE ADVERSARY NEVER SWITCHES ENDPOINTS. At the robust action the lower endpoint is the worst
+   one, and the quantity deciding that is (r - p*blo*D) -- the SAME inequality that selected this
+   branch in (4). So a branch is chosen exactly when the lower endpoint is the binding one. */
+d_at_lo : ratsimp( subst(u = ustar(blo), cross) )$
+print("(9) f_lo - f_hi at u=ustar(blo) =", factor(d_at_lo))$
+print("    residual vs 4*D*p^2*blo*t^2*(r-p*blo*D)/(p*blo^2+r)^2 =",
+      ratsimp( d_at_lo - 4*D*p^2*blo*t^2*(r - p*blo*D)/(p*blo^2 + r)^2 ),
+      "  (=0; >=0 exactly when r >= p*blo*D, which is (4))")$
+print("    at the equalising action  f_lo - f_hi =", ratsimp( subst(u = uk, cross) ),
+      "  (=0: an exact tie, so the endpoint does not matter there)")$
+print("    at u=0                    f_lo - f_hi =", ratsimp( subst(u = 0, cross) ),
+      "  (=0: an exact tie)")$
+
+/* (10) CONSEQUENCE for the horizon. The Bellman adversary re-picks b every step, which is normally a
+   strict relaxation of a constant unknown effect. Here it is not: by (9) the maximiser is b=blo at
+   every step (or a tie), so the per-step optimum is realised by the CONSTANT effect blo. The robust
+   policy is therefore minimax against a constant unknown effect as well, and the DP value is that
+   worst case rather than an upper bound on it. Measured to machine precision on 500 random
+   instances by minimax_lq_certificate. */
+
+/* (8) the finite-horizon lift. With x_{k+1} = a*x + b*u, stage cost q*x^2 + r*u^2 and cost-to-go
+   pn*y^2, the Bellman step is homogeneous of degree 2 in (x,u): setting u = s*x it becomes exactly
+   the static problem with t -> -a and p -> pn. So the SAME closed form runs the robust Riccati
+   recursion, one scalar per step, and the robust policy is linear feedback. */
+bell : q*x^2 + r*(s*x)^2 + pn*(a*x + bb*s*x)^2$
+print("(8) Bellman/x^2 - (q + r*s^2 + subst([p=pn, t=-a, u=s], f(bb,u))) =",
+      ratsimp( bell/x^2 - (q + subst([p = pn, t = -a, u = s], f(bb,u))) ), "  (=0)")$

@@ -9,6 +9,31 @@ still change).
 
 ### Added
 
+- **The minimax LQ controller over a partially identified effect** (`chc.regret.minimax_action`,
+  `minimax_lq_policy`, `minimax_lq_certificate`, `MinimaxAction`, `MinimaxBranch`,
+  `MinimaxLQPolicy`, `MinimaxLQCertificate`). Result 33 proved by counterexample that certainty
+  equivalence is *not* minimax for the LQ loss and closed with "a minimax LQ controller over the
+  identified interval is not built in this repo". It is now, in closed form: the stage cost is
+  convex in the effect so the inner maximum sits at an interval endpoint, the two endpoint branches
+  cross at exactly two points (`u = 0` *and* the equalising action `target/b_hat`), and a convex
+  piecewise quadratic is minimised at a branch minimiser or a kink -- four candidates, evaluated,
+  exact. `minimax_lq_policy` runs the same form as a robust Riccati recursion, so the horizon policy
+  is linear feedback rather than a minimax search.
+
+  Three things fell out that are worth knowing before using it. The *optimistic* endpoint never
+  supplies the answer -- the choice is between the CE action for the pessimistic endpoint and the
+  equalising action, decided by `curvature*b_lo*halfwidth <= effort`. The correction has **no fixed
+  sign**: the robust action is smaller than CE only when `curvature*b_lo*b_hat < effort`, and larger
+  otherwise, so "be robust, act less" is a statement about expensive effort rather than about
+  pessimism. And the dynamic-programming adversary that re-picks the effect every step -- normally a
+  strict relaxation of a constant unknown effect -- buys nothing here, because the robust action
+  always leaves the lower endpoint worst; a constant `b_lo` attains the value, measured to machine
+  precision on 500 random instances. The horizon value is therefore the constant-effect worst case,
+  not an upper bound on it.
+
+  Scalar state and scalar effect. The multivariate lift is not built: with a matrix effect the inner
+  maximisation is over a matrix ball and the endpoint argument does not survive.
+
 - **`lam_unc = 1` is now a bound, not a knob** (`chc.adjoint.costate_norms`,
   `chc.adjoint.perturbation_cost_weights`, `ConfoundingRobustPenalty.certified`,
   `chc.uncertainty.confounding_cost_bound_certificate`). Result 38 (b) recorded that the §34

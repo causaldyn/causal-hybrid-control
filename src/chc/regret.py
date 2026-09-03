@@ -21,6 +21,7 @@ import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import comb
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -3678,6 +3679,284 @@ def confounding_robust_lq_regret_certificate(
         floor_quadratic_ratio=float(floor_ratio),
         order_doubling_ratio=float(order_doubling_ratio),
         ok=ok,
+    )
+
+
+# --- Result 58: the minimax LQ controller over the identified effect interval ---
+
+
+MinimaxBranch = Literal["lower", "upper", "equalise", "zero"]
+"""Which candidate the robust action landed on. ``lower`` / ``upper`` are the certainty-equivalent
+actions for an interval *endpoint*, ``equalise`` the action that makes both endpoints equally bad
+(``b_hat*u = target``), ``zero`` doing nothing -- the answer when the sign is unidentified."""
+
+
+@dataclass(frozen=True)
+class MinimaxAction:
+    """The robust action, its worst case over the interval, and which candidate bound."""
+
+    action: float
+    worst_case: float
+    binding: MinimaxBranch
+
+
+def minimax_action(
+    target: float, b_lo: float, b_hi: float, effort: float, curvature: float = 1.0
+) -> MinimaxAction:
+    """Exact ``argmin_u max_{b in [b_lo, b_hi]} curvature*(b*u - target)^2 + effort*u^2``.
+
+    §33 showed by counterexample that certainty equivalence is *not* minimax for the LQ loss and
+    left the robust controller unbuilt; this is it, in closed form rather than by search
+    (``validation/minimax_lq.mac``, ``proofs/minimax_lq.v``).
+
+    Two facts make it closed-form. The stage cost is convex in ``b`` with curvature
+    ``2*curvature*u^2 >= 0``, so the inner maximum is attained at an **endpoint** and the outer
+    problem is the minimisation of a max of two convex quadratics. Those two branches cross at
+    exactly two points, ``u = 0`` and the equalising action ``u = target/b_hat`` -- *both* of them,
+    which is why the candidate set is enumerated rather than reasoned about by the sign of ``u``.
+    A convex piecewise quadratic attains its minimum at a branch minimiser or at a kink, so
+    evaluating the four candidates is exact, not a heuristic.
+
+    The choice is decided by ``curvature*b_lo*(b_hi - b_lo)/2 <= effort``: below it the answer is
+    the CE action for the *pessimistic* endpoint, above it the equalising action. And the correction
+    does NOT have a fixed sign -- the robust action is smaller than CE at ``b_hat`` only when
+    ``curvature*b_lo*b_hat < effort``, and larger otherwise. "Be robust, act less" is a statement
+    about expensive effort, not about pessimism.
+    """
+    if b_hi < b_lo:
+        raise ValueError(f"empty identified interval: b_lo={b_lo} > b_hi={b_hi}")
+    if effort <= 0.0:
+        raise ValueError(f"effort must be positive to bound the action; got {effort}")
+    if curvature < 0.0:
+        raise ValueError(
+            f"curvature is a cost-to-go coefficient and cannot be negative: {curvature}"
+        )
+
+    def branch(b: float, u: float) -> float:
+        return curvature * (b * u - target) ** 2 + effort * u**2
+
+    def worst(u: float) -> float:
+        return max(branch(b_lo, u), branch(b_hi, u))
+
+    def endpoint_action(b: float) -> float:
+        return curvature * b * target / (curvature * b**2 + effort)
+
+    midpoint = 0.5 * (b_lo + b_hi)
+    candidates: list[tuple[float, MinimaxBranch]] = [
+        (endpoint_action(b_lo), "lower"),
+        (endpoint_action(b_hi), "upper"),
+        (0.0, "zero"),
+    ]
+    if midpoint != 0.0:
+        candidates.append((target / midpoint, "equalise"))
+    action, binding = min(candidates, key=lambda c: worst(c[0]))
+    return MinimaxAction(action=action, worst_case=worst(action), binding=binding)
+
+
+@dataclass(frozen=True)
+class MinimaxLQPolicy:
+    """Robust finite-horizon feedback over a partially identified effect, beside its CE rival."""
+
+    gains: NDArray[np.float64]  # u_k = -gains[k]*x_k
+    value: float  # worst-case cost coefficient: J <= value*x0^2
+    binding: tuple[MinimaxBranch, ...]
+    ce_gains: NDArray[np.float64]
+    ce_value: float  # the CE policy's worst case over the SAME interval
+
+
+def _worst_case_of_gains(
+    gains: NDArray[np.float64],
+    state_gain: float,
+    b_lo: float,
+    b_hi: float,
+    state_cost: float,
+    effort: float,
+    terminal_cost: float,
+) -> float:
+    """Worst case of a FIXED linear policy against a per-step adversarial effect."""
+    p = terminal_cost
+    for gain in reversed(gains.tolist()):
+        s = -gain
+        step = max((state_gain + b_lo * s) ** 2, (state_gain + b_hi * s) ** 2)
+        p = state_cost + effort * s**2 + p * step
+    return p
+
+
+def minimax_lq_policy(
+    state_gain: float,
+    b_lo: float,
+    b_hi: float,
+    state_cost: float,
+    effort: float,
+    terminal_cost: float,
+    horizon: int,
+) -> MinimaxLQPolicy:
+    """Robust Riccati recursion for ``x' = a*x + b*u`` with ``b`` only known to lie in an interval.
+
+    The Bellman step is homogeneous of degree two in ``(x, u)``, so substituting ``u = s*x`` turns
+    it into exactly the static problem of :func:`minimax_action` with ``target = -a`` and
+    ``curvature = p_{k+1}`` (identity (8) of ``validation/minimax_lq.mac``). The robust policy is
+    therefore linear feedback with a closed form per step, not a minimax search, and the value
+    function stays quadratic.
+
+    The adversary re-picks ``b`` at **every step**, which is what makes dynamic programming apply
+    and is normally a strict relaxation of a constant unknown effect. Here it is not, and that is a
+    result rather than a caveat: identity (9) shows the robust action always leaves the *lower*
+    endpoint (weakly) worst, decided by the same ``curvature*b_lo*D <= effort`` that picked the
+    branch, so the per-step optimum is realised by the constant effect ``b_lo``. The value is the
+    constant-effect worst case rather than an upper bound on it, and
+    :func:`minimax_lq_certificate` measures that instead of assuming it.
+
+    HONEST SCOPE. Scalar state and scalar effect: the interval is the §32 sensitivity interval for
+    one control channel, and the multivariate lift is not this function.
+    """
+    if horizon < 1:
+        raise ValueError(f"horizon must be at least one step; got {horizon}")
+    b_hat = 0.5 * (b_lo + b_hi)
+
+    p = terminal_cost
+    gains: list[float] = []
+    binding: list[MinimaxBranch] = []
+    for _ in range(horizon):
+        step = minimax_action(-state_gain, b_lo, b_hi, effort, curvature=p)
+        gains.append(-step.action)
+        binding.append(step.binding)
+        p = state_cost + step.worst_case
+
+    p_ce = terminal_cost
+    ce_gains: list[float] = []
+    for _ in range(horizon):
+        gain = b_hat * p_ce * state_gain / (effort + b_hat**2 * p_ce)
+        ce_gains.append(gain)
+        p_ce = state_cost + state_gain**2 * p_ce - state_gain * p_ce * b_hat * gain
+
+    robust = np.asarray(gains[::-1], dtype=float)
+    equivalent = np.asarray(ce_gains[::-1], dtype=float)
+    return MinimaxLQPolicy(
+        gains=robust,
+        value=p,
+        binding=tuple(binding[::-1]),
+        ce_gains=equivalent,
+        ce_value=_worst_case_of_gains(
+            equivalent, state_gain, b_lo, b_hi, state_cost, effort, terminal_cost
+        ),
+    )
+
+
+def _closed_loop_cost(
+    gains: NDArray[np.float64],
+    state_gain: float,
+    effect: float,
+    state_cost: float,
+    effort: float,
+    terminal_cost: float,
+) -> float:
+    """Realised cost of ``u_k = -gains[k]*x_k`` from ``x_0 = 1`` under one CONSTANT true effect."""
+    x, total = 1.0, 0.0
+    for gain in gains.tolist():
+        u = -gain * x
+        total += state_cost * x**2 + effort * u**2
+        x = state_gain * x + effect * u
+    return total + terminal_cost * x**2
+
+
+@dataclass(frozen=True)
+class MinimaxLQCertificate:
+    """Evidence that the closed form is the minimiser, beats CE, and how much the DP relaxes."""
+
+    static_action: float
+    static_value: float
+    static_ce_worst: float
+    grid_action: float  # brute-force argmin over a fine grid -- must reproduce static_action
+    halfwidths: tuple[float, ...]
+    values: tuple[float, ...]
+    ce_values: tuple[float, ...]
+    constant_effect_worst: float  # worst cost of the robust policy at a CONSTANT unknown effect
+    worst_constant_effect: float  # the effect attaining it -- b_lo, by identity (9)
+    relaxation_ratio: float  # value / constant_effect_worst; 1 means the per-step adversary is free
+    lower_endpoint_margin: float  # min over steps of the normalised (lower - upper) endpoint gap
+    beats_ce: bool
+    monotone: bool
+    ok: bool
+
+
+def minimax_lq_certificate(
+    state_gain: float = 1.0,
+    b_hat: float = 1.0,
+    state_cost: float = 1.0,
+    effort: float = 1.0,
+    terminal_cost: float = 1.0,
+    horizon: int = 5,
+    halfwidths: Sequence[float] = (0.0, 0.1, 0.25, 0.5),
+    grid: int = 200_001,
+) -> MinimaxLQCertificate:
+    """Check the closed form against brute force, against CE, and against its own DP relaxation.
+
+    Three things, and the third is the one that could embarrass the entry. (i) On §33's own
+    counterexample the closed form must return the action a fine grid search finds, and must beat
+    the CE action's worst case -- §33 reported 0.4 against 0.5 and 0.8 against 0.8125. (ii) Over a
+    sweep of interval half-widths the robust worst case must stay at or below CE's and grow with the
+    width. (iii) The robust policy is derived against an adversary that re-picks the effect every
+    step, which is normally a strict relaxation; ``relaxation_ratio`` measures the price of it
+    against a grid of *constant* effects, and ``lower_endpoint_margin`` measures the structural
+    reason the price is zero -- the lower endpoint is the worst one at every step.
+    """
+    b_lo, b_hi = b_hat - halfwidths[-1], b_hat + halfwidths[-1]
+
+    static = minimax_action(1.0, 0.5, 1.5, 1.0)  # §33's instance, fixed: it is the published one
+    span = np.linspace(-1.0, 1.0, grid)
+    worst_on_grid = np.maximum((0.5 * span - 1.0) ** 2, (1.5 * span - 1.0) ** 2) + span**2
+    grid_action = float(span[int(np.argmin(worst_on_grid))])
+    ce_worst = max((0.5 * 0.5 - 1.0) ** 2, (1.5 * 0.5 - 1.0) ** 2) + 0.5**2
+
+    policies = [
+        minimax_lq_policy(
+            state_gain, b_hat - d, b_hat + d, state_cost, effort, terminal_cost, horizon
+        )
+        for d in halfwidths
+    ]
+    values = tuple(p.value for p in policies)
+    ce_values = tuple(p.ce_value for p in policies)
+
+    widest = policies[-1]
+    effects = np.linspace(b_lo, b_hi, 401)
+    costs = [
+        _closed_loop_cost(widest.gains, state_gain, float(b), state_cost, effort, terminal_cost)
+        for b in effects
+    ]
+    constant_worst = max(costs)
+    worst_effect = float(effects[int(np.argmax(costs))])
+
+    actions = -widest.gains
+    lower = (state_gain + b_lo * actions) ** 2
+    upper = (state_gain + b_hi * actions) ** 2
+    margin = float(np.min(lower - upper) / max(float(np.max(lower)), 1e-30))
+
+    beats_ce = all(v <= c + 1e-12 for v, c in zip(values, ce_values, strict=True))
+    monotone = all(values[i] <= values[i + 1] + 1e-12 for i in range(len(values) - 1))
+    return MinimaxLQCertificate(
+        static_action=static.action,
+        static_value=static.worst_case,
+        static_ce_worst=ce_worst,
+        grid_action=grid_action,
+        halfwidths=tuple(halfwidths),
+        values=values,
+        ce_values=ce_values,
+        constant_effect_worst=constant_worst,
+        worst_constant_effect=worst_effect,
+        relaxation_ratio=widest.value / constant_worst,
+        lower_endpoint_margin=margin,
+        beats_ce=beats_ce,
+        monotone=monotone,
+        ok=(
+            abs(static.action - grid_action) < 1e-4
+            and static.worst_case < ce_worst
+            and beats_ce
+            and monotone
+            and abs(widest.value / constant_worst - 1.0) < 1e-9
+            and margin > -1e-9
+            and abs(worst_effect - b_lo) < 1e-9
+        ),
     )
 
 
