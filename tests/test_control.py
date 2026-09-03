@@ -10,10 +10,13 @@ import pytest
 from chc import (
     DampedOscillator,
     HybridDynamics,
+    LinearDynamics,
     QuadraticCost,
+    SupportModel,
     ZeroResidual,
     lbfgs_box_control,
     nlp_solver_certificate,
+    pessimistic_control,
     projected_gradient_control,
     rollout,
 )
@@ -237,3 +240,107 @@ def test_the_compiled_solver_amortises_across_calls() -> None:
     cold = solve_seconds()
     warm = min(solve_seconds(), solve_seconds())
     assert warm < 0.5 * cold
+
+
+def _two_lever_problem() -> tuple[LinearDynamics, QuadraticCost, jnp.ndarray, jnp.ndarray]:
+    """Two levers that both want to push hard, so a per-lever cap is visible in the answer."""
+    dyn = LinearDynamics(a_matrix=jnp.zeros((2, 2)), b_matrix=jnp.eye(2))
+    cost = QuadraticCost(
+        Q=jnp.eye(2),
+        R=jnp.diag(jnp.array([1e-3, 1e-3])),
+        Qf=10.0 * jnp.eye(2),
+        x_target=jnp.zeros(2),
+    )
+    return dyn, cost, jnp.array([1.0, 1.0]), jnp.zeros((20, 2))
+
+
+def test_a_per_lever_box_is_the_same_answer_as_the_scalar_it_repeats() -> None:
+    # The widened signature must not move any existing caller's numbers: a vector that spells out
+    # the scalar has to reproduce it exactly, not merely closely.
+    dyn, cost, x0, us0 = _two_lever_problem()
+    scalar, _ = projected_gradient_control(dyn, x0, us0, DT, cost, -1.0, 1.0, steps=200)
+    vector, _ = projected_gradient_control(
+        dyn, x0, us0, DT, cost, jnp.array([-1.0, -1.0]), jnp.array([1.0, 1.0]), steps=200
+    )
+    assert bool((scalar == vector).all())
+
+
+def test_a_tighter_lever_saturates_where_a_shared_box_would_not() -> None:
+    dyn, cost, x0, us0 = _two_lever_problem()
+    shared, _ = projected_gradient_control(dyn, x0, us0, DT, cost, -5.0, 5.0, steps=400)
+    # The second lever is the constrained actuator; the first keeps the loose bound it had.
+    per_lever, _ = projected_gradient_control(
+        dyn, x0, us0, DT, cost, jnp.array([-5.0, -0.2]), jnp.array([5.0, 0.2]), steps=400
+    )
+
+    assert float(jnp.abs(shared[:, 1]).max()) > 0.2  # the shared box does not bind here
+    assert float(jnp.abs(per_lever[:, 1]).max()) <= 0.2 + 1e-6  # the per-lever one does
+    assert float(jnp.abs(per_lever[:, 1]).max()) == pytest.approx(0.2, abs=1e-6)  # and it saturates
+    assert float(jnp.abs(per_lever[:, 0]).max()) > 0.2  # the free lever is untouched by it
+    # Constraining one lever cannot improve the objective: the feasible set only shrank.
+    assert float(total_cost(dyn, x0, per_lever, DT, cost)) >= float(
+        total_cost(dyn, x0, shared, DT, cost)
+    )
+
+
+def test_a_per_lever_box_does_not_promote_the_caller_dtype() -> None:
+    # The box is validated in float64 but must come back in the actions' precision: a float64
+    # bound clipped against float32 actions promotes the answer and changes what was asked for.
+    dyn, cost, x0, _ = _two_lever_problem()
+    us0 = jnp.zeros((20, 2), dtype=jnp.float32)
+    lo, hi = jnp.array([-5.0, -0.2]), jnp.array([5.0, 0.2])
+    us, _ = projected_gradient_control(dyn, x0, us0, DT, cost, lo, hi, steps=50)
+    assert us.dtype == us0.dtype
+    lbfgs, _ = lbfgs_box_control(dyn, x0, us0, DT, cost, lo, hi, steps=50)
+    assert lbfgs.dtype == us0.dtype
+
+
+def test_lbfgs_honours_the_same_per_lever_box() -> None:
+    # L-BFGS-B keeps one bound pair per coordinate, so the per-lever box has to survive the ravel.
+    dyn, cost, x0, us0 = _two_lever_problem()
+    lo, hi = jnp.array([-5.0, -0.2]), jnp.array([5.0, 0.2])
+    us, _ = lbfgs_box_control(dyn, x0, us0, DT, cost, lo, hi, steps=200)
+    assert float(jnp.abs(us[:, 1]).max()) <= 0.2 + 1e-8
+    assert float(jnp.abs(us[:, 0]).max()) > 0.2
+
+    reference, _ = projected_gradient_control(dyn, x0, us0, DT, cost, lo, hi, steps=2000)
+    assert float(total_cost(dyn, x0, us, DT, cost)) == pytest.approx(
+        float(total_cost(dyn, x0, reference, DT, cost)), rel=1e-3
+    )
+
+
+def test_an_ambiguous_or_empty_box_is_rejected_rather_than_broadcast() -> None:
+    dyn, cost, x0, us0 = _two_lever_problem()
+
+    # (horizon,) would broadcast along the lever axis and silently constrain the wrong thing.
+    with pytest.raises(ValueError, match="per-lever"):
+        projected_gradient_control(dyn, x0, us0, DT, cost, jnp.zeros(20) - 1.0, 1.0)
+
+    with pytest.raises(ValueError, match="expected a scalar"):
+        projected_gradient_control(dyn, x0, us0, DT, cost, -1.0, jnp.ones((3, 4)))
+
+    # jnp.clip with lo > hi returns hi everywhere without complaint -- a wrong answer, not an error.
+    with pytest.raises(ValueError, match="empty action box"):
+        projected_gradient_control(dyn, x0, us0, DT, cost, jnp.array([-1.0, 0.5]), 0.1)
+
+
+def test_pessimistic_control_takes_a_per_lever_box_too() -> None:
+    dyn, cost, x0, us0 = _two_lever_problem()
+    key = jax.random.key(0)
+    logged_x = jax.random.normal(key, (256, 2))
+    logged_u = 0.5 * jax.random.normal(jax.random.key(1), (256, 2))
+    support = SupportModel.fit(logged_x, logged_u)
+    us, _ = pessimistic_control(
+        dyn,
+        x0,
+        us0,
+        DT,
+        cost,
+        support,
+        0.1,
+        jnp.array([-5.0, -0.2]),
+        jnp.array([5.0, 0.2]),
+        steps=300,
+    )
+    assert float(jnp.abs(us[:, 1]).max()) <= 0.2 + 1e-6
+    assert float(jnp.abs(us[:, 0]).max()) > 0.2

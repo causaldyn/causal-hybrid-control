@@ -46,7 +46,7 @@ import numpy as np
 from jax import Array
 
 from chc.barrier import barrier_gamma_star, identification_radius_threshold
-from chc.control import projected_gradient_control
+from chc.control import Bound, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
@@ -113,8 +113,8 @@ def causal_plan(
     cost: QuadraticCost,
     dt: float,
     horizon: int,
-    u_lo: float,
-    u_hi: float,
+    u_lo: Bound,
+    u_hi: Bound,
     *,
     support: SupportModel | None = None,
     lam_supp: float = 0.0,

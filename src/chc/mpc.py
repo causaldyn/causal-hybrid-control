@@ -11,7 +11,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jax import Array
 
-from chc.control import projected_gradient_control
+from chc.control import Bound, projected_gradient_control
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
@@ -23,8 +23,8 @@ def mpc_control(
     cost: QuadraticCost,
     dt: float,
     horizon: int,
-    u_lo: float,
-    u_hi: float,
+    u_lo: Bound,
+    u_hi: Bound,
     n_steps: int,
     *,
     plant: Dynamics | None = None,

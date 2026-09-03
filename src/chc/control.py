@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -33,9 +34,61 @@ from chc.residual import MLPResidual, ZeroResidual
 
 _MAX_BACKTRACK = 40
 
+Bound = float | Array
+"""One side of the action box: a scalar shared by every lever, or a per-lever array.
 
-def project_box(us: Array, lo: float, hi: float) -> Array:
-    """Euclidean projection onto the box ``[lo, hi]`` (elementwise clip)."""
+A real actuator set is rarely a cube -- a budget and a discount move in different units and over
+different ranges -- so a single scalar pair forces the caller to widen every lever to the loosest
+one, which is a larger feasible set than the plant has.
+"""
+
+
+def broadcast_box(bound: Bound, shape: tuple[int, ...], name: str, dtype: Any) -> Array:
+    """Expand a scalar or per-lever bound to the full ``(horizon, m)`` action shape.
+
+    Accepts a scalar, a ``(m,)`` per-lever vector, or an already-full ``(horizon, m)`` schedule.
+    A 1-D array is read as **per-lever**, never as per-step: for ``m == 1`` a ``(horizon,)`` array
+    would broadcast along the lever axis and silently constrain the wrong axis, so time-varying
+    bounds have to be spelled out in two dimensions.
+
+    ``dtype`` is the *actions'* dtype, and it is required rather than defaulted: the box is
+    validated in float64 but returned in the caller's precision, because a float64 box clipped
+    against float32 actions promotes the answer and silently changes what the caller asked for.
+
+    Raises:
+        ValueError: on a shape that is neither, or on an inverted box. ``jnp.clip`` with
+            ``lo > hi`` returns ``hi`` everywhere without complaint, which is a wrong answer
+            rather than a failure, so the ordering is checked here where it can still be reported.
+    """
+    values = np.asarray(bound, dtype=np.float64)
+    if values.ndim == 1 and values.shape != shape[1:]:
+        raise ValueError(
+            f"{name} has shape {values.shape}; a 1-D bound is per-lever and must be "
+            f"{shape[1:]}. For a bound that varies over time pass the full {shape}."
+        )
+    if values.ndim > 2 or (values.ndim == 2 and values.shape != shape):
+        raise ValueError(
+            f"{name} has shape {values.shape}; expected a scalar, {shape[1:]} or {shape}"
+        )
+    return jnp.asarray(np.broadcast_to(values, shape), dtype=dtype)
+
+
+def check_box(lo: Array, hi: Array) -> None:
+    """Reject an inverted or empty box before ``jnp.clip`` turns it into a silent answer."""
+    bad = np.asarray(lo) > np.asarray(hi)
+    if bool(bad.any()):
+        first = tuple(int(i) for i in np.argwhere(bad)[0])
+        raise ValueError(
+            f"empty action box at index {first}: u_lo {float(np.asarray(lo)[first])} > "
+            f"u_hi {float(np.asarray(hi)[first])}"
+        )
+
+
+def project_box(us: Array, lo: Bound, hi: Bound) -> Array:
+    """Euclidean projection onto the box ``[lo, hi]`` (elementwise clip).
+
+    ``lo`` and ``hi`` may be scalars or per-lever arrays; both broadcast against ``us``.
+    """
     return jnp.clip(us, lo, hi)
 
 
@@ -43,8 +96,8 @@ def _backtrack(
     us: Array,
     current: Array,
     grad: Array,
-    u_lo: float,
-    u_hi: float,
+    u_lo: Array,
+    u_hi: Array,
     lr0: float,
     tol: float,
     value_of: Callable[[Array], Array],
@@ -59,7 +112,14 @@ def _backtrack(
         state: tuple[Array, Array, Array, Array, Array],
     ) -> tuple[Array, Array, Array, Array, Array]:
         trial, lr, _, _, _ = state
-        candidate = jnp.clip(us - lr * grad, u_lo, u_hi)
+        # `.astype(us.dtype)` is load-bearing, not defensive. The actions carry the working
+        # precision, but the gradient does not: `control_gradient_adjoint` differentiates a cost
+        # whose Q/R/Qf and x_target are whatever `jnp.array` produced, which under
+        # `jax_enable_x64` is float64 even when the actions are float32. The subtraction then
+        # promotes, the candidate re-enters the carry one dtype wider than it left, and
+        # `lax.while_loop` rejects the body outright. Casting here -- at the point that decides
+        # what the carry holds -- keeps the whole descent in the caller's precision.
+        candidate = jnp.clip(us - lr * grad, u_lo, u_hi).astype(us.dtype)
         value = value_of(candidate)
         return trial + 1, lr * 0.5, candidate, value, value < current - tol
 
@@ -78,8 +138,8 @@ def _projected_gradient_loop(
     us0: Array,
     dt: float,
     cost: QuadraticCost,
-    u_lo: float,
-    u_hi: float,
+    u_lo: Array,
+    u_hi: Array,
     steps: int,
     lr0: float,
     tol: float,
@@ -136,8 +196,8 @@ def projected_gradient_control(
     us0: Array,
     dt: float,
     cost: QuadraticCost,
-    u_lo: float,
-    u_hi: float,
+    u_lo: Bound,
+    u_hi: Bound,
     steps: int = 10_000,
     lr0: float = 0.2,
     tol: float = 1e-9,
@@ -150,11 +210,19 @@ def projected_gradient_control(
 
     The descent runs inside a single compiled program (:func:`_projected_gradient_scan`); only the
     trim to the accepted prefix happens on the host, so the return shape stays what a Python loop
-    would have produced. ``dt``, the box and the line-search scalars are static to the compilation,
-    the same convention :func:`chc.cost.total_cost` already uses for ``dt``.
+    would have produced.
+
+    ``u_lo`` and ``u_hi`` are a scalar shared by every lever, a per-lever ``(m,)`` array, or a full
+    ``(horizon, m)`` schedule. They are normalised to the action shape here and enter the compiled
+    program as *arrays*, so a caller sweeping boxes compiles once rather than once per box value.
+    ``dt``, ``steps`` and the line-search scalars stay static to the compilation, the same
+    convention :func:`chc.cost.total_cost` already uses for ``dt``.
     """
+    lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
+    hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
+    check_box(lo, hi)
     optimised, values, taken = _projected_gradient_loop(
-        dyn, x0, us0, dt, cost, u_lo, u_hi, steps, lr0, tol
+        dyn, x0, us0, dt, cost, lo, hi, steps, lr0, tol
     )
     return optimised, jnp.asarray(np.asarray(values)[: int(taken) + 1].tolist())
 
@@ -165,8 +233,8 @@ def lbfgs_box_control(
     us0: Array,
     dt: float,
     cost: QuadraticCost,
-    u_lo: float,
-    u_hi: float,
+    u_lo: Bound,
+    u_hi: Bound,
     steps: int = 300,
 ) -> tuple[Array, Array]:
     """Minimise ``J`` over the control sequence subject to box constraints, by L-BFGS-B.
@@ -181,8 +249,10 @@ def lbfgs_box_control(
     is cast back to ``us0``'s dtype, so a float32 caller is not silently promoted.
     """
     shape = us0.shape
-    size = int(np.prod(shape))
-    history = [float(total_cost(dyn, x0, project_box(us0, u_lo, u_hi), dt, cost))]
+    lo = broadcast_box(u_lo, shape, "u_lo", us0.dtype)
+    hi = broadcast_box(u_hi, shape, "u_hi", us0.dtype)
+    check_box(lo, hi)
+    history = [float(total_cost(dyn, x0, project_box(us0, lo, hi), dt, cost))]
     seen: dict[bytes, float] = {}
 
     def objective(flat: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
@@ -197,19 +267,27 @@ def lbfgs_box_control(
 
     result = minimize(
         objective,
-        np.asarray(project_box(us0, u_lo, u_hi), dtype=np.float64).ravel(),
+        np.asarray(project_box(us0, lo, hi), dtype=np.float64).ravel(),
         jac=True,
         method="L-BFGS-B",
-        bounds=[(u_lo, u_hi)] * size,
+        # Per element, not per problem: L-BFGS-B keeps one bound pair per coordinate, which is
+        # what makes a per-lever box expressible here at all.
+        bounds=list(
+            zip(
+                np.asarray(lo, dtype=np.float64).ravel(),
+                np.asarray(hi, dtype=np.float64).ravel(),
+                strict=True,
+            )
+        ),
         callback=record,
         options={"maxiter": steps},
     )
     optimised = jnp.asarray(result.x, dtype=us0.dtype).reshape(shape)
-    return project_box(optimised, u_lo, u_hi), jnp.asarray(history)
+    return project_box(optimised, lo, hi), jnp.asarray(history)
 
 
 def box_stationarity(
-    dyn: Dynamics, x0: Array, us: Array, dt: float, cost: QuadraticCost, u_lo: float, u_hi: float
+    dyn: Dynamics, x0: Array, us: Array, dt: float, cost: QuadraticCost, u_lo: Bound, u_hi: Bound
 ) -> float:
     """First-order optimality residual ``||u - P_box(u - grad J)||`` -- zero exactly at a KKT point.
 

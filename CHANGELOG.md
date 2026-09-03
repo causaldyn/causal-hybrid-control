@@ -7,6 +7,40 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **Per-lever action bounds** (`chc.control.Bound`, `broadcast_box`, `check_box`). `u_lo` / `u_hi`
+  on `projected_gradient_control`, `lbfgs_box_control`, `box_stationarity`, `pessimistic_control`,
+  `causal_plan` and `mpc_control` now take a scalar, a per-lever `(m,)` array, or a full
+  `(horizon, m)` schedule. A real actuator set is rarely a cube -- a budget and a discount move in
+  different units over different ranges -- and a single scalar pair forced the caller to widen every
+  lever to the loosest one, which is a *larger* feasible set than the plant has. Purely widening:
+  a vector spelling out the old scalar reproduces its answer exactly (asserted, not approximated).
+
+  Two things are rejected rather than broadcast, because both were silent wrong answers rather than
+  errors. A 1-D bound is read as **per-lever**, never per-step: for `m == 1` a `(horizon,)` array
+  would broadcast along the lever axis and constrain the wrong thing, so a time-varying bound has to
+  be spelled out in two dimensions. And an inverted box now raises -- `jnp.clip` with `lo > hi`
+  returns `hi` everywhere without complaint.
+
+  The box also stopped being static to the compilation: it enters the jitted program as an array, so
+  a caller sweeping boxes compiles once rather than once per box value.
+
+### Fixed
+
+- **`projected_gradient_control` and `pessimistic_control` crashed outright on float32 actions
+  under `jax_enable_x64`.** Reproduced on the released 0.4.0 wheel, so this predates the per-lever
+  work that surfaced it: `lax.while_loop` rejected the body with *"carry input and carry output
+  must have equal types"*. The cause is one line down from the symptom. The descent treats the
+  actions' dtype as the working precision, but the gradient does not follow it --
+  `control_gradient_adjoint` differentiates a cost whose `Q`/`R`/`Qf`/`x_target` are whatever
+  `jnp.array` produced, which with x64 enabled is float64 even when the actions are float32 -- so
+  `us - lr * grad` promoted and the candidate re-entered the carry one dtype wider than it left.
+  Fixed by casting the candidate back at the point that decides what the carry holds, rather than
+  by widening the actions or narrowing the gradient at any of the call sites. `chc.uncertainty`
+  already carried a note that a float32 run is a *different* computation, not a cheaper one; this
+  is the same lesson one layer down.
+
 ## [0.4.0] — 2026-09-03
 
 ### Added

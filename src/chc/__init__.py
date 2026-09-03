@@ -42,6 +42,7 @@ from chc.causal import (
     sensitivity_analysis,
 )
 from chc.control import (
+    Bound,
     NLPSolverCertificate,
     SolverComparison,
     box_stationarity,
@@ -405,6 +406,7 @@ __all__ = [
     "BangBangResult",
     "BarrierConfoundingCurve",
     "BarrierReachabilityGap",
+    "Bound",
     "CappedExplorationPolicy",
     "CausalControlCurve",
     "CausalDynamicsFit",

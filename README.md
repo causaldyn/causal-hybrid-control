@@ -82,7 +82,7 @@ cost = QuadraticCost(
 
 xs, us = mpc_control(
     model, jnp.array([1.0, 0.0]), cost, dt=0.1, horizon=20, u_lo=-5.0, u_hi=5.0, n_steps=40
-)  # closed-loop MPC
+)  # closed-loop MPC; u_lo/u_hi also take a per-lever array when the actuators differ
 ```
 
 ## Example notebooks

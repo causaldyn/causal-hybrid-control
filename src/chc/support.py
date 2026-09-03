@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from chc.control import _backtrack
+from chc.control import Bound, _backtrack, broadcast_box, check_box
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
@@ -67,8 +67,8 @@ def _pessimistic_loop(
     cost: QuadraticCost,
     support: SupportModel,
     lam_supp: float,
-    u_lo: float,
-    u_hi: float,
+    u_lo: Array,
+    u_hi: Array,
     steps: int,
     lr0: float,
     tol: float,
@@ -128,8 +128,8 @@ def pessimistic_control(
     cost: QuadraticCost,
     support: SupportModel,
     lam_supp: float,
-    u_lo: float,
-    u_hi: float,
+    u_lo: Bound,
+    u_hi: Bound,
     steps: int = 10_000,
     lr0: float = 0.2,
     tol: float = 1e-9,
@@ -143,8 +143,13 @@ def pessimistic_control(
     Uses autodiff for the augmented-objective gradient (validated equal to the discrete adjoint in
     ``01 §4.1``). Returns the optimised controls and the **task**-cost history (penalties excluded,
     so runs at different weights are comparable).
-    """
 
+    ``u_lo`` / ``u_hi`` take the same scalar, per-lever or full-schedule forms
+    :func:`chc.control.projected_gradient_control` accepts.
+    """
+    lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
+    hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
+    check_box(lo, hi)
     optimised, values, taken = _pessimistic_loop(
         model,
         x0,
@@ -153,8 +158,8 @@ def pessimistic_control(
         cost,
         support,
         lam_supp,
-        u_lo,
-        u_hi,
+        lo,
+        hi,
         steps,
         lr0,
         tol,
