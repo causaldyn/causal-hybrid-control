@@ -6,8 +6,11 @@ __pycache__/
 build/
 dist/
 
-# uv / venv
-.venv/
+# uv / venv -- the glob, not `.venv/`: a `.venv311` sat outside it and reached the sdist
+.venv*/
+
+# hypothesis' example database is a local cache, not an input
+.hypothesis/
 uv.lock.bak
 
 # tooling caches

@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-03
+
 ### Added
 
 - **Result 51 -- the non-separable half of the delayed-exposure gate** (`validation/delayed_network_exposure.mac`,
@@ -939,6 +941,20 @@ still change).
 
 ### Fixed
 
+- **The sdist shipped whatever was lying in the working tree, and could not build a wheel.**
+  `[tool.hatch.build.targets.sdist]` was absent, so hatchling fell back to "everything `.gitignore`
+  does not exclude" -- and `.gitignore` named `.venv/` while the local environment was `.venv311`,
+  outside the pattern. `.hypothesis/` was never listed at all. Built locally, the 0.4.0 sdist came to
+  **226 MB** across 6 076 stray files, and `uv build` then failed to produce a wheel from it at all
+  (`symlink path ... is absolute, but external symlinks are not allowed` -- the venv's interpreter
+  symlink). CI never saw this, because a fresh checkout has neither directory, which is exactly why it
+  survived two releases: the published 0.3.0 sdist is 1.07 MB and correct. The fix is an **allow-list**
+  rather than another ignore pattern, so the artefact no longer depends on the state of a contributor's
+  tree -- the sdist carries the Rocq proofs and Maxima derivations the docstrings cite, and it must be
+  reproducible. Contents reproduce the published 0.3.0 sdist exactly, plus the new `justfile`; the
+  0.4.0 sdist is 1.33 MB and the wheel builds. `.gitignore` gained `.venv*/` and `.hypothesis/` too,
+  since the mismatch was a real hole in it.
+
 - **Three Maxima derivations had never run to completion, and nothing checked.** `maxima -b` exits 0
   after a parse error -- and still echoes the batch filename on the way out -- so neither the exit code
   nor the last output line detects an aborted batch. CI compiles every `proofs/*.v` on each push but ran
@@ -1294,6 +1310,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.4.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.4.0
 [0.3.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.3.0
 [0.2.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.2.0
 [0.1.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.1.0
