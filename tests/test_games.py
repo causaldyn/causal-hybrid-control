@@ -5,10 +5,12 @@ import jax.numpy as jnp
 import pytest
 
 from chc.games import (
+    EquilibriumMonotonicityCertificate,
     EquilibriumTransferCertificate,
     congestion_contraction_certificate,
     congestion_contraction_modulus,
     congestion_damping,
+    equilibrium_monotonicity_certificate,
     equilibrium_transfer_certificate,
     project_simplex,
     softmax_congestion_equilibrium,
@@ -19,8 +21,14 @@ from chc.marketplace import SharedStateMarket
 
 @pytest.fixture(scope="module")
 def transfer() -> EquilibriumTransferCertificate:
-    """Result 39's evidence -- ~6 s of leader solves, so it is built once for the module."""
+    """Result 39's evidence -- ~9 s of leader solves, so it is built once for the module."""
     return equilibrium_transfer_certificate()
+
+
+@pytest.fixture(scope="module")
+def monotonicity() -> EquilibriumMonotonicityCertificate:
+    """Result 39's GLOBAL half: moduli over a box plus finite-perturbation displacements."""
+    return equilibrium_monotonicity_certificate()
 
 
 def test_project_simplex_lands_on_the_budget_simplex() -> None:
@@ -207,3 +215,49 @@ def test_contraction_modulus_is_not_the_equilibrium_conditioning(
     assert transfer.looseness[-1] > 50.0  # kappa = 5.96 -> 100x
     assert transfer.looseness[0] < transfer.looseness[-1]  # and it grows with kappa
     assert max(transfer.conditioning) - min(transfer.conditioning) < 1e-3  # truth is flat
+
+
+def test_the_residual_map_is_one_strongly_monotone_over_the_whole_box(
+    monotonicity: EquilibriumMonotonicityCertificate,
+) -> None:
+    # Not an implicit-function derivative at the equilibrium: a minimum over a box, and the
+    # constant is exactly 1 because the softmax Jacobian annihilates the constants.
+    assert monotonicity.ambient_modulus == pytest.approx(1.0, abs=1e-9)
+    assert monotonicity.ok
+
+
+def test_monotonicity_holds_between_pairs_not_only_in_the_derivative(
+    monotonicity: EquilibriumMonotonicityCertificate,
+) -> None:
+    # The definition itself, on random pairs. A pointwise Jacobian bound does not imply it without
+    # the mean value theorem, so measuring it is a separate check rather than a restatement.
+    assert monotonicity.finite_monotonicity >= 1.0 - 1e-6
+
+
+def test_a_finite_operator_perturbation_moves_the_equilibrium_no_further(
+    monotonicity: EquilibriumMonotonicityCertificate,
+) -> None:
+    # What the local conditioning could not say: at modulus 1 the displacement is bounded by the
+    # perturbation one-for-one, at finite size.
+    assert monotonicity.displacement_ratio <= 1.0 + 1e-6
+
+
+def test_the_tangent_improvement_is_local_and_evaporates_over_the_box(
+    monotonicity: EquilibriumMonotonicityCertificate,
+) -> None:
+    # Result 39 (b)'s strictly-better tangent constant is a neighbourhood statement. Near a corner
+    # the softmax approaches a vertex, s_min collapses, and the improvement is gone -- which is
+    # exactly why quoting it globally is a mistake.
+    assert monotonicity.local_tangent_bound > monotonicity.tangent_bound
+    assert monotonicity.tangent_bound == pytest.approx(1.0, abs=1e-6)
+    assert monotonicity.local_tangent_modulus >= monotonicity.local_tangent_bound - 1e-9
+
+
+def test_an_active_constraint_costs_an_order_and_a_vertex_costs_the_slope(
+    transfer: EquilibriumTransferCertificate,
+) -> None:
+    # The regularity assumption behind Result 39 (c), made falsifiable. With the budget constraint
+    # active the slope drops by nearly a full order; at a vertex the plan does not move at all, so
+    # the regret is identically zero and there is no slope to degrade.
+    assert transfer.constrained_slope < transfer.regret_slope - 0.5
+    assert all(r == 0.0 for r in transfer.vertex_regret)

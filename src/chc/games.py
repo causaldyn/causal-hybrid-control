@@ -24,6 +24,7 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from jax import Array
 
@@ -264,6 +265,166 @@ def congestion_contraction_certificate(
 
 
 @dataclass(frozen=True)
+class EquilibriumMonotonicityCertificate:
+    """Global strong monotonicity of ``F = I - S``, and the finite-perturbation bound it licenses.
+
+    Result 39 (b) bounds ``||(I - S')^{-1}||`` at the equilibrium -- an implicit-function
+    derivative, so it prices *infinitesimal* perturbations and says as much. These are the global
+    quantities: a modulus that holds at every point of a box, and a displacement measured at a
+    perturbation of finite size.
+    """
+
+    kappa: float
+    ambient_modulus: float  # min over the box of lambda_min of the symmetric part of F'; exactly 1
+    tangent_modulus: float  # the same restricted to the fixed-mass tangent space 1-perp
+    tangent_bound: float  # 1 + kappa*n*s_min^2 at the worst sampled s -- the certified bound
+    box_bound: float  # 1 + kappa*exp(-2*spread)/n, computable from the BOX with no solve at all
+    local_tangent_modulus: float  # the tangent modulus on a ball around the equilibrium instead
+    local_tangent_bound: float  # and its certified bound, where the improvement over 1 is real
+    jacobian_agreement: float  # max |autodiff F' - the closed form|; a precision check, not a gate
+    finite_monotonicity: float  # min over random pairs of <F(x)-F(y), x-y>/||x-y||^2
+    displacement_ratio: float  # max ||x*(S+g)-x*(S)||/||g||; monotonicity caps it at 1/mu
+    ok: bool
+
+
+def _tangent_basis(n: int) -> Array:
+    """Orthonormal basis of ``1-perp``: the directions a mass-conserving equilibrium can move."""
+    basis = jnp.eye(n) - jnp.ones((n, n)) / n
+    q, _ = jnp.linalg.qr(basis)
+    return q[:, : n - 1]
+
+
+def equilibrium_monotonicity_certificate(
+    beta: float = 2.5,
+    congestion: float = 2.0,
+    n_zones: int = 6,
+    mass: float = 6.0,
+    samples: int = 400,
+    perturbations: int = 24,
+    seed: int = 0,
+) -> EquilibriumMonotonicityCertificate:
+    """Measure the GLOBAL modulus Result 39 (b) left open, and the bound it buys.
+
+    ``F'(x) = I + kappa*J(s(x))`` with ``J = diag(s) - s s^T`` a covariance matrix, so ``F' >= I``
+    at *every* ``x``, not only at the equilibrium: ``F`` is 1-strongly monotone globally, and
+    ``1`` cannot be improved because ``J`` annihilates the constants. The direction that saturates
+    it is the one mass conservation forbids, so on the fixed-mass tangent space the modulus is
+    strictly larger, bounded below by ``1 + kappa*n*s_min^2`` -- exactly attained at the two-point
+    uniform ``s``, the same configuration that makes Result 39 (a)'s Popoviciu bound sharp
+    (``validation/equilibrium_monotonicity.mac``, ``proofs/equilibrium_monotonicity.v``; z3 and cvc5
+    both return unsat on the negation at ``n = 3``).
+
+    Measurements, each able to fail. ``ambient_modulus`` and ``tangent_modulus`` are minimised over
+    a box rather than evaluated at a point; ``tangent_bound`` and ``box_bound`` are the certified
+    lower bounds, the second needing neither a sample nor a solve. ``finite_monotonicity`` tests the
+    definition itself on random *pairs*, which no derivative argument implies.
+    ``displacement_ratio`` perturbs the operator by a finite amount and measures how far the
+    equilibrium moves: strong monotonicity at ``mu`` caps it at ``1/mu``, one-for-one at ``mu = 1``.
+
+    Reported at two scales on purpose, because the answers differ and only one of them is the
+    headline. Over the whole box the tangent improvement **evaporates**: near a corner the softmax
+    approaches a vertex, ``s_min`` collapses, and both the measured tangent modulus and its bound
+    fall back to 1. The strictly-better constant of Result 39 (b) is a statement about a
+    neighbourhood of an interior equilibrium, and ``local_tangent_modulus`` is where it has teeth --
+    quoting it globally is exactly the mistake this certificate exists to prevent.
+    """
+    key = jax.random.key(seed)
+    k_attract, k_box, k_pairs, k_perturb = jax.random.split(key, 4)
+    attract = jax.random.normal(k_attract, (n_zones,))
+    kappa = beta * congestion
+
+    def response(x: Array) -> Array:
+        return mass * jax.nn.softmax(beta * (attract - congestion * x / mass))
+
+    def residual_map(x: Array) -> Array:
+        return x - response(x)
+
+    q = np.asarray(_tangent_basis(n_zones), dtype=np.float64)
+
+    def moduli(points: Array) -> tuple[float, float, float, float]:
+        """Ambient and tangent moduli over a sample, the certified bound, and autodiff agreement.
+
+        ``F'(x) = I + kappa*(diag(s) - s s^T)`` in closed form, and the eigen-solves run on that in
+        float64 -- because the quantity under test is *exactly* 1, and taking it from a float32
+        autodiff Jacobian misses by ~2e-7, which is larger than any tolerance worth calling a gate.
+        The autodiff Jacobian is still computed and compared, so the shipped map is checked rather
+        than assumed to be the map the algebra describes; that comparison is a precision question
+        and carries a precision tolerance, which the modulus does not.
+        """
+        probs = np.asarray(jax.vmap(lambda x: response(x) / mass)(points), dtype=np.float64)
+        # Renormalising is not a guard, it is the definition: `s` is a probability vector, and a
+        # float32 softmax sums to 1 only to ~1e-7. That residual mass is exactly what stops `J`
+        # from annihilating the constants, and it shows up as a modulus 2e-7 BELOW 1 -- an
+        # artefact of the sample, not of the algebra the certificate is testing.
+        probs = probs / probs.sum(axis=1, keepdims=True)
+        gram = np.einsum("ni,nj->nij", probs, probs)
+        jac = np.eye(n_zones) + kappa * (np.einsum("ij,ni->nij", np.eye(n_zones), probs) - gram)
+        autodiff = np.asarray(jax.vmap(jax.jacobian(residual_map))(points), dtype=np.float64)
+        agreement = float(np.max(np.abs(autodiff - jac)))
+        ambient = float(np.min(np.linalg.eigvalsh(jac)[:, 0]))
+        projected = np.einsum("ji,njk,kl->nil", q, jac, q)
+        tangent = float(np.min(np.linalg.eigvalsh(projected)[:, 0]))
+        return ambient, tangent, 1.0 + kappa * n_zones * float(np.min(probs)) ** 2, agreement
+
+    xs = jax.random.uniform(k_box, (samples, n_zones), minval=0.0, maxval=mass)
+    ambient, tangent, bound, agreement = moduli(xs)
+
+    # The box bound needs no solve and no sample: over x in [0, mass]^n the logits span at most
+    # beta*(ptp(attract) + congestion), and softmax turns that into s_min >= exp(-spread)/n.
+    spread = float(beta * (jnp.max(attract) - jnp.min(attract) + congestion))
+    box = 1.0 + kappa * float(jnp.exp(-2.0 * spread)) / n_zones
+
+    pairs = jax.random.uniform(k_pairs, (2, samples, n_zones), minval=0.0, maxval=mass)
+    gaps = pairs[0] - pairs[1]
+    deltas = jax.vmap(residual_map)(pairs[0]) - jax.vmap(residual_map)(pairs[1])
+    finite = float(jnp.min(jnp.sum(deltas * gaps, axis=1) / jnp.sum(gaps * gaps, axis=1)))
+
+    damping = congestion_damping(beta, congestion)
+    base = fixed_point(
+        lambda _, x: (1.0 - damping) * x + damping * response(x),
+        None,
+        jnp.full(n_zones, mass / n_zones),
+    )
+    k_local = jax.random.fold_in(k_box, 1)
+    local = base.x + 0.05 * mass * jax.random.normal(k_local, (samples, n_zones))
+    _, local_tangent, local_bound, _ = moduli(local)
+    offsets = 0.05 * mass * jax.random.normal(k_perturb, (perturbations, n_zones))
+
+    def displaced(offset: Array) -> Array:
+        moved = fixed_point(
+            lambda g, x: (1.0 - damping) * x + damping * (response(x) + g),
+            offset,
+            base.x,
+        )
+        return jnp.linalg.norm(moved.x - base.x) / jnp.linalg.norm(offset)
+
+    ratio = float(jnp.max(jax.vmap(displaced)(offsets)))
+    return EquilibriumMonotonicityCertificate(
+        kappa=kappa,
+        ambient_modulus=ambient,
+        tangent_modulus=tangent,
+        tangent_bound=bound,
+        box_bound=box,
+        local_tangent_modulus=local_tangent,
+        local_tangent_bound=local_bound,
+        jacobian_agreement=agreement,
+        finite_monotonicity=finite,
+        displacement_ratio=ratio,
+        ok=(
+            abs(ambient - 1.0) < 1e-9  # exactly 1: attained on the constants, never below
+            and tangent >= bound - 1e-9
+            and local_tangent >= local_bound - 1e-9
+            and local_bound > bound  # the local improvement is real where the global one is not
+            and bound >= box - 1e-12
+            and finite >= 1.0 - 1e-6  # the definition, on pairs, not a derivative
+            and ratio <= 1.0 + 1e-6  # 1/mu at mu = 1
+            and agreement < 1e-4  # the shipped map IS I + kappa*J, to the working precision
+            and bool(base.converged)
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class EquilibriumTransferCertificate:
     """Result 39: the equilibrium layer transfers the estimation-error ORDER and is non-expansive.
 
@@ -289,7 +450,38 @@ class EquilibriumTransferCertificate:
     operator_errors: tuple[float, ...]  # perturbation sizes fed to the leader problem
     regrets: tuple[float, ...]  # leader regret on the TRUE game, interior optimum
     regret_slope: float  # log-log slope of regret vs error; theory says 2
+    constrained_slope: float  # the same with the budget constraint ACTIVE -- the order collapses
+    vertex_regret: tuple[float, ...]  # regret at a vertex optimum; identically 0, so no slope
     ok: bool  # ambient conditioning at 1, tangent strictly inside it, slope quadratic
+
+
+def _simplex_leader(
+    objective: Callable[[Array], Array], n: int, budget: float, steps: int, lr: float
+) -> Array:
+    """Projected Adam on the budget simplex -- :func:`_unconstrained_leader`'s constrained sibling.
+
+    Exists to make the regularity assumption of Result 39 (c) falsifiable: the interior arm is what
+    the order claim is about, and this is the arm where it breaks.
+    """
+    u = project_simplex(jnp.full(n, budget / n), budget)
+    optimizer = optax.adam(lr)
+    state = optimizer.init(u)
+    grad_fn = jax.grad(lambda v: -objective(v))
+
+    @jax.jit
+    def step(u: Array, state: Any) -> tuple[Array, Any]:
+        updates, state = optimizer.update(grad_fn(u), state)
+        return project_simplex(jnp.asarray(optax.apply_updates(u, updates)), budget), state
+
+    for _ in range(steps):
+        u, state = step(u, state)
+    return u
+
+
+def _log_slope(errors: Sequence[float], regrets: Sequence[float]) -> float:
+    """Log-log slope of regret against operator error; the floor keeps an exact zero finite."""
+    logged = jnp.log(jnp.maximum(jnp.array(regrets), 1e-16))
+    return float(jnp.polyfit(jnp.log(jnp.array(errors)), logged, 1)[0])
 
 
 def _unconstrained_leader(
@@ -316,6 +508,7 @@ def equilibrium_transfer_certificate(
     n_zones: int = 6,
     seed: int = 0,
     incentive_cost: float = 2.0,
+    budget: float = 3.0,
     steps: int = 900,
     errors: Sequence[float] = (0.4, 0.2, 0.1, 0.05),
     kappas: Sequence[float] = (4.0, 5.0, 5.5, 5.8, 5.96),
@@ -330,9 +523,18 @@ def equilibrium_transfer_certificate(
     second order in ``e``.
 
     Both conditioning numbers are *local*: they are implicit-function derivatives at the
-    equilibrium, so they bound the response to infinitesimal perturbations. A global
-    inverse-Lipschitz statement would need strong monotonicity of ``F(x) = x - S(x)``, which is not
-    proved here; the finite-``e`` half is measured, not certified from them.
+    equilibrium, so they bound the response to infinitesimal perturbations. The global
+    inverse-Lipschitz statement -- strong monotonicity of ``F(x) = x - S(x)`` -- is
+    :func:`equilibrium_monotonicity_certificate`, which measures it over a box and at a finite
+    perturbation size rather than deducing it from these derivatives.
+
+    The order half carries a **binding regularity assumption**, and the last two fields make it
+    falsifiable rather than merely stated. The quadratic order needs the leader's optimum to move
+    smoothly with the operator, which an active constraint destroys: with the budget constraint
+    active the measured slope falls from ``1.97`` to ``1.14``, and at a **vertex** the argmax is
+    locally constant, so the regret is *identically zero* across the whole sweep and the log-log
+    slope does not exist. The vertex case is not a degraded rate but the absence of one, and any
+    statement of the form "the equilibrium transfers the order" is vacuous there.
     """
     key_a, key_w, key_p = jax.random.split(jax.random.key(seed), 3)
     attract = jax.random.normal(key_a, (n_zones,))
@@ -373,11 +575,32 @@ def equilibrium_transfer_certificate(
 
     best = float(leader_value(attract, plan(attract)))
     regrets = [best - float(leader_value(attract, plan(attract + e * direction))) for e in errors]
-    slope = float(
-        jnp.polyfit(jnp.log(jnp.array(errors)), jnp.log(jnp.maximum(jnp.array(regrets), 1e-16)), 1)[
-            0
-        ]
-    )
+
+    # Two arms that can falsify the regularity the order claim needs. On the budget simplex with the
+    # sum constraint active the plan still moves, so a slope exists and is measurably worse than 2;
+    # dropping the quadratic incentive cost sends the optimum to a vertex, where it stops moving at
+    # all and the notion of a slope goes with it.
+    def constrained_plan(operator: Array) -> Array:
+        return _simplex_leader(lambda u: leader_value(operator, u), n_zones, budget, steps, lr=0.05)
+
+    def vertex_value(operator: Array, u: Array) -> Array:
+        equilibrium = softmax_congestion_equilibrium(operator, u, congestion, mass, beta).x
+        return jnp.dot(weights, equilibrium)
+
+    def vertex_plan(operator: Array) -> Array:
+        return _simplex_leader(lambda u: vertex_value(operator, u), n_zones, budget, steps, lr=0.05)
+
+    constrained_best = float(leader_value(attract, constrained_plan(attract)))
+    constrained = [
+        constrained_best - float(leader_value(attract, constrained_plan(attract + e * direction)))
+        for e in errors
+    ]
+    vertex_best = float(vertex_value(attract, vertex_plan(attract)))
+    vertex = [
+        vertex_best - float(vertex_value(attract, vertex_plan(attract + e * direction)))
+        for e in errors
+    ]
+    slope = _log_slope(errors, regrets)
     return EquilibriumTransferCertificate(
         kappas=tuple(float(k) for k in kappas),
         conditioning=tuple(conditioning),
@@ -387,9 +610,13 @@ def equilibrium_transfer_certificate(
         operator_errors=tuple(float(e) for e in errors),
         regrets=tuple(regrets),
         regret_slope=slope,
+        constrained_slope=_log_slope(errors, constrained),
+        vertex_regret=tuple(vertex),
         ok=all(abs(c - 1.0) < 1e-3 for c in conditioning)
         and all(t <= c + 1e-9 for t, c in zip(tangent, conditioning, strict=True))
-        and 1.7 <= slope <= 2.3,
+        and 1.7 <= slope <= 2.3
+        and _log_slope(errors, constrained) < slope - 0.5  # an active constraint costs an order
+        and all(r == 0.0 for r in vertex),  # a vertex plan does not move, so there is no slope
     )
 
 

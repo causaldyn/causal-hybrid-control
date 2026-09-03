@@ -9,6 +9,34 @@ still change).
 
 ### Added
 
+- **Global strong monotonicity of the congestion equilibrium**
+  (`chc.games.equilibrium_monotonicity_certificate`, `EquilibriumMonotonicityCertificate`).
+  Result 39 (b) bounds `||(I - S')^{-1}||` at the equilibrium -- an implicit-function derivative, so
+  it prices infinitesimal perturbations, and the entry said so. `F'(x) = I + kappa*J(s(x))` with `J`
+  a covariance matrix, so `F' >= I` at *every* `x`: `F` is 1-strongly monotone globally, and a
+  finite operator perturbation moves the equilibrium one-for-one rather than only to first order
+  (measured 0.829 <= 1 over 24 perturbations). On the fixed-mass tangent space the pairwise form of
+  the variance gives a computable bound `1 + kappa*n*s_min^2`, exactly attained at the two-point
+  uniform `s` -- the same configuration that makes the Popoviciu bound of Result 39 (a) sharp. z3
+  and cvc5 both return unsat on the negation at `n = 3`.
+
+  The measurement that matters for using it: the *tangent* improvement is local and **evaporates**
+  over a box. Near a corner the softmax approaches a vertex, `s_min` collapses, and both the
+  measured tangent modulus and its bound fall back to 1 (1.000183 over the box against 1.0521 on a
+  ball around the equilibrium). Quoting Result 39 (b)'s strictly-better constant globally is the
+  mistake this certificate exists to prevent; what survives globally is the ambient 1, which is what
+  the finite-perturbation bound needs.
+
+### Changed
+
+- **`equilibrium_transfer_certificate` now measures the regularity its order claim assumes**
+  (new fields `constrained_slope`, `vertex_regret`). The quadratic order needs the leader's optimum
+  to move smoothly with the operator; an active constraint destroys that. With the budget constraint
+  active the log-log slope falls from `1.973` to `1.135`, and at a vertex the argmax is locally
+  constant, the plan does not move, and the regret is identically zero across the whole sweep -- not
+  a degraded rate but the absence of one. The assumption was in the docstrings; it is now in the
+  output, where it can fail.
+
 - **The minimax LQ controller over a partially identified effect** (`chc.regret.minimax_action`,
   `minimax_lq_policy`, `minimax_lq_certificate`, `MinimaxAction`, `MinimaxBranch`,
   `MinimaxLQPolicy`, `MinimaxLQCertificate`). Result 33 proved by counterexample that certainty

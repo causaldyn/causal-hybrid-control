@@ -1,0 +1,71 @@
+/* DISCOVERY (GLOBAL monotonicity of the congestion equilibrium map): §39 (b) bounds
+   ||(I - S')^{-1}|| at ONE point -- an implicit-function derivative, so it licenses a statement about
+   infinitesimal operator perturbations only, and §39 says so ("Both numbers are LOCAL ... the global
+   version would need strong monotonicity of F(x) = x - S(x) and is NOT proved here"). This proves it.
+   F' = I + kappa*J with J = diag(s) - s s^T the softmax Jacobian, and J is a covariance matrix, so
+   F' >= I EVERYWHERE, not just at the equilibrium: F is 1-strongly monotone globally. On the
+   fixed-mass tangent space the modulus is strictly bigger, and the pairwise form of the variance
+   gives a computable lower bound n*s_min^2 that is EXACTLY attained at the two-point uniform s --
+   the same configuration that makes §39 (a)'s Popoviciu bound sharp.
+   proofs/equilibrium_monotonicity.v proves the monotone core; the box bound on s_min is (5). */
+display2d : false$
+
+/* (1) the quadratic form of the softmax Jacobian is the s-variance -- §39 (a)'s identity, re-derived
+   here for n=4 because everything below is a statement about that form. */
+n : 4$
+s : [s1, s2, s3, s4]$
+v : [v1, v2, v3, v4]$
+J : genmatrix(lambda([i,k], if i = k then s[i]*(1 - s[i]) else -s[i]*s[k]), n, n)$
+/* Maxima's `.` returns a SCALAR for a 1x1 result, so indexing it would silently give 0. */
+quadform : ratsimp( matrix(v) . J . transpose(matrix(v)) )$
+varform  : ratsimp( sum(s[i]*v[i]^2, i, 1, n) - (sum(s[i]*v[i], i, 1, n))^2 )$
+print("(1) v.J.v - Var_s(v) =", ratsimp(quadform - varform), "  (=0)")$
+
+/* (2) the PAIRWISE form. Var_s(v) = (1/2)*sum_{i,j} s_i s_j (v_i - v_j)^2 once sum(s) = 1. This is
+   the identity that turns a variance into something bounded below by the SMALLEST s, which the
+   moment form cannot do. */
+pairs : ratsimp( (1/2)*sum(sum(s[i]*s[k]*(v[i] - v[k])^2, k, 1, n), i, 1, n) )$
+print("(2) pairwise - Var_s(v) under sum(s)=1  residual =",
+      ratsimp( subst(s4 = 1 - s1 - s2 - s3, pairs - varform) ), "  (=0)")$
+
+/* (3) on the fixed-mass tangent space sum(v)=0 the pair sum has a closed form: 2*n*||v||^2. */
+pairsum : ratsimp( sum(sum((v[i] - v[k])^2, k, 1, n), i, 1, n) )$
+print("(3) sum_{i,k}(v_i-v_k)^2 - (2*n*||v||^2 - 2*(sum v)^2) =",
+      ratsimp( pairsum - (2*n*sum(v[i]^2, i, 1, n) - 2*(sum(v[i], i, 1, n))^2) ), "  (=0)")$
+
+/* (4) THE BOUND. Replace every s_i s_j in (2) by its lower bound s_min^2 and apply (3) with
+   sum(v)=0: Var_s(v) >= (1/2)*s_min^2*2*n*||v||^2 = n*s_min^2*||v||^2. So on the tangent space
+   F' - (1 + kappa*n*s_min^2) I is positive semidefinite. Checked here at the configuration that
+   makes it TIGHT -- n=2, s=(1/2,1/2), v=(1,-1) -- where bound and truth coincide exactly. */
+tight_var   : subst([s1 = 1/2, s2 = 1/2, v1 = 1, v2 = -1],
+                    s1*v1^2 + s2*v2^2 - (s1*v1 + s2*v2)^2)$
+tight_bound : 2*(1/2)^2*(1^2 + (-1)^2)$
+print("(4) tightness at n=2, s=(1/2,1/2), v=(1,-1):  Var - bound =",
+      ratsimp( tight_var - tight_bound ),
+      "  (=0: attained at Var =", tight_var, ", so the constant cannot be improved)")$
+
+/* (5) the box. s = softmax(z) with z = beta*(a + u - c*x/mass); over a bounded x-box the logits span
+   at most `spread`, and then s_min >= exp(-spread)/n. Substituting into (4) gives a modulus that is
+   strictly above 1 and computable from the box alone -- no equilibrium needed. */
+smin_bound : exp(-spread)/n$
+print("(5) tangent modulus lower bound  1 + kappa*n*s_min^2 >=",
+      ratsimp( 1 + kappa*n*smin_bound^2 ), "  (= 1 + kappa*exp(-2*spread)/n)")$
+print("    residual vs 1 + kappa*exp(-2*spread)/n =",
+      ratsimp( 1 + kappa*n*smin_bound^2 - (1 + kappa*exp(-2*spread)/n) ), "  (=0)")$
+
+/* (6) AMBIENT vs TANGENT, and why the ambient constant is exactly 1 and cannot be improved: J
+   annihilates the constants, so v = 1 gives Var = 0 and (I + kappa*J)v = v for every kappa. The
+   ambient strong-monotonicity modulus of F is therefore exactly 1 -- global, but saturated in the
+   one direction mass conservation forbids. */
+ones : transpose(matrix([1, 1, 1, 1]))$
+print("(6) J.1 under sum(s)=1  residual =",
+      ratsimp( subst(s4 = 1 - s1 - s2 - s3, J . ones) ),
+      "  (=0: the ambient modulus 1 is attained on the constants, which mass conservation forbids)")$
+
+/* (7) GLOBAL CONSEQUENCE. F' >= mu*I pointwise with mu = 1 gives strong monotonicity by the mean
+   value theorem, and strong monotonicity gives the inverse-Lipschitz bound
+   ||x - y|| <= ||F(x) - F(y)||/mu for ALL x,y -- the finite-perturbation statement §39 (b) could
+   not make. With mu = 1 the equilibrium displacement is bounded by the operator perturbation
+   one-for-one, globally. Verified numerically over a box, not just at a point, by
+   chc.games.equilibrium_monotonicity_certificate. */
+print("(7) inverse-Lipschitz constant 1/mu at mu=1 is", 1/1, " (one-for-one, globally)")$
