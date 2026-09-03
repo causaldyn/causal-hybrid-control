@@ -59,7 +59,7 @@ CIs (predictive regret `13734.15 [13732.55, 13735.31]`), and
 
 ```bash
 uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.11–3.14)
-uv run pytest      # 384 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
+uv run pytest      # 491 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
 ```
 
 ## Quickstart
@@ -132,7 +132,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 Correctness is cross-checked in independent tools, symbolic first (`validation/`): the ARE / matrix
 exponential are verified **Maxima**-authoritative (exact + high-precision `bfloat`) against **PARI/GP**
 (50-digit) and **Octave**, with SciPy used only as the fast float64 numeric. The control and guarantee
-invariants are **formally proved in Rocq** — 48 files under `proofs/`, from the box-projection bounds
+invariants are **formally proved in Rocq** — 55 files under `proofs/`, from the box-projection bounds
 and idempotence (`box_projection.v`) to the interference-aware regret certificate.
 
 ## Honest positioning
