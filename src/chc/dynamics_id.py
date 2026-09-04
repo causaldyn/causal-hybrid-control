@@ -37,10 +37,12 @@ HONEST SCOPE, three limits worth stating before the code:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from chc.causal import _polynomial_features, _ridge_predict
@@ -412,4 +414,187 @@ def fit_causal_residual(
         nuisance_r2_state=_r_squared(y, y_hat),
         nuisance_r2_action=_r_squared(u, u_hat),
         moment_norm=float(jnp.linalg.norm(moment.T @ score / moment.shape[0])),
+    )
+
+
+# --- Result 41 (A7): what a tracked log identifies, and what it does not ---
+
+
+@dataclass(frozen=True)
+class ClosedLoopAttribution:
+    """Which coefficients of a control-affine fit the log identifies, on a tracked plant."""
+
+    manifold_slope: float  # m, from regressing the state on the action
+    manifold_r2: float  # 1 means exact tracking: the log lies on an affine manifold
+    implied_gain: float  # -1/m, the proportional gain of the loop that produced the log
+    action_curvature: float  # C, the u^2 coefficient of the response along the manifold
+    predicted_interaction: float  # C/m = -gain*C, the identity
+    fitted_interaction: float  # b1 from the four-term least squares
+    fitted_drift: float  # a from the same fit -- reported so its instability is visible
+    design_condition: float  # cond of the standardised design; large means d, a, b0 are not split
+    exploration_budget: float  # variance off the manifold, as a share of the state's variance
+
+
+def closed_loop_gain_attribution(
+    states: Array, actions: Array, rates: Array
+) -> ClosedLoopAttribution:
+    """Attribute a control-affine fit's coefficients to the controller and to the plant.
+
+    Result 41 left one item open: *why* the interaction coefficient ``b1`` of
+    ``dx/dt = d + a*x + (b0 + b1*x)*u`` comes out large and negative on a setpoint-tracked zone.
+    The answer is a property of the log, not of the plant. A proportional loop
+    ``u = gain*(setpoint - x) + u0`` puts every sample on an affine manifold ``x = c + m*u`` with
+    ``m = -1/gain``, and restricted to that manifold the four-term class collapses to a quadratic in
+    the action::
+
+        d + a*x + (b0 + b1*x)*u  =  (d + a*c) + (a*m + b0 + b1*c)*u + (b1*m)*u^2
+
+    Only ``b1`` reaches the ``u^2`` term, so **``b1`` is the identified coefficient and the pole is
+    not** -- the inverse of the usual reading, and the reason Result 41 (a) found the reported pole
+    to be a units artefact while ``lambda(u) = a + b1*u`` held. Matching against an observed
+    response ``A + B*u + C*u^2`` gives
+
+        ``b1 = C/m = -gain*C``,
+
+    so the sign is decided by the curvature of the response in the action and the **magnitude by the
+    controller**: a tighter tracker reports a bigger interaction from identical physics.
+    ``proofs/closed_loop_attribution.v`` proves the matching identity and exhibits the explicit
+    one-parameter family that leaves ``d``, ``a`` and ``b0`` free.
+
+    This also **refutes** the standing guess that ``b1 = -1/gain``. That is the *manifold slope*,
+    not the interaction; equating them forces ``C = 1/gain^2``, a constraint on the plant rather
+    than an identity (``guess_is_a_constraint_not_an_identity``).
+
+    ``exploration_budget`` is what buys the rest back: variation off the manifold restores the
+    design's rank, and with it the separation of ``a`` from ``b0``. Reading a pole off a fit whose
+    budget is ~0 is reading the regulariser.
+    """
+    x = jnp.asarray(states, dtype=jnp.float64).ravel()
+    u = jnp.asarray(actions, dtype=jnp.float64).ravel()
+    y = jnp.asarray(rates, dtype=jnp.float64).ravel()
+
+    affine = jnp.stack([jnp.ones_like(u), u], axis=1)
+    manifold = jnp.linalg.lstsq(affine, x, rcond=None)[0]
+    slope = float(manifold[1])
+    residual = x - affine @ manifold
+
+    quadratic = jnp.stack([jnp.ones_like(u), u, u**2], axis=1)
+    response = jnp.linalg.lstsq(quadratic, y, rcond=None)[0]
+    curvature = float(response[2])
+
+    design = jnp.stack([jnp.ones_like(x), x, u, x * u], axis=1)
+    coefficients = jnp.linalg.lstsq(design, y, rcond=None)[0]
+    scale = jnp.linalg.norm(design, axis=0)
+    condition = float(jnp.linalg.cond(design / jnp.where(scale > 0.0, scale, 1.0)))
+
+    state_variance = float(jnp.var(x))
+    return ClosedLoopAttribution(
+        manifold_slope=slope,
+        manifold_r2=_r_squared(x, affine @ manifold),
+        # A loop with zero gain leaves the state unexplained by the action; reporting an infinite
+        # gain is the honest answer, not a clamped one.
+        implied_gain=float("inf") if slope == 0.0 else -1.0 / slope,
+        action_curvature=curvature,
+        predicted_interaction=float("nan") if slope == 0.0 else curvature / slope,
+        fitted_interaction=float(coefficients[3]),
+        fitted_drift=float(coefficients[1]),
+        design_condition=condition,
+        exploration_budget=(
+            0.0 if state_variance == 0.0 else float(jnp.var(residual)) / state_variance
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class ClosedLoopAttributionCertificate:
+    """Two arms: an interaction the plant has, and one the tracking loop manufactures."""
+
+    gains: tuple[float, ...]
+    true_interaction: float  # the plant's own b1 in arm A
+    recovered: tuple[float, ...]  # fitted b1 under exact tracking -- should equal it at every gain
+    drift_error: tuple[float, ...]  # |fitted a - true a| under the same fits; should NOT be small
+    curvature: float  # the u^2 term arm B's plant has and the fitted class cannot represent
+    spurious: tuple[float, ...]  # fitted b1 in arm B: pure artefact, -gain*curvature
+    spurious_predicted: tuple[float, ...]  # -gain*curvature
+    refuted_guess: tuple[float, ...]  # -1/gain, the form plans/24 carried
+    exploration: tuple[float, ...]  # off-manifold noise levels for the recovery sweep
+    drift_error_by_exploration: tuple[float, ...]  # |fitted a - true a| as exploration grows
+    condition_by_exploration: tuple[float, ...]
+    ok: bool
+
+
+def closed_loop_attribution_certificate(
+    gains: Sequence[float] = (0.5, 1.0, 2.6, 8.0),
+    exploration: Sequence[float] = (0.0, 0.05, 0.25, 1.0),
+    samples: int = 4000,
+    seed: int = 0,
+) -> ClosedLoopAttributionCertificate:
+    """Separate the interaction a plant HAS from the one a tracking loop MANUFACTURES.
+
+    Arm A: the plant really is ``d + a*x + (b0 + b1*x)*u``. Under exact tracking the design is
+    singular, yet ``b1`` comes back exactly while the drift ``a`` does not -- the non-identification
+    is real and it is the pole that suffers, not the interaction.
+
+    Arm B: the plant has **no** interaction, but its response carries a ``u^2`` term the fitted
+    class cannot represent. The fit answers with ``b1 = -gain*curvature``: a coefficient that is
+    entirely an artefact of misspecification amplified by the loop, growing linearly with the
+    controller's gain. That is the mechanism behind Result 41's large negative ``b1``, and why
+    the number cannot be read as authority-falls-with-temperature without checking the budget.
+
+    The exploration sweep is the remedy: variation off the manifold restores the design's rank and
+    the drift with it. All three claims are measured here, and the middle one is the one that would
+    embarrass the entry if ``b1`` turned out to be as unstable as ``a``.
+    """
+    rng = np.random.default_rng(seed)
+    true_drift, true_offset, true_channel, true_interaction = -0.35, 1.0, 0.40, -0.30
+    curvature = 0.1454
+
+    def tracked(gain: float, noise: float) -> tuple[Array, Array]:
+        actions = 20.0 + 2.0 * rng.standard_normal(samples)
+        states = 17.0 - actions / gain + noise * rng.standard_normal(samples)
+        return jnp.asarray(states), jnp.asarray(actions)
+
+    recovered, drift_error, spurious = [], [], []
+    for gain in gains:
+        states, actions = tracked(gain, 0.0)
+        rates = (
+            true_offset + true_drift * states + (true_channel + true_interaction * states) * actions
+        )
+        fit = closed_loop_gain_attribution(states, actions, rates)
+        recovered.append(fit.fitted_interaction)
+        drift_error.append(abs(fit.fitted_drift - true_drift))
+
+        curved = true_offset + true_drift * states + true_channel * actions + curvature * actions**2
+        spurious.append(closed_loop_gain_attribution(states, actions, curved).fitted_interaction)
+
+    drift_by_noise, condition_by_noise = [], []
+    for noise in exploration:
+        states, actions = tracked(2.6, noise)
+        rates = (
+            true_offset + true_drift * states + (true_channel + true_interaction * states) * actions
+        )
+        fit = closed_loop_gain_attribution(states, actions, rates)
+        drift_by_noise.append(abs(fit.fitted_drift - true_drift))
+        condition_by_noise.append(fit.design_condition)
+
+    predicted = tuple(-g * curvature for g in gains)
+    return ClosedLoopAttributionCertificate(
+        gains=tuple(float(g) for g in gains),
+        true_interaction=true_interaction,
+        recovered=tuple(recovered),
+        drift_error=tuple(drift_error),
+        curvature=curvature,
+        spurious=tuple(spurious),
+        spurious_predicted=predicted,
+        refuted_guess=tuple(-1.0 / g for g in gains),
+        exploration=tuple(float(e) for e in exploration),
+        drift_error_by_exploration=tuple(drift_by_noise),
+        condition_by_exploration=tuple(condition_by_noise),
+        ok=(
+            all(abs(b - true_interaction) < 1e-6 for b in recovered)
+            and max(drift_error) > 1e-2  # the pole is NOT recovered, and that is the point
+            and all(abs(s - p) < 1e-6 for s, p in zip(spurious, predicted, strict=True))
+            and drift_by_noise[-1] < 1e-6  # exploration buys the drift back
+            and condition_by_noise[-1] < condition_by_noise[0]
+        ),
     )

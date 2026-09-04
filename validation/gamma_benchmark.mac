@@ -1,0 +1,78 @@
+/* DISCOVERY (benchmarking Gamma): Result 32 ships Gamma as the analyst's unfalsifiable input.
+   Unfalsifiable is not the same as uncalibrated. Two calibrations exist and both are exact algebra:
+   (a) express Gamma in units of the confounding an OBSERVED covariate carries -- which forces the
+   LOG scale, because odds ratios COMPOSE MULTIPLICATIVELY; and (b) the negative control, the
+   smallest Gamma reconciling a known-null outcome, which needs the endpoint that actually BINDS.
+   The second is where a wrong answer hides: the MSM interval is NOT symmetric about the mean, and
+   the two endpoints read OPPOSITE tails of the sample. proofs/gamma_benchmark.v machine-checks the
+   composition law, the endpoint reduction and the saturation criterion. */
+display2d : false$
+
+/* The sharp MSM upper bound as shipped (chc.uncertainty.msm_worst_case_mean): weight Gamma on the
+   top tau-tail, 1/Gamma elsewhere, tau = 1/(Gamma+1), and the complementary mean closes the mean
+   constraint.  cp = CVaR of the top tau tail, mu = sample mean. */
+tau  : 1/(g + 1)$
+cm   : (mu - tau*cp)/(1 - tau)$              /* complementary bottom (1-tau) mean */
+infl : (g - 1)/(g + 1) * (cp - cm)$          /* confounding_robust_inflation */
+U    : mu + infl$
+
+/* (1) THE INFLATION COLLAPSES. Three constants (Gamma-1)/(Gamma+1), tau and the complementary mean
+   cancel into one factor: the sharp bound is a (1 - 1/Gamma) blend of the mean and the tail CVaR.
+   The shipped code computes it the long way, so this is what it is really computing. */
+print("(1) U - (mu + (1 - 1/g)*(cp - mu)) =",
+      ratsimp( U - (mu + (1 - 1/g)*(cp - mu)) ), "  (=0)")$
+
+/* (2) GAMMA = 1 IS POINT IDENTIFICATION and the bound is monotone in Gamma. The blend weight
+   1 - 1/g rises from 0, and cp - mu >= 0 for any sample, so U increases with Gamma. */
+print("(2) U at g=1 minus mu =", ratsimp( subst(g = 1, U) - mu ), "  (=0)")$
+print("    d/dg of the blend weight =", diff(1 - 1/g, g), "  (>0 for g>0)")$
+
+/* (3) SATURATION. tau -> 0 sends cp -> max(y) and the blend weight -> 1, so U -> max(y). A null
+   whose whole sample sits on one side of zero can therefore NEVER be reconciled: this limit is the
+   `inf` return, not a numerical give-up. */
+print("(3) limit of U as g -> inf =", limit( mu + (1 - 1/g)*(ymax - mu), g, inf ), "  (=ymax)")$
+
+/* (4) THE ENDPOINTS READ OPPOSITE TAILS. The lower endpoint is Lo(y) = -U(-y). Reflecting the
+   sample maps the top tail of -y onto the BOTTOM tail of y, so with cn = mean of the bottom
+   tau-tail of y the lower endpoint is mu - (1 - 1/g)*(mu - cn). Using cp for both endpoints -- the
+   symmetric-interval reflex -- is wrong unless the two tails happen to mirror each other. */
+Ureflect : -( (-mu) + (1 - 1/g)*((-cn) - (-mu)) )$
+print("(4) -U(-y) - (mu - (1 - 1/g)*(mu - cn)) =",
+      ratsimp( Ureflect - (mu - (1 - 1/g)*(mu - cn)) ), "  (=0)")$
+print("    symmetric-reflex error  Lo_true - (mu - (1-1/g)*(cp - mu)) =",
+      ratsimp( Ureflect - (mu - (1 - 1/g)*(cp - mu)) ),
+      "  (=0 only when cp + cn = 2*mu, i.e. mirrored tails)")$
+
+/* (5) THE NEGATIVE CONTROL IS A CLOSED FORM, not only a bisection. For a positive estimate the
+   lower endpoint has to reach zero: mu - (1 - 1/g)*(mu - cn) = 0. Solve for g. */
+gcal : rhs(first(solve( mu - (1 - 1/g)*(mu - cn) = 0, g )))$
+print("(5) calibrated Gamma =", ratsimp(gcal))$
+print("    residual at that Gamma =", ratsimp( subst(g = gcal, mu - (1 - 1/g)*(mu - cn)) ), "  (=0)")$
+print("    Gamma >= 1 iff  gcal - 1 =", ratsimp(gcal - 1),
+      "  (>=0 exactly when mu>0>cn, which is when a null needs reconciling at all)")$
+/* cn itself depends on Gamma through tau, so the shipped routine bisects rather than substituting
+   this form; the closed form is the CHECK, and it is what the endpoint residual gate measures. */
+
+/* (6) ODDS RATIOS COMPOSE. Two unmeasured confounders shifting the assignment logit by a and b
+   give a combined shift a+b, so the sensitivities MULTIPLY. This is the whole reason the benchmark
+   reports log(Gamma)/log(Gamma_strongest) and not Gamma/Gamma_strongest. */
+Gam(z) := exp(z)$
+print("(6) Gam(a+b) - Gam(a)*Gam(b) =", ratsimp( Gam(a + b) - Gam(a)*Gam(b) ), "  (=0)")$
+print("    log is the unique additive scale:  log(Gam(a+b)) - (log(Gam(a)) + log(Gam(b))) =",
+      ratsimp( log(Gam(a + b)) - (log(Gam(a)) + log(Gam(b))) ), "  (=0)")$
+
+/* (7) k IS AN EXPONENT. "k times as strong as the strongest observed covariate" means k times the
+   logit gap, hence Gamma = Gs^k and k = log(Gamma)/log(Gs). Unique whenever Gs > 1. */
+print("(7) Gs^(log(G)/log(Gs)) - G =", ratsimp( radcan( Gs^(log(G)/log(Gs)) - G ) ), "  (=0)")$
+
+/* (8) REFUTATION: the LINEAR ratio G/Gs is right at exactly one point. If it were the scale, a
+   confounder "twice as strong" would be 2*Gs; composition says it is Gs^2. The two agree only at
+   Gs = 2, so the linear reading is not a weaker convention, it is a different claim that happens to
+   coincide once. */
+print("(8) 2*Gs - Gs^2 =", factor( 2*Gs - Gs^2 ), "  (=0 only at Gs=0 or Gs=2)")$
+
+/* (9) A NULL COVARIATE SCORES exp(O(n^{-1/2})), NOT 1. Dropping a truly-zero coefficient leaves a
+   gap driven by the estimation error d of that coefficient, so the implied Gamma is exp(|d*x|) and
+   log(Gamma) inherits the root-n rate. The gate is therefore on log(Gamma)*sqrt(n), not on Gamma. */
+print("(9) log(exp(abs(d*xq))) - abs(d)*abs(xq) =",
+      ratsimp( log(exp(abs(d*xq))) - abs(d)*abs(xq) ), "  (=0)")$

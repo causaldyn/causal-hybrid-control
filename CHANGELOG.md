@@ -9,6 +9,57 @@ still change).
 
 ### Added
 
+- **Gamma is unfalsifiable, but it is not uncalibrated** (`chc.uncertainty.benchmark_gamma`,
+  `negative_control_gamma`, `gamma_benchmark_certificate`, `GammaBenchmark`,
+  `GammaBenchmarkCertificate`). Result 32 ships `Gamma` as the analyst's input and says so at every
+  use. Two calibrations turn it into a number that can be argued about. **Benchmarking** drops an
+  observed covariate from the propensity: the two fits differ by exactly the kind of odds ratio the
+  MSM bounds, so `Gamma_j = exp(quantile_i |logit e(x_i) - logit e_{-j}(x_i)|)` is the sensitivity a
+  confounder as strong as covariate `j` would generate (Cinelli-Hazlett, in MSM units).
+  **Negative-control calibration** inverts a known-null outcome for the smallest `Gamma` that
+  reconciles it -- a *lower bound* on the confounding actually present, so assuming less is refuted
+  by the data rather than merely unappealing, and `inf` when the sample lies wholly on one side of
+  zero and the model class is refuted instead.
+
+  `multiples_of_strongest` is `log(Gamma)/log(Gamma_strongest)`, an **exponent**: odds ratios compose
+  multiplicatively, so a confounder twice as strong as the benchmark is `Gamma_s^2`, not `2*Gamma_s`.
+  The two readings coincide at `Gamma_s = 2` and nowhere else above 1 (Rocq
+  `linear_scale_coincides_once`).
+
+  Two measurements changed the design. The MSM's own statistic is the **sup** over units, and under
+  an unbounded covariate the sup is an extreme order statistic: measured `309 -> 382 -> 397 -> 734`
+  as `n` runs `500 -> 4000 -> 32000 -> 128000`, while the 95th percentile sits at `22, 24, 19, 19`.
+  A benchmark that quadruples because more data arrived is not a benchmark, so `quantile` defaults
+  to 0.95 and the chosen value is reported; pass `quantile=1.0` for the uniform bound. And the MSM
+  interval is **not symmetric about the mean** -- a positive estimate is reconciled by the lower
+  endpoint, a negative one by the upper, and the two read opposite tails. Reusing the upper tail for
+  both understates the confounding: on a right-skewed null it returns a finite `Gamma` where the
+  true answer is that no `Gamma` reconciles the sample at all.
+
+  `validation/gamma_benchmark.mac` also collapses the shipped three-constant bound to one blend,
+  `mu + (1 - 1/Gamma)*(CVaR - mu)`, verified against the code to 4.4e-16.
+
+- **What a setpoint-tracked log identifies, and what it manufactures**
+  (`chc.dynamics_id.closed_loop_gain_attribution`, `closed_loop_attribution_certificate`,
+  `ClosedLoopAttribution`). Result 41 ended with an open item: why the interaction coefficient `b1`
+  of `dx/dt = d + a*x + (b0 + b1*x)*u` comes out large and negative on a tracked zone. It is a
+  property of the log. A proportional loop puts every sample on an affine manifold `x = c + m*u`
+  with `m = -1/gain`, and restricted to it the four-term class collapses to a quadratic in the
+  action where only `b1` reaches the `u^2` term. So **the interaction is the identified coefficient
+  and the pole is not** -- the inverse of the usual reading -- and `b1 = C/m = -gain*C` with `C` the
+  curvature of the response in the action.
+
+  Two arms separate an interaction the plant *has* from one the loop *manufactures*. With a real
+  `b1 = -0.30` the fit returns it exactly at every gain while the drift error stays at ~0.06 and the
+  design's condition number is `3.7e16`. With **no** interaction but a curvature the class cannot
+  represent, the fit answers `-gain*C`, growing linearly: `-0.073, -0.145, -0.378, -1.163` over
+  gains `0.5, 1, 2.6, 8`. At gain 2.6 a curvature of 0.1454 is reported as `-0.37804`, against the
+  `-0.3779` measured on the emulator. Exploration off the manifold is the remedy and it is cheap:
+  `sigma = 0.05` drops the condition number to 893 and recovers the drift exactly.
+
+  This also refutes the guess that `b1 = -1/gain`: that is the manifold *slope*, and it moves the
+  opposite way in the gain -- the interaction grows with a tighter loop, the guess shrinks.
+
 - **Global strong monotonicity of the congestion equilibrium**
   (`chc.games.equilibrium_monotonicity_certificate`, `EquilibriumMonotonicityCertificate`).
   Result 39 (b) bounds `||(I - S')^{-1}||` at the equilibrium -- an implicit-function derivative, so

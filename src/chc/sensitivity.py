@@ -8,6 +8,14 @@ NumPy/SciPy, ``chc.uncertainty`` is JAX). Nothing is moved -- this is a discover
 
 The pipeline, estimate -> sensitivity radius -> robust control -> validation:
 
+0. **Calibrating ``Gamma`` before spending it (§32 (b)).** ``Gamma`` cannot be tested against the
+   data, but it can be priced. :func:`benchmark_gamma` expresses it in units of the confounding the
+   OBSERVED covariates carry -- dropping covariate ``j`` from the propensity produces exactly the
+   pair of propensities the MSM bounds -- and reports the EXPONENT
+   ``log(Gamma)/log(Gamma_strongest)``, because odds ratios compose multiplicatively.
+   :func:`negative_control_gamma` inverts a known-null outcome for the smallest ``Gamma`` that
+   reconciles it, a *lower bound* on the confounding present: assuming less is refuted by the data,
+   and ``inf`` says the model class is refuted instead.
 1. **Sensitivity radius (§32, bounded density-ratio / MSM).** Given a treated-outcome sample and a
    sensitivity ``Gamma >= 1`` (the analyst's unfalsifiable input, ``[1/Gamma, Gamma]`` density-ratio
    box), the sharp worst-case effect is a CVaR mixture; :func:`confounding_robust_inflation` /
@@ -101,12 +109,17 @@ from chc.uncertainty import (
     ConfoundingRobustCertificate,
     ConfoundingRobustClosedLoopCertificate,
     ConfoundingRobustPenalty,
+    GammaBenchmark,
+    GammaBenchmarkCertificate,
+    benchmark_gamma,
     confounding_robust_certificate,
     confounding_robust_closed_loop_bound,
     confounding_robust_closed_loop_certificate,
     confounding_robust_inflation,
     confounding_robust_radius,
+    gamma_benchmark_certificate,
     msm_worst_case_mean,
+    negative_control_gamma,
 )
 
 __all__ = [
@@ -120,6 +133,8 @@ __all__ = [
     "ConfoundingRobustPenalty",
     "ConfoundingRobustTask",
     "DynamicConfoundingCurve",
+    "GammaBenchmark",
+    "GammaBenchmarkCertificate",
     "MarketplaceControlCurve",
     "SafetyCertificate",
     "SafetyFilterBenchmark",
@@ -128,6 +143,7 @@ __all__ = [
     "barrier_confounding_certificate",
     "barrier_gamma_star",
     "barrier_reachability_gap",
+    "benchmark_gamma",
     "certainty_equivalence_control",
     "certify_safety",
     "confounding_regret_floor_certificate",
@@ -144,9 +160,11 @@ __all__ = [
     "confounding_robust_tracking_benchmark",
     "confounding_robust_tracking_loop",
     "control_channel",
+    "gamma_benchmark_certificate",
     "identification_radius_threshold",
     "lq_regret_sensitivity",
     "msm_worst_case_mean",
+    "negative_control_gamma",
     "robust_barrier_margin",
     "robust_safe_action",
     "robust_safety_filter",

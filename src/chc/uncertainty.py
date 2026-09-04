@@ -18,6 +18,7 @@ cannot move the learned dynamics much (plans/20 §B).
 from __future__ import annotations
 
 import operator
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -1212,4 +1213,305 @@ def confounding_cost_bound_certificate(
         first_order_ratio=tuple(first_ratio),
         worst_ratio=max(ratio),
         ok=max(ratio) <= 1.0,
+    )
+
+
+# --- Result 32 (A19): Gamma is unfalsifiable only if nobody benchmarks it ---
+
+
+def _logistic_fit(
+    design: NDArray[np.float64],
+    treated: NDArray[np.float64],
+    ridge: float = 1e-6,
+    steps: int = 60,
+    tol: float = 1e-10,
+) -> NDArray[np.float64]:
+    """Ridge-penalised logistic regression by IRLS -- the propensity model benchmarking needs.
+
+    Newton on the penalised log-likelihood; the ridge is on the slopes only, so an intercept-only
+    model is unpenalised and the fit stays invariant to shifting the outcome's base rate. Converges
+    in a handful of steps on the well-separated designs a benchmark sweeps, and the iteration is
+    stopped on the coefficient step rather than the likelihood, which is what a caller comparing two
+    *nested* fits needs: the difference of two half-converged logits is not an odds ratio.
+    """
+    coefficients = np.zeros(design.shape[1], dtype=np.float64)
+    penalty = ridge * np.eye(design.shape[1])
+    penalty[0, 0] = 0.0
+    for _ in range(steps):
+        probability = 1.0 / (1.0 + np.exp(-design @ coefficients))
+        weights = np.clip(probability * (1.0 - probability), 1e-12, None)
+        gradient = design.T @ (treated - probability) - penalty @ coefficients
+        hessian = design.T @ (design * weights[:, None]) + penalty
+        step = np.linalg.solve(hessian, gradient)
+        coefficients = coefficients + step
+        if float(np.max(np.abs(step))) < tol:
+            break
+    return coefficients
+
+
+@dataclass(frozen=True)
+class GammaBenchmark:
+    """``Gamma`` expressed in units of the confounding the OBSERVED covariates actually carry."""
+
+    names: tuple[str, ...]
+    implied_gamma: tuple[float, ...]  # the odds-ratio range each covariate alone induces
+    quantile: float  # of the per-unit logit gap; 1.0 is the MSM's own sup and is n-dependent
+    strongest: str
+    strongest_gamma: float
+    assumed_gamma: float
+    multiples_of_strongest: float  # log(assumed)/log(strongest): odds ratios compose, so log scale
+
+
+def benchmark_gamma(
+    treated: NDArray[np.float64],
+    covariates: NDArray[np.float64],
+    assumed_gamma: float,
+    names: Sequence[str] | None = None,
+    quantile: float = 0.95,
+    ridge: float = 1e-6,
+) -> GammaBenchmark:
+    """Price an assumed MSM ``Gamma`` against the observed covariates, in MSM units.
+
+    ``Gamma`` is the analyst's unfalsifiable input, and Result 32 says so every time it is used. It
+    is unfalsifiable; it is not *uncalibrated*. The MSM bounds the assignment odds ratio between the
+    true propensity and the modelled one uniformly over units, and dropping an observed covariate
+    produces exactly such a pair -- so
+
+        ``Gamma_j = exp( quantile_i | logit e(x_i) - logit e_{-j}(x_i) | )``
+
+    is the sensitivity a confounder as strong as covariate ``j`` would generate, measured rather
+    than assumed.
+
+    **``quantile = 1.0`` is the MSM's own quantity and it is not the default, because it grows
+    with the sample.** The model bounds the odds ratio *uniformly* over units, so the sup is the
+    faithful statistic -- but under an unbounded covariate the sup is an extreme order statistic.
+    Measured on a standard-normal design, the sup runs ``309 -> 382 -> 397 -> 734`` as ``n`` goes
+    ``500 -> 4000 -> 32000 -> 128000``, while the 95th percentile sits at ``22, 24, 19, 19`` and
+    the median at ``2.7, 3.0, 2.7, 2.8``. A benchmark that quadruples because more data arrived is
+    not a benchmark, so the default reports a quantile and says which one; pass ``quantile=1.0``
+    when the uniform bound is the point and the covariates are bounded.
+
+    ``multiples_of_strongest`` then reads ``Gamma`` as "an unobserved confounder ``k`` times as
+    strong as the strongest thing we did observe", on the log scale odds ratios compose in. A
+    ``k`` far below 1 is an assumption nobody should be impressed by; a ``k`` far above 1 is one
+    the analyst has to defend.
+
+    SCOPE. Per-covariate and one-at-a-time: this is the *marginal* strength of each covariate, not a
+    policy-level aggregation over a set of them, and the two differ whenever covariates are
+    correlated. Dropping a covariate from the propensity is a benchmark, not a claim that the
+    unobserved confounder resembles it. The propensity is logistic-linear in the columns as passed;
+    a benchmark is only as good as that model, which is why the covariates should already carry the
+    basis expansion the analyst believes.
+    """
+    if assumed_gamma < 1.0:
+        raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {assumed_gamma}")
+    if not 0.0 < quantile <= 1.0:
+        raise ValueError(f"quantile must lie in (0, 1]; got {quantile}")
+    x = np.asarray(covariates, dtype=np.float64)
+    if x.ndim != 2:
+        raise ValueError(f"covariates must be 2-D (n, p); got shape {x.shape}")
+    if x.shape[1] == 0:
+        raise ValueError("benchmarking needs at least one observed covariate")
+    t = np.asarray(treated, dtype=np.float64).ravel()
+    labels = tuple(names) if names is not None else tuple(f"x{j}" for j in range(x.shape[1]))
+    if len(labels) != x.shape[1]:
+        raise ValueError(f"got {len(labels)} names for {x.shape[1]} covariates")
+
+    design = np.column_stack([np.ones(x.shape[0]), x])
+    full_logit = design @ _logistic_fit(design, t, ridge)
+    implied = []
+    for j in range(x.shape[1]):
+        reduced = np.delete(design, j + 1, axis=1)
+        gap = np.abs(full_logit - reduced @ _logistic_fit(reduced, t, ridge))
+        implied.append(float(np.exp(np.quantile(gap, quantile))))
+
+    best = int(np.argmax(implied))
+    strongest = implied[best]
+    return GammaBenchmark(
+        names=labels,
+        implied_gamma=tuple(implied),
+        quantile=quantile,
+        strongest=labels[best],
+        strongest_gamma=strongest,
+        assumed_gamma=assumed_gamma,
+        # log(1) = 0 would divide: a covariate that moves the odds not at all sets no scale, and
+        # saying so beats reporting a finite multiple of nothing.
+        multiples_of_strongest=(
+            float("inf") if strongest <= 1.0 else float(np.log(assumed_gamma) / np.log(strongest))
+        ),
+    )
+
+
+def negative_control_gamma(
+    outcomes: NDArray[np.float64], tol: float = 1e-9, gamma_max: float = 1e6
+) -> float:
+    """Smallest ``Gamma`` whose MSM interval covers zero on a KNOWN-NULL outcome.
+
+    The other half of calibration, and the half that can refute. On an outcome whose true effect is
+    zero, any nonzero estimate is confounding, so the smallest ``Gamma`` that reconciles the two is
+    a **lower bound on the confounding actually present**: assuming less than it is refuted by the
+    data rather than merely unappealing. Monotonicity of the MSM inflation in ``Gamma`` makes the
+    search a bisection, exact to ``tol``.
+
+    Returns ``inf`` when no ``Gamma`` reconciles the null -- the endpoint saturates at the extreme
+    order statistic as ``Gamma -> inf``, so a sample whose values all share the mean's sign cannot
+    be pulled across zero by a bounded density ratio at all, and the negative control has refuted
+    the model class instead of calibrating it.
+
+    The interval is NOT symmetric about the mean, and which endpoint has to travel depends on the
+    sign of the estimate: a positive estimate is reconciled by the *lower* endpoint reaching zero, a
+    negative one by the upper. Reflecting the sample by ``-sign(mean)`` maps both onto the single
+    upper-endpoint routine :func:`msm_worst_case_mean` computes, which is why the sharp CVaR tails
+    are used in the direction that actually binds rather than the convenient one.
+    """
+    y = np.asarray(outcomes, dtype=np.float64).ravel()
+    mu = float(np.mean(y))
+    if mu == 0.0:
+        return 1.0
+    reflected = -np.sign(mu) * y  # mean is now -|mu| < 0; the binding endpoint is the upper one
+    if float(np.max(reflected)) < 0.0:
+        return float("inf")
+    low, high = 1.0, gamma_max
+    if msm_worst_case_mean(reflected, gamma_max) < 0.0:
+        return float("inf")
+    while high - low > tol * max(1.0, low):
+        mid = 0.5 * (low + high)
+        if msm_worst_case_mean(reflected, mid) >= 0.0:
+            high = mid
+        else:
+            low = mid
+    return high
+
+
+@dataclass(frozen=True)
+class GammaBenchmarkCertificate:
+    """Falsifiable gates for :func:`benchmark_gamma` and :func:`negative_control_gamma`."""
+
+    strengths: tuple[float, ...]
+    implied_by_strength: tuple[float, ...]
+    monotone_in_strength: bool
+    null_covariate_gamma: float
+    ranks_with_truth: bool
+    sizes: tuple[int, ...]
+    sup_by_size: tuple[float, ...]
+    quantile_by_size: tuple[float, ...]
+    null_by_size: tuple[float, ...]
+    null_floor_scaled: float  # median of log(null_gamma)*sqrt(n): bounded iff the floor is root-n
+    sup_growth: float  # max/min of the sup over the sample sizes swept
+    quantile_growth: float  # the same ratio for the reported quantile
+    quantile_is_stabler: bool
+    biases: tuple[float, ...]
+    calibrated_gamma: tuple[float, ...]
+    endpoint_residual: float  # |binding endpoint| at the calibrated Gamma, worst over the sweep
+    calibration_monotone: bool
+    unreconcilable_is_infinite: bool
+    ok: bool
+
+
+def gamma_benchmark_certificate(
+    strengths: Sequence[float] = (0.25, 0.5, 1.0, 2.0),
+    sizes: Sequence[int] = (500, 4000, 32000),
+    biases: Sequence[float] = (0.1, 0.2, 0.4),
+    quantile: float = 0.95,
+    samples: int = 4000,
+    seed: int = 0,
+) -> GammaBenchmarkCertificate:
+    """Check that the benchmark measures confounding strength and that the calibration binds.
+
+    Five gates, each able to fail:
+
+    1. **Monotone in strength.** A covariate whose logit coefficient grows induces a larger implied
+       ``Gamma``. A benchmark that does not order confounders by strength orders nothing.
+    2. **The null covariate's score is a root-``n`` noise floor.** Dropping a coefficient that is
+       truly zero must not manufacture sensitivity beyond sampling noise -- and "beyond sampling
+       noise" is a rate, not a constant, so the gate is that ``log(Gamma_null) * sqrt(n)`` stays
+       bounded as ``n`` grows rather than that a single draw sits below a fixed number. Measured on
+       six seeds per size, that product runs ``2.1, 4.0, 5.0, 4.4`` at ``n = 1000 .. 64000`` while
+       ``Gamma_null`` itself falls ``1.069 -> 1.017``; a single draw of ``1.27`` at ``n = 4000`` is
+       inside that distribution, which is exactly why one draw cannot be the gate.
+    3. **Ranking.** On one design carrying strong / weak / null covariates, the implied ``Gamma``
+       ranks them in that order.
+    4. **The reported quantile is stabler in ``n`` than the sup.** This is the measurement the
+       default rests on, so it is run rather than remembered: the sup is an extreme order statistic
+       under an unbounded covariate and grows with the sample; the quantile should not.
+    5. **The negative control lands on the endpoint, and grows with the planted bias.** At the
+       returned ``Gamma`` the binding interval endpoint sits at zero to solver tolerance, and a
+       larger planted bias needs a larger ``Gamma`` -- plus ``inf`` when the sample cannot be
+       reconciled at all.
+    """
+    rng = np.random.default_rng(seed)
+
+    def draw(n: int, beta: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        x = rng.standard_normal((n, beta.shape[0]))
+        p = 1.0 / (1.0 + np.exp(-(x @ beta)))
+        return (rng.uniform(size=n) < p).astype(np.float64), x
+
+    implied_by_strength = []
+    for strength in strengths:
+        treated, x = draw(samples, np.array([float(strength), 0.0]))
+        implied_by_strength.append(
+            benchmark_gamma(treated, x, 2.0, quantile=quantile).implied_gamma[0]
+        )
+    monotone = bool(np.all(np.diff(implied_by_strength) > 0.0))
+
+    treated, x = draw(samples, np.array([1.5, 0.4, 0.0]))
+    ranked = benchmark_gamma(treated, x, 2.0, names=("strong", "weak", "null"), quantile=quantile)
+    null_gamma = ranked.implied_gamma[2]
+    ranks = bool(
+        ranked.implied_gamma[0] > ranked.implied_gamma[1] > ranked.implied_gamma[2]
+        and ranked.strongest == "strong"
+    )
+
+    sup_by_size, quantile_by_size, null_by_size = [], [], []
+    for n in sizes:
+        treated, x = draw(int(n), np.array([1.5, 0.4, 0.0]))
+        sup_by_size.append(benchmark_gamma(treated, x, 2.0, quantile=1.0).strongest_gamma)
+        at_quantile = benchmark_gamma(treated, x, 2.0, quantile=quantile)
+        quantile_by_size.append(at_quantile.strongest_gamma)
+        null_by_size.append(at_quantile.implied_gamma[2])
+    null_floor_scaled = float(
+        np.median([np.log(g) * np.sqrt(n) for g, n in zip(null_by_size, sizes, strict=True)])
+    )
+    sup_growth = float(max(sup_by_size) / min(sup_by_size))
+    quantile_growth = float(max(quantile_by_size) / min(quantile_by_size))
+
+    calibrated, residuals = [], []
+    for bias in biases:
+        null_outcome = rng.standard_normal(samples) + float(bias)
+        gamma = negative_control_gamma(null_outcome)
+        calibrated.append(gamma)
+        # positive mean: the LOWER endpoint is the one that has to reach zero
+        residuals.append(abs(-msm_worst_case_mean(-null_outcome, gamma)))
+    calibration_monotone = bool(np.all(np.diff(calibrated) > 0.0))
+    unreconcilable = negative_control_gamma(np.abs(rng.standard_normal(samples)) + 1.0)
+
+    ok = bool(
+        monotone
+        and ranks
+        and null_floor_scaled < 12.0
+        and quantile_growth < sup_growth
+        and calibration_monotone
+        and max(residuals) < 1e-6
+        and np.isinf(unreconcilable)
+    )
+    return GammaBenchmarkCertificate(
+        strengths=tuple(float(s) for s in strengths),
+        implied_by_strength=tuple(implied_by_strength),
+        monotone_in_strength=monotone,
+        null_covariate_gamma=float(null_gamma),
+        ranks_with_truth=ranks,
+        sizes=tuple(int(n) for n in sizes),
+        sup_by_size=tuple(sup_by_size),
+        quantile_by_size=tuple(quantile_by_size),
+        null_by_size=tuple(null_by_size),
+        null_floor_scaled=null_floor_scaled,
+        sup_growth=sup_growth,
+        quantile_growth=quantile_growth,
+        quantile_is_stabler=bool(quantile_growth < sup_growth),
+        biases=tuple(float(b) for b in biases),
+        calibrated_gamma=tuple(calibrated),
+        endpoint_residual=float(max(residuals)),
+        calibration_monotone=calibration_monotone,
+        unreconcilable_is_infinite=bool(np.isinf(unreconcilable)),
+        ok=ok,
     )
