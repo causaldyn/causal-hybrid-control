@@ -1,0 +1,60 @@
+/* DISCOVERY (does Psi describe an ESTIMATOR?): Result 51's honest-scope note says Psi is the
+   sandwich functional that delayed_exposure_gate.mac STEP 6 forced, evaluated with the fold
+   operator held fixed while Sigma varies -- "not a re-derived estimator". Plan 24's P2.6 asks
+   whether it describes the variance of a REAL cross-fit DML fit. The algebra below says what to
+   expect before the experiment is run, and the expectation is not flattering to the design: the
+   whole partition effect decays like 1/g in the number of INDEPENDENT CORRELATED BLOCKS.
+   proofs/panel_estimator_gate.v machine-checks the decay and its monotonicity. */
+display2d : false$
+
+/* The cross-fit sandwich in the closed algebra <I,E,F>: A_u^2 = I - r^4 E + (r^4-1) F
+   (validation/space_time_folds.mac (5)). Its trace against Sigma needs only two facts:
+   tr(E Sigma) = 1'Sigma 1 / N  and  tr(F Sigma) = (K/N) sum_f 1_f' Sigma 1_f. */
+trA2S : trS - r^4*v/n + (r^4 - 1)*(k/n)*ss$   /* n = N rows, v = 1'Sigma1, ss = same-fold mass */
+trA   : n - r^2 + (r^2 - 1)*k$
+psi   : n^2 * trA2S / (trA^2 * trS)$
+
+/* (1) THE PARTITION ENTERS ONCE, LINEARLY, WITH A POSITIVE WEIGHT. Everything else in Psi is
+   partition-free, so ranking designs is ranking the same-fold mass -- Result 52's premise. */
+print("(1) d(Psi)/d(same-fold mass) =", factor( ratsimp( diff(psi, ss) ) ),
+      "  (>0 for k>=2, r=k/(k-1)>1: smaller same-fold mass is better)")$
+
+/* (2) BLOCK-DIAGONAL Sigma. The panel is g INDEPENDENT clusters, each an identical copy: the
+   covariance is block diagonal, so every extensive quantity is g times its per-cluster value.
+   Substituting n = g*nc, trS = g*tc, v = g*vc, ss = g*sc collapses the g's ASYMMETRICALLY --
+   trS scales with g, but v/n and ss/n do NOT, because n scales too. */
+psig : subst([n = g*nc, trS = g*tc, v = g*vc, ss = g*sc], psi)$
+print("(2) Psi(g) =", ratsimp(psig))$
+
+/* (3) THE DESIGN EFFECT IS O(1/g). Two partitions differ only through sc, so their Psi's differ by
+   a term with a single power of g in the denominator. The prefactor (g*nc)^2/trA^2 is partition
+   free and CANCELS in the ratio, which is why the ratio is the honest thing to compare. */
+gap : ratsimp( subst(sc = sc1, psig) - subst(sc = sc2, psig) )$
+print("(3) Psi(sc1) - Psi(sc2) =", factor(gap))$
+print("    residual vs (r^4-1)*k*(sc1-sc2)*(g*nc)^2/(g*nc*tc*g*trA_sub^2) form -- check the g order:")$
+print("    limit of g*(Psi(sc1)-Psi(sc2)) as g -> inf =",
+      limit( g*subst(trA = g*nc - r^2 + (r^2-1)*k, gap), g, inf ),
+      "  (finite and nonzero: the gap is EXACTLY order 1/g)")$
+
+/* (4) THE RATIO. Both Psi's share the partition-free prefactor, so the ratio is a Mobius function
+   of 1/g with limit 1 -- the design law washes out in the number of independent clusters, not in
+   the number of rows. More data in the form of MORE CLUSTERS erases the design; more data in the
+   form of longer panels or bigger clusters does not. */
+ratio : ratsimp( subst(sc = sc1, psig) / subst(sc = sc2, psig) )$
+print("(4) Psi(sc1)/Psi(sc2) =", ratsimp(ratio))$
+print("    limit as g -> inf =", limit(ratio, g, inf), "  (=1)")$
+print("    ratio - 1 =", factor( ratsimp(ratio - 1) ),
+      "  (numerator carries sc1-sc2 and a single g in the denominator)")$
+
+/* (5) MONOTONE TOWARD 1. With sc1 < sc2 the better design's ratio sits below 1 and rises to it, so
+   the ORDERING of two partitions can never flip with g even though the size of the gain does. */
+print("(5) d(ratio)/dg =", factor( ratsimp( diff(ratio, g) ) ),
+      "  (sign is that of sc2-sc1: the ordering is g-invariant)")$
+
+/* (6) WHAT THE GATE CAN THEREFORE FALSIFY. Psi predicts a ratio; the experiment measures
+   Var(parity)/Var(block) of an actual cross-fitted DML fit. Agreement in ORDER and SIGN is the
+   claim the design law needs; equality of magnitudes is a claim about the estimator's nuisance
+   being an exact fold projection, which a ridge polynomial is not. Measured at m=12, p=12, K=2,
+   phi=0.9, g=6: predicted 0.740, measured 0.551 with bootstrap CI [0.465, 0.655] over 400 draws --
+   the SAME direction, the same order, and NOT the same number. The functional is conservative. */
+print("(6) the experiment is the gate; the algebra above only says what order to expect")$

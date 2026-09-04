@@ -9,6 +9,22 @@ still change).
 
 ### Added
 
+- **Result 51's `Psi` measured against a real cross-fit estimator** (`chc.regret.
+  panel_estimator_certificate`, `PanelEstimatorGate`). Result 51 shipped `Psi` saying in its own
+  scope note that it is a functional of the process, "not a re-derived estimator". This runs the
+  comparison. The partition enters `Psi` once, linearly, with positive weight, and with a
+  block-diagonal covariance over `g` independent clusters every partition-free factor cancels from
+  the RATIO, leaving a Mobius function of the cluster count with `|ratio - 1| <= C/g`. **The design
+  law is a finite-cluster statement**: more data as more clusters erases it, more data as longer
+  panels or larger clusters does not.
+
+  Against a ridge-polynomial DML fit over 300 draws (`m=12`, `p=12`, `K=2`): six cells of six agree
+  on the sign, both predicted and measured wash out toward 1 with `g`, the functional is
+  **conservative in every cell** -- the estimator gains 5-23% more from the good partition than
+  `Psi` predicts -- and the bootstrap interval covers the prediction in **two cells of six**. So
+  `Psi` is a ranking rule, not a point predictor of an estimator's variance ratio. The certificate
+  gates the sign, the washout and the conservatism, and **counts coverage without gating on it**.
+
 - **Folds on both axes of a delayed-network panel** (`chc.network_causal.panel_covariance`,
   `kronecker_spectrum`; `chc.regret.optimal_fold_partition(time_axis=...)`,
   `space_time_fold_certificate`, `SpaceTimeFoldCurve`). Result 51 showed the delayed-network

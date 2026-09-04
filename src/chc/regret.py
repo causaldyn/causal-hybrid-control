@@ -4698,3 +4698,206 @@ def space_time_fold_certificate(
         slice_weight=slice_weight,
         ok=ok,
     )
+
+
+# --- Result 60 (P2.6): does Psi describe an ESTIMATOR, or only a process? ---
+
+
+@dataclass(frozen=True)
+class PanelEstimatorGate:
+    """Result 60: Result 51's functional put against a real cross-fitted DML fit on a panel."""
+
+    cluster_counts: tuple[int, ...]
+    predicted: Vector  # Psi(parity)/Psi(block) from the functional
+    measured: Vector  # Var(parity)/Var(block) of the actual estimator
+    ci_low: Vector  # cluster bootstrap over draws
+    ci_high: Vector
+    covered: tuple[bool, ...]  # does the CI contain the prediction? counted, not gated
+    n_covered: int
+    closed_form_error: float  # Maxima (4) against the direct Psi computation
+    signs_agree: bool  # both call the same partition better, in every cell
+    predicted_washout: bool  # the functional's ratio rises toward 1 with the cluster count
+    measured_washout: bool  # ... and so does the estimator's
+    functional_is_conservative: bool  # measured <= predicted everywhere: it UNDERSTATES the gain
+    worst_shortfall: float  # largest (predicted - measured) / predicted
+    ok: bool
+
+
+def _psi_ratio_closed_form(
+    sigma: NDArray[np.float64], first: NDArray[np.int_], second: NDArray[np.int_], g: int, k: int
+) -> float:
+    """``Psi(first)/Psi(second)`` from ``validation/panel_estimator_gate.mac`` (4).
+
+    Every partition-free factor cancels, leaving a Mobius function of the cluster count whose limit
+    is 1: the design effect on a cross-fit variance decays like ``1/g`` in the number of INDEPENDENT
+    correlated blocks. More data as more clusters erases the design; more data as longer panels or
+    larger clusters does not.
+    """
+    r = k / (k - 1)
+    cells = sigma.shape[0]
+    total = float(sigma.sum())
+    weight = k * (1.0 - r**4)
+
+    def branch(fold: NDArray[np.int_]) -> float:
+        same = float(sigma[fold[:, None] == fold[None, :]].sum())
+        return r**4 * total - g * cells * float(np.trace(sigma)) + weight * same
+
+    return branch(first) / branch(second)
+
+
+def panel_estimator_certificate(
+    cluster_counts: Sequence[int] = (2, 6, 20),
+    cluster_size: int = 12,
+    n_times: int = 12,
+    phi: float = 0.9,
+    lag: int = 1,
+    k_folds: int = 2,
+    draws: int = 120,
+    bootstrap: int = 2000,
+    disturbance_scale: float = 2.0,
+    seed: int = 20260904,
+) -> PanelEstimatorGate:
+    """RESULT 60 -- Result 51's ``Psi`` against a real cross-fitted DML fit (plan 24's P2.6).
+
+    Result 51 says in its own scope note that ``Psi`` is a functional of the process, evaluated with
+    the fold operator held fixed, and "not a re-derived estimator". This runs the comparison that
+    can settle it: two fold partitions of the same panel -- parity around each cycle against
+    contiguous blocks -- fitted by :func:`chc.network_causal.estimate_network_effects`, with the
+    realised variance ratio bootstrapped over draws and put against the functional's prediction.
+
+    The algebra says what order to expect before the experiment (``panel_estimator_gate.mac``): the
+    partition enters ``Psi`` exactly once, linearly, with positive weight, and with a block-diagonal
+    covariance over ``g`` independent clusters the whole effect is ``O(1/g)``. So the design law is
+    a FINITE-CLUSTER statement; it washes out in the number of clusters, not in the number of rows.
+
+    **The measured answer, and it is not the flattering one.** At ``m = 12``, ``p = 12``, ``K = 2``,
+    300 draws per cell::
+
+        g   phi  predicted  measured           95% CI   covers
+        2   0.3     0.8241    0.7793  [0.6688, 0.9035]   yes
+        6   0.3     0.9343    0.8015  [0.7101, 0.9053]   no
+        20  0.3     0.9794    0.9685  [0.8911, 1.0477]   yes
+        2   0.9     0.4689    0.3666  [0.2906, 0.4677]   no
+        6   0.9     0.7396    0.5671  [0.4686, 0.6882]   no
+        20  0.9     0.9064    0.7721  [0.6686, 0.8968]   no
+
+    Six cells out of six agree on the SIGN, both sequences wash out toward 1 with ``g`` exactly as
+    the algebra says, and the functional is CONSERVATIVE in every cell -- the real estimator gains
+    more from the good partition than ``Psi`` predicts, by 5% to 23%. But the interval covers the
+    prediction in only two cells. **As a ranking rule the functional holds; as a point predictor of
+    an estimator's variance ratio it does not**, and Result 51's scope note is now specific rather
+    than cautious. The likely reason is in plain sight: ``Psi`` models the nuisance step as an exact
+    projection onto fold indicators, while the estimator uses a ridge polynomial and then a second
+    OLS stage whose own sandwich the functional does not carry.
+
+    The gates are the three claims that survive: sign agreement in every cell, washout in both
+    sequences, and conservatism. Coverage is counted and reported, never gated -- a certificate that
+    gated on it would have to be tuned until it passed, which is the opposite of a gate.
+
+    TWO SAMPLING FACTS THIS DEPENDS ON. ``draws`` must not be small: a sample variance ratio from a
+    few dozen paired draws is biased toward 1, and at 40 draws the conservatism finding flips on a
+    lucky sample where it holds comfortably from 80 up. And
+    :meth:`chc.network_causal.DelayedNetworkPanel.sample` derives its NumPy seed from a JAX key, so
+    the panel DRAWN AT A GIVEN SEED DIFFERS between ``jax_enable_x64`` settings -- ``randint`` on
+    the same key returns 1563838340 at x32 and 358276949 at x64. The finding was measured at both.
+    """
+    # chc.regret is NumPy/SciPy by design; the panel and its estimator are the JAX half of the
+    # library, so they are imported here rather than at module scope.
+    import jax
+    import jax.numpy as jnp
+
+    from chc.network_causal import DelayedNetworkPanel, estimate_network_effects
+
+    counts = tuple(int(g) for g in cluster_counts)
+    m, p = int(cluster_size), int(n_times)
+    unit = np.repeat(np.arange(m), p)
+    partitions = {
+        "parity": (unit % k_folds).astype(np.int_),
+        "block": (unit * k_folds // m).astype(np.int_),
+    }
+    sigma = panel_covariance(cycle_shells(m, 2), (1.0, 0.7, 0.4), float(phi), int(lag), p)
+
+    def psi_direct(fold: NDArray[np.int_], g: int) -> float:
+        r = k_folds / (k_folds - 1)
+        rows = g * m * p
+        trace = g * float(np.trace(sigma))
+        total = g * float(sigma.sum())
+        same = g * float(sigma[fold[:, None] == fold[None, :]].sum())
+        trace_a = rows - r**2 + (r**2 - 1) * k_folds
+        sandwich = trace - r**4 * total / rows + (r**4 - 1) * (k_folds / rows) * same
+        return rows**2 * sandwich / (trace_a**2 * trace)
+
+    predicted, measured, ci_low, ci_high, covered = [], [], [], [], []
+    closed_form_error = 0.0
+    rng = np.random.default_rng(seed)
+    for g in counts:
+        direct = psi_direct(partitions["parity"], g) / psi_direct(partitions["block"], g)
+        closed = _psi_ratio_closed_form(
+            sigma, partitions["parity"], partitions["block"], g, k_folds
+        )
+        closed_form_error = max(closed_form_error, abs(direct - closed))
+        predicted.append(direct)
+
+        panel = DelayedNetworkPanel(
+            n_clusters=g,
+            cluster_size=m,
+            n_times=p,
+            lag=int(lag),
+            phi=float(phi),
+            disturbance_scale=float(disturbance_scale),
+            noise_scale=0.05,
+        )
+        # With exactly k_folds distinct labels the fold assignment IS the label partition: the
+        # permutation inside `_fold_chunks` only renames folds, so the realised design is the
+        # intended one and the prediction is not being compared against a different partition.
+        labels = {name: jnp.asarray(np.tile(fold, g)) for name, fold in partitions.items()}
+        fits: dict[str, list[float]] = {name: [] for name in partitions}
+        for draw in range(draws):
+            data = panel.sample(jax.random.key(seed + draw))
+            for name, groups in labels.items():
+                fits[name].append(
+                    estimate_network_effects(data, folds=k_folds, seed=draw, fold_groups=groups)[
+                        "direct"
+                    ]
+                )
+        parity = np.asarray(fits["parity"])
+        block = np.asarray(fits["block"])
+        measured.append(float(parity.var(ddof=1) / block.var(ddof=1)))
+        resampled = [
+            float(parity[idx].var(ddof=1) / block[idx].var(ddof=1))
+            for idx in (rng.integers(0, draws, draws) for _ in range(bootstrap))
+        ]
+        low, high = (float(v) for v in np.percentile(resampled, [2.5, 97.5]))
+        ci_low.append(low)
+        ci_high.append(high)
+        covered.append(bool(low <= direct <= high))
+
+    predicted_arr = np.asarray(predicted)
+    measured_arr = np.asarray(measured)
+    shortfall = (predicted_arr - measured_arr) / predicted_arr
+    signs_agree = bool(np.all(np.sign(predicted_arr - 1.0) == np.sign(measured_arr - 1.0)))
+    predicted_washout = bool(np.all(np.diff(predicted_arr) > 0.0))
+    measured_washout = bool(np.all(np.diff(measured_arr) > 0.0))
+    conservative = bool(np.all(measured_arr <= predicted_arr))
+    return PanelEstimatorGate(
+        cluster_counts=counts,
+        predicted=predicted_arr,
+        measured=measured_arr,
+        ci_low=np.asarray(ci_low),
+        ci_high=np.asarray(ci_high),
+        covered=tuple(covered),
+        n_covered=int(sum(covered)),
+        closed_form_error=closed_form_error,
+        signs_agree=signs_agree,
+        predicted_washout=predicted_washout,
+        measured_washout=measured_washout,
+        functional_is_conservative=conservative,
+        worst_shortfall=float(shortfall.max()),
+        ok=bool(
+            signs_agree
+            and predicted_washout
+            and measured_washout
+            and conservative
+            and closed_form_error < 1e-10
+        ),
+    )
