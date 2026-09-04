@@ -44,6 +44,7 @@ from chc.regret import (
     interference_convexity_certificate,
     interference_orthogonal_certificate,
     interference_regret_certificate,
+    matrix_ratio_certificate,
     minimax_exploration_certificate,
     multichannel_control_certificate,
     multivariate_interference_certificate,
@@ -832,6 +833,41 @@ def test_general_q_ratio_moment_lifts_the_sandwich_off_two_channels() -> None:
     target = 1.0 / (n - 3 - 1)
     error = float(np.max(np.abs(np.diag(got) - target)))
     assert float(np.ptp(np.diag(got))) / 2 <= error + 1e-12
+
+
+def test_matrix_ratio_certificate_reports_what_the_grid_is_worth() -> None:
+    # Result 63 (d): at q = 3 the value alone hides a percent-scale quadrature error, and the
+    # isotropy bar of (e) only exists on exchangeable problems. The refinement residual works on
+    # any problem and is CONSERVATIVE -- measured 1.25x to 5.26x the true error, never below it.
+
+    # 1. q = 2 is converged, so the certificate says so and the value is unchanged
+    n = 6
+    fine = exact_matrix_ratio_moment(np.eye(n), np.eye(n), np.eye(2 * n), nodes=32)
+    cert = matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(2 * n), nodes=32)
+    assert np.allclose(cert.value, fine)
+    assert cert.nodes == 32
+    assert cert.coarse_nodes == 31
+    assert cert.ok
+    assert cert.relative_residual < 1e-6
+
+    # 2. q = 3 on a coarse grid is NOT converged, and the residual is what says so -- while the
+    #    returned array on its own looks perfectly ordinary
+    n = 5
+    coarse = matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(3 * n), nodes=5)
+    assert not coarse.ok
+    assert coarse.relative_residual > 0.1
+
+    # 3. and it never UNDER-states the true error, which is the property that makes it usable:
+    #    the exact answer here is I/(n - q - 1), so the true error is computable
+    truth = np.eye(3) / (n - 3 - 1)
+    true_error = float(np.max(np.abs(coarse.value - truth)))
+    assert coarse.residual >= true_error
+
+    # 4. the contract: a tolerance must be positive, and a residual needs a coarser grid
+    with pytest.raises(ValueError, match="tolerance must be positive"):
+        matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(3 * n), tolerance=0.0)
+    with pytest.raises(ValueError, match="at least 4"):
+        matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(3 * n), nodes=3)
 
 
 def test_exact_ratio_moment_closed_forms_tail_condition_and_crossover_immunity() -> None:

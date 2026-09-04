@@ -40,6 +40,17 @@ still change).
   no reference value in hand -- measured at 77% and 99% of the true error. It is a necessary
   condition only: a grid can be isotropic and uniformly wrong.
 
+- **`matrix_ratio_certificate` -- the same value, plus what the grid is worth**
+  (`chc.regret.matrix_ratio_certificate`, `MatrixRatioAccuracy`). At `q = 3` the returned array
+  carries a percent-scale quadrature error and reveals nothing about it, and the isotropy bar above
+  only exists on exchangeable problems -- precisely not the anisotropic ones, where convergence is
+  worst. This attaches the grid-refinement residual `max|X(nodes) - X(nodes-1)|`, which works on any
+  problem. Measured against both references available (the exact exchangeable anchor and a 4M-draw
+  Monte Carlo) it is CONSERVATIVE in 6 of 6 cells, over-stating the true error by `1.25x` to `5.26x`
+  and never under-stating it. Cost is one coarser grid, about 26% at `nodes = 5`. Read it the way
+  Result 61's certified gap is read: a small residual is evidence, a large one convicts only the
+  grid.
+
 - **The delayed-network panel leaves the cycle, and the network estimator reports uncertainty**
   (`chc.network_causal.torus_adjacency`, `DelayedNetworkPanel(graph=...)`,
   `estimate_network_effects(exclude_neighbours=...)` and its new `direct_se` / `spillover_se`).

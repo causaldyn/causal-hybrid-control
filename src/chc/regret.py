@@ -1676,7 +1676,9 @@ def exact_matrix_ratio_moment(
       ways around this were measured and all three lost: a Smolyak sparse grid on nested open
       Fejer-2 (the tail is algebraic, not Gaussian), per-axis Cholesky scaling, and Aitken
       extrapolation (Gauss-Legendre beats geometric, so a fixed-ratio model over-corrects).
-      **At q = 3, treat the returned value as accurate to the error bar below, not to 6 digits.**
+      **At q = 3 use :func:`matrix_ratio_certificate` instead of this function**: it returns the
+      same value with a grid-refinement error estimate, since nothing in the array itself reveals
+      that the default grid is not converged.
 
     Accuracy is self-certifying where it matters: on an EXCHANGEABLE problem the exact answer is
     isotropic, so the observed spread of the diagonal lower-bounds twice the largest entry error
@@ -1818,6 +1820,76 @@ def exact_matrix_ratio_moment(
     for value, (i, j) in zip(total, entries, strict=True):
         out[i, j] = out[j, i] = value
     return out
+
+
+@dataclass(frozen=True)
+class MatrixRatioAccuracy:
+    """What :func:`exact_matrix_ratio_moment` is worth on the grid it was given -- Result 63 (d).
+
+    At ``q = 2`` the cone is 3-dimensional and the default grid reaches machine precision, so the
+    value needs no caveat. At ``q = 3`` the cone is 6-dimensional and the value carries a
+    percent-scale error that nothing in the returned array reveals. This is the grid-refinement
+    residual: the same integral on the next grid down, and the gap between them.
+
+    Measured against the two references available -- the exact exchangeable anchor and a 4M-draw
+    Monte Carlo -- the residual is CONSERVATIVE in every cell tried, over-stating the true error by
+    ``1.25x`` to ``5.26x`` and never under-stating it. That is the same one-sided logic as Result
+    61's certified gap: a small ``relative_residual`` is evidence, a large one convicts nothing
+    beyond the grid.
+    """
+
+    value: NDArray[np.float64]  # the fine-grid estimate: identical to exact_matrix_ratio_moment
+    coarse: NDArray[np.float64]
+    nodes: int
+    coarse_nodes: int
+    residual: float  # max |fine - coarse|, entrywise
+    relative_residual: float  # residual / max |fine|
+    tolerance: float
+    ok: bool
+
+
+def matrix_ratio_certificate(
+    numerator: NDArray[np.float64],
+    denominator: NDArray[np.float64],
+    regressor_cov: NDArray[np.float64],
+    nodes: int | None = None,
+    tolerance: float = 0.01,
+) -> MatrixRatioAccuracy:
+    """:func:`exact_matrix_ratio_moment` with a quadrature-error estimate attached.
+
+    Same arguments and same value; the extra cost is one coarser grid, which at ``q = 3`` is
+    ``(nodes-1)^6 / nodes^6`` -- about 26% at ``nodes = 5``. Use this rather than the bare value
+    whenever ``q = 3``, where the default grid is not converged and the array alone says nothing
+    about that. The estimator works on ANY problem, including the anisotropic ones where the
+    isotropy bar of Result 63 (e) does not apply at all.
+    """
+    if tolerance <= 0.0:
+        raise ValueError("tolerance must be positive")
+    om = np.asarray(regressor_cov, dtype=np.float64)
+    n = np.asarray(denominator, dtype=np.float64).shape[0]
+    if om.ndim != 2 or om.shape[0] != om.shape[1] or om.shape[0] % n:
+        raise ValueError("regressor_cov must be qn-by-qn: the covariance of vec(X), X n-by-q")
+    q = om.shape[0] // n
+    if nodes is None:
+        nodes = 40 if q == 2 else 8
+    if nodes < 4:
+        raise ValueError("nodes must be at least 4: the residual needs a coarser grid to compare")
+    coarse_nodes = nodes - 1
+    fine = exact_matrix_ratio_moment(numerator, denominator, regressor_cov, nodes=nodes)
+    coarse = exact_matrix_ratio_moment(numerator, denominator, regressor_cov, nodes=coarse_nodes)
+    residual = float(np.max(np.abs(fine - coarse)))
+    scale = float(np.max(np.abs(fine)))
+    relative = residual / scale if scale > 0.0 else residual
+    return MatrixRatioAccuracy(
+        value=fine,
+        coarse=coarse,
+        nodes=nodes,
+        coarse_nodes=coarse_nodes,
+        residual=residual,
+        relative_residual=relative,
+        tolerance=tolerance,
+        ok=relative <= tolerance,
+    )
 
 
 def _fold_weight_matrix(
