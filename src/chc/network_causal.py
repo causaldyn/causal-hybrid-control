@@ -82,6 +82,35 @@ def graph_shells(adjacency: NDArray[np.float64], dmax: int) -> list[NDArray[np.f
     return shells
 
 
+def torus_adjacency(rows: int, cols: int) -> tuple[tuple[int, ...], ...]:
+    """Adjacency rows of the ``rows x cols`` 2-D torus ``C_rows x C_cols``, as nested tuples.
+
+    The immutable form is deliberate: it is what :class:`DelayedNetworkPanel` stores, and a frozen
+    dataclass carrying a NumPy array compares elementwise and stops being usable as a value.
+
+    The torus is the second topology Result 52's design law is tested on and the first one where
+    the law has no closed form: it is vertex-transitive, so every unit sees the same neighbourhood,
+    but ``Q(x)`` is NOT circulant for ``rows, cols > 1``, so
+    :func:`chc.regret.optimal_fold_partition` cannot take the exact banded route and falls back to
+    the search whose price Result 61 measured.
+
+    Raises:
+        ValueError: if either side is below 3, where the wrap would create a double edge and the
+            adjacency would stop being 0/1.
+    """
+    if rows < 3 or cols < 3:
+        raise ValueError(f"a torus needs both sides >= 3 to avoid double edges; got {rows}x{cols}")
+    m = rows * cols
+    adjacency = [[0] * m for _ in range(m)]
+    for r in range(rows):
+        for c in range(cols):
+            here = r * cols + c
+            for nr, nc in ((r, (c + 1) % cols), ((r + 1) % rows, c)):
+                there = nr * cols + nc
+                adjacency[here][there] = adjacency[there][here] = 1
+    return tuple(tuple(row) for row in adjacency)
+
+
 def propagate_shells(
     innovations: NDArray[np.float64],
     shells: Sequence[NDArray[np.float64]],
@@ -263,6 +292,14 @@ class DelayedNetworkPanel:
     would be an approximation; that variant is reachable by raising
     ``eta_smoothing``.
 
+    ``graph`` replaces the cycle with any **regular** adjacency, given as nested tuples so the
+    frozen dataclass stays a value (:func:`torus_adjacency` builds one). Regularity is required and
+    checked, because the ``neighbours`` column is rectangular and a varying degree would have to be
+    padded with a sentinel that every consumer would then have to know about. ``None`` keeps the
+    cycle and the byte-identical draw. The topology matters to the *design*, not to the law: Result
+    52's closed form needs vertex transitivity, and on a torus ``Q(x)`` is not even circulant, so
+    :func:`chc.regret.optimal_fold_partition` takes the search route Result 61 priced.
+
     ``sample`` takes a JAX key like its cross-sectional sibling and returns the same column-dict, so
     ``estimate_network_effects`` accepts a panel with no adapter. Internally the propagation runs
     through the NumPy routine ``chc.regret.delayed_network_certificate`` is verified against; the
@@ -273,6 +310,7 @@ class DelayedNetworkPanel:
     n_clusters: int = 40
     cluster_size: int = 6
     n_times: int = 24
+    graph: tuple[tuple[int, ...], ...] | None = None  # None = the cycle C_cluster_size
     lag: int = 1
     phi: float = 0.6
     gammas: tuple[float, ...] = (1.0, 0.7, 0.4)
@@ -289,8 +327,17 @@ class DelayedNetworkPanel:
         """Draw the panel as flat columns, ordered cluster-major, then unit, then time."""
         m, p, g = self.cluster_size, self.n_times, self.n_clusters
         dmax = len(self.gammas) - 1
-        shells = cycle_shells(m, dmax)
-        ring = shells[1] / shells[1].sum(axis=1, keepdims=True)  # mean over cycle neighbours
+        if self.graph is None:
+            shells = cycle_shells(m, dmax)
+        else:
+            adjacency = np.asarray(self.graph, dtype=np.float64)
+            if adjacency.shape[0] != m:
+                raise ValueError(f"graph has {adjacency.shape[0]} vertices for cluster_size={m}")
+            degrees = adjacency.sum(axis=1)
+            if not np.all(degrees == degrees[0]):
+                raise ValueError("graph must be regular: the neighbours column is rectangular")
+            shells = graph_shells(adjacency, dmax)
+        ring = shells[1] / shells[1].sum(axis=1, keepdims=True)  # mean over graph neighbours
         span = self.burn_in + p + self.lag * dmax
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**31 - 1)))
 
@@ -321,7 +368,7 @@ class DelayedNetworkPanel:
 
         # flat row index of (cluster, unit, time) is g*m*p + i*p + t, so a same-time neighbour of
         # unit i is at the same offset with i replaced -- the graph is per-cluster, never across.
-        ring_idx = np.stack([(np.arange(m) - 1) % m, (np.arange(m) + 1) % m], axis=1)
+        ring_idx = np.argwhere(shells[1] > 0)[:, 1].reshape(m, -1)
         base = (np.arange(g) * m * p)[:, None, None, None]
         neigh = base + ring_idx[None, :, None, :] * p + np.arange(p)[None, None, :, None]
 
@@ -337,7 +384,7 @@ class DelayedNetworkPanel:
             "cid": jnp.asarray(np.repeat(np.arange(g), m * p)),
             "unit": jnp.asarray(np.tile(np.repeat(np.arange(m), p), g)),
             "time": jnp.asarray(np.tile(np.arange(p), g * m)),
-            "neighbours": jnp.asarray(neigh.reshape(g * m * p, 2)),
+            "neighbours": jnp.asarray(neigh.reshape(g * m * p, ring_idx.shape[1])),
         }
 
 
@@ -535,6 +582,30 @@ def _fold_chunks(n: int, folds: int, seed: int, groups: Array | None) -> list[Ar
     return [jnp.where(row_fold == k)[0] for k in range(folds)]
 
 
+def _sandwich_meat(design: Array, resid: Array, groups: Array | None) -> Array:
+    """``sum_c X_c' e_c e_c' X_c``: a cluster-robust sandwich's meat, HC when ``groups`` is None."""
+    if groups is None:
+        weighted = design * resid[:, None]
+        return weighted.T @ weighted
+    labels = jnp.unique(groups)
+    sums = jnp.stack([(design[groups == c] * resid[groups == c, None]).sum(axis=0) for c in labels])
+    return sums.T @ sums
+
+
+def _neighbour_units(data: dict[str, Array]) -> Array:
+    """``(n_units, n_units)``: is unit ``j`` a hop-1 neighbour of unit ``i``, or ``i`` itself?
+
+    Read off the panel's ``neighbours`` column, which holds same-time ROW indices of a unit's graph
+    neighbours -- so mapping them through ``unit`` recovers the unit-level adjacency without the
+    estimator having to be handed the graph a second time.
+    """
+    units = jnp.asarray(data["unit"])
+    neighbours = jnp.asarray(data["neighbours"])
+    n_units = int(units.max()) + 1
+    banned = jnp.eye(n_units, dtype=bool)
+    return banned.at[units[:, None], units[neighbours]].set(True)
+
+
 def estimate_network_effects(
     data: dict[str, Array],
     covariates: tuple[str, ...] = ("x", "z", "x_nb", "z_nb"),
@@ -544,6 +615,7 @@ def estimate_network_effects(
     ridge: float = 1.0,
     seed: int = 0,
     fold_groups: Array | None = None,
+    exclude_neighbours: bool = False,
 ) -> dict[str, float]:
     """Cross-fitted DML for the direct and spillover effects (partials out graph-aware nuisances).
 
@@ -561,22 +633,58 @@ def estimate_network_effects(
     index recovers the graph structure the permutation destroys; passing a graph-aware grouping
     (contiguous blocks of a cycle, a partition of a real graph) moves ``theta`` toward the root.
     Folds become unbalanced when the labels are, which is the price of keeping them intact.
+
+    ``exclude_neighbours`` drops, from each fold's TRAINING set, every row whose unit is a graph
+    neighbour of a unit in the test fold -- the Emmenegger-style rule, which buys validity by
+    throwing data away rather than by choosing the split. It is a baseline to design against, not a
+    default: it is hop-1 (the ``neighbours`` column is what a panel carries), and on a graph-blind
+    split it removes most of the training set, which the estimator feels.
+
+    Returns the two effects and their **cluster-robust** influence-function standard errors,
+    clustered on ``cid`` when the data carry it and heteroskedastic otherwise. Under interference
+    an i.i.d. SE is not conservative-or-not, it is wrong: the score correlates across units that
+    share a spillover, and the cluster is the only level at which independence is credible here. A
+    95% interval is ``effect +/- 1.96 * se``.
     """
     y, u, e = data["x_next"], data["u"], data[exposure]
     covs = jnp.stack([data[c] for c in covariates], axis=1)
     n = y.shape[0]
     chunks = _fold_chunks(n, folds, seed, fold_groups)
+    banned = _neighbour_units(data) if exclude_neighbours else None
+    units = jnp.asarray(data["unit"]) if banned is not None else None
     y_res, u_res, e_res = (jnp.zeros(n), jnp.zeros(n), jnp.zeros(n))
     for k in range(folds):
         test = chunks[k]
         train = jnp.concatenate([chunks[j] for j in range(folds) if j != k])
+        if banned is not None and units is not None:
+            contaminated = jnp.any(banned[units[test]], axis=0)
+            train = train[~contaminated[units[train]]]
+            if train.shape[0] <= covs.shape[1]:
+                raise ValueError(
+                    f"fold {k} keeps {train.shape[0]} training rows after neighbour exclusion. "
+                    "The test fold's hop-1 neighbourhood covers the training fold, which happens "
+                    "on a graph dense enough that every unit is somebody's neighbour -- raise "
+                    "folds so each test fold is smaller, or drop the exclusion rule"
+                )
         phi_tr = _polynomial_features(covs[train], degree)
         phi_te = _polynomial_features(covs[test], degree)
         y_res = y_res.at[test].set(y[test] - _ridge_predict(phi_tr, y[train], phi_te, ridge))
         u_res = u_res.at[test].set(u[test] - _ridge_predict(phi_tr, u[train], phi_te, ridge))
         e_res = e_res.at[test].set(e[test] - _ridge_predict(phi_tr, e[train], phi_te, ridge))
-    coef, *_ = jnp.linalg.lstsq(jnp.stack([u_res, e_res], axis=1), y_res, rcond=None)
-    return {"direct": float(coef[0]), "spillover": float(coef[1])}
+    design = jnp.stack([u_res, e_res], axis=1)
+    gram = design.T @ design
+    coef = jnp.linalg.solve(gram, design.T @ y_res)
+    resid = y_res - design @ coef
+    groups = data.get("cid")
+    meat = _sandwich_meat(design, resid, None if groups is None else jnp.asarray(groups))
+    inv = jnp.linalg.inv(gram)
+    var = jnp.diag(inv @ meat @ inv)
+    return {
+        "direct": float(coef[0]),
+        "spillover": float(coef[1]),
+        "direct_se": float(jnp.sqrt(var[0])),
+        "spillover_se": float(jnp.sqrt(var[1])),
+    }
 
 
 class NeighbourMessagePassing(eqx.Module):

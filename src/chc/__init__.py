@@ -196,6 +196,7 @@ from chc.network_causal import (
     graph_shells,
     kronecker_spectrum,
     panel_covariance,
+    torus_adjacency,
 )
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
 from chc.pathway import (
@@ -830,6 +831,7 @@ __all__ = [
     "time_varying_rollout_bound",
     "time_varying_rollout_certificate",
     "toeplitz_matvec",
+    "torus_adjacency",
     "total_cost",
     "total_cost_diffrax",
     "transport_step",

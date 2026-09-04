@@ -9,6 +9,29 @@ still change).
 
 ### Added
 
+- **The delayed-network panel leaves the cycle, and the network estimator reports uncertainty**
+  (`chc.network_causal.torus_adjacency`, `DelayedNetworkPanel(graph=...)`,
+  `estimate_network_effects(exclude_neighbours=...)` and its new `direct_se` / `spillover_se`).
+  `DelayedNetworkPanel` was cycles-only, so Result 52's design law could only ever be tested on the
+  one topology it has a closed form for. It now takes any **regular** adjacency as nested tuples --
+  regular because the `neighbours` column is rectangular and a varying degree would need a sentinel
+  every consumer would have to know about. `graph=None` keeps the cycle and a byte-identical draw.
+
+  `estimate_network_effects` returns **cluster-robust** influence-function standard errors,
+  clustered on `cid`. Which coefficient the correction reaches is decided by which regressor is
+  smooth: measured clustered / i.i.d. is `0.93` on the direct effect and `1.87` on the spillover,
+  because the exposure is a shell sum while the treatment's exogenous part is i.i.d. across units.
+  One i.i.d. SE for both would understate exactly the coefficient interference is about.
+
+  `exclude_neighbours=True` is the Emmenegger-style baseline -- drop every training row whose unit
+  neighbours a test unit. It is off by default and it raises rather than fitting on nothing when
+  the test fold's hop-1 neighbourhood covers the training fold, which is what happens at `K = 2` on
+  a `3x4` torus or a random cubic graph. Measured against it (`causaldyn-bench` Track N, `C_12`,
+  `g = 2`, 120 draws): exclusion costs **+66%** MSE, contiguous graph blocks **+37%**, and the
+  Result 52 design ties the graph-blind unit split. The law's own mass ratio -- `0.720` cycle,
+  `0.974` torus, `0.966` cubic -- forecasts which topology has a design effect at all, and is right
+  on all three.
+
 - **The fold design is a MAXIMUM cut, and the exact optimum is now reachable at any `m`**
   (`chc.regret.fold_exactness_certificate`, `FoldExactnessCurve`; `optimal_fold_partition` gained
   `FoldDesign.route` and `banded_exact=`). Two things.
