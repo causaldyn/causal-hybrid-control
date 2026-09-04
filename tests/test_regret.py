@@ -911,11 +911,16 @@ def test_optimal_fold_partition_recovers_the_stripe_law_and_certifies() -> None:
         edges = sum(design.fold[i] == design.fold[(i + 1) % 8] for i in range(8))
         assert edges == expect_edges  # 0 = alternating, 4 = width-2 stripes
 
-    # 2. local search (exhaustive_limit forced down) still finds the C_12 global optimum.
+    # 2. local search still finds the C_12 global optimum. banded_exact=False is required as
+    # well as the lowered limit: a cycle is circulant, so otherwise the banded dynamic program
+    # takes the case and this stops testing the search at all.
     shells12 = [np.asarray(sh, dtype=float) for sh in cycle_shells(12, 2)]
     for phi in (0.3, 0.8):
-        design = optimal_fold_partition(shells12, gammas, phi, lag=1, exhaustive_limit=10)
+        design = optimal_fold_partition(
+            shells12, gammas, phi, lag=1, exhaustive_limit=10, banded_exact=False
+        )
         assert not design.exhaustive
+        assert design.route == "spectral-swap"
         assert abs(design.objective - brute(12, shells12, phi)) < 1e-9
 
     # 3. K = 3 on C_6: matches brute force over all balanced 3-colourings.

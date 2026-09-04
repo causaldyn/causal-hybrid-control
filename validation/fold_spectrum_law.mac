@@ -6,7 +6,8 @@
    multiplies the partition is the same-fold indicator with POSITIVE weight (r^4-1) K/m, so Psi is
    AFFINE in the same-fold weighted 2-walk counts (STEP 2). For K = 2 the objective is the
    quadratic form s'Q(x)s in the fold sign vector, Q(x) = sum_{d,e} g_d g_e x^|d-e| S_d S_e:
-   fold design IS minimum-weight balanced graph bisection with delay-dependent weights. On a
+   fold design IS balanced graph bisection with delay-dependent weights -- MAXIMUM-weight cut,
+   see validation/fold_cut_duality.mac for why the name was inverted here. On a
    cycle Q is circulant and diagonalises over Fourier modes (STEP 3); the two PURE spectral
    designs -- parity, all mass at cos(theta) = -1, and width-2 stripes, all mass at
    cos(theta) = 0 (m divisible by 4) -- obey an exact factored two-threshold law (STEP 4):

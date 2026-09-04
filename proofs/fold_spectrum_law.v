@@ -4,8 +4,9 @@
    delayed-network covariance: (i) the residualiser's square stays inside the idempotent algebra
    <I, E, F> -- squaring promotes r^2 to r^4 and nothing else -- so the fold partition enters the
    variance functional ONLY through the same-fold overlap term, with weight r^4 - 1 > 0: the
-   variance-optimal fold design is a MINIMUM-weight balanced cut of the graph weighted by
-   Q(x) = sum g_d g_e x^|d-e| S_d S_e; (ii) on a cycle the K = 2 objective diagonalises over
+   variance-optimal fold design minimises the same-fold 2-walk mass of the graph weighted by
+   Q(x) = sum g_d g_e x^|d-e| S_d S_e -- which is the MAXIMUM-weight balanced cut of that graph,
+   not the minimum-weight one this header claimed until Result 61 (proofs/fold_cut_duality.v); (ii) on a cycle the K = 2 objective diagonalises over
    Fourier modes with score lambda(c) = g0^2 + 4 g1^2 c^2 + 4 g0 g1 x c + shell-2 terms,
    c = cos(theta); (iii) the two pure spectral designs, parity (all mass at c = -1) and width-2
    stripes (all mass at c = 0), differ by the factored two-threshold law
@@ -32,8 +33,9 @@ Lemma residualiser_square_promotes_r :
 Proof. intro r; split; ring. Qed.
 
 (* (B) The weight on the same-fold term is r^4 - 1 > 0 for every genuine fold count
-   (r = K/(K-1) > 1): smaller same-fold weighted 2-walk count means smaller variance,
-   so the design problem is a MINIMUM cut, never a maximum one. *)
+   (r = K/(K-1) > 1): smaller same-fold weighted 2-walk count means smaller variance.  Since
+   that count is 1'Q1 - 2*cut with 1'Q1 partition-free (Result 61), the design problem is a
+   MAXIMUM cut of Q -- the earlier reading of this comment had the direction backwards. *)
 Lemma partition_weight_positive : forall r : R, 1 < r -> 0 < r^4 - 1.
 Proof.
   intros r H.

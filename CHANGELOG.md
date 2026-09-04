@@ -9,6 +9,37 @@ still change).
 
 ### Added
 
+- **The fold design is a MAXIMUM cut, and the exact optimum is now reachable at any `m`**
+  (`chc.regret.fold_exactness_certificate`, `FoldExactnessCurve`; `optimal_fold_partition` gained
+  `FoldDesign.route` and `banded_exact=`). Two things.
+
+  **A naming correction with teeth.** Result 52 reduced the cross-fit variance to the same-fold
+  2-walk mass `sum_f 1_f' Q 1_f` and called minimising it "the minimum-weight balanced cut". That
+  mass is `1'Q1 - 2*cut` with `1'Q1` partition-free, so minimising it is **maximising** the cut of
+  `Q(x)`: the problem is a max-bisection. The distinction is not cosmetic -- max-bisection has a
+  constant-factor SDP approximation and min-bisection has none. Every formula and Rocq lemma of
+  Result 52 was and remains correct; only the sentence drawn from them was inverted. What made the
+  wrong name feel right is that `Q`'s edges are 2-WALKS: the optimum keeps *adjacent* units
+  together (adjacency cut 6 of 12 on `C_12`, against parity's 12).
+
+  **An exact route past the enumeration limit.** On a circulant the objective collapses to circular
+  offset counts and `Q(x)` has bandwidth `2*dmax` -- set by the spillover truncation, never by `m` --
+  so a dynamic program over `(window of B labels, running balance)` returns the global optimum in
+  `O(4^B m^2)`: **1.0 s at `m = 240`**, where enumeration would walk `~1e70` designs. It reproduces
+  enumeration to `2.8e-14` on all fifteen cells of `m in {10..18}`, and it refuses `m <= 2*band`,
+  where the offsets `b` and `m-b` name the same pair and the collapse double-counts.
+
+  That separates two numbers the previous certificate conflated. Past the enumeration limit the
+  spectral-plus-swap fallback is exactly optimal in **one cell of twelve** (shortfall `0.00-2.06%`
+  over `m in {24, 60, 120, 240}`), so the earlier "it finds the optimum on all eighteen instances"
+  was a small-`m` fact read as a general one; and the Ky Fan bound's own looseness is `0.58-2.61%`
+  and **flat in `m`**. What `FoldDesign.gap` reports is the two stacked, so it always dominates the
+  true shortfall: `eps` certified implies `eps`-optimal, while a large gap convicts nothing.
+
+  Cross-checked outside Python: polymake 4.15 maximises the same objective by exact rational LP over
+  the 35 balanced cut vectors at `m = 8` and returns `3376/125`; Normaliz 3.11.1 counts the
+  hypersimplex's lattice points at `m = 8, 10, 12, 14` as `C(m, m/2)`, all 0/1.
+
 - **Result 51's `Psi` measured against a real cross-fit estimator** (`chc.regret.
   panel_estimator_certificate`, `PanelEstimatorGate`). Result 51 shipped `Psi` saying in its own
   scope note that it is a functional of the process, "not a re-derived estimator". This runs the

@@ -7,7 +7,7 @@
    projector, F the within-fold projector, E^2 = E, F^2 = F, EF = FE = E), so an operator is a
    COEFFICIENT TRIPLE and squaring is arithmetic: A_u^2 = (1, -r^4, r^4-1). Only the F coefficient
    sees the partition and it is strictly positive, which is what turns the design into a
-   min-weight balanced cut on the product set. (ii) `pair_splits` is the entrywise content of
+   same balanced max-cut on the product set (Result 61). (ii) `pair_splits` is the entrywise content of
    `P (x) T + P^T (x) T^T = 2(sym (x) sym + skew (x) skew)`: each +-shift pair costs at most TWO
    Kronecker terms and exactly one when the spatial factor is symmetric, which bounds the rank by
    2D rather than 2D+1. (iii) delta = 0 collapses every shift, recovering separability. (iv) The
