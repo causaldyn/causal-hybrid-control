@@ -20,8 +20,9 @@ from __future__ import annotations
 import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import comb
-from typing import Literal
+from functools import cache
+from math import comb, lgamma
+from typing import Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -1424,107 +1425,270 @@ def exact_ratio_moment(
     return float(value)
 
 
-# Signed triple products building each entry of adj(M) N adj(M) for q = 2: with
-# adj(M) = [[m22, -m12], [-m12, m11]], entry (0,0) is m22^2 n11 - 2 m12 m22 n12 + m12^2 n22 and
-# so on (proofs/matrix_ratio_moment.v, sandwich_entry_*). Indices 0..2 name the quadratic forms
-# m11, m12, m22 of M = X'AX and 3..5 those of N = X'(A Sigma A)X; each tuple is
-# (coefficient, form, form, form).
-_SANDWICH_TRIPLES: dict[tuple[int, int], list[tuple[int, int, int, int]]] = {
-    (0, 0): [(1, 2, 2, 3), (-2, 1, 2, 4), (1, 1, 1, 5)],
-    (0, 1): [(-1, 1, 2, 3), (1, 0, 2, 4), (1, 1, 1, 4), (-1, 0, 1, 5)],
-    (1, 1): [(1, 1, 1, 3), (-2, 0, 1, 4), (1, 0, 0, 5)],
-}
+def _adjugate_terms(q: int) -> dict[tuple[int, int], list[tuple[int, tuple[tuple[int, int], ...]]]]:
+    """``adj(M)[i][j]`` as signed products of ``q - 1`` entries of ``M`` -- the cofactor Leibniz
+    sum, with the ``(-1)^(i+j)`` and the minor's own permutation parity folded into one sign."""
+    out: dict[tuple[int, int], list[tuple[int, tuple[tuple[int, int], ...]]]] = {}
+    for i in range(q):
+        for j in range(q):
+            rows = [r for r in range(q) if r != j]
+            cols = [c for c in range(q) if c != i]
+            terms = []
+            for perm in itertools.permutations(range(q - 1)):
+                sign, seen = 1, [False] * (q - 1)
+                for a in range(q - 1):
+                    if seen[a]:
+                        continue
+                    length, b = 0, a
+                    while not seen[b]:
+                        seen[b] = True
+                        b = perm[b]
+                        length += 1
+                    if length % 2 == 0:
+                        sign = -sign
+                terms.append(
+                    (
+                        sign * (-1) ** (i + j),
+                        tuple((rows[a], cols[perm[a]]) for a in range(q - 1)),
+                    )
+                )
+            out[(i, j)] = terms
+    return out
 
 
-def _quadratic_form_kernels(p_full: NDArray[np.float64], n: int) -> list[NDArray[np.float64]]:
-    """Kernels of the three quadratic forms X'BX under the tilt, from one block product.
+def _permutation_cycles(m: int) -> list[tuple[tuple[int, ...], ...]]:
+    """Every permutation of ``m`` letters, as its cycle decomposition."""
+    out = []
+    for perm in itertools.permutations(range(m)):
+        seen, cycles = [False] * m, []
+        for i in range(m):
+            if seen[i]:
+                continue
+            cyc, j = [], i
+            while not seen[j]:
+                seen[j] = True
+                cyc.append(j)
+                j = perm[j]
+            cycles.append(tuple(cyc))
+        out.append(tuple(cycles))
+    return out
 
-    ``(X'BX)_{ij} = vec(X)' K_{ij} vec(X)`` with ``K_11 = e11 (x) B``, ``K_22 = e22 (x) B`` and
-    ``K_12`` the symmetrised cross block. Multiplying each by the tilted covariance ``S`` is what
-    every trace in the three-form moment consumes, and all six products come from the two block
-    rows of ``(I_2 (x) B) S`` -- assembled here instead of six kron-then-matmul passes.
+
+def _rotate_min(word: tuple[int, ...]) -> tuple[int, ...]:
+    return min(word[r:] + word[:r] for r in range(len(word)))
+
+
+@cache
+def _sandwich_plan(q: int) -> dict[str, object]:
+    """Node-independent index tables for ``E[adj(M) N adj(M)]`` entrywise, ``q`` channels.
+
+    ``adj(M)`` has degree ``q - 1``, so each entry of the sandwich is a signed sum of products of
+    ``m = 2q - 1`` quadratic forms. The Gaussian moment of such a product is a sum over the
+    SYMMETRIC GROUP (``validation/general_q_ratio_moment.mac`` STEP 1),
+
+        ``E[prod_i z' K_i z] = sum_{sigma in S_m} 2^(m - c(sigma)) prod_{cycles} tr(prod K_j S)``,
+
+    which at ``q = 2`` reproduces Isserlis' 15 pairings and at any ``q`` is mechanical. The plan
+    caches what does not depend on the quadrature node: which cycle words appear (deduplicated up
+    to rotation, since a trace is), and which products of them each entry sums.
     """
-    top, bottom = p_full[:, :n, :], p_full[:, n:, :]
-    zeros = np.zeros_like(top)
-    return [
-        np.concatenate([top, zeros], axis=1),
-        0.5 * np.concatenate([bottom, top], axis=1),
-        np.concatenate([zeros, bottom], axis=1),
+    m = 2 * q - 1
+    adj = _adjugate_terms(q)
+    forms: list[tuple[int, int, int]] = []
+    form_id: dict[tuple[int, int, int], int] = {}
+
+    def form(side: int, a: int, b: int) -> int:
+        key = (side, min(a, b), max(a, b))
+        if key not in form_id:
+            form_id[key] = len(forms)
+            forms.append(key)
+        return form_id[key]
+
+    products = []
+    for i in range(q):
+        for j in range(i, q):
+            for k in range(q):
+                for ell in range(q):
+                    nid = form(1, k, ell)
+                    for s1, idx1 in adj[(i, k)]:
+                        for s2, idx2 in adj[(ell, j)]:
+                            products.append(
+                                (
+                                    (i, j),
+                                    s1 * s2,
+                                    tuple(
+                                        [form(0, a, b) for a, b in idx1]
+                                        + [nid]
+                                        + [form(0, a, b) for a, b in idx2]
+                                    ),
+                                )
+                            )
+
+    word_id: dict[tuple[int, ...], int] = {}
+    words: list[tuple[int, ...]] = []
+
+    def cycle(fids: tuple[int, ...]) -> int:
+        key = _rotate_min(fids)
+        if key not in word_id:
+            word_id[key] = len(words)
+            words.append(key)
+        return word_id[key]
+
+    cycle_sets = _permutation_cycles(m)
+    terms = [
+        (
+            entry,
+            coefficient * 2.0 ** (m - len(cyc)),
+            tuple(cycle(tuple(fids[t] for t in c)) for c in cyc),
+        )
+        for entry, coefficient, fids in products
+        for cyc in cycle_sets
     ]
 
+    entries = sorted({e for e, _, _ in terms})
+    pad = len(words)  # a constant-one row, so every term has exactly m factors
+    idx = np.full((len(terms), m), pad, dtype=np.int32)
+    weight = np.empty(len(terms))
+    seg = np.empty(len(terms), dtype=np.int32)
+    for t, (entry, w, ids) in enumerate(terms):
+        idx[t, : len(ids)] = ids
+        weight[t] = w
+        seg[t] = entries.index(entry)
+    order = np.argsort(seg, kind="stable")
+    return {
+        "forms": forms,
+        "words": tuple(words),
+        "idx": idx[order],
+        "weight": weight[order],
+        "seg": seg[order],
+        "entries": entries,
+    }
 
-def _sandwich_entries(
-    kernels: list[NDArray[np.float64]],
-) -> dict[tuple[int, int], NDArray[np.float64]]:
-    """The three upper-triangular sandwich entries at every quadrature node.
 
-    Each is a signed sum of ``E[q_i q_j q_k]`` over the tilted Gaussian, which Isserlis' 15
-    pairings collapse to ``t_i t_j t_k + 2 sum t_i c_jk + 4 (d_ijk + d_ikj)`` in traces of the
-    kernels (``validation/matrix_ratio_moment.mac`` STEP 3). Pairs and triples are shared across
-    entries -- the caches are what keep the node loop linear in the number of distinct traces.
+@cache
+def _word_levels(
+    words: tuple[tuple[int, ...], ...],
+) -> tuple[tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.int32]], ...]:
+    """The cycle words as a prefix trie, flattened one level at a time.
+
+    Every word is a product of kernels and every prefix is shared by many words, so the traces
+    cost one batched matmul PER LEVEL rather than one per word: at ``q = 3`` that is 3336 gemms
+    instead of 25920 word evaluations.
     """
-    traces = [np.einsum("bii->b", kernel) for kernel in kernels]
-    pair_cache: dict[tuple[int, int], NDArray[np.float64]] = {}
-    product_cache: dict[tuple[int, int], NDArray[np.float64]] = {}
-    triple_cache: dict[tuple[int, int, int], NDArray[np.float64]] = {}
-
-    def pair(i: int, j: int) -> NDArray[np.float64]:
-        key = (min(i, j), max(i, j))
-        if key not in pair_cache:
-            pair_cache[key] = np.einsum("bij,bji->b", kernels[key[0]], kernels[key[1]])
-        return pair_cache[key]
-
-    def triple(i: int, j: int, k: int) -> NDArray[np.float64]:
-        if (i, j, k) not in triple_cache:
-            if (i, j) not in product_cache:
-                product_cache[(i, j)] = kernels[i] @ kernels[j]
-            triple_cache[(i, j, k)] = np.einsum("bij,bji->b", product_cache[(i, j)], kernels[k])
-        return triple_cache[(i, j, k)]
-
-    entries = {}
-    for which, terms in _SANDWICH_TRIPLES.items():
-        value = np.zeros(traces[0].shape)
-        for coefficient, i, j, k in terms:
-            value += coefficient * (
-                traces[i] * traces[j] * traces[k]
-                + 2.0 * (traces[i] * pair(j, k) + traces[j] * pair(i, k) + traces[k] * pair(i, j))
-                + 4.0 * (triple(i, j, k) + triple(i, k, j))
+    depth = max(len(w) for w in words)
+    levels: list[tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.int32]]] = []
+    prev_ids: dict[tuple[int, ...], int] = {(): 0}
+    for k in range(1, depth + 1):
+        cur_ids: dict[tuple[int, ...], int] = {}
+        parent: list[int] = []
+        letter: list[int] = []
+        emit: list[tuple[int, int]] = []
+        for i, w in enumerate(words):
+            if len(w) < k:
+                continue
+            pre = w[:k]
+            if pre not in cur_ids:
+                cur_ids[pre] = len(parent)
+                parent.append(prev_ids[pre[:-1]])
+                letter.append(pre[-1])
+            if len(w) == k:
+                emit.append((cur_ids[pre], i))
+        levels.append(
+            (
+                np.array(parent, np.int32),
+                np.array(letter, np.int32),
+                np.array(emit, np.int32).reshape(-1, 2),
             )
-        entries[which] = value
-    return entries
+        )
+        prev_ids = cur_ids
+    return tuple(levels)
+
+
+def _word_traces(
+    levels: tuple[tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.int32]], ...],
+    kernels: NDArray[np.float64],
+    n_words: int,
+    batch: int,
+) -> NDArray[np.float64]:
+    out = np.empty((n_words, batch))
+    prev = None
+    for parent, letter, emit in levels:
+        stack = kernels[letter]
+        cur = stack if prev is None else prev[parent] @ stack
+        if emit.size:
+            out[emit[:, 1]] = np.einsum("pbii->pb", cur[emit[:, 0]])
+        prev = cur
+    return out
+
+
+def _matrix_gamma(q: int, s: float) -> float:
+    """``Gamma_q(s) = pi^(q(q-1)/4) prod_j Gamma(s - (j-1)/2)``, the multivariate gamma.
+
+    Returns ``inf`` outside the convergence half-plane ``s > (q-1)/2``. That bound -- not the
+    poles of the individual gamma factors -- is what governs: the Ingham--Siegel integral over
+    the positive-definite cone diverges there whether or not the product happens to be finite.
+    """
+    if s <= 0.5 * (q - 1):
+        return float("inf")
+    return float(
+        np.exp(0.25 * q * (q - 1) * np.log(np.pi) + sum(lgamma(s - 0.5 * j) for j in range(q)))
+    )
 
 
 def exact_matrix_ratio_moment(
     numerator: NDArray[np.float64],
     denominator: NDArray[np.float64],
     regressor_cov: NDArray[np.float64],
-    nodes: int = 40,
+    nodes: int | None = None,
 ) -> NDArray[np.float64]:
-    """``E[(X'CX)^-1 (X'BX) (X'CX)^-1]`` for a Gaussian n-by-2 block ``X``, exactly -- Result 54.
+    """``E[(X'CX)^-1 (X'BX) (X'CX)^-1]`` for a Gaussian ``n``-by-``q`` block ``X``, exactly.
 
-    The matrix companion of :func:`exact_ratio_moment`: the exact sampling covariance of the
-    TWO-channel (direct, spillover) cross-fit estimate is ``E[(X'AX)^-1 X'A Sigma A X (X'AX)^-1]``
-    -- call with ``numerator = A Sigma A``, ``denominator = A``, and ``regressor_cov`` the 2n-by-2n
-    covariance of ``vec(X)`` (own-process block, cross block, spillover block). ``regressor_cov``
-    may be SINGULAR -- a spillover column that is deterministic given the own column is the normal
-    case, and nothing here inverts it.
+    The matrix companion of :func:`exact_ratio_moment`: the exact sampling covariance of a
+    ``q``-CHANNEL cross-fit estimate is ``E[(X'AX)^-1 X'A Sigma A X (X'AX)^-1]`` -- call with
+    ``numerator = A Sigma A``, ``denominator = A``, and ``regressor_cov`` the ``qn``-by-``qn``
+    covariance of ``vec(X)``. The channel count is read off that shape, not passed: ``q =
+    regressor_cov.shape[0] // n``. ``regressor_cov`` may be SINGULAR -- a spillover column that
+    is deterministic given the own column is the normal case, and nothing here inverts it.
 
-    Route (all derived, not cited, in ``validation/matrix_ratio_moment.mac``): ``M^-1 =
-    adj(M)/det(M)`` turns each entry into signed sums of THREE quadratic forms; the Ingham--Siegel
-    identity ``det(M)^-2 = (2/pi) int_{T>0} det(T)^(1/2) etr(-TM) dT`` replaces the determinant by
-    a Gaussian tilt; the tilted law has covariance ``(I + 2 Om (T (x) C))^-1 Om``; and the Isserlis
-    three-form moment ``E[q1 q2 q3] = t1 t2 t3 + 2(t1 c23 + t2 c13 + t3 c12) + 4(d123 + d132)``
-    closes each entry. The cone integral runs in Cholesky coordinates (which cannot leave the
-    cone -- ``proofs/matrix_ratio_moment.v``) on a tensor Gauss--Legendre grid: cost is one
-    ``slogdet`` + ``solve`` of size 2n per node, ``nodes**3`` nodes -- seconds at ``n = 30``,
-    not a hot-path tool.
+    Route (derived, not cited, in ``validation/general_q_ratio_moment.mac``): ``M^-1 =
+    adj(M)/det(M)`` turns each entry into a signed sum of products of ``m = 2q - 1`` quadratic
+    forms, since the adjugate has degree ``q - 1``; the Ingham--Siegel identity ``det(M)^-s =
+    Gamma_q(s)^-1 int_{T>0} det(T)^(s-(q+1)/2) etr(-TM) dT`` at ``s = 2`` replaces the
+    determinant by a Gaussian tilt; the tilted law has covariance ``(I + 2 Om (T (x) C))^-1 Om``;
+    and the ``m``-form Gaussian moment is a sum over the SYMMETRIC GROUP,
+    ``sum_{sigma in S_m} 2^(m - c(sigma)) prod_{cycles} tr(...)``, which at ``q = 2`` is
+    Isserlis' 15 pairings and at ``q = 3`` is 120 terms. The cone integral runs in Cholesky
+    coordinates (which cannot leave the cone -- ``proofs/matrix_ratio_moment.v``) on a tensor
+    Gauss--Legendre grid of dimension ``q(q+1)/2``.
 
-    Anchors: the Ingham--Siegel constant to 8 digits, Wishart ``E[W^-1] = I/(n-3)`` to 6, a
-    10^6-draw Monte Carlo within 1.6 SE. Existence is the inverse-Wishart threshold, enforced:
-    per-channel effective rank at least ``q + 2 = 4``, below which the integral diverges (visible
-    as node-count instability, measured at ``n = 3``) while a plug-in sandwich still quotes a
-    number. Scope: ``q = 2`` channels only -- the adjugate route is what keeps the polynomial
-    degree manageable.
+    Scope, both halves measured rather than assumed:
+
+    * ``Gamma_q(2)`` is finite iff ``2 > (q-1)/2``, so the ROUTE is valid exactly for ``q <= 4``
+      (``proofs/general_q_ratio_moment.v``, ``ingham_siegel_valid_iff_q_le_four``).
+    * The IMPLEMENTATION stops at ``q = 3``: ``q = 4`` needs ``7! = 5040`` permutations on each
+      of 5760 products, i.e. 29 million plan terms, which is not a table worth building.
+    * Cost is the cone dimension, not the algebra. ``q = 2`` is 3-dimensional and converges to
+      machine precision at ``nodes = 40`` in seconds. ``q = 3`` is 6-dimensional: measured
+      relative error on the exchangeable anchor is 2.7e-1 at ``nodes = 4`` and 6.5e-2 at
+      ``nodes = 5``, a factor of 4.2-6.2 per node, so six digits needs ``nodes ~ 11-13`` and
+      hours -- and that is the ISOTROPIC case. A general anisotropic ``regressor_cov`` converges
+      at 1.93 per node instead. ``nodes`` defaults to 40 at ``q = 2`` and 8 at ``q = 3``. Three
+      ways around this were measured and all three lost: a Smolyak sparse grid on nested open
+      Fejer-2 (the tail is algebraic, not Gaussian), per-axis Cholesky scaling, and Aitken
+      extrapolation (Gauss-Legendre beats geometric, so a fixed-ratio model over-corrects).
+      **At q = 3, treat the returned value as accurate to the error bar below, not to 6 digits.**
+
+    Accuracy is self-certifying where it matters: on an EXCHANGEABLE problem the exact answer is
+    isotropic, so the observed spread of the diagonal lower-bounds twice the largest entry error
+    with no reference value in hand (``half_spread_bounds_the_max_error``). The converse fails --
+    a grid can be isotropic and uniformly wrong -- so a small spread is a necessary condition,
+    not a certificate (``zero_spread_does_not_certify``).
+
+    Anchors: the Ingham--Siegel constant to 8 digits and Wishart ``E[W^-1] = I/(n-q-1)`` to 6 at
+    ``q = 2``; at ``q = 3`` the same Wishart anchor plus the matrix-beta law
+    ``E[M^-1 X'PX M^-1] = (r/n) I/(n-q-1)`` for a rank-``r`` projection ``P``. Existence is the
+    inverse-Wishart threshold, enforced: per-channel effective rank at least ``q + 2``, below
+    which the integral diverges while a plug-in sandwich still quotes a number.
     """
     b = np.asarray(numerator, dtype=np.float64)
     c = np.asarray(denominator, dtype=np.float64)
@@ -1532,29 +1696,39 @@ def exact_matrix_ratio_moment(
     n = c.shape[0]
     if b.shape != (n, n) or c.shape != (n, n):
         raise ValueError("numerator and denominator must be square and of the same shape")
-    if om.shape != (2 * n, 2 * n):
-        raise ValueError("regressor_cov must be 2n-by-2n: the covariance of vec(X), X n-by-2")
+    if om.ndim != 2 or om.shape[0] != om.shape[1] or om.shape[0] % n:
+        raise ValueError("regressor_cov must be qn-by-qn: the covariance of vec(X), X n-by-q")
+    q = om.shape[0] // n
+    if not 2 <= q <= 3:
+        raise ValueError(
+            f"q = {q} channels: this is the matrix route, q >= 2 (use exact_ratio_moment for the "
+            "scalar case), and the plan stops at q = 3 -- q = 4 costs 29 million terms"
+        )
+    if nodes is None:
+        nodes = 40 if q == 2 else 8
     om_values, om_vectors = np.linalg.eigh(om)
-    tol = 2 * n * float(np.finfo(np.float64).eps) * max(float(om_values[-1]), 1.0)
+    tol = q * n * float(np.finfo(np.float64).eps) * max(float(om_values[-1]), 1.0)
     if float(om_values[0]) < -tol:
         raise ValueError("regressor_cov must be PSD")
     root = om_vectors * np.sqrt(np.clip(om_values, 0.0, None))
-    big_c = np.kron(np.eye(2), c)
+    big_c = np.kron(np.eye(q), c)
     support = np.linalg.eigvalsh(root.T @ big_c @ root)
     if float(support[0]) < -tol:
         raise ValueError("denominator must be PSD on the regressor support: X'CX changes sign")
     k_eff = int(np.count_nonzero(support > tol))
-    if k_eff < 8:
+    if k_eff < q * (q + 2):
         raise ValueError(
-            f"E[(X'CX)^-1 ...] diverges: per-channel effective rank {k_eff / 2:g} < 4, the "
+            f"E[(X'CX)^-1 ...] diverges: per-channel effective rank {k_eff / q:g} < {q + 2}, the "
             "inverse-Wishart existence threshold n >= q + 2"
         )
-    big_b = np.kron(np.eye(2), b)
-    eye = np.eye(2 * n)
+    big_b = np.kron(np.eye(q), b)
+    eye = np.eye(q * n)
 
     # Deterministic probe for the integrand's own scale: the mass of a divergence-free cone
     # integral concentrates where the tilted determinant and the traces balance, and a grid that
-    # misses that shoulder converges to a wrong answer with a straight face.
+    # misses that shoulder converges to a wrong answer with a straight face. One GLOBAL scale,
+    # not one per axis: giving each Cholesky axis its own analytic peak was measured and is
+    # worse -- better at nodes = 4, but 1.8x per node against 4.2x, so worse by nodes = 5.
     best, scale = -np.inf, 1.0
     for probe in np.geomspace(1e-3, 1e3, 61):
         tilt = eye + 2.0 * probe**2 * om @ big_c
@@ -1563,42 +1737,87 @@ def exact_matrix_ratio_moment(
             continue
         tilted = np.linalg.solve(tilt, om)
         magnitude = (
-            probe**5 * float(np.exp(-0.5 * logdet)) * abs(float(np.trace(c @ tilted[:n, :n]))) ** 2
+            probe ** (2 * q + 1)
+            * float(np.exp(-0.5 * logdet))
+            * abs(float(np.trace(c @ tilted[:n, :n]))) ** q
         )
         if magnitude > best:
             best, scale = magnitude, probe
+
+    plan = _sandwich_plan(q)
+    words = cast(tuple[tuple[int, ...], ...], plan["words"])
+    forms = cast(list[tuple[int, int, int]], plan["forms"])
+    entries = cast(list[tuple[int, int]], plan["entries"])
+    idx = cast(NDArray[np.int32], plan["idx"])
+    weight = cast(NDArray[np.float64], plan["weight"])
+    seg = cast(NDArray[np.int32], plan["seg"])
+    levels = _word_levels(words)
+    tri = [(i, j) for i in range(q) for j in range(i + 1)]
+    dim = len(tri)
 
     points, weights = np.polynomial.legendre.leggauss(nodes)
     half_points = scale * (0.5 * (points + 1)) / (1 - 0.5 * (points + 1))
     half_jacobian = scale * 0.5 / (1 - 0.5 * (points + 1)) ** 2 * weights
     full_points = scale * points / (1 - points**2)
     full_jacobian = scale * (1 + points**2) / (1 - points**2) ** 2 * weights
+    grid = np.meshgrid(*[half_points if i == j else full_points for i, j in tri], indexing="ij")
+    coords = np.stack([axis.ravel() for axis in grid], axis=1)
+    quad_weight = np.ones(coords.shape[0])
+    for ax, (i, j) in enumerate(tri):
+        shape = [1] * dim
+        shape[ax] = nodes
+        quad_weight = (
+            quad_weight
+            * np.broadcast_to(
+                (half_jacobian if i == j else full_jacobian).reshape(shape), grid[0].shape
+            ).ravel()
+        )
 
-    grid = np.meshgrid(half_points, half_points, full_points, indexing="ij")
-    aa, bb, cc = (axis.ravel() for axis in grid)
-    ww = np.einsum("i,j,k->ijk", half_jacobian, half_jacobian, full_jacobian).ravel()
-
-    chunk = max(64, min(4096, int(2.0e8 // (32 * n * n))))
-    out = dict.fromkeys(_SANDWICH_TRIPLES, 0.0)
-    for start in range(0, aa.size, chunk):
+    bounds = np.searchsorted(seg, np.arange(len(entries) + 1))
+    constant = 2.0**q / _matrix_gamma(q, 2.0)
+    det_exponent = 2.0 * (2.0 - 0.5 * (q + 1))
+    widest = max(len(parent) for parent, _, _ in levels)
+    chunk = max(4, min(256, int(4.0e8 // (2 * widest * (q * n) ** 2 * 8))))
+    total = np.zeros(len(entries))
+    for start in range(0, coords.shape[0], chunk):
         sl = slice(start, start + chunk)
-        a_c, b_c, c_c = aa[sl], bb[sl], cc[sl]
-        t_mat = np.empty((a_c.size, 2, 2))
-        t_mat[:, 0, 0] = a_c * a_c
-        t_mat[:, 0, 1] = t_mat[:, 1, 0] = a_c * c_c
-        t_mat[:, 1, 1] = c_c * c_c + b_c * b_c
-        w_op = np.einsum("bij,kl->bikjl", t_mat, c).reshape(-1, 2 * n, 2 * n)
+        cholesky, node_weight = coords[sl], quad_weight[sl]
+        size = cholesky.shape[0]
+        low = np.zeros((size, q, q))
+        for t, (i, j) in enumerate(tri):
+            low[:, i, j] = cholesky[:, t]
+        t_mat = low @ np.swapaxes(low, 1, 2)
+        diagonal = cholesky[:, [t for t, (i, j) in enumerate(tri) if i == j]]
+        w_op = np.einsum("bij,kl->bikjl", t_mat, c).reshape(size, q * n, q * n)
         tilt = eye[None] + 2.0 * om[None] @ w_op
         sign, logdet = np.linalg.slogdet(tilt)
         tilted = np.linalg.solve(tilt, np.broadcast_to(om, tilt.shape))
-        kernels = _quadratic_form_kernels(big_c[None] @ tilted, n) + _quadratic_form_kernels(
-            big_b[None] @ tilted, n
+        jacobian = np.prod(diagonal ** np.arange(q, 0, -1)[None], axis=1)
+        prefactor = (
+            constant
+            * np.where(sign > 0, np.exp(-0.5 * logdet), 0.0)
+            * np.prod(diagonal, axis=1) ** det_exponent
+            * jacobian
+            * node_weight
         )
-        prefactor = np.where(sign > 0, np.exp(-0.5 * logdet), 0.0)
-        base = (2.0 / np.pi) * (a_c * b_c) * prefactor * 4.0 * a_c * a_c * b_c * ww[sl]
-        for which, value in _sandwich_entries(kernels).items():
-            out[which] += float((base * value).sum())
-    return np.array([[out[(0, 0)], out[(0, 1)]], [out[(0, 1)], out[(1, 1)]]])
+        kernels = np.zeros((len(forms), size, q * n, q * n))
+        rows = {side: (big_c if side == 0 else big_b)[None] @ tilted for side in (0, 1)}
+        for fid, (side, u, v) in enumerate(forms):
+            block = rows[side]
+            kernels[fid, :, u * n : (u + 1) * n] = block[:, v * n : (v + 1) * n]
+            if u != v:
+                kernels[fid, :, v * n : (v + 1) * n] = block[:, u * n : (u + 1) * n]
+                kernels[fid] *= 0.5
+        traces = np.concatenate(
+            [_word_traces(levels, kernels, len(words), size), np.ones((1, size))], axis=0
+        )
+        total += np.add.reduceat(
+            (weight[:, None] * np.prod(traces[idx], axis=1)) @ prefactor, bounds[:-1]
+        )
+    out = np.zeros((q, q))
+    for value, (i, j) in zip(total, entries, strict=True):
+        out[i, j] = out[j, i] = value
+    return out
 
 
 def _fold_weight_matrix(

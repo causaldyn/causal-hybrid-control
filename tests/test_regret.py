@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -10,6 +12,9 @@ from chc.dynamics import DampedOscillator
 from chc.lqr import linearize_discrete, linearized_regret_certificate
 from chc.network_causal import cycle_shells
 from chc.regret import (
+    _matrix_gamma,
+    _permutation_cycles,
+    _sandwich_plan,
     adaptive_exploration_certificate,
     bandit_causal_certificate,
     capped_exploration_policy,
@@ -744,8 +749,14 @@ def test_exact_matrix_ratio_moment_matches_the_haar_law_and_prices_the_two_chann
     #    integral diverges while a plug-in sandwich still quotes a number
     with pytest.raises(ValueError, match="inverse-Wishart"):
         exact_matrix_ratio_moment(np.eye(3), np.eye(3), np.eye(6), nodes=16)
-    with pytest.raises(ValueError, match="2n-by-2n"):
+    # the channel count is READ OFF regressor_cov's shape, so a qn-by-qn block is accepted for
+    # any q; what is rejected is q outside the matrix route's own range
+    with pytest.raises(ValueError, match="qn-by-qn"):
+        exact_matrix_ratio_moment(np.eye(4), np.eye(4), np.eye(6), nodes=16)
+    with pytest.raises(ValueError, match="q = 1 channels"):
         exact_matrix_ratio_moment(np.eye(4), np.eye(4), np.eye(4), nodes=16)
+    with pytest.raises(ValueError, match="q = 4 channels"):
+        exact_matrix_ratio_moment(np.eye(4), np.eye(4), np.eye(16), nodes=4)
 
     # 4. the application: a SINGULAR Om, because the spillover column is a deterministic map of
     #    the own column. The delayed-network panel on C_4, two shells, phi = 0.5.
@@ -778,6 +789,49 @@ def test_exact_matrix_ratio_moment_matches_the_haar_law_and_prices_the_two_chann
     plug = inverse @ moments[1] @ inverse
     # the matrix Jensen gap has a sign: the plug-in sandwich UNDERSTATES both channel variances
     assert np.all(np.diag(exact) > np.diag(plug))
+
+
+def test_general_q_ratio_moment_lifts_the_sandwich_off_two_channels() -> None:
+    # Result 63, validation/general_q_ratio_moment.mac, proofs/general_q_ratio_moment.v.
+
+    # 1. the S_m weights ARE Isserlis: sum over S_m of 2^(m - cycles) is the number of perfect
+    #    matchings of 2m points, (2m-1)!!. This is the identity that lets the hand-written
+    #    three-form expansion be deleted -- if it failed, every q would be wrong at once.
+    for m, expected in ((1, 1), (2, 3), (3, 15), (4, 105), (5, 945)):
+        total = sum(2 ** (m - len(cyc)) for cyc in _permutation_cycles(m))
+        assert total == expected
+
+    # 2. the plan's shape is the algebra: adj(M) has degree q - 1, so each entry is a sum of
+    #    products of m = 2q - 1 forms, and S_m contributes m! permutations to each product
+    for q, products in ((2, 12), (3, 216)):
+        plan = _sandwich_plan(q)
+        m = 2 * q - 1
+        assert len(plan["idx"]) == products * math.factorial(m)
+        assert plan["idx"].shape[1] == m
+        assert len(plan["forms"]) == 2 * q * (q + 1) // 2  # q(q+1)/2 forms of M and of N
+
+    # 3. Gamma_q(2) is finite iff 2 > (q-1)/2, so the ROUTE stops at q = 4 whatever the cost
+    assert _matrix_gamma(2, 2.0) == pytest.approx(np.pi / 2)
+    assert _matrix_gamma(3, 2.0) == pytest.approx(np.pi**2 / 2)
+    assert _matrix_gamma(4, 2.0) == pytest.approx(np.pi**4 / 2)
+    assert not np.isfinite(_matrix_gamma(5, 2.0))
+
+    # 4. q = 3 against the Wishart anchor E[M^-1] = I/(n - q - 1). Two things are EXACT at any
+    #    node count and one is not: the sandwich is symmetric, and under exchangeability its
+    #    off-diagonal vanishes structurally -- while the diagonal carries the whole quadrature
+    #    error, which on a 6-dimensional cone is large at a coarse grid and is not hidden here.
+    n = 5
+    got = exact_matrix_ratio_moment(np.eye(n), np.eye(n), np.eye(3 * n), nodes=3)
+    assert got.shape == (3, 3)
+    assert np.allclose(got, got.T)
+    assert float(np.max(np.abs(got - np.diag(np.diag(got))))) < 1e-12
+
+    # 5. and the error bar needs no reference value: the exact answer is isotropic, so half the
+    #    observed spread LOWER-BOUNDS the largest entry error (half_spread_bounds_the_max_error).
+    #    Necessary, not sufficient -- a grid can be isotropic and uniformly wrong.
+    target = 1.0 / (n - 3 - 1)
+    error = float(np.max(np.abs(np.diag(got) - target)))
+    assert float(np.ptp(np.diag(got))) / 2 <= error + 1e-12
 
 
 def test_exact_ratio_moment_closed_forms_tail_condition_and_crossover_immunity() -> None:

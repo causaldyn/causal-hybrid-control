@@ -9,6 +9,37 @@ still change).
 
 ### Added
 
+- **`exact_matrix_ratio_moment` works at any channel count the route allows, not just two**
+  (`chc.regret.exact_matrix_ratio_moment`). The channel count is read off `regressor_cov`'s shape
+  (`q = regressor_cov.shape[0] // n`), so the signature is unchanged for existing two-channel
+  callers and `nodes` now defaults per `q` (40 at `q = 2`, 8 at `q = 3`).
+
+  The enabling identity is that Isserlis' pairings are a sum over the symmetric group,
+  `E[prod_i z'K_i z] = sum_{sigma in S_m} 2^(m - c(sigma)) prod_{cycles} tr(...)`, whose weights
+  sum to `(2m-1)!!`. That retires the hand-written three-form table rather than generalising it --
+  one definition covers every `q`, it reproduces the shipped `q = 2` numbers to `2.3e-15`, and it
+  is *faster* than the special case it replaced, because prefix sharing turns 25 920 word
+  evaluations at `q = 3` into 3 336 batched gemms.
+
+  Two limits, with different causes, both enforced. The Ingham-Siegel route needs `s = 2` at every
+  `q` while `Gamma_q(s)` converges only for `s > (q-1)/2`, so the ROUTE ends at `q <= 4` --
+  structural, and no amount of compute buys past it. The plan ends one step earlier, at `q = 3`,
+  because `q = 4` would need `5760 x 5040 = 29` million terms.
+
+  Accuracy is reported, not assumed. `q = 3` integrates over a six-dimensional cone: measured
+  relative error on the Wishart anchor `E[M^-1] = I/(n-q-1)` is `2.9e-1` at 4 nodes per axis and
+  `4.7e-2` at 5, a factor of `4.2-6.2` per node, so six digits costs `nodes ~ 11-13` and hours --
+  and that is the ISOTROPIC case. With a general anisotropic `Omega` the rate falls to `1.93x` per
+  node (gap to a 4M-draw Monte Carlo `7.1e-2 -> 6.0e-2 -> 3.1e-2` at 3, 4, 5 nodes). Three ways
+  around it were tried and all three lost -- a Smolyak sparse grid, per-axis Cholesky scaling, and
+  Aitken extrapolation over three grids -- and the docstring says so rather than quoting a
+  convergence the tool does not have.
+
+  The error bar comes free where it matters: on an exchangeable problem the exact answer is
+  isotropic, so half the observed spread of the diagonal lower-bounds the largest entry error with
+  no reference value in hand -- measured at 77% and 99% of the true error. It is a necessary
+  condition only: a grid can be isotropic and uniformly wrong.
+
 - **The delayed-network panel leaves the cycle, and the network estimator reports uncertainty**
   (`chc.network_causal.torus_adjacency`, `DelayedNetworkPanel(graph=...)`,
   `estimate_network_effects(exclude_neighbours=...)` and its new `direct_se` / `spillover_se`).

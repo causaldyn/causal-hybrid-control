@@ -1,0 +1,153 @@
+/* P2.3 / A11 -- the matrix ratio moment at GENERAL q, where Result 54 stopped at q = 2.
+ *
+ * Result 54 computed V = E[(X'AX)^-1 X'A Sigma A X (X'AX)^-1] for a TWO-channel regressor block
+ * by writing M^-1 = adj(M)/det(M), expanding every sandwich entry into a product of THREE
+ * quadratic forms, and killing det(M)^-2 with the 2x2 Ingham-Siegel integral.  Both halves were
+ * hard-coded at q = 2.  This file derives the q-general replacements and checks them.
+ *
+ * STEP 1 is the load-bearing one: the Gaussian moment of a product of m quadratic forms is a sum
+ * over the SYMMETRIC GROUP S_m, one term per permutation, weight 2^(m - cycles) and one trace per
+ * cycle.  That is what replaces Result 54's hand-written 15-pairing Isserlis expansion, and it is
+ * what makes m = 2q-1 mechanical at any q.
+ *
+ *   timeout 900 maxima --very-quiet -b validation/general_q_ratio_moment.mac
+ */
+
+print("=== STEP 1: the moment of a product of m quadratic forms is a sum over S_m ===")$
+
+/* Claim.  For z ~ N(0, S) and q_i = z' K_i z with every K_i symmetric,
+ *
+ *     E[prod_{i=1}^m q_i] = sum_{sigma in S_m} 2^(m - c(sigma)) prod_{cycles C of sigma} tr(prod_{j in C} K_j S)
+ *
+ * with c(sigma) the number of cycles.  Equivalently: the k-th joint cumulant is
+ * 2^(k-1) times the sum of the (k-1)! cyclic trace words, and the moment-cumulant expansion over
+ * set partitions then reassembles a partition-plus-cyclic-order, which IS a permutation.
+ */
+
+/* the permutation-sum evaluator, built from scratch so nothing is assumed */
+cycles_of(perm) := block([n : length(perm), seen : [], out : [], i, j, cyc],
+  seen : makelist(false, i, 1, n),
+  for i : 1 thru n do
+    if not seen[i] then (
+      cyc : [], j : i,
+      while not seen[j] do (seen[j] : true, cyc : endcons(j, cyc), j : perm[j]),
+      out : endcons(cyc, out)),
+  out)$
+
+/* trace of the word K_{c1} S K_{c2} S ... over one cycle */
+cycle_trace(cyc, KK, SS) := block([w : ident(length(SS)), j],
+  for j in cyc do w : w . KK[j] . SS,
+  mat_trace(w))$
+
+perm_moment(KK, SS) := block([m : length(KK), total : 0, p, cyc],
+  for p in permutations(makelist(i, i, 1, m)) do (
+    cyc : cycles_of(p),
+    total : total + 2^(m - length(cyc)) * product(cycle_trace(cyc[k], KK, SS), k, 1, length(cyc))),
+  ratsimp(total))$
+
+/* --- the m = 1, 2, 3 cases against the forms Result 54 already uses --- */
+S2 : matrix([s11, s12], [s12, s22])$
+K1 : matrix([a11, a12], [a12, a22])$
+K2 : matrix([b11, b12], [b12, b22])$
+K3 : matrix([c11, c12], [c12, c22])$
+tr(K) := mat_trace(K . S2)$
+c2(K, L) := mat_trace(K . S2 . L . S2)$
+d3(K, L, M) := mat_trace(K . S2 . L . S2 . M . S2)$
+
+print("(1) m=1:", ratsimp(perm_moment([K1], S2) - tr(K1)))$
+print("(2) m=2:", ratsimp(perm_moment([K1, K2], S2) - (tr(K1)*tr(K2) + 2*c2(K1, K2))))$
+print("(3) m=3 vs Result 54's shipped expansion:",
+      ratsimp(perm_moment([K1, K2, K3], S2)
+              - (tr(K1)*tr(K2)*tr(K3)
+                 + 2*(tr(K1)*c2(K2,K3) + tr(K2)*c2(K1,K3) + tr(K3)*c2(K1,K2))
+                 + 4*(d3(K1,K2,K3) + d3(K1,K3,K2)))))$
+
+/* --- m = 4 and m = 5 against the standard-normal moment, which is independent of any pairing
+ * formula.  Write z = L y with L the Cholesky factor of S and y ~ N(0, I): every quadratic form
+ * becomes y'(L'KL)y, and E[y1^a y2^b] is (a-1)!!(b-1)!! for even a, b and 0 otherwise. --- */
+dfact(n) := if n <= 0 then 1 else product(2*k - 1, k, 1, n/2)$
+
+gauss_moment(expr) := block([poly : expand(expr), total : 0, a, b, cf, deg],
+  deg : hipow(poly, y1) + hipow(poly, y2),
+  for a : 0 thru deg do
+    for b : 0 thru deg - a do
+      if evenp(a) and evenp(b) then (
+        cf : ratcoef(ratcoef(poly, y1, a), y2, b),
+        if cf # 0 then total : total + cf * dfact(a) * dfact(b)),
+  ratsimp(total))$
+
+/* a concrete numeric S and kernels: exact rationals, so the comparison is exact */
+/* pick the Cholesky factor first, so S = L L' is rational and the y-basis check is exact */
+LN : matrix([2, 0], [1, 3])$
+SN : LN . transpose(LN)$
+KA : matrix([1, 1/3], [1/3, -2])$
+KB : matrix([-1/2, 1], [1, 1])$
+KC : matrix([3, -1/4], [-1/4, 1/2])$
+KD : matrix([1/5, 2], [2, -1])$
+KE : matrix([-3/2, 1/7], [1/7, 4])$
+print("(3a) S = L L' is rational:", SN, " Cholesky residual:", ratsimp(LN . transpose(LN) - SN))$
+yv : [y1, y2]$
+qform(K) := block([W : ratsimp(transpose(LN) . K . LN)],
+  expand(sum(sum(W[i,j] * yv[i] * yv[j], j, 1, 2), i, 1, 2)))$
+
+print("(4) m=4 permutation sum minus the direct Gaussian integral:",
+      ratsimp(perm_moment([KA, KB, KC, KD], SN)
+              - gauss_moment(qform(KA)*qform(KB)*qform(KC)*qform(KD))))$
+print("(5) m=5 permutation sum minus the direct Gaussian integral:",
+      ratsimp(perm_moment([KA, KB, KC, KD, KE], SN)
+              - gauss_moment(qform(KA)*qform(KB)*qform(KC)*qform(KD)*qform(KE))))$
+
+/* term count: |S_m| = m!, so q = 3 needs m = 2q-1 = 5 and 120 traces per product */
+print("(6) terms at q=2 (m=3):", 3!, "  at q=3 (m=5):", 5!, "  at q=4 (m=7):", 7!)$
+
+print("=== STEP 2: the Ingham-Siegel constant and exponent at general q ===")$
+
+/* det(M)^(-s) = Gamma_q(s)^-1 int_{T>0} det(T)^(s-(q+1)/2) etr(-TM) dT,  Re(s) > (q-1)/2,
+ * with Gamma_q(s) = pi^(q(q-1)/4) prod_{j=1}^q Gamma(s - (j-1)/2).
+ * The sandwich needs s = 2 at every q, because M^-1 N M^-1 = adj(M) N adj(M) / det(M)^2. */
+mgamma(q, s) := %pi^(q*(q-1)/4) * product(gamma(s - (j-1)/2), j, 1, q)$
+print("(7) Gamma_1(2) =", ratsimp(mgamma(1, 2)), " exponent", ratsimp(2 - (1+1)/2))$
+print("(8) Gamma_2(2) =", ratsimp(mgamma(2, 2)), " exponent", ratsimp(2 - (2+1)/2),
+      "  (Result 54 uses 2/pi and det(T)^(1/2))")$
+print("(9) Gamma_3(2) =", ratsimp(mgamma(3, 2)), " exponent", ratsimp(2 - (3+1)/2))$
+print("(10) Gamma_4(2) =", ratsimp(mgamma(4, 2)), " exponent", ratsimp(2 - (4+1)/2))$
+/* validity: s = 2 must exceed (q-1)/2, so the representation survives to q = 4 and fails at q = 6 */
+print("(11) largest q with 2 > (q-1)/2:", floor(2*2 - 1 + 1) - 1, " -- i.e. q <= 4")$
+
+/* q = 1 reduction: det(M)^-2 = 1/y^2 = int_0^inf t e^{-ty} dt, and Gamma_1(2) = Gamma(2) = 1 */
+assume(y > 0)$
+print("(12) q=1 reduction, int_0^inf t^(2-1) e^(-t*y) dt * Gamma_1(2)^-1 - y^(-2):",
+      ratsimp(integrate(t^(2-1) * exp(-t*y), t, 0, inf) / mgamma(1, 2) - y^(-2)))$
+
+print("=== STEP 3: the adjugate at q = 3 -- degree q-1, so m = 2q-1 forms ===")$
+
+M3 : genmatrix(lambda([i,j], mm[min(i,j), max(i,j)]), 3, 3)$
+A3 : adjoint(M3)$
+print("(13) adj(M) . M - det(M) I  at q=3:", ratsimp(A3 . M3 - determinant(M3) * ident(3)))$
+scale_rule : flatten(makelist(makelist(mm[i,j] = lam*mm[i,j], j, i, 3), i, 1, 3))$
+print("(14) total degree of adj(M)[1,1] in the entries of M:",
+      hipow(expand(subst(scale_rule, A3[1,1])), lam),
+      "  and of det(M):", hipow(expand(subst(scale_rule, determinant(M3))), lam))$
+/* so adj_{ij} N_{kl} adj_{mn} is a product of (q-1) + 1 + (q-1) = 2q-1 quadratic forms */
+print("(15) forms per sandwich entry at q=3:", 2*3 - 1)$
+
+print("=== STEP 4: the scale mixture -- multivariate t transports by one scalar ===")$
+
+/* R = sqrt(nu/W) G with W ~ chi^2_nu independent of G ~ N(0, Omega).  Under R the sandwich is
+ * homogeneous of degree 0 in the scale of R for the FIRST-order ratio, but the matrix sandwich
+ * M^-1 N M^-1 scales as (nu/W)^2 / (nu/W)^2 * (nu/W)^0 ... derive it rather than assert it. */
+/* M = R'AR scales by w := nu/W, N = R'A Sigma A R scales by w, so M^-1 N M^-1 scales by w^-1. */
+print("(16) M^-1 N M^-1 under R -> sqrt(w) R scales by w^(", ratsimp(-2 + 1), ")")$
+/* hence V_t = E[W/nu] * V_gauss.  Derive E[W] from the chi-square density rather than quote it. */
+/* symbolic nu makes Maxima ask whether nu/2 + 1 is an integer and then wait for an answer that
+ * a batch file cannot give, so the identity is checked at concrete degrees of freedom instead. */
+chisq(w, k) := w^(k/2 - 1) * exp(-w/2) / (2^(k/2) * gamma(k/2))$
+print("(17) E[W]/nu - 1 and the density's mass, at nu = 3, 4, 5, 7, 10:",
+      makelist([ratsimp(integrate(w * chisq(w, k), w, 0, inf) / k - 1),
+                ratsimp(integrate(chisq(w, k), w, 0, inf))],
+               k, [3, 4, 5, 7, 10]))$
+/* parameterising by the VARIANCE instead of the scale multiplies Omega by (nu-2)/nu, and the
+ * sandwich is homogeneous of degree -1 in Omega, so the cost is nu/(nu-2) - 1 = 2/(nu-2). */
+print("(18) variance- vs scale-parameterisation factor:", ratsimp(nu/(nu-2) - 1))$
+
+print("=== done ===")$
