@@ -116,6 +116,62 @@ def propagate_shells(
     return out
 
 
+def panel_covariance(
+    shells: Sequence[NDArray[np.float64]],
+    gammas: Sequence[float] | NDArray[np.float64],
+    phi: float,
+    lag: int,
+    n_times: int,
+) -> NDArray[np.float64]:
+    """Space-time covariance of the panel :func:`propagate_shells` draws, in ``kron(space, time)``.
+
+    From the generative law itself, with no separability assumed::
+
+        Cov(x_i(t), x_k(s)) = sum_{d,e} g_d g_e [S_d S_e]_{ik} phi**|(t-s) - lag*(d-e)|
+
+    so ``Sigma = sum_q P_q (x) T_q`` over shifts ``q = d-e``, with ``P_q = sum_{d-e=q} g_d g_e
+    S_d S_e`` and ``[T_q]_{ts} = phi**|(t-s) - lag*q|``. Result 51 says this is separable only at
+    ``lag = 0``; Result 59 bounds how far from separable it gets. Since ``P_{-q} = P_q^T`` and
+    ``T_{-q} = T_q^T``, each ``+-q`` pair splits into a symmetric and an antisymmetric channel, so
+    the KRONECKER RANK is at most ``2*dmax`` -- set by the spillover truncation, never by the graph
+    diameter or by ``n_times`` -- and exactly ``dmax+1`` when the shell operators commute, which
+    holds on any vertex-transitive graph. Measured on a cycle: ``2, 3, 4, 5`` at ``dmax = 1..4``;
+    on a path or an Erdos-Renyi graph: ``2, 4, 6, 8``. Never ``2*dmax+1``, because the ``q = 0``
+    and ``q = dmax`` factors are symmetric on every graph.
+
+    Shares the shell convention with :func:`propagate_shells` on purpose: this is the covariance of
+    exactly that simulator's output, verified against 2e5 draws.
+    """
+    gam = np.asarray(gammas, dtype=np.float64)
+    dmax = gam.size - 1
+    lags = np.arange(n_times)[:, None] - np.arange(n_times)[None, :]
+    m = shells[0].shape[0]
+    sigma = np.zeros((m * n_times, m * n_times))
+    for d in range(dmax + 1):
+        for e in range(dmax + 1):
+            block = float(phi) ** np.abs(lags - lag * (d - e))
+            sigma += gam[d] * gam[e] * np.kron(shells[d] @ shells[e], block)
+    return sigma
+
+
+def kronecker_spectrum(
+    sigma: NDArray[np.float64], n_units: int, n_times: int
+) -> NDArray[np.float64]:
+    """Singular values of the space/time rearrangement -- the Kronecker rank of ``sigma``.
+
+    Van Loan-Pitsianis: ``sum_r A_r (x) B_r`` becomes a sum of outer products once the entries are
+    rearranged so that each ``(space, space)`` pair indexes a row and each ``(time, time)`` pair a
+    column. The number of nonzero singular values is the smallest number of Kronecker terms that
+    can represent ``sigma``, so a value of 1 IS separability rather than evidence for it.
+    """
+    rearranged = (
+        sigma.reshape(n_units, n_times, n_units, n_times)
+        .transpose(0, 2, 1, 3)
+        .reshape(n_units * n_units, n_times * n_times)
+    )
+    return np.linalg.svd(rearranged, compute_uv=False)
+
+
 def ar1_innovations(
     rng: np.random.Generator, shape: tuple[int, ...], span: int, phi: float
 ) -> NDArray[np.float64]:

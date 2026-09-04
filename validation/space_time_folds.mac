@@ -1,0 +1,92 @@
+/* DISCOVERY (space-time folds): Result 51 showed the delayed-network covariance is separable only
+   at delta = 0, and Result 52 designed folds on the SPACE axis alone. Plan 24's P2.5 asks what the
+   two-axis problem costs. It is not intractable: the covariance is a sum of KRONECKER terms whose
+   count is bounded by the SPILLOVER TRUNCATION -- never by the graph diameter or the panel length --
+   and the count drops further on a graph whose shell operators commute. Everything below is exact.
+   proofs/space_time_folds.v machine-checks the fold-sandwich algebra and the weight comparison. */
+display2d : false$
+
+/* The panel covariance, from the generative law
+     x_i(t) = sum_d g_d sum_{j in shell d(i)} z_j(t - delta*d),  Cov(z_j(t), z_k(s)) = 1{j=k} ph^|t-s|
+   is  Sigma_{(i,t),(k,s)} = sum_{d,e} g_d g_e [S_d S_e]_{ik} ph^|(t-s) - delta*(d-e)|,
+   i.e.  Sigma = sum_{q=-D}^{D} P_q (x) T_q  with  P_q = sum_{d-e=q} g_d g_e S_d S_e  and
+   [T_q]_{ts} = ph^|(t-s) - delta*q|.  Verified against 2*10^5 simulated panels to 0.021 on a scale
+   of 2.3 (chc.regret.space_time_fold_certificate re-runs it). */
+
+/* (1) THE INDEX PAIRING. P_{-q} = P_q^T and T_{-q} = T_q^T, because swapping (d,e) transposes the
+   spatial factor and negates the temporal shift. Checked on the exponent, which is where it lives. */
+print("(1) |(s-t) - delta*(-q)| - |(t-s) - delta*q| =",
+      ratsimp( abs((s - t) - delta*(-q)) - abs((t - s) - delta*q) ), "  (=0: T_{-q} = T_q^T)")$
+
+/* (2) EACH +-q PAIR CONTRIBUTES AT MOST TWO KRONECKER TERMS, and exactly one when P_q is symmetric.
+   The identity  P (x) T + P^T (x) T^T = 2*(sym(P) (x) sym(T) + skew(P) (x) skew(T))  splits the
+   pair into a symmetric and an antisymmetric channel; the second vanishes iff P = P^T. Checked
+   entrywise on generic 2x2 blocks -- the statement is bilinear, so 2x2 is not a special case. */
+P : matrix([p11, p12], [p21, p22])$
+T : matrix([t11, t12], [t21, t22])$
+symp : (P + transpose(P))/2$  skewp : (P - transpose(P))/2$
+symt : (T + transpose(T))/2$  skewt : (T - transpose(T))/2$
+lhs2 : kronecker_product(P, T) + kronecker_product(transpose(P), transpose(T))$
+rhs2 : 2*( kronecker_product(symp, symt) + kronecker_product(skewp, skewt) )$
+print("(2) P(x)T + P^T(x)T^T - 2(sym(x)sym + skew(x)skew) =",
+      ratsimp( lhs2 - rhs2 ), "  (=0)")$
+print("    skew(P) = 0 kills the second channel:  skew(P) at p21=p12 =",
+      ratsimp( subst(p21 = p12, skewp) ), "  (=0)")$
+
+/* (3) THE TWO EXTREME SHIFTS ARE ALWAYS SYMMETRIC, on ANY graph. q = 0 gives sum_d g_d^2 S_d^2 and
+   q = D gives g_D g_0 S_D S_0 = g_D g_0 S_D -- a single term with the identity, so it cannot fail to
+   be symmetric. Only q = 1 .. D-1 can carry an antisymmetric part, and only when the shell
+   operators fail to commute. Hence  rank <= (D+1) + (D-1) = 2D, and never 2D+1. */
+print("(3) shifts q = -D..D count 2*D+1; symmetric-only channels D+1; extra channels D-1")$
+print("    bound  (D+1) + (D-1) - 2*D =", ratsimp( (D + 1) + (D - 1) - 2*D ), "  (=0)")$
+/* Commuting shells (vertex-transitive graphs: cycle, torus, any Cayley graph) make every P_q
+   symmetric, because P_q^T = sum_{d-e=q} g_d g_e S_e S_d = P_q. Then the rank is D+1.
+   MEASURED, cycle m=14: 2, 3, 4, 5 at D = 1, 2, 3, 4.  Path / Erdos-Renyi: 2, 4, 6, 8 = 2D. */
+
+/* (4) SEPARABILITY IS EXACTLY delta = 0, recovering Result 51's STEP 7 from the Kronecker side.
+   All the shifts collapse onto T_0, so Sigma = (sum_q P_q) (x) T_0 and the rank is 1. */
+print("(4) shift at delta=0 :  subst(delta=0, |(t-s) - delta*q|) - |t-s| =",
+      ratsimp( subst(delta = 0, abs((t - s) - delta*q)) - abs(t - s) ), "  (=0)")$
+
+/* (5) THE FOLD OPERATOR'S SQUARE, which is what makes the two-axis design a MIN-WEIGHT BALANCED CUT
+   on the product set. With E the grand-mean projector, F the within-fold projector, E^2=E, F^2=F,
+   EF=FE=E, the algebra <I,E,F> is closed, so an operator is a coefficient TRIPLE and multiplication
+   is a rule on triples. A_u = (1, -r^2, r^2-1). */
+mul(u, v) := block([a1:u[1], b1:u[2], c1:u[3], a2:v[1], b2:v[2], c2:v[3]],
+  [ a1*a2,
+    a1*b2 + b1*a2 + b1*b2 + b1*c2 + c1*b2,
+    a1*c2 + c1*a2 + c1*c2 ])$
+au   : [1, -r^2, r^2 - 1]$
+sq   : mul(au, au)$
+print("(5) A_u^2 coefficients =", ratsimp(sq))$
+print("    residual vs (1, -r^4, r^4-1) =", ratsimp( sq - [1, -r^4, r^4 - 1] ), "  (=0)")$
+/* So tr(A_u^2 Sigma) = tr(Sigma) - r^4 (1'Sigma 1)/N + (r^4-1)(K/N) sum_f 1_f' Sigma 1_f, and only
+   the last term sees the partition, with a POSITIVE weight for K >= 2 (r = K/(K-1) > 1). */
+print("    partition weight  (r^4-1) at r=K/(K-1) =", factor( ratsimp( subst(r = K/(K-1), r^4 - 1) ) ),
+      "  (>0 for K>=2)")$
+
+/* (6) THE TIME AXIS RE-WEIGHTS THE SPACE PROBLEM. A fold held CONSTANT in time scores
+   sum_{t,s} [T_q]_{ts} = w_q, not the single-slice value [T_q]_{tt} = ph^(delta*|q|) that Result 52
+   uses. The two are NOT proportional, so the panel's one-axis design is not the cross-section's. */
+w(q, ph, delta, p) := sum( sum( ph^abs((t - s) - delta*q), s, 0, p - 1), t, 0, p - 1)$
+print("(6) w_0 at p=3 =", ratsimp( w(0, ph, delta, 3) ))$
+print("    w_1 at p=3, delta=1 =", ratsimp( w(1, ph, 1, 3) ))$
+print("    proportionality residual  w_1/w_0 - ph^delta  at p=3, delta=1 =",
+      ratsimp( w(1, ph, 1, 3)/w(0, ph, 1, 3) - ph ),
+      "  (NOT identically 0: the panel weight is not the slice weight)")$
+print("    at ph=3/5 the two weights are", ratsimp( subst(ph = 3/5, w(1, ph, 1, 3)/w(0, ph, 1, 3)) ),
+      "vs", 3/5)$
+print("    the residual factors as", factor( ratsimp( w(1, ph, 1, 3)/w(0, ph, 1, 3) - ph ) ),
+      "  (vanishes only at ph = +-1: the degenerate limits, never in between)")$
+
+/* (7) THE SHIFT LEAVES THE WINDOW, which is why cutting time pays MORE as the delay grows. Every
+   temporal lag in the panel obeys |t-s| <= p-1, so once the shift delta*q exceeds that, EVERY entry
+   of T_q is at most ph^(delta*q-(p-1)) and the whole block is exponentially small in the excess.
+   The design then has almost no reason to keep those pairs together, and the freed budget goes to
+   the space axis -- measured as 0.0-1.2% of the objective at delta=1 rising to 12.9-19.2% at
+   delta=4 (m=8, p=4, K=2, cycle), with the heuristic matching exhaustive enumeration exactly. */
+assume(delta*q - p + 1 >= 0)$
+print("(7) worst-case exponent gap:  min over |tau|<=p-1 of  |tau - delta*q| - (delta*q - (p-1)) =",
+      ratsimp( abs((p - 1) - delta*q) - (delta*q - (p - 1)) ),
+      "  (=0 at tau = p-1, so the bound ph^(delta*q-(p-1)) is ATTAINED, not merely valid)")$
+print("    mass bound  w_q <= p^2 ph^(delta*q-(p-1))  is that entry bound summed over p^2 pairs")$

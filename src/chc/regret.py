@@ -29,7 +29,14 @@ from scipy.integrate import quad
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
 from scipy.special import psi
 
-from chc.network_causal import ar1_innovations, cycle_shells, graph_shells, propagate_shells
+from chc.network_causal import (
+    ar1_innovations,
+    cycle_shells,
+    graph_shells,
+    kronecker_spectrum,
+    panel_covariance,
+    propagate_shells,
+)
 
 Matrix = NDArray[np.float64]
 Vector = NDArray[np.float64]
@@ -1619,6 +1626,7 @@ def optimal_fold_partition(
     phi: float,
     lag: int = 1,
     k_folds: int = 2,
+    time_axis: int | None = None,
     exhaustive_limit: int = 20000,
     restarts: int = 8,
     seed: int = 0,
@@ -1641,6 +1649,21 @@ def optimal_fold_partition(
     which every balanced partition obeys. A large gap on the local-search path is an honest
     "could not certify", not a silent success.
 
+    ``time_axis`` opts into the TWO-AXIS problem (Result 59). Left at ``None`` the design set is the
+    ``m`` units and nothing changes. Given the panel length ``p`` it becomes the ``m*p``
+    (unit, time) cells, ordered as ``kron(space, time)``, and the weight becomes the panel
+    covariance ``Sigma = sum_q P_q (x) T_q``, ``[T_q]_{ts} = phi**|(t-s) - lag*q|``: a sum of
+    at most ``2*dmax`` Kronecker terms -- set by the SPILLOVER TRUNCATION, never by the diameter
+    or by ``p`` -- and of exactly ``dmax+1`` when the shell operators commute, which every
+    vertex-transitive graph gives.
+
+    **Cutting the time axis is not free, and its price is a function of the delay.** Measured on a
+    cycle (``m=8``, ``p=4``, ``K=2``) against the best time-constant fold: ``0.0-1.2%`` of the
+    objective at ``lag=1``, ``1.5-4.3%`` at ``lag=2``, ``12.9-19.2%`` at ``lag=4``. The reason is
+    exact: once ``lag*q`` passes the panel's longest lag ``p-1``, every entry of ``T_q`` is bounded
+    by ``phi**(lag*q - (p-1))`` and the design has almost no reason to keep those pairs together.
+    One axis at a time is a defensible scope at ``lag=1`` and an expensive one beyond it.
+
     The objective is the PLUG-IN law's. Near a design boundary the exact moment shifts thresholds
     (Result 52 (e)); rank the shortlisted designs with :func:`exact_ratio_moment` when it matters.
     """
@@ -1649,13 +1672,17 @@ def optimal_fold_partition(
     if len(mats) != gam.size:
         raise ValueError("shells and gammas must have the same length")
     m = mats[0].shape[0]
+    x = float(phi) ** int(lag)
+    if time_axis is None:
+        q = np.zeros((m, m))
+        for d in range(gam.size):
+            for e in range(gam.size):
+                q += gam[d] * gam[e] * x ** abs(d - e) * (mats[d] @ mats[e])
+    else:
+        q = panel_covariance(mats, gam, float(phi), int(lag), int(time_axis))
+    m = q.shape[0]
     if m % k_folds != 0:
         raise ValueError("m must be divisible by k_folds: the law is derived for equal fold sizes")
-    x = float(phi) ** int(lag)
-    q = np.zeros((m, m))
-    for d in range(gam.size):
-        for e in range(gam.size):
-            q += gam[d] * gam[e] * x ** abs(d - e) * (mats[d] @ mats[e])
 
     def objective(fold: NDArray[np.int_]) -> float:
         same = fold[:, None] == fold[None, :]
@@ -4453,4 +4480,221 @@ def confounding_robust_tracking_benchmark(
         savings_at_target_pct=savings,
         unconfounded_premium_pct=premium,
         ok=(robust_worst < ce_worst and savings > 0.0),
+    )
+
+
+# --- Result 59 (A15): the space-time fold problem, and what one axis at a time costs ---
+
+
+@dataclass(frozen=True)
+class SpaceTimeFoldCurve:
+    """Result 59: the two-axis fold problem -- its Kronecker rank, and the price of one axis."""
+
+    covariance_error: float  # max |simulated - panel_covariance|, on the scale below
+    covariance_scale: float
+    commuting_rank: tuple[int, ...]  # cycle: rank should be dmax+1 at each dmax swept
+    generic_rank: tuple[int, ...]  # a non-commuting graph: 2*dmax
+    dmax_grid: tuple[int, ...]
+    rank_times: int  # panel long enough to RESOLVE every shift: p-1 >= lag*dmax
+    separable_rank: int  # at lag = 0 the covariance must collapse to ONE Kronecker term
+    saturated_times: int  # ... and a panel too short to resolve the largest shift
+    saturated_rank: tuple[int, ...]  # where the rank drops below the law, commuting / generic
+    lags: tuple[int, ...]
+    slice_design: Vector  # Result 52's CROSS-SECTIONAL design, held constant in time
+    space_only: Vector  # best time-constant fold for the PANEL objective
+    space_time: Vector  # best free (unit, time) fold
+    slice_design_penalty: Vector  # (slice_design - space_only) / space_only: wrong WEIGHT
+    price_of_one_axis: Vector  # (space_only - space_time) / space_only: wrong AXIS
+    weight_beats_axis_at_short_delay: bool
+    axis_beats_weight_at_long_delay: bool
+    exhaustive_ratio: float  # heuristic / exact optimum on a product set small enough to enumerate
+    panel_weight: float  # w_1/w_0 at p=3, lag=1 -- what a time-constant fold really carries
+    slice_weight: float  # phi**lag -- what Result 52 scores it with
+    ok: bool
+
+
+def _panel_objective(sigma: NDArray[np.float64], fold: NDArray[np.int_]) -> float:
+    return float(sigma[fold[:, None] == fold[None, :]].sum())
+
+
+def space_time_fold_certificate(
+    m: int = 8,
+    n_times: int = 4,
+    gammas: Sequence[float] = (1.0, 0.7, 0.4),
+    phi: float = 0.6,
+    lags: Sequence[int] = (1, 2, 3, 4),
+    dmax_grid: Sequence[int] = (1, 2, 3, 4),
+    k_folds: int = 2,
+    n_draws: int = 200_000,
+    restarts: int = 30,
+    seed: int = 20260904,
+) -> SpaceTimeFoldCurve:
+    """RESULT 59 -- folds on BOTH axes (derived in ``validation/space_time_folds.mac``, proved in
+    ``proofs/space_time_folds.v``).
+
+    Result 51 showed the delayed-network covariance is separable only at ``lag = 0``; Result 52
+    designed folds on the space axis alone and said so. Plan 24's P2.5 asks what the restriction
+    costs. Four gates, each able to fail:
+
+    1. **The covariance formula is the simulator's.** ``panel_covariance`` is compared against
+       trajectories drawn from the generative definition, never from the Kronecker form, so a wrong
+       model shows up as a mismatch rather than as agreement with itself.
+    2. **The Kronecker rank obeys the commutation law.** ``dmax+1`` when the shell operators commute
+       (the cycle), ``2*dmax`` when they do not (a path) -- and never ``2*dmax+1``, because the
+       ``q = 0`` and ``q = dmax`` spatial factors are symmetric on every graph. At ``lag = 0`` the
+       rank must be exactly 1, which is Result 51's STEP 7 read from the Kronecker side. Both
+       statements need a panel long enough to RESOLVE the shifts: once ``lag*q`` passes ``p-1``
+       every remaining temporal factor is a multiple of the same matrix, so the rank SATURATES
+       strictly below the law -- measured 4 against 5 (cycle) and 7 against 8 (path) at
+       ``p = 4, dmax = 4``. A short panel cannot see the coupling it is being asked to design for.
+    3. **Two different mistakes, and they cross.** Holding a fold constant in time is one error;
+       scoring it with Result 52's SINGLE-SLICE weight instead of the panel's is another, and they
+       are not the same. Measured on a cycle (``m=8``, ``p=4``, ``K=2``, ``phi=0.6``) the slice
+       weight costs ``3.3, 8.7, 2.8, 0.3%`` over ``lag = 1..4`` while the frozen time axis costs
+       ``0.3, 3.3, 13.3, 19.2%``. **At short delay the mistake to fix is the weight; at long delay
+       it is the axis.** The gate is that crossing, not either number alone.
+    4. **The heuristic is exact where exactness is checkable.** On a product set small enough to
+       enumerate, spectral rounding plus balanced swaps must return the global optimum.
+
+    The last field pair is the quieter finding: a fold held constant in time is scored by Result 52
+    with the SINGLE-SLICE weight ``phi**lag``, but on a panel it really carries ``w_1/w_0``, the
+    ratio of shifted-Toeplitz masses. Those differ everywhere strictly inside ``(0,1)``
+    (``proofs/space_time_folds.v``, ``panel_weight_exceeds_the_slice_weight``), so even the one-axis
+    panel design is not the cross-sectional one.
+    """
+    gam = np.asarray(gammas, dtype=np.float64)
+    dmax = gam.size - 1
+    shells = cycle_shells(m, dmax)
+    rng = np.random.default_rng(seed)
+
+    span = 40 + n_times + max(lags) * dmax
+    innovations = ar1_innovations(rng, (n_draws, m), span, float(phi))
+    drawn = propagate_shells(innovations, shells, gam, int(lags[0]), n_times)
+    empirical = np.cov(drawn.reshape(n_draws, m * n_times), rowvar=False)
+    predicted = panel_covariance(shells, gam, float(phi), int(lags[0]), n_times)
+    covariance_error = float(np.abs(empirical - predicted).max())
+    covariance_scale = float(np.abs(predicted).max())
+
+    path = np.diag(np.ones(m - 1), 1) + np.diag(np.ones(m - 1), -1)
+    rank_times = max(dmax_grid) + 2  # p-1 >= dmax: every shift lands inside the window
+
+    def kron_rank(
+        shell_set: list[NDArray[np.float64]], weights: NDArray[np.float64], p: int
+    ) -> int:
+        spectrum = kronecker_spectrum(panel_covariance(shell_set, weights, float(phi), 1, p), m, p)
+        return int((spectrum > 1e-9 * spectrum[0]).sum())
+
+    commuting, generic = [], []
+    for d in dmax_grid:
+        weights = np.array([0.9**k for k in range(d + 1)])
+        commuting.append(kron_rank(cycle_shells(m, d), weights, rank_times))
+        generic.append(kron_rank(graph_shells(path, d), weights, rank_times))
+    saturated_times = max(dmax_grid)
+    short_weights = np.array([0.9**k for k in range(max(dmax_grid) + 1)])
+    saturated_rank = (
+        kron_rank(cycle_shells(m, max(dmax_grid)), short_weights, saturated_times),
+        kron_rank(graph_shells(path, max(dmax_grid)), short_weights, saturated_times),
+    )
+    flat = panel_covariance(shells, gam, float(phi), 0, n_times)
+    flat_spectrum = kronecker_spectrum(flat, m, n_times)
+    separable_rank = int((flat_spectrum > 1e-9 * flat_spectrum[0]).sum())
+
+    slice_design, space_only, space_time = [], [], []
+    for lag in lags:
+        sigma = panel_covariance(shells, gam, float(phi), int(lag), n_times)
+        cross_section = optimal_fold_partition(
+            shells, gammas, float(phi), lag=int(lag), k_folds=k_folds
+        ).fold
+        slice_design.append(_panel_objective(sigma, np.repeat(cross_section, n_times)))
+        best_constant = np.inf
+        for chosen in itertools.combinations(range(1, m), m // k_folds - 1):
+            unit_fold = np.ones(m, dtype=np.int_)
+            unit_fold[0] = 0
+            unit_fold[list(chosen)] = 0
+            best_constant = min(
+                best_constant, _panel_objective(sigma, np.repeat(unit_fold, n_times))
+            )
+        free = optimal_fold_partition(
+            shells,
+            gammas,
+            float(phi),
+            lag=int(lag),
+            k_folds=k_folds,
+            time_axis=n_times,
+            restarts=restarts,
+            seed=seed,
+        )
+        space_only.append(float(best_constant))
+        space_time.append(float(free.objective))
+    slice_arr = np.asarray(slice_design)
+    space_only_arr = np.asarray(space_only)
+    space_time_arr = np.asarray(space_time)
+    price = (space_only_arr - space_time_arr) / space_only_arr
+    slice_penalty = (slice_arr - space_only_arr) / space_only_arr
+
+    small_units, small_times = 4, 3
+    small_shells = cycle_shells(small_units, dmax)
+    small = panel_covariance(small_shells, gam, float(phi), int(lags[0]), small_times)
+    cells = small_units * small_times
+    exact = min(
+        _panel_objective(
+            small, np.array([0 if i in (0, *chosen) else 1 for i in range(cells)], dtype=np.int_)
+        )
+        for chosen in itertools.combinations(range(1, cells), cells // 2 - 1)
+    )
+    heuristic = optimal_fold_partition(
+        small_shells,
+        gammas,
+        float(phi),
+        lag=int(lags[0]),
+        k_folds=2,
+        time_axis=small_times,
+        exhaustive_limit=0,
+        restarts=restarts,
+        seed=seed,
+    ).objective
+    exhaustive_ratio = float(heuristic / exact)
+
+    def toeplitz_mass(shift: int, periods: int) -> float:
+        gaps = np.arange(periods)[:, None] - np.arange(periods)[None, :]
+        return float((float(phi) ** np.abs(gaps - shift)).sum())
+
+    panel_weight = toeplitz_mass(1, 3) / toeplitz_mass(0, 3)
+    slice_weight = float(phi)
+
+    ok = bool(
+        covariance_error < 0.05 * covariance_scale
+        and commuting == [d + 1 for d in dmax_grid]
+        and generic == [max(2 * d, 2) for d in dmax_grid]
+        and separable_rank == 1
+        and saturated_rank[0] < commuting[-1]
+        and saturated_rank[1] < generic[-1]
+        and np.all(np.diff(price) > 0.0)
+        and bool(slice_penalty[0] > price[0])
+        and bool(price[-1] > slice_penalty[-1])
+        and exhaustive_ratio < 1.0 + 1e-9
+        and panel_weight > slice_weight
+    )
+    return SpaceTimeFoldCurve(
+        covariance_error=covariance_error,
+        covariance_scale=covariance_scale,
+        commuting_rank=tuple(commuting),
+        generic_rank=tuple(generic),
+        dmax_grid=tuple(int(d) for d in dmax_grid),
+        rank_times=rank_times,
+        separable_rank=separable_rank,
+        saturated_times=saturated_times,
+        saturated_rank=saturated_rank,
+        lags=tuple(int(v) for v in lags),
+        slice_design=slice_arr,
+        space_only=space_only_arr,
+        space_time=space_time_arr,
+        slice_design_penalty=slice_penalty,
+        price_of_one_axis=price,
+        weight_beats_axis_at_short_delay=bool(slice_penalty[0] > price[0]),
+        axis_beats_weight_at_long_delay=bool(price[-1] > slice_penalty[-1]),
+        exhaustive_ratio=exhaustive_ratio,
+        panel_weight=panel_weight,
+        slice_weight=slice_weight,
+        ok=ok,
     )

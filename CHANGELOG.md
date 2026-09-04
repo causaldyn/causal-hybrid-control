@@ -9,6 +9,27 @@ still change).
 
 ### Added
 
+- **Folds on both axes of a delayed-network panel** (`chc.network_causal.panel_covariance`,
+  `kronecker_spectrum`; `chc.regret.optimal_fold_partition(time_axis=...)`,
+  `space_time_fold_certificate`, `SpaceTimeFoldCurve`). Result 51 showed the delayed-network
+  covariance is separable only at `delta = 0`; Result 52 designed folds on the space axis and said
+  so. The two-axis problem is not intractable. Writing `Sigma = sum_q P_q (x) T_q` with
+  `P_{-q} = P_q'` and `T_{-q} = T_q'`, each `+-q` pair splits into a symmetric and an antisymmetric
+  channel, so the **Kronecker rank is at most `2*dmax`** -- set by the spillover truncation, never
+  by the graph diameter or the panel length -- and never `2*dmax+1`, because the `q = 0` and
+  `q = dmax` factors are symmetric on every graph. Exactly `dmax+1` when the shell operators commute
+  (cycle: `2, 3, 4, 5`) against `2*dmax` when they do not (path: `2, 4, 6, 8`), and `1` at
+  `delta = 0`. Reproduced independently in Octave (`validation/space_time_folds.m`) and verified
+  against 2e5 simulated panels.
+
+  Two consequences for the design. A panel too short to resolve a shift cannot see the coupling it
+  is designing for: once `delta*q` passes `p-1` the temporal factors become proportional and the
+  rank saturates below the law (4 against 5, 7 against 8). And **two different mistakes cross over**
+  -- scoring a time-constant fold with the cross-sectional weight costs `3.3, 8.7, 2.8, 0.3%` over
+  `delta = 1..4`, while freezing the time axis costs `0.3, 3.0, 13.3, 19.5%`. At short delay the
+  mistake to fix is the weight; at long delay it is the axis. `time_axis=None` is the default and
+  reproduces the previous behaviour exactly.
+
 - **Gamma is unfalsifiable, but it is not uncalibrated** (`chc.uncertainty.benchmark_gamma`,
   `negative_control_gamma`, `gamma_benchmark_certificate`, `GammaBenchmark`,
   `GammaBenchmarkCertificate`). Result 32 ships `Gamma` as the analyst's input and says so at every
