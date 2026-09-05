@@ -1683,11 +1683,14 @@ def exact_matrix_ratio_moment(
       9     531 441   2.76e-2            --
       ===== ========= ================== ==================
 
-      That is **1.6 digits for 531 441 points and 91 minutes**. Extrapolating the measured rate
-      (1.6 per node at ``n = 5``, 2 per node at ``n = 7``), six digits would need ``nodes ~ 20-32``,
-      i.e. 6e7 to 1e9 points. Six digits at ``q = 3`` is not reachable with this quadrature -- not
-      "expensive", unreachable. Note also that ``nodes = 8`` at ``n = 5`` costs 54 minutes and is no
-      more accurate than ``nodes = 5`` at 2 minutes, which is why the ``q = 3`` default is 6.
+      That is **1.6 digits for 531 441 points**. Extrapolating the measured rate (1.6 per node at
+      ``n = 5``, 2 per node at ``n = 7``), six digits would need ``nodes ~ 20-32``, i.e. 6e7 to 1e9
+      points. Six digits at ``q = 3`` is not reachable with this quadrature -- not "expensive",
+      unreachable. Note also that ``nodes = 8`` at ``n = 5`` evaluates 17x the points of
+      ``nodes = 5`` and is no more accurate (4.64e-2 against 4.68e-2), which is why the ``q = 3``
+      default is 6. Wall-clock figures are deliberately absent: the same cell measured 3218 s and
+      1499 s on this machine depending on what else was running, while the accuracy column is
+      bit-identical across those runs.
 
       Convergence is monotone only with margin from the existence boundary: at ``n = q + 2`` the
       sequence goes 4.68e-2, 8.66e-2, 6.69e-2, 4.64e-2, 2.76e-2, while at ``n = q + 4`` it
@@ -1878,6 +1881,32 @@ class MatrixRatioAccuracy:
     So: treat a large ``relative_residual`` as proof the grid is inadequate; treat a small one as
     evidence only where the convergence rate is known to exceed 2 per node, which at ``q = 3`` it
     is not.
+
+    **The second bar, where it exists.** On an exchangeable problem the exact answer has a constant
+    diagonal, so half the observed diagonal spread is a PROVED lower bound on the largest entry
+    error (``half_spread_bounds_the_max_error``) -- no reference value needed, and no extra
+    quadrature, since it is a function of ``value`` alone. ``exchangeable`` says whether the
+    precondition actually holds, decided rather than assumed: ``Omega`` must be invariant under
+    permuting the ``q`` channels of ``vec(X)``, which ``q - 1`` transposition checks settle.
+
+    Measured at ``q = 3, n = 5`` against the exact anchor, the bar recovers a far STEADIER share of
+    the true error than the residual does:
+
+    ===== ================== ===============
+    nodes residual / true    bar / true
+    ===== ================== ===============
+    5     5.26               0.99
+    6     0.86               0.55
+    7     0.30               0.45
+    8     0.44               0.46
+    9     0.68               0.48
+    ===== ================== ===============
+
+    The residual's ratio swings by 17x; the bar sits at 0.45-0.55 once past the coarsest grid. But
+    it does not rescue the cells the residual missed -- at a 1% tolerance both convict every one of
+    these cells, so the bar is a safety net rather than a fix, and ``ok`` requires both. Do not read
+    the steadiness as a calibration: five cells of one problem family is exactly the evidence base
+    that produced the retracted rate claim in :func:`exact_matrix_ratio_moment`.
     """
 
     value: NDArray[np.float64]  # the fine-grid estimate: identical to exact_matrix_ratio_moment
@@ -1886,8 +1915,29 @@ class MatrixRatioAccuracy:
     coarse_nodes: int
     residual: float  # max |fine - coarse|, entrywise
     relative_residual: float  # residual / max |fine|
+    exchangeable: bool  # the q channels are exchangeable, so the exact answer has constant diagonal
+    isotropy_bar: float  # half the diagonal spread: a PROVED lower bound on the error, else nan
+    relative_isotropy_bar: float
     tolerance: float
     ok: bool
+
+
+def _channels_are_exchangeable(om: NDArray[np.float64], q: int, n: int) -> bool:
+    """Is ``Omega`` invariant under permuting the ``q`` channels of ``vec(X)``?
+
+    ``vec`` is column-major, so a channel permutation acts as ``P kron I_n``. Transpositions
+    ``(0, j)`` generate ``S_q``, so ``q - 1`` checks decide it. When this holds, ``X P`` has the
+    same law as ``X`` for every ``P``, hence the sandwich satisfies ``S = P' S P`` and is compound
+    symmetric -- constant diagonal -- whatever the numerator and denominator are.
+    """
+    eye_n = np.eye(n)
+    for j in range(1, q):
+        perm = np.eye(q)
+        perm[[0, j]] = perm[[j, 0]]
+        big = np.kron(perm, eye_n)
+        if not np.allclose(big.T @ om @ big, om, rtol=1e-10, atol=1e-12):
+            return False
+    return True
 
 
 def matrix_ratio_certificate(
@@ -1902,8 +1952,10 @@ def matrix_ratio_certificate(
     Same arguments and same value; the extra cost is one coarser grid, which at ``q = 3`` is
     ``(nodes-1)^6 / nodes^6`` -- about 26% at ``nodes = 5``. Use this rather than the bare value
     whenever ``q = 3``, where the default grid is not converged and the array alone says nothing
-    about that. The estimator works on ANY problem, including the anisotropic ones where the
-    isotropy bar of Result 63 (e) does not apply at all.
+    about that. The refinement residual works on ANY problem, including the anisotropic ones where
+    the isotropy bar does not apply; the isotropy bar is free but only valid when the channels are
+    exchangeable. ``ok`` requires whichever of the two are available to pass, so adding the second
+    can only tighten it.
     """
     if tolerance <= 0.0:
         raise ValueError("tolerance must be positive")
@@ -1922,6 +1974,14 @@ def matrix_ratio_certificate(
     residual = float(np.max(np.abs(fine - coarse)))
     scale = float(np.max(np.abs(fine)))
     relative = residual / scale if scale > 0.0 else residual
+    exchangeable = _channels_are_exchangeable(om, q, n)
+    if exchangeable:
+        diag = np.diag(fine)
+        bar = 0.5 * float(diag.max() - diag.min())
+        relative_bar = bar / scale if scale > 0.0 else bar
+    else:
+        bar = float("nan")
+        relative_bar = float("nan")
     return MatrixRatioAccuracy(
         value=fine,
         coarse=coarse,
@@ -1929,8 +1989,11 @@ def matrix_ratio_certificate(
         coarse_nodes=coarse_nodes,
         residual=residual,
         relative_residual=relative,
+        exchangeable=exchangeable,
+        isotropy_bar=bar,
+        relative_isotropy_bar=relative_bar,
         tolerance=tolerance,
-        ok=relative <= tolerance,
+        ok=relative <= tolerance and not (exchangeable and relative_bar > tolerance),
     )
 
 

@@ -39,12 +39,14 @@ still change).
   | 8 | 262 144 | 4.64e-2 | -- |
   | 9 | 531 441 | 2.76e-2 | -- |
 
-  **1.6 digits for 531 441 points and 91 minutes.** The measured rate is `1.6x` per node at
-  `n = q + 2` and `2x` at `n = q + 4`, so six digits would need `nodes ~ 20-32`, i.e. `6e7` to
-  `1e9` points: not expensive, unreachable. An earlier draft of this entry read the two-point
-  `4.2-6.2x` slope as a rate and predicted six digits at `nodes ~ 11-13`; the full curve
-  withdraws that. The `q = 3` default is 6 rather than 8 for the same reason -- at `n = 5`,
-  `nodes = 8` costs 54 minutes and is no more accurate than `nodes = 5` at two.
+  **1.6 digits for 531 441 points.** The measured rate is `1.6x` per node at `n = q + 2` and `2x`
+  at `n = q + 4`, so six digits would need `nodes ~ 20-32`, i.e. `6e7` to `1e9` points: not
+  expensive, unreachable. An earlier draft of this entry read the two-point `4.2-6.2x` slope as a
+  rate and predicted six digits at `nodes ~ 11-13`; the full curve withdraws that. The `q = 3`
+  default is 6 rather than 8 for the same reason -- at `n = 5`, `nodes = 8` evaluates 17x the
+  points of `nodes = 5` and is no more accurate (`4.64e-2` against `4.68e-2`). Wall-clock figures
+  that appeared in an earlier draft are withdrawn: the same cell measured 3218 s and 1499 s on the
+  same machine depending on load, while the accuracy column is bit-identical across both runs.
 
   Convergence is monotone only with margin from the existence boundary: at `n = q + 2` the
   sequence goes `4.68e-2, 8.66e-2, 6.69e-2, 4.64e-2, 2.76e-2`.
@@ -85,6 +87,22 @@ still change).
   extra cost; measured, the residual ratios are flat (`0.96, 1.09`) while the error ratios are
   `1.44` and `1.68`. The error sequence is not geometric, so no Richardson-type correction exists
   and none was shipped.
+
+  The certificate now carries a SECOND bar where one exists: `exchangeable`, `isotropy_bar` and
+  `relative_isotropy_bar`. On an exchangeable problem the exact answer has a constant diagonal, so
+  half the observed diagonal spread is a **proved** lower bound on the largest entry error -- and
+  it costs nothing, being a function of the returned matrix. The precondition is decided rather
+  than assumed: `Omega` must be invariant under permuting the `q` channels of `vec(X)`, which
+  `q - 1` transposition checks settle, so a channel-asymmetric problem gets `nan` instead of a
+  wrong number. `ok` now requires both bars, which can only tighten it.
+
+  What it is worth, measured at `q = 3, n = 5` against the exact anchor: bar/true error is
+  `0.99, 0.55, 0.45, 0.46, 0.48` at `nodes = 5..9`, against the residual's
+  `5.26, 0.86, 0.30, 0.44, 0.68`. The bar is far steadier -- 0.45-0.55 past the coarsest grid,
+  where the residual swings 17x. It does NOT rescue the cells the residual missed: at a 1%
+  tolerance both convict all of them, so this is a safety net, not the fix. Nor is the steadiness
+  a calibration -- five cells of one problem family is the evidence base that produced the
+  retracted rate claim above.
 
 - **The delayed-network panel leaves the cycle, and the network estimator reports uncertainty**
   (`chc.network_causal.torus_adjacency`, `DelayedNetworkPanel(graph=...)`,

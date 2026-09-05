@@ -874,6 +874,30 @@ def test_matrix_ratio_certificate_reports_what_the_grid_is_worth() -> None:
         matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(3 * n), nodes=3)
 
 
+def test_the_isotropy_bar_rides_along_when_the_channels_are_exchangeable() -> None:
+    # Result 63 (e) proves half the diagonal spread LOWER-bounds the largest entry error whenever
+    # the exact answer is isotropic. The certificate can compute that for free -- it is a function
+    # of the returned matrix -- but only where it is valid, so the precondition is detected rather
+    # than assumed.
+    n = 6
+    cert = matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(2 * n), nodes=32)
+    assert cert.exchangeable
+    truth = np.eye(2) / (n - 2 - 1)
+    assert cert.isotropy_bar <= float(np.max(np.abs(cert.value - truth)))
+
+    # a channel-symmetric but non-identity Omega still qualifies: exchangeability is about the
+    # PERMUTATION group acting on channels, not about the covariance being the identity
+    compound = np.kron(np.array([[1.0, 0.3], [0.3, 1.0]]), np.eye(n))
+    assert matrix_ratio_certificate(np.eye(n), np.eye(n), compound, nodes=8).exchangeable
+
+    # and a channel-ASYMMETRIC one does not, so the bar is withheld rather than quoted wrongly
+    lopsided = np.eye(2 * n)
+    lopsided[:n, :n] *= 3.0
+    off = matrix_ratio_certificate(np.eye(n), np.eye(n), lopsided, nodes=8)
+    assert not off.exchangeable
+    assert math.isnan(off.isotropy_bar)
+
+
 def test_exact_ratio_moment_closed_forms_tail_condition_and_crossover_immunity() -> None:
     # Result 51 (l)/(m), validation/omega_jensen_gap.mac, proofs/omega_jensen_gap.v.
 
