@@ -836,9 +836,11 @@ def test_general_q_ratio_moment_lifts_the_sandwich_off_two_channels() -> None:
 
 
 def test_matrix_ratio_certificate_reports_what_the_grid_is_worth() -> None:
-    # Result 63 (d): at q = 3 the value alone hides a percent-scale quadrature error, and the
-    # isotropy bar of (e) only exists on exchangeable problems. The refinement residual works on
-    # any problem and is CONSERVATIVE -- measured 1.25x to 5.26x the true error, never below it.
+    # Result 63 (d), (d'): at q = 3 the value alone hides a percent-scale quadrature error, and
+    # the isotropy bar of (e) only exists on exchangeable problems. The refinement residual works
+    # on any problem, but it is an ESTIMATE, not a bound. It measures the STEP e(k-1) - e(k), so
+    # residual/true = r - 1 and it majorises the error iff the per-node rate r >= 2. Over 13 cells
+    # the ratio runs 0.30x to 5.26x, below 1 in five -- each of those a cell with r < 2.
 
     # 1. q = 2 is converged, so the certificate says so and the value is unchanged
     n = 6
@@ -857,8 +859,10 @@ def test_matrix_ratio_certificate_reports_what_the_grid_is_worth() -> None:
     assert not coarse.ok
     assert coarse.relative_residual > 0.1
 
-    # 3. and it never UNDER-states the true error, which is the property that makes it usable:
-    #    the exact answer here is I/(n - q - 1), so the true error is computable
+    # 3. in THIS cell it dominates the true error -- the exact answer is I/(n - q - 1), so the
+    #    true error is computable, and the rate from nodes 4 to 5 is 6.24, comfortably past the
+    #    r >= 2 threshold. Not asserted in general: at nodes 7, 8, 9 the rate falls to 1.30, 1.44,
+    #    1.68 and the residual under-states. See the docstring.
     truth = np.eye(3) / (n - 3 - 1)
     true_error = float(np.max(np.abs(coarse.value - truth)))
     assert coarse.residual >= true_error

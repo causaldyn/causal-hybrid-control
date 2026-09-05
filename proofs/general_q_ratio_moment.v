@@ -203,3 +203,45 @@ Qed.
 Lemma variance_parameterisation_costs_two_over_nu_minus_two :
   forall nu : R, nu > 2 -> nu / (nu - 2) - 1 = 2 / (nu - 2).
 Proof. intros nu H; field; lra. Qed.
+
+(* ------------------------------------------------------------------ *)
+(* (E) what a grid-refinement residual is worth: the rate-2 threshold  *)
+(* ------------------------------------------------------------------ *)
+
+(* The shipped certificate reports |X_k - X_(k-1)| as a stand-in for the unknown |X_k - X|.
+   If the error decays geometrically in a fixed direction, e_k = e/r and e_(k-1) = e, then the
+   residual is e - e/r, so residual / true = r - 1 EXACTLY. *)
+Lemma refinement_residual_is_rate_minus_one :
+  forall e r : R, e <> 0 -> r <> 0 -> (e - e / r) / (e / r) = r - 1.
+Proof. intros e r He Hr; field; split; assumption. Qed.
+
+(* Hence the residual majorises the error iff the per-node decay rate reaches 2. This is the
+   whole content of the q = 3 failure: the measured rates on the existence boundary are
+   1.30, 1.44, 1.68 -- all below 2 -- so the residual under-states there by construction, not
+   by accident. *)
+Lemma residual_bounds_iff_rate_reaches_two :
+  forall e r : R, 0 < e -> 0 < r -> (e / r <= e - e / r <-> 2 <= r).
+Proof.
+  intros e r He Hr.
+  assert (Hr' : r <> 0) by lra.
+  assert (Hx : e / r * r = e) by (field; assumption).
+  assert (Hy : (e - e / r) * r = e * r - e) by (field; assumption).
+  split; intro H.
+  - assert (Hm : e / r * r <= (e - e / r) * r) by (apply Rmult_le_compat_r; lra).
+    rewrite Hx, Hy in Hm. nra.
+  - apply Rmult_le_reg_r with (r := r); [assumption |].
+    rewrite Hx, Hy. nra.
+Qed.
+
+(* And the threshold is strict on the failing side: at r < 2 the residual is strictly smaller
+   than the error it is meant to bound, so a small residual is not evidence of a small error. *)
+Lemma rate_below_two_understates :
+  forall e r : R, 0 < e -> 0 < r -> r < 2 -> e - e / r < e / r.
+Proof.
+  intros e r He Hr H2.
+  assert (Hr' : r <> 0) by lra.
+  apply Rmult_lt_reg_r with (r := r); [assumption |].
+  replace (e / r * r) with e by (field; assumption).
+  replace ((e - e / r) * r) with (e * r - e) by (field; assumption).
+  nra.
+Qed.

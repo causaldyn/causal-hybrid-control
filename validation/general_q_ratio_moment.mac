@@ -151,3 +151,57 @@ print("(17) E[W]/nu - 1 and the density's mass, at nu = 3, 4, 5, 7, 10:",
 print("(18) variance- vs scale-parameterisation factor:", ratsimp(nu/(nu-2) - 1))$
 
 print("=== done ===")$
+
+/* --------------------------------------------------------------------------
+   Result 63 (d''') -- what a grid-refinement residual is actually worth.
+
+   Let the quadrature error decay geometrically in a FIXED direction:
+   X_k - X = c * r^(-k) with r > 1.  The shipped residual is |X_k - X_(k-1)|.
+   -------------------------------------------------------------------------- */
+
+e(k) := c * r^(-k)$
+resid(k) := e(k - 1) - e(k)$
+
+/* (19) the residual is the true error times exactly (r - 1) */
+id19 : ratsimp(resid(k) / e(k) - (r - 1))$
+if id19 # 0 then error("19: residual/true is not r-1") else print("19 ok: residual/true = r-1")$
+
+/* (20) so it majorises the error iff the per-node decay rate is at least 2 */
+id20 : ratsimp(subst(2, r, resid(k) / e(k)) - 1)$
+if id20 # 0 then error("20: r=2 is not the threshold") else print("20 ok: r=2 is the crossover")$
+
+/* (21) the threshold is one-sided and strict: r > 2 gives a strict majorant,
+   r < 2 a strict under-statement.  Checked at the measured q=3 rates. */
+ratio_at(rr) := float(subst(rr, r, resid(k) / e(k)))$
+for rr in [1.295, 1.441, 1.682, 4.215, 6.242] do
+  block([v : ratio_at(rr)],
+    if is(rr > 2) # is(v > 1) then error("21: threshold violated at r =", rr))$
+print("21 ok: r>2 <=> residual majorises, on all five measured monotone cells")$
+
+/* (22) the identity is not a model but an ALGEBRAIC fact about the shipped estimator:
+   for a monotone same-signed error sequence the residual IS the step, e_(k-1) - e_k.
+   Checked against the measured q=3, n=5 sweep -- errors and residuals were produced by
+   independent code paths (the anchor is exact, the residual is two quadratures). */
+errs   : [8.6624e-2, 6.6880e-2, 4.6406e-2, 2.7583e-2]$   /* nodes = 6, 7, 8, 9 */
+resids : [1.9745e-2, 2.0474e-2, 1.8823e-2]$              /* nodes = 7, 8, 9    */
+for j : 1 thru 3 do
+  if abs((errs[j] - errs[j + 1]) - resids[j]) / resids[j] > 1.0e-3
+    then error("22: residual is not the step at index", j)$
+print("22 ok: residual = e_(k-1) - e_k to 1e-3 on all three measured cells")$
+
+/* (23) so the observed rates decide it, and at q=3 they are all below the threshold:
+   r = 1.295, 1.441, 1.682 on the existence boundary => the residual under-states by
+   construction. Nothing about the ESTIMATOR is broken; the convergence rate is. */
+for rr in [1.295, 1.441, 1.682] do
+  if is(ratio_at(rr) >= 1) then error("23: expected under-statement at r =", rr)$
+print("23 ok: every measured q=3 rate is below 2, so every residual under-states")$
+
+/* (24) and a three-grid rate estimator does NOT rescue it, because the error sequence is
+   not geometric. Under geometric decay residual_(k-1)/residual_k = r exactly; measured,
+   the residual ratios are flat (0.96, 1.09) while the error ratios are (1.441, 1.682). */
+res_ratio : [1.9745e-2 / 2.0474e-2, 2.0474e-2 / 1.8823e-2]$
+err_ratio : [4.6406e-2 / 2.7583e-2, 6.6880e-2 / 4.6406e-2]$
+for j : 1 thru 2 do
+  if abs(res_ratio[j] - err_ratio[j]) < 0.2 then
+    error("24: residual ratio unexpectedly tracks the error ratio at j =", j)$
+print("24 ok: residual ratios do not track error ratios -- no Richardson rescue")$

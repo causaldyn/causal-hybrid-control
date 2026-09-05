@@ -1667,18 +1667,45 @@ def exact_matrix_ratio_moment(
       (``proofs/general_q_ratio_moment.v``, ``ingham_siegel_valid_iff_q_le_four``).
     * The IMPLEMENTATION stops at ``q = 3``: ``q = 4`` needs ``7! = 5040`` permutations on each
       of 5760 products, i.e. 29 million plan terms, which is not a table worth building.
-    * Cost is the cone dimension, not the algebra. ``q = 2`` is 3-dimensional and converges to
-      machine precision at ``nodes = 40`` in seconds. ``q = 3`` is 6-dimensional: measured
-      relative error on the exchangeable anchor is 2.7e-1 at ``nodes = 4`` and 6.5e-2 at
-      ``nodes = 5``, a factor of 4.2-6.2 per node, so six digits needs ``nodes ~ 11-13`` and
-      hours -- and that is the ISOTROPIC case. A general anisotropic ``regressor_cov`` converges
-      at 1.93 per node instead. ``nodes`` defaults to 40 at ``q = 2`` and 8 at ``q = 3``. Three
-      ways around this were measured and all three lost: a Smolyak sparse grid on nested open
-      Fejer-2 (the tail is algebraic, not Gaussian), per-axis Cholesky scaling, and Aitken
-      extrapolation (Gauss-Legendre beats geometric, so a fixed-ratio model over-corrects).
+    * Cost is the cone dimension, not the algebra, and at ``q = 3`` the cone wins. ``q = 2`` is
+      3-dimensional and reaches machine precision at ``nodes = 40`` in seconds. ``q = 3`` is
+      6-dimensional and **is a percent-accuracy tool, not a high-precision one.** Measured on the
+      exchangeable anchor, taking the grid as far as it will go:
+
+      ===== ========= ================== ==================
+      nodes points    rel err, ``n = 5`` rel err, ``n = 7``
+      ===== ========= ================== ==================
+      4     4 096     2.92e-1            9.55e-2
+      5     15 625    4.68e-2            5.67e-2
+      6     46 656    8.66e-2            1.87e-2
+      7     117 649   6.69e-2            1.12e-2
+      8     262 144   4.64e-2            --
+      9     531 441   2.76e-2            --
+      ===== ========= ================== ==================
+
+      That is **1.6 digits for 531 441 points and 91 minutes**. Extrapolating the measured rate
+      (1.6 per node at ``n = 5``, 2 per node at ``n = 7``), six digits would need ``nodes ~ 20-32``,
+      i.e. 6e7 to 1e9 points. Six digits at ``q = 3`` is not reachable with this quadrature -- not
+      "expensive", unreachable. Note also that ``nodes = 8`` at ``n = 5`` costs 54 minutes and is no
+      more accurate than ``nodes = 5`` at 2 minutes, which is why the ``q = 3`` default is 6.
+
+      Convergence is monotone only with margin from the existence boundary: at ``n = q + 2`` the
+      sequence goes 4.68e-2, 8.66e-2, 6.69e-2, 4.64e-2, 2.76e-2, while at ``n = q + 4`` it
+      decreases throughout.
+
+      Seven ways out were measured and all seven lost. Four rules -- a Smolyak sparse grid on
+      nested open Fejer-2 (the tail is algebraic, not Gaussian), per-axis Cholesky scaling, Aitken
+      extrapolation (Gauss-Legendre beats geometric, so a fixed-ratio model over-corrects), and
+      whitening the cone by ``E[M]^-1/2``. Three mechanisms that would have been fixable were
+      ruled out by measurement: ill-conditioning (``cond(tilt) <= 1038`` over the whole grid),
+      a peak the grid straddles (the top node carries under 1.6% of the mass, and 90% of it needs
+      thousands of nodes), and a truncated tail (enlarging the domain strictly hurts: 4.7e-2 ->
+      7.8e-2 -> 3.1e-1 -> 5.7 at 1x, 2x, 5x, 10x the probe scale). What is left is ordinary slow
+      convergence in six dimensions, with no lever attached.
+
       **At q = 3 use :func:`matrix_ratio_certificate` instead of this function**: it returns the
       same value with a grid-refinement error estimate, since nothing in the array itself reveals
-      that the default grid is not converged.
+      that the grid is not converged.
 
     Accuracy is self-certifying where it matters: on an EXCHANGEABLE problem the exact answer is
     isotropic, so the observed spread of the diagonal lower-bounds twice the largest entry error
@@ -1707,7 +1734,7 @@ def exact_matrix_ratio_moment(
             "scalar case), and the plan stops at q = 3 -- q = 4 costs 29 million terms"
         )
     if nodes is None:
-        nodes = 40 if q == 2 else 8
+        nodes = 40 if q == 2 else 6
     om_values, om_vectors = np.linalg.eigh(om)
     tol = q * n * float(np.finfo(np.float64).eps) * max(float(om_values[-1]), 1.0)
     if float(om_values[0]) < -tol:
@@ -1831,11 +1858,26 @@ class MatrixRatioAccuracy:
     percent-scale error that nothing in the returned array reveals. This is the grid-refinement
     residual: the same integral on the next grid down, and the gap between them.
 
-    Measured against the two references available -- the exact exchangeable anchor and a 4M-draw
-    Monte Carlo -- the residual is CONSERVATIVE in every cell tried, over-stating the true error by
-    ``1.25x`` to ``5.26x`` and never under-stating it. That is the same one-sided logic as Result
-    61's certified gap: a small ``relative_residual`` is evidence, a large one convicts nothing
-    beyond the grid.
+    **It is an estimate, not a bound, and exactly when it fails is known.** A refinement residual
+    measures the STEP, not the remainder: for a monotone same-signed error sequence it is
+    identically ``e(k-1) - e(k)``, verified against the measured ``q = 3`` sweep to 5e-5 relative.
+    So ``residual / true error = r - 1`` where ``r = e(k-1)/e(k)`` is the per-node decay, and the
+    residual majorises the error **iff r >= 2** (``residual_bounds_iff_rate_reaches_two``). Below
+    that threshold it under-states, by construction rather than by accident.
+
+    That is the whole story of the ``q = 3`` failures. The measured rates there are 1.30, 1.44,
+    1.68 -- all under 2 -- and the corresponding measured ratios are 0.30, 0.44, 0.68, i.e.
+    ``r - 1`` to two decimals. Over 13 cells the ratio ranges ``0.30x`` to ``5.26x`` and falls
+    below 1 in five, every one of them a cell whose rate is under 2.
+
+    A three-grid rate estimator does not rescue this and was not shipped: under geometric decay
+    ``residual(k-1)/residual(k)`` would equal ``r``, but the measured residual ratios are flat
+    (0.96, 1.09) while the error ratios are 1.44 and 1.68. The error sequence is not geometric, so
+    there is nothing for a Richardson-type correction to extrapolate.
+
+    So: treat a large ``relative_residual`` as proof the grid is inadequate; treat a small one as
+    evidence only where the convergence rate is known to exceed 2 per node, which at ``q = 3`` it
+    is not.
     """
 
     value: NDArray[np.float64]  # the fine-grid estimate: identical to exact_matrix_ratio_moment

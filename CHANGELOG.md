@@ -12,7 +12,7 @@ still change).
 - **`exact_matrix_ratio_moment` works at any channel count the route allows, not just two**
   (`chc.regret.exact_matrix_ratio_moment`). The channel count is read off `regressor_cov`'s shape
   (`q = regressor_cov.shape[0] // n`), so the signature is unchanged for existing two-channel
-  callers and `nodes` now defaults per `q` (40 at `q = 2`, 8 at `q = 3`).
+  callers and `nodes` now defaults per `q` (40 at `q = 2`, 6 at `q = 3`).
 
   The enabling identity is that Isserlis' pairings are a sum over the symmetric group,
   `E[prod_i z'K_i z] = sum_{sigma in S_m} 2^(m - c(sigma)) prod_{cycles} tr(...)`, whose weights
@@ -26,14 +26,37 @@ still change).
   structural, and no amount of compute buys past it. The plan ends one step earlier, at `q = 3`,
   because `q = 4` would need `5760 x 5040 = 29` million terms.
 
-  Accuracy is reported, not assumed. `q = 3` integrates over a six-dimensional cone: measured
-  relative error on the Wishart anchor `E[M^-1] = I/(n-q-1)` is `2.9e-1` at 4 nodes per axis and
-  `4.7e-2` at 5, a factor of `4.2-6.2` per node, so six digits costs `nodes ~ 11-13` and hours --
-  and that is the ISOTROPIC case. With a general anisotropic `Omega` the rate falls to `1.93x` per
-  node (gap to a 4M-draw Monte Carlo `7.1e-2 -> 6.0e-2 -> 3.1e-2` at 3, 4, 5 nodes). Three ways
-  around it were tried and all three lost -- a Smolyak sparse grid, per-axis Cholesky scaling, and
-  Aitken extrapolation over three grids -- and the docstring says so rather than quoting a
-  convergence the tool does not have.
+  Accuracy is reported, not assumed, and at `q = 3` what it reports is a percent, not six digits.
+  The cone is six-dimensional, and the grid was taken as far as it will go against the Wishart
+  anchor `E[M^-1] = I/(n-q-1)`:
+
+  | nodes | points | rel err, `n = 5` | rel err, `n = 7` |
+  |---|---|---|---|
+  | 4 | 4 096 | 2.92e-1 | 9.55e-2 |
+  | 5 | 15 625 | 4.68e-2 | 5.67e-2 |
+  | 6 | 46 656 | 8.66e-2 | 1.87e-2 |
+  | 7 | 117 649 | 6.69e-2 | 1.12e-2 |
+  | 8 | 262 144 | 4.64e-2 | -- |
+  | 9 | 531 441 | 2.76e-2 | -- |
+
+  **1.6 digits for 531 441 points and 91 minutes.** The measured rate is `1.6x` per node at
+  `n = q + 2` and `2x` at `n = q + 4`, so six digits would need `nodes ~ 20-32`, i.e. `6e7` to
+  `1e9` points: not expensive, unreachable. An earlier draft of this entry read the two-point
+  `4.2-6.2x` slope as a rate and predicted six digits at `nodes ~ 11-13`; the full curve
+  withdraws that. The `q = 3` default is 6 rather than 8 for the same reason -- at `n = 5`,
+  `nodes = 8` costs 54 minutes and is no more accurate than `nodes = 5` at two.
+
+  Convergence is monotone only with margin from the existence boundary: at `n = q + 2` the
+  sequence goes `4.68e-2, 8.66e-2, 6.69e-2, 4.64e-2, 2.76e-2`.
+
+  Seven ways out were measured and all seven lost. Four rules -- a Smolyak sparse grid on nested
+  open Fejer-2, per-axis Cholesky scaling, Aitken extrapolation over three grids, and whitening
+  the cone by `E[M]^-1/2`. Three diagnosable mechanisms, each of which would have had a fix, were
+  ruled out by measurement: ill-conditioning (`cond(tilt) <= 1038` over the whole grid), a peak
+  the grid straddles (the top node carries under 1.6% of the mass), and a truncated tail
+  (enlarging the domain strictly hurts -- `4.7e-2 -> 7.8e-2 -> 3.1e-1 -> 5.7` at 1x, 2x, 5x, 10x
+  the probe scale). What is left is ordinary slow convergence in six dimensions with no lever
+  attached, and the docstring says so rather than quoting a convergence the tool does not have.
 
   The error bar comes free where it matters: on an exchangeable problem the exact answer is
   isotropic, so half the observed spread of the diagonal lower-bounds the largest entry error with
@@ -45,11 +68,23 @@ still change).
   carries a percent-scale quadrature error and reveals nothing about it, and the isotropy bar above
   only exists on exchangeable problems -- precisely not the anisotropic ones, where convergence is
   worst. This attaches the grid-refinement residual `max|X(nodes) - X(nodes-1)|`, which works on any
-  problem. Measured against both references available (the exact exchangeable anchor and a 4M-draw
-  Monte Carlo) it is CONSERVATIVE in 6 of 6 cells, over-stating the true error by `1.25x` to `5.26x`
-  and never under-stating it. Cost is one coarser grid, about 26% at `nodes = 5`. Read it the way
-  Result 61's certified gap is read: a small residual is evidence, a large one convicts only the
-  grid.
+  problem. Cost is one coarser grid, about 26% at `nodes = 5`.
+
+  It is an ESTIMATE, not a bound, and exactly when it fails is now known rather than tabulated. A
+  refinement residual measures the STEP, not the remainder: for a monotone same-signed error
+  sequence it is identically `e(k-1) - e(k)`, confirmed to `5e-5` relative against the exact
+  anchor. So `residual / true = r - 1` with `r` the per-node decay, and the residual majorises the
+  error **iff `r >= 2`**. Below that it under-states by construction. The measured `q = 3` rates
+  are `1.30, 1.44, 1.68` and the measured ratios are `0.30, 0.44, 0.68` -- `r - 1` to two decimals.
+  Over 13 cells the ratio ranges `0.30x` to `5.26x` and falls below 1 in five, each one a cell
+  whose rate is under 2. An earlier draft of this entry claimed "conservative in 6 of 6 cells";
+  that is withdrawn.
+
+  A three-grid rate estimator was designed and rejected on measurement. Under geometric decay
+  `residual(k-1)/residual(k)` would equal `r`, making the certificate self-diagnosing for about 4%
+  extra cost; measured, the residual ratios are flat (`0.96, 1.09`) while the error ratios are
+  `1.44` and `1.68`. The error sequence is not geometric, so no Richardson-type correction exists
+  and none was shipped.
 
 - **The delayed-network panel leaves the cycle, and the network estimator reports uncertainty**
   (`chc.network_causal.torus_adjacency`, `DelayedNetworkPanel(graph=...)`,
