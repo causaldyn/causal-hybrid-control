@@ -1319,11 +1319,22 @@ def benchmark_gamma(
 
     design = np.column_stack([np.ones(x.shape[0]), x])
     full_logit = design @ _logistic_fit(design, t, ridge)
+    # The gap compares two INDEPENDENT fits, so dropping a column that carries no signal leaves a
+    # residue at rounding scale rather than exactly zero. That residue must be snapped away here
+    # and not at the division below: exp() turns 1e-16 into 1 + 1e-16, log() turns it back, and the
+    # ratio then reports a confounding strength of 1e16 with a straight face. The floor is the
+    # backward-stability scale of the matvec that produced the logits, sqrt(n) * eps * |logit|.
+    noise = (
+        float(np.sqrt(design.shape[0]))
+        * float(np.finfo(np.float64).eps)
+        * max(1.0, float(np.max(np.abs(full_logit))))
+    )
     implied = []
     for j in range(x.shape[1]):
         reduced = np.delete(design, j + 1, axis=1)
         gap = np.abs(full_logit - reduced @ _logistic_fit(reduced, t, ridge))
-        implied.append(float(np.exp(np.quantile(gap, quantile))))
+        spread = float(np.quantile(gap, quantile))
+        implied.append(float(np.exp(spread)) if spread > noise else 1.0)
 
     best = int(np.argmax(implied))
     strongest = implied[best]

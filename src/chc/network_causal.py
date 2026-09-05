@@ -198,7 +198,10 @@ def kronecker_spectrum(
         .transpose(0, 2, 1, 3)
         .reshape(n_units * n_units, n_times * n_times)
     )
-    return np.linalg.svd(rearranged, compute_uv=False)
+    # astype, not a cast: the signature promises float64 and this makes that true of the VALUE.
+    # numpy's own stub for compute_uv=False widened to floating[Any] before 2.5, so relying on the
+    # stub made the promise hold on one interpreter and not another.
+    return np.linalg.svd(rearranged, compute_uv=False).astype(np.float64, copy=False)
 
 
 def ar1_innovations(

@@ -50,8 +50,22 @@ def test_a_covariate_that_moves_nothing_sets_no_scale() -> None:
     treated, covariates = _design(500, [1.5])
     dead = np.column_stack([covariates[:, 0], np.zeros(covariates.shape[0])])
     benchmark = benchmark_gamma(treated, dead[:, 1:], 3.0)
-    assert benchmark.strongest_gamma == pytest.approx(1.0)
+    # EXACTLY 1.0, not approx: two independent fits leave a rounding residue, and approx would let
+    # 1 + 2.2e-16 through -- which log() then turns into a reported confounding strength of 5e15.
+    # The floor lives in the producer, so this holds on every interpreter and numpy build.
+    assert benchmark.strongest_gamma == 1.0
     assert np.isinf(benchmark.multiples_of_strongest)
+
+
+def test_the_noise_floor_does_not_swallow_a_weak_but_real_covariate() -> None:
+    # The other side of the floor that makes the test above platform-independent: it is set at the
+    # backward-stability scale of the logit matvec, so a genuinely weak confounder must survive it.
+    # A coefficient of 0.05 is far weaker than anything a sensitivity analysis would call material
+    # and is still eleven orders of magnitude above the floor.
+    treated, covariates = _design(4000, [0.05])
+    benchmark = benchmark_gamma(treated, covariates, 3.0)
+    assert benchmark.strongest_gamma > 1.0
+    assert np.isfinite(benchmark.multiples_of_strongest)
 
 
 def test_the_sup_grows_with_the_sample_and_the_quantile_does_not() -> None:
