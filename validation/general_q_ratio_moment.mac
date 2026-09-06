@@ -205,3 +205,63 @@ for j : 1 thru 2 do
   if abs(res_ratio[j] - err_ratio[j]) < 0.2 then
     error("24: residual ratio unexpectedly tracks the error ratio at j =", j)$
 print("24 ok: residual ratios do not track error ratios -- no Richardson rescue")$
+
+/* --------------------------------------------------------------------------
+   Result 63 (g) -- an exact anchor with an ANISOTROPIC numerator.
+   With Omega = I and C = I, for ANY PSD B:  E[M^-1 X'BX M^-1] = (tr B / n) I / (n-q-1).
+   Polar decomposition X = H T: H is Haar on the Stiefel manifold and independent of
+   T = (X'X)^(1/2), the sandwich is T^-1 (H'BH) T^-1, and E[H'BH] = (tr B/n) I.
+   -------------------------------------------------------------------------- */
+
+/* (25) Haar averaging at n = 2 and n = 3 (q = 1): E[h'Bh] = tr B / n, symbolically. */
+h2 : [cos(t), sin(t)]$
+B2 : matrix([b11, b12], [b12, b22])$
+avg2 : ratsimp(integrate(expand(h2 . (B2 . h2)), t, 0, 2*%pi) / (2*%pi))$
+if ratsimp(avg2 - (b11 + b22)/2) # 0 then error("25: Haar average wrong at n=2")$
+h3 : [sin(ph)*cos(th), sin(ph)*sin(th), cos(ph)]$
+B3 : matrix([b11, b12, b13], [b12, b22, b23], [b13, b23, b33])$
+avg3 : ratsimp(integrate(integrate(expand(h3 . (B3 . h3)) * sin(ph), ph, 0, %pi), th, 0, 2*%pi) / (4*%pi))$
+if ratsimp(avg3 - (b11 + b22 + b33)/3) # 0 then error("25: Haar average wrong at n=3")$
+print("25 ok: E[h'Bh] = tr B / n at n = 2, 3")$
+
+/* (26) the radial factor: E[r^-2] for chi-square with n degrees of freedom is 1/(n-2),
+   which is the q = 1 case of E[W^-1] = I/(n-q-1).  The integrals are taken exactly at
+   every integer n from 3 to 10 (a symbolic n makes integrate() ask whether n is an
+   integer and the batch stalls); the pattern for all n is the gamma recurrence
+   gamma(m+1) = m gamma(m) applied to int r^a exp(-r^2/2) = 2^((a-1)/2) gamma((a+1)/2). */
+for nn : 3 thru 10 do (
+  radn : integrate(r^(nn-3) * exp(-r^2/2), r, 0, inf)
+         / integrate(r^(nn-1) * exp(-r^2/2), r, 0, inf),
+  if ratsimp(radn - 1/(nn-2)) # 0 then error("26: E[1/r^2] is not 1/(n-2) at n =", nn))$
+gamma_expand : true$
+rad : subst((n-2)/2, m, ratsimp(gamma(m) / (2 * gamma(m+1))))$
+if ratsimp(rad - 1/(n-2)) # 0 then error("26: gamma recurrence does not give 1/(n-2)")$
+print("26 ok: E[1/r^2] = 1/(n-2), exact at n = 3..10 and by the gamma recurrence")$
+
+/* (27) so at q = 1 the anchor reads (tr B / n) / (n - 2) = tr B / (n (n-2)), and the
+   structure is what the matrix test checks: the sandwich is ISOTROPIC in q with the scalar
+   tr B / n, not tr B and not the largest eigenvalue of B. */
+anchor1 : (b11 + b22 + b33)/3 * rad$
+if ratsimp(subst(3, n, anchor1) - (b11 + b22 + b33)/3) # 0 then error("27: q=1 anchor at n=3")$
+print("27 ok: q = 1 anchor = tr B / (n (n-2))")$
+
+/* (28) WHY THE EXISTENCE BOUNDARY RESISTS EVERY SAMPLING RESCUE.  For B > 0 the sandwich
+   M^-1 X'BX M^-1 lies in Loewner order between lambda_min(B) M^-1 and lambda_max(B) M^-1, so it
+   is square-integrable under the Wishart law exactly when E[W^-2] is.  Von Rosen's second inverse
+   moment is E[W^-2] = (n-1) I / ((n-q)(n-q-1)(n-q-3)), whose POLE sits at n = q+3 -- one step past
+   the n = q+1 pole of E[W^-1].  Checked here at q = 1, where the matrix statement collapses to an
+   exact chi-square moment: E[1/r^4] = 1/((n-2)(n-4)), integrated rather than quoted.  The pole
+   location is what the argument uses; it says the natural sample-and-average transport has
+   infinite variance at n = q+2 and n = q+3, NOT that no quadrature reaches those cells -- the
+   tensor rule converges on them, slowly. */
+for nn : 5 thru 10 do (
+  m4 : integrate(r^(nn-5) * exp(-r^2/2), r, 0, inf) / integrate(r^(nn-1) * exp(-r^2/2), r, 0, inf),
+  if ratsimp(m4 - 1/((nn-2)*(nn-4))) # 0
+    then error("28: E[1/r^4] is not 1/((n-2)(n-4)) at n =", nn))$
+von_rosen : (n-1)/((n-1)*(n-2)*(n-4))$   /* q = 1 */
+if ratsimp(von_rosen - 1/((n-2)*(n-4))) # 0 then error("28: von Rosen does not reduce at q = 1")$
+if ratsimp(subst(1, q, (n-q)*(n-q-1)*(n-q-3)) - (n-1)*(n-2)*(n-4)) # 0
+  then error("28: the q = 1 denominator is wrong")$
+for qq : 1 thru 5 do
+  if subst(qq+3, n, (n-qq)*(n-qq-1)*(n-qq-3)) # 0 then error("28: no pole at n = q+3, q =", qq)$
+print("28 ok: E[W^-2] poles exactly at n = q+3; q = 1 case = 1/((n-2)(n-4)) at n = 5..10")$

@@ -245,3 +245,52 @@ Proof.
   replace ((e - e / r) * r) with (e * r - e) by (field; assumption).
   nra.
 Qed.
+
+(* ------------------------------------------------------------------ *)
+(* (F) which cells no sampling rescue reaches: the second-moment pole  *)
+(* ------------------------------------------------------------------ *)
+
+(* For B > 0 the sandwich M^-1 X'BX M^-1 is squeezed in Loewner order between lambda_min(B) M^-1
+   and lambda_max(B) M^-1, so it is square-integrable under the Wishart law exactly when E[W^-2]
+   is. Von Rosen's moment is (n-1) I / ((n-q)(n-q-1)(n-q-3)). What is formalised below is the
+   ARITHMETIC of the pole locations -- where that denominator vanishes and what sign it takes on
+   either side -- not the measure-theoretic existence statement itself, which is von Rosen 1988
+   and is checked here numerically instead (q = 2,3,4, agreement to 0.06-0.43% at margin +3). *)
+Definition second_moment_denominator (n q : R) : R := (n - q) * (n - q - 1) * (n - q - 3).
+
+Lemma second_moment_poles_at_q_plus_three :
+  forall q : R, second_moment_denominator (q + 3) q = 0.
+Proof. intros q; unfold second_moment_denominator; ring_simplify; ring. Qed.
+
+Lemma second_moment_denominator_positive_past_the_pole :
+  forall n q : R, q + 3 < n -> 0 < second_moment_denominator n q.
+Proof.
+  intros n q H; unfold second_moment_denominator.
+  apply Rmult_lt_0_compat; [apply Rmult_lt_0_compat |]; lra.
+Qed.
+
+(* On the existence boundary itself the formula does not merely fail to apply: it returns a
+   NEGATIVE number for a quantity that is a sum of squares. That is the unmistakable signature of
+   an expectation that does not exist, and it is why the QMC replicate SD -- not the sample mean --
+   was the statistic that diagnosed the failure. *)
+Lemma second_moment_denominator_negative_on_the_boundary_cell :
+  forall q : R, second_moment_denominator (q + 2) q < 0.
+Proof. intros q; unfold second_moment_denominator; lra. Qed.
+
+(* The two cells that matter are exactly those where the VALUE exists and its second moment does
+   not: n = q+2 and n = q+3 clear the E[W^-1] pole at n = q+1 and fail the E[W^-2] pole at n = q+3.
+   Everything Result 63 reports on the boundary lives in this gap -- the integral is finite, so a
+   quadrature can converge on it (the tensor rule does, at rate 1.3-1.7), while sample-and-average
+   has infinite variance there. *)
+Definition inverse_moment_pole (q : R) (k : nat) : R := q + 2 * INR k - 1.
+
+Lemma the_pole_moves_two_per_moment :
+  forall q : R, inverse_moment_pole q 2 - inverse_moment_pole q 1 = 2.
+Proof. intros q; unfold inverse_moment_pole; simpl; ring. Qed.
+
+Lemma value_exists_but_second_moment_does_not :
+  forall n q : R, n = q + 2 \/ n = q + 3 ->
+    inverse_moment_pole q 1 < n /\ ~ (inverse_moment_pole q 2 < n).
+Proof.
+  intros n q [H | H]; unfold inverse_moment_pole; simpl; split; lra.
+Qed.

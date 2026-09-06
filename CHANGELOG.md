@@ -60,6 +60,36 @@ still change).
   the probe scale). What is left is ordinary slow convergence in six dimensions with no lever
   attached, and the docstring says so rather than quoting a convergence the tool does not have.
 
+  An eighth way out, randomised QMC, lost too -- and its failure was mis-diagnosed once before it
+  was measured. Scrambled Sobol at `q = 3, n = 5` beats the grid at 4 096 points (`1.5e-1` against
+  `2.9e-1`), loses at 16 384, and at 65 536 has a replicate spread larger than its error. An
+  earlier draft blamed the half-line map's Jacobian at the cube boundary; measured, the transformed
+  integrand is nonnegative, its tail exponent is at least 4 on every ray and the dominant points
+  are interior. What they share is a `T` within a few percent of rank one (the three largest carry
+  `eig(T) = [350, 0.20, 0.10]`, `[255, 0.86, 0.03]`, `[83, 0.97, 0.11]`), a corner of measure
+  `~3e-5` under the Cholesky map, so per-point contributions have kurtosis `1 300-1 900` and one
+  point can carry 10% of the sum. The grid sees it from the other side: at `nodes = 5` the three
+  outermost `l00` nodes carry 99% of the `(0,0)` entry. In spectral coordinates `T = Q Lambda Q'`
+  the kurtosis is `6.6` against `128` at `n = q + 4` but stays near `940` at `n = q + 2`. The two
+  cells fall either side of a moment condition: for `B > 0` the sandwich lies between
+  `lambda_min(B) M^-1` and `lambda_max(B) M^-1`, so it is square-integrable under the Wishart law
+  iff `E[W^-2]` is, and von Rosen's `E[W^-2] = (n-1) I / ((n-q)(n-q-1)(n-q-3))` poles exactly at
+  `n = q + 3` -- one step past the `n = q + 1` pole of `E[W^-1]`. Both checked: Maxima identity 28
+  verifies the pole for `q = 1..5` and integrates the exact `q = 1` case `1/((n-2)(n-4))` at
+  `n = 5..10`, and Monte Carlo at `q = 2, 3, 4` matches the formula to `0.06-0.43%` at margin `+3`.
+  That rules out sample-and-average on the
+  boundary cell; it does not rule out every map, and the tensor rule converges there regardless, so
+  what is bounded is the rescue rather than the integral.
+
+  A new exact anchor with an ANISOTROPIC numerator: for `Omega = I`, `C = I` and any PSD `B`,
+  `E[M^-1 X'BX M^-1] = (tr B / n) I / (n - q - 1)` (polar decomposition `X = HT`, `H` Haar and
+  independent of `T`, `E[H'BH] = (tr B / n) I`; Maxima identities 25-27). It is the first check of
+  the general code with a numerator that is neither the identity nor a projection, and it
+  qualifies the `q = 2` claim: with a random positive-definite `B` the rule lands at `7.7e-6,
+  1.2e-7, 1.1e-8, 2.0e-9` for `nodes = 20, 40, 60, 80` -- algebraic convergence, where the
+  isotropic cells reach `1e-15`. "Machine precision at `q = 2`" holds when the numerator is a
+  multiple of the identity, and the docstring now says so.
+
   The error bar comes free where it matters: on an exchangeable problem the exact answer is
   isotropic, so half the observed spread of the diagonal lower-bounds the largest entry error with
   no reference value in hand -- measured at 77% and 99% of the true error. It is a necessary

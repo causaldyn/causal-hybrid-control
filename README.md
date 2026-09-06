@@ -59,7 +59,7 @@ CIs (predictive regret `13734.15 [13732.55, 13735.31]`), and
 
 ```bash
 uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.11–3.14)
-uv run pytest      # 491 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
+uv run pytest      # 611 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
 ```
 
 ## Quickstart
@@ -132,7 +132,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 Correctness is cross-checked in independent tools, symbolic first (`validation/`): the ARE / matrix
 exponential are verified **Maxima**-authoritative (exact + high-precision `bfloat`) against **PARI/GP**
 (50-digit) and **Octave**, with SciPy used only as the fast float64 numeric. The control and guarantee
-invariants are **formally proved in Rocq** — 55 files under `proofs/`, from the box-projection bounds
+invariants are **formally proved in Rocq** — 63 files under `proofs/`, from the box-projection bounds
 and idempotence (`box_projection.v`) to the interference-aware regret certificate.
 
 ## Honest positioning
@@ -156,7 +156,7 @@ The release-by-release record, scope corrections included, is in [`CHANGELOG.md`
 
 ## Status
 
-Early (`v0.3.0`), single-author, research code (385 collected tests; Python 3.11–3.14, astral `ruff` + `ty`).
+Early (`v0.4.0`), single-author, research code (612 collected tests; Python 3.11–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**

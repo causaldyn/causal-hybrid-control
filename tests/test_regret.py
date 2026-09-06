@@ -874,6 +874,34 @@ def test_matrix_ratio_certificate_reports_what_the_grid_is_worth() -> None:
         matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(3 * n), nodes=3)
 
 
+def test_an_anisotropic_numerator_has_an_exact_anchor_too() -> None:
+    # Result 63 (g): with Omega = I and C = I the sandwich is (tr B / n) I / (n - q - 1) for ANY
+    # PSD B -- polar decomposition X = H T, H Haar and independent of T, E[H'BH] = (tr B / n) I.
+    # The projection anchor (r / n) is the special case tr P = r. This is the first check of the
+    # general code with a numerator that is neither the identity nor a projection.
+    rng = np.random.default_rng(3)
+    n = 6
+    root = rng.standard_normal((n, n))
+    b = root @ root.T + np.diag(rng.uniform(0.1, 2.0, n))
+    want = (np.trace(b) / n) * np.eye(2) / (n - 2 - 1)
+    got = exact_matrix_ratio_moment(b, np.eye(n), np.eye(2 * n), nodes=40)
+    assert np.allclose(got, want, rtol=0.0, atol=1e-6)
+    # off B = I the q = 2 rule converges algebraically, not spectrally: 7.7e-6, 1.2e-7 at 20, 40
+    coarse = exact_matrix_ratio_moment(b, np.eye(n), np.eye(2 * n), nodes=20)
+    assert 1e-6 < float(np.max(np.abs(coarse - want))) < 1e-4
+
+    # q = 3 at a coarse grid: the STRUCTURE is what is checked -- isotropic with the scalar
+    # tr B / n, which a wrong scalar (tr B, or the largest eigenvalue) would miss by far more
+    # than the grid's own error (2.9e-1 at nodes = 4 on the exchangeable cell)
+    n = 5
+    root = rng.standard_normal((n, n))
+    b = root @ root.T + np.diag(rng.uniform(0.1, 2.0, n))
+    want = (np.trace(b) / n) * np.eye(3) / (n - 3 - 1)
+    got = exact_matrix_ratio_moment(b, np.eye(n), np.eye(3 * n), nodes=4)
+    assert np.max(np.abs(got - want)) / np.max(np.abs(want)) < 0.35
+    assert np.max(np.abs(got - np.diag(np.diag(got)))) < 1e-8 * np.max(np.abs(want))
+
+
 def test_the_isotropy_bar_rides_along_when_the_channels_are_exchangeable() -> None:
     # Result 63 (e) proves half the diagonal spread LOWER-bounds the largest entry error whenever
     # the exact answer is isotropic. The certificate can compute that for free -- it is a function

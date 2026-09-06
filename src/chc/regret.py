@@ -1668,7 +1668,10 @@ def exact_matrix_ratio_moment(
     * The IMPLEMENTATION stops at ``q = 3``: ``q = 4`` needs ``7! = 5040`` permutations on each
       of 5760 products, i.e. 29 million plan terms, which is not a table worth building.
     * Cost is the cone dimension, not the algebra, and at ``q = 3`` the cone wins. ``q = 2`` is
-      3-dimensional and reaches machine precision at ``nodes = 40`` in seconds. ``q = 3`` is
+      3-dimensional and reaches machine precision at ``nodes = 40`` in seconds **when the
+      numerator is a multiple of the identity**; with an anisotropic ``B`` the rule converges
+      algebraically instead -- 7.7e-6, 1.2e-7, 1.1e-8, 2.0e-9 at ``nodes = 20, 40, 60, 80``
+      against the exact anchor ``(tr B / n) I / (n - q - 1)`` (Result 63 (g)). ``q = 3`` is
       6-dimensional and **is a percent-accuracy tool, not a high-precision one.** Measured on the
       exchangeable anchor, taking the grid as far as it will go:
 
