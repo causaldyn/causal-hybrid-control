@@ -289,3 +289,74 @@ if ratsimp(subst(0, r, subst(2, q, anchor2[1][2]))) # 0
 if ratsimp(subst(2, q, ratsimp(invert(2*R2)/(n - q - 1))[1][1]) - subst(2, q, anchor2[1][1])/2) # 0
   then error("29: the scale does not enter inversely")$
 print("29 ok: correlated-channel anchor R^-1/(n-q-1), off-diagonal -r/((1-r^2)(n-3))")$
+
+/* (30) THE MASTER ANCHOR: Omega = R (x) S with denominator C = S^-1, any PSD numerator B, gives
+   E[M^-1 X'BX M^-1] = (tr(BS)/n) R^-1 / (n - q - 1), which contains (25)-(27) at R = S = I,
+   (29) at B = S = I, and the Wishart anchor I/(n-q-1) at B = R = S = I.
+
+   The derivation needs no matrix square root.  Take ANY invertible factors S = F F' and R = G G'.
+   Then vec(X) ~ N(0, R (x) S) is the same law as X = F Z G' for a standard n x q Gaussian Z, and
+
+     M   = X' S^-1 X  = G Z' F' (F F')^-1 F Z G'  = G (Z'Z) G'          [F square invertible]
+     X'BX                                         = G Z' (F'BF) Z G'
+
+   so M^-1 X'BX M^-1 = G'^-1 [ (Z'Z)^-1 Z' Btil Z (Z'Z)^-1 ] G^-1 with Btil = F'BF.  The bracket is
+   exactly the Omega = I sandwich of (25)-(27), whose expectation is (tr Btil / n) I / (n-q-1), and
+   tr Btil = tr(F'BF) = tr(B F F') = tr(BS).  Hence the claim, since G'^-1 G^-1 = (G G')^-1 = R^-1.
+
+   Everything below the expectation step is algebra over the entries and is checked as such: q = 2,
+   n = 3, a symbolic Z, a symbolic invertible F and G, and a symbolic symmetric B. */
+Zm : genmatrix(lambda([i,j], concat(z, i, j)), 3, 2)$
+Fm : genmatrix(lambda([i,j], concat(f, i, j)), 3, 3)$
+Gm : genmatrix(lambda([i,j], concat(g, i, j)), 2, 2)$
+Bm : genmatrix(lambda([i,j], concat(b, min(i,j), max(i,j))), 3, 3)$
+Sm : Fm . transpose(Fm)$
+Rm : Gm . transpose(Gm)$
+Xm : Fm . Zm . transpose(Gm)$
+mat_zero(A) := is(ratsimp(A) = zeromatrix(length(A), length(transpose(A))))$
+
+/* (a) the denominator loses S entirely: X' S^-1 X = G (Z'Z) G' */
+if not mat_zero(transpose(Xm) . invert(Sm) . Xm - Gm . (transpose(Zm) . Zm) . transpose(Gm))
+  then error("30: X'S^-1X is not G(Z'Z)G'")$
+/* (b) the numerator keeps S only through the congruence Btil = F'BF */
+if not mat_zero(transpose(Xm) . Bm . Xm - Gm . (transpose(Zm) . (transpose(Fm) . Bm . Fm) . Zm)
+                                          . transpose(Gm))
+  then error("30: X'BX is not G Z' (F'BF) Z G'")$
+/* (c) the whole sandwich conjugates by G, so the R-dependence is exactly R^-1 */
+Mm : transpose(Xm) . invert(Sm) . Xm$
+brk : invert(transpose(Zm) . Zm) . transpose(Zm) . (transpose(Fm) . Bm . Fm) . Zm
+      . invert(transpose(Zm) . Zm)$
+if not mat_zero(invert(Mm) . (transpose(Xm) . Bm . Xm) . invert(Mm)
+                - invert(transpose(Gm)) . brk . invert(Gm))
+  then error("30: the sandwich does not conjugate by G")$
+/* (d) the scalar the Haar average produces is tr(BS), not tr(B) and not tr(B) tr(S) */
+if ratsimp(mat_trace(transpose(Fm) . Bm . Fm) - mat_trace(Bm . Sm)) # 0
+  then error("30: tr(F'BF) is not tr(BS)")$
+/* (e) assembling, with the (25)-(27) expectation of the bracket substituted in */
+master : (mat_trace(Bm . Sm)/n) * invert(Rm) / (n - q - 1)$
+if not mat_zero(invert(transpose(Gm)) . invert(Gm) - invert(Rm))
+  then error("30: G'^-1 G^-1 is not R^-1")$
+/* (f) the three earlier anchors are the three degenerate cases, symbolically */
+if not mat_zero(subst(2, q, ratsimp(subst([g11=1,g12=0,g21=0,g22=1], master)))
+                - subst(2, q, (mat_trace(Bm . Sm)/n) * ident(2) / (n - q - 1)))
+  then error("30: R = I does not give the (25)-(27) anchor")$
+ident_sub : [f11=1,f12=0,f13=0,f21=0,f22=1,f23=0,f31=0,f32=0,f33=1,
+             b11=1,b12=0,b13=0,b22=1,b23=0,b33=1]$
+if ratsimp(subst(ident_sub, mat_trace(Bm . Sm))/n - 3/n) # 0
+  then error("30: B = S = I does not give tr(BS)/n = q_rows/n")$
+/* the concrete instantiation HAS n = 3 rows, so tr(BS)/n = 3/3 = 1 there; substitute n on both
+   sides or the comparison is between two different n, which is the R9 mistake in miniature */
+if not mat_zero(subst(3, n, subst(ident_sub, master)) - subst(3, n, invert(Rm)/(n - q - 1)))
+  then error("30: B = S = I does not reduce to the (29) anchor R^-1/(n-q-1)")$
+/* (g) the scalings the formula predicts, each a separate way to be wrong:
+   B -> cB linear; R -> cR inverse; S -> cS linear (C = S^-1 absorbs the denominator half). */
+if not mat_zero(ratsimp(subst(map(lambda([s], lhs(s) = 2*rhs(s)),
+                                  [b11=b11,b12=b12,b13=b13,b22=b22,b23=b23,b33=b33]), master))
+                - 2*ratsimp(master))
+  then error("30: the numerator does not enter linearly")$
+if not mat_zero(ratsimp((mat_trace(Bm . Sm)/n) * invert(2*Rm) / (n - q - 1)) - ratsimp(master)/2)
+  then error("30: the channel covariance does not enter inversely")$
+if not mat_zero(ratsimp((mat_trace(Bm . (2*Sm))/n) * invert(Rm) / (n - q - 1))
+                - 2*ratsimp(master))
+  then error("30: the row covariance does not enter linearly")$
+print("30 ok: master anchor (tr(BS)/n) R^-1/(n-q-1) for Omega = R (x) S, C = S^-1, any PSD B")$

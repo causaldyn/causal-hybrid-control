@@ -294,3 +294,79 @@ Lemma value_exists_but_second_moment_does_not :
 Proof.
   intros n q [H | H]; unfold inverse_moment_pole; simpl; split; lra.
 Qed.
+
+(* ------------------------------------------------------------------ *)
+(* (G) the master anchor, and the one power of R it depends on         *)
+(* ------------------------------------------------------------------ *)
+
+(* validation/general_q_ratio_moment.mac identity 30. For Omega = R (x) S with denominator
+   C = S^-1, factor S = F F' and R = G G' (any invertible factors -- no square root needed). Then
+   vec(X) ~ N(0, R (x) S) is the law of X = F Z G' for a standard Z, the denominator becomes
+   G (Z'Z) G' -- S cancels COMPLETELY -- and the numerator becomes G Z' (F'BF) Z G'. Applying the
+   Omega = I anchor to the bracket and using tr(F'BF) = tr(BS),
+
+       E[M^-1 X'BX M^-1] = (tr(BS)/n) * R^-1 / (n - q - 1)                                  (30)
+
+   for any PSD B. It contains the Wishart anchor (B = R = S = I), the anisotropic-numerator anchor
+   (R = S = I) and the correlated-channel anchor (B = S = I). Stdlib has no matrices, so what is
+   proved here is what the formula asserts beyond the matrix algebra: the ENTIRE dependence on the
+   channel covariance is the single inverse power R^-1, and the rest is the scalar below. *)
+Definition master_scale (trBS n q : R) : R := trBS / n / (n - q - 1).
+
+(* The anchor's pole is the FIRST inverse-moment pole of (F), not a new one: the closed form
+   exists exactly where E[W^-1] does, and (F) then says its second moment needs two more. *)
+Lemma master_scale_poles_at_the_first_inverse_moment :
+  forall q : R, inverse_moment_pole q 1 - q - 1 = 0.
+Proof. intros q; unfold inverse_moment_pole; simpl; ring. Qed.
+
+Lemma master_scale_positive_past_the_pole :
+  forall trBS n q : R, 0 < trBS -> 0 < n -> inverse_moment_pole q 1 < n ->
+    0 < master_scale trBS n q.
+Proof.
+  intros trBS n q Ht Hn Hp; unfold master_scale.
+  unfold inverse_moment_pole in Hp; simpl in Hp.
+  apply Rdiv_lt_0_compat; [apply Rdiv_lt_0_compat |]; lra.
+Qed.
+
+(* B = S = I gives tr(BS) = tr(I_n) = n, and the scalar collapses to the Wishart constant. This is
+   the degeneration that makes (30) a generalisation rather than a different formula. *)
+Lemma master_scale_degenerates_to_the_wishart_constant :
+  forall n q : R, n <> 0 -> master_scale n n q = / (n - q - 1).
+Proof.
+  intros n q Hn; unfold master_scale.
+  rewrite Rdiv_diag by exact Hn.
+  unfold Rdiv; rewrite Rmult_1_l; reflexivity.
+Qed.
+
+(* Three scalings, one law. The numerator and the row covariance enter (30) linearly and only
+   through tr(BS); the channel covariance enters inversely and only through R^-1. So on the scalar
+   channel R = rho * I the whole anchor scales by beta * sigma / rho -- which is the falsifiable
+   part of the formula, and what identity 30 checks entry by entry. *)
+Definition master_entry (trBS n q rho : R) : R := master_scale trBS n q / rho.
+
+Lemma master_entry_scales_by_beta_sigma_over_rho :
+  forall trBS n q rho beta sigma kappa : R,
+    n <> 0 -> n - q - 1 <> 0 -> rho <> 0 -> kappa <> 0 ->
+    master_entry (beta * sigma * trBS) n q (kappa * rho)
+      = (beta * sigma / kappa) * master_entry trBS n q rho.
+Proof.
+  intros trBS n q rho beta sigma kappa Hn Hd Hr Hk.
+  unfold master_entry, master_scale; field; repeat split; assumption.
+Qed.
+
+(* And what the anchor did NOT buy. The same factorisation says a Kronecker Omega can be reduced to
+   the isotropic problem and conjugated back, which was proposed as a fast path in the evaluator.
+   Measured against the direct path on three cells the accuracy ratios are 1.82, 1.49 and 0.65: the
+   reduction LOSES on the third. A branch that changes the answer's error in an unpredictable
+   direction by less than a factor of two is a second implementation to keep in sync, not a fast
+   path, so the identity ships as identity 30 and this section, and the branch does not. *)
+Definition uniform_gain (gs : list R) : Prop := Forall (fun g => 1 <= g) gs.
+
+Lemma measured_kronecker_gains_are_not_uniform :
+  ~ uniform_gain (182 / 100 :: 149 / 100 :: 65 / 100 :: nil).
+Proof.
+  intros H; unfold uniform_gain in H.
+  assert (Hlast : 1 <= 65 / 100)
+    by exact (Forall_inv (Forall_inv_tail (Forall_inv_tail H))).
+  lra.
+Qed.

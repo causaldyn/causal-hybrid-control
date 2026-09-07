@@ -7,6 +7,7 @@ import math
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import scipy.linalg
 
 from chc.dynamics import DampedOscillator
 from chc.lqr import linearize_discrete, linearized_regret_certificate
@@ -886,9 +887,13 @@ def test_an_anisotropic_numerator_has_an_exact_anchor_too() -> None:
     want = (np.trace(b) / n) * np.eye(2) / (n - 2 - 1)
     got = exact_matrix_ratio_moment(b, np.eye(n), np.eye(2 * n), nodes=40)
     assert np.allclose(got, want, rtol=0.0, atol=1e-6)
-    # off B = I the q = 2 rule converges algebraically, not spectrally: 7.7e-6, 1.2e-7 at 20, 40
+    # B does NOT change the regime: at n = 6 (margin 2) the relative error is 2.8e-6 at nodes = 20
+    # and 4.6e-8 at 40 whether B is the identity or not. An earlier reading of the ABSOLUTE numbers
+    # here as "algebraic off B proportional to I" compared them with relative ones and is withdrawn;
+    # what governs the accuracy is the margin n - (q + 2). See Result 63 (j).
+    scale = float(np.max(np.abs(want)))
     coarse = exact_matrix_ratio_moment(b, np.eye(n), np.eye(2 * n), nodes=20)
-    assert 1e-6 < float(np.max(np.abs(coarse - want))) < 1e-4
+    assert 1e-6 < float(np.max(np.abs(coarse - want))) / scale < 1e-5
 
     # q = 3 at a coarse grid: the STRUCTURE is what is checked -- isotropic with the scalar
     # tr B / n, which a wrong scalar (tr B, or the largest eigenvalue) would miss by far more
@@ -900,6 +905,54 @@ def test_an_anisotropic_numerator_has_an_exact_anchor_too() -> None:
     got = exact_matrix_ratio_moment(b, np.eye(n), np.eye(3 * n), nodes=4)
     assert np.max(np.abs(got - want)) / np.max(np.abs(want)) < 0.35
     assert np.max(np.abs(got - np.diag(np.diag(got)))) < 1e-8 * np.max(np.abs(want))
+
+
+def test_the_master_anchor_covers_every_other_one_and_the_reduction_is_exact() -> None:
+    # Result 63 (i), general form: for regressor_cov = kron(R, S) and denominator = S^-1 the exact
+    # answer is (tr(BS)/n) R^-1 / (n - q - 1) for ANY PSD numerator B. Factor S = FF' and R = GG':
+    # X = F Z G' for a standard Z, the denominator becomes G(Z'Z)G' -- S cancels entirely -- and
+    # the numerator becomes G Z'(F'BF)Z G', so the Omega = I anchor applies to the bracket and
+    # tr(F'BF) = tr(BS). It contains the Wishart, anisotropic-numerator and correlated-channel
+    # anchors as the cases B = R = S = I, R = S = I and B = S = I. Maxima identity 30.
+    rng = np.random.default_rng(11)
+    n, q = 6, 2
+    corr = np.array([[1.0, 0.4], [0.4, 1.0]])
+    root_s = rng.standard_normal((n, n))
+    s = root_s @ root_s.T / n + np.eye(n)
+    root_b = rng.standard_normal((n, n))
+    b = root_b @ root_b.T + np.diag(rng.uniform(0.1, 2.0, n))
+    r_inv = np.linalg.inv(corr)
+    want = (np.trace(b @ s) / n) * r_inv / (n - q - 1)
+    scale = float(np.max(np.abs(want)))
+    got = exact_matrix_ratio_moment(b, np.linalg.inv(s), np.kron(corr, s), nodes=40)
+    assert float(np.max(np.abs(got - want))) / scale < 1e-6
+
+    # every plausible variant of the formula is convicted by five orders of magnitude, so this
+    # pins the scalar (tr(BS), not tr(B) and not tr(B)tr(S)/n) and the power (R^-1, not R)
+    for wrong in (
+        (np.trace(b) / n) * r_inv / (n - q - 1),
+        (np.trace(b) * np.trace(s) / n**2) * r_inv / (n - q - 1),
+        (np.trace(b @ s) / n) * corr / (n - q - 1),
+        (np.trace(b @ s) / n) * np.eye(q) / (n - q - 1),
+    ):
+        assert float(np.max(np.abs(got - wrong))) / scale > 0.1
+
+    # the same factorisation makes a Kronecker regressor_cov REDUCIBLE: run the isotropic problem
+    # on the congruences and conjugate back. That is an exact identity, verified here -- but not a
+    # fast path. Measured against the direct route over three cells the accuracy ratios are 1.82,
+    # 1.49 and 0.65, so the reduction loses on one of them; a branch that moves the error by less
+    # than 2x in an unpredictable direction is a second implementation to keep in sync.
+    r_root_inv = np.linalg.inv(scipy.linalg.sqrtm(corr).real)
+    s_root = scipy.linalg.sqrtm(s).real
+    reduced = (
+        r_root_inv
+        @ exact_matrix_ratio_moment(
+            s_root @ b @ s_root, s_root @ np.linalg.inv(s) @ s_root, np.eye(q * n), nodes=40
+        )
+        @ r_root_inv
+    )
+    assert float(np.max(np.abs(reduced - got))) / scale < 1e-6
+    assert float(np.max(np.abs(reduced - want))) / scale < 1e-6
 
 
 def test_correlated_channels_have_an_exact_anchor_and_it_is_the_hard_one() -> None:
@@ -920,10 +973,24 @@ def test_correlated_channels_have_an_exact_anchor_and_it_is_the_hard_one() -> No
     assert want[0, 1] < -0.1
     assert abs(got[0, 1] - want[0, 1]) < 1e-5
 
-    # and convergence is ALGEBRAIC here, exactly as with an anisotropic numerator -- the q = 2
-    # rule reaches machine precision only on isotropic cells
+    # what governs the q = 2 accuracy is the MARGIN from the existence boundary, not the shape of
+    # Om: at n = 6 (margin 2) the rule is at 4.6e-8 relative whether B and Om are isotropic or
+    # not, and only from n = q + 4 outwards does it reach 1e-14. A correlated Om moves the
+    # constant by about 11x and leaves the regime alone.
+    scale = float(np.max(np.abs(want)))
     coarse = exact_matrix_ratio_moment(np.eye(n), np.eye(n), om, nodes=20)
-    assert 1e-6 < float(np.max(np.abs(coarse - want))) < 1e-3
+    assert 1e-5 < float(np.max(np.abs(coarse - want))) / scale < 1e-4
+    plain = np.eye(q) / (n - q - 1)
+    isotropic = exact_matrix_ratio_moment(np.eye(n), np.eye(n), np.eye(q * n), nodes=20)
+    ratio = (float(np.max(np.abs(coarse - want))) / scale) / (
+        float(np.max(np.abs(isotropic - plain))) / float(np.max(np.abs(plain)))
+    )
+    assert 5.0 < ratio < 25.0  # a constant, not a change of regime
+
+    far = 12  # margin 8: the same rule, the same isotropy, four more orders of accuracy
+    far_want = np.eye(q) / (far - q - 1)
+    far_got = exact_matrix_ratio_moment(np.eye(far), np.eye(far), np.eye(q * far), nodes=40)
+    assert float(np.max(np.abs(far_got - far_want))) / float(np.max(np.abs(far_want))) < 1e-11
 
 
 def test_the_isotropy_bar_rides_along_when_the_channels_are_exchangeable() -> None:

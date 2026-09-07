@@ -30,7 +30,7 @@ still change).
   The cone is six-dimensional, and the grid was taken as far as it will go against the Wishart
   anchor `E[M^-1] = I/(n-q-1)`:
 
-  | nodes | points | rel err, `n = 5` | rel err, `n = 7` |
+  | nodes | points | abs err, `n = 5` | abs err, `n = 7` |
   |---|---|---|---|
   | 4 | 4 096 | 2.92e-1 | 9.55e-2 |
   | 5 | 15 625 | 4.68e-2 | 5.67e-2 |
@@ -81,24 +81,54 @@ still change).
   boundary cell; it does not rule out every map, and the tensor rule converges there regardless, so
   what is bounded is the rescue rather than the integral.
 
-  **A second new anchor, with CORRELATED channels -- and it convicts the table above.** For
-  `numerator = denominator = I` and `regressor_cov = kron(R, I_n)`, `vec(X) ~ N(0, R (x) I_n)` gives
-  `X'X ~ Wishart_q(n, R)`, so the sandwich collapses to `E[(X'X)^-1] = R^-1/(n - q - 1)`. It is the
-  first anchor here whose answer is NOT isotropic -- at `q = 2` the off-diagonal is
-  `-r/((1-r^2)(n-3))`, which a rule blind to the channel correlation could not produce -- and a
-  4e6-draw Monte Carlo confirms it to 2.5e-4. Three consequences, all now in the docstrings:
-  the `q = 3` accuracy table is about 2x optimistic on a correlated cell (2.37e-1, 2.53e-1,
-  3.72e-2, 2.20e-2 at `nodes = 4..7`, RISING at 5); the `q = 2` rule's machine precision is
-  isotropic-only on this axis too (3.1e-5, 5.4e-7, 4.8e-8 at `nodes = 20, 40, 60`); and
-  `matrix_ratio_certificate`'s residual understates by **41x** there (6.2e-3 against a true
-  2.53e-1), an order of magnitude outside the 0.30x-5.26x range -- which was measured over 13
-  cells that were all exchangeable, and is therefore a property of those cells, not a calibration.
+  **A second new anchor, with CORRELATED channels.** For `numerator = denominator = I` and
+  `regressor_cov = kron(R, I_n)`, `vec(X) ~ N(0, R (x) I_n)` gives `X'X ~ Wishart_q(n, R)`, so the
+  sandwich collapses to `E[(X'X)^-1] = R^-1/(n - q - 1)`. It is the first anchor here whose answer
+  is NOT isotropic -- at `q = 2` the off-diagonal is `-r/((1-r^2)(n-3))`, which a rule blind to the
+  channel correlation could not produce -- and a 4e6-draw Monte Carlo confirms it to 2.5e-4. It
+  generalises: for `regressor_cov = kron(R, S)` and `denominator = S^-1` the answer is
+  `(tr(BS)/n) R^-1/(n - q - 1)` for any PSD numerator `B`, which contains every anchor this
+  function has. No matrix square root is needed to see it -- factor `S = FF'` and `R = GG'` for any
+  invertible factors, and `X = F Z G'` for a standard `Z` makes the denominator `G (Z'Z) G'` (`S`
+  cancels entirely) and the numerator `G Z' (F'BF) Z G'`, so the `Omega = I` anchor applies to the
+  bracket and `tr(F'BF) = tr(BS)`. Checked symbolically (Maxima identity 30, on symbolic `Z`, `F`,
+  `G` and `B`), formally (`proofs/general_q_ratio_moment.v` section (G): the pole is the same
+  `E[W^-1]` pole, the Wishart constant is the degeneration, and the three-way scaling law
+  `beta*sigma/rho`), and numerically -- at `q = 2, n = 6` the rule matches it to `2.5e-7` relative
+  while every plausible variant of the formula (`tr(B)` for `tr(BS)`, `tr(B)tr(S)/n^2`, `R` for
+  `R^-1`) is off by more than `0.1`.
+
+  The same factorisation makes a Kronecker `regressor_cov` **reducible** -- run the isotropic
+  problem on the congruences and conjugate back -- and that was proposed as a fast path. It is
+  **not shipping.** Measured against the direct route the accuracy ratios over three cells are
+  `1.82x`, `1.49x` and `0.65x`: the reduction loses on one of them, so the branch would move the
+  answer's error by less than a factor of two in an unpredictable direction while adding a second
+  implementation to keep in sync. The mechanism proposed for the expected win was wrong too --
+  conjugating by `R^-1/2` was supposed to amplify the error by `cond(R)` and amplifies it by
+  `0.90-0.94x`. The identity ships as an exact test and a lemma; the branch does not.
+
+  **What the new anchor then corrected was three claims made from it in a first draft, all wrong
+  for one reason: they compared numbers computed in different normalisations.** The `n = 7` column
+  of the accuracy table is an ABSOLUTE max-entry error while the `n = 5` column is both, and the
+  correlated cell had been quoted as a single entry's relative error. Recomputed in one convention
+  (max entry, relative):
+
+  - the correlated cell is 1.6x and 1.4x worse than the exchangeable one on the two coarse grids,
+    0.63x on the third and 1.3x on the fourth -- not "2x worse at every size";
+  - `matrix_ratio_certificate`'s residual / true error there is 2.42, 5.80, 1.44 at
+    `nodes = 5, 6, 7` -- CONSERVATIVE, and more so than on the exchangeable cell (2.06, 3.64,
+    0.78). The claim that it understated by 41x is withdrawn;
+  - and what governs the `q = 2` accuracy is the MARGIN from the existence boundary, not the shape
+    of `B` or `Om`. At `nodes = 40` the relative error is 7.34e-6, 4.59e-8, 3.35e-11, 4.23e-13 at
+    `n = 5, 6, 8, 12`, and an anisotropic `B` at `n = 6` reproduces the isotropic numbers exactly.
+    Both earlier qualifiers -- "machine precision only when the numerator is a multiple of the
+    identity", then "only on isotropic cells" -- are withdrawn in favour of the margin.
 
   The repair named above was built and closed on its budget rather than shipped. A tensor rule in
   spectral coordinates -- ordered eigenvalues through a gap parameterisation, so the Vandermonde is
   a polynomial rather than an absolute value, and an `SO(3)` product rule that is EXACT on 27 nodes
-  whenever `regressor_cov = I` -- is 33-46x more accurate than the shipped grid at equal point
-  counts on `n = q + 4`. It still misses six digits (3.63e-4 at 74 088 points), does not win at all
+  whenever `regressor_cov = I` -- is 31.8x more accurate than the shipped grid at the matched
+  46 656 points on `n = q + 4` (both sides the `(0,0)` entry's relative error). It still misses six digits (3.63e-4 at 74 088 points), does not win at all
   on the existence boundary, and is only 7x better on a correlated cell where both rules are
   erratic. A 7x constant does not pay for a second coordinate system and its Haar quadrature.
 
@@ -106,10 +136,12 @@ still change).
   `E[M^-1 X'BX M^-1] = (tr B / n) I / (n - q - 1)` (polar decomposition `X = HT`, `H` Haar and
   independent of `T`, `E[H'BH] = (tr B / n) I`; Maxima identities 25-27). It is the first check of
   the general code with a numerator that is neither the identity nor a projection, and it
-  qualifies the `q = 2` claim: with a random positive-definite `B` the rule lands at `7.7e-6,
-  1.2e-7, 1.1e-8, 2.0e-9` for `nodes = 20, 40, 60, 80` -- algebraic convergence, where the
-  isotropic cells reach `1e-15`. "Machine precision at `q = 2`" holds when the numerator is a
-  multiple of the identity, and the docstring now says so.
+  the first cell where `B` can be varied against a known answer at all. With a random
+  positive-definite `B` the rule lands at `7.7e-6, 1.2e-7, 1.1e-8, 2.0e-9` for
+  `nodes = 20, 40, 60, 80`. Those are ABSOLUTE errors at `n = 7`; recomputed as relative errors
+  they match what `B = I` gives on the same cell, so the reading of them as "algebraic off
+  `B` proportional to the identity" is withdrawn -- see the normalisation note above. What governs
+  the `q = 2` accuracy is the margin, and `B` moves only the constant.
 
   The error bar comes free where it matters: on an exchangeable problem the exact answer is
   isotropic, so half the observed spread of the diagonal lower-bounds the largest entry error with

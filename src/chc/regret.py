@@ -1667,18 +1667,31 @@ def exact_matrix_ratio_moment(
       (``proofs/general_q_ratio_moment.v``, ``ingham_siegel_valid_iff_q_le_four``).
     * The IMPLEMENTATION stops at ``q = 3``: ``q = 4`` needs ``7! = 5040`` permutations on each
       of 5760 products, i.e. 29 million plan terms, which is not a table worth building.
-    * Cost is the cone dimension, not the algebra, and at ``q = 3`` the cone wins. ``q = 2`` is
-      3-dimensional and reaches machine precision at ``nodes = 40`` in seconds **on an isotropic
-      cell only**. Both departures cost it that: with an anisotropic ``B`` it converges
-      algebraically -- 7.7e-6, 1.2e-7, 1.1e-8, 2.0e-9 at ``nodes = 20, 40, 60, 80`` against the
-      exact anchor ``(tr B / n) I / (n - q - 1)`` (Result 63 (g)) -- and with correlated channels
-      likewise, 3.1e-5, 5.4e-7, 4.8e-8 at ``nodes = 20, 40, 60`` against ``R^-1/(n-q-1)``
-      (Result 63 (i)). ``q = 3`` is
+    * Cost is the cone dimension, not the algebra, and at ``q = 3`` the cone wins. At ``q = 2``
+      the cone is 3-dimensional and what governs the accuracy is the MARGIN from the existence
+      boundary ``n >= q + 2``, not the shape of ``B`` or ``Om``. Relative max-entry error against
+      ``I/(n-q-1)``, at ``nodes = 20, 40, 80, 120``:
+
+      == ====== ======== ======== ======== ========
+      n  margin 20       40       80       120
+      == ====== ======== ======== ======== ========
+      5  1      1.14e-4  7.34e-6  4.68e-7  9.32e-8
+      6  2      2.81e-6  4.59e-8  7.37e-10 6.54e-11
+      8  4      2.16e-7  3.35e-11 3.08e-14 2.46e-14
+      12 8      4.90e-6  4.23e-13 1.25e-15 2.37e-14
+      == ====== ======== ======== ======== ========
+
+      So "machine precision at ``q = 2``" holds from ``n = q + 4`` outwards and not near the
+      boundary. ``B`` and ``Om`` move the constant, not the regime: an anisotropic ``B`` at
+      ``n = 6`` gives 2.81e-6, 4.59e-8, 4.10e-9 -- the same numbers as ``B = I`` -- and correlated
+      channels give 3.14e-5, 5.38e-7, 4.84e-8, a flat factor of about 11. Earlier drafts of this
+      docstring attributed the loss of machine precision first to an anisotropic numerator and
+      then to correlated channels; both are withdrawn, and the margin is the variable. ``q = 3`` is
       6-dimensional and **is a percent-accuracy tool, not a high-precision one.** Measured on the
       exchangeable anchor, taking the grid as far as it will go:
 
       ===== ========= ================== ==================
-      nodes points    rel err, ``n = 5`` rel err, ``n = 7``
+      nodes points    abs err, ``n = 5`` abs err, ``n = 7``
       ===== ========= ================== ==================
       4     4 096     2.92e-1            9.55e-2
       5     15 625    4.68e-2            5.67e-2
@@ -1701,14 +1714,21 @@ def exact_matrix_ratio_moment(
       sequence goes 4.68e-2, 8.66e-2, 6.69e-2, 4.64e-2, 2.76e-2, while at ``n = q + 4`` it
       decreases throughout.
 
-      **That table is measured on an EXCHANGEABLE cell, and a correlated one is worse.** Every
-      anchor above has ``regressor_cov = I``. There is one with correlated channels -- for
-      ``numerator = denominator = I`` and ``regressor_cov = kron(R, I_n)`` the sandwich is
-      ``E[(X'X)^-1]`` with ``X'X ~ Wishart_q(n, R)``, so the exact answer is ``R^-1/(n-q-1)``
-      (Result 63 (i)) -- and on it the same grid at ``q = 3, n = 7`` gives 2.37e-1, 2.53e-1,
-      3.72e-2, 2.20e-2 at ``nodes = 4, 5, 6, 7``, against 9.55e-2, 5.67e-2, 1.87e-2, 1.12e-2 on
-      the exchangeable cell: about 2x worse at every size, and non-monotone with a rise at
-      ``nodes = 5``. Read the table as a floor, not as the accuracy on your problem.
+      **The column above is the ABSOLUTE max-entry error.** At ``n = 5`` the exact answer is ``I``
+      so absolute and relative coincide; at ``n = 7`` it is ``I/3`` and the relative error is 3x
+      the column -- 2.87e-1, 1.70e-1, 5.59e-2, 3.36e-2 at ``nodes = 4..7``. Quoting the two
+      columns against each other, or against a relative number, is the mistake this note exists
+      to prevent.
+
+      **Every anchor above also has ``regressor_cov = I``,** and there is one with correlated
+      channels: for ``numerator = denominator = I`` and ``regressor_cov = kron(R, I_n)`` the
+      sandwich is ``E[(X'X)^-1]`` with ``X'X ~ Wishart_q(n, R)``, so the exact answer is
+      ``R^-1/(n-q-1)`` (Result 63 (i)). Measured in one convention (max entry, relative) at
+      ``q = 3, n = 7``, correlated against exchangeable: 4.71e-1 / 2.87e-1, 2.39e-1 / 1.70e-1,
+      3.52e-2 / 5.59e-2, 4.29e-2 / 3.36e-2 at ``nodes = 4..7`` -- 1.6x and 1.4x worse on the two
+      coarse grids, 0.63x on the third, 1.3x on the fourth, and non-monotone on both sides. A
+      correlated ``Om`` is not systematically harder; it is a different cell of the same
+      percent-scale tool.
 
       Seven ways out were measured and all seven lost. Four rules -- a Smolyak sparse grid on
       nested open Fejer-2 (the tail is algebraic, not Gaussian), per-axis Cholesky scaling, Aitken
@@ -1887,14 +1907,17 @@ class MatrixRatioAccuracy:
     ``r - 1`` to two decimals. Over 13 cells the ratio ranges ``0.30x`` to ``5.26x`` and falls
     below 1 in five, every one of them a cell whose rate is under 2.
 
-    **Those 13 cells are all exchangeable, and off them it is much worse.** On the correlated-
-    channel anchor of Result 63 (i) (``regressor_cov = kron(R, I_n)``, exact answer
-    ``R^-1/(n-q-1)``) at ``q = 3, n = 7``, the residual at ``nodes = 5`` is 6.2e-3 while the true
-    error is 2.53e-1: a ratio of **0.024**, understating by 41x and an order of magnitude outside
-    the range above. The mechanism is the same one -- the error sequence there is not merely slow
-    but non-monotone (0.3053, 0.2991, 0.3853, 0.4114 against an exact 0.4002), and a step measured
-    across a turning point says nothing about the remainder. So the ``0.30x-5.26x`` range is a
-    property of the exchangeable cells it was measured on, not a calibration.
+    **Those 13 cells are all exchangeable; the first correlated one sits at the conservative end
+    and slightly past it.** On the correlated-channel anchor of Result 63 (i)
+    (``regressor_cov = kron(R, I_n)``, exact answer ``R^-1/(n-q-1)``) at ``q = 3, n = 7``,
+    residual / true error is 2.42, 5.80 and 1.44 at
+    ``nodes = 5, 6, 7`` -- conservative at all three, and in fact more conservative than the
+    exchangeable cell at the same nodes (2.06, 3.64, 0.78). An earlier draft of this docstring
+    claimed the residual understated by 41x there; that came from dividing a single entry's step
+    by a different entry's relative error, and is withdrawn. What the correlated cell does show is
+    that the ratio is no more predictable off the exchangeable cells than on them: it still swings
+    by 4x across three consecutive grids, and its 5.80 widens the measured range to 0.30x-5.80x.
+    That range remains a description of the cells it was measured on rather than a calibration.
 
     A three-grid rate estimator does not rescue this and was not shipped: under geometric decay
     ``residual(k-1)/residual(k)`` would equal ``r``, but the measured residual ratios are flat
