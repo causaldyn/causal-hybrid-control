@@ -265,3 +265,27 @@ if ratsimp(subst(1, q, (n-q)*(n-q-1)*(n-q-3)) - (n-1)*(n-2)*(n-4)) # 0
 for qq : 1 thru 5 do
   if subst(qq+3, n, (n-qq)*(n-qq-1)*(n-qq-3)) # 0 then error("28: no pole at n = q+3, q =", qq)$
 print("28 ok: E[W^-2] poles exactly at n = q+3; q = 1 case = 1/((n-2)(n-4)) at n = 5..10")$
+
+/* (29) THE ANCHOR WITH CORRELATED CHANNELS -- the one the estimator actually needs.  Identities
+   (25)-(27) cover Omega = I with any numerator B.  The complementary case is B = C = I with
+   Omega = R (x) I_n: then vec(X) ~ N(0, R (x) I_n) means X = Z R^(1/2) for a standard Z, so
+   M = X'X = R^(1/2) Z'Z R^(1/2) is Wishart_q(n, R) and the sandwich M^-1 N M^-1 collapses to
+   M^-1.  Hence E = R^-1 / (n - q - 1) -- the FIRST anchor whose answer is not isotropic, and the
+   first that a rule ignoring the channel correlation would fail.  Checked symbolically at q = 2
+   for a general correlation r, including that the off-diagonal is nonzero and carries the
+   opposite sign to r. */
+R2 : matrix([1, r], [r, 1])$
+anchor2 : ratsimp(invert(R2) / (n - q - 1))$
+if ratsimp(subst(2, q, anchor2[1][1]) - 1/((1 - r^2)*(n - 3))) # 0
+  then error("29: the q = 2 diagonal is not 1/((1-r^2)(n-3))")$
+if ratsimp(subst(2, q, anchor2[1][2]) + r/((1 - r^2)*(n - 3))) # 0
+  then error("29: the q = 2 off-diagonal is not -r/((1-r^2)(n-3))")$
+/* r = 0 must reproduce the isotropic anchor I/(n-q-1) that (25)-(27) built on */
+if ratsimp(subst(0, r, subst(2, q, anchor2[1][1])) - 1/(n - 3)) # 0
+  then error("29: r = 0 does not reduce to the isotropic anchor")$
+if ratsimp(subst(0, r, subst(2, q, anchor2[1][2]))) # 0
+  then error("29: r = 0 leaves an off-diagonal")$
+/* and the Wishart scale enters as R^-1, not R: doubling every variance HALVES the answer */
+if ratsimp(subst(2, q, ratsimp(invert(2*R2)/(n - q - 1))[1][1]) - subst(2, q, anchor2[1][1])/2) # 0
+  then error("29: the scale does not enter inversely")$
+print("29 ok: correlated-channel anchor R^-1/(n-q-1), off-diagonal -r/((1-r^2)(n-3))")$

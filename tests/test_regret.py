@@ -902,6 +902,30 @@ def test_an_anisotropic_numerator_has_an_exact_anchor_too() -> None:
     assert np.max(np.abs(got - np.diag(np.diag(got)))) < 1e-8 * np.max(np.abs(want))
 
 
+def test_correlated_channels_have_an_exact_anchor_and_it_is_the_hard_one() -> None:
+    # Result 63 (i): with numerator = denominator = I and regressor_cov = kron(R, I_n), the
+    # sandwich collapses to E[(X'X)^-1] with X'X ~ Wishart_q(n, R), so the exact answer is
+    # R^-1 / (n - q - 1). It is the first anchor with CORRELATED channels -- which is the case
+    # the estimator actually ships for -- and the rule is measurably worse on it than on any
+    # exchangeable cell.
+    n, q = 6, 2
+    corr = np.array([[1.0, 0.5], [0.5, 1.0]])
+    om = np.kron(corr, np.eye(n))
+    want = np.linalg.inv(corr) / (n - q - 1)
+    got = exact_matrix_ratio_moment(np.eye(n), np.eye(n), om, nodes=40)
+    assert np.allclose(got, want, rtol=0.0, atol=1e-5)
+
+    # the off-diagonal is what makes this anchor bite: an isotropic answer has none, so a rule
+    # that ignored the channel correlation would fail here and pass every earlier anchor
+    assert want[0, 1] < -0.1
+    assert abs(got[0, 1] - want[0, 1]) < 1e-5
+
+    # and convergence is ALGEBRAIC here, exactly as with an anisotropic numerator -- the q = 2
+    # rule reaches machine precision only on isotropic cells
+    coarse = exact_matrix_ratio_moment(np.eye(n), np.eye(n), om, nodes=20)
+    assert 1e-6 < float(np.max(np.abs(coarse - want))) < 1e-3
+
+
 def test_the_isotropy_bar_rides_along_when_the_channels_are_exchangeable() -> None:
     # Result 63 (e) proves half the diagonal spread LOWER-bounds the largest entry error whenever
     # the exact answer is isotropic. The certificate can compute that for free -- it is a function

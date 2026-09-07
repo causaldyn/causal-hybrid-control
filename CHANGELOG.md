@@ -81,6 +81,27 @@ still change).
   boundary cell; it does not rule out every map, and the tensor rule converges there regardless, so
   what is bounded is the rescue rather than the integral.
 
+  **A second new anchor, with CORRELATED channels -- and it convicts the table above.** For
+  `numerator = denominator = I` and `regressor_cov = kron(R, I_n)`, `vec(X) ~ N(0, R (x) I_n)` gives
+  `X'X ~ Wishart_q(n, R)`, so the sandwich collapses to `E[(X'X)^-1] = R^-1/(n - q - 1)`. It is the
+  first anchor here whose answer is NOT isotropic -- at `q = 2` the off-diagonal is
+  `-r/((1-r^2)(n-3))`, which a rule blind to the channel correlation could not produce -- and a
+  4e6-draw Monte Carlo confirms it to 2.5e-4. Three consequences, all now in the docstrings:
+  the `q = 3` accuracy table is about 2x optimistic on a correlated cell (2.37e-1, 2.53e-1,
+  3.72e-2, 2.20e-2 at `nodes = 4..7`, RISING at 5); the `q = 2` rule's machine precision is
+  isotropic-only on this axis too (3.1e-5, 5.4e-7, 4.8e-8 at `nodes = 20, 40, 60`); and
+  `matrix_ratio_certificate`'s residual understates by **41x** there (6.2e-3 against a true
+  2.53e-1), an order of magnitude outside the 0.30x-5.26x range -- which was measured over 13
+  cells that were all exchangeable, and is therefore a property of those cells, not a calibration.
+
+  The repair named above was built and closed on its budget rather than shipped. A tensor rule in
+  spectral coordinates -- ordered eigenvalues through a gap parameterisation, so the Vandermonde is
+  a polynomial rather than an absolute value, and an `SO(3)` product rule that is EXACT on 27 nodes
+  whenever `regressor_cov = I` -- is 33-46x more accurate than the shipped grid at equal point
+  counts on `n = q + 4`. It still misses six digits (3.63e-4 at 74 088 points), does not win at all
+  on the existence boundary, and is only 7x better on a correlated cell where both rules are
+  erratic. A 7x constant does not pay for a second coordinate system and its Haar quadrature.
+
   A new exact anchor with an ANISOTROPIC numerator: for `Omega = I`, `C = I` and any PSD `B`,
   `E[M^-1 X'BX M^-1] = (tr B / n) I / (n - q - 1)` (polar decomposition `X = HT`, `H` Haar and
   independent of `T`, `E[H'BH] = (tr B / n) I`; Maxima identities 25-27). It is the first check of
