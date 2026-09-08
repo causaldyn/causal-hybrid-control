@@ -8,12 +8,21 @@ the layers in one call ever loses that separation, this file fails.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
 
 import numpy as np
 import pytest
 
-from chc.decision import Constraint, Lever, Target, prescribe
+from chc.decision import (
+    Constraint,
+    DecisionError,
+    Lever,
+    NotIdentifiedError,
+    Target,
+    prescribe,
+)
 from chc.graph import CausalGraph
 from chc.panel import Panel
 
@@ -101,7 +110,7 @@ def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
     assert result.plan is None
     assert result.certificate.trustworthy_steps == 0
     assert result.certificate.solver_status is None
-    with pytest.raises(ValueError, match="not identified"):
+    with pytest.raises(NotIdentifiedError, match="not identified"):
         _ = result.schedule
     assert "no schedule" in result.report().lower()
 
@@ -229,3 +238,86 @@ def test_the_arguments_that_cannot_mean_anything_are_refused() -> None:
         Constraint("wait")
     with pytest.raises(KeyError, match="not in the panel"):
         _prescribe(panel, ("weather",))
+
+
+# ---- the operational log: a decision nobody can reconstruct afterwards is not auditable ----
+
+
+def _events(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The `chc_event` of each record, read with `getattr` because `extra` keys are dynamic."""
+    return [str(getattr(record, "chc_event", "")) for record in caplog.records]
+
+
+def test_every_decision_point_leaves_a_structured_record(caplog: pytest.LogCaptureFixture) -> None:
+    """Each record names its point in `chc_event`, so a handler routes on a field, not on prose."""
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
+        _prescribe(_panel(n_units=40, n_periods=8), CausalGraph.from_edges(EDGES))
+    assert _events(caplog) == ["adjustment", "fit", "plan", "certificate"]
+    fit = caplog.records[_events(caplog).index("fit")]
+    assert getattr(fit, "method", None) == "orthogonal"
+    assert getattr(fit, "transitions", 0) > 0
+
+
+def test_the_unidentified_path_warns_rather_than_falling_silent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No schedule is the loudest thing this library says; it must not be said only in a return."""
+    graph = CausalGraph.from_edges(EDGES, latent=("demand",))
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
+        _prescribe(_panel(n_units=40, n_periods=8), graph)
+    events = _events(caplog)
+    assert events.count("abort") == 1
+    assert "plan" not in events  # nothing was solved, so nothing may claim to have been
+    abort = caplog.records[events.index("abort")]
+    assert abort.levelno == logging.WARNING
+    assert "demand" in str(getattr(abort, "reason", ""))
+
+
+def test_the_library_installs_no_handler_and_sets_no_level() -> None:
+    """Logging configuration belongs to the application; a library that takes it steals it."""
+    logger = logging.getLogger("chc.decision")
+    assert logger.handlers == []
+    assert logger.level == logging.NOTSET
+
+
+def test_single_precision_is_warned_about_and_not_refused(caplog: pytest.LogCaptureFixture) -> None:
+    """JAX is float32 by default and the harm is plant-specific, so this is a warning, not a gate.
+
+    The precision is on :class:`~chc.panel.Provenance` of every result either way; what the log adds
+    is that it reaches an operator who never opens the provenance. Forged here rather than by
+    flipping ``jax_enable_x64``, which is process-global and would leak into every later test.
+    """
+    panel = _panel(n_units=40, n_periods=8)
+    single = dataclasses.replace(panel, provenance=dataclasses.replace(panel.provenance, x64=False))
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
+        result = _prescribe(single, CausalGraph.from_edges(EDGES))
+    events = _events(caplog)
+    assert events[0] == "precision"
+    assert caplog.records[0].levelno == logging.WARNING
+    assert "plan" in events  # warned, then carried on: the schedule is still produced
+    assert result.provenance.x64 is False
+
+
+def test_a_mis_specified_decision_and_an_unidentified_one_are_different_types() -> None:
+    """The fallback to partial identification is triggered by one of these and not by the other.
+
+    Both stay ``ValueError`` subclasses, so nothing that caught the old type stops catching them.
+    """
+    assert issubclass(NotIdentifiedError, DecisionError)
+    assert issubclass(DecisionError, ValueError)
+    with pytest.raises(DecisionError, match="above hi"):
+        Lever("incentive", lo=1.0, hi=-1.0)
+    with pytest.raises(DecisionError, match="at least one lever"):
+        prescribe(
+            _panel(n_units=10, n_periods=4),
+            levers=[],
+            target=Target("supply", 1.0),
+            adjustment=CausalGraph.from_edges(EDGES),
+            horizon=3,
+            dt=DT,
+        )
+    blocked = _prescribe(
+        _panel(n_units=40, n_periods=8), CausalGraph.from_edges(EDGES, latent=("demand",))
+    )
+    with pytest.raises(NotIdentifiedError):
+        _ = blocked.schedule

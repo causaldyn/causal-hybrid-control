@@ -33,6 +33,41 @@ still change).
 
 ### Added
 
+- **`prescribe` now says what it is doing while it does it, and says failure in a type.** Each
+  decision point emits one stdlib `logging` record on `chc.decision`, keyed by `chc_event` --
+  `precision`, `adjustment`, `fit`, `abort`, `plan`, `certificate` -- with the numbers a downstream
+  JSON handler would want as `extra` fields (the fitting method, the identification radius, the
+  overlap, the solver status and iteration count, `Gamma*`, the certified horizon, and the wall
+  time of the fit and of the solve). No handler is installed and no level is set: a library that
+  calls `basicConfig` takes a decision that belongs to the application.
+
+  Two records are `WARNING` rather than `INFO`, being the two worth waking someone for: a panel
+  built without `JAX_ENABLE_X64=1`, and a graph under which no observed set identifies the effect.
+  The precision one is a **warning and not a refusal** -- JAX is single-precision by default, the
+  harm is plant-specific, and `Provenance.x64` already travels with every result -- so a caller who
+  needs the guarantee asserts on the provenance rather than having a default chosen for them.
+
+  New `DecisionError(ValueError)` and `NotIdentifiedError(DecisionError)` replace the bare
+  `ValueError`s. Both remain `ValueError` subclasses, so nothing that caught the old type stops
+  catching them; what they buy is that a caller falling back to `chc.sensitivity`'s partial-
+  identification path can trigger on the *one* failure this library exists to produce, instead of
+  matching on a message. A column that is simply absent still raises `KeyError`, matching `Panel`
+  lookup: a missing name is a lookup failure, not a bad decision.
+
+- **`tests/test_decision_properties.py`: one hypothesis invariant per layer of the facade.**
+  Projection idempotence and box membership; the §40 certified prefix monotone in the assumed
+  `Gamma`; the schedule inside the lever band over random boxes; `to_json` surviving `json.dumps`;
+  the panel fingerprint blind to dictionary order and not to a changed value; d-separation symmetric
+  over random DAGs; and the canonical adjustment set never containing the outcome or a descendant of
+  the treatment.
+
+  That last one is stated on the *output* rather than by asking `is_valid_adjustment_set`, and the
+  difference was measured, not assumed: both methods read the same `forb`, so a consistency check
+  between them is a tautology. Dropping `Y` from `forb` -- the exact pre-release defect a
+  brute-force cross-check caught before 0.5.0 -- leaves the consistency property green and fails
+  the output property. Every property here was confirmed to fail under a mutation of the code it
+  claims to constrain.
+
 - **`chc.mmm`: marketing-mix budget scheduling, the case study `prescribe` was built for.** A
   saturating carryover plant where the confounding is not hypothetical -- media spend is planned
   *against demand*, so a model fitted on the log credits the channel with the season.

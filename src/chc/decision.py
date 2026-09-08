@@ -28,6 +28,8 @@ computed from a channel nothing in the log pins down.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -48,6 +50,41 @@ from chc.plan import CausalPlan, CertificateStatus, causal_plan, certify_safety
 SCHEMA_VERSION = 1
 """``to_json``'s schema version. Bumped when a field changes meaning, not when one is added."""
 
+
+class DecisionError(ValueError):
+    """A decision could not be set up: a lever, a target, a constraint or an adjustment is wrong.
+
+    Subclasses ``ValueError`` so it stays catchable the way it always was, and exists so a caller
+    wrapping :func:`prescribe` can tell *its own* mis-specification apart from a ``ValueError``
+    thrown out of jax, numpy or the solver. Every message names the offending column or bound.
+
+    Columns that are simply absent still raise ``KeyError``, matching :class:`~chc.panel.Panel`
+    lookup: asking for a name that is not there is a lookup failure, not a bad decision.
+    """
+
+
+class NotIdentifiedError(DecisionError):
+    """The effect is not identified by adjustment, so there is no schedule to hand back.
+
+    Its own type because it is the one failure this library exists to produce. A caller may want to
+    fall back to :mod:`chc.sensitivity`'s partial-identification path on exactly this and on
+    nothing else; catching it by message would be catching it by accident.
+    """
+
+
+_log = logging.getLogger(__name__)
+"""Decision-point log for :func:`prescribe`, on the stdlib and nothing else.
+
+Every record carries a ``chc_event`` key in its ``extra`` payload naming the point it was emitted
+at --- ``precision``, ``adjustment``, ``fit``, ``abort``, ``plan``, ``certificate`` --- so a JSON
+formatter downstream can route on one field rather than parse a sentence. The library installs no
+handler and sets no level: that is the application's call, and a library that reaches for
+``basicConfig`` takes it away.
+
+The two records that are not ``INFO`` are the two worth waking someone for: identifying in single
+precision, and a graph that says the effect is not identified at all.
+"""
+
 IdentificationStatus = Literal["identified", "asserted", "not_identified"]
 """How the set was arrived at. ``asserted`` means a caller named it and nothing here checked it."""
 
@@ -67,7 +104,7 @@ class Lever:
 
     def __post_init__(self) -> None:
         if self.lo > self.hi:
-            raise ValueError(f"lever {self.name!r} has lo={self.lo} above hi={self.hi}")
+            raise DecisionError(f"lever {self.name!r} has lo={self.lo} above hi={self.hi}")
 
 
 @dataclass(frozen=True)
@@ -89,9 +126,9 @@ class Constraint:
 
     def __post_init__(self) -> None:
         if self.lo is None and self.hi is None:
-            raise ValueError(f"constraint on {self.state!r} bounds nothing")
+            raise DecisionError(f"constraint on {self.state!r} bounds nothing")
         if self.lo is not None and self.hi is not None and self.lo > self.hi:
-            raise ValueError(f"constraint on {self.state!r} has lo={self.lo} above hi={self.hi}")
+            raise DecisionError(f"constraint on {self.state!r} has lo={self.lo} above hi={self.hi}")
 
 
 @dataclass(frozen=True)
@@ -184,7 +221,7 @@ class Prescription:
                 :mod:`chc.sensitivity` for what to do about it.
         """
         if self.plan is None:
-            raise ValueError(
+            raise NotIdentifiedError(
                 "the effect is not identified, so no schedule was computed: "
                 f"{self.certificate.adjustment.reason}"
             )
@@ -332,12 +369,25 @@ def prescribe(
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
         :attr:`Prescription.schedule`, which raises when the effect is not identified.
+
+    Raises:
+        DecisionError: the decision is mis-specified --- no lever, a column named as both target and
+            constraint, or a panel with no consecutive pair of periods to fit a transition on.
+        KeyError: a lever, target, constraint or asserted covariate names a column the panel does
+            not have. The message lists the panel's columns.
+
+    Each decision point emits one ``logging`` record on ``chc.decision``, keyed by ``chc_event``
+    (see :data:`_log`). Nothing is configured here; a caller that wants them calls
+    ``logging.basicConfig`` itself. An unidentified effect and a single-precision panel are the two
+    that come through at ``WARNING``.
     """
     if not levers:
-        raise ValueError("prescribe needs at least one lever; there is nothing to decide otherwise")
+        raise DecisionError(
+            "prescribe needs at least one lever; there is nothing to decide otherwise"
+        )
     states = (target.name, *(constraint.state for constraint in constraints))
     if len(set(states)) != len(states):
-        raise ValueError(f"a column is both target and constraint: {states}")
+        raise DecisionError(f"a column is both target and constraint: {states}")
     lever_names = tuple(lever.name for lever in levers)
     for name in (*states, *lever_names):
         if name not in panel.columns:
@@ -345,13 +395,41 @@ def prescribe(
                 f"column {name!r} is not in the panel; columns are {sorted(panel.names)}"
             )
 
+    if not panel.provenance.x64:
+        _log.warning(
+            "identifying in single precision; export JAX_ENABLE_X64=1 if the fit is load-bearing",
+            extra={"chc_event": "precision", "x64": False, "rows": panel.provenance.n_rows},
+        )
+
     resolved = _resolve_adjustment(adjustment, panel=panel, target=target, levers=lever_names)
+    _log.info(
+        "adjustment resolved",
+        extra={
+            "chc_event": "adjustment",
+            "source": "graph" if isinstance(adjustment, CausalGraph) else "asserted",
+            "status": resolved.status,
+            "covariates": list(resolved.covariates),
+        },
+    )
     data = _transitions(panel, states=states, levers=lever_names, adjust_for=resolved.covariates)
     n_states, n_levers = len(states), len(lever_names)
 
     base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
+    started = time.perf_counter()
     fit = fit_causal_residual(
         base, data, dt, adjust_for=resolved.covariates, folds=folds, seed=seed
+    )
+    _log.info(
+        "control channel fitted",
+        extra={
+            "chc_event": "fit",
+            "method": fit.method,
+            "identified": fit.identified,
+            "channel_error": fit.channel_error,
+            "overlap": fit.action_residual_variance,
+            "transitions": int(jnp.asarray(data["x"]).shape[0]),
+            "seconds": time.perf_counter() - started,
+        },
     )
     identification: IdentificationStatus = (
         "not_identified"
@@ -360,6 +438,10 @@ def prescribe(
     )
 
     if identification == "not_identified":
+        _log.warning(
+            "no schedule: no observed set identifies the effect",
+            extra={"chc_event": "abort", "reason": resolved.reason},
+        )
         return Prescription(
             levers=tuple(levers),
             target=target.name,
@@ -395,6 +477,7 @@ def prescribe(
     u_hi = jnp.array([lever.hi for lever in levers])
     u_max = float(jnp.max(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))))
 
+    started = time.perf_counter()
     plan = causal_plan(
         model,
         start,
@@ -408,28 +491,52 @@ def prescribe(
         tolerance=float("inf") if tolerance is None else tolerance,
     )
 
+    _log.info(
+        "plan solved",
+        extra={
+            "chc_event": "plan",
+            "solver_status": plan.solver_status,
+            "solver_iterations": plan.solver_iterations,
+            "certificate_status": plan.certificate_status,
+            "certified_horizon": plan.certified_horizon,
+            "task_cost": plan.task_cost,
+            "seconds": time.perf_counter() - started,
+        },
+    )
+
     barrier = _barrier(states, constraints)
     safety = (
         None
         if barrier is None
         else certify_safety(plan, model, barrier, dt, gamma=gamma, u_max=u_max)
     )
+    certificate = DecisionCertificate(
+        identification=identification,
+        adjustment=resolved,
+        identification_radius=fit.channel_error,
+        overlap=fit.action_residual_variance,
+        certificate_status=plan.certificate_status,
+        certified_horizon=plan.certified_horizon,
+        barrier_certified_steps=None if safety is None else safety.certified_steps,
+        gamma_star=None if safety is None else safety.gamma_star,
+        solver_status=plan.solver_status,
+        solver_iterations=plan.solver_iterations,
+    )
+    _log.info(
+        "decision certified",
+        extra={
+            "chc_event": "certificate",
+            "identification": certificate.identification,
+            "gamma_star": certificate.gamma_star,
+            "barrier_certified_steps": certificate.barrier_certified_steps,
+            "trustworthy_steps": certificate.trustworthy_steps,
+        },
+    )
     return Prescription(
         levers=tuple(levers),
         target=target.name,
         plan=plan,
-        certificate=DecisionCertificate(
-            identification=identification,
-            adjustment=resolved,
-            identification_radius=fit.channel_error,
-            overlap=fit.action_residual_variance,
-            certificate_status=plan.certificate_status,
-            certified_horizon=plan.certified_horizon,
-            barrier_certified_steps=None if safety is None else safety.certified_steps,
-            gamma_star=None if safety is None else safety.gamma_star,
-            solver_status=plan.solver_status,
-            solver_iterations=plan.solver_iterations,
-        ),
+        certificate=certificate,
         model_fit=fit,
         provenance=panel.provenance,
     )
@@ -480,7 +587,7 @@ def _transitions(
         dtype=np.int64,
     )
     if current.size == 0:
-        raise ValueError(
+        raise DecisionError(
             "no unit has two consecutive periods, so there is not a single transition to fit on"
         )
     following = np.array(
