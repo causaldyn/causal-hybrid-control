@@ -41,7 +41,7 @@ from jax import Array
 from chc.control import SolverStatus
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
-from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual
+from chc.dynamics_id import CausalDynamicsFit, Integrator, fit_causal_residual
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.lqr import linearize_continuous
 from chc.panel import Panel, Provenance
@@ -342,6 +342,7 @@ def prescribe(
     x0: Array | None = None,
     folds: int = 2,
     seed: int = 0,
+    integrator: Integrator = "rk4",
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -365,6 +366,15 @@ def prescribe(
             over the whole horizon while proving nothing.
         x0: the state to plan from. Defaults to the mean over units of each unit's last observed
             state, which is the pooled "where we are now" and is recorded as such.
+        integrator: the one-step map the fit is made consistent with, passed to
+            :func:`~chc.dynamics_id.fit_causal_residual`. Defaults to ``"rk4"`` here and to
+            ``"euler"`` there, deliberately: the low-level fit has no idea what will consume it and
+            keeps its contract, while this function *knows* the field goes straight to
+            :func:`chc.plan.causal_plan`, which rolls out with RK4. Fitting one integrator and
+            planning with another is a bias the caller never asked for --- on the plant in
+            :mod:`chc.mmm` it costs 28% of the control channel. Choose ``"euler"`` when the panel is
+            genuinely discrete-time (a weekly budget is not a sample of an ODE) and the one-step map
+            *is* the model.
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
@@ -417,7 +427,13 @@ def prescribe(
     base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
     started = time.perf_counter()
     fit = fit_causal_residual(
-        base, data, dt, adjust_for=resolved.covariates, folds=folds, seed=seed
+        base,
+        data,
+        dt,
+        adjust_for=resolved.covariates,
+        folds=folds,
+        seed=seed,
+        integrator=integrator,
     )
     _log.info(
         "control channel fitted",
@@ -426,6 +442,8 @@ def prescribe(
             "method": fit.method,
             "identified": fit.identified,
             "channel_error": fit.channel_error,
+            "integrator": fit.integrator,
+            "integrator_defect": fit.integrator_defect,
             "overlap": fit.action_residual_variance,
             "transitions": int(jnp.asarray(data["x"]).shape[0]),
             "seconds": time.perf_counter() - started,

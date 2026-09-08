@@ -37,8 +37,10 @@ HONEST SCOPE, three limits worth stating before the code:
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -46,8 +48,28 @@ import numpy as np
 from jax import Array
 
 from chc.causal import _polynomial_features, _ridge_predict
-from chc.dynamics import Dynamics
+from chc.dynamics import Dynamics, HybridDynamics
+from chc.integrate import rk4_step
 from chc.residual import ControlAffineResidual, control_affine_features
+
+Integrator = Literal["euler", "rk4"]
+"""Which one-step map the fit is asked to be consistent with. See :func:`fit_causal_residual`."""
+
+_MAX_DEFECT_CORRECTIONS = 8
+"""Cap on the ``rk4`` fixed point. Four is plenty at ``|A|dt < 1``; the cap is against a divergence
+at large ``|A|dt``, where the iteration is not a contraction and the loop must stop anyway."""
+
+_DEFECT_PROGRESS = 0.99
+"""A state stops correcting once an iteration fails to cut *its* defect by 1%.
+
+Two choices in one line. The floor is **relative**, because the defect bottoms out at the
+observation noise and not at zero. It is **per state**, because a state the model cannot represent
+has a floor orders of magnitude above one it can, and a single pooled criterion lets the first stop
+the second: on the marketing-mix plant the sales row carries an unmodelled seasonal driver, and
+pooling left the adstock rows at half their remaining gap. The stages of RK4 do couple the states,
+but every solve downstream of the target rate is separable across output columns -- ridge
+residualisation, the channel moment and the drift all share one design matrix -- so freezing one
+column's target while another keeps moving is well defined rather than convenient."""
 
 _NOT_IDENTIFIED = (
     "no adjustment set and no instrument: the control channel is not identified from this log. "
@@ -135,6 +157,15 @@ class CausalDynamicsFit:
     nuisance_r2_state: float
     nuisance_r2_action: float
     moment_norm: float  # ||mean(design * residual)|| at the solution; should be ~0
+    integrator: Integrator = "euler"  # which one-step map the fit was made consistent with
+    # RMS one-step defect in rate units, ``||x_next - step(F, x, u, dt)|| / dt``, under THAT
+    # integrator. Comparable across the two settings, and the number that says whether the
+    # ``rk4`` fixed point converged: it floors at the observation noise, never at zero.
+    integrator_defect: float | None = None
+
+
+def _column_rms(values: Array) -> np.ndarray:
+    return np.asarray(jnp.sqrt(jnp.mean(values**2, axis=0)))
 
 
 def _r_squared(target: Array, prediction: Array) -> float:
@@ -332,6 +363,7 @@ def fit_causal_residual(
     folds: int = 2,
     ridge: float = 1e-6,
     seed: int = 0,
+    integrator: Integrator = "euler",
 ) -> CausalDynamicsFit:
     """Fit a :class:`ControlAffineResidual` whose channel is the *interventional* control response.
 
@@ -357,19 +389,43 @@ def fit_causal_residual(
             Cross-fitting earns its keep against learners whose fit is adaptive to the sample
             (feature selection, trees, early stopping) or saturated enough to memorise it, where
             own-sample residuals collapse; ``folds>=2`` is the safe default for that reason.
+        integrator: the one-step map the fitted field is made consistent with.
+
+            ``"euler"`` (default, and what every release so far did) reads the rate off the log as
+            ``(x_next - x)/dt``, which is exactly right if the caller treats the result as a
+            *discrete-time* model and steps it the same way. It is **not** right if the caller then
+            integrates with :func:`chc.integrate.rk4_step`, as :func:`chc.plan.causal_plan` and
+            :func:`chc.integrate.rollout` do: the two disagree by the RK4 amplification factor
+            ``1 + z + z^2/2 + z^3/6 + z^4/24`` at ``z = A dt``. On a linear plant at ``theta*dt =
+            0.7`` that is a decay fitted at ``-0.502`` against a true ``-0.700`` and, more to the
+            point, a control channel fitted at ``0.574`` against a true ``0.800``.
+
+            ``"rk4"`` closes that gap by defect correction rather than by inverting RK4 in closed
+            form, which does not exist for a nonlinear field: fit, step the fitted field with RK4,
+            add the leftover ``(x_next - RK4(F))/dt`` back onto the target rate, refit. The map is a
+            contraction with modulus about ``|A|dt/2``, so it converges in a handful of passes and
+            costs that many fits. Measured on the same plant, it recovers ``-0.698`` and ``0.798``.
+            It is not free: the corrected target carries the defect's noise, so the channel's
+            standard error grows -- 0.016 to 0.061 on the plant in :mod:`chc.mmm`. That is the usual
+            bias-variance trade and it is stated rather than hidden, since the bias it removes was
+            deterministic and the variance it adds is not.
+
+            Stops when a state stops improving, per state and not pooled (see
+            ``_DEFECT_PROGRESS``); ``integrator_defect`` reports where it stopped and is the honest
+            check that it converged at all.
+
+            The default stays ``"euler"`` so no shipped fit changes meaning.
+            :func:`chc.decision.prescribe` defaults the other way, because it *knows* the field goes
+            to the planner.
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
     """
     x, u, x_next = data["x"], data["u"], data["x_next"]
-    rate = (x_next - x) / dt
-    y = rate - jax.vmap(lambda xi, ui: known(0.0, xi, ui))(x, u)
+    known_rate = jax.vmap(lambda xi, ui: known(0.0, xi, ui))(x, u)
 
     identified = bool(adjust_for) or instrument is not None
     covariates = jnp.concatenate([x, *[data[name] for name in adjust_for]], axis=1)
-    y_res, u_res, y_hat, u_hat = _cross_fit_residuals(
-        y, u, covariates, degree=nuisance_degree, folds=folds, ridge=ridge, seed=seed
-    )
 
     method = "orthogonal" if adjust_for else ("iv" if instrument else "observational")
     instrument_action: Array | None = None
@@ -383,38 +439,72 @@ def fit_causal_residual(
         instrument_action = projected - jnp.mean(projected, axis=0, keepdims=True)
         method = "iv"
 
-    channel = solve_channel_moment(
-        y_res, u_res, x, instrument_action=instrument_action, degree=degree, ridge=ridge
-    )
-    regressor = _channel_design(u_res, x, degree)
-    moment = (
-        regressor if instrument_action is None else _channel_design(instrument_action, x, degree)
-    )
-    coeffs = channel.reshape(x.shape[1], -1).T
+    def fit_to(rate: Array) -> CausalDynamicsFit:
+        """Everything downstream of the target rate, so the rk4 correction can re-run just this."""
+        y = rate - known_rate
+        y_res, u_res, y_hat, u_hat = _cross_fit_residuals(
+            y, u, covariates, degree=nuisance_degree, folds=folds, ridge=ridge, seed=seed
+        )
+        channel = solve_channel_moment(
+            y_res, u_res, x, instrument_action=instrument_action, degree=degree, ridge=ridge
+        )
+        regressor = _channel_design(u_res, x, degree)
+        moment = (
+            regressor
+            if instrument_action is None
+            else _channel_design(instrument_action, x, degree)
+        )
+        coeffs = channel.reshape(x.shape[1], -1).T
 
-    # a_θ mops up the rest of y at the fitted channel; see this module's scope note on why that
-    # makes the drift observational-conditional while the channel stays interventional.
-    phi_x = jax.vmap(control_affine_features, in_axes=(0, None))(x, degree)
-    fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_x, u)
-    drift = _solve_ridge(phi_x, y - fitted, ridge).T
-    residual = ControlAffineResidual(drift=drift, channel=channel, degree=degree)
+        # a_θ mops up the rest of y at the fitted channel; see this module's scope note on why that
+        # makes the drift observational-conditional while the channel stays interventional.
+        phi_x = jax.vmap(control_affine_features, in_axes=(0, None))(x, degree)
+        fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_x, u)
+        drift = _solve_ridge(phi_x, y - fitted, ridge).T
 
-    score = y_res - regressor @ coeffs
-    error = _sandwich_error(y_res, regressor, moment, coeffs, ridge) if identified else None
-    drift_scale = _ols_error(y - fitted, phi_x, drift.T, ridge) if identified else None
+        score = y_res - regressor @ coeffs
+        return CausalDynamicsFit(
+            residual=ControlAffineResidual(drift=drift, channel=channel, degree=degree),
+            identified=identified,
+            method=method,
+            folds=folds,
+            channel_error=_sandwich_error(y_res, regressor, moment, coeffs, ridge)
+            if identified
+            else None,
+            drift_error=_ols_error(y - fitted, phi_x, drift.T, ridge) if identified else None,
+            action_residual_variance=float(jnp.mean(u_res**2)),
+            nuisance_r2_state=_r_squared(y, y_hat),
+            nuisance_r2_action=_r_squared(u, u_hat),
+            moment_norm=float(jnp.linalg.norm(moment.T @ score / moment.shape[0])),
+            integrator=integrator,
+        )
 
-    return CausalDynamicsFit(
-        residual=residual,
-        identified=identified,
-        method=method,
-        folds=folds,
-        channel_error=error,
-        drift_error=drift_scale,
-        action_residual_variance=float(jnp.mean(u_res**2)),
-        nuisance_r2_state=_r_squared(y, y_hat),
-        nuisance_r2_action=_r_squared(u, u_hat),
-        moment_norm=float(jnp.linalg.norm(moment.T @ score / moment.shape[0])),
-    )
+    def defect(fit: CausalDynamicsFit) -> Array:
+        """``(x_next - step(F, x, u, dt)) / dt`` -- what the target rate is still missing."""
+        model = HybridDynamics(known=known, residual=fit.residual)
+        if integrator == "euler":
+            predicted = x + dt * jax.vmap(lambda xi, ui: model(0.0, xi, ui))(x, u)
+        else:
+            predicted = jax.vmap(lambda xi, ui: rk4_step(model, 0.0, xi, ui, dt))(x, u)
+        return (x_next - predicted) / dt
+
+    rate = (x_next - x) / dt
+    fit = fit_to(rate)
+    best = _column_rms(defect(fit))
+    if integrator == "rk4":
+        active = np.ones_like(best, dtype=bool)
+        for _ in range(_MAX_DEFECT_CORRECTIONS):
+            step = defect(fit) * jnp.asarray(active, dtype=rate.dtype)
+            trial = fit_to(rate + step)
+            achieved = _column_rms(defect(trial))
+            improved = active & (achieved < _DEFECT_PROGRESS * best)
+            if not improved.any():
+                break  # every state is at its noise floor, or the iteration is not contracting
+            rate = rate + step * jnp.asarray(improved, dtype=rate.dtype)
+            # `trial` already IS that fit when no column was reverted, which is the common case
+            fit = trial if bool(improved.all()) else fit_to(rate)
+            best, active = np.where(improved, achieved, best), improved
+    return dataclasses.replace(fit, integrator_defect=float(np.sqrt(np.mean(best**2))))
 
 
 # --- Result 41 (A7): what a tracked log identifies, and what it does not ---

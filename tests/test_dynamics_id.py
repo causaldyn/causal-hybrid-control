@@ -10,16 +10,18 @@ import itertools
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
-from chc.dynamics import HybridDynamics
+from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import (
     CausalDynamicsFit,
     ConfoundedControlAffineSystem,
     fit_causal_residual,
     solve_channel_moment,
 )
+from chc.integrate import rk4_step
 from chc.residual import ControlAffineResidual
 from chc.train import fit_residual
 
@@ -425,3 +427,73 @@ def test_the_residual_channel_is_the_jacobian_the_safety_layer_reads() -> None:
     jacobian = jax.jacobian(lambda action: residual(0.0, x, action))(u)
 
     assert jnp.allclose(jacobian, residual.control_channel(x))
+
+
+# ---- D15: which one-step map the fit is consistent with ----
+
+
+def _rk4_amplification(z: float) -> float:
+    """RK4's one-step growth factor for ``y' = z/dt * y`` -- the exponential's Taylor sum to 4."""
+    return 1.0 + z + z**2 / 2 + z**3 / 6 + z**4 / 24
+
+
+def _rk4_generated_log(theta: float, n: int = 4000, dt: float = 1.0, seed: int = 0):
+    """One-step pairs from ``x' = -theta x + 0.8 u``, integrated the way the planner integrates."""
+    kx, kz, ku, kn = jax.random.split(jax.random.PRNGKey(seed), 4)
+    x = jax.random.normal(kx, (n, 1))
+    z = jax.random.normal(kz, (n, 1))
+    u = 0.9 * z + 0.4 * jax.random.normal(ku, (n, 1))
+    truth = LinearDynamics(jnp.array([[-theta]]), jnp.array([[0.8]]))
+    x_next = jax.vmap(lambda xi, ui: rk4_step(truth, 0.0, xi, ui, dt))(x, u)
+    return {"x": x, "u": u, "z": z, "x_next": x_next + 0.01 * jax.random.normal(kn, (n, 1))}
+
+
+def test_the_euler_fit_recovers_the_euler_field_and_the_rk4_fit_recovers_the_true_one() -> None:
+    """The default reads a forward difference; the plan integrates with RK4. That is a real bias.
+
+    Two-sided in the same way as everything else here. It would be no achievement for ``rk4`` to
+    land on ``-theta`` if ``euler`` did too, so the ``euler`` arm is pinned to the *closed-form*
+    place it is supposed to land: the RK4 amplification ``1 + z + z^2/2 + z^3/6 + z^4/24`` divided
+    back into a rate. The channel is the number that matters -- it is what the optimiser moves
+    along -- and it is off by 28% at ``theta*dt = 0.7``.
+    """
+    dt = 1.0
+    base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    for theta in (0.7, 0.4, 0.25):
+        data = _rk4_generated_log(theta, dt=dt)
+        euler = fit_causal_residual(base, data, dt, adjust_for=("z",), seed=0)
+        rk4 = fit_causal_residual(base, data, dt, adjust_for=("z",), seed=0, integrator="rk4")
+
+        # feature 0 is the bias, feature 1 the state itself
+        assert float(np.asarray(euler.residual.drift)[0, 1]) == pytest.approx(
+            (_rk4_amplification(-theta * dt) - 1.0) / dt, abs=0.01
+        )
+        assert float(np.asarray(rk4.residual.drift)[0, 1]) == pytest.approx(-theta, abs=0.01)
+        assert float(np.asarray(rk4.residual.channel)[0, 0, 0]) == pytest.approx(0.8, abs=0.01)
+        assert euler.integrator == "euler"
+        assert rk4.integrator == "rk4"
+
+    # the sharpest case, stated as the bias it removes rather than as a tolerance
+    data = _rk4_generated_log(0.7, dt=dt)
+    euler = fit_causal_residual(base, data, dt, adjust_for=("z",), seed=0)
+    rk4 = fit_causal_residual(base, data, dt, adjust_for=("z",), seed=0, integrator="rk4")
+    off = abs(float(np.asarray(euler.residual.channel)[0, 0, 0]) - 0.8)
+    assert off > 0.2  # 0.574 against 0.800: the mismatch is a quarter of the control channel
+    assert abs(float(np.asarray(rk4.residual.channel)[0, 0, 0]) - 0.8) < 0.1 * off
+
+
+def test_the_defect_lands_at_the_noise_floor_under_whichever_integrator_was_asked_for() -> None:
+    """``integrator_defect`` is measured against the map the fit was made consistent with.
+
+    Both settings therefore reach the same floor -- the 0.01 observation noise divided by ``dt`` --
+    on the same log, and that is the point: it says the fixed point converged, not that one
+    integrator fits better than the other. A number that only ever went down for ``rk4`` would be
+    measuring two different things and calling it an improvement.
+    """
+    dt = 1.0
+    base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    data = _rk4_generated_log(0.7, dt=dt)
+    for integrator in ("euler", "rk4"):
+        fit = fit_causal_residual(base, data, dt, adjust_for=("z",), seed=0, integrator=integrator)
+        assert fit.integrator_defect is not None
+        assert fit.integrator_defect == pytest.approx(0.01, abs=0.003)

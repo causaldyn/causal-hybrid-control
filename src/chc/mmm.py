@@ -32,15 +32,17 @@ HONEST SCOPE, and it bounds what the numbers below mean:
 * ``theta_c`` is taken as known. In practice it is fitted (Robyn, Meridian); treating it as known
   here isolates the question this module is about, which is the incremental return and not the
   carryover rate.
-* **``known=`` is exact only up to the integrator.**
+* **``known=`` was exact only up to the integrator, and this module is where that was found.**
   :func:`chc.dynamics_id.fit_causal_residual` reads the state rate as a forward difference
   ``(x_next - x)/dt`` while :func:`chc.plan.causal_plan` rolls out with RK4, so at a coarse ``dt``
-  the residual quietly absorbs the gap between the two. It is not small here and it is not noise:
-  on the fastest-decaying channel (``theta*dt = 0.7``) the fitted decay is ``-0.503`` against the
-  ``-0.7`` handed over as known, and a test pins that difference against the closed-form RK4
-  amplification rather than asserting the residual is zero, which it is not. Every headline number
-  in this module is audited on the true plant, so none of them depends on that gap; a schedule read
-  off the *planner's own forecast* would.
+  the residual quietly absorbed the gap between the two. It was not small and it was not noise: on
+  the fastest-decaying channel (``theta*dt = 0.7``) the fitted decay came back ``-0.503`` against
+  the ``-0.7`` handed over as known, and the control channel with it. :func:`chc.decision.prescribe`
+  now defaults to ``integrator="rk4"``, which closes the gap by defect correction; a test asserts
+  both halves --- that the known rows come back empty under RK4, and that the same log read with
+  ``integrator="euler"`` still leaves exactly the closed-form amplification difference. Every
+  headline number here is audited on the true plant either way, so none of them ever depended on
+  the gap; a schedule read off the *planner's own forecast* did.
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ from jax import Array
 
 from chc.decision import Constraint, Lever, Prescription, Target, prescribe
 from chc.dynamics import Dynamics, LinearDynamics
+from chc.dynamics_id import Integrator
 from chc.graph import CausalGraph
 from chc.integrate import rk4_step, rollout
 from chc.panel import Panel
@@ -271,6 +274,7 @@ def run_marketing_mix(
     unit_cost: float = 0.08,
     sales_target: float = 8.0,
     seed: int = 0,
+    integrator: Integrator = "rk4",
 ) -> MmmReport:
     """Plan the next ``horizon`` weeks three ways and audit all three on the true plant.
 
@@ -307,6 +311,7 @@ def run_marketing_mix(
             dt=dt,
             tolerance=1.0,
             seed=seed,
+            integrator=integrator,
         )
 
     adjusted, confounded = plan(system.graph()), plan(())

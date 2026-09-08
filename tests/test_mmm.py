@@ -1,8 +1,12 @@
 """Marketing-mix budget scheduling: the facade on a saturating carryover plant, audited on truth.
 
 Four seeds were checked before any threshold here was written. Adjusted beats a matched-budget flat
-split by 4.3%, 4.8%, 7.7%, 8.3%; the confounded arm returns 0.88, 0.78, 0.82, 0.78 of the adjusted
+split by 4.4%, 4.3%, 7.5%, 8.0%; the confounded arm returns 0.88, 0.78, 0.82, 0.78 of the adjusted
 arm's lift. The assertions sit outside that spread, not on top of one draw of it.
+
+Those first four moved when `prescribe` switched to `integrator="rk4"` (from 4.3 / 4.8 / 7.7 / 8.3),
+which is the right size of move: the fitted field changed materially and the *conclusion* did not,
+because every arm here is audited on the true plant rather than on the planner's own forecast.
 """
 
 from __future__ import annotations
@@ -73,24 +77,40 @@ def test_the_channel_ordering_matches_the_true_incremental_returns(report: MmmRe
     assert system.gamma[0] > system.gamma[2] > system.gamma[1]
 
 
-def test_the_known_adstock_rows_are_left_with_exactly_the_integrator_gap(
+def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_integrator(
     report: MmmReport,
 ) -> None:
-    """``known=`` did its job, and what it did not cover is the forward-difference/RK4 mismatch.
+    """``known=`` did its job, and the integrator gap that used to be left behind is mostly closed.
 
-    `fit_causal_residual` reads the rate as ``(x_next - x)/dt`` while the plant was rolled out with
-    RK4, so the residual on a row handed over as known is not zero -- it is the difference between
-    the two integrators, in closed form. Asserting *that* rather than "approximately zero" is what
-    makes this test fail if anything else ever leaks into those rows.
+    Both halves are asserted, because "small" on its own would also pass if the row were being
+    fitted right by accident: the same log read with ``integrator="euler"`` must still leave the
+    *closed-form* difference between the two integrators, which is what every release up to 0.4.0
+    silently shipped.
+
+    Not zero, and the residue is not float noise -- at 30 corrections and a 0.01% progress bar the
+    ``theta = 0.4`` row still sits at 0.025, so that row's fixed point is where the model class
+    runs out, not where the loop gives up. The thresholds are set on the measurement (0.04 / 0.35 /
+    0.13 of each row's gap, aggregating to 0.12) with room, not on the hope.
     """
-    residual = report.arm("adjusted").prescription.model_fit.residual  # type: ignore[union-attr]
-    drift = np.asarray(residual.drift)
+    drift = np.asarray(report.arm("adjusted").prescription.model_fit.residual.drift)  # type: ignore[union-attr]
     system = MarketingMixSystem()
+    euler = run_marketing_mix(integrator="euler")
+    euler_drift = np.asarray(euler.arm("adjusted").prescription.model_fit.residual.drift)  # type: ignore[union-attr]
+
+    gaps, corrected, uncorrected = [], [], []
     for index, theta in enumerate(system.theta):
         row = 1 + index  # state 0 is sales; adstock rows follow
-        measured = drift[row, 1 + row]  # feature 1 + row is the row's own state (bias is feature 0)
-        expected = (_rk4_amplification(-theta * DT) - 1.0) / DT + theta
-        assert measured == pytest.approx(expected, abs=0.02)
+        column = 1 + row  # feature 1 + row is the row's own state (bias is feature 0)
+        gaps.append((_rk4_amplification(-theta * DT) - 1.0) / DT + theta)
+        corrected.append(abs(drift[row, column]))
+        uncorrected.append(abs(euler_drift[row, column]))
+
+    for gap, left in zip(gaps, uncorrected, strict=True):
+        assert left == pytest.approx(gap, abs=0.02)  # euler leaves exactly the amplification
+    for gap, left in zip(gaps, corrected, strict=True):
+        assert left < 0.5 * gap  # rk4 leaves less than half of it on every row
+    assert sum(corrected) < 0.25 * sum(uncorrected)  # measured 0.12
+    assert corrected[0] < 0.1 * gaps[0]  # and on the fastest row, where the gap is largest, 0.04
 
 
 def test_the_prescription_is_identified_and_certified_over_the_whole_horizon(

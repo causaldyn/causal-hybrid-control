@@ -33,6 +33,42 @@ still change).
 
 ### Added
 
+- **The fit and the planner were using different integrators, and `prescribe` now does not.**
+  `fit_causal_residual` reads the state rate off the log as a forward difference
+  `(x_next - x)/dt`, while `causal_plan` and `rollout` integrate with RK4. Fitting one map and
+  planning with the other is a deterministic bias, and not a small one: on a linear plant at
+  `theta*dt = 0.7` the decay comes back `-0.502` against a true `-0.700`, and -- the number that
+  actually steers the optimiser -- **the control channel comes back `0.574` against a true
+  `0.800`**, a quarter of it gone. The gap is exactly the RK4 amplification
+  `1 + z + z^2/2 + z^3/6 + z^4/24`, which is how it was identified rather than guessed at.
+
+  New `integrator=` argument on `fit_causal_residual`. `"rk4"` closes the gap by **defect
+  correction** -- fit, step the fitted field with RK4, add the leftover `(x_next - RK4(F))/dt` back
+  onto the target rate, refit -- rather than by inverting RK4 in closed form, which does not exist
+  for a nonlinear field. It recovers `-0.698` and `0.798` on the same log. It stops **per state**
+  rather than on a pooled criterion, which was the one real subtlety: a state the model cannot
+  represent has a defect floor orders of magnitude above one it can, and pooling let the
+  marketing-mix plant's seasonally-driven sales row halt the adstock rows at half their remaining
+  gap. Every solve downstream of the target rate is separable across output columns, so freezing one
+  column's target while another keeps moving is well defined.
+
+  It is not free. The corrected target carries the defect's noise, so the channel's standard error
+  grows -- `0.016` to `0.061` on the `chc.mmm` plant. The bias removed was deterministic and the
+  variance added is not, which is the trade, stated rather than hidden.
+
+  **Defaults differ on purpose.** `fit_causal_residual` keeps `"euler"`, so no shipped fit changes
+  meaning and a caller whose panel is genuinely discrete-time (a weekly budget is not a sample of an
+  ODE) keeps the one-step map as the model. `prescribe` defaults to `"rk4"`, because it *knows*
+  where the field is going. `CausalDynamicsFit` gained `integrator` and `integrator_defect`, the
+  latter being the RMS one-step defect under whichever map was asked for -- the honest check that
+  the fixed point converged, and it floors at the observation noise rather than at zero.
+
+  The `chc.mmm` headline numbers moved and its conclusion did not: adjusted still beats a
+  matched-budget flat split, now by 4.4 / 4.3 / 7.5 / 8.0% across four seeds against
+  4.3 / 4.8 / 7.7 / 8.3 before. That is the expected shape, since every arm there is audited on the
+  true plant rather than on the planner's own forecast -- which is exactly what the module's honest
+  scope note said the gap did and did not touch.
+
 - **`prescribe` now says what it is doing while it does it, and says failure in a type.** Each
   decision point emits one stdlib `logging` record on `chc.decision`, keyed by `chc_event` --
   `precision`, `adjustment`, `fit`, `abort`, `plan`, `certificate` -- with the numbers a downstream
@@ -74,21 +110,21 @@ still change).
 
   ```
   | arm        | total spend | cumulative sales |    lift | lift / extra spend |
-  | adjusted   |      42.511 |           84.721 | +43.656 |            +1.0723 |
-  | confounded |      36.423 |           79.492 | +38.427 |            +1.1099 |
-  | flat       |      42.511 |           82.905 | +41.840 |            +1.0277 |
+  | adjusted   |      41.677 |           84.048 | +42.984 |            +1.0779 |
+  | confounded |      35.710 |           78.739 | +37.674 |            +1.1110 |
+  | flat       |      41.677 |           82.257 | +41.193 |            +1.0330 |
   | none       |       1.800 |           41.064 |  +0.000 |                nan |
   ```
 
   Three readings of one log by the same optimiser. **At matched budget the prescribed schedule buys
-  4.3% more cumulative sales than an equal split** (4.3 / 4.8 / 7.7 / 8.3% over four seeds), by
+  4.3% more cumulative sales than an equal split** (4.4 / 4.3 / 7.5 / 8.0% over four seeds), by
   front-loading to build carryover and then tapering. The **confounded** arm -- an empty adjustment
   set asserted, which is what fitting the log directly amounts to -- credits every channel with the
-  season and inflates them unevenly (`2.09x`, `3.44x`, `2.83x`), so it believes it needs less
+  season and inflates them unevenly (`2.23x`, `4.84x`, `3.04x`), so it believes it needs less
   budget, spends 14% less and buys 88% of the lift (0.78-0.88 over four seeds).
 
   Two things the module exists to say out loud. **Return-per-unit-spend rewards under-investment**
-  under diminishing returns: the confounded arm looks *better* on it (`1.110` against `1.072`) while
+  under diminishing returns: the confounded arm looks *better* on it (`1.111` against `1.078`) while
   buying less, which is why the arms are compared at matched budget and a test pins that inversion.
   And **cumulative sales, not terminal sales, is the metric**: an optimiser that understands
   carryover front-loads and tapers, which raises the area under the curve and lowers the endpoint.
