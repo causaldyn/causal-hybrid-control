@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-Panel = NDArray[np.float64]
+Outcomes = NDArray[np.float64]
 Vector = NDArray[np.float64]
 
 
@@ -43,7 +43,7 @@ def _project_simplex(v: Vector) -> Vector:
     return np.maximum(v - css[rho] / (rho + 1.0), 0.0)
 
 
-def _scm_weights(donor_pre: Panel, treated_pre: Vector, steps: int) -> Vector:
+def _scm_weights(donor_pre: Outcomes, treated_pre: Vector, steps: int) -> Vector:
     """Simplex weights minimising ``||treated_pre - donor_pre.T @ w||^2`` by projected gradient."""
     n_donors = donor_pre.shape[0]
     gram = donor_pre @ donor_pre.T  # (J, J)
@@ -55,7 +55,9 @@ def _scm_weights(donor_pre: Panel, treated_pre: Vector, steps: int) -> Vector:
     return w
 
 
-def _split(outcomes: Panel, treated_unit: int, n_pre: int) -> tuple[Panel, Panel, Vector, Vector]:
+def _split(
+    outcomes: Outcomes, treated_unit: int, n_pre: int
+) -> tuple[Outcomes, Outcomes, Vector, Vector]:
     outcomes = np.asarray(outcomes, dtype=np.float64)
     n_units, n_periods = outcomes.shape
     if not 0 <= treated_unit < n_units:
@@ -73,7 +75,7 @@ def _split(outcomes: Panel, treated_unit: int, n_pre: int) -> tuple[Panel, Panel
 
 
 def synthetic_control(
-    outcomes: Panel, treated_unit: int, n_pre: int, *, steps: int = 5000
+    outcomes: Outcomes, treated_unit: int, n_pre: int, *, steps: int = 5000
 ) -> SyntheticControlResult:
     """Classic simplex synthetic control for one treated unit against the remaining donor units.
 
@@ -89,7 +91,7 @@ def synthetic_control(
 
 
 def augmented_synthetic_control(
-    outcomes: Panel, treated_unit: int, n_pre: int, *, ridge: float = 1.0, steps: int = 5000
+    outcomes: Outcomes, treated_unit: int, n_pre: int, *, ridge: float = 1.0, steps: int = 5000
 ) -> SyntheticControlResult:
     """Ridge-augmented synthetic control (Ben-Michael-Feller-Rothstein).
 

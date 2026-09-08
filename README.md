@@ -59,10 +59,44 @@ CIs (predictive regret `13734.15 [13732.55, 13735.31]`), and
 
 ```bash
 uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.11–3.14)
-uv run pytest      # 613 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
+uv run pytest      # 646 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
 ```
 
 ## Quickstart
+
+From a panel of logs to a certified schedule, in one call. The causal assumption is a **required**
+argument, because the default would be "adjust for nothing", which is a claim rather than its
+absence — and when the graph says the effect is not identified there is no schedule at all.
+
+```python
+from chc import CausalGraph, Constraint, Lever, Panel, Target, prescribe
+
+panel = Panel.from_frame(logs, unit="region", time="week")  # pandas, polars or a dict
+graph = CausalGraph.from_edges(
+    [("demand", "incentive"), ("demand", "supply"), ("incentive", "supply"), ("incentive", "wait")]
+)
+
+out = prescribe(
+    panel,
+    adjustment=graph,
+    horizon=15,
+    dt=0.1,
+    tolerance=0.5,
+    levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+    target=Target("supply", value=1.0),
+    constraints=[Constraint("wait", hi=0.5)],
+)
+
+out.certificate.trustworthy_steps  # 15 -- the prefix that survives BOTH identification and safety
+out.schedule.magnitudes  # (15, 1); raises instead, if the effect is not identified
+print(out.report())  # Markdown: decision, both certificate axes, provenance
+```
+
+`prescribe` composes what is below it and adds no new estimator, solver or guarantee: the
+adjustment set comes from the graph, the control channel from cross-fit Robinson DML
+(`fit_causal_residual`), the plan from `causal_plan`, and the safety price from `certify_safety`.
+
+### The expert path
 
 ```python
 import jax, jax.numpy as jnp
@@ -118,6 +152,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | safety under partial ID | `barrier`, `plan` | the same sensitivity radius spent on a **constraint**: robust control-barrier margin, a least-restrictive safety filter (closed-form certified action interval, no QP), and `Gamma*` — **the largest sensitivity-model level under which the barrier stays certified** (a model parameter, not measured confounding). Safety degrades at *first* order in the effect bias (until the radius swallows the channel and the loss saturates) where performance regret degrades at second (the envelope theorem protects objectives, not binding constraints), **Rocq-certified**; in closed loop a regret-sized budget violates the limit on 93% of steps where the constraint-sized one never does. `certify_safety` audits a finished plan against all of it — the certified prefix next to the plan's `Gamma*` (the weakest step's, exactly) |
 | what the certificate is worth | `reachability` | the **Hamilton–Jacobi** answer the barrier only approximates: `V(x,T) = max_u min_{ΔB} min_s h(ξ(s))` on a Lax–Friedrichs grid, with the §32 identification radius as the adversary. Same robust-margin algebra as `barrier`, but `p = ∇V` is *solved for* rather than assumed. Turns the CBF theorem into an executable check (condition on all of `{h ≥ 0}` ⟹ the tube **is** `{h ≥ 0}`) and prices what pointwise certification misses — on a relative-degree-2 barrier the §40 verdict is identical at every radius while the true tube shrinks (6.4% of the grid certified-and-unreachable), so `certify_safety`'s per-step prefix is a filter, not a proof. `uv run python scripts/reachability_demo.py` |
 | end to end | `spine` | all four layers on **one** decision — confounded logs → causal gain → constrained plan → `Gamma*` certificate → the same plan run on the *true* plant. Two zones of a mobile driver pool, one incentive lever whose `[+b, -b]` column is driver conservation, a supply floor in the zone it drains. The confounded arm plans 13.6 and pays 38.5; `Gamma*` tells the two arms apart (7.46 vs 1.18) **before either acts**, without ground truth. `uv run python scripts/spine_demo.py` |
+| decisions from a panel | `decision`, `panel`, `graph` | the façade: `prescribe(panel, adjustment=graph, ...)` runs adjustment set → causal channel → constrained plan → safety certificate as one call, and adds no new estimator, solver or guarantee. `graph.CausalGraph` derives the adjustment set (the canonical Perković–Textor–Kalisch–Maathuis set, valid **iff any observed set is**) instead of asking a caller to type `covariates=("x", "z")` by hand, so a collider is never adjusted for and a mediator never removed — the two failures that raise nothing and change the number. `panel.Panel` checks a long panel's `(unit, time)` index once and does the wide pivot DiD/SCM need, naming the column *and* the entity when it refuses. `DecisionCertificate` keeps identification and certification apart, and an unidentified effect yields **no schedule at all** rather than one that looks like every other schedule. Measured on one synthetic plant read three ways: adjusted channel `0.81` against a true `0.80`, empty adjustment asserted `2.09`, confounder latent → no schedule |
 | causal frontier | `did`, `scm`, `estimators`, `causal` | Callaway–Sant'Anna staggered **DiD**; **augmented synthetic control**; **R-learner** CATE; **E-values** beside Cinelli–Hazlett; **influence-function CIs** on cross-fit DML |
 | dynamic effects | `irf`, `toeplitz` | impulse-response / local-projection dynamic effects; Toeplitz / Levinson–Durbin / Gohberg–Semencul operators |
 | delay | `delay`, `irf` | a discrete delay as a **plain `Dynamics`** — the m-stage linear chain, so `rollout`, the adjoint, both solvers, `causal_plan`, `certify_safety` and `mpc_control` run on a delayed plant unchanged (augment, don't write a DDE solver); the exact **delay margin** `arccos(a/K)/sqrt(K²−a²)`; a causal **delay estimate with a moving-block bootstrap interval**; and the stabilising ball in *delay* space, which is a **half-line with a relative radius** whose performance loss is a **square root** one side and linear the other — the decay-optimal design sits at a defective root, so neither a symmetric ball nor a single regret constant exists. `robust_delay_design` turns an interval into the minimax design, which is *below* its centre. **Rocq-proved** |
@@ -156,7 +191,7 @@ The release-by-release record, scope corrections included, is in [`CHANGELOG.md`
 
 ## Status
 
-Early (`v0.4.0`), single-author, research code (614 collected tests; Python 3.11–3.14, astral `ruff` + `ty`).
+Early (`v0.4.0`), single-author, research code (648 collected tests; Python 3.11–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**

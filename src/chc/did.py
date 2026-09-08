@@ -19,7 +19,7 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
-Panel = NDArray[np.float64]
+Outcomes = NDArray[np.float64]
 Groups = NDArray[np.int64]
 
 
@@ -39,7 +39,7 @@ class GroupTimeATT:
 
 
 def callaway_santanna(
-    outcomes: Panel,
+    outcomes: Outcomes,
     group: Groups,
     *,
     control: Literal["notyet", "never"] = "notyet",
@@ -101,7 +101,9 @@ def callaway_santanna(
     return GroupTimeATT(att, event_study, overall, treated_groups, n_periods)
 
 
-def twoway_fixed_effects_att(outcomes: Panel, group: Groups, *, never_treated: int = -1) -> float:
+def twoway_fixed_effects_att(
+    outcomes: Outcomes, group: Groups, *, never_treated: int = -1
+) -> float:
     """The single two-way fixed-effects treatment coefficient -- the biased baseline CS beats.
 
     Regresses the twice-demeaned outcome on the twice-demeaned treatment indicator
@@ -115,7 +117,7 @@ def twoway_fixed_effects_att(outcomes: Panel, group: Groups, *, never_treated: i
         if g != never_treated:
             treated[i, g:] = 1.0
 
-    def demean(m: Panel) -> Panel:
+    def demean(m: Outcomes) -> Outcomes:
         return m - m.mean(axis=1, keepdims=True) - m.mean(axis=0, keepdims=True) + m.mean()
 
     y_d, d_d = demean(outcomes), demean(treated)
@@ -126,7 +128,7 @@ def twoway_fixed_effects_att(outcomes: Panel, group: Groups, *, never_treated: i
     return float(np.sum(y_d * d_d) / denom)
 
 
-def de_chaisemartin(outcomes: Panel, group: Groups, *, never_treated: int = -1) -> float:
+def de_chaisemartin(outcomes: Outcomes, group: Groups, *, never_treated: int = -1) -> float:
     """de Chaisemartin-d'Haultfoeuille DID_M -- the average instantaneous (first-exposure) effect.
 
     A switcher-count-weighted average, over consecutive-period 2x2 DiDs, of the outcome change of

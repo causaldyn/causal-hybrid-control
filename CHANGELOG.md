@@ -7,7 +7,131 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`CappedExplorationPolicy` was advertised in `chc.__all__` but never imported into it**, so
+  `from chc import CappedExplorationPolicy` raised `ImportError` and the return type of the public
+  `capped_exploration_policy` had no name at the top level. Fixed at the producer -- the class is
+  now imported from `chc.regret` -- rather than by deleting the advertisement, since a function in
+  the public namespace returning a type that is not in it is the defect, not the symptom. A new
+  `tests/test_public_api.py` pins three namespace invariants that nothing was checking: every
+  advertised name resolves, no name is advertised twice, and **no export shadows a submodule**.
+
 ### Added
+
+- **`chc.prescribe` runs the whole chain in one call** (`chc.decision`). Panel of logs in,
+  certified intervention schedule out: adjustment set from the graph, control channel from
+  cross-fit Robinson DML, constrained plan with a Gronwall tube, barrier priced against
+  confounding. No new estimator, no new solver, no new guarantee -- what did not exist was a way to
+  run the existing layers in that order without re-deriving the wiring, so every demo was five
+  imports and forty lines.
+
+  ```python
+  panel = Panel.from_frame(logs, unit="region", time="week")
+  graph = CausalGraph.from_edges([("demand", "incentive"), ("demand", "supply"), ...])
+  out = prescribe(
+      panel,
+      levers=[Lever("incentive", -2, 2, unit_cost=0.05)],
+      target=Target("supply", 1.0),
+      constraints=[Constraint("wait", hi=0.5)],
+      adjustment=graph,
+      horizon=15,
+      dt=0.1,
+      tolerance=0.5,
+  )
+  print(out.report())
+  ```
+
+  **The causal assumption is a required argument.** `adjustment=` takes either a `CausalGraph`, from
+  which the set is *derived* and can come back `not_identified`, or a sequence of names, which
+  *asserts* it. There is no default, because the default would be "adjust for nothing" -- a causal
+  claim, not the absence of one.
+
+  **Two axes, never merged.** `DecisionCertificate` reports identification (about the data and the
+  graph) separately from certification (about model error and the barrier), following
+  `CausalPlan.certificate_status` vs `solver_status`. A plan fully certified over a channel nothing
+  identifies is a trustworthy tube around a meaningless action, and `trustworthy_steps` is the one
+  number that respects both -- zero whenever the effect is not identified, whatever the tube says.
+  An unidentified effect produces **no schedule at all**: `Prescription.schedule` raises, as
+  `CausalPlan.certified_actions` already does, rather than hand back actions that look like every
+  other schedule and mean nothing.
+
+  **Omitting `tolerance=` switches the tube off** instead of setting it to infinity. This library
+  cannot know how much trajectory error a caller accepts, and a certificate at infinite tolerance
+  passes over the whole horizon while proving nothing.
+
+  `Prescription.report()` is Markdown from string templates -- no plotting dependency, so the
+  output is deterministic and a test asserts on it; `to_json()` is schema-versioned; `reach()`
+  ranks levers by fitted channel **times box width**, because a large coefficient on a lever that
+  may barely move is not a large lever. Ranked from the same fit that produced the plan, so the
+  ordering cannot contradict the schedule printed beside it.
+
+  The three-arm test is the load-bearing one: the same logs read three ways. Adjusted for the
+  confounder the channel comes back `0.81` against a true `0.80`; with an empty adjustment
+  *asserted* it comes back `2.09`; with the confounder declared latent there is no schedule.
+
+  Two deviations from the plan's specification, both deliberate. `Lever.cap_per_step` is **not**
+  shipped: the solver constrains a box, not a rate, so the field would have been silently ignored,
+  which is worse than absent -- it waits on general constraints (Dykstra). And
+  `DecisionCertificate` carries no `regret_bound`, because nothing in `chc.regret` takes a
+  `CausalPlan` and a fabricated one would be the only uncertified number on a page of certified
+  ones.
+
+  The module is `chc.decision`, not `chc.prescribe`: the headline export is a *function* named
+  `prescribe`, and a same-named module inside the same package is shadowed by it -- after
+  `import chc.prescribe`, `chc.prescribe.Lever` raises `AttributeError`. It was the library's only
+  such collision, and a check for the class is now trivial (`iter_modules` against `__all__`).
+
+- **`chc.graph.CausalGraph` derives the adjustment set instead of asking the caller to type it.**
+  Every effect estimator here takes `covariates=("x", "z")` -- a causal claim entered by hand, whose
+  two failure modes are silent. Adjusting for a collider *opens* a path that was closed (M-bias);
+  adjusting for a mediator removes part of the effect being estimated. Neither raises, neither fits
+  worse, and both change the number.
+
+  `CausalGraph.adjustment_set(treatment=..., outcome=...)` returns the canonical set of Perkovic,
+  Textor, Kalisch and Maathuis (2018), `Adjust(X, Y, O) = (an(X u Y) n O) \ forb(X, Y)`, which is
+  valid **iff any set of observed variables is** -- so one construction answers both questions, and
+  a failed check is a proof that nothing else would have worked either. The result is an
+  `AdjustmentSet` carrying `status` beside `covariates`, because an empty tuple means two opposite
+  things: *identified, nothing to adjust for* (a randomised lever) and *not identified* (confounded
+  through a latent). `__bool__` reads the status, not the length, so the first is truthy.
+  `not_identified` names the latents whose measurement alone would flip the verdict -- the blame a
+  caller can act on, rather than the longer list of latents that merely sit on some open path.
+
+  Also `d_separated` (Koller-Friedman Bayes-ball), `is_valid_adjustment_set`, `parents` /
+  `children` / `ancestors` / `descendants`, and `require_columns`, which names every missing column
+  at once. Treatment and outcome accept a name or a sequence of names, since the multi-lever case
+  is the one this library exists for. Pure Python over names and sets -- no NumPy, no JAX.
+
+  **Verified against implementations that share no code with it.** `d_separated` is checked on
+  random DAGs against textbook path enumeration (16 808 cases in the scratch sweep, > 500 kept in
+  CI), and the canonical set against exhaustive search over every subset of the observed nodes
+  (2 697 cases, both branches exercised). That sweep found one real defect before release: with no
+  causal path from `X` to `Y`, `cn(X, Y)` is empty, so the literature's `forb = de(cn) u X` does not
+  contain `Y`, and the construction offered to adjust for the *outcome* -- which d-separates `X`
+  from `Y` trivially and certifies nothing. `forb` here is `de(cn(X, Y)) u X u Y`.
+
+- **`chc.panel.Panel` checks a long panel's `(unit, time)` index once, and pivots it once.**
+  The estimators want panel data in two incompatible shapes -- a dense `(n_units, n_periods)` matrix
+  for `chc.did` and `chc.scm`, flat named columns everywhere else -- and callers have been pivoting
+  between them by hand. That pivot is where the quiet failures live: a duplicated `(unit, time)` row
+  keeps whichever value was written last, a missing one becomes a zero, and neither surfaces until
+  an estimate is already in a slide. `Panel.from_frame(data, unit=..., time=...)` refuses all three
+  and names the column *and* the entity: which unit appeared twice at which period, which unit has
+  no row at which period, which column is `nan` for whom. `wide(name)` is the checked pivot;
+  `codes()` ranks labels rather than assuming they are `0..T-1`; `cluster=` is declared once, where
+  it belongs, since it is a property of the sampling design and not of the estimator.
+
+  `Provenance` travels with the panel: a sha256 over the column bytes, the library version, the row
+  count, the column names, an optional `seed=` for simulated data, and
+  **`jax.config.jax_enable_x64`**. The last is not decoration -- this
+  library has already been bitten by it, since a threefry key spends a different number of bits per
+  element at the two settings and therefore draws a *different* sample from the same seed. A seed
+  alone does not name a dataset. Two panels agreeing numerically but differing in dtype hash
+  differently, which is the honest answer, because they will not produce the same numbers.
+
+  The private `Panel` type alias in `chc.did` and `chc.scm` -- a wide `NDArray[float64]`, never
+  exported -- is renamed `Outcomes`, so one name means one thing.
 
 - **`exact_matrix_ratio_moment` works at any channel count the route allows, not just two**
   (`chc.regret.exact_matrix_ratio_moment`). The channel count is read off `regressor_cov`'s shape

@@ -61,6 +61,16 @@ from chc.control import (
     projected_gradient_solve,
 )
 from chc.cost import QuadraticCost, total_cost
+from chc.decision import (
+    Constraint,
+    DecisionCertificate,
+    IdentificationStatus,
+    InterventionSchedule,
+    Lever,
+    Prescription,
+    Target,
+    prescribe,
+)
 from chc.deep_galerkin import (
     FieldMLP,
     LQMeanFieldGame,
@@ -145,6 +155,7 @@ from chc.games import (
     stackelberg_allocation,
 )
 from chc.gmethods import naive_pooled_effect, sequential_g_formula
+from chc.graph import AdjustmentSet, AdjustmentStatus, CausalGraph, CyclicGraphError
 from chc.independence import partial_corr_test
 from chc.integrate import rk4_step, rollout
 from chc.irf import (
@@ -199,6 +210,7 @@ from chc.network_causal import (
     torus_adjacency,
 )
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
+from chc.panel import Panel, PanelError, Provenance
 from chc.pathway import (
     CausalPathway,
     PathwayCertificate,
@@ -225,6 +237,7 @@ from chc.reachability import (
 from chc.regret import (
     AdaptiveExplorationCurve,
     BanditCausalCurve,
+    CappedExplorationPolicy,
     CausalControlCurve,
     CeExplicitConstantCurve,
     ClusteredLowerBoundCurve,
@@ -443,6 +456,8 @@ __all__ = [
     "IV2SLS",
     "LIBRARY",
     "AdaptiveExplorationCurve",
+    "AdjustmentSet",
+    "AdjustmentStatus",
     "BackdoorOLS",
     "BanditCausalCurve",
     "BangBangResult",
@@ -453,6 +468,7 @@ __all__ = [
     "CausalControlCurve",
     "CausalDynamicsFit",
     "CausalEffectEstimator",
+    "CausalGraph",
     "CausalPathway",
     "CausalPlan",
     "CeExplicitConstantCurve",
@@ -477,12 +493,15 @@ __all__ = [
     "CongestionContractionCertificate",
     "ConjugateTimeCurve",
     "ConstrainedRegretCurve",
+    "Constraint",
     "ContractiveResidual",
     "ContractiveRolloutCertificate",
     "ControlAffineResidual",
     "ConvectionDiffusionCurve",
+    "CyclicGraphError",
     "DampedOscillator",
     "DampingInjectionCertificate",
+    "DecisionCertificate",
     "DelayBall",
     "DelayBallCertificate",
     "DelayEstimate",
@@ -520,13 +539,16 @@ __all__ = [
     "HighProbRegretCurve",
     "HigherOrderBarrierGap",
     "HybridDynamics",
+    "IdentificationStatus",
     "InformationLowerBoundCurve",
     "InterferenceConvexityCurve",
     "InterferenceOrthogonalCurve",
+    "InterventionSchedule",
     "KANResidual",
     "KoopmanModel",
     "LQMeanFieldGame",
     "LaggedGraph",
+    "Lever",
     "LinearDynamics",
     "LipschitzCertificate",
     "LipschitzResidual",
@@ -553,6 +575,8 @@ __all__ = [
     "NonlinearRegretCurve",
     "OptimalExplorationCurve",
     "OrthogonalControlCurve",
+    "Panel",
+    "PanelError",
     "PanelEstimatorGate",
     "PartialIdControlCurve",
     "PathwayCertificate",
@@ -560,6 +584,8 @@ __all__ = [
     "PessimismCurve",
     "PortHamiltonianCertificate",
     "PortHamiltonianResidual",
+    "Prescription",
+    "Provenance",
     "QuadraticCost",
     "RLearner",
     "ReachableTube",
@@ -582,6 +608,7 @@ __all__ = [
     "SymbolicEdge",
     "SymbolicExtractionCurve",
     "SyntheticControlResult",
+    "Target",
     "TigramiteDiscovery",
     "TimeVaryingRolloutCertificate",
     "TransportabilityCurve",
@@ -785,6 +812,7 @@ __all__ = [
     "poisson_1d",
     "poisson_2d",
     "port_hamiltonian_certificate",
+    "prescribe",
     "project_box",
     "project_simplex",
     "projected_gradient_control",
