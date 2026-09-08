@@ -5,31 +5,7 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the API stabilises (pre-1.0 it may
 still change).
 
-## [Unreleased]
-
-### Fixed
-
-- **A green local `ty` was a red CI `ty`, and the gap was structural rather than a slip.**
-  `Panel.provenance` read `jax.config.jax_enable_x64`, which jax 0.11 declares on `Config` and jax
-  0.10 only injects at import time -- and `uv.lock` resolves 0.11 at Python >= 3.12 and **0.10.2
-  below it**, so the check passed on the 3.14 development environment and failed on CI's 3.11
-  runner. Fixed by asking the question through a declared public function instead:
-  `jax.dtypes.canonicalize_dtype(np.float64) == np.float64`, which is the same fact by
-  construction, since `float64` canonicalises down to `float32` with x64 off. Confirmed by
-  reverting the fix and watching 3.11 fail again.
-
-  The loop that missed it is now in the `justfile`: `just types-matrix` runs `ty` on 3.11 / 3.12 /
-  3.13 / 3.14, each in its own environment so `.venv` is not swapped underneath the caller, and
-  `just all` includes it. One interpreter is not enough to type-check a package whose lockfile
-  resolves different dependency versions across its own supported range.
-
-- **`CappedExplorationPolicy` was advertised in `chc.__all__` but never imported into it**, so
-  `from chc import CappedExplorationPolicy` raised `ImportError` and the return type of the public
-  `capped_exploration_policy` had no name at the top level. Fixed at the producer -- the class is
-  now imported from `chc.regret` -- rather than by deleting the advertisement, since a function in
-  the public namespace returning a type that is not in it is the defect, not the symptom. A new
-  `tests/test_public_api.py` pins three namespace invariants that nothing was checking: every
-  advertised name resolves, no name is advertised twice, and **no export shadows a submodule**.
+## [0.5.0] — 2026-09-09
 
 ### Added
 
@@ -738,6 +714,28 @@ still change).
   by widening the actions or narrowing the gradient at any of the call sites. `chc.uncertainty`
   already carried a note that a float32 run is a *different* computation, not a cheaper one; this
   is the same lesson one layer down.
+
+- **A green local `ty` was a red CI `ty`, and the gap was structural rather than a slip.**
+  `Panel.provenance` read `jax.config.jax_enable_x64`, which jax 0.11 declares on `Config` and jax
+  0.10 only injects at import time -- and `uv.lock` resolves 0.11 at Python >= 3.12 and **0.10.2
+  below it**, so the check passed on the 3.14 development environment and failed on CI's 3.11
+  runner. Fixed by asking the question through a declared public function instead:
+  `jax.dtypes.canonicalize_dtype(np.float64) == np.float64`, which is the same fact by
+  construction, since `float64` canonicalises down to `float32` with x64 off. Confirmed by
+  reverting the fix and watching 3.11 fail again.
+
+  The loop that missed it is now in the `justfile`: `just types-matrix` runs `ty` on 3.11 / 3.12 /
+  3.13 / 3.14, each in its own environment so `.venv` is not swapped underneath the caller, and
+  `just all` includes it. One interpreter is not enough to type-check a package whose lockfile
+  resolves different dependency versions across its own supported range.
+
+- **`CappedExplorationPolicy` was advertised in `chc.__all__` but never imported into it**, so
+  `from chc import CappedExplorationPolicy` raised `ImportError` and the return type of the public
+  `capped_exploration_policy` had no name at the top level. Fixed at the producer -- the class is
+  now imported from `chc.regret` -- rather than by deleting the advertisement, since a function in
+  the public namespace returning a type that is not in it is the defect, not the symptom. A new
+  `tests/test_public_api.py` pins three namespace invariants that nothing was checking: every
+  advertised name resolves, no name is advertised twice, and **no export shadows a submodule**.
 
 ## [0.4.0] — 2026-09-03
 
@@ -2042,6 +2040,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.5.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.5.0
 [0.4.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.4.0
 [0.3.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.3.0
 [0.2.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.2.0

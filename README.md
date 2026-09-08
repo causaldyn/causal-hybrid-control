@@ -218,7 +218,7 @@ The release-by-release record, scope corrections included, is in [`CHANGELOG.md`
 
 ## Status
 
-Early (`v0.4.0`), single-author, research code (671 collected tests; Python 3.11–3.14, astral `ruff` + `ty`).
+Early (`v0.5.0`), single-author, research code (671 collected tests; Python 3.11–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**
