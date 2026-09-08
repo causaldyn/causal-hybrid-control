@@ -188,6 +188,32 @@ it because it is not a fitting problem. `chc.dynamics_id` is the identified rout
 restricted to control-affine residuals; outside that class this library offers a sensitivity radius
 (`chc.sensitivity`), not an unbiased estimate.
 
+### Where it sits
+
+Read by the two questions this library refuses to merge: does the tool **identify** the effect of an
+action from data a policy generated, and does it **certify** the plan it hands you. Most tools answer
+one; the ones that answer both are papers, not packages.
+
+| | what it is for | identifies an interventional effect | produces a schedule | ships a certificate | licence |
+|---|---|---|---|---|---|
+| **`chc`** | decisions from a confounded log, over a plant | yes, the **control channel** of a control-affine residual (cross-fit Robinson DML), and it says `not_identified` rather than guessing | yes, projected-gradient over a box | yes — identification status, trajectory tube, barrier `Γ*` | MIT |
+| **DoWhy / DoWhy-GCM** | identify and refute an effect on a DAG | yes — back-door, front-door, IV, and the Rotnitzky–Smucler **efficient** backdoor set, which minimises asymptotic variance among backdoor sets. CHC's `CausalGraph` answers the other question, Perković et al.'s canonical set, which is valid **iff any observed set is** | no | refutation tests, not a control guarantee | MIT |
+| **EconML** | heterogeneous treatment effects, DML/DR/orthogonal forests | yes, for a **static** treatment; this is the estimator family CHC lifts to a matrix | no | confidence intervals | MIT |
+| **DCBO** | sequential interventions in a time-varying SCM | yes, by GP emulation over an SCM | yes, a sequence of interventions | regret empirics, no feasibility guarantee | **GPL-3.0**, research code, not on PyPI |
+| **Google Meridian** | Bayesian marketing-mix modelling | partially — priors and geo experiments calibrate it; the estimand is the media response | yes, budget optimisation | posterior intervals | Apache-2.0 |
+| **do-mpc** | robust and economic nonlinear MPC | **no** — the model is yours and assumed correct | yes, and far more general constraints than CHC's box | robust multi-stage MPC guarantees, under a correct model | **LGPL-3.0** |
+| **d3rlpy** | offline deep RL from logged trajectories | no — conservatism bounds value error, not confounding | yes, a policy | pessimistic value bounds | MIT |
+| **causaLens `decisionOS`** | enterprise causal decision platform | yes, per its own account | yes | not publicly auditable | commercial, closed |
+
+Two rows that are **not** here, and the reason is the same. The 2024–25 literature on causal
+Bayesian optimisation under safety constraints, and on causal optimal control ("COAST"-style), has
+no shipped, installable implementation this could be run against. That is the gap CHC is aimed at,
+and stating it as an absence is more honest than a row of dashes against a paper.
+
+Where a row says *no* it is not a criticism: do-mpc solves control problems CHC cannot state, and
+EconML answers effect questions CHC does not ask. The claim is narrower — that **going from a
+confounded log to a certified schedule in one place** is what nothing above does end to end.
+
 The release-by-release record, scope corrections included, is in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Status
