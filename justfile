@@ -11,7 +11,7 @@ default:
 check: fmt lint types test
 
 # Everything, including the formal and symbolic gates. Minutes, not seconds.
-all: check proofs assumptions derivations
+all: check types-matrix proofs assumptions derivations
 
 # ── Python (uv + ruff + ty) ───────────────────────────────────────────────────
 
@@ -31,6 +31,20 @@ test:
 fix:
     uv run ruff check --fix .
     uv run ruff format .
+
+# `just types` checks one interpreter, and that is not enough here. uv.lock resolves jax 0.10.2
+# below Python 3.12 and 0.11.0 at or above it, and 0.11 declares `Config.jax_enable_x64` where
+# 0.10 injects it -- so a green local `ty` on 3.14 was a red CI job on 3.11, with the failure
+# living in a dependency's own class definition rather than in this code. This runs the same
+# matrix ci.yml does, each in its own environment so `.venv` is not swapped underneath you.
+# Minutes, not seconds: run it before pushing anything that touches a dependency's API.
+types-matrix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for v in 3.11 3.12 3.13 3.14; do
+      echo "== ty on $v =="
+      UV_PROJECT_ENVIRONMENT=".venv-ty-$v" uv run --python "$v" --group dev ty check
+    done
 
 # ── Rocq ──────────────────────────────────────────────────────────────────────
 

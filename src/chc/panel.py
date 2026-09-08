@@ -277,6 +277,15 @@ def _version() -> str:
 
 
 def _x64_enabled() -> bool:
-    import jax
+    """Whether JAX is in double precision, asked in a way a type checker can resolve.
 
-    return bool(jax.config.jax_enable_x64)
+    ``jax.config.jax_enable_x64`` is injected onto ``Config`` at import time rather than declared on
+    it, so whether a checker sees it depends on the jax version the lockfile resolves -- it does on
+    Python 3.14 here and does not on 3.11, which is a red CI job for a green local run.
+    ``canonicalize_dtype`` is a declared public function and answers the same question by
+    construction: with x64 off, ``float64`` canonicalises down to ``float32``.
+    """
+    import jax
+    import numpy as onp
+
+    return jax.dtypes.canonicalize_dtype(onp.float64) == onp.float64

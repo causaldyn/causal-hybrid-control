@@ -9,6 +9,20 @@ still change).
 
 ### Fixed
 
+- **A green local `ty` was a red CI `ty`, and the gap was structural rather than a slip.**
+  `Panel.provenance` read `jax.config.jax_enable_x64`, which jax 0.11 declares on `Config` and jax
+  0.10 only injects at import time -- and `uv.lock` resolves 0.11 at Python >= 3.12 and **0.10.2
+  below it**, so the check passed on the 3.14 development environment and failed on CI's 3.11
+  runner. Fixed by asking the question through a declared public function instead:
+  `jax.dtypes.canonicalize_dtype(np.float64) == np.float64`, which is the same fact by
+  construction, since `float64` canonicalises down to `float32` with x64 off. Confirmed by
+  reverting the fix and watching 3.11 fail again.
+
+  The loop that missed it is now in the `justfile`: `just types-matrix` runs `ty` on 3.11 / 3.12 /
+  3.13 / 3.14, each in its own environment so `.venv` is not swapped underneath the caller, and
+  `just all` includes it. One interpreter is not enough to type-check a package whose lockfile
+  resolves different dependency versions across its own supported range.
+
 - **`CappedExplorationPolicy` was advertised in `chc.__all__` but never imported into it**, so
   `from chc import CappedExplorationPolicy` raised `ImportError` and the return type of the public
   `capped_exploration_policy` had no name at the top level. Fixed at the producer -- the class is
@@ -18,6 +32,47 @@ still change).
   advertised name resolves, no name is advertised twice, and **no export shadows a submodule**.
 
 ### Added
+
+- **`chc.mmm`: marketing-mix budget scheduling, the case study `prescribe` was built for.** A
+  saturating carryover plant where the confounding is not hypothetical -- media spend is planned
+  *against demand*, so a model fitted on the log credits the channel with the season.
+
+  ```
+  | arm        | total spend | cumulative sales |    lift | lift / extra spend |
+  | adjusted   |      42.511 |           84.721 | +43.656 |            +1.0723 |
+  | confounded |      36.423 |           79.492 | +38.427 |            +1.1099 |
+  | flat       |      42.511 |           82.905 | +41.840 |            +1.0277 |
+  | none       |       1.800 |           41.064 |  +0.000 |                nan |
+  ```
+
+  Three readings of one log by the same optimiser. **At matched budget the prescribed schedule buys
+  4.3% more cumulative sales than an equal split** (4.3 / 4.8 / 7.7 / 8.3% over four seeds), by
+  front-loading to build carryover and then tapering. The **confounded** arm -- an empty adjustment
+  set asserted, which is what fitting the log directly amounts to -- credits every channel with the
+  season and inflates them unevenly (`2.09x`, `3.44x`, `2.83x`), so it believes it needs less
+  budget, spends 14% less and buys 88% of the lift (0.78-0.88 over four seeds).
+
+  Two things the module exists to say out loud. **Return-per-unit-spend rewards under-investment**
+  under diminishing returns: the confounded arm looks *better* on it (`1.110` against `1.072`) while
+  buying less, which is why the arms are compared at matched budget and a test pins that inversion.
+  And **cumulative sales, not terminal sales, is the metric**: an optimiser that understands
+  carryover front-loads and tapers, which raises the area under the curve and lowers the endpoint.
+  The first draft of this module scored on the endpoint and duly ranked the flat split first.
+
+  The plant is control-affine by construction, with each channel acting twice: an immediate
+  incremental return `gamma_c` that is the **control channel** and is what gets confounded, and a
+  carried-over return `beta_c` through a saturating adstock that is part of the **drift**. The
+  adstock rows are mechanical and are handed to `prescribe` as `known=`, so the fit has only the
+  sales row to learn. Every arm is audited by rolling its schedule out on the *true* plant, as
+  `chc.spine` does, rather than on the planner's own forecast.
+
+  **A library finding fell out of the `known=` check.** `fit_causal_residual` reads the state rate
+  as a forward difference `(x_next - x)/dt` while `causal_plan` rolls out with RK4, so at a coarse
+  `dt` the residual silently absorbs the gap between the two integrators. It is not small: at
+  `theta*dt = 0.7` the fitted decay is `-0.503` against the `-0.7` handed over as known, a 28%
+  discrepancy that is pure discretisation. The test asserts the residual on those rows equals the
+  closed-form RK4 amplification gap rather than asserting it is zero -- which is both honest and a
+  stronger check, since anything else leaking into a "known" row now fails it.
 
 - **`chc.prescribe` runs the whole chain in one call** (`chc.decision`). Panel of logs in,
   certified intervention schedule out: adjustment set from the graph, control channel from

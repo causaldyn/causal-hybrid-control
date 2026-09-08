@@ -196,6 +196,14 @@ from chc.mintime import (
     double_integrator_min_time,
     switching_function,
 )
+from chc.mmm import (
+    MarketingMixPlant,
+    MarketingMixSystem,
+    MmmArm,
+    MmmReport,
+    adstock_dynamics,
+    run_marketing_mix,
+)
 from chc.mpc import mpc_control
 from chc.network_causal import (
     ConfoundedNetworkSystem,
@@ -554,6 +562,8 @@ __all__ = [
     "LipschitzResidual",
     "LipschitzRolloutCertificate",
     "MLPResidual",
+    "MarketingMixPlant",
+    "MarketingMixSystem",
     "MarketplaceControlCurve",
     "MarketplaceMatching",
     "MeanFieldControl",
@@ -565,6 +575,8 @@ __all__ = [
     "MinimaxBranch",
     "MinimaxLQCertificate",
     "MinimaxLQPolicy",
+    "MmmArm",
+    "MmmReport",
     "MultiChannelControlCurve",
     "MultivariateInterferenceCurve",
     "MultivariateTransferCurve",
@@ -618,6 +630,7 @@ __all__ = [
     "__version__",
     "adaptive_exploration_certificate",
     "admissible_action_interval",
+    "adstock_dynamics",
     "advection_diffusion_field",
     "advection_diffusion_kernel",
     "advection_diffusion_propagator",
@@ -829,6 +842,7 @@ __all__ = [
     "robust_safety_filter",
     "rollout",
     "rollout_mse",
+    "run_marketing_mix",
     "safety_filter_benchmark",
     "sample_autocorrelation",
     "sensitivity_analysis",
