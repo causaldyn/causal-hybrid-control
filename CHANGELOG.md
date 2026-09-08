@@ -5,6 +5,26 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the API stabilises (pre-1.0 it may
 still change).
 
+## [0.5.1] — 2026-09-09
+
+### Fixed
+
+- **`chc.__version__` was a literal, and it reported `0.3.0` from a 0.5.0 install.** It had been a
+  second copy of `pyproject.toml`'s `version` since 0.3.0 and both releases since forgot it, which
+  is what a second copy does. Caught by installing 0.5.0 from the index and asking the wheel what
+  it was -- not by any check in the repo, since the literal agreed with itself everywhere.
+
+  It matters past the cosmetic because of what reads it. `Provenance.chc_version` is the field that
+  says which version produced the numbers beside it, and a caller reading `chc.__version__` to
+  stamp their own artefacts was recording a version that did not. (`Provenance` itself was already
+  correct: it has read package metadata since it was written.)
+
+  Fixed at the producer -- `__version__` now comes from the same
+  `chc.panel.installed_version()` the provenance uses, so there is one source of truth and it is
+  the metadata `uv build` writes. `installed_version` is exported, since a caller stamping their own
+  records should not have to reach for a private name. A test pins `chc.__version__` against
+  `importlib.metadata.version`, and it fails when the literal is put back.
+
 ## [0.5.0] — 2026-09-09
 
 ### Added
@@ -2040,6 +2060,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.5.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.5.1
 [0.5.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.5.0
 [0.4.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.4.0
 [0.3.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.3.0

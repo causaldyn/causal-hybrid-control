@@ -26,3 +26,16 @@ def test_every_advertised_symbol_exists() -> None:
 
 def test_the_namespace_advertises_no_duplicates() -> None:
     assert len(chc.__all__) == len(set(chc.__all__))
+
+
+def test_the_advertised_version_is_the_installed_one() -> None:
+    """`chc.__version__` was a literal, and it sat at 0.3.0 through two releases.
+
+    A second copy of `pyproject.toml`'s `version` drifts the moment a release forgets it, and the
+    thing that reads it is `Provenance` -- so a stale literal names a version that did not produce
+    the numbers beside it. Pinned against package metadata, which is what `uv build` writes.
+    """
+    from importlib.metadata import version
+
+    assert chc.__version__ == version("causal-hybrid-control")
+    assert chc.__version__ != "unknown"  # the installed-from-a-source-tree fallback, not this

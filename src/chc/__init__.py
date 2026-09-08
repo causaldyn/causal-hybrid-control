@@ -220,7 +220,7 @@ from chc.network_causal import (
     torus_adjacency,
 )
 from chc.offpolicy import GaussianPolicy, fit_behavior_policy, off_policy_value
-from chc.panel import Panel, PanelError, Provenance
+from chc.panel import Panel, PanelError, Provenance, installed_version
 from chc.pathway import (
     CausalPathway,
     PathwayCertificate,
@@ -460,7 +460,8 @@ from chc.uncertainty import (
     time_varying_rollout_certificate,
 )
 
-__version__ = "0.3.0"
+__version__ = installed_version()
+"""The installed distribution's version. See :func:`chc.panel.installed_version`."""
 
 __all__ = [
     "IV2SLS",
@@ -768,6 +769,7 @@ __all__ = [
     "identification_radius_threshold",
     "information_lower_bound_certificate",
     "innovations",
+    "installed_version",
     "interference_bias",
     "interference_convexity_certificate",
     "interference_orthogonal_certificate",

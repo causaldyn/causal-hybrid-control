@@ -168,7 +168,7 @@ class Panel:
             cluster=cluster,
             provenance=Provenance(
                 data_sha256=_fingerprint(columns),
-                chc_version=_version(),
+                chc_version=installed_version(),
                 n_rows=n_rows,
                 columns=tuple(sorted(columns)),
                 x64=_x64_enabled(),
@@ -267,7 +267,14 @@ class Panel:
         raise AssertionError("panel is balanced; _first_hole must not be called")
 
 
-def _version() -> str:
+def installed_version() -> str:
+    """The version of the *installed* distribution, which is the only one that can be reproduced.
+
+    Read from package metadata rather than from a literal in the source, because a literal is a
+    second copy of `pyproject.toml`'s `version` and second copies drift: `chc.__version__` sat at
+    `0.3.0` through the 0.4.0 and 0.5.0 releases, so every `Provenance` written by a caller reading
+    it named a version that did not produce the numbers beside it.
+    """
     from importlib.metadata import PackageNotFoundError, version
 
     try:
