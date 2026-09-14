@@ -49,6 +49,35 @@ Proof.
   field; exact H.
 Qed.
 
+(* Gill & Levit (1995) Bernoulli 1:59-79; van der Vaart (1998) Thm 2.5.2 -- van Trees on the
+   FUNCTIONAL psi(b) = u_star(b), named so that `Check` says where the cited input enters
+   (plans/24 P1.2). For ANY estimator of b, biased or not and adaptive or not, the Bayes mean
+   squared error OF THE ESTIMATED ACTION is at least psi'(b)^2 / (n * I_data + I_prior). The
+   algebraic core is proved in proofs/van_trees.v; this name stands for the measure-theoretic
+   wrapper, which is cited and not formalised. A Definition and not an Axiom, for the reason
+   spelled out in proofs/c2_end_to_end.v. *)
+Definition ActionVanTreesFloor (action_mse sensitivity n i_data i_prior : R) : Prop :=
+  sensitivity ^ 2 / (n * i_data + i_prior) <= action_mse.
+
+(* THE ACTION-SIDE FLOOR, IN THE VOCABULARY OF ITS CITED INPUT. Lemma (A) makes regret EXACTLY the
+   curvature times the squared action error, with no linearisation, so van Trees on the action
+   transfers to regret without a delta method: E[R] >= curvature * psi'^2/(n I_data + I_prior).
+   Lemma (C) then puts that below its large-n limit, which is Result 10's constant. This proves
+   nothing the lemmas around it do not; what it adds is that the dependency on the cited
+   inequality is in the TYPE rather than in the header. *)
+Lemma action_regret_floor_from_cited_inputs :
+  forall curvature action_mse sensitivity n i_data i_prior er : R,
+  0 <= curvature ->
+  ActionVanTreesFloor action_mse sensitivity n i_data i_prior ->
+  curvature * action_mse <= er ->
+  curvature * (sensitivity ^ 2 / (n * i_data + i_prior)) <= er.
+Proof.
+  intros curvature action_mse sensitivity n i_data i_prior er Hc Hfloor Hreg.
+  unfold ActionVanTreesFloor in Hfloor.
+  eapply Rle_trans; [| exact Hreg].
+  apply Rmult_le_compat_l; assumption.
+Qed.
+
 (* (C) THE VAN TREES QUOTIENT. n k/(n d + i) is below its limit k/d for every n, and the shortfall
    is exactly k i/(d (n d + i)) -- positive and O(1/n). So the prior information costs something
    at finite n and nothing asymptotically, which is the passage to a local-minimax statement. *)

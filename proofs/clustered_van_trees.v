@@ -36,6 +36,28 @@ From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
 Open Scope R_scope.
 
+(* ===== THE CITED STATISTICAL INPUTS, AS NAMED PREDICATES (plans/24 P1.2) =====
+
+   Ingredients (1) and (2) of the header, declared as Props carrying their citations so that the
+   theorems below name them in their types rather than only in prose. Nothing is assumed that was
+   not assumed before. Definitions and not Axioms, for the reason spelled out in
+   proofs/c2_end_to_end.v. *)
+
+(* Gassiat & Stoltz (2024) arXiv:2402.06431 Thm 4 and p.8; Gill & Levit (1995) Bernoulli 1:59-79;
+   Lehmann & Casella (1998) sec 2.6 -- the CLUSTERED van Trees floor. Fisher information is
+   additive over independent clusters, so G of them contribute G*Ic and the Bayes risk of ANY
+   estimator obeys mse >= 1/(I0 + G*Ic). The ALGEBRAIC core (Cauchy-Schwarz on the joint score) is
+   proved in proofs/van_trees.v; what this name stands for is the measure-theoretic wrapper --
+   joint trajectory law, score covariance identity, additivity -- which is cited, not formalised. *)
+Definition ClusteredVanTreesFloor (mse I0 Ic G : R) : Prop := 1 / (I0 + G * Ic) <= mse.
+
+(* The LOWER-Lipschitz regret map of ingredient (2): u*(b) = xt*b/(b^2+rr) is a diffeomorphism with
+   |du*/db| >= L_min > 0 away from the knife edge b^2 = rr, so the action error is at least L_min
+   times the model error and the expected regret is at least kappa0 = (b^2+rr)*L_min^2 times the
+   mean squared model error. SCALAR; the matrix case holds on the decision-sensitive subspace with
+   kappa0 = lambda_min(M)/2, and decision-irrelevant directions contribute nothing. *)
+Definition LowerLipschitzRegret (er kappa0 mse : R) : Prop := kappa0 * mse <= er.
+
 (* (2) the LOWER-Lipschitz regret map: if the action error a is at least the Lipschitz floor e
    (e = L_min*|Bhat-B| <= |u*(Bhat)-u*(B)| = a), then the regret cc*a^2 is at least cc*e^2. *)
 Theorem regret_ge_from_lipschitz : forall cc e a,
@@ -81,13 +103,34 @@ Qed.
    G*E[R] does NOT vanish: E[R] decays no faster than 1/G. This is the irreducibility the upper bound
    alone could not give. *)
 Theorem regret_floor_uniform_positive : forall kappa0 c G er mse,
-  0 < kappa0 -> 0 <= mse -> 0 < G -> c <= G * mse -> kappa0 * mse <= er ->
+  0 < kappa0 -> 0 <= mse -> 0 < G -> c <= G * mse -> LowerLipschitzRegret er kappa0 mse ->
   kappa0 * c <= G * er.
 Proof.
-  intros kappa0 c G er mse Hk Hmse HG Hc Her.
+  intros kappa0 c G er mse Hk Hmse HG Hc Her. unfold LowerLipschitzRegret in Her.
   assert (H1 : kappa0 * (G * mse) <= G * er).
   { replace (kappa0 * (G * mse)) with (G * (kappa0 * mse)) by ring.
     apply Rmult_le_compat_l; lra. }
   assert (H2 : kappa0 * c <= kappa0 * (G * mse)) by (apply Rmult_le_compat_l; lra).
   lra.
+Qed.
+
+(* THE HEADLINE, STATED IN THE VOCABULARY OF ITS TWO CITED INPUTS. The clustered van-Trees floor
+   supplies mse >= 1/(I0 + G*Ic) and the lower-Lipschitz regret map supplies er >= kappa0*mse, so
+   G*E[R] is bounded below by kappa0/(I0+Ic) for EVERY G -- the sampling regret decays no faster
+   than 1/G. This proves nothing the three theorems above did not; what it adds is that `Check` on
+   it names both places the statistical content enters, which the header alone cannot make
+   machine-visible. *)
+Theorem clustered_regret_floor_from_cited_inputs : forall I0 Ic G kappa0 er mse,
+  0 <= I0 -> 0 < Ic -> 1 <= G -> 0 < kappa0 -> 0 <= mse ->
+  ClusteredVanTreesFloor mse I0 Ic G ->
+  LowerLipschitzRegret er kappa0 mse ->
+  kappa0 * (1 / (I0 + Ic)) <= G * er.
+Proof.
+  intros I0 Ic G kappa0 er mse HI0 HIc HG Hk Hmse Hfloor Hreg.
+  unfold ClusteredVanTreesFloor in Hfloor.
+  apply (regret_floor_uniform_positive kappa0 (1 / (I0 + Ic)) G er mse); try assumption; [lra |].
+  eapply Rle_trans; [apply (clustered_floor_positive I0 Ic G); assumption |].
+  assert (Hd : 0 < I0 + G * Ic) by nra.
+  replace (G / (I0 + G * Ic)) with (G * (1 / (I0 + G * Ic))) by (field; lra).
+  apply Rmult_le_compat_l; lra.
 Qed.

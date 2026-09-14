@@ -17,14 +17,52 @@ From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
 Open Scope R_scope.
 
+(* ===== THE CITED STATISTICAL INPUTS, AS NAMED PREDICATES (plans/24 P1.2) =====
+
+   Everything this file takes from the literature is declared below as a Prop carrying its
+   citation, and the theorems are stated in those names rather than in the inequalities they
+   unfold to. Nothing is assumed that was not assumed before: each definition is the formula the
+   statements already carried inline, so the theorems are the same theorems. What changes is that
+   the dependency is machine-visible -- `Check end_to_end_full` prints the cited names in the type,
+   `Print CrossFitRemainder` prints exactly what was assumed under one, and a grep for a name
+   enumerates every result that rests on that paper, which a prose header cannot do.
+
+   These are Definitions and deliberately NOT Axioms. An Axiom would make `Print Assumptions`
+   list them by name, which reads like the stronger audit and is the weaker formalisation: it
+   would turn theorems that are currently true outright into theorems true only if OUR
+   transcription of the cited result is, and it would put every lemma in this file outside
+   Stdlib's classical reals, which `just assumptions` exists to forbid. A hypothesis the caller
+   must supply cannot be wrong in a way that leaks. *)
+
+(* Chernozhukov, Chetverikov, Demirer, Duflo, Hansen, Newey & Robins (2018), Econometrics J
+   21:C1-C68, Lemma 6.1 with Assumption 3.1: under cross-fitting and a Neyman-orthogonal score the
+   nuisance-induced remainder is of order `delta ^ order` in the nuisance estimation error --
+   `order = 2` on a channel that was orthogonalised, `order = 1` on one that was plugged in. Which
+   of the two a channel gets is the whole content of the full/half distinction below. *)
+Definition CrossFitRemainder (e delta : R) (order : nat) : Prop := Rabs e <= delta ^ order.
+
+(* Hansen & Lee (2019), J. Econometrics 210:268-290, Theorem 2: with cluster-level independence the
+   sampling error is O_p(1/sqrt(G)) in the number of INDEPENDENT CLUSTERS and not in the number of
+   rows, so its square sits under a floor `fG` of order 1/G however many rows each cluster brings.
+   `r_s` is the radius the CLT delivers; `fG` is the rate that radius obeys. *)
+Definition ClusterRobustSampling (s r_s fG : R) : Prop := Rabs s <= r_s /\ r_s ^ 2 <= fG.
+
+(* Mania, Tu & Recht (2019), NeurIPS 32: for a stabilising certainty-equivalent controller and a
+   sufficiently small model error the suboptimality is LOCALLY QUADRATIC in that error,
+   `R <= cc * ||Bhat - B||^2` with `cc` the LQ curvature. That bound is what licenses the shape of
+   `c2_regret` below; the only thing the algebra needs from the citation is that the curvature
+   exists and is nonnegative on the stabilising set. *)
+Definition LocalQuadraticRegret (cc : R) : Prop := 0 <= cc.
+
 Definition c2_regret (cc s e_d e_s : R) : R := cc * (s + e_d + e_s) ^ 2.
 
 (* Three-way triangle: the regret is bounded by the sum of the sampling + two channel radii. *)
 Theorem three_channel_bound : forall cc s e_d e_s r_s r_d r_e,
-  0 <= cc -> Rabs s <= r_s -> Rabs e_d <= r_d -> Rabs e_s <= r_e ->
+  LocalQuadraticRegret cc -> Rabs s <= r_s -> Rabs e_d <= r_d -> Rabs e_s <= r_e ->
   c2_regret cc s e_d e_s <= cc * (r_s + r_d + r_e) ^ 2.
 Proof.
-  intros cc s e_d e_s r_s r_d r_e Hc Hs Hd He. unfold c2_regret.
+  intros cc s e_d e_s r_s r_d r_e Hc Hs Hd He.
+  unfold LocalQuadraticRegret in Hc. unfold c2_regret.
   apply Rmult_le_compat_l; [exact Hc |].
   assert (Ht : Rabs (s + e_d + e_s) <= r_s + r_d + r_e).
   { eapply Rle_trans; [apply Rabs_triang |].
@@ -48,11 +86,13 @@ Qed.
 (* END-TO-END, FULL-orthogonal: both channels O(delta^2) and the cluster floor s^2 <= fG give
    R <= 3*cc*(fG + 2*delta^4) = O(1/G + delta^4). *)
 Theorem end_to_end_full : forall cc s e_d e_s r_s fG d,
-  0 <= cc -> 0 <= d -> Rabs s <= r_s -> r_s ^ 2 <= fG ->
-  Rabs e_d <= d ^ 2 -> Rabs e_s <= d ^ 2 ->
+  LocalQuadraticRegret cc -> 0 <= d ->
+  ClusterRobustSampling s r_s fG ->
+  CrossFitRemainder e_d d 2 -> CrossFitRemainder e_s d 2 ->
   c2_regret cc s e_d e_s <= 3 * cc * (fG + 2 * d ^ 4).
 Proof.
-  intros cc s e_d e_s r_s fG d Hc Hd0 Hs HfG Hed Hes.
+  intros cc s e_d e_s r_s fG d Hc Hd0 [Hs HfG] Hed Hes.
+  unfold CrossFitRemainder in Hed, Hes.
   eapply Rle_trans; [apply (three_channel_bound cc s e_d e_s r_s (d ^ 2) (d ^ 2)); assumption |].
   replace (3 * cc * (fG + 2 * d ^ 4)) with (cc * (3 * (fG + 2 * d ^ 4))) by ring.
   apply Rmult_le_compat_l; [exact Hc |].
@@ -64,11 +104,13 @@ Qed.
    R <= 3*cc*(fG + delta^4 + delta^2) = O(1/G + delta^2) -- orthogonalising only the direct channel
    bought nothing at the regret order. *)
 Theorem end_to_end_half : forall cc s e_d e_s r_s fG d,
-  0 <= cc -> 0 <= d -> Rabs s <= r_s -> r_s ^ 2 <= fG ->
-  Rabs e_d <= d ^ 2 -> Rabs e_s <= d ->
+  LocalQuadraticRegret cc -> 0 <= d ->
+  ClusterRobustSampling s r_s fG ->
+  CrossFitRemainder e_d d 2 -> CrossFitRemainder e_s d 1 ->
   c2_regret cc s e_d e_s <= 3 * cc * (fG + d ^ 4 + d ^ 2).
 Proof.
-  intros cc s e_d e_s r_s fG d Hc Hd0 Hs HfG Hed Hes.
+  intros cc s e_d e_s r_s fG d Hc Hd0 [Hs HfG] Hed Hes.
+  unfold CrossFitRemainder in Hed, Hes. rewrite pow_1 in Hes.
   eapply Rle_trans; [apply (three_channel_bound cc s e_d e_s r_s (d ^ 2) d); assumption |].
   replace (3 * cc * (fG + d ^ 4 + d ^ 2)) with (cc * (3 * (fG + d ^ 4 + d ^ 2))) by ring.
   apply Rmult_le_compat_l; [exact Hc |].
@@ -81,10 +123,10 @@ Qed.
    matching LOWER bound (that the 1/G rate is IRREDUCIBLE) is proved separately by the clustered van-Trees
    argument in proofs/clustered_van_trees.v (regret_floor_uniform_positive). *)
 Theorem perfect_nuisance_sampling_bound : forall cc s r_s fG,
-  0 <= cc -> Rabs s <= r_s -> r_s ^ 2 <= fG ->
+  LocalQuadraticRegret cc -> ClusterRobustSampling s r_s fG ->
   c2_regret cc s 0 0 <= cc * fG.
 Proof.
-  intros cc s r_s fG Hc Hs HfG. unfold c2_regret.
+  intros cc s r_s fG Hc [Hs HfG]. unfold LocalQuadraticRegret in Hc. unfold c2_regret.
   apply Rmult_le_compat_l; [exact Hc |].
   replace (s + 0 + 0) with s by ring.
   assert (Hrpos : 0 <= r_s) by (eapply Rle_trans; [apply Rabs_pos | exact Hs]).
