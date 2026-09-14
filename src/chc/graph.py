@@ -110,6 +110,91 @@ class CausalGraph:
         graph._require_acyclic()
         return graph
 
+    @staticmethod
+    def lagged_name(name: str, lag: int = 0) -> str:
+        """The node ``name`` carries at ``lag`` steps into the past: ``x[t]``, ``x[t-1]``, ...
+
+        Exists so a caller naming a treatment or an outcome for :meth:`unrolled` does not
+        hand-format the string and drift from what the constructor produced. The format is an
+        implementation detail of the pair, not a contract with the caller.
+        """
+        if lag < 0:
+            raise ValueError(f"lag must be non-negative; {name!r} was asked for at lag {lag}")
+        return f"{name}[t]" if lag == 0 else f"{name}[t-{lag}]"
+
+    @classmethod
+    def unrolled(
+        cls,
+        edges: Iterable[tuple[str, str, int]],
+        *,
+        lags: int,
+        latent: Iterable[str] = (),
+    ) -> CausalGraph:
+        """Unroll ``(parent, child, lag)`` edges over time into an ordinary static DAG.
+
+        A time series has one more thing to say than a cross-section: *when* a parent acts. Rather
+        than teach every method on this class about lags -- which would fork ``d_separated``,
+        ``adjustment_set``, ``_proper_backdoor`` and the rest -- the time index is pushed into the
+        node name, and the criterion stays one algorithm over one edge format. The cost is node
+        count, which is ``(lags + 1)`` times the variable count and irrelevant at this scale.
+
+        An edge ``(p, c, k)`` means ``p`` at time ``t-k`` causes ``c`` at time ``t``, instantiated
+        at every slice where both endpoints exist. ``k = 0`` is contemporaneous. A self-edge is
+        allowed at ``k >= 1`` and is the ordinary autoregressive term -- ``("x", "x", 1)`` becomes
+        ``x[t-1] -> x[t]``, which is not a self-loop once time is explicit.
+
+        Args:
+            edges: ``(parent, child, lag)`` triples, ``lag >= 0``.
+            lags: how far back to unroll. Slices are ``t-lags ... t``, so ``lags = 0`` keeps only
+                the contemporaneous structure. Named ``lags`` not ``horizon`` deliberately: in this
+                library ``horizon`` is a *plan* length (:func:`chc.decision.prescribe`), and one
+                name meaning two things is how a caller gets a graph one slice short.
+            latent: variable names that are unobserved. Latency is a property of the variable, not
+                of a slice, so a latent name is latent at every lag.
+
+        Returns:
+            A :class:`CausalGraph` over ``lagged_name``-formatted nodes. Everything on the class
+            works on it unchanged.
+
+        Raises:
+            ValueError: on a negative ``lags`` or ``lag``, or on a contemporaneous self-edge.
+            CyclicGraphError: if the contemporaneous edges cycle within a slice. Edges with
+                ``lag >= 1`` cannot: time decreases strictly along them.
+        """
+        if lags < 0:
+            raise ValueError(f"lags must be non-negative; got {lags}")
+        triples = [(str(parent), str(child), int(lag)) for parent, child, lag in edges]
+        for parent, child, lag in triples:
+            if lag < 0:
+                raise ValueError(f"negative lag {lag} on edge {parent!r} -> {child!r}")
+            if lag == 0 and parent == child:
+                raise ValueError(
+                    f"contemporaneous self-edge on {parent!r}: a variable cannot cause itself "
+                    "within a slice. An autoregressive term is lag >= 1"
+                )
+        pairs = [
+            (cls.lagged_name(parent, step + lag), cls.lagged_name(child, step))
+            for parent, child, lag in triples
+            for step in range(lags - lag + 1)
+        ]
+        names = {name for parent, child, _ in triples for name in (parent, child)}
+        unknown = sorted({str(name) for name in latent} - names)
+        if unknown:
+            raise ValueError(
+                f"latent variables {unknown} do not appear in any edge; a latent variable that "
+                "causes nothing and is caused by nothing cannot confound anything"
+            )
+        return cls.from_edges(
+            pairs,
+            latent=[
+                cls.lagged_name(name, step)
+                for name in latent
+                for step in range(lags + 1)
+                # a latent that only ever acts at lag 0 has no node at the deepest slices
+                if cls.lagged_name(name, step) in {end for pair in pairs for end in pair}
+            ],
+        )
+
     # ---- structure ------------------------------------------------------------------------
 
     @property
