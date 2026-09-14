@@ -1,0 +1,131 @@
+/* The port-Hamiltonian residual needs a COERCIVE energy, not merely a decreasing one -- Appendix A
+   item A20, the last of Result 30's transfer ledger.
+
+   chc.residual.PortHamiltonianResidual encodes x' = (J - R) grad H(x) + g(x) u with J skew and
+   R = L L' PSD, and its docstring says: "With no input the energy obeys H' = -dH . R dH <= 0, so H
+   is a Lyapunov function -- the residual can't blow up off-support like a black box can."  The
+   first half is an identity and is re-derived below.  The second half does not follow from it.
+
+   H' <= 0 confines the state to the sublevel set { H <= H(x0) }, and that is a bound on the state
+   only if the sublevel set is BOUNDED.  A tanh MLP energy is bounded above and below in x by
+   construction, so every sublevel set above its supremum is the whole space and the inequality
+   confines nothing; worse, grad H decays to zero in every direction, so the unforced flow has a
+   continuum of near-equilibria and the energy certifies convergence to SOMETHING without saying
+   where.  An input-convex energy with a quadratic floor, H(x) >= (eps/2)|x|^2, makes the sublevel
+   set a ball of radius sqrt(2 H(x0)/eps) -- a number the caller can print -- and makes the
+   equilibrium unique.
+
+   Consumed by chc.residual.PortHamiltonianResidual(energy="icnn") and
+   chc.residual.port_hamiltonian_energy_certificate; proved in proofs/convex_port_hamiltonian.v.
+
+   Run: timeout 600 maxima --very-quiet -b validation/convex_port_hamiltonian.mac */
+
+print("================================================================")$
+print("A COERCIVE ENERGY FOR THE PORT-HAMILTONIAN RESIDUAL (A20)")$
+print("================================================================")$
+
+/* ===== STEP 1: the passivity identity, and the skew term that cancels ===== */
+
+print("=== STEP 1: H' = -dH' R dH + y'u exactly, with y = g' dH ===")$
+
+Jm : matrix([0, aa], [-aa, 0])$              /* interconnection: skew by construction */
+Rm : matrix([r1, r12], [r12, r2])$           /* dissipation: PSD, R = L L' */
+gm : matrix([g1], [g2])$                     /* one control port */
+dH : matrix([h1], [h2])$                     /* the co-energy vector grad H(x) */
+uu : u1$
+
+flow  : (Jm - Rm) . dH + gm*uu$
+hdot  : (transpose(dH) . flow)$
+yy    : (transpose(gm) . dH)$
+print("STEP 1a dH' J dH =", ratsimp( transpose(dH) . Jm . dH ), " (0 -- skew)")$
+print("STEP 1b H' + dH' R dH - y'u =", ratsimp( hdot + transpose(dH) . Rm . dH - yy*uu ), " (0)")$
+print("STEP 1c so the residual is LOSSLESS through J and dissipates only through R.  With u = 0")$
+print("        the energy is non-increasing, and that much the shipped docstring gets right")$
+
+/* ===== STEP 2: what H' <= 0 actually certifies ===== */
+
+print("=== STEP 2: H' <= 0 is a statement about SUBLEVEL SETS, not about the state ===")$
+print("STEP 2a integrating, H(x(T)) <= H(x(0)) for u = 0, i.e. x(t) stays in { H <= H(x0) }")$
+print("STEP 2b that bounds |x(t)| if and only if the sublevel set is bounded.  Nothing in")$
+print("        H' = -dH' R dH <= 0 says it is -- the inequality is invariant under adding any")$
+print("        constant to H and under replacing H by any increasing function of itself")$
+print("STEP 2c and passivity itself needs a storage function BOUNDED BELOW, so the dissipation")$
+print("        inequality H(T) - H(0) <= int y'u cannot be run backwards to extract energy")$
+
+/* ===== STEP 3: a tanh MLP energy is bounded, hence certifies nothing ===== */
+
+print("=== STEP 3: the shipped energy is bounded in x, so every high sublevel set is R^n ===")$
+
+Hmlp : ww*tanh(aa1*xx + bb1) + cc$
+print("STEP 3a a one-neuron tanh energy H(x) =", Hmlp)$
+print("STEP 3b its range is [c - |w|, c + |w|]: sup H - inf H =",
+      ratsimp( (cc + abs(ww)) - (cc - abs(ww)) ), " (2|w|)")$
+print("STEP 3c so for any level above c + |w| the sublevel set is ALL of R, and H' <= 0 confines")$
+print("        the state to the whole line.  The depth and width change the constant, never the")$
+print("        boundedness: a linear read-out of bounded activations is bounded")$
+dHmlp : ratsimp(diff(Hmlp, xx))$
+print("STEP 3d dH/dx =", dHmlp, " which -> 0 as |x| -> inf, so the unforced flow stalls rather")$
+print("        than returning: grad H = 0 is approached in EVERY direction, and the equilibrium")$
+print("        set of (J - R) grad H = 0 is not a point")$
+
+/* ===== STEP 4: a quadratic floor turns the same inequality into a radius ===== */
+
+print("=== STEP 4: H(x) >= (eps/2)|x|^2 makes the sublevel set a ball, with an explicit radius ===")$
+
+print("STEP 4a if H(x) >= (eps/2)|x|^2 then H(x) <= c forces |x|^2 <= 2c/eps; the boundary case")$
+print("        (eps/2)|x|^2 = c gives |x| =", sqrt(2*cc0/ep), " where c0 = H(x0)")$
+print("STEP 4b residual of (eps/2)*(sqrt(2*c0/eps))^2 - c0 =",
+      ratsimp( (ep/2)*(sqrt(2*cc0/ep))^2 - cc0 ), " (0)")$
+print("STEP 4c combined with STEP 2a: |x(t)| <= sqrt(2 H(x0)/eps) for all t >= 0, u = 0 -- a")$
+print("        FORWARD-INVARIANT BALL, which is the claim the docstring was making without it")$
+
+/* ===== STEP 5: when are the equilibria exactly the critical points of H? ===== */
+
+print("=== STEP 5: (J - R) is generically invertible, so equilibria are grad H = 0 ===")$
+
+print("STEP 5a det(J - R) =", ratsimp( determinant(Jm - Rm) ))$
+print("STEP 5b with R = L L' PSD its principal minors are nonnegative, so det(J - R) =")$
+print("        det R + a^2 >= a^2: the interconnection alone makes it invertible whenever a != 0,")$
+print("        and R > 0 suffices on its own")$
+print("STEP 5c so (J - R) dH = 0 iff dH = 0, and a STRICTLY CONVEX H has at most one such point;")$
+print("        with the quadratic floor of STEP 4 it has exactly one, and it is the global min")$
+print("STEP 5d a bounded MLP energy has no such guarantee -- STEP 3d puts near-critical points")$
+print("        everywhere far from the data, which is precisely the off-support regime")$
+
+/* ===== STEP 6: the ICNN rule, from the Hessian of a composition ===== */
+
+print("=== STEP 6: why nonnegative recurrent weights and a convex increasing sigma suffice ===")$
+
+sig(t) := log(1 + exp(t))$
+phi(z) := pp*z^2 + qq*z + rr0$
+lhs6 : diff(sig(phi(xx)), xx, 2)$
+rhs6 : subst(tt = phi(xx), diff(sig(tt), tt, 2)) * diff(phi(xx), xx)^2
+       + subst(tt = phi(xx), diff(sig(tt), tt)) * diff(phi(xx), xx, 2)$
+print("STEP 6a d^2/dx^2 sigma(phi(x)) - [ sigma''(phi) phi'^2 + sigma'(phi) phi'' ] =",
+      ratsimp(lhs6 - rhs6), " (0)")$
+print("STEP 6b the first term is >= 0 when sigma is CONVEX; the second is >= 0 when sigma is")$
+print("        NON-DECREASING and phi is convex.  In an ICNN layer phi = W z(x) + V x + b with")$
+print("        z convex componentwise, so phi'' = sum_j W_j z_j'' is a NONNEGATIVE combination of")$
+print("        convex functions exactly when W >= 0 entrywise -- which is the architecture's rule")$
+print("STEP 6c softplus satisfies both: sigma'(t) =", ratsimp(diff(sig(tt), tt)),
+      " which is in (0,1), and sigma''(t) =", ratsimp(diff(sig(tt), tt, 2)))$
+print("        the second is e^t/(e^t+1)^2 > 0 for every real t, so softplus is STRICTLY convex")$
+print("        and strictly increasing -- both halves of the rule, with no case analysis")$
+print("STEP 6d and a nonnegative read-out of those units keeps ICNN(x) >= 0, so adding")$
+print("        (eps/2)|x|^2 gives H >= (eps/2)|x|^2 with no further assumption")$
+
+/* ===== STEP 7: the strong-convexity constant is exactly the quadratic floor ===== */
+
+print("=== STEP 7: the Hessian floor, and the radius it buys ===")$
+
+print("STEP 7a H = C(x) + (eps/2)|x|^2 with C convex gives H'' = C'' + eps I >= eps I, so H is")$
+print("        eps-STRONGLY convex whatever the network learned")$
+print("STEP 7b and the gradient inherits it: (grad H(x) - grad H(y)).(x - y) >= eps|x-y|^2, so")$
+print("        grad H is injective -- one critical point, confirming STEP 5c without a search")$
+print("STEP 7c the certificate reports radius(H0) = sqrt(2 H0/eps) and checks the realised")$
+print("        trajectory against it; for the tanh energy the same quantity is INFINITE, which")$
+print("        is the honest number rather than a missing one")$
+
+print("================================================================")$
+print("STEPs 1-7 complete; residuals at 1a, 1b, 4b are 0")$
+print("================================================================")$

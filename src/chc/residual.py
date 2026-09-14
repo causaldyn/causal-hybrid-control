@@ -4,8 +4,10 @@ Lipschitz (certified bounded gain). GP is future."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from itertools import combinations_with_replacement
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -313,39 +315,135 @@ class GraphResidual(eqx.Module):
         return update.reshape(-1)
 
 
+PortHamiltonianEnergy = Literal["mlp", "icnn"]
+"""Which energy the port-Hamiltonian residual carries: a plain MLP, or an input-convex one."""
+
+
+class _ConvexEnergy(eqx.Module):
+    """Input-convex scalar energy with a quadratic floor -- ``H(x) >= (eps/2)|x|^2``.
+
+    Amos-Xu-Kolter's ICNN: every recurrent weight is passed through ``softplus`` so it is
+    nonnegative, and ``softplus`` is convex and non-decreasing, so each layer is a convex
+    non-decreasing function of a nonnegative combination of convex functions plus an affine term --
+    convex by induction (``validation/convex_port_hamiltonian.mac`` STEP 6). The read-out is
+    nonnegative too, which keeps the network part ``>= 0``, so adding ``(eps/2)|x|^2`` gives the
+    floor with no assumption about what was learned.
+    """
+
+    passthrough: list[Array]  # V_k : affine in x at every layer, unconstrained
+    recurrent: list[Array]  # W_k : layer to layer, NONNEGATIVE via softplus -- the whole rule
+    biases: list[Array]
+    readout: Array  # nonnegative via softplus, so the network part stays >= 0
+    convexity: float = eqx.field(static=True)  # eps, the strong-convexity constant
+
+    def __init__(
+        self, state_dim: int, width: int = 16, depth: int = 2, convexity: float = 0.1, *, key: Array
+    ) -> None:
+        keys = jax.random.split(key, 2 * depth + 1)
+        self.passthrough = [
+            width**-0.5 * jax.random.normal(keys[k], (width, state_dim)) for k in range(depth)
+        ]
+        self.recurrent = [
+            width**-0.5 * jax.random.normal(keys[depth + k], (width, width))
+            for k in range(depth - 1)
+        ]
+        self.biases = [jnp.zeros(width) for _ in range(depth)]
+        self.readout = width**-0.5 * jax.random.normal(keys[-1], (width,))
+        self.convexity = convexity
+
+    def __call__(self, x: Array) -> Array:
+        z = jax.nn.softplus(self.passthrough[0] @ x + self.biases[0])
+        for weight, passthrough, bias in zip(
+            self.recurrent, self.passthrough[1:], self.biases[1:], strict=True
+        ):
+            z = jax.nn.softplus(jax.nn.softplus(weight) @ z + passthrough @ x + bias)
+        network = jax.nn.softplus(self.readout) @ z
+        return network + 0.5 * self.convexity * jnp.dot(x, x)
+
+
 class PortHamiltonianResidual(eqx.Module):
     """Port-Hamiltonian residual ``x' = (J - R) grad H(x) + g(x) u`` -- passive, Lyapunov-stable.
 
     Encodes energy + dissipation + a control port: ``J = A - A^T`` skew (lossless interconnection),
-    ``R = L L^T >= 0`` dissipation, ``H_theta`` a scalar energy MLP, ``g(x)`` the input matrix. With
-    no input the energy obeys ``H' = dH . (J - R) dH = -dH . R dH <= 0`` (the skew term
-    ``dH . J dH = 0``, ``dH := grad H``), so ``H`` is a Lyapunov function -- the residual can't blow
-    up off-support like a black box can, exactly the offline-control failure mode. Cleanest
-    when the known part is itself port-Hamiltonian (as :class:`~chc.dynamics.DampedOscillator` is),
-    so ``known + residual`` stays port-Hamiltonian; as a pure additive correction the bound is on
-    the residual's own contribution. Pure autograd (one scalar-MLP gradient), no inner solve, so it
-    composes with the discrete/diffrax adjoints. Prefer over plain HNN/LNN (no port or dissipation).
+    ``R = L L^T >= 0`` dissipation, ``H_theta`` a scalar energy network, ``g(x)`` the input matrix.
+    With no input the energy obeys ``H' = dH . (J - R) dH = -dH . R dH <= 0`` (the skew term
+    ``dH . J dH = 0``, ``dH := grad H``). Cleanest when the known part is itself port-Hamiltonian
+    (as :class:`~chc.dynamics.DampedOscillator` is), so ``known + residual`` stays
+    port-Hamiltonian; as a pure additive correction the bound is on the residual's own
+    contribution. Pure autograd (one scalar gradient), no inner solve, so it composes with the
+    discrete/diffrax adjoints. Prefer over plain HNN/LNN (no port or dissipation).
+
+    ``energy`` decides what ``H' <= 0`` is worth, and the difference is not cosmetic (Result 68,
+    ``validation/convex_port_hamiltonian.mac``). The inequality confines the state to
+    ``{ H <= H(x0) }``, which bounds the state only if that set is bounded:
+
+    * ``"mlp"`` (the default, and what every model built before this option is) reads a ``tanh``
+      MLP out linearly, so ``H`` is BOUNDED in ``x``. Every sublevel set above its supremum is the
+      whole space, :meth:`invariant_radius` is ``inf``, and ``grad H`` decays in all directions --
+      so the unforced flow stalls wherever it started rather than returning, and the energy has
+      many near-equilibria. ``H' <= 0`` is still true; it just certifies nothing about the state.
+    * ``"icnn"`` builds an input-convex energy with a quadratic floor, ``H(x) >= (eps/2)|x|^2``,
+      which makes ``{ H <= c }`` a ball of radius ``sqrt(2c/eps)`` -- forward invariant, and a
+      number the caller can print -- and makes the critical point unique, since the gradient of an
+      ``eps``-strongly convex function is injective.
+
+    The default stays ``"mlp"`` because changing it would silently move the semantics of every
+    model already trained against this class; ``convex_energy_certificate`` measures the gap.
     """
 
-    energy: eqx.nn.MLP  # H_theta : R^state -> scalar
+    energy: eqx.nn.MLP | _ConvexEnergy  # H_theta : R^state -> scalar
     input_map: eqx.nn.MLP  # g_theta : R^state -> R^(state*control), reshaped to the input matrix
     a_raw: Array  # J = a_raw - a_raw.T (skew)
     l_raw: Array  # R = l_raw @ l_raw.T (positive-semidefinite dissipation)
     state_dim: int = eqx.field(static=True)
     control_dim: int = eqx.field(static=True)
+    energy_kind: PortHamiltonianEnergy = eqx.field(static=True)
+    convexity: float = eqx.field(static=True)  # eps, and 0.0 when the energy is a plain MLP
 
     def __init__(
-        self, state_dim: int, control_dim: int, width: int = 16, depth: int = 2, *, key: Array
+        self,
+        state_dim: int,
+        control_dim: int,
+        width: int = 16,
+        depth: int = 2,
+        *,
+        energy: PortHamiltonianEnergy = "mlp",
+        convexity: float = 0.1,
+        key: Array,
     ) -> None:
+        if energy not in ("mlp", "icnn"):
+            raise ValueError(f'energy is "mlp" or "icnn": got {energy!r}')
+        if energy == "icnn" and convexity <= 0.0:
+            raise ValueError(
+                "an input-convex energy needs a positive convexity floor: it IS the invariant "
+                f"radius sqrt(2c/eps), and got {convexity}"
+            )
         k_h, k_g, k_a, k_l = jax.random.split(key, 4)
         self.state_dim = state_dim
         self.control_dim = control_dim
-        self.energy = eqx.nn.MLP(state_dim, "scalar", width, depth, activation=jax.nn.tanh, key=k_h)
+        self.energy_kind = energy
+        self.convexity = convexity if energy == "icnn" else 0.0
+        self.energy = (
+            _ConvexEnergy(state_dim, width, depth, convexity, key=k_h)
+            if energy == "icnn"
+            else eqx.nn.MLP(state_dim, "scalar", width, depth, activation=jax.nn.tanh, key=k_h)
+        )
         self.input_map = eqx.nn.MLP(
             state_dim, state_dim * control_dim, width, depth, activation=jax.nn.tanh, key=k_g
         )
         self.a_raw = 0.1 * jax.random.normal(k_a, (state_dim, state_dim))
         self.l_raw = 0.1 * jax.random.normal(k_l, (state_dim, state_dim))
+
+    def invariant_radius(self, level: float | Array) -> Array:
+        """Radius of the ball the sublevel set ``{ H <= level }`` sits inside.
+
+        ``sqrt(2 level/eps)`` for an input-convex energy, because ``H(x) >= (eps/2)|x|^2``; ``inf``
+        for a plain MLP, whose bounded range leaves every high sublevel set equal to the whole
+        space. The infinity is the honest answer, not a missing field.
+        """
+        if self.energy_kind != "icnn":
+            return jnp.asarray(math.inf)
+        return jnp.sqrt(2.0 * jnp.maximum(jnp.asarray(level), 0.0) / self.convexity)
 
     def energy_gradient(self, x: Array) -> Array:
         """``grad_x H(x)`` -- the port-Hamiltonian co-energy vector."""
@@ -513,6 +611,246 @@ def port_hamiltonian_certificate(
     max_rate = float(jnp.max(energy_rate))
     ok = skew_residual < 1e-5 and min_eig >= -1e-9 and max_rate <= 1e-5
     return PortHamiltonianCertificate(skew_residual, min_eig, max_rate, ok)
+
+
+@dataclass(frozen=True)
+class ConvexEnergyCertificate:
+    """Result 68: a DECREASING energy is not a BOUNDED one, and only a coercive one gives a radius.
+
+    ``H' <= 0`` holds for both energies -- it is an identity of the port-Hamiltonian structure, not
+    a property of the network -- so the inequality cannot tell them apart. What separates them is
+    whether the sublevel set it confines the state to is bounded.
+    """
+
+    passivity_residual: float  # |H' - (y'u - dH' R dH)| by autodiff: the identity, for BOTH kinds
+    max_energy_rate: float  # max autonomous H' over both kinds: <= 0, which is the point
+    mlp_range_exponent: float  # d log(sup-inf H)/d log(box): ~0, the tanh energy SATURATES
+    icnn_range_exponent: float  # ... for the convex energy: > 1, it grows with the box
+    mlp_min_curvature: float  # smallest Hessian eigenvalue of the tanh energy: NEGATIVE somewhere
+    icnn_min_curvature: float  # ... of the convex energy: = eps once the softplus units saturate
+    convexity: float  # eps
+    icnn_floor_slack: float  # min over the outermost shell of H(x) - (eps/2)|x|^2: >= 0, the floor
+    icnn_radius: float  # sqrt(2 H(x0)/eps), the invariant ball predicted from the start alone
+    icnn_max_excursion: float  # the realised max |x(t)| under the unforced flow: <= icnn_radius
+    mlp_radius: float  # inf -- there is no finite invariant ball, and that is the honest number
+    mlp_critical_points: int  # distinct minimisers of H found from a grid of starts: > 1
+    icnn_critical_points: int  # ... for the convex energy: exactly 1, since grad H is injective
+    max_gradient_at_rest: float  # largest |grad H| at those endpoints, so the counts are honest
+    ok: bool
+
+
+def _unforced_flow(model: PortHamiltonianResidual, x0: Array, dt: float, n_step: int) -> Array:
+    """RK4 on ``x' = (J - R) grad H(x)``, returning the whole path so excursions can be measured."""
+    zero = jnp.zeros((model.control_dim,))
+
+    def field(state: Array) -> Array:
+        return model(0.0, state, zero)
+
+    def step(state: Array, _: None) -> tuple[Array, Array]:
+        k1 = field(state)
+        k2 = field(state + 0.5 * dt * k1)
+        k3 = field(state + 0.5 * dt * k2)
+        k4 = field(state + dt * k3)
+        moved = state + dt / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        return moved, moved
+
+    _, path = jax.lax.scan(step, x0, None, length=n_step)
+    return path
+
+
+def _critical_points(
+    model: PortHamiltonianResidual, starts: Array, rate: float, n_step: int
+) -> Array:
+    """Gradient descent on ``H`` from each start -- the critical points, not the flow's position.
+
+    The unforced flow ``x' = (J - R) grad H`` reaches a critical point only as fast as the
+    dissipation lets it, and a randomly initialised ``R = L L'`` has eigenvalues near ``0.01``, so
+    over any affordable horizon the trajectory mostly ROTATES on a level set. The claim being
+    measured is about ``H``'s critical points -- Rocq
+    ``strong_convexity_gives_a_unique_critical_point`` -- so they are found directly.
+    """
+
+    def step(state: Array, _: None) -> tuple[Array, None]:
+        return state - rate * jax.vmap(jax.grad(model.energy))(state), None
+
+    rested, _ = jax.lax.scan(step, starts, None, length=n_step)
+    return rested
+
+
+def _distinct(points: Array, tolerance: float) -> int:
+    """Count clusters of ``points`` under a simple greedy sweep -- the grid is small by design."""
+    kept: list[Array] = []
+    for point in points:
+        if all(float(jnp.linalg.norm(point - seen)) > tolerance for seen in kept):
+            kept.append(point)
+    return len(kept)
+
+
+def convex_energy_certificate(
+    seed: int = 0,
+    state_dim: int = 2,
+    control_dim: int = 1,
+    convexity: float = 0.25,
+    n_start: int = 49,
+    spread: float = 3.0,
+    dt: float = 0.05,
+    n_step: int = 4000,
+) -> ConvexEnergyCertificate:
+    """RESULT 68 (A20) -- the port-Hamiltonian residual needs a COERCIVE energy, not a falling one.
+
+    Derived in ``validation/convex_port_hamiltonian.mac``, proved in
+    ``proofs/convex_port_hamiltonian.v``. :func:`port_hamiltonian_certificate` already checks the
+    three things that make the structure passive: the skew form vanishes, ``R >= 0``, and
+    ``H' <= 0``. All three hold for ANY energy network, because they are identities of
+    ``(J - R) grad H`` -- which is exactly why they cannot distinguish a useful energy from a
+    useless one.
+
+    What ``H' <= 0`` buys is confinement to ``{ H <= H(x0) }``, and that is a bound on the state
+    only when the set is bounded. A ``tanh`` MLP read out linearly is bounded in ``x``, so its high
+    sublevel sets are the whole space and the confinement is vacuous; and because its gradient
+    decays in every direction it has many critical points, so the "Lyapunov function" certifies
+    convergence to something without saying where.
+    An input-convex energy with a quadratic floor gives ``H(x) >= (eps/2)|x|^2``, hence the
+    forward-invariant ball ``|x(t)| <= sqrt(2 H(x0)/eps)`` -- a number the caller can print -- and a
+    unique critical point, because ``grad H`` of an ``eps``-strongly convex function is injective.
+
+    The arms, each able to fail: the passivity identity by autodiff against the algebra; the range
+    of each energy on a box and on a box ten times larger, which saturates for one and grows
+    quadratically for the other; the smallest Hessian eigenvalue over states spanning that whole
+    sweep; the quadratic floor on the outermost shell; the realised excursion of the unforced flow
+    against the predicted radius; and the number of distinct near-equilibria reached from a grid of
+    starts.
+    """
+    if convexity <= 0.0:
+        raise ValueError("the convexity floor eps must be positive: it IS the invariant radius")
+    k_mlp, k_icnn, k_state, k_control = jax.random.split(jax.random.PRNGKey(seed), 4)
+    plain = PortHamiltonianResidual(state_dim, control_dim, key=k_mlp)
+    convex = PortHamiltonianResidual(
+        state_dim, control_dim, energy="icnn", convexity=convexity, key=k_icnn
+    )
+
+    # 1. the passivity identity, by autodiff, for BOTH kinds -- it cannot separate them
+    states = spread * jax.random.normal(k_state, (64, state_dim))
+    controls = jax.random.normal(k_control, (64, control_dim))
+    residuals: list[float] = []
+    rates: list[float] = []
+    for model in (plain, convex):
+        _, dissipation = model.structure_matrices()
+
+        def rate(state: Array, control: Array, m: PortHamiltonianResidual = model) -> Array:
+            return jnp.dot(m.energy_gradient(state), m(0.0, state, control))
+
+        def algebra(
+            state: Array,
+            control: Array,
+            m: PortHamiltonianResidual = model,
+            r: Array = dissipation,
+        ) -> Array:
+            gradient = m.energy_gradient(state)
+            port = m.input_map(state).reshape(m.state_dim, m.control_dim)
+            return (port.T @ gradient) @ control - gradient @ r @ gradient
+
+        measured = jax.vmap(rate)(states, controls)
+        predicted = jax.vmap(algebra)(states, controls)
+        residuals.append(float(jnp.max(jnp.abs(measured - predicted))))
+        idle = jnp.zeros((control_dim,))
+        rates.append(float(jnp.max(jax.vmap(lambda s, m=model, z=idle: rate(s, z, m))(states))))
+
+    # 2. how each energy's range grows with the box it is measured on. A ratio between two boxes
+    #    would be diluted by the convex network's own (roughly linear) growth, so the reported
+    #    number is the log-log SLOPE over a sweep: ~0 means bounded, > 1 means coercive.
+    corners = jax.random.uniform(k_state, (4096, state_dim), minval=-1.0, maxval=1.0)
+    scales = spread * jnp.asarray([1.0, 3.0, 10.0, 30.0])
+
+    def range_exponent(model: PortHamiltonianResidual) -> float:
+        spans = jnp.asarray(
+            [jnp.ptp(jax.vmap(model.energy)(float(scale) * corners)) for scale in scales]
+        )
+        x, y = jnp.log(scales), jnp.log(spans)
+        centred = x - jnp.mean(x)
+        return float(jnp.sum(centred * (y - jnp.mean(y))) / jnp.sum(centred**2))
+
+    # 3. the curvature that decides whether the sublevel set is a ball. eps-strong convexity is a
+    #    GLOBAL claim, so the probes span the whole sweep rather than the inner box alone: near the
+    #    origin the network's own curvature dominates the floor and overstates it, while far out
+    #    every softplus saturates, the ICNN is affine, and what is left is exactly eps.
+    probes = jnp.concatenate(
+        [float(scale) * jax.random.normal(k_control, (256, state_dim)) for scale in scales]
+    )
+
+    def min_curvature(model: PortHamiltonianResidual) -> float:
+        hessians = jax.vmap(jax.hessian(model.energy))(probes)
+        return float(jnp.min(jnp.linalg.eigvalsh(hessians)))
+
+    # ... and the floor it is supposed to buy, on the outermost shell. A network that merely grows
+    #     fast stands in for the quadratic term at small radius and cannot at large radius, so this
+    #     is the radius at which the claim H(x) >= (eps/2)|x|^2 is actually load-bearing.
+    shell = float(scales[-1]) * states / jnp.linalg.norm(states, axis=1, keepdims=True)
+    floor_slack = float(
+        jnp.min(jax.vmap(convex.energy)(shell) - 0.5 * convexity * jnp.sum(shell**2, axis=1))
+    )
+
+    # 4. the predicted ball against the realised excursion, from a grid of starts
+    side = round(n_start**0.5)
+    axis = jnp.linspace(-spread, spread, side)
+    grid = jnp.stack(jnp.meshgrid(*([axis] * state_dim), indexing="ij"), axis=-1).reshape(
+        -1, state_dim
+    )
+    paths = jax.vmap(lambda s: _unforced_flow(convex, s, dt, n_step))(grid)
+    levels = jax.vmap(convex.energy)(grid)
+    radii = jax.vmap(convex.invariant_radius)(levels)
+    excursions = jnp.max(jnp.linalg.norm(paths, axis=2), axis=1)
+    worst = int(jnp.argmax(excursions - radii))
+
+    # 5. how many distinct places the ENERGY can come to rest. The flow's own position at time T
+    #    would measure the dissipation rate instead: a random R = L L' has eigenvalues near 0.01,
+    #    so the trajectory mostly rotates on a level set over any affordable horizon.
+    #    The descent rate and length are set by what the PLAIN energy needs: its curvature is so
+    #    small that 4000 steps leave |grad H| at 4e-2; the convex one reaches 1e-15 either way.
+    tolerance = 0.05 * spread
+    plain_rest = _critical_points(plain, grid, 0.2, 20_000)
+    convex_rest = _critical_points(convex, grid, 0.2, 20_000)
+    at_rest = float(
+        jnp.max(
+            jnp.concatenate(
+                [
+                    jnp.linalg.norm(jax.vmap(jax.grad(plain.energy))(plain_rest), axis=1),
+                    jnp.linalg.norm(jax.vmap(jax.grad(convex.energy))(convex_rest), axis=1),
+                ]
+            )
+        )
+    )
+    plain_exponent, convex_exponent = range_exponent(plain), range_exponent(convex)
+    ok = bool(
+        max(residuals) < 1e-5
+        and max(rates) <= 1e-6
+        and plain_exponent < 0.15
+        and convex_exponent > 1.0
+        and min_curvature(plain) < 0.0
+        and min_curvature(convex) >= convexity - 1e-4
+        and floor_slack >= 0.0
+        and bool(jnp.all(excursions <= radii + 1e-6))
+        and at_rest < 1e-3
+        and _distinct(plain_rest, tolerance) > 1
+        and _distinct(convex_rest, tolerance) == 1
+    )
+    return ConvexEnergyCertificate(
+        max(residuals),
+        max(rates),
+        plain_exponent,
+        convex_exponent,
+        min_curvature(plain),
+        min_curvature(convex),
+        convexity,
+        floor_slack,
+        float(radii[worst]),
+        float(excursions[worst]),
+        float(plain.invariant_radius(1.0)),
+        _distinct(plain_rest, tolerance),
+        _distinct(convex_rest, tolerance),
+        at_rest,
+        ok,
+    )
 
 
 @dataclass(frozen=True)

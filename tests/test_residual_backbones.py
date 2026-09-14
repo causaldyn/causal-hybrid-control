@@ -12,6 +12,8 @@ from chc.residual import (
     LipschitzResidual,
     PortHamiltonianResidual,
     SpectralResidual,
+    _unforced_flow,
+    convex_energy_certificate,
     damping_injection_certificate,
     fit_spectral_residual,
     lipschitz_certificate,
@@ -42,6 +44,94 @@ def test_port_hamiltonian_output_has_state_shape_and_composes() -> None:
     assert model(0.0, x, u).shape == (2,)  # a state-dimension vector field
     hybrid = HybridDynamics(DampedOscillator(1.0, 0.1), model)
     assert hybrid(0.0, x, u).shape == (2,)  # slots into the additive hybrid unchanged
+
+
+def test_a_convex_energy_turns_the_passivity_inequality_into_an_invariant_ball() -> None:
+    # Result 68, validation/convex_port_hamiltonian.mac, proofs/convex_port_hamiltonian.v.
+    # H' <= 0 is an identity of (J - R) grad H and holds for ANY energy network, so it cannot tell
+    # a useful energy from a useless one. What separates them is whether { H <= H(x0) } is bounded.
+
+    key = jax.random.PRNGKey(4)
+    k_mlp, k_icnn, k_x, k_y = jax.random.split(key, 4)
+    convexity = 0.3
+    plain = PortHamiltonianResidual(2, 1, key=k_mlp)
+    convex = PortHamiltonianResidual(2, 1, energy="icnn", convexity=convexity, key=k_icnn)
+
+    # 1. the energy is CONVEX, checked by the midpoint inequality rather than by the Hessian the
+    #    certificate reads -- an independent route to the same property. The floor is exactly
+    #    convex on its own and would mask the network behind it, so it is subtracted: what is under
+    #    test is the architecture's nonnegativity rule, which is all that makes the network convex.
+    #    And it is tested far out as well as near the origin, because a mixed-sign recurrent weight
+    #    perturbs a near-affine region by less than the tolerance and only bites once the units it
+    #    feeds have separated.
+    def network(x: Array) -> Array:
+        return convex.energy(x) - 0.5 * convexity * jnp.dot(x, x)
+
+    for scale in (4.0, 100.0):
+        a = scale * jax.random.normal(k_x, (256, 2))
+        b = scale * jax.random.normal(k_y, (256, 2))
+        midpoint = jax.vmap(network)(0.5 * (a + b))
+        chord = 0.5 * (jax.vmap(network)(a) + jax.vmap(network)(b))
+        assert bool(jnp.all(midpoint <= chord + 1e-9))
+    # ... and STRONGLY convex with exactly the declared constant: the chord clears the midpoint by
+    #     at least (eps/8)|a-b|^2, which is the definition rearranged
+    a = 4.0 * jax.random.normal(k_x, (256, 2))
+    b = 4.0 * jax.random.normal(k_y, (256, 2))
+    chord = 0.5 * (jax.vmap(convex.energy)(a) + jax.vmap(convex.energy)(b))
+    midpoint = jax.vmap(convex.energy)(0.5 * (a + b))
+    gap = 0.125 * convexity * jnp.sum((a - b) ** 2, axis=1)
+    assert bool(jnp.all(chord - midpoint >= gap - 1e-4))
+    # the plain MLP energy is not: some pair violates the same inequality
+    plain_mid = jax.vmap(plain.energy)(0.5 * (a + b))
+    plain_chord = 0.5 * (jax.vmap(plain.energy)(a) + jax.vmap(plain.energy)(b))
+    assert bool(jnp.any(plain_mid > plain_chord + 1e-5))
+
+    # 2. the quadratic floor, which is what makes the sublevel set a ball -- checked at a radius
+    #    where a network that merely grows cannot stand in for the quadratic term
+    far = 100.0 * jax.random.normal(k_x, (256, 2))
+    assert bool(jnp.all(jax.vmap(convex.energy)(far) >= 0.5 * convexity * jnp.sum(far**2, axis=1)))
+
+    # 3. so the radius is a number for one and infinity for the other -- and the infinity is the
+    #    honest answer, not a missing field
+    assert float(convex.invariant_radius(2.0)) == pytest.approx(
+        float(jnp.sqrt(2.0 * 2.0 / convexity)), rel=1e-6
+    )
+    assert jnp.isinf(plain.invariant_radius(2.0))
+    assert float(convex.invariant_radius(-1.0)) == 0.0  # H >= 0, so a negative level is empty
+
+    # 4. and the ball is FORWARD INVARIANT under the unforced flow
+    starts = 3.0 * jax.random.normal(k_x, (16, 2))
+    paths = jax.vmap(lambda s: _unforced_flow(convex, s, 0.05, 800))(starts)
+    radii = jax.vmap(convex.invariant_radius)(jax.vmap(convex.energy)(starts))
+    assert bool(jnp.all(jnp.max(jnp.linalg.norm(paths, axis=2), axis=1) <= radii + 1e-5))
+
+    # 5. the certificate: both energies pass the passivity check, and only one has a radius
+    cert = convex_energy_certificate()
+    assert cert.ok
+    assert cert.passivity_residual < 1e-5  # the identity, for BOTH kinds
+    assert cert.max_energy_rate <= 1e-6  # H' <= 0, for BOTH kinds: it separates nothing
+    assert cert.mlp_range_exponent < 0.15  # the tanh energy saturates over a 30x box sweep
+    assert cert.icnn_range_exponent > 1.0  # the convex one does not
+    assert cert.mlp_min_curvature < 0.0
+    # two-sided: far from the origin the ICNN saturates to an affine map, so the infimum of the
+    # Hessian is the floor itself and nothing else -- a one-sided >= would also pass on a network
+    # whose own curvature happened to be doing the work
+    assert cert.icnn_min_curvature == pytest.approx(cert.convexity, abs=1e-6)
+    assert cert.icnn_floor_slack >= 0.0
+    assert cert.icnn_max_excursion <= cert.icnn_radius
+    assert jnp.isinf(cert.mlp_radius)
+    assert cert.icnn_critical_points == 1
+    assert cert.mlp_critical_points > 1
+    # ... and those endpoints really are critical, so the counts are about H and not about how far
+    # a finite descent happened to get
+    assert cert.max_gradient_at_rest < 1e-3
+
+    with pytest.raises(ValueError, match='"mlp" or "icnn"'):
+        PortHamiltonianResidual(2, 1, energy="quadratic", key=k_mlp)  # ty: ignore[invalid-argument-type]
+    with pytest.raises(ValueError, match="positive convexity floor"):
+        PortHamiltonianResidual(2, 1, energy="icnn", convexity=0.0, key=k_mlp)
+    with pytest.raises(ValueError, match="convexity floor eps must be positive"):
+        convex_energy_certificate(convexity=0.0)
 
 
 def test_damping_injection_certificate_dissipates_closed_loop_energy() -> None:
