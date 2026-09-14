@@ -5,6 +5,416 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the API stabilises (pre-1.0 it may
 still change).
 
+## [Unreleased]
+
+### Added
+
+- **`cross_cluster_mixing_certificate`: the cluster rate does not need independent clusters (A3').**
+  `multichannel_control_certificate` and `clustered_lower_bound_certificate` both draw independent
+  clusters, so everything downstream of them rested on partial interference with independent groups
+  (Hudgens & Halloran 2008) -- the assumption a marketplace violates first, since adjacent cities share
+  drivers, weather and campaigns. A3' weakens it to `psi`-dependence in the sense of Kojevnikov, Marmer
+  & Song (2021): cluster scores may correlate across clusters provided the coefficient `theta_s` decays
+  fast enough for their Condition ND. This certificate measures both halves of the resulting claim,
+  because "the rate survived" alone is unfalsifiable -- it is also what an arm with no dependence at
+  all reports.
+
+  Each arm draws **two independent** unit-variance AR(1)-across-cluster fields, one entering the
+  spillover regressor and one the outcome error. With two, the per-unit cross moment is zero while the
+  score picks up `Cov(s_g, s_h) ~ rho^(2|g-h|)`. At `240` seeds x `5` independent replicate blocks over
+  `G` in `80..1280`, the fitted slope of RMSE against `G` reads `-0.5013 +- 0.0072`, `-0.5210 +- 0.0099`,
+  `-0.5054 +- 0.0072`, `-0.4912 +- 0.0087`, `-0.4702 +- 0.0131` for `rho = 0, 0.3, 0.5, 0.7, 0.85`.
+
+  Two, not one, and the reason is a decoy rather than a nuance. Sharing one field between the regressor
+  and the error makes it an omitted confounder, and measured that way the certificate reports slopes
+  `-0.001 .. +0.027` -- **indistinguishable from the non-summable arm below**, so the bug would read as
+  "the rate broke" rather than as a broken plant. Nothing in the slope separates them; the point
+  estimate does. Hence `worst_mean_error` is part of the returned curve and gated in the tests. On the
+  run above it is `0.00492`; on a matched pair at reduced settings it is `0.0138` with two fields and
+  `0.3377` with one, a `24x` gap.
+
+  The negative control is the half that makes those numbers mean something: one arm replaces the decay
+  with a **fixed** count of super-blocks, so `theta_s` never decays and Condition ND(b) fails. Its slope
+  is `+0.0000 +- 0.0103` -- the rate is gone, not merely worse, and the separation from the nearest
+  summable arm is `28.2` standard errors.
+
+  What A3' actually moves is the CONSTANT, and that is predicted rather than observed: the bread is free
+  of `rho` (a unit-variance field has unit variance whatever its correlation length), so `G*MSE` must be
+  AFFINE in the HAC sum `sum_{d != 0} psi(d) = 2 rho^2/(1 - rho^2)`. Fitted, `G*MSE = 0.2205 + 0.1182 *
+  sum psi` with `R^2 = 0.99487` across arms whose HAC sum spans `0` to `5.207`; the worst point is
+  `8.8%` off, against the `4.1%` Monte-Carlo standard error of an MSE from `1200` draws.
+
+  `validation/cross_cluster_hac.mac` carries the symbolic side: the HAC sum `2r/(1-r)` with `r = rho^2`,
+  and the finite-`G` Bartlett-weighted sum `s_G = 2 sum_{d=1}^{G-1} (1 - d/G) r^d` whose deficit obeys
+  `lim_G G*(s_inf - s_G) = 2r/(1-r)^2` -- both at residual `0` against the stated form, and re-summed
+  independently at 40 digits (worst residual `8.2e-16`). That deficit is why the fitted slope comes out
+  SHALLOWER than `-1/2` at high decay: `s_G` reaches its limit from below, so `G*MSE` rises with `G`.
+  It predicts `+0.005383` on `G in [80,1280]` and `+0.002691` on `[160,2560]` -- halving as the window
+  doubles, the shape the measurement shows -- and accounts for `17.2%` and `36.9%` of the measured
+  gaps, no more. The sign and the walk are derived; the magnitude at the low window is not.
+
+  Two arguments are rejected at the boundary rather than silently mismeasured. A decay of `1` is **not**
+  the limiting case it looks like: an AR(1) at `phi = 1` is a field CONSTANT across clusters, which is
+  exactly the common shock KMS's conditional definition conditions on, and which the cross-fit nuisance
+  intercept absorbs -- measured, that arm reports `G*MSE = 0.117` against `0.240` for independent
+  clusters, i.e. LESS dependence, not more. Fewer than four decay arms is also refused, since below that
+  `hac_r_squared` is `1.0` by construction and says nothing.
+
+- **`plan_regret_bound`: how far a finished plan is from the best one the same box allows
+  (L3.2).** `DecisionCertificate` shipped with no `regret_bound` because nothing took a
+  `CausalPlan`, and the obvious candidate does not survive a box. Result 6's self-certifying
+  `|grad J|^2/(2 mu)` needs no optimum, which is what makes it a certificate -- but at a lever the
+  gradient holds against its own bound `grad J` is nonzero while the true regret is zero, so it
+  charges regret at the optimum itself. On a `2x1` LQ plant whose box `[-0.2, 0.2]` clips the
+  unconstrained optimum away, all 12 actions pinned and the realised gap exactly `0`, it reports
+  **`55.83`**.
+
+  What replaces it is the same certified gain maximised over the *feasible* moves only:
+  `bound = sum_i max{ -g_i d - (mu/2)d^2 : lo_i - U_i <= d <= hi_i - U_i }`. Clipping subtracts
+  exactly a perfect square (`gain(d0) - gain(d) = (mu/2)(d - d0)^2`), so the box can never loosen
+  the bound, and at a pinned lever the maximiser is `d = 0` and the term is **exactly** zero. That
+  plant's bound is `0.0`; a `2x2` plant with one tight lever reports `9.8e-8` where Result 6's
+  reports `384.5`.
+
+  It is not vacuous. Against the best cost the same box allows, on deliberately unconverged solves,
+  bound/realised comes out at **`1.06`, `1.30`, `1.33`, `1.75`** -- at plans where Result 6's bound
+  is `292x` and `1105x` looser.
+
+  And the modulus is allowed to collapse. `gain(d) <= -g d`, whose maximum over an interval sits at
+  an endpoint, so the bound is capped by the **Frank-Wolfe gap** `sum_i max(-g_i a_i, -g_i b_i)` --
+  which does not mention `mu` and is finite on any bounded box. As `mu -> 0` the bound converges to
+  it linearly while `|grad J|^2/(2 mu)` diverges. `gain` is also non-increasing in `mu`, so a
+  conservative modulus is looser and never invalid; for a plant affine in the action
+  `H - R = B'QB >= 0` makes `lambda_min(R)` a valid one with no eigenvalue solve, and the sampled
+  curvature reproduces `lambda_min(H)` to 12 digits.
+
+  The box separates, so `per_lever` sums to the bound and names which lever carries the worst-case
+  cost. Where the measured curvature is negative the certificate reports `inf` and `ok=False`: no
+  convexity argument applies there, and a finite number would be a fabrication. The bound is on the
+  **planning objective** -- how far the planning model is from the plant is the Gronwall tube's
+  question, and the two must not be added.
+
+  This also closes the one property `tests/test_decision_properties.py` could not write: over
+  random boxes and random solver budgets the bound never falls below the realised optimality gap.
+  It has to be checked against a deliberately unconverged plan -- against a converged one
+  `bound >= 0` passes it by accident.
+
+  Derived in `validation/constrained_plan_regret.mac`, proved in
+  `proofs/constrained_plan_regret.v`.
+
+- **A coercive energy for the port-Hamiltonian residual, and the radius it finally prints (A20).**
+  `PortHamiltonianResidual` documented `H' = -dH' R dH <= 0` as making `H` a Lyapunov function, "so
+  the residual can't blow up off-support like a black box can". The inequality is real -- it is an
+  identity of `(J - R) grad H` and the certificate reproduces it to `2.7e-15` -- but it holds for
+  **any** energy network whatsoever, so it cannot tell a useful energy from a useless one. Both
+  arms of the new certificate report `H' <= -9.9e-9`; the number separates nothing.
+
+  What `H' <= 0` buys is confinement to `{ H <= H(x0) }`, and that bounds the state only if the set
+  is bounded. A `tanh` MLP read out linearly is bounded **in `x`**, so every sublevel set above its
+  supremum is the whole space: measured as the log-log slope of its range against the box it is
+  measured on, the shipped energy scores **`0.074`** -- it saturates. Its gradient decays in every
+  direction too, so the unforced flow has near-equilibria everywhere far from the data, which is
+  precisely the off-support regime the docstring was claiming to cover: gradient descent on `H`
+  from a `7x7` grid of starts reaches **3** distinct rest points.
+
+  `PortHamiltonianResidual(..., energy="icnn", convexity=eps)` swaps in an input-convex network
+  (Amos-Xu-Kolter: `softplus` activations, recurrent weights forced nonnegative through `softplus`)
+  plus a quadratic floor, giving `H(x) >= (eps/2)|x|^2`. Its range exponent is **`1.24`**, and
+  `invariant_radius(level)` returns `sqrt(2 level/eps)` -- the forward-invariant ball, checked
+  against the realised excursion of the unforced flow (`6.00` inside a predicted `25.81`). For the
+  MLP the same call returns `inf`, which is the honest answer rather than a missing field. And
+  because `grad H` of an `eps`-strongly convex function is injective, the convex energy has
+  **exactly 1** critical point, with `|grad H| <= 3.8e-4` at every reported rest point so the
+  counts are about `H` and not about how far a finite descent happened to get.
+
+  The strong-convexity constant is measured, not assumed, and the measurement has to be taken far
+  out: near the origin the network's own curvature dominates the floor and overstates it. Over
+  probes spanning the whole `30x` sweep the smallest Hessian eigenvalue of the convex energy is
+  **`0.250000000095`** against a declared `eps = 0.25` -- once every `softplus` unit saturates the
+  ICNN is affine and what is left is exactly the floor -- while the `tanh` energy reaches
+  **`-0.068`**.
+
+  Derived in `validation/convex_port_hamiltonian.mac`, proved in
+  `proofs/convex_port_hamiltonian.v`.
+
+- **The van Trees floor when the effect is a MATRIX, and the alignment a scalar plant hides
+  (A18).** Result 57 discharged Result 10's `needs LAM` annotation by working in action space,
+  where the one-step LQ regret is exactly a squared error, and closed with *"the multivariate case
+  has the same structure with `psi'` a Jacobian and the floor a trace."* It does -- and the
+  conclusion changes, which is why `multivariate_action_floor` is a new entry point rather than a
+  widened signature.
+
+  The regret identity survives at any dimension: `J(u,B) - J(u*(B),B) = (u-u*)' M (u-u*)` with
+  `M = B'QB + R`, exactly and for every `u`. So `E[regret] = tr(M Sigma)`, and because trace
+  against a PSD weight is monotone in the PSD order, the matrix van Trees inequality
+  `Sigma >= Psi' G^-1 Psi'` becomes `E[regret] >= tr(M Psi' G^-1 Psi')`. At `p = q = 1` that is
+  Result 10's constant unchanged, and on two decoupled channels it is `h1 C(b1,x1) + h2 C(b2,x2)`
+  -- both reproduced to `4.4e-16`.
+
+  The scalar floor is a **product** of a curvature and an information; this one is a **trace** that
+  interleaves them, so it decomposes over the eigendirections of the information as
+  `sum_i (Psi' v_i)' M (Psi' v_i)/lambda_i`. Confounding therefore stops having a price and starts
+  having an **alignment**: cutting the information along one direction by `k` raises the floor by
+  `1 + (k-1) a_w/sum(a)`. Measured with the same `k = 4`, the direction the optimal action leans on
+  most costs **`3.40x`** and a direction in the kernel of `Psi'` costs **`1.0000000000`** -- exactly
+  nothing. Even the worst single direction falls short of `k`, because `Psi'` has rank 2 in a
+  4-dimensional parameter family and `80%` of the weight sits in one direction. A scalar plant has
+  one direction, always sits at the first corner, and reports `V_exp/V_conf`.
+
+  Result 57(d)'s knife edge becomes one entry of a vector: a channel at `rr = b^2` carries weight
+  `1.2e-32` against its neighbour's `0.074`, so confounding *it* is free. And the bound still binds
+  where it should -- a Hodges estimator drives the pointwise error to exactly `0` against the
+  unbiased Cramer-Rao floor while sitting `31.6x` above the van Trees floor, `19x` worse than the
+  efficient plug-in's `1.67x`.
+
+  `Psi'` comes from differentiating `M u* = -B'Qx` rather than from autodiff -- `chc.regret` is
+  numpy/scipy only and a `jax` import there would pull the accelerator stack into a module that
+  never needs it -- so the certificate checks it against a central finite difference on square and
+  both rectangular shapes (`1.0e-10`).
+
+  Derived in `validation/multivariate_van_trees.mac`, proved in `proofs/multivariate_van_trees.v`.
+
+- **A cap schedule and a spending budget, and the invariant that survives both (A17).** Result 56
+  answered "how long do you explore under a per-round action cap" with a single number,
+  `n* = sqrt(K T/(A c))/cap`, and recorded as honest scope that a cap which *varies* over rounds,
+  or a total budget on top of the cap, changes the feasible set so that `n*` is no longer a
+  formula. `capped_exploration_policy` now takes `cap` as a per-round sequence and an optional
+  `budget`, and the constant-cap path is left numerically untouched.
+
+  What replaces the formula is an invariant. Differentiating the objective along the greedy fill
+  gives `dF/dn = cap(n) [A - K c (T - n)/(I0 + c S(n))^2]`, and the cap is a strictly positive
+  factor -- it cannot move a root. So the stopping **mass** is cap-free and the stopping **round**
+  is whatever prefix sum reaches it: `n* = min{n : sum_{t<=n} cap_t >= min(B, S*)}`, an index read
+  off the schedule. Across five schedules at `T = 4000` -- constant, both ramps, a dead first
+  third, and uniform noise -- whose blocks differ by **6.9x in length**, every one stops within
+  **half a cap** of the predicted mass.
+
+  `predicted_mass` is that root taken against the *remaining* horizon, `A(I0 + c S)^2 = K c (T-n)`,
+  solved as a fixed point of the integer map. Result 56's closed form is its `n << T` limit and
+  runs **25% high** once the caps open late, so the field would otherwise report a target the
+  policy knowingly misses.
+
+  Two consequences worth naming. A dead actuator early on is not an approximation: `m` rounds under
+  a zero cap add exactly `m K/I0` and hand the rest of the horizon to the *same* problem -- block
+  length, mass and cost all match the shifted solve, to `1e-13` on the cost. And once a budget is
+  spent the cost curve is **exactly** flat, because a round that explores nothing adds one
+  estimation term and removes one exploitation term at the same information; the policy therefore
+  takes the first minimiser rather than letting floating-point noise pick among the ties.
+
+  Cross-checks that can fail: the `O(T)` sweep against a projected-gradient solve of the full
+  convex program on a random box (`1.9e-6`), the digamma identity against the explicit harmonic sum
+  it replaces (`1e-13`), and the greedy fill against the same mass spread uniformly, reversed, and
+  shifted one block later.
+
+  Derived in `validation/capped_exploration_schedule.mac`, proved in
+  `proofs/capped_exploration_schedule.v`.
+
+- **A dual-weighted error estimate that does not need its adjoint written out (A16).** Result 55's
+  estimator is exact, and the exactness belongs to the *affine* reduced problem: its 2x2 transition
+  matrix is the LQ one and cannot be told otherwise. `adjoint_weighted_error(field, times,
+  trajectory, rate, terminal_row)` takes any field and builds the adjoint by linearising it, so the
+  same construction runs on a game with no closed form. The pairing identity behind it needs no
+  structure at all -- only that the adjoint is driven by the **transpose**, and with the
+  untransposed Jacobian it fails by exactly `(j21 - j12)(z2 d1 - z1 d2)`, i.e. it is correct
+  precisely on a self-adjoint field.
+
+  `CongestedMeanFieldGame` is the game that makes this measurable: pay for distance from a
+  congestion-shifted target, `(q/2)(x - c m - gamma m^3)^2`. The value function stays quadratic in
+  `x`, so the Riccati root never sees `gamma` and the reduction to `(m, S)` survives, but the
+  two-point problem is nonlinear and there is no closed form -- `solve` shoots on `S(0)` from the LQ
+  answer. At `gamma = 0.6` it moves `S(0)` by 72%.
+
+  Measured by `nonlinear_dwr_certificate()` on a manufactured error `yhat = y + eta p`, whose true
+  value is known exactly so that "the estimate is first-order" cannot be confused with "the solver
+  is bad": on an affine field the relative error is **flat at `6.3e-7` across a 16x sweep in `eta`**
+  and that floor is quadrature (halving the step divides it by `3.7`); on the congested field the
+  absolute error fits an exponent of **`2.03`**, so the remainder is the second variation and the
+  relative error is first-order. Two controls make the adjoint earn its place: keeping the defect
+  and swapping in the *affine* linearisation costs exactly one order (exponent **`1.02`**, `196x`
+  worse at the smallest perturbation), and using the affine field for both -- what the Result 55
+  estimator does if pointed at a congested game -- gives a **constant** `0.19` error, exponent
+  `7e-8`: it stops tracking entirely.
+
+  Derived in `validation/nonlinear_dwr.mac`, proved in `proofs/nonlinear_dwr.v`.
+
+- **The finite-population gap, priced rather than fitted (A13).** Result 49 returns a
+  Fokker-Planck density, which is the `N -> infinity` limit, and nobody deploys to infinity. Under
+  the *mean-field* optimal control the feedback is a function of an agent's own state and of
+  deterministic coefficients, so the closed-loop agents are **independent** OU processes and the
+  empirical mean is a sample mean of `N` i.i.d. draws. That makes the gap exact at every `t` and
+  every `N` -- `E[(m_N - m)^2] = v(t)/N` -- rather than an asymptotic rate with an unnamed constant.
+
+  `MeanFieldSolution.finite_population_rms(n)` is that closed form;
+  `MeanFieldSolution.simulate_population(...)` runs the primitive plant under the same feedback so
+  the two can be compared without one reading the other. `finite_population_gap_certificate()`
+  measures four arms: the gap against the closed form (worst relative error 4.8% at
+  `R = 400`, exponent `-0.4989` against a Monte-Carlo standard error of `0.0120`); the
+  falsification, where one shared Brownian path drives every agent and the exponent collapses to
+  `0.0003`; a fixed coupling gain, which moves the constant to the rate `A + kappa` (ratio `0.98`
+  against the moved constant, `1.74` against the unmoved one); and `kappa = c/N`, the scaling an
+  N-player Nash actually has, whose bias matches its leading-order constant to `0.5%` under common
+  random numbers and sits at `0.21` of the fluctuation at `N = 512`.
+
+  So the exponent is the part that transfers and the constant is the part that moves. Derived in
+  `validation/finite_population_gap.mac`, proved in `proofs/finite_population_gap.v`. The
+  1-Wasserstein *density* gap is a separate claim with a different constant (Fournier-Guillin) and
+  the certificate does not assert it.
+
+- **`CausalGraph.unrolled(...)`: lagged edges, without a second kind of graph.** A time series has
+  one more thing to say than a cross-section -- *when* a parent acts -- and the obvious way to carry
+  it would fork `d_separated`, `adjustment_set`, `_proper_backdoor` and every other method on a
+  lag-aware edge type. Instead the time index goes into the node name: an edge `("spend", "sales", 1)`
+  unrolls to `spend[t-1] -> sales[t]`, and the Perkovic criterion runs on the result *unchanged*. The
+  cost is node count, `(lags + 1)` times the variable count, which is nothing at this scale.
+
+  `("x", "x", 1)` -- the ordinary autoregressive term -- is accepted, because it is not a self-loop
+  once time is explicit; `("x", "x", 0)` is rejected, because within a slice it is. A latent variable
+  is latent in every slice, latency being a property of the variable rather than of the moment it
+  acted. `CausalGraph.lagged_name(name, lag)` is there so a caller naming a treatment does not
+  hand-format `"spend[t]"` and drift from what the constructor produced.
+
+  The argument is `lags=`, **not** `horizon=` as the design note proposed. In this library `horizon`
+  is a plan length (`prescribe`), and one name meaning two things is how a caller gets a graph one
+  slice short.
+
+- **Supply-chain hardening (L6).** `SECURITY.md` with a threat model that says plainly what is *not*
+  in scope -- wrong numbers are correctness bugs and belong in the public tracker, where they can be
+  argued about -- and what is: any path where a log record, an exception or a `Provenance` carries
+  caller data beyond the column names it was given. `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1).
+  Dependabot on `uv.lock` and on GitHub Actions, the second being the one that actually gets
+  exploited: every workflow here holds `id-token: write` or `contents: write`. CodeQL over `python`
+  **and** `actions`, at `security-extended`. OpenSSF Scorecard. Private vulnerability reporting,
+  secret scanning and push protection enabled on the repository.
+
+  Releases now also carry a **SLSA build provenance** attestation
+  (`actions/attest-build-provenance`), which is a different claim from the PEP 740 one PyPI already
+  had: PyPI's says "uploaded by this workflow", this one says "built from this commit", and it
+  verifies with `gh attestation verify` without going through the index at all. The PEP 740
+  attestations were checked rather than assumed -- `/integrity/.../provenance` returns both
+  artifacts, publisher `causaldyn/causal-hybrid-control` via `release.yml`.
+
+  README gains a **stability statement**: what 0.x promises, three tiers by what a break costs you,
+  and the road to 1.0.
+
+### Fixed
+
+- **`numpy>=2.0`, which is what the code already required.** `chc.deep_galerkin` calls
+  `np.trapezoid`, added in numpy 2.0 under that name, while the floor said `>=1.26`. Nothing
+  noticed because every resolution in practice pulls a jax that pins `numpy>=2.1`; a user who
+  pinned an old jax would have got an `AttributeError` from a declared-supported configuration.
+- **Two more stale copies of the version, found by looking for siblings of the one 0.5.1 fixed.**
+  `CITATION.cff` and the README's BibTeX block both still said `0.3.0` -- so GitHub's "Cite this
+  repository" and any paper citing this library were naming a version two minors old. Same cause as
+  `__version__`: a hand-maintained duplicate of `pyproject.toml`'s `version`, agreeing with itself
+  and therefore invisible.
+
+  `tests/test_release_metadata.py` now pins all of them -- `CITATION.cff`, the README BibTeX, and
+  `SECURITY.md`'s supported-versions row -- against `pyproject.toml`, which is the file a release
+  commit edits. Confirmed each assertion fails when the stale value is put back.
+
+- `CONTRIBUTING.md` said Python 3.12–3.14; the floor has been 3.11 since the lint matrix was
+  widened.
+
+- **A carryover-blind baseline for the marketing-mix case study, and what it measured.**
+  `run_marketing_mix` gains a `myopic` arm: the *same identified fit* the `adjusted` arm plans from,
+  spent on this week's return alone, at the same total budget. Its purpose is to separate what
+  identification buys from what the objective's HORIZON buys, which the previous three arms could
+  not distinguish -- `flat` is neither identified nor forward-looking, so `adjusted > flat` credited
+  both at once.
+
+  A rule constant in time is not an approximation of myopia on this plant, it is myopia's exact
+  answer: the immediate increment `gamma_c * spend_c` is linear in spend, so "re-optimise every week
+  for this week's sales" fills the highest-`gamma` channel to its ceiling and spills to the next,
+  with the same answer every week.
+
+  What it then measured is not what it was built to show. Over eight seeds (`causaldyn_bench`
+  Track M), mean lift over doing nothing: `adjusted 46.56`, `myopic 46.88`, `flat 44.11`,
+  `confounded 36.70`. Adjusting for the season is worth `+9.9` and wins at **8 of 8** seeds; looking
+  past this week is worth `-0.3` with its sign flipping **5/3**, inside `6.2%` of the mean lift.
+  Both identified rules beat the equal split at 8 of 8.
+
+  And the design that flips it is one line: a myopic rule loses when the carryover ordering
+  *contradicts* the immediate one, not merely because carryover exists. Here `beta_c/theta_c` ranks
+  the channels `(1.29, 1.50, 1.60)` against `gamma_c`'s `(0.50, 0.20, 0.35)` -- the two disagree
+  about the top channel but agree about which to drop. Re-parameterise to `beta/theta` of
+  `(0.07, 8.00, 1.60)` at unchanged `gamma`, so the myopic ordering is untouched by construction,
+  and the whole-horizon plan wins **6 of 6** by `2.11..3.40`. The module's honest scope now says so;
+  the case study's headline is the identification, and the horizon is a second, smaller and
+  plant-dependent effect.
+
+### Changed
+
+- **`composition_transfer_certificate` now says why its fitted slopes are not the integers, and
+  the difference is derived rather than tolerated.** The certificate reports
+  `2.048478 / 4.012425 / 6.002273` against a theoretical `2 / 4 / 6`, and that excess had been
+  read as agreement-up-to-noise. There is no noise in it -- the certificate is deterministic. With
+  `e = delta^p` and `t = log(delta)`, `log R = const + 2 p t + lam e + 2 c2 e^2 + O(e^3)`, so an
+  ordinary least-squares fit over a finite window necessarily reports
+  `2 p + lam cov(t, e^(p t))/var(t) + 2 c2 cov(t, e^(2 p t))/var(t)`, with
+  `lam = (2 b^3 - 6 b rr)/(rr^2 - b^4)` and `c2 = (b^6 - 8 b^4 rr + 5 b^2 rr^2 - 2 rr^3)/(2 (rr^2
+  - b^4)^2)`. New derivation `validation/order_transfer_window.mac` (Maxima, cross-checked in
+  giac); the two terms account for `4.09e-2` of the `4.85e-2` excess at `p = 1`, and what is left
+  is one more power of `delta` across four windows.
+
+  The same derivation bounds the window from the other end, which is the part that changes what a
+  reader should do. `u*(b + e) - u*(b)` is a cancellation, so the regret's relative error grows as
+  `delta_lo` falls: at `delta in [1e-5, 2e-4]` the `p = 3` fit reads `6.035`, and the two-channel
+  and three-channel `delta^4` sweeps in `multivariate_interference_certificate` and
+  `exposure_map_certificate` return `nan` outright, because the regret has underflowed to exactly
+  zero and the fit takes `log 0`. The same 12-point fit at 60 digits reproduces the two-term
+  prediction to `4.3e-25`, which is what identifies the miss as rounding rather than mathematics.
+  No behaviour changed; `slopes` returns what it always did.
+
+- **The statistical results the proofs cite are now named predicates in the theorem types, not
+  prose in the file headers.** Five files -- `proofs/c2_end_to_end.v`, `van_trees.v`,
+  `clustered_van_trees.v`, `action_van_trees.v`, `multivariate_van_trees.v` -- declare each cited
+  input as a `Definition ... : Prop` carrying its citation (`CrossFitRemainder` for CCDDHNR 2018
+  Lemma 6.1, `ClusterRobustSampling` for Hansen-Lee 2019 Theorem 2, `LocalQuadraticRegret` for
+  Mania-Tu-Recht 2019, `ScoreIdentity` and `InformationDecomposition` for Gill-Levit 1995 and
+  Gassiat-Stoltz 2024, plus `ClusteredVanTreesFloor`, `LowerLipschitzRegret`, `ActionVanTreesFloor`
+  and `PsdDominates`), and the theorems are stated in those names. Three composed statements were
+  added that read entirely in that vocabulary: `van_trees_floor_from_cited_inputs`,
+  `clustered_regret_floor_from_cited_inputs`, `action_regret_floor_from_cited_inputs`.
+
+  Nothing is assumed that was not assumed before -- every definition unfolds to the inequality the
+  statement already carried -- and nothing became an `Axiom`. That choice is the point: an `Axiom`
+  would make `Print Assumptions` list the citations by name, which reads like the stronger audit
+  and is the weaker formalisation, because it turns theorems that are true outright into theorems
+  true only if our transcription of the cited result is, and it would put those files outside
+  Stdlib's classical reals. So the audit command is `Check <theorem>` (the cited names appear in
+  the type) and `Print <Name>` (what was assumed under it); `just assumptions` still reports every
+  lemma resting on Stdlib's four axioms and nothing else.
+
+  A `grep` for one predicate now enumerates every result that rests on that paper, across files,
+  which a header comment cannot do.
+
+- **`capped_exploration_policy` documented `n* = sqrt(K T/(A c))/cap` as if it were exact; it
+  over-states the stopping mass by a CONSTANT.** Under a constant cap the stopping round is
+  `n = S/cap`, so the remaining horizon is itself a function of the mass and the first-order
+  condition is a *quadratic* in `w = I0 + c S`: `A w^2 + (K/cap) w = K c T + K I0/cap`. Subtracting
+  the balance the closed form solves -- the same one with the horizon held at the full `T` --
+  removes `T` entirely and leaves `A(w0^2 - w^2) = K c S/cap`. That is exact at every finite
+  horizon, not asymptotic: the cap-free form is an **upper** bound on the mass, and the gap is at
+  most `K/(2 A c cap)`.
+
+  So what the closed form drops is a constant, not a vanishing remainder, and the constant is the
+  only place the cap level enters the mass above `O(1/sqrt(T))`. At the defaults and `cap = 0.01`
+  the ceiling is `2.0165`, approached strictly from below (`1.834, 1.959, 1.998, 2.011, 2.015` over
+  `T = 1e4 .. 1e8`) with the residual decaying as
+  `(K + 4 A I0 cap) sqrt(K/(A c)) / (8 A c cap^2 sqrt(T))`. It is the tight actuator this hurts: at
+  `T = 4000` the over-statement is `0.50%` of the mass at `cap = 0.316` and `236.5%` at
+  `cap = 0.001`.
+
+  No numeric behaviour changed -- `predicted_mass` already solved the quadratic as a fixed point,
+  which is why the docstring and the code disagreed silently. `capped_exploration_policy` and
+  `_self_consistent_mass` now say what is actually computed and where the closed form stands
+  relative to it.
+
+  Derived in `validation/capped_exploration_schedule.mac` STEP 7, proved in
+  `proofs/capped_exploration_schedule.v` section (H), confirmed to 60 digits over nine horizons by
+  `validation/capped_exploration_o1.gp`, and the `T = 3` optimum independently certified by z3 and
+  cvc5 in `validation/capped_exploration_t3.smt2`.
+
 ## [0.5.1] — 2026-09-09
 
 ### Fixed

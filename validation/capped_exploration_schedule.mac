@@ -1,0 +1,172 @@
+/* A CAP THAT VARIES, AND A BUDGET ON TOP OF IT: what Result 56's n* becomes when the feasible set
+   stops being a single number.
+
+   Result 56 settled the constant-cap case -- explore at the cap for n* = sqrt(KT/(Ac))/cap rounds,
+   then stop -- and recorded in its own honest scope (3) that "a cap that VARIES over rounds, or a
+   budget constraint in addition to the cap, changes the feasible set; the exchange argument still
+   says 'as early as feasible', but n* is then not a single number."  That is A17.
+
+   The answer is that n* was never the invariant.  The first-order condition depends on the cap
+   schedule ONLY through the exploration MASS already delivered, so what is cap-independent is
+
+       S* = sqrt(K T / (A c)) - I0/c        <- the optimal total exploration, whatever the caps
+
+   and the schedule only decides how many rounds it takes to deliver it:
+
+       n* = min{ n : sum_{t<=n} cap_t >= min(B, S*) }
+
+   A budget B therefore does not interact with the cap at all: it truncates the same mass.  Two
+   constraints collapse to one number, and Result 56's n* is the constant-cap special case
+   S* / cap.  The COST still depends on the shape -- delivering the same mass earlier is strictly
+   cheaper, which is Result 56's exchange argument, unchanged and still never mentioning the cap.
+
+   Certificate: chc.regret.capped_exploration_policy(cap=<schedule>, budget=);
+   proofs/capped_exploration.v carries the exchange argument this builds on. */
+
+linel : 110$
+display2d : false$
+assume(A > 0, K > 0, c > 0, T > 0, I0 >= 0, n > 0, n < T, kap > 0)$
+
+/* ===== STEP 1: the exchange argument does not know what the feasible set is ===== */
+
+print("=== STEP 1: an earlier round is strictly cheaper, whatever the caps are ===")$
+/* Three rounds is enough to exhibit it: only the prefix sums enter. */
+F3 : A*(v1 + v2 + v3)
+     + K*( 1/I0 + 1/(I0 + c*v1) + 1/(I0 + c*(v1 + v2)) )$
+print("STEP 1a dF/dv1 - dF/dv2 =", ratsimp( diff(F3, v1) - diff(F3, v2) ))$
+print("STEP 1b which is negative for every feasible v, and contains no cap: moving mass from a")$
+print("        later round to an earlier one at EQUAL total is a strict improvement, so the")$
+print("        optimum fills the caps greedily from round 1 -- a box constraint per round and a")$
+print("        budget on the sum are both order-preserving, so neither disturbs this")$
+
+/* ===== STEP 2: the stopping condition, in continuous time ===== */
+
+print("=== STEP 2: where the greedy fill should stop ===")$
+/* Cost of exploring on [0, n] under a fill with S'(t) = cap(t), then exploiting to T.  The running
+   information cost integrates the mass DELIVERED SO FAR at each instant, so its integration
+   variable is a dummy and only the upper limit depends on n.  Writing it as an INDEFINITE integral
+   with S declared dependent on n instead makes Maxima differentiate under the integral sign as
+   well, adding a spurious -K c S' n/(I0 + c S)^2 -- it conflates the dummy with the limit. */
+Fc : A*Sf(n) + K*'integrate(1/(I0 + c*Sf(u)), u, 0, n) + K*(T - n)/(I0 + c*Sf(n))$
+dFc : subst('diff(Sf(n), n, 1) = cap, diff(Fc, n))$
+print("STEP 2a dF/dn =", ratsimp(dFc))$
+claim : cap*( A - K*c*(T - n)/(I0 + c*Sf(n))^2 )$
+print("STEP 2b claimed  cap(n) [ A - K c (T - n)/(I0 + c S(n))^2 ]; residual =",
+      ratsimp( dFc - claim ), " (0)")$
+print("STEP 2c the two K/(I0 + c S) terms cancel -- the round that stops exploring is also the")$
+print("        round that starts exploiting, so the level of the cost is continuous there and")$
+print("        only the SLOPE decides.  What is left contains the cap as an overall factor and")$
+print("        NOWHERE else: the bracket sees only the mass S(n) and the rounds left")$
+
+/* ===== STEP 3: the optimal mass, and Result 56 as its constant-cap corollary ===== */
+
+print("=== STEP 3: solve the bracket for the mass ===")$
+remove([S, cap], dependency)$
+kill(S)$
+root : solve( A*(I0 + c*S)^2 = K*c*T, S )$
+print("STEP 3a roots of A (I0 + c S)^2 = K c T:", root)$
+Sstar : sqrt(K*T/(A*c)) - I0/c$
+print("STEP 3b the positive one, written for a certificate:  S* =", Sstar)$
+print("STEP 3c residual of A (I0 + c S*)^2 - K c T =",
+      ratsimp( A*(I0 + c*Sstar)^2 - K*c*T ), " (0)")$
+print("STEP 3d Result 56 used n << T to replace (T - n) by T; the correction is second order")$
+print("STEP 3e at a CONSTANT cap, n* = S*/cap =", ratsimp(Sstar/cp),
+      " and Result 56's sqrt(KT/(Ac))/cap is this with I0 = 0:",
+      ratsimp( subst(I0 = 0, Sstar/cp) ))$
+print("STEP 3f so the I0 term is exactly the O(1) Result 56 declined to model, now explicit")$
+
+/* ===== STEP 4: the second-order condition, and why a budget only truncates ===== */
+
+print("=== STEP 4: the bracket is decreasing in the mass, so the root is a MINIMUM ===")$
+bracket : A - K*c*(T - n)/(I0 + c*S)^2$
+print("STEP 4a d/dS of the bracket =", ratsimp( diff(bracket, S) ))$
+print("        which is POSITIVE (K, c, T-n, and the square all are), so the bracket rises")$
+print("        through zero exactly once: below S* exploring more still pays, above it does not")$
+print("STEP 4b therefore on [0, S*] the objective is strictly DECREASING in the mass, and a")$
+print("        budget B < S* is attained at the boundary: spend all of B, as early as the caps")$
+print("        allow.  A budget B >= S* is slack and changes nothing")$
+print("STEP 4c the two constraints therefore collapse:  deliver mass min(B, S*), greedily.")$
+print("        n* = min{ n : sum_{t<=n} cap_t >= min(B, S*) } -- a stopping INDEX read off a")$
+print("        prefix sum, not a formula, which is exactly why Result 56 could not name it")$
+
+/* ===== STEP 5: what does NOT survive ===== */
+
+print("=== STEP 5: the cost is not cap-free even though the stopping mass is ===")$
+print("STEP 5a STEP 1 says delivering the same mass EARLIER is strictly cheaper, so two cap")$
+print("        schedules with the same prefix mass at n* still cost differently unless they")$
+print("        agree round by round.  What is invariant is the stopping rule, not the value")$
+print("STEP 5b and cap_t = 0 for all t <= m simply shifts the whole block: the greedy fill")$
+print("        ignores rounds it cannot use, so a dead actuator early on costs exactly the")$
+print("        exploitation of those rounds at the prior information I0")$
+
+/* ===== STEP 6: a dead prefix is the SAME problem on the remaining horizon ===== */
+
+print("=== STEP 6: cap_t = 0 for t < m reduces EXACTLY, it does not merely shift ===")$
+
+simpsum : true$
+
+/* Rounds before m deliver no mass, so the information never leaves I0 and every one of their
+   estimation terms is the same constant.  Reindexing the live part by u = t - m is a change of
+   dummy variable, done by hand; everything else is checked here. */
+dead  : sum(K/(I0 + c*0), t, 0, m - 1)$
+alive : 'sum(1/(I0 + c*St(u)), u, 0, k - 1)$
+lhs6  : A*St(k) + dead + K*alive + K*(T - (m + k))/(I0 + c*St(k))$
+rhs6  : m*K/I0 + ( A*St(k) + K*alive + K*((T - m) - k)/(I0 + c*St(k)) )$
+print("STEP 6a the dead estimation sum collapses to", dead)$
+print("STEP 6b F(T; m idle rounds then caps) - [ m K/I0 + F(T - m; caps) ] =",
+      ratsimp(lhs6 - rhs6), " (0)")$
+print("STEP 6c so the reduction is exact: the idle rounds add a constant that no choice can")$
+print("        change, and the block that follows solves the ORIGINAL problem on T - m.  The")$
+print("        optimal mass there is sqrt(K (T - m)/(A c)) - I0/c: the mass is free of the cap")$
+print("        LEVEL, not of when the cap opens.  STEP 5b said 'shifts'; this says how much")$
+
+/* and stopping INSIDE the dead prefix is not a family of competing candidates */
+inside6 : n*K/I0 + K*(T - n)/I0$
+print("STEP 6d stopping at any n <= m costs", ratsimp(inside6), "-- constant in n, so the whole")$
+print("        dead prefix is ONE candidate, namely the n = 0 arm of the shifted problem")$
+print("STEP 6e the certificate measures the reduction at (T, m) = (400,133), (400,200),")$
+print("        (4000,1333), (4000,500), (10000,2000): residual at most 3.1e-12 on the cost and")$
+print("        1.8e-15 on the mass, with the active block length equal on the nose")$
+
+/* ===== STEP 7: the O(1) term Result 56 dropped (P3.2) ===== */
+
+print("=== STEP 7: the O(1) term Result 56 dropped, and where the cap enters the MASS ===")$
+
+/* Under a CONSTANT cap kap the stopping round is n = S/kap, so the remaining horizon in STEP 2's
+   bracket is itself a function of the mass and the root stops being a square root. */
+root : A*(I0 + c*S)^2 - K*c*(T - S/kap)$
+quad : A*w^2 + (K/kap)*w - K*c*T - K*I0/kap$
+print("STEP 7a A(I0+cS)^2 - Kc(T - S/kap) in w = I0 + cS, minus a quadratic in w =",
+      ratsimp( subst(S = (w - I0)/c, root) - quad ), " (0)")$
+
+wpos : (-K/kap + sqrt(K^2/kap^2 + 4*A*(K*c*T + K*I0/kap)))/(2*A)$
+print("STEP 7b the positive root is w =", wpos)$
+print("STEP 7c the quadratic at that root =",
+      ratsimp( radcan( subst(w = wpos, quad) ) ), " (0)")$
+
+Sex : ratsimp( (wpos - I0)/c )$
+S56 : sqrt(K*T/(A*c)) - I0/c$                 /* Result 56's closed form */
+So1 : S56 - K/(2*A*c*kap)$                    /* ... with the missing O(1) term put back */
+
+print("STEP 7d taylor(S56 - Sexact, T, inf, 1) =", taylor(S56 - Sex, T, inf, 1))$
+print("        the leading entry is a CONSTANT, not a vanishing remainder: Result 56 over-states")$
+print("        the mass by K/(2 A c kap) at EVERY horizon, however long")$
+print("STEP 7e residual of that constant against K/(2 A c kap) =",
+      ratsimp( radcan( limit( S56 - Sex, T, inf ) - K/(2*A*c*kap) ) ), " (0)")$
+
+coef : (4*A^(3/2)*I0*sqrt(K)*sqrt(c)*kap + sqrt(A)*K^(3/2)*sqrt(c))/(8*A^2*c^2*kap^2)$
+print("STEP 7f with the O(1) term restored, taylor(So1 - Sexact, T, inf, 1) =",
+      taylor(So1 - Sex, T, inf, 1))$
+print("STEP 7g residual against -(K + 4 A I0 kap) sqrt(K/(A c)) / (8 A c kap^2 sqrt(T)) =",
+      ratsimp( radcan( ratdisrep(taylor(So1 - Sex, T, inf, 1)) + coef/sqrt(T) ) ), " (0)")$
+print("        and that coefficient rewritten is", ratsimp(radcan(coef)))$
+
+print("STEP 7h so the MASS is cap-free only to LEADING order.  The cap enters at O(1) as")$
+print("        -K/(2 A c kap) and again at O(1/sqrt(T)) as 1/kap^2, and nowhere else.  A tighter")$
+print("        cap stops at a SMALLER mass, and the error Result 56 makes is the whole of that")$
+print("        O(1) term -- which is why the certificate ships the fixed point rather than the")$
+print("        closed form: at T = 4000 with caps that open late the closed form runs 25% high")$
+print("STEP 7i the three terms also say WHEN Result 56 is safe: the O(1) correction is small")$
+print("        against the leading term exactly when kap >> K/(2 A c) / sqrt(K T/(A c)) =")$
+print("        sqrt(K/(4 A c T)), i.e. when one round's cap already moves the information by more")$
+print("        than the whole block does per unit horizon")$

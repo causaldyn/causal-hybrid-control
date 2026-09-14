@@ -105,6 +105,7 @@ counts:
     printf '%-22s %s\n' modules "$(ls src/chc/*.py | wc -l)"
     printf '%-22s %s\n' "public names" "$(grep -cE '^    "' src/chc/__init__.py)"
     printf '%-22s %s\n' "rocq proofs" "$(ls proofs/*.v | wc -l)"
+    printf '%-22s %s\n' "rocq lemmas" "$(grep -ohE '^[[:space:]]*(Lemma|Theorem|Corollary|Proposition)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' proofs/*.v | wc -l)"
     printf '%-22s %s\n' "maxima derivations" "$(ls validation/*.mac | wc -l)"
     printf '%-22s %s\n' "test files" "$(ls tests/*.py | wc -l)"
     printf '%-22s %s\n' "collected tests" "$(uv run pytest --collect-only -q 2>/dev/null | awk '{s+=$2} END {print s}')"

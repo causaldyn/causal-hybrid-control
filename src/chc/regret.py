@@ -391,6 +391,374 @@ def information_lower_bound_certificate(
 
 
 @dataclass(frozen=True)
+class MultivariateActionFloor:
+    """The van Trees floor on control regret when the effect is a MATRIX -- Result 67.
+
+    Result 57's scalar floor is a PRODUCT, curvature times information. This one is a TRACE,
+    ``tr(M Psi' G^-1 Psi')``, which interleaves them -- so it decomposes over the eigendirections
+    of the information rather than collapsing to a single ratio, and a direction the optimal action
+    does not depend on contributes exactly nothing however badly it is identified.
+    """
+
+    floor: float  # tr(M Psi' G^-1 Psi'): the bound EVERY estimator of theta obeys
+    optimal_action: Vector  # u*(theta) at the plant supplied
+    curvature: Matrix  # M = B'QB + R, the exact second derivative of the regret in action space
+    sensitivity: Matrix  # Psi' = du*/dtheta, q x d
+    information_spectrum: Vector  # eigenvalues of G, ASCENDING -- eigh's order, not the caller's
+    direction_floors: Vector  # each eigendirection's share of the floor; they sum to it
+    spectral_alignment: Vector  # (Psi' v)' M (Psi' v) per eigendirection, in that same order
+    direction_alignment: Vector  # the same weight per SUPPLIED direction: diag(Psi' M Psi')
+
+
+def _action_and_curvature(
+    effect: Matrix, state_weight: Matrix, action_weight: Matrix, target: Vector
+) -> tuple[Vector, Matrix]:
+    curvature = effect.T @ state_weight @ effect + action_weight
+    return -np.linalg.solve(curvature, effect.T @ state_weight @ target), curvature
+
+
+def _action_sensitivity(
+    effect: Matrix,
+    state_weight: Matrix,
+    action_weight: Matrix,
+    target: Vector,
+    directions: Matrix,
+) -> Matrix:
+    """``du*/dtheta`` along each supplied direction in effect space.
+
+    Differentiating ``M u* = -B'Q x`` gives ``du* = -M^-1[(dM) u* + (dB)'Q x]`` with
+    ``dM = (dB)'QB + B'Q(dB)`` -- a solve per direction against the factorisation already formed,
+    rather than an autodiff pass. ``chc.regret`` is numpy/scipy only and a ``jax`` import here
+    would pull the accelerator stack into a module that never needs it; the price is that the
+    derivative has to be checked, which is what the finite-difference gate in the certificate does.
+    """
+    action, curvature = _action_and_curvature(effect, state_weight, action_weight, target)
+    columns = np.empty((effect.shape[1], directions.shape[0]))
+    for index, bump in enumerate(directions):
+        moved = bump.T @ state_weight @ effect + effect.T @ state_weight @ bump
+        columns[:, index] = -np.linalg.solve(
+            curvature, moved @ action + bump.T @ state_weight @ target
+        )
+    return columns
+
+
+def multivariate_action_floor(
+    *,
+    effect: Matrix,
+    state_weight: Matrix,
+    action_weight: Matrix,
+    target: Vector,
+    information: Matrix,
+    directions: Matrix | None = None,
+) -> MultivariateActionFloor:
+    """RESULT 67 (A18) -- van Trees on the ACTION when the effect is a matrix.
+
+    Derived in ``validation/multivariate_van_trees.mac``, proved in
+    ``proofs/multivariate_van_trees.v``. Result 57 closed with "the multivariate case has the same
+    structure with ``psi'`` a Jacobian and the floor a trace"; the structure is the same and the
+    CONCLUSION is not, which is why this is a separate result rather than a generalisation.
+
+    The regret is an exact quadratic form in the action at any dimension,
+
+        ``J(u,B) - J(u*(B),B) = (u - u*)' M (u - u*)``,  ``M = B'QB + R``
+
+    (STEP 1b, residual 0), so ``E[regret] = tr(M Sigma)`` with ``Sigma`` the action-error
+    covariance, and trace against a PSD weight is monotone in the PSD order (STEP 3; Rocq
+    ``the_psd_order_transfers_to_the_regret``). Feeding the matrix van Trees inequality
+    ``Sigma >= Psi' G^-1 Psi'`` through that gives
+
+        ``E[regret] >= tr( M Psi' G^-1 Psi' )``,  ``G = n I_data + I(prior)``
+
+    which at ``p = q = 1`` is ``(b^2+rr) psi'(b)^2 / G`` -- Result 10's constant, unchanged
+    (STEP 4c, residual 0).
+
+    What the scalar model cannot express is in :attr:`alignment`. The floor splits over the
+    eigendirections of the information as ``sum_i (Psi' v_i)' M (Psi' v_i) / lambda_i``, so
+    confounding -- which lowers ``lambda_i`` anisotropically -- is paid only in proportion to how
+    much the optimal action leans on the directions it damages. Its price is therefore a
+    ``Psi'``-weighted mean of the per-direction factors, equal to the full factor only when the
+    damaged direction carries all the weight and exactly ``1`` at the other corner (STEP 6b). A
+    scalar plant has one direction, so it always sits at the first corner and reports
+    ``V_exp/V_conf``.
+
+    ``directions`` is a ``(d, p, q)`` stack spanning the parameter family: the default is the
+    ``p*q`` unit bumps, i.e. ``theta = vec(B)``, and a restricted family (two decoupled channels
+    with known zero cross-effects, say) is supplied by giving its own basis. ``information`` is
+    ``G`` in that basis and must be positive definite -- a singular ``G`` is an unidentified
+    direction, for which the floor is not a number.
+    """
+    effect = np.asarray(effect, dtype=np.float64)
+    state_weight = np.asarray(state_weight, dtype=np.float64)
+    action_weight = np.asarray(action_weight, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    information = np.asarray(information, dtype=np.float64)
+    if effect.ndim != 2:
+        raise ValueError(f"the effect is a p-by-q matrix: got shape {effect.shape}")
+    states, actions = effect.shape
+    if state_weight.shape != (states, states):
+        raise ValueError(
+            f"the state weight must be {states}-by-{states} to match the effect: "
+            f"got {state_weight.shape}"
+        )
+    if action_weight.shape != (actions, actions):
+        raise ValueError(
+            f"the action weight must be {actions}-by-{actions} to match the effect: "
+            f"got {action_weight.shape}"
+        )
+    if target.shape != (states,):
+        raise ValueError(
+            f"the target lives in state space: expected ({states},), got {target.shape}"
+        )
+    if directions is None:
+        basis = np.zeros((states * actions, states, actions))
+        for index in range(states * actions):
+            basis.reshape(states * actions, -1)[index, index] = 1.0
+    else:
+        basis = np.asarray(directions, dtype=np.float64)
+        if basis.ndim != 3 or basis.shape[1:] != (states, actions):
+            raise ValueError(
+                f"directions is a (d, {states}, {actions}) stack of effect-space bumps: "
+                f"got shape {basis.shape}"
+            )
+    if information.shape != (basis.shape[0], basis.shape[0]):
+        raise ValueError(
+            f"the information matrix is d-by-d in the direction basis: "
+            f"expected {(basis.shape[0], basis.shape[0])}, got {information.shape}"
+        )
+    action, curvature = _action_and_curvature(effect, state_weight, action_weight, target)
+    sensitivity = _action_sensitivity(effect, state_weight, action_weight, target, basis)
+    spectrum, rotation = np.linalg.eigh(0.5 * (information + information.T))
+    if spectrum.min() <= 0.0:
+        raise ValueError(
+            "the information matrix must be positive definite: a null direction is unidentified, "
+            f"and the floor is not a number there (smallest eigenvalue {spectrum.min():.3e})"
+        )
+    mapped = sensitivity @ rotation
+    alignment = np.einsum("ij,ik,kj->j", mapped, curvature, mapped)
+    shares = alignment / spectrum
+    named = np.einsum("ij,ik,kj->j", sensitivity, curvature, sensitivity)
+    return MultivariateActionFloor(
+        float(shares.sum()),
+        action,
+        curvature,
+        sensitivity,
+        spectrum,
+        shares,
+        alignment,
+        named,
+    )
+
+
+@dataclass(frozen=True)
+class MultivariateVanTreesCurve:
+    """Result 67 -- the matrix-effect van Trees floor, and the alignment a scalar plant hides."""
+
+    floor: float  # tr(M Psi' G^-1 Psi') at the reference plant
+    scalar_agreement: float  # relative gap between the 1x1 floor and Result 10's closed form
+    channel_sum_agreement: float  # ... and between the 2x2 floor and h1 C1 + h2 C2 (STEP 7c)
+    sensitivity_residual: float  # closed-form Psi' against a central finite difference
+    bayes_floor: float  # tr(E_lambda[Psi'] G^-1 E_lambda[Psi']): the estimand-level floor
+    plugin_ratio: float  # the efficient plug-in's Bayes action error over that floor (> 1)
+    hodges_pointwise_ratio: float  # a superefficient estimator against the UNBIASED floor (~ 0)
+    hodges_bayes_ratio: float  # the same estimator against the van Trees floor (>> 1)
+    information_loss: float  # the factor k by which ONE direction's information is cut
+    aligned_ratio: float  # k applied to the direction u* leans on most
+    orthogonal_ratio: float  # k applied to a direction in the kernel of Psi' (== 1 exactly)
+    worst_single_direction: float  # 1 + (k-1) a_max/sum(a): the most one direction can ever cost
+    knife_edge_weight: float  # the weight a channel at rr = b^2 carries (== 0)
+    live_channel_weight: float  # ... against the other channel's, which is not zero
+
+
+def multivariate_van_trees_certificate(
+    *,
+    rr: float = 0.5,
+    gains: tuple[float, float] = (1.0, 0.4),
+    target: tuple[float, float] = (1.0, 0.8),
+    sigma: float = 0.5,
+    prior_width: float = 0.25,
+    n_probe: int = 4000,
+    information_loss: float = 4.0,
+    draws: int = 40_000,
+    seed: int = 11,
+) -> MultivariateVanTreesCurve:
+    """RESULT 67 (A18) -- the multivariate van Trees floor, and what it says that Result 57 cannot.
+
+    Derived in ``validation/multivariate_van_trees.mac``, proved in
+    ``proofs/multivariate_van_trees.v``. Four things are measured, each able to fail.
+
+    1. The floor REDUCES correctly. At ``p = q = 1`` it is Result 10's ``C sigma^2/(n V)``, and on
+       two decoupled channels it is ``h1 C(b1,x1) + h2 C(b2,x2)`` -- the per-channel scalar
+       constants weighted by the information in each direction (STEP 7c). Both are exact
+       identities, so the gate is at machine precision, and the hand-derived ``Psi'`` is checked
+       against a central finite difference rather than trusted.
+
+    2. The bound BINDS and is not beatable. A Hodges estimator, which snaps to the prior mean
+       whenever the fit lands within ``n^(-1/4)``, drives the pointwise action error to essentially
+       zero against the unbiased Cramer-Rao floor -- the same demonstration as Result 57(c), now in
+       two dimensions -- while sitting far above the van Trees floor, which assumes nothing about
+       bias. The efficient plug-in clears the same floor by a modest factor.
+
+    3. The price of confounding is an ALIGNMENT, not a ratio. Cutting the information along ONE
+       direction by ``information_loss`` raises the floor by ``1 + (k-1) a_w/sum(a)`` with
+       ``a_w = (Psi' w)' M (Psi' w)``: full price only if that direction carries all the weight.
+       Two arms with the SAME ``k`` bracket it -- the direction the optimal action leans on most,
+       and a direction in the kernel of ``Psi'``, which costs exactly nothing. A scalar plant has
+       one direction and therefore always reports ``k``; that is the whole of Result 10's
+       ``V_exp/V_conf``.
+
+    4. The knife edge becomes a WEIGHT. At ``rr = b^2`` Result 57(d)'s sensitivity vanishes, so
+       that channel contributes zero to the floor -- and confounding it is free. In the scalar
+       model this is a measure-zero curiosity; here it is one entry of a vector that a real plant
+       can sit near without anything else degenerating.
+    """
+    if prior_width <= 0.0:
+        raise ValueError("the prior width is a standard deviation and must be positive")
+    if information_loss < 1.0:
+        raise ValueError("information_loss is a factor by which information is CUT: it is >= 1")
+    b1, b2 = gains
+    x = np.asarray(target, dtype=np.float64)
+    weight = np.eye(2)
+    control_weight = rr * np.eye(2)
+    channels = np.array([[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [0.0, 1.0]]])
+
+    def constant(gain: float, entry: float) -> float:
+        return entry**2 * (rr - gain**2) ** 2 / (rr + gain**2) ** 3
+
+    # 1a. the two decoupled channels, against the sum of scalar constants
+    spectrum = np.array([37.0, 23.0])
+    diagonal = multivariate_action_floor(
+        effect=np.diag([b1, b2]),
+        state_weight=weight,
+        action_weight=control_weight,
+        target=x,
+        information=np.diag(spectrum),
+        directions=channels,
+    )
+    channel_sum = constant(b1, x[0]) / spectrum[0] + constant(b2, x[1]) / spectrum[1]
+    channel_agreement = abs(diagonal.floor / channel_sum - 1.0)
+
+    # 1b. and the 1x1 case, against Result 10's closed form
+    scalar = multivariate_action_floor(
+        effect=np.array([[b1]]),
+        state_weight=np.eye(1),
+        action_weight=np.array([[rr]]),
+        target=x[:1],
+        information=np.array([[spectrum[0]]]),
+    )
+    scalar_agreement = abs(scalar.floor / (constant(b1, x[0]) / spectrum[0]) - 1.0)
+
+    # 1c. the hand-derived Jacobian, against a finite difference on the FULL vec(B) family
+    rng = np.random.default_rng(seed)
+    dense = rng.normal(size=(2, 2))
+    full = multivariate_action_floor(
+        effect=dense,
+        state_weight=weight,
+        action_weight=control_weight,
+        target=x,
+        information=np.diag(np.array([31.0, 19.0, 27.0, 13.0])),
+    )
+
+    def action_at(flat: NDArray[np.float64]) -> NDArray[np.float64]:
+        moved = flat.reshape(2, 2)
+        return -np.linalg.solve(moved.T @ weight @ moved + control_weight, moved.T @ weight @ x)
+
+    step = 1e-6
+    base = dense.ravel()
+    difference = np.stack(
+        [
+            (action_at(base + step * unit) - action_at(base - step * unit)) / (2.0 * step)
+            for unit in np.eye(4)
+        ],
+        axis=1,
+    )
+    sensitivity_residual = float(np.abs(difference - full.sensitivity).max())
+
+    # 2. the estimand-level floor, and two estimators against it
+    prior_info = 1.0 / prior_width**2
+    gram = (n_probe / sigma**2 + prior_info) * np.eye(2)
+    centre = np.array([b1, b2])
+    drawn = centre + prior_width * rng.standard_normal((draws, 2))
+    standard_error = sigma / np.sqrt(n_probe)
+    fitted = drawn + standard_error * rng.standard_normal((draws, 2))
+
+    def optimal(gain: NDArray[np.float64]) -> NDArray[np.float64]:
+        return -gain * x / (gain**2 + rr)
+
+    def jacobian(gain: NDArray[np.float64]) -> NDArray[np.float64]:
+        return -x * (rr - gain**2) / (rr + gain**2) ** 2
+
+    # E_lambda[Psi'] is diagonal because the channels are decoupled, so the trace is a sum
+    mean_jacobian = jacobian(drawn).mean(axis=0)
+    bayes_floor = float(np.sum(mean_jacobian**2 / np.diag(gram)))
+    plugin_error = float(np.sum((optimal(fitted) - optimal(drawn)) ** 2, axis=1).mean())
+
+    snapped = np.where(np.abs(fitted - centre) <= n_probe**-0.25, centre, fitted)
+    hodges_error = float(np.sum((optimal(snapped) - optimal(drawn)) ** 2, axis=1).mean())
+
+    at_centre = centre + standard_error * rng.standard_normal((draws, 2))
+    snapped_at_centre = np.where(np.abs(at_centre - centre) <= n_probe**-0.25, centre, at_centre)
+    unbiased_floor = float(np.sum(jacobian(centre) ** 2 * sigma**2 / n_probe))
+    hodges_pointwise = float(
+        np.sum((optimal(snapped_at_centre) - optimal(centre)) ** 2, axis=1).mean()
+    )
+
+    # 3. the same information loss in two different directions of the FULL family
+    isotropic = 25.0 * np.eye(4)
+
+    def damaged(direction: NDArray[np.float64]) -> float:
+        unit = direction / np.linalg.norm(direction)
+        cut = isotropic - 25.0 * (1.0 - 1.0 / information_loss) * np.outer(unit, unit)
+        return multivariate_action_floor(
+            effect=dense,
+            state_weight=weight,
+            action_weight=control_weight,
+            target=x,
+            information=cut,
+        ).floor
+
+    reference = multivariate_action_floor(
+        effect=dense,
+        state_weight=weight,
+        action_weight=control_weight,
+        target=x,
+        information=isotropic,
+    ).floor
+    # eigh sorts ASCENDING, so the last column is the direction the action leans on most and the
+    # first spans the kernel of Psi' -- the two arms are read off the ends, never off an index.
+    weighted = full.sensitivity.T @ full.curvature @ full.sensitivity
+    order, basis = np.linalg.eigh(weighted)
+    aligned_ratio = damaged(basis[:, -1]) / reference
+    orthogonal_ratio = damaged(basis[:, 0]) / reference
+    worst = 1.0 + (information_loss - 1.0) * order[-1] / order.sum()
+
+    # 4. the knife edge, as one entry of a vector
+    edge = multivariate_action_floor(
+        effect=np.diag([b1, float(np.sqrt(rr))]),
+        state_weight=weight,
+        action_weight=control_weight,
+        target=x,
+        information=np.diag(spectrum),
+        directions=channels,
+    )
+    return MultivariateVanTreesCurve(
+        diagonal.floor,
+        scalar_agreement,
+        channel_agreement,
+        sensitivity_residual,
+        bayes_floor,
+        plugin_error / bayes_floor,
+        hodges_pointwise / unbiased_floor,
+        hodges_error / bayes_floor,
+        information_loss,
+        float(aligned_ratio),
+        float(orthogonal_ratio),
+        float(worst),
+        float(edge.direction_alignment[1]),
+        float(edge.direction_alignment[0]),
+    )
+
+
+@dataclass(frozen=True)
 class HighProbRegretCurve:
     """Finite-sample high-probability UPPER bound on scalar CE regret (w.p. >= 1-delta)."""
 
@@ -599,6 +967,26 @@ def composition_transfer_certificate(
     estimator -> dynamics-error rate -> stabilising controller -> finite-sample control regret with
     explicit constants -- is closed by ``ce_explicit_constant_certificate``, which computes both the
     stabilising ball and the constant. Plug-in (``p=1 -> 2``) and DML (``p=2 -> 4``) are instances.
+
+    ``slopes`` IS NOT ``expected_slopes``, AND THE DIFFERENCE IS NOT NOISE. At the default window
+    the fit returns ``2.048478 / 4.012425 / 6.002273`` against ``2 / 4 / 6``, and that excess is a
+    deterministic property of the *window*, not evidence of agreement-up-to-sampling -- there is no
+    sampling here at all. Writing ``e = delta^p`` and ``t = log(delta)``,
+    ``log R = const + 2 p t + lam e + 2 c2 e^2 + O(e^3)``, so an ordinary least-squares fit reports
+
+        ``slope = 2 p + lam cov(t, e^(p t))/var(t) + 2 c2 cov(t, e^(2 p t))/var(t) + O(e^3)``
+
+    with ``lam = u*''(b)/u*'(b) = (2 b^3 - 6 b rr)/(rr^2 - b^4)`` and
+    ``c2 = (b^6 - 8 b^4 rr + 5 b^2 rr^2 - 2 rr^3)/(2 (rr^2 - b^4)^2)`` -- derived in
+    ``validation/order_transfer_window.mac`` and cross-checked in giac. Those two terms carry
+    ``4.09e-2`` of the ``4.85e-2`` excess at ``p = 1``; what is left is one more power of ``delta``.
+
+    SHRINKING THE WINDOW DOES NOT MAKE THE READING BETTER INDEFINITELY. The slope is bracketed from
+    below by double precision: ``u*(b + e) - u*(b)`` is a cancellation, so the regret's relative
+    error is about ``4 eps |u*(b)| / (|u*'(b)| delta_lo^p)``, which GROWS as the window drops. At
+    ``delta in [1e-5, 2e-4]`` the ``p = 3`` slope reads ``6.035``, and the same fit at 60 digits
+    reproduces the two-term prediction to ``4.3e-25``. A window has to clear both ends;
+    ``causaldyn_bench.paper_one`` Table 1 prints them side by side and names which one binds.
     """
 
     def u_star(bv: float) -> float:
@@ -1020,6 +1408,194 @@ def clustered_lower_bound_certificate(
     plateau_slope = float(np.polyfit(np.log(gs), np.log(g_times), 1)[0])
     return ClusteredLowerBoundCurve(
         gs, reg, g_times, plateau_slope, float(g_times[-1]), float(np.min(g_times))
+    )
+
+
+@dataclass(frozen=True)
+class CrossClusterMixingCurve:
+    """A3': the ``1/sqrt(G)`` rate under cross-cluster psi-dependence, and the constant it moves."""
+
+    g_grid: Vector  # cluster counts G
+    decays: Vector  # per-arm cross-cluster decay rho of the latent fields; psi(d) = rho^(2d)
+    rmse: Matrix  # (arm, G) root-mean-square error of the total effect, pooled over replicates
+    slopes: Vector  # per-arm log-log slope of rmse vs G (-1/2 for every summable arm)
+    slope_errors: Vector  # s.e. of each slope over INDEPENDENT replicate blocks
+    hac_scale: Vector  # G*MSE at the largest G: the network-HAC variance CONSTANT, not the rate
+    hac_predictor: Vector  # sum_{d != 0} psi(d) = 2 rho^2/(1 - rho^2), the cross-cluster HAC term
+    hac_intercept: float  # fitted `a` in G*MSE = a + b*sum psi: the own-cluster variance
+    hac_slope: float  # fitted `b`: what one unit of cross-cluster dependence costs
+    hac_r_squared: float  # R^2 of that affine fit (-> 1 iff the HAC form describes the constant)
+    blocked_slope: float  # falsification arm: a FIXED super-block count, so psi never decays
+    blocked_error: float  # s.e. of it over the same replicate blocks
+    worst_mean_error: float  # max |mean signed error| over arms and G: the NO-CONFOUNDING gate
+
+
+def _cluster_field_pair(
+    rng: np.random.Generator, n_clusters: int, decay: float, blocks: int | None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The two INDEPENDENT unit-variance cluster fields a mixing arm needs.
+
+    One enters the spillover regressor and one the outcome error, which is what gives the SCORE a
+    cross-cluster covariance ``psi(d) = rho^(2d)`` without making either field an omitted
+    confounder -- reusing a single field for both would bias ``b_s`` instead, a different failure
+    mode that also flattens the error curve. ``blocks`` replaces the decay with a fixed number of
+    super-blocks: correlation that stays at 1 however far apart two clusters are.
+    """
+    if blocks is not None:
+        label = np.arange(n_clusters) * blocks // n_clusters
+        return rng.standard_normal(blocks)[label], rng.standard_normal(blocks)[label]
+    return (
+        ar1_innovations(rng, (), n_clusters, decay),
+        ar1_innovations(rng, (), n_clusters, decay),
+    )
+
+
+def cross_cluster_mixing_certificate(
+    *,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    alpha_u: float = 1.0,
+    alpha_g: float = 0.8,
+    gamma: float = 1.0,
+    cluster_size: int = 10,
+    leak: float = 1.0,
+    tau: float = 0.5,
+    noise: float = 0.5,
+    delta_small: float = 0.002,
+    decays: Sequence[float] = (0.0, 0.3, 0.5, 0.7, 0.85),
+    blocked_arm: int = 4,
+    g_grid: Sequence[int] = (80, 160, 320, 640),
+    n_seeds: int = 100,
+    n_replicates: int = 4,
+    seed: int = 0,
+) -> CrossClusterMixingCurve:
+    """ASSUMPTION A3' -- Contribution 2's cluster rate does NOT need independent clusters.
+
+    A1 as stated assumes partial interference with INDEPENDENT clusters (Hudgens & Halloran 2008),
+    which is the assumption a marketplace violates: adjacent cities share drivers, weather and
+    campaigns. A3' weakens it to ``psi``-dependence in the sense of Kojevnikov, Marmer & Song
+    (2021, Definition 2.2) -- the cluster scores may correlate across clusters provided the
+    dependence coefficients ``theta_s``, defined by
+    ``|Cov(f(s_A), g(s_B) | C)| <= psi_{a,b}(f, g) * theta_s`` for cluster sets at distance
+    ``s > 0``, decay fast enough for their Condition ND -- which is the same regime as Leung's
+    (2022) approximate neighbourhood interference. Under A3' the CLT is the network-HAC one rather
+    than the i.i.d.-cluster one: the ``G^{-1/2}`` rate survives and only the variance CONSTANT
+    changes, by the HAC sum. A3' is not free -- the KMS CLT wants ``p > 4`` moments where A7 asks
+    only for ``q > 2``.
+
+    Both halves are measured here, because "the rate survives" alone is not falsifiable:
+
+    * Each arm draws two independent AR(1)-across-cluster fields with decay ``rho``, one entering
+      the spillover regressor and one the outcome error, so the score inherits
+      ``Cov(psi_g, psi_h) ~ rho^(2|g-h|)`` -- summable for every ``rho < 1``. ``rho = 0`` reduces
+      exactly to the independent-cluster plant of :func:`multichannel_control_certificate`. Reusing
+      ONE field for both would instead make it an omitted confounder -- and measured, that design
+      flattens the slopes to ``-0.001 .. +0.027``, which is INDISTINGUISHABLE from the non-summable
+      arm below on the slope alone. ``worst_mean_error`` is the only thing that separates them
+      (``0.0138`` against ``0.3377``), which is why it is reported rather than assumed away.
+    * The CONSTANT is predicted, not just observed: with the bread free of ``rho`` (the field is
+      unit variance whatever its correlation length) the meat is affine in the HAC sum, so
+      ``G*MSE = a + b*2 rho^2/(1 - rho^2)`` with ``a, b`` free of ``rho``. ``hac_r_squared`` is
+      that fit; a value below ~0.95 falsifies the HAC form rather than the rate.
+    * ``blocked_arm`` is the falsification: a FIXED number of super-blocks, so ``psi(d)`` never
+      decays, ``sum_d psi(d) = Theta(G)`` and A3' fails. Its slope must be ~0 -- the effective
+      sample size is the block count, not ``G``. Without this arm a flat ``-1/2`` would be
+      evidence of nothing, since it is also what an arm with no dependence at all reports.
+
+    ``g_grid`` starts at 80 deliberately. Result 70: a fitted exponent is a WINDOW measurement,
+    and at ``rho = 0.9`` the field's correlation length is ~9 clusters, so a window opening at
+    ``G = 40`` reports ~``-0.35`` -- the pre-asymptotic regime, not the rate. The replicate blocks
+    are genuinely independent -- the seed stream carries a replicate index -- so ``slope_errors``
+    is a real s.e. rather than the nested-prefix reconstruction
+    :func:`end_to_end_c2_certificate` is forced into. With five blocks it has four degrees of
+    freedom, so it is a ``t`` and not a ``z``: the two-sided 5% critical value is ``2.776``.
+    """
+    if len(decays) < 4:
+        raise ValueError(
+            f"the HAC fit needs at least 4 decay arms to be a fit rather than an interpolation: "
+            f"below that `hac_r_squared` is 1.0 by construction and says nothing. "
+            f"Got {len(decays)}."
+        )
+    if any(not 0.0 <= d < 1.0 for d in decays):
+        raise ValueError(
+            f"every decay must lie in [0, 1): psi(d) = rho^(2d) is summable only there, and at "
+            f"rho = 1 the AR(1) field degenerates to a CONSTANT, which the cross-fit nuisance "
+            f"intercept absorbs -- the arm would read LESS dependence, not more. Got {decays}."
+        )
+    b_total = b_d + b_s
+    gs = np.asarray(g_grid, dtype=np.float64)
+    log_g = np.log(gs)
+    arms: list[tuple[float, int | None]] = [(float(r), None) for r in decays]
+    arms.append((0.0, blocked_arm))
+
+    def simulate(
+        rng: np.random.Generator, gclust: int, decay: float, blocks: int | None
+    ) -> tuple[NDArray[np.float64], ...]:
+        cid = np.repeat(np.arange(gclust), cluster_size)
+        n = cid.size
+        exposure_field, error_field = _cluster_field_pair(rng, gclust, decay, blocks)
+        z = rng.standard_normal(n)
+        u = alpha_u * z + 0.7 * rng.standard_normal(n)
+        g = alpha_g * z + leak * exposure_field[cid] + 0.7 * rng.standard_normal(n)
+        y = (
+            b_d * u
+            + b_s * g
+            + gamma * z
+            + tau * error_field[cid]  # A3': the cluster effect now CORRELATES across clusters
+            + noise * rng.standard_normal(n)
+        )
+        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
+
+    mse = np.zeros((len(arms), gs.size, n_replicates))
+    bias = np.zeros_like(mse)
+    for a, (decay, blocks) in enumerate(arms):
+        for j, gclust in enumerate(g_grid):
+            for rep in range(n_replicates):
+                errs = np.empty(n_seeds)
+                for s in range(n_seeds):
+                    rng = np.random.default_rng((seed, a, j, rep, s))
+                    z, u, g, y, fold = simulate(rng, gclust, decay, blocks)
+                    errs[s] = _dml_two_channel(z, u, g, y, delta_small, True, fold) - b_total
+                mse[a, j, rep] = float(np.mean(errs**2))
+                bias[a, j, rep] = float(np.mean(errs))
+
+    per_rep = np.array(
+        [
+            [
+                float(np.polyfit(log_g, 0.5 * np.log(mse[a, :, rep]), 1)[0])
+                for rep in range(n_replicates)
+            ]
+            for a in range(len(arms))
+        ]
+    )
+    slopes = per_rep.mean(axis=1)
+    errors = (
+        per_rep.std(axis=1, ddof=1) / np.sqrt(n_replicates)
+        if n_replicates > 1
+        else np.zeros(len(arms))
+    )
+
+    rhos = np.asarray(decays, dtype=np.float64)
+    predictor = 2.0 * rhos**2 / (1.0 - rhos**2)
+    hac = gs[-1] * mse[: rhos.size, -1, :].mean(axis=1)
+    slope_hac, intercept = np.polyfit(predictor, hac, 1)
+    residual = hac - (intercept + slope_hac * predictor)
+    spread = float(np.sum((hac - hac.mean()) ** 2))
+    r_squared = 1.0 - float(residual @ residual) / spread if spread > 0.0 else 1.0
+    return CrossClusterMixingCurve(
+        gs,
+        rhos,
+        np.sqrt(mse[: rhos.size].mean(axis=2)),
+        slopes[: rhos.size],
+        errors[: rhos.size],
+        hac,
+        predictor,
+        float(intercept),
+        float(slope_hac),
+        r_squared,
+        float(slopes[-1]),
+        float(errors[-1]),
+        float(np.max(np.abs(bias.mean(axis=2)))),
     )
 
 
@@ -3330,20 +3906,28 @@ class MinimaxExplorationCurve:
 
 @dataclass(frozen=True)
 class CappedExplorationPolicy:
-    """The optimal exploration schedule under a per-round action cap -- Result 56.
+    """The optimal exploration schedule under a per-round action cap -- Result 56, extended.
 
-    The policy is two numbers: explore at ``cap`` for ``block_rounds`` rounds, then stop. It is
-    not an approximation -- the objective is convex and depends on the schedule only through its
-    prefix sums, so front-loading as hard as the box allows is globally optimal.
+    For a constant cap the policy is two numbers: explore at ``cap`` for ``block_rounds`` rounds,
+    then stop. It is not an approximation -- the objective is convex and depends on the schedule
+    only through its prefix sums, so front-loading as hard as the box allows is globally optimal.
+
+    When the cap VARIES or a total ``budget`` is imposed, the invariant is not the block length but
+    :attr:`exploration_mass`: the first-order condition sees the cap only through the mass already
+    delivered, so the optimal mass is cap-free and the schedule decides only how many rounds it
+    takes to deliver it (``validation/capped_exploration_schedule.mac``).
     """
 
-    cap: float
+    cap: float  # the constant cap; for a schedule, the mean over the block that was chosen
     block_rounds: int
     cost: float
     uncapped_floor: float
     taper_cost: float
     excess: float  # cost - uncapped_floor: additive, and logarithmic in T
     predicted_excess: float  # (K/(2 c cap)) ln T, the derived leading form of that excess
+    exploration_mass: float  # sum of the caps actually used -- what the stopping rule is about
+    predicted_mass: float  # the self-consistent stopping mass; it does not know the cap SCHEDULE
+    budget_binds: bool  # True when the budget, not the caps, is what stopped the block
 
 
 def _capped_block_cost(
@@ -3368,10 +3952,79 @@ def _capped_block_cost(
     return curvature * cap * rounds + numerator * (inside + after)
 
 
+def _scheduled_block_costs(
+    caps: NDArray[np.float64],
+    *,
+    curvature: float,
+    numerator: float,
+    info_rate: float,
+    prior_info: float,
+) -> NDArray[np.float64]:
+    """Exact cost of stopping after each round under a greedy fill of ``caps``; index 0 = never.
+
+    A varying cap makes the prefix sums arbitrary, so the digamma shortcut of
+    :func:`_capped_block_cost` -- which needs the information to grow by a constant step -- does
+    not apply and the harmonic sum has to be materialised. That is O(T) once against O(1) per
+    candidate, which is why the two paths are kept apart rather than unified on the slower one.
+    """
+    mass = np.concatenate([[0.0], np.cumsum(caps)])
+    info = prior_info + info_rate * mass
+    inside = np.concatenate([[0.0], np.cumsum(numerator / info[:-1])])
+    remaining = caps.size - np.arange(caps.size + 1, dtype=np.float64)
+    return curvature * mass + inside + numerator * remaining / info
+
+
+def _self_consistent_mass(
+    caps: NDArray[np.float64],
+    *,
+    horizon: int,
+    curvature: float,
+    numerator: float,
+    info_rate: float,
+    prior_info: float,
+) -> float:
+    """The stopping mass written against the REMAINING horizon rather than the whole one.
+
+    The first-order condition of ``validation/capped_exploration_schedule.mac`` STEP 2 is
+    ``A (I0 + c S)^2 = K c (T - n)`` with ``n`` the round on which the greedy fill delivers ``S``
+    -- so the target mass and the round that reaches it are defined together, and only the prefix
+    sums of the caps connect them. Result 56's ``sqrt(K T/(A c)) - I0/c`` is this at ``n << T``;
+    it runs 25% high as soon as the caps open late, which a schedule is free to do. At a CONSTANT
+    cap the gap to it is not asymptotic at all but the exact constant ``K/(2 A c cap)``, derived
+    in :func:`capped_exploration_policy`.
+
+    The integer map ``n -> S(n) -> n`` is iterated to a fixed point. It is monotone in ``n`` and
+    lands in a handful of steps, but a two-cycle across a round boundary is possible, so the loop
+    stops on the first repeat rather than on a tolerance.
+    """
+    prefix = np.cumsum(caps)
+
+    def mass_for(rounds: int) -> float:
+        reach = numerator * max(horizon - rounds, 0) / (curvature * info_rate)
+        return max(float(np.sqrt(reach)) - prior_info / info_rate, 0.0)
+
+    rounds, seen = 0, set()
+    for _ in range(64):
+        if rounds in seen:
+            break
+        seen.add(rounds)
+        rounds = int(np.searchsorted(prefix, mass_for(rounds))) + 1
+    return mass_for(rounds)
+
+
+def _greedy_fill(caps: NDArray[np.float64], budget: float | None) -> NDArray[np.float64]:
+    """Saturate the caps from round 1 until the budget runs out -- Result 56's exchange argument
+    says an earlier round is strictly cheaper, and it never mentions what the caps are."""
+    if budget is None:
+        return caps
+    return np.diff(np.concatenate([[0.0], np.minimum(np.cumsum(caps), budget)]))
+
+
 def capped_exploration_policy(
     *,
     horizon: int,
-    cap: float,
+    cap: float | Sequence[float],
+    budget: float | None = None,
     b: float = 1.0,
     rr: float = 0.5,
     xt: float = 1.0,
@@ -3397,7 +4050,8 @@ def capped_exploration_policy(
     stop. A clipped burst, not a taper.
 
     The price of the cap is ADDITIVE and LOGARITHMIC, not a constant factor. The optimal block
-    length is ``n* = sqrt(K T/(A c))/cap``, and at it the leading term is ``2 sqrt(A K T/c)``,
+    length is ``n* = sqrt(K T/(A c))/cap`` TO LEADING ORDER -- exactly it is ``S*/cap``, smaller
+    by the constant derived below -- and at it the leading term is ``2 sqrt(A K T/c)``,
     which with ``K = A (du*/db)^2`` and ``c = eta/sigma^2`` is EXACTLY the uncapped constant
     ``c_causal sqrt(T)`` (``capped_leading_term_is_the_uncapped_floor``). What is left over is the
     harmonic sum, ``(K/(2 c cap)) ln T + O(1)`` -- so the ratio to the uncapped floor tends to 1
@@ -3415,14 +4069,76 @@ def capped_exploration_policy(
     it as a slope rather than a level. Per decade of ``T`` at ``cap = 0.03`` it predicts ``2.32``
     against a measured ``2.20`` then ``2.29`` -- converging, which is the claim.
 
+    A VARYING cap, or a total ``budget`` on top of it, was Result 56's own open item: the exchange
+    argument still says "as early as feasible", but ``n*`` is then not a single number. It turns out
+    ``n*`` was never the invariant. The first-order condition is
+
+        ``dF/dn = cap(n) [ A - K c (T - n) / (I0 + c S(n))^2 ]``
+
+    (``validation/capped_exploration_schedule.mac`` STEP 2b, residual 0), whose bracket contains the
+    cap nowhere -- only the mass ``S(n)`` delivered so far. So the optimal exploration MASS solves
+
+        ``A (I0 + c S)^2 = K c (T - n)``,  with ``n`` the round the prefix sum delivers ``S``
+
+    and is free of the cap LEVEL while the round that reaches it is not. It is not free of the
+    horizon: ``n`` sits inside its own condition, so ``predicted_mass`` is a fixed point rather
+    than a closed form, and Result 56's ``sqrt(K T/(A c)) - I0/c`` is the ``n << T`` limit -- 25%
+    high as soon as the caps open late.
+
+    Under a CONSTANT cap that fixed point has a closed form, and it says exactly what Result 56
+    drops. The stopping round is ``n = S/cap``, so the remaining horizon is itself a function of
+    the mass and the condition becomes a QUADRATIC in ``w = I0 + c S``,
+
+        ``A w^2 + (K/cap) w = K c T + K I0/cap``
+
+    whose Result 56 counterpart is the same balance with the horizon held at the full ``T``,
+    ``A w0^2 = K c T``. Subtracting the two kills ``T`` entirely and leaves
+    ``A (w0^2 - w^2) = K c S/cap``, so the cap-free form OVER-states the mass at every finite
+    horizon -- never under-states it -- by ``(w0 - w)/c <= K/(2 A c cap)``, a CONSTANT rather than
+    a vanishing remainder (``proofs/capped_exploration_schedule.v`` section (H)). At the defaults
+    and ``cap = 0.01`` the ceiling is ``2.016``, approached strictly from below as
+    ``1.834, 1.959, 1.998, 2.011, 2.015`` over ``T = 1e4 .. 1e8``, the remainder decaying like
+    ``(K + 4 A I0 cap) sqrt(K/(A c)) / (8 A c cap^2 sqrt(T))`` (STEP 7 of
+    ``validation/capped_exploration_schedule.mac``, confirmed to 60 digits by
+    ``validation/capped_exploration_o1.gp``). It is the TIGHT actuator the omission hurts: at
+    ``T = 4000`` the over-statement is ``0.5%`` of the mass at ``cap = 0.3`` and ``17%`` at
+    ``cap = 0.01``.
+
+    A budget does not interact with the caps either: below the
+    root the objective is strictly decreasing in the mass, so a binding budget is spent in full, as
+    early as the caps allow. The two collapse to
+
+        deliver mass ``min(budget, S*)``, greedily -- ``block_rounds`` is where the prefix sum of
+        the caps first reaches it.
+
+    ``cap`` therefore takes either a scalar or a per-round schedule of length ``horizon``. What does
+    NOT become cap-free is the COST: delivering the same mass earlier is strictly cheaper, so two
+    schedules with the same prefix mass at ``n*`` still cost differently. The stopping rule is the
+    invariant, not the value. A prefix of ZERO caps is the sharp case -- it adds exactly ``m K/I0``
+    and hands the rest of the horizon to the same problem, so a dead actuator has a price and not a
+    distortion.
+
     Scope: as in :func:`minimax_exploration_certificate` -- the van Trees score identity for a
     functional under an adaptive design and Fisher-information additivity are cited, not
     formalised, and exploitation is assumed to contribute no identifying information.
     """
     if horizon < 1:
         raise ValueError("horizon must be at least one round")
-    if cap <= 0.0:
+    caps = (
+        np.full(horizon, float(cap))
+        if isinstance(cap, int | float)
+        else np.asarray(cap, dtype=np.float64)
+    )
+    if caps.shape != (horizon,):
+        raise ValueError(
+            f"a cap schedule needs one entry per round: got {caps.shape} for horizon {horizon}"
+        )
+    if caps.min() < 0.0:
+        raise ValueError("a cap bounds the action, so it cannot be negative")
+    if caps.max() <= 0.0:
         raise ValueError("cap must be positive: a zero cap forbids exploration entirely")
+    if budget is not None and budget <= 0.0:
+        raise ValueError("budget must be positive: a zero budget forbids exploration entirely")
     curvature = b * b + rr
     sensitivity = -xt * (rr - b * b) / (rr + b * b) ** 2
     numerator = curvature * sensitivity * sensitivity
@@ -3430,41 +4146,83 @@ def capped_exploration_policy(
     c_causal = 2.0 * curvature * abs(sensitivity) * sigma / np.sqrt(eta)
     floor = c_causal * np.sqrt(horizon) - curvature * i0 / info_rate
 
-    def cost_of(rounds: NDArray[np.float64]) -> NDArray[np.float64]:
-        return _capped_block_cost(
-            rounds,
-            cap=cap,
+    predicted_mass = _self_consistent_mass(
+        caps,
+        horizon=horizon,
+        curvature=curvature,
+        numerator=numerator,
+        info_rate=info_rate,
+        prior_info=i0,
+    )
+    fill = _greedy_fill(caps, budget)
+    constant = budget is None and float(caps.min()) == float(caps.max())
+
+    if constant:
+        # The information grows by a constant step, so the harmonic sum is a difference of
+        # digammas and the search costs O(1) per candidate -- which is what lets the certificate
+        # run to T = 1e7. This path is Result 56's and is left numerically untouched.
+        level = float(caps[0])
+
+        def cost_of(rounds: NDArray[np.float64]) -> NDArray[np.float64]:
+            return _capped_block_cost(
+                rounds,
+                cap=level,
+                curvature=curvature,
+                numerator=numerator,
+                info_rate=info_rate,
+                prior_info=i0,
+                horizon=horizon,
+            )
+
+        predicted = np.sqrt(numerator * horizon / (curvature * info_rate)) / level
+        # Convex in the block length, so a coarse geometric bracket plus a local sweep is exact.
+        coarse = np.unique(
+            np.clip(np.round(predicted * np.geomspace(0.05, 20.0, 61)), 1.0, float(horizon))
+        )
+        centre = float(coarse[int(np.argmin(cost_of(coarse)))])
+        window = np.unique(np.clip(np.arange(centre - 64.0, centre + 65.0), 1.0, float(horizon)))
+        best = int(window[int(np.argmin(cost_of(window)))])
+        cost = float(cost_of(np.array([float(best)]))[0])
+    else:
+        curve = _scheduled_block_costs(
+            fill,
             curvature=curvature,
             numerator=numerator,
             info_rate=info_rate,
             prior_info=i0,
-            horizon=horizon,
         )
+        # Once the budget is spent the curve is EXACTLY flat -- a round with no exploration adds
+        # one term to the estimation sum and removes one from the exploitation tail at the same
+        # information -- so argmin lands wherever float noise puts it. Trim to the last round that
+        # actually explores, which is what "explore for n rounds then stop" means. The threshold is
+        # not cosmetic: a prefix sum that reaches the budget carries O(eps*T) of rounding, so the
+        # round after the last real one is filled with a few ulps rather than a clean zero.
+        best = int(np.argmin(curve))
+        crumb = np.finfo(np.float64).eps * caps.size * float(np.sum(fill[:best]))
+        used = np.flatnonzero(fill[:best] > crumb)
+        best = int(used[-1]) + 1 if used.size else 0
+        cost = float(curve[best])
 
-    predicted = np.sqrt(numerator * horizon / (curvature * info_rate)) / cap
-    # Convex in the block length, so a coarse geometric bracket plus a local sweep is exact.
-    coarse = np.unique(
-        np.clip(np.round(predicted * np.geomspace(0.05, 20.0, 61)), 1.0, float(horizon))
-    )
-    centre = float(coarse[int(np.argmin(cost_of(coarse)))])
-    window = np.unique(np.clip(np.arange(centre - 64.0, centre + 65.0), 1.0, float(horizon)))
-    best = window[int(np.argmin(cost_of(window)))]
-    cost = float(cost_of(np.array([best]))[0])
+    mass = float(np.sum(fill[:best]))
+    effective = mass / best if best > 0 else float(caps[0])
 
     scale = sigma * np.sqrt(numerator / (2.0 * curvature * eta))
     steps = np.arange(1, horizon + 1, dtype=np.float64)
-    taper = np.minimum(scale / np.sqrt(steps), cap)
+    taper = _greedy_fill(np.minimum(scale / np.sqrt(steps), caps), budget)
     info = i0 + info_rate * np.concatenate([[0.0], np.cumsum(taper)[:-1]])
     taper_cost = float(np.sum(curvature * taper + numerator / info))
 
     return CappedExplorationPolicy(
-        cap=float(cap),
-        block_rounds=int(best),
+        cap=effective,
+        block_rounds=best,
         cost=cost,
         uncapped_floor=float(floor),
         taper_cost=taper_cost,
         excess=cost - float(floor),
-        predicted_excess=float(numerator * np.log(horizon) / (2.0 * info_rate * cap)),
+        predicted_excess=float(numerator * np.log(horizon) / (2.0 * info_rate * effective)),
+        exploration_mass=mass,
+        predicted_mass=predicted_mass,
+        budget_binds=budget is not None and mass >= budget - 1e-9 * max(1.0, budget),
     )
 
 

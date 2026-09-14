@@ -13,9 +13,12 @@ from chc.dynamics import DampedOscillator
 from chc.lqr import linearize_discrete, linearized_regret_certificate
 from chc.network_causal import cycle_shells
 from chc.regret import (
+    _capped_block_cost,
     _matrix_gamma,
     _permutation_cycles,
     _sandwich_plan,
+    _scheduled_block_costs,
+    _self_consistent_mass,
     adaptive_exploration_certificate,
     bandit_causal_certificate,
     capped_exploration_policy,
@@ -29,6 +32,7 @@ from chc.regret import (
     confounded_turnpike_certificate,
     conjugate_time_certificate,
     constrained_ce_regret_certificate,
+    cross_cluster_mixing_certificate,
     delayed_network_certificate,
     dlqr,
     doubly_robust_control_certificate,
@@ -48,8 +52,10 @@ from chc.regret import (
     matrix_ratio_certificate,
     minimax_exploration_certificate,
     multichannel_control_certificate,
+    multivariate_action_floor,
     multivariate_interference_certificate,
     multivariate_transfer_certificate,
+    multivariate_van_trees_certificate,
     nonlinear_regret_certificate,
     optimal_exploration_certificate,
     optimal_fold_partition,
@@ -391,6 +397,44 @@ def test_clustered_lower_bound_makes_the_sampling_floor_irreducible() -> None:
     assert ratio < 2.0  # G*regret stays within a bounded band (a genuine plateau, not decay)
 
 
+def test_the_cluster_rate_survives_summable_cross_cluster_dependence_and_only_that() -> None:
+    # A3' (paper 1, Appendix C.3): Contribution 2's G^-1/2 does NOT need independent clusters, only
+    # psi-dependence with a SUMMABLE coefficient (Kojevnikov-Marmer-Song 2021; Leung 2022). Both
+    # halves are gated, because "the rate survived" alone is unfalsifiable -- it is also what an arm
+    # with no dependence at all reports. The non-summable arm (a FIXED super-block count, so psi
+    # never decays) is the negative control and its rate must be gone, not merely worse.
+    curve = cross_cluster_mixing_certificate(
+        decays=(0.0, 0.3, 0.5, 0.7), g_grid=(40, 80, 160, 320), n_seeds=60, n_replicates=3
+    )
+    assert np.all(curve.slopes < -0.35)  # every summable arm still concentrates at ~1/sqrt(G)
+    assert curve.blocked_slope > -0.15  # psi that never decays: effective n is the block count
+    assert np.min(np.abs(curve.slopes - curve.blocked_slope)) > 0.3
+
+    # the CONSTANT is the half A3' actually moves, and it is predicted rather than just observed:
+    # the bread is free of rho (a unit-variance field has unit variance whatever its correlation
+    # length), so G*MSE must be AFFINE in the HAC sum sum_{d != 0} psi(d) = 2 rho^2/(1 - rho^2)
+    assert curve.hac_r_squared > 0.9
+    assert curve.hac_slope > 0.0  # dependence costs variance; a negative slope would be nonsense
+    assert curve.hac_scale[-1] > 1.3 * curve.hac_scale[0]
+    assert np.all(np.diff(curve.rmse[:, -1]) > 0.0)  # more dependence, more error, at fixed G
+
+    # the two fields are INDEPENDENT of each other, so the dependence must reach the score's
+    # cross-cluster covariance and NOWHERE else. Reusing ONE field for both makes it an omitted
+    # confounder, and measured at these settings that design flattens the slopes to
+    # -0.001/-0.002/+0.006/+0.027 -- i.e. it is INDISTINGUISHABLE from the non-summable arm above
+    # on the slope alone. What separates them is the point estimate: 0.0138 here against 0.3377
+    # with one field, a 24x gap, so this assertion is the only thing standing between the two
+    assert curve.worst_mean_error < 0.06
+
+    # rho = 1 is NOT the boundary case it looks like: an AR(1) at phi = 1 is a field CONSTANT across
+    # clusters, which is the common shock KMS's conditional definition conditions on -- and which
+    # the cross-fit nuisance intercept absorbs, so the arm would read LESS dependence, not more
+    with pytest.raises(ValueError, match="degenerates to a CONSTANT"):
+        cross_cluster_mixing_certificate(decays=(0.0, 0.3, 0.5, 1.0), g_grid=(40, 80), n_seeds=2)
+    with pytest.raises(ValueError, match="at least 4 decay arms"):
+        cross_cluster_mixing_certificate(decays=(0.0, 0.5), g_grid=(40, 80), n_seeds=2)
+
+
 def test_exposure_map_has_three_channel_bottleneck() -> None:
     # Contribution 2, exposure-map generalization (proofs/exposure_map_c2.v): the marketplace plant
     # x_{t+1}=A x_t + (B_d + B_s W)u_t + eps has three effect channels (direct, spillover-coeff, and
@@ -728,6 +772,412 @@ def test_capped_exploration_front_loads_and_does_not_become_a_taper() -> None:
         capped_exploration_policy(horizon=0, cap=0.1)
     with pytest.raises(ValueError, match="cap must be positive"):
         capped_exploration_policy(horizon=10, cap=0.0)
+
+
+def test_capped_exploration_under_a_schedule_and_a_budget_moves_the_mass_not_the_length() -> None:
+    # Result 66, validation/capped_exploration_schedule.mac, proofs/capped_exploration_schedule.v.
+    # Result 56 left this as honest scope: a cap that VARIES, or a budget on top of the cap,
+    # changes the feasible set, so n* stops being a formula. What survives is the stopping MASS.
+
+    horizon = 400
+    b, rr, xt, sigma, i0, eta = 1.0, 0.5, 1.0, 0.7, 1.0, 0.6
+    curvature = b * b + rr
+    sensitivity = -xt * (rr - b * b) / (rr + b * b) ** 2
+    numerator = curvature * sensitivity * sensitivity
+    info_rate = eta / sigma**2
+
+    def cumulative(schedule: np.ndarray) -> float:
+        info = i0 + info_rate * np.concatenate([[0.0], np.cumsum(schedule)[:-1]])
+        return float(np.sum(curvature * schedule + numerator / info))
+
+    def gradient(schedule: np.ndarray) -> np.ndarray:
+        info = i0 + info_rate * np.concatenate([[0.0], np.cumsum(schedule)[:-1]])
+        weights = numerator / info**2
+        tail = np.concatenate([np.cumsum(weights[::-1])[::-1][1:], [0.0]])
+        return curvature - info_rate * tail
+
+    def solve(caps: np.ndarray) -> tuple[np.ndarray, float]:
+        guess = np.minimum(1e-3, caps)
+        step, best = 1.0, cumulative(guess)
+        for _ in range(8000):
+            trial = np.clip(guess - step * gradient(guess), 0.0, caps)
+            value = cumulative(trial)
+            if value < best:
+                guess, best, step = trial, value, step * 1.05
+            else:
+                step *= 0.5
+                if step < 1e-15:
+                    break
+        return guess, best
+
+    # 1. a VARYING cap: the O(T) sweep lands on the same optimum a projected-gradient solve of
+    #    the full convex program does, and that optimum is still a saturated front-loaded block
+    caps = np.random.default_rng(0).uniform(0.01, 0.08, horizon)
+    schedule, reference = solve(caps)
+    policy = capped_exploration_policy(horizon=horizon, cap=caps)
+    assert policy.cost == pytest.approx(reference, rel=1e-4)
+    assert (schedule > 0.999 * caps).sum() == pytest.approx(policy.block_rounds, abs=2)
+
+    # 2. the two cost implementations are independent and must agree: Result 56's digamma
+    #    identity, O(1) per candidate, against the explicit harmonic sum the schedule path has to
+    #    materialise. Comparing two POLICIES at a constant cap would not test this -- the policy
+    #    routes a constant cap to the digamma path and would be checking it against itself
+    for rounds, level in ((1000, 0.03), (10000, 0.03), (4000, 0.005)):
+        curve = _scheduled_block_costs(
+            np.full(rounds, level),
+            curvature=curvature,
+            numerator=numerator,
+            info_rate=info_rate,
+            prior_info=i0,
+        )
+        probe = np.array([1.0, 7.0, 50.0, rounds / 4, rounds / 2, rounds - 1.0])
+        fast = _capped_block_cost(
+            probe,
+            cap=level,
+            curvature=curvature,
+            numerator=numerator,
+            info_rate=info_rate,
+            prior_info=i0,
+            horizon=rounds,
+        )
+        assert np.allclose(fast, curve[probe.astype(int)], rtol=1e-12)
+    # ... and a SLACK budget is what forces a constant cap down the O(T) path end to end
+    for rounds in (10**3, 10**4, 10**5):
+        fast_policy = capped_exploration_policy(horizon=rounds, cap=0.03)
+        swept = capped_exploration_policy(horizon=rounds, cap=np.full(rounds, 0.03), budget=1e9)
+        assert swept.block_rounds == fast_policy.block_rounds
+        assert swept.cost == pytest.approx(fast_policy.cost, rel=1e-12)
+
+    # 3. the invariant is the stopping MASS, not the block length. Across schedules whose blocks
+    #    differ by 6x in length, every one stops within a single cap of the mass the first-order
+    #    condition names -- and that condition never mentions the cap level
+    rounds = 4000
+    rng = np.random.default_rng(1)
+    schedules = {
+        "constant": np.full(rounds, 0.03),
+        "up-ramp": np.linspace(0.01, 0.05, rounds),
+        "down-ramp": np.linspace(0.05, 0.01, rounds),
+        "idle-third": np.where(np.arange(rounds) < rounds // 3, 0.0, 0.03),
+        "random": rng.uniform(0.0, 0.06, rounds),
+    }
+    policies = {
+        name: capped_exploration_policy(horizon=rounds, cap=c) for name, c in schedules.items()
+    }
+    for name, shaped in policies.items():
+        landing = float(schedules[name][shaped.block_rounds - 1])
+        assert abs(shaped.exploration_mass - shaped.predicted_mass) < landing
+    lengths = [shaped.block_rounds for shaped in policies.values()]
+    assert max(lengths) / min(lengths) > 3.0
+    # ... while Result 56's LEADING form sqrt(K T/(A c)) - I0/c is not that invariant: it reads
+    #     the whole horizon, so it runs 25% high as soon as the caps open late
+    leading = float(np.sqrt(numerator * rounds / (curvature * info_rate)) - i0 / info_rate)
+    assert policies["constant"].exploration_mass == pytest.approx(leading, rel=0.08)
+    assert policies["idle-third"].exploration_mass < 0.8 * leading
+
+    # 4. an idle prefix is not an approximation: m rounds under a zero cap add exactly m K/I0 and
+    #    hand the remaining horizon to the SAME problem, block length and mass included
+    for total, idle in ((400, 133), (4000, 500)):
+        dead = capped_exploration_policy(
+            horizon=total, cap=np.where(np.arange(total) < idle, 0.0, 0.03)
+        )
+        short = capped_exploration_policy(horizon=total - idle, cap=0.03)
+        assert dead.block_rounds - idle == short.block_rounds
+        assert dead.exploration_mass == pytest.approx(short.exploration_mass, abs=1e-12)
+        assert dead.cost == pytest.approx(idle * numerator / i0 + short.cost, rel=1e-12)
+
+    # 5. a BUDGET below the free mass binds, is spent in full, and is spent as early as the caps
+    #    allow -- the exchange argument, checked against the same mass arranged three other ways
+    level = 0.03
+    caps = np.full(horizon, level)
+    free = capped_exploration_policy(horizon=horizon, cap=caps)
+    for budget in (1.0, 2.0):
+        assert budget < free.exploration_mass
+        bounded = capped_exploration_policy(horizon=horizon, cap=caps, budget=budget)
+        assert bounded.budget_binds
+        assert bounded.exploration_mass == pytest.approx(budget, rel=1e-12)
+        # the shortest prefix that covers the budget, and not one round more: a round that
+        # delivers nothing is exactly free, so the cost curve beyond here is flat, not rising
+        assert bounded.block_rounds * level >= budget - 1e-9
+        assert (bounded.block_rounds - 1) * level < budget - 1e-9
+        greedy = np.zeros(horizon)
+        greedy[: bounded.block_rounds] = np.diff(
+            np.concatenate([[0.0], np.minimum(np.cumsum(caps[: bounded.block_rounds]), budget)])
+        )
+        assert bounded.cost == pytest.approx(cumulative(greedy), rel=1e-12)
+        shifted = np.zeros(horizon)
+        shifted[bounded.block_rounds : 2 * bounded.block_rounds] = greedy[: bounded.block_rounds]
+        assert cumulative(greedy) < min(
+            cumulative(np.full(horizon, budget / horizon)),
+            cumulative(greedy[::-1]),
+            cumulative(shifted),
+        )
+    # ... and a budget above the free mass is slack: it changes nothing at all
+    slack = capped_exploration_policy(
+        horizon=horizon, cap=caps, budget=10.0 * free.exploration_mass
+    )
+    assert not slack.budget_binds
+    assert slack.block_rounds == free.block_rounds
+    assert slack.cost == pytest.approx(free.cost, rel=1e-12)
+
+    with pytest.raises(ValueError, match="one entry per round"):
+        capped_exploration_policy(horizon=10, cap=np.full(9, 0.1))
+    with pytest.raises(ValueError, match="cannot be negative"):
+        capped_exploration_policy(horizon=3, cap=[0.1, -0.1, 0.1])
+    with pytest.raises(ValueError, match="cap must be positive"):
+        capped_exploration_policy(horizon=3, cap=[0.0, 0.0, 0.0])
+    with pytest.raises(ValueError, match="budget must be positive"):
+        capped_exploration_policy(horizon=10, cap=0.1, budget=0.0)
+
+
+def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_dropped() -> None:
+    # Result 66 extended, validation/capped_exploration_schedule.mac STEP 7,
+    # validation/capped_exploration_o1.gp, proofs/capped_exploration_schedule.v section (H).
+    # Result 56's sqrt(K T/(A c)) - I0/c is the root of the first-order condition with the
+    # REMAINING horizon held at the full T. Under a constant cap the stopping round is S/cap, so
+    # the remaining horizon is a function of the mass and the root solves a QUADRATIC in
+    # w = I0 + c S. What Result 56 drops is therefore a CONSTANT, not a vanishing remainder.
+
+    b, rr, xt, sigma, i0, eta = 1.0, 0.5, 1.0, 0.7, 1.0, 0.6
+    curvature = b * b + rr
+    sensitivity = -xt * (rr - b * b) / (rr + b * b) ** 2
+    numerator = curvature * sensitivity * sensitivity
+    info_rate = eta / sigma**2
+    aa, kk, cc = curvature, numerator, info_rate
+
+    def exact(horizon: float, cap: float) -> float:
+        # A w^2 + (K/cap) w = K c T + K I0/cap, solved for the positive root
+        q = kk / cap
+        w = (-q + np.sqrt(q * q + 4.0 * aa * (kk * cc * horizon + kk * i0 / cap))) / (2.0 * aa)
+        return float((w - i0) / cc)
+
+    def result_56(horizon: float) -> float:
+        return float(np.sqrt(kk * horizon / (aa * cc)) - i0 / cc)
+
+    constant = kk / (2.0 * aa * cc)  # the dropped term is this over the cap
+
+    # 1. the quadratic root is what _self_consistent_mass iterates to. Its fixed point is the
+    #    same balance discretised on integer rounds, so the two may differ by the mass one round
+    #    delivers and by no more than that
+    cap = 0.01
+    for horizon in (10**4, 10**5, 10**6):
+        caps = np.full(horizon, cap)
+        fixed = _self_consistent_mass(
+            caps,
+            horizon=horizon,
+            curvature=curvature,
+            numerator=numerator,
+            info_rate=info_rate,
+            prior_info=i0,
+        )
+        assert fixed == pytest.approx(exact(horizon, cap), abs=cap)
+
+    # 2. the gap to Result 56 converges to K/(2 A c cap) -- a CONSTANT, over five decades of T
+    gaps = [result_56(t) - exact(t, cap) for t in (10**4, 10**5, 10**6, 10**7, 10**8)]
+    assert gaps[-1] == pytest.approx(constant / cap, rel=1e-3)
+    # ... and it is a ceiling, not just a limit: proofs/capped_exploration_schedule.v
+    #     the_overstatement_never_exceeds_the_cap_term, approached strictly from below
+    assert all(0.0 < gaps[i] < gaps[i + 1] <= constant / cap for i in range(len(gaps) - 1))
+
+    # 3. what is left after subtracting the constant decays like 1/sqrt(T) with the coefficient
+    #    STEP 7g derives -- four decades, so the rate is read off a curve and not a pair
+    coefficient = (kk + 4.0 * aa * i0 * cap) * np.sqrt(kk / (aa * cc)) / (8.0 * aa * cc * cap**2)
+    tail = [
+        (result_56(t) - constant / cap - exact(t, cap)) * np.sqrt(t)
+        for t in (10**5, 10**6, 10**7, 10**8)
+    ]
+    assert tail[-1] == pytest.approx(-coefficient, rel=1e-4)
+    assert all(abs(tail[i]) < abs(tail[i + 1]) for i in range(len(tail) - 1))
+
+    # 4. the cap enters the mass ONLY through that constant, so a tighter actuator is exactly
+    #    where Result 56's form over-states -- inversely in the cap, and unboundedly
+    horizon = 4000
+    overstatement = {k: result_56(horizon) - exact(horizon, k) for k in (0.3, 0.1, 0.03, 0.01)}
+    assert all(v <= constant / k for k, v in overstatement.items())
+    assert overstatement[0.01] / overstatement[0.1] == pytest.approx(10.0, rel=0.1)
+    # ... 0.5% of the mass at cap 0.3 and 17% at cap 0.01, on the same horizon
+    assert overstatement[0.3] / exact(horizon, 0.3) < 0.01
+    assert overstatement[0.01] / exact(horizon, 0.01) > 0.15
+
+    # 5. the policy's own mass agrees with the quadratic, not with Result 56's form
+    policy = capped_exploration_policy(horizon=10**5, cap=cap)
+    assert policy.predicted_mass == pytest.approx(exact(10**5, cap), abs=cap)
+    assert abs(policy.predicted_mass - result_56(10**5)) > 1.9
+
+
+def test_multivariate_van_trees_prices_an_alignment_where_the_scalar_floor_prices_a_ratio() -> None:
+    # Result 67, validation/multivariate_van_trees.mac, proofs/multivariate_van_trees.v.
+    # Result 57 closed with "the multivariate case has the same structure with psi' a Jacobian and
+    # the floor a trace". The structure is the same; the conclusion is not.
+
+    rr = 0.5
+    weight, control = np.eye(2), rr * np.eye(2)
+    x = np.array([1.0, 0.8])
+    channels = np.array([[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [0.0, 1.0]]])
+
+    def scalar_constant(gain: float, entry: float) -> float:
+        return entry**2 * (rr - gain**2) ** 2 / (rr + gain**2) ** 3
+
+    # 1. the reductions are EXACT identities, not approximations: two decoupled channels give the
+    #    sum of per-channel Result-10 constants, each weighted by the information in its direction
+    spectrum = np.array([37.0, 23.0])
+    diagonal = multivariate_action_floor(
+        effect=np.diag([1.0, 0.4]),
+        state_weight=weight,
+        action_weight=control,
+        target=x,
+        information=np.diag(spectrum),
+        directions=channels,
+    )
+    assert diagonal.floor == pytest.approx(
+        scalar_constant(1.0, x[0]) / spectrum[0] + scalar_constant(0.4, x[1]) / spectrum[1],
+        rel=1e-12,
+    )
+    assert float(diagonal.direction_floors.sum()) == pytest.approx(diagonal.floor, rel=1e-12)
+
+    # 2. the hand-derived Jacobian is CHECKED, not trusted -- including on a rectangular plant,
+    #    where p != q and the curvature is not the effect's own Gram
+    rng = np.random.default_rng(3)
+    for states, actions in ((2, 2), (3, 2), (2, 3)):
+        effect = rng.normal(size=(states, actions))
+        state_weight = np.eye(states)
+        action_weight = 0.7 * np.eye(actions)
+        target = rng.normal(size=states)
+        size = states * actions
+        floor = multivariate_action_floor(
+            effect=effect,
+            state_weight=state_weight,
+            action_weight=action_weight,
+            target=target,
+            information=np.diag(np.linspace(11.0, 29.0, size)),
+        )
+
+        def action_at(
+            flat: np.ndarray,
+            shape: tuple[int, int] = (states, actions),
+            sw: np.ndarray = state_weight,
+            aw: np.ndarray = action_weight,
+            tg: np.ndarray = target,
+        ) -> np.ndarray:
+            moved = flat.reshape(shape)
+            return -np.linalg.solve(moved.T @ sw @ moved + aw, moved.T @ sw @ tg)
+
+        step = 1e-6
+        base = effect.ravel()
+        difference = np.stack(
+            [
+                (action_at(base + step * unit) - action_at(base - step * unit)) / (2.0 * step)
+                for unit in np.eye(size)
+            ],
+            axis=1,
+        )
+        assert np.abs(difference - floor.sensitivity).max() < 1e-8
+
+    # 3. the floor is ANTITONE in the information, which is the PSD-order step: adding information
+    #    in any direction can only lower it, and adding it where the action does not look is free
+    base_information = np.diag([20.0, 20.0, 20.0, 20.0])
+    dense = rng.normal(size=(2, 2))
+
+    def floor_at(information: np.ndarray) -> float:
+        return multivariate_action_floor(
+            effect=dense,
+            state_weight=weight,
+            action_weight=control,
+            target=x,
+            information=information,
+        ).floor
+
+    reference = floor_at(base_information)
+    for _ in range(20):
+        extra = rng.normal(size=(4, 4))
+        assert floor_at(base_information + extra @ extra.T) <= reference + 1e-12
+
+    # 4. the headline: the SAME information loss costs a factor in one direction and nothing in
+    #    another, because the floor weighs a direction by how much the optimal action leans on it
+    curve = multivariate_van_trees_certificate()
+    assert curve.orthogonal_ratio == pytest.approx(1.0, abs=1e-9)
+    # 3.0 pins the DEFAULT SEED's number, not a law: the arm draws its 2x2 plant from `seed`, and
+    # over seeds 11-15 the factor ranges 2.833..3.643. The seed-invariant claims are the bracket
+    # (1, information_loss), the exactly-1 kernel direction, and the closed form below; they are
+    # swept in causaldyn_bench.paper_three's Table 5 rather than duplicated here.
+    assert 3.0 < curve.aligned_ratio < curve.information_loss
+    # ... and the closed form 1 + (k-1) a_max/sum(a) reproduces the measured ratio, which is a
+    #     cross-check of the eigendecomposition path against the algebra, not a restatement
+    assert curve.worst_single_direction == pytest.approx(curve.aligned_ratio, rel=1e-9)
+
+    # 5. the knife edge is one ENTRY of a vector now: a channel at rr = b^2 carries no weight at
+    #    all, while its neighbour carries the usual amount
+    assert curve.knife_edge_weight < 1e-20 * curve.live_channel_weight
+    assert curve.live_channel_weight > 0.01
+
+    # 6. the bound binds on the good estimator and is not beatable by the superefficient one
+    assert curve.scalar_agreement < 1e-12
+    assert curve.channel_sum_agreement < 1e-12
+    assert curve.sensitivity_residual < 1e-8
+    assert curve.plugin_ratio > 1.0
+    assert curve.hodges_pointwise_ratio < 1e-6  # superefficient AT the centre: never minimax
+    assert curve.hodges_bayes_ratio > 10.0 * curve.plugin_ratio  # and paid for off-centre
+
+    with pytest.raises(ValueError, match="p-by-q matrix"):
+        multivariate_action_floor(
+            effect=np.array([1.0, 2.0]),
+            state_weight=weight,
+            action_weight=control,
+            target=x,
+            information=np.eye(2),
+        )
+    with pytest.raises(ValueError, match="state weight must be"):
+        multivariate_action_floor(
+            effect=np.eye(2),
+            state_weight=np.eye(3),
+            action_weight=control,
+            target=x,
+            information=np.eye(4),
+        )
+    with pytest.raises(ValueError, match="action weight must be"):
+        multivariate_action_floor(
+            effect=np.eye(2),
+            state_weight=weight,
+            action_weight=np.eye(3),
+            target=x,
+            information=np.eye(4),
+        )
+    with pytest.raises(ValueError, match="target lives in state space"):
+        multivariate_action_floor(
+            effect=np.eye(2),
+            state_weight=weight,
+            action_weight=control,
+            target=np.zeros(3),
+            information=np.eye(4),
+        )
+    with pytest.raises(ValueError, match="stack of effect-space bumps"):
+        multivariate_action_floor(
+            effect=np.eye(2),
+            state_weight=weight,
+            action_weight=control,
+            target=x,
+            information=np.eye(2),
+            directions=np.eye(2),
+        )
+    with pytest.raises(ValueError, match="d-by-d in the direction basis"):
+        multivariate_action_floor(
+            effect=np.eye(2),
+            state_weight=weight,
+            action_weight=control,
+            target=x,
+            information=np.eye(3),
+        )
+    with pytest.raises(ValueError, match="positive definite"):
+        multivariate_action_floor(
+            effect=np.eye(2),
+            state_weight=weight,
+            action_weight=control,
+            target=x,
+            information=np.diag([1.0, 1.0, 1.0, 0.0]),
+        )
+    with pytest.raises(ValueError, match="information is CUT"):
+        multivariate_van_trees_certificate(information_loss=0.5)
+    with pytest.raises(ValueError, match="prior width"):
+        multivariate_van_trees_certificate(prior_width=0.0)
 
 
 def test_exact_matrix_ratio_moment_matches_the_haar_law_and_prices_the_two_channel_gap() -> None:

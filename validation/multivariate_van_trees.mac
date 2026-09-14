@@ -1,0 +1,170 @@
+/* Multivariate van Trees on the ACTION -- Appendix A item A18, the arm Result 57 left open.
+
+   Result 57 removed Result 10's unbiasedness and delta-method caveats by working in action space,
+   where the one-step LQ regret is EXACTLY (b^2+rr)(u - u*(b))^2, and then applying van Trees to
+   the estimand psi(b) = u*(b). Its honest scope closed with: "the model is still the scalar
+   one-step LQ plant; the multivariate case has the same structure with psi' a Jacobian and the
+   floor a trace, which is Result 25's territory."
+
+   This file does that case. What it finds is not bookkeeping: the scalar floor is a PRODUCT of a
+   curvature and an information, and the multivariate floor is a TRACE of their interleaving --
+   so the price of confounding stops being a ratio and becomes an ALIGNMENT between the directions
+   information is lost in and the directions the optimal action actually depends on. A scalar model
+   cannot express that, because with one direction the alignment is always 1.
+
+   Consumed by chc.regret.multivariate_action_floor and the multivariate arm of
+   information_lower_bound_certificate; proved in proofs/multivariate_van_trees.v.
+
+   Run: timeout 600 maxima --very-quiet -b validation/multivariate_van_trees.mac */
+
+print("================================================================")$
+print("MULTIVARIATE VAN TREES ON THE ACTION (A18)")$
+print("================================================================")$
+
+/* ===== STEP 1: the regret is an exact quadratic form in the ACTION, at any dimension ===== */
+
+print("=== STEP 1: J(u,B) - J(u*(B),B) = (u - u*)' M (u - u*) with M = B'QB + R ===")$
+
+Qm : matrix([q11, q12], [q12, q22])$      /* state weight, symmetric */
+Rm : matrix([r11, r12], [r12, r22])$      /* action weight, symmetric */
+Bm : matrix([b11, b12], [b21, b22])$      /* the effect MATRIX: q actions onto p states */
+xv : matrix([x1], [x2])$                  /* the state to be driven to zero */
+uv : matrix([u1], [u2])$
+
+tr2(A) := A[1][1] + A[2][2]$          /* trace, without pulling in nchrpl */
+/* Maxima's scalarmatrixp collapses a 1x1 product of dot products to its entry, so a quadratic
+   form comes back as a SCALAR and must not be indexed. */
+
+Mm : transpose(Bm) . Qm . Bm + Rm$
+J(u) := ratsimp( transpose(xv + Bm . u) . Qm . (xv + Bm . u) + transpose(u) . Rm . u )$
+ustar : ratsimp( - invert(Mm) . transpose(Bm) . Qm . xv )$
+
+print("STEP 1a u*(B) = -(B'QB + R)^(-1) B' Q x, first entry =", ratsimp(ustar[1][1]))$
+print("STEP 1a' is it a matrix?", matrixp(ustar), " and is J scalar?", not matrixp(J(uv)))$
+dv : uv - ustar$
+gap : ratsimp( J(uv) - J(ustar) - transpose(dv) . Mm . dv )$
+print("STEP 1b J(u) - J(u*) - (u-u*)' M (u-u*) =", gap, " (0)")$
+print("STEP 1c so the curvature is the MATRIX M = B'QB + R, exactly and for every u -- the")$
+print("        scalar (b^2 + rr) of Result 57 is its 1x1 case, and nothing is linearised")$
+
+/* the stationarity that picks u* out, as a check that u* is the minimiser and not just a root */
+print("STEP 1d grad_u J at u* =", ratsimp( subst([u1 = ustar[1][1], u2 = ustar[2][1]],
+                                                [diff(J(uv), u1), diff(J(uv), u2)]) ), " ([0,0])")$
+
+/* ===== STEP 2: a quadratic form is a trace, which is what turns a matrix bound into a number = */
+
+print("=== STEP 2: d' M d = tr(M d d'), so the regret is linear in the error COVARIANCE ===")$
+
+dd : matrix([d1], [d2])$
+print("STEP 2a d'Md - tr(M d d') =",
+      ratsimp( transpose(dd) . Mm . dd - tr2(Mm . dd . transpose(dd)) ), " (0)")$
+print("STEP 2b taking expectations, E[regret] = tr(M Sigma) with Sigma = E[(u - u*)(u - u*)'],")$
+print("        so a lower bound on Sigma in the PSD ORDER becomes a lower bound on the regret")$
+
+/* ===== STEP 3: trace against a PSD weight is monotone in the PSD order ===== */
+
+print("=== STEP 3: M >= 0 and D >= 0 give tr(M D) >= 0, by cyclicity and a factorisation ===")$
+
+Lm : matrix([l11, 0], [l21, l22])$        /* a Cholesky-type factor: M = L L' */
+Dm : matrix([e11, e12], [e12, e22])$      /* the PSD difference Sigma - floor */
+print("STEP 3a tr(L L' D) - tr(L' D L) =",
+      ratsimp( tr2(Lm . transpose(Lm) . Dm) - tr2(transpose(Lm) . Dm . Lm) ), " (0)")$
+print("STEP 3b and L' D L is a congruence of D, hence PSD whenever D is, so its trace -- a sum")$
+print("        of diagonal entries, each of the form v'Dv -- is nonnegative.  The multivariate")$
+print("        van Trees inequality Sigma >= Psi' G^(-1) Psi' is therefore a REGRET bound:")$
+print("        E[regret] >= tr( M Psi' G^(-1) Psi'' ),  G = n I_data + I(prior)")$
+
+/* ===== STEP 4: the scalar case, and Result 10's constant ===== */
+
+print("=== STEP 4: at p = q = d = 1 the trace collapses to Result 10's C ===")$
+
+psi1 : -bb*xt/(bb^2 + rr)$                /* u*(b) in the scalar model */
+dpsi : ratsimp(diff(psi1, bb))$
+print("STEP 4a psi'(b) =", dpsi)$
+scalarC : ratsimp( (bb^2 + rr) * dpsi^2 )$
+print("STEP 4b M psi'^2 =", scalarC)$
+print("STEP 4c Result 10's C = xt^2 (rr - b^2)^2/(rr + b^2)^3; residual =",
+      ratsimp( scalarC - xt^2*(rr - bb^2)^2/(rr + bb^2)^3 ), " (0)")$
+print("STEP 4d so the multivariate floor CONTAINS the scalar one; the constant does not move")$
+
+/* ===== STEP 5: the knife edge stops being a point and becomes a rank condition ===== */
+
+print("=== STEP 5: what kills the floor is a DIRECTION the action cannot see ===")$
+
+print("STEP 5a scalar: psi'(b) = 0 at rr = b^2 (Result 57(d)) -- one equation in one unknown,")$
+print("        so a 1-parameter family MEETS it.  Multivariate: the floor tr(M Psi' G^-1 Psi'')")$
+print("        is a sum of terms w' M w with w the columns of Psi' G^(-1/2), and M > 0, so")$
+print("        it vanishes IFF Psi' = 0 -- q*d equations, which a generic family misses")$
+Psi : matrix([p11, p12], [p21, p22])$
+Gi  : matrix([g11, g12], [g12, g22])$     /* G^(-1), symmetric */
+floorq : ratsimp( tr2( Mm . Psi . Gi . transpose(Psi) ) )$
+Gdg : matrix([g1, 0], [0, g2])$
+print("STEP 5b with G^(-1) diagonal the floor is sum_i g_i * col_i(Psi')' M col_i(Psi'); residual =",
+      ratsimp( tr2( Mm . Psi . Gdg . transpose(Psi) )
+               - g1 * transpose(col(Psi, 1)) . Mm . col(Psi, 1)
+               - g2 * transpose(col(Psi, 2)) . Mm . col(Psi, 2) ), " (0)")$
+print("        each term is a quadratic form in one COLUMN of Psi', so a column vanishing removes")$
+print("        that term and leaves the others: partial blindness, not a knife edge")$
+vv : matrix([v1], [v2])$
+print("STEP 5c the floor loses the direction v exactly when Psi' v = 0; for the rank-one")$
+print("        Psi' = w v'^perp this is an identity, residual =",
+      ratsimp( tr2( Mm . (matrix([w1],[w2]) . matrix([-v2, v1]))
+                          . vv . transpose(vv)
+                          . transpose(matrix([w1],[w2]) . matrix([-v2, v1])) ) ), " (0)")$
+print("STEP 5d so 'unidentifiable' splits in two: a direction of theta that does not move u* is")$
+print("        invisible to the floor BY CONSTRUCTION and costs no regret, while a direction that")$
+print("        moves u* and is not identified is what the floor prices")$
+
+/* ===== STEP 6: the price of confounding is an ALIGNMENT, not a ratio ===== */
+
+print("=== STEP 6: confounding shrinks G anisotropically, and only the aligned part is paid ===")$
+
+/* Take Psi' = a single row e' (one action direction depends on theta) and G^(-1) = diag(h1,h2):
+   the floor is M11 * (e.h.e), so which coordinate of theta loses information matters. */
+print("STEP 6a with Psi' = [[e1, e2],[0, 0]] and G^(-1) = diag(h1, h2), the floor is")$
+Psi2 : matrix([e1, e2], [0, 0])$
+Gd   : matrix([h1, 0], [0, h2])$
+fl2  : ratsimp( tr2( Mm . Psi2 . Gd . transpose(Psi2) ) )$
+print("       ", fl2)$
+print("STEP 6b confounding that removes information along theta_2 raises h2 alone.  The ratio")$
+print("        floor_conf/floor_exp is then")$
+ratio : ratsimp( subst(h2 = kk*h2, fl2) / fl2 )$
+print("       ", ratio)$
+print("STEP 6c which is kk only when e1 = 0, and 1 when e2 = 0.  In the scalar model there is")$
+print("        one direction and the ratio is always kk -- Result 10's V_exp/V_conf.  So the")$
+print("        scalar 'confounding costs a factor' is the ALIGNED corner of a statement whose")$
+print("        general form is a weighted mean of the per-direction factors, weights")$
+print("        (M_ii e_i^2 h_i), and whose other corner is FREE")$
+print("STEP 6d the two extremes, for the certificate: e = (1,0) gives", ratsimp(subst([e1=1,e2=0], ratio)),
+      "and e = (0,1) gives", ratsimp(subst([e1=0,e2=1], ratio)))$
+
+/* ===== STEP 7: the diagonal plant, where the floor is a SUM of scalar Result-10 constants ===== */
+
+print("=== STEP 7: two decoupled channels -- the case the certificate measures ===")$
+
+Bd : matrix([bb1, 0], [0, bb2])$
+Qi : matrix([1, 0], [0, 1])$
+Ri : matrix([rr, 0], [0, rr])$
+Md : transpose(Bd) . Qi . Bd + Ri$
+ud : ratsimp( - invert(Md) . transpose(Bd) . Qi . xv )$
+print("STEP 7a u*(theta) =", ud, " -- channel i sees only theta_i")$
+Pd : ratsimp( matrix([diff(ud[1][1], bb1), diff(ud[1][1], bb2)],
+                     [diff(ud[2][1], bb1), diff(ud[2][1], bb2)]) )$
+print("STEP 7b Psi' = du*/d(bb1, bb2) is DIAGONAL:", Pd)$
+Hd : matrix([h1, 0], [0, h2])$
+fl7 : ratsimp( tr2( Md . Pd . Hd . transpose(Pd) ) )$
+claim7 : h1*x1^2*(rr - bb1^2)^2/(rr + bb1^2)^3 + h2*x2^2*(rr - bb2^2)^2/(rr + bb2^2)^3$
+print("STEP 7c floor - [ h1 C(bb1, x1) + h2 C(bb2, x2) ] =", ratsimp(fl7 - claim7), " (0)")$
+print("        so the multivariate floor is the sum of Result 10's constant per channel, each")$
+print("        weighted by the information available in THAT direction")$
+print("STEP 7d at the knife edge rr = bb2^2 the second constant vanishes:",
+      ratsimp( subst(rr = bb2^2, ratsimp(fl7 - h1*x1^2*(bb2^2 - bb1^2)^2/(bb2^2 + bb1^2)^3)) ), " (0)")$
+print("        -- so confounding that destroys information in theta_2 alone is EXACTLY FREE")$
+print("        there.  The scalar model says confounding always costs V_exp/V_conf; the")$
+print("        multivariate one says the factor is a Psi'-weighted mean and can be 1")$
+print("STEP 7e the ratio, for the certificate: (h1 C1 + kk h2 C2)/(h1 C1 + h2 C2) =",
+      ratsimp( subst(h2 = kk*h2, fl7)/fl7 ))$
+
+print("================================================================")$
+print("STEPs 1-7 complete; residuals at 1b, 1d, 2a, 3a, 4c, 5b, 5c, 7c, 7d are 0")$
+print("================================================================")$

@@ -1,0 +1,98 @@
+/* DISCOVERY / derivation: the fitted log-log slope of `composition_transfer_certificate` is NOT the
+   exponent 2*p -- it is 2*p plus a WINDOW term that is exact and closed form, and the certificate's
+   shipped 2.05 / 4.01 / 6.00 against a theoretical 2 / 4 / 6 is that term, not agreement-up-to-noise.
+   composition_transfer.mac proves the doubling (estimator order p -> regret order 2p); this file
+   prices what an ordinary least-squares fit over a FINITE window reports instead.
+
+   The mechanism: with e = delta^p and t = log(delta),
+       log R(t) = const + 2*p*t + 2*log|f(e)/(us'(b)*e)|,   f(e) = us(b+e) - us(b)
+   and the second term expands as lambda*e + 2*c2*e^2 + O(e^3). An OLS fit of log R on t therefore
+   returns 2*p + lambda*cov(t, e^{p t})/var(t) + 2*c2*cov(t, e^{2 p t})/var(t) + O(e^3).
+
+   STEP 1  lambda and c2 in closed form.
+   STEP 2  the OLS window term, and the slope it predicts on the shipped window.
+   STEP 3  a 60-digit reproduction of the certificate's own fit -- which is what shows the residual
+           the shipped double-precision run reports at tight windows is ROUNDING, not mathematics.
+   STEP 4  the cancellation floor that bounds the window from BELOW.
+   Cross-checked in giac (same lambda, same c2). Maxima is the source of truth. */
+display2d : false$
+
+us(bb) := bb*xt/(bb^2 + rr)$   /* optimal action, as in composition_transfer.mac */
+
+/* `mean` lives in the descriptive package; defining it here keeps the file loadable from a cold
+   interpreter, which is what run_all.sh gives it. */
+avg(l) := sum(l[i], i, 1, length(l))/length(l)$
+
+/* ---------- STEP 1: the two expansion coefficients ---------- */
+up   : subst(bb = b, diff(us(bb), bb))$
+upp  : subst(bb = b, diff(us(bb), bb, 2))$
+lam  : ratsimp(upp/up)$
+ser  : expand(taylor(log((us(b + e) - us(b))/(up*e)), e, 0, 2))$
+c1   : ratsimp(coeff(ser, e, 1))$
+c2   : ratsimp(coeff(ser, e, 2))$
+print("STEP 1a  lambda = u*''(b)/u*'(b) =", lam)$
+print("STEP 1b  c2 (coefficient of e^2 in log(f/(u*' e))) =", c2)$
+print("STEP 1c  residual  2*c1 - lambda =", ratsimp(2*c1 - lam), "  (must be 0: the series and the")$
+print("                   derivative ratio are two routes to the same first coefficient)")$
+
+/* the library's defaults, and the numbers the table generator carries */
+defaults : [b = 1, rr = 1/2, xt = 1]$
+lam0 : ratsimp(subst(defaults, lam))$
+c20  : ratsimp(subst(defaults, c2))$
+print("STEP 1d  at b=1, rr=1/2, xt=1:  lambda =", lam0, " c2 =", c20)$
+
+/* ---------- STEP 2: what an OLS fit over a finite window reports ---------- */
+/* the certificate sweeps n points geometric in delta, so t = log(delta) is EQUALLY SPACED and the
+   window term is a covariance over that grid -- no approximation enters here, only the expansion. */
+olsterm(ts, p) := block(
+  [ys : map(lambda([t], exp(p*t)), ts), zs, m1, m2, vt],
+  zs : map(lambda([t], exp(2*p*t)), ts),
+  m1 : avg(makelist(ts[i]*ys[i], i, 1, length(ts))) - avg(ts)*avg(ys),
+  m2 : avg(makelist(ts[i]*zs[i], i, 1, length(ts))) - avg(ts)*avg(zs),
+  vt : avg(makelist(ts[i]^2, i, 1, length(ts))) - avg(ts)^2,
+  lam0*m1/vt + 2*c20*m2/vt)$
+
+grid(dlo, dhi, n) := block([q : (dhi/dlo)^(1/(n - 1))],
+  makelist(log(bfloat(dlo)*q^(i - 1)), i, 1, n))$
+
+fpprec : 60$
+shipped : grid(1/100, 1/5, 12)$
+print("STEP 2a  shipped window [0.01, 0.2], 12 points -- predicted slope 2p + window term:")$
+for p : 1 thru 3 do print("   p =", p, "  2p + term =", bfloat(2*p + olsterm(shipped, p)))$
+
+/* ---------- STEP 3: the certificate's own fit, at 60 digits ---------- */
+/* R(delta) = (b^2+rr)*(u*(b + delta^p) - u*(b))^2 with the EXACT map, fitted exactly as the
+   certificate fits it. At double precision this fit is what returns 2.048478 / 4.012425 / 6.002273. */
+regret(d, p) := block([bb : 1, r : 1/2, x : 1, e : bfloat(d)^p],
+  (bb^2 + r)*((bb + e)*x/((bb + e)^2 + r) - bb*x/(bb^2 + r))^2)$
+
+fitslope(ts, p) := block([ys : map(lambda([t], log(regret(exp(t), p))), ts), vt],
+  vt : avg(makelist(ts[i]^2, i, 1, length(ts))) - avg(ts)^2,
+  (avg(makelist(ts[i]*ys[i], i, 1, length(ts))) - avg(ts)*avg(ys))/vt)$
+
+print("STEP 3a  60-digit fit against the prediction, shipped window:")$
+for p : 1 thru 3 do
+  print("   p =", p, "  fitted =", bfloat(fitslope(shipped, p)),
+        "  residual vs 2p+term =", bfloat(fitslope(shipped, p) - 2*p - olsterm(shipped, p)))$
+
+/* the load-bearing cross-check: at a window tight enough that the SHIPPED double-precision run
+   reports 6.000098 for p = 3, 60 digits reports the prediction to ~1e-17. The 1e-4 is rounding. */
+tight : grid(1/10000, 1/500, 12)$
+print("STEP 3b  tight window [1e-4, 2e-3] -- numpy at 53 bits reports 6.000098 for p = 3;")$
+for p : 1 thru 3 do
+  print("   p =", p, "  60-digit fitted =", bfloat(fitslope(tight, p)),
+        "  residual vs 2p+term =", bfloat(fitslope(tight, p) - 2*p - olsterm(tight, p)))$
+print("         so the tight-window miss is DOUBLE PRECISION, not the expansion.")$
+
+/* ---------- STEP 4: the floor that bounds the window from below ---------- */
+/* u*(b+e) - u*(b) is a difference of two numbers near u*(b), so its relative error is
+   2*eps*|u*(b)|/(|u*'(b)|*e); squaring doubles it, and a relative wobble of that size on the
+   smallest regret in the window moves the fitted slope by about that over the spread of t. */
+eps : 2^(-52)$
+floorterm(dlo, p) := block([u0 : subst(defaults, us(b)), d0 : subst(defaults, up)],
+  2*(2*eps*abs(u0)/(abs(d0)*bfloat(dlo)^p)))$
+print("STEP 4a  relative cancellation error at the smallest delta in each window, p = 3:")$
+print("   shipped delta_lo = 0.01 :", bfloat(floorterm(1/100, 3)))$
+print("   tight   delta_lo = 1e-4 :", bfloat(floorterm(1/10000, 3)))$
+print("STEP 4b  the floor GROWS as the window drops, so a usable window is bounded from BOTH ends:")$
+print("         above by the expansion's next term, below by the rounding of a cancellation.")$

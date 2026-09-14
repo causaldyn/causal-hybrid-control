@@ -1,0 +1,100 @@
+/* DISCOVERY / derivation (Result 71, A3'): what cross-cluster psi-dependence does to the clustered
+   rate. The claim `cross_cluster_mixing_certificate` measures is asymmetric -- the G^-1/2 RATE
+   survives while the CONSTANT moves -- and the constant's form is a PREDICTION, not an observation.
+
+   Setup. Clusters on a line, two INDEPENDENT unit-variance AR(1)-across-cluster fields with decay
+   rho: one in the spillover regressor, one in the outcome error. The cluster score
+   s_g = sum_{i in g} gtilde_i nu_i then has, for g /= h,
+       Cov(s_g, s_h) = m^2 leak^2 tau^2 rho^(2|g-h|),
+   because the two fields are independent of each other, so E[e_g e_h v_g v_h] = rho^d * rho^d.
+   Hence theta_s = rho^(2s): geometric, the easiest case of KMS Condition ND. Write r := rho^2.
+
+   The bread is free of rho -- a unit-variance field has unit variance whatever its correlation
+   length -- so only the meat moves, and G*MSE is AFFINE in the HAC sum. That is the two-parameter
+   model the certificate fits.
+
+   STEP 1  the HAC sum in closed form: the `hac_predictor` the certificate regresses G*MSE on.
+   STEP 2  the FINITE-G (Bartlett-weighted) sum, and the O(1/G) deficit it leaves.
+   STEP 3  the slope bias that deficit predicts, against the measured one.
+   STEP 4  numeric cross-check of STEPs 1-2 by direct summation at 40 digits.
+
+   Cross-checked in giac: same s_inf, same partial geometric sum, same arithmetico-geometric partner,
+   and the same two numeric constants (5.20720720721 and 18.7647106566 at rho = 0.85). giac CANNOT do
+   the n -> infinity limit in STEP 2d -- it returns 'limit unevaluated with "unable to make series
+   expansion" even under assume(r < 1) -- so that one step is Maxima's alone, and what stands in for a
+   second engine there is STEP 4c: direct 40-digit summation puts G*(s_inf - s_G) flat at
+   18.76471065660 from G = 80 up, which is the limit Maxima returned.
+   Maxima is the source of truth; every closed form here is re-summed numerically in STEP 4. */
+display2d : false$
+simpsum : true$           /* without it `sum` stays a noun and nothing below evaluates */
+assume(r > 0, r < 1)$
+declare(d, integer)$
+
+/* ---------- STEP 1: the two-sided HAC sum on an infinite line ---------- */
+one_side : sum(r^d, d, 1, inf)$
+hac_inf  : ratsimp(2*one_side)$
+print("STEP 1a  sum_{d != 0} psi(d) = 2 sum_{d>=1} r^d =", hac_inf, "   with r = rho^2")$
+print("STEP 1b  residual vs 2*r/(1-r) =", ratsimp(hac_inf - 2*r/(1 - r)),
+      "  (must be 0; in rho this is 2*rho^2/(1-rho^2), the certificate's `hac_predictor`)")$
+
+/* ---------- STEP 2: what a FINITE G actually sums ---------- */
+/* with G clusters on a line there are (G - d) ordered pairs at distance d in each direction, so the
+   variance of the cluster-score mean carries a BARTLETT-weighted sum, not the infinite one */
+geo  : ratsimp(sum(r^d, d, 1, n))$          /* partial geometric sum; simpsum does this one */
+/* `simpsum` does NOT do the arithmetico-geometric partner -- it comes back a noun and then `limit`
+   spins on it. Differentiating the geometric sum is exact and needs no extra package:
+   sum d r^d = r * d/dr sum r^d. */
+argeo : ratsimp(r*diff(geo, r))$
+print("STEP 2a  sum_{d=1}^{n} r^d =", geo)$
+print("STEP 2b  sum_{d=1}^{n} d r^d =", argeo)$
+sG(g) := 2*subst(n = g - 1, geo) - (2/g)*subst(n = g - 1, argeo)$
+print("STEP 2c  s_G = 2 sum_{d=1}^{G-1} (1 - d/G) r^d, assembled from 2a and 2b")$
+/* the deficit s_inf - s_G: the 1/G term is what flattens the fitted slope. The tail
+   2*sum_{d>=G} r^d dies geometrically, so the leading term is (2/G)*sum_{d>=1} d r^d. */
+tail_lead : ratsimp(2*limit(argeo, n, inf))$
+print("STEP 2d  lim_{G->inf} G*(s_inf - s_G) = 2 sum_{d>=1} d r^d =", tail_lead)$
+print("STEP 2e  residual vs 2*r/(1-r)^2 =", ratsimp(tail_lead - 2*r/(1 - r)^2))$
+print("         s_G approaches s_inf FROM BELOW at rate 1/G, so G*MSE RISES with G, which makes an")$
+print("         OLS fit of log(RMSE) on log(G) report a slope SHALLOWER than -1/2. Sign predicted.")$
+
+/* ---------- STEP 3: the slope bias that predicts, vs the measured one ---------- */
+/* G*MSE(G) = a + b*s_G = (a + b*s_inf) - b*L/G + o(1/G), L := lim G*(s_inf - s_G), so
+       log(RMSE) = const - (1/2) log G - (kappa/2)/G + O(1/G^2),  kappa := b*L/(a + b*s_inf),
+   and an OLS fit on t = log G returns -1/2 - (kappa/2)*cov(t, 1/G)/var(t). */
+afit : 0.2205$   /* the certificate's fitted intercept a */
+bfit : 0.1182$   /* the certificate's fitted slope b     */
+r0   : 0.85^2$   /* the arm nearest rejecting, rho = 0.85 */
+avg(l) := sum(l[i], i, 1, length(l))/length(l)$
+slope_bias(grid) := block(
+  [ts : map(lambda([g], log(float(g))), grid), xs : map(lambda([g], 1/float(g)), grid), cxt, vt],
+  cxt : avg(makelist(ts[i]*xs[i], i, 1, length(ts))) - avg(ts)*avg(xs),
+  vt  : avg(makelist(ts[i]^2, i, 1, length(ts))) - avg(ts)^2,
+  -(float(bfit*subst(r = r0, tail_lead)/(afit + bfit*subst(r = r0, hac_inf)))/2)*cxt/vt)$
+print("STEP 3a  at rho = 0.85:  s_inf =", float(subst(r = r0, hac_inf)),
+      "  L =", float(subst(r = r0, tail_lead)))$
+print("STEP 3b  G in [80,1280]: predicted slope = -1/2 +", slope_bias([80,160,320,640,1280]),
+      " ; measured -0.4687 +- 0.0103")$
+print("STEP 3c  G in [160,2560]: predicted slope = -1/2 +", slope_bias([160,320,640,1280,2560]),
+      " ; measured -0.4927 +- 0.0072")$
+print("STEP 3d  share of the measured 0.0313 gap explained on the low window:",
+      slope_bias([80,160,320,640,1280])/0.0313)$
+print("         PARTIAL, and recorded as such: the SIGN and the direction of the walk are predicted,")$
+print("         the magnitude is not. The rest is the bread's own fluctuation at high rho, which")$
+print("         this expansion does not model.")$
+
+/* ---------- STEP 4: numeric cross-check by direct summation ---------- */
+/* a closed form out of a CAS is a hypothesis until it is re-summed independently */
+fpprec : 40$
+direct_inf(rr, nn) := 2*sum(bfloat(rr)^d, d, 1, nn)$
+direct_fin(rr, g)  := 2*sum((1 - bfloat(d)/g)*bfloat(rr)^d, d, 1, g - 1)$
+print("STEP 4a  s_inf closed", bfloat(subst(r = r0, hac_inf)),
+      "  direct(4000 terms)", bfloat(direct_inf(r0, 4000)),
+      "  residual", bfloat(subst(r = r0, hac_inf) - direct_inf(r0, 4000)))$
+for g in [80, 160, 320, 640, 1280] do
+  print("STEP 4b  G =", g, "  s_G closed", bfloat(subst(r = r0, sG(g))),
+        "  direct", bfloat(direct_fin(r0, g)),
+        "  residual", bfloat(subst(r = r0, sG(g)) - direct_fin(r0, g)))$
+for g in [80, 160, 320, 640, 1280] do
+  print("STEP 4c  G =", g, "  G*(s_inf - s_G) =",
+        bfloat(g*(subst(r = r0, hac_inf) - subst(r = r0, sG(g)))),
+        "  -> limit", bfloat(subst(r = r0, tail_lead)))$
