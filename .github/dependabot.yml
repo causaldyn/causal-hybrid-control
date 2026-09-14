@@ -1,0 +1,27 @@
+version: 2
+
+updates:
+  # `uv`, not `pip`: the authoritative file here is `uv.lock`, and the pip ecosystem would edit
+  # `pyproject.toml` and leave the lock naming the old version -- the exact drift that made the
+  # 0.4.0 re-release awkward.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # jax, jaxlib, equinox, optax and diffrax move as a set: a lone jax bump does not resolve
+      # against the others' pins, so one PR per package would be one red PR per package.
+      jax-stack:
+        patterns: ["jax", "jaxlib", "equinox", "optax", "diffrax", "lineax", "jaxtyping"]
+      # The dev toolchain is not shipped -- none of it is in `[project.dependencies]` -- so a bump
+      # is a CI question, not a user's. One PR a week rather than five.
+      dev-tooling:
+        dependency-type: "development"
+
+  # The one that actually gets exploited. A pinned action tag is a mutable pointer at somebody
+  # else's repository, and every workflow here runs with `id-token: write` or `contents: write`.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

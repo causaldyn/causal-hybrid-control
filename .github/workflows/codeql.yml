@@ -1,0 +1,38 @@
+name: codeql
+
+# Two languages, and the second is not decoration: `actions` analysis is what catches an untrusted
+# checkout or a script injection in a workflow, and this repository's workflows hold `id-token: write`
+# against PyPI Trusted Publishing. A compromised workflow here publishes a wheel under this name.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, because CodeQL's queries change even when the code does not -- a scheduled run is how a
+    # new query reaches old code. Off-peak on a Monday.
+    - cron: "41 5 * * 1"
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["python", "actions"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
+        with:
+          language: ${{ matrix.language }}
+          # `security-extended` over the default suite. The default is tuned for a low false-positive
+          # rate on a large codebase with a review queue; this is a small one with a single reviewer,
+          # where the cost of reading an extra finding is lower than the cost of missing one.
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

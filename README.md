@@ -94,7 +94,9 @@ print(out.report())  # Markdown: decision, both certificate axes, provenance
 
 `prescribe` composes what is below it and adds no new estimator, solver or guarantee: the
 adjustment set comes from the graph, the control channel from cross-fit Robinson DML
-(`fit_causal_residual`), the plan from `causal_plan`, and the safety price from `certify_safety`.
+(`fit_causal_residual`), the plan from `causal_plan`, the safety price from `certify_safety`,
+and how far the plan can be from the best one its own box allows from `plan_regret_bound` --
+`0.0` at a plan every lever bound pins, where the textbook `|grad J|^2/(2 mu)` reports `55.83`.
 
 ### The expert path
 
@@ -141,13 +143,13 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 
 | area | module | what it does |
 |---|---|---|
-| dynamics | `dynamics`, `residual`, `integrate`, `symbolic` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / graph / **control-affine** (`a_θ(x) + B_θ(x)u`, the class the identification and safety layers share) / **port-Hamiltonian** (passive, Lyapunov-stable) / **Lipschitz-certified** / **spectral** residuals; RK4. The spectral one IS a circulant on a periodic grid, so its operator norm `max_k |lambda_k|` is *attained* rather than bounded (the Lipschitz backbone's Schur bound measures 113x slack), it is translation-equivariant to machine precision, and being linear in its kernel it is fitted by a closed-form per-mode least squares rather than by Adam. `symbolic` turns a fitted RBF-KAN edge back into a closed form and states what that is worth: the intercept is a gauge (only the total is identified), the layer is additive so an interaction has a *proved* error floor `r²` on `[−r,r]²`, and the extracted formula extrapolates where the layer (RBF support gone) does not — 4.22e-4 against 34.65 |
+| dynamics | `dynamics`, `residual`, `integrate`, `symbolic` | hybrid `f_known + r_θ`; MLP / **RBF-KAN** / graph / **control-affine** (`a_θ(x) + B_θ(x)u`, the class the identification and safety layers share) / **port-Hamiltonian** (passive; `energy="icnn"` for a *coercive* one) / **Lipschitz-certified** / **spectral** residuals; RK4. `H' <= 0` is an identity of `(J - R) grad H` in which `H` never appears, so it holds for any energy network and separates none of them (`2.7e-15` for both arms); what it confines the state to is `{ H <= H(x0) }`, and a `tanh` energy read out linearly is bounded in `x`, so that set is the whole space and `invariant_radius` is honestly `inf`. The input-convex energy with a quadratic floor makes it a ball: realised excursion `6.00` inside a predicted `25.81`, and one critical point instead of three. The spectral one IS a circulant on a periodic grid, so its operator norm `max_k |lambda_k|` is *attained* rather than bounded (the Lipschitz backbone's Schur bound measures 113x slack), it is translation-equivariant to machine precision, and being linear in its kernel it is fitted by a closed-form per-mode least squares rather than by Adam. `symbolic` turns a fitted RBF-KAN edge back into a closed form and states what that is worth: the intercept is a gauge (only the total is identified), the layer is additive so an interaction has a *proved* error floor `r²` on `[−r,r]²`, and the extracted formula extrapolates where the layer (RBF support gone) does not — 4.22e-4 against 34.65 |
 | sensitivity | `adjoint` | discrete adjoint (verified == autodiff == finite differences) |
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
 | identification | `train`, `dynamics_id`, `causal`, `estimators`, `gmethods`, `frames` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters; Robins' **g-formula** (cross-fitted) for a treatment *sequence* under time-varying confounding. `dynamics_id` is the one that makes the *plant* causal: prediction-error fitting learns the **observational** control channel, so under a confounded logging policy the planner inherits the bias (measured: channel `0.02` where the truth is `1.0`). `fit_causal_residual` estimates it by Robinson partialling-out lifted to a state-dependent matrix — channel error `0.002`, control regret `0.014` against the biased fit's `6.41` — or by 2SLS when the confounder is never logged, at a real variance premium (`0.10` error, regret `0.13`, because the shifter explains only 18% of the action). Reports `identified=False` instead of a confident wrong answer when nothing in the log can pin it down. Data goes in as a mapping of arrays, a **pandas** frame or a **polars** frame — `frames.as_columns` recognises a frame structurally and normalises once at the boundary, so neither library is a dependency of the wheel. `uv run python scripts/dynamics_id_demo.py` |
 | control | `cost`, `control`, `mpc`, `splitting`, `plan` | Bolza objective; projected-gradient OC and a bound-constrained quasi-Newton (`lbfgs_box_control`) sharing the same discrete-adjoint gradient, with `box_stationarity` as the reference-free convergence measure; receding-horizon MPC; **Strang–Marchuk** splitting; `causal_plan` — the one-call spine returning a plan *with* its uncertainty tube and certified horizon attached. Three modes are named apart on purpose: **plan** (`causal_plan`, box constraints in the solve), **audit** (`certify_safety`, read-only on a finished plan), **filter** (`robust_safety_filter`, the only one that changes an action). No barrier or tube enters the *objective*, so a plan can come back and fail its own audit; with no error model supplied the certificate reports `not_evaluated` rather than a vacuous full-horizon pass |
 | offline safety | `support`, `offpolicy`, `uncertainty` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate; **calibrated** deep-ensemble + split-conformal uncertainty; a **time-consistent nested-CVaR** aggregation of that disagreement (the risk-neutral sum averages one very bad step away); **Wasserstein-1 DRO** distribution-shift margin; **certified rollout tubes** (Lipschitz / contractive-log-norm Grönwall bounds → time-varying uncertainty tube, safety-tightening, certified-safe horizon), **Rocq-proved**. The ensemble trains as one sharded program (`vmap` over a member axis, `lax.scan` over the Adam steps, `NamedSharding` over the device mesh) rather than K sequential fits — 3.6× on one device, 10.3× over an 8-device mesh at K=8, agreeing with the serial recursion to 232 ULP |
-| guarantee | `regret` | LQ certainty-equivalence bound — quadratic in model error (Dean–Mania–Tu–Recht–Matni); **interference-aware regret certificate** (extra exposure-map-error term), **machine-checked in Rocq** |
+| guarantee | `regret` | LQ certainty-equivalence bound — quadratic in model error (Dean–Mania–Tu–Recht–Matni); **interference-aware regret certificate** (extra exposure-map-error term), **machine-checked in Rocq**; the **van Trees floor on control regret** — `multivariate_action_floor` for a matrix effect, where the bound is a trace and confounding is priced by *alignment* with `du*/dθ` rather than by a ratio; and `capped_exploration_policy`, which takes a per-round cap **schedule** and a spending **budget** and stops on a delivered exploration *mass* rather than a round count |
 | sensitivity-aware control | `sensitivity` (facade over `regret`, `uncertainty`, `barrier`) | **control under HIDDEN CONFOUNDING**: bounded-density-ratio (MSM) CVaR worst-case → pessimism-radius inflation; the confounding-regret floor is *second-order* in the effect bias; a **minimax controller** that shifts the gain under asymmetric (over/under-shoot) loss and beats certainty-equivalence — now a **closed-loop** controller on a confounded dynamic plant (bounds the worst-case downside, 82% cheaper over 30 steps), plus a `ConfoundingRobustPenalty` that carries the sensitivity radius into the general pessimistic-control stack — all **Rocq-certified**. `Γ` itself is **calibrated before it is spent**: `benchmark_gamma` prices it in units of the confounding the observed covariates carry (an exponent, `log Γ / log Γ_strongest`, because odds ratios compose) and `negative_control_gamma` inverts a known-null outcome for the smallest `Γ` that reconciles it — a *lower bound* on the confounding present, or `inf` when the model class is refuted instead. `chc.sensitivity` is the one-import surface (calibrate→radius→control) |
 | safety under partial ID | `barrier`, `plan` | the same sensitivity radius spent on a **constraint**: robust control-barrier margin, a least-restrictive safety filter (closed-form certified action interval, no QP), and `Gamma*` — **the largest sensitivity-model level under which the barrier stays certified** (a model parameter, not measured confounding). Safety degrades at *first* order in the effect bias (until the radius swallows the channel and the loss saturates) where performance regret degrades at second (the envelope theorem protects objectives, not binding constraints), **Rocq-certified**; in closed loop a regret-sized budget violates the limit on 93% of steps where the constraint-sized one never does. `certify_safety` audits a finished plan against all of it — the certified prefix next to the plan's `Gamma*` (the weakest step's, exactly) |
 | what the certificate is worth | `reachability` | the **Hamilton–Jacobi** answer the barrier only approximates: `V(x,T) = max_u min_{ΔB} min_s h(ξ(s))` on a Lax–Friedrichs grid, with the §32 identification radius as the adversary. Same robust-margin algebra as `barrier`, but `p = ∇V` is *solved for* rather than assumed. Turns the CBF theorem into an executable check (condition on all of `{h ≥ 0}` ⟹ the tube **is** `{h ≥ 0}`) and prices what pointwise certification misses — on a relative-degree-2 barrier the §40 verdict is identical at every radius while the true tube shrinks (6.4% of the grid certified-and-unreachable), so `certify_safety`'s per-step prefix is a filter, not a proof. `uv run python scripts/reachability_demo.py` |
@@ -161,7 +163,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | advanced control | `koopman`, `meanfield`, `transport`, `matching`, `games`, `mintime` | Koopman-LQR; mean-field control; a periodic **advection-diffusion** field with an exact spectral propagator (the translation-invariant plant that justifies the spectral residual); continuum + discrete **Kantorovich OT** (driver↔rider matching → **dual surge prices**); differentiable Stackelberg games over a **certified** congestion equilibrium (implicit-function gradients, contraction certificate, optimal damping — the solver reports its residual instead of silently returning a non-equilibrium); PMP time-optimal bang-bang |
 | marketplace moat | `marketplace` | **offline causal control under equilibrium interference**: learn incentives from confounded switchback logs where SUTVA fails — de-confounded + equilibrium-aware + W-DRO-pessimistic control recovers the oracle where MOPO / naive-causal go *negative* |
 | evaluation | `benchmark`, `causal_bench`, `flagship`, `lalonde`, `metrics`, `surrogate` | pricing / inventory / support-shift / **model-uncertainty** / **confounding-robust** / **causal-dynamics** (the confounding is in the plant's own channel; the failure is invisible to the constraint and support columns) oracle-regret tasks + leaderboard with multi-seed bootstrap CIs; a causal-methods table scoring every frontier estimator against the naive baseline it is meant to beat; real-data **LaLonde** validation; step-response quality metrics; a gradient-boosted tree surrogate as the tabular prediction competitor (optional `trees` extra) |
-| scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka) plus the non-symmetric **convection-diffusion** case with the cell-Peclet threshold and the optimal SUPG parameter; mesh-free **Deep Galerkin** — a neural Poisson solver, and the coupled **mean-field game** (backward HJB + forward Fokker-Planck joined by `alpha* = -(b/r)V_x` and the population mean), with both boundary conditions structural rather than penalised. Gated on an exact LQ closed form, which also prices the failure: past the anti-monotone threshold `c = 1 + ra²/(qb²)` the equilibrium degenerates at a horizon in closed form, and there the solver's own residual *falls* while its error rises |
+| scientific / PDE | `epidemic`, `galerkin`, `deep_galerkin` | SIR epidemic control (flatten the curve); 1D/2D Galerkin FEM (progonka) plus the non-symmetric **convection-diffusion** case with the cell-Peclet threshold and the optimal SUPG parameter; mesh-free **Deep Galerkin** — a neural Poisson solver, and the coupled **mean-field game** (backward HJB + forward Fokker-Planck joined by `alpha* = -(b/r)V_x` and the population mean), with both boundary conditions structural rather than penalised. Gated on an exact LQ closed form, which also prices the failure: past the anti-monotone threshold `c = 1 + ra²/(qb²)` the equilibrium degenerates at a horizon in closed form, and there the solver's own residual *falls* while its error rises. The density it returns is the `N -> infinity` limit, so the **finite-population gap** is priced exactly rather than fitted: `E[(m_N - m)^2] = v(t)/N` at every `t` and every `N`, because a mean-field feedback leaves the closed-loop agents independent. The a-posteriori estimator generalises off the closed form too: `adjoint_weighted_error` linearises whatever field it is given, so the same construction runs on a **congestion-shifted** game with no closed form — exact on the affine problem, second-order otherwise, and one order better than reusing the affine adjoint |
 
 ## Validation
 
@@ -218,7 +220,8 @@ The release-by-release record, scope corrections included, is in [`CHANGELOG.md`
 
 ## Status
 
-Early (`v0.5.1`), single-author, research code (672 collected tests; Python 3.11–3.14, astral `ruff` + `ty`).
+Early (`v0.5.1`), single-author, research code (695 collected tests, `just counts` for the rest;
+Python 3.11–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**
@@ -238,6 +241,35 @@ discomfort 8.01→7.32, energy 0.393→0.354, cost 0.100→0.090, emissions 0.06
 win). Roadmap: more real tasks, the Medium/paper writeups, and — only if a real-time/edge deployment
 target appears — a compiled runtime.
 
+### What "0.x" promises
+
+Pre-1.0, so SemVer's major-version protection does not apply yet. What *does* apply, and what you can
+plan against:
+
+- **A minor release may change behaviour, and the changelog says which.** `CHANGELOG.md` is written
+  to be read before upgrading — it carries scope corrections and retractions alongside the additions,
+  because a number that quietly changed meaning is worse than one that broke loudly. 0.5.0 moved the
+  marketing-mix headline figures by fixing the integrator the fit used; that is the kind of thing it
+  records.
+- **A patch release changes no signature and no number.** 0.5.1 fixed a wrong `__version__` and
+  nothing else.
+- **Renames get one minor of alias.** Removals get one minor of `DeprecationWarning` first, naming the
+  replacement in the message.
+
+Three tiers, by what a break costs you:
+
+| tier | modules | promise |
+|---|---|---|
+| **stable** | `dynamics` `integrate` `cost` `control` `plan` `barrier` `residual` `lqr` `mpc` `train` `adjoint` `decision` `panel` `graph` `dynamics_id` | the plant/control spine and the façade over it. Breaking changes wait for 1.0 and get a deprecation cycle |
+| **evolving** | the estimator, certificate and domain layers — `causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace` `mmm` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
+| **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` | may change or be withdrawn in any release. Pin an exact version if you depend on one |
+
+Roadmap: **0.6.0** general constraints in the solver, the transfer ledger, a docs site → **1.0.0**,
+which is when the stable tier stops moving.
+
+Supply chain: every artifact carries a PEP 740 attestation and a SLSA build provenance; see
+[`SECURITY.md`](SECURITY.md) for how to verify one and what is in scope for a report.
+
 ## Contributing and citation
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) lists the gates a change has to pass — ruff, `ty`, the pytest
@@ -249,7 +281,7 @@ suite, and `rocq compile` over `proofs/*.v`. Machine-readable citation metadata 
   author  = {Gradina, Ilia},
   title   = {causal-hybrid-control: physics-structured dynamics with a learned causal residual},
   year    = {2026},
-  version = {0.3.0},
+  version = {0.5.1},
   doi     = {10.5281/zenodo.21737789},
   license = {MIT},
   url     = {https://github.com/causaldyn/causal-hybrid-control}

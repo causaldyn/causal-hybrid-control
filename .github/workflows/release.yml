@@ -17,6 +17,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write     # OIDC token for the build-provenance attestation
+      attestations: write # write it back to this repository's attestation store
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
@@ -31,6 +35,15 @@ jobs:
         run: uv build
       - name: Check metadata
         run: uvx twine check dist/*
+      # SLSA build provenance, and it is a *different* claim from the PEP 740 attestation the
+      # publish job makes. PyPI's says "this file was uploaded by this workflow"; this one says
+      # "this file was built from this commit, by this workflow, on this runner", and it is
+      # verifiable with `gh attestation verify` without going through PyPI at all. A reader who
+      # distrusts the index needs the second one.
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "dist/*"
       - uses: actions/upload-artifact@v7
         with:
           name: dist

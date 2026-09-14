@@ -1,0 +1,36 @@
+name: scorecard
+
+# OpenSSF Scorecard grades the supply chain rather than the code: are actions pinned, is a branch
+# protected, is publishing tokenless, are dependencies watched. It is the only check here that
+# reports on the *repository* instead of on what is in it.
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: "17 6 * * 1"
+  push:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write  # upload the SARIF to the Security tab
+      id-token: write         # sign the results so the badge is verifiable
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Signs the result and publishes it so the README badge resolves. It publishes the score
+          # and the check names, not the source.
+          publish_results: true
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif

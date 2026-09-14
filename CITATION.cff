@@ -11,8 +11,8 @@ repository-code: "https://github.com/causaldyn/causal-hybrid-control"
 # the concept DOI, which resolves to the newest release rather than to one version
 doi: "10.5281/zenodo.21737789"
 license: MIT
-version: 0.3.0
-date-released: "2026-08-01"
+version: 0.5.1
+date-released: "2026-09-08"
 abstract: >-
   Physics-structured dynamics with a learned causal residual, controlled by constrained optimal
   control and MPC, and made safe on offline confounded data by an explicit pessimism and support

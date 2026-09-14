@@ -9,7 +9,7 @@ before a large change, so we do not both build the same thing differently.
 uv sync --group dev
 ```
 
-Python 3.12–3.14. `uv.lock` is committed and authoritative — run everything through `uv run`, never a
+Python 3.11–3.14. `uv.lock` is committed and authoritative — run everything through `uv run`, never a
 bare `python` / `pytest` / `ruff`, or you are testing a different dependency set from CI.
 
 ## The gates
