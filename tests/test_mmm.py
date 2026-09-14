@@ -11,6 +11,7 @@ because every arm here is audited on the true plant rather than on the planner's
 
 from __future__ import annotations
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -33,6 +34,32 @@ def _rk4_amplification(z: float) -> float:
 def test_the_adjusted_plan_beats_a_flat_split_at_the_same_budget(report: MmmReport) -> None:
     assert report.arm("flat").total_spend == pytest.approx(report.arm("adjusted").total_spend)
     assert report.lift("adjusted") > 1.02 * report.lift("flat")
+
+
+def test_the_myopic_arm_spends_the_same_budget_on_this_week_alone(report: MmmReport) -> None:
+    """The carryover-blind baseline: matched budget, constant in time, ranked by the fitted
+    immediate return. Its point is to separate what identification buys from what the objective's
+    HORIZON buys -- it reads the adjusted arm's own fit, so the two differ only in the second.
+
+    Pinned here as construction, not as an outcome: which of the two earns more is a property of
+    the plant (``causaldyn_bench.allocation``, Track M, measures both regimes over seeds), and
+    asserting an order at one seed would be asserting a sign the measurement says is not there.
+    """
+    myopic, adjusted = report.arm("myopic"), report.arm("adjusted")
+    assert myopic.total_spend == pytest.approx(adjusted.total_spend)
+    assert myopic.prescription is None  # a fixed rule, not a plan
+    assert bool(jnp.all(myopic.spend == myopic.spend[0]))  # constant in time: the whole myopia
+
+    fit = adjusted.prescription
+    assert fit is not None
+    reach = fit.reach()
+    best = max(reach, key=lambda lever: reach[lever])
+    worst = min(reach, key=lambda lever: reach[lever])
+    columns, system = list(reach), MarketingMixSystem()
+    # the best immediate channel is filled to its ceiling and the worst is left at the floor
+    assert float(myopic.spend[0, columns.index(best)]) == pytest.approx(system.spend_ceiling)
+    assert float(myopic.spend[0, columns.index(worst)]) == pytest.approx(system.spend_floor)
+    assert report.lift("myopic") > report.lift("flat")  # concentration beats an equal split here
 
 
 def test_the_confounded_arm_overrates_every_channel_and_underinvests(report: MmmReport) -> None:

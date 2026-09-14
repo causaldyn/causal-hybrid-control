@@ -32,6 +32,16 @@ HONEST SCOPE, and it bounds what the numbers below mean:
 * ``theta_c`` is taken as known. In practice it is fitted (Robyn, Meridian); treating it as known
   here isolates the question this module is about, which is the incremental return and not the
   carryover rate.
+* **What the whole-horizon plan buys over a myopic one is a property of these parameters, not of
+  the method.** The ``myopic`` arm exists to measure that rather than assume it, and
+  ``causaldyn_bench.allocation`` (Track M) scores both over seeds: on the parameters below the two
+  TIE (mean lift ``46.56`` against ``46.88`` over eight seeds, sign flipping ``5/3``), while both
+  beat the equal split at ``8/8`` and the confounded arm loses at ``8/8``. Here ``beta_c/theta_c``
+  ranks the channels ``(1.29, 1.50, 1.60)`` against ``gamma_c``'s ``(0.50, 0.20, 0.35)``: the two
+  orderings disagree about the top channel but AGREE about which to drop. Move the carryover until
+  they contradict -- ``beta/theta`` of ``(0.07, 8.00, 1.60)`` at unchanged ``gamma`` -- and the
+  whole-horizon plan wins ``6/6``. So the headline of this case study is the identification, and
+  the horizon is a second, smaller and plant-dependent effect.
 * **``known=`` was exact only up to the integrator, and this module is where that was found.**
   :func:`chc.dynamics_id.fit_causal_residual` reads the state rate as a forward difference
   ``(x_next - x)/dt`` while :func:`chc.plan.causal_plan` rolls out with RK4, so at a coarse ``dt``
@@ -286,6 +296,8 @@ def run_marketing_mix(
       amounts to and is the arm that credits the channel with the season;
     * ``flat`` --- an equal split across channels held constant, at the ``adjusted`` arm's realised
       total spend, so the head-to-head is at matched budget and differs only in allocation;
+    * ``myopic`` --- the same identified fit spent on this week's return alone, also at that budget,
+      which isolates what the objective's HORIZON buys from what identification buys;
     * ``none`` --- spend held at the floor, which is the do-nothing counterfactual every lift is
       measured against.
 
@@ -324,9 +336,44 @@ def run_marketing_mix(
     n_channels = len(system.channels)
     per_step = arms[0].total_spend / (horizon * n_channels)
     arms.append(_audit("flat", jnp.full((horizon, n_channels), per_step), truth, x0, dt, None))
+    myopic = _myopic_spend(adjusted, system, horizon, per_step * n_channels)
+    arms.append(_audit("myopic", myopic, truth, x0, dt, None))
     floor = jnp.full((horizon, n_channels), system.spend_floor)
     arms.append(_audit("none", floor, truth, x0, dt, None))
     return MmmReport(arms=tuple(arms), true_gamma=system.gamma, channels=system.channels)
+
+
+def _myopic_spend(
+    prescription: Prescription,
+    system: MarketingMixSystem,
+    horizon: int,
+    weekly_budget: float,
+) -> Array:
+    """Spend each week's budget on the channels with the largest IMMEDIATE fitted return.
+
+    The carryover-blind baseline, and it reads the *same* fit the ``adjusted`` arm planned from --
+    :meth:`chc.decision.Prescription.reach`, which is the fitted control channel scaled by the
+    lever's own box. So what separates the two arms is the horizon the objective looks over and not
+    the identification, which is the comparison "does carryover matter" actually needs.
+
+    A rule constant in time is not an approximation of myopia here, it is myopia's exact answer: the
+    immediate increment ``gamma_c * spend_c`` is LINEAR in spend, so "re-optimise every week for
+    this week's sales" fills the highest-``gamma`` channel to its ceiling and spills to the next,
+    with the same answer every week. Ignoring the adstock state is the whole of the myopia -- and on
+    this plant the two orderings genuinely disagree, because ``beta_c/theta_c`` ranks the channels
+    in the opposite direction to ``gamma_c``.
+    """
+    reach = prescription.reach()
+    week = np.full(len(system.channels), system.spend_floor)
+    remaining = weekly_budget - float(week.sum())
+    index = {name: position for position, name in enumerate(system.spend_columns)}
+    for name in sorted(system.spend_columns, key=lambda lever: -reach[lever]):
+        if remaining <= 0.0:
+            break
+        room = min(system.spend_ceiling - week[index[name]], remaining)
+        week[index[name]] += room
+        remaining -= room
+    return jnp.tile(jnp.asarray(week), (horizon, 1))
 
 
 def _start_state(panel: Panel, states: tuple[str, ...]) -> Array:
