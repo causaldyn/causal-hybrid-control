@@ -1,0 +1,125 @@
+/* THE FINITE-POPULATION GAP: what N agents cost you against the Fokker-Planck density.
+
+   Result 49 solved a mean-field game as a coupled HJB/Fokker-Planck pair and left one modelling
+   gap open: the FP density is the N -> infinity limit, and nobody deploys to infinity.  This file
+   prices the gap for the scalar LQ mean-field game of chc.deep_galerkin.LQMeanFieldGame, and the
+   answer is EXACT rather than fitted -- which is the whole point, because "we fitted an exponent
+   of -0.5" is a much weaker claim than "the constant is v(t) and here is the identity".
+
+   The structure that makes it exact: under the MEAN-FIELD optimal control the feedback is
+   alpha_i = -(b/r)(P X_i + s(t)) with s DETERMINISTIC, so the N closed-loop agents are
+   INDEPENDENT Ornstein-Uhlenbeck processes.  Independence is not an approximation here; it is
+   what applying a mean-field control to a finite population means.  The empirical mean is then a
+   sample mean of N i.i.d. Gaussians, and everything follows from that one fact.
+
+       dX_i = (A X_i + f(t)) dt + sigma dW_i,   A = a - b^2 P/r < 0
+       m(t) = E[X],  v(t) = Var[X]
+       E[(m_N(t) - m(t))^2] = v(t)/N          <- exact, every t, every N
+
+   The 1/sqrt(N) is therefore not an asymptotic rate but an identity, and the constant is the
+   closed-loop variance, which has its own closed form.
+
+   Certificate: chc.deep_galerkin.finite_population_gap_certificate; proofs/finite_population_gap.v. */
+
+linel : 110$
+display2d : false$
+assume(sg > 0, N > 0, t > 0, v0 >= 0, A < 0)$
+
+/* ===== STEP 1: the closed-loop variance ODE and its solution ===== */
+
+print("=== STEP 1: v'(t) = 2 A v + sigma^2, v(0) = v0 ===")$
+vsol : v0*exp(2*A*t) + sg^2*(exp(2*A*t) - 1)/(2*A)$
+print("STEP 1a claimed v(t) =", vsol)$
+print("STEP 1b residual of v' - (2 A v + sigma^2) =",
+      ratsimp( diff(vsol, t) - (2*A*vsol + sg^2) ), " (0)")$
+print("STEP 1c v(0) - v0 =", ratsimp( subst(t = 0, vsol) - v0 ), " (0)")$
+
+/* The stationary variance is where an OU process settles.  A < 0, so -sigma^2/(2A) > 0. */
+vinf : -sg^2/(2*A)$
+print("STEP 1d v(infinity) = -sigma^2/(2A) =", vinf, " and it is POSITIVE because A < 0")$
+print("STEP 1e residual of v(t) - [v_inf + (v0 - v_inf) exp(2 A t)] =",
+      ratsimp( vsol - (vinf + (v0 - vinf)*exp(2*A*t)) ), " (0)")$
+print("        so v(t) moves MONOTONICALLY from v0 to v_inf: the gap constant is bounded by")$
+print("        max(v0, v_inf) for every t, which is what makes a uniform-in-time claim possible")$
+
+/* ===== STEP 2: the empirical mean of N independent agents ===== */
+
+print("=== STEP 2: the gap is a sample-mean variance, exactly ===")$
+print("STEP 2a the N agents are i.i.d. under a deterministic feedback, so m_N = (1/N) sum X_i")$
+print("        has Var[m_N] = v(t)/N and E[m_N] = m(t) EXACTLY -- no CLT, no large-N limit")$
+gap2 : vsol/N$
+print("STEP 2b E[(m_N - m)^2] =", gap2)$
+print("STEP 2c the RMS gap is sqrt of that:")
+$
+rms : sqrt(gap2)$
+print("        rms(N, t) =", rms)$
+
+/* The exponent claim, stated as a derivative rather than as a fitted slope. */
+print("STEP 2d d log(rms) / d log(N) =",
+      ratsimp( diff(log(rms), N) * N ), " (-1/2)")$
+print("        EXACTLY -1/2 for every t and every parameter: the exponent is structural, and a")$
+print("        simulation that returns anything else is measuring its own Monte-Carlo error")$
+
+/* ===== STEP 3: how many Monte-Carlo replicates the exponent check needs ===== */
+
+print("=== STEP 3: the Monte-Carlo error on the measured exponent ===")$
+print("STEP 3a with R replicates the sample variance of m_N has relative standard error")$
+print("        sqrt(2/(R-1)), so the RMS has sqrt(2/(R-1))/2, and a log-log slope over a range")$
+print("        [N_lo, N_hi] inherits it divided by the lever arm log(N_hi/N_lo)")$
+relse : sqrt(2/(R - 1))/2$
+print("STEP 3b relative standard error of the measured RMS =", relse)$
+slope_se : relse * sqrt(2) / log(Nhi/Nlo)$
+print("STEP 3c standard error of the two-point log-log slope ~", slope_se)$
+print("STEP 3d at R = 400 replicates over N in [8, 512]:",
+      float( subst([R = 400, Nhi = 512, Nlo = 8], slope_se) ))$
+print("        so a tolerance of 0.05 on the exponent is about 4 standard errors -- tight")$
+print("        enough to fail on a real bug, loose enough not to flake")$
+
+/* ===== STEP 4: the density gap is NOT the same exponent, and must not be conflated ===== */
+
+print("=== STEP 4: the mean gap and the DENSITY gap are different claims ===")$
+print("STEP 4a everything above is about the MEAN.  The 1-Wasserstein distance between the")$
+print("        empirical measure of N i.i.d. scalar draws and their own law also decays like")$
+print("        N^(-1/2) in one dimension (Fournier-Guillin), but that is a theorem about")$
+print("        empirical measures, not a corollary of STEP 2, and its CONSTANT is not v(t)")$
+print("STEP 4b the certificate therefore reports the two separately and asserts the closed form")$
+print("        only for the mean.  Conflating them would claim a constant that was never derived")$
+
+/* ===== STEP 5: the linear-drift assumption, stated as the thing that can break ===== */
+
+print("=== STEP 5: where this stops being exact ===")$
+print("STEP 5a independence needs the feedback to be a function of the agent's OWN state and of")$
+print("        DETERMINISTIC time-dependent coefficients.  Substituting the EMPIRICAL mean m_N")$
+print("        into the control -- the N-player Nash equilibrium rather than the mean-field")$
+print("        control applied to N players -- couples the agents and adds an O(1/N) correction")$
+print("        to the variance on top of the O(1/N) here")$
+coupled : v0*exp(2*(A + kap)*t) + sg^2*(exp(2*(A + kap)*t) - 1)/(2*(A + kap))$
+print("STEP 5b for the coupled mean, m_N solves dm_N = (A + kappa) m_N dt + (sigma/sqrt(N)) dW,")$
+print("        whose variance is (1/N) *", coupled)$
+print("STEP 5c residual of that against the same ODE with rate (A + kappa) =",
+      ratsimp( diff(coupled, t) - (2*(A + kap)*coupled + sg^2) ), " (0)")$
+print("STEP 5d so the exponent survives the coupling and only the CONSTANT changes, from v(t)")$
+print("        to the same expression at rate A + kappa.  That is the claim the certificate")$
+print("        makes for the coupled arm, and it is why the exponent is the robust part")$
+
+/* ===== STEP 6: the coupling BIAS, which is the part that is O(1/N) rather than O(1/sqrt N) ===== */
+
+print("=== STEP 6: kappa = c/N is what an N-player Nash actually gives, and then the bias is")$
+print("            SUBDOMINANT to the fluctuation ===")$
+print("STEP 6a a real N-player equilibrium weights the agent's own state 1/N inside the mean, so")$
+print("        the coupling gain is kappa = c/N, not a fixed constant.  The coupled mean then")$
+print("        drifts away from the mean-field mean, and that drift is a BIAS, not a fluctuation")$
+print("STEP 6b e(t) = mbar(t) - m(t) obeys e' = (A + kappa) e + kappa m, e(0) = 0, because")$
+print("        mbar' = (A+kappa) mbar + f and m' = A m + f share the same forcing f")$
+bias : kap * integrate( exp((A + kap)*(t - s)) * m(s), s, 0, t )$
+print("STEP 6c residual of e' - [(A + kappa) e + kappa m] =",
+      ratsimp( diff(bias, t) - ((A + kap)*bias + kap*m(t)) ), " (0)")$
+print("STEP 6d at kappa = c/N the leading term drops the kappa out of the exponential:")$
+lead : c * integrate( exp(A*(t - s)) * m(s), s, 0, t )$
+print("        e(t) = (1/N) *", lead, "+ O(1/N^2)")$
+print("STEP 6e first two terms of e(t) in powers of 1/N, with kappa = c*eps and eps = 1/N:")$
+print("        ", ratsimp( taylor( subst(kap = c*eps, bias), eps, 0, 2 ) ))$
+print("STEP 6f so bias/rms ~ (1/N)/(1/sqrt(N)) = N^(-1/2) -> 0: the finite-population gap is a")$
+print("        FLUCTUATION at leading order and the Nash correction never catches it up.  That")$
+print("        is why the certificate asserts the closed form for the mean-field arm and only a")$
+print("        RATE for the coupled one")$

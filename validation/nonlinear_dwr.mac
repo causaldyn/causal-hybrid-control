@@ -1,0 +1,121 @@
+/* A GENERIC DUAL-WEIGHTED ESTIMATOR: the same construction as Result 55 with the affine adjoint
+   replaced by a linearisation, and the price of doing so.
+
+   Result 55 gave an EXACT error quotient for the LQ mean-field game, and said plainly that the
+   exactness was a property of the affine reduced problem: "for a non-quadratic mean-field game the
+   same construction is the standard dual-weighted residual (Becker-Rannacher) and is first-order,
+   with the adjoint solved numerically".  This file does three things with that sentence.
+
+   (1) It produces the smallest mean-field game that breaks the affine reduction WITHOUT breaking
+   the reduction itself: pay for distance from a CONGESTION-SHIFTED target,
+
+       running cost (q/2)(x - phi(m))^2 + (r/2) alpha^2,   phi(m) = c m + gam m^3
+
+   The value function stays quadratic in x -- the Riccati coefficient never sees phi -- so the
+   two-point boundary value problem for (m, S) survives, and it is nonlinear exactly when gam != 0.
+
+   (2) It derives the estimator for a general field, so the adjoint is a linearisation rather than
+   a known matrix.  That is what jax.vjp supplies in chc.deep_galerkin.adjoint_weighted_error.
+
+   (3) It says what is lost: the remainder is the SECOND variation, so the estimate is exact for an
+   affine field at any perturbation size, and O(eta^2) otherwise.  That is a measurable claim and
+   chc.deep_galerkin.nonlinear_dwr_certificate measures it.
+
+   Certificate: chc.deep_galerkin.nonlinear_dwr_certificate; proofs/nonlinear_dwr.v. */
+
+linel : 110$
+display2d : false$
+
+/* ===== STEP 1: the congested game still reduces to a 2x2 two-point boundary value problem ===== */
+
+print("=== STEP 1: the HJB ansatz survives a congestion-shifted target ===")$
+depends([S, Z, m], t)$
+phi : c*m + gam*m^3$
+V   : P*x^2/2 + S*x + Z$
+Vx  : diff(V, x)$
+/* HJB with the minimising control alpha* = -(b/r) V_x already substituted. */
+hjb : -diff(V, t) - ( q/2*(x - phi)^2 - b^2/(2*r)*Vx^2 + a*x*Vx + sg^2/2*diff(V, x, 2) )$
+poly : ratexpand(hjb)$
+print("STEP 1a coefficient of x^2 (the Riccati equation, and phi is absent from it) =",
+      ratsimp( coeff(poly, x, 2) ))$
+print("STEP 1b so P is the stationary root of (b^2/r)P^2 - 2 a P - q = 0 exactly as in the LQ case,")$
+print("        and the CONGESTION cannot move it -- that is what keeps the reduction alive")$
+bigA : a - b^2*P/r$
+print("STEP 1c coefficient of x^1, solved for S' =",
+      ratsimp( solve( coeff(poly, x, 1) = 0, diff(S, t) )[1] ))$
+print("STEP 1d claimed S' = q phi(m) - A S; residual =",
+      ratsimp( subst( diff(S,t) = q*phi - bigA*S, coeff(poly, x, 1) ) ))$
+print("        (0)")$
+print("STEP 1e the Fokker-Planck mean closes the loop: m' = a m + b E[alpha*] = A m - (b^2/r) S,")$
+print("        so the reduced field is F(m, S) = (A m - (b^2/r) S,  q phi(m) - A S)")$
+print("STEP 1f terminal condition V(T,.) = (q_T/2)(x - cT m_T)^2 with q_T = P gives")$
+print("        S(T) + P cT m(T) = 0, i.e. the functional row B_T = (P cT, 1) -- unchanged by gam")$
+
+/* ===== STEP 2: the adjoint identity, for a GENERAL field ===== */
+
+print("=== STEP 2: d/dt (z . delta) = z . g, whatever the field is ===")$
+remove([S, Z, m], dependency)$
+depends([d1, d2, z1, z2, g1, g2, y1, y2], t)$
+/* delta obeys the LINEARISED primal with defect g; z obeys the transposed adjoint. */
+/* F'(yhat) with arbitrary time-dependent entries: no structure is assumed of the field. */
+depends([j11, j12, j21, j22], t)$
+dprime : [j11*d1 + j12*d2 + g1,  j21*d1 + j22*d2 + g2]$   /* linearised primal with defect g */
+zprime : [-(j11*z1 + j21*z2),    -(j12*z1 + j22*z2)]$     /* TRANSPOSED adjoint */
+pairing : z1*d1 + z2*d2$
+lhs : subst([diff(d1,t) = dprime[1], diff(d2,t) = dprime[2],
+             diff(z1,t) = zprime[1], diff(z2,t) = zprime[2]],
+            diff(pairing, t))$
+print("STEP 2a residual of d/dt(z.delta) - z.g =",
+      ratsimp( lhs - (z1*g1 + z2*g2) ), " (0)")$
+print("        The transpose is the whole content: every Jacobian entry cancels in pairs, so the")$
+print("        identity needs NO structure in F -- which is why jax.vjp is enough to build z")$
+
+/* ===== STEP 3: the error formula ===== */
+
+print("=== STEP 3: integrate the identity across [0, T] ===")$
+print("STEP 3a integrating, z(T).delta(T) - z(0).delta(0) = int_0^T z.g dt")$
+print("STEP 3b the initial condition pins m, so delta(0) = (0, J(yhat) - J(y)) with J = S(0),")$
+print("        and z(0).delta(0) = z2(0) (J(yhat) - J(y))")$
+print("STEP 3c choose z(T) = B_T^T, so z(T).delta(T) = B_T delta(T) = eps, the terminal defect")$
+print("STEP 3d therefore  J(yhat) - J(y) = (eps - int_0^T z.g dt) / z2(0)")$
+print("STEP 3e and z2(0) is the obstruction denominator: for a constant Jacobian M,")$
+print("        z(s) = exp(M^T (T-s)) B_T^T, so z2(0) = B_T Phi(T) e2 = den(T) of Result 55")$
+
+/* ===== STEP 4: what the linearisation costs ===== */
+
+print("=== STEP 4: the remainder is the SECOND variation ===")$
+print("STEP 4a write yhat = y + eta p for a fixed smooth p.  The exact defect is")$
+print("        g = eta p' - (F(y + eta p) - F(y)), and everything turns on how F expands")$
+
+/* The concrete congested field, in its own variables so nothing above is disturbed. */
+kill(mm, ss, pm, ps)$
+Fm : AA*mm - b^2/r*ss$
+Fs : q*(c*mm + gam*mm^3) - AA*ss$
+shift : [ subst([mm = mm + eta*pm, ss = ss + eta*ps], Fm) - Fm,
+          subst([mm = mm + eta*pm, ss = ss + eta*ps], Fs) - Fs ]$
+first  : [ coeff(ratexpand(shift[1]), eta, 1), coeff(ratexpand(shift[2]), eta, 1) ]$
+second : [ coeff(ratexpand(shift[1]), eta, 2), coeff(ratexpand(shift[2]), eta, 2) ]$
+third  : [ coeff(ratexpand(shift[1]), eta, 3), coeff(ratexpand(shift[2]), eta, 3) ]$
+jacobian_p : [ diff(Fm, mm)*pm + diff(Fm, ss)*ps, diff(Fs, mm)*pm + diff(Fs, ss)*ps ]$
+print("STEP 4b order eta^1 of F(y + eta p) - F(y) minus F'(y) p =",
+      ratsimp( first - jacobian_p ), " ([0, 0])")$
+print("        so the LINEARISED primal that STEP 2 assumed is the eta^1 truncation, exactly")$
+print("STEP 4c order eta^2 =", second, " and half the second variation is")$
+hessian_pp : [ (diff(Fm, mm, 2)*pm^2 + 2*diff(diff(Fm, mm), ss)*pm*ps + diff(Fm, ss, 2)*ps^2)/2,
+               (diff(Fs, mm, 2)*pm^2 + 2*diff(diff(Fs, mm), ss)*pm*ps + diff(Fs, ss, 2)*ps^2)/2 ]$
+print("        (1/2) F''(y)[p,p] =", hessian_pp, "; residual =",
+      ratsimp( second - hessian_pp ), " ([0, 0])")$
+print("STEP 4d order eta^3 =", third, " -- the cubic terminates, so this expansion is EXACT")$
+print("STEP 4e AFFINE FIELD (gam = 0): the eta^2 and eta^3 terms both vanish,")$
+print("        residual =", ratsimp( subst(gam = 0, second + third) ), " ([0, 0])")$
+print("        so g is EXACTLY eta (p' - M p) at ANY eta and the formula of STEP 3d has NO")$
+print("        remainder -- Result 55's exactness, recovered as the gam = 0 case")$
+print("STEP 4f NONLINEAR FIELD: the eta^2 term survives, so")$
+print("            estimate - (J(yhat) - J(y)) = O(eta^2),  relative error O(eta)")$
+print("        Both exponents are measurable, and nonlinear_dwr_certificate FITS them on a")$
+print("        geometric sweep in eta rather than asserting them")$
+print("STEP 4g the only nonlinear entry is the second component's, d^2/dm^2 of q phi(m) =",
+      ratsimp( diff(q*(c*mm + gam*mm^3), mm, 2) ), " (6 q gam m)")$
+print("        -- so at m = 0 the congested field is second-order INDISTINGUISHABLE from the")$
+print("        affine one, and a certificate that probes only near the origin would measure")$
+print("        exactness it has not got")$

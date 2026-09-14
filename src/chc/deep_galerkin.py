@@ -28,6 +28,8 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from functools import partial
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -35,6 +37,12 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from jax import Array
+
+PopulationNoise = Literal["independent", "common"]
+"""Whether each agent gets its own Brownian path or the whole population shares one."""
+
+_SHOOTING_STEPS = 40
+_SHOOTING_TOLERANCE = 1e-6  # terminal-row miss above which the congested solve is a failure
 
 
 class ScalarMLP(eqx.Module):
@@ -266,6 +274,74 @@ class MeanFieldSolution:
     def density(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
         m, v = self._interp(self.mean, t), self._interp(self.variance, t)
         return np.exp(-0.5 * (x - m) ** 2 / v) / np.sqrt(2.0 * np.pi * v)
+
+    def finite_population_rms(self, n_agents: int) -> np.ndarray:
+        """``sqrt(v(t)/N)`` on :attr:`times`: what ``N`` agents cost against the density.
+
+        Exact at every ``t`` and every ``N``, not asymptotic. A mean-field feedback is a function
+        of an agent's *own* state and of deterministic coefficients, so the closed-loop agents are
+        independent Ornstein-Uhlenbeck processes and ``m_N`` is a sample mean of ``N`` i.i.d.
+        draws; the ``1/sqrt(N)`` is then an identity and the constant is the closed-loop variance.
+        Derived in ``validation/finite_population_gap.mac``, measured by
+        :func:`finite_population_gap_certificate`.
+        """
+        if n_agents < 1:
+            raise ValueError(f"a population needs at least one agent; got {n_agents}")
+        return np.sqrt(self.variance / n_agents)
+
+    def simulate_population(
+        self,
+        n_agents: int,
+        *,
+        replicates: int = 1,
+        seed: int = 0,
+        n_step: int = 400,
+        mean_feedback: float = 0.0,
+        noise: PopulationNoise = "independent",
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Run ``n_agents`` under this feedback; return ``(times, empirical mean paths)``.
+
+        The plant stepped here is the *primitive* one, ``dX = (a X + b alpha) dt + sigma dW`` by
+        Euler-Maruyama. Only the control is taken from the solution, so the paths are an
+        independent check on :meth:`finite_population_rms` rather than a restatement of it; the
+        Euler bias on the variance is ``|A| dt`` relative, two orders below the Monte-Carlo error
+        at the default step.
+
+        ``mean_feedback`` adds ``(kappa/b) m_N`` to every agent's control. That is the difference
+        between an N-player equilibrium and a mean-field control applied to N players: it couples
+        the agents, moves the closed-loop rate to ``A + kappa`` and biases the mean away from
+        ``m``. ``noise="common"`` drives every agent with one Brownian path instead of its own,
+        which is the independence assumption the identity rests on -- it is exposed so it can be
+        violated on purpose.
+        """
+        if n_agents < 1:
+            raise ValueError(f"a population needs at least one agent; got {n_agents}")
+        if replicates < 1:
+            raise ValueError(f"a Monte-Carlo sweep needs at least one replicate; got {replicates}")
+        game = self.game
+        dt = game.horizon / n_step
+        times = np.linspace(0.0, game.horizon, n_step + 1)
+        drive = self._interp(self.value_s, times)
+        rng = np.random.default_rng(seed)
+        x = game.mean_initial + math.sqrt(game.variance_initial) * rng.standard_normal(
+            (replicates, n_agents)
+        )
+        # One shared column under a common shock, one column per agent otherwise.
+        shock = (replicates, 1) if noise == "common" else (replicates, n_agents)
+        paths = np.empty((replicates, n_step + 1))
+        paths[:, 0] = x.mean(axis=1)
+        root_dt = math.sqrt(dt)
+        for step in range(n_step):
+            control = -(game.b / game.r) * (game.riccati_root * x + drive[step])
+            if mean_feedback:
+                control = control + (mean_feedback / game.b) * x.mean(axis=1, keepdims=True)
+            x = (
+                x
+                + (game.a * x + game.b * control) * dt
+                + game.sigma * root_dt * rng.standard_normal(shock)
+            )
+            paths[:, step + 1] = x.mean(axis=1)
+        return times, paths
 
     def hjb_residual(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
         """Residual of the backward HJB at the closed form. Zero up to the ``Z`` quadrature."""
@@ -695,6 +771,27 @@ def _value_slope_error(game: LQMeanFieldGame, model: MeanFieldDGM) -> float:
     return abs(fitted - float(game.solve().value_s[0]))
 
 
+_MONOTONE_GAME = LQMeanFieldGame(
+    a=-0.5,
+    b=1.0,
+    q=1.0,
+    r=1.0,
+    coupling=0.5,
+    terminal_coupling=0.5,
+    sigma=0.7,
+    horizon=1.0,
+    mean_initial=1.0,
+    variance_initial=0.25,
+)
+"""The instance both certificates measure, so the obstruction and the gap describe one system."""
+
+
+def _ou_variance(game: LQMeanFieldGame, rate: float, t: float) -> float:
+    """``v0 e^{2 rate t} + sigma^2 (e^{2 rate t} - 1)/(2 rate)``, the closed-loop variance."""
+    decay = math.exp(2.0 * rate * t)
+    return game.variance_initial * decay + game.sigma**2 * (decay - 1.0) / (2.0 * rate)
+
+
 def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurve:
     """Measure the coupled DGM against the exact LQ mean-field equilibrium.
 
@@ -705,18 +802,7 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
     obstruction, the DGM's error grows while its own residual *shrinks*, so a residual-based
     stopping rule reports success exactly where the answer is worst.
     """
-    safe = LQMeanFieldGame(
-        a=-0.5,
-        b=1.0,
-        q=1.0,
-        r=1.0,
-        coupling=0.5,
-        terminal_coupling=0.5,
-        sigma=0.7,
-        horizon=1.0,
-        mean_initial=1.0,
-        variance_initial=0.25,
-    )
+    safe = _MONOTONE_GAME
     oscillatory = replace(safe, coupling=3.0, terminal_coupling=3.0)
 
     # --- arm 1: the gate is exact ---------------------------------------------------------
@@ -825,5 +911,505 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
         far_dual_weighted=far_dual,
         near_dual_weighted=near_dual,
         dual_weighted_accuracy=dual_accuracy,
+        ok=ok,
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# The finite-population gap: what N agents cost against the Fokker-Planck density.
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FinitePopulationGap:
+    """Evidence that the mean-field density is *priced* at finite ``N``, not merely approached."""
+
+    sizes: tuple[int, ...]
+    measured_rms: tuple[float, ...]
+    closed_form_rms: tuple[float, ...]
+    worst_relative_error: float
+    measured_exponent: float
+    exponent_standard_error: float
+    common_shock_exponent: float  # the independence assumption, violated on purpose
+    coupled_variance_ratio: float  # measured / the (A + kappa) closed form -- should be 1
+    coupled_wrong_rate_ratio: float  # measured / the (A) closed form -- must NOT be 1
+    predicted_bias_constant: float  # c * int_0^T exp(A(T-s)) m(s) ds
+    measured_bias_constant: float  # N * (coupled mean - mean-field mean), common random numbers
+    bias_to_fluctuation: float  # at the largest N: the O(1/N) bias over the O(1/sqrt N) gap
+    ok: bool
+
+
+def finite_population_gap_certificate(
+    replicates: int = 400, seed: int = 0, n_step: int = 400
+) -> FinitePopulationGap:
+    """Price Result 49's modelling gap: the Fokker-Planck density is the ``N -> infinity`` limit.
+
+    Four arms, in increasing order of what they can tell you.
+
+    The first measures the empirical-mean gap of a simulated population against the closed form
+    ``sqrt(v(t)/N)``, and fits the exponent. The second is the falsification: drive every agent
+    with one shared Brownian path and the exponent must collapse to zero, because independence --
+    not large ``N`` -- is what makes the identity exact.
+
+    The third and fourth ask what an *N-player* equilibrium would change. A mean-feedback gain
+    ``kappa`` moves the closed-loop rate to ``A + kappa``: arm three checks the variance against
+    the moved constant and against the unmoved one, so the second number is there to be wrong.
+    Arm four takes ``kappa = c/N``, which is the scaling a real Nash equilibrium has, and measures
+    the resulting bias under common random numbers -- it is ``O(1/N)``, so it never catches up
+    with the ``O(1/sqrt N)`` fluctuation, which is why the exponent is the part that transfers.
+
+    Derived in ``validation/finite_population_gap.mac``; the exponent's Monte-Carlo standard error
+    is derived there too, and reported here rather than assumed.
+    """
+    game = _MONOTONE_GAME
+    solution = game.solve()
+    # Both grids end at the horizon, so the last column of a simulation and the last entry of the
+    # closed form are the same instant and no interpolation is needed to compare them.
+    end = -1
+    terminal_mean = float(solution.mean[end])
+    sizes = (8, 16, 32, 64, 128, 256, 512)
+    log_sizes = np.log(np.asarray(sizes, dtype=float))
+
+    # --- arm 1: the gap against the closed form, and the exponent --------------------------
+    measured, predicted = [], []
+    for n_agents in sizes:
+        _, paths = solution.simulate_population(
+            n_agents, replicates=replicates, seed=seed + n_agents, n_step=n_step
+        )
+        measured.append(float(np.sqrt(((paths[:, end] - terminal_mean) ** 2).mean())))
+        predicted.append(float(solution.finite_population_rms(n_agents)[end]))
+    exponent = float(np.polyfit(log_sizes, np.log(measured), 1)[0])
+    worst = max(abs(m / p - 1.0) for m, p in zip(measured, predicted, strict=True))
+    # Two-point slope error at this R and this lever arm; the 7-point fit is at least this good.
+    slope_se = float(
+        math.sqrt(2.0 / (replicates - 1)) / 2.0 * math.sqrt(2.0) / math.log(sizes[-1] / sizes[0])
+    )
+
+    # --- arm 2: remove the independence and the identity goes with it ----------------------
+    shared = []
+    for n_agents in sizes:
+        _, paths = solution.simulate_population(
+            n_agents, replicates=replicates, seed=seed + n_agents, n_step=n_step, noise="common"
+        )
+        shared.append(float(np.sqrt(((paths[:, end] - terminal_mean) ** 2).mean())))
+    common_exponent = float(np.polyfit(log_sizes, np.log(shared), 1)[0])
+
+    # --- arm 3: a fixed coupling moves the constant, not the exponent ----------------------
+    kappa, coupled_size = 0.6, 512
+    rate = game.closed_loop_rate + kappa
+    _, coupled_paths = solution.simulate_population(
+        coupled_size,
+        replicates=replicates,
+        seed=seed + coupled_size,
+        n_step=n_step,
+        mean_feedback=kappa,
+    )
+    coupled_variance = float(coupled_paths[:, end].var(ddof=1))
+    moved = _ou_variance(game, rate, game.horizon)
+    unmoved = _ou_variance(game, game.closed_loop_rate, game.horizon)
+
+    # --- arm 4: at kappa = c/N the bias is O(1/N) and loses to the fluctuation --------------
+    gain, bias_size = 6.0, 512
+    weight = np.exp(game.closed_loop_rate * (game.horizon - solution.times)) * solution.mean
+    predicted_bias = gain * float(np.trapezoid(weight, solution.times))
+    # Common random numbers: the same seed and the same draw sequence in both runs, so the
+    # O(1/sqrt N) fluctuation cancels in the difference and only the O(1/N) drift survives.
+    _, free = solution.simulate_population(
+        bias_size, replicates=replicates, seed=seed + bias_size, n_step=n_step
+    )
+    _, tied = solution.simulate_population(
+        bias_size,
+        replicates=replicates,
+        seed=seed + bias_size,
+        n_step=n_step,
+        mean_feedback=gain / bias_size,
+    )
+    measured_bias = float(bias_size * (tied[:, end] - free[:, end]).mean())
+    fluctuation = float(solution.finite_population_rms(bias_size)[end])
+
+    ok = bool(
+        worst < 0.08
+        and abs(exponent + 0.5) < 0.05
+        and slope_se < 0.02
+        and common_exponent > -0.15  # the falsification arm: NOT -1/2
+        and abs(coupled_variance * coupled_size / moved - 1.0) < 0.08
+        and coupled_variance * coupled_size / unmoved > 1.5  # the unmoved constant is wrong
+        and abs(measured_bias / predicted_bias - 1.0) < 0.05
+        and abs(measured_bias / bias_size) < 0.3 * fluctuation
+    )
+    return FinitePopulationGap(
+        sizes=sizes,
+        measured_rms=tuple(measured),
+        closed_form_rms=tuple(predicted),
+        worst_relative_error=worst,
+        measured_exponent=exponent,
+        exponent_standard_error=slope_se,
+        common_shock_exponent=common_exponent,
+        coupled_variance_ratio=coupled_variance * coupled_size / moved,
+        coupled_wrong_rate_ratio=coupled_variance * coupled_size / unmoved,
+        predicted_bias_constant=predicted_bias,
+        measured_bias_constant=measured_bias,
+        bias_to_fluctuation=abs(measured_bias / bias_size) / fluctuation,
+        ok=ok,
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# A generic dual-weighted estimator: the adjoint as a linearisation, not as a known matrix.
+# --------------------------------------------------------------------------------------------
+
+
+@partial(jax.jit, static_argnums=0)
+def _congested_field(game: CongestedMeanFieldGame, state: Array) -> Array:
+    """:meth:`CongestedMeanFieldGame.reduced_field`, jitted at module level.
+
+    The game is a frozen dataclass of scalars, hence hashable, hence a legal static argument;
+    binding it inside the method would give every call a fresh cache.
+    """
+    base = game.base
+    mean, slope = state[0], state[1]
+    response = base.coupling * mean + game.congestion * mean**3
+    return jnp.stack(
+        [
+            base.closed_loop_rate * mean - base.b**2 / base.r * slope,
+            base.q * response - base.closed_loop_rate * slope,
+        ]
+    )
+
+
+@dataclass(frozen=True)
+class CongestedMeanFieldGame:
+    """:class:`LQMeanFieldGame` with a cubic congestion coupling: the reduction survives, the
+    linearity does not.
+
+    The running cost pays for distance from a *congestion-shifted* target,
+    ``(q/2)(x - c m - gamma m^3)^2``, so the value function stays quadratic in ``x`` -- the Riccati
+    coefficient never sees ``gamma`` -- while the reduced two-point boundary value problem for
+    ``(m, S)`` becomes nonlinear:
+
+        m' = A m - (b^2/r) S,   S' = q (c m + gamma m^3) - A S,   S(T) + P c_T m(T) = 0
+
+    That is the smallest change that breaks :meth:`LQMeanFieldGame.solve`'s closed form without
+    breaking the reduction it rests on, which is what makes it a usable gate for a *generic*
+    dual-weighted estimator. At ``congestion = 0`` it is the LQ game exactly, and
+    :func:`adjoint_weighted_error` is then exact rather than first-order -- Result 55, recovered as
+    a special case. Derived in ``validation/nonlinear_dwr.mac``.
+    """
+
+    base: LQMeanFieldGame
+    congestion: float
+
+    @property
+    def terminal_row(self) -> np.ndarray:
+        """``B_T = (P c_T, 1)``, the row the terminal condition sends to zero. ``gamma``-free."""
+        return np.array([self.base.riccati_root * self.base.terminal_coupling, 1.0])
+
+    def reduced_field(self, state: Array) -> Array:
+        """``F(m, S)``, in jax so the adjoint is :func:`jax.vjp` of this and of nothing else."""
+        return _congested_field(self, state)
+
+    def trajectory(self, slope_initial: float, times: np.ndarray) -> np.ndarray:
+        """RK4 the reduced system from ``(m_0, slope_initial)``; shape ``(len(times), 2)``."""
+        path = np.empty((times.size, 2))
+        path[0] = (self.base.mean_initial, slope_initial)
+        for i in range(times.size - 1):
+            step = times[i + 1] - times[i]
+            k1 = np.asarray(self.reduced_field(path[i]))
+            k2 = np.asarray(self.reduced_field(path[i] + 0.5 * step * k1))
+            k3 = np.asarray(self.reduced_field(path[i] + 0.5 * step * k2))
+            k4 = np.asarray(self.reduced_field(path[i] + step * k3))
+            path[i + 1] = path[i] + step / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        return path
+
+    def solve(self, n_time: int = 401) -> tuple[np.ndarray, np.ndarray]:
+        """Shoot on ``S(0)`` until the terminal row vanishes; return ``(times, trajectory)``.
+
+        The LQ closed form supplies the first iterate, so the secant converges in a handful of
+        steps even at a congestion that moves the answer by tens of percent. There is no closed
+        form to fall back on here -- that is the point of the class, and it is why this returns
+        the two arrays rather than a :class:`MeanFieldSolution`: three of that type's five fields
+        do not exist without one.
+        """
+        times = np.linspace(0.0, self.base.horizon, n_time)
+        row = self.terminal_row
+
+        def miss(slope_initial: float) -> float:
+            return float(row @ self.trajectory(slope_initial, times)[-1])
+
+        guess = float(self.base.solve(n_time=n_time).value_s[0])
+        previous, current = guess, guess * 1.01 + 1e-3
+        miss_previous, miss_current = miss(previous), miss(current)
+        for _ in range(_SHOOTING_STEPS):
+            # The secant plateaus above the target once RK4 noise in `miss` swamps the step, so
+            # the loop aims low and the check below decides what actually counts as a failure.
+            if abs(miss_current) < 1e-13 or miss_current == miss_previous:
+                break
+            step = miss_current * (current - previous) / (miss_current - miss_previous)
+            previous, miss_previous = current, miss_current
+            current = current - step
+            miss_current = miss(current)
+        if abs(miss_current) > _SHOOTING_TOLERANCE:
+            raise ValueError(
+                f"the congested two-point problem did not close: terminal row {miss_current:.3e} "
+                f"at S(0) = {current:.6f}; the fixed point may have degenerated"
+            )
+        return times, self.trajectory(current, times)
+
+
+def adjoint_weighted_error(
+    field: Callable[[Array], Array],
+    times: np.ndarray,
+    trajectory: np.ndarray,
+    rate: np.ndarray,
+    terminal_row: np.ndarray,
+    *,
+    free_component: int = 1,
+) -> float:
+    """Estimate ``J(yhat) - J(y)`` for ``J(y) = y(0)[free_component]``, from ``yhat`` alone.
+
+    The generic form of Result 55. Pairing the linearised primal with the transposed adjoint gives
+    ``d/dt (z . delta) = z . g`` for *any* field (``validation/nonlinear_dwr.mac`` STEP 2, residual
+    0), and integrating it across the interval leaves
+
+        J(yhat) - J(y) = (eps - int_0^T z . g dt) / z(0)[free_component]
+
+    with ``g = yhat' - F(yhat)`` the defect the caller supplies as ``rate``, ``eps = B_T yhat(T)``
+    the terminal defect, and ``z`` the solution of ``-z' = F'(yhat)^T z`` from ``z(T) = B_T``. The
+    only thing needed of ``F`` is a vector-Jacobian product, which is :func:`jax.vjp` -- so the
+    hand-written affine transition matrix of :func:`dual_weighted_error_estimate` is replaced by a
+    linearisation of whatever field is passed in.
+
+    ``free_component`` names the component of ``y(0)`` the boundary value problem does *not* pin;
+    the other one is an initial condition and cannot be in error. The returned value is SIGNED,
+    because for a nonlinear field the sign of the remainder is part of the measurement.
+
+    Exactness is a property of the field, not of this function. For an affine ``F`` the second
+    variation vanishes and the formula has no remainder at any perturbation size; otherwise the
+    remainder is ``O(eta^2)`` in the size of the error, so the estimate is first-order.
+    :func:`nonlinear_dwr_certificate` measures both exponents rather than asserting them.
+    """
+    if trajectory.shape != rate.shape or trajectory.shape[0] != times.size:
+        raise ValueError(
+            f"trajectory {trajectory.shape} and rate {rate.shape} must agree and have "
+            f"{times.size} rows, one per time"
+        )
+
+    # jax.jacrev IS reverse-mode -- vjp against each basis vector -- so the Jacobian here comes
+    # from autodiff of the field and never from a hand-written matrix. Materialising it is the
+    # right trade at this size: the system is 2x2, and one vmapped call replaces ~3200 sequential
+    # vjps through the RK4 stages. A large system would keep the loop and call jax.vjp per stage.
+    midpoints = 0.5 * (times[:-1] + times[1:])
+    columns = trajectory.T
+    middle_states = np.stack([np.interp(midpoints, times, column) for column in columns], axis=1)
+    node_jacobians = np.asarray(jax.vmap(jax.jacrev(field))(jnp.asarray(trajectory)))
+    middle_jacobians = np.asarray(jax.vmap(jax.jacrev(field))(jnp.asarray(middle_states)))
+
+    # Backwards in t is forwards in tau = T - t, so the adjoint is an ordinary forward RK4 on the
+    # reversed grid, with -F'(yhat)^T contributing the transpose at each stage.
+    weights = np.empty_like(trajectory)
+    weights[-1] = terminal_row
+    for i in range(times.size - 1, 0, -1):
+        step = times[i] - times[i - 1]
+        upper, lower = node_jacobians[i].T, node_jacobians[i - 1].T
+        middle = middle_jacobians[i - 1].T
+        k1 = upper @ weights[i]
+        k2 = middle @ (weights[i] + 0.5 * step * k1)
+        k3 = middle @ (weights[i] + 0.5 * step * k2)
+        k4 = lower @ (weights[i] + step * k3)
+        weights[i - 1] = weights[i] + step / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+    defect = rate - np.asarray(jax.vmap(field)(jnp.asarray(trajectory)))
+    interior = float(np.trapezoid(np.einsum("ij,ij->i", weights, defect), times))
+    terminal = float(terminal_row @ trajectory[-1])
+    denominator = float(weights[0][free_component])
+    if denominator == 0.0:
+        return math.inf  # the obstruction: no fixed point, hence no finite error to report
+    return (terminal - interior) / denominator
+
+
+@dataclass(frozen=True)
+class NonlinearDwrCurve:
+    """Evidence for A16: the adjoint built by autodiff, and what the linearisation costs."""
+
+    perturbations: tuple[float, ...]
+    affine_relative_errors: tuple[float, ...]  # flat: exact up to quadrature, at every size
+    affine_quadrature_ratio: float  # halving the step divides the floor by ~4
+    denominator_against_result_55: float  # |z(0)[1] - den(T)| at congestion 0
+    congested_errors: tuple[float, ...]
+    congested_exponent: float  # -> 2: the remainder is the second variation
+    congested_relative_error: float  # at the largest perturbation, so it is not trivially small
+    affine_adjoint_errors: tuple[float, ...]  # same defect, wrong linearisation
+    affine_adjoint_exponent: float  # -> 1: the right adjoint is worth exactly one order
+    affine_model_error: float  # affine field for BOTH defect and adjoint: stops tracking
+    affine_model_exponent: float  # -> 0
+    ok: bool
+
+
+def _perturbation(times: np.ndarray, horizon: float) -> tuple[np.ndarray, np.ndarray]:
+    """A smooth ``(p, p')`` with ``p_m(0) = 0``, so the initial condition survives the shift.
+
+    Both components are non-zero at ``T`` on purpose: a perturbation that vanished there would
+    leave the terminal defect at zero and exercise only half the estimator.
+    """
+    s = times / horizon
+    shape = np.stack([0.5 * s + np.sin(np.pi * s), 1.0 + 0.4 * np.cos(np.pi * s)], axis=1)
+    rate = np.stack(
+        [(0.5 + np.pi * np.cos(np.pi * s)) / horizon, -0.4 * np.pi / horizon * np.sin(np.pi * s)],
+        axis=1,
+    )
+    return shape, rate
+
+
+def _manufactured(
+    game: CongestedMeanFieldGame, n_time: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """``(times, solution, field-at-solution, p, p')`` for the manufactured-error sweep."""
+    times, solution = game.solve(n_time=n_time)
+    rate = np.asarray(jax.vmap(game.reduced_field)(jnp.asarray(solution)))
+    shape, shape_rate = _perturbation(times, game.base.horizon)
+    return times, solution, rate, shape, shape_rate
+
+
+def nonlinear_dwr_certificate(
+    congestion: float = 0.6, n_time: int = 801, seed: int = 0
+) -> NonlinearDwrCurve:
+    """Measure the generic dual-weighted estimator, and price the linearisation it rests on.
+
+    Result 55 shipped an *exact* error quotient for the LQ mean-field game and recorded that the
+    exactness belonged to the affine reduced problem. This replaces the hand-written affine adjoint
+    with :func:`jax.vjp` of whatever field is handed over, and measures the four statements that
+    makes, on a manufactured error ``yhat = y + eta p`` whose true value is known exactly.
+
+    The perturbation is manufactured rather than taken from a trained network deliberately: a
+    network's error is not known, so it could not separate "the estimate is first-order" from "the
+    network is bad". Here the true error is ``eta p_S(0)`` by construction and the only thing being
+    measured is the estimator.
+
+    ``seed`` is accepted for signature parity with the other certificates in this module and is
+    unused: nothing here is random.
+    """
+    del seed
+    base_game = _MONOTONE_GAME
+    affine = CongestedMeanFieldGame(base=base_game, congestion=0.0)
+    congested = CongestedMeanFieldGame(base=base_game, congestion=congestion)
+    sizes = tuple(0.05 * 0.5**k for k in range(5))
+    logs = np.log(np.asarray(sizes))
+
+    # --- arm 1: an affine field makes the formula EXACT, at every perturbation size ----------
+    def affine_relative(grid: int) -> list[float]:
+        times, solution, rate, shape, shape_rate = _manufactured(affine, grid)
+        out = []
+        for size in sizes:
+            got = adjoint_weighted_error(
+                affine.reduced_field,
+                times,
+                solution + size * shape,
+                rate + size * shape_rate,
+                affine.terminal_row,
+            )
+            out.append(abs(got / (size * shape[0, 1]) - 1.0))
+        return out
+
+    affine_errors = affine_relative(n_time)
+    refined = affine_relative(2 * n_time - 1)
+    quadrature_ratio = float(np.mean(affine_errors) / np.mean(refined))
+
+    # STEP 3e: at congestion 0 the adjoint's free component at t = 0 IS Result 55's den(T). Shoot
+    # from S(0) + eta instead of perturbing the trajectory: the result still solves the ODE, so the
+    # interior defect drops out and the estimate is exactly eps/z(0)[1]. On an affine field eps is
+    # den(T) * eta exactly, so the estimate over eta measures den(T)/z(0)[1] and nothing else --
+    # which is a claim about the adjoint, not a restatement of the formula that produced it.
+    times, solution = affine.solve(n_time=n_time)
+    shot = affine.trajectory(float(solution[0, 1]) + sizes[0], times)
+    denominator_gap = abs(
+        adjoint_weighted_error(
+            affine.reduced_field,
+            times,
+            shot,
+            np.asarray(jax.vmap(affine.reduced_field)(jnp.asarray(shot))),
+            affine.terminal_row,
+        )
+        / sizes[0]
+        - 1.0
+    )
+
+    # --- arms 2-4: the congested field, with the right adjoint, the wrong one, and neither ----
+    times, solution, rate, shape, shape_rate = _manufactured(congested, n_time)
+    right, wrong_adjoint, wrong_model = [], [], []
+    for size in sizes:
+        trajectory, trajectory_rate = solution + size * shape, rate + size * shape_rate
+        truth = size * shape[0, 1]
+        right.append(
+            abs(
+                adjoint_weighted_error(
+                    congested.reduced_field,
+                    times,
+                    trajectory,
+                    trajectory_rate,
+                    congested.terminal_row,
+                )
+                - truth
+            )
+        )
+        # Same defect, affine linearisation: shifting the rate keeps `rate - F` unchanged, so the
+        # only thing that differs from the arm above is which Jacobian the adjoint was built from.
+        shift = np.asarray(jax.vmap(affine.reduced_field)(jnp.asarray(trajectory))) - np.asarray(
+            jax.vmap(congested.reduced_field)(jnp.asarray(trajectory))
+        )
+        wrong_adjoint.append(
+            abs(
+                adjoint_weighted_error(
+                    affine.reduced_field,
+                    times,
+                    trajectory,
+                    trajectory_rate + shift,
+                    congested.terminal_row,
+                )
+                - truth
+            )
+        )
+        # And the affine field for both, which is what the Result 55 estimator does if pointed at
+        # a congested game: its transition matrix is the LQ one and cannot be told otherwise.
+        wrong_model.append(
+            abs(
+                adjoint_weighted_error(
+                    affine.reduced_field,
+                    times,
+                    trajectory,
+                    trajectory_rate,
+                    congested.terminal_row,
+                )
+                - truth
+            )
+        )
+
+    congested_exponent = float(np.polyfit(logs, np.log(right), 1)[0])
+    adjoint_exponent = float(np.polyfit(logs, np.log(wrong_adjoint), 1)[0])
+    model_exponent = float(np.polyfit(logs, np.log(wrong_model), 1)[0])
+    congested_relative = float(right[0] / abs(sizes[0] * shape[0, 1]))
+
+    ok = bool(
+        max(affine_errors) < 1e-5
+        and max(affine_errors) / min(affine_errors) < 1.1  # flat in eta: exact, not asymptotic
+        and quadrature_ratio > 3.0  # and the floor is quadrature, falling like the step squared
+        and denominator_gap < 1e-6
+        and abs(congested_exponent - 2.0) < 0.15
+        and congested_relative > 0.01  # the arm is not measuring an error too small to matter
+        and abs(adjoint_exponent - 1.0) < 0.15
+        and abs(model_exponent) < 0.15
+        and wrong_adjoint[-1] > 100.0 * right[-1]
+    )
+    return NonlinearDwrCurve(
+        perturbations=sizes,
+        affine_relative_errors=tuple(affine_errors),
+        affine_quadrature_ratio=quadrature_ratio,
+        denominator_against_result_55=denominator_gap,
+        congested_errors=tuple(right),
+        congested_exponent=congested_exponent,
+        congested_relative_error=congested_relative,
+        affine_adjoint_errors=tuple(wrong_adjoint),
+        affine_adjoint_exponent=adjoint_exponent,
+        affine_model_error=float(wrong_model[-1]),
+        affine_model_exponent=model_exponent,
         ok=ok,
     )
