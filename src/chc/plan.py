@@ -36,6 +36,7 @@ truncation or by the filter, not by the planner. A CBF-QP or barrier-penalised s
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -46,7 +47,7 @@ import numpy as np
 from jax import Array
 
 from chc.barrier import barrier_gamma_star, identification_radius_threshold
-from chc.control import Bound, SolverStatus, projected_gradient_solve
+from chc.control import Bound, SolverStatus, broadcast_box, projected_gradient_solve
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
@@ -322,4 +323,151 @@ def certify_safety(
         gamma_star=float("nan") if any(np.isnan(per_step)) else min(per_step),
         step_gamma_star=per_step,
         radius=delta * float(jnp.max(grad_norm)),
+    )
+
+
+ModulusSource = Literal["supplied", "measured"]
+
+
+@dataclass(frozen=True)
+class PlanRegretBound:
+    """How far a finished plan can be from the best one the same box allows (Result 69, L3.2).
+
+    Result 6's self-certifying bound ``J(U) - J* <= |grad J|^2/(2 mu)`` needs no optimum, which is
+    what makes it a certificate rather than a diagnostic. It does not survive a box: at a lever the
+    gradient holds against its own bound ``grad J`` is nonzero while the true regret is zero, so
+    that bound charges regret to a coordinate that cannot move. Result 13 read the same fact from
+    the other side -- an active cap freezes the control and the regret's curvature collapses.
+
+    What replaces it is the same quantity maximised over the *feasible* moves only. Per coordinate
+    the certified gain of a move ``d`` is ``-g d - (mu/2) d^2``, and its maximum over
+    ``[lo - U, hi - U]`` is the unconstrained one minus a perfect square
+    (``validation/constrained_plan_regret.mac`` STEP 3a): never larger, exactly zero at a lever the
+    gradient pins, and still finite as ``mu -> 0``, where it degrades to :attr:`frank_wolfe_gap`
+    rather than to infinity.
+
+    The bound is on the **planning objective**, which is the question the solver was asked. How far
+    the planning model itself is from the plant is the error tube's question
+    (:attr:`CausalPlan.uncertainty_tube`), and the two must not be added.
+    """
+
+    bound: float  # J(U) - min over the box of J, certified; inf when nothing certifies it
+    unconstrained_bound: float  # Result 6's |grad J|^2/(2 mu), for the comparison
+    frank_wolfe_gap: float  # the mu-free fallback the box guarantees; bound <= this
+    modulus: float  # the mu actually used
+    modulus_source: ModulusSource
+    gradient_norm: float
+    per_lever: tuple[float, ...]  # the bound split by lever; sums to ``bound``
+    pinned_actions: int  # coordinates the gradient holds against a bound: exactly free
+    ok: bool  # the objective was convex enough over the box for the bound to mean anything
+
+
+def _objective_modulus(
+    objective: Callable[[Array], Array],
+    actions: Array,
+    lo: Array,
+    hi: Array,
+    probes: int,
+    seed: int,
+) -> float:
+    """Smallest Hessian eigenvalue of ``J`` over the box, at the plan and at random feasible points.
+
+    A local modulus, and the certificate says so: for a plant affine in the action ``J`` is exactly
+    quadratic and one evaluation is the global answer, while for a nonlinear plant this is a sample
+    and a caller who can bound the curvature should pass ``modulus`` instead. Sampling is what makes
+    a non-convex objective *visible* -- a single evaluation at the plan sits at a solver's stopping
+    point, which is the least likely place to find the negative curvature.
+    """
+    flat = actions.reshape(-1)
+    drawn = jax.random.uniform(
+        jax.random.PRNGKey(seed),
+        (max(probes, 0), flat.size),
+        minval=lo.reshape(-1),
+        maxval=hi.reshape(-1),
+    )
+
+    def curvature(point: Array) -> Array:
+        hessian = jax.hessian(lambda v: objective(v.reshape(actions.shape)))(point)
+        return jnp.min(jnp.linalg.eigvalsh(0.5 * (hessian + hessian.T)))
+
+    # vmapped rather than looped: the Hessian of a rollout is expensive to TRACE, and a Python
+    # loop retraces it once per probe. Batching pays that cost once for the whole sample.
+    return float(jnp.min(jax.vmap(curvature)(jnp.concatenate([flat[None, :], drawn]))))
+
+
+def plan_regret_bound(
+    plan: CausalPlan,
+    model: Dynamics,
+    x0: Array,
+    cost: QuadraticCost,
+    dt: float,
+    u_lo: Bound,
+    u_hi: Bound,
+    *,
+    modulus: float | None = None,
+    probes: int = 16,
+    seed: int = 0,
+) -> PlanRegretBound:
+    """RESULT 69 (L3.2) -- the optimality gap of a finished plan, certified from its own gradient.
+
+    Derived in ``validation/constrained_plan_regret.mac``, proved in
+    ``proofs/constrained_plan_regret.v``. Reads the plan's actions, not the solver's internals, so
+    it prices a plan that came from anywhere -- including one an operator edited by hand.
+
+    Args:
+        modulus: the strong-convexity modulus of ``J`` over the box. ``None`` measures it (see
+            :func:`_objective_modulus`). A *smaller* modulus gives a *larger* bound and is never
+            invalid (STEP 4d), so a conservative one is the safe input; for a plant affine in the
+            action ``lambda_min(R)`` is always valid and needs no eigenvalue solve on ``J``.
+        probes: random feasible points added to the curvature sample when ``modulus`` is measured.
+
+    The three numbers to read together: :attr:`~PlanRegretBound.bound` is what the box certifies,
+    :attr:`~PlanRegretBound.unconstrained_bound` is what Result 6 would have reported at the same
+    plan, and :attr:`~PlanRegretBound.frank_wolfe_gap` is what survives if the modulus goes to zero.
+    ``ok`` is ``False`` -- and the bound ``inf`` -- exactly when the measured curvature is negative,
+    because then no convexity argument applies and a finite number would be a fabrication.
+
+    Raises:
+        ValueError: if a supplied ``modulus`` is negative, which is not a curvature.
+    """
+    if modulus is not None and modulus < 0.0:
+        raise ValueError(f"modulus is a curvature and cannot be negative: {modulus}")
+
+    actions = plan.actions
+    lo = broadcast_box(u_lo, actions.shape, "u_lo", actions.dtype)
+    hi = broadcast_box(u_hi, actions.shape, "u_hi", actions.dtype)
+
+    def objective(us: Array) -> Array:
+        return total_cost(model, x0, us, dt, cost)
+
+    gradient = jax.grad(objective)(actions)
+    mu = (
+        float(modulus)
+        if modulus is not None
+        else _objective_modulus(objective, actions, lo, hi, probes, seed)
+    )
+    source: ModulusSource = "supplied" if modulus is not None else "measured"
+
+    below, above = lo - actions, hi - actions  # the feasible moves, as offsets from the plan
+    # max{-g d : d in [below, above]}: a line on an interval is largest at an endpoint, and both
+    # candidates are >= 0 because 0 is feasible.
+    linear = jnp.maximum(-gradient * below, -gradient * above)
+    if mu > 0.0:
+        step = jnp.clip(-gradient / mu, below, above)
+        certified = -gradient * step - 0.5 * mu * step**2
+    else:
+        certified = linear
+
+    per_lever = tuple(float(v) for v in jnp.sum(certified, axis=0))
+    total = float(jnp.sum(certified))
+    return PlanRegretBound(
+        bound=total if mu >= 0.0 else math.inf,
+        unconstrained_bound=(float(jnp.sum(gradient**2)) / (2.0 * mu) if mu > 0.0 else math.inf),
+        frank_wolfe_gap=float(jnp.sum(linear)),
+        modulus=mu,
+        modulus_source=source,
+        gradient_norm=float(jnp.linalg.norm(gradient)),
+        per_lever=per_lever if mu >= 0.0 else tuple(math.inf for _ in per_lever),
+        pinned_actions=int(jnp.sum((certified <= 0.0) & (gradient != 0.0))),
+        ok=bool(mu >= 0.0),
     )

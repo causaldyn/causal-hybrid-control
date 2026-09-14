@@ -20,13 +20,13 @@ import numpy as np
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from chc.control import project_box
-from chc.cost import QuadraticCost
+from chc.control import project_box, projected_gradient_solve
+from chc.cost import QuadraticCost, total_cost
 from chc.decision import Constraint, Lever, Target, prescribe
 from chc.dynamics import LinearDynamics
 from chc.graph import CausalGraph
 from chc.panel import Panel
-from chc.plan import causal_plan, certify_safety
+from chc.plan import causal_plan, certify_safety, plan_regret_bound
 
 DT = 0.1
 
@@ -97,6 +97,36 @@ def test_certified_prefix_is_monotone_in_gamma(gamma: float, step: float) -> Non
     weaker = certify_safety(PLAN, MODEL, barrier, DT, gamma=gamma + step, u_max=1.0)
     assert weaker.certified_steps <= weak.certified_steps  # more assumed confounding, never more
     assert not np.isnan(weak.gamma_star) or np.isnan(weaker.gamma_star)
+
+
+# ---- the regret bound: never below the gap it certifies, whatever the box ----
+#
+# The one property L1's list could not write until L3.2 shipped. It has to be checked against a
+# plan that is actually suboptimal, or `bound >= 0` passes it by accident -- so the solve is cut
+# short deliberately and the reference is run to convergence on the same box.
+
+_REGRET_COST = QuadraticCost(
+    Q=jnp.eye(1), R=0.05 * jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.array([1.0])
+)
+_REGRET_X0 = jnp.array([0.4])
+
+
+@given(lo=finite(-2.0, -0.05), width=finite(0.1, 4.0), steps=st.integers(min_value=1, max_value=60))
+@settings(deadline=None, max_examples=12, suppress_health_check=[HealthCheck.too_slow])
+def test_the_regret_bound_never_falls_below_the_gap_it_certifies(
+    lo: float, width: float, steps: int
+) -> None:
+    hi = lo + width
+    rough = causal_plan(MODEL, _REGRET_X0, _REGRET_COST, DT, 12, lo, hi, steps=steps)
+    curve = plan_regret_bound(rough, MODEL, _REGRET_X0, _REGRET_COST, DT, lo, hi, probes=2)
+    converged = projected_gradient_solve(
+        MODEL, _REGRET_X0, rough.actions, DT, _REGRET_COST, lo, hi, steps=30_000, tol=1e-14
+    )
+    reached = float(total_cost(MODEL, _REGRET_X0, converged.actions, DT, _REGRET_COST))
+    assert curve.bound >= rough.task_cost - reached - 1e-9  # valid, at every box and every budget
+    assert curve.bound >= 0.0  # d = 0 is feasible, so the maximum can never be negative
+    assert curve.bound <= curve.frank_wolfe_gap + 1e-9  # the mu-free fallback always caps it
+    assert curve.bound <= curve.unconstrained_bound + 1e-9  # ... and the box never loosens it
 
 
 # ---- the facade: whatever the box, the schedule is inside it, and the report is JSON ----

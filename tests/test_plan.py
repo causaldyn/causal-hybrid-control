@@ -2,6 +2,7 @@
 
 from itertools import pairwise
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -9,11 +10,11 @@ import pytest
 from jax import Array
 
 from chc.barrier import robust_barrier_margin
-from chc.control import projected_gradient_control
-from chc.cost import QuadraticCost
+from chc.control import Bound, projected_gradient_control, projected_gradient_solve
+from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, HybridDynamics, LinearDynamics
-from chc.plan import causal_plan, certify_safety
-from chc.residual import ZeroResidual
+from chc.plan import causal_plan, certify_safety, plan_regret_bound
+from chc.residual import MLPResidual, ZeroResidual
 from chc.support import SupportModel
 from chc.uncertainty import ConfoundingRobustPenalty, confounding_robust_inflation
 
@@ -243,3 +244,91 @@ def test_a_plan_says_whether_its_own_solve_finished() -> None:
 
     # Independent axes: both plans carry the same certificate verdict, and only one is optimised.
     assert truncated.certificate_status == finished.certificate_status == "not_evaluated"
+
+
+def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charges_regret() -> None:
+    # Result 69 (L3.2), validation/constrained_plan_regret.mac, proofs/constrained_plan_regret.v.
+    # Result 6's |grad J|^2/(2 mu) needs no optimum, which is what makes it a certificate -- and it
+    # does not survive a box: at a lever the gradient holds against its own bound grad J is nonzero
+    # while the true regret is zero.
+    dt, horizon = 0.1, 12
+    plant = LinearDynamics(jnp.array([[0.0, 1.0], [-2.0, -0.3]]), jnp.array([[0.0], [1.0]]))
+    cost = QuadraticCost(
+        Q=jnp.eye(2), R=0.05 * jnp.eye(1), Qf=3.0 * jnp.eye(2), x_target=jnp.zeros(2)
+    )
+    x0 = jnp.array([1.5, 0.0])
+
+    def reached(model: object, lo: Bound, hi: Bound, m: int, seed: int) -> float:
+        """Best cost the box allows, from several starts -- the truth the bound is checked on."""
+        best = jnp.inf
+        for key in jax.random.split(jax.random.PRNGKey(seed), 5):
+            start = jax.random.uniform(key, (horizon, m), minval=lo, maxval=hi)
+            solved = projected_gradient_solve(
+                model, x0, start, dt, cost, lo, hi, steps=40_000, tol=1e-14
+            )
+            best = jnp.minimum(best, total_cost(model, x0, solved.actions, dt, cost))
+        return float(best)
+
+    # 1. THE HEADLINE. A box tight enough to clip the optimum away leaves every action pinned,
+    #    so the plan IS optimal -- and the bound says exactly zero where Result 6's says 56.
+    pinned = causal_plan(plant, x0, cost, dt, horizon, -0.2, 0.2, steps=20_000)
+    tight = plan_regret_bound(pinned, plant, x0, cost, dt, -0.2, 0.2, probes=8)
+    assert tight.pinned_actions == pinned.actions.size  # the gradient holds all of them
+    assert tight.bound == 0.0  # exactly, not approximately: the maximiser is d = 0
+    assert tight.unconstrained_bound > 50.0  # ... and Result 6 charges regret to the optimum
+    assert pinned.task_cost - reached(plant, -0.2, 0.2, 1, 0) <= 1e-9
+
+    # 2. THE GATE THAT CAN FAIL: on genuinely unconverged plans the bound must sit ABOVE the
+    #    realised gap, and it is worth having only if it does so without being vacuous.
+    for lo, hi, steps, ceiling in ((-2.0, 2.0, 3, 2.0), (-2.0, 2.0, 200, 1.5), (-0.4, 0.4, 3, 1.2)):
+        plan = causal_plan(plant, x0, cost, dt, horizon, lo, hi, steps=steps)
+        curve = plan_regret_bound(plan, plant, x0, cost, dt, lo, hi, probes=8)
+        realised = plan.task_cost - reached(plant, lo, hi, 1, 0)
+        assert curve.bound >= realised - 1e-12  # valid
+        assert curve.bound <= ceiling * realised  # and tight enough to act on
+        assert curve.bound <= curve.unconstrained_bound + 1e-12  # the box never loosens it
+        assert curve.bound <= curve.frank_wolfe_gap + 1e-12  # ... and the mu-free fallback caps it
+        assert sum(curve.per_lever) == pytest.approx(curve.bound, rel=1e-9, abs=1e-12)
+
+    # 3. A SECOND PLANT, nonlinear: the same certificate, with the modulus no longer a constant.
+    hybrid = HybridDynamics(
+        DampedOscillator(1.0, 0.2), MLPResidual(2, 1, 2, key=jax.random.PRNGKey(3))
+    )
+    plan = causal_plan(hybrid, x0, cost, dt, horizon, -0.5, 0.5, steps=20_000)
+    curve = plan_regret_bound(hybrid_plan := plan, hybrid, x0, cost, dt, -0.5, 0.5, probes=24)
+    assert curve.ok
+    assert curve.modulus > 0.0
+    assert curve.bound >= hybrid_plan.task_cost - reached(hybrid, -0.5, 0.5, 1, 2) - 1e-12
+
+    # 4. WHERE THE MODULUS COMES FROM. For a plant affine in the action J is exactly quadratic, so
+    #    the measured curvature is the global one -- and lambda_min(R) is a valid floor under it
+    #    (STEP 7b), which STEP 4d says can only make the bound larger.
+    slack = causal_plan(plant, x0, cost, dt, horizon, -2.0, 2.0, steps=20_000)
+    measured = plan_regret_bound(slack, plant, x0, cost, dt, -2.0, 2.0, probes=16)
+    hessian = jax.hessian(lambda v: total_cost(plant, x0, v.reshape(horizon, 1), dt, cost))(
+        slack.actions.reshape(-1)
+    )
+    assert measured.modulus == pytest.approx(
+        float(jnp.min(jnp.linalg.eigvalsh(hessian))), rel=1e-10
+    )
+    assert measured.modulus >= float(jnp.min(jnp.linalg.eigvalsh(cost.R)))
+    conservative = plan_regret_bound(slack, plant, x0, cost, dt, -2.0, 2.0, modulus=0.05)
+    assert conservative.modulus_source == "supplied"
+    assert conservative.bound >= measured.bound  # a smaller modulus is looser, never invalid
+
+    # 5. AND IT REFUSES TO CERTIFY WHAT IT CANNOT. A residual large enough to make J non-convex
+    #    over the box gets inf, because there no convexity argument applies and a finite number
+    #    would be a fabrication.
+    loud = jax.tree_util.tree_map(
+        lambda a: 4.0 * a if eqx.is_array(a) else a,
+        MLPResidual(2, 1, 2, key=jax.random.PRNGKey(3)),
+    )
+    wild = HybridDynamics(DampedOscillator(1.0, 0.2), loud)
+    rough = causal_plan(wild, x0, cost, dt, horizon, -6.0, 6.0, steps=4_000)
+    verdict = plan_regret_bound(rough, wild, x0, cost, dt, -6.0, 6.0, probes=48)
+    assert not verdict.ok
+    assert verdict.modulus < 0.0
+    assert np.isinf(verdict.bound)
+
+    with pytest.raises(ValueError, match="cannot be negative"):
+        plan_regret_bound(slack, plant, x0, cost, dt, -2.0, 2.0, modulus=-1.0)

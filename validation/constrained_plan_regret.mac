@@ -1,0 +1,135 @@
+/* A self-certifying regret bound for a plan that lives in a BOX -- plans/25 item L3.2.
+
+   chc.plan.causal_plan minimises J(U) over U in a box of lever bounds, and DecisionCertificate
+   ships without a regret_bound because nothing in chc.regret takes a CausalPlan: every certificate
+   there is over a scalar or a curve.  The natural candidate is Result 6's self-certifying PL bound
+   J(U) - J* <= |grad J|^2/(2 mu), computed from the achieved gradient with no optimum needed.  It
+   does not survive the box: at a lever pinned to its bound grad J is nonzero and the bound reports
+   regret where there is none.  Result 13 read the same fact from the other side -- once the cap is
+   active the control freezes and the regret's curvature collapses -- and concluded the modulus
+   collapses with it.
+
+   What is derived here is that the modulus does not have to collapse: the FEASIBLE SET truncates
+   instead.  The bound becomes a per-coordinate maximum over the box,
+
+       gap(U) = sum_i max{ -g_i d - (mu/2) d^2 : lo_i - U_i <= d <= hi_i - U_i },
+
+   which is the unconstrained bound MINUS A PERFECT SQUARE, is exactly zero at a lever the gradient
+   itself holds against a bound, stays finite as mu -> 0 (it degrades to the Frank-Wolfe gap rather
+   than to infinity), and is TIGHT at a constrained optimum where |grad J|^2/(2 mu) is not.
+
+   Consumed by chc.regret.plan_regret_bound; proved in proofs/constrained_plan_regret.v.
+
+   Run: timeout 600 maxima --very-quiet -b validation/constrained_plan_regret.mac */
+
+assume(mu > 0, bb > 0, aa < 0, gg < 0, bb0 > 0)$
+print("================================================================")$
+print("A SELF-CERTIFYING REGRET BOUND INSIDE A BOX (L3.2)")$
+print("================================================================")$
+
+/* ===== STEP 1: strong convexity, evaluated at the constrained optimum ===== */
+
+print("=== STEP 1: the gap a feasible direction certifies ===")$
+
+q(d) := -gg*d - (mu/2)*d^2$
+print("STEP 1a mu-strong convexity at U, read at U*: J* >= J + g*ds + (mu/2)ds^2, ds = U* - U.")$
+print("        Rearranged, J - J* <= -g*ds - (mu/2)ds^2 = q(ds).  Residual of the rearrangement:")$
+print("        [J + g*ds + (mu/2)ds^2] - [J - q(ds)] =",
+      ratsimp( (JJ + gg*ds + (mu/2)*ds^2) - (JJ - q(ds)) ), " (0)")$
+print("STEP 1b U* is FEASIBLE, so ds lies in the box's local offsets [lo-U, hi-U] =: [aa, bb],")$
+print("        and aa <= 0 <= bb because U is feasible too.  So J - J* <= max over that interval,")$
+print("        and the maximum is a quantity the caller can compute from g alone")$
+
+/* ===== STEP 2: the unconstrained maximiser is Result 6's bound ===== */
+
+print("=== STEP 2: with no box the maximum is |g|^2/(2 mu), which is Result 6 ===")$
+
+d0 : rhs(solve(diff(q(d), d) = 0, d)[1])$
+print("STEP 2a dq/dd =", diff(q(d), d), " vanishes at d0 =", d0)$
+print("STEP 2b d^2q/dd^2 =", diff(q(d), d, 2), " < 0, so d0 is a MAXIMUM (mu > 0)")$
+print("STEP 2c q(d0) - g^2/(2 mu) =", ratsimp( q(d0) - gg^2/(2*mu) ), " (0) -- Result 6's bound")$
+
+/* ===== STEP 3: clipping costs exactly a square, so the box can only help ===== */
+
+print("=== STEP 3: the constrained value is the unconstrained one MINUS A PERFECT SQUARE ===")$
+
+print("STEP 3a q(d0) - q(d) - (mu/2)*(d - d0)^2 =",
+      ratsimp( q(d0) - q(dd) - (mu/2)*(dd - d0)^2 ), " (0)")$
+print("        so for the clipped maximiser dhat = clip(d0, aa, bb),")$
+print("        gap = g^2/(2 mu) - (mu/2)(dhat - d0)^2 <= g^2/(2 mu), with the DEFICIT in closed")$
+print("        form: the box never loosens the bound, and how much it tightens it is measurable")$
+print("STEP 3b a lever the gradient itself holds against a bound has dhat = 0, and there")$
+print("        gap = ", ratsimp( subst(dd = 0, q(dd)) ), " -- EXACTLY zero, not small.")$
+print("        Result 6's bound reports g^2/(2 mu) > 0 at that same point: it charges regret to a")$
+print("        coordinate that cannot move, which is Result 13's frozen control seen from the")$
+print("        certificate side")$
+print("STEP 3c gap >= 0 always, because d = 0 is feasible (aa <= 0 <= bb) and q(0) = 0;")$
+print("        q(0) =", q(0), " (0)")$
+
+/* ===== STEP 4: the modulus may vanish and the bound survives ===== */
+
+print("=== STEP 4: mu -> 0 degrades the bound to the Frank-Wolfe gap, not to infinity ===")$
+
+print("STEP 4a q(d) <= -g*d, since (mu/2)d^2 >= 0; the linear part is the Frank-Wolfe gap")$
+print("        fw = max{-g*d : aa <= d <= bb} = max(-g*aa, -g*bb), finite on a BOUNDED box")$
+print("STEP 4b take g < 0, so the clip sits at dhat = bb whenever mu <= -g/bb -- i.e. for every")$
+print("        small enough modulus.  The value there at mu = 0 is")$
+print("        subst(mu = 0, -g*bb - (mu/2)bb^2) =", subst(mu = 0, -gg*bb - (mu/2)*bb^2),
+      " = fw, and the approach is LINEAR in mu, deficit =",
+      ratsimp( (-gg*bb) - (-gg*bb - (mu/2)*bb^2) ))$
+print("STEP 4c Result 6's bound over the same range is O(1/mu).  Its ratio to fw is")$
+print("        (g^2/(2 mu))/(-g*bb) =", ratsimp( (gg^2/(2*mu))/(-gg*bb) ),
+      " -- unbounded as mu -> 0.")$
+print("        This is the whole point of L3.2: Result 13's collapsing modulus destroys the")$
+print("        unconstrained certificate and leaves the constrained one finite")$
+print("STEP 4d the gap is NON-INCREASING in mu, so a conservative (smaller) modulus is a LARGER")$
+print("        bound and never an invalid one.  Interior branch: d/dmu [g^2/(2mu)] =",
+      ratsimp(diff(gg^2/(2*mu), mu)), " (<= 0);")$
+print("        clipped branch, dhat fixed at a bound: d/dmu [-g*dhat - (mu/2)dhat^2] =",
+      diff(-gg*dd - (mu/2)*dd^2, mu), " (<= 0)")$
+
+/* ===== STEP 5: the box separates, so the bound attributes to levers ===== */
+
+print("=== STEP 5: a product of intervals separates the maximum coordinatewise ===")$
+
+pair : -g1*e1 - (mu/2)*e1^2 - g2*e2 - (mu/2)*e2^2$
+print("STEP 5a the joint objective over (e1, e2) is",
+      ratsimp( pair - ( (-g1*e1 - (mu/2)*e1^2) + (-g2*e2 - (mu/2)*e2^2) ) ),
+      " away from the sum of the two single-coordinate ones (0)")$
+print("STEP 5b so max over the RECTANGLE = sum of the per-coordinate maxima, and the bound is a")$
+print("        SUM OF NONNEGATIVE PER-LEVER TERMS: the worst-case regret is attributable.  A")$
+print("        general convex set does not separate; a box of lever bounds does, which is exactly")$
+print("        the feasible set chc.decision.Lever declares")$
+
+/* ===== STEP 6: tight where Result 6's bound is worst ===== */
+
+print("=== STEP 6: at a constrained optimum the gap is 0 and Result 6's bound is not ===")$
+
+print("STEP 6a take J(u) = (mu/2)(u - us)^2 with the unconstrained optimum us OUTSIDE the box,")$
+print("        so the constrained optimum is the nearer bound U = bb0 and the true regret is 0")$
+print("STEP 6b g = dJ/du at U =", diff((mu/2)*(uu - us)^2, uu), " -> mu*(bb0 - us)")$
+print("STEP 6c Result 6's bound there is g^2/(2 mu) =",
+      ratsimp( (mu*(bb0 - us))^2/(2*mu) ), " -- nonzero regret at the OPTIMUM")$
+print("STEP 6d the gap's maximiser is d0 = -g/mu = us - bb0, which points OUT of the box, so")$
+print("        dhat = 0 and gap =", ratsimp( subst(dd = 0, -mu*(bb0-us)*dd - (mu/2)*dd^2) ), " (0).")$
+print("        The ratio between the two bounds at that point is unbounded: it grows as the")$
+print("        unconstrained optimum recedes from the box")$
+
+/* ===== STEP 7: where the modulus comes from when J is exactly quadratic ===== */
+
+print("=== STEP 7: for a linear plant the objective IS quadratic and mu is not an estimate ===")$
+
+Bm : matrix([b11, b12], [b21, b22])$
+Qm : matrix([q1, 0], [0, q2])$
+Rm : matrix([r1, 0], [0, r2])$
+Hm : ratsimp( transpose(Bm) . Qm . Bm + Rm )$
+print("STEP 7a a plant affine in U gives J(U) = (1/2)U'HU + c'U + k with H = B'QB + R =", Hm)$
+print("STEP 7b H - R =", ratsimp(Hm - Rm), " = B'QB, which is PSD whenever Q is, so")$
+print("        lambda_min(H) >= lambda_min(R): the lever prices alone give a VALID modulus with no")$
+print("        eigenvalue solve, and STEP 4d says using it only loosens the bound")$
+print("STEP 7c with a nonlinear plant J is not quadratic and mu is an estimate over the box; the")$
+print("        certificate reports which of the two it used rather than silently mixing them")$
+
+print("================================================================")$
+print("STEPs 1-7 complete; residuals at 1a, 2c, 3a, 3c, 5a, 6d are 0")$
+print("================================================================")$

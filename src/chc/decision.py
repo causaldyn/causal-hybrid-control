@@ -45,7 +45,13 @@ from chc.dynamics_id import CausalDynamicsFit, Integrator, fit_causal_residual
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.lqr import linearize_continuous
 from chc.panel import Panel, Provenance
-from chc.plan import CausalPlan, CertificateStatus, causal_plan, certify_safety
+from chc.plan import (
+    CausalPlan,
+    CertificateStatus,
+    causal_plan,
+    certify_safety,
+    plan_regret_bound,
+)
 
 SCHEMA_VERSION = 1
 """``to_json``'s schema version. Bumped when a field changes meaning, not when one is added."""
@@ -178,6 +184,12 @@ class DecisionCertificate:
     # not one of the solver's three. Same convention as the certified-horizon fields above.
     solver_status: SolverStatus | None
     solver_iterations: int
+    # How far the plan can be from the best one the SAME BOX allows (Result 69), certified from its
+    # own gradient with no optimum needed. ``inf`` means the objective was not convex over the box,
+    # so nothing certifies it; ``None`` means no plan was solved at all. This is a gap in the
+    # PLANNING objective -- how far the planning model is from the plant is the tube's question,
+    # and the two must not be added.
+    regret_bound: float | None
 
     @property
     def trustworthy_steps(self) -> int:
@@ -322,6 +334,7 @@ class Prescription:
                 "solver_status": certificate.solver_status,
                 "solver_iterations": certificate.solver_iterations,
                 "trustworthy_steps": certificate.trustworthy_steps,
+                "regret_bound": certificate.regret_bound,
             },
             "provenance": self.provenance.to_json(),
         }
@@ -475,6 +488,7 @@ def prescribe(
                 gamma_star=None,
                 solver_status=None,
                 solver_iterations=0,
+                regret_bound=None,
             ),
             model_fit=fit,
             provenance=panel.provenance,
@@ -496,10 +510,11 @@ def prescribe(
     u_max = float(jnp.max(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))))
 
     started = time.perf_counter()
+    planning_cost = _cost(states, levers, target)
     plan = causal_plan(
         model,
         start,
-        _cost(states, levers, target),
+        planning_cost,
         dt,
         horizon,
         u_lo,
@@ -528,6 +543,7 @@ def prescribe(
         if barrier is None
         else certify_safety(plan, model, barrier, dt, gamma=gamma, u_max=u_max)
     )
+    regret = plan_regret_bound(plan, model, start, planning_cost, dt, u_lo, u_hi, probes=4)
     certificate = DecisionCertificate(
         identification=identification,
         adjustment=resolved,
@@ -539,6 +555,7 @@ def prescribe(
         gamma_star=None if safety is None else safety.gamma_star,
         solver_status=plan.solver_status,
         solver_iterations=plan.solver_iterations,
+        regret_bound=regret.bound,
     )
     _log.info(
         "decision certified",
@@ -548,6 +565,7 @@ def prescribe(
             "gamma_star": certificate.gamma_star,
             "barrier_certified_steps": certificate.barrier_certified_steps,
             "trustworthy_steps": certificate.trustworthy_steps,
+            "regret_bound": certificate.regret_bound,
         },
     )
     return Prescription(
