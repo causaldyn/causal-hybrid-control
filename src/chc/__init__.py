@@ -49,6 +49,7 @@ from chc.causal import (
 )
 from chc.control import (
     Bound,
+    LinearConstraint,
     NLPSolverCertificate,
     SolverComparison,
     SolverResult,
@@ -584,6 +585,7 @@ __all__ = [
     "LQMeanFieldGame",
     "LaggedGraph",
     "Lever",
+    "LinearConstraint",
     "LinearDynamics",
     "LipschitzCertificate",
     "LipschitzResidual",

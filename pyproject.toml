@@ -89,6 +89,7 @@ include = [
     "/validation",
     "/notebooks",
     "/scripts",
+    "/docs",
     "/.github",
     "/CHANGELOG.md",
     "/CITATION.cff",

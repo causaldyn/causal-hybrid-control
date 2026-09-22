@@ -18,9 +18,11 @@ promise nothing that was not asked for.
 
 **Three modes, deliberately named apart, because "safety" alone does not say which one you get:**
 
-* **plan** -- :func:`causal_plan`. Box constraints in the solve, plus an *a-priori* Gronwall error
-  tube that says how far ahead the plan may be trusted. The tube is computed from ``lipschitz`` and
-  ``model_error``; it does not enter the objective and does not move a single action.
+* **plan** -- :func:`causal_plan`. Box constraints in the solve -- optionally intersected with
+  linear rows over the whole sequence, such as a budget or a rate limit -- plus an *a-priori*
+  Gronwall error tube that says how far ahead the plan may be trusted. The tube is computed from
+  ``lipschitz`` and ``model_error``; it does not enter the objective and does not move a single
+  action.
 * **audit** -- :func:`certify_safety`. Given a barrier and a sensitivity level ``Gamma``, it prices
   a *finished* plan against §40: where along it the safety guarantee survives unmeasured
   confounding, and the largest ``Gamma`` the whole plan tolerates. Read-only by construction.
@@ -37,7 +39,7 @@ truncation or by the filter, not by the planner. A CBF-QP or barrier-penalised s
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -47,7 +49,13 @@ import numpy as np
 from jax import Array
 
 from chc.barrier import barrier_gamma_star, identification_radius_threshold
-from chc.control import Bound, SolverStatus, broadcast_box, projected_gradient_solve
+from chc.control import (
+    Bound,
+    LinearConstraint,
+    SolverStatus,
+    broadcast_box,
+    projected_gradient_solve,
+)
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
@@ -133,6 +141,7 @@ def causal_plan(
     model_error: float = 0.0,
     tolerance: float = float("inf"),
     steps: int = 10_000,
+    constraints: Sequence[LinearConstraint] = (),
 ) -> CausalPlan:
     """Plan under box constraints, optional offline pessimism, and a certified error tube.
 
@@ -148,6 +157,9 @@ def causal_plan(
             negative ``lipschitz`` is allowed and meaningful -- it is a contractive log-norm (§30),
             and the tube then shrinks.
         tolerance: tube radius above which the plan stops being certified.
+        constraints: linear rows over the whole action sequence
+            (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
+            only by the answer.
 
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
@@ -163,7 +175,9 @@ def causal_plan(
 
     guess = jnp.zeros((horizon, cost.R.shape[0]))
     if support is None:
-        solve = projected_gradient_solve(model, x0, guess, dt, cost, u_lo, u_hi, steps=steps)
+        solve = projected_gradient_solve(
+            model, x0, guess, dt, cost, u_lo, u_hi, steps=steps, constraints=constraints
+        )
     else:
         solve = pessimistic_solve(
             model,
@@ -178,6 +192,7 @@ def causal_plan(
             steps=steps,
             uncertainty=uncertainty,
             lam_unc=lam_unc,
+            constraints=constraints,
         )
     actions = solve.actions
 

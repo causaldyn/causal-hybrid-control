@@ -29,6 +29,7 @@ computed from a channel nothing in the log pins down.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -38,7 +39,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from chc.control import SolverStatus
+from chc.control import LinearConstraint, SolverStatus
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit, Integrator, fit_causal_residual
@@ -101,16 +102,27 @@ class Lever:
 
     ``unit_cost`` is the quadratic price of using it, and defaults to free: with a box constraint a
     free lever is still bounded, so the default is safe rather than merely convenient.
+
+    ``cap_per_step`` bounds how far the lever may move between consecutive planned steps. ``None``
+    lets it jump anywhere in its box from one step to the next, which is a schedule a media plan, a
+    rota or a price list often cannot execute. The move from the level already in force to the
+    first planned step is not capped, since the planner is not told what that level is.
     """
 
     name: str
     lo: float
     hi: float
     unit_cost: float = 0.0
+    cap_per_step: float | None = None
 
     def __post_init__(self) -> None:
         if self.lo > self.hi:
             raise DecisionError(f"lever {self.name!r} has lo={self.lo} above hi={self.hi}")
+        if self.cap_per_step is not None and not self.cap_per_step >= 0.0:
+            raise DecisionError(
+                f"lever {self.name!r} has cap_per_step={self.cap_per_step}; a rate limit is a "
+                "non-negative distance"
+            )
 
 
 @dataclass(frozen=True)
@@ -364,7 +376,9 @@ def prescribe(
             transitions the channel is fitted on; gaps are dropped rather than interpolated, so an
             unbalanced panel is fine and a silently invented row is not.
         levers, target, constraints: the decision, in the domain's own names. States are the target
-            column followed by each constrained column, in that order.
+            column followed by each constrained column, in that order. A lever's
+            ``cap_per_step`` is held by every iterate of the solve; the regret bound stays priced
+            against the box alone, so with a rate limit it is conservative rather than tight.
         adjustment: a :class:`~chc.graph.CausalGraph` to *derive* the adjustment set from, or a
             sequence of column names to *assert* it. Required, and deliberately so --- omitting it
             would default to adjusting for nothing, which is a causal claim, not an absence of one.
@@ -508,6 +522,8 @@ def prescribe(
     u_lo = jnp.array([lever.lo for lever in levers])
     u_hi = jnp.array([lever.hi for lever in levers])
     u_max = float(jnp.max(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))))
+    caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
+    rate = LinearConstraint.rate_limit(horizon, caps)
 
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target)
@@ -522,6 +538,7 @@ def prescribe(
         lipschitz=_log_norm(model, start, n_levers),
         model_error=0.0 if tolerance is None else _model_error(fit, u_max),
         tolerance=float("inf") if tolerance is None else tolerance,
+        constraints=(rate,),
     )
 
     _log.info(
@@ -533,6 +550,9 @@ def prescribe(
             "certificate_status": plan.certificate_status,
             "certified_horizon": plan.certified_horizon,
             "task_cost": plan.task_cost,
+            "rate_limited_levers": [
+                lever.name for lever in levers if lever.cap_per_step is not None
+            ],
             "seconds": time.perf_counter() - started,
         },
     )

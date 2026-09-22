@@ -234,10 +234,36 @@ def test_the_arguments_that_cannot_mean_anything_are_refused() -> None:
         )
     with pytest.raises(ValueError, match="above hi"):
         Lever("incentive", lo=1.0, hi=-1.0)
+    for cap in (-0.1, float("nan")):
+        with pytest.raises(ValueError, match="non-negative distance"):
+            Lever("incentive", lo=-1.0, hi=1.0, cap_per_step=cap)
     with pytest.raises(ValueError, match="bounds nothing"):
         Constraint("wait")
     with pytest.raises(KeyError, match="not in the panel"):
         _prescribe(panel, ("weather",))
+
+
+def test_a_rate_limit_moves_the_schedule_rather_than_annotating_it() -> None:
+    """L3.1: a capped lever changes what is prescribed, and binds where the free plan jumps."""
+    panel = _panel()
+    graph = CausalGraph.from_edges(EDGES)
+    free = np.asarray(_prescribe(panel, graph).schedule.magnitudes)[:, 0]
+    cap = 0.25 * float(np.max(np.abs(np.diff(free))))
+
+    capped = prescribe(
+        panel,
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05, cap_per_step=cap)],
+        target=Target("supply", value=1.0),
+        constraints=[Constraint("wait", hi=0.5)],
+        adjustment=graph,
+        horizon=15,
+        dt=DT,
+        tolerance=0.5,
+    )
+    held = np.abs(np.diff(np.asarray(capped.schedule.magnitudes)[:, 0]))
+    assert held.max() <= cap + 1e-9
+    assert held.max() == pytest.approx(cap, abs=1e-6)  # it binds: without the cap it is 4x this
+    assert capped.certificate.solver_status == "converged"
 
 
 # ---- the operational log: a decision nobody can reconstruct afterwards is not auditable ----
@@ -256,6 +282,8 @@ def test_every_decision_point_leaves_a_structured_record(caplog: pytest.LogCaptu
     fit = caplog.records[_events(caplog).index("fit")]
     assert getattr(fit, "method", None) == "orthogonal"
     assert getattr(fit, "transitions", 0) > 0
+    plan = caplog.records[_events(caplog).index("plan")]
+    assert getattr(plan, "rate_limited_levers", None) == []
 
 
 def test_the_unidentified_path_warns_rather_than_falling_silent(

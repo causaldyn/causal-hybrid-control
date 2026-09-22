@@ -60,6 +60,52 @@ still change).
   clusters, i.e. LESS dependence, not more. Fewer than four decay arms is also refused, since below that
   `hac_r_squared` is `1.0` by construction and says nothing.
 
+- **Linear constraints on the action sequence: budgets and rate limits (L3, L3.1).** Every solver
+  took a box on each action and nothing else, while the plans that get executed carry a total budget
+  and a limit on how far a lever moves per step -- both linear in the flattened actions, neither a
+  box. `LinearConstraint(matrix, lower, upper)` states them over the row-major flattened sequence
+  (step `k`, lever `j` is column `k*m + j`), two-sided with `+-inf` for an absent side, and
+  `LinearConstraint.rate_limit(horizon, caps)` builds the bands. `projected_gradient_solve`,
+  `projected_gradient_control`, `pessimistic_solve`, `pessimistic_control` and `causal_plan` take
+  `constraints=`; `Lever(cap_per_step=...)` carries a rate limit into `prescribe`, whose plan log
+  names the levers it limited. `SolverResult.constraint_violation` reports the returned plan's worst
+  row excess, and `stationarity` is measured against the constrained projection. Calls without
+  constraints take the old code path and return bit-identical results.
+
+  Every iterate stays feasible, so a solve stopped by its step budget still returns a plan that can
+  be executed. Only the projection changed: Dykstra's algorithm onto `box ∩ rows`, with the rows
+  coloured into mutually orthogonal classes projected at once and the box last in every sweep,
+  warm-started from the previous projection's increments; then a dual active-set polish from those
+  increments, kept only if the primal-dual pair passes the projection's KKT conditions. An empty
+  feasible set is refused before the solve by one linear program, since Dykstra cannot detect it.
+
+  Against the alternative -- a Powell-Hestenes-Rockafellar augmented Lagrangian with the box in its
+  inner solve -- under a decision rule registered before the first run: on three plans where both
+  limits bind, the shipped solver lands within a relative `8.9e-8`, `1.3e-8` and `4.7e-10` of the
+  exact or best-of-two reference optimum with violations at rounding, at `1/38` to `1/94` of the
+  augmented Lagrangian's gradient and cost evaluations; the augmented Lagrangian misses the `1e-6`
+  accuracy gate on the oscillator (`4.1e-6`). Against the exact least-distance projection on 3000
+  random polytopes, the shipped projection is at most `4.3e-12` away, and none runs out its sweeps.
+
+  The property test found two defects on the way, both now pinned. Stopping when the iterate stops
+  moving stopped one instance after 31 sweeps at a point breaking a row by `7.8e-2` -- a sweep can
+  hand the iterate back unchanged while the increments still travel -- so the projection stops on the
+  increments (Birgin & Raydan 2005). And near a vertex where one more constraint is nearly active,
+  Dykstra holds the iterate still for thousands of sweeps while an increment drains: 17 of the 3000
+  ran out the cap, up to `2.7e-3` from the projection. A polish on the active set the increments'
+  signs name left 10 of them, and a primal-dual active-set correction 9 -- every one a vertex at
+  which the increments named exactly one constraint too many, so that the set was over-determined
+  and the solve singular. Stepping only as far as the first multiplier that would change sign -- the
+  ratio test of Goldfarb & Idnani (1983) -- releases it. That polish is trusted only through its KKT
+  check, which reads complementary slackness off the multipliers themselves: a check on feasibility
+  and on the signs the method believes it holds accepted points up to `0.91` from the projection
+  when its steps were starved, and `test_the_polish_vouches_only_for_the_projection` holds the line.
+
+  Under a rate limit `plan_regret_bound` is still priced against the box alone, so it is
+  conservative rather than tight. The decision, the registered rule and every number above are in
+  `docs/adr/0001-linear-action-constraints.md`, reproducible by counts with
+  `scripts/bench_linear_constraints.py`.
+
 - **`plan_regret_bound`: how far a finished plan is from the best one the same box allows
   (L3.2).** `DecisionCertificate` shipped with no `regret_bound` because nothing took a
   `CausalPlan`, and the obvious candidate does not survive a box. Result 6's self-certifying

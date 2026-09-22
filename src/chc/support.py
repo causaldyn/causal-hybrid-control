@@ -10,6 +10,7 @@ this module supplies ``D`` and the controller that combines them through the ``P
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 import equinox as eqx
@@ -19,10 +20,18 @@ import numpy as np
 from jax import Array
 
 from chc.control import (
+    Blocks,
     Bound,
+    Duals,
+    LinearConstraint,
     SolverResult,
     _backtrack,
+    _constraint_blocks,
+    _dykstra,
+    _no_duals,
+    _polytope_stationarity,
     _status,
+    _violation,
     broadcast_box,
     check_box,
     project_box,
@@ -82,6 +91,7 @@ def _pessimistic_loop(
     tol: float,
     uncertainty: PenaltyModel | None,
     lam_unc: float,
+    blocks: Blocks = (),
 ) -> tuple[Array, Array, Array]:
     """The penalised descent as one XLA program, mirroring :func:`chc.control`'s shape exactly.
 
@@ -104,26 +114,31 @@ def _pessimistic_loop(
         return task(us) + penalty
 
     grad_aug = jax.grad(augmented)
-    us = jnp.clip(us0, u_lo, u_hi)
+    duals = _no_duals(us0.size, blocks, us0.dtype)
+    if blocks:
+        flat, duals = _dykstra(us0.ravel(), u_lo.ravel(), u_hi.ravel(), blocks, duals)
+        us = flat.reshape(us0.shape)
+    else:
+        us = jnp.clip(us0, u_lo, u_hi)
     initial = augmented(us)
     values = jnp.zeros((steps + 1,), dtype=initial.dtype).at[0].set(task(us))
 
-    def descending(carry: tuple[Array, Array, Array, Array, Array]) -> Array:
-        taken, _, _, _, alive = carry
+    def descending(carry: tuple[Array, Array, Array, Array, Array, Duals]) -> Array:
+        taken, _, _, _, alive, _ = carry
         return jnp.logical_and(taken < steps, alive)
 
     def descend(
-        carry: tuple[Array, Array, Array, Array, Array],
-    ) -> tuple[Array, Array, Array, Array, Array]:
-        taken, us, current, values, _ = carry
-        us, current, accepted = _backtrack(
-            us, current, grad_aug(us), u_lo, u_hi, lr0, tol, augmented
+        carry: tuple[Array, Array, Array, Array, Array, Duals],
+    ) -> tuple[Array, Array, Array, Array, Array, Duals]:
+        taken, us, current, values, _, duals = carry
+        us, current, accepted, duals = _backtrack(
+            us, current, grad_aug(us), u_lo, u_hi, lr0, tol, augmented, blocks, duals
         )
         taken = jnp.where(accepted, taken + 1, taken)
-        return taken, us, current, values.at[taken].set(task(us)), accepted
+        return taken, us, current, values.at[taken].set(task(us)), accepted, duals
 
-    taken, optimised, _, values, _ = jax.lax.while_loop(
-        descending, descend, (jnp.asarray(0), us, initial, values, jnp.asarray(True))
+    taken, optimised, _, values, _, _ = jax.lax.while_loop(
+        descending, descend, (jnp.asarray(0), us, initial, values, jnp.asarray(True), duals)
     )
     return optimised, values, taken
 
@@ -143,18 +158,36 @@ def pessimistic_solve(
     tol: float = 1e-9,
     uncertainty: PenaltyModel | None = None,
     lam_unc: float = 0.0,
+    *,
+    constraints: Sequence[LinearConstraint] = (),
 ) -> SolverResult:
     """:func:`pessimistic_control`, returning why it stopped as well as where.
 
     The stationarity residual is of the **augmented** objective, not the task cost: the penalties
     are what the descent actually minimised, so a residual measured on the task alone would be
-    non-zero at the very point the solver was right to stop.
+    non-zero at the very point the solver was right to stop. With ``constraints`` it projects onto
+    the box and the rows together, as :func:`chc.control.projected_gradient_solve` does.
     """
     lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
     hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
     check_box(lo, hi)
+    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype)
     optimised, values, taken = _pessimistic_loop(
-        model, x0, us0, dt, cost, support, lam_supp, lo, hi, steps, lr0, tol, uncertainty, lam_unc
+        model,
+        x0,
+        us0,
+        dt,
+        cost,
+        support,
+        lam_supp,
+        lo,
+        hi,
+        steps,
+        lr0,
+        tol,
+        uncertainty,
+        lam_unc,
+        blocks,
     )
     iterations = int(taken)
 
@@ -171,7 +204,12 @@ def pessimistic_solve(
         cost_history=jnp.asarray(np.asarray(values)[: iterations + 1].tolist()),
         status=_status(iterations, steps),
         iterations=iterations,
-        stationarity=float(jnp.linalg.norm(optimised - project_box(optimised - gradient, lo, hi))),
+        stationarity=(
+            _polytope_stationarity(optimised, gradient, lo, hi, blocks)
+            if blocks
+            else float(jnp.linalg.norm(optimised - project_box(optimised - gradient, lo, hi)))
+        ),
+        constraint_violation=_violation(optimised, constraints),
     )
 
 
@@ -190,6 +228,8 @@ def pessimistic_control(
     tol: float = 1e-9,
     uncertainty: PenaltyModel | None = None,
     lam_unc: float = 0.0,
+    *,
+    constraints: Sequence[LinearConstraint] = (),
 ) -> tuple[Array, Array]:
     """Projected-gradient OC with an offline-safety penalty ``λ_supp·Σ D + λ_unc·Σ U``.
 
@@ -199,12 +239,14 @@ def pessimistic_control(
     ``01 §4.1``). Returns the optimised controls and the **task**-cost history (penalties excluded,
     so runs at different weights are comparable).
 
-    ``u_lo`` / ``u_hi`` take the same scalar, per-lever or full-schedule forms
-    :func:`chc.control.projected_gradient_control` accepts.
+    ``u_lo`` / ``u_hi`` take the same scalar, per-lever or full-schedule forms, and
+    ``constraints`` the same linear rows, that :func:`chc.control.projected_gradient_control`
+    accepts.
     """
     lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
     hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
     check_box(lo, hi)
+    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype)
     optimised, values, taken = _pessimistic_loop(
         model,
         x0,
@@ -220,5 +262,6 @@ def pessimistic_control(
         tol,
         uncertainty,
         lam_unc,
+        blocks,
     )
     return optimised, jnp.asarray(np.asarray(values)[: int(taken) + 1].tolist())
