@@ -414,7 +414,12 @@ def _action_and_curvature(
     effect: Matrix, state_weight: Matrix, action_weight: Matrix, target: Vector
 ) -> tuple[Vector, Matrix]:
     curvature = effect.T @ state_weight @ effect + action_weight
-    return -np.linalg.solve(curvature, effect.T @ state_weight @ target), curvature
+    # astype, not a cast: numpy's stub for solve on float input is floating[Any] before 2.5, so the
+    # float64 promise has to be made true of the value rather than rest on one interpreter's stub.
+    action = np.linalg.solve(curvature, effect.T @ state_weight @ target).astype(
+        np.float64, copy=False
+    )
+    return -action, curvature
 
 
 def _action_sensitivity(
