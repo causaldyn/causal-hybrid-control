@@ -21,7 +21,7 @@ jobs:
       - name: Install uv
         # Pinned to a full version, not `@v9`: setup-uv dropped its moving major/minor tags in
         # v8.0.0, so `@v9` does not resolve. The other actions here still publish them.
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Sync dependencies
@@ -42,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Sync dependencies
