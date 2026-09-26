@@ -108,3 +108,60 @@ print("STEP 9 taper^2 / floor^2 =", ratsimp(taper_sq/floor_sq),
       " (2 confirms the best 1/sqrt(t) taper sits exactly sqrt(2) above the minimax floor)")$
 print("STEP 9 floor^2 vs c_causal^2 residual =", ratsimp(floor_sq - c_sq),
       " (0 confirms floor_sq is the same constant as STEP 4)")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 10. ATTAINED BY AN ESTIMATOR, NOT ONLY BY A SCHEDULE. STEP 8 shows the burst attains the
+   floor of the REDUCED objective, which charges every round the van Trees floor. An actual policy
+   is charged its estimator's error instead. Take explore-then-commit: n probe rounds at the prior
+   centre theta0 with a probe of CONSTANT magnitude, e_t = s_t*sqrt(M/n) with fair independent signs
+   s_t, then commit to u*(thetahat) with thetahat the least-squares fit of
+   y_t = theta*sqrt(eta)*e_t + noise. With u* affine, u*(theta) = u0 + gp*theta, the probe's energy
+   is deterministic whatever the signs, so thetahat is unbiased with variance
+   sigma2/(eta*sum e_t^2) = sigma2/(eta*M) EXACTLY; the fair signs remove the cross term between the
+   probe and the planned action's bias; and with K = A*gp^2, c = eta/sigma2, d = theta - theta0 the
+   regret is, exactly,
+       E R_T = n*K*d^2 + A*M + (T - n)*K/(c*M).
+   Check the probe's energy first, at n = 3 with arbitrary signs: */
+etc_probe : [s1*sqrt(M/3), s2*sqrt(M/3), s3*sqrt(M/3)]$
+print("STEP 10 sum of e_t^2 with signs +-1 minus M =",
+      ratsimp(subst([s1^2 = 1, s2^2 = 1, s3^2 = 1], expand(sum(etc_probe[i]^2, i, 1, 3))) - M),
+      " (0: a constant-magnitude probe delivers exactly the budgeted information)")$
+etc_regret : n*K*d^2 + A*M + (T - n)*K/(c*M)$
+/* Sqrt-free: write the optimal budget as M = q with A*q^2 = K*(T - n)/c. */
+etc_first_order : ratsimp( subst(K = A*c*q^2/(T - n), diff(etc_regret, M)) )$
+print("STEP 10 dR/dM at M = q, A q^2 = K (T-n)/c:", ratsimp(subst(M = q, etc_first_order)),
+      " (0: q is the optimal budget)")$
+etc_at_q : ratsimp( subst([M = q, K = A*c*q^2/(T - n)], etc_regret) )$
+print("STEP 10 R(q) - [2*A*q + n*K*d^2] =",
+      ratsimp( etc_at_q - (2*A*q + n*(A*c*q^2/(T - n))*d^2) ),
+      " (0: the commit phase costs exactly what the probe did)")$
+print("STEP 10 (2*A*q)^2 - c_causal^2*(T - n) with K = A*gp^2, c = eta/sigma2 =",
+      ratsimp( subst([K = A*gp^2, c = eta/sigma2], 4*A^2*(K*(T - n)/(A*c)) - c_sq*(T - n)) ),
+      " (0: the leading term IS c_causal*sqrt(T - n))")$
+print("        So sup over |theta - theta0| <= H*T^(-1/4) of E R_T is c_causal*sqrt(T - n) +",
+      " n*K*H^2/sqrt(T): the constant is attained by a policy, and is therefore sharp.")$
+
+/* ---------------------------------------------------------------------------------------------
+   STEP 11. THE SAME BUDGET AS GAUSSIAN DITHER IS NOT THE SAME DESIGN. The reduced objective sees a
+   probe only through its variance; least squares sees its realised energy. With e_t ~ N(0, M/n),
+   sum e_t^2 = (M/n)*chi2_n, and E[1/chi2_n] = 1/(n - 2) for n > 2 and +inf for n <= 2. Check the
+   inverse chi-square mean through the Gamma integral in n = 2*a + 2 (analytic in a, so declaring a
+   non-integer only stops Maxima asking), and at the integers n = 3..12 directly: */
+assume(a_chi > 0)$
+declare(a_chi, noninteger)$
+inv_chi2 : integrate(x^(a_chi - 1)*exp(-x/2), x, 0, inf) / (2^(a_chi + 1)*gamma(a_chi + 1))$
+print("STEP 11 E[1/chi2_n] - 1/(n - 2), n = 2a + 2 =",
+      ratsimp( makegamma(minfactorial(makefact(inv_chi2))) - 1/(2*a_chi) ))$
+print("STEP 11 the same at n = 3..12 =",
+      ratsimp( makelist(integrate(x^(j/2 - 2)*exp(-x/2), x, 0, inf)/(2^(j/2)*gamma(j/2))
+                        - 1/(j - 2), j, 3, 12) ))$
+/* So the commit phase costs n/(n - 2) times STEP 10's. At STEP 10's budget the total is
+   A*q*(1 + n/(n - 2)) against 2*A*q, a factor (n - 1)/(n - 2); re-optimising the budget for the
+   inflated variance gives sqrt(n/(n - 2)) instead (squares compared, sqrt-free): */
+print("STEP 11 [A q (1 + n/(n-2))] / [2 A q] - (n-1)/(n-2) =",
+      ratsimp( A*q*(1 + n/(n - 2))/(2*A*q) - (n - 1)/(n - 2) ))$
+print("STEP 11 re-optimised: [2 sqrt(A K (T-n) n/(c (n-2)))]^2 / [2 sqrt(A K (T-n)/c)]^2 - n/(n-2) =",
+      ratsimp( (4*A*K*(T - n)*n/(c*(n - 2))) / (4*A*K*(T - n)/c) - n/(n - 2) ))$
+print("        n = 1 and n = 2 make the affine regret infinite. On a bounded u* the estimate is",
+      " clipped instead: n = 1 costs order T^(3/4) and n = 2 order sqrt(T)*log(T) -- the RATE is",
+      " lost, not the constant. A cap forces n = M/cap, of order sqrt(T), which removes the factor.")$

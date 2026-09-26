@@ -9,6 +9,36 @@ still change).
 
 ### Added
 
+- **The capped-exploration optimum for a whole objective class, and the exploration floor attained
+  by an estimator rather than a schedule (P3).** Two gaps paper P3 would have been refereed on.
+
+  `proofs/greedy_fill.v` proves, at every horizon, that the greedy fill -- each round at its cap
+  until the total is spent -- costs no more than any feasible schedule of the same total, for
+  **every** estimation term that is a sum of non-increasing functions of the information delivered
+  before each round, and strictly less when it delivers strictly more before a strictly decreasing
+  term. Results 56 and 66 had proved the exchange of two rounds for the one term `K/(I0 + c S)` and
+  left the `T`-round step to Maxima and the certificate, on the grounds that Stdlib has no
+  schedules. It needs none: every feasible prefix sum is at most `min(M, C_t)`, the greedy fill
+  attains that at every `t` at once, and nothing else is used -- no convexity, and not the form of
+  the term. A budget constrains only the total, so it changes which total is optimal and never the
+  shape. 16 lemmas on Stdlib's classical reals and nothing else; an exhaustive check over 458,899
+  schedules on a grid at `T = 3`, with random non-convex step functions, found nothing cheaper.
+
+  `validation/minimax_exploration.mac` STEPs 10-11. `minimax_exploration_certificate` shows that a
+  front-loaded *schedule* attains `c_causal sqrt(T)` of the reduced objective, which charges every
+  round the van Trees floor. STEP 10 shows a *policy* does: explore-then-commit with a
+  constant-magnitude probe `s_t sqrt(M/n)`, fair signs, and least squares has regret
+  `n K d^2 + A M + (T - n) K/(c M)` exactly when `u*` is affine, hence `c_causal sqrt(T - n) +
+  n K d^2` at the optimal budget -- the committed rounds costing exactly what the probe did. STEP 11:
+  the same budget as Gaussian dither is not the same design, because least squares sees the probe's
+  realised energy and `E[1/chi2_n] = 1/(n - 2)`: a factor `(n - 1)/(n - 2)`, and for `n <= 2` an
+  infinite regret. On the certificate's own non-affine plant (Table 6 of `causaldyn-bench`'s
+  `just paper-3`) the constant probe reaches `0.9929 +- 0.0030` of the floor at `T = 1e7`, while one
+  round of dither loses the rate: its regret grows with slope `0.752`, not `1/2`, because the bounded
+  `u*` clips an estimate whose variance is infinite.
+
+  No numeric behaviour changed.
+
 - **`cross_cluster_mixing_certificate`: the cluster rate does not need independent clusters (A3').**
   `multichannel_control_certificate` and `clustered_lower_bound_certificate` both draw independent
   clusters, so everything downstream of them rested on partial interference with independent groups
