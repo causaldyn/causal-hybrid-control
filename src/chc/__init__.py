@@ -215,7 +215,7 @@ from chc.mmm import (
     adstock_dynamics,
     run_marketing_mix,
 )
-from chc.mpc import mpc_control
+from chc.mpc import RecedingHorizon, mpc_control
 from chc.network_causal import (
     ConfoundedNetworkSystem,
     DelayedNetworkPanel,
@@ -641,6 +641,7 @@ __all__ = [
     "QuadraticCost",
     "RLearner",
     "ReachableTube",
+    "RecedingHorizon",
     "RegretCurve",
     "RobustDelayDesign",
     "SafetyCertificate",

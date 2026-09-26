@@ -62,6 +62,12 @@ uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.1
 uv run pytest      # 670 passed, 2 skipped (tigramite, lightgbm: bring-your-own-env)
 ```
 
+**GPU.** There is no `chc[cuda]` extra, on purpose: `uv.lock` pins the CPU `jaxlib`, and a CUDA
+wheel there would install CUDA for every user. Add JAX's CUDA build to the environment that uses
+chc -- `pip install causal-hybrid-control "jax[cuda13]"`, or `cuda12`, whichever your driver
+supports -- and JAX places arrays on the GPU; chc has no GPU-specific code. In a development
+checkout keep it in a separate environment, because `uv sync` removes what the lock does not list.
+
 ## Quickstart
 
 From a panel of logs to a certified schedule, in one call. The causal assumption is a **required**
@@ -121,6 +127,26 @@ xs, us = mpc_control(
 )  # closed-loop MPC; u_lo/u_hi also take a per-lever array when the actuators differ
 ```
 
+Online, where the plant is the world rather than a simulation, `RecedingHorizon` plans from each
+measured state and returns the whole `causal_plan` -- actions, tube and audit together:
+
+```python
+from chc import BarrierConstraint, RecedingHorizon
+
+floor = BarrierConstraint(lambda x: x[1] + 0.8, alpha=2.0)  # built once, not per step
+controller = RecedingHorizon(model, cost, dt=0.1, horizon=20, u_lo=-5.0, u_hi=5.0, barrier=floor)
+plan = controller.step(x)  # every step: read plan.safety, then apply plan.actions[0]
+```
+
+Each step starts from the last plan and the barrier's multipliers, shifted one step on -- 35 % fewer
+descent steps than cold solves on an oscillator's velocity floor, for the same closed-loop cost to
+`2e-6` (`docs/adr/0003-receding-horizon-warm-starts.md`). A program compiles the first time a step
+needs it and is reused after, so steps stop compiling as long as the model, the cost and the
+barrier's function stay the same objects: a new `lambda` per step compiles the descent per step.
+For a process that restarts, set `jax_compilation_cache_dir` and lower
+`jax_persistent_cache_min_compile_time_secs` to 0 -- at its default of one second JAX wrote none of
+a first step's programs to disk.
+
 ## Example notebooks
 
 Worked, executed notebooks (figures + tables) under [`notebooks/`](notebooks/) — open in JupyterLab
@@ -147,7 +173,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 | sensitivity | `adjoint` | discrete adjoint (verified == autodiff == finite differences) |
 | classical OC | `lqr` | LQR / AKOR (Riccati) — the `r_θ→0` limit and correctness baseline |
 | identification | `train`, `dynamics_id`, `causal`, `estimators`, `gmethods`, `frames` | system ID (one/multi-step); pluggable effect backend — adjustment, **IV/2SLS**, **DML**, sensitivity, refutation, + optional **EconML/DoWhy** adapters; Robins' **g-formula** (cross-fitted) for a treatment *sequence* under time-varying confounding. `dynamics_id` is the one that makes the *plant* causal: prediction-error fitting learns the **observational** control channel, so under a confounded logging policy the planner inherits the bias (measured: channel `0.02` where the truth is `1.0`). `fit_causal_residual` estimates it by Robinson partialling-out lifted to a state-dependent matrix — channel error `0.002`, control regret `0.014` against the biased fit's `6.41` — or by 2SLS when the confounder is never logged, at a real variance premium (`0.10` error, regret `0.13`, because the shifter explains only 18% of the action). Reports `identified=False` instead of a confident wrong answer when nothing in the log can pin it down. Data goes in as a mapping of arrays, a **pandas** frame or a **polars** frame — `frames.as_columns` recognises a frame structurally and normalises once at the boundary, so neither library is a dependency of the wheel. `uv run python scripts/dynamics_id_demo.py` |
-| control | `cost`, `control`, `mpc`, `splitting`, `plan` | Bolza objective; projected-gradient OC and a bound-constrained quasi-Newton (`lbfgs_box_control`) sharing the same discrete-adjoint gradient, with `box_stationarity` as the reference-free convergence measure; receding-horizon MPC; **Strang–Marchuk** splitting; `causal_plan` — the one-call spine returning a plan *with* its uncertainty tube and certified horizon attached. Three modes are named apart on purpose: **plan** (`causal_plan`, the box and linear constraints — budgets, rate limits — in the solve, and with `barrier=` the audit's own condition held by augmented-Lagrangian rounds), **audit** (`certify_safety`, read-only on a finished plan), **filter** (`robust_safety_filter`, one action at a time, online). The tube never enters the *objective* and a barrier does only when given one; even then the verdict is the audit's, which the plan carries as `plan.safety`, because a solve stopped by its budget can come back short of the condition; with no error model supplied the certificate reports `not_evaluated` rather than a vacuous full-horizon pass |
+| control | `cost`, `control`, `mpc`, `splitting`, `plan` | Bolza objective; projected-gradient OC and a bound-constrained quasi-Newton (`lbfgs_box_control`) sharing the same discrete-adjoint gradient, with `box_stationarity` as the reference-free convergence measure; receding-horizon MPC (`mpc_control` against a simulated plant, `RecedingHorizon.step(x)` online: one `causal_plan` per measured state, warm-started from the last plan and its barrier multipliers); **Strang–Marchuk** splitting; `causal_plan` — the one-call spine returning a plan *with* its uncertainty tube and certified horizon attached. Three modes are named apart on purpose: **plan** (`causal_plan`, the box and linear constraints — budgets, rate limits — in the solve, and with `barrier=` the audit's own condition held by augmented-Lagrangian rounds), **audit** (`certify_safety`, read-only on a finished plan), **filter** (`robust_safety_filter`, one action at a time, online). The tube never enters the *objective* and a barrier does only when given one; even then the verdict is the audit's, which the plan carries as `plan.safety`, because a solve stopped by its budget can come back short of the condition; with no error model supplied the certificate reports `not_evaluated` rather than a vacuous full-horizon pass |
 | offline safety | `support`, `offpolicy`, `uncertainty` | pessimism penalty; IPS/SNIPS off-policy value + overlap gate; **calibrated** deep-ensemble + split-conformal uncertainty; a **time-consistent nested-CVaR** aggregation of that disagreement (the risk-neutral sum averages one very bad step away); **Wasserstein-1 DRO** distribution-shift margin; **certified rollout tubes** (Lipschitz / contractive-log-norm Grönwall bounds → time-varying uncertainty tube, safety-tightening, certified-safe horizon), **Rocq-proved**. The ensemble trains as one sharded program (`vmap` over a member axis, `lax.scan` over the Adam steps, `NamedSharding` over the device mesh) rather than K sequential fits — 3.6× on one device, 10.3× over an 8-device mesh at K=8, agreeing with the serial recursion to 232 ULP |
 | guarantee | `regret` | LQ certainty-equivalence bound — quadratic in model error (Dean–Mania–Tu–Recht–Matni); **interference-aware regret certificate** (extra exposure-map-error term), **machine-checked in Rocq**; the **van Trees floor on control regret** — `multivariate_action_floor` for a matrix effect, where the bound is a trace and confounding is priced by *alignment* with `du*/dθ` rather than by a ratio; and `capped_exploration_policy`, which takes a per-round cap **schedule** and a spending **budget** and stops on a delivered exploration *mass* rather than a round count |
 | sensitivity-aware control | `sensitivity` (facade over `regret`, `uncertainty`, `barrier`) | **control under HIDDEN CONFOUNDING**: bounded-density-ratio (MSM) CVaR worst-case → pessimism-radius inflation; the confounding-regret floor is *second-order* in the effect bias; a **minimax controller** that shifts the gain under asymmetric (over/under-shoot) loss and beats certainty-equivalence — now a **closed-loop** controller on a confounded dynamic plant (bounds the worst-case downside, 82% cheaper over 30 steps), plus a `ConfoundingRobustPenalty` that carries the sensitivity radius into the general pessimistic-control stack — all **Rocq-certified**. `Γ` itself is **calibrated before it is spent**: `benchmark_gamma` prices it in units of the confounding the observed covariates carry (an exponent, `log Γ / log Γ_strongest`, because odds ratios compose) and `negative_control_gamma` inverts a known-null outcome for the smallest `Γ` that reconciles it — a *lower bound* on the confounding present, or `inf` when the model class is refuted instead. `chc.sensitivity` is the one-import surface (calibrate→radius→control) |
@@ -203,7 +229,7 @@ one; the ones that answer both are papers, not packages.
 | **EconML** | heterogeneous treatment effects, DML/DR/orthogonal forests | yes, for a **static** treatment; this is the estimator family CHC lifts to a matrix | no | confidence intervals | MIT |
 | **DCBO** | sequential interventions in a time-varying SCM | yes, by GP emulation over an SCM | yes, a sequence of interventions | regret empirics, no feasibility guarantee | **GPL-3.0**, research code, not on PyPI |
 | **Google Meridian** | Bayesian marketing-mix modelling | partially — priors and geo experiments calibrate it; the estimand is the media response | yes, budget optimisation | posterior intervals | Apache-2.0 |
-| **do-mpc** | robust and economic nonlinear MPC | **no** — the model is yours and assumed correct | yes, and more general constraints than CHC's linear ones on the actions: nonlinear, and on the state | robust multi-stage MPC guarantees, under a correct model | **LGPL-3.0** |
+| **do-mpc** | robust and economic nonlinear MPC | **no** — the model is yours and assumed correct | yes, and more general constraints than CHC's: nonlinear path constraints on the state itself, where CHC holds linear rows on the actions and a barrier's decay condition | robust multi-stage MPC guarantees, under a correct model | **LGPL-3.0** |
 | **d3rlpy** | offline deep RL from logged trajectories | no — conservatism bounds value error, not confounding | yes, a policy | pessimistic value bounds | MIT |
 | **causaLens `decisionOS`** | enterprise causal decision platform | yes, per its own account | yes | not publicly auditable | commercial, closed |
 

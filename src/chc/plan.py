@@ -50,6 +50,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from numpy.typing import NDArray
 
 from chc.barrier import barrier_gamma_star, identification_radius_threshold
 from chc.control import (
@@ -81,6 +82,10 @@ _PENALTY_RANGE = 1e8  # how far the penalty may grow past its start before the r
 
 _log = logging.getLogger(__name__)
 """Barrier rounds of :func:`causal_plan`, keyed by ``chc_event`` as in :mod:`chc.decision`."""
+
+# Compiled once here: an eager ``lax.scan`` is traced and compiled afresh on every call, which a
+# replanning loop would pay at every step.
+_trajectory = eqx.filter_jit(rollout)
 
 
 @dataclass(frozen=True)
@@ -191,6 +196,7 @@ def causal_plan(
     steps: int = 10_000,
     constraints: Sequence[LinearConstraint] = (),
     barrier: BarrierConstraint | None = None,
+    warm_start: Array | None = None,
 ) -> CausalPlan:
     """Plan under box constraints, optional offline pessimism, and a certified error tube.
 
@@ -217,12 +223,71 @@ def causal_plan(
             uses. A barrier the unconstrained plan already clears changes no action, even when
             that solve stopped on its budget. ``steps`` then caps each descent, of which there are
             at most ``1 + _BARRIER_ROUNDS``.
+        warm_start: the ``(horizon, m)`` actions the descent starts from, zeros when omitted --
+            typically the last plan shifted one step, which :class:`chc.mpc.RecedingHorizon` passes
+            along with the barrier's multipliers. It is projected onto the box and the rows before
+            the first step, so it need not be admissible. It moves where the solve starts, and so
+            what a solve stopped by ``steps`` returns; a solve that converges on a problem with one
+            minimiser lands on it from any start.
 
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
             silently drop it -- the pessimistic solver is the only consumer of that argument; if
-            ``model_error`` is negative, which is not an error budget; or if a barrier is given
-            with a box that admits no action but zero, which leaves nothing to price it with.
+            ``model_error`` is negative, which is not an error budget; if a barrier is given with
+            a box that admits no action but zero, which leaves nothing to price it with; or if
+            ``warm_start`` is not a finite ``(horizon, m)`` array.
+    """
+    plan, _ = _plan(
+        model,
+        x0,
+        cost,
+        dt,
+        horizon,
+        u_lo,
+        u_hi,
+        support=support,
+        lam_supp=lam_supp,
+        uncertainty=uncertainty,
+        lam_unc=lam_unc,
+        lipschitz=lipschitz,
+        model_error=model_error,
+        tolerance=tolerance,
+        steps=steps,
+        constraints=constraints,
+        barrier=barrier,
+        warm_start=warm_start,
+        multipliers=None,
+    )
+    return plan
+
+
+def _plan(
+    model: Dynamics,
+    x0: Array,
+    cost: QuadraticCost,
+    dt: float,
+    horizon: int,
+    u_lo: Bound,
+    u_hi: Bound,
+    *,
+    support: SupportModel | None,
+    lam_supp: float,
+    uncertainty: PenaltyModel | None,
+    lam_unc: float,
+    lipschitz: float,
+    model_error: float,
+    tolerance: float,
+    steps: int,
+    constraints: Sequence[LinearConstraint],
+    barrier: BarrierConstraint | None,
+    warm_start: Array | NDArray[np.float64] | None,
+    multipliers: NDArray[np.float64] | None,
+) -> tuple[CausalPlan, NDArray[np.float64] | None]:
+    """:func:`causal_plan`, with the barrier's multipliers passed in and handed back.
+
+    What a receding horizon carries from one plan to the next besides the actions: ``multipliers``
+    seed the barrier rounds in place of zeros, and the rounds' last come back -- zeros where the
+    barrier was slack, ``None`` with no barrier.
     """
     if uncertainty is not None and support is None:
         raise ValueError("uncertainty penalty requires a support model; it is unused without one")
@@ -237,6 +302,16 @@ def causal_plan(
         )
 
     guess = jnp.zeros((horizon, cost.R.shape[0]))
+    if warm_start is not None:
+        start = np.asarray(warm_start, dtype=np.float64)
+        if start.shape != guess.shape:
+            raise ValueError(
+                f"warm_start has shape {start.shape}, but a plan is {guess.shape}: one row per "
+                "step, one column per lever"
+            )
+        if not np.isfinite(start).all():
+            raise ValueError("warm_start has a non-finite entry, and the descent would start there")
+        guess = jax.device_put(start.astype(guess.dtype))  # converted on the host: no compilation
     if support is None:
         solve = projected_gradient_solve(
             model, x0, guess, dt, cost, u_lo, u_hi, steps=steps, constraints=constraints
@@ -259,7 +334,7 @@ def causal_plan(
         )
     actions, status, iterations = solve.actions, solve.status, solve.iterations
     if barrier is not None:
-        actions, status, iterations = _hold_barrier(
+        actions, status, iterations, multipliers = _hold_barrier(
             model,
             x0,
             cost,
@@ -274,13 +349,14 @@ def causal_plan(
             uncertainty=uncertainty,
             lam_unc=lam_unc,
             steps=steps,
+            multipliers=multipliers,
         )
 
     lipschitz_seq, error_seq = [lipschitz] * horizon, [model_error] * horizon
     evaluated = model_error > 0.0
     plan = CausalPlan(
         actions=actions,
-        trajectory=rollout(model, x0, actions, dt),
+        trajectory=_trajectory(model, x0, actions, dt),
         task_cost=float(total_cost(model, x0, actions, dt, cost)),
         uncertainty_tube=(
             time_varying_rollout_bound(lipschitz_seq, error_seq, dt) if evaluated else None
@@ -292,7 +368,7 @@ def causal_plan(
         solver_iterations=iterations,
     )
     if barrier is None:
-        return plan
+        return plan, None
     audit = certify_safety(
         plan,
         model,
@@ -303,7 +379,7 @@ def causal_plan(
         cvar_gap=barrier.cvar_gap,
         u_max=authority,
     )
-    return replace(plan, safety=audit)
+    return replace(plan, safety=audit), multipliers
 
 
 class _HeldBarrier(eqx.Module):
@@ -375,7 +451,8 @@ def _hold_barrier(
     uncertainty: PenaltyModel | None,
     lam_unc: float,
     steps: int,
-) -> tuple[Array, SolverStatus, int]:
+    multipliers: NDArray[np.float64] | None,
+) -> tuple[Array, SolverStatus, int, NDArray[np.float64]]:
     """Hold ``barrier`` by augmented-Lagrangian rounds started from the unconstrained ``start``.
 
     Each round minimises the plan's own objective plus ``sum(max(0, lam + rho c)^2 - lam^2)/2 rho``
@@ -391,9 +468,14 @@ def _hold_barrier(
     and rounding alone would then fail the audit about half the time. A ``start`` that clears the
     shifted condition is returned untouched, which is what makes a slack barrier free.
 
+    ``multipliers`` seed the rounds in place of zeros -- a receding horizon's last, shifted. The
+    penalty is chosen afresh all the same: one grown for the last state left the first round
+    ill-conditioned, and cost more descent steps than warm multipliers saved.
+
     Returns:
         The actions, the status -- ``converged`` for the rounds' own rule, ``max_iterations``
-        otherwise -- and the accepted descent steps over every descent, ``start``'s included.
+        otherwise -- the accepted descent steps over every descent, ``start``'s included, and the
+        multipliers the rounds ended with: zeros when ``start`` came back untouched.
     """
     actions = start.actions
     lo = broadcast_box(u_lo, actions.shape, "u_lo", actions.dtype)
@@ -416,9 +498,9 @@ def _hold_barrier(
     backoff = _BARRIER_BACKOFF * float(scale)
     excess = np.asarray(shortfall, dtype=np.float64) + backoff
     if float(np.max(excess)) <= 0.0:
-        return actions, start.status, start.iterations
+        return actions, start.status, start.iterations, np.zeros_like(excess)
 
-    task = float(start.cost_history[-1])
+    task = float(np.asarray(start.cost_history)[-1])  # on the host: indexing compiles per length
     weight = float(
         np.clip(
             10.0
@@ -429,7 +511,7 @@ def _hold_barrier(
         )
     )
     ceiling = weight * _PENALTY_RANGE
-    multipliers = np.zeros_like(excess)
+    multipliers = np.zeros_like(excess) if multipliers is None else multipliers
     status: SolverStatus = "max_iterations"
     iterations, rounds = start.iterations, 0
     measure, previous = math.inf, math.inf
@@ -497,7 +579,7 @@ def _hold_barrier(
             "active_steps": int(np.sum(multipliers > 0.0)),
         },
     )
-    return actions, status, iterations
+    return actions, status, iterations, multipliers
 
 
 @dataclass(frozen=True)

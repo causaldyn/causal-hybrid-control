@@ -645,6 +645,16 @@ def _status(iterations: int, steps: int) -> SolverStatus:
     return "max_iterations" if iterations >= steps else "converged"
 
 
+def _history(values: Array, taken: int) -> Array:
+    """The accepted prefix of the cost buffer, as the default float dtype, converted on the host.
+
+    ``jnp.asarray`` of a Python list compiles a conversion for every new length, and the length is
+    the step count, so a replanning loop compiled one per replan.
+    """
+    prefix = np.asarray(values)[: taken + 1]
+    return jax.device_put(prefix.astype(jax.dtypes.canonicalize_dtype(np.float64)))
+
+
 def projected_gradient_solve(
     dyn: Dynamics,
     x0: Array,
@@ -681,7 +691,7 @@ def projected_gradient_solve(
     iterations = int(taken)
     return SolverResult(
         actions=optimised,
-        cost_history=jnp.asarray(np.asarray(values)[: iterations + 1].tolist()),
+        cost_history=_history(values, iterations),
         status=_status(iterations, steps),
         iterations=iterations,
         stationarity=(
@@ -738,7 +748,7 @@ def projected_gradient_control(
     optimised, values, taken = _projected_gradient_loop(
         dyn, x0, us0, dt, cost, lo, hi, steps, lr0, tol, blocks
     )
-    return optimised, jnp.asarray(np.asarray(values)[: int(taken) + 1].tolist())
+    return optimised, _history(values, int(taken))
 
 
 def lbfgs_box_control(

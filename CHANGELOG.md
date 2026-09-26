@@ -142,6 +142,44 @@ still change).
   measured alternatives and the mutation check of the tests are in
   `docs/adr/0002-barrier-in-the-solve.md`.
 
+- **A receding horizon warm-started from its last plan: `RecedingHorizon.step(x)`, and
+  `causal_plan(warm_start=...)` (L3).** `chc.mpc.RecedingHorizon` holds `causal_plan`'s arguments
+  and plans from each measured state; `step` returns the whole `CausalPlan`, so the audit reaches
+  the caller with the action it covers. Each step starts the descent from the last plan shifted one
+  step, and a held barrier's rounds from their last multipliers shifted the same way, under a
+  penalty chosen afresh; the barrier-free solve still runs first, so a slack barrier still changes
+  no action. `causal_plan(warm_start=...)` is the actions half, for a caller's own loop; the start
+  is projected onto the box and the rows before the first step, so it need not be admissible.
+
+  Counted in descent steps over closed loops of ADR 0002's barrier instances -- 40 steps of an
+  oscillator under velocity floors of `0.8` and `0.3`, 60 of SIR under a capacity limit -- the
+  controller takes 35 %, 36 % and 3 % fewer than cold solves at the default cap, with the realised
+  cost within `2e-6` of theirs. The multipliers are most of it where the barrier binds: the shifted
+  actions alone save 21 %, 2 %, and on SIR cost 4 % more. At a 100-step cap the controller saves
+  29 %, 15 %, and costs 5 % more on SIR, and its closed loop costs within `5e-6` of the converged
+  one's, where the cold loop's costs 0.26 % more on the looser floor. Carrying the grown penalty
+  over as well was measured and rejected: the next rounds stalled 12 % to 112 % above the optimum
+  while reporting `converged`.
+
+  **Replanning compiles nothing.** Each `causal_plan` call compiled two to five programs afresh:
+  the cost history, built from a Python list whose length is the step count; the last cost, read
+  by indexing on the device; the trajectory's eager `lax.scan`; and `pessimistic_solve`'s
+  stationarity gradient, a closure re-traced per call. The conversions now run on the host and the
+  two programs compile once, and a test holds three steps of a controller to zero compilations,
+  with the caches cleared first. Across 70 outputs of the solvers and plans in both precisions every
+  value is bit-identical to before except `pessimistic_solve`'s `stationarity`, which moved by
+  `3e-13` relative in `float64` and `4e-5` in `float32`, where the residual's cancellation amplifies
+  the gradient's last bits. A barrier passed as a new `lambda` each call still compiles the descent
+  each call; the controller holds one. Across processes JAX's persistent cache needs its threshold
+  lowered as well as its directory set: at the default one second it wrote none of a first step's
+  programs, and at `jax_persistent_cache_min_compile_time_secs = 0` a second process loaded all 73
+  compile requests from disk.
+
+  Each step is one `causal_plan`, so nothing outside its horizon carries over: a budget row caps
+  each window rather than the run, and a rate limit does not reach back to the action already
+  applied. The decision, the table and the rejected alternatives are in
+  `docs/adr/0003-receding-horizon-warm-starts.md`.
+
 - **`plan_regret_bound`: how far a finished plan is from the best one the same box allows
   (L3.2).** `DecisionCertificate` shipped with no `regret_bound` because nothing took a
   `CausalPlan`, and the obvious candidate does not survive a box. Result 6's self-certifying

@@ -16,7 +16,6 @@ from typing import Protocol
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import Array
 
 from chc.control import (
@@ -28,6 +27,7 @@ from chc.control import (
     _backtrack,
     _constraint_blocks,
     _dykstra,
+    _history,
     _no_duals,
     _polytope_stationarity,
     _status,
@@ -75,6 +75,30 @@ class SupportModel(eqx.Module):
         return jnp.sum(jax.vmap(self.squared_distance)(xs, us))
 
 
+def _augmented(
+    model: Dynamics,
+    x0: Array,
+    us: Array,
+    dt: float,
+    cost: QuadraticCost,
+    support: SupportModel | None,
+    lam_supp: float,
+    uncertainty: PenaltyModel | None,
+    lam_unc: float,
+) -> Array:
+    """The task cost plus the weighted penalties: what the pessimistic descent minimises."""
+    xs = rollout(model, x0, us, dt)
+    penalty = 0.0 if support is None else lam_supp * support.penalty_trajectory(xs[:-1], us)
+    if uncertainty is not None:
+        penalty = penalty + lam_unc * uncertainty.penalty_trajectory(xs[:-1], us)
+    return total_cost(model, x0, us, dt, cost) + penalty
+
+
+# Compiled once at module level: a gradient of a closure built per solve re-traced the rollout's
+# scan and compiled it afresh on every call.
+_augmented_gradient = eqx.filter_jit(jax.grad(_augmented, argnums=2))
+
+
 @eqx.filter_jit
 def _pessimistic_loop(
     model: Dynamics,
@@ -109,11 +133,7 @@ def _pessimistic_loop(
         return total_cost(model, x0, us, dt, cost)
 
     def augmented(us: Array) -> Array:
-        xs = rollout(model, x0, us, dt)
-        penalty = 0.0 if support is None else lam_supp * support.penalty_trajectory(xs[:-1], us)
-        if uncertainty is not None:
-            penalty = penalty + lam_unc * uncertainty.penalty_trajectory(xs[:-1], us)
-        return task(us) + penalty
+        return _augmented(model, x0, us, dt, cost, support, lam_supp, uncertainty, lam_unc)
 
     grad_aug = jax.grad(augmented)
     duals = _no_duals(us0.size, blocks, us0.dtype)
@@ -192,18 +212,12 @@ def pessimistic_solve(
         blocks,
     )
     iterations = int(taken)
-
-    def augmented(us: Array) -> Array:
-        xs = rollout(model, x0, us, dt)
-        penalty = lam_supp * support.penalty_trajectory(xs[:-1], us)
-        if uncertainty is not None:
-            penalty = penalty + lam_unc * uncertainty.penalty_trajectory(xs[:-1], us)
-        return total_cost(model, x0, us, dt, cost) + penalty
-
-    gradient = jax.grad(augmented)(optimised)
+    gradient = _augmented_gradient(
+        model, x0, optimised, dt, cost, support, lam_supp, uncertainty, lam_unc
+    )
     return SolverResult(
         actions=optimised,
-        cost_history=jnp.asarray(np.asarray(values)[: iterations + 1].tolist()),
+        cost_history=_history(values, iterations),
         status=_status(iterations, steps),
         iterations=iterations,
         stationarity=(
@@ -266,4 +280,4 @@ def pessimistic_control(
         lam_unc,
         blocks,
     )
-    return optimised, jnp.asarray(np.asarray(values)[: int(taken) + 1].tolist())
+    return optimised, _history(values, int(taken))
