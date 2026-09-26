@@ -106,6 +106,42 @@ still change).
   `docs/adr/0001-linear-action-constraints.md`, reproducible by counts with
   `scripts/bench_linear_constraints.py`.
 
+- **The barrier condition held inside the solve: `causal_plan(barrier=...)` (L3).**
+  `certify_safety` audits a finished plan against the worst-case control-barrier condition
+  `grad h . xdot >= -alpha h` over the identified set, and until now that was all anything did with
+  it: a plan could come back and fail its own audit, and the only enforcement was truncation or the
+  one-step filter. `BarrierConstraint(barrier, alpha, gamma, cvar_gap)` carries the audit's
+  arguments into `causal_plan`, which holds the condition at every planned step by
+  Powell-Hestenes-Rockafellar augmented-Lagrangian rounds around the same descent -- one multiplier
+  per step, the box and the linear rows kept in the descent's projection, the plan's support and
+  uncertainty penalties kept in its objective, and the safeguards of Birgin & Martinez (2014). The
+  audit stays the source of truth: `CausalPlan.safety` is `certify_safety` run on the finished
+  plan, and the solve and the audit form the condition through one shared helper.
+  `prescribe(hold_constraints=True)` hands its constraints to the solve the same way; it is off by
+  default, so no existing schedule moves.
+
+  The rounds aim a relative `1e-6` inside the condition, because an active step solved exactly sits
+  on the boundary, where rounding alone fails the audit about half the time -- measured rather than
+  supposed: the one-step filter clips onto that boundary, and fails its audit by at most `1.7e-16`
+  on 16 of 40 steps. Against the exact QP optimum, or the better of SLSQP and trust-constr, on a
+  two-state plant, an oscillator's velocity floor at `gamma = 1` and `2`, and a capacity limit on
+  SIR, the held plan certifies every step where the barrier-free plan meets the condition at 7 of
+  12, 34 and 32 of 40, and 72 of 100 steps, and it costs `2.5e-7`, `7.0e-6`, `2.2e-5` and `6.1e-6`
+  above the optimum, relative. A smaller back-off buys a smaller gap and stops converging on SIR;
+  filtering the free plan instead costs `1.84` and `1.64` above the optimum on the oscillator; a
+  quadratic penalty without the multipliers reaches the same plans at a penalty two to five decades
+  larger, converging on SIR only at its ceiling. A barrier the free plan already clears changes no
+  action, status or iteration count, even when that solve stopped on its budget.
+
+  Only the answer is held, not every iterate: a budget-stopped solve, or a condition no admissible
+  action can meet, comes back short, and the audit says so rather than anything raising. Where
+  `grad h = 0` at a planned step -- a constant barrier, a ball at its centre -- `certify_safety`
+  cannot price a radius and raises, as it did before; `causal_plan(barrier=...)` inherits that and
+  raises after the solve. `certify_safety` is bit-identical to before on 51 audits in both
+  precisions, and `chc.support`'s penalised descent now accepts `support=None`. The decision, the
+  measured alternatives and the mutation check of the tests are in
+  `docs/adr/0002-barrier-in-the-solve.md`.
+
 - **`plan_regret_bound`: how far a finished plan is from the best one the same box allows
   (L3.2).** `DecisionCertificate` shipped with no `regret_bound` because nothing took a
   `CausalPlan`, and the obvious candidate does not survive a box. Result 6's self-certifying

@@ -20,6 +20,7 @@ from chc.decision import (
     DecisionError,
     Lever,
     NotIdentifiedError,
+    Prescription,
     Target,
     prescribe,
 )
@@ -232,6 +233,16 @@ def test_the_arguments_that_cannot_mean_anything_are_refused() -> None:
             horizon=3,
             dt=DT,
         )
+    with pytest.raises(ValueError, match="no constraint was given to hold"):
+        prescribe(
+            panel,
+            levers=[Lever("incentive", -1.0, 1.0)],
+            target=Target("supply", 1.0),
+            hold_constraints=True,
+            adjustment=graph,
+            horizon=3,
+            dt=DT,
+        )
     with pytest.raises(ValueError, match="above hi"):
         Lever("incentive", lo=1.0, hi=-1.0)
     for cap in (-0.1, float("nan")):
@@ -266,6 +277,38 @@ def test_a_rate_limit_moves_the_schedule_rather_than_annotating_it() -> None:
     assert capped.certificate.solver_status == "converged"
 
 
+def test_held_constraints_move_the_schedule_rather_than_fail_its_audit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``wait >= -0.1`` binds: the incentive that lifts supply drains wait below it from step 0."""
+    panel = _panel()
+    graph = CausalGraph.from_edges(EDGES)
+
+    def decide(hold: bool) -> Prescription:
+        return prescribe(
+            panel,
+            levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+            target=Target("supply", value=1.0),
+            constraints=[Constraint("wait", lo=-0.1)],
+            hold_constraints=hold,
+            adjustment=graph,
+            horizon=15,
+            dt=DT,
+            tolerance=0.5,
+        )
+
+    audited = decide(False)
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
+        held = decide(True)
+    assert audited.certificate.barrier_certified_steps == 0
+    assert held.certificate.barrier_certified_steps == 15
+    assert held.certificate.solver_status == "converged"
+    assert held.plan is not None
+    assert float(np.min(np.asarray(held.plan.trajectory)[:, 1])) >= -0.1  # states: supply, wait
+    plan = caplog.records[_events(caplog).index("plan")]
+    assert getattr(plan, "constraints_held", None) is True
+
+
 # ---- the operational log: a decision nobody can reconstruct afterwards is not auditable ----
 
 
@@ -284,6 +327,7 @@ def test_every_decision_point_leaves_a_structured_record(caplog: pytest.LogCaptu
     assert getattr(fit, "transitions", 0) > 0
     plan = caplog.records[_events(caplog).index("plan")]
     assert getattr(plan, "rate_limited_levers", None) == []
+    assert getattr(plan, "constraints_held", None) is False
 
 
 def test_the_unidentified_path_warns_rather_than_falling_silent(

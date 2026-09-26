@@ -82,7 +82,7 @@ def _pessimistic_loop(
     us0: Array,
     dt: float,
     cost: QuadraticCost,
-    support: SupportModel,
+    support: SupportModel | None,
     lam_supp: float,
     u_lo: Array,
     u_hi: Array,
@@ -100,7 +100,9 @@ def _pessimistic_loop(
     augmented gradient every solve instead of once per problem shape.
 
     Acceptance is on the *augmented* cost and the recorded history is the *task* cost, so both are
-    carried through the loop -- runs at different penalty weights stay comparable.
+    carried through the loop -- runs at different penalty weights stay comparable. ``support`` may
+    be ``None``: :func:`chc.plan.causal_plan` runs its barrier rounds through this descent with a
+    penalty of their own and no support model.
     """
 
     def task(us: Array) -> Array:
@@ -108,7 +110,7 @@ def _pessimistic_loop(
 
     def augmented(us: Array) -> Array:
         xs = rollout(model, x0, us, dt)
-        penalty = lam_supp * support.penalty_trajectory(xs[:-1], us)
+        penalty = 0.0 if support is None else lam_supp * support.penalty_trajectory(xs[:-1], us)
         if uncertainty is not None:
             penalty = penalty + lam_unc * uncertainty.penalty_trajectory(xs[:-1], us)
         return task(us) + penalty

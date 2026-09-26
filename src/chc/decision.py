@@ -47,6 +47,7 @@ from chc.graph import AdjustmentSet, CausalGraph
 from chc.lqr import linearize_continuous
 from chc.panel import Panel, Provenance
 from chc.plan import (
+    BarrierConstraint,
     CausalPlan,
     CertificateStatus,
     causal_plan,
@@ -360,6 +361,7 @@ def prescribe(
     horizon: int,
     adjustment: CausalGraph | Sequence[str],
     constraints: Sequence[Constraint] = (),
+    hold_constraints: bool = False,
     known: Dynamics | None = None,
     dt: float = 1.0,
     gamma: float = 1.0,
@@ -379,6 +381,13 @@ def prescribe(
             column followed by each constrained column, in that order. A lever's
             ``cap_per_step`` is held by every iterate of the solve; the regret bound stays priced
             against the box alone, so with a rate limit it is conservative rather than tight.
+        hold_constraints: hold ``constraints`` inside the solve, as the barrier condition
+            :func:`chc.plan.certify_safety` audits at ``gamma``
+            (:class:`chc.plan.BarrierConstraint`), rather than only price the plan against them.
+            Off by default, so no existing schedule moves; the certificate reads the same audit
+            either way, and it is still the verdict -- a solve stopped by its budget can come back
+            short of the condition. The regret bound then includes what holding cost, since it is
+            still priced against the box alone.
         adjustment: a :class:`~chc.graph.CausalGraph` to *derive* the adjustment set from, or a
             sequence of column names to *assert* it. Required, and deliberately so --- omitting it
             would default to adjusting for nothing, which is a causal claim, not an absence of one.
@@ -386,7 +395,8 @@ def prescribe(
             vector field is the fitted residual.
         dt: the time step one panel period represents.
         gamma: the sensitivity level the barrier is priced at (§40), passed to
-            :func:`chc.plan.certify_safety`. It prices the plan; it does not change it.
+            :func:`chc.plan.certify_safety`. It prices the plan, and changes it only under
+            ``hold_constraints``.
         tolerance: the trajectory error above which the plan stops being certified. **Omitting it
             switches the tube off** rather than setting it to infinity: this library cannot know
             how much error a caller accepts, and a certificate with an infinite tolerance passes
@@ -409,7 +419,8 @@ def prescribe(
 
     Raises:
         DecisionError: the decision is mis-specified --- no lever, a column named as both target and
-            constraint, or a panel with no consecutive pair of periods to fit a transition on.
+            constraint, constraints to hold with none given, or a panel with no consecutive pair of
+            periods to fit a transition on.
         KeyError: a lever, target, constraint or asserted covariate names a column the panel does
             not have. The message lists the panel's columns.
 
@@ -422,6 +433,8 @@ def prescribe(
         raise DecisionError(
             "prescribe needs at least one lever; there is nothing to decide otherwise"
         )
+    if hold_constraints and not constraints:
+        raise DecisionError("hold_constraints was set, but no constraint was given to hold")
     states = (target.name, *(constraint.state for constraint in constraints))
     if len(set(states)) != len(states):
         raise DecisionError(f"a column is both target and constraint: {states}")
@@ -525,6 +538,13 @@ def prescribe(
     caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
     rate = LinearConstraint.rate_limit(horizon, caps)
 
+    barrier = _barrier(states, constraints)
+    held = (
+        BarrierConstraint(barrier, gamma=gamma)
+        if hold_constraints and barrier is not None
+        else None
+    )
+
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target)
     plan = causal_plan(
@@ -539,6 +559,7 @@ def prescribe(
         model_error=0.0 if tolerance is None else _model_error(fit, u_max),
         tolerance=float("inf") if tolerance is None else tolerance,
         constraints=(rate,),
+        barrier=held,
     )
 
     _log.info(
@@ -553,11 +574,11 @@ def prescribe(
             "rate_limited_levers": [
                 lever.name for lever in levers if lever.cap_per_step is not None
             ],
+            "constraints_held": held is not None,
             "seconds": time.perf_counter() - started,
         },
     )
 
-    barrier = _barrier(states, constraints)
     safety = (
         None
         if barrier is None

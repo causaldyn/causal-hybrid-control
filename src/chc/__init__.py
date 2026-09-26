@@ -10,9 +10,10 @@ whole chain -- confounded logs to certified plan -- as one decision.
 Two distinctions the API deliberately keeps visible rather than smoothing over. Fitting a residual
 by prediction error is not identifying it: under a confounded logging policy that recovers the
 observational control response, and `chc.dynamics_id` is the module that recovers the interventional
-one. And "safety" names three different operations -- **plan** (`causal_plan`), **audit**
-(`certify_safety`), **filter** (`robust_safety_filter`) -- of which only the last changes an action;
-see `chc.plan` for what that does and does not promise.
+one. And "safety" names three different operations -- **plan** (`causal_plan`, which holds a
+barrier in the solve only when handed one), **audit** (`certify_safety`, read-only), **filter**
+(`robust_safety_filter`, one action at a time) -- and the audit's verdict is the one to read, even
+on a plan solved under the barrier; see `chc.plan` for what each does and does not promise.
 """
 
 from __future__ import annotations
@@ -237,6 +238,7 @@ from chc.pathway import (
     causal_pathway_certificate,
 )
 from chc.plan import (
+    BarrierConstraint,
     CausalPlan,
     CertificateStatus,
     ModulusSource,
@@ -493,6 +495,7 @@ __all__ = [
     "BanditCausalCurve",
     "BangBangResult",
     "BarrierConfoundingCurve",
+    "BarrierConstraint",
     "BarrierReachabilityGap",
     "Bound",
     "CappedExplorationPolicy",

@@ -22,27 +22,30 @@ promise nothing that was not asked for.
   linear rows over the whole sequence, such as a budget or a rate limit -- plus an *a-priori*
   Gronwall error tube that says how far ahead the plan may be trusted. The tube is computed from
   ``lipschitz`` and ``model_error``; it does not enter the objective and does not move a single
-  action.
+  action. A :class:`BarrierConstraint` does: passed as ``barrier=``, the audit's own condition is
+  held in the solve by augmented-Lagrangian rounds (``docs/adr/0002-barrier-in-the-solve.md``).
 * **audit** -- :func:`certify_safety`. Given a barrier and a sensitivity level ``Gamma``, it prices
   a *finished* plan against §40: where along it the safety guarantee survives unmeasured
   confounding, and the largest ``Gamma`` the whole plan tolerates. Read-only by construction.
-* **filter** -- :func:`chc.barrier.robust_safety_filter`. The only mode that changes an action: it
-  clips one nominal action into the certified interval at one state, online, scalar control.
+* **filter** -- :func:`chc.barrier.robust_safety_filter`. It clips one nominal action into the
+  certified interval at one state, online, scalar control.
 
-What does **not** exist here is a state-constrained solve: no barrier, tube or ``h(x) >= 0``
-requirement is imposed *inside* the optimisation, so :func:`causal_plan` can return a plan whose
-audit fails and whose tube leaves tolerance at step 3. That is why the audit is a separate call and
-why :attr:`CausalPlan.certified_actions` exists -- the enforcement happens after the fact, by
-truncation or by the filter, not by the planner. A CBF-QP or barrier-penalised solve is future work.
+A held barrier binds the *answer*, not every iterate as the box and the rows do, and the solver's
+word is not taken for it: a solve stopped by its budget, or a condition no admissible action can
+meet, comes back short of the condition, and :attr:`CausalPlan.safety` -- the audit, run on the
+finished plan -- says so. The tube is still never imposed inside the optimisation, so a plan can
+leave tolerance at step 3; that is why :attr:`CausalPlan.certified_actions` exists.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -52,14 +55,17 @@ from chc.barrier import barrier_gamma_star, identification_radius_threshold
 from chc.control import (
     Bound,
     LinearConstraint,
+    SolverResult,
     SolverStatus,
+    _constraint_blocks,
     broadcast_box,
+    check_box,
     projected_gradient_solve,
 )
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
-from chc.support import PenaltyModel, SupportModel, pessimistic_solve
+from chc.support import PenaltyModel, SupportModel, _pessimistic_loop, pessimistic_solve
 from chc.uncertainty import (
     certified_horizon,
     confounding_robust_inflation,
@@ -67,6 +73,14 @@ from chc.uncertainty import (
 )
 
 CertificateStatus = Literal["not_evaluated", "uncertified", "partial", "certified"]
+
+_BARRIER_BACKOFF = 1e-6  # how far inside the condition the solve aims, relative to its terms
+_BARRIER_ROUNDS = 30  # augmented-Lagrangian rounds, each one descent of at most ``steps``
+_PENALTY_GROWTH = 10.0  # applied when a round fails to halve the shortfall
+_PENALTY_RANGE = 1e8  # how far the penalty may grow past its start before the rounds give up
+
+_log = logging.getLogger(__name__)
+"""Barrier rounds of :func:`causal_plan`, keyed by ``chc_event`` as in :mod:`chc.decision`."""
 
 
 @dataclass(frozen=True)
@@ -93,6 +107,10 @@ class CausalPlan:
     certified_horizon: int | None  # last step inside ``tolerance``; None if not evaluated
     solver_status: SolverStatus  # why the descent stopped -- see :data:`chc.control.SolverStatus`
     solver_iterations: int  # accepted descent steps
+    # :func:`certify_safety` run on this plan against the barrier it was solved under; None when no
+    # barrier was given. The verdict to read, not the solve's: the rounds aim inside the condition,
+    # but a budget-stopped or infeasible solve can come back short of it.
+    safety: SafetyCertificate | None = None
 
     @property
     def certificate_status(self) -> CertificateStatus:
@@ -124,6 +142,36 @@ class CausalPlan:
         return self.actions[: self.certified_horizon]
 
 
+@dataclass(frozen=True)
+class BarrierConstraint:
+    """``grad h . xdot >= -alpha * h`` at every planned step, against every effect the data allow.
+
+    The condition :func:`certify_safety` audits, handed to :func:`causal_plan` to hold in the solve
+    rather than to price after it. ``barrier`` is ``h`` -- safe where ``h >= 0``, a JAX-traceable
+    scalar function; ``alpha`` is the class-K gain; ``gamma`` and ``cvar_gap`` set the
+    identification radius ``(gamma-1)/(gamma+1) * cvar_gap`` on the effect, so the condition is the
+    worst case over the identified set and ``gamma = 1`` is the ordinary CBF condition. The defaults
+    and the calibration burden on ``cvar_gap`` are :func:`certify_safety`'s.
+
+    Raises:
+        ValueError: on ``gamma < 1``, which is not a sensitivity level, or ``cvar_gap <= 0``, which
+            scales no radius -- here, rather than after the solve that would have used them.
+    """
+
+    barrier: Callable[[Array], Array]
+    alpha: float = 1.0
+    gamma: float = 1.0
+    cvar_gap: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not self.gamma >= 1.0:
+            raise ValueError(f"gamma is a sensitivity level and must be >= 1, got {self.gamma}")
+        if not self.cvar_gap > 0.0:
+            raise ValueError(
+                f"cvar_gap must be positive to scale a sensitivity radius, got {self.cvar_gap}"
+            )
+
+
 def causal_plan(
     model: Dynamics,
     x0: Array,
@@ -142,6 +190,7 @@ def causal_plan(
     tolerance: float = float("inf"),
     steps: int = 10_000,
     constraints: Sequence[LinearConstraint] = (),
+    barrier: BarrierConstraint | None = None,
 ) -> CausalPlan:
     """Plan under box constraints, optional offline pessimism, and a certified error tube.
 
@@ -160,17 +209,31 @@ def causal_plan(
         constraints: linear rows over the whole action sequence
             (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
             only by the answer.
+        barrier: a condition to hold at every planned step (:class:`BarrierConstraint`), by
+            augmented-Lagrangian rounds around the same descent. Unlike ``constraints`` it binds the
+            answer, not every iterate, and the plan comes back with :attr:`CausalPlan.safety` --
+            :func:`certify_safety` run on the finished plan, the verdict to read. Its ``gamma_star``
+            is priced at the largest magnitude any lever may take, the budget :func:`chc.prescribe`
+            uses. A barrier the unconstrained plan already clears changes no action, even when
+            that solve stopped on its budget. ``steps`` then caps each descent, of which there are
+            at most ``1 + _BARRIER_ROUNDS``.
 
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
-            silently drop it -- the pessimistic solver is the only consumer of that argument; or if
-            ``model_error`` is negative, which is not an error budget.
+            silently drop it -- the pessimistic solver is the only consumer of that argument; if
+            ``model_error`` is negative, which is not an error budget; or if a barrier is given
+            with a box that admits no action but zero, which leaves nothing to price it with.
     """
     if uncertainty is not None and support is None:
         raise ValueError("uncertainty penalty requires a support model; it is unused without one")
     if model_error < 0.0:
         raise ValueError(
             f"model_error is a per-step error budget and cannot be negative: {model_error}"
+        )
+    authority = float(np.max(np.maximum(np.abs(np.asarray(u_lo)), np.abs(np.asarray(u_hi)))))
+    if barrier is not None and not authority > 0.0:
+        raise ValueError(
+            f"a barrier needs a box that admits a nonzero action; the largest is {authority}"
         )
 
     guess = jnp.zeros((horizon, cost.R.shape[0]))
@@ -194,11 +257,28 @@ def causal_plan(
             lam_unc=lam_unc,
             constraints=constraints,
         )
-    actions = solve.actions
+    actions, status, iterations = solve.actions, solve.status, solve.iterations
+    if barrier is not None:
+        actions, status, iterations = _hold_barrier(
+            model,
+            x0,
+            cost,
+            dt,
+            u_lo,
+            u_hi,
+            constraints,
+            barrier,
+            solve,
+            support=support,
+            lam_supp=lam_supp,
+            uncertainty=uncertainty,
+            lam_unc=lam_unc,
+            steps=steps,
+        )
 
     lipschitz_seq, error_seq = [lipschitz] * horizon, [model_error] * horizon
     evaluated = model_error > 0.0
-    return CausalPlan(
+    plan = CausalPlan(
         actions=actions,
         trajectory=rollout(model, x0, actions, dt),
         task_cost=float(total_cost(model, x0, actions, dt, cost)),
@@ -208,9 +288,216 @@ def causal_plan(
         certified_horizon=(
             certified_horizon(lipschitz_seq, error_seq, dt, tolerance) if evaluated else None
         ),
-        solver_status=solve.status,
-        solver_iterations=solve.iterations,
+        solver_status=status,
+        solver_iterations=iterations,
     )
+    if barrier is None:
+        return plan
+    audit = certify_safety(
+        plan,
+        model,
+        barrier.barrier,
+        dt,
+        alpha=barrier.alpha,
+        gamma=barrier.gamma,
+        cvar_gap=barrier.cvar_gap,
+        u_max=authority,
+    )
+    return replace(plan, safety=audit)
+
+
+class _HeldBarrier(eqx.Module):
+    """The barrier condition as a Powell-Hestenes-Rockafellar term: one multiplier per step.
+
+    It is a :class:`~chc.support.PenaltyModel`, so the penalised descent of :mod:`chc.support`
+    minimises it unchanged. That descent has one penalty slot besides the support model's, so
+    ``rest`` carries the uncertainty penalty the plan may already have.
+    """
+
+    model: Dynamics
+    barrier: Callable[[Array], Array] = eqx.field(static=True)
+    dt: float = eqx.field(static=True)
+    alpha: float = eqx.field(static=True)
+    delta: float = eqx.field(static=True)
+    multipliers: Array
+    weight: Array
+    backoff: Array
+    rest: PenaltyModel | None = None
+    rest_weight: float = eqx.field(static=True, default=0.0)
+
+    def shortfall(self, states: Array, actions: Array) -> Array:
+        """``-alpha h - (a + <w, u> - d ||u||)`` per step: positive where the audit fails."""
+        h_values, grad_norm, drift, channel = _barrier_terms(
+            self.model, self.barrier, states, actions, self.dt
+        )
+        return -self.alpha * h_values - _guaranteed(drift, channel, grad_norm, actions, self.delta)
+
+    def scale(self, states: Array, actions: Array) -> Array:
+        """The largest term of the condition over the plan: what rounding in it is relative to."""
+        h_values, grad_norm, drift, channel = _barrier_terms(
+            self.model, self.barrier, states, actions, self.dt
+        )
+        push = jnp.einsum("km,km->k", channel, actions)
+        spread = self.delta * grad_norm * _norm(actions)
+        return jnp.max(jnp.abs(self.alpha * h_values) + jnp.abs(drift) + jnp.abs(push) + spread)
+
+    def penalty_trajectory(self, xs: Array, us: Array) -> Array:
+        excess = self.shortfall(xs, us) + self.backoff
+        shifted = jnp.maximum(0.0, self.multipliers + self.weight * excess)
+        term = jnp.sum(shifted**2 - self.multipliers**2) / (2.0 * self.weight)
+        if self.rest is not None:
+            term = term + self.rest_weight * self.rest.penalty_trajectory(xs, us)
+        return term
+
+
+@eqx.filter_jit
+def _barrier_state(
+    model: Dynamics, x0: Array, actions: Array, dt: float, held: _HeldBarrier
+) -> tuple[Array, Array]:
+    """``(scale, shortfall)`` of the condition along the plan -- one compiled call per round."""
+    states = rollout(model, x0, actions, dt)[:-1]
+    return held.scale(states, actions), held.shortfall(states, actions)
+
+
+def _hold_barrier(
+    model: Dynamics,
+    x0: Array,
+    cost: QuadraticCost,
+    dt: float,
+    u_lo: Bound,
+    u_hi: Bound,
+    constraints: Sequence[LinearConstraint],
+    barrier: BarrierConstraint,
+    start: SolverResult,
+    *,
+    support: SupportModel | None,
+    lam_supp: float,
+    uncertainty: PenaltyModel | None,
+    lam_unc: float,
+    steps: int,
+) -> tuple[Array, SolverStatus, int]:
+    """Hold ``barrier`` by augmented-Lagrangian rounds started from the unconstrained ``start``.
+
+    Each round minimises the plan's own objective plus ``sum(max(0, lam + rho c)^2 - lam^2)/2 rho``
+    over the same box and rows by the same descent, ``c`` being the per-step shortfall of the
+    condition :func:`certify_safety` audits; then ``lam <- max(0, lam + rho c)``, and ``rho`` grows
+    tenfold whenever a round fails to halve ``max |max(c, -lam/rho)|``, the measure of infeasibility
+    and complementarity together. Scheme and starting penalty are the safeguarded ones of Birgin &
+    Martinez (2014); rounds stop once the measure is within half the back-off and the round's
+    descent stopped on its own rule, or when ``rho`` would pass ``_PENALTY_RANGE`` times its start.
+
+    ``c`` carries a back-off of ``_BARRIER_BACKOFF`` times the condition's largest term at
+    ``start``, so the rounds settle inside the condition: an active step solved exactly sits on it,
+    and rounding alone would then fail the audit about half the time. A ``start`` that clears the
+    shifted condition is returned untouched, which is what makes a slack barrier free.
+
+    Returns:
+        The actions, the status -- ``converged`` for the rounds' own rule, ``max_iterations``
+        otherwise -- and the accepted descent steps over every descent, ``start``'s included.
+    """
+    actions = start.actions
+    lo = broadcast_box(u_lo, actions.shape, "u_lo", actions.dtype)
+    hi = broadcast_box(u_hi, actions.shape, "u_hi", actions.dtype)
+    check_box(lo, hi)
+    blocks = _constraint_blocks(constraints, lo, hi, actions.dtype)
+    held = _HeldBarrier(
+        model=model,
+        barrier=barrier.barrier,
+        dt=dt,
+        alpha=barrier.alpha,
+        delta=confounding_robust_inflation(barrier.cvar_gap, 0.0, barrier.gamma),
+        multipliers=jnp.zeros(actions.shape[0], actions.dtype),
+        weight=jnp.asarray(1.0, actions.dtype),
+        backoff=jnp.asarray(0.0, actions.dtype),
+        rest=uncertainty,
+        rest_weight=lam_unc,
+    )
+    scale, shortfall = _barrier_state(model, x0, actions, dt, held)
+    backoff = _BARRIER_BACKOFF * float(scale)
+    excess = np.asarray(shortfall, dtype=np.float64) + backoff
+    if float(np.max(excess)) <= 0.0:
+        return actions, start.status, start.iterations
+
+    task = float(start.cost_history[-1])
+    weight = float(
+        np.clip(
+            10.0
+            * max(1.0, abs(task))
+            / max(1.0, 0.5 * float(np.sum(np.maximum(excess, 0.0) ** 2))),
+            1e-8,
+            1e8,
+        )
+    )
+    ceiling = weight * _PENALTY_RANGE
+    multipliers = np.zeros_like(excess)
+    status: SolverStatus = "max_iterations"
+    iterations, rounds = start.iterations, 0
+    measure, previous = math.inf, math.inf
+    for rounds in range(1, _BARRIER_ROUNDS + 1):
+        held = eqx.tree_at(
+            lambda term: (term.multipliers, term.weight, term.backoff),
+            held,
+            (
+                jnp.asarray(multipliers, actions.dtype),
+                jnp.asarray(weight, actions.dtype),
+                jnp.asarray(backoff, actions.dtype),
+            ),
+        )
+        # lr0 and tol are the solvers' defaults, which the unconstrained solve above also used.
+        actions, _, taken = _pessimistic_loop(
+            model,
+            x0,
+            actions,
+            dt,
+            cost,
+            support,
+            lam_supp,
+            lo,
+            hi,
+            steps,
+            0.2,
+            1e-9,
+            held,
+            1.0,
+            blocks,
+        )
+        iterations += int(taken)
+        _, shortfall = _barrier_state(model, x0, actions, dt, held)
+        excess = np.asarray(shortfall, dtype=np.float64) + backoff
+        measure = float(np.max(np.abs(np.maximum(excess, -multipliers / weight))))
+        multipliers = np.maximum(0.0, multipliers + weight * excess)
+        _log.debug(
+            "barrier round",
+            extra={
+                "chc_event": "barrier_round",
+                "round": rounds,
+                "penalty": weight,
+                "measure": measure,
+                "worst_shortfall": float(np.max(excess)) - backoff,
+                "descent_steps": int(taken),
+            },
+        )
+        if measure <= 0.5 * backoff and int(taken) < steps:
+            status = "converged"
+            break
+        if measure > 0.5 * previous:
+            if weight * _PENALTY_GROWTH > ceiling:
+                break
+            weight *= _PENALTY_GROWTH
+        previous = measure
+    _log.info(
+        "barrier held" if status == "converged" else "barrier rounds stopped short",
+        extra={
+            "chc_event": "barrier",
+            "status": status,
+            "rounds": rounds,
+            "penalty": weight,
+            "measure": measure,
+            "backoff": backoff,
+            "active_steps": int(np.sum(multipliers > 0.0)),
+        },
+    )
+    return actions, status, iterations
 
 
 @dataclass(frozen=True)
@@ -235,6 +522,47 @@ class SafetyCertificate:
     gamma_star: float  # weakest step's §40 ceiling; nan if some step certifies at no Gamma at all
     step_gamma_star: tuple[float, ...]  # per-step ceilings, so the weak link is locatable
     radius: float  # largest d_k = Delta(Gamma)*||grad h(x_k)|| applied along the plan
+
+
+def _norm(vectors: Array) -> Array:
+    """Row norms whose gradient at a zero row is zero, a subgradient, where ``jnp.linalg.norm``'s is
+    nan. Zero rows are masked *before* the norm, since a ``where`` after it still differentiates
+    both branches; the rest go through ``jnp.linalg.norm`` itself, whose fused kernel rounds once
+    less than a written-out square root of a sum does."""
+    nonzero = jnp.any(vectors != 0.0, axis=-1)
+    return jnp.where(
+        nonzero, jnp.linalg.norm(jnp.where(nonzero[..., None], vectors, 1.0), axis=-1), 0.0
+    )
+
+
+def _barrier_terms(
+    model: Dynamics, barrier: Callable[[Array], Array], states: Array, actions: Array, dt: float
+) -> tuple[Array, Array, Array, Array]:
+    """``h``, ``||grad h||``, drift ``a = grad h . f(x, 0)``, channel ``w = B^T grad h``, per step.
+
+    The one place the barrier condition is formed: :func:`certify_safety` audits it and
+    :func:`causal_plan` holds it through the same code, so the solve cannot drift from its audit.
+    """
+    times = dt * jnp.arange(states.shape[0])
+    zeros = jnp.zeros_like(actions)
+
+    def scalar_h(x: Array) -> Array:
+        return jnp.squeeze(barrier(x))
+
+    h_values = jax.vmap(scalar_h)(states)
+    grad_h = jax.vmap(jax.grad(scalar_h))(states)
+    drift = jnp.einsum("kn,kn->k", grad_h, jax.vmap(model)(times, states, zeros))
+    channel = jnp.einsum(  # w = B^T grad h, per step
+        "kn,knm->km", grad_h, jax.vmap(jax.jacobian(model, argnums=2))(times, states, zeros)
+    )
+    return h_values, _norm(grad_h), drift, channel
+
+
+def _guaranteed(
+    drift: Array, channel: Array, grad_norm: Array, actions: Array, delta: float
+) -> Array:
+    """``a + <w, u> - d ||u||``, ``d = delta ||grad h||``: the worst case at the planned action."""
+    return drift + jnp.einsum("km,km->k", channel, actions) - delta * grad_norm * _norm(actions)
 
 
 def certify_safety(
@@ -288,26 +616,9 @@ def certify_safety(
         raise ValueError(f"cvar_gap must be positive to scale a sensitivity radius, got {cvar_gap}")
 
     states, actions = plan.trajectory[:-1], plan.actions
-    times = dt * jnp.arange(states.shape[0])
-    zeros = jnp.zeros_like(actions)
-
-    def scalar_h(x: Array) -> Array:
-        return jnp.squeeze(barrier(x))
-
-    h_values = jax.vmap(scalar_h)(states)
-    grad_h = jax.vmap(jax.grad(scalar_h))(states)
-    drift = jnp.einsum("kn,kn->k", grad_h, jax.vmap(model)(times, states, zeros))
-    channel = jnp.einsum(  # w = B^T grad h, per step
-        "kn,knm->km", grad_h, jax.vmap(jax.jacobian(model, argnums=2))(times, states, zeros)
-    )
-    grad_norm = jnp.linalg.norm(grad_h, axis=1)
-
+    h_values, grad_norm, drift, channel = _barrier_terms(model, barrier, states, actions, dt)
     delta = confounding_robust_inflation(cvar_gap, 0.0, gamma)
-    guaranteed = (
-        drift
-        + jnp.einsum("km,km->k", channel, actions)
-        - delta * grad_norm * jnp.linalg.norm(actions, axis=1)
-    )
+    guaranteed = _guaranteed(drift, channel, grad_norm, actions, delta)
     required = -alpha * h_values
     certified = guaranteed >= required
 
