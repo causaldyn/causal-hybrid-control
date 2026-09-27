@@ -1,0 +1,86 @@
+# Why, and when not to use it
+
+## The gap
+
+Each of the three obvious approaches solves a different problem and leaves the same gap:
+
+- **Forecast + argmax.** Optimises a correlation. Under a confounded logging policy the fitted
+  action response *is* the observational one, so the planner acts on the wrong effect and never
+  notices. [Tutorial 1](tutorials/01_causal_vs_predictive_control.md) shows the sign flip and what
+  it does to control.
+- **Causal effect estimation alone** (DML, staggered DiD, synthetic control, causal forests).
+  Returns an effect, not a decision: no dynamics, no actuation limits, no horizon, no notion of a
+  state the action must not reach. `chc` treats these as *backends* (`chc.estimators`) rather than
+  rivals.
+- **Offline RL / MPC on a learned model.** Fits the dynamics by residual MSE, which is not
+  identification, and calibrates its pessimism to sampling noise rather than to unmeasured
+  confounding — so the uncertainty penalty shrinks with `N` while the bias does not.
+
+What is here is the seam: identify the *interventional* control channel from confounded logs
+([`chc.dynamics_id`](api/dynamics_id.md)), plan against it under constraints, and price what
+unmeasured confounding can do to the plan's performance ([`chc.sensitivity`](api/sensitivity.md))
+and to its safety ([`chc.barrier`](api/barrier.md)).
+
+## Where it sits
+
+Read by the two questions this library refuses to merge: does the tool **identify** the effect of
+an action from data a policy generated, and does it **certify** the plan it hands you. Most tools
+answer one; the ones that answer both are papers, not packages.
+
+| | what it is for | identifies an interventional effect | produces a schedule | ships a certificate | licence |
+|---|---|---|---|---|---|
+| **`chc`** | decisions from a confounded log, over a plant | yes, the **control channel** of a control-affine residual (cross-fit Robinson DML), and it says `not_identified` rather than guessing | yes, projected gradient over a box and linear constraints (budgets, rate limits), with a confounding-robust barrier held in the solve | yes — identification status, trajectory tube, barrier `Γ*` | MIT |
+| **DoWhy / DoWhy-GCM** | identify and refute an effect on a DAG | yes — back-door, front-door, IV, and the Rotnitzky–Smucler **efficient** backdoor set, which minimises asymptotic variance among backdoor sets. CHC's `CausalGraph` answers the other question, Perković et al.'s canonical set, which is valid **iff any observed set is** | no | refutation tests, not a control guarantee | MIT |
+| **EconML** | heterogeneous treatment effects, DML/DR/orthogonal forests | yes, for a **static** treatment; this is the estimator family CHC lifts to a matrix | no | confidence intervals | MIT |
+| **DCBO** | sequential interventions in a time-varying SCM | yes, by GP emulation over an SCM | yes, a sequence of interventions | regret empirics, no feasibility guarantee | **GPL-3.0**, research code, not on PyPI |
+| **Google Meridian** | Bayesian marketing-mix modelling | partially — priors and geo experiments calibrate it; the estimand is the media response | yes, budget optimisation | posterior intervals | Apache-2.0 |
+| **do-mpc** | robust and economic nonlinear MPC | **no** — the model is yours and assumed correct | yes, and more general constraints than CHC's: nonlinear path constraints on the state itself, where CHC holds linear rows on the actions and a barrier's decay condition | robust multi-stage MPC guarantees, under a correct model | **LGPL-3.0** |
+| **d3rlpy** | offline deep RL from logged trajectories | no — conservatism bounds value error, not confounding | yes, a policy | pessimistic value bounds | MIT |
+| **causaLens `decisionOS`** | enterprise causal decision platform | yes, per its own account | yes | not publicly auditable | commercial, closed |
+
+Two rows that are **not** here, and the reason is the same. The 2024–25 literature on causal
+Bayesian optimisation under safety constraints, and on causal optimal control ("COAST"-style), has no
+shipped, installable implementation this could be run against. That is the gap CHC is aimed at,
+and stating it as an absence is more honest than a row of dashes against a paper.
+
+Where a row says *no* it is not a criticism: do-mpc solves control problems CHC cannot state, and
+EconML answers effect questions CHC does not ask. The claim is narrower — that **going from a
+confounded log to a certified schedule in one place** is what nothing above does end to end.
+
+## When not to use it
+
+The same table, read the other way.
+
+- **Your model is known and trusted, and the constraints are nonlinear in the state.** That is
+  do-mpc's problem, and it states control problems CHC cannot: CHC holds linear rows on the actions
+  and a barrier's decay condition, not general path constraints on the state.
+- **You need an effect, not a decision.** Heterogeneous effects of a static treatment are EconML's
+  question; identifying and refuting an effect on a DAG is DoWhy's. CHC calls such estimators
+  through `chc.estimators` rather than competing with them.
+- **You want a Bayesian marketing-mix model** calibrated by priors and geo experiments: that is
+  Meridian. The [media-budgets case study](case-studies/media-budgets.md) is about the other half —
+  scheduling spend when the log was planned against demand.
+- **Your residual is not control-affine.** `chc.dynamics_id` is the identified route, and it is
+  restricted to control-affine residuals; outside that class this library offers a sensitivity
+  radius (`chc.sensitivity`), not an unbiased estimate.
+- **Nothing in your log identifies the effect** — no adjustment set and no instrument. Then there is
+  no schedule to be had: `prescribe` returns none, on purpose, and what remains is to price the
+  radius ([the sensitivity level Γ](concepts/gamma.md)).
+- **You need a frozen API today.** This is early, single-author research code before 1.0. The
+  [stability tiers](api/index.md) say what each module promises; an experimental module may change
+  or be withdrawn in any release.
+
+## Honest positioning
+
+`chc` composes ideas that exist — hybrid dynamics (SciML UDE), pessimistic offline control
+(MOPO/MOReL/Delphic), sequential causal identification (g-methods / dynamic treatment regimes),
+differentiable control (Neuromancer). The contribution is the *integration behind one API* plus a
+benchmark with ground-truth interventional effects. KAN is **one interpretable residual backend**,
+not the identity of the framework — and `chc.symbolic` makes "interpretable" checkable rather than
+asserted, including the two places where the interpretation stops being valid.
+
+Worth knowing before you rely on a fitted model: **a low residual MSE is not causal
+identification.** Fitting `r_θ` by prediction error recovers the *observational* control response,
+which is the wrong one whenever the logged action was chosen from something that also moved the
+state, and no amount of extra training fixes it because it is not a fitting problem. See
+[identification](concepts/identification.md).

@@ -1,0 +1,153 @@
+site_name: causal-hybrid-control
+site_url: https://causaldyn.github.io/causal-hybrid-control/
+site_description: >-
+  Physics-structured dynamics with a learned causal residual, controlled by constrained optimal
+  control / MPC.
+repo_url: https://github.com/causaldyn/causal-hybrid-control
+
+theme:
+  name: material
+  font: false  # system fonts, so a page view sends no request to Google Fonts
+  features:
+    - content.code.copy
+    - navigation.indexes
+
+# Not pages. The ADRs quote prototype measurements that no committed routine reprints, so the site
+# links them on GitHub rather than publishing them; output/ is what `docs/build.sh` prints for the
+# pages to include; the scripts are the build's own code.
+exclude_docs: |
+  adr/
+  output/
+  *.py
+  *.sh
+
+validation:
+  nav:
+    omitted_files: warn
+  links:
+    anchors: warn
+    unrecognized_links: warn
+
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path: [.]
+      check_paths: true
+
+hooks:
+  - docs/hooks.py
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            # A few docstrings document two parameters in one entry (`unit, time: ...`), which the
+            # Google parser renders but cannot match to the signature; without these two it warns
+            # on each, and a strict build fails on a style the library never adopted.
+            docstring_options:
+              warn_unknown_params: false
+              warn_missing_types: false
+            show_source: false
+            show_root_heading: false
+            heading_level: 2
+            members_order: source
+
+nav:
+  - Home: index.md
+  - Why, and when not to: why.md
+  - Quickstart: quickstart.md
+  - Concepts:
+      - Identification: concepts/identification.md
+      - Pessimism: concepts/pessimism.md
+      - Certificates: concepts/certificates.md
+      - The sensitivity level Γ: concepts/gamma.md
+      - The dtype policy: concepts/dtype-policy.md
+  - Tutorials:
+      - tutorials/index.md
+      - tutorials/01_causal_vs_predictive_control.md
+      - tutorials/02_learn_hidden_physics.md
+      - tutorials/03_causal_inference_toolkit.md
+      - tutorials/04_epidemic_and_pessimism.md
+      - tutorials/05_benchmark_scoreboard.md
+      - tutorials/05_confounding_robust_control.md
+      - tutorials/06_cruise_control_confounded.md
+      - tutorials/07_real_data_lalonde.md
+  - Case studies:
+      - case-studies/index.md
+      - case-studies/pricing.md
+      - case-studies/epidemic.md
+      - case-studies/media-budgets.md
+      - case-studies/marketplace-dispatch.md
+      - case-studies/driver-supply.md
+      - case-studies/confounded-incentives.md
+  - API reference:
+      - api/index.md
+      - Stable:
+          - api/adjoint.md
+          - api/barrier.md
+          - api/control.md
+          - api/cost.md
+          - api/decision.md
+          - api/dynamics.md
+          - api/dynamics_id.md
+          - api/graph.md
+          - api/integrate.md
+          - api/lqr.md
+          - api/mpc.md
+          - api/panel.md
+          - api/plan.md
+          - api/residual.md
+          - api/train.md
+      - Evolving:
+          - api/causal.md
+          - api/delay.md
+          - api/did.md
+          - api/estimators.md
+          - api/frames.md
+          - api/gmethods.md
+          - api/independence.md
+          - api/irf.md
+          - api/marketplace.md
+          - api/matching.md
+          - api/metrics.md
+          - api/mintime.md
+          - api/mmm.md
+          - api/network_causal.md
+          - api/offpolicy.md
+          - api/pathway.md
+          - api/reachability.md
+          - api/regret.md
+          - api/scm.md
+          - api/sensitivity.md
+          - api/spine.md
+          - api/splitting.md
+          - api/support.md
+          - api/toeplitz.md
+          - api/uncertainty.md
+      - Experimental:
+          - api/benchmark.md
+          - api/causal_bench.md
+          - api/deep_galerkin.md
+          - api/discovery.md
+          - api/epidemic.md
+          - api/flagship.md
+          - api/galerkin.md
+          - api/games.md
+          - api/koopman.md
+          - api/lalonde.md
+          - api/meanfield.md
+          - api/surrogate.md
+          - api/symbolic.md
+          - api/transport.md
+  - Theory: theory.md
+  - Benchmarks: benchmarks.md
+  - Security: security.md
+  - Cite: cite.md

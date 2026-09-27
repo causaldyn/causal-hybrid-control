@@ -302,6 +302,7 @@ Supply chain: every artifact carries a PEP 740 attestation and a SLSA build prov
 suite, and `rocq compile` over `proofs/*.v`. Machine-readable citation metadata is in
 [`CITATION.cff`](CITATION.cff); every release is archived on Zenodo.
 
+<!-- --8<-- [start:bibtex] -->
 ```bibtex
 @software{gradina_causal_hybrid_control,
   author  = {Gradina, Ilia},
@@ -316,6 +317,8 @@ suite, and `rocq compile` over `proofs/*.v`. Machine-readable citation metadata 
 
 The `doi` is the *concept* DOI: it resolves to the newest release rather than freezing at the
 `version` above, so a reader following the citation lands on current code.
+
+<!-- --8<-- [end:bibtex] -->
 
 ## License
 

@@ -37,6 +37,12 @@ wandb/
 # datasets (notebooks download to a local cache; never commit data)
 data/
 
+# docs: the built site, and what docs/build.sh executes and prints into the pages
+site/
+docs/output/
+docs/tutorials/*
+!docs/tutorials/index.md
+
 # editors / OS
 .vscode/
 .idea/

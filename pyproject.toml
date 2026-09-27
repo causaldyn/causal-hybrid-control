@@ -68,6 +68,10 @@ notebooks = [
     "matplotlib>=3.8",
     "pandas>=2.0",
 ]
+docs = [
+    "mkdocs-material>=9.7.7",
+    "mkdocstrings[python]>=1.0.6",
+]
 
 [build-system]
 requires = ["hatchling"]

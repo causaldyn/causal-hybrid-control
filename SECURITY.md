@@ -8,8 +8,9 @@
 | < 0.5 | no |
 
 This is a pre-1.0, single-author research library. Only the latest minor gets fixes; there are no
-backports. If you are pinned to an older minor, the upgrade path is the [changelog](CHANGELOG.md),
-which records every scope correction and every behaviour change, not only the additions.
+backports. If you are pinned to an older minor, the upgrade path is the
+[changelog](https://github.com/causaldyn/causal-hybrid-control/blob/main/CHANGELOG.md), which
+records every scope correction and every behaviour change, not only the additions.
 
 ## Reporting a vulnerability
 

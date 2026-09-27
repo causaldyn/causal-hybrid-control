@@ -118,3 +118,10 @@ bench:
 
 flagship:
     uv run --group viz python scripts/flagship_demo.py
+
+# ── Docs ──────────────────────────────────────────────────────────────────────
+
+# Execute the notebooks and the scripts the pages quote, then `mkdocs build --strict` into site/.
+# Needs `uv sync --group docs --group notebooks`.
+docs:
+    ./docs/build.sh
