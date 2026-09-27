@@ -7,7 +7,7 @@
 `prescribe` plans with every lever it is handed. Which levers to use at all is a question of its
 own: a pilot allowed to change two things at once, or an operator who has to answer for every lever
 moved, needs a schedule that moves at most `k` of the `m` levers, and a statement of what the others
-would have bought. `plans/24` §L1 proposed cardinality-constrained planning: a group-L1 penalty on
+would have bought. The proposed design was cardinality-constrained planning: a group-L1 penalty on
 the action matrix, one group per lever as in the group lasso (Yuan & Lin 2006), inside the
 projected-gradient solver, then greedy forward selection with the solve as the inner loop, each
 removal priced by the certificate.
@@ -65,7 +65,7 @@ subset of each instance's levers through the public `prescribe`, the others pinn
 and compares greedy with the exhaustive best at every size short of all the levers. Four
 alternatives are read off the same table: the group-L1 path's first support of the size, planned
 alone (*path*); greedy among the levers of the path's first support larger than the size —
-`plans/24`'s screen, then greedy (*screen*); greedy followed by best-improvement single swaps
+the proposed screen, then greedy (*screen*); greedy followed by best-improvement single swaps
 (*swaps*); and backward elimination from the full set (*backward*). The path is solved on
 `prescribe`'s planning objective, rebuilt and asserted to reproduce the prescription's plan to the
 bit, by an accelerated proximal gradient whose per-column prox is held to L-BFGS-B first (worst
@@ -154,7 +154,7 @@ checks each candidate's cleared prefix.
 ## Alternatives
 
 - **A group-L1 stage** — the rule set before the first run was to add it only if it repairs a
-  greedy miss, or if the lever count makes greedy impractical. As `plans/24`'s screen it repaired
+  greedy miss, or if the lever count makes greedy impractical. As the proposed screen it repaired
   no miss, and broke one hit on the named plants and one on the random ones. As the selector itself
   it repaired the saturation miss, broke 2 hits on the named plants and 15 on the random ones, and
   skipped a size 6 times. The first lever to enter the path is the one that pulls hardest at the
