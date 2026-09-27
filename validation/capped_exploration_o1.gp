@@ -1,4 +1,4 @@
-\\ PARI/GP: the O(1) term of the capped-exploration stopping mass, at 60 digits -- plans/25 P3.2.
+\\ PARI/GP: the O(1) term of the capped-exploration stopping mass, at 60 digits.
 \\
 \\ Result 56 gave the stopping mass as S* = sqrt(K T/(A c)) - I0/c.  Result 66 replaced it with the
 \\ fixed point of A(I0 + cS)^2 = K c (T - n), n = S/kap, because the leading form runs 25% high once

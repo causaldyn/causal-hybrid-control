@@ -46,7 +46,7 @@ print("(4) d|b1|/dKp at fixed C =", ratsimp( diff(-Kp*C, Kp) ), "  (= -C: linear
 print("(5) -Kp*C at Kp=2.6, C=0.1454 =", float( subst([Kp = 2.6, C = 0.1454], -Kp*C) ),
       "  (§41 reported -0.3779)")$
 
-/* (6) REFUTATION of the standing guess. plans/24 proposed b1 = -1/Kp from the simultaneity slope.
+/* (6) REFUTATION of the standing guess, b1 = -1/Kp from the simultaneity slope.
    That is the slope of the MANIFOLD, m, not the interaction coefficient: b1 = C/m, so -1/Kp would
    require C = 1/Kp^2, a coincidence rather than an identity. The simultaneity slope is a real and
    useful quantity -- it identifies the CONTROLLER -- but it is not b1. */

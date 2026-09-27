@@ -1,4 +1,4 @@
-; SMT: the two bounds behind bounded_approximator_is_blind -- plans/24 P4.1.
+; SMT: the two bounds behind bounded_approximator_is_blind.
 ;
 ; proofs/mean_field_dwr.v (F) proves them in Rocq; this is the independent second route, the
 ; negation of each asserted over the reals and expected unsat from BOTH z3 and cvc5:

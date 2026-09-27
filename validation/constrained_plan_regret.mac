@@ -1,4 +1,4 @@
-/* A self-certifying regret bound for a plan that lives in a BOX -- plans/25 item L3.2.
+/* A self-certifying regret bound for a plan that lives in a BOX.
 
    chc.plan.causal_plan minimises J(U) over U in a box of lever bounds, and DecisionCertificate
    ships without a regret_bound because nothing in chc.regret takes a CausalPlan: every certificate

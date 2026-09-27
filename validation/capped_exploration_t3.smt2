@@ -1,4 +1,4 @@
-; SMT: the T = 3 capped-exploration instance, checked over the WHOLE feasible box -- plans/25 P3.2.
+; SMT: the T = 3 capped-exploration instance, checked over the WHOLE feasible box.
 ;
 ; proofs/capped_exploration_schedule.v proves the exchange argument and the stopping condition
 ; POINTWISE: given two rounds it shows the earlier one is cheaper, and given the root it shows the

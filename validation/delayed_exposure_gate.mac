@@ -1,5 +1,5 @@
-/* plans/24 G gate: does the C2 network result (Result 43) survive a DELAYED exposure map, or does
-   it reduce to Result 43 with lags?
+/* The delayed-exposure gate: does the C2 network result (Result 43) survive a DELAYED exposure
+   map, or does it reduce to Result 43 with lags?
 
    Answer: two of the three parts reduce, one does not, and the obstruction is exact.
 

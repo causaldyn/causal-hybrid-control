@@ -1,5 +1,5 @@
 /* Symbolic derivation of the interference-aware certainty-equivalence regret bound behind
-   chc.regret.interference_regret_certificate and proofs/interference_regret.v (plans/20 section A).
+   chc.regret.interference_regret_certificate and proofs/interference_regret.v.
 
    A kappa-smooth cost J with minimiser p_star (so J'(p_star) = 0) admits the second-order upper
    bound  J(p_hat) - J(p_star) <= (kappa/2) (p_hat - p_star)^2.  Certainty equivalence makes the plan
