@@ -245,7 +245,7 @@ Lemma trace_against_a_psd_weight_is_nonnegative k l (L : 'M[R]_(k, l)) (D : 'M[R
 Proof. by move=> hD; rewrite trace_of_a_factored_weight; apply: sumr_ge0 => j _; exact: hD. Qed.
 
 (* Gill & Levit (1995) Bernoulli 1:59-79; van der Vaart (1998) Thm 2.5.2, MATRIX form -- the cited
-   measure-theoretic input, named so that `Check` says where it enters (plans/24 P1.2). For any
+   measure-theoretic input, named so that `Check` says where it enters. For any
    estimator the Bayes action-error covariance dominates Psi' G^-1 Psi'' in the PSD order. A
    Definition and not an Axiom, for the reason spelled out in proofs/c2_end_to_end.v. *)
 Definition PsdDominates {k} (Sigma Floor : 'M[R]_k) : Prop := psd (Sigma - Floor).

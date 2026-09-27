@@ -50,8 +50,8 @@ Proof.
 Qed.
 
 (* Gill & Levit (1995) Bernoulli 1:59-79; van der Vaart (1998) Thm 2.5.2 -- van Trees on the
-   FUNCTIONAL psi(b) = u_star(b), named so that `Check` says where the cited input enters
-   (plans/24 P1.2). For ANY estimator of b, biased or not and adaptive or not, the Bayes mean
+   FUNCTIONAL psi(b) = u_star(b), named so that `Check` says where the cited input enters.
+   For ANY estimator of b, biased or not and adaptive or not, the Bayes mean
    squared error OF THE ESTIMATED ACTION is at least psi'(b)^2 / (n * I_data + I_prior). The
    algebraic core is proved in proofs/van_trees.v; this name stands for the measure-theoretic
    wrapper, which is cited and not formalised. A Definition and not an Axiom, for the reason

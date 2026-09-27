@@ -117,8 +117,8 @@ Proof.
 Qed.
 
 (* Gill & Levit (1995) Bernoulli 1:59-79; van der Vaart (1998) Thm 2.5.2, MATRIX form -- the cited
-   input this whole file exists to consume, named so that `Check` says where it enters (plans/24
-   P1.2). For ANY estimator of theta, biased or not, the Bayes error covariance DOMINATES
+   input this whole file exists to consume, named so that `Check` says where it enters. For ANY
+   estimator of theta, biased or not, the Bayes error covariance DOMINATES
    Psi' G^-1 Psi'^T in the PSD order; at 2x2 that is Sylvester's criterion on the difference. The
    algebraic core of van Trees is proved in proofs/van_trees.v; what this name stands for is the
    measure-theoretic wrapper, which is cited and not formalised. A Definition and not an Axiom, for

@@ -63,9 +63,9 @@ Theorem magnitude_grows_with_gain :
     0 <= curv -> 0 < kp1 -> kp1 <= kp2 -> kp1 * curv <= kp2 * curv.
 Proof. intros kp1 kp2 curv Hc Hk1 Hk. nra. Qed.
 
-(* The refutation. b1 = -1/Kp -- the guess plans/24 carried -- is the MANIFOLD slope, not the
-   interaction. Equating them constrains the plant to curv = 1/Kp^2, which is a coincidence and not
-   an identity: the two agree only on that surface. *)
+(* The refutation. b1 = -1/Kp -- the guess that stood in for the magnitude -- is the MANIFOLD
+   slope, not the interaction. Equating them constrains the plant to curv = 1/Kp^2, which is a
+   coincidence and not an identity: the two agree only on that surface. *)
 Theorem guess_is_a_constraint_not_an_identity :
   forall kp curv : R, 0 < kp -> (- (kp * curv) = -1 / kp <-> curv = 1 / kp ^ 2).
 Proof.

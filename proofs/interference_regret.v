@@ -5,9 +5,8 @@
    a kappa-smooth cost with minimiser pi_star and the certainty-equivalence controllability bound
    |pi_hat - pi_star| <= C*(eid + eint), the regret is QUADRATIC in the TOTAL error, with the
    interference error entering additively inside the square. This extends the
-   Dean-Mania-Tu-Recht-Matni LQ certainty-equivalence bound (which has the eid term only). A
-   machine-checked regret certificate under interference is the citable, hard-to-replicate piece of
-   plans/20 section A. See also proofs/box_projection.v (the feasibility invariant). *)
+   Dean-Mania-Tu-Recht-Matni LQ certainty-equivalence bound (which has the eid term only). See also
+   proofs/box_projection.v (the feasibility invariant). *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.

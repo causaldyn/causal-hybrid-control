@@ -17,7 +17,7 @@ From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
 Open Scope R_scope.
 
-(* ===== THE CITED STATISTICAL INPUTS, AS NAMED PREDICATES (plans/24 P1.2) =====
+(* ===== THE CITED STATISTICAL INPUTS, AS NAMED PREDICATES =====
 
    Everything this file takes from the literature is declared below as a Prop carrying its
    citation, and the theorems are stated in those names rather than in the inequalities they

@@ -17,7 +17,7 @@ From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
 Open Scope R_scope.
 
-(* ===== THE CITED MEASURE-THEORETIC INPUTS, AS NAMED PREDICATES (plans/24 P1.2) =====
+(* ===== THE CITED MEASURE-THEORETIC INPUTS, AS NAMED PREDICATES =====
 
    The two premises the honest-scope note above names are declared here as Props carrying their
    citations, and the theorems are stated in those names. Nothing is assumed that was not assumed

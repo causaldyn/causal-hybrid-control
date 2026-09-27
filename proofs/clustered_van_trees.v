@@ -36,7 +36,7 @@ From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
 Open Scope R_scope.
 
-(* ===== THE CITED STATISTICAL INPUTS, AS NAMED PREDICATES (plans/24 P1.2) =====
+(* ===== THE CITED STATISTICAL INPUTS, AS NAMED PREDICATES =====
 
    Ingredients (1) and (2) of the header, declared as Props carrying their citations so that the
    theorems below name them in their types rather than only in prose. Nothing is assumed that was
