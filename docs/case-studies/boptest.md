@@ -106,8 +106,11 @@ Where they disagree:
   the planning objective on the fitted model, not a statement about the plant. It was infinite, the
   objective not convex over the box, on 3.4% of the adjusted calls and 12.1% of the naive ones.
 - Nothing in the certificate bounds comfort, which is what the gate matches on and what the runaway
-  weeks lost: `prescribe` refuses a constraint on its target column, so there is no barrier and no
-  `gamma*`.
+  weeks lost: `prescribe` refused a constraint on its target column, so there was no barrier and no
+  `gamma*`. From 0.7.0 it accepts one
+  ([ADR 0005](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0005-bound-on-the-steered-state.md)).
+  Whether its audit would have flagged these weeks is open: it prices the fitted model, under which
+  more heat cools a zone above the crossing.
 
 Where they agree: the naive certificate trusted nothing, because an `asserted` identification never
 earns a step whatever the model predicts, and the runaway weeks bore that out. They are also what

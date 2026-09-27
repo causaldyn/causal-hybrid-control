@@ -138,7 +138,13 @@ class Target:
 
 @dataclass(frozen=True)
 class Constraint:
-    """A state that must stay inside a range --- what the safety certificate is priced against."""
+    """A state that must stay inside a range --- what the safety certificate is priced against.
+
+    ``state`` may be the target column: the steered state is then bounded as well as steered, which
+    is how a comfort band around a set point is stated. A target value outside its own bound is
+    allowed and means "as close as the bound permits"; holding the bound is what keeps the plan
+    from crossing it on the way.
+    """
 
     state: str
     lo: float | None = None
@@ -447,7 +453,9 @@ def prescribe(
             transitions the channel is fitted on; gaps are dropped rather than interpolated, so an
             unbalanced panel is fine and a silently invented row is not.
         levers, target, constraints: the decision, in the domain's own names. States are the target
-            column followed by each constrained column, in that order. A lever's
+            column followed by each other constrained column, in that order. A constraint may name
+            the target column itself: it then bounds the steered state, which gets the barrier and
+            ``gamma_star`` like any other constrained column, and adds no state. A lever's
             ``cap_per_step`` is held by every iterate of the solve; the regret bound stays priced
             against the box alone, so with a rate limit it is conservative rather than tight.
         hold_constraints: hold ``constraints`` inside the solve, as the barrier condition
@@ -502,8 +510,8 @@ def prescribe(
         :attr:`Prescription.schedule`, which raises when the effect is not identified.
 
     Raises:
-        DecisionError: the decision is mis-specified --- no lever, a column named as both target and
-            constraint, constraints to hold with none given, ``max_levers`` below one or with a
+        DecisionError: the decision is mis-specified --- no lever, a column constrained twice,
+            constraints to hold with none given, ``max_levers`` below one or with a
             lever whose box excludes zero, or a panel with no consecutive pair of periods to fit a
             transition on.
         KeyError: a lever, target, constraint or asserted covariate names a column the panel does
@@ -532,9 +540,16 @@ def prescribe(
                     "level an unselected lever is held at; under max_levers every lever must be "
                     "able to stay off, so express it as a move from its current level"
                 )
-    states = (target.name, *(constraint.state for constraint in constraints))
-    if len(set(states)) != len(states):
-        raise DecisionError(f"a column is both target and constraint: {states}")
+    constrained = tuple(constraint.state for constraint in constraints)
+    twice = sorted({name for name in constrained if constrained.count(name) > 1})
+    if twice:
+        raise DecisionError(
+            f"columns constrained more than once: {twice}; "
+            "give each one Constraint with both bounds"
+        )
+    # A bound on the target column bounds the target's own coordinate. A second coordinate for the
+    # same column would hand the fit two identical rows, one of them with nothing to steer it.
+    states = (target.name, *(name for name in constrained if name != target.name))
     lever_names = tuple(lever.name for lever in levers)
     for name in (*states, *lever_names):
         if name not in panel.columns:

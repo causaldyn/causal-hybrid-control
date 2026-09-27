@@ -7,6 +7,20 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`prescribe` accepts a bound on its target column.** A `Constraint` that names the target
+  bounds the steered state's own coordinate and adds no state; it gets the barrier, `gamma*` and
+  `hold_constraints` like any other constrained column. Before, it raised `DecisionError`. This is
+  how a comfort band around a set point is stated, the first of the three things the BOPTEST case
+  study found the façade could not state. A target outside its own bound asks for "as close as the
+  bound permits". On the test panel, steering supply to 1 under a cap of 0.5, the priced plan
+  crosses the cap at step 4 and its audit certifies no step; the held one peaks at 0.397 and
+  certifies all 15, at a task cost of 4.654 against 1.991. It stops short of 0.5 because
+  the barrier condition's class-K gain, 1, lets the margin close only geometrically. A column
+  constrained twice is still refused, now by a message that names it. The design record is
+  `docs/adr/0005-bound-on-the-steered-state.md`.
+
 ## [0.6.0] — 2026-09-27
 
 ### Added

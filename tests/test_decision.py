@@ -324,12 +324,12 @@ def test_the_arguments_that_cannot_mean_anything_are_refused() -> None:
             horizon=3,
             dt=DT,
         )
-    with pytest.raises(ValueError, match="both target and constraint"):
+    with pytest.raises(ValueError, match=r"constrained more than once: \['wait'\]"):
         prescribe(
             panel,
             levers=[Lever("incentive", -1.0, 1.0)],
             target=Target("supply", 1.0),
-            constraints=[Constraint("supply", hi=2.0)],
+            constraints=[Constraint("wait", lo=-1.0), Constraint("wait", hi=2.0)],
             adjustment=graph,
             horizon=3,
             dt=DT,
@@ -408,6 +408,41 @@ def test_held_constraints_move_the_schedule_rather_than_fail_its_audit(
     assert float(np.min(np.asarray(held.plan.trajectory)[:, 1])) >= -0.1  # states: supply, wait
     plan = caplog.records[_events(caplog).index("plan")]
     assert getattr(plan, "constraints_held", None) is True
+
+
+def test_a_bound_on_the_target_is_held_on_its_own_coordinate() -> None:
+    """L10: the steered state can be bounded as well as steered, and gains no second coordinate.
+
+    Steering supply to 1 with ``supply <= 0.5`` asks for "as close as the bound permits". Priced,
+    the plan heads for 1 and the audit stops where it would cross; held, it stays under the bound.
+    The fit sees one state, so the bound cost the identification nothing.
+    """
+    panel = _panel()
+    graph = CausalGraph.from_edges(EDGES)
+
+    def decide(hold: bool) -> Prescription:
+        return prescribe(
+            panel,
+            levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+            target=Target("supply", value=1.0),
+            constraints=[Constraint("supply", hi=0.5)],
+            hold_constraints=hold,
+            adjustment=graph,
+            horizon=15,
+            dt=DT,
+            tolerance=0.5,
+        )
+
+    priced, held = decide(False), decide(True)
+    assert np.asarray(held.model_fit.residual.channel).shape[0] == 1  # supply alone
+    assert priced.plan is not None
+    assert held.plan is not None
+    assert float(np.max(np.asarray(priced.plan.trajectory)[:, 0])) > 0.5
+    assert priced.certificate.barrier_certified_steps is not None
+    assert priced.certificate.barrier_certified_steps < 15
+    assert held.certificate.barrier_certified_steps == 15
+    assert held.certificate.gamma_star is not None
+    assert float(np.max(np.asarray(held.plan.trajectory)[:, 0])) <= 0.5
 
 
 # ---- the operational log: a decision nobody can reconstruct afterwards is not auditable ----
