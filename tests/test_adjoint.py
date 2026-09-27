@@ -14,6 +14,7 @@ from chc import (
     total_cost,
 )
 from chc.adjoint import costate_norms, perturbation_cost_weights
+from chc.integrate import rk4_step
 
 DT = 0.1
 
@@ -102,3 +103,65 @@ def test_a_target_per_state_needs_its_row_and_its_horizon() -> None:
         moving.running(x0, us[0])
     with pytest.raises(ValueError, match="31 rows, one per state, but a 20-step plan has 21"):
         total_cost(dyn, x0, us[:20], DT, moving)
+
+
+def _forced(t: jax.Array, x: jax.Array, u: jax.Array) -> jax.Array:
+    """A scalar plant whose forcing and whose decay both move in time."""
+    return (-0.5 + 0.3 * t) * x + u + jnp.sin(3.0 * t)
+
+
+def _forced_setup() -> tuple[QuadraticCost, jax.Array, jax.Array]:
+    cost = QuadraticCost(Q=jnp.eye(1), R=0.1 * jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.ones(1))
+    return cost, jnp.array([0.2]), 0.3 * jax.random.normal(jax.random.key(0), (20, 1))
+
+
+def test_the_adjoint_steps_the_clock_the_rollout_steps() -> None:
+    """On a plant that moves in time each step's Jacobian is taken at that step's time."""
+    cost, x0, us = _forced_setup()
+    g_adjoint = control_gradient_adjoint(_forced, x0, us, DT, cost)
+    g_autodiff = jax.grad(lambda u: total_cost(_forced, x0, u, DT, cost))(us)
+    assert jnp.allclose(g_adjoint, g_autodiff, atol=1e-8, rtol=1e-6)
+
+
+def test_the_costates_are_cost_to_go_gradients_on_a_plant_that_moves_in_time() -> None:
+    cost, x0, us = _forced_setup()
+    xs = rollout(_forced, x0, us, DT)
+    horizon = us.shape[0]
+
+    def cost_to_go(x: jax.Array, k: int) -> jax.Array:
+        """``J`` from state ``x`` entering step ``k``, on the actions that remain."""
+        tail = rollout(_forced, x, us[k:], DT, t0=k * DT)
+        running = sum(cost.running(tail[j], us[k + j]) for j in range(horizon - k))
+        return running + cost.terminal(tail[-1])
+
+    norms = costate_norms(_forced, x0, us, DT, cost)
+    for k in (0, 7, horizon - 1):
+        expected = jnp.linalg.norm(jax.grad(cost_to_go)(xs[k + 1], k + 1))
+        assert abs(float(norms[k]) - float(expected)) < 1e-8
+
+
+def test_the_perturbation_weights_read_each_step_at_its_own_time() -> None:
+    """Both terms, written out on a scalar plant: the injection gain and the tube's transition."""
+    cost, x0, us = _forced_setup()
+    xs = rollout(_forced, x0, us, DT)
+    times = DT * jnp.arange(us.shape[0])
+    step = DT * jax.vmap(jax.jacobian(_forced, argnums=1))(times, xs[:-1], us)[:, 0, 0]
+    gains = DT * jnp.abs(1.0 + step / 2.0 + step**2 / 6.0 + step**3 / 24.0)
+    first = costate_norms(_forced, x0, us, DT, cost) * gains
+    at_zero = perturbation_cost_weights(_forced, x0, us, DT, cost, 0.0)
+    assert jnp.allclose(at_zero, first, rtol=1e-12)
+
+    radius = 0.1
+
+    def one_step(t: jax.Array, x: jax.Array, u: jax.Array) -> jax.Array:
+        return rk4_step(_forced, t, x, u, DT)
+
+    transition = jax.vmap(jax.jacobian(one_step, argnums=1))(times, xs[:-1], us)[:, 0, 0]
+    rho, tube = 0.0, []
+    for k in range(us.shape[0]):
+        rho = abs(float(transition[k])) * rho + radius * abs(float(us[k, 0])) * float(gains[k])
+        tube.append(rho)
+    second = 0.5 * (sum(r**2 for r in tube[:-1]) + tube[-1] ** 2)  # Q = Qf = 1
+    spread = second / (radius * float(jnp.sum(jnp.abs(us))))
+    weights = perturbation_cost_weights(_forced, x0, us, DT, cost, radius)
+    assert jnp.allclose(weights, first + spread, rtol=1e-10)

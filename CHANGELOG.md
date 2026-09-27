@@ -35,6 +35,17 @@ still change).
   target, since they re-plan with one cost and the window would not move with the loop. The
   design record is `docs/adr/0006-a-target-per-step.md`.
 
+### Fixed
+
+- **The discrete adjoint read every step at `t = 0`.** `control_gradient_adjoint`,
+  `costate_norms` and `perturbation_cost_weights` took each step's Jacobians at time zero, while
+  `rollout`, and so `total_cost`, steps the clock to `k * dt`. On a plant that moves in time the
+  descent in `causal_plan` and `projected_gradient_control` followed the gradient of a different
+  map: on a forced scalar plant the adjoint was off autodiff by 0.14 where the largest entry is
+  0.80. Every dynamics the library ships ignores `t`, so none of its numbers move; a plant of the
+  caller's own that reads `t` gets the gradient of its own objective now. Each of the four sites
+  is pinned by a test that fails when it is put back at `t = 0`.
+
 ## [0.6.0] — 2026-09-27
 
 ### Added

@@ -31,12 +31,13 @@ def control_gradient_adjoint(
     xs = rollout(dyn, x0, us, dt)  # (H + 1, n)
     horizon = us.shape[0]
     targets = cost.targets(horizon)  # (H + 1, n)
+    times = dt * jnp.arange(horizon)  # the clock the rollout steps: step k starts at k * dt
 
-    def step_fn(x: Array, u: Array) -> Array:
-        return rk4_step(dyn, 0.0, x, u, dt)
+    def step_fn(t: Array, x: Array, u: Array) -> Array:
+        return rk4_step(dyn, t, x, u, dt)
 
-    f_x = jax.vmap(jax.jacobian(step_fn, argnums=0))(xs[:-1], us)  # (H, n, n)
-    f_u = jax.vmap(jax.jacobian(step_fn, argnums=1))(xs[:-1], us)  # (H, n, m)
+    f_x = jax.vmap(jax.jacobian(step_fn, argnums=1))(times, xs[:-1], us)  # (H, n, n)
+    f_u = jax.vmap(jax.jacobian(step_fn, argnums=2))(times, xs[:-1], us)  # (H, n, m)
     l_x = jax.vmap(jax.grad(cost.running, argnums=0))(xs[:-1], us, targets[:-1])  # (H, n)
     l_u = jax.vmap(jax.grad(cost.running, argnums=1))(xs[:-1], us, targets[:-1])  # (H, m)
     lam_terminal = jax.grad(cost.terminal)(xs[-1], targets[-1])  # (n,)
@@ -69,11 +70,12 @@ def costate_norms(dyn: Dynamics, x0: Array, us: Array, dt: float, cost: Quadrati
     xs = rollout(dyn, x0, us, dt)
     horizon = us.shape[0]
     targets = cost.targets(horizon)
+    times = dt * jnp.arange(horizon)
 
-    def step_fn(x: Array, u: Array) -> Array:
-        return rk4_step(dyn, 0.0, x, u, dt)
+    def step_fn(t: Array, x: Array, u: Array) -> Array:
+        return rk4_step(dyn, t, x, u, dt)
 
-    f_x = jax.vmap(jax.jacobian(step_fn, argnums=0))(xs[:-1], us)
+    f_x = jax.vmap(jax.jacobian(step_fn, argnums=1))(times, xs[:-1], us)
     l_x = jax.vmap(jax.grad(cost.running, argnums=0))(xs[:-1], us, targets[:-1])
     lam_terminal = jax.grad(cost.terminal)(xs[-1], targets[-1])
 
@@ -122,12 +124,13 @@ def perturbation_cost_weights(
     xs = rollout(dyn, x0, us, dt)
     horizon = us.shape[0]
     eye = jnp.eye(x0.shape[0], dtype=xs.dtype)
+    times = dt * jnp.arange(horizon)
 
-    def step_fn(x: Array, u: Array) -> Array:
-        return rk4_step(dyn, 0.0, x, u, dt)
+    def step_fn(t: Array, x: Array, u: Array) -> Array:
+        return rk4_step(dyn, t, x, u, dt)
 
-    f_x = jax.vmap(jax.jacobian(step_fn, argnums=0))(xs[:-1], us)  # (H, n, n)
-    field_x = jax.vmap(jax.jacobian(lambda x, u: dyn(0.0, x, u), argnums=0))(xs[:-1], us)
+    f_x = jax.vmap(jax.jacobian(step_fn, argnums=1))(times, xs[:-1], us)  # (H, n, n)
+    field_x = jax.vmap(jax.jacobian(dyn, argnums=1))(times, xs[:-1], us)
 
     def injection_gain(jac: Array) -> Array:
         m = dt * jac
