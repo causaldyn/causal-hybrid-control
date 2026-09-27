@@ -68,6 +68,38 @@ jobs:
             for f in *.v; do rocq compile -q "$f"; done
             echo "compiled $(ls -1 *.vo | wc -l) proofs"'
 
+  # The matrix lifts in proofs/mathcomp/ need MathComp, which the plain Rocq image does not carry.
+  # Unlike the Stdlib proofs they are stated over abstract MathComp fields, not over Stdlib's
+  # axiomatic reals, so every lemma must print "Closed under the global context": the audit counts
+  # those lines against the lemma count and fails on any axiom or admitted step.
+  proofs-mathcomp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compile and audit the MathComp lifts
+        # Same container discipline as `proofs`: read-only mount, sources copied into /tmp, and
+        # `bash -lc` so the image's opam switch is on PATH.
+        run: |
+          docker run --rm -v "$PWD/proofs/mathcomp:/proofs:ro" mathcomp/mathcomp:2.6.0-rocq-prover-9.2 bash -lc '
+            set -euo pipefail
+            mkdir /tmp/proofs /tmp/audit && cp /proofs/*.v /tmp/proofs/ && cd /tmp/proofs
+            for f in *.v; do rocq compile -q "$f"; done
+            echo "compiled $(ls -1 *.vo | wc -l) MathComp proofs"
+            expected=0
+            for f in *.v; do
+              names=$(grep -oP "^\s*(Lemma|Theorem|Corollary|Proposition)\s+\K[A-Za-z_][A-Za-z0-9_\x27]*" "$f" || true)
+              [ -z "$names" ] && continue
+              cp "$f" /tmp/audit/
+              for n in $names; do echo "Print Assumptions $n." >> "/tmp/audit/$f"; expected=$((expected + 1)); done
+            done
+            cd /tmp/audit
+            for f in *.v; do rocq compile -q "$f" >> /tmp/audit.out 2>&1 || { cat /tmp/audit.out; exit 1; }; done
+            closed=$(grep -c "^Closed under the global context$" /tmp/audit.out || true)
+            if [ "$closed" -ne "$expected" ] || grep -qE "^Axioms:|Admitted" /tmp/audit.out; then
+              cat /tmp/audit.out; echo "$closed of $expected lemmas closed under the global context"; exit 1
+            fi
+            echo "$closed lemmas closed under the global context"'
+
   # The CAS half of every result was gated exactly once -- by hand, in the session that wrote it.
   # Three derivations were consequently dead from their first commit to 2026-09-01. `maxima -b` exits 0
   # on a parse error and still echoes the batch filename, so `run_all.sh` greps the output instead.

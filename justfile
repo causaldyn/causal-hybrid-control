@@ -89,6 +89,48 @@ assumptions:
     grep -q 'Admitted' "$work/all.out" && { echo "an Admitted proof reached the batch"; exit 1; } || true
     echo "$lemmas lemmas rest on Stdlib's classical-reals axioms and nothing else"
 
+# ── Rocq + MathComp ───────────────────────────────────────────────────────────
+
+# The matrix lifts in proofs/mathcomp/ need MathComp 2.6, which Fedora does not package, so they
+# compile in the opam switch `chc-mathcomp` (CI: mathcomp/mathcomp:2.6.0-rocq-prover-9.2). The
+# system rocq never sees them: `just proofs` globs proofs/*.v, which does not descend.
+proofs-mathcomp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$HOME/.local/bin:$PATH"
+    work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+    cp proofs/mathcomp/*.v "$work"/
+    cd "$work"
+    for f in *.v; do timeout 900 opam exec --switch=chc-mathcomp -- rocq compile -q "$f"; done
+    echo "compiled $(ls -1 *.vo | wc -l) MathComp proofs"
+
+# These are stated over abstract MathComp fields, not over Stdlib's axiomatic reals, so here
+# "Closed under the global context" IS reachable, and it is the gate: every lemma must print it,
+# and one axiom of any kind -- a project Axiom, an admitted step, a Section hypothesis leaking out
+# of its Section -- fails the recipe.
+assumptions-mathcomp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$HOME/.local/bin:$PATH"
+    work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+    expected=0
+    for f in proofs/mathcomp/*.v; do
+      names=$(grep -oP '^\s*(Lemma|Theorem|Corollary|Proposition)\s+\K[A-Za-z_][A-Za-z0-9_'"'"']*' "$f" || true)
+      [ -z "$names" ] && continue
+      probe="$work/$(basename "$f")"
+      cp "$f" "$probe"
+      for n in $names; do echo "Print Assumptions $n." >> "$probe"; expected=$((expected + 1)); done
+      if ! (cd "$work" && timeout 900 opam exec --switch=chc-mathcomp -- rocq compile -q "$(basename "$f")") \
+          >> "$work/all.out" 2>&1; then
+        cat "$work/all.out"; exit 1
+      fi
+    done
+    closed=$(grep -c '^Closed under the global context$' "$work/all.out" || true)
+    if [ "$closed" -ne "$expected" ] || grep -qE '^Axioms:|Admitted' "$work/all.out"; then
+      cat "$work/all.out"; echo "$closed of $expected lemmas closed under the global context"; exit 1
+    fi
+    echo "$closed lemmas closed under the global context"
+
 # ── Maxima ────────────────────────────────────────────────────────────────────
 
 # `maxima -b` exits 0 on a parse error, so the runner greps the output instead.
