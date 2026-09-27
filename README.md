@@ -197,7 +197,8 @@ Correctness is cross-checked in independent tools, symbolic first (`validation/`
 exponential are verified **Maxima**-authoritative (exact + high-precision `bfloat`) against **PARI/GP**
 (50-digit) and **Octave**, with SciPy used only as the fast float64 numeric. The control and guarantee
 invariants are **formally proved in Rocq** — 63 files under `proofs/`, from the box-projection bounds
-and idempotence (`box_projection.v`) to the interference-aware regret certificate.
+and idempotence (`box_projection.v`) to the interference-aware regret certificate — and where Stdlib
+could state only a scalar shadow, `proofs/mathcomp/` proves the matrix statement with MathComp.
 
 ## Honest positioning
 

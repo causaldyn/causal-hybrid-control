@@ -9,6 +9,21 @@ still change).
 
 ### Added
 
+- **The matrix statements behind the scalar Rocq proofs, proved with MathComp
+  (`proofs/mathcomp/`).** Stdlib has no matrices, so the robust barrier margin, the multivariate
+  van Trees floor, the certainty-equivalence constant and the dimension limits of the KAN,
+  circulant, Riccati and delay results were machine-checked only as scalar or 2×2 shadows, with the
+  matrix forms resting on Maxima and numerical sweeps. Six files now prove them over abstract
+  fields at any dimension: the operator- and Frobenius-ball reduction of the robust barrier margin
+  to the channel ball, and discrete-time forward invariance for an affine barrier under the Euler
+  step; the regret identity and trace floor of multivariate van Trees; completing the square, the
+  exact regret-to-go and the explicit constant of the certainty-equivalence bound for any `n`, `m`,
+  with the positive-semidefinite side of the discrete Riccati recursion; `n`-input KAN floors,
+  `N`-mode circulant bounds and the multivariate delay half-line. All 191 lemmas are closed under
+  the global context, and `just assumptions-mathcomp`, a separate CI job, fails otherwise.
+  Continuous-time forward invariance (Nagumo 1942, Brezis 1970), the Riccati escape time and the
+  transcendental delay boundary stay cited or scalar.
+
 - **A documentation site, every result on it printed while it builds.** `just docs` runs
   `docs/build.sh`, the same script CI and the Pages deploy run: it executes the eight notebooks and
   the scripts the pages quote, then `mkdocs build --strict`, so no page carries a number of its own.

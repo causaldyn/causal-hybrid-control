@@ -12,20 +12,29 @@ and idempotence behind `project_box`
 ([`box_projection.v`](https://github.com/causaldyn/causal-hybrid-control/blob/main/proofs/box_projection.v))
 to the interference-aware regret certificate
 ([`interference_regret.v`](https://github.com/causaldyn/causal-hybrid-control/blob/main/proofs/interference_regret.v)).
+Where Stdlib's lack of matrices limited a proof to its scalar or 2×2 shadow, the matrix statement is
+proved separately in
+[`proofs/mathcomp/`](https://github.com/causaldyn/causal-hybrid-control/tree/main/proofs/mathcomp)
+with MathComp, at any dimension: the robust barrier margin over an operator or Frobenius ball, the
+multivariate van Trees regret identity, and the explicit constant of the certainty-equivalence
+regret bound.
 
 Two things bound what "proved" means here:
 
-- **Every lemma is stated over Rocq's classical reals**, which are themselves axiomatic. The gate
-  is therefore not "closed under the global context", which no such lemma can be; it is that
-  nothing *outside* Stdlib's own classical-reals axioms gets in — no project `Axiom`, no admitted
-  step, no `Hypothesis` leaking out of its `Section`.
+- **Every lemma under `proofs/` is stated over Rocq's classical reals**, which are themselves
+  axiomatic. The gate is therefore not "closed under the global context", which no such lemma can
+  be; it is that nothing *outside* Stdlib's own classical-reals axioms gets in — no project
+  `Axiom`, no admitted step, no `Hypothesis` leaking out of its `Section`. The MathComp lifts are
+  stated over abstract fields instead, so for them "closed under the global context" is the gate.
 - **A published statistical result a proof relies on is an input, not a theorem.** It enters the
   theorem's type as a named predicate carrying its citation, rather than as an axiom, so
   `Check <theorem>` shows the cited names and `Print <Name>` what was assumed under each.
 
 ```bash
-just proofs        # compile every proof (CI does this on every push, under Rocq 9.2)
-just assumptions   # Print Assumptions on every lemma; fails on anything beyond Stdlib's axioms
+just proofs                # compile every proof (CI does this on every push, under Rocq 9.2)
+just assumptions           # Print Assumptions on every lemma; fails on anything beyond Stdlib's axioms
+just proofs-mathcomp       # compile the MathComp lifts (MathComp 2.6, see CONTRIBUTING.md)
+just assumptions-mathcomp  # fails unless every lift is closed under the global context
 ```
 
 ## Symbolic derivations — [`validation/`](https://github.com/causaldyn/causal-hybrid-control/tree/main/validation)

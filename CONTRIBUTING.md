@@ -30,6 +30,17 @@ the post-rename `From Stdlib Require Import`, which does not exist before Rocq 9
 for f in proofs/*.v; do rocq compile -q "$f"; done
 ```
 
+The matrix lifts in `proofs/mathcomp/` also need MathComp 2.6, which Fedora does not package. They
+compile in a user-level opam switch, and CI compiles them in the
+`mathcomp/mathcomp:2.6.0-rocq-prover-9.2` image:
+
+```bash
+opam repo add rocq-released https://rocq-prover.org/opam/released
+opam switch create chc-mathcomp ocaml-base-compiler.5.3.0 --no-switch
+opam install --switch=chc-mathcomp rocq-core.9.2.0 rocq-stdlib.9.2.0 rocq-mathcomp-algebra.2.6.0
+just proofs-mathcomp && just assumptions-mathcomp
+```
+
 `tests/conftest.py` enables `jax_enable_x64`, so the suite runs in **float64** while a standalone
 `uv run python` script runs float32. Numbers calibrated in one regime can fail in the other — if you
 quote a measurement anywhere, produce it under the suite's settings.
