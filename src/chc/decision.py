@@ -640,7 +640,7 @@ def prescribe(
     model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
 
     def solve(lo: Array, hi: Array) -> CausalPlan:
-        return causal_plan(
+        solved = causal_plan(
             model,
             start,
             planning_cost,
@@ -654,6 +654,12 @@ def prescribe(
             constraints=(rate,),
             barrier=held,
         )
+        if held is None:
+            return solved
+        # The solve's own audit reads one margin at a tie. Greedy ranks candidates on, and the
+        # certificate reports, the audit of every tied margin, so the two cannot disagree.
+        audit = _certify(solved, model, margins, dt, gamma=gamma, u_max=u_max)
+        return replace(solved, safety=audit)
 
     def price(solved: CausalPlan) -> float:
         return plan_regret_bound(
@@ -685,9 +691,12 @@ def prescribe(
         },
     )
 
-    safety = _certify(plan, model, margins, dt, gamma=gamma, u_max=u_max) if margins else None
     if held is not None:
-        plan = replace(plan, safety=safety)  # the solve's own audit read one margin at a tie
+        safety = plan.safety  # solve() already audited every tied margin
+    elif margins:
+        safety = _certify(plan, model, margins, dt, gamma=gamma, u_max=u_max)
+    else:
+        safety = None
     certificate = DecisionCertificate(
         identification=identification,
         adjustment=resolved,

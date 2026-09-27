@@ -576,7 +576,10 @@ still change).
   audit field for field, which a test pins, and no number `mmm_demo.py` prints moved. A tied step's
   `gamma_star` is the weakest tied margin's, an upper bound on what a single action reaches. A held
   solve still takes one barrier, whose gradient at a tie is now the first tied margin's rather than
-  zero; `plan.safety` carries the per-margin audit, as the certificate does.
+  zero; `plan.safety` carries the per-margin audit, as the certificate does, and `max_levers` ranks
+  its candidates under `hold_constraints` on that audit too. Ranked on the solve's own, greedy kept a
+  lever whose plan left through the untested bound at the first step and whose certificate then
+  cleared none of it.
 
 - **`DecisionCertificate.trustworthy_steps` trusted a plan whose tube was never evaluated.** Since
   0.5.0 it dropped a `None` prefix instead of counting it as zero, which its own docstring promised,

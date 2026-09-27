@@ -233,6 +233,49 @@ def test_held_constraints_rank_a_lever_that_cannot_hold_them_last(
     assert held.certificate.barrier_certified_steps == 12
 
 
+def test_held_constraints_rank_candidates_on_the_audit_the_certificate_reports() -> None:
+    """From the midpoint of a two-sided supply bound both margins are the minimum, and a held solve
+    enforces only the first there, so ``incentive``, the cheaper route to the target, leaves through
+    ``hi`` at the first step. The certificate audits every tied margin and clears no step of that
+    plan; ranked on the solve's own audit, greedy kept it anyway."""
+    boxes = {"incentive": 2.0, "boost": 2.0, "calm": 0.3}
+
+    def run(keep: tuple[str, ...], max_levers: int | None) -> Prescription:
+        levers = [
+            Lever(
+                name,
+                lo=-box if name in keep else 0.0,
+                hi=box if name in keep else 0.0,
+                unit_cost=0.05,
+            )
+            for name, box in boxes.items()
+        ]
+        return prescribe(
+            PANEL,
+            levers=levers,
+            target=Target("wait", value=-1.0),
+            constraints=[Constraint("supply", lo=-0.2, hi=0.2)],
+            hold_constraints=True,
+            adjustment=GRAPH,
+            horizon=12,
+            dt=DT,
+            x0=[0.0, 0.0],
+            max_levers=max_levers,
+        )
+
+    incentive, calm = run(("incentive",), None), run(("calm",), None)
+    assert incentive.plan is not None
+    assert calm.plan is not None
+    assert incentive.plan.task_cost < calm.plan.task_cost
+    assert incentive.certificate.barrier_certified_steps == 0
+    assert calm.certificate.barrier_certified_steps == 12
+
+    selected = run(tuple(boxes), max_levers=1)
+    assert selected.selection is not None
+    assert selected.selection.selected == ("calm",)
+    assert selected.certificate.barrier_certified_steps == 12
+
+
 def test_a_max_levers_that_cannot_be_honoured_is_refused() -> None:
     with pytest.raises(DecisionError, match="selects no lever"):
         _prescribe(max_levers=0)
