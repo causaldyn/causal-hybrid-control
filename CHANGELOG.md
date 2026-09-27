@@ -9,6 +9,41 @@ still change).
 
 ### Added
 
+- **A pendulum case study for `prescribe`: Pendulum-v1 held at an angle, planned from a log whose
+  torque was confounded (`scripts/pendulum_demo.py`).** The control audience's counterpart of
+  `chc.mmm`. While logging, an operator cancelled half the wind torque it measured, so the logged
+  torque moves with a disturbance that enters `omega'` exactly where the torque does: the
+  confounding sits on the control channel. Gravity goes in as `known=`, the actuator is what the log
+  has to identify, and every schedule is run on the *true* pendulum:
+
+  ```
+  | reading | identification | adjusted for | torque channel | trusted steps | final angle error | rms angle error | peak omega |
+  |---|---|---|---|---|---|---|---|
+  | adjusted | identified | wind | +3.002 | 4 | +0.003 | 0.141 | 0.460 |
+  | asserted | asserted | nothing | -1.064 | 0 | +0.610 | 0.667 | 0.869 |
+  | latent | not_identified | - | - | 0 | no schedule | - | - |
+  | none | - | - | - | - | +0.300 | 0.300 | 0.000 |
+  ```
+
+  The task is to raise the pendulum 0.30 rad from hanging and hold it for 40 steps of 0.05 s,
+  inside Pendulum-v1's torque box of 2, with `|omega| <= 1.0` held in the solve as the barrier.
+  Adjusted for the wind, the channel is `+3.002` against `3.000`. Asserting an empty set returns
+  `-1.064`, where the omitted-variable formula for white wind,
+  `b (k(k-1) s_w^2 + s_e^2) / (k^2 s_w^2 + s_e^2)`, predicts `-1.052`: an operator who cancels half
+  the wind teaches the log that torque pushes backwards, and the plan ends `2.0x` as far from the
+  target as never acting. Declared latent, the wind leaves no schedule.
+
+  Four trusted steps of forty is what the certificate can say here, and the script's docstring says
+  why: the tube compounds at the hanging pendulum's logarithmic norm, `(15 - 1)/2` per second, and
+  `channel_error` averages every channel coefficient's standard error, the constant term included
+  -- the channel at upright, where the log never goes. The audit, not the certificate, shows the
+  rest of the schedule holding.
+
+  A script with a test that drives the file itself (`tests/test_pendulum_demo.py`) rather than a
+  module, because nothing imports the plant. Its numbers are float32, the default, and the header
+  says so; in float32 a warning adds that the fits match float64 to the digits printed while the
+  barrier-held solves do not, so peak omega and the asserted schedule's errors move.
+
 - **Which levers to use: `prescribe(max_levers=k)` (L1).** `prescribe` planned with every lever it
   was handed, so a pilot allowed to move two things had to guess which two. `max_levers=k` chooses
   at most `k` by greedy forward selection with the plan as its inner loop: from no lever, each step
