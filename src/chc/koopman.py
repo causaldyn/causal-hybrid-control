@@ -4,7 +4,7 @@ The Koopman idea: in a lifted feature space ``phi(x)`` the dynamics are approxim
 ``phi(x') ~ A phi(x) + B u``. Fit ``A, B`` from transitions by least squares (EDMD); the nonlinear
 system becomes linear, so control is a fast, exact **discrete LQR** in the lifted space, not a
 gradient-descent MPC. This mirrors the CHC hybrid philosophy (a structured global model plus a
-correction); the modern, Residual-Koopman-MPC-lineage control backend (see ``plans/16``). The
+correction); the modern, Residual-Koopman-MPC-lineage control backend. The
 dictionary is polynomial; the first ``state_dim`` features are the raw state, decoding is a slice.
 """
 

@@ -6,7 +6,7 @@ MCI-calibrated partial-correlation test (:func:`chc.independence.partial_corr_te
 add the candidate with the strongest association *given the already-selected parents*, until none is
 significant. Conditioning on the selected parents (dominant autoregressive lags are picked first)
 removes indirect-path false positives -- ``x^i_{t-2} -> x^i_{t-1} -> x^j_t`` makes ``x^i_{t-2}``
-look like a parent to a naive test, but not once ``x^i_{t-1}`` is conditioned on. See ``plans/17``.
+look like a parent to a naive test, but not once ``x^i_{t-1}`` is conditioned on.
 
 Deliberately minimal: lag-capped, next-state targets only, no contemporaneous-link search. The heavy
 algorithms (PCMCI+/LPCMCI) stay a lazy, opt-in tigramite adapter; the point here is to feed
@@ -153,7 +153,7 @@ class TigramiteDiscovery:
     PCMCI + a tigramite conditional-independence test doing the work. Reach for it when the native
     minimal PC1 is not enough -- dense coupling, or nonlinear dependencies via a nonparametric test
     (``cond_ind_test=GPDC()``/``CMIknn()``). tigramite is GPL-3.0, so it stays bring-your-own-env
-    and is never a chc dependency; see ``plans/17``.
+    and is never a chc dependency.
     """
 
     pc_alpha: float = 0.01

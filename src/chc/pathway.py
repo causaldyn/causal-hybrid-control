@@ -1,4 +1,4 @@
-"""Temporal causal pathways: which set of variables, over which lags, drives a target (plans/17-18).
+"""Temporal causal pathways: which set of variables, over which lags, drives a target.
 
 A one-step causal tool answers "does X move the target, and in which direction?". CHC's dynamics
 layer answers the *temporal* question: **which variables, at which lags and along which multi-step

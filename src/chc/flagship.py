@@ -3,7 +3,7 @@
 Offline data is logged under a behaviour policy that ties the action to a confounder ``z`` which
 also drives the outcome. A controller that fits the action effect **without** adjusting for ``z``
 learns the wrong sign and drives the true plant away from target; adjusting for ``z`` recovers the
-effect and control succeeds. This is the "causal != predictive for control" figure (``plans/05``):
+effect and control succeeds. This is the "causal != predictive for control" figure:
 plan with the learned effect, act on the true system — the model/plant split of ``chc.mpc``.
 """
 

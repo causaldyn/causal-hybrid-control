@@ -3,7 +3,7 @@
 Weak form of ``-u'' = f`` on ``[0,1]`` with ``u(0)=u(1)=0`` and a piecewise-linear hat basis: the 1D
 analogue of the user's 2D bilinear coursework (``plans/11`` §5). Hat stiffness assembles to the
 tridiagonal stencil ``(1/h)[-1, 2, -1]``, solved by the Thomas sweep (the "progonka" kernel of
-Marchuk-Agoshkov projection-grid methods). Seeds the weak-form / Galerkin track (``plans/01`` §3.3).
+Marchuk-Agoshkov projection-grid methods).
 
 That operator is symmetric positive definite, where testing with the trial space is optimal by
 Cea's lemma. The second half of the module is the case where that fails: adding advection,

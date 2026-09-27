@@ -6,7 +6,7 @@ truth, not a self-authored DGP. The LaLonde (1986) challenge swaps the experimen
 non-experimental CPS comparison pool: the naive treated-minus-control gap is then catastrophically
 biased (wrong sign, ~ -$8500), and a causal estimator's job is to recover the experimental number by
 covariate adjustment. This exercises CHC's causal backbone (:mod:`chc.estimators`) on real external
-data -- the external-validity corroboration `plans/19` E asks for.
+data -- an external-validity check.
 
 Data (public domain, ~445 + 15992 rows) is fetched from the Rdatasets mirror on first use and cached
 under ``~/.cache/chc``; no dataset ships in the repo and no package dependency is added (urllib +

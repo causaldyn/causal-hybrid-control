@@ -2,7 +2,7 @@
 
 Trains only the residual parameters (the known mechanism is frozen) to minimise one-step or
 multi-step (rollout) prediction error via autodiff through the RK4 step + Optax. This is the "hybrid
-learns the unknown part" step (``plans/08`` Milestone B/D); the known dynamics are never re-learned.
+learns the unknown part" step; the known dynamics are never re-learned.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def fit_residual_multistep(
     """Fit the residual to *trajectories* by minimising multi-step rollout error.
 
     ``data = {x0, us, xs}`` with shapes (N, n), (N, H, m), (N, H+1, n). Unlike one-step fitting this
-    directly penalises rollout drift (``plans/08``). Returns the trained model and loss history.
+    directly penalises rollout drift. Returns the trained model and loss history.
     """
     known = model.known
     residual = model.residual

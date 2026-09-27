@@ -284,7 +284,7 @@ class GraphResidual(eqx.Module):
     The state is ``n_nodes`` blocks of ``node_dim``. Each node's update is an MLP of its features,
     the mean of its neighbours' encoded features (one message-passing round), and the control. It is
     permutation-equivariant and parameter-shared, learning a coupling a pointwise MLP re-learns per
-    node. The adjacency is frozen (``stop_gradient``); see ``plans/16``.
+    node. The adjacency is frozen (``stop_gradient``).
     """
 
     adjacency: Array
@@ -1069,10 +1069,8 @@ def spectral_residual_certificate(
 ) -> SpectralResidualCurve:
     """Does a circulant backbone beat an MLP on the plant that justifies it -- and how, exactly.
 
-    ``plans/18`` E was skipped under its own kill-criterion, whose sole reopening condition was
-    tying a learned spectral operator into ``chc.transport``. Both halves are here, so the
-    criterion is live: if the MLP matches this backbone on its own home ground, the backbone is
-    deleted and the finding recorded.
+    This is the backbone's kill-criterion: if the MLP matches it on its own home ground, the
+    backbone is deleted and the finding recorded.
 
     The plant is ``chc.transport``'s periodic advection-diffusion field plus a Gaussian-smoothed
     control channel -- translation-invariant by construction, so the truth lies IN the circulant

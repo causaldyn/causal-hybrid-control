@@ -3,7 +3,7 @@
 The "recommend a zone, agents migrate, new distribution" loop: agents adjust *gradually* toward the
 softmax response to the per-tick incentives, so an action plays out over several ticks -- a planner
 that anticipates the migration lag beats a myopic controller that only reacts to the mismatch.
-Builds on the game response in ``chc.games``. See ``plans/16`` (Phase 3).
+Builds on the game response in ``chc.games``.
 """
 
 from __future__ import annotations

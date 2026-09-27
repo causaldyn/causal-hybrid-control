@@ -1,6 +1,6 @@
 """Off-policy evaluation: estimate a policy's value from logged data before deploying it.
 
-The pre-deployment safety gate (``plans/02`` §6): given logs ``(x, u, r)`` collected under a
+The pre-deployment safety gate: given logs ``(x, u, r)`` collected under a
 behaviour policy, estimate the value of a candidate target policy by inverse-propensity weighting,
 and refuse deployment when the target's actions leave the logged support (no overlap => no
 evidence). Overlap is summarised by the effective sample size; a low ESS fraction is untrustworthy.

@@ -3,7 +3,7 @@
 Marketplaces have strategic, mobile agents, so SUTVA fails -- the platform is a Stackelberg *leader*
 over the agents' equilibrium, and its action is optimised accounting for the induced best response.
 These are the reusable methods (equilibrium solver + bilevel allocator); the benchmark *task* that
-scores them (the zone-incentive game) lives in ``causaldyn-bench``. See ``plans/16``, ``plans/21``.
+scores them (the zone-incentive game) lives in ``causaldyn-bench``.
 
 The solver is a **certified** fixed point, not a fixed iteration count. :func:`fixed_point` runs to
 a tolerance under ``lax.while_loop`` and differentiates by the implicit function theorem, so

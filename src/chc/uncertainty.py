@@ -1,5 +1,5 @@
 """Calibrated pessimism: a deep-ensemble residual whose disagreement, conformalised for coverage,
-scores predictive uncertainty for the offline-safety penalty (plans/19 A; the ``U`` term, plans/02).
+scores predictive uncertainty for the offline-safety penalty (its ``U`` term).
 
 ``chc.support`` scores *density distance* ``D((x,u),D)``; this module supplies the complementary
 *calibrated predictive uncertainty* ``U(x,u)``. Fit K residuals as a deep ensemble; their member
@@ -12,7 +12,7 @@ exploitation is bounded, not merely discouraged.
 A third scorer, :class:`WassersteinPenalty`, targets the *deployment-shift* failure mode rather than
 in-distribution epistemic spread: a Wasserstein-1 distributionally-robust margin
 (``radius * Sigma ||d r / d x||``) that keeps control where a small shift of the state distribution
-cannot move the learned dynamics much (plans/20 §B).
+cannot move the learned dynamics much.
 """
 
 from __future__ import annotations
@@ -458,7 +458,7 @@ class SplitConformal(eqx.Module):
 
 
 class WassersteinPenalty(eqx.Module):
-    """Wasserstein-1 distributionally-robust penalty on the learned residual (plans/20 §B).
+    """Wasserstein-1 distributionally-robust penalty on the learned residual.
 
     Where ``SupportModel`` scores *in-distribution* density distance ``D`` and the ensemble scores
     epistemic *spread* ``U``, this scores robustness to a *distribution shift* of the states.

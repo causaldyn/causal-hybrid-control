@@ -1,6 +1,6 @@
 """Confounded offline identification: why the control-effect residual needs the adjustment set.
 
-A minimal linear demonstration of the CHC causal claim (see ``plans/02``). The historical action
+A minimal linear demonstration of the CHC causal claim. The historical action
 was chosen by a behaviour policy correlated with a covariate ``z`` that also drives the outcome.
 Fitting the effect of ``u`` without adjusting for ``z`` is confounded (the estimate can flip sign);
 conditioning the residual on the adjustment set recovers the true interventional effect.

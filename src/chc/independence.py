@@ -5,7 +5,7 @@ conditioning set ``z``, then Fisher-z test the residual correlation. In serially
 naive ``corr(x, y)`` is badly miscalibrated -- autocorrelation inflates the effective variance of
 the estimator, so unrelated series look linked. Conditioning on the lagged parents (tigramite's
 *momentary conditional independence*) whitens the residuals and restores calibration. This is the CI
-primitive ``chc.discovery`` screens lagged parents with; see ``plans/17``. The method (partial
+primitive ``chc.discovery`` screens lagged parents with. The method (partial
 correlation) is standard; only the autocorrelation-aware *usage* is borrowed -- no tigramite code.
 
 Computed in NumPy float64, not JAX: a p-value threshold is precision-sensitive near ``alpha``, and a

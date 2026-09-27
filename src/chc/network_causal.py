@@ -4,7 +4,7 @@ On a network a unit's outcome depends on its *neighbours'* treatments too (inter
 so an effect estimate that ignores the exposure is blind to the spillover. This adds a cross-fitted,
 Neyman-orthogonal Double ML that estimates **both** the direct and the spillover effect, using
 graph-aggregated (mean-neighbour) covariates as the nuisance features -- the lean, JAX-native
-counterpart of GNN-nuisance network DML (cf. arXiv 2509.18484, 2211.07823); see ``plans/16``.
+counterpart of GNN-nuisance network DML (cf. arXiv 2509.18484, 2211.07823).
 Identifiability caveat: like confounding, the spillover is only recovered under the stated exposure
 model (mean neighbour treatment); real pilots need cluster/geo randomisation.
 """

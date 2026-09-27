@@ -2,8 +2,8 @@
 
 ``SupportModel`` scores how far a state-action pair ``(x, u)`` sits from the offline data cloud
 (squared Mahalanobis distance ``D``); ``pessimistic_control`` penalises leaving that support, so the
-controller does not exploit the model where it was never trained. This is the offline-safety layer
-(``plans/02`` §3): the objective is ``J_task + λ_unc·Σ U + λ_supp·Σ D``, where the calibrated
+controller does not exploit the model where it was never trained. This is the offline-safety layer:
+the objective is ``J_task + λ_unc·Σ U + λ_supp·Σ D``, where the calibrated
 predictive-uncertainty term ``U`` comes from ``chc.uncertainty`` (deep ensemble / conformal) and
 this module supplies ``D`` and the controller that combines them through the ``PenaltyModel``.
 """

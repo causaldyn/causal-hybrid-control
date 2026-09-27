@@ -1,12 +1,12 @@
-"""Dynamic causal effects: the impulse-response / carryover kernel for control (plans/18).
+"""Dynamic causal effects: the impulse-response / carryover kernel for control.
 
 CHC's one-step ``estimate_control_effect`` gives the scalar ``d x_next/d u``; a controller planning
 over a horizon needs the whole ``d x_{t+h}/d u_t``, ``h = 0..H`` -- how an intervention
 propagates over time (the impulse response, or an MMM **adstock carryover kernel**). This is Jorda
 **local projections**: one regression per horizon of the ``h``-step-ahead outcome on the treatment
 plus an adjustment set, so conditioning on the state/confounders blocks the backdoor path exactly as
-the one-step estimate does. The dynamic sibling of :func:`chc.causal.estimate_control_effect`; see
-``plans/18``. This is a causal-effect estimator, not a sequence model.
+the one-step estimate does. The dynamic sibling of :func:`chc.causal.estimate_control_effect`.
+This is a causal-effect estimator, not a sequence model.
 """
 
 from __future__ import annotations
@@ -302,7 +302,7 @@ def irf_control_sequence(irf: ArrayLike, target: ArrayLike) -> np.ndarray:
     Toeplitz of the response), so achieving a target trajectory ``x*`` is the deconvolution
     ``u = G^{-1} x*`` -- solved with the Toeplitz machinery. This makes the *whole* dynamic effect
     actionable: it accounts for carryover, where a one-step controller that inverts only ``g_1``
-    over-actuates on a delayed plant (steady-state error ``sum_h g_h / g_1``). See ``plans/18``.
+    over-actuates on a delayed plant (steady-state error ``sum_h g_h / g_1``).
     """
     kernel = np.asarray(irf, dtype=np.float64)[1:]  # drop g_0 = 0; the causal impulse response
     target = np.asarray(target, dtype=np.float64)

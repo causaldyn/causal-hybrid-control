@@ -4,7 +4,7 @@ Everything here already existed -- constrained OC (:mod:`chc.control`), the offl
 uncertainty penalties (:mod:`chc.support`, :mod:`chc.uncertainty`), and the certified Gronwall
 error tube with its safe horizon. What was missing was a single object that carries a plan
 *together with* the evidence about where it may be trusted, so a caller cannot walk away with the
-actions and leave the certificate behind. See ``plans/21`` §D.
+actions and leave the certificate behind.
 
     plan = causal_plan(model, x0, cost, dt=0.1, horizon=20, u_lo=-5.0, u_hi=5.0,
                        lipschitz=0.8, model_error=0.05, tolerance=0.5)

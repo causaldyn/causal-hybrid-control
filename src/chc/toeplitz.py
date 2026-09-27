@@ -4,7 +4,7 @@ A Toeplitz operator *is* a linear time-invariant system -- its action is convolu
 impulse response. These primitives back the structured route to the dynamic causal effect
 (``chc.irf``): the fast forward operator, the Yule-Walker AR fit (reflection coefficients and
 innovation power), deconvolution (recover the excitation from the response), and the
-Gohberg-Semencul fast inverse. See ``plans/18``.
+Gohberg-Semencul fast inverse.
 
 Two ways to apply ``T^{-1}``: ``solve_toeplitz`` is a one-shot dense solve; **Gohberg-Semencul**
 (:func:`gohberg_semencul_generators` + :func:`gohberg_semencul_apply`) compresses the whole inverse
@@ -82,7 +82,7 @@ def sample_autocorrelation(x: ArrayLike, max_lag: int) -> np.ndarray:
     Divides every lag by ``n`` (not ``n - k``): the biased estimator is guaranteed PSD, so its
     Toeplitz matrix is valid and Levinson-Durbin stays stable even from few samples, where the
     unbiased estimator can be non-PD with reflection coefficients outside ``(-1, 1)``. The robust
-    distillation of Gohberg-Semencul covariance estimation (arXiv:2311.14995); see ``plans/18``.
+    distillation of Gohberg-Semencul covariance estimation (arXiv:2311.14995).
     """
     x = np.asarray(x, dtype=np.float64)
     x = x - x.mean()

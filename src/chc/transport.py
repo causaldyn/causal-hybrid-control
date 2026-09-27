@@ -1,4 +1,4 @@
-"""Continuum mean-field control: the density transport PDE ``rho_t + (rho v)_x = s`` (plans/16).
+"""Continuum mean-field control: the density transport PDE ``rho_t + (rho v)_x = s``.
 
 The continuous-space sibling of :class:`chc.meanfield.MeanFieldControl` (which lives on a finite
 zone graph). Agents are a density ``rho(x, t)`` on a periodic 1-D domain; a velocity field ``v``
@@ -12,8 +12,8 @@ advects them and a source ``s`` injects/removes mass. Two pieces, both honest an
   target profile at least transport effort ``sum rho v^2`` -- a discretised **dynamic optimal
   transport / mean-field game**, differentiable straight through the conservative solver.
 
-plans/16 deferred this continuum model (the discrete zone graph gets ~90% of the value at ~10% of
-the cost); it is built here as the elegant limit, with the mass-conservation and splitting-order
+The discrete zone graph stays the primary model, with most of the value at a fraction of the cost;
+this continuum model is built as its elegant limit, with the mass-conservation and splitting-order
 gates that make it trustworthy rather than merely elegant.
 """
 

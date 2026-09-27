@@ -2,7 +2,7 @@
 
 For ``ẋ = A x + r(x)`` the known linear (often stiff) operator is advanced by its exact flow
 ``exp(A dt)`` and the learned residual ``r`` by RK4. Strang-Marchuk composes them symmetrically for
-2nd-order accuracy, so the network need not represent the stiff known dynamics (``plans/01`` §3.1).
+2nd-order accuracy, so the network need not represent the stiff known dynamics.
 This is where the "Marchuk" framing earns its keep.
 """
 
