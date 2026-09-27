@@ -3,10 +3,12 @@ name: docs
 # Publish the documentation site to GitHub Pages. The build is `docs/build.sh`, the script ci.yml's
 # `docs` job runs on every push and pull request.
 #
-# A release cut by release.yml does not start this workflow: that job creates the Release with the
-# workflow's own GITHUB_TOKEN, and GitHub starts no workflow run from an event that token raised
-# (`workflow_dispatch` excepted). Until that changes, deploy a release by dispatching this by hand.
+# release.yml calls this as its last job. Listening for `release: published` alone would never fire
+# for those releases: release.yml creates the Release with its own GITHUB_TOKEN, and GitHub starts no
+# workflow run from an event that token raised. The `release` trigger stays for a Release created by
+# hand, and `workflow_dispatch` for redeploying without one.
 on:
+  workflow_call:
   release:
     types: [published]
   workflow_dispatch:

@@ -128,3 +128,14 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* sbom/* \
             --title "$GITHUB_REF_NAME" \
             --notes-file notes.md
+
+  # The documentation for the version just released, deployed from its tag. Called rather than
+  # triggered: the Release above was created with this run's own token, and GitHub starts no
+  # workflow from an event that token raised, so docs.yml's `release` trigger would never fire.
+  docs:
+    needs: github-release
+    permissions:
+      contents: read
+      pages: write     # the called deploy job publishes the artifact
+      id-token: write  # and proves the deployment came from this repository's workflow
+    uses: ./.github/workflows/docs.yml

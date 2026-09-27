@@ -9,6 +9,20 @@ still change).
 
 ### Added
 
+- **A documentation site, every result on it printed while it builds.** `just docs` runs
+  `docs/build.sh`, the same script CI and the Pages deploy run: it executes the eight notebooks and
+  the scripts the pages quote, then `mkdocs build --strict`, so no page carries a number of its own.
+  The API reference is one page per public module, filed under the README's stability tiers, and
+  `tests/test_docs_api_pages.py` fails when a module has no page, a page renders a module that does
+  not exist, or a page's tier disagrees with the README. mkdocs-material and mkdocstrings live in a
+  `docs` dependency group, so neither the runtime nor `dev` grows. `release.yml` deploys the site
+  to GitHub Pages as its last job; `docs.yml` redeploys by dispatch.
+
+- **Every GitHub Release carries a CycloneDX SBOM.** `release.yml` exports
+  `causal-hybrid-control-<version>.cdx.json` from `uv.lock` with the runtime dependencies only,
+  checks that it names the version being released, and attaches it next to the wheel and the sdist.
+  Release tags are cut signed (`git tag -s`), as 0.5.0 and 0.5.1 already were.
+
 - **`residual_blindness_sweep`, and `solve_mfg_dgm(optimizer="lbfgs")`: Result 55's blind residual
   as a distribution, and the half of it that is proved (P4).** Result 55 measured one seed, one width
   and one optimiser, and read the raw residual's negative rank correlation with the error as
