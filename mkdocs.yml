@@ -120,7 +120,6 @@ nav:
           - api/marketplace.md
           - api/matching.md
           - api/metrics.md
-          - api/mintime.md
           - api/mmm.md
           - api/network_causal.md
           - api/offpolicy.md
@@ -146,6 +145,7 @@ nav:
           - api/koopman.md
           - api/lalonde.md
           - api/meanfield.md
+          - api/mintime.md
           - api/surrogate.md
           - api/symbolic.md
           - api/transport.md

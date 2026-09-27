@@ -290,7 +290,7 @@ Three tiers, by what a break costs you:
 |---|---|---|
 | **stable** | `dynamics` `integrate` `cost` `control` `plan` `barrier` `residual` `lqr` `mpc` `train` `adjoint` `decision` `panel` `graph` `dynamics_id` | the plant/control spine and the façade over it. Breaking changes wait for 1.0 and get a deprecation cycle |
 | **evolving** | the estimator, certificate and domain layers — `causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace` `mmm` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
-| **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` | may change or be withdrawn in any release. Pin an exact version if you depend on one |
+| **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` | may change or be withdrawn in any release. Pin an exact version if you depend on one |
 
 Roadmap: **0.6.0** general constraints in the solver, the transfer ledger, a docs site → **1.0.0**,
 which is when the stable tier stops moving.

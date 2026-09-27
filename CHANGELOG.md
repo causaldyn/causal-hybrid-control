@@ -686,6 +686,11 @@ still change).
 
 ### Changed
 
+- **`chc.mintime` is filed experimental, not evolving.** It solves the scalar double
+  integrator's time-optimal problem in closed form and nothing more general, which is the
+  README's definition of a module that carries one result. The tier table is new in this
+  release, so no published promise moves.
+
 - **`MatrixRatioAccuracy.ok` is deprecated for `status`: `"convicted"` or `"not_convicted"`, never
   `"certified"` (D13).** `ok = True` read as a certificate, and the refinement residual behind it
   is an estimate, guaranteed to majorise the error only once the per-node convergence rate reaches
