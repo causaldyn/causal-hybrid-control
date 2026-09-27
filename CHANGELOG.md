@@ -587,7 +587,7 @@ still change).
 
 ### Changed
 
-- **`MatrixRatioAccuracy.ok` is replaced by `status`: `"convicted"` or `"not_convicted"`, never
+- **`MatrixRatioAccuracy.ok` is deprecated for `status`: `"convicted"` or `"not_convicted"`, never
   `"certified"` (D13).** `ok = True` read as a certificate, and the refinement residual behind it
   is an estimate, guaranteed to majorise the error only once the per-node convergence rate reaches
   2 (`residual_bounds_iff_rate_reaches_two`). A rate is a ratio of two errors; the certificate holds
@@ -600,10 +600,11 @@ still change).
   where the channels are exchangeable, exceeds `tolerance`, and `"not_convicted"` otherwise, which
   is evidence and not a certificate.
 
-  **Breaking**, and removed rather than deprecated: replace `cert.ok` with
-  `cert.status == "not_convicted"` and `not cert.ok` with `cert.status == "convicted"`, and drop
-  `ok=` where you construct a `MatrixRatioAccuracy` yourself. No numeric behaviour changed:
-  `status` is `"convicted"` exactly where `ok` was `False`.
+  **Deprecated**, removed in 0.7.0: `ok` stays through 0.6.x as a property that raises a
+  `DeprecationWarning` and returns `status == "not_convicted"`. Replace `cert.ok` with
+  `cert.status == "not_convicted"` and `not cert.ok` with `cert.status == "convicted"`. `ok` is no
+  longer a constructor argument, so drop `ok=` where you construct a `MatrixRatioAccuracy`
+  yourself. No numeric behaviour changed: `status` is `"convicted"` exactly where `ok` was `False`.
 
 - **`composition_transfer_certificate` now says why its fitted slopes are not the integers, and
   the difference is derived rather than tolerated.** The certificate reports

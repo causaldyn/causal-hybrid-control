@@ -18,6 +18,7 @@ the discrete Lyapunov equation.
 from __future__ import annotations
 
 import itertools
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -2583,6 +2584,21 @@ class MatrixRatioAccuracy:
             self.exchangeable and self.relative_isotropy_bar > self.tolerance
         )
         return "not_convicted" if within else "convicted"
+
+    @property
+    def ok(self) -> bool:
+        """Deprecated since 0.6.0, removed in 0.7.0: ``status == "not_convicted"``.
+
+        Kept for one minor so that code reading it warns before it breaks. The value is unchanged,
+        and it was never a certificate (:data:`MatrixRatioStatus`).
+        """
+        warnings.warn(
+            "MatrixRatioAccuracy.ok is deprecated and will be removed in 0.7.0; use `status == "
+            '"not_convicted"` for `ok` and `status == "convicted"` for `not ok`',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.status == "not_convicted"
 
 
 def _channels_are_exchangeable(om: NDArray[np.float64], q: int, n: int) -> bool:

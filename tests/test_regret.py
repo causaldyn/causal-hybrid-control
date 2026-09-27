@@ -1373,6 +1373,27 @@ def test_the_ratio_status_can_convict_and_cannot_certify() -> None:
     assert float(np.max(np.abs(iso.value - truth))) / float(np.max(np.abs(iso.value))) > between
 
 
+@pytest.mark.parametrize(("tolerance", "status"), [(0.5, "convicted"), (2.0, "not_convicted")])
+def test_ok_warns_for_one_minor_and_still_reads_not_convicted(
+    tolerance: float, status: MatrixRatioStatus
+) -> None:
+    cert = MatrixRatioAccuracy(
+        value=np.eye(2),
+        coarse=np.eye(2),
+        nodes=8,
+        coarse_nodes=7,
+        residual=1.0,
+        relative_residual=1.0,
+        exchangeable=False,
+        isotropy_bar=math.nan,
+        relative_isotropy_bar=math.nan,
+        tolerance=tolerance,
+    )
+    assert cert.status == status
+    with pytest.warns(DeprecationWarning, match='status == "not_convicted"'):
+        assert cert.ok is (status == "not_convicted")
+
+
 _bar = st.floats(min_value=0.0, max_value=1e3, allow_nan=False, allow_infinity=False)
 _tolerance = st.floats(min_value=0.0, max_value=1e3, exclude_min=True, allow_nan=False)
 
