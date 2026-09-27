@@ -102,7 +102,10 @@ still change).
   `tests/test_docs_api_pages.py` fails when a module has no page, a page renders a module that does
   not exist, or a page's tier disagrees with the README. mkdocs-material and mkdocstrings live in a
   `docs` dependency group, so neither the runtime nor `dev` grows. `release.yml` deploys the site
-  to GitHub Pages as its last job; `docs.yml` redeploys by dispatch.
+  to GitHub Pages as its last job; `docs.yml` redeploys by dispatch. The site loads no math
+  renderer, for the reason it loads no Google Fonts: either would send a reader's browser to a
+  third party. The three TeX spans the tutorials carried are written as inline code with Unicode
+  instead, and `tests/test_notebook_prose.py` fails on a TeX span in any notebook's prose.
 
 - **Every GitHub Release carries a CycloneDX SBOM.** `release.yml` exports
   `causal-hybrid-control-<version>.cdx.json` from `uv.lock` with the runtime dependencies only,
