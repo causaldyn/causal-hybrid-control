@@ -60,6 +60,14 @@ The same table, read the other way.
 - **You want a Bayesian marketing-mix model** calibrated by priors and geo experiments: that is
   Meridian. The [media-budgets case study](case-studies/media-budgets.md) is about the other half —
   scheduling spend when the log was planned against demand.
+- **You can run experiments on the system.** Causal Bayesian optimisation intervenes and learns
+  from each intervention; `prescribe` reads a log and never experiments. On DCBO's own three dynamic
+  SCMs ([Track L](https://github.com/causaldyn/causaldyn-bench/blob/main/results/track_l.md) of
+  `causaldyn-bench`), `prescribe` from the log alone is level with DCBO on the stationary one and
+  behind every method that experiments, plain BO included, on the other two. The track names what
+  it lacks there: a *minimise* objective, a choice of which variables to intervene on, experiments,
+  and a model that changes in time. The converse holds too: DCBO reads the true SEM for every
+  explorative evaluation, so it cannot run from a log alone.
 - **Your residual is not control-affine.** `chc.dynamics_id` is the identified route, and it is
   restricted to control-affine residuals; outside that class this library offers a sensitivity
   radius (`chc.sensitivity`), not an unbiased estimate.

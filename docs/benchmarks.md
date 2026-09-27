@@ -51,6 +51,15 @@ uv run python scripts/run_causal_bench.py
 --8<-- "docs/output/run_causal_bench.txt"
 ```
 
+## Head to head: DCBO's dynamic SCMs
+
+The two leaderboards above are this library's own. The comparison with the nearest academic method,
+DCBO on its own three dynamic SCMs, is Track L of
+[`causaldyn-bench`](https://github.com/causaldyn/causaldyn-bench), because running DCBO takes its
+reference implementation and GPy, neither of which this library depends on:
+[`results/track_l.md`](https://github.com/causaldyn/causaldyn-bench/blob/main/results/track_l.md).
+[When not to use it](why.md#when-not-to-use-it) says what it means for choosing a tool.
+
 ## As a notebook
 
 [Tutorial 5 (the scoreboard)](tutorials/05_benchmark_scoreboard.md) runs the pricing, inventory and
