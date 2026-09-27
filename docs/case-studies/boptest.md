@@ -127,7 +127,8 @@ Scope, and it bounds what the numbers mean:
   only through re-planning, which pre-heats up to one horizon early.
 - Six replicates, sized to the emulator time available rather than for power. Neighbouring logs
   share 13 of their 20 days, so the interval treats replicates as more independent than they are.
-- Every number is float64, from chc 0.5.1.
+- Every number is float64, from the library at commit `7796c69`: after 0.5.1, which is the
+  version it reports, and before 0.6.0.
 
 Results:
 [`results/boptest_prescribe/results.md`](https://github.com/causaldyn/causaldyn-bench/blob/main/results/boptest_prescribe/results.md).
