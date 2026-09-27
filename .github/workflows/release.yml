@@ -1,6 +1,7 @@
 name: release
 
-# Cut a release by pushing an annotated tag: `git tag -a v0.1.0 -m ... && git push origin v0.1.0`.
+# Cut a release by pushing a signed tag: `git tag -s v0.1.0 -m ... && git push origin v0.1.0`. The
+# SSH signing key is registered on the maintainer's GitHub account, so the tag reads as Verified.
 # Publishing uses PyPI Trusted Publishing (OIDC) -- no stored token. One-time PyPI-side setup:
 # add this repo + the `release.yml` workflow + the `pypi` environment as a trusted publisher.
 #
@@ -48,6 +49,23 @@ jobs:
         with:
           name: dist
           path: dist/
+      # CycloneDX from the lockfile the tests ran against, so the bill of materials names what was
+      # tested rather than what the wheel's version ranges would resolve to today. Kept out of
+      # `dist/`: the publish job uploads everything in there to PyPI, and PyPI rejects a JSON file.
+      # Both lockfile forks are listed (numpy, scipy, jax and jaxlib resolve one way on Python 3.11
+      # and another from 3.12); that is the lockfile's truth, not a duplicate. The format is a uv
+      # preview feature: if uv changes it, this step fails before anything is published.
+      - name: Export the SBOM
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir sbom
+          uv export --format cyclonedx1.5 --preview-features sbom-export --frozen --no-dev \
+            --output-file "sbom/causal-hybrid-control-$version.cdx.json"
+          jq -e --arg v "$version" '.metadata.component.version == $v' sbom/*.cdx.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: sbom/
 
   publish:
     needs: build
@@ -74,6 +92,10 @@ jobs:
         with:
           name: dist
           path: dist/
+      - uses: actions/download-artifact@v7
+        with:
+          name: sbom
+          path: sbom/
       # The notes are the changelog section for this version, not a pointer to it. A release page
       # that says "see CHANGELOG.md" makes the reader leave to find out what they just installed,
       # and the Zenodo record -- which copies this body -- would archive the pointer rather than
@@ -103,6 +125,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          gh release create "$GITHUB_REF_NAME" dist/* sbom/* \
             --title "$GITHUB_REF_NAME" \
             --notes-file notes.md
