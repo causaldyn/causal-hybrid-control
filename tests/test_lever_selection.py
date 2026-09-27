@@ -264,6 +264,16 @@ def test_each_selection_step_leaves_one_structured_record(caplog: pytest.LogCapt
         assert getattr(record, "descent_steps", 0) > 0
 
 
+def test_the_report_lists_the_levers_kept_in_the_order_greedy_added_them() -> None:
+    selected = _prescribe(max_levers=2)
+    assert selected.selection is not None
+    rows = [line for line in selected.report().splitlines() if line.startswith(("| 1 |", "| 2 |"))]
+    assert [row.split("|")[2].strip() for row in rows] == [
+        f"`{lever}`" for lever in selected.selection.selected
+    ]
+    assert "max_levers" not in _prescribe(None).report()
+
+
 def test_the_selection_travels_in_the_json() -> None:
     result = _prescribe(max_levers=2)
     payload = json.loads(json.dumps(result.to_json()))

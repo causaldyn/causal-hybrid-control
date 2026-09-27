@@ -19,8 +19,8 @@ still change).
   charges nothing, so under `max_levers` every lever's box must contain zero; a box that excludes
   it, or `max_levers < 1`, raises `DecisionError`. `Prescription.selection` is a frozen
   `LeverSelection` -- the idle cost and one `SelectionStep(lever, task_cost, regret_bound)` per
-  step -- carried by `to_json` under `"selection"`; `schema_version` stays `1`, since a field was
-  added and none changed meaning. A step's regret bound is `plan_regret_bound` priced against every
+  step -- carried by `to_json` under `"selection"` and tabulated by `report()`; `schema_version`
+  stays `1`, since a field was added and none changed meaning. A step's regret bound is `plan_regret_bound` priced against every
   lever's box, so it bounds what the levers left out could still buy, and with it greedy's miss
   against the best set of its size. Each step leaves one `selection` log record with every
   candidate's cost. Without `max_levers` nothing moves: four prescriptions hash identically before

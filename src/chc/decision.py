@@ -340,6 +340,18 @@ class Prescription:
                 first, last = magnitudes[0, index], magnitudes[-1, index]
                 lines.append(f"| `{name}` | {span} | {first:+.4g} | {last:+.4g} |")
             lines += ["", f"Planned task cost: {self.plan.task_cost:.6g}.", ""]
+            if self.selection is not None:
+                lines += [
+                    "Levers kept under `max_levers`, in the order greedy added them; with none, "
+                    f"the planned cost is {self.selection.idle_cost:.6g}.",
+                    "",
+                    "| step | lever | planned cost | regret bound |",
+                    "|---|---|---|---|",
+                ]
+                for index, step in enumerate(self.selection.steps, start=1):
+                    bound = _show(step.regret_bound)
+                    lines.append(f"| {index} | `{step.lever}` | {step.task_cost:.6g} | {bound} |")
+                lines.append("")
         lines += [
             "## Certificate",
             "",
