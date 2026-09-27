@@ -5,7 +5,7 @@
 [![python](https://img.shields.io/pypi/pyversions/causal-hybrid-control)](https://pypi.org/project/causal-hybrid-control/)
 [![license](https://img.shields.io/pypi/l/causal-hybrid-control)](LICENSE)
 [![doi](https://zenodo.org/badge/DOI/10.5281/zenodo.21737789.svg)](https://doi.org/10.5281/zenodo.21737789)
-[![docs](https://github.com/causaldyn/causal-hybrid-control/actions/workflows/docs.yml/badge.svg)](https://causaldyn.github.io/causal-hybrid-control/)
+[![docs](https://img.shields.io/website?url=https%3A%2F%2Fcausaldyn.github.io%2Fcausal-hybrid-control%2F&label=docs)](https://causaldyn.github.io/causal-hybrid-control/)
 [![scorecard](https://api.scorecard.dev/projects/github.com/causaldyn/causal-hybrid-control/badge)](https://scorecard.dev/viewer/?uri=github.com/causaldyn/causal-hybrid-control)
 
 Physics-structured dynamics with a **learned causal residual**, controlled by **constrained optimal
