@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: github/codeql-action/init@v4
         with:
-          language: ${{ matrix.language }}
+          languages: ${{ matrix.language }}
           # `security-extended` over the default suite. The default is tuned for a low false-positive
           # rate on a large codebase with a review queue; this is a small one with a single reviewer,
           # where the cost of reading an extra finding is lower than the cost of missing one.
