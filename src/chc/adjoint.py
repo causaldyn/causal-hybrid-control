@@ -30,15 +30,16 @@ def control_gradient_adjoint(
     """
     xs = rollout(dyn, x0, us, dt)  # (H + 1, n)
     horizon = us.shape[0]
+    targets = cost.targets(horizon)  # (H + 1, n)
 
     def step_fn(x: Array, u: Array) -> Array:
         return rk4_step(dyn, 0.0, x, u, dt)
 
     f_x = jax.vmap(jax.jacobian(step_fn, argnums=0))(xs[:-1], us)  # (H, n, n)
     f_u = jax.vmap(jax.jacobian(step_fn, argnums=1))(xs[:-1], us)  # (H, n, m)
-    l_x = jax.vmap(jax.grad(cost.running, argnums=0))(xs[:-1], us)  # (H, n)
-    l_u = jax.vmap(jax.grad(cost.running, argnums=1))(xs[:-1], us)  # (H, m)
-    lam_terminal = jax.grad(cost.terminal)(xs[-1])  # (n,)
+    l_x = jax.vmap(jax.grad(cost.running, argnums=0))(xs[:-1], us, targets[:-1])  # (H, n)
+    l_u = jax.vmap(jax.grad(cost.running, argnums=1))(xs[:-1], us, targets[:-1])  # (H, m)
+    lam_terminal = jax.grad(cost.terminal)(xs[-1], targets[-1])  # (n,)
 
     def body(lam: Array, k: Array) -> tuple[Array, Array]:
         g_u = l_u[k] + f_u[k].T @ lam
@@ -67,13 +68,14 @@ def costate_norms(dyn: Dynamics, x0: Array, us: Array, dt: float, cost: Quadrati
     """
     xs = rollout(dyn, x0, us, dt)
     horizon = us.shape[0]
+    targets = cost.targets(horizon)
 
     def step_fn(x: Array, u: Array) -> Array:
         return rk4_step(dyn, 0.0, x, u, dt)
 
     f_x = jax.vmap(jax.jacobian(step_fn, argnums=0))(xs[:-1], us)
-    l_x = jax.vmap(jax.grad(cost.running, argnums=0))(xs[:-1], us)
-    lam_terminal = jax.grad(cost.terminal)(xs[-1])
+    l_x = jax.vmap(jax.grad(cost.running, argnums=0))(xs[:-1], us, targets[:-1])
+    lam_terminal = jax.grad(cost.terminal)(xs[-1], targets[-1])
 
     def body(lam: Array, k: Array) -> tuple[Array, Array]:
         # The costate reported at k is lambda_{k+1}: the one that multiplies a perturbation
@@ -142,9 +144,10 @@ def perturbation_cost_weights(
 
     _, rho = jax.lax.scan(tube, jnp.zeros((), dtype=xs.dtype), jnp.arange(horizon))  # rho_{k+1}
 
-    hess_run = jax.vmap(jax.hessian(cost.running, argnums=0))(xs[:-1], us)
+    targets = cost.targets(horizon)
+    hess_run = jax.vmap(jax.hessian(cost.running, argnums=0))(xs[:-1], us, targets[:-1])
     curvature = jax.vmap(lambda h: jnp.linalg.norm(h, ord=2))(hess_run)
-    terminal_curvature = jnp.linalg.norm(jax.hessian(cost.terminal)(xs[-1]), ord=2)
+    terminal_curvature = jnp.linalg.norm(jax.hessian(cost.terminal)(xs[-1], targets[-1]), ord=2)
     second = 0.5 * (jnp.sum(curvature[1:] * rho[:-1] ** 2) + terminal_curvature * rho[-1] ** 2)
 
     first_order = costate_norms(dyn, x0, us, dt, cost) * gains
@@ -194,7 +197,10 @@ def total_cost_diffrax(
         return (t + dt, solution.ys[-1]), x  # emit the pre-decision state x_k
 
     (_, x_final), xs = jax.lax.scan(step, (jnp.asarray(0.0), x0), us)
-    return jnp.sum(jax.vmap(cost.running)(xs, us)) + cost.terminal(x_final)
+    targets = cost.targets(us.shape[0])
+    return jnp.sum(jax.vmap(cost.running)(xs, us, targets[:-1])) + cost.terminal(
+        x_final, targets[-1]
+    )
 
 
 def control_gradient_diffrax(

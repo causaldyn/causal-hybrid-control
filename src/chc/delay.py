@@ -181,7 +181,7 @@ def lift_cost(cost: QuadraticCost, stages: int) -> QuadraticCost:
         Q=embed(cost.Q),
         R=cost.R,
         Qf=embed(cost.Qf),
-        x_target=augment_state(cost.x_target, stages),
+        x_target=jnp.concatenate([cost.x_target] * (stages + 1), axis=-1),
     )
 
 

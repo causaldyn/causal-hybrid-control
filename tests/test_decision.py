@@ -378,6 +378,56 @@ def test_a_rate_limit_moves_the_schedule_rather_than_annotating_it() -> None:
     assert capped.certificate.solver_status == "converged"
 
 
+def test_a_schedule_is_steered_for_before_it_moves() -> None:
+    """L10: a target that moves inside the horizon reaches the plan before it moves.
+
+    Supply is to stay at 0 for seven steps and be at 0.8 from the eighth. Priced against that
+    schedule, its own plan costs less than half of what either constant target a caller could pass
+    instead does: 0, which waits for a later call to re-plan, or 0.8, which leaves 0 at once.
+    """
+    panel = _panel()
+    graph = CausalGraph.from_edges(EDGES)
+    horizon, step, high, unit_cost = 15, 7, 0.8, 0.05
+    schedule = [0.0] * step + [high] * (horizon - step)
+
+    def decide(value: float | list[float]) -> Prescription:
+        return prescribe(
+            panel,
+            levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=unit_cost)],
+            target=Target("supply", value=value),
+            adjustment=graph,
+            horizon=horizon,
+            dt=DT,
+            tolerance=0.5,
+        )
+
+    def against_schedule(result: Prescription) -> float:
+        """The Bolza sum with ``value[k]`` on the state after ``k + 1`` actions, written out."""
+        assert result.plan is not None
+        xs = np.asarray(result.plan.trajectory)[:, 0]
+        us = np.asarray(result.plan.actions)[:, 0]
+        rows = np.array([schedule[0], *schedule])
+        return float(
+            0.5 * np.sum((xs[:-1] - rows[:-1]) ** 2)
+            + 0.5 * unit_cost * np.sum(us**2)
+            + 0.5 * (xs[-1] - rows[-1]) ** 2
+        )
+
+    scheduled = decide(schedule)
+    assert scheduled.plan is not None
+    assert against_schedule(scheduled) == pytest.approx(scheduled.plan.task_cost, rel=1e-9)
+    constants = min(against_schedule(decide(0.0)), against_schedule(decide(high)))
+    assert against_schedule(scheduled) < 0.5 * constants
+    assert float(np.asarray(scheduled.plan.trajectory)[step, 0]) > 0.2  # rising before the move
+
+    flat, scalar = decide([1.0] * horizon), decide(1.0)
+    assert flat.plan is not None
+    assert scalar.plan is not None
+    assert np.array_equal(np.asarray(flat.plan.actions), np.asarray(scalar.plan.actions))
+    with pytest.raises(DecisionError, match="one level per step, 15 for this horizon"):
+        decide(schedule[1:])
+
+
 def test_held_constraints_move_the_schedule_rather_than_fail_its_audit(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -129,10 +129,16 @@ class Lever:
 
 @dataclass(frozen=True)
 class Target:
-    """The column to steer and where to steer it."""
+    """The column to steer and where to steer it.
+
+    ``value`` is one level for the whole plan, or a schedule with one level per step:
+    ``value[k]`` is the level for the state after ``k + 1`` actions, so a schedule has ``horizon``
+    entries. A schedule is how a set point that moves inside the horizon reaches the plan --- a
+    comfort band that tightens at eight is steered for before eight, not re-planned for after it.
+    """
 
     name: str
-    value: float
+    value: float | Sequence[float]
     weight: float = 1.0
 
 
@@ -511,9 +517,9 @@ def prescribe(
 
     Raises:
         DecisionError: the decision is mis-specified --- no lever, a column constrained twice,
-            constraints to hold with none given, ``max_levers`` below one or with a
-            lever whose box excludes zero, or a panel with no consecutive pair of periods to fit a
-            transition on.
+            a target schedule whose length is not ``horizon``, constraints to hold with none
+            given, ``max_levers`` below one or with a lever whose box excludes zero, or a panel
+            with no consecutive pair of periods to fit a transition on.
         KeyError: a lever, target, constraint or asserted covariate names a column the panel does
             not have. The message lists the panel's columns.
 
@@ -528,6 +534,11 @@ def prescribe(
         )
     if hold_constraints and not constraints:
         raise DecisionError("hold_constraints was set, but no constraint was given to hold")
+    if np.shape(target.value) not in ((), (horizon,)):
+        raise DecisionError(
+            f"target {target.name!r} has a schedule of shape {np.shape(target.value)}; a schedule "
+            f"has one level per step, {horizon} for this horizon"
+        )
     if max_levers is not None:
         if max_levers < 1:
             raise DecisionError(
@@ -654,7 +665,7 @@ def prescribe(
     held = BarrierConstraint(_barrier(margins), gamma=gamma) if hold_constraints else None
 
     started = time.perf_counter()
-    planning_cost = _cost(states, levers, target)
+    planning_cost = _cost(states, levers, target, horizon)
     lipschitz = _log_norm(model, start, n_levers)
     model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
 
@@ -890,15 +901,25 @@ def _transitions(
     return data
 
 
-def _cost(states: tuple[str, ...], levers: Sequence[Lever], target: Target) -> QuadraticCost:
+def _cost(
+    states: tuple[str, ...], levers: Sequence[Lever], target: Target, horizon: int
+) -> QuadraticCost:
     """Weight the target's own coordinate and price each lever; constrained states are free.
 
     A constrained state gets weight zero rather than a small one: its bound is enforced by the
     barrier and priced by the certificate, and adding a quadratic pull towards zero would be a
     second, unstated objective.
+
+    A schedule becomes one target per state. The start's row repeats the first level; no action
+    reaches the start, so that row moves the reported cost and nothing the plan does.
     """
     weights = jnp.array([target.weight] + [0.0] * (len(states) - 1))
-    goal = jnp.array([target.value] + [0.0] * (len(states) - 1))
+    if np.ndim(target.value) == 0:
+        goal = jnp.array([target.value] + [0.0] * (len(states) - 1))
+    else:
+        levels = jnp.asarray(target.value)
+        path = jnp.concatenate([levels[:1], levels])
+        goal = jnp.zeros((horizon + 1, len(states))).at[:, 0].set(path)
     q = jnp.diag(weights)
     return QuadraticCost(
         Q=q, R=jnp.diag(jnp.array([lever.unit_cost for lever in levers])), Qf=q, x_target=goal

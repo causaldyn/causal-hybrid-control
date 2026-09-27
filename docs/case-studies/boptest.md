@@ -127,7 +127,9 @@ Scope, and it bounds what the numbers mean:
 - The façade could not state three things the problem has: a bound on the steered state, as above;
   a weather term in the drift, so the weather the adjusted arm partials out never enters its
   forecast; and a target that changes within the horizon, so the comfort schedule reaches the plan
-  only through re-planning, which pre-heats up to one horizon early.
+  only through re-planning, which pre-heats up to one horizon early. From 0.7.0 a `Target` takes a
+  schedule
+  ([ADR 0006](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0006-a-target-per-step.md)).
 - Six replicates, sized to the emulator time available rather than for power. Neighbouring logs
   share 13 of their 20 days, so the interval treats replicates as more independent than they are.
 - Every number is float64, from the library at commit `7796c69`: after 0.5.1, which is the

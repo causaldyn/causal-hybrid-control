@@ -95,6 +95,14 @@ def loop() -> Loop:
     return Loop(states, plans, cold, actions_only)
 
 
+def test_the_controller_refuses_a_target_that_would_not_move_with_it() -> None:
+    rows = jnp.zeros((HORIZON + 1, 2))
+    cost = QuadraticCost(Q=COST.Q, R=COST.R, Qf=COST.Qf, x_target=rows)
+    controller = RecedingHorizon(OSCILLATOR, cost, dt=DT, horizon=HORIZON, u_lo=-U_MAX, u_hi=U_MAX)
+    with pytest.raises(ValueError, match="same window at every step"):
+        controller.step(X0)
+
+
 def test_the_controller_takes_every_argument_causal_plan_does() -> None:
     """A new ``causal_plan`` argument the controller does not carry would be silently unusable."""
     planned = {

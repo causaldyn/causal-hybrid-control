@@ -32,6 +32,16 @@ def test_diffrax_cost_matches_the_fixed_step_rollout() -> None:
     assert abs(diffrax_cost - rk4_cost) < 1e-3  # adaptive solve and RK4 approximate the same cost
 
 
+def test_diffrax_cost_reads_a_target_per_state_as_the_rollout_does() -> None:
+    dyn, cost, x0, us = _setup()
+    ramp = jnp.linspace(0.0, 1.0, us.shape[0] + 1)
+    rows = jnp.stack([ramp, jnp.zeros_like(ramp)], axis=1)
+    moving = QuadraticCost(Q=cost.Q, R=cost.R, Qf=cost.Qf, x_target=rows)
+    diffrax_cost = float(total_cost_diffrax(dyn, x0, us, DT, moving))
+    assert abs(diffrax_cost - float(total_cost(dyn, x0, us, DT, moving))) < 1e-3
+    assert abs(diffrax_cost - float(total_cost_diffrax(dyn, x0, us, DT, cost))) > 0.1
+
+
 def test_diffrax_adjoint_matches_finite_difference() -> None:
     dyn, cost, x0, us = _setup()
     gradient = control_gradient_diffrax(dyn, x0, us, DT, cost)

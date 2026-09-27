@@ -298,8 +298,8 @@ Three tiers, by what a break costs you:
 | **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` | may change or be withdrawn in any release. Pin an exact version if you depend on one |
 
 Roadmap: **0.7.0** the three things `prescribe` cannot state in 0.6.0 — a bound on the steered
-state (on `main`), exogenous drivers in the drift, a target that varies within the horizon →
-**1.0.0**, which is when the stable tier stops moving.
+state and a target that varies within the horizon (both on `main`), exogenous drivers in the drift
+→ **1.0.0**, which is when the stable tier stops moving.
 
 Supply chain: every artifact carries a PEP 740 attestation and a SLSA build provenance; see
 [`SECURITY.md`](SECURITY.md) for how to verify one and what is in scope for a report.

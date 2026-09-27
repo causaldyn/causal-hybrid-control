@@ -58,6 +58,7 @@ def mpc_control(
     Returns:
         ``(xs, us)`` with ``xs`` of shape ``(n_steps + 1, n)`` and ``us`` of shape ``(n_steps, m)``.
     """
+    _refuse_moving_target(cost, "mpc_control")
     plant = model if plant is None else plant
     control_dim = cost.R.shape[0]
     guess = jnp.zeros((horizon, control_dim))
@@ -80,6 +81,15 @@ def mpc_control(
         )
 
     return jnp.stack(states), jnp.stack(applied)
+
+
+def _refuse_moving_target(cost: QuadraticCost, where: str) -> None:
+    if cost.x_target.ndim >= 2:
+        raise ValueError(
+            f"{where} replans with one cost, so a per-state x_target would hold the same window at "
+            "every step instead of moving with the loop; plan each step with causal_plan and the "
+            "rows for that step"
+        )
 
 
 def _shift(sequence: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -120,7 +130,8 @@ class RecedingHorizon:
     Each step is one :func:`~chc.plan.causal_plan`, so nothing outside the horizon carries over:
     ``constraints`` bind each horizon afresh -- a budget row caps every window, not the run's
     total, and a rate limit does not reach back to the action already applied -- and ``steps``
-    caps each descent, of which a held barrier runs up to ``1 + _BARRIER_ROUNDS`` a step.
+    caps each descent, of which a held barrier runs up to ``1 + _BARRIER_ROUNDS`` a step. For the
+    same reason a per-state ``x_target`` is refused: every step would read the same window.
 
     One controller per control loop: :meth:`step` updates the warm start in place, unguarded. A
     new controller over the same model, cost and barrier is a cold start that reuses the compiled
@@ -149,6 +160,7 @@ class RecedingHorizon:
 
     def step(self, x: Array) -> CausalPlan:
         """Plan from the measured state ``x``, and keep the plan as the next step's start."""
+        _refuse_moving_target(self.cost, "RecedingHorizon")
         actions, multipliers = (None, None) if self._warm is None else self._warm
         plan, multipliers = _plan(
             self.model,

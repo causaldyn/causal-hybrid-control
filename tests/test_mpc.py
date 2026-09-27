@@ -1,6 +1,7 @@
 """MPC gate: closed-loop receding-horizon control regulates the plant and respects constraints."""
 
 import jax.numpy as jnp
+import pytest
 
 from chc import (
     DampedOscillator,
@@ -38,3 +39,14 @@ def test_mpc_regulates_oscillator() -> None:
     # closed-loop tracking beats the open-loop (do-nothing) response
     xs_free = rollout(model, x0, jnp.zeros((n_steps, 1)), DT)
     assert float(jnp.sum(xs[:, 0] ** 2)) < float(jnp.sum(xs_free[:, 0] ** 2))
+
+
+def test_mpc_refuses_a_target_that_would_not_move_with_the_loop() -> None:
+    model = HybridDynamics(
+        known=DampedOscillator(omega=1.0, zeta=0.1), residual=ZeroResidual(out_dim=2)
+    )
+    cost = QuadraticCost(
+        Q=jnp.eye(2), R=jnp.array([[0.05]]), Qf=jnp.eye(2), x_target=jnp.zeros((21, 2))
+    )
+    with pytest.raises(ValueError, match="same window at every step"):
+        mpc_control(model, jnp.array([1.0, 0.0]), cost, DT, 20, -5.0, 5.0, n_steps=3)

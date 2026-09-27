@@ -153,6 +153,19 @@ def test_lift_cost_charges_nothing_for_the_buffer() -> None:
     assert abs(float(lifted.terminal(z_wild)) - float(cost.terminal(x))) < 1e-12
 
 
+def test_lift_cost_lifts_a_target_per_state_row_by_row() -> None:
+    stages, cost = 6, _cost()
+    rows = jnp.linspace(0.0, 1.0, 5)[:, None]
+    moving = QuadraticCost(Q=cost.Q, R=cost.R, Qf=cost.Qf, x_target=rows)
+    lifted = lift_cost(moving, stages)
+    assert lifted.x_target.shape == (5, stages + 1)
+    x, u = jnp.array([1.7]), jnp.array([0.3])
+    z = augment_state(x, stages)
+    for k in range(5):
+        lifted_cost = float(lifted.running(z, u, lifted.x_target[k]))
+        assert abs(lifted_cost - float(cost.running(x, u, rows[k]))) < 1e-12
+
+
 def test_stages_for_spread_inverts_the_erlang_variance() -> None:
     assert stages_for_spread(0.1) == 100
     assert stages_for_spread(0.5) == 4

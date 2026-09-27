@@ -21,6 +21,20 @@ still change).
   constrained twice is still refused, now by a message that names it. The design record is
   `docs/adr/0005-bound-on-the-steered-state.md`.
 
+- **A target that moves inside the horizon: `Target.value` may be a schedule, and
+  `QuadraticCost.x_target` one row per state.** `value[k]` is the level for the state after
+  `k + 1` actions, so a schedule has `horizon` entries; the cost's `(H + 1, n)` rows reach every
+  consumer of its stage costs (`total_cost`, the discrete adjoint, `costate_norms`,
+  `perturbation_cost_weights`, `total_cost_diffrax`, `lift_cost`), and `running` and `terminal`
+  take the row as an optional `target`. A fixed target computes what it did, to the bit. This is
+  the third thing the BOPTEST case study found the façade could not state: its harness steered for
+  the highest comfort bound in the next eight hours, which pre-heated up to one horizon early. On
+  the test panel, holding supply at 0 for seven steps and at 0.8 after, the schedule's own plan
+  costs 0.557 against the schedule, where passing 0 costs 2.561 and passing 0.8 costs 1.532; it is
+  already at 0.314 when the level moves. `mpc_control` and `RecedingHorizon` refuse a per-state
+  target, since they re-plan with one cost and the window would not move with the loop. The
+  design record is `docs/adr/0006-a-target-per-step.md`.
+
 ## [0.6.0] — 2026-09-27
 
 ### Added
