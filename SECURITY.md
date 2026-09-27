@@ -49,14 +49,25 @@ wastes your time:
 
 - Releases are published to PyPI by **Trusted Publishing** (OIDC), from `.github/workflows/release.yml`
   on an annotated `v*` tag. No API token exists to leak.
-- Every artifact carries a **PEP 740 attestation** signed through Sigstore and logged in Rekor.
+- Every artifact carries two attestations, both signed through Sigstore and logged in Rekor, and
+  they are different claims: the **PEP 740 attestation** on PyPI says the file was uploaded by this
+  workflow, the **SLSA build provenance** says it was built from the tagged commit by this workflow.
   Verify before you trust:
 
   ```bash
+  # the build provenance, from GitHub's attestation store (needs `gh auth login`):
   gh attestation verify --repo causaldyn/causal-hybrid-control causal_hybrid_control-*.whl
-  # or, straight from the index:
+  # the same provenance from the bundle attached to the GitHub Release, with no attestation API
+  # and no login (every release after 0.6.0 carries it):
+  gh attestation verify causal_hybrid_control-*.whl \
+    --bundle causal-hybrid-control-<version>.provenance.sigstore.json \
+    --repo causaldyn/causal-hybrid-control
+  # the PEP 740 attestation, straight from the index:
   curl -s https://pypi.org/integrity/causal-hybrid-control/0.6.0/causal_hybrid_control-0.6.0-py3-none-any.whl/provenance
   ```
+
+  The bundle route still fetches Sigstore's trust root; with no network at all, add
+  `--custom-trusted-root` with a file saved earlier by `gh attestation trusted-root`.
 
   The publisher in a valid attestation is `causaldyn/causal-hybrid-control` via `release.yml`. A
   wheel for this project that carries no attestation, or one naming a different workflow, did not

@@ -45,9 +45,32 @@ jobs:
       # verifiable with `gh attestation verify` without going through PyPI at all. A reader who
       # distrusts the index needs the second one.
       - name: Attest the build provenance
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: "dist/*"
+      # The same attestation as a Release asset, so the provenance can be checked from the release
+      # page alone, with no attestation API and no GitHub login:
+      #   gh attestation verify <file> --bundle <bundle> --repo causaldyn/causal-hybrid-control
+      # The file is a Sigstore bundle covering the wheel and the sdist, so it takes Sigstore's own
+      # extension, `.sigstore.json`, which Scorecard's Signed-Releases check also recognises; not
+      # `.intoto.jsonl`, whose in-toto layout is one bare DSSE envelope per line. Checked against both
+      # files here, so a bundle that does not verify stops the release before anything is published.
+      - name: Stage and check the provenance bundle
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir provenance
+          bundle="provenance/causal-hybrid-control-$version.provenance.sigstore.json"
+          cp "$BUNDLE" "$bundle"
+          for f in dist/*; do
+            gh attestation verify "$f" --bundle "$bundle" --repo "$GITHUB_REPOSITORY"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: provenance
+          path: provenance/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dist
@@ -99,6 +122,10 @@ jobs:
         with:
           name: sbom
           path: sbom/
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: provenance
+          path: provenance/
       # The notes are the changelog section for this version, not a pointer to it. A release page
       # that says "see CHANGELOG.md" makes the reader leave to find out what they just installed,
       # and the Zenodo record -- which copies this body -- would archive the pointer rather than
@@ -128,7 +155,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* sbom/* \
+          gh release create "$GITHUB_REF_NAME" dist/* sbom/* provenance/* \
             --title "$GITHUB_REF_NAME" \
             --notes-file notes.md
 
