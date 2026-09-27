@@ -7,7 +7,9 @@
 # marketplace log, shows the naive effect estimate is biased, turns an (unfalsifiable) sensitivity
 # `Gamma` into a pessimism radius (Result 32), and lets a **minimax controller** hedge the costlier
 # error under an asymmetric business cost (Result 35) — beating certainty-equivalence on the realised
-# cost (Result 37). Every step is machine-checked (Rocq/Maxima); see `discoveries/theorems.md` §32–§37.
+# cost (Result 37). The radius and the controller are machine-checked in Rocq and derived in
+# Maxima: `proofs/confounding_robust_cvar.v` and `proofs/confounding_robust_control.v`, each with
+# the `validation/` derivation of the same name.
 
 # %%
 import numpy as np
