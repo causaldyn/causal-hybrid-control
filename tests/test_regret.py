@@ -1423,10 +1423,10 @@ def test_correlated_channels_have_an_exact_anchor_and_it_is_the_hard_one() -> No
     assert want[0, 1] < -0.1
     assert abs(got[0, 1] - want[0, 1]) < 1e-5
 
-    # what governs the q = 2 accuracy is the MARGIN from the existence boundary, not the shape of
-    # Om: at n = 6 (margin 2) the rule is at 4.6e-8 relative whether B and Om are isotropic or
-    # not, and only from n = q + 4 outwards does it reach 1e-14. A correlated Om moves the
-    # constant by about 11x and leaves the regime alone.
+    # at n = 6 (margin 2) a correlated Om costs a constant: about 11x the exchangeable error on
+    # both a 20- and a 40-node grid (4x at margin 1). Past margin two it is no longer a constant
+    # -- 128x at margin 4 and 202x at margin 8 on the 40-node grid, against 11x and 16x on the
+    # 20-node one -- so this cell pins the small-margin constant and nothing more.
     scale = float(np.max(np.abs(want)))
     coarse = exact_matrix_ratio_moment(np.eye(n), np.eye(n), om, nodes=20)
     assert 1e-5 < float(np.max(np.abs(coarse - want))) / scale < 1e-4
@@ -1435,7 +1435,7 @@ def test_correlated_channels_have_an_exact_anchor_and_it_is_the_hard_one() -> No
     ratio = (float(np.max(np.abs(coarse - want))) / scale) / (
         float(np.max(np.abs(isotropic - plain))) / float(np.max(np.abs(plain)))
     )
-    assert 5.0 < ratio < 25.0  # a constant, not a change of regime
+    assert 5.0 < ratio < 25.0  # the margin-2 constant
 
     far = 12  # margin 8: the same rule, the same isotropy, four more orders of accuracy
     far_want = np.eye(q) / (far - q - 1)

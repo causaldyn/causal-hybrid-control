@@ -2249,9 +2249,9 @@ def exact_matrix_ratio_moment(
     * The IMPLEMENTATION stops at ``q = 3``: ``q = 4`` needs ``7! = 5040`` permutations on each
       of 5760 products, i.e. 29 million plan terms, which is not a table worth building.
     * Cost is the cone dimension, not the algebra, and at ``q = 3`` the cone wins. At ``q = 2``
-      the cone is 3-dimensional and what governs the accuracy is the MARGIN from the existence
-      boundary ``n >= q + 2``, not the shape of ``B`` or ``Om``. Relative max-entry error against
-      ``I/(n-q-1)``, at ``nodes = 20, 40, 80, 120``:
+      the cone is 3-dimensional and on exchangeable channels what governs the accuracy is the
+      MARGIN from the existence boundary ``n >= q + 2``, not the shape of ``B``. Relative max-entry
+      error against ``I/(n-q-1)``, at ``nodes = 20, 40, 80, 120``:
 
       == ====== ======== ======== ======== ========
       n  margin 20       40       80       120
@@ -2263,13 +2263,17 @@ def exact_matrix_ratio_moment(
       == ====== ======== ======== ======== ========
 
       So "machine precision at ``q = 2``" holds from ``n = q + 4`` outwards and not near the
-      boundary. ``B`` and ``Om`` move the constant, not the regime: an anisotropic ``B`` at
-      ``n = 6`` gives 2.81e-6, 4.59e-8, 4.10e-9 -- the same numbers as ``B = I`` -- and correlated
-      channels give 3.14e-5, 5.38e-7, 4.84e-8, a flat factor of about 11. Earlier drafts of this
-      docstring attributed the loss of machine precision first to an anisotropic numerator and
-      then to correlated channels; both are withdrawn, and the margin is the variable. ``q = 3`` is
-      6-dimensional and **is a percent-accuracy tool, not a high-precision one.** Measured on the
-      exchangeable anchor, taking the grid as far as it will go:
+      boundary. An anisotropic ``B`` changes nothing: at ``n = 6`` it gives 2.81e-6, 4.59e-8,
+      4.10e-9 -- the same numbers as ``B = I`` -- and at ``nodes = 40`` its error over the
+      exchangeable one is 1.00 at margins 1, 2, 4 and 8. Correlated channels are NOT a constant.
+      With ``rho = 0.5`` the factor over the exchangeable error is flat at small margins -- 4.1 and
+      4.2 at margin 1, 11.2 and 11.7 at margin 2 (``nodes = 20`` and ``40``; 3.14e-5, 5.38e-7,
+      4.84e-8 at ``n = 6``) -- but 10.9 against 128 at margin 4 and 15.9 against 202 at margin 8:
+      past margin two the correlated rule also converges more slowly. Earlier drafts attributed
+      the loss of machine precision first to an anisotropic numerator (withdrawn) and then to
+      correlated channels, withdrawn in turn as "a flat factor of about 11", which holds only up
+      to margin 2. ``q = 3`` is 6-dimensional and **is a percent-accuracy tool, not a high-precision
+      one.** Measured on the exchangeable anchor, taking the grid as far as it will go:
 
       ===== ========= ================== ==================
       nodes points    abs err, ``n = 5`` abs err, ``n = 7``
@@ -2278,18 +2282,18 @@ def exact_matrix_ratio_moment(
       5     15 625    4.68e-2            5.67e-2
       6     46 656    8.66e-2            1.87e-2
       7     117 649   6.69e-2            1.12e-2
-      8     262 144   4.64e-2            --
-      9     531 441   2.76e-2            --
+      8     262 144   4.64e-2            6.33e-3
+      9     531 441   2.76e-2            2.04e-3
       ===== ========= ================== ==================
 
-      That is **1.6 digits for 531 441 points**. Extrapolating the measured rate (1.6 per node at
-      ``n = 5``, 2 per node at ``n = 7``), six digits would need ``nodes ~ 20-32``, i.e. 6e7 to 1e9
-      points. Six digits at ``q = 3`` is not reachable with this quadrature -- not "expensive",
-      unreachable. Note also that ``nodes = 8`` at ``n = 5`` evaluates 17x the points of
-      ``nodes = 5`` and is no more accurate (4.64e-2 against 4.68e-2), which is why the ``q = 3``
-      default is 6. Wall-clock figures are deliberately absent: the same cell measured 3218 s and
-      1499 s on this machine depending on what else was running, while the accuracy column is
-      bit-identical across those runs.
+      That is **1.6 digits for 531 441 points** on the boundary, 2.2 at ``n = 7``. At the
+      geometric-mean rates over ``nodes = 4..9`` (1.60 per node at ``n = 5``, 2.16 at ``n = 7``),
+      six digits would need 31 and 21 nodes, i.e. 9e8 and 9e7 points. Six digits at ``q = 3`` is
+      not reachable with this quadrature -- not "expensive", unreachable. Note also that
+      ``nodes = 8`` at ``n = 5`` evaluates 17x the points of ``nodes = 5`` and is no more accurate
+      (4.64e-2 against 4.68e-2), which is why the ``q = 3`` default is 6. Wall-clock figures are
+      deliberately absent: the same cell measured 3218 s and 1499 s on this machine depending on
+      what else was running, while the accuracy column is bit-identical across those runs.
 
       Convergence is monotone only with margin from the existence boundary: at ``n = q + 2`` the
       sequence goes 4.68e-2, 8.66e-2, 6.69e-2, 4.64e-2, 2.76e-2, while at ``n = q + 4`` it
@@ -2297,7 +2301,8 @@ def exact_matrix_ratio_moment(
 
       **The column above is the ABSOLUTE max-entry error.** At ``n = 5`` the exact answer is ``I``
       so absolute and relative coincide; at ``n = 7`` it is ``I/3`` and the relative error is 3x
-      the column -- 2.87e-1, 1.70e-1, 5.59e-2, 3.36e-2 at ``nodes = 4..7``. Quoting the two
+      the column -- 2.87e-1, 1.70e-1, 5.59e-2, 3.36e-2, 1.90e-2, 6.13e-3 at ``nodes = 4..9``.
+      Quoting the two
       columns against each other, or against a relative number, is the mistake this note exists
       to prevent.
 
@@ -2481,11 +2486,15 @@ class MatrixRatioAccuracy:
     identically ``e(k-1) - e(k)``, verified against the measured ``q = 3`` sweep to 5e-5 relative.
     So ``residual / true error = r - 1`` where ``r = e(k-1)/e(k)`` is the per-node decay, and the
     residual majorises the error **iff r >= 2** (``residual_bounds_iff_rate_reaches_two``). Below
-    that threshold it under-states, by construction rather than by accident.
+    that threshold it under-states, by construction rather than by accident -- under that premise.
+    Without it the residual can only be larger, being at least ``|e(k-1) - e(k)|`` by the reverse
+    triangle inequality: ``r >= 2`` always suffices, and below 2 the residual majorises only where
+    the error changes sign or moves its largest entry, as at ``q = 3, n = 7`` with 5 and 8 nodes
+    (rates 1.68 and 1.77, ratios 2.06 and 1.04).
 
-    That is the whole story of the ``q = 3`` failures. The measured rates there are 1.30, 1.44,
-    1.68 -- all under 2 -- and the corresponding measured ratios are 0.30, 0.44, 0.68, i.e.
-    ``r - 1`` to two decimals. Over 13 cells the ratio ranges ``0.30x`` to ``5.26x`` and falls
+    That is the whole story of the ``q = 3`` failures. The measured rates on the boundary are 1.30,
+    1.44, 1.68 -- all under 2 -- and the corresponding measured ratios are 0.30, 0.44, 0.68, i.e.
+    ``r - 1`` to two decimals. Over 15 cells the ratio ranges ``0.30x`` to ``5.26x`` and falls
     below 1 in five, every one of them a cell whose rate is under 2.
 
     **Those 13 cells are all exchangeable; the first correlated one sits at the conservative end
@@ -6334,35 +6343,46 @@ def panel_estimator_certificate(
     a FINITE-CLUSTER statement; it washes out in the number of clusters, not in the number of rows.
 
     **The measured answer, and it is not the flattering one.** At ``m = 12``, ``p = 12``, ``K = 2``,
-    300 draws per cell::
+    300 draws per cell, this routine at its defaults under float32::
 
         g   phi  predicted  measured           95% CI   covers
-        2   0.3     0.8241    0.7793  [0.6688, 0.9035]   yes
-        6   0.3     0.9343    0.8015  [0.7101, 0.9053]   no
-        20  0.3     0.9794    0.9685  [0.8911, 1.0477]   yes
-        2   0.9     0.4689    0.3666  [0.2906, 0.4677]   no
-        6   0.9     0.7396    0.5671  [0.4686, 0.6882]   no
-        20  0.9     0.9064    0.7721  [0.6686, 0.8968]   no
+        2   0.3     0.8241    0.7689  [0.6668, 0.8953]   yes
+        6   0.3     0.9343    0.9941  [0.8816, 1.1057]   yes
+        20  0.3     0.9794    0.9715  [0.9088, 1.0416]   yes
+        2   0.9     0.4689    0.3241  [0.2402, 0.4336]   no
+        6   0.9     0.7396    0.5764  [0.4714, 0.7021]   no
+        20  0.9     0.9064    0.7569  [0.6515, 0.8901]   no
 
-    Six cells out of six agree on the SIGN, both sequences wash out toward 1 with ``g`` exactly as
+    Where the effect is large enough to resolve, the verdict is sharp. At ``phi = 0.9`` every
+    interval excludes 1 on the predicted side, the ratio washes out toward 1 with ``g`` exactly as
     the algebra says, and the functional is CONSERVATIVE in every cell -- the real estimator gains
-    more from the good partition than ``Psi`` predicts, by 5% to 23%. But the interval covers the
-    prediction in only two cells. **As a ranking rule the functional holds; as a point predictor of
-    an estimator's variance ratio it does not**, and Result 51's scope note is now specific rather
-    than cautious. The likely reason is in plain sight: ``Psi`` models the nuisance step as an exact
-    projection onto fold indicators, while the estimator uses a ridge polynomial and then a second
-    OLS stage whose own sandwich the functional does not carry.
+    more from the good partition than ``Psi`` predicts, by 17% to 31% -- with the interval excluding
+    the prediction each time. ``seed=20000``, and the default seeds under ``jax_enable_x64``, repeat
+    all of it in every cell (15% to 32%). **As a ranking rule the functional holds; as a point
+    predictor of an estimator's variance ratio it does not**, and Result 51's scope note is now
+    specific rather than cautious. The likely reason is in plain sight: ``Psi`` models the
+    nuisance step as an exact projection onto fold indicators, while the estimator uses a ridge
+    polynomial and then a second OLS stage whose own sandwich the functional does not carry.
 
-    The gates are the three claims that survive: sign agreement in every cell, washout in both
-    sequences, and conservatism. Coverage is counted and reported, never gated -- a certificate that
-    gated on it would have to be tuned until it passed, which is the opposite of a gate.
+    At ``phi = 0.3`` the predicted reduction is 18% at ``g = 2`` -- resolved from 1 on all three
+    streams, and covered -- and 2% to 7% at ``g >= 6``, below what 300 draws can see: the six
+    estimates there, across the three streams, span 0.80 to 1.04, on both sides of the prediction
+    and of 1.
+
+    The gates are the three claims the functional makes: sign agreement in every cell, washout in
+    both sequences, and conservatism. At ``phi = 0.9`` they hold on every stream tried. At
+    ``phi = 0.3`` they compare point estimates against an effect smaller than the Monte-Carlo
+    error, so ``ok`` is False on two streams of the three -- the gate reporting that it cannot see,
+    which is what it should report. Coverage is counted and reported, never gated -- a certificate
+    that gated on it would have to be tuned until it passed, which is the opposite of a gate.
 
     TWO SAMPLING FACTS THIS DEPENDS ON. ``draws`` must not be small: a sample variance ratio from a
     few dozen paired draws is biased toward 1, and at 40 draws the conservatism finding flips on a
     lucky sample where it holds comfortably from 80 up. And
     :meth:`chc.network_causal.DelayedNetworkPanel.sample` derives its NumPy seed from a JAX key, so
     the panel DRAWN AT A GIVEN SEED DIFFERS between ``jax_enable_x64`` settings -- ``randint`` on
-    the same key returns 1563838340 at x32 and 358276949 at x64. The finding was measured at both.
+    the same key returns 1563838340 at x32 and 358276949 at x64 -- which is why the x64 run above
+    is a third stream and not a check on rounding.
     """
     # chc.regret is NumPy/SciPy by design; the panel and its estimator are the JAX half of the
     # library, so they are imported here rather than at module scope.

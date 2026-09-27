@@ -473,6 +473,36 @@ still change).
 
 ### Fixed
 
+- **Three accuracy statements in `exact_matrix_ratio_moment` and `MatrixRatioAccuracy` held only in
+  part.** At `q = 2`, a correlated `Omega` (`rho = 0.5`) is not "a flat factor of about 11" over the
+  exchangeable error: that holds up to margin 2 only, and at margins 4 and 8 the factor grows from
+  `10.9` to `128` and from `15.9` to `202` between 20 and 40 nodes, so correlation also slows the
+  convergence. At `q = 3` the per-node rates came from grids that stopped at 7 nodes for `n = 7`;
+  taken to 9 (`just paper-2` in `causaldyn-bench`), the geometric-mean rates over 4-9 nodes are
+  `1.60` at `n = 5` and `2.16` at `n = 7`, so six digits need 31 and 21 nodes, not `~20-32`. And
+  the refinement residual majorises the error iff the rate reaches 2 only for an error that keeps its
+  sign and its largest entry; in general residual / true error is at least `|rate - 1|` (reverse
+  triangle inequality), so a rate of 2 always suffices, and at `n = 7` with 8 nodes the residual
+  majorised at `1.04` with the rate at `1.77`. No numeric behaviour changed.
+
+- **`dual_weighted_error_estimate`'s docstring divided by `den(T)` twice.** Since 0.4.0 it has
+  written the identity as `S_hat(0) - S(0) = (eps - int z.g) / den(T)` with the normalised adjoint
+  `z(s) = Phi(T-s)^T v / den(T)`, which puts `den(T)` under the interior term twice. The identity is
+  `eps/den(T) - int z.g` with that `z` (`validation/mean_field_dwr.mac` STEP 3c); the code weights by
+  `v^T Phi(T-s)` and divides once, so it was never wrong, and the certificate's `1.7%` is the code's
+  number. The statement had joined STEP 2's un-normalised form to STEP 3's normalised weight. No
+  numeric behaviour changed.
+
+- **`panel_estimator_certificate`'s docstring quoted a table this routine does not produce.** The
+  measured column came from an exploratory script that drew its panels from `jax.random.key(20000 +
+  s)`; the routine draws from `key(seed + draw)` with `seed=20260904`, and nobody ran it at its
+  defaults before the table was pasted in. It reproduces the quoted column exactly at `seed=20000`,
+  so the code was never wrong -- the provenance was. At its own defaults the `phi = 0.9` verdict is
+  unchanged in kind (every cell conservative, now by 17% to 31%, and on two further streams by 15%
+  to 32%), but the `phi = 0.3` claims do not survive: at `g >= 6` the predicted reduction is 2% to
+  7%, 300 draws cannot resolve it, and `ok` is False there on two streams of three. The docstring now
+  carries the routine's own output and says so. No numeric behaviour changed.
+
 - **`numpy>=2.0`, which is what the code already required.** `chc.deep_galerkin` calls
   `np.trapezoid`, added in numpy 2.0 under that name, while the floor said `>=1.26`. Nothing
   noticed because every resolution in practice pulls a jax that pins `numpy>=2.1`; a user who
