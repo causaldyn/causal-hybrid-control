@@ -2472,14 +2472,26 @@ def exact_matrix_ratio_moment(
     return out
 
 
+MatrixRatioStatus = Literal["convicted", "not_convicted"]
+"""What :class:`MatrixRatioAccuracy` can say about its grid: a conviction, or the absence of one.
+
+``convicted`` means the refinement residual, or the isotropy bar where the channels are
+exchangeable, exceeds the tolerance. ``not_convicted`` means neither does, and that is evidence,
+not a certificate. There is deliberately no ``certified``: what guarantees that the residual bounds
+the error is a per-node convergence rate of at least 2 (``residual_bounds_iff_rate_reaches_two``),
+and nothing the certificate evaluates measures that rate -- at ``q = 3`` or at ``q = 2``.
+"""
+
+
 @dataclass(frozen=True)
 class MatrixRatioAccuracy:
     """What :func:`exact_matrix_ratio_moment` is worth on the grid it was given -- Result 63 (d).
 
-    At ``q = 2`` the cone is 3-dimensional and the default grid reaches machine precision, so the
-    value needs no caveat. At ``q = 3`` the cone is 6-dimensional and the value carries a
-    percent-scale error that nothing in the returned array reveals. This is the grid-refinement
-    residual: the same integral on the next grid down, and the gap between them.
+    At ``q = 3`` the cone is 6-dimensional and the value carries a percent-scale error that nothing
+    in the returned array reveals. At ``q = 2`` it is 3-dimensional, and how close the default grid
+    comes depends on the margin from the existence boundary and on the channel correlation
+    (:func:`exact_matrix_ratio_moment`). This is the grid-refinement residual: the same integral on
+    the next grid down, and the gap between them.
 
     **It is an estimate, not a bound, and exactly when it fails is known.** A refinement residual
     measures the STEP, not the remainder: for a monotone same-signed error sequence it is
@@ -2514,9 +2526,14 @@ class MatrixRatioAccuracy:
     (0.96, 1.09) while the error ratios are 1.44 and 1.68. The error sequence is not geometric, so
     there is nothing for a Richardson-type correction to extrapolate.
 
-    So: treat a large ``relative_residual`` as proof the grid is inadequate; treat a small one as
-    evidence only where the convergence rate is known to exceed 2 per node, which at ``q = 3`` it
-    is not.
+    So :attr:`status` is one-sided. A bar over ``tolerance`` convicts the grid; nothing here
+    certifies it. What guarantees that the residual majorises the error is a per-node rate of at
+    least 2, and a rate is a ratio of two errors, while the certificate holds one difference between
+    two grids and no reference value; a third grid would add a ratio of residuals, which is not the
+    rate (above). Nor does the rate follow the channel count. It passes 2 on some ``q = 3`` grids
+    (``test_matrix_ratio_certificate_reports_what_the_grid_is_worth`` has one), and on a correlated
+    ``q = 2`` anchor one step from the existence boundary the default grid's rate is below 2 and the
+    residual understates the error (``test_the_ratio_status_can_convict_and_cannot_certify``).
 
     **The second bar, where it exists.** On an exchangeable problem the exact answer has a constant
     diagonal, so half the observed diagonal spread is a PROVED lower bound on the largest entry
@@ -2540,9 +2557,9 @@ class MatrixRatioAccuracy:
 
     The residual's ratio swings by 17x; the bar sits at 0.45-0.55 once past the coarsest grid. But
     it does not rescue the cells the residual missed -- at a 1% tolerance both convict every one of
-    these cells, so the bar is a safety net rather than a fix, and ``ok`` requires both. Do not read
-    the steadiness as a calibration: five cells of one problem family is exactly the evidence base
-    that produced the retracted rate claim in :func:`exact_matrix_ratio_moment`.
+    these cells, so the bar is a safety net rather than a fix, and either bar convicts on its own.
+    Do not read the steadiness as a calibration: five cells of one problem family is exactly the
+    evidence base that produced the retracted rate claim in :func:`exact_matrix_ratio_moment`.
     """
 
     value: NDArray[np.float64]  # the fine-grid estimate: identical to exact_matrix_ratio_moment
@@ -2555,7 +2572,17 @@ class MatrixRatioAccuracy:
     isotropy_bar: float  # half the diagonal spread: a PROVED lower bound on the error, else nan
     relative_isotropy_bar: float
     tolerance: float
-    ok: bool
+
+    @property
+    def status(self) -> MatrixRatioStatus:
+        """``convicted`` iff a bar exceeds ``tolerance`` -- see :data:`MatrixRatioStatus`.
+
+        Derived rather than stored, so the verdict cannot disagree with the bars it summarises.
+        """
+        within = self.relative_residual <= self.tolerance and not (
+            self.exchangeable and self.relative_isotropy_bar > self.tolerance
+        )
+        return "not_convicted" if within else "convicted"
 
 
 def _channels_are_exchangeable(om: NDArray[np.float64], q: int, n: int) -> bool:
@@ -2590,8 +2617,9 @@ def matrix_ratio_certificate(
     whenever ``q = 3``, where the default grid is not converged and the array alone says nothing
     about that. The refinement residual works on ANY problem, including the anisotropic ones where
     the isotropy bar does not apply; the isotropy bar is free but only valid when the channels are
-    exchangeable. ``ok`` requires whichever of the two are available to pass, so adding the second
-    can only tighten it.
+    exchangeable. Either bar over ``tolerance`` makes :attr:`MatrixRatioAccuracy.status`
+    ``convicted``, so adding the second can only tighten the verdict; neither can certify it
+    (:data:`MatrixRatioStatus`).
     """
     if tolerance <= 0.0:
         raise ValueError("tolerance must be positive")
@@ -2629,7 +2657,6 @@ def matrix_ratio_certificate(
         isotropy_bar=bar,
         relative_isotropy_bar=relative_bar,
         tolerance=tolerance,
-        ok=relative <= tolerance and not (exchangeable and relative_bar > tolerance),
     )
 
 

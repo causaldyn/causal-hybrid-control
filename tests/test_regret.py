@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
+from typing import get_args
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import scipy.linalg
+from hypothesis import given
+from hypothesis import strategies as st
 
 from chc.dynamics import DampedOscillator
 from chc.lqr import linearize_discrete, linearized_regret_certificate
 from chc.network_causal import cycle_shells
 from chc.regret import (
+    MatrixRatioAccuracy,
+    MatrixRatioStatus,
     _capped_block_cost,
     _matrix_gamma,
     _permutation_cycles,
@@ -1300,15 +1306,17 @@ def test_matrix_ratio_certificate_reports_what_the_grid_is_worth() -> None:
     assert np.allclose(cert.value, fine)
     assert cert.nodes == 32
     assert cert.coarse_nodes == 31
-    assert cert.ok
+    assert cert.status == "not_convicted"
     assert cert.relative_residual < 1e-6
 
     # 2. q = 3 on a coarse grid is NOT converged, and the residual is what says so -- while the
-    #    returned array on its own looks perfectly ordinary
+    #    returned array on its own looks perfectly ordinary. Past every bar, the most a q = 3 grid
+    #    can read is not_convicted.
     n = 5
     coarse = matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(3 * n), nodes=5)
-    assert not coarse.ok
+    assert coarse.status == "convicted"
     assert coarse.relative_residual > 0.1
+    assert replace(coarse, tolerance=1.0).status == "not_convicted"
 
     # 3. in THIS cell it dominates the true error -- the exact answer is I/(n - q - 1), so the
     #    true error is computable, and the rate from nodes 4 to 5 is 6.24, comfortably past the
@@ -1323,6 +1331,79 @@ def test_matrix_ratio_certificate_reports_what_the_grid_is_worth() -> None:
         matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(3 * n), tolerance=0.0)
     with pytest.raises(ValueError, match="at least 4"):
         matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(3 * n), nodes=3)
+
+
+def test_the_ratio_status_can_convict_and_cannot_certify() -> None:
+    # Result 63 (d'): the residual is guaranteed to majorise the error once the per-node rate
+    # reaches 2, and a rate is a ratio of two ERRORS, which a certificate holding one difference and
+    # no reference value cannot form. So the status names what the bars can establish, and no more.
+    assert get_args(MatrixRatioStatus) == ("convicted", "not_convicted")
+
+    # 1. q = 2 is no exception. On a correlated anchor whose channels are NOT exchangeable (so no
+    #    isotropy bar), at the default grid, the rate measured against the exact answer is below 2,
+    #    the residual understates the error, and a tolerance between the two reads not_convicted
+    #    while the value misses it
+    n = 5
+    corr = np.array([[1.0, 0.5], [0.5, 2.0]])
+    cert = matrix_ratio_certificate(np.eye(n), np.eye(n), np.kron(corr, np.eye(n)))
+    assert not cert.exchangeable
+    exact = np.linalg.inv(corr) / (n - 2 - 1)
+    fine_error = float(np.max(np.abs(cert.value - exact)))
+    coarse_error = float(np.max(np.abs(cert.coarse - exact)))
+    assert cert.nodes == 40
+    assert coarse_error / fine_error < 2.0
+    assert cert.residual < fine_error
+    relative_error = fine_error / float(np.max(np.abs(cert.value)))  # the residual's normalisation
+    between = math.sqrt(cert.relative_residual * relative_error)
+    assert replace(cert, tolerance=between).status == "not_convicted"
+    assert relative_error > between
+
+    # 2. the residual convicts at any tolerance below it
+    assert replace(cert, tolerance=0.5 * cert.relative_residual).status == "convicted"
+
+    # 3. and the isotropy bar convicts ON ITS OWN: on an exchangeable anchor the proved bar exceeds
+    #    the residual, so between the two the residual passes and the bar convicts -- rightly, since
+    #    the error it bounds from below is past that tolerance as well
+    iso = matrix_ratio_certificate(np.eye(n), np.eye(n), np.eye(2 * n))
+    assert iso.exchangeable
+    assert iso.relative_residual < iso.relative_isotropy_bar
+    between = math.sqrt(iso.relative_residual * iso.relative_isotropy_bar)
+    assert replace(iso, tolerance=between).status == "convicted"
+    truth = np.eye(2) / (n - 2 - 1)
+    assert float(np.max(np.abs(iso.value - truth))) / float(np.max(np.abs(iso.value))) > between
+
+
+_bar = st.floats(min_value=0.0, max_value=1e3, allow_nan=False, allow_infinity=False)
+_tolerance = st.floats(min_value=0.0, max_value=1e3, exclude_min=True, allow_nan=False)
+
+
+@given(residual=_bar, bar=_bar, exchangeable=st.booleans(), tolerance=_tolerance)
+def test_no_q3_grid_reads_certified_whatever_its_bars(
+    residual: float, bar: float, exchangeable: bool, tolerance: float
+) -> None:
+    # The verdict reads the stored bars and nothing else, so ranging over every value the bars of an
+    # accepted q = 3 cell can take covers every such cell at no quadrature cost. Where the channels
+    # are not exchangeable the certificate withholds the bar as nan.
+    held = bar if exchangeable else math.nan
+    cert = MatrixRatioAccuracy(
+        value=np.eye(3),
+        coarse=np.eye(3),
+        nodes=8,
+        coarse_nodes=7,
+        residual=residual,
+        relative_residual=residual,
+        exchangeable=exchangeable,
+        isotropy_bar=held,
+        relative_isotropy_bar=held,
+        tolerance=tolerance,
+    )
+    assert cert.status in get_args(MatrixRatioStatus)
+    # each available bar convicts on its own ...
+    if residual > tolerance or (exchangeable and bar > tolerance):
+        assert cert.status == "convicted"
+    # ... and a tolerance covering every available bar clears the grid, which is all it can do
+    covering = max(residual, bar if exchangeable else 0.0)
+    assert replace(cert, tolerance=covering).status == "not_convicted"
 
 
 def test_an_anisotropic_numerator_has_an_exact_anchor_too() -> None:

@@ -587,6 +587,24 @@ still change).
 
 ### Changed
 
+- **`MatrixRatioAccuracy.ok` is replaced by `status`: `"convicted"` or `"not_convicted"`, never
+  `"certified"` (D13).** `ok = True` read as a certificate, and the refinement residual behind it
+  is an estimate, guaranteed to majorise the error only once the per-node convergence rate reaches
+  2 (`residual_bounds_iff_rate_reaches_two`). A rate is a ratio of two errors; the certificate holds
+  one difference between two grids and no reference value, so nothing it evaluates measures one.
+  Nor can the channel count stand in for it: the rate passes 2 on some `q = 3` grids, and on a
+  correlated `q = 2` anchor one step from the existence boundary the default grid's rate is below 2
+  and the residual understates the error (`test_the_ratio_status_can_convict_and_cannot_certify`
+  measures both against the exact answer). `status` is a `chc.regret.MatrixRatioStatus`, derived
+  from the bars rather than stored: `"convicted"` when the relative residual, or the isotropy bar
+  where the channels are exchangeable, exceeds `tolerance`, and `"not_convicted"` otherwise, which
+  is evidence and not a certificate.
+
+  **Breaking**, and removed rather than deprecated: replace `cert.ok` with
+  `cert.status == "not_convicted"` and `not cert.ok` with `cert.status == "convicted"`, and drop
+  `ok=` where you construct a `MatrixRatioAccuracy` yourself. No numeric behaviour changed:
+  `status` is `"convicted"` exactly where `ok` was `False`.
+
 - **`composition_transfer_certificate` now says why its fitted slopes are not the integers, and
   the difference is derived rather than tolerated.** The certificate reports
   `2.048478 / 4.012425 / 6.002273` against a theoretical `2 / 4 / 6`, and that excess had been
