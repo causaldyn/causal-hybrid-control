@@ -12,9 +12,12 @@ import dataclasses
 import json
 import logging
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from chc.cost import QuadraticCost
 from chc.decision import (
     Constraint,
     DecisionCertificate,
@@ -23,10 +26,15 @@ from chc.decision import (
     NotIdentifiedError,
     Prescription,
     Target,
+    _barrier,
+    _certify,
+    _margins,
     prescribe,
 )
+from chc.dynamics import LinearDynamics
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.panel import Panel
+from chc.plan import CausalPlan, causal_plan, certify_safety
 
 DT = 0.1
 B_TRUE = 0.8  # the incentive's true effect on supply, the number every arm is judged against
@@ -186,6 +194,70 @@ def test_an_unevaluated_tube_vouches_for_no_step_whatever_the_barrier_says(
         regret_bound=None,
     )
     assert certificate.trustworthy_steps == expected
+
+
+def test_a_state_in_the_middle_of_a_two_sided_bound_is_audited_rather_than_skipped() -> None:
+    """At the midpoint the two margins tie with opposite gradients, and ``jnp.min`` averages tied
+    gradients, so the barrier's was zero: that step's check vanished and ``gamma_star`` raised. A
+    plan that starts in the middle of a two-sided bound sits exactly there at its first step. The
+    audit now reads each margin; a held solve still reads one gradient, and it is a margin's."""
+    bounds = [Constraint("wait", lo=-0.5, hi=0.5)]
+    barrier = _barrier(_margins(("supply", "wait"), bounds))
+    assert np.allclose(jax.grad(barrier)(jnp.zeros(2)), [0.0, 1.0])  # the first tied margin, lo's
+
+    result = prescribe(
+        _panel(n_units=40, n_periods=8),
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("supply", value=1.0),
+        constraints=bounds,
+        adjustment=CausalGraph.from_edges(EDGES),
+        horizon=15,
+        dt=DT,
+        tolerance=0.5,
+        x0=jnp.zeros(2),
+    )
+    assert result.certificate.barrier_certified_steps is not None
+    assert result.certificate.gamma_star is not None
+
+
+def _dash() -> tuple[LinearDynamics, CausalPlan]:
+    """``wait' = wait + u`` planned from 1 towards 5 in a box of 2: full push from the start."""
+    model = LinearDynamics(jnp.ones((1, 1)), jnp.ones((1, 1)))
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=jnp.array([[1e-3]]), Qf=jnp.eye(1), x_target=jnp.array([5.0])
+    )
+    plan = causal_plan(model, jnp.ones(1), cost, DT, 5, jnp.array([-2.0]), jnp.array([2.0]))
+    assert float(plan.actions[0, 0]) == pytest.approx(2.0)
+    return model, plan
+
+
+def test_a_tie_is_certified_only_if_every_tied_margin_is() -> None:
+    """From the middle of ``[0.5, 1.5]`` both margins are the minimum, and a state leaving through
+    ``hi`` at speed 3 clears ``lo``'s condition while failing its own: checked on the first tied
+    margin alone, that step would be certified. Its ceiling is the weaker margin's, not the first's:
+    the drift pushes towards ``hi``, so ``lo`` holds with no action at all."""
+    model, plan = _dash()
+    lo, hi = _margins(("wait",), [Constraint("wait", lo=0.5, hi=1.5)])
+    first, second = (certify_safety(plan, model, margin, DT, u_max=2.0) for margin in (lo, hi))
+    assert bool(first.planned_certified[0])
+    assert not bool(second.planned_certified[0])
+
+    audit = _certify(plan, model, (lo, hi), DT, gamma=1.0, u_max=2.0)
+    assert not bool(audit.planned_certified[0])
+    assert audit.certified_steps == 0
+    assert np.isinf(first.step_gamma_star[0])
+    # hi: a deficit of 0.5 on a channel of 1 at u_max 2 leaves a radius 0.75: (1 + 0.75)/(1 - 0.75)
+    assert audit.step_gamma_star[0] == second.step_gamma_star[0] == pytest.approx(7.0)
+
+
+def test_off_a_tie_the_audit_is_certify_safety_on_the_barrier_itself() -> None:
+    """With ``lo`` the only minimum at every step, reading margins one by one changes nothing."""
+    model, plan = _dash()
+    margins = _margins(("wait",), [Constraint("wait", lo=0.5, hi=20.0)])
+    combined = _certify(plan, model, margins, DT, gamma=2.0, u_max=2.0)
+    direct = certify_safety(plan, model, _barrier(margins), DT, gamma=2.0, u_max=2.0)
+    for field in dataclasses.fields(direct):
+        np.testing.assert_array_equal(getattr(combined, field.name), getattr(direct, field.name))
 
 
 def test_reach_prices_a_lever_by_its_box_and_not_by_its_coefficient_alone() -> None:

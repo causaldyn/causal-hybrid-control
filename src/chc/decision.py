@@ -32,7 +32,7 @@ import logging
 import math
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import jax.numpy as jnp
@@ -50,6 +50,7 @@ from chc.plan import (
     BarrierConstraint,
     CausalPlan,
     CertificateStatus,
+    SafetyCertificate,
     causal_plan,
     certify_safety,
     plan_regret_bound,
@@ -450,8 +451,9 @@ def prescribe(
             (:class:`chc.plan.BarrierConstraint`), rather than only price the plan against them.
             Off by default, so no existing schedule moves; the certificate reads the same audit
             either way, and it is still the verdict -- a solve stopped by its budget can come back
-            short of the condition. The regret bound then includes what holding cost, since it is
-            still priced against the box alone.
+            short of the condition, and where two bounds tie the solve holds only the first. The
+            regret bound then includes what holding cost, since it is still priced against the
+            box alone.
         max_levers: plan with at most this many levers, chosen by greedy forward selection with
             :func:`chc.plan.causal_plan` as its inner loop. Starting from no lever, each step plans
             once per lever not yet chosen, with that lever added, and keeps the cheapest plan ---
@@ -629,12 +631,8 @@ def prescribe(
     caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
     rate = LinearConstraint.rate_limit(horizon, caps)
 
-    barrier = _barrier(states, constraints)
-    held = (
-        BarrierConstraint(barrier, gamma=gamma)
-        if hold_constraints and barrier is not None
-        else None
-    )
+    margins = _margins(states, constraints)
+    held = BarrierConstraint(_barrier(margins), gamma=gamma) if hold_constraints else None
 
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target)
@@ -687,11 +685,9 @@ def prescribe(
         },
     )
 
-    safety = (
-        None
-        if barrier is None
-        else certify_safety(plan, model, barrier, dt, gamma=gamma, u_max=u_max)
-    )
+    safety = _certify(plan, model, margins, dt, gamma=gamma, u_max=u_max) if margins else None
+    if held is not None:
+        plan = replace(plan, safety=safety)  # the solve's own audit read one margin at a tie
     certificate = DecisionCertificate(
         identification=identification,
         adjustment=resolved,
@@ -881,31 +877,91 @@ def _cost(states: tuple[str, ...], levers: Sequence[Lever], target: Target) -> Q
     )
 
 
-def _barrier(
+def _margins(
     states: tuple[str, ...], constraints: Sequence[Constraint]
-) -> Callable[[Array], Array] | None:
-    """``h(x) = min_j (bound margins)``, safe where ``h >= 0``; ``None`` when nothing is bounded.
-
-    The minimum is non-smooth where two constraints bind at once, and ``certify_safety`` reads a
-    gradient off it. At such a point the gradient is one of the active constraints' rather than a
-    convex combination, which is a valid subgradient but not the tightest channel; with a single
-    active constraint --- the ordinary case --- it is exact.
-    """
-    if not constraints:
-        return None
+) -> tuple[Callable[[Array], Array], ...]:
+    """An affine margin per finite bound, ``x - lo`` then ``hi - x``, in constraint order."""
     index = {name: position for position, name in enumerate(states)}
-    terms = [(index[c.state], c.lo, c.hi) for c in constraints]
+    margins: list[Callable[[Array], Array]] = []
+    for constraint in constraints:
+        position = index[constraint.state]
+        if constraint.lo is not None:
+            margins.append(_margin(position, constraint.lo, 1.0))
+        if constraint.hi is not None:
+            margins.append(_margin(position, constraint.hi, -1.0))
+    return tuple(margins)
+
+
+def _margin(position: int, bound: float, sign: float) -> Callable[[Array], Array]:
+    return lambda x: sign * (x[position] - bound)
+
+
+def _barrier(margins: Sequence[Callable[[Array], Array]]) -> Callable[[Array], Array]:
+    """``h(x) = min_j m_j(x)``, safe where ``h >= 0``: the one barrier a held solve takes.
+
+    Where margins tie the minimum has no gradient, and the solve reads one anyway: the first tied
+    margin's, selected explicitly, because ``jnp.min`` averages tied gradients and the two margins
+    of a two-sided bound tie at its midpoint with opposite ones --- a zero gradient, which held
+    nothing there. The audit does not read this gradient; :func:`_certify` checks every tied margin.
+    """
 
     def barrier(x: Array) -> Array:
-        margins = []
-        for position, lo, hi in terms:
-            if lo is not None:
-                margins.append(x[position] - lo)
-            if hi is not None:
-                margins.append(hi - x[position])
-        return jnp.min(jnp.stack(margins))
+        stacked = jnp.stack([margin(x) for margin in margins])
+        return stacked[jnp.argmin(stacked)]
 
     return barrier
+
+
+def _certify(
+    plan: CausalPlan,
+    model: Dynamics,
+    margins: Sequence[Callable[[Array], Array]],
+    dt: float,
+    *,
+    gamma: float,
+    u_max: float,
+) -> SafetyCertificate:
+    """:func:`chc.plan.certify_safety` for ``h = min_j m_j``, run on each margin as its own barrier.
+
+    Along a trajectory the right derivative of a minimum is the smallest of its tied terms', so the
+    condition on ``h`` holds at a step iff it holds for every margin at the minimum there, and the
+    step is certified only if each of them is. At a tie ``h`` has no gradient, and one margin's
+    would pass a state leaving through another: at the midpoint of a two-sided bound, a state moving
+    fast towards ``hi`` clears ``lo``'s condition. Where one margin is the minimum --- the ordinary
+    case --- this is the audit of ``h`` itself.
+
+    A tied step's ``gamma_star`` is the weakest of its margins', an upper bound rather than the
+    ceiling itself: each margin's is reached by its own best action, and no one action need reach
+    the smallest. The two agree when every tied margin holds with no action at all, where both are
+    infinite.
+    """
+    audits = [
+        certify_safety(plan, model, margin, dt, gamma=gamma, u_max=u_max) for margin in margins
+    ]
+    values = jnp.stack([audit.barrier_values for audit in audits])
+    tied = values == jnp.min(values, axis=0)  # no margin at all where a value is nan
+    passed = jnp.stack([audit.planned_certified for audit in audits])
+    certified = jnp.any(tied, axis=0) & jnp.all(passed | ~tied, axis=0)
+    guaranteed = jnp.stack([audit.guaranteed_derivative for audit in audits])
+    ceilings, rows = np.asarray([audit.step_gamma_star for audit in audits]), np.asarray(tied)
+    step_gamma_star = tuple(
+        float(np.min(column[on])) if on.any() else math.nan
+        for column, on in zip(ceilings.T, rows.T, strict=True)
+    )
+    return SafetyCertificate(
+        barrier_values=jnp.min(values, axis=0),
+        guaranteed_derivative=jnp.nanmin(jnp.where(tied, guaranteed, jnp.nan), axis=0),
+        required=jnp.max(jnp.stack([audit.required for audit in audits]), axis=0),  # -alpha * h
+        planned_certified=certified,
+        certified_steps=(
+            int(jnp.argmin(certified)) if not bool(jnp.all(certified)) else int(certified.shape[0])
+        ),
+        gamma_star=(
+            math.nan if any(math.isnan(g) for g in step_gamma_star) else min(step_gamma_star)
+        ),
+        step_gamma_star=step_gamma_star,
+        radius=max(audit.radius for audit in audits),
+    )
 
 
 def _log_norm(model: Dynamics, x0: Array, n_levers: int) -> float:

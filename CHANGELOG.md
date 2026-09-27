@@ -529,6 +529,20 @@ still change).
 
 ### Fixed
 
+- **`prescribe` raised on a plan starting in the middle of a two-sided bound, and checked any tie
+  against an average of its margins.** The facade audited `h = min_j` of the bound margins through
+  `certify_safety`, which reads `h`'s gradient, and `jnp.min` averages tied gradients. The two
+  margins of a two-sided bound tie at its midpoint with opposite ones, so there the gradient was
+  zero, the step's check vacuous and `gamma_star` raised `ValueError`: a pendulum at rest inside
+  `|omega| <= 1` could not be prescribed at all. Reading the first tied margin instead would still
+  certify a state leaving fast through the other, so the audit now runs `certify_safety` on each
+  margin as its own barrier and certifies a step only if every margin at the minimum there is, the
+  right derivative of a minimum being the smallest of its tied terms'. Off a tie it is the old
+  audit field for field, which a test pins, and no number `mmm_demo.py` prints moved. A tied step's
+  `gamma_star` is the weakest tied margin's, an upper bound on what a single action reaches. A held
+  solve still takes one barrier, whose gradient at a tie is now the first tied margin's rather than
+  zero; `plan.safety` carries the per-margin audit, as the certificate does.
+
 - **`DecisionCertificate.trustworthy_steps` trusted a plan whose tube was never evaluated.** Since
   0.5.0 it dropped a `None` prefix instead of counting it as zero, which its own docstring promised,
   so a plan with no error bound took the barrier's prefix as its answer: the confounded arm of the
