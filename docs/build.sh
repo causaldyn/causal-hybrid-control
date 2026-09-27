@@ -19,7 +19,7 @@ timeout 3600 uv run --group notebooks jupyter nbconvert --to markdown --execute 
 
 mkdir -p docs/output
 timeout 1800 uv run python docs/quickstart.py >docs/output/quickstart.txt
-for script in flagship_demo epidemic_demo mmm_demo run_marketplace_demo spine_demo \
+for script in flagship_demo epidemic_demo mmm_demo pendulum_demo run_marketplace_demo spine_demo \
   run_dynamic_confounding_demo run_benchmark run_causal_bench; do
   timeout 1800 uv run python "scripts/$script.py" >"docs/output/$script.txt"
 done

@@ -84,6 +84,7 @@ nav:
       - case-studies/index.md
       - case-studies/pricing.md
       - case-studies/epidemic.md
+      - case-studies/pendulum.md
       - case-studies/media-budgets.md
       - case-studies/marketplace-dispatch.md
       - case-studies/driver-supply.md
