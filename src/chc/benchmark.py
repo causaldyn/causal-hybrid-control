@@ -1,4 +1,4 @@
-"""Benchmark v0: confounded, constrained control tasks with oracle regret — the moat (``plans/06``).
+"""Benchmark v0: confounded, constrained control tasks with oracle regret.
 
 Each task ships a confounded offline dataset, a true plant with a computable oracle controller, and
 an evaluation reporting **regret vs oracle**, **constraint violations**, and **out-of-support action

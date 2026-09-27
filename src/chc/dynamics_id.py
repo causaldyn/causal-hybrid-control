@@ -606,7 +606,7 @@ class ClosedLoopAttributionCertificate:
     curvature: float  # the u^2 term arm B's plant has and the fitted class cannot represent
     spurious: tuple[float, ...]  # fitted b1 in arm B: pure artefact, -gain*curvature
     spurious_predicted: tuple[float, ...]  # -gain*curvature
-    refuted_guess: tuple[float, ...]  # -1/gain, the form plans/24 carried
+    refuted_guess: tuple[float, ...]  # -1/gain: the manifold slope, once guessed to be b1
     exploration: tuple[float, ...]  # off-manifold noise levels for the recovery sweep
     drift_error_by_exploration: tuple[float, ...]  # |fitted a - true a| as exploration grows
     condition_by_exploration: tuple[float, ...]

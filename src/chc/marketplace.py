@@ -1,6 +1,6 @@
-"""Offline causal decision-making under equilibrium interference -- the marketplace moat (plans/20).
+"""Offline causal decision-making under equilibrium interference.
 
-The composition no existing tool ships end to end: learn an incentive policy from *confounded,
+The problem, end to end: learn an incentive policy from *confounded,
 switchback-logged* marketplace data where (a) the logging policy is confounded (operators already
 incentivise busy zones, so demand drives both treatment and outcome), and (b) SUTVA fails because
 drivers are mobile -- incentivising a zone pulls drivers from its neighbours through a shared

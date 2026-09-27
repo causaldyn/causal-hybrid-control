@@ -1,7 +1,7 @@
 """1D Galerkin finite elements with a tridiagonal (Thomas / progonka) solve.
 
 Weak form of ``-u'' = f`` on ``[0,1]`` with ``u(0)=u(1)=0`` and a piecewise-linear hat basis: the 1D
-analogue of the user's 2D bilinear coursework (``plans/11`` §5). Hat stiffness assembles to the
+analogue of the bilinear (Q1) elements of :func:`poisson_2d`. Hat stiffness assembles to the
 tridiagonal stencil ``(1/h)[-1, 2, -1]``, solved by the Thomas sweep (the "progonka" kernel of
 Marchuk-Agoshkov projection-grid methods).
 
@@ -74,7 +74,7 @@ _Q1_STIFFNESS = (1.0 / 6.0) * np.array(
 def poisson_2d(f: Callable[[Array, Array], Array], n: int) -> tuple[Array, Array]:
     """FEM solution of ``-Δu = f`` on ``[0,1]^2``, ``u=0`` on the boundary, bilinear (Q1) elements.
 
-    The 2D analogue of the user's coursework (``plans/11`` §5): a bilinear tensor-product basis
+    The 2D analogue of :func:`poisson_1d`: a bilinear tensor-product basis
     assembled element-by-element on an ``n x n`` grid; ``f`` is vectorised over the grids.
     Returns the 1D node coordinates and the ``(n+1, n+1)`` nodal solution.
     """

@@ -2,7 +2,7 @@
 
 Every method in the causal frontier (`chc.did`, `chc.scm`, `chc.estimators`, `chc.gmethods`) ships
 with a test proving it recovers a *known* effect where a naive baseline is biased. This consolidates
-those into one table -- the moat, scored: for each method it draws a self-contained synthetic DGP
+those into one table: for each method it draws a self-contained synthetic DGP
 with a ground-truth effect, runs the method and its naive baseline, and reports both biases so the
 win is visible side by side. NumPy orchestration; the R-learner row builds a JAX payload internally.
 """
