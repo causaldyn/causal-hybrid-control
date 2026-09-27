@@ -9,6 +9,15 @@ still change).
 
 ### Added
 
+- **A BOPTEST case study for `prescribe`, closed loop on a live building emulator
+  (`docs/case-studies/boptest.md`).** Pre-registered in `causaldyn-bench` (L8.1): a heat pump
+  planned from a weather-compensated log, the call with the graph against the same call with
+  nothing adjusted, energy read at the built-in baseline's comfort. The gate reads REFUTED, the
+  naive call cheaper in all four replicates both arms could be read in, but both validity checks
+  failed, so the verdict does not stand; the naive loop also ran away in eight weeks, where its
+  fitted channel changed sign. The page lists what the façade could not state there: a bound on
+  the steered state, a weather term in the drift, a target that varies within the horizon.
+
 - **A pendulum case study for `prescribe`: Pendulum-v1 held at an angle, planned from a log whose
   torque was confounded (`scripts/pendulum_demo.py`).** The control audience's counterpart of
   `chc.mmm`. While logging, an operator cancelled half the wind torque it measured, so the logged

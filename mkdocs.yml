@@ -89,6 +89,7 @@ nav:
       - case-studies/marketplace-dispatch.md
       - case-studies/driver-supply.md
       - case-studies/confounded-incentives.md
+      - case-studies/boptest.md
   - API reference:
       - api/index.md
       - Stable:
