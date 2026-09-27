@@ -17,6 +17,7 @@ import pytest
 
 from chc.decision import (
     Constraint,
+    DecisionCertificate,
     DecisionError,
     Lever,
     NotIdentifiedError,
@@ -24,7 +25,7 @@ from chc.decision import (
     Target,
     prescribe,
 )
-from chc.graph import CausalGraph
+from chc.graph import AdjustmentSet, CausalGraph
 from chc.panel import Panel
 
 DT = 0.1
@@ -157,6 +158,34 @@ def test_omitting_the_tolerance_switches_the_tube_off_rather_than_setting_it_to_
     assert without.certificate.certified_horizon is None
     assert without.certificate.trustworthy_steps == 0  # no constraint either, so nothing is proved
     assert without.plan is not None  # the plan exists; only its tube was not evaluated
+
+
+@pytest.mark.parametrize(
+    ("tube", "barrier", "expected"),
+    [
+        (15, 9, 9),  # both evaluated: the shorter prefix binds
+        (15, None, 15),  # nothing is bounded, so there is no safety prefix to respect
+        (None, 9, 0),  # the barrier cleared a trajectory whose error nothing bounds
+        (None, None, 0),
+    ],
+)
+def test_an_unevaluated_tube_vouches_for_no_step_whatever_the_barrier_says(
+    tube: int | None, barrier: int | None, expected: int
+) -> None:
+    certificate = DecisionCertificate(
+        identification="asserted",
+        adjustment=AdjustmentSet((), "identified", "asserted by the caller"),
+        identification_radius=None,
+        overlap=1.0,
+        certificate_status="not_evaluated" if tube is None else "certified",
+        certified_horizon=tube,
+        barrier_certified_steps=barrier,
+        gamma_star=None,
+        solver_status="converged",
+        solver_iterations=1,
+        regret_bound=None,
+    )
+    assert certificate.trustworthy_steps == expected
 
 
 def test_reach_prices_a_lever_by_its_box_and_not_by_its_coefficient_alone() -> None:

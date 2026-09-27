@@ -209,14 +209,17 @@ class DecisionCertificate:
         """The prefix that survives *both* axes --- the number an operator can act on.
 
         Zero whenever the effect is not identified, whatever the tube says, and never longer than
-        the shorter of the two certified prefixes. ``None`` on either axis means "not evaluated",
-        which contributes zero here rather than infinity.
+        the shorter of the two certified prefixes. The two ``None`` values mean different things.
+        ``certified_horizon is None`` means the tube was not evaluated, so nothing bounds the
+        trajectory's error and it contributes zero rather than infinity --- a barrier cleared by an
+        unbounded trajectory proves nothing. ``barrier_certified_steps is None`` means no state was
+        bounded, so there is no safety prefix to respect and the tube alone decides.
         """
-        if self.identification == "not_identified":
+        if self.identification == "not_identified" or self.certified_horizon is None:
             return 0
-        limits = [self.certified_horizon, self.barrier_certified_steps]
-        measured = [limit for limit in limits if limit is not None]
-        return min(measured) if measured else 0
+        if self.barrier_certified_steps is None:
+            return self.certified_horizon
+        return min(self.certified_horizon, self.barrier_certified_steps)
 
 
 @dataclass(frozen=True)

@@ -473,6 +473,15 @@ still change).
 
 ### Fixed
 
+- **`DecisionCertificate.trustworthy_steps` trusted a plan whose tube was never evaluated.** Since
+  0.5.0 it dropped a `None` prefix instead of counting it as zero, which its own docstring promised,
+  so a plan with no error bound took the barrier's prefix as its answer: the confounded arm of the
+  marketing-mix case study, whose fit carries no channel error, reported 12 trustworthy steps. An
+  unevaluated tube now contributes zero. A missing barrier still does not limit the answer, because
+  `None` there means no state was bounded rather than that a check was skipped. `mmm_demo.py` also
+  called its `+4.3%` "more cumulative sales"; it is lift, cumulative sales over the do-nothing arm,
+  and the README's spine numbers now match what `spine_demo.py` prints (13.59, 38.97, 1.17).
+
 - **Three accuracy statements in `exact_matrix_ratio_moment` and `MatrixRatioAccuracy` held only in
   part.** At `q = 2`, a correlated `Omega` (`rho = 0.5`) is not "a flat factor of about 11" over the
   exchangeable error: that holds up to margin 2 only, and at margins 4 and 8 the factor grows from

@@ -31,9 +31,9 @@ def main() -> None:
     flat_gap = report.lift("adjusted") / report.lift("flat") - 1.0
     print(
         f"\nAt the same total budget ({report.arm('adjusted').total_spend:.1f}) the prescribed"
-        f" schedule buys {flat_gap:+.1%} more cumulative sales than an equal split -- it"
-        " front-loads to build carryover and then tapers, which is why cumulative sales and not"
-        " the terminal value is the number reported."
+        f" schedule buys {flat_gap:+.1%} more lift than an equal split (cumulative sales over the"
+        " do-nothing arm) -- it front-loads to build carryover and then tapers, which is why"
+        " cumulative sales and not the terminal value are scored."
     )
     print(
         f"The confounded arm credits every channel with the season, so it believes it needs less:"

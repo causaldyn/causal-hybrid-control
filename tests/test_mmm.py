@@ -151,6 +151,15 @@ def test_the_prescription_is_identified_and_certified_over_the_whole_horizon(
     assert report.arm("flat").prescription is None  # a fixed rule has nothing to certify
 
 
+def test_the_confounded_arm_is_trusted_for_no_step(report: MmmReport) -> None:
+    """Its fit carries no channel error, so no tube bounds its trajectory; the barrier alone
+    clearing all twelve steps must not read as twelve trustworthy ones."""
+    certificate = report.arm("confounded").prescription.certificate  # type: ignore[union-attr]
+    assert certificate.certified_horizon is None
+    assert certificate.barrier_certified_steps == 12
+    assert certificate.trustworthy_steps == 0
+
+
 def test_the_case_study_reaches_a_decision_in_under_ten_lines() -> None:
     """The L1 gate, executed rather than asserted in prose. Body below is nine statements."""
     system = MarketingMixSystem()
