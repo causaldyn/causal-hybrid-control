@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   # Matrixed like `test`, and for a reason ruff alone would not justify: with the floor at 3.11 the
   # resolver forks, so `ty` reads numpy 2.4.6's stubs below 3.12 and 2.5.1's at or above it. The two

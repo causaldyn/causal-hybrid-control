@@ -13,6 +13,9 @@ on:
     # new query reaches old code. Off-peak on a Monday.
     - cron: "41 5 * * 1"
 
+# Nothing by default: the job below names exactly the scopes it needs.
+permissions: {}
+
 jobs:
   analyze:
     runs-on: ubuntu-latest

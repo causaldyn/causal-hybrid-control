@@ -15,6 +15,9 @@ on:
   push:
     tags: ["v*"]
 
+# Nothing by default: each job below names exactly the scopes it needs.
+permissions: {}
+
 jobs:
   build:
     runs-on: ubuntu-latest

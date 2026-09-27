@@ -13,6 +13,9 @@ on:
     types: [published]
   workflow_dispatch:
 
+# Nothing by default: each job below names exactly the scopes it needs.
+permissions: {}
+
 # One deployment at a time, and never cancelled halfway through.
 concurrency:
   group: pages
