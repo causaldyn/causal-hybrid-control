@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---|---|
-| 0.5.x | yes |
-| < 0.5 | no |
+| 0.6.x | yes |
+| < 0.6 | no |
 
 This is a pre-1.0, single-author research library. Only the latest minor gets fixes; there are no
 backports. If you are pinned to an older minor, the upgrade path is the
@@ -55,7 +55,7 @@ wastes your time:
   ```bash
   gh attestation verify --repo causaldyn/causal-hybrid-control causal_hybrid_control-*.whl
   # or, straight from the index:
-  curl -s https://pypi.org/integrity/causal-hybrid-control/0.5.1/causal_hybrid_control-0.5.1-py3-none-any.whl/provenance
+  curl -s https://pypi.org/integrity/causal-hybrid-control/0.6.0/causal_hybrid_control-0.6.0-py3-none-any.whl/provenance
   ```
 
   The publisher in a valid attestation is `causaldyn/causal-hybrid-control` via `release.yml`. A

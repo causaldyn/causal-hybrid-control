@@ -5,6 +5,8 @@
 [![python](https://img.shields.io/pypi/pyversions/causal-hybrid-control)](https://pypi.org/project/causal-hybrid-control/)
 [![license](https://img.shields.io/pypi/l/causal-hybrid-control)](LICENSE)
 [![doi](https://zenodo.org/badge/DOI/10.5281/zenodo.21737789.svg)](https://doi.org/10.5281/zenodo.21737789)
+[![docs](https://github.com/causaldyn/causal-hybrid-control/actions/workflows/docs.yml/badge.svg)](https://causaldyn.github.io/causal-hybrid-control/)
+[![scorecard](https://api.scorecard.dev/projects/github.com/causaldyn/causal-hybrid-control/badge)](https://scorecard.dev/viewer/?uri=github.com/causaldyn/causal-hybrid-control)
 
 Physics-structured dynamics with a **learned causal residual**, controlled by **constrained optimal
 control / MPC**, and made safe on offline, confounded data by an explicit **pessimism / support** layer.
@@ -197,7 +199,7 @@ Sources are paired `.py` (jupytext) next to each `.ipynb`.
 Correctness is cross-checked in independent tools, symbolic first (`validation/`): the ARE / matrix
 exponential are verified **Maxima**-authoritative (exact + high-precision `bfloat`) against **PARI/GP**
 (50-digit) and **Octave**, with SciPy used only as the fast float64 numeric. The control and guarantee
-invariants are **formally proved in Rocq** — 63 files under `proofs/`, from the box-projection bounds
+invariants are **formally proved in Rocq** — 70 files under `proofs/`, from the box-projection bounds
 and idempotence (`box_projection.v`) to the interference-aware regret certificate — and where Stdlib
 could state only a scalar shadow, `proofs/mathcomp/` proves the matrix statement with MathComp.
 
@@ -248,7 +250,7 @@ The release-by-release record, scope corrections included, is in [`CHANGELOG.md`
 
 ## Status
 
-Early (`v0.5.1`), single-author, research code (695 collected tests, `just counts` for the rest;
+Early (`v0.6.0`), single-author, research code (799 collected tests, `just counts` for the rest;
 Python 3.11–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
@@ -269,8 +271,8 @@ discomfort 8.01→7.32, energy 0.393→0.354, cost 0.100→0.090, emissions 0.06
 win). Planned through `prescribe` instead, from a weather-compensated log, the same plant gave a
 pre-registered comparison of the adjusted call against the naive one whose verdict is void, and a
 naive loop that ran away where its fitted channel changed sign
-([case study](docs/case-studies/boptest.md)). Roadmap: more real tasks, the Medium/paper writeups, and — only if a real-time/edge deployment
-target appears — a compiled runtime.
+([case study](docs/case-studies/boptest.md)). Roadmap: more real tasks, the Medium/paper writeups,
+and — only if a real-time/edge deployment target appears — a compiled runtime.
 
 ### What "0.x" promises
 
@@ -295,8 +297,9 @@ Three tiers, by what a break costs you:
 | **evolving** | the estimator, certificate and domain layers — `causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace` `mmm` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
 | **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` | may change or be withdrawn in any release. Pin an exact version if you depend on one |
 
-Roadmap: **0.6.0** general constraints in the solver, the transfer ledger, a docs site → **1.0.0**,
-which is when the stable tier stops moving.
+Roadmap: **0.7.0** the three things `prescribe` cannot state yet — a bound on the steered state,
+exogenous drivers in the drift, a target that varies within the horizon → **1.0.0**, which is when
+the stable tier stops moving.
 
 Supply chain: every artifact carries a PEP 740 attestation and a SLSA build provenance; see
 [`SECURITY.md`](SECURITY.md) for how to verify one and what is in scope for a report.
@@ -313,7 +316,7 @@ suite, and `rocq compile` over `proofs/*.v`. Machine-readable citation metadata 
   author  = {Gradina, Ilia},
   title   = {causal-hybrid-control: physics-structured dynamics with a learned causal residual},
   year    = {2026},
-  version = {0.5.1},
+  version = {0.6.0},
   doi     = {10.5281/zenodo.21737789},
   license = {MIT},
   url     = {https://github.com/causaldyn/causal-hybrid-control}

@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-27
+
 ### Added
 
 - **A BOPTEST case study for `prescribe`, closed loop on a live building emulator
@@ -70,15 +72,15 @@ still change).
   candidate's cost. Without `max_levers` nothing moves: four prescriptions hash identically before
   and after, and a test holds the `None` path to its one cold solve.
 
-  Greedy is not exhaustive. Against exhaustive search it found the best set in 5 of 6 cells on
-  three named plants, missing on one built for it to miss, and in all 84 on 28 random four-lever
-  plants on which some lever lowers the cost. The group-L1 stage `plans/24` proposed was measured
-  and not shipped: as a screen before greedy it repaired no miss and broke a hit on each set of
-  plants, and as the selector itself it repaired the built miss and broke 2 hits on the named
-  plants and 15 on the random ones. Greedy followed by single swaps repaired the miss and broke
-  nothing, and is the first thing to add if misses show up in use. The decision, the tables, the
-  rejected alternatives and the mutation check of the tests are in
-  `docs/adr/0004-greedy-lever-selection.md`, reproducible with `scripts/bench_max_levers.py`.
+  Greedy is not exhaustive. Against exhaustive search it found the best set in 5 of 6 cells on three
+  named plants, missing on one built for it to miss, and in all 84 on 28 random four-lever plants on
+  which some lever lowers the cost. The group-L1 stage first proposed for this was measured and not
+  shipped: as a screen before greedy it repaired no miss and broke a hit on each set of plants, and
+  as the selector itself it repaired the built miss and broke 2 hits on the named plants and 15 on
+  the random ones. Greedy followed by single swaps repaired the miss and broke nothing, and is the
+  first thing to add if misses show up in use. The decision, the tables, the rejected alternatives
+  and the mutation check of the tests are in `docs/adr/0004-greedy-lever-selection.md`, reproducible
+  with `scripts/bench_max_levers.py`.
 
 - **The matrix statements behind the scalar Rocq proofs, proved with MathComp
   (`proofs/mathcomp/`).** Stdlib has no matrices, so the robust barrier margin, the multivariate
@@ -574,6 +576,103 @@ still change).
   README gains a **stability statement**: what 0.x promises, three tiers by what a break costs you,
   and the road to 1.0.
 
+### Changed
+
+- **`chc.mintime` is filed experimental, not evolving.** It solves the scalar double
+  integrator's time-optimal problem in closed form and nothing more general, which is the
+  README's definition of a module that carries one result. The tier table is new in this
+  release, so no published promise moves.
+
+- **`MatrixRatioAccuracy.ok` is deprecated for `status`: `"convicted"` or `"not_convicted"`, never
+  `"certified"` (D13).** `ok = True` read as a certificate, and the refinement residual behind it
+  is an estimate, guaranteed to majorise the error only once the per-node convergence rate reaches
+  2 (`residual_bounds_iff_rate_reaches_two`). A rate is a ratio of two errors; the certificate holds
+  one difference between two grids and no reference value, so nothing it evaluates measures one.
+  Nor can the channel count stand in for it: the rate passes 2 on some `q = 3` grids, and on a
+  correlated `q = 2` anchor one step from the existence boundary the default grid's rate is below 2
+  and the residual understates the error (`test_the_ratio_status_can_convict_and_cannot_certify`
+  measures both against the exact answer). `status` is a `chc.regret.MatrixRatioStatus`, derived
+  from the bars rather than stored: `"convicted"` when the relative residual, or the isotropy bar
+  where the channels are exchangeable, exceeds `tolerance`, and `"not_convicted"` otherwise, which
+  is evidence and not a certificate.
+
+  **Deprecated**, removed in 0.7.0: `ok` stays through 0.6.x as a property that raises a
+  `DeprecationWarning` and returns `status == "not_convicted"`. Replace `cert.ok` with
+  `cert.status == "not_convicted"` and `not cert.ok` with `cert.status == "convicted"`. `ok` is no
+  longer a constructor argument, so drop `ok=` where you construct a `MatrixRatioAccuracy`
+  yourself. No numeric behaviour changed: `status` is `"convicted"` exactly where `ok` was `False`.
+
+- **`composition_transfer_certificate` now says why its fitted slopes are not the integers, and
+  the difference is derived rather than tolerated.** The certificate reports
+  `2.048478 / 4.012425 / 6.002273` against a theoretical `2 / 4 / 6`, and that excess had been
+  read as agreement-up-to-noise. There is no noise in it -- the certificate is deterministic. With
+  `e = delta^p` and `t = log(delta)`, `log R = const + 2 p t + lam e + 2 c2 e^2 + O(e^3)`, so an
+  ordinary least-squares fit over a finite window necessarily reports
+  `2 p + lam cov(t, e^(p t))/var(t) + 2 c2 cov(t, e^(2 p t))/var(t)`, with
+  `lam = (2 b^3 - 6 b rr)/(rr^2 - b^4)` and `c2 = (b^6 - 8 b^4 rr + 5 b^2 rr^2 - 2 rr^3)/(2 (rr^2
+  - b^4)^2)`. New derivation `validation/order_transfer_window.mac` (Maxima, cross-checked in
+  giac); the two terms account for `4.09e-2` of the `4.85e-2` excess at `p = 1`, and what is left
+  is one more power of `delta` across four windows.
+
+  The same derivation bounds the window from the other end, which is the part that changes what a
+  reader should do. `u*(b + e) - u*(b)` is a cancellation, so the regret's relative error grows as
+  `delta_lo` falls: at `delta in [1e-5, 2e-4]` the `p = 3` fit reads `6.035`, and the two-channel
+  and three-channel `delta^4` sweeps in `multivariate_interference_certificate` and
+  `exposure_map_certificate` return `nan` outright, because the regret has underflowed to exactly
+  zero and the fit takes `log 0`. The same 12-point fit at 60 digits reproduces the two-term
+  prediction to `4.3e-25`, which is what identifies the miss as rounding rather than mathematics.
+  No behaviour changed; `slopes` returns what it always did.
+
+- **The statistical results the proofs cite are now named predicates in the theorem types, not
+  prose in the file headers.** Five files -- `proofs/c2_end_to_end.v`, `van_trees.v`,
+  `clustered_van_trees.v`, `action_van_trees.v`, `multivariate_van_trees.v` -- declare each cited
+  input as a `Definition ... : Prop` carrying its citation (`CrossFitRemainder` for CCDDHNR 2018
+  Lemma 6.1, `ClusterRobustSampling` for Hansen-Lee 2019 Theorem 2, `LocalQuadraticRegret` for
+  Mania-Tu-Recht 2019, `ScoreIdentity` and `InformationDecomposition` for Gill-Levit 1995 and
+  Gassiat-Stoltz 2024, plus `ClusteredVanTreesFloor`, `LowerLipschitzRegret`, `ActionVanTreesFloor`
+  and `PsdDominates`), and the theorems are stated in those names. Three composed statements were
+  added that read entirely in that vocabulary: `van_trees_floor_from_cited_inputs`,
+  `clustered_regret_floor_from_cited_inputs`, `action_regret_floor_from_cited_inputs`.
+
+  Nothing is assumed that was not assumed before -- every definition unfolds to the inequality the
+  statement already carried -- and nothing became an `Axiom`. That choice is the point: an `Axiom`
+  would make `Print Assumptions` list the citations by name, which reads like the stronger audit
+  and is the weaker formalisation, because it turns theorems that are true outright into theorems
+  true only if our transcription of the cited result is, and it would put those files outside
+  Stdlib's classical reals. So the audit command is `Check <theorem>` (the cited names appear in
+  the type) and `Print <Name>` (what was assumed under it); `just assumptions` still reports every
+  lemma resting on Stdlib's four axioms and nothing else.
+
+  A `grep` for one predicate now enumerates every result that rests on that paper, across files,
+  which a header comment cannot do.
+
+- **`capped_exploration_policy` documented `n* = sqrt(K T/(A c))/cap` as if it were exact; it
+  over-states the stopping mass by a CONSTANT.** Under a constant cap the stopping round is
+  `n = S/cap`, so the remaining horizon is itself a function of the mass and the first-order
+  condition is a *quadratic* in `w = I0 + c S`: `A w^2 + (K/cap) w = K c T + K I0/cap`. Subtracting
+  the balance the closed form solves -- the same one with the horizon held at the full `T` --
+  removes `T` entirely and leaves `A(w0^2 - w^2) = K c S/cap`. That is exact at every finite
+  horizon, not asymptotic: the cap-free form is an **upper** bound on the mass, and the gap is at
+  most `K/(2 A c cap)`.
+
+  So what the closed form drops is a constant, not a vanishing remainder, and the constant is the
+  only place the cap level enters the mass above `O(1/sqrt(T))`. At the defaults and `cap = 0.01`
+  the ceiling is `2.0165`, approached strictly from below (`1.834, 1.959, 1.998, 2.011, 2.015` over
+  `T = 1e4 .. 1e8`) with the residual decaying as
+  `(K + 4 A I0 cap) sqrt(K/(A c)) / (8 A c cap^2 sqrt(T))`. It is the tight actuator this hurts: at
+  `T = 4000` the over-statement is `0.50%` of the mass at `cap = 0.316` and `236.5%` at
+  `cap = 0.001`.
+
+  No numeric behaviour changed -- `predicted_mass` already solved the quadratic as a fixed point,
+  which is why the docstring and the code disagreed silently. `capped_exploration_policy` and
+  `_self_consistent_mass` now say what is actually computed and where the closed form stands
+  relative to it.
+
+  Derived in `validation/capped_exploration_schedule.mac` STEP 7, proved in
+  `proofs/capped_exploration_schedule.v` section (H), confirmed to 60 digits over nine horizons by
+  `validation/capped_exploration_o1.gp`, and the `T = 3` optimum independently certified by z3 and
+  cvc5 in `validation/capped_exploration_t3.smt2`.
+
 ### Fixed
 
 - **`certify_safety` raised on a safe plan that crossed a flat point of its barrier.** A smooth
@@ -684,102 +783,13 @@ still change).
   the case study's headline is the identification, and the horizon is a second, smaller and
   plant-dependent effect.
 
-### Changed
-
-- **`chc.mintime` is filed experimental, not evolving.** It solves the scalar double
-  integrator's time-optimal problem in closed form and nothing more general, which is the
-  README's definition of a module that carries one result. The tier table is new in this
-  release, so no published promise moves.
-
-- **`MatrixRatioAccuracy.ok` is deprecated for `status`: `"convicted"` or `"not_convicted"`, never
-  `"certified"` (D13).** `ok = True` read as a certificate, and the refinement residual behind it
-  is an estimate, guaranteed to majorise the error only once the per-node convergence rate reaches
-  2 (`residual_bounds_iff_rate_reaches_two`). A rate is a ratio of two errors; the certificate holds
-  one difference between two grids and no reference value, so nothing it evaluates measures one.
-  Nor can the channel count stand in for it: the rate passes 2 on some `q = 3` grids, and on a
-  correlated `q = 2` anchor one step from the existence boundary the default grid's rate is below 2
-  and the residual understates the error (`test_the_ratio_status_can_convict_and_cannot_certify`
-  measures both against the exact answer). `status` is a `chc.regret.MatrixRatioStatus`, derived
-  from the bars rather than stored: `"convicted"` when the relative residual, or the isotropy bar
-  where the channels are exchangeable, exceeds `tolerance`, and `"not_convicted"` otherwise, which
-  is evidence and not a certificate.
-
-  **Deprecated**, removed in 0.7.0: `ok` stays through 0.6.x as a property that raises a
-  `DeprecationWarning` and returns `status == "not_convicted"`. Replace `cert.ok` with
-  `cert.status == "not_convicted"` and `not cert.ok` with `cert.status == "convicted"`. `ok` is no
-  longer a constructor argument, so drop `ok=` where you construct a `MatrixRatioAccuracy`
-  yourself. No numeric behaviour changed: `status` is `"convicted"` exactly where `ok` was `False`.
-
-- **`composition_transfer_certificate` now says why its fitted slopes are not the integers, and
-  the difference is derived rather than tolerated.** The certificate reports
-  `2.048478 / 4.012425 / 6.002273` against a theoretical `2 / 4 / 6`, and that excess had been
-  read as agreement-up-to-noise. There is no noise in it -- the certificate is deterministic. With
-  `e = delta^p` and `t = log(delta)`, `log R = const + 2 p t + lam e + 2 c2 e^2 + O(e^3)`, so an
-  ordinary least-squares fit over a finite window necessarily reports
-  `2 p + lam cov(t, e^(p t))/var(t) + 2 c2 cov(t, e^(2 p t))/var(t)`, with
-  `lam = (2 b^3 - 6 b rr)/(rr^2 - b^4)` and `c2 = (b^6 - 8 b^4 rr + 5 b^2 rr^2 - 2 rr^3)/(2 (rr^2
-  - b^4)^2)`. New derivation `validation/order_transfer_window.mac` (Maxima, cross-checked in
-  giac); the two terms account for `4.09e-2` of the `4.85e-2` excess at `p = 1`, and what is left
-  is one more power of `delta` across four windows.
-
-  The same derivation bounds the window from the other end, which is the part that changes what a
-  reader should do. `u*(b + e) - u*(b)` is a cancellation, so the regret's relative error grows as
-  `delta_lo` falls: at `delta in [1e-5, 2e-4]` the `p = 3` fit reads `6.035`, and the two-channel
-  and three-channel `delta^4` sweeps in `multivariate_interference_certificate` and
-  `exposure_map_certificate` return `nan` outright, because the regret has underflowed to exactly
-  zero and the fit takes `log 0`. The same 12-point fit at 60 digits reproduces the two-term
-  prediction to `4.3e-25`, which is what identifies the miss as rounding rather than mathematics.
-  No behaviour changed; `slopes` returns what it always did.
-
-- **The statistical results the proofs cite are now named predicates in the theorem types, not
-  prose in the file headers.** Five files -- `proofs/c2_end_to_end.v`, `van_trees.v`,
-  `clustered_van_trees.v`, `action_van_trees.v`, `multivariate_van_trees.v` -- declare each cited
-  input as a `Definition ... : Prop` carrying its citation (`CrossFitRemainder` for CCDDHNR 2018
-  Lemma 6.1, `ClusterRobustSampling` for Hansen-Lee 2019 Theorem 2, `LocalQuadraticRegret` for
-  Mania-Tu-Recht 2019, `ScoreIdentity` and `InformationDecomposition` for Gill-Levit 1995 and
-  Gassiat-Stoltz 2024, plus `ClusteredVanTreesFloor`, `LowerLipschitzRegret`, `ActionVanTreesFloor`
-  and `PsdDominates`), and the theorems are stated in those names. Three composed statements were
-  added that read entirely in that vocabulary: `van_trees_floor_from_cited_inputs`,
-  `clustered_regret_floor_from_cited_inputs`, `action_regret_floor_from_cited_inputs`.
-
-  Nothing is assumed that was not assumed before -- every definition unfolds to the inequality the
-  statement already carried -- and nothing became an `Axiom`. That choice is the point: an `Axiom`
-  would make `Print Assumptions` list the citations by name, which reads like the stronger audit
-  and is the weaker formalisation, because it turns theorems that are true outright into theorems
-  true only if our transcription of the cited result is, and it would put those files outside
-  Stdlib's classical reals. So the audit command is `Check <theorem>` (the cited names appear in
-  the type) and `Print <Name>` (what was assumed under it); `just assumptions` still reports every
-  lemma resting on Stdlib's four axioms and nothing else.
-
-  A `grep` for one predicate now enumerates every result that rests on that paper, across files,
-  which a header comment cannot do.
-
-- **`capped_exploration_policy` documented `n* = sqrt(K T/(A c))/cap` as if it were exact; it
-  over-states the stopping mass by a CONSTANT.** Under a constant cap the stopping round is
-  `n = S/cap`, so the remaining horizon is itself a function of the mass and the first-order
-  condition is a *quadratic* in `w = I0 + c S`: `A w^2 + (K/cap) w = K c T + K I0/cap`. Subtracting
-  the balance the closed form solves -- the same one with the horizon held at the full `T` --
-  removes `T` entirely and leaves `A(w0^2 - w^2) = K c S/cap`. That is exact at every finite
-  horizon, not asymptotic: the cap-free form is an **upper** bound on the mass, and the gap is at
-  most `K/(2 A c cap)`.
-
-  So what the closed form drops is a constant, not a vanishing remainder, and the constant is the
-  only place the cap level enters the mass above `O(1/sqrt(T))`. At the defaults and `cap = 0.01`
-  the ceiling is `2.0165`, approached strictly from below (`1.834, 1.959, 1.998, 2.011, 2.015` over
-  `T = 1e4 .. 1e8`) with the residual decaying as
-  `(K + 4 A I0 cap) sqrt(K/(A c)) / (8 A c cap^2 sqrt(T))`. It is the tight actuator this hurts: at
-  `T = 4000` the over-statement is `0.50%` of the mass at `cap = 0.316` and `236.5%` at
-  `cap = 0.001`.
-
-  No numeric behaviour changed -- `predicted_mass` already solved the quadratic as a fixed point,
-  which is why the docstring and the code disagreed silently. `capped_exploration_policy` and
-  `_self_consistent_mass` now say what is actually computed and where the closed form stands
-  relative to it.
-
-  Derived in `validation/capped_exploration_schedule.mac` STEP 7, proved in
-  `proofs/capped_exploration_schedule.v` section (H), confirmed to 60 digits over nine horizons by
-  `validation/capped_exploration_o1.gp`, and the `T = 3` optimum independently certified by z3 and
-  cvc5 in `validation/capped_exploration_t3.smt2`.
+- **Docstrings and docs pages pointed into a repository no reader can open.** Module and function
+  docstrings cited `plans/<n>` and `discoveries/theorems.md`, paths in the author's research
+  repository, which is not public, so the API reference sent a reader to nothing. A pointer that
+  carried a result now names the public file that holds it -- a proof under `proofs/`, a derivation
+  under `validation/`, a page of the site -- and one that only recorded where an idea came from is
+  gone. `tests/test_docs_self_contained.py` fails on such a path anywhere under `src/chc/` or
+  `docs/`, or in a notebook.
 
 ## [0.5.1] — 2026-09-09
 
@@ -2836,6 +2846,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.6.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.6.0
 [0.5.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.5.1
 [0.5.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.5.0
 [0.4.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.4.0
