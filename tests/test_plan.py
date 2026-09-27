@@ -1,4 +1,4 @@
-"""The one-call spine: a plan that carries its own certificate (plans/21 §D)."""
+"""The one-call spine: a plan that carries its own certificate."""
 
 from itertools import pairwise
 

@@ -1,7 +1,7 @@
 """chc.discovery wiring: the discovered adjustment set de-biases the effect; node_adjacency sound.
 
-Task C of plans/17. The headline is (ii): discovery *supplies the adjustment set* that turns a
-sign-flipped confounded estimate back into the true effect. The residual wiring is covered at the
+The headline is (ii): discovery *supplies the adjustment set* that turns a sign-flipped
+confounded estimate back into the true effect. The residual wiring is covered at the
 level of the ``node_adjacency`` helper feeding ``GraphResidual`` -- an end-to-end "beats a dense
 MLP" claim only holds where discovery is reliable (sparse, well-excited, per-node-noise systems);
 dense spatial coupling is a known hard case for linear discovery, left to the tigramite adapter.

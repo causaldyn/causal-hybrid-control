@@ -1,6 +1,6 @@
 """chc.toeplitz: FFT matvec matches dense, Levinson matches Yule-Walker, deconvolution round-trips.
 
-Structured-operator primitives for the dynamic-effect route (plans/18).
+Structured-operator primitives for the dynamic-effect route (``chc.irf``).
 """
 
 import jax.numpy as jnp

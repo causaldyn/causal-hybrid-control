@@ -250,9 +250,9 @@ def test_closed_form_fit_recovers_the_advection_diffusion_operator() -> None:
 
 
 def test_spectral_certificate_beats_the_mlp_and_records_where_it_does_not() -> None:
-    # Result 48. plans/18 E was skipped under a kill-criterion whose reopening condition was tying a
-    # learned spectral operator into chc.transport; both halves exist now, so the criterion is live
-    # and every block below can fail on its own.
+    # Result 48. The spectral backbone was skipped under a kill-criterion whose reopening condition
+    # was tying a learned spectral operator into chc.transport; both halves exist now, so the
+    # criterion is live and every block below can fail on its own.
     curve = spectral_residual_certificate()
     # (1) THE OPERATOR IS RECOVERED. Relative, because the symbol's own scale is nu*n^2/L^2.
     assert curve.symbol_error < 1e-5

@@ -1,7 +1,7 @@
 """Confounding demo: the same offline data, two opposite conclusions about the action's effect.
 
 Run: ``uv run python scripts/confounding_demo.py``. This is the text seed of the
-"causal != predictive for control" figure (see ``plans/05``).
+"causal != predictive for control" figure, which ``scripts/flagship_demo.py`` draws.
 """
 
 from __future__ import annotations

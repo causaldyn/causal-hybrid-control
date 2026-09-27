@@ -561,9 +561,10 @@ def _backward(costs: dict[tuple[int, ...], float], m: int, size: int) -> tuple[i
 METHODS = ("greedy", "path_set", "screen_then_greedy", "greedy_then_swaps", "backward")
 """``greedy`` is what ships. ``path_set`` is the group-L1 path's first support of the size, planned
 alone; ``screen_then_greedy`` is greedy among the levers of the path's first support larger than
-the size, the screen-then-select design of ``plans/24`` §L1; ``greedy_then_swaps`` trades one lever
-at a time from the greedy set while that lowers the cost; ``backward`` removes levers one at a time
-from the full set. The last four are read off the exhaustive table, so they cost no solve here."""
+the size, the screen-then-select design weighed in ``docs/adr/0004-greedy-lever-selection.md``;
+``greedy_then_swaps`` trades one lever at a time from the greedy set while that lowers the cost;
+``backward`` removes levers one at a time from the full set. The last four are read off the
+exhaustive table, so they cost no solve here."""
 
 
 def tally(rows: list[dict]) -> dict:
