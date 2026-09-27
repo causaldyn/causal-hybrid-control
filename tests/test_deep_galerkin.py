@@ -15,6 +15,7 @@ from chc.deep_galerkin import (
     finite_population_gap_certificate,
     lq_mean_field_certificate,
     nonlinear_dwr_certificate,
+    residual_blindness_sweep,
     solve_mfg_dgm,
     solve_poisson_dgm,
 )
@@ -169,6 +170,42 @@ def test_lq_mean_field_certificate_holds() -> None:
     assert curve.near_value_error > 5.0 * curve.far_value_error
     assert curve.near_dual_weighted > curve.far_dual_weighted
     assert curve.dual_weighted_accuracy < 0.1
+
+
+def test_lbfgs_on_one_fixed_draw_reproduces_the_monotone_equilibrium() -> None:
+    """The second optimiser has to be a competent solver on its own terms, or a sign it reports
+    near the obstruction says nothing about residuals."""
+    game = LQMeanFieldGame(
+        a=-0.5,
+        b=1.0,
+        q=1.0,
+        r=1.0,
+        coupling=0.5,
+        terminal_coupling=0.5,
+        sigma=0.7,
+        horizon=1.0,
+        mean_initial=1.0,
+        variance_initial=0.25,
+    )
+    model = solve_mfg_dgm(game, steps=100, seed=0, optimizer="lbfgs")
+    grid_t, grid_x = np.meshgrid(np.linspace(0.0, game.horizon, 11), np.linspace(-1.0, 3.0, 11))
+    fitted = np.asarray(
+        jax.vmap(model.control)(jnp.asarray(grid_t.ravel()), jnp.asarray(grid_x.ravel()))
+    )
+    exact = game.solve().control(grid_t.ravel(), grid_x.ravel())
+    assert np.abs(fitted - exact).max() / np.abs(exact).max() < 0.02
+
+
+def test_the_dual_weighted_estimate_ranks_the_error_the_residual_cannot() -> None:
+    """Result 55 (d) in miniature: three horizons toward ``T* = 0.8036`` on a short budget."""
+    sweep = residual_blindness_sweep((0.30, 0.60, 0.76), steps=150, seed=1)
+    assert sweep.errors[0] < sweep.errors[1] < sweep.errors[2]
+    assert sweep.rank_dual_weighted == pytest.approx(1.0)
+    assert sweep.worst_dual_discrepancy < 0.1
+    for residual, conditioned, den in zip(
+        sweep.residuals, sweep.conditioned_residuals, sweep.denominators, strict=True
+    ):
+        assert conditioned == pytest.approx(residual / abs(den))
 
 
 # ---------------------------------------------------------------------------------------------

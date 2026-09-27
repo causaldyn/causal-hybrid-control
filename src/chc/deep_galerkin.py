@@ -11,9 +11,10 @@ solvers.
 The second half is the mean-field game that Poisson solve was only a stepping stone to. A backward
 HJB for the value ``V`` and a forward Fokker-Planck for the density ``rho``, joined by the optimal
 feedback ``alpha* = -(b/r) V_x`` and by the population mean ``m(t) = int x rho(x,t) dx``, are solved
-as one coupled system by DGM (cf. arXiv 2405.13346) -- ``solve_mfg_dgm``. Both boundary conditions
-are hard constraints rather than penalties: ``rho(0,.)`` is the prescribed Gaussian by construction
-and ``V(T,.)`` is the prescribed terminal cost evaluated at the network's *own* terminal mean.
+as one coupled system by DGM (cf. Carmona & Lauriere, SIAM J. Numer. Anal. 59(3), 2021) --
+``solve_mfg_dgm``. Both boundary conditions are hard constraints rather than penalties:
+``rho(0,.)`` is the prescribed Gaussian by construction and ``V(T,.)`` is the prescribed terminal
+cost evaluated at the network's *own* terminal mean.
 
 The falsifiable gate is that the linear-quadratic case has a CLOSED FORM: ``LQMeanFieldGame.solve``
 returns it exactly, from a stationary Riccati root plus a 2x2 trace-free two-point boundary value
@@ -37,9 +38,13 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from jax import Array
+from scipy.stats import spearmanr
 
 PopulationNoise = Literal["independent", "common"]
 """Whether each agent gets its own Brownian path or the whole population shares one."""
+
+MeanFieldOptimizer = Literal["adam", "lbfgs"]
+"""Adam on freshly drawn collocation points every step, or L-BFGS on one fixed draw."""
 
 _SHOOTING_STEPS = 40
 _SHOOTING_TOLERANCE = 1e-6  # terminal-row miss above which the congested solve is a failure
@@ -519,6 +524,7 @@ def solve_mfg_dgm(
     mass_weight: float = 1.0,
     half_width: float | None = None,
     seed: int = 0,
+    optimizer: MeanFieldOptimizer = "adam",
 ) -> MeanFieldDGM:
     """Solve the coupled forward-backward mean-field system by Deep Galerkin.
 
@@ -528,6 +534,12 @@ def solve_mfg_dgm(
     to widen it when the population is known to travel further than that; the certificate uses it
     near the obstruction horizon deliberately, to hand the solver a domain it could not have
     guessed and show that this still does not save it.
+
+    ``optimizer="lbfgs"`` runs ``steps`` L-BFGS iterations with a zoom line search on ONE draw of
+    ``n_time x n_space`` collocation points -- the draw Adam would have taken first -- because a
+    quasi-Newton curvature estimate assumes the objective does not change between iterations,
+    and resampling every step would change it. ``learning_rate`` is Adam's alone; the line search
+    picks L-BFGS's step.
     """
     if half_width is None:
         stationary_variance = game.sigma**2 / (2.0 * abs(game.closed_loop_rate))
@@ -557,15 +569,40 @@ def solve_mfg_dgm(
             + mass_weight * jnp.mean(mass_error**2)
         )
 
-    optimizer = optax.adam(learning_rate)
-    state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+    if optimizer == "lbfgs":
+        _, time_key, space_key = jax.random.split(key, 3)
+        ts = jax.random.uniform(time_key, (n_time,), maxval=game.horizon)
+        xs = jax.random.uniform(space_key, (n_time, n_space), minval=-half_width, maxval=half_width)
+        params, static = eqx.partition(model, eqx.is_inexact_array)
+
+        def objective(p: MeanFieldDGM) -> Array:
+            return loss(eqx.combine(p, static), ts, xs)
+
+        solver = optax.lbfgs()
+        solver_state = solver.init(params)
+        value_and_grad = optax.value_and_grad_from_state(objective)
+
+        @jax.jit
+        def quasi_newton_step(
+            p: optax.Params, s: optax.OptState
+        ) -> tuple[optax.Params, optax.OptState]:
+            value, grad = value_and_grad(p, state=s)
+            updates, s = solver.update(grad, s, p, value=value, grad=grad, value_fn=objective)
+            return optax.apply_updates(p, updates), s
+
+        for _ in range(steps):
+            params, solver_state = quasi_newton_step(params, solver_state)
+        return eqx.combine(params, static)
+
+    adam = optax.adam(learning_rate)
+    state = adam.init(eqx.filter(model, eqx.is_inexact_array))
 
     @eqx.filter_jit
     def step(
         m: MeanFieldDGM, opt_state: optax.OptState, ts: Array, xs: Array
     ) -> tuple[MeanFieldDGM, optax.OptState]:
         grads = eqx.filter_grad(loss)(m, ts, xs)
-        updates, opt_state = optimizer.update(grads, opt_state)
+        updates, opt_state = adam.update(grads, opt_state)
         return eqx.apply_updates(m, updates), opt_state
 
     for _ in range(steps):
@@ -703,13 +740,13 @@ def dual_weighted_error_estimate(
 ) -> float:
     """An a-posteriori estimate of ``|S_hat(0) - S(0)|`` from the model alone -- Result 55.
 
-    Result 49 measured a residual that FALLS as the answer degrades near the mean-field
-    obstruction, so a residual-based stopping rule reports its cleanest convergence exactly where
-    the solution is worst. The remedy is not a bigger residual budget but the right functional.
-    Because the reduced fixed point is AFFINE, the error is an exact quotient
-    (``validation/mean_field_dwr.mac`` STEP 2, ``proofs/mean_field_dwr.v``)::
+    Result 49 measured a residual that FALLS as the answer degrades near the mean-field obstruction,
+    so a residual-based stopping rule reports its cleanest convergence exactly where the solution is
+    worst (under Adam; the fall is the optimiser's, see below). The remedy is not a bigger residual
+    budget but the right functional. Because the reduced fixed point is AFFINE, the error is an
+    exact quotient (``validation/mean_field_dwr.mac`` STEPs 2-3, ``proofs/mean_field_dwr.v``)::
 
-        S_hat(0) - S(0) = (eps - int_0^T z(s).g(s) ds) / den(T),   z(s) = Phi(T-s)^T v / den(T)
+        S_hat(0) - S(0) = eps/den(T) - int_0^T z(s).g(s) ds,   z(s) = Phi(T-s)^T v / den(T)
 
     with ``g = y' - M y`` the reduced defect of the model's own ``y = (m, S)``, ``eps = v.y(T)``
     the terminal-consistency defect (structurally zero here), and ``z`` the exact ADJOINT
@@ -720,10 +757,20 @@ def dual_weighted_error_estimate(
     Two facts make it work where the raw residual does not. The dual weight carries ``1/den(T)``
     and nothing else that can blow up, so it diverges exactly at the obstruction; and the reduced
     residual is homogeneous of degree 1 in ``(m, S)``, so a bounded approximator facing a
-    diverging solution keeps a small residual by construction. Conditioning the residual by
-    ``1/|den|`` alone is NOT enough -- measured rank correlation with the error ``0.41`` against
-    ``-0.67`` for the raw residual and ``1.00`` for this estimator; what matters is the projection
-    onto the adjoint mode, not the scalar rescaling.
+    diverging solution keeps a bounded residual by construction (``proofs/mean_field_dwr.v``,
+    ``bounded_approximator_is_blind``). Conditioning the residual by ``1/|den|`` alone is NOT
+    enough -- measured rank correlation with the error ``0.41`` against ``-0.67`` for the raw
+    residual and ``1.00`` for this estimator; what matters is the projection onto the adjoint
+    mode, not the scalar rescaling.
+
+    Those three numbers are one configuration. Over five seeds, widths 32, 64 and 128, and Adam
+    against L-BFGS (``residual_blindness_sweep``; ``just paper-4`` in ``causaldyn-bench``), this
+    estimate ranks the error perfectly in 28 of 30 configurations and at ``0.976`` in the other
+    two; conditioning is positive in all 30 and perfect in none; and the raw residual ranks the
+    error backwards in 15 of 15 Adam configurations and FORWARDS in 13 of 15 L-BFGS ones -- its
+    size is bounded by the homogeneity, its order is decided by the optimiser. As a value rather
+    than a rank the estimate is within ``12%`` of the true error under Adam and within ``80%``
+    under L-BFGS: rank with it anywhere, quote it as a number only where it was measured.
 
     Scope: the estimate is exact for this affine family up to quadrature and autodiff error
     (measured within ``6%`` at a horizon where the error is ``72`` and the raw residual is at its
@@ -762,13 +809,17 @@ def dual_weighted_error_estimate(
     return abs(terminal - interior) / abs(denominator)
 
 
-def _value_slope_error(game: LQMeanFieldGame, model: MeanFieldDGM) -> float:
-    """``|S_hat(0) - S(0)|`` against the closed form -- the truth the estimator is scored on."""
+def _fitted_slope(game: LQMeanFieldGame, model: MeanFieldDGM) -> float:
+    """``S_hat(0) = V_x(0, 0)`` read off the trained model."""
     mean_terminal = model.mean(jnp.asarray(game.horizon))
-    fitted = float(
+    return float(
         jax.grad(lambda x: model.value_at(jnp.asarray(0.0), x, mean_terminal))(jnp.asarray(0.0))
     )
-    return abs(fitted - float(game.solve().value_s[0]))
+
+
+def _value_slope_error(game: LQMeanFieldGame, model: MeanFieldDGM) -> float:
+    """``|S_hat(0) - S(0)|`` against the closed form -- the truth the estimator is scored on."""
+    return abs(_fitted_slope(game, model) - float(game.solve().value_s[0]))
 
 
 _MONOTONE_GAME = LQMeanFieldGame(
@@ -784,6 +835,12 @@ _MONOTONE_GAME = LQMeanFieldGame(
     variance_initial=0.25,
 )
 """The instance both certificates measure, so the obstruction and the gap describe one system."""
+
+_ANTI_MONOTONE_GAME = replace(_MONOTONE_GAME, coupling=3.0, terminal_coupling=3.0)
+"""The same plant past the branch threshold, where an obstruction horizon always exists."""
+
+_OBSTRUCTION_BOX = 10.0
+"""One half-width for every horizon near the obstruction, so the horizon is the only change."""
 
 
 def _ou_variance(game: LQMeanFieldGame, rate: float, t: float) -> float:
@@ -803,7 +860,7 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
     stopping rule reports success exactly where the answer is worst.
     """
     safe = _MONOTONE_GAME
-    oscillatory = replace(safe, coupling=3.0, terminal_coupling=3.0)
+    oscillatory = _ANTI_MONOTONE_GAME
 
     # --- arm 1: the gate is exact ---------------------------------------------------------
     reference = safe.solve()
@@ -844,7 +901,7 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
 
     # --- arm 3: the residual stops tracking the error near the obstruction ----------------
     # One box for both horizons, wide enough for the near one, so the only difference is T.
-    box = 10.0
+    box = _OBSTRUCTION_BOX
     far, near = replace(oscillatory, horizon=0.35), replace(oscillatory, horizon=0.76)
     far_model = solve_mfg_dgm(far, steps=steps, half_width=box, seed=seed)
     near_model = solve_mfg_dgm(near, steps=steps, half_width=box, seed=seed)
@@ -912,6 +969,96 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
         near_dual_weighted=near_dual,
         dual_weighted_accuracy=dual_accuracy,
         ok=ok,
+    )
+
+
+@dataclass(frozen=True)
+class BlindnessSweep:
+    """Result 55 (d): one solve per horizon on the anti-monotone instance, scored three ways.
+
+    Every score is read off the trained model; ``exact_slopes``, ``errors`` and ``control_errors``
+    need the closed form, and are what the scores are judged by. The ranks are Spearman's, each
+    score against ``errors``.
+    """
+
+    horizons: tuple[float, ...]
+    denominators: tuple[float, ...]
+    exact_slopes: tuple[float, ...]
+    fitted_slopes: tuple[float, ...]
+    errors: tuple[float, ...]  # |S_hat(0) - S(0)|
+    control_errors: tuple[float, ...]  # relative max control error where the population is
+    residuals: tuple[float, ...]  # the normalised interior residual a stopping rule would watch
+    conditioned_residuals: tuple[float, ...]  # residual / |den(T)|
+    dual_weighted: tuple[float, ...]
+    rank_residual: float
+    rank_conditioned: float
+    rank_dual_weighted: float
+    worst_dual_discrepancy: float  # max over horizons of |estimate / error - 1|
+
+
+def residual_blindness_sweep(
+    horizons: tuple[float, ...] = (0.30, 0.40, 0.50, 0.60, 0.68, 0.72, 0.76, 0.79),
+    *,
+    width: int = 32,
+    optimizer: MeanFieldOptimizer = "adam",
+    steps: int = 2500,
+    seed: int = 0,
+) -> BlindnessSweep:
+    """Rank the error of one solve per horizon by three scores as the horizon nears ``T*``.
+
+    ``lq_mean_field_certificate`` asserts the blindness on two horizons; this is the curve behind
+    it, on the same anti-monotone instance and in the same box, so the horizon is the only thing
+    that changes (``T* = 0.8036``). The three scores are the raw residual, the residual conditioned
+    by ``1/|den(T)|``, and ``dual_weighted_error_estimate`` -- which reads everything off the model
+    and never calls ``game.solve()``.
+
+    What is and is not proved about the ranks. ``proofs/mean_field_dwr.v`` proves that a model
+    whose reduced state stays within ``B`` keeps its reduced residual under a bound that does not
+    depend on the horizon, while its error exceeds any level close enough to ``T*``
+    (``bounded_approximator_is_blind``): the raw residual cannot rank the error there. That it
+    ranks it BACKWARDS -- ``rank_residual < 0`` -- is not implied, and is what this sweep measures,
+    per ``seed``, ``width`` and ``optimizer``. Measured over seeds 0-4 and widths 32, 64, 128: it
+    does under Adam in 15 of 15 configurations and does not under L-BFGS in 13 of 15.
+    """
+    exact, fitted, errors, controls, residuals, conditioned, dual, denominators = (
+        [] for _ in range(8)
+    )
+    for horizon in horizons:
+        game = replace(_ANTI_MONOTONE_GAME, horizon=horizon)
+        model = solve_mfg_dgm(
+            game,
+            width=width,
+            steps=steps,
+            half_width=_OBSTRUCTION_BOX,
+            seed=seed,
+            optimizer=optimizer,
+        )
+        den = game.fixed_point_denominator()
+        truth = float(game.solve().value_s[0])
+        slope = _fitted_slope(game, model)
+        residual = _dgm_residual(game, model)
+        denominators.append(den)
+        exact.append(truth)
+        fitted.append(slope)
+        errors.append(abs(slope - truth))
+        controls.append(_dgm_errors(game, model)[0])
+        residuals.append(residual)
+        conditioned.append(residual / abs(den))
+        dual.append(dual_weighted_error_estimate(game, model))
+    return BlindnessSweep(
+        horizons=tuple(float(h) for h in horizons),
+        denominators=tuple(denominators),
+        exact_slopes=tuple(exact),
+        fitted_slopes=tuple(fitted),
+        errors=tuple(errors),
+        control_errors=tuple(controls),
+        residuals=tuple(residuals),
+        conditioned_residuals=tuple(conditioned),
+        dual_weighted=tuple(dual),
+        rank_residual=float(spearmanr(residuals, errors).statistic),
+        rank_conditioned=float(spearmanr(conditioned, errors).statistic),
+        rank_dual_weighted=float(spearmanr(dual, errors).statistic),
+        worst_dual_discrepancy=max(abs(d / e - 1.0) for d, e in zip(dual, errors, strict=True)),
     )
 
 

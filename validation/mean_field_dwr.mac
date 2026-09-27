@@ -14,8 +14,9 @@
 
    and the dual weight z(s) = Phi(T-s)^T v / den(T) is the exact adjoint solution.  Since
    z(T) = v/den(T) and Phi is bounded on [0,T], the ONLY divergent factor in the error is
-   1/|den(T)| -- so the conditioned estimator residual/|den| is equivalent to the error up to
-   horizon-continuous constants, two-sided, while the raw residual is not an estimator at all.
+   1/|den(T)| -- so a residual conditioned by 1/|den| bounds the error from above up to a
+   horizon-continuous constant, and from below only where the adjoint projection of the defect
+   stays away from zero, which is a property of the approximator (STEP 3d).
 
    The last step derives what Result 49 could only measure: den has a SIMPLE zero at T*, so the
    pole is exactly of order 1 -- the -0.998 exponent it fitted.
@@ -80,9 +81,10 @@ print("STEP 3c so the error is  e = eps/den - int_0^T z(s).g(s) ds  -- a dual-we
 print("        whose weight carries 1/den and NOTHING ELSE that can blow up: Phi(T-s) is an")$
 print("        entire matrix function of the horizon, bounded on every compact")$
 print("STEP 3d TWO-SIDED.  |v|/|den| = |z(T)| <= sup_s |z(s)| <= (sup_s |Phi(T-s)|) |v| / |den|,")$
-print("        and the outer factor is horizon-continuous with no zero and no pole.  So the")$
-print("        CONDITIONED estimator  residual / |den(T)|  is equivalent to the error, while the")$
-print("        raw residual differs from it by a factor that diverges at T*")$
+print("        and the outer factor is horizon-continuous with no zero and no pole: the WEIGHT is")$
+print("        two-sided in 1/|den|.  The error is not.  |e| <= (|eps| + sup|Phi^T v| int|g|)/|den|")$
+print("        is an upper bound a residual conditioned by 1/|den| inherits; a lower bound needs")$
+print("        the adjoint projection of g to stay away from zero -- the approximator's property")$
 
 /* ===== STEP 4: why the raw residual FALLS -- the residual is homogeneous, the error is not ===== */
 
@@ -93,11 +95,11 @@ scaled : ratsimp( subst([S = kap*S, m = kap*m, Sd = kap*Sd], hjb1) - kap*hjb1 )$
 print("STEP 4a the x^1 coefficient of the HJB residual is S' + A S - q c m, HOMOGENEOUS of")$
 print("        degree 1 in (m, S): residual under (m,S) -> kappa (m,S) minus kappa*residual =",
       scaled, " (0)")$
-print("STEP 4b the exact solution's amplitude |S(0)| = |num m0 / den| DIVERGES at T*, while a")$
-print("        trained network of finite capacity stays bounded.  By STEP 4a its residual then")$
-print("        stays bounded too -- and in practice SHRINKS, because the flattest function in the")$
-print("        family is the one the optimiser reaches.  Error up, residual down: the sign of the")$
-print("        correlation is decided by the homogeneity, not by the architecture")$
+print("STEP 4b the exact solution's amplitude |S(0)| = |num m0 / den| DIVERGES at T*.  An")$
+print("        approximator whose reduced state stays within B keeps, by STEP 4a, a residual")$
+print("        within (1 + |A| + |q c|) B while its error exceeds |num m0|/|den| - B")$
+print("        (proofs/mean_field_dwr.v, bounded_approximator_is_blind): the residual CANNOT")$
+print("        follow the error.  Whether it FALLS is not decided here; that is measured")$
 
 /* ===== STEP 5: the pole is SIMPLE -- Result 49's fitted -0.998 is exactly -1 ===== */
 

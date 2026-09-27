@@ -9,6 +9,31 @@ still change).
 
 ### Added
 
+- **`residual_blindness_sweep`, and `solve_mfg_dgm(optimizer="lbfgs")`: Result 55's blind residual
+  as a distribution, and the half of it that is proved (P4).** Result 55 measured one seed, one width
+  and one optimiser, and read the raw residual's negative rank correlation with the error as
+  structural. The two additions separate what is proved from what was measured.
+
+  `proofs/mean_field_dwr.v` proves the first half: an approximator whose reduced state stays within
+  `B` keeps its reduced residual below `(1 + |A| + |qc|)B` at every horizon, while its error exceeds
+  any prescribed level close enough to the obstruction (`bounded_residual`,
+  `error_exceeds_amplitude_gap`, `bounded_approximator_is_blind`, on Stdlib's classical reals and
+  nothing else). `validation/bounded_approximator_blind.smt2` states the negations of both bounds;
+  z3 and cvc5 return `unsat`. So the residual cannot rank the error near `T*`. That it ranks it
+  backwards is not implied.
+
+  `residual_blindness_sweep(horizons, *, width, optimizer, steps, seed)` returns a `BlindnessSweep`:
+  one solve per horizon on the anti-monotone instance in one fixed box, scored by the raw residual,
+  the residual conditioned by `1/|den(T)|` and `dual_weighted_error_estimate`, each ranked against the
+  true error. `solve_mfg_dgm` takes `optimizer: MeanFieldOptimizer = "adam"`; `"lbfgs"` runs `steps`
+  L-BFGS iterations with a zoom line search on one fixed collocation draw. Over seeds 0-4, widths 32,
+  64 and 128 and both optimisers (`just paper-4` in `causaldyn-bench`), the raw residual ranks the
+  error backwards in 15 of 15 Adam configurations and forwards in 13 of 15 L-BFGS ones, so the sign
+  is the optimiser's. Scalar conditioning is positive in 30 of 30 and perfect in none. The
+  dual-weighted estimate ranks perfectly in 28 of 30 and at `0.976` in the other two; its worst
+  relative discrepancy from the error is `0.12` under Adam and `0.80` under L-BFGS. The default
+  optimiser is unchanged, so no existing numeric behaviour changed.
+
 - **The capped-exploration optimum for a whole objective class, and the exploration floor attained
   by an estimator rather than a schedule (P3).** Two gaps paper P3 would have been refereed on.
 
