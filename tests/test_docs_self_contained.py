@@ -1,11 +1,12 @@
 """Nothing the library publishes points into the research repository it was developed in.
 
 The docstrings under `src/chc/` render into the API reference, the pages under `docs/` are the
-site, and `docs/build.sh` executes the notebooks into its tutorials. `plans/<n>` and `discoveries/`
-are paths in the author's research repository, which is not public: a reader who follows one finds
-nothing. A pointer that carries a result names the public file that holds it instead -- a proof
-under `proofs/`, a derivation under `validation/`, a page of the site -- and a pointer that only
-records where an idea came from has no reader to serve.
+site, and `docs/build.sh` executes the notebooks into its tutorials. The sdist also ships
+`proofs/`, `validation/`, `scripts/` and `tests/`, and the docstrings and pages send a reader into
+them by path. `plans/<n>` and `discoveries` are paths in the author's research repository, which is
+not public: a reader who follows one finds nothing. A pointer that carries a result names the
+public file that holds it instead -- a proof under `proofs/`, a derivation under `validation/`, a
+page of the site -- and a pointer that only records where an idea came from has no reader to serve.
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from collections.abc import Iterable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PRIVATE_PATH = re.compile(rb"plans/[0-9]|discoveries/")
+# The scan of tests/ reads this file too. `[/]` keeps the pattern's own text from matching it;
+# `plans/[0-9]` needs no such help, since a bracket is not a digit.
+PRIVATE_PATH = re.compile(rb"plans/[0-9]|discoveries[/]")
 
 
 def _files(directory: Path) -> list[Path]:
@@ -41,3 +44,9 @@ def test_no_docs_page_points_into_the_research_repository() -> None:
     # The tutorial pages exist only once the site is built, so the notebooks stand in for them.
     notebooks = list((ROOT / "notebooks").glob("*.ipynb"))
     assert _pointers(_files(ROOT / "docs") + notebooks) == []
+
+
+def test_no_proof_derivation_script_or_test_points_into_the_research_repository() -> None:
+    # The sdist ships these beside the library, and the docstrings and pages cite them by path.
+    shipped = ("proofs", "validation", "scripts", "tests")
+    assert _pointers([path for name in shipped for path in _files(ROOT / name)]) == []
