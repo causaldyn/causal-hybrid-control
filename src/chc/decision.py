@@ -40,7 +40,7 @@ import numpy as np
 from jax import Array
 
 from chc.control import LinearConstraint, SolverStatus
-from chc.cost import QuadraticCost
+from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit, Integrator, fit_causal_residual
 from chc.graph import AdjustmentSet, CausalGraph
@@ -84,10 +84,10 @@ _log = logging.getLogger(__name__)
 """Decision-point log for :func:`prescribe`, on the stdlib and nothing else.
 
 Every record carries a ``chc_event`` key in its ``extra`` payload naming the point it was emitted
-at --- ``precision``, ``adjustment``, ``fit``, ``abort``, ``plan``, ``certificate`` --- so a JSON
-formatter downstream can route on one field rather than parse a sentence. The library installs no
-handler and sets no level: that is the application's call, and a library that reaches for
-``basicConfig`` takes it away.
+at --- ``precision``, ``adjustment``, ``fit``, ``abort``, ``selection`` (one per step under
+``max_levers``), ``plan``, ``certificate`` --- so a JSON formatter downstream can route on one field
+rather than parse a sentence. The library installs no handler and sets no level: that is the
+application's call, and a library that reaches for ``basicConfig`` takes it away.
 
 The two records that are not ``INFO`` are the two worth waking someone for: identifying in single
 precision, and a graph that says the effect is not identified at all.
@@ -223,6 +223,38 @@ class DecisionCertificate:
 
 
 @dataclass(frozen=True)
+class SelectionStep:
+    """One step of the greedy lever selection: the lever it added, and what the plan cost with it.
+
+    ``regret_bound`` is :func:`chc.plan.plan_regret_bound` on that step's plan, priced against
+    every lever's box, the levers not yet selected included. So it bounds how far below
+    ``task_cost`` any plan the boxes allow can go: what the levers left out at this step could
+    still buy, plus what the solve left on the table. ``inf`` when the objective was not convex
+    over the boxes, as in :attr:`DecisionCertificate.regret_bound`.
+    """
+
+    lever: str
+    task_cost: float  # the planned cost with the levers selected so far, this one included
+    regret_bound: float
+
+
+@dataclass(frozen=True)
+class LeverSelection:
+    """Which levers :func:`prescribe` kept under ``max_levers``, in the order it added them.
+
+    What a step bought is the drop in planned cost from the step before it; ``idle_cost`` is the
+    planned cost with every lever held at zero, which is what the first step is measured against.
+    """
+
+    idle_cost: float
+    steps: tuple[SelectionStep, ...]
+
+    @property
+    def selected(self) -> tuple[str, ...]:
+        return tuple(step.lever for step in self.steps)
+
+
+@dataclass(frozen=True)
 class Prescription:
     """The decision, the evidence for it, and what it took to get there."""
 
@@ -232,6 +264,9 @@ class Prescription:
     certificate: DecisionCertificate
     model_fit: CausalDynamicsFit
     provenance: Provenance
+    # None unless ``max_levers`` was given and a plan was made. The schedule still has a column per
+    # lever: an unselected one is zero throughout.
+    selection: LeverSelection | None = None
 
     @property
     def lever_names(self) -> tuple[str, ...]:
@@ -352,6 +387,19 @@ class Prescription:
                 "trustworthy_steps": certificate.trustworthy_steps,
                 "regret_bound": certificate.regret_bound,
             },
+            "selection": None
+            if self.selection is None
+            else {
+                "idle_cost": self.selection.idle_cost,
+                "steps": [
+                    {
+                        "lever": step.lever,
+                        "task_cost": step.task_cost,
+                        "regret_bound": step.regret_bound,
+                    }
+                    for step in self.selection.steps
+                ],
+            },
             "provenance": self.provenance.to_json(),
         }
 
@@ -365,6 +413,7 @@ def prescribe(
     adjustment: CausalGraph | Sequence[str],
     constraints: Sequence[Constraint] = (),
     hold_constraints: bool = False,
+    max_levers: int | None = None,
     known: Dynamics | None = None,
     dt: float = 1.0,
     gamma: float = 1.0,
@@ -391,6 +440,20 @@ def prescribe(
             either way, and it is still the verdict -- a solve stopped by its budget can come back
             short of the condition. The regret bound then includes what holding cost, since it is
             still priced against the box alone.
+        max_levers: plan with at most this many levers, chosen by greedy forward selection with
+            :func:`chc.plan.causal_plan` as its inner loop. Starting from no lever, each step plans
+            once per lever not yet chosen, with that lever added, and keeps the cheapest plan ---
+            under ``hold_constraints``, the one the audit clears over the longest prefix first.
+            Greedy is not exhaustive and can miss the best set;
+            ``docs/adr/0004-greedy-lever-selection.md`` shows where. **An unselected lever is held
+            at zero** at every step: the level at which the fitted control-affine channel credits
+            it with no effect and its ``unit_cost`` charges nothing, and the level
+            :meth:`InterventionSchedule.windows` reads as inactive. So every lever's box must
+            contain zero. The steps, each with its planned cost and regret bound, are
+            :attr:`Prescription.selection`; the certificate's regret bound stays priced against
+            every lever's box, so it includes what leaving levers out cost. ``None`` plans with
+            every lever, as before; a value at or above the number of levers selects them all and
+            returns that same plan.
         adjustment: a :class:`~chc.graph.CausalGraph` to *derive* the adjustment set from, or a
             sequence of column names to *assert* it. Required, and deliberately so --- omitting it
             would default to adjusting for nothing, which is a causal claim, not an absence of one.
@@ -422,8 +485,9 @@ def prescribe(
 
     Raises:
         DecisionError: the decision is mis-specified --- no lever, a column named as both target and
-            constraint, constraints to hold with none given, or a panel with no consecutive pair of
-            periods to fit a transition on.
+            constraint, constraints to hold with none given, ``max_levers`` below one or with a
+            lever whose box excludes zero, or a panel with no consecutive pair of periods to fit a
+            transition on.
         KeyError: a lever, target, constraint or asserted covariate names a column the panel does
             not have. The message lists the panel's columns.
 
@@ -438,6 +502,18 @@ def prescribe(
         )
     if hold_constraints and not constraints:
         raise DecisionError("hold_constraints was set, but no constraint was given to hold")
+    if max_levers is not None:
+        if max_levers < 1:
+            raise DecisionError(
+                f"max_levers={max_levers} selects no lever; leave it unset to plan with every lever"
+            )
+        for lever in levers:
+            if not lever.lo <= 0.0 <= lever.hi:
+                raise DecisionError(
+                    f"lever {lever.name!r} has box [{lever.lo}, {lever.hi}], which excludes 0, the "
+                    "level an unselected lever is held at; under max_levers every lever must be "
+                    "able to stay off, so express it as a move from its current level"
+                )
     states = (target.name, *(constraint.state for constraint in constraints))
     if len(set(states)) != len(states):
         raise DecisionError(f"a column is both target and constraint: {states}")
@@ -550,20 +626,37 @@ def prescribe(
 
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target)
-    plan = causal_plan(
-        model,
-        start,
-        planning_cost,
-        dt,
-        horizon,
-        u_lo,
-        u_hi,
-        lipschitz=_log_norm(model, start, n_levers),
-        model_error=0.0 if tolerance is None else _model_error(fit, u_max),
-        tolerance=float("inf") if tolerance is None else tolerance,
-        constraints=(rate,),
-        barrier=held,
-    )
+    lipschitz = _log_norm(model, start, n_levers)
+    model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
+
+    def solve(lo: Array, hi: Array) -> CausalPlan:
+        return causal_plan(
+            model,
+            start,
+            planning_cost,
+            dt,
+            horizon,
+            lo,
+            hi,
+            lipschitz=lipschitz,
+            model_error=model_error,
+            tolerance=float("inf") if tolerance is None else tolerance,
+            constraints=(rate,),
+            barrier=held,
+        )
+
+    def price(solved: CausalPlan) -> float:
+        return plan_regret_bound(
+            solved, model, start, planning_cost, dt, u_lo, u_hi, probes=4
+        ).bound
+
+    selection: LeverSelection | None = None
+    if max_levers is None:
+        plan = solve(u_lo, u_hi)
+    else:
+        idle = total_cost(model, start, jnp.zeros((horizon, n_levers)), dt, planning_cost)
+        plan, steps = _select_levers(levers, max_levers, solve, price)
+        selection = LeverSelection(idle_cost=float(idle), steps=steps)
 
     _log.info(
         "plan solved",
@@ -587,7 +680,6 @@ def prescribe(
         if barrier is None
         else certify_safety(plan, model, barrier, dt, gamma=gamma, u_max=u_max)
     )
-    regret = plan_regret_bound(plan, model, start, planning_cost, dt, u_lo, u_hi, probes=4)
     certificate = DecisionCertificate(
         identification=identification,
         adjustment=resolved,
@@ -599,7 +691,7 @@ def prescribe(
         gamma_star=None if safety is None else safety.gamma_star,
         solver_status=plan.solver_status,
         solver_iterations=plan.solver_iterations,
-        regret_bound=regret.bound,
+        regret_bound=price(plan),
     )
     _log.info(
         "decision certified",
@@ -619,10 +711,74 @@ def prescribe(
         certificate=certificate,
         model_fit=fit,
         provenance=panel.provenance,
+        selection=selection,
     )
 
 
 # ---- wiring ---------------------------------------------------------------------------------
+
+
+def _select_levers(
+    levers: Sequence[Lever],
+    max_levers: int,
+    solve: Callable[[Array, Array], CausalPlan],
+    price: Callable[[CausalPlan], float],
+) -> tuple[CausalPlan, tuple[SelectionStep, ...]]:
+    """Greedy forward selection: add the lever whose plan ranks first, ``max_levers`` times at most.
+
+    Each candidate is a cold solve on its own box, the levers not in it pinned to ``[0, 0]``, so its
+    plan is the one :func:`prescribe` would make for that set alone, whatever the path to it; once
+    every lever is in, the plan is the one ``max_levers=None`` makes. Ties go to the lever listed
+    first.
+    """
+    chosen: list[int] = []
+    plans: list[CausalPlan] = []
+    steps: list[SelectionStep] = []
+    for _ in range(min(max_levers, len(levers))):
+        started = time.perf_counter()
+        candidates: dict[int, CausalPlan] = {}
+        for index in range(len(levers)):
+            if index in chosen:
+                continue
+            keep = {*chosen, index}
+            lo = jnp.array([lever.lo if i in keep else 0.0 for i, lever in enumerate(levers)])
+            hi = jnp.array([lever.hi if i in keep else 0.0 for i, lever in enumerate(levers)])
+            candidates[index] = solve(lo, hi)
+        best = min(candidates, key=lambda index: _rank(candidates[index]))
+        chosen.append(best)
+        plans.append(candidates[best])
+        steps.append(SelectionStep(levers[best].name, plans[-1].task_cost, price(plans[-1])))
+        _log.info(
+            "lever selected",
+            extra={
+                "chc_event": "selection",
+                "step": len(steps),
+                "lever": steps[-1].lever,
+                "task_cost": steps[-1].task_cost,
+                "regret_bound": steps[-1].regret_bound,
+                "candidates": {
+                    levers[index].name: {
+                        "task_cost": plan.task_cost,
+                        "cleared_steps": None
+                        if plan.safety is None
+                        else plan.safety.certified_steps,
+                    }
+                    for index, plan in candidates.items()
+                },
+                "descent_steps": sum(plan.solver_iterations for plan in candidates.values()),
+                "seconds": time.perf_counter() - started,
+            },
+        )
+    return plans[-1], tuple(steps)
+
+
+def _rank(plan: CausalPlan) -> tuple[int, float]:
+    """Held constraints first --- the longest prefix the audit clears --- then the planned cost.
+
+    ``plan.safety`` is there only when the constraints were held, so otherwise this is the cost.
+    """
+    cleared = 0 if plan.safety is None else plan.safety.certified_steps
+    return -cleared, plan.task_cost
 
 
 def _resolve_adjustment(

@@ -9,6 +9,33 @@ still change).
 
 ### Added
 
+- **Which levers to use: `prescribe(max_levers=k)` (L1).** `prescribe` planned with every lever it
+  was handed, so a pilot allowed to move two things had to guess which two. `max_levers=k` chooses
+  at most `k` by greedy forward selection with the plan as its inner loop: from no lever, each step
+  plans once per lever not yet chosen, with that lever added -- a cold `causal_plan` with the levers
+  outside the set pinned to `[0, 0]`, the plan `prescribe` makes for that set alone -- and keeps the
+  cheapest, or under `hold_constraints` the one whose audit clears the longest prefix. An unselected
+  lever is held at zero, where the fitted channel credits it with no effect and its `unit_cost`
+  charges nothing, so under `max_levers` every lever's box must contain zero; a box that excludes
+  it, or `max_levers < 1`, raises `DecisionError`. `Prescription.selection` is a frozen
+  `LeverSelection` -- the idle cost and one `SelectionStep(lever, task_cost, regret_bound)` per
+  step -- carried by `to_json` under `"selection"`; `schema_version` stays `1`, since a field was
+  added and none changed meaning. A step's regret bound is `plan_regret_bound` priced against every
+  lever's box, so it bounds what the levers left out could still buy, and with it greedy's miss
+  against the best set of its size. Each step leaves one `selection` log record with every
+  candidate's cost. Without `max_levers` nothing moves: four prescriptions hash identically before
+  and after, and a test holds the `None` path to its one cold solve.
+
+  Greedy is not exhaustive. Against exhaustive search it found the best set in 5 of 6 cells on
+  three named plants, missing on one built for it to miss, and in all 84 on 28 random four-lever
+  plants on which some lever lowers the cost. The group-L1 stage `plans/24` proposed was measured
+  and not shipped: as a screen before greedy it repaired no miss and broke a hit on each set of
+  plants, and as the selector itself it repaired the built miss and broke 2 hits on the named
+  plants and 15 on the random ones. Greedy followed by single swaps repaired the miss and broke
+  nothing, and is the first thing to add if misses show up in use. The decision, the tables, the
+  rejected alternatives and the mutation check of the tests are in
+  `docs/adr/0004-greedy-lever-selection.md`, reproducible with `scripts/bench_max_levers.py`.
+
 - **The matrix statements behind the scalar Rocq proofs, proved with MathComp
   (`proofs/mathcomp/`).** Stdlib has no matrices, so the robust barrier margin, the multivariate
   van Trees floor, the certainty-equivalence constant and the dimension limits of the KAN,
