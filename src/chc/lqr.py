@@ -88,8 +88,8 @@ def linearized_regret_certificate(
     certainty-equivalence regret bound (:func:`chc.regret.certainty_equivalence_gap`) for that
     linearisation -- a local certificate valid where model error dominates the plant's curvature.
     Exact on a linear plant; empirically tracks the nonlinear closed-loop suboptimality to ~1.1x in
-    the small-model-error regime. Extends the LQ guarantee of ``plans/19`` B to nonlinear plants,
-    locally.
+    the small-model-error regime. Extends the LQ guarantee of :mod:`chc.regret` to nonlinear
+    plants, locally.
     """
     a, b = linearize_discrete(dyn, x_star, u_star, dt)
     a_hat, b_hat = linearize_discrete(dyn_hat, x_star, u_star, dt)

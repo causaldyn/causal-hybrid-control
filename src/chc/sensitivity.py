@@ -65,7 +65,11 @@ Worked example (the calibration is explicit -- NOT baked in)::
 
 HONEST: ``Gamma`` and the CVaR-gap calibration are the analyst's inputs; the sign-identification
 constraint ``b_hat > D > 0`` must hold. These robustify pessimism, they do NOT test for confounding.
-See ``discoveries/theorems.md`` §32-§40 for the proofs and scope.
+The scalar closed forms of steps 0-5 are proved in Rocq and derived in Maxima, one pair per step,
+each proof's header stating its scope: ``proofs/<name>.v`` and ``validation/<name>.mac`` for
+``gamma_benchmark``, ``confounding_robust_cvar``, ``confounding_lq_regret``,
+``confounding_robust_control``, ``lipschitz_rollout`` and ``barrier_feasibility``, in step order;
+step 5's vector form is proved at any dimension in ``proofs/mathcomp/barrier_feasibility_lift.v``.
 """
 
 from __future__ import annotations

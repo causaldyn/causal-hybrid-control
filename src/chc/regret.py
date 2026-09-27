@@ -5165,7 +5165,7 @@ def interference_regret_certificate(
     and an interference / exposure-map error ``eint`` of the actuation channel (``dB``).
 
     This is the empirical twin of the machine-checked bound in ``proofs/interference_regret.v``
-    (``regret <= (kappa C^2 / 2) (eid + eint)^2``) and the plans/20 §A theorem: the interference
+    (``regret <= (kappa C^2 / 2) (eid + eint)^2``): the interference
     error enters *additively* inside the square, so ignoring it under-states the regret. Sets
     ``eint = interference_ratio * eid``; the recorded error is the additive ``||dA|| + ||dB||`` (not
     the Euclidean norm), so the fitted slope tests the quadratic-in-total law directly (~2).

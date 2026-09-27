@@ -43,7 +43,7 @@ class Provenance:
 
     ``x64`` is not decoration. JAX's double-precision flag changes how many bits a threefry key
     spends per element, so the *same* seed draws a *different* sample at the two settings; a run
-    recorded without it cannot be repeated. See ``discoveries/theorems.md`` on Track J.
+    recorded without it cannot be repeated. See ``docs/concepts/dtype-policy.md``.
     """
 
     data_sha256: str  # over column name, dtype, shape and bytes, in sorted name order
