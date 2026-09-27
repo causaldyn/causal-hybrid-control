@@ -150,9 +150,18 @@ def barrier_gamma_star(threshold_radius: float, cvar_gap: float, grad_norm: floa
     * ``0 < c < cvar_gap`` -- the finite ceiling ``(gap + c) / (gap - c)``.
     * ``c >= cvar_gap`` -- ``Delta`` saturates at ``cvar_gap`` as ``Gamma -> inf``, so the threshold
       is beyond anything the sensitivity model can produce: ``inf``.
+
+    ``grad_norm == 0`` is a state where the barrier is flat, such as the centre of a ball, and there
+    the radius ``Delta * grad_norm`` is zero at every ``Gamma``: the step holds at every level or at
+    none, ``inf`` when ``threshold_radius >= 0`` and ``nan`` otherwise.
     """
-    if cvar_gap <= 0.0 or grad_norm <= 0.0:
-        raise ValueError("cvar_gap and grad_norm must be positive to invert the radius")
+    if cvar_gap <= 0.0 or grad_norm < 0.0:
+        raise ValueError(
+            "cvar_gap must be positive and grad_norm nonnegative to invert the radius, got "
+            f"cvar_gap={cvar_gap}, grad_norm={grad_norm}"
+        )
+    if grad_norm == 0.0:
+        return float("inf") if threshold_radius >= 0.0 else float("nan")
     c = threshold_radius / grad_norm
     if np.isnan(c) or c < 0.0:
         return float("nan")

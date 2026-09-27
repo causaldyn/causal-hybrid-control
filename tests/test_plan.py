@@ -160,6 +160,23 @@ def test_gamma_star_prices_the_problem_and_does_not_move_with_the_assumed_level(
     assert 1.0 < thin < ceilings.pop()  # less authority buys less tolerance
 
 
+def test_a_plan_resting_where_the_barrier_is_flat_is_certified_at_every_gamma() -> None:
+    """A smooth barrier has flat points -- the centre of a ball -- and a safe plan may rest on one.
+
+    There the radius is zero at every ``Gamma`` and ``0 >= -alpha h`` holds, so the ceiling is
+    ``inf``. The audit used to raise instead, because it inverted the radius at a zero gradient.
+    """
+    plan = causal_plan(_MODEL, jnp.zeros(2), _COST, 0.1, 12, -5.0, 5.0)
+    assert float(jnp.max(jnp.abs(plan.trajectory))) == 0.0
+
+    def ball(x: Array) -> Array:
+        return 1.0 - jnp.sum(x**2)
+
+    cert = certify_safety(plan, _MODEL, ball, 0.1, alpha=5.0, u_max=5.0)
+    assert cert.gamma_star == float("inf")
+    assert cert.certified_steps == 12
+
+
 def test_gamma_star_is_sharp_at_the_weakest_step() -> None:
     """At exactly ``gamma_star`` the best admissible action meets the barrier; past it it cannot."""
     cert = certify_safety(_PLAN, _MODEL, _mixed, 0.1, alpha=5.0, gamma=1.0, u_max=5.0)

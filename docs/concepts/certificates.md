@@ -35,7 +35,11 @@ design record is
 - **The barrier** — for a control-affine plant and a safe set `{h >= 0}`, whether the barrier
   condition survives an identification radius on the effect, step by step, and `Γ*`: the largest
   sensitivity-model level under which the barrier stays certified. The plan-level `Γ*` is the
-  weakest step's, so one uncertifiable step sinks the plan.
+  weakest step's, so one uncertifiable step sinks the plan. Where the barrier is flat, as at the
+  centre of a ball, the radius is zero at every level and the step's `Γ*` is `inf` or `nan`.
+  Where two bounds tie, as at the midpoint of a two-sided one, `prescribe` audits each and reports
+  the weaker `Γ*`: an upper bound on the joint ceiling, because each bound's is reached by its own
+  best action and no single action need reach both.
 - **The optimality gap** — `plan_regret_bound` certifies how far a finished plan can be from the
   best one its own box allows, from the plan's own gradient and with no optimum needed. It reads the
   plan's actions, not the solver's internals, so it prices a plan that came from anywhere —

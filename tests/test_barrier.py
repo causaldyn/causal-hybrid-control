@@ -76,6 +76,16 @@ def test_gamma_star_reports_the_degenerate_ends_instead_of_a_misleading_number()
         barrier_gamma_star(0.4, 0.0, 1.0)
 
 
+def test_a_flat_barrier_holds_at_every_gamma_or_at_none() -> None:
+    """Where ``grad h = 0`` the radius is zero at every ``Gamma``: no level decides the step."""
+    assert barrier_gamma_star(0.4, 1.0, 0.0) == float("inf")
+    assert barrier_gamma_star(0.0, 1.0, 0.0) == float("inf")
+    assert np.isnan(barrier_gamma_star(-0.1, 1.0, 0.0))
+    assert np.isnan(barrier_gamma_star(float("nan"), 1.0, 0.0))
+    with pytest.raises(ValueError, match="nonnegative"):
+        barrier_gamma_star(0.4, 1.0, -1.0)
+
+
 def test_a_nominally_infeasible_barrier_is_not_reported_as_certified_at_gamma_one() -> None:
     """``d* < 0`` means no radius works -- including the zero radius that ``Gamma = 1`` produces."""
     drift, channel, u_max, alpha_h = -2.0, 0.6, 2.0, 0.5

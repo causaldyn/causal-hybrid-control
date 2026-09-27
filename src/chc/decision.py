@@ -193,7 +193,11 @@ class DecisionCertificate:
     certificate_status: CertificateStatus
     certified_horizon: int | None  # steps the Gronwall tube keeps inside ``tolerance``
     barrier_certified_steps: int | None  # leading prefix clearing the barrier; None if no bound
-    gamma_star: float | None  # weakest step's confounding ceiling (§40); None if unconstrained
+    # The weakest step's confounding ceiling; None if unconstrained. At a step where two bounds tie
+    # (the midpoint of a two-sided bound) it is the weaker tied margin's ceiling, an upper bound on
+    # the joint one: each margin's is reached by its own best action, and no one action need reach
+    # both.
+    gamma_star: float | None
     # None when the effect is not identified: no solve was attempted, which is a third answer and
     # not one of the solver's three. Same convention as the certified-horizon fields above.
     solver_status: SolverStatus | None

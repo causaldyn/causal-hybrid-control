@@ -573,6 +573,14 @@ still change).
 
 ### Fixed
 
+- **`certify_safety` raised on a safe plan that crossed a flat point of its barrier.** A smooth
+  barrier has states where its gradient vanishes, such as the centre of a ball `1 - |x|^2`, and
+  there the identification radius `Delta * |grad h|` is zero at every sensitivity level, so the
+  step holds at every `Gamma` or at none. `barrier_gamma_star` treated the zero norm as invalid
+  input and raised, so a plan resting at the centre of its safe set could not be audited at all.
+  It now returns `inf` where the step's threshold radius is nonnegative and `nan` where it is
+  negative, the answers its other cases already give; a negative norm still raises.
+
 - **`prescribe` raised on a plan starting in the middle of a two-sided bound, and checked any tie
   against an average of its margins.** The facade audited `h = min_j` of the bound margins through
   `certify_safety`, which reads `h`'s gradient, and `jnp.min` averages tied gradients. The two
