@@ -266,7 +266,10 @@ the randomised benchmark), and the **control loop** on a real building emulator 
 forecast-MPC of this library, run via `causaldyn-bench` against a live **BOPTEST**
 `bestest_hydronic_heat_pump`, beats the tuned built-in baseline on *every* KPI at once (thermal
 discomfort 8.01→7.32, energy 0.393→0.354, cost 0.100→0.090, emissions 0.066→0.059 — a clean Pareto
-win). Roadmap: more real tasks, the Medium/paper writeups, and — only if a real-time/edge deployment
+win). Planned through `prescribe` instead, from a weather-compensated log, the same plant gave a
+pre-registered comparison of the adjusted call against the naive one whose verdict is void, and a
+naive loop that ran away where its fitted channel changed sign
+([case study](docs/case-studies/boptest.md)). Roadmap: more real tasks, the Medium/paper writeups, and — only if a real-time/edge deployment
 target appears — a compiled runtime.
 
 ### What "0.x" promises
