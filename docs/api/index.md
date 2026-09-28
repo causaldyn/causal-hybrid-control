@@ -39,7 +39,8 @@ The README's tier table names the stable and the experimental modules one by one
 ## Experimental
 
 Modules that exist to carry one research result, and modules built ahead of the release that
-verifies them on a plant CHC did not write. They may change or be withdrawn in any release. Pin an
+verifies them: on a plant CHC did not write, or, for the marketplace plant `zones`, in the
+pre-registered study it is the plant of. They may change or be withdrawn in any release. Pin an
 exact version if you depend on one.
 
 Three entries in modules of other tiers are experimental on the same terms, for the same reason:

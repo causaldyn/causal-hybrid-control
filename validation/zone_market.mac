@@ -1,0 +1,32 @@
+/* MK2 zone plant: the closed forms chc.zones relies on, per zone.
+   s' = gam (sig - s) + f - m ;  q' = lam (1 + xi - eps p) - m - alp q ;  m = mu s q / (s + q)  (harmonic)
+   linear matching is the tangent of the harmonic one at the do-nothing point (sb, qb). */
+display2d: false$
+mh(s, q) := mu*s*q/(s + q)$
+/* 1. Euler: the harmonic law is homogeneous of degree one, so its tangent plane passes through 0. */
+mus: ratsimp(subst([s = sb, q = qb], diff(mh(s, q), s)))$
+muq: ratsimp(subst([s = sb, q = qb], diff(mh(s, q), q)))$
+print("mus =", factor(mus), "  muq =", factor(muq))$
+print("tangent offset (must be 0):", ratsimp(mh(sb, qb) - (mus*sb + muq*qb)))$
+/* 2. The derived baseline supply and demand make (sb, qb) the do-nothing steady state, both laws. */
+mb: mh(sb, qb)$
+sig: sb + mb/gam$   lam: mb + alp*qb$
+print("do-nothing s' (harmonic):", ratsimp(gam*(sig - sb) + 0 - mh(sb, qb)))$
+print("do-nothing q' (harmonic):", ratsimp(lam*(1 - 0) - mh(sb, qb) - alp*qb))$
+ml(s, q) := mus*s + muq*q$
+print("do-nothing s' (linear):", ratsimp(gam*(sig - sb) - ml(sb, qb)))$
+print("do-nothing q' (linear):", ratsimp(lam - ml(sb, qb) - alp*qb))$
+/* 3. Linear steady state under inflow f and price p, and its responses. */
+kill(sig, lam)$
+eqs: [gam*(sig - s) + f - (mus*s + muq*q) = 0, lam*(1 - eps*p) - (mus*s + muq*q) - alp*q = 0]$
+sol: solve(eqs, [s, q])$
+S: rhs(sol[1][1])$  Q: rhs(sol[1][2])$
+M: ratsimp(mus*S + muq*Q)$
+Delta: gam*muq + gam*alp + mus*alp$
+print("dm/df - alp mus/Delta:", ratsimp(diff(M, f) - alp*mus/Delta))$
+print("dm/dp + eps lam gam muq/Delta:", ratsimp(diff(M, p) + eps*lam*gam*muq/Delta))$
+print("ds/df - (muq+alp)/Delta:", ratsimp(diff(S, f) - (muq + alp)/Delta))$
+print("dq/dp + eps lam (gam+mus)/Delta:", ratsimp(diff(Q, p) + eps*lam*(gam + mus)/Delta))$
+/* 4. With sig, lam at their derived values and f = p = 0, the linear steady state is (sb, qb). */
+sub0: [sig = sb + mb/gam, lam = mb + alp*qb, f = 0, p = 0]$
+print("linear do-nothing steady state - (sb, qb):", ratsimp(subst(sub0, S) - sb), ratsimp(subst(sub0, Q) - qb))$

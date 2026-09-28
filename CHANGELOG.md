@@ -259,6 +259,32 @@ still change).
     global effect on a secondary metric such as matches; and a design helper. The design record
     is `docs/adr/0014-the-global-effect-of-a-marketplace-experiment.md`.
 
+- **`chc.zones`: the marketplace plant the loop runs on, zones over time, control-affine by
+  construction.** Per zone: idle supply, open requests and an incentive stock; an incentive and a
+  price as levers, moves from the do-nothing point on `[0, 1]`. An incentive recruits at once
+  through `(I - P) diag(recruit)` and late through the stock, and a share `spill` of its recruits
+  come from the neighbouring zones on a ring, so the city keeps `1 - spill` of them. A price turns
+  away `demand * elasticity`. `ZoneMarketSystem` is parameterised by the do-nothing point: each
+  zone's idle supply and open requests, from which the supply level and the demand are derived so
+  that it is the steady state (`validation/zone_market.mac`). Experimental, as the plant of the
+  marketplace study 0.10.0 pre-registers.
+  - **Matching** is harmonic, `mu s q / (s + q)`, or its tangent at the do-nothing point, which
+    passes through zero; the two share the steady state.
+  - **The logged operator chased the shock.** `sample` moves both levers with each zone's own
+    demand shock, which also takes supply off the road, and logs it. Over six logs a fit that
+    ignores the shock read the price at −0.71 to 0.21 of one period's response (a price rise
+    raising demand in 18 of 24 zones) and the incentive at 0.18–0.39 of it over the city; adjusted
+    for the shock, at 0.78–1.16 and 0.90–1.08 zone by zone. `graph()` derives that adjustment.
+  - **Bridges.** `zone_decision` is the settled trips as a `ZoneDecision` over the incentives, and
+    `linear_gaussian` one RK4 period at the do-nothing point as a `LinearGaussianPlant`. Both are
+    exact under linear matching. Under harmonic matching `zone_decision` is first order: 3.5% of the
+    move it predicts at an incentive of 0.025, 12.8% at 0.1. `stock_dynamics` hands the stock rows
+    to a fit as `known=`.
+  - **Scope.** Every number from it is by construction. The logged actions share the period's
+    noise through the shock, which an evaluation that weights actions by `u | x` alone assumes
+    they do not. Interference runs through supply only. The design record is
+    `docs/adr/0017-the-marketplace-plant.md`.
+
 ### Changed
 
 - **`channel_error` is robust for every fit, as it already was for a weighted one (D28).** The

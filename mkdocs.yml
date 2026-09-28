@@ -154,6 +154,7 @@ nav:
           - api/switchback.md
           - api/symbolic.md
           - api/transport.md
+          - api/zones.md
   - Theory: theory.md
   - Benchmarks: benchmarks.md
   - Security: security.md
