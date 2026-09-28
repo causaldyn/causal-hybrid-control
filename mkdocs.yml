@@ -64,6 +64,7 @@ nav:
   - Home: index.md
   - Why, and when not to: why.md
   - Quickstart: quickstart.md
+  - The decision lifecycle: lifecycle.md
   - Concepts:
       - Identification: concepts/identification.md
       - Pessimism: concepts/pessimism.md

@@ -31,6 +31,8 @@ driver supports — and JAX places arrays on the GPU; chc has no GPU-specific co
 - [Why, and when not to use it](why.md) — the gap this closes, where it sits among the tools you
   already know, and the problems it is the wrong tool for.
 - [Quickstart](quickstart.md) — from a panel of logs to a certified schedule, in one call.
+- [The decision lifecycle](lifecycle.md) — identify, plan, evaluate, experiment, deploy, adapt:
+  what is built for each stage, where it is documented, and what is not built yet.
 - **Concepts** — [identification](concepts/identification.md),
   [pessimism](concepts/pessimism.md), [certificates](concepts/certificates.md),
   [the sensitivity level Γ](concepts/gamma.md) and [the dtype policy](concepts/dtype-policy.md).

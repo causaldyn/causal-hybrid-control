@@ -126,6 +126,17 @@ still change).
   rows' multipliers, not those of ADR 0003's barrier rounds. `PriceStatus`, `RowPrice` and
   `ShadowPrices` are exported.
 
+- **The docs file the library by the decision it serves.** A new page, "The decision lifecycle",
+  takes a decision from logs through six stages: identify, plan, evaluate, experiment, deploy and
+  adapt. For each stage it names what is built and where it is documented, and what is not built
+  yet:
+  - an off-policy evaluation of a whole plan on a plant with memory;
+  - an experiment that answers `NotIdentifiedError`;
+  - a gate that holds a plan in shadow until the evidence says to deploy it;
+  - a monitor that notices the effect has moved.
+
+  Nothing moved, and every page keeps its URL.
+
 ### Changed
 
 - **`chc.offpolicy` says what it estimates.** `off_policy_value` weights one step at a time, so
