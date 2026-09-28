@@ -26,6 +26,8 @@
 ; incrementally", and it reports block (E)'s model as algebraic numbers rather than rationals:
 ; 115x^2 - 22x - 56 = (5x - 4)(23x + 14) and 115x^2 - 208x + 37 = (5x - 1)(23x - 37), i.e. the
 ; same x* = (4/5, 1/5, 0) z3 prints directly, through a non-minimal defining polynomial.
+;
+; Expected output: unsat, unsat, unsat, unsat, sat.
 
 (set-logic QF_NRA)
 (set-option :produce-models true)

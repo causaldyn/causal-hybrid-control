@@ -31,7 +31,7 @@ Two things bound what "proved" means here:
   `Check <theorem>` shows the cited names and `Print <Name>` what was assumed under each.
 
 ```bash
-just proofs                # compile every proof (CI does this on every push, under Rocq 9.2)
+just proofs                # compile every proof (CI: every push, Rocq 9.2, then the audit below)
 just assumptions           # Print Assumptions on every lemma; fails on anything beyond Stdlib's axioms
 just proofs-mathcomp       # compile the MathComp lifts (MathComp 2.6, see CONTRIBUTING.md)
 just assumptions-mathcomp  # fails unless every lift is closed under the global context
@@ -49,10 +49,14 @@ unsatisfiable.
 just derivations   # run every Maxima derivation; fails if any did not complete
 ```
 
-CI runs the same check on every push. It checks that each derivation *completes*, not that its
-output matches a stored copy. Only the Maxima files run there: the PARI/GP, Octave, FriCAS, R,
-Python and SMT files beside them (`*.gp`, `*.m`, `*.input`, `*.R`, `*.py`, `*.smt2`) are run by
-hand, and CI would not notice one of them breaking.
+```bash
+just crosschecks   # the SMT verdicts against the ones each file states; PARI/GP and Octave complete
+```
+
+CI runs both on every push. It checks that each derivation *completes*, not that its output matches
+a stored copy, and the same of the PARI/GP and Octave files (`*.gp`, `*.m`); each SMT file
+(`*.smt2`) states its verdicts, and z3's must match them. The FriCAS, R and Python files beside
+them (`*.input`, `*.R`, `*.py`) are run by hand, and CI would not notice one of them breaking.
 
 ## Result numbers in docstrings
 

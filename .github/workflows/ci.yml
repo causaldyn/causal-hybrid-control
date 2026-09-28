@@ -69,7 +69,8 @@ jobs:
             set -euo pipefail
             mkdir /tmp/proofs && cp /proofs/*.v /tmp/proofs/ && cd /tmp/proofs
             for f in *.v; do rocq compile -q "$f"; done
-            echo "compiled $(ls -1 *.vo | wc -l) proofs"'
+            echo "compiled $(ls -1 *.vo | wc -l) proofs"
+            bash /proofs/assumptions.sh /proofs'
 
   # The matrix lifts in proofs/mathcomp/ need MathComp, which the plain Rocq image does not carry.
   # Unlike the Stdlib proofs they are stated over abstract MathComp fields, not over Stdlib's
@@ -119,6 +120,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y maxima maxima-share
       - name: Run every derivation
         run: ./validation/run_all.sh
+
+  # The rest of validation/ that finishes in seconds. The SMT files state their verdicts, and z3's
+  # must match them; the PARI/GP and Octave files must complete, as the derivations must. The
+  # runner's apt z3 is 4.8.12, and it returns the stated verdicts on both files.
+  crosschecks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install z3, PARI/GP and Octave
+        run: sudo apt-get update && sudo apt-get install -y z3 pari-gp octave
+      - name: Run every cross-check
+        run: ./validation/run_crosschecks.sh
 
   # The site shows what the code prints, so building it means running the code: `docs/build.sh`
   # executes the eight notebooks and the scripts the pages quote, then builds with `--strict`. Run

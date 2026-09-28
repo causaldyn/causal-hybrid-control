@@ -11,7 +11,7 @@ default:
 check: fmt lint types test
 
 # Everything, including the formal and symbolic gates. Minutes, not seconds.
-all: check types-matrix proofs assumptions derivations
+all: check types-matrix proofs assumptions derivations crosschecks
 
 # ── Python (uv + ruff + ty) ───────────────────────────────────────────────────
 
@@ -67,27 +67,7 @@ proofs:
 # Measured 2026-09-03 over 386 lemmas in 55 files: functional_extensionality_dep and
 # sig_forall_dec on all of them, sig_not_dec on 36, classic on 9, and nothing else.
 assumptions:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-    allowed='FunctionalExtensionality.functional_extensionality_dep|ClassicalDedekindReals.sig_forall_dec|ClassicalDedekindReals.sig_not_dec|Classical_Prop.classic'
-    for f in proofs/*.v; do
-      names=$(grep -oP '^\s*(Lemma|Theorem|Corollary|Proposition)\s+\K[A-Za-z_][A-Za-z0-9_'"'"']*' "$f" || true)
-      [ -z "$names" ] && continue
-      probe="$work/$(basename "$f")"
-      cp "$f" "$probe"
-      for n in $names; do echo "Print Assumptions $n." >> "$probe"; done
-      timeout 900 rocq top -batch -load-vernac-source "$probe" >> "$work/all.out" 2>&1 || true
-    done
-    # Axiom names are the lines that start a fresh declaration inside a Print Assumptions block.
-    stray=$(grep -oE '^[A-Za-z][A-Za-z0-9_.]*[[:space:]]*:' "$work/all.out" | sed 's/[[:space:]]*:$//' \
-            | sort -u | grep -vE "^($allowed|Axioms)$" || true)
-    lemmas=$(grep -c '^Axioms:' "$work/all.out")
-    if [ -n "$stray" ]; then
-      echo "assumptions outside Stdlib's classical reals:"; echo "$stray" | sed 's/^/       /'; exit 1
-    fi
-    grep -q 'Admitted' "$work/all.out" && { echo "an Admitted proof reached the batch"; exit 1; } || true
-    echo "$lemmas lemmas rest on Stdlib's classical-reals axioms and nothing else"
+    ./proofs/assumptions.sh
 
 # ── Rocq + MathComp ───────────────────────────────────────────────────────────
 
@@ -136,6 +116,11 @@ assumptions-mathcomp:
 # `maxima -b` exits 0 on a parse error, so the runner greps the output instead.
 derivations:
     ./validation/run_all.sh
+
+# The SMT files' verdicts against the ones each states, and the PARI/GP and Octave files for
+# completion. Seconds. Needs z3, gp and octave-cli, and runs cvc5 too where it is installed.
+crosschecks:
+    ./validation/run_crosschecks.sh
 
 # ── The numbers other documents quote ─────────────────────────────────────────
 

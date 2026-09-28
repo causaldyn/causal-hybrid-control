@@ -252,6 +252,15 @@ still change).
     global effect on a secondary metric such as matches; and a design helper. The design record
     is `docs/adr/0014-the-global-effect-of-a-marketplace-experiment.md`.
 
+### Changed
+
+- **CI audits the proofs' assumptions, and runs the SMT, PARI/GP and Octave cross-checks.** The
+  proofs job compiled every proof without printing what each rests on; it now fails on an axiom
+  outside Stdlib's classical reals or an admitted step, by the audit `just assumptions` runs, from
+  one script. A new job runs the SMT files, whose z3 verdicts must match the ones each file states,
+  and the PARI/GP and Octave files, which must complete; `just crosschecks` runs the same locally.
+  The FriCAS, R and Python files in `validation/` are still run by hand.
+
 ### Removed
 
 - **`runtime/`, the Rust harness that measured a compiled control loop.** Its verdict, recorded
