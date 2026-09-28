@@ -36,13 +36,13 @@ HONEST SCOPE, and it bounds what the numbers below mean:
 * **What the whole-horizon plan buys over a myopic one is a property of these parameters, not of
   the method.** The ``myopic`` arm exists to measure that rather than assume it, and
   ``causaldyn_bench.allocation`` (Track M) scores both over seeds: on the parameters below the two
-  TIE (mean lift ``46.56`` against ``46.88`` over eight seeds, sign flipping ``5/3``), while both
-  beat the equal split at ``8/8`` and the confounded arm loses at ``8/8``. Here ``beta_c/theta_c``
-  ranks the channels ``(1.29, 1.50, 1.60)`` against ``gamma_c``'s ``(0.50, 0.20, 0.35)``: the two
-  orderings disagree about the top channel but AGREE about which to drop. Move the carryover until
-  they contradict -- ``beta/theta`` of ``(0.07, 8.00, 1.60)`` at unchanged ``gamma`` -- and the
-  whole-horizon plan wins ``6/6``. So the headline of this case study is the identification, and
-  the horizon is a second, smaller and plant-dependent effect.
+  TIE (mean lift ``46.43`` against ``46.11`` over eight seeds, sign flipping ``3/5``), while the
+  adjusted arm beats the equal split and the confounded arm at ``8/8`` each. Here
+  ``beta_c/theta_c`` ranks the channels ``(1.29, 1.50, 1.60)`` against ``gamma_c``'s ``(0.50, 0.20,
+  0.35)``: the two orderings disagree about the top channel but AGREE about which to drop. Move the
+  carryover until they contradict -- ``beta/theta`` of ``(0.10, 8.00, 1.60)`` at unchanged
+  ``gamma`` -- and the whole-horizon plan wins ``8/8``. So the headline of this case study is the
+  identification, and the horizon is a second, smaller and plant-dependent effect.
 * **``known=`` was exact only up to the integrator, and this module is where that was found.**
   :func:`chc.dynamics_id.fit_causal_residual` reads the state rate as a forward difference
   ``(x_next - x)/dt`` while :func:`chc.plan.causal_plan` rolls out with RK4, so at a coarse ``dt``

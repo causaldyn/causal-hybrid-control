@@ -256,6 +256,15 @@ still change).
   class. It was the noise: with the noise taken out, the fixed point sits at zero on every known
   row to 1e-6, and over noise draws that coefficient scatters by 0.041.
 
+  A third claim was in the benchmark, whose CI the refusal turned red. Track M's
+  carryover-dominant plant decayed its fastest channel at `theta * dt = 1.5`, and seed 0's log
+  reads that channel's weekly decay at 0.2668 +- 0.0033, below any RK4 step. The plant moves to
+  1.0; at 1.2 seed 5 has no fixed point either, stalling in that channel's dependence on its own
+  adstock. The whole-horizon plan's win there goes from 6 of 6 seeds to 8 of 8, by 1.20-3.79
+  (+9.5%). On the shipped plant the tie stays a tie: 46.43 against 46.11 over eight seeds, sign
+  3/5 (was 46.56 against 46.88, 5/3), and the myopic rule now beats the equal split at 7 of 8. The
+  numbers in `chc.mmm`'s scope note are re-measured.
+
 ## [0.6.0] — 2026-09-27
 
 ### Added
