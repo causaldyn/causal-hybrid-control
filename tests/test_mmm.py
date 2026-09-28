@@ -1,12 +1,14 @@
 """Marketing-mix budget scheduling: the facade on a saturating carryover plant, audited on truth.
 
 Four seeds were checked before any threshold here was written. Adjusted beats a matched-budget flat
-split by 4.4%, 4.3%, 7.5%, 8.0%; the confounded arm returns 0.88, 0.78, 0.82, 0.78 of the adjusted
+split by 4.5%, 3.2%, 7.7%, 7.9%; the confounded arm returns 0.87, 0.78, 0.81, 0.78 of the adjusted
 arm's lift. The assertions sit outside that spread, not on top of one draw of it.
 
 Those first four moved when `prescribe` switched to `integrator="rk4"` (from 4.3 / 4.8 / 7.7 / 8.3),
 which is the right size of move: the fitted field changed materially and the *conclusion* did not,
-because every arm here is audited on the true plant rather than on the planner's own forecast.
+because every arm here is audited on the true plant rather than on the planner's own forecast. They
+moved again in 0.7.0 (from 4.4 / 4.3 / 7.4 / 8.0), when the rk4 fit stopped halting short of its
+fixed point, after one pass on the sales row, and was solved to it.
 """
 
 from __future__ import annotations
@@ -72,13 +74,19 @@ def test_the_confounded_arm_overrates_every_channel_and_underinvests(report: Mmm
         assert believed > 1.5 * adjusted.reach()[channel]  # every channel credited with the season
 
     # and the inflation is uneven, so the ORDER it would allocate by is distorted too: the true
-    # social:search ratio of incremental returns is 0.4, which the adjusted arm nearly recovers.
+    # social:search ratio of incremental returns is 0.4, and the confounded arm reads 0.67-1.08 of
+    # it over four seeds, 0.28-0.67 above the adjusted arm on each. The adjusted arm's own ratio
+    # is not pinned to 0.4, and never was: its sales row carries a saturating carryover and a
+    # seasonal push the model class leaves out, so where the channels land moves with how far the
+    # rk4 fit gets -- 0.43 on seed 0 read as Euler, 0.33 after one pass of the old iteration, 0.20
+    # at the fixed point -- and across seeds it spans 0.20-0.58. Up to 0.6.0 this line asserted
+    # 0.4 +- 0.1 on seed 0, where one pass happened to land.
     def ratio(prescription) -> float:
         reach = prescription.reach()
         return reach["spend_social"] / reach["spend_search"]
 
-    assert ratio(adjusted) == pytest.approx(0.4, abs=0.1)
     assert ratio(confounded) > 0.6
+    assert ratio(confounded) > ratio(adjusted) + 0.2
 
     assert report.arm("confounded").total_spend < report.arm("adjusted").total_spend
     assert report.lift("confounded") < 0.95 * report.lift("adjusted")
@@ -114,10 +122,11 @@ def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_
     *closed-form* difference between the two integrators, which is what every release up to 0.4.0
     silently shipped.
 
-    Not zero, and the residue is not float noise -- at 30 corrections and a 0.01% progress bar the
-    ``theta = 0.4`` row still sits at 0.025, so that row's fixed point is where the model class
-    runs out, not where the loop gives up. The thresholds are set on the measurement (0.04 / 0.35 /
-    0.13 of each row's gap, aggregating to 0.12) with room, not on the hope.
+    Not zero, and the residue is the log's noise, not the model class: on the same rows with the
+    noise taken out, the rk4 fixed point sits at zero on every known row to 1e-6, and over 40 noise
+    draws each row's own-state coefficient scatters by 0.053 / 0.041 / 0.014. The thresholds are
+    set on the measurement (0.004 / 0.22 / 0.08 of each row's gap, aggregating to 0.06) with room,
+    not on the hope -- and the per-row ones are single draws of that noise.
     """
     drift = np.asarray(report.arm("adjusted").prescription.model_fit.residual.drift)  # type: ignore[union-attr]
     system = MarketingMixSystem()
@@ -136,8 +145,8 @@ def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_
         assert left == pytest.approx(gap, abs=0.02)  # euler leaves exactly the amplification
     for gap, left in zip(gaps, corrected, strict=True):
         assert left < 0.5 * gap  # rk4 leaves less than half of it on every row
-    assert sum(corrected) < 0.25 * sum(uncorrected)  # measured 0.12
-    assert corrected[0] < 0.1 * gaps[0]  # and on the fastest row, where the gap is largest, 0.04
+    assert sum(corrected) < 0.25 * sum(uncorrected)  # measured 0.06
+    assert corrected[0] < 0.1 * gaps[0]  # and on the fastest row, where the gap is largest, 0.004
 
 
 def test_the_prescription_is_identified_and_certified_over_the_whole_horizon(

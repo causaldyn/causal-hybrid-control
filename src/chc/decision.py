@@ -38,10 +38,11 @@ from typing import Any, Literal
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from numpy.typing import ArrayLike
 
 from chc.control import LinearConstraint, SolverStatus
 from chc.cost import QuadraticCost, total_cost
-from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
+from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit, Integrator, fit_causal_residual
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.lqr import linearize_continuous
@@ -138,7 +139,7 @@ class Target:
     """
 
     name: str
-    value: float | Sequence[float]
+    value: ArrayLike
     weight: float = 1.0
 
 
@@ -161,6 +162,21 @@ class Constraint:
             raise DecisionError(f"constraint on {self.state!r} bounds nothing")
         if self.lo is not None and self.hi is not None and self.lo > self.hi:
             raise DecisionError(f"constraint on {self.state!r} has lo={self.lo} above hi={self.hi}")
+
+
+@dataclass(frozen=True)
+class Driver:
+    """An exogenous column that pushes the state, and its forecast over the plan.
+
+    ``forecast[k]`` is the level at ``t = k * dt``, so a forecast has ``horizon + 1`` entries: one
+    at the start of every step and one at the end of the last. Between two entries the driver moves
+    linearly, which is how the fit reads it off the log (:class:`chc.dynamics.DrivenDynamics`).
+    Nothing the plan does moves a driver --- weather, a published demand forecast; a column the
+    levers can move is a state, not a driver.
+    """
+
+    name: str
+    forecast: ArrayLike
 
 
 @dataclass(frozen=True)
@@ -284,6 +300,7 @@ class Prescription:
     # None unless ``max_levers`` was given and a plan was made. The schedule still has a column per
     # lever: an unselected one is zero throughout.
     selection: LeverSelection | None = None
+    drivers: tuple[Driver, ...] = ()  # the forecasts the plan was made against
 
     @property
     def lever_names(self) -> tuple[str, ...]:
@@ -374,6 +391,7 @@ class Prescription:
             "",
             f"- identification: **{certificate.identification}** ({certificate.adjustment.reason})",
             f"- adjusted for: {list(certificate.adjustment.covariates) or 'nothing'}",
+            *self._driver_lines(),
             f"- channel standard error: {_show(certificate.identification_radius)}",
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
             f"- error tube: **{certificate.certificate_status}**, "
@@ -429,8 +447,22 @@ class Prescription:
                     for step in self.selection.steps
                 ],
             },
+            "drivers": [
+                {"name": driver.name, "forecast": np.asarray(driver.forecast, dtype=float).tolist()}
+                for driver in self.drivers
+            ],
             "provenance": self.provenance.to_json(),
         }
+
+    def _driver_lines(self) -> list[str]:
+        gain = self.model_fit.driver_gain
+        if not self.drivers or gain is None:
+            return []
+        pushes = ", ".join(
+            f"`{driver.name}` {float(np.asarray(gain)[0, index]):+.4g}"
+            for index, driver in enumerate(self.drivers)
+        )
+        return [f"- drivers in the drift, with their push on `{self.target}`'s rate: {pushes}"]
 
 
 def prescribe(
@@ -451,6 +483,7 @@ def prescribe(
     folds: int = 2,
     seed: int = 0,
     integrator: Integrator = "rk4",
+    drivers: Sequence[Driver] = (),
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -510,6 +543,14 @@ def prescribe(
             :mod:`chc.mmm` it costs 28% of the control channel. Choose ``"euler"`` when the panel is
             genuinely discrete-time (a weekly budget is not a sample of an ODE) and the one-step map
             *is* the model.
+        drivers: exogenous columns the plan can forecast but not move, each with its forecast over
+            the horizon (:class:`Driver`). They are fitted into the drift jointly with the states
+            (:func:`~chc.dynamics_id.fit_causal_residual`), and the plan is made against the
+            forecast, so it acts ahead of a push it can see coming. The forecast moves the drift
+            and never the channel, so ``gamma_star`` is priced with it in place. Two things are not
+            priced: the forecast's own error, and the fitted gain's standard error, which the tube's
+            model error leaves out as it leaves out the drift's. A forecast outside the range the
+            panel logged is extrapolated by the fitted gain, and logged as a warning.
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
@@ -518,10 +559,11 @@ def prescribe(
     Raises:
         DecisionError: the decision is mis-specified --- no lever, a column constrained twice,
             a target schedule whose length is not ``horizon``, constraints to hold with none
-            given, ``max_levers`` below one or with a lever whose box excludes zero, or a panel
-            with no consecutive pair of periods to fit a transition on.
-        KeyError: a lever, target, constraint or asserted covariate names a column the panel does
-            not have. The message lists the panel's columns.
+            given, ``max_levers`` below one or with a lever whose box excludes zero, a driver that
+            is also a lever or a state or is named twice, a forecast that is not ``horizon + 1``
+            finite levels, or a panel with no consecutive pair of periods to fit a transition on.
+        KeyError: a lever, target, constraint, driver or asserted covariate names a column the
+            panel does not have. The message lists the panel's columns.
 
     Each decision point emits one ``logging`` record on ``chc.decision``, keyed by ``chc_event``
     (see :data:`_log`). Nothing is configured here; a caller that wants them calls
@@ -562,7 +604,8 @@ def prescribe(
     # same column would hand the fit two identical rows, one of them with nothing to steer it.
     states = (target.name, *(name for name in constrained if name != target.name))
     lever_names = tuple(lever.name for lever in levers)
-    for name in (*states, *lever_names):
+    driver_names = _check_drivers(drivers, horizon=horizon, taken=(*states, *lever_names))
+    for name in (*states, *lever_names, *driver_names):
         if name not in panel.columns:
             raise KeyError(
                 f"column {name!r} is not in the panel; columns are {sorted(panel.names)}"
@@ -584,7 +627,13 @@ def prescribe(
             "covariates": list(resolved.covariates),
         },
     )
-    data = _transitions(panel, states=states, levers=lever_names, adjust_for=resolved.covariates)
+    data = _transitions(
+        panel,
+        states=states,
+        levers=lever_names,
+        adjust_for=resolved.covariates,
+        drivers=driver_names,
+    )
     n_states, n_levers = len(states), len(lever_names)
 
     base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
@@ -597,6 +646,7 @@ def prescribe(
         folds=folds,
         seed=seed,
         integrator=integrator,
+        drivers=driver_names,
     )
     _log.info(
         "control channel fitted",
@@ -608,6 +658,10 @@ def prescribe(
             "integrator": fit.integrator,
             "integrator_defect": fit.integrator_defect,
             "overlap": fit.action_residual_variance,
+            "drivers": list(driver_names),
+            "driver_gain": None
+            if fit.driver_gain is None
+            else np.asarray(fit.driver_gain).tolist(),
             "transitions": int(jnp.asarray(data["x"]).shape[0]),
             "seconds": time.perf_counter() - started,
         },
@@ -642,6 +696,7 @@ def prescribe(
             ),
             model_fit=fit,
             provenance=panel.provenance,
+            drivers=tuple(drivers),
         )
 
     if not fit.identified:
@@ -653,7 +708,11 @@ def prescribe(
             "observational fit, which is the interventional one only if the lever is unconfounded",
         )
 
-    model = HybridDynamics(known=base, residual=fit.residual)
+    model: Dynamics = HybridDynamics(known=base, residual=fit.residual)
+    if drivers and fit.driver_gain is not None:
+        _warn_outside_logged_range(panel, drivers)
+        forecast = jnp.stack([jnp.asarray(driver.forecast, dtype=float) for driver in drivers], 1)
+        model = DrivenDynamics(model, fit.driver_gain, forecast, dt)
     start = jnp.asarray(data["x0"]) if x0 is None else jnp.asarray(x0)
     u_lo = jnp.array([lever.lo for lever in levers])
     u_hi = jnp.array([lever.hi for lever in levers])
@@ -759,6 +818,7 @@ def prescribe(
         model_fit=fit,
         provenance=panel.provenance,
         selection=selection,
+        drivers=tuple(drivers),
     )
 
 
@@ -851,9 +911,15 @@ def _resolve_adjustment(
 
 
 def _transitions(
-    panel: Panel, *, states: tuple[str, ...], levers: tuple[str, ...], adjust_for: tuple[str, ...]
+    panel: Panel,
+    *,
+    states: tuple[str, ...],
+    levers: tuple[str, ...],
+    adjust_for: tuple[str, ...],
+    drivers: tuple[str, ...] = (),
 ) -> dict[str, Array]:
-    """``(x, u, x_next)`` over consecutive periods within a unit, plus the adjustment columns.
+    """``(x, u, x_next)`` over consecutive periods within a unit, plus the adjustment columns, and
+    each driver at both ends of the transition (``name`` and ``f"{name}_next"``).
 
     Gaps are dropped, not interpolated: a unit missing period ``t`` contributes the transitions on
     either side of the hole and nothing across it. That is why an unbalanced panel is allowed here
@@ -892,6 +958,9 @@ def _transitions(
     }
     for name in adjust_for:
         data[name] = stack((name,), current)
+    for name in drivers:
+        data[name] = stack((name,), current)
+        data[f"{name}_next"] = stack((name,), following)
 
     units = sorted({unit for unit, _ in row_of})
     final_rows = np.array(
@@ -899,6 +968,54 @@ def _transitions(
     )
     data["x0"] = jnp.mean(stack(states, final_rows), axis=0)
     return data
+
+
+def _check_drivers(
+    drivers: Sequence[Driver], *, horizon: int, taken: tuple[str, ...]
+) -> tuple[str, ...]:
+    """The drivers' names, once each checked against the horizon and the decision's own columns."""
+    names = tuple(driver.name for driver in drivers)
+    twice = sorted({name for name in names if names.count(name) > 1})
+    if twice:
+        raise DecisionError(f"drivers named more than once: {twice}")
+    clash = sorted(set(names) & set(taken))
+    if clash:
+        raise DecisionError(
+            f"columns {clash} are named as drivers and as a lever or a state; a driver is "
+            "exogenous, and a column the plan can move is not"
+        )
+    for driver in drivers:
+        levels = np.asarray(driver.forecast, dtype=float)
+        if levels.shape != (horizon + 1,):
+            raise DecisionError(
+                f"driver {driver.name!r} has a forecast of shape {levels.shape}; it needs a level "
+                f"at the start of every step and one at the end of the last, {horizon + 1} for "
+                "this horizon"
+            )
+        if not np.all(np.isfinite(levels)):
+            raise DecisionError(f"driver {driver.name!r} has a forecast that is not finite")
+    return names
+
+
+def _warn_outside_logged_range(panel: Panel, drivers: Sequence[Driver]) -> None:
+    for driver in drivers:
+        logged = np.asarray(panel[driver.name], dtype=float)
+        low, high = float(logged.min()), float(logged.max())
+        levels = np.asarray(driver.forecast, dtype=float)
+        if levels.min() < low or levels.max() > high:
+            _log.warning(
+                "the forecast for %r leaves the range the panel logged, [%.4g, %.4g]; the fitted "
+                "gain is extrapolated there",
+                driver.name,
+                low,
+                high,
+                extra={
+                    "chc_event": "driver_range",
+                    "driver": driver.name,
+                    "logged": [low, high],
+                    "forecast": [float(levels.min()), float(levels.max())],
+                },
+            )
 
 
 def _cost(

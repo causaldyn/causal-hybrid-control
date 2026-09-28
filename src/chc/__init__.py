@@ -67,6 +67,7 @@ from chc.decision import (
     Constraint,
     DecisionCertificate,
     DecisionError,
+    Driver,
     IdentificationStatus,
     InterventionSchedule,
     Lever,
@@ -123,7 +124,13 @@ from chc.delay import (
 )
 from chc.did import GroupTimeATT, callaway_santanna, de_chaisemartin, twoway_fixed_effects_att
 from chc.discovery import LaggedGraph, TigramiteDiscovery, discover_lagged_parents
-from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
+from chc.dynamics import (
+    DampedOscillator,
+    DrivenDynamics,
+    Dynamics,
+    HybridDynamics,
+    LinearDynamics,
+)
 from chc.dynamics_id import (
     CausalDynamicsFit,
     ClosedLoopAttribution,
@@ -555,6 +562,8 @@ __all__ = [
     "DoWhyEstimator",
     "DoubleML",
     "DoublyRobustCurve",
+    "DrivenDynamics",
+    "Driver",
     "DynamicCausalCurve",
     "DynamicConfoundingCurve",
     "Dynamics",

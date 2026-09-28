@@ -35,6 +35,34 @@ still change).
   target, since they re-plan with one cost and the window would not move with the loop. The
   design record is `docs/adr/0006-a-target-per-step.md`.
 
+- **Exogenous drivers: a push the plan cannot move but can see coming.** The second of the three
+  things the BOPTEST case study found the façade could not state, and with it all three are
+  stated. `chc.dynamics.DrivenDynamics` adds `G w(t)` to any dynamics, with `w` moving linearly
+  between forecast levels at `k * dt`. `fit_causal_residual(..., drivers=...)` fits the gain
+  jointly with the drift. It reads each driver at both ends of a transition (`name`,
+  `f"{name}_next"`) and puts both ends into the channel's nuisance covariates.
+  `prescribe(..., drivers=[Driver(name, forecast)])` plans against a forecast of `horizon + 1`
+  levels. On zones heated against the weather (`tests/test_drivers.py`):
+  - without the driver the fitted decay came back between -0.18 and -0.005 against a true -0.5;
+    with it the gain, the decay and the channel land within 0.012, 0.014 and 0.010 of the truth
+    over eight seeds;
+  - the schedule `prescribe` makes with the forecast costs 1.0001-1.0036x the oracle's on the true
+    plant, and the one made without it 1.69-1.98x;
+  - on the true plant the plan agrees with a hand-written QP to 0.001, and the same forecast read
+    one step late misses it by 0.27.
+
+  The forecast moves the drift and never the channel, so `gamma*` is priced with it in place.
+  Neither the forecast's error nor the gain's standard error enters the tube. A forecast outside
+  the logged range is logged as extrapolation (`chc_event="driver_range"`). The design record is
+  `docs/adr/0007-exogenous-drivers.md`.
+
+### Changed
+
+- **`Target.value` and `Driver.forecast` are typed `ArrayLike`.** They were `float |
+  Sequence[float]` and `Sequence[float]`, so a numpy schedule or forecast, which both always
+  accepted, type-checked only by coincidence. Nothing is converted. A `Target` or a `Driver` that
+  holds an array still cannot be compared with `==` or hashed.
+
 ### Fixed
 
 - **`mpc_control` stepped its plant at `t = 0`, and every window's plan started its clock at 0.**
@@ -56,6 +84,58 @@ still change).
   0.80. Every dynamics the library ships ignores `t`, so none of its numbers move; a plant of the
   caller's own that reads `t` gets the gradient of its own objective now. Each of the four sites
   is pinned by a test that fails when it is put back at `t = 0`.
+
+- **The `rk4` fit stopped short of the fixed point that defines it, and its standard errors were
+  not that fixed point's.** Present since `integrator="rk4"` shipped in 0.5.0:
+  - **The fixed point.** The fit was iterated -- add what an RK4 step leaves of `x_next` to the
+    target, refit -- and a state stopped once a pass cut its defect's RMS by less than 1%. That is
+    not where the fixed point is. A bias `b` under a noise floor `f` moves the RMS by only
+    `b^2/(2 f^2)`, and a pass contracts the drift only by `1 - (1 + z + z^2/2 + z^3/6)`, 0.51 at
+    `z = -0.7` and 0.77 at `-1.2`. On a log at `|A| dt = 0.05` whose action moves the state little,
+    the first pass was refused on eight seeds of eight, and `"rk4"` returned the Euler fit to the
+    digit: a channel of 0.780 against a true 0.800. Run on until the RMS stopped falling at all, it
+    still stopped 0.9 standard errors of the channel and 1.4 of the decay short at
+    `theta * dt = 0.7`, `N = 1000` (120 seeds), and 0.09 of the decay short at 1.25 on a log solved
+    exactly. The fit is now the solution of `theta = G y(theta)` -- the estimator `G` handed the
+    rate `theta` reads off the log, its own fitted rate plus what its RK4 step leaves over -- found
+    by Newton's method from the Euler fit in three to six steps from `|A| dt = 0.05` to 1.2. Over
+    400 seeds at 0.7 no coefficient is off by more than 0.05 standard errors.
+  - **A log with no fixed point.** RK4's growth factor bottoms out at 0.2704, at `z = -1.596`, so
+    a log that falls by more than that in one step -- an exact linear mode past `|A| dt = 1.308` --
+    has no field that RK4 steps onto it. The fit returned whatever the iteration held: a decay of
+    -1.57 at `|A| dt = 1.5`, with the defect at five times the noise. It now raises `ValueError`.
+  - **The standard errors.** They were read off the corrected target, which carries the noise once
+    more per pass: at `theta * dt = 0.7`, `channel_error` was 0.0032 against a spread of 0.00053
+    over ten seeds. They are now the fixed point's own, `K^-1 G S G^T K^-T`: the noise `S` the
+    Euler sandwich reads, carried through the fit `G` and through the RK4 map's gain on the
+    estimate, `K = I - G dy/dtheta`, the matrix Newton steps with. Over 200 noise draws on one log
+    the channel scattered 1.03x what `channel_error` says; on 100 draws on the marketing-mix rows,
+    whose sales row leaves out a seasonal push, 0.96x. The channel reads its noise after the
+    adjustment set has taken out what it explains, as the Euler sandwich does: the whole defect
+    carries that push, and read off it the error would be 12x the spread. `drift_error` stays
+    conditional on the channel and keeps the push, as under Euler, so on those rows it is 3.4x the
+    drift's scatter over noise draws. On a log the model class fits, the RK4 map couples the drift
+    to the channel it is conditional on, and the drift scattered 1.26x it at `theta * dt = 0.7`
+    over 400 seeds (1.02x under Euler): a scale, as documented, now with its numbers.
+
+  Every `rk4` fit moves, and `prescribe` fits with `rk4` by default. The marketing-mix case study
+  over four seeds:
+  - the prescribed schedule's lift over an equal split moved from 4.4 / 4.3 / 7.4 / 8.0% to
+    4.5 / 3.2 / 7.7 / 7.9%;
+  - the confounded arm keeps 0.87 / 0.78 / 0.81 / 0.78 of the adjusted arm's lift;
+  - `channel_error` goes from 0.061 to 0.029 and `drift_error` from 0.109 to 0.097. They feed the
+    tube and the identification radius, and the certificate stays at 12 of 12 steps on every seed;
+  - the README row now reads +4.5%, channels inflated 2.3-8.1x, 15% under-invested and 87% of the
+    lift. It had quoted +4.3%, which was already stale.
+
+  Two claims did not survive. `tests/test_mmm.py` asserted that the adjusted arm recovers the true
+  social:search return ratio, 0.4 +- 0.1. The sales row there carries a saturating carryover and a
+  seasonal push the model class leaves out, so the ratio moves with how far the fit gets: 0.43 read
+  as Euler, 0.33 after the one pass the old rule allowed, 0.20 at the fixed point. Over four seeds
+  it spans 0.20-0.58. The test now asserts what holds on every seed: the confounded arm reads it at
+  least 0.2 higher. The same file put the 0.025 left on one known adstock row down to the model
+  class. It was the noise: with the noise taken out, the fixed point sits at zero on every known
+  row to 1e-6, and over noise draws that coefficient scatters by 0.041.
 
 ## [0.6.0] — 2026-09-27
 

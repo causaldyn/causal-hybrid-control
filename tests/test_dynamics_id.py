@@ -437,14 +437,35 @@ def _rk4_amplification(z: float) -> float:
     return 1.0 + z + z**2 / 2 + z**3 / 6 + z**4 / 24
 
 
-def _rk4_generated_log(theta: float, n: int = 4000, dt: float = 1.0, seed: int = 0):
-    """One-step pairs from ``x' = -theta x + 0.8 u``, integrated the way the planner integrates."""
+def _rk4_generated_log(
+    theta: float,
+    n: int = 4000,
+    dt: float = 1.0,
+    seed: int = 0,
+    spread: float = 1.0,
+    noise_seed: int | None = None,
+):
+    """One-step pairs from ``x' = -theta x + 0.8 u``, integrated the way the planner integrates.
+
+    ``noise_seed`` redraws only the observation noise, on the rows ``seed`` drew."""
+    kx, kz, ku, kn = jax.random.split(jax.random.PRNGKey(seed), 4)
+    x = jax.random.normal(kx, (n, 1))
+    z = jax.random.normal(kz, (n, 1))
+    u = spread * (0.9 * z + 0.4 * jax.random.normal(ku, (n, 1)))
+    truth = LinearDynamics(jnp.array([[-theta]]), jnp.array([[0.8]]))
+    x_next = jax.vmap(lambda xi, ui: rk4_step(truth, 0.0, xi, ui, dt))(x, u)
+    kn = kn if noise_seed is None else jax.random.PRNGKey(noise_seed)
+    return {"x": x, "u": u, "z": z, "x_next": x_next + 0.01 * jax.random.normal(kn, (n, 1))}
+
+
+def _exact_log(theta: float, n: int = 2000, dt: float = 1.0, seed: int = 0):
+    """The same plant's log with each step solved exactly, the action held, instead of by RK4."""
     kx, kz, ku, kn = jax.random.split(jax.random.PRNGKey(seed), 4)
     x = jax.random.normal(kx, (n, 1))
     z = jax.random.normal(kz, (n, 1))
     u = 0.9 * z + 0.4 * jax.random.normal(ku, (n, 1))
-    truth = LinearDynamics(jnp.array([[-theta]]), jnp.array([[0.8]]))
-    x_next = jax.vmap(lambda xi, ui: rk4_step(truth, 0.0, xi, ui, dt))(x, u)
+    factor = float(np.exp(-theta * dt))
+    x_next = factor * x + 0.8 * u * (1.0 - factor) / theta
     return {"x": x, "u": u, "z": z, "x_next": x_next + 0.01 * jax.random.normal(kn, (n, 1))}
 
 
@@ -497,3 +518,93 @@ def test_the_defect_lands_at_the_noise_floor_under_whichever_integrator_was_aske
         fit = fit_causal_residual(base, data, dt, adjust_for=("z",), seed=0, integrator=integrator)
         assert fit.integrator_defect is not None
         assert fit.integrator_defect == pytest.approx(0.01, abs=0.003)
+
+
+def test_the_correction_runs_when_the_gap_it_closes_hides_under_the_noise() -> None:
+    """At ``theta*dt = 0.05`` with an action that moves the state little, the Euler gap raises the
+    defect's RMS by well under 1%. A 1% bar refused the first correction on eight seeds of eight:
+    ``"rk4"`` handed back the Euler fit, digit for digit, and reported the noise floor as its
+    defect. The gap is 2.5% of the channel, three standard errors of it on this log.
+
+    Paired on one log, so the noise both fits share cancels: the Euler arm lands on the closed-form
+    Euler reading and the ``rk4`` arm sits the whole gap above it.
+    """
+    dt, theta = 0.1, 0.5
+    z = -theta * dt
+    base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    data = _rk4_generated_log(theta, n=20_000, dt=dt, spread=0.3)
+    euler = fit_causal_residual(base, data, dt, adjust_for=("z",), seed=0)
+    rk4 = fit_causal_residual(base, data, dt, adjust_for=("z",), seed=0, integrator="rk4")
+
+    def slope(fit: CausalDynamicsFit) -> float:
+        return float(np.asarray(fit.residual.drift)[0, 1])
+
+    def channel(fit: CausalDynamicsFit) -> float:
+        return float(np.asarray(fit.residual.channel)[0, 0, 0])
+
+    assert slope(euler) == pytest.approx((_rk4_amplification(z) - 1.0) / dt, abs=0.003)
+    assert slope(rk4) == pytest.approx(-theta, abs=0.003)
+    euler_gap = 0.8 * (1.0 - (_rk4_amplification(z) - 1.0) / z)  # 0.0197
+    assert channel(rk4) - channel(euler) == pytest.approx(euler_gap, abs=0.003)
+
+
+def test_the_rk4_channel_error_carries_the_rk4_gain_the_spread_carries() -> None:
+    """Replicates of one log that differ only in their noise scatter the ``rk4`` channel 1.64x as
+    far as the Euler channel, and ``channel_error`` says 1.78x. That factor is the RK4 map's gain on
+    the estimate, which the fixed point's own error carries.
+
+    Read against the Euler fit on the same replicates, because the two share every noise draw:
+    sixteen replicates pin the ratio of their spreads to a few percent, where either spread alone
+    moves by a quarter (0.75 to 1.15 of its error over three sets of sixteen). Errors read off a
+    fit of the final defect equal the Euler fit's to three digits and fail the second assertion at
+    1.62; read off the corrected target, as up to 0.6.0, they were six times the spread.
+    """
+    dt, replicates = 1.0, 16
+    base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    spread, reported = {}, {}
+    for integrator in ("euler", "rk4"):
+        channels, errors = [], []
+        for replicate in range(replicates):
+            data = _rk4_generated_log(0.7, n=1000, dt=dt, noise_seed=replicate)
+            fit = fit_causal_residual(
+                base, data, dt, adjust_for=("z",), seed=0, integrator=integrator
+            )
+            assert fit.channel_error is not None
+            channels.append(np.asarray(fit.residual.channel).ravel())
+            errors.append(fit.channel_error)
+        spread[integrator] = float(np.sqrt(np.mean(np.var(np.array(channels), axis=0, ddof=1))))
+        reported[integrator] = float(np.mean(errors))
+
+    assert spread["rk4"] / reported["rk4"] == pytest.approx(1.0, abs=0.35)
+    gain = spread["rk4"] / spread["euler"]
+    assert gain / (reported["rk4"] / reported["euler"]) == pytest.approx(1.0, abs=0.15)
+
+
+def test_the_rk4_fit_reads_an_exact_log_as_rk4_does_and_refuses_one_rk4_cannot_read() -> None:
+    """On a log whose steps were solved exactly rather than by RK4, the ``rk4`` fit is the field
+    whose RK4 step reproduces it: the decay ``z*`` at which RK4's growth factor ``R`` equals
+    ``exp(-theta dt)``, and the channel ``0.8 z* / (-theta dt)``. Not the plant's own ``-theta``,
+    which RK4 steps to a different log.
+
+    ``R`` bottoms out at 0.2704, at ``z = -1.596``, so there is no such field once ``theta dt``
+    passes ``-log(0.2704) = 1.308``. Up to 0.6.0 the fit returned one anyway. It iterated until the
+    defect stopped falling and kept where it was: ``-1.279`` against this fixed point's ``-1.370``
+    at ``theta dt = 1.25``, and at 1.5 a decay of ``-1.57`` with the defect at five times the noise.
+    """
+    dt, theta = 1.0, 1.25
+    base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    fit = fit_causal_residual(
+        base, _exact_log(theta, dt=dt), dt, adjust_for=("z",), seed=0, integrator="rk4"
+    )
+    roots = np.roots([1 / 24, 1 / 6, 1 / 2, 1, 1 - np.exp(-theta * dt)])
+    z_star = max(root.real for root in roots if abs(root.imag) < 1e-9)  # the branch R falls on
+    assert float(np.asarray(fit.residual.drift)[0, 1]) == pytest.approx(z_star / dt, abs=0.005)
+    assert float(np.asarray(fit.residual.channel)[0, 0, 0]) == pytest.approx(
+        0.8 * z_star / (-theta * dt), abs=0.005
+    )
+    assert fit.integrator_defect == pytest.approx(0.01, abs=0.001)
+
+    with pytest.raises(ValueError, match="rk4 fixed point did not converge"):
+        fit_causal_residual(
+            base, _exact_log(1.5, dt=dt), dt, adjust_for=("z",), seed=0, integrator="rk4"
+        )
