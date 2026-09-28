@@ -18,8 +18,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   graph that does not identify the effect raises `NotIdentifiedError` instead of returning a
   schedule. See the [quickstart](quickstart.md) and [identification](concepts/identification.md).
 - **`fit_causal_residual`.** It fits the lever's channel in a hybrid model by cross-fitted
-  orthogonalisation, or through an instrument when the confounder is latent. See
-  [`chc.dynamics_id`](api/dynamics_id.md).
+  orthogonalisation, or through an instrument when the confounder is latent. When the channel
+  class cannot fit every state, `weights` points it at the states a one-shot decision will be taken
+  at. See [`chc.dynamics_id`](api/dynamics_id.md).
 - **Static effects.** `estimate_effect_dml`, `sensitivity_analysis`, `refute_effect` and
   `e_value`. See [tutorial 3](tutorials/03_causal_inference_toolkit.md), and
   [tutorial 7](tutorials/07_real_data_lalonde.md) against an experimental benchmark.

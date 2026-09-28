@@ -38,7 +38,7 @@ HONEST SCOPE, three limits worth stating before the code:
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -134,7 +134,7 @@ class CausalDynamicsFit:
     # first-stage R^2 of 0.18. A test pins the calibration band; do not read it as exact. Under
     # ``rk4`` it is the fixed point's own, the same noise carried through the RK4 map's gain on the
     # estimate: 1.78x the Euler fit's at ``theta*dt = 0.7``, where 200 noise draws on one log
-    # scattered the channel 1.03x it.
+    # scattered the channel 1.03x it. A weighted fit's is robust instead (see ``weights``).
     channel_error: float | None
     # Root-mean diagonal of the drift stage's own homoskedastic OLS covariance, or None when the
     # channel is not identified (the drift is then conditional on a meaningless channel). It is a
@@ -163,6 +163,9 @@ class CausalDynamicsFit:
     # (n, d): each driver's push on each state's rate, fitted jointly with the drift; None without
     # drivers. :class:`chc.dynamics.DrivenDynamics` replays it against a forecast.
     driver_gain: Array | None = None
+    weighted: bool = False  # whether a weight on the state weighed the channel moment
+    # Kish's (sum w)^2 / sum w^2: how many equally weighted transitions the moment is worth
+    effective_sample_size: float | None = None
 
 
 def _r_squared(target: Array, prediction: Array) -> float:
@@ -255,6 +258,7 @@ def _channel_coefficients(
     regressor: Array,
     instrument: Array,
     ridge: float,
+    weights: Array | None = None,
 ) -> Array:
     """Solve the just-identified moment ``Z'(y_res - D c) = 0`` for ``c``, ridge-stabilised.
 
@@ -263,6 +267,8 @@ def _channel_coefficients(
     a scalar action with no state features, because the in-sample identity ``Z'u = Z'Z`` does not
     survive multiplication by ``phi(x)``.
     """
+    if weights is not None:
+        instrument = instrument * weights[:, None]
     gram = instrument.T @ regressor + ridge * jnp.eye(regressor.shape[1])
     return jnp.linalg.solve(gram, instrument.T @ state_residual)
 
@@ -289,6 +295,38 @@ def _sandwich_error(
     return float(jnp.sqrt(jnp.mean(jnp.diag(covariance))))
 
 
+def _robust_spread(sensitivity: Array, score: Array, n_coeff: int) -> Array:
+    """``sum_i J_i diag(e_i^2) J_i'`` for a fit linear in its target ``y``, ``J = d coeffs / d y``.
+
+    Each row's own squared residual stands in for its noise, so it holds when the noise differs
+    across rows, and ``J`` runs through the cross-fitted nuisances as well as the moment. A weight
+    that loads a few rows loads the nuisance fits' error at them too, which a sandwich on the moment
+    alone misses: on a log whose noise grew as ``exp(x)``, weighed by ``exp(-x)``, that sandwich
+    came to 0.67 of the channel's spread over sixteen redraws of the noise, and this to 1.04.
+    """
+    n = score.shape[0]
+    scale = n / max(n - n_coeff, 1)
+    return jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity)
+
+
+def _state_weights(weights: Callable[[Array], Array], states: Array) -> Array:
+    """The caller's weight at each state, checked and scaled to mean 1, so ``ridge`` keeps its
+    meaning whatever the weight's units."""
+    if not callable(weights):
+        raise TypeError(f"weights must be a function of the state, or None; got {weights!r}")
+    values = jnp.asarray(weights(states), dtype=states.dtype)
+    if values.shape != (states.shape[0],):
+        raise ValueError(
+            f"the weight must give one value per transition, shape ({states.shape[0]},), from the "
+            f"states alone; got shape {values.shape}"
+        )
+    if not bool(jnp.all(jnp.isfinite(values))) or bool(jnp.any(values < 0.0)):
+        raise ValueError("the weight must be finite and non-negative at every state")
+    if float(jnp.sum(values)) <= 0.0:
+        raise ValueError("the weight is zero at every state")
+    return values / jnp.mean(values)
+
+
 def _ols_error(target: Array, design: Array, coeffs: Array, ridge: float) -> float:
     """Root-mean diagonal of ``sigma^2 (X'X)^-1`` -- the plain homoskedastic OLS covariance.
 
@@ -312,6 +350,7 @@ def solve_channel_moment(
     instrument_action: Array | None = None,
     degree: int = 1,
     ridge: float = 1e-6,
+    weights: Array | None = None,
 ) -> Array:
     """Solve ``E[(y_res - B_θ(x) u_res) (x) (z (x) phi(x))] = 0`` for the channel.
 
@@ -332,6 +371,9 @@ def solve_channel_moment(
             which is the orthogonal (adjusted) case.
         degree: monomial degree of ``B_θ``'s dependence on the state.
         ridge: Tikhonov term on the moment's Gram matrix.
+        weights: one weight per transition, shape ``(N,)``, on its moment; ``None`` weighs all
+            alike. A weight that is a function of the state alone keeps the moment orthogonal (see
+            :func:`fit_causal_residual`).
 
     Returns:
         The channel coefficients, shape ``(n, m, n_features)``, consumable directly as
@@ -343,7 +385,7 @@ def solve_channel_moment(
         if instrument_action is None
         else _channel_design(instrument_action, states, degree)
     )
-    coeffs = _channel_coefficients(state_residual, regressor, moment, ridge)
+    coeffs = _channel_coefficients(state_residual, regressor, moment, ridge, weights)
     n_features = regressor.shape[1] // action_residual.shape[1]
     return coeffs.T.reshape(state_residual.shape[1], action_residual.shape[1], n_features)
 
@@ -362,6 +404,7 @@ def fit_causal_residual(
     seed: int = 0,
     integrator: Integrator = "euler",
     drivers: tuple[str, ...] = (),
+    weights: Callable[[Array], Array] | None = None,
 ) -> CausalDynamicsFit:
     """Fit a :class:`ControlAffineResidual` whose channel is the *interventional* control response.
 
@@ -417,7 +460,11 @@ def fit_causal_residual(
             A log that falls by more in one step than RK4 can follow has no ``rk4`` reading at all.
             RK4's growth factor bottoms out at 0.2704, at ``z = -1.596``, and an exact linear mode
             falls below that past ``|A|dt = 1.308``. The fit raises there rather than return a field
-            that is neither reading. ``integrator_defect`` floors at the noise under both.
+            that is neither reading. A channel that reads the state can run out sooner: on the plant
+            in :mod:`chc.mmm` with its fastest channel decaying at ``theta*dt = 1.2``, one seed in
+            eight stalls in that channel's dependence on its own adstock, at a gap a damped Newton
+            cannot close either, at both precisions. ``integrator_defect`` floors at the noise under
+            both.
 
             The default stays ``"euler"`` so no shipped fit changes meaning.
             :func:`chc.decision.prescribe` defaults the other way, because it *knows* the field goes
@@ -437,6 +484,32 @@ def fit_causal_residual(
             driver, since a column nothing downstream of the action moves can be neither a mediator
             nor a collider of its effect. The fitted gain is :attr:`CausalDynamicsFit.driver_gain`;
             its standard error is inside ``drift_error``.
+        weights: a weight on each transition's channel moment, a function of its state alone. A
+            callable is called with ``x (N, n)`` and nothing else, since a weight that reads the
+            action or the next state biases the channel at first order, while any weight on the
+            state keeps the moment orthogonal. The weights are scaled to mean 1. The channel's
+            standard error is then robust: each row's squared residual carried through the moment
+            and the cross-fitted nuisances alike, since a weight that loads a few rows loads the
+            nuisances' error at them too. ``effective_sample_size`` says how few.
+
+            Under a channel class that contains the truth every weight estimates the same channel,
+            and only the variance moves. The inverse of the rate's noise variance is the efficient
+            weight in the limit, but it loads the states where the noise is small, which can be
+            where the nuisances extrapolate: on a log whose rate noise ran ``exp(-x/2)`` against
+            the action's ``exp(x/2)``, the channel scattered 0.87 as far as the unweighted fit's at
+            ``N = 64000``, its limit, and 1.15 as far at ``N = 4000``.
+
+            Under a class that misses the truth, each weight estimates a different channel: the
+            projection of the true one under ``w s^2`` times the log's law of states, where
+            ``s^2(x)`` is the variance the adjustment set leaves in the action at ``x``. The weight
+            then chooses where the fit is right. For a one-shot decision on a scalar action, made
+            at states drawn from ``Q`` with regret curvature ``kappa(x)`` in the channel,
+            ``w = kappa (dQ/dP) / s^2`` makes the fit the best of its class for that decision. A
+            weight that has to be estimated first -- ``s^2``, or the inverse noise -- carries its
+            own error into the channel at first order there, since the estimand moves with the
+            weight. No weight on the state alone serves a dynamic plan, which reads the channel's
+            slope along its path as well as its level: there the costate weight left 36 to 178
+            times the regret of the best fit in the class.
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
@@ -473,6 +546,8 @@ def fit_causal_residual(
     phi_x = jax.vmap(control_affine_features, in_axes=(0, None))(x, degree)
     design = jnp.concatenate([phi_x, driver_read], axis=1)
 
+    row_weight = None if weights is None else _state_weights(weights, x)
+
     def solve(y: Array) -> tuple[Array, Array, tuple[Array, Array, Array, Array, Array]]:
         """The channel and the drift regression's coefficients a target ``y`` fits to, with the
         residualisation behind them. Linear in ``y``, which the ``rk4`` fixed point relies on."""
@@ -480,7 +555,13 @@ def fit_causal_residual(
             y, u, covariates, degree=nuisance_degree, folds=folds, ridge=ridge, seed=seed
         )
         channel = solve_channel_moment(
-            y_res, u_res, x, instrument_action=instrument_action, degree=degree, ridge=ridge
+            y_res,
+            u_res,
+            x,
+            instrument_action=instrument_action,
+            degree=degree,
+            ridge=ridge,
+            weights=row_weight,
         )
         fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_x, u)
         remainder = _solve_ridge(design, y - fitted, ridge)  # (features + drivers, n)
@@ -501,22 +582,29 @@ def fit_causal_residual(
         gain = remainder[phi_x.shape[1] :].T
 
         score = y_res - regressor @ coeffs
+        channel_error = None
+        if identified and row_weight is None:
+            channel_error = _sandwich_error(y_res, regressor, moment, coeffs, ridge)
+        # a weighted fit's comes from its own sensitivity, which only the caller knows how to take
+        weighted_moment = moment if row_weight is None else moment * row_weight[:, None]
         return CausalDynamicsFit(
             residual=ControlAffineResidual(drift=drift, channel=channel, degree=degree),
             identified=identified,
             method=method,
             folds=folds,
-            channel_error=_sandwich_error(y_res, regressor, moment, coeffs, ridge)
-            if identified
-            else None,
+            channel_error=channel_error,
             drift_error=_ols_error(y - fitted, design, remainder, ridge) if identified else None,
             action_residual_variance=float(jnp.mean(u_res**2)),
             nuisance_r2_state=_r_squared(y, y_hat),
             nuisance_r2_action=_r_squared(u, u_hat),
-            moment_norm=float(jnp.linalg.norm(moment.T @ score / moment.shape[0])),
+            moment_norm=float(jnp.linalg.norm(weighted_moment.T @ score / moment.shape[0])),
             integrator=integrator,
             drivers=tuple(drivers),
             driver_gain=gain if drivers else None,
+            weighted=row_weight is not None,
+            effective_sample_size=float(x.shape[0])
+            if row_weight is None
+            else float(jnp.sum(row_weight) ** 2 / jnp.sum(row_weight**2)),
         )
 
     def predicted(residual: ControlAffineResidual, gain: Array) -> Array:
@@ -604,9 +692,12 @@ def fit_causal_residual(
         channel, _, (y_res, u_res, *_) = solve(target)
         regressor = _channel_design(u_res, x, degree)
         score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
-        structural = jnp.sum(score**2, axis=0) / max(x.shape[0] - regressor.shape[1], 1)
         newton, sensitivity = newton_matrix(theta)
-        spread = jnp.einsum("pis,s,qis->pq", fit_map, structural, fit_map)
+        if row_weight is None:
+            structural = jnp.sum(score**2, axis=0) / max(x.shape[0] - regressor.shape[1], 1)
+            spread = jnp.einsum("pis,s,qis->pq", fit_map, structural, fit_map)
+        else:
+            spread = _robust_spread(fit_map, score, regressor.shape[1])
         covariance = jnp.linalg.solve(newton, jnp.linalg.solve(newton, spread).T)
         # The drift keeps the defect, which is its own regression's residual, as under Euler.
         noise = jnp.sum(defect(fit) ** 2, axis=0) / max(x.shape[0] - design.shape[1], 1)
@@ -627,6 +718,14 @@ def fit_causal_residual(
     fit = fit_to((x_next - x) / dt)
     if integrator == "rk4":
         fit = rk4_fixed_point(fit)
+    elif identified and row_weight is not None:
+        y = (x_next - x) / dt - known_rate
+        channel, _, (y_res, u_res, *_) = solve(y)
+        regressor = _channel_design(u_res, x, degree)
+        score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
+        sensitivity = jax.jacrev(lambda target: solve(target)[0].ravel())(jnp.zeros_like(y))
+        spread = _robust_spread(sensitivity, score, regressor.shape[1])
+        fit = dataclasses.replace(fit, channel_error=float(jnp.sqrt(jnp.mean(jnp.diag(spread)))))
     return dataclasses.replace(fit, integrator_defect=float(jnp.sqrt(jnp.mean(defect(fit) ** 2))))
 
 

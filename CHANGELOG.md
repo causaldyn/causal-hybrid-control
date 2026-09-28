@@ -161,6 +161,46 @@ still change).
     marketplace model, and a bias-corrected `a_hat`. The design record is
     `docs/adr/0012-a-switchback-for-a-named-effect.md`.
 
+- **`fit_causal_residual(..., weights=...)`: a weight on each transition's channel moment, so a
+  channel class that cannot fit every state is fitted where the decision needs it.** `weights` is
+  a function of the states alone: it is called with `x` and nothing else, and returns one
+  non-negative weight per transition. The nuisances and the drift stay unweighted.
+  `solve_channel_moment` takes the same weight per row, and the fit reports `weighted` and Kish's
+  `effective_sample_size`.
+  - **A weight on the state keeps the moment orthogonal; one that reads the action does not.** On
+    exact nuisances perturbed along the covariates, the channel's error goes as the square of the
+    perturbation under a state weight and linearly under `exp(u/2)` (slopes 2.19 and
+    0.87). A callable that never sees the action makes that structural.
+  - **Under a class that misses the truth, the weight chooses the estimand**: the linear fit to the
+    true channel under `w s^2` times the log's law of states, `s^2(x)` the variance the adjustment
+    set leaves in the action. For a one-shot decision at states drawn from `Q`, with regret
+    curvature `kappa` in the channel, `w = kappa (dQ/dP) / s^2` makes the fit the best of its class
+    for that decision. On a quadratic channel fitted by a line, four weights landed on their four
+    closed-form lines. The decision weight's regret was 1.00 of the class's floor, and the
+    unweighted fit's 9.7 times it; with nuisances outside the polynomial sieve, 1.00 and
+    7.9 times. Over 100 logs of 4000 rows, the excess over the floor came to 1.16 of
+    the prediction from the weight's variance, `tr(G V) / 2n`.
+  - **A weighted fit's standard error is robust and carries the nuisances.** Each row's squared
+    residual goes through the fit's own linear map, the cross-fitted nuisances included, since a
+    weight that loads a few rows loads the nuisances' error at them too. On a log whose noise grew
+    as `exp(x)`, over redraws of the noise:
+    - weighed by `exp(-x)`, a sandwich on the moment alone came to 0.67 of the spread, and this to
+      1.04 (1.02 under `rk4`);
+    - weighed by `exp(x)`, this came to 0.93 and 0.85, where an error pooling the noise over the
+      rows came to 0.16.
+
+    Over fresh logs of a missed class the decision weight's error came to 0.96 of its spread.
+    The unweighted fit's homoskedastic error is unchanged; on those logs it came to 0.40 of its
+    spread.
+  - **When the class contains the truth,** every weight reads the same channel and only the
+    variance moves. The inverse noise, `exp(x/2)` here, is efficient in the limit, at 0.873 of the
+    unweighted fit's error. It scattered the channel 0.87 times as far at 64 000 rows, and 1.15
+    times as far at 4000, because it loads the tail where the nuisances extrapolate.
+  - **Not built.** A weight the library estimates, whether `dQ/dP`, `s^2` or the inverse noise:
+    under a missed class its error moves the channel at first order. A weight for a dynamic plan,
+    where a weight on the state left 36–178 times the best fit's regret. `prescribe` is unchanged.
+    The design record is `docs/adr/0013-a-weight-on-the-channel-moment.md`.
+
 ## [0.7.0] — 2026-09-28
 
 ### Added

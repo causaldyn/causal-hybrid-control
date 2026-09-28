@@ -5,6 +5,7 @@ actually confounded, so each recovery test also pins down what the *un*-adjusted
 same rows.
 """
 
+import functools
 import itertools
 
 import jax
@@ -444,10 +445,12 @@ def _rk4_generated_log(
     seed: int = 0,
     spread: float = 1.0,
     noise_seed: int | None = None,
+    noise_growth: float = 0.0,
 ):
     """One-step pairs from ``x' = -theta x + 0.8 u``, integrated the way the planner integrates.
 
-    ``noise_seed`` redraws only the observation noise, on the rows ``seed`` drew."""
+    ``noise_seed`` redraws only the observation noise, on the rows ``seed`` drew; its scale grows
+    as ``exp(noise_growth x)``."""
     kx, kz, ku, kn = jax.random.split(jax.random.PRNGKey(seed), 4)
     x = jax.random.normal(kx, (n, 1))
     z = jax.random.normal(kz, (n, 1))
@@ -455,7 +458,8 @@ def _rk4_generated_log(
     truth = LinearDynamics(jnp.array([[-theta]]), jnp.array([[0.8]]))
     x_next = jax.vmap(lambda xi, ui: rk4_step(truth, 0.0, xi, ui, dt))(x, u)
     kn = kn if noise_seed is None else jax.random.PRNGKey(noise_seed)
-    return {"x": x, "u": u, "z": z, "x_next": x_next + 0.01 * jax.random.normal(kn, (n, 1))}
+    noise = 0.01 * jnp.exp(noise_growth * x) * jax.random.normal(kn, (n, 1))
+    return {"x": x, "u": u, "z": z, "x_next": x_next + noise}
 
 
 def _exact_log(theta: float, n: int = 2000, dt: float = 1.0, seed: int = 0):
@@ -608,3 +612,343 @@ def test_the_rk4_fit_reads_an_exact_log_as_rk4_does_and_refuses_one_rk4_cannot_r
         fit_causal_residual(
             base, _exact_log(1.5, dt=dt), dt, adjust_for=("z",), seed=0, integrator="rk4"
         )
+
+
+# ---- ID1: which transitions the channel moment weighs ----
+
+DECISION_MEAN, DECISION_VARIANCE = -0.5, 0.25  # Q, the law of the states the decision is taken at
+
+
+def _decision_log(
+    n: int, curvature: float, seed: int, noise: float = 1.0, nuisances: str = "polynomial"
+) -> dict[str, jax.Array]:
+    """A scalar state whose channel ``1 + x/2 + curvature x^2`` the linear class misses unless the
+    curvature is zero. The confounder ``z`` leaves the action a variance ``exp(x/2)`` and the rate
+    a noise of variance ``exp(-x/2)``, so each weight reads its own channel off the same rows.
+    ``"trigonometric"`` nuisances lie outside the fits' polynomial sieve."""
+    kx, kz, kv, ke = jax.random.split(jax.random.key(seed), 4)
+    x = jax.random.normal(kx, (n, 1))
+    z = jax.random.normal(kz, (n, 1))
+    if nuisances == "polynomial":
+        action, drift = 0.5 * x + 0.1 * x**2, 1.0 + 0.5 * x - 0.2 * x**2
+    else:
+        action, drift = 0.5 * x + 0.3 * jnp.sin(2.0 * x), jnp.cos(x) + 0.5 * x
+    u = action + 0.8 * z + jnp.exp(0.25 * x) * jax.random.normal(kv, (n, 1))
+    rate = (1.0 + 0.5 * x + curvature * x**2) * u + drift + z
+    rate = rate + noise * jnp.exp(-0.25 * x) * jax.random.normal(ke, (n, 1))
+    return {"x": x, "z": z, "u": u, "x_next": x + rate}
+
+
+def _decision_weight(states: jax.Array) -> jax.Array:
+    """``kappa (dQ/dP) / s^2`` at ``kappa = 1``: the log's states are standard normal, and the
+    action's leftover variance is ``exp(x/2)``."""
+    x = states[:, 0]
+    log_ratio = -((x - DECISION_MEAN) ** 2) / (2 * DECISION_VARIANCE) + x**2 / 2
+    return jnp.exp(log_ratio - 0.5 * x) / jnp.sqrt(DECISION_VARIANCE)
+
+
+def _tilted_channel(tilt: float, curvature: float) -> np.ndarray:
+    """The linear fit to ``1 + x/2 + curvature x^2`` under ``N(tilt, 1)``, which is what a weight
+    ``w`` with ``w s^2`` proportional to ``exp(tilt x)`` turns the log's standard normal into."""
+    return np.array([1.0 + curvature * (1.0 - tilt**2), 0.5 + 2.0 * curvature * tilt])
+
+
+def _decision_regret(channel: np.ndarray, curvature: float) -> float:
+    """``E_Q[(b - c0 - c1 x)^2] / 2``: acting on the fitted channel ``c`` at states drawn from Q,
+    each paid ``b(x) u - u^2 / 2``. From Q's moments, independently of the fit."""
+    c0, c1, c2 = 1.0 - channel[0], 0.5 - channel[1], curvature
+    mu, var = DECISION_MEAN, DECISION_VARIANCE
+    m1, m2, m3 = mu, mu**2 + var, mu**3 + 3 * mu * var
+    m4 = mu**4 + 6 * mu**2 * var + 3 * var**2
+    square = c0**2 + 2 * c0 * c1 * m1 + (c1**2 + 2 * c0 * c2) * m2 + 2 * c1 * c2 * m3 + c2**2 * m4
+    return 0.5 * square
+
+
+def _decision_variance(curvature: float) -> tuple[np.ndarray, np.ndarray]:
+    """``G = E_Q[phi phi']`` and ``n Cov`` of the decision-weighted line, ``G^-1 E[psi psi'] G^-1``,
+    by Gauss-Hermite under Q. The score is ``w phi u_res (r u_res + eps)``, with ``r`` the line's
+    miss under Q, so ``E[psi psi'] = E_Q[(q/p) phi phi' (3 r^2 + var(eps)/s^2)]``."""
+    nodes, masses = np.polynomial.hermite.hermgauss(80)
+    x = DECISION_MEAN + np.sqrt(2.0 * DECISION_VARIANCE) * nodes
+    under_q = masses / np.sqrt(np.pi)
+    density_ratio = np.exp(-((x - DECISION_MEAN) ** 2) / (2 * DECISION_VARIANCE) + x**2 / 2)
+    density_ratio /= np.sqrt(DECISION_VARIANCE)
+    miss = curvature * ((x - DECISION_MEAN) ** 2 - DECISION_VARIANCE)
+    features = np.stack([np.ones_like(x), x])
+    gram = (under_q * features) @ features.T
+    meat = (under_q * density_ratio * (3.0 * miss**2 + np.exp(-x)) * features) @ features.T
+    return gram, np.linalg.solve(gram, np.linalg.solve(gram, meat).T)
+
+
+@functools.cache
+def _replicated_decision_fits() -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """A hundred fresh logs of 4000 rows from a class that misses the truth, fitted under the
+    decision weight, and the first forty under ones as well: the lines, and the errors the fits
+    reported. A regret is a quadratic form in the line's error, so its mean over forty logs moves
+    by a fifth; the hundred are for that."""
+    weights = {"ones": lambda states: jnp.ones(states.shape[0]), "decision": _decision_weight}
+    lines: dict[str, list[np.ndarray]] = {name: [] for name in weights}
+    errors: dict[str, list[float]] = {name: [] for name in weights}
+    for seed in range(100):
+        data = _decision_log(4000, 0.4, seed=100 + seed)
+        for name, weight in weights.items():
+            if name == "ones" and seed >= 40:
+                continue
+            fit = _decision_fit(data, weight)
+            assert fit.channel_error is not None
+            lines[name].append(_line(fit))
+            errors[name].append(fit.channel_error)
+    return {name: (np.array(lines[name]), np.array(errors[name])) for name in weights}
+
+
+def _decision_fit(data: dict[str, jax.Array], weights) -> CausalDynamicsFit:
+    return fit_causal_residual(
+        _known, data, 1.0, adjust_for=("z",), nuisance_degree=4, weights=weights
+    )
+
+
+def _line(fit: CausalDynamicsFit) -> np.ndarray:
+    """The fitted channel's intercept and slope in the scalar state."""
+    return np.asarray(fit.residual.channel)[0, 0]
+
+
+def test_a_weight_on_the_state_keeps_the_moment_orthogonal_and_one_on_the_action_does_not() -> None:
+    """Why the weight is a function of the state alone. On a state weight the channel's error is
+    second order in the nuisances' error; on a weight that reads the action it is first order,
+    because ``E[w u_res | x, z]`` is no longer zero."""
+    data = _decision_log(40_000, 0.0, seed=1, noise=1e-4)
+    x, z, u = data["x"], data["z"], data["u"]
+    y = data["x_next"] - x
+    action_nuisance = 0.5 * x + 0.1 * x**2 + 0.8 * z  # E[u | x, z], exactly
+    state_nuisance = (1.0 + 0.5 * x) * action_nuisance + 1.0 + 0.5 * x - 0.2 * x**2 + z
+    towards_state = x**2 - 1.0 + 0.7 * z
+    towards_action = x - 0.5 * x * z
+    towards_state /= jnp.std(towards_state)
+    towards_action /= jnp.std(towards_action)
+    eps = np.array([0.1, 0.05, 0.025, 0.0125])
+
+    def slope(weights: jax.Array) -> float:
+        errors = [
+            np.linalg.norm(
+                np.asarray(
+                    solve_channel_moment(
+                        y - state_nuisance - e * towards_state,
+                        u - action_nuisance - e * towards_action,
+                        x,
+                        weights=weights,
+                    )
+                )[0, 0]
+                - np.array([1.0, 0.5])
+            )
+            for e in eps
+        ]
+        return float(np.polyfit(np.log(eps), np.log(errors), 1)[0])
+
+    assert 1.75 < slope(_decision_weight(x)) < 2.25
+    assert 0.75 < slope(jnp.exp(0.5 * u[:, 0])) < 1.25
+
+
+def test_every_weight_reads_the_channel_when_the_class_contains_it() -> None:
+    """Only the variance moves. The inverse of the rate's noise, ``exp(x/2)``, is the efficient
+    weight, whose error is ``0.873`` of the unweighted fit's in the limit; here it reports 0.93,
+    and over 60 such logs the channel scattered 0.87 as far. Over 200 logs of 4000 rows it
+    scattered 1.15 as far: it loads the right tail, where the degree-4 nuisances extrapolate."""
+    data = _decision_log(64_000, 0.0, seed=2)
+    ones = _decision_fit(data, lambda states: jnp.ones(states.shape[0]))
+    inverse_noise = _decision_fit(data, lambda states: jnp.exp(0.5 * states[:, 0]))
+    for fit in (ones, inverse_noise, _decision_fit(data, _decision_weight)):
+        assert np.allclose(_line(fit), [1.0, 0.5], atol=0.03)
+
+    limit = np.sqrt((2.0 + 1.0) * np.exp(-0.5) / ((1.8125 + 1.25) * np.exp(-0.25)))
+    assert inverse_noise.channel_error is not None
+    assert ones.channel_error is not None
+    assert limit < inverse_noise.channel_error / ones.channel_error < 0.97
+
+
+def test_each_weight_reads_its_own_projection_when_the_class_misses_the_channel() -> None:
+    """Under a class that misses the truth the weight chooses the estimand: the linear fit to the
+    true channel under ``w s^2`` times the log's law of states. Checked on three tilts and on the
+    decision weight, whose target is the fit under Q, ``(1.0, 0.1)`` here -- four channels at
+    least 0.3 apart, read off the same rows."""
+    curvature = 0.4
+    data = _decision_log(64_000, curvature, seed=3)
+    targets = {
+        -0.5: _tilted_channel(-0.5, curvature),
+        0.5: _tilted_channel(0.5, curvature),  # the unweighted fit, (1.3, 0.9)
+        1.0: _tilted_channel(1.0, curvature),  # the inverse noise, (1.0, 1.3)
+    }
+    for tilt, target in targets.items():
+        fit = _decision_fit(data, lambda states, t=tilt: jnp.exp((t - 0.5) * states[:, 0]))
+        assert np.allclose(_line(fit), target, atol=0.05), (tilt, _line(fit), target)
+    unweighted = _decision_fit(data, None)
+    assert np.allclose(_line(unweighted), targets[0.5], atol=0.05)
+
+    decision = _decision_fit(data, _decision_weight)
+    q_fit = np.array(
+        [
+            1.0 + curvature * (DECISION_VARIANCE - DECISION_MEAN**2),
+            0.5 + 2.0 * curvature * DECISION_MEAN,
+        ]
+    )
+    assert np.allclose(_line(decision), q_fit, atol=0.05)
+    channels = [*targets.values(), q_fit]
+    assert min(np.linalg.norm(a - b) for a, b in itertools.combinations(channels, 2)) > 0.3
+
+
+@pytest.mark.parametrize("nuisances", ["polynomial", "trigonometric"])
+def test_the_decision_weight_takes_the_regret_to_the_floor_of_its_class(nuisances: str) -> None:
+    """The payoff: acting on the decision-weighted fit costs what the best line costs, the
+    curvature's share ``curvature^2 var_Q^2 = 0.01`` that no line removes, and the unweighted fit
+    costs nine times that. The regret is computed from Q's moments, not from the fit. Nuisances
+    outside the fits' polynomial sieve leave the decision weight at the floor, since its moment
+    stays orthogonal to their error and it reads the states where the sieve is good; the
+    unweighted fit, which reads the tails, moved to 7.9 times it."""
+    curvature = 0.4
+    data = _decision_log(64_000, curvature, seed=4, nuisances=nuisances)
+    floor = curvature**2 * DECISION_VARIANCE**2
+    decision = _decision_regret(_line(_decision_fit(data, _decision_weight)), curvature)
+    unweighted = _decision_regret(_line(_decision_fit(data, None)), curvature)
+
+    assert decision == pytest.approx(floor, rel=0.05)
+    assert unweighted > 6.0 * decision  # 9.9 and 7.9 times
+
+
+def test_a_weighted_fit_reports_an_error_its_spread_matches() -> None:
+    """The weighted fit's standard error is robust, since a weight is chosen because the rows
+    differ. Over fresh logs of a class that misses the truth, where the score's variance moves
+    with the state, the unweighted fit's homoskedastic error came to 0.40 of its spread; weighted
+    by ones, on the same channel, the robust one came to 1.02, and the decision weight's to 0.96."""
+    for name, (lines, errors) in _replicated_decision_fits().items():
+        spread = float(np.sqrt(np.mean(np.var(lines, axis=0, ddof=1))))
+        assert spread / float(np.mean(errors)) == pytest.approx(1.0, abs=0.25), name
+
+
+def test_the_decision_weights_regret_is_what_its_variance_predicts() -> None:
+    """Above the floor, the decision-weighted fit's regret is ``tr(G V) / 2n``, with ``V`` the
+    decision weight's variance worked out by quadrature from the log's law, not read off a fit:
+    ``2.98 / n`` here, against the lab's ``2.91 / n`` on the class that contains the truth. The
+    bias term of the corrected expansion vanishes for the decision weight, which is what makes it
+    the one weight whose regret this predicts. Over 400 logs the ratio was 1.14 +- 0.06: at 4000
+    rows the line scatters 5% wider than its limit."""
+    curvature, rows = 0.4, 4000
+    lines, _ = _replicated_decision_fits()["decision"]
+    floor = curvature**2 * DECISION_VARIANCE**2
+    excess = np.mean([_decision_regret(line, curvature) for line in lines]) - floor
+    gram, variance = _decision_variance(curvature)
+    predicted = 0.5 * float(np.trace(gram @ variance)) / rows
+    assert 0.75 < excess / predicted < 1.55
+
+
+@pytest.mark.parametrize("tilt", [-1.0, 1.0], ids=["quiet_rows", "noisy_rows"])
+def test_the_weighted_error_carries_each_rows_noise_and_the_nuisances_error_at_the_rows_it_loads(
+    tilt: float,
+) -> None:
+    """On one log whose noise grows as ``exp(x)``, redraws of the noise alone scatter the channel by
+    what the fit's own linear map says, whichever end of the log the weight loads.
+
+    Weighed by ``exp(-x)``, towards the quiet rows, the error came to 1.04 and 1.02 of the spread
+    under the two integrators over sixteen redraws; a sandwich on the moment alone leaves out what
+    the cross-fitted nuisances pass on from the rows the weight loads, and came to 0.67. Weighed by
+    ``exp(x)``, towards the noisy rows, it came to 0.93 and 0.85; an error that pools the noise
+    over the rows came to 0.16 under ``rk4``, and agrees with the robust one on average under
+    ``exp(-x)``, so only the noisy rows can tell them apart."""
+    dt = 1.0
+    base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    for integrator in ("euler", "rk4"):
+        channels, errors = [], []
+        for replicate in range(16):
+            data = _rk4_generated_log(0.7, n=1000, dt=dt, noise_seed=replicate, noise_growth=1.0)
+            fit = fit_causal_residual(
+                base,
+                data,
+                dt,
+                adjust_for=("z",),
+                integrator=integrator,
+                weights=lambda states: jnp.exp(tilt * states[:, 0]),
+            )
+            assert fit.channel_error is not None
+            channels.append(np.asarray(fit.residual.channel).ravel())
+            errors.append(fit.channel_error)
+        spread = float(np.sqrt(np.mean(np.var(np.array(channels), axis=0, ddof=1))))
+        assert spread / float(np.mean(errors)) == pytest.approx(1.0, abs=0.3), integrator
+
+
+def test_the_weight_is_read_off_the_states_alone_and_its_scale_does_not_matter() -> None:
+    """Ones reproduce the unweighted channel exactly; a weight a billion times smaller gives the
+    same fit, since the weights are scaled to mean 1 before the ridge sees them; the moment the
+    weighted fit solves is the weighted one."""
+    data = _decision_log(4000, 0.4, seed=5)
+    seen: list[jax.Array] = []
+
+    def ones(states: jax.Array) -> jax.Array:
+        seen.append(states)
+        return jnp.ones(states.shape[0])
+
+    unweighted = _decision_fit(data, None)
+    even = _decision_fit(data, ones)
+    assert len(seen) == 1
+    assert np.array_equal(np.asarray(seen[0]), np.asarray(data["x"]))
+    assert np.allclose(_line(even), _line(unweighted), rtol=0.0, atol=1e-12)
+    assert even.weighted
+    assert not unweighted.weighted
+    assert even.effective_sample_size == pytest.approx(4000.0)
+
+    decision = _decision_fit(data, _decision_weight)
+    tiny = _decision_fit(data, lambda states: 1e-9 * _decision_weight(states))
+    assert np.allclose(_line(tiny), _line(decision), rtol=1e-9, atol=0.0)
+    assert tiny.channel_error == pytest.approx(decision.channel_error, rel=1e-9)
+    assert decision.moment_norm < 1e-8
+    assert decision.effective_sample_size is not None
+    assert 0.3 * 4000 < decision.effective_sample_size < 0.8 * 4000
+
+
+def test_a_zero_weight_drops_its_rows_from_the_moment() -> None:
+    """Weights of zero and one solve the moment on the rows weighted one, and count them."""
+    data = _decision_log(4000, 0.4, seed=6)
+    x = data["x"]
+    rng = np.random.default_rng(0)
+    y_res, u_res = jnp.asarray(rng.normal(size=(4000, 1))), jnp.asarray(rng.normal(size=(4000, 1)))
+    kept = np.asarray(x[:, 0] > 0.0)
+    weighted = solve_channel_moment(y_res, u_res, x, weights=jnp.asarray(kept, dtype=x.dtype))
+    subset = solve_channel_moment(y_res[kept], u_res[kept], x[kept])
+    assert np.allclose(np.asarray(weighted), np.asarray(subset), rtol=1e-10, atol=0.0)
+
+    fit = _decision_fit(data, lambda states: (states[:, 0] > 0.0).astype(states.dtype))
+    assert fit.effective_sample_size == pytest.approx(float(kept.sum()))
+
+
+@pytest.mark.parametrize(
+    ("weights", "error", "message"),
+    [
+        (lambda states: jnp.ones((states.shape[0], 1)), ValueError, "one value per transition"),
+        (lambda states: -jnp.ones(states.shape[0]), ValueError, "finite and non-negative"),
+        (lambda states: jnp.full(states.shape[0], jnp.nan), ValueError, "finite and non-negative"),
+        (lambda states: jnp.zeros(states.shape[0]), ValueError, "zero at every state"),
+        ("efficient", TypeError, "a function of the state, or None"),
+    ],
+)
+def test_a_weight_is_refused_unless_it_is_one_finite_non_negative_value_per_state(
+    weights, error: type[Exception], message: str
+) -> None:
+    with pytest.raises(error, match=message):
+        _decision_fit(_decision_log(200, 0.0, seed=7), weights)
+
+
+def test_the_rk4_fixed_point_takes_the_weights_too() -> None:
+    """Ones give the unweighted ``rk4`` fit to the digit, and a weight that the class makes
+    harmless leaves the channel where the unweighted one finds it, at the noise floor."""
+    dt = 1.0
+    base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    data = _rk4_generated_log(0.7, dt=dt)
+
+    def fit(weights) -> CausalDynamicsFit:
+        return fit_causal_residual(
+            base, data, dt, adjust_for=("z",), integrator="rk4", weights=weights
+        )
+
+    unweighted, even = fit(None), fit(lambda states: jnp.ones(states.shape[0]))
+    assert np.allclose(np.asarray(even.residual.channel), np.asarray(unweighted.residual.channel))
+    assert np.allclose(np.asarray(even.residual.drift), np.asarray(unweighted.residual.drift))
+    weighted = fit(lambda states: jnp.exp(-states[:, 0]))
+    assert float(np.asarray(weighted.residual.channel)[0, 0, 0]) == pytest.approx(0.8, abs=0.01)
+    assert weighted.integrator_defect == pytest.approx(0.01, abs=0.003)

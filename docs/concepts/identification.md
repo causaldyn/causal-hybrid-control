@@ -35,6 +35,27 @@ Three limits, stated before the code is:
   reports `identified=False` rather than a confident wrong answer, and that case belongs to
   [`chc.sensitivity`](../api/sensitivity.md), which prices the radius instead of pretending it away.
 
+## When the channel class misses the truth
+
+Orthogonality protects the channel from the nuisances' error, not from the class. When `B_θ` cannot
+represent the true channel, as when a line is fitted to a curved response, the fit is the
+projection of the true channel under `s²(x) P(x)`. Here `s²(x) = E[(u - m)² | x]` is the variance
+the adjustment set leaves in the action, and `P` is the log's law of states. So the fit is the best
+line where the log was.
+
+`weights=` moves the projection to `w s² P`. For a one-shot decision taken at states drawn from
+`Q`, the weight `w = κ (dQ/dP) / s²` makes the fit the best line for that decision.
+
+- **The weight is a function of the state alone.** A weight that reads the action breaks the
+  orthogonality at first order, so the fit calls it with the states and nothing else.
+- **A weight the caller estimates brings its own error at first order.** Nothing orthogonalises
+  it.
+- **No pointwise weight is right for a dynamic plan.** A dynamic plan reads the channel's slope
+  along its path as well as its level.
+
+The design and its numbers are in
+[ADR 0013](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0013-a-weight-on-the-channel-moment.md).
+
 ## The adjustment set comes from a graph
 
 Every effect estimator here can take its adjustment set as a literal tuple of column names. That
