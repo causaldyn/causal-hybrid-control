@@ -337,7 +337,11 @@ def _stationary(plant: LinearGaussianPlant, policy: AffinePolicy) -> tuple[_Arra
     f = plant.a + plant.b @ policy.gain
     drive = plant.b @ policy.covariance @ plant.b.T + plant.noise
     sx = _sym(solve_discrete_lyapunov(f, drive))
-    mx = np.linalg.solve(np.eye(plant.states) - f, plant.b @ policy.offset + plant.offset)
+    # astype, not a cast: numpy's stubs type solve and cholesky on float input as floating[Any]
+    # before 2.5, the numpy Python 3.11 gets, so the float64 promise is made true of the value.
+    mx = np.linalg.solve(np.eye(plant.states) - f, plant.b @ policy.offset + plant.offset).astype(
+        np.float64, copy=False
+    )
     mz, sz = _joint(mx, sx, policy)
     return mz, sz, sx
 
@@ -490,7 +494,9 @@ class _RelativeValue:
         p = _sym(solve_discrete_lyapunov(f.T, cx + k.T @ cu @ k))
         stage_linear = cost.linear[:n] + k.T @ cu @ plan.offset
         drift = plant.b @ plan.offset + plant.offset
-        linear = np.linalg.solve(np.eye(n) - f.T, stage_linear + f.T @ p @ drift)
+        linear = np.linalg.solve(np.eye(n) - f.T, stage_linear + f.T @ p @ drift).astype(
+            np.float64, copy=False
+        )
         return cls(p, linear, float(np.trace(cu + plant.b.T @ p @ plant.b)))
 
     def __call__(self, x: _Array) -> _Array:
@@ -587,7 +593,9 @@ def _smoothing_limit(sb: _Array, s0: _Array, s1: _Array) -> float:
     if _min_eig(room) <= 0.0:
         return 0.0
     chol = np.linalg.cholesky(room)
-    scaled = np.linalg.solve(chol, np.linalg.solve(chol, _sym(s1 - s0)).T)
+    scaled = np.linalg.solve(chol, np.linalg.solve(chol, _sym(s1 - s0)).T).astype(
+        np.float64, copy=False
+    )
     return 1.0 / math.sqrt(float(np.max(np.linalg.eigvalsh(_sym(scaled)))))
 
 

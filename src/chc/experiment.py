@@ -170,9 +170,10 @@ class ZoneDecision:
         for name, value in fields.items():
             object.__setattr__(self, name, _frozen(value))
         object.__setattr__(self, "_state_root", _frozen(state_root))
-        object.__setattr__(
-            self, "_action_root", _frozen(np.linalg.cholesky(fields["action_weight"]).T)
-        )
+        # astype, not a cast: numpy's stub for cholesky on float input is floating[Any] before 2.5,
+        # the numpy Python 3.11 gets, so the float64 promise is made true of the value.
+        action_root = np.linalg.cholesky(fields["action_weight"]).T.astype(np.float64, copy=False)
+        object.__setattr__(self, "_action_root", _frozen(action_root))
 
     @property
     def zones(self) -> int:
