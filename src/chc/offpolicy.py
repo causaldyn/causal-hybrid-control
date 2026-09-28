@@ -1,9 +1,17 @@
-"""Off-policy evaluation: estimate a policy's value from logged data before deploying it.
+"""Off-policy evaluation of a one-step policy value from logged data.
 
-The pre-deployment safety gate: given logs ``(x, u, r)`` collected under a
-behaviour policy, estimate the value of a candidate target policy by inverse-propensity weighting,
-and refuse deployment when the target's actions leave the logged support (no overlap => no
-evidence). Overlap is summarised by the effective sample size; a low ESS fraction is untrustworthy.
+Given logs ``(x, u, r)`` collected under a behaviour policy, :func:`off_policy_value` estimates by
+inverse-propensity weighting the value of a candidate policy **on the logger's own states**:
+``E_{x ~ d_b} E_{u ~ pi(.|x)} [r]``, the contextual-bandit value. For a policy that moves the
+state -- a feedback plan on a plant with memory -- that is not the value of deploying it. On a loop
+whose candidate spreads the state past twice the logger's variance, SNIPS converges to -2.92
+against a deployed value of -5.76, with the overlap flag set
+(``test_the_one_step_estimand_is_not_the_deployed_value``).
+
+Overlap is summarised by the effective sample size of the one-step weights, and ``overlap_ok``
+reports whether its fraction clears a threshold. Nothing here refuses: the flag is the caller's to
+read, and it sees one-step overlap only -- the stationary state-action ratio a deployed plan needs
+can have infinite variance while it reads True.
 """
 
 from __future__ import annotations
@@ -31,7 +39,15 @@ class GaussianPolicy(eqx.Module):
 
 
 def fit_behavior_policy(xs: Array, us: Array) -> GaussianPolicy:
-    """Least-squares Gaussian fit of ``u ~ N(W x + b, sigma^2)`` from logged ``(x, u)``."""
+    """Least-squares Gaussian fit of ``u ~ N(W x + b, sigma^2)`` from logged ``(x, u)``.
+
+    One ``sigma`` per action for every state. On logs whose noise varies with the state the fitted
+    density is not the logger's, and weights built on it are biased: a candidate identical to the
+    logger has mean weight ``1 + chi^2(pi_b || pi_hat)``, which is ``r^2 / sqrt(2 r^2 - 1)`` for a
+    standard-deviation misfit ``r`` and infinite at ``r^2 <= 1/2``. In a sequential deployment gate
+    simulated on heteroscedastic logs, that bias took the type-I error from 0.013 to 1.000. Where
+    the propensity was logged at decision time, use it instead.
+    """
     n = xs.shape[1]
     design = jnp.concatenate([xs, jnp.ones((xs.shape[0], 1))], axis=1)
     coef, *_ = jnp.linalg.lstsq(design, us, rcond=None)  # (n+1, m)
@@ -46,11 +62,13 @@ def off_policy_value(
     behavior: GaussianPolicy,
     ess_fraction_threshold: float = 0.1,
 ) -> dict[str, float | bool]:
-    """IPS / self-normalised value estimate plus overlap diagnostics.
+    """IPS / self-normalised estimates of the one-step value, plus overlap diagnostics.
 
     ``data`` has keys ``x`` (N, n), ``u`` (N, m), ``r`` (N,). Returns IPS and self-normalised
-    (SNIPS) value estimates, the effective sample size and its fraction, the max weight, and
-    ``overlap_ok`` (whether the ESS fraction clears the threshold — the deployment gate).
+    (SNIPS) estimates of ``E_{x ~ d_b} E_{u ~ pi}[r]`` (the module docstring says why that is not a
+    deployed plan's value), the effective sample size and its fraction, ``max_weight`` -- the
+    largest normalised weight, ``max w / sum w``, a share of the total rather than a weight -- and
+    ``overlap_ok``, whether the ESS fraction clears ``ess_fraction_threshold``.
     """
     xs, us, rs = data["x"], data["u"], data["r"]
     log_w = jax.vmap(target.log_prob)(xs, us) - jax.vmap(behavior.log_prob)(xs, us)

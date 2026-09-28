@@ -128,6 +128,18 @@ still change).
 
 ### Changed
 
+- **`chc.offpolicy` says what it estimates.** `off_policy_value` weights one step at a time, so
+  IPS and SNIPS estimate the candidate's value on the logger's own states,
+  `E_{x ~ d_b} E_{u ~ pi}[r]` -- the contextual-bandit value. For a feedback plan on a plant with
+  memory that is not the value of deploying it: on a loop where the candidate spreads the state
+  past twice the logger's variance, SNIPS converges to -2.92 against a deployed value of -5.76,
+  and `overlap_ok` is True, because the stationary state-action ratio a deployed plan needs is not
+  the one-step one. The module docstring had promised that it "refuses deployment"; nothing in it
+  refuses, and the docs now say so, as does `concepts/pessimism.md`. `max_weight` is documented
+  as the share of the largest weight in the total, which is what it always returned, and
+  `fit_behavior_policy` says what its single `sigma` costs on heteroscedastic logs. A test pins
+  the one-step estimand on that loop. The code is unchanged; the dynamic evaluator is planned
+  separately.
 - **`Target.value` and `Driver.forecast` are typed `ArrayLike`.** They were `float |
   Sequence[float]` and `Sequence[float]`, so a numpy schedule or forecast, which both always
   accepted, type-checked only by coincidence. Nothing is converted. A `Target` or a `Driver` that

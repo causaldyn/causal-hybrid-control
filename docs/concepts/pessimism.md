@@ -37,10 +37,13 @@ sensitivity radius of [Γ](gamma.md) into the same pessimistic-control stack.
 
 ## Before deploying
 
-[`chc.offpolicy`](../api/offpolicy.md) is the pre-deployment gate: from logs collected under a
+[`chc.offpolicy`](../api/offpolicy.md) is the pre-deployment check: from logs collected under a
 behaviour policy, it estimates a candidate policy's value by inverse-propensity weighting (IPS and
-SNIPS), and refuses when the candidate's actions leave the logged support — no overlap, no
-evidence. Overlap is summarised by the effective sample size.
+SNIPS) and flags (`overlap_ok`) when the candidate's actions leave the logged support — no
+overlap, no evidence. Overlap is summarised by the effective sample size. It does not refuse, and
+what it estimates is the candidate's value **on the logger's states**, one step at a time: for a
+feedback plan on a plant with memory that is not the value of deploying it, and on a loop where
+the candidate spreads the state it was off by half with the flag set (see the module docstring).
 
 ## See it
 
