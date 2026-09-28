@@ -189,6 +189,14 @@ from chc.games import (
     softmax_congestion_equilibrium,
     stackelberg_allocation,
 )
+from chc.gate import (
+    DeploymentGate,
+    GateConfig,
+    GateMode,
+    Verdict,
+    ZoneBatch,
+    ZonePlan,
+)
 from chc.gmethods import naive_pooled_effect, sequential_g_formula
 from chc.graph import AdjustmentSet, AdjustmentStatus, CausalGraph, CyclicGraphError
 from chc.independence import partial_corr_test
@@ -576,6 +584,7 @@ __all__ = [
     "DelayMarginCertificate",
     "DelayedDynamics",
     "DelayedNetworkPanel",
+    "DeploymentGate",
     "DoWhyEstimator",
     "DoubleML",
     "DoublyRobustCurve",
@@ -605,6 +614,8 @@ __all__ = [
     "FoldHeuristicCurve",
     "GammaBenchmark",
     "GammaBenchmarkCertificate",
+    "GateConfig",
+    "GateMode",
     "GaussianPolicy",
     "GraphResidual",
     "GroupTimeATT",
@@ -712,8 +723,11 @@ __all__ = [
     "TimeVaryingRolloutCertificate",
     "TransportabilityCurve",
     "VanTreesCurve",
+    "Verdict",
     "WassersteinPenalty",
     "ZeroResidual",
+    "ZoneBatch",
+    "ZonePlan",
     "__version__",
     "adaptive_exploration_certificate",
     "adjoint_weighted_error",

@@ -116,6 +116,7 @@ nav:
           - api/estimators.md
           - api/evaluation.md
           - api/frames.md
+          - api/gate.md
           - api/gmethods.md
           - api/independence.md
           - api/irf.md

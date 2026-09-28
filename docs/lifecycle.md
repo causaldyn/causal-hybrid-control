@@ -93,7 +93,11 @@ documented, and what is not built yet. Every name below is importable from `chc`
   caller measures. See [`chc.mpc`](api/mpc.md).
 - **`robust_safety_filter`.** It clips one nominal action into the certified interval, at one
   state. See [`chc.barrier`](api/barrier.md).
-- **Not built:** a gate that holds a plan in shadow until the evidence says to deploy it.
+- **`DeploymentGate`.** It runs a candidate policy in shadow of the baseline, per zone, and after
+  each batch says deploy, hold, experiment or roll back. It can be read at any time: at every
+  read, the expected share of wrong deploys across zones is at most `alpha`. That holds when the
+  propensities were logged at decision time, zones do not spill over, and a decision's reward does
+  not depend on earlier ones. See [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 

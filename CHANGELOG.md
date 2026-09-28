@@ -60,6 +60,32 @@ still change).
     here. The design record is `docs/adr/0009-evaluating-a-plan.md`, and the coverage campaign is
     `scripts/bench_evaluation.py`.
 
+- **`chc.gate`: a deployment gate that can be read at any time.**
+  `DeploymentGate(plans, config).update(batches)` runs a candidate policy in shadow of the
+  baseline, per zone, and after every batch returns `"deploy"`, `"shadow"`, `"experiment"`,
+  `"hold"` or `"rollback"`. `mode(zone)` says how to log the zone's next batch.
+  - **The guarantee holds at every read**, including one chosen by looking at the data. The
+    expected share of wrong DEPLOY decisions across zones is at most `alpha`, and each HOLD for
+    harm or ROLLBACK is wrong with probability at most `alpha_harm`. Each verdict is an e-process
+    over the logged propensities, a mixture over constant bets. Across zones, e-BH runs over
+    e-values that freeze when their zone stops gathering. A drift alarm, e-Shiryaev–Roberts over
+    e-values the caller supplies, holds a zone and restarts its evidence, or rolls it back.
+  - **Its conditions are in the docstring:** propensities logged at decision time, no spillover
+    between zones, no carryover, and rewards in `[0, 1]`. Read after every decision, a z-test
+    deploys a candidate that sits exactly at the margin on 28 of 100 paths. The gate deploys it on
+    none.
+  - **It takes propensities, not weights**: the candidate's, the baseline's, and the one logged
+    when the action was drawn. It computes the weights itself, so none can arrive clipped the
+    wrong way. It refuses a batch whose logged propensities are not those of the policy the zone's
+    mode asked for.
+  - **EXPERIMENT** is chosen when shadow cannot reach a verdict at `min_effect` within the horizon,
+    and the mixture `(1 - rho) baseline + rho candidate`, which bounds both weights, would gather
+    evidence faster. The speeds come from a two-point growth bound that is exact and minimax.
+  - **The lab's eight-zone closed loop is reproduced verdict for verdict** over 400 replications
+    (`scripts/bench_gate.py`). At `alpha = 0.10`, the FDR is 0.0075 when every zone is null and
+    0.0055 when half are. Power is 1.000, and no deployment was rolled back. The design record is
+    `docs/adr/0010-a-deployment-gate.md`.
+
 ## [0.7.0] — 2026-09-28
 
 ### Added
