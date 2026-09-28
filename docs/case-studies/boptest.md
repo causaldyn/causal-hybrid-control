@@ -101,7 +101,8 @@ Where they disagree:
 
 - The adjusted certificate trusted one step on every call, with an error tube of 0.29 K on average.
   The plant's one-step error left that tube on 4.1% of steps, reaching 0.79 K. The tube prices the
-  channel's standard error, which is a scale and not a coverage guarantee.
+  channel's standard error, which is a scale and not a coverage guarantee, and which was then
+  the homoskedastic one. From 0.8.0 it is robust to noise that moves with the state.
 - The regret bound stayed small wherever it was finite, the runaway weeks included. It is a gap in
   the planning objective on the fitted model, not a statement about the plant. It was infinite, the
   objective not convex over the box, on 3.4% of the adjusted calls and 12.1% of the naive ones.

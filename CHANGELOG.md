@@ -261,6 +261,29 @@ still change).
 
 ### Changed
 
+- **`channel_error` is robust for every fit, as it already was for a weighted one (D28).** The
+  unweighted fit reported the homoskedastic 2SLS sandwich, which pools the noise over the rows. It
+  now reports each row's squared structural residual carried through the fit's own linear map, the
+  cross-fitted nuisances included, and under `rk4` through the fixed point too. The unweighted fit
+  and one weighted by ones report the same error, to the bit.
+  - **Why.** On logs whose noise moves with the state, the homoskedastic error read 0.80 of the
+    channel's spread under a class that contains the truth, and 0.40 under one that misses it (800
+    logs of 4000 rows). The robust error's root mean square reads 0.96 and 1.04 of it. On a
+    confounded plant it came to 1.08 of the channel's error against the truth on the adjustment
+    path and 1.05 on the IV path (200 logs of 2000 rows), where the homoskedastic one ran
+    optimistic. Under `rk4` it carries the RK4 map's gain on the estimate: 1.70 against 1.73
+    measured over 200 noise draws.
+  - **What it costs.** One log's robust error scatters, by 24% and 40% of its value on those 800
+    logs, where the homoskedastic one moved by 2–3%: read it as a scale. Its mean falls 4–6% short
+    of the spread at 4000 rows for that reason; at 16 000 rows neither shortfall is distinguishable
+    from zero. The `jacrev` through the cross-fit it needs has not been timed on a quiet machine
+    yet.
+  - **What moves.** `prescribe`'s identification radius and its tube read it. On the marketing-mix
+    case study over four seeds the channel's error went from 0.029 / 0.034 / 0.035 / 0.031 to
+    0.028 / 0.035 / 0.036 / 0.032. The lift, the confounded arm's share, `drift_error` and the
+    certificate (12 of 12 steps; the confounded arm none) did not move, and no test's number did.
+    The BOPTEST case study's tube, 0.29 K one step ahead, was read under the homoskedastic error.
+
 - **CI audits the proofs' assumptions, and runs the SMT, PARI/GP and Octave cross-checks.** The
   proofs job compiled every proof without printing what each rests on; it now fails on an axiom
   outside Stdlib's classical reals or an admitted step, by the audit `just assumptions` runs, from

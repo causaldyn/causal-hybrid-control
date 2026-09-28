@@ -129,12 +129,16 @@ class CausalDynamicsFit:
     identified: bool
     method: str  # "orthogonal" | "iv" | "observational"
     folds: int
-    # root-mean diagonal of the 2SLS sandwich, None when not identified. Homoskedastic, so on the
-    # ``iv`` path with a weak first stage it runs optimistic -- measured ~1.25x at N=4000 with a
-    # first-stage R^2 of 0.18. A test pins the calibration band; do not read it as exact. Under
-    # ``rk4`` it is the fixed point's own, the same noise carried through the RK4 map's gain on the
-    # estimate: 1.78x the Euler fit's at ``theta*dt = 0.7``, where 200 noise draws on one log
-    # scattered the channel 1.03x it. A weighted fit's is robust instead (see ``weights``).
+    # Root-mean diagonal of the channel's robust covariance, None when not identified: each row's
+    # squared structural residual carried through the fit's own linear map, cross-fitted nuisances
+    # included. Robust since 0.8.0; the homoskedastic error before it read 0.80x the channel's
+    # spread over 800 logs whose noise moves with the state, and 0.40x when the class missed the
+    # truth, where the robust one's root mean square reads 0.96x and 1.04x. On a confounded plant
+    # it came to 1.08x the channel's error against the truth on the adjustment path and 1.05x on
+    # the ``iv`` path (200 logs of 2000 rows). One log's value scatters, by 24% and 40% of itself
+    # on those 800 logs of 4000 rows: a scale, not coverage. Under ``rk4`` it is the fixed point's
+    # own, the noise carried through the RK4 map's gain on the estimate: 1.70x the Euler fit's at
+    # ``theta*dt = 0.7``, where 200 noise draws on one log scattered the channel 1.73x as far.
     channel_error: float | None
     # Root-mean diagonal of the drift stage's own homoskedastic OLS covariance, or None when the
     # channel is not identified (the drift is then conditional on a meaningless channel). It is a
@@ -273,28 +277,6 @@ def _channel_coefficients(
     return jnp.linalg.solve(gram, instrument.T @ state_residual)
 
 
-def _sandwich_error(
-    state_residual: Array,
-    regressor: Array,
-    instrument: Array,
-    coeffs: Array,
-    ridge: float,
-) -> float:
-    """Root-mean diagonal of ``sigma^2 (Z'D)^-1 (Z'Z) (D'Z)^-1`` -- the 2SLS sandwich.
-
-    ``sigma^2`` comes from the **structural** residual ``y_res - D c``, i.e. against the actual
-    action rather than against the instrument. Using the instrument's own fitted residual instead
-    understates it badly (measured ~5x on the IV path) because the projection has already dropped
-    the endogenous variation the structural error is made of.
-    """
-    n, n_coeff = regressor.shape
-    score = state_residual - regressor @ coeffs
-    sigma2 = jnp.sum(score**2) / (max(n - n_coeff, 1) * state_residual.shape[1])
-    bread = jnp.linalg.inv(instrument.T @ regressor + ridge * jnp.eye(n_coeff))
-    covariance = sigma2 * bread @ (instrument.T @ instrument) @ bread.T
-    return float(jnp.sqrt(jnp.mean(jnp.diag(covariance))))
-
-
 def _robust_spread(sensitivity: Array, score: Array, n_coeff: int) -> Array:
     """``sum_i J_i diag(e_i^2) J_i'`` for a fit linear in its target ``y``, ``J = d coeffs / d y``.
 
@@ -330,10 +312,9 @@ def _state_weights(weights: Callable[[Array], Array], states: Array) -> Array:
 def _ols_error(target: Array, design: Array, coeffs: Array, ridge: float) -> float:
     """Root-mean diagonal of ``sigma^2 (X'X)^-1`` -- the plain homoskedastic OLS covariance.
 
-    Used for the drift stage, and deliberately not the sandwich :func:`_sandwich_error` computes:
-    the drift is fitted by least squares on the remainder, so there is no instrument and no
-    endogenous regressor to sandwich against. What it does share is the caveat that it is a scale
-    rather than a coverage statement.
+    Used for the drift stage, which is fitted by least squares on the remainder, so there is no
+    instrument and no endogenous regressor to sandwich against. Unlike the channel's robust error it
+    pools the noise over the rows, and it is a scale rather than a coverage statement.
     """
     n, n_coeff = design.shape
     score = target - design @ coeffs
@@ -488,9 +469,9 @@ def fit_causal_residual(
             callable is called with ``x (N, n)`` and nothing else, since a weight that reads the
             action or the next state biases the channel at first order, while any weight on the
             state keeps the moment orthogonal. The weights are scaled to mean 1. The channel's
-            standard error is then robust: each row's squared residual carried through the moment
-            and the cross-fitted nuisances alike, since a weight that loads a few rows loads the
-            nuisances' error at them too. ``effective_sample_size`` says how few.
+            standard error is robust, as for every fit, and here it has to be: a weight that loads
+            a few rows loads the nuisances' error at them too. ``effective_sample_size`` says how
+            few.
 
             Under a channel class that contains the truth every weight estimates the same channel,
             and only the variance moves. The inverse of the rate's noise variance is the efficient
@@ -582,17 +563,15 @@ def fit_causal_residual(
         gain = remainder[phi_x.shape[1] :].T
 
         score = y_res - regressor @ coeffs
-        channel_error = None
-        if identified and row_weight is None:
-            channel_error = _sandwich_error(y_res, regressor, moment, coeffs, ridge)
-        # a weighted fit's comes from its own sensitivity, which only the caller knows how to take
         weighted_moment = moment if row_weight is None else moment * row_weight[:, None]
         return CausalDynamicsFit(
             residual=ControlAffineResidual(drift=drift, channel=channel, degree=degree),
             identified=identified,
             method=method,
             folds=folds,
-            channel_error=channel_error,
+            # the channel's comes from the fit's own sensitivity, which only the caller knows how
+            # to take: through the cross-fit under Euler, through the fixed point under ``rk4``
+            channel_error=None,
             drift_error=_ols_error(y - fitted, design, remainder, ridge) if identified else None,
             action_residual_variance=float(jnp.mean(u_res**2)),
             nuisance_r2_state=_r_squared(y, y_hat),
@@ -693,11 +672,7 @@ def fit_causal_residual(
         regressor = _channel_design(u_res, x, degree)
         score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
         newton, sensitivity = newton_matrix(theta)
-        if row_weight is None:
-            structural = jnp.sum(score**2, axis=0) / max(x.shape[0] - regressor.shape[1], 1)
-            spread = jnp.einsum("pis,s,qis->pq", fit_map, structural, fit_map)
-        else:
-            spread = _robust_spread(fit_map, score, regressor.shape[1])
+        spread = _robust_spread(fit_map, score, regressor.shape[1])
         covariance = jnp.linalg.solve(newton, jnp.linalg.solve(newton, spread).T)
         # The drift keeps the defect, which is its own regression's residual, as under Euler.
         noise = jnp.sum(defect(fit) ** 2, axis=0) / max(x.shape[0] - design.shape[1], 1)
@@ -718,7 +693,7 @@ def fit_causal_residual(
     fit = fit_to((x_next - x) / dt)
     if integrator == "rk4":
         fit = rk4_fixed_point(fit)
-    elif identified and row_weight is not None:
+    elif identified:
         y = (x_next - x) / dt - known_rate
         channel, _, (y_res, u_res, *_) = solve(y)
         regressor = _channel_design(u_res, x, degree)

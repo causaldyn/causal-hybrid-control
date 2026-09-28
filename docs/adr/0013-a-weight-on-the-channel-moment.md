@@ -43,7 +43,8 @@ verifier checked it:
 - **The fit says what it did.** `weighted`, and Kish's `effective_sample_size`.
 - **`solve_channel_moment(..., weights=...)`** takes one weight per row, for a caller who brings
   their own nuisances.
-- **The unweighted fit is unchanged** to the bit, its homoskedastic error included.
+- **The unweighted fit's channel is unchanged** to the bit. Its homoskedastic error was too, and
+  D28 has since made the robust error every fit's: see the consequence below.
 
 ## Consequences
 
@@ -82,7 +83,10 @@ Decisions are taken at `Q = N(-0.5, 0.25)`.
     right tail, where the degree-4 nuisances extrapolate.
   - Its reported error came to 0.99 of its spread at both sizes.
 - **The unweighted fit's homoskedastic error** came to 0.40 of its spread over 200 logs of the
-  missed class. It is a shipped number, so it is left alone here and raised as a decision.
+  missed class. It was a shipped number, so it was left alone here and raised as a decision,
+  D28, which made the robust error the default for every fit in 0.8.0. Over 800 logs of 4000
+  rows its root mean square came to 0.96 of the spread under a class that contains the truth
+  and 1.04 under one that misses it, where the homoskedastic error read 0.80 and 0.40.
 - **17 tests.** Of 16 mutations of the weighted paths, 15 are caught. The survivor drops the
   robust error's degrees-of-freedom factor `n / (n - k)`, which is 1.002 at `k = 2` and 1000 rows:
   equivalent at every size the tests can afford.

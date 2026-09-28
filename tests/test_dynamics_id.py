@@ -394,8 +394,9 @@ def test_the_reported_channel_error_is_calibrated_on_both_identified_paths() -> 
     This is the test that catches the defect it was written for: reporting the ordinary
     least-squares SE of a regression on the *projected* action, with sigma^2 taken from that same
     regression's residual, understated the IV path by ~5x -- worse than reporting nothing, because
-    ``chc.sensitivity`` consumes exactly this number as a radius. The 2SLS sandwich with sigma^2
-    from the structural residual brings both paths into band.
+    ``chc.sensitivity`` consumes exactly this number as a radius. The robust sandwich on the
+    structural residual brings both paths into band: over 200 logs it came to 1.08 and 1.05 of the
+    channel's error against the truth, where the homoskedastic one ran optimistic on the IV path.
     """
     system = _system(instrument_to_action=jnp.array([[0.8]]))
     for keywords in ({"adjust_for": ("z",)}, {"instrument": "w"}):
@@ -554,14 +555,14 @@ def test_the_correction_runs_when_the_gap_it_closes_hides_under_the_noise() -> N
 
 def test_the_rk4_channel_error_carries_the_rk4_gain_the_spread_carries() -> None:
     """Replicates of one log that differ only in their noise scatter the ``rk4`` channel 1.64x as
-    far as the Euler channel, and ``channel_error`` says 1.78x. That factor is the RK4 map's gain on
+    far as the Euler channel, and ``channel_error`` says 1.70x. That factor is the RK4 map's gain on
     the estimate, which the fixed point's own error carries.
 
     Read against the Euler fit on the same replicates, because the two share every noise draw:
     sixteen replicates pin the ratio of their spreads to a few percent, where either spread alone
-    moves by a quarter (0.75 to 1.15 of its error over three sets of sixteen). Errors read off a
-    fit of the final defect equal the Euler fit's to three digits and fail the second assertion at
-    1.62; read off the corrected target, as up to 0.6.0, they were six times the spread.
+    moves by a quarter (0.75 to 1.15 of its error over three sets of sixteen). Errors that leave the
+    gain out sit near the Euler fit's and fail the second assertion by the gain itself; read off
+    the corrected target, as up to 0.6.0, they were six times the spread.
     """
     dt, replicates = 1.0, 16
     base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
@@ -816,11 +817,23 @@ def test_the_decision_weight_takes_the_regret_to_the_floor_of_its_class(nuisance
 def test_a_weighted_fit_reports_an_error_its_spread_matches() -> None:
     """The weighted fit's standard error is robust, since a weight is chosen because the rows
     differ. Over fresh logs of a class that misses the truth, where the score's variance moves
-    with the state, the unweighted fit's homoskedastic error came to 0.40 of its spread; weighted
-    by ones, on the same channel, the robust one came to 1.02, and the decision weight's to 0.96."""
+    with the state, the robust error weighted by ones came to 1.02 of its spread, and the decision
+    weight's to 0.96. The homoskedastic error the unweighted fit reported up to 0.7.0 came to
+    0.40."""
     for name, (lines, errors) in _replicated_decision_fits().items():
         spread = float(np.sqrt(np.mean(np.var(lines, axis=0, ddof=1))))
         assert spread / float(np.mean(errors)) == pytest.approx(1.0, abs=0.25), name
+
+
+def test_the_unweighted_fit_reports_the_robust_error_a_weight_of_ones_does() -> None:
+    """Every fit's channel error is the robust one (D28). On this class the homoskedastic error the
+    unweighted fit reported up to 0.7.0 came to 0.40 of the channel's spread over 800 logs of 4000
+    rows, and the robust one, which a weight of ones always reported, to 0.96."""
+    data = _decision_log(4000, 0.4, seed=100)
+    plain = fit_causal_residual(_known, data, 1.0, adjust_for=("z",), nuisance_degree=4)
+    ones = _decision_fit(data, lambda states: jnp.ones(states.shape[0]))
+    assert plain.channel_error is not None
+    assert plain.channel_error == ones.channel_error
 
 
 def test_the_decision_weights_regret_is_what_its_variance_predicts() -> None:

@@ -1147,9 +1147,9 @@ def _model_error(fit: CausalDynamicsFit, u_max: float) -> float:
 
     ``channel_error`` bounds ``||B_hat - B||`` per entry; the rate error it induces is that times
     the largest action the box allows, which is what this returns. It is a *scale*, not coverage:
-    ``channel_error`` is the homoskedastic sandwich diagonal and runs optimistic on the IV path, so
-    the tube inherits that optimism and the docstring of :class:`chc.dynamics_id.CausalDynamicsFit`
-    is the place that says by how much.
+    ``channel_error`` is the robust sandwich's root-mean diagonal, calibrated on average but
+    scattering from one log to the next, so one fit's tube is as wide as that fit's reading. The
+    docstring of :class:`chc.dynamics_id.CausalDynamicsFit` says by how much.
     """
     return 0.0 if fit.channel_error is None else float(fit.channel_error) * max(u_max, 1.0)
 
