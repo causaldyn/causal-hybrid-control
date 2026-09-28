@@ -53,14 +53,20 @@ The lab's switchback thread worked this out for a first-order state per zone,
 - **`read_switchback(lever, outcome, estimand, analysis)`** reads an effect off the data, with a
   standard error from the data:
   - the plug-in and IV by the delta method on a heteroskedasticity-robust covariance, IV's keeping
-    lag one of its MA(1) error;
+    lag one of its MA(1) error. The plug-in also tests the first-order state it rests on, by
+    whether `y_(t-1)` and `u_(t-1)` add to its regression, and warns when the data reject it at 1%.
+    The channel at an i.i.d. lever is not tested: it is read right on any linear time-invariant
+    plant. A lever that alternates every period leaves only `y_(t-1)` to test, since
+    `u_(t-1) = 1 - u_t`, and hides a stock it drives, which then alternates with it;
   - the local projection with the `H − 1` lags of its overlapping sums;
   - for the steady state, Fieller's interval, which is unbounded when the data cannot rule out a
     unit root;
   - the block difference in its Horvitz–Thompson form. Each block is centred on the midpoint of
     the on and off blocks before it, which its own coin cannot move, so it is unbiased at any
-    number of blocks. The block scores are martingale differences, so their spread is the
-    standard error.
+    number of blocks. The block scores are martingale differences in time. Each zone's difference
+    is its own and the zones are weighted alike, and the zones' scores are summed block by block
+    before squaring, so the standard error keeps what a spillover or a shock common to the zones
+    puts between them.
 
 ## Consequences
 
@@ -91,17 +97,57 @@ module. The working model runs at `a = 0.8`, `b = 2`, `sigma = 1`, over 2000 per
 - **The local projection's lags** matter only when the state is measured with noise, because
   noise leaves past levers in the error. Dropping them puts the standard error 7.8% low at noise 4
   and `H = 5`; without noise they change it by 0.1%.
-- **82 tests.** Each of 27 mutations is caught: 15 in the design, 12 in the reading. Dropping the
+- **88 tests.** Each of 36 mutations is caught: 15 in the design, 21 in the reading. Dropping the
   local projection's lags survived the coverage tests, since their noisy case moves the standard
   error by only 2.3%, and a test at noise 4 and `H = 5` now catches it.
+- **On a plant the working model does not describe** (`scripts/bench_switchback.py`, 8000 runs a
+  reading). The plant is the zone market of `chc.zones`, and CHC wrote it, so every number here is
+  by construction. Each zone's incentive is switched between 0 and 0.3 by its own coins, and the
+  reading is its idle supply. The incentive also acts through a stock, so the state is not first
+  order. Half of what a zone recruits comes from its two neighbours, and the zones' channels
+  differ. The prior is fitted to an i.i.d. pilot of 200 000 periods a zone. The truth comes from
+  branching the runs: from a run's own state, a zone's lever forced on and forced off. The
+  numbers are for linear matching, then harmonic.
+  - **The plug-in, on the trusted plans, is biased.**
+    - `tau_5` at its aligned design reads −2.8% and −2.9%; its intervals cover 0.79 and 0.77.
+    - At the design for the channel and the steady state, the channel reads +13.9% and +13.8%
+      (covered 0.018 and 0.019) and the steady state +8.6% and +9.5% (covered 0.27 and 0.20).
+    - The first-order test warns on 99.9–100% of these runs. On the working model it warned on
+      0.8–1.3% of 2000 runs at each of six designs and persistences, against its 1%.
+  - **Model-free, the readings are unbiased,** within 0.34%, and their intervals cover 0.944–0.953.
+    The plan's variances are the working model's, though, and a test at the planned MDE rejects
+    (±0.005):
+    - for the channel, whose spread is 0.99 of the plan's, 0.801 and 0.799;
+    - for `tau_2`'s local projection, spread 1.04 times as far as planned, 0.774 and 0.771;
+    - for `tau_5`'s, 1.06 times as far, 0.742 and 0.737;
+    - for the steady state's block difference, 1.73 and 1.64 times as far, 0.426 and 0.459.
+      Neighbouring zones' readings correlate at +0.25 and +0.24. Without the spillover it
+      spreads 0.94 times as far and rejects 0.90.
+  - **So the 0.9.0 gate, realised power within three points of nominal, holds here for the channel,
+    and at its edge for `tau_2`,** 2.6 and 2.9 points under. `tau_5`'s local projection misses it
+    by 5.8 and 6.3 points and the block difference by 37 and 34.
+  - **Under harmonic matching** the truth sits 0.2–1.6% above the linearised one, and the
+    model-free readings still read it within 0.3%.
+  - **The block difference's standard error, before the change** squared the scores zone by zone.
+    It was 0.88 and 0.89 of the spread there, and covered 0.915 and 0.918 (2000 runs). Summed
+    block by block it is 0.994 and 0.993, and covers 0.944 and 0.945. On the working model on a
+    ring of four, half of each push felt by the neighbours, the old form was 0.77 of the spread.
+    With channels 3, 2, 2 and 1 and no spillover it was 2.0, since pooling the blocks weighted each
+    zone by how soon its coins showed both settings.
 
 ## Not built
 
-- **Realised power on a marketplace flagship.** It waits for a zones-by-time marketplace model.
-- **Shocks common to zones, and spillover between them.** Zones are pooled as independent
-  replications, each with an intercept.
-- **A second state or a longer carryover.** The model-free readings, run on some zones, are the
-  check.
+- **A plan whose variances see a second state or spillover.** They are the working model's, and on
+  the zone market they put the local projections' power 3–6 points under nominal and the block
+  difference's 34–37 under. An internal pilot would carry them: in a lab run (4000 runs, linear
+  matching), re-reading each standard error from the first quarter of the run and restating the
+  MDE brought the local projections within 2.1 points of nominal and put the block difference
+  4–5 over, since its early blocks are centred on fewer blocks before them.
+- **Shocks common to zones, and spillover between them, in the regressions.** Their standard errors
+  pool the zones as independent replications. On the zone market, summing their scores across
+  zones moved them by under 1%.
+- **A plug-in for a state of higher order.** The test says when the first-order plug-in is biased;
+  the effect is then read by the model-free designs.
 - **A bias-corrected `a_hat`** for short runs near the unit root.
 - **The switchback average effect under a carryover of order `m`.** That stays with Bojinov,
   Simchi-Levi and Zhao's estimators, as an oracle rather than a reimplementation.
@@ -117,3 +163,7 @@ module. The working model runs at `a = 0.8`, `b = 2`, `sigma = 1`, over 2000 per
   40 blocks.
 - **The delta method's interval for the steady state.** It covered 0.877 at `a = 0.95` over 200
   periods.
+- **Pooling the blocks of every zone.** It weights a zone by how soon its coins showed both
+  settings. That weight moves from run to run and carries the zones' differences into the spread.
+- **Squaring the block scores zone by zone.** It misses the dependence spillover puts between
+  zones: coverage 0.915 on the zone market.

@@ -100,8 +100,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   persistence estimate is orthogonal to it, and the plan quotes each effect's standard error and
   minimum detectable effect at the least favourable persistence. Without a trusted state model only
   model-free readings are planned. `read_switchback` reads the effect off the data, with a
-  standard error from the data. Scope: a first-order state per zone, and zones independent. See
-  [`chc.switchback`](api/switchback.md).
+  standard error from the data, and warns when the data reject the first-order state the plug-in
+  rests on. Scope: a first-order state per zone, and a plan that takes the zones as independent.
+  See [`chc.switchback`](api/switchback.md).
 - **`shadow_price_effect`** (*experimental*). An experiment on a matching market treats some of the
   rows, and they compete with the control rows for the same columns, so the naive difference is not
   what treating every row would do. It reads that global effect off the rows' rents in the

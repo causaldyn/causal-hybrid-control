@@ -43,7 +43,11 @@ an effect off the data a design produced, with a standard error from the data.
 
 What is outside the model, and comes back as a warning rather than a refusal: a second state or a
 longer carryover, drift, spillover between zones, ``a`` near 1 on a short run, and fewer than 100
-switches. The prior's ``a`` must lie in ``(0, 1)``: for ``a < 0`` the bound is unattainable at even
+switches. The plug-in's reading tests for a second state, and the block difference's standard error
+keeps spillover; the plan's variances assume neither. On the zone market of :mod:`chc.zones`, whose
+incentive also acts through a stock and draws half its recruits from the neighbouring zones, the
+plug-in read its effects 3% to 14% off, and the block difference spread 1.6-1.7 times as far as
+planned. The prior's ``a`` must lie in ``(0, 1)``: for ``a < 0`` the bound is unattainable at even
 ``H`` and the best design depends on ``q``.
 """
 
@@ -75,6 +79,8 @@ SwitchbackAnalysis = Literal["state_aware", "iv", "local_projection", "block_dim
 _GRID = 9  # points of the prior's persistence interval every worst case is taken over
 _FEW_SWITCHES = 100
 _NEAR_UNIT_ROOT = 0.1  # sd(a_hat) / (1 - a) past which the steady state's delta method is ~8% low
+_IID = 5.0  # |lag-one autocorrelation| * sqrt(n) past which a lever is not i.i.d.
+_FIRST_ORDER_LEVEL = 0.01  # the p-value under which the data reject a first-order state
 
 
 @dataclass(frozen=True)
@@ -428,8 +434,9 @@ def _trusted(estimands, prior: PersistencePrior, periods: int, r_max: float, war
     if horizons:
         warnings.append(
             "the plug-in trusts a first-order state: a second state or a longer carryover biases "
-            "it, and a drift more persistent than a over-corrects it. To check it, run some zones "
-            "on the model-free design (trust_state_model=False) and compare the readings"
+            "it, and a drift more persistent than a over-corrects it. read_switchback warns when "
+            "the data reject a first-order state; to check the rest, run some zones on the "
+            "model-free design (trust_state_model=False) and compare the readings"
         )
 
         # one zone's, since the O(1/T) bias of a_hat does not shrink with more zones
@@ -598,9 +605,11 @@ def _assemble(estimands, prior, periods, zones, trusted, z, min_switches) -> Swi
             )
     if zones > 1:
         warnings.append(
-            "several zones: randomise each independently. The readings pool them as independent "
-            "replications with an intercept each, so a shock common to the zones, or spillover "
-            "between them, is outside the model"
+            "several zones: randomise each independently. The plan takes them as independent "
+            "replications, so a shock common to the zones, or spillover between them, is outside "
+            "its variances: on chc.zones' market, spillover put the block difference's spread at "
+            "1.6-1.7x the plan's. The block difference's standard error keeps it; the "
+            "regressions' do not"
         )
     return SwitchbackPlan(tuple(arms), tuple(reports), periods, zones, tuple(warnings))
 
@@ -738,10 +747,60 @@ def _fieller(a: float, b: float, cov: np.ndarray, z: float) -> tuple[float, floa
     return ((half - spread) / curvature, (half + spread) / curvature)
 
 
+def _lag_one(u: np.ndarray) -> float:
+    """The lever's lag-one autocorrelation within the zones."""
+    centred = _within(u)
+    return float((centred[:, 1:] * centred[:, :-1]).sum() / (centred * centred).sum())
+
+
+def _first_order(u, y) -> None:
+    """Warn when ``y_(t-1)`` and ``u_(t-1)`` add to the plug-in's regression. A first-order state
+    observed without noise rules them out, and then the Wald statistic is chi-square on as many
+    degrees of freedom as the lags the data tell apart from ``y_t``, ``u_t`` and the zone's
+    intercept."""
+    if u.shape[0] * (u.shape[1] - 2) <= 4:
+        return
+    lags = "y_(t-1) and u_(t-1)"
+    regressors = np.stack([y[:, 1:-1], u[:, 1:], y[:, :-2], u[:, :-1]])
+    within = _within(regressors).reshape(4, -1)
+    if np.linalg.matrix_rank(within) < 4:
+        # a lever that alternates every period has u_(t-1) = 1 - u_t, which u_t and the intercept
+        # absorb. So does a stock the lever drives, which then alternates with it: no test on
+        # such data can see one
+        if np.linalg.matrix_rank(within[:3]) < 3:
+            return
+        regressors, lags = regressors[:3], "y_(t-1)"
+    theta, cov = _fit(y[:, 2:], regressors, regressors, 0)
+    added = theta[2:]
+    wald = float(added @ np.linalg.solve(cov[2:, 2:], added))
+    p = math.exp(-wald / 2.0) if added.size == 2 else math.erfc(math.sqrt(wald / 2.0))
+    if p < _FIRST_ORDER_LEVEL:
+        _log.warning(
+            "the data reject a first-order state: given y_t and u_t, the outcome still depends on "
+            "%s (Wald %.1f against chi-square(%d), p = %.2g). A second state, a longer carryover "
+            "or a state measured with noise biases the plug-in (by -3%% to +14%% on chc.zones' "
+            "market, whose incentive also acts through a stock); read the effect model-free",
+            lags,
+            wald,
+            added.size,
+            p,
+            extra={
+                "chc_event": "switchback_second_state",
+                "wald": wald,
+                "degrees_of_freedom": added.size,
+                "p": p,
+            },
+        )
+
+
 def _plant(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
     if analysis == "state_aware":
         regressors = np.stack([y[:, :-1], u])
         theta, cov = _fit(y[:, 1:], regressors, regressors, 0)
+        # u_t is independent of everything y_t carries when the lever is i.i.d., so the channel
+        # is then read right on any linear time-invariant plant, and there is nothing to test
+        if estimand.periods > 1.0 or abs(_lag_one(u)) * math.sqrt(u.size) > _IID:
+            _first_order(u, y)
     else:
         # the error eps_t + eta_(t+1) - a eta_t of a noisy state is MA(1)
         theta, cov = _fit(
@@ -781,9 +840,8 @@ def _plant(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
 
 def _projection(u, y, h: int, z: float):
     rows = u.shape[1] - h + 1
-    centred = _within(u)
-    lag_one = float((centred[:, 1:] * centred[:, :-1]).sum() / (centred * centred).sum())
-    if abs(lag_one) > 5.0 / math.sqrt(u.size):
+    lag_one = _lag_one(u)
+    if abs(lag_one) * math.sqrt(u.size) > _IID:
         raise ValueError(
             f"the local projection needs an i.i.d. lever; this one's lag-one autocorrelation is "
             f"{lag_one:.3f}"
@@ -827,12 +885,23 @@ def _block_difference(u, y, blocks: BlockDesign, z: float):
             (np.cumsum(totals * on, axis=1) - totals * on) / seen_on
             + (np.cumsum(totals * off, axis=1) - totals * off) / seen_off
         )
-    scores = (sign * (totals - midpoint))[usable]
-    if scores.size < 2:
+    used = usable.sum(axis=1)
+    live = used > 1
+    if not live.any():
         raise ValueError("need blocks at both settings before the last two in some zone")
-    n = kept * scores.size
-    estimate = 2.0 * float(scores.sum()) / n
-    se = 2.0 * math.sqrt(float(scores.var(ddof=1)) * scores.size) / n
+    scores = np.where(usable, sign * (totals - midpoint), 0.0)[live]
+    used = used[live]
+    # each zone's own difference, the zones weighted alike. Pooling their blocks would weight a
+    # zone by how soon its coins showed both settings, a weight that moves from run to run and
+    # carries the differences between the zones' effects into the spread
+    mean = scores.sum(axis=1) / used
+    estimate = 2.0 * float(mean.mean()) / kept
+    # the zones' centred scores are summed block by block before squaring: a zone's neighbours
+    # move its outcome with their own coins, which puts their scores for the same block in step.
+    # On chc.zones' market, squaring them zone by zone put the standard error at 0.88 of the spread
+    step = (np.where(usable[live], scores - mean[:, None], 0.0) / used[:, None]).sum(axis=0)
+    correction = used.sum() / (used.sum() - used.size)
+    se = 2.0 * math.sqrt(float(step @ step) * correction) / (kept * used.size)
     return estimate, se, (estimate - z * se, estimate + z * se)
 
 
@@ -850,18 +919,24 @@ def read_switchback(
     ``lever[z, t]`` is zone ``z``'s lever in period ``t``, 0 or 1, and ``outcome[z, t]`` its
     reading at the start of period ``t``: ``outcome`` has one more period than ``lever``, and
     ``outcome[z, t + 1]`` is the first reading after ``lever[z, t]``. One zone may be passed as 1-D
-    arrays. Zones are pooled as independent replications, each with an intercept.
+    arrays. The regressions pool the zones as independent replications, each with an intercept.
 
     * ``"state_aware"`` and ``"iv"`` fit ``a`` and ``b`` and read ``b S_H(a)``, by the delta method
       on a covariance robust to heteroskedasticity; IV's keeps the lag-one autocovariance of the
-      MA(1) error a state measured with noise has.
+      MA(1) error a state measured with noise has. The plug-in also tests the first-order state it
+      rests on, by whether ``y_(t-1)`` and ``u_(t-1)`` add to its regression, and warns when the
+      data reject it at 1%; not for the channel at an i.i.d. lever, which it reads right on any
+      linear time-invariant plant. A lever that alternates every period hides a stock it drives
+      from the test, since the stock then alternates with it.
     * ``"local_projection"`` needs an i.i.d. lever, and its covariance keeps the ``H - 1`` lags of
       the overlapping sums.
     * ``"block_dim"`` needs ``blocks``, the design's. Each block's kept periods are centred on the
       midpoint of the on and off blocks before it, so the difference in means is unbiased at any
       number of blocks; the blocks before both settings have been seen only centre. It reads
       ``tau_H`` on ``BlockDesign(H, H - 1)``, and the steady state on any block, with the
-      working-model bias :func:`design_switchback` quotes.
+      working-model bias :func:`design_switchback` quotes. Each zone's difference is its own and
+      the zones are weighted alike, and the standard error sums the zones' scores block by block,
+      so it keeps what a spillover or a shock common to the zones puts between them.
 
     Raises:
         ValueError: when the shapes disagree, the lever is not 0 or 1 or never switches, the

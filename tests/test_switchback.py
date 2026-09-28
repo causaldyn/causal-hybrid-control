@@ -553,6 +553,118 @@ def test_the_block_difference_is_unbiased_at_eight_blocks():
     assert realised.mean() / B - 1 == pytest.approx(-0.27, abs=0.02)
 
 
+def _ring(rng, reps: int, periods: int, length: int, b, spill: float, burn: int = 400):
+    """The working model in four zones on a ring, on blocks of ``length``: zone ``i``'s lever moves
+    its own state by ``b_i`` and each neighbour's by ``-spill b_i / 2``."""
+    burn = length * math.ceil(burn / length)
+    n = periods + burn
+    coins = rng.integers(0, 2, (reps, 4, n // length + 1)).astype(float)
+    u = np.repeat(coins, length, axis=2)[:, :, :n]
+    pushed = np.asarray(b, dtype=float).reshape(1, -1, 1) * u
+    drive = pushed - spill * (np.roll(pushed, 1, axis=1) + np.roll(pushed, -1, axis=1)) / 2.0
+    x = np.zeros((reps, 4, n + 1))
+    eps = SIGMA * rng.standard_normal((reps, 4, n))
+    for t in range(n):
+        x[:, :, t + 1] = A * x[:, :, t] + drive[:, :, t] + eps[:, :, t]
+    return u[:, :, burn:], x[:, :, burn:]
+
+
+@pytest.mark.parametrize(
+    ("channels", "spill"),
+    [((B, B, B, B), 0.5), ((3.0, 2.0, 2.0, 1.0), 0.0)],
+    ids=["spillover", "zones that differ"],
+)
+def test_the_block_difference_keeps_what_ties_the_zones_together(channels, spill):
+    """Spillover: a zone's neighbours move its outcome with their own coins, so two zones' scores
+    for the same block move together; squared zone by zone, the standard error was 0.77 of the
+    spread and covered 0.88. Zones that differ: pooling the blocks weighted a zone by how soon its
+    coins showed both settings, and the zones' differences put the standard error at 2.0."""
+    rng = np.random.default_rng(13)
+    reps, blocks = 1000, BlockDesign(50, 22)
+    u, y = _ring(rng, reps, 2000, 50, channels, spill)
+    readings = [
+        read_switchback(u[r], y[r], STEADY_STATE, "block_dim", blocks=blocks) for r in range(reps)
+    ]
+    estimates = np.array([x.estimate for x in readings])
+    target = np.mean(channels) * (1.0 / (1.0 - A) + _dim_bias(50, 22, A, math.inf))
+    assert np.mean([x.se for x in readings]) / estimates.std() == pytest.approx(1.0, abs=0.07)
+    covered = np.mean([x.interval[0] <= target <= x.interval[1] for x in readings])
+    assert covered == pytest.approx(0.95, abs=0.025)
+    assert estimates.mean() == pytest.approx(target, abs=4 * estimates.std() / math.sqrt(reps))
+
+
+def test_the_block_difference_weights_the_zones_alike():
+    rng = np.random.default_rng(15)
+    u, y = _ring(rng, 1, 2000, 5, (3.0, 2.0, 2.0, 1.0), 0.5)
+    blocks = BlockDesign(5, 4)
+    pooled = read_switchback(u[0], y[0], Horizon(5), "block_dim", blocks=blocks)
+    each = [
+        read_switchback(u[0][i], y[0][i], Horizon(5), "block_dim", blocks=blocks) for i in range(4)
+    ]
+    assert pooled.estimate == pytest.approx(np.mean([x.estimate for x in each]), rel=1e-12)
+
+
+def _second_state(rng, reps: int, periods: int, flip: float, burn: int = 400):
+    """A zone whose lever also acts through a stock: ``x' = a x + b u + s / 2 + eps``,
+    ``s' = 0.7 s + u``."""
+    n = periods + burn
+    u = (_markov_signs(rng, reps, n, flip) + 1.0) / 2.0
+    x, s = np.zeros((reps, n + 1)), np.zeros(reps)
+    for t in range(n):
+        x[:, t + 1] = A * x[:, t] + B * u[:, t] + 0.5 * s + SIGMA * rng.standard_normal(reps)
+        s = 0.7 * s + u[:, t]
+    return u[:, burn:], x[:, burn:]
+
+
+def _warned(caplog, read) -> bool:
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="chc.switchback"):
+        read()
+    return "switchback_second_state" in [r.chc_event for r in caplog.records]
+
+
+def test_the_plug_in_warns_when_the_data_reject_a_first_order_state(caplog):
+    rng = np.random.default_rng(16)
+    u, y = _second_state(rng, 20, 2000, 0.2)
+    for r in range(20):
+        assert _warned(caplog, lambda r=r: read_switchback(u[r], y[r], Horizon(5), "state_aware"))
+    # at an i.i.d. lever the channel is read right whatever the state, and is not tested
+    u, y = _second_state(rng, 400, 2000, 0.5)
+    for r in range(20):
+        assert not _warned(caplog, lambda r=r: read_switchback(u[r], y[r], CHANNEL, "state_aware"))
+    channels = [read_switchback(u[r], y[r], CHANNEL, "state_aware").estimate for r in range(400)]
+    assert np.mean(channels) == pytest.approx(B, abs=4 * np.std(channels) / 20)
+
+
+def test_the_first_order_check_warns_at_its_level_on_a_first_order_state(caplog):
+    # measured: 0.008 to 0.013 of 2000 runs at designs flipping 0.07 to 0.5, a = 0.6 to 0.95
+    rng = np.random.default_rng(17)
+    u, y = _simulate(_markov_signs(rng, 1000, 2400, 0.2), A, 0.0, rng, 400)
+    warned = [
+        _warned(caplog, lambda r=r: read_switchback(u[r], y[r], Horizon(5), "state_aware"))
+        for r in range(1000)
+    ]
+    assert np.mean(warned) < 0.025
+
+
+def test_the_first_order_check_drops_the_lag_an_alternating_lever_absorbs(caplog):
+    # u_(t-1) = 1 - u_t, which u_t and the intercept absorb. Fitted anyway, the singular regression
+    # stopped 90% of these readings with an error and warned on 4% of them; on y_(t-1) alone, with
+    # one degree of freedom, it warns on 0.011
+    rng = np.random.default_rng(18)
+    u, y = _simulate(_markov_signs(rng, 4000, 2400, 1.0), A, 0.0, rng, 400)
+    warned = [
+        _warned(caplog, lambda r=r: read_switchback(u[r], y[r], Horizon(5), "state_aware"))
+        for r in range(4000)
+    ]
+    assert 0.005 < np.mean(warned) < 0.02
+    # switched once, before the periods the check fits on, the lever leaves it nothing to test
+    v = -np.ones((4, 600))
+    v[:, 0] = 1.0
+    u, y = _simulate(v, A, 0.0, rng, 0)
+    assert not _warned(caplog, lambda: read_switchback(u, y, Horizon(5), "state_aware"))
+
+
 def test_near_a_unit_root_the_steady_state_interval_is_fiellers(caplog):
     # a = 0.95 over 200 periods: the delta method covers 0.877 and Fieller's 0.930; the rest is
     # a_hat's O(1/T) bias, which the reading warns of

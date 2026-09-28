@@ -141,7 +141,8 @@ still change).
   favourable persistence in the prior's interval, with its standard error, minimum detectable
   effect and loss against its own best design. `read_switchback(lever, outcome, estimand,
   analysis)` reads the effect off the data with a standard error from the data. Scope: a
-  first-order state per zone, `0 < a < 1`, zones independent.
+  first-order state per zone, `0 < a < 1`. The plug-in's reading warns when the data reject a
+  first-order state, and the plan's variances take the zones as independent.
   - **The design is aligned to the effect.** The plug-in `b_hat S_H(a_hat)` loses nothing to the
     unknown persistence when the design's `A1 = S_H'/S_H`. At two periods that is a Markov design
     flipping with probability `a/(1 + 2a)`. Several effects meet at their minimax, and a floor on
@@ -152,7 +153,13 @@ still change).
     - A heteroskedasticity-robust covariance, with the lags that noise and overlapping sums create.
     - Fieller's interval for the steady state.
     - A block difference in means centred on the midpoint of the earlier on and off blocks. It is
-      unbiased at any number of blocks; at eight, the realised-means form reads 27% low.
+      unbiased at any number of blocks; at eight, the realised-means form reads 27% low. Each
+      zone's difference is its own and the zones are weighted alike, and the standard error sums
+      the zones' scores block by block, so it keeps what spillover puts between them.
+    - A test of the plug-in's first-order state: whether `y_(t-1)` and `u_(t-1)` add to its
+      regression. It warns (`switchback_second_state`) when the data reject the state at 1%, and
+      warned on 0.8–1.3% of runs on the working model. A lever that alternates every period
+      hides a stock it drives from the test, since the stock then alternates with it.
   - **Measured** at `a = 0.8`, over 2000 periods a zone:
     - the lab's reference planner is reproduced to its printed digits;
     - the simulated spread is 0.988–1.040 of the planned standard error, and a test at the planned
@@ -164,9 +171,21 @@ still change).
     drift, spillover and shocks common to zones, a short run near the unit root, few switches. Near
     the unit root (`a = 0.95`, 200 periods), Fieller's interval covered 0.930 where the delta method
     covered 0.877.
-  - **Not built:** realised power on a marketplace flagship, which waits for a zones-by-time
-    marketplace model, and a bias-corrected `a_hat`. The design record is
-    `docs/adr/0012-a-switchback-for-a-named-effect.md`.
+  - **Measured on a plant the working model does not describe,** the zone market of `chc.zones`,
+    by `scripts/bench_switchback.py`. CHC wrote that plant, so the numbers are by construction. The
+    incentive acts through a stock as well, so the state is not first order; half of what a zone
+    recruits comes from its neighbours.
+    - On the trusted plans the plug-in reads 3% to 14% off. Its intervals cover 0.018–0.79, and the
+      first-order test warns on 99.9–100% of runs.
+    - The model-free readings are within 0.34% and cover 0.944–0.953.
+    - Their plans' variances are the working model's. A test at the planned MDE rejects 0.80 for
+      the channel, 0.77 for `tau_2`'s local projection and 0.74 for `tau_5`'s, and 0.43–0.46 for
+      the steady state's block difference, whose spread is 1.6–1.7 times the plan's under the
+      spillover.
+    - The 0.9.0 gate, power within three points of nominal, holds there for the channel, and at
+      its edge for `tau_2`.
+  - **Not built:** a plan whose variances see a second state or spillover, and a bias-corrected
+    `a_hat`. The design record is `docs/adr/0012-a-switchback-for-a-named-effect.md`.
 
 - **`fit_causal_residual(..., weights=...)`: a weight on each transition's channel moment, so a
   channel class that cannot fit every state is fitted where the decision needs it.** `weights` is
