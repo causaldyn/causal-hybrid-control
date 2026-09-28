@@ -99,6 +99,14 @@ documented, and what is not built yet. Every name below is importable from `chc`
   model-free readings are planned. `read_switchback` reads the effect off the data, with a
   standard error from the data. Scope: a first-order state per zone, and zones independent. See
   [`chc.switchback`](api/switchback.md).
+- **`shadow_price_effect`.** An experiment on a matching market treats some of the rows, and they
+  compete with the control rows for the same columns, so the naive difference is not what treating
+  every row would do. It reads that global effect off the rows' rents in the experiment's own
+  matching, with a standard error, the second-order bias left at the treated share, which vanishes
+  at one half, and an alarm near the LP limit, where that bias stops being second order. Strata
+  fixed before the assignment post-stratify it. `shadow_price_interval` is the range the exact LP
+  leaves at `eps = 0`. See
+  [`chc.matching`](api/matching.md).
 - **Not built:** an experiment design for a dynamic plan's whole decision, beyond one lever's
   effect.
 

@@ -201,6 +201,57 @@ still change).
     where a weight on the state left 36–178 times the best fit's regret. `prescribe` is unchanged.
     The design record is `docs/adr/0013-a-weight-on-the-channel-moment.md`.
 
+- **`shadow_price_effect`: the global effect of an experiment on a matching market, read off the
+  rows' rents in the experiment's own matching.** A treatment given to some of the rows moves the
+  prices every row faces, so the treated-minus-control difference an A/B test reads is not what
+  treating every row would do. `shadow_price_effect(cost, supply, demand, treated, *, eps)` solves
+  the experiment's market with `sinkhorn` and returns a `ShadowPriceEffect`:
+  - `effect`, the treated-minus-control difference of the rows' rents, which is the slope of
+    welfare in the treated share;
+  - its `standard_error` over the assignment;
+  - `naive`, the difference an A/B test reads;
+  - `second_order_bias`, what `effect` misses the global effect by to second order, with the
+    `curvature` that prices it.
+
+  The rows are the randomised units. The other side is randomised by passing the transposed
+  market, and rows outside the experiment, such as an idle pool of supply, are priced but not
+  counted (`randomised`). `strata`, one label per row fixed before the assignment, post-stratify
+  it.
+  - **Measured.** The effect equals a five-point difference of welfare in the share, from a solver
+    written apart, to 2e-12 relative. It misses the global effect at second order, and at third
+    at `p = 1/2`; the naive difference misses at first. Averaged over the Gauss–Legendre pair
+    `p = 1/2 -+ 1/(2 sqrt 3)`, it misses at fifth order. Over 400 assignments at shares 0.2 and 0.5
+    on six markets, its spread was 0.90–1.06 of its standard error, and 0.39–0.89 of the naive
+    difference's.
+  - **The curvature is read less the assignment's noise.** The plug-in `eps g' C^+ g` read the
+    true `-f''(p)` 1.3–12 times too large on those markets. Less that noise it read 0.71–1.09 of
+    it. From one experiment it is noisy, 0.8–5.8 times its value, and at `p = 0.2` the bias it
+    prices was 0.4–7% of the standard error. Design at `p = 1/2`, where that term vanishes.
+  - **What it does not price** is the part of the bias that shrinks with the number of rows. It
+    was under 0.3% of the standard error on five of the markets, and 2–3% on 80 units against 80
+    others where demand is short, where at `p = 1/2` it is most of the bias.
+  - **Near the LP limit the second-order law fails,** and the bias saturates at first order.
+    `nu_hat`, how far the treatment moves the prices across the shares in units of `eps`, is the
+    alarm. Above 1, or on a solve whose marginal residual is over `tol`, `second_order_bias` is
+    `None`, with the reason, and a warning is logged. Over twenty markets swept towards the limit,
+    the law held to 10% in nine cases of ten below 0.5 and to 33% below 1. The assignment's noise
+    raises `nu_hat`, so with few rows in an arm it withholds the claim far from the limit too: in
+    4–100% of the experiments on 80 units against 80 others.
+  - **Post-stratified** by `strata`, one label per row fixed before the assignment, such as the
+    rows' types. Each stratum's difference is weighted by its mass, so the mix of each stratum the
+    coins dealt either arm no longer moves the effect. On the same markets its spread was 0.52–0.78
+    of the plain effect's, and 0.85–1.04 of its standard error. A stratum with fewer than two rows
+    in an arm is refused, not merged: merging it into another after the assignment moved the
+    effect by 8–24% of the global effect at `p = 0.2`, and falling back to the plain difference by
+    5–10%.
+  - **`shadow_price_interval`** is the same reading at `eps = 0`, where the exact LP's duals are
+    not unique: the range of the effect over the optimal dual face, `[f'(p+), f'(p-)]`, from two
+    LPs.
+  - **Not built:** the two-sided estimator `f_RS`, whose RMSE was 0.85–1.04 of the
+    post-stratified effect's, and which needs both sides randomised and has no standard error; the
+    global effect on a secondary metric such as matches; and a design helper. The design record
+    is `docs/adr/0014-the-global-effect-of-a-marketplace-experiment.md`.
+
 ## [0.7.0] — 2026-09-28
 
 ### Added

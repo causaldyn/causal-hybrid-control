@@ -238,7 +238,15 @@ from chc.marketplace import (
     pessimistic_equilibrium_allocation,
     sutva_allocation,
 )
-from chc.matching import MarketplaceMatching, SinkhornResult, marketplace_report, sinkhorn
+from chc.matching import (
+    MarketplaceMatching,
+    ShadowPriceEffect,
+    SinkhornResult,
+    marketplace_report,
+    shadow_price_effect,
+    shadow_price_interval,
+    sinkhorn,
+)
 from chc.meanfield import MeanFieldControl
 from chc.metrics import overshoot, rise_time, settling_time, steady_state_error
 from chc.mintime import (
@@ -735,6 +743,7 @@ __all__ = [
     "SafetyFilterBenchmark",
     "ScalarMLP",
     "SelectionStep",
+    "ShadowPriceEffect",
     "ShadowPrices",
     "ShardedEnsembleCertificate",
     "SharedStateMarket",
@@ -1004,6 +1013,8 @@ __all__ = [
     "sensitivity_analysis",
     "sequential_g_formula",
     "settling_time",
+    "shadow_price_effect",
+    "shadow_price_interval",
     "sharded_ensemble_certificate",
     "sinkhorn",
     "softmax_congestion_equilibrium",
