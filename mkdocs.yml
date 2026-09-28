@@ -114,6 +114,7 @@ nav:
           - api/delay.md
           - api/did.md
           - api/estimators.md
+          - api/evaluation.md
           - api/frames.md
           - api/gmethods.md
           - api/independence.md

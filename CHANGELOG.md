@@ -5,6 +5,61 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the API stabilises (pre-1.0 it may
 still change).
 
+## [Unreleased]
+
+### Added
+
+- **`chc.evaluation`: what deploying a plan would cost, from logs of another policy, certified
+  before any cost is read.** `evaluate_plan(logs, plan, method, plant=..., cost=...)` estimates
+  the plan's value with an interval. Four methods:
+  - `"pdis"`: per-decision importance sampling over episodes;
+  - `"mis"`: marginalised importance sampling on the stationary laws;
+  - `"dr"`: MIS with the model's relative value as a control variate;
+  - `"fqe"`: fitted Q evaluation with quadratic features.
+
+  First, `certify_evaluation` reads the model and the two policies, never a cost, and gives the
+  exact second moment of the weights the method needs, the effective samples it predicts, and the
+  margin of each condition that keeps it finite. When the certificate refuses, `evaluate_plan`
+  raises `InfeasibleEvaluation` naming the condition. Scope: every number is exact for a
+  linear-Gaussian loop, `LinearGaussianPlant`, and an affine plan, `AffinePolicy`, and no more.
+  - **The certificate** is the lab's, corrected by an independent verifier, whose loops are now
+    tests:
+    - The trajectory moment runs an exact recursion from the episodes' own initial law. A loop
+      that passes the closed-form small-gain test and the one-step gate is infinite from `h = 6`
+      when it starts from the logger's stationary law. The recursion matches an independent
+      whole-trajectory integral to 1e-9 on 80 random loops.
+    - The stationary condition `2 Sigma_b^z - Sigma_pi^z > 0` is split into a state and an action
+      margin. The one-step gate is neither necessary nor sufficient for it, and the tests hold a
+      loop for each direction.
+  - **The value reported is the deployed plan's.** A deterministic plan has no density, so the
+    weights evaluate it smoothed, and smoothing costs exactly `tau^2 tr(R + B' P B)` a step. The
+    model's value of that is subtracted, and also carried in the interval, times `model_error`
+    (default 1), because its error is first order in the model's. Every estimate reports the share
+    of the weighted value the model removed. `tau` minimises the predicted mean squared error of
+    the reported value among those the certificate passes, one rule for every weighted method.
+  - **The loop `off_policy_value` misjudges.** It reads 2.92 for a deployed cost of 5.76, and its
+    overlap flag says nothing is wrong. Here `"mis"` and `"dr"` refuse it by the state margin,
+    `2 R_x - P_x = -1.34`. `"fqe"`, with a restricted chi-square of 3.30, returns an interval that
+    covers 5.76 and not 2.92.
+  - **Coverage**, 500 replicates on a two-sided market loop, with the model fitted to each
+    replicate's logs (nominal 0.95, Monte Carlo SE 0.010). With the model's correction trusted:
+    `"mis"` 0.940, `"dr"` 0.942, `"fqe"` 0.942 and `"pdis"` 0.968. At the default
+    `model_error = 1`: `"mis"` 0.970, `"dr"` 0.972 and `"pdis"` 1.000. The default over-covers
+    here because this model is right, and it counts the whole correction as unverified. The loop
+    is CHC's own.
+  - **The stationary interval's degrees of freedom are read off the batches the weights used.**
+    It is Student's `t` over 40 batch means with Satterthwaite's `(sum_k s_k)^2 / sum_k s_k^2`,
+    `s_k` each batch's sum of squares, and every stationary estimate reports it as
+    `degrees_of_freedom`. On `MountainCarContinuous-v0` linearised at its valley floor, with a
+    lightly damped logger and a plan whose states are ten times narrower than the logs', the
+    weight sits in a few of the logger's passes through the floor, and the median degrees of
+    freedom are 6 to 8. There a fixed `t_39` covered 0.916 (`"dr"`) and 0.890 (`"mis"`) of 500
+    replicates, with the model fitted; Satterthwaite's covers 0.954 and 0.930. `"mis"` is still at
+    the edge of two points (`scripts/bench_evaluation.py valley`).
+  - `off_policy_value` is unchanged: it is the one-step estimator, and its docstring now points
+    here. The design record is `docs/adr/0009-evaluating-a-plan.md`, and the coverage campaign is
+    `scripts/bench_evaluation.py`.
+
 ## [0.7.0] — 2026-09-28
 
 ### Added

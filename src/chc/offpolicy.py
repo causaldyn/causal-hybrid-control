@@ -11,7 +11,8 @@ against a deployed value of -5.76, with the overlap flag set
 Overlap is summarised by the effective sample size of the one-step weights, and ``overlap_ok``
 reports whether its fraction clears a threshold. Nothing here refuses: the flag is the caller's to
 read, and it sees one-step overlap only -- the stationary state-action ratio a deployed plan needs
-can have infinite variance while it reads True.
+can have infinite variance while it reads True. :func:`chc.evaluation.evaluate_plan` estimates the
+deployed value, and refuses by name when the logs cannot give it.
 """
 
 from __future__ import annotations

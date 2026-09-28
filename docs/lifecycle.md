@@ -67,10 +67,16 @@ documented, and what is not built yet. Every name below is importable from `chc`
   gradient.
 - **The reachable tube.** [`chc.reachability`](api/reachability.md) computes the backward
   reachable tube under a partially identified effect.
+- **`evaluate_plan` and `certify_evaluation`.** They estimate what deploying a plan would cost,
+  from logs of another policy, with an interval. Before any cost is read, the certificate says
+  whether the logs can, and refuses by name when a weight the method needs has infinite variance.
+  Four methods: per-decision importance sampling over episodes, marginalised importance sampling,
+  doubly robust, and fitted Q evaluation, which works where every weight is refused. Every number
+  is exact for a linear-Gaussian loop and an affine plan, and no more. See
+  [`chc.evaluation`](api/evaluation.md).
 - **`off_policy_value`.** It weights one step at a time. So it estimates a candidate's value on
   the logger's own states, which is the contextual-bandit value. That is not the value of
   deploying a plan on a plant with memory. See [`chc.offpolicy`](api/offpolicy.md).
-- **Not built:** an off-policy evaluation of a whole plan on a plant with memory, with an interval.
 
 ## 4. Experiment: where the logs cannot say enough
 

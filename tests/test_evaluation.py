@@ -1,0 +1,674 @@
+"""Evaluating a plan from logs: the certificate against an independent route and the loops that
+fixed its statement, and the estimates against values in closed form.
+
+The independent route, ``_xi_log_moment``, writes ``alpha log W_H`` as a quadratic form in the
+standard-normal vector of every draw along a logged trajectory and integrates it in one step. It
+uses no recursion, no starred loop and no Renyi formula. The loops are an external verifier's:
+
+* CE1 passes the small-gain test and the one-step gate, and its trajectory weight has an infinite
+  second moment from ``h = 6`` when it starts from the logger's stationary law.
+* CE3 shifts no gain on an unstable loop, and is finite at every horizon.
+* E1-E3 set the one-step gate against the stationary condition, in both directions.
+* M1 and M2 make a spectral-radius condition wrong in both directions for matrices.
+
+Truths are computed here, by Lyapunov solves and covariance propagation, not by the module.
+"""
+
+from __future__ import annotations
+
+import math
+
+import jax.numpy as jnp
+import numpy as np
+import pytest
+from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
+from scipy.stats import t as student
+
+from chc import QuadraticCost
+from chc.evaluation import (
+    AffinePolicy,
+    EvaluationMethod,
+    InfeasibleEvaluation,
+    InitialLaw,
+    LinearGaussianPlant,
+    _batch_half_width,
+    certify_evaluation,
+    evaluate_plan,
+    fit_logger,
+)
+
+# A two-sided market: x = (demand-supply imbalance, unserved backlog), u = the incentive level.
+MARKET = LinearGaussianPlant(
+    np.array([[0.85, 0.15], [0.25, 0.75]]),
+    np.array([[-0.6], [-0.2]]),
+    np.zeros(2),
+    np.diag([0.05, 0.03]),
+)
+Q, R = np.diag([2.0, 1.0]), np.array([[0.4]])
+COST = QuadraticCost(Q=jnp.asarray(Q), R=jnp.asarray(R), Qf=jnp.asarray(Q), x_target=jnp.zeros(2))
+_P = solve_discrete_are(MARKET.a, MARKET.b, Q, R)
+PLAN = AffinePolicy(
+    -np.linalg.solve(R + MARKET.b.T @ _P @ MARKET.b, MARKET.b.T @ _P @ MARKET.a),
+    np.array([0.05]),
+    np.zeros((1, 1)),
+)
+LOGGER = AffinePolicy(np.array([[0.3, 0.2]]), np.array([0.1]), np.array([[0.25]]))
+
+
+def _scalar_plant(a: float, b: float, noise: float, offset: float = 0.0) -> LinearGaussianPlant:
+    return LinearGaussianPlant(
+        np.array([[a]]), np.array([[b]]), np.array([offset]), np.array([[noise]])
+    )
+
+
+def _scalar_policy(gain: float, offset: float, variance: float) -> AffinePolicy:
+    return AffinePolicy(np.array([[gain]]), np.array([offset]), np.array([[variance]]))
+
+
+def _stationary_state(
+    plant: LinearGaussianPlant, policy: AffinePolicy
+) -> tuple[np.ndarray, np.ndarray]:
+    f = plant.a + plant.b @ policy.gain
+    covariance = solve_discrete_lyapunov(f, plant.b @ policy.covariance @ plant.b.T + plant.noise)
+    mean = np.linalg.solve(np.eye(f.shape[0]) - f, plant.b @ policy.offset + plant.offset)
+    return mean, covariance
+
+
+def _stage_cost(mx: np.ndarray, sx: np.ndarray, policy: AffinePolicy) -> float:
+    """``E [x'Qx + u'Ru] / 2`` when ``x ~ N(mx, sx)`` and ``u`` follows ``policy``."""
+    mu = policy.gain @ mx + policy.offset
+    su = policy.gain @ sx @ policy.gain.T + policy.covariance
+    return 0.5 * float(np.trace(Q @ sx) + mx @ Q @ mx + np.trace(R @ su) + mu @ R @ mu)
+
+
+def _stationary_value(plant: LinearGaussianPlant, policy: AffinePolicy) -> float:
+    return _stage_cost(*_stationary_state(plant, policy), policy)
+
+
+def _episode_value(
+    plant: LinearGaussianPlant, policy: AffinePolicy, initial: InitialLaw, horizon: int
+) -> float:
+    f = plant.a + plant.b @ policy.gain
+    mx, sx, total = initial.mean, initial.covariance, 0.0
+    for _ in range(horizon):
+        total += _stage_cost(mx, sx, policy)
+        mx = f @ mx + plant.b @ policy.offset + plant.offset
+        sx = f @ sx @ f.T + plant.b @ policy.covariance @ plant.b.T + plant.noise
+    return total
+
+
+def _rollouts(
+    plant: LinearGaussianPlant,
+    policy: AffinePolicy,
+    starts: np.ndarray,
+    steps: int,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``x`` ``(R, steps + 1, n)`` and ``u`` ``(R, steps, m)``, one rollout from each start."""
+    replicates, n = starts.shape
+    m = plant.actions
+    noise = np.linalg.cholesky(plant.noise)
+    dither = np.linalg.cholesky(policy.covariance)
+    x, u = np.empty((replicates, steps + 1, n)), np.empty((replicates, steps, m))
+    x[:, 0] = starts
+    for t in range(steps):
+        u[:, t] = (
+            x[:, t] @ policy.gain.T
+            + policy.offset
+            + rng.standard_normal((replicates, m)) @ dither.T
+        )
+        x[:, t + 1] = (
+            x[:, t] @ plant.a.T
+            + u[:, t] @ plant.b.T
+            + plant.offset
+            + rng.standard_normal((replicates, n)) @ noise.T
+        )
+    return x, u
+
+
+def _stationary_logs(
+    plant: LinearGaussianPlant, logger: AffinePolicy, steps: int, replicates: int, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Logs started from the logger's stationary law, so that no burn-in is needed."""
+    rng = np.random.default_rng(seed)
+    mean, covariance = _stationary_state(plant, logger)
+    starts = (
+        mean + rng.standard_normal((replicates, mean.shape[0])) @ np.linalg.cholesky(covariance).T
+    )
+    return _rollouts(plant, logger, starts, steps, rng)
+
+
+def _xi_log_moment(
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    plan: AffinePolicy,
+    initial: InitialLaw,
+    horizon: int,
+    alpha: float = 2.0,
+) -> float:
+    """``log E_b[W_H^alpha]``, with ``alpha log W_H`` a quadratic form in the standard normals.
+
+    ``xi = (e_0, nu_0..nu_{H-1}, w_0..w_{H-2})``: the initial draw, the logger's action draws and
+    the plant's noise. Every state and action is affine in ``xi``, the log weight is quadratic in
+    it, and ``E exp(xi'G xi + g'xi + g0) = det(I - 2G)^(-1/2) exp(g0 + g'(I - 2G)^(-1) g / 2)``,
+    finite iff ``I - 2G > 0``."""
+    n, m = plant.b.shape
+    size = n + horizon * m + (horizon - 1) * n
+    eigenvalues, vectors = np.linalg.eigh(initial.covariance)
+    root0 = vectors @ np.diag(np.sqrt(np.clip(eigenvalues, 0.0, None))) @ vectors.T
+    root_b = np.linalg.cholesky(logger.covariance)
+    root_w = np.linalg.cholesky(plant.noise)
+    precision = np.linalg.inv(plan.covariance)
+    d_gain, d_offset = plan.gain - logger.gain, plan.offset - logger.offset
+    log_det = np.linalg.slogdet(logger.covariance)[1] - np.linalg.slogdet(plan.covariance)[1]
+    cx, lx = initial.mean.astype(float), np.zeros((n, size))
+    lx[:, :n] = root0
+    g_mat, g_vec, g0 = np.zeros((size, size)), np.zeros(size), 0.0
+    column = n
+    for t in range(horizon):
+        pick = np.zeros((m, size))
+        pick[:, column : column + m] = np.eye(m)
+        column += m
+        # u_t - plan's mean = -d_gain x_t - d_offset + root_b nu_t; 2 log(pi / b) is quadratic in it
+        error = -d_gain @ lx + root_b @ pick
+        shift = -d_gain @ cx - d_offset
+        g_mat += pick.T @ pick - error.T @ precision @ error
+        g_vec += -2.0 * error.T @ precision @ shift
+        g0 += -shift @ precision @ shift + log_det
+        if t < horizon - 1:
+            noise = np.zeros((n, size))
+            noise[:, column : column + n] = np.eye(n)
+            column += n
+            lu, cu = logger.gain @ lx + root_b @ pick, logger.gain @ cx + logger.offset
+            lx = plant.a @ lx + plant.b @ lu + root_w @ noise
+            cx = plant.a @ cx + plant.b @ cu + plant.offset
+    scale = alpha / 2.0
+    core = np.eye(size) - 2.0 * scale * g_mat
+    core = 0.5 * (core + core.T)
+    if np.min(np.linalg.eigvalsh(core)) <= 0.0:
+        return math.inf
+    g = scale * g_vec
+    return float(scale * g0 - 0.5 * np.linalg.slogdet(core)[1] + 0.5 * g @ np.linalg.solve(core, g))
+
+
+def _random_case(
+    rng: np.random.Generator,
+) -> tuple[LinearGaussianPlant, AffinePolicy, AffinePolicy, InitialLaw, int]:
+    n, m = int(rng.integers(1, 3)), int(rng.integers(1, 3))
+    a = rng.normal(size=(n, n)) * 0.5
+    b = rng.normal(size=(n, m))
+    root = rng.normal(size=(n, n)) * 0.4
+    plant = LinearGaussianPlant(a, b, rng.normal(size=n) * 0.3, root @ root.T + 0.05 * np.eye(n))
+    root_b = rng.normal(size=(m, m)) * 0.5
+    logger_cov = root_b @ root_b.T + 0.6 * np.eye(m)
+    logger = AffinePolicy(rng.normal(size=(m, n)) * 0.4, rng.normal(size=m) * 0.3, logger_cov)
+    plan_cov = logger_cov * rng.uniform(0.3, 1.6)
+    plan = AffinePolicy(
+        logger.gain + rng.normal(size=(m, n)) * 0.3, rng.normal(size=m) * 0.3, plan_cov
+    )
+    root0 = rng.normal(size=(n, n)) * 0.5
+    initial = InitialLaw(rng.normal(size=n) * 0.5, root0 @ root0.T)
+    return plant, logger, plan, initial, int(rng.integers(1, 7))
+
+
+def _pdis(
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    plan: AffinePolicy,
+    initial: InitialLaw,
+    horizon: int,
+    samples: int = 10**6,
+):
+    return certify_evaluation(
+        plant, logger, plan, "pdis", samples, horizon=horizon, initial=initial
+    )
+
+
+# ------------------------------------------------------------------------ the trajectory weight
+
+
+def test_the_trajectory_moment_matches_the_whole_trajectory_integral() -> None:
+    rng = np.random.default_rng(11)
+    finite = 0
+    for _ in range(80):
+        plant, logger, plan, initial, horizon = _random_case(rng)
+        certified = _pdis(plant, logger, plan, initial, horizon).log_second_moment
+        oracle = _xi_log_moment(plant, logger, plan, initial, horizon)
+        assert math.isfinite(certified) == math.isfinite(oracle)
+        if math.isfinite(oracle):
+            finite += 1
+            assert certified == pytest.approx(oracle, rel=1e-9, abs=1e-9)
+    assert 20 < finite < 80  # both branches were exercised
+
+
+def test_the_small_gain_test_and_the_one_step_gate_pass_on_a_loop_that_escapes_at_h_6() -> None:
+    # CE1: 2 S_b - S_pi - 2 D^2 R_x = 55/52 > 0, and r = 9/70 < 1 - |a*| = 31/140. From the
+    # logger's stationary law, R_x = 200/13, the x_0 term diverges once the recursion's iterate
+    # passes 1 / (2 R_x); from a fixed start it never does.
+    plant = _scalar_plant(19 / 20, 1.0, 1 / 2)
+    logger, plan = _scalar_policy(0.0, 0.0, 1.0), _scalar_policy(-3 / 20, 0.0, 1 / 4)
+
+    stationary_start = _pdis(
+        plant, logger, plan, InitialLaw(np.zeros(1), np.array([[200 / 13]])), 10
+    )
+    fixed_start = _pdis(plant, logger, plan, InitialLaw(np.zeros(1), np.zeros((1, 1))), 400)
+
+    assert stationary_start.one_step_margin == pytest.approx(55 / 52, rel=1e-12)
+    assert stationary_start.escape_horizon == 6
+    assert not stationary_start.certified
+    assert "infinite from h = 6" in stationary_start.reason
+    assert fixed_start.escape_horizon is None
+
+
+def test_a_plan_that_shifts_no_gain_is_finite_at_every_horizon_on_an_unstable_loop() -> None:
+    # CE3: D = 0, so E_b[W_H^2] = exp(H (log c0 + d^2 / (2 S_b - S_pi))) whatever the loop does.
+    plant = _scalar_plant(1.5, 1.0, 0.3)
+    logger, plan = _scalar_policy(-0.3, 0.1, 1.0), _scalar_policy(-0.3, -0.2, 0.64)
+
+    certificate = _pdis(plant, logger, plan, InitialLaw(np.zeros(1), np.eye(1)), 60)
+
+    closed = 60 * (-0.5 * math.log(0.64) - 0.5 * math.log(1.36) + 0.09 / 1.36)
+    assert certificate.log_second_moment == pytest.approx(8.134660321708, rel=1e-11)
+    assert certificate.log_second_moment == pytest.approx(closed, rel=1e-12)
+    assert certificate.one_step_margin is None  # the logger's loop has no stationary law
+
+
+def test_the_certifiable_horizon_grows_like_log_n_over_the_growth_rate() -> None:
+    # The lab's two-state loop, with offsets and a correlated initial law: lambda = 0.290715 a
+    # step, so each tenfold n buys log(10) / lambda = 7.9 steps.
+    plant = LinearGaussianPlant(
+        np.array([[0.95, 0.10], [0.0, 0.85]]),
+        np.array([[0.0], [0.5]]),
+        np.zeros(2),
+        np.array([[0.05, 0.01], [0.01, 0.08]]),
+    )
+    logger = AffinePolicy(np.array([[-0.2, -0.5]]), np.array([0.1]), np.array([[0.8]]))
+    plan = AffinePolicy(np.array([[-0.4, -0.9]]), np.array([-0.1]), np.array([[0.3]]))
+    initial = InitialLaw(np.array([0.2, -0.1]), np.array([[0.3, 0.05], [0.05, 0.4]]))
+
+    horizons = [
+        _pdis(plant, logger, plan, initial, 40, samples).certified_horizon
+        for samples in (10**3, 10**4, 10**5, 10**6)
+    ]
+    growth = _pdis(plant, logger, plan, initial, 201).log_second_moment - (
+        _pdis(plant, logger, plan, initial, 200).log_second_moment
+    )
+    stationary = certify_evaluation(plant, logger, plan, "mis", 10**4)
+
+    assert horizons == [7, 15, 23, 31]
+    assert growth == pytest.approx(0.290715, abs=5e-7)
+    assert math.exp(stationary.log_second_moment) == pytest.approx(1.9023, abs=5e-5)
+
+
+def test_a_spectral_radius_test_is_wrong_in_both_directions_for_matrices() -> None:
+    # B = I, S_b = S_pi = I, W = 0.1 I, K_b = 0, K_pi = D, so the starred loop is A + 2 D.
+    # M1: the naive radius condition holds, r = 0.4 <= 1 - rho(A*) = 0.5, and the moment escapes.
+    # M2: it fails, r = 0.5 > 0.1, and the moment stays finite.
+    def loop(
+        a_star: np.ndarray, d: np.ndarray
+    ) -> tuple[LinearGaussianPlant, AffinePolicy, AffinePolicy]:
+        plant = LinearGaussianPlant(a_star - 2.0 * d, np.eye(2), np.zeros(2), 0.1 * np.eye(2))
+        return (
+            plant,
+            AffinePolicy(np.zeros((2, 2)), np.zeros(2), np.eye(2)),
+            AffinePolicy(d, np.zeros(2), np.eye(2)),
+        )
+
+    fixed = InitialLaw(np.zeros(2), np.zeros((2, 2)))
+    m1 = loop(np.array([[0.5, 2.0], [0.0, 0.5]]), np.diag([math.sqrt(0.16 / 2.2), 0.0]))
+    m2 = loop(np.diag([0.9, 0.1]), np.diag([0.0, math.sqrt(0.25 / 2.2)]))
+
+    assert _pdis(*m1, fixed, 10).escape_horizon == 4
+    assert _pdis(*m2, fixed, 3000).escape_horizon is None
+
+
+# ----------------------------------------------------------------------- the stationary weight
+
+
+@pytest.mark.parametrize(
+    ("loop", "gate", "state", "action", "second"),
+    [
+        # E1: the one-step gate passes, and the plan spreads the state past twice the logger's.
+        ((1.0, 0.5, 0.2, -1.0, 0.5, -0.4, 0.6), 0.088, -0.105556, None, None),
+        # E2: the gate fails, and the stationary weight is finite.
+        ((0.95, 1.0, 0.5, -0.05, 1.0, -0.95, 0.5), -11.289474, 14.789474, 0.635231, 3.642590),
+        # E3: the gate passes, and so does 2 R_x - P_x; the action block fails.
+        ((0.8, 1.0, 0.2, -0.6, 1.0, 0.0, 0.5), 0.6, 0.555556, -1.65, None),
+    ],
+    ids=["E1", "E2", "E3"],
+)
+def test_the_one_step_gate_is_neither_necessary_nor_sufficient_for_the_stationary_weight(
+    loop: tuple[float, ...],
+    gate: float,
+    state: float,
+    action: float | None,
+    second: float | None,
+) -> None:
+    a, b, noise, logger_gain, logger_var, plan_gain, plan_var = loop
+    certificate = certify_evaluation(
+        _scalar_plant(a, b, noise),
+        _scalar_policy(logger_gain, 0.0, logger_var),
+        _scalar_policy(plan_gain, 0.0, plan_var),
+        "mis",
+        10**5,
+    )
+
+    assert certificate.one_step_margin == pytest.approx(gate, abs=1e-6)
+    assert certificate.state_margin == pytest.approx(state, abs=1e-6)
+    if action is not None:
+        assert certificate.action_margin == pytest.approx(action, abs=1e-6)
+    assert certificate.certified == (second is not None)
+    if second is not None:
+        assert math.exp(certificate.log_second_moment) == pytest.approx(second, abs=1e-6)
+
+
+def test_the_smoothing_interval_is_exactly_zero_to_tau_max() -> None:
+    limit = certify_evaluation(MARKET, LOGGER, PLAN, "mis", 10**5).smoothing_limit
+    assert limit is not None
+
+    inside = certify_evaluation(MARKET, LOGGER, PLAN, "mis", 10**5, smoothing=0.999 * limit)
+    outside = certify_evaluation(MARKET, LOGGER, PLAN, "mis", 10**5, smoothing=1.001 * limit)
+
+    assert all(m is not None and m > 0.0 for m in (inside.state_margin, inside.action_margin))
+    assert not outside.certified
+    assert any(m is not None and m <= 0.0 for m in (outside.state_margin, outside.action_margin))
+
+
+def test_ci_reliable_reads_the_fourth_moment_not_the_second() -> None:
+    # Same gain, a wider plan: 2 Sigma_b - Sigma_pi > 0 holds, 4 Sigma_b - 3 Sigma_pi does not.
+    plant = _scalar_plant(0.5, 1.0, 1.0)
+    logger = _scalar_policy(-0.2, 0.0, 1.0)
+
+    narrow = certify_evaluation(plant, logger, _scalar_policy(-0.2, 0.0, 1.2), "mis", 10**5)
+    wide = certify_evaluation(plant, logger, _scalar_policy(-0.2, 0.0, 1.4), "mis", 10**5)
+
+    assert (narrow.certified, narrow.ci_reliable) == (True, True)
+    assert (wide.certified, wide.ci_reliable) == (True, False)
+
+
+# ---------------------------------------------------------------------------------- estimates
+
+
+def test_the_loop_the_one_step_gate_misjudges_is_refused_by_weights_and_evaluated_by_fqe() -> None:
+    # The loop of test_the_one_step_estimand_is_not_the_deployed_value: the candidate spreads the
+    # state to 4.28 against the logger's 1.47, so every stationary weight has infinite variance,
+    # while the restricted chi-square over quadratic features is 3.30.
+    plant = _scalar_plant(0.9, 1.0, 0.1)
+    logger, candidate = _scalar_policy(-0.4, 0.0, 1.0), _scalar_policy(-0.1, 0.0, 1.44)
+    cost = QuadraticCost(
+        Q=jnp.array([[2.0]]), R=jnp.array([[2.0]]), Qf=jnp.array([[2.0]]), x_target=jnp.zeros(1)
+    )
+    x, u = _stationary_logs(plant, logger, 20_000, 1, seed=31)
+    logs = {"x": x[0], "u": u[0]}
+
+    refusals = {}
+    for method in ("mis", "dr"):
+        with pytest.raises(InfeasibleEvaluation) as caught:
+            evaluate_plan(logs, candidate, method, plant=plant, cost=cost, logger=logger)
+        refusals[method] = caught.value.certificate
+    fqe = evaluate_plan(logs, candidate, "fqe", plant=plant, cost=cost, logger=logger)
+
+    deployed = (1.54 / 0.36) * (1 + 0.1**2) + 1.44  # 5.761, the candidate's own average cost
+    one_step = (1.1 / 0.75) * (1 + 0.1**2) + 1.44  # 2.921, what one-step weights converge to
+    assert all(c.state_margin is not None and c.state_margin < 0.0 for c in refusals.values())
+    assert math.expm1(fqe.certificate.log_second_moment) == pytest.approx(3.30, abs=0.01)
+    assert fqe.interval[0] <= deployed <= fqe.interval[1]
+    assert not fqe.interval[0] <= one_step <= fqe.interval[1]
+
+
+def test_smoothing_costs_exactly_tau_squared_beta() -> None:
+    x, u = _stationary_logs(MARKET, LOGGER, 4000, 1, seed=5)
+    stationary = evaluate_plan({"x": x[0], "u": u[0]}, PLAN, "mis", plant=MARKET, cost=COST)
+    initial = InitialLaw(np.array([1.0, 0.5]), 0.2 * np.eye(2))
+    starts = initial.mean + np.random.default_rng(6).normal(size=(3000, 2)) @ np.sqrt(
+        initial.covariance
+    )
+    xe, ue = _rollouts(
+        MARKET,
+        AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1)),
+        starts,
+        5,
+        np.random.default_rng(7),
+    )
+    episodic = evaluate_plan({"x": xe, "u": ue}, PLAN, "pdis", plant=MARKET, cost=COST)
+
+    def smoothed(tau: float) -> AffinePolicy:
+        return AffinePolicy(PLAN.gain, PLAN.offset, np.array([[tau * tau]]))
+
+    tau = stationary.certificate.smoothing
+    assert tau > 0.0
+    assert stationary.model_correction == pytest.approx(
+        _stationary_value(MARKET, smoothed(tau)) - _stationary_value(MARKET, PLAN), rel=1e-9
+    )
+    tau = episodic.certificate.smoothing
+    law = InitialLaw(xe[:, 0].mean(axis=0), np.cov(xe[:, 0], rowvar=False))
+    assert episodic.model_correction == pytest.approx(
+        _episode_value(MARKET, smoothed(tau), law, 5) - _episode_value(MARKET, PLAN, law, 5),
+        rel=1e-9,
+    )
+
+
+@pytest.mark.parametrize("method", ["mis", "dr", "fqe"])
+def test_the_stationary_intervals_cover_the_deployed_value(method: EvaluationMethod) -> None:
+    truth = _stationary_value(MARKET, PLAN)
+    x, u = _stationary_logs(MARKET, LOGGER, 4000, 100, seed=2026)
+
+    covered, errors = [], []
+    for r in range(x.shape[0]):
+        result = evaluate_plan(
+            {"x": x[r], "u": u[r]}, PLAN, method, plant=MARKET, cost=COST, model_error=0.0
+        )
+        covered.append(result.interval[0] <= truth <= result.interval[1])
+        errors.append(result.value - truth)
+        assert (result.degrees_of_freedom is None) == (method == "fqe")
+
+    errors_ = np.asarray(errors)
+    assert 0.88 <= np.mean(covered) <= 1.0  # nominal 0.95, three binomial SDs at 100 replicates
+    assert abs(errors_.mean()) < 3.0 * errors_.std(ddof=1) / math.sqrt(errors_.size)
+
+
+@pytest.mark.parametrize(("carriers", "dof"), [(range(40), 39.0), ((3, 11, 20, 37), 4.0)])
+def test_the_batch_interval_has_as_many_degrees_of_freedom_as_batches_carry_mass(
+    carriers: tuple[int, ...] | range, dof: float
+) -> None:
+    # Constant within a batch, so each batch's sum of squares is exactly 100 or 0: forty equal
+    # batches keep t_39, and four carrying batches leave t_4.
+    contributions = np.zeros(4000)
+    for sign, batch in enumerate(carriers):
+        contributions[100 * batch : 100 * (batch + 1)] = (-1.0) ** sign
+    means = contributions.reshape(40, 100).mean(axis=1)
+
+    half, got = _batch_half_width(contributions)
+
+    assert got == pytest.approx(dof, rel=1e-12)
+    assert half == pytest.approx(
+        student.ppf(0.975, dof) * means.std(ddof=1) / math.sqrt(40), rel=1e-12
+    )
+
+
+def test_weights_spent_in_a_few_of_the_loggers_excursions_leave_the_interval_few_degrees() -> None:
+    # MountainCarContinuous-v0 linearised at the valley floor, its force disturbed and logged by a
+    # lightly damped operator, evaluated for a tight LQR plan whose states are ten times narrower
+    # than the logs': the weight sits in the logger's rare passes through the floor. On 40 logs
+    # the degrees of freedom never exceeded 13.4, and a fixed t_39 covered 0.91 of 500 replicates.
+    # The market's weights spread over every batch; its lowest of 40 logs was 31.6.
+    a, b = np.array([[0.9925, 1.0], [-0.0075, 1.0]]), np.array([[0.0015], [0.0015]])
+    plant = LinearGaussianPlant(a, b, np.zeros(2), 0.04 * b @ b.T)
+    logger = AffinePolicy(np.array([[0.0, -20.0]]), np.zeros(1), np.array([[0.09]]))
+    q, r = np.diag([400.0, 40000.0]), np.array([[1.0]])
+    p = solve_discrete_are(a, b, q, r)
+    plan = AffinePolicy(
+        -np.linalg.solve(r + b.T @ p @ b, b.T @ p @ a), np.array([0.1]), np.zeros((1, 1))
+    )
+    cost = QuadraticCost(
+        Q=jnp.asarray(q), R=jnp.asarray(r), Qf=jnp.asarray(q), x_target=jnp.zeros(2)
+    )
+    rng = np.random.default_rng(5)
+    mean, covariance = _stationary_state(plant, logger)
+    x, u = np.empty((4001, 2)), np.empty((4000, 1))
+    x[0] = mean + np.linalg.cholesky(covariance) @ rng.standard_normal(2)
+    for t in range(4000):
+        u[t] = logger.gain @ x[t] + 0.3 * rng.standard_normal(1)
+        x[t + 1] = a @ x[t] + b @ (u[t] + 0.2 * rng.standard_normal(1))
+    xm, um = _stationary_logs(MARKET, LOGGER, 4000, 1, seed=2026)
+
+    spiky = evaluate_plan({"x": x, "u": u}, plan, "dr", plant=plant, cost=cost, model_error=0.0)
+    spread = evaluate_plan(
+        {"x": xm[0], "u": um[0]}, PLAN, "mis", plant=MARKET, cost=COST, model_error=0.0
+    )
+
+    assert spiky.degrees_of_freedom is not None
+    assert spiky.degrees_of_freedom < 15.0
+    assert spread.degrees_of_freedom is not None
+    assert spread.degrees_of_freedom > 25.0
+
+
+def test_the_episodic_interval_covers_the_deployed_value() -> None:
+    initial = InitialLaw(np.array([1.0, 0.5]), 0.2 * np.eye(2))
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.array([[1.0]]))
+    rng = np.random.default_rng(77)
+
+    covered = []
+    for _ in range(60):
+        starts = initial.mean + rng.normal(size=(3000, 2)) @ np.sqrt(initial.covariance)
+        x, u = _rollouts(MARKET, logger, starts, 5, rng)
+        result = evaluate_plan(
+            {"x": x, "u": u}, PLAN, "pdis", plant=MARKET, cost=COST, model_error=0.0
+        )
+        truth = _episode_value(MARKET, PLAN, initial, 5)
+        covered.append(result.interval[0] <= truth <= result.interval[1])
+
+    assert np.mean(covered) >= 0.85  # nominal 0.95; 60 replicates
+
+
+def test_dr_removes_the_first_order_error_of_a_misspecified_model() -> None:
+    # A[0, 0] off by 0.1. The model's own value, and MIS, whose weights come from the model, carry
+    # its first-order error; DR's is the product of the two nuisances' errors. The plan carries
+    # its dither into deployment, so no smoothing correction adds a first-order term of its own.
+    dithered = AffinePolicy(PLAN.gain, PLAN.offset, np.array([[0.04]]))
+    truth = _stationary_value(MARKET, dithered)
+    wrong = LinearGaussianPlant(
+        MARKET.a + np.array([[0.1, 0.0], [0.0, 0.0]]), MARKET.b, MARKET.offset, MARKET.noise
+    )
+    x, u = _stationary_logs(MARKET, LOGGER, 200_000, 1, seed=3)
+    logs = {"x": x[0], "u": u[0]}
+
+    direct = _stationary_value(wrong, dithered) - truth
+    mis = evaluate_plan(logs, dithered, "mis", plant=wrong, cost=COST).value - truth
+    dr = evaluate_plan(logs, dithered, "dr", plant=wrong, cost=COST).value - truth
+
+    assert direct > 0.003
+    assert abs(mis - direct) < 0.25 * direct
+    assert abs(dr) < 0.25 * direct
+
+
+def test_a_randomised_plan_is_evaluated_as_it_is() -> None:
+    dithered = AffinePolicy(PLAN.gain, PLAN.offset, np.array([[0.04]]))
+    x, u = _stationary_logs(MARKET, LOGGER, 4000, 1, seed=9)
+
+    result = evaluate_plan({"x": x[0], "u": u[0]}, dithered, "dr", plant=MARKET, cost=COST)
+
+    assert result.certificate.smoothing == 0.0
+    assert (result.model_correction, result.model_share) == (0.0, 0.0)
+    assert result.interval[0] <= _stationary_value(MARKET, dithered) <= result.interval[1]
+
+
+def test_the_model_correction_is_carried_in_the_interval() -> None:
+    x, u = _stationary_logs(MARKET, LOGGER, 4000, 1, seed=12)
+    logs = {"x": x[0], "u": u[0]}
+
+    trusted = evaluate_plan(logs, PLAN, "mis", plant=MARKET, cost=COST, model_error=0.0)
+    counted = evaluate_plan(
+        logs,
+        PLAN,
+        "mis",
+        plant=MARKET,
+        cost=COST,
+        model_error=1.0,
+        smoothing=trusted.certificate.smoothing,
+    )
+
+    width = counted.interval[1] - counted.interval[0]
+    assert width == pytest.approx(
+        trusted.interval[1] - trusted.interval[0] + 2.0 * trusted.model_correction, rel=1e-12
+    )
+    assert counted.model_share == pytest.approx(
+        trusted.model_correction / (trusted.value + trusted.model_correction), rel=1e-12
+    )
+
+
+def test_fit_logger_recovers_the_logging_policy() -> None:
+    x, u = _stationary_logs(MARKET, LOGGER, 50_000, 1, seed=4)
+
+    fitted = fit_logger(x[0, :-1], u[0])
+
+    assert np.allclose(fitted.gain, LOGGER.gain, atol=0.02)
+    assert np.allclose(fitted.offset, LOGGER.offset, atol=0.01)
+    assert np.allclose(fitted.covariance, LOGGER.covariance, rtol=0.03)
+
+
+# ------------------------------------------------------------------------------ what is refused
+
+
+def test_unstable_loops_are_refused_with_their_spectral_radius() -> None:
+    plant = _scalar_plant(1.1, 1.0, 0.1)
+
+    logger_unstable = certify_evaluation(
+        plant, _scalar_policy(0.0, 0.0, 1.0), _scalar_policy(-0.5, 0.0, 1.0), "mis", 10**4
+    )
+    plan_unstable = certify_evaluation(
+        plant, _scalar_policy(-0.5, 0.0, 1.0), _scalar_policy(0.0, 0.0, 1.0), "fqe", 10**4
+    )
+
+    assert "logger's closed loop has spectral radius 1.1" in logger_unstable.reason
+    assert "plan's closed loop has spectral radius 1.1" in plan_unstable.reason
+    assert not logger_unstable.certified
+    assert not plan_unstable.certified
+
+
+def test_arguments_that_do_not_fit_the_method_are_refused() -> None:
+    initial = InitialLaw(np.zeros(2), np.eye(2))
+    dithered = AffinePolicy(PLAN.gain, PLAN.offset, np.array([[0.04]]))
+
+    with pytest.raises(ValueError, match="only 'pdis' reads"):
+        certify_evaluation(MARKET, LOGGER, PLAN, "mis", 100, horizon=5, initial=initial)
+    with pytest.raises(ValueError, match="pass their horizon"):
+        certify_evaluation(MARKET, LOGGER, PLAN, "pdis", 100, horizon=5)
+    with pytest.raises(ValueError, match="smoothing applies"):
+        certify_evaluation(MARKET, LOGGER, PLAN, "fqe", 100, smoothing=0.1)
+    with pytest.raises(ValueError, match="smoothing applies"):
+        certify_evaluation(MARKET, LOGGER, dithered, "mis", 100, smoothing=0.1)
+    with pytest.raises(ValueError, match="method must be one of"):
+        certify_evaluation(MARKET, LOGGER, PLAN, "snips", 100)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="gain has shape"):
+        certify_evaluation(MARKET, LOGGER, _scalar_policy(0.0, 0.0, 1.0), "mis", 100)
+
+
+def test_logs_that_do_not_fit_the_method_are_refused() -> None:
+    x, u = _stationary_logs(MARKET, LOGGER, 200, 1, seed=1)
+
+    with pytest.raises(KeyError, match="missing \\['u'\\]"):
+        evaluate_plan({"x": x[0]}, PLAN, "mis", plant=MARKET, cost=COST)
+    with pytest.raises(ValueError, match="reads x \\(T \\+ 1, n\\)"):
+        evaluate_plan({"x": x[0, 1:], "u": u[0]}, PLAN, "mis", plant=MARKET, cost=COST)
+    with pytest.raises(ValueError, match="reads x \\(E, H \\+ 1, n\\)"):
+        evaluate_plan({"x": x[0], "u": u[0]}, PLAN, "pdis", plant=MARKET, cost=COST)
+    per_step = QuadraticCost(Q=COST.Q, R=COST.R, Qf=COST.Qf, x_target=jnp.zeros((201, 2)))
+    with pytest.raises(ValueError, match="one row per state"):
+        evaluate_plan({"x": x[0], "u": u[0]}, PLAN, "mis", plant=MARKET, cost=per_step)
+
+
+def test_an_infeasible_evaluation_carries_its_certificate() -> None:
+    plant = _scalar_plant(1.0, 0.5, 0.2)
+    logger, candidate = _scalar_policy(-1.0, 0.0, 0.5), _scalar_policy(-0.4, 0.0, 0.6)
+    x, u = _stationary_logs(plant, logger, 2000, 1, seed=8)
+    cost = QuadraticCost(
+        Q=jnp.array([[2.0]]), R=jnp.array([[2.0]]), Qf=jnp.array([[2.0]]), x_target=jnp.zeros(1)
+    )
+
+    with pytest.raises(InfeasibleEvaluation, match="2 R_x - P_x") as caught:
+        evaluate_plan(
+            {"x": x[0], "u": u[0]}, candidate, "mis", plant=plant, cost=cost, logger=logger
+        )
+
+    assert caught.value.certificate.one_step_margin == pytest.approx(0.088, abs=1e-9)
