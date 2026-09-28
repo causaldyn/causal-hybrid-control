@@ -86,6 +86,7 @@ confounding the decision can tolerate — [the sensitivity level Γ](concepts/ga
 - [Concepts](concepts/identification.md) — what each part of the report means, and what it does
   not promise.
 - [Tutorials](tutorials/index.md) — the executed notebooks, from the sign flip to real data.
-- The expert path — [`causal_plan`](api/plan.md), [`mpc_control` and
-  `RecedingHorizon`](api/mpc.md), [`fit_causal_residual`](api/dynamics_id.md) — is what `prescribe`
-  wraps, and takes a hand-built plant, cost and barrier.
+- The expert path — [`fit_causal_residual`](api/dynamics_id.md) and [`causal_plan`](api/plan.md)
+  are what `prescribe` wraps, and take a hand-built plant, cost and barrier.
+  [`mpc_control` and `RecedingHorizon`](api/mpc.md) re-plan the same problem in a closed loop,
+  which `prescribe` does not.

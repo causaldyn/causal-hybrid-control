@@ -1,6 +1,6 @@
 """Causal Hybrid Control: hybrid dynamics + a learned causal residual + constrained control.
 
-Current spine (v0.3.0): hybrid dynamics, RK4 rollout, a hand-written discrete adjoint (verified
+The spine: hybrid dynamics, RK4 rollout, a hand-written discrete adjoint (verified
 against autodiff and finite differences), projected-gradient optimal control, MPC, causal
 identification behind a pluggable estimator interface, pessimism/support, off-policy evaluation,
 and the oracle-regret benchmark. On top of it: control under hidden confounding, the safety

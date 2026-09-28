@@ -152,6 +152,14 @@ still change).
   solvers. `chc.estimators` said EconML fails to install beside pandas 3; 0.17 installs, and stays
   out for what it brings with it. Test and proof counts written by hand are gone from the prose:
   `just counts` prints them.
+- **Five pages that said more, or less, than the code does.** `chc.mmm` gave "the solver constrains a
+  box and not a half-space" as the reason for no total budget; `causal_plan` has taken one since
+  0.6.0, and the reason is that `prescribe` has no budget argument. The quickstart listed
+  `mpc_control` and `RecedingHorizon` among what `prescribe` wraps; it wraps `fit_causal_residual`
+  and `causal_plan`. `theory.md` now says that CI runs only the Maxima derivations, and that the
+  PARI/GP, Octave, FriCAS, R, Python and SMT files are run by hand. `why.md` no longer says
+  `prescribe` cannot choose its levers: `max_levers` chooses one set for the whole horizon, not one
+  per step. The BOPTEST case study names drivers (ADR 0007) as the third of its three statements.
 - **`Target.value` and `Driver.forecast` are typed `ArrayLike`.** They were `float |
   Sequence[float]` and `Sequence[float]`, so a numpy schedule or forecast, which both always
   accepted, type-checked only by coincidence. Nothing is converted. A `Target` or a `Driver` that

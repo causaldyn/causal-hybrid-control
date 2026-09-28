@@ -50,7 +50,9 @@ just derivations   # run every Maxima derivation; fails if any did not complete
 ```
 
 CI runs the same check on every push. It checks that each derivation *completes*, not that its
-output matches a stored copy.
+output matches a stored copy. Only the Maxima files run there: the PARI/GP, Octave, FriCAS, R,
+Python and SMT files beside them (`*.gp`, `*.m`, `*.input`, `*.R`, `*.py`, `*.smt2`) are run by
+hand, and CI would not notice one of them breaking.
 
 ## Result numbers in docstrings
 
