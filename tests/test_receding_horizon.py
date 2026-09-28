@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -344,7 +345,28 @@ def test_a_step_compiles_nothing_once_its_programs_exist(arguments: dict[str, An
     plan = controller.step(X0)
     x = rk4_step(OSCILLATOR, 0.0, X0, plan.actions[0], DT)
     with _compilations() as compiled:
-        for _ in range(3):
-            plan = controller.step(x)
-            x = rk4_step(OSCILLATOR, 0.0, x, plan.actions[0], DT)
+        for k in range(1, 4):  # the clock moves too: a new window start is a value, not a program
+            plan = controller.step(x, t=k * DT)
+            x = rk4_step(OSCILLATOR, k * DT, x, plan.actions[0], DT)
     assert compiled == []
+
+
+class _Onset(eqx.Module):
+    """``x' = u + p(t)``, a push rising from 0 to 5 around ``t = 1``."""
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return u + 2.5 * (1.0 + jnp.tanh((t - 1.0) / 0.05)) * jnp.ones_like(x)
+
+
+def test_a_window_started_at_t_is_the_tail_of_the_plan_started_at_zero() -> None:
+    """Bellman on a plant that moves in time: from the full plan's own state at step ``j``, the
+    window over the remaining steps, started at ``t = j * dt``, is the full plan's tail. Read from
+    the default ``t = 0`` it plans for the push a second early and is off by 2.7."""
+    cost = QuadraticCost(Q=jnp.eye(1), R=jnp.array([[0.01]]), Qf=jnp.eye(1), x_target=jnp.zeros(1))
+    steps, j = 12, 5
+    full = causal_plan(_Onset(), jnp.zeros(1), cost, DT, steps, -50.0, 50.0)
+    window = RecedingHorizon(_Onset(), cost, DT, steps - j, -50.0, 50.0)
+    tail = window.step(full.trajectory[j], t=j * DT)
+    assert float(jnp.max(jnp.abs(tail.actions - full.actions[j:]))) < 1e-4
+    unclocked = RecedingHorizon(_Onset(), cost, DT, steps - j, -50.0, 50.0).step(full.trajectory[j])
+    assert float(jnp.max(jnp.abs(unclocked.actions - full.actions[j:]))) > 1.0

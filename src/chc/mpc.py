@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
@@ -51,6 +52,10 @@ def mpc_control(
     closed-loop cost on a known plant and 0.4% with an MLP residual, for 1.5x and 2.4x less time.
     Raise it if the loop is offline; the solve stops on its own once the line search fails.
 
+    The loop keeps one clock: step ``k`` applies its action to the plant at ``t = k * dt``, and the
+    plan it solves there reads the model from ``t = k * dt`` on. Autonomous plants never notice; a
+    plant with a time-varying term is planned and stepped on the time it is at.
+
     Args:
         model: dynamics used for planning (the controller's belief).
         plant: true dynamics the control is applied to (defaults to ``model``).
@@ -66,13 +71,14 @@ def mpc_control(
     states = [x0]
     applied: list[Array] = []
 
-    for _ in range(n_steps):
+    for k in range(n_steps):
+        t = k * dt
         us_opt, _ = projected_gradient_control(
-            model, x, guess, dt, cost, u_lo, u_hi, steps=inner_steps
+            _Shifted(model, jnp.asarray(t)), x, guess, dt, cost, u_lo, u_hi, steps=inner_steps
         )
         u0 = us_opt[0]
         applied.append(u0)
-        x = rk4_step(plant, 0.0, x, u0, dt)
+        x = rk4_step(plant, t, x, u0, dt)
         states.append(x)
         guess = (
             jnp.concatenate([us_opt[1:], us_opt[-1:]], axis=0)
@@ -81,6 +87,19 @@ def mpc_control(
         )
 
     return jnp.stack(states), jnp.stack(applied)
+
+
+class _Shifted(eqx.Module):
+    """``dynamics`` on the loop's clock: time ``t`` inside a window is ``t0 + t`` outside it.
+
+    ``t0`` is an array leaf, so a new window start is a new value, not a new program.
+    """
+
+    dynamics: Dynamics
+    t0: Array
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.dynamics(self.t0 + t, x, u)
 
 
 def _refuse_moving_target(cost: QuadraticCost, where: str) -> None:
@@ -158,12 +177,17 @@ class RecedingHorizon:
         default=None, init=False, repr=False
     )
 
-    def step(self, x: Array) -> CausalPlan:
-        """Plan from the measured state ``x``, and keep the plan as the next step's start."""
+    def step(self, x: Array, t: float = 0.0) -> CausalPlan:
+        """Plan from the measured state ``x``, and keep the plan as the next step's start.
+
+        ``t`` is the loop's clock at ``x``, and the window is planned from it: step ``k`` of the
+        plan reads the model at ``t + k * dt``. An autonomous model ignores it; a model with a
+        time-varying term needs it, since the default plans every window as if it started at 0.
+        """
         _refuse_moving_target(self.cost, "RecedingHorizon")
         actions, multipliers = (None, None) if self._warm is None else self._warm
         plan, multipliers = _plan(
-            self.model,
+            _Shifted(self.model, jnp.asarray(t)),
             x,
             self.cost,
             self.dt,

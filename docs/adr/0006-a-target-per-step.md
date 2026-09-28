@@ -76,8 +76,9 @@ eighth. Each plan is priced against that schedule, in float64:
 
 - **A callable target, `x_target(k)`.** Rejected: a Python function in a module is static, so every
   schedule would compile its own programs, while rows of data share one per shape.
-- **A clock coordinate in the state.** Rejected: rollouts pass `t = 0` to every step, and a target
-  that is a function of a state coordinate makes the cost non-quadratic.
+- **A clock coordinate in the state.** Rejected: a target that is a function of a state coordinate
+  makes the cost non-quadratic. (This record first gave a second reason, that rollouts pass `t = 0`
+  to every step. They do not: `rollout` steps `k * dt`.)
 - **A separate `TrackingCost`.** Rejected: every consumer would accept two cost types, and a fixed
   target is one row repeated.
 - **Re-planning alone.** Rejected: the table above, and L8.1's early pre-heating.
