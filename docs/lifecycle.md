@@ -84,7 +84,13 @@ documented, and what is not built yet. Every name below is importable from `chc`
   `capped_exploration_policy` price how much exploration a controller should inject while its
   effect is not identified, and on what schedule. Each is weighed against the control the
   exploration costs. See [`chc.regret`](api/regret.md).
-- **Not built:** a design that answers `NotIdentifiedError` with an experiment, and its power.
+- **`design_experiment`.** It says how many units to run in each zone before a one-shot decision,
+  and whether to run any: the regret the experiment removes, against what it spends. The verdict
+  is deploy, experiment or abstain, with the reason. Every number it reports is Monte Carlo's,
+  re-solving the decision on every draw; its local model only chooses the units. A channel the
+  logs do not identify enters as a wide prior. Scope: a static decision over zones, linear in each
+  zone's channel, with a box on the levers. See [`chc.experiment`](api/experiment.md).
+- **Not built:** an experiment design for a plant whose state carries the lever's past.
 
 ## 5. Deploy: one step at a time
 

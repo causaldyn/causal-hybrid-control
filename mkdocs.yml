@@ -115,6 +115,7 @@ nav:
           - api/did.md
           - api/estimators.md
           - api/evaluation.md
+          - api/experiment.md
           - api/frames.md
           - api/gate.md
           - api/gmethods.md

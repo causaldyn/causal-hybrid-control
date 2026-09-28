@@ -86,6 +86,46 @@ still change).
     0.0055 when half are. Power is 1.000, and no deployment was rolled back. The design record is
     `docs/adr/0010-a-deployment-gate.md`.
 
+- **`chc.experiment`: which experiment a decision needs, how large, and whether to run one.**
+  `design_experiment(decision, prior, experiment, budget)` returns an `ExperimentDesign` with:
+  - whole units per zone and what they spend;
+  - the regret of acting now and after the experiment;
+  - the value net of spend, with its Monte Carlo error;
+  - a regret bound at `level`;
+  - a verdict of `"deploy"`, `"experiment"` or `"abstain"`.
+
+  Scope: a one-shot `ZoneDecision` over `K` zones, linear in each zone's channel, with a quadratic
+  cost and a box on the levers. The channels enter as a Gaussian `ChannelPrior`, and the
+  experiment as a `ZoneExperiment` of unit costs, noise and probe sizes.
+  - **Units go where a wrong estimate costs the decision, not where power is lowest.** The
+    decision weight `W = J_bu M⁻¹ J_ub` is the Hessian of the regret in the channel; it is
+    averaged over the prior's sigma points. The allocation water-fills the diagonal of `W` at the
+    price of information, minimises `uses · regret + spend` under the budget, then rounds down
+    without overspending.
+  - **A lever pinned at its bound is priced by its Gaussian tail**, so a zone the optimiser never
+    moves can still be worth testing. Each design says how far each pinned lever is from
+    activation.
+  - **Monte Carlo reports; the local model only allocates.** Every regret is measured by drawing
+    channels from the prior, simulating the experiment, updating, and re-solving. `model_gap` is
+    the local model's distance from that, logged over 25% (`chc_event="design_gap"`). It reaches
+    0.52 on a prior half as wide as the channel, while the realised regret stays at 0.96–1.01 of
+    the reported.
+  - **Measured** by `scripts/bench_experiment.py`, which realises each experiment unit by unit by
+    least squares, a path to the posterior independent of the design's own:
+    - on the lab's market at one budget, decision-weighted units leave `1.18e-3` of regret, against
+      `1.84e-3` for classical Neyman, `1.53e-3` for equal units and `1.61e-3` for equal spend;
+    - at the design's own spend on a prior 10% wide, `0.0905 ± 0.0028`, against `0.110–0.120` for
+      the same three rules;
+    - the realised regret, now and after, is 0.96–1.03 of the predicted on three scenarios;
+    - a deploy verdict's bound held on 0.938 and 0.954 of worlds drawn from the prior (nominal
+      0.95, inside both Clopper–Pearson intervals), and on 0.952 and 0.989 at a fixed truth.
+  - **Not built:**
+    - the joint design for correlated channels, a matrix geometric mean the lab measured 6% better;
+    - a dynamic decision;
+    - the comparison on a marketplace flagship, which waits for a zones-by-time marketplace model.
+
+    The design record is `docs/adr/0011-designing-an-experiment.md`.
+
 ## [0.7.0] — 2026-09-28
 
 ### Added
