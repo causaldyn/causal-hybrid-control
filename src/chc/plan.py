@@ -11,6 +11,7 @@ actions and leave the certificate behind.
     plan.actions              # the full sequence
     plan.certified_actions    # only the prefix whose error tube is inside tolerance
     plan.certified_horizon    # where that prefix ends
+    plan.shadow_prices()      # what each constraint row is worth to the plan
 
 With no safety arguments this is exactly :func:`chc.control.projected_gradient_control` with the
 trajectory and cost packaged; each safety argument switches on one existing layer, so the defaults
@@ -42,7 +43,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 import equinox as eqx
@@ -51,7 +52,9 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from numpy.typing import NDArray
+from scipy.optimize import linprog
 
+from chc.adjoint import control_gradient_adjoint
 from chc.barrier import barrier_gamma_star, identification_radius_threshold
 from chc.control import (
     Bound,
@@ -66,7 +69,13 @@ from chc.control import (
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
-from chc.support import PenaltyModel, SupportModel, _pessimistic_loop, pessimistic_solve
+from chc.support import (
+    PenaltyModel,
+    SupportModel,
+    _augmented_gradient,
+    _pessimistic_loop,
+    pessimistic_solve,
+)
 from chc.uncertainty import (
     certified_horizon,
     confounding_robust_inflation,
@@ -74,6 +83,7 @@ from chc.uncertainty import (
 )
 
 CertificateStatus = Literal["not_evaluated", "uncertified", "partial", "certified"]
+PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
 
 _BARRIER_BACKOFF = 1e-6  # how far inside the condition the solve aims, relative to its terms
 _BARRIER_ROUNDS = 30  # augmented-Lagrangian rounds, each one descent of at most ``steps``
@@ -103,6 +113,9 @@ class CausalPlan:
     the error budget. The solver status is about the optimisation: whether the descent reached its
     own stopping rule or merely ran out of budget. A fully certified plan built on an unfinished
     solve is a trustworthy tube around a suboptimal action, and nothing in the tube says so.
+
+    :meth:`shadow_prices` answers a third: what each constraint row costs the plan, read off the
+    problem the plan was solved for.
     """
 
     actions: Array  # (horizon, m)
@@ -116,6 +129,7 @@ class CausalPlan:
     # barrier was given. The verdict to read, not the solve's: the rounds aim inside the condition,
     # but a budget-stopped or infeasible solve can come back short of it.
     safety: SafetyCertificate | None = None
+    _problem: _PlanProblem | None = field(default=None, repr=False, compare=False)
 
     @property
     def certificate_status(self) -> CertificateStatus:
@@ -145,6 +159,240 @@ class CausalPlan:
                 "causal_plan (see CausalPlan.certificate_status)"
             )
         return self.actions[: self.certified_horizon]
+
+    def shadow_prices(self, tolerance: float | None = None) -> ShadowPrices:
+        """What each row of the plan's ``constraints`` is worth: its KKT multiplier at this plan.
+
+        The gradient is of the objective the solve minimised -- the task cost, plus the pessimism
+        penalties when a support model was given -- at the returned actions. A row binds within
+        ``tolerance * (1 + |bound|)`` of its bound, and so does a box bound. The box's multipliers
+        absorb every action at a bound, so the rows' multipliers solve the stationarity conditions
+        on the free actions alone, by least squares. Where the binding rows are dependent there,
+        the multiplier is not unique, and two linear programs give each row's range instead.
+
+        Read ``residual`` and ``dual_feasible`` before the prices. A solve stopped by its budget is
+        not at a KKT point, and its prices answer a question that has none. A price is the marginal
+        fall in the optimum per unit its row is relaxed: of the optimum, on a plan convex in its
+        actions -- a linear model and a quadratic cost -- and of the local optimum the solve found
+        otherwise. These are the stated rows' multipliers, not the barrier rounds' that
+        :class:`chc.mpc.RecedingHorizon` carries between steps.
+
+        Computed when asked: one gradient, a least-squares solve and, for a degenerate row, two
+        linear programs. ``tolerance`` defaults to ``max(1e-6, 1e3 * eps)`` of the actions' dtype.
+
+        Raises:
+            ValueError: on a plan held under a barrier, whose condition is a constraint of its own,
+                with multipliers that would enter every row's price; or on a plan that carries no
+                problem, as one built by hand does.
+        """
+        problem = self._problem
+        if problem is None:
+            raise ValueError(
+                "this plan carries no problem to price; causal_plan and RecedingHorizon attach one"
+            )
+        if problem.barrier:
+            raise ValueError(
+                "the plan was held under a barrier, a constraint whose multipliers would enter "
+                "every row's price; the prices of a barrier-held plan are not built"
+            )
+        shape, dtype = self.actions.shape, self.actions.dtype
+        if tolerance is None:
+            tolerance = max(1e-6, 1e3 * float(jnp.finfo(dtype).eps))
+        present = [row for row in problem.constraints if row.matrix.shape[0]]
+        size = int(np.prod(shape))
+        return _row_prices(
+            problem.gradient(self.actions),
+            np.asarray(self.actions, dtype=np.float64).ravel(),
+            np.vstack([row.matrix for row in present]) if present else np.zeros((0, size)),
+            np.concatenate([row.lower for row in present]) if present else np.zeros(0),
+            np.concatenate([row.upper for row in present]) if present else np.zeros(0),
+            np.asarray(broadcast_box(problem.u_lo, shape, "u_lo", dtype), np.float64).ravel(),
+            np.asarray(broadcast_box(problem.u_hi, shape, "u_hi", dtype), np.float64).ravel(),
+            tolerance,
+        )
+
+
+@dataclass(frozen=True)
+class RowPrice:
+    """What one constraint row is worth to the plan: how much its objective falls per unit the
+    row is relaxed -- an upper bound raised, a lower bound lowered.
+
+    ``status`` says how far ``price`` can be read:
+
+    * ``exact`` -- the row binds, and the binding rows are independent on the actions the box
+      leaves free (LICQ), so the multiplier is unique.
+    * ``weakly_active`` -- the row sits at its bound with a multiplier of zero: relaxing it buys
+      nothing to first order, and tightening it costs nothing to first order.
+    * ``degenerate`` -- the binding rows are dependent on the free actions, so the multiplier is a
+      set: ``price`` is ``None`` and ``interval`` its range. Relaxing the bound buys
+      ``interval[0]`` a unit and tightening it costs ``interval[1]``, both widened by the
+      stationarity slack.
+    * ``inactive`` -- the row has room, and is worth nothing at the margin.
+
+    An equality row's price takes either sign: the fall per unit its value rises.
+    """
+
+    status: PriceStatus
+    price: float | None
+    interval: tuple[float, float]  # (price, price) unless degenerate
+
+
+@dataclass(frozen=True)
+class ShadowPrices:
+    """The rows' prices at a plan, with what it takes to trust them.
+
+    See :meth:`CausalPlan.shadow_prices`.
+    """
+
+    rows: tuple[RowPrice, ...]  # one per row of the plan's constraints, stacked in the order given
+    residual: float  # stationarity miss on the free actions, over max(1, |gradient there|)
+    # Of the binding rows on the free actions: 0 when they are dependent, inf when none binds.
+    smallest_singular_value: float
+    dual_feasible: bool  # every multiplier has the sign its bound allows, to the tolerance
+
+
+@dataclass(frozen=True)
+class _PlanProblem:
+    """What :meth:`CausalPlan.shadow_prices` needs of the solve, kept by the plan it produced."""
+
+    model: Dynamics
+    x0: Array
+    cost: QuadraticCost
+    dt: float
+    u_lo: Bound
+    u_hi: Bound
+    constraints: tuple[LinearConstraint, ...]
+    support: SupportModel | None
+    lam_supp: float
+    uncertainty: PenaltyModel | None
+    lam_unc: float
+    barrier: bool
+
+    def gradient(self, actions: Array) -> NDArray[np.float64]:
+        """The solve's objective, differentiated at ``actions`` and flattened as the rows are."""
+        if self.support is None:
+            gradient = control_gradient_adjoint(self.model, self.x0, actions, self.dt, self.cost)
+        else:
+            gradient = _augmented_gradient(
+                self.model,
+                self.x0,
+                actions,
+                self.dt,
+                self.cost,
+                self.support,
+                self.lam_supp,
+                self.uncertainty,
+                self.lam_unc,
+            )
+        return np.asarray(gradient, dtype=np.float64).ravel()
+
+
+def _row_prices(
+    gradient: NDArray[np.float64],
+    actions: NDArray[np.float64],
+    matrix: NDArray[np.float64],
+    lower: NDArray[np.float64],
+    upper: NDArray[np.float64],
+    lo: NDArray[np.float64],
+    hi: NDArray[np.float64],
+    tolerance: float,
+) -> ShadowPrices:
+    """The rows' multipliers at ``actions``, from the gradient on the actions left off the box."""
+    with np.errstate(invalid="ignore"):  # an infinite bound is never binding
+        at_hi = np.isfinite(hi) & (actions >= hi - tolerance * (1.0 + np.abs(hi)))
+        at_lo = np.isfinite(lo) & (actions <= lo + tolerance * (1.0 + np.abs(lo))) & ~at_hi
+        values = matrix @ actions
+        up = np.isfinite(upper) & (values >= upper - tolerance * (1.0 + np.abs(upper)))
+        down = np.isfinite(lower) & (values <= lower + tolerance * (1.0 + np.abs(lower)))
+    free = ~(at_hi | at_lo)
+    active = np.flatnonzero(up | down)
+    equality = up[active] & down[active]
+    # A row at its upper bound pushes back along +a, at its lower along -a; an equality row, either.
+    columns = (matrix[active] * np.where(down[active] & ~up[active], -1.0, 1.0)[:, None]).T
+    local, pull = columns[free], gradient[free]
+    scale = max(1.0, float(np.linalg.norm(pull)))
+    multipliers, singular = np.zeros(active.size), np.zeros(0)
+    if active.size and local.shape[0]:
+        multipliers = np.linalg.lstsq(local, -pull, rcond=None)[0]
+        singular = np.linalg.svd(local, compute_uv=False)
+    residual = float(np.linalg.norm(pull + local @ multipliers)) / scale
+    independent = active.size == 0 or (
+        singular.size == active.size
+        and singular[-1] > singular[0] * max(local.shape) * np.finfo(np.float64).eps
+    )
+    slack = 1e3 * tolerance * scale
+    remainder = gradient + columns @ multipliers
+    dual_feasible = bool(
+        np.all(multipliers[~equality] >= -slack)
+        and np.all(remainder[at_hi] <= slack)
+        and np.all(remainder[at_lo] >= -slack)
+    )
+    rows: list[RowPrice] = []
+    for index in range(matrix.shape[0]):
+        found = np.flatnonzero(active == index)
+        if not found.size:
+            rows.append(RowPrice("inactive", 0.0, (0.0, 0.0)))
+            continue
+        column = int(found[0])
+        if independent:
+            price = float(multipliers[column])
+            weak = abs(price) * float(np.linalg.norm(local[:, column])) <= slack
+            rows.append(RowPrice("weakly_active" if weak else "exact", price, (price, price)))
+            continue
+        low, high, feasible = _multiplier_range(
+            gradient,
+            columns,
+            equality,
+            at_hi,
+            at_lo,
+            column,
+            10.0 * max(residual, tolerance) * scale,
+        )
+        dual_feasible = dual_feasible and feasible
+        rows.append(RowPrice("degenerate", None, (low, high)))
+    return ShadowPrices(
+        rows=tuple(rows),
+        residual=residual,
+        smallest_singular_value=(
+            math.inf if not active.size else float(singular[-1]) if independent else 0.0
+        ),
+        dual_feasible=dual_feasible,
+    )
+
+
+def _multiplier_range(
+    gradient: NDArray[np.float64],
+    columns: NDArray[np.float64],
+    equality: NDArray[np.bool_],
+    at_hi: NDArray[np.bool_],
+    at_lo: NDArray[np.bool_],
+    column: int,
+    slack: float,
+) -> tuple[float, float, bool]:
+    """The least and the greatest multiplier of one binding row over every set of multipliers that
+    meets the stationarity conditions to within ``slack``, and whether any does."""
+    size, active = columns.shape
+    capped, floored = np.flatnonzero(at_hi), np.flatnonzero(at_lo)
+    system = np.zeros((size, active + capped.size + floored.size))
+    system[:, :active] = columns
+    system[capped, active + np.arange(capped.size)] = 1.0
+    system[floored, active + capped.size + np.arange(floored.size)] = -1.0
+    bounds = [(None, None) if both else (0.0, None) for both in equality]
+    bounds += [(0.0, None)] * (capped.size + floored.size)
+    ends, feasible = [], True
+    for sense in (1.0, -1.0):
+        objective = np.zeros(system.shape[1])
+        objective[column] = sense
+        result = linprog(
+            objective,
+            A_ub=np.vstack([system, -system]),
+            b_ub=np.concatenate([slack - gradient, slack + gradient]),
+            bounds=bounds,
+            method="highs",
+        )
+        feasible = feasible and result.status != 2
+        ends.append(sense * result.fun if result.status == 0 else -sense * math.inf)
+    return float(ends[0]), float(ends[1]), feasible
 
 
 @dataclass(frozen=True)
@@ -366,6 +614,20 @@ def _plan(
         ),
         solver_status=status,
         solver_iterations=iterations,
+        _problem=_PlanProblem(
+            model=model,
+            x0=x0,
+            cost=cost,
+            dt=dt,
+            u_lo=u_lo,
+            u_hi=u_hi,
+            constraints=tuple(constraints),
+            support=support,
+            lam_supp=lam_supp,
+            uncertainty=uncertainty,
+            lam_unc=lam_unc,
+            barrier=barrier is not None,
+        ),
     )
     if barrier is None:
         return plan, None

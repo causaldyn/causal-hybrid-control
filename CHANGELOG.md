@@ -78,6 +78,32 @@ still change).
   did. `scripts/bench_period_budget.py` reprints the numbers; the design record is
   `docs/adr/0008-a-budget-per-period.md`.
 
+- **`CausalPlan.shadow_prices()`: what each constraint row is worth to the plan.** Each row of
+  `constraints` gets its KKT multiplier at the returned actions: how much the optimum falls per
+  unit the row is relaxed, an upper bound raised or a lower bound lowered. It is read off the
+  problem the plan was solved for, which `causal_plan` and `RecedingHorizon.step` now keep on the
+  plan. The gradient is that of the objective the solve minimised: the task cost, plus the support
+  and uncertainty penalties of a pessimistic solve. The box's multipliers absorb every action at a
+  bound. `RowPrice.status` says how far a price can be read:
+  - `exact`: the binding rows are independent on the actions the box leaves free;
+  - `weakly_active`: the row is at its bound with a multiplier of zero;
+  - `degenerate`: the binding rows are dependent there, so the multiplier is a set, and two linear
+    programs give its range in place of a price;
+  - `inactive`.
+
+  `ShadowPrices` carries the stationarity `residual` and `dual_feasible`, to read before the
+  prices: three steps of the lab's solve leave a residual 4900 times the converged one. On the
+  ledger lab's plant, a day's budget of half what the day spends unbudgeted is priced at
+  1.7536641, where Octave's `qp` gives 1.7536659 and the cost's slope is 1.7536660. A budget that
+  meets every cap is `degenerate` on `[0, 0.511]`, and the cost's left slope there is 0.511. A
+  pessimistic plan is priced on its penalised objective, to 4e-8 of its slope; priced without its
+  confounding penalty, the same budget would read 0.2 too high at the same residual. On random
+  separable problems under a box, with upper, lower and equality rows, each of the test's 69
+  exact prices matches a central difference of the optimum to 4.9e-7. A plan held under a barrier
+  is refused, since the barrier's multipliers would enter every row's price. These are the stated
+  rows' multipliers, not those of ADR 0003's barrier rounds. `PriceStatus`, `RowPrice` and
+  `ShadowPrices` are exported.
+
 ### Changed
 
 - **`Target.value` and `Driver.forecast` are typed `ArrayLike`.** They were `float |
