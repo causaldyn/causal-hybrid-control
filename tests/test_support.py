@@ -6,15 +6,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from chc import (
-    DampedOscillator,
-    HybridDynamics,
-    QuadraticCost,
-    ZeroResidual,
-    projected_gradient_control,
-    rollout,
-)
+from chc import HybridDynamics, QuadraticCost
+from chc.control import projected_gradient_control
 from chc.cost import total_cost
+from chc.dynamics import DampedOscillator
+from chc.integrate import rollout
+from chc.residual import ZeroResidual
 from chc.support import SupportModel, pessimistic_control
 
 DT = 0.1

@@ -28,7 +28,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import integrate, optimize, signal, stats
 
-from chc import DeploymentGate, GateConfig, GateMode, ZoneBatch, ZonePlan
+from chc import DeploymentGate, GateConfig, ZoneBatch, ZonePlan
+from chc.gate import GateMode
 
 BATCH = 96
 CHECKS = 150

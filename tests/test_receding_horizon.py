@@ -24,13 +24,13 @@ from jax import Array
 from chc import (
     BarrierConstraint,
     CausalPlan,
-    DampedOscillator,
     LinearConstraint,
     QuadraticCost,
     RecedingHorizon,
     SupportModel,
     causal_plan,
 )
+from chc.dynamics import DampedOscillator
 from chc.integrate import rk4_step
 from chc.mpc import PeriodBudget
 from chc.plan import _plan

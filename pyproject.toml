@@ -123,6 +123,8 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PERF", "PIE", "PT", "PT
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# a name the top level only serves with a warning is the library's own to stop using first
+filterwarnings = ["error:chc\\.\\w+ leaves the top level:DeprecationWarning"]
 
 [tool.ty.environment]
 python-version = "3.11"

@@ -5,8 +5,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc import QuadraticCost, causal_plan, mpc_control, projected_gradient_control, rollout
+from chc import QuadraticCost, causal_plan
 from chc.adjoint import control_gradient_adjoint
+from chc.control import projected_gradient_control
 from chc.cost import total_cost
 from chc.delay import (
     DelayedDynamics,
@@ -26,7 +27,9 @@ from chc.delay import (
     state_of,
     state_trajectory,
 )
+from chc.integrate import rollout
 from chc.irf import delay_estimate
+from chc.mpc import mpc_control
 
 _TAU, _DT = 1.0, 0.02
 _LAG = round(_TAU / _DT)

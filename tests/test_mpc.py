@@ -5,14 +5,11 @@ import jax.numpy as jnp
 import pytest
 from jax import Array
 
-from chc import (
-    DampedOscillator,
-    HybridDynamics,
-    QuadraticCost,
-    ZeroResidual,
-    mpc_control,
-    rollout,
-)
+from chc import HybridDynamics, QuadraticCost
+from chc.dynamics import DampedOscillator
+from chc.integrate import rollout
+from chc.mpc import mpc_control
+from chc.residual import ZeroResidual
 
 DT = 0.1
 

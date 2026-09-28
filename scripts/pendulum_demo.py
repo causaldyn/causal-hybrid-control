@@ -65,7 +65,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from chc import CausalGraph, Constraint, Lever, Panel, Prescription, Target, prescribe
+from chc import CausalGraph, Constraint, Lever, Panel, Target, prescribe
+from chc.decision import Prescription
 from chc.integrate import rollout
 
 THETA, OMEGA, TORQUE, WIND = "theta", "omega", "torque", "wind"

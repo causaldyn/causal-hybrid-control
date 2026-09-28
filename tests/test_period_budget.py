@@ -14,8 +14,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc import LinearConstraint, LinearDynamics, QuadraticCost, RecedingHorizon, causal_plan
+from chc import LinearConstraint, QuadraticCost, RecedingHorizon, causal_plan
 from chc.cost import total_cost
+from chc.dynamics import LinearDynamics
 from chc.integrate import rk4_step
 from chc.mpc import PeriodBudget
 

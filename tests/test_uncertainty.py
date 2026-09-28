@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from jax import Array
 
-from chc import SplitConformal, fit_ensemble, sharded_ensemble_certificate
+from chc import SplitConformal
 from chc.benchmark import ModelUncertaintyTask
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step
@@ -25,7 +25,9 @@ from chc.uncertainty import (
     NestedCVaRPenalty,
     _top_tail_mean,
     cvar_upper,
+    fit_ensemble,
     nested_risk_certificate,
+    sharded_ensemble_certificate,
 )
 
 DT = 0.1

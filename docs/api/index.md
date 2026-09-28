@@ -1,7 +1,10 @@
 # API reference
 
-One page per public module, rendered from the module's docstrings. Names are importable from their
-module; many are also re-exported from the top-level `chc` namespace, whose `__all__` lists them.
+One page per public module, rendered from the module's docstrings. Every name is importable from
+its module, which is where it stays. The top-level `chc` namespace holds the
+[lifecycle's](../lifecycle.md) names, the classes a call to one of them takes and the errors they
+raise, and its `__all__` lists them. Any other name 0.7.0 bound there still imports from it until
+1.0, with a `DeprecationWarning` that names its module.
 
 The pages are grouped by stability tier — by what a break would cost you — and each page states its
 tier at the top.

@@ -35,16 +35,12 @@ from scipy.optimize import minimize, nnls
 jax.config.update("jax_enable_x64", True)
 
 import chc.control as control  # noqa: E402
-from chc import (  # noqa: E402
-    DampedOscillator,
-    LinearConstraint,
-    LinearDynamics,
-    MarketingMixSystem,
-    QuadraticCost,
-    projected_gradient_solve,
-)
+from chc import LinearConstraint, QuadraticCost  # noqa: E402
 from chc.adjoint import control_gradient_adjoint  # noqa: E402
+from chc.control import projected_gradient_solve  # noqa: E402
 from chc.cost import total_cost  # noqa: E402
+from chc.dynamics import DampedOscillator, LinearDynamics  # noqa: E402
+from chc.mmm import MarketingMixSystem  # noqa: E402
 
 STEPS, LR0, TOL = 10_000, 0.2, 1e-9  # projected_gradient_solve's defaults, used by both arms
 

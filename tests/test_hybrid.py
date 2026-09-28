@@ -5,7 +5,9 @@ import jax.numpy as jnp
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from chc import DampedOscillator, HybridDynamics, MLPResidual, ZeroResidual
+from chc import HybridDynamics
+from chc.dynamics import DampedOscillator
+from chc.residual import MLPResidual, ZeroResidual
 
 finite = st.floats(min_value=-10.0, max_value=10.0, allow_nan=False, allow_infinity=False)
 

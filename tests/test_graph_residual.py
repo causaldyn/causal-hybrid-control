@@ -5,8 +5,10 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from chc import HybridDynamics, MLPResidual, fit_residual, one_step_mse, rk4_step
-from chc.residual import GraphResidual
+from chc import HybridDynamics
+from chc.integrate import rk4_step
+from chc.residual import GraphResidual, MLPResidual
+from chc.train import fit_residual, one_step_mse
 
 N = 10
 DT = 0.05

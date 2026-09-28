@@ -5,7 +5,10 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from chc import DampedOscillator, HybridDynamics, KANResidual, ZeroResidual, rk4_step
+from chc import HybridDynamics
+from chc.dynamics import DampedOscillator
+from chc.integrate import rk4_step
+from chc.residual import KANResidual, ZeroResidual
 from chc.train import fit_residual, one_step_mse
 
 DT = 0.05

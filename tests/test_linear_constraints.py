@@ -17,18 +17,18 @@ from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from scipy.optimize import nnls
 
-from chc import (
-    DampedOscillator,
-    LinearConstraint,
-    QuadraticCost,
-    SupportModel,
-    causal_plan,
-    pessimistic_solve,
+from chc import LinearConstraint, QuadraticCost, SupportModel, causal_plan
+from chc.control import (
+    _constraint_blocks,
+    _dykstra,
+    _no_duals,
+    _polish,
     projected_gradient_control,
     projected_gradient_solve,
 )
-from chc.control import _constraint_blocks, _dykstra, _no_duals, _polish
 from chc.cost import total_cost
+from chc.dynamics import DampedOscillator
+from chc.support import pessimistic_solve
 
 DT = 0.1
 HORIZON = 30

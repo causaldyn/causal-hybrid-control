@@ -45,17 +45,16 @@ from chc import (  # noqa: E402
     HybridDynamics,
     Lever,
     LinearConstraint,
-    LinearDynamics,
-    MarketingMixSystem,
     Panel,
-    Prescription,
     QuadraticCost,
     Target,
     causal_plan,
     prescribe,
-    total_cost,
 )
-from chc.mmm import SALES, adstock_dynamics  # noqa: E402
+from chc.cost import total_cost  # noqa: E402
+from chc.decision import Prescription  # noqa: E402
+from chc.dynamics import LinearDynamics  # noqa: E402
+from chc.mmm import SALES, MarketingMixSystem, adstock_dynamics  # noqa: E402
 
 # ── instances ─────────────────────────────────────────────────────────────────────────────────
 

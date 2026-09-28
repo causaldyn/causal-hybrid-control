@@ -3,7 +3,7 @@
 import jax
 import jax.numpy as jnp
 
-from chc import RLearner
+from chc.estimators import RLearner
 
 
 def _heterogeneous_confounded(n: int, seed: int) -> tuple[dict, jnp.ndarray]:

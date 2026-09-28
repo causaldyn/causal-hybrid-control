@@ -112,7 +112,10 @@ and how far the plan can be from the best one its own box allows from `plan_regr
 
 ```python
 import jax, jax.numpy as jnp
-from chc import DampedOscillator, HybridDynamics, KANResidual, QuadraticCost, mpc_control
+from chc import HybridDynamics, QuadraticCost
+from chc.dynamics import DampedOscillator
+from chc.mpc import mpc_control
+from chc.residual import KANResidual
 
 # hybrid dynamics: known oscillator + a learnable (KAN) residual, swappable for MLP/linear
 model = HybridDynamics(

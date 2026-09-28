@@ -28,22 +28,20 @@ from chc import (
     CausalGraph,
     Constraint,
     DecisionError,
-    DrivenDynamics,
     Driver,
     Lever,
-    LinearDynamics,
     Panel,
     QuadraticCost,
     RecedingHorizon,
     Target,
     causal_plan,
-    control_gradient_adjoint,
     fit_causal_residual,
     prescribe,
-    total_cost,
 )
+from chc.adjoint import control_gradient_adjoint
+from chc.cost import total_cost
 from chc.decision import Prescription, _cost
-from chc.dynamics import Dynamics
+from chc.dynamics import DrivenDynamics, Dynamics, LinearDynamics
 from chc.plan import _barrier_terms
 
 DT = 0.1

@@ -5,7 +5,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from chc import DampedOscillator, HybridDynamics, rk4_step
+from chc import HybridDynamics
+from chc.dynamics import DampedOscillator
+from chc.integrate import rk4_step
 from chc.koopman import KoopmanModel, koopman_controller, koopman_lqr_gain
 
 DT = 0.05

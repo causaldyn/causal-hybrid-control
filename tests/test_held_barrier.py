@@ -21,14 +21,13 @@ from scipy.optimize import nnls
 from chc import (
     BarrierConstraint,
     CausalPlan,
-    DampedOscillator,
     QuadraticCost,
     SupportModel,
     causal_plan,
     certify_safety,
 )
 from chc.cost import total_cost
-from chc.dynamics import HybridDynamics, LinearDynamics
+from chc.dynamics import DampedOscillator, HybridDynamics, LinearDynamics
 from chc.epidemic import SIRDynamics
 from chc.integrate import rollout
 from chc.residual import ZeroResidual

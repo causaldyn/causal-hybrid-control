@@ -2,19 +2,18 @@
 
 import jax.numpy as jnp
 
-from chc import (
-    DampedOscillator,
-    HybridDynamics,
-    QuadraticCost,
-    ZeroResidual,
+from chc import HybridDynamics, QuadraticCost
+from chc.control import projected_gradient_control
+from chc.cost import total_cost
+from chc.dynamics import DampedOscillator
+from chc.lqr import (
     continuous_lqr,
     dlqr_feedback_controls,
     finite_horizon_dlqr,
     linearize_continuous,
     linearize_discrete,
-    projected_gradient_control,
-    total_cost,
 )
+from chc.residual import ZeroResidual
 
 DT = 0.1
 

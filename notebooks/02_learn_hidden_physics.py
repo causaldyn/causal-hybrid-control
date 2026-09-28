@@ -20,18 +20,10 @@ import pandas as pd
 jax.config.update("jax_enable_x64", True)
 %matplotlib inline
 
-from chc import (
-    DampedOscillator,
-    HybridDynamics,
-    KANResidual,
-    MLPResidual,
-    ZeroResidual,
-    fit_residual,
-    fit_residual_multistep,
-    one_step_mse,
-    rk4_step,
-    rollout,
-)
+from chc.dynamics import DampedOscillator, HybridDynamics
+from chc.integrate import rk4_step, rollout
+from chc.residual import KANResidual, MLPResidual, ZeroResidual
+from chc.train import fit_residual, fit_residual_multistep, one_step_mse
 
 DT = 0.05
 

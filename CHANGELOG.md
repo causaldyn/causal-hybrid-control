@@ -299,6 +299,26 @@ still change).
   and the PARI/GP and Octave files, which must complete; `just crosschecks` runs the same locally.
   The FriCAS, R and Python files in `validation/` are still run by hand.
 
+### Deprecated
+
+- **421 names leave the top level in 1.0; import each from its module (D17).** `chc` now holds the
+  lifecycle: every name `docs/lifecycle.md` files, the classes a call to one of them takes, the
+  errors they raise, and `__version__`, 61 entries in `__all__`. Every other name 0.7.0 bound there
+  still imports from `chc`, with a `DeprecationWarning` at the importing line that names the module:
+  `chc.rollout leaves the top level in 1.0: import it from chc.integrate`. Module paths do not move,
+  so the migration is a find-and-replace from the warning's text, and `import chc` still imports
+  the modules it did, so `chc.integrate.rollout` keeps working. The record is
+  `docs/adr/0016-the-top-level-is-the-lifecycle.md`.
+  - **What changes without a warning.** `from chc import *` binds the 61 names, not 459, and
+    `dir(chc)` no longer lists the others. Type checkers still see all 482, so a checked caller is warned at
+    run time rather than broken at check time.
+  - **What was never there.** The result types added since 0.7.0 (`PlanEvaluation`, `Verdict`,
+    `ExperimentDesign`, `SwitchbackPlan` and their kin) and `fit_logger` live at their module paths
+    only.
+  - **What else moved.** The library's tests, scripts and notebooks, the README and the bench
+    import from module paths, and pytest turns the warning into an error in both repositories, so
+    neither can start depending on the top level again.
+
 ### Removed
 
 - **`runtime/`, the Rust harness that measured a compiled control loop.** Its verdict, recorded

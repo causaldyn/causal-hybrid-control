@@ -16,17 +16,17 @@ from scipy.optimize import OptimizeResult, minimize
 from chc import (
     BarrierConstraint,
     CausalPlan,
-    ConfoundingRobustPenalty,
     LinearConstraint,
-    LinearDynamics,
     QuadraticCost,
     RecedingHorizon,
     SupportModel,
     causal_plan,
 )
+from chc.dynamics import LinearDynamics
 from chc.mpc import PeriodBudget
 from chc.plan import _row_prices
 from chc.support import _augmented
+from chc.uncertainty import ConfoundingRobustPenalty
 
 DT = 0.5
 DAY = 48

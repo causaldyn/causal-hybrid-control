@@ -7,24 +7,18 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc import (
-    DampedOscillator,
-    HybridDynamics,
-    LinearDynamics,
-    QuadraticCost,
-    SupportModel,
-    ZeroResidual,
+from chc import HybridDynamics, QuadraticCost, SupportModel
+from chc.adjoint import control_gradient_adjoint
+from chc.control import (
     box_stationarity,
     lbfgs_box_control,
     nlp_solver_certificate,
-    pessimistic_control,
-    pessimistic_solve,
     projected_gradient_control,
     projected_gradient_solve,
-    rollout,
 )
-from chc.adjoint import control_gradient_adjoint
 from chc.cost import total_cost
+from chc.dynamics import DampedOscillator, LinearDynamics
+from chc.integrate import rollout
 from chc.residual import (
     ContractiveResidual,
     ControlAffineResidual,
@@ -34,7 +28,9 @@ from chc.residual import (
     MLPResidual,
     PortHamiltonianResidual,
     SpectralResidual,
+    ZeroResidual,
 )
+from chc.support import pessimistic_control, pessimistic_solve
 
 DT = 0.1
 

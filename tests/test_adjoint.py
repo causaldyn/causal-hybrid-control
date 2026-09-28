@@ -4,17 +4,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from chc import (
-    DampedOscillator,
-    HybridDynamics,
-    QuadraticCost,
-    ZeroResidual,
-    control_gradient_adjoint,
-    rollout,
-    total_cost,
-)
-from chc.adjoint import costate_norms, perturbation_cost_weights
-from chc.integrate import rk4_step
+from chc import HybridDynamics, QuadraticCost
+from chc.adjoint import control_gradient_adjoint, costate_norms, perturbation_cost_weights
+from chc.cost import total_cost
+from chc.dynamics import DampedOscillator
+from chc.integrate import rk4_step, rollout
+from chc.residual import ZeroResidual
 
 DT = 0.1
 
