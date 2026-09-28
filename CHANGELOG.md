@@ -122,6 +122,12 @@ still change).
   accepted, type-checked only by coincidence. Nothing is converted. A `Target` or a `Driver` that
   holds an array still cannot be compared with `==` or hashed.
 
+### Removed
+
+- **`MatrixRatioAccuracy.ok`, deprecated in 0.6.0 (D13).** Read `cert.status == "not_convicted"`
+  where you read `cert.ok`, and `cert.status == "convicted"` where you read `not cert.ok`; the
+  values are the ones `ok` returned. The property had warned for one minor, as promised.
+
 ### Fixed
 
 - **`mpc_control` stepped its plant at `t = 0`, and every window's plan started its clock at 0.**
