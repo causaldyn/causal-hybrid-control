@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import jax.numpy as jnp
 import pytest
 
@@ -47,3 +49,37 @@ def test_report_renders_the_kantorovich_story() -> None:
     text = marketplace_report(MarketplaceMatching.synthetic_city(seed=3))
     assert "Kantorovich" in text  # the lineage
     assert "surge" in text  # the dual output
+
+
+def _sinkhorn_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if getattr(r, "chc_event", None) == "sinkhorn"]
+
+
+def test_sinkhorn_reports_and_warns_when_its_iterations_stop_short(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # At eps = 0.01 this city's residual sits on a plateau near 1e-2 for the first thousand
+    # iterations; the result used to hand back that plan, and prices read off it, with nothing said.
+    city = MarketplaceMatching.synthetic_city(n_zones=10, seed=1)
+    with caplog.at_level(logging.WARNING, logger="chc.matching"):
+        res = sinkhorn(city.cost, city.supply, city.demand, eps=0.01, iters=1000)
+    rows = jnp.sum(jnp.abs(res.plan.sum(axis=1) - city.supply))
+    cols = jnp.sum(jnp.abs(res.plan.sum(axis=0) - city.demand))
+    assert res.marginal_residual == pytest.approx(float((rows + cols) / city.supply.sum()))
+    assert res.marginal_residual > 1e-3
+    (record,) = _sinkhorn_warnings(caplog)
+    assert record.levelno == logging.WARNING
+    assert getattr(record, "marginal_residual", None) == res.marginal_residual
+
+
+def test_sinkhorn_is_quiet_once_its_marginals_hold(caplog: pytest.LogCaptureFixture) -> None:
+    city = MarketplaceMatching.synthetic_city(n_zones=10, seed=1)
+    with caplog.at_level(logging.WARNING, logger="chc.matching"):
+        res = sinkhorn(city.cost, city.supply, city.demand, eps=0.01, iters=16000)
+    assert res.marginal_residual < 1e-12
+    assert not _sinkhorn_warnings(caplog)
+
+
+def test_sinkhorn_refuses_a_tolerance_that_cannot_be_met() -> None:
+    with pytest.raises(ValueError, match="tol must be positive"):
+        sinkhorn(COST, SUPPLY, DEMAND, tol=0.0)

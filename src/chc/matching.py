@@ -11,6 +11,7 @@ exact LP (Octave `glpk` cross-check: Kantorovich-Rubinstein gap = 0). NumPy base
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import jax
@@ -21,27 +22,50 @@ from jax.scipy.special import logsumexp
 
 from chc.games import project_simplex
 
+_log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class SinkhornResult:
-    """A solved entropic OT: plan, dual potentials (surge prices), cost, and duality gap."""
+    """A solved entropic OT: plan, dual potentials (surge prices), cost, duality gap, and how far
+    the plan is from the marginals it was asked to meet."""
 
     plan: Array  # (m, n) transport / matching plan
     potentials_f: Array  # (m,) supply-side dual potentials
     potentials_g: Array  # (n,) demand-side dual potentials = market-clearing (surge) prices
     transport_cost: float  # <plan, cost>
     duality_gap: float  # |cost - dual|; -> 0 as eps -> 0 (Kantorovich-Rubinstein)
+    # (||P 1 - a||_1 + ||P' 1 - b||_1) / sum(a). The loop ends on the demand update, so the columns
+    # hold to rounding and this is the supply side's miss. The duality gap is no substitute: it
+    # carries the entropic term, so it stays positive at convergence.
+    marginal_residual: float
 
 
 def sinkhorn(
-    cost: Array, supply: Array, demand: Array, *, eps: float = 0.05, iters: int = 1000
+    cost: Array,
+    supply: Array,
+    demand: Array,
+    *,
+    eps: float = 0.05,
+    iters: int = 1000,
+    tol: float = 1e-4,
 ) -> SinkhornResult:
     """Entropic (log-domain, stable) Kantorovich OT; returns the plan and dual potentials (surge).
 
     ``cost`` is ``(m, n)`` dispatch cost; ``supply``/``demand`` are the marginals (equal totals).
     Recovers the exact transportation LP as ``eps -> 0``; the demand potentials ``g`` are the
     market-clearing surge prices.
+
+    The iteration count is fixed, so that the solve stays a ``lax.scan`` and differentiable, and a
+    fixed count is a guess: at small ``eps`` the residual can sit on a plateau for thousands of
+    iterations before it falls. On ``MarketplaceMatching.synthetic_city(seed=3)`` at its own
+    ``eps = 0.02`` it is still 2.2e-3 after 2000 iterations and 1.7e-15 after 16000 (float64).
+    :attr:`SinkhornResult.marginal_residual` says whether the guess was good, and a residual over
+    ``tol`` is logged as a warning, because potentials read off an unconverged plan are not the
+    market-clearing prices.
     """
+    if tol <= 0.0:
+        raise ValueError("tol must be positive")
     cost = jnp.asarray(cost)
     a, b = jnp.asarray(supply), jnp.asarray(demand)
     log_a, log_b = jnp.log(a), jnp.log(b)
@@ -56,7 +80,23 @@ def sinkhorn(
     plan = jnp.exp((f[:, None] + g[None, :] - cost) / eps)
     transport = float(jnp.sum(plan * cost))
     dual = float(jnp.dot(f, a) + jnp.dot(g, b))
-    return SinkhornResult(plan, f, g, transport, abs(transport - dual))
+    miss = jnp.sum(jnp.abs(plan.sum(axis=1) - a)) + jnp.sum(jnp.abs(plan.sum(axis=0) - b))
+    residual = float(miss / jnp.sum(a))
+    if not residual <= tol:
+        _log.warning(
+            "sinkhorn stopped %.2e of the mass away from its marginals after %d iterations; "
+            "raise iters or eps before reading prices off this plan",
+            residual,
+            iters,
+            extra={
+                "chc_event": "sinkhorn",
+                "marginal_residual": residual,
+                "eps": eps,
+                "iters": iters,
+                "tol": tol,
+            },
+        )
+    return SinkhornResult(plan, f, g, transport, abs(transport - dual), residual)
 
 
 def _nearest_local(cost: np.ndarray, supply: np.ndarray, demand: np.ndarray) -> tuple[float, float]:

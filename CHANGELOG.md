@@ -9,6 +9,17 @@ still change).
 
 ### Added
 
+- **`sinkhorn` says how far its plan is from its marginals.** `SinkhornResult` gains
+  `marginal_residual`, the L1 miss of both marginals over the total mass, and a residual over the
+  new `tol` (default `1e-4`) is logged as a warning (`chc_event="sinkhorn"`). The solve runs a fixed
+  number of iterations so that it stays a differentiable `lax.scan`, and at small `eps` the residual
+  can sit on a plateau for thousands of them: `MarketplaceMatching.synthetic_city(seed=3)` at its
+  own `eps = 0.02` is still 2.2e-3 of the mass away after its default 2000 iterations and 1.7e-15
+  after 16000, and its dual potentials -- the surge prices -- came back with nothing said. The
+  duality gap never showed this: it carries the entropic term and stays positive at convergence.
+  Nothing numeric changed; `SinkhornResult` has one more field, so code that constructs one
+  positionally needs it.
+
 - **`prescribe` accepts a bound on its target column.** A `Constraint` that names the target
   bounds the steered state's own coordinate and adds no state; it gets the barrier, `gamma*` and
   `hold_constraints` like any other constrained column. Before, it raised `DecisionError`. This is
