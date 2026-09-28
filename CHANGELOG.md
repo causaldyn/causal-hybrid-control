@@ -252,6 +252,14 @@ still change).
     global effect on a secondary metric such as matches; and a design helper. The design record
     is `docs/adr/0014-the-global-effect-of-a-marketplace-experiment.md`.
 
+### Removed
+
+- **`runtime/`, the Rust harness that measured a compiled control loop.** Its verdict, recorded
+  under 0.4.0, was 1.38x over the compiled library: not enough to carry a second runtime. It was
+  never in the wheel, and its last state is at the `v0.7.0` tag. With it goes `paste`, which
+  RUSTSEC-2024-0436 lists as unmaintained, and which reached the repository only through its
+  `nalgebra`.
+
 ## [0.7.0] — 2026-09-28
 
 ### Added
