@@ -1,5 +1,5 @@
 # chc.experiment
 
-**Stability tier: [evolving](index.md#evolving).**
+**Stability tier: [experimental](index.md#experimental).**
 
 ::: chc.experiment

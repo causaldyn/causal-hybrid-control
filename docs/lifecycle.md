@@ -10,7 +10,9 @@ A decision taken from logs goes through six stages:
 6. **Adapt** when the world moves.
 
 This page files the library by stage. For each stage it lists what is built, where it is
-documented, and what is not built yet. Every name below is importable from `chc`.
+documented, and what is not built yet. Every name below is importable from `chc`. Entries marked
+*experimental* may change or be withdrawn in any release; see the
+[stability tiers](api/index.md).
 
 ## 1. Identify: what the logs can say about the levers
 
@@ -19,8 +21,8 @@ documented, and what is not built yet. Every name below is importable from `chc`
   schedule. See the [quickstart](quickstart.md) and [identification](concepts/identification.md).
 - **`fit_causal_residual`.** It fits the lever's channel in a hybrid model by cross-fitted
   orthogonalisation, or through an instrument when the confounder is latent. When the channel
-  class cannot fit every state, `weights` points it at the states a one-shot decision will be taken
-  at. See [`chc.dynamics_id`](api/dynamics_id.md).
+  class cannot fit every state, `weights` (*experimental*) points it at the states a one-shot
+  decision will be taken at. See [`chc.dynamics_id`](api/dynamics_id.md).
 - **Static effects.** `estimate_effect_dml`, `sensitivity_analysis`, `refute_effect` and
   `e_value`. See [tutorial 3](tutorials/03_causal_inference_toolkit.md), and
   [tutorial 7](tutorials/07_real_data_lalonde.md) against an experimental benchmark.
@@ -85,28 +87,28 @@ documented, and what is not built yet. Every name below is importable from `chc`
   `capped_exploration_policy` price how much exploration a controller should inject while its
   effect is not identified, and on what schedule. Each is weighed against the control the
   exploration costs. See [`chc.regret`](api/regret.md).
-- **`design_experiment`.** It says how many units to run in each zone before a one-shot decision,
-  and whether to run any: the regret the experiment removes, against what it spends. The verdict
-  is deploy, experiment or abstain, with the reason. Every number it reports is Monte Carlo's,
-  re-solving the decision on every draw; its local model only chooses the units. A channel the
-  logs do not identify enters as a wide prior. Scope: a static decision over zones, linear in each
-  zone's channel, with a box on the levers. See [`chc.experiment`](api/experiment.md).
-- **`design_switchback` and `read_switchback`.** Which switchback to run in a zone whose state
-  carries the lever's past, for a named effect: the channel, the effect of holding the lever on
-  for `H` periods, or the steady state. The design is aligned to the effect, so the persistence
-  estimate is orthogonal to it, and the plan quotes each effect's standard error and minimum
-  detectable effect at the least favourable persistence. Without a trusted state model only
+- **`design_experiment`** (*experimental*). It says how many units to run in each zone before a
+  one-shot decision, and whether to run any: the regret the experiment removes, against what it
+  spends. The verdict is deploy, experiment or abstain, with the reason. Every number it reports is
+  Monte Carlo's, re-solving the decision on every draw; its local model only chooses the units. A
+  channel the logs do not identify enters as a wide prior. Scope: a static decision over zones,
+  linear in each zone's channel, with a box on the levers. See
+  [`chc.experiment`](api/experiment.md).
+- **`design_switchback` and `read_switchback`** (*experimental*). Which switchback to run in a zone
+  whose state carries the lever's past, for a named effect: the channel, the effect of holding the
+  lever on for `H` periods, or the steady state. The design is aligned to the effect, so the
+  persistence estimate is orthogonal to it, and the plan quotes each effect's standard error and
+  minimum detectable effect at the least favourable persistence. Without a trusted state model only
   model-free readings are planned. `read_switchback` reads the effect off the data, with a
   standard error from the data. Scope: a first-order state per zone, and zones independent. See
   [`chc.switchback`](api/switchback.md).
-- **`shadow_price_effect`.** An experiment on a matching market treats some of the rows, and they
-  compete with the control rows for the same columns, so the naive difference is not what treating
-  every row would do. It reads that global effect off the rows' rents in the experiment's own
-  matching, with a standard error, the second-order bias left at the treated share, which vanishes
-  at one half, and an alarm near the LP limit, where that bias stops being second order. Strata
-  fixed before the assignment post-stratify it. `shadow_price_interval` is the range the exact LP
-  leaves at `eps = 0`. See
-  [`chc.matching`](api/matching.md).
+- **`shadow_price_effect`** (*experimental*). An experiment on a matching market treats some of the
+  rows, and they compete with the control rows for the same columns, so the naive difference is not
+  what treating every row would do. It reads that global effect off the rows' rents in the
+  experiment's own matching, with a standard error, the second-order bias left at the treated
+  share, which vanishes at one half, and an alarm near the LP limit, where that bias stops being
+  second order. Strata fixed before the assignment post-stratify it. `shadow_price_interval` is the
+  range the exact LP leaves at `eps = 0`. See [`chc.matching`](api/matching.md).
 - **Not built:** an experiment design for a dynamic plan's whole decision, beyond one lever's
   effect.
 

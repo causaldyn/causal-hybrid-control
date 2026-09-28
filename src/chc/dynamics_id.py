@@ -354,7 +354,8 @@ def solve_channel_moment(
         ridge: Tikhonov term on the moment's Gram matrix.
         weights: one weight per transition, shape ``(N,)``, on its moment; ``None`` weighs all
             alike. A weight that is a function of the state alone keeps the moment orthogonal (see
-            :func:`fit_causal_residual`).
+            :func:`fit_causal_residual`). Experimental: it may change or be withdrawn in any
+            release.
 
     Returns:
         The channel coefficients, shape ``(n, m, n_features)``, consumable directly as
@@ -465,8 +466,9 @@ def fit_causal_residual(
             driver, since a column nothing downstream of the action moves can be neither a mediator
             nor a collider of its effect. The fitted gain is :attr:`CausalDynamicsFit.driver_gain`;
             its standard error is inside ``drift_error``.
-        weights: a weight on each transition's channel moment, a function of its state alone. A
-            callable is called with ``x (N, n)`` and nothing else, since a weight that reads the
+        weights: a weight on each transition's channel moment, a function of its state alone.
+            Experimental: it may change or be withdrawn in any release. A callable is called with
+            ``x (N, n)`` and nothing else, since a weight that reads the
             action or the next state biases the channel at first order, while any weight on the
             state keeps the moment orthogonal. The weights are scaled to mean 1. The channel's
             standard error is robust, as for every fit, and here it has to be: a weight that loads

@@ -35,5 +35,10 @@ The README's tier table names the stable and the experimental modules one by one
 
 ## Experimental
 
-Modules that exist to carry one research result. They may change or be withdrawn in any release.
-Pin an exact version if you depend on one.
+Modules that exist to carry one research result, and modules built ahead of the release that
+verifies them on a plant CHC did not write. They may change or be withdrawn in any release. Pin an
+exact version if you depend on one.
+
+Three entries in modules of other tiers are experimental on the same terms, for the same reason:
+the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, and
+`shadow_price_effect` and `shadow_price_interval` in `chc.matching`.

@@ -314,7 +314,11 @@ Three tiers, by what a break costs you:
 |---|---|---|
 | **stable** | `dynamics` `integrate` `cost` `control` `plan` `barrier` `residual` `lqr` `mpc` `train` `adjoint` `decision` `panel` `graph` `dynamics_id` | the plant/control spine and the façade over it. Breaking changes wait for 1.0 and get a deprecation cycle |
 | **evolving** | the estimator, certificate and domain layers — `causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace` `mmm` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
-| **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` | may change or be withdrawn in any release. Pin an exact version if you depend on one |
+| **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` — and modules built ahead of the release that verifies them on a plant CHC did not write — `experiment` `switchback` | may change or be withdrawn in any release. Pin an exact version if you depend on one |
+
+Three entries in modules of other tiers are experimental on the same terms, for the same reason:
+the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, and
+`shadow_price_effect` and `shadow_price_interval` in `matching`.
 
 Roadmap: **0.8.0** evidence before deployment — what a plan would cost, estimated from another
 policy's logs with an interval, and a gate that deploys a policy, holds it or rolls it back. The same

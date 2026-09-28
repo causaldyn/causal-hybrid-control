@@ -211,6 +211,8 @@ def shadow_price_effect(
 ) -> ShadowPriceEffect:
     """The global effect of a treatment on a matching's welfare, from one experiment on its rows.
 
+    Experimental: it may change or be withdrawn in any release.
+
     ``cost``, ``supply`` and ``demand`` are the market the experiment runs, as :func:`sinkhorn`
     takes them, with the treatment already in the treated rows' costs. ``treated`` marks those rows,
     and ``randomised`` the rows the experiment assigned at all: a row outside it, such as an idle
@@ -356,6 +358,8 @@ def shadow_price_interval(
     strata: ArrayLike | None = None,
 ) -> tuple[float, float]:
     """The effect :func:`shadow_price_effect` reads, at ``eps = 0``: an interval, not a point.
+
+    Experimental: it may change or be withdrawn in any release.
 
     The exact matching LP has many optimal duals wherever it is degenerate, and every one of them
     is a supergradient of welfare in the treated share. So the treated-minus-control difference of

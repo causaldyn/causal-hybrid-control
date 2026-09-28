@@ -284,6 +284,14 @@ still change).
     certificate (12 of 12 steps; the confounded arm none) did not move, and no test's number did.
     The BOPTEST case study's tube, 0.29 K one step ahead, was read under the homoskedastic error.
 
+- **`chc.experiment` and `chc.switchback` are filed experimental, and so are the `weights`
+  argument and `shadow_price_effect` / `shadow_price_interval`.** Each is verified on plants CHC
+  wrote, and was built ahead of the release that verifies it on one it did not: experiments and
+  decision-weighted identification are 0.9.0's, the marketplace 0.10.0's. Until then each may
+  change or be withdrawn in any release. The README, the API pages, the navigation, the lifecycle
+  page and the three entries' docstrings say so. No release carried them, so no published promise
+  moves.
+
 - **CI audits the proofs' assumptions, and runs the SMT, PARI/GP and Octave cross-checks.** The
   proofs job compiled every proof without printing what each rests on; it now fails on an axiom
   outside Stdlib's classical reals or an admitted step, by the audit `just assumptions` runs, from
