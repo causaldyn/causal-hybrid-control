@@ -140,6 +140,18 @@ still change).
   `fit_behavior_policy` says what its single `sigma` costs on heteroscedastic logs. A test pins
   the one-step estimand on that loop. The code is unchanged; the dynamic evaluator is planned
   separately.
+- **The positioning table is checked against the tools as they stand, and says what it concedes.**
+  EconML was listed as static-only. Its DML estimators return a matrix θ(X), and `DynamicDML`
+  estimates sequential effects within the logged horizon: `scripts/econml_reference.py` runs
+  EconML 0.17.0 on both, recovering a 2×2 `B(x)` to 0.068 and a linear plant's impulse response to
+  0.013. DCBO's licence is ambiguous (MIT in `LICENSE`, GPL-3.0-or-later in its README and
+  `setup.py`), not GPL-3.0. Meridian holds each channel's flighting fixed, so it produces no
+  schedule. Each row now names the version read on 2026-09-28. The README and `why.md` concede
+  four things: `DynamicDML` within the logged horizon, Nerlove–Arrow (1962) for the adstock
+  schedule, SCOPE-RL for sequential off-policy evaluation, and CasADi, acados and do-mpc as
+  solvers. `chc.estimators` said EconML fails to install beside pandas 3; 0.17 installs, and stays
+  out for what it brings with it. Test and proof counts written by hand are gone from the prose:
+  `just counts` prints them.
 - **`Target.value` and `Driver.forecast` are typed `ArrayLike`.** They were `float |
   Sequence[float]` and `Sequence[float]`, so a numpy schedule or forecast, which both always
   accepted, type-checked only by coincidence. Nothing is converted. A `Target` or a `Driver` that
