@@ -47,15 +47,15 @@ name at a time.
 
 ## Consequences
 
-- `chc.__all__` is 61 entries, and reads as the lifecycle: the page's names, what their calls take,
-  what they raise.
+- `chc.__all__` held 61 entries when this was adopted, and reads as the lifecycle: the page's names,
+  what their calls take, what they raise.
 - A caller importing any of the 421 names from `chc` is warned at the import's line, and the warning
   names the module to import it from. Under Python's default filters a `DeprecationWarning` shows in
   `__main__` and under pytest, not in a library that imports the name, so a library depending on
   `chc` sees it in its own test suite.
-- `from chc import *` binds 61 names instead of 459, without a warning. A star import cannot be
-  warned per name without warning 421 times, and the README's promise of a warning before a removal
-  is about names a caller writes.
+- `from chc import *` binds the lifecycle's names instead of 459, without a warning. A star import
+  cannot be warned per name without warning 421 times, and the README's promise of a warning before
+  a removal is about names a caller writes.
 - A name the lifecycle page gains has to be importable from `chc`, and so do the classes its call
   takes; the tests fail until it is.
 - At 1.0, `_MOVED`, the `TYPE_CHECKING` block and `__getattr__` are deleted, and the 421 names stop

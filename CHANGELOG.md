@@ -93,6 +93,28 @@ still change).
     0.0055 when half are. Power is 1.000, and no deployment was rolled back. The design record is
     `docs/adr/0010-a-deployment-gate.md`.
 
+- **`chc.gate`: a channel-drift monitor read off the logged dither** (*experimental*).
+  `channel_drift_evalues(log, residual, dither_scale=, radius=, residual_scale=)` returns, per
+  decision, e-values for "every entry of the one-step channel lies within `radius` of the model's".
+  `DriftAlarm(arl)` turns them into an alarm, and `ZoneBatch(drift=...)` into the gate's HOLD or
+  ROLLBACK.
+  - **Each column is an exact e-value, whatever the model gets wrong in the drift, the noise law or
+    the policy.** With `xi` the logged dither over its scale and `r` the residual moved to the
+    radius's edge, `E[exp(theta r xi - theta^2 r^2 / 2) | c] = 1 / |1 - theta k|`. It is derived in
+    `validation/dither_drift_evalue.mac`, its algebra is proved in
+    `proofs/dither_drift_evalue.v`, and every column's mean is checked by Monte Carlo.
+  - **Measured on the lab's plant** (`scripts/bench_drift.py`, 300 paths), whose model has the
+    drift wrong and whose noise is Laplace. On an unchanged channel the alarm's run length is at
+    least 3.23 times its target at `10^3` and 5.60 times at `10^4`, and 3.46 and 5.40 times with
+    the drift model off by a further 0.15. Without the identification radius it falls to 0.96 and
+    0.36. A channel at 1.4 instead of 1.07 is caught in 259 and 456 decisions on average. That is
+    1.56 and 1.37 times an oracle that knows which entry moved, which way and at what rate.
+  - **Refused:** a log with no dither or with a clipped decision, a dither whose draws a chi-square
+    test at `1e-9` rejects at the stated scale, and a negative radius. `radius` has no default:
+    at 0 the alarm came after 0.36 of its target.
+  - `DeploymentGate` now runs its drift alarm through `DriftAlarm`, and its verdicts are unchanged.
+    The design record is `docs/adr/0018-a-channel-drift-monitor.md`.
+
 - **`chc.experiment`: which experiment a decision needs, how large, and whether to run one.**
   `design_experiment(decision, prior, experiment, budget)` returns an `ExperimentDesign` with:
   - whole units per zone and what they spend;
@@ -348,14 +370,14 @@ still change).
 
 - **421 names leave the top level in 1.0; import each from its module (D17).** `chc` now holds the
   lifecycle: every name `docs/lifecycle.md` files, the classes a call to one of them takes, the
-  errors they raise, and `__version__`, 61 entries in `__all__`. Every other name 0.7.0 bound there
+  errors they raise, and `__version__`, 63 entries in `__all__`. Every other name 0.7.0 bound there
   still imports from `chc`, with a `DeprecationWarning` at the importing line that names the module:
   `chc.rollout leaves the top level in 1.0: import it from chc.integrate`. Module paths do not move,
   so the migration is a find-and-replace from the warning's text, and `import chc` still imports
   the modules it did, so `chc.integrate.rollout` keeps working. The record is
   `docs/adr/0016-the-top-level-is-the-lifecycle.md`.
-  - **What changes without a warning.** `from chc import *` binds the 61 names, not 459, and
-    `dir(chc)` no longer lists the others. Type checkers still see all 482, so a checked caller is warned at
+  - **What changes without a warning.** `from chc import *` binds the 63 names, not 459, and
+    `dir(chc)` no longer lists the others. Type checkers still see all 484, so a checked caller is warned at
     run time rather than broken at check time.
   - **What was never there.** The result types added since 0.7.0 (`PlanEvaluation`, `Verdict`,
     `ExperimentDesign`, `SwitchbackPlan` and their kin) and `fit_logger` live at their module paths

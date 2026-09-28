@@ -107,7 +107,15 @@ from chc.evaluation import (
     evaluate_plan,
 )
 from chc.experiment import ChannelPrior, ZoneDecision, ZoneExperiment, design_experiment
-from chc.gate import DecisionLog, DeploymentGate, GateConfig, ZoneBatch, ZonePlan
+from chc.gate import (
+    DecisionLog,
+    DeploymentGate,
+    DriftAlarm,
+    GateConfig,
+    ZoneBatch,
+    ZonePlan,
+    channel_drift_evalues,
+)
 from chc.graph import CausalGraph, CyclicGraphError
 from chc.irf import delay_estimate
 from chc.matching import shadow_price_effect, shadow_price_interval
@@ -148,6 +156,7 @@ __all__ = [
     "DecisionError",
     "DecisionLog",
     "DeploymentGate",
+    "DriftAlarm",
     "Driver",
     "GateConfig",
     "GaussianPolicy",
@@ -180,6 +189,7 @@ __all__ = [
     "causal_plan",
     "certify_evaluation",
     "certify_safety",
+    "channel_drift_evalues",
     "delay_estimate",
     "design_experiment",
     "design_switchback",

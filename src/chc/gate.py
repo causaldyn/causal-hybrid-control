@@ -34,6 +34,10 @@ What the guarantee needs, and the gate cannot check:
   probability 1.000, a candidate that was +0.029 better myopically and -0.010 worse in the long run.
   :func:`chc.evaluation.evaluate_plan` estimates a plan's value on such a plant.
 * **Rewards in** ``[0, 1]``.
+
+A zone's channel is watched through per-decision drift e-values. :func:`channel_drift_evalues`
+reads them off the Gaussian dither a :class:`DecisionLog` records, and :class:`DriftAlarm` turns
+them into an alarm outside the gate as well.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ from typing import ClassVar, Literal
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+from scipy import special
 
 _log = logging.getLogger(__name__)
 
@@ -58,6 +63,8 @@ _Array = NDArray[np.float64]
 _BETS = 0.9 * 2.0 ** -np.arange(12)  # constant bets, mixed with equal weight
 _LOG_BETS = math.log(_BETS.size)
 _MATCH = 1e-6  # relative gap allowed between a logged propensity and the mode's
+_DRIFT_BETS = 2.0 ** -np.arange(8)  # |theta|, in residual scales per dither scale
+_DITHER_LEVEL = 1e-9  # a dither this far from its stated scale is a slip, not a draw
 
 
 def _vector(value: ArrayLike, name: str) -> _Array:
@@ -68,6 +75,26 @@ def _vector(value: ArrayLike, name: str) -> _Array:
         raise ValueError(f"{name} is not finite")
     array.setflags(write=False)
     return array
+
+
+def _evalues(value: ArrayLike, name: str, size: int | None = None) -> _Array:
+    """E-values as one row per decision and one column per detector."""
+    evalues = np.array(value, dtype=np.float64)
+    if evalues.ndim == 1:
+        evalues = evalues[:, None]
+    rows = "decisions" if size is None else size
+    if (
+        evalues.ndim != 2
+        or evalues.shape[1] == 0
+        or (size is not None and evalues.shape[0] != size)
+    ):
+        raise ValueError(
+            f"{name} must have shape ({rows},) or ({rows}, detectors), got {evalues.shape}"
+        )
+    if not (np.all(np.isfinite(evalues)) and np.all(evalues >= 0.0)):
+        raise ValueError(f"{name} e-values must be finite and non-negative")
+    evalues.setflags(write=False)
+    return evalues
 
 
 @dataclass(frozen=True)
@@ -314,7 +341,8 @@ class ZoneBatch:
     propensity recorded when the action was drawn, under the policy the zone's mode asked for;
     :meth:`from_log` reads it off a :class:`DecisionLog`. ``drift``, optional, holds per-decision
     e-values for "the channel is unchanged", one column per detector, each with expectation at most
-    1 given the past while the channel holds.
+    1 given the past while the channel holds: :func:`channel_drift_evalues` reads them off the
+    log's dither.
 
     Raises:
         ValueError: on arrays of different lengths, a non-finite entry, a reward outside ``[0, 1]``,
@@ -345,17 +373,7 @@ class ZoneBatch:
         if size and np.min(self.logged) <= 0.0:
             raise ValueError("a logged propensity is 0: the action could not have been drawn")
         if self.drift is not None:
-            drift = np.array(self.drift, dtype=np.float64)
-            if drift.ndim == 1:
-                drift = drift[:, None]
-            if drift.ndim != 2 or drift.shape[0] != size or drift.shape[1] == 0:
-                raise ValueError(
-                    f"drift must have shape ({size},) or ({size}, detectors), got {drift.shape}"
-                )
-            if not (np.all(np.isfinite(drift)) and np.all(drift >= 0.0)):
-                raise ValueError("drift e-values must be finite and non-negative")
-            drift.setflags(write=False)
-            object.__setattr__(self, "drift", drift)
+            object.__setattr__(self, "drift", _evalues(self.drift, "drift", size))
 
     @classmethod
     def from_log(
@@ -373,6 +391,197 @@ class ZoneBatch:
             ValueError: on what the constructor refuses.
         """
         return cls(reward, candidate, baseline, log.propensity, drift)
+
+
+def _entries(value: ArrayLike, shape: tuple[int, ...], name: str) -> _Array:
+    array = np.array(value, dtype=np.float64)
+    if array.ndim and array.shape != shape:
+        raise ValueError(f"{name} must be a scalar or of shape {shape}, got {array.shape}")
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{name} is not finite")
+    return np.broadcast_to(array, shape)
+
+
+def channel_drift_evalues(
+    log: DecisionLog,
+    residual: ArrayLike,
+    *,
+    dither_scale: ArrayLike,
+    radius: ArrayLike,
+    residual_scale: ArrayLike,
+) -> NDArray[np.float64]:
+    """Per-decision e-values for "every entry of the one-step channel lies within ``radius`` of the
+    model's", read off the logged dither: a :class:`ZoneBatch`'s ``drift``, or what a
+    :class:`DriftAlarm` runs on.
+
+    ``residual`` holds, for each decision in ``log``, the next state less the model's one-step
+    prediction at the action as applied, one column per state. ``dither_scale`` is the standard
+    deviation each action's dither was drawn with. ``radius`` bounds, entry by entry, how far the
+    plant's one-step channel ``d x_(t+1) / d u_t`` may lie from the model's while nothing has
+    moved, in the residual's units per unit of action. ``residual_scale``, one per state and fixed
+    before the data, such as the model's one-step noise, is the unit the bets are placed in. A
+    scalar stands for every state or action.
+
+    For state ``i`` and action ``j``, the dither is standardised, ``xi = dither_j /
+    dither_scale_j``, and the residual is moved to the radius's edge and scaled,
+    ``r = (residual_i - radius_ij u_j) / residual_scale_i`` against a channel that grew and
+    ``(residual_i + radius_ij u_j) / residual_scale_i`` against one that shrank. The e-value at a
+    bet ``theta`` is ``exp(theta r xi - theta^2 r^2 / 2)``, with ``theta`` among ``1, 1/2, ...,
+    1/128``, negated against shrinkage. On a plant whose one-step map is ``g(x) + B u`` plus noise,
+    ``r = c + k xi``, where ``k`` is how far ``B_ij`` lies past that edge, times
+    ``dither_scale_j / residual_scale_i``, and ``c`` is everything else. When ``xi`` is ``N(0, 1)``
+    and independent of ``c``, ``E[exp(theta r xi - theta^2 r^2 / 2) | c] = 1 / |1 - theta k|``,
+    which is at most 1 on each side the entry has not crossed, whatever the model's error in ``g``,
+    the noise's law or the policy. Row ``t`` of the result, reshaped to ``(states, actions, 2,
+    8)``, holds decision ``t``'s e-values by state, action, growth then shrinkage, and bet.
+
+    On the lab's plant, whose model has the drift wrong and whose noise is Laplace, a
+    :class:`DriftAlarm` on these e-values ran at least 3.2 and 5.6 times its target on an unchanged
+    channel, at ``10^3`` and ``10^4``, and caught a channel at 1.4 instead of 1.07 in 259 and 456
+    decisions on average: 1.56 and 1.37 times an oracle that knew which entry moved, which way and
+    at what rate (``scripts/bench_drift.py``, 300 paths).
+
+    What the guarantee needs, and the function cannot check:
+
+    * **A plant affine in the action over one step.** The model's error in ``g`` and the noise
+      must not depend on the dither drawn at that step. A response nonlinear in the action, such
+      as ``xi^2 - 1`` in the next state, is uncorrelated with the dither and still breaks the
+      identity: in the lab, a running product of such e-values passed 20 on 27% of paths, where
+      Ville's inequality allows 5%. A plant integrated over a step has a one-step channel that
+      carries the drift's Jacobian too, to first order in the step.
+    * **A dither drawn as stated and applied as logged**: each action's from
+      ``N(0, dither_scale_j^2)``, independently of the other actions' and of the past. With a
+      fifth more variance than stated, the e-value's mean at ``theta r = 1`` is
+      ``exp(0.1) = 1.105``.
+    * **A radius that covers the identification error.** The e-values hold while every entry lies
+      inside it. On the same plant, a channel 0.07 from the model's, watched with no radius,
+      alarmed after 0.36 of the average run length the alarm was set for. A standard error, such as
+      :attr:`chc.dynamics_id.CausalDynamicsFit.channel_error`, is a scale, not a radius.
+
+    Raises:
+        ValueError: on a log with no dither, or with a clipped decision (see
+            :meth:`DecisionLog.dither_draws`); on a residual without one row per decision, a
+            non-finite entry, a scale that is not positive, a negative radius, or a scale or radius
+            that is neither a scalar nor of its full shape; and on a dither whose draws, over
+            ``dither_scale``, a two-sided chi-square test rejects at ``1e-9``: a slip in units, or
+            a variance passed for a standard deviation.
+    """
+    dither = log.dither_draws()
+    size = dither.shape[0]
+    action = log.action if log.action.ndim == 2 else log.action[:, None]
+    xi = dither if dither.ndim == 2 else dither[:, None]
+    r = np.array(residual, dtype=np.float64)
+    if r.ndim == 1:
+        r = r[:, None]
+    if r.ndim != 2 or r.shape[0] != size:
+        raise ValueError(
+            f"residual must have shape ({size},) or ({size}, states), one row per decision, got"
+            f" {r.shape}"
+        )
+    if not np.all(np.isfinite(r)):
+        raise ValueError("residual is not finite")
+    states, actions = r.shape[1], action.shape[1]
+    sigma = _entries(dither_scale, (actions,), "dither_scale")
+    scale = _entries(residual_scale, (states,), "residual_scale")
+    edge = _entries(radius, (states, actions), "radius")
+    for name, array in (("dither_scale", sigma), ("residual_scale", scale)):
+        if not np.all(array > 0.0):
+            raise ValueError(f"{name} must be positive, got {np.min(array)}")
+    if not np.all(edge >= 0.0):
+        raise ValueError(f"radius must be non-negative, got {np.min(edge)}")
+    xi = xi / sigma
+    if size:
+        squares = np.sum(xi * xi, axis=0)
+        tail = 2.0 * np.minimum(special.chdtr(size, squares), special.chdtrc(size, squares))
+        if np.any(tail < _DITHER_LEVEL):
+            j = int(np.argmin(tail))
+            raise ValueError(
+                f"the dither of action {j}, over its dither_scale {sigma[j]:g}, has mean square"
+                f" {squares[j] / size:.4g} over {size} decisions, where N(0, 1) draws give 1"
+                f" (two-sided chi-square p = {tail[j]:.2g}): drawn at another scale than stated,"
+                " or a variance passed for a standard deviation"
+            )
+    side = np.array([1.0, -1.0])
+    moved = r[:, :, None, None] - side * edge[None, :, :, None] * action[:, None, :, None]
+    bet = (moved / scale[None, :, None, None])[..., None] * (side[:, None] * _DRIFT_BETS)
+    log_e = bet * xi[:, None, :, None, None] - bet * bet / 2.0
+    return np.exp(log_e).reshape(size, states * actions * side.size * _DRIFT_BETS.size)
+
+
+class DriftAlarm:
+    """Shiryaev-Roberts over e-values for "the channel is unchanged": an alarm that sounds, on an
+    unchanged channel, after ``arl`` decisions on average or later.
+
+    Each detector's statistic runs ``R_t = (R_(t-1) + 1) e_t`` from ``R_0 = 0``, and the alarm
+    sounds when their average reaches ``arl``. While every e-value has expectation at most 1 given
+    the past, the average less ``t`` is a supermartingale, whatever the dependence between the
+    detectors, so the average run length is at least ``arl`` (Shin, Ramdas and Rinaldo 2024,
+    arXiv:2203.03532). After an alarm the statistic starts again at the next call, and the call's
+    e-values after the alarming decision are dropped: they were computed against the model the
+    alarm rejected. :class:`DeploymentGate` runs one per zone.
+
+    Raises:
+        ValueError: on an ``arl`` not above 1.
+    """
+
+    def __init__(self, arl: float) -> None:
+        if not arl > 1.0:
+            raise ValueError(f"arl must exceed 1, got {arl}")
+        self.arl = float(arl)
+        self._running: _Array | None = None
+
+    @property
+    def detectors(self) -> int | None:
+        """How many detectors the running statistic follows: ``None`` before the first e-value and
+        after an alarm, when any number may start."""
+        return None if self._running is None else self._running.shape[0]
+
+    @property
+    def statistic(self) -> float:
+        """The detectors' average statistic, 0 before the first e-value and after an alarm."""
+        return 0.0 if self._running is None else float(self._running.mean())
+
+    def update(self, evalues: ArrayLike) -> bool:
+        """Add e-values, one row per decision and one column per detector, and say whether the
+        alarm sounded.
+
+        Raises:
+            ValueError: on e-values that are not finite and non-negative, or whose number of
+                detectors is not the running statistic's.
+        """
+        rows = _evalues(evalues, "evalues")
+        if self._running is not None and rows.shape[1] != self._running.shape[0]:
+            raise ValueError(
+                f"{rows.shape[1]} drift detectors, where the running statistic has"
+                f" {self._running.shape[0]}"
+            )
+        if rows.shape[0] == 0:
+            return False
+        running = np.zeros(rows.shape[1]) if self._running is None else self._running
+        for t, row in enumerate(rows):
+            running = (running + 1.0) * row
+            if running.mean() >= self.arl:
+                self._running = None
+                _log.warning(
+                    "channel drift alarm: the detectors' average Shiryaev-Roberts statistic"
+                    " reached %.4g >= %g at decision %d of %d in this update; %d later e-values"
+                    " were dropped",
+                    running.mean(),
+                    self.arl,
+                    t,
+                    rows.shape[0],
+                    rows.shape[0] - t - 1,
+                    extra={
+                        "chc_event": "drift_alarm",
+                        "statistic": float(running.mean()),
+                        "arl": self.arl,
+                        "decision": t,
+                        "detectors": rows.shape[1],
+                    },
+                )
+                return True
+        self._running = running
+        return False
 
 
 def _growth(mean: float, variance: float) -> float:
@@ -438,11 +647,11 @@ class _Evidence:
 @dataclass
 class _Zone:
     plan: ZonePlan
+    drift: DriftAlarm
     mode: GateMode = "shadow"
     improvement: _Evidence = field(default_factory=_Evidence)
     harm: _Evidence = field(default_factory=_Evidence)
     rollback: _Evidence = field(default_factory=_Evidence)
-    drift: _Array | None = None  # one Shiryaev-Roberts statistic per detector
     decisions: int = 0
 
 
@@ -483,7 +692,9 @@ class DeploymentGate:
         if not plans:
             raise ValueError("the gate needs at least one zone")
         self.config = config
-        self._zones = {name: _Zone(plan) for name, plan in plans.items()}
+        self._zones = {
+            name: _Zone(plan, DriftAlarm(config.drift_arl)) for name, plan in plans.items()
+        }
 
     def mode(self, zone: str) -> GateMode:
         return self._zones[zone].mode
@@ -506,7 +717,9 @@ class DeploymentGate:
         live = {z: b for z, b in batches.items() if self._zones[z].mode != "retired"}
         for z, b in live.items():
             self._check(z, b)
-        alarms = {z: self._drift_alarm(self._zones[z], b.drift) for z, b in live.items()}
+        alarms = {
+            z: b.drift is not None and self._zones[z].drift.update(b.drift) for z, b in live.items()
+        }
         for z, b in live.items():
             zone = self._zones[z]
             zone.decisions += b.reward.shape[0]
@@ -566,30 +779,12 @@ class DeploymentGate:
                 f" {worst:.3g}, tolerance {_MATCH:g}); a propensity fitted after the fact is not"
                 " a logged one"
             )
-        if (
-            batch.drift is not None
-            and zone.drift is not None
-            and batch.drift.shape[1] != zone.drift.shape[0]
-        ):
+        detectors = zone.drift.detectors
+        if batch.drift is not None and detectors is not None and batch.drift.shape[1] != detectors:
             raise ValueError(
                 f"zone {name!r}: {batch.drift.shape[1]} drift detectors, where the running"
-                f" statistic has {zone.drift.shape[0]}"
+                f" statistic has {detectors}"
             )
-
-    def _drift_alarm(self, zone: _Zone, drift: _Array | None) -> bool:
-        """Shiryaev-Roberts over e-values, ``R_t = (R_{t-1} + 1) e_t`` per detector, averaged; an
-        alarm at the average reaching ``drift_arl`` keeps the average run length on an unchanged
-        channel at least that."""
-        if drift is None or drift.shape[0] == 0:
-            return False
-        if zone.drift is None:
-            zone.drift = np.zeros(drift.shape[1])
-        for row in drift:
-            zone.drift = (zone.drift + 1.0) * row
-            if zone.drift.mean() >= self.config.drift_arl:
-                zone.drift = None
-                return True
-        return False
 
     def _rule(self, zone: _Zone, alarm: bool, selected: bool) -> Verdict:
         threshold = math.log(1.0 / self.config.alpha_harm)

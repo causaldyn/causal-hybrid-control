@@ -1,0 +1,97 @@
+/* The dither e-value behind chc.gate.channel_drift_evalues (ADR 0018), in the library's own
+   parameterisation.
+
+   A decision applies u_j = p_j + sig_j xi_j, with xi_j ~ N(0, 1) drawn independently of everything
+   before it and of the other actions' draws. For state i the residual against the model is
+   g_err + (B_ij - Bhat_ij) u_j + rest, where g_err is the model's error in the drift and rest
+   holds the noise and the other actions' channel errors times their actions: nothing in it
+   multiplies xi_j. The library moves the residual to the radius's edge, r - side eps u_j, with
+   side = +1 against growth and -1 against shrinkage, divides by the residual scale sc, and bets
+   theta = side th, th >= 0:
+       e = exp(theta rt xi - theta^2 rt^2 / 2),   rt = (r - side eps u_j) / sc.
+
+   STEP 1  the exponent is quadratic in xi, and 1 - 2 (its xi^2 coefficient) = (1 - theta k)^2
+   STEP 2  E[e | c] = 1 / |1 - theta k| for rt = c + k xi: the nuisance c cancels exactly
+   STEP 3  the library's rt is c + k xi with k = (B_ij - Bhat_ij - side eps) sig / sc
+   STEP 4  theta k = th (side (B_ij - Bhat_ij) - eps) sig / sc: at most 0 on both sides while
+           |B_ij - Bhat_ij| <= eps, so every column is an e-value on the composite null
+   STEP 5  the second moment exp(theta^2 c^2 / D) / sqrt(D), D = 1 - 4 theta k + 2 theta^2 k^2
+   STEP 6  a dither drawn with v times the stated variance: exp(theta^2 c^2 (v - 1) / 2) at k = 0
+   STEP 7  quadrature at the unit test's columns
+
+   Run: timeout 300 maxima --very-quiet -b validation/dither_drift_evalue.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 10$
+
+/* E exp(a xi + b xi^2), xi ~ N(0, 1), 1 - 2 b > 0: the Gaussian integral every step rests on */
+assume(q > 0)$
+gauss : integrate(exp(-q*v^2/2), v, minf, inf)/sqrt(2*%pi)$
+print("the Gaussian integral int exp(-q v^2/2) dv / sqrt(2 pi) =", gauss,
+      " -> E exp(a xi + b xi^2) = exp(a^2 / (2 (1 - 2 b))) / sqrt(1 - 2 b)")$
+mgf(a, b) := exp(a^2/(2*(1 - 2*b)))/sqrt(1 - 2*b)$
+
+print("=== STEP 1: the exponent ===")$
+ex : theta*(c + k*xi)*xi - theta^2*(c + k*xi)^2/2$
+a1 : theta*c*(1 - theta*k)$
+b1 : theta*k - theta^2*k^2/2$
+print("STEP 1a exponent - (-theta^2 c^2/2 + a1 xi + b1 xi^2) =",
+      ratsimp(ex - (-theta^2*c^2/2 + a1*xi + b1*xi^2)), " (0)")$
+print("STEP 1b (1 - 2 b1) - (1 - theta k)^2 =", ratsimp((1 - 2*b1) - (1 - theta*k)^2), " (0)")$
+
+print("=== STEP 2: the mean ===")$
+/* E^2 = exp(-theta^2 c^2 + a1^2 / (1 - 2 b1)) / (1 - 2 b1), squared to keep sqrt's branch out */
+print("STEP 2a -theta^2 c^2 + a1^2 / (1 - theta k)^2 =",
+      ratsimp(-theta^2*c^2 + a1^2/(1 - theta*k)^2),
+      " (0): the nuisance c cancels, and E^2 = 1/(1 - theta k)^2")$
+print("STEP 2b so E[e | c] = 1/|1 - theta k| whatever c: at most 1 iff theta k <= 0 or >= 2")$
+
+print("=== STEP 3: the library's residual at the edge ===")$
+u : p + sig*xi$
+r : gerr + d*u + rest$          /* d = B_ij - Bhat_ij; gerr and rest do not involve xi */
+rt : (r - side*eps*u)/sc$
+kk : (d - side*eps)*sig/sc$
+cc : ratsimp(rt - kk*xi)$
+print("STEP 3a rt - k xi =", cc)$
+print("STEP 3b d/dxi (rt - k xi) =", ratsimp(diff(cc, xi)), " (0): c does not involve the dither")$
+
+print("=== STEP 4: the sides ===")$
+for s in [1, -1] do
+  print("STEP 4 side", s, ": theta k =", factor(ratsimp(subst(side = s, s*th*kk))),
+        "<= 0 iff", if s = 1 then "d <= eps" else "d >= -eps", "(sig, sc > 0, th >= 0)")$
+
+print("=== STEP 5: the second moment ===")$
+ex2 : ratsimp(2*ex)$
+a2 : 2*theta*c*(1 - theta*k)$
+b2 : 2*theta*k - theta^2*k^2$
+print("STEP 5a 2 exponent - (-theta^2 c^2 + a2 xi + b2 xi^2) =",
+      ratsimp(ex2 - (-theta^2*c^2 + a2*xi + b2*xi^2)), " (0)")$
+dd : 1 - 4*theta*k + 2*theta^2*k^2$
+print("STEP 5b (1 - 2 b2) - D =", ratsimp(1 - 2*b2 - dd), " (0)")$
+print("STEP 5c a2^2/(2 D) - theta^2 c^2 - theta^2 c^2 / D =",
+      ratsimp(a2^2/(2*dd) - theta^2*c^2 - theta^2*c^2/dd),
+      " (0): E[e^2 | c] = exp(theta^2 c^2 / D) / sqrt(D)")$
+print("STEP 5d D = 0 at theta k =", solve(2*z^2 - 4*z + 1 = 0, z),
+      ": infinite for theta k in [1 - 1/sqrt 2, 1 + 1/sqrt 2]; on the null side D >= 1")$
+
+print("=== STEP 6: a dither wider than stated ===")$
+/* xi = sqrt(v) z, z ~ N(0, 1): the exponent in z has coefficients a1 sqrt(v) and b1 v */
+mean_v : exp(-theta^2*c^2/2)*mgf(a1*sqrt(v), b1*v)$
+print("STEP 6a at k = 0: log E =", ratsimp(radcan(log(subst(k = 0, mean_v)))),
+      " = theta^2 c^2 (v - 1) / 2")$
+print("STEP 6b theta c = 1, v = 1.2: E =", float(subst([k = 0, theta = 1, c = 1, v = 1.2], mean_v)),
+      " (1.10517)")$
+
+print("=== STEP 7: quadrature at the unit test's columns ===")$
+check(vc, vk, vth) := block([num],
+  num : quad_qagi(exp(vth*(vc + vk*x)*x - vth^2*(vc + vk*x)^2/2)*exp(-x^2/2)/sqrt(2*%pi),
+                  x, minf, inf, 'epsrel = 1d-12)[1],
+  [num, 1/abs(1 - vth*vk), num*abs(1 - vth*vk) - 1])$
+/* test_each_drift_evalue_averages_what_the_dither_identity_says: entry (1, 0) grew 0.1 past a
+   radius of 0.05, with sig = 0.5 and sc = 0.25, so k = 0.1 against growth and 0.3 against
+   shrinkage; entry (1, 1) sits at the model's with a radius of 0.2, sig = 2 and sc = 0.25 */
+print("STEP 7 (c, k, theta) = (0.4, 0.1, 1):", check(0.4, 0.1, 1.0), " (grew: 1/0.9)")$
+print("STEP 7 (c, k, theta) = (0.4, 0.3, -1):", check(0.4, 0.3, -1.0), " (1/1.3)")$
+print("STEP 7 (c, k, theta) = (-0.7, -1.6, 0.5):", check(-0.7, -1.6, 0.5), " (1/1.8)")$
+print("STEP 7 (c, k, theta) = (2.0, 0.0, 1):", check(2.0, 0.0, 1.0), " (on the edge: 1)")$

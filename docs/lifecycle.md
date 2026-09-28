@@ -134,4 +134,12 @@ documented, and what is not built yet. Every name below is importable from `chc`
   cover while the logs and the loop are exchangeable, so a run of steps outside them says the
   model no longer describes the plant. Nothing in the library watches for that run. See
   [`chc.uncertainty`](api/uncertainty.md).
-- **Not built:** a monitor that notices the effect has moved, or anything that re-identifies it.
+- **`channel_drift_evalues` and `DriftAlarm`** (*experimental*). They watch a deployed plan's
+  channel through the Gaussian dither its decisions log. Each decision gives e-values that every
+  entry of the channel still lies within its identification radius of the model's. They hold
+  whatever the model gets wrong in the drift, the noise law or the policy. `DriftAlarm` alarms on
+  them with an average run length of at least its target while the channel holds, and
+  `DeploymentGate` holds or rolls back a zone on them. Scope: a plant affine in the action over one
+  step, a dither drawn and applied as logged, and a radius that covers the identification error.
+  See [`chc.gate`](api/gate.md).
+- **Not built:** anything that re-identifies the channel once it has moved.

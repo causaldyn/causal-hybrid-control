@@ -43,6 +43,7 @@ verifies them: on a plant CHC did not write, or, for the marketplace plant `zone
 pre-registered study it is the plant of. They may change or be withdrawn in any release. Pin an
 exact version if you depend on one.
 
-Three entries in modules of other tiers are experimental on the same terms, for the same reason:
-the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, and
-`shadow_price_effect` and `shadow_price_interval` in `chc.matching`.
+Five entries in modules of other tiers are experimental on the same terms, for the same reason:
+the `weights` argument of `fit_causal_residual` and `solve_channel_moment`,
+`shadow_price_effect` and `shadow_price_interval` in `chc.matching`, and `channel_drift_evalues` and
+`DriftAlarm` in `chc.gate`.

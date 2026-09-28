@@ -21,7 +21,16 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy import integrate, optimize, signal, stats
 
-from chc.gate import DecisionLog, DeploymentGate, GateConfig, GateMode, ZoneBatch, ZonePlan
+from chc.gate import (
+    DecisionLog,
+    DeploymentGate,
+    DriftAlarm,
+    GateConfig,
+    GateMode,
+    ZoneBatch,
+    ZonePlan,
+    channel_drift_evalues,
+)
 
 BATCH = 96
 REWARD_SCALE = 0.6
@@ -371,6 +380,20 @@ def test_a_refused_update_changes_no_zone() -> None:
     assert gate.update({"a": STRONG}) == {"a": "shadow", "b": "shadow"}
 
 
+def test_a_refused_drift_batch_leaves_every_alarm_as_it_was() -> None:
+    """Zone b's batch has the wrong number of detectors, and zone a's would have alarmed: the
+    refusal comes first, so a's statistic is still 50 and the next e-value of 2 takes it to 102."""
+    gate = DeploymentGate({"a": ZonePlan(0.1, 0.1), "b": ZonePlan(0.1, 0.1)}, LONE)
+
+    def neutral(drift: list[list[float]]) -> ZoneBatch:
+        return dataclasses.replace(NEUTRAL, drift=np.array(drift))
+
+    gate.update({"a": neutral([[50.0]]), "b": neutral([[1.0, 1.0]])})
+    with pytest.raises(ValueError, match="zone 'b': 1 drift detectors"):
+        gate.update({"a": neutral([[10.0]]), "b": neutral([[1.0]])})
+    assert gate.update({"a": neutral([[2.0]])})["a"] == "hold"
+
+
 def test_inputs_outside_the_contract_are_refused() -> None:
     one = np.ones(3)
     with pytest.raises(ValueError, match="rewards must lie in"):
@@ -530,3 +553,262 @@ def test_a_reader_of_the_draw_refuses_a_clipped_dither() -> None:
         clipped.dither_draws()
     with pytest.raises(ValueError, match="records no dither"):
         _logged(5, 3, dither=False).dither_draws()
+
+
+# ---- the channel-drift monitor (ADR 0018) ----
+
+
+def _dithered(action: np.ndarray, dither: np.ndarray) -> DecisionLog:
+    size = action.shape[0]
+    return DecisionLog(
+        action=action,
+        propensity=np.ones(size),
+        saturated=np.zeros(size, dtype=bool),
+        dither=dither,
+    )
+
+
+def test_each_drift_evalue_averages_what_the_dither_identity_says() -> None:
+    """Two states and two actions, each entry of the channel off the model's by its own amount,
+    with its own radius, dither scale and residual scale, and a residual that also carries the other
+    action's dither. Column by column, the mean is ``1 / |1 - theta k|``: at most 1 on each side an
+    entry has not crossed, above 1 on the side it has."""
+    rng = np.random.default_rng(20)
+    size = 50_000
+    sigma, scale = np.array([0.5, 2.0]), np.array([1.0, 0.25])
+    radius = np.array([[0.1, 0.0], [0.05, 0.2]])
+    moved = np.array([[0.05, -0.03], [0.1, 0.0]])  # the plant's channel less the model's
+    dither = sigma * rng.standard_normal((size, 2))
+    action = 0.5 * np.sin(np.arange(size)[:, None] / 7.0 + np.array([0.0, 1.0])) + dither
+    residual = np.array([0.2, -0.05]) + action @ moved.T + 0.3 * scale * rng.normal(size=(size, 2))
+    evalues = channel_drift_evalues(
+        _dithered(action, dither), residual, dither_scale=sigma, radius=radius, residual_scale=scale
+    ).reshape(size, 2, 2, 2, 8)
+    side = np.array([1.0, -1.0])
+    k = (moved[..., None] - side * radius[..., None]) * sigma[:, None] / scale[:, None, None]
+    theta = side[:, None] * 2.0 ** -np.arange(8)
+    expected = 1.0 / np.abs(1.0 - theta * k[..., None])
+    z = (evalues.mean(axis=0) - expected) / (evalues.std(axis=0) / math.sqrt(size))
+    assert np.abs(z).max() < 5.0
+    crossed = expected > 1.0
+    assert crossed.sum() == 16
+    assert crossed[0, 1, 1].all()  # shrank past a radius of 0
+    assert crossed[1, 0, 0].all()  # grew past its radius
+
+
+def test_a_decision_reads_as_the_docstring_writes_it() -> None:
+    """Two decisions, two states and one action, against the formula transcribed entry by entry:
+    the residual moved to the edge by the action as applied, and the columns in the documented
+    order."""
+    action, drawn = np.array([0.7, -0.4]), np.array([0.2, -0.6])
+    residual = np.array([[0.3, -1.1], [0.05, 0.4]])
+    radius, sigma, scale = np.array([[0.1], [0.25]]), 0.5, np.array([0.8, 2.0])
+    evalues = channel_drift_evalues(
+        _dithered(action, drawn), residual, dither_scale=sigma, radius=radius, residual_scale=scale
+    ).reshape(2, 2, 1, 2, 8)
+    for t in range(2):
+        for i in range(2):
+            for s, side in enumerate((1.0, -1.0)):
+                r = (residual[t, i] - side * radius[i, 0] * action[t]) / scale[i]
+                for b in range(8):
+                    theta = side * 2.0**-b
+                    expected = math.exp(theta * r * drawn[t] / sigma - (theta * r) ** 2 / 2)
+                    assert evalues[t, i, 0, s, b] == pytest.approx(expected, rel=1e-13)
+
+
+def _lab_plant(
+    paths: int, channel: np.ndarray, dither: float, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The lab's plant ``x' = 0.8 x + 0.15 + b_t u + eps``, ``eps`` Laplace with standard
+    deviation 0.5, under ``u = -0.5 x + dither xi``, and the residual against a model that gets
+    the drift wrong, ``x' = 0.9 x + 0.05 + u``: per decision and path, the action, the dither and
+    the residual."""
+    x = rng.normal(0.0, 0.7, paths)
+    action, drawn, residual = (np.empty((channel.size, paths)) for _ in range(3))
+    for t, b in enumerate(channel):
+        drawn[t] = dither * rng.standard_normal(paths)
+        action[t] = -0.5 * x + drawn[t]
+        after = 0.8 * x + 0.15 + b * action[t] + rng.laplace(scale=0.5 / math.sqrt(2), size=paths)
+        residual[t] = after - (0.9 * x + 0.05 + action[t])
+        x = after
+    return action, drawn, residual
+
+
+def _alarms_by(
+    plant: tuple[np.ndarray, np.ndarray, np.ndarray],
+    ends: tuple[int, ...],
+    *,
+    dither: float,
+    radius: float,
+    arl: float,
+) -> np.ndarray:
+    """Per path, whether the alarm sounded before each end, the alarm fed the rows up to each end
+    in one update."""
+    action, drawn, residual = plant
+    sounded = np.zeros((len(ends), action.shape[1]), dtype=bool)
+    for p in range(action.shape[1]):
+        evalues = channel_drift_evalues(
+            _dithered(action[:, p], drawn[:, p]),
+            residual[:, p],
+            dither_scale=dither,
+            radius=radius,
+            residual_scale=0.5,
+        )
+        alarm, start = DriftAlarm(arl), 0
+        for i, end in enumerate(ends):
+            sounded[i:, p] |= alarm.update(evalues[start:end])
+            start = end
+    return sounded
+
+
+def test_a_channel_inside_its_radius_alarms_by_h_no_more_often_than_h_over_arl() -> None:
+    """``R_t - t`` is a supermartingale, so ``P(alarm by H) <= H / A``. The model's drift is wrong,
+    the noise Laplace and the channel 0.3 from the model's; with a radius of 0.35 the bound holds,
+    and with none the alarm sounds on almost every path."""
+    rng = np.random.default_rng(21)
+    horizon, arl = 300, 1000.0
+    plant = _lab_plant(200, np.full(horizon, 1.3), 1.0, rng)
+    covered = _alarms_by(plant, (horizon,), dither=1.0, radius=0.35, arl=arl)
+    naive = _alarms_by(plant, (horizon,), dither=1.0, radius=0.0, arl=arl)
+    assert covered.mean() <= horizon / arl
+    assert naive.mean() > 3 * horizon / arl
+
+
+def test_a_channel_that_moves_past_its_radius_is_caught_after_the_move() -> None:
+    rng = np.random.default_rng(22)
+    move, arl = 200, 1000.0
+    channel = np.where(np.arange(move + 1000) < move, 1.07, 1.5)
+    sounded = _alarms_by(
+        _lab_plant(100, channel, 0.3, rng), (move, channel.size), dither=0.3, radius=0.1, arl=arl
+    )
+    assert sounded[0].mean() <= move / arl
+    assert sounded[1].mean() >= 0.95
+
+
+def test_the_alarm_is_shiryaev_roberts_averaged_over_detectors_and_starts_again() -> None:
+    alarm = DriftAlarm(6.0)
+    assert not alarm.update(np.ones((0, 5)))
+    assert (alarm.detectors, alarm.statistic) == (None, 0.0)  # no decision fixes no count
+    assert not alarm.update(np.array([[2.0, 0.5]]))
+    assert (alarm.detectors, alarm.statistic) == (2, 1.25)
+    assert not alarm.update(np.array([[3.0, 1.0]]))
+    assert alarm.statistic == 5.25  # ((2 + 1) 3 + (0.5 + 1) 1) / 2
+    assert alarm.update(np.array([[4.0, 4.0], [1e6, 1e6]]))
+    assert (alarm.detectors, alarm.statistic) == (None, 0.0)  # the second row was dropped
+    assert not alarm.update(np.ones((1, 3)))
+    assert alarm.statistic == 1.0
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    rows=st.integers(0, 30),
+    cut=st.floats(0.0, 1.0),
+    detectors=st.integers(1, 4),
+    seed=st.integers(0, 2**31 - 1),
+)
+def test_the_alarm_reads_the_same_whatever_the_batches(
+    rows: int, cut: float, detectors: int, seed: int
+) -> None:
+    evalues = np.random.default_rng(seed).uniform(0.0, 1.5, size=(rows, detectors))
+    whole, split = DriftAlarm(1e12), DriftAlarm(1e12)
+    whole.update(evalues)
+    at = round(cut * rows)
+    split.update(evalues[:at])
+    split.update(evalues[at:])
+    assert split.statistic == pytest.approx(whole.statistic, rel=1e-12)
+
+
+def test_a_dither_that_is_not_the_stated_draw_is_refused() -> None:
+    rng = np.random.default_rng(23)
+    drawn = 0.3 * rng.standard_normal(40)
+    log = _dithered(0.1 + drawn, drawn)
+    residual = rng.normal(size=40)
+    common = {"radius": 0.1, "residual_scale": 0.5}
+    channel_drift_evalues(log, residual, dither_scale=0.3, **common)
+    with pytest.raises(ValueError, match=r"mean square 1\d\.\d+ over 40 decisions"):
+        channel_drift_evalues(log, residual, dither_scale=0.09, **common)
+    with pytest.raises(ValueError, match="dither of action 0"):
+        channel_drift_evalues(log, residual, dither_scale=3.0, **common)
+    clipped = dataclasses.replace(log, saturated=np.arange(40) == 7)
+    with pytest.raises(ValueError, match=r"\(the first is decision 7\)"):
+        channel_drift_evalues(clipped, residual, dither_scale=0.3, **common)
+    with pytest.raises(ValueError, match="records no dither"):
+        channel_drift_evalues(
+            dataclasses.replace(log, dither=None), residual, dither_scale=0.3, **common
+        )
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"residual": np.ones(39)}, r"residual must have shape \(40,\) or \(40, states\)"),
+        ({"residual": np.full(40, np.nan)}, "residual is not finite"),
+        ({"radius": -0.1}, "radius must be non-negative"),
+        ({"radius": np.ones(2)}, r"radius must be a scalar or of shape \(1, 1\)"),
+        ({"residual_scale": 0.0}, "residual_scale must be positive"),
+        ({"dither_scale": -0.3}, "dither_scale must be positive"),
+        ({"dither_scale": np.inf}, "dither_scale is not finite"),
+    ],
+)
+def test_drift_evalues_outside_the_contract_are_refused(
+    change: dict[str, object], match: str
+) -> None:
+    drawn = 0.3 * np.random.default_rng(24).standard_normal(40)
+    arguments: dict[str, object] = {
+        "residual": np.zeros(40),
+        "dither_scale": 0.3,
+        "radius": 0.1,
+        "residual_scale": 0.5,
+    } | change
+    residual = arguments.pop("residual")
+    with pytest.raises(ValueError, match=match):
+        channel_drift_evalues(_dithered(drawn, drawn), residual, **arguments)  # type: ignore[arg-type]
+
+
+def test_an_alarm_outside_the_contract_is_refused() -> None:
+    with pytest.raises(ValueError, match="arl must exceed 1"):
+        DriftAlarm(1.0)
+    alarm = DriftAlarm(10.0)
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        alarm.update(-np.ones(3))
+    alarm.update(np.ones((2, 2)))
+    with pytest.raises(ValueError, match="3 drift detectors, where the running statistic has 2"):
+        alarm.update(np.ones((1, 3)))
+    assert alarm.statistic == 2.0
+
+
+def test_a_gate_fed_the_dither_evalues_holds_a_zone_whose_channel_moved() -> None:
+    """A zone in shadow whose channel is 1.0 at first and 2.0 from the fourth batch: its evidence
+    restarts, and it reads HOLD, once the dither shows the move. Before it, a false alarm has
+    probability at most 288 / 10 000."""
+    rng = np.random.default_rng(25)
+    gate = DeploymentGate({"z": ZonePlan(0.1, 0.1)}, dataclasses.replace(LONE, drift_arl=1e4))
+    x, verdicts = 0.0, []
+    for batch in range(8):
+        drawn = rng.standard_normal(BATCH)
+        action = np.empty(BATCH)
+        residual = np.empty(BATCH)
+        for t in range(BATCH):
+            action[t] = -0.5 * x + drawn[t]
+            after = 0.5 * x + (1.0 if batch < 3 else 2.0) * action[t] + 0.5 * rng.standard_normal()
+            residual[t] = after - (0.5 * x + action[t])
+            x = after
+        log = DecisionLog(action, _npdf(drawn, 0.0, 1.0), np.zeros(BATCH, dtype=bool), drawn)
+        drift = channel_drift_evalues(
+            log, residual, dither_scale=1.0, radius=0.1, residual_scale=0.5
+        )
+        verdicts.append(
+            gate.update(
+                {
+                    "z": ZoneBatch.from_log(
+                        log,
+                        reward=np.full(BATCH, 0.5),
+                        candidate=_npdf(drawn, 0.1, 1.0),
+                        baseline=log.propensity,
+                        drift=drift,
+                    )
+                }
+            )["z"]
+        )
+    assert verdicts[:3] == ["shadow"] * 3
+    assert "hold" in verdicts[3:]
