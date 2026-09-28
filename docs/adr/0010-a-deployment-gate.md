@@ -58,12 +58,13 @@ checked its new pieces:
     mixture's.
   - It catches a baseline that is not what actually logged.
   - A fitted propensity passed as the logged one still gets through. The gate can require the
-    field; only the record it comes from can make it honest (D26).
+    field; only the record it comes from can make it honest (ADR 0015).
 - **`ZonePlan(chi2, tv)` is the caller's**, computed from the two policies. It steers only the
   EXPERIMENT rule: no guarantee depends on it.
 - **Every batch is checked before any is added**, so a refused update changes no zone.
-- **The evidence lives in memory.** Persisting it, and the logged propensity and dither with each
-  decision, is D26, a persisted-schema decision left to the author.
+- **The evidence lives in memory.** What each decision records, its logged propensity and its
+  dither, is stored as a versioned `DecisionLog` (ADR 0015); persisting the evidence itself is not
+  built.
 - **Not refused, because the gate cannot see them:**
   - carryover, stated as a condition. On a plant with memory, `chc.evaluation` estimates the
     plan's value, and switchback increments with a washout are the lab's next step;

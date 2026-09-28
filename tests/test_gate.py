@@ -10,14 +10,18 @@ produced by the lab's reference implementation on the same draws.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import math
 from dataclasses import dataclass
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from scipy import integrate, optimize, signal, stats
 
-from chc.gate import DeploymentGate, GateConfig, GateMode, ZoneBatch, ZonePlan
+from chc.gate import DecisionLog, DeploymentGate, GateConfig, GateMode, ZoneBatch, ZonePlan
 
 BATCH = 96
 REWARD_SCALE = 0.6
@@ -383,6 +387,10 @@ def test_inputs_outside_the_contract_are_refused() -> None:
         ZoneBatch(reward=one, candidate=one, baseline=one, logged=one, drift=np.ones((2, 1)))
     with pytest.raises(ValueError, match="non-negative"):
         ZoneBatch(reward=one, candidate=one, baseline=one, logged=one, drift=-one)
+    with pytest.raises(ValueError, match="saturated must hold 3 booleans"):
+        DecisionLog(action=one, propensity=one, saturated=np.zeros(3))
+    with pytest.raises(ValueError, match=r"action must have shape \(3,\)"):
+        DecisionLog(action=np.ones(2), propensity=one, saturated=np.zeros(3, dtype=bool))
     with pytest.raises(ValueError, match="chi2"):
         ZonePlan(-1.0, 0.1)
     with pytest.raises(ValueError, match="tv"):
@@ -412,3 +420,113 @@ def test_inputs_outside_the_contract_are_refused() -> None:
         gate.update(
             {"z": ZoneBatch(two.reward, two.candidate, two.baseline, two.logged, np.ones((2, 3)))}
         )
+
+
+# ---- what a logged decision records (ADR 0015) ----
+
+
+def _logged(size: int, seed: int, *, dither: bool = True) -> DecisionLog:
+    """The baseline draws each action as its mean plus a standard normal dither, so the logged
+    propensity is the dither's density."""
+    rng = np.random.default_rng(seed)
+    xi = rng.normal(size=size)
+    return DecisionLog(
+        action=0.2 * rng.normal(size=size) + xi,
+        propensity=_npdf(xi, 0.0, 1.0),
+        saturated=np.zeros(size, dtype=bool),
+        dither=xi if dither else None,
+    )
+
+
+def test_a_batch_read_from_stored_records_is_the_batch_built_from_arrays() -> None:
+    log = _logged(BATCH, 7)
+    stored = json.loads(json.dumps(log.to_records()))
+    assert {record["decision_log_version"] for record in stored} == {DecisionLog.VERSION}
+    read = DecisionLog.from_records(stored)
+    reward = np.random.default_rng(8).uniform(size=BATCH)
+    candidate = _npdf(read.action, 0.3, 1.0)
+    baseline = read.propensity
+    from_log = ZoneBatch.from_log(read, reward=reward, candidate=candidate, baseline=baseline)
+    from_arrays = ZoneBatch(reward, candidate, log.propensity, log.propensity)
+    for name in ("reward", "candidate", "baseline", "logged"):
+        np.testing.assert_array_equal(getattr(from_log, name), getattr(from_arrays, name))
+    gates = [DeploymentGate({"z": ZonePlan(0.1, 0.1)}, LONE) for _ in range(2)]
+    assert gates[0].update({"z": from_log}) == gates[1].update({"z": from_arrays})
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    size=st.integers(0, 12),
+    width=st.sampled_from([None, 1, 3]),
+    dither=st.booleans(),
+    seed=st.integers(0, 2**31 - 1),
+)
+def test_a_log_survives_its_stored_form_bit_for_bit(
+    size: int, width: int | None, dither: bool, seed: int
+) -> None:
+    """Through JSON and back, over actions from 1e-300 to 1e300. An empty log cannot say whether it
+    would have carried a dither, and reads back without one."""
+    rng = np.random.default_rng(seed)
+    shape = (size,) if width is None else (size, width)
+    log = DecisionLog(
+        action=rng.normal(size=shape) * 10.0 ** rng.integers(-300, 300, size=shape),
+        propensity=np.exp(20.0 * rng.normal(size=size)),
+        saturated=rng.uniform(size=size) < 0.3,
+        dither=rng.normal(size=shape) if dither else None,
+    )
+    read = DecisionLog.from_records(json.loads(json.dumps(log.to_records())))
+    np.testing.assert_array_equal(read.propensity, log.propensity)
+    np.testing.assert_array_equal(read.saturated, log.saturated)
+    np.testing.assert_array_equal(read.action.reshape(shape), log.action)
+    if log.dither is None or size == 0:
+        assert read.dither is None
+    else:
+        assert read.dither is not None
+        np.testing.assert_array_equal(read.dither.reshape(shape), log.dither)
+
+
+RECORD = {"decision_log_version": 1, "action": 0.4, "propensity": 0.35, "saturated": False}
+
+
+def _without(key: str) -> dict[str, object]:
+    return {k: v for k, v in RECORD.items() if k != key}
+
+
+@pytest.mark.parametrize(
+    ("records", "match"),
+    [
+        ([_without("decision_log_version")], "1 of 1 records have no 'decision_log_version'"),
+        ([RECORD | {"decision_log_version": 2}], "decision_log_version 2;"),
+        ([RECORD | {"decision_log_version": True}], "decision_log_version True;"),
+        ([RECORD | {"decision_log_version": "1"}], "decision_log_version '1';"),
+        ([RECORD, _without("propensity")], r"no 'propensity' \(the first is record 1\)"),
+        ([_without("action")], "no 'action'"),
+        ([_without("saturated")], "no 'saturated'"),
+        ([RECORD | {"saturated": 0}], "true or false"),
+        ([RECORD | {"dither": 0.1}, RECORD], "1 of 2 records carry a dither"),
+        ([RECORD | {"propensity": 0.0}], "must be positive"),
+        ([RECORD | {"dither": [0.1, 0.2]}], "dither has shape"),
+    ],
+)
+def test_a_stored_record_is_refused_rather_than_filled_in(
+    records: list[dict[str, object]], match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        DecisionLog.from_records(records)
+
+
+def test_keys_the_log_does_not_define_are_left_to_the_caller() -> None:
+    read = DecisionLog.from_records([RECORD | {"version": "policy-7", "reward": 0.9}])
+    assert read.propensity.tolist() == [0.35]
+    assert read.dither is None
+
+
+def test_a_reader_of_the_draw_refuses_a_clipped_dither() -> None:
+    log = _logged(5, 3)
+    np.testing.assert_array_equal(log.dither_draws(), log.dither)
+    clipped = dataclasses.replace(log, saturated=np.array([False, False, True, False, False]))
+    clipped_draw = r"1 of 5 decisions were clipped \(the first is decision 2\)"
+    with pytest.raises(ValueError, match=clipped_draw):
+        clipped.dither_draws()
+    with pytest.raises(ValueError, match="records no dither"):
+        _logged(5, 3, dither=False).dither_draws()

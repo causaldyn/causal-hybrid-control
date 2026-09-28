@@ -25,7 +25,9 @@ What the guarantee needs, and the gate cannot check:
 * **Propensities logged at decision time.** A behaviour law fitted to the logs afterwards, as
   :func:`chc.offpolicy.fit_behavior_policy` does, took a lab gate's type-I error from 0.013 to
   1.000. The gate takes the logged propensity and refuses a batch whose propensities are not those
-  of the policy it asked to log, but it cannot tell a logged propensity from a refitted one.
+  of the policy it asked to log, but it cannot tell a logged propensity from a refitted one. A
+  :class:`DecisionLog` is the record that carries it: read back from storage, it refuses a record
+  that does not say which version it is, or lacks a field, rather than filling one in.
 * **No spillover between zones**: each zone's null holds given every zone's past.
 * **No carryover**: a decision's reward does not depend on earlier decisions. On a plant with
   memory, per-decision increments certify the myopic contrast; in the lab they deployed, with
@@ -39,9 +41,9 @@ from __future__ import annotations
 import functools
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import ClassVar, Literal
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -146,15 +148,173 @@ class ZonePlan:
             raise ValueError(f"tv must lie in [0, 1], got {self.tv}")
 
 
+def _column(records: list[Mapping[str, object]], key: str) -> list[object]:
+    missing = [i for i, record in enumerate(records) if key not in record]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} of {len(records)} records have no {key!r} (the first is record"
+            f" {missing[0]}); a decision log is read as it was written, never filled in"
+        )
+    return [record[key] for record in records]
+
+
+@dataclass(frozen=True)
+class DecisionLog:
+    """What each decision recorded when it was taken, one entry per decision.
+
+    ``action`` is the action as applied, one row per decision for a vector action. ``propensity``
+    is the probability, or density, of drawing it, computed by the policy that drew it when it drew
+    it: the number the gate's guarantee is stated on. ``saturated`` flags a decision whose action
+    was clipped, so that what was applied is not what was drawn. ``dither``, optional, is the
+    Gaussian perturbation added to the policy's action, as applied.
+
+    Stored, a decision is a record with ``decision_log_version`` beside those fields.
+    :meth:`from_records` reads version :attr:`VERSION` and refuses a record with no version, or
+    with another, rather than guess what an older log meant. What a new version would require of
+    stored logs is in ``docs/adr/0015-what-a-logged-decision-records.md``.
+
+    Raises:
+        ValueError: on entries whose number differs between the fields, a non-finite entry, a
+            propensity that is not positive, a ``saturated`` that is not boolean, or a ``dither``
+            whose shape is not the action's.
+    """
+
+    action: NDArray[np.float64]
+    propensity: NDArray[np.float64]
+    saturated: NDArray[np.bool_]
+    dither: NDArray[np.float64] | None = None
+
+    VERSION: ClassVar[int] = 1
+
+    def __post_init__(self) -> None:
+        propensity = _vector(self.propensity, "propensity")
+        size = propensity.shape[0]
+        if size and not np.min(propensity) > 0.0:
+            raise ValueError(
+                f"a logged propensity must be positive, got {np.min(propensity)}: the action could"
+                " not have been drawn"
+            )
+        action = np.array(self.action, dtype=np.float64)
+        if action.ndim not in (1, 2) or action.shape[0] != size:
+            raise ValueError(
+                f"action must have shape ({size},) or ({size}, actions), got {action.shape}"
+            )
+        if not np.all(np.isfinite(action)):
+            raise ValueError("action is not finite")
+        saturated = np.array(self.saturated)
+        if saturated.size == 0:
+            saturated = saturated.astype(np.bool_)
+        if saturated.dtype != np.bool_ or saturated.shape != (size,):
+            raise ValueError(
+                f"saturated must hold {size} booleans, got {saturated.dtype} of shape"
+                f" {saturated.shape}"
+            )
+        for name, array in (
+            ("propensity", propensity),
+            ("action", action),
+            ("saturated", saturated),
+        ):
+            array.setflags(write=False)
+            object.__setattr__(self, name, array)
+        if self.dither is not None:
+            dither = np.array(self.dither, dtype=np.float64)
+            if dither.shape != action.shape:
+                raise ValueError(f"dither has shape {dither.shape}, the action {action.shape}")
+            if not np.all(np.isfinite(dither)):
+                raise ValueError("dither is not finite")
+            dither.setflags(write=False)
+            object.__setattr__(self, "dither", dither)
+
+    @classmethod
+    def from_records(cls, records: Iterable[Mapping[str, object]]) -> DecisionLog:
+        """The log that stored records hold, such as JSON lines or a table's rows.
+
+        Every record needs ``decision_log_version`` equal to :attr:`VERSION`, and ``action``,
+        ``propensity`` and ``saturated``, a boolean. ``dither`` is on every record or on none. Keys
+        the log does not define, such as a timestamp, the reward or the caller's own ``version``,
+        are left to the caller.
+
+        Raises:
+            ValueError: on a record with no version or with another, a missing field, a
+                ``saturated`` that is not a boolean, or a ``dither`` on some records and not
+                others; and on what the constructor refuses.
+        """
+        rows = list(records)
+        versions = _column(rows, "decision_log_version")
+        other = sorted(
+            {
+                repr(v)
+                for v in versions
+                if isinstance(v, bool | np.bool_)
+                or not isinstance(v, int | np.integer)
+                or v != cls.VERSION
+            }
+        )
+        if other:
+            raise ValueError(
+                f"records of decision_log_version {', '.join(other)}; this version of chc reads"
+                f" version {cls.VERSION} only"
+            )
+        saturated = _column(rows, "saturated")
+        if not all(isinstance(flag, bool | np.bool_) for flag in saturated):
+            raise ValueError("saturated must be true or false on every record")
+        with_dither = sum(row.get("dither") is not None for row in rows)
+        if 0 < with_dither < len(rows):
+            raise ValueError(
+                f"{with_dither} of {len(rows)} records carry a dither: a log records the dither of"
+                " every decision or of none"
+            )
+        return cls(
+            action=np.array(_column(rows, "action"), dtype=np.float64),
+            propensity=np.array(_column(rows, "propensity"), dtype=np.float64),
+            saturated=np.array(saturated, dtype=np.bool_),
+            dither=np.array(_column(rows, "dither"), dtype=np.float64) if with_dither else None,
+        )
+
+    def to_records(self) -> list[dict[str, object]]:
+        """One record per decision, versioned and ready for JSON, which :meth:`from_records`
+        reads back to the bit."""
+        records: list[dict[str, object]] = []
+        for i in range(self.propensity.shape[0]):
+            record: dict[str, object] = {
+                "decision_log_version": self.VERSION,
+                "action": self.action[i].tolist(),
+                "propensity": float(self.propensity[i]),
+                "saturated": bool(self.saturated[i]),
+            }
+            if self.dither is not None:
+                record["dither"] = self.dither[i].tolist()
+            records.append(record)
+        return records
+
+    def dither_draws(self) -> NDArray[np.float64]:
+        """The dither of every decision, for a reader that needs each to be the Gaussian draw.
+
+        Raises:
+            ValueError: on a log with no dither, or with a clipped decision, whose dither as
+                applied is not the draw.
+        """
+        if self.dither is None:
+            raise ValueError("the log records no dither")
+        if self.saturated.any():
+            raise ValueError(
+                f"{int(self.saturated.sum())} of {self.saturated.size} decisions were clipped (the"
+                f" first is decision {int(np.argmax(self.saturated))}), and a clipped decision's"
+                " dither is not the Gaussian draw"
+            )
+        return self.dither
+
+
 @dataclass(frozen=True)
 class ZoneBatch:
     """One zone's decisions since the gate was last read, one entry per decision.
 
     ``candidate`` and ``baseline`` are the two policies' propensities of the action taken -- a
     probability for a discrete action, a density for a continuous one -- and ``logged`` is the
-    propensity recorded when the action was drawn, under the policy the zone's mode asked for.
-    ``drift``, optional, holds per-decision e-values for "the channel is unchanged", one column per
-    detector, each with expectation at most 1 given the past while the channel holds.
+    propensity recorded when the action was drawn, under the policy the zone's mode asked for;
+    :meth:`from_log` reads it off a :class:`DecisionLog`. ``drift``, optional, holds per-decision
+    e-values for "the channel is unchanged", one column per detector, each with expectation at most
+    1 given the past while the channel holds.
 
     Raises:
         ValueError: on arrays of different lengths, a non-finite entry, a reward outside ``[0, 1]``,
@@ -196,6 +356,23 @@ class ZoneBatch:
                 raise ValueError("drift e-values must be finite and non-negative")
             drift.setflags(write=False)
             object.__setattr__(self, "drift", drift)
+
+    @classmethod
+    def from_log(
+        cls,
+        log: DecisionLog,
+        *,
+        reward: NDArray[np.float64],
+        candidate: NDArray[np.float64],
+        baseline: NDArray[np.float64],
+        drift: NDArray[np.float64] | None = None,
+    ) -> ZoneBatch:
+        """The batch whose logged propensities are the ones ``log`` recorded, decision by decision.
+
+        Raises:
+            ValueError: on what the constructor refuses.
+        """
+        return cls(reward, candidate, baseline, log.propensity, drift)
 
 
 def _growth(mean: float, variance: float) -> float:

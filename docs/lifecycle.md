@@ -121,7 +121,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   each batch says deploy, hold, experiment or roll back. It can be read at any time: at every
   read, the expected share of wrong deploys across zones is at most `alpha`. That holds when the
   propensities were logged at decision time, zones do not spill over, and a decision's reward does
-  not depend on earlier ones. See [`chc.gate`](api/gate.md).
+  not depend on earlier ones. A `DecisionLog` is the versioned record each decision stores for it:
+  the action, the propensity it was drawn with, a flag for a clipped action and the dither. See
+  [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 

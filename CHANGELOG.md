@@ -78,6 +78,13 @@ still change).
     when the action was drawn. It computes the weights itself, so none can arrive clipped the
     wrong way. It refuses a batch whose logged propensities are not those of the policy the zone's
     mode asked for.
+  - **`DecisionLog` is what each decision records**, versioned: the action as applied, the
+    propensity computed when it was drawn, a flag for a clipped action, and the Gaussian dither.
+    `DecisionLog.from_records` reads stored rows back, JSON lines or a table's, and refuses a record
+    with no version, with another, or without a field, rather than filling one in.
+    `ZoneBatch.from_log` takes the logged propensities from it, and `dither_draws` refuses a clipped
+    dither. The stored form survives JSON bit for bit. The design record, with what a new version
+    would require of stored logs, is `docs/adr/0015-what-a-logged-decision-records.md`.
   - **EXPERIMENT** is chosen when shadow cannot reach a verdict at `min_effect` within the horizon,
     and the mixture `(1 - rho) baseline + rho candidate`, which bounds both weights, would gather
     evidence faster. The speeds come from a two-point growth bound that is exact and minimax.

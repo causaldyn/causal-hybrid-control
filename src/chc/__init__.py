@@ -199,6 +199,7 @@ from chc.games import (
     stackelberg_allocation,
 )
 from chc.gate import (
+    DecisionLog,
     DeploymentGate,
     GateConfig,
     GateMode,
@@ -611,6 +612,7 @@ __all__ = [
     "DampingInjectionCertificate",
     "DecisionCertificate",
     "DecisionError",
+    "DecisionLog",
     "DelayBall",
     "DelayBallCertificate",
     "DelayEstimate",
