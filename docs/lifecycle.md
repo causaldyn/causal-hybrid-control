@@ -47,6 +47,10 @@ documented, and what is not built yet. Every name below is importable from `chc`
   (`LinearConstraint`: a budget, a rate limit), a barrier held in the solve (`BarrierConstraint`)
   and offline [pessimism](concepts/pessimism.md). See [`chc.plan`](api/plan.md).
 - **`CausalPlan.shadow_prices()`.** What each row costs the plan: the budget's price, per unit.
+- **`CausalPlan.decision_weight()`** (*experimental*). What an error in the lever's one-step
+  channel costs the plan, to second order: `W`, the Hessian of its regret in the channel's entries.
+  Its entries are the ones the drift monitor watches, so a radius or a detected move can be priced
+  in the plan's own cost.
 - **`minimax_action`.** The robust action over an identified interval, minimising the worst cost
   or the worst regret. See [`chc.regret`](api/regret.md).
 - **The case studies**, each one decision from its logs to a plan:

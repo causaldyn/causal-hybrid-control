@@ -51,7 +51,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
+from scipy.linalg import null_space
 from scipy.optimize import linprog
 
 from chc.adjoint import control_gradient_adjoint
@@ -68,7 +69,7 @@ from chc.control import (
 )
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
-from chc.integrate import rollout
+from chc.integrate import rk4_step, rollout
 from chc.support import (
     PenaltyModel,
     SupportModel,
@@ -211,6 +212,136 @@ class CausalPlan:
             tolerance,
         )
 
+    def decision_weight(self, tolerance: float | None = None) -> DecisionWeight:
+        """What an error in the one-step channel costs this plan, to second order. *Experimental.*
+
+        If the plant's one-step map is the planning model's plus ``E u``, each entry of the channel
+        off by ``E`` as :func:`chc.gate.channel_drift_evalues` watches them, the plan loses
+        ``vec(E)' W vec(E) / 2`` against the plan that knew ``E``, up to a term cubic in ``E``. By
+        the envelope theorem ``W = J_Eu M^-1 J_uE``, with ``M`` the Hessian of the task cost in
+        the directions the plan may move and ``J_uE`` its mixed derivative in those directions and
+        ``E``. The directions are the actions off the box, along the binding rows, with
+        :meth:`shadow_prices`' rule for what binds.
+
+        ``W`` is the regret's curvature at ``E = 0``, and three things bound how far it reaches:
+
+        * **The active set.** ``W`` holds while the bounds and rows that bind stay binding. At one
+          met with a zero multiplier, counted in ``weakly_active``, the regret is piecewise
+          quadratic, and ``W``, with the bound held, is its lower branch: freeing a direction can
+          only raise it.
+        * **The cubic term.** On the scalar plan of ``validation/plan_decision_weight.mac``, whose
+          one-step channel is 0.117, the regret's third derivative in ``E`` is -280 where ``W`` is
+          9.2, and the quadratic is within 10% of the exact regret only for ``E`` in
+          ``[-0.0096, 0.0102]``, about 8% of the channel.
+        * **A stationary plan.** ``residual`` is the stationarity miss along the free directions.
+          A solve stopped by its budget carries a first-order term that ``W`` does not.
+
+        ``W`` vanishes where the plan's response to the channel is flat, as on one step at
+        ``r = gamma^2 qf``, and the regret there is fourth order, not nil.
+
+        Computed when asked, in the plan's precision: one Hessian of the task cost in the actions,
+        ``(H m)^2`` entries, and one mixed derivative. ``tolerance`` is :meth:`shadow_prices`'.
+
+        Raises:
+            ValueError: on a plan held under a barrier, whose condition moves with the channel; on
+                one solved with pessimism penalties, whose regret on the task cost has a
+                first-order term; on one that carries no problem, as one built by hand does; or
+                where ``M`` is not positive definite, so the plan is not a strict local minimum
+                and its regret is not quadratic in ``E``.
+        """
+        problem = self._problem
+        if problem is None:
+            raise ValueError(
+                "this plan carries no problem to weigh; causal_plan and RecedingHorizon attach one"
+            )
+        if problem.barrier:
+            raise ValueError(
+                "the plan was held under a barrier, whose condition moves with the channel; the "
+                "decision weight of a barrier-held plan is not built"
+            )
+        weighted = problem.lam_supp != 0.0 or (
+            problem.uncertainty is not None and problem.lam_unc != 0.0
+        )
+        if problem.support is not None and weighted:
+            raise ValueError(
+                "the plan minimised the task cost plus pessimism penalties, so an error in the "
+                "channel costs its task cost at first order and the regret is not quadratic"
+            )
+        shape, dtype = self.actions.shape, self.actions.dtype
+        if tolerance is None:
+            tolerance = max(1e-6, 1e3 * float(jnp.finfo(dtype).eps))
+        states, actions = problem.x0.shape[0], shape[1]
+        flat = self.actions.ravel()
+        still = jnp.zeros(states * actions, dtype=dtype)
+
+        def cost(u: Array, change: Array) -> Array:
+            return _perturbed_task_cost(problem, u.reshape(shape), change.reshape(states, actions))
+
+        gradient = np.asarray(jax.grad(cost)(flat, still), dtype=np.float64)
+        hessian = np.asarray(jax.hessian(cost)(flat, still), dtype=np.float64)
+        mixed = np.asarray(jax.jacfwd(jax.grad(cost), argnums=1)(flat, still), dtype=np.float64)
+        present = [row for row in problem.constraints if row.matrix.shape[0]]
+        size = flat.size
+        matrix = np.vstack([row.matrix for row in present]) if present else np.zeros((0, size))
+        kkt = _kkt(
+            gradient,
+            np.asarray(flat, dtype=np.float64),
+            matrix,
+            np.concatenate([row.lower for row in present]) if present else np.zeros(0),
+            np.concatenate([row.upper for row in present]) if present else np.zeros(0),
+            np.asarray(broadcast_box(problem.u_lo, shape, "u_lo", dtype), np.float64).ravel(),
+            np.asarray(broadcast_box(problem.u_hi, shape, "u_hi", dtype), np.float64).ravel(),
+            tolerance,
+        )
+        free = kkt.free
+        pinned = kkt.at_hi | kkt.at_lo
+        weak_rows = np.abs(kkt.multipliers) * np.linalg.norm(kkt.columns[free], axis=0)
+        weakly_active = int(np.sum(np.abs(kkt.remainder[pinned]) <= kkt.slack)) + int(
+            np.sum(weak_rows <= kkt.slack)
+        )
+        # The directions the plan may move: the free actions, less what keeps a binding row bound.
+        basis = np.eye(size)[:, free]
+        if kkt.active.size and basis.shape[1]:
+            basis = basis @ null_space(matrix[kkt.active][:, free])
+        curvature = basis.T @ hessian @ basis
+        eigenvalues = np.linalg.eigvalsh(curvature) if basis.shape[1] else np.zeros(0)
+        if eigenvalues.size and eigenvalues[0] <= 1e3 * np.finfo(np.float64).eps * max(
+            1.0, float(np.abs(eigenvalues).max())
+        ):
+            raise ValueError(
+                f"the task cost's Hessian along the plan's free directions has eigenvalue "
+                f"{eigenvalues[0]:.4g}: the plan is not a strict local minimum, and its regret is "
+                "not quadratic in the channel"
+            )
+        reduced = basis.T @ mixed
+        weight = reduced.T @ np.linalg.solve(curvature, reduced) if basis.shape[1] else None
+        pull = gradient[free]
+        return DecisionWeight(
+            matrix=np.zeros((states * actions,) * 2) if weight is None else (weight + weight.T) / 2,
+            channel_shape=(states, actions),
+            free=int(basis.shape[1]),
+            weakly_active=weakly_active,
+            residual=float(np.linalg.norm(basis.T @ gradient))
+            / max(1.0, float(np.linalg.norm(pull))),
+        )
+
+
+def _perturbed_task_cost(problem: _PlanProblem, actions: Array, change: Array) -> Array:
+    """The task cost of ``actions`` when each step's one-step map is the model's plus
+    ``change @ u``: the rollout :func:`chc.integrate.rollout` makes, with the channel moved."""
+    targets = problem.cost.targets(actions.shape[0])
+
+    def body(carry: tuple[Array, Array], u: Array) -> tuple[tuple[Array, Array], Array]:
+        t, x = carry
+        x_next = rk4_step(problem.model, t, x, u, problem.dt) + change @ u
+        return (t + problem.dt, x_next), x_next
+
+    start = (jnp.asarray(0.0, dtype=problem.x0.dtype), problem.x0)
+    _, xs = jax.lax.scan(body, start, actions)
+    xs = jnp.concatenate([problem.x0[None, :], xs], axis=0)
+    running = jnp.sum(jax.vmap(problem.cost.running)(xs[:-1], actions, targets[:-1]))
+    return running + problem.cost.terminal(xs[-1], targets[-1])
+
 
 @dataclass(frozen=True)
 class RowPrice:
@@ -252,6 +383,38 @@ class ShadowPrices:
 
 
 @dataclass(frozen=True)
+class DecisionWeight:
+    """What an error in the one-step channel costs a plan, to second order. *Experimental.*
+
+    See :meth:`CausalPlan.decision_weight`.
+    """
+
+    # (n m, n m), symmetric positive semidefinite: the channel's entry (i, j), state i and action j,
+    # is index i m + j, the order chc.gate.channel_drift_evalues reads the entries in
+    matrix: NDArray[np.float64]
+    channel_shape: tuple[int, int]  # (n, m)
+    free: int  # the directions the plan may move in: actions off the box, less the binding rows
+    weakly_active: int  # bounds and rows the plan meets with a zero multiplier
+    residual: float  # stationarity miss along the free directions, over max(1, |gradient there|)
+
+    def regret(self, change: ArrayLike) -> float:
+        """``vec(E)' W vec(E) / 2`` at ``change = E``: what the plan loses, to second order,
+        against the plan that knew its one-step channel was off by ``E``.
+
+        Raises:
+            ValueError: on a ``change`` that is not a finite ``channel_shape`` matrix.
+        """
+        entries = np.asarray(change, dtype=np.float64)
+        if entries.shape != self.channel_shape or not np.all(np.isfinite(entries)):
+            raise ValueError(
+                f"change must be a finite {self.channel_shape} matrix, the one-step channel's "
+                f"shape, got shape {entries.shape}"
+            )
+        flat = entries.ravel()
+        return float(flat @ self.matrix @ flat) / 2.0
+
+
+@dataclass(frozen=True)
 class _PlanProblem:
     """What :meth:`CausalPlan.shadow_prices` needs of the solve, kept by the plan it produced."""
 
@@ -287,6 +450,71 @@ class _PlanProblem:
         return np.asarray(gradient, dtype=np.float64).ravel()
 
 
+@dataclass(frozen=True)
+class _Kkt:
+    """What binds at a plan, and the multipliers that make it stationary, as prices and weights
+    read them."""
+
+    at_hi: NDArray[np.bool_]  # actions on their upper bound
+    at_lo: NDArray[np.bool_]  # actions on their lower bound
+    active: NDArray[np.intp]  # the binding rows' indices
+    equality: NDArray[np.bool_]  # per binding row: at both of its bounds
+    columns: NDArray[np.float64]  # (actions, binding rows): each row's push, signed by its side
+    multipliers: NDArray[np.float64]  # the rows', by least squares on the free actions
+    singular: NDArray[np.float64]  # the binding rows' singular values on the free actions
+    residual: float  # stationarity miss on the free actions, over ``scale``
+    scale: float  # max(1, |gradient on the free actions|)
+    slack: float  # what counts as zero in a multiplier
+    remainder: NDArray[np.float64]  # the gradient less the rows' push: the box's multipliers
+
+    @property
+    def free(self) -> NDArray[np.bool_]:
+        return ~(self.at_hi | self.at_lo)
+
+
+def _kkt(
+    gradient: NDArray[np.float64],
+    actions: NDArray[np.float64],
+    matrix: NDArray[np.float64],
+    lower: NDArray[np.float64],
+    upper: NDArray[np.float64],
+    lo: NDArray[np.float64],
+    hi: NDArray[np.float64],
+    tolerance: float,
+) -> _Kkt:
+    """The binding bounds and rows at ``actions``, within ``tolerance * (1 + |bound|)``, and the
+    rows' multipliers from the gradient on the actions left off the box."""
+    with np.errstate(invalid="ignore"):  # an infinite bound is never binding
+        at_hi = np.isfinite(hi) & (actions >= hi - tolerance * (1.0 + np.abs(hi)))
+        at_lo = np.isfinite(lo) & (actions <= lo + tolerance * (1.0 + np.abs(lo))) & ~at_hi
+        values = matrix @ actions
+        up = np.isfinite(upper) & (values >= upper - tolerance * (1.0 + np.abs(upper)))
+        down = np.isfinite(lower) & (values <= lower + tolerance * (1.0 + np.abs(lower)))
+    free = ~(at_hi | at_lo)
+    active = np.flatnonzero(up | down)
+    # A row at its upper bound pushes back along +a, at its lower along -a; an equality row, either.
+    columns = (matrix[active] * np.where(down[active] & ~up[active], -1.0, 1.0)[:, None]).T
+    local, pull = columns[free], gradient[free]
+    scale = max(1.0, float(np.linalg.norm(pull)))
+    multipliers, singular = np.zeros(active.size), np.zeros(0)
+    if active.size and local.shape[0]:
+        multipliers = np.linalg.lstsq(local, -pull, rcond=None)[0]
+        singular = np.linalg.svd(local, compute_uv=False)
+    return _Kkt(
+        at_hi=at_hi,
+        at_lo=at_lo,
+        active=active,
+        equality=up[active] & down[active],
+        columns=columns,
+        multipliers=multipliers,
+        singular=singular,
+        residual=float(np.linalg.norm(pull + local @ multipliers)) / scale,
+        scale=scale,
+        slack=1e3 * tolerance * scale,
+        remainder=gradient + columns @ multipliers,
+    )
+
+
 def _row_prices(
     gradient: NDArray[np.float64],
     actions: NDArray[np.float64],
@@ -298,30 +526,15 @@ def _row_prices(
     tolerance: float,
 ) -> ShadowPrices:
     """The rows' multipliers at ``actions``, from the gradient on the actions left off the box."""
-    with np.errstate(invalid="ignore"):  # an infinite bound is never binding
-        at_hi = np.isfinite(hi) & (actions >= hi - tolerance * (1.0 + np.abs(hi)))
-        at_lo = np.isfinite(lo) & (actions <= lo + tolerance * (1.0 + np.abs(lo))) & ~at_hi
-        values = matrix @ actions
-        up = np.isfinite(upper) & (values >= upper - tolerance * (1.0 + np.abs(upper)))
-        down = np.isfinite(lower) & (values <= lower + tolerance * (1.0 + np.abs(lower)))
-    free = ~(at_hi | at_lo)
-    active = np.flatnonzero(up | down)
-    equality = up[active] & down[active]
-    # A row at its upper bound pushes back along +a, at its lower along -a; an equality row, either.
-    columns = (matrix[active] * np.where(down[active] & ~up[active], -1.0, 1.0)[:, None]).T
-    local, pull = columns[free], gradient[free]
-    scale = max(1.0, float(np.linalg.norm(pull)))
-    multipliers, singular = np.zeros(active.size), np.zeros(0)
-    if active.size and local.shape[0]:
-        multipliers = np.linalg.lstsq(local, -pull, rcond=None)[0]
-        singular = np.linalg.svd(local, compute_uv=False)
-    residual = float(np.linalg.norm(pull + local @ multipliers)) / scale
+    kkt = _kkt(gradient, actions, matrix, lower, upper, lo, hi, tolerance)
+    at_hi, at_lo, active, equality = kkt.at_hi, kkt.at_lo, kkt.active, kkt.equality
+    columns, multipliers, singular = kkt.columns, kkt.multipliers, kkt.singular
+    residual, scale, slack, remainder = kkt.residual, kkt.scale, kkt.slack, kkt.remainder
+    local = columns[kkt.free]
     independent = active.size == 0 or (
         singular.size == active.size
         and singular[-1] > singular[0] * max(local.shape) * np.finfo(np.float64).eps
     )
-    slack = 1e3 * tolerance * scale
-    remainder = gradient + columns @ multipliers
     dual_feasible = bool(
         np.all(multipliers[~equality] >= -slack)
         and np.all(remainder[at_hi] <= slack)

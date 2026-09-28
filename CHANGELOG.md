@@ -115,6 +115,27 @@ still change).
   - `DeploymentGate` now runs its drift alarm through `DriftAlarm`, and its verdicts are unchanged.
     The design record is `docs/adr/0018-a-channel-drift-monitor.md`.
 
+- **`CausalPlan.decision_weight()`: what an error in the one-step channel costs a plan**
+  (*experimental*). If the plant's one-step map is the model's plus `E u`, the plan loses
+  `vec(E)' W vec(E) / 2` to the plan that knew `E`, up to a cubic term. `W = J_Eu M^-1 J_uE` over
+  the directions the plan may move: the actions off the box, along the binding rows.
+  `DecisionWeight.regret(E)` reads it. The entries are the ones `channel_drift_evalues` watches, in
+  its order, so a radius or a detected move can be priced in the plan's own cost. Until now `W`
+  existed only for `chc.experiment`'s one-shot decision.
+  - **Checked three ways.** `validation/plan_decision_weight.mac` derives `W` through the RK4 step,
+    on one and two steps and with an action on its bound, against the regret's exact second
+    derivative. `proofs/plan_decision_weight.v` proves the envelope identity, and that pinning an
+    action or binding a row can only lower `W` (9 lemmas). On a two-state, two-lever plan with a
+    binding box and budget, the regret re-solved by SLSQP meets `W`'s prediction with a gap that
+    shrinks linearly in `E`, the cubic term's.
+  - **It says how far it reaches.** On the validation file's scalar plan the quadratic is within
+    10% of the regret only for errors up to 8% of the channel. `weakly_active` counts the bounds
+    and rows met with a zero multiplier, where the regret is piecewise and `W` its lower branch, and
+    `residual` the stationarity miss of an unfinished solve.
+  - **Refused:** a plan held under a barrier, whose condition moves with the channel; one solved
+    with pessimism penalties, whose regret has a first-order term; one built by hand; and one whose
+    Hessian along its free directions is not positive definite.
+
 - **`chc.experiment`: which experiment a decision needs, how large, and whether to run one.**
   `design_experiment(decision, prior, experiment, budget)` returns an `ExperimentDesign` with:
   - whole units per zone and what they spend;

@@ -1,0 +1,113 @@
+/* The decision weight behind chc.plan.CausalPlan.decision_weight: the Hessian of a plan's
+   certainty-equivalent regret in its one-step channel.
+
+   A plan u* minimises J(u; 0), the task cost of the rollout x_(k+1) = step(x_k, u_k) + E u_k at
+   E = 0, where step is the library's RK4 step. If the one-step channel is off by E, the plan loses
+       R(E) = J(u*(0); E) - min_u J(u; E)
+   against the plan that knew E. The library reports W = J_Eu M^-1 J_uE, M = J_uu, over the actions
+   the plan may move (off their bounds), so that R(E) = E' W E / 2 to second order.
+
+   STEP 1  the RK4 step of xdot = a x + b u is x1 = phi x0 + gam u, the library's one-step map
+   STEP 2  H = 1: the brute-force regret's second derivative at E = 0 equals J_ue^2 / J_uu
+   STEP 3  H = 2: the same against J_eu M^-1 J_ue with M the 2 x 2 Hessian
+   STEP 4  H = 2 with u_0 held at a bound: only the free action enters
+   STEP 5  how far the quadratic reaches: the third derivative, and the exact regret against it
+   STEP 6  the numbers the unit test pins
+   STEP 7  H = 2 with a row met at no pull: the weight on the row's branch, below the free one
+
+   Run: timeout 300 maxima --very-quiet -b validation/plan_decision_weight.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 16$
+
+print("=== STEP 1: the RK4 step of a linear scalar plant ===")$
+f(x) := a*x + b*u$
+k1 : f(x0)$
+k2 : f(x0 + dt/2*k1)$
+k3 : f(x0 + dt/2*k2)$
+k4 : f(x0 + dt*k3)$
+x1 : x0 + dt/6*(k1 + 2*k2 + 2*k3 + k4)$
+phi_rk : 1 + a*dt + (a*dt)^2/2 + (a*dt)^3/6 + (a*dt)^4/24$
+gam_rk : b*dt*(1 + a*dt/2 + (a*dt)^2/6 + (a*dt)^3/24)$
+print("STEP 1 x1 - (phi x0 + gam u) =", ratsimp(x1 - (phi_rk*x0 + gam_rk*u)), " (0)")$
+
+print("=== STEP 2: one step ===")$
+/* the cost the library's QuadraticCost writes: a running 1/2 q (x - s)^2 + 1/2 r u^2 at x0, and a
+   terminal 1/2 qf (x - s)^2 at x1 */
+J1(v, e) := q*(x0 - s)^2/2 + r*v^2/2 + qf*(phi*x0 + (gam + e)*v - s)^2/2$
+best1(e) := rhs(first(solve(diff(J1(v, e), v) = 0, v)))$
+R1(e) := J1(best1(0), e) - J1(best1(e), e)$
+brute1 : ratsimp(subst(e = 0, diff(R1(e), e, 2)))$
+juu1 : diff(J1(v, e), v, 2)$
+jue1 : diff(J1(v, e), v, 1, e, 1)$
+formula1 : ratsimp(subst([v = best1(0), e = 0], jue1^2/juu1))$
+print("STEP 2a the plan: u* =", ratsimp(best1(0)))$
+print("STEP 2b R''(0) - J_ue^2 / J_uu =", ratsimp(brute1 - formula1), " (0)")$
+print("STEP 2c R(0) =", ratsimp(R1(0)), ", R'(0) =", ratsimp(subst(e = 0, diff(R1(e), e))),
+      " (0, 0: no first-order term, the plan is stationary)")$
+print("STEP 2d W =", factor(formula1))$
+
+print("=== STEP 3: two steps ===")$
+J2(v0, v1, e) := block([y1, y2],
+  y1 : phi*x0 + (gam + e)*v0,
+  y2 : phi*y1 + (gam + e)*v1,
+  q*(x0 - s)^2/2 + r*v0^2/2 + q*(y1 - s)^2/2 + r*v1^2/2 + qf*(y2 - s)^2/2)$
+best2(e) := block([sol],
+  sol : solve([diff(J2(v0, v1, e), v0) = 0, diff(J2(v0, v1, e), v1) = 0], [v0, v1]),
+  [rhs(first(first(sol))), rhs(second(first(sol)))])$
+p0 : best2(0)$
+R2(e) := block([pe], pe : best2(e), J2(p0[1], p0[2], e) - J2(pe[1], pe[2], e))$
+brute2 : ratsimp(subst(e = 0, diff(R2(e), e, 2)))$
+hess2 : matrix([diff(J2(v0, v1, e), v0, 2), diff(J2(v0, v1, e), v0, 1, v1, 1)],
+               [diff(J2(v0, v1, e), v1, 1, v0, 1), diff(J2(v0, v1, e), v1, 2)])$
+mixed2 : matrix([diff(J2(v0, v1, e), v0, 1, e, 1)], [diff(J2(v0, v1, e), v1, 1, e, 1)])$
+at0 : [v0 = p0[1], v1 = p0[2], e = 0]$
+formula2 : ratsimp(subst(at0, (transpose(mixed2) . invert(hess2) . mixed2)))$
+print("STEP 3 R''(0) - J_eu M^-1 J_ue =", ratsimp(brute2 - formula2), " (0)")$
+
+print("=== STEP 4: two steps, the first action held at a bound ===")$
+/* the plan holds u_0 at ub and moves u_1 only, so its regret is taken with u_0 = ub throughout */
+best4(e) := rhs(first(solve(diff(J2(ub, v1, e), v1) = 0, v1)))$
+R4(e) := J2(ub, best4(0), e) - J2(ub, best4(e), e)$
+brute4 : ratsimp(subst(e = 0, diff(R4(e), e, 2)))$
+formula4 : ratsimp(subst([v1 = best4(0), e = 0],
+                         diff(J2(ub, v1, e), v1, 1, e, 1)^2/diff(J2(ub, v1, e), v1, 2)))$
+print("STEP 4 R''(0) - J_eu1^2 / J_u1u1 =", ratsimp(brute4 - formula4), " (0)")$
+
+/* the unit test's numbers: a = -0.5, b = 1.2, dt = 0.1, x0 = 1, target 0, q = 1, r = 0.1, qf = 2;
+   the bound is ub = -0.4 */
+num : [phi = subst([a = -1/2, dt = 1/10], phi_rk), gam = subst([a = -1/2, b = 6/5, dt = 1/10],
+       gam_rk), x0 = 1, s = 0, q = 1, r = 1/10, qf = 2, ub = -2/5]$
+
+print("=== STEP 5: how far the quadratic reaches ===")$
+third1 : ratsimp(subst(e = 0, diff(R1(e), e, 3)))$
+print("STEP 5a R'''(0) at one step =", factor(third1))$
+print("STEP 5b at the numbers: R'''(0) =", float(subst(num, third1)), ", W =",
+      float(subst(num, formula1)), ", gam =", float(subst(num, gam)))$
+w1 : float(subst(num, formula1))$
+ratio1(ee) := float(subst(num, R1(ee)))/(w1*ee^2/2)$
+for ee in [-0.03, -0.01, -0.003, 0.003, 0.01, 0.03] do
+  print("STEP 5c E =", ee, ": the exact regret over W E^2 / 2 =", ratio1(ee))$
+print("STEP 5d within 10% of W E^2 / 2 for E in [", find_root(ratio1(z) - 1.1, z, -0.1, -1d-4),
+      ",", find_root(ratio1(z) - 0.9, z, 1d-4, 0.1), "]")$
+
+print("=== STEP 6: the unit test's numbers ===")$
+print("STEP 6 H = 1: u* =", float(subst(num, best1(0))), " W =", float(subst(num, formula1)))$
+print("STEP 6 H = 2: u* =", float(subst(num, p0)), " W =", float(subst(num, formula2)))$
+print("STEP 6 H = 2, u_0 = -0.4: u_1* =", float(subst(num, best4(0))),
+      " W =", float(subst(num, formula4)))$
+
+print("=== STEP 7: two steps, a row u_0 + u_1 >= c met where it has no pull ===")$
+/* c is the free plan's own sum, so the row binds with a zero multiplier and the plan is p0. Held,
+   the row leaves the plan one direction, w in u_0 and -w in u_1: W is the regret's branch on it */
+J7(w, e) := J2(p0[1] + w, p0[2] - w, e)$
+best7(e) := rhs(first(solve(diff(J7(w, e), w) = 0, w)))$
+R7(e) := J7(best7(0), e) - J7(best7(e), e)$
+brute7 : ratsimp(subst(e = 0, diff(R7(e), e, 2)))$
+formula7 : ratsimp(subst([w = best7(0), e = 0],
+                         diff(J7(w, e), w, 1, e, 1)^2/diff(J7(w, e), w, 2)))$
+print("STEP 7a the plan on the row: w* =", ratsimp(best7(0)), " (0: the row has no pull)")$
+print("STEP 7b R''(0) - J_ew^2 / J_ww =", ratsimp(brute7 - formula7), " (0)")$
+print("STEP 7c at the numbers: W =", float(subst(num, formula7)), " (the row held), against",
+      float(subst(num, formula2)), " free")$
