@@ -266,7 +266,7 @@ The release-by-release record, scope corrections included, is in [`CHANGELOG.md`
 
 ## Status
 
-Early (`v0.6.0`), single-author, research code (`just counts` prints the test and proof counts;
+Early (`v0.7.0`), single-author, research code (`just counts` prints the test and proof counts;
 Python 3.11–3.14, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
@@ -313,9 +313,11 @@ Three tiers, by what a break costs you:
 | **evolving** | the estimator, certificate and domain layers — `causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace` `mmm` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
 | **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` | may change or be withdrawn in any release. Pin an exact version if you depend on one |
 
-Roadmap: **0.7.0** the three things `prescribe` cannot state in 0.6.0 — a bound on the steered
-state and a target that varies within the horizon (both on `main`), exogenous drivers in the drift
-→ **1.0.0**, which is when the stable tier stops moving.
+Roadmap: **0.8.0** evidence before deployment — what a plan would cost, estimated from another
+policy's logs with an interval, and a gate that deploys a policy, holds it or rolls it back. The same
+release starts narrowing the top level: a name imported from `chc` beyond the lifecycle's warns, and
+stays importable from its module → **1.0.0**, which is when the stable tier stops moving and the top
+level holds only the lifecycle's names.
 
 Supply chain: every artifact carries a PEP 740 attestation and a SLSA build provenance; see
 [`SECURITY.md`](SECURITY.md) for how to verify one and what is in scope for a report.
@@ -332,7 +334,7 @@ suite, and `rocq compile` over `proofs/*.v`. Machine-readable citation metadata 
   author  = {Gradina, Ilia},
   title   = {causal-hybrid-control: physics-structured dynamics with a learned causal residual},
   year    = {2026},
-  version = {0.6.0},
+  version = {0.7.0},
   doi     = {10.5281/zenodo.21737789},
   license = {MIT},
   url     = {https://github.com/causaldyn/causal-hybrid-control}

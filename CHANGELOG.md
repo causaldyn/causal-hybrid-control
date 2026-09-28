@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the API stabilises (pre-1.0 it may
 still change).
 
-## [Unreleased]
+## [0.7.0] — 2026-09-28
 
 ### Added
 
@@ -3104,6 +3104,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.7.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.7.0
 [0.6.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.6.0
 [0.5.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.5.1
 [0.5.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.5.0
