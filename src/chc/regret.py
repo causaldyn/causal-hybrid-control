@@ -29,6 +29,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.integrate import quad
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
+from scipy.optimize import brentq
 from scipy.special import psi
 
 from chc.network_causal import (
@@ -5327,15 +5328,22 @@ def confounding_robust_lq_regret_certificate(
 # --- Result 58: the minimax LQ controller over the identified effect interval ---
 
 
-MinimaxBranch = Literal["lower", "upper", "equalise", "zero"]
+MinimaxBranch = Literal["lower", "upper", "equalise", "zero", "interior"]
 """Which candidate the robust action landed on. ``lower`` / ``upper`` are the certainty-equivalent
 actions for an interval *endpoint*, ``equalise`` the action that makes both endpoints equally bad
-(``b_hat*u = target``), ``zero`` doing nothing -- the answer when the sign is unidentified."""
+(``b_hat*u = target`` for the cost, the ``sqrt(D)``-weighted mean of the endpoint actions for the
+regret), ``zero`` doing nothing -- the answer when the sign is unidentified -- and ``interior`` a
+regret whose worst effect lies inside the interval."""
+
+MinimaxCriterion = Literal["cost", "regret"]
 
 
 @dataclass(frozen=True)
 class MinimaxAction:
-    """The robust action, its worst case over the interval, and which candidate bound."""
+    """The robust action, its worst case over the interval, and which candidate bound.
+
+    ``worst_case`` is the worst of whatever was minimised: the cost, or the regret.
+    """
 
     action: float
     worst_case: float
@@ -5343,7 +5351,13 @@ class MinimaxAction:
 
 
 def minimax_action(
-    target: float, b_lo: float, b_hi: float, effort: float, curvature: float = 1.0
+    target: float,
+    b_lo: float,
+    b_hi: float,
+    effort: float,
+    curvature: float = 1.0,
+    *,
+    criterion: MinimaxCriterion = "cost",
 ) -> MinimaxAction:
     """Exact ``argmin_u max_{b in [b_lo, b_hi]} curvature*(b*u - target)^2 + effort*u^2``.
 
@@ -5364,6 +5378,18 @@ def minimax_action(
     does NOT have a fixed sign -- the robust action is smaller than CE at ``b_hat`` only when
     ``curvature*b_lo*b_hat < effort``, and larger otherwise. "Be robust, act less" is a statement
     about expensive effort, not about pessimism.
+
+    ``criterion="regret"`` minimises the worst *regret* instead: the cost over what the action
+    that knew ``b`` would have paid, ``D(b) (u - u*(b))^2`` with ``D(b) = curvature*b^2 + effort``
+    and ``u*(b) = curvature*b*target/D(b)``. The two answers differ: on the five intervals of its
+    test the minimax-cost action carries 4.1-6.2x the minimax regret. The regret's worst
+    effect is an endpoint unless ``sqrt(D) (u - u*)`` turns inside the interval, which happens
+    exactly where ``u*b*D(b) - target*effort`` changes sign on it -- that root test decides the
+    case, and a monotone ``u*`` does not: on ``b in [1, 10]`` with unit weights the endpoint answer
+    is 20% low. With no turn, the answer is the endpoint equaliser, ``(sqrt(D_lo)*u*_lo +
+    sqrt(D_hi)*u*_hi) / (sqrt(D_lo) + sqrt(D_hi))``; with one, the worst regret is evaluated at
+    the endpoints and the turn, is convex in ``u``, and is minimised over the range of ``u*`` by
+    golden section.
     """
     if b_hi < b_lo:
         raise ValueError(f"empty identified interval: b_lo={b_lo} > b_hi={b_hi}")
@@ -5373,6 +5399,10 @@ def minimax_action(
         raise ValueError(
             f"curvature is a cost-to-go coefficient and cannot be negative: {curvature}"
         )
+    if criterion == "regret":
+        return _minimax_regret_action(target, b_lo, b_hi, effort, curvature)
+    if criterion != "cost":
+        raise ValueError(f"criterion must be 'cost' or 'regret', got {criterion!r}")
 
     def branch(b: float, u: float) -> float:
         return curvature * (b * u - target) ** 2 + effort * u**2
@@ -5393,6 +5423,63 @@ def minimax_action(
         candidates.append((target / midpoint, "equalise"))
     action, binding = min(candidates, key=lambda c: worst(c[0]))
     return MinimaxAction(action=action, worst_case=worst(action), binding=binding)
+
+
+def _minimax_regret_action(
+    target: float, b_lo: float, b_hi: float, effort: float, curvature: float
+) -> MinimaxAction:
+    """``minimax_action(..., criterion="regret")``; see there for the two cases."""
+
+    def spread(b: float) -> float:
+        return curvature * b**2 + effort
+
+    def best(b: float) -> float:
+        return curvature * b * target / spread(b)
+
+    def regret(u: float, b: float) -> float:
+        return spread(b) * (u - best(b)) ** 2
+
+    def turn(u: float) -> float | None:
+        """Where ``sqrt(D) (u - u*)`` turns inside the interval; it turns at most once."""
+
+        def slope(b: float) -> float:
+            return u * b * spread(b) - target * effort
+
+        if slope(b_lo) * slope(b_hi) >= 0.0:
+            return None
+        return float(brentq(slope, b_lo, b_hi, xtol=1e-15, rtol=4.0 * np.finfo(float).eps))
+
+    def worst(u: float) -> float:
+        inside = turn(u)
+        edges = max(regret(u, b_lo), regret(u, b_hi))
+        return edges if inside is None else max(edges, regret(u, inside))
+
+    root_lo, root_hi = np.sqrt(spread(b_lo)), np.sqrt(spread(b_hi))
+    equaliser = float((root_lo * best(b_lo) + root_hi * best(b_hi)) / (root_lo + root_hi))
+    if turn(equaliser) is None:
+        return MinimaxAction(
+            action=equaliser, worst_case=float(worst(equaliser)), binding="equalise"
+        )
+
+    # ``u*`` peaks where ``curvature*b^2 = effort``; past the range of ``u*`` every regret grows.
+    reach = [best(b_lo), best(b_hi)]
+    peak = np.sqrt(effort / curvature)
+    reach += [best(b) for b in (peak, -peak) if b_lo < b < b_hi]
+    lo, hi = min(reach), max(reach)
+    ratio = (np.sqrt(5.0) - 1.0) / 2.0
+    left, right = hi - ratio * (hi - lo), lo + ratio * (hi - lo)
+    worst_left, worst_right = worst(left), worst(right)
+    while hi - lo > 4.0 * np.finfo(float).eps * max(1.0, abs(lo), abs(hi)):
+        if worst_left <= worst_right:
+            hi, right, worst_right = right, left, worst_left
+            left = hi - ratio * (hi - lo)
+            worst_left = worst(left)
+        else:
+            lo, left, worst_left = left, right, worst_right
+            right = lo + ratio * (hi - lo)
+            worst_right = worst(right)
+    action = float(0.5 * (lo + hi))
+    return MinimaxAction(action=action, worst_case=float(worst(action)), binding="interior")
 
 
 @dataclass(frozen=True)

@@ -78,6 +78,17 @@ still change).
   did. `scripts/bench_period_budget.py` reprints the numbers; the design record is
   `docs/adr/0008-a-budget-per-period.md`.
 
+- **`minimax_action` minimises the worst regret on request.** `criterion="regret"` minimises the
+  worst of `D(b) (u - u*(b))^2`, what the action pays over the one that knew `b`; the default,
+  `"cost"`, is unchanged. The two answers differ: on the five intervals of its test, the
+  minimax-cost action carries 4.1-6.2 times the minimax regret. The worst regret sits at an
+  endpoint unless it turns inside the interval, and a root test decides which. With no turn the
+  answer is the endpoint equaliser; with one it is found by golden section, and `binding` reads
+  the new `"interior"`. The endpoints alone would be wrong there: on `b in [1, 10]` with unit
+  weights, the endpoint equaliser's own regret exceeds the worst case it claims by more than 20%.
+  A brute-force search agrees on 120 random intervals across both regimes. `MinimaxCriterion` is
+  exported.
+
 - **`CausalPlan.shadow_prices()`: what each constraint row is worth to the plan.** Each row of
   `constraints` gets its KKT multiplier at the returned actions: how much the optimum falls per
   unit the row is relaxed, an upper bound raised or a lower bound lowered. It is read off the

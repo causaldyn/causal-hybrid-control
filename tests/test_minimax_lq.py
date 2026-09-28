@@ -62,6 +62,93 @@ def test_an_empty_interval_and_a_free_action_are_rejected_not_answered() -> None
         minimax_action(1.0, 0.5, 1.5, effort=0.0)
 
 
+def _regret_brute_force(
+    target: float, b_lo: float, b_hi: float, effort: float, curvature: float
+) -> tuple[np.ndarray, float]:
+    """The effect grid, and the least worst-regret over it by ternary search in the action."""
+    grid = np.linspace(b_lo, b_hi, 20_001)
+    spread = curvature * grid**2 + effort
+    best = curvature * grid * target / spread
+    low, high = float(best.min()), float(best.max())
+    for _ in range(100):
+        left, right = low + (high - low) / 3.0, high - (high - low) / 3.0
+        if np.max(spread * (left - best) ** 2) <= np.max(spread * (right - best) ** 2):
+            high = right
+        else:
+            low = left
+    action = 0.5 * (low + high)
+    return grid, float(np.max(spread * (action - best) ** 2))
+
+
+def _worst_regret_on(grid: np.ndarray, action: float, target: float, effort: float) -> float:
+    spread = grid**2 + effort
+    return float(np.max(spread * (action - grid * target / spread) ** 2))
+
+
+def test_the_regret_criterion_matches_a_brute_force_search_in_both_regimes() -> None:
+    """The verifier's samplers, smaller: an interval under ``sqrt(effort/curvature)`` never turns,
+    and past it the worst regret can sit inside, which the endpoint formula misses."""
+    rng = np.random.default_rng(20260928)
+    bindings: dict[str, set[str]] = {"rising": set(), "falling": set(), "straddle": set()}
+    for kind in bindings:
+        for _ in range(40):
+            effort = float(np.exp(rng.uniform(np.log(0.1), np.log(10.0))))
+            peak = np.sqrt(effort)  # curvature 1
+            target = float(rng.choice([-1.0, 1.0]) * np.exp(rng.uniform(np.log(0.1), np.log(5.0))))
+            if kind == "rising":
+                b_hi = peak * rng.uniform(0.02, 1.0)
+                b_lo = b_hi * rng.uniform(0.0, 0.999)
+            elif kind == "falling":
+                b_lo = peak * rng.uniform(1.0, 5.0)
+                b_hi = b_lo * rng.uniform(1.001, 20.0)
+            else:
+                b_lo, b_hi = peak * rng.uniform(0.01, 0.99), peak * rng.uniform(1.01, 20.0)
+            robust = minimax_action(target, b_lo, b_hi, effort, criterion="regret")
+            grid, brute = _regret_brute_force(target, b_lo, b_hi, effort, 1.0)
+            # The grid can only miss a peak: its max is a lower bound on the action's worst case,
+            # and its minimax a lower bound on the true one, short of it by the grid's resolution.
+            assert _worst_regret_on(grid, robust.action, target, effort) <= robust.worst_case * (
+                1 + 1e-12
+            )
+            assert brute * (1 - 1e-12) <= robust.worst_case <= brute * (1 + 1e-5)
+            bindings[kind].add(robust.binding)
+    assert bindings["rising"] == {"equalise"}
+    assert "interior" in bindings["falling"] | bindings["straddle"]
+
+
+def test_the_endpoint_formula_is_twenty_percent_low_where_the_regret_peaks_inside() -> None:
+    """The verifier's counterexample, ``b in [1, 10]`` with unit weights: the equaliser 0.148476
+    claims a worst regret its own curve exceeds at ``b = 1.71``; the minimax is 0.154464."""
+    robust = minimax_action(1.0, 1.0, 10.0, effort=1.0, criterion="regret")
+    assert robust.binding == "interior"
+    assert robust.action == pytest.approx(0.154464, abs=1e-6)
+    assert robust.worst_case == pytest.approx(2 * 0.155294, abs=2e-6)  # its regret has a 1/2
+    grid = np.linspace(1.0, 10.0, 200_001)
+    assert _worst_regret_on(grid, 0.148476, 1.0, 1.0) > 1.2 * 2 * 0.123569
+
+
+def test_the_minimax_cost_action_carries_several_times_the_minimax_regret() -> None:
+    ratios = []
+    for b_hat, halfwidth in [(0.3, 0.05), (0.3, 0.2), (1.0, 0.3), (2.0, 0.5), (0.5, 0.4)]:
+        b_lo, b_hi = b_hat - halfwidth, b_hat + halfwidth
+        regret = minimax_action(1.0, b_lo, b_hi, effort=1.0, criterion="regret")
+        cost = minimax_action(1.0, b_lo, b_hi, effort=1.0)
+        grid = np.linspace(b_lo, b_hi, 20_001)
+        ratios.append(_worst_regret_on(grid, cost.action, 1.0, 1.0) / regret.worst_case)
+    assert (min(ratios), max(ratios)) == pytest.approx((4.112, 6.218), abs=1e-3)
+
+
+def test_a_point_identified_effect_has_no_regret() -> None:
+    robust = minimax_action(1.0, 0.7, 0.7, effort=0.5, curvature=2.0, criterion="regret")
+    assert robust.action == pytest.approx(2.0 * 0.7 / (2.0 * 0.49 + 0.5))
+    assert robust.worst_case == pytest.approx(0.0, abs=1e-24)
+
+
+def test_an_unknown_criterion_is_refused() -> None:
+    with pytest.raises(ValueError, match="criterion"):
+        minimax_action(1.0, 0.5, 1.5, effort=1.0, criterion="worst")  # type: ignore[arg-type]
+
+
 def test_the_horizon_policy_beats_certainty_equivalences_worst_case() -> None:
     curve = minimax_lq_certificate()
     assert curve.ok
