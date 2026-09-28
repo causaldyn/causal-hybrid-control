@@ -2827,10 +2827,15 @@ def optimal_fold_partition(
     ``k_folds``-partitions of the graph weighted by ``Q(x) = sum_{d,e} g_d g_e x^|d-e| S_d S_e``,
     which -- since the mass is ``1'Q1 - 2*cut`` with ``1'Q1`` partition-free -- is the
     MAXIMUM-weight balanced cut of that graph and not the minimum-weight one (Result 61),
-    ``x = phi**lag``. On a cycle the answer is a spectral stripe design: width-2 stripes below
-    ``x = g1/g0``, alternating folds between ``g1/g0`` and ``g1/(2 g2)`` -- and NEVER the
-    contiguous blocks that ``delayed_network_certificate`` compares, which cost up to +55% of
-    ``Psi`` at small ``x``.
+    ``x = phi**lag``. On a cycle with ONE spillover shell the answer is proved over all labellings:
+    width-2 stripes below ``x = g1/g0`` and alternating folds above it. With two shells it depends
+    on ``gammas``, not only on ``x``: at ``(1, 0.7, 0.4)`` stripes win on ``[0, 7/10]`` and
+    ``[7/8, 1]`` and alternation between (every other periodic pattern is a de Bruijn cycle whose
+    mean cost is at least ``9/1600`` higher), but at ``g2 = 0.6`` the period-8 pattern
+    ``00101101`` wins below ``x ~ 0.818`` and alternation never does. What does not change is that
+    the contiguous blocks ``delayed_network_certificate`` compares are never optimal on the
+    cycles certified (``8 <= m <= 14``, one and two shells); they cost up to +55% of ``Psi`` at
+    small ``x``.
 
     Three routes, and ``route`` says which one ran. Small problems (``k_folds = 2`` and at most
     ``exhaustive_limit`` balanced bisections) are ENUMERATED. Past that, a **circulant** weight
