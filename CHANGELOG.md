@@ -126,6 +126,41 @@ still change).
 
     The design record is `docs/adr/0011-designing-an-experiment.md`.
 
+- **`chc.switchback`: which switchback to run on a plant with memory, and how to read it, for a
+  named effect.** A zone's state remembers what the lever did, so its periods are not independent
+  units. `design_switchback(estimands, prior, periods, zones)` plans for the effects a controller
+  needs: the channel `b` (`CHANNEL`), the effect `tau_H` of holding the lever on for `H` periods
+  (`Horizon(H)`), or the steady state (`STEADY_STATE`). Each effect is reported at the least
+  favourable persistence in the prior's interval, with its standard error, minimum detectable
+  effect and loss against its own best design. `read_switchback(lever, outcome, estimand,
+  analysis)` reads the effect off the data with a standard error from the data. Scope: a
+  first-order state per zone, `0 < a < 1`, zones independent.
+  - **The design is aligned to the effect.** The plug-in `b_hat S_H(a_hat)` loses nothing to the
+    unknown persistence when the design's `A1 = S_H'/S_H`. At two periods that is a Markov design
+    flipping with probability `a/(1 + 2a)`. Several effects meet at their minimax, and a floor on
+    the number of switches stops the steady state asking never to switch. Under measurement noise
+    every effect is read by IV. Without a trusted state model, only model-free readings are
+    planned.
+  - **The reading.**
+    - A heteroskedasticity-robust covariance, with the lags that noise and overlapping sums create.
+    - Fieller's interval for the steady state.
+    - A block difference in means centred on the midpoint of the earlier on and off blocks. It is
+      unbiased at any number of blocks; at eight, the realised-means form reads 27% low.
+  - **Measured** at `a = 0.8`, over 2000 periods a zone:
+    - the lab's reference planner is reproduced to its printed digits;
+    - the simulated spread is 0.988–1.040 of the planned standard error, and a test at the planned
+      MDE rejects 0.782–0.824 of the time against a planned power of 0.80;
+    - the data's intervals covered 0.937–0.959 of 0.95;
+    - for `tau_5`, the aligned design's variance is 1.77 times smaller than an i.i.d. design's,
+      against 1.69 predicted.
+  - **Warnings, not refusals,** for what is outside the model: a second state or a longer carryover,
+    drift, spillover and shocks common to zones, a short run near the unit root, few switches. Near
+    the unit root (`a = 0.95`, 200 periods), Fieller's interval covered 0.930 where the delta method
+    covered 0.877.
+  - **Not built:** realised power on a marketplace flagship, which waits for a zones-by-time
+    marketplace model, and a bias-corrected `a_hat`. The design record is
+    `docs/adr/0012-a-switchback-for-a-named-effect.md`.
+
 ## [0.7.0] — 2026-09-28
 
 ### Added

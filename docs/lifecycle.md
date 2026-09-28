@@ -90,7 +90,16 @@ documented, and what is not built yet. Every name below is importable from `chc`
   re-solving the decision on every draw; its local model only chooses the units. A channel the
   logs do not identify enters as a wide prior. Scope: a static decision over zones, linear in each
   zone's channel, with a box on the levers. See [`chc.experiment`](api/experiment.md).
-- **Not built:** an experiment design for a plant whose state carries the lever's past.
+- **`design_switchback` and `read_switchback`.** Which switchback to run in a zone whose state
+  carries the lever's past, for a named effect: the channel, the effect of holding the lever on
+  for `H` periods, or the steady state. The design is aligned to the effect, so the persistence
+  estimate is orthogonal to it, and the plan quotes each effect's standard error and minimum
+  detectable effect at the least favourable persistence. Without a trusted state model only
+  model-free readings are planned. `read_switchback` reads the effect off the data, with a
+  standard error from the data. Scope: a first-order state per zone, and zones independent. See
+  [`chc.switchback`](api/switchback.md).
+- **Not built:** an experiment design for a dynamic plan's whole decision, beyond one lever's
+  effect.
 
 ## 5. Deploy: one step at a time
 

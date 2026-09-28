@@ -135,6 +135,7 @@ nav:
           - api/spine.md
           - api/splitting.md
           - api/support.md
+          - api/switchback.md
           - api/toeplitz.md
           - api/uncertainty.md
       - Experimental:
