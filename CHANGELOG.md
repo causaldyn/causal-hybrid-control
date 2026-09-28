@@ -56,6 +56,28 @@ still change).
   the logged range is logged as extrapolation (`chc_event="driver_range"`). The design record is
   `docs/adr/0007-exogenous-drivers.md`.
 
+- **A budget per period on a receding horizon: `chc.mpc.PeriodBudget`.** A budget row in
+  `constraints` caps each window, so a loop that re-plans every step spends it again at every
+  step: on the ledger lab's plant, 2.0 and 8.3 times a day's budget.
+  `RecedingHorizon(budget=PeriodBudget(weights, amount, period))` caps what each period spends,
+  and `step(x, t, spent)` reads what the period has spent so far, as measured: the ledger is the
+  caller's, since an applied action need not be the planned one. Each period the window touches
+  gets one row over its steps in the window: what is left of the current period, or a later
+  period's `amount`, pro rata to the share of that period's remaining steps the window holds.
+  Every period spends its budget to 3e-15. Against the plan made for the whole run at once:
+  - on the lab's plant over three days, a window of one day loses 0.40-0.83% of the budget's
+    value, and a window of a sixth of a day 4.6-8.2%;
+  - on the marketing-mix plant over six four-week periods, a window of two periods loses
+    0.24-0.67% and a window of one period 0.45-1.25%. Its slowest adstock outlasts a period, and
+    how far past a period's end to look is the plant's to say;
+  - planned on the adjusted arm's fit, which loses 0.6% with no budget, a window of one period
+    loses 5.7-8.7% over three periods.
+
+  Where the box forces a spend above a row, the plan spends the least the box allows and a
+  warning names the overrun (`chc_event="budget_overrun"`). An unbudgeted loop computes what it
+  did. `scripts/bench_period_budget.py` reprints the numbers; the design record is
+  `docs/adr/0008-a-budget-per-period.md`.
+
 ### Changed
 
 - **`Target.value` and `Driver.forecast` are typed `ArrayLike`.** They were `float |

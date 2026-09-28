@@ -32,6 +32,7 @@ from chc import (
     causal_plan,
 )
 from chc.integrate import rk4_step
+from chc.mpc import PeriodBudget
 from chc.plan import _plan
 
 DT = 0.1
@@ -105,14 +106,19 @@ def test_the_controller_refuses_a_target_that_would_not_move_with_it() -> None:
 
 
 def test_the_controller_takes_every_argument_causal_plan_does() -> None:
-    """A new ``causal_plan`` argument the controller does not carry would be silently unusable."""
+    """A new ``causal_plan`` argument the controller does not carry would be silently unusable.
+
+    ``budget`` is the one field beyond them: a budget per period is what only a loop can hold.
+    """
     planned = {
         name: parameter.default
         for name, parameter in inspect.signature(causal_plan).parameters.items()
         if name not in ("x0", "warm_start")
     }
     carried = {
-        field.name: field.default for field in dataclasses.fields(RecedingHorizon) if field.init
+        field.name: field.default
+        for field in dataclasses.fields(RecedingHorizon)
+        if field.init and field.name != "budget"
     }
     assert carried.keys() == planned.keys()
     assert {
@@ -348,6 +354,26 @@ def test_a_step_compiles_nothing_once_its_programs_exist(arguments: dict[str, An
         for k in range(1, 4):  # the clock moves too: a new window start is a value, not a program
             plan = controller.step(x, t=k * DT)
             x = rk4_step(OSCILLATOR, k * DT, x, plan.actions[0], DT)
+    assert compiled == []
+
+
+def test_a_budgeted_loop_compiles_nothing_after_its_first_two_steps() -> None:
+    """A window inside one period has one budget row and a window across two has two: two
+    programs, both built by the first two steps, and every step after reuses one of them."""
+    jax.clear_caches()
+    budget = PeriodBudget(np.ones(1), 3.0, period=HORIZON)
+    controller = RecedingHorizon(OSCILLATOR, COST, DT, HORIZON, -U_MAX, U_MAX, budget=budget)
+    x, spent = X0, 0.0
+    for k in range(HORIZON + 2):
+        if k % HORIZON == 0:
+            spent = 0.0
+        if k == 2:
+            with _compilations() as compiled:
+                plan = controller.step(x, t=k * DT, spent=spent)
+        else:
+            plan = controller.step(x, t=k * DT, spent=spent)
+        spent += abs(float(plan.actions[0, 0]))
+        x = rk4_step(OSCILLATOR, k * DT, x, plan.actions[0], DT)
     assert compiled == []
 
 

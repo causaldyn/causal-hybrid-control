@@ -7,11 +7,14 @@ with the learned hybrid model, act on the true system — needs no change to thi
 
 :func:`mpc_control` runs that loop against a simulated plant. :class:`RecedingHorizon` is its
 online form -- the caller owns the plant and the clock -- and each of its steps is a whole
-:func:`chc.plan.causal_plan`, certificate included.
+:func:`chc.plan.causal_plan`, certificate included. :class:`PeriodBudget` caps what that loop
+spends per period, which no single window can see.
 """
 
 from __future__ import annotations
 
+import logging
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -21,12 +24,14 @@ import numpy as np
 from jax import Array
 from numpy.typing import NDArray
 
-from chc.control import Bound, LinearConstraint, projected_gradient_control
+from chc.control import Bound, LinearConstraint, broadcast_box, projected_gradient_control
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
 from chc.plan import BarrierConstraint, CausalPlan, _plan
 from chc.support import PenaltyModel, SupportModel
+
+_log = logging.getLogger(__name__)
 
 
 def mpc_control(
@@ -116,6 +121,39 @@ def _shift(sequence: NDArray[np.float64]) -> NDArray[np.float64]:
     return np.concatenate([sequence[1:], sequence[-1:]])
 
 
+@dataclass(frozen=True)
+class PeriodBudget:
+    """At most ``amount`` spent per period of ``period`` steps; a step spends ``weights @ u``.
+
+    Periods start at ``t = start`` on the loop's clock and every ``period * dt`` after. Unspent
+    budget does not carry over: each period starts with ``amount``.
+
+    Raises:
+        ValueError: on ``weights`` that are not a finite 1-D vector with a non-zero entry, a
+            negative or non-finite ``amount``, a ``period`` below one step, or a non-finite
+            ``start``.
+    """
+
+    weights: NDArray[np.float64]  # (m,) the spend of one unit of each lever
+    amount: float
+    period: int
+    start: float = 0.0
+
+    def __post_init__(self) -> None:
+        weights = np.asarray(self.weights, dtype=np.float64)
+        if weights.ndim != 1 or not np.isfinite(weights).all():
+            raise ValueError(f"weights must be a finite (m,) vector, got shape {weights.shape}")
+        if not weights.any():
+            raise ValueError("every weight is zero, so the budget caps nothing")
+        if not (math.isfinite(self.amount) and self.amount >= 0.0):
+            raise ValueError(f"amount must be finite and non-negative, got {self.amount}")
+        if self.period < 1:
+            raise ValueError(f"period must be at least one step, got {self.period}")
+        if not math.isfinite(self.start):
+            raise ValueError(f"start must be finite, got {self.start}")
+        object.__setattr__(self, "weights", weights)
+
+
 @dataclass(eq=False)
 class RecedingHorizon:
     """:func:`chc.plan.causal_plan` from each measured state, warm-started from the last plan.
@@ -152,6 +190,21 @@ class RecedingHorizon:
     caps each descent, of which a held barrier runs up to ``1 + _BARRIER_ROUNDS`` a step. For the
     same reason a per-state ``x_target`` is refused: every step would read the same window.
 
+    **A budget per period** is ``budget``, and the ledger is the caller's: :meth:`step` takes what
+    the current period has spent so far, as measured. Each period the window touches gets one row
+    over its steps in the window: what is left of the current period, pro rata to the share of its
+    remaining steps the window holds, and a later period's ``amount``, pro rata the same way. So a
+    ``horizon`` of at least ``period`` sees the rest of every period it plans in, and its row is
+    exactly what is left; a shorter one gets a flat share of it. How far past the period's end to
+    look is the plant's to say. Against the plan made for the whole run at once, on the ledger lab's
+    plant, whose memory is a few steps, a window of one day lost 0.4-0.8 % of the budget's value
+    over three days and one of a sixth of a day 4.6-8.2 %; on the marketing-mix plant, whose slowest
+    adstock keeps 37 % of a spend four weeks on, a window of two four-week periods lost 0.24-0.67 %
+    over six and one of one period 0.45-1.25 % (``docs/adr/0008-a-budget-per-period.md``). No step's
+    row lets the period overspend, except where the box forces a spend; then the row is the least
+    the box allows, and a warning says by how much the period goes over
+    (``chc_event="budget_overrun"``).
+
     One controller per control loop: :meth:`step` updates the warm start in place, unguarded. A
     new controller over the same model, cost and barrier is a cold start that reuses the compiled
     programs.
@@ -173,18 +226,31 @@ class RecedingHorizon:
     steps: int = 10_000
     constraints: Sequence[LinearConstraint] = ()
     barrier: BarrierConstraint | None = None
+    budget: PeriodBudget | None = None
     _warm: tuple[NDArray[np.float64], NDArray[np.float64] | None] | None = field(
         default=None, init=False, repr=False
     )
 
-    def step(self, x: Array, t: float = 0.0) -> CausalPlan:
+    def step(self, x: Array, t: float = 0.0, spent: float | None = None) -> CausalPlan:
         """Plan from the measured state ``x``, and keep the plan as the next step's start.
 
         ``t`` is the loop's clock at ``x``, and the window is planned from it: step ``k`` of the
         plan reads the model at ``t + k * dt``. An autonomous model ignores it; a model with a
         time-varying term needs it, since the default plans every window as if it started at 0.
+
+        ``spent`` is what the period ``t`` falls in has spent so far, as measured, and a budgeted
+        step needs it: the budget's rows are set from it and from where ``t`` falls in the period.
+
+        Raises:
+            ValueError: on ``spent`` without a budget, or a budget without ``spent``; on a
+                budgeted step whose ``t`` is not on the ``dt`` grid from the budget's start.
         """
         _refuse_moving_target(self.cost, "RecedingHorizon")
+        constraints = tuple(self.constraints)
+        if self.budget is not None:
+            constraints = (*constraints, self._budget_rows(self.budget, t, spent))
+        elif spent is not None:
+            raise ValueError("spent is a budget's ledger, and this controller has no budget")
         actions, multipliers = (None, None) if self._warm is None else self._warm
         plan, multipliers = _plan(
             _Shifted(self.model, jnp.asarray(t)),
@@ -202,7 +268,7 @@ class RecedingHorizon:
             model_error=self.model_error,
             tolerance=self.tolerance,
             steps=self.steps,
-            constraints=self.constraints,
+            constraints=constraints,
             barrier=self.barrier,
             warm_start=actions,
             multipliers=multipliers,
@@ -212,3 +278,70 @@ class RecedingHorizon:
             None if multipliers is None else _shift(multipliers),
         )
         return plan
+
+    def _budget_rows(self, budget: PeriodBudget, t: float, spent: float | None) -> LinearConstraint:
+        """One row per period the window touches, over that period's steps in the window."""
+        if spent is None or not math.isfinite(spent):
+            raise ValueError(
+                "a budgeted step needs spent: what the period t falls in has spent so far"
+            )
+        offset = (t - budget.start) / self.dt
+        index = round(offset)
+        if abs(offset - index) > 1e-6:
+            raise ValueError(
+                f"t = {t} is {offset:.6g} steps from the budget's start; a budgeted step reads its "
+                "place in the period off the clock, so t must be on the dt grid"
+            )
+        position = index % budget.period
+        levers = self.cost.R.shape[0]
+        if budget.weights.shape[0] != levers:
+            raise ValueError(
+                f"the budget weighs {budget.weights.shape[0]} levers, the plan has {levers}"
+            )
+        shape = (self.horizon, levers)
+        dtype = jnp.result_type(float)
+        lo = np.asarray(broadcast_box(self.u_lo, shape, "u_lo", dtype), dtype=np.float64)
+        hi = np.asarray(broadcast_box(self.u_hi, shape, "u_hi", dtype), dtype=np.float64)
+        spends = budget.weights != 0.0  # a free lever's unbounded side must not read as 0 * inf
+        weights = budget.weights[spends]
+        least = np.minimum(weights * lo[:, spends], weights * hi[:, spends]).sum(axis=1)
+        left = budget.amount - spent
+        # A row the solve holds to rounding comes back that far over; that is not an overrun.
+        rounding = 1e3 * float(jnp.finfo(dtype).eps) * max(1.0, budget.amount)
+        matrix, upper, first = [], [], 0
+        while first < self.horizon:
+            share = budget.period - position if first == 0 else budget.period
+            count = min(share, self.horizon - first)
+            bound = (left if first == 0 else budget.amount) * count / share
+            floor = float(least[first : first + count].sum())
+            if bound < floor:
+                if first == 0 and floor - bound > rounding:
+                    _log.warning(
+                        "this period's %d steps in the window spend at least %.6g, and their "
+                        "row allowed %.6g of the %.6g left, so the plan spends the least the box "
+                        "allows",
+                        count,
+                        floor,
+                        bound,
+                        left,
+                        extra={
+                            "chc_event": "budget_overrun",
+                            "position": position,
+                            "left": left,
+                            "floor": floor,
+                            "allowed": bound,
+                        },
+                    )
+                bound = floor
+            row = np.zeros(shape)
+            row[first : first + count] = budget.weights
+            matrix.append(row.ravel())
+            upper.append(bound)
+            first += count
+        _log.debug(
+            "budget rows for step %d of the period: %s",
+            position,
+            [round(value, 9) for value in upper],
+            extra={"chc_event": "budget", "position": position, "left": left, "bounds": upper},
+        )
+        return LinearConstraint(np.stack(matrix), np.full(len(upper), -np.inf), np.asarray(upper))

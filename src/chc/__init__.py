@@ -227,7 +227,7 @@ from chc.mmm import (
     adstock_dynamics,
     run_marketing_mix,
 )
-from chc.mpc import RecedingHorizon, mpc_control
+from chc.mpc import PeriodBudget, RecedingHorizon, mpc_control
 from chc.network_causal import (
     ConfoundedNetworkSystem,
     DelayedNetworkPanel,
@@ -647,6 +647,7 @@ __all__ = [
     "PartialIdControlCurve",
     "PathwayCertificate",
     "PathwayEdge",
+    "PeriodBudget",
     "PessimismCurve",
     "PlanRegretBound",
     "PopulationNoise",
