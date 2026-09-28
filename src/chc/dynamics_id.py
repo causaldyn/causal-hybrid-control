@@ -401,7 +401,9 @@ def fit_causal_residual(
             the action the shifter explains, and on the reference DGP that is 18%, which costs
             roughly an order of magnitude in channel error against adjusting for a logged
             confounder (0.10 vs 0.002 at ``N=4000``). Still ~10x better than not identifying at all.
-        degree: channel/drift feature degree. ``1`` keeps the constant channel that §18/§19 cover.
+        degree: the feature degree of the drift and the channel, one basis for both. ``1`` fits an
+            affine drift and a channel affine in the state, which contains the constant channel
+            §18/§19 cover without being restricted to it.
         nuisance_degree: flexibility of ``g`` and ``m``. Richer nuisances are the whole point of
             cross-fitting -- orthogonality is what makes their error enter only at second order.
         folds: cross-fitting folds. ``1`` fits the nuisances on the same rows it residualises.

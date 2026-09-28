@@ -48,7 +48,8 @@ def _system(**kw) -> ConfoundedControlAffineSystem:
 
 
 def _channel_of(fit: CausalDynamicsFit) -> jax.Array:
-    """The constant part of ``B_θ``, which at ``degree=1`` is the whole of it."""
+    """The constant part of ``B_θ``, the channel at ``x = 0``. At ``degree=1`` the fitted channel
+    is affine in the state; the plants here have a constant one, so its slope should be noise."""
     return fit.residual.channel[:, :, 0]
 
 

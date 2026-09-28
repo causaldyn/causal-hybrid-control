@@ -95,8 +95,10 @@ class ControlAffineResidual(eqx.Module):
     :func:`chc.dynamics_id.fit_causal_residual`. A general ``r_θ(x, u)`` fitted by prediction error
     has no such guarantee -- under a confounded logging policy it learns the observational response.
 
-    ``degree = 1`` gives a constant channel (the case the orthogonality results §18/§19 cover);
-    higher degrees make the channel state-dependent at the cost of leaving that scope.
+    The drift and the channel share one basis, so ``degree = 1`` makes both affine in the state,
+    ``B_θ(x) = C_0 + sum_l C_l x_l``. That contains the constant channel the orthogonality results
+    §18/§19 cover without being restricted to it: only ``degree = 0`` makes the channel constant,
+    and then the drift is constant too. Higher degrees make both polynomial in the state.
     """
 
     drift: Array  # (out_dim, n_features)

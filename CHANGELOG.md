@@ -353,6 +353,15 @@ still change).
   RUSTSEC-2024-0436 lists as unmaintained, and which reached the repository only through its
   `nalgebra`.
 
+### Fixed
+
+- **What `degree = 1` fits, as documented.** `ControlAffineResidual` and `fit_causal_residual`
+  said `degree = 1` fits a constant channel. The drift and the channel share one basis, so it fits
+  a channel affine in the state, `B(x) = C_0 + sum_l C_l x_l`, as it always has; only `degree = 0`
+  makes the channel constant, and the drift with it. Nothing computed changes. What it means for
+  a caller: a fitted channel is read at a state, and `C_0` alone is the channel at `x = 0`. A plant
+  with `n` states and `m` levers fits `n m (n + 1)` channel coefficients rather than `n m`.
+
 ## [0.7.0] — 2026-09-28
 
 ### Added
