@@ -158,7 +158,12 @@ def test_sharded_path_runs_across_a_multi_device_mesh() -> None:
         "r = c(n_members=8, parity_steps=40);"
         "print(json.dumps(r.__dict__))"
     )
-    env = {**os.environ, "XLA_FLAGS": "--xla_force_host_platform_device_count=8"}
+    # The flag multiplies host devices, which a GPU default backend would never use.
+    env = {
+        **os.environ,
+        "JAX_PLATFORMS": "cpu",
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=8",
+    }
     completed = subprocess.run(
         [sys.executable, "-c", source], capture_output=True, text=True, env=env, timeout=600
     )
