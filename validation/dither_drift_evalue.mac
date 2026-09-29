@@ -178,10 +178,12 @@ print("STEP 8h (c, k, theta, m1, m2) = (0.7, 0.6, 1, 1, 2):", clipped(0.7, 0.6, 
       " (crossed: above 1, below 1/(1 - 0.6))")$
 /* Any action nondecreasing in its own draw: the mean is int phi(g(xi) - theta c) dxi with
    g = xi - theta k h(xi), and g' = 1 - theta k h' >= 1 on the null side, so it is at most 1. A tanh
-   actuator, h(xi) = (tanh(p + 0.4 xi) - tanh(p))/0.4: */
+   actuator, h(xi) = (tanh(p + 0.4 xi) - tanh(p))/0.4. The integrand is phi(xi - theta r) with r
+   bounded, under 1e-190 past |xi| = 40 at both points below, so the range stops there: quad_qagi's
+   tails reach tanh(-748), which Maxima 5.46, the one CI installs, cannot evaluate. */
 smooth(vc, vk, vth, vp) := block([h],
   h : (tanh(vp + 0.4*x) - tanh(vp))/0.4,
-  quad_qagi(exp(vth*(vc + vk*h)*x - vth^2*(vc + vk*h)^2/2)*phi(x), x, minf, inf, 'epsrel = 1d-12)[1])$
+  quad_qags(exp(vth*(vc + vk*h)*x - vth^2*(vc + vk*h)^2/2)*phi(x), x, -40, 40, 'epsrel = 1d-12)[1])$
 print("STEP 8h tanh actuator, (c, k, theta, p) = (1.5, -2, 1, 0.8):", smooth(1.5, -2.0, 1.0, 0.8),
       " (inside: at most 1)")$
 print("STEP 8h tanh actuator, (c, k, theta, p) = (0, 0, 1, 2):", smooth(0.0, 0.0, 1.0, 2.0),
