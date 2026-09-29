@@ -25,7 +25,7 @@ linel : 110$
 display2d : false$
 
 /* E over independent N(0, 1) draws: expand, then replace each monomial by its moment */
-/* (n - 1)!! as a product, so that n = 0 gives 1: Maxima 5.47 refuses (-1)!! */
+/* (n - 1)!! as a product, so that n = 0 gives 1: Maxima 5.46 refuses (-1)!! */
 gmoment(n) := if oddp(n) then 0 else product(2*j - 1, j, 1, n/2)$
 expect(ex, vars) := block([p : expand(ex)],
   for v in vars do p : expand(sum(coeff(p, v, i)*gmoment(i), i, 0, hipow(p, v))),
