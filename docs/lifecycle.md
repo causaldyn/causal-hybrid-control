@@ -78,9 +78,11 @@ documented, and what is not built yet. Every name below is importable from `chc`
   from logs of another policy, with an interval. Before any cost is read, the certificate says
   whether the logs can, and refuses by name when a weight the method needs has infinite variance.
   Four methods: per-decision importance sampling over episodes, marginalised importance sampling,
-  doubly robust, and fitted Q evaluation, which works where every weight is refused. Every number
-  is exact for a linear-Gaussian loop and an affine plan, and no more. See
-  [`chc.evaluation`](api/evaluation.md).
+  doubly robust, and fitted Q evaluation, which works where every weight is refused. A plan is an
+  `AffinePolicy`, held for ever, or an `AffineSchedule`, whose gain and offset change with the step
+  and which only importance sampling over episodes evaluates; `AffineSchedule.open_loop` builds
+  one from a sequence of actions. Every number is exact for a linear-Gaussian loop and an affine
+  plan, and no more. See [`chc.evaluation`](api/evaluation.md).
 - **`off_policy_value`.** It weights one step at a time. So it estimates a candidate's value on
   the logger's own states, which is the contextual-bandit value. That is not the value of
   deploying a plan on a plant with memory. See [`chc.offpolicy`](api/offpolicy.md).

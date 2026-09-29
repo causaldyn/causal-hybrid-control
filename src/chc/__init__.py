@@ -100,6 +100,7 @@ from chc.dynamics import HybridDynamics
 from chc.dynamics_id import fit_causal_residual
 from chc.evaluation import (
     AffinePolicy,
+    AffineSchedule,
     InfeasibleEvaluation,
     InitialLaw,
     LinearGaussianPlant,
@@ -149,6 +150,7 @@ __version__ = _installed_version()
 
 __all__ = [
     "AffinePolicy",
+    "AffineSchedule",
     "BarrierConstraint",
     "BlockDesign",
     "CausalGraph",

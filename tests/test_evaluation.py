@@ -3,7 +3,8 @@ fixed its statement, and the estimates against values in closed form.
 
 The independent route, ``_xi_log_moment``, writes ``alpha log W_H`` as a quadratic form in the
 standard-normal vector of every draw along a logged trajectory and integrates it in one step. It
-uses no recursion, no starred loop and no Renyi formula. The loops are an external verifier's:
+uses no recursion, no starred loop and no Renyi formula, and takes a schedule as readily as a
+policy, since the plan enters one step at a time. The loops are an external verifier's:
 
 * CE1 passes the small-gain test and the one-step gate, and its trajectory weight has an infinite
   second moment from ``h = 6`` when it starts from the logger's stationary law.
@@ -27,6 +28,7 @@ from scipy.stats import t as student
 from chc import QuadraticCost
 from chc.evaluation import (
     AffinePolicy,
+    AffineSchedule,
     EvaluationMethod,
     InfeasibleEvaluation,
     InitialLaw,
@@ -53,6 +55,12 @@ PLAN = AffinePolicy(
     np.zeros((1, 1)),
 )
 LOGGER = AffinePolicy(np.array([[0.3, 0.2]]), np.array([0.1]), np.array([[0.25]]))
+# A plan that tightens its feedback over five steps while its offset walks down.
+RAMP = AffineSchedule(
+    np.stack([(0.4 + 0.3 * t) * PLAN.gain for t in range(5)]),
+    np.linspace(0.3, -0.2, 5)[:, None],
+    np.zeros((1, 1)),
+)
 
 
 def _scalar_plant(a: float, b: float, noise: float, offset: float = 0.0) -> LinearGaussianPlant:
@@ -74,11 +82,15 @@ def _stationary_state(
     return mean, covariance
 
 
-def _stage_cost(mx: np.ndarray, sx: np.ndarray, policy: AffinePolicy) -> float:
-    """``E [x'Qx + u'Ru] / 2`` when ``x ~ N(mx, sx)`` and ``u`` follows ``policy``."""
+def _stage_cost(
+    mx: np.ndarray, sx: np.ndarray, policy: AffinePolicy, target: np.ndarray | None = None
+) -> float:
+    """``E [(x - target)'Q(x - target) + u'Ru] / 2`` when ``x ~ N(mx, sx)`` and ``u`` follows
+    ``policy``; the target is zero by default."""
+    dx = mx if target is None else mx - target
     mu = policy.gain @ mx + policy.offset
     su = policy.gain @ sx @ policy.gain.T + policy.covariance
-    return 0.5 * float(np.trace(Q @ sx) + mx @ Q @ mx + np.trace(R @ su) + mu @ R @ mu)
+    return 0.5 * float(np.trace(Q @ sx) + dx @ Q @ dx + np.trace(R @ su) + mu @ R @ mu)
 
 
 def _stationary_value(plant: LinearGaussianPlant, policy: AffinePolicy) -> float:
@@ -86,12 +98,17 @@ def _stationary_value(plant: LinearGaussianPlant, policy: AffinePolicy) -> float
 
 
 def _episode_value(
-    plant: LinearGaussianPlant, policy: AffinePolicy, initial: InitialLaw, horizon: int
+    plant: LinearGaussianPlant,
+    plan: AffinePolicy | AffineSchedule,
+    initial: InitialLaw,
+    horizon: int,
+    targets: np.ndarray | None = None,
 ) -> float:
-    f = plant.a + plant.b @ policy.gain
     mx, sx, total = initial.mean, initial.covariance, 0.0
-    for _ in range(horizon):
-        total += _stage_cost(mx, sx, policy)
+    for t in range(horizon):
+        policy = plan if isinstance(plan, AffinePolicy) else plan.step(t)
+        f = plant.a + plant.b @ policy.gain
+        total += _stage_cost(mx, sx, policy, None if targets is None else targets[t])
         mx = f @ mx + plant.b @ policy.offset + plant.offset
         sx = f @ sx @ f.T + plant.b @ policy.covariance @ plant.b.T + plant.noise
     return total
@@ -141,7 +158,7 @@ def _stationary_logs(
 def _xi_log_moment(
     plant: LinearGaussianPlant,
     logger: AffinePolicy,
-    plan: AffinePolicy,
+    plan: AffinePolicy | AffineSchedule,
     initial: InitialLaw,
     horizon: int,
     alpha: float = 2.0,
@@ -158,14 +175,15 @@ def _xi_log_moment(
     root0 = vectors @ np.diag(np.sqrt(np.clip(eigenvalues, 0.0, None))) @ vectors.T
     root_b = np.linalg.cholesky(logger.covariance)
     root_w = np.linalg.cholesky(plant.noise)
-    precision = np.linalg.inv(plan.covariance)
-    d_gain, d_offset = plan.gain - logger.gain, plan.offset - logger.offset
-    log_det = np.linalg.slogdet(logger.covariance)[1] - np.linalg.slogdet(plan.covariance)[1]
     cx, lx = initial.mean.astype(float), np.zeros((n, size))
     lx[:, :n] = root0
     g_mat, g_vec, g0 = np.zeros((size, size)), np.zeros(size), 0.0
     column = n
     for t in range(horizon):
+        step = plan if isinstance(plan, AffinePolicy) else plan.step(t)
+        precision = np.linalg.inv(step.covariance)
+        d_gain, d_offset = step.gain - logger.gain, step.offset - logger.offset
+        log_det = np.linalg.slogdet(logger.covariance)[1] - np.linalg.slogdet(step.covariance)[1]
         pick = np.zeros((m, size))
         pick[:, column : column + m] = np.eye(m)
         column += m
@@ -239,6 +257,48 @@ def test_the_trajectory_moment_matches_the_whole_trajectory_integral() -> None:
             finite += 1
             assert certified == pytest.approx(oracle, rel=1e-9, abs=1e-9)
     assert 20 < finite < 80  # both branches were exercised
+
+
+def test_a_schedules_trajectory_moment_matches_the_whole_trajectory_integral() -> None:
+    rng = np.random.default_rng(12)
+    finite = 0
+    for _ in range(80):
+        plant, logger, plan, initial, horizon = _random_case(rng)
+        m, n = plan.gain.shape
+        schedule = AffineSchedule(
+            plan.gain + rng.normal(size=(horizon, m, n)) * 0.3,
+            plan.offset + rng.normal(size=(horizon, m)) * 0.3,
+            plan.covariance,
+        )
+        certified = certify_evaluation(
+            plant, logger, schedule, "pdis", 10**6, initial=initial
+        ).log_second_moment
+        oracle = _xi_log_moment(plant, logger, schedule, initial, horizon)
+        assert math.isfinite(certified) == math.isfinite(oracle)
+        if math.isfinite(oracle):
+            finite += 1
+            assert certified == pytest.approx(oracle, rel=1e-9, abs=1e-9)
+    assert 20 < finite < 80  # both branches were exercised
+
+
+def test_a_schedule_that_holds_one_policy_is_certified_as_that_policy() -> None:
+    initial = InitialLaw(np.array([0.3, -0.2]), 0.2 * np.eye(2))
+    held = AffineSchedule(
+        np.broadcast_to(PLAN.gain, (5, 1, 2)), np.broadcast_to(PLAN.offset, (5, 1)), PLAN.covariance
+    )
+
+    assert certify_evaluation(MARKET, LOGGER, held, "pdis", 10**4, initial=initial) == (
+        certify_evaluation(MARKET, LOGGER, PLAN, "pdis", 10**4, horizon=5, initial=initial)
+    )
+    ramp = certify_evaluation(MARKET, LOGGER, RAMP, "pdis", 10**4, initial=initial, smoothing=0.3)
+    margins = [
+        certify_evaluation(
+            MARKET, LOGGER, RAMP.step(t), "pdis", 10**4, horizon=5, initial=initial, smoothing=0.3
+        ).one_step_margin
+        for t in range(5)
+    ]
+    assert all(margin is not None for margin in margins)
+    assert ramp.one_step_margin == min(margin for margin in margins if margin is not None)
 
 
 def test_the_small_gain_test_and_the_one_step_gate_pass_on_a_loop_that_escapes_at_h_6() -> None:
@@ -541,6 +601,77 @@ def test_the_episodic_interval_covers_the_deployed_value() -> None:
     assert np.mean(covered) >= 0.85  # nominal 0.95; 60 replicates
 
 
+@pytest.mark.parametrize("kind", ["feedback", "open loop"])
+def test_the_episodic_interval_covers_a_schedules_deployed_value(kind: str) -> None:
+    # Against a target that moves every step: the schedule's truth reads each step's own row.
+    initial = InitialLaw(np.array([1.0, 0.5]), 0.2 * np.eye(2))
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.array([[1.0]]))
+    targets = np.linspace([0.5, 0.0], [-0.3, 0.4], 6)
+    cost = QuadraticCost(Q=COST.Q, R=COST.R, Qf=COST.Qf, x_target=jnp.asarray(targets))
+    schedule = (
+        RAMP
+        if kind == "feedback"
+        else AffineSchedule.open_loop(np.linspace(0.4, -0.2, 5)[:, None], states=2)
+    )
+    truth = _episode_value(MARKET, schedule, initial, 5, targets)
+    rng = np.random.default_rng(78)
+
+    covered, errors = [], []
+    for _ in range(60):
+        starts = initial.mean + rng.normal(size=(3000, 2)) @ np.sqrt(initial.covariance)
+        x, u = _rollouts(MARKET, logger, starts, 5, rng)
+        result = evaluate_plan(
+            {"x": x, "u": u}, schedule, "pdis", plant=MARKET, cost=cost, model_error=0.0
+        )
+        covered.append(result.interval[0] <= truth <= result.interval[1])
+        errors.append(result.value - truth)
+
+    errors_ = np.asarray(errors)
+    assert np.mean(covered) >= 0.85  # nominal 0.95; 60 replicates
+    assert abs(errors_.mean()) < 3.0 * errors_.std(ddof=1) / math.sqrt(errors_.size)
+
+
+def test_a_schedules_smoothing_costs_exactly_tau_squared_beta() -> None:
+    initial = InitialLaw(np.array([1.0, 0.5]), 0.2 * np.eye(2))
+    rng = np.random.default_rng(6)
+    starts = initial.mean + rng.normal(size=(3000, 2)) @ np.sqrt(initial.covariance)
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    x, u = _rollouts(MARKET, logger, starts, 5, rng)
+
+    result = evaluate_plan({"x": x, "u": u}, RAMP, "pdis", plant=MARKET, cost=COST)
+
+    tau = result.certificate.smoothing
+    smoothed = AffineSchedule(RAMP.gains, RAMP.offsets, np.array([[tau * tau]]))
+    law = InitialLaw(x[:, 0].mean(axis=0), np.cov(x[:, 0], rowvar=False))
+    assert tau > 0.0
+    assert result.model_correction == pytest.approx(
+        _episode_value(MARKET, smoothed, law, 5) - _episode_value(MARKET, RAMP, law, 5), rel=1e-9
+    )
+
+
+def test_pdis_scores_each_step_against_its_own_target() -> None:
+    # The plan is the logger, so every weight is one and the estimate is the logs' mean cost, each
+    # step against its own row; no step reads the last, the terminal state's.
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.array([[1.0]]))
+    rng = np.random.default_rng(21)
+    x, u = _rollouts(MARKET, logger, rng.normal(size=(400, 2)), 5, rng)
+    targets = np.linspace([1.0, -0.5], [-0.5, 0.8], 6)
+    cost = QuadraticCost(Q=COST.Q, R=COST.R, Qf=COST.Qf, x_target=jnp.asarray(targets))
+    schedule = AffineSchedule(
+        np.broadcast_to(logger.gain, (5, 1, 2)),
+        np.broadcast_to(logger.offset, (5, 1)),
+        logger.covariance,
+    )
+
+    result = evaluate_plan(
+        {"x": x, "u": u}, schedule, "pdis", plant=MARKET, cost=cost, logger=logger
+    )
+
+    dx = x[:, :-1] - targets[:-1]
+    logged = 0.5 * (np.einsum("eti,ij,etj->et", dx, Q, dx) + np.einsum("eti,ij,etj->et", u, R, u))
+    assert result.value == pytest.approx(logged.mean(axis=0).sum(), rel=1e-12)
+
+
 def test_dr_removes_the_first_order_error_of_a_misspecified_model() -> None:
     # A[0, 0] off by 0.1. The model's own value, and MIS, whose weights come from the model, carry
     # its first-order error; DR's is the product of the two nuisances' errors. The plan carries
@@ -642,6 +773,66 @@ def test_arguments_that_do_not_fit_the_method_are_refused() -> None:
         certify_evaluation(MARKET, LOGGER, PLAN, "snips", 100)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="gain has shape"):
         certify_evaluation(MARKET, LOGGER, _scalar_policy(0.0, 0.0, 1.0), "mis", 100)
+
+
+@pytest.mark.parametrize("method", ["mis", "dr", "fqe"])
+def test_a_schedule_is_refused_by_every_stationary_method(method: EvaluationMethod) -> None:
+    x, u = _stationary_logs(MARKET, LOGGER, 200, 1, seed=1)
+
+    with pytest.raises(ValueError, match="only 'pdis' evaluates one"):
+        certify_evaluation(MARKET, LOGGER, RAMP, method, 100)
+    with pytest.raises(ValueError, match="only 'pdis' evaluates one"):
+        evaluate_plan({"x": x[0], "u": u[0]}, RAMP, method, plant=MARKET, cost=COST)
+
+
+def test_a_schedule_that_does_not_fit_the_episodes_is_refused() -> None:
+    initial = InitialLaw(np.zeros(2), np.eye(2))
+    x, u = _rollouts(MARKET, LOGGER, np.zeros((10, 2)), 4, np.random.default_rng(3))
+    per_state = QuadraticCost(Q=COST.Q, R=COST.R, Qf=COST.Qf, x_target=jnp.zeros((5, 2)))
+
+    with pytest.raises(ValueError, match="the schedule runs 5 steps and the episodes 4"):
+        certify_evaluation(MARKET, LOGGER, RAMP, "pdis", 100, horizon=4, initial=initial)
+    with pytest.raises(ValueError, match="the schedule runs 5 steps and the episodes 4"):
+        evaluate_plan({"x": x, "u": u}, RAMP, "pdis", plant=MARKET, cost=COST)
+    with pytest.raises(ValueError, match="gain has shape \\(1, 3\\)"):
+        certify_evaluation(
+            MARKET,
+            LOGGER,
+            AffineSchedule.open_loop(np.zeros((5, 1)), 3),
+            "pdis",
+            100,
+            initial=initial,
+        )
+    with pytest.raises(
+        ValueError, match="x_target has 5 rows, one per state, but 3 steps have 4 states"
+    ):
+        evaluate_plan({"x": x[:, :-1], "u": u[:, :-1]}, PLAN, "pdis", plant=MARKET, cost=per_state)
+    fits = evaluate_plan(
+        {"x": x, "u": u},
+        LOGGER,
+        "pdis",
+        plant=MARKET,
+        cost=per_state,
+        logger=LOGGER,
+        min_effective=1.0,
+    )
+    assert fits.certificate.effective_samples == pytest.approx(10.0, rel=1e-12)
+
+
+def test_a_schedule_is_checked_like_a_policy() -> None:
+    with pytest.raises(ValueError, match="gains must have shape \\(H, m, n\\)"):
+        AffineSchedule(np.zeros((1, 2)), np.zeros((1, 1)), np.zeros((1, 1)))
+    with pytest.raises(ValueError, match="offsets must have shape \\(5, 1\\)"):
+        AffineSchedule(RAMP.gains, np.zeros((4, 1)), np.zeros((1, 1)))
+    with pytest.raises(ValueError, match="not positive semidefinite"):
+        AffineSchedule(RAMP.gains, RAMP.offsets, -np.eye(1))
+    with pytest.raises(ValueError, match="actions must have shape \\(H, m\\)"):
+        AffineSchedule.open_loop(np.zeros(5), 2)
+    open_loop = AffineSchedule.open_loop(np.ones((3, 2)), 4, covariance=0.1 * np.eye(2))
+    assert open_loop.horizon == 3
+    assert open_loop.gains.shape == (3, 2, 4)
+    assert not np.any(open_loop.gains)
+    assert np.array_equal(open_loop.step(2).covariance, 0.1 * np.eye(2))
 
 
 def test_logs_that_do_not_fit_the_method_are_refused() -> None:

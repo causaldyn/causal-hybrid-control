@@ -30,6 +30,14 @@ Four methods:
   certified by the restricted chi-square over those features, evaluates a deterministic plan
   directly, and works where every weight has infinite variance.
 
+A plan is an :class:`AffinePolicy`, which holds for ever, or an :class:`AffineSchedule`, whose gain
+and offset change with the step and which ends at its horizon; a prescription's schedule is one,
+open loop. Only ``"pdis"`` evaluates a schedule: ``"mis"`` and ``"dr"`` read stationary laws and
+``"fqe"`` here is average-cost, so each refuses one. The starred loop then changes with the step,
+and the recursion carries the law of the state forward, which serves every horizon in one pass
+whether the plan changes or not. ``"pdis"`` also scores each step against its own target when the
+cost has one per state.
+
 A deterministic plan has no density, so the weights evaluate it smoothed, ``N(K x + k, tau^2 I)``,
 and smoothing raises its average cost by exactly ``tau^2 beta``, ``beta = tr(R + B' P B)`` (over a
 horizon, ``sum_t tr(R + B' P_{t+1} B)``). The value reported is the deployed plan's: the model's
@@ -59,8 +67,8 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import Literal, get_args
+from dataclasses import dataclass, replace
+from typing import Literal, TypeVar, get_args
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -160,6 +168,61 @@ class AffinePolicy:
 
 
 @dataclass(frozen=True)
+class AffineSchedule:
+    """A plan that changes with the step and ends: ``u_t | x_t ~ N(gains[t] x_t + offsets[t],
+    covariance)`` for ``t < horizon``; a zero covariance is a deterministic schedule. A
+    prescription's schedule is open loop, every gain zero, and :meth:`open_loop` builds one.
+
+    Raises:
+        ValueError: on shapes that do not agree, a non-finite entry, or a ``covariance`` that is not
+            a symmetric positive semidefinite matrix.
+    """
+
+    gains: NDArray[np.float64]  # (H, m, n)
+    offsets: NDArray[np.float64]  # (H, m)
+    covariance: NDArray[np.float64]  # (m, m)
+
+    def __post_init__(self) -> None:
+        gains = np.asarray(self.gains, dtype=np.float64)
+        if gains.ndim != 3 or 0 in gains.shape:
+            raise ValueError(f"gains must have shape (H, m, n), got {gains.shape}")
+        horizon, m, _ = gains.shape
+        object.__setattr__(self, "gains", _matrix(gains, "gains", gains.shape))
+        object.__setattr__(self, "offsets", _matrix(self.offsets, "offsets", (horizon, m)))
+        object.__setattr__(self, "covariance", _matrix(self.covariance, "covariance", (m, m)))
+        _psd(self.covariance, "covariance")
+
+    @property
+    def horizon(self) -> int:
+        return self.gains.shape[0]
+
+    def step(self, t: int) -> AffinePolicy:
+        """The plan at step ``t``."""
+        return AffinePolicy(self.gains[t], self.offsets[t], self.covariance)
+
+    @classmethod
+    def open_loop(
+        cls, actions: ArrayLike, states: int, covariance: ArrayLike | None = None
+    ) -> AffineSchedule:
+        """``u_t = actions[t]`` whatever the state, over ``states`` states: deterministic unless a
+        ``covariance`` is given.
+
+        Raises:
+            ValueError: on ``actions`` that are not an ``(H, m)`` matrix, ``states`` below one, and
+                every error the constructor raises.
+        """
+        u = np.asarray(actions, dtype=np.float64)
+        if u.ndim != 2 or 0 in u.shape or states < 1:
+            raise ValueError(
+                f"actions must have shape (H, m) and states be at least 1, got {u.shape} and "
+                f"{states}"
+            )
+        horizon, m = u.shape
+        spread = np.zeros((m, m)) if covariance is None else np.asarray(covariance, np.float64)
+        return cls(np.zeros((horizon, m, states)), u, spread)
+
+
+@dataclass(frozen=True)
 class InitialLaw:
     """``x_0 ~ N(mean, covariance)``, the law the episodes start from; the covariance may be
     singular, and is zero for a fixed start.
@@ -214,9 +277,9 @@ class EvaluationCertificate:
     the trajectory weight's at the logged horizon, for ``"fqe"`` the restricted chi-square over its
     features -- and ``effective_samples`` is ``samples`` divided by ``1 + chi^2``. A margin is a
     smallest eigenvalue, and its condition holds when it is positive. ``one_step_margin`` is the
-    one-step gate's, averaged over the logger's stationary states, and is reported for comparison
-    only: it is neither necessary nor sufficient for any method here, and is ``None`` when the
-    logger's loop has no stationary law.
+    one-step gate's, averaged over the logger's stationary states, and for a schedule the smallest
+    over its steps. It is reported for comparison only: it is neither necessary nor sufficient for
+    any method here, and is ``None`` when the logger's loop has no stationary law.
     """
 
     method: EvaluationMethod
@@ -311,13 +374,43 @@ def _log_normal(z: _Array, mean: _Array, covariance: _Array) -> _Array:
 # ------------------------------------------------------------------------------------ closed loops
 
 
-def _has_density(policy: AffinePolicy) -> bool:
+_Plan = TypeVar("_Plan", AffinePolicy, AffineSchedule)
+
+
+def _has_density(policy: AffinePolicy | AffineSchedule) -> bool:
     return _min_eig(policy.covariance) > 0.0
 
 
-def _smoothed(policy: AffinePolicy, tau: float) -> AffinePolicy:
-    m = policy.offset.shape[0]
-    return AffinePolicy(policy.gain, policy.offset, policy.covariance + tau * tau * np.eye(m))
+def _smoothed(policy: _Plan, tau: float) -> _Plan:
+    m = policy.covariance.shape[0]
+    return replace(policy, covariance=policy.covariance + tau * tau * np.eye(m))
+
+
+def _held(plan: AffinePolicy | AffineSchedule, method: EvaluationMethod) -> AffinePolicy:
+    """The policy a stationary method evaluates. A schedule changes with the step and ends, so its
+    loop has no stationary law and no average cost."""
+    if isinstance(plan, AffineSchedule):
+        raise ValueError(
+            f"{method!r} evaluates a stationary loop's average cost, and a schedule changes with "
+            "the step and ends: only 'pdis' evaluates one"
+        )
+    return plan
+
+
+def _schedule(plan: AffinePolicy | AffineSchedule, horizon: int) -> AffineSchedule:
+    """``plan`` over ``horizon`` steps: a policy held for every one, or a schedule of that many."""
+    if isinstance(plan, AffineSchedule):
+        if plan.horizon != horizon:
+            raise ValueError(
+                f"the schedule runs {plan.horizon} steps and the episodes {horizon}: 'pdis' "
+                "evaluates a schedule over the logged horizon"
+            )
+        return plan
+    return AffineSchedule(
+        np.broadcast_to(plan.gain, (horizon, *plan.gain.shape)),
+        np.broadcast_to(plan.offset, (horizon, *plan.offset.shape)),
+        plan.covariance,
+    )
 
 
 def _spectral_radius(plant: LinearGaussianPlant, policy: AffinePolicy) -> float:
@@ -346,38 +439,23 @@ def _stationary(plant: LinearGaussianPlant, policy: AffinePolicy) -> tuple[_Arra
     return mz, sz, sx
 
 
-def _expect_exp_quadratic(p: _Array, q: _Array, v: _Array) -> tuple[_Array, _Array, float] | None:
-    """``log E exp(y' p y + 2 q' y)`` for ``y ~ N(m, v)`` is ``m' p~ m + 2 q~' m + r~``, or
-    ``None`` when it diverges. ``v`` may be singular."""
-    vh = _sqrt_psd(v)
-    core = _sym(np.eye(p.shape[0]) - 2.0 * vh @ p @ vh)
-    if _min_eig(core) <= 0.0:
-        return None
-    t = vh @ np.linalg.solve(core, vh)
-    return (
-        _sym(p + 2.0 * p @ t @ p),
-        q + 2.0 * p @ t @ q,
-        2.0 * float(q @ t @ q) - 0.5 * float(np.linalg.slogdet(core)[1]),
-    )
-
-
 def _trajectory_log_moments(
     plant: LinearGaussianPlant,
     logger: AffinePolicy,
-    plan: AffinePolicy,
+    plan: AffineSchedule,
     initial: InitialLaw,
-    horizon: int,
     alpha: float,
 ) -> _Array:
-    """``log E_b[W_h^alpha]`` for ``h = 1..horizon``, ``inf`` from the first ``h`` at which it
+    """``log E_b[W_h^alpha]`` for ``h = 1..plan.horizon``, ``inf`` from the first ``h`` at which it
     diverges.
 
-    Integrating one step's action against ``b (pi / b)^alpha`` leaves a Gaussian factor in the
+    Integrating one step's action against ``b (pi_t / b)^alpha`` leaves a Gaussian factor in the
     state and an action law tilted toward the plan; the next state under that law is the "starred"
-    loop. The recursion runs backward from the last step, and the loop is time-invariant, so its
-    iterate after ``j`` steps back is the same whatever the horizon: one pass serves every ``h``.
+    loop. The recursion carries the law of the state forward along it, unnormalised: each step's
+    factor tilts the law and adds its log mass, which after ``h`` steps is ``log E_b[W_h^alpha]``.
+    One pass serves every ``h``, and the loop may change with the step.
     """
-    out = np.full(horizon, math.inf)
+    out = np.full(plan.horizon, math.inf)
     sb, sp = logger.covariance, plan.covariance
     gap = alpha * sb - (alpha - 1.0) * sp
     if _min_eig(gap) <= 0.0 or _min_eig(sp) <= 0.0 or _min_eig(sb) <= 0.0:
@@ -390,35 +468,39 @@ def _trajectory_log_moments(
     )
     sbi, spi = np.linalg.inv(sb), np.linalg.inv(sp)
     s_star = np.linalg.inv(alpha * spi - (alpha - 1.0) * sbi)
-    a_star = plant.a + plant.b @ s_star @ (
-        alpha * spi @ plan.gain - (alpha - 1.0) * sbi @ logger.gain
-    )
-    b_star = (
-        plant.b @ s_star @ (alpha * spi @ plan.offset - (alpha - 1.0) * sbi @ logger.offset)
-        + plant.offset
-    )
     v_star = plant.b @ s_star @ plant.b.T + plant.noise
-    d_gain, d_offset = plan.gain - logger.gain, plan.offset - logger.offset
-    p_step = d_gain.T @ potential @ d_gain
-    q_step = d_gain.T @ potential @ d_offset
-    r_step = log_c0 + float(d_offset @ potential @ d_offset)
-    p, q, r = p_step, q_step, r_step
-    for h in range(1, horizon + 1):
-        start = _expect_exp_quadratic(p, q, initial.covariance)
-        if start is None:
+    mean, cov, log_mass = initial.mean, initial.covariance, 0.0
+    for t, (gain, offset) in enumerate(zip(plan.gains, plan.offsets, strict=True)):
+        d_gain, d_offset = gain - logger.gain, offset - logger.offset
+        p = d_gain.T @ potential @ d_gain
+        q = d_gain.T @ potential @ d_offset
+        # E exp(x' p x + 2 q' x) under the state's law N(mean, cov), and the law it tilts that one
+        # into, N(mean + 2 tilt g, tilt) with tilt = (cov^-1 - 2 p)^-1, written through cov's root
+        # so that a singular cov, a fixed start's among them, needs no inverse.
+        root = _sqrt_psd(cov)
+        core = _sym(np.eye(p.shape[0]) - 2.0 * root @ p @ root)
+        if _min_eig(core) <= 0.0:
             return out
-        pt, qt, rt = start
-        mean = initial.mean
-        out[h - 1] = r + float(mean @ pt @ mean) + 2.0 * float(qt @ mean) + rt
-        if h == horizon:
-            break
-        step = _expect_exp_quadratic(p, q, v_star)
-        if step is None:
-            return out
-        pt, qt, rt = step
-        p = _sym(p_step + a_star.T @ pt @ a_star)
-        q = q_step + a_star.T @ (pt @ b_star + qt)
-        r = r + r_step + float(b_star @ pt @ b_star) + 2.0 * float(qt @ b_star) + rt
+        tilt = root @ np.linalg.solve(core, root)
+        g = p @ mean + q
+        log_mass += (
+            log_c0
+            + float(d_offset @ potential @ d_offset)
+            + float(mean @ p @ mean)
+            + 2.0 * float(q @ mean)
+            + 2.0 * float(g @ tilt @ g)
+            - 0.5 * float(np.linalg.slogdet(core)[1])
+        )
+        out[t] = log_mass
+        a_star = plant.a + plant.b @ s_star @ (
+            alpha * spi @ gain - (alpha - 1.0) * sbi @ logger.gain
+        )
+        b_star = (
+            plant.b @ s_star @ (alpha * spi @ offset - (alpha - 1.0) * sbi @ logger.offset)
+            + plant.offset
+        )
+        mean = a_star @ (mean + 2.0 * tilt @ g) + b_star
+        cov = _sym(a_star @ tilt @ a_star.T + v_star)
     return out
 
 
@@ -436,26 +518,48 @@ class _StageCost:
 
     @classmethod
     def of(cls, cost: QuadraticCost, states: int, actions: int) -> _StageCost:
-        q, r = np.asarray(cost.Q, dtype=np.float64), np.asarray(cost.R, dtype=np.float64)
-        target = np.asarray(cost.x_target, dtype=np.float64)
-        if target.ndim != 1:
+        if np.ndim(cost.x_target) != 1:
             raise ValueError(
-                "the cost's x_target has one row per state; a plan evaluated in a loop is scored "
-                "against one target"
+                "the cost's x_target has one row per state; a stationary loop is scored against "
+                "one target, and only 'pdis' scores each step against its own"
             )
+        return cls.steps(cost, states, actions, 1)[0]
+
+    @classmethod
+    def steps(
+        cls, cost: QuadraticCost, states: int, actions: int, horizon: int
+    ) -> tuple[_StageCost, ...]:
+        """Each of ``horizon`` steps' cost, against the cost's one target or against the step's
+        row of one per state, which :meth:`QuadraticCost.targets` orders."""
+        q, r = np.asarray(cost.Q, dtype=np.float64), np.asarray(cost.R, dtype=np.float64)
+        # Read here, not through targets(): jax would round a float64 target without x64.
+        target = np.asarray(cost.x_target, dtype=np.float64)
         if (
             q.shape != (states, states)
             or r.shape != (actions, actions)
-            or target.shape != (states,)
+            or target.ndim not in (1, 2)
+            or target.shape[-1] != states
         ):
             raise ValueError(
-                f"the cost is over {q.shape[0]} states and {r.shape[0]} actions, the plant over "
-                f"{states} and {actions}"
+                f"the cost is over {q.shape[0]} states and {r.shape[0]} actions, with x_target of "
+                f"shape {target.shape}; the plant is over {states} and {actions}"
             )
+        if target.ndim == 2 and target.shape[0] != horizon + 1:
+            raise ValueError(
+                f"x_target has {target.shape[0]} rows, one per state, but {horizon} steps have "
+                f"{horizon + 1} states"
+            )
+        rows = np.broadcast_to(target, (horizon, states)) if target.ndim == 1 else target[:-1]
         zeros = np.zeros((states, actions))
-        matrix = 0.5 * np.block([[q, zeros], [zeros.T, r]])
-        linear = np.concatenate([-0.5 * q @ target, np.zeros(actions)])
-        return cls(_sym(matrix), linear, 0.5 * float(target @ q @ target))
+        matrix = _sym(0.5 * np.block([[q, zeros], [zeros.T, r]]))
+        return tuple(
+            cls(
+                matrix,
+                np.concatenate([-0.5 * q @ row, np.zeros(actions)]),
+                0.5 * float(row @ q @ row),
+            )
+            for row in rows
+        )
 
     def __call__(self, z: _Array) -> _Array:
         quadratic = np.einsum("...i,ij,...j->...", z, self.matrix, z)
@@ -503,37 +607,35 @@ class _RelativeValue:
         return np.einsum("...i,ij,...j->...", x, self.p, x) + 2.0 * x @ self.linear
 
 
-def _horizon_beta(
-    plant: LinearGaussianPlant, plan: AffinePolicy, cost: _StageCost, horizon: int
-) -> float:
+def _horizon_beta(plant: LinearGaussianPlant, plan: AffineSchedule, cost: _StageCost) -> float:
     """``sum_t tr(C_uu + b' P_{t+1} b)`` with ``P_horizon = 0``: smoothing's cost over the
-    horizon."""
+    horizon. Only the cost's curvature enters, which every step's target shares."""
     n = plant.states
     cx, cu = cost.matrix[:n, :n], cost.matrix[n:, n:]
-    k = plan.gain
-    f = plant.a + plant.b @ k
     p = np.zeros((n, n))
     total = 0.0
-    for _ in range(horizon):
+    for k in plan.gains[::-1]:
         total += float(np.trace(cu + plant.b.T @ p @ plant.b))
+        f = plant.a + plant.b @ k
         p = f.T @ p @ f + cx + k.T @ cu @ k
     return total
 
 
 def _episode_value(
     plant: LinearGaussianPlant,
-    policy: AffinePolicy,
-    cost: _StageCost,
+    plan: AffineSchedule,
+    costs: tuple[_StageCost, ...],
     initial: InitialLaw,
-    horizon: int,
 ) -> float:
-    """The model's expected cost over ``horizon`` steps from ``initial``."""
-    f = plant.a + plant.b @ policy.gain
-    drive = plant.b @ policy.covariance @ plant.b.T + plant.noise
+    """The model's expected cost over the schedule from ``initial``, step ``t`` scored by
+    ``costs[t]``."""
+    drive = plant.b @ plan.covariance @ plant.b.T + plant.noise
     mx, sx = initial.mean, initial.covariance
     total = 0.0
-    for _ in range(horizon):
+    for t, cost in enumerate(costs):
+        policy = plan.step(t)
         total += cost.mean(*_joint(mx, sx, policy))
+        f = plant.a + plant.b @ policy.gain
         mx = f @ mx + plant.b @ policy.offset + plant.offset
         sx = _sym(f @ sx @ f.T + drive)
     return total
@@ -639,19 +741,18 @@ def _best_on_grid(limit: float, score: Callable[[float], float]) -> float | None
     return float(grid[best]) if math.isfinite(values[best]) else None
 
 
-def _check_policies(plant: LinearGaussianPlant, **policies: AffinePolicy) -> None:
+def _check_policies(plant: LinearGaussianPlant, **policies: AffinePolicy | AffineSchedule) -> None:
     shape = (plant.actions, plant.states)
     for name, policy in policies.items():
-        if policy.gain.shape != shape:
-            raise ValueError(
-                f"the {name}'s gain has shape {policy.gain.shape}, the plant's loop needs {shape}"
-            )
+        gain = policy.gain.shape if isinstance(policy, AffinePolicy) else policy.gains.shape[1:]
+        if gain != shape:
+            raise ValueError(f"the {name}'s gain has shape {gain}, the plant's loop needs {shape}")
 
 
 def certify_evaluation(
     plant: LinearGaussianPlant,
     logger: AffinePolicy,
-    plan: AffinePolicy,
+    plan: AffinePolicy | AffineSchedule,
     method: EvaluationMethod,
     samples: int,
     *,
@@ -664,14 +765,16 @@ def certify_evaluation(
 
     Reads the model and the two policies, and nothing the plan will be scored on. ``samples``
     counts transitions for the stationary methods and episodes for ``"pdis"``, which also needs
-    the logged ``horizon`` and the episodes' ``initial`` law. A plan without a density is evaluated
-    by the weights smoothed by ``smoothing``, and by default by the ``tau`` at which the logs
-    support the most effective samples; :func:`evaluate_plan` chooses its own against the cost.
-    The certificate refuses when a weight the method needs has infinite variance, or leaves fewer
-    than ``min_effective`` effective samples (``"pdis"``: at the logged horizon).
+    the logged ``horizon``, a schedule's own by default, and the episodes' ``initial`` law. A plan
+    without a density is evaluated by the weights smoothed by ``smoothing``, and by default by the
+    ``tau`` at which the logs support the most effective samples; :func:`evaluate_plan` chooses its
+    own against the cost. The certificate refuses when a weight the method needs has infinite
+    variance, or leaves fewer than ``min_effective`` effective samples (``"pdis"``: at the logged
+    horizon).
 
     Raises:
-        ValueError: on an unknown method, a policy whose shape does not fit the plant, a
+        ValueError: on an unknown method, a policy whose shape does not fit the plant, a schedule
+            for a method other than ``"pdis"`` or over another horizon than the episodes', a
             ``samples`` or ``min_effective`` below one, ``horizon`` and ``initial`` missing for
             ``"pdis"`` or passed to another method, or a ``smoothing`` that is not positive, or is
             passed for ``"fqe"`` or a plan with a density.
@@ -691,20 +794,23 @@ def certify_evaluation(
                 "smoothing applies to a plan without a density, evaluated by weights; 'fqe' "
                 "evaluates a deterministic plan directly, and a plan with a density as it is"
             )
-    if method == "pdis":
-        if horizon is None or initial is None:
-            raise ValueError("'pdis' reads episodes: pass their horizon and initial law")
-        if horizon < 1 or initial.mean.shape != (plant.states,):
-            raise ValueError(
-                f"horizon must be at least 1 and initial over {plant.states} states, got "
-                f"{horizon} and {initial.mean.shape[0]}"
-            )
-        return _certify_episodes(
-            plant, logger, plan, samples, smoothing, horizon, initial, min_effective
+    if method != "pdis":
+        held = _held(plan, method)
+        if horizon is not None or initial is not None:
+            raise ValueError("horizon and initial describe episodes, which only 'pdis' reads")
+        return _certify_stationary(plant, logger, held, method, samples, smoothing, min_effective)
+    if horizon is None and isinstance(plan, AffineSchedule):
+        horizon = plan.horizon
+    if horizon is None or initial is None:
+        raise ValueError("'pdis' reads episodes: pass their horizon and initial law")
+    if horizon < 1 or initial.mean.shape != (plant.states,):
+        raise ValueError(
+            f"horizon must be at least 1 and initial over {plant.states} states, got "
+            f"{horizon} and {initial.mean.shape[0]}"
         )
-    if horizon is not None or initial is not None:
-        raise ValueError("horizon and initial describe episodes, which only 'pdis' reads")
-    return _certify_stationary(plant, logger, plan, method, samples, smoothing, min_effective)
+    return _certify_episodes(
+        plant, logger, _schedule(plan, horizon), samples, smoothing, initial, min_effective
+    )
 
 
 def _certify_stationary(
@@ -848,17 +954,19 @@ def _certify_stationary(
 def _certify_episodes(
     plant: LinearGaussianPlant,
     logger: AffinePolicy,
-    plan: AffinePolicy,
+    plan: AffineSchedule,
     samples: int,
     smoothing: float | None,
-    horizon: int,
     initial: InitialLaw,
     min_effective: float,
 ) -> EvaluationCertificate:
+    horizon = plan.horizon
     rx = _stationary(plant, logger)[2] if _spectral_radius(plant, logger) < 1.0 else None
 
-    def one_step(target: AffinePolicy) -> float | None:
-        return None if rx is None else _one_step_margin(rx, logger, target)
+    def one_step(target: AffineSchedule) -> float | None:
+        if rx is None:
+            return None
+        return min(_one_step_margin(rx, logger, target.step(t)) for t in range(horizon))
 
     def refuse(reason: str, limit: float | None = None) -> EvaluationCertificate:
         return EvaluationCertificate(
@@ -878,12 +986,12 @@ def _certify_episodes(
     if not _has_density(plan):
         limit = math.sqrt(room)
         if smoothing is None:
-            chosen = _best_on_grid(
-                limit,
-                lambda t: _trajectory_log_moments(
-                    plant, logger, _smoothed(plan, t), initial, horizon, 2.0
-                )[-1],
-            )
+
+            def second_moment(tau: float) -> float:
+                smoothed = _smoothed(plan, tau)
+                return float(_trajectory_log_moments(plant, logger, smoothed, initial, 2.0)[-1])
+
+            chosen = _best_on_grid(limit, second_moment)
             if chosen is None:
                 return refuse(
                     f"no smoothing in (0, {limit:.4g}) keeps E_b[W_h^2] finite through "
@@ -893,7 +1001,7 @@ def _certify_episodes(
             smoothing = chosen
         tau = smoothing
         target = _smoothed(plan, tau)
-    moments = _trajectory_log_moments(plant, logger, target, initial, horizon, 2.0)
+    moments = _trajectory_log_moments(plant, logger, target, initial, 2.0)
     infinite = np.flatnonzero(~np.isfinite(moments))
     escape = int(infinite[0]) + 1 if infinite.size else None
     short = np.flatnonzero(moments > math.log(samples / min_effective))
@@ -912,7 +1020,7 @@ def _certify_episodes(
         reason = (
             f"certified through h = {horizon}: {effective:.1f} effective of {samples} episodes{at}"
         )
-    fourth = _trajectory_log_moments(plant, logger, target, initial, horizon, 4.0)[-1]
+    fourth = _trajectory_log_moments(plant, logger, target, initial, 4.0)[-1]
     return EvaluationCertificate(
         "pdis",
         escape is None and certified_horizon >= horizon,
@@ -1036,21 +1144,31 @@ def _fqe_estimate(
     return value, _Z95 * math.sqrt(variance)
 
 
-def _log_policy(policy: AffinePolicy, x: _Array, u: _Array) -> _Array:
-    """``log policy(u | x)`` over the leading axes of ``x`` and ``u``."""
-    residual = (u - x @ policy.gain.T - policy.offset).reshape(-1, u.shape[-1])
+def _log_policy(policy: AffinePolicy | AffineSchedule, x: _Array, u: _Array) -> _Array:
+    """``log policy(u | x)`` over the leading axes of ``x`` and ``u``; a schedule's step is the
+    axis before the last."""
+    if isinstance(policy, AffinePolicy):
+        mean = x @ policy.gain.T + policy.offset
+    else:
+        mean = np.einsum("tmn,...tn->...tm", policy.gains, x) + policy.offsets
+    residual = (u - mean).reshape(-1, u.shape[-1])
     zero = np.zeros(u.shape[-1])
     return _log_normal(residual, zero, policy.covariance).reshape(u.shape[:-1])
 
 
 def _episodes_estimate(
-    x: _Array, u: _Array, logger: AffinePolicy, target: AffinePolicy, cost: _StageCost
+    x: _Array,
+    u: _Array,
+    logger: AffinePolicy,
+    target: AffineSchedule,
+    costs: tuple[_StageCost, ...],
 ) -> tuple[float, float, float]:
     """Per-decision importance sampling, each step's weights normalised to mean one: the estimate
-    of ``target``'s expected cost over the horizon, its half-width by the delta method over
-    episodes, and the last step's effective sample size."""
+    of ``target``'s expected cost over the horizon, step ``t`` scored by ``costs[t]``, its
+    half-width by the delta method over episodes, and the last step's effective sample size."""
     xs = x[:, :-1]
-    c = cost(np.concatenate([xs, u], axis=-1))
+    z = np.concatenate([xs, u], axis=-1)
+    c = np.stack([cost(z[:, t]) for t, cost in enumerate(costs)], axis=1)
     log_w = np.cumsum(_log_policy(target, xs, u) - _log_policy(logger, xs, u), axis=1)
     w = _normalised(log_w)
     per_step = np.mean(w * c, axis=0)
@@ -1059,7 +1177,39 @@ def _episodes_estimate(
     return float(per_step.sum()), half, _effective(w[:, -1])
 
 
-def _choose_smoothing(
+def _episode_smoothing(
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    plan: AffineSchedule,
+    costs: tuple[_StageCost, ...],
+    initial: InitialLaw,
+    samples: int,
+    model_error: float,
+    min_effective: float,
+) -> float | None:
+    """The ``tau`` minimising the predicted mean squared error of the reported value -- the
+    model's unverified share of the correction, squared, plus the weighted estimate's variance --
+    among those the certificate passes. The variance is approximated by the weights' own,
+    ``(E_b[W_H^2] - 1) J_H^2 / n``, which leaves out the cost's spread. ``None`` when no smoothing
+    passes."""
+    budget = math.log(samples / min_effective)
+    room = _min_eig(2.0 * logger.covariance - plan.covariance)
+    if room <= 0.0 or not _has_density(logger):
+        return None
+    beta = _horizon_beta(plant, plan, costs[0])
+
+    def episode_mse(tau: float) -> float:
+        target = _smoothed(plan, tau)
+        l2 = _trajectory_log_moments(plant, logger, target, initial, 2.0)[-1]
+        if not l2 <= budget:
+            return math.inf
+        value = _episode_value(plant, target, costs, initial)
+        return (model_error * tau * tau * beta) ** 2 + math.expm1(l2) * value * value / samples
+
+    return _best_on_grid(math.sqrt(room), episode_mse)
+
+
+def _stationary_smoothing(
     plant: LinearGaussianPlant,
     logger: AffinePolicy,
     plan: AffinePolicy,
@@ -1067,33 +1217,10 @@ def _choose_smoothing(
     samples: int,
     model_error: float,
     min_effective: float,
-    episodes: tuple[int, InitialLaw] | None,
 ) -> float | None:
-    """The ``tau`` minimising the predicted mean squared error of the reported value -- the
-    model's unverified share of the correction, squared, plus the weighted estimate's variance --
-    among those the certificate passes.
-
-    Stationary: the variance is exactly ``E_b[w^2 (c - J)^2] / n``. Episodes: it is approximated by
-    the weights' own, ``(E_b[W_H^2] - 1) J_H^2 / n``, which leaves out the cost's spread. ``None``
-    when no smoothing passes."""
+    """:func:`_episode_smoothing`'s ``tau`` for a stationary method, whose weighted estimate's
+    variance is exactly ``E_b[w^2 (c - J)^2] / n``."""
     budget = math.log(samples / min_effective)
-    if episodes is not None:
-        horizon, initial = episodes
-        room = _min_eig(2.0 * logger.covariance - plan.covariance)
-        if room <= 0.0 or not _has_density(logger):
-            return None
-        beta = _horizon_beta(plant, plan, cost, horizon)
-
-        def episode_mse(tau: float) -> float:
-            target = _smoothed(plan, tau)
-            l2 = _trajectory_log_moments(plant, logger, target, initial, horizon, 2.0)[-1]
-            if not l2 <= budget:
-                return math.inf
-            value = _episode_value(plant, target, cost, initial, horizon)
-            return (model_error * tau * tau * beta) ** 2 + math.expm1(l2) * value * value / samples
-
-        return _best_on_grid(math.sqrt(room), episode_mse)
-
     if max(_spectral_radius(plant, logger), _spectral_radius(plant, plan)) >= 1.0:
         return None
     mb, sb, _ = _stationary(plant, logger)
@@ -1117,9 +1244,26 @@ def _choose_smoothing(
     return _best_on_grid(limit, stationary_mse)
 
 
+def _admit(certificate: EvaluationCertificate) -> EvaluationCertificate:
+    """Log the certificate's verdict, and raise :class:`InfeasibleEvaluation` when it refuses."""
+    event = {
+        "chc_event": "plan_evaluation",
+        "method": certificate.method,
+        "certified": certificate.certified,
+        "samples": certificate.samples,
+        "effective_samples": certificate.effective_samples,
+        "smoothing": certificate.smoothing,
+    }
+    if not certificate.certified:
+        _log.info("evaluation refused", extra=event | {"reason": certificate.reason})
+        raise InfeasibleEvaluation(certificate)
+    _log.info("evaluation certified", extra=event)
+    return certificate
+
+
 def evaluate_plan(
     logs: Mapping[str, ArrayLike],
-    plan: AffinePolicy,
+    plan: AffinePolicy | AffineSchedule,
     method: EvaluationMethod,
     *,
     plant: LinearGaussianPlant,
@@ -1133,8 +1277,10 @@ def evaluate_plan(
 
     ``logs`` has ``"x"`` and ``"u"``: for the stationary methods one logged run, ``x`` of shape
     ``(T + 1, n)`` and ``u`` of shape ``(T, m)``; for ``"pdis"`` ``E`` episodes, ``(E, H + 1, n)``
-    and ``(E, H, m)``, whose first states give the initial law. The cost is ``cost.running``, one
-    target for every state, and ``plant`` is the model: of the loop's law for every method but
+    and ``(E, H, m)``, whose first states give the initial law. ``plan`` is a policy, or for
+    ``"pdis"`` a schedule over the logged horizon. The cost is ``cost.running``: one target for
+    every state, or for ``"pdis"`` one for each of the episodes' ``H + 1`` states, the last of
+    which no step reads. ``plant`` is the model: of the loop's law for every method but
     ``"fqe"``, of the relative value for ``"dr"``, and of the smoothing correction. ``logger`` is
     the policy that logged, fitted by :func:`fit_logger` when omitted.
 
@@ -1151,73 +1297,74 @@ def evaluate_plan(
         InfeasibleEvaluation: when the certificate refuses; it carries the certificate.
         KeyError: on logs without ``"x"`` or ``"u"``.
         ValueError: on logs of the wrong shape, non-finite logs, a negative ``model_error``, a
-            cost with one target per step, and every error :func:`certify_evaluation` raises.
+            cost with a target per state for a stationary method or with other than ``H + 1`` of
+            them for ``"pdis"``, and every error :func:`certify_evaluation` raises.
     """
     if method not in get_args(EvaluationMethod):
         raise ValueError(f"method must be one of {get_args(EvaluationMethod)}, got {method!r}")
     if not (math.isfinite(model_error) and model_error >= 0.0):
         raise ValueError(f"model_error must be non-negative, got {model_error}")
     _check_policies(plant, plan=plan)
+    held = None if method == "pdis" else _held(plan, method)
     x, u = _parse_logs(logs, method, plant)
     n, m = plant.states, plant.actions
     if logger is None:
         logger = fit_logger(x[..., :-1, :].reshape(-1, n), u.reshape(-1, m))
-    stage = _StageCost.of(cost, n, m)
     samples = u.shape[0]
-    episodes = None
-    if method == "pdis":
-        starts = x[:, 0]
-        initial = InitialLaw(starts.mean(axis=0), np.atleast_2d(np.cov(starts, rowvar=False)))
-        episodes = (u.shape[1], initial)
-    if smoothing is None and method != "fqe" and not _has_density(plan):
-        smoothing = _choose_smoothing(
-            plant, logger, plan, stage, samples, model_error, min_effective, episodes
-        )
-    certificate = certify_evaluation(
-        plant,
-        logger,
-        plan,
-        method,
-        samples,
-        smoothing=smoothing,
-        horizon=None if episodes is None else episodes[0],
-        initial=None if episodes is None else episodes[1],
-        min_effective=min_effective,
-    )
-    event = {
-        "chc_event": "plan_evaluation",
-        "method": method,
-        "certified": certificate.certified,
-        "samples": samples,
-        "effective_samples": certificate.effective_samples,
-        "smoothing": certificate.smoothing,
-    }
-    if not certificate.certified:
-        _log.info("evaluation refused", extra=event | {"reason": certificate.reason})
-        raise InfeasibleEvaluation(certificate)
-    _log.info("evaluation certified", extra=event)
-
-    tau = certificate.smoothing
-    target = _smoothed(plan, tau) if tau > 0.0 else plan
-    correction = 0.0
-    if tau > 0.0:
-        beta = (
-            _horizon_beta(plant, plan, stage, episodes[0])
-            if episodes is not None
-            else _RelativeValue.of(plant, plan, stage).beta
-        )
-        correction = tau * tau * beta
     effective: float | None
     dof: float | None = None
-    if method == "fqe":
-        weighted, half = _fqe_estimate(x, u, plan, stage)
-        effective = None
-    elif episodes is not None:
-        weighted, half, effective = _episodes_estimate(x, u, logger, target, stage)
-    else:
-        weighted, half, effective, dof = _stationary_estimate(
-            x, u, plant, plan, target, stage, method
+    if held is None:
+        starts = x[:, 0]
+        initial = InitialLaw(starts.mean(axis=0), np.atleast_2d(np.cov(starts, rowvar=False)))
+        schedule = _schedule(plan, u.shape[1])
+        stages = _StageCost.steps(cost, n, m, schedule.horizon)
+        if smoothing is None and not _has_density(schedule):
+            smoothing = _episode_smoothing(
+                plant, logger, schedule, stages, initial, samples, model_error, min_effective
+            )
+        certificate = _admit(
+            certify_evaluation(
+                plant,
+                logger,
+                schedule,
+                method,
+                samples,
+                smoothing=smoothing,
+                initial=initial,
+                min_effective=min_effective,
+            )
         )
+        tau = certificate.smoothing
+        correction = tau * tau * _horizon_beta(plant, schedule, stages[0]) if tau > 0.0 else 0.0
+        weighted, half, effective = _episodes_estimate(
+            x, u, logger, _smoothed(schedule, tau) if tau > 0.0 else schedule, stages
+        )
+    else:
+        stage = _StageCost.of(cost, n, m)
+        if smoothing is None and method != "fqe" and not _has_density(held):
+            smoothing = _stationary_smoothing(
+                plant, logger, held, stage, samples, model_error, min_effective
+            )
+        certificate = _admit(
+            certify_evaluation(
+                plant,
+                logger,
+                held,
+                method,
+                samples,
+                smoothing=smoothing,
+                min_effective=min_effective,
+            )
+        )
+        tau = certificate.smoothing
+        correction = tau * tau * _RelativeValue.of(plant, held, stage).beta if tau > 0.0 else 0.0
+        if method == "fqe":
+            weighted, half = _fqe_estimate(x, u, held, stage)
+            effective = None
+        else:
+            weighted, half, effective, dof = _stationary_estimate(
+                x, u, plant, held, _smoothed(held, tau) if tau > 0.0 else held, stage, method
+            )
     value = weighted - correction
     half += model_error * correction
     share = correction / abs(weighted) if correction > 0.0 else 0.0

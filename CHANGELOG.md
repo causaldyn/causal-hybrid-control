@@ -64,6 +64,29 @@ still change).
   Ampere and later unless asked otherwise, a key's normal draws equal across devices only to
   rounding, the NumPy modules staying on the CPU, and JAX's preallocation of 75% of the card.
 
+- **`AffineSchedule`: a plan evaluated from logs may change with the step (ADR 0023).**
+  `AffineSchedule(gains, offsets, covariance)` is `u_t | x_t ~ N(gains[t] x_t + offsets[t],
+  covariance)` for the `H` steps of `gains (H, m, n)`, and `AffineSchedule.open_loop(actions,
+  states)` builds a prescription's kind, every gain zero. `certify_evaluation` and `evaluate_plan`
+  take one for `"pdis"`, over the episodes' horizon, which is the schedule's by default.
+  `"mis"`, `"dr"` and `"fqe"` refuse one by name: each evaluates a stationary loop's average cost,
+  and a schedule ends.
+  - **The weight's moment is carried forward.** The recursion carries the unnormalised law of the
+    state along the starred loop, so one pass serves every horizon when the loop changes with the
+    step; the backward one needed a loop that does not. A policy is evaluated as the schedule that
+    holds it, and its certificate is unchanged: CE1 still escapes at `h = 6`, CE3's moment is
+    still 8.134660321708, and the two-state loop still certifies `H* = 7, 15, 23, 31`. On 80
+    random schedules the moment matches the whole-trajectory integral to a relative 1e-9.
+  - **A target per state.** `"pdis"` scores each step against its own row of an `(H + 1, n)`
+    `x_target` (ADR 0006); no step reads the last. The stationary methods still refuse one.
+  - **Checked** by a ramped feedback schedule and an open-loop one against a moving target: over 60
+    replicates of 3000 episodes each, the interval covers at least 0.85 of the time and the mean
+    error is within three standard errors of zero; the smoothing correction is exactly
+    `tau^2 sum_t tr(R + B' P_{t+1} B)` over the schedule's own gains.
+  - **Not built:** a finite-horizon FQE, which would evaluate a schedule where every weight is
+    refused, and the bridges from a `Prescription` to the plant and the logs `evaluate_plan`
+    reads.
+
 ### Changed
 
 - **The suite runs over worker processes, and on the GPU from an opt-in group.** `pytest-xdist`
