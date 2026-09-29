@@ -1,6 +1,7 @@
 # ADR 0015 — What a logged decision records
 
-**Status:** proposed, 2026-09-28.
+**Status:** proposed, 2026-09-28. Amended 2026-09-29 by ADR 0021, before any release: `dither`
+is the draw, before any clip.
 
 ## Context
 
@@ -19,7 +20,9 @@ shape, the shape cannot be taken back, so this is a type-1 door.
   - `action`, as applied, one row per decision for a vector action;
   - `propensity`, computed by the policy that drew the action, when it drew it;
   - `saturated`, a boolean: the action was clipped, so what was applied is not what was drawn;
-  - `dither`, optional: the Gaussian perturbation added to the policy's action, as applied.
+  - `dither`, optional: the Gaussian perturbation drawn for the policy's action, as drawn. On a
+    clipped decision it is the draw, not what the clip left of it (ADR 0021; this said "as
+    applied" until then).
 - **Stored, a decision is a record** with `decision_log_version` beside those four fields.
   `DecisionLog.to_records()` writes them, and `DecisionLog.from_records(rows)` reads them. The
   version is 1.

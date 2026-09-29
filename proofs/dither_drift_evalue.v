@@ -14,7 +14,9 @@
    (C) both sides: every column is an e-value while the entry lies inside its radius, and the
        side an entry has crossed has mean above 1
    (D) the detectors' averaged Shiryaev-Roberts statistic grows by at most 1 a decision in
-       expectation, and e-CUSUM never exceeds e-SR *)
+       expectation, and e-CUSUM never exceeds e-SR
+   (E) a clipped action, read with its draw (ADR 0021): the mean is at most 1 inside the radius,
+       exactly 1 on its edge, and at least 1 past it *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
@@ -210,3 +212,76 @@ Proof.
   apply Rmult_le_compat_r; [exact He |].
   apply Rmax_lub; lra.
 Qed.
+
+(* ---------------------------------------------------------------------------------------------- *)
+(* (E) A CLIPPED ACTION, READ WITH ITS DRAW (ADR 0021). A box clips the applied dither to
+   h(xi) = clip(xi, -m1, m2) in dither units, so rt = c + k h(xi), while the bet reads the draw xi.
+   Pointwise, e phi(xi) = phi(xi - a) with a = th rt, a that moves with xi included. Between the
+   clips a = th (c + k xi), so xi - a = s xi - th c with s = 1 - th k; beyond them a is constant.
+   The three regions' Gaussian integrals, Phi(u1), (Phi(u2) - Phi(u1)) / s and 1 - Phi(u2), with
+   u1 = -s m1 - th c and u2 = s m2 - th c, are STEP 8d of validation/dither_drift_evalue.mac and
+   enter as the Definition [ClippedMean]: p1 and p2 stand for Phi(u1) <= Phi(u2). *)
+
+Lemma tilted_density_exponent :
+  forall a xi : R, a * xi - a ^ 2 / 2 - xi ^ 2 / 2 = - (xi - a) ^ 2 / 2.
+Proof. intros. field. Qed.
+
+Lemma clipped_middle_shift :
+  forall th c k xi : R, xi - th * (c + k * xi) = (1 - th * k) * xi - th * c.
+Proof. intros. ring. Qed.
+
+Lemma clipped_lower_edge :
+  forall th c k m1 : R, - m1 - th * (c + k * - m1) = - (1 - th * k) * m1 - th * c.
+Proof. intros. ring. Qed.
+
+Lemma clipped_upper_edge :
+  forall th c k m2 : R, m2 - th * (c + k * m2) = (1 - th * k) * m2 - th * c.
+Proof. intros. ring. Qed.
+
+(* The cited region integrals: a Definition, not an Axiom. *)
+Definition ClippedMean (s p1 p2 m : R) : Prop :=
+  0 <= p1 <= p2 /\ p2 <= 1 /\ m = p1 + (p2 - p1) / s + (1 - p2).
+
+Lemma clipped_mean_identity :
+  forall s p1 p2 m : R, s <> 0 -> ClippedMean s p1 p2 m -> m = 1 - (p2 - p1) * (1 - 1 / s).
+Proof. intros s p1 p2 m Hs [_ [_ Hm]]. subst m. field. exact Hs. Qed.
+
+(* Inside the radius, th k <= 0 (Theorem bet_times_k_inside_the_radius), so s >= 1: the clipped
+   decision's mean is at most 1, whatever the clip, c and the nominal action. *)
+Theorem clipped_evalue_valid :
+  forall th k p1 p2 m : R, th * k <= 0 -> ClippedMean (1 - th * k) p1 p2 m -> m <= 1.
+Proof.
+  intros th k p1 p2 m Hk Hmean.
+  assert (Hs : 1 - th * k <> 0) by lra.
+  rewrite (clipped_mean_identity (1 - th * k) p1 p2 m Hs Hmean).
+  destruct Hmean as [[Hp1 Hp12] _].
+  assert (Hinv : 1 / (1 - th * k) <= 1).
+  { apply (Rmult_le_reg_r (1 - th * k)); [lra |].
+    replace (1 / (1 - th * k) * (1 - th * k)) with 1 by (field; exact Hs). nra. }
+  nra.
+Qed.
+
+(* On the side an entry has crossed, 0 < th k < 1, the mean is at least 1: a clip shrinks the
+   power, and never turns it against the alarm. *)
+Theorem clipped_evalue_keeps_its_side :
+  forall th k p1 p2 m : R, 0 < th * k < 1 -> ClippedMean (1 - th * k) p1 p2 m -> 1 <= m.
+Proof.
+  intros th k p1 p2 m Hk Hmean.
+  assert (Hs : 1 - th * k <> 0) by lra.
+  rewrite (clipped_mean_identity (1 - th * k) p1 p2 m Hs Hmean).
+  destruct Hmean as [[Hp1 Hp12] _].
+  assert (Hinv : 1 <= 1 / (1 - th * k)).
+  { apply (Rmult_le_reg_r (1 - th * k)); [lra |].
+    replace (1 / (1 - th * k) * (1 - th * k)) with 1 by (field; exact Hs). nra. }
+  nra.
+Qed.
+
+(* No clip, p1 = 0 and p2 = 1: the mean is Theorem dither_evalue_mean's 1/s. *)
+Lemma clipped_mean_without_a_clip :
+  forall s m : R, s <> 0 -> ClippedMean s 0 1 m -> m = 1 / s.
+Proof. intros s m Hs [_ [_ Hm]]. subst m. field. exact Hs. Qed.
+
+(* On the radius's edge, k = 0 and s = 1: the mean is exactly 1, whatever the clip. *)
+Lemma clipped_mean_on_the_edge :
+  forall p1 p2 m : R, ClippedMean 1 p1 p2 m -> m = 1.
+Proof. intros p1 p2 m [_ [_ Hm]]. subst m. field. Qed.

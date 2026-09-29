@@ -558,12 +558,14 @@ def test_a_reader_of_the_draw_refuses_a_clipped_dither() -> None:
 # ---- the channel-drift monitor (ADR 0018) ----
 
 
-def _dithered(action: np.ndarray, dither: np.ndarray) -> DecisionLog:
+def _dithered(
+    action: np.ndarray, dither: np.ndarray, saturated: np.ndarray | None = None
+) -> DecisionLog:
     size = action.shape[0]
     return DecisionLog(
         action=action,
         propensity=np.ones(size),
-        saturated=np.zeros(size, dtype=bool),
+        saturated=np.zeros(size, dtype=bool) if saturated is None else saturated,
         dither=dither,
     )
 
@@ -616,26 +618,72 @@ def test_a_decision_reads_as_the_docstring_writes_it() -> None:
                     assert evalues[t, i, 0, s, b] == pytest.approx(expected, rel=1e-13)
 
 
+def test_a_clipped_decision_is_read_with_its_draw() -> None:
+    """A box clips ``u = p + sigma xi``, so the residual moves with what the clip left of the
+    dither while the bet reads the draw. Without noise ``c`` is known decision by decision, and each
+    column averages ``1 - (Phi(u2) - Phi(u1)) (1 - 1 / s)`` (``validation/dither_drift_evalue.mac``
+    STEP 8), with the nominal action inside the box, on a bound and beyond one: exactly 1 on the
+    radius's edge, at most 1 inside it and at least 1 past it. The flag is not read."""
+    rng = np.random.default_rng(27)
+    size, sigma, low, high = 70_000, 0.4, -0.6, 0.6
+    nominal = np.resize([-0.9, -0.6, -0.3, 0.0, 0.45, 0.6, 1.0], size)
+    drawn = sigma * rng.standard_normal(size)
+    action = np.clip(nominal + drawn, low, high)
+    scale, radius, offset = np.array([0.5, 1.0]), np.array([[0.1], [0.1]]), np.array([0.2, -0.3])
+    moved = np.array([0.1, 0.3])  # state 0 on its radius's growth edge, state 1 past it
+    residual = offset + action[:, None] * moved
+    log = _dithered(action, drawn, action != nominal + drawn)
+    common = {"dither_scale": sigma, "radius": radius, "residual_scale": scale}
+    evalues = channel_drift_evalues(log, residual, **common)
+    unflagged = dataclasses.replace(log, saturated=np.zeros(size, dtype=bool))
+    np.testing.assert_array_equal(channel_drift_evalues(unflagged, residual, **common), evalues)
+    side = np.array([1.0, -1.0])
+    edge = moved[:, None] - side * radius  # (states, sides)
+    theta = side[:, None] * 2.0 ** -np.arange(8)  # (sides, bets)
+    c = (offset[:, None] + edge * nominal[:, None, None]) / scale[:, None]
+    s = 1.0 - theta * (edge * sigma / scale[:, None])[..., None]
+    below, above = (nominal - low) / sigma, (high - nominal) / sigma
+    tc = theta * c[..., None]
+    p1 = stats.norm.cdf(-s * below[:, None, None, None] - tc)
+    p2 = stats.norm.cdf(s * above[:, None, None, None] - tc)
+    expected = 1.0 - (p2 - p1) * (1.0 - 1.0 / s)  # (decisions, states, sides, bets)
+    gap = evalues.reshape(size, 2, 2, 8) - expected
+    z = gap.mean(axis=0) / (gap.std(axis=0) / math.sqrt(size))
+    assert np.abs(z).max() < 5.0
+    assert 0.3 < log.saturated.mean() < 0.7
+    np.testing.assert_allclose(expected[:, 0, 0], 1.0, rtol=1e-12)  # the edge, whatever the clip
+    assert (expected[:, :, 1] <= 1.0).all()
+    assert (expected[:, 1, 0] >= 1.0).all()
+    assert expected[:, 1, 0].mean() > 1.001
+
+
 def _lab_plant(
-    paths: int, channel: np.ndarray, dither: float, rng: np.random.Generator
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    paths: int,
+    channel: np.ndarray,
+    dither: float,
+    rng: np.random.Generator,
+    box: float = math.inf,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """The lab's plant ``x' = 0.8 x + 0.15 + b_t u + eps``, ``eps`` Laplace with standard
-    deviation 0.5, under ``u = -0.5 x + dither xi``, and the residual against a model that gets
-    the drift wrong, ``x' = 0.9 x + 0.05 + u``: per decision and path, the action, the dither and
-    the residual."""
+    deviation 0.5, under ``u = -0.5 x + dither xi`` clipped to ``[-box, box]``, and the residual
+    against a model that gets the drift wrong, ``x' = 0.9 x + 0.05 + u``: per decision and path,
+    the action as applied, the dither as drawn, the residual, and whether the box clipped."""
     x = rng.normal(0.0, 0.7, paths)
     action, drawn, residual = (np.empty((channel.size, paths)) for _ in range(3))
+    saturated = np.empty((channel.size, paths), dtype=bool)
     for t, b in enumerate(channel):
         drawn[t] = dither * rng.standard_normal(paths)
-        action[t] = -0.5 * x + drawn[t]
+        wanted = -0.5 * x + drawn[t]
+        action[t] = np.clip(wanted, -box, box)
+        saturated[t] = action[t] != wanted
         after = 0.8 * x + 0.15 + b * action[t] + rng.laplace(scale=0.5 / math.sqrt(2), size=paths)
         residual[t] = after - (0.9 * x + 0.05 + action[t])
         x = after
-    return action, drawn, residual
+    return action, drawn, residual, saturated
 
 
 def _alarms_by(
-    plant: tuple[np.ndarray, np.ndarray, np.ndarray],
+    plant: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     ends: tuple[int, ...],
     *,
     dither: float,
@@ -644,11 +692,11 @@ def _alarms_by(
 ) -> np.ndarray:
     """Per path, whether the alarm sounded before each end, the alarm fed the rows up to each end
     in one update."""
-    action, drawn, residual = plant
+    action, drawn, residual, saturated = plant
     sounded = np.zeros((len(ends), action.shape[1]), dtype=bool)
     for p in range(action.shape[1]):
         evalues = channel_drift_evalues(
-            _dithered(action[:, p], drawn[:, p]),
+            _dithered(action[:, p], drawn[:, p], saturated[:, p]),
             residual[:, p],
             dither_scale=dither,
             radius=radius,
@@ -681,6 +729,20 @@ def test_a_channel_that_moves_past_its_radius_is_caught_after_the_move() -> None
     sounded = _alarms_by(
         _lab_plant(100, channel, 0.3, rng), (move, channel.size), dither=0.3, radius=0.1, arl=arl
     )
+    assert sounded[0].mean() <= move / arl
+    assert sounded[1].mean() >= 0.95
+
+
+def test_a_boxed_plant_dithered_throughout_is_watched_as_an_unboxed_one() -> None:
+    """The same move, with the lab's actions boxed to ``+-0.5`` and every decision dithered, so
+    that a quarter of them clip: before the move the alarm sounds on no more than ``H / A`` of the
+    paths, and after it on nearly every one."""
+    rng = np.random.default_rng(28)
+    move, arl = 200, 1000.0
+    channel = np.where(np.arange(move + 1000) < move, 1.07, 1.5)
+    plant = _lab_plant(100, channel, 0.3, rng, box=0.5)
+    assert 0.1 < plant[3].mean() < 0.4
+    sounded = _alarms_by(plant, (move, channel.size), dither=0.3, radius=0.1, arl=arl)
     assert sounded[0].mean() <= move / arl
     assert sounded[1].mean() >= 0.95
 
@@ -729,9 +791,6 @@ def test_a_dither_that_is_not_the_stated_draw_is_refused() -> None:
         channel_drift_evalues(log, residual, dither_scale=0.09, **common)
     with pytest.raises(ValueError, match="dither of action 0"):
         channel_drift_evalues(log, residual, dither_scale=3.0, **common)
-    clipped = dataclasses.replace(log, saturated=np.arange(40) == 7)
-    with pytest.raises(ValueError, match=r"\(the first is decision 7\)"):
-        channel_drift_evalues(clipped, residual, dither_scale=0.3, **common)
     with pytest.raises(ValueError, match="records no dither"):
         channel_drift_evalues(
             dataclasses.replace(log, dither=None), residual, dither_scale=0.3, **common

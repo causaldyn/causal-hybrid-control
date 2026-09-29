@@ -196,7 +196,8 @@ class DecisionLog:
     is the probability, or density, of drawing it, computed by the policy that drew it when it drew
     it: the number the gate's guarantee is stated on. ``saturated`` flags a decision whose action
     was clipped, so that what was applied is not what was drawn. ``dither``, optional, is the
-    Gaussian perturbation added to the policy's action, as applied.
+    Gaussian perturbation drawn for the policy's action, as drawn: on a clipped decision, the draw,
+    not what the clip left of it.
 
     Stored, a decision is a record with ``decision_log_version`` beside those fields.
     :meth:`from_records` reads version :attr:`VERSION` and refuses a record with no version, or
@@ -318,11 +319,12 @@ class DecisionLog:
         return records
 
     def dither_draws(self) -> NDArray[np.float64]:
-        """The dither of every decision, for a reader that needs each to be the Gaussian draw.
+        """The dither of every decision, for a reader that needs each action to carry its whole
+        draw, as :func:`channel_move` does: on a clipped decision, what the product of the residual
+        and the draw reads is scaled by the chance that the draw was not clipped.
 
         Raises:
-            ValueError: on a log with no dither, or with a clipped decision, whose dither as
-                applied is not the draw.
+            ValueError: on a log with no dither, or with a clipped decision.
         """
         if self.dither is None:
             raise ValueError("the log records no dither")
@@ -330,7 +332,7 @@ class DecisionLog:
             raise ValueError(
                 f"{int(self.saturated.sum())} of {self.saturated.size} decisions were clipped (the"
                 f" first is decision {int(np.argmax(self.saturated))}), and a clipped decision's"
-                " dither is not the Gaussian draw"
+                " action does not carry the whole of its draw"
             )
         return self.dither
 
@@ -472,11 +474,26 @@ def channel_drift_evalues(
     the noise's law or the policy. Row ``t`` of the result, reshaped to ``(states, actions, 2,
     8)``, holds decision ``t``'s e-values by state, action, growth then shrinkage, and bet.
 
+    A clipped decision is read the same way: the bet reads the draw, and the residual moves with
+    the action as applied. With a box cutting the draw to ``h = clip(xi, -m1, m2)`` in dither
+    units, ``r = c + k h``, and the mean given ``c`` is ``1 - (Phi(u2) - Phi(u1)) (1 - 1 / s)``,
+    with ``s = 1 - theta k``, ``u1 = -s m1 - theta c`` and ``u2 = s m2 - theta c``. That is at
+    most 1 on each side the entry has not crossed, exactly 1 on the radius's edge whatever the
+    clip, and at least 1 on the side it has (``validation/dither_drift_evalue.mac`` STEP 8). On the
+    sides not crossed, the mean stays at most 1 for an action applied as any nondecreasing function
+    of its own draw, such as a saturating actuator. The draw is what the log must carry: the dither
+    as applied, put in its place, is not an e-value, and on the edge, with the nominal action on a
+    bound, its mean reaches 1.15.
+
     On the lab's plant, whose model has the drift wrong and whose noise is Laplace, a
     :class:`DriftAlarm` on these e-values ran at least 3.2 and 5.6 times its target on an unchanged
     channel, at ``10^3`` and ``10^4``, and caught a channel at 1.4 instead of 1.07 in 259 and 456
     decisions on average: 1.56 and 1.37 times an oracle that knew which entry moved, which way and
-    at what rate (``scripts/bench_drift.py``, 300 paths).
+    at what rate (``scripts/bench_drift.py``, 300 paths). With the actions boxed to ``+-0.5``, so
+    that a quarter of the decisions clipped, it ran at least 2.8 and 4.6 times its target and caught
+    the move in 438 and 749 decisions, 1.69 and 1.64 times the unboxed delays. With the clipped
+    decisions' e-values set to 0 instead, which is also valid, it caught the move on none of the
+    paths within 3000 decisions.
 
     What the guarantee needs, and the function cannot check:
 
@@ -486,24 +503,27 @@ def channel_drift_evalues(
       identity: in the lab, a running product of such e-values passed 20 on 27% of paths, where
       Ville's inequality allows 5%. A plant integrated over a step has a one-step channel that
       carries the drift's Jacobian too, to first order in the step.
-    * **A dither drawn as stated and applied as logged**: each action's from
-      ``N(0, dither_scale_j^2)``, independently of the other actions' and of the past. With a
-      fifth more variance than stated, the e-value's mean at ``theta r = 1`` is
-      ``exp(0.1) = 1.105``.
+    * **A dither drawn as stated and logged as drawn**: each action's from
+      ``N(0, dither_scale_j^2)``, independently of the other actions' and of the past, and applied
+      whole or cut by a box on that action alone, fixed before the draw. A projection that couples
+      the actions, such as a budget shared across them, moves one action's residual with another's
+      draw, and is not covered. With a fifth more variance than stated, the e-value's mean at
+      ``theta r = 1`` is ``exp(0.1) = 1.105``.
     * **A radius that covers the identification error.** The e-values hold while every entry lies
       inside it. On the same plant, a channel 0.07 from the model's, watched with no radius,
       alarmed after 0.36 of the average run length the alarm was set for. A standard error, such as
       :attr:`chc.dynamics_id.CausalDynamicsFit.channel_error`, is a scale, not a radius.
 
     Raises:
-        ValueError: on a log with no dither, or with a clipped decision (see
-            :meth:`DecisionLog.dither_draws`); on a residual without one row per decision, a
+        ValueError: on a log with no dither; on a residual without one row per decision, a
             non-finite entry, a scale that is not positive, a negative radius, or a scale or radius
             that is neither a scalar nor of its full shape; and on a dither whose draws, over
             ``dither_scale``, a two-sided chi-square test rejects at ``1e-9``: a slip in units, or
             a variance passed for a standard deviation.
     """
-    dither = log.dither_draws()
+    if log.dither is None:
+        raise ValueError("the log records no dither")
+    dither = log.dither
     size = dither.shape[0]
     action = log.action if log.action.ndim == 2 else log.action[:, None]
     xi = dither if dither.ndim == 2 else dither[:, None]

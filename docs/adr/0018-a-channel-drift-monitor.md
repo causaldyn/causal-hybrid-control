@@ -51,7 +51,8 @@ on it (AG5), and an independent verifier checked it.
 - **Refusals**, each at the boundary:
   - a log with no dither;
   - a log with a clipped decision (`DecisionLog.dither_draws`), because skipping clipped decisions
-    after the draw selects on `xi`;
+    after the draw selects on `xi`. Lifted by ADR 0021: a clipped decision is read with its
+    draw, which is exact;
   - a dither whose draws, over the stated scale, a two-sided chi-square test rejects at `1e−9`.
     That catches a slip in units, or a variance passed for a standard deviation. For a hundred
     zones read every fifteen minutes, the threshold makes a false refusal about once in 285 years
@@ -96,6 +97,7 @@ radius of 0.1. Run lengths are censored at 80 000 decisions, so each mean is a l
   The docstring says so, with these numbers.
 - **A plan whose actions clip cannot be watched this way.** The plan's candidate fix is to skip,
   before the draw, the decisions whose nominal action lies near a bound. It is not built.
+  ADR 0021 watches such a plan by reading each clipped decision with its draw instead.
 - The gate's own drift behaviour is unchanged, and its 28 earlier tests pass as they were.
 - The identity is checked three ways:
   - `validation/dither_drift_evalue.mac` derives it in the library's parameterisation (both sides,

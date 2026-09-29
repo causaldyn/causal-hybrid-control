@@ -79,11 +79,12 @@ still change).
     wrong way. It refuses a batch whose logged propensities are not those of the policy the zone's
     mode asked for.
   - **`DecisionLog` is what each decision records**, versioned: the action as applied, the
-    propensity computed when it was drawn, a flag for a clipped action, and the Gaussian dither.
+    propensity computed when it was drawn, a flag for a clipped action, and the Gaussian dither as
+    drawn, which on a clipped decision is the draw rather than what the clip left of it.
     `DecisionLog.from_records` reads stored rows back, JSON lines or a table's, and refuses a record
     with no version, with another, or without a field, rather than filling one in.
     `ZoneBatch.from_log` takes the logged propensities from it, and `dither_draws` refuses a clipped
-    dither. The stored form survives JSON bit for bit. The design record, with what a new version
+    decision. The stored form survives JSON bit for bit. The design record, with what a new version
     would require of stored logs, is `docs/adr/0015-what-a-logged-decision-records.md`.
   - **EXPERIMENT** is chosen when shadow cannot reach a verdict at `min_effect` within the horizon,
     and the mixture `(1 - rho) baseline + rho candidate`, which bounds both weights, would gather
@@ -109,9 +110,19 @@ still change).
     the drift model off by a further 0.15. Without the identification radius it falls to 0.96 and
     0.36. A channel at 1.4 instead of 1.07 is caught in 259 and 456 decisions on average. That is
     1.56 and 1.37 times an oracle that knows which entry moved, which way and at what rate.
-  - **Refused:** a log with no dither or with a clipped decision, a dither whose draws a chi-square
-    test at `1e-9` rejects at the stated scale, and a negative radius. `radius` has no default:
-    at 0 the alarm came after 0.36 of its target.
+  - **A plan whose actions clip is watched as it is.** A clipped decision is read with its draw,
+    and the residual at the action as applied. Its e-value's mean is then
+    `1 - (Phi(u2) - Phi(u1)) (1 - 1/s)`, `s = 1 - theta k`: at most 1 inside the radius, exactly 1
+    on its edge whatever the clip, and at least 1 past it. The bound holds for any action applied as
+    a nondecreasing function of its own draw, such as a saturating actuator. On the lab's plant
+    boxed so that a quarter of the decisions clip, the alarm ran at least 2.84 and 4.61 times its
+    target, and caught the move in 1.69 and 1.64 times the unboxed delay. Setting the clipped
+    decisions' e-values to 0, also valid, caught it on none of 300 paths within 3000 decisions.
+    `DecisionLog.dither` is now the draw, before any clip; version 1 has not been released. The
+    design record is `docs/adr/0021-watching-a-plan-whose-actions-clip.md`.
+  - **Refused:** a log with no dither, a dither whose draws a chi-square test at `1e-9` rejects at
+    the stated scale, and a negative radius. `radius` has no default: at 0 the alarm came after
+    0.36 of its target.
   - `DeploymentGate` now runs its drift alarm through `DriftAlarm`, and its verdicts are unchanged.
     The design record is `docs/adr/0018-a-channel-drift-monitor.md`.
 

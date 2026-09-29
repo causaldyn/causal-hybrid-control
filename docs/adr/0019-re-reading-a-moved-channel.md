@@ -34,6 +34,8 @@ the noise. So `E[r_i dither_j] = d_ij dither_scale_j^2`, whatever `c` holds.
     rejects at its stated scale, and a malformed residual. Two more: fewer than two decisions, and
     a `forgetting` outside `(0, 1]`, or one that leaves every weight on the last decision. The
     dither check is one helper, `_standardised_dither`, shared with `channel_drift_evalues`.
+    Since ADR 0021 the monitor reads a clipped decision, and `channel_move` still refuses one: a
+    clip scales its product by the chance that the draw was not clipped.
 - **`ChannelMove.price(weight)`** returns a `MovePrice` from the plan's decision weight. It holds
   two expectations:
   - `keep`: what keeping the plan loses to the plan that knew the move, `d' W d / 2`, estimated

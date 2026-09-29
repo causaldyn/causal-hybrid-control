@@ -132,8 +132,8 @@ documented, and what is not built yet. Every name below is importable from `chc`
   read, the expected share of wrong deploys across zones is at most `alpha`. That holds when the
   propensities were logged at decision time, zones do not spill over, and a decision's reward does
   not depend on earlier ones. A `DecisionLog` is the versioned record each decision stores for it:
-  the action, the propensity it was drawn with, a flag for a clipped action and the dither. See
-  [`chc.gate`](api/gate.md).
+  the action, the propensity it was drawn with, a flag for a clipped action and the dither as
+  drawn. See [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 
@@ -147,7 +147,8 @@ documented, and what is not built yet. Every name below is importable from `chc`
   whatever the model gets wrong in the drift, the noise law or the policy. `DriftAlarm` alarms on
   them with an average run length of at least its target while the channel holds, and
   `DeploymentGate` holds or rolls back a zone on them. Scope: a plant affine in the action over one
-  step, a dither drawn and applied as logged, and a radius that covers the identification error.
+  step, a dither drawn as stated and logged as drawn, applied whole or cut by a box on its own
+  action, and a radius that covers the identification error.
   See [`chc.gate`](api/gate.md).
 - **`channel_move`** (*experimental*). It re-reads the channel off the same dither once it has
   moved: how far each entry lies from the model's, with a covariance, and with older decisions
