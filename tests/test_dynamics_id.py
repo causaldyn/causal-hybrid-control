@@ -389,7 +389,10 @@ def test_iv_recovers_the_channel_when_the_confounder_is_latent() -> None:
     assert errors[-1] < 0.2 * _error(_channel_of(unadjusted))
 
 
-def test_the_reported_channel_error_is_calibrated_on_both_identified_paths() -> None:
+@pytest.mark.parametrize("channel_degree", [None, 0], ids=["affine", "constant"])
+def test_the_reported_channel_error_is_calibrated_on_both_identified_paths(
+    channel_degree: int | None,
+) -> None:
     """The standard error has to track the spread it claims to describe.
 
     This is the test that catches the defect it was written for: reporting the ordinary
@@ -404,7 +407,11 @@ def test_the_reported_channel_error_is_calibrated_on_both_identified_paths() -> 
         deviations, reported = [], []
         for seed in range(24):
             fit = fit_causal_residual(
-                _known, system.sample(2000, jax.random.key(seed), _known), system.dt, **keywords
+                _known,
+                system.sample(2000, jax.random.key(seed), _known),
+                system.dt,
+                channel_degree=channel_degree,
+                **keywords,
             )
             deviations.extend(
                 abs(np.asarray(_channel_of(fit)).ravel() - np.asarray(CHANNEL).ravel())
@@ -414,7 +421,14 @@ def test_the_reported_channel_error_is_calibrated_on_both_identified_paths() -> 
         assert 0.5 < ratio < 2.0, f"{keywords} SE off by {ratio:.2f}x"
 
 
-def test_the_residual_channel_is_the_jacobian_the_safety_layer_reads() -> None:
+@pytest.mark.parametrize(
+    ("degree", "channel_degree", "drift_features", "channel_features"),
+    [(2, None, 6, 6), (1, 0, 3, 1), (0, 1, 1, 3)],
+    ids=["shared", "constant_channel", "constant_drift"],
+)
+def test_the_residual_channel_is_the_jacobian_the_safety_layer_reads(
+    degree: int, channel_degree: int | None, drift_features: int, channel_features: int
+) -> None:
     """``control_channel`` and ``d r / d u`` must be the same object.
 
     :func:`chc.plan.certify_safety` recovers the channel by differentiating at ``u = 0``; if the
@@ -422,9 +436,10 @@ def test_the_residual_channel_is_the_jacobian_the_safety_layer_reads() -> None:
     be talking about different plants.
     """
     residual = ControlAffineResidual(
-        drift=jax.random.normal(jax.random.key(1), (2, 6)),
-        channel=jax.random.normal(jax.random.key(2), (2, 1, 6)),
-        degree=2,
+        drift=jax.random.normal(jax.random.key(1), (2, drift_features)),
+        channel=jax.random.normal(jax.random.key(2), (2, 1, channel_features)),
+        degree=degree,
+        channel_degree=channel_degree,
     )
     x, u = jnp.array([0.3, -0.7]), jnp.array([1.2])
     jacobian = jax.jacobian(lambda action: residual(0.0, x, action))(u)
@@ -966,3 +981,60 @@ def test_the_rk4_fixed_point_takes_the_weights_too() -> None:
     weighted = fit(lambda states: jnp.exp(-states[:, 0]))
     assert float(np.asarray(weighted.residual.channel)[0, 0, 0]) == pytest.approx(0.8, abs=0.01)
     assert weighted.integrator_defect == pytest.approx(0.01, abs=0.003)
+
+
+# ---- D29: a constant channel beside an affine drift ----
+
+
+def test_a_constant_channel_is_n_m_coefficients_beside_the_drifts_own_basis() -> None:
+    """``channel_degree=0`` estimates the channel §18/§19 cover and leaves the drift affine.
+
+    Two-sided like the rest: adjusted, it lands on the truth; unadjusted, it is as wrong as the
+    affine channel's constant term, since the class does not identify anything the moment does
+    not.
+    """
+    system = _system()
+    data = system.sample(4000, jax.random.key(0), _known)
+    constant = fit_causal_residual(_known, data, system.dt, adjust_for=("z",), channel_degree=0)
+    unadjusted = fit_causal_residual(_known, data, system.dt, channel_degree=0)
+
+    residual = constant.residual
+    assert residual.channel.shape == (2, 1, 1)  # n m, where the affine channel has n m (n + 1)
+    assert residual.drift.shape == (2, 3)  # the drift keeps its bias and its two slopes
+    assert _error(residual.channel[:, :, 0]) < 0.05  # measured 0.008
+    assert _error(unadjusted.residual.channel[:, :, 0]) > 1.0  # measured 1.35
+
+    x, elsewhere, u = jnp.array([0.3, -0.7]), jnp.array([-2.0, 1.5]), jnp.array([0.4])
+    assert jnp.array_equal(residual.control_channel(x), residual.control_channel(elsewhere))
+    assert jnp.allclose(residual.closed_loop_jacobian(x, u), residual.drift_jacobian(x))
+
+
+def test_the_rk4_fixed_point_reads_a_constant_channel() -> None:
+    """The ``rk4`` fixed point carries the channel's own basis, not the drift's.
+
+    Pinned the way the affine fit is: Euler to the RK4 amplification's reading of the channel,
+    ``rk4`` to the true one, both at the noise floor of what they were made consistent with.
+    """
+    dt = 1.0
+    base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    data = _rk4_generated_log(0.7, dt=dt)
+    euler, rk4 = (
+        fit_causal_residual(
+            base, data, dt, adjust_for=("z",), integrator=integrator, channel_degree=0
+        )
+        for integrator in ("euler", "rk4")
+    )
+
+    assert rk4.residual.channel.shape == (1, 1, 1)
+    assert float(np.asarray(rk4.residual.channel)[0, 0, 0]) == pytest.approx(0.8, abs=0.01)
+    assert float(np.asarray(rk4.residual.drift)[0, 1]) == pytest.approx(-0.7, abs=0.01)
+    assert float(np.asarray(euler.residual.channel)[0, 0, 0]) == pytest.approx(0.574, abs=0.01)
+    for fit in (euler, rk4):
+        assert fit.integrator_defect == pytest.approx(0.01, abs=0.003)
+
+
+def test_a_negative_channel_degree_is_refused() -> None:
+    system = _system()
+    data = system.sample(200, jax.random.key(0), _known)
+    with pytest.raises(ValueError, match="channel_degree must be a non-negative integer"):
+        fit_causal_residual(_known, data, system.dt, adjust_for=("z",), channel_degree=-1)

@@ -95,23 +95,39 @@ class ControlAffineResidual(eqx.Module):
     :func:`chc.dynamics_id.fit_causal_residual`. A general ``r_θ(x, u)`` fitted by prediction error
     has no such guarantee -- under a confounded logging policy it learns the observational response.
 
-    The drift and the channel share one basis, so ``degree = 1`` makes both affine in the state,
-    ``B_θ(x) = C_0 + sum_l C_l x_l``. That contains the constant channel the orthogonality results
-    §18/§19 cover without being restricted to it: only ``degree = 0`` makes the channel constant,
-    and then the drift is constant too. Higher degrees make both polynomial in the state.
+    The channel's basis has its own degree, ``channel_degree``, which defaults to ``degree``. With
+    one basis for both, ``degree = 1`` makes the channel affine in the state,
+    ``B_θ(x) = C_0 + sum_l C_l x_l``, which contains the constant channel the orthogonality results
+    §18/§19 cover without being restricted to it. ``channel_degree = 0`` is that constant channel
+    beside a drift of any degree: ``n m`` channel coefficients where the affine one has
+    ``n m (n + 1)``. Higher degrees make either polynomial in the state.
     """
 
-    drift: Array  # (out_dim, n_features)
-    channel: Array  # (out_dim, control_dim, n_features)
-    degree: int = eqx.field(static=True, default=1)
+    drift: Array  # (out_dim, n_features at degree)
+    channel: Array  # (out_dim, control_dim, n_features at channel_degree)
+    degree: int = eqx.field(static=True)
+    channel_degree: int = eqx.field(static=True)
+
+    def __init__(
+        self, drift: Array, channel: Array, degree: int = 1, channel_degree: int | None = None
+    ) -> None:
+        self.drift = drift
+        self.channel = channel
+        self.degree = degree
+        self.channel_degree = degree if channel_degree is None else channel_degree
 
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
         phi = control_affine_features(x, self.degree)
-        return self.drift @ phi + (self.channel @ phi) @ u
+        psi = (
+            phi
+            if self.channel_degree == self.degree
+            else control_affine_features(x, self.channel_degree)
+        )
+        return self.drift @ phi + (self.channel @ psi) @ u
 
     def control_channel(self, x: Array) -> Array:
         """``B_θ(x)`` -- the ``(out_dim, control_dim)`` response of the state rate to the action."""
-        return self.channel @ control_affine_features(x, self.degree)
+        return self.channel @ control_affine_features(x, self.channel_degree)
 
     def drift_jacobian(self, x: Array) -> Array:
         """``∂a_θ/∂x`` at ``x`` -- the ``(out_dim, n)`` local linearisation of the *drift*.
@@ -120,8 +136,8 @@ class ControlAffineResidual(eqx.Module):
         of ``a_θ(x) + B_θ(x) u`` while only the second is identified causally by
         :func:`chc.dynamics_id.fit_causal_residual`.
 
-        This is the drift at ``u = 0`` and **nothing else**: at ``degree >= 1`` the channel depends
-        on the state, so the vector field the MPC integrates has Jacobian
+        This is the drift at ``u = 0`` and **nothing else**: at ``channel_degree >= 1`` the channel
+        depends on the state, so the vector field the MPC integrates has Jacobian
         ``∂a_θ/∂x + ∂(B_θ(x) u)/∂x`` and this method returns only the first term. Reading stability
         off it is then a statement about where the actuator's coordinates put their zero rather than
         about the plant: under ``u = alpha v + beta`` the fitted class is closed and the drift
@@ -137,10 +153,10 @@ class ControlAffineResidual(eqx.Module):
     def closed_loop_jacobian(self, x: Array, u: Array) -> Array:
         """``∂(a_θ + B_θ u)/∂x`` at ``(x, u)`` -- the linearisation the horizon actually follows.
 
-        Equals :meth:`drift_jacobian` exactly at ``degree = 0``, where the channel is constant and
-        the two questions coincide. Everywhere else the difference is the whole of the coordinate
-        dependence described above, and it is the difference that decides whether a plan is being
-        integrated against a decaying model or an extrapolation.
+        Equals :meth:`drift_jacobian` exactly at ``channel_degree = 0``, where the channel is
+        constant and the two questions coincide. Everywhere else the difference is the whole of the
+        coordinate dependence described above, and it is the difference that decides whether a plan
+        is being integrated against a decaying model or an extrapolation.
         """
         return jax.jacobian(lambda z: self(0.0, z, u))(x)
 

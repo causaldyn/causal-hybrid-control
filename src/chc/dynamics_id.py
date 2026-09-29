@@ -380,6 +380,7 @@ def fit_causal_residual(
     adjust_for: tuple[str, ...] = (),
     instrument: str | None = None,
     degree: int = 1,
+    channel_degree: int | None = None,
     nuisance_degree: int = 2,
     folds: int = 2,
     ridge: float = 1e-6,
@@ -401,9 +402,19 @@ def fit_causal_residual(
             the action the shifter explains, and on the reference DGP that is 18%, which costs
             roughly an order of magnitude in channel error against adjusting for a logged
             confounder (0.10 vs 0.002 at ``N=4000``). Still ~10x better than not identifying at all.
-        degree: the feature degree of the drift and the channel, one basis for both. ``1`` fits an
-            affine drift and a channel affine in the state, which contains the constant channel
-            §18/§19 cover without being restricted to it.
+        degree: the feature degree of the drift, and of the channel unless ``channel_degree``
+            says otherwise. ``1`` fits an affine drift and, by default, a channel affine in the
+            state, which contains the constant channel §18/§19 cover without being restricted to it.
+        channel_degree: the feature degree of the channel; ``None`` is ``degree``. ``0`` fits the
+            constant channel §18/§19 cover beside a drift of degree ``degree``: ``n m``
+            coefficients where the affine channel has ``n m (n + 1)``, and as many fewer tangents
+            in the ``rk4`` fixed point. An affine channel is as accurate as a constant one only
+            where the log is centred. On eight logs of :class:`chc.zones.ZoneMarketSystem`, against
+            one RK4 period's response (``scripts/bench_channel_degree.py``), the constant channel
+            was 3.6% (linear matching) and 4.6% (harmonic) off in relative RMS wherever it was
+            read; the affine one was as close at the logs' mean state, 16% off at the do-nothing
+            point and 159% and 123% at ``x = 0``, where :meth:`chc.decision.Prescription.reach`
+            reads it.
         nuisance_degree: flexibility of ``g`` and ``m``. Richer nuisances are the whole point of
             cross-fitting -- orthogonality is what makes their error enter only at second order.
         folds: cross-fitting folds. ``1`` fits the nuisances on the same rows it residualises.
@@ -499,6 +510,9 @@ def fit_causal_residual(
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
     """
+    channel_degree = degree if channel_degree is None else channel_degree
+    if channel_degree < 0:
+        raise ValueError(f"channel_degree must be a non-negative integer; got {channel_degree}")
     x, u, x_next = data["x"], data["u"], data["x_next"]
     known_rate = jax.vmap(lambda xi, ui: known(0.0, xi, ui))(x, u)
 
@@ -529,6 +543,7 @@ def fit_causal_residual(
     # makes the drift observational-conditional while the channel stays interventional. The drivers
     # sit in the same regression, read the way the integrator reads them.
     phi_x = jax.vmap(control_affine_features, in_axes=(0, None))(x, degree)
+    phi_c = jax.vmap(control_affine_features, in_axes=(0, None))(x, channel_degree)
     design = jnp.concatenate([phi_x, driver_read], axis=1)
 
     row_weight = None if weights is None else _state_weights(weights, x)
@@ -544,11 +559,11 @@ def fit_causal_residual(
             u_res,
             x,
             instrument_action=instrument_action,
-            degree=degree,
+            degree=channel_degree,
             ridge=ridge,
             weights=row_weight,
         )
-        fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_x, u)
+        fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_c, u)
         remainder = _solve_ridge(design, y - fitted, ridge)  # (features + drivers, n)
         return channel, remainder, (y_res, u_res, y_hat, u_hat, fitted)
 
@@ -556,11 +571,11 @@ def fit_causal_residual(
         """Everything downstream of the target rate, so the ``rk4`` fixed point can re-run it."""
         y = rate - known_rate
         channel, remainder, (y_res, u_res, y_hat, u_hat, fitted) = solve(y)
-        regressor = _channel_design(u_res, x, degree)
+        regressor = _channel_design(u_res, x, channel_degree)
         moment = (
             regressor
             if instrument_action is None
-            else _channel_design(instrument_action, x, degree)
+            else _channel_design(instrument_action, x, channel_degree)
         )
         coeffs = channel.reshape(x.shape[1], -1).T
         drift = remainder[: phi_x.shape[1]].T
@@ -569,7 +584,9 @@ def fit_causal_residual(
         score = y_res - regressor @ coeffs
         weighted_moment = moment if row_weight is None else moment * row_weight[:, None]
         return CausalDynamicsFit(
-            residual=ControlAffineResidual(drift=drift, channel=channel, degree=degree),
+            residual=ControlAffineResidual(
+                drift=drift, channel=channel, degree=degree, channel_degree=channel_degree
+            ),
             identified=identified,
             method=method,
             folds=folds,
@@ -627,13 +644,16 @@ def fit_causal_residual(
             rows = theta[size:].reshape(-1, x.shape[1])  # the drift regression's: drift, then gain
             channel = theta[:size].reshape(shape)
             residual = ControlAffineResidual(
-                drift=rows[: phi_x.shape[1]].T, channel=channel, degree=degree
+                drift=rows[: phi_x.shape[1]].T,
+                channel=channel,
+                degree=degree,
+                channel_degree=channel_degree,
             )
             return residual, rows[phi_x.shape[1] :].T, rows
 
         def reading(theta: Array) -> Array:
             residual, gain, rows = unpack(theta)
-            own = jax.vmap(lambda c, ui: (residual.channel @ c) @ ui)(phi_x, u) + design @ rows
+            own = jax.vmap(lambda c, ui: (residual.channel @ c) @ ui)(phi_c, u) + design @ rows
             return own + (x_next - predicted(residual, gain)) / dt
 
         def coefficients(y: Array) -> Array:
@@ -673,7 +693,7 @@ def fit_causal_residual(
         # does, after the adjustment set has taken out what it explains: a push the model leaves
         # out but the adjustment set carries -- a season -- is in the defect and is not noise.
         channel, _, (y_res, u_res, *_) = solve(target)
-        regressor = _channel_design(u_res, x, degree)
+        regressor = _channel_design(u_res, x, channel_degree)
         score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
         newton, sensitivity = newton_matrix(theta)
         spread = _robust_spread(fit_map, score, regressor.shape[1])
@@ -700,7 +720,7 @@ def fit_causal_residual(
     elif identified:
         y = (x_next - x) / dt - known_rate
         channel, _, (y_res, u_res, *_) = solve(y)
-        regressor = _channel_design(u_res, x, degree)
+        regressor = _channel_design(u_res, x, channel_degree)
         score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
         sensitivity = jax.jacrev(lambda target: solve(target)[0].ravel())(jnp.zeros_like(y))
         spread = _robust_spread(sensitivity, score, regressor.shape[1])

@@ -43,6 +43,21 @@ still change).
     Averaging over the grid by likelihood covers 0.83. A period's return reported from the
     likelihood's pick alone is too narrow.
 
+- **`fit_causal_residual(channel_degree=...)`: a channel whose feature degree is not the drift's
+  (D29).** `None`, the default, keeps one basis for both, and the default fit is the same to the
+  bit. `0` fits the constant channel §18/§19 cover beside a drift of any degree: `n m`
+  coefficients where the affine channel has `n m (n + 1)`, and as many fewer tangents in the `rk4`
+  fixed point. `ControlAffineResidual` carries it; `control_channel` and `closed_loop_jacobian`
+  read it.
+  - **Why.** An affine channel is as accurate as a constant one only where the log is centred. On
+    eight logs of `ZoneMarketSystem`, against one RK4 period's response
+    (`scripts/bench_channel_degree.py`), the constant channel was 3.6% (linear matching) and 4.6%
+    (harmonic) off in relative RMS wherever it was read. The affine one was as close at the logs'
+    mean state, 16% off at the do-nothing point, and 159% and 123% at `x = 0`, where
+    `Prescription.reach` reads the channel's constant term.
+  - **The default does not move.** `dynamics_id` is in the stable tier, and what a constant channel
+    does to the tube, the regret bound and the marketing-mix case study has not been measured.
+
 ## [0.8.0] — 2026-09-29
 
 ### Added
