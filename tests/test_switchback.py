@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import logging
 import math
+from statistics import NormalDist
 
 import numpy as np
 import pytest
+from scipy import stats
 
 from chc.switchback import (
     CHANNEL,
@@ -24,6 +26,7 @@ from chc.switchback import (
     SwitchbackPlan,
     TargetMDE,
     _a1_markov,
+    _block_pilot,
     _dim_bias,
     _ds,
     _fieller,
@@ -33,6 +36,7 @@ from chc.switchback import (
     _v_state_aware,
     design_switchback,
     read_switchback,
+    restate_mde,
 )
 
 A, SIGMA, B = 0.8, 1.0, 2.0
@@ -795,3 +799,292 @@ def test_a_reading_is_logged(caplog):
     assert record.estimate == reading.estimate
     assert reading.periods == 2000
     assert reading.zones == 1
+
+
+# --- the internal pilot ---------------------------------------------------------------------------
+
+
+def test_the_plan_keeps_the_level_and_power_its_mdes_are_for():
+    plan = design_switchback((CHANNEL,), PRIOR, 2000, alpha=0.1, power=0.9)
+    assert (plan.alpha, plan.power) == (0.1, 0.9)
+    normal = NormalDist()
+    z = normal.inv_cdf(0.95) + normal.inv_cdf(0.9)
+    assert plan.reports[0].mde == pytest.approx(z * plan.reports[0].se, rel=1e-12)
+
+
+def _block_pilot_by_hand(settings: np.ndarray, run_blocks: int) -> tuple[float, float]:
+    """The run's variance over the pilot's, and the pilot's degrees of freedom, zone by zone and
+    block by block: a centred block's score has variance ``1 + (1/on + 1/off) / 4``, a zone's
+    difference averages its centred blocks, the zones with two are weighted alike, and the run's
+    later blocks count each setting at its expected value."""
+    zones, blocks = settings.shape
+    pilot, run, per_block = [], [], np.zeros(blocks)
+    for z in range(zones):
+        on = off = 0
+        centred = []
+        for k in range(blocks):
+            if on and off:
+                centred.append((k, 1.0 + (1.0 / on + 1.0 / off) / 4.0))
+            on, off = on + settings[z, k], off + 1 - settings[z, k]
+        later = [
+            1.0 + (1.0 / (on + j / 2) + 1.0 / (off + j / 2)) / 4.0
+            for j in range(run_blocks - blocks)
+        ]
+        total = sum(v for _, v in centred)
+        if len(centred) > 1:
+            pilot.append(total / len(centred) ** 2)
+            for k, v in centred:
+                per_block[k] += v / len(centred) ** 2
+        if len(centred) + len(later) > 1:
+            run.append((total + sum(later)) / (len(centred) + len(later)) ** 2)
+    ratio = (sum(run) / len(run) ** 2) / (sum(pilot) / len(pilot) ** 2)
+    return ratio, per_block.sum() ** 2 / (per_block**2).sum()
+
+
+@pytest.mark.parametrize("run_blocks", [10, 11, 40, 400])
+def test_the_block_pilot_factor_is_its_transcription(run_blocks):
+    rng = np.random.default_rng(run_blocks)
+    checked = 0
+    while checked < 20:
+        settings = rng.integers(0, 2, (3, 10))
+        if (settings.min(axis=1) == settings.max(axis=1)).any():
+            continue
+        lever = np.repeat(settings, 7, axis=1).astype(float)
+        expected = _block_pilot_by_hand(settings, run_blocks)
+        assert _block_pilot(lever, 7, run_blocks) == pytest.approx(expected, rel=1e-12)
+        checked += 1
+
+
+@pytest.mark.parametrize("run_blocks", [11, 20])
+def test_a_block_pilot_leaves_out_a_zone_centred_less_than_twice(run_blocks):
+    # the second zone shows its second setting in the last block, so it has no centred block, and
+    # one block the run adds does not make two; the third has one centred block
+    settings = np.array(
+        [
+            [1, 0, 1, 1, 0, 0, 1, 0, 1, 0],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+            [1, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+        ]
+    )
+    lever = np.repeat(settings, 3, axis=1).astype(float)
+    expected = _block_pilot_by_hand(settings, run_blocks)
+    assert _block_pilot(lever, 3, run_blocks) == pytest.approx(expected, rel=1e-12)
+
+
+def test_a_long_block_pilot_restates_by_its_blocks():
+    # far from the start, a centred block is as good as any other and every block is centred, so
+    # the factor is the ratio of the blocks
+    rng = np.random.default_rng(3)
+    lever = np.repeat(rng.integers(0, 2, (4, 4000)), 2, axis=1).astype(float)
+    ratio, dof = _block_pilot(lever, 2, 40_000)
+    assert ratio == pytest.approx(0.1, rel=0.01)
+    assert dof == pytest.approx(4000, rel=0.01)
+
+
+@pytest.mark.parametrize(("alpha", "power"), [(0.05, 0.8), (0.1, 0.9)])
+def test_the_restated_mde_is_its_formula(alpha, power):
+    plan = design_switchback(
+        (Horizon(2),), PRIOR, 2000, trust_state_model=False, alpha=alpha, power=power
+    )
+    (report,) = plan.reports
+    assert report.analysis == "local_projection"
+    u, y = _run(2000, seed=4)
+    restated = restate_mde(plan, Horizon(2), u[:500], y[:501])
+    pilot = read_switchback(u[:500], y[:501], Horizon(2), "local_projection")
+    se = pilot.se * math.sqrt(499 / 1999)
+    assert restated.se == pytest.approx(se, rel=1e-12)
+    # the overlapping sums keep one lag, so the 499 rows have 499 / 3 degrees of freedom
+    c = stats.nct.ppf(power, 499 / 3, NormalDist().inv_cdf(1.0 - alpha / 2.0))
+    assert restated.mde == pytest.approx(c * se, rel=1e-12)
+    assert (restated.estimand, restated.arm, restated.analysis) == (Horizon(2), 0, report.analysis)
+    assert (restated.bias, restated.loss) == (report.bias, report.loss)
+
+
+@pytest.mark.parametrize(
+    ("case", "analysis", "lags"),
+    [
+        ("channel and tau_5 without a model", "state_aware", 0),
+        ("noisy channel and tau_5", "iv", 1),
+        ("tau_2 by local projection", "local_projection", 1),
+    ],
+)
+def test_a_regression_restates_by_its_rows_and_lags(case, analysis, lags):
+    """Three zones, so the degrees of freedom count every zone's rows."""
+    estimands, kappa, options = SIMULATED[case]
+    prior = PersistencePrior(A, A, SIGMA, B, noise_ratio=kappa)
+    plan = design_switchback(estimands, prior, 2000, **(options | {"zones": 3}))
+    report = next(r for r in plan.reports if r.analysis == analysis)
+    u, y = _arm_runs(plan, report.arm, math.sqrt(kappa) * SIGMA, 1, np.random.default_rng(8))
+    cut, run = 300, round(plan.arms[report.arm].share * plan.periods)
+    restated = restate_mde(plan, report.estimand, u[0, :, :cut], y[0, :, : cut + 1])
+    pilot = read_switchback(u[0, :, :cut], y[0, :, : cut + 1], report.estimand, analysis)
+    se = pilot.se * math.sqrt((cut - lags) / (run - lags))
+    assert restated.se == pytest.approx(se, rel=1e-12)
+    c = stats.nct.ppf(0.8, 3 * (cut - lags) / (2 * lags + 1), NormalDist().inv_cdf(0.975))
+    assert restated.mde == pytest.approx(c * se + abs(report.bias), rel=1e-12)
+
+
+def test_a_block_restatement_carries_the_plans_bias():
+    plan, length, u, y = _four_zone_pilot()
+    (report,) = plan.reports
+    assert report.bias < 0.0
+    cut = 12 * length
+    restated = restate_mde(plan, STEADY_STATE, u[:, :cut], y[:, : cut + 1])
+    pilot = read_switchback(
+        u[:, :cut], y[:, : cut + 1], STEADY_STATE, "block_dim", blocks=plan.arms[0].design
+    )
+    ratio, dof = _block_pilot(u[:, :cut], length, plan.periods // length)
+    assert restated.se == pytest.approx(pilot.se * math.sqrt(ratio), rel=1e-12)
+    c = stats.nct.ppf(0.8, dof, NormalDist().inv_cdf(0.975))
+    assert restated.mde == pytest.approx(c * restated.se - report.bias, rel=1e-12)
+    assert (restated.bias, restated.loss) == (report.bias, report.loss)
+
+
+def _both_settings(u: np.ndarray, cut: int, length: int) -> bool:
+    """Whether every zone's pilot showed both settings, which a block pilot needs."""
+    settings = u[:, :cut:length]
+    return bool((settings.min(axis=1) < settings.max(axis=1)).all())
+
+
+@pytest.mark.parametrize("case", SIMULATED)
+def test_the_restated_mde_holds_the_plans_power(case):
+    """A pilot of a quarter of each arm, ten blocks a zone at least. At a tenth the pilot's own
+    noise costs more: IV's has about 45 switches and read tau_5's standard error 14% high (power
+    0.835), and the plug-in's steady state carries its O(1/T) bias (0.764 against the truth)."""
+    estimands, kappa, options = SIMULATED[case]
+    prior = PersistencePrior(A, A, SIGMA, B, noise_ratio=kappa)
+    plan = design_switchback(estimands, prior, 2000, **options)
+    reps = 1500
+    rng = np.random.default_rng(97_000 + list(SIMULATED).index(case))
+    for j, arm in enumerate(plan.arms):
+        u, y = _arm_runs(plan, j, math.sqrt(kappa) * SIGMA, reps, rng)
+        blocks = arm.design if isinstance(arm.design, BlockDesign) else None
+        cut = u.shape[2] // 4
+        if blocks is not None:
+            cut = blocks.length * max(10, cut // blocks.length)
+        for report in (r for r in plan.reports if r.arm == j):
+            tau = _tau(A, report.estimand.periods)
+            rejects = []
+            for r in range(reps):
+                if blocks is not None and not _both_settings(u[r], cut, blocks.length):
+                    continue  # refused, and tested below
+                restated = restate_mde(plan, report.estimand, u[r][:, :cut], y[r][:, : cut + 1])
+                full = read_switchback(u[r], y[r], report.estimand, report.analysis, blocks=blocks)
+                rejects.append(abs(full.estimate - (tau - restated.mde)) / full.se > 1.959964)
+            # 0.80 +- 0.010 over 1500 runs
+            power = float(np.mean(rejects))
+            assert power == pytest.approx(0.8, abs=0.03), (report.estimand, power)
+
+
+def test_a_ten_block_pilot_restates_by_the_blocks_it_centred():
+    """Four zones, a pilot of ten blocks of the steady state's forty. Rescaled by its periods its
+    standard error read 1.2 times the run's, since the blocks before a zone has shown both settings
+    are lost and the next are centred on few; and without the noncentral t, the power at the
+    restated MDE was 0.71."""
+    plan = design_switchback((STEADY_STATE,), PRIOR, 2000, 4, trust_state_model=False)
+    blocks = plan.arms[0].design
+    assert isinstance(blocks, BlockDesign)
+    reps = 2000
+    u, y = _ring(np.random.default_rng(31), reps, 2000, blocks.length, (B, B, B, B), 0.0)
+    cut = 10 * blocks.length
+    runs = [r for r in range(reps) if _both_settings(u[r], cut, blocks.length)]
+    full = [read_switchback(u[r], y[r], STEADY_STATE, "block_dim", blocks=blocks) for r in runs]
+    restated = [restate_mde(plan, STEADY_STATE, u[r][:, :cut], y[r][:, : cut + 1]) for r in runs]
+    spread = np.std([x.estimate for x in full])
+    se = np.array([x.se for x in restated])
+    assert math.sqrt(np.mean(se**2)) / spread == pytest.approx(1.0, abs=0.05)
+    tau = _tau(A, math.inf)
+    power = np.mean(
+        [
+            abs(x.estimate - (tau - s.mde)) / x.se > 1.959964
+            for x, s in zip(full, restated, strict=True)
+        ]
+    )
+    assert power == pytest.approx(0.8, abs=0.03)
+
+
+def test_the_block_pilot_reads_the_spread_the_plan_misses():
+    """On the ring whose neighbours' coins make up most of the block difference's variance, the
+    plan's standard error is 0.29 of the spread. A pilot of twenty blocks restates it, and the
+    run's power at the restated MDE is the plan's."""
+    plan = design_switchback((STEADY_STATE,), PRIOR, 2000, 4, trust_state_model=False)
+    blocks = plan.arms[0].design
+    assert isinstance(blocks, BlockDesign)
+    (report,) = plan.reports
+    reps = 1500
+    u, y = _ring(np.random.default_rng(23), reps, 2000, blocks.length, (B, B, B, B), 0.5)
+    cut = 20 * blocks.length
+    tau = B / (1.0 - A)
+    full = [
+        read_switchback(u[r], y[r], STEADY_STATE, "block_dim", blocks=blocks) for r in range(reps)
+    ]
+    spread = np.std([x.estimate for x in full])
+    assert report.se / spread == pytest.approx(0.29, abs=0.03)
+    restated = [
+        restate_mde(plan, STEADY_STATE, u[r][:, :cut], y[r][:, : cut + 1]) for r in range(reps)
+    ]
+    se = np.array([x.se for x in restated])
+    assert math.sqrt(np.mean(se**2)) / spread == pytest.approx(1.0, abs=0.07)
+    power = np.mean(
+        [
+            abs(x.estimate - (tau - s.mde)) / x.se > 1.959964
+            for x, s in zip(full, restated, strict=True)
+        ]
+    )
+    assert power == pytest.approx(0.8, abs=0.03)
+
+
+def _four_zone_pilot():
+    plan = design_switchback((STEADY_STATE,), PRIOR, 2000, 4, trust_state_model=False)
+    blocks = plan.arms[0].design
+    assert isinstance(blocks, BlockDesign)
+    u, y = _ring(np.random.default_rng(29), 1, 2000, blocks.length, (B, B, B, B), 0.0)
+    return plan, blocks.length, u[0], y[0]
+
+
+def _one_setting(u: np.ndarray, length: int) -> np.ndarray:
+    u = u.copy()
+    u[0, : 12 * length] = 1.0
+    return u
+
+
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [
+        (lambda plan, n, u, y: restate_mde(plan, Horizon(3), u[:, : 12 * n], y), "the plan reads"),
+        (
+            lambda plan, n, u, y: restate_mde(plan, STEADY_STATE, u[:1, : 12 * n], y[:1]),
+            "a pilot is the arm's first periods",
+        ),
+        (lambda plan, n, u, y: restate_mde(plan, STEADY_STATE, u, y), "a pilot is the arm's first"),
+        (
+            lambda plan, n, u, y: restate_mde(plan, STEADY_STATE, u[:, : 9 * n], y[:, : 9 * n + 1]),
+            "blocks a zone",
+        ),
+        (
+            lambda plan, n, u, y: restate_mde(
+                plan, STEADY_STATE, _one_setting(u, n)[:, : 12 * n], y[:, : 12 * n + 1]
+            ),
+            "one setting",
+        ),
+        (
+            lambda plan, n, u, y: restate_mde(plan, STEADY_STATE, u[:, : 12 * n], y[:, : 12 * n]),
+            "one more period",
+        ),
+    ],
+)
+def test_the_restatement_refuses_what_it_cannot_restate(call, match):
+    plan, length, u, y = _four_zone_pilot()
+    with pytest.raises(ValueError, match=match):
+        call(plan, length, u, y)
+
+
+def test_a_restatement_is_logged(caplog):
+    plan, length, u, y = _four_zone_pilot()
+    cut = 12 * length
+    with caplog.at_level(logging.INFO, logger="chc.switchback"):
+        restated = restate_mde(plan, STEADY_STATE, u[:, :cut], y[:, : cut + 1])
+    record = caplog.records[-1]
+    assert record.chc_event == "switchback_pilot"
+    assert record.restated_se == restated.se
+    assert record.planned_se == plan.reports[0].se

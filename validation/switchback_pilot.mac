@@ -1,0 +1,99 @@
+/* The internal pilot behind chc.switchback.restate_mde: how a switchback's first periods restate
+   the minimum detectable effect its whole run can detect.
+
+   The block difference centres block k on the midpoint of the on and off blocks before it, so
+   with on and off such blocks and uncorrelated block totals e of variance s2, its score is
+   sign_k (e_k - (mean_on e + mean_off e) / 2) plus a constant.
+
+   STEP 1  a centred block's variance is s2 (1 + (1/on + 1/off) / 4): checked for three counts
+           against the Gaussian moments, and in general by its coefficients
+   STEP 2  two zones' scores for the same block covary by c12 c21 / 4 when zone i's coin moves
+           zone j's total by c_ji, whatever the centring holds: the centring does not inflate the
+           cross-zone part, which the ratio restate_mde uses carries as if it did
+           (docs/adr/0020-an-internal-pilot-for-a-switchback.md)
+   STEP 3  the multiplier: with the pilot's variance chi-square on nu over nu, independent of the
+           run's error, the run's power at c se, averaged over the pilot, is the noncentral t's
+           distribution at c. At scipy's c for power 0.8 the integral reads 0.8 at nu = 8, 7.2 and
+           36.5
+   STEP 4  the run's later blocks counted at their expected settings: against the exact binomial
+           expectation, one zone's factor moves by under 0.2% on a balanced pilot and under 1% on
+           pilots that showed one setting once or twice, over runs of 12, 20 and 40 blocks
+
+   Run: timeout 300 maxima --very-quiet -b validation/switchback_pilot.mac */
+
+linel : 110$
+display2d : false$
+
+/* E over independent N(0, 1) draws: expand, then replace each monomial by its moment */
+gmoment(n) := if oddp(n) then 0 else (n - 1)!!$
+expect(ex, vars) := block([p : expand(ex)],
+  for v in vars do p : expand(sum(coeff(p, v, i)*gmoment(i), i, 0, hipow(p, v))),
+  p)$
+
+print("=== STEP 1: a centred block's variance ===")$
+/* the block's own total is e0; the earlier on blocks are a1..a_on, the off blocks b1..b_off */
+centred_variance(on, off) := block([as, bs, d],
+  as : makelist(concat(a, i), i, 1, on),
+  bs : makelist(concat(b, i), i, 1, off),
+  d : sqrt(s2)*(e0 - (apply("+", as)/on + apply("+", bs)/off)/2),
+  expect(d^2, append([e0], as, bs)))$
+for c in [[1, 1], [2, 3], [4, 1]] do
+  print("STEP 1", c, ": Var - s2 (1 + (1/on + 1/off) / 4) =",
+        ratsimp(centred_variance(c[1], c[2]) - s2*(1 + (1/c[1] + 1/c[2])/4)), " (0)")$
+/* in general: the block's coefficient 1, and on coefficients 1/(2 on), off coefficients 1/(2 off) */
+general : 1 + on*(1/(2*on))^2 + off*(1/(2*off))^2$
+print("STEP 1 in general:", ratsimp(general - (1 + (1/on + 1/off)/4)), " (0)")$
+
+print("=== STEP 2: two zones' scores for the same block ===")$
+/* fair independent coins x1, x2 in {0, 1}; each zone's total holds its own effect b_i, what the
+   other zone's coin does to it, c_ij, and a remainder r_i independent of both coins; the midpoints
+   m1, m2 are built from earlier blocks, so they are independent of this block's coins too */
+score(setting, total, midpoint) := (2*setting - 1)*(total - midpoint)$
+t1 : b1*x1 + c12*x2 + r1$
+t2 : b2*x2 + c21*x1 + r2$
+over_coins(ex) := expand((subst([x1 = 0, x2 = 0], ex) + subst([x1 = 0, x2 = 1], ex)
+                          + subst([x1 = 1, x2 = 0], ex) + subst([x1 = 1, x2 = 1], ex))/4)$
+joint : over_coins(score(x1, t1, m1)*score(x2, t2, m2))$
+mean1 : over_coins(score(x1, t1, m1))$
+mean2 : over_coins(score(x2, t2, m2))$
+covariance : expand(joint - mean1*mean2)$
+print("STEP 2 E[score_1] =", mean1, " (b1 / 2)")$
+print("STEP 2 Cov(score_1, score_2) - c12 c21 / 4 =", ratsimp(covariance - c12*c21/4),
+      " (0: neither the remainders nor the midpoints enter)")$
+
+print("=== STEP 3: the multiplier ===")$
+Phi(x) := (1 + erf(x/sqrt(2)))/2$
+chi2(v, nu) := v^(nu/2 - 1)*exp(-v/2)/(2^(nu/2)*gamma(nu/2))$
+z : 1.959963984540054$
+/* scipy.stats.nct.ppf(0.8, nu, z), the library's c at power 0.8 */
+for case in [[8, 3.120341240278109], [7.2, 3.1590162165667275], [36.5, 2.86716125873909]] do block(
+  [nu : case[1], c : case[2], power],
+  power : quad_qagi(Phi(c*sqrt(v/nu) - z)*chi2(v, nu), v, 0, inf)[1],
+  print("STEP 3 nu =", nu, ": the averaged power - 0.8 =", power - 0.8, " (~1e-9 or less)"))$
+/* against the plain c = z + z_0.8, the averaged power is short of 0.8 */
+block([nu : 8, c : 1.959963984540054 + 0.8416212335729143],
+  print("STEP 3 at c = z + z_power, nu = 8, the averaged power =",
+        quad_qagi(Phi(c*sqrt(v/nu) - z)*chi2(v, nu), v, 0, inf)[1], " (below 0.8)"))$
+
+print("=== STEP 4: the run's later blocks at their expected settings ===")$
+/* E[1 / (n + B)] for B ~ Binomial(j, 1/2) */
+einv(n, j) := sum(binomial(j, i)/2^j/(n + i), i, 0, j)$
+/* one zone's variance factor over the run: the pilot's centred blocks, then the later ones */
+zone_factor(settings, run_blocks, exact) := block([on : 0, off : 0, total : 0, used : 0, later],
+  for s in settings do (
+    if on > 0 and off > 0 then (total : total + 1 + (1/on + 1/off)/4, used : used + 1),
+    if s = 1 then on : on + 1 else off : off + 1),
+  later : run_blocks - length(settings),
+  for j : 0 thru later - 1 do
+    total : total + 1 + (if exact then (einv(on, j) + einv(off, j))/4
+                         else (1/(on + j/2) + 1/(off + j/2))/4),
+  total/(used + later)^2)$
+/* a balanced pilot, and three that showed one setting once or twice, where 1/on is steepest */
+pilots : [[1, 0, 1, 1, 0, 0, 1, 0, 1, 0], [1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+          [0, 1, 1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 0, 0, 0, 0, 0, 0, 0, 0]]$
+gaps : makelist(lmax(makelist(float(abs(zone_factor(p, m, false)/zone_factor(p, m, true) - 1)),
+                              m, [12, 20, 40])), p, pilots)$
+print("STEP 4 the balanced pilot's largest gap over runs of 12, 20 and 40 blocks =", gaps[1],
+      " (under 0.002)")$
+print("STEP 4 the lopsided pilots' largest =", lmax(rest(gaps)), " (under 0.01)")$
+print("STEP 4 both bounds hold:", is(gaps[1] < 0.002 and lmax(rest(gaps)) < 0.01))$

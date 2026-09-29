@@ -39,7 +39,9 @@ The results it rests on (the lab's switchback thread, independently verified):
 :func:`design_switchback` returns the arms, and for each effect the analysis, its standard error,
 its minimum detectable effect and its loss against the effect's own best design, at the least
 favourable ``a`` of the prior. Every variance is asymptotic in ``T``. :func:`read_switchback` reads
-an effect off the data a design produced, with a standard error from the data.
+an effect off the data a design produced, with a standard error from the data, and
+:func:`restate_mde` reads it off the first periods of the run, an internal pilot, and restates the
+minimum detectable effect the whole run can detect.
 
 What is outside the model, and comes back as a warning rather than a refusal: a second state or a
 longer carryover, drift, spillover between zones, ``a`` near 1 on a short run, and fewer than 100
@@ -47,8 +49,9 @@ switches. The plug-in's reading tests for a second state, and the block differen
 keeps spillover; the plan's variances assume neither. On the zone market of :mod:`chc.zones`, whose
 incentive also acts through a stock and draws half its recruits from the neighbouring zones, the
 plug-in read its effects 3% to 14% off, and the block difference spread 1.6-1.7 times as far as
-planned. The prior's ``a`` must lie in ``(0, 1)``: for ``a < 0`` the bound is unattainable at even
-``H`` and the best design depends on ``q``.
+planned; the internal pilot reads that spread off the run. The prior's ``a`` must lie in
+``(0, 1)``: for ``a < 0`` the bound is unattainable at even ``H`` and the best design depends on
+``q``.
 """
 
 from __future__ import annotations
@@ -62,7 +65,7 @@ from typing import Literal
 
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy import optimize
+from scipy import optimize, stats
 
 _log = logging.getLogger(__name__)
 
@@ -81,6 +84,7 @@ _FEW_SWITCHES = 100
 _NEAR_UNIT_ROOT = 0.1  # sd(a_hat) / (1 - a) past which the steady state's delta method is ~8% low
 _IID = 5.0  # |lag-one autocorrelation| * sqrt(n) past which a lever is not i.i.d.
 _FIRST_ORDER_LEVEL = 0.01  # the p-value under which the data reject a first-order state
+_PILOT_BLOCKS = 10  # a block pilot's power at its restated MDE was 0.735 at five blocks a zone
 
 
 @dataclass(frozen=True)
@@ -216,13 +220,17 @@ class EstimandReport:
 
 @dataclass(frozen=True)
 class SwitchbackPlan:
-    """The arms to run in every zone, the reading of each effect, and what the plan cannot see."""
+    """The arms to run in every zone, the reading of each effect, and what the plan cannot see.
+    ``alpha`` is the two-sided test's level and ``power`` the power each effect's minimum
+    detectable effect is for."""
 
     arms: tuple[SwitchbackArm, ...]
     reports: tuple[EstimandReport, ...]
     periods: int
     zones: int
     warnings: tuple[str, ...]
+    alpha: float
+    power: float
 
 
 # --- closed forms; variances in units of 4 sigma^2 / T per zone -----------------------------------
@@ -565,7 +573,11 @@ def _model_free(
     return [SwitchbackArm(float(s), d) for s, d in zip(shares, designs, strict=True)], rows
 
 
-def _assemble(estimands, prior, periods, zones, trusted, z, min_switches) -> SwitchbackPlan:
+def _assemble(
+    estimands, prior, periods, zones, trusted, alpha, power, min_switches
+) -> SwitchbackPlan:
+    normal = NormalDist()
+    z = normal.inv_cdf(1.0 - alpha / 2.0) + normal.inv_cdf(power)
     grid = prior._grid()
     r_max = 1.0 - 2.0 * min_switches / periods
     warnings: list[str] = []
@@ -611,7 +623,9 @@ def _assemble(estimands, prior, periods, zones, trusted, z, min_switches) -> Swi
             "1.6-1.7x the plan's. The block difference's standard error keeps it; the "
             "regressions' do not"
         )
-    return SwitchbackPlan(tuple(arms), tuple(reports), periods, zones, tuple(warnings))
+    return SwitchbackPlan(
+        tuple(arms), tuple(reports), periods, zones, tuple(warnings), alpha, power
+    )
 
 
 def design_switchback(
@@ -649,14 +663,16 @@ def design_switchback(
         )
     if not (0.0 < alpha < 1.0 and 0.0 < power < 1.0):
         raise ValueError(f"alpha and power must lie in (0, 1), got {alpha} and {power}")
-    normal = NormalDist()
-    z = normal.inv_cdf(1.0 - alpha / 2.0) + normal.inv_cdf(power)
     if isinstance(zones, int):
         if zones < 1:
             raise ValueError(f"zones must be at least 1, got {zones}")
-        plan = _assemble(estimands, prior, periods, zones, trust_state_model, z, min_switches)
+        plan = _assemble(
+            estimands, prior, periods, zones, trust_state_model, alpha, power, min_switches
+        )
     else:
-        plan = _zones_for(estimands, prior, periods, zones, trust_state_model, z, min_switches)
+        plan = _zones_for(
+            estimands, prior, periods, zones, trust_state_model, alpha, power, min_switches
+        )
     _log.info(
         "switchback design: %d arm(s), %d zone(s)",
         len(plan.arms),
@@ -671,10 +687,10 @@ def design_switchback(
     return plan
 
 
-def _zones_for(estimands, prior, periods, target: TargetMDE, trusted, z, min_switches):
+def _zones_for(estimands, prior, periods, target: TargetMDE, trusted, alpha, power, min_switches):
     n = 1
     for _ in range(40):
-        plan = _assemble(estimands, prior, periods, n, trusted, z, min_switches)
+        plan = _assemble(estimands, prior, periods, n, trusted, alpha, power, min_switches)
         need = 1
         for report in plan.reports:
             smallest = min(
@@ -982,3 +998,145 @@ def read_switchback(
         extra={"chc_event": "switchback_reading", "estimate": estimate, "se": se},
     )
     return SwitchbackReading(estimand, analysis, estimate, se, interval, zones, periods)
+
+
+# --- an internal pilot ----------------------------------------------------------------------------
+
+
+def _block_pilot(u: np.ndarray, length: int, run_blocks: int) -> tuple[float, float]:
+    """The block difference's variance over ``run_blocks`` blocks a zone against its variance over
+    the pilot's, and the pilot's degrees of freedom.
+
+    A block is centred on the midpoint of the ``on`` and ``off`` blocks before it, so its score's
+    variance is ``1 + (1/on + 1/off) / 4`` times a block's own when the blocks' totals are
+    uncorrelated, and the blocks before a zone has shown both settings are lost. The pilot's counts
+    are its coins'; the run's later blocks are counted at their expected values, which moves a
+    zone's factor by under 0.2% on a balanced pilot and under 1% on one that showed a setting once
+    or twice. What spillover puts between two zones' scores for the same block is not inflated by
+    the centring, and the ratio carries it as if it were. The standard error sums the zones' scores
+    block by block before squaring, so its degrees of freedom are Satterthwaite's over the blocks.
+    """
+    settings = u[:, : (u.shape[1] // length) * length : length]
+    blocks = settings.shape[1]
+    if blocks < _PILOT_BLOCKS:
+        raise ValueError(
+            f"a pilot of {blocks} blocks a zone: the block difference's standard error squares one "
+            f"sum a block, and below {_PILOT_BLOCKS} the power at the restated MDE falls short "
+            "(0.735 of 0.80 at five blocks on the working model)"
+        )
+    shown = settings.sum(axis=1)
+    alike = np.flatnonzero((shown == 0) | (shown == blocks))
+    if alike.size:
+        raise ValueError(
+            f"zone(s) {alike.tolist()} showed one setting in all {blocks} blocks of the pilot: "
+            "their blocks are not centred yet, and when they will be is not known; run a longer "
+            "pilot"
+        )
+    on = np.cumsum(settings, axis=1) - settings
+    off = np.arange(blocks) - on
+    usable = (on > 0) & (off > 0)
+    spread = np.where(
+        usable, 1.0 + 0.25 * (1.0 / np.maximum(on, 1) + 1.0 / np.maximum(off, 1)), 0.0
+    )
+    used = usable.sum(axis=1)
+    live = used > 1
+    per_block = (spread[live] / used[live, None] ** 2).sum(axis=0)
+    later = np.arange(run_blocks - blocks) / 2.0
+    ahead = 1.0 + 0.25 * (1.0 / (shown[:, None] + later) + 1.0 / (blocks - shown[:, None] + later))
+    run_used = used + run_blocks - blocks
+    run_live = run_used > 1
+    run = ((spread.sum(axis=1) + ahead.sum(axis=1))[run_live] / run_used[run_live] ** 2).sum()
+    pilot = per_block.sum() / live.sum() ** 2
+    ratio = run / run_live.sum() ** 2 / pilot
+    return float(ratio), float(per_block.sum() ** 2 / (per_block**2).sum())
+
+
+def restate_mde(
+    plan: SwitchbackPlan, estimand: Horizon, lever: ArrayLike, outcome: ArrayLike
+) -> EstimandReport:
+    """``estimand``'s report, with its standard error and minimum detectable effect re-read from
+    the first periods of its arm: an internal pilot.
+
+    The plan's variances are the working model's. On a plant with a second state or spillover the
+    model-free readings stay where they were, but those of a horizon or the steady state spread
+    further than planned: 1.04 to 1.73 times on :mod:`chc.zones`' market. ``lever`` and
+    ``outcome`` are the arm's first periods in every zone, as :func:`read_switchback` takes them.
+    They are read by the plan's own analysis, and the standard error is carried to the arm's whole
+    length:
+
+    * a regression's by its rows, ``sqrt((n_pilot - L) / (n_run - L))``, with ``L`` the lags its
+      covariance keeps, which are also the rows it sheds;
+    * the block difference's by its variance over the run's blocks against its variance over the
+      pilot's. The blocks before a zone has shown both settings are lost, and the next are centred
+      on few blocks before them: rescaled by its periods, a pilot of ten blocks read 1.2 times the
+      run's standard error on the working model.
+
+    The restated MDE is ``c se + |bias|``, with ``bias`` the plan's and ``c`` the ``power``
+    quantile of the noncentral t with ``nu`` degrees of freedom and noncentrality
+    ``z_(1 - alpha/2)``. The run's power at that MDE, averaged over what the pilot could have read,
+    is then the plan's when the pilot's variance is chi-square on ``nu``. For a regression
+    ``nu = n / (2 L + 1)``, with ``n`` its rows over every zone; for the block difference, whose
+    standard error squares one sum over the zones a block, it is Satterthwaite's over the blocks.
+    With ``c = z_(1 - alpha/2) + z_power`` the power at the restated MDE was 0.71 of 0.80 at a pilot
+    of ten blocks.
+
+    On :mod:`chc.zones`' market, over 4000 runs under each matching, the run's power at the
+    restated MDE about the reading's own mean, which leaves the reading's bias out, was 0.81 for
+    the channel from a tenth of its arm, 0.78 to 0.79 for ``tau_5`` and 0.80 to 0.81 for ``tau_2``,
+    and 0.75, 0.79 and 0.80 for the steady state from ten, fifteen and twenty of its forty blocks.
+    The steady state's shortfall at ten is the spillover between zones: it puts a covariance
+    between two zones' scores for the same block that the centring does not inflate, and the
+    block factor treats it as if it did, so a short pilot reads the standard error low.
+
+    The test at the end is unchanged, and so is its level: the MDE is restated, the run is not
+    resized. The report's ``loss`` is the plan's, since the design is.
+
+    Raises:
+        ValueError: when the plan does not read ``estimand``, the pilot has other zones than the
+            plan or is not shorter than the arm, a block pilot has fewer than ten blocks a zone or
+            a zone that showed one setting in all of them, or :func:`read_switchback` refuses the
+            pilot.
+    """
+    report = next((r for r in plan.reports if r.estimand == estimand), None)
+    if report is None:
+        raise ValueError(
+            f"the plan reads {[r.estimand.name for r in plan.reports]}, not {estimand.name}"
+        )
+    blocks = plan.arms[report.arm].design
+    run = round(plan.arms[report.arm].share * plan.periods)
+    u = np.atleast_2d(np.asarray(lever, dtype=np.float64))
+    zones, periods = u.shape
+    if zones != plan.zones or periods >= run:
+        raise ValueError(
+            f"the pilot is {zones} zone(s) over {periods} periods, and arm {report.arm} of the "
+            f"plan is {plan.zones} zone(s) over {run}: a pilot is the arm's first periods"
+        )
+    if isinstance(blocks, BlockDesign):
+        pilot = read_switchback(
+            lever, outcome, estimand, report.analysis, blocks=blocks, alpha=plan.alpha
+        )
+        ratio, dof = _block_pilot(u, blocks.length, run // blocks.length)
+    else:
+        pilot = read_switchback(lever, outcome, estimand, report.analysis, alpha=plan.alpha)
+        # the lags each regression's covariance keeps, which are also the rows it sheds
+        if report.analysis == "local_projection":
+            lags = int(estimand.periods) - 1
+        else:
+            lags = 1 if report.analysis == "iv" else 0
+        ratio = (periods - lags) / (run - lags)
+        dof = zones * (periods - lags) / (2 * lags + 1)
+    se = pilot.se * math.sqrt(ratio)
+    level = NormalDist().inv_cdf(1.0 - plan.alpha / 2.0)
+    mde = float(stats.nct.ppf(plan.power, dof, level)) * se + abs(report.bias)
+    _log.info(
+        "switchback pilot: %s's MDE restated from %d periods",
+        estimand.name,
+        periods,
+        extra={
+            "chc_event": "switchback_pilot",
+            "planned_se": report.se,
+            "restated_se": se,
+            "degrees_of_freedom": dof,
+        },
+    )
+    return EstimandReport(estimand, report.arm, report.analysis, se, mde, report.bias, report.loss)

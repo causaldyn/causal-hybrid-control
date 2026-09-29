@@ -261,8 +261,34 @@ still change).
       spillover.
     - The 0.9.0 gate, power within three points of nominal, holds there for the channel, and at
       its edge for `tau_2`.
-  - **Not built:** a plan whose variances see a second state or spillover, and a bias-corrected
-    `a_hat`. The design record is `docs/adr/0012-a-switchback-for-a-named-effect.md`.
+  - **`restate_mde`: an internal pilot restates the MDE the run can detect.** It reads an effect
+    off the first periods of its arm with the plan's own analysis, and carries the standard error
+    to the whole arm:
+    - a regression's by its rows;
+    - the block difference's by its variance over the run's blocks against its variance over the
+      pilot's, because the blocks before a zone has shown both settings are lost.
+
+    The multiplier is the noncentral t's, so the run's power at the restated MDE, averaged over the
+    pilot, is the plan's. The test at the end and its level are unchanged, and the run is not
+    resized. `SwitchbackPlan` now keeps the `alpha` and `power` its MDEs are for. `restate_mde`
+    refuses a block pilot with fewer than ten blocks a zone, and one in which a zone showed a single
+    setting throughout.
+    - **Measured on the market above,** 4000 runs under each matching:
+      - The steady state's power was 0.42–0.46 at the planned MDE and 0.79–0.84 at the restated
+        one, against the truth.
+      - About the reading's own mean, which leaves the reading's bias out, it was 0.75, 0.79 and
+        0.80 from ten, fifteen and twenty of the forty blocks. The ten-block shortfall comes from
+        the spillover between zones, which the block factor treats as if the centring inflated it.
+      - From a tenth of the arm, the channel and `tau_2` held 0.80–0.81, and `tau_5` 0.78–0.79.
+    - Checked by `validation/switchback_pilot.mac`. The design record is
+      `docs/adr/0020-an-internal-pilot-for-a-switchback.md`.
+  - **Not built:**
+    - a plan whose variances see a second state or spillover (the internal pilot reads them off
+      the run instead);
+    - resizing the run from the pilot;
+    - a bias-corrected `a_hat`.
+
+    The design record is `docs/adr/0012-a-switchback-for-a-named-effect.md`.
 
 - **`fit_causal_residual(..., weights=...)`: a weight on each transition's channel moment, so a
   channel class that cannot fit every state is fitted where the decision needs it.** `weights` is

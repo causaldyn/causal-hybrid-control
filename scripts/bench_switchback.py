@@ -15,13 +15,17 @@ run of the design: from the run's own state, ``H`` periods with that lever force
 everything else as the run drew it, averaged over the zones as the pooled readings average them.
 Under linear matching it is the closed form from ``linear_gaussian``, which the script checks.
 
-    zones  five plans, the simulations of tests/test_switchback.py that need no measurement noise,
-           planned from the pilot and run on the market. For each reading: its bias, its spread
-           against the plan's standard error, its data standard error against its spread, its
-           power at the planned MDE with each, its coverage, and how often the plug-in's
-           first-order check warned.
+    zones   five plans, the simulations of tests/test_switchback.py that need no measurement
+            noise, planned from the pilot and run on the market. For each reading: its bias, its
+            spread against the plan's standard error, its data standard error against its spread,
+            its power at the planned MDE with each, its coverage, and how often the plug-in's
+            first-order check warned.
+    pilots  the three model-free plans, each reading's MDE restated by ``restate_mde`` from the
+            first tenth, quarter and half of its arm, or ten, fifteen and twenty blocks a zone,
+            and the run's power at it: against the truth, and against the reading's own mean,
+            which leaves out the reading's bias and keeps the pilot's error.
 
-Run: uv run python scripts/bench_switchback.py zones [--matching harmonic] [--spill S]
+Run: uv run python scripts/bench_switchback.py {zones,pilots} [--matching harmonic] [--spill S]
      [--replicates N]
 """
 
@@ -46,6 +50,7 @@ from chc.switchback import (
     PersistencePrior,
     design_switchback,
     read_switchback,
+    restate_mde,
 )
 from chc.zones import ZoneMarketSystem
 
@@ -54,6 +59,7 @@ jax.config.update("jax_enable_x64", True)
 LEVEL = 0.3  # the incentive when a zone's coin says on; the logged operator's own level
 PERIODS, BURN, PILOT, CHUNK = 2000, 400, 200_000, 250
 HELD = 120  # periods a lever is held for the steady state: the slowest mode is 0.806 a period
+PILOT_SHARES, PILOT_BLOCKS = (0.1, 0.25, 0.5), (10, 15, 20)
 Z = 1.959964
 SEED = 20260928
 
@@ -263,14 +269,91 @@ def _zones(replicates: int, matching: str, spill: float) -> dict:
     return out
 
 
+def _pilots(replicates: int, matching: str, spill: float) -> dict:
+    system = ZoneMarketSystem(matching=matching, spill=spill)  # type: ignore[arg-type]
+    run = _stepper(system)
+    prior = _pilot(system, run, np.random.default_rng([SEED, 0]))
+    out: dict = {"prior": prior.__dict__, "level": LEVEL, "matching": matching, "spill": spill}
+    for index, (name, (estimands, trusted)) in enumerate(PLANS.items()):
+        if trusted:
+            continue
+        plan = design_switchback(estimands, prior, PERIODS, system.zones, trust_state_model=False)
+        rng = np.random.default_rng([SEED, 9, index])
+        readings = {}
+        for j, arm in enumerate(plan.arms):
+            periods = round(arm.share * PERIODS)
+            u, y = _switchback(system, run, rng, replicates, periods, arm.design)
+            blocks = arm.design if isinstance(arm.design, BlockDesign) else None
+            if blocks is None:
+                cuts = {f"a share of {s}": int(s * periods) for s in PILOT_SHARES}
+            else:
+                cuts = {f"{m} blocks": m * blocks.length for m in PILOT_BLOCKS}
+            for report in (r for r in plan.reports if r.arm == j):
+                h = report.estimand.periods
+                held = HELD if math.isinf(h) else int(h)
+                zone_tau, _ = _branched(
+                    system, np.random.default_rng([SEED, 2, index, j]), arm.design, held
+                )
+                tau = float(zone_tau.mean())
+                reads = [
+                    read_switchback(u[r], y[r], report.estimand, report.analysis, blocks=blocks)
+                    for r in range(replicates)
+                ]
+                x = np.array([r.estimate for r in reads])
+                se = np.array([r.se for r in reads])
+                spread = float(x.std(ddof=1))
+                entry: dict = {
+                    "analysis": report.analysis,
+                    "design": str(arm.design),
+                    "bias_over_spread": float((x.mean() - tau) / spread),
+                    "planned_se_over_spread": report.se / spread,
+                    "power_at_the_planned_mde": float(
+                        np.mean(np.abs(x - (tau - report.mde)) / se > Z)
+                    ),
+                }
+                for label, cut in cuts.items():
+                    kept, restated = [], []
+                    for r in range(replicates):
+                        try:
+                            pilot = restate_mde(
+                                plan, report.estimand, u[r][:, :cut], y[r][:, : cut + 1]
+                            )
+                        except ValueError:  # a zone whose pilot showed one setting only
+                            continue
+                        kept.append(r)
+                        restated.append((pilot.se, pilot.mde))
+                    rows = np.array(kept)
+                    se_mde = np.array(restated)
+                    # the reading's own mean, and the plan's bias its MDE allows for
+                    centre = x.mean() + abs(report.bias)
+                    entry[label] = {
+                        "periods": cut,
+                        "refused": replicates - rows.size,
+                        "restated_se_over_spread": float(
+                            np.sqrt(np.mean(se_mde[:, 0] ** 2)) / spread
+                        ),
+                        "restated_se_cv": float(se_mde[:, 0].std() / se_mde[:, 0].mean()),
+                        "power": float(
+                            np.mean(np.abs(x[rows] - (tau - se_mde[:, 1])) / se[rows] > Z)
+                        ),
+                        "power_about_the_mean": float(
+                            np.mean(np.abs(x[rows] - (centre - se_mde[:, 1])) / se[rows] > Z)
+                        ),
+                    }
+                readings[report.estimand.name] = entry
+        out[name] = readings
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("case", choices=["zones"])
+    parser.add_argument("case", choices=["zones", "pilots"])
     parser.add_argument("--matching", choices=["linear", "harmonic"], default="linear")
     parser.add_argument("--spill", type=float, default=ZoneMarketSystem.spill)
     parser.add_argument("--replicates", type=int, default=8000)
     args = parser.parse_args()
-    print(json.dumps(_zones(args.replicates, args.matching, args.spill), indent=2))
+    case = _zones if args.case == "zones" else _pilots
+    print(json.dumps(case(args.replicates, args.matching, args.spill), indent=2))
 
 
 if __name__ == "__main__":

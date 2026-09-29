@@ -136,9 +136,11 @@ from chc.switchback import (
     BlockDesign,
     Horizon,
     PersistencePrior,
+    SwitchbackPlan,
     TargetMDE,
     design_switchback,
     read_switchback,
+    restate_mde,
 )
 from chc.uncertainty import SplitConformal
 
@@ -178,6 +180,7 @@ __all__ = [
     "RecedingHorizon",
     "SplitConformal",
     "SupportModel",
+    "SwitchbackPlan",
     "Target",
     "TargetMDE",
     "ZoneBatch",
@@ -206,6 +209,7 @@ __all__ = [
     "prescribe",
     "read_switchback",
     "refute_effect",
+    "restate_mde",
     "robust_safety_filter",
     "sensitivity_analysis",
     "shadow_price_effect",

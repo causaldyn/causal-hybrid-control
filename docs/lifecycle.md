@@ -105,8 +105,11 @@ documented, and what is not built yet. Every name below is importable from `chc`
   minimum detectable effect at the least favourable persistence. Without a trusted state model only
   model-free readings are planned. `read_switchback` reads the effect off the data, with a
   standard error from the data, and warns when the data reject the first-order state the plug-in
-  rests on. Scope: a first-order state per zone, and a plan that takes the zones as independent.
-  See [`chc.switchback`](api/switchback.md).
+  rests on. `restate_mde` re-reads an effect's standard error from the run's first periods, an
+  internal pilot, and restates the minimum detectable effect the whole run can detect, so a plan
+  whose working model missed a second state or spillover is corrected by the run itself. Scope: a
+  first-order state per zone, and a plan that takes the zones as independent. See
+  [`chc.switchback`](api/switchback.md).
 - **`shadow_price_effect`** (*experimental*). An experiment on a matching market treats some of the
   rows, and they compete with the control rows for the same columns, so the naive difference is not
   what treating every row would do. It reads that global effect off the rows' rents in the
