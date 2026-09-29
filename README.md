@@ -66,11 +66,13 @@ uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.1
 uv run pytest      # the tigramite and lightgbm tests skip: bring-your-own-env
 ```
 
-**GPU.** There is no `chc[cuda]` extra, on purpose: `uv.lock` pins the CPU `jaxlib`, and a CUDA
-wheel there would install CUDA for every user. Add JAX's CUDA build to the environment that uses
-chc -- `pip install causal-hybrid-control "jax[cuda13]"`, or `cuda12`, whichever your driver
-supports -- and JAX places arrays on the GPU; chc has no GPU-specific code. In a development
-checkout keep it in a separate environment, because `uv sync` removes what the lock does not list.
+**GPU, TPU and other hardware.** chc has no device-specific code: install JAX's build for your
+hardware beside it -- `pip install causal-hybrid-control "jax[cuda13]"` on an NVIDIA GPU whose
+driver is 580 or newer -- and JAX places the arrays there. The
+[installation page](docs/installation.md) lists every build JAX offers, CUDA 12 and 13, TPU, ROCm,
+conda and nightlies, and what changes for chc on an accelerator. In a development checkout,
+`just test-gpu` runs the suite on the GPU from the opt-in `cuda` dependency group, in its own
+environment.
 
 ## Quickstart
 

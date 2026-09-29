@@ -58,6 +58,12 @@ still change).
   - **The default does not move.** `dynamics_id` is in the stable tier, and what a constant channel
     does to the tube, the regret bound and the marketing-mix case study has not been measured.
 
+- **An installation page.** Every build JAX offers, installed beside chc: CPU, CUDA 13 and 12 from
+  wheels or from a local toolkit, TPU, ROCm, Intel, conda-forge and nightlies, with how to check
+  the device. And what changes for chc on an accelerator: float32 products in TensorFloat-32 on
+  Ampere and later unless asked otherwise, a key's normal draws equal across devices only to
+  rounding, the NumPy modules staying on the CPU, and JAX's preallocation of 75% of the card.
+
 ### Changed
 
 - **The suite runs over worker processes, and on the GPU from an opt-in group.** `pytest-xdist`

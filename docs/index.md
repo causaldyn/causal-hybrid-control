@@ -21,10 +21,11 @@ pip install causal-hybrid-control    # or: uv add causal-hybrid-control
 
 JAX, Diffrax, Equinox, Optax, NumPy and SciPy come with it; Python 3.11–3.14.
 
-**GPU.** There is no `chc[cuda]` extra, on purpose: the project's lockfile pins the CPU `jaxlib`,
-and a CUDA wheel there would install CUDA for every user. Add JAX's CUDA build to the environment
-that uses chc — `pip install causal-hybrid-control "jax[cuda13]"`, or `cuda12`, whichever your
-driver supports — and JAX places arrays on the GPU; chc has no GPU-specific code.
+**GPU, TPU and other hardware.** chc has no device-specific code: install JAX's build for your
+hardware beside it — `pip install causal-hybrid-control "jax[cuda13]"` on an NVIDIA GPU whose
+driver is 580 or newer — and JAX places the arrays there. [Installation](installation.md) lists
+every build JAX offers, CUDA 12 and 13, TPU, ROCm, conda and nightlies, and what changes for chc on
+an accelerator.
 
 ## Where to go next
 
