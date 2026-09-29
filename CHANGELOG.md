@@ -108,6 +108,46 @@ still change).
     decisions whose rewards do not depend on earlier ones, and a plan over a horizon on a plant with
     memory breaks that.
 
+- **`chc.misspecification`: whether a plan pays for its model class being wrong** (*experimental*,
+  ADR 0024). `misspecification_cost(plan, reference, alternative)` reads two fits of one class on
+  one log, such as an unweighted fit and one weighted by the state, and prices their difference `d`
+  in the plan's regret: `(d' W d − tr(W S)) / 2`, with a standard error. `W` is the regret's
+  curvature in every fitted parameter at the plan, and `S` the difference's covariance, summed
+  from the two fits' rows. When the class holds the truth, `d = 0`, and `p_value` is the chance of
+  the quadratic reading at least as large, by Imhof's inversion of its chi-square mixture.
+  `unseen` counts the directions the plan weighs that the log's actions never moved.
+  - **The drift is priced with the channel.** The drift is fitted on what the channel leaves of
+    the rate, so two fits whose channels differ have drifts that differ too.
+    `CausalPlan.decision_weight` prices the channel alone: on logs whose actions averaged −1, 0
+    and +1 it read 0.14, 0.44 and 2.8 of the regret between the two fits' plans. The quadratic in
+    every parameter read 0.49, 0.54 and 0.49, and 0.74–0.78 and 0.89–0.91 at three tenths and a
+    tenth of the difference (`scripts/bench_misspecification.py`).
+  - **Calibrated over whole logs** (200 logs of 4000 rows). With the class holding the truth, the
+    test rejected 1.0%, 6.0% and 11.5% at 1, 5 and 10%. With it missing, the cost fell within
+    1.96 standard errors of its value on 400 000 rows in 0.915 of the logs. At 5% it caught 13%,
+    30%, 78% and 97% of logs whose channel moved with the state at slopes 0.005, 0.01, 0.02 and
+    0.03.
+  - **What it cannot see.** On a log whose second action was always twice the first, it read
+    `p = 0.33` while the plan lost 0.55 against the truth, and `unseen` reported two directions
+    the plan weighs that the log never moved. Held to the log's ratio, the plan had none and lost
+    `5e-6`.
+  - **Not in `prescribe`'s JSON**, whose schema changes once, at 1.0. It refuses fits that carry
+    drivers, and whatever `decision_weight` refuses.
+
+- **`fit_causal_residual(influence=True)`, and `CausalDynamicsFit.influence` and `.unmoved`.**
+  `influence`, `(N, n, p)`, is each transition's share of the error in every fitted parameter when
+  the whole log is drawn again: the channel's through the moment's residual, the drift's through
+  the channel and through its own regression's residual. It is off by default, and the fit is the
+  same either way. Under Euler its channel block gives `channel_error` to 1e-9. Under `rk4` it also
+  carries the drift's residual into the channel, which `channel_error` leaves out.
+  `unmoved`, `(p, r)`, is on every fit: the directions of the channel that the log's actions,
+  less what the covariates' features predict of them, never moved, each with the drift
+  regression's response to it.
+  - **Why every fit carries it.** A log whose actions the covariates determine, as a deployed
+    plan's own may be, has no data on the channel, and the ridge sets it. On such a log, in
+    float64, the fit was identified and read the channel as `0.0009 ± 0.0013` against a true 0.8.
+    `unmoved` is what says the log cannot tell.
+
 ### Changed
 
 - **The suite runs over worker processes, and on the GPU from an opt-in group.** `pytest-xdist`

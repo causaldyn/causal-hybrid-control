@@ -249,81 +249,111 @@ class CausalPlan:
                 where ``M`` is not positive definite, so the plan is not a strict local minimum
                 and its regret is not quadratic in ``E``.
         """
-        problem = self._problem
-        if problem is None:
-            raise ValueError(
-                "this plan carries no problem to weigh; causal_plan and RecedingHorizon attach one"
-            )
-        if problem.barrier:
-            raise ValueError(
-                "the plan was held under a barrier, whose condition moves with the channel; the "
-                "decision weight of a barrier-held plan is not built"
-            )
-        weighted = problem.lam_supp != 0.0 or (
-            problem.uncertainty is not None and problem.lam_unc != 0.0
-        )
-        if problem.support is not None and weighted:
-            raise ValueError(
-                "the plan minimised the task cost plus pessimism penalties, so an error in the "
-                "channel costs its task cost at first order and the regret is not quadratic"
-            )
-        shape, dtype = self.actions.shape, self.actions.dtype
-        if tolerance is None:
-            tolerance = max(1e-6, 1e3 * float(jnp.finfo(dtype).eps))
+        problem = _weighable(self._problem)
+        shape = self.actions.shape
         states, actions = problem.x0.shape[0], shape[1]
-        flat = self.actions.ravel()
-        still = jnp.zeros(states * actions, dtype=dtype)
 
         def cost(u: Array, change: Array) -> Array:
             return _perturbed_task_cost(problem, u.reshape(shape), change.reshape(states, actions))
 
-        gradient = np.asarray(jax.grad(cost)(flat, still), dtype=np.float64)
-        hessian = np.asarray(jax.hessian(cost)(flat, still), dtype=np.float64)
-        mixed = np.asarray(jax.jacfwd(jax.grad(cost), argnums=1)(flat, still), dtype=np.float64)
-        present = [row for row in problem.constraints if row.matrix.shape[0]]
-        size = flat.size
-        matrix = np.vstack([row.matrix for row in present]) if present else np.zeros((0, size))
-        kkt = _kkt(
-            gradient,
-            np.asarray(flat, dtype=np.float64),
-            matrix,
-            np.concatenate([row.lower for row in present]) if present else np.zeros(0),
-            np.concatenate([row.upper for row in present]) if present else np.zeros(0),
-            np.asarray(broadcast_box(problem.u_lo, shape, "u_lo", dtype), np.float64).ravel(),
-            np.asarray(broadcast_box(problem.u_hi, shape, "u_hi", dtype), np.float64).ravel(),
-            tolerance,
+        matrix, free, weakly_active, residual = _regret_curvature(
+            problem, self.actions, cost, states * actions, tolerance
         )
-        free = kkt.free
-        pinned = kkt.at_hi | kkt.at_lo
-        weak_rows = np.abs(kkt.multipliers) * np.linalg.norm(kkt.columns[free], axis=0)
-        weakly_active = int(np.sum(np.abs(kkt.remainder[pinned]) <= kkt.slack)) + int(
-            np.sum(weak_rows <= kkt.slack)
-        )
-        # The directions the plan may move: the free actions, less what keeps a binding row bound.
-        basis = np.eye(size)[:, free]
-        if kkt.active.size and basis.shape[1]:
-            basis = basis @ null_space(matrix[kkt.active][:, free])
-        curvature = basis.T @ hessian @ basis
-        eigenvalues = np.linalg.eigvalsh(curvature) if basis.shape[1] else np.zeros(0)
-        if eigenvalues.size and eigenvalues[0] <= 1e3 * np.finfo(np.float64).eps * max(
-            1.0, float(np.abs(eigenvalues).max())
-        ):
-            raise ValueError(
-                f"the task cost's Hessian along the plan's free directions has eigenvalue "
-                f"{eigenvalues[0]:.4g}: the plan is not a strict local minimum, and its regret is "
-                "not quadratic in the channel"
-            )
-        reduced = basis.T @ mixed
-        weight = reduced.T @ np.linalg.solve(curvature, reduced) if basis.shape[1] else None
-        pull = gradient[free]
         return DecisionWeight(
-            matrix=np.zeros((states * actions,) * 2) if weight is None else (weight + weight.T) / 2,
+            matrix=matrix,
             channel_shape=(states, actions),
-            free=int(basis.shape[1]),
+            free=free,
             weakly_active=weakly_active,
-            residual=float(np.linalg.norm(basis.T @ gradient))
-            / max(1.0, float(np.linalg.norm(pull))),
+            residual=residual,
         )
+
+
+def _weighable(problem: _PlanProblem | None) -> _PlanProblem:
+    """The plan's problem, refused where its regret in an error of the model is not quadratic."""
+    if problem is None:
+        raise ValueError(
+            "this plan carries no problem to weigh; causal_plan and RecedingHorizon attach one"
+        )
+    if problem.barrier:
+        raise ValueError(
+            "the plan was held under a barrier, whose condition moves with the channel; the "
+            "decision weight of a barrier-held plan is not built"
+        )
+    weighted = problem.lam_supp != 0.0 or (
+        problem.uncertainty is not None and problem.lam_unc != 0.0
+    )
+    if problem.support is not None and weighted:
+        raise ValueError(
+            "the plan minimised the task cost plus pessimism penalties, so an error in the "
+            "channel costs its task cost at first order and the regret is not quadratic"
+        )
+    return problem
+
+
+def _regret_curvature(
+    problem: _PlanProblem,
+    actions: Array,
+    cost: Callable[[Array, Array], Array],
+    size: int,
+    tolerance: float | None,
+) -> tuple[NDArray[np.float64], int, int, float]:
+    """The regret's Hessian in a perturbation of the model, by the envelope theorem, for a plan at
+    ``actions`` whose task cost under a perturbation of ``size`` entries is
+    ``cost(actions.ravel(), change)``: ``W = J' M^-1 J`` over the directions the plan may move.
+
+    Returns ``W``, how many directions the plan may move in, how many bounds and rows it meets with
+    a zero multiplier, and its stationarity miss along the free directions, relative.
+    """
+    shape, dtype = actions.shape, actions.dtype
+    if tolerance is None:
+        tolerance = max(1e-6, 1e3 * float(jnp.finfo(dtype).eps))
+    flat = actions.ravel()
+    still = jnp.zeros(size, dtype=dtype)
+    gradient = np.asarray(jax.grad(cost)(flat, still), dtype=np.float64)
+    hessian = np.asarray(jax.hessian(cost)(flat, still), dtype=np.float64)
+    mixed = np.asarray(jax.jacfwd(jax.grad(cost), argnums=1)(flat, still), dtype=np.float64)
+    present = [row for row in problem.constraints if row.matrix.shape[0]]
+    n_actions = flat.size
+    matrix = np.vstack([row.matrix for row in present]) if present else np.zeros((0, n_actions))
+    kkt = _kkt(
+        gradient,
+        np.asarray(flat, dtype=np.float64),
+        matrix,
+        np.concatenate([row.lower for row in present]) if present else np.zeros(0),
+        np.concatenate([row.upper for row in present]) if present else np.zeros(0),
+        np.asarray(broadcast_box(problem.u_lo, shape, "u_lo", dtype), np.float64).ravel(),
+        np.asarray(broadcast_box(problem.u_hi, shape, "u_hi", dtype), np.float64).ravel(),
+        tolerance,
+    )
+    free = kkt.free
+    pinned = kkt.at_hi | kkt.at_lo
+    weak_rows = np.abs(kkt.multipliers) * np.linalg.norm(kkt.columns[free], axis=0)
+    weakly_active = int(np.sum(np.abs(kkt.remainder[pinned]) <= kkt.slack)) + int(
+        np.sum(weak_rows <= kkt.slack)
+    )
+    # The directions the plan may move: the free actions, less what keeps a binding row bound.
+    basis = np.eye(n_actions)[:, free]
+    if kkt.active.size and basis.shape[1]:
+        basis = basis @ null_space(matrix[kkt.active][:, free])
+    curvature = basis.T @ hessian @ basis
+    eigenvalues = np.linalg.eigvalsh(curvature) if basis.shape[1] else np.zeros(0)
+    if eigenvalues.size and eigenvalues[0] <= 1e3 * np.finfo(np.float64).eps * max(
+        1.0, float(np.abs(eigenvalues).max())
+    ):
+        raise ValueError(
+            f"the task cost's Hessian along the plan's free directions has eigenvalue "
+            f"{eigenvalues[0]:.4g}: the plan is not a strict local minimum, and its regret is "
+            "not quadratic in the channel"
+        )
+    reduced = basis.T @ mixed
+    weight = reduced.T @ np.linalg.solve(curvature, reduced) if basis.shape[1] else None
+    pull = gradient[free]
+    return (
+        np.zeros((size, size)) if weight is None else (weight + weight.T) / 2,
+        int(basis.shape[1]),
+        weakly_active,
+        float(np.linalg.norm(basis.T @ gradient)) / max(1.0, float(np.linalg.norm(pull))),
+    )
 
 
 def _perturbed_task_cost(problem: _PlanProblem, actions: Array, change: Array) -> Array:

@@ -7,6 +7,7 @@ same rows.
 
 import functools
 import itertools
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
@@ -1038,3 +1039,100 @@ def test_a_negative_channel_degree_is_refused() -> None:
     data = system.sample(200, jax.random.key(0), _known)
     with pytest.raises(ValueError, match="channel_degree must be a non-negative integer"):
         fit_causal_residual(_known, data, system.dt, adjust_for=("z",), channel_degree=-1)
+
+
+def _policy_log(
+    n: int, actions: Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray]
+) -> dict[str, jax.Array]:
+    """A two-state log under a logging policy of the caller's, the confounder ``z`` adjusted for:
+    ``actions(rng, x, z)`` returns ``(n, m)``, and each action's channel is the matching column of
+    ``[[0.8, 0.1], [-0.4, 0.3]]``."""
+    rng = np.random.default_rng(0)
+    x = rng.normal(0.0, 1.0, (n, 2))
+    z = rng.normal(0.0, 1.0, n)
+    u = actions(rng, x, z)
+    channel = np.array([[0.8, 0.1], [-0.4, 0.3]])[:, : u.shape[1]]
+    rate = x @ np.array([[-0.5, 0.2], [0.0, -0.3]]).T + u @ channel.T + np.outer(z, [1.5, 0.0])
+    return {
+        "x": jnp.asarray(x),
+        "u": jnp.asarray(u),
+        "x_next": jnp.asarray(x + 0.1 * rate + rng.normal(0.0, 0.01, (n, 2))),
+        "z": jnp.asarray(z[:, None]),
+    }
+
+
+def _dithered(rng: np.random.Generator, x: np.ndarray, z: np.ndarray) -> np.ndarray:
+    return (0.9 * z - 0.3 * x[:, 0] + rng.normal(0.0, 0.5, z.size))[:, None]
+
+
+def _determined(
+    scale: float,
+) -> Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray]:
+    return lambda rng, x, z: scale * (0.9 * z - 0.3 * x[:, 0])[:, None]
+
+
+@pytest.mark.parametrize(
+    ("actions", "rows", "channel_degree", "unmoved"),
+    [
+        (_dithered, 4000, 0, 0),
+        (_dithered, 4000, 1, 0),
+        (lambda rng, x, z: _dithered(rng, x, z) * 1e-6 + _determined(1.0)(rng, x, z), 4000, 0, 0),
+        (_determined(1.0), 4000, 0, 2),
+        (_determined(1.0), 4000, 1, 6),
+        (_determined(1.0), 60, 0, 2),
+        (_determined(1e-4), 4000, 0, 2),
+        (lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 2.0]), 4000, 0, 2),
+        (lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 2.0]), 4000, 1, 6),
+        (lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 0.0]), 4000, 0, 2),
+    ],
+    ids=[
+        "dithered",
+        "dithered, affine channel",
+        "a dither of one part in a million",
+        "determined by the covariates",
+        "determined, affine channel",
+        "determined, on 60 rows",
+        "determined, at a ten-thousandth of the scale",
+        "the second action twice the first",
+        "twice the first, affine channel",
+        "the second action never used",
+    ],
+)
+def test_the_fit_names_the_directions_its_log_never_moves(
+    actions: Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray],
+    rows: int,
+    channel_degree: int,
+    unmoved: int,
+) -> None:
+    """One direction per state for each combination of the channel's coefficients the action
+    residuals never reach, however small the log or the actions' units. A dither, however faint,
+    moves its direction: the fit then reads it with an error to match."""
+    fit = fit_causal_residual(
+        _known,
+        _policy_log(rows, actions),
+        0.1,
+        adjust_for=("z",),
+        nuisance_degree=2,
+        channel_degree=channel_degree,
+    )
+    assert fit.unmoved is not None
+    assert fit.unmoved.shape[1] == unmoved
+
+
+def test_a_policy_the_covariates_determine_reads_as_a_confident_wrong_channel() -> None:
+    """Why the field exists: with nothing left of the action once the covariates are taken out, the
+    ridge sets the channel, near zero where the truth is 0.8, and its error says 0.0013. Only
+    ``unmoved`` tells the caller that every direction of the channel is unread."""
+    fit = fit_causal_residual(
+        _known,
+        _policy_log(4000, _determined(1.0)),
+        0.1,
+        adjust_for=("z",),
+        nuisance_degree=2,
+        channel_degree=0,
+    )
+    assert fit.channel_error is not None
+    assert fit.channel_error < 0.01
+    assert abs(float(fit.residual.channel[0, 0, 0]) - 0.8) > 0.5
+    assert fit.unmoved is not None
+    assert fit.unmoved.shape[1] == fit.residual.channel.size

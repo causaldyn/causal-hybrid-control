@@ -152,6 +152,7 @@ nav:
           - api/lalonde.md
           - api/meanfield.md
           - api/mintime.md
+          - api/misspecification.md
           - api/surrogate.md
           - api/switchback.md
           - api/symbolic.md

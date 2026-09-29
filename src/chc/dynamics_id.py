@@ -170,6 +170,21 @@ class CausalDynamicsFit:
     weighted: bool = False  # whether a weight on the state weighed the channel moment
     # Kish's (sum w)^2 / sum w^2: how many equally weighted transitions the moment is worth
     effective_sample_size: float | None = None
+    # (N, n, p), kept when the fit was asked for it: each transition's share, per state, of the
+    # error in the fitted parameters when the whole log is drawn again -- the channel, raveled, then
+    # the drift regression's rows (the drift's transpose, then the drivers' gain's), raveled. A row
+    # moves the channel through the moment's residual, and the drift through the channel and through
+    # its own regression's residual, so the sum of psi psi' over both is their robust covariance,
+    # the drift's carrying the channel's error. Under Euler its channel block is
+    # ``channel_error``'s; under ``rk4`` the RK4 map also carries the drift's residual into the
+    # channel, which ``channel_error``, read with the noise alone random, leaves out.
+    influence: Array | None = None
+    # (p, r), in ``influence``'s order: the directions the log's actions never move. Each moves one
+    # state's channel where the action residuals, scaled to the raw actions' size, fall below the
+    # square root of the working precision, with the drift regression's response to it on this log.
+    # The moment has no data there and the ridge sets the channel, whatever ``channel_error`` says.
+    # ``r`` is 0 when the log moves every direction.
+    unmoved: Array | None = None
 
 
 def _r_squared(target: Array, prediction: Array) -> float:
@@ -291,6 +306,60 @@ def _robust_spread(sensitivity: Array, score: Array, n_coeff: int) -> Array:
     return jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity)
 
 
+def _influence(
+    sensitivity: Array, score: Array, direct: Array, drift_score: Array, n_coeff: int
+) -> Array:
+    """``psi[i, s] = sqrt(n / (n - k)) (J[:, i, s] e[i, s] + D[:, i, s] (r[i, s] - e[i, s]))``,
+    shape ``(N, n, p)``: each row's and state's share of the error. ``J`` is the whole fit's
+    response to the row's rate and ``D`` the part of it that reaches the drift directly, not
+    through the channel, so the channel reads the moment's residual ``e`` and the drift's direct
+    part its own regression's residual ``r``, which holds what the drift's features leave."""
+    n = score.shape[0]
+    return jnp.sqrt(n / max(n - n_coeff, 1)) * (
+        jnp.einsum("pis,is->isp", sensitivity, score)
+        + jnp.einsum("pis,is->isp", direct, drift_score - score)
+    )
+
+
+def _unmoved_directions(
+    actions: Array, states: Array, covariates: Array, nuisance_degree: int, channel_degree: int
+) -> Array:
+    """The channel's coefficient directions, unit columns ``(m k, r)``, along which the log's
+    actions, less their least-squares projection on the nuisance's features, keep less than the
+    square root of the working precision of their raw size.
+
+    Projected without the cross-fit's ridge and folds, a policy the covariates determine leaves
+    rounding, where the ridge would leave a bias that grows as the log shrinks. Scaled to the raw
+    actions, the test reads the same in any units. An action the log never used has a raw column of
+    zeros, and its coefficients come back whole."""
+    features = _polynomial_features(_standardised(covariates), nuisance_degree)
+    left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
+    size = jnp.linalg.norm(_channel_design(actions, states, channel_degree), axis=0)
+    scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
+    residual = _channel_design(left, states, channel_degree) * scale
+    _, singular, rows = jnp.linalg.svd(residual, full_matrices=False)
+    null = rows[singular <= jnp.sqrt(jnp.finfo(singular.dtype).eps)].T * scale[:, None]
+    return null / jnp.linalg.norm(null, axis=0)
+
+
+def _unmoved_parameters(
+    directions: Array, features: Array, actions: Array, design: Array, ridge: float, states: int
+) -> Array:
+    """Each unmoved direction of the channel, state by state, as a move of every parameter in
+    :attr:`CausalDynamicsFit.influence`'s order: the channel's own, and the drift regression's
+    response to it on this log."""
+    shape = (states, actions.shape[1], features.shape[1])
+    moves = []
+    for state in range(states):
+        for direction in directions.T:
+            change = jnp.zeros(shape).at[state].set(direction.reshape(shape[1:]))
+            pushed = jax.vmap(lambda c, u, change=change: (change @ c) @ u)(features, actions)
+            response = _solve_ridge(design, pushed, ridge)
+            moves.append(jnp.concatenate([change.ravel(), -response.ravel()]))
+    size = int(np.prod(shape)) + design.shape[1] * states
+    return jnp.stack(moves, axis=1) if moves else jnp.zeros((size, 0))
+
+
 def _state_weights(weights: Callable[[Array], Array], states: Array) -> Array:
     """The caller's weight at each state, checked and scaled to mean 1, so ``ridge`` keeps its
     meaning whatever the weight's units."""
@@ -388,6 +457,7 @@ def fit_causal_residual(
     integrator: Integrator = "euler",
     drivers: tuple[str, ...] = (),
     weights: Callable[[Array], Array] | None = None,
+    influence: bool = False,
 ) -> CausalDynamicsFit:
     """Fit a :class:`ControlAffineResidual` whose channel is the *interventional* control response.
 
@@ -506,6 +576,11 @@ def fit_causal_residual(
             weight. No weight on the state alone serves a dynamic plan, which reads the channel's
             slope along its path as well as its level: there the costate weight left 36 to 178
             times the regret of the best fit in the class.
+        influence: whether to keep each transition's influence on the fitted parameters,
+            :attr:`CausalDynamicsFit.influence`, which
+            :func:`chc.misspecification.misspecification_cost` reads to compare two fits of one
+            log. Off by default: under ``euler`` it costs a reverse pass per parameter rather than
+            per channel coefficient, and it is ``N n p`` numbers the fit then carries.
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
@@ -547,6 +622,14 @@ def fit_causal_residual(
     design = jnp.concatenate([phi_x, driver_read], axis=1)
 
     row_weight = None if weights is None else _state_weights(weights, x)
+    unmoved = _unmoved_parameters(
+        _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree),
+        phi_c,
+        u,
+        design,
+        ridge,
+        x.shape[1],
+    )
 
     def solve(y: Array) -> tuple[Array, Array, tuple[Array, Array, Array, Array, Array]]:
         """The channel and the drift regression's coefficients a target ``y`` fits to, with the
@@ -566,6 +649,21 @@ def fit_causal_residual(
         fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_c, u)
         remainder = _solve_ridge(design, y - fitted, ridge)  # (features + drivers, n)
         return channel, remainder, (y_res, u_res, y_hat, u_hat, fitted)
+
+    def _parameters(solved: tuple[Array, Array, object]) -> Array:
+        """The channel, then the drift regression's rows: the order the ``rk4`` fixed point uses."""
+        return jnp.concatenate([solved[0].ravel(), solved[1].ravel()])
+
+    def drift_direct(channel_size: int) -> Array:
+        """``(p, N, n)``: how a row's rate moves the drift regression's rows other than through the
+        channel -- the regression's own weight on the row, in the row's state's column."""
+        states = x.shape[1]
+        weight = jnp.linalg.solve(
+            design.T @ design + ridge * jnp.eye(design.shape[1]), design.T
+        )  # (features + drivers, N)
+        rows = jnp.einsum("fi,ts->ftis", weight, jnp.eye(states))
+        rows = rows.reshape(weight.shape[0] * states, x.shape[0], states)
+        return jnp.concatenate([jnp.zeros((channel_size, x.shape[0], states)), rows])
 
     def fit_to(rate: Array) -> CausalDynamicsFit:
         """Everything downstream of the target rate, so the ``rk4`` fixed point can re-run it."""
@@ -605,6 +703,7 @@ def fit_causal_residual(
             effective_sample_size=float(x.shape[0])
             if row_weight is None
             else float(jnp.sum(row_weight) ** 2 / jnp.sum(row_weight**2)),
+            unmoved=unmoved,
         )
 
     def predicted(residual: ControlAffineResidual, gain: Array) -> Array:
@@ -698,6 +797,11 @@ def fit_causal_residual(
         newton, sensitivity = newton_matrix(theta)
         spread = _robust_spread(fit_map, score, regressor.shape[1])
         covariance = jnp.linalg.solve(newton, jnp.linalg.solve(newton, spread).T)
+
+        # A row reaches the fixed point through K^-1 G, as the covariance says the noise does.
+        def carry(rows: Array) -> Array:
+            return jnp.linalg.solve(newton, rows.reshape(theta.size, -1)).reshape(rows.shape)
+
         # The drift keeps the defect, which is its own regression's residual, as under Euler.
         noise = jnp.sum(defect(fit) ** 2, axis=0) / max(x.shape[0] - design.shape[1], 1)
         gram = jnp.linalg.inv(design.T @ design + ridge * jnp.eye(design.shape[1]))
@@ -712,6 +816,11 @@ def fit_causal_residual(
             fit,
             channel_error=float(jnp.sqrt(jnp.mean(jnp.diag(covariance)[:size]))),
             drift_error=float(jnp.sqrt(jnp.mean(jnp.diag(drift_covariance)))),
+            influence=_influence(
+                carry(fit_map), score, carry(drift_direct(size)), defect(fit), regressor.shape[1]
+            )
+            if influence
+            else None,
         )
 
     fit = fit_to((x_next - x) / dt)
@@ -719,12 +828,27 @@ def fit_causal_residual(
         fit = rk4_fixed_point(fit)
     elif identified:
         y = (x_next - x) / dt - known_rate
-        channel, _, (y_res, u_res, *_) = solve(y)
+        channel, remainder, (y_res, u_res, _, _, fitted) = solve(y)
         regressor = _channel_design(u_res, x, channel_degree)
         score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
-        sensitivity = jax.jacrev(lambda target: solve(target)[0].ravel())(jnp.zeros_like(y))
-        spread = _robust_spread(sensitivity, score, regressor.shape[1])
-        fit = dataclasses.replace(fit, channel_error=float(jnp.sqrt(jnp.mean(jnp.diag(spread)))))
+        if influence:
+            sensitivity = jax.jacrev(lambda target: _parameters(solve(target)))(jnp.zeros_like(y))
+        else:
+            sensitivity = jax.jacrev(lambda target: solve(target)[0].ravel())(jnp.zeros_like(y))
+        spread = _robust_spread(sensitivity[: channel.size], score, regressor.shape[1])
+        fit = dataclasses.replace(
+            fit,
+            channel_error=float(jnp.sqrt(jnp.mean(jnp.diag(spread)))),
+            influence=_influence(
+                sensitivity,
+                score,
+                drift_direct(channel.size),
+                y - fitted - design @ remainder,
+                regressor.shape[1],
+            )
+            if influence
+            else None,
+        )
     return dataclasses.replace(fit, integrator_defect=float(jnp.sqrt(jnp.mean(defect(fit) ** 2))))
 
 
