@@ -47,6 +47,22 @@ that changes with the step and ends. What each method needs for the second:
   such a cost, as before.
 - **The one-step margin** of a schedule is the smallest over its steps, reported for comparison
   only, as ADR 0009's is.
+- **`Prescription.evaluate(panel)`** connects a prescription to `evaluate_plan` by `"pdis"`, with
+  what it cannot supply itself built from the panel and the plan:
+  - **The episodes** are windows of `H + 1` consecutive periods of a unit, over the plan's states
+    and levers, cut back from the unit's latest period, so the most recent periods are always read
+    and a remainder too short for a window is at the oldest end. Consecutive windows share their
+    boundary period. A gap in a unit's periods ends a run, and no window crosses it.
+  - **The plant** is the plan's model over one RK4 step, linearised at the windows' mean state and
+    action, with the covariance of its one-step residuals on the windows as the noise. The
+    certificate's moments are expectations over the logs, so the model is linearised where the
+    logs are, and not at the target or along the plan's own path.
+  - **The cost** is the plan's, whose terminal term no step reads.
+  - **It refuses by what the levers were logged on**: their parents in the graph, or the
+    covariates an asserted adjustment names. A column among them outside the plan's state means
+    the logger's propensity is not a policy of the state, and the weights are wrong however many
+    episodes there are. A plan made against driver forecasts is refused too: its plant changes
+    with the step, and the evaluation's plant is one step for every step.
 
 ## Consequences
 
@@ -62,9 +78,16 @@ that changes with the step and ends. What each method needs for the second:
     own row.
 - The public surface grows by one class, `AffineSchedule`, at the top level: `evaluate_plan` takes
   it, and ADR 0016 puts what a lifecycle call takes there.
-- A prescription can reach `evaluate_plan` through `AffineSchedule.open_loop`, but the rest of the
-  loop does not connect yet: nothing builds the `LinearGaussianPlant` a prescription's model
-  linearises to, or the episode arrays `evaluate_plan` reads from a `Panel`.
+- A prescription is evaluated from a panel in one call. `tests/test_lifecycle_loop.py` writes the
+  loop from the top level alone: a plan made from one panel of a linear-Gaussian market is certified
+  from a later one, its interval covers the plan's value on the true market in the test's draw,
+  and its value is `evaluate_plan`'s on windows the test cuts itself.
+- Windows cut from one unit follow each other, so they depend on one another through the state;
+  the interval treats them as independent.
+- The deployment gate is still not connected. It assumes a decision's reward does not depend on
+  earlier decisions, and a plan over a horizon on a plant with memory breaks that. An
+  episode-level gate would need independent episodes, which consecutive windows of one unit are
+  not.
 - Everything is exact on a linear-Gaussian loop and no more, as ADR 0009 says.
 
 ## Alternatives considered
@@ -78,3 +101,8 @@ that changes with the step and ends. What each method needs for the second:
 - **A finite-horizon FQE**, per-step quadratic Q functions fitted backward. It would evaluate a
   schedule where every weight is refused. Deferred: it is an estimator of its own, with its own
   interval, and nothing here depends on it.
+- **Refusing a prescription by its adjustment set.** Rejected: the set also holds covariates that
+  only move the target, which it adjusts for precision and which the logger never read. The loop
+  test's demand is one; refusing it would refuse an evaluation that is right.
+- **Non-overlapping windows that skip a period between them.** Rejected: they read fewer episodes
+  and are dependent through the state all the same.

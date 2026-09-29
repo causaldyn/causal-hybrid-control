@@ -83,6 +83,11 @@ documented, and what is not built yet. Every name below is importable from `chc`
   and which only importance sampling over episodes evaluates; `AffineSchedule.open_loop` builds
   one from a sequence of actions. Every number is exact for a linear-Gaussian loop and an affine
   plan, and no more. See [`chc.evaluation`](api/evaluation.md).
+- **A prescription's `evaluate`.** It evaluates the prescribed schedule from a later panel, before
+  it is deployed, by importance sampling over episodes: the panel's windows of `H + 1` consecutive
+  periods, on the plan's model linearised at their mean. It refuses a plan whose levers were logged
+  on a column outside its state, and one made against driver forecasts. See
+  [`chc.decision`](api/decision.md).
 - **`off_policy_value`.** It weights one step at a time. So it estimates a candidate's value on
   the logger's own states, which is the contextual-bandit value. That is not the value of
   deploying a plan on a plant with memory. See [`chc.offpolicy`](api/offpolicy.md).

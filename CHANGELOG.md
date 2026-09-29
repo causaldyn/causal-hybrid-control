@@ -84,8 +84,29 @@ still change).
     error is within three standard errors of zero; the smoothing correction is exactly
     `tau^2 sum_t tr(R + B' P_{t+1} B)` over the schedule's own gains.
   - **Not built:** a finite-horizon FQE, which would evaluate a schedule where every weight is
-    refused, and the bridges from a `Prescription` to the plant and the logs `evaluate_plan`
-    reads.
+    refused.
+
+- **`Prescription.evaluate(panel)`: a prescription is evaluated from a later panel before it is
+  deployed (ADR 0023).** It hands `evaluate_plan`, by `"pdis"`: the windows of `H + 1` consecutive
+  periods of each unit, cut back from its latest period; the plan's actions as an open-loop
+  `AffineSchedule`; the plan's cost; and the plan's model over one step, linearised at the
+  windows' mean state and action, with the covariance of its one-step residuals as the noise.
+  - **It refuses** a plan whose levers were logged on a column outside its state, since importance
+    weights need the logger's propensity given that column and no policy of the state is that, and
+    a plan made against driver forecasts, whose plant changes with the step. What the levers were
+    logged on is their parents in the graph, or the covariates an asserted adjustment names, not
+    the adjustment set: the set also holds a covariate that only moves the target, and the logger
+    never read that one.
+  - **Checked** from the top level alone (`tests/test_lifecycle_loop.py`): on a linear-Gaussian
+    market with a randomised incentive, a three-step plan made from one panel is certified from a
+    later one, and its interval covers the plan's value on the true market in the test's draw; the
+    value is `evaluate_plan`'s on the same windows to a relative 1e-9. A linear model's
+    linearisation is its own RK4 step to 1e-14, and a nonlinear one's Jacobian matches finite
+    differences at the windows' mean. Nine mutations of the bridge, all caught.
+  - **Scope.** Windows cut from one unit follow each other, so they depend on one another through
+    the state, which the interval does not see. The deployment gate is not connected: it takes
+    decisions whose rewards do not depend on earlier ones, and a plan over a horizon on a plant with
+    memory breaks that.
 
 ### Changed
 

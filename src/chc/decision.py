@@ -32,20 +32,28 @@ import logging
 import math
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 
 from chc.control import LinearConstraint, SolverStatus
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit, Integrator, fit_causal_residual
+from chc.evaluation import (
+    AffinePolicy,
+    AffineSchedule,
+    LinearGaussianPlant,
+    PlanEvaluation,
+    evaluate_plan,
+)
 from chc.graph import AdjustmentSet, CausalGraph
-from chc.lqr import linearize_continuous
+from chc.integrate import rk4_step
+from chc.lqr import linearize_continuous, linearize_discrete
 from chc.panel import Panel, Provenance
 from chc.plan import (
     BarrierConstraint,
@@ -288,6 +296,16 @@ class LeverSelection:
 
 
 @dataclass(frozen=True)
+class _Columns:
+    """What evaluating a plan needs to know of the panel it was made from."""
+
+    states: tuple[str, ...]  # in the model's order: the target, then every other constrained one
+    # What the levers were logged on besides one another: their parents in the graph, or the
+    # covariates an asserted adjustment names.
+    logged_on: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Prescription:
     """The decision, the evidence for it, and what it took to get there."""
 
@@ -301,6 +319,7 @@ class Prescription:
     # lever: an unselected one is zero throughout.
     selection: LeverSelection | None = None
     drivers: tuple[Driver, ...] = ()  # the forecasts the plan was made against
+    _columns: _Columns | None = field(default=None, repr=False, compare=False)
 
     @property
     def lever_names(self) -> tuple[str, ...]:
@@ -323,6 +342,85 @@ class Prescription:
                 f"{self.certificate.adjustment.reason}"
             )
         return InterventionSchedule(levers=self.lever_names, magnitudes=self.plan.actions)
+
+    def evaluate(
+        self,
+        panel: Panel,
+        *,
+        logger: AffinePolicy | None = None,
+        smoothing: float | None = None,
+        model_error: float = 1.0,
+        min_effective: float = 100.0,
+    ) -> PlanEvaluation:
+        """The schedule's expected cost over its horizon, estimated from ``panel`` before it is
+        deployed: :func:`chc.evaluation.evaluate_plan` by ``"pdis"``, whose keywords these are.
+
+        What it is handed: the episodes are every window of ``H + 1`` consecutive periods of a
+        unit, over the plan's states and the levers, cut back from its latest period; the schedule
+        is the plan's actions, open loop; the cost is the plan's own, less its terminal term; the
+        plant is the plan's model over one step, linearised at the episodes' mean state and action,
+        with the covariance of its one-step residuals on them as the noise. ``panel`` may be the one
+        the plan was fitted on, and the plan was chosen on it, so a value read off it can be
+        optimistic; a later one is not.
+
+        Scope: what :mod:`chc.evaluation` states, and two things more. The logs' actions must
+        depend on the state and a randomisation of their own alone, so a plan whose levers were
+        logged on a column outside its state is refused: the weights need the logger's propensity
+        given that column, and no policy of the state is that. The graph says what the levers were
+        logged on, their parents; an asserted adjustment is taken to name it. A covariate adjusted
+        for only because it moves the target is no reason to refuse. And windows cut from one unit
+        follow each other, so they are dependent through the state, which the interval does not
+        see.
+
+        Raises:
+            NotIdentifiedError: if the effect is not identified, so there is no plan.
+            DecisionError: on a plan made against driver forecasts, whose plant changes with the
+                step; a plan whose levers were logged on a column outside its state, or whose
+                record does not say; or a panel with fewer than two windows.
+            InfeasibleEvaluation: when the evaluation's certificate refuses.
+        """
+        plan = self.plan
+        if plan is None:
+            raise NotIdentifiedError(
+                "the effect is not identified, so there is no plan to evaluate: "
+                f"{self.certificate.adjustment.reason}"
+            )
+        if self.drivers:
+            raise DecisionError(
+                "the plan was made against driver forecasts, so its plant changes with the step, "
+                "and the evaluation's plant is one step for every step"
+            )
+        columns = self._columns
+        if columns is None:
+            raise DecisionError(
+                "this prescription does not record its states or what its levers were logged on, "
+                "and importance weights are right only if that is the plan's state"
+            )
+        outside = [name for name in columns.logged_on if name not in columns.states]
+        if outside:
+            raise DecisionError(
+                f"the levers were logged on {outside}, outside the plan's state "
+                f"{list(columns.states)}: importance weights need the logger's propensity given "
+                "them, which no policy of the state is"
+            )
+        problem = plan._problem
+        if problem is None:
+            raise DecisionError("the plan carries no problem, so there is no model to evaluate on")
+        actions = np.asarray(plan.actions, dtype=np.float64)
+        logs = _episodes(
+            panel, states=columns.states, levers=self.lever_names, horizon=len(actions)
+        )
+        return evaluate_plan(
+            logs,
+            AffineSchedule.open_loop(actions, len(columns.states)),
+            "pdis",
+            plant=_linearised(problem.model, logs["x"], logs["u"], problem.dt),
+            cost=problem.cost,
+            logger=logger,
+            smoothing=smoothing,
+            model_error=model_error,
+            min_effective=min_effective,
+        )
 
     def reach(self) -> dict[str, float]:
         """Per lever, how far it can move the target's rate across its own box.
@@ -618,6 +716,14 @@ def prescribe(
         )
 
     resolved = _resolve_adjustment(adjustment, panel=panel, target=target, levers=lever_names)
+    columns = _Columns(
+        states=states,
+        logged_on=tuple(
+            sorted({p for lever in lever_names for p in adjustment.parents(lever)} - {*lever_names})
+        )
+        if isinstance(adjustment, CausalGraph)
+        else resolved.covariates,
+    )
     _log.info(
         "adjustment resolved",
         extra={
@@ -697,6 +803,7 @@ def prescribe(
             model_fit=fit,
             provenance=panel.provenance,
             drivers=tuple(drivers),
+            _columns=columns,
         )
 
     if not fit.identified:
@@ -819,6 +926,7 @@ def prescribe(
         provenance=panel.provenance,
         selection=selection,
         drivers=tuple(drivers),
+        _columns=columns,
     )
 
 
@@ -968,6 +1076,55 @@ def _transitions(
     )
     data["x0"] = jnp.mean(stack(states, final_rows), axis=0)
     return data
+
+
+def _episodes(
+    panel: Panel, *, states: tuple[str, ...], levers: tuple[str, ...], horizon: int
+) -> dict[str, NDArray[np.float64]]:
+    """``x (E, H + 1, n)`` and ``u (E, H, m)``: every window of ``H + 1`` consecutive periods of a
+    unit, cut back from its latest one, so that a window starts where the one before it ends. A gap
+    ends a run, as in :func:`_transitions`, and the oldest periods of a run short of a window are
+    left out.
+
+    Raises:
+        DecisionError: on fewer than two windows.
+    """
+    unit_codes, time_codes = panel.codes()
+    order = np.lexsort((time_codes, unit_codes))
+    breaks = np.flatnonzero((np.diff(unit_codes[order]) != 0) | (np.diff(time_codes[order]) != 1))
+    windows = [
+        order[run[end - horizon : end + 1]]
+        for run in np.split(np.arange(order.size), breaks + 1)
+        for end in range(run.size - 1, horizon - 1, -horizon)
+    ]
+    if len(windows) < 2:
+        raise DecisionError(
+            f"an evaluation over episodes needs two windows of {horizon + 1} consecutive periods "
+            f"in a unit, and the panel has {len(windows)}"
+        )
+    rows = np.stack(windows)
+
+    def stack(names: tuple[str, ...]) -> NDArray[np.float64]:
+        return np.stack([np.asarray(panel[name], dtype=np.float64) for name in names], axis=1)
+
+    return {"x": stack(states)[rows], "u": stack(levers)[rows[:, :-1]]}
+
+
+def _linearised(
+    model: Dynamics, x: NDArray[np.float64], u: NDArray[np.float64], dt: float
+) -> LinearGaussianPlant:
+    """``model``'s step over ``dt`` linearised at the mean state and action of the episodes
+    ``x (E, H + 1, n)`` and ``u (E, H, m)``, with the covariance of its one-step residuals on them
+    as the noise."""
+    n, m = x.shape[-1], u.shape[-1]
+    xs, xn, us = x[:, :-1].reshape(-1, n), x[:, 1:].reshape(-1, n), u.reshape(-1, m)
+    x_bar, u_bar = xs.mean(axis=0), us.mean(axis=0)
+    jacobians = linearize_discrete(model, jnp.asarray(x_bar), jnp.asarray(u_bar), dt)
+    a, b = (np.asarray(jacobian, dtype=np.float64) for jacobian in jacobians)
+    step = np.asarray(rk4_step(model, 0.0, jnp.asarray(x_bar), jnp.asarray(u_bar), dt))
+    offset = step.astype(np.float64) - a @ x_bar - b @ u_bar
+    residual = xn - xs @ a.T - us @ b.T - offset
+    return LinearGaussianPlant(a, b, offset, np.atleast_2d(np.cov(residual, rowvar=False)))
 
 
 def _check_drivers(

@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import math
 
 import jax
 import jax.numpy as jnp
@@ -22,12 +23,15 @@ from chc.decision import (
     Constraint,
     DecisionCertificate,
     DecisionError,
+    Driver,
     Lever,
     NotIdentifiedError,
     Prescription,
     Target,
     _barrier,
     _certify,
+    _episodes,
+    _linearised,
     _margins,
     prescribe,
 )
@@ -123,6 +127,114 @@ def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
     with pytest.raises(NotIdentifiedError, match="not identified"):
         _ = result.schedule
     assert "no schedule" in result.report().lower()
+
+
+def test_a_plan_whose_levers_were_logged_on_a_column_outside_its_state_is_not_evaluated() -> None:
+    # The policy chased demand, which the plan's state does not carry: no policy of the state is
+    # the logger, and importance weights would be wrong however many episodes there were.
+    panel = _panel()
+    chased = _prescribe(panel, CausalGraph.from_edges(EDGES))
+    asserted = _prescribe(panel, ("demand",))
+
+    with pytest.raises(DecisionError, match=r"logged on \['demand'\], outside the plan's state"):
+        chased.evaluate(panel)
+    with pytest.raises(DecisionError, match=r"logged on \['demand'\]"):
+        asserted.evaluate(panel)
+    with pytest.raises(DecisionError, match="does not record"):
+        dataclasses.replace(chased, _columns=None).evaluate(panel)
+    with pytest.raises(DecisionError, match="driver forecasts"):
+        dataclasses.replace(chased, drivers=(Driver("demand", np.zeros(16)),)).evaluate(panel)
+    with pytest.raises(NotIdentifiedError, match="no plan to evaluate"):
+        _prescribe(panel, CausalGraph.from_edges(EDGES, latent=("demand",))).evaluate(panel)
+
+
+def test_the_episodes_are_windows_cut_back_from_each_units_latest_period() -> None:
+    # Unit 0 has periods 0-6; unit 1 has 0-2 and 4-8, a hole at 3 that no window may cross.
+    rows = [(0, t) for t in range(7)] + [(1, t) for t in (0, 1, 2, 4, 5, 6, 7, 8)]
+    panel = Panel.from_frame(
+        {
+            "unit": np.array([unit for unit, _ in rows]),
+            "time": np.array([t for _, t in rows]),
+            "x": np.array([10.0 * unit + t for unit, t in rows]),
+            "a": np.array([100.0 + 10.0 * unit + t for unit, t in rows]),
+        },
+        unit="unit",
+        time="time",
+    )
+
+    episodes = _episodes(panel, states=("x",), levers=("a",), horizon=2)
+
+    assert episodes["x"][..., 0].tolist() == [
+        [4, 5, 6],
+        [2, 3, 4],
+        [0, 1, 2],
+        [10, 11, 12],
+        [16, 17, 18],
+        [14, 15, 16],
+    ]
+    assert episodes["u"][..., 0].tolist() == [
+        [104, 105],
+        [102, 103],
+        [100, 101],
+        [110, 111],
+        [116, 117],
+        [114, 115],
+    ]
+    with pytest.raises(DecisionError, match="needs two windows of 7 consecutive periods"):
+        _episodes(panel, states=("x",), levers=("a",), horizon=6)
+
+
+def test_a_linear_models_linearisation_is_its_own_step_and_its_noise_the_residuals() -> None:
+    # RK4 on x' = A x + B u is the degree-4 Taylor polynomial of the step, written out here.
+    a, b, dt = np.array([[-0.5, 0.2], [0.0, -0.3]]), np.array([[1.0], [0.5]]), 0.1
+    ha = dt * a
+    powers = [np.linalg.matrix_power(ha, k) for k in range(5)]
+    step = sum(p / math.factorial(k) for k, p in enumerate(powers))
+    channel = dt * sum(p / math.factorial(k + 1) for k, p in enumerate(powers[:4])) @ b
+    rng = np.random.default_rng(3)
+    x, u = np.empty((50, 4, 2)), rng.normal(size=(50, 3, 1))
+    x[:, 0] = rng.normal(size=(50, 2))
+    shocks = 0.1 * rng.normal(size=(50, 3, 2))
+    for t in range(3):
+        x[:, t + 1] = x[:, t] @ step.T + u[:, t] @ channel.T + shocks[:, t]
+
+    plant = _linearised(LinearDynamics(jnp.asarray(a), jnp.asarray(b)), x, u, dt)
+
+    assert np.allclose(plant.a, step, rtol=0.0, atol=1e-14)
+    assert np.allclose(plant.b, channel, rtol=0.0, atol=1e-14)
+    assert np.allclose(plant.offset, 0.0, rtol=0.0, atol=1e-13)
+    assert np.allclose(plant.noise, np.cov(shocks.reshape(-1, 2), rowvar=False), atol=1e-12)
+
+
+def test_a_nonlinear_model_is_linearised_at_the_episodes_mean_state_and_action() -> None:
+    def pendulum(t: float, x: jax.Array, u: jax.Array) -> jax.Array:
+        return jnp.stack([x[1], -jnp.sin(x[0]) - 0.2 * x[1] + u[0]])
+
+    def step(x: np.ndarray, u: np.ndarray) -> np.ndarray:
+        """RK4 over 0.1, written here."""
+
+        def f(z: np.ndarray) -> np.ndarray:
+            return np.array([z[1], -np.sin(z[0]) - 0.2 * z[1] + u[0]])
+
+        k1 = f(x)
+        k2 = f(x + 0.05 * k1)
+        k3 = f(x + 0.05 * k2)
+        k4 = f(x + 0.1 * k3)
+        return x + 0.1 / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+    rng = np.random.default_rng(4)
+    x, u = rng.normal(1.0, 0.3, size=(40, 3, 2)), rng.normal(0.5, 0.2, size=(40, 2, 1))
+    x_bar, u_bar = x[:, :-1].reshape(-1, 2).mean(axis=0), u.reshape(-1, 1).mean(axis=0)
+
+    plant = _linearised(pendulum, x, u, 0.1)
+
+    h = 1e-6
+    jacobian = np.stack(
+        [(step(x_bar + h * e, u_bar) - step(x_bar - h * e, u_bar)) / (2.0 * h) for e in np.eye(2)],
+        axis=1,
+    )
+    assert np.allclose(plant.a, jacobian, rtol=0.0, atol=1e-8)
+    assert np.allclose(plant.a @ x_bar + plant.b @ u_bar + plant.offset, step(x_bar, u_bar))
 
 
 def test_the_schedule_respects_the_box_and_its_windows_agree_with_the_magnitudes() -> None:
