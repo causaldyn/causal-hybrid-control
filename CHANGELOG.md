@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-29
+
 ### Added
 
 - **`chc.evaluation`: what deploying a plan would cost, from logs of another policy, certified
@@ -400,7 +402,7 @@ still change).
   away `demand * elasticity`. `ZoneMarketSystem` is parameterised by the do-nothing point: each
   zone's idle supply and open requests, from which the supply level and the demand are derived so
   that it is the steady state (`validation/zone_market.mac`). Experimental, as the plant of the
-  marketplace study 0.10.0 pre-registers.
+  marketplace study 0.11.0 pre-registers.
   - **Matching** is harmonic, `mu s q / (s + q)`, or its tangent at the do-nothing point, which
     passes through zero; the two share the steady state.
   - **The logged operator chased the shock.** `sample` moves both levers with each zone's own
@@ -446,7 +448,7 @@ still change).
 - **`chc.experiment` and `chc.switchback` are filed experimental, and so are the `weights`
   argument and `shadow_price_effect` / `shadow_price_interval`.** Each is verified on plants CHC
   wrote, and was built ahead of the release that verifies it on one it did not: experiments and
-  decision-weighted identification are 0.9.0's, the marketplace 0.10.0's. Until then each may
+  decision-weighted identification are 0.9.0's, the marketplace 0.11.0's. Until then each may
   change or be withdrawn in any release. The README, the API pages, the navigation, the lifecycle
   page and the three entries' docstrings say so. No release carried them, so no published promise
   moves.
@@ -3594,6 +3596,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.8.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.8.0
 [0.7.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.7.0
 [0.6.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.6.0
 [0.5.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.5.1

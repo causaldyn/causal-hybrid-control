@@ -4,7 +4,7 @@
 
 ## Context
 
-The 0.10.0 release pre-registers a marketplace study whose headline is that an off-policy estimate
+The 0.11.0 release (0.10.0 until D35 put the media-mix release first) pre-registers a marketplace study whose headline is that an off-policy estimate
 of a plan predicts the plan's realised lift. The study needs a plant that every stage of the loop
 can run on:
 
