@@ -115,6 +115,7 @@ from chc.gate import (
     ZoneBatch,
     ZonePlan,
     channel_drift_evalues,
+    channel_move,
 )
 from chc.graph import CausalGraph, CyclicGraphError
 from chc.irf import delay_estimate
@@ -190,6 +191,7 @@ __all__ = [
     "certify_evaluation",
     "certify_safety",
     "channel_drift_evalues",
+    "channel_move",
     "delay_estimate",
     "design_experiment",
     "design_switchback",

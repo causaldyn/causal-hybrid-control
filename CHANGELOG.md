@@ -136,6 +136,40 @@ still change).
     with pessimism penalties, whose regret has a first-order term; one built by hand; and one whose
     Hessian along its free directions is not positive definite.
 
+- **`channel_move`: how far a deployed plan's channel has moved, read off the logged dither, and
+  what that costs the plan** (*experimental*). `channel_move(log, residual, dither_scale=,
+  forgetting=1.0)` returns a `ChannelMove`: the plant's one-step channel less the model's, its
+  covariance and its effective size. `ChannelMove.price(weight)` reads the move through
+  `CausalPlan.decision_weight()` as a `MovePrice` with two parts. The first is what keeping the
+  plan loses, estimated without bias, with a standard error. The second is what a plan re-solved on
+  the estimate loses on average. Until now the drift monitor could say that the channel had moved,
+  and nothing could say by how much.
+  - **The estimate is unbiased whatever the model gets wrong in the drift, the noise law or the
+    policy.** Each decision's residual times its standardised dither reads the move, and everything
+    else adds to the spread, not the mean. The weights forget older decisions at a constant rate,
+    so an estimate re-read as decisions arrive follows a channel that moves. The covariance is
+    scaled to be exactly unbiased at any weights. The usual `kish / (kish - 1)` read 13% low at
+    eight decisions forgotten at 0.7.
+  - **Measured on the drift monitor's plant** (`scripts/bench_channel_move.py`, 2000 paths). The
+    estimate lay within 0.75 standard errors of a move of 0.07, and its spread was 0.99-1.03 of its
+    standard error. Its 95% intervals covered 0.943-0.955 of the paths, and 0.951-0.960 of them
+    after the channel moved partway through the log.
+  - **Two expectations, not a decision rule.** Re-planning when a log's keep price beat its re-plan
+    price lost to the better of always keeping and always re-planning at 30, 100 and 400 decisions
+    on a budgeted plan. The logs whose estimate reads a large move are the ones it errs most on.
+    Shrinking the estimate, or choosing on half the log, did no better. So no rule ships. Re-read
+    the move on the decisions logged after the choice, such as those after a `DriftAlarm`, and the
+    re-plan price is the re-solved plan's.
+  - **Checked:**
+    - `validation/dither_channel_move.mac` derives the identities, the forgetting's worth, the
+      prices, their variance and the covariance's scale;
+    - `proofs/dither_channel_move.v` proves their algebra (7 lemmas);
+    - 24 tests;
+    - 24 mutations of the estimator and the prices, all caught.
+
+    The dither check is now one helper shared with `channel_drift_evalues`, and its messages and
+    verdicts are unchanged. The design record is `docs/adr/0019-re-reading-a-moved-channel.md`.
+
 - **`chc.experiment`: which experiment a decision needs, how large, and whether to run one.**
   `design_experiment(decision, prior, experiment, budget)` returns an `ExperimentDesign` with:
   - whole units per zone and what they spend;

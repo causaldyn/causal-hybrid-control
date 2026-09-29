@@ -1,0 +1,100 @@
+/* The channel move behind chc.gate.channel_move and ChannelMove.price: how far the one-step
+   channel lies from the model's, read off the logged dither, and what that costs a plan.
+
+   A decision applies u_j = p_j + sig_j xi_j with xi ~ N(0, I) drawn independently of everything
+   before it. The residual of state i against the model is r = c + sum_k d_k sig_k xi_k, where
+   d_k = B_ik - Bhat_ik and c holds the model's error in the drift, the nominal actions' share of
+   the channel's error and the noise: nothing in c depends on this decision's dither.
+
+   STEP 1  E[r xi_j] = d_j sig_j whatever c is: the estimate r xi_j / sig_j is unbiased
+   STEP 2  Var(r xi_j) = E[c^2] + sum_k d_k^2 sig_k^2 + d_j^2 sig_j^2: the move adds to the noise
+   STEP 3  forgetting at rate lam over n decisions: (sum w)^2 / sum w^2 -> (1 + lam) / (1 - lam)
+   STEP 4  for an estimate dh ~ N(d, S) of the move and a plan's weight W:
+           E[dh' W dh] = d' W d + tr(W S) and Var(dh' W dh) = 4 d' W S W d + 2 tr((W S)^2),
+           checked in two dimensions against the Gaussian moments; and, with W S W for W,
+           E[dh' W S W dh] = d' W S W d + tr((W S)^2), which the variance's estimate subtracts
+   STEP 5  the rule: keeping the plan costs d' W d / 2, re-planning on dh costs tr(W S) / 2 in
+           expectation, so re-planning pays when d' W d > tr(W S). An oracle's rule: with d read
+           off the same log as dh, the choice selects on dh's error, and chc does not ship it
+           (docs/adr/0019-re-reading-a-moved-channel.md)
+   STEP 6  the covariance's scale: for independent products z_t of one variance v and weights w,
+           E[sum_t w_t^2 (z_t - dh)^2] = v sum_t w_t^2 [(sum_(s # t) w_s)^2 + sum_(s # t) w_s^2]
+           / (sum w)^2, against Var(dh) = v sum w^2 / (sum w)^2, checked for three and four
+           symbolic weights
+
+   Run: timeout 300 maxima --very-quiet -b validation/dither_channel_move.mac */
+
+linel : 110$
+display2d : false$
+scalarmatrixp : false$  /* keep 1 x 1 products as matrices, so [1, 1] reads them */
+
+/* E over independent N(0, 1) draws: expand, then replace each monomial by its moment */
+gmoment(n) := if oddp(n) then 0 else (n - 1)!!$
+expect(ex, vars) := block([p : expand(ex)],
+  for v in vars do p : expand(sum(coeff(p, v, i)*gmoment(i), i, 0, hipow(p, v))),
+  p)$
+
+print("=== STEP 1: the product's mean ===")$
+/* two actions; c enters through its own moments, independent of the dither */
+r : c + d1*s1*x1 + d2*s2*x2$
+m1 : expect(r*x1, [x1, x2])$
+print("STEP 1 E[r xi_1] - d1 s1 =", ratsimp(m1 - d1*s1), " (0: c drops out, whatever it is)")$
+
+print("=== STEP 2: the product's variance ===")$
+second : expect((r*x1)^2, [x1, x2])$
+/* c^2 is a moment of its own: write E[c^2] as c2 */
+second : subst(c^2 = c2, expand(second))$
+var1 : expand(second - (d1*s1)^2)$
+print("STEP 2 Var(r xi_1) - (E[c^2] + d1^2 s1^2 + d2^2 s2^2 + d1^2 s1^2) =",
+      ratsimp(var1 - (c2 + d1^2*s1^2 + d2^2*s2^2 + d1^2*s1^2)), " (0)")$
+
+print("=== STEP 3: forgetting ===")$
+sw : sum(lam^k, k, 0, n - 1), simpsum$
+sw2 : sum(lam^(2*k), k, 0, n - 1), simpsum$
+neff : ratsimp(sw^2/sw2)$
+print("STEP 3a (sum w)^2 / sum w^2 =", factor(neff))$
+assume(0 < lam, lam < 1)$
+print("STEP 3b as n -> inf:", ratsimp(limit(neff, n, inf)), " ((1 + lam) / (1 - lam))")$
+print("STEP 3c at lam = 0.99, n = 1000:", float(subst([lam = 0.99, n = 1000], neff)), " (199 in the limit)")$
+
+print("=== STEP 4: the weighted square of a Gaussian estimate ===")$
+/* dh = d + L z with z ~ N(0, I) and S = L L', in two dimensions */
+L : matrix([l11, 0], [l21, l22])$
+S : L . transpose(L)$
+W : matrix([w11, w12], [w12, w22])$
+dvec : matrix([e1], [e2])$
+dh : dvec + L . matrix([z1], [z2])$
+q : expand((transpose(dh) . W . dh)[1, 1])$
+mq : expect(q, [z1, z2])$
+print("STEP 4a E[dh' W dh] - d' W d - tr(W S) =",
+      ratsimp(mq - (transpose(dvec) . W . dvec)[1, 1] - mat_trace(W . S)), " (0)")$
+vq : ratsimp(expect(q^2, [z1, z2]) - mq^2)$
+print("STEP 4b Var(dh' W dh) - 4 d' W S W d - 2 tr((W S)^2) =",
+      ratsimp(vq - 4*(transpose(dvec) . W . S . W . dvec)[1, 1] - 2*mat_trace(W . S . W . S)), " (0)")$
+
+print("=== STEP 5: keep or re-plan ===")$
+/* re-planning on dh leaves the error dh - d = L z; its regret is (L z)' W (L z) / 2 */
+replan : expect(expand((transpose(L . matrix([z1], [z2])) . W . (L . matrix([z1], [z2])))[1, 1]/2),
+                [z1, z2])$
+print("STEP 5 E[regret of re-planning] - tr(W S) / 2 =", ratsimp(replan - mat_trace(W . S)/2), " (0)")$
+
+print("=== STEP 4c: the bias the keep price's error subtracts ===")$
+M : W . S . W$
+qm : expand((transpose(dh) . M . dh)[1, 1])$
+print("STEP 4c E[dh' W S W dh] - d' W S W d - tr((W S)^2) =",
+      ratsimp(expect(qm, [z1, z2]) - (transpose(dvec) . M . dvec)[1, 1] - mat_trace(W . S . W . S)),
+      " (0)")$
+
+print("=== STEP 6: the covariance's scale ===")$
+scaled(n) := block([w, e, z, w1, w2, dh, raw],
+  w : makelist(concat(w, i), i, 1, n),
+  e : makelist(concat(e, i), i, 1, n),
+  z : makelist(m + sqrt(v)*e[i], i, 1, n),
+  w1 : apply("+", w), w2 : apply("+", w^2),
+  dh : sum(w[i]*z[i], i, 1, n)/w1,
+  raw : expand(sum(w[t]^2*(z[t] - dh)^2, t, 1, n)),
+  /* independent standard e: e_i^2 -> 1, then every term still holding an e has mean 0 */
+  for i thru n do raw : ratsubst(1, e[i]^2, raw),
+  for i thru n do raw : subst(e[i] = 0, raw),
+  ratsimp(raw - v*sum(w[t]^2*((w1 - w[t])^2 + (w2 - w[t]^2)), t, 1, n)/w1^2))$
+print("STEP 6 three weights:", scaled(3), " four weights:", scaled(4), " (0, 0)")$

@@ -37,7 +37,8 @@ What the guarantee needs, and the gate cannot check:
 
 A zone's channel is watched through per-decision drift e-values. :func:`channel_drift_evalues`
 reads them off the Gaussian dither a :class:`DecisionLog` records, and :class:`DriftAlarm` turns
-them into an alarm outside the gate as well.
+them into an alarm outside the gate as well. Once the channel has moved, :func:`channel_move`
+re-reads it off the same dither, and :meth:`ChannelMove.price` puts the move in a plan's own cost.
 """
 
 from __future__ import annotations
@@ -52,6 +53,8 @@ from typing import ClassVar, Literal
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import special
+
+from chc.plan import DecisionWeight
 
 _log = logging.getLogger(__name__)
 
@@ -402,6 +405,40 @@ def _entries(value: ArrayLike, shape: tuple[int, ...], name: str) -> _Array:
     return np.broadcast_to(array, shape)
 
 
+def _residual_rows(residual: ArrayLike, size: int) -> _Array:
+    """The residual as one row per decision and one column per state."""
+    rows = np.array(residual, dtype=np.float64)
+    if rows.ndim == 1:
+        rows = rows[:, None]
+    if rows.ndim != 2 or rows.shape[0] != size:
+        raise ValueError(
+            f"residual must have shape ({size},) or ({size}, states), one row per decision, got"
+            f" {rows.shape}"
+        )
+    if not np.all(np.isfinite(rows)):
+        raise ValueError("residual is not finite")
+    return rows
+
+
+def _standardised_dither(dither: _Array, sigma: _Array) -> _Array:
+    """The dither over its stated scale, refused when a two-sided chi-square test rejects the draws
+    as ``N(0, 1)`` there."""
+    xi = dither / sigma
+    size = xi.shape[0]
+    if size:
+        squares = np.sum(xi * xi, axis=0)
+        tail = 2.0 * np.minimum(special.chdtr(size, squares), special.chdtrc(size, squares))
+        if np.any(tail < _DITHER_LEVEL):
+            j = int(np.argmin(tail))
+            raise ValueError(
+                f"the dither of action {j}, over its dither_scale {sigma[j]:g}, has mean square"
+                f" {squares[j] / size:.4g} over {size} decisions, where N(0, 1) draws give 1"
+                f" (two-sided chi-square p = {tail[j]:.2g}): drawn at another scale than stated,"
+                " or a variance passed for a standard deviation"
+            )
+    return xi
+
+
 def channel_drift_evalues(
     log: DecisionLog,
     residual: ArrayLike,
@@ -470,16 +507,7 @@ def channel_drift_evalues(
     size = dither.shape[0]
     action = log.action if log.action.ndim == 2 else log.action[:, None]
     xi = dither if dither.ndim == 2 else dither[:, None]
-    r = np.array(residual, dtype=np.float64)
-    if r.ndim == 1:
-        r = r[:, None]
-    if r.ndim != 2 or r.shape[0] != size:
-        raise ValueError(
-            f"residual must have shape ({size},) or ({size}, states), one row per decision, got"
-            f" {r.shape}"
-        )
-    if not np.all(np.isfinite(r)):
-        raise ValueError("residual is not finite")
+    r = _residual_rows(residual, size)
     states, actions = r.shape[1], action.shape[1]
     sigma = _entries(dither_scale, (actions,), "dither_scale")
     scale = _entries(residual_scale, (states,), "residual_scale")
@@ -489,18 +517,7 @@ def channel_drift_evalues(
             raise ValueError(f"{name} must be positive, got {np.min(array)}")
     if not np.all(edge >= 0.0):
         raise ValueError(f"radius must be non-negative, got {np.min(edge)}")
-    xi = xi / sigma
-    if size:
-        squares = np.sum(xi * xi, axis=0)
-        tail = 2.0 * np.minimum(special.chdtr(size, squares), special.chdtrc(size, squares))
-        if np.any(tail < _DITHER_LEVEL):
-            j = int(np.argmin(tail))
-            raise ValueError(
-                f"the dither of action {j}, over its dither_scale {sigma[j]:g}, has mean square"
-                f" {squares[j] / size:.4g} over {size} decisions, where N(0, 1) draws give 1"
-                f" (two-sided chi-square p = {tail[j]:.2g}): drawn at another scale than stated,"
-                " or a variance passed for a standard deviation"
-            )
+    xi = _standardised_dither(xi, sigma)
     side = np.array([1.0, -1.0])
     moved = r[:, :, None, None] - side * edge[None, :, :, None] * action[:, None, :, None]
     bet = (moved / scale[None, :, None, None])[..., None] * (side[:, None] * _DRIFT_BETS)
@@ -582,6 +599,192 @@ class DriftAlarm:
                 return True
         self._running = running
         return False
+
+
+@dataclass(frozen=True)
+class MovePrice:
+    """What a move of the one-step channel costs a plan, against the plan that knew it, in
+    expectation. *Experimental.*
+
+    See :meth:`ChannelMove.price`.
+    """
+
+    # Keeping the plan: d' W d / 2, estimated without bias, so negative when the estimate's noise
+    # outweighs the move rather than clipped, which would bias it up.
+    keep: float
+    # keep's standard error: a scale, not coverage
+    keep_error: float
+    # A plan re-solved on the estimate: tr(W S) / 2, what the estimate's error costs it on average
+    replan: float
+
+
+@dataclass(frozen=True)
+class ChannelMove:
+    """How far the plant's one-step channel lies from the model's, read off a log's dither.
+    *Experimental.*
+
+    See :func:`channel_move`.
+    """
+
+    # (states, actions): the plant's one-step channel less the model's, per unit of action
+    estimate: NDArray[np.float64]
+    # (states * actions, states * actions): the estimate's covariance, entry (i, j) of the channel
+    # at index i * actions + j, the order chc.plan.DecisionWeight reads it in
+    covariance: NDArray[np.float64]
+    effective_size: float  # (sum w)^2 / sum w^2: how many equally weighted decisions it is worth
+
+    def price(self, weight: DecisionWeight) -> MovePrice:
+        """What the move costs the plan ``weight`` was read off, kept or re-solved on the estimate.
+
+        With ``W`` the plan's :meth:`chc.plan.CausalPlan.decision_weight`, ``d`` the move and ``S``
+        the covariance, keeping the plan loses ``d' W d / 2`` to the plan that knew ``d``, and a
+        plan re-solved on the estimate ``dh`` loses ``(dh - d)' W (dh - d) / 2``, ``tr(W S) / 2`` on
+        average. Since ``E[dh' W dh] = d' W d + tr(W S)``, keeping is priced at
+        ``(dh' W dh - tr(W S)) / 2``, and its standard error is ``sqrt(4 d' W S W d + 2 tr((W S)^2))
+        / 2``, with ``d' W S W d`` read as ``dh' W S W dh - tr((W S)^2)``, for the same reason, and
+        floored at 0: ``dh`` put in for ``d`` reads its variance three times too large on a channel
+        that has not moved (``validation/dither_channel_move.mac`` STEPs 4-5,
+        ``proofs/dither_channel_move.v``).
+
+        **Two expectations, not a decision rule.** Re-planning pays in expectation when
+        ``d' W d > tr(W S)``, but comparing the two prices of one log selects on its error: the
+        logs whose estimate reads a large move are the ones whose estimate errs most along ``W``,
+        and they are the ones re-planned. On the budgeted plan of
+        ``scripts/bench_channel_move.py``, 200 logs of each size, re-planning when the keep price
+        beat the re-plan price lost 0.149 where always keeping lost 0.095, at 30 decisions, and
+        0.100 and 0.043 where always re-planning lost 0.080 and 0.024, at 100 and 400. Re-planning
+        on the estimate shrunk by ``1 - tr(W S) / dh' W dh``, or choosing on one half of the log
+        and re-planning on the other, did no better than the better of the two throughout. Re-read
+        the move on the decisions logged after the choice, such as those after a
+        :class:`DriftAlarm` sounds, and the re-plan price is the re-solved plan's.
+
+        **How far they reach.** Both are second order in the move, and hold as far as ``W`` does:
+        while the plan's active set stays as it is, and for a move small against the channel (see
+        :meth:`chc.plan.CausalPlan.decision_weight`). With a move of 10-15% of the channel's
+        entries, the kept plan lost 0.095 where the keep price at the true move reads 0.107. A
+        plan re-solved on the estimate from 30 decisions lost 0.18 where the re-plan price read
+        0.37, its box capping how far it moved; from 400 and 1600, 0.024 and 0.0060 against 0.026
+        and 0.0066.
+
+        Raises:
+            ValueError: on a weight whose channel is not the move's shape.
+        """
+        if tuple(weight.channel_shape) != self.estimate.shape:
+            raise ValueError(
+                f"the weight reads a channel of shape {tuple(weight.channel_shape)}, the move is"
+                f" of shape {self.estimate.shape}"
+            )
+        w = np.asarray(weight.matrix, dtype=np.float64)
+        d = self.estimate.ravel()
+        ws = w @ self.covariance
+        trace, trace_squared = float(np.trace(ws)), float(np.trace(ws @ ws))
+        leverage = max(float(d @ ws @ w @ d) - trace_squared, 0.0)
+        return MovePrice(
+            keep=(float(d @ w @ d) - trace) / 2.0,
+            keep_error=math.sqrt(4.0 * leverage + 2.0 * trace_squared) / 2.0,
+            replan=trace / 2.0,
+        )
+
+
+def channel_move(
+    log: DecisionLog,
+    residual: ArrayLike,
+    *,
+    dither_scale: ArrayLike,
+    forgetting: float = 1.0,
+) -> ChannelMove:
+    """How far the plant's one-step channel lies from the model's, read off the logged dither, with
+    the older decisions forgotten at a constant rate. *Experimental.*
+
+    ``residual`` and ``dither_scale`` are :func:`channel_drift_evalues`': per decision, the next
+    state less the model's one-step prediction at the action as applied, and the standard deviation
+    each action's dither was drawn with. With ``xi = dither_j / dither_scale_j``, decision ``t``
+    reads entry ``(i, j)`` as the product ``z = residual_i xi_j / dither_scale_j``. On a plant whose
+    one-step map is ``g(x) + B u`` plus noise, ``residual_i = c + sum_k d_ik dither_k``, with ``d``
+    the plant's channel less the model's and ``c`` everything else: the model's error in ``g``, the
+    policy's action through ``d``, and the noise. When the dither is ``N(0, dither_scale^2)`` and
+    independent of ``c``, ``E[z] = d_ij`` whatever ``c`` holds, and ``c`` adds to the product's
+    variance rather than to its mean (``validation/dither_channel_move.mac`` STEPs 1-2).
+
+    The estimate is the products' mean under the weights ``forgetting^k``, ``k`` the decisions
+    since, so the last decision weighs 1. Re-read as decisions arrive, it follows a channel that
+    moves, and is worth ``(1 + forgetting) / (1 - forgetting)`` equally weighted decisions once the
+    log is long (STEP 3); ``1``, the default, weighs every decision alike. The covariance is the
+    products' own, weighted the same way and scaled so that it is unbiased when they share one:
+    ``E[sum_t w_t^2 (z_t - dh)(z_t - dh)'] = sum_t w_t^2 [(sum_(s != t) w_s)^2 + sum_(s != t)
+    w_s^2] Var(z) / (sum w)^2``, which is ``(n - 1) Var(z)`` for equal weights. The products'
+    errors are uncorrelated across decisions, since each dither is drawn after everything before
+    it, so it holds for noise that moves with the state as well; unequal variances leave a bias of
+    order ``1 / effective_size`` under forgetting, and none under equal weights.
+
+    :meth:`ChannelMove.price` reads the move in the cost of a plan: what keeping it costs, and what
+    re-solving it on the estimate would.
+
+    On the drift monitor's plant (``scripts/bench_channel_move.py``, 2000 paths), whose model has
+    the drift wrong and whose noise is Laplace, the estimate of a move of 0.07 lay within 0.75 of
+    its standard errors of it over 500 and 2000 decisions, at dithers of 0.3 and 1.0; its spread
+    was 0.99-1.03 of its standard error, and ``estimate +- 1.96`` of them covered the move on
+    0.943-0.955 of the paths. With the channel at 1.4 for the last 1000 of 4000 decisions, the
+    intervals covered what each estimate follows on 0.960 of the paths without forgetting and
+    0.951 forgetting at 0.995.
+
+    What the estimate needs, and the function cannot check: :func:`channel_drift_evalues`'
+    contract. A plant affine in the action over one step, since a response nonlinear in the action
+    reads into the product; a dither drawn as stated and applied as logged; and, for the move to be
+    one number per entry, a channel that does not move with the state over the log: the estimate
+    is the one-step channel's average over the decisions, weighted as above, and a plant integrated
+    over a step has a channel that carries the drift's Jacobian, to first order in the step.
+
+    Raises:
+        ValueError: on a log with no dither or with a clipped decision (see
+            :meth:`DecisionLog.dither_draws`), fewer than two decisions, a residual without one row
+            per decision or not finite, a ``dither_scale`` that is not positive or is neither a
+            scalar nor one per action, a dither the chi-square test in :func:`channel_drift_evalues`
+            rejects, a ``forgetting`` outside ``(0, 1]``, or one so close to 0 that a single
+            decision carries all the weight.
+    """
+    dither = log.dither_draws()
+    size = dither.shape[0]
+    xi = dither if dither.ndim == 2 else dither[:, None]
+    r = _residual_rows(residual, size)
+    if size < 2:
+        raise ValueError(f"{size} decisions: the estimate's covariance needs two at least")
+    if not 0.0 < forgetting <= 1.0:
+        raise ValueError(f"forgetting must lie in (0, 1], got {forgetting}")
+    states, actions = r.shape[1], xi.shape[1]
+    sigma = _entries(dither_scale, (actions,), "dither_scale")
+    if not np.all(sigma > 0.0):
+        raise ValueError(f"dither_scale must be positive, got {np.min(sigma)}")
+    xi = _standardised_dither(xi, sigma)
+    products = (r[:, :, None] * (xi / sigma)[:, None, :]).reshape(size, states * actions)
+    w = forgetting ** np.arange(size - 1, -1, -1, dtype=np.float64)
+    total, squares = float(w.sum()), w * w
+    estimate = w @ products / total
+    # Sums over the other decisions, as sums of positive terms: ``total - w_t`` cancels to nothing
+    # when one weight carries almost all of it.
+    others = _exclusive_sums(w)
+    spread = float(np.sum(squares * (others * others + _exclusive_sums(squares))))
+    if not spread > 0.0:
+        raise ValueError(
+            f"forgetting at {forgetting:g} leaves all the weight on the last decision: nothing is"
+            " left to estimate the covariance from"
+        )
+    centred = products - estimate
+    covariance = (centred.T * squares) @ centred * (float(squares.sum()) / spread)
+    for array in (estimate, covariance):
+        array.setflags(write=False)
+    return ChannelMove(
+        estimate=estimate.reshape(states, actions),
+        covariance=covariance,
+        effective_size=total * total / float(squares.sum()),
+    )
+
+
+def _exclusive_sums(values: _Array) -> _Array:
+    """``sum_(s != t) values_s`` for each ``t``, from the two sides, with nothing subtracted."""
+    before = np.concatenate([[0.0], np.cumsum(values)[:-1]])
+    after = np.concatenate([np.cumsum(values[::-1])[:-1][::-1], [0.0]])
+    return before + after
 
 
 def _growth(mean: float, variance: float) -> float:

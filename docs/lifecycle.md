@@ -146,4 +146,12 @@ documented, and what is not built yet. Every name below is importable from `chc`
   `DeploymentGate` holds or rolls back a zone on them. Scope: a plant affine in the action over one
   step, a dither drawn and applied as logged, and a radius that covers the identification error.
   See [`chc.gate`](api/gate.md).
-- **Not built:** anything that re-identifies the channel once it has moved.
+- **`channel_move`** (*experimental*). It re-reads the channel off the same dither once it has
+  moved: how far each entry lies from the model's, with a covariance, and with older decisions
+  forgotten at a constant rate. Its `price` reads the move in the plan's own cost, through
+  `CausalPlan.decision_weight()`. That gives two expectations: what keeping the plan loses,
+  estimated without bias, and what a plan re-solved on the estimate would lose to its noise. They
+  are not a rule. Compared on one log, they choose on the log's own error. See
+  [`chc.gate`](api/gate.md).
+- **Not built:** a re-solve on the estimate, since `causal_plan` plans on a continuous-time field
+  and the move is a one-step one; and a rule that chooses between keeping and re-planning.
