@@ -58,6 +58,16 @@ still change).
   - **The default does not move.** `dynamics_id` is in the stable tier, and what a constant channel
     does to the tube, the regret bound and the marketing-mix case study has not been measured.
 
+### Changed
+
+- **The suite runs over worker processes, and on the GPU from an opt-in group.** `pytest-xdist`
+  joins the `dev` group. `just test` runs the tests over four worker processes on the CPU, each
+  file in one worker; `just test 0` runs them in one process, as CI does. A `cuda` dependency
+  group holds JAX's CUDA 13 wheels, Linux only: the package does not depend on it and CI never
+  installs it. `just test-gpu` runs the suite on the GPU from its own environment, `.venv-cuda`,
+  since in `.venv` the plugin would load its CUDA libraries into every CPU process. How much time
+  the workers save has not been measured on a quiet machine.
+
 ## [0.8.0] — 2026-09-29
 
 ### Added

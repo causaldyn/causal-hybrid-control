@@ -12,6 +12,9 @@ uv sync --group dev
 Python 3.11–3.14. `uv.lock` is committed and authoritative — run everything through `uv run`, never a
 bare `python` / `pytest` / `ruff`, or you are testing a different dependency set from CI.
 
+CI runs CPython's default build. Where uv also manages a free-threaded 3.14t, it can take that for
+`.python-version`'s `3.14`; `uv sync --python 3.14+gil --group dev` makes the environment CI's.
+
 ## The gates
 
 CI runs exactly these, and a PR is expected to pass all of them locally first:
@@ -44,6 +47,14 @@ just proofs-mathcomp && just assumptions-mathcomp
 `tests/conftest.py` enables `jax_enable_x64`, so the suite runs in **float64** while a standalone
 `uv run python` script runs float32. Numbers calibrated in one regime can fail in the other — if you
 quote a measurement anywhere, produce it under the suite's settings.
+
+The suite runs on the CPU, as on CI. `just test` spreads it over four worker processes and
+`just test 0` keeps CI's single process; either way it needs about 12 GB, since a process keeps
+every program it compiled. The
+`cuda` dependency group holds jax's CUDA 13 wheels (Linux only); it is not a dependency of the
+package and CI never installs it. `just test-gpu` installs it into its own environment,
+`.venv-cuda`, and runs the suite on the GPU there. In any environment that has it, jax takes the GPU
+without being asked, so pin `JAX_PLATFORMS=cpu` for a number meant to match CI.
 
 ## What a change should look like
 

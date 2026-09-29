@@ -60,6 +60,7 @@ dev = [
     # tests/test_frames.py can prove the two agree with each other and with a plain mapping.
     "pandas>=2.0",
     "polars>=1.0",
+    "pytest-xdist>=3.8.0",
 ]
 viz = ["matplotlib>=3.8"]
 notebooks = [
@@ -73,6 +74,9 @@ notebooks = [
 docs = [
     "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.6",
+]
+cuda = [
+    "jax[cuda13] ; sys_platform == 'linux'",
 ]
 
 [build-system]

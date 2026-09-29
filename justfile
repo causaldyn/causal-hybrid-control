@@ -1,8 +1,9 @@
-# Verification loop for this project. `just check` runs exactly the four commands ci.yml's
-# `lint` and `test` jobs run, in the same order, so a green check here is a green CI; `just all`
-# adds the two gates CI keeps in separate jobs because they need Rocq and Maxima rather than
-# Python. CI invokes the commands directly rather than through `just`, so that a runner needs
-# no extra tooling -- if a recipe below and ci.yml ever disagree, ci.yml is the one that ships.
+# Verification loop for this project. `just check` runs the four commands ci.yml's `lint` and
+# `test` jobs run, in the same order, so a green check here is a green CI -- the tests on the CPU
+# as there, spread over worker processes where CI runs them in one. `just all` adds the two gates
+# CI keeps in separate jobs because they need Rocq and Maxima rather than Python. CI invokes the
+# commands directly rather than through `just`, so that a runner needs no extra tooling -- if a
+# recipe below and ci.yml ever disagree, ci.yml is the one that ships.
 
 default:
     @just --list
@@ -24,9 +25,22 @@ lint:
 types:
     uv run ty check
 
-# addopts already carries -q; a second one suppresses the summary line entirely.
-test:
-    uv run pytest
+# addopts already carries -q; a second one suppresses the summary line entirely. The tests run
+# over `workers` pytest-xdist processes, each file in one of them: a worker keeps the memory of
+# every program it compiled, so `--dist loadfile` compiles a file's programs and runs its module
+# fixtures once rather than in every worker, and the suite's memory barely depends on how many
+# workers share it (two ended at 6.0 and 5.6 GB). `just test 0` runs one process, as CI does; a
+# test that passes there and fails across workers reads another test's state. JAX_PLATFORMS pins
+# the CPU CI runs on, since jax takes the GPU unasked in an environment that has the `cuda` group.
+test workers="4":
+    JAX_PLATFORMS=cpu uv run pytest -n {{workers}} --dist loadfile
+
+# The same suite on the GPU. The opt-in `cuda` group (jax's CUDA 13 wheels, Linux only) is not a
+# dependency of the package and CI never installs it, and it gets its own environment: in `.venv`
+# every CPU process would load the plugin's libraries, 0.4 GB each. conftest.py runs the suite in
+# float64. Without preallocation the workers share the card rather than each claiming most of it.
+test-gpu workers="4":
+    UV_PROJECT_ENVIRONMENT=.venv-cuda JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false uv run --group cuda pytest -n {{workers}} --dist loadfile
 
 fix:
     uv run ruff check --fix .
