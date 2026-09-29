@@ -40,8 +40,9 @@ The README's tier table names the stable and the experimental modules one by one
 
 Modules that exist to carry one research result, and modules built ahead of the release that
 verifies them: on a plant CHC did not write, or, for the marketplace plant `zones`, in the
-pre-registered study it is the plant of. They may change or be withdrawn in any release. Pin an
-exact version if you depend on one.
+pre-registered study it is the plant of, and for the discount model `dlm` on an external media-mix
+generator. They may change or be withdrawn in any release. Pin an exact version if you depend on
+one.
 
 Ten entries in modules of other tiers are experimental on the same terms, for the same reason:
 the `weights` argument of `fit_causal_residual` and `solve_channel_moment`,

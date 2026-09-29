@@ -7,6 +7,42 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`chc.dlm`: a discount dynamic linear model** (*experimental*, ADR 0022). West and Harrison's
+  model, with blocks for a level or trend (`Polynomial`), Fourier seasonality over a period that
+  need not be an integer (`Seasonal`) and random-walk coefficients on regressors (`Regression`),
+  each with its own discount. `forward_filter` learns the observational variance (Normal–Gamma,
+  with a variance discount), returns the one-step Student `t` forecasts and their log-likelihood,
+  takes missing steps as `NaN`, and applies and logs a feed-back intervention at a named step.
+  `smooth` and `backward_sample` give the retrospective states; `forecast` the `k`-step ones;
+  `monitor_evalues` e-values of the one-step errors for `chc.gate.DriftAlarm`. NumPy in float64.
+  - **Component discounts combine additively by default**, as West and Harrison's do: each block's
+    own covariance is inflated and the covariance between blocks is left alone.
+    `form="multiplicative"` inflates by `D P D`, which with equal discounts is the single discount.
+  - **The smoother states each covariance in the units `E[V_t | D_T]`**, not the `S_t` the filter
+    had at `t`: `n_T S_T / (n_T − 2)` with a fixed variance, one quadrature a step with a moving
+    one. Its moments are those of `backward_sample`'s draws exactly, including the lag-one
+    covariances a period's total needs.
+  - **`forecast` holds the first step's evolution variance by default**; `"compounding"` applies
+    the discount at every step, 3.854 times the state variance 52 steps ahead at `delta = 0.95`.
+    Under the multiplicative form it refuses to hold a `W = D P D − P` that is not a variance.
+  - **An idle regressor winds up.** Its coefficient's variance grows by `1 / delta` a step while
+    the regressor is zero, 14.4 times over 52 weeks at 0.95, and a long run is logged
+    (`chc_event="dlm_windup"`). `Regression(hold_when_idle=True)` discounts only the steps whose
+    regressor is non-zero.
+  - **Checked** against PyBATS 0.0.5 (the filter to 2.7e-16; `hold_when_idle` to 1.7e-16 once
+    PyBATS's reading of the previous step's regressor is matched) and statsmodels' fixed-`W` level
+    at steady state (2.8e-7), each in a throwaway environment; `validation/discount_dlm.mac`; and
+    35 tests, among them the smoother against a batch Gaussian posterior built independently.
+  - **What the bench found** (`scripts/bench_dlm.py`, 500 series per world, 90% intervals): the
+    one-step forecasts cover 0.897 of data drawn from the model and 0.902 on random-walk
+    coefficients. A channel's contribution over the last 13 weeks, with the discounts picked by
+    one-step likelihood, covered 0.782 and 0.770: the likelihood picked the coefficients' discount
+    at 0.95 or above in 450 of the 500 series, and fixed at 0.85 or 0.9 it covers 0.884–0.898.
+    Averaging over the grid by likelihood covers 0.83. A period's return reported from the
+    likelihood's pick alone is too narrow.
+
 ## [0.8.0] — 2026-09-29
 
 ### Added

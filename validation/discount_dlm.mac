@@ -1,0 +1,97 @@
+/* The discount dynamic linear model behind chc.dlm (ADR 0022): the identities its docstrings state.
+
+   STEP 1  one discount with G = I is recursive least squares with forgetting:
+           C_t^-1 = delta C_(t-1)^-1 + F F' / V, and the gain is C_t F / V
+   STEP 2  unrolled from a vague prior, the mean is weighted least squares, weights delta^(T - t)
+   STEP 3  the weights' Kish effective size is (1 + delta) / (1 - delta)
+   STEP 4  a discounted level's steady state: C = V (1 - delta), gain 1 - delta, and the discount
+           is the fixed W / V = (1 - delta)^2 / delta
+   STEP 5  a level's k-step state variance: C (1 + k (1 - delta) / delta) with the evolution
+           variance held, C delta^-k compounding; 3.854 times apart at k = 52, delta = 0.95
+   STEP 6  an idle regressor's coefficient variance grows by delta^-k over k idle steps
+   STEP 7  the multiplicative form's W = D P D - P for two blocks is indefinite exactly when
+           rho^2 > (d1^2 - 1)(d2^2 - 1) / (d1 d2 - 1)^2, d_i = delta_i^(-1/2); never with equal
+           discounts
+   STEP 8  the smoother's variance factor: E[1 / phi] = int_0^inf E[exp(-u phi)] du, which for
+           phi ~ G(n / 2, n S / 2) is n S / (n - 2); the backward step phi_t = beta phi_(t+1) +
+           gamma_t adds (1 - beta) / S_t to the mean and 2 (1 - beta) / (n_t S_t^2) to the variance
+   STEP 9  West and Harrison's cumulative monitor at tau = 0.135 is e-CUSUM at threshold 1 / tau:
+           a guaranteed average run length of 7.4 steps
+
+   Run: timeout 300 maxima --very-quiet -b validation/discount_dlm.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 10$
+
+print("=== STEP 1: one discount with G = I is RLS with forgetting ===")$
+C0 : matrix([c11, c12], [c12, c22])$
+F : matrix([f1], [f2])$
+R : C0/delta$
+Q : transpose(F) . R . F + V$
+A : R . F / Q$
+C1 : R - A . transpose(A) * Q$
+print("C_t^-1 - (delta C_(t-1)^-1 + F F' / V) =",
+      fullratsimp(invert(C1) - (delta*invert(C0) + F . transpose(F)/V)))$
+print("A_t - C_t F / V =", fullratsimp(A - C1 . F / V))$
+
+print("=== STEP 2: from a vague prior, weighted least squares ===")$
+m1 : (p0*delta*m0 + f1*y1/V) / (p0*delta + f1^2/V)$
+p1 : p0*delta + f1^2/V$
+m2 : (p1*delta*m1 + f2*y2/V) / (p1*delta + f2^2/V)$
+p2 : p1*delta + f2^2/V$
+m3 : (p2*delta*m2 + f3*y3/V) / (p2*delta + f3^2/V)$
+wls : (delta^2*f1*y1 + delta*f2*y2 + f3*y3) / (delta^2*f1^2 + delta*f2^2 + f3^2)$
+print("three-step mean at p0 = 0 minus weighted LS with weights (delta^2, delta, 1):",
+      ratsimp(subst(p0 = 0, m3) - wls))$
+
+print("=== STEP 3: the Kish effective size of weights delta^k ===")$
+kish : ratsimp((1/(1 - delta))^2 / (1/(1 - delta^2)))$
+print("(sum w)^2 / sum w^2 =", factor(kish), "  minus (1 + delta)/(1 - delta):",
+      ratsimp(kish - (1 + delta)/(1 - delta)))$
+
+print("=== STEP 4: a discounted level's steady state ===")$
+/* C = R V / (R + V) with R = C / delta */
+sol : solve(C = (C/delta)*V / (C/delta + V), C)$
+Css : rhs(first(sublist(sol, lambda([s], rhs(s) # 0))))$
+print("steady C =", factor(Css))$
+print("gain R / (R + V) =", factor(ratsimp((Css/delta)/(Css/delta + V))))$
+print("W / V = (R - C) / V =", factor(ratsimp((Css/delta - Css)/V)))$
+
+print("=== STEP 5: a level's k-step state variance under each policy ===")$
+held(k) := 1 + k*(1 - delta)/delta$
+compounding(k) := delta^(-k)$
+print("held W, one step ahead, minus compounding:", ratsimp(held(1) - compounding(1)))$
+print("compounding / held at k = 52, delta = 0.95:",
+      float(subst(delta = 0.95, compounding(52)/held(52))))$
+
+print("=== STEP 6: an idle regressor's windup delta^-52 ===")$
+for d in [0.98, 0.95, 0.90] do print("  delta =", d, ":", float(d^(-52)))$
+
+print("=== STEP 7: the multiplicative form's W for two correlated blocks ===")$
+P : matrix([s1^2, rho*s1*s2], [rho*s1*s2, s2^2])$
+Dm : matrix([d1, 0], [0, d2])$
+W : Dm . P . Dm - P$
+detW : factor(determinant(W))$
+print("det W =", detW)$
+print("det W - s1^2 s2^2 ((d1^2 - 1)(d2^2 - 1) - (d1 d2 - 1)^2 rho^2) =",
+      ratsimp(determinant(W) - s1^2*s2^2*((d1^2 - 1)*(d2^2 - 1) - (d1*d2 - 1)^2*rho^2)))$
+print("equal discounts, d1 = d2 = d: det W =", factor(subst([d1 = d, d2 = d], determinant(W))),
+      " (>= 0: W = P (d^2 - 1))")$
+thr(a, b) := sqrt((1/a - 1)*(1/b - 1)) / (1/sqrt(a*b) - 1)$
+print("|rho| threshold at discounts (0.99, 0.8):", float(thr(0.99, 0.8)))$
+print("the same, (0.95, 0.9):", float(thr(0.95, 0.9)))$
+print("(d1 d2 - 1)^2 - (d1^2 - 1)(d2^2 - 1) =", factor(expand((d1*d2 - 1)^2 - (d1^2 - 1)*(d2^2 - 1))),
+      " (>= 0, so the threshold is at most 1)")$
+
+print("=== STEP 8: the smoother's variance factor ===")$
+assume(a > 1, b > 0, u > 0, n > 2, S > 0)$
+declare(a, noninteger)$
+print("int_0^inf (1 + u / b)^-a du =", integrate((1 + u/b)^(-a), u, 0, inf), " = E[1 / X], X ~ G(a, b)")$
+print("E[1 / phi], phi ~ G(n / 2, n S / 2):", ratsimp(subst([a = n/2, b = n*S/2], b/(a - 1))))$
+gm : ((1 - beta)*n/2) / (n*S/2)$
+gv : ((1 - beta)*n/2) / (n*S/2)^2$
+print("E gamma_t =", ratsimp(gm), "   Var gamma_t =", ratsimp(gv))$
+
+print("=== STEP 9: West and Harrison's monitor as e-CUSUM ===")$
+print("1 / 0.135 =", float(1/0.135))$

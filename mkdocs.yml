@@ -141,6 +141,7 @@ nav:
           - api/causal_bench.md
           - api/deep_galerkin.md
           - api/discovery.md
+          - api/dlm.md
           - api/epidemic.md
           - api/experiment.md
           - api/flagship.md
