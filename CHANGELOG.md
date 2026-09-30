@@ -9,6 +9,33 @@ still change).
 
 ### Added
 
+- **A check on what the logger read** (*experimental*, ADR 0028). `prescribe` asks the panel it
+  fits, and `Prescription.evaluate` the panel it evaluates, whether the levers read anything but
+  the states and their recorded parents: a column the graph says no lever causes, a driver, or the
+  past. `Prescription.logger_check` and `PlanEvaluation.logger_check` hold the answer, a
+  `LoggerCheck`, and `Prescription.report()` prints it. A rejection is logged as a warning
+  (`chc_event="logger_check"`) and changes nothing else.
+  - **`chc.independence.gcm_test`** is the test: Shah and Peters' generalised covariance measure
+    over every pair at once, with in-sample regressions on the monomials of the conditioning set,
+    sums within each period, and sign changes over the periods. A column the conditioning set
+    determines is left out.
+  - **Why the periods, not the units.** When the logger read the state and fresh noise, each
+    period's sum is a martingale difference, however the state is autocorrelated, and noise the
+    units share stays inside it. Over 1000 panels a case, it rejected 4.3-6.9% at 5% on one run
+    of 4000 steps, on one or five geos over 104-260 weeks, and on 30-300 units over 10-20 periods,
+    shared shocks included. Clusters by unit rejected 26.6% on five geos, and 51.0-88.2% with a
+    shared shock; cross-fitting by unit 16.4% there, by time 13.8% on one geo; the GCM over rows
+    19.6-85.2% with a shared shock (500 panels a case, `scripts/bench_logger_check.py`).
+  - **What a pass means.** `detectable` is the partial correlation each pair would be caught at
+    eight times in ten. The statistic normalises itself, so it is read through Student's t on the
+    periods' sums: over 10-40 clusters it was caught 77-82% of the time there, where a normal
+    reading gave a value caught 63-74% of the time.
+  - **What a flag means: a premise failing, not a measured cost.** On the lifecycle test's market,
+    400 panels a case, a logger that chased demand was flagged on every panel while the estimate's
+    mean error stayed within 0.71 of its standard error and the interval still covered. One that
+    kept half its last incentive was flagged too, and the interval at `model_error=0` covered
+    91.2%.
+
 - **`chc.dlm`: a discount dynamic linear model** (*experimental*, ADR 0022). West and Harrison's
   model, with blocks for a level or trend (`Polynomial`), Fourier seasonality over a period that
   need not be an integer (`Seasonal`) and random-walk coefficients on regressors (`Regression`),

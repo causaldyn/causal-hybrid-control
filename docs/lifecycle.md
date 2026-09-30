@@ -91,8 +91,12 @@ documented, and what is not built yet. Every name below is importable from `chc`
 - **A prescription's `evaluate`.** It evaluates the prescribed schedule from a later panel, before
   it is deployed, by importance sampling over episodes: the panel's windows of `H + 1` consecutive
   periods, on the plan's model linearised at their mean. It refuses a plan whose levers were logged
-  on a column outside its state, and one made against driver forecasts. See
-  [`chc.decision`](api/decision.md).
+  on a column outside its state, and one made against driver forecasts. It also asks the panel,
+  as `prescribe` asks the one it fits, whether the levers read anything besides the state and
+  their recorded parents, and warns when they did (*experimental*): a premise failing, not a
+  measured cost
+  ([ADR 0028](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0028-asking-the-panel-what-the-logger-read.md)).
+  See [`chc.decision`](api/decision.md).
 - **`off_policy_value`.** It weights one step at a time. So it estimates a candidate's value on
   the logger's own states, which is the contextual-bandit value. That is not the value of
   deploying a plan on a plant with memory. See [`chc.offpolicy`](api/offpolicy.md).

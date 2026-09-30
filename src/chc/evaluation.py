@@ -76,6 +76,7 @@ from scipy.linalg import solve_discrete_lyapunov
 from scipy.stats import t as student
 
 from chc.cost import QuadraticCost
+from chc.independence import GcmTest
 
 _log = logging.getLogger(__name__)
 
@@ -322,6 +323,31 @@ class PlanEvaluation:
     model_share: float
     effective_samples: float | None
     degrees_of_freedom: float | None
+    # whether the logs' actions read anything but the plan's state: filled by
+    # :meth:`chc.decision.Prescription.evaluate`, which knows the columns' names, and None from
+    # :func:`evaluate_plan`, which does not
+    logger_check: LoggerCheck | None = None
+
+
+@dataclass(frozen=True)
+class LoggerCheck:
+    """Whether the logs' actions read ``given`` and a randomisation of their own alone, tested
+    against ``columns`` by :func:`chc.independence.gcm_test`. *Experimental.*
+
+    The weights read the logger's propensity given the plan's state. A logger that also read
+    another column before it acted, or the state's past, has another propensity, which the weights
+    do not see. ``test.p_value`` is the chance of a dependence this large if it read nothing else.
+    A pass is not a confirmation: ``test.detectable`` is the partial correlation each pair could
+    have shown. Nor is a rejection a measured cost. Over 400 units and 12 periods, a logger that
+    chased demand was flagged on every panel while the estimate's mean error stayed within 0.71 of
+    its standard error; one that kept half its last incentive was flagged too, and the interval at
+    ``model_error=0`` covered 91% (ADR 0028).
+    """
+
+    levers: tuple[str, ...]  # the rows of ``test``'s arrays
+    given: tuple[str, ...]  # what the levers and ``columns`` were regressed on
+    columns: tuple[str, ...]  # the arrays' columns; a column one period back is ``name[t-1]``
+    test: GcmTest
 
 
 class InfeasibleEvaluation(ValueError):

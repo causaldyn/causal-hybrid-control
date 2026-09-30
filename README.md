@@ -323,14 +323,15 @@ Three tiers, by what a break costs you:
 | **evolving** | the estimator, certificate and domain layers — `causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace` `mmm` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
 | **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` — and modules built ahead of the release that verifies them — `experiment` `switchback` on a plant CHC did not write, `zones` in the pre-registered study it is the plant of, `dlm` on an external media-mix generator, `misspecification` on the zone plant | may change or be withdrawn in any release. Pin an exact version if you depend on one |
 
-Sixteen entries in modules of other tiers are experimental on the same terms, for the same
-reason: the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its
-`influence` argument with the field of that name, and the `unmoved` field of
-`CausalDynamicsFit`, `callaway_santanna_inference` and `EventStudyInference` in `did`,
-`synthetic_control_inference` and `SyntheticControlInference` in `scm`,
-`shadow_price_effect` and `shadow_price_interval` in `matching`, `channel_drift_evalues`,
-`DriftAlarm`, `channel_move`, `ChannelMove` and `MovePrice` in `gate`, and
-`CausalPlan.decision_weight` and `DecisionWeight` in `plan`.
+Twenty entries in modules of other tiers are experimental on the same terms, for the same reason:
+the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its `influence` argument
+with the field of that name, and the `unmoved` field of `CausalDynamicsFit`,
+`callaway_santanna_inference` and `EventStudyInference` in `did`, `synthetic_control_inference` and
+`SyntheticControlInference` in `scm`, `gcm_test` and `GcmTest` in `independence`, `LoggerCheck` in
+`evaluation`, the `logger_check` field of `Prescription` and `PlanEvaluation`, `shadow_price_effect`
+and `shadow_price_interval` in `matching`, `channel_drift_evalues`, `DriftAlarm`, `channel_move`,
+`ChannelMove` and `MovePrice` in `gate`, and `CausalPlan.decision_weight` and `DecisionWeight` in
+`plan`.
 
 Roadmap: **0.9.0** experiments and identification — the experiment that moves a plan,
 identification weighted by the decision, and inference for `did` and `scm` through maintained

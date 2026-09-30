@@ -290,7 +290,15 @@ def test_each_selection_step_leaves_one_structured_record(caplog: pytest.LogCapt
         result = _prescribe(max_levers=2)
     ours = [record for record in caplog.records if record.name == "chc.decision"]
     events = [str(getattr(record, "chc_event", "")) for record in ours]
-    assert events == ["adjustment", "fit", "selection", "selection", "plan", "certificate"]
+    assert events == [
+        "adjustment",
+        "logger_check",
+        "fit",
+        "selection",
+        "selection",
+        "plan",
+        "certificate",
+    ]
     assert result.selection is not None
     records = [record for record in ours if getattr(record, "chc_event", "") == "selection"]
     for number, (record, step) in enumerate(zip(records, result.selection.steps, strict=True), 1):

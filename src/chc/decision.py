@@ -49,10 +49,12 @@ from chc.evaluation import (
     AffinePolicy,
     AffineSchedule,
     LinearGaussianPlant,
+    LoggerCheck,
     PlanEvaluation,
     evaluate_plan,
 )
 from chc.graph import AdjustmentSet, CausalGraph
+from chc.independence import gcm_test
 from chc.integrate import rk4_step
 from chc.lqr import linearize_continuous, linearize_discrete
 from chc.panel import Panel, Provenance
@@ -95,13 +97,16 @@ _log = logging.getLogger(__name__)
 """Decision-point log for :func:`prescribe`, on the stdlib and nothing else.
 
 Every record carries a ``chc_event`` key in its ``extra`` payload naming the point it was emitted
-at --- ``precision``, ``adjustment``, ``fit``, ``abort``, ``selection`` (one per step under
-``max_levers``), ``plan``, ``certificate`` --- so a JSON formatter downstream can route on one field
-rather than parse a sentence. The library installs no handler and sets no level: that is the
-application's call, and a library that reaches for ``basicConfig`` takes it away.
+at --- ``precision``, ``adjustment``, ``logger_check``, ``fit``, ``abort``, ``selection`` (one per
+step under ``max_levers``), ``driver_range``, ``plan``, ``certificate`` --- so a JSON formatter
+downstream can route on one field rather than parse a sentence. The library installs no handler and
+sets no level: that is the application's call, and a library that reaches for ``basicConfig`` takes
+it away.
 
-The two records that are not ``INFO`` are the two worth waking someone for: identifying in single
-precision, and a graph that says the effect is not identified at all.
+The records that are not ``INFO`` are the ones worth waking someone for: identifying in single
+precision, a graph that says the effect is not identified at all, a driver's forecast outside the
+range the panel logged, and levers that read a column besides the state and their recorded
+parents.
 """
 
 IdentificationStatus = Literal["identified", "asserted", "not_identified"]
@@ -304,6 +309,18 @@ class _Columns:
     # What the levers were logged on besides one another: their parents in the graph, or the
     # covariates an asserted adjustment names.
     logged_on: tuple[str, ...]
+    # Columns the record says were fixed before the levers moved and not logged on: the graph's
+    # observed columns that no lever causes, and the drivers. What the logger check tests besides
+    # the past.
+    unlogged: tuple[str, ...] = ()
+    # The levers' parents the logger check cannot condition on: latent in the graph, or not a
+    # numeric column of the panel. The check needs every parent, so it is not run without them.
+    unreadable: tuple[str, ...] = ()
+
+    @property
+    def given(self) -> tuple[str, ...]:
+        """What the levers may have read: the states, then their parents outside the states."""
+        return tuple(dict.fromkeys((*self.states, *self.logged_on)))
 
 
 @dataclass(frozen=True)
@@ -320,6 +337,10 @@ class Prescription:
     # lever: an unselected one is zero throughout.
     selection: LeverSelection | None = None
     drivers: tuple[Driver, ...] = ()  # the forecasts the plan was made against
+    # Whether the panel's levers read anything but the states and their parents in the record. It
+    # is reported, not acted on; None when a lever's parent is not logged, or the panel has too few
+    # rows for it. *Experimental.*
+    logger_check: LoggerCheck | None = None
     _columns: _Columns | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -373,6 +394,11 @@ class Prescription:
         follow each other, so they are dependent through the state, which the interval does not
         see.
 
+        What the graph cannot say, the panel is asked: whether the levers read a column besides the
+        state, or the state's past (:attr:`PlanEvaluation.logger_check`, as
+        :attr:`Prescription.logger_check` on the panel the plan was fitted on). A rejection is
+        logged as a warning and changes nothing else. *Experimental.*
+
         Raises:
             NotIdentifiedError: if the effect is not identified, so there is no plan.
             DecisionError: on a plan made against driver forecasts, whose plant changes with the
@@ -411,7 +437,8 @@ class Prescription:
         logs = _episodes(
             panel, states=columns.states, levers=self.lever_names, horizon=len(actions)
         )
-        return evaluate_plan(
+        logger_check = _check_logger(panel, levers=self.lever_names, columns=columns)
+        evaluation = evaluate_plan(
             logs,
             AffineSchedule.open_loop(actions, len(columns.states)),
             "pdis",
@@ -422,6 +449,7 @@ class Prescription:
             model_error=model_error,
             min_effective=min_effective,
         )
+        return replace(evaluation, logger_check=logger_check)
 
     def reach(self) -> dict[str, float]:
         """Per lever, how far it can move the target's rate across its own box.
@@ -493,6 +521,7 @@ class Prescription:
             *self._driver_lines(),
             f"- channel standard error: {_show(certificate.identification_radius)}",
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
+            self._logger_line(),
             f"- error tube: **{certificate.certificate_status}**, "
             f"certified horizon {_show(certificate.certified_horizon)}",
             f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}, "
@@ -552,6 +581,30 @@ class Prescription:
             ],
             "provenance": self.provenance.to_json(),
         }
+
+    def _logger_line(self) -> str:
+        check = self.logger_check
+        if check is None:
+            unreadable = () if self._columns is None else self._columns.unreadable
+            if unreadable:
+                names = list(unreadable)
+                return f"- logger check: not run, the levers' parents {names} are not logged"
+            return "- logger check: not run, too few rows"
+        test = check.test
+        if math.isnan(test.p_value):
+            return "- logger check: nothing to test, the state determines every column"
+        head = f"p = {test.p_value:.3g} over {test.clusters} periods"
+        if test.p_value <= _LOGGER_CHECK_ALPHA:
+            correlation = test.partial_correlation
+            lever, column = np.unravel_index(np.nanargmax(np.abs(correlation)), correlation.shape)
+            return (
+                f"- logger check: **the levers read more than the record says** ({head}); "
+                f"strongest: `{check.levers[lever]}` on `{check.columns[column]}`, partial "
+                f"correlation {correlation[lever, column]:+.2f}"
+            )
+        seen = test.detectable[np.isfinite(test.detectable)]
+        missed = f"a partial correlation up to {seen.max():.2g}" if seen.size else "any dependence"
+        return f"- logger check: passed ({head}); a pass can miss {missed}"
 
     def _driver_lines(self) -> list[str]:
         gain = self.model_fit.driver_gain
@@ -666,8 +719,13 @@ def prescribe(
 
     Each decision point emits one ``logging`` record on ``chc.decision``, keyed by ``chc_event``
     (see :data:`_log`). Nothing is configured here; a caller that wants them calls
-    ``logging.basicConfig`` itself. An unidentified effect and a single-precision panel are the two
-    that come through at ``WARNING``.
+    ``logging.basicConfig`` itself. An unidentified effect, a single-precision panel, a forecast
+    outside the logged range and levers that read more than the record says come through at
+    ``WARNING``.
+
+    Before fitting, the panel is asked whether the levers read anything but the states and their
+    recorded parents: :attr:`Prescription.logger_check` (*experimental*). It reports; it changes
+    nothing else.
     """
     if not levers:
         raise DecisionError(
@@ -717,13 +775,20 @@ def prescribe(
         )
 
     resolved = _resolve_adjustment(adjustment, panel=panel, target=target, levers=lever_names)
+    if isinstance(adjustment, CausalGraph):
+        parents = {p for lever in lever_names for p in adjustment.parents(lever)}
+        logged_on = tuple(sorted(parents - {*lever_names}))
+        uncaused = set(adjustment.observed) - adjustment.descendants(lever_names)
+        latent = set(logged_on) - set(adjustment.observed)
+    else:
+        logged_on, uncaused, latent = resolved.covariates, set(), set()
     columns = _Columns(
         states=states,
-        logged_on=tuple(
-            sorted({p for lever in lever_names for p in adjustment.parents(lever)} - {*lever_names})
-        )
-        if isinstance(adjustment, CausalGraph)
-        else resolved.covariates,
+        logged_on=logged_on,
+        unlogged=tuple(sorted((uncaused | {*driver_names}) - {*states, *logged_on})),
+        unreadable=tuple(
+            name for name in logged_on if name in latent or not _readable(panel, name)
+        ),
     )
     _log.info(
         "adjustment resolved",
@@ -734,6 +799,7 @@ def prescribe(
             "covariates": list(resolved.covariates),
         },
     )
+    logger_check = _check_logger(panel, levers=lever_names, columns=columns)
     data = _transitions(
         panel,
         states=states,
@@ -804,6 +870,7 @@ def prescribe(
             model_fit=fit,
             provenance=panel.provenance,
             drivers=tuple(drivers),
+            logger_check=logger_check,
             _columns=columns,
         )
 
@@ -927,6 +994,7 @@ def prescribe(
         provenance=panel.provenance,
         selection=selection,
         drivers=tuple(drivers),
+        logger_check=logger_check,
         _columns=columns,
     )
 
@@ -1077,6 +1145,92 @@ def _transitions(
     )
     data["x0"] = jnp.mean(stack(states, final_rows), axis=0)
     return data
+
+
+# The class :func:`chc.dynamics_id.fit_causal_residual` regresses the levers on by default.
+_LOGGER_CHECK_DEGREE = 2
+_LOGGER_CHECK_ALPHA = 0.05  # the level at which a check is logged as a warning
+
+
+def _readable(panel: Panel, name: str) -> bool:
+    return name in panel.columns and np.issubdtype(panel[name].dtype, np.number)
+
+
+def _check_logger(
+    panel: Panel, *, levers: tuple[str, ...], columns: _Columns
+) -> LoggerCheck | None:
+    """Whether the levers read anything but ``columns.given``, over every period of a unit that
+    follows another of the same unit, by :func:`chc.independence.gcm_test` with the periods as
+    clusters.
+
+    Tested against the numeric columns of ``columns.unlogged`` the panel holds, at the period, and
+    against ``given`` and the levers one period back: the past a Markov logger ignores. ``None``,
+    logged, when a lever's parent cannot be read or the rows are fewer than twice the regression's
+    terms. A rejection is logged as a warning.
+    """
+    if columns.unreadable:
+        _log.info(
+            "logger not checked: the levers' parents are latent or not in the panel",
+            extra={"chc_event": "logger_check", "unreadable": list(columns.unreadable)},
+        )
+        return None
+    given = columns.given
+    unit_codes, time_codes = panel.codes()
+    row_of = {
+        (int(unit), int(period)): row
+        for row, (unit, period) in enumerate(zip(unit_codes, time_codes, strict=True))
+    }
+    pairs = [
+        (row, row_of[(unit, period - 1)])
+        for (unit, period), row in sorted(row_of.items())
+        if (unit, period - 1) in row_of
+    ]
+    terms = math.comb(len(given) + _LOGGER_CHECK_DEGREE, _LOGGER_CHECK_DEGREE)
+    if len(pairs) < 2 * terms:
+        _log.info(
+            "logger not checked: too few rows",
+            extra={"chc_event": "logger_check", "rows": len(pairs), "terms": terms},
+        )
+        return None
+    now = np.array([row for row, _ in pairs], dtype=np.int64)
+    before = np.array([previous for _, previous in pairs], dtype=np.int64)
+
+    def read(names: Sequence[str], rows: NDArray[np.int64]) -> NDArray[np.float64]:
+        return np.column_stack([np.asarray(panel[name], dtype=np.float64)[rows] for name in names])
+
+    present = tuple(name for name in columns.unlogged if _readable(panel, name))
+    past = (*given, *levers)
+    against = (
+        read(past, before) if not present else np.hstack([read(present, now), read(past, before)])
+    )
+    check = LoggerCheck(
+        levers=levers,
+        given=given,
+        columns=(*present, *(CausalGraph.lagged_name(name, 1) for name in past)),
+        test=gcm_test(
+            read(levers, now),
+            against,
+            read(given, now),
+            clusters=time_codes[now],
+            degree=_LOGGER_CHECK_DEGREE,
+        ),
+    )
+    rejected = check.test.p_value <= _LOGGER_CHECK_ALPHA
+    _log.log(
+        logging.WARNING if rejected else logging.INFO,
+        "the levers read a column besides the state and their recorded parents"
+        if rejected
+        else "logger checked",
+        extra={
+            "chc_event": "logger_check",
+            "p_value": check.test.p_value,
+            "given": list(check.given),
+            "columns": list(check.columns),
+            "rows": len(pairs),
+            "clusters": check.test.clusters,
+        },
+    )
+    return check
 
 
 def _episodes(

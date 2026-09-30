@@ -53,17 +53,21 @@ EDGES = [
 ]
 
 
-def _logs(n_units: int = 200, n_periods: int = 12, seed: int = 0) -> dict[str, np.ndarray]:
-    """Two zones of a driver pool under one incentive, logged by a policy that chases demand."""
+def _logs(
+    n_units: int = 200, n_periods: int = 12, seed: int = 0, sticky: float = 0.0
+) -> dict[str, np.ndarray]:
+    """Two zones of a driver pool under one incentive, logged by a policy that chases demand, and
+    that keeps ``sticky`` of its last incentive."""
     rng = np.random.default_rng(seed)
     rows: dict[str, list[float]] = {
         name: [] for name in ("unit", "time", "supply", "wait", "incentive", "demand")
     }
     for unit in range(n_units):
         supply, wait = rng.normal(0.0, 0.2), rng.normal(0.0, 0.2)
+        incentive = 0.0
         for period in range(n_periods):
             demand = rng.normal(0.0, 1.0)
-            incentive = 0.9 * demand + rng.normal(0.0, 0.5)
+            incentive = 0.9 * demand + sticky * incentive + rng.normal(0.0, 0.5)
             rows["unit"].append(unit)
             rows["time"].append(period)
             rows["supply"].append(supply)
@@ -127,6 +131,21 @@ def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
     with pytest.raises(NotIdentifiedError, match="not identified"):
         _ = result.schedule
     assert "no schedule" in result.report().lower()
+
+
+def test_a_latent_parent_the_panel_does_not_hold_leaves_the_logger_unchecked() -> None:
+    """The check conditions on the levers' parents, so it cannot run without one; the rest of the
+    unidentified path goes on as before, whether or not the panel holds a column by that name."""
+    graph = CausalGraph.from_edges(EDGES, latent=("demand",))
+    logs = _logs()
+    logs.pop("demand")
+    for panel in (_panel(), Panel.from_frame(logs, unit="unit", time="time", seed=0)):
+        result = _prescribe(panel, graph)
+        assert result.certificate.identification == "not_identified"
+        assert result.logger_check is None
+        assert "- logger check: not run, the levers' parents ['demand'] are not logged" in (
+            result.report()
+        )
 
 
 def test_a_plan_whose_levers_were_logged_on_a_column_outside_its_state_is_not_evaluated() -> None:
@@ -407,6 +426,7 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
     report = result.report()
     assert "# Prescription for `supply`" in report
     assert "Trustworthy prefix: 15 steps" in report
+    assert "- logger check: passed (p = " in report
     assert result.provenance.data_sha256[:16] in report
 
 
@@ -659,11 +679,41 @@ def _events(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [str(getattr(record, "chc_event", "")) for record in caplog.records]
 
 
+def test_the_logger_check_flags_a_graph_that_leaves_out_what_the_levers_read() -> None:
+    """The graph without the policy's edge from demand says demand was fixed before the incentive
+    and not read; the panel says otherwise, and the check says so before anything is fitted."""
+    panel = _panel()
+    right = _prescribe(panel, CausalGraph.from_edges(EDGES)).logger_check
+    missing = CausalGraph.from_edges([edge for edge in EDGES if edge != ("demand", "incentive")])
+    prescription = _prescribe(panel, missing)
+    wrong = prescription.logger_check
+    assert right is not None
+    assert wrong is not None
+    assert right.given == ("supply", "wait", "demand")
+    assert right.test.p_value > 0.05
+    assert wrong.given == ("supply", "wait")
+    assert wrong.test.p_value <= 0.05
+    strongest = np.nanargmax(np.abs(wrong.test.partial_correlation[0]))
+    assert wrong.columns[strongest] == "demand"
+    assert "strongest: `incentive` on `demand`" in prescription.report()
+
+
+def test_the_logger_check_sees_a_policy_that_keeps_part_of_its_last_incentive() -> None:
+    """The graph has the right parents; the policy also reads its own past, which the weights of a
+    policy of the state do not."""
+    panel = Panel.from_frame(_logs(sticky=0.5), unit="unit", time="time", seed=0)
+    check = _prescribe(panel, CausalGraph.from_edges(EDGES)).logger_check
+    assert check is not None
+    assert check.test.p_value <= 0.05
+    strongest = np.nanargmax(np.abs(check.test.partial_correlation[0]))
+    assert check.columns[strongest] == "incentive[t-1]"
+
+
 def test_every_decision_point_leaves_a_structured_record(caplog: pytest.LogCaptureFixture) -> None:
     """Each record names its point in `chc_event`, so a handler routes on a field, not on prose."""
     with caplog.at_level(logging.INFO, logger="chc.decision"):
         _prescribe(_panel(n_units=40, n_periods=8), CausalGraph.from_edges(EDGES))
-    assert _events(caplog) == ["adjustment", "fit", "plan", "certificate"]
+    assert _events(caplog) == ["adjustment", "logger_check", "fit", "plan", "certificate"]
     fit = caplog.records[_events(caplog).index("fit")]
     assert getattr(fit, "method", None) == "orthogonal"
     assert getattr(fit, "transitions", 0) > 0
