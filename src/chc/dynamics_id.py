@@ -46,6 +46,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from scipy.optimize import brentq
+from scipy.stats import norm
 
 from chc.causal import _polynomial_features, _ridge_predict
 from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics
@@ -185,6 +187,16 @@ class CausalDynamicsFit:
     # The moment has no data there and the ridge sets the channel, whatever ``channel_error`` says.
     # ``r`` is 0 when the log moves every direction.
     unmoved: Array | None = None
+    # (N, n, q), kept with ``influence``, ``q`` the channel's size in its raveled order: ``N`` times
+    # each transition's weight, per state, in each channel coefficient through the channel's moment
+    # with the cross-fitted nuisances held, less the drift regression's own weight on the row, which
+    # reads the state alone and so carries no omitted confounder's push. It is the plug-in Riesz
+    # representer of every linear functional of the channel, ``N (D'D)^-1 D_i`` under Euler, which
+    # :func:`omitted_confounder_bound` reads. Under ``rk4`` it goes through the fixed point, to
+    # first order, as ``influence`` does.
+    representer: Array | None = None
+    # (N, n), kept with ``influence``: the channel moment's residual, ``y_res - D c``, per state.
+    moment_residual: Array | None = None
 
 
 def _r_squared(target: Array, prediction: Array) -> float:
@@ -319,6 +331,12 @@ def _influence(
         jnp.einsum("pis,is->isp", sensitivity, score)
         + jnp.einsum("pis,is->isp", direct, drift_score - score)
     )
+
+
+def _representer(sensitivity: Array) -> Array:
+    """``(q, N, n)`` weights of the channel's coefficients on each row's rate, as ``(N, n, q)``
+    times ``N``, the scale whose mean square is the representer's second moment."""
+    return sensitivity.shape[1] * jnp.transpose(sensitivity, (1, 2, 0))
 
 
 def _unmoved_directions(
@@ -579,8 +597,10 @@ def fit_causal_residual(
         influence: whether to keep each transition's influence on the fitted parameters,
             :attr:`CausalDynamicsFit.influence`, which
             :func:`chc.misspecification.misspecification_cost` reads to compare two fits of one
-            log. Off by default: under ``euler`` it costs a reverse pass per parameter rather than
-            per channel coefficient, and it is ``N n p`` numbers the fit then carries.
+            log, and beside it the channel's representer and moment residual, which
+            :func:`omitted_confounder_bound` reads. Off by default: under ``euler`` it costs a
+            reverse pass per parameter rather than per channel coefficient, and it is ``N n p``
+            numbers the fit then carries, and ``N n q`` more.
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
@@ -631,13 +651,8 @@ def fit_causal_residual(
         x.shape[1],
     )
 
-    def solve(y: Array) -> tuple[Array, Array, tuple[Array, Array, Array, Array, Array]]:
-        """The channel and the drift regression's coefficients a target ``y`` fits to, with the
-        residualisation behind them. Linear in ``y``, which the ``rk4`` fixed point relies on."""
-        y_res, u_res, y_hat, u_hat = _cross_fit_residuals(
-            y, u, covariates, degree=nuisance_degree, folds=folds, ridge=ridge, seed=seed
-        )
-        channel = solve_channel_moment(
+    def moment(y_res: Array, u_res: Array) -> Array:
+        return solve_channel_moment(
             y_res,
             u_res,
             x,
@@ -646,6 +661,14 @@ def fit_causal_residual(
             ridge=ridge,
             weights=row_weight,
         )
+
+    def solve(y: Array) -> tuple[Array, Array, tuple[Array, Array, Array, Array, Array]]:
+        """The channel and the drift regression's coefficients a target ``y`` fits to, with the
+        residualisation behind them. Linear in ``y``, which the ``rk4`` fixed point relies on."""
+        y_res, u_res, y_hat, u_hat = _cross_fit_residuals(
+            y, u, covariates, degree=nuisance_degree, folds=folds, ridge=ridge, seed=seed
+        )
+        channel = moment(y_res, u_res)
         fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_c, u)
         remainder = _solve_ridge(design, y - fitted, ridge)  # (features + drivers, n)
         return channel, remainder, (y_res, u_res, y_hat, u_hat, fitted)
@@ -664,6 +687,20 @@ def fit_causal_residual(
         rows = jnp.einsum("fi,ts->ftis", weight, jnp.eye(states))
         rows = rows.reshape(weight.shape[0] * states, x.shape[0], states)
         return jnp.concatenate([jnp.zeros((channel_size, x.shape[0], states)), rows])
+
+    def held(u_res: Array) -> Array:
+        """``(p, N, n)``: how a row's rate moves the parameters through the channel's moment alone,
+        with the cross-fitted nuisances held, less the drift regression's own weight on the row.
+        Letting the nuisances move with the row as well, as ``influence`` does, adds their own
+        error to the representer, and so an upward bias of the order of the nuisance features over
+        ``N`` to its second moment."""
+
+        def respond(y_res: Array) -> Array:
+            channel = moment(y_res, u_res)
+            fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_c, u)
+            return jnp.concatenate([channel.ravel(), -_solve_ridge(design, fitted, ridge).ravel()])
+
+        return jax.jacrev(respond)(jnp.zeros_like(x_next))
 
     def fit_to(rate: Array) -> CausalDynamicsFit:
         """Everything downstream of the target rate, so the ``rk4`` fixed point can re-run it."""
@@ -821,6 +858,8 @@ def fit_causal_residual(
             )
             if influence
             else None,
+            representer=_representer(carry(held(u_res))[:size]) if influence else None,
+            moment_residual=score if influence else None,
         )
 
     fit = fit_to((x_next - x) / dt)
@@ -848,8 +887,178 @@ def fit_causal_residual(
             )
             if influence
             else None,
+            representer=_representer(held(u_res)[: channel.size]) if influence else None,
+            moment_residual=score if influence else None,
         )
     return dataclasses.replace(fit, integrator_defect=float(jnp.sqrt(jnp.mean(defect(fit) ** 2))))
+
+
+# --- MM7: how strong a confounder the adjustment set left out would have to be ---
+
+
+@dataclass(frozen=True)
+class OmittedConfounderBound:
+    """How far a confounder the adjustment set left out could move a linear functional of the
+    channel, and how strong it would have to be to move it to ``null``. *Experimental.*
+
+    ``bias_scale`` is identified; ``strength`` is the analyst's, as ``Gamma`` is
+    (docs/concepts/gamma.md), in partial R^2s rather than odds.
+    """
+
+    estimate: float
+    # sum over states of sigma nu: the bias at strength 1, DoubleML's ``max_bias``
+    bias_scale: float
+    strength: float  # |rho| sqrt(cf_y cf_d / (1 - cf_d))
+    lower: float  # estimate - strength * bias_scale
+    upper: float
+    # with the sampling error of the estimate and of bias_scale, each one-sided at ``level``
+    ci_lower: float
+    ci_upper: float
+    # cf_y = cf_d at which the bound reaches ``null``: the design sensitivity, which the confidence
+    # bound's own value, below, reaches as the log grows. 1 when no share moves the bound.
+    robustness_value: float
+    robustness_value_ci: float
+
+
+def omitted_confounder_bound(
+    fit: CausalDynamicsFit,
+    functional: Array,
+    *,
+    cf_y: float,
+    cf_d: float,
+    rho: float = 1.0,
+    level: float = 0.95,
+    null: float = 0.0,
+) -> OmittedConfounderBound:
+    """Bound a linear functional of the channel against a confounder ``adjust_for`` left out.
+    *Experimental.*
+
+    Chernozhukov, Cinelli, Newey, Sharma and Syrgkanis (2022) bound the bias of a linear
+    functional of a partially linear fit by ``|rho| sqrt(cf_y cf_d / (1 - cf_d)) sigma nu``:
+    ``sigma^2`` the rate's residual variance after the fit, ``nu^2`` the second moment of the
+    functional's Riesz representer, both identified, and two shares that are not. ``cf_y`` is the
+    share of that residual variance the latent explains; ``cf_d`` the share of the long
+    representer's second moment the fit's short one misses, which for one lever is the latent's
+    partial R^2 with it. ``rho`` is the correlation between the two gaps, 1 at the worst. On a
+    linear Gaussian plant with one latent the bound is attained, for any functional of any number
+    of levers, and with two latents it is strict unless they move the lever and the rate in
+    proportion (``validation/omitted_confounder_bound.mac``). Over several states the bound sums
+    ``sigma_s nu_s``, taking the shares as common to them; under Euler a functional of one
+    state's channel reads that state alone.
+
+    ``functional`` weighs the channel's coefficients, in its shape ``(n, m, n_features)``. One
+    lever's effect on one state is a single 1. Moving spend from lever ``a`` to lever ``b`` is
+    ``+1`` at ``b`` and ``-1`` at ``a``, and since its value is linear in the channel, its
+    ``robustness_value`` is the confounding at which the move stops paying.
+
+    The sampling error follows DoubleML's: each confidence bound is one-sided at ``level``, and
+    carries the estimate's influence and ``bias_scale``'s, whose ``nu^2`` part is ``nu^2 -
+    alpha^2`` for a representer ``alpha``. Its sign convention for the estimate differs from this
+    one in the cross term of the two influences, which vanishes in expectation.
+
+    Args:
+        fit: an identified fit of :func:`fit_causal_residual`, by adjustment, unweighted, made
+            with ``influence=True``.
+        functional: the weight on each channel coefficient.
+        cf_y: the share of the residual variance the latent explains, in ``[0, 1)``.
+        cf_d: the share of the long representer's second moment the short one misses, in
+            ``[0, 1)``.
+        rho: the correlation of the two gaps, in ``[-1, 1]``.
+        level: each confidence bound's one-sided level, in ``[0.5, 1)``.
+        null: the value the robustness values measure the distance to.
+
+    Raises:
+        ValueError: on a fit whose channel is not identified by adjustment -- an instrument's
+            representer is not the moment's -- or that is weighted, or kept no representer; on a
+            functional of another shape; on shares, ``rho`` or ``level`` outside their ranges.
+    """
+    if fit.method != "orthogonal":
+        raise ValueError(
+            "the bound is derived for a channel identified by adjustment; this fit's method is "
+            f"{fit.method!r}"
+        )
+    if fit.weighted:
+        raise ValueError("the bound is derived for the unweighted moment; this fit is weighted")
+    if fit.representer is None or fit.moment_residual is None or fit.influence is None:
+        raise ValueError("the fit kept no representer; fit it with influence=True")
+    for name, share in (("cf_y", cf_y), ("cf_d", cf_d)):
+        if not 0.0 <= share < 1.0:
+            raise ValueError(f"{name} is a share of variance and must lie in [0, 1); got {share}")
+    if not -1.0 <= rho <= 1.0:
+        raise ValueError(f"rho is a correlation and must lie in [-1, 1]; got {rho}")
+    if not 0.5 <= level < 1.0:
+        raise ValueError(
+            f"level is a one-sided confidence level and must lie in [0.5, 1); got {level}"
+        )
+    channel = np.asarray(fit.residual.channel, dtype=np.float64)
+    weights = np.asarray(functional, dtype=np.float64)
+    if weights.shape != channel.shape:
+        raise ValueError(
+            f"the functional weighs a channel of shape {weights.shape}; the fit's is "
+            f"{channel.shape}"
+        )
+    w = weights.ravel()
+    estimate = float(w @ channel.ravel())
+    alpha = np.asarray(fit.representer, dtype=np.float64) @ w  # (N, n)
+    residual = np.asarray(fit.moment_residual, dtype=np.float64)
+    psi = np.asarray(fit.influence, dtype=np.float64)[:, :, : w.size] @ w  # the estimate's
+    rows = residual.shape[0]
+    sigma2, nu2 = np.mean(residual**2, axis=0), np.mean(alpha**2, axis=0)
+    product = np.sqrt(sigma2 * nu2)
+    scale = float(np.sum(product))
+    # d(sigma nu) = (nu^2 d sigma^2 + sigma^2 d nu^2) / (2 sigma nu), in the mean's scaling
+    scale_psi = np.divide(
+        nu2 * (residual**2 - sigma2) + sigma2 * (nu2 - alpha**2),
+        2.0 * product,
+        out=np.zeros_like(residual),
+        where=product > 0.0,
+    )
+    quantile = float(norm.ppf(level))
+
+    def bounds(strength: float) -> tuple[float, float, float, float]:
+        low, high = estimate - strength * scale, estimate + strength * scale
+        spread_low = float(np.sqrt(np.sum((psi - strength * scale_psi / rows) ** 2)))
+        spread_high = float(np.sqrt(np.sum((psi + strength * scale_psi / rows) ** 2)))
+        return low, high, low - quantile * spread_low, high + quantile * spread_high
+
+    def at_share(share: float) -> float:
+        """The strength at ``cf_y = cf_d = share``."""
+        return abs(rho) * share / float(np.sqrt(1.0 - share))
+
+    strength = abs(rho) * float(np.sqrt(cf_y * cf_d / (1.0 - cf_d)))
+    lower, upper, ci_lower, ci_upper = bounds(strength)
+
+    gap = abs(estimate - null)
+    facing = 2 if estimate > null else 3  # the confidence bound on the null's side
+
+    def reach(share: float) -> float:
+        """How far the confidence bound facing the null still is from it."""
+        bound = bounds(at_share(share))[facing]
+        return bound - null if estimate > null else null - bound
+
+    if gap == 0.0:
+        robustness, robustness_ci = 0.0, 0.0
+    elif abs(rho) * scale == 0.0:  # no share moves the bound; the sampling error alone may
+        robustness, robustness_ci = 1.0, (0.0 if reach(0.0) <= 0.0 else 1.0)
+    else:
+        ratio = (gap / (abs(rho) * scale)) ** 2
+        robustness = 0.5 * (float(np.sqrt(ratio**2 + 4.0 * ratio)) - ratio)
+        robustness_ci = (
+            0.0
+            if reach(0.0) <= 0.0
+            else float(brentq(reach, 0.0, robustness, xtol=1e-12, rtol=4.0 * np.finfo(float).eps))
+        )
+    return OmittedConfounderBound(
+        estimate=estimate,
+        bias_scale=scale,
+        strength=strength,
+        lower=lower,
+        upper=upper,
+        ci_lower=ci_lower,
+        ci_upper=ci_upper,
+        robustness_value=robustness,
+        robustness_value_ci=robustness_ci,
+    )
 
 
 # --- Result 41 (A7): what a tracked log identifies, and what it does not ---

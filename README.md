@@ -324,10 +324,11 @@ Three tiers, by what a break costs you:
 | **evolving** | the estimator, certificate and domain layers — `causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace` `mmm` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
 | **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` — and modules built ahead of the release that verifies them — `experiment` `switchback` on a plant CHC did not write, `zones` in the pre-registered study it is the plant of, `dlm` on an external media-mix generator, `misspecification` on the zone plant, `response` in the plans it warm-starts | may change or be withdrawn in any release. Pin an exact version if you depend on one |
 
-Twenty-one entries in modules of other tiers are experimental on the same terms, for the same
+Twenty-three entries in modules of other tiers are experimental on the same terms, for the same
 reason:
 the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its `influence` argument
-with the field of that name, and the `unmoved` field of `CausalDynamicsFit`,
+with the fields it keeps, the `unmoved` field of `CausalDynamicsFit`, and `omitted_confounder_bound`
+and `OmittedConfounderBound` in `dynamics_id`,
 `callaway_santanna_inference` and `EventStudyInference` in `did`, `synthetic_control_inference` and
 `SyntheticControlInference` in `scm`, `gcm_test` and `GcmTest` in `independence`, `LoggerCheck` in
 `evaluation`, the `logger_check` field of `Prescription` and `PlanEvaluation`, `shadow_price_effect`

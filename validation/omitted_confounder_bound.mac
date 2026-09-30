@@ -1,0 +1,79 @@
+/* The omitted-confounder bound on a linear functional of a partially linear fit
+   (Chernozhukov, Cinelli, Newey, Sharma and Syrgkanis 2022; the CausalML book, Thm. 12.2.1),
+   the closed forms chc.dynamics_id.omitted_confounder_bound is tested against.
+
+   The short fit leaves a latent A out. Its bias on a functional is bounded by
+       |theta_s - theta| <= |rho| sqrt(cf_y cf_d / (1 - cf_d)) sqrt(sigma^2 nu^2),
+   sigma^2 the short fit's residual variance, nu^2 the second moment of the functional's Riesz
+   representer, cf_y the share of that residual variance A explains, and cf_d the share of the
+   long representer's second moment the short one misses, 1 - nu^2 / nu_long^2.
+
+   STEP 1  one treatment, one latent, all linear and Gaussian: the bound holds with equality, so
+           rho = 1 is attained and the bound is sharp
+   STEP 2  two treatments, any functional w of them, one latent: equality again (Sherman-Morrison)
+   STEP 3  two latents: bound^2 - bias^2 = (a1 b2 - a2 b1)^2 / (sv V) >= 0, zero only when the
+           latents move the treatment and the outcome in proportion; the bound is not an identity
+   STEP 4  the influence of nu^2 = w' G^-1 w, G the design's second moment, is nu^2 - alpha^2,
+           alpha = w' G^-1 D the representer: the sign the sampling error of the bound needs
+   STEP 5  the robustness value: cf_y = cf_d = v meets |theta_s - null| at
+           v = (sqrt(f^4 + 4 f^2) - f^2) / 2, f = |theta_s - null| / (|rho| sqrt(sigma^2 nu^2)),
+           Cinelli and Hazlett's form
+
+   Run: timeout 300 maxima --very-quiet -b validation/omitted_confounder_bound.mac */
+
+linel : 110$
+display2d : false$
+
+/* STEP 1: A ~ N(0, 1), D = a A + v, Var v = sv; Y = th D + b A + e, Var e = se */
+assume(sv > 0, se > 0)$
+V : a^2 + sv$
+bias : a*b/V$                         /* theta_s - th: Cov(Y, D) / Var(D) - th */
+sigma2 : se + b^2*sv/V$               /* Var(Y - theta_s D) */
+nu2 : 1/V$                            /* the representer is D / Var(D) */
+cf_d : 1 - nu2/(1/sv)$                /* the long representer is v / sv */
+cf_y : (sigma2 - se)/sigma2$          /* the long residual is e */
+print("STEP 1  bias^2 - sigma^2 nu^2 cf_y cf_d / (1 - cf_d):",
+      ratsimp(bias^2 - sigma2*nu2*cf_y*cf_d/(1 - cf_d)))$
+print("STEP 1b cf_d is A's partial R^2 with D:", ratsimp(cf_d - a^2/V))$
+
+/* STEP 2: D = a A + v with Var v = S, Y = th' D + b A + e; the functional w' theta */
+S : matrix([s11, s12], [s12, s22])$
+av : matrix([a1], [a2])$
+wv : matrix([w1], [w2])$
+SD : av . transpose(av) + S$
+SDi : invert(SD)$
+Si : invert(S)$
+bias2 : b*(transpose(wv) . SDi . av)$
+nu2_2 : transpose(wv) . SDi . wv$
+nul_2 : transpose(wv) . Si . wv$
+cfd_2 : 1 - nu2_2/nul_2$
+sigma2_2 : se + b^2*(1 - transpose(av) . SDi . av)$
+cfy_2 : (sigma2_2 - se)/sigma2_2$
+print("STEP 2  bias^2 - sigma^2 nu^2 cf_y cf_d / (1 - cf_d):",
+      ratsimp(bias2^2 - sigma2_2*nu2_2*cfy_2*cfd_2/(1 - cfd_2)))$
+
+/* STEP 3: two independent standard latents, D = a1 A1 + a2 A2 + v, Y = th D + b1 A1 + b2 A2 + e */
+V3 : a1^2 + a2^2 + sv$
+bias3 : (a1*b1 + a2*b2)/V3$
+sigma2_3 : se + b1^2 + b2^2 - (a1*b1 + a2*b2)^2/V3$
+nu2_3 : 1/V3$
+cfd_3 : 1 - nu2_3/(1/sv)$
+cfy_3 : (sigma2_3 - se)/sigma2_3$
+gap3 : ratsimp(sigma2_3*nu2_3*cfy_3*cfd_3/(1 - cfd_3) - bias3^2)$
+print("STEP 3  bound^2 - bias^2, less (a1 b2 - a2 b1)^2 / (sv V):",
+      ratsimp(gap3 - (a1*b2 - a2*b1)^2/(sv*V3)))$
+
+/* STEP 4: nu^2(G) = w' G^-1 w along G + eps (D D' - G), D = [d1, d2] one row of the design */
+G : matrix([g11, g12], [g12, g22])$
+dv : matrix([d1], [d2])$
+moved : transpose(wv) . invert(G + eps*(dv . transpose(dv) - G)) . wv$
+alpha : transpose(wv) . invert(G) . dv$
+influence : ratsimp(subst(eps = 0, diff(moved, eps)))$
+print("STEP 4  d nu^2 / d eps at 0, less (nu^2 - alpha^2):",
+      ratsimp(influence - (transpose(wv) . invert(G) . wv - alpha^2)))$
+
+/* STEP 5: v^2 / (1 - v) = f^2 on [0, 1) */
+rv : (sqrt(f^4 + 4*f^2) - f^2)/2$
+print("STEP 5  rv^2 - f^2 (1 - rv):", ratsimp(rv^2 - f^2*(1 - rv)))$
+print("STEP 5b rv at f = 1/2, 1, 3:", float(subst(f = 1/2, rv)), float(subst(f = 1, rv)),
+      float(subst(f = 3, rv)))$

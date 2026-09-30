@@ -87,6 +87,21 @@ still change).
   mean at 1 on the model's own forecasts, where a one-step scale 10% too large moves it eight
   standard errors, and takes West and Harrison's feed-back intervention at the step an alarm on
   a break sounds.
+- **An omitted-confounder bound for a fitted channel** (*experimental*, ADR 0032).
+  `chc.dynamics_id.omitted_confounder_bound` bounds how far a confounder the adjustment set left
+  out could move a linear functional of `fit_causal_residual`'s channel, one lever's effect or the
+  value of moving spend between two, by the partial-R² bound of Chernozhukov, Cinelli, Newey,
+  Sharma and Syrgkanis (2022), with confidence bounds and the shares at which each reaches a null.
+  A fit made with `influence=True` keeps what it reads, the channel's Riesz representer with the
+  nuisances held and the moment's residual (`CausalDynamicsFit.representer`, `.moment_residual`),
+  under `rk4` through the fixed point. The bound is attained on a linear Gaussian plant with one
+  latent, for any functional of any number of levers (`validation/omitted_confounder_bound.mac`),
+  and the tests hold its side on the true channel under Euler and under `rk4` at `A dt = -0.7`,
+  where the Euler reading of the same log misses by more than 0.2. Over 500 drawn worlds its
+  confidence bounds covered the true reallocation in 0.940 (Clopper-Pearson 0.915-0.959) at a
+  nominal 0.95, at half the shares in 0.216 (`scripts/bench_omitted_confounder.py`). DoubleML
+  0.11.4, fed the same cross-fitted predictions, gives the same bounds to 2e-10
+  (`scripts/doubleml_bound_reference.py`).
 
 ### Changed
 

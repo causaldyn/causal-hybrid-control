@@ -64,6 +64,38 @@ Unfalsifiable is not the same as uncalibrated. Two functions price `Γ` against 
   returns `inf` when no `Γ` reconciles the null — the negative control has then refuted the model
   class instead of calibrating it.
 
+## The same question in variance shares
+
+A channel fitted by adjustment has a second sensitivity model beside `Γ`, in Cinelli and Hazlett's
+currency rather than odds. `omitted_confounder_bound` (*experimental*) bounds how far a confounder
+the adjustment set left out could move a linear functional of the channel, such as one lever's
+effect or the value of moving spend from one lever to another, by the bound of Chernozhukov,
+Cinelli, Newey, Sharma and Syrgkanis (2022):
+
+```text
+|bias| ≤ |ρ| · sqrt(cf_y · cf_d / (1 − cf_d)) · σ · ν
+```
+
+`σ²` is the rate's residual variance after the fit and `ν²` the second moment of the functional's
+Riesz representer, both identified. `cf_y` and `cf_d` are the shares of the two the confounder
+would explain, and they are the analyst's, as `Γ` is. `robustness_value` is the share, the same on
+both sides, at which the bound reaches a null. A reallocation's value is linear in the channel, so
+for one that is the confounding at which the move stops paying. `robustness_value_ci` is the same
+for the confidence bound, and the point value is its design sensitivity, the value it reaches as
+the log grows. On an OLS fit, `chc.causal.sensitivity_analysis` reports Cinelli and Hazlett's own
+robustness value.
+
+With one latent on a linear Gaussian plant the bound is attained, so at the latent's own shares it
+sits on the truth (`validation/omitted_confounder_bound.mac`). Over 500 such worlds with drawn
+loadings, half read by Euler and half by `rk4` at steps up to 1.4, its confidence bounds covered the
+reallocation's true value in 0.940 of them (Clopper–Pearson 0.915–0.959) at a nominal 0.95; at half
+the shares in 0.216, and with none, the fit's own interval, in 0.138
+(`scripts/bench_omitted_confounder.py`). DoubleML 0.11.4, fed the same cross-fitted predictions,
+gives the same bounds to 2e-10 (`scripts/doubleml_bound_reference.py`).
+
+The two models do not convert into each other: `Γ` bounds how far a confounder moves the odds of
+treatment, the shares how much of two variances it explains. Where both apply, report both.
+
 ## Spend it on performance
 
 The radius widens a pessimism radius (never optimistic, tight at `Γ = 1`, monotone). The
