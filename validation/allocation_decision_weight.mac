@@ -1,0 +1,64 @@
+/* The decision weight chc.allocation.decision_weight is tested against
+   (tests/test_allocation_decision_weight.py).
+   A plan made on parameters theta_hat and scored on theta loses
+       R(theta_hat) = V(u*(theta); theta) - V(u*(theta_hat); theta),
+   and W is R's Hessian in theta_hat at theta: to second order the loss is d' W d / 2 for an error d.
+   With the budget spent and every rate inside its box, the KKT gives
+       W = D' diag(h) D,   D = (I - w 1' / sum(w)) A,
+   A block-diagonal with channel c's row a_c = g_c / h_c, g_c the slope's gradient in the channel's
+   parameters, h_c = -V_c'' and w_c = 1 / h_c. For two channels D's rows are du1 and -du1, so
+   W = (h1 + h2) grad(u1) grad(u1)'.
+
+   STEP 1  two exponential channels, b (1 - exp(-u/K)), one period, no carryover: u1* in closed
+           form, R's Hessian against (h1 + h2) grad(u1) grad(u1)', and W at b1 = 900, K1 = 50,
+           b2 = 600, K2 = 80, B = 150, the numbers the tests read
+   STEP 2  two Michaelis-Menten channels, b u / (K + u): the same
+
+   Run: timeout 300 maxima --very-quiet -b validation/allocation_decision_weight.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 16$
+ratprint : false$
+
+planner : [p1, q1, p2, q2]$   /* the planner's b1, K1, b2, K2 */
+truth : [p1 = b1, q1 = k1, p2 = b2, q2 = k2]$
+point : [b1 = 900, k1 = 50, b2 = 600, k2 = 80, B = 150]$
+
+/* f(x, K) is the family's curve; u1s its best split in the planner's parameters */
+weigh(f, u1s) := block([worth, R, H, u1, h1, h2, g, W],
+  worth(x) := b1*f(x, k1) + b2*f(B - x, k2),
+  u1 : subst(truth, u1s),
+  R : worth(u1) - worth(u1s),
+  H : subst(truth, hessian(R, planner)),
+  h1 : -b1*subst(x = u1, diff(f(x, k1), x, 2)),
+  h2 : -b2*subst(x = B - u1, diff(f(x, k2), x, 2)),
+  g : subst(truth, matrix(map(lambda([v], diff(u1s, v)), planner))),
+  W : (h1 + h2) * transpose(g) . g,
+  [H, W])$
+
+/* STEP 1 */
+fe(x, K) := 1 - exp(-x/K)$
+ue : (log(p1/q1) - log(p2/q2) + B/q2) / (1/q1 + 1/q2)$
+print("STEP 1a  the split's slopes meet:",
+      radcan(subst(truth, subst(x = ue, p1/q1*exp(-x/q1)) - subst(x = B - ue, p2/q2*exp(-x/q2)))))$
+[He, We] : weigh(fe, ue)$
+/* exp(-u1/K1) holds logs of the parameters to a rational power; logexpand and radcan take them
+   apart, and the difference is then a rational function of b, K, B and exp(-B/(K1 + K2)).
+   Maxima 5.46 leaves an exponent such as 2 K2/(K2 + K1) + 2 K1/(K2 + K1) as it is, so each
+   exponent is simplified on its own before the whole. */
+exponents(e) := if mapatom(e) then e else if op(e) = "^" then part(e, 1)^ratsimp(part(e, 2)) else e$
+print("STEP 1b  R's Hessian less W:",
+      ratsimp(scanmap(exponents, ratsimp(radcan(ev(He - We, logexpand = all))), bottomup)))$
+print("STEP 1c  W at the tests' point, rows b1 K1 b2 K2:")$
+print(float(subst(point, We)))$
+
+/* STEP 2 */
+fm(x, K) := x/(K + x)$
+um : (sqrt(p1*q1)*(q2 + B) - q1*sqrt(p2*q2)) / (sqrt(p1*q1) + sqrt(p2*q2))$
+print("STEP 2a  the split's slopes meet:",
+      radcan(subst(truth, subst(x = um, p1*q1/(q1 + x)^2) - subst(x = B - um, p2*q2/(q2 + x)^2))))$
+[Hm, Wm] : weigh(fm, um)$
+print("STEP 2b  R's Hessian less W:", radcan(Hm - Wm))$
+print("STEP 2c  W at the tests' point, rows b1 K1 b2 K2:")$
+print(float(subst(point, Wm)))$

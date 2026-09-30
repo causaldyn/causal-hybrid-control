@@ -182,6 +182,18 @@ still change).
   certificate. An S-shaped curve is hedged on its envelope. The tests hold it to a closed form,
   two mirrored linear readings hedged by the even split, and on three channels with carryover to
   every split of a 241-by-241 grid; five mutations caught.
+- **What a wrong channel costs the allocation, `chc.allocation.decision_weight`** (*experimental*,
+  ADR 0040). `decision_weight(channels, budget, periods, *, lower, upper, history=None)` returns an
+  `AllocationWeight`: the Hessian `W` of the loss of `allocate`'s plan made on channels whose
+  parameters, each channel's kernel, curve and coefficient, are off by `d`, `d' W d / 2` to second
+  order. `AllocationWeight.expected_regret(covariance)` is `tr(W S) / 2`, what a test that leaves
+  the parameters with covariance `S` leaves the plan. The rates inside their boxes answer an error
+  at one price, so `W = D' diag(h) D`, `D` each rate's response less the share that keeps the
+  budget spent, `h` the worths' curvatures; a channel at an end of its box carries no weight, and an
+  S-shaped curve is refused. `validation/allocation_decision_weight.mac` holds `W` to the realised
+  loss's Hessian for two exponential and two Michaelis-Menten channels; on three channels with
+  carryover the plan re-made on moved channels meets it to `1e-4`, and with every parameter off by
+  a tenth the quadratic is within a tenth of the loss. Fourteen mutations caught.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,

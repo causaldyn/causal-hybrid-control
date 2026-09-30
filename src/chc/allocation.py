@@ -41,6 +41,15 @@ the split where its curves are concave, so the worst is too, and cutting planes 
 on it from below while the splits they propose close on it from above; the two ends are the
 certificate.
 
+**What a wrong channel costs the plan.** A plan made on channels whose parameters are off by ``d``
+loses ``d' W d / 2`` of the worth the true channels' plan returns, to second order:
+:func:`decision_weight` is that ``W``, the decision weight of an experiment's value of information
+(:mod:`chc.experiment`) with this allocation as the decision. The rates inside their boxes meet at
+one price, so an error moves them along the budget, each by its slope's response to the error, less
+the share of the whole that keeps the budget spent; ``W`` weighs those moves by each worth's
+curvature. An experiment that leaves the parameters with covariance ``S`` leaves an expected regret
+of ``tr(W S) / 2`` (:meth:`AllocationWeight.expected_regret`).
+
 HONEST SCOPE:
 
 * The channels are read as given: a fitted channel's error goes straight into the plan. Where the
@@ -60,6 +69,10 @@ HONEST SCOPE:
 * A split for several readings is robust to the readings it is given and to no other: it hedges
   between the families the tests could not tell apart, not against one none of them is. On an
   S-shaped curve the regret is the envelope's.
+* The decision weight is local: second order in the error, at the plan on the channels as given,
+  and a channel held at an end of its box carries no weight. One that would leave its end under a
+  small error costs more than ``W`` says, as :mod:`chc.experiment`'s pinned levers do. It is read
+  on concave curves only.
 * :func:`chc.mmm.prescribe` plans a budget over a continuous plant whose adstock is a state; this
   plans discrete channels, which that plant does not describe.
 """
@@ -74,6 +87,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.flatten_util import ravel_pytree
 from jax.typing import ArrayLike
 from scipy.optimize import brentq, linprog
 
@@ -81,6 +95,7 @@ from chc.response import Channel, Logarithmic, Power, Saturation, relax
 
 __all__ = [
     "Allocation",
+    "AllocationWeight",
     "Goal",
     "MarginalReturnTarget",
     "MinimaxAllocation",
@@ -88,6 +103,7 @@ __all__ = [
     "ReturnTarget",
     "allocate",
     "budget_for",
+    "decision_weight",
     "minimax_allocate",
 ]
 
@@ -171,6 +187,39 @@ class MinimaxAllocation:
     regret: np.ndarray
     worst: float
     bound: float
+
+
+@dataclass(frozen=True)
+class AllocationWeight:
+    """How much a plan loses when the channels it is made on are wrong. *Experimental.*
+
+    Attributes:
+        parameters: ``(p,)`` each parameter's place, the channel's position and the parameter's
+            name in it, ``"1.curve.scale"``.
+        matrix: ``(p, p)`` the regret's Hessian ``W`` in the parameters: a plan made on parameters
+            off by ``d`` returns ``d' W d / 2`` less than the plan on the channels as given, to
+            second order.
+        allocation: the plan on the channels as given.
+        pinned: the channels held at an end of their box, whose parameters carry no weight.
+    """
+
+    parameters: tuple[str, ...]
+    matrix: np.ndarray
+    allocation: Allocation
+    pinned: tuple[int, ...]
+
+    def expected_regret(self, covariance: ArrayLike) -> float:
+        """``tr(W S) / 2`` at ``covariance = S``: what a plan made on estimates with that
+        covariance loses on average, to second order.
+
+        Raises:
+            ValueError: when ``covariance`` is not ``(p, p)``.
+        """
+        spread = np.asarray(covariance, dtype=float)
+        size = len(self.parameters)
+        if spread.shape != (size, size):
+            raise ValueError(f"covariance has shape {spread.shape}; the weight is {size} by {size}")
+        return 0.5 * float(np.sum(self.matrix * spread))
 
 
 class _Worth(eqx.Module):
@@ -581,6 +630,103 @@ def minimax_allocate(
     return MinimaxAllocation(
         spend=np.asarray(chosen), best=best, regret=regret, worst=worst, bound=min(floor, worst)
     )
+
+
+def decision_weight(
+    channels: Sequence[Channel],
+    budget: float,
+    periods: int,
+    *,
+    lower: ArrayLike,
+    upper: ArrayLike,
+    history: ArrayLike | None = None,
+) -> AllocationWeight:
+    """How much :func:`allocate`'s plan loses when the channels it is made on are wrong.
+    *Experimental.*
+
+    The arguments are :func:`allocate`'s, and so is the plan. Each channel's parameters are its
+    inexact leaves, the kernel's, the curve's and the coefficient. Inside their boxes the rates meet
+    at the budget's price, ``V_c'(u_c) = periods * price``; an error ``d_c`` in channel ``c`` moves
+    its rate by ``g_c d_c / h_c``, ``g_c`` the slope's gradient in its parameters and ``h_c`` the
+    worth's curvature ``-V_c''``, and the price moves every rate back by the share ``(1/h_c) /
+    sum(1/h)`` of the total, so the budget stays spent. The first-order loss is nil, since the
+    slopes are equal and the moves sum to nothing, and the second is ``du' diag(h) du / 2``, which
+    is ``d' W d / 2``. ``validation/allocation_decision_weight.mac`` holds it to the Hessian of the
+    realised loss for two exponential and two Michaelis-Menten channels.
+
+    Raises:
+        TypeError, ValueError: as :func:`allocate`; and ValueError on an S-shaped curve, whose plan
+            is its envelope's, or a channel inside its box whose worth is not strictly concave at
+            its rate.
+    """
+    allocation = allocate(channels, budget, periods, lower=lower, upper=upper, history=history)
+    lower_rates, upper_rates, spent = _inputs(channels, periods, lower, upper, history)
+    before = spent.shape[0]
+    names: list[str] = []
+    blocks: list[tuple[int, int]] = []
+    curvature, response = [], []
+    free = []
+    for column, channel in enumerate(channels):
+        if isinstance(channel.curve, Saturation) and channel.curve.inflection() > 0.0:
+            raise ValueError(
+                f"channel {column}'s curve is S-shaped; its plan is its envelope's, where the "
+                "decision weight is not read"
+            )
+        parameters, static = eqx.partition(channel, eqx.is_inexact_array)
+        flat, unravel = ravel_pytree(parameters)
+        start = sum(size for _, size in blocks)
+        blocks.append((start, flat.size))
+        names += [f"{column}.{name}" for name in _names(parameters)]
+        rate = float(allocation.spend[column])
+        if not lower_rates[column] < rate < upper_rates[column]:
+            continue
+        tail = channel.kernel.length - 1
+        idle = jnp.asarray(np.concatenate([spent[:, column], np.zeros(periods + tail)]))
+        unit = jnp.asarray(np.concatenate([np.zeros(before), np.ones(periods), np.zeros(tail)]))
+
+        def worth(at: Array, theta: Array, static=static, unravel=unravel, idle=idle, unit=unit):
+            read = eqx.combine(unravel(theta), static)
+            carry = read.kernel(idle)[before:]
+            reach = read.kernel(unit)[before:]
+            return read.coefficient * jnp.sum(read.curve(carry + at * reach))
+
+        slope = jax.grad(worth)
+        at = jnp.asarray(rate, dtype=flat.dtype)
+        bend = -float(jax.grad(slope)(at, flat))
+        if not bend > 0.0:
+            raise ValueError(
+                f"channel {column} runs inside its box where its worth is not strictly concave "
+                f"(curvature {bend}); its rate does not answer an error smoothly"
+            )
+        free.append(column)
+        curvature.append(bend)
+        response.append(np.asarray(jax.grad(slope, argnums=1)(at, flat), dtype=float) / bend)
+    size = sum(width for _, width in blocks)
+    moves = np.zeros((len(free), size))  # each free rate's move per unit error in each parameter
+    for row, (column, gain) in enumerate(zip(free, response, strict=True)):
+        start, width = blocks[column]
+        moves[row, start : start + width] = gain
+    if free:
+        share = (1.0 / np.array(curvature)) / np.sum(1.0 / np.array(curvature))
+        moves -= np.outer(share, moves.sum(axis=0))
+    weight = moves.T @ (np.array(curvature)[:, None] * moves) if free else np.zeros((size, size))
+    return AllocationWeight(
+        parameters=tuple(names),
+        matrix=0.5 * (weight + weight.T),
+        allocation=allocation,
+        pinned=tuple(c for c in range(len(channels)) if c not in free),
+    )
+
+
+def _names(parameters: Channel) -> list[str]:
+    """Each flattened leaf's place, ``"curve.scale"``, with an index where a leaf is not a
+    scalar."""
+    names = []
+    for path, leaf in jax.tree_util.tree_flatten_with_path(parameters)[0]:
+        name = ".".join(str(getattr(key, "name", key)) for key in path)
+        count = int(np.size(leaf))
+        names += [name] if count == 1 else [f"{name}[{k}]" for k in range(count)]
+    return names
 
 
 def _onto(split: np.ndarray, lower: np.ndarray, upper: np.ndarray, rate: float) -> np.ndarray:
