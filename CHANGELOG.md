@@ -56,6 +56,24 @@ still change).
     `2.2e-16` of its largest value but `hill_function`, to `2.3e-9`, because PyTensor makes the
     Python floats it is called with float32 constants. Its CDF Weibull kernel with `l_max` carries
     `l_max + 1` weights: `WeibullAdstock` of that length.
+- **A spend budget for `prescribe`** (ADR 0031). `budgets=` takes `PeriodBudget`s: at most
+  `amount` in each `period` steps from the plan's first, a step spending `weights @ u`, held as the
+  rows `RecedingHorizon` holds at its first step. A period the horizon cuts short gets its share, so
+  a budget for the whole horizon has `period=horizon`. `Prescription.budget_prices()` is what a
+  unit more would lower the planned cost by, period by period, read from
+  `CausalPlan.shadow_prices`; `report()` states it, or that a plan held under the constraints'
+  barrier has none. `to_json` carries the budgets under `"budgets"`, as it carries the drivers,
+  since the schedule depends on them, and `schema_version` stays 1; the prices stay out, as ID2's
+  gate does, until the schema's one change at 1.0. A budget for another number of levers, one whose
+  periods start anywhere but the plan's first step, or one below what the levers' boxes spend at
+  the least raises `DecisionError` before anything is fitted: a prescription is made offline,
+  where `RecedingHorizon`, which must act, spends the floor and warns. On `chc.mmm`'s plant with
+  60% of the unbudgeted plan's spend, the budget binds and its price matches the planned cost's
+  central difference in the amount within the test's `1e-3`. `tests/test_plan_oracles.py` holds a
+  budget's price to a closed form within `1e-6`: goodwill with linear revenue, Sethi's (1977)
+  setting (`validation/planner_oracles.mac`, STEP 5), where the price is what the step the budget
+  leaves inside the box is worth, and a budget of whole steps is degenerate between the steps on
+  either side. Without a budget nothing moves.
 
 ## [0.9.0] — 2026-09-30
 

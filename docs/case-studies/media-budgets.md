@@ -45,9 +45,9 @@ Scope, and it bounds what the numbers mean:
 - The saturating plant is fitted with a polynomial drift, so the fitted plant is a **local
   surrogate** of the truth. That is why every arm is audited on the true plant, and the sales
   reported are the audited ones rather than the planner's own forecast.
-- Spend is priced through `Lever.unit_cost` rather than capped by a total budget. The `flat` and
-  `myopic` arms are held at the `adjusted` arm's total spend, so those comparisons are at matched
-  budget.
+- Spend is priced through `Lever.unit_cost` rather than capped. `prescribe` takes a budget
+  (`budgets=`), but the arms here are compared at matched spend instead: the `flat` and `myopic`
+  arms are held at the `adjusted` arm's total spend.
 - The carryover rates `theta_c` are taken as known. In practice they are fitted (Robyn, Meridian);
   holding them fixed isolates the incremental return, which is what this case study is about.
 - What the whole-horizon plan buys over the myopic one is a property of the plant's parameters,

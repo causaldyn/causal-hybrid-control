@@ -57,11 +57,13 @@ from chc.graph import AdjustmentSet, CausalGraph
 from chc.independence import gcm_test
 from chc.integrate import rk4_step
 from chc.lqr import linearize_continuous, linearize_discrete
+from chc.mpc import PeriodBudget, _period_rows
 from chc.panel import Panel, Provenance
 from chc.plan import (
     BarrierConstraint,
     CausalPlan,
     CertificateStatus,
+    RowPrice,
     SafetyCertificate,
     causal_plan,
     certify_safety,
@@ -341,7 +343,10 @@ class Prescription:
     # is reported, not acted on; None when a lever's parent is not logged, or the panel has too few
     # rows for it. *Experimental.*
     logger_check: LoggerCheck | None = None
+    budgets: tuple[PeriodBudget, ...] = ()  # what the plan was held to spend
     _columns: _Columns | None = field(default=None, repr=False, compare=False)
+    # How many of the plan's constraint rows each budget holds: the last ones, in order.
+    _budget_rows: tuple[int, ...] = field(default=(), repr=False, compare=False)
 
     @property
     def lever_names(self) -> tuple[str, ...]:
@@ -364,6 +369,31 @@ class Prescription:
                 f"{self.certificate.adjustment.reason}"
             )
         return InterventionSchedule(levers=self.lever_names, magnitudes=self.plan.actions)
+
+    def budget_prices(self, tolerance: float | None = None) -> tuple[tuple[RowPrice, ...], ...]:
+        """What each budget is worth to the plan: one price per period it holds in the plan.
+
+        A period's price is how much the planned cost falls per unit more it may spend, in the
+        cost's units per unit of spend; zero where the period has room. Read as
+        :meth:`chc.plan.CausalPlan.shadow_prices` reads every row, whose ``tolerance`` this is.
+
+        Raises:
+            NotIdentifiedError: if the effect is not identified, so no plan was made.
+            ValueError: if the plan was held under the constraints' barrier
+                (``hold_constraints``), whose rows' prices are not built.
+        """
+        if self.plan is None:
+            raise NotIdentifiedError(
+                "the effect is not identified, so no plan was made and no budget was priced: "
+                f"{self.certificate.adjustment.reason}"
+            )
+        rows = self.plan.shadow_prices(tolerance).rows
+        first = len(rows) - sum(self._budget_rows)
+        prices = []
+        for count in self._budget_rows:
+            prices.append(rows[first : first + count])
+            first += count
+        return tuple(prices)
 
     def evaluate(
         self,
@@ -501,6 +531,16 @@ class Prescription:
                 first, last = magnitudes[0, index], magnitudes[-1, index]
                 lines.append(f"| `{name}` | {span} | {first:+.4g} | {last:+.4g} |")
             lines += ["", f"Planned task cost: {self.plan.task_cost:.6g}.", ""]
+            # a plan held under the constraints' barrier carries no row prices
+            priced = self.budget_prices() if self.budgets and self.plan.safety is None else None
+            for index, budget in enumerate(self.budgets):
+                worth = (
+                    "not priced, as the plan was held under the constraints' barrier"
+                    if priced is None
+                    else "a unit more in each period would lower the planned cost by "
+                    + ", ".join(_show_price(price) for price in priced[index])
+                )
+                lines += [f"Budget of {budget.amount:.6g} per {budget.period} steps: {worth}.", ""]
             if self.selection is not None:
                 lines += [
                     "Levers kept under `max_levers`, in the order greedy added them; with none, "
@@ -579,6 +619,15 @@ class Prescription:
                 {"name": driver.name, "forecast": np.asarray(driver.forecast, dtype=float).tolist()}
                 for driver in self.drivers
             ],
+            "budgets": [
+                {
+                    "weights": budget.weights.tolist(),
+                    "amount": budget.amount,
+                    "period": budget.period,
+                    "start": budget.start,
+                }
+                for budget in self.budgets
+            ],
             "provenance": self.provenance.to_json(),
         }
 
@@ -626,6 +675,7 @@ def prescribe(
     adjustment: CausalGraph | Sequence[str],
     constraints: Sequence[Constraint] = (),
     hold_constraints: bool = False,
+    budgets: Sequence[PeriodBudget] = (),
     max_levers: int | None = None,
     known: Dynamics | None = None,
     dt: float = 1.0,
@@ -657,6 +707,14 @@ def prescribe(
             short of the condition, and where two bounds tie the solve holds only the first. The
             regret bound then includes what holding cost, since it is still priced against the
             box alone.
+        budgets: what the plan may spend (:class:`chc.mpc.PeriodBudget`): at most ``amount`` in
+            each ``period`` steps from the plan's first, a step spending ``weights @ u``, with each
+            lever's spend per unit in the levers' order. A period the horizon cuts short gets its
+            share of ``amount``, so a budget for the whole horizon has ``period=horizon``; the rows
+            are :class:`chc.mpc.RecedingHorizon`'s at its first step, with nothing spent, and every
+            iterate of the solve holds them. :meth:`Prescription.budget_prices` says what each
+            period's budget is worth to the plan; the regret bound stays priced against the box
+            alone, as with a rate limit.
         max_levers: plan with at most this many levers, chosen by greedy forward selection with
             :func:`chc.plan.causal_plan` as its inner loop. Starting from no lever, each step plans
             once per lever not yet chosen, with that lever added, and keeps the cheapest plan ---
@@ -713,7 +771,9 @@ def prescribe(
             a target schedule whose length is not ``horizon``, constraints to hold with none
             given, ``max_levers`` below one or with a lever whose box excludes zero, a driver that
             is also a lever or a state or is named twice, a forecast that is not ``horizon + 1``
-            finite levels, or a panel with no consecutive pair of periods to fit a transition on.
+            finite levels, a budget that does not weigh one spend per lever, starts its periods
+            anywhere but the plan's first step, or allows less than the levers' boxes spend at
+            the least, or a panel with no consecutive pair of periods to fit a transition on.
         KeyError: a lever, target, constraint, driver or asserted covariate names a column the
             panel does not have. The message lists the panel's columns.
 
@@ -750,6 +810,27 @@ def prescribe(
                     "level an unselected lever is held at; under max_levers every lever must be "
                     "able to stay off, so express it as a move from its current level"
                 )
+    for budget in budgets:
+        if budget.weights.shape[0] != len(levers):
+            raise DecisionError(
+                f"a budget weighs {budget.weights.shape[0]} levers and the decision has "
+                f"{len(levers)}; its weights are each lever's spend per unit, in the levers' order"
+            )
+        if budget.start != 0.0:
+            raise DecisionError(
+                f"a budget's periods start at t = {budget.start:g}, and the plan starts at 0 with "
+                "nothing spent; a period already under way has spent what the plan cannot see"
+            )
+        least = sum(
+            min(weight * lever.lo, weight * lever.hi)
+            for weight, lever in zip(budget.weights, levers, strict=True)
+            if weight != 0.0  # a free lever's unbounded side must not read as 0 * inf
+        )
+        if budget.amount < budget.period * least:
+            raise DecisionError(
+                f"a budget of {budget.amount:g} per {budget.period} steps allows less than the "
+                f"{budget.period * least:g} the levers' boxes spend in that many at the least"
+            )
     constrained = tuple(constraint.state for constraint in constraints)
     twice = sorted({name for name in constrained if constrained.count(name) > 1})
     if twice:
@@ -871,6 +952,7 @@ def prescribe(
             provenance=panel.provenance,
             drivers=tuple(drivers),
             logger_check=logger_check,
+            budgets=tuple(budgets),
             _columns=columns,
         )
 
@@ -894,6 +976,13 @@ def prescribe(
     u_max = float(jnp.max(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))))
     caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
     rate = LinearConstraint.rate_limit(horizon, caps)
+    # a prescription is the first step of a loop at t = 0 with nothing spent, and reads a budget so
+    spend_rows = tuple(
+        _period_rows(
+            budget, 0.0, 0.0, dt=dt, horizon=horizon, u_lo=u_lo, u_hi=u_hi, levers=n_levers
+        )
+        for budget in budgets
+    )
 
     margins = _margins(states, constraints)
     held = BarrierConstraint(_barrier(margins), gamma=gamma) if hold_constraints else None
@@ -915,7 +1004,7 @@ def prescribe(
             lipschitz=lipschitz,
             model_error=model_error,
             tolerance=float("inf") if tolerance is None else tolerance,
-            constraints=(rate,),
+            constraints=(rate, *spend_rows),
             barrier=held,
         )
         if held is None:
@@ -951,6 +1040,7 @@ def prescribe(
                 lever.name for lever in levers if lever.cap_per_step is not None
             ],
             "constraints_held": held is not None,
+            "budget_bounds": [rows.upper.tolist() for rows in spend_rows],
             "seconds": time.perf_counter() - started,
         },
     )
@@ -995,7 +1085,9 @@ def prescribe(
         selection=selection,
         drivers=tuple(drivers),
         logger_check=logger_check,
+        budgets=tuple(budgets),
         _columns=columns,
+        _budget_rows=tuple(rows.matrix.shape[0] for rows in spend_rows),
     )
 
 
@@ -1489,3 +1581,9 @@ def _show(value: object) -> str:
     if value is None:
         return "not evaluated"
     return f"{value:.4g}" if isinstance(value, float) else str(value)
+
+
+def _show_price(price: RowPrice) -> str:
+    if price.price is None:
+        return f"[{price.interval[0]:.4g}, {price.interval[1]:.4g}]"
+    return f"{price.price:.4g}"

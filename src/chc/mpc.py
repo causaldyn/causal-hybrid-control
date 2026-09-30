@@ -280,68 +280,91 @@ class RecedingHorizon:
         return plan
 
     def _budget_rows(self, budget: PeriodBudget, t: float, spent: float | None) -> LinearConstraint:
-        """One row per period the window touches, over that period's steps in the window."""
         if spent is None or not math.isfinite(spent):
             raise ValueError(
                 "a budgeted step needs spent: what the period t falls in has spent so far"
             )
-        offset = (t - budget.start) / self.dt
-        index = round(offset)
-        if abs(offset - index) > 1e-6:
-            raise ValueError(
-                f"t = {t} is {offset:.6g} steps from the budget's start; a budgeted step reads its "
-                "place in the period off the clock, so t must be on the dt grid"
-            )
-        position = index % budget.period
-        levers = self.cost.R.shape[0]
-        if budget.weights.shape[0] != levers:
-            raise ValueError(
-                f"the budget weighs {budget.weights.shape[0]} levers, the plan has {levers}"
-            )
-        shape = (self.horizon, levers)
-        dtype = jnp.result_type(float)
-        lo = np.asarray(broadcast_box(self.u_lo, shape, "u_lo", dtype), dtype=np.float64)
-        hi = np.asarray(broadcast_box(self.u_hi, shape, "u_hi", dtype), dtype=np.float64)
-        spends = budget.weights != 0.0  # a free lever's unbounded side must not read as 0 * inf
-        weights = budget.weights[spends]
-        least = np.minimum(weights * lo[:, spends], weights * hi[:, spends]).sum(axis=1)
-        left = budget.amount - spent
-        # A row the solve holds to rounding comes back that far over; that is not an overrun.
-        rounding = 1e3 * float(jnp.finfo(dtype).eps) * max(1.0, budget.amount)
-        matrix, upper, first = [], [], 0
-        while first < self.horizon:
-            share = budget.period - position if first == 0 else budget.period
-            count = min(share, self.horizon - first)
-            bound = (left if first == 0 else budget.amount) * count / share
-            floor = float(least[first : first + count].sum())
-            if bound < floor:
-                if first == 0 and floor - bound > rounding:
-                    _log.warning(
-                        "this period's %d steps in the window spend at least %.6g, and their "
-                        "row allowed %.6g of the %.6g left, so the plan spends the least the box "
-                        "allows",
-                        count,
-                        floor,
-                        bound,
-                        left,
-                        extra={
-                            "chc_event": "budget_overrun",
-                            "position": position,
-                            "left": left,
-                            "floor": floor,
-                            "allowed": bound,
-                        },
-                    )
-                bound = floor
-            row = np.zeros(shape)
-            row[first : first + count] = budget.weights
-            matrix.append(row.ravel())
-            upper.append(bound)
-            first += count
-        _log.debug(
-            "budget rows for step %d of the period: %s",
-            position,
-            [round(value, 9) for value in upper],
-            extra={"chc_event": "budget", "position": position, "left": left, "bounds": upper},
+        return _period_rows(
+            budget,
+            t,
+            spent,
+            dt=self.dt,
+            horizon=self.horizon,
+            u_lo=self.u_lo,
+            u_hi=self.u_hi,
+            levers=self.cost.R.shape[0],
         )
-        return LinearConstraint(np.stack(matrix), np.full(len(upper), -np.inf), np.asarray(upper))
+
+
+def _period_rows(
+    budget: PeriodBudget,
+    t: float,
+    spent: float,
+    *,
+    dt: float,
+    horizon: int,
+    u_lo: Bound,
+    u_hi: Bound,
+    levers: int,
+) -> LinearConstraint:
+    """One row per period a plan of ``horizon`` steps from ``t`` touches, over that period's steps
+    in the plan, when the period ``t`` falls in has spent ``spent``."""
+    offset = (t - budget.start) / dt
+    index = round(offset)
+    if abs(offset - index) > 1e-6:
+        raise ValueError(
+            f"t = {t} is {offset:.6g} steps from the budget's start; a budgeted step reads its "
+            "place in the period off the clock, so t must be on the dt grid"
+        )
+    position = index % budget.period
+    if budget.weights.shape[0] != levers:
+        raise ValueError(
+            f"the budget weighs {budget.weights.shape[0]} levers, the plan has {levers}"
+        )
+    shape = (horizon, levers)
+    dtype = jnp.result_type(float)
+    lo = np.asarray(broadcast_box(u_lo, shape, "u_lo", dtype), dtype=np.float64)
+    hi = np.asarray(broadcast_box(u_hi, shape, "u_hi", dtype), dtype=np.float64)
+    spends = budget.weights != 0.0  # a free lever's unbounded side must not read as 0 * inf
+    weights = budget.weights[spends]
+    least = np.minimum(weights * lo[:, spends], weights * hi[:, spends]).sum(axis=1)
+    left = budget.amount - spent
+    # A row the solve holds to rounding comes back that far over; that is not an overrun.
+    rounding = 1e3 * float(jnp.finfo(dtype).eps) * max(1.0, budget.amount)
+    matrix, upper, first = [], [], 0
+    while first < horizon:
+        share = budget.period - position if first == 0 else budget.period
+        count = min(share, horizon - first)
+        bound = (left if first == 0 else budget.amount) * count / share
+        floor = float(least[first : first + count].sum())
+        if bound < floor:
+            if first == 0 and floor - bound > rounding:
+                _log.warning(
+                    "this period's %d steps in the window spend at least %.6g, and their "
+                    "row allowed %.6g of the %.6g left, so the plan spends the least the box "
+                    "allows",
+                    count,
+                    floor,
+                    bound,
+                    left,
+                    extra={
+                        "chc_event": "budget_overrun",
+                        "position": position,
+                        "left": left,
+                        "floor": floor,
+                        "allowed": bound,
+                    },
+                )
+            bound = floor
+        row = np.zeros(shape)
+        row[first : first + count] = budget.weights
+        matrix.append(row.ravel())
+        upper.append(bound)
+        first += count
+    _log.debug(
+        "budget rows for step %d of the period: %s",
+        position,
+        [round(value, 9) for value in upper],
+        extra={"chc_event": "budget", "position": position, "left": left, "bounds": upper},
+    )
+    return LinearConstraint(np.stack(matrix), np.full(len(upper), -np.inf), np.asarray(upper))

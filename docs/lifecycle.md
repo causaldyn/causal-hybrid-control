@@ -45,7 +45,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   - `Lever`: a box, a limit on how far it moves in one step, and a quadratic price on its use;
   - `Target`: a level, or a schedule of levels;
   - `Constraint`: a bound on a state;
-  - `Driver`: a forecast the plan cannot move.
+  - `Driver`: a forecast the plan cannot move;
+  - `PeriodBudget`, as `budgets=`: at most so much spent per period, with what a unit more
+    would buy read back from `Prescription.budget_prices()`.
 
   See the [quickstart](quickstart.md) and [`chc.decision`](api/decision.md).
 - **`causal_plan`, the solver underneath.** It takes the box, linear rows over the whole sequence

@@ -37,6 +37,7 @@ from chc.decision import (
 )
 from chc.dynamics import LinearDynamics
 from chc.graph import AdjustmentSet, CausalGraph
+from chc.mpc import PeriodBudget
 from chc.panel import Panel
 from chc.plan import CausalPlan, causal_plan, certify_safety
 
@@ -508,6 +509,71 @@ def test_a_rate_limit_moves_the_schedule_rather_than_annotating_it() -> None:
     assert held.max() <= cap + 1e-9
     assert held.max() == pytest.approx(cap, abs=1e-6)  # it binds: without the cap it is 4x this
     assert capped.certificate.solver_status == "converged"
+
+
+def test_a_budget_is_priced_apart_from_the_rate_limit_held_beside_it() -> None:
+    """The plan's rows are the rate limit's, then the budget's; the budget's price is the planned
+    cost's slope in its amount."""
+    panel = _panel()
+    graph = CausalGraph.from_edges(EDGES)
+
+    def decide(amount: float) -> Prescription:
+        return prescribe(
+            panel,
+            levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05, cap_per_step=0.3)],
+            target=Target("supply", value=1.0),
+            constraints=[Constraint("wait", hi=0.5)],
+            adjustment=graph,
+            horizon=15,
+            dt=DT,
+            tolerance=0.5,
+            budgets=[PeriodBudget(np.ones(1), amount, 15)],
+        )
+
+    def cost(amount: float) -> float:
+        plan = decide(amount).plan
+        assert plan is not None
+        return plan.task_cost
+
+    budgeted = decide(10.0)
+    assert budgeted.plan is not None
+    assert len(budgeted.plan.shadow_prices().rows) == 14 + 1
+    assert float(np.sum(budgeted.plan.actions)) == pytest.approx(10.0, rel=1e-9)
+    [[price]] = budgeted.budget_prices()
+    assert price.status == "exact"
+    step = 0.01
+    slope = (cost(10.0 - step) - cost(10.0 + step)) / (2 * step)
+    assert price.price == pytest.approx(slope, rel=1e-3)
+
+
+def test_a_budget_held_beside_the_constraints_barrier_is_kept_and_reported_unpriced() -> None:
+    held = _prescribe(
+        _panel(),
+        CausalGraph.from_edges(EDGES),
+        hold_constraints=True,
+        budgets=[PeriodBudget(np.ones(1), 3.0, 15)],
+    )
+    assert held.plan is not None
+    assert float(np.sum(held.plan.actions)) <= 3.0 + 1e-9
+    assert (
+        "Budget of 3 per 15 steps: not priced, as the plan was held under the constraints' "
+        "barrier." in held.report()
+    )
+    with pytest.raises(ValueError, match="barrier"):
+        held.budget_prices()
+
+
+def test_no_budget_is_priced_when_the_effect_is_not_identified() -> None:
+    blocked = _prescribe(
+        _panel(),
+        CausalGraph.from_edges(EDGES, latent=("demand",)),
+        budgets=[PeriodBudget(np.ones(1), 3.0, 15)],
+    )
+    with pytest.raises(NotIdentifiedError, match="no budget was priced"):
+        blocked.budget_prices()
+    assert blocked.to_json()["budgets"] == [
+        {"weights": [1.0], "amount": 3.0, "period": 15, "start": 0.0}
+    ]
 
 
 def test_a_schedule_is_steered_for_before_it_moves() -> None:

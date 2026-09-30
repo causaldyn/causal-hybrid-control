@@ -25,11 +25,10 @@ HONEST SCOPE, and it bounds what the numbers below mean:
   the state, so the fitted plant is a **local surrogate** of the truth. Every arm is therefore
   audited by rolling its schedule out on the true plant, as :mod:`chc.spine` does, and the reported
   sales are the audited ones rather than the planner's own forecast.
-* There is no hard total-budget constraint. :func:`chc.plan.causal_plan` takes one (a
-  :class:`chc.control.LinearConstraint` row of ones, since 0.6.0), but :func:`chc.prescribe`, which
-  this module drives, has no budget argument; spend is priced through ``Lever.unit_cost`` instead.
-  Arms are compared at matched total spend and by return per unit spent, which is the comparison
-  that does not depend on the budget anyway.
+* The arms are not held to a total budget. :func:`chc.prescribe` takes one (``budgets``, since
+  0.10.0), but spend here is priced through ``Lever.unit_cost`` instead, and the arms are compared
+  at matched total spend and by return per unit spent, which is the comparison that does not
+  depend on the budget anyway.
 * ``theta_c`` is taken as known. In practice it is fitted (Robyn, Meridian); treating it as known
   here isolates the question this module is about, which is the incremental return and not the
   carryover rate.

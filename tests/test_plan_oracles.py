@@ -11,6 +11,10 @@
   Capasso 2011, sec. 3.4): no effort until the stock reaches ``x~ = (k + 1) / 2``, the effort that
   holds it there, and full effort from where the stock would end at ``1 + (x~ - 1) u~ / ubar``.
   The only oracle here with a singular arc.
+* **A budget's price.** Goodwill with linear revenue and a budget on its spend, Sethi's (1977)
+  setting: a unit of spend at ``s`` is worth ``(p / d)(1 - exp(-d (T - s)))`` of revenue, falling in
+  ``s``, so the plan spends first. The budget's price is what the step it leaves inside the box is
+  worth; where it leaves none, the steps on either side of where it ran out bound the price.
 """
 
 from __future__ import annotations
@@ -21,7 +25,9 @@ import numpy as np
 import pytest
 from scipy.optimize import minimize
 
+from chc.control import LinearConstraint
 from chc.cost import QuadraticCost
+from chc.dynamics import LinearDynamics
 from chc.mmm import MarketingMixSystem
 from chc.plan import causal_plan
 
@@ -31,6 +37,9 @@ PRICE, TARGET = 0.08, 8.0  # the spend's quadratic price, and the sales target a
 # validation/planner_oracles.mac, STEP 4
 SINGULAR_STOCK, SINGULAR_EFFORT = 3.0, 0.12
 ENTRY, EXIT, VALUE = 2.703100720721096, 9.27765777115768, 2.578920572317573
+# STEP 5: what steps 35 and 34 are worth, and the revenue of 35.5 and 35 steps of full spend
+WORTH_35, WORTH_34 = 0.1920480154134232, 0.1924358382780715
+REVENUE_HALF, REVENUE_FULL = 6.967878964376164, 6.871854956669453
 
 
 def _golden_rule() -> tuple[np.ndarray, float, np.ndarray]:
@@ -123,3 +132,38 @@ def test_a_harvest_plan_rides_the_singular_arc_and_earns_its_value() -> None:
     leave = dt * (horizon - int(np.argmax(effort[::-1] < top - 1e-6)))
     assert abs(entry - ENTRY) <= dt
     assert abs(leave - EXIT) <= dt
+
+
+@pytest.mark.parametrize(
+    ("budget", "revenue", "status", "worth"),
+    [
+        (35.5, REVENUE_HALF, "exact", (WORTH_35, WORTH_35)),
+        (35.0, REVENUE_FULL, "degenerate", (WORTH_35, WORTH_34)),
+    ],
+)
+def test_a_budget_is_spent_first_and_priced_at_what_its_last_step_is_worth(
+    budget: float, revenue: float, status: str, worth: tuple[float, float]
+) -> None:
+    dt, horizon, far = 0.1, 100, 1e3
+    # goodwill decaying at 1/2 and the revenue it has earned, towards a revenue out of reach
+    model = LinearDynamics(jnp.array([[-0.5, 0.0], [1.0, 0.0]]), jnp.array([[1.0], [0.0]]))
+    cost = QuadraticCost(
+        Q=jnp.zeros((2, 2)),
+        R=jnp.zeros((1, 1)),
+        Qf=jnp.diag(jnp.array([0.0, 1.0])),
+        x_target=jnp.array([0.0, far]),
+    )
+    row = LinearConstraint(np.ones((1, horizon)), np.array([-np.inf]), np.array([budget]))
+    plan = causal_plan(
+        model, jnp.zeros(2), cost, dt, horizon, 0.0, 1.0, steps=50_000, constraints=(row,)
+    )
+    assert plan.solver_status == "converged"
+    spend = np.zeros(horizon)
+    spend[:35], spend[35] = 1.0, budget - 35.0
+    np.testing.assert_allclose(np.asarray(plan.actions)[:, 0], spend, atol=1e-6)
+    reached = float(plan.trajectory[-1, 1])
+    assert reached == pytest.approx(revenue, rel=1e-6)
+    # the row's multiplier is the revenue's distance to the target times what a step is worth
+    [price] = plan.shadow_prices().rows
+    assert price.status == status
+    np.testing.assert_allclose(np.asarray(price.interval) / (far - reached), worth, rtol=1e-6)
