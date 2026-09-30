@@ -1,0 +1,62 @@
+/* Closed forms chc.allocation.budget_for is tested against (tests/test_goal_seek.py). A plan's
+   gain I(B) is its return over spending nothing, at the best split of the budget B.
+
+   STEP 1  one Michaelis-Menten channel, no carryover, one period, I = b B / (K + B): the least
+           budget that gains a, the budget whose last unit returns m, and the most budget whose
+           average return is r, which is where I - r B, whose peak is at the marginal budget,
+           falls back through zero
+   STEP 2  one exponential channel, I = b (1 - exp(-B/K)): the same three; the average return's
+           root is K (c + W(-c exp(-c))) with c = b / (r K), on W's principal branch
+   STEP 3  a floor makes the average return rise before it falls: a Michaelis-Menten channel
+           (b1 = 900, K1 = 50, from 0) beside a linear one returning 1/2 a unit held at its floor
+           of 200. At r = 2 the average crosses twice, and the most budget is the second crossing,
+           325 + 25 sqrt(13), not the first, 325 - 25 sqrt(13)
+
+   Run: timeout 120 maxima --very-quiet -b validation/goal_seek.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 16$
+
+/* STEP 1 */
+I1(B) := b*B/(K + B)$
+Ba : a*K/(b - a)$
+Bm : sqrt(b*K/m) - K$
+Br : b/r - K$
+print("STEP 1a  I(Ba) - a:", ratsimp(I1(Ba) - a))$
+print("STEP 1b  I'(Bm) - m:", ratsimp(subst(B = Bm, diff(I1(B), B)) - m))$
+print("STEP 1c  I(Br) / Br - r:", ratsimp(I1(Br)/Br - r))$
+print("STEP 1d  the average falls with B, d(I/B)/dB:", ratsimp(diff(I1(B)/B, B)))$
+print("STEP 1e  I - r B peaks at the marginal budget for m = r:",
+      ratsimp(subst([B = subst(m = r, Bm)], diff(I1(B) - r*B, B))))$
+
+/* STEP 2 */
+I2(B) := b*(1 - exp(-B/K))$
+Ea : -K*log(1 - a/b)$
+Em : K*log(b/(K*m))$
+print("STEP 2a  I(Ea) - a:", ratsimp(I2(Ea) - a))$
+print("STEP 2b  I'(Em) - m:", ratsimp(subst(B = Em, diff(I2(B), B)) - m))$
+/* x = B/K solves c (1 - exp(-x)) = x; with x = c + w and w exp(w) = -c exp(-c), exp(-x) is
+   exp(-c) / exp(w) = -w / c */
+c : b/(r*K)$
+x : c + w$
+print("STEP 2c  c (1 - exp(-x)) - x, exp(-x) = -w/c:", ratsimp(c*(1 - (-w/c)) - x))$
+print("STEP 2d  and exp(-x) = -w/c follows from w exp(w) = -c exp(-c):",
+      ratsimp(exp(-c)/(-c*exp(-c)/w) - (-w/c)))$
+
+/* STEP 3 */
+b1 : 900$ K1 : 50$ slope2 : 1/2$ floor2 : 200$ rr : 2$
+/* x is channel 1's spend; channel 2 stays at its floor while channel 1's slope beats 1/2 */
+gain(x) := b1*x/(K1 + x) + slope2*floor2$
+f3 : ratsimp((gain(xs) - rr*(xs + floor2))*(K1 + xs))$
+roots : solve(f3 = 0, xs)$
+print("STEP 3a  where the average return is 2:", roots)$
+xhi : 125 + 25*sqrt(13)$
+xlo : 125 - 25*sqrt(13)$
+print("STEP 3b  both are roots:", ratsimp(subst(xs = xhi, f3)), ratsimp(subst(xs = xlo, f3)))$
+print("STEP 3c  the budgets:", floor2 + xlo, "=", float(floor2 + xlo), " and", floor2 + xhi, "=",
+      float(floor2 + xhi))$
+print("STEP 3d  channel 1's slope there beats 1/2, so channel 2 stays at its floor:",
+      float(b1*K1/(K1 + xhi)^2))$
+print("STEP 3e  the marginal budget at 2 and the gain less 2 B there (positive):",
+      floor2 + sqrt(b1*K1/rr) - K1, ",", gain(sqrt(b1*K1/rr) - K1) - rr*(sqrt(b1*K1/rr) - K1 + floor2))$

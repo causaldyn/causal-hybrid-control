@@ -25,6 +25,14 @@ from the best on the true curves. On concave curves the two are one number.
 unit of budget buys, spread the way the plan spends it. It is where the channels running inside
 their boxes meet; a channel at its cap returns more a unit and one at its floor less.
 
+**A goal in place of a budget.** :func:`budget_for` finds the budget that meets a goal, and plans
+it: the least budget that gains a return (:class:`ReturnTarget`), the budget at which one more unit
+returns a given amount (:class:`MarginalReturnTarget`), or the most budget whose plan returns a
+given amount a unit on average, a target return on ad spend (:class:`ReturnOnSpendTarget`). A
+plan's gain is what its spend adds, ``worth - idle``, where ``idle`` is what the channels return
+with nothing spent in the plan: the history's carryover alone. As the price falls every rate rises,
+so the plans for every budget lie on one path, and each goal is a point on it.
+
 HONEST SCOPE:
 
 * The channels are read as given: a fitted channel's error goes straight into the plan. Where the
@@ -37,13 +45,17 @@ HONEST SCOPE:
   the tail further up the curve, so a long kernel's tail is valued at its most.
 * :class:`chc.response.Ricker` is not monotone, and a negative coefficient turns a concave curve
   convex; the bisection proves nothing for either, and both are refused.
+* On an S-shaped curve a goal is met on the path of the envelope's plans, the ones :func:`allocate`
+  makes, and read on the true curves. The gain still rises along it, so a return target is the
+  least budget of those plans, but a plan off the path may meet it for less; and a target return on
+  ad spend is a budget where the average crosses the target, not proved the most.
 * :func:`chc.mmm.prescribe` plans a budget over a continuous plant whose adstock is a state; this
   plans discrete channels, which that plant does not describe.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import equinox as eqx
@@ -56,7 +68,15 @@ from scipy.optimize import brentq
 
 from chc.response import Channel, Logarithmic, Power, Saturation, relax
 
-__all__ = ["Allocation", "allocate"]
+__all__ = [
+    "Allocation",
+    "Goal",
+    "MarginalReturnTarget",
+    "ReturnOnSpendTarget",
+    "ReturnTarget",
+    "allocate",
+    "budget_for",
+]
 
 _EPS = float(np.finfo(float).eps)
 
@@ -72,12 +92,48 @@ class Allocation:
             envelopes; ``bound - worth`` bounds the plan's shortfall from the best on the channels,
             and is ``0`` when every curve is concave.
         price: the return on one more currency unit of budget, on the envelopes.
+        budget: what the plan spends over its periods.
+        idle: what the channels return over the same periods with nothing spent in the plan, the
+            history's carryover alone.
     """
 
     spend: np.ndarray
     worth: float
     bound: float
     price: float
+    budget: float
+    idle: float
+
+    @property
+    def gain(self) -> float:
+        """What the plan's spend adds to the channels' return: ``worth - idle``."""
+        return self.worth - self.idle
+
+
+@dataclass(frozen=True)
+class ReturnTarget:
+    """The least budget whose plan gains ``amount``, in the channels' units."""
+
+    amount: float
+
+
+@dataclass(frozen=True)
+class MarginalReturnTarget:
+    """The budget at which one more currency unit returns ``per_unit``: below it a unit returns
+    more, past it less. On revenue, ``per_unit = 1`` is where spend stops paying for itself."""
+
+    per_unit: float
+
+
+@dataclass(frozen=True)
+class ReturnOnSpendTarget:
+    """The most budget whose plan gains ``per_unit`` for each currency unit it spends: a target
+    return on ad spend, read on the gain."""
+
+    per_unit: float
+
+
+Goal = ReturnTarget | MarginalReturnTarget | ReturnOnSpendTarget
 
 
 class _Worth(eqx.Module):
@@ -130,9 +186,20 @@ def _rate(worth: _Worth, low: float, high: float, target: float) -> float:
     )
 
 
+def _rates(
+    envelopes: Sequence[_Worth], lower: np.ndarray, upper: np.ndarray, periods: int, price: float
+) -> np.ndarray:
+    """Each channel's rate at ``price``: every rate falls as the price rises."""
+    return np.array(
+        [
+            _rate(worth, low, high, periods * price)
+            for worth, low, high in zip(envelopes, lower, upper, strict=True)
+        ]
+    )
+
+
 def _check(
     channels: Sequence[Channel],
-    budget: float,
     periods: int,
     lower: np.ndarray,
     upper: np.ndarray,
@@ -165,12 +232,20 @@ def _check(
         raise ValueError(f"history has shape {history.shape}; it needs one column a channel")
     if not (np.all(np.isfinite(history)) and np.all(history >= 0.0)):
         raise ValueError("history holds a negative or non-finite spend")
-    least, most = periods * float(lower.sum()), periods * float(upper.sum())
-    if not (np.isfinite(budget) and least <= budget <= most):
-        raise ValueError(
-            f"a budget of {budget} is outside what the box spends over {periods} periods, "
-            f"[{least}, {most}]"
-        )
+
+
+def _inputs(
+    channels: Sequence[Channel],
+    periods: int,
+    lower: ArrayLike,
+    upper: ArrayLike,
+    history: ArrayLike | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    lower_rates = np.asarray(lower, dtype=float)
+    upper_rates = np.asarray(upper, dtype=float)
+    spent = np.zeros((0, len(channels))) if history is None else np.asarray(history, dtype=float)
+    _check(channels, periods, lower_rates, upper_rates, spent)
+    return lower_rates, upper_rates, spent
 
 
 def allocate(
@@ -200,22 +275,21 @@ def allocate(
             coefficient, a box or history of the wrong shape, a box with ``lower > upper`` or a
             negative end, or a budget the box cannot spend over the periods.
     """
-    lower_rates = np.asarray(lower, dtype=float)
-    upper_rates = np.asarray(upper, dtype=float)
-    spent = np.zeros((0, len(channels))) if history is None else np.asarray(history, dtype=float)
-    _check(channels, float(budget), periods, lower_rates, upper_rates, spent)
+    lower_rates, upper_rates, spent = _inputs(channels, periods, lower, upper, history)
+    budget = float(budget)
+    least, most = periods * float(lower_rates.sum()), periods * float(upper_rates.sum())
+    if not (np.isfinite(budget) and least <= budget <= most):
+        raise ValueError(
+            f"a budget of {budget} is outside what the box spends over {periods} periods, "
+            f"[{least}, {most}]"
+        )
     given = tuple(channels)
     relaxed = relax(given)
     envelopes = _worths(relaxed, spent, periods)
-    target = float(budget) / periods
+    target = budget / periods
 
     def rates(price: float) -> np.ndarray:
-        return np.array(
-            [
-                _rate(worth, low, high, periods * price)
-                for worth, low, high in zip(envelopes, lower_rates, upper_rates, strict=True)
-            ]
-        )
+        return _rates(envelopes, lower_rates, upper_rates, periods, price)
 
     # Every rate falls as the price rises. At no price any rate is as good as its cap, since no
     # slope is negative; at the steepest slope the floors allow, every channel sits at its floor.
@@ -239,4 +313,138 @@ def allocate(
     bound = sum(_value(w, rate) for w, rate in zip(envelopes, spend, strict=True))
     worths = envelopes if relaxed is given else _worths(given, spent, periods)
     worth = sum(_value(w, rate) for w, rate in zip(worths, spend, strict=True))
-    return Allocation(spend=spend, worth=worth, bound=bound, price=0.5 * (cheap + dear))
+    return Allocation(
+        spend=spend,
+        worth=worth,
+        bound=bound,
+        price=0.5 * (cheap + dear),
+        budget=budget,
+        idle=sum(_value(w, 0.0) for w in worths),
+    )
+
+
+def _cross(
+    rates: Callable[[float], np.ndarray],
+    excess: Callable[[np.ndarray], float],
+    few: np.ndarray,
+    dear: float,
+    many: np.ndarray,
+) -> np.ndarray:
+    """The least rates on the path where ``excess``, which does not fall as the rates rise,
+    reaches nothing: ``few`` are the rates at price ``dear``, short of it, and ``many`` at price 0,
+    not. Bisected on the price as :func:`allocate` bisects it; where a linear rate jumps, the plans
+    either side are mixed to meet it, as :func:`allocate` mixes them to spend its budget."""
+    cheap, tolerance = 0.0, 4 * _EPS * dear
+    while dear - cheap > tolerance:
+        middle = 0.5 * (cheap + dear)
+        at = rates(middle)
+        if excess(at) >= 0.0:
+            many, cheap = at, middle
+        else:
+            few, dear = at, middle
+
+    def mixed(share: float) -> float:
+        return excess(few + share * (many - few))
+
+    if mixed(1.0) <= 0.0:  # met at the cheap end, to rounding
+        return many
+    return few + brentq(mixed, 0.0, 1.0, xtol=4 * _EPS, rtol=4 * _EPS) * (many - few)
+
+
+def budget_for(
+    channels: Sequence[Channel],
+    goal: Goal,
+    periods: int,
+    *,
+    lower: ArrayLike,
+    upper: ArrayLike,
+    history: ArrayLike | None = None,
+) -> Allocation:
+    """The budget that meets ``goal``, and the plan :func:`allocate` makes with it.
+
+    A plan's gain is :attr:`Allocation.gain`, what its spend adds to the channels' return over its
+    periods and each kernel's length after. As the budget grows every rate rises along one path of
+    plans, and each goal is a point on it:
+
+    * :class:`ReturnTarget`: the least budget whose plan gains ``amount``. The gain rises along the
+      path, so the budget is exact.
+    * :class:`MarginalReturnTarget`: the rates at which each channel's slope meets ``per_unit``, or
+      the end of its box it presses on. Where a channel's return is linear with that slope, its
+      least rate.
+    * :class:`ReturnOnSpendTarget`: the most budget whose gain is ``per_unit`` times the budget or
+      more. The gain less ``per_unit`` a unit is concave in the budget and peaks at the marginal
+      target's budget, so past that budget it falls, and the most budget is where it falls through
+      nothing. The average can rise before the peak, where a floor holds spend on a channel that
+      returns little a unit, so it can meet the target at a smaller budget too; that one is not
+      returned.
+
+    Args:
+        channels, periods, lower, upper, history: as :func:`allocate` takes them.
+        goal: what the budget must meet.
+
+    Raises:
+        TypeError: ``goal`` is none of the three, or a channel is not a
+            :class:`chc.response.Channel`.
+        ValueError: what :func:`allocate` refuses of the channels and the box; a goal whose value is
+            not finite; a gain beyond what the box returns at its caps; a return on spend that no
+            budget in the box reaches, which the error says by how much it falls short at the peak.
+    """
+    if not isinstance(goal, ReturnTarget | MarginalReturnTarget | ReturnOnSpendTarget):
+        raise TypeError(f"goal is a {type(goal).__name__}, not a Goal")
+    value = goal.amount if isinstance(goal, ReturnTarget) else goal.per_unit
+    if not np.isfinite(value):
+        raise ValueError(f"the goal's value is {value}; it needs a finite one")
+    lower_rates, upper_rates, spent = _inputs(channels, periods, lower, upper, history)
+    given = tuple(channels)
+    relaxed = relax(given)
+    envelopes = _worths(relaxed, spent, periods)
+    worths = envelopes if relaxed is given else _worths(given, spent, periods)
+    idle = sum(_value(w, 0.0) for w in worths)
+
+    def rates(price: float) -> np.ndarray:
+        return _rates(envelopes, lower_rates, upper_rates, periods, price)
+
+    def gain(spend: np.ndarray) -> float:
+        return sum(_value(w, rate) for w, rate in zip(worths, spend, strict=True)) - idle
+
+    def cost(spend: np.ndarray) -> float:
+        return periods * float(spend.sum())
+
+    match goal:
+        case MarginalReturnTarget(per_unit=per_unit):
+            spend = rates(max(per_unit, 0.0))
+        case ReturnTarget(amount=amount):
+            most = gain(upper_rates)
+            if amount > most:
+                raise ValueError(
+                    f"no plan in the box gains {amount}: at every cap the channels gain {most:.6g}"
+                )
+            # at the steepest slope the floors allow every channel sits at its floor, as allocate
+            dear = max(
+                0.0, *(_slope(w, low) for w, low in zip(envelopes, lower_rates, strict=True))
+            )
+            spend = (
+                lower_rates
+                if gain(lower_rates) >= amount
+                else _cross(
+                    rates, lambda at: gain(at) - amount, lower_rates, dear / periods, upper_rates
+                )
+            )
+        case ReturnOnSpendTarget(per_unit=per_unit):
+
+            def surplus(at: np.ndarray) -> float:
+                return gain(at) - per_unit * cost(at)
+
+            if surplus(upper_rates) >= 0.0:
+                spend = upper_rates
+            else:
+                peak = rates(per_unit)  # per_unit > 0 here, since the gain is never negative
+                if surplus(peak) < 0.0:
+                    raise ValueError(
+                        f"no budget in the box gains {per_unit} a currency unit it spends: the "
+                        f"gain less {per_unit} a unit peaks at {surplus(peak):.6g}, at a budget "
+                        f"of {cost(peak):.6g}"
+                    )
+                spend = _cross(rates, lambda at: -surplus(at), peak, per_unit, upper_rates)
+    budget = cost(np.clip(spend, lower_rates, upper_rates))
+    return allocate(given, budget, periods, lower=lower_rates, upper=upper_rates, history=spent)

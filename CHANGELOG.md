@@ -137,6 +137,22 @@ still change).
   default. The tests hold the plan against SciPy's SLSQP, random plans, the worth's own slopes, a
   closed form and a grid; causaldyn-bench's Track M v2 holds it against an oracle written without
   it.
+- **A goal in place of a budget, `chc.allocation.budget_for`** (*experimental*, ADR 0037).
+  `budget_for(channels, goal, periods, *, lower, upper, history=None)` finds the budget that meets
+  `goal` and returns `allocate`'s plan for it: `ReturnTarget(amount)`, the least budget whose plan
+  gains `amount`; `MarginalReturnTarget(per_unit)`, the budget at which one more currency unit
+  returns `per_unit`; `ReturnOnSpendTarget(per_unit)`, a target return on ad spend, the most budget
+  whose plan gains `per_unit` a unit it spends. The gain is `Allocation.gain`, the worth less
+  `Allocation.idle`, what the channels return with nothing spent in the plan, so the history's
+  carryover is not counted as the plan's return; `Allocation` also carries its `budget`. The plans
+  for every budget lie on one path, and each goal is a point on it, found by `allocate`'s bisection
+  on the price. A return on spend is sought past the budget where the price is the target, since a
+  floor that holds spend on a poor channel can make the average rise before it, and the first
+  budget that meets it is then not the most. Exact where every curve is concave; on an S-curve the
+  path is the envelope's plans. The tests hold each goal to the closed forms of
+  `validation/goal_seek.mac`, one Michaelis–Menten or exponential channel and a floor's two
+  crossings at `325 ± 25√13`, and on channels with carryover to the gain the channels return. Nine
+  mutations caught.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,
