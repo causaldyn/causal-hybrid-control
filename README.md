@@ -326,7 +326,7 @@ Three tiers, by what a break costs you:
 | **evolving** | the estimator, certificate and domain layers — `causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace` `mmm` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
 | **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` — and modules built ahead of the release that verifies them — `experiment` `switchback` on a plant CHC did not write, `zones` in the pre-registered study it is the plant of, `dlm`, `lift` and `allocation` on an external media-mix generator, `misspecification` on the zone plant, `response` in the plans it warm-starts | may change or be withdrawn in any release. Pin an exact version if you depend on one |
 
-Twenty-three entries in modules of other tiers are experimental on the same terms, for the same
+Twenty-four entries in modules of other tiers are experimental on the same terms, for the same
 reason:
 the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its `influence` argument
 with the fields it keeps, the `unmoved` field of `CausalDynamicsFit`, and `omitted_confounder_bound`
@@ -335,8 +335,8 @@ and `OmittedConfounderBound` in `dynamics_id`,
 `SyntheticControlInference` in `scm`, `gcm_test` and `GcmTest` in `independence`, `LoggerCheck` in
 `evaluation`, the `logger_check` field of `Prescription` and `PlanEvaluation`, `shadow_price_effect`
 and `shadow_price_interval` in `matching`, `channel_drift_evalues`, `DriftAlarm`, `channel_move`,
-`ChannelMove` and `MovePrice` in `gate`, and `CausalPlan.decision_weight`, `DecisionWeight` and
-`CausalPlan.relaxed_cost` in `plan`.
+`ChannelMove`, `MovePrice` and the `alpha_futility` field of `GateConfig` in `gate`, and
+`CausalPlan.decision_weight`, `DecisionWeight` and `CausalPlan.relaxed_cost` in `plan`.
 
 Roadmap: **0.10.0** media mix — the discount dynamic linear model verified on an external
 generator, response curves with one definition of ROI, a budget in `prescribe`, and lift tests as

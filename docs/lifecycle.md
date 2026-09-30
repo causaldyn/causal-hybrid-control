@@ -155,7 +155,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   propensities were logged at decision time, zones do not spill over, and a decision's reward does
   not depend on earlier ones. A `DecisionLog` is the versioned record each decision stores for it:
   the action, the propensity it was drawn with, a flag for a clipped action and the dither as
-  drawn. See [`chc.gate`](api/gate.md).
+  drawn. With `alpha_futility` (*experimental*), an experiment whose candidate is not worth
+  `min_effect` returns to shadow, each such stop wrong with probability at most `alpha_futility`.
+  See [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 

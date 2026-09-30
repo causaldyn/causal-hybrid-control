@@ -11,7 +11,8 @@ zone:
 * ``"experiment"``: shadow evidence would come too slowly, so the zone logs under a mixture of the
   two policies, which bounds both weights;
 * ``"rollback"``: a deployed candidate turned out worse than the baseline, or its channel drifted;
-* ``"shadow"``: not yet.
+* ``"shadow"``: not yet, or, with a futility stop, no longer in an experiment whose candidate is
+  not worth ``min_effect``.
 
 Each verdict is an e-process crossing a threshold: a mixture over constant bets of
 ``prod(1 + lam Y_t)``, with ``Y_t`` a decision's weighted contrast less the margin, scaled so that
@@ -115,10 +116,17 @@ class GateConfig:
     decisions per zone the gate may spend, decide when to switch to EXPERIMENT, and no guarantee
     depends on them.
 
+    ``alpha_futility`` (*experimental*), unset by default, adds a futility stop: an experiment
+    whose evidence says the candidate does not beat the baseline by ``delta + min_effect`` returns
+    to shadow, and the zone no longer switches to EXPERIMENT until its channel drifts. Each stop is
+    wrong, stopping a candidate that does beat the baseline by more than ``delta + min_effect``,
+    with probability at most ``alpha_futility``.
+
     Raises:
         ValueError: on a margin outside ``[0, 1)``, a level or ``rho`` outside ``(0, 1)``, a
-            ``min_effect`` that is not positive, a ``horizon`` below 1, or a ``drift_arl`` not
-            above 1.
+            ``min_effect`` that is not positive, a ``horizon`` below 1, a ``drift_arl`` not above
+            1, or an ``alpha_futility`` with ``delta + min_effect`` not below 1, which no reward
+            in ``[0, 1]`` can beat.
     """
 
     delta: float
@@ -129,18 +137,27 @@ class GateConfig:
     alpha_harm: float = 0.05
     drift_arl: float = 10_000.0
     rho: float = 0.5
+    alpha_futility: float | None = None
 
     def __post_init__(self) -> None:
         for name in ("delta", "delta_harm"):
             value = getattr(self, name)
             if not 0.0 <= value < 1.0:
                 raise ValueError(f"{name} must lie in [0, 1), got {value}")
-        for name in ("alpha", "alpha_harm", "rho"):
+        levels = ("alpha", "alpha_harm", "rho") + (
+            ("alpha_futility",) if self.alpha_futility is not None else ()
+        )
+        for name in levels:
             value = getattr(self, name)
             if not 0.0 < value < 1.0:
                 raise ValueError(f"{name} must lie in (0, 1), got {value}")
         if not (math.isfinite(self.min_effect) and self.min_effect > 0.0):
             raise ValueError(f"min_effect must be positive, got {self.min_effect}")
+        if self.alpha_futility is not None and not self.delta + self.min_effect < 1.0:
+            raise ValueError(
+                f"a futility stop tests whether the candidate beats the baseline by delta +"
+                f" min_effect = {self.delta + self.min_effect:g}, which no reward in [0, 1] can"
+            )
         if self.horizon < 1:
             raise ValueError(f"horizon must be at least 1 decision, got {self.horizon}")
         if not self.drift_arl > 1.0:
@@ -875,6 +892,8 @@ class _Zone:
     improvement: _Evidence = field(default_factory=_Evidence)
     harm: _Evidence = field(default_factory=_Evidence)
     rollback: _Evidence = field(default_factory=_Evidence)
+    futility: _Evidence = field(default_factory=_Evidence)
+    futile: bool = False  # the futility e-value crossed in this epoch; a crossing is a rejection
     decisions: int = 0
 
 
@@ -890,16 +909,21 @@ class DeploymentGate:
     * each HOLD for harm, and each ROLLBACK on evidence, is wrong with probability at most
       ``alpha_harm``;
     * with drift e-values supplied, an unchanged channel alarms at most once per ``drift_arl``
-      decisions on average.
+      decisions on average;
+    * with ``alpha_futility``, each futility stop is wrong with probability at most
+      ``alpha_futility``; a stop is wrong when the candidate beats the baseline by more than
+      ``delta + min_effect``.
 
     The rules, in order, for each zone at each read:
 
     1. a drift alarm: HOLD, and the zone's evidence opens a new epoch; ROLLBACK if deployed;
     2. selected by e-BH over every zone's e-value: DEPLOY;
     3. the harm e-value reaches ``1 / alpha_harm``: HOLD, and the zone retires;
-    4. in shadow, a verdict at ``min_effect`` would take longer than the ``horizon`` has left, and
+    4. with ``alpha_futility``, the futility e-value has reached ``1 / alpha_futility`` in this
+       epoch: SHADOW, back from an experiment, and the zone does not switch to EXPERIMENT again;
+    5. in shadow, a verdict at ``min_effect`` would take longer than the ``horizon`` has left, and
        the mixture would gather evidence faster: EXPERIMENT;
-    5. otherwise the zone stays where it is, in shadow or in the experiment.
+    6. otherwise the zone stays where it is, in shadow or in the experiment.
 
     A deployed zone is watched by a rollback e-process on the baseline's weight. A retired zone
     reads HOLD from then on; a new candidate is a new hypothesis, for a new gate. :meth:`mode` says
@@ -954,9 +978,16 @@ class DeploymentGate:
             diff = w_new - w_base
             zone.improvement.add((diff * r - cfg.delta) / (bound + cfg.delta))
             zone.harm.add((diff * (1 - r) - cfg.delta_harm) / (bound + cfg.delta_harm))
+            if cfg.alpha_futility is not None:
+                # The harm increment at the margin -(delta + min_effect): E[diff (1 - r)] is
+                # V_base - V_new, so this bets against V_new - V_base >= delta + min_effect.
+                worth = cfg.delta + cfg.min_effect
+                zone.futility.add((diff * (1 - r) + worth) / (bound - worth))
             if alarms[z]:
                 zone.improvement.restart()
                 zone.harm.restart()
+                zone.futility.restart()
+                zone.futile = False
 
         # A zone's improvement evidence stops at DEPLOY or retirement, so e-BH reads stopped
         # e-values, and the deployed set is self-consistent at every read.
@@ -964,9 +995,9 @@ class DeploymentGate:
         selected = dict(zip(self._zones, _ebh(log_e, cfg.alpha), strict=True))
         verdicts: dict[str, Verdict] = {}
         for z, zone in self._zones.items():
-            before, alarm = zone.mode, alarms.get(z, False)
+            before, alarm, futile = zone.mode, alarms.get(z, False), zone.futile
             verdicts[z] = self._rule(zone, alarm, bool(selected[z]))
-            if zone.mode != before or alarm:
+            if zone.mode != before or alarm or zone.futile != futile:
                 _log.info(
                     "gate verdict",
                     extra={
@@ -975,8 +1006,10 @@ class DeploymentGate:
                         "verdict": verdicts[z],
                         "mode": zone.mode,
                         "drift_alarm": alarm,
+                        "futile": zone.futile,
                         "log_evidence": zone.improvement.log_value,
                         "log_harm": zone.harm.log_value,
+                        "log_futility": zone.futility.log_value,
                         "log_rollback": zone.rollback.log_value,
                         "epoch": zone.improvement.epoch,
                         "decisions": zone.decisions,
@@ -1026,10 +1059,22 @@ class DeploymentGate:
         if zone.harm.log_value >= threshold:
             zone.mode = "retired"
             return "hold"
+        if self._futile(zone):
+            zone.mode = "shadow"
+            return "shadow"
         if zone.mode == "shadow" and self._experiment_is_faster(zone):
             zone.mode = "experiment"
             return "experiment"
         return "shadow" if zone.mode == "shadow" else "experiment"
+
+    def _futile(self, zone: _Zone) -> bool:
+        """The futility e-value has reached ``1 / alpha_futility`` in this epoch. The flag stays up
+        after the e-value falls back: a crossing rejects, and an experiment that re-entered on the
+        way down would stop again."""
+        level = self.config.alpha_futility
+        if level is not None and zone.futility.log_value >= math.log(1.0 / level):
+            zone.futile = True
+        return zone.futile
 
     def _experiment_is_faster(self, zone: _Zone) -> bool:
         """Shadow cannot reach a lone e-BH selection at ``min_effect`` in the horizon left, and the

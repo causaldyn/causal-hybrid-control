@@ -45,7 +45,7 @@ budget's split `allocation` on an external media-mix generator, for the gate `mi
 on the zone plant, and for the response curves `response` in the plans they warm-start. They may
 change or be withdrawn in any release. Pin an exact version if you depend on one.
 
-Twenty-three entries in modules of other tiers are experimental on the same terms, for the same
+Twenty-four entries in modules of other tiers are experimental on the same terms, for the same
 reason:
 the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its `influence` argument
 with the fields it keeps, the `unmoved` field of `CausalDynamicsFit`, and `omitted_confounder_bound`
@@ -54,5 +54,6 @@ and `OmittedConfounderBound` in `chc.dynamics_id`,
 and `SyntheticControlInference` in `chc.scm`, `gcm_test` and `GcmTest` in `chc.independence`,
 `LoggerCheck` in `chc.evaluation`, the `logger_check` field of `Prescription` and `PlanEvaluation`,
 `shadow_price_effect` and `shadow_price_interval` in `chc.matching`, `channel_drift_evalues`,
-`DriftAlarm`, `channel_move`, `ChannelMove` and `MovePrice` in `chc.gate`, and
+`DriftAlarm`, `channel_move`, `ChannelMove`, `MovePrice` and the `alpha_futility` field of
+`GateConfig` in `chc.gate`, and
 `CausalPlan.decision_weight`, `DecisionWeight` and `CausalPlan.relaxed_cost` in `chc.plan`.

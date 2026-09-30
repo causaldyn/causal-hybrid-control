@@ -137,6 +137,19 @@ still change).
   default. The tests hold the plan against SciPy's SLSQP, random plans, the worth's own slopes, a
   closed form and a grid; causaldyn-bench's Track M v2 holds it against an oracle written without
   it.
+- **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
+  `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
+  "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,
+  negated. When it reaches `1 / alpha_futility`, an experiment returns to shadow and the zone does
+  not switch to EXPERIMENT again until its channel drifts. Each stop is wrong with probability at
+  most `alpha_futility`; DEPLOY's false-discovery rate is untouched, since the switch is decided on
+  the past and the improvement evidence keeps accruing in shadow. On the lab's closed loop at
+  `alpha_futility = 0.1`, 400 paired replications (`scripts/bench_gate.py --futility 0.1`), the
+  heavy-tailed null's experiment shrinks from 14 276–14 304 decisions to 1 816–1 937, a candidate
+  at exactly `delta` saves 11–13 % of its own, and the FDR, the power and every deploy are those
+  without the stop. Back in shadow, the heavy-tailed null was held for harm in 5 of 800 runs,
+  against 1, within `alpha_harm`. A candidate exactly `delta + min_effect` better, read after each
+  of 2000 decisions, was stopped on 1 of 100 paths.
 
 ### Changed
 

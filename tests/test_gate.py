@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import math
 from dataclasses import dataclass
 
@@ -147,6 +148,39 @@ def _closed_loop(truths: list[Truth], replications: int, seed: int) -> np.ndarra
             out = gate.update(batch)
             verdicts[rep, c] = [out[z] for z in names]
     return verdicts
+
+
+def _paired_loop(
+    truths: list[Truth], replications: int, seed: int, config: GateConfig
+) -> tuple[np.ndarray, np.ndarray]:
+    """Verdicts as in :func:`_closed_loop`, and the decisions each zone logged under the mixture,
+    ``(replications, zones)``. The shock and each zone draw from streams of their own, so two
+    configs see the same draws in every zone whose modes agree."""
+    names = [f"z{i}" for i in range(len(truths))]
+    plans = {z: t.plan for z, t in zip(names, truths, strict=True)}
+    checks = config.horizon // BATCH
+    verdicts = np.empty((replications, checks, len(truths)), dtype=object)
+    spent = np.zeros((replications, len(truths)), dtype=int)
+    for rep in range(replications):
+        shock = np.random.default_rng([seed, rep, 0])
+        streams = [np.random.default_rng([seed, rep, 1 + i]) for i in range(len(truths))]
+        gate = DeploymentGate(plans, config)
+        state = np.zeros(1)
+        for c in range(checks):
+            eta, state = signal.lfilter(
+                [1.0], [1.0, -0.995], 0.1 * shock.normal(size=BATCH), zi=state
+            )
+            a = 0.2 + 0.2 * np.tanh(eta)
+            modes = [gate.mode(z) for z in names]
+            spent[rep] += BATCH * (np.array(modes) == "experiment")
+            batch = {
+                z: t.draw(g, mode, a, config.rho)
+                for z, t, g, mode in zip(names, truths, streams, modes, strict=True)
+                if mode != "retired"
+            }
+            out = gate.update(batch)
+            verdicts[rep, c] = [out[z] for z in names]
+    return verdicts, spent
 
 
 def _ones(n: int, *, candidate: float, baseline: float, logged: float, reward: float) -> ZoneBatch:
@@ -310,6 +344,135 @@ def test_experiment_is_chosen_only_when_shadow_is_too_slow_and_the_mixture_faste
         plans, GateConfig(delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=10**9)
     )
     assert ample.update({}) == {"heavy": "experiment", "far": "shadow", "near": "shadow"}
+
+
+FUTILE = dataclasses.replace(LAB, alpha_futility=0.1)
+
+
+def test_the_futility_stop_ends_the_experiments_that_cannot_pay_and_nothing_else() -> None:
+    """The lab's two worlds with and without the stop, on paired draws. The heavy-tailed null
+    (contrast -0.012) leaves its experiment early, the boundary zones with chi2 32.6 (contrast
+    exactly ``delta``) now and then, and every zone the stop does not reach reads the same verdicts
+    in both runs: the better heavy-tailed zone is deployed on the same check."""
+    for truths, seed, stopped, spent in (
+        (
+            [BOUNDARY] * 4 + [BOUNDARY_WIDE] * 2 + [WIDE_NULL, HARMFUL],
+            9300,
+            [4, 5, 6],
+            ([0, 0, 0, 0, 286_080, 286_080, 286_080, 0], [0, 0, 0, 0, 243_840, 257_280, 35_232, 0]),
+        ),
+        (
+            [BOUNDARY, BOUNDARY, BOUNDARY_WIDE, WIDE_NULL, BETTER, BETTER, BETTER, WIDE_BETTER],
+            9301,
+            [2, 3],
+            ([0, 0, 286_080, 286_080, 0, 0, 0, 40_128], [0, 0, 274_272, 28_800, 0, 0, 0, 40_128]),
+        ),
+    ):
+        without, spent_without = _paired_loop(truths, 20, seed, LAB)
+        with_stop, spent_with = _paired_loop(truths, 20, seed, FUTILE)
+        assert spent_without.sum(axis=0).tolist() == spent[0]
+        assert spent_with.sum(axis=0).tolist() == spent[1]
+        same = [bool((without[..., k] == with_stop[..., k]).all()) for k in range(len(truths))]
+        assert [k for k, s in enumerate(same) if not s] == stopped
+        assert not (with_stop[..., stopped] == "deploy").any()
+
+
+def test_a_futility_stop_is_wrong_no_more_often_than_its_level_when_read_after_every_decision() -> (
+    None
+):
+    """A lone zone whose candidate is exactly ``delta + min_effect`` better, in the experiment from
+    the start, read after each of 2000 decisions: the stop ends it on 1 of 100 paths, where
+    ``alpha_futility`` allows 10."""
+    worth = FUTILE.delta + FUTILE.min_effect
+    truth = Truth(_boundary(worth, "high"), 1.0, "bump")
+    config = dataclasses.replace(FUTILE, horizon=1)
+    rng = np.random.default_rng(20260930)
+    stops = 0
+    for _ in range(100):
+        gate = DeploymentGate({"z": truth.plan}, config)
+        assert gate.update({}) == {"z": "experiment"}
+        batch = truth.draw(rng, "experiment", np.full(2000, 0.2), config.rho)
+        for t in range(2000):
+            one = slice(t, t + 1)
+            verdict = gate.update(
+                {
+                    "z": ZoneBatch(
+                        batch.reward[one],
+                        batch.candidate[one],
+                        batch.baseline[one],
+                        batch.logged[one],
+                    )
+                }
+            )["z"]
+            if verdict != "experiment":
+                stops += verdict == "shadow"
+                break
+    assert abs(truth.contrast - worth) < 1e-12
+    assert stops == 1
+
+
+@pytest.fixture
+def futile() -> DeploymentGate:
+    """A lone zone sent to the experiment by the rule on the horizon, whose candidate acts as the
+    baseline does, so that every mode logs a propensity of 1. It cannot be ``delta + min_effect``
+    better, and three batches in the experiment reject it."""
+    config = GateConfig(
+        delta=0.02,
+        delta_harm=0.02,
+        min_effect=0.02,
+        horizon=1,
+        drift_arl=100.0,
+        alpha_futility=0.1,
+    )
+    gate = DeploymentGate({"z": WIDE_NULL.plan}, config)
+    assert gate.update({}) == {"z": "experiment"}
+    same = _ones(BATCH, candidate=1.0, baseline=1.0, logged=1.0, reward=0.5)
+    verdicts = [gate.update({"z": same})["z"] for _ in range(3)]
+    assert verdicts == ["experiment", "experiment", "shadow"]
+    return gate
+
+
+def test_a_futile_experiment_returns_to_shadow_and_stays_there(futile: DeploymentGate) -> None:
+    """Back in shadow, the rule on the horizon would send the zone straight back. It stays, also
+    once a batch of evidence for the candidate has pulled the futility e-value back under its
+    threshold: a crossing rejects."""
+    # Each of these decisions bets the futility e-value down, and no other e-value up.
+    for_it = _ones(BATCH, candidate=0.0, baseline=1.0, logged=1.0, reward=0.0)
+    assert [futile.update({"z": b})["z"] for b in (NEUTRAL, for_it, NEUTRAL)] == ["shadow"] * 3
+
+
+def test_a_drift_alarm_lets_a_futile_zone_experiment_again(futile: DeploymentGate) -> None:
+    """The alarm opens a new epoch for the futility evidence with the others, so a rejection made
+    on the channel before it moved no longer stands."""
+    alarm = dataclasses.replace(NEUTRAL, drift=np.full(1, 1e6))
+    assert futile.update({"z": alarm}) == {"z": "hold"}
+    assert futile.update({}) == {"z": "experiment"}
+
+
+def test_a_candidate_better_by_delta_is_deployed_although_it_is_not_worth_min_effect(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Per 1000 decisions: 100 where only the candidate earns 1, 100 where it acts where the
+    baseline earned 0 and does not, 800 neutral. The candidate is 0.1 better, above ``delta = 0``
+    and below ``delta + min_effect = 0.2``. One batch rejects it for futility, as a gate that
+    cannot select it logs, and selects it: DEPLOY, the claim ``V_new - V_base > delta``, comes
+    first."""
+    config = GateConfig(
+        delta=0.0, delta_harm=0.0, min_effect=0.2, horizon=10**6, alpha_futility=0.1
+    )
+    reward = np.r_[np.ones(100), np.zeros(100), np.full(800, 0.5)]
+    candidate = np.r_[np.full(100, 2.0), np.zeros(100), np.ones(800)]
+    batch = ZoneBatch(
+        reward=reward, candidate=candidate, baseline=np.ones(1000), logged=np.ones(1000)
+    )
+    unselectable = DeploymentGate(
+        {"z": ZonePlan(0.2, 0.1)}, dataclasses.replace(config, alpha=1e-300)
+    )
+    with caplog.at_level(logging.INFO, logger="chc.gate"):
+        assert unselectable.update({"z": batch}) == {"z": "shadow"}
+    assert [getattr(r, "futile", None) for r in caplog.records if r.name == "chc.gate"] == [True]
+    gate = DeploymentGate({"z": ZonePlan(0.2, 0.1)}, config)
+    assert gate.update({"z": batch}) == {"z": "deploy"}
 
 
 def test_an_unchanged_channel_alarms_no_more_often_than_drift_arl() -> None:

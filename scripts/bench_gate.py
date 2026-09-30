@@ -1,4 +1,5 @@
-"""The error rates behind docs/adr/0010-a-deployment-gate.md. Verdicts and rates only, no wall time.
+"""The error rates behind docs/adr/0010-a-deployment-gate.md, and with ``--futility`` those behind
+docs/adr/0035-a-futility-stop-for-the-gate-s-experiment.md. Verdicts and rates only, no wall time.
 
 The lab's closed loop, run through :class:`chc.gate.DeploymentGate`: eight zones of a synthetic
 market, each with a candidate ``N(m, s^2)`` against the baseline ``N(0, 1)``, and a reward that is
@@ -13,14 +14,22 @@ the candidate once deployed. A check is 96 decisions, and the horizon 150 checks
 Per world: the false-deploy rate as FDR at the horizon and at the adversarial stopping time (the
 first check at which a null zone is deployed), the chance that any null zone is deployed, the
 missed-deploy rate as one minus power, and how often each zone was sent to EXPERIMENT, held or
-rolled back.
+rolled back. Per zone, the decisions logged under the mixture, averaged over replications, and the
+share of replications in which a futility stop ended its experiment.
 
-Run: uv run python scripts/bench_gate.py {null,mixed} [--replications 400] > out.json
+With ``--futility LEVEL``, each replication runs twice, without and with the futility stop at that
+level. The shock and each zone then draw from streams of their own, so the two arms see the same
+draws in every zone whose modes agree: a zone the stop never reaches reads the same verdicts in
+both.
+
+Run: uv run python scripts/bench_gate.py {null,mixed} [--replications 400] [--futility LEVEL]
+    > out.json
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 from dataclasses import dataclass
@@ -129,32 +138,43 @@ def _worlds() -> dict[str, tuple[list[Truth], int]]:
     }
 
 
-def _run(world: str, replications: int) -> dict:
+def _run(world: str, replications: int, config: GateConfig, *, paired: bool = False) -> dict:
     truths, seed = _worlds()[world]
     rng = np.random.default_rng(seed)
     names = [f"z{i}" for i in range(len(truths))]
     plans = {z: t.plan for z, t in zip(names, truths, strict=True)}
-    null = np.array([t.contrast <= CONFIG.delta + 1e-12 for t in truths])
-    harm_null = np.array([-t.contrast <= CONFIG.delta_harm + 1e-12 for t in truths])
+    null = np.array([t.contrast <= config.delta + 1e-12 for t in truths])
+    harm_null = np.array([-t.contrast <= config.delta_harm + 1e-12 for t in truths])
     first = np.full((replications, len(truths)), -1)
     seen = {v: np.zeros((replications, len(truths)), dtype=bool) for v in ("experiment", "hold")}
     seen["rollback"] = np.zeros((replications, len(truths)), dtype=bool)
+    spent = np.zeros((replications, len(truths)))
+    futile = np.zeros((replications, len(truths)), dtype=bool)
     fdp_star = np.zeros(replications)
     for rep in range(replications):
-        gate = DeploymentGate(plans, CONFIG)
+        if paired:
+            shock = np.random.default_rng([seed, rep, 0])
+            streams = [np.random.default_rng([seed, rep, 1 + i]) for i in range(len(truths))]
+        else:
+            shock, streams = rng, [rng] * len(truths)  # the lab's order of draws
+        gate = DeploymentGate(plans, config)
         state, stopped = np.zeros(1), False
         for c in range(CHECKS):
             eta, state = signal.lfilter(
-                [1.0], [1.0, -0.995], 0.1 * rng.normal(size=BATCH), zi=state
+                [1.0], [1.0, -0.995], 0.1 * shock.normal(size=BATCH), zi=state
             )
             a = 0.2 + 0.2 * np.tanh(eta)
             batch = {
-                z: t.draw(rng, gate.mode(z), a, CONFIG.rho)
-                for z, t in zip(names, truths, strict=True)
+                z: t.draw(g, gate.mode(z), a, config.rho)
+                for z, t, g in zip(names, truths, streams, strict=True)
                 if gate.mode(z) != "retired"
             }
+            before = [gate.mode(z) for z in names]
             verdicts = gate.update(batch)
             for i, z in enumerate(names):
+                if before[i] == "experiment":
+                    spent[rep, i] += BATCH
+                    futile[rep, i] |= gate.mode(z) == "shadow"
                 if verdicts[z] in seen:
                     seen[verdicts[z]][rep, i] = True
                 if verdicts[z] == "deploy" and first[rep, i] < 0:
@@ -198,6 +218,9 @@ def _run(world: str, replications: int) -> dict:
         "harm_null_zone_runs": int(harm_null.sum() * replications),
         "rollbacks_of_deployed": int((seen["rollback"] & deployed).sum()),
         "deployments": int(deployed.sum()),
+        "alpha_futility": config.alpha_futility,
+        "experiment_decisions": spent.mean(axis=0).tolist(),
+        "futility_stop_share": futile.mean(axis=0).tolist(),
     }
 
 
@@ -205,8 +228,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("world", choices=["null", "mixed"])
     parser.add_argument("--replications", type=int, default=400)
+    parser.add_argument("--futility", type=float, default=None, help="alpha_futility; unset")
     args = parser.parse_args()
-    print(json.dumps(_run(args.world, args.replications), indent=2))
+    if args.futility is None:
+        print(json.dumps(_run(args.world, args.replications, CONFIG), indent=2))
+        return
+    stop = dataclasses.replace(CONFIG, alpha_futility=args.futility)
+    arms = {
+        arm: _run(args.world, args.replications, config, paired=True)
+        for arm, config in (("without", CONFIG), ("with", stop))
+    }
+    print(json.dumps(arms, indent=2))
 
 
 if __name__ == "__main__":
