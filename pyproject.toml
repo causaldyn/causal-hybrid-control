@@ -42,6 +42,9 @@ dependencies = [
 # statsmodels, shap and lightgbm for one adapter, and dowhy declares Python <3.14 -- so their adapters
 # (chc.estimators) are lazy-import, bring-your-own-env instead.
 trees = ["lightgbm>=4", "catboost>=1.2", "scikit-learn>=1.4"]  # lightgbm's sklearn API needs sklearn
+# difference-in-differences inference for chc.did: Callaway-Sant'Anna's multiplier bootstrap and
+# Rambachan-Roth, lazily imported; below 4, since a major release may move the results it reads
+did = ["diff-diff>=3.12,<4"]
 
 [project.urls]
 Homepage = "https://github.com/causaldyn/causal-hybrid-control"
@@ -61,6 +64,8 @@ dev = [
     "pandas>=2.0",
     "polars>=1.0",
     "pytest-xdist>=3.8.0",
+    # the did extra, so that CI runs chc.did's inference tests
+    "diff-diff>=3.12,<4",
 ]
 viz = ["matplotlib>=3.8"]
 notebooks = [

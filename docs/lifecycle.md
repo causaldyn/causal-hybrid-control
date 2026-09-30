@@ -27,7 +27,10 @@ documented, and what is not built yet. Every name below is importable from `chc`
   `e_value`. See [tutorial 3](tutorials/03_causal_inference_toolkit.md), and
   [tutorial 7](tutorials/07_real_data_lalonde.md) against an experimental benchmark.
 - **Designs with a comparison group.** Difference-in-differences, in [`chc.did`](api/did.md), and
-  synthetic control, in [`chc.scm`](api/scm.md).
+  synthetic control, in [`chc.scm`](api/scm.md). With the did extra (*experimental*), a staggered
+  design's estimates come with their uncertainty: standard errors, an interval on the overall
+  effect and a uniform band over the event study, from diff-diff's multiplier bootstrap, with the
+  numbers of units at which they were measured to hold their level.
 - **Effects that take time.** Impulse responses and `delay_estimate`, in
   [`chc.irf`](api/irf.md).
 - **No adjustment set at all.** The sensitivity level [Γ](concepts/gamma.md) bounds the effect

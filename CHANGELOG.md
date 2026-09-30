@@ -177,6 +177,32 @@ still change).
     4e-15, and the p-values within the permutations' noise.
   - **Scope.** The interval needs a first-order state per zone, and imputes each zone from its own
     lever; the test's null of no effect anywhere needs neither.
+- **Inference for a staggered design, through diff-diff** (*experimental*, ADR 0026). The `did`
+  extra is `diff-diff>=3.12,<4` (MIT), and the `dev` group holds it, so CI runs its tests.
+  `chc.did.callaway_santanna_inference` takes `callaway_santanna`'s arguments and returns an
+  `EventStudyInference`: the library's own estimates, with diff-diff's multiplier bootstrap around
+  them, which draws whole units. It gives standard errors and a uniform band over the event study,
+  and the overall ATT's standard error and interval. `EventStudyInference.robust_interval(m)` is
+  Rambachan and Roth's smoothness restriction for the event study's average effect after
+  treatment, from diff-diff's HonestDiD.
+  - **diff-diff must reproduce the estimates.** Its cells, event study and overall ATT are checked
+    against `callaway_santanna`'s to `1e-9` of the largest effect before its bootstrap is read, so
+    a release that changed an estimand stops the call instead of moving the intervals.
+  - **HonestDiD reads the analytic fit's covariance.** diff-diff's bootstrapped event study carries
+    none, and HonestDiD then takes its effects as independent: in an exploration, `Delta^SD(0)`'s
+    interval covered 0.68.
+  - **What the bench found** (`scripts/bench_did_inference.py`: ten periods, three cohorts and
+    never-treated units, AR(1) errors, 1000 panels a case, at 5%). The overall ATT's interval
+    rejected a true null 5.7-6.6% of the time from 100 units, and 6.9-7.8% at 30. The band held
+    from 300 units only, rejecting 6.4-7.2%; at 100 it rejected 7.9-8.7%, at 30 21-24%.
+    `robust_interval(0)` covered 0.95 at 300 units, 0.92 at 100 and 0.78-0.79 at 30.
+  - **Against R's did 2.5.1 and HonestDiD 0.2.8**, in a scratch library, on one panel of 300
+    units: the cells, the event study and the overall ATT agreed to 6e-15, the analytic standard
+    errors to 4e-15, and the smoothness interval to 1e-3. The relative-magnitudes restriction is
+    not exposed: diff-diff 3.12 disables the paper's hybrid, and its interval was 0.55-0.72 of R's
+    width on that panel.
+  - **16 tests**, among them `robust_interval` against R's on a panel drawn from numpy's frozen
+    `RandomState` stream.
 
 ### Changed
 

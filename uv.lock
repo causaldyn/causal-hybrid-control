@@ -234,6 +234,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+did = [
+    { name = "diff-diff" },
+]
 trees = [
     { name = "catboost" },
     { name = "lightgbm" },
@@ -246,6 +249,7 @@ cuda = [
     { name = "jax", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, extra = ["cuda13"], marker = "python_full_version >= '3.12' and sys_platform == 'linux'" },
 ]
 dev = [
+    { name = "diff-diff" },
     { name = "hypothesis" },
     { name = "pandas" },
     { name = "polars" },
@@ -273,6 +277,7 @@ viz = [
 [package.metadata]
 requires-dist = [
     { name = "catboost", marker = "extra == 'trees'", specifier = ">=1.2" },
+    { name = "diff-diff", marker = "extra == 'did'", specifier = ">=3.12,<4" },
     { name = "diffrax", specifier = ">=0.6" },
     { name = "equinox", specifier = ">=0.11.4" },
     { name = "jax", specifier = ">=0.4.30" },
@@ -282,11 +287,12 @@ requires-dist = [
     { name = "scikit-learn", marker = "extra == 'trees'", specifier = ">=1.4" },
     { name = "scipy", specifier = ">=1.13" },
 ]
-provides-extras = ["trees"]
+provides-extras = ["trees", "did"]
 
 [package.metadata.requires-dev]
 cuda = [{ name = "jax", extras = ["cuda13"], marker = "sys_platform == 'linux'" }]
 dev = [
+    { name = "diff-diff", specifier = ">=3.12,<4" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "polars", specifier = ">=1.0" },
@@ -617,6 +623,37 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0f/d5/c66da9b79e5bdb124974bfe172b4daf3c984ebd9c2a06e2b8a4dc7331c72/defusedxml-0.7.1.tar.gz", hash = "sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69", size = 75520, upload-time = "2021-03-08T10:59:26.269Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61", size = 25604, upload-time = "2021-03-08T10:59:24.45Z" },
+]
+
+[[package]]
+name = "diff-diff"
+version = "3.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pandas" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/13/09/a323cf4f4890c82c4fa5b66907ce2a4d5dbef38c65ddfee0dc4ffcc36020/diff_diff-3.12.0.tar.gz", hash = "sha256:87556489736d3f48926e2594402d29ef7fa5a6a8d03d1d9bc312f6a08f5da937", size = 2115840, upload-time = "2026-09-08T13:11:52.931Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0a/b3/f44907c0017fdaa61fe4f144c3745dcb7df7f04b605686c64f097207a83e/diff_diff-3.12.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:96ddd2084fb7de773d82cc7c092ff7e5b55ceac08421583c875b79d314e9e092", size = 2845185, upload-time = "2026-09-08T13:11:06.091Z" },
+    { url = "https://files.pythonhosted.org/packages/df/96/3c4606916423f5c8158ef5cc3f4ed9e2fe76e64be787dead1c80a847066e/diff_diff-3.12.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:be64de8eaa4396daf0a80ee197c7fd763af52f88218b5af77883b1ccaef2e135", size = 8070914, upload-time = "2026-09-08T13:11:08.267Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/bb/8cabebfddcfa43be1d8224090e87d963bf1cf75424a0d0ebd5f2fa992132/diff_diff-3.12.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:2cb1abc76d9820fb68dab1465f1068b60d16b3801ccd6b3e82885a0fb90a3db0", size = 15633866, upload-time = "2026-09-08T13:11:11.369Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/b5/ac9e74aab79e0d81e114eb7028d6cb3a8819772911adbd88734b3bff7500/diff_diff-3.12.0-cp311-cp311-win_amd64.whl", hash = "sha256:c255c5f8196c42f0c904d4e46094c12432b3357b088d6a4fc22b71887c79bbe3", size = 3140175, upload-time = "2026-09-08T13:11:14.15Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/1e/526cd5607ef2978730397747d1894f18dadaa9ce0a4c5b0ab804a067112a/diff_diff-3.12.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:b9891bb4a7eb95499c3c164ae5405f96a82ea4b78bee687dd6bfeb26c7ce3366", size = 2840588, upload-time = "2026-09-08T13:11:15.882Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/cb/c27509a34249ddd370d7676fe4b0d994d46b69d0f113a0d74d13e6bcf041/diff_diff-3.12.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:361f6e4d2b983a96fd20fad496a04bd3c972e02a929ce19e6472df7684347fa3", size = 8070113, upload-time = "2026-09-08T13:11:17.844Z" },
+    { url = "https://files.pythonhosted.org/packages/13/d2/4c71c24e4962ce6c620d26f341b4133cfe3dadb1b6dd82f5927251f6160c/diff_diff-3.12.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:0ad6471817528b79c69d60aa7f0a263ee84f37bc514211c0fab17b45917aaa96", size = 15633566, upload-time = "2026-09-08T13:11:20.382Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/9d/336ada5e97645d6689a32ac4f0bb40e9ad225a829b517f90afe52a810c18/diff_diff-3.12.0-cp312-cp312-win_amd64.whl", hash = "sha256:5e648fe807e604d67a5e37bbc8fb85ec3a7a65102367df0cd93f7f9e2ac89a6e", size = 3137098, upload-time = "2026-09-08T13:11:23.456Z" },
+    { url = "https://files.pythonhosted.org/packages/39/98/200605bb90a23fe682c430a41ac68b4ad129f96f26085fc92046b4040d8e/diff_diff-3.12.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:ef1f67308d7a41f9e7701869a3dea54d1ffffba3ed76735b4174f6ca42e7ecca", size = 2840507, upload-time = "2026-09-08T13:11:25.499Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/25/5f32d0977dc0def81c398f80cf09638b947dccb5506d9c1764c61b7ab1b0/diff_diff-3.12.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:87d3b51532a59f1f63ff4d4fea40b3c5ea13cc05139a49516997d33262fffa6f", size = 8070079, upload-time = "2026-09-08T13:11:27.703Z" },
+    { url = "https://files.pythonhosted.org/packages/17/b7/c3825df9061c3e0b72ca74725ec8ae4e7688449c58721005aae50ff9df65/diff_diff-3.12.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:4c6861fe1208b70692fd0435369d0a2fc1fe999810fd7e4deaf9310f208adc3b", size = 15633409, upload-time = "2026-09-08T13:11:30.576Z" },
+    { url = "https://files.pythonhosted.org/packages/da/59/48e3fde98344d1964c43cc862219b254470194ba9f98632e945883a924e6/diff_diff-3.12.0-cp313-cp313-win_amd64.whl", hash = "sha256:799a114675f181d62b1bed6c7870b890d46dddf9eb3f3377e0dd64b10b1421b4", size = 3137105, upload-time = "2026-09-08T13:11:33.001Z" },
+    { url = "https://files.pythonhosted.org/packages/81/0b/ae3a6f74e12b1dc010937e79756e9b65f294c7a3d05fd479f9b658b775b4/diff_diff-3.12.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:f34b38976aae638f3cf3834213e958039e9df8b2484bc559f9f3e7d1593d07b9", size = 2840340, upload-time = "2026-09-08T13:11:35.062Z" },
+    { url = "https://files.pythonhosted.org/packages/92/2b/e1ebdb16ef2cea1cb3507125ec1e2e5e799912dfee86294571076f6c7426/diff_diff-3.12.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:036860fdbc8f9402d72fba333aed24cb1bc83df2d2adf31e55e571bf9996c54d", size = 8069952, upload-time = "2026-09-08T13:11:37.01Z" },
+    { url = "https://files.pythonhosted.org/packages/07/14/20a054046056f3555a28a36cfa814fc0e56a0771c261d17c8fb0feac65c8/diff_diff-3.12.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:463df928c510060ba6354d6a581ae0c70dfc5efcd425a3ceffee7ab65658a4d9", size = 15633270, upload-time = "2026-09-08T13:11:39.405Z" },
+    { url = "https://files.pythonhosted.org/packages/35/50/73036451b9fdae48950e61f3e3f62e20308a879dde10becdaf0aa0806935/diff_diff-3.12.0-cp314-cp314-win_amd64.whl", hash = "sha256:db553e05c400f941903ac7712b3df172780a880c0f9e7c0b3d28c4d466d1ad78", size = 3136727, upload-time = "2026-09-08T13:11:41.726Z" },
 ]
 
 [[package]]
