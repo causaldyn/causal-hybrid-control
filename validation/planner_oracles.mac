@@ -1,0 +1,105 @@
+/* Closed forms the planner is tested against (tests/test_plan_oracles.py).
+
+   STEP 1  an RK4 step with the action held keeps every equilibrium of the plant, and at one its
+           Jacobians are T4(h f_x) and h S4(h f_x) f_u, so the discrete costate ratio
+           F_u (I - F_x)^-1 is the continuous -f_u f_x^-1 whatever the step: the undiscounted
+           turnpike of a plan with actions held over steps is the continuous golden rule
+   STEP 2  the golden rule of chc.mmm's plant: the steady state's Lagrange condition in the spend
+           is Nerlove and Arrow's, k u = w (S* - S) / d (g + beta h'(A) / th), and the current-value
+           Hamiltonian's steady state is the same with d and th raised by the discount r
+   STEP 3  harvesting a logistic stock for (a x - c) u, undiscounted (Anita, Arnautu and Capasso
+           2011, sec. 3.4): the singular arc holds x~ = (a k + c) / (2 a) with u~ = r (1 - x~ / k);
+           no effort before it, full effort after it, which ends where a x - c has fallen to
+           (a x~ - c) u~ / ubar; the entry, the exit and the value in closed form
+   STEP 4  the book's example, r = 3/10, k = 5, a = c = 1, x0 = 2, ubar = 3/2, T = 10, to double
+           precision, as the tests' anchors
+
+   Run: timeout 300 maxima --very-quiet -b validation/planner_oracles.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 16$
+
+/* STEP 1 */
+T4(z) := 1 + z + z^2/2 + z^3/6 + z^4/24$
+S4(z) := 1 + z/2 + z^2/6 + z^3/24$
+rk4(f, x, u, h) := block([k1, k2, k3, k4],
+  k1 : f(x, u), k2 : f(x + h/2*k1, u), k3 : f(x + h/2*k2, u), k4 : f(x + h*k3, u),
+  x + h/6*(k1 + 2*k2 + 2*k3 + k4))$
+/* any smooth f vanishing at (xb, ub), through second order */
+f(x, u) := c1*(x - xb) + c2*(x - xb)^2 + c3*(u - ub) + c4*(x - xb)*(u - ub) + c5*(u - ub)^2$
+advanced : rk4(f, x, u, h)$
+Fx : ratsimp(subst([x = xb, u = ub], diff(advanced, x)))$
+Fu : ratsimp(subst([x = xb, u = ub], diff(advanced, u)))$
+print("STEP 1a  the equilibrium is kept:", ratsimp(subst([x = xb, u = ub], advanced) - xb))$
+print("STEP 1b  Fx - T4(h fx):", ratsimp(Fx - T4(c1*h)), "  Fu - h S4(h fx) fu:",
+      ratsimp(Fu - h*S4(c1*h)*c3))$
+print("STEP 1c  Fu / (1 - Fx) + fu / fx:", ratsimp(Fu/(1 - Fx) + c3/c1))$
+/* in several states T4(M) - I = M S4(M), so Fu' (I - Fx')^-1 = -fu' fx'^-1 for any matrix M */
+M : matrix([m11, m12], [m21, m22])$
+I2 : ident(2)$
+print("STEP 1d  T4(M) - I - M S4(M):",
+      ratsimp(I2 + M + M.M/2 + M.M.M/6 + M.M.M.M/24 - I2 - M.(I2 + M/2 + M.M/6 + M.M.M/24)))$
+
+/* STEP 2: one channel of the plant; sales S towards a target Ss, spend u priced at k */
+fS : -d*(S - b0) + beta*A/(K + A) + g*u$
+fA : -th*A + u$
+L : w/2*(S - Ss)^2 + k/2*u^2$
+stationary : [diff(L, S) + m1*diff(fS, S) + m2*diff(fA, S),
+            diff(L, A) + m1*diff(fS, A) + m2*diff(fA, A),
+            diff(L, u) + m1*diff(fS, u) + m2*diff(fA, u)]$
+row : ratsimp(subst(solve([stationary[1], stationary[2]], [m1, m2])[1], stationary[3]))$
+nerlove_arrow : k*u - w*(Ss - S)/d*(g + beta*K/(K + A)^2/th)$
+print("STEP 2a  Lagrange row - Nerlove-Arrow:", ratsimp(row - nerlove_arrow))$
+H : L + n1*fS + n2*fA$
+discounted : ratsimp(subst(solve([r*n1 - diff(H, S), r*n2 - diff(H, A)], [n1, n2])[1],
+                           diff(H, u)))$
+print("STEP 2b  discounted row - Nerlove-Arrow at d + r, th + r:",
+      ratsimp(discounted - (k*u - w*(Ss - S)/(r + d)*(g + beta*K/(K + A)^2/(r + th)))))$
+print("STEP 2c  undiscounted row - Lagrange row:", ratsimp(subst(r = 0, discounted) - row))$
+
+/* STEP 3: x' = r x (1 - x/k) - u x, payoff (a x - c) u, 0 <= u <= ubar */
+growth(x) := r*x*(1 - x/k)$
+Hh : (a*x - c)*u + lam*(growth(x) - u*x)$
+switching : diff(Hh, u)$
+lamdot : -diff(Hh, x)$
+xdot : growth(x) - u*x$
+/* on the arc the switching function and its derivative vanish */
+sigmadot : ratsimp(diff(switching, x)*xdot + diff(switching, lam)*lamdot)$
+onarc : ratsimp(subst(solve(switching, lam)[1], sigmadot))$
+print("STEP 3a  d(switching)/dt on the arc, free of u:", factor(onarc))$
+xs : (a*k + c)/(2*a)$
+print("STEP 3b  it vanishes at x~ = (a k + c) / (2 a):", ratsimp(subst(x = xs, onarc)))$
+us : ratsimp(growth(xs)/xs)$
+print("STEP 3c  u~ = r (1 - x~/k), which holds the stock:", ratsimp(us - r*(1 - xs/k)))$
+/* no effort: the logistic from x0 reaches x~ at */
+logistic(t, x0, rate, cap) := cap*x0*exp(rate*t)/(cap + x0*(exp(rate*t) - 1))$
+enter : log(xs*(k - x0)/(x0*(k - xs)))/r$
+print("STEP 3d  the stock at the entry, less x~:",
+      ratsimp(subst(t = enter, logistic(t, x0, r, k)) - xs))$
+/* full effort: a logistic with rate rho = r - ubar and capacity rho k / r */
+rho : r - ubar$
+full(s) := logistic(s, xs, rho, rho*k/r)$
+print("STEP 3e  the arc solves x' = r x (1 - x/k) - ubar x:",
+      ratsimp(diff(full(s), s) - (growth(full(s)) - ubar*full(s))))$
+/* the payoff over tau of full effort: ubar (a int x - c tau), with int x in closed form */
+stock_integral(tau) := k/r*log((rho + r*xs/k*(exp(rho*tau) - 1))/rho)$
+print("STEP 3f  d/dtau of int x, less x(tau):", ratsimp(diff(stock_integral(tau), tau) - full(tau)))$
+/* leaving the arc a moment later trades full effort at the end for the arc's rate, so at the
+   optimum a x(T) - c = (a x~ - c) u~ / ubar */
+xend : (c + (a*xs - c)*us/ubar)/a$
+tau_end : log(xend*(r*xs/k - rho)/(r*xs*xend/k - rho*xs))/rho$
+print("STEP 3g  the stock after tau_end of full effort, less the exit stock:",
+      ratsimp(full(tau_end) - xend))$
+value : (a*xs - c)*us*(T - tau_end - enter) + ubar*(a*stock_integral(tau_end) - c*tau_end)$
+
+/* STEP 4 */
+book : [r = 3/10, k = 5, a = 1, c = 1, x0 = 2, ubar = 3/2, T = 10]$
+print("STEP 4a  x~ =", subst(book, xs), "  u~ =", subst(book, us))$
+print("STEP 4b  entry =", float(subst(book, enter)), "  exit =", float(subst(book, T - tau_end)))$
+print("STEP 4c  value =", float(subst(book, value)))$
+/* the same value, the exit found as the payoff's maximum rather than from its condition */
+payoff(leave) := subst(book, (a*xs - c)*us*(leave - enter)
+                             + ubar*(a*stock_integral(T - leave) - c*(T - leave)))$
+print("STEP 4d  the payoff's slope at the exit:",
+      float(subst(leave = subst(book, T - tau_end), diff(payoff(leave), leave))))$
