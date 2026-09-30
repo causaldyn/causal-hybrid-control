@@ -158,6 +158,20 @@ still change).
   since in `.venv` the plugin would load its CUDA libraries into every CPU process. How much time
   the workers save has not been measured on a quiet machine.
 
+### Notes
+
+- **What 0.8.0's robust `channel_error` costs, now timed on a quiet machine.** 0.8.0 shipped it
+  untimed.
+  - Under Euler, a fit takes 3.5–3.7 times as long once compiled: 0.046 s against 0.170 s on a
+    4000-row log with degree-4 nuisances, and 0.056 s against 0.198 s at 16 000 rows. A process's
+    first fit, compile included, takes 1.6 times as long (2.4 s against 3.8 s).
+  - Under `rk4` the fixed point dominates, and a compiled fit did not move. A first fit got 12–14%
+    faster, because the homoskedastic error it dropped compiled a path of its own.
+  - The fit's changes since then (the constant channel beside an affine drift, and `unmoved` on
+    every fit) add 7–9% under Euler and at most 2% under `rk4`.
+  - How it was timed: the three versions alternated over six rounds, one process each, in float64
+    on the CPU of one laptop.
+
 ## [0.8.0] — 2026-09-29
 
 ### Added
