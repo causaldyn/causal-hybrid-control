@@ -431,6 +431,13 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
     assert result.provenance.data_sha256[:16] in report
 
 
+def test_the_reported_gamma_names_its_sensitivity_model() -> None:
+    """Rosenbaum's Gamma is another model's, and docs/concepts/gamma.md gives the bracket."""
+    report = _prescribe(_panel(), CausalGraph.from_edges(EDGES)).report()
+    (line,) = [line for line in report.splitlines() if "gamma*" in line]
+    assert line.endswith("(marginal sensitivity model)")
+
+
 def test_an_unbalanced_panel_still_yields_the_transitions_on_either_side_of_a_hole() -> None:
     logs = _logs(n_units=40)
     keep = ~((logs["unit"] == 0) & (logs["time"] == 5))

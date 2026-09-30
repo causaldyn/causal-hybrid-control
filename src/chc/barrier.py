@@ -137,7 +137,7 @@ def identification_radius_threshold(
 
 
 def barrier_gamma_star(threshold_radius: float, cvar_gap: float, grad_norm: float) -> float:
-    """Largest sensitivity ``Gamma`` a safety certificate survives: ``(gap + c) / (gap - c)``.
+    """Largest MSM ``Gamma`` a safety certificate survives: ``(gap + c) / (gap - c)``.
 
     Inverts §32's ``Delta(Gamma) = (Gamma-1)/(Gamma+1) * cvar_gap`` at ``threshold_radius``, with
     ``c = threshold_radius / grad_norm`` the effect-space radius the barrier can absorb. The closed

@@ -17,7 +17,7 @@ from chc.regret import confounding_robust_control_benchmark
 def main() -> None:
     curve = confounding_robust_control_benchmark()
     print("== confounding-robust control on a synthetic observational confounded marketplace ==")
-    print("   (churn cost 4x budget-waste; controller assumes sensitivity Gamma=2.5)\n")
+    print("   (churn cost 4x budget-waste; controller assumes MSM sensitivity Gamma=2.5)\n")
     print(f"   {'true confounding':>18} {'CE cost':>10} {'robust cost':>12} {'robust wins':>12}")
     for conf, ce, rob in zip(
         curve.confounding_levels, curve.ce_costs, curve.robust_costs, strict=True

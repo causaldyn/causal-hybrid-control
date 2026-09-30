@@ -342,7 +342,10 @@ def test_the_rounds_keep_the_plans_own_pessimism() -> None:
 
 @pytest.mark.parametrize(
     ("kwargs", "message"),
-    [({"gamma": 0.9}, "gamma is a sensitivity level"), ({"cvar_gap": 0.0}, "cvar_gap must be")],
+    [
+        ({"gamma": 0.9}, "gamma is a marginal sensitivity model level"),
+        ({"cvar_gap": 0.0}, "cvar_gap must be"),
+    ],
 )
 def test_a_barrier_constraint_refuses_what_certify_safety_could_not_price(
     kwargs: dict[str, float], message: str

@@ -16,7 +16,7 @@ from chc.regret import confounding_robust_tracking_benchmark
 def main() -> None:
     curve = confounding_robust_tracking_benchmark()
     print("== confounding-robust control in CLOSED LOOP on a confounded dynamic plant ==")
-    print("   (x' = a*x + b_true*u + noise; churn 4x budget-waste; assumed Gamma=2.5)\n")
+    print("   (x' = a*x + b_true*u + noise; churn 4x budget-waste; assumed MSM Gamma=2.5)\n")
     print(f"   {'true confounding':>18} {'CE cost':>10} {'robust cost':>12} {'robust wins':>12}")
     for conf, ce, rob in zip(
         curve.confounding_levels, curve.ce_costs, curve.robust_costs, strict=True

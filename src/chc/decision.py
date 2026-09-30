@@ -565,7 +565,7 @@ class Prescription:
             f"- error tube: **{certificate.certificate_status}**, "
             f"certified horizon {_show(certificate.certified_horizon)}",
             f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}, "
-            f"gamma* {_show(certificate.gamma_star)}",
+            f"gamma* {_show(certificate.gamma_star)} (marginal sensitivity model)",
             f"- solver: {certificate.solver_status} after "
             f"{certificate.solver_iterations} accepted steps",
             "",
@@ -735,7 +735,7 @@ def prescribe(
         known: physics kept fixed and not estimated. ``None`` means nothing is known and the whole
             vector field is the fitted residual.
         dt: the time step one panel period represents.
-        gamma: the sensitivity level the barrier is priced at (§40), passed to
+        gamma: the marginal sensitivity model's level the barrier is priced at (§40), passed to
             :func:`chc.plan.certify_safety`. It prices the plan, and changes it only under
             ``hold_constraints``.
         tolerance: the trajectory error above which the plan stops being certified. **Omitting it

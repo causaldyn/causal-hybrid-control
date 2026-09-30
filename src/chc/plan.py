@@ -668,7 +668,9 @@ class BarrierConstraint:
 
     def __post_init__(self) -> None:
         if not self.gamma >= 1.0:
-            raise ValueError(f"gamma is a sensitivity level and must be >= 1, got {self.gamma}")
+            raise ValueError(
+                f"gamma is a marginal sensitivity model level and must be >= 1, got {self.gamma}"
+            )
         if not self.cvar_gap > 0.0:
             raise ValueError(
                 f"cvar_gap must be positive to scale a sensitivity radius, got {self.cvar_gap}"
@@ -1231,7 +1233,7 @@ def certify_safety(
         barrier: ``h(x)``, safe where ``h >= 0``. Differentiated with :func:`jax.grad`, so it must
             be a JAX-traceable scalar function.
         alpha: the class-K gain in ``grad h . xdot >= -alpha*h``.
-        gamma, cvar_gap: the sensitivity level and the gap it scales, combined into
+        gamma, cvar_gap: the marginal sensitivity model's level and the gap it scales, combined into
             ``Delta = (gamma-1)/(gamma+1) * cvar_gap``. ``gamma = 1`` is exact identification --
             zero radius, and this degenerates to the ordinary CBF check. NOTE the calibration
             burden: ``Delta`` is used here as an **operator-norm radius on the effect matrix**, and

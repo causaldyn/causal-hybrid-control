@@ -30,8 +30,9 @@ def main() -> None:
     )
     print(
         f"Gamma* separates them offline, before either acts: the causal plan's supply floor holds"
-        f" up to sensitivity {causal.certificate.gamma_star:.2f}, the naive one's only to"
-        f" {naive.certificate.gamma_star:.2f} -- a warning that needs no ground truth."
+        f" up to the marginal sensitivity model's Gamma {causal.certificate.gamma_star:.2f}, the"
+        f" naive one's only to {naive.certificate.gamma_star:.2f} -- a warning that needs no"
+        " ground truth."
     )
     print(
         f"over the certified prefix the true plant stays safe (min h ="

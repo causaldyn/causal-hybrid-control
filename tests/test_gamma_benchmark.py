@@ -9,7 +9,14 @@ The load-bearing test is ``test_the_two_endpoints_read_opposite_tails``: the MSM
 symmetric about the mean, so a positive estimate is reconciled by the lower endpoint and a negative
 one by the upper. Reusing the upper tail for both is the bug this file fences off, and Rocq
 ``symmetric_reflex_wrong_verdict`` shows it can turn ``inf`` into a finite 2.
+
+Both read Gamma in the marginal sensitivity model's units, which are not Rosenbaum's: on a binary
+confounder whose pull on the treatment and on the outcome is known, the benchmark of the confounder
+itself is its MSM Gamma, Rosenbaum's lies between that and its square, and the Gamma a known-null
+outcome needs climbs from 1 to the benchmark as the confounder's pull on the outcome grows.
 """
+
+import math
 
 import numpy as np
 import pytest
@@ -174,3 +181,72 @@ def test_the_certificate_passes_every_gate() -> None:
     assert certificate.null_floor_scaled < 12.0
     assert certificate.endpoint_residual < 1e-6
     assert certificate.unreconcilable_is_infinite
+
+
+def _odds(share: float) -> float:
+    return share / (1.0 - share)
+
+
+def _filled(n: int, share: float) -> np.ndarray:
+    """``n`` units, the first ``round(share * n)`` of them ones: a stratum filled exactly."""
+    ones = round(share * n)
+    return np.repeat([1.0, 0.0], [ones, n - ones])
+
+
+def _binary_confounder(pull: float, n: int = 20_000) -> tuple[np.ndarray, np.ndarray]:
+    """A log with one confounder ``u``, 30% ones, which multiplies the odds of treatment by
+    ``pull`` from 1 to 4 at ``u = 0``: Rosenbaum's Gamma is ``pull``, up to the strata's
+    rounding."""
+    exposed = round(0.3 * n)
+    u = np.repeat([1.0, 0.0], [exposed, n - exposed])
+    odds = 0.25 * pull
+    treated = np.concatenate([_filled(exposed, odds / (1.0 + odds)), _filled(n - exposed, 0.2)])
+    return treated, u
+
+
+def _outcome(treated: np.ndarray, u: np.ndarray, pull: float) -> np.ndarray:
+    """An outcome the treatment leaves alone and ``u`` multiplies the odds of by ``pull``, about
+    even odds, each stratum of ``(u, treated)`` filled exactly."""
+    root = math.sqrt(pull)
+    y = np.empty_like(u)
+    for level, share in ((1.0, root / (1.0 + root)), (0.0, 1.0 / (1.0 + root))):
+        for arm in (1.0, 0.0):
+            stratum = (u == level) & (treated == arm)
+            y[stratum] = _filled(int(stratum.sum()), share)
+    return y
+
+
+@pytest.mark.parametrize("pull", [1.5, 3.0, 10.0, 50.0])
+def test_a_confounders_benchmark_is_its_msm_gamma_inside_rosenbaums_bracket(pull: float) -> None:
+    """Rosenbaum(Gamma) within MSM(Gamma) within Rosenbaum(Gamma^2) (Zhao, Small and Bhattacharya
+    2019, Prop. 7.1). Rosenbaum's model bounds the odds of treatment of two units against each
+    other and the MSM each unit's against the stratum's, so the benchmark, which drops the
+    confounder from the propensity, must report the second."""
+    treated, u = _binary_confounder(pull)
+    stratum = _odds(treated.mean())
+    msm = max(_odds(treated[u == 1].mean()) / stratum, stratum / _odds(treated[u == 0].mean()))
+    rosenbaum = _odds(treated[u == 1].mean()) / _odds(treated[u == 0].mean())
+    benchmark = benchmark_gamma(treated, u[:, None], 2.0, quantile=1.0).strongest_gamma
+    assert benchmark == pytest.approx(msm, rel=1e-6)
+    assert benchmark < rosenbaum < benchmark**2
+
+
+@pytest.mark.parametrize("pull", [1.5, 3.0, 10.0, 50.0])
+def test_a_null_outcome_needs_the_benchmark_only_when_the_confounder_is_the_outcome(
+    pull: float,
+) -> None:
+    """The benchmark prices the treatment side alone. How much Gamma a confounder forces also
+    depends on its pull on the outcome, as in Rosenbaum and Silber's amplification: none when it
+    leaves the outcome alone, more the more it moves it, and the benchmark itself, the sharp end
+    of the MSM's interval, when the outcome is the confounder."""
+    treated, u = _binary_confounder(pull)
+    benchmark = benchmark_gamma(treated, u[:, None], 2.0, quantile=1.0).strongest_gamma
+    needed = []
+    for outcome_pull in (1.0, 1.5, 3.0, 10.0, 100.0, 1e4):
+        y = _outcome(treated, u, outcome_pull)
+        needed.append(negative_control_gamma(y[treated == 1] - y[treated == 0].mean()))
+    assert needed[0] == pytest.approx(1.0, abs=1e-3)
+    assert needed == sorted(needed)
+    assert needed[-1] < benchmark
+    sharp = negative_control_gamma(u[treated == 1] - u[treated == 0].mean())
+    assert sharp == pytest.approx(benchmark, rel=1e-6)

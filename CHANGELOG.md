@@ -88,6 +88,21 @@ still change).
   standard errors, and takes West and Harrison's feed-back intervention at the step an alarm on
   a break sounds.
 
+### Changed
+
+- **Every Γ names its model.** CHC's `Γ` is the marginal sensitivity model's (Tan 2006), and
+  Rosenbaum's, the one matched-design analyses report, is another model's. `Prescription.report()`
+  prints `gamma* ... (marginal sensitivity model)`, `BarrierConstraint`'s refusal of `gamma < 1`
+  says whose level it is, and so do the demos that print a `Γ`. `docs/concepts/gamma.md` gives the
+  bracket, Rosenbaum(Γ) ⊆ MSM(Γ) ⊆ Rosenbaum(Γ²) (Zhao, Small and Bhattacharya 2019), so a study
+  insensitive to Rosenbaum's `Γ = 5` covers the MSM only up to `√5`; Rosenbaum and Silber's
+  amplification; and the benchmark's two limits: it measures the treatment side alone, and nothing
+  formal ties an unobserved confounder to an observed covariate. `tests/test_gamma_benchmark.py`
+  holds the bracket on a binary confounder: fed the confounder, `benchmark_gamma` reports its MSM
+  `Γ`, not Rosenbaum's, which lies between that and its square, and the `Γ` a known-null outcome
+  needs rises from 1 with the confounder's pull on the outcome to that MSM `Γ` when the outcome is
+  the confounder.
+
 ## [0.9.0] — 2026-09-30
 
 ### Added
