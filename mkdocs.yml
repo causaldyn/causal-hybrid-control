@@ -153,6 +153,7 @@ nav:
           - api/meanfield.md
           - api/mintime.md
           - api/misspecification.md
+          - api/response.md
           - api/surrogate.md
           - api/switchback.md
           - api/symbolic.md

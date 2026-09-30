@@ -7,6 +7,32 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **Response curves, `chc.response`** (*experimental*, ADR 0029): how a channel's return rises
+  with its spend, for the plant, for curves taken as known from another package, and for the
+  planner.
+  - **One contract.** Each family is a standard shape of spend over its scale `K`, in currency, with
+    every other parameter dimensionless, so a change of currency moves `K` alone. A `Saturation` is
+    zero at zero spend, increasing, and rises to 1; the channel's coefficient carries the size.
+  - **Seventeen bounded families.** Concave from zero: `MichaelisMenten`, `Exponential`, `Tanh`,
+    `Arctan`, `Algebraic`, `HalfNormal`. S-shaped over part of their range: `Hill`, `Weibull`,
+    `Logistic`, `Gompertz`, `Richards`, `ChapmanRichards`, `GammaCDF`, `LogNormalCDF`, `BurrXII`,
+    `BetaCDF`, `Kumaraswamy`. Beside them `Logarithmic` and `Power`, unbounded baselines, and
+    `Ricker`, the inverted U of ad fatigue.
+  - **Where each bends.** `inflection()` and `tangency()` are in spend, 0 for a curve concave from
+    zero. The tangency, where the tangent from the origin touches the curve, is a closed form for
+    `Hill`, `Weibull` and `ChapmanRichards` and a root past the inflection otherwise
+    (`validation/response_curves.mac`; the tests hold the roots to Maxima's to `1e-13`).
+    `Envelope(curve)` is the concave envelope: on an S-curve `h'(0) = 0`, so zero spend is a
+    stationary point a planner started there can stop at, and the envelope has no such point.
+  - **A floor is not a shape**: Janoschek is `Weibull`, and ADBUDG and Morgan–Mercer–Flodin are
+    `Hill`, each with a floor at the plant's base. PyMC-Marketing's `LogisticSaturation` is `Tanh`
+    with `K = 2 / lam`.
+  - **Every family's slope at zero spend is its own.** JAX's gamma and beta CDFs give `nan` there
+    at shape 1; both have a slope of their own in spend. `BetaCDF` has none in its shapes, since
+    JAX's `betainc` has none, and asking for one raises.
+
 ## [0.9.0] — 2026-09-30
 
 ### Added

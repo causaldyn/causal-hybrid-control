@@ -1,0 +1,151 @@
+/* The response curves of chc.response (ADR 0029): every closed form the module states.
+
+   Each family is a standardised shape g(z) of z = spend / K, so a change of currency moves K and
+   nothing else. The bounded ones rise from g(0) = 0 to a ceiling of 1.
+
+   STEP 1  the contract: g(0) = 0 and the ceiling 1 for the seventeen bounded shapes, no ceiling for
+           log(1 + z) and z^rho, and Ricker's peak of 1 at z = 1
+   STEP 2  where each S-shaped family bends: g'' = 0 at its stated inflection
+   STEP 3  the concave envelope's tangency g(z) = z g'(z) is unique past the inflection, since
+           (g - z g')' = -z g''; Hill's is z^n = n - 1, Weibull's e^u - 1 = k u at u = z^k,
+           Chapman-Richards' e^z - 1 = p z, and the last two are Lambert W's -1 branch
+   STEP 4  the nestings: Hill at n = 1 is Michaelis-Menten, Burr XII at k = 1 is Hill, Weibull,
+           gamma and Chapman-Richards at shape 1 are the exponential, Richards at nu = 1 is the
+           logistic and tends to Gompertz as nu -> 0
+   STEP 5  the tangencies with no closed form, to double precision, as anchors for the tests
+
+   Run: timeout 300 maxima --very-quiet -b validation/response_curves.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 16$
+assume(z > 0, K > 0, n > 1, k > 1, p > 1, a > 1, b > 1, s > 0, nu > 0, c > 1, sigma > 0)$
+/* the forms are continuous in the shapes, so what holds off the integers holds on them */
+declare([n, k, p, a, b, c, nu], noninteger)$
+
+logistic(z) := 1/(1 + exp(-s*(z - 1)))$
+richards(z) := (1 + nu*exp(-s*(z - 1)))^(-1/nu)$
+gompertz(z) := exp(-b*exp(-z))$
+
+shapes : [
+  ["michaelis-menten", z/(1 + z)],
+  ["exponential", 1 - exp(-z)],
+  ["tanh", tanh(z)],
+  ["arctan", 2/%pi*atan(z)],
+  ["algebraic", z/sqrt(1 + z^2)],
+  ["half-normal", erf(z)],
+  ["hill", z^n/(1 + z^n)],
+  ["weibull", 1 - exp(-z^k)],
+  ["logistic", (logistic(z) - logistic(0))/(1 - logistic(0))],
+  ["gompertz", (gompertz(z) - gompertz(0))/(1 - gompertz(0))],
+  ["chapman-richards", (1 - exp(-z))^p],
+  ["log-normal", (1 + erf(log(z)/(sigma*sqrt(2))))/2],
+  ["burr", 1 - (1 + z^c)^(-k)]
+]$
+
+print("=== STEP 1: g(0) = 0 and the ceiling ===")$
+for entry in shapes do (
+  [name, g] : entry,
+  print(name, ": g(0+) =", ratsimp(radcan(limit(g, z, 0, plus))),
+        "  g(inf) =", ratsimp(radcan(limit(g, z, inf))))
+)$
+/* Richards through w = e^(-s (z - 1)), which falls to 0 as z grows: Maxima's limit asks whether
+   1/nu is an integer, and the answer does not matter */
+richards_w : ((1 + nu*w)^(-1/nu) - (1 + nu*exp(s))^(-1/nu))/(1 - (1 + nu*exp(s))^(-1/nu))$
+print("richards: g(0) =", ratsimp(subst(w = exp(s), richards_w)), "  g(inf) =",
+      ratsimp(subst(w = 0, richards_w)))$
+/* the gamma CDF through its density, whose integral Maxima evaluates where the limit stalls */
+print("gamma: g(0) =", 1 - gamma_incomplete_regularized(a, 0), "  integral of the density =",
+      integrate(z^(a - 1)*exp(-z)/gamma(a), z, 0, inf))$
+/* on [0, 1], constant 1 beyond: the ceiling is reached at z = 1 */
+print("beta: g(0) =", beta_incomplete_regularized(a, b, 0),
+      "  g(1) =", beta_incomplete_regularized(a, b, 1))$
+print("kumaraswamy: g(0) =", subst(z = 0, 1 - (1 - z^a)^b),
+      "  g(1) =", subst(z = 1, 1 - (1 - z^a)^b))$
+print("log(1 + z): g(0) =", subst(z = 0, log(1 + z)), "  g(inf) =", limit(log(1 + z), z, inf))$
+print("z^rho, 0 < rho <= 1: g(0+) =", limit(z^(1/2), z, 0, plus), "  g(inf) =", limit(z^(1/2), z, inf))$
+ricker : z*exp(1 - z)$
+print("ricker: g(0) =", subst(z = 0, ricker), "  g'(1) =", subst(z = 1, diff(ricker, z)),
+      "  g(1) =", subst(z = 1, ricker), "  g(inf) =", limit(ricker, z, inf))$
+
+print("=== STEP 2: each S-shaped family's inflection ===")$
+bends : [
+  ["hill", z^n/(1 + z^n), ((n - 1)/(n + 1))^(1/n)],
+  ["weibull", 1 - exp(-z^k), ((k - 1)/k)^(1/k)],
+  ["logistic", logistic(z), 1],
+  ["gompertz", gompertz(z), log(b)],
+  ["richards", richards(z), 1],
+  ["chapman-richards", (1 - exp(-z))^p, log(p)],
+  ["log-normal", (1 + erf(log(z)/(sigma*sqrt(2))))/2, exp(-sigma^2)],
+  ["burr", 1 - (1 + z^c)^(-k), ((c - 1)/(c*k + 1))^(1/c)],
+  ["kumaraswamy", 1 - (1 - z^a)^b, ((a - 1)/(a*b - 1))^(1/a)],
+  ["ricker", ricker, 2]
+]$
+for entry in bends do (
+  [name, g, at] : entry,
+  print(name, ": g''(z_i) =", radcan(subst(z = at, diff(g, z, 2))))
+)$
+/* the normalisations are affine in the unnormalised curve, so they keep its inflection. The two
+   CDFs are checked through their densities, whose derivative vanishes at the mode */
+gamma_density : diff(1 - gamma_incomplete_regularized(a, z), z)$
+print("gamma: density =", gamma_density, "  density'(a - 1) =",
+      ratsimp(subst(z = a - 1, diff(gamma_density, z))))$
+beta_density : z^(a - 1)*(1 - z)^(b - 1)/beta(a, b)$
+print("beta: d/dz I_z(a, b) - density =",
+      ratsimp(diff(beta_incomplete_regularized(a, b, z), z) - beta_density),
+      "  density'((a - 1)/(a + b - 2)) =",
+      ratsimp(radcan(subst(z = (a - 1)/(a + b - 2), diff(beta_density, z)))))$
+print("the concave families: g'' =")$
+for entry in [["michaelis-menten", z/(1 + z)], ["exponential", 1 - exp(-z)], ["tanh", tanh(z)],
+              ["arctan", 2/%pi*atan(z)], ["algebraic", z/sqrt(1 + z^2)], ["half-normal", erf(z)],
+              ["log", log(1 + z)]] do
+  print("  ", first(entry), ":", factor(diff(second(entry), z, 2)))$
+
+print("=== STEP 3: the envelope's tangency ===")$
+print("(g - z g')' + z g'' =", ratsimp(diff(G(z) - z*diff(G(z), z), z) + z*diff(G(z), z, 2)))$
+hill : z^n/(1 + z^n)$
+print("hill: g - z g' =", factor(ratsimp(hill - z*diff(hill, z))), " -> z^n = n - 1")$
+print("hill: g - z g' at z^n = n - 1:",
+      radcan(subst(z = (n - 1)^(1/n), hill - z*diff(hill, z))))$
+weibull : 1 - exp(-z^k)$
+print("weibull: (g - z g') exp(z^k) =", expand(radcan((weibull - z*diff(weibull, z))*exp(z^k))),
+      " -> e^u - 1 = k u, u = z^k")$
+cr : (1 - exp(-z))^p$
+print("chapman-richards: (g - z g') / (1 - e^-z)^(p - 1) * e^z =",
+      expand(radcan((cr - z*diff(cr, z))/(1 - exp(-z))^(p - 1)*exp(z))), " -> e^z - 1 = p z")$
+/* e^u = 1 + k u: with t = u + 1/k, t e^-t = e^(-1/k) / k, so t = -W(-e^(-1/k) / k). The 0 branch
+   returns t = 1/k, u = 0, and the -1 branch the root the tangency needs */
+lambert_root(k) := -1/k - generalized_lambert_w(-1, float(-exp(-1/k)/k))$
+for kk in [1.5, 2, 3, 5] do block([u : float(lambert_root(kk))],
+  print("  k =", kk, ": u =", u, "  e^u - 1 - k u =", float(exp(u) - 1 - kk*u)))$
+
+print("=== STEP 4: the nestings ===")$
+print("hill(n = 1) - michaelis-menten =", ratsimp(subst(n = 1, hill) - z/(1 + z)))$
+print("burr(k = 1) - hill(n = c) =", ratsimp(subst(k = 1, 1 - (1 + z^c)^(-k)) - z^c/(1 + z^c)))$
+print("weibull(k = 1) - exponential =", subst(k = 1, weibull) - (1 - exp(-z)))$
+print("chapman-richards(p = 1) - exponential =", subst(p = 1, cr) - (1 - exp(-z)))$
+print("gamma(a = 1) - exponential =",
+      block([gamma_expand : true], ratsimp(1 - gamma_incomplete_regularized(1, z) - (1 - exp(-z)))))$
+print("richards(nu = 1) - logistic =", ratsimp(subst(nu = 1, richards(z)) - logistic(z)))$
+/* nu -> 0: (1 + nu w)^(-1/nu) -> exp(-w), w = e^(-s (z - 1)) = e^s e^(-s z): Gompertz in s z with
+   b = e^s */
+print("lim nu -> 0 of richards =", limit(richards(z), nu, 0, plus), "  gompertz(s z; b = e^s) =",
+      radcan(subst([b = exp(s), z = s*z], gompertz(z))))$
+
+print("=== STEP 5: the tangencies with no closed form, to double precision ===")$
+tangency(g, lo, hi) := find_root(g - z*diff(g, z), z, lo, hi)$
+print("logistic, s = 4:", tangency(subst(s = 4, (logistic(z) - logistic(0))/(1 - logistic(0))), 1, 5))$
+print("gompertz, b = 5:", tangency(subst(b = 5, (gompertz(z) - gompertz(0))/(1 - gompertz(0))), log(5.0), 10))$
+print("richards, s = 3, nu = 0.5:",
+      tangency(subst([s = 3, nu = 0.5], (richards(z) - richards(0))/(1 - richards(0))), 1, 6))$
+print("gamma, a = 3:", tangency(1 - gamma_incomplete_regularized(3, z), 2, 20))$
+print("log-normal, sigma = 0.5:",
+      tangency(subst(sigma = 0.5, (1 + erf(log(z)/(sigma*sqrt(2))))/2), exp(-0.25), 10))$
+/* at c = 3, k = 2 the root is exactly 1: (1 + u)^(k + 1) - (1 + u) = c k u holds at u = 1 */
+print("burr, c = 3, k = 2:", tangency(subst([c = 3, k = 2], 1 - (1 + z^c)^(-k)), 0.5, 10))$
+print("burr, c = 4, k = 1.5:", tangency(subst([c = 4, k = 1.5], 1 - (1 + z^c)^(-k)), 0.5, 10))$
+print("kumaraswamy, a = 3, b = 2:", tangency(subst([a = 3, b = 2], 1 - (1 - z^a)^b), 0.6, 0.999999))$
+/* I_z(3, 2) = 4 z^3 - 3 z^4, so g - z g' = z^3 (9 z - 8): the root is 8/9 */
+print("beta, a = 3, b = 2:", tangency(beta_incomplete_regularized(3, 2, z), 0.67, 0.999999))$
+print("weibull, k = 2 (u = z^2 from Lambert W):", float(sqrt(lambert_root(2))))$
+print("chapman-richards, p = 3 (z from Lambert W):", float(lambert_root(3)))$

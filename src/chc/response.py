@@ -1,0 +1,604 @@
+"""Response curves: how a channel's return rises with what is spent on it.
+
+Every family is a standard shape ``g`` of spend in units of its own scale ``K``,
+``h(spend) = g(spend / K)``, with ``K`` in currency and every other parameter dimensionless. A
+change of currency therefore moves ``K`` and nothing else, and every number read off a curve -- a
+value, a slope per unit of spend, an inflection or a tangency in spend -- moves with it exactly.
+
+**Bounded families** (:class:`Saturation`) start at ``h(0) = 0``, increase and rise to a ceiling of
+1; a channel's coefficient carries the size of the return, the curve only its shape.
+
+* Concave from zero spend: :class:`MichaelisMenten`, :class:`Exponential` (Mitscherlich's law, the
+  monomolecular curve), :class:`Tanh`, :class:`Arctan`, :class:`Algebraic` and :class:`HalfNormal`.
+* A shape parameter, S-shaped over part of its range: :class:`Hill` (the log-logistic),
+  :class:`Weibull`, :class:`Logistic` and :class:`Gompertz`, both normalised to 0 at 0,
+  :class:`Richards`, :class:`ChapmanRichards`, :class:`GammaCDF`, :class:`LogNormalCDF`,
+  :class:`BurrXII`, and :class:`BetaCDF` and :class:`Kumaraswamy`, which reach the ceiling at ``K``.
+
+**Unbounded baselines** (:class:`Response`): :class:`Logarithmic` and :class:`Power`, the constant
+elasticity. **Not monotone, apart:** :class:`Ricker`, the inverted U of ad fatigue; nothing below
+about envelopes applies to it.
+
+A floor is not a shape. At zero spend a floor is the plant's base, so Janoschek's curve is
+:class:`Weibull` with a floor, and ADBUDG (Little 1970) and Morgan--Mercer--Flodin are
+:class:`Hill` with one. PyMC-Marketing's ``LogisticSaturation``,
+``(1 - e^{-lam x}) / (1 + e^{-lam x})``, is ``tanh(lam x / 2)``: concave from zero, so
+:class:`Tanh` with ``K = 2 / lam``, not :class:`Logistic`.
+
+**Why the envelope.** On an S-shaped curve ``h'(0) = 0`` wherever the curve starts convex, so zero
+spend on a channel is a stationary point, and a planner started at zero can stop there and report
+convergence. The concave envelope (:class:`Envelope`) is the tangent from the origin up to the
+spend ``A`` where it touches the curve, ``h(A) = A h'(A)``, and the curve beyond it. Planned
+against, it has no such trap, its plan is a warm start for the true curve, and its value bounds the
+true optimum, so the gap between the two certifies the plan. The inflection and the tangency are in
+closed form where one exists and found as a root otherwise (``validation/response_curves.mac``).
+
+HONEST SCOPE:
+
+* :meth:`Saturation.inflection`, :meth:`Saturation.tangency` and :class:`Envelope` read concrete
+  parameters: a fitted curve, not one inside a trace. Every curve itself traces, differentiates and
+  compiles, and its parameters are leaves a fit can move.
+* :class:`BetaCDF` has no derivative in its shapes ``a`` and ``b``, since JAX's ``betainc`` has
+  none; asking for one raises. :class:`Kumaraswamy` is its closed-form counterpart.
+* Spend is nonnegative. Below zero a family's value is not defined, and several return ``nan``.
+* In single precision the numeric tangencies are good to single precision.
+"""
+
+from __future__ import annotations
+
+import abc
+import functools
+import math
+from typing import ClassVar
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+from jax import Array
+from jax.core import Tracer
+from jax.custom_derivatives import SymbolicZero
+from jax.scipy.special import betainc, betaln, erf, gammainc, gammaln, ndtr, xlog1py, xlogy
+from jax.typing import ArrayLike
+from scipy.optimize import brentq
+from scipy.special import lambertw
+
+
+def _real(value: ArrayLike) -> Array:
+    return jnp.asarray(value, dtype=float)
+
+
+def _require(
+    name: str, value: Array, low: float, high: float = math.inf, *, low_included: bool = False
+) -> None:
+    """Refuse a parameter outside ``(low, high]``, or ``[low, high]`` when ``low_included``."""
+    if jnp.ndim(value) != 0:
+        raise ValueError(
+            f"{name} has shape {jnp.shape(value)}; a curve takes one number per parameter, so "
+            "several channels take several curves"
+        )
+    if isinstance(value, Tracer):
+        return  # a fit's own parameterisation keeps a traced value in range
+    number = float(value)
+    above = number >= low if low_included else number > low
+    if not (above and number <= high and math.isfinite(number)):
+        interval = f"{'[' if low_included else '('}{low}, {high}{']' if high < math.inf else ')'}"
+        raise ValueError(f"{name}={number} is outside {interval}")
+
+
+def _lambert_root(rate: float) -> float:
+    """The positive root of ``e^u - 1 = rate * u``, for ``rate > 1``.
+
+    With ``t = u + 1/rate`` the equation is ``t e^{-t} = e^{-1/rate} / rate``, so ``-t`` is Lambert
+    W of ``-e^{-1/rate} / rate``: the 0 branch gives ``u = 0``, the -1 branch the positive root.
+    """
+    return -1.0 / rate - float(lambertw(-math.exp(-1.0 / rate) / rate, k=-1).real)
+
+
+@jax.custom_jvp
+def _gamma_cdf(shape: Array, z: Array) -> Array:
+    return gammainc(shape, z)
+
+
+@functools.partial(_gamma_cdf.defjvp, symbolic_zeros=True)
+def _gamma_cdf_jvp(primals: tuple[Array, Array], tangents: tuple[Array, Array]):
+    # JAX's own slope in z is exp((a - 1) log z - z - lgamma(a)), which is 0 * -inf = nan at zero
+    # spend for a = 1, where the curve is the exponential and its slope 1
+    shape, z = primals
+    shape_dot, z_dot = tangents
+    value = _gamma_cdf(shape, z)
+    slope = jnp.zeros_like(value)
+    if not isinstance(shape_dot, SymbolicZero):
+        slope = slope + jax.jvp(lambda a: gammainc(a, z), (shape,), (shape_dot,))[1]
+    if not isinstance(z_dot, SymbolicZero):
+        slope = slope + jnp.exp(xlogy(shape - 1.0, z) - z - gammaln(shape)) * z_dot
+    return value, slope
+
+
+@jax.custom_jvp
+def _beta_cdf(a: Array, b: Array, z: Array) -> Array:
+    return betainc(a, b, z)
+
+
+@functools.partial(_beta_cdf.defjvp, symbolic_zeros=True)
+def _beta_cdf_jvp(primals: tuple[Array, Array, Array], tangents: tuple[Array, Array, Array]):
+    # the slope in z as for the gamma CDF; JAX has none in a and b, and a zero would be a wrong one
+    a, b, z = primals
+    a_dot, b_dot, z_dot = tangents
+    if not (isinstance(a_dot, SymbolicZero) and isinstance(b_dot, SymbolicZero)):
+        raise ValueError(
+            "BetaCDF has no derivative in its shapes a and b (JAX's betainc has none); fit them "
+            "without one, or use Kumaraswamy, its closed-form counterpart"
+        )
+    value = _beta_cdf(a, b, z)
+    if isinstance(z_dot, SymbolicZero):
+        return value, jnp.zeros_like(value)
+    density = jnp.exp(xlogy(a - 1.0, z) + xlog1py(b - 1.0, -z) - betaln(a, b))
+    return value, density * z_dot
+
+
+class Response(eqx.Module):
+    """A response curve: the return on a channel as a function of its spend, zero at zero spend.
+
+    ``h(spend) = standard(spend / scale)``, with ``scale`` in currency.
+    """
+
+    scale: eqx.AbstractVar[Array]
+
+    @abc.abstractmethod
+    def standard(self, z: Array) -> Array:
+        """The curve with spend in units of ``scale``."""
+
+    def __call__(self, spend: ArrayLike) -> Array:
+        return self.standard(jnp.asarray(spend, dtype=float) / self.scale)
+
+    def __check_init__(self) -> None:
+        _require("scale", self.scale, 0.0)
+
+
+class Saturation(Response):
+    """A bounded response: zero at zero spend, increasing, and rising to a ceiling of 1."""
+
+    _support: ClassVar[float] = math.inf  # where the curve reaches its ceiling, in scales
+
+    @abc.abstractmethod
+    def _standard_inflection(self) -> float:
+        """Where the curve turns from convex to concave, in scales; 0 if it is concave from 0."""
+
+    def _standard_tangency(self) -> float:
+        """Where the tangent from the origin touches the curve, ``g(z) = z g'(z)``, in scales.
+
+        ``(g - z g')' = -z g''``, so ``g - z g'`` falls from 0 while the curve is convex and rises
+        once it is concave: the touching point is its one root past the inflection.
+        """
+        start = self._standard_inflection()
+        if start == 0.0:
+            return 0.0
+        slope = jax.grad(self.standard)
+
+        def gap(z: float) -> float:
+            at = _real(z)
+            return float(self.standard(at) - at * slope(at))
+
+        if gap(start) >= 0.0:
+            return start  # the convex stretch is within rounding of none
+        end = start
+        for _ in range(64):
+            # past its support a curve is flat at 1, where the gap is 1
+            end = min(2.0 * end, self._support)
+            if gap(end) > 0.0:
+                return brentq(gap, start, end, xtol=1e-15 * start)
+        raise RuntimeError(f"{self!r}: no tangency within {end} scales")
+
+    def inflection(self) -> float:
+        """Where the curve turns from convex to concave, in spend; 0 if it is concave from zero.
+
+        Below it ``h'' > 0``, so a plan's first-order conditions do not certify it there.
+        """
+        return float(self.scale) * self._standard_inflection()
+
+    def tangency(self) -> float:
+        """The spend where the tangent from the origin touches the curve; 0 if it is concave."""
+        return float(self.scale) * self._standard_tangency()
+
+
+class Envelope(Saturation):
+    """The concave envelope of a saturation curve: the least concave curve on or above it.
+
+    Linear from the origin to the tangency ``A``, where ``h(A) = A h'(A)``, and the curve beyond
+    it; the curve itself when it is concave. Planned against, it bounds the return any plan on the
+    curve can reach, and its plan is the warm start that keeps a planner off zero spend.
+    """
+
+    curve: Saturation
+    touch: float = eqx.field(static=True)  # the tangency, in scales
+
+    def __init__(self, curve: Saturation) -> None:
+        self.curve = curve
+        self.touch = curve._standard_tangency()
+
+    @property
+    def scale(self) -> Array:
+        return self.curve.scale
+
+    def standard(self, z: Array) -> Array:
+        if self.touch == 0.0:
+            return self.curve.standard(z)
+        # the touching point is held fixed: there g = z g', so its own derivative drops out of the
+        # chord's, and a slope in the curve's parameters is exact
+        chord = self.curve.standard(_real(self.touch)) / self.touch
+        return jnp.where(z < self.touch, chord * z, self.curve.standard(z))
+
+    def _standard_inflection(self) -> float:
+        return 0.0
+
+
+class MichaelisMenten(Saturation):
+    """``z / (1 + z)``: half the ceiling at ``K``. :class:`Hill` at slope 1."""
+
+    scale: Array = eqx.field(converter=_real)
+
+    def standard(self, z: Array) -> Array:
+        return z / (1.0 + z)
+
+    def _standard_inflection(self) -> float:
+        return 0.0
+
+
+class Exponential(Saturation):
+    """``1 - e^{-z}``: Mitscherlich's law, the monomolecular curve; ``1 - 1/e`` of the ceiling at
+    ``K``."""
+
+    scale: Array = eqx.field(converter=_real)
+
+    def standard(self, z: Array) -> Array:
+        return -jnp.expm1(-z)
+
+    def _standard_inflection(self) -> float:
+        return 0.0
+
+
+class Tanh(Saturation):
+    """``tanh(z)``. PyMC-Marketing's ``LogisticSaturation`` with ``lam`` is this with
+    ``K = 2 / lam``."""
+
+    scale: Array = eqx.field(converter=_real)
+
+    def standard(self, z: Array) -> Array:
+        # XLA's tanh falls by an ulp here and there on its way to 1; this form rises, and is closer
+        return -jnp.expm1(-2.0 * z) / (1.0 + jnp.exp(-2.0 * z))
+
+    def _standard_inflection(self) -> float:
+        return 0.0
+
+
+class Arctan(Saturation):
+    """``(2/pi) arctan(z)``: half the ceiling at ``K``, and the slowest approach to it here."""
+
+    scale: Array = eqx.field(converter=_real)
+
+    def standard(self, z: Array) -> Array:
+        return 2.0 / jnp.pi * jnp.arctan(z)
+
+    def _standard_inflection(self) -> float:
+        return 0.0
+
+
+class Algebraic(Saturation):
+    """``z / sqrt(1 + z^2)``, which is ``x / sqrt(K^2 + x^2)`` in spend."""
+
+    scale: Array = eqx.field(converter=_real)
+
+    def standard(self, z: Array) -> Array:
+        return z / jnp.hypot(1.0, z)
+
+    def _standard_inflection(self) -> float:
+        return 0.0
+
+
+class HalfNormal(Saturation):
+    """``erf(z)``: the half-normal CDF with standard deviation ``K / sqrt(2)``."""
+
+    scale: Array = eqx.field(converter=_real)
+
+    def standard(self, z: Array) -> Array:
+        return erf(z)
+
+    def _standard_inflection(self) -> float:
+        return 0.0
+
+
+class Hill(Saturation):
+    """``z^n / (1 + z^n)``: half the ceiling at ``K``, the log-logistic CDF (Hill 1910).
+
+    S-shaped for ``slope > 1``, with inflection ``((n - 1)/(n + 1))^{1/n}`` and tangency
+    ``(n - 1)^{1/n}``; :class:`MichaelisMenten` at ``slope = 1``. With a floor it is ADBUDG and
+    Morgan--Mercer--Flodin.
+    """
+
+    scale: Array = eqx.field(converter=_real)
+    slope: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("slope", self.slope, 0.0)
+
+    def standard(self, z: Array) -> Array:
+        below = z <= 1.0
+        # z^n below 1 and z^-n above it, so no power overflows; each branch sees 1 in the other's
+        # range, where its slope is finite
+        rising = jnp.where(below, z, 1.0) ** self.slope
+        falling = jnp.where(below, 1.0, z) ** -self.slope
+        return jnp.where(below, rising / (1.0 + rising), 1.0 / (1.0 + falling))
+
+    def _standard_inflection(self) -> float:
+        n = float(self.slope)
+        return ((n - 1.0) / (n + 1.0)) ** (1.0 / n) if n > 1.0 else 0.0
+
+    def _standard_tangency(self) -> float:
+        n = float(self.slope)
+        return (n - 1.0) ** (1.0 / n) if n > 1.0 else 0.0
+
+
+class Weibull(Saturation):
+    """``1 - exp(-z^k)``: the Weibull CDF, ``1 - 1/e`` of the ceiling at ``K``.
+
+    S-shaped for ``shape > 1``, with inflection ``((k - 1)/k)^{1/k}``; the tangency is ``u^{1/k}``
+    at the positive root of ``e^u - 1 = k u``. :class:`Exponential` at ``shape = 1``; with a floor,
+    Janoschek's curve (1957).
+    """
+
+    scale: Array = eqx.field(converter=_real)
+    shape: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("shape", self.shape, 0.0)
+
+    def standard(self, z: Array) -> Array:
+        return -jnp.expm1(-(z**self.shape))
+
+    def _standard_inflection(self) -> float:
+        k = float(self.shape)
+        return ((k - 1.0) / k) ** (1.0 / k) if k > 1.0 else 0.0
+
+    def _standard_tangency(self) -> float:
+        k = float(self.shape)
+        return _lambert_root(k) ** (1.0 / k) if k > 1.0 else 0.0
+
+
+class Logistic(Saturation):
+    """The logistic ``1 / (1 + e^{-s (z - 1)})`` moved and stretched to run from 0 at zero spend to
+    1, with its midpoint and inflection at ``K``. Always S-shaped."""
+
+    scale: Array = eqx.field(converter=_real)
+    steepness: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("steepness", self.steepness, 0.0)
+
+    def standard(self, z: Array) -> Array:
+        s = self.steepness
+        return (jax.nn.sigmoid(s * (z - 1.0)) - jax.nn.sigmoid(-s)) / jax.nn.sigmoid(s)
+
+    def _standard_inflection(self) -> float:
+        return 1.0
+
+
+class Gompertz(Saturation):
+    """Gompertz's ``exp(-b e^{-z})`` moved and stretched to run from 0 at zero spend to 1.
+
+    ``b`` is the displacement: the inflection is at ``log b``, so the curve is S-shaped for
+    ``b > 1`` and concave from zero otherwise.
+    """
+
+    scale: Array = eqx.field(converter=_real)
+    displacement: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("displacement", self.displacement, 0.0)
+
+    def standard(self, z: Array) -> Array:
+        b = self.displacement
+        # exp(-b e^-z) - e^-b, written so that neither a small b nor a large z cancels
+        return jnp.exp(-b * jnp.exp(-z)) * -jnp.expm1(b * jnp.expm1(-z)) / -jnp.expm1(-b)
+
+    def _standard_inflection(self) -> float:
+        return max(math.log(float(self.displacement)), 0.0)
+
+
+class Richards(Saturation):
+    """Richards' generalised logistic ``(1 + nu e^{-s (z - 1)})^{-1/nu}``, normalised to 0 at 0.
+
+    The inflection is at ``K`` for every asymmetry ``nu``. :class:`Logistic` at ``nu = 1``; as
+    ``nu -> 0`` it tends to :class:`Gompertz` with ``b = e^s`` and scale ``K / s``.
+    """
+
+    scale: Array = eqx.field(converter=_real)
+    steepness: Array = eqx.field(converter=_real)
+    asymmetry: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("steepness", self.steepness, 0.0)
+        _require("asymmetry", self.asymmetry, 0.0)
+
+    def standard(self, z: Array) -> Array:
+        s, nu = self.steepness, self.asymmetry
+
+        def rising(at: Array) -> Array:
+            return jnp.exp(-jnp.log1p(nu * jnp.exp(-s * (at - 1.0))) / nu)
+
+        floor = rising(_real(0.0))
+        return (rising(z) - floor) / (1.0 - floor)
+
+    def _standard_inflection(self) -> float:
+        return 1.0
+
+
+class ChapmanRichards(Saturation):
+    """``(1 - e^{-z})^p``, the Chapman--Richards growth curve.
+
+    S-shaped for ``power > 1``, with inflection ``log p``; the tangency is the positive root of
+    ``e^z - 1 = p z``. :class:`Exponential` at ``power = 1``.
+    """
+
+    scale: Array = eqx.field(converter=_real)
+    power: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("power", self.power, 0.0)
+
+    def standard(self, z: Array) -> Array:
+        return (-jnp.expm1(-z)) ** self.power
+
+    def _standard_inflection(self) -> float:
+        return max(math.log(float(self.power)), 0.0)
+
+    def _standard_tangency(self) -> float:
+        p = float(self.power)
+        return _lambert_root(p) if p > 1.0 else 0.0
+
+
+class GammaCDF(Saturation):
+    """The gamma CDF with unit rate, ``P(a, z)``. S-shaped for ``shape > 1``, with inflection at
+    the mode ``a - 1``; :class:`Exponential` at ``shape = 1``."""
+
+    scale: Array = eqx.field(converter=_real)
+    shape: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("shape", self.shape, 0.0)
+
+    def standard(self, z: Array) -> Array:
+        return _gamma_cdf(self.shape, z)
+
+    def _standard_inflection(self) -> float:
+        return max(float(self.shape) - 1.0, 0.0)
+
+
+class LogNormalCDF(Saturation):
+    """``Phi(log z / sigma)``: the log-normal CDF with median ``K``. Always S-shaped, with
+    inflection at the mode ``e^{-sigma^2}``."""
+
+    scale: Array = eqx.field(converter=_real)
+    sigma: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("sigma", self.sigma, 0.0)
+
+    def standard(self, z: Array) -> Array:
+        positive = z > 0.0
+        # the log at zero spend is -inf; the branch that reads it sees 1 instead
+        return jnp.where(positive, ndtr(jnp.log(jnp.where(positive, z, 1.0)) / self.sigma), 0.0)
+
+    def _standard_inflection(self) -> float:
+        return math.exp(-(float(self.sigma) ** 2))
+
+
+class BurrXII(Saturation):
+    """``1 - (1 + z^c)^{-k}``, the Burr XII CDF, with ``slope`` ``c`` and ``tail`` ``k``.
+
+    S-shaped for ``slope > 1``, with inflection ``((c - 1)/(c k + 1))^{1/c}``. :class:`Hill` at
+    ``tail = 1``; the tail sets how slowly the last of the ceiling arrives, as ``z^{-c k}``.
+    """
+
+    scale: Array = eqx.field(converter=_real)
+    slope: Array = eqx.field(converter=_real)
+    tail: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("slope", self.slope, 0.0)
+        _require("tail", self.tail, 0.0)
+
+    def standard(self, z: Array) -> Array:
+        return -jnp.expm1(-self.tail * jnp.log1p(z**self.slope))
+
+    def _standard_inflection(self) -> float:
+        c, k = float(self.slope), float(self.tail)
+        return ((c - 1.0) / (c * k + 1.0)) ** (1.0 / c) if c > 1.0 else 0.0
+
+
+class BetaCDF(Saturation):
+    """The beta CDF ``I_z(a, b)`` on ``[0, K]``, and the ceiling beyond ``K``.
+
+    S-shaped for ``a > 1``, with inflection at the mode ``(a - 1)/(a + b - 2)``; at ``b = 1`` it is
+    ``z^a``, convex up to ``K``, where it touches its envelope. ``b >= 1``, since below 1 the curve
+    would rise ever faster into its ceiling. No derivative in ``a`` or ``b`` (JAX's ``betainc``
+    has none); :class:`Kumaraswamy` has them.
+    """
+
+    scale: Array = eqx.field(converter=_real)
+    a: Array = eqx.field(converter=_real)
+    b: Array = eqx.field(converter=_real)
+
+    _support: ClassVar[float] = 1.0
+
+    def __check_init__(self) -> None:
+        _require("a", self.a, 0.0)
+        _require("b", self.b, 1.0, low_included=True)
+
+    def standard(self, z: Array) -> Array:
+        inside = z < 1.0
+        return jnp.where(inside, _beta_cdf(self.a, self.b, jnp.where(inside, z, 0.5)), 1.0)
+
+    def _standard_inflection(self) -> float:
+        a, b = float(self.a), float(self.b)
+        return (a - 1.0) / (a + b - 2.0) if a > 1.0 else 0.0
+
+
+class Kumaraswamy(Saturation):
+    """``1 - (1 - z^a)^b`` on ``[0, K]``, and the ceiling beyond ``K``: Kumaraswamy's closed-form
+    counterpart of :class:`BetaCDF`.
+
+    S-shaped for ``a > 1``, with inflection ``((a - 1)/(a b - 1))^{1/a}``; ``b >= 1``, as for the
+    beta CDF.
+    """
+
+    scale: Array = eqx.field(converter=_real)
+    a: Array = eqx.field(converter=_real)
+    b: Array = eqx.field(converter=_real)
+
+    _support: ClassVar[float] = 1.0
+
+    def __check_init__(self) -> None:
+        _require("a", self.a, 0.0)
+        _require("b", self.b, 1.0, low_included=True)
+
+    def standard(self, z: Array) -> Array:
+        inside = z < 1.0
+        at = jnp.where(inside, z, 0.5)
+        return jnp.where(inside, -jnp.expm1(self.b * jnp.log1p(-(at**self.a))), 1.0)
+
+    def _standard_inflection(self) -> float:
+        a, b = float(self.a), float(self.b)
+        return ((a - 1.0) / (a * b - 1.0)) ** (1.0 / a) if a > 1.0 else 0.0
+
+
+class Logarithmic(Response):
+    """``log(1 + z)``: concave and unbounded, a baseline."""
+
+    scale: Array = eqx.field(converter=_real)
+
+    def standard(self, z: Array) -> Array:
+        return jnp.log1p(z)
+
+
+class Power(Response):
+    """``z^rho``, ``0 < rho <= 1``: constant elasticity ``rho``, concave and unbounded.
+    PyMC-Marketing's ``RootSaturation``."""
+
+    scale: Array = eqx.field(converter=_real)
+    exponent: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("exponent", self.exponent, 0.0, 1.0)
+
+    def standard(self, z: Array) -> Array:
+        return z**self.exponent
+
+
+class Ricker(Response):
+    """``z e^{1 - z}``: rises to its peak of 1 at ``K`` and falls after it, the inverted U of ad
+    fatigue. Not monotone, so no envelope, and a plan's concavity arguments do not reach it."""
+
+    scale: Array = eqx.field(converter=_real)
+
+    def standard(self, z: Array) -> Array:
+        return z * jnp.exp(1.0 - z)
