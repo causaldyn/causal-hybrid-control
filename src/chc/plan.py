@@ -70,6 +70,7 @@ from chc.control import (
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step, rollout
+from chc.response import relax
 from chc.support import (
     PenaltyModel,
     SupportModel,
@@ -130,6 +131,12 @@ class CausalPlan:
     # barrier was given. The verdict to read, not the solve's: the rounds aim inside the condition,
     # but a budget-stopped or infeasible solve can come back short of it.
     safety: SafetyCertificate | None = None
+    # The task cost of the same problem planned on the concave envelope of every response curve in
+    # the model that starts convex, the plan this one's descent started from; None when the model
+    # holds no such curve or the caller gave a warm start. Where a larger response never costs more
+    # and the relaxed problem is convex -- a budget spread over curves of spend -- no plan costs
+    # less, so ``task_cost - relaxed_cost`` bounds how far this plan is from the best one.
+    relaxed_cost: float | None = None
     _problem: _PlanProblem | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -719,7 +726,12 @@ def causal_plan(
             along with the barrier's multipliers. It is projected onto the box and the rows before
             the first step, so it need not be admissible. It moves where the solve starts, and so
             what a solve stopped by ``steps`` returns; a solve that converges on a problem with one
-            minimiser lands on it from any start.
+            minimiser lands on it from any start. Omitted on a model holding a
+            :class:`chc.response.Saturation` that starts convex, the start is instead the plan of
+            the same problem on each such curve's concave envelope (:func:`chc.response.relax`),
+            and the plan reports that problem's cost as :attr:`CausalPlan.relaxed_cost`: such a
+            curve has no slope at zero spend, so zeros are a stationary point the descent would stop
+            at, reporting convergence.
 
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
@@ -792,6 +804,40 @@ def _plan(
             f"a barrier needs a box that admits a nonzero action; the largest is {authority}"
         )
 
+    first = None
+    if warm_start is None and (relaxed := relax(model)) is not model:
+        first, _ = _plan(
+            relaxed,
+            x0,
+            cost,
+            dt,
+            horizon,
+            u_lo,
+            u_hi,
+            support=support,
+            lam_supp=lam_supp,
+            uncertainty=uncertainty,
+            lam_unc=lam_unc,
+            lipschitz=lipschitz,
+            model_error=model_error,
+            tolerance=tolerance,
+            steps=steps,
+            constraints=constraints,
+            barrier=barrier,
+            warm_start=None,
+            multipliers=multipliers,
+        )
+        warm_start = first.actions
+        _log.info(
+            "planned on the concave envelope first",
+            extra={
+                "chc_event": "plan_relaxed",
+                "relaxed_cost": first.task_cost,
+                "status": first.solver_status,
+                "descent_steps": first.solver_iterations,
+            },
+        )
+
     guess = jnp.zeros((horizon, cost.R.shape[0]))
     if warm_start is not None:
         start = np.asarray(warm_start, dtype=np.float64)
@@ -843,6 +889,12 @@ def _plan(
             multipliers=multipliers,
         )
 
+    if first is not None:
+        iterations += first.solver_iterations
+        if status == "no_progress":
+            # the answer is where the relaxed descent stopped, and it stopped for its own reason
+            status = first.solver_status
+
     lipschitz_seq, error_seq = [lipschitz] * horizon, [model_error] * horizon
     evaluated = model_error > 0.0
     plan = CausalPlan(
@@ -857,6 +909,7 @@ def _plan(
         ),
         solver_status=status,
         solver_iterations=iterations,
+        relaxed_cost=None if first is None else first.task_cost,
         _problem=_PlanProblem(
             model=model,
             x0=x0,

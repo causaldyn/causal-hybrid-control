@@ -15,7 +15,12 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from scipy.optimize import minimize_scalar
 
+from chc.control import LinearConstraint
+from chc.cost import QuadraticCost
+from chc.mpc import RecedingHorizon
+from chc.plan import CausalPlan, causal_plan
 from chc.response import (
     Algebraic,
     Arctan,
@@ -40,6 +45,7 @@ from chc.response import (
     Saturation,
     Tanh,
     Weibull,
+    relax,
 )
 
 CONCAVE = [
@@ -342,3 +348,122 @@ def test_a_curve_built_inside_a_trace_fits_by_gradient() -> None:
     assert float(loss(at_truth)) == 0.0
     np.testing.assert_allclose(jax.grad(loss)(at_truth), 0.0, atol=1e-15)
     assert np.all(np.isfinite(jax.grad(loss)(at_truth + 0.1)))
+
+
+def test_relax_swaps_each_curve_that_starts_convex_and_leaves_the_rest() -> None:
+    concave, rate = MichaelisMenten(1.0), jnp.ones(2)
+    model = (Hill(1.0, 3.0), concave, {"inner": Weibull(1.0, 2.0)}, rate)
+    relaxed = relax(model)
+    assert isinstance(relaxed[0], Envelope)
+    assert isinstance(relaxed[2]["inner"], Envelope)
+    assert relaxed[1] is concave
+    assert relaxed[3] is rate
+    assert relax(relaxed) is relaxed
+    only_concave = (concave, Hill(1.0, 0.8), Ricker(1.0))
+    assert relax(only_concave) is only_concave
+
+
+class _Revenue(eqx.Module):
+    """A budget split between an S-curve and a Michaelis-Menten channel, as a one-step plant.
+
+    The revenue's rate does not read the state, so one RK4 step of ``dt = 1`` is the static
+    allocation exactly, and a target above any reachable revenue makes the cheapest plan the one
+    with the most revenue.
+    """
+
+    curve: Saturation
+    other: Saturation = MichaelisMenten(100.0)
+
+    def __call__(self, t: float | jax.Array, x: jax.Array, u: jax.Array) -> jax.Array:
+        return jnp.array([1000.0 * self.curve(u[0]) + 300.0 * self.other(u[1])])
+
+
+REVENUE_COST = QuadraticCost(
+    Q=jnp.zeros((1, 1)), R=jnp.zeros((2, 2)), Qf=jnp.eye(1), x_target=jnp.array([1e4])
+)
+BUDGET = LinearConstraint(np.ones((1, 2)), np.array([-np.inf]), np.array([300.0]))
+
+
+def _best_split(model: _Revenue) -> tuple[float, float]:
+    """The most revenue a budget of 300 buys, and the S-curve's share of it: a grid, refined."""
+    grid = np.linspace(0.0, 300.0, 30001)
+    revenue = np.asarray(1000.0 * model.curve(grid) + 300.0 * model.other(300.0 - grid))
+    start = grid[np.argmax(revenue)]
+    refined = minimize_scalar(
+        lambda spend: -float(1000.0 * model.curve(spend) + 300.0 * model.other(300.0 - spend)),
+        bounds=(max(start - 0.02, 0.0), min(start + 0.02, 300.0)),
+        method="bounded",
+        options={"xatol": 1e-10},
+    )
+    return max(-float(refined.fun), float(revenue.max())), float(refined.x)
+
+
+def _revenue(model: _Revenue, plan: CausalPlan) -> float:
+    return float(model(0.0, jnp.zeros(1), plan.actions[0])[0])
+
+
+@pytest.mark.parametrize(
+    "curve",
+    [
+        Hill(100.0, 3.0),
+        Weibull(100.0, 1.8),
+        Logistic(100.0, 4.0),
+        Gompertz(100.0, 5.0),
+        Richards(100.0, 3.0, 0.5),
+        ChapmanRichards(100.0, 3.0),
+        GammaCDF(100.0, 3.0),
+        LogNormalCDF(100.0, 0.5),
+        BurrXII(100.0, 4.0, 1.5),
+        BetaCDF(200.0, 3.0, 2.0),
+        Kumaraswamy(200.0, 3.0, 2.0),
+    ],
+    ids=name,
+)
+def test_a_plan_from_zero_spend_reaches_the_best_split_on_every_s_curve(curve: Saturation) -> None:
+    model = _Revenue(curve)
+    best, share = _best_split(model)
+    plan = causal_plan(model, jnp.zeros(1), REVENUE_COST, 1.0, 1, 0.0, 300.0, constraints=(BUDGET,))
+    assert plan.solver_status == "converged"
+    assert _revenue(model, plan) == pytest.approx(best, rel=1e-9)
+    assert plan.relaxed_cost is not None
+    gap = plan.task_cost - plan.relaxed_cost
+    assert gap >= -1e-12 * plan.task_cost
+    if share >= curve.tangency():
+        # the best split spends where the envelope is the curve, so the relaxation is tight
+        assert gap <= 1e-12 * plan.task_cost
+    else:
+        assert gap > 0.0
+
+
+def test_zero_spend_alone_stops_at_the_greedy_corner_of_a_hill_curve() -> None:
+    # the trap the envelope start removes: h'(0) = 0, so the descent from zeros reports convergence
+    model = _Revenue(Hill(100.0, 3.0))
+    alone = causal_plan(
+        model,
+        jnp.zeros(1),
+        REVENUE_COST,
+        1.0,
+        1,
+        0.0,
+        300.0,
+        constraints=(BUDGET,),
+        warm_start=jnp.zeros((1, 2)),
+    )
+    assert alone.solver_status == "converged"
+    assert _revenue(model, alone) == pytest.approx(225.0, rel=1e-12)
+    assert alone.relaxed_cost is None
+
+
+def test_a_receding_horizon_relaxes_its_cold_start_only() -> None:
+    model = _Revenue(Hill(100.0, 3.0))
+    controller = RecedingHorizon(model, REVENUE_COST, 1.0, 1, 0.0, 300.0, constraints=(BUDGET,))
+    cold = controller.step(jnp.zeros(1))
+    assert cold.relaxed_cost is not None
+    assert _revenue(model, cold) == pytest.approx(_best_split(model)[0], rel=1e-9)
+    assert controller.step(jnp.zeros(1)).relaxed_cost is None
+
+
+def test_a_model_with_no_curve_to_relax_plans_as_before() -> None:
+    model = _Revenue(MichaelisMenten(100.0))
+    plan = causal_plan(model, jnp.zeros(1), REVENUE_COST, 1.0, 1, 0.0, 300.0, constraints=(BUDGET,))
+    assert plan.relaxed_cost is None

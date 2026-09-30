@@ -30,8 +30,10 @@ spend on a channel is a stationary point, and a planner started at zero can stop
 convergence. The concave envelope (:class:`Envelope`) is the tangent from the origin up to the
 spend ``A`` where it touches the curve, ``h(A) = A h'(A)``, and the curve beyond it. Planned
 against, it has no such trap, its plan is a warm start for the true curve, and its value bounds the
-true optimum, so the gap between the two certifies the plan. The inflection and the tangency are in
-closed form where one exists and found as a root otherwise (``validation/response_curves.mac``).
+true optimum, so the gap between the two certifies the plan. :func:`relax` swaps every such curve in
+a model for its envelope, and :func:`chc.plan.causal_plan` plans the relaxed model first whenever it
+is given no warm start. The inflection and the tangency are in closed form where one exists and
+found as a root otherwise (``validation/response_curves.mac``).
 
 HONEST SCOPE:
 
@@ -49,7 +51,7 @@ from __future__ import annotations
 import abc
 import functools
 import math
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 
 import equinox as eqx
 import jax
@@ -61,6 +63,8 @@ from jax.scipy.special import betainc, betaln, erf, gammainc, gammaln, ndtr, xlo
 from jax.typing import ArrayLike
 from scipy.optimize import brentq
 from scipy.special import lambertw
+
+Model = TypeVar("Model")
 
 
 def _real(value: ArrayLike) -> Array:
@@ -230,6 +234,29 @@ class Envelope(Saturation):
 
     def _standard_inflection(self) -> float:
         return 0.0
+
+
+def relax(model: Model) -> Model:
+    """``model`` with every saturation curve in it that starts convex replaced by its envelope.
+
+    ``model`` is any pytree holding curves: a plant, a tuple of curves, one curve. A curve concave
+    from zero is left as it is, and when no curve starts convex the answer is ``model`` itself, so
+    ``relax(model) is model`` says there is nothing to relax. :func:`chc.plan.causal_plan` reads it
+    that way, and starts its descent from the relaxed problem's plan.
+    """
+    relaxed = False
+
+    def swap(node: object) -> object:
+        nonlocal relaxed
+        if isinstance(node, Saturation):
+            envelope = Envelope(node)
+            if envelope.touch > 0.0:
+                relaxed = True
+                return envelope
+        return node
+
+    answer = jax.tree_util.tree_map(swap, model, is_leaf=lambda node: isinstance(node, Saturation))
+    return answer if relaxed else model
 
 
 class MichaelisMenten(Saturation):

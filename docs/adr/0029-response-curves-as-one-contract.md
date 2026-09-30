@@ -43,6 +43,15 @@ curve, `h(A) = A h'(A)`, and the curve beyond (Weber, Prop. 3.8). Its optimum bo
 - **`Envelope(curve)`** is itself a `Saturation`: the chord below the tangency, the curve beyond.
   The tangency is held fixed when it is differentiated, and that is exact, since at the tangency
   `g = z g'` and its own derivative drops out.
+- **The planner never starts alone at zero on an S-curve.** `relax(model)` swaps every curve in a
+  pytree that starts convex for its envelope, and returns `model` itself when there is none. When
+  `causal_plan` is given no warm start and `relax(model) is not model`, it first plans the same
+  problem on the relaxed model and starts from that plan; a `RecedingHorizon`'s cold start does
+  the same. `CausalPlan.relaxed_cost` (*experimental*) is that problem's task cost. Where a larger
+  response never costs more and the relaxed problem is convex, as a budget spread over curves of
+  spend is, no plan costs less, so `task_cost - relaxed_cost` bounds the plan's distance from the
+  best. The accepted steps of both descents are counted, and a descent that took no step from the
+  relaxed plan reports the relaxed descent's status: the answer is where that one stopped.
 - **A floor is not a shape.** At zero spend a floor is the plant's base. So Janoschek is `Weibull`
   with a floor, and ADBUDG (Little 1970) and Morgan–Mercer–Flodin are `Hill` with one: names in
   the docs, not classes.
@@ -68,13 +77,18 @@ curve, `h(A) = A h'(A)`, and the curve beyond (Weber, Prop. 3.8). Its optimum bo
   are the exponential, Richards at `nu = 1` is the logistic and tends to Gompertz as `nu -> 0`,
   the gap proportional to `nu`); a change of currency, as a property test; and a curve built inside
   a trace fitting by gradient.
-- The module has no consumer yet. It is experimental until MM3's next steps use it.
+- The planner's gate, the S-curve counterexample posed to `causal_plan` as a one-step plant (a
+  budget of 300 over `1000 h(u_1) + 300 u_2 / (100 + u_2)`): from zero spend it reaches the best
+  split, found by a grid and refined, to `1e-9` on each of eleven S-shaped families, where a
+  descent from zeros stops at the greedy corner, 225, on the Hill with slope 3 and reports
+  convergence. Where the best split spends past the curve's tangency the relaxed cost matches the
+  plan's to `1e-12` of it; on the gamma CDF with shape 3 the tangency lies past the budget, and the
+  gap is positive, a bound and not a certificate of optimality.
+- Nothing in the library plans on these curves yet: `chc.mmm`'s plant keeps its own Hill until the
+  adstock kernels arrive. It is experimental until the plant and Track M v2 read it.
 
 ## Not built
 
-- **The planner's warm start and certificate.** `causal_plan` on every non-concave response starts
-  from the envelope's plan and reports the relaxed value's gap. MM3's next step, with the S-curve
-  counterexample from zero spend on every S-shaped family as its gate.
 - **The adstock kernels** (geometric, delayed peak, Weibull), the ROI set (R21), and the plant's
   Hill replaced by a `Saturation`.
 - **Fitting every family and planning against those that fit alike**, minimax regret across them
@@ -88,6 +102,9 @@ curve, `h(A) = A h'(A)`, and the curve beyond (Weber, Prop. 3.8). Its optimum bo
 - **One class with a `kind` field.** Rejected: every family has its own parameters, ranges,
   inflection and tangency, so a `kind` would switch on all of them, and a missing case would be a
   runtime error rather than an abstract method a new family cannot omit.
+- **Multi-start in place of the envelope.** Rejected: a start drawn at random lands in the corner's
+  basin with a probability no one knows, and a multi-start's best plan certifies nothing, where the
+  relaxed problem's value bounds every plan when it is convex.
 - **The tangency as a traced, differentiable root.** Not built. Its consumers, a warm start and a
   certificate, read it once from a fitted curve, and a bracketed root on concrete parameters is
   simpler and exact to rounding. A curve inside a trace still traces; only the tangency does not.

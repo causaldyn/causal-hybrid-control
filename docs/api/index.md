@@ -45,7 +45,8 @@ generator, for the gate `misspecification` on the zone plant, and for the respon
 `response` in the plans they warm-start. They may change or be withdrawn in any release. Pin an
 exact version if you depend on one.
 
-Twenty entries in modules of other tiers are experimental on the same terms, for the same reason:
+Twenty-one entries in modules of other tiers are experimental on the same terms, for the same
+reason:
 the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its `influence` argument
 with the field of that name, and the `unmoved` field of `CausalDynamicsFit`,
 `callaway_santanna_inference` and `EventStudyInference` in `chc.did`, `synthetic_control_inference`
@@ -53,4 +54,4 @@ and `SyntheticControlInference` in `chc.scm`, `gcm_test` and `GcmTest` in `chc.i
 `LoggerCheck` in `chc.evaluation`, the `logger_check` field of `Prescription` and `PlanEvaluation`,
 `shadow_price_effect` and `shadow_price_interval` in `chc.matching`, `channel_drift_evalues`,
 `DriftAlarm`, `channel_move`, `ChannelMove` and `MovePrice` in `chc.gate`, and
-`CausalPlan.decision_weight` and `DecisionWeight` in `chc.plan`.
+`CausalPlan.decision_weight`, `DecisionWeight` and `CausalPlan.relaxed_cost` in `chc.plan`.

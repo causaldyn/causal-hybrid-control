@@ -32,6 +32,15 @@ still change).
   - **Every family's slope at zero spend is its own.** JAX's gamma and beta CDFs give `nan` there
     at shape 1; both have a slope of their own in spend. `BetaCDF` has none in its shapes, since
     JAX's `betainc` has none, and asking for one raises.
+  - **`causal_plan` no longer starts alone at zero on an S-curve.** Given no warm start, on a model
+    holding a curve that starts convex it plans the same problem on `relax(model)` first and starts
+    from that plan, as a `RecedingHorizon`'s cold start does. `CausalPlan.relaxed_cost`
+    (*experimental*) is the relaxed problem's task cost: where a larger response never costs more
+    and that problem is convex, as a budget over curves of spend is, `task_cost - relaxed_cost`
+    bounds the plan's distance from the best. On a one-step budget split between an S-curve and a
+    Michaelis-Menten channel, the plan from zero spend now reaches the best split on each of eleven
+    S-shaped families; a descent from zeros stopped at the greedy corner on the Hill, and reported
+    convergence. A model with no such curve plans as before.
 
 ## [0.9.0] — 2026-09-30
 
