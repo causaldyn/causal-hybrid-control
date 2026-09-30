@@ -51,11 +51,17 @@ so the transfer here keeps their inversion and replaces the ATE by the lift the 
 - The `F` is exact for a model linear in its parameters. Where the tests leave a parameter on a
   ridge, as Heusch's leave the scale, the fit has fewer effective parameters than it counts, and
   the test can be conservative, rejecting the truth less often than its level: power lost, not
-  validity.
+  validity. On Heusch's tests it was not (below).
 - A fit now holds its tests, so the check reads what the fit read and cannot be handed other
   tests.
-- causaldyn-bench's `observational_check` track measures the check on Heusch's world, where both
-  the truth and the observational fit are known.
+- On causaldyn-bench's Track M v2, Heusch's generator written from his paper, with his four
+  go-dark tests of each channel and a fresh history each time, the check was pre-registered and
+  run on 500 histories (`results/track_m2_check.md` there). On paid shopping the `F` rejected the
+  truth in 0.054 (Clopper-Pearson 0.036-0.078), the factor's interval covered 1 in 0.938 and the
+  observational channel's noise-free factor in 0.939, and the `F` rejected the observational
+  channel in 0.998. The tests read a median factor of 0.505 of the observational channel's lift, a
+  median least `Γ` of 2.75 at a gap of 1; on Meta 0.181 and 7.82. The observational fit read no
+  television in 430 of the 500 histories, and a channel that predicts no gap has no factor.
 
 ## Alternatives
 

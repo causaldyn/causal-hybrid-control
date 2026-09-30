@@ -139,7 +139,12 @@ still change).
   tests: a floor under the confounding, as De Bartolomeis et al. (2024) bound `Γ` from a trial. The
   tests hold the statistic and the factor to NumPy, the fit's own channel to a factor of 1 and `k`
   times it to `1/k` with the closed-form excess, a channel of the right size and the wrong
-  carryover to a rejection, and `least_gamma` to a grid of `Γ`; twelve mutations caught.
+  carryover to a rejection, and `least_gamma` to a grid of `Γ`; twelve mutations caught. On
+  causaldyn-bench's Track M v2, pre-registered, over 500 of Heusch's histories on paid shopping,
+  the `F` rejected the truth in 0.054 (Clopper-Pearson 0.036-0.078), the factor's interval
+  covered 1 in 0.938 and the observational channel's noise-free factor in 0.939, and the `F`
+  rejected the observational channel in 0.998; the tests read a median factor of 0.505 of its
+  lift, a median least `Γ` of 2.75 at a gap of 1.
 - **A budget allocated over channels, `chc.allocation`** (*experimental*, ADR 0034).
   `allocate(channels, budget, periods, *, lower, upper, history=None)` spends a budget over
   `periods` periods at one rate a period for each `chc.response.Channel`, each within its box, for
