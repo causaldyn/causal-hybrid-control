@@ -33,6 +33,14 @@ plan's gain is what its spend adds, ``worth - idle``, where ``idle`` is what the
 with nothing spent in the plan: the history's carryover alone. As the price falls every rate rises,
 so the plans for every budget lie on one path, and each goal is a point on it.
 
+**A split for several readings of the channels.** Tests that never bent a curve fit several
+families alike, and the families part where the plan goes. :func:`minimax_allocate` takes each
+reading of every channel and chooses the split whose worst regret over them is least: the regret
+under a reading is its best return at the budget over the split's. A reading's regret is convex in
+the split where its curves are concave, so the worst is too, and cutting planes (Kelley 1960) close
+on it from below while the splits they propose close on it from above; the two ends are the
+certificate.
+
 HONEST SCOPE:
 
 * The channels are read as given: a fitted channel's error goes straight into the plan. Where the
@@ -49,6 +57,9 @@ HONEST SCOPE:
   makes, and read on the true curves. The gain still rises along it, so a return target is the
   least budget of those plans, but a plan off the path may meet it for less; and a target return on
   ad spend is a budget where the average crosses the target, not proved the most.
+* A split for several readings is robust to the readings it is given and to no other: it hedges
+  between the families the tests could not tell apart, not against one none of them is. On an
+  S-shaped curve the regret is the envelope's.
 * :func:`chc.mmm.prescribe` plans a budget over a continuous plant whose adstock is a state; this
   plans discrete channels, which that plant does not describe.
 """
@@ -64,7 +75,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from jax.typing import ArrayLike
-from scipy.optimize import brentq
+from scipy.optimize import brentq, linprog
 
 from chc.response import Channel, Logarithmic, Power, Saturation, relax
 
@@ -72,13 +83,18 @@ __all__ = [
     "Allocation",
     "Goal",
     "MarginalReturnTarget",
+    "MinimaxAllocation",
     "ReturnOnSpendTarget",
     "ReturnTarget",
     "allocate",
     "budget_for",
+    "minimax_allocate",
 ]
 
 _EPS = float(np.finfo(float).eps)
+# the cutting planes stop when the worst regret is this share of the largest best return above
+# their bound, or after this many rounds, the gap then reported as it stands
+_GAP, _ROUNDS = 1e-9, 500
 
 
 @dataclass(frozen=True)
@@ -134,6 +150,27 @@ class ReturnOnSpendTarget:
 
 
 Goal = ReturnTarget | MarginalReturnTarget | ReturnOnSpendTarget
+
+
+@dataclass(frozen=True)
+class MinimaxAllocation:
+    """A split chosen for the least worst regret over several readings of the channels.
+
+    Attributes:
+        spend: ``(channels,)`` spend a period, in the budget's currency.
+        best: ``(readings,)`` each reading's best return at the budget, on its envelopes: the
+            ``bound`` :func:`allocate` gives it.
+        regret: ``(readings,)`` each reading's best return over the split's, were it true.
+        worst: the largest regret, the split's.
+        bound: no split in the box at the budget has a worst regret below this, so
+            ``worst - bound`` bounds how far the split is from the least worst regret.
+    """
+
+    spend: np.ndarray
+    best: np.ndarray
+    regret: np.ndarray
+    worst: float
+    bound: float
 
 
 class _Worth(eqx.Module):
@@ -448,3 +485,114 @@ def budget_for(
                 spend = _cross(rates, lambda at: -surplus(at), peak, per_unit, upper_rates)
     budget = cost(np.clip(spend, lower_rates, upper_rates))
     return allocate(given, budget, periods, lower=lower_rates, upper=upper_rates, history=spent)
+
+
+def minimax_allocate(
+    readings: Sequence[Sequence[Channel]],
+    budget: float,
+    periods: int,
+    *,
+    lower: ArrayLike,
+    upper: ArrayLike,
+    history: ArrayLike | None = None,
+) -> MinimaxAllocation:
+    """Spend ``budget`` for the least worst regret over ``readings`` of the channels.
+
+    Each reading is a whole set of channels, one a column, as :func:`allocate` takes them: the same
+    channels read another way, by another curve family, say. The regret of a split under a reading
+    is the reading's best return at the budget over the split's, both on its envelopes, and the
+    split returned has the least worst regret, to a share ``1e-9`` of the largest best return or as
+    near as 500 rounds of cutting planes come. A reading's regret is convex in the split, so its
+    tangent at any split lies under it: the planes are every reading's tangents at every split
+    tried so far, the linear program over them is a bound from below, and each split it proposes is
+    tried next. :attr:`MinimaxAllocation.bound` is the last program's value and ``worst`` the best
+    split's, so the gap between them is what the split may still be from the least worst regret.
+
+    Args:
+        readings: the readings, each with one channel a column; at least one.
+        budget, periods, lower, upper, history: as :func:`allocate` takes them.
+
+    Raises:
+        TypeError, ValueError: what :func:`allocate` refuses of any reading, the box, the history
+            or the budget; no readings; readings of different numbers of channels.
+    """
+    readings = tuple(tuple(reading) for reading in readings)
+    if not readings:
+        raise ValueError("no readings to hedge between")
+    size = len(readings[0])
+    if any(len(reading) != size for reading in readings):
+        raise ValueError(
+            f"the readings have {sorted({len(r) for r in readings})} channels; each reads them all"
+        )
+    lower_rates, upper_rates, spent = _inputs(readings[0], periods, lower, upper, history)
+    plans = [
+        allocate(reading, budget, periods, lower=lower_rates, upper=upper_rates, history=spent)
+        for reading in readings
+    ]
+    best = np.array([plan.bound for plan in plans])
+    envelopes = [_worths(relax(reading), spent, periods) for reading in readings]
+    rate = float(budget) / periods
+
+    def returns(split: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Every reading's return on ``split``, and its slope in each channel's rate."""
+        values = np.empty(len(readings))
+        slopes = np.empty((len(readings), size))
+        for index, worths in enumerate(envelopes):
+            pairs = [
+                _value_and_slope(w, jnp.asarray(r, dtype=float))
+                for w, r in zip(worths, split, strict=True)
+            ]
+            values[index] = sum(float(value) for value, _ in pairs)
+            slopes[index] = [float(slope) for _, slope in pairs]
+        return values, slopes
+
+    # t >= best - value - slope @ (s - split) for every reading, over s in the box spending the
+    # budget; the variables are the rates and t, and t is the worst regret the planes allow
+    rows: list[np.ndarray] = []
+    limits: list[float] = []
+    worst, chosen, regret = np.inf, plans[0].spend, best
+    splits = [plan.spend for plan in plans]
+    floor = 0.0
+    scale = float(np.max(np.abs(best))) or 1.0
+    for _ in range(_ROUNDS):
+        for tried in splits:
+            values, slopes = returns(tried)
+            losses = best - values
+            if losses.max() < worst:
+                worst, chosen, regret = float(losses.max()), tried, losses
+            rows.extend(np.concatenate([-slopes, -np.ones((len(readings), 1))], axis=1))
+            limits.extend(values - slopes @ tried - best)
+        if worst - floor <= _GAP * scale:
+            break
+        program = linprog(
+            np.concatenate([np.zeros(size), [1.0]]),
+            A_ub=np.array(rows),
+            b_ub=np.array(limits),
+            A_eq=np.concatenate([np.ones(size), [0.0]])[None, :],
+            b_eq=[rate],
+            bounds=[*zip(lower_rates, upper_rates, strict=True), (0.0, None)],
+            method="highs",
+            options={"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10},
+        )
+        if program.status != 0:
+            raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
+        floor = max(floor, float(program.fun))
+        splits = [_onto(program.x[:size], lower_rates, upper_rates, rate)]
+    return MinimaxAllocation(
+        spend=np.asarray(chosen), best=best, regret=regret, worst=worst, bound=min(floor, worst)
+    )
+
+
+def _onto(split: np.ndarray, lower: np.ndarray, upper: np.ndarray, rate: float) -> np.ndarray:
+    """The nearest split to ``split`` in the box whose rates sum to ``rate``: every rate shifted
+    by one amount and clipped to its box, the amount where the sum is ``rate``."""
+
+    def excess(shift: float) -> float:
+        return float(np.clip(split + shift, lower, upper).sum()) - rate
+
+    low, high = float(np.min(lower - split)), float(np.max(upper - split))
+    if excess(low) >= 0.0:
+        return lower.copy()
+    if excess(high) <= 0.0:
+        return upper.copy()
+    return np.clip(split + brentq(excess, low, high, xtol=4 * _EPS * rate), lower, upper)

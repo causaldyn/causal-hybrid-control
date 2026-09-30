@@ -153,6 +153,17 @@ still change).
   `validation/goal_seek.mac`, one Michaelis–Menten or exponential channel and a floor's two
   crossings at `325 ± 25√13`, and on channels with carryover to the gain the channels return. Nine
   mutations caught.
+- **A split for several readings of the channels, `chc.allocation.minimax_allocate`**
+  (*experimental*, ADR 0038). Tests that never bent a curve fit several families alike, and the
+  families part where the plan goes. `minimax_allocate(readings, budget, periods, *, lower, upper,
+  history=None)` takes each reading of every channel and returns the split whose worst regret over
+  them is least, the regret under a reading being its best return at the budget over the split's.
+  Where the curves are concave the worst regret is convex in the split, and Kelley's cutting planes
+  close on it: the linear program over every reading's tangents bounds it from below, and the best
+  split tried bounds it from above, so `MinimaxAllocation.worst - MinimaxAllocation.bound` is the
+  certificate. An S-shaped curve is hedged on its envelope. The tests hold it to a closed form,
+  two mirrored linear readings hedged by the even split, and on three channels with carryover to
+  every split of a 241-by-241 grid; five mutations caught.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,
