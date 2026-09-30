@@ -138,7 +138,7 @@ effects that move with the cohort; AR(1) errors within a unit; comparisons with 
 - **de Chaisemartin and D'Haultfoeuille's and Goodman-Bacon's inference, and synthetic DiD.**
   diff-diff has them; no consumer asks yet.
 - **Designs that chose their treated units.** The multiplier bootstrap treats the units as drawn;
-  a design that chose them (plans/27, CA2 and CA3's note) needs other inference.
+  a design that chose them needs other inference.
 
 ## Alternatives considered
 
@@ -147,4 +147,4 @@ effects that move with the cohort; AR(1) errors within a unit; comparisons with 
 - **Returning diff-diff's estimates instead of checking them.** Rejected: the check is the only
   place the two implementations meet, and a silent change of estimand is the failure it stops.
 - **HonestDiD on the bootstrapped event study.** Rejected on the 0.68 above.
-- **moderndid** (MIT), named in plans/27 as the fallback. Not needed: diff-diff held.
+- **moderndid** (MIT), the fallback had diff-diff failed. Not needed: diff-diff held.

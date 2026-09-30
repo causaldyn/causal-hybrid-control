@@ -138,8 +138,8 @@ the library; `JAX_PLATFORMS=cpu`, rates only, no timing. The evidence is in
 ## Not built
 
 - **Bojinov, Simchi-Levi and Zhao's Horvitz–Thompson estimator** on an FIR plant of order `m`,
-  which shares `tau_(m+1)` with `block_dim` at `H = m + 1`: the comparison on their ground
-  (plans/27, EX5's oracle beside it).
+  which shares `tau_(m+1)` with `block_dim` at `H = m + 1`: the comparison on their ground,
+  with their estimator as the oracle beside this one.
 - **Coverage of the IV and local-projection intervals.** Their statistics and refusals are tested;
   their coverage is not measured.
 - **Spillover in the interval.** The test's null of no effect anywhere holds under spillover. The
