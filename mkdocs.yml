@@ -150,6 +150,7 @@ nav:
           - api/games.md
           - api/koopman.md
           - api/lalonde.md
+          - api/lift.md
           - api/meanfield.md
           - api/mintime.md
           - api/misspecification.md

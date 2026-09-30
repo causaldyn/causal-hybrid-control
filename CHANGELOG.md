@@ -108,6 +108,25 @@ still change).
   zero as the radius. Past the flip `minimax_action` holds under its cost criterion and still moves,
   hedged, under `criterion="regret"`. `tests/test_reallocation_flip.py` holds the three on a fitted
   two-lever channel, the `Γ` flip against a grid of `Γ`.
+- **Lift tests read as structure, `chc.lift`** (*experimental*, ADR 0033). `fit_lift(tests,
+  channel)` fits a `chc.response.Channel` to geo tests' gaps period by period, Heusch's (2026a)
+  differencing equation, by least squares over every test's readout with one noise variance, and
+  gives each parameter a profile-likelihood interval with an `F` cutoff (Bates and Watts 1988). A
+  `LiftTest` is a treated and a control `GeoArm`, each its spend over the readout and the periods
+  before it, its outcome, and its share of the market, which both are divided by. The coefficient
+  is projected out, since the gap is linear in it, and the retention, scales and shapes are fitted
+  in logs, so the two ridges a lift fit meets, a line and a step, are lines the solver follows; an
+  interval that runs to a bound says so, and `LiftFit.tested_adstock` is the adstock the readouts
+  covered, where the curve is identified. The tests hold the retention's interval to an
+  independent NumPy profile within `1e-4`. On causaldyn-bench's Track M v2, Heusch's (2026b)
+  generator written from his paper, with his four go-dark tests of paid shopping and noise of a
+  percent of mean weekly sales in each group, as his, the retention's 95% interval covered the
+  truth in 0.954 of 500 histories (Clopper-Pearson 0.932-0.971), the scale's in 0.976 and the
+  coefficient's in 0.978, the scale's mostly open upward: his tests bend the curve little. At
+  three times the noise the retention still covers, 0.958, but 15% of its intervals close, against
+  81% at his; at ten times it covers 0.878, and 4 of the 500 fits raise rather than converge. On
+  Meta at his noise it covers 0.918 (0.890-0.941), under the nominal, which the `F` cutoff
+  promises exactly only for a model linear in its parameters.
 
 ### Changed
 
