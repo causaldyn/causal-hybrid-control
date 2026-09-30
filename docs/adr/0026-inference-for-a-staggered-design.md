@@ -97,7 +97,8 @@ effects that move with the cohort; AR(1) errors within a unit; comparisons with 
   an exploration of 1000 panels a case on the same design, `Delta^SD(0)`'s interval covered 0.68,
   at 300 units and at 100; at 300 it was 0.40 wide where the analytic covariance makes it 0.67.
   That is why `robust_interval` fits twice, and raises if the analytic event study has no
-  covariance.
+  covariance. Reported upstream as
+  [diff-diff#836](https://github.com/igerber/diff-diff/issues/836).
 - **The relative-magnitudes restriction.** diff-diff 3.12's interval for `Delta^RM` is the
   estimated identified set widened by `z` standard errors; its own docstring says the paper's ARP
   hybrid is disabled pending calibration. In the exploration it covered every panel, at 3.4 to 6.3

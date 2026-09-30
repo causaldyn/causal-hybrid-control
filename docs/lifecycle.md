@@ -30,7 +30,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   synthetic control, in [`chc.scm`](api/scm.md). With the did extra (*experimental*), a staggered
   design's estimates come with their uncertainty: standard errors, an interval on the overall
   effect and a uniform band over the event study, from diff-diff's multiplier bootstrap, with the
-  numbers of units at which they were measured to hold their level.
+  numbers of units at which they were measured to hold their level. A synthetic control's
+  estimate comes with Abadie, Diamond and Hainmueller's placebo test, exact when the treated unit
+  was drawn at random, and a conformal interval (*experimental*, no extra).
 - **Effects that take time.** Impulse responses and `delay_estimate`, in
   [`chc.irf`](api/irf.md).
 - **No adjustment set at all.** The sensitivity level [Γ](concepts/gamma.md) bounds the effect

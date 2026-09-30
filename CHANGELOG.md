@@ -203,6 +203,29 @@ still change).
     width on that panel.
   - **16 tests**, among them `robust_interval` against R's on a panel drawn from numpy's frozen
     `RandomState` stream.
+- **Inference for a synthetic control** (*experimental*, ADR 0027). No extra.
+  `chc.scm.synthetic_control_inference` takes `synthetic_control`'s arguments and returns a
+  `SyntheticControlInference`: the estimate, Abadie, Diamond and Hainmueller's in-space placebo
+  p-value, and the hull of the constant effects Chernozhukov, Wüthrich and Zhu's conformal test
+  does not reject.
+  - **The placebo is built as ADH built it**: every unit's synthetic control from all the others,
+    so the test is exact when the treated unit was drawn at random. diff-diff, which carries both
+    tests, leaves the treated unit out of every placebo's donor pool. On the same panels that
+    construction rejected 0.5-1.5 points more under no effect, and the panels where only one of
+    the two rejected ran 10 to 4 and 18 to 3 its way.
+  - **Both tests are owned, over the exact weights.** diff-diff is the tests' oracle: the
+    conformal p-value equals its `conformal_test`'s at 25 effects, and the interval ends where its
+    test starts to reject. Its Frank-Wolfe needed 200 000 steps to converge where the weights here
+    are exact.
+  - **What the bench found** (`scripts/bench_scm_inference.py`: 20 periods before treatment and
+    5 after, 1000 panels a case). With the treated unit drawn at random, the placebo rejected a
+    true null 3.8-4.7% of the time at 5% with 19 donors, and 9.2-9.6% at 10%. The interval covered
+    the effect 97.2-98.4% of the time at `alpha = 0.05` and 93.1-94.0% at 0.10, above the test's own
+    levels on 25 periods, 4% and 8%. With the treated unit chosen as the one its donors fit best,
+    the placebo rejected 27.8% at 5% and the interval covered 81.7% at 0.10: neither test holds for
+    a design that picks its test market.
+  - **11 tests**, among them the ranks' exactness with each unit treated in turn, which diff-diff's
+    construction fails on the same panel. Nine mutations caught.
 
 ### Changed
 
