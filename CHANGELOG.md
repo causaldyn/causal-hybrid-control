@@ -170,7 +170,10 @@ still change).
 - **Every Γ names its model.** CHC's `Γ` is the marginal sensitivity model's (Tan 2006), and
   Rosenbaum's, the one matched-design analyses report, is another model's. `Prescription.report()`
   prints `gamma* ... (marginal sensitivity model)`, `BarrierConstraint`'s refusal of `gamma < 1`
-  says whose level it is, and so do the demos that print a `Γ`. `docs/concepts/gamma.md` gives the
+  says whose level it is, and so do the demos that print a `Γ`. The report also states the `gamma`
+  the barrier's certified steps were counted at, which it left out, so the steps read as if no
+  confounding had been priced; `DecisionCertificate.gamma`, the JSON's `certificate.gamma` and the
+  certificate's log record carry it, `None` where no bound was audited. `docs/concepts/gamma.md` gives the
   bracket, Rosenbaum(Γ) ⊆ MSM(Γ) ⊆ Rosenbaum(Γ²) (Zhao, Small and Bhattacharya 2019), so a study
   insensitive to Rosenbaum's `Γ = 5` covers the MSM only up to `√5`; Rosenbaum and Silber's
   amplification; and the benchmark's two limits: it measures the treatment side alone, and nothing

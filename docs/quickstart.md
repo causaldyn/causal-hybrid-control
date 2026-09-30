@@ -66,8 +66,9 @@ Read the first report by its two axes, which are kept apart on purpose:
 - **Identification** is about the data and the graph: whether an adjustment set exists, which one
   was used, and the channel's standard error.
 - **Certification** is about model error and the barrier: the error tube's certified horizon, the
-  steps that clear the constraint, and `gamma*`, the largest level of the marginal sensitivity
-  model under which the barrier stays certified.
+  steps that clear the constraint at the level of the marginal sensitivity model the plan was
+  audited at (`gamma`, when a bound is given), and `gamma*`, the largest level under which the
+  barrier stays certified.
 
 The **trustworthy prefix** is the part of the schedule that survives *both* — the number an
 operator can act on. A plan can be fully certified against a channel nothing identifies, which is a

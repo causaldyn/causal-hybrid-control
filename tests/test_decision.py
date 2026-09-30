@@ -438,6 +438,33 @@ def test_the_reported_gamma_names_its_sensitivity_model() -> None:
     assert line.endswith("(marginal sensitivity model)")
 
 
+def test_the_certificate_states_the_gamma_its_barrier_prefix_was_audited_at() -> None:
+    """The certified steps are counted at the caller's ``gamma``, and ``gamma*`` is where no action
+    clears the barrier; printed without the first, the steps read as if nothing had been priced."""
+    result = _prescribe(_panel(), CausalGraph.from_edges(EDGES), gamma=1.5)
+    assert result.certificate.gamma == 1.5
+    (line,) = [line for line in result.report().splitlines() if "gamma*" in line]
+    assert " at gamma 1.5, gamma* " in line
+    assert result.to_json()["certificate"]["gamma"] == 1.5
+
+
+def test_no_gamma_is_stated_where_no_bound_was_audited() -> None:
+    result = prescribe(
+        _panel(),
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("supply", value=1.0),
+        adjustment=CausalGraph.from_edges(EDGES),
+        horizon=15,
+        dt=DT,
+        tolerance=0.5,
+        gamma=1.5,
+    )
+    assert result.certificate.barrier_certified_steps is None
+    assert result.certificate.gamma is None
+    (line,) = [line for line in result.report().splitlines() if "gamma*" in line]
+    assert "at gamma" not in line
+
+
 def test_an_unbalanced_panel_still_yields_the_transitions_on_either_side_of_a_hole() -> None:
     logs = _logs(n_units=40)
     keep = ~((logs["unit"] == 0) & (logs["time"] == 5))

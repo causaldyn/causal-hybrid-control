@@ -252,6 +252,10 @@ class DecisionCertificate:
     # PLANNING objective -- how far the planning model is from the plant is the tube's question,
     # and the two must not be added.
     regret_bound: float | None
+    # The marginal sensitivity model's level the barrier's prefix was audited at, the caller's
+    # ``gamma``: ``barrier_certified_steps`` counts the steps the plan clears there, and
+    # ``gamma_star`` is where no action would. None where no bound was audited.
+    gamma: float | None = None
 
     @property
     def trustworthy_steps(self) -> int:
@@ -564,8 +568,9 @@ class Prescription:
             self._logger_line(),
             f"- error tube: **{certificate.certificate_status}**, "
             f"certified horizon {_show(certificate.certified_horizon)}",
-            f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}, "
-            f"gamma* {_show(certificate.gamma_star)} (marginal sensitivity model)",
+            f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}"
+            + ("" if certificate.gamma is None else f" at gamma {certificate.gamma:.4g}")
+            + f", gamma* {_show(certificate.gamma_star)} (marginal sensitivity model)",
             f"- solver: {certificate.solver_status} after "
             f"{certificate.solver_iterations} accepted steps",
             "",
@@ -596,6 +601,7 @@ class Prescription:
                 "certificate_status": certificate.certificate_status,
                 "certified_horizon": certificate.certified_horizon,
                 "barrier_certified_steps": certificate.barrier_certified_steps,
+                "gamma": certificate.gamma,
                 "gamma_star": certificate.gamma_star,
                 "solver_status": certificate.solver_status,
                 "solver_iterations": certificate.solver_iterations,
@@ -1063,12 +1069,14 @@ def prescribe(
         solver_status=plan.solver_status,
         solver_iterations=plan.solver_iterations,
         regret_bound=price(plan),
+        gamma=None if safety is None else float(gamma),
     )
     _log.info(
         "decision certified",
         extra={
             "chc_event": "certificate",
             "identification": certificate.identification,
+            "gamma": certificate.gamma,
             "gamma_star": certificate.gamma_star,
             "barrier_certified_steps": certificate.barrier_certified_steps,
             "trustworthy_steps": certificate.trustworthy_steps,
