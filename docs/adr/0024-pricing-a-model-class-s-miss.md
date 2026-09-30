@@ -95,6 +95,27 @@ first state at a given slope, fitted by the constant-channel class unweighted an
   - `noise` matched the difference's realised spread in `W` to 1.1 of its standard errors.
 - **Power** (section `power`). At 5% it caught 13%, 30%, 78% and 97% of the logs as the slope went
   0.005, 0.01, 0.02 and 0.03. The logs of `metric` have slope 1.
+- **The zone plant** (section `zones`, 0.9.0's verification). Two zones of `chc.zones`' market are
+  fitted under `rk4`, unweighted and weighted by `exp` of the first zone's standardised supply. The
+  plan raises every zone's idle supply by a fifth over 12 periods. The plant was detuned from the
+  class two ways, one at a time. Curvature bends the trips towards the harmonic law, which they
+  follow at 1. Saturation makes an incentive recruit less the more drivers are idle, so the channel
+  moves with the state.
+  - Where the class held (400 logs), the test rejected 0.5%, 3.25% and 7.5% at 1, 5 and 10%. The
+    p-values' Kolmogorov distance from uniform was at most 0.056, inside the 0.068 that 400 draws
+    allow at 5%.
+  - Saturation 0.1, 0.2, 0.4 and 0.8 (100 logs each): at 5% it caught 5%, 5%, 9% and 32% of the
+    logs. The regret between the two fits' plans went 0.0047, 0.0056, 0.0082 and 0.0145, against
+    0.0048 where the class held.
+  - Curvature 0.5 and 1: 1% and 2%. The regret between the fits' plans stayed at 0.0046–0.0049.
+    The harmonic law, which the class misses too, did not move the cost of choosing between the
+    fits, so there was nothing to find.
+  - `cost + noise`, the quadratic's mean reading, matched the mean regret between the fits' plans
+    within 1% at every setting. At differences this small, second order holds.
+  - Planning on the reference fit lost 0.38–0.51 against the truth at every setting, including
+    where the class held. That is 32 to 106 times the regret between the fits. It is the error both fits
+    share, which their difference cannot see. The gate prices the choice between fits, not either
+    fit's distance from the truth.
 - **What it cannot see** (section `unseen`). The log's second action was always twice the first,
   and the class held the truth. The gate read `p = 0.33` and two unseen directions, and the plan
   lost 0.55 against the truth. Held to the log's ratio, the plan had none unseen and lost `5e-6`.
@@ -108,8 +129,6 @@ first state at a given slope, fitted by the constant-channel class unweighted an
 
 ## Not built
 
-- **The zone-plant sweep**, 0.9.0's verification: one physics parameter detuned step by step, the
-  size read at zero and the power as a curve in the detuning.
 - **Fits with drivers**, **barrier-held plans** and **pessimism-weighted plans**.
 - **What to do on a failure.** The function reports. Refitting, dithering (AD2) or keeping the plan
   is the loop's call (AP3).

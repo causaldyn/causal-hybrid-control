@@ -1,6 +1,5 @@
 """Whether a plan pays for its model class being wrong: two fits of one class on one log, their
-difference priced in the plan's own regret. *Experimental*: built ahead of the release that
-verifies it on the zone plant.
+difference priced in the plan's own regret. *Experimental.*
 
 Under a class that holds the truth, every weight on the state estimates the same parameters, and
 an instrument estimates what an adjustment set does; only the variance moves. Under a class that
@@ -90,11 +89,20 @@ def misspecification_cost(
     channel's slope in the state went 0.005, 0.01, 0.02 and 0.03, where the logs above had 1
     (section ``power``).
 
+    On two zones of :mod:`chc.zones`' market, fitted under ``rk4`` unweighted and weighted by the
+    first zone's supply (section ``zones``), it rejected 0.5%, 3.25% and 7.5% of 400 logs at 1, 5
+    and 10% where the class held. An incentive that recruits less the more drivers are idle moves
+    the channel with the state: at 5% the test caught 5%, 5%, 9% and 32% of the logs as that
+    saturation went 0.1, 0.2, 0.4 and 0.8, while the regret between the two fits' plans went from
+    0.0047 to 0.0145. Trips bent as far as the harmonic law, which the class misses too, left that
+    regret and the test's rate where they were.
+
     How far it reaches: as far as ``W`` does, second order in the difference. On the logs above,
     where the two channels differed by two thirds of the channel's size, ``d' W d / 2`` read half of
     the regret between the two fits' plans, three quarters of it at three tenths of that difference
     and nine tenths at a tenth (section ``reach``). At a large difference the cost is a floor, not
-    an estimate.
+    an estimate. On the zone plant, where the difference is small, ``cost + noise`` matched the
+    regret between the fits' plans within 1% on average at every setting.
 
     What it cannot see: a direction of the channel the log's actions never moved
     (:attr:`chc.dynamics_id.CausalDynamicsFit.unmoved`) has no data in either fit, both carry the
@@ -103,7 +111,9 @@ def misspecification_cost(
     deployed plan's own may be, leaves every direction unmoved. On a log whose second action was
     always twice the first, the gate read ``p = 0.33`` and two unseen directions while the plan
     lost 0.55 against the truth; held to the log's ratio, the plan had none unseen and lost
-    ``5e-6`` (section ``unseen``).
+    ``5e-6`` (section ``unseen``). Nor can it see the error both fits share: on the zone plant, the
+    plan lost 0.38 to 0.51 against the truth at every setting, including where the class held, 32 to
+    106 times the regret between the fits' plans.
 
     Raises:
         ValueError: on a fit made without ``influence=True``; two fits whose classes, integrators

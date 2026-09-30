@@ -23,6 +23,16 @@ tracking plan made on the unweighted fit. At ``slope = 0`` the class holds the t
                  channel: what the gate reads, how many directions it reports it cannot see, and
                  what planning on the fit costs against the truth. Then the same with the plan held
                  to the log's own ratio, where the unmoved direction stops mattering.
+    zones        Two zones of :mod:`chc.zones`' market, detuned two ways from the class the fits
+                 hold: the trips bent from the linear law towards the harmonic one (curvature 1 is
+                 the harmonic law; beyond 2 some trips on a log turn negative), and an incentive
+                 that recruits less the more drivers are idle (saturation). Each log is fitted
+                 twice under ``rk4``, unweighted and weighted by ``exp`` of the first zone's
+                 standardised supply, and the plan raises every zone's idle supply by a fifth over
+                 12 periods. The size over --zone-size-logs logs where the class holds; at each
+                 detuning over --zone-logs logs the rejection rates, the cost, the regret between
+                 the two fits' plans that it prices, and the regret of planning on the reference fit
+                 against planning on the true plant. Logs run over --workers processes.
 
 Run: JAX_ENABLE_X64=1 JAX_PLATFORMS=cpu uv run python scripts/bench_misspecification.py > out.json
 """
@@ -33,7 +43,10 @@ import argparse
 import dataclasses
 import json
 import math
+import multiprocessing
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -47,6 +60,7 @@ from chc.integrate import rk4_step
 from chc.misspecification import _parameters, _residual, misspecification_cost
 from chc.plan import CausalPlan, causal_plan
 from chc.residual import ControlAffineResidual
+from chc.zones import ZoneMarketPlant, ZoneMarketSystem
 
 SEED = 20260930
 DT, HORIZON, BOX = 0.1, 12, 5.0
@@ -64,6 +78,13 @@ COST = QuadraticCost(
 FIT = {"adjust_for": ("z",), "degree": 1, "channel_degree": 0, "nuisance_degree": 2, "seed": 0}
 # the unseen section's constant channel, one column per action
 PAIR = np.array([[0.8, 0.3], [-0.4, 0.5]])
+ZONE_FIT = {"integrator": "rk4", "degree": 1, "channel_degree": 0, "seed": 0, "influence": True}
+# (curvature, saturation): the size where the class holds, then each detuning on its own
+DETUNINGS = (
+    (0.0, 0.0),
+    *((curvature, 0.0) for curvature in (0.5, 1.0)),
+    *((0.0, saturation) for saturation in (0.1, 0.2, 0.4, 0.8)),
+)
 
 
 def _known(t: jax.Array, x: jax.Array, u: jax.Array) -> jax.Array:
@@ -278,14 +299,197 @@ def unseen(rows: int) -> dict[str, dict[str, float]]:
     return out
 
 
+class DetunedPlant(ZoneMarketPlant):
+    """The zone plant detuned two ways from the class the fits hold.
+
+    * ``curvature`` bends the trips from the linear law towards the harmonic one,
+      ``tangent + curvature (harmonic - tangent)``. The linear law is the harmonic one's tangent at
+      the do-nothing point, so at 1 the trips are the harmonic law's.
+    * ``saturation`` makes an incentive recruit less the more drivers are idle in its zone,
+      ``recruit (1 - saturation (supply - idle) / idle)``, ``idle`` the do-nothing supply. The
+      channel then moves with the state.
+
+    At zero both, the drift is linear and the channel constant: the fitted class holds the truth.
+    """
+
+    idle: jax.Array
+    curvature: float = 0.0
+    saturation: float = 0.0
+
+    def trips(self, x: jax.Array) -> jax.Array:
+        k = self.sigma.shape[0]
+        supply, queue = x[:k], x[k : 2 * k]
+        tangent = self.match_supply * supply + self.match_queue * queue
+        return tangent + self.curvature * (self.mu * supply * queue / (supply + queue) - tangent)
+
+    def __call__(self, t: float | jax.Array, x: jax.Array, u: jax.Array) -> jax.Array:
+        k = self.sigma.shape[0]
+        supply, queue, stock = x[:k], x[k : 2 * k], x[2 * k :]
+        incentive, price = u[:k], u[k:]
+        trips = self.trips(x)
+        recruit = self.recruit * (1.0 - self.saturation * (supply - self.idle) / self.idle)
+        recruited = self.transfer @ (recruit * incentive + self.carry * stock)
+        d_supply = (
+            self.gamma * (self.sigma - supply) + recruited - trips - self.shock_supply * self.shock
+        )
+        d_queue = (
+            self.demand * (1.0 + self.shock - self.elasticity * price) - trips - self.alpha * queue
+        )
+        return jnp.concatenate([d_supply, d_queue, incentive - self.theta * stock])
+
+
+@dataclasses.dataclass(frozen=True)
+class DetunedZones(ZoneMarketSystem):
+    curvature: float = 0.0
+    saturation: float = 0.0
+
+    def plant(self, shock: jax.Array | None = None) -> DetunedPlant:
+        base = super().plant(shock)
+        fields = {field.name: getattr(base, field.name) for field in dataclasses.fields(base)}
+        return DetunedPlant(
+            **fields,
+            idle=jnp.asarray(self.supply),
+            curvature=self.curvature,
+            saturation=self.saturation,
+        )
+
+
+def _zones(curvature: float, saturation: float) -> DetunedZones:
+    """:mod:`chc.zones`' first two zones."""
+    return DetunedZones(
+        supply=(8.0, 6.0),
+        queue=(4.0, 3.0),
+        recruit=(2.0, 1.5),
+        carry=(0.6, 0.5),
+        elasticity=(0.5, 0.5),
+        curvature=curvature,
+        saturation=saturation,
+    )
+
+
+def _zone_data(system: ZoneMarketSystem, seed: int) -> dict[str, jax.Array]:
+    """Consecutive periods of a day as ``(x, u, x_next)``, plus each zone's shock."""
+    logs = system.sample(seed=seed)
+    day = logs["day"]
+    current = np.flatnonzero(np.r_[day[1:] == day[:-1], False])
+    x = np.stack([logs[name] for name in system.state_columns], 1)
+    u = np.stack([logs[name] for name in system.lever_columns], 1)
+    data = {"x": jnp.asarray(x[current]), "u": jnp.asarray(u[current])}
+    data["x_next"] = jnp.asarray(x[current + 1])
+    for name in system.shock_columns:
+        data[name] = jnp.asarray(logs[name][current][:, None])
+    return data
+
+
+def _zone_cost(system: ZoneMarketSystem) -> QuadraticCost:
+    k = system.zones
+    weight = jnp.diag(jnp.concatenate([jnp.ones(k), 0.1 * jnp.ones(k), jnp.zeros(k)]))
+    return QuadraticCost(
+        Q=weight,
+        R=0.05 * jnp.eye(2 * k),
+        Qf=weight,
+        x_target=system.do_nothing.at[:k].multiply(1.2),
+    )
+
+
+def _zone_plan(system: ZoneMarketSystem, model: Callable) -> CausalPlan:
+    return causal_plan(
+        model, system.do_nothing, _zone_cost(system), 1.0, HORIZON, 0.0, 1.0, steps=20_000
+    )
+
+
+def _zone_loss(system: ZoneMarketSystem, model: Callable, actions: jax.Array) -> float:
+    return float(total_cost(model, system.do_nothing, actions, 1.0, _zone_cost(system)))
+
+
+def _zone_log(
+    curvature: float, saturation: float, seed: int, truth_actions: np.ndarray
+) -> dict[str, Any]:
+    """One log of the detuned plant: the gate, and the regrets it is read against."""
+    system = _zones(curvature, saturation)
+    data = _zone_data(system, seed)
+    supply = data["x"][:, 0]
+    centre, scale = float(jnp.mean(supply)), float(jnp.std(supply))
+    known = system.stock_dynamics()
+    fit = {**ZONE_FIT, "adjust_for": system.shock_columns}
+    reference = fit_causal_residual(known, data, 1.0, **fit)
+    alternative = fit_causal_residual(
+        known, data, 1.0, weights=lambda s: jnp.exp((s[:, 0] - centre) / scale), **fit
+    )
+    ours = HybridDynamics(known=known, residual=reference.residual)
+    theirs = HybridDynamics(known=known, residual=alternative.residual)
+    plan = _zone_plan(system, ours)
+    gate = misspecification_cost(plan, reference, alternative)
+    truth = system.plant()
+    return {
+        "seed": seed,
+        "p_value": gate.p_value,
+        "cost": gate.cost,
+        "cost_error": gate.cost_error,
+        "noise": gate.noise,
+        "unseen": gate.unseen,
+        "status": plan.solver_status,
+        "regret_between_fits": _zone_loss(system, theirs, plan.actions)
+        - _zone_loss(system, theirs, _zone_plan(system, theirs).actions),
+        "regret_against_truth": _zone_loss(system, truth, plan.actions)
+        - _zone_loss(system, truth, jnp.asarray(truth_actions)),
+    }
+
+
+def _mean_and_se(rows: list[dict[str, Any]], key: str) -> dict[str, float]:
+    values = np.asarray([row[key] for row in rows], dtype=np.float64)
+    return {
+        f"{key}_mean": float(values.mean()),
+        f"{key}_se": float(values.std(ddof=1) / math.sqrt(values.size)),
+    }
+
+
+def zones(logs: int, size_logs: int, workers: int) -> dict[str, dict[str, object]]:
+    out: dict[str, dict[str, object]] = {}
+    context = multiprocessing.get_context("spawn")  # JAX does not survive a fork
+    with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
+        for curvature, saturation in DETUNINGS:
+            system = _zones(curvature, saturation)
+            truth = np.asarray(_zone_plan(system, system.plant()).actions)
+            count = size_logs if curvature == saturation == 0.0 else logs
+            seeds = [SEED + 1 + index for index in range(count)]
+            rows = list(
+                pool.map(
+                    _zone_log, [curvature] * count, [saturation] * count, seeds, [truth] * count
+                )
+            )
+            p_values = np.asarray([row["p_value"] for row in rows])
+            statuses = [str(row["status"]) for row in rows]
+            out[f"curvature {curvature:g}, saturation {saturation:g}"] = {
+                "logs": count,
+                **_rates(p_values),
+                "ks_uniform": float(
+                    np.max(np.abs(np.sort(p_values) - (np.arange(1, count + 1) - 0.5) / count))
+                ),
+                **_mean_and_se(rows, "cost"),
+                **_mean_and_se(rows, "cost_error"),
+                **_mean_and_se(rows, "noise"),
+                **_mean_and_se(rows, "regret_between_fits"),
+                **_mean_and_se(rows, "regret_against_truth"),
+                "unseen_max": max(int(row["unseen"]) for row in rows),
+                "solver_status": {status: statuses.count(status) for status in set(statuses)},
+            }
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, default=40_000)
     parser.add_argument("--small", type=int, default=4000)
     parser.add_argument("--population", type=int, default=400_000)
     parser.add_argument("--logs", type=int, default=200)
+    parser.add_argument("--zone-logs", type=int, default=100)
+    parser.add_argument("--zone-size-logs", type=int, default=400)
+    parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
-        "--sections", nargs="+", default=["metric", "reach", "calibration", "power", "unseen"]
+        "--sections",
+        nargs="+",
+        default=["metric", "reach", "calibration", "power", "unseen", "zones"],
     )
     args = parser.parse_args()
     sections: dict[str, Callable[[], object]] = {
@@ -294,6 +498,7 @@ def main() -> None:
         "calibration": lambda: calibration(args.logs, args.small, args.population),
         "power": lambda: power(args.logs, args.small),
         "unseen": lambda: unseen(args.rows),
+        "zones": lambda: zones(args.zone_logs, args.zone_size_logs, args.workers),
     }
     out: dict[str, object] = {"x64": bool(jax.config.jax_enable_x64), "seed": SEED}
     for name in args.sections:

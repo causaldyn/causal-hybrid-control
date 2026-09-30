@@ -127,6 +127,13 @@ still change).
     1.96 standard errors of its value on 400 000 rows in 0.915 of the logs. At 5% it caught 13%,
     30%, 78% and 97% of logs whose channel moved with the state at slopes 0.005, 0.01, 0.02 and
     0.03.
+  - **On the zone plant** (0.9.0's verification). Where the class held, it rejected 0.5%, 3.25% and
+    7.5% of 400 logs at 1, 5 and 10%. An incentive that recruits less the more drivers are idle
+    moves the channel with the state. As that saturation went from 0.1 to 0.8, the power at 5% rose
+    from 5% to 32%, and the regret between the two fits' plans tripled. Trips bent to the harmonic
+    law left that regret, and the test's rate, where they were. Planning on the unweighted fit lost
+    0.38–0.51 against the truth at every setting: the error both fits share, which the gate does
+    not price.
   - **What it cannot see.** On a log whose second action was always twice the first, it read
     `p = 0.33` while the plan lost 0.55 against the truth, and `unseen` reported two directions
     the plan weighs that the log never moved. Held to the log's ratio, the plan had none and lost
