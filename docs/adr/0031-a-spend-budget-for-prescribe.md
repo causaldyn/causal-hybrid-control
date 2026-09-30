@@ -67,7 +67,7 @@ every window does to a loop: it caps each window, and the day overspends by 2 to
 
 ## Not built
 
-- **Goal seek and a target ROAS** (plans/27 §2.1). A target on a known function of states and
-  levers, such as revenue over spend in a window, has no expression in `prescribe`: every target
-  and constraint is a logged column modelled as a state. It needs a known output map, which is a
-  change to `prescribe`'s API of its own.
+- **Goal seek and a target ROAS.** A target on a known function of states and levers, such as
+  revenue over spend in a window, has no expression in `prescribe`: every target and constraint is
+  a logged column modelled as a state. It needs a known output map, which is a change to
+  `prescribe`'s API of its own.
