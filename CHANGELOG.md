@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-30
+
 ### Added
 
 - **A check on what the logger read** (*experimental*, ADR 0028). `prescribe` asks the panel it
@@ -35,6 +37,12 @@ still change).
     mean error stayed within 0.71 of its standard error and the interval still covered. One that
     kept half its last incentive was flagged too, and the interval at `model_error=0` covered
     91.2%.
+  - **What a flag buys against a wrong graph** (causaldyn-bench's Track Q, nine worlds of 200
+    panels). Its size there was 0.046 over 1600 panels planned on the true graph. Read as a stop,
+    it removed silent failures beyond chance on one error of eight: a persistent input the graph
+    omits, which the lever's own past carries. It does not see the same input drawn afresh, since it
+    tests only the columns the graph names, a mediator the graph makes a parent of the lever, or a
+    collider with a latent parent; and where it flags a harmless error it refuses sound plans.
 
 - **`chc.dlm`: a discount dynamic linear model** (*experimental*, ADR 0022). West and Harrison's
   model, with blocks for a level or trend (`Polynomial`), Fourier seasonality over a period that
@@ -3891,6 +3899,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.9.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.9.0
 [0.8.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.8.0
 [0.7.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.7.0
 [0.6.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.6.0
