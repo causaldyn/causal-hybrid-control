@@ -10,15 +10,16 @@ permissions:
 
 jobs:
   # Matrixed like `test`, and for a reason ruff alone would not justify: with the floor at 3.11 the
-  # resolver forks, so `ty` reads numpy 2.4.6's stubs below 3.12 and 2.5.1's at or above it. The two
+  # resolver forks, so `ty` reads numpy 2.4.6's stubs below 3.12 and 2.5's at or above it. The two
   # disagree about what is well-typed, and a single-version lint job would let whichever half a
-  # developer's own interpreter is not report clean right up to the push.
+  # developer's own interpreter is not report clean right up to the push. A free-threaded build
+  # resolves as its twin with the GIL does -- no marker tells the two apart -- so it adds no leg here.
   lint:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install uv
@@ -34,14 +35,23 @@ jobs:
       - name: Format check
         run: uv run ruff format --check .
       - name: Type check
-        run: uv run ty check
+        run: uv run ty check --python-version ${{ matrix.python-version }}
 
+  # The free-threaded legs leave out what publishes no free-threaded wheel -- polars' runtime is
+  # abi3, which such a build cannot load, and diff-diff builds for CPython with the GIL only -- since
+  # uv.lock cannot: PEP 508 has no marker for the build. The tests that need either skip without it,
+  # and `--no-sync` keeps `uv run` from installing them again.
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        include:
+          - python-version: "3.14t"
+            without: --no-install-package polars --no-install-package polars-runtime-32 --no-install-package diff-diff
+          - python-version: "3.15t"
+            without: --no-install-package polars --no-install-package polars-runtime-32
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install uv
@@ -49,9 +59,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Sync dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev ${{ matrix.without }}
       - name: Tests
-        run: uv run pytest
+        run: uv run --no-sync pytest
 
   # The formal claims are gated like the Python ones: every docstring that cites a Rocq lemma is only
   # as good as the file still compiling. Pinned to 9.2 because the proofs use the post-rename

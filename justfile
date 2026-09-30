@@ -5,11 +5,23 @@
 # commands directly rather than through `just`, so that a runner needs no extra tooling -- if a
 # recipe below and ci.yml ever disagree, ci.yml is the one that ships.
 
+# JAX's build for this machine's accelerator, as the pyproject extra that installs it: CUDA 13
+# where the NVIDIA driver is 580 or newer and the GPU of compute capability 7.5 or newer, CUDA 12
+# from driver 525, none otherwise. `sync` and `test` install it into `.venv`; CI never does.
+# Override with `just accelerator=cuda12 test`, or `just accelerator= test` for none.
+accelerator := `timeout 10 nvidia-smi --query-gpu=driver_version,compute_cap --format=csv,noheader 2>/dev/null | awk -F', ' 'NR == 1 { if ($1 + 0 >= 580 && $2 + 0 >= 7.5) print "cuda13"; else if ($1 + 0 >= 525) print "cuda12" }'`
+extra := if accelerator == "" { "" } else { "--extra " + accelerator }
+
 default:
     @just --list
 
 # The Python ladder, cheapest first. Stops at the first failure.
-check: fmt lint types test
+check: fmt lint types test-cpu
+
+# `.venv` exactly as the lock has it, with this machine's accelerator build. A plain `uv sync`
+# removes the build again; `uv run` leaves it in place.
+sync:
+    uv sync {{extra}}
 
 # Everything, including the formal and symbolic gates. Minutes, not seconds.
 all: check types-matrix proofs assumptions derivations crosschecks
@@ -29,35 +41,33 @@ types:
 # over `workers` pytest-xdist processes, each file in one of them: a worker keeps the memory of
 # every program it compiled, so `--dist loadfile` compiles a file's programs and runs its module
 # fixtures once rather than in every worker, and the suite's memory barely depends on how many
-# workers share it (two ended at 6.0 and 5.6 GB). `just test 0` runs one process, as CI does; a
-# test that passes there and fails across workers reads another test's state. JAX_PLATFORMS pins
-# the CPU CI runs on, since jax takes the GPU unasked in an environment that has the `cuda` group.
+# workers share it (two ended at 6.0 and 5.6 GB). `just test-cpu 0` runs one process on the CPU,
+# as CI does; a test that passes there and fails across workers reads another test's state.
+# `test` runs on the device the accelerator build gives jax -- the GPU, where there is one, in the
+# float64 conftest.py sets -- and `test-cpu` on the CPU CI runs on, whatever is installed.
 test workers="4":
-    JAX_PLATFORMS=cpu uv run pytest -n {{workers}} --dist loadfile
+    uv run {{extra}} pytest -n {{workers}} --dist loadfile
 
-# The same suite on the GPU. The opt-in `cuda` group (jax's CUDA 13 wheels, Linux only) is not a
-# dependency of the package and CI never installs it, and it gets its own environment: in `.venv`
-# every CPU process would load the plugin's libraries, 0.4 GB each. conftest.py runs the suite in
-# float64. Without preallocation the workers share the card rather than each claiming most of it.
-test-gpu workers="4":
-    UV_PROJECT_ENVIRONMENT=.venv-cuda JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false uv run --group cuda pytest -n {{workers}} --dist loadfile
+test-cpu workers="4":
+    JAX_PLATFORMS=cpu uv run pytest -n {{workers}} --dist loadfile
 
 fix:
     uv run ruff check --fix .
     uv run ruff format .
 
 # `just types` checks one interpreter, and that is not enough here. uv.lock resolves jax 0.10.2
-# below Python 3.12 and 0.11.0 at or above it, and 0.11 declares `Config.jax_enable_x64` where
+# below Python 3.12 and 0.11 at or above it, and 0.11 declares `Config.jax_enable_x64` where
 # 0.10 injects it -- so a green local `ty` on 3.14 was a red CI job on 3.11, with the failure
 # living in a dependency's own class definition rather than in this code. This runs the same
-# matrix ci.yml does, each in its own environment so `.venv` is not swapped underneath you.
+# matrix ci.yml's `lint` does, each in its own environment so `.venv` is not swapped underneath
+# you; a free-threaded build resolves as its twin with the GIL does, so it adds no leg here.
 # Minutes, not seconds: run it before pushing anything that touches a dependency's API.
 types-matrix:
     #!/usr/bin/env bash
     set -euo pipefail
-    for v in 3.11 3.12 3.13 3.14; do
+    for v in 3.11 3.12 3.13 3.14 3.15; do
       echo "== ty on $v =="
-      UV_PROJECT_ENVIRONMENT=".venv-ty-$v" uv run --python "$v" --group dev ty check
+      UV_PROJECT_ENVIRONMENT=".venv-ty-$v" uv run --python "$v" --group dev ty check --python-version "$v"
     done
 
 # ── Rocq ──────────────────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ name = "causal-hybrid-control"
 version = "0.9.0"
 description = "Physics-structured dynamics with a learned causal residual, controlled by constrained optimal control / MPC."
 readme = "README.md"
-requires-python = ">=3.11,<3.15"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Ilia Gradina", email = "ilia.gradina@gmail.com" }]
 keywords = [
@@ -24,6 +24,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
+    "Environment :: GPU :: NVIDIA CUDA :: 12",
+    "Environment :: GPU :: NVIDIA CUDA :: 13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
@@ -43,8 +47,20 @@ dependencies = [
 # (chc.estimators) are lazy-import, bring-your-own-env instead.
 trees = ["lightgbm>=4", "catboost>=1.2", "scikit-learn>=1.4"]  # lightgbm's sklearn API needs sklearn
 # difference-in-differences inference for chc.did: Callaway-Sant'Anna's multiplier bootstrap and
-# Rambachan-Roth, lazily imported; below 4, since a major release may move the results it reads
-did = ["diff-diff>=3.12,<4"]
+# Rambachan-Roth, lazily imported; below 4, since a major release may move the results it reads.
+# diff-diff declares Python below 3.15, so on 3.15 the extra is empty and the inference raises.
+did = ["diff-diff>=3.12,<4 ; python_version < '3.15'"]
+# JAX's build for an accelerator, chosen at install time: `pip install "causal-hybrid-control[cuda13]"`.
+# Each extra is JAX's own of the same name, which pins jaxlib and the plugin to jax's version, so
+# the two cannot drift apart. The CUDA, ROCm, TPU and oneAPI builds are Linux wheels.
+cpu = ["jax[cpu]"]
+cuda13 = ["jax[cuda13]"]  # NVIDIA driver >= 580, GPUs of compute capability 7.5 or newer
+cuda12 = ["jax[cuda12]"]  # NVIDIA driver >= 525
+cuda13-local = ["jax[cuda13-local]"]  # CUDA 13 installed on the system rather than from wheels
+cuda12-local = ["jax[cuda12-local]"]
+rocm7-local = ["jax[rocm7-local]"]  # AMD GPUs; ROCm 7 installed on the system
+tpu = ["jax[tpu]"]  # Google Cloud TPU VMs
+oneapi = ["jax[oneapi] ; python_version >= '3.12'"]  # Intel GPUs; JAX has no oneAPI build for 3.11
 
 [project.urls]
 Homepage = "https://github.com/causaldyn/causal-hybrid-control"
@@ -64,8 +80,8 @@ dev = [
     "pandas>=2.0",
     "polars>=1.0",
     "pytest-xdist>=3.8.0",
-    # the did extra, so that CI runs chc.did's inference tests
-    "diff-diff>=3.12,<4",
+    # the did extra, so that CI runs chc.did's inference tests where diff-diff installs
+    "diff-diff>=3.12,<4 ; python_version < '3.15'",
 ]
 viz = ["matplotlib>=3.8"]
 notebooks = [
@@ -80,8 +96,19 @@ docs = [
     "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.6",
 ]
-cuda = [
-    "jax[cuda13] ; sys_platform == 'linux'",
+
+[tool.uv]
+# One accelerator per environment: two plugins would both claim the device.
+conflicts = [
+    [
+        { extra = "cuda13" },
+        { extra = "cuda12" },
+        { extra = "cuda13-local" },
+        { extra = "cuda12-local" },
+        { extra = "rocm7-local" },
+        { extra = "tpu" },
+        { extra = "oneapi" },
+    ],
 ]
 
 [build-system]
@@ -136,7 +163,12 @@ addopts = "-q"
 filterwarnings = ["error:chc\\.\\w+ leaves the top level:DeprecationWarning"]
 
 [tool.ty.environment]
-python-version = "3.11"
+# The interpreter `.python-version` pins, not the floor: ty reads the environment's stubs at this
+# version, and a target below the environment reads them on a branch they were never written for
+# -- at 3.11, numpy 2.5's, which requires 3.12, made ty 0.0.67 onwards reject `.min()` on a float64
+# array. ci.yml's lint legs and `just types-matrix` pass each interpreter's own version, the 3.11
+# leg holding the floor.
+python-version = "3.14"
 
 [tool.ty.src]
 include = ["src/chc"]

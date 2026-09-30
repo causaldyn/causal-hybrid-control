@@ -19,13 +19,14 @@ control**, not by argmax over a predictive score. `chc` is a small JAX library f
 pip install causal-hybrid-control    # or: uv add causal-hybrid-control
 ```
 
-JAX, Diffrax, Equinox, Optax, NumPy and SciPy come with it; Python 3.11–3.14.
+JAX, Diffrax, Equinox, Optax, NumPy and SciPy come with it; Python 3.11–3.15, the free-threaded
+3.14t and 3.15t included.
 
 **GPU, TPU and other hardware.** chc has no device-specific code: install JAX's build for your
-hardware beside it — `pip install causal-hybrid-control "jax[cuda13]"` on an NVIDIA GPU whose
-driver is 580 or newer — and JAX places the arrays there. [Installation](installation.md) lists
-every build JAX offers, CUDA 12 and 13, TPU, ROCm, conda and nightlies, and what changes for chc on
-an accelerator.
+hardware through the extra of the same name — `pip install "causal-hybrid-control[cuda13]"` on an
+NVIDIA GPU whose driver is 580 or newer — and JAX places the arrays there.
+[Installation](installation.md) lists every extra, CUDA 12 and 13, TPU, ROCm and oneAPI, JAX's conda
+and nightly builds, and what changes for chc on an accelerator.
 
 ## Where to go next
 

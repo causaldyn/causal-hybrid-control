@@ -28,7 +28,8 @@ Outcomes = NDArray[np.float64]
 Groups = NDArray[np.int64]
 
 _DID_HINT = (
-    "callaway_santanna_inference needs the 'did' extra: pip install 'causal-hybrid-control[did]'."
+    "callaway_santanna_inference needs the 'did' extra: pip install 'causal-hybrid-control[did]'. "
+    "Its diff-diff supports Python below 3.15, where the extra installs nothing."
 )
 # diff-diff warns of the cells a design leaves empty: the base period's, which is zero by
 # construction, and those with no clean control. callaway_santanna leaves both out without a word.

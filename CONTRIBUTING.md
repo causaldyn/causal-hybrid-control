@@ -6,14 +6,16 @@ before a large change, so we do not both build the same thing differently.
 ## Setup
 
 ```bash
-uv sync --group dev
+just sync    # or: uv sync, which leaves out the accelerator build below
 ```
 
-Python 3.11–3.14. `uv.lock` is committed and authoritative — run everything through `uv run`, never a
+Python 3.11–3.15. `uv.lock` is committed and authoritative — run everything through `uv run`, never a
 bare `python` / `pytest` / `ruff`, or you are testing a different dependency set from CI.
 
-CI runs CPython's default build. Where uv also manages a free-threaded 3.14t, it can take that for
-`.python-version`'s `3.14`; `uv sync --python 3.14+gil --group dev` makes the environment CI's.
+CI tests CPython's default build on every version and the free-threaded one on 3.14 and 3.15, where
+polars and diff-diff publish no wheels and their tests skip. The development environment is the
+default build, but where uv manages a free-threaded 3.14t and no default 3.14, it can take the 3.14t
+for `.python-version`'s `3.14`: `uv python install 3.14` gives it the default build to take.
 
 ## The gates
 
@@ -22,8 +24,8 @@ CI runs exactly these, and a PR is expected to pass all of them locally first:
 ```bash
 uv run ruff check .
 uv run ruff format --check .
-uv run ty check
-uv run pytest
+uv run ty check    # CI: --python-version of each leg; `just types-matrix` runs them all
+uv run pytest      # CI: on the CPU; `just test-cpu`
 ```
 
 The formal proofs are gated too. `proofs/*.v` must compile under **Rocq 9.2** (pinned: the proofs use
@@ -48,13 +50,16 @@ just proofs-mathcomp && just assumptions-mathcomp
 `uv run python` script runs float32. Numbers calibrated in one regime can fail in the other — if you
 quote a measurement anywhere, produce it under the suite's settings.
 
-The suite runs on the CPU, as on CI. `just test` spreads it over four worker processes and
-`just test 0` keeps CI's single process; either way it needs about 12 GB, since a process keeps
-every program it compiled. The
-`cuda` dependency group holds jax's CUDA 13 wheels (Linux only); it is not a dependency of the
-package and CI never installs it. `just test-gpu` installs it into its own environment,
-`.venv-cuda`, and runs the suite on the GPU there. In any environment that has it, jax takes the GPU
-without being asked, so pin `JAX_PLATFORMS=cpu` for a number meant to match CI.
+`just test` runs the suite over four worker processes on this machine's accelerator: it installs
+the extra JAX's build for it needs into `.venv` -- `cuda13` where `nvidia-smi` reports a driver of 580
+or newer and a GPU of compute capability 7.5 or newer, `cuda12` from driver 525 -- and jax takes the
+GPU. `just accelerator=cuda12 test` names another build, and `just accelerator= test` none.
+`just test-cpu` pins the CPU CI runs on, whatever is installed, and `just check` runs it;
+`just test-cpu 0` keeps CI's single process. Either way the suite needs about 12 GB of host memory,
+since a process keeps every program it compiled, and with a CUDA build installed every process loads
+its libraries, about 0.4 GB each, on the CPU too. A plain `uv sync` removes the build and `uv run`
+keeps it; wherever it is installed, jax takes the GPU without being asked, so pin
+`JAX_PLATFORMS=cpu` for a number meant to match CI.
 
 ## What a change should look like
 

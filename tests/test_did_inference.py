@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from dataclasses import replace
 from typing import Literal
@@ -14,6 +15,10 @@ from chc.did import GroupTimeATT, callaway_santanna, callaway_santanna_inference
 
 N_PERIODS = 8
 Z = 1.959963984540054
+# the did extra installs nothing on Python 3.15, and diff-diff ships no free-threaded wheels
+needs_diff_diff = pytest.mark.skipif(
+    importlib.util.find_spec("diff_diff") is None, reason="needs the did extra"
+)
 
 
 def _effect(g: int, t: int) -> float:
@@ -51,6 +56,7 @@ def _overall(cohorts: tuple[int, ...]) -> float:
     return sum(_effect(g, t) for g, t in cells) / len(cells)
 
 
+@needs_diff_diff
 @pytest.mark.parametrize("control", ["notyet", "never"])
 def test_the_inference_is_centred_on_callaway_santannas_own_estimates(
     control: Literal["notyet", "never"],
@@ -63,6 +69,7 @@ def test_the_inference_is_centred_on_callaway_santannas_own_estimates(
     assert set(inference.band) == set(inference.se)
 
 
+@needs_diff_diff
 def test_units_treated_from_the_first_period_change_nothing() -> None:
     """They have no base period, so no cell and no place among the controls; R's did drops them."""
     outcomes, group = _panel(10)
@@ -78,6 +85,7 @@ def test_units_treated_from_the_first_period_change_nothing() -> None:
     )
 
 
+@needs_diff_diff
 def test_a_panel_without_never_treated_units_leaves_its_late_cells_out_in_both() -> None:
     outcomes, group = _panel(1, cohorts=(3, 5, 7))
     inference = callaway_santanna_inference(outcomes, group, draws=199)
@@ -85,6 +93,7 @@ def test_a_panel_without_never_treated_units_leaves_its_late_cells_out_in_both()
     assert all(np.isfinite(s) for s in inference.se.values())
 
 
+@needs_diff_diff
 def test_the_uniform_band_is_wider_than_every_pointwise_interval() -> None:
     inference = callaway_santanna_inference(*_panel(2), draws=499)
     for e, (lo, hi) in inference.band.items():
@@ -93,6 +102,7 @@ def test_the_uniform_band_is_wider_than_every_pointwise_interval() -> None:
         assert hi > centre + Z * inference.se[e]
 
 
+@needs_diff_diff
 def test_a_seed_reproduces_the_bootstrap_and_another_moves_it() -> None:
     outcomes, group = _panel(3)
     first = callaway_santanna_inference(outcomes, group, draws=199, seed=7)
@@ -106,6 +116,7 @@ def test_a_seed_reproduces_the_bootstrap_and_another_moves_it() -> None:
     assert first.se != other.se
 
 
+@needs_diff_diff
 def test_the_standard_error_is_the_estimates_spread_over_panels() -> None:
     """(estimate - truth) / se is standard normal over panels: its square averages one.
 
@@ -119,6 +130,7 @@ def test_the_standard_error_is_the_estimates_spread_over_panels() -> None:
     assert 0.6 < float(np.mean(squares)) < 1.6
 
 
+@needs_diff_diff
 def test_diff_diffs_estimates_must_be_callaway_santannas(monkeypatch: pytest.MonkeyPatch) -> None:
     def shifted(
         outcomes: np.ndarray,
@@ -163,12 +175,14 @@ def test_without_the_extra_it_names_the_extra(monkeypatch: pytest.MonkeyPatch) -
         callaway_santanna_inference(*_panel(8))
 
 
+@needs_diff_diff
 def test_the_robust_interval_widens_as_the_trends_may_part_further() -> None:
     inference = callaway_santanna_inference(*_panel(12, per=100), draws=199)
     narrow, wider, widest = (inference.robust_interval(m) for m in (0.0, 0.05, 0.2))
     assert widest[0] < wider[0] < narrow[0] < narrow[1] < wider[1] < widest[1]
 
 
+@needs_diff_diff
 def test_a_linear_trend_the_event_study_misses_is_inside_the_robust_interval() -> None:
     """The treated drift 0.15 a period away from the comparison: the event study's average
     after treatment is biased by 0.15 (e + 1) averaged over e, and ``m = 0`` extrapolates the
@@ -186,6 +200,7 @@ def test_a_linear_trend_the_event_study_misses_is_inside_the_robust_interval() -
     assert lo <= truth <= hi
 
 
+@needs_diff_diff
 def test_the_robust_interval_is_rs_honestdid_on_the_same_panel() -> None:
     """R's did 2.5.1 and HonestDiD 0.2.8 on this panel: the smoothness interval for the event
     study's average effect after treatment, from did's event study and the covariance of its
@@ -196,6 +211,7 @@ def test_the_robust_interval_is_rs_honestdid_on_the_same_panel() -> None:
         np.testing.assert_allclose(inference.robust_interval(m), expected, atol=5e-3)
 
 
+@needs_diff_diff
 def test_the_robust_interval_refuses_a_negative_bound() -> None:
     inference = callaway_santanna_inference(*_panel(14), draws=199)
     with pytest.raises(ValueError, match="m must be at least 0"):

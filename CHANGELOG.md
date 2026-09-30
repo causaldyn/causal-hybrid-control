@@ -150,6 +150,20 @@ still change).
   without the stop. Back in shadow, the heavy-tailed null was held for harm in 5 of 800 runs,
   against 1, within `alpha_harm`. A candidate exactly `delta + min_effect` better, read after each
   of 2000 decisions, was stopped on 1 of 100 paths.
+- **Accelerator extras** (ADR 0036). `pip install "causal-hybrid-control[cuda13]"` installs chc
+  with JAX's CUDA 13 build; `cpu`, `cuda12`, `cuda13-local`, `cuda12-local`, `rocm7-local`, `tpu`
+  and `oneapi` name the others. Each is JAX's own extra of the same name, which pins `jaxlib` and
+  the plugin to jax's version, and `oneapi` needs Python 3.12, since the jax the lock resolves on
+  3.11 has no oneAPI build. The installation page installs through them; JAX's extra beside chc
+  works as before. pip and uv install an extra that does not exist with a warning alone, so
+  `tests/test_accelerator_extras.py` fails when one here names an extra the installed jax does not
+  provide. Three mutations caught.
+- **Python 3.15, and the free-threaded 3.14t and 3.15t** (ADR 0036). `requires-python` loses its
+  cap below 3.15. CI's test matrix gains the three, its lint matrix 3.15. On 3.15 the `did` extra
+  installs nothing, since diff-diff declares Python below 3.15, and `callaway_santanna_inference`
+  says so when it raises; the `trees` extra's CatBoost has no wheel there. The free-threaded legs
+  go without polars and diff-diff, which publish no free-threaded wheels, and the tests that need
+  either skip.
 
 ### Changed
 
@@ -165,6 +179,20 @@ still change).
   `Γ`, not Rosenbaum's, which lies between that and its square, and the `Γ` a known-null outcome
   needs rises from 1 with the confounder's pull on the outcome to that MSM `Γ` when the outcome is
   the confounder.
+- **`just test` runs on the machine's accelerator.** It installs into `.venv` the extra the NVIDIA
+  driver and GPU call for -- `cuda13` from driver 580 on a GPU of compute capability 7.5 or newer,
+  `cuda12` from driver 525 -- and the suite runs on the GPU. `just sync` builds `.venv` the same
+  way; `just test-cpu`, which `just check` runs, pins the CPU CI tests on. The `cuda` dependency
+  group, `.venv-cuda` and `just test-gpu` are gone. `tests/conftest.py` turns JAX's preallocation
+  off, so the workers share the card, and computes float32 products in float32 rather than
+  TensorFloat-32.
+- **`ty` checks each interpreter at its own version.** `[tool.ty.environment] python-version` was
+  3.11, which had ty read the development environment's NumPy 2.5 stubs, written for 3.12 and
+  later, on a branch never written for them: from ty 0.0.67 it rejected `.min()` on a float64
+  array, eight times. It is now 3.14, `.python-version`'s, and CI's lint legs and
+  `just types-matrix` pass their own; the 3.11 leg holds the floor.
+- **Dependencies relocked at their latest**: jax 0.11.2 (0.10.2 on 3.11), NumPy 2.5.3 (2.4.6),
+  SciPy 1.18.1 (1.17.1), ruff 0.16.9, ty 0.0.84.
 
 ## [0.9.0] — 2026-09-30
 

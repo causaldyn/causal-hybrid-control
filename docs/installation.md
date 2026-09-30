@@ -4,14 +4,28 @@
 pip install causal-hybrid-control    # or: uv add causal-hybrid-control
 ```
 
-This brings JAX's CPU build with Diffrax, Equinox, Optax, NumPy and SciPy; Python 3.11–3.14.
+This brings JAX's CPU build with Diffrax, Equinox, Optax, NumPy and SciPy, on Python 3.11–3.15,
+the free-threaded 3.14t and 3.15t included. Two optional extras reach less far. The `did` extra's
+diff-diff declares Python below 3.15, so there the extra installs nothing, and the `trees` extra's
+CatBoost has no wheel for 3.15; neither publishes a free-threaded one.
 
 `chc` has no device-specific code. Its arrays go wherever JAX puts them, so running it on an
-accelerator means installing JAX's build for that hardware beside it. There is no `chc[cuda]`
-extra, on purpose: every JAX build for an accelerator is installed through JAX's own extras, and
-an extra here would only repeat one of them. This page follows JAX's
+accelerator means installing JAX's build for that hardware, and `chc` carries JAX's extras under
+their own names: `pip install "causal-hybrid-control[cuda13]"` installs `chc` with
+`jax[cuda13]`, which pins `jaxlib` and the CUDA plugin to jax's own version. Install one: two
+plugins would both claim the device. This page follows JAX's
 [installation guide](https://docs.jax.dev/en/latest/installation.html) as of JAX 0.11; where the two
 differ, JAX's guide is the authority.
+
+| Extra | Hardware | Needs |
+|---|---|---|
+| `cpu` | any | nothing: the plain install is this build; the extra lets a script name one per machine |
+| `cuda13` | NVIDIA GPU of compute capability 7.5 or newer | driver 580 or newer |
+| `cuda12` | NVIDIA GPU of compute capability 5.2 or newer | driver 525 or newer |
+| `cuda13-local`, `cuda12-local` | NVIDIA GPU | CUDA, cuDNN and NCCL installed on the system |
+| `rocm7-local` | AMD GPU | ROCm 7 installed on the system |
+| `tpu` | Google Cloud TPU | a TPU VM |
+| `oneapi` | Intel GPU, experimental | Python 3.12 or newer |
 
 ## Which build for which hardware
 
@@ -40,26 +54,28 @@ The route JAX recommends: the wheels carry CUDA, cuDNN and NCCL themselves, and 
 comes from the system (`nvidia-smi` prints its version).
 
 ```bash
-pip install causal-hybrid-control "jax[cuda13]"   # driver >= 580, GPUs of SM 7.5 or newer
-pip install causal-hybrid-control "jax[cuda12]"   # driver >= 525, GPUs of SM 5.2 or newer
+pip install "causal-hybrid-control[cuda13]"   # driver >= 580, GPUs of SM 7.5 or newer
+pip install "causal-hybrid-control[cuda12]"   # driver >= 525, GPUs of SM 5.2 or newer
 ```
 
-JAX recommends CUDA 13 and plans to drop CUDA 12. With uv, `uv add causal-hybrid-control "jax[cuda13]"`. A project that must also resolve on macOS or
-Windows can keep the CUDA build to Linux with a marker:
+JAX recommends CUDA 13 and plans to drop CUDA 12. With uv, `uv add "causal-hybrid-control[cuda13]"`.
+The CUDA wheels are Linux-only, so a project that must also resolve on macOS or Windows adds `chc`
+plainly and keeps JAX's CUDA build to Linux with a marker:
 
 ```bash
-uv add "jax[cuda13]; sys_platform == 'linux'"
+uv add causal-hybrid-control "jax[cuda13]; sys_platform == 'linux'"
 ```
 
 - **Leave `LD_LIBRARY_PATH` unset.** It can override the CUDA libraries the wheels bring.
-- **Upgrade through the extra**, `pip install --upgrade "jax[cuda13]"`. The extra pins the CUDA
-  plugin and `jaxlib` to jax's own version, and upgrading `jax` alone leaves the plugin behind.
+- **Upgrade through the extra**, `pip install --upgrade "causal-hybrid-control[cuda13]"` or
+  `pip install --upgrade "jax[cuda13]"`. The extra pins the CUDA plugin and `jaxlib` to jax's own
+  version, and upgrading `jax` alone leaves the plugin behind.
 
 ### CUDA installed on the system
 
 ```bash
-pip install causal-hybrid-control "jax[cuda13-local]"   # CUDA >= 13.0, cuDNN >= 9.12 and < 10.0, NCCL >= 2.18
-pip install causal-hybrid-control "jax[cuda12-local]"   # CUDA >= 12.1, cuDNN >= 9.10.2 and < 10.0, NCCL >= 2.18
+pip install "causal-hybrid-control[cuda13-local]"   # CUDA >= 13.0, cuDNN >= 9.12 and < 10.0, NCCL >= 2.18
+pip install "causal-hybrid-control[cuda12-local]"   # CUDA >= 12.1, cuDNN >= 9.10.2 and < 10.0, NCCL >= 2.18
 ```
 
 Here JAX finds the CUDA libraries through `LD_LIBRARY_PATH` and `ptxas` and `nvlink` through
@@ -76,7 +92,7 @@ JAX's guide warns that they can fail silently.
 ## Google Cloud TPU
 
 ```bash
-pip install causal-hybrid-control "jax[tpu]"
+pip install "causal-hybrid-control[tpu]"
 ```
 
 ## AMD GPU
@@ -88,7 +104,7 @@ the extra brings only JAX's ROCm plugin, built against one ROCm version, and AMD
 says which. Then:
 
 ```bash
-pip install causal-hybrid-control "jax[rocm7-local]"
+pip install "causal-hybrid-control[rocm7-local]"
 ```
 
 AMD also publishes a container, `docker pull rocm/jax:latest`. WSL2 is experimental.
@@ -100,9 +116,14 @@ the Apple GPU experimental.
 
 ## Intel GPU
 
-Experimental, through Intel's OneAPI plugin: either its
-[pip installation](https://github.com/intel/intel-extension-for-openxla/blob/main/docs/acc_jax.md)
-or [Intel's XLA container](https://hub.docker.com/r/intel/intel-optimized-xla).
+Experimental, through Intel's OneAPI plugin, on Python 3.12 or newer:
+
+```bash
+pip install "causal-hybrid-control[oneapi]"
+```
+
+Intel's [installation notes](https://github.com/intel/intel-extension-for-openxla/blob/main/docs/acc_jax.md)
+and [XLA container](https://hub.docker.com/r/intel/intel-optimized-xla) cover the driver side.
 
 ## conda-forge
 
@@ -164,7 +185,7 @@ python -c "import jax; print(jax.devices())"    # [CudaDevice(id=0)] on a workin
 
 ## Developing `chc` on a GPU
 
-The repository keeps JAX's CUDA 13 wheels in an opt-in dependency group, `cuda`, that the package
-does not depend on and CI never installs. `just test-gpu` runs the test suite on the GPU from its own
-environment, `.venv-cuda`; see
+In a checkout, `just sync` and `just test` install the extra this machine's NVIDIA driver and GPU
+call for into `.venv`, and the suite runs on the GPU; `just test-cpu` runs it on the CPU, as CI
+does. CI installs no accelerator build. See
 [CONTRIBUTING](https://github.com/causaldyn/causal-hybrid-control/blob/main/CONTRIBUTING.md).

@@ -62,17 +62,16 @@ CIs (predictive regret `13734.15 [13732.55, 13735.31]`), and
 ## Install
 
 ```bash
-uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.11–3.14)
+uv sync            # JAX + Diffrax + Equinox + Optax + NumPy + SciPy (Python 3.11–3.15)
 uv run pytest      # the tigramite and lightgbm tests skip: bring-your-own-env
 ```
 
 **GPU, TPU and other hardware.** chc has no device-specific code: install JAX's build for your
-hardware beside it -- `pip install causal-hybrid-control "jax[cuda13]"` on an NVIDIA GPU whose
-driver is 580 or newer -- and JAX places the arrays there. The
-[installation page](docs/installation.md) lists every build JAX offers, CUDA 12 and 13, TPU, ROCm,
-conda and nightlies, and what changes for chc on an accelerator. In a development checkout,
-`just test-gpu` runs the suite on the GPU from the opt-in `cuda` dependency group, in its own
-environment.
+hardware through the extra of the same name -- `pip install "causal-hybrid-control[cuda13]"` on an
+NVIDIA GPU whose driver is 580 or newer -- and JAX places the arrays there. The
+[installation page](docs/installation.md) lists every extra, CUDA 12 and 13, TPU, ROCm and oneAPI,
+JAX's conda and nightly builds, and what changes for chc on an accelerator. In a development
+checkout, `just test` installs the build this machine's GPU calls for and runs the suite on it.
 
 ## Quickstart
 
@@ -280,7 +279,7 @@ The release-by-release record, scope corrections included, is in [`CHANGELOG.md`
 ## Status
 
 Early (`v0.9.0`), single-author, research code (`just counts` prints the test and proof counts;
-Python 3.11–3.14, astral `ruff` + `ty`).
+Python 3.11–3.15 with the free-threaded 3.14t and 3.15t, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
 Callaway–Sant'Anna staggered DiD, augmented synthetic control, R-learner CATE, E-values; **calibrated**
