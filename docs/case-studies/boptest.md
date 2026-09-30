@@ -143,3 +143,83 @@ Results:
 Code:
 [`causaldyn_bench/boptest_prescribe.py`](https://github.com/causaldyn/causaldyn-bench/blob/main/src/causaldyn_bench/boptest_prescribe.py),
 through [`prescribe`](../api/decision.md).
+
+## The rerun, with the band, the weather and the schedule stated
+
+From 0.7.0 `prescribe` states all three things the first run could not. A second run asked the same
+question with them stated. It was pre-registered the same way, on the same six logs and weeks, with
+the library at `f3f9eae`, in float64:
+
+```python
+prescribe(
+    panel,
+    levers=[Lever("modulation", 0, 1, unit_cost=0)],
+    target=Target("zone", value=lower[1:] + offset),
+    constraints=[Constraint("zone", hi=min(upper[1:]))],
+    hold_constraints=True,
+    drivers=[Driver("outdoor", outdoor), Driver("solar", solar)],
+    horizon=16,
+    dt=0.5,
+    tolerance=0.5,
+    x0=[zone],
+    adjustment=graph,
+)  # the naive arm passes adjustment=()
+```
+
+- The target now follows the lower comfort bound step by step, plus an offset swept from +1 to
+  +2.5 K.
+- The band's upper edge is held inside the solve.
+- BOPTEST's weather forecast enters the drift. The fit puts every driver into the channel's
+  nuisance covariates, whatever `adjustment` says, so both arms are adjusted for the weather. The
+  arms now differ only in `bound`: the logging controller's comfort feedback, and the occupancy
+  behind it.
+
+| replicate | baseline discomfort | baseline energy | adjusted energy | naive energy | excess |
+|---|---|---|---|---|---|
+| 0 | 5.1359 | 1.7260 | 1.4627 | 1.4627 | -0.0000 |
+| 1 | 3.4514 | 1.8867 | -- | -- | -- |
+| 2 | 5.9027 | 1.7812 | 1.5339 | 1.5429 | +0.0059 |
+| 3 | 5.6058 | 1.6424 | 1.4973 | 1.4967 | -0.0004 |
+| 4 | 4.2318 | 1.6473 | 1.3024 | 1.3414 | +0.0299 |
+| 5 | 3.7969 | 1.4327 | -- | -- | -- |
+
+The mean excess is +0.0088, with a 95% t-interval of [-0.0140, +0.0317] over the four replicates
+where both arms have a reading, so the decision reads INCONCLUSIVE. **This verdict does not stand
+either**:
+
+- V1: in replicates 1 and 5, neither arm got as comfortable as the baseline at any of the offsets.
+  The pilot had ended them at its own least discomfort, and these weeks needed more.
+- V2: counting only calls made from inside the band, the iteration budget stopped up to 7.1% of
+  an adjusted week's calls and 5.5% of a naive week's, against a limit of 1%.
+
+Beside the gate, not gated: at the baseline's discomfort, the adjusted arm needed 14.73% less energy
+than the baseline (95% t-interval [6.81%, 22.65%]) and the naive arm 14.02% less ([7.58%, 20.46%]).
+Each is over the four replicates where it has a reading.
+
+**What the held band did.** The naive arm, now adjusted for the weather, no longer ran away: in no
+week did the zone end a step above the held edge more than 3.3% of the time.
+
+The adjusted arm ran away once, in replicate 1 at the two highest offsets. There its fitted
+channel, `3.579 - 0.1505 T`, crosses zero at 23.78 C. It is the only one of the twelve fits under
+which more heat cools a zone inside the band. The zone ended above the edge on 17.6% and 24.4% of
+steps, and discomfort reached 114 and 194 K h.
+
+The band holds the fitted model's zone inside it, and under that model more heat cools a zone above
+23.78 C. Once the plant's zone is above the edge, no call can meet the barrier. So a held
+constraint is a statement about the model, and it protects the plant only where the model's
+channel has the right sign.
+
+**What the certificate said.** The adjusted plans were trusted for between none and two steps,
+where the first run's were trusted for one step on every call. The tube one step ahead averaged
+0.31 K, and the plant stayed inside it on 98.1% of steps, against 95.9% in the first run. The tube
+now prices a standard error that is robust to noise moving with the state. The naive plans were
+trusted for no step, as before.
+
+Scope: the same six replicates, the same shared log days, and the same zero lever price as above.
+Neither verdict stands, so this page makes no claim about what adjustment costs or saves on this
+building.
+
+Results:
+[`results/boptest_rerun/results.md`](https://github.com/causaldyn/causaldyn-bench/blob/main/results/boptest_rerun/results.md).
+Code:
+[`causaldyn_bench/boptest_rerun.py`](https://github.com/causaldyn/causaldyn-bench/blob/main/src/causaldyn_bench/boptest_rerun.py).
