@@ -188,6 +188,21 @@ still change).
   since in `.venv` the plugin would load its CUDA libraries into every CPU process. How much time
   the workers save has not been measured on a quiet machine.
 
+### Fixed
+
+- **A replanning loop that holds a bound compiles once.** With `hold_constraints=True`, `prescribe`
+  built each bound's margin as a closure, and the barrier made of them was a static field of the
+  model the held solve compiles. The compile key therefore changed at every call, even with the
+  same bounds, and every call compiled the barrier's check and the penalised descent again: two
+  programs and about 4.5 MB a call, which the process kept. A week of half-hour calls on the
+  BOPTEST building grew a process by about 1.5 GB. A margin is now a module whose bound is an
+  array, so a bound that moves between calls is a value, not a program.
+  - On a surrogate of that building, from the 12th call to the 144th, the loop compiled nothing
+    and its resident memory rose 14 MB. Before, it compiled 264 programs and grew 600 MB.
+  - All 144 schedules came out the same, bit for bit, in float64: 2304 actions, 305 of them
+    inside the box.
+  - A test counts the programs compiled by two calls after a first, and fails on the closures.
+
 ### Notes
 
 - **What 0.8.0's robust `channel_error` costs, now timed on a quiet machine.** 0.8.0 shipped it

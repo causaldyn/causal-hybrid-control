@@ -35,6 +35,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
@@ -1200,12 +1201,10 @@ def _cost(
     )
 
 
-def _margins(
-    states: tuple[str, ...], constraints: Sequence[Constraint]
-) -> tuple[Callable[[Array], Array], ...]:
+def _margins(states: tuple[str, ...], constraints: Sequence[Constraint]) -> tuple[_Margin, ...]:
     """An affine margin per finite bound, ``x - lo`` then ``hi - x``, in constraint order."""
     index = {name: position for position, name in enumerate(states)}
-    margins: list[Callable[[Array], Array]] = []
+    margins: list[_Margin] = []
     for constraint in constraints:
         position = index[constraint.state]
         if constraint.lo is not None:
@@ -1215,11 +1214,28 @@ def _margins(
     return tuple(margins)
 
 
-def _margin(position: int, bound: float, sign: float) -> Callable[[Array], Array]:
-    return lambda x: sign * (x[position] - bound)
+class _Margin(eqx.Module):
+    """``sign (x[position] - bound)``: one bound's margin, safe where it is ``>= 0``.
+
+    A module and not a closure over the bound: the held solve's compiled programs take the barrier
+    as an argument, and a closure would be a new static one at every call, so a replanning loop
+    would compile its programs again at every call and keep them all. As an array, a bound that
+    moves between calls is a value, not a program.
+    """
+
+    position: int = eqx.field(static=True)
+    sign: float = eqx.field(static=True)
+    bound: Array
+
+    def __call__(self, x: Array) -> Array:
+        return self.sign * (x[self.position] - self.bound)
 
 
-def _barrier(margins: Sequence[Callable[[Array], Array]]) -> Callable[[Array], Array]:
+def _margin(position: int, bound: float, sign: float) -> _Margin:
+    return _Margin(position, sign, jnp.asarray(bound, dtype=float))
+
+
+class _Barrier(eqx.Module):
     """``h(x) = min_j m_j(x)``, safe where ``h >= 0``: the one barrier a held solve takes.
 
     Where margins tie the minimum has no gradient, and the solve reads one anyway: the first tied
@@ -1228,11 +1244,15 @@ def _barrier(margins: Sequence[Callable[[Array], Array]]) -> Callable[[Array], A
     nothing there. The audit does not read this gradient; :func:`_certify` checks every tied margin.
     """
 
-    def barrier(x: Array) -> Array:
-        stacked = jnp.stack([margin(x) for margin in margins])
+    margins: tuple[_Margin, ...]
+
+    def __call__(self, x: Array) -> Array:
+        stacked = jnp.stack([margin(x) for margin in self.margins])
         return stacked[jnp.argmin(stacked)]
 
-    return barrier
+
+def _barrier(margins: Sequence[_Margin]) -> _Barrier:
+    return _Barrier(tuple(margins))
 
 
 def _certify(

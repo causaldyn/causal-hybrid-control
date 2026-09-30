@@ -896,7 +896,9 @@ class _HeldBarrier(eqx.Module):
     """
 
     model: Dynamics
-    barrier: Callable[[Array], Array] = eqx.field(static=True)
+    # not static: a barrier that is a module keeps its arrays traced, so a replanning loop whose
+    # bounds move compiles once; filter_jit keys on a plain function either way
+    barrier: Callable[[Array], Array]
     dt: float = eqx.field(static=True)
     alpha: float = eqx.field(static=True)
     delta: float = eqx.field(static=True)

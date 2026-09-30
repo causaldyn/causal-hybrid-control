@@ -572,6 +572,50 @@ def test_held_constraints_move_the_schedule_rather_than_fail_its_audit(
     assert getattr(plan, "constraints_held", None) is True
 
 
+def test_a_replanning_loop_compiles_nothing_after_its_first_held_prescription() -> None:
+    """A receding-horizon loop calls ``prescribe`` from every state it reaches, and a held bound
+    may move between calls, as a comfort band's edge does. The bound reaches the held solve as an
+    array, so the calls after the first compile nothing; closed over, it compiled the barrier's
+    programs afresh at every call, and a week of half-hour calls held gigabytes of them."""
+    panel = _panel()
+    graph = CausalGraph.from_edges(EDGES)
+
+    def decide(bound: float) -> Prescription:
+        return prescribe(
+            panel,
+            levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+            target=Target("supply", value=1.0),
+            constraints=[Constraint("wait", lo=bound)],
+            hold_constraints=True,
+            adjustment=graph,
+            horizon=15,
+            dt=DT,
+            tolerance=0.5,
+        )
+
+    jax.clear_caches()
+    first = decide(-0.1)
+    compiled: list[str] = []
+
+    class Record(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.getMessage().startswith("Compiling "):
+                compiled.append(record.getMessage().split(" ")[1])
+
+    handler, logger = Record(), logging.getLogger("jax")
+    logger.addHandler(handler)
+    try:
+        with jax.log_compiles(True):
+            later = [decide(bound) for bound in (-0.12, -0.08)]
+    finally:
+        logger.removeHandler(handler)
+    assert compiled == []
+    for held, bound in zip([first, *later], (-0.1, -0.12, -0.08), strict=True):
+        assert held.plan is not None
+        assert held.certificate.barrier_certified_steps == 15
+        assert float(np.min(np.asarray(held.plan.trajectory)[:, 1])) >= bound - 1e-6
+
+
 def test_a_bound_on_the_target_is_held_on_its_own_coordinate() -> None:
     """L10: the steered state can be bounded as well as steered, and gains no second coordinate.
 
