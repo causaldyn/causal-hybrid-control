@@ -138,6 +138,7 @@ nav:
           - api/toeplitz.md
           - api/uncertainty.md
       - Experimental:
+          - api/allocation.md
           - api/benchmark.md
           - api/causal_bench.md
           - api/deep_galerkin.md

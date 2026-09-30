@@ -127,6 +127,16 @@ still change).
   81% at his; at ten times it covers 0.878, and 4 of the 500 fits raise rather than converge. On
   Meta at his noise it covers 0.918 (0.890-0.941), under the nominal, which the `F` cutoff
   promises exactly only for a model linear in its parameters.
+- **A budget allocated over channels, `chc.allocation`** (*experimental*, ADR 0034).
+  `allocate(channels, budget, periods, *, lower, upper, history=None)` spends a budget over
+  `periods` periods at one rate a period for each `chc.response.Channel`, each within its box, for
+  the most return. The history's adstock runs into the plan and the plan's runs on for each
+  kernel's length after it. Exact where every curve is concave, by bisection on the budget's price,
+  with a linear channel's jump spent to the budget exactly; an S-shaped curve is planned on its
+  envelope, and `Allocation.bound - Allocation.worth` bounds the plan's shortfall. The box has no
+  default. The tests hold the plan against SciPy's SLSQP, random plans, the worth's own slopes, a
+  closed form and a grid; causaldyn-bench's Track M v2 holds it against an oracle written without
+  it.
 
 ### Changed
 

@@ -40,10 +40,10 @@ The README's tier table names the stable and the experimental modules one by one
 
 Modules that exist to carry one research result, and modules built ahead of the release that
 verifies them: on a plant CHC did not write, or, for the marketplace plant `zones`, in the
-pre-registered study it is the plant of, for the discount model `dlm` and the lift fit `lift` on an
-external media-mix generator, for the gate `misspecification` on the zone plant, and for the
-response curves `response` in the plans they warm-start. They may change or be withdrawn in any
-release. Pin an exact version if you depend on one.
+pre-registered study it is the plant of, for the discount model `dlm`, the lift fit `lift` and the
+budget's split `allocation` on an external media-mix generator, for the gate `misspecification`
+on the zone plant, and for the response curves `response` in the plans they warm-start. They may
+change or be withdrawn in any release. Pin an exact version if you depend on one.
 
 Twenty-three entries in modules of other tiers are experimental on the same terms, for the same
 reason:
