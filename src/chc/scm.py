@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.optimize import nnls
 
 Outcomes = NDArray[np.float64]
 Vector = NDArray[np.float64]
@@ -35,24 +36,24 @@ class SyntheticControlResult:
     pre_rmspe: float  # pre-period root-mean-squared prediction error (smaller = better match)
 
 
-def _project_simplex(v: Vector) -> Vector:
-    """Euclidean projection onto the probability simplex ``{w >= 0, sum w = 1}`` (Duchi et al.)."""
-    u = np.sort(v)[::-1]
-    css = np.cumsum(u) - 1.0
-    rho = np.nonzero(u * np.arange(1, v.size + 1) > css)[0][-1]
-    return np.maximum(v - css[rho] / (rho + 1.0), 0.0)
-
-
 def _scm_weights(donor_pre: Outcomes, treated_pre: Vector, steps: int) -> Vector:
-    """Simplex weights minimising ``||treated_pre - donor_pre.T @ w||^2`` by projected gradient."""
-    n_donors = donor_pre.shape[0]
-    gram = donor_pre @ donor_pre.T  # (J, J)
-    target = donor_pre @ treated_pre  # (J,)
-    lr = 1.0 / max(float(np.max(np.linalg.eigvalsh(gram))), 1e-9)
-    w = np.full(n_donors, 1.0 / n_donors)
-    for _ in range(steps):
-        w = _project_simplex(w - lr * (gram @ w - target))
-    return w
+    """Simplex weights minimising ``||treated_pre - donor_pre.T @ w||``, exactly.
+
+    The synthetic control is the point of the donors' hull nearest the treated unit, so with
+    ``Z = donor_pre.T - treated_pre`` its weights give the point of the hull of ``Z``'s columns
+    nearest the origin. For ``u >= 0`` minimising ``||Z u||^2 + (1'u - 1)^2``, ``u / 1'u`` is that
+    point: writing ``u = s w`` with ``w`` on the simplex, the best ``s`` leaves ``a / (1 + a)``
+    with ``a = ||Z w||^2``, which grows with ``a``. That is one non-negative least squares, which
+    Lawson and Hanson's active set solves in finitely many steps, at most ``steps``. ``Z`` is
+    scaled first: the weights do not depend on its scale, and the appended row's weight does.
+    """
+    z = donor_pre.T - treated_pre[:, None]  # (T0, J)
+    scale = max(float(np.sqrt(np.mean(z**2))), np.finfo(np.float64).tiny)
+    design = np.vstack([z / scale, np.ones(z.shape[1])])
+    target = np.zeros(design.shape[0])
+    target[-1] = 1.0
+    u, _ = nnls(design, target, maxiter=steps)
+    return u / u.sum()
 
 
 def _split(
@@ -81,7 +82,8 @@ def synthetic_control(
 
     ``outcomes`` is ``(N, T)``; treatment starts at period ``n_pre`` (so periods ``0..n_pre-1`` are
     pre-treatment). Donor weights lie on the probability simplex; ``att[k]`` is the treated-minus-
-    synthetic gap in post period ``k``.
+    synthetic gap in post period ``k``. The weights are the exact optimum, whatever the outcomes'
+    units; ``steps`` caps the solver's iterations, and running out raises ``RuntimeError``.
     """
     donor_pre, donor_post, treated_pre, treated_post = _split(outcomes, treated_unit, n_pre)
     w = _scm_weights(donor_pre, treated_pre, steps)

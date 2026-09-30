@@ -1,0 +1,31 @@
+/* The reduction behind chc.scm._scm_weights: a synthetic control's weights from one non-negative
+   least squares.
+
+   The weights minimise ||Z w|| over the simplex, with Z = donor_pre' - treated_pre: the point of
+   the hull of Z's columns nearest the origin. The claim: for u >= 0 minimising
+   ||Z u||^2 + (1'u - 1)^2, u / 1'u is that point.
+
+   STEP 1  every u >= 0 other than 0 is s w with s = 1'u > 0 and w on the simplex, and with
+           a = ||Z w||^2 the objective is s^2 a + (s - 1)^2: convex in s, least at s = 1 / (1 + a),
+           where it is a / (1 + a)
+   STEP 2  a / (1 + a) grows with a, and u = 0 gives 1, above every a / (1 + a); so the least
+           objective is at the w of least a, and u / 1'u recovers it
+
+   Run: timeout 300 maxima --very-quiet -b validation/synthetic_control_nnls.mac */
+
+linel : 110$
+display2d : false$
+assume(a >= 0)$
+
+print("=== STEP 1: the best scale for a fixed point of the simplex ===")$
+objective : s^2*a + (s - 1)^2$
+best_s : rhs(first(solve(diff(objective, s) = 0, s)))$
+least : ratsimp(subst(s = best_s, objective))$
+print("s* =", best_s, "  least objective =", least)$
+print("convex in s: second derivative", diff(objective, s, 2), "=> positive:", is(diff(objective, s, 2) > 0))$
+print("least - a/(1 + a) =", ratsimp(least - a/(1 + a)))$
+
+print("=== STEP 2: the least objective grows with a, and stays below u = 0's ===")$
+growth : ratsimp(diff(a/(1 + a), a))$
+print("d/da a/(1 + a) =", growth, "=> positive:", is(growth > 0))$
+print("1 - a/(1 + a) =", ratsimp(1 - a/(1 + a)), "=> positive:", is(ratsimp(1 - a/(1 + a)) > 0))$

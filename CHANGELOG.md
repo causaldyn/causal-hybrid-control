@@ -228,6 +228,15 @@ still change).
   - All 144 schedules came out the same, bit for bit, in float64: 2304 actions, 305 of them
     inside the box.
   - A test counts the programs compiled by two calls after a first, and fails on the closures.
+- **`synthetic_control` and `augmented_synthetic_control` reach the synthetic control's optimum.**
+  Their donor weights came from 5000 steps of projected gradient, which stopped short of it. Over
+  50 panels of each design, the pre-period error ended up to 8% above its minimum and the weights
+  up to 0.21 from the optimum's. The overall effect moved by up to 0.022 on the tests' 30 donors
+  and 25 periods, and by up to 0.13 with 80 donors and 30 periods. The weights now come from one
+  non-negative least squares, exact to rounding: the synthetic control is the point of the donors'
+  hull nearest the treated unit, and Lawson and Hanson's active set finds it in finitely many
+  steps, at most `steps`. They no longer depend on the outcomes' units or origin. Where several
+  weightings fit the pre-period equally well, the one returned can differ from before.
 
 ### Notes
 
