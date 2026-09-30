@@ -1,18 +1,22 @@
-"""chc.lift: a channel fitted to geo tests' gaps, and the intervals its profile gives.
+"""chc.lift: a channel fitted to geo tests' gaps, the intervals its profile gives, and an
+observational channel checked against them.
 
 The oracle for the intervals is written here without the module: the kernel and the curve in
 NumPy, the coefficient in closed form, the scale by a bounded search, so the profile over the
-retention and its crossings are computed by a second route.
+retention and its crossings are computed by a second route. The check's oracle is the same NumPy
+channel, and the fit's least squares as the fit recorded it.
 """
 
+import dataclasses
 import math
 
+import equinox as eqx
 import numpy as np
 import pytest
 from scipy import optimize, stats
 
-from chc.lift import GeoArm, LiftTest, fit_lift
-from chc.response import Channel, GeometricAdstock, Tanh
+from chc.lift import GeoArm, LiftTest, ObservationalCheck, check_observational, fit_lift
+from chc.response import Channel, GeometricAdstock, MichaelisMenten, Tanh
 
 LENGTH = 6
 TRUE = {"kernel.retention": 0.2, "curve.scale": 250.0, "coefficient": 1100.0}
@@ -241,3 +245,142 @@ def test_what_cannot_be_fitted_is_refused() -> None:
     )
     with pytest.raises(ValueError, match="cannot fit 3 parameters"):
         fit_lift((few,), START)
+
+
+def _oracle_gaps(
+    tests: tuple[LiftTest, ...], retention: float, scale: float, coefficient: float
+) -> np.ndarray:
+    """The gaps a channel predicts, by NumPy."""
+    weights = retention ** np.arange(LENGTH)
+    weights = weights / weights.sum()
+
+    def curve(arm: GeoArm) -> np.ndarray:
+        return np.tanh(np.convolve(arm.spend / arm.share, weights)[: arm.spend.size] / scale)
+
+    return np.concatenate(
+        [coefficient * (curve(t.treated) - curve(t.control))[t.treated.history :] for t in tests]
+    )
+
+
+def _times(channel: Channel, factor: float) -> Channel:
+    return eqx.tree_at(lambda c: c.coefficient, channel, channel.coefficient * factor)
+
+
+def test_the_check_reads_a_channel_s_gaps_against_the_fit_s_least_squares(fit) -> None:
+    tests = _world(0)
+    observed = (0.35, 180.0, 900.0)
+    check = check_observational(fit, _channel(*observed))
+    gap = np.concatenate([test.difference for test in tests])
+    predicted = _oracle_gaps(tests, *observed)
+    variance = fit.noise_sd**2
+    statistic = (np.sum((gap - predicted) ** 2) - variance * fit.dof) / 3 / variance
+    factor = (predicted @ gap) / (predicted @ predicted)
+    half = stats.t.ppf(0.975, fit.dof) * math.sqrt(variance / (predicted @ predicted))
+    assert check.dof == (3, fit.dof)
+    assert check.statistic == pytest.approx(statistic, rel=1e-8)
+    assert check.p_value == pytest.approx(stats.f.sf(statistic, 3, fit.dof), rel=1e-6)
+    assert check.factor == pytest.approx(factor, rel=1e-10)
+    np.testing.assert_allclose(check.factor_interval, (factor - half, factor + half), rtol=1e-10)
+
+
+def test_the_world_s_own_channel_passes_the_check_of_its_tests(fit) -> None:
+    """On the fixture's tests the truth's p-value is 0.19: not rejected at the fit's level, its
+    factor's interval holds 1, and no confounding is needed to reconcile it."""
+    check = check_observational(fit, _channel(*TRUE.values()))
+    assert 0.05 < check.p_value < 0.95
+    assert not check.rejected
+    assert check.factor_interval[0] < 1.0 < check.factor_interval[1]
+    assert check.least_gamma(1.0) == 1.0
+
+
+@pytest.mark.parametrize("k", [0.5, 2.0])
+def test_the_fit_reads_a_factor_of_one_and_k_times_it_reads_one_over_k(fit, k) -> None:
+    """The fit's coefficient is the least-squares multiple of its shape, so the fit's own channel
+    reads 1 with nothing to reject, and k times it reads 1/k with an excess of (k-1)^2 |g|^2."""
+    own = check_observational(fit, fit.channel)
+    assert own.factor == pytest.approx(1.0, rel=1e-9)
+    assert own.statistic == pytest.approx(0.0, abs=1e-9)
+    assert not own.rejected
+    scaled = check_observational(fit, _times(fit.channel, k))
+    predicted = _oracle_gaps(_world(0), *fit.estimate)
+    excess = (k - 1.0) ** 2 * (predicted @ predicted)
+    assert scaled.factor == pytest.approx(1.0 / k, rel=1e-9)
+    assert scaled.statistic == pytest.approx(excess / 3 / fit.noise_sd**2, rel=1e-7)
+    assert scaled.rejected
+
+
+def test_a_channel_of_the_right_size_and_the_wrong_carryover_is_rejected(fit) -> None:
+    """Scaled to the size the tests read, a channel whose carryover lasts four times as long reads
+    a factor of 1, and the F still says the gaps are not its."""
+    slow = _channel(0.8, TRUE["curve.scale"], TRUE["coefficient"])
+    sized = _times(slow, check_observational(fit, slow).factor)
+    check = check_observational(fit, sized)
+    assert check.factor == pytest.approx(1.0, rel=1e-9)
+    assert check.least_gamma(1.0) == 1.0
+    assert check.rejected
+    assert check.p_value < 1e-6
+
+
+@pytest.mark.parametrize(
+    "interval", [(0.3, 0.6), (1.2, 1.5), (0.8, 1.1), (-0.4, 0.2), (2.5, 3.0), (-1.0, -0.2)]
+)
+def test_the_least_gamma_is_the_first_on_a_grid_whose_set_reaches_the_interval(interval) -> None:
+    check = ObservationalCheck(0.0, 1.0, (3, 60), sum(interval) / 2.0, interval, 0.95)
+    gammas = np.linspace(1.0, 60.0, 590_001)
+    for gap in (0.5, 1.0, 2.0):
+        radius = (gammas - 1.0) / (gammas + 1.0) * gap
+        reaches = (1.0 - radius <= interval[1]) & (interval[0] <= 1.0 + radius)
+        least = check.least_gamma(gap)
+        if reaches.any():
+            first = gammas[np.argmax(reaches)]
+            assert first - 1e-4 <= least <= first * (1.0 + 1e-12)
+        else:
+            assert least == math.inf
+
+
+def test_a_channel_that_predicts_no_gap_has_no_factor(fit) -> None:
+    check = check_observational(fit, _times(fit.channel, 0.0))
+    assert math.isnan(check.factor)
+    assert math.isnan(check.least_gamma(1.0))
+    assert check.rejected  # the tests read a lift the channel says is not there
+    with pytest.raises(ValueError, match="cvar_gap"):
+        check_observational(fit, fit.channel).least_gamma(0.0)
+
+
+def test_the_check_reads_a_group_at_the_market_s_scale() -> None:
+    truth = _channel(*TRUE.values())
+    whole = check_observational(fit_lift(_world(5), START), truth)
+    part = check_observational(fit_lift(_world(5, share=0.4), START), truth)
+    assert part.statistic == pytest.approx(whole.statistic, rel=1e-6)
+    assert part.factor == pytest.approx(whole.factor, rel=1e-9)
+
+
+def test_what_the_check_cannot_read_is_refused(fit) -> None:
+    kernel = GeometricAdstock(0.2, length=LENGTH, normalized=True)
+    others = [
+        Channel(kernel, MichaelisMenten(250.0), 1100.0),
+        Channel(GeometricAdstock(0.2, length=LENGTH + 2, normalized=True), Tanh(250.0), 1100.0),
+        Channel(GeometricAdstock(0.2, length=LENGTH, normalized=False), Tanh(250.0), 1100.0),
+    ]
+    for other in others:
+        with pytest.raises(ValueError, match="not of the fit's families"):
+            check_observational(fit, other)
+    with pytest.raises(TypeError, match=r"reads a chc\.response\.Channel"):
+        check_observational(fit, Tanh(250.0))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="not finite"):
+        check_observational(fit, _times(fit.channel, math.nan))
+
+
+def test_a_channel_cheaper_than_the_fit_says_the_fit_is_not_the_least(fit) -> None:
+    off = dataclasses.replace(fit, channel=_times(fit.channel, 1.5))
+    with pytest.raises(ValueError, match="fits the tests better than the fit"):
+        check_observational(off, fit.channel)
+    exact = []
+    for test in _world(0):
+        treated, control = test.treated.spend, test.control.spend
+        gap = np.asarray(fit.channel(treated) - fit.channel(control))[test.treated.history :]
+        exact.append(
+            LiftTest(treated=GeoArm(treated, gap), control=GeoArm(control, np.zeros(gap.size)))
+        )
+    with pytest.raises(ValueError, match="no noise"):
+        check_observational(dataclasses.replace(fit, tests=tuple(exact)), fit.channel)

@@ -127,6 +127,19 @@ still change).
   81% at his; at ten times it covers 0.878, and 4 of the 500 fits raise rather than converge. On
   Meta at his noise it covers 0.918 (0.890-0.941), under the nominal, which the `F` cutoff
   promises exactly only for a model linear in its parameters.
+- **An observational channel checked against lift tests, `chc.lift.check_observational`**
+  (*experimental*, ADR 0039). Where spend follows the business an observational fit reads the
+  business's decisions as the channel's effect, and the geo tests are what can say so.
+  `check_observational(fit, observed)` reads a channel fitted to logged spend against the tests
+  `fit` read, which `LiftFit.tests` now carries: an `F` test of the channel as a point of the fit's
+  model, its least squares over the fit's per parameter over the fit's noise variance, and the
+  factor of the lift it predicts that the tests read, `g·d / g·g`, with a `t` interval.
+  `ObservationalCheck.least_gamma(cvar_gap)` turns the factor into the least marginal-sensitivity
+  `Γ` whose identified set, `1 ± (Γ-1)/(Γ+1)·cvar_gap` in units of the predicted lift, reaches the
+  tests: a floor under the confounding, as De Bartolomeis et al. (2024) bound `Γ` from a trial. The
+  tests hold the statistic and the factor to NumPy, the fit's own channel to a factor of 1 and `k`
+  times it to `1/k` with the closed-form excess, a channel of the right size and the wrong
+  carryover to a rejection, and `least_gamma` to a grid of `Γ`; twelve mutations caught.
 - **A budget allocated over channels, `chc.allocation`** (*experimental*, ADR 0034).
   `allocate(channels, budget, periods, *, lower, upper, history=None)` spends a budget over
   `periods` periods at one rate a period for each `chc.response.Channel`, each within its box, for

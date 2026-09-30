@@ -23,6 +23,13 @@ interval says so: a curve the tests never bent has no upper scale.
 The curve is identified over the adstock the tests covered, :attr:`LiftFit.tested_adstock`, and
 nowhere else. Past it a plan reads the family's shape, not the experiment.
 
+:func:`check_observational` reads a channel fitted to observational data, where spend follows the
+business, against the tests a fit read: an ``F`` test of whether the tests' gaps could be the
+channel's, and the factor of the lift it predicts that the tests read. Through an analyst's
+effect-scale gap the factor gives the least marginal-sensitivity ``Gamma`` the tests leave the
+observational channel, a floor under the confounding a plan assumes (De Bartolomeis et al. 2024
+bound ``Gamma`` from below with a trial in the same way).
+
 HONEST SCOPE:
 
 * The noise is one scale, independent across periods and tests. A gap read through a synthetic
@@ -30,6 +37,9 @@ HONEST SCOPE:
   intervals are then too narrow.
 * The groups spend alike on every other channel and answer alike, so a group's spend and outcome
   divided by its share of the market are the market's (Heusch's scaling).
+* The check's ``F`` is the region the intervals are profiles of: exact for a model linear in its
+  parameters, approximate on a curve. Its ``Gamma`` bounds the tested channel's confounding; read
+  for a channel no test reached, it assumes the two are confounded alike.
 * The arithmetic is JAX's, as for the library's other JAX estimators: float64 under
   ``jax_enable_x64``, and float32, good to about seven digits, without it.
 """
@@ -38,7 +48,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import equinox as eqx
 import jax
@@ -49,6 +59,7 @@ from jax.tree_util import PyTreeDef
 from numpy.typing import ArrayLike, NDArray
 from scipy import optimize, stats
 
+from chc.barrier import barrier_gamma_star
 from chc.response import Channel
 
 _Array = NDArray[np.float64]
@@ -171,6 +182,7 @@ class LiftFit:
     # the adstock the readouts covered, both groups, at the fitted kernel: where the curve is
     # identified; past it a plan reads the family's shape
     tested_adstock: tuple[float, float]
+    tests: tuple[LiftTest, ...] = field(repr=False)  # the tests fitted, which a check reads again
 
     def interval(self, parameter: str) -> tuple[float, float]:
         """``parameter``'s interval, by its name in :attr:`parameters`."""
@@ -527,6 +539,7 @@ def fit_lift(tests: Sequence[LiftTest], channel: Channel, *, level: float = 0.95
         noise_sd=math.sqrt(variance),
         dof=dof,
         tested_adstock=_tested_adstock(fitted, tests),
+        tests=tests,
     )
 
 
@@ -556,3 +569,138 @@ def _tested_adstock(channel: Channel, tests: tuple[LiftTest, ...]) -> tuple[floa
     ]
     covered = np.concatenate(reached)
     return float(np.min(covered)), float(np.max(covered))
+
+
+@dataclass(frozen=True)
+class ObservationalCheck:
+    """An observational channel read against the lift tests a fit read. *Experimental.* See
+    :func:`check_observational`."""
+
+    statistic: float  # F: the channel's least squares over the fit's, per parameter, over s^2
+    p_value: float
+    dof: tuple[int, int]  # the F's: the fit's parameters, and its periods less them
+    # the multiple of the gaps the channel predicts that the tests read, and its t interval at
+    # level; nan where the channel predicts no gap
+    factor: float
+    factor_interval: tuple[float, float]
+    level: float
+
+    @property
+    def rejected(self) -> bool:
+        """Whether the tests reject the channel at :attr:`level`."""
+        return self.p_value < 1.0 - self.level
+
+    def least_gamma(self, cvar_gap: float) -> float:
+        """The least marginal-sensitivity ``Gamma`` whose identified set reaches the tests.
+
+        In units of the lift the channel predicts, the set is ``1 ± (Gamma-1)/(Gamma+1) cvar_gap``,
+        ``chc.sensitivity``'s radius, ``cvar_gap`` the analyst's effect-scale CVaR gap as a share of
+        that lift. The least ``Gamma`` whose set reaches :attr:`factor_interval` inverts the radius
+        at the interval's distance from 1, as :func:`chc.barrier.barrier_gamma_star` does. Less
+        confounding than this the tests refute at :attr:`level`, as a known-null outcome refutes it
+        in :func:`chc.uncertainty.negative_control_gamma`: a floor, not a ceiling.
+
+        ``1.0`` when the interval holds 1; ``inf`` when it lies ``cvar_gap`` or further from 1, so
+        that no level reconciles the two and the tests refute the model rather than calibrate it;
+        ``nan`` when the channel predicts no gap.
+
+        Raises:
+            ValueError: when ``cvar_gap`` is not positive and finite.
+        """
+        if not (math.isfinite(cvar_gap) and cvar_gap > 0.0):
+            raise ValueError(f"cvar_gap must be positive and finite, got {cvar_gap}")
+        if math.isnan(self.factor):
+            return math.nan
+        lower, upper = self.factor_interval
+        return barrier_gamma_star(max(lower - 1.0, 1.0 - upper, 0.0), cvar_gap, 1.0)
+
+
+def check_observational(fit: LiftFit, observed: Channel) -> ObservationalCheck:
+    """Read ``observed``, a channel fitted to observational data, against the tests ``fit`` read.
+    *Experimental.*
+
+    Two readings of the tests' gaps ``d``, at the fit's level and with its noise variance ``s^2``
+    over ``n - p`` degrees of freedom:
+
+    * **An ``F`` test** of ``observed`` as a point of the fit's model: the least squares of the gaps
+      it predicts over the fit's, per parameter, over ``s^2``, against ``F_{p, n-p}`` (Bates and
+      Watts 1988), the joint region the fit's intervals are profiles of.
+    * **The factor**, the least-squares multiple of the gaps it predicts, ``g``, that the tests
+      read: ``c = g.d / g.g``, with the ``t`` interval ``c ± t s / |g|``. It is the tested lift over
+      the lift ``observed`` predicts, each period weighted by what it predicts there, so tests of
+      either sign add rather than cancel; ``1`` when the lift is the channel's.
+
+    The ``F`` rejects a channel whose shape the tests contradict even where its size is right; the
+    factor says how far its size is off, and :meth:`ObservationalCheck.least_gamma` turns that into
+    a floor under the confounding. Where spend follows the business an observational fit reads the
+    business's decisions as the channel's effect, and the tests are what can say so: on Heusch's
+    generator it reads paid shopping's return at 8.45 against a true 4.20, with an oracle's
+    controls (Heusch 2026a).
+
+    Raises:
+        TypeError: when ``observed`` is not a :class:`chc.response.Channel`.
+        ValueError: when ``observed`` is not of the fit's families, kernel length and form, so the
+            fit's model does not hold it; when it predicts a gap that is not finite; when the fit
+            reproduces the tests exactly, leaving no noise to test against; or when ``observed``
+            fits the tests better than the fit by more than the fit tells apart, so the fit is not
+            their least squares, and a fit from it, ``fit_lift(fit.tests, observed)``, is due.
+    """
+    if not isinstance(observed, Channel):
+        raise TypeError(
+            f"observed is a {type(observed).__name__}; the check reads a chc.response.Channel"
+        )
+    fitted, fitted_static = eqx.partition(fit.channel, eqx.is_inexact_array)
+    parameters, static = eqx.partition(observed, eqx.is_inexact_array)
+    same = jax.tree_util.tree_structure(parameters) == jax.tree_util.tree_structure(fitted)
+    if not (same and eqx.tree_equal(static, fitted_static)):
+        raise ValueError(
+            "the observed channel is not of the fit's families, kernel length and form; the check "
+            "tests it as a point of the fit's model, so fit the tests from its template"
+        )
+    gap = np.concatenate([test.difference for test in fit.tests])
+    predicted = _predicted(observed, fit.tests)
+    if not np.all(np.isfinite(predicted)):
+        raise ValueError("the observed channel predicts a gap that is not finite on the tests")
+    least = float(np.sum((gap - _predicted(fit.channel, fit.tests)) ** 2))
+    cost = float(np.sum((gap - predicted) ** 2))
+    parameter_count, dof = len(fit.parameters), fit.dof
+    variance = least / dof
+    if not variance > 0.0:
+        raise ValueError("the fit reproduces the tests exactly; there is no noise to test against")
+    excess = cost - least
+    if excess < -_SLACK * variance * float(stats.f.ppf(fit.level, 1, dof)):
+        raise ValueError(
+            f"the observed channel fits the tests better than the fit, by {-excess:.6g} against "
+            f"its least squares {least:.6g}, so the fit is not their least squares: fit from it, "
+            "fit_lift(fit.tests, observed)"
+        )
+    statistic = max(excess, 0.0) / parameter_count / variance
+    size = float(predicted @ predicted)
+    if size > 0.0:
+        factor = float(predicted @ gap) / size
+        half = float(stats.t.ppf((1.0 + fit.level) / 2.0, dof)) * math.sqrt(variance / size)
+        interval = (factor - half, factor + half)
+    else:
+        factor, interval = math.nan, (math.nan, math.nan)
+    return ObservationalCheck(
+        statistic=statistic,
+        p_value=float(stats.f.sf(statistic, parameter_count, dof)),
+        dof=(parameter_count, dof),
+        factor=factor,
+        factor_interval=interval,
+        level=fit.level,
+    )
+
+
+def _predicted(channel: Channel, tests: tuple[LiftTest, ...]) -> _Array:
+    """The gaps ``channel`` predicts, stacked over the tests, at the market's scale."""
+    return np.concatenate(
+        [
+            np.asarray(
+                channel(test.treated.spend / test.treated.share)
+                - channel(test.control.spend / test.control.share),
+                dtype=np.float64,
+            )[test.treated.history :]
+            for test in tests
+        ]
+    )

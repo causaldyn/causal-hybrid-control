@@ -47,7 +47,7 @@ the confounder.
 
 ## Calibrate it before spending it
 
-Unfalsifiable is not the same as uncalibrated. Two functions price `Γ` against the data:
+Unfalsifiable is not the same as uncalibrated. Three functions price `Γ` against the data:
 
 - **`benchmark_gamma`** expresses it in units of the confounding the *observed* covariates carry:
   dropping covariate `j` from the propensity produces exactly the pair of propensities the model
@@ -63,6 +63,13 @@ Unfalsifiable is not the same as uncalibrated. Two functions price `Γ` against 
   **lower bound on the confounding actually present**: assuming less is refuted by the data. It
   returns `inf` when no `Γ` reconciles the null — the negative control has then refuted the model
   class instead of calibrating it.
+- **`check_observational`** (*experimental*, `chc.lift`) reads a media-mix channel fitted to
+  logged spend against the geo tests of it, and its `least_gamma(cvar_gap)` is the least `Γ` whose
+  identified set, `1 ± (Γ-1)/(Γ+1)·cvar_gap` in units of the lift the channel predicts, reaches
+  the lift the tests read. It is the same kind of floor, from an experiment rather than a known
+  null (De Bartolomeis et al. 2024 bound `Γ` from below with a trial in the same way), and the
+  same `inf` when no level reconciles the two. It bounds the tested channel; read for a channel no
+  test reached, it assumes the two are confounded alike.
 
 ## The same question in variance shares
 
