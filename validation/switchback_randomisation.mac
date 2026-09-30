@@ -1,0 +1,71 @@
+/* The randomisation test and interval behind chc.switchback.randomisation_test and
+   randomisation_interval: what a sharp null has to say about a plant with memory.
+
+   The working model is x_{t+1} = a x_t + b u_t + eps_t, y_t = x_t + eta_t, and a potential outcome
+   keeps the run's shocks and its state before the first period: only the lever's path changes.
+
+   STEP 1  the lever's path moves the reading by b sum_{s=1}^{t} a^(s-1) w_{t-s}, whatever the shocks,
+           the noise or the state before the run: so (a, b) impute the reading under every schedule,
+           and the joint null is sharp. The effect alone is not: tau_H = b S_H(a) leaves the memory
+           free
+   STEP 2  on BlockDesign(H, H - 1) the kept reading of block j is moved by its own coin by tau_H,
+           and by block j - d's by tau_H a^(d H). A null that names tau_H and no memory treats
+           that carryover as fixed when it moves with the coins
+   STEP 3  S_H(a) > 0 on [0, 1), so tau_0 names b_0 = tau_0 / S_H(a_0) at every a_0 of the range
+   STEP 4  the resolution: K fair coins give 2^K equally likely schedules, and a statistic the
+           complement negates gives a two-sided p-value of at least 2^(1 - K); at 5% that refuses
+           fewer than six coins two-sided and fewer than five one-sided
+
+   Run: timeout 300 maxima --very-quiet -b validation/switchback_randomisation.mac */
+
+linel : 110$
+display2d : false$
+
+print("=== STEP 1: the lever's path enters the reading through a fixed kernel ===")$
+/* x(t, w) is the state under lever path w, from the shared x0 and shocks e[t]; w[k] is the lever
+   of period k - 1, since Maxima's lists start at 1 */
+state(t, w) := if t = 0 then x0 else a*state(t - 1, w) + b*w[t] + e[t - 1]$
+kernel(t, w) := sum(b*a^(s - 1)*w[t - s + 1], s, 1, t)$
+for t in [1, 2, 3, 5, 8] do block([moved, off],
+  moved : makelist(concat(w, i), i, 0, t - 1),
+  off : makelist(0, i, 0, t - 1),
+  print("STEP 1 t =", t, ": x(w) - x(0) - kernel =",
+        ratsimp(state(t, moved) - state(t, off) - kernel(t, moved)), " (0)"))$
+/* the kernel's first H terms are tau_H = b S_H(a), with S_H(a) = (1 - a^H)/(1 - a) */
+S(h) := (1 - a^h)/(1 - a)$
+for h in [1, 2, 3, 7] do
+  print("STEP 1 H =", h, ": sum_{s<=H} b a^(s-1) - b S_H =",
+        ratsimp(sum(b*a^(s - 1), s, 1, h) - b*S(h)), " (0)")$
+/* two memories with the same tau_H impute different readings: the effect alone is not sharp */
+path : [1, 0, 1, 1, 0, 1]$
+imputed(aa, bb) := subst([a = aa, b = bb], kernel(6, path))$
+print("STEP 1 same tau_2 = 2: imputed at (a, b) = (0, 2) and (1/2, 4/3):",
+      imputed(0, 2), imputed(1/2, 4/3), " (they differ)")$
+print("STEP 1 their tau_2:", subst([a = 0, b = 2], b*S(2)), subst([a = 1/2, b = 4/3], b*S(2)),
+      " (both 2)")$
+
+print("=== STEP 2: the kept reading of a block of H, keeping the last ===")$
+/* block i covers periods i H .. i H + H - 1; block j's kept reading is x at (j + 1) H, and the
+   periods of block j - d sit at lags d H + 1 .. d H + H from it */
+carry(d, h) := sum(b*a^(s - 1), s, d*h + 1, d*h + h)$
+for c in [[0, 2], [1, 2], [2, 2], [1, 5], [3, 5]] do
+  print("STEP 2 d =", c[1], " H =", c[2], ": carry - tau_H a^(d H) =",
+        ratsimp(carry(c[1], c[2]) - b*S(c[2])*a^(c[1]*c[2])), " (0)")$
+/* in general: sum_{s = dH+1}^{dH+H} a^(s-1) = a^(dH) sum_{k=0}^{H-1} a^k, a geometric sum */
+print("STEP 2 in general: carry - tau_H a^(d H) =",
+      ratsimp(ev(sum(b*a^(s - 1), s, d*h + 1, d*h + h), simpsum) - b*S(h)*a^(d*h)), " (0)")$
+print("STEP 2 the first block back's share of tau_H at a = 0.8: H = 2", float(0.8^2),
+      " H = 5", float(0.8^5), " H = 10", float(0.8^10))$
+
+print("=== STEP 3: S_H(a) > 0 on [0, 1) ===")$
+/* S_H(a) = 1 + a + ... + a^(H - 1) >= 1 for a >= 0, and 1/(1 - a) > 0 at H = inf */
+for h in [1, 2, 5, 12] do
+  print("STEP 3 H =", h, ": S_H(a) - sum_{s<H} a^s =", ratsimp(S(h) - sum(a^s, s, 0, h - 1)), " (0)")$
+
+print("=== STEP 4: the resolution ===")$
+smallest(k, sided) := if sided = 2 then 2^(1 - k) else 2^(-k)$
+for k in [4, 5, 6] do
+  print("STEP 4 K =", k, ": one-sided", smallest(k, 1), is(smallest(k, 1) <= 1/20),
+        " two-sided", smallest(k, 2), is(smallest(k, 2) <= 1/20))$
+print("STEP 4 fewest coins at 5%: one-sided", ceiling(float(log(20)/log(2))),
+      " two-sided", ceiling(float(1 + log(20)/log(2))), " (5 and 6)")$

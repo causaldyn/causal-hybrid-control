@@ -41,7 +41,10 @@ its minimum detectable effect and its loss against the effect's own best design,
 favourable ``a`` of the prior. Every variance is asymptotic in ``T``. :func:`read_switchback` reads
 an effect off the data a design produced, with a standard error from the data, and
 :func:`restate_mde` reads it off the first periods of the run, an internal pilot, and restates the
-minimum detectable effect the whole run can detect.
+minimum detectable effect the whole run can detect. :func:`randomisation_test` and
+:func:`randomisation_interval` infer from the design's own randomisation instead of from ``T``
+being large: the test is exact at any number of blocks, and the interval is exact given a range
+for ``a``.
 
 What is outside the model, and comes back as a warning rather than a refusal: a second state or a
 longer carryover, drift, spillover between zones, ``a`` near 1 on a short run, and fewer than 100
@@ -61,11 +64,11 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from statistics import NormalDist
-from typing import Literal
+from typing import Literal, overload
 
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy import optimize, stats
+from scipy import optimize, signal, stats
 
 _log = logging.getLogger(__name__)
 
@@ -236,12 +239,20 @@ class SwitchbackPlan:
 # --- closed forms; variances in units of 4 sigma^2 / T per zone -----------------------------------
 
 
-def _s(a: float, h: float) -> float:
+@overload
+def _s(a: float, h: float) -> float: ...
+@overload
+def _s(a: np.ndarray, h: float) -> np.ndarray: ...
+def _s(a, h):
     """``S_H(a) = (1 - a^H) / (1 - a)``, so ``tau_H = b S_H``."""
     return 1.0 / (1.0 - a) if math.isinf(h) else (1.0 - a**h) / (1.0 - a)
 
 
-def _ds(a: float, h: float) -> float:
+@overload
+def _ds(a: float, h: float) -> float: ...
+@overload
+def _ds(a: np.ndarray, h: float) -> np.ndarray: ...
+def _ds(a, h):
     if math.isinf(h):
         return 1.0 / (1.0 - a) ** 2
     return (1.0 - a**h) / (1.0 - a) ** 2 - h * a ** (h - 1.0) / (1.0 - a)
@@ -739,17 +750,19 @@ def _within(x: np.ndarray) -> np.ndarray:
 def _fit(target, regressors, instruments, lags: int) -> tuple[np.ndarray, np.ndarray]:
     """Least squares of ``target`` on ``regressors`` with an intercept per zone, or IV when the
     ``instruments`` differ, and the coefficients' covariance, robust to heteroskedasticity and
-    keeping the scores' autocovariances within a zone up to ``lags``."""
+    keeping the scores' autocovariances within a zone up to ``lags``. Axes before the regressors'
+    are a batch of fits against the one ``target``."""
     y, x, z = _within(target), _within(regressors), _within(instruments)
-    bread = np.linalg.inv(np.einsum("izt,jzt->ij", z, x))
-    theta = bread @ np.einsum("izt,zt->i", z, y)
-    scores = z * (y - np.einsum("i,izt->zt", theta, x))
-    meat = np.einsum("izt,jzt->ij", scores, scores)
+    bread = np.linalg.inv(np.einsum("...izt,...jzt->...ij", z, x))
+    theta = np.einsum("...ij,...j->...i", bread, np.einsum("...izt,...zt->...i", z, y))
+    scores = z * (y - np.einsum("...i,...izt->...zt", theta, x))[..., None, :, :]
+    meat = np.einsum("...izt,...jzt->...ij", scores, scores)
     for lag in range(1, lags + 1):
-        cross = np.einsum("izt,jzt->ij", scores[:, :, lag:], scores[:, :, :-lag])
-        meat += cross + cross.T
-    n = y.size
-    return theta, bread @ meat @ bread.T * n / (n - x.shape[0] - y.shape[0])
+        cross = np.einsum("...izt,...jzt->...ij", scores[..., lag:], scores[..., :-lag])
+        meat += cross + np.swapaxes(cross, -1, -2)
+    n = y.shape[-2] * y.shape[-1]
+    scale = n / (n - x.shape[-3] - y.shape[-2])
+    return theta, bread @ meat @ np.swapaxes(bread, -1, -2) * scale
 
 
 def _fieller(a: float, b: float, cov: np.ndarray, z: float) -> tuple[float, float]:
@@ -809,19 +822,32 @@ def _first_order(u, y) -> None:
         )
 
 
-def _plant(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
+def _plant_fit(u, y, analysis: SwitchbackAnalysis) -> tuple[np.ndarray, np.ndarray]:
+    """``(a_hat, b_hat)`` and their covariance. Axes of ``u`` before the zones' are a batch of
+    levers read against the one outcome."""
     if analysis == "state_aware":
-        regressors = np.stack([y[:, :-1], u])
-        theta, cov = _fit(y[:, 1:], regressors, regressors, 0)
-        # u_t is independent of everything y_t carries when the lever is i.i.d., so the channel
-        # is then read right on any linear time-invariant plant, and there is nothing to test
-        if estimand.periods > 1.0 or abs(_lag_one(u)) * math.sqrt(u.size) > _IID:
-            _first_order(u, y)
-    else:
-        # the error eps_t + eta_(t+1) - a eta_t of a noisy state is MA(1)
-        theta, cov = _fit(
-            y[:, 2:], np.stack([y[:, 1:-1], u[:, 1:]]), np.stack([u[:, :-1], u[:, 1:]]), 1
-        )
+        regressors = np.stack(np.broadcast_arrays(y[:, :-1], u), axis=-3)
+        return _fit(y[:, 1:], regressors, regressors, 0)
+    # the error eps_t + eta_(t+1) - a eta_t of a noisy state is MA(1)
+    regressors = np.stack(np.broadcast_arrays(y[:, 1:-1], u[..., 1:]), axis=-3)
+    return _fit(y[:, 2:], regressors, np.stack([u[..., :-1], u[..., 1:]], axis=-3), 1)
+
+
+def _plug_in(theta: np.ndarray, cov: np.ndarray, h: float) -> tuple[np.ndarray, np.ndarray]:
+    """``b_hat S_H(a_hat)`` and its variance by the delta method."""
+    a, b = theta[..., 0], theta[..., 1]
+    gradient = np.stack([b * _ds(a, h), _s(a, h)], axis=-1)
+    return b * _s(a, h), np.einsum("...i,...ij,...j->...", gradient, cov, gradient)
+
+
+def _plant(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
+    theta, cov = _plant_fit(u, y, analysis)
+    # u_t is independent of everything y_t carries when the lever is i.i.d., so the channel is
+    # then read right on any linear time-invariant plant, and there is nothing to test
+    if analysis == "state_aware" and (
+        estimand.periods > 1.0 or abs(_lag_one(u)) * math.sqrt(u.size) > _IID
+    ):
+        _first_order(u, y)
     a, b = float(theta[0]), float(theta[1])
     h = estimand.periods
     if h > 1.0:
@@ -841,83 +867,112 @@ def _plant(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
             f"the fitted persistence a_hat = {a:.4f} is at or past 1: the plant has no steady "
             "state to read"
         )
-    gradient = np.array([b * _ds(a, h), _s(a, h)])
-    variance = float(gradient @ cov @ gradient)
+    estimate, variance = (float(v) for v in _plug_in(theta, cov, h))
     if variance <= 0.0:
         raise ValueError(
             "the scores' lag-one autocovariance is below minus half their variance, which the "
             "MA(1) error of a first-order state measured with noise cannot produce"
         )
-    estimate, se = b * _s(a, h), math.sqrt(variance)
+    se = math.sqrt(variance)
     if math.isinf(h):
         return estimate, se, _fieller(a, b, cov, z)
     return estimate, se, (estimate - z * se, estimate + z * se)
 
 
+def _projection_fit(u, y, h: int) -> tuple[np.ndarray, np.ndarray]:
+    """The local projection's coefficient on ``u_t`` and its variance; axes of ``u`` before the
+    zones' are a batch of levers."""
+    rows = u.shape[-1] - h + 1
+    ahead = sum(y[:, j : j + rows] for j in range(1, h + 1))
+    regressors = np.stack(np.broadcast_arrays(u[..., :rows], y[:, :rows]), axis=-3)
+    # the sums over H periods overlap, so the error is MA(H - 1)
+    theta, cov = _fit(ahead, regressors, regressors, h - 1)
+    return theta[..., 0], cov[..., 0, 0]
+
+
 def _projection(u, y, h: int, z: float):
-    rows = u.shape[1] - h + 1
     lag_one = _lag_one(u)
     if abs(lag_one) * math.sqrt(u.size) > _IID:
         raise ValueError(
             f"the local projection needs an i.i.d. lever; this one's lag-one autocorrelation is "
             f"{lag_one:.3f}"
         )
-    ahead = sum(y[:, j : j + rows] for j in range(1, h + 1))
-    regressors = np.stack([u[:, :rows], y[:, :rows]])
-    # the sums over H periods overlap, so the error is MA(H - 1)
-    theta, cov = _fit(ahead, regressors, regressors, h - 1)
-    if cov[0, 0] <= 0.0:
+    estimate, variance = (float(v) for v in _projection_fit(u, y, h))
+    if variance <= 0.0:
         raise ValueError(
             f"the scores' autocovariances to lag {h - 1} sum to a negative variance, which the "
             f"MA({h - 1}) error of the overlapping sums cannot produce"
         )
-    estimate, se = float(theta[0]), math.sqrt(float(cov[0, 0]))
+    se = math.sqrt(variance)
     return estimate, se, (estimate - z * se, estimate + z * se)
 
 
-def _block_difference(u, y, blocks: BlockDesign, z: float):
-    zones, periods = u.shape
-    length, kept = blocks.length, blocks.length - blocks.washout
-    count = periods // length
-    if count < 3:
-        raise ValueError(f"need three whole blocks of {length} a zone, got {count}")
-    settings = u[:, : count * length].reshape(zones, count, length)
-    if not (settings == settings[:, :, :1]).all():
-        raise ValueError(f"the lever changes inside a block of {length} periods")
-    sign = 2.0 * settings[:, :, 0] - 1.0
+def _block_totals(y, blocks: BlockDesign, count: int) -> np.ndarray:
+    """Each of the first ``count`` blocks' total over the periods it keeps, zone by zone."""
+    zones, length = y.shape[0], blocks.length
     totals = y[:, 1 : count * length + 1].reshape(zones, count, length)[:, :, blocks.washout :]
-    totals = totals.sum(axis=2)
+    return totals.sum(axis=2)
+
+
+def _block_reading(sign, totals, kept: int) -> tuple[np.ndarray, np.ndarray]:
+    """The block difference and its standard error from each block's setting, ``sign`` = +-1, and
+    total, zone by zone. Axes of ``sign`` before the zones' are a batch of schedules; where no zone
+    has two usable blocks, both are NaN."""
     # each block is centred on the midpoint of the on and off blocks before it, which its own coin
     # cannot move: the difference in means is then unbiased at any number of blocks, and the
     # scores are martingale differences, so their spread is the standard error. The midpoint and
     # not the plain mean of the blocks before: that one carries the past coins' imbalance, which
     # costs (kept tau / 2)^2 sum 1/b and put the sd at 2.3x on 40 blocks of 50
     on, off = sign > 0.0, sign < 0.0
-    seen_on = np.cumsum(on, axis=1) - on
-    seen_off = np.cumsum(off, axis=1) - off
+    seen_on = np.cumsum(on, axis=-1) - on
+    seen_off = np.cumsum(off, axis=-1) - off
     usable = (seen_on > 0) & (seen_off > 0)
     with np.errstate(invalid="ignore", divide="ignore"):
         midpoint = 0.5 * (
-            (np.cumsum(totals * on, axis=1) - totals * on) / seen_on
-            + (np.cumsum(totals * off, axis=1) - totals * off) / seen_off
+            (np.cumsum(totals * on, axis=-1) - totals * on) / seen_on
+            + (np.cumsum(totals * off, axis=-1) - totals * off) / seen_off
         )
-    used = usable.sum(axis=1)
-    live = used > 1
-    if not live.any():
+        used = usable.sum(axis=-1)
+        live = used > 1
+        usable &= live[..., None]
+        scores = np.where(usable, sign * (totals - midpoint), 0.0)
+        # each zone's own difference, the zones weighted alike. Pooling their blocks would weight a
+        # zone by how soon its coins showed both settings, a weight that moves from run to run and
+        # carries the differences between the zones' effects into the spread
+        weight = np.where(live, used, 1)
+        mean = np.where(live, scores.sum(axis=-1) / weight, 0.0)
+        zones = live.sum(axis=-1)
+        estimate = 2.0 * mean.sum(axis=-1) / zones / kept
+        # the zones' centred scores are summed block by block before squaring: a zone's neighbours
+        # move its outcome with their own coins, which puts their scores for the same block in
+        # step. On chc.zones' market, squaring them zone by zone put the standard error at 0.88 of
+        # the spread
+        step = (np.where(usable, scores - mean[..., None], 0.0) / weight[..., None]).sum(axis=-2)
+        blocks = np.where(live, used, 0).sum(axis=-1)
+        correction = blocks / (blocks - zones)
+        se = 2.0 * np.sqrt((step * step).sum(axis=-1) * correction) / (kept * zones)
+    return estimate, se
+
+
+def _block_difference(u, y, blocks: BlockDesign, z: float):
+    zones, periods = u.shape
+    length = blocks.length
+    count = periods // length
+    if count < 3:
+        raise ValueError(f"need three whole blocks of {length} a zone, got {count}")
+    settings = u[:, : count * length].reshape(zones, count, length)
+    if not (settings == settings[:, :, :1]).all():
+        raise ValueError(f"the lever changes inside a block of {length} periods")
+    estimate, se = (
+        float(v)
+        for v in _block_reading(
+            2.0 * settings[:, :, 0] - 1.0,
+            _block_totals(y, blocks, count),
+            length - blocks.washout,
+        )
+    )
+    if math.isnan(estimate):
         raise ValueError("need blocks at both settings before the last two in some zone")
-    scores = np.where(usable, sign * (totals - midpoint), 0.0)[live]
-    used = used[live]
-    # each zone's own difference, the zones weighted alike. Pooling their blocks would weight a
-    # zone by how soon its coins showed both settings, a weight that moves from run to run and
-    # carries the differences between the zones' effects into the spread
-    mean = scores.sum(axis=1) / used
-    estimate = 2.0 * float(mean.mean()) / kept
-    # the zones' centred scores are summed block by block before squaring: a zone's neighbours
-    # move its outcome with their own coins, which puts their scores for the same block in step.
-    # On chc.zones' market, squaring them zone by zone put the standard error at 0.88 of the spread
-    step = (np.where(usable[live], scores - mean[:, None], 0.0) / used[:, None]).sum(axis=0)
-    correction = used.sum() / (used.sum() - used.size)
-    se = 2.0 * math.sqrt(float(step @ step) * correction) / (kept * used.size)
     return estimate, se, (estimate - z * se, estimate + z * se)
 
 
@@ -1140,3 +1195,437 @@ def restate_mde(
         },
     )
     return EstimandReport(estimand, report.arm, report.analysis, se, mde, report.bias, report.loss)
+
+
+# --- randomisation inference ----------------------------------------------------------------------
+
+Alternative = Literal["two-sided", "greater", "less"]
+"""Which statistics are at least as extreme as the observed one: larger in absolute value, larger,
+or smaller."""
+
+_ENUMERATE = 1 << 14  # a block design's schedules are all read up to this many, and drawn past it
+_BATCH = 1 << 20  # lever periods over the schedules a batch reads at once
+_KEEP = 1 << 23  # lever periods over the schedules an interval keeps instead of drawing again
+_TIE = 1e-9  # a statistic within this share of the observed one's size ties with it
+_PERSISTENCE_POINTS = 21  # memories on the persistence range the interval is projected over
+_WIDEST = 1024.0  # standard errors from the estimate past which an interval's end is infinite
+_END = 1e-3  # standard errors an interval's end is found to, and may overshoot by
+
+
+@dataclass(frozen=True)
+class RandomisationTest:
+    """The randomisation test of the sharp null that the lever moves no reading in any zone.
+
+    ``statistic`` is the reading's ``estimate / se``, as :func:`read_switchback` reads it, and
+    ``p_value`` the chance, over the design's schedules that the reading reads, of a statistic at
+    least as extreme against ``alternative``. When ``enumerated`` it is read off all ``schedules``
+    of the design, which are equally likely, less those the reading refuses; otherwise off
+    ``schedules`` drawn from it, as ``(1 + at least as extreme) / (1 + read)``. Either way it is
+    exact given that the data were read: under the null, ``P(p_value <= alpha) <= alpha``, at any
+    number of blocks and whatever the plant's memory. A reading with neither an effect nor a noise,
+    a constant outcome, has ``statistic`` NaN and ``p_value`` 1.
+    """
+
+    estimand: Horizon
+    analysis: SwitchbackAnalysis
+    alternative: Alternative
+    statistic: float
+    p_value: float
+    schedules: int
+    enumerated: bool
+
+
+def _log_chance(u: np.ndarray, design: MarkovDesign | BlockDesign, coins: int) -> float:
+    """The log-probability the design gives the observed lever: over the ``coins`` a zone the
+    reading reads for a block design, over every period for a Markov one."""
+    zones, periods = u.shape
+    if isinstance(design, BlockDesign):
+        starts = u[:, :: design.length]
+        if not (np.repeat(starts, design.length, axis=1)[:, :periods] == u).all():
+            raise ValueError(f"the lever changes inside a block of {design.length} periods")
+        return -zones * coins * math.log(2.0)
+    if not 0.0 <= design.flip <= 1.0:
+        raise ValueError(f"a Markov design flips with a probability in [0, 1], got {design.flip}")
+    switches = int(np.count_nonzero(np.diff(u, axis=1)))
+    stays = zones * (periods - 1) - switches
+    if (switches and design.flip == 0.0) or (stays and design.flip == 1.0):
+        raise ValueError(f"MarkovDesign({design.flip}) cannot have drawn this lever")
+    chance = -zones * math.log(2.0)
+    if switches:
+        chance += switches * math.log(design.flip)
+    if stays:
+        chance += stays * math.log1p(-design.flip)
+    return chance
+
+
+@dataclass(frozen=True)
+class _Randomisation:
+    """The design's schedules for one observed lever, and the statistic each gives an outcome."""
+
+    u: np.ndarray
+    estimand: Horizon
+    analysis: SwitchbackAnalysis
+    design: MarkovDesign | BlockDesign
+    alternative: Alternative
+    coins: int
+    enumerated: bool
+    draws: int
+    seed: int
+
+    @classmethod
+    def of(
+        cls,
+        u: np.ndarray,
+        estimand: Horizon,
+        analysis: SwitchbackAnalysis,
+        design: MarkovDesign | BlockDesign,
+        alternative: Alternative,
+        alpha: float,
+        draws: int,
+        seed: int,
+    ) -> _Randomisation:
+        if alternative not in ("two-sided", "greater", "less"):
+            raise ValueError(f"alternative is two-sided, greater or less, got {alternative!r}")
+        if draws < 1:
+            raise ValueError(f"need at least one drawn schedule, got {draws}")
+        zones, periods = u.shape
+        coins = 0
+        if isinstance(design, BlockDesign):
+            # the block difference reads whole blocks, and every other reading every period
+            whole = analysis == "block_dim"
+            coins = periods // design.length if whole else -(-periods // design.length)
+        enumerated = isinstance(design, BlockDesign) and (1 << (zones * coins)) <= _ENUMERATE
+        sides = 2 if alternative == "two-sided" else 1
+        # the complement of a schedule negates every reading and is as likely
+        smallest = sides * math.exp(_log_chance(u, design, coins))
+        if not enumerated:
+            smallest = max(smallest, 1.0 / (1.0 + draws))
+        if smallest > alpha:
+            raise ValueError(
+                f"this schedule's smallest {alternative} p-value is {smallest:.3g}, above "
+                f"alpha = {alpha}: no outcome could reject. K fair coins give 2^(1-K) two-sided "
+                "and 2^-K one-sided, so at 5% a block design needs six coins over the zones "
+                "two-sided and five one-sided"
+            )
+        return cls(u, estimand, analysis, design, alternative, coins, enumerated, draws, seed)
+
+    @property
+    def schedules(self) -> int:
+        return 1 << (self.u.shape[0] * self.coins) if self.enumerated else self.draws
+
+    def batches(self):
+        """The design's schedules, in batches of levers ``[schedule, zone, period]``."""
+        zones, periods = self.u.shape
+        size = max(1, _BATCH // (zones * periods))
+        design = self.design
+        if self.enumerated:
+            assert isinstance(design, BlockDesign)
+            n = zones * self.coins
+            tail = self.u[:, self.coins * design.length :]
+            for start in range(0, self.schedules, size):
+                index = np.arange(start, min(start + size, self.schedules))
+                coins = ((index[:, None] >> np.arange(n)) & 1).reshape(-1, zones, self.coins)
+                lever = np.repeat(coins.astype(np.float64), design.length, axis=-1)[..., :periods]
+                yield np.concatenate([lever, np.broadcast_to(tail, (len(index), *tail.shape))], -1)
+            return
+        rng = np.random.default_rng(self.seed)
+        for start in range(0, self.draws, size):
+            count = min(size, self.draws - start)
+            if isinstance(design, MarkovDesign):
+                path = np.concatenate(
+                    [
+                        rng.random((count, zones, 1)) < 0.5,
+                        rng.random((count, zones, periods - 1)) < design.flip,
+                    ],
+                    axis=-1,
+                )
+                yield (np.cumsum(path, axis=-1) % 2).astype(np.float64)
+            else:
+                coins = rng.random((count, zones, -(-periods // design.length))) < 0.5
+                lever = np.repeat(coins.astype(np.float64), design.length, axis=-1)
+                yield lever[..., :periods]
+
+    def statistic(self, levers: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """The reading's ``estimate / se`` for each lever against the one outcome ``y``, and NaN
+        where :func:`read_switchback` would refuse the schedule: no switch or no usable block to
+        read, a steady state past ``a_hat >= 1``, no positive variance, or a local projection's
+        lever that is not i.i.d."""
+        h, analysis, design = self.estimand.periods, self.analysis, self.design
+        with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+            if analysis == "block_dim":
+                assert isinstance(design, BlockDesign)
+                count = levers.shape[-1] // design.length
+                estimate, se = _block_reading(
+                    2.0 * levers[..., : count * design.length : design.length] - 1.0,
+                    _block_totals(y, design, count),
+                    design.length - design.washout,
+                )
+            else:
+                switches = np.abs(np.diff(levers, axis=-1)).sum(axis=-1)
+                # a lever that never switches leaves the regression singular, and so does one
+                # that alternates every period when it is its own lag's instrument
+                idle = switches == 0.0
+                if analysis == "iv":
+                    idle |= switches == levers.shape[-1] - 1
+                degenerate = idle.all(axis=-1)
+                if analysis == "local_projection":
+                    centred = _within(levers)
+                    lag_one = (centred[..., 1:] * centred[..., :-1]).sum(axis=(-2, -1)) / (
+                        centred * centred
+                    ).sum(axis=(-2, -1))
+                    degenerate |= np.abs(lag_one) * math.sqrt(self.u.size) > _IID
+                levers = np.where(degenerate[..., None, None], self.u, levers)
+                if analysis == "local_projection":
+                    estimate, variance = _projection_fit(levers, y, int(h))
+                else:
+                    theta, cov = _plant_fit(levers, y, analysis)
+                    estimate, variance = _plug_in(theta, cov, h)
+                    if math.isinf(h):
+                        estimate = np.where(theta[..., 0] < 1.0, estimate, np.nan)
+                estimate = np.where(degenerate, np.nan, estimate)
+                se = np.sqrt(np.where(variance > 0.0, variance, np.nan))
+            return estimate / se
+
+    def oriented(self, statistic):
+        """The statistic, larger where it is more extreme against the alternative."""
+        if self.alternative == "two-sided":
+            return np.abs(statistic)
+        return statistic if self.alternative == "greater" else -statistic
+
+    def p_value(self, y: np.ndarray, schedules=None) -> tuple[float, float]:
+        """The observed statistic and its p-value over the design's schedules the reading reads.
+
+        Under the null the outcome is fixed, and so is which schedules the reading reads, so the
+        observed schedule, which it read, is a draw from the design restricted to them: the
+        p-value is exact given that the data were read. Counting the other schedules as never
+        extreme is exact only over all of them, and given a reading allows up to ``alpha`` over
+        the share read: the block difference reads ``1 - 2^(3 - K)`` of one zone's ``K`` coins,
+        7/8 at six."""
+        observed = float(self.statistic(self.u, y))
+        if math.isnan(observed):
+            return observed, 1.0
+        # a reading without noise has an infinite statistic, which ties only with another
+        tie = _TIE * max(abs(observed), 1.0) if math.isfinite(observed) else 0.0
+        bar = self.oriented(observed) - tie
+        extreme = total = 0
+        for levers in self.batches() if schedules is None else schedules:
+            statistic = self.statistic(levers, y)
+            read = statistic[~np.isnan(statistic)]
+            extreme += int(np.count_nonzero(self.oriented(read) >= bar))
+            total += read.size
+        return observed, extreme / total if self.enumerated else (1 + extreme) / (1 + total)
+
+
+def _prepare(
+    lever, outcome, estimand, analysis, design, alpha
+) -> tuple[np.ndarray, np.ndarray, SwitchbackReading]:
+    blocks = None
+    if analysis == "block_dim":
+        if not isinstance(design, BlockDesign):
+            raise ValueError(f"the block difference reads a BlockDesign, got {design}")
+        blocks = design
+    reading = read_switchback(lever, outcome, estimand, analysis, blocks=blocks, alpha=alpha)
+    u = np.atleast_2d(np.asarray(lever, dtype=np.float64))
+    return u, np.atleast_2d(np.asarray(outcome, dtype=np.float64)), reading
+
+
+def randomisation_test(
+    lever: ArrayLike,
+    outcome: ArrayLike,
+    estimand: Horizon,
+    analysis: SwitchbackAnalysis,
+    design: MarkovDesign | BlockDesign,
+    *,
+    alternative: Alternative = "two-sided",
+    alpha: float = 0.05,
+    draws: int = 9999,
+    seed: int = 0,
+) -> RandomisationTest:
+    """Test the sharp null that the lever moves no reading, in any zone and at any lag, by
+    drawing the design's schedule again: Fisher's randomisation test, with the reading's
+    ``estimate / se`` as the statistic.
+
+    Under the null the outcome does not depend on the schedule, so the observed statistic is one
+    draw from its distribution over the design's schedules, and the p-value is exact at any number
+    of blocks, whatever the plant's memory or the zones' spillover: there is no effect to carry or
+    to spill. The schedules the reading refuses, such as a block schedule with fewer than two
+    blocks after both settings, are left out of that distribution, since the observed one is a
+    schedule the reading read; counting them as never extreme instead would reject up to ``alpha``
+    over the share read, 0.107 at 10% on six blocks. The statistic is studentised, which also keeps
+    the test's level, in large samples, under the weaker null of an effect that averages zero (Wu
+    and Ding 2021).
+
+    ``lever`` and ``outcome`` are as :func:`read_switchback` takes them, and ``design`` is the one
+    that drew the lever: every zone's schedule independently, a Markov design's from a fair first
+    period and a block design's one fair coin a block. A block design with at most 2^14 schedules
+    over the zones is enumerated; otherwise ``draws`` schedules are drawn with ``seed``.
+
+    On the working model with ``a = 0.8`` and no effect (``scripts/bench_switchback_randomisation.py
+    size``, 1000 runs each, less those the reading refused), it rejected at 5% 3.6%, 5.2% and 4.6%
+    of the block differences of ``tau_5`` over 6, 8 and 12 blocks, where the Wald interval
+    excluded 0 in 17.2%, 11.9% and 7.2%; 5.8% and 5.4% of the plug-in's ``tau_3`` over 30 and 60
+    periods of ``MarkovDesign(0.3)``, against Wald's 8.7% and 6.1%; and 4.4% of the steady state's
+    over 60 periods at ``a = 0.9``, against Fieller's 5.3%. Against pyfixest 0.60.0's ``ritest``,
+    on 200 logs of an i.i.d. lever over 80 periods, the channel's statistic agreed with its HC1 t
+    to 1e-13. Its p-values, from 999 permutations of the lever where this redraws 4999 schedules,
+    differed by 0.008 on average and 0.054 at most, which the permutations' own noise allows.
+
+    Raises:
+        ValueError: when :func:`read_switchback` refuses the data, the design cannot have drawn the
+            lever or the block difference is asked of a Markov design, or no outcome could reject
+            at ``alpha``: ``K`` fair coins give a two-sided p-value of at least ``2^(1 - K)``, so
+            at 5% a block design needs six coins over the zones two-sided and five one-sided.
+    """
+    u, y, _ = _prepare(lever, outcome, estimand, analysis, design, alpha)
+    null = _Randomisation.of(u, estimand, analysis, design, alternative, alpha, draws, seed)
+    statistic, p = null.p_value(y)
+    _log.info(
+        "switchback randomisation test: %s by %s, p = %.4g",
+        estimand.name,
+        analysis,
+        p,
+        extra={
+            "chc_event": "switchback_randomisation",
+            "statistic": statistic,
+            "p": p,
+            "schedules": null.schedules,
+            "enumerated": null.enumerated,
+        },
+    )
+    return RandomisationTest(
+        estimand, analysis, alternative, statistic, p, null.schedules, null.enumerated
+    )
+
+
+def _kernel(u: np.ndarray, a: float) -> np.ndarray:
+    """``sum_{s >= 1} a^(s - 1) u_(t - s)`` for every reading ``t``: what one unit of the channel
+    puts into it, the experiment's periods only."""
+    carried = signal.lfilter([1.0], [1.0, -a], u, axis=-1)
+    return np.concatenate([np.zeros((u.shape[0], 1)), carried], axis=-1)
+
+
+def randomisation_interval(
+    lever: ArrayLike,
+    outcome: ArrayLike,
+    estimand: Horizon,
+    analysis: SwitchbackAnalysis,
+    design: MarkovDesign | BlockDesign,
+    persistence: tuple[float, float],
+    *,
+    alpha: float = 0.05,
+    draws: int = 999,
+    seed: int = 0,
+) -> tuple[float, float]:
+    """``estimand``'s ``1 - alpha`` confidence interval, by inverting :func:`randomisation_test`
+    under the working model's joint null.
+
+    A null that names ``tau_H`` alone is not sharp on a plant with memory: the schedule moves each
+    reading through the whole path of the lever, ``b sum_{s >= 1} a^(s - 1) u_(t - s)``, and two
+    memories with the same ``tau_H`` impute different readings. The joint null ``(a, b)`` is sharp:
+    it imputes the readings with the lever off, ``y - b sum a^(s - 1) u_(t - s)``, which the
+    schedule cannot move, and the test of no effect on them is exact
+    (``validation/switchback_randomisation.mac``). So the set of every ``tau_H = b S_H(a)`` that
+    some ``a`` in ``persistence`` leaves unrejected at ``alpha`` covers ``tau_H`` with probability
+    at least ``1 - alpha`` whenever the plant is first-order with its ``a`` in that range: at any
+    number of blocks, where the Wald and Fieller intervals are asymptotic. The statistic is read
+    off the imputed readings rather than compared with the effect, so a reading that is biased for
+    its effect, as the block difference is for the steady state, keeps that. The range is the
+    price: it is an assumption, and a long memory read over few blocks is unbounded.
+
+    On the working model (``scripts/bench_switchback_randomisation.py``, 400 runs a case, 1000 for
+    the long memory; a run whose every effect the test rejected counts as a miss):
+
+    * the block difference of ``tau_5`` at ``a = 0.8`` over 8, 12 and 20 blocks. Wald covered
+      0.886, 0.932 and 0.932. Over ``(0.6, 0.9)`` this covered 0.995, 0.980 and 0.973, unbounded
+      in 78%, 10% and none of the runs; at the true memory alone 0.956, 0.935 and 0.948, unbounded
+      in 28% of the runs over 8 blocks. At the truth the test rejected 4.0% and 4.9% of 4000 runs
+      over 8 and 12 blocks.
+    * the plug-in's ``tau_3`` over 40 periods of ``MarkovDesign(0.3)``: Wald 0.925, the range
+      0.990, the true memory 0.953, at 1.35 and 1.14 times Wald's median width.
+    * the plug-in's steady state at ``a = 0.9`` over 60 and 120 periods: Fieller 0.890 and 0.918,
+      unbounded in 23% and 2% of the runs. Over ``(0.8, 0.95)`` this covered 0.993 and 1.000 at
+      1.37 and 1.57 times Fieller's median width, and at the true memory 0.938 and 0.940 at half
+      of it.
+    * ``tau_2`` at ``a = 0.95`` over 12 and 24 blocks of 2: Wald 0.919 and 0.934, the true memory
+      0.949 and 0.947, but unbounded in 94% and 84% of the runs.
+
+    A null without the memory, ``persistence = (0, 0)``, is not sharp under carryover. For the
+    block difference it still covered 0.950 to 0.966 in every case above, and never unbounded; for
+    the plug-in it covered 0.53 of ``tau_3`` and none of the steady states, where it rejected every
+    effect in 41% and 48% of the runs.
+
+    Every null is tested on the same ``draws`` schedules, or on all of a block design's when it has
+    at most 2^14, at 21 memories spread evenly across ``persistence``; a memory between two of
+    them is covered by continuity, not exactly. The ends are found from the first effect accepted
+    near the estimate, by steps that double until the test rejects and then bisection to a
+    thousandth of a standard error, each end reported on its rejected side. An accepted set with
+    gaps may come back with a gap filled, or cut at the first rejection a step lands on. An end
+    past 1024 standard errors is infinite.
+
+    Raises:
+        ValueError: when :func:`randomisation_test` would refuse, ``persistence`` is not
+            ``0 <= lo <= hi < 1``, or the test rejects every effect within eight standard errors
+            of the estimate at every memory in the range: the data are at odds with a first-order
+            plant there, at least near the estimate.
+    """
+    lo, hi = (float(v) for v in persistence)
+    if not 0.0 <= lo <= hi < 1.0:
+        raise ValueError(f"the persistence range must satisfy 0 <= lo <= hi < 1, got {persistence}")
+    u, y, reading = _prepare(lever, outcome, estimand, analysis, design, alpha)
+    null = _Randomisation.of(u, estimand, analysis, design, "two-sided", alpha, draws, seed)
+    kept = list(null.batches()) if null.schedules * u.size <= _KEEP else None
+    h = estimand.periods
+    memories = np.linspace(lo, hi, _PERSISTENCE_POINTS if hi > lo else 1)
+    channels = [(_kernel(u, a) / _s(a, h)) for a in memories]
+    order = list(range(len(memories)))
+
+    def accepted(tau: float) -> bool:
+        for k, j in enumerate(order):
+            if null.p_value(y - tau * channels[j], kept)[1] > alpha:
+                order.insert(0, order.pop(k))
+                return True
+        return False
+
+    # the search's unit; a reading without noise has no standard error to step by
+    centre, scale = reading.estimate, reading.se or max(abs(reading.estimate), 1.0)
+    candidates = [centre] + [centre + s * k * scale for k in range(1, 9) for s in (1.0, -1.0)]
+    start = next((tau for tau in candidates if accepted(tau)), None)
+    if start is None:
+        raise ValueError(
+            f"the randomisation test rejects every {estimand.name} within eight standard errors of "
+            f"{centre:.4g} at every memory in [{lo}, {hi}]: the data are at odds with a "
+            "first-order plant over that range"
+        )
+    ends = []
+    for direction in (-1.0, 1.0):
+        inside, step = start, scale
+        while accepted(start + direction * step):
+            inside = start + direction * step
+            step *= 2.0
+            if step > _WIDEST * scale:
+                ends.append(direction * math.inf)
+                break
+        else:
+            outside = start + direction * step
+            while abs(outside - inside) > _END * scale:
+                middle = 0.5 * (inside + outside)
+                if accepted(middle):
+                    inside = middle
+                else:
+                    outside = middle
+            ends.append(outside)
+    interval = (ends[0], ends[1])
+    _log.info(
+        "switchback randomisation interval: %s by %s, [%.4g, %.4g]",
+        estimand.name,
+        analysis,
+        *interval,
+        extra={
+            "chc_event": "switchback_randomisation_interval",
+            "interval": interval,
+            "persistence": (lo, hi),
+            "schedules": null.schedules,
+            "enumerated": null.enumerated,
+        },
+    )
+    return interval

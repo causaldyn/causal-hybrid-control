@@ -155,6 +155,29 @@ still change).
     float64, the fit was identified and read the channel as `0.0009 ± 0.0013` against a true 0.8.
     `unmoved` is what says the log cannot tell.
 
+- **`randomisation_test` and `randomisation_interval`: a switchback read off its own
+  randomisation** (*experimental*, ADR 0025). `read_switchback`'s intervals are asymptotic in the
+  run's length. `randomisation_test` tests the sharp null that the lever moves no reading by
+  drawing the design's schedule again: every schedule of a block design up to 2^14 of them,
+  otherwise `draws`. Its statistic is the reading's `estimate / se`. It is exact at any number of
+  blocks and whatever the plant's memory, given that the data were read: the schedules the reading
+  refuses are not part of the reference. `randomisation_interval` inverts it under the working
+  model's joint null of persistence and channel, over a range of persistence the caller gives,
+  since a null that names the effect alone is not sharp under carryover. Both join the top level,
+  and so does `MarkovDesign`, which they take.
+  - **Where Wald fails** (`scripts/bench_switchback_randomisation.py`, on the working model). At
+    `a = 0.8` the block difference's Wald interval rejected a true zero in 17.2%, 11.9% and 7.2%
+    of the runs over 6, 8 and 12 blocks; the test rejected 3.6%, 5.2% and 4.6%. Where Wald covered
+    0.886 to 0.919 (8 blocks, a steady state over 60 periods, a memory of 0.95), the interval
+    over a range holding the truth covered at least 0.986, and at the true memory 0.938 to 0.956.
+    The price is width: at few blocks and a long memory the exact interval is mostly unbounded.
+  - **The memory is part of the null.** Without it, the plug-in's interval covered 0.53 of
+    `tau_3` and none of the steady states.
+  - **Against pyfixest's `ritest`** on an i.i.d. lever: the statistic agreed with its HC1 t to
+    4e-15, and the p-values within the permutations' noise.
+  - **Scope.** The interval needs a first-order state per zone, and imputes each zone from its own
+    lever; the test's null of no effect anywhere needs neither.
+
 ### Changed
 
 - **The suite runs over worker processes, and on the GPU from an opt-in group.** `pytest-xdist`

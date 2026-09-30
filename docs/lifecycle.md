@@ -114,7 +114,11 @@ documented, and what is not built yet. Every name below is importable from `chc`
   standard error from the data, and warns when the data reject the first-order state the plug-in
   rests on. `restate_mde` re-reads an effect's standard error from the run's first periods, an
   internal pilot, and restates the minimum detectable effect the whole run can detect, so a plan
-  whose working model missed a second state or spillover is corrected by the run itself. Scope: a
+  whose working model missed a second state or spillover is corrected by the run itself.
+  `randomisation_test` draws the design's schedule again to test the sharp null that the lever
+  moves nothing: exact at any number of blocks and whatever the plant's memory, where
+  `read_switchback`'s interval is asymptotic. `randomisation_interval` inverts it under the working
+  model's joint null of persistence and channel, exact given a range for the persistence. Scope: a
   first-order state per zone, and a plan that takes the zones as independent. See
   [`chc.switchback`](api/switchback.md).
 - **`shadow_price_effect`** (*experimental*). An experiment on a matching market treats some of the
