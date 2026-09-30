@@ -96,6 +96,27 @@ gives the same bounds to 2e-10 (`scripts/doubleml_bound_reference.py`).
 The two models do not convert into each other: `Γ` bounds how far a confounder moves the odds of
 treatment, the shares how much of two variances it explains. Where both apply, report both.
 
+## Where a move flips
+
+A reallocation's value is linear in the channel, so each model gives its flip point in one call. In
+variance shares it is the move's robustness value:
+
+```python
+move = np.zeros(fit.residual.channel.shape)
+move[0, a, 0], move[0, b, 0] = -1.0, 1.0  # one unit of spend from lever a to lever b
+bound = omitted_confounder_bound(fit, move, cf_y=0.1, cf_d=0.1)
+bound.robustness_value  # the shares at which the move's value could be zero
+```
+
+With `null` set to what a unit moved costs, it is the shares at which the move stops paying for
+itself. In `Γ`, the identified set of the move's value, `d̂ ± (Γ-1)/(Γ+1)·G` for the analyst's gap
+`G`, reaches zero at `Γ = (G + |d̂|)/(G - |d̂|)`. That is `barrier_gamma_star(abs(d_hat), G, 1.0)`,
+the inversion a certificate makes, with the value's distance from zero as the radius the decision
+can absorb. Past the flip the move's sign is not identified, and the robust criteria part:
+`minimax_action`'s worst cost is least at holding, while its `criterion="regret"` still moves, the
+estimate's way, hedged. `tests/test_reallocation_flip.py` holds all three, the first against a grid
+of `Γ`.
+
 ## Spend it on performance
 
 The radius widens a pessimism radius (never optimistic, tight at `Γ = 1`, monotone). The

@@ -102,6 +102,12 @@ still change).
   nominal 0.95, at half the shares in 0.216 (`scripts/bench_omitted_confounder.py`). DoubleML
   0.11.4, fed the same cross-fitted predictions, gives the same bounds to 2e-10
   (`scripts/doubleml_bound_reference.py`).
+- **Where a reallocation flips** (`docs/concepts/gamma.md`). In variance shares a move of spend
+  flips at `omitted_confounder_bound`'s robustness value on it. In `Γ`, for the analyst's CVaR gap,
+  it flips where `barrier_gamma_star` puts a certificate's ceiling, with the value's distance from
+  zero as the radius. Past the flip `minimax_action` holds under its cost criterion and still moves,
+  hedged, under `criterion="regret"`. `tests/test_reallocation_flip.py` holds the three on a fitted
+  two-lever channel, the `Γ` flip against a grid of `Γ`.
 
 ### Changed
 
