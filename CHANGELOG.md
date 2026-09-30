@@ -74,6 +74,19 @@ still change).
   setting (`validation/planner_oracles.mac`, STEP 5), where the price is what the step the budget
   leaves inside the box is worth, and a budget of whole steps is degenerate between the steps on
   either side. Without a budget nothing moves.
+- **The discount DLM's monitor, measured** (`scripts/bench_dlm_monitor.py`). `monitor_evalues`
+  read by `DriftAlarm` at an average run length of 1000, on a local level the filter tracks
+  exactly, so the null holds by construction: over 300 series it alarmed by step 100 on 0.027
+  (0.012-0.052), under its bound of 0.1, where West and Harrison's monitor at `tau = 0.135`
+  alarmed on 0.997, within a median of 13 steps. The price is the window a change leaves: at
+  `delta = 0.9` the filter absorbs a shift of two one-step deviations within a few steps, and
+  `DriftAlarm` caught 74% of them within 1000 steps, where the textbook monitor caught every one
+  at once; a shift of three it caught in all but one, with a median delay of 3. A known variance
+  set too low reads as a change, 57% by step 100 with every deviation 1.25 times what it allowed
+  for; learned, 4.3%. `chc.dlm`'s docstring states both. `tests/test_dlm.py` holds the e-values'
+  mean at 1 on the model's own forecasts, where a one-step scale 10% too large moves it eight
+  standard errors, and takes West and Harrison's feed-back intervention at the step an alarm on
+  a break sounds.
 
 ## [0.9.0] — 2026-09-30
 

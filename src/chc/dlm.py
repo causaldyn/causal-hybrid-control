@@ -68,6 +68,17 @@ What it does not do, and what to watch:
   coefficients' discount at 0.95 or above in 450 and below 0.9 in none, and the 90% intervals of a
   channel's contribution over 13 weeks covered 0.78 and 0.77; fixed at 0.85 or 0.9 they covered
   0.88-0.90. An interval reported from the likelihood's pick alone is too narrow.
+* **A monitor has until the filter absorbs a change.** Once the discount has taken a shift into
+  the level, the one-step errors are white again. On ``scripts/bench_dlm_monitor.py``'s local
+  level at ``delta = 0.9``, 300 series, :class:`chc.gate.DriftAlarm` at an average run length of
+  1000 caught a shift of two one-step deviations within 1000 steps in 74% of them, and one of
+  three in all but one. West and Harrison's monitor at ``tau = 0.135`` caught each within a
+  median of one step, and on unchanged series alarmed within a median of 13; DriftAlarm alarmed
+  by step 100 on 2.7% of them, under its bound of 10%. Those series are the model's own, so the
+  bound holds there by construction.
+* **A known variance set too low reads as a change.** With every deviation 1.25 times what the
+  known variance allowed for, the alarm sounded by step 100 on 57% of the series; with the
+  variance learned from a prior of five degrees of freedom, on 4.3%.
 
 :func:`monitor_evalues` turns the one-step errors into e-values for West and Harrison's (1986)
 alternatives -- a shift of the location, an inflation of the scale -- which

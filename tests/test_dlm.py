@@ -22,6 +22,7 @@ from chc.dlm import (
     monitor_evalues,
     smooth,
 )
+from chc.gate import DriftAlarm
 
 
 def _prior(p: int, *, scale: float = 1.0, dof: float = math.inf, spread: float = 10.0) -> Prior:
@@ -365,6 +366,52 @@ def test_monitor_evalues_are_density_ratios_with_mean_one():
     np.testing.assert_allclose(e[:, 0], stats.t.pdf(u - 2.0, nu) / base, rtol=1e-10)
     np.testing.assert_allclose(e[:, 1], stats.t.pdf(u + 2.0, nu) / base, rtol=1e-10)
     np.testing.assert_allclose(e[:, 2], stats.t.pdf(u / 2.5, nu) / 2.5 / base, rtol=1e-10)
+
+
+def _steady_level(
+    seed: int, horizon: int, delta: float
+) -> tuple[DynamicLinearModel, np.ndarray, np.ndarray]:
+    """A local level with ``W / V = (1 - delta)^2 / delta``, ``V = 1``, from the discount filter's
+    steady state, so the filter is the truth's Kalman filter and its standardised errors are iid;
+    the model, the level and the series."""
+    rng = np.random.default_rng(seed)
+    start = math.sqrt(1.0 - delta) * rng.standard_normal()
+    level = start + np.cumsum((1.0 - delta) / math.sqrt(delta) * rng.standard_normal(horizon))
+    prior = Prior(np.zeros(1), np.array([[1.0 - delta]]), 1.0, math.inf)
+    model = DynamicLinearModel((Polynomial(1, delta),), prior)
+    return model, level, level + rng.standard_normal(horizon)
+
+
+def test_the_monitor_s_e_values_average_one_on_the_model_s_own_forecasts():
+    """The shift's e-value has variance ``exp(h^2) - 1``, the inflation's
+    ``1 / (k^2 sqrt(2 / k^2 - 1)) - 1``, finite for ``k < sqrt 2``. At ``k = 1.25`` a one-step scale
+    10% too large moves its mean to 0.975, eight of its standard errors at this length."""
+    model, _, y = _steady_level(17, 20_000, 0.9)
+    evalues = monitor_evalues(forward_filter(model, y), shifts=(2.0,), inflations=(1.25,))
+    k = 1.25
+    variance = np.array(
+        [math.exp(4.0) - 1.0] * 2 + [1.0 / (k**2 * math.sqrt(2.0 / k**2 - 1.0)) - 1.0]
+    )
+    error = np.sqrt(variance / y.size)
+    assert np.all(np.abs(evalues.mean(axis=0) - 1.0) < 4.0 * error)
+
+
+def test_an_alarm_on_a_break_is_the_step_to_intervene_at():
+    """West and Harrison's feed-back: the step the alarm sounds at is filtered again with its prior
+    discounted, and the level catches the break there, not at the filter's gain a step."""
+    model, level, y = _steady_level(19, 260, 0.9)
+    shift = 4.0 / math.sqrt(0.9)  # four of the steady one-step forecast's deviations
+    level[200:] += shift
+    y[200:] += shift
+    alarm = DriftAlarm(1_000.0)
+    rows = monitor_evalues(forward_filter(model, y))
+    first = next((step for step, row in enumerate(rows) if alarm.update(row[None, :])), None)
+    assert first is not None
+    assert 200 <= first <= 205
+    after = slice(first, first + 10)
+    plain = forward_filter(model, y).mean[after, 0]
+    helped = forward_filter(model, y, interventions={first: 0.01}).mean[after, 0]
+    assert np.abs(helped - level[after]).mean() < 0.3 * np.abs(plain - level[after]).mean()
 
 
 def test_an_intervention_lets_the_level_catch_a_break():
