@@ -41,6 +41,21 @@ still change).
     Michaelis-Menten channel, the plan from zero spend now reaches the best split on each of eleven
     S-shaped families; a descent from zeros stopped at the greedy corner on the Hill, and reported
     convergence. A model with no such curve plans as before.
+- **Carryover and the return per unit, in `chc.response`** (*experimental*, ADR 0030).
+  - **Three kernels**: `GeometricAdstock`, `DelayedAdstock`, whose carryover peaks after the spend,
+    and `WeibullAdstock`, the survival of each lag under a Weibull CDF. Each has a length of its
+    own, so logging another period moves no earlier adstock, and `normalized` has no default; both
+    are keyword-only. `Channel(kernel, curve, coefficient)` is a channel's return, adstock first.
+  - **One definition of return, read four ways**, in the outcome's units unless `revenue_per_kpi`
+    turns a KPI into revenue: `contribution`, the channel's return in a window's periods; and per
+    currency unit, `roi`, the incremental return on a window's spend, carryover included;
+    `marginal_roi`, its derivative along the window's spend; and `steady_state_marginal_roi`, the
+    slope of a period's return once the adstock of a constant spend has settled.
+  - **PyMC-Marketing, mapped.** `scripts/pymc_marketing_reference.py` runs PyMC-Marketing 1.2.0's
+    kernels and saturation functions beside these in a throwaway environment: every one agrees to
+    `2.2e-16` of its largest value but `hill_function`, to `2.3e-9`, because PyTensor makes the
+    Python floats it is called with float32 constants. Its CDF Weibull kernel with `l_max` carries
+    `l_max + 1` weights: `WeibullAdstock` of that length.
 
 ## [0.9.0] — 2026-09-30
 

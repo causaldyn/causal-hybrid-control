@@ -84,18 +84,19 @@ curve, `h(A) = A h'(A)`, and the curve beyond (Weber, Prop. 3.8). Its optimum bo
   convergence. Where the best split spends past the curve's tangency the relaxed cost matches the
   plan's to `1e-12` of it; on the gamma CDF with shape 3 the tangency lies past the budget, and the
   gap is positive, a bound and not a certificate of optimality.
-- Nothing in the library plans on these curves yet: `chc.mmm`'s plant keeps its own Hill until the
-  adstock kernels arrive. It is experimental until the plant and Track M v2 read it.
+- Nothing in the library plans on these curves yet: `chc.mmm`'s plant keeps its own Hill on its
+  adstock state until it takes a `Saturation`. It is experimental until the plant and Track M v2
+  read it.
 
 ## Not built
 
-- **The adstock kernels** (geometric, delayed peak, Weibull), the ROI set (R21), and the plant's
-  Hill replaced by a `Saturation`.
+- **The adstock kernels** (geometric, delayed peak, Weibull) and the return per unit, built by
+  ADR 0030; the plant's Hill replaced by a `Saturation`.
 - **Fitting every family and planning against those that fit alike**, minimax regret across them
   (PL4), scored on Track M v2's worlds whose true curve is each family in turn.
 - **The context-dependent Hill** (arXiv:2406.16728), after a check of the paper.
-- **The mapping from PyMC-Marketing's and Meridian's forms**, checked against them in a throwaway
-  environment (R17).
+- **The mapping from Meridian's forms**, checked against them in a throwaway environment;
+  PyMC-Marketing's is built by ADR 0030.
 
 ## Alternatives considered
 

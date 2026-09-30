@@ -1,4 +1,5 @@
-"""Response curves: how a channel's return rises with what is spent on it.
+"""A channel's response to its spend: how its return rises with what is spent, how long the spend
+carries over, and what the return is per unit spent.
 
 Every family is a standard shape ``g`` of spend in units of its own scale ``K``,
 ``h(spend) = g(spend / K)``, with ``K`` in currency and every other parameter dimensionless. A
@@ -21,9 +22,7 @@ about envelopes applies to it.
 
 A floor is not a shape. At zero spend a floor is the plant's base, so Janoschek's curve is
 :class:`Weibull` with a floor, and ADBUDG (Little 1970) and Morgan--Mercer--Flodin are
-:class:`Hill` with one. PyMC-Marketing's ``LogisticSaturation``,
-``(1 - e^{-lam x}) / (1 + e^{-lam x})``, is ``tanh(lam x / 2)``: concave from zero, so
-:class:`Tanh` with ``K = 2 / lam``, not :class:`Logistic`.
+:class:`Hill` with one.
 
 **Why the envelope.** On an S-shaped curve ``h'(0) = 0`` wherever the curve starts convex, so zero
 spend on a channel is a stationary point, and a planner started at zero can stop there and report
@@ -35,15 +34,49 @@ a model for its envelope, and :func:`chc.plan.causal_plan` plans the relaxed mod
 is given no warm start. The inflection and the tangency are in closed form where one exists and
 found as a root otherwise (``validation/response_curves.mac``).
 
+**Carryover** (:class:`Adstock`). A period's adstock is the spend of the ``length`` periods up to
+it, weighted by lag, ``a_t = sum_{l < L} w_l s_{t - l}``, with nothing spent before the series:
+:class:`GeometricAdstock`, :class:`DelayedAdstock`, whose carryover peaks after the spend, and
+:class:`WeibullAdstock`. The length is the kernel's own, never a share of the series, so logging
+another period moves no earlier value; ``normalized`` has no default, since packages differ on it
+and every coefficient fitted through the kernel moves with it. :class:`Channel` is a channel's
+return, ``coefficient * curve(kernel(spend))``, adstock first.
+
+**The return**, in the outcome's units unless ``revenue_per_kpi`` turns a KPI into revenue:
+:func:`contribution`, the channel's return in a window's periods; and per currency unit spent,
+:func:`roi`, the incremental return on a window's spend, carryover included;
+:func:`marginal_roi`, the return on one more unit spread over the window; and
+:func:`steady_state_marginal_roi`, the slope of a period's return once the adstock of a constant
+spend has settled. A coefficient is none of them: through a long geometric kernel of
+retention ``r`` a unit of spend on a linear channel returns ``1 / (1 - r)`` times what it returns
+in its own period, and on a saturating curve the return per unit moves with the spend.
+
+**PyMC-Marketing, mapped** (``scripts/pymc_marketing_reference.py`` runs its transforms beside
+these). ``geometric_adstock`` and ``delayed_adstock`` with ``l_max`` are :class:`GeometricAdstock`
+and :class:`DelayedAdstock` with ``length = l_max``; the CDF ``weibull_adstock`` with ``l_max``
+carries one weight more, :class:`WeibullAdstock` with ``length = l_max + 1`` and its ``lam`` as
+``scale``. ``LogisticSaturation``, ``(1 - e^{-lam x}) / (1 + e^{-lam x})``, is
+``tanh(lam x / 2)``: concave from zero, so :class:`Tanh` with ``K = 2 / lam``, not
+:class:`Logistic`. ``tanh_saturation`` with ``b`` and ``c`` is ``b`` times :class:`Tanh` with
+``K = b c``, ``michaelis_menten`` with ``alpha`` and ``lam`` is ``alpha`` times
+:class:`MichaelisMenten` with ``K = lam``, ``hill_function`` is :class:`Hill`,
+``hill_saturation_sigmoid`` is a multiple of :class:`Logistic`, and ``root_saturation`` is
+:class:`Power`. Neither PyMC-Marketing nor Meridian is a dependency: each would bring a
+probabilistic-programming stack for a few closed forms, and neither has the envelope.
+
 HONEST SCOPE:
 
 * :meth:`Saturation.inflection`, :meth:`Saturation.tangency` and :class:`Envelope` read concrete
   parameters: a fitted curve, not one inside a trace. Every curve itself traces, differentiates and
-  compiles, and its parameters are leaves a fit can move.
+  compiles, and its parameters are leaves a fit can move. So does every kernel.
 * :class:`BetaCDF` has no derivative in its shapes ``a`` and ``b``, since JAX's ``betainc`` has
   none; asking for one raises. :class:`Kumaraswamy` is its closed-form counterpart.
 * Spend is nonnegative. Below zero a family's value is not defined, and several return ``nan``.
 * In single precision the numeric tangencies are good to single precision.
+* The readings of the return take concrete numbers: they report on a fitted channel, not on one
+  inside a trace. The carryover they count is what falls inside the series; to count the rest,
+  extend the series with what is spent after it.
+* Meridian's forms are not mapped yet, nor run beside these.
 """
 
 from __future__ import annotations
@@ -51,6 +84,7 @@ from __future__ import annotations
 import abc
 import functools
 import math
+from collections.abc import Callable
 from typing import ClassVar, TypeVar
 
 import equinox as eqx
@@ -77,8 +111,8 @@ def _require(
     """Refuse a parameter outside ``(low, high]``, or ``[low, high]`` when ``low_included``."""
     if jnp.ndim(value) != 0:
         raise ValueError(
-            f"{name} has shape {jnp.shape(value)}; a curve takes one number per parameter, so "
-            "several channels take several curves"
+            f"{name} has shape {jnp.shape(value)}; each parameter is one number, so several "
+            "channels take several curves and kernels"
         )
     if isinstance(value, Tracer):
         return  # a fit's own parameterisation keeps a traced value in range
@@ -629,3 +663,204 @@ class Ricker(Response):
 
     def standard(self, z: Array) -> Array:
         return z * jnp.exp(1.0 - z)
+
+
+def _length(length: int) -> None:
+    if not (isinstance(length, int) and length >= 1):
+        raise ValueError(f"length={length!r} is not a whole number of periods, at least 1")
+
+
+class Adstock(eqx.Module):
+    """A carryover kernel: ``a_t = sum_{l < L} w_l s_{t - l}``, the spend of the ``length`` periods
+    up to a period weighted by lag, with nothing spent before the series.
+
+    A period's adstock reads those ``L`` periods and no others, so appending periods to a series
+    moves no earlier value, and ``normalized`` divides by the kernel's own sum, never the series'.
+    It has no default: packages differ on it, and every coefficient fitted through the kernel moves
+    with it.
+    """
+
+    length: eqx.AbstractVar[int]
+    normalized: eqx.AbstractVar[bool]
+
+    @abc.abstractmethod
+    def _unnormalized(self) -> Array:
+        """The ``(length,)`` weights before normalising, lag 0 first."""
+
+    def weights(self) -> Array:
+        """The ``(length,)`` weights, lag 0 first."""
+        weights = self._unnormalized()
+        return weights / jnp.sum(weights) if self.normalized else weights
+
+    def __call__(self, spend: ArrayLike) -> Array:
+        """The adstock of a ``(T,)`` spend series, or of each column of a ``(T, C)`` one."""
+        series = jnp.asarray(spend, dtype=float)
+        if series.ndim not in (1, 2):
+            raise ValueError(f"spend has shape {series.shape}; a kernel reads a (T,) or (T, C) one")
+        weights = self.weights()
+
+        def carry(column: Array) -> Array:
+            return jnp.convolve(column, weights)[: column.shape[0]]
+
+        return carry(series) if series.ndim == 1 else jax.vmap(carry, 1, 1)(series)
+
+    def __check_init__(self) -> None:
+        _length(self.length)
+
+
+class GeometricAdstock(Adstock):
+    """``w_l = r^l``: each period keeps ``retention`` of the carryover it received."""
+
+    retention: Array = eqx.field(converter=_real)
+    length: int = eqx.field(static=True, kw_only=True)
+    normalized: bool = eqx.field(static=True, kw_only=True)
+
+    def __check_init__(self) -> None:
+        _require("retention", self.retention, 0.0, 1.0, low_included=True)
+
+    def _unnormalized(self) -> Array:
+        # a running product, since the slope of r ** 0 at r = 0 is 0 * inf
+        return jnp.cumprod(jnp.full(self.length, self.retention).at[0].set(1.0))
+
+
+class DelayedAdstock(Adstock):
+    """``w_l = r^{(l - d)^2}``: the carryover peaks ``delay`` periods after the spend (Jin, Wang,
+    Sun, Chan and Koehler 2017)."""
+
+    retention: Array = eqx.field(converter=_real)
+    delay: Array = eqx.field(converter=_real)
+    length: int = eqx.field(static=True, kw_only=True)
+    normalized: bool = eqx.field(static=True, kw_only=True)
+
+    def __check_init__(self) -> None:
+        _require("retention", self.retention, 0.0, 1.0)
+        _require("delay", self.delay, 0.0, low_included=True)
+
+    def _unnormalized(self) -> Array:
+        return self.retention ** ((jnp.arange(self.length, dtype=float) - self.delay) ** 2)
+
+
+class WeibullAdstock(Adstock):
+    """``w_0 = 1`` and ``w_l = prod_{j=1}^{l} (1 - F(j))``, ``F`` the Weibull CDF of ``shape`` and
+    ``scale``: the share of the carryover that survives each lag. The scale is in periods, not a
+    share of the series."""
+
+    shape: Array = eqx.field(converter=_real)
+    scale: Array = eqx.field(converter=_real)
+    length: int = eqx.field(static=True, kw_only=True)
+    normalized: bool = eqx.field(static=True, kw_only=True)
+
+    def __check_init__(self) -> None:
+        _require("shape", self.shape, 0.0)
+        _require("scale", self.scale, 0.0)
+
+    def _unnormalized(self) -> Array:
+        # 1 - F(j) = exp(-(j / scale)^shape), so the product is the exponential of a running sum
+        lags = jnp.arange(1, self.length, dtype=float)
+        hazard = jnp.cumsum((lags / self.scale) ** self.shape)
+        return jnp.exp(-jnp.concatenate([jnp.zeros(1), hazard]))
+
+
+class Channel(eqx.Module):
+    """A channel's return on its spend, ``coefficient * curve(kernel(spend))``: adstock first.
+
+    ``coefficient`` is in the outcome's units per unit of the curve, so the return is in the
+    outcome's units, revenue or a KPI.
+    """
+
+    kernel: Adstock
+    curve: Response
+    coefficient: Array = eqx.field(converter=_real)
+
+    def __check_init__(self) -> None:
+        _require("coefficient", self.coefficient, -math.inf)
+
+    def __call__(self, spend: ArrayLike) -> Array:
+        return self.coefficient * self.curve(self.kernel(spend))
+
+
+def _series(spend: ArrayLike) -> Array:
+    series = jnp.asarray(spend, dtype=float)
+    if series.ndim != 1:
+        raise ValueError(f"spend has shape {series.shape}; a return is read one channel at a time")
+    return series
+
+
+def _window(spend: ArrayLike, window: slice) -> tuple[Array, Array, float]:
+    series = _series(spend)
+    inside = jnp.zeros_like(series).at[window].set(1.0)
+    spent = float(jnp.sum(series * inside))
+    if not spent > 0.0:
+        raise ValueError(f"the window {window} spends {spent}; its return per unit is undefined")
+    return series, inside, spent
+
+
+def contribution(
+    channel: Callable[[Array], Array],
+    spend: ArrayLike,
+    window: slice = slice(None),
+    *,
+    revenue_per_kpi: float = 1.0,
+) -> float:
+    """The channel's return in the window's periods, carried over from all the spend before them.
+
+    What a decomposition attributes to the channel in those periods, in the outcome's units, or in
+    revenue through ``revenue_per_kpi``. The return the window's own spend causes, wherever it
+    falls, is instead :func:`roi` times what the window spent.
+    """
+    return revenue_per_kpi * float(jnp.sum(channel(_series(spend))[window]))
+
+
+def roi(
+    channel: Callable[[Array], Array],
+    spend: ArrayLike,
+    window: slice = slice(None),
+    *,
+    revenue_per_kpi: float = 1.0,
+) -> float:
+    """The incremental return on the window's spend, per currency unit, carryover included.
+
+    The channel's return over the whole series, less its return with the window's spend removed,
+    over what the window spent. ``channel`` is any function of a ``(T,)`` spend series returning a
+    ``(T,)`` series of returns. The carryover counted is what falls inside the series: to count all
+    of it, extend the series by the kernel's length with what is spent after.
+    ``revenue_per_kpi`` turns a KPI into revenue; at 1 the outcome is revenue.
+    """
+    series, inside, spent = _window(spend, window)
+    removed = series * (1.0 - inside)
+    return revenue_per_kpi * float(jnp.sum(channel(series) - channel(removed))) / spent
+
+
+def marginal_roi(
+    channel: Callable[[Array], Array],
+    spend: ArrayLike,
+    window: slice = slice(None),
+    *,
+    revenue_per_kpi: float = 1.0,
+) -> float:
+    """The return on one more currency unit, spread over the window in proportion to its spend.
+
+    The derivative of the channel's return over the whole series along the window's spend, over
+    what the window spent: the limit of scaling the window's spend by ``1 + e``, where a step of
+    finite size would move the number on a curved response. Carryover is counted as in
+    :func:`roi`.
+    """
+    series, inside, spent = _window(spend, window)
+    _, slope = jax.jvp(lambda path: jnp.sum(channel(path)), (series,), (series * inside,))
+    return revenue_per_kpi * float(slope) / spent
+
+
+def steady_state_marginal_roi(
+    channel: Channel, level: float, *, revenue_per_kpi: float = 1.0
+) -> float:
+    """The return on one more currency unit a period, once ``level`` a period has been spent for
+    longer than the kernel remembers.
+
+    The adstock settles at ``level * sum(w)``, so a period's return is ``b h(level * sum(w))`` and
+    its slope in the level ``b h'(level * sum(w)) sum(w)``: through a long unnormalised geometric
+    kernel of retention ``r``, ``b h'(level / (1 - r)) / (1 - r)``.
+    """
+    _require("level", _real(level), 0.0, low_included=True)
+    total = jnp.sum(channel.kernel.weights())
+    slope = jax.grad(channel.curve)(_real(level) * total)
+    return revenue_per_kpi * float(channel.coefficient * slope * total)

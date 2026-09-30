@@ -1,4 +1,5 @@
-"""The response curves' contract: each family's bounds, bend, tangency and nestings.
+"""The response curves' contract: each family's bounds, bend, tangency and nestings; the planner's
+start on them; and the carryover kernels and the return per unit read through them.
 
 The inflections and tangencies are derived in ``validation/response_curves.mac``; the anchors below
 are its double-precision roots.
@@ -16,20 +17,25 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy.optimize import minimize_scalar
+from scipy.stats import weibull_min
 
 from chc.control import LinearConstraint
 from chc.cost import QuadraticCost
 from chc.mpc import RecedingHorizon
 from chc.plan import CausalPlan, causal_plan
 from chc.response import (
+    Adstock,
     Algebraic,
     Arctan,
     BetaCDF,
     BurrXII,
+    Channel,
     ChapmanRichards,
+    DelayedAdstock,
     Envelope,
     Exponential,
     GammaCDF,
+    GeometricAdstock,
     Gompertz,
     HalfNormal,
     Hill,
@@ -45,7 +51,12 @@ from chc.response import (
     Saturation,
     Tanh,
     Weibull,
+    WeibullAdstock,
+    contribution,
+    marginal_roi,
     relax,
+    roi,
+    steady_state_marginal_roi,
 )
 
 CONCAVE = [
@@ -467,3 +478,193 @@ def test_a_model_with_no_curve_to_relax_plans_as_before() -> None:
     model = _Revenue(MichaelisMenten(100.0))
     plan = causal_plan(model, jnp.zeros(1), REVENUE_COST, 1.0, 1, 0.0, 300.0, constraints=(BUDGET,))
     assert plan.relaxed_cost is None
+
+
+KERNELS = [
+    GeometricAdstock(0.6, length=8, normalized=False),
+    GeometricAdstock(0.6, length=8, normalized=True),
+    DelayedAdstock(0.7, 2.5, length=10, normalized=False),
+    DelayedAdstock(0.7, 2.5, length=10, normalized=True),
+    WeibullAdstock(1.5, 3.0, length=12, normalized=False),
+    WeibullAdstock(0.8, 2.0, length=12, normalized=True),
+]
+SPEND = jnp.asarray(np.random.default_rng(7).gamma(2.0, 50.0, size=60))
+
+
+def kernel_name(kernel: Adstock) -> str:
+    return f"{type(kernel).__name__}-{'normalized' if kernel.normalized else 'raw'}"
+
+
+@pytest.mark.parametrize("kernel", KERNELS, ids=kernel_name)
+def test_a_kernel_reads_its_own_length_of_spend_and_no_more(kernel: Adstock) -> None:
+    weights, spend = np.asarray(kernel.weights()), np.asarray(SPEND)
+    by_hand = [
+        sum(weights[lag] * spend[t - lag] for lag in range(min(t + 1, len(weights))))
+        for t in range(len(spend))
+    ]
+    np.testing.assert_allclose(kernel(SPEND), by_hand, rtol=1e-13)
+    # a shorter series is a prefix: the kernel's length is its own, not the series'
+    np.testing.assert_array_equal(kernel(SPEND[:23]), kernel(SPEND)[:23])
+    both = kernel(jnp.stack([SPEND, 3.0 * SPEND], 1))
+    np.testing.assert_allclose(both[:, 1], 3.0 * kernel(SPEND), rtol=1e-14)
+
+
+def test_the_kernels_weights_are_their_definitions() -> None:
+    geometric = GeometricAdstock(0.6, length=8, normalized=False).weights()
+    np.testing.assert_allclose(geometric, 0.6 ** np.arange(8), rtol=1e-14)
+    delayed = DelayedAdstock(0.7, 2.0, length=6, normalized=False).weights()
+    np.testing.assert_allclose(delayed, 0.7 ** ((np.arange(6) - 2.0) ** 2), rtol=1e-15)
+    assert int(np.argmax(delayed)) == 2
+    # the survival of each lag from SciPy's Weibull, rather than the running sum the kernel keeps
+    survival = 1.0 - weibull_min.cdf(np.arange(1, 12), 1.5, scale=3.0)
+    np.testing.assert_allclose(
+        WeibullAdstock(1.5, 3.0, length=12, normalized=False).weights(),
+        np.cumprod(np.concatenate([[1.0], survival])),
+        rtol=1e-13,
+    )
+    for kernel in KERNELS:
+        if kernel.normalized:
+            assert float(jnp.sum(kernel.weights())) == pytest.approx(1.0, rel=1e-15)
+
+
+def test_a_kernel_without_carryover_has_a_finite_slope_in_its_retention() -> None:
+    def total(retention: jax.Array) -> jax.Array:
+        return jnp.sum(GeometricAdstock(retention, length=4, normalized=False)(SPEND))
+
+    weights = GeometricAdstock(0.0, length=4, normalized=False).weights()
+    np.testing.assert_array_equal(weights, [1.0, 0.0, 0.0, 0.0])
+    # at r = 0 only the first lag moves: each period's adstock gains the spend before it
+    assert float(jax.grad(total)(0.0)) == pytest.approx(float(jnp.sum(SPEND[:-1])), rel=1e-14)
+
+
+def test_a_linear_channel_returns_its_coefficient_times_the_kernels_sum() -> None:
+    kernel = GeometricAdstock(0.6, length=8, normalized=False)
+    channel = Channel(kernel, Power(1.0, 1.0), 2.0)
+    padded = jnp.concatenate([SPEND, jnp.zeros(7)])  # every period's carryover inside the series
+    whole = 2.0 * float(jnp.sum(kernel.weights()))
+    assert roi(channel, padded, slice(10, 20)) == pytest.approx(whole, rel=1e-13)
+    assert marginal_roi(channel, padded, slice(10, 20)) == pytest.approx(whole, rel=1e-13)
+    assert steady_state_marginal_roi(channel, 40.0) == pytest.approx(whole, rel=1e-13)
+
+
+def test_a_contribution_is_the_return_in_its_periods_from_all_the_spend_before() -> None:
+    channel = Channel(DelayedAdstock(0.7, 1.5, length=10, normalized=True), Hill(80.0, 2.5), 3.0)
+    # over the whole series it is the ROI times what was spent, since no spend returns nothing
+    whole = roi(channel, SPEND) * float(jnp.sum(SPEND))
+    assert contribution(channel, SPEND) == pytest.approx(whole, rel=1e-13)
+    # a window that spends nothing still carries over what came before it
+    quiet = SPEND.at[30:40].set(0.0)
+    assert contribution(channel, quiet, slice(30, 40)) > 0.0
+    assert contribution(channel, quiet, slice(30, 40), revenue_per_kpi=4.0) == pytest.approx(
+        4.0 * contribution(channel, quiet, slice(30, 40)), rel=1e-15
+    )
+
+
+def test_the_marginal_roi_is_the_limit_of_scaling_the_windows_spend() -> None:
+    channel = Channel(DelayedAdstock(0.7, 1.5, length=10, normalized=True), Hill(80.0, 2.5), 3.0)
+    window, step = slice(20, 35), 1e-6
+    inside = jnp.zeros(60).at[window].set(1.0)
+    scaled = SPEND * (1.0 + step * inside)
+    moved = float(jnp.sum(channel(scaled) - channel(SPEND)))
+    moved /= step * float(jnp.sum(SPEND * inside))
+    assert marginal_roi(channel, SPEND, window) == pytest.approx(moved, rel=1e-6)
+
+
+def test_the_steady_state_marginal_roi_is_the_slope_of_a_long_rollout() -> None:
+    # the recursion a_t = s_t + r a_{t-1} rolled out at a constant level, the last period's return
+    # differenced in the level; and the kernel's closed form b h'(s / (1 - r)) / (1 - r)
+    r, beta, curve, level, step = 0.6, 2.0, Hill(300.0, 2.0), 40.0, 1e-4
+
+    def settled(spend: float) -> float:
+        stock = 0.0
+        for _ in range(400):
+            stock = spend + r * stock
+        return beta * float(curve(stock))
+
+    moved = (settled(level + step) - settled(level - step)) / (2.0 * step)
+    channel = Channel(GeometricAdstock(r, length=400, normalized=False), curve, beta)
+    closed = beta * float(jax.grad(curve)(level / (1.0 - r))) / (1.0 - r)
+    assert steady_state_marginal_roi(channel, level) == pytest.approx(closed, rel=1e-12)
+    assert steady_state_marginal_roi(channel, level) == pytest.approx(moved, rel=1e-7)
+
+
+@pytest.mark.parametrize("currency", [1e-3, 0.37, 1e3])
+def test_every_return_per_unit_is_invariant_to_the_currency(currency: float) -> None:
+    def channel(rate: float) -> Channel:
+        curve = LogNormalCDF(90.0 * rate, 0.6)
+        return Channel(WeibullAdstock(1.5, 3.0, length=12, normalized=False), curve, 5.0 * rate)
+
+    home, abroad, window = channel(1.0), channel(currency), slice(10, 40)
+    assert roi(abroad, SPEND * currency, window) == pytest.approx(
+        roi(home, SPEND, window), rel=1e-12
+    )
+    assert marginal_roi(abroad, SPEND * currency, window) == pytest.approx(
+        marginal_roi(home, SPEND, window), rel=1e-12
+    )
+    assert steady_state_marginal_roi(abroad, 40.0 * currency) == pytest.approx(
+        steady_state_marginal_roi(home, 40.0), rel=1e-12
+    )
+
+
+def test_revenue_per_kpi_turns_a_kpi_return_into_revenue() -> None:
+    channel = Channel(GeometricAdstock(0.5, length=6, normalized=True), Tanh(100.0), 1.5)
+    assert roi(channel, SPEND, revenue_per_kpi=4.0) == pytest.approx(
+        4.0 * roi(channel, SPEND), rel=1e-15
+    )
+    assert marginal_roi(channel, SPEND, revenue_per_kpi=4.0) == pytest.approx(
+        4.0 * marginal_roi(channel, SPEND), rel=1e-15
+    )
+    assert steady_state_marginal_roi(channel, 40.0, revenue_per_kpi=4.0) == pytest.approx(
+        4.0 * steady_state_marginal_roi(channel, 40.0), rel=1e-15
+    )
+
+
+def test_a_return_per_unit_is_refused_where_it_is_undefined() -> None:
+    channel = Channel(GeometricAdstock(0.5, length=6, normalized=True), Tanh(100.0), 1.5)
+    with pytest.raises(ValueError, match=r"spends 0\.0"):
+        roi(channel, SPEND.at[10:20].set(0.0), slice(10, 20))
+    with pytest.raises(ValueError, match="one channel at a time"):
+        marginal_roi(channel, jnp.stack([SPEND, SPEND], 1))
+    with pytest.raises(ValueError, match=r"^level"):
+        steady_state_marginal_roi(channel, -1.0)
+    with pytest.raises(ValueError, match="a kernel reads"):
+        channel.kernel(jnp.ones((4, 3, 2)))
+
+
+@pytest.mark.parametrize(
+    ("build", "field"),
+    [
+        (lambda: GeometricAdstock(0.6, length=0, normalized=True), "length"),
+        (lambda: GeometricAdstock(0.6, length=8.0, normalized=True), "length"),
+        (lambda: GeometricAdstock(1.5, length=8, normalized=True), "retention"),
+        (lambda: GeometricAdstock(-0.1, length=8, normalized=True), "retention"),
+        (lambda: DelayedAdstock(0.0, 1.0, length=8, normalized=True), "retention"),
+        (lambda: DelayedAdstock(0.5, -1.0, length=8, normalized=True), "delay"),
+        (lambda: WeibullAdstock(0.0, 2.0, length=8, normalized=True), "shape"),
+        (lambda: WeibullAdstock(1.0, 0.0, length=8, normalized=True), "scale"),
+        (lambda: Channel(KERNELS[0], Tanh(1.0), math.nan), "coefficient"),
+    ],
+)
+def test_a_kernel_or_channel_out_of_range_is_refused(build, field: str) -> None:
+    with pytest.raises(ValueError, match=f"^{field}"):
+        build()
+
+
+def test_a_channel_fits_through_its_kernel_and_curve() -> None:
+    truth = Channel(GeometricAdstock(0.6, length=8, normalized=True), Hill(120.0, 2.0), 3.0)
+    observed = truth(SPEND)
+
+    @jax.jit
+    def loss(parameters: jax.Array) -> jax.Array:
+        retention, log_scale, log_slope, coefficient = parameters
+        model = Channel(
+            GeometricAdstock(retention, length=8, normalized=True),
+            Hill(jnp.exp(log_scale), jnp.exp(log_slope)),
+            coefficient,
+        )
+        return jnp.sum((model(SPEND) - observed) ** 2)
+
+    at_truth = jnp.array([0.6, math.log(120.0), math.log(2.0), 3.0])
+    assert float(loss(at_truth)) == pytest.approx(0.0, abs=1e-20)
+    np.testing.assert_allclose(jax.grad(loss)(at_truth), 0.0, atol=1e-10)
+    assert np.all(np.isfinite(jax.grad(loss)(at_truth + 0.05)))
