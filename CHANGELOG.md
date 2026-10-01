@@ -183,7 +183,10 @@ still change).
   largest best return: a fit run to the edge of its family reads a slope in currency past `1e15`,
   the largest entry HiGHS accepts, and it refused the program. The tests hold it to a closed form,
   two mirrored linear readings hedged by the even split, in any unit, and on three channels with
-  carryover to every split of a 241-by-241 grid; five mutations caught.
+  carryover to every split of a 241-by-241 grid; five mutations caught. On causaldyn-bench's
+  Track M v2, pre-registered over 100 seeds under six curve families, it did not beat planning on
+  the family AIC picks: worst over the families, 0.389 per euro [0.308, 0.469] against 0.370
+  [0.292, 0.448], the difference +0.019 [-0.009, +0.055].
 - **What a wrong channel costs the allocation, `chc.allocation.decision_weight`** (*experimental*,
   ADR 0040). `decision_weight(channels, budget, periods, *, lower, upper, history=None)` returns an
   `AllocationWeight`: the Hessian `W` of the loss of `allocate`'s plan made on channels whose

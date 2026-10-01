@@ -49,6 +49,15 @@ unbuilt: a split that holds up under every reading the tests allow.
   channel makes large.
 - It hedges between the readings it is given and against no other. A family none of them is can
   still be the truth.
+- On causaldyn-bench's Track M v2 it was pre-registered against planning on the family AIC picks,
+  and scored on 100 seeds, each under six curve families (`results/track_m2_families.md` there),
+  its readings every family the tests could not tell from the best at one parameter's profile
+  cutoff. It did not beat the choice: worst over the families, both on the logistic's worlds, the
+  split lost 0.389 per euro of the budget [0.308, 0.469] and AIC's 0.370 [0.292, 0.448], the
+  difference +0.019 [-0.009, +0.055], and its mean was above AIC's on every family. A fixed concave
+  family, tanh, planned whatever the curve, had the lowest mean of the arms on five families of
+  six. The readings kept included S-shaped fits run to the edge of their family. Not measured:
+  whether a rule that keeps fewer would serve the split better.
 
 ## Alternatives
 
