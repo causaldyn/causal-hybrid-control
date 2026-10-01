@@ -893,6 +893,54 @@ def forecast(
     return DLMForecast(means, scales, dofs, state_mean, state_scale)
 
 
+# -------------------------------------------------------------------------------- choosing fits
+
+
+def confidence_set(fits: Sequence[DLMFit], parameters: int, level: float = 0.95) -> tuple[int, ...]:
+    """The fits a likelihood-ratio test at ``level`` does not reject, in the order given: those
+    whose :attr:`DLMFit.log_likelihood` is within ``chi2_parameters(level) / 2`` of the best.
+    ``parameters`` is how many settings the fits vary over, two for a grid over two discounts.
+
+    An interval reported as the union of each member's interval, from its lowest lower end to its
+    highest upper end, carries the uncertainty of the discounts as well as the states'
+    (projection; Berger and Boos 1994). The best fit's interval alone does not, and a mixture
+    weighted by the likelihood carries too little of it: the likelihood is flat where an
+    evolution variance is weakly identified, and its best point there is a selection.
+
+    Raises:
+        ValueError: on no fits, fits of other observations than the first's, a ``parameters``
+            that is not a positive integer, or a ``level`` outside ``(0, 1)``.
+    """
+    if not fits:
+        raise ValueError("confidence_set needs at least one fit")
+    if isinstance(parameters, bool) or not isinstance(parameters, int) or parameters < 1:
+        raise ValueError(f"parameters must be a positive integer, got {parameters!r}")
+    if not 0.0 < level < 1.0:
+        raise ValueError(f"level must be in (0, 1), got {level}")
+    for i, fit in enumerate(fits[1:], start=1):
+        if not np.array_equal(fit.y, fits[0].y, equal_nan=True):
+            raise ValueError(
+                f"fit {i} filtered other observations than fit 0; a likelihood ratio compares"
+                " fits of the same data"
+            )
+    loglik = np.array([fit.log_likelihood for fit in fits])
+    margin = float(special.chdtri(parameters, 1.0 - level)) / 2.0
+    members = tuple(int(i) for i in np.flatnonzero(loglik >= loglik.max() - margin))
+    _log.info(
+        "dlm confidence set: %d of %d fits within %.3g of the best log-likelihood",
+        len(members),
+        len(fits),
+        margin,
+        extra={
+            "chc_event": "dlm_confidence_set",
+            "members": len(members),
+            "fits": len(fits),
+            "margin": margin,
+        },
+    )
+    return members
+
+
 # ------------------------------------------------------------------------------------ monitoring
 
 

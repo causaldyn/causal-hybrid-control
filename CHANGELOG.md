@@ -236,6 +236,11 @@ still change).
   of a column is then a quantile over the draws, taken after the sum, so it carries the
   dependence across steps that per-step intervals lose. `tests/test_dlm.py` holds each part's
   mean and variance to the smoother's exact ones; five mutations caught.
+- **`chc.dlm.confidence_set`**: the fits a likelihood-ratio test at a level does not reject, those
+  within `chi2_k(level) / 2` of the best log-likelihood, for an interval reported as the union of
+  each member's (projection), which carries the discounts' uncertainty as well as the states'.
+  `scripts/bench_dlm.py` pre-registers its coverage on the random-walk world's 500 series and on
+  a world drawn from the discount model itself, before the scored run.
 
 ### Changed
 

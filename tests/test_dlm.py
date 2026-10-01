@@ -17,6 +17,7 @@ from chc.dlm import (
     Regression,
     Seasonal,
     backward_sample,
+    confidence_set,
     decompose,
     forecast,
     forward_filter,
@@ -385,6 +386,59 @@ def test_a_decomposition_refuses_another_fit_s_draws():
     fit, _ = _parts_fit()
     with pytest.raises(ValueError, match=r"draws of states shaped \(25, 2\)"):
         decompose(fit, backward_sample(_small_fit(6.0), 5, seed=1))
+
+
+def _grid_fits(y=None):
+    """A level and two drifting coefficients over a 4 x 4 grid of their discounts."""
+    x, world_y = _world(14, horizon=80, width=3)
+    grid = (0.85, 0.9, 0.95, 1.0)
+    fits = [
+        forward_filter(
+            DynamicLinearModel((Polynomial(1, d_level), Regression(2, d_coef)), _prior(3, dof=3.0)),
+            world_y if y is None else y,
+            x[:, 1:],
+        )
+        for d_level in grid
+        for d_coef in grid
+    ]
+    return fits, np.array([f.log_likelihood for f in fits])
+
+
+@pytest.mark.parametrize(("parameters", "level"), [(2, 0.95), (1, 0.95), (2, 0.5), (3, 0.99)])
+def test_the_confidence_set_is_the_fits_the_likelihood_ratio_keeps(parameters, level, caplog):
+    fits, loglik = _grid_fits()
+    statistic = 2.0 * (loglik.max() - loglik)
+    expected = tuple(np.flatnonzero(statistic <= stats.chi2.ppf(level, parameters)).tolist())
+    with caplog.at_level(logging.INFO, logger="chc.dlm"):
+        members = confidence_set(fits, parameters, level)
+    assert members == expected
+    assert int(np.argmax(loglik)) in members
+    assert 1 < len(members) < len(fits)
+    (record,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "dlm_confidence_set"]
+    assert record.members == len(members)
+
+
+def test_a_confidence_set_refuses_fits_of_other_data():
+    fits, _ = _grid_fits()
+    shifted, _ = _grid_fits(y=fits[0].y + 1.0)
+    with pytest.raises(ValueError, match="fit 1 filtered other observations than fit 0"):
+        confidence_set([fits[0], shifted[0]], 1)
+
+
+@pytest.mark.parametrize(
+    ("fits", "parameters", "level", "message"),
+    [
+        ((), 1, 0.95, "at least one fit"),
+        (None, 0, 0.95, "parameters must be a positive integer"),
+        (None, True, 0.95, "parameters must be a positive integer"),
+        (None, 1, 1.0, r"level must be in \(0, 1\)"),
+        (None, 1, 0.0, r"level must be in \(0, 1\)"),
+    ],
+)
+def test_a_confidence_set_refuses_what_is_not_a_test(fits, parameters, level, message):
+    fits = _grid_fits()[0][:2] if fits is None else fits
+    with pytest.raises(ValueError, match=message):
+        confidence_set(fits, parameters, level)
 
 
 def test_the_variance_factor_is_the_closed_form_at_the_last_step():

@@ -27,6 +27,33 @@ discount at 0.9.
 
 A coverage's Monte Carlo standard error is ``sqrt(0.9 * 0.1 / count)``.
 
+MM9, the discounts' uncertainty carried by projection. Pre-registered 2026-10-02, before any scored
+run of it, on a pilot of 100 fresh series of each world drawn outside this script's streams:
+
+    projected    the union of the 90% intervals of every grid pair in
+                 ``chc.dlm.confidence_set(fits, 2)``, the likelihood ratio at 0.95;
+
+scored on the random-walk world's series, the same as the rows above (its draws come from a
+stream of their own, so the rows above do not move), and on a third world:
+
+    discount     156 steps of the discount model itself at 0.9 and 0.9, with an explicit state
+                 path: ``W_t`` is the blockwise ``(1 - delta) / delta`` times ``C_(t-1)`` of the
+                 covariance recursion at the known variance 0.25, started where 104 steps of
+                 other media settle it. Media and noise as in the random walk, from a stream of
+                 its own.
+
+Gate: each channel's contribution over the last 13 weeks covered in at least 0.88 of the series,
+in both worlds. Below 0.85 on either is a failure of the method, not a near miss. Predicted from
+the pilot: 0.91 and 0.93 on the random walk, 0.93 and 0.99 on the discount world, intervals about
+1.2 times as wide as at the true discounts. What the pilot found on the way: at the true law and
+evolution variance the random walk's intervals cover 0.89 and 0.86, at the likelihood's pick of
+that same law 0.78 and 0.77, so the loss is the selection of a weakly identified evolution
+variance and not the discount law; on the discount world the pick covers 0.87 and 0.95. The other
+candidates covered the random walk at 0.79 and 0.80 (the likelihood-weighted mixture over the
+grid), 0.84 and 0.84 (the pick's interval at the level whose coverage over 40 series simulated
+from the fitted model is 0.90), 0.73 and 0.71 (the discounts chosen by the 13-step-ahead score)
+and 0.79 and 0.81 (the set's draws pooled in place of the union).
+
 Run: uv run python scripts/bench_dlm.py [--replicates 500] [--seed S] [--own-only] > out.json
 
 The own world draws first, so ``--own-only`` reproduces a full run's own world at the same seed.
@@ -49,6 +76,7 @@ from chc.dlm import (
     Prior,
     Regression,
     backward_sample,
+    confidence_set,
     forward_filter,
 )
 
@@ -59,6 +87,7 @@ GRID = (0.8, 0.85, 0.9, 0.95, 0.98, 1.0)
 FIXED = (0.85, 0.9, 0.95, 0.98)
 WINDOW = 13
 DRAWS = 1000
+NOISE = 0.25  # the random walk's and the discount world's observational variance
 
 
 def _pit(fit: DLMFit, start: int) -> np.ndarray:
@@ -112,9 +141,29 @@ def _fit(y: np.ndarray, x: np.ndarray, prior: Prior, d_level: float, d_coef: flo
     return forward_filter(DynamicLinearModel(blocks, prior), y, x)
 
 
-def walk(replicates: int, rng: np.random.Generator) -> dict[str, object]:
+def _bounds(samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    lo, hi = np.quantile(samples, [0.5 - LEVEL / 2.0, 0.5 + LEVEL / 2.0], axis=0)
+    return lo, hi
+
+
+def _projected(
+    fits: list[DLMFit], x: np.ndarray, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """The union of the 90% intervals over the grid pairs the likelihood ratio keeps."""
+    members = confidence_set(fits, 2)
+    los, his = zip(
+        *(_bounds(_contributions(fits[i], x, DRAWS, int(rng.integers(2**31)))) for i in members),
+        strict=True,
+    )
+    return np.min(los, axis=0), np.max(his, axis=0), len(members)
+
+
+def walk(replicates: int, rng: np.random.Generator, seed: int) -> dict[str, object]:
     horizon = 156
     one_hits = one_count = 0
+    projected_hits = np.zeros(2)
+    projected_widths: list[np.ndarray] = []
+    set_sizes: list[int] = []
     picked_hits = np.zeros(2)
     averaged_hits = np.zeros(2)
     burned_hits = np.zeros(2)
@@ -123,7 +172,7 @@ def walk(replicates: int, rng: np.random.Generator) -> dict[str, object]:
     widths = np.zeros(2)
     chosen: list[tuple[float, float]] = []
     pairs = list(itertools.product(GRID, GRID))
-    for _ in range(replicates):
+    for replicate in range(replicates):
         level = 10.0 + np.cumsum(0.05 * rng.standard_normal(horizon))
         coef = 1.0 + np.cumsum(0.02 * rng.standard_normal((horizon, 2)), axis=0)
         x = rng.gamma(2.0, 1.0, (horizon, 2)) * (rng.random((horizon, 2)) > 0.25)
@@ -158,6 +207,12 @@ def walk(replicates: int, rng: np.random.Generator) -> dict[str, object]:
         for d in FIXED:
             held = fits[(best[0], d)]
             fixed_hits[d] += _hit(_contributions(held, x, DRAWS, int(rng.integers(2**31))), truth)
+
+        aside = np.random.default_rng([seed, 2, replicate])
+        lo_set, hi_set, size = _projected([fits[pair] for pair in pairs], x, aside)
+        projected_hits += (lo_set <= truth) & (truth <= hi_set)
+        projected_widths.append((hi_set - lo_set) / (hi - lo))
+        set_sizes.append(size)
     picked = np.array(chosen)
     return {
         "one_step_coverage": one_hits / one_count,
@@ -167,7 +222,10 @@ def walk(replicates: int, rng: np.random.Generator) -> dict[str, object]:
             "averaged": (averaged_hits / replicates).tolist(),
             "averaged_after_burn_in": (burned_hits / replicates).tolist(),
             **{f"fixed_{d}": (h / replicates).tolist() for d, h in fixed_hits.items()},
+            "projected": (projected_hits / replicates).tolist(),
         },
+        "projected_width_over_picked_median": np.median(projected_widths, axis=0).tolist(),
+        "projected_set_size_median": float(np.median(set_sizes)),
         "picked_relative_width": (widths / replicates).tolist(),
         "picked_discount_level_mean": float(picked[:, 0].mean()),
         "picked_loglik_above_coefficient_0.9": {
@@ -177,6 +235,68 @@ def walk(replicates: int, rng: np.random.Generator) -> dict[str, object]:
         "picked_discount_coefficient_counts": {
             str(d): int(np.sum(picked[:, 1] == d)) for d in GRID
         },
+    }
+
+
+def _discount_path(
+    x: np.ndarray, rates: tuple[float, float], c: np.ndarray, rng: np.random.Generator | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """A level and two coefficients moving as the discount model says, along ``x``: the
+    covariance recursion at the known variance gives each step's ``W_t``. Without ``rng`` only
+    the covariance is run, to where it settles."""
+    theta = np.array([10.0, 1.0, 1.0])
+    path = np.empty((x.shape[0], 3))
+    for t in range(x.shape[0]):
+        w = np.zeros((3, 3))
+        w[0, 0] = rates[0] * c[0, 0]
+        w[1:, 1:] = rates[1] * c[1:, 1:]
+        r = c + w
+        f = np.array([1.0, *x[t]])
+        q = f @ r @ f + NOISE
+        gain = r @ f / q
+        c = r - np.outer(gain, gain) * q
+        if rng is not None:
+            theta = theta + np.linalg.cholesky(w) @ rng.standard_normal(3)
+        path[t] = theta
+    return path, c
+
+
+def discount(replicates: int, seed: int) -> dict[str, object]:
+    horizon, true_pair = 156, (0.9, 0.9)
+    rates = ((1.0 - true_pair[0]) / true_pair[0], (1.0 - true_pair[1]) / true_pair[1])
+    rng = np.random.default_rng([seed, 1])
+    pairs = list(itertools.product(GRID, GRID))
+    picked_hits, projected_hits, reference_hits = np.zeros(2), np.zeros(2), np.zeros(2)
+    widths: list[np.ndarray] = []
+    chosen: list[float] = []
+    for _ in range(replicates):
+        settle_x = rng.gamma(2.0, 1.0, (104, 2)) * (rng.random((104, 2)) > 0.25)
+        _, start = _discount_path(settle_x, rates, np.diag([100.0, 10.0, 10.0]), None)
+        x = rng.gamma(2.0, 1.0, (horizon, 2)) * (rng.random((horizon, 2)) > 0.25)
+        path, _ = _discount_path(x, rates, start, rng)
+        y = path[:, 0] + np.sum(x * path[:, 1:], axis=1)
+        y = y + math.sqrt(NOISE) * rng.standard_normal(horizon)
+        truth = np.sum(x[-WINDOW:] * path[-WINDOW:, 1:], axis=0)
+        prior = Prior(np.zeros(3), np.diag([100.0, 10.0, 10.0]), 1.0, 1.0)
+        fits = {pair: _fit(y, x, prior, *pair) for pair in pairs}
+        loglik = np.array([fits[pair].log_likelihood for pair in pairs])
+        best = pairs[int(np.argmax(loglik))]
+        chosen.append(best[1])
+        picked_hits += _hit(_contributions(fits[best], x, DRAWS, int(rng.integers(2**31))), truth)
+        reference = _contributions(fits[true_pair], x, DRAWS, int(rng.integers(2**31)))
+        reference_hits += _hit(reference, truth)
+        lo, hi, _ = _projected([fits[pair] for pair in pairs], x, rng)
+        projected_hits += (lo <= truth) & (truth <= hi)
+        ref_lo, ref_hi = _bounds(reference)
+        widths.append((hi - lo) / (ref_hi - ref_lo))
+    return {
+        "contribution_coverage": {
+            "picked": (picked_hits / replicates).tolist(),
+            "projected": (projected_hits / replicates).tolist(),
+            "at_the_true_discounts": (reference_hits / replicates).tolist(),
+        },
+        "projected_width_over_true_median": np.median(widths, axis=0).tolist(),
+        "picked_discount_coefficient_counts": {str(d): chosen.count(d) for d in GRID},
     }
 
 
@@ -194,7 +314,8 @@ def main() -> None:
         "own": own(args.replicates, rng),
     }
     if not args.own_only:
-        out["walk"] = walk(args.replicates, rng)
+        out["walk"] = walk(args.replicates, rng, args.seed)
+        out["discount"] = discount(args.replicates, args.seed)
     print(json.dumps(out, indent=2))
 
 
