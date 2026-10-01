@@ -238,9 +238,13 @@ still change).
   mean and variance to the smoother's exact ones; five mutations caught.
 - **`chc.dlm.confidence_set`**: the fits a likelihood-ratio test at a level does not reject, those
   within `chi2_k(level) / 2` of the best log-likelihood, for an interval reported as the union of
-  each member's (projection), which carries the discounts' uncertainty as well as the states'.
-  `scripts/bench_dlm.py` pre-registers its coverage on the random-walk world's 500 series and on
-  a world drawn from the discount model itself, before the scored run.
+  each member's (projection), which carries the discounts' uncertainty as well as the states'
+  (ADR 0041). Pre-registered in `scripts/bench_dlm.py` and scored on 500 series: a channel's
+  13-week contribution covered at least 0.88 of the time, met in both worlds. On the random walk
+  the union covered 0.938 and 0.944 where the likelihood's pick covered 0.782 and 0.770, and the
+  likelihood-weighted mixture 0.830 and 0.826. On series of the discount model itself it covered
+  0.940 and 0.946 against the pick's 0.852 and 0.848, at 1.21 times the width at the true
+  discounts. The rows ADR 0022 reports reproduced exactly.
 
 ### Changed
 

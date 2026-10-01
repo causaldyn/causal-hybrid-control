@@ -68,7 +68,8 @@ What it does not do, and what to watch:
   On the random-walk world of ``scripts/bench_dlm.py``, 500 series, the likelihood picked the
   coefficients' discount at 0.95 or above in 450 and below 0.9 in none, and the 90% intervals of a
   channel's contribution over 13 weeks covered 0.78 and 0.77; fixed at 0.85 or 0.9 they covered
-  0.88-0.90. An interval reported from the likelihood's pick alone is too narrow.
+  0.88-0.90. An interval reported from the likelihood's pick alone is too narrow; the union over
+  :func:`confidence_set`'s fits covered 0.94 there.
 * **A monitor has until the filter absorbs a change.** Once the discount has taken a shift into
   the level, the one-step errors are white again. On ``scripts/bench_dlm_monitor.py``'s local
   level at ``delta = 0.9``, 300 series, :class:`chc.gate.DriftAlarm` at an average run length of
@@ -906,6 +907,11 @@ def confidence_set(fits: Sequence[DLMFit], parameters: int, level: float = 0.95)
     (projection; Berger and Boos 1994). The best fit's interval alone does not, and a mixture
     weighted by the likelihood carries too little of it: the likelihood is flat where an
     evolution variance is weakly identified, and its best point there is a selection.
+
+    The union over-covers. On ``scripts/bench_dlm.py``'s 500 series a channel's 13-week
+    contribution was covered 0.94 at a nominal 0.90, both on a random walk, where the pick
+    covered 0.78, and on the discount model's own series, where it covered 0.85. The intervals
+    there were 1.2 times as wide as at the true discounts.
 
     Raises:
         ValueError: on no fits, fits of other observations than the first's, a ``parameters``
