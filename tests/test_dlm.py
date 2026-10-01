@@ -493,6 +493,27 @@ def test_a_sign_that_does_not_bind_leaves_the_posterior_as_it_was(caplog):
     assert (record.levelno, record.mixed, draws.mixed) == (logging.INFO, True, True)
 
 
+def test_the_variance_moves_as_a_two_block_gibbs_on_the_values_and_itself(caplog):
+    """With no wall met, a trajectory ends on a fresh draw of the values given ``V``, and ``V``
+    given ``k`` values is ``IG((n_T + k) / 2, (n_T S_T + q) / 2)``, ``q`` their distance from their
+    mean. So ``E[V' | V] = (n_T S_T + k V) / (n_T + k - 2)``, and ``V``'s lag-1 autocorrelation is
+    ``k / (n_T + k - 2)``, 0.50 here. Drawn given every state, it would be 0.66:
+    ``(p + sum rank W*) / (n_T + p + sum rank W* - 2)``, each evolution innovation pinning it."""
+    y, x = _channel_world(2.0, seed=21)
+    fit = forward_filter(_channel_model(0.98, 3.0), y, x[:, None])
+    with caplog.at_level(logging.INFO, logger="chc.dlm"):
+        draws = constrained_sample(fit, {0: "positive"}, 2000, seed=9, warmup=200)
+    (record,) = [
+        r for r in caplog.records if getattr(r, "chc_event", None) == "dlm_constrained_sample"
+    ]
+    assert record.walls == 0.0
+    v = draws.variance - draws.variance.mean()
+    lag1 = (v[:, 1:] * v[:, :-1]).sum() / (v**2).sum()
+    values, n = y.size, fit.dof[-1]  # discounted at every step, the coefficient has a value a step
+    expected = values / (n + values - 2.0)
+    assert abs(lag1 - expected) < 4.5 * math.sqrt((1.0 - expected**2) / v.size)
+
+
 def test_a_run_too_short_to_read_is_logged_as_a_warning(caplog):
     y, x = _channel_world(-0.5, seed=21)
     fit = forward_filter(_channel_model(0.98, 3.0), y, x[:, None])

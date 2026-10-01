@@ -33,7 +33,10 @@ over paths, and the truncated posterior is a Gaussian truncated to an orthant.
     draw of every state.
   - *The other states, given the constrained paths*, by forward filtering and backward sampling of
     a DLM with known offsets, whose covariances are computed once.
-  - *`V`*, from its inverse gamma given the path.
+  - *`V`*, from its inverse gamma given the constrained values alone, with the other states
+    integrated out as well. `V` given the data is `IG(n_T / 2, n_T S_T / 2)`, and the `k` values
+    given `V` are the Gaussian above, so they add `k / 2` to the shape and half their distance
+    from their mean, in the metric of their covariance, to the rate.
 - **Ties.** Steps that a zero evolution variance ties together share one value: a discount of 1, or
   a regressor held while idle. A static coefficient is then a single value.
 - **Diagnostics.** `rhat` is the largest rank-normalised split R-hat, bulk or tail, over every
@@ -58,6 +61,10 @@ oracle path posterior is built from independent innovations (`theta = c + M e`),
 
 - **A sign that does not bind** leaves the smoother's means and variances, and the variance's
   posterior mean `n_T S_T / (n_T - 2)`. No trajectory meets a wall.
+- **The variance's chain.** With no wall met, a trajectory ends on a fresh draw of the values, so
+  `E[V' | V] = (n_T S_T + k V) / (n_T + k - 2)` and `V`'s lag-1 autocorrelation is
+  `k / (n_T + k - 2)`: 0.50 in the test's world, 52 values and `n_T = 55`. Drawn given every
+  state, as first built, it would be `(p + Σ rank W*) / (n_T + p + Σ rank W* - 2)`, 0.66 there.
 - **A static coefficient** held to either sign is the truncated normal, and the level moves by its
   regression on the coefficient.
 - **Three steps, a level and a drifting coefficient, with correlated priors:** the truncated mean
@@ -77,7 +84,7 @@ oracle path posterior is built from independent innovations (`theta = c + M e`),
   - one chain of four shifted by half a deviation takes R-hat above 1.01, and so does one with
     1.6 times the others' spread, through the folded draws;
   - iid chains stay below it.
-- **Mutations.** Seventeen mutations of the sampler and its diagnostics each fail a test. Among
+- **Mutations.** Twenty-one mutations of the sampler and its diagnostics each fail a test. Among
   them:
   - a reflection that flips only the hit coordinate;
   - the entry root taken for the exit;
@@ -85,7 +92,8 @@ oracle path posterior is built from independent innovations (`theta = c + M e`),
   - the filtered means taken for the smoothed;
   - the values' covariance transposed across channels;
   - a tie mapped one step off;
-  - the other states' first prior not moved by the constrained values.
+  - the other states' first prior not moved by the constrained values;
+  - `V` drawn given every state, or given the values with their correlation ignored.
 
   Five survived the first tests, each because no test could see it, and a test was added for
   each:
@@ -96,15 +104,21 @@ oracle path posterior is built from independent innovations (`theta = c + M e`),
     moving average whose autocorrelation rises at lag 4 does not);
   - no chain differed only in spread, which hides the folded R-hat.
 - **Cost.**
-  - The constrained values' covariance is held dense, so memory grows as the square of their number:
-    a coefficient that drifts over `T` steps has `T` values, and a static one has one.
-  - A sweep costs a backward draw of every state and one trajectory. A trajectory meets more walls
-    the harder the signs bind.
+  - The constrained values' covariance is held dense and factored once, so memory grows as the
+    square of their number and the factoring as its cube: a coefficient that drifts over `T` steps
+    has `T` values, and a static one has one.
+  - A sweep costs a backward draw of every state, one trajectory, and a triangular solve for `V`'s
+    rate. A trajectory meets more walls the harder the signs bind.
   - No timing is quoted.
 - **It is exact only in the limit.** A finite run is read through `rhat` and `ess`.
 
 ## Alternatives
 
+- **`V` given every state**, as first built. Each evolution innovation adds a degree of freedom
+  to its conditional, which pins `V` to the path, and its chain moved slowly (Consequences).
+- **Interweaving** (Yu and Meng 2011): a second draw of `V` in the values' non-centred
+  coordinates, a truncated inverse gamma. Where the signs bind, the interval it may move in
+  starts near the current value and runs one way.
 - **Single-site updates**, which were planned first: each value drawn from its truncated full
   conditional given its neighbours, odd and even steps alternating. They were built and did not
   mix on a drifting coefficient with a learned variance. When the evolution variance is small

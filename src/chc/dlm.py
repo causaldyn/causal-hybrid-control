@@ -104,7 +104,7 @@ from typing import Literal
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy import integrate, special
+from scipy import integrate, linalg, special
 
 _log = logging.getLogger(__name__)
 
@@ -1058,11 +1058,14 @@ def constrained_sample(
       no step size and no rejection. The steps a zero evolution variance ties together (a discount
       of 1, or an idle held regressor) are one value;
     * the other states given those paths, by forward filtering and backward sampling;
-    * ``V`` from its inverse gamma.
+    * ``V`` from its inverse gamma given the constrained values alone, the other states
+      integrated out as well. Given every state, each evolution innovation would add a degree of
+      freedom, which pins ``V`` to the path and slows its chain.
 
     Truncating each backward-sampling step instead would not give this posterior, since the filter
-    that feeds it never saw the signs. The values' covariance is held dense, so memory grows as
-    the square of their number, and a trajectory meets more walls the harder the signs bind.
+    that feeds it never saw the signs. The values' covariance is held dense and factored once, so
+    memory grows as the square of their number, and a trajectory meets more walls the harder the
+    signs bind.
 
     A constrained coefficient must be a :class:`Regression` block of width one. ``rhat`` and
     ``ess`` say whether the chains mixed; the draws are not to be read when they are not
@@ -1119,7 +1122,6 @@ def constrained_sample(
     g = s.evolution
     first_cov, w = _transitions(fit)
     first_mean = fit.prior_mean[0]
-    first_precision = np.linalg.inv(first_cov)
     learned = not math.isinf(model.prior.dof)
     cs = sorted(constrained)
     us = [j for j in range(p) if j not in constrained]
@@ -1170,10 +1172,10 @@ def constrained_sample(
         r_first = first_cov[np.ix_(us, us)] - shift @ first_cov[np.ix_(cs, us)]
         gains, _, _, back, roots = _unit_filter(gu, fu, observed, r_first, w[:, us][:, :, us])
 
-    # the variance's full conditional: what does not move with the draws
-    ranks = sum(int(np.linalg.matrix_rank(w_t, hermitian=True)) for w_t in w)
-    w_pinv = np.array([np.linalg.pinv(w_t, hermitian=True) for w_t in w])
-    shape = (model.prior.dof + observed.sum() + p + ranks) / 2.0 if learned else math.inf
+    # the variance given the constrained values, the other states integrated out: V given y is
+    # IG(n_T / 2, n_T S_T / 2) and the values given V are N(value_mean, V value_cov)
+    value_root = np.linalg.cholesky(value_cov)
+    shape = (fit.dof[-1] + value_mean.size) / 2.0 if learned else math.inf
 
     start = backward_sample(fit, chains, seed=int(rng.integers(2**31)))
     theta = start.states.copy()
@@ -1185,15 +1187,10 @@ def constrained_sample(
     bounces = 0
     for sweep in range(warmup + draws):
         if learned:
-            errors = np.where(observed, y0 - np.einsum("tp,ctp->ct", design, theta), 0.0)
-            d0 = theta[:, 0] - first_mean
-            moves = theta[:, 1:] - np.einsum("pq,ctq->ctp", g, theta[:, :-1])
-            rate = 0.5 * (
-                model.prior.dof * model.prior.scale
-                + (errors**2).sum(axis=1)
-                + np.einsum("cp,pq,cq->c", d0, first_precision, d0)
-                + np.einsum("ctp,tpq,ctq->c", moves, w_pinv, moves)
+            white = linalg.solve_triangular(
+                value_root, (theta[:, step, columns] - value_mean).T, lower=True
             )
+            rate = 0.5 * (fit.dof[-1] * fit.scale[-1] + (white**2).sum(axis=0))
             variance = 1.0 / rng.gamma(shape, 1.0 / rate)
         sd = np.sqrt(variance)[:, None]
 

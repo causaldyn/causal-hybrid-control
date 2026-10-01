@@ -252,20 +252,22 @@ still change).
   - the constrained values, with the other states integrated out, by one exact Hamiltonian
     trajectory a sweep (Pakman and Paninski 2014), reflected at the signs' walls;
   - the other states by forward filtering and backward sampling given them;
-  - the variance from its inverse gamma.
+  - the variance from its inverse gamma given the constrained values, the other states integrated
+    out as well: given every state, each evolution innovation pins it to the path.
 
   Steps a discount of 1 or an idle held regressor ties together are one value. Rank-normalised
   split R-hat and bulk ESS come with the draws (Vehtari et al. 2021); `ConstrainedDraws.mixed` says
-  whether they can be read, and a run whose draws cannot is logged as a warning. `tests/test_dlm.py` holds the draws to oracles that share no code with
-  the sampler:
-  - the smoother where a sign does not bind;
+  whether they can be read, and a run whose draws cannot is logged as a warning.
+  `tests/test_dlm.py` holds the draws to oracles that share no code with the sampler:
+  - the smoother where a sign does not bind, and there the variance's lag-1 autocorrelation,
+    `k / (n_T + k - 2)` for `k` values;
   - the truncated normal for a static coefficient;
   - adaptive quadrature over three steps, with and without a tie;
   - rejection from the batch posterior for two channels;
   - and a channel whose effect is −0.5, held positive, whose level lands near a fit without the
     channel.
 
-  Seventeen mutations each fail a test. Single-site updates, planned first, did not mix on a
+  Twenty-one mutations each fail a test. Single-site updates, planned first, did not mix on a
   drifting coefficient.
 
 ### Changed
