@@ -193,7 +193,10 @@ still change).
   S-shaped curve is refused. `validation/allocation_decision_weight.mac` holds `W` to the realised
   loss's Hessian for two exponential and two Michaelis-Menten channels; on three channels with
   carryover the plan re-made on moved channels meets it to `1e-4`, and with every parameter off by
-  a tenth the quadratic is within a tenth of the loss. Fourteen mutations caught.
+  a tenth the quadratic is within a tenth of the loss. Fourteen mutations caught. On
+  causaldyn-bench's Track M v2, pre-registered over 500 geo panels, choosing where a geo test runs
+  by the regret `W` expects it to leave cut the plan's regret to 0.0050 per euro [0.0037, 0.0062],
+  against 0.0143 for Abadie and Zhao's representative set and 0.0241 for a random set.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,

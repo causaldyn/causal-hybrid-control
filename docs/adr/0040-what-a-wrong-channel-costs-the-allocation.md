@@ -51,8 +51,15 @@ holds at its floor is worth nothing to the plan.
   zero. Fourteen mutations caught.
 - It is local. A channel pinned with a small multiplier leaves its end under an error the weight
   does not see, and the loss there is more than `W` says, as for `chc.experiment`'s pinned levers.
-- It prices a test's covariance; it does not choose the test. causaldyn-bench is where a choice of
-  where to test, read through `W`, is to be scored against the choices it replaces.
+- It prices a test's covariance; it does not choose the test. On causaldyn-bench's Track M v2 a
+  choice of where to test read through it was pre-registered and scored on 500 geo panels
+  (`results/track_m2_geo.md` there): choosing the tested geos by the regret `W` expects their test
+  to leave cut the plan's regret to 0.0050 per euro of the budget [0.0037, 0.0062], against 0.0143
+  for the set that represents the market, Abadie and Zhao's, 0.0164 for the set a synthetic control
+  fits best and 0.0241 for a random set; paired, -0.0094 [-0.0128, -0.0059] against the
+  representative set. The expected regret, local and at independent errors, under-states the
+  realised by about half, 0.0028 against 0.0050: it ranks sets, it does not forecast what a test
+  leaves.
 
 ## Alternatives
 
