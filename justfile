@@ -60,14 +60,16 @@ fix:
 # 0.10 injects it -- so a green local `ty` on 3.14 was a red CI job on 3.11, with the failure
 # living in a dependency's own class definition rather than in this code. This runs the same
 # matrix ci.yml's `lint` does, each in its own environment so `.venv` is not swapped underneath
-# you; a free-threaded build resolves as its twin with the GIL does, so it adds no leg here.
-# Minutes, not seconds: run it before pushing anything that touches a dependency's API.
+# you; a free-threaded build resolves as its twin with the GIL does, so it adds no leg here, and
+# each leg asks for the twin with the GIL: uv may otherwise settle on the free-threaded one, which
+# no abi3 wheel serves, and build polars from source. Minutes, not seconds: run it before pushing
+# anything that touches a dependency's API.
 types-matrix:
     #!/usr/bin/env bash
     set -euo pipefail
     for v in 3.11 3.12 3.13 3.14 3.15; do
       echo "== ty on $v =="
-      UV_PROJECT_ENVIRONMENT=".venv-ty-$v" uv run --python "$v" --group dev ty check --python-version "$v"
+      UV_PROJECT_ENVIRONMENT=".venv-ty-$v" uv run --python "$v+gil" --group dev ty check --python-version "$v"
     done
 
 # ── Rocq ──────────────────────────────────────────────────────────────────────
