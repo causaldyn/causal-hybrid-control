@@ -73,13 +73,21 @@ def _worth(channels, spend) -> float:
     )
 
 
-def test_two_mirrored_linear_readings_are_hedged_by_the_even_split():
+@pytest.mark.parametrize("unit", [1.0, 1e18])
+def test_two_mirrored_linear_readings_are_hedged_by_the_even_split(unit):
     """Reading A returns 2 and 1 a unit on the two channels, B 1 and 2: each is best all on its
     better channel, worth 200 of a budget of 100, so a split's regrets are 100 - s1 and s1, and the
-    least worst regret is 50, at the even split."""
+    least worst regret is 50, at the even split. Counted in a unit 10^18 times smaller the split is
+    the same: a fit run to the edge of its family reads returns that large."""
     readings = [
-        (Channel(ONE, Power(100.0, 1.0), 200.0), Channel(ONE, Power(100.0, 1.0), 100.0)),
-        (Channel(ONE, Power(100.0, 1.0), 100.0), Channel(ONE, Power(100.0, 1.0), 200.0)),
+        (
+            Channel(ONE, Power(100.0, 1.0), 200.0 * unit),
+            Channel(ONE, Power(100.0, 1.0), 100.0 * unit),
+        ),
+        (
+            Channel(ONE, Power(100.0, 1.0), 100.0 * unit),
+            Channel(ONE, Power(100.0, 1.0), 200.0 * unit),
+        ),
     ]
     plan = minimax_allocate(
         readings,
@@ -90,9 +98,9 @@ def test_two_mirrored_linear_readings_are_hedged_by_the_even_split():
         history=np.zeros((0, 2)),
     )
     np.testing.assert_allclose(plan.spend, [50.0, 50.0], rtol=1e-9)
-    np.testing.assert_allclose(plan.best, [200.0, 200.0], rtol=1e-12)
-    np.testing.assert_allclose(plan.regret, [50.0, 50.0], rtol=1e-9)
-    assert plan.worst - plan.bound <= 1e-9 * 200.0
+    np.testing.assert_allclose(plan.best, [200.0 * unit, 200.0 * unit], rtol=1e-12)
+    np.testing.assert_allclose(plan.regret, [50.0 * unit, 50.0 * unit], rtol=1e-9)
+    assert plan.worst - plan.bound <= 1e-9 * 200.0 * unit
 
 
 def test_no_split_on_a_fine_grid_has_a_smaller_worst_regret():

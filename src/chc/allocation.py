@@ -596,7 +596,10 @@ def minimax_allocate(
         return values, slopes
 
     # t >= best - value - slope @ (s - split) for every reading, over s in the box spending the
-    # budget; the variables are the rates and t, and t is the worst regret the planes allow
+    # budget; the variables are the rates and t, and t is the worst regret the planes allow. Both
+    # sides are read in units of the largest best return: HiGHS refuses a program with an entry past
+    # 1e15, and a reading's slope in currency reaches that when its fit has run to the edge of its
+    # family, a coefficient of 1e35 on a curve barely bent
     rows: list[np.ndarray] = []
     limits: list[float] = []
     worst, chosen, regret = np.inf, plans[0].spend, best
@@ -609,8 +612,8 @@ def minimax_allocate(
             losses = best - values
             if losses.max() < worst:
                 worst, chosen, regret = float(losses.max()), tried, losses
-            rows.extend(np.concatenate([-slopes, -np.ones((len(readings), 1))], axis=1))
-            limits.extend(values - slopes @ tried - best)
+            rows.extend(np.concatenate([-slopes / scale, -np.ones((len(readings), 1))], axis=1))
+            limits.extend((values - slopes @ tried - best) / scale)
         if worst - floor <= _GAP * scale:
             break
         program = linprog(
@@ -625,7 +628,7 @@ def minimax_allocate(
         )
         if program.status != 0:
             raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
-        floor = max(floor, float(program.fun))
+        floor = max(floor, float(program.fun) * scale)
         splits = [_onto(program.x[:size], lower_rates, upper_rates, rate)]
     return MinimaxAllocation(
         spend=np.asarray(chosen), best=best, regret=regret, worst=worst, bound=min(floor, worst)

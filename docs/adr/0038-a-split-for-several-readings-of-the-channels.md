@@ -40,6 +40,10 @@ unbuilt: a split that holds up under every reading the tests allow.
   while trusting any one reading's best split leaves a worst regret above the hedge's by a tenth;
   one reading, planned as `allocate` plans it; and an S-curve's regret on its envelope's chord.
   Five mutations caught.
+- The planes are read in units of the largest best return. In currency, a reading whose fit has
+  run to the edge of its family, its coefficient and scale grown together, carries a slope past
+  `1e15`, the largest entry HiGHS accepts, and on causaldyn-bench's Track M v2 it refused the
+  program. The closed form holds in a unit `1e18` times smaller.
 - A reading needs its own `allocate` for its best return, and the planes one tangent a reading a
   round, so the cost grows with the number of readings, which a product of families kept per
   channel makes large.

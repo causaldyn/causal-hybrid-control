@@ -179,9 +179,11 @@ still change).
   Where the curves are concave the worst regret is convex in the split, and Kelley's cutting planes
   close on it: the linear program over every reading's tangents bounds it from below, and the best
   split tried bounds it from above, so `MinimaxAllocation.worst - MinimaxAllocation.bound` is the
-  certificate. An S-shaped curve is hedged on its envelope. The tests hold it to a closed form,
-  two mirrored linear readings hedged by the even split, and on three channels with carryover to
-  every split of a 241-by-241 grid; five mutations caught.
+  certificate. An S-shaped curve is hedged on its envelope. The planes are read in units of the
+  largest best return: a fit run to the edge of its family reads a slope in currency past `1e15`,
+  the largest entry HiGHS accepts, and it refused the program. The tests hold it to a closed form,
+  two mirrored linear readings hedged by the even split, in any unit, and on three channels with
+  carryover to every split of a 241-by-241 grid; five mutations caught.
 - **What a wrong channel costs the allocation, `chc.allocation.decision_weight`** (*experimental*,
   ADR 0040). `decision_weight(channels, budget, periods, *, lower, upper, history=None)` returns an
   `AllocationWeight`: the Hessian `W` of the loss of `allocate`'s plan made on channels whose
