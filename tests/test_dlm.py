@@ -490,7 +490,7 @@ def test_a_sign_that_does_not_bind_leaves_the_posterior_as_it_was(caplog):
         r for r in caplog.records if getattr(r, "chc_event", None) == "dlm_constrained_sample"
     ]
     assert (record.rhat, record.ess, record.walls) == (draws.rhat, draws.ess, 0.0)
-    assert (record.levelno, record.mixed) == (logging.INFO, True)
+    assert (record.levelno, record.mixed, draws.mixed) == (logging.INFO, True, True)
 
 
 def test_a_run_too_short_to_read_is_logged_as_a_warning(caplog):
@@ -502,7 +502,7 @@ def test_a_run_too_short_to_read_is_logged_as_a_warning(caplog):
     (record,) = [
         r for r in caplog.records if getattr(r, "chc_event", None) == "dlm_constrained_sample"
     ]
-    assert (record.levelno, record.mixed) == (logging.WARNING, False)
+    assert (record.levelno, record.mixed, draws.mixed) == (logging.WARNING, False, False)
     assert "not to be read" in record.getMessage()
 
 

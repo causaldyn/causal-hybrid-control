@@ -833,6 +833,12 @@ class ConstrainedDraws:
     ess: float
 
     @property
+    def mixed(self) -> bool:
+        """Whether the draws can be read: ``rhat`` at most 1.01 and ``ess`` at least 100 a chain
+        (Vehtari et al. 2021)."""
+        return self.rhat <= 1.01 and self.ess >= 100.0 * self.states.shape[0]
+
+    @property
     def pooled(self) -> PosteriorDraws:
         """The chains pooled into one set of draws, as :func:`decompose` reads them."""
         chains, draws, horizon, p = self.states.shape
@@ -1059,8 +1065,8 @@ def constrained_sample(
     the square of their number, and a trajectory meets more walls the harder the signs bind.
 
     A constrained coefficient must be a :class:`Regression` block of width one. ``rhat`` and
-    ``ess`` say whether the chains mixed; the draws are not to be read when ``rhat`` is above
-    1.01 or ``ess`` below 100 a chain, and the run is then logged as a warning.
+    ``ess`` say whether the chains mixed; the draws are not to be read when they are not
+    :attr:`ConstrainedDraws.mixed`, and the run is then logged as a warning.
 
     Raises:
         ValueError: on no signs, a column that is not one of ``x``'s or not in a width-one
@@ -1235,9 +1241,9 @@ def constrained_sample(
             kept_states[:, sweep - warmup] = theta
             kept_variance[:, sweep - warmup] = variance
 
-    rhat, ess = _convergence(kept_states, kept_variance)
+    result = ConstrainedDraws(kept_states, kept_variance, *_convergence(kept_states, kept_variance))
+    rhat, ess, mixed = result.rhat, result.ess, result.mixed
     walls = bounces / (chains * (warmup + draws))
-    mixed = rhat <= 1.01 and ess >= 100.0 * chains
     _log.log(
         logging.INFO if mixed else logging.WARNING,
         "dlm constrained sample: %d chains of %d draws, R-hat %.4f, bulk ESS %.0f,"
@@ -1258,7 +1264,7 @@ def constrained_sample(
             "mixed": mixed,
         },
     )
-    return ConstrainedDraws(kept_states, kept_variance, rhat, ess)
+    return result
 
 
 # ----------------------------------------------------------------------------------- forecasting

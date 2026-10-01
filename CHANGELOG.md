@@ -255,8 +255,8 @@ still change).
   - the variance from its inverse gamma.
 
   Steps a discount of 1 or an idle held regressor ties together are one value. Rank-normalised
-  split R-hat and bulk ESS come with the draws (Vehtari et al. 2021), and a run that has not mixed
-  is logged as a warning. `tests/test_dlm.py` holds the draws to oracles that share no code with
+  split R-hat and bulk ESS come with the draws (Vehtari et al. 2021); `ConstrainedDraws.mixed` says
+  whether they can be read, and a run whose draws cannot is logged as a warning. `tests/test_dlm.py` holds the draws to oracles that share no code with
   the sampler:
   - the smoother where a sign does not bind;
   - the truncated normal for a static coefficient;

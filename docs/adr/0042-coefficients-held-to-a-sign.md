@@ -39,8 +39,9 @@ over paths, and the truncated posterior is a Gaussian truncated to an orthant.
 - **Diagnostics.** `rhat` is the largest rank-normalised split R-hat, bulk or tail, over every
   state at every step and `V`. `ess` is the smallest bulk effective sample size, by Geyer's initial
   monotone sequence (Vehtari et al. 2021). Each run is logged (`chc_event="dlm_constrained_sample"`)
-  with both and with the number of walls a trajectory met. The log is a warning when `rhat` is
-  above 1.01 or `ess` below 100 a chain; the draws are not to be read then.
+  with both and with the number of walls a trajectory met. `ConstrainedDraws.mixed` is the one
+  rule for whether the draws can be read: `rhat` at most 1.01 and `ess` at least 100 a chain. When
+  they cannot, the log is a warning.
 - **Scope, and what is refused:**
   - no signs;
   - a column that is not one of `x`'s, or that shares its regression block with another column;
