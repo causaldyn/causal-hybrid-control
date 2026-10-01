@@ -229,6 +229,13 @@ still change).
   says so when it raises; the `trees` extra's CatBoost has no wheel there. The free-threaded legs
   go without polars and diff-diff, which publish no free-threaded wheels, and the tests that need
   either skip.
+- **`chc.dlm.decompose`**: the fitted mean split into its parts, draw by draw, from
+  `backward_sample`'s draws. A polynomial or seasonal block is one part (the level, the seasonal
+  effect) and a regression block one part per column, so each channel has its own; a draw's parts
+  add up to its `F_t' θ_t` to rounding. A part's interval, a window's total or a return per unit
+  of a column is then a quantile over the draws, taken after the sum, so it carries the
+  dependence across steps that per-step intervals lose. `tests/test_dlm.py` holds each part's
+  mean and variance to the smoother's exact ones; five mutations caught.
 
 ### Changed
 

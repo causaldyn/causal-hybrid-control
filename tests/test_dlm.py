@@ -17,6 +17,7 @@ from chc.dlm import (
     Regression,
     Seasonal,
     backward_sample,
+    decompose,
     forecast,
     forward_filter,
     monitor_evalues,
@@ -332,6 +333,58 @@ def test_backward_sampling_with_a_moving_variance_matches_the_smoother():
     precision = 1.0 / draws.variance
     mean = precision.mean(axis=0)
     np.testing.assert_allclose(precision.var(axis=0), 2.0 * mean**2 / dof, rtol=0.05)
+
+
+def _parts_fit():
+    """A level with a slope, two regression columns, two harmonics of 12, and a learned variance."""
+    rng = np.random.default_rng(12)
+    horizon = 48
+    t = np.arange(horizon)
+    x = rng.gamma(2.0, 1.0, (horizon, 2))
+    y = 5.0 + 0.1 * t + x @ np.array([1.0, -0.5]) + np.sin(2.0 * np.pi * t / 12.0)
+    y = y + 0.3 * rng.standard_normal(horizon)
+    model = DynamicLinearModel(
+        (Polynomial(2, 0.95), Regression(2, 0.9), Seasonal(12.0, (1, 2), 0.98)),
+        Prior(np.zeros(8), 10.0 * np.eye(8), 0.5, 3.0),
+    )
+    return forward_filter(model, y, x), x
+
+
+def test_the_decomposition_adds_up_to_the_mean_draw_by_draw():
+    fit, x = _parts_fit()
+    draws = backward_sample(fit, 50, seed=3)
+    parts = decompose(fit, draws)
+    assert parts.shape == (50, fit.y.size, 4)
+    whole = np.einsum("dtp,tp->dt", draws.states, fit.design)
+    np.testing.assert_allclose(parts.sum(axis=2), whole, rtol=1e-12, atol=1e-12)
+    states = draws.states
+    np.testing.assert_allclose(parts[..., 0], states[..., 0])
+    np.testing.assert_allclose(parts[..., 1], x[:, 0] * states[..., 2])
+    np.testing.assert_allclose(parts[..., 2], x[:, 1] * states[..., 3])
+    np.testing.assert_allclose(parts[..., 3], states[..., 4] + states[..., 6])
+
+
+def test_the_decomposition_s_moments_are_the_smoother_s():
+    """Each part is linear in the state, so its mean and variance are the smoothed ones'."""
+    fit, _ = _parts_fit()
+    sm = smooth(fit)
+    n = 20_000
+    parts = decompose(fit, backward_sample(fit, n, seed=4))
+    coordinates = [[0, 1], [2], [3], [4, 5, 6, 7]]
+    for i, coords in enumerate(coordinates):
+        loading = np.zeros_like(fit.design)
+        loading[:, coords] = fit.design[:, coords]
+        mean = np.einsum("tp,tp->t", loading, sm.mean)
+        var = np.einsum("tp,tpq,tq->t", loading, sm.covariance, loading)
+        z = (parts[..., i].mean(axis=0) - mean) / np.sqrt(var / n)
+        assert np.max(np.abs(z)) < 4.5
+        np.testing.assert_allclose(parts[..., i].var(axis=0), var, rtol=0.06)
+
+
+def test_a_decomposition_refuses_another_fit_s_draws():
+    fit, _ = _parts_fit()
+    with pytest.raises(ValueError, match=r"draws of states shaped \(25, 2\)"):
+        decompose(fit, backward_sample(_small_fit(6.0), 5, seed=1))
 
 
 def test_the_variance_factor_is_the_closed_form_at_the_last_step():

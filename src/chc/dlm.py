@@ -1,5 +1,6 @@
 """Discount dynamic linear models: forward filtering with a learned observational variance,
-smoothing, backward sampling, forecasting and monitoring. *Experimental.*
+smoothing, backward sampling and the decomposition it gives, forecasting and monitoring.
+*Experimental.*
 
 The model is West and Harrison's (1997): ``y_t = F_t' theta_t + nu_t`` with
 ``theta_t = G theta_(t-1) + omega_t``, where the evolution variance is not a parameter but a
@@ -779,6 +780,35 @@ def backward_sample(fit: DLMFit, draws: int, seed: int) -> PosteriorDraws:
         z = rng.standard_normal((draws, p))
         states[:, t] = centre + (z @ _sqrt_psd(residual).T) / np.sqrt(precision[:, t : t + 1])
     return PosteriorDraws(states, 1.0 / precision)
+
+
+def decompose(fit: DLMFit, draws: PosteriorDraws) -> _Array:
+    """The mean ``F_t' theta_t`` split into its parts, draw by draw: ``(draws, T, parts)``.
+
+    A :class:`Polynomial` or :class:`Seasonal` block is one part, its coordinates of ``F_t``
+    times its coordinates of the state: the level, or the seasonal effect. A :class:`Regression`
+    block is one part per column, the column times its coefficient. Parts follow the state's
+    order, and a draw's parts add up to its ``F_t' theta_t`` to rounding.
+
+    Each part's interval is a quantile over the draws. A window's total, a difference between
+    two windows, or a return per unit of a column is taken draw by draw first, so its interval
+    carries the parts' dependence across steps and on each other.
+
+    Raises:
+        ValueError: on draws of another model's or another series' states.
+    """
+    if draws.states.shape[1:] != fit.mean.shape:
+        raise ValueError(
+            f"draws of states shaped {draws.states.shape[1:]}, where the fit's are {fit.mean.shape}"
+        )
+    products = draws.states * fit.design
+    parts: list[_Array] = []
+    for block, sl in zip(fit.model.blocks, _structure(fit.model).slices, strict=True):
+        if isinstance(block, Regression):
+            parts.extend(products[:, :, j] for j in range(sl.start, sl.stop))
+        else:
+            parts.append(products[:, :, sl].sum(axis=2))
+    return np.stack(parts, axis=2)
 
 
 # ----------------------------------------------------------------------------------- forecasting
