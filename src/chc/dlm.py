@@ -1,6 +1,6 @@
 """Discount dynamic linear models: forward filtering with a learned observational variance,
-smoothing, backward sampling and the decomposition it gives, forecasting and monitoring.
-*Experimental.*
+smoothing, backward sampling and the decomposition it gives, sampling with coefficients held to a
+sign, forecasting and monitoring. *Experimental.*
 
 The model is West and Harrison's (1997): ``y_t = F_t' theta_t + nu_t`` with
 ``theta_t = G theta_(t-1) + omega_t``, where the evolution variance is not a parameter but a
@@ -41,6 +41,9 @@ What is exact and what is not:
   filtering, backward sampling) when ``beta = 1``; below 1 it draws the variance path by the
   beta-gamma evolution run backwards and each state given the next at that step's variance
   (McAlinn and West 2019, appendix A.2).
+* :func:`constrained_sample` draws the posterior truncated to coefficients' signs by Gibbs
+  sampling, which is exact only in the limit of its chains; its R-hat and effective sample size
+  say whether a run can be read.
 * :func:`smooth` returns the exact means, covariances and lag-one covariances of those draws.
   Each covariance is in the units of ``E[V_t | D_T]``: with ``beta = 1`` that is the final
   estimate ``n_T S_T / (n_T - 2)`` at every step, not the ``S_t`` the filter had at ``t`` (a
@@ -810,6 +813,452 @@ def decompose(fit: DLMFit, draws: PosteriorDraws) -> _Array:
         else:
             parts.append(products[:, :, sl].sum(axis=2))
     return np.stack(parts, axis=2)
+
+
+# ------------------------------------------------------------------------------ sign constraints
+
+Sign = Literal["positive", "negative"]
+
+
+@dataclass(frozen=True)
+class ConstrainedDraws:
+    """Draws of ``theta_(1:T)`` and ``V`` given ``D_T`` and the signs, from Gibbs chains after
+    their warm-up. ``rhat`` is the largest rank-normalised split R-hat, bulk or tail, over every
+    state at every step and the variance (Vehtari et al. 2021); ``ess`` the smallest bulk
+    effective sample size over the same."""
+
+    states: _Array  # (chains, draws, T, p)
+    variance: _Array  # (chains, draws)
+    rhat: float
+    ess: float
+
+    @property
+    def pooled(self) -> PosteriorDraws:
+        """The chains pooled into one set of draws, as :func:`decompose` reads them."""
+        chains, draws, horizon, p = self.states.shape
+        variance = np.repeat(self.variance.reshape(-1, 1), horizon, axis=1)
+        return PosteriorDraws(self.states.reshape(chains * draws, horizon, p), variance)
+
+
+def _rank_normal(x: _Array) -> _Array:
+    """Rank-normalised draws, pooled over chains: ``(chains, draws, q)``."""
+    chains, draws, q = x.shape
+    flat = x.reshape(chains * draws, q)
+    ranks = flat.argsort(axis=0).argsort(axis=0) + 1.0
+    return special.ndtri((ranks - 0.375) / (chains * draws + 0.25)).reshape(chains, draws, q)
+
+
+def _split(x: _Array) -> _Array:
+    half = x.shape[1] // 2
+    return np.concatenate([x[:, :half], x[:, x.shape[1] - half :]], axis=0)
+
+
+def _rhat_of(z: _Array) -> _Array:
+    _, n, _ = z.shape
+    means = z.mean(axis=1)
+    within = z.var(axis=1, ddof=1).mean(axis=0)
+    between = n * means.var(axis=0, ddof=1)
+    return np.sqrt(((n - 1.0) / n * within + between / n) / within)
+
+
+def _ess_of(z: _Array) -> _Array:
+    """Bulk effective sample size of split, rank-normalised chains: Geyer's initial monotone
+    sequence over the chains' combined autocorrelation."""
+    m, n, q = z.shape
+    centred = z - z.mean(axis=1, keepdims=True)
+    size = 1 << (2 * n - 1).bit_length()
+    spectrum = np.fft.rfft(centred, n=size, axis=1)
+    acov = np.fft.irfft(spectrum * np.conj(spectrum), n=size, axis=1)[:, :n] / n
+    within = z.var(axis=1, ddof=1).mean(axis=0)
+    between = n * z.mean(axis=1).var(axis=0, ddof=1)
+    var_plus = (n - 1.0) / n * within + between / n
+    rho = 1.0 - (within - acov.mean(axis=0)) / var_plus
+    rho[0] = 1.0
+    pairs = rho[: 2 * (n // 2)].reshape(n // 2, 2, q).sum(axis=1)
+    positive = np.cumprod(pairs > 0.0, axis=0).astype(bool)
+    monotone = np.minimum.accumulate(np.where(positive, pairs, 0.0), axis=0)
+    tau = -1.0 + 2.0 * monotone.sum(axis=0)
+    return m * n / np.maximum(tau, 1.0 / np.log10(m * n))
+
+
+def _convergence(states: _Array, variance: _Array) -> tuple[float, float]:
+    chains, draws, horizon, p = states.shape
+    x = np.concatenate([states.reshape(chains, draws, horizon * p), variance[:, :, None]], axis=2)
+    x = x[:, :, np.ptp(x.reshape(-1, x.shape[2]), axis=0) > 0.0]
+    folded = np.abs(x - np.median(x.reshape(-1, x.shape[2]), axis=0))
+    bulk = _split(_rank_normal(x))
+    rhat = np.maximum(_rhat_of(bulk), _rhat_of(_split(_rank_normal(folded))))
+    return float(rhat.max()), float(_ess_of(bulk).min())
+
+
+def _transitions(fit: DLMFit) -> tuple[_Array, _Array]:
+    """``R*_1``, the first prior's covariance, and ``W*_t`` for ``t = 2, ..., T``, both in units
+    of ``V``: ``R_t = G C_(t-1) G' + W_t`` with ``W_t`` the discount's blockwise inflation, zero
+    exactly where a block's discount is 1 or a held coordinate is idle.
+
+    Raises:
+        ValueError: on a fit whose ``R_t`` is not the discount's, such as one with interventions.
+    """
+    s = _structure(fit.model)
+    horizon, p = fit.mean.shape
+    active = fit.design != 0.0
+    w = np.zeros((max(horizon - 1, 0), p, p))
+    for t in range(1, horizon):
+        evolved = s.evolution @ fit.covariance[t - 1] @ s.evolution.T
+        w[t - 1] = _evolve(s, "additive", evolved, active[t]) - evolved
+        scale_of = float(np.abs(fit.prior_covariance[t]).max())
+        if not np.allclose(
+            evolved + w[t - 1], fit.prior_covariance[t], rtol=0.0, atol=1e-9 * scale_of
+        ):
+            raise ValueError(
+                f"step {t}: the prior covariance is not the discount's evolution of the last"
+                " posterior; constrained sampling does not take a fit with interventions"
+            )
+        w[t - 1] /= fit.scale[t - 1]
+    return fit.prior_covariance[0] / fit.model.prior.scale, w
+
+
+def _unit_filter(
+    g: _Array, design: _Array, observed: _Array, first_cov: _Array, w: _Array
+) -> tuple[_Array, _Array, _Array, _Array, _Array]:
+    """The filter at ``V = 1``, whose covariances are the posterior's given ``V`` in units of
+    ``V`` and do not depend on ``y``: the gains ``(T, p)``, zero where ``y_t`` is missing; the
+    priors' and posteriors' covariances ``(T, p, p)``; the smoother's gains ``B_t``
+    ``(T - 1, p, p)``; and roots of the backward draw's covariances ``(T, p, p)``."""
+    horizon, p = design.shape
+    gains = np.zeros((horizon, p))
+    covs = np.empty((horizon, p, p))
+    priors = np.empty((horizon, p, p))
+    r = first_cov
+    for t in range(horizon):
+        if t:
+            r = _sym(g @ covs[t - 1] @ g.T + w[t - 1])
+        priors[t] = r
+        if observed[t]:
+            rf = r @ design[t]
+            gains[t] = rf / (design[t] @ rf + 1.0)
+            shrink = np.eye(p) - np.outer(gains[t], design[t])
+            covs[t] = _sym(shrink @ r @ shrink.T + np.outer(gains[t], gains[t]))
+        else:
+            covs[t] = r
+    back = np.zeros((max(horizon - 1, 0), p, p))
+    roots = np.zeros((horizon, p, p))
+    roots[-1] = _sqrt_psd(covs[-1])
+    for t in range(horizon - 1):
+        back[t] = np.linalg.solve(priors[t + 1], g @ covs[t]).T
+        roots[t] = _sqrt_psd(covs[t] - back[t] @ priors[t + 1] @ back[t].T)
+    return gains, priors, covs, back, roots
+
+
+def _path_covariance(back: _Array, smoothed: _Array, cs: list[int], times: _Array) -> _Array:
+    """``Cov(theta_s[cs], theta_t[cs])`` for ``s`` and ``t`` in the sorted ``times``, shaped
+    ``(times, cs, times, cs)``, from the smoothed covariances and
+    ``Cov(theta_s, theta_t) = B_s Cov(theta_(s+1), theta_t)`` for ``s < t``."""
+    n, k, p = times.size, len(cs), smoothed.shape[1]
+    out = np.empty((n, k, n, k))
+    column = np.empty((n, p, k))  # Cov(theta_s, theta_t[cs]) for the times t from i on
+    i = n
+    for s in range(int(times[-1]), -1, -1):
+        if i < n:
+            column[i:] = back[s] @ column[i:]
+        if i and times[i - 1] == s:
+            i -= 1
+            column[i] = smoothed[s][:, cs]
+            block = column[i:, cs, :]
+            out[i, :, i:, :] = block.transpose(1, 0, 2)
+            out[i:, :, i, :] = block.transpose(0, 2, 1)
+    return out
+
+
+_MAX_BOUNCES = 1_000
+
+
+def _reflected_orbit(
+    mean: _Array, offset: _Array, velocity: _Array, sign: _Array, cov: _Array
+) -> tuple[_Array, int]:
+    """One exact Hamiltonian trajectory of length ``pi / 2`` for ``N(mean, cov)`` truncated to
+    ``sign * x >= 0`` (Pakman and Paninski 2014), a chain to a row: from ``mean + offset`` the
+    orbit is ``mean + a cos(t) + b sin(t)``, with ``a = offset`` and ``b = velocity``, until it
+    meets a wall, where the velocity reflects in the metric of ``cov``. Returns the final offsets
+    and how many walls were met. With no wall in the way the end is ``mean + velocity``, a draw
+    independent of the start.
+
+    Raises:
+        RuntimeError: on a trajectory that meets more than ``_MAX_BOUNCES`` walls per coordinate.
+    """
+    a, b = offset.copy(), velocity.copy()
+    left = np.full(a.shape[0], 0.5 * math.pi)
+    diagonal = np.diag(cov)
+    moving = np.arange(a.shape[0])
+    bounces = 0
+    while moving.size:
+        am, bm = a[moving], b[moving]
+        radius = np.hypot(am, bm)
+        reaches = radius > np.abs(mean)
+        cross = np.arccos(np.clip(-mean / np.where(reaches, radius, 1.0), -1.0, 1.0))
+        time = np.mod(np.arctan2(bm, am) + sign * cross, 2.0 * math.pi)
+        # a coordinate on its wall, or past it by rounding, and heading out leaves now
+        time[(sign * (mean + am) <= 0.0) & (sign * bm < 0.0)] = 0.0
+        leaving = sign * (bm * np.cos(time) - am * np.sin(time)) < 0.0
+        time = np.where(reaches & leaving, time, np.inf)
+        wall = time.argmin(axis=1)
+        hit = time[np.arange(moving.size), wall]
+        ends = hit >= left[moving]
+        done = moving[ends]
+        rest = left[done][:, None]
+        a[done] = a[done] * np.cos(rest) + b[done] * np.sin(rest)
+        moving, hit, wall = moving[~ends], hit[~ends, None], wall[~ends]
+        if not moving.size:
+            break
+        bounces += moving.size
+        if bounces > _MAX_BOUNCES * mean.size * a.shape[0]:
+            raise RuntimeError(
+                f"an exact Hamiltonian trajectory met {bounces} walls over {a.shape[0]} chains"
+                f" and {mean.size} constrained values, more than {_MAX_BOUNCES} a value"
+            )
+        position = a[moving] * np.cos(hit) + b[moving] * np.sin(hit)
+        speed = b[moving] * np.cos(hit) - a[moving] * np.sin(hit)
+        rows = np.arange(moving.size)
+        position[rows, wall] = -mean[wall]
+        speed -= (2.0 * speed[rows, wall] / diagonal[wall])[:, None] * cov[wall]
+        a[moving], b[moving] = position, speed
+        left[moving] -= hit[:, 0]
+    return a, bounces
+
+
+def constrained_sample(
+    fit: DLMFit,
+    signs: Mapping[int, Sign],
+    draws: int,
+    seed: int,
+    *,
+    chains: int = 4,
+    warmup: int | None = None,
+) -> ConstrainedDraws:
+    """Draws of the states and the variance given the data with the coefficients of some columns
+    of ``x`` held to a sign at every step: the model's posterior truncated to the signs, so the
+    point estimate is the truncated posterior's mean, not a clipped one, and a channel's pull
+    against its sign moves into the other states. ``signs`` maps a column of ``x`` to
+    ``"positive"`` (at least 0) or ``"negative"`` (at most 0).
+
+    The discounts define the evolution variances ``W_t`` through the unconstrained filter, which
+    depend on the design and not on ``y``; with them the model is a Gaussian prior over paths,
+    and the signs condition it. Gibbs sampling over three blocks, each chain started from an
+    unconstrained backward draw moved into the signs (ADR 0042):
+
+    * the constrained coefficients' values with the other states integrated out, a Gaussian given
+      ``V`` truncated to the signs, by one exact Hamiltonian trajectory of length ``pi / 2``
+      (Pakman and Paninski 2014): the orbit is an ellipse, reflected where it meets a wall, with
+      no step size and no rejection. The steps a zero evolution variance ties together (a discount
+      of 1, or an idle held regressor) are one value;
+    * the other states given those paths, by forward filtering and backward sampling;
+    * ``V`` from its inverse gamma.
+
+    Truncating each backward-sampling step instead would not give this posterior, since the filter
+    that feeds it never saw the signs. The values' covariance is held dense, so memory grows as
+    the square of their number, and a trajectory meets more walls the harder the signs bind.
+
+    A constrained coefficient must be a :class:`Regression` block of width one. ``rhat`` and
+    ``ess`` say whether the chains mixed; the draws are not to be read when ``rhat`` is above
+    1.01 or ``ess`` below 100 a chain, and the run is then logged as a warning.
+
+    Raises:
+        ValueError: on no signs, a column that is not one of ``x``'s or not in a width-one
+            regression block, a sign that is neither, ``form="multiplicative"`` (whose evolution
+            couples the blocks), a variance discount below 1, a fit with interventions, ``draws``
+            below 1, ``chains`` below 2 or a negative ``warmup``.
+    """
+    model = fit.model
+    if not signs:
+        raise ValueError("no sign to impose; backward_sample draws the unconstrained posterior")
+    if isinstance(draws, bool) or not isinstance(draws, int) or draws < 1:
+        raise ValueError(f"draws must be a positive integer, got {draws!r}")
+    if isinstance(chains, bool) or not isinstance(chains, int) or chains < 2:
+        raise ValueError(f"chains must be an integer of at least 2 for R-hat, got {chains!r}")
+    warmup = draws if warmup is None else warmup
+    if isinstance(warmup, bool) or not isinstance(warmup, int) or warmup < 0:
+        raise ValueError(f"warmup must be a non-negative integer, got {warmup!r}")
+    if model.form != "additive":
+        raise ValueError(
+            "constrained sampling needs form='additive', whose evolution keeps the blocks apart"
+        )
+    if model.variance_discount != 1.0:
+        raise ValueError("constrained sampling needs a variance discount of 1")
+    s = _structure(model)
+    block_of = {}
+    for block, sl in zip(model.blocks, s.slices, strict=True):
+        for j in range(sl.start, sl.stop):
+            block_of[j] = block
+    constrained: dict[int, float] = {}
+    for column, sign in signs.items():
+        if isinstance(column, bool) or not isinstance(column, int):
+            raise ValueError(f"a sign's key is a column of x, got {column!r}")
+        if not 0 <= column < s.regression.size:
+            raise ValueError(f"column {column} is not one of x's {s.regression.size}")
+        if sign not in ("positive", "negative"):
+            raise ValueError(f"a sign is 'positive' or 'negative', got {sign!r}")
+        j = int(s.regression[column])
+        if block_of[j].size != 1:
+            raise ValueError(
+                f"column {column}'s coefficient shares a regression block of width"
+                f" {block_of[j].size}; give a constrained coefficient a block of its own"
+            )
+        constrained[j] = 1.0 if sign == "positive" else -1.0
+
+    rng = np.random.default_rng(seed)
+    horizon, p = fit.mean.shape
+    design, y = fit.design, fit.y
+    observed = ~np.isnan(y)
+    y0 = np.where(observed, y, 0.0)
+    g = s.evolution
+    first_cov, w = _transitions(fit)
+    first_mean = fit.prior_mean[0]
+    first_precision = np.linalg.inv(first_cov)
+    learned = not math.isinf(model.prior.dof)
+    cs = sorted(constrained)
+    us = [j for j in range(p) if j not in constrained]
+
+    # the constrained coefficients with the other states integrated out, in units of V: a
+    # Gaussian over each one's distinct values, one per run of steps that a zero evolution
+    # variance ties together (a discount of 1, or an idle held regressor)
+    full_gain, full_prior, full_cov, full_back, full_root = _unit_filter(
+        g, design, observed, first_cov, w
+    )
+    filtered = np.empty((horizon, p))
+    a = first_mean
+    for t in range(horizon):
+        if t:
+            a = g @ filtered[t - 1]
+        filtered[t] = a + full_gain[t] * (y0[t] - design[t] @ a)
+    smoothed, smoothed_cov = filtered.copy(), full_cov.copy()
+    for t in range(horizon - 2, -1, -1):
+        smoothed[t] += full_back[t] @ (smoothed[t + 1] - g @ filtered[t])
+        smoothed_cov[t] = _sym(
+            full_cov[t] + full_back[t] @ (smoothed_cov[t + 1] - full_prior[t + 1]) @ full_back[t].T
+        )
+    starts = [np.concatenate([[0], 1 + np.flatnonzero(w[:, j, j] > 0.0)]) for j in cs]
+    times = np.unique(np.concatenate(starts))
+    step = np.concatenate(starts)
+    which = np.repeat(np.arange(len(cs)), [run.size for run in starts])
+    columns = np.asarray(cs)[which]
+    spot = np.searchsorted(times, step)
+    value_cov = _path_covariance(full_back, smoothed_cov, cs, times)[
+        spot[:, None], which[:, None], spot, which
+    ]
+    value_mean = smoothed[step, columns]
+    value_sign = np.array([constrained[j] for j in columns])
+    first_value = np.cumsum([0] + [run.size for run in starts[:-1]])
+    fill = np.stack(
+        [
+            first_value[c] + np.searchsorted(run, np.arange(horizon), side="right") - 1
+            for c, run in enumerate(starts)
+        ],
+        axis=1,
+    )
+
+    # the other states given the constrained paths: a DLM with known offsets
+    gu, fu = g[np.ix_(us, us)], design[:, us]
+    shift = first_cov[np.ix_(us, cs)] @ np.linalg.inv(first_cov[np.ix_(cs, cs)])
+    pu = len(us)
+    if pu:
+        r_first = first_cov[np.ix_(us, us)] - shift @ first_cov[np.ix_(cs, us)]
+        gains, _, _, back, roots = _unit_filter(gu, fu, observed, r_first, w[:, us][:, :, us])
+
+    # the variance's full conditional: what does not move with the draws
+    ranks = sum(int(np.linalg.matrix_rank(w_t, hermitian=True)) for w_t in w)
+    w_pinv = np.array([np.linalg.pinv(w_t, hermitian=True) for w_t in w])
+    shape = (model.prior.dof + observed.sum() + p + ranks) / 2.0 if learned else math.inf
+
+    start = backward_sample(fit, chains, seed=int(rng.integers(2**31)))
+    theta = start.states.copy()
+    theta[:, :, cs] = (value_sign * np.maximum(value_sign * theta[:, step, columns], 0.0))[:, fill]
+    variance = start.variance[:, -1] if learned else np.full(chains, model.prior.scale)
+
+    kept_states = np.empty((chains, draws, horizon, p))
+    kept_variance = np.empty((chains, draws))
+    bounces = 0
+    for sweep in range(warmup + draws):
+        if learned:
+            errors = np.where(observed, y0 - np.einsum("tp,ctp->ct", design, theta), 0.0)
+            d0 = theta[:, 0] - first_mean
+            moves = theta[:, 1:] - np.einsum("pq,ctq->ctp", g, theta[:, :-1])
+            rate = 0.5 * (
+                model.prior.dof * model.prior.scale
+                + (errors**2).sum(axis=1)
+                + np.einsum("cp,pq,cq->c", d0, first_precision, d0)
+                + np.einsum("ctp,tpq,ctq->c", moves, w_pinv, moves)
+            )
+            variance = 1.0 / rng.gamma(shape, 1.0 / rate)
+        sd = np.sqrt(variance)[:, None]
+
+        # the velocity is a centred draw of the values' Gaussian: a backward draw of every state
+        noise = rng.standard_normal((chains, horizon, p))
+        path = np.empty((chains, horizon, p))
+        path[:, -1] = noise[:, -1] @ full_root[-1].T
+        for t in range(horizon - 2, -1, -1):
+            path[:, t] = path[:, t + 1] @ full_back[t].T + noise[:, t] @ full_root[t].T
+        moved, met = _reflected_orbit(
+            value_mean,
+            theta[:, step, columns] - value_mean,
+            sd * path[:, step, columns],
+            value_sign,
+            value_cov,
+        )
+        bounces += met
+        values = value_sign * np.maximum(value_sign * (value_mean + moved), 0.0)
+        theta[:, :, cs] = values[:, fill]
+
+        if pu:
+            offsets = y0 - np.einsum("tp,ctp->ct", design[:, cs], theta[:, :, cs])
+            a = first_mean[us] + (theta[:, 0, cs] - first_mean[cs]) @ shift.T
+            means = np.empty((chains, horizon, pu))
+            ahead = np.empty((chains, horizon, pu))
+            for t in range(horizon):
+                if t:
+                    a = means[:, t - 1] @ gu.T
+                ahead[:, t] = a
+                if observed[t]:
+                    a = a + (offsets[:, t] - a @ fu[t])[:, None] * gains[t]
+                means[:, t] = a
+            noise = rng.standard_normal((chains, horizon, pu))
+            u = means[:, -1] + sd * (noise[:, -1] @ roots[-1].T)
+            theta[:, -1, us] = u
+            for t in range(horizon - 2, -1, -1):
+                u = (
+                    means[:, t]
+                    + (u - ahead[:, t + 1]) @ back[t].T
+                    + sd * (noise[:, t] @ roots[t].T)
+                )
+                theta[:, t, us] = u
+
+        if sweep >= warmup:
+            kept_states[:, sweep - warmup] = theta
+            kept_variance[:, sweep - warmup] = variance
+
+    rhat, ess = _convergence(kept_states, kept_variance)
+    walls = bounces / (chains * (warmup + draws))
+    mixed = rhat <= 1.01 and ess >= 100.0 * chains
+    _log.log(
+        logging.INFO if mixed else logging.WARNING,
+        "dlm constrained sample: %d chains of %d draws, R-hat %.4f, bulk ESS %.0f,"
+        " %.1f walls a trajectory%s",
+        chains,
+        draws,
+        rhat,
+        ess,
+        walls,
+        "" if mixed else "; the chains have not mixed and the draws are not to be read",
+        extra={
+            "chc_event": "dlm_constrained_sample",
+            "rhat": rhat,
+            "ess": ess,
+            "chains": chains,
+            "draws": draws,
+            "walls": walls,
+            "mixed": mixed,
+        },
+    )
+    return ConstrainedDraws(kept_states, kept_variance, rhat, ess)
 
 
 # ----------------------------------------------------------------------------------- forecasting

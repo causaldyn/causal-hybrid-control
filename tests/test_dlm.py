@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 import pytest
-from scipy import stats
+from scipy import integrate, special, stats
 
 from chc.dlm import (
     DiscountForm,
@@ -18,6 +18,7 @@ from chc.dlm import (
     Seasonal,
     backward_sample,
     confidence_set,
+    constrained_sample,
     decompose,
     forecast,
     forward_filter,
@@ -386,6 +387,376 @@ def test_a_decomposition_refuses_another_fit_s_draws():
     fit, _ = _parts_fit()
     with pytest.raises(ValueError, match=r"draws of states shaped \(25, 2\)"):
         decompose(fit, backward_sample(_small_fit(6.0), 5, seed=1))
+
+
+def _path_posterior(fit, variance: float) -> tuple[np.ndarray, np.ndarray]:
+    """The whole path's posterior with a known variance, without the filter's recursions: the path
+    is ``c + M e`` in independent standard innovations ``e``, so a zero evolution variance needs no
+    inverse, and the posterior is the Gaussian conditional given ``y = F theta + nu``. The mean
+    ``(T p,)`` and covariance ``(T p, T p)``, step-major."""
+    from chc.dlm import _structure
+
+    g = _structure(fit.model).evolution
+    horizon, p = fit.mean.shape
+
+    def root(m):
+        values, vectors = np.linalg.eigh(m)
+        return vectors * np.sqrt(np.clip(values, 0.0, None))
+
+    loading = np.zeros((horizon * p, horizon * p))
+    centre = np.zeros(horizon * p)
+    loading[:p, :p] = root(fit.prior_covariance[0])
+    centre[:p] = fit.prior_mean[0]
+    for t in range(1, horizon):
+        now, before = slice(t * p, (t + 1) * p), slice((t - 1) * p, t * p)
+        loading[now] = g @ loading[before]
+        loading[now, now] += root(fit.prior_covariance[t] - g @ fit.covariance[t - 1] @ g.T)
+        centre[now] = g @ centre[before]
+    prior = loading @ loading.T
+    design = np.zeros((horizon, horizon * p))
+    for t in range(horizon):
+        design[t, t * p : (t + 1) * p] = fit.design[t]
+    gain = prior @ design.T @ np.linalg.inv(design @ prior @ design.T + variance * np.eye(horizon))
+    return centre + gain @ (fit.y - design @ centre), prior - gain @ design @ prior
+
+
+def _orthant_mean(mean: np.ndarray, cov: np.ndarray, sign: np.ndarray) -> np.ndarray:
+    """``E[X | sign * X >= 0]`` for ``X ~ N(mean, cov)`` in two or three dimensions: the last
+    coordinate in closed form given the others, the others by adaptive quadrature."""
+    mu, sig = sign * mean, cov * np.outer(sign, sign)
+    d = mu.size
+    head = slice(0, d - 1)
+    k = np.linalg.solve(sig[head, head], sig[head, d - 1])
+    sd = math.sqrt(sig[d - 1, d - 1] - k @ sig[head, d - 1])
+    precision = np.linalg.inv(sig[head, head])
+    norm = 1.0 / math.sqrt((2.0 * math.pi) ** (d - 1) * np.linalg.det(sig[head, head]))
+    top = np.maximum(mu[head], 0.0) + 12.0 * np.sqrt(np.diag(sig[head, head]))
+
+    def weights(*y):
+        r = np.array(y) - mu[head]
+        density = norm * math.exp(-0.5 * r @ precision @ r)
+        z = (mu[d - 1] + k @ r) / sd
+        tail = special.ndtr(z)
+        return density * tail, density * sd * (
+            z * tail + math.exp(-0.5 * z * z) / math.sqrt(2 * math.pi)
+        )
+
+    def integral(fn):
+        if d == 2:
+            return integrate.quad(fn, 0.0, top[0], epsabs=0.0, epsrel=1e-8, limit=200)[0]
+        return integrate.dblquad(
+            lambda b, a: fn(a, b), 0.0, top[0], 0.0, top[1], epsabs=0.0, epsrel=1e-8
+        )[0]
+
+    mass = integral(lambda *y: weights(*y)[0])
+    out = [integral(lambda *y, i=i: y[i] * weights(*y)[0]) / mass for i in range(d - 1)]
+    out.append(integral(lambda *y: weights(*y)[1]) / mass)
+    return sign * np.array(out)
+
+
+def _channel_world(effect: float, seed: int, horizon: int = 52):
+    """A drifting base and one channel dark a fifth of the time; the series and the regressor."""
+    rng = np.random.default_rng(seed)
+    x = rng.gamma(2.0, 1.0, horizon) * (rng.random(horizon) > 0.2)
+    base = 10.0 + np.cumsum(0.05 * rng.standard_normal(horizon))
+    return base + effect * x + 0.3 * rng.standard_normal(horizon), x
+
+
+def _channel_model(coefficient_discount: float, dof: float) -> DynamicLinearModel:
+    return DynamicLinearModel(
+        (Polynomial(1, 0.95), Regression(1, coefficient_discount)),
+        Prior(np.array([10.0, 0.0]), np.diag([25.0, 1.0]), 0.1, dof),
+    )
+
+
+def test_a_sign_that_does_not_bind_leaves_the_posterior_as_it_was(caplog):
+    """The truncation removes no mass, so the draws are the smoother's and the variance's
+    posterior mean is ``n_T S_T / (n_T - 2)``; no trajectory meets a wall."""
+    y, x = _channel_world(2.0, seed=21)
+    fit = forward_filter(_channel_model(0.98, 3.0), y, x[:, None])
+    with caplog.at_level(logging.INFO, logger="chc.dlm"):
+        draws = constrained_sample(fit, {0: "positive"}, 1000, seed=5, warmup=500)
+    assert draws.rhat < 1.01
+    assert draws.ess > 400
+    sm = smooth(fit)
+    states = draws.states.reshape(-1, *fit.mean.shape)
+    sd = np.sqrt(np.einsum("tpp->tp", sm.covariance))
+    assert np.max(np.abs(states.mean(axis=0) - sm.mean) / (sd / math.sqrt(draws.ess))) < 4.5
+    assert np.all(np.abs((states.var(axis=0) / sd**2).mean(axis=0) - 1.0) < 0.05)
+    n, s = fit.dof[-1], fit.scale[-1]
+    v = draws.variance.ravel()
+    assert abs(v.mean() - n * s / (n - 2.0)) < 4.5 * v.std() / math.sqrt(draws.ess)
+    (record,) = [
+        r for r in caplog.records if getattr(r, "chc_event", None) == "dlm_constrained_sample"
+    ]
+    assert (record.rhat, record.ess, record.walls) == (draws.rhat, draws.ess, 0.0)
+    assert (record.levelno, record.mixed) == (logging.INFO, True)
+
+
+def test_a_run_too_short_to_read_is_logged_as_a_warning(caplog):
+    y, x = _channel_world(-0.5, seed=21)
+    fit = forward_filter(_channel_model(0.98, 3.0), y, x[:, None])
+    with caplog.at_level(logging.INFO, logger="chc.dlm"):
+        draws = constrained_sample(fit, {0: "positive"}, 20, seed=1, chains=2, warmup=0)
+    assert draws.ess < 200.0
+    (record,) = [
+        r for r in caplog.records if getattr(r, "chc_event", None) == "dlm_constrained_sample"
+    ]
+    assert (record.levelno, record.mixed) == (logging.WARNING, False)
+    assert "not to be read" in record.getMessage()
+
+
+@pytest.mark.parametrize(("effect", "sign"), [(-0.3, "positive"), (0.3, "negative")])
+def test_a_static_coefficient_held_to_a_sign_is_the_truncated_normal(effect, sign):
+    """With a discount of 1 the coefficient is one value, Gaussian given a known variance: held to
+    a sign it is the truncated normal, and the level moves by its regression on the coefficient."""
+    y, x = _channel_world(effect, seed=22, horizon=40)
+    model = DynamicLinearModel(
+        (Polynomial(1, 0.95), Regression(1, 1.0)),
+        Prior(np.array([10.0, 0.0]), np.diag([25.0, 1.0]), 0.09, math.inf),
+    )
+    fit = forward_filter(model, y, x[:, None])
+    mean, cov = _path_posterior(fit, 0.09)
+    mu, sigma = mean[1], math.sqrt(cov[1, 1])
+    bound = -mu / sigma
+    a, b = (bound, math.inf) if sign == "positive" else (-math.inf, bound)
+    exact = stats.truncnorm(a, b, loc=mu, scale=sigma).mean()
+    level = slice(0, None, 2)
+    exact_level = mean[level] + cov[level, 1] / sigma**2 * (exact - mu)
+
+    draws = constrained_sample(fit, {0: sign}, 1000, seed=6, warmup=300)
+    assert draws.rhat < 1.01
+    states = draws.states.reshape(-1, *fit.mean.shape)
+    coefficient = states[:, :, 1]
+    assert np.all(coefficient == coefficient[:, :1])
+    assert np.all(coefficient * (1.0 if sign == "positive" else -1.0) >= 0.0)
+    assert abs(exact - mu) > 50.0 * coefficient.std() / math.sqrt(draws.ess)
+    z = (coefficient[:, 0].mean() - exact) / (coefficient[:, 0].std() / math.sqrt(draws.ess))
+    assert abs(z) < 4.5
+    se = states[:, :, 0].std(axis=0) / math.sqrt(draws.ess)
+    assert np.max(np.abs(states[:, :, 0].mean(axis=0) - exact_level) / se) < 4.5
+
+
+@pytest.mark.parametrize(
+    ("x", "hold"), [((1.0, 0.5, 2.0), False), ((1.0, 0.0, 2.0), True)], ids=["drifts", "tied"]
+)
+def test_a_drifting_coefficient_held_to_a_sign_matches_quadrature(x, hold):
+    """Three steps, a level and a coefficient whose priors are correlated: the coefficient's
+    distinct values are a Gaussian of two or three dimensions given a known variance, whose
+    truncated mean quadrature gives. An idle held regressor ties its step to the last, and the two
+    are one value in every draw."""
+    x = np.array(x)
+    model = DynamicLinearModel(
+        (Polynomial(1, 0.8), Regression(1, 0.7, hold_when_idle=hold)),
+        Prior(np.zeros(2), np.array([[0.5, 0.6], [0.6, 1.0]]), 0.5, math.inf),
+    )
+    fit = forward_filter(model, np.array([0.4, -0.3, -0.2]), x[:, None])
+    mean, cov = _path_posterior(fit, 0.5)
+    values = [1, 5] if hold else [1, 3, 5]
+    exact = _orthant_mean(mean[values], cov[np.ix_(values, values)], np.ones(len(values)))
+    level = [0, 2, 4]
+    exact_level = mean[level] + cov[np.ix_(level, values)] @ np.linalg.solve(
+        cov[np.ix_(values, values)], exact - mean[values]
+    )
+
+    draws = constrained_sample(fit, {0: "positive"}, 1000, seed=7, warmup=300)
+    assert draws.rhat < 1.01
+    states = draws.states.reshape(-1, 3, 2)
+    if hold:
+        assert np.array_equal(states[:, 0, 1], states[:, 1, 1])
+    distinct = states[:, [0, 2] if hold else [0, 1, 2], 1]
+    se = distinct.std(axis=0) / math.sqrt(draws.ess)
+    assert np.all(np.abs(exact - mean[values]) > 50.0 * se)
+    assert np.max(np.abs(distinct.mean(axis=0) - exact) / se) < 4.5
+    se = states[:, :, 0].std(axis=0) / math.sqrt(draws.ess)
+    assert np.max(np.abs(states[:, :, 0].mean(axis=0) - exact_level) / se) < 4.5
+
+
+def test_the_constrained_values_covariance_is_the_batch_posterior_s():
+    """Every pair of steps of two coefficients, one held idle at a step: the smoother's recursion
+    ``Cov(theta_s, theta_t) = B_s Cov(theta_(s+1), theta_t)`` against the batch posterior."""
+    from chc.dlm import _gains, _path_covariance
+
+    model = DynamicLinearModel(
+        (Polynomial(1, 0.8), Regression(1, 0.7, hold_when_idle=True), Regression(1, 0.75)),
+        _prior(3, scale=0.5),
+    )
+    x = np.array([[1.0, 0.3], [0.0, 1.5], [1.2, 0.8], [0.4, 0.0], [0.9, 1.1]])
+    fit = forward_filter(model, np.array([0.3, -0.4, 0.1, 0.6, -0.2]), x)
+    times = np.arange(5)
+    got = _path_covariance(_gains(fit), smooth(fit).covariance / 0.5, [1, 2], times)
+    _, cov = _path_posterior(fit, 0.5)
+    expected = cov.reshape(5, 3, 5, 3)[:, 1:, :, 1:] / 0.5
+    np.testing.assert_allclose(got, expected, rtol=1e-9, atol=1e-12)
+    assert np.abs(got[0, 0, 2, 1] - got[0, 1, 2, 0]) > 1e-3
+    np.testing.assert_allclose(
+        _path_covariance(_gains(fit), smooth(fit).covariance / 0.5, [1, 2], np.array([1, 3])),
+        expected[[1, 3]][:, :, [1, 3]],
+        rtol=1e-9,
+        atol=1e-12,
+    )
+
+
+def test_two_channels_held_to_their_signs_match_rejection_from_the_batch_posterior():
+    """Two drifting coefficients, each held positive, over three steps: six values, whose
+    truncated posterior rejection from two million draws of the batch posterior samples exactly."""
+    model = DynamicLinearModel(
+        (Polynomial(1, 0.8), Regression(1, 0.7), Regression(1, 0.75)),
+        Prior(
+            np.zeros(3),
+            np.array([[4.0, 0.5, -0.3], [0.5, 1.0, 0.2], [-0.3, 0.2, 1.0]]),
+            0.5,
+            math.inf,
+        ),
+    )
+    x = np.array([[1.0, 0.3], [0.2, 1.5], [1.2, 0.8]])
+    fit = forward_filter(model, np.array([0.3, -0.4, 0.1]), x)
+    mean, cov = _path_posterior(fit, 0.5)
+    sample = np.random.default_rng(0).multivariate_normal(mean, cov, 2_000_000, method="eigh")
+    kept = sample[(sample.reshape(-1, 3, 3)[:, :, 1:] >= 0.0).all(axis=(1, 2))]
+    oracle, oracle_se = kept.mean(axis=0), kept.std(axis=0) / math.sqrt(kept.shape[0])
+
+    draws = constrained_sample(fit, {0: "positive", 1: "positive"}, 1000, seed=8, warmup=300)
+    assert draws.rhat < 1.01
+    states = draws.states.reshape(-1, 9)
+    se = np.hypot(states.std(axis=0) / math.sqrt(draws.ess), oracle_se)
+    assert np.all(np.abs(oracle - mean) > 50.0 * se)
+    assert np.max(np.abs(states.mean(axis=0) - oracle) / se) < 4.5
+
+
+def test_a_negative_effect_held_positive_moves_into_the_level():
+    """A channel whose effect is -0.5, held positive: its coefficient piles near 0 and the level
+    takes the effect, landing near a fit without the channel, not at the unconstrained level a
+    clipped coefficient would keep. The parts still add up draw by draw."""
+    y, x = _channel_world(-0.5, seed=21)
+    fit = forward_filter(_channel_model(0.98, 3.0), y, x[:, None])
+    draws = constrained_sample(fit, {0: "positive"}, 500, seed=3, warmup=250)
+    assert draws.rhat < 1.01
+    states = draws.pooled.states
+    assert states[:, :, 1].min() >= 0.0
+    free = smooth(fit).mean
+    assert free[:, 1].mean() < -0.4
+    assert states[:, :, 1].mean() < 0.1
+    alone = forward_filter(
+        DynamicLinearModel(
+            (Polynomial(1, 0.95),), Prior(np.array([10.0]), np.array([[25.0]]), 0.1, 3.0)
+        ),
+        y,
+    )
+    level = states[:, :, 0].mean(axis=0)
+    taken = np.abs(level - smooth(alone).mean[:, 0]).mean()
+    kept = np.abs(free[:, 0] - smooth(alone).mean[:, 0]).mean()
+    assert taken < 0.25 * kept
+    parts = decompose(fit, draws.pooled)
+    whole = np.einsum("dtp,tp->dt", states, fit.design)
+    np.testing.assert_allclose(parts.sum(axis=2), whole, rtol=1e-12, atol=1e-12)
+    assert parts[..., 1].min() >= 0.0
+
+
+def test_the_effective_sample_size_is_an_ar1_s_and_rhat_flags_a_stuck_chain():
+    """Bulk ESS over 200 AR(1) columns averages ``m n (1 - rho) / (1 + rho)``. Over a moving
+    average whose autocorrelation rises again at lag 4, it is the initial monotone sequence's, which
+    cuts the rise to the pair before. One chain of four shifted by half a deviation takes R-hat
+    above 1.01, and so does one with 1.6 times the others' spread, through the folded draws; iid
+    chains stay below it."""
+    from chc.dlm import _convergence, _ess_of, _rank_normal, _split
+
+    rng = np.random.default_rng(0)
+    chains, n, rho = 4, 1000, 0.6
+    noise = rng.standard_normal((chains, n + 200, 200))
+    ar = np.empty_like(noise)
+    ar[:, 0] = noise[:, 0] / math.sqrt(1.0 - rho**2)
+    for t in range(1, n + 200):
+        ar[:, t] = rho * ar[:, t - 1] + noise[:, t]
+    ess = _ess_of(_split(_rank_normal(ar[:, 200:])))
+    assert ess.mean() == pytest.approx(chains * n * (1.0 - rho) / (1.0 + rho), rel=0.03)
+    a, b = 0.06, 0.6  # x_t = e_t + a e_(t-2) + b e_(t-4)
+    noise = rng.standard_normal((chains, n + 4, 200))
+    moving = noise[:, 4:] + a * noise[:, 2:-2] + b * noise[:, :-4]
+    lag2, lag4 = (a + a * b) / (1.0 + a * a + b * b), b / (1.0 + a * a + b * b)
+    tau = -1.0 + 2.0 * (1.0 + lag2 + min(lag2, lag4))
+    ess = _ess_of(_split(_rank_normal(moving)))
+    assert ess.mean() == pytest.approx(chains * n / tau, rel=0.03)
+    states = rng.standard_normal((chains, n, 2, 2))
+    variance = rng.standard_normal((chains, n))
+    assert _convergence(states, variance)[0] < 1.01
+    shifted = states.copy()
+    shifted[0, :, 1, 0] += 0.5
+    assert _convergence(shifted, variance)[0] > 1.01
+    spread = states.copy()
+    spread[1, :, 0, 1] *= 1.6
+    assert _convergence(spread, variance)[0] > 1.01
+
+
+def test_an_orbit_that_meets_a_wall_reflects_and_one_that_does_not_is_a_fresh_draw():
+    from chc.dlm import _reflected_orbit
+
+    # no wall in reach: the end is mean + velocity, whatever the start
+    mean = np.array([5.0, -5.0])
+    cov = np.array([[1.0, 0.3], [0.3, 1.0]])
+    sign = np.array([1.0, -1.0])
+    velocity = np.array([[0.4, -0.2], [-0.1, 0.3]])
+    end, met = _reflected_orbit(mean, np.array([[0.5, 0.1], [-0.2, 0.4]]), velocity, sign, cov)
+    np.testing.assert_allclose(end, velocity, atol=1e-15)
+    assert met == 0
+    # one coordinate, the mean outside: from 0.5 at rest the orbit reaches 0 at arccos(2 / 3),
+    # leaves it with the speed reversed and runs out the rest of pi / 2 from there
+    hit = math.acos(2.0 / 3.0)
+    speed = 1.5 * math.sin(hit)
+    rest = 0.5 * math.pi - hit
+    end, met = _reflected_orbit(
+        np.array([-1.0]), np.array([[1.5]]), np.array([[0.0]]), np.array([1.0]), np.eye(1)
+    )
+    assert met == 1
+    assert end[0, 0] == pytest.approx(math.cos(rest) + speed * math.sin(rest), rel=1e-12)
+    # on the wall and heading out at 3 / 4: it reflects at once, returns at 2 atan(3 / 4) and runs
+    # out the rest, cos and sin of which are 24 / 25 and 7 / 25: it ends at 0.17, 1.17 from the mean
+    end, met = _reflected_orbit(
+        np.array([-1.0]), np.array([[1.0]]), np.array([[-0.75]]), np.array([1.0]), np.eye(1)
+    )
+    assert met == 2
+    assert end[0, 0] == pytest.approx(1.17, rel=1e-12)
+
+
+def _signed_fit(blocks=None, form: DiscountForm = "additive", beta: float = 1.0, **kwargs):
+    y, x = _channel_world(1.0, seed=23, horizon=12)
+    blocks = blocks or (Polynomial(1, 0.95), Regression(1, 0.98))
+    p = sum(b.size for b in blocks)
+    model = DynamicLinearModel(blocks, _prior(p, dof=3.0), form, variance_discount=beta)
+    return forward_filter(model, y, np.tile(x[:, None], (1, p - 1)), **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("fit", "signs", "options", "message"),
+    [
+        (None, {}, {}, "no sign to impose"),
+        (None, {0: "positive"}, {"draws": 0}, "draws must be a positive integer"),
+        (None, {0: "positive"}, {"draws": True}, "draws must be a positive integer"),
+        (None, {0: "positive"}, {"chains": 1}, "chains must be an integer of at least 2"),
+        (None, {0: "positive"}, {"warmup": -1}, "warmup must be a non-negative integer"),
+        (None, {1: "positive"}, {}, "column 1 is not one of x's 1"),
+        (None, {True: "positive"}, {}, "a sign's key is a column of x"),
+        (None, {0: "up"}, {}, "a sign is 'positive' or 'negative'"),
+        (
+            lambda: _signed_fit((Polynomial(1, 0.95), Regression(2, 0.98))),
+            {0: "positive"},
+            {},
+            "shares a regression block of width 2",
+        ),
+        (lambda: _signed_fit(form="multiplicative"), {0: "positive"}, {}, "form='additive'"),
+        (lambda: _signed_fit(beta=0.95), {0: "positive"}, {}, "variance discount of 1"),
+        (
+            lambda: _signed_fit(interventions={5: 0.5}),
+            {0: "positive"},
+            {},
+            "does not take a fit with interventions",
+        ),
+    ],
+)
+def test_constrained_sampling_refuses_what_it_cannot_draw(fit, signs, options, message):
+    fit = _signed_fit() if fit is None else fit()
+    with pytest.raises(ValueError, match=message):
+        constrained_sample(fit, signs, **{"draws": 10, "seed": 0, **options})
 
 
 def _grid_fits(y=None):

@@ -245,6 +245,28 @@ still change).
   likelihood-weighted mixture 0.830 and 0.826. On series of the discount model itself it covered
   0.940 and 0.946 against the pick's 0.852 and 0.848, at 1.21 times the width at the true
   discounts. The rows ADR 0022 reports reproduced exactly.
+- **`chc.dlm.constrained_sample`**: draws of the states and the variance with some columns'
+  coefficients held to a sign at every step: the posterior truncated to the signs, not a clipped
+  one (ADR 0042). A channel's negative pull then moves into the level, and `decompose` over the
+  draws still adds up. Gibbs over three blocks:
+  - the constrained values, with the other states integrated out, by one exact Hamiltonian
+    trajectory a sweep (Pakman and Paninski 2014), reflected at the signs' walls;
+  - the other states by forward filtering and backward sampling given them;
+  - the variance from its inverse gamma.
+
+  Steps a discount of 1 or an idle held regressor ties together are one value. Rank-normalised
+  split R-hat and bulk ESS come with the draws (Vehtari et al. 2021), and a run that has not mixed
+  is logged as a warning. `tests/test_dlm.py` holds the draws to oracles that share no code with
+  the sampler:
+  - the smoother where a sign does not bind;
+  - the truncated normal for a static coefficient;
+  - adaptive quadrature over three steps, with and without a tie;
+  - rejection from the batch posterior for two channels;
+  - and a channel whose effect is −0.5, held positive, whose level lands near a fit without the
+    channel.
+
+  Seventeen mutations each fail a test. Single-site updates, planned first, did not mix on a
+  drifting coefficient.
 
 ### Changed
 
