@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-03
+
 ### Added
 
 - **Response curves, `chc.response`** (*experimental*, ADR 0029): how a channel's return rises
@@ -392,6 +394,36 @@ still change).
   `just types-matrix` pass their own; the 3.11 leg holds the floor.
 - **Dependencies relocked at their latest**: jax 0.11.2 (0.10.2 on 3.11), NumPy 2.5.3 (2.4.6),
   SciPy 1.18.1 (1.17.1), ruff 0.16.9, ty 0.0.84.
+
+### Notes
+
+- **What the media-mix plans are worth against the tools, on Track M v2.** causaldyn-bench draws
+  worlds from Heusch's (2026b) generator, which CHC did not write, has each arm read the same geo
+  lift tests and plan a quarter's budget within a box, and scores each plan's regret per euro of
+  the budget against the best plan in the box, carryover included. Every comparison was
+  pre-registered before its scored run, paired over the same worlds, with a 95% Student-t
+  interval; the arms' fits use each tool's own defaults and optimiser.
+  - Against PyMC-Marketing, on 200 drawn worlds: a tie, CHC's regret less PyMC-Marketing's
+    +0.0020 [-0.0110, +0.0150]. The gate set before the run, CHC's regret below it, is not met, so
+    media mix is this release's example, not its theme. On 100 reference worlds PyMC-Marketing's
+    regret is the lower, by 0.0163 [0.0032, 0.0295].
+  - Against Meridian 2.1.0 (a national model with the tests as its ROI prior, planned by its
+    `BudgetOptimizer`): CHC's regret is lower by 0.0697 [0.0540, 0.0855] on the 200 drawn worlds,
+    on 153 of them, and by 0.0591 [0.0452, 0.0730] on the reference worlds. Meridian's plans stay
+    near the status quo: 24 of its 600 channel-plans on a bound of the box, the best plan's 347.
+  - Against Robyn 3.12.1 (the tests as its calibration, its own model selection, planned by
+    `robyn_allocator`), on the first 100 drawn worlds: lower by 0.1815 [0.1343, 0.2287]. Robyn's
+    own regret is above the status quo's there, by 0.0458 [0.0115, 0.0801].
+  - Against the status quo, on the drawn worlds, lower by 0.1594 [0.1367, 0.1821]. Against the
+    same channels planned with nothing carried over, lower by 0.0253 [0.0086, 0.0420]; on the
+    reference worlds, whose best plan is a corner, that plan's regret is the lower, by 0.0247
+    [0.0118, 0.0376].
+  - CHC's reading of the tests left the scale interval open above on 554 of 600 channels, the
+    tests not having read where the curve bends, so its plan reads the family's shape past the
+    spend the tests moved.
+- **Every module this release adds ships experimental, and `dlm` stays so.** The tier table has
+  them wait on an external media-mix generator, and there the comparison with PyMC-Marketing was
+  a tie.
 
 ## [0.9.0] — 2026-09-30
 
@@ -4285,6 +4317,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.10.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.10.0
 [0.9.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.9.0
 [0.8.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.8.0
 [0.7.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.7.0

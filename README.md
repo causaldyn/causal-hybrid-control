@@ -279,7 +279,7 @@ The release-by-release record, scope corrections included, is in [`CHANGELOG.md`
 
 ## Status
 
-Early (`v0.9.0`), single-author, research code (`just counts` prints the test and proof counts;
+Early (`v0.10.0`), single-author, research code (`just counts` prints the test and proof counts;
 Python 3.11–3.15 with the free-threaded 3.14t and 3.15t, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
@@ -338,9 +338,7 @@ and `shadow_price_interval` in `matching`, `channel_drift_evalues`, `DriftAlarm`
 `ChannelMove`, `MovePrice` and the `alpha_futility` field of `GateConfig` in `gate`, and
 `CausalPlan.decision_weight`, `DecisionWeight` and `CausalPlan.relaxed_cost` in `plan`.
 
-Roadmap: **0.10.0** media mix — the discount dynamic linear model verified on an external
-generator, response curves with one definition of ROI, a budget in `prescribe`, and lift tests as
-identification → **0.11.0** the marketplace study, and the adaptation modules leave experimental →
+Roadmap: **0.11.0** the marketplace study, and the adaptation modules leave experimental →
 **1.0.0**, which is when the stable tier stops moving and the top level holds only the lifecycle's
 names: the 421 names that warn since 0.8.0 leave it then.
 
@@ -359,7 +357,7 @@ suite, and `rocq compile` over `proofs/*.v`. Machine-readable citation metadata 
   author  = {Gradina, Ilia},
   title   = {causal-hybrid-control: physics-structured dynamics with a learned causal residual},
   year    = {2026},
-  version = {0.9.0},
+  version = {0.10.0},
   doi     = {10.5281/zenodo.21737789},
   license = {MIT},
   url     = {https://github.com/causaldyn/causal-hybrid-control}
