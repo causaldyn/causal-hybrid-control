@@ -31,7 +31,11 @@ still change).
     with `K = 2 / lam`.
   - **Every family's slope at zero spend is its own.** JAX's gamma and beta CDFs give `nan` there
     at shape 1; both have a slope of their own in spend. `BetaCDF` has none in its shapes, since
-    JAX's `betainc` has none, and asking for one raises.
+    JAX's `betainc` has none, and asking for one raises. Where a slope at zero is infinite, below
+    shape 1 and the curvature below shape 2, it is read a machine epsilon of the scale off zero,
+    so a zero weight on it is nothing, not `nan`: a planner reads the curve through one in every
+    period a kernel without carryover leaves unreached, and a fit of the scale at every period of
+    zero spend. Every slope finite at zero spend, the curvature at shape 1 included, is exact.
   - **`causal_plan` no longer starts alone at zero on an S-curve.** Given no warm start, on a model
     holding a curve that starts convex it plans the same problem on `relax(model)` first and starts
     from that plan, as a `RecedingHorizon`'s cold start does. `CausalPlan.relaxed_cost`

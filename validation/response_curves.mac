@@ -13,6 +13,10 @@
            gamma and Chapman-Richards at shape 1 are the exponential, Richards at nu = 1 is the
            logistic and tends to Gompertz as nu -> 0
    STEP 5  the tangencies with no closed form, to double precision, as anchors for the tests
+   STEP 6  at zero spend: below shape 1 a power's slope is infinite, and at the shapes 1 and 2 the
+           curvature g''(0) is finite, the tests' anchors over K^2 at K = 2
+   STEP 7  at zero spend and shape 1, the slope g' moved by the shape is f log z + r, infinite: the
+           tests read it at z = eps, and f and r are their anchors
 
    Run: timeout 300 maxima --very-quiet -b validation/response_curves.mac */
 
@@ -149,3 +153,47 @@ print("kumaraswamy, a = 3, b = 2:", tangency(subst([a = 3, b = 2], 1 - (1 - z^a)
 print("beta, a = 3, b = 2:", tangency(beta_incomplete_regularized(3, 2, z), 0.67, 0.999999))$
 print("weibull, k = 2 (u = z^2 from Lambert W):", float(sqrt(lambert_root(2))))$
 print("chapman-richards, p = 3 (z from Lambert W):", float(lambert_root(3)))$
+
+print("=== STEP 6: at zero spend ===")$
+print("hill, n = 1/2: g'(0+) =", limit(diff(z^(1/2)/(1 + z^(1/2)), z), z, 0, plus),
+      "  z^(1/2): g'(0+) =", limit(diff(z^(1/2), z), z, 0, plus))$
+/* g''(0) over K^2, K = 2; the gamma and beta CDFs through Maxima's own regularised functions */
+at_zero : [
+  ["hill, n = 1", z/(1 + z)],
+  ["hill, n = 2", z^2/(1 + z^2)],
+  ["weibull, k = 1", 1 - exp(-z)],
+  ["weibull, k = 2", 1 - exp(-z^2)],
+  ["chapman-richards, p = 1", 1 - exp(-z)],
+  ["chapman-richards, p = 2", (1 - exp(-z))^2],
+  ["burr, c = 1, k = 2", 1 - (1 + z)^(-2)],
+  ["burr, c = 2, k = 3", 1 - (1 + z^2)^(-3)],
+  ["kumaraswamy, a = 1, b = 3", 1 - (1 - z)^3],
+  ["kumaraswamy, a = 2, b = 3", 1 - (1 - z^2)^3],
+  ["gamma, a = 1", 1 - gamma_incomplete_regularized(1, z)],
+  ["gamma, a = 2", 1 - gamma_incomplete_regularized(2, z)],
+  ["beta, a = 1, b = 2", beta_incomplete_regularized(1, 2, z)],
+  ["beta, a = 2, b = 3", beta_incomplete_regularized(2, 3, z)],
+  ["power, rho = 1", z]
+]$
+for entry in at_zero do (
+  [name, g] : entry,
+  print(name, ": g''(0+) / 4 =", ratsimp(limit(diff(g, z, 2), z, 0, plus)/4))
+)$
+
+print("=== STEP 7: at zero spend and shape 1, the slope moved by the shape ===")$
+/* Burr XII at k = 2 and Kumaraswamy at b = 2, as in the tests */
+moved_by_shape : [
+  ["hill", z^n/(1 + z^n), n],
+  ["weibull", 1 - exp(-z^k), k],
+  ["chapman-richards", (1 - exp(-z))^p, p],
+  ["burr, k = 2", 1 - (1 + z^c)^(-2), c],
+  ["kumaraswamy, b = 2", 1 - (1 - z^a)^2, a],
+  ["gamma", 1 - gamma_incomplete_regularized(a, z), a],
+  ["power", z^rho, rho]
+]$
+for entry in moved_by_shape do (
+  [name, g, m] : entry,
+  moved : subst(m = 1, diff(diff(g, z), m)),
+  f : limit(moved/log(z), z, 0, plus),
+  print(name, ": f =", f, "  r =", limit(moved - f*log(z), z, 0, plus))
+)$

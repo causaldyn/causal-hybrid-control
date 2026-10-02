@@ -8,6 +8,7 @@ are its double-precision roots.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import equinox as eqx
 import jax
@@ -333,12 +334,141 @@ def test_integer_parameters_become_floats_a_fit_can_move() -> None:
 
 
 @pytest.mark.parametrize(
-    "curve", [curve for curve in BOUNDED if not isinstance(curve, BetaCDF)], ids=name
+    "curve",
+    [
+        curve
+        for curve in [*BOUNDED, *CONCAVE_SHAPES, Power(2.0, 0.5)]
+        if not isinstance(curve, BetaCDF)
+    ],
+    ids=name,
 )
-def test_every_parameter_has_a_finite_slope_down_to_zero_spend(curve: Saturation) -> None:
+def test_every_parameter_has_a_finite_slope_down_to_zero_spend(curve: Response) -> None:
     spend = jnp.linspace(0.0, 10.0, 41)
     grads = eqx.filter_grad(lambda moved: jnp.sum(moved(spend)))(curve)
     assert all(np.all(np.isfinite(leaf)) for leaf in jax.tree_util.tree_leaves(grads))
+    # the curve is 0 at zero spend whatever its parameters, and so is every slope in them there
+    at_zero = eqx.filter_grad(lambda moved: moved(0.0))(curve)
+    assert not any(np.any(leaf) for leaf in jax.tree_util.tree_leaves(at_zero))
+
+
+# the families that rise from zero spend like a power of it, at shapes below 1, at 1, between 1 and
+# 2, and past 2
+AT_ZERO = [
+    pytest.param(curve, id=f"{name(curve)}-{shape}")
+    for shape in (0.5, 1.0, 1.5, 2.5)
+    for curve in (
+        Hill(2.0, shape),
+        Weibull(2.0, shape),
+        ChapmanRichards(2.0, shape),
+        BurrXII(2.0, shape, 2.0),
+        Kumaraswamy(2.0, shape, 2.0),
+        GammaCDF(2.0, shape),
+        BetaCDF(2.0, shape, 2.0),
+        *((Power(2.0, shape),) if shape <= 1.0 else ()),
+    )
+]
+
+
+@pytest.mark.parametrize("curve", AT_ZERO)
+def test_a_slope_at_zero_spend_is_finite_and_nothing_where_no_spend_reaches(
+    curve: Response,
+) -> None:
+    # a period no spend reaches, as after a plan through a kernel with no carryover, reads the
+    # curve at zero spend through a zero weight, and so does the slope of spend / K in K at zero
+    # spend; below slope 1 the curve's slope there is infinite, and 0 * inf was nan
+    assert math.isfinite(slope(curve, 0.0))
+    assert math.isfinite(curvature(curve, 0.0))
+
+    def unreached(rate: jax.Array) -> jax.Array:
+        return curve(rate * 0.0)
+
+    def at_scale(scale: jax.Array) -> jax.Array:
+        return eqx.tree_at(lambda moved: moved.scale, curve, scale)(0.0)
+
+    for read in (unreached, at_scale):
+        assert float(jax.grad(read)(jnp.asarray(2.0))) == 0.0
+        assert float(jax.grad(jax.grad(read))(jnp.asarray(2.0))) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("curve", "expected"),
+    [
+        (Hill(2.0, 1.0), -0.5),
+        (Hill(2.0, 2.0), 0.5),
+        (Weibull(2.0, 1.0), -0.25),
+        (Weibull(2.0, 2.0), 0.5),
+        (ChapmanRichards(2.0, 1.0), -0.25),
+        (ChapmanRichards(2.0, 2.0), 0.5),
+        (BurrXII(2.0, 1.0, 2.0), -1.5),
+        (BurrXII(2.0, 2.0, 3.0), 1.5),
+        (Kumaraswamy(2.0, 1.0, 3.0), -1.5),
+        (Kumaraswamy(2.0, 2.0, 3.0), 1.5),
+        (GammaCDF(2.0, 1.0), -0.25),
+        (GammaCDF(2.0, 2.0), 0.25),
+        (BetaCDF(2.0, 1.0, 2.0), -0.5),
+        (BetaCDF(2.0, 2.0, 3.0), 3.0),
+        (Power(2.0, 1.0), 0.0),
+    ],
+    ids=lambda value: name(value) if isinstance(value, Response) else "",
+)
+def test_the_curvature_at_zero_spend_is_the_curves_own_where_it_is_finite(
+    curve: Response, expected: float
+) -> None:
+    # Maxima's g''(0) over K^2 (validation/response_curves.mac, STEP 6): at shape 1 JAX's own
+    # second slope of the power is 1 * 0 * 0^-1, and it and the gamma and beta densities' slopes
+    # at every shape were nan
+    assert curvature(curve, 0.0) == pytest.approx(expected, rel=1e-14, abs=1e-300)
+
+
+@pytest.mark.parametrize(
+    "curve",
+    [
+        Hill(2.0, 0.7),
+        Weibull(2.0, 0.5),
+        ChapmanRichards(2.0, 0.5),
+        BurrXII(2.0, 0.5, 2.0),
+        Kumaraswamy(2.0, 0.8, 2.0),
+        GammaCDF(2.0, 0.5),
+        BetaCDF(2.0, 0.5, 2.0),
+        Power(2.0, 0.5),
+    ],
+    ids=name,
+)
+def test_below_slope_one_the_slope_at_zero_spend_is_the_steepest_a_plan_reads(
+    curve: Response,
+) -> None:
+    # the slope there is infinite; read a machine epsilon of a scale off zero it is finite and
+    # steeper than anywhere from there on, so a plan at zero spend still moves off it
+    spend = 2.0 * jnp.geomspace(1e-15, 1e2, 200)
+    beyond = np.asarray(jax.vmap(jax.grad(curve))(spend))
+    assert math.isfinite(slope(curve, 0.0))
+    assert slope(curve, 0.0) > beyond.max()
+
+
+@pytest.mark.parametrize(
+    ("curve", "shape", "f", "r"),
+    [
+        (Hill(2.0, 1.0), lambda curve: curve.slope, 1.0, 1.0),
+        (Weibull(2.0, 1.0), lambda curve: curve.shape, 1.0, 1.0),
+        (ChapmanRichards(2.0, 1.0), lambda curve: curve.power, 1.0, 1.0),
+        (BurrXII(2.0, 1.0, 2.0), lambda curve: curve.slope, 2.0, 2.0),
+        (Kumaraswamy(2.0, 1.0, 2.0), lambda curve: curve.a, 2.0, 2.0),
+        (GammaCDF(2.0, 1.0), lambda curve: curve.shape, 1.0, np.euler_gamma),
+        (Power(2.0, 1.0), lambda curve: curve.exponent, 1.0, 1.0),
+    ],
+    ids=lambda value: name(value) if isinstance(value, Response) else "",
+)
+def test_a_slope_infinite_at_zero_spend_is_read_a_machine_epsilon_of_the_scale_off_it(
+    curve: Response, shape: Callable[[Response], jax.Array], f: float, r: float
+) -> None:
+    # at shape 1 the slope moved by the shape is (f log z + r) / K, -inf at zero spend
+    # (validation/response_curves.mac, STEP 7), and read at z = eps; where a power of 0 at zero
+    # spend was not read off it, its log was 0, and the slope moved by the shape r / K
+    def moved(value: jax.Array) -> jax.Array:
+        return jax.grad(eqx.tree_at(shape, curve, value))(jnp.asarray(0.0))
+
+    at_eps = (f * math.log(np.finfo(np.float64).eps) + r) / 2.0
+    assert float(jax.grad(moved)(jnp.asarray(1.0))) == pytest.approx(at_eps, rel=1e-14)
 
 
 def test_the_beta_cdf_refuses_a_slope_in_its_shapes_and_names_the_alternative() -> None:

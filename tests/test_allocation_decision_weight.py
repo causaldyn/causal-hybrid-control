@@ -61,6 +61,21 @@ def test_the_weight_is_maxima_s_hessian_of_the_loss(family) -> None:
     assert weight.pinned == ()
 
 
+@pytest.mark.parametrize("family", [MichaelisMenten, lambda scale: Hill(scale, 1.0)])
+def test_a_kernel_with_no_carryover_weighs_as_one_with_no_tail(family) -> None:
+    # at retention 0 the periods after the plan see no spend, and the curvature reads the curve
+    # there through a zero weight; at slope 1 a Hill's curvature at zero spend was 0 * inf = nan
+    kernel = GeometricAdstock(0.0, length=8, normalized=False)
+    channels = (Channel(kernel, family(50.0), 900.0), Channel(kernel, family(80.0), 600.0))
+    weight = decision_weight(channels, 150.0, 1, lower=[0.0, 0.0], upper=[150.0, 150.0])
+    order = ["0.coefficient", "0.curve.scale", "1.coefficient", "1.curve.scale"]
+    index = [weight.parameters.index(name) for name in order]
+    np.testing.assert_allclose(
+        weight.matrix[np.ix_(index, index)], MAXIMA[MichaelisMenten], rtol=1e-8
+    )
+    assert np.all(np.isfinite(weight.matrix))
+
+
 def _worth(channels, rates) -> float:
     """What ``rates`` return on ``channels``, each run over the history, the plan and its tail."""
     total = 0.0

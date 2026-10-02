@@ -72,6 +72,14 @@ HONEST SCOPE:
 * :class:`BetaCDF` has no derivative in its shapes ``a`` and ``b``, since JAX's ``betainc`` has
   none; asking for one raises. :class:`Kumaraswamy` is its closed-form counterpart.
 * Spend is nonnegative. Below zero a family's value is not defined, and several return ``nan``.
+* A curve that rises from zero spend like ``z^m`` has its slopes of order above ``m`` infinite
+  there unless ``m`` is whole: the slope itself below shape 1 (:class:`Hill`, :class:`Weibull`,
+  :class:`ChapmanRichards`, :class:`BurrXII`, :class:`Kumaraswamy`, :class:`GammaCDF`,
+  :class:`BetaCDF`, and :class:`Power`), the curvature below shape 2. Each is read a machine epsilon
+  of the scale off zero instead: finite, so a zero weight on it, as in a period no spend reaches, is
+  nothing rather than ``nan``, and the slope still steeper there than anywhere past it. A number
+  read through one, such as a decision weight in a parameter that turns that spend on, is large
+  and finite, not infinite. Every slope finite at zero spend is the curve's own.
 * In single precision the numeric tangencies are good to single precision.
 * The readings of the return take concrete numbers: they report on a fitted channel, not on one
   inside a trace. The carryover they count is what falls inside the series; to count the rest,
@@ -132,6 +140,46 @@ def _lambert_root(rate: float) -> float:
     return -1.0 / rate - float(lambertw(-math.exp(-1.0 / rate) / rate, k=-1).real)
 
 
+def _off_zero(base: Array, exponent: Array) -> Array:
+    """``base``, but a machine epsilon where it is 0 and the power of it is not above 0."""
+    epsilon = jnp.finfo(jnp.result_type(base, exponent)).eps
+    return jnp.where((base == 0.0) & (exponent <= 0.0), epsilon, base)
+
+
+@jax.custom_jvp
+def _power(base: Array, exponent: Array) -> Array:
+    """``base ** exponent`` for ``base >= 0``, with every slope of it finite at a zero base.
+
+    A power below 1 rises from zero with an infinite slope, and the chain rule multiplies that by
+    whatever zero meets it into ``nan``: a period no spend reaches, the slope of ``spend / K`` in
+    ``K`` at zero spend. Each slope is a power one lower, so a power not above 0 at a zero base,
+    which only a slope meets, is read a machine epsilon off zero, where it is finite. A positive
+    power is exact at zero, and so is every slope that is finite there.
+    """
+    return _off_zero(base, exponent) ** exponent
+
+
+@_power.defjvp
+def _power_jvp(primals: tuple[Array, Array], tangents: tuple[Array, Array]):
+    base, exponent = primals
+    base_dot, exponent_dot = tangents
+    value = _power(base, exponent)
+    at = _off_zero(base, exponent)
+    # the slope in the exponent is the value times log(base), so 0 where the value is
+    log = jnp.log(jnp.where(at > 0.0, at, 1.0))
+    return value, exponent * _power(base, exponent - 1.0) * base_dot + value * log * exponent_dot
+
+
+def _density(power: Array, rest: Callable[[Array], Array], z: Array) -> Array:
+    """``z^power exp(rest(z))``: through logarithms away from zero, so that neither factor
+    overflows, and through :func:`_power` at zero, so that its slopes there are finite."""
+    zero = z == 0.0
+    at, away = jnp.where(zero, z, 0.0), jnp.where(zero, 0.5, z)
+    return jnp.where(
+        zero, _power(at, power) * jnp.exp(rest(at)), jnp.exp(xlogy(power, away) + rest(away))
+    )
+
+
 @jax.custom_jvp
 def _gamma_cdf(shape: Array, z: Array) -> Array:
     return gammainc(shape, z)
@@ -148,7 +196,7 @@ def _gamma_cdf_jvp(primals: tuple[Array, Array], tangents: tuple[Array, Array]):
     if not isinstance(shape_dot, SymbolicZero):
         slope = slope + jax.jvp(lambda a: gammainc(a, z), (shape,), (shape_dot,))[1]
     if not isinstance(z_dot, SymbolicZero):
-        slope = slope + jnp.exp(xlogy(shape - 1.0, z) - z - gammaln(shape)) * z_dot
+        slope = slope + _density(shape - 1.0, lambda at: -at - gammaln(shape), z) * z_dot
     return value, slope
 
 
@@ -170,7 +218,7 @@ def _beta_cdf_jvp(primals: tuple[Array, Array, Array], tangents: tuple[Array, Ar
     value = _beta_cdf(a, b, z)
     if isinstance(z_dot, SymbolicZero):
         return value, jnp.zeros_like(value)
-    density = jnp.exp(xlogy(a - 1.0, z) + xlog1py(b - 1.0, -z) - betaln(a, b))
+    density = _density(a - 1.0, lambda at: xlog1py(b - 1.0, -at) - betaln(a, b), z)
     return value, density * z_dot
 
 
@@ -386,7 +434,7 @@ class Hill(Saturation):
         below = z <= 1.0
         # z^n below 1 and z^-n above it, so no power overflows; each branch sees 1 in the other's
         # range, where its slope is finite
-        rising = jnp.where(below, z, 1.0) ** self.slope
+        rising = _power(jnp.where(below, z, 1.0), self.slope)
         falling = jnp.where(below, 1.0, z) ** -self.slope
         return jnp.where(below, rising / (1.0 + rising), 1.0 / (1.0 + falling))
 
@@ -414,7 +462,7 @@ class Weibull(Saturation):
         _require("shape", self.shape, 0.0)
 
     def standard(self, z: Array) -> Array:
-        return -jnp.expm1(-(z**self.shape))
+        return -jnp.expm1(-_power(z, self.shape))
 
     def _standard_inflection(self) -> float:
         k = float(self.shape)
@@ -507,7 +555,7 @@ class ChapmanRichards(Saturation):
         _require("power", self.power, 0.0)
 
     def standard(self, z: Array) -> Array:
-        return (-jnp.expm1(-z)) ** self.power
+        return _power(-jnp.expm1(-z), self.power)
 
     def _standard_inflection(self) -> float:
         return max(math.log(float(self.power)), 0.0)
@@ -569,7 +617,7 @@ class BurrXII(Saturation):
         _require("tail", self.tail, 0.0)
 
     def standard(self, z: Array) -> Array:
-        return -jnp.expm1(-self.tail * jnp.log1p(z**self.slope))
+        return -jnp.expm1(-self.tail * jnp.log1p(_power(z, self.slope)))
 
     def _standard_inflection(self) -> float:
         c, k = float(self.slope), float(self.tail)
@@ -625,7 +673,7 @@ class Kumaraswamy(Saturation):
     def standard(self, z: Array) -> Array:
         inside = z < 1.0
         at = jnp.where(inside, z, 0.5)
-        return jnp.where(inside, -jnp.expm1(self.b * jnp.log1p(-(at**self.a))), 1.0)
+        return jnp.where(inside, -jnp.expm1(self.b * jnp.log1p(-_power(at, self.a))), 1.0)
 
     def _standard_inflection(self) -> float:
         a, b = float(self.a), float(self.b)
@@ -652,7 +700,7 @@ class Power(Response):
         _require("exponent", self.exponent, 0.0, 1.0)
 
     def standard(self, z: Array) -> Array:
-        return z**self.exponent
+        return _power(z, self.exponent)
 
 
 class Ricker(Response):

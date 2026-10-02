@@ -7,7 +7,7 @@ against the worth's own slope.
 
 import numpy as np
 import pytest
-from scipy.optimize import minimize
+from scipy.optimize import minimize, minimize_scalar
 
 from chc.allocation import allocate
 from chc.response import (
@@ -127,6 +127,32 @@ def test_the_history_s_carryover_holds_back_the_channel_it_has_saturated():
     assert plan.spend[0] < plan.spend[1]
     even = allocate((twin, twin), 2 * 4 * 50.0, 4, lower=np.zeros(2), upper=np.full(2, 100.0))
     np.testing.assert_allclose(even.spend, [50.0, 50.0], rtol=1e-9)
+
+
+def test_a_channel_without_carryover_on_a_curve_steep_at_zero_spend_is_planned():
+    """With no carryover the periods after the plan see no spend, and the planner reads the curve
+    there at zero spend through a zero weight; below slope 1 a Hill's slope there is infinite, and
+    the product was nan."""
+    channels = (
+        Channel(GeometricAdstock(0.5, length=10, normalized=False), Exponential(80.0), 300.0),
+        Channel(GeometricAdstock(0.0, length=10, normalized=False), Hill(51.0, 0.5), 234.6),
+    )
+    history = np.zeros((0, 2))
+    budget = 1400.0
+    plan = allocate(
+        channels, budget, PERIODS, lower=np.zeros(2), upper=np.full(2, 200.0), history=history
+    )
+    assert PERIODS * plan.spend.sum() == pytest.approx(budget, rel=1e-13)
+    assert plan.worth == pytest.approx(_worth(channels, plan.spend, history), rel=1e-12)
+    rate = budget / PERIODS
+    best = minimize_scalar(
+        lambda first: -_worth(channels, [first, rate - first], history),
+        bounds=(0.0, rate),
+        method="bounded",
+        options={"xatol": 1e-10},
+    )
+    assert plan.worth >= -best.fun * (1 - 1e-12)
+    assert plan.spend[0] == pytest.approx(best.x, rel=1e-5)
 
 
 def test_an_s_curve_is_planned_on_its_envelope_and_the_gap_bounds_the_shortfall():

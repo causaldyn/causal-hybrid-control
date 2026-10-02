@@ -59,8 +59,21 @@ curve, `h(A) = A h'(A)`, and the curve beyond (Weber, Prop. 3.8). Its optimum bo
   `K = 2 / lam`; the docs say so where a user porting a model looks for it by name.
 - **Every family's slope at zero spend is its own.** JAX's gamma and beta CDFs return `nan` there at
   shape 1, where the curve is the exponential or `1 - (1 - z)^b`. Their slope in spend is a custom
-  JVP on the density, written with `xlogy`. A flat zero in its place would have been as wrong, and
-  a planner starts there.
+  JVP on the density, written with `xlogy` away from zero and through the power below at zero. A
+  flat zero in its place would have been as wrong, and a planner starts there.
+- **Where a slope at zero spend is infinite, it is read off zero.** A curve rising like `z^m` has
+  its slopes of order above `m` infinite at zero unless `m` is whole: the slope itself below shape 1
+  (`Hill`, `Weibull`, `ChapmanRichards`, `BurrXII`, `Kumaraswamy`, `GammaCDF`, `BetaCDF`, `Power`),
+  the curvature below shape 2. The chain rule multiplies an infinite slope into `nan` wherever a
+  zero meets it: a period after a plan that a kernel without carryover leaves unreached, and the
+  slope of `spend / K` in `K` at zero spend, in any fit of a scale to a series with a dark period.
+  JAX's own power is `nan` there at shape 1 too, at second order, `1 * 0 * 0^-1`. So each such power
+  is `_power(base, exponent)`, a custom JVP whose slope in the base is the power one lower, itself
+  the same function; a power not above 0 at a zero base, which only a slope meets, is read a machine
+  epsilon off zero. Every slope at zero spend is then finite, every one finite there is exact, every
+  slope in a parameter at zero spend is 0, as the curve is, and below shape 1 the slope at zero is
+  steeper than anywhere past `eps K`. A number read through one, such as a decision weight in a
+  parameter that turns that spend on, is large and finite.
 - **`BetaCDF` has no slope in its shapes.** JAX's `betainc` has none, and a zero would be a wrong
   one, so asking raises and names `Kumaraswamy`, its closed-form counterpart.
 - **`Tanh` is `(1 - e^{-2z}) / (1 + e^{-2z})`.** XLA's `tanh` falls by an ulp here and there on its
@@ -77,6 +90,14 @@ curve, `h(A) = A h'(A)`, and the curve beyond (Weber, Prop. 3.8). Its optimum bo
   are the exponential, Richards at `nu = 1` is the logistic and tends to Gompertz as `nu -> 0`,
   the gap proportional to `nu`); a change of currency, as a property test; and a curve built inside
   a trace fitting by gradient.
+- At zero spend, the same file holds every slope and curvature finite and a zero weight on either
+  nothing, for seven families at shapes 0.5, 1, 1.5 and 2.5 and for `Power`; the curvature to
+  Maxima's `g''(0)` at shapes 1 and 2 (`validation/response_curves.mac`, STEP 6); every slope in a
+  parameter exactly 0, below shape 1 included; below shape 1 the slope steeper than anywhere from
+  `1e-15 K` on; and at shape 1 the slope moved by the shape, `(f log z + r) / K` and infinite at
+  zero, read at `z = eps`, with Maxima's `f` and `r` (STEP 7). `tests/test_allocation.py` plans a Hill of slope 0.5 behind a kernel without
+  carryover against a bounded scalar search, and `tests/test_allocation_decision_weight.py` weighs
+  a Hill of slope 1 behind one as Maxima's Michaelis–Menten.
 - The planner's gate, the S-curve counterexample posed to `causal_plan` as a one-step plant (a
   budget of 300 over `1000 h(u_1) + 300 u_2 / (100 + u_2)`): from zero spend it reaches the best
   split, found by a grid and refined, to `1e-9` on each of eleven S-shaped families, where a
@@ -111,6 +132,11 @@ curve, `h(A) = A h'(A)`, and the curve beyond (Weber, Prop. 3.8). Its optimum bo
   simpler and exact to rounding. A curve inside a trace still traces; only the tangency does not.
 - **Clipping spend at zero.** Rejected: a clip is flat below zero, so a planner's gradient there is
   zero, and a planner that steps below zero is the caller's error to see, not the curve's to hide.
+- **A slope of 0 at zero spend where it is infinite, the double `where`.** Rejected: it tells a
+  planner that a channel steepest at zero is flat there, and the planner leaves the channel dark.
+- **Leaving the periods no spend reaches out of the planner's worth.** Rejected: it mends one
+  consumer, and a fit of a scale through a dark period, a marginal return over one, and the
+  curvature at shape 1 fail alike.
 - **The curves in `chc.mmm`.** Rejected: the plant, the curves known from other packages, PL4 and
   MM6 all read them, and `chc.mmm` is one consumer.
 - **PyMC-Marketing or Meridian as a dependency.** Rejected: each would pull a probabilistic
