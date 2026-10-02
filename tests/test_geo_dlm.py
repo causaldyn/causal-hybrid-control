@@ -1,6 +1,7 @@
-"""chc.dlm over geos: one geo against chc.dlm's own filter, many against the conjugate regression
-on every observation at once, geos that share nothing against a filter each, and one step's
-score against SciPy's multivariate t.
+"""chc.dlm over geos: one geo against chc.dlm's own filter and smoother, many against the
+conjugate regression on every observation at once, geos that share nothing against a filter each,
+one step's score against SciPy's multivariate t, the smoother against the joint Gaussian posterior
+of every state, and the sampler's draws against the smoother.
 
 The update is West and Harrison's for a vector with one variance scale; validation/geo_dlm.mac
 shows it is the sequential one and its density the product of the sequential ones.
@@ -21,8 +22,10 @@ from chc.dlm import (
     Prior,
     Regression,
     Seasonal,
+    backward_sample,
     forward_filter,
     forward_filter_geos,
+    smooth,
     stacked_prior,
 )
 
@@ -47,11 +50,8 @@ NATIONAL = (Regression(2, 0.97),)
 REGIONAL = (Polynomial(2, 0.9), Seasonal(13.0, (1, 2), 0.95), Regression(2, 0.99))
 
 
-@pytest.mark.parametrize("form", ["additive", "multiplicative"])
-@pytest.mark.parametrize(
-    ("beta", "dof", "hold"), [(1.0, 6.0, False), (0.95, 6.0, True), (1.0, math.inf, False)]
-)
-def test_one_geo_is_chc_dlm_s_filter_of_its_national_and_regional_blocks(form, beta, dof, hold):
+def _one_geo(form, beta, dof, hold):
+    """One geo's filter, and chc.dlm's of its national blocks and then its regional ones."""
     regional = (*REGIONAL[:2], Regression(2, 0.99, hold_when_idle=hold))
     y, x = _panel(1, 1, 2, missing=0.1)
     prior = _prior(2 + 2 + 4 + 2, dof=dof)
@@ -61,6 +61,15 @@ def test_one_geo_is_chc_dlm_s_filter_of_its_national_and_regional_blocks(form, b
         y[:, 0],
         np.concatenate([x[:, 0], x[:, 0]], axis=1),  # the national block's columns, then the geo's
     )
+    return geo, alone
+
+
+@pytest.mark.parametrize("form", ["additive", "multiplicative"])
+@pytest.mark.parametrize(
+    ("beta", "dof", "hold"), [(1.0, 6.0, False), (0.95, 6.0, True), (1.0, math.inf, False)]
+)
+def test_one_geo_is_chc_dlm_s_filter_of_its_national_and_regional_blocks(form, beta, dof, hold):
+    geo, alone = _one_geo(form, beta, dof, hold)
     pairs = [
         (geo.prior_mean, alone.prior_mean),
         (geo.prior_covariance, alone.prior_covariance),
@@ -239,6 +248,107 @@ def test_a_stacked_prior_repeats_the_regional_one_for_each_geo():
     np.testing.assert_array_equal(prior.covariance[4:6, 4:6], regional.covariance)
     assert not prior.covariance[2:4, 4:6].any()
     assert (prior.scale, prior.dof) == (1.3, 6.0)
+
+
+@pytest.mark.parametrize("form", ["additive", "multiplicative"])
+@pytest.mark.parametrize(
+    ("beta", "dof", "hold"), [(1.0, 6.0, False), (0.95, 6.0, True), (1.0, math.inf, False)]
+)
+def test_one_geo_is_smoothed_as_chc_dlm_smooths_it(form, beta, dof, hold):
+    """The filters agree to ``1e-14``; each gain solves against ``R_(t+1)``, near ``1e4`` in
+    condition in the multiplicative form, so the smoothers agree to some ``1e-12`` of the scale."""
+    geo, alone = _one_geo(form, beta, dof, hold)
+    ours, theirs = smooth(geo), smooth(alone)
+    for mine, expected in [
+        (ours.mean, theirs.mean),
+        (ours.covariance, theirs.covariance),
+        (ours.cross_covariance, theirs.cross_covariance),
+    ]:
+        np.testing.assert_allclose(mine, expected, rtol=0.0, atol=1e-10 * np.abs(expected).max())
+    np.testing.assert_allclose(ours.dof, theirs.dof, rtol=1e-10)
+    assert ours.exact == theirs.exact == (beta == 1.0)
+
+
+def _batch(fit, units: np.ndarray, v: float):
+    """Every state's posterior at once: the stacked model as one Gaussian, the evolution variance
+    at each step the one the discounts implied, read off the filter in ``units``, and each observed
+    geo a row of variance ``v w_g``."""
+    from chc.dlm import _structure
+
+    g = _structure(fit.model.stacked).evolution
+    horizon, p = fit.mean.shape
+    info = np.zeros((horizon * p, horizon * p))
+    vec = np.zeros(horizon * p)
+    blk = [slice(t * p, (t + 1) * p) for t in range(horizon)]
+    r0 = fit.prior_covariance[0] / units[0]
+    info[blk[0], blk[0]] += np.linalg.inv(r0)
+    vec[blk[0]] += np.linalg.solve(r0, fit.prior_mean[0])
+    for t in range(1, horizon):
+        wi = np.linalg.inv((fit.prior_covariance[t] - g @ fit.covariance[t - 1] @ g.T) / units[t])
+        info[blk[t], blk[t]] += wi
+        info[blk[t - 1], blk[t - 1]] += g.T @ wi @ g
+        info[blk[t], blk[t - 1]] -= wi @ g
+        info[blk[t - 1], blk[t]] -= g.T @ wi
+    weights = v * fit.model.relative_variance
+    for t in range(horizon):
+        seen = ~np.isnan(fit.y[t])
+        f = fit.design[t, seen]
+        info[blk[t], blk[t]] += f.T @ (f / weights[seen, None])
+        vec[blk[t]] += f.T @ (fit.y[t, seen] / weights[seen])
+    cov = np.linalg.inv(info)
+    return (cov @ vec).reshape(horizon, p), cov, blk
+
+
+def _three_geos(dof: float, beta: float = 1.0):
+    """A level and a slope a geo, so the evolution is not the identity."""
+    model = GeoDLM(
+        NATIONAL,
+        (Polynomial(2, 0.9), Regression(2, 0.95)),
+        3,
+        stacked_prior(_prior(2, dof=dof), _prior(4, dof=dof), 3),
+        variance_discount=beta,
+        relative_variance=[0.6, 1.0, 1.8],
+    )
+    return forward_filter_geos(model, *_panel(8, 3, 2, missing=0.15))
+
+
+@pytest.mark.parametrize("dof", [math.inf, 5.0])
+def test_the_smoother_over_geos_is_every_state_s_posterior_given_every_geo(dof):
+    """A known variance: the model is one Gaussian over every state, and the smoother is its
+    posterior. A learned one: that posterior in the variance's units, ``V`` the filter's ``S`` at
+    each step, times ``E[V | D_T] = S_T n_T / (n_T - 2)``."""
+    fit = _three_geos(dof)
+    if math.isinf(dof):
+        units, v, factor = np.ones(T), fit.model.prior.scale, 1.0
+    else:
+        units = np.concatenate([[fit.model.prior.scale], fit.scale[:-1]])
+        v, factor = 1.0, fit.scale[-1] * fit.dof[-1] / (fit.dof[-1] - 2.0)
+    mean, cov, blk = _batch(fit, units, v)
+    sm = smooth(fit)
+    np.testing.assert_allclose(sm.mean, mean, rtol=1e-8, atol=1e-10)
+    for t in range(T):
+        np.testing.assert_allclose(
+            sm.covariance[t], factor * cov[blk[t], blk[t]], rtol=1e-8, atol=1e-12
+        )
+    for t in range(T - 1):
+        np.testing.assert_allclose(
+            sm.cross_covariance[t], factor * cov[blk[t], blk[t + 1]], rtol=1e-8, atol=1e-12
+        )
+
+
+def test_draws_over_geos_have_the_smoother_s_moments_with_a_moving_variance():
+    fit, n = _three_geos(5.0, beta=0.9), 20_000
+    sm = smooth(fit)
+    assert not sm.exact
+    draws = backward_sample(fit, n, seed=11)
+    assert draws.states.shape == (n, T, fit.mean.shape[1])
+    sd = np.sqrt(np.einsum("tii->ti", sm.covariance))
+    z = (draws.states.mean(axis=0) - sm.mean) / (sd / math.sqrt(n))
+    assert np.max(np.abs(z)) < 4.5
+    np.testing.assert_allclose(draws.states.var(axis=0), sd**2, rtol=0.06)
+    mean = draws.states.mean(axis=0)
+    lag = np.mean((draws.states[:, :-1] - mean[:-1]) * (draws.states[:, 1:] - mean[1:]), axis=0)
+    np.testing.assert_allclose(lag, np.einsum("tii->ti", sm.cross_covariance), rtol=0.08, atol=1e-3)
 
 
 @pytest.mark.parametrize(

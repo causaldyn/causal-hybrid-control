@@ -265,8 +265,11 @@ still change).
   is `forward_filter`'s to `1e-12`; with nothing discounted, four geos with a season and missing
   observations are the conjugate regression on every observation at once to `1e-10`. The filter is
   dense; the multiplicative form keeps the posterior precision an arrowhead, so a filter linear in
-  the number of geos exists for it, not built. No smoother, sampler or forecast over geos yet. All
-  22 mutations of the filter tried fail a test.
+  the number of geos exists for it, not built. `smooth` and `backward_sample` take its fit and run
+  back over the stacked state: over three geos with missing observations the smoother is the joint
+  Gaussian posterior of every state to `1e-8`, the variance known or learned, and the draws have
+  its moments. No forecast over geos yet. All 22 mutations of the filter and 8 of the smoothing
+  and sampling path tried fail a test.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,

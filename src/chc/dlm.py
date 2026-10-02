@@ -113,8 +113,12 @@ them, and its density the product of theirs (``validation/geo_dlm.mac``, steps 1
   diagonal scaling of the covariance, keeps that zero through the evolution while component
   discounting does not (step 3): a filter linear in the number of geos exists for the first form
   and is not built.
-* There is a filter over geos and nothing after it: no smoother, sampler or forecast yet. One
-  variance scale serves every geo, each geo's share of it fixed.
+* :func:`smooth` and :func:`backward_sample` take a filter over geos and run back over its stacked
+  state. They read the filter's moments, the evolution and the variance discount, and the
+  variance's backward step reads ``n_t`` and ``S_t``, not how many geos a step observed. Over
+  three geos with missing observations the smoother is the joint Gaussian posterior of every state
+  to ``1e-8``, the variance known or learned. There is no forecast or decomposition over geos yet.
+  One variance scale serves every geo, each geo's share of it fixed.
 
 The implementation is NumPy in float64 and written from the published equations.
 """
@@ -125,7 +129,7 @@ import logging
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -651,7 +655,55 @@ def _warn_windup(model: DynamicLinearModel, s: _Structure, design: _Array) -> No
 # ------------------------------------------------------------------------------------- smoothing
 
 
-def _gains(fit: DLMFit) -> _Array:
+class _Path(Protocol):
+    """What smoothing and sampling read of a filter: the model whose evolution and variance
+    discount they run back, and the filter's moments. Neither reads how many observations a step
+    had, so a filter over geos is read through its stacked model."""
+
+    @property
+    def model(self) -> DynamicLinearModel: ...
+    @property
+    def prior_mean(self) -> _Array: ...
+    @property
+    def prior_covariance(self) -> _Array: ...
+    @property
+    def mean(self) -> _Array: ...
+    @property
+    def covariance(self) -> _Array: ...
+    @property
+    def dof(self) -> _Array: ...
+    @property
+    def scale(self) -> _Array: ...
+
+
+@dataclass(frozen=True)
+class _Stacked:
+    """A filter over geos as smoothing and sampling read it."""
+
+    model: DynamicLinearModel
+    prior_mean: _Array
+    prior_covariance: _Array
+    mean: _Array
+    covariance: _Array
+    dof: _Array
+    scale: _Array
+
+
+def _path(fit: DLMFit | GeoDLMFit) -> _Path:
+    if isinstance(fit, GeoDLMFit):
+        return _Stacked(
+            fit.model.stacked,
+            fit.prior_mean,
+            fit.prior_covariance,
+            fit.mean,
+            fit.covariance,
+            fit.dof,
+            fit.scale,
+        )
+    return fit
+
+
+def _gains(fit: _Path) -> _Array:
     """``B_t = C_t G' R_(t+1)^(-1)`` for ``t < T``: scale-free, since ``C_t`` and ``R_(t+1)`` are
     both stated at ``S_t``."""
     g = _structure(fit.model).evolution
@@ -662,7 +714,7 @@ def _gains(fit: DLMFit) -> _Array:
     return out
 
 
-def _variance_factor(fit: DLMFit) -> tuple[_Array, _Array]:
+def _variance_factor(fit: _Path) -> tuple[_Array, _Array]:
     """``E[V_t | D_T] = E[1 / phi_t | D_T]`` at every step, and the degrees of freedom of a gamma
     matched to the mean and variance of ``phi_t | D_T``.
 
@@ -719,39 +771,41 @@ class SmoothedStates:
     exact: bool
 
 
-def smooth(fit: DLMFit) -> SmoothedStates:
+def smooth(fit: DLMFit | GeoDLMFit) -> SmoothedStates:
     """Retrospective moments of every state given all the data: Rauch-Tung-Striebel, with each
     step's covariance in the units ``E[V_t | D_T]`` of the variance the whole series supports.
-    They are the moments of :func:`backward_sample`'s draws.
+    They are the moments of :func:`backward_sample`'s draws. A filter over geos is smoothed over
+    its stacked state.
 
     Raises:
         ValueError: when the final degrees of freedom ``n_T`` is not above 2, so the covariances
             are infinite.
     """
-    horizon, _ = fit.mean.shape
-    gains = _gains(fit)
-    if math.isinf(fit.model.prior.dof):
-        expect_var = fit.scale.copy()  # known variance: E[V | D_T] = S
+    path = _path(fit)
+    horizon, _ = path.mean.shape
+    gains = _gains(path)
+    if math.isinf(path.model.prior.dof):
+        expect_var = path.scale.copy()  # known variance: E[V | D_T] = S
         dof = np.full(horizon, math.inf)
     else:
-        if fit.dof[-1] <= 2.0:
+        if path.dof[-1] <= 2.0:
             raise ValueError(
-                f"the final degrees of freedom is {float(fit.dof[-1]):.3g}, not above 2, so the"
+                f"the final degrees of freedom is {float(path.dof[-1]):.3g}, not above 2, so the"
                 " smoothed covariances are infinite; use backward_sample"
             )
-        expect_var, dof = _variance_factor(fit)
-    mean = np.empty_like(fit.mean)
-    cov = np.empty_like(fit.covariance)
-    cross = np.empty((max(horizon - 1, 0), *fit.covariance.shape[1:]))
-    mean[-1] = fit.mean[-1]
-    cov[-1] = expect_var[-1] * fit.covariance[-1] / fit.scale[-1]
+        expect_var, dof = _variance_factor(path)
+    mean = np.empty_like(path.mean)
+    cov = np.empty_like(path.covariance)
+    cross = np.empty((max(horizon - 1, 0), *path.covariance.shape[1:]))
+    mean[-1] = path.mean[-1]
+    cov[-1] = expect_var[-1] * path.covariance[-1] / path.scale[-1]
     for t in range(horizon - 2, -1, -1):
         b = gains[t]
-        mean[t] = fit.mean[t] + b @ (mean[t + 1] - fit.prior_mean[t + 1])
-        residual = (fit.covariance[t] - b @ fit.prior_covariance[t + 1] @ b.T) / fit.scale[t]
+        mean[t] = path.mean[t] + b @ (mean[t + 1] - path.prior_mean[t + 1])
+        residual = (path.covariance[t] - b @ path.prior_covariance[t + 1] @ b.T) / path.scale[t]
         cov[t] = _sym(expect_var[t] * residual + b @ cov[t + 1] @ b.T)
         cross[t] = b @ cov[t + 1]
-    return SmoothedStates(mean, cov, cross, dof, fit.model.variance_discount == 1.0)
+    return SmoothedStates(mean, cov, cross, dof, path.model.variance_discount == 1.0)
 
 
 @dataclass(frozen=True)
@@ -767,21 +821,22 @@ def _sqrt_psd(m: _Array) -> _Array:
     return v * np.sqrt(np.clip(w, 0.0, None))
 
 
-def backward_sample(fit: DLMFit, draws: int, seed: int) -> PosteriorDraws:
+def backward_sample(fit: DLMFit | GeoDLMFit, draws: int, seed: int) -> PosteriorDraws:
     """Forward filtering, backward sampling: joint draws of ``theta_(1:T)`` and ``V_(1:T)`` given
     ``D_T``, with the volatility path when ``variance_discount < 1`` (McAlinn and West 2019,
-    appendix A.2).
+    appendix A.2). A filter over geos is sampled over its stacked state.
 
     Raises:
         ValueError: on ``draws`` below 1.
     """
     if isinstance(draws, bool) or not isinstance(draws, int) or draws < 1:
         raise ValueError(f"draws must be a positive integer, got {draws!r}")
+    path = _path(fit)
     rng = np.random.default_rng(seed)
-    horizon, p = fit.mean.shape
-    beta = fit.model.variance_discount
-    known = math.isinf(fit.model.prior.dof)
-    gains = _gains(fit)
+    horizon, p = path.mean.shape
+    beta = path.model.variance_discount
+    known = math.isinf(path.model.prior.dof)
+    gains = _gains(path)
     states = np.empty((draws, horizon, p))
     precision = np.empty((draws, horizon))
 
@@ -789,23 +844,23 @@ def backward_sample(fit: DLMFit, draws: int, seed: int) -> PosteriorDraws:
         return rng.gamma(shape, 1.0 / rate, size=draws)
 
     if known:
-        precision[:] = 1.0 / fit.scale[None, :]
+        precision[:] = 1.0 / path.scale[None, :]
     else:
-        precision[:, -1] = gamma(fit.dof[-1] / 2.0, fit.dof[-1] * fit.scale[-1] / 2.0)
-    root = _sqrt_psd(fit.covariance[-1] / fit.scale[-1])
+        precision[:, -1] = gamma(path.dof[-1] / 2.0, path.dof[-1] * path.scale[-1] / 2.0)
+    root = _sqrt_psd(path.covariance[-1] / path.scale[-1])
     z = rng.standard_normal((draws, p))
-    states[:, -1] = fit.mean[-1] + (z @ root.T) / np.sqrt(precision[:, -1:])
+    states[:, -1] = path.mean[-1] + (z @ root.T) / np.sqrt(precision[:, -1:])
     for t in range(horizon - 2, -1, -1):
         if not known:
             fresh = (
-                gamma((1.0 - beta) * fit.dof[t] / 2.0, fit.dof[t] * fit.scale[t] / 2.0)
+                gamma((1.0 - beta) * path.dof[t] / 2.0, path.dof[t] * path.scale[t] / 2.0)
                 if beta < 1.0
                 else 0.0
             )
             precision[:, t] = beta * precision[:, t + 1] + fresh
         b = gains[t]
-        residual = (fit.covariance[t] - b @ fit.prior_covariance[t + 1] @ b.T) / fit.scale[t]
-        centre = fit.mean[t] + (states[:, t + 1] - fit.prior_mean[t + 1]) @ b.T
+        residual = (path.covariance[t] - b @ path.prior_covariance[t + 1] @ b.T) / path.scale[t]
+        centre = path.mean[t] + (states[:, t + 1] - path.prior_mean[t + 1]) @ b.T
         z = rng.standard_normal((draws, p))
         states[:, t] = centre + (z @ _sqrt_psd(residual).T) / np.sqrt(precision[:, t : t + 1])
     return PosteriorDraws(states, 1.0 / precision)

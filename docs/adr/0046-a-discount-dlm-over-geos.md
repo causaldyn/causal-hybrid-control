@@ -40,6 +40,12 @@ sampling. A discount DLM's filter is exact and in closed form, and its coefficie
   coordinate when no geo's column on it moves, and on a geo's own when that geo's does not.
 - **The filter is dense**, a step `O(p^3)` in the stacked state's `p` coordinates, and the fit
   holds `2 T` covariances of `p^2` entries.
+- **Smoothing and sampling are `chc.dlm`'s, over the stacked state.** `smooth` and
+  `backward_sample` take a `GeoDLMFit` and read the filter's moments, the evolution and the
+  variance discount, nothing of a step's observations. The variance's backward step holds for a
+  vector: given `D_t`, `phi_t ~ G(n_t / 2, n_t S_t / 2)` however many geos the step observed, and
+  `phi_t - beta phi_(t+1)`, a gamma's share split off by an independent beta, is
+  `G((1 - beta) n_t / 2, n_t S_t / 2)` independent of `phi_(t+1)`.
 
 ## Consequences
 
@@ -55,17 +61,27 @@ sampling. A discount DLM's filter is exact and in closed form, and its coefficie
     itself at its own variance;
   - a step's score against SciPy's multivariate `t` with a geo missing, a step with none observed,
     each geo's row of `F` with the national regression the wider and the narrower, a regressor held
-    while idle live where any geo that reads it moves, `stacked_prior`, and the refusals.
+    while idle live where any geo that reads it moves, `stacked_prior`, and the refusals;
+  - one geo smoothed as `smooth` smooths `forward_filter`'s model, to `1e-10` of the scale, in the
+    same forms and cases;
+  - three geos with a level and a slope each and missing observations: the discounts' evolution
+    variances read off the filter make the model one Gaussian over every state, and the smoother
+    is its posterior to `1e-8`, with the variance known, and learned, in its units times
+    `E[V | D_T] = S_T n_T / (n_T - 2)`;
+  - the same three geos with a moving variance: the sampler's draws have the smoother's means,
+    variances and lag-one covariances.
 - All 22 mutations of the filter tried fail a test. Two survived the first tests and each got one:
   a national regression reading the columns past a wider regional one, and the coordinates held
-  while idle read off the first geo alone.
+  while idle read off the first geo alone. All 8 mutations of the smoothing and sampling path over
+  geos tried fail one too, and the joint posterior's test catches a wrong evolution over geos on
+  its own.
 - The precision's pattern: an observation of one geo adds nothing between two others, and the
   multiplicative form keeps that zero through the evolution while component discounting does not
   (`validation/geo_dlm.mac`, step 3). A filter linear in the number of geos exists for the
   multiplicative form, by the arrowhead's block elimination, and is not built: the dense one is
   its oracle, and its speed is to be measured.
-- There is a filter over geos and nothing after it: no smoother, sampler, forecast or choice of
-  discounts over geos yet. A geo's own variance is not learned.
+- Over geos there is a filter, a smoother and a sampler, and nothing after them: no forecast,
+  decomposition or choice of discounts yet. A geo's own variance is not learned.
 - No timing is quoted.
 
 ## Alternatives
