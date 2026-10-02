@@ -237,6 +237,22 @@ still change).
   each goal is met to its closed form. Of 48 mutations of the two functions 41 fail a test; the
   other seven change how fast a plan is reached or act at rounding, Newton's method started without
   the duals' binding totals among them (ADR 0043, ADR 0044).
+- **A geo world drawn from a stated hierarchy, `chc.geo_world`** (*experimental*, ADR 0045).
+  `GeoMediaMix(channels, geos=20, weeks=104, ...).draw(seed)` returns a `GeoMediaWorld`: each geo's
+  KPI made by its own media, so a model of geos can be scored on the effects it recovers and a plan
+  over geos on what it returns. A `MediaChannel` states a channel nationally: its saturation curve
+  per head, the median over the geos of its effect, the KPI per head a week at the curve's ceiling,
+  the log-SD of the geos' effects about it, its carryover, the log's mean spend per head and
+  whether it is bought nationally. A geo's lift is its population times the curve per head of its
+  spend per head through a normalised geometric adstock, times its effect, so geos of any size
+  share a curve; populations and bases per head are log-normal about the mix's, national media is
+  allotted by population, and the log's spend rises with the season by a policy, the confounding.
+  Spillover into a geo's two neighbours on a ring and a national random walk in each channel's
+  lift are options. Every variate is drawn whatever the parameters, so two mixes that differ in one
+  compare paired. `GeoMediaWorld.cells(week)` returns each geo's channels as `chc.response`
+  cells for `allocate_geos`, lifting what the world's media lift to `1e-12`; `lift(spend)` reads
+  what any spend lifts, spillover included. The tests hold the geos' spreads to the stated ones
+  within five standard errors over 4000 geos, and all 25 mutations of the module tried fail one.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,

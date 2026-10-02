@@ -67,8 +67,8 @@ returns with every plan.
   still holds. A release threshold set without the charge: a difference of a share `1e-9` of it.
   Newton's method on S-shaped curves: beside a concave cell, an S-shaped one met nine targets at
   Brent's budgets, since the most budget a return on spend allows lies past the gain's best ratio,
-  where that cell is off its chord; nothing proves it for several S-shaped cells, which were not
-  tried.
+  where that cell is off its chord; nothing proves it for several S-shaped cells, and a run on two
+  was stopped before it finished.
 - At an end of the budgets the price is not one number. A marginal target's plan reports the
   target; a budget's plan, whichever price the solver reaches.
 - No timing is quoted.

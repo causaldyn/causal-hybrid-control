@@ -149,6 +149,7 @@ nav:
           - api/flagship.md
           - api/galerkin.md
           - api/games.md
+          - api/geo_world.md
           - api/koopman.md
           - api/lalonde.md
           - api/lift.md
