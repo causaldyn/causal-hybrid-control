@@ -270,6 +270,19 @@ still change).
   Gaussian posterior of every state to `1e-8`, the variance known or learned, and the draws have
   its moments. No forecast over geos yet. All 22 mutations of the filter and 8 of the smoothing
   and sampling path tried fail a test.
+- **The geos' spread by the marginal likelihood, `chc.dlm.fit_geo_spread`** (*experimental*,
+  ADR 0047). `fit_geo_spread(model, y, x, pooled, draws, seed, *, level=0.9)` chooses the prior
+  variance of named regional coordinates, the same in every geo, by the filter's log-likelihood,
+  which is the exact marginal likelihood (type-II maximum likelihood), with each spread's
+  likelihood-ratio interval. It draws the spread from its posterior under a prior flat on each
+  standard deviation, by importance sampling in the range's logistic coordinates, so that every
+  draw is in the range, and `GeoSpread.mixture` mixes a quantity's posterior over the draws. Where
+  one spread is weakly identified the mixture agrees with quadrature of its posterior within three
+  Monte Carlo standard errors, with the best inside the range, near its floor and at its ceiling.
+  `validation/geo_spread.mac` derives Fisher's identity for the slope, the alternative to central
+  differences when nothing is discounted. 18 of 19 mutations tried fail a test; the 19th draws
+  from the range's other end, the same sampler mirrored. `scripts/bench_geo_dlm.py` pre-registers
+  the recovery and coverage of geos' effects and of their spread on `chc.geo_world`'s worlds.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,

@@ -119,6 +119,13 @@ them, and its density the product of theirs (``validation/geo_dlm.mac``, steps 1
   three geos with missing observations the smoother is the joint Gaussian posterior of every state
   to ``1e-8``, the variance known or learned. There is no forecast or decomposition over geos yet.
   One variance scale serves every geo, each geo's share of it fixed.
+* :func:`fit_geo_spread` chooses the geos' spread, the regional prior's variance on named
+  coordinates, by the marginal likelihood that the filter's log-likelihood is (type-II maximum
+  likelihood), with each spread's likelihood-ratio interval. It draws the spread from its
+  posterior under a prior flat on each standard deviation by importance sampling, so that
+  :meth:`GeoSpread.mixture` carries a quantity's uncertainty about the spread as well as about the
+  states. Where one spread is weakly identified the mixture is quadrature's within its Monte Carlo
+  error, with the best inside the range, near its floor, and at its ceiling.
 
 The implementation is NumPy in float64 and written from the published equations.
 """
@@ -127,13 +134,13 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy import integrate, linalg, special
+from scipy import integrate, linalg, optimize, special
 
 _log = logging.getLogger(__name__)
 
@@ -1813,4 +1820,301 @@ def _log_multivariate_t(quad: float, log_det: float, k: int, dof: float) -> floa
         - 0.5 * k * math.log(dof * math.pi)
         - 0.5 * log_det
         - (dof + k) / 2.0 * math.log1p(quad / dof)
+    )
+
+
+# ---------------------------------------------------------------------------- the geos' spread
+
+# The least spread searched, a share of the vaguest: below it the geos are pooled completely.
+_LEAST_SPREAD = 1e-12
+# Central differences, in the log of a spread and in the draws' coordinates: the gradient's step,
+# and the curvature's.
+_GRADIENT_STEP = 1e-3
+_CURVATURE_STEP = 1e-2
+# The draws' proposal: a Student t of these degrees of freedom, its scale this many times the
+# posterior's curvature's inverse, and no wider than this standard deviation where it is flat.
+_PROPOSAL_DOF = 4.0
+_PROPOSAL_INFLATION = 1.5
+_PROPOSAL_WIDEST = 4.0
+
+
+@dataclass(frozen=True)
+class GeoSpread:
+    """How far the geos spread about the national coefficients, chosen by the marginal
+    likelihood: :func:`fit_geo_spread`'s output.
+
+    ``variance[i]`` is the prior variance of every geo's regional coordinate ``pooled[i]``, stated
+    at the prior's scale as :class:`Prior` states a covariance: at a variance ``V`` the geos spread
+    about the national coefficient with variance ``variance[i] V / scale``. ``fit`` is the filter
+    at ``variance``, and ``lower`` and ``upper`` each spread's likelihood-ratio interval, the other
+    spreads held at their best.
+
+    ``draws`` are spreads drawn from their posterior, ``(draws, pooled)``, under a prior flat on
+    each standard deviation over the range searched, with self-normalised importance ``weights``.
+    :meth:`mixture` averages a quantity's posterior over them, so that it carries the spread's
+    uncertainty as well as the states'.
+    """
+
+    fit: GeoDLMFit
+    x: _Array | None
+    pooled: tuple[int, ...]
+    variance: _Array
+    lower: _Array
+    upper: _Array
+    draws: _Array
+    weights: _Array
+
+    def at(self, variance: ArrayLike) -> GeoDLM:
+        """The model with every geo's pooled coordinates at prior variance ``variance``."""
+        return _with_spread(self.fit.model, self.pooled, np.asarray(variance, dtype=np.float64))
+
+    def mixture(
+        self, quantity: Callable[[GeoDLMFit], tuple[ArrayLike, ArrayLike]]
+    ) -> tuple[_Array, _Array]:
+        """A quantity's mean and variance over the spread's posterior.
+
+        ``quantity`` maps a filter to the quantity's posterior mean and variance at that filter's
+        spread; the result is their mixture over the draws, ``sum_j w_j m_j`` and
+        ``sum_j w_j (v_j + (m_j - mean)^2)``, one filter a draw of positive weight.
+        """
+        live = np.flatnonzero(self.weights)
+        moments = [
+            quantity(forward_filter_geos(self.at(self.draws[j]), self.fit.y, self.x)) for j in live
+        ]
+        means = np.array([np.asarray(m, dtype=np.float64) for m, _ in moments])
+        variances = np.array([np.asarray(v, dtype=np.float64) for _, v in moments])
+        weights = self.weights[live].reshape((-1,) + (1,) * (means.ndim - 1))
+        mean = (weights * means).sum(axis=0)
+        return mean, (weights * (variances + (means - mean) ** 2)).sum(axis=0)
+
+
+def _with_spread(model: GeoDLM, pooled: tuple[int, ...], variance: _Array) -> GeoDLM:
+    national = _sizes(model.national)
+    regional = _sizes(model.regional)
+    covariance = np.array(model.prior.covariance)
+    for g in range(model.geos):
+        at = national + g * regional + np.array(pooled)
+        covariance[at, at] = variance
+    prior = Prior(model.prior.mean, covariance, model.prior.scale, model.prior.dof)
+    return replace(model, prior=prior)
+
+
+def _sizes(blocks: tuple[Block, ...]) -> int:
+    return sum(b.size for b in blocks)
+
+
+def _vaguest(model: GeoDLM, pooled: Sequence[int]) -> tuple[tuple[int, ...], _Array]:
+    """The pooled coordinates, checked, and their prior variance in the model: the vaguest
+    spread."""
+    national, regional = _sizes(model.national), _sizes(model.regional)
+    coordinates = tuple(pooled)
+    if (
+        not coordinates
+        or any(isinstance(i, bool) or not isinstance(i, int) for i in coordinates)
+        or len(set(coordinates)) < len(coordinates)
+        or not all(0 <= i < regional for i in coordinates)
+    ):
+        raise ValueError(
+            f"pooled must name distinct coordinates of a geo's regional blocks, 0 to "
+            f"{regional - 1}, got {pooled!r}"
+        )
+    covariance = model.prior.covariance
+    k = len(coordinates)
+    first = covariance[national + np.array(coordinates), national + np.array(coordinates)]
+    for g in range(model.geos):
+        at = national + g * regional + np.array(coordinates)
+        variance = covariance[at, at]
+        if not np.array_equal(variance, first):
+            raise ValueError(
+                f"geo {g}'s prior variance on the pooled coordinates is {variance.tolist()}, geo"
+                f" 0's {first.tolist()}: a spread is one variance for every geo"
+            )
+        rows = covariance[at].copy()
+        rows[np.arange(k), at] = 0.0
+        if np.any(rows != 0.0):
+            raise ValueError(
+                f"geo {g}'s pooled coordinates have prior covariance with other coordinates; a"
+                " spread is a variance of its own"
+            )
+    return coordinates, first.copy()
+
+
+def fit_geo_spread(
+    model: GeoDLM,
+    y: ArrayLike,
+    x: ArrayLike | None,
+    pooled: Sequence[int],
+    draws: int,
+    seed: int,
+    *,
+    level: float = 0.9,
+) -> GeoSpread:
+    """How far the geos spread about the national coefficients, by the marginal likelihood of
+    ``y`` (type-II maximum likelihood, empirical Bayes), and draws of the spread from its
+    posterior.
+
+    ``pooled`` are coordinates of a geo's regional blocks, counted from 0: each one's prior
+    variance, the same in every geo and independent of every other coordinate, is the geos'
+    spread on it, and the model's own is the vaguest considered. Each spread's log is searched
+    from ``1e-12`` of the model's own up to it, from the model's own, by L-BFGS-B on central
+    differences of :attr:`GeoDLMFit.log_likelihood`, which is exact, so the search is the only
+    approximation. Each spread's interval at ``level`` is where the log-likelihood, the other
+    spreads at their best, is within ``chi2_1(level) / 2`` of the best, or the range's end where
+    it stays so.
+
+    The posterior is under a prior flat on each standard deviation over the range (Gelman 2006),
+    which unlike a flat prior on the log does not pile its mass at a spread of 0. ``draws``
+    spreads are drawn from it with ``seed`` by importance sampling in the range's logistic
+    coordinates, ``log_spread = low + (high - low) expit(u)``: a Student ``t`` about the
+    posterior's mode in ``u`` with its curvature there. Every draw is in the range, and the mode
+    is inside it even where the best is at an end, as when the data would spread the geos wider
+    than the model's own prior lets them. A quantity that carries the spread's uncertainty is the
+    mixture of its posteriors over the draws, :meth:`GeoSpread.mixture`.
+
+    Raises:
+        ValueError: on pooled coordinates that are not distinct coordinates of the regional
+            blocks, a pooled coordinate whose prior variance differs between geos or that has
+            prior covariance with another, ``draws`` below 1, a ``level`` outside ``(0, 1)``, and
+            what :func:`forward_filter_geos` refuses.
+    """
+    if isinstance(draws, bool) or not isinstance(draws, int) or draws < 1:
+        raise ValueError(f"draws must be a positive integer, got {draws!r}")
+    if not 0.0 < level < 1.0:
+        raise ValueError(f"level must be in (0, 1), got {level}")
+    coordinates, vaguest = _vaguest(model, pooled)
+    ys = np.array(y, dtype=np.float64)
+    xs = None if x is None else np.array(x, dtype=np.float64)
+    k = len(coordinates)
+    high = np.log(vaguest)
+    low = high + math.log(_LEAST_SPREAD)
+    filters = 0
+
+    def loglik(log_spread: _Array) -> float:
+        nonlocal filters
+        filters += 1
+        spread = _with_spread(model, coordinates, np.exp(log_spread))
+        return forward_filter_geos(spread, ys, xs).log_likelihood
+
+    def unit(i: int, step: float) -> _Array:
+        out = np.zeros(k)
+        out[i] = step
+        return out
+
+    def downhill(f: Callable[[_Array], float]) -> Callable[[_Array], tuple[float, _Array]]:
+        def value_and_slope(at: _Array) -> tuple[float, _Array]:
+            slope = np.array(
+                [
+                    f(at + unit(i, _GRADIENT_STEP)) - f(at - unit(i, _GRADIENT_STEP))
+                    for i in range(k)
+                ]
+            ) / (2.0 * _GRADIENT_STEP)
+            return -f(at), -slope
+
+        return value_and_slope
+
+    search = optimize.minimize(
+        downhill(loglik),
+        high,
+        jac=True,
+        method="L-BFGS-B",
+        bounds=list(zip(low, high, strict=True)),
+    )
+    best = np.asarray(search.x, dtype=np.float64)
+    fit = forward_filter_geos(_with_spread(model, coordinates, np.exp(best)), ys, xs)
+    top = fit.log_likelihood
+
+    cut = float(special.chdtri(1, 1.0 - level)) / 2.0
+    lower, upper = best.copy(), best.copy()
+    for i in range(k):
+
+        def below(value: float, i: int = i) -> float:
+            moved = best.copy()
+            moved[i] = value
+            return top - loglik(moved) - cut
+
+        lower[i] = (
+            low[i] if below(low[i]) <= 0.0 else optimize.brentq(below, low[i], best[i], xtol=1e-3)
+        )
+        upper[i] = (
+            high[i]
+            if below(high[i]) <= 0.0
+            else optimize.brentq(below, best[i], high[i], xtol=1e-3)
+        )
+
+    width = high - low
+
+    def log_spread_at(u: _Array) -> _Array:
+        return low + width * special.expit(u)
+
+    def log_posterior(u: _Array) -> float:
+        log_spread = log_spread_at(u)
+        # the prior's density in the log of a variance, and d log_spread / du
+        prior = 0.5 * float(log_spread.sum())
+        jacobian = float(np.sum(np.log(width) + special.log_expit(u) + special.log_expit(-u)))
+        return loglik(log_spread) + prior + jacobian
+
+    share = np.clip((best - low) / width, 1e-3, 1.0 - 1e-3)
+    peak = optimize.minimize(
+        downhill(log_posterior), special.logit(share), jac=True, method="L-BFGS-B"
+    )
+    mode = np.asarray(peak.x, dtype=np.float64)
+    height = log_posterior(mode)
+    h = _CURVATURE_STEP
+    curvature = np.empty((k, k))
+    for i in range(k):
+        for j in range(i, k):
+            if i == j:
+                ends = log_posterior(mode + unit(i, h)) + log_posterior(mode - unit(i, h))
+                curvature[i, i] = (ends - 2.0 * height) / h**2
+            else:
+                corners = (
+                    log_posterior(mode + unit(i, h) + unit(j, h))
+                    - log_posterior(mode + unit(i, h) - unit(j, h))
+                    - log_posterior(mode - unit(i, h) + unit(j, h))
+                    + log_posterior(mode - unit(i, h) - unit(j, h))
+                )
+                curvature[i, j] = curvature[j, i] = corners / (4.0 * h**2)
+    eigenvalues, vectors = np.linalg.eigh(_sym(-curvature))
+    flattest = _PROPOSAL_WIDEST**-2
+    scale = _PROPOSAL_INFLATION * (vectors / np.maximum(eigenvalues, flattest)) @ vectors.T
+    root = np.linalg.cholesky(_sym(scale))
+    rng = np.random.default_rng(seed)
+    z = (
+        rng.standard_normal((draws, k))
+        / np.sqrt(rng.chisquare(_PROPOSAL_DOF, draws) / _PROPOSAL_DOF)[:, None]
+    )
+    us = mode + z @ root.T
+    proposal = -(_PROPOSAL_DOF + k) / 2.0 * np.log1p(np.sum(z * z, axis=1) / _PROPOSAL_DOF)
+    log_weights = np.array([log_posterior(u) for u in us]) - proposal
+    log_spreads = np.array([log_spread_at(u) for u in us])
+    weights = np.exp(log_weights - log_weights.max())
+    weights /= weights.sum()
+    effective = float(1.0 / np.sum(weights**2))
+    _log.info(
+        "dlm geo spread: %d coordinates pooled, %d filters, %.3g effective draws of %d",
+        k,
+        filters,
+        effective,
+        draws,
+        extra={
+            "chc_event": "dlm_geo_spread",
+            "pooled": k,
+            "filters": filters,
+            "effective_draws": effective,
+            "draws": draws,
+            "search": str(search.message),
+            "mode_search": str(peak.message),
+            "at_least": int(np.sum(best <= low)),
+            "at_most": int(np.sum(best >= high)),
+        },
+    )
+    return GeoSpread(
+        fit,
+        xs,
+        coordinates,
+        np.exp(best),
+        np.exp(lower),
+        np.exp(upper),
+        np.exp(log_spreads),
+        weights,
     )

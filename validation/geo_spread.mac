@@ -1,0 +1,35 @@
+/* The marginal likelihood's slope in a geos' spread, by Fisher's identity: the alternative to
+   chc.dlm.fit_geo_spread's central differences that ADR 0047 records.
+
+   A coordinate's prior theta | V ~ N(m0, lam V), the variance's n0 and S0, and two observations
+   y_i = theta + nu_i, nu_i ~ N(0, w_i V). With (m, C, S) the conjugate posterior, C stated at S:
+
+       d log p(y | lam) / d lam = -1 / (2 lam) + ((m - m0)^2 + C) / (2 lam^2 S)
+
+   Summed over the geos it is the slope in a spread when nothing is discounted. A discounted
+   block's evolution variance is a share of the filtered covariance, which moves with the spread,
+   so the identity loses terms there, and the code differences the log-likelihood instead.
+
+   Run: timeout 300 maxima --very-quiet -b validation/geo_spread.mac */
+
+display2d : false$
+scalarmatrixp : false$  /* a 1 x 1 product stays a matrix, so [1, 1] reads its entry */
+zero(x) := is(ratdisrep(ratsimp(rat(x))) = 0)$
+/* run_all.sh reads only whether a file completed, so an identity that fails stops it */
+require(label, holds) := if holds then print(label, true) else error(label, "does not hold")$
+assume(lam > 0, S0 > 0, n0 > 0, w1 > 0, w2 > 0)$
+
+F : matrix([1], [1])$
+W : matrix([w1, 0], [0, w2])$
+e : matrix([y1 - m0], [y2 - m0])$
+Q : lam*S0 * F . transpose(F) + S0*W$   /* the one-step squared scale, stated at S0 */
+Qi : invert(Q)$
+q : (transpose(e) . Qi . e)[1, 1]$
+/* the marginal, a bivariate t with n0 degrees of freedom, without its constant */
+loglik : -log(determinant(Q))/2 - (n0 + 2)/2 * log(1 + q/n0)$
+A : lam*S0 * transpose(F) . Qi$
+S : S0*(n0 + q)/(n0 + 2)$
+m : m0 + (A . e)[1, 1]$
+C : (S/S0)*(lam*S0 - (A . Q . transpose(A))[1, 1])$
+require("d log p(y | lam) / d lam = Fisher's identity:",
+        zero(diff(loglik, lam) - (-1/(2*lam) + ((m - m0)^2 + C)/(2*lam^2*S))))$
