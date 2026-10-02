@@ -212,14 +212,31 @@ still change).
   planes on the cells' envelopes (HiGHS) certify the plan to a share `1e-9` of the bound; Newton's
   method on the binding totals' prices then makes it exact where the free cells are strictly
   concave, a total released where its price comes out on the wrong side and bound where the plan
-  breaks it. One geo is `allocate`'s plan to `1e-12`, and fixed geo budgets each geo's own; on three
-  geos of three channels with carryover SciPy's SLSQP finds nothing better and every interior
-  cell's slope meets its three prices; on two of two no plan of a 400-step lattice returns more; a
-  cap or floor a millionth from binding is planned exactly. A plan made in two steps, the budget
-  split over the geos by their average return first, leaves more than a percent of the joint plan's
-  gain. Nineteen of twenty mutations caught; the twentieth, Newton's method started without the
-  duals' binding totals, leaves the plans as they are, the active-set step finding the totals
-  itself.
+  breaks it. A Newton step that does not bring the totals closer is replaced by the least of the
+  dual, convex in the prices, along it. One geo is `allocate`'s plan to `1e-12`, and fixed geo
+  budgets each geo's own; on three geos of three channels with carryover SciPy's SLSQP finds
+  nothing better and every interior cell's slope meets its three prices; on two of two no plan of a
+  400-step lattice returns more; a cap or floor a millionth from binding is planned exactly, and so
+  is a budget `1e-9` to `1e-3` below the most a cap allows, where without the line search the
+  cutting planes' plan came back. A plan made in two steps, the budget split over the geos by their
+  average return first, leaves more than a percent of the joint plan's gain.
+- **A goal over geos and channels, `chc.allocation.budget_for_geos`** (*experimental*, ADR 0044).
+  `budget_for_geos(cells, goal, periods, *, lower, upper, geo_totals=None, channel_totals=None,
+  history=None)` returns `allocate_geos`'s plan at the budget that meets one of `budget_for`'s
+  goals, read on the same gain: a return target, a marginal return target or a target return on
+  spend. The budgets run between the least and the most a plan within the boxes and the totals
+  spends. On concave curves the best plan's gain is concave in the budget, its slope the budget's
+  price, so a return target is met by Newton's method from the least budget and a return on spend
+  from the most, in at most ten plans; a marginal target is one plan, its budget left free and each
+  unit it spends charged the target. Under totals the gain can fall past some budget: a return
+  target is refused only above the most any plan gains, and a negative marginal target is a budget
+  past that peak. On S-shaped curves Brent's method runs on the true gain. One geo meets each goal
+  at `budget_for`'s budget, spend and gain to `1e-12`; on three geos of three channels with
+  carryover under a cap and a floor, a return target is met at the least budget and a return on
+  spend at the most, a billionth less or more missing each; where two caps make the gain fall,
+  each goal is met to its closed form. Of 48 mutations of the two functions 41 fail a test; the
+  other seven change how fast a plan is reached or act at rounding, Newton's method started without
+  the duals' binding totals among them (ADR 0043, ADR 0044).
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,

@@ -30,9 +30,17 @@ fixed.
   cutting planes bound each cell's worth from above by its tangents and its cap's value; the linear
   program over those bounds (HiGHS) bounds every plan from above while the plans it proposes
   approach from below, and the loop stops at a share `1e-9` of the bound or after 500 rounds. Its
-  duals are the prices to within that gap, and they name the totals that bind. With every free cell
-  strictly concave, Newton's method on the binding totals' prices then closes the budget and those
-  totals to rounding, each cell's rate exact at its price by `allocate`'s root-finder.
+  duals certify the bound and name the totals that bind. With every free cell strictly concave,
+  Newton's method on the binding totals' prices then closes the budget and those totals to
+  rounding, each cell's rate exact at its price by `allocate`'s root-finder.
+- **A Newton step that does not close is replaced by the least of the dual along it.** A budget a hair
+  below the most a cap allows leaves every cell outside the capped geo at its cap but one, which
+  alone sets the budget's price; the free cells do not see that price, so the step does not move
+  it, and the cutting planes' duals are not the plan's there. The residual is the gradient of the
+  dual, convex in the prices, so along any step its projection on the step falls; a step that does
+  not bring the totals closer is replaced by the least of the dual along it, by Brent's method.
+  Where the free cells leave a price undetermined the step is damped, as Levenberg and Marquardt
+  damp it, and the search along it moves that price until a cell leaves its cap.
 - **The binding totals are settled by the exact plan, not by the duals.** The duals name a total
   that binds only to within the gap, so a cap or floor near what the best plan spends there can be
   named binding when it is not, or free when it binds; the tests' totals a millionth either side of
@@ -60,17 +68,24 @@ fixed.
   - a cap on a geo and a floor on a channel a millionth either side of the free plan's spend: the
     free plan, the total priced at 0, where it does not bind, and where it binds the plan that holds
     it fixed, its price on its side;
+  - a budget `1e-9` to `1e-3` below the most a cap on a geo allows: the plan exact, and every cell's
+    slope through its whole series meeting its prices to `1e-10`. Without the line search the
+    cutting planes' plan came back there;
   - a linear cell, the cutting planes' plan within its gap; a cell held at zero on a square root,
     whose slope there has no tangent; a change of currency.
 
-  Of twenty mutations nineteen fail a test. The twentieth starts Newton's method from the fixed
-  totals alone, not the totals the duals name; the active-set step then binds the others itself,
-  so the plans are the same and only the rounds differ. The duals are a warm start.
+  Of 48 mutations of `allocate_geos` and of its goals (ADR 0044) 41 fail a test. Three of the
+  seven left are here, and none changes a plan. Newton's method started from the fixed totals
+  alone, not the totals the duals name: the active-set step binds the others itself, so the duals
+  are a warm start. The line search's step halved: the steps after it close the rest. The guard
+  against a direction that does not descend the dual dropped: a Newton step on a convex dual
+  descends it in exact arithmetic, so only rounding reaches the guard.
 - The rates and prices are exact only where the Newton step is. A cell on a straight stretch at
   the best plan, an envelope's chord or a linear curve, leaves the cutting planes' plan: on a linear
-  cell beside a Michaelis-Menten one, rates within `2e-5` of the best. `allocate` mixes the two
-  sides of a linear channel's jump to spend the budget exactly; over several totals no such mix is
-  built.
+  cell beside a Michaelis-Menten one, rates within `2e-5` of the best. Its prices are the last
+  program's duals, which certify the bound but need not be the best plan's where the program is
+  degenerate. `allocate` mixes the two sides of a linear channel's jump to spend the budget exactly;
+  over several totals no such mix is built.
 - Each round evaluates every cell once and solves one linear program, whose rows grow by a tangent
   for each cell whose bound is loose. No timing is quoted.
 - In single precision, JAX's default, a slope is good to single precision, Newton's method does not

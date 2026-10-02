@@ -63,7 +63,11 @@ above while the plans it proposes approach from below; where every cell inside i
 concave, Newton's method on the binding totals' prices then makes the plan exact. The program's
 duals name the totals that bind only to within its gap, so a total a hair from binding may be named
 wrongly: one whose price comes out on the wrong side is released and one the plan breaks is bound,
-until the plan meets the conditions that make it the best.
+until the plan meets the conditions that make it the best. :func:`budget_for_geos` finds the budget
+that meets a goal over the grid: on concave curves the best plan's gain is concave in the budget
+and its slope is the budget's price, so Newton's method on the budget meets a return target or a
+return on spend in a few plans, and a marginal target is one plan, the budget left free and each
+unit of it charged the target's return.
 
 HONEST SCOPE:
 
@@ -92,12 +96,17 @@ HONEST SCOPE:
   plans discrete channels, which that plant does not describe.
 * Over geos and channels, a plan with a cell inside its box on a straight stretch of its curve (an
   envelope's chord, a linear curve) is the cutting planes', within a share ``1e-9`` of the bound or
-  as near as 500 rounds come; its rates and prices are as exact as that gap, not to rounding.
+  as near as 500 rounds come; its rates are as near the best as that gap allows, not exact to
+  rounding, and its prices are the last program's duals, which certify the bound but need not be
+  the best plan's where the program is degenerate and several prices nearly certify it.
   Where every geo's spend and every channel's are fixed, the split of the price between the geos'
   totals and the channels' is the one the solver reaches; the sum each cell meets is the same
   however it is split. In single precision, JAX's default, Newton's method does not close and the
   cutting planes' plan comes back: its worth and bound are good to single precision, its rates
   only as near as the gap allows.
+* A goal over geos and channels on an S-shaped curve is met where the true gain crosses it along
+  the envelopes' plans, not proved the least or the most budget: under totals the plans need not
+  all rise with the budget, so the true gain need not either.
 """
 
 from __future__ import annotations
@@ -130,6 +139,7 @@ __all__ = [
     "allocate",
     "allocate_geos",
     "budget_for",
+    "budget_for_geos",
     "decision_weight",
     "minimax_allocate",
 ]
@@ -329,6 +339,22 @@ class _Group:
     members: np.ndarray
     least: float
     most: float
+
+
+@dataclass(frozen=True)
+class _Layout:
+    """A grid of cells in one row, geo by geo, with each cell's box and history and the totals'
+    groups, as :func:`allocate_geos` accepts them."""
+
+    geos: int
+    width: int
+    cells: tuple[Channel, ...]
+    lower: np.ndarray
+    upper: np.ndarray
+    history: np.ndarray
+    geo_totals: Totals | None
+    channel_totals: Totals | None
+    groups: tuple[_Group, ...]  # the geos' totals, then the channels'
 
 
 class _Worth(eqx.Module):
@@ -859,10 +885,11 @@ def allocate_geos(
     tangents under a linear program, until the program's value is within a share ``1e-9`` of the
     best plan it has proposed, or after 500 rounds. Where every cell inside its box is then strictly
     concave, Newton's method on the prices of the totals that bind closes the budget and those
-    totals with each cell's rate exact at its prices. A total whose price comes out on the wrong
-    side is released and one the plan breaks is bound, until each binding total's price has its
-    side's sign and the others hold: the conditions for the best plan on concave worths. Otherwise
-    the cutting planes' best plan is returned, with the program's value as its bound.
+    totals with each cell's rate exact at its prices; a step that does not bring them closer is
+    replaced by the least of the dual, convex in the prices, along it. A total whose price comes out
+    on the wrong side is released and one the plan breaks is bound, until each binding total's price
+    has its side's sign and the others hold: the conditions for the best plan on concave worths.
+    Otherwise the cutting planes' best plan is returned, with the program's value as its bound.
 
     Args:
         cells: one row a geo, each with the same channels in the same order.
@@ -882,6 +909,143 @@ def allocate_geos(
             different lengths; totals of the wrong length, or one outside what its cells' boxes
             spend; and a budget, boxes and totals no plan meets together.
     """
+    layout = _layout(cells, periods, lower, upper, geo_totals, channel_totals, history)
+    budget = float(budget)
+    least, most = periods * float(layout.lower.sum()), periods * float(layout.upper.sum())
+    if not (np.isfinite(budget) and least <= budget <= most):
+        raise ValueError(
+            f"a budget of {budget} is outside what the box spends over {periods} periods, "
+            f"[{least}, {most}]"
+        )
+    return _plan(layout, periods, budget)
+
+
+def budget_for_geos(
+    cells: Sequence[Sequence[Channel]],
+    goal: Goal,
+    periods: int,
+    *,
+    lower: ArrayLike,
+    upper: ArrayLike,
+    geo_totals: Totals | None = None,
+    channel_totals: Totals | None = None,
+    history: ArrayLike | None = None,
+) -> GeoAllocation:
+    """The budget that meets ``goal`` over every geo's channels, and the plan
+    :func:`allocate_geos` makes with it.
+
+    The budgets run from the least to the most a plan within the boxes and the totals spends. On
+    concave curves the best plan's gain is concave in the budget, and its slope there is the
+    budget's price; each step below is one plan. Under totals the gain can fall past some budget:
+    a cap on a geo and one on a channel can leave the last of the budget only to cells that return
+    less than the spend they take from a cell in both.
+
+    * :class:`ReturnTarget`: the least budget whose plan gains ``amount``, by Newton's method on
+      the budget from the least, whose steps a concave gain keeps short of the target. Refused
+      above the most any plan gains, the plan with nothing charged for its spend.
+    * :class:`MarginalReturnTarget`: one plan, its budget left free and each currency unit it
+      spends charged ``per_unit`` of return: every cell inside its box then returns ``per_unit`` a
+      unit plus its totals' prices, and the budget is what the plan spends, an end of the budgets
+      where the price stays on one side of ``per_unit`` across them.
+    * :class:`ReturnOnSpendTarget`: the most budget whose gain is ``per_unit`` times the budget or
+      more. The gain less ``per_unit`` a unit is concave in the budget and peaks where the price is
+      ``per_unit``, so past that budget it falls, and the most budget is where it falls through
+      nothing: Newton's method from the most budget.
+
+    On an S-shaped curve the plans are the envelopes', and the gain is read on the true curves,
+    which need not be concave in the budget: a return target and a return on spend are met where
+    the true gain crosses them, by Brent's method between budgets either side, and neither is
+    proved the least or the most.
+
+    Args:
+        cells, periods, lower, upper, geo_totals, channel_totals, history: as
+            :func:`allocate_geos` takes them.
+        goal: what the budget must meet.
+
+    Raises:
+        TypeError: ``goal`` is none of the three, or what :func:`allocate_geos` refuses as a type.
+        ValueError: what :func:`allocate_geos` refuses of the cells, the boxes and the totals; a
+            goal whose value is not finite; a gain beyond the most any plan returns; a return on
+            spend no budget reaches, which the error says by how much it falls short at the peak.
+    """
+    if not isinstance(goal, ReturnTarget | MarginalReturnTarget | ReturnOnSpendTarget):
+        raise TypeError(f"goal is a {type(goal).__name__}, not a Goal")
+    value = goal.amount if isinstance(goal, ReturnTarget) else goal.per_unit
+    if not np.isfinite(value):
+        raise ValueError(f"the goal's value is {value}; it needs a finite one")
+    grid = tuple(tuple(row) for row in cells)
+    layout = _layout(grid, periods, lower, upper, geo_totals, channel_totals, history)
+    least, most = _reach(layout, periods)
+    concave = relax(layout.cells) is layout.cells
+    plans: dict[float, GeoAllocation] = {}
+
+    def plan(budget: float) -> GeoAllocation:
+        budget = float(np.clip(budget, least, most))
+        if budget not in plans:
+            plans[budget] = allocate_geos(
+                grid,
+                budget,
+                periods,
+                lower=lower,
+                upper=upper,
+                geo_totals=geo_totals,
+                channel_totals=channel_totals,
+                history=history,
+            )
+        return plans[budget]
+
+    match goal:
+        case MarginalReturnTarget():
+            return _plan(layout, periods, goal)
+        case ReturnTarget(amount=amount):
+
+            def short(p: GeoAllocation) -> float:
+                return p.gain - amount
+
+            start = plan(least)
+            if short(start) >= 0.0:
+                return start
+            top = plan(_plan(layout, periods, MarginalReturnTarget(0.0)).budget)
+            if short(top) < 0.0:
+                raise ValueError(
+                    f"no plan the constraints allow gains {amount}: the most a plan gains is "
+                    f"{top.gain:.6g}, at a budget of {top.budget:.6g}"
+                )
+            found = _newton(plan, short, lambda p: p.price, start) if concave else None
+            if found is not None:
+                return found
+            return plan(_crossing(plan, short, least, top.budget))
+        case ReturnOnSpendTarget(per_unit=per_unit):
+
+            def surplus(p: GeoAllocation) -> float:
+                return p.gain - per_unit * p.budget
+
+            end = plan(most)
+            if surplus(end) >= 0.0:
+                return end
+            found = _newton(plan, surplus, lambda p: p.price - per_unit, end) if concave else None
+            if found is not None:
+                return found
+            peak = plan(_plan(layout, periods, MarginalReturnTarget(per_unit)).budget)
+            if surplus(peak) < 0.0:
+                raise ValueError(
+                    f"no budget the constraints allow gains {per_unit} a currency unit it spends: "
+                    f"the gain less {per_unit} a unit peaks at {surplus(peak):.6g}, at a budget "
+                    f"of {peak.budget:.6g}"
+                )
+            return plan(_crossing(plan, lambda p: -surplus(p), peak.budget, most))
+
+
+def _layout(
+    cells: Sequence[Sequence[Channel]],
+    periods: int,
+    lower: ArrayLike,
+    upper: ArrayLike,
+    geo_totals: Totals | None,
+    channel_totals: Totals | None,
+    history: ArrayLike | None,
+) -> _Layout:
+    """The grid laid out for planning, after what :func:`allocate_geos` refuses of it."""
     grid = tuple(tuple(row) for row in cells)
     if not grid or not grid[0]:
         raise ValueError("no cells to allocate over: it needs a geo with a channel")
@@ -903,13 +1067,6 @@ def allocate_geos(
     names = [f"geo {g}'s channel {c}" for g in range(geos) for c in range(width)]
     low, high, spent = low.ravel(), high.ravel(), spent.reshape(spent.shape[0], geos * width)
     _check(flat, periods, low, high, spent, names)
-    budget = float(budget)
-    least, most = periods * float(low.sum()), periods * float(high.sum())
-    if not (np.isfinite(budget) and least <= budget <= most):
-        raise ValueError(
-            f"a budget of {budget} is outside what the box spends over {periods} periods, "
-            f"[{least}, {most}]"
-        )
     cell = np.arange(geos * width).reshape(geos, width)
     groups: list[_Group] = []
     for kind, totals, members in (
@@ -934,21 +1091,48 @@ def allocate_geos(
                     f"spend over {periods} periods, [{reach[0]}, {reach[1]}]"
                 )
             groups.append(_Group(group, float(floor), float(cap)))
-    given = flat
-    relaxed = relax(given)
-    envelopes = _worths(relaxed, spent, periods)
-    worths = envelopes if relaxed is given else _worths(given, spent, periods)
-    rate = budget / periods
-    rates, ceiling, price, prices = _outer(envelopes, low, high, groups, rate, periods)
-    exact = _polish(envelopes, low, high, groups, rate, periods, price, prices)
-    if exact is None:
-        bound = max(ceiling, sum(_value(w, r) for w, r in zip(envelopes, rates, strict=True)))
+    return _Layout(geos, width, flat, low, high, spent, geo_totals, channel_totals, tuple(groups))
+
+
+def _plan(layout: _Layout, periods: int, spend: float | MarginalReturnTarget) -> GeoAllocation:
+    """The best plan of the grid that spends a budget, or that spends to where one more currency
+    unit returns a marginal target's ``per_unit``: the budget left free, each unit of it charged
+    that return.
+
+    A budget is one more total, every cell's, fixed at the budget.
+    """
+    if isinstance(spend, MarginalReturnTarget):
+        groups, charge = layout.groups, spend.per_unit
     else:
-        rates, price, prices = exact
+        everything = _Group(np.arange(layout.lower.size), spend, spend)
+        groups, charge = (everything, *layout.groups), 0.0
+    low, high = layout.lower, layout.upper
+    given = layout.cells
+    relaxed = relax(given)
+    envelopes = _worths(relaxed, layout.history, periods)
+    worths = envelopes if relaxed is given else _worths(given, layout.history, periods)
+    rates, ceiling, prices = _outer(envelopes, low, high, groups, periods, charge)
+    exact = _polish(envelopes, low, high, groups, periods, charge, prices)
+    if exact is None:
+        # the program bounds the worth less the charge, so the worth of any plan spending as much
+        charged = charge * periods * float(rates.sum())
+        bound = max(
+            ceiling + charged, sum(_value(w, r) for w, r in zip(envelopes, rates, strict=True))
+        )
+    else:
+        rates, prices = exact
         bound = sum(_value(w, r) for w, r in zip(envelopes, rates, strict=True))
+    if isinstance(spend, MarginalReturnTarget):
+        price, budget = charge, periods * float(rates.sum())
+    else:
+        price, prices, budget = float(prices[0]), prices[1:], spend
     worth = sum(_value(w, r) for w, r in zip(worths, rates, strict=True))
+    geos, width = layout.geos, layout.width
+    geo_totals, channel_totals = layout.geo_totals, layout.channel_totals
     split = iter(prices)
-    geo_prices = np.zeros(geos) if geo_totals is None else np.array([next(split) for _ in cell])
+    geo_prices = (
+        np.zeros(geos) if geo_totals is None else np.array([next(split) for _ in range(geos)])
+    )
     channel_prices = np.zeros(width) if channel_totals is None else np.array(list(split))
     # every geo's total fixed, or every channel's, fixes the budget, whose price is then theirs: a
     # cell is in one geo and one channel, so the sum it meets does not move
@@ -968,22 +1152,101 @@ def allocate_geos(
     )
 
 
+def _reach(layout: _Layout, periods: int) -> tuple[float, float]:
+    """The least and the most a plan within the boxes and the totals spends over its periods.
+
+    Raises:
+        ValueError: where no plan meets the boxes and the totals together.
+    """
+    least, most = periods * float(layout.lower.sum()), periods * float(layout.upper.sum())
+    size = layout.lower.size
+    unit = float(np.max(layout.upper)) or 1.0
+    per = periods * unit
+    rows: list[np.ndarray] = []
+    limits: list[float] = []
+    for group in layout.groups:
+        member = np.zeros(size)
+        member[group.members] = 1.0
+        if np.isfinite(group.most):
+            rows.append(member)
+            limits.append(group.most / per)
+        if group.least > 0.0:
+            rows.append(-member)
+            limits.append(-group.least / per)
+    if not rows:
+        return least, most
+    ends = []
+    for sense in (1.0, -1.0):
+        program = linprog(
+            np.full(size, sense),
+            A_ub=np.array(rows),
+            b_ub=np.array(limits),
+            bounds=list(zip(layout.lower / unit, layout.upper / unit, strict=True)),
+            method="highs",
+        )
+        if program.status == 2:
+            raise ValueError("no plan meets the boxes and the totals together")
+        if program.status != 0:
+            raise RuntimeError(f"the budgets' linear program failed: {program.message}")
+        ends.append(per * float(program.x.sum()))
+    # a vertex's rates are the boxes' and the totals' own numbers, to rounding
+    return float(np.clip(ends[0], least, most)), float(np.clip(ends[1], least, most))
+
+
+def _newton(
+    plan: Callable[[float], GeoAllocation],
+    excess: Callable[[GeoAllocation], float],
+    slope: Callable[[GeoAllocation], float],
+    start: GeoAllocation,
+) -> GeoAllocation | None:
+    """The plan whose ``excess``, concave in the budget, reaches nothing, by Newton's method from
+    ``start``, where it falls short; ``slope`` is its derivative in the budget.
+
+    A concave excess lies under its tangents, so from short of nothing every step stays short, and
+    the steps go one way and shrink; a step that reaches nothing, which only rounding makes, is the
+    last. None where the slope stops pointing toward nothing, so the excess peaks short of it.
+    """
+    current, heading = start, np.sign(slope(start))
+    for _ in range(100):
+        rise = slope(current)
+        if rise == 0.0 or np.sign(rise) != heading:
+            return None
+        step = -excess(current) / rise
+        current = plan(current.budget + step)
+        if excess(current) >= 0.0 or abs(step) <= 4 * _EPS * current.budget:
+            return current
+    return None
+
+
+def _crossing(
+    plan: Callable[[float], GeoAllocation],
+    excess: Callable[[GeoAllocation], float],
+    short: float,
+    past: float,
+) -> float:
+    """A budget where ``excess`` crosses nothing between ``short``, where it is below, and
+    ``past``, where it is not, by Brent's method on the budget."""
+    return brentq(
+        lambda budget: excess(plan(budget)), short, past, xtol=4 * _EPS * past, rtol=4 * _EPS
+    )
+
+
 def _outer(
     envelopes: Sequence[_Worth],
     lower: np.ndarray,
     upper: np.ndarray,
     groups: Sequence[_Group],
-    rate: float,
     periods: int,
-) -> tuple[np.ndarray, float, float, np.ndarray]:
-    """The best plan on the envelopes by cutting planes (Kelley 1960).
+    charge: float,
+) -> tuple[np.ndarray, float, np.ndarray]:
+    """The best plan on the envelopes by cutting planes (Kelley 1960), each currency unit it
+    spends charged ``charge`` of its worth.
 
     Each cell's worth is bounded above by its value at its cap and by its tangents; the linear
-    program maximises the bounds over the plans that meet the constraints, and each plan it
-    proposes adds a tangent where a cell's bound is loose. The program's value bounds every plan
-    from above; the plans' worths approach it from below. Returns the best plan's rates, the last
-    value, and the budget's and each group's price, the last program's duals in return a currency
-    unit.
+    program maximises the bounds less the charge over the plans that meet the constraints, and each
+    plan it proposes adds a tangent where a cell's bound is loose. The program's value bounds every
+    plan from above; the plans it proposes approach it from below. Returns the best plan's rates,
+    the last value, and each group's price, the last program's duals in return a currency unit.
     """
     size = len(envelopes)
     # rates are read in units of the largest cap, and worths in units of every cap's together:
@@ -1019,8 +1282,8 @@ def _outer(
     side_rows: list[np.ndarray] = []
     side_limits: list[float] = []
     fixed: list[int] = []
-    fixed_rows: list[np.ndarray] = [np.ones(size)]
-    fixed_limits: list[float] = [rate / unit]
+    fixed_rows: list[np.ndarray] = []
+    fixed_limits: list[float] = []
     for index, group in enumerate(groups):
         member = np.zeros(size)
         member[group.members] = 1.0
@@ -1040,8 +1303,10 @@ def _outer(
     totals = sparse.csr_array(
         np.hstack([np.array(side_rows).reshape(len(sides), size), np.zeros((len(sides), size))])
     )
-    equal = sparse.csr_array(np.hstack([np.array(fixed_rows), np.zeros((len(fixed_rows), size))]))
-    objective = np.concatenate([np.zeros(size), -np.ones(size)])
+    equal = sparse.csr_array(
+        np.hstack([np.array(fixed_rows).reshape(len(fixed), size), np.zeros((len(fixed), size))])
+    )
+    objective = np.concatenate([np.full(size, charge * per / scale), -np.ones(size)])
     box = [*zip(lower / unit, upper / unit, strict=True), *[(None, None)] * size]
 
     best, plan, ceiling = -np.inf, lower.copy(), np.inf
@@ -1053,8 +1318,8 @@ def _outer(
                 [sparse.coo_array((entries, (rows, columns)), shape=(solved, 2 * size)), totals]
             ),
             b_ub=np.array([*limits, *side_limits]),
-            A_eq=equal,
-            b_eq=np.array(fixed_limits),
+            A_eq=equal if fixed else None,
+            b_eq=np.array(fixed_limits) if fixed else None,
             bounds=box,
             method="highs",
             options={"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10},
@@ -1068,22 +1333,23 @@ def _outer(
         heights = program.x[size:] * scale
         pairs = [tangent(cell, float(r)) for cell, r in enumerate(rates)]
         values = np.array([value for value, _ in pairs])
-        if values.sum() > best:
-            best, plan = float(values.sum()), rates
-        if ceiling - best <= _GAP * abs(ceiling):
+        charged = charge * periods * float(rates.sum())
+        if values.sum() - charged > best:
+            best, plan = float(values.sum()) - charged, rates
+        level = abs(ceiling + charged)  # a share of the worth: less the charge it can be nothing
+        if ceiling - best <= _GAP * level:
             break
-        for cell in np.flatnonzero(heights - values > _GAP * abs(ceiling) / size):
+        for cell in np.flatnonzero(heights - values > _GAP * level / size):
             value, slope = pairs[cell]
             if np.isfinite(slope):
                 bound(int(cell), slope, value - slope * float(rates[cell]))
     duals = -scale / per
-    price = float(program.eqlin.marginals[0]) * duals
     prices = np.zeros(len(groups))
     for (index, sign), marginal in zip(sides, program.ineqlin.marginals[solved:], strict=True):
         prices[index] += sign * float(marginal) * duals
-    for index, marginal in zip(fixed, program.eqlin.marginals[1:], strict=True):
+    for index, marginal in zip(fixed, program.eqlin.marginals, strict=True):
         prices[index] = float(marginal) * duals
-    return plan, ceiling, price, prices
+    return plan, ceiling, prices
 
 
 def _polish(
@@ -1091,17 +1357,16 @@ def _polish(
     lower: np.ndarray,
     upper: np.ndarray,
     groups: Sequence[_Group],
-    rate: float,
     periods: int,
-    price: float,
+    charge: float,
     prices: np.ndarray,
-) -> tuple[np.ndarray, float, np.ndarray] | None:
-    """The plan made exact on the totals that bind, or None.
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """The plan made exact on the totals that bind, a fixed budget among them, or None.
 
-    A cell's price is the budget's plus those of the binding totals it is in, and its rate is
-    exact at it: where its slope meets ``periods`` times the price, or the end of its box the
-    slope presses on. Newton's method on the binding totals' prices closes the budget and those
-    totals, starting from the totals and prices the cutting planes found. A binding total whose
+    A cell's price is the charge on spend plus those of the binding totals it is in, and its rate
+    is exact at it: where its slope meets ``periods`` times the price, or the end of its box the
+    slope presses on. Newton's method on the binding totals' prices closes those totals, starting
+    from the totals and prices the cutting planes found. A binding total whose
     price comes out on the wrong side is released, and a free total the plan breaks is bound where
     it breaks, until neither happens: the plan then meets the conditions for the best on concave
     worths. None where a free cell is not strictly concave, Newton's method does not close, or the
@@ -1120,47 +1385,20 @@ def _polish(
     for _ in range(2 * len(groups) + 1):  # every round but the last changes the binding totals
         binding = list(sides)
         targets = np.array(
-            [
-                rate,
-                *(
-                    (groups[k].most if sides[k] >= 0.0 else groups[k].least) / periods
-                    for k in binding
-                ),
-            ]
+            [(groups[k].most if sides[k] >= 0.0 else groups[k].least) / periods for k in binding]
         )
-        membership = np.zeros((1 + len(binding), size))
-        membership[0] = 1.0
-        for row, k in enumerate(binding, start=1):
+        membership = np.zeros((len(binding), size))
+        for row, k in enumerate(binding):
             membership[row, groups[k].members] = 1.0
-        unknown = np.array([price, *full[binding]])
-        for _ in range(50):
-            at = periods * (membership.T @ unknown)
-            exact = np.array(
-                [
-                    _rate(w, lo, hi, float(t))
-                    for w, lo, hi, t in zip(envelopes, lower, upper, at, strict=True)
-                ]
-            )
-            residual = membership @ exact - targets
-            if np.max(np.abs(residual)) <= tolerance:
-                break
-            free = (lower < exact) & (exact < upper)
-            bends = np.array(
-                [
-                    float(_curvature(w, jnp.asarray(float(r), dtype=float))) if inside else -1.0
-                    for w, r, inside in zip(envelopes, exact, free, strict=True)
-                ]
-            )
-            if not np.all(bends < 0.0):
-                return None  # a straight stretch: its rate does not follow its price
-            response = np.where(free, periods / bends, 0.0)
-            jacobian = (membership * response) @ membership.T
-            unknown = unknown - np.linalg.lstsq(jacobian, residual, rcond=None)[0]
-        else:
+        closed = _close(
+            envelopes, lower, upper, membership, targets, periods, charge, full[binding], tolerance
+        )
+        if closed is None:
             return None
-        price, full = float(unknown[0]), np.zeros(len(groups))
-        full[binding] = unknown[1:]
-        floor = -1e-9 * float(np.max(np.abs(unknown)))
+        unknown, exact = closed
+        full = np.zeros(len(groups))
+        full[binding] = unknown
+        floor = -1e-9 * float(np.max(np.abs(unknown), initial=charge))
         # held at its most and better spending less, or at its least and better spending more
         wrong = [k for k in binding if sides[k] * full[k] < floor]
         spent = np.array([periods * exact[group.members].sum() for group in groups])
@@ -1170,10 +1408,87 @@ def _polish(
             if k not in sides and not group.least - margin <= spent[k] <= group.most + margin
         }
         if not wrong and not broken:
-            return exact, price, full
+            return exact, full
         for k in wrong:
             del sides[k]
         sides |= broken
+    return None
+
+
+def _close(
+    envelopes: Sequence[_Worth],
+    lower: np.ndarray,
+    upper: np.ndarray,
+    membership: np.ndarray,
+    targets: np.ndarray,
+    periods: int,
+    charge: float,
+    unknown: np.ndarray,
+    tolerance: float,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """The prices, from ``unknown``, at which the cells' rates sum through ``membership`` to
+    ``targets``, each cell's price ``charge`` plus its rows'; and those rates. None where a free
+    cell is not strictly concave or the prices do not close.
+
+    Each step is Newton's on the prices, the free cells' curvatures its Jacobian. The residual is,
+    up to sign and scale, the gradient of the dual, convex in the prices, so along any direction
+    its projection on the direction falls as the step grows, and the dual is least where that
+    projection reaches nothing. A Newton step that shrinks the residual is taken whole; one that
+    does not is cut or stretched to that least. A cell held at an end of its box adds nothing to
+    the Jacobian, so where the free cells leave a price open the direction is taken with a little
+    damping, as Levenberg and Marquardt damp it, and the search along it moves that price as far
+    as it takes a held cell off its end.
+    """
+
+    def respond(prices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        at = periods * (charge + membership.T @ prices)
+        rates = np.array(
+            [
+                _rate(w, lo, hi, float(t))
+                for w, lo, hi, t in zip(envelopes, lower, upper, at, strict=True)
+            ]
+        )
+        return rates, membership @ rates - targets
+
+    rates, residual = respond(unknown)
+    for _ in range(100):
+        if np.all(np.abs(residual) <= tolerance):
+            return unknown, rates
+        free = (lower < rates) & (rates < upper)
+        bends = np.array(
+            [
+                float(_curvature(w, jnp.asarray(float(r), dtype=float))) if inside else -1.0
+                for w, r, inside in zip(envelopes, rates, free, strict=True)
+            ]
+        )
+        if not np.all(bends < 0.0):
+            return None  # a straight stretch: its rate does not follow its price
+        jacobian = (membership * np.where(free, periods / bends, 0.0)) @ membership.T
+        direction, _, rank, _ = np.linalg.lstsq(jacobian, -residual, rcond=None)
+        if rank < len(jacobian):
+            scale = float(np.max(np.abs(jacobian))) or 1.0
+            damped = jacobian - 1e-9 * scale * np.eye(len(jacobian))
+            direction = np.linalg.solve(damped, -residual)
+        trial_rates, trial_residual = respond(unknown + direction)
+        if np.linalg.norm(trial_residual) < np.linalg.norm(residual):
+            unknown, rates, residual = unknown + direction, trial_rates, trial_residual
+            continue
+        if direction @ residual <= 0.0:
+            return None  # rounding has turned the step uphill
+
+        def along(
+            step: float, start: np.ndarray = unknown, direction: np.ndarray = direction
+        ) -> float:
+            return float(direction @ respond(start + step * direction)[1])
+
+        far = 1.0
+        while along(far) > 0.0:
+            far *= 2.0
+            if far > 2.0**60:
+                return None  # the dual falls without end along it
+        step = brentq(along, 0.0, far, xtol=1e-12 * far, rtol=4 * _EPS)
+        unknown = unknown + step * direction
+        rates, residual = respond(unknown)
     return None
 
 

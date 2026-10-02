@@ -7,6 +7,8 @@ three; each price against the cells' own slopes; a total a hair from binding is 
 the plan that holds it fixed; a plan made in two steps, the geos first, never returns more.
 """
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy.optimize import minimize
@@ -183,17 +185,23 @@ def test_on_two_geos_of_two_channels_no_lattice_plan_returns_more():
         geo_totals=caps,
         channel_totals=floors,
     )
-    grid = np.arange(steps + 1) * budget / steps
-    table = [[np.asarray(cell(grid)) for cell in row] for row in cells]
-    a, b, c = np.meshgrid(*(np.arange(steps + 1),) * 3, indexing="ij")
-    d = steps - a - b - c
-    spend = np.stack([a, b, c, d]) * budget / steps
-    keep = (
-        (d >= 0) & (spend[0] + spend[1] <= caps.most[0]) & (spend[1] + spend[3] >= floors.least[1])
-    )
-    a, b, c, d = (x[keep] for x in (a, b, c, d))
-    revenue = table[0][0][a] + table[0][1][b] + table[1][0][c] + table[1][1][d]
-    best = float(revenue.max())
+    unit = budget / steps
+    table = [[np.asarray(cell(np.arange(steps + 1) * unit)) for cell in row] for row in cells]
+    b, c = np.meshgrid(np.arange(steps + 1), np.arange(steps + 1), indexing="ij")
+    best = -np.inf
+    # a plane of the lattice at a time, its first rate fixed: the whole is 64 million plans
+    for a in range(steps + 1):
+        d = steps - a - b - c
+        keep = (
+            (d >= 0)
+            & (a * unit + b * unit <= caps.most[0])
+            & (b * unit + d * unit >= floors.least[1])
+        )
+        if keep.any():
+            revenue = (
+                table[0][0][a] + table[0][1][b[keep]] + table[1][0][c[keep]] + table[1][1][d[keep]]
+            )
+            best = max(best, float(revenue.max()))
     assert best <= plan.worth * (1 + 1e-12)
     assert plan.worth - best <= 1e-4 * plan.worth
     assert plan.spend[0].sum() == pytest.approx(240.0, rel=1e-12)
@@ -305,6 +313,40 @@ def test_a_total_a_hair_from_binding_is_planned_exactly(kind, bound, delta):
         np.testing.assert_allclose(plan.spend, free.spend, rtol=1e-12)
         assert plan.price == pytest.approx(free.price, rel=1e-12)
         np.testing.assert_array_equal(prices, 0.0)
+
+
+@pytest.mark.parametrize("short", [1e-9, 1e-6, 1e-3])
+def test_a_budget_a_hair_below_the_most_a_cap_allows_is_planned_exactly(short):
+    """Geo 0 held at its cap and every other cell at its own but one, which the last hair of budget
+    takes off its cap and which alone sets the budget's price. A Newton step on the prices does not
+    move that price, every cell it would move held at its cap; the plan is still exact, and every
+    cell's slope, through its whole series, meets its prices."""
+    cap = 1700.0
+    caps = Totals(least=np.zeros(3), most=np.array([cap, np.inf, np.inf]))
+    most = cap + PERIODS * UPPER[1:].sum()
+    plan = allocate_geos(
+        CELLS, most - short, PERIODS, lower=LOWER, upper=UPPER, geo_totals=caps, history=HISTORY
+    )
+    assert plan.bound == plan.worth
+    assert PERIODS * plan.spend[0].sum() == pytest.approx(cap, rel=1e-13)
+    assert plan.geo_prices[0] > 0.0
+    for g in range(3):
+        for c in range(3):
+            cell, rate = CELLS[g][c], float(plan.spend[g, c])
+            tail = jnp.zeros(cell.kernel.length - 1)
+
+            def worth(r, g=g, c=c, cell=cell, tail=tail):
+                series = jnp.concatenate([HISTORY[:, g, c], jnp.full(PERIODS, r), tail])
+                return jnp.sum(cell(series)[HISTORY.shape[0] :])
+
+            slope = float(jax.grad(worth)(rate)) / PERIODS
+            prices = plan.price + plan.geo_prices[g]
+            if LOWER[g, c] < rate < UPPER[g, c]:
+                assert slope == pytest.approx(prices, rel=1e-10), (g, c)
+            elif rate == LOWER[g, c]:
+                assert slope <= prices * (1 + 1e-10), (g, c)
+            else:
+                assert slope >= prices * (1 - 1e-10), (g, c)
 
 
 def test_an_s_curve_is_planned_on_its_envelope_as_allocate_plans_it():
