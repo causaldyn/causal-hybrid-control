@@ -282,7 +282,13 @@ still change).
   `validation/geo_spread.mac` derives Fisher's identity for the slope, the alternative to central
   differences when nothing is discounted. 18 of 19 mutations tried fail a test; the 19th draws
   from the range's other end, the same sampler mirrored. `scripts/bench_geo_dlm.py` pre-registers
-  the recovery and coverage of geos' effects and of their spread on `chc.geo_world`'s worlds.
+  the recovery and coverage of geos' effects and of their spread on `chc.geo_world`'s worlds. On
+  its scored run, 100 worlds in each of four arms, the gate is met in every arm:
+  - pooling puts each geo's error 9–11 % below the geo's alone at a noise of 30, and 33 % below it
+    at 100;
+  - the intervals mixed over the draws cover 0.88–0.89 of the effects;
+  - the spread's intervals cover 0.83–0.92 of the hierarchies' variances, averaged over channels.
+    In the log-normal hierarchy, search's and social's, the most kurtotic, cover only 0.74–0.78.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,

@@ -82,8 +82,46 @@ integrate over the spread.
   over the twelve weakly identified cases tried, at either end and inside, 146–190 of 200 draws.
 - **The bench**, `scripts/bench_geo_dlm.py`, pre-registered its gate in its docstring before the
   scored run: pooling recovers the effects, the intervals that carry the spread's uncertainty
-  cover them, and the spread recovers the hierarchy's variance.
+  cover them, and the spread recovers the hierarchy's variance. **The gate is met in every arm.**
 - No timing is quoted.
+
+Measured by `scripts/bench_geo_dlm.py --replicates 100 --noise N --hierarchy H`, each arm its own
+process: 100 worlds from seed 20261002, in double precision. G1 is the pooled error minus each
+other way's, with the paired difference's 95 % half-width. G3's ratios are by channel: search,
+social, video, tv.
+
+| arm | G1, minus alone | G1, minus together | G2, integrated coverage | G3, spread coverage | G3, median ratio |
+|---|---|---|---|---|---|
+| lognormal, noise 30 | −0.025 ± 0.007 | −0.66 ± 0.05 | 0.892 | 0.8325 | 0.85, 0.71, 0.86, 0.88 |
+| lognormal, noise 100 | −0.259 ± 0.031 | −0.37 ± 0.04 | 0.882 | 0.835 | 0.91, 0.72, 0.72, 0.93 |
+| gaussian, noise 30 | −0.021 ± 0.007 | −0.68 ± 0.02 | 0.889 | 0.91 | 0.94, 1.03, 0.96, 1.04 |
+| gaussian, noise 100 | −0.256 ± 0.029 | −0.38 ± 0.03 | 0.890 | 0.9225 | 0.93, 1.04, 0.96, 1.10 |
+
+- **As predicted from the pilot.**
+  - The integrated coverage is 0.882–0.892, against a predicted 0.88–0.89.
+  - The pooled error is 8.9 % and 10.6 % below each geo's alone at a noise of 30, against 7–11 %.
+  - The lognormal arms' spread coverage is 0.8325 and 0.835, against 0.82–0.89.
+  - The median effective draws are 39.6–43.0 of 64, near the predicted 40–44.
+- **Off the prediction.**
+  - At a noise of 100 the pooled error is 33.4 % and 32.9 % below alone's, against 34–36 %. In
+    the lognormal arm it is 4.2 % above the error at the world's own spread, against within 4 %.
+  - The pooled intervals take the spread as known. At a noise of 100 they cover 0.818 and 0.846,
+    against 0.83, and at 30 they cover 0.885, against 0.87–0.88.
+  - The gaussian arms' spread coverage, 0.91 and 0.9225, and median ratios, 0.93–1.10, are above
+    the predicted 0.82–0.89 and 0.86.
+    - That prediction took the spread for the maximum-likelihood variance of 12 observed effects,
+      `chi2_11 / 12`, whose median is 0.86.
+    - The marginal likelihood integrates the national coefficients out under a vague prior, nearly
+      restricted maximum likelihood (Harville 1974). Its reference is `chi2_11 / 11`, median 0.94.
+  - In the lognormal arms the most kurtotic hierarchy, social's, has the lowest ratio, 0.71 and
+    0.72, as predicted. Video's is as low at a noise of 100, 0.72, and search's is not low, 0.85
+    and 0.91.
+  - The least effective draws are 11.7 of 64, in the lognormal arm at a noise of 100; the pilot's
+    least was 16.
+- **The gate averages G3's coverage over the channels, as pre-registered.** In the lognormal arms
+  the intervals of the two most kurtotic hierarchies cover less one by one: search's 0.74 and 0.78,
+  social's 0.77 and 0.74. A variance read from 12 geos varies more the heavier the hierarchy's
+  tails, and a normal hierarchy's likelihood does not see the tails.
 
 ## Alternatives
 
