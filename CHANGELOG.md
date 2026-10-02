@@ -253,6 +253,20 @@ still change).
   cells for `allocate_geos`, lifting what the world's media lift to `1e-12`; `lift(spend)` reads
   what any spend lifts, spillover included. The tests hold the geos' spreads to the stated ones
   within five standard errors over 4000 geos, and all 25 mutations of the module tried fail one.
+- **A discount DLM over geos, `chc.dlm.forward_filter_geos`** (*experimental*, ADR 0046).
+  `GeoDLM(national, regional, geos, prior, ...)` stacks blocks every geo reads and blocks each geo
+  has its own copy of; a national and a regional regression block read each geo's columns from the
+  first, so a geo's coefficient is the national one plus its deviation, the regional prior the
+  spread of the geos and the regional discount how long it is remembered. `stacked_prior` builds
+  the prior with every geo's alike. `forward_filter_geos(model, y, x)` filters a KPI a geo with one
+  variance scale, each geo's share of it given (`relative_variance`): the evolution and discounts are
+  `chc.dlm`'s for the stacked model, and the update West and Harrison's for a vector, the one made a
+  geo at a time (`validation/geo_dlm.mac`), its score the observed geos' multivariate `t`. One geo
+  is `forward_filter`'s to `1e-12`; with nothing discounted, four geos with a season and missing
+  observations are the conjugate regression on every observation at once to `1e-10`. The filter is
+  dense; the multiplicative form keeps the posterior precision an arrowhead, so a filter linear in
+  the number of geos exists for it, not built. No smoother, sampler or forecast over geos yet. All
+  22 mutations of the filter tried fail a test.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,

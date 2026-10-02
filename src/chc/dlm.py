@@ -91,6 +91,31 @@ alternatives -- a shift of the location, an inflation of the scale -- which
 ``forward_filter(interventions=...)`` applies an extra discount at named steps, their
 feed-back intervention, and logs each (``chc_event="dlm_intervention"``).
 
+**Over geos.** :class:`GeoDLM` stacks ``national`` blocks every geo reads and ``regional`` blocks
+each geo has its own copy of; :func:`forward_filter_geos` filters a KPI a geo, ``y_(g,t) =
+F_(g,t)' theta_t + nu_(g,t)`` with ``nu_(g,t) ~ N(0, V w_g)``, ``w_g`` the geo's known variance
+relative to the others'. A geo's row of ``F`` reads the national blocks and its own regional ones,
+and a national and a regional regression block read the geo's columns of ``x`` from the first, so a
+geo's coefficient on a column both read is the national one plus its own deviation. The evolution
+and the discounts are this module's for the stacked model; the update is West and Harrison's for a
+vector with one variance scale (1997, section 16.4): with ``r_t`` geos observed,
+``Q_t = F R_t F' + S_(t-1) W``, ``A_t = R_t F' Q_t^-1``, ``n_t = beta n_(t-1) + r_t`` and
+``S_t = S_(t-1) (beta n_(t-1) + e' Q_t^-1 e) / n_t``, and the one-step forecast of the observed
+geos is multivariate Student ``t``. That is the update one geo at a time with no evolution between
+them, and its density the product of theirs (``validation/geo_dlm.mac``, steps 1 and 2).
+
+* One geo is :func:`forward_filter`'s model of the national blocks and then the regional ones,
+  and with every discount 1 the filter is the conjugate regression on the first state over every
+  observation at once; the tests hold the first to ``1e-12`` and the second to ``1e-10``.
+* The filter is dense: with ``p`` coordinates, the national ones and every geo's, a step costs
+  ``O(p^3)`` and the fit holds ``2 T`` covariances of ``p^2`` entries. An observation of one geo
+  adds nothing to the posterior precision between two others, and the multiplicative form, a
+  diagonal scaling of the covariance, keeps that zero through the evolution while component
+  discounting does not (step 3): a filter linear in the number of geos exists for the first form
+  and is not built.
+* There is a filter over geos and nothing after it: no smoother, sampler or forecast yet. One
+  variance scale serves every geo, each geo's share of it fixed.
+
 The implementation is NumPy in float64 and written from the published equations.
 """
 
@@ -1453,3 +1478,284 @@ def _log_std_t(u: _Array, dof: _Array) -> _Array:
     nu = dof[~normal]
     out[~normal] = -(nu + 1.0) / 2.0 * np.log1p(u[~normal] ** 2 / nu)
     return out
+
+
+# ------------------------------------------------------------------------------------------ geos
+
+
+@dataclass(frozen=True)
+class GeoDLM:
+    """A discount DLM over ``geos`` geos: ``national`` blocks every geo reads and ``regional``
+    blocks each geo has its own copy of, filtered by :func:`forward_filter_geos`.
+
+    ``prior`` is on the stacked state: the national blocks' coordinates, then each geo's copy of
+    the regional blocks', in the geos' order; :func:`stacked_prior` builds one whose geos' regional
+    priors are alike and independent. ``relative_variance`` is each geo's observational variance
+    relative to the others', 1 for every geo when omitted.
+
+    A national and a regional regression block read each geo's columns of ``x`` from the first,
+    so where both read a column, a geo's coefficient on it is the national coefficient plus the
+    geo's own deviation. The regional blocks' prior variance is then the spread of the geos about
+    the national coefficient, and the regional discount how long that prior is remembered.
+
+    Raises:
+        ValueError: on a ``geos`` that is not a positive integer, a ``relative_variance`` that is
+            not one positive finite number a geo, and what :class:`DynamicLinearModel` refuses of
+            the stacked model: no blocks, a prior of the wrong size, an unknown ``form``, or a
+            ``variance_discount`` it does not take.
+    """
+
+    national: tuple[Block, ...]
+    regional: tuple[Block, ...]
+    geos: int
+    prior: Prior
+    form: DiscountForm = "additive"
+    variance_discount: float = 1.0
+    relative_variance: ArrayLike | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.geos, bool) or not isinstance(self.geos, int) or self.geos < 1:
+            raise ValueError(f"geos must be a positive integer, got {self.geos!r}")
+        weights = (
+            np.ones(self.geos)
+            if self.relative_variance is None
+            else np.array(self.relative_variance, dtype=np.float64)
+        )
+        if weights.shape != (self.geos,) or not np.all(np.isfinite(weights) & (weights > 0.0)):
+            raise ValueError(
+                f"relative_variance must be {self.geos} positive finite numbers, one a geo, got "
+                f"{self.relative_variance!r}"
+            )
+        weights.setflags(write=False)
+        object.__setattr__(self, "national", tuple(self.national))
+        object.__setattr__(self, "regional", tuple(self.regional))
+        object.__setattr__(self, "relative_variance", weights)
+        self.stacked  # noqa: B018 -- the stacked model validates the blocks and the prior
+
+    @property
+    def stacked(self) -> DynamicLinearModel:
+        """The stacked state's model: the national blocks, then the regional ones once a geo."""
+        return DynamicLinearModel(
+            self.national + self.regional * self.geos,
+            self.prior,
+            self.form,
+            self.variance_discount,
+        )
+
+    @property
+    def regressors(self) -> int:
+        """How many columns each geo's ``x`` must have: the national regression blocks' widths
+        summed, or the regional ones', whichever is more."""
+        return max(_widths(self.national), _widths(self.regional))
+
+
+def _widths(blocks: tuple[Block, ...]) -> int:
+    return sum(b.width for b in blocks if isinstance(b, Regression))
+
+
+def stacked_prior(national: Prior | None, regional: Prior | None, geos: int) -> Prior:
+    """The stacked state's prior: ``national`` on the national blocks and ``regional`` on each
+    geo's copy of the regional blocks, every block independent of the others.
+
+    ``None`` stands for no blocks of that kind.
+
+    Raises:
+        ValueError: on two priors whose ``scale`` or ``dof`` differ, both ``None``, or a ``geos``
+            that is not a positive integer.
+    """
+    if isinstance(geos, bool) or not isinstance(geos, int) or geos < 1:
+        raise ValueError(f"geos must be a positive integer, got {geos!r}")
+    if regional is None and national is None:
+        raise ValueError("a stacked prior needs a national prior, a regional one, or both")
+    parts = [] if national is None else [national]
+    parts += [] if regional is None else [regional] * geos
+    first = parts[0]
+    if any(p.scale != first.scale or p.dof != first.dof for p in parts):
+        raise ValueError(
+            "the national and the regional prior must state one variance: their scale and dof "
+            f"differ ({national.scale if national else None}, {national.dof if national else None}"
+            f" against {regional.scale if regional else None}, "
+            f"{regional.dof if regional else None})"
+        )
+    return Prior(
+        np.concatenate([p.mean for p in parts]),
+        linalg.block_diag(*[p.covariance for p in parts]),
+        first.scale,
+        first.dof,
+    )
+
+
+@dataclass(frozen=True)
+class GeoDLMFit:
+    """:func:`forward_filter_geos`'s output over the stacked state, one row per step, in
+    :class:`DLMFit`'s notation.
+
+    ``one_step_mean`` and ``one_step_scale`` are every geo's, observed or not: location ``F a`` and
+    squared scale ``F R F' + S_(t-1) W``, ``W`` the relative variances on the diagonal.
+    ``log_scores`` is the observed geos' joint one-step log density, ``NaN`` on a step with none
+    observed. ``n`` rises by the number of geos observed at a step.
+    """
+
+    model: GeoDLM
+    y: _Array  # (T, geos)
+    design: _Array  # F_t, (T, geos, p)
+    prior_mean: _Array  # a_t, (T, p)
+    prior_covariance: _Array  # R_t, (T, p, p)
+    one_step_mean: _Array  # f_t, (T, geos)
+    one_step_scale: _Array  # Q_t, (T, geos, geos)
+    one_step_dof: _Array  # beta n_(t-1), (T,)
+    mean: _Array  # m_t, (T, p)
+    covariance: _Array  # C_t, (T, p, p)
+    dof: _Array  # n_t, (T,)
+    scale: _Array  # S_t, (T,)
+    log_scores: _Array  # (T,)
+
+    @property
+    def log_likelihood(self) -> float:
+        """The sum of the one-step forecasts' joint log densities over the steps with a geo
+        observed."""
+        return float(np.nansum(self.log_scores))
+
+    @property
+    def errors(self) -> _Array:
+        """One-step errors ``y - f``, ``(T, geos)``, ``NaN`` where a geo is missing."""
+        return self.y - self.one_step_mean
+
+
+def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None) -> GeoDLMFit:
+    """Filter ``y``, ``(T, geos)``, through ``model``, with ``x``, ``(T, geos, model.regressors)``,
+    each geo's columns for the regression blocks. A missing observation is ``NaN``.
+
+    Raises:
+        ValueError: on a ``y`` that is not ``(T, geos)`` of finite values and ``NaN``, or an ``x``
+            whose shape is not ``(T, geos, model.regressors)`` or that is not finite.
+        FloatingPointError: on a step whose observed geos' one-step squared scale is not positive
+            definite and finite.
+    """
+    ys = np.array(y, dtype=np.float64)
+    if ys.ndim != 2 or ys.shape[0] == 0 or ys.shape[1] != model.geos:
+        raise ValueError(f"y must be (T, {model.geos}), a column a geo, got shape {ys.shape}")
+    if np.any(np.isinf(ys)):
+        raise ValueError("y has an infinite value; a missing observation is NaN")
+    horizon, geos = ys.shape
+    stacked = model.stacked
+    s = _structure(stacked)
+    design = _geo_design(model, s, x, horizon)
+    active = np.any(design != 0.0, axis=1)
+    weights = np.asarray(model.relative_variance, dtype=np.float64)
+    p = stacked.size
+    beta = stacked.variance_discount
+
+    a_all = np.empty((horizon, p))
+    r_all = np.empty((horizon, p, p))
+    m_all = np.empty((horizon, p))
+    c_all = np.empty((horizon, p, p))
+    f_all = np.empty((horizon, geos))
+    q_all = np.empty((horizon, geos, geos))
+    nu_all = np.empty(horizon)
+    n_all = np.empty(horizon)
+    s_all = np.empty(horizon)
+    score = np.full(horizon, np.nan)
+
+    m = stacked.prior.mean.copy()
+    c = stacked.prior.covariance.copy()
+    n, v = stacked.prior.dof, stacked.prior.scale
+    eye = np.eye(p)
+    for t in range(horizon):
+        a = s.evolution @ m
+        r = _sym(_evolve(s, stacked.form, s.evolution @ c @ s.evolution.T, active[t]))
+        rows = design[t]
+        f = rows @ a
+        q = _sym(rows @ r @ rows.T) + v * np.diag(weights)
+        nu = beta * n
+        a_all[t], r_all[t], f_all[t], q_all[t], nu_all[t] = a, r, f, q, nu
+        seen = ~np.isnan(ys[t])
+        k = int(seen.sum())
+        if k == 0:
+            m, c, n = a, r, beta * n
+        else:
+            observed = rows[seen]
+            q_seen = q[np.ix_(seen, seen)]
+            if not np.all(np.isfinite(q_seen)):
+                raise FloatingPointError(f"step {t}: the one-step squared scale is not finite")
+            try:
+                root = linalg.cho_factor(q_seen, lower=True)
+            except np.linalg.LinAlgError:
+                raise FloatingPointError(
+                    f"step {t}: the one-step squared scale is not positive definite"
+                ) from None
+            e = ys[t, seen] - f[seen]
+            gain = linalg.cho_solve(root, observed @ r).T
+            quad = float(e @ linalg.cho_solve(root, e))
+            n_new = beta * n + k
+            v_new = v if math.isinf(n_new) else v * (beta * n + quad) / n_new
+            shrink = eye - gain @ observed
+            c = _sym((v_new / v) * (shrink @ r @ shrink.T + (gain * (v * weights[seen])) @ gain.T))
+            m = a + gain @ e
+            log_det = 2.0 * float(np.sum(np.log(np.diag(root[0]))))
+            score[t] = _log_multivariate_t(quad, log_det, k, nu)
+            n, v = n_new, v_new
+        m_all[t], c_all[t], n_all[t], s_all[t] = m, c, n, v
+
+    _warn_windup(stacked, s, active.astype(np.float64))
+    return GeoDLMFit(
+        model,
+        ys,
+        design,
+        a_all,
+        r_all,
+        f_all,
+        q_all,
+        nu_all,
+        m_all,
+        c_all,
+        n_all,
+        s_all,
+        score,
+    )
+
+
+def _geo_design(model: GeoDLM, s: _Structure, x: ArrayLike | None, horizon: int) -> _Array:
+    """Each geo's row of ``F`` at each step, ``(T, geos, p)``: the blocks' fixed parts on the
+    national coordinates and the geo's own, and its columns of ``x`` on their regressions."""
+    geos, k = model.geos, model.regressors
+    if x is None:
+        if k:
+            raise ValueError(f"the model's regression blocks need x with {k} columns a geo")
+        xs = np.zeros((horizon, geos, 0))
+    else:
+        xs = np.array(x, dtype=np.float64)
+        if xs.shape != (horizon, geos, k):
+            raise ValueError(f"x must have shape ({horizon}, {geos}, {k}), got {xs.shape}")
+        if not np.all(np.isfinite(xs)):
+            raise ValueError("x is not finite")
+    national = sum(b.size for b in model.national)
+    regional = sum(b.size for b in model.regional)
+    p = s.evolution.shape[0]
+    on_national = s.regression[s.regression < national]
+    design = np.zeros((horizon, geos, p))
+    for g in range(geos):
+        own = slice(national + g * regional, national + (g + 1) * regional)
+        mine = np.zeros(p)
+        mine[:national] = 1.0
+        mine[own] = 1.0
+        design[:, g, :] = s.design * mine
+        design[:, g, on_national] = xs[:, g, : on_national.size]
+        on_own = s.regression[(s.regression >= own.start) & (s.regression < own.stop)]
+        design[:, g, on_own] = xs[:, g, : on_own.size]
+    return design
+
+
+def _log_multivariate_t(quad: float, log_det: float, k: int, dof: float) -> float:
+    """``log`` of the ``k``-variate Student ``t`` density with ``dof`` degrees of freedom and
+    squared scale ``Q`` at an error ``e``, given ``quad = e' Q^-1 e`` and ``log_det = log det Q``;
+    normal when ``dof`` is infinite."""
+    if math.isinf(dof):
+        return -0.5 * (k * math.log(2.0 * math.pi) + log_det + quad)
+    return float(
+        special.gammaln((dof + k) / 2.0)
+        - special.gammaln(dof / 2.0)
+        - 0.5 * k * math.log(dof * math.pi)
+        - 0.5 * log_det
+        - (dof + k) / 2.0 * math.log1p(quad / dof)
+    )
