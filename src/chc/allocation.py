@@ -50,6 +50,21 @@ the share of the whole that keeps the budget spent; ``W`` weighs those moves by 
 curvature. An experiment that leaves the parameters with covariance ``S`` leaves an expected regret
 of ``tr(W S) / 2`` (:meth:`AllocationWeight.expected_regret`).
 
+**Geos and channels together.** :func:`allocate_geos` plans one budget over a grid of cells, every
+geo's channels, each cell a channel of its own with its curve, carryover and history. Besides each
+cell's box, :class:`Totals` bound what each geo spends over the plan, and what each channel spends
+across the geos. At the best plan a cell inside its box returns, a currency unit, the budget's price
+plus its geo's and its channel's: a total's price is what one more currency unit of room in it
+returns, positive where it binds at its most, negative at its least, nothing where it does not bind.
+A plan made in two steps, the budget split over the geos first and each geo's share over its
+channels after, is one plan of the grid, so it never returns more. The best plan is found by cutting
+planes on the cells' worths (Kelley 1960) under a linear program, whose value bounds every plan from
+above while the plans it proposes approach from below; where every cell inside its box is strictly
+concave, Newton's method on the binding totals' prices then makes the plan exact. The program's
+duals name the totals that bind only to within its gap, so a total a hair from binding may be named
+wrongly: one whose price comes out on the wrong side is released and one the plan breaks is bound,
+until the plan meets the conditions that make it the best.
+
 HONEST SCOPE:
 
 * The channels are read as given: a fitted channel's error goes straight into the plan. Where the
@@ -75,6 +90,14 @@ HONEST SCOPE:
   on concave curves only.
 * :func:`chc.mmm.prescribe` plans a budget over a continuous plant whose adstock is a state; this
   plans discrete channels, which that plant does not describe.
+* Over geos and channels, a plan with a cell inside its box on a straight stretch of its curve (an
+  envelope's chord, a linear curve) is the cutting planes', within a share ``1e-9`` of the bound or
+  as near as 500 rounds come; its rates and prices are as exact as that gap, not to rounding.
+  Where every geo's spend and every channel's are fixed, the split of the price between the geos'
+  totals and the channels' is the one the solver reaches; the sum each cell meets is the same
+  however it is split. In single precision, JAX's default, Newton's method does not close and the
+  cutting planes' plan comes back: its worth and bound are good to single precision, its rates
+  only as near as the gap allows.
 """
 
 from __future__ import annotations
@@ -89,6 +112,7 @@ import numpy as np
 from jax import Array
 from jax.flatten_util import ravel_pytree
 from jax.typing import ArrayLike
+from scipy import sparse
 from scipy.optimize import brentq, linprog
 
 from chc.response import Channel, Logarithmic, Power, Saturation, relax
@@ -96,12 +120,15 @@ from chc.response import Channel, Logarithmic, Power, Saturation, relax
 __all__ = [
     "Allocation",
     "AllocationWeight",
+    "GeoAllocation",
     "Goal",
     "MarginalReturnTarget",
     "MinimaxAllocation",
     "ReturnOnSpendTarget",
     "ReturnTarget",
+    "Totals",
     "allocate",
+    "allocate_geos",
     "budget_for",
     "decision_weight",
     "minimax_allocate",
@@ -222,6 +249,88 @@ class AllocationWeight:
         return 0.5 * float(np.sum(self.matrix * spread))
 
 
+@dataclass(frozen=True)
+class Totals:
+    """Bounds on what each of several groups of cells spends over the plan, every period
+    together: ``least[k] <= periods * (group k's rates summed) <= most[k]``.
+
+    :func:`allocate_geos` takes one for the geos, a geo's channels a group, and one for the
+    channels, a channel across the geos a group. A fixed spend is ``least == most``; ``most`` may
+    be infinite, and a ``least`` of zero binds nothing a box does not.
+
+    Raises:
+        ValueError: on bounds that are not one ``least`` and one ``most`` a group, with
+            ``0 <= least <= most`` and ``least`` finite.
+    """
+
+    least: np.ndarray
+    most: np.ndarray
+
+    def __post_init__(self) -> None:
+        least = np.asarray(self.least, dtype=float)
+        most = np.asarray(self.most, dtype=float)
+        if least.ndim != 1 or most.shape != least.shape:
+            raise ValueError(
+                f"least has shape {least.shape} and most {most.shape}; they need one bound a group"
+            )
+        if not (
+            np.all(np.isfinite(least))
+            and np.all(least >= 0.0)
+            and not np.any(np.isnan(most))
+            and np.all(most >= least)
+        ):
+            raise ValueError(f"the totals [{least}, {most}] are not 0 <= least <= most")
+        object.__setattr__(self, "least", least)
+        object.__setattr__(self, "most", most)
+
+
+@dataclass(frozen=True)
+class GeoAllocation:
+    """A plan's spend a period for each geo's channels, what it returns, and what each constraint
+    is worth.
+
+    Attributes:
+        spend: ``(geos, channels)`` spend a period, in the budget's currency.
+        worth: the cells' return on the plan over its periods and each kernel's length after.
+        bound: the most any plan meeting the constraints returns on the cells' concave envelopes;
+            ``bound - worth`` bounds the plan's shortfall from the best on the cells, and is ``0``
+            when every curve is concave and the plan is exact.
+        price: the return on one more currency unit of budget, on the envelopes; ``0`` where
+            every geo's total is fixed, or every channel's, which fixes the budget and carries its
+            price.
+        geo_prices: ``(geos,)`` the return on one more currency unit of room in each geo's total:
+            positive where the total binds at its most, negative at its least, ``0`` where it does
+            not bind or no geo totals were given.
+        channel_prices: ``(channels,)`` the same for each channel's total across the geos.
+        budget: what the plan spends over its periods.
+        idle: what the cells return over the same periods with nothing spent in the plan, the
+            history's carryover alone.
+    """
+
+    spend: np.ndarray
+    worth: float
+    bound: float
+    price: float
+    geo_prices: np.ndarray
+    channel_prices: np.ndarray
+    budget: float
+    idle: float
+
+    @property
+    def gain(self) -> float:
+        """What the plan's spend adds to the cells' return: ``worth - idle``."""
+        return self.worth - self.idle
+
+
+@dataclass(frozen=True)
+class _Group:
+    """One total: the cells it sums, in the grid's flat order, and its bounds over the plan."""
+
+    members: np.ndarray
+    least: float
+    most: float
+
+
 class _Worth(eqx.Module):
     """One channel's return on the plan, as a function of its spend a period."""
 
@@ -238,6 +347,11 @@ class _Worth(eqx.Module):
 @eqx.filter_jit
 def _value_and_slope(worth: _Worth, rate: Array) -> tuple[Array, Array]:
     return jax.value_and_grad(worth)(rate)
+
+
+@eqx.filter_jit
+def _curvature(worth: _Worth, rate: Array) -> Array:
+    return jax.grad(jax.grad(worth))(rate)
 
 
 def _worths(channels: Sequence[Channel], history: np.ndarray, periods: int) -> tuple[_Worth, ...]:
@@ -290,20 +404,22 @@ def _check(
     lower: np.ndarray,
     upper: np.ndarray,
     history: np.ndarray,
+    names: Sequence[str] | None = None,
 ) -> None:
     if not channels:
         raise ValueError("no channels to allocate over")
     for index, channel in enumerate(channels):
+        name = f"channel {index}" if names is None else names[index]
         if not isinstance(channel, Channel):
-            raise TypeError(f"channel {index} is a {type(channel).__name__}, not a Channel")
+            raise TypeError(f"{name} is a {type(channel).__name__}, not a Channel")
         if not isinstance(channel.curve, Saturation | Logarithmic | Power):
             raise ValueError(
-                f"channel {index}'s curve is a {type(channel.curve).__name__}, which is not "
+                f"{name}'s curve is a {type(channel.curve).__name__}, which is not "
                 "increasing and concave or S-shaped; the allocation cannot certify a plan on it"
             )
         if not float(channel.coefficient) >= 0.0:
             raise ValueError(
-                f"channel {index}'s coefficient is {float(channel.coefficient)}; a negative one "
+                f"{name}'s coefficient is {float(channel.coefficient)}; a negative one "
                 "turns its curve convex"
             )
     if not (isinstance(periods, int) and periods >= 1):
@@ -719,6 +835,346 @@ def decision_weight(
         allocation=allocation,
         pinned=tuple(c for c in range(len(channels)) if c not in free),
     )
+
+
+def allocate_geos(
+    cells: Sequence[Sequence[Channel]],
+    budget: float,
+    periods: int,
+    *,
+    lower: ArrayLike,
+    upper: ArrayLike,
+    geo_totals: Totals | None = None,
+    channel_totals: Totals | None = None,
+    history: ArrayLike | None = None,
+) -> GeoAllocation:
+    """Spend ``budget`` over ``periods`` on every geo's channels at once, for the most return.
+
+    Each cell, one geo's channel, runs at one rate a period as :func:`allocate`'s channels do, its
+    worth counted the same way, carryover in from its history and out after the plan. The budget is
+    spent exactly; each geo's spend over the plan, its channels together, stays within
+    ``geo_totals``, and each channel's, its geos together, within ``channel_totals``.
+
+    The plan is found by cutting planes on the cells' envelopes, each worth bounded above by its
+    tangents under a linear program, until the program's value is within a share ``1e-9`` of the
+    best plan it has proposed, or after 500 rounds. Where every cell inside its box is then strictly
+    concave, Newton's method on the prices of the totals that bind closes the budget and those
+    totals with each cell's rate exact at its prices. A total whose price comes out on the wrong
+    side is released and one the plan breaks is bound, until each binding total's price has its
+    side's sign and the others hold: the conditions for the best plan on concave worths. Otherwise
+    the cutting planes' best plan is returned, with the program's value as its bound.
+
+    Args:
+        cells: one row a geo, each with the same channels in the same order.
+        budget, periods: as :func:`allocate` takes them.
+        lower, upper: ``(geos, channels)`` each cell's least and most spend a period.
+        geo_totals: what each geo spends over the plan, its channels together; no bound when
+            omitted.
+        channel_totals: what each channel spends over the plan, its geos together; no bound when
+            omitted.
+        history: ``(T, geos, channels)`` spend in the periods before the plan, whose adstock runs
+            into it; nothing spent before the plan when omitted.
+
+    Raises:
+        TypeError: a cell is not a :class:`chc.response.Channel`, or a total is not a
+            :class:`Totals`.
+        ValueError: what :func:`allocate` refuses of a cell, its box or its history; rows of
+            different lengths; totals of the wrong length, or one outside what its cells' boxes
+            spend; and a budget, boxes and totals no plan meets together.
+    """
+    grid = tuple(tuple(row) for row in cells)
+    if not grid or not grid[0]:
+        raise ValueError("no cells to allocate over: it needs a geo with a channel")
+    geos, width = len(grid), len(grid[0])
+    if any(len(row) != width for row in grid):
+        raise ValueError(
+            f"the geos have {sorted({len(row) for row in grid})} channels; each needs every channel"
+        )
+    flat = tuple(channel for row in grid for channel in row)
+    low, high = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    for name, rates in (("lower", low), ("upper", high)):
+        if rates.shape != (geos, width):
+            raise ValueError(
+                f"{name} has shape {rates.shape}; it needs {(geos, width)}, one a cell"
+            )
+    spent = np.zeros((0, geos, width)) if history is None else np.asarray(history, dtype=float)
+    if spent.ndim != 3 or spent.shape[1:] != (geos, width):
+        raise ValueError(f"history has shape {spent.shape}; it needs (T, {geos}, {width})")
+    names = [f"geo {g}'s channel {c}" for g in range(geos) for c in range(width)]
+    low, high, spent = low.ravel(), high.ravel(), spent.reshape(spent.shape[0], geos * width)
+    _check(flat, periods, low, high, spent, names)
+    budget = float(budget)
+    least, most = periods * float(low.sum()), periods * float(high.sum())
+    if not (np.isfinite(budget) and least <= budget <= most):
+        raise ValueError(
+            f"a budget of {budget} is outside what the box spends over {periods} periods, "
+            f"[{least}, {most}]"
+        )
+    cell = np.arange(geos * width).reshape(geos, width)
+    groups: list[_Group] = []
+    for kind, totals, members in (
+        ("geo", geo_totals, list(cell)),
+        ("channel", channel_totals, list(cell.T)),
+    ):
+        if totals is None:
+            continue
+        if not isinstance(totals, Totals):
+            raise TypeError(f"{kind}_totals is a {type(totals).__name__}, not Totals")
+        if totals.least.shape != (len(members),):
+            raise ValueError(
+                f"{kind}_totals bound {totals.least.size} groups; there are {len(members)} {kind}s"
+            )
+        for index, (group, floor, cap) in enumerate(
+            zip(members, totals.least, totals.most, strict=True)
+        ):
+            reach = periods * float(low[group].sum()), periods * float(high[group].sum())
+            if floor > reach[1] or cap < reach[0]:
+                raise ValueError(
+                    f"{kind} {index}'s total [{floor}, {cap}] is outside what its cells' boxes "
+                    f"spend over {periods} periods, [{reach[0]}, {reach[1]}]"
+                )
+            groups.append(_Group(group, float(floor), float(cap)))
+    given = flat
+    relaxed = relax(given)
+    envelopes = _worths(relaxed, spent, periods)
+    worths = envelopes if relaxed is given else _worths(given, spent, periods)
+    rate = budget / periods
+    rates, ceiling, price, prices = _outer(envelopes, low, high, groups, rate, periods)
+    exact = _polish(envelopes, low, high, groups, rate, periods, price, prices)
+    if exact is None:
+        bound = max(ceiling, sum(_value(w, r) for w, r in zip(envelopes, rates, strict=True)))
+    else:
+        rates, price, prices = exact
+        bound = sum(_value(w, r) for w, r in zip(envelopes, rates, strict=True))
+    worth = sum(_value(w, r) for w, r in zip(worths, rates, strict=True))
+    split = iter(prices)
+    geo_prices = np.zeros(geos) if geo_totals is None else np.array([next(split) for _ in cell])
+    channel_prices = np.zeros(width) if channel_totals is None else np.array(list(split))
+    # every geo's total fixed, or every channel's, fixes the budget, whose price is then theirs: a
+    # cell is in one geo and one channel, so the sum it meets does not move
+    if geo_totals is not None and np.array_equal(geo_totals.least, geo_totals.most):
+        geo_prices, price = geo_prices + price, 0.0
+    elif channel_totals is not None and np.array_equal(channel_totals.least, channel_totals.most):
+        channel_prices, price = channel_prices + price, 0.0
+    return GeoAllocation(
+        spend=rates.reshape(geos, width),
+        worth=worth,
+        bound=bound,
+        price=price,
+        geo_prices=geo_prices,
+        channel_prices=channel_prices,
+        budget=budget,
+        idle=sum(_value(w, 0.0) for w in worths),
+    )
+
+
+def _outer(
+    envelopes: Sequence[_Worth],
+    lower: np.ndarray,
+    upper: np.ndarray,
+    groups: Sequence[_Group],
+    rate: float,
+    periods: int,
+) -> tuple[np.ndarray, float, float, np.ndarray]:
+    """The best plan on the envelopes by cutting planes (Kelley 1960).
+
+    Each cell's worth is bounded above by its value at its cap and by its tangents; the linear
+    program maximises the bounds over the plans that meet the constraints, and each plan it
+    proposes adds a tangent where a cell's bound is loose. The program's value bounds every plan
+    from above; the plans' worths approach it from below. Returns the best plan's rates, the last
+    value, and the budget's and each group's price, the last program's duals in return a currency
+    unit.
+    """
+    size = len(envelopes)
+    # rates are read in units of the largest cap, and worths in units of every cap's together:
+    # HiGHS works to absolute tolerances, and a channel's worth in currency can pass 1e9
+    unit = float(np.max(upper)) or 1.0
+    caps = [_value(w, hi) for w, hi in zip(envelopes, upper, strict=True)]
+    scale = float(np.sum(np.abs(caps))) or 1.0
+    rows: list[int] = []
+    columns: list[int] = []
+    entries: list[float] = []
+    limits: list[float] = []
+
+    def bound(cell: int, slope: float, height: float) -> None:
+        """The cell's height at most ``height + slope * rate``, in currency and worth."""
+        rows.extend((len(limits), len(limits)))
+        columns.extend((size + cell, cell))
+        entries.extend((1.0, -slope * unit / scale))
+        limits.append(height / scale)
+
+    def tangent(cell: int, at: float) -> tuple[float, float]:
+        value, slope = _value_and_slope(envelopes[cell], jnp.asarray(at, dtype=float))
+        return float(value), float(slope)
+
+    for cell in range(size):
+        bound(cell, 0.0, caps[cell])  # an increasing worth is at most its cap's
+        for at in {float(lower[cell]), 0.5 * float(lower[cell] + upper[cell]), float(upper[cell])}:
+            value, slope = tangent(cell, at)
+            if np.isfinite(slope):
+                bound(cell, slope, value - slope * at)
+
+    per = periods * unit
+    sides: list[tuple[int, float]] = []  # each inequality row's group, +1 at its most, -1 its least
+    side_rows: list[np.ndarray] = []
+    side_limits: list[float] = []
+    fixed: list[int] = []
+    fixed_rows: list[np.ndarray] = [np.ones(size)]
+    fixed_limits: list[float] = [rate / unit]
+    for index, group in enumerate(groups):
+        member = np.zeros(size)
+        member[group.members] = 1.0
+        if group.least == group.most:
+            fixed.append(index)
+            fixed_rows.append(member)
+            fixed_limits.append(group.least / per)
+            continue
+        if np.isfinite(group.most):
+            sides.append((index, 1.0))
+            side_rows.append(member)
+            side_limits.append(group.most / per)
+        if group.least > 0.0:
+            sides.append((index, -1.0))
+            side_rows.append(-member)
+            side_limits.append(-group.least / per)
+    totals = sparse.csr_array(
+        np.hstack([np.array(side_rows).reshape(len(sides), size), np.zeros((len(sides), size))])
+    )
+    equal = sparse.csr_array(np.hstack([np.array(fixed_rows), np.zeros((len(fixed_rows), size))]))
+    objective = np.concatenate([np.zeros(size), -np.ones(size)])
+    box = [*zip(lower / unit, upper / unit, strict=True), *[(None, None)] * size]
+
+    best, plan, ceiling = -np.inf, lower.copy(), np.inf
+    for _ in range(_ROUNDS):
+        solved = len(limits)
+        program = linprog(
+            objective,
+            A_ub=sparse.vstack(
+                [sparse.coo_array((entries, (rows, columns)), shape=(solved, 2 * size)), totals]
+            ),
+            b_ub=np.array([*limits, *side_limits]),
+            A_eq=equal,
+            b_eq=np.array(fixed_limits),
+            bounds=box,
+            method="highs",
+            options={"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10},
+        )
+        if program.status == 2:
+            raise ValueError("no plan meets the budget, the boxes and the totals together")
+        if program.status != 0:
+            raise RuntimeError(f"the plan's linear program failed: {program.message}")
+        ceiling = min(ceiling, -float(program.fun) * scale)
+        rates = np.clip(program.x[:size] * unit, lower, upper)
+        heights = program.x[size:] * scale
+        pairs = [tangent(cell, float(r)) for cell, r in enumerate(rates)]
+        values = np.array([value for value, _ in pairs])
+        if values.sum() > best:
+            best, plan = float(values.sum()), rates
+        if ceiling - best <= _GAP * abs(ceiling):
+            break
+        for cell in np.flatnonzero(heights - values > _GAP * abs(ceiling) / size):
+            value, slope = pairs[cell]
+            if np.isfinite(slope):
+                bound(int(cell), slope, value - slope * float(rates[cell]))
+    duals = -scale / per
+    price = float(program.eqlin.marginals[0]) * duals
+    prices = np.zeros(len(groups))
+    for (index, sign), marginal in zip(sides, program.ineqlin.marginals[solved:], strict=True):
+        prices[index] += sign * float(marginal) * duals
+    for index, marginal in zip(fixed, program.eqlin.marginals[1:], strict=True):
+        prices[index] = float(marginal) * duals
+    return plan, ceiling, price, prices
+
+
+def _polish(
+    envelopes: Sequence[_Worth],
+    lower: np.ndarray,
+    upper: np.ndarray,
+    groups: Sequence[_Group],
+    rate: float,
+    periods: int,
+    price: float,
+    prices: np.ndarray,
+) -> tuple[np.ndarray, float, np.ndarray] | None:
+    """The plan made exact on the totals that bind, or None.
+
+    A cell's price is the budget's plus those of the binding totals it is in, and its rate is
+    exact at it: where its slope meets ``periods`` times the price, or the end of its box the
+    slope presses on. Newton's method on the binding totals' prices closes the budget and those
+    totals, starting from the totals and prices the cutting planes found. A binding total whose
+    price comes out on the wrong side is released, and a free total the plan breaks is bound where
+    it breaks, until neither happens: the plan then meets the conditions for the best on concave
+    worths. None where a free cell is not strictly concave, Newton's method does not close, or the
+    binding totals keep changing.
+    """
+    size = len(envelopes)
+    # each binding total's side: 1 held at its most, -1 at its least, 0 fixed
+    sides = {
+        k: 0.0 if group.least == group.most else float(np.sign(prices[k]))
+        for k, group in enumerate(groups)
+        if group.least == group.most or prices[k] != 0.0
+    }
+    full = prices.copy()
+    tolerance = 16 * _EPS * size * float(np.max(upper))
+    margin = periods * tolerance
+    for _ in range(2 * len(groups) + 1):  # every round but the last changes the binding totals
+        binding = list(sides)
+        targets = np.array(
+            [
+                rate,
+                *(
+                    (groups[k].most if sides[k] >= 0.0 else groups[k].least) / periods
+                    for k in binding
+                ),
+            ]
+        )
+        membership = np.zeros((1 + len(binding), size))
+        membership[0] = 1.0
+        for row, k in enumerate(binding, start=1):
+            membership[row, groups[k].members] = 1.0
+        unknown = np.array([price, *full[binding]])
+        for _ in range(50):
+            at = periods * (membership.T @ unknown)
+            exact = np.array(
+                [
+                    _rate(w, lo, hi, float(t))
+                    for w, lo, hi, t in zip(envelopes, lower, upper, at, strict=True)
+                ]
+            )
+            residual = membership @ exact - targets
+            if np.max(np.abs(residual)) <= tolerance:
+                break
+            free = (lower < exact) & (exact < upper)
+            bends = np.array(
+                [
+                    float(_curvature(w, jnp.asarray(float(r), dtype=float))) if inside else -1.0
+                    for w, r, inside in zip(envelopes, exact, free, strict=True)
+                ]
+            )
+            if not np.all(bends < 0.0):
+                return None  # a straight stretch: its rate does not follow its price
+            response = np.where(free, periods / bends, 0.0)
+            jacobian = (membership * response) @ membership.T
+            unknown = unknown - np.linalg.lstsq(jacobian, residual, rcond=None)[0]
+        else:
+            return None
+        price, full = float(unknown[0]), np.zeros(len(groups))
+        full[binding] = unknown[1:]
+        floor = -1e-9 * float(np.max(np.abs(unknown)))
+        # held at its most and better spending less, or at its least and better spending more
+        wrong = [k for k in binding if sides[k] * full[k] < floor]
+        spent = np.array([periods * exact[group.members].sum() for group in groups])
+        broken = {
+            k: 1.0 if spent[k] > group.most else -1.0
+            for k, group in enumerate(groups)
+            if k not in sides and not group.least - margin <= spent[k] <= group.most + margin
+        }
+        if not wrong and not broken:
+            return exact, price, full
+        for k in wrong:
+            del sides[k]
+        sides |= broken
+    return None
 
 
 def _names(parameters: Channel) -> list[str]:

@@ -202,6 +202,24 @@ still change).
   causaldyn-bench's Track M v2, pre-registered over 500 geo panels, choosing where a geo test runs
   by the regret `W` expects it to leave cut the plan's regret to 0.0050 per euro [0.0037, 0.0062],
   against 0.0143 for Abadie and Zhao's representative set and 0.0241 for a random set.
+- **One budget over geos and channels, `chc.allocation.allocate_geos`** (*experimental*, ADR 0043).
+  `allocate_geos(cells, budget, periods, *, lower, upper, geo_totals=None, channel_totals=None,
+  history=None)` plans every geo's channels at once, each cell with its own curve, carryover and
+  history, the budget spent exactly and what each geo and each channel spends over the plan held
+  within `Totals(least, most)`. It returns a `GeoAllocation`: the spend, the worth, a bound on it,
+  and a price for the budget and for each total, what a unit more room in it returns, so a cell
+  inside its box returns the budget's price plus its geo's and its channel's. Kelley's cutting
+  planes on the cells' envelopes (HiGHS) certify the plan to a share `1e-9` of the bound; Newton's
+  method on the binding totals' prices then makes it exact where the free cells are strictly
+  concave, a total released where its price comes out on the wrong side and bound where the plan
+  breaks it. One geo is `allocate`'s plan to `1e-12`, and fixed geo budgets each geo's own; on three
+  geos of three channels with carryover SciPy's SLSQP finds nothing better and every interior
+  cell's slope meets its three prices; on two of two no plan of a 400-step lattice returns more; a
+  cap or floor a millionth from binding is planned exactly. A plan made in two steps, the budget
+  split over the geos by their average return first, leaves more than a percent of the joint plan's
+  gain. Nineteen of twenty mutations caught; the twentieth, Newton's method started without the
+  duals' binding totals, leaves the plans as they are, the active-set step finding the totals
+  itself.
 - **A futility stop for the gate's experiment** (*experimental*, ADR 0035).
   `GateConfig(alpha_futility=...)`, unset by default, runs a fourth e-process per zone, against
   "the candidate beats the baseline by `delta + min_effect`": the harm e-process at that margin,
