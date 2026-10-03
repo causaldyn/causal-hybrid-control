@@ -46,7 +46,7 @@ the noise. So `E[r_i dither_j] = d_ij dither_scale_j^2`, whatever `c` holds.
 - **No decision rule.** STEP 5 and Rocq (C) state when re-planning pays for an oracle that knows
   `d`. The same comparison made on the log the estimate came from is not shipped: the measurement
   below refutes it.
-- **Experimental** until 0.11.0's gate, like the monitor it reads the same dither as.
+- **Experimental** until 0.12.0's gate, like the monitor it reads the same dither as.
 
 ## Consequences
 

@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-03
+
 ### Added
 
 - **A split for the worst share of the readings, `chc.allocation.cvar_allocate`**
@@ -37,6 +39,12 @@ still change).
   - *The fix:* the tangency is now an array leaf. Envelopes share one structure, and a second
     posterior's draws compile nothing; two tests hold both.
   - *Behaviour change:* `Envelope.touch` is a 0-d array where it was a float.
+
+### Notes
+
+- **The marketplace study moves to 0.12.0.** The roadmap had it as 0.11.0. A planner for a
+  posterior's draws, and the fix that keeps it from compiling a program per draw, ship first.
+  Nothing in the study changes; ADRs 0017 and 0019 carry the new number.
 
 ## [0.10.0] — 2026-10-03
 
@@ -4348,6 +4356,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.11.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.11.0
 [0.10.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.10.0
 [0.9.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.9.0
 [0.8.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.8.0
