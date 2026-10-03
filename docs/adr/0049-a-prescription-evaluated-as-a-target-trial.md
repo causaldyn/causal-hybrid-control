@@ -102,6 +102,11 @@ were wrong.
     one a search scoring each level alone chooses.
   - **Refusals.** At the certificate's edge, some draws are refused, counted and logged; when all
     but one are, the evaluation is refused.
+- All 35 mutations tried fail a test: 21 of the bootstrap and the batched grid, 14 of the windows
+  and of what `Prescription.evaluate` passes on. A first round left two survivors, and each got a
+  test: the plant built once on every unit for every draw, which the replay test catches now that
+  its plant is fitted to each drawn panel, and the caller's time zero not passed on, which the
+  dropout test catches by counting the windows each reading takes.
 - **Few units.** A bootstrap over few units draws few distinct panels. In the coverage test's
   world, 600 windows split over 5, 10, 20 and 60 units, 40 replicates each, the bootstrap covered
   34, 36, 34 and 37, and the windows' own interval 21, 26, 20 and 28.
