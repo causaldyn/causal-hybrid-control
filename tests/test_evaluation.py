@@ -27,6 +27,7 @@ from scipy.stats import t as student
 
 from chc import QuadraticCost
 from chc.evaluation import (
+    _GRID,
     AffinePolicy,
     AffineSchedule,
     EvaluationMethod,
@@ -34,6 +35,9 @@ from chc.evaluation import (
     InitialLaw,
     LinearGaussianPlant,
     _batch_half_width,
+    _episode_smoothing,
+    _smoothed_log_moments,
+    _StageCost,
     certify_evaluation,
     evaluate_plan,
     fit_logger,
@@ -279,6 +283,43 @@ def test_a_schedules_trajectory_moment_matches_the_whole_trajectory_integral() -
             finite += 1
             assert certified == pytest.approx(oracle, rel=1e-9, abs=1e-9)
     assert 20 < finite < 80  # both branches were exercised
+
+
+def test_the_smoothing_grid_reads_each_level_as_the_whole_trajectory_integral_does() -> None:
+    """Every level of a grid in one recursion, each against the integral for the plan smoothed by
+    that level alone, at every horizon. Past the logger's room a level diverges from the first
+    step; within it a level can still diverge at a later one, and is ``inf`` from there on."""
+    rng = np.random.default_rng(13)
+    finite = first = later = 0
+    for case in range(40):
+        plant, logger, plan, initial, horizon = _random_case(rng)
+        m, n = plan.gain.shape
+        schedule = AffineSchedule(
+            plan.gain + rng.normal(size=(horizon, m, n)) * 0.3,
+            plan.offset + rng.normal(size=(horizon, m)) * 0.3,
+            plan.covariance if case % 2 else np.zeros((m, m)),
+        )
+        room = np.min(np.linalg.eigvalsh(2.0 * logger.covariance - schedule.covariance))
+        levels = math.sqrt(room) * np.geomspace(0.05, 1.5, 8)
+
+        moments = _smoothed_log_moments(plant, logger, schedule, initial, 2.0, levels)
+
+        for k, tau in enumerate(levels):
+            covariance = schedule.covariance + tau * tau * np.eye(m)
+            for h in range(1, horizon + 1):
+                head = AffineSchedule(schedule.gains[:h], schedule.offsets[:h], covariance)
+                oracle = _xi_log_moment(plant, logger, head, initial, h)
+                assert math.isfinite(moments[k, h - 1]) == math.isfinite(oracle)
+                if math.isfinite(oracle):
+                    assert moments[k, h - 1] == pytest.approx(oracle, rel=1e-9, abs=1e-9)
+            row = np.isfinite(moments[k])
+            finite += bool(row.all())
+            first += not row[0]
+            later += bool(row[0] and not row.all())
+    # every branch was exercised
+    assert finite > 0
+    assert first > 0
+    assert later > 0
 
 
 def test_a_schedule_that_holds_one_policy_is_certified_as_that_policy() -> None:
@@ -647,6 +688,44 @@ def test_a_schedules_smoothing_costs_exactly_tau_squared_beta() -> None:
     assert result.model_correction == pytest.approx(
         _episode_value(MARKET, smoothed, law, 5) - _episode_value(MARKET, RAMP, law, 5), rel=1e-9
     )
+
+
+def test_the_smoothing_is_the_level_a_search_one_level_at_a_time_would_choose() -> None:
+    """The smoothing's search scores its grid at once, each level's value read as the plan's own
+    plus ``tau^2 beta``. Here each level is scored alone: its weights' second moment by the
+    whole-trajectory integral, its value by covariance propagation of the smoothed plan. The level
+    chosen scores the least, to rounding, or no level passes and none is chosen."""
+    rng = np.random.default_rng(15)
+    stages = _StageCost.steps(COST, 2, 1, 5)
+    chosen = 0
+    for _ in range(12):
+        logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.array([[rng.uniform(0.2, 1.5)]]))
+        schedule = AffineSchedule.open_loop(rng.normal(0.0, 0.4, (5, 1)), states=2)
+        initial = InitialLaw(rng.normal(size=2) * 0.5, rng.uniform(0.05, 0.4) * np.eye(2))
+        samples, model_error = int(rng.integers(300, 5000)), float(rng.choice([0.0, 0.5, 1.0]))
+
+        got = _episode_smoothing(
+            MARKET, logger, schedule, stages, initial, samples, model_error, 100.0
+        )
+
+        limit = math.sqrt(2.0 * logger.covariance[0, 0])
+        grid = np.geomspace(1e-4 * limit, 0.999 * limit, _GRID)
+        base = _episode_value(MARKET, schedule, initial, 5)
+        scores = np.full(_GRID, math.inf)
+        for i, tau in enumerate(grid):
+            smoothed = AffineSchedule(schedule.gains, schedule.offsets, np.array([[tau * tau]]))
+            l2 = _xi_log_moment(MARKET, logger, smoothed, initial, 5)
+            if l2 <= math.log(samples / 100.0):
+                value = _episode_value(MARKET, smoothed, initial, 5)
+                variance = math.expm1(l2) * value * value / samples
+                scores[i] = (model_error * (value - base)) ** 2 + variance
+        if not np.isfinite(scores).any():
+            assert got is None
+            continue
+        chosen += 1
+        assert got is not None
+        assert scores[np.argmin(np.abs(grid - got))] == pytest.approx(scores.min(), rel=1e-9)
+    assert 0 < chosen < 12
 
 
 def test_pdis_scores_each_step_against_its_own_target() -> None:

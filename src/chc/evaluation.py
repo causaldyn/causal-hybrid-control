@@ -374,6 +374,19 @@ def _sqrt_psd(m: _Array) -> _Array:
     return (v * np.sqrt(np.clip(w, 0.0, None))) @ v.T
 
 
+def _stack_sym(m: _Array) -> _Array:
+    return 0.5 * (m + np.swapaxes(m, -1, -2))
+
+
+def _stack_min_eig(m: _Array) -> _Array:
+    return np.min(np.linalg.eigvalsh(_stack_sym(m)), axis=-1)
+
+
+def _stack_mv(m: _Array, v: _Array) -> _Array:
+    """``m[k] @ v[k]`` for every ``k``; a single matrix or vector broadcasts."""
+    return np.einsum("...ij,...j->...i", m, v)
+
+
 def _log_alpha_moment(m1: _Array, s1: _Array, m0: _Array, s0: _Array, alpha: float) -> float:
     """``log E_{N(m0, s0)}[(N(m1, s1) / N(m0, s0))^alpha]``, ``inf`` when it diverges."""
     sa = alpha * s0 + (1.0 - alpha) * s1
@@ -527,6 +540,90 @@ def _trajectory_log_moments(
         )
         mean = a_star @ (mean + 2.0 * tilt @ g) + b_star
         cov = _sym(a_star @ tilt @ a_star.T + v_star)
+    return out
+
+
+def _smoothed_log_moments(
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    plan: AffineSchedule,
+    initial: InitialLaw,
+    alpha: float,
+    taus: _Array,
+) -> _Array:
+    """:func:`_trajectory_log_moments` of ``plan`` smoothed by each of ``taus``, as ``(K, H)``.
+
+    The same recursion with a leading axis over the smoothing, so a grid of ``K`` levels takes
+    ``H`` batched steps rather than ``K`` recursions of its own. A level leaves the batch at the
+    step its moment diverges, and its row is ``inf`` from there, as the scalar recursion's is.
+    """
+    n, m = plant.states, plant.actions
+    out = np.full((taus.shape[0], plan.horizon), math.inf)
+    sb = logger.covariance
+    sp = plan.covariance + (taus * taus)[:, None, None] * np.eye(m)
+    gap = alpha * sb - (alpha - 1.0) * sp
+    if _min_eig(sb) <= 0.0:
+        return out
+    live = np.flatnonzero((_stack_min_eig(gap) > 0.0) & (_stack_min_eig(sp) > 0.0))
+    if live.size == 0:
+        return out
+    sp, gap = sp[live], gap[live]
+    potential = 0.5 * alpha * (alpha - 1.0) * np.linalg.inv(gap)
+    log_c0 = (
+        0.5 * alpha * np.linalg.slogdet(sb)[1]
+        - 0.5 * (alpha - 1.0) * np.linalg.slogdet(sp)[1]
+        - 0.5 * np.linalg.slogdet(gap)[1]
+    )
+    sbi, spi = np.linalg.inv(sb), np.linalg.inv(sp)
+    s_star = np.linalg.inv(alpha * spi - (alpha - 1.0) * sbi)
+    v_star = plant.b @ s_star @ plant.b.T + plant.noise
+    mean = np.broadcast_to(initial.mean, (live.size, n))
+    cov = np.broadcast_to(initial.covariance, (live.size, n, n))
+    log_mass = np.zeros(live.size)
+    for t, (gain, offset) in enumerate(zip(plan.gains, plan.offsets, strict=True)):
+        d_gain, d_offset = gain - logger.gain, offset - logger.offset
+        p = d_gain.T @ potential @ d_gain
+        q = d_gain.T @ potential @ d_offset
+        w, v = np.linalg.eigh(_stack_sym(cov))
+        root = (v * np.sqrt(np.clip(w, 0.0, None))[:, None, :]) @ np.swapaxes(v, -1, -2)
+        core = _stack_sym(np.eye(n) - 2.0 * root @ p @ root)
+        keep = _stack_min_eig(core) > 0.0
+        if not keep.all():
+            live = live[keep]
+            if live.size == 0:
+                return out
+            potential, log_c0, spi, s_star, v_star = (
+                potential[keep],
+                log_c0[keep],
+                spi[keep],
+                s_star[keep],
+                v_star[keep],
+            )
+            mean, cov, log_mass = mean[keep], cov[keep], log_mass[keep]
+            p, q, root, core = p[keep], q[keep], root[keep], core[keep]
+        tilt = root @ np.linalg.solve(core, root)
+        g = _stack_mv(p, mean) + q
+        log_mass = log_mass + (
+            log_c0
+            + d_offset @ potential @ d_offset
+            + np.einsum("ki,kij,kj->k", mean, p, mean)
+            + 2.0 * np.einsum("ki,ki->k", q, mean)
+            + 2.0 * np.einsum("ki,kij,kj->k", g, tilt, g)
+            - 0.5 * np.linalg.slogdet(core)[1]
+        )
+        out[live, t] = log_mass
+        a_star = plant.a + plant.b @ s_star @ (
+            alpha * spi @ gain - (alpha - 1.0) * sbi @ logger.gain
+        )
+        b_star = (
+            _stack_mv(
+                plant.b @ s_star,
+                alpha * spi @ offset - (alpha - 1.0) * sbi @ logger.offset,
+            )
+            + plant.offset
+        )
+        mean = _stack_mv(a_star, mean + 2.0 * _stack_mv(tilt, g)) + b_star
+        cov = _stack_sym(a_star @ tilt @ np.swapaxes(a_star, -1, -2) + v_star)
     return out
 
 
@@ -758,13 +855,22 @@ def _tilted_second_moment(
     return cost.second_moment_about(mq, sq, value)
 
 
+def _grid(limit: float) -> _Array:
+    """The geometric grid over ``(0, limit)`` the smoothing is chosen on."""
+    return np.geomspace(1e-4 * limit, 0.999 * limit, _GRID)
+
+
+def _grid_minimum(grid: _Array, scores: _Array) -> float | None:
+    """The grid point of the first smallest score; ``None`` when no score is finite."""
+    best = int(np.argmin(scores))
+    return float(grid[best]) if math.isfinite(scores[best]) else None
+
+
 def _best_on_grid(limit: float, score: Callable[[float], float]) -> float | None:
     """The minimiser of ``score`` on a geometric grid over ``(0, limit)``; ``None`` when it is
     nowhere finite."""
-    grid = np.geomspace(1e-4 * limit, 0.999 * limit, _GRID)
-    values = np.array([score(float(tau)) for tau in grid])
-    best = int(np.argmin(values))
-    return float(grid[best]) if math.isfinite(values[best]) else None
+    grid = _grid(limit)
+    return _grid_minimum(grid, np.array([score(float(tau)) for tau in grid]))
 
 
 def _check_policies(plant: LinearGaussianPlant, **policies: AffinePolicy | AffineSchedule) -> None:
@@ -1217,22 +1323,24 @@ def _episode_smoothing(
     model's unverified share of the correction, squared, plus the weighted estimate's variance --
     among those the certificate passes. The variance is approximated by the weights' own,
     ``(E_b[W_H^2] - 1) J_H^2 / n``, which leaves out the cost's spread. ``None`` when no smoothing
-    passes."""
+    passes.
+
+    The grid is read at once, by :func:`_smoothed_log_moments`, and the model's value of the plan
+    smoothed by ``tau`` is the plan's own plus ``tau^2 beta``: the smoothing enters the value
+    linearly in ``tau^2``, and ``beta`` is that slope (:func:`_horizon_beta`)."""
     budget = math.log(samples / min_effective)
     room = _min_eig(2.0 * logger.covariance - plan.covariance)
     if room <= 0.0 or not _has_density(logger):
         return None
     beta = _horizon_beta(plant, plan, costs[0])
-
-    def episode_mse(tau: float) -> float:
-        target = _smoothed(plan, tau)
-        l2 = _trajectory_log_moments(plant, logger, target, initial, 2.0)[-1]
-        if not l2 <= budget:
-            return math.inf
-        value = _episode_value(plant, target, costs, initial)
-        return (model_error * tau * tau * beta) ** 2 + math.expm1(l2) * value * value / samples
-
-    return _best_on_grid(math.sqrt(room), episode_mse)
+    grid = _grid(math.sqrt(room))
+    l2 = _smoothed_log_moments(plant, logger, plan, initial, 2.0, grid)[:, -1]
+    within = l2 <= budget
+    tau, l2 = grid[within], l2[within]
+    value = _episode_value(plant, plan, costs, initial) + tau * tau * beta
+    scores = np.full(grid.shape, math.inf)
+    scores[within] = (model_error * tau * tau * beta) ** 2 + np.expm1(l2) * value * value / samples
+    return _grid_minimum(grid, scores)
 
 
 def _stationary_smoothing(
