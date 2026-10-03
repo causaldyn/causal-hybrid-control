@@ -95,8 +95,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   periods, on the plan's model linearised at their mean. It reads the panel as a target trial
   emulated from it. The windows start on calendar periods every unit shares, so a unit that leaves
   the panel does not decide where its windows start. The intervals come from resampling the units,
-  the whole evaluation run again on each draw. And the plan is set against the policy that logged
-  the panel, the difference's interval read within each draw
+  the whole evaluation run again on each draw; a panel of one unit, with none to resample, is read
+  as before, deprecated. And the plan is set against the policy that logged the panel, the
+  difference's interval read within each draw
   ([ADR 0049](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0049-a-prescription-evaluated-as-a-target-trial.md)).
   It refuses a plan whose levers were logged on a column outside its state, and one made against
   driver forecasts. It also asks the panel, as `prescribe` asks the one it fits, whether the levers

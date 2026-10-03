@@ -16,7 +16,8 @@ still change).
   `PlanEvaluation.bootstrap` and `versus_logger` `None`. Each such call warns once with a
   `DeprecationWarning` and logs the same at `WARNING` (`chc_event="one_unit"`). Evaluate on a
   panel of several units instead. The test holds the reading of one zone's 1200 windows to the
-  code before the change, to `1e-9`.
+  code before the change, to `1e-9`. Twenty mutations of the warning, its message, its log and its
+  path caught.
 
 ### Fixed
 
