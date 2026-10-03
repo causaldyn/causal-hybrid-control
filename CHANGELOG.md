@@ -7,6 +7,34 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Prescription.evaluate` reads a panel as the target trial it emulates (ADR 0049).** Three
+  parts of that trial were wrong (Hernán and Robins, *Causal Inference: What If*, chapter 22).
+  - **Time zero.** Each unit's windows were cut back from its own latest period, so a unit that
+    left the panel because of what happened to it had its windows chosen by their outcomes. They
+    now start at the panel's periods `H`, `2H`, ... before its last, the same for every unit, and
+    a unit gives each window it was observed throughout: `time_zero="calendar"`, the default;
+    `"unit"` keeps the old windows. On a market where a zone leaves three periods after its supply
+    first strays, over twelve panels of 4000 zones at `model_error=0`, the interval on the old
+    windows missed the plan's value on them every time, by 4.6 to 8.1 of its standard errors, and
+    the calendar's covered the plan's value on its own windows, and the plan's difference from the
+    logger's, every time.
+  - **The interval.** A unit's windows share its state, and the delta method over windows took
+    them as independent. The intervals now come from `n_resamples=200` draws of the units with
+    replacement, from `seed`, the whole evaluation run again on each: the linearisation, the
+    logger's fit, the smoothing, the certificate and both values. `PlanEvaluation.bootstrap` counts
+    the draws the certificate refused, which are left out and logged as a warning. Over 40
+    replicates of 60 units of ten consecutive windows, the windows' own interval covered 28 and the
+    bootstrap 37. Windows of one unit alone are refused.
+  - **The comparator.** `PlanEvaluation.versus_logger` holds the logged policy's value on the same
+    windows, the plan's value less it, and that difference's interval, read off the difference
+    within each draw. The policy in place can cost less than the plan.
+  - The tests hold the bootstrap to the cluster-robust sandwich where the nuisances are held fixed,
+    and to `evaluate_plan` on each drawn panel, replayed from the seed. An evaluation runs the
+    analysis `n_resamples + 1` times; the smoothing's grid is read in one recursion batched over
+    its levels, and the linearisation is compiled, once a model.
+
 ## [0.11.0] — 2026-10-03
 
 ### Added

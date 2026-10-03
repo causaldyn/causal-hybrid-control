@@ -182,9 +182,9 @@ def test_the_episodes_are_windows_cut_back_from_each_units_latest_period() -> No
         time="time",
     )
 
-    episodes = _episodes(panel, states=("x",), levers=("a",), horizon=2)
+    episodes = _episodes(panel, states=("x",), levers=("a",), horizon=2, time_zero="unit")
 
-    assert episodes["x"][..., 0].tolist() == [
+    assert episodes.x[..., 0].tolist() == [
         [4, 5, 6],
         [2, 3, 4],
         [0, 1, 2],
@@ -192,7 +192,7 @@ def test_the_episodes_are_windows_cut_back_from_each_units_latest_period() -> No
         [16, 17, 18],
         [14, 15, 16],
     ]
-    assert episodes["u"][..., 0].tolist() == [
+    assert episodes.u[..., 0].tolist() == [
         [104, 105],
         [102, 103],
         [100, 101],
@@ -200,8 +200,79 @@ def test_the_episodes_are_windows_cut_back_from_each_units_latest_period() -> No
         [116, 117],
         [114, 115],
     ]
+    assert episodes.units.tolist() == [0, 0, 0, 1, 1, 1]
     with pytest.raises(DecisionError, match="needs two windows of 7 consecutive periods"):
-        _episodes(panel, states=("x",), levers=("a",), horizon=6)
+        _episodes(panel, states=("x",), levers=("a",), horizon=6, time_zero="unit")
+
+
+def test_the_episodes_start_on_one_calendar_for_every_unit() -> None:
+    # Periods 0-8, so windows of three periods start at 6, 4, 2 and 0. Unit 0 leaves after period
+    # 5, unit 1 misses period 3, unit 2 arrives at period 1: each gives the windows it was
+    # observed throughout. Cut back from its latest period, unit 0's would start at 3 and 1.
+    rows = (
+        [(0, t) for t in range(6)]
+        + [(1, t) for t in (0, 1, 2, 4, 5, 6, 7, 8)]
+        + [(2, t) for t in range(1, 9)]
+    )
+    panel = Panel.from_frame(
+        {
+            "unit": np.array([unit for unit, _ in rows]),
+            "time": np.array([t for _, t in rows]),
+            "x": np.array([10.0 * unit + t for unit, t in rows]),
+            "a": np.array([100.0 + 10.0 * unit + t for unit, t in rows]),
+        },
+        unit="unit",
+        time="time",
+    )
+
+    episodes = _episodes(panel, states=("x",), levers=("a",), horizon=2, time_zero="calendar")
+    cut = _episodes(panel, states=("x",), levers=("a",), horizon=2, time_zero="unit")
+
+    assert episodes.x[..., 0].tolist() == [
+        [2, 3, 4],
+        [0, 1, 2],
+        [16, 17, 18],
+        [14, 15, 16],
+        [10, 11, 12],
+        [26, 27, 28],
+        [24, 25, 26],
+        [22, 23, 24],
+    ]
+    assert episodes.u[..., 0].tolist() == [
+        [102, 103],
+        [100, 101],
+        [116, 117],
+        [114, 115],
+        [110, 111],
+        [126, 127],
+        [124, 125],
+        [122, 123],
+    ]
+    assert episodes.units.tolist() == [0, 0, 1, 1, 1, 2, 2, 2]
+    assert cut.x[:2, :, 0].tolist() == [[3, 4, 5], [1, 2, 3]]
+    with pytest.raises(DecisionError, match="needs two windows of 9 consecutive periods"):
+        _episodes(panel, states=("x",), levers=("a",), horizon=8, time_zero="calendar")
+
+
+def test_a_calendar_window_is_one_units() -> None:
+    # Unit 0 is observed at periods 0-4 and unit 1 at 5-8: unit 0's period 4, then unit 1's 5 and
+    # 6, span a window's periods, and are two units'.
+    rows = [(0, t) for t in range(5)] + [(1, t) for t in range(5, 9)]
+    panel = Panel.from_frame(
+        {
+            "unit": np.array([unit for unit, _ in rows]),
+            "time": np.array([t for _, t in rows]),
+            "x": np.array([10.0 * unit + t for unit, t in rows]),
+            "a": np.zeros(len(rows)),
+        },
+        unit="unit",
+        time="time",
+    )
+
+    episodes = _episodes(panel, states=("x",), levers=("a",), horizon=2, time_zero="calendar")
+
+    assert episodes.x[..., 0].tolist() == [[2, 3, 4], [0, 1, 2], [16, 17, 18]]
+    assert episodes.units.tolist() == [0, 0, 1]
 
 
 def test_a_linear_models_linearisation_is_its_own_step_and_its_noise_the_residuals() -> None:

@@ -313,7 +313,9 @@ class PlanEvaluation:
     ``effective_samples`` is the weights' own, ``(sum w)^2 / sum w^2``, beside the certificate's
     prediction, and ``None`` for ``"fqe"``. ``degrees_of_freedom`` is the stationary interval's
     Student ``t``: well below 39 when a few of the logger's excursions carry the weights, and
-    ``None`` for ``"fqe"`` and ``"pdis"``, whose intervals are normal.
+    ``None`` for ``"fqe"`` and ``"pdis"``, whose intervals are normal. From
+    :meth:`chc.decision.Prescription.evaluate` the interval is normal too, its spread read from a
+    bootstrap over the units the episodes came from (``bootstrap``) rather than across episodes.
     """
 
     value: float
@@ -327,6 +329,49 @@ class PlanEvaluation:
     # :meth:`chc.decision.Prescription.evaluate`, which knows the columns' names, and None from
     # :func:`evaluate_plan`, which does not
     logger_check: LoggerCheck | None = None
+    # the plan against the policy that logged the episodes, and the bootstrap over units both its
+    # interval and ``interval`` were read from: filled by
+    # :meth:`chc.decision.Prescription.evaluate`, which knows each episode's unit, and None from
+    # :func:`evaluate_plan`, which takes its episodes as independent
+    versus_logger: LoggerComparison | None = None
+    bootstrap: UnitBootstrap | None = None
+
+
+@dataclass(frozen=True)
+class LoggerComparison:
+    """The plan against the policy that logged the episodes, on the same episodes.
+
+    ``logger_value`` is the logs' own mean cost over the horizon: the logger's value from the
+    episodes' initial states, what deploying the plan would replace. ``difference`` is the plan's
+    value less it. ``interval`` is read off the difference within each resample of the units, both
+    values computed on the same draw, so what the two share --- which units were drawn, the states
+    they started from --- cancels in it; two marginal intervals combined would count it twice. The
+    plan's model correction widens it as it widens the plan's own interval.
+
+    A plan's value alone does not say that switching to it helps: the policy in place can do better
+    than the plan, and better than any other fixed alternative a trial would compare it with
+    (Hernán and Robins, *Causal Inference: What If*, Fine Points 22.7 and 22.8). The difference is
+    the switch's own estimate.
+    """
+
+    logger_value: float
+    difference: float  # the plan's value less the logger's
+    interval: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class UnitBootstrap:
+    """How the intervals of a :class:`PlanEvaluation` were read: from ``resamples`` draws of the
+    units with replacement, every episode of a drawn unit kept, the whole analysis run again on
+    each draw.
+
+    ``refused`` counts the draws whose certificate refused; the intervals read the others, so a
+    count well above zero says the evaluation sits near the certificate's edge.
+    """
+
+    units: int  # the units that contributed an episode
+    resamples: int
+    refused: int
 
 
 @dataclass(frozen=True)
@@ -1288,6 +1333,12 @@ def _log_policy(policy: AffinePolicy | AffineSchedule, x: _Array, u: _Array) -> 
     return _log_normal(residual, zero, policy.covariance).reshape(u.shape[:-1])
 
 
+def _stage_costs(x: _Array, u: _Array, costs: tuple[_StageCost, ...]) -> _Array:
+    """``(E, H)``: each episode's logged cost at each step, step ``t`` scored by ``costs[t]``."""
+    z = np.concatenate([x[:, :-1], u], axis=-1)
+    return np.stack([cost(z[:, t]) for t, cost in enumerate(costs)], axis=1)
+
+
 def _episodes_estimate(
     x: _Array,
     u: _Array,
@@ -1299,8 +1350,7 @@ def _episodes_estimate(
     of ``target``'s expected cost over the horizon, step ``t`` scored by ``costs[t]``, its
     half-width by the delta method over episodes, and the last step's effective sample size."""
     xs = x[:, :-1]
-    z = np.concatenate([xs, u], axis=-1)
-    c = np.stack([cost(z[:, t]) for t, cost in enumerate(costs)], axis=1)
+    c = _stage_costs(x, u, costs)
     log_w = np.cumsum(_log_policy(target, xs, u) - _log_policy(logger, xs, u), axis=1)
     w = _normalised(log_w)
     per_step = np.mean(w * c, axis=0)
@@ -1378,6 +1428,57 @@ def _stationary_smoothing(
     return _best_on_grid(limit, stationary_mse)
 
 
+def _episode_certificate(
+    x: _Array,
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    schedule: AffineSchedule,
+    stages: tuple[_StageCost, ...],
+    smoothing: float | None,
+    model_error: float,
+    min_effective: float,
+) -> EvaluationCertificate:
+    """:func:`certify_evaluation` by ``"pdis"`` on the episodes ``x``, from their starts' law, at
+    ``smoothing`` or else at the ``tau`` :func:`_episode_smoothing` chooses: the verdict
+    :func:`evaluate_plan` admits, before it is logged."""
+    samples = x.shape[0]
+    starts = x[:, 0]
+    initial = InitialLaw(starts.mean(axis=0), np.atleast_2d(np.cov(starts, rowvar=False)))
+    if smoothing is None and not _has_density(schedule):
+        smoothing = _episode_smoothing(
+            plant, logger, schedule, stages, initial, samples, model_error, min_effective
+        )
+    return certify_evaluation(
+        plant,
+        logger,
+        schedule,
+        "pdis",
+        samples,
+        smoothing=smoothing,
+        initial=initial,
+        min_effective=min_effective,
+    )
+
+
+def _episode_estimate(
+    x: _Array,
+    u: _Array,
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    schedule: AffineSchedule,
+    stages: tuple[_StageCost, ...],
+    tau: float,
+) -> tuple[float, float, float, float]:
+    """``"pdis"``'s weighted estimate with the weights smoothed by ``tau``, its half-width and the
+    weights' effective sample size (:func:`_episodes_estimate`), and the model's correction
+    ``tau^2 beta_hat``."""
+    correction = tau * tau * _horizon_beta(plant, schedule, stages[0]) if tau > 0.0 else 0.0
+    weighted, half, effective = _episodes_estimate(
+        x, u, logger, _smoothed(schedule, tau) if tau > 0.0 else schedule, stages
+    )
+    return weighted, half, effective, correction
+
+
 def _admit(certificate: EvaluationCertificate) -> EvaluationCertificate:
     """Log the certificate's verdict, and raise :class:`InfeasibleEvaluation` when it refuses."""
     event = {
@@ -1448,30 +1549,15 @@ def evaluate_plan(
     effective: float | None
     dof: float | None = None
     if held is None:
-        starts = x[:, 0]
-        initial = InitialLaw(starts.mean(axis=0), np.atleast_2d(np.cov(starts, rowvar=False)))
         schedule = _schedule(plan, u.shape[1])
         stages = _StageCost.steps(cost, n, m, schedule.horizon)
-        if smoothing is None and not _has_density(schedule):
-            smoothing = _episode_smoothing(
-                plant, logger, schedule, stages, initial, samples, model_error, min_effective
-            )
         certificate = _admit(
-            certify_evaluation(
-                plant,
-                logger,
-                schedule,
-                method,
-                samples,
-                smoothing=smoothing,
-                initial=initial,
-                min_effective=min_effective,
+            _episode_certificate(
+                x, plant, logger, schedule, stages, smoothing, model_error, min_effective
             )
         )
-        tau = certificate.smoothing
-        correction = tau * tau * _horizon_beta(plant, schedule, stages[0]) if tau > 0.0 else 0.0
-        weighted, half, effective = _episodes_estimate(
-            x, u, logger, _smoothed(schedule, tau) if tau > 0.0 else schedule, stages
+        weighted, half, effective, correction = _episode_estimate(
+            x, u, plant, logger, schedule, stages, certificate.smoothing
         )
     else:
         stage = _StageCost.of(cost, n, m)
@@ -1504,4 +1590,113 @@ def evaluate_plan(
     share = correction / abs(weighted) if correction > 0.0 else 0.0
     return PlanEvaluation(
         value, (value - half, value + half), certificate, correction, share, effective, dof
+    )
+
+
+def _logged_cost(x: _Array, u: _Array, costs: tuple[_StageCost, ...]) -> float:
+    """The logs' own mean cost over the horizon: the value of the policy that logged them."""
+    return float(_stage_costs(x, u, costs).mean(axis=0).sum())
+
+
+def _evaluate_by_unit(
+    x: _Array,
+    u: _Array,
+    units: NDArray[np.int64],
+    plan: AffineSchedule,
+    *,
+    plant: Callable[[_Array, _Array], LinearGaussianPlant],
+    cost: QuadraticCost,
+    logger: AffinePolicy | None,
+    smoothing: float | None,
+    model_error: float,
+    min_effective: float,
+    resamples: int,
+    seed: int,
+) -> PlanEvaluation:
+    """:func:`evaluate_plan` by ``"pdis"`` on the episodes ``x``, ``u`` of ``units``, beside the
+    plan against the logger on them, both intervals read from a bootstrap over the units.
+
+    A unit's episodes are dependent through its state, so a draw takes as many units as there are,
+    with replacement, and every episode of a unit drawn. Every step that reads the episodes runs
+    again on each draw: ``plant`` builds the model from the episodes drawn, the logger is fitted
+    again unless it is given, and the initial law, the smoothing, the certificate and both values
+    are computed again. A draw the certificate refuses is counted and left out. Each interval is
+    its estimate plus or minus 1.96 standard deviations of its draws, widened by the plan's model
+    correction as :func:`evaluate_plan` widens its own; the difference's draws are the difference
+    within each draw. ``resamples`` is at least two, the caller's to check.
+
+    Raises:
+        InfeasibleEvaluation: when the certificate refuses the episodes, or refuses all draws but
+            one, which leaves no spread to read.
+    """
+    evaluation = evaluate_plan(
+        {"x": x, "u": u},
+        plan,
+        "pdis",
+        plant=plant(x, u),
+        cost=cost,
+        logger=logger,
+        smoothing=smoothing,
+        model_error=model_error,
+        min_effective=min_effective,
+    )
+    n, m = x.shape[-1], u.shape[-1]
+    stages = _StageCost.steps(cost, n, m, plan.horizon)
+    labels, members = np.unique(units, return_inverse=True)
+    rng = np.random.default_rng(seed)
+    draws: list[tuple[float, float]] = []
+    refusal: EvaluationCertificate | None = None
+    for _ in range(resamples):
+        drawn = np.bincount(rng.integers(0, labels.size, labels.size), minlength=labels.size)
+        rows = np.repeat(np.arange(x.shape[0]), drawn[members])
+        xs, us = x[rows], u[rows]
+        model = plant(xs, us)
+        fitted = (
+            logger
+            if logger is not None
+            else fit_logger(xs[:, :-1].reshape(-1, n), us.reshape(-1, m))
+        )
+        certificate = _episode_certificate(
+            xs, model, fitted, plan, stages, smoothing, model_error, min_effective
+        )
+        if not certificate.certified:
+            refusal = certificate
+            continue
+        weighted, _, _, correction = _episode_estimate(
+            xs, us, model, fitted, plan, stages, certificate.smoothing
+        )
+        draws.append((weighted - correction, weighted - correction - _logged_cost(xs, us, stages)))
+    refused = resamples - len(draws)
+    _log.log(
+        logging.WARNING if refused else logging.INFO,
+        "the certificate refused resamples of the units, and the intervals read the rest"
+        if refused
+        else "units resampled",
+        extra={
+            "chc_event": "unit_bootstrap",
+            "units": int(labels.size),
+            "resamples": resamples,
+            "refused": refused,
+        },
+    )
+    if refusal is not None and len(draws) < 2:
+        raise InfeasibleEvaluation(
+            replace(
+                refusal,
+                reason=f"the certificate refused {refused} of {resamples} resamples of the units, "
+                f"which leaves no spread to read; the last because {refusal.reason}",
+            )
+        )
+    spread = np.std(np.asarray(draws), axis=0, ddof=1)
+    widened = model_error * evaluation.model_correction
+    half, half_difference = (_Z95 * float(deviation) + widened for deviation in spread)
+    logged = _logged_cost(x, u, stages)
+    difference = evaluation.value - logged
+    return replace(
+        evaluation,
+        interval=(evaluation.value - half, evaluation.value + half),
+        versus_logger=LoggerComparison(
+            logged, difference, (difference - half_difference, difference + half_difference)
+        ),
+        bootstrap=UnitBootstrap(int(labels.size), resamples, refused),
     )

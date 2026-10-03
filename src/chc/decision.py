@@ -33,7 +33,7 @@ import math
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -51,7 +51,7 @@ from chc.evaluation import (
     LinearGaussianPlant,
     LoggerCheck,
     PlanEvaluation,
-    evaluate_plan,
+    _evaluate_by_unit,
 )
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.independence import gcm_test
@@ -113,6 +113,10 @@ parents.
 
 IdentificationStatus = Literal["identified", "asserted", "not_identified"]
 """How the set was arrived at. ``asserted`` means a caller named it and nothing here checked it."""
+
+TimeZero = Literal["calendar", "unit"]
+"""Where :meth:`Prescription.evaluate`'s windows start: on one calendar for every unit, or cut back
+from each unit's own latest period."""
 
 
 @dataclass(frozen=True)
@@ -407,26 +411,58 @@ class Prescription:
         smoothing: float | None = None,
         model_error: float = 1.0,
         min_effective: float = 100.0,
+        time_zero: TimeZero = "calendar",
+        n_resamples: int = 200,
+        seed: int = 0,
     ) -> PlanEvaluation:
         """The schedule's expected cost over its horizon, estimated from ``panel`` before it is
-        deployed: :func:`chc.evaluation.evaluate_plan` by ``"pdis"``, whose keywords these are.
+        deployed, beside the cost of the policy that logged the panel:
+        :func:`chc.evaluation.evaluate_plan` by ``"pdis"``, whose keywords the first four are, with
+        its intervals read from a bootstrap over the units.
 
-        What it is handed: the episodes are every window of ``H + 1`` consecutive periods of a
-        unit, over the plan's states and the levers, cut back from its latest period; the schedule
-        is the plan's actions, open loop; the cost is the plan's own, less its terminal term; the
-        plant is the plan's model over one step, linearised at the episodes' mean state and action,
-        with the covariance of its one-step residuals on them as the noise. ``panel`` may be the one
-        the plan was fitted on, and the plan was chosen on it, so a value read off it can be
-        optimistic; a later one is not.
+        What it is handed: the episodes are windows of ``H + 1`` consecutive periods of a unit,
+        over the plan's states and the levers; the schedule is the plan's actions, open loop; the
+        cost is the plan's own, less its terminal term; the plant is the plan's model over one
+        step, linearised at the episodes' mean state and action, with the covariance of its
+        one-step residuals on them as the noise. ``panel`` may be the one the plan was fitted on,
+        and the plan was chosen on it, so a value read off it can be optimistic; a later one is
+        not.
+
+        A window starts at its time zero, where a target trial starts each unit's follow-up: when
+        the unit is eligible and is assigned a strategy (Hernán and Robins, *Causal Inference:
+        What If*, section 22.4). Under ``"calendar"``, the default, the time zeros are the panel's
+        periods ``H``, ``2H``, ... before its last, the same for every unit, and a unit gives
+        every window it was observed throughout. Under ``"unit"`` each unit's windows are cut back
+        from its own latest period, a gap ending a run: where a unit's record ends then sets where
+        each of its windows starts, so when a unit leaves the panel because of what happened to
+        it, its windows are chosen by their own outcomes, and the value read off them is biased.
+
+        One unit's windows follow each other, dependent through its state, so the intervals come
+        from ``n_resamples`` draws of the units with replacement, from ``seed``, every window of a
+        drawn unit kept. Each draw runs the evaluation again: the plant is linearised again, the
+        logger fitted again unless it is given, the smoothing chosen again unless it is given, and
+        the certificate and the values computed again. An interval is its estimate plus or minus
+        1.96 standard deviations of its draws, widened by the model's correction as
+        :func:`~chc.evaluation.evaluate_plan` widens its own; a draw the certificate refuses is
+        left out and counted (:attr:`PlanEvaluation.bootstrap`). With few units the draws are
+        few distinct panels and the intervals too narrow, and windows from one unit are refused.
+
+        :attr:`PlanEvaluation.versus_logger` holds the plan's value less the logged policy's, on
+        the same windows, its interval read off the difference within each draw. The policy in
+        place can cost less than the plan; the difference is what switching to the plan would
+        change.
 
         Scope: what :mod:`chc.evaluation` states, and two things more. The logs' actions must
         depend on the state and a randomisation of their own alone, so a plan whose levers were
         logged on a column outside its state is refused: the weights need the logger's propensity
         given that column, and no policy of the state is that. The graph says what the levers were
         logged on, their parents; an asserted adjustment is taken to name it. A covariate adjusted
-        for only because it moves the target is no reason to refuse. And windows cut from one unit
-        follow each other, so they are dependent through the state, which the interval does not
-        see.
+        for only because it moves the target is no reason to refuse. And a window is read only
+        when its unit was observed to its end. A unit that leaves the panel because of what
+        happened to it after a window's time zero takes that window with it, and the windows left
+        are not those an unselected panel would hold; weighting them by the chance of staying,
+        which would correct that, is not built. Leaving on what happened before a time zero
+        moves only the law the windows start from, which the value is read at.
 
         What the graph cannot say, the panel is asked: whether the levers read a column besides the
         state, or the state's past (:attr:`PlanEvaluation.logger_check`, as
@@ -435,11 +471,21 @@ class Prescription:
 
         Raises:
             NotIdentifiedError: if the effect is not identified, so there is no plan.
-            DecisionError: on a plan made against driver forecasts, whose plant changes with the
+            DecisionError: on a ``time_zero`` other than ``"calendar"`` and ``"unit"``; fewer than
+                two resamples; a plan made against driver forecasts, whose plant changes with the
                 step; a plan whose levers were logged on a column outside its state, or whose
-                record does not say; or a panel with fewer than two windows.
-            InfeasibleEvaluation: when the evaluation's certificate refuses.
+                record does not say; a panel with fewer than two windows, or with windows of one
+                unit alone.
+            InfeasibleEvaluation: when the evaluation's certificate refuses, on the panel or on
+                every draw but one.
         """
+        if time_zero not in get_args(TimeZero):
+            raise DecisionError(f"time_zero must be one of {get_args(TimeZero)}, got {time_zero!r}")
+        if n_resamples < 2:
+            raise DecisionError(
+                f"n_resamples={n_resamples}: an interval read from draws of the units needs at "
+                "least two of them"
+            )
         plan = self.plan
         if plan is None:
             raise NotIdentifiedError(
@@ -468,20 +514,33 @@ class Prescription:
         if problem is None:
             raise DecisionError("the plan carries no problem, so there is no model to evaluate on")
         actions = np.asarray(plan.actions, dtype=np.float64)
-        logs = _episodes(
-            panel, states=columns.states, levers=self.lever_names, horizon=len(actions)
+        episodes = _episodes(
+            panel,
+            states=columns.states,
+            levers=self.lever_names,
+            horizon=len(actions),
+            time_zero=time_zero,
         )
+        if np.unique(episodes.units).size < 2:
+            raise DecisionError(
+                "the windows are one unit's, and the interval is read from draws of the units, "
+                "which would draw that unit every time"
+            )
         logger_check = _check_logger(panel, levers=self.lever_names, columns=columns)
-        evaluation = evaluate_plan(
-            logs,
+        model, dt = problem.model, problem.dt
+        evaluation = _evaluate_by_unit(
+            episodes.x,
+            episodes.u,
+            episodes.units,
             AffineSchedule.open_loop(actions, len(columns.states)),
-            "pdis",
-            plant=_linearised(problem.model, logs["x"], logs["u"], problem.dt),
+            plant=lambda x, u: _linearised(model, x, u, dt),
             cost=problem.cost,
             logger=logger,
             smoothing=smoothing,
             model_error=model_error,
             min_effective=min_effective,
+            resamples=n_resamples,
+            seed=seed,
         )
         return replace(evaluation, logger_check=logger_check)
 
@@ -1333,36 +1392,77 @@ def _check_logger(
     return check
 
 
+@dataclass(frozen=True)
+class _Episodes:
+    """The windows :meth:`Prescription.evaluate` reads: ``x (E, H + 1, n)``, ``u (E, H, m)``, and
+    ``units (E,)``, each window's unit as :meth:`chc.panel.Panel.codes` codes it."""
+
+    x: NDArray[np.float64]
+    u: NDArray[np.float64]
+    units: NDArray[np.int64]
+
+
 def _episodes(
-    panel: Panel, *, states: tuple[str, ...], levers: tuple[str, ...], horizon: int
-) -> dict[str, NDArray[np.float64]]:
-    """``x (E, H + 1, n)`` and ``u (E, H, m)``: every window of ``H + 1`` consecutive periods of a
-    unit, cut back from its latest one, so that a window starts where the one before it ends. A gap
-    ends a run, as in :func:`_transitions`, and the oldest periods of a run short of a window are
-    left out.
+    panel: Panel,
+    *,
+    states: tuple[str, ...],
+    levers: tuple[str, ...],
+    horizon: int,
+    time_zero: TimeZero,
+) -> _Episodes:
+    """Every window of ``H + 1`` consecutive periods of a unit that starts at a time zero, a unit's
+    latest first.
+
+    ``"calendar"``: the time zeros are the panel's periods ``H``, ``2H``, ... before its last, the
+    same for every unit, and a unit gives each window it was observed throughout. ``"unit"``: each
+    unit's windows are cut back from its own latest period, so that a window starts where the one
+    before it ends; a gap ends a run, as in :func:`_transitions`, and the oldest periods of a run
+    short of a window are left out.
 
     Raises:
         DecisionError: on fewer than two windows.
     """
     unit_codes, time_codes = panel.codes()
     order = np.lexsort((time_codes, unit_codes))
-    breaks = np.flatnonzero((np.diff(unit_codes[order]) != 0) | (np.diff(time_codes[order]) != 1))
-    windows = [
-        order[run[end - horizon : end + 1]]
-        for run in np.split(np.arange(order.size), breaks + 1)
-        for end in range(run.size - 1, horizon - 1, -horizon)
-    ]
-    if len(windows) < 2:
+    if time_zero == "calendar":
+        # Sorted by unit and period, a unit's periods rise strictly: H + 1 rows in a row of one
+        # unit whose periods differ by H are H + 1 consecutive periods.
+        units, times = unit_codes[order], time_codes[order]
+        last = panel.n_periods - 1
+        first = np.flatnonzero(((last - times) % horizon == 0) & (times + horizon <= last))
+        first = first[first + horizon < order.size]
+        end = first + horizon
+        first = first[(units[end] == units[first]) & (times[end] - times[first] == horizon)]
+        first = first[np.lexsort((-times[first], units[first]))]
+        rows = order[first[:, None] + np.arange(horizon + 1)]
+    else:
+        breaks = np.flatnonzero(
+            (np.diff(unit_codes[order]) != 0) | (np.diff(time_codes[order]) != 1)
+        )
+        windows = [
+            order[run[end - horizon : end + 1]]
+            for run in np.split(np.arange(order.size), breaks + 1)
+            for end in range(run.size - 1, horizon - 1, -horizon)
+        ]
+        rows = np.stack(windows) if windows else np.empty((0, horizon + 1), dtype=np.int64)
+    if rows.shape[0] < 2:
         raise DecisionError(
             f"an evaluation over episodes needs two windows of {horizon + 1} consecutive periods "
-            f"in a unit, and the panel has {len(windows)}"
+            f"in a unit, and the panel has {rows.shape[0]}"
         )
-    rows = np.stack(windows)
 
     def stack(names: tuple[str, ...]) -> NDArray[np.float64]:
         return np.stack([np.asarray(panel[name], dtype=np.float64) for name in names], axis=1)
 
-    return {"x": stack(states)[rows], "u": stack(levers)[rows[:, :-1]]}
+    return _Episodes(stack(states)[rows], stack(levers)[rows[:, :-1]], unit_codes[rows[:, 0]])
+
+
+@eqx.filter_jit
+def _one_step(model: Dynamics, x: Array, u: Array, dt: float) -> tuple[Array, Array, Array]:
+    """``model``'s RK4 step over ``dt`` from ``(x, u)`` and its Jacobians there, compiled: an
+    evaluation linearises once for every draw of its bootstrap."""
+    a, b = linearize_discrete(model, x, u, dt)
+    return a, b, rk4_step(model, 0.0, x, u, dt)
 
 
 def _linearised(
@@ -1374,10 +1474,11 @@ def _linearised(
     n, m = x.shape[-1], u.shape[-1]
     xs, xn, us = x[:, :-1].reshape(-1, n), x[:, 1:].reshape(-1, n), u.reshape(-1, m)
     x_bar, u_bar = xs.mean(axis=0), us.mean(axis=0)
-    jacobians = linearize_discrete(model, jnp.asarray(x_bar), jnp.asarray(u_bar), dt)
-    a, b = (np.asarray(jacobian, dtype=np.float64) for jacobian in jacobians)
-    step = np.asarray(rk4_step(model, 0.0, jnp.asarray(x_bar), jnp.asarray(u_bar), dt))
-    offset = step.astype(np.float64) - a @ x_bar - b @ u_bar
+    a, b, step = (
+        np.asarray(part, dtype=np.float64)
+        for part in _one_step(model, jnp.asarray(x_bar), jnp.asarray(u_bar), dt)
+    )
+    offset = step - a @ x_bar - b @ u_bar
     residual = xn - xs @ a.T - us @ b.T - offset
     return LinearGaussianPlant(a, b, offset, np.atleast_2d(np.cov(residual, rowvar=False)))
 

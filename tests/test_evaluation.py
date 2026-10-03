@@ -17,12 +17,14 @@ Truths are computed here, by Lyapunov solves and covariance propagation, not by 
 
 from __future__ import annotations
 
+import logging
 import math
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
+from scipy.stats import norm
 from scipy.stats import t as student
 
 from chc import QuadraticCost
@@ -34,8 +36,10 @@ from chc.evaluation import (
     InfeasibleEvaluation,
     InitialLaw,
     LinearGaussianPlant,
+    PlanEvaluation,
     _batch_half_width,
     _episode_smoothing,
+    _evaluate_by_unit,
     _smoothed_log_moments,
     _StageCost,
     certify_evaluation,
@@ -157,6 +161,43 @@ def _stationary_logs(
         mean + rng.standard_normal((replicates, mean.shape[0])) @ np.linalg.cholesky(covariance).T
     )
     return _rollouts(plant, logger, starts, steps, rng)
+
+
+def _unit_windows(
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    units: int,
+    windows: int,
+    horizon: int,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``x``, ``u`` and each episode's unit: every unit one run of the logger from its stationary
+    law, cut into ``windows`` consecutive windows of ``horizon`` steps, so that a unit's windows
+    share its state."""
+    mean, covariance = _stationary_state(plant, logger)
+    starts = mean + rng.standard_normal((units, mean.shape[0])) @ np.linalg.cholesky(covariance).T
+    x, u = _rollouts(plant, logger, starts, windows * horizon, rng)
+    xs = np.stack([x[:, k * horizon : (k + 1) * horizon + 1] for k in range(windows)], axis=1)
+    us = np.stack([u[:, k * horizon : (k + 1) * horizon] for k in range(windows)], axis=1)
+    return (
+        xs.reshape(units * windows, horizon + 1, -1),
+        us.reshape(units * windows, horizon, -1),
+        np.repeat(np.arange(units), windows),
+    )
+
+
+def _log_density(policy: AffinePolicy | AffineSchedule, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """``log N(u; gain x + offset, covariance)`` at every episode and step, up to a constant."""
+    if isinstance(policy, AffineSchedule):
+        mean = np.einsum("tmn,etn->etm", policy.gains, x) + policy.offsets
+    else:
+        mean = x @ policy.gain.T + policy.offset
+    residual = u - mean
+    precision = np.linalg.inv(policy.covariance)
+    return -0.5 * (
+        np.einsum("eti,ij,etj->et", residual, precision, residual)
+        + np.linalg.slogdet(policy.covariance)[1]
+    )
 
 
 def _xi_log_moment(
@@ -815,6 +856,230 @@ def test_fit_logger_recovers_the_logging_policy() -> None:
     assert np.allclose(fitted.gain, LOGGER.gain, atol=0.02)
     assert np.allclose(fitted.offset, LOGGER.offset, atol=0.01)
     assert np.allclose(fitted.covariance, LOGGER.covariance, rtol=0.03)
+
+
+# ------------------------------------------------------------------------- the units' bootstrap
+
+
+def test_the_plan_against_the_logger_is_read_off_the_difference_within_each_draw() -> None:
+    """With the plant, the logger and the smoothing given, a draw of the units recomputes two
+    means, and their bootstrap spread is the cluster-robust one: each episode's influence summed
+    within its unit (Liang and Zeger 1986). The difference's spread is the difference's
+    influence's, a third below the two spreads in quadrature, since both values read the same
+    episodes."""
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    x, u, units = _unit_windows(MARKET, logger, 150, 4, 5, np.random.default_rng(31))
+    tau = 0.6
+
+    result = _evaluate_by_unit(
+        x,
+        u,
+        units,
+        RAMP,
+        plant=lambda xs, us: MARKET,
+        cost=COST,
+        logger=logger,
+        smoothing=tau,
+        model_error=0.0,
+        min_effective=20.0,
+        resamples=4000,
+        seed=3,
+    )
+
+    smoothed = AffineSchedule(RAMP.gains, RAMP.offsets, np.array([[tau * tau]]))
+    xs = x[:, :-1]
+    cost = 0.5 * (np.einsum("eti,ij,etj->et", xs, Q, xs) + np.einsum("eti,ij,etj->et", u, R, u))
+    log_w = np.cumsum(_log_density(smoothed, xs, u) - _log_density(logger, xs, u), axis=1)
+    w = np.exp(log_w - log_w.max(axis=0))
+    w /= w.mean(axis=0)
+    plan = np.sum(w * (cost - np.mean(w * cost, axis=0)), axis=1)
+    logged = np.sum(cost - cost.mean(axis=0), axis=1)
+
+    def spread(influence: np.ndarray) -> float:
+        return math.sqrt(np.sum(np.bincount(units, weights=influence) ** 2)) / units.size
+
+    comparison, bootstrap = result.versus_logger, result.bootstrap
+    assert comparison is not None
+    assert bootstrap is not None
+    assert (bootstrap.units, bootstrap.resamples, bootstrap.refused) == (150, 4000, 0)
+    assert comparison.logger_value == pytest.approx(cost.mean(axis=0).sum(), rel=1e-12)
+    assert comparison.difference == pytest.approx(result.value - comparison.logger_value, rel=1e-12)
+    half = (result.interval[1] - result.interval[0]) / 2.0
+    paired = (comparison.interval[1] - comparison.interval[0]) / 2.0
+    assert half == pytest.approx(1.959964 * spread(plan), rel=0.06)
+    assert paired == pytest.approx(1.959964 * spread(plan - logged), rel=0.06)
+    assert spread(plan - logged) < 0.75 * math.hypot(spread(plan), spread(logged))
+
+
+def test_each_draw_of_the_units_is_evaluated_as_a_panel_of_its_own() -> None:
+    """Replaying the draws from the seed, each drawn panel is handed to ``evaluate_plan`` with a
+    plant fitted to it, so its logger is fitted, its starts' law read and its smoothing chosen on
+    it alone. The intervals are those draws' spread, the plan's model correction added as
+    ``evaluate_plan`` adds it, about the estimate on every unit."""
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    x, u, units = _unit_windows(MARKET, logger, 40, 3, 5, np.random.default_rng(61))
+
+    def plant(xs: np.ndarray, us: np.ndarray) -> LinearGaussianPlant:
+        """The market's step fitted by least squares to the episodes given."""
+        z = np.concatenate([xs[:, :-1], us, np.ones_like(us)], axis=-1).reshape(-1, 4)
+        y = xs[:, 1:].reshape(-1, 2)
+        fit = np.linalg.lstsq(z, y, rcond=None)[0]
+        noise = np.cov(y - z @ fit, rowvar=False)
+        return LinearGaussianPlant(fit[:2].T, fit[2:3].T, fit[3], noise)
+
+    def logged(xs: np.ndarray, us: np.ndarray) -> float:
+        stage = np.einsum("eti,ij,etj->et", xs[:, :-1], Q, xs[:, :-1])
+        return float(np.mean(np.sum(0.5 * (stage + np.einsum("eti,ij,etj->et", us, R, us)), 1)))
+
+    result = _evaluate_by_unit(
+        x,
+        u,
+        units,
+        RAMP,
+        plant=plant,
+        cost=COST,
+        logger=None,
+        smoothing=None,
+        model_error=0.5,
+        min_effective=5.0,
+        resamples=50,
+        seed=7,
+    )
+
+    rng = np.random.default_rng(7)
+    values, differences = [], []
+    for _ in range(50):
+        drawn_units = np.bincount(rng.integers(0, 40, 40), minlength=40)
+        rows = np.repeat(np.arange(units.size), drawn_units[units])
+        xs, us = x[rows], u[rows]
+        drawn = evaluate_plan(
+            {"x": xs, "u": us},
+            RAMP,
+            "pdis",
+            plant=plant(xs, us),
+            cost=COST,
+            model_error=0.5,
+            min_effective=5.0,
+        )
+        values.append(drawn.value)
+        differences.append(drawn.value - logged(xs, us))
+    whole = evaluate_plan(
+        {"x": x, "u": u},
+        RAMP,
+        "pdis",
+        plant=plant(x, u),
+        cost=COST,
+        model_error=0.5,
+        min_effective=5.0,
+    )
+    widened = 0.5 * whole.model_correction
+    z = float(norm.ppf(0.975))
+
+    comparison, bootstrap = result.versus_logger, result.bootstrap
+    assert comparison is not None
+    assert bootstrap is not None
+    assert (bootstrap.units, bootstrap.resamples, bootstrap.refused) == (40, 50, 0)
+    assert whole.certificate.smoothing > 0.0
+    assert result.value == pytest.approx(whole.value, rel=1e-12)
+    assert comparison.difference == pytest.approx(whole.value - logged(x, u), rel=1e-12)
+    for (lo, hi), centre, draws in (
+        (result.interval, whole.value, values),
+        (comparison.interval, comparison.difference, differences),
+    ):
+        assert (lo + hi) / 2.0 == pytest.approx(centre, rel=1e-12)
+        assert (hi - lo) / 2.0 == pytest.approx(z * np.std(draws, ddof=1) + widened, rel=1e-9)
+
+
+def test_the_units_bootstrap_covers_where_windows_taken_as_independent_do_not() -> None:
+    """Each of 60 units is one run of a logger whose loop keeps 98% of its slower mode a step, cut
+    into ten consecutive windows, so a unit's windows share its state. Over 40 replicates the
+    episodes' own interval, which takes them as independent, is little more than half as wide as
+    the estimate's spread and covers 28 of 40; resampling the units, the analysis run again on each
+    draw, covers 37 (the test asks 35, the binomial's 1.4% tail at the nominal 0.95) and is as wide
+    as the spread."""
+    logger = AffinePolicy(np.array([[0.02, 0.02]]), np.zeros(1), np.eye(1))
+    schedule = AffineSchedule.open_loop(np.linspace(0.2, -0.1, 5)[:, None], states=2)
+    truth = _episode_value(MARKET, schedule, InitialLaw(*_stationary_state(MARKET, logger)), 5)
+    rng = np.random.default_rng(41)
+
+    errors, independent, by_unit = [], [], []
+    for replicate in range(40):
+        x, u, units = _unit_windows(MARKET, logger, 60, 10, 5, rng)
+        alone = evaluate_plan(
+            {"x": x, "u": u}, schedule, "pdis", plant=MARKET, cost=COST, model_error=0.0
+        )
+        drawn = _evaluate_by_unit(
+            x,
+            u,
+            units,
+            schedule,
+            plant=lambda xs, us: MARKET,
+            cost=COST,
+            logger=None,
+            smoothing=None,
+            model_error=0.0,
+            min_effective=100.0,
+            resamples=100,
+            seed=replicate,
+        )
+        errors.append(drawn.value - truth)
+        independent.append(alone.interval)
+        by_unit.append(drawn.interval)
+
+    def coverage(intervals: list[tuple[float, float]]) -> float:
+        return float(np.mean([lo <= truth <= hi for lo, hi in intervals]))
+
+    def width(intervals: list[tuple[float, float]]) -> float:
+        return float(np.mean([hi - lo for lo, hi in intervals])) / 2.0
+
+    spread = 1.959964 * float(np.std(errors, ddof=1))
+    assert coverage(by_unit) >= 35 / 40
+    assert coverage(independent) <= 0.75
+    assert width(by_unit) == pytest.approx(spread, rel=0.25)
+    assert width(independent) < 0.7 * spread
+
+
+def test_draws_the_certificate_refuses_are_counted_and_too_many_refuse_the_evaluation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """At the certificate's edge, a draw of the units whose starts spread wider than the panel's
+    needs more episodes than it has. Such draws are left out, counted, and logged as a warning;
+    when all but one are, no spread is left to read and the evaluation is refused."""
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    x, u, units = _unit_windows(MARKET, logger, 100, 3, 5, np.random.default_rng(51))
+    starts = x[:, 0]
+    initial = InitialLaw(starts.mean(axis=0), np.cov(starts, rowvar=False))
+    edge = certify_evaluation(
+        MARKET, logger, RAMP, "pdis", x.shape[0], smoothing=0.5, initial=initial
+    ).effective_samples
+
+    def evaluate(resamples: int) -> PlanEvaluation:
+        return _evaluate_by_unit(
+            x,
+            u,
+            units,
+            RAMP,
+            plant=lambda xs, us: MARKET,
+            cost=COST,
+            logger=logger,
+            smoothing=0.5,
+            model_error=0.0,
+            min_effective=0.999 * edge,
+            resamples=resamples,
+            seed=0,
+        )
+
+    with caplog.at_level(logging.INFO, logger="chc.evaluation"):
+        result = evaluate(40)
+    records = [r for r in caplog.records if getattr(r, "chc_event", "") == "unit_bootstrap"]
+
+    assert result.bootstrap is not None
+    assert 0 < result.bootstrap.refused < 40
+    assert [(r.levelno, r.refused) for r in records] == [
+        (logging.WARNING, result.bootstrap.refused)
+    ]
+    with pytest.raises(InfeasibleEvaluation, match="which leaves no spread to read"):
+        evaluate(2)
 
 
 # ------------------------------------------------------------------------------ what is refused

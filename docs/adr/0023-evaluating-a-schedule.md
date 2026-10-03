@@ -1,6 +1,8 @@
 # ADR 0023 — Evaluating a schedule
 
-**Status:** proposed, 2026-09-29.
+**Status:** proposed, 2026-09-29. Amended 2026-10-03 by ADR 0049: `Prescription.evaluate`'s
+windows start on one calendar for every unit, its intervals come from a bootstrap over the units,
+and it sets the plan against the policy that logged the panel.
 
 ## Context
 
