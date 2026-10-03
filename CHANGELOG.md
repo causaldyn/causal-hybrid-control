@@ -27,6 +27,14 @@ still change).
   three families each forty percent apart, the mean's split gains 38.4 on average and loses under
   16 of them; at each level tried from 0.1 to 0.8 the split is the reference.
 
+### Changed
+
+- **The licence is Apache-2.0**, with a `NOTICE` file; releases up to 0.10.0 stay under MIT. It
+  permits what MIT permits and adds a patent licence from each contributor, which ends for anyone
+  who sues claiming the work infringes a patent. A redistributor keeps the `NOTICE` and marks the
+  files they changed, and a contribution comes under the same licence unless its author says
+  otherwise.
+
 ### Fixed
 
 - **`chc.response.Envelope` no longer compiles a program for each curve.**

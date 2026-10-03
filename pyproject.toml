@@ -4,7 +4,7 @@ version = "0.11.0"
 description = "Physics-structured dynamics with a learned causal residual, controlled by constrained optimal control / MPC."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "Apache-2.0"
 authors = [{ name = "Ilia Gradina", email = "ilia.gradina@gmail.com" }]
 keywords = [
     "causal-inference",
@@ -18,7 +18,6 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -137,6 +136,7 @@ include = [
     "/CITATION.cff",
     "/CONTRIBUTING.md",
     "/LICENSE",
+    "/NOTICE",
     "/README.md",
     "/SECURITY.md",
     "/justfile",
