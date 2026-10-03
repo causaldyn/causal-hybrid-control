@@ -241,6 +241,13 @@ def test_the_envelopes_slope_in_a_curve_parameter_is_exact_with_the_tangency_hel
     assert float(held(jnp.asarray(n))) == pytest.approx(float(moved), rel=1e-7)
 
 
+def test_envelopes_with_different_tangencies_share_one_tree_structure() -> None:
+    # so a program compiled for one posterior draw of an S-shaped curve serves every other draw
+    one, other = Envelope(Hill(2.0, 3.0)), Envelope(Hill(1.5, 4.5))
+    assert float(one.touch) != float(other.touch)
+    assert jax.tree_util.tree_structure(one) == jax.tree_util.tree_structure(other)
+
+
 def test_the_families_nest_where_their_definitions_say() -> None:
     spend = jnp.linspace(0.0, 12.0, 241)
 

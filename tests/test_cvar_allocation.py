@@ -8,6 +8,8 @@ every reading is one; and for what holds at any readings and level: the split ne
 the worst share than the reference, and its level's mean gain is the gains' own.
 """
 
+import logging
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -227,6 +229,48 @@ def test_an_s_curve_s_gain_is_its_envelope_s():
     hill, other = plan.spend
     assert 0.0 < hill < tangency
     assert plan.gain[0] == pytest.approx(envelope(hill, other) - envelope(45.0, 45.0), rel=1e-9)
+
+
+def _s_shaped_readings(count: int, seed: int) -> list[tuple[Channel, ...]]:
+    """``count`` readings of three Hill channels that start convex, each draw with slopes of its
+    own, so each relaxes to envelopes with tangencies of their own."""
+    rng = np.random.default_rng(seed)
+    return [
+        tuple(
+            Channel(kernel, Hill(float(s), float(n)), float(c))
+            for kernel, s, n, c in zip(
+                KERNELS,
+                np.array([150.0, 90.0, 60.0]) * rng.lognormal(0.0, 0.3, 3),
+                rng.uniform(1.5, 4.0, 3),
+                np.array([1000.0, 700.0, 450.0]) * rng.lognormal(0.0, 0.3, 3),
+                strict=True,
+            )
+        )
+        for _ in range(count)
+    ]
+
+
+def test_another_posteriors_s_shaped_draws_compile_nothing_new(caplog):
+    """The programs compiled for one posterior's draws serve the next posterior's. Each compiled
+    program is held in memory, so a program per draw and channel grows a long run without bound."""
+
+    def plan(readings):
+        return cvar_allocate(
+            readings,
+            BUDGET,
+            PERIODS,
+            level=0.5,
+            against=CURRENT,
+            lower=LOWER,
+            upper=UPPER,
+            history=HISTORY,
+        )
+
+    plan(_s_shaped_readings(6, seed=1))
+    with jax.log_compiles(True), caplog.at_level(logging.WARNING):
+        plan(_s_shaped_readings(6, seed=2))
+    compiled = [r.getMessage() for r in caplog.records if "XLA compilation" in r.getMessage()]
+    assert compiled == []
 
 
 @settings(max_examples=25, deadline=None)

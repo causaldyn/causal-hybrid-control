@@ -296,23 +296,26 @@ class Envelope(Saturation):
     """
 
     curve: Saturation
-    touch: float = eqx.field(static=True)  # the tangency, in scales
+    # the tangency, in scales: a leaf, so that envelopes of different curves of one family share a
+    # tree structure, and one compiled program serves every draw of a posterior
+    touch: Array
 
     def __init__(self, curve: Saturation) -> None:
         self.curve = curve
-        self.touch = curve._standard_tangency()
+        self.touch = _real(curve._standard_tangency())
 
     @property
     def scale(self) -> Array:
         return self.curve.scale
 
     def standard(self, z: Array) -> Array:
-        if self.touch == 0.0:
-            return self.curve.standard(z)
         # the touching point is held fixed: there g = z g', so its own derivative drops out of the
-        # chord's, and a slope in the curve's parameters is exact
-        chord = self.curve.standard(_real(self.touch)) / self.touch
-        return jnp.where(z < self.touch, chord * z, self.curve.standard(z))
+        # chord's, and a slope in the curve's parameters is exact. A concave curve touches at 0
+        # and its chord is never read; 1 stands in for it so that the division is defined
+        bent = self.touch > 0.0
+        at = jnp.where(bent, self.touch, 1.0)
+        chord = self.curve.standard(at) / at
+        return jnp.where(bent & (z < self.touch), chord * z, self.curve.standard(z))
 
     def _standard_inflection(self) -> float:
         return 0.0

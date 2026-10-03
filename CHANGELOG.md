@@ -25,6 +25,19 @@ still change).
   three families each forty percent apart, the mean's split gains 38.4 on average and loses under
   16 of them; at each level tried from 0.1 to 0.8 the split is the reference.
 
+### Fixed
+
+- **`chc.response.Envelope` no longer compiles a program for each curve.**
+  - *The defect:* the tangency was a static field, so the envelopes of two draws of one S-shaped
+    curve had different tree structures. Every jitted function they entered then compiled once per
+    draw and channel, `chc.allocation`'s value-and-slope among them.
+  - *Its size:* planned over 400 draws of a posterior of three Hill channels, `cvar_allocate`
+    compiled 1 542 programs. Each stayed in memory for the rest of the process, about 0.45 MiB
+    apiece.
+  - *The fix:* the tangency is now an array leaf. Envelopes share one structure, and a second
+    posterior's draws compile nothing; two tests hold both.
+  - *Behaviour change:* `Envelope.touch` is a 0-d array where it was a float.
+
 ## [0.10.0] — 2026-10-03
 
 ### Added
