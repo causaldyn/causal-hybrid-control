@@ -25,6 +25,14 @@
    STEP 5  Kumaraswamy at b = 2 has Hill's rho at n = 2a - 1, for every a > 1: in x = z*^a for the
            one and x = g(z*) for the other, both excesses are n x ((n - 1)/n - x), and both slope
            conditions are x^((a - 1)/a) (1 - x) = the same constant
+   STEP 6  the threshold, n = 1 + eps. A curve that starts as alpha u - beta u^2 in u = z^n has
+           rho = (alpha^2/beta) a (1 - a) eps^2 + o(eps^2), where a = -W(-2/e^2)/2 = 0.2031879 is
+           the root of a = e^(2a - 2) below 1: on z = (alpha/beta) eps sigma the excess is
+           (alpha^2/beta) eps^2 sigma (sigma - 1 - log sigma) to first order, largest at sigma = a.
+           Hill 1, Weibull, gamma and Chapman-Richards 2, Burr XII 2k/(k + 1), Kumaraswamy and beta
+           2b/(b - 1). Hill's, from STEP 1's root, is a (1 - a) eps^2 (1 - (1 + a) eps + O(eps^2)).
+           Gompertz starts with a slope, 1/(e - 1) at b = 1, and its convex stretch only bends it:
+           at b = 1 + eps, rho = eps^3/(12 (e - 1)) + O(eps^4)
 
    Run: timeout 300 maxima --very-quiet -b validation/envelope_nonconvexity.mac */
 
@@ -131,3 +139,63 @@ block([n, wt, f, rhs_k, rhs_h],
 for a in [1.5, 2.5, 4] do
   print("a =", a, ": kumaraswamy", nonconvexity(1 - (1 - z^a)^2, 0.3, 0.999999),
         "  hill at 2a - 1", hill_rho(2*a - 1))$
+
+print("=== STEP 6: the threshold ===")$
+block([a, psi, G, onset, gomp, s, c1, c2, c3, k, top, peak],
+  a : -lambert_w(-2*exp(-2))/2,
+  print("a:", float(a), "  a - e^(2a - 2) at 40 digits:",
+        block([fpprec : 40], bfloat(a - exp(2*a - 2))), "  a (1 - a):", float(a*(1 - a))),
+  /* the excess on the shape's own scale; at its peak log sigma = 2 sigma - 2, as for a */
+  psi : sigma*(sigma - 1 - log(sigma)),
+  print("psi' with log sigma = 2 sigma - 2:",
+        ratsimp(subst(log(sigma) = 2*sigma - 2, diff(psi, sigma)))),
+  print("psi there, less sigma (1 - sigma):",
+        ratsimp(subst(log(sigma) = 2*sigma - 2, psi) - sigma*(1 - sigma))),
+  /* g / z for g = alpha u - beta u^2, u = z^(1 + eps), z = (alpha/beta) eps sigma, and L the log of
+     (alpha/beta) eps, held as a symbol: eps L goes to 0 with eps */
+  G : alpha*exp(eps*(L + log(sigma))) - beta*(alpha/beta)*eps*sigma*exp(2*eps*(L + log(sigma))),
+  G : expand(ratdisrep(taylor(G, eps, 0, 1))),
+  print("d(g/z)/d sigma at first order, zero at sigma = 1 only:", factor(diff(G, sigma))),
+  print("the excess z (m - g/z) less (alpha^2/beta) eps^2 psi:",
+        ratsimp(expand((alpha/beta)*eps*sigma*(subst(sigma = 1, G) - G))
+                - (alpha^2/beta)*eps^2*psi)),
+  /* each family's onset in u at n = 1 */
+  onset(g) := block([t : expand(ratdisrep(taylor(g, u, 0, 2)))],
+    [coeff(t, u, 1), -coeff(t, u, 2), ratsimp(coeff(t, u, 1)^2/(-coeff(t, u, 2)))]),
+  print("hill [alpha, beta, alpha^2/beta]:", onset(u/(1 + u))),
+  print("weibull, and gamma and chapman-richards at a = p = 1:", onset(1 - exp(-u))),
+  print("burr xii:", onset(1 - (1 + u)^(-k))),
+  print("kumaraswamy, and beta at a = 1:", onset(1 - (1 - u)^b)),
+  /* Gompertz at b = 1 + eps on z = eps t: below eps^3 the curve is linear in t, which no chord
+     from the origin sees, and at eps^3 it is t^2/2 - t^3/6 over e - 1 */
+  gomp : (exp(-b*exp(-z)) - exp(-b))/(1 - exp(-b)),
+  s : expand(ratdisrep(taylor(subst([b = 1 + eps, z = eps*t], gomp), eps, 0, 3))),
+  [c1, c2, c3] : [coeff(s, eps, 1), coeff(s, eps, 2), coeff(s, eps, 3)],
+  print("bends at eps and eps^2, both 0:", ratsimp(diff(c1, t, 2)), ratsimp(diff(c2, t, 2))),
+  print("bend at eps^3 less (1 - t)/(e - 1):", ratsimp(diff(c3, t, 2) - (1 - t)/(%e - 1))),
+  /* the excess of h = t^2/2 - t^3/6 under its chord: h/t peaks at 3/2, the excess at 1/2 */
+  k : t/2 - t^2/6,
+  top : subst(t = 3/2, k),
+  peak : solve(diff(t*(top - k), t), t),
+  print("h/t peaks at", solve(diff(k, t), t), "  the excess is stationary at", peak,
+        "  where it is", map(lambda([p], subst(p, t*(top - k))), peak)))$
+/* Hill on STEP 1's root, A = 1 + x eps: log x = 2 (x - 1) - eps (x - 1)^2 at first order, so
+   x = a + x1 eps, and rho/eps^2 = x (1 - x)/(1 + x eps)^2 */
+block([lx, eq, x1, r],
+  lx : expand(ratdisrep(taylor(2*(1 + eps)/eps*(log(1 + x*eps) - log(1 + eps)), eps, 0, 1))),
+  print("log x less 2 (x - 1) - eps (x - 1)^2:", ratsimp(lx - (2*(x - 1) - eps*(x - 1)^2))),
+  eq : subst(log(a) = 2*a - 2,
+             expand(ratdisrep(taylor(log(a + x1*eps) - subst(x = a + x1*eps, lx), eps, 0, 1)))),
+  print("at eps^0:", ratsimp(coeff(eq, eps, 0)), "  x1:", factor(rhs(first(solve(coeff(eq, eps, 1), x1))))),
+  r : expand(ratdisrep(taylor(subst(x = a + rhs(first(solve(coeff(eq, eps, 1), x1)))*eps,
+                                    x*(1 - x)/(1 + x*eps)^2), eps, 0, 1))),
+  print("rho/eps^2 over a (1 - a), less 1 - (1 + a) eps:",
+        ratsimp(r/(a*(1 - a)) - (1 - (1 + a)*eps))))$
+for n in [1.01, 1.001] do
+  print("hill, n =", n, ": rho/(a (1 - a) eps^2)",
+        nonconvexity(z^n/(1 + z^n), 1.5*((n - 1)/(n + 1))^(1/n), 1)
+        /(float(-lambert_w(-2*exp(-2))/2*(1 + lambert_w(-2*exp(-2))/2))*(n - 1)^2))$
+for b in [1.01, 1.001] do
+  print("gompertz, b =", b, ": rho/(eps^3/(12 (e - 1)))",
+        nonconvexity(subst(b = b, (gompertz(z) - gompertz(0))/(1 - gompertz(0))), 1.2*log(b), 1)
+        /((b - 1)^3/(12*(float(%e) - 1))))$

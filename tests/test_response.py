@@ -297,6 +297,73 @@ def test_the_nonconvexity_does_not_move_with_the_currency() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("curve", "anchor"),
+    [
+        (Weibull(1.0, 1.0 + 1e-3), 0.0020111162423181239),
+        (Weibull(1.0, 1.0 + 1e-4), 0.00020015705713263540),
+        (Weibull(1.0, 1.0 + 1e-6), 2.0000249113597843e-06),
+        (Weibull(1.0, 1.0 + 1e-9), 2.0000002042076526e-09),
+        (Weibull(1.0, 1.0 + 1e-12), 2.0001778012172336e-12),
+        (ChapmanRichards(1.0, 1.0 + 1e-3), 0.0019986677767711026),
+        (ChapmanRichards(1.0, 1.0 + 1e-4), 0.00019998666777765502),
+        (ChapmanRichards(1.0, 1.0 + 1e-6), 1.9999986665032447e-06),
+        (ChapmanRichards(1.0, 1.0 + 1e-9), 2.0000001641474084e-09),
+        (ChapmanRichards(1.0, 1.0 + 1e-12), 2.0001778011633485e-12),
+        (Weibull(1.0, 1e4), 1.0002457076775969),
+        (ChapmanRichards(1.0, 1e4), 11.667123907124678),
+    ],
+    ids=lambda value: name(value) if isinstance(value, Response) else "",
+)
+def test_a_lambert_tangency_matches_paris_root_near_shape_one_and_far_from_it(
+    curve: Saturation, anchor: float
+) -> None:
+    # validation/envelope_nonconvexity.gp, e^u - 1 = k u at 80 digits: near k = 1 the root is near
+    # 2 (k - 1), where both of Lambert W's real branches round to -1
+    # pytest.approx's default abs of 1e-12 would pass any of the small anchors
+    assert curve.tangency() == pytest.approx(anchor, rel=1e-14, abs=0.0)
+
+
+# a (1 - a), for a the root of a = e^(2a - 2) below 1 (validation/envelope_nonconvexity.mac STEP 6)
+THRESHOLD = 0.16190255947297871
+PAST_ONE = 1.0 + 1e-6
+
+
+@pytest.mark.parametrize(
+    ("curve", "law"),
+    [
+        (Hill(2.0, PAST_ONE), 1.0),
+        (Weibull(2.0, PAST_ONE), 2.0),
+        (GammaCDF(2.0, PAST_ONE), 2.0),
+        (ChapmanRichards(2.0, PAST_ONE), 2.0),
+        (BurrXII(2.0, PAST_ONE, 1.5), 1.2),
+        (Kumaraswamy(2.0, PAST_ONE, 3.0), 3.0),
+        (BetaCDF(2.0, PAST_ONE, 2.0), 4.0),
+    ],
+    ids=lambda value: name(value) if isinstance(value, Response) else "",
+)
+def test_the_nonconvexity_vanishes_as_the_square_of_the_shape_past_one(
+    curve: Saturation, law: float
+) -> None:
+    # a curve that starts alpha u - beta u^2 in u = z^(1 + eps) has (alpha^2/beta) a (1 - a) eps^2
+    eps = PAST_ONE - 1.0
+    assert curve.nonconvexity() == pytest.approx(law * THRESHOLD * eps**2, rel=1e-4, abs=0.0)
+
+
+def test_gompertzs_nonconvexity_vanishes_as_the_cube_of_its_displacement_past_one() -> None:
+    # it starts with a slope, 1/(e - 1) at b = 1, which its convex stretch only bends
+    eps = 1e-4
+    assert Gompertz(2.0, 1.0 + eps).nonconvexity() == pytest.approx(
+        eps**3 / (12 * (math.e - 1)), rel=1e-3, abs=0.0
+    )
+
+
+@pytest.mark.parametrize("curve", [Gompertz(2.0, 1.0 + 1e-12), Logistic(2.0, 1e-8)], ids=name)
+def test_a_convex_stretch_within_rounding_of_none_has_no_nonconvexity(curve: Saturation) -> None:
+    assert curve.tangency() > 0.0
+    assert curve.nonconvexity() == 0.0
+
+
 def test_the_envelopes_slope_in_a_curve_parameter_is_exact_with_the_tangency_held() -> None:
     spend, n, step = 1.0, 3.0, 1e-6
     envelope = Envelope(Hill(2.0, n))

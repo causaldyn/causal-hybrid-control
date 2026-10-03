@@ -13,10 +13,13 @@ still change).
   the shape alone, 0 for a curve concave from zero: Hill's is 0.0674, 0.1547 and 0.2920 at slopes
   2, 3 and 5, roots of `4r³ + 12r² + 14r − 1`, `3r² + 6r − 1` (so `2/√3 − 1`) and
   `125r⁴ + 375r³ + 375r² − 35r − 32`, and rises to 1, a step's, as the slope grows; Kumaraswamy's
-  at `b = 2` is Hill's at slope `2a − 1`. A plan on envelopes loses at most a channel's coefficient
-  times it where it leaves the channel inside its chord. Derived in
-  `validation/envelope_nonconvexity.mac` and checked at 80 digits by its PARI/GP counterpart; the
-  anchors for thirteen families are Maxima's.
+  at `b = 2` is Hill's at slope `2a − 1`. Where a curve turns concave it falls as the square of the
+  shape's excess over 1: a curve that starts `αu − βu²` in `u = z^(1+ε)` has
+  `(α²/β) a(1 − a) ε²`, with `a = −W(−2/e²)/2` the root of `a = e^(2a−2)` below 1, so Hill's is
+  `0.1619 ε²`; Gompertz, which starts with a slope, has `ε³/(12(e − 1))` at `b = 1 + ε`. A plan
+  on envelopes loses at most a channel's coefficient times it where it leaves the channel inside
+  its chord. Derived in `validation/envelope_nonconvexity.mac` and checked at 80 digits by its
+  PARI/GP counterpart; the anchors for thirteen families are Maxima's.
 
 ### Deprecated
 
@@ -43,6 +46,15 @@ still change).
   `allocate_geos` and `minimax_allocate` return a linear program's vertex and were not affected
   (1.26/0.34 on the same ties). `cvar_allocate` keeps its reference split wherever no split beats
   it on the envelopes, as it promises, so a reference inside the chords stays there: 0.8/0.8.
+
+- **`Weibull` and `ChapmanRichards` put the tangency of a shape below `1 + 1e-4` at half its
+  spend, and of most below `1 + 1e-8` at `nan`.** It is the positive root of `e^u − 1 = k u`, and
+  it was read as the gap between Lambert W's two real branches, which both round to −1 there. The
+  envelope's chord ended at the wrong point, or with `nan` was left out, and `nonconvexity()`
+  raised; either way the envelope was off by no more than the curve's nonconvexity, 3.2e-9 of its
+  ceiling at `1 + 1e-4`. The root is now found where `(e^u − 1 − u)/u`, summed term by term below
+  1, meets `k − 1`, and from `k = 1 + 1e-15` to `1e4` it is within one ulp of PARI/GP's at 80
+  digits.
 
 - **`Prescription.evaluate` reads a panel as the target trial it emulates (ADR 0049).** Three
   parts of that trial were wrong (Hernán and Robins, *Causal Inference: What If*, chapter 22).

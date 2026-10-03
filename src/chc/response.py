@@ -104,7 +104,6 @@ from jax.custom_derivatives import SymbolicZero
 from jax.scipy.special import betainc, betaln, erf, gammainc, gammaln, ndtr, xlog1py, xlogy
 from jax.typing import ArrayLike
 from scipy.optimize import brentq
-from scipy.special import lambertw
 
 Model = TypeVar("Model")
 
@@ -134,10 +133,26 @@ def _require(
 def _lambert_root(rate: float) -> float:
     """The positive root of ``e^u - 1 = rate * u``, for ``rate > 1``.
 
-    With ``t = u + 1/rate`` the equation is ``t e^{-t} = e^{-1/rate} / rate``, so ``-t`` is Lambert
-    W of ``-e^{-1/rate} / rate``: the 0 branch gives ``u = 0``, the -1 branch the positive root.
+    With ``t = u + 1/rate`` the equation is ``t e^{-t} = e^{-1/rate} / rate``, so the root is the
+    gap between Lambert W's two real branches there. Near ``rate = 1`` both round to -1 and the gap
+    to nothing, so it is found instead where ``(e^u - 1 - u) / u``, which rises from 0 and is summed
+    term by term below 1, meets ``rate - 1``: the root is ``2 (rate - 1)`` to first order.
     """
-    return -1.0 / rate - float(lambertw(-math.exp(-1.0 / rate) / rate, k=-1).real)
+    excess = rate - 1.0
+
+    def gap(u: float) -> float:
+        if u >= 1.0:
+            return (math.expm1(u) - u) / u - excess
+        term, total, n = 0.5 * u, 0.0, 2
+        while total + term != total:
+            total += term
+            n += 1
+            term *= u / n
+        return total - excess
+
+    # (e^u - 1 - u) / u >= u / 2, and e^u = 1 + rate u <= (1 + rate) u <= (1 + rate) e^{u/2} past 1
+    high = min(2.0 * excess, 2.0 * math.log1p(rate))
+    return brentq(gap, 0.0, high, xtol=1e-15 * high, rtol=4 * math.ulp(1.0))
 
 
 def _off_zero(base: Array, exponent: Array) -> Array:
@@ -292,7 +307,8 @@ class Saturation(Response):
         A number of the shape alone, on the curve's scale of a ceiling of 1, so a change of
         currency leaves it. A plan made on envelopes loses at most a channel's coefficient times
         this where it leaves the channel inside its chord (:mod:`chc.allocation`). Hill's at slope
-        2, 3 and 5 is 0.0674, 0.1547 and 0.2920, and it rises to 1, a step's, as the slope grows
+        2, 3 and 5 is 0.0674, 0.1547 and 0.2920; it rises to 1, a step's, as the slope grows, and
+        falls as ``0.1619 (n - 1)^2`` as the slope ``n`` falls to 1, where the curve turns concave
         (``validation/envelope_nonconvexity.mac``).
         """
         touch = self._standard_tangency()
