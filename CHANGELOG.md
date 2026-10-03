@@ -7,6 +7,17 @@ still change).
 
 ## [Unreleased]
 
+### Deprecated
+
+- **`Prescription.evaluate` on windows of one unit; from 1.0 it raises `DecisionError` (ADR
+  0049).** The bootstrap over units below has none to resample there, and `chc.decision` is
+  stable, so the refusal waits for 1.0. Until then such windows are read as before, as
+  independent, under the interval that treats them so, too narrow for them, with
+  `PlanEvaluation.bootstrap` and `versus_logger` `None`. Each such call warns once with a
+  `DeprecationWarning` and logs the same at `WARNING` (`chc_event="one_unit"`). Evaluate on a
+  panel of several units instead. The test holds the reading of one zone's 1200 windows to the
+  code before the change, to `1e-9`.
+
 ### Fixed
 
 - **`Prescription.evaluate` reads a panel as the target trial it emulates (ADR 0049).** Three
@@ -26,7 +37,7 @@ still change).
     logger's fit, the smoothing, the certificate and both values. `PlanEvaluation.bootstrap` counts
     the draws the certificate refused, which are left out and logged as a warning. Over 40
     replicates of 60 units of ten consecutive windows, the windows' own interval covered 28 and the
-    bootstrap 37. Windows of one unit alone are refused.
+    bootstrap 37. Windows of one unit alone are read as before, deprecated (above).
   - **The comparator.** `PlanEvaluation.versus_logger` holds the logged policy's value on the same
     windows, the plan's value less it, and that difference's interval, read off the difference
     within each draw. The policy in place can cost less than the plan.

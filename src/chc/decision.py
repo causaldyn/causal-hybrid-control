@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, get_args
@@ -52,6 +53,7 @@ from chc.evaluation import (
     LoggerCheck,
     PlanEvaluation,
     _evaluate_by_unit,
+    evaluate_plan,
 )
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.independence import gcm_test
@@ -100,15 +102,15 @@ _log = logging.getLogger(__name__)
 
 Every record carries a ``chc_event`` key in its ``extra`` payload naming the point it was emitted
 at --- ``precision``, ``adjustment``, ``logger_check``, ``fit``, ``abort``, ``selection`` (one per
-step under ``max_levers``), ``driver_range``, ``plan``, ``certificate`` --- so a JSON formatter
-downstream can route on one field rather than parse a sentence. The library installs no handler and
-sets no level: that is the application's call, and a library that reaches for ``basicConfig`` takes
-it away.
+step under ``max_levers``), ``driver_range``, ``plan``, ``certificate``, and ``one_unit`` from
+:meth:`Prescription.evaluate` --- so a JSON formatter downstream can route on one field rather than
+parse a sentence. The library installs no handler and sets no level: that is the application's
+call, and a library that reaches for ``basicConfig`` takes it away.
 
 The records that are not ``INFO`` are the ones worth waking someone for: identifying in single
 precision, a graph that says the effect is not identified at all, a driver's forecast outside the
-range the panel logged, and levers that read a column besides the state and their recorded
-parents.
+range the panel logged, levers that read a column besides the state and their recorded parents,
+and an evaluation that reads one unit's windows as independent.
 """
 
 IdentificationStatus = Literal["identified", "asserted", "not_identified"]
@@ -445,7 +447,10 @@ class Prescription:
         1.96 standard deviations of its draws, widened by the model's correction as
         :func:`~chc.evaluation.evaluate_plan` widens its own; a draw the certificate refuses is
         left out and counted (:attr:`PlanEvaluation.bootstrap`). With few units the draws are
-        few distinct panels and the intervals too narrow, and windows from one unit are refused.
+        few distinct panels and the intervals too narrow. Windows of one unit leave nothing to
+        resample, so they are read as before, as independent, under an interval too narrow for
+        them, with ``bootstrap`` and ``versus_logger`` ``None``: deprecated, the call warns with a
+        :class:`DeprecationWarning`, and from 1.0 it raises :class:`DecisionError`.
 
         :attr:`PlanEvaluation.versus_logger` holds the plan's value less the logged policy's, on
         the same windows, its interval read off the difference within each draw. The policy in
@@ -474,8 +479,7 @@ class Prescription:
             DecisionError: on a ``time_zero`` other than ``"calendar"`` and ``"unit"``; fewer than
                 two resamples; a plan made against driver forecasts, whose plant changes with the
                 step; a plan whose levers were logged on a column outside its state, or whose
-                record does not say; a panel with fewer than two windows, or with windows of one
-                unit alone.
+                record does not say; or a panel with fewer than two windows.
             InfeasibleEvaluation: when the evaluation's certificate refuses, on the panel or on
                 every draw but one.
         """
@@ -521,27 +525,47 @@ class Prescription:
             horizon=len(actions),
             time_zero=time_zero,
         )
-        if np.unique(episodes.units).size < 2:
-            raise DecisionError(
-                "the windows are one unit's, and the interval is read from draws of the units, "
-                "which would draw that unit every time"
-            )
         logger_check = _check_logger(panel, levers=self.lever_names, columns=columns)
         model, dt = problem.model, problem.dt
-        evaluation = _evaluate_by_unit(
-            episodes.x,
-            episodes.u,
-            episodes.units,
-            AffineSchedule.open_loop(actions, len(columns.states)),
-            plant=lambda x, u: _linearised(model, x, u, dt),
-            cost=problem.cost,
-            logger=logger,
-            smoothing=smoothing,
-            model_error=model_error,
-            min_effective=min_effective,
-            resamples=n_resamples,
-            seed=seed,
-        )
+        schedule = AffineSchedule.open_loop(actions, len(columns.states))
+        if np.unique(episodes.units).size < 2:
+            # A break on the stable tier waits for 1.0 behind a DeprecationWarning: until then one
+            # unit's windows are read as they were before the bootstrap over units.
+            message = (
+                "the windows are one unit's, so there are no units to resample: the interval "
+                "treats the windows as independent and is too narrow. From 1.0 a panel of one "
+                "unit raises DecisionError; evaluate on a panel of several units instead"
+            )
+            warnings.warn(message, DeprecationWarning, stacklevel=2)
+            _log.warning(
+                message, extra={"chc_event": "one_unit", "windows": int(episodes.x.shape[0])}
+            )
+            evaluation = evaluate_plan(
+                {"x": episodes.x, "u": episodes.u},
+                schedule,
+                "pdis",
+                plant=_linearised(model, episodes.x, episodes.u, dt),
+                cost=problem.cost,
+                logger=logger,
+                smoothing=smoothing,
+                model_error=model_error,
+                min_effective=min_effective,
+            )
+        else:
+            evaluation = _evaluate_by_unit(
+                episodes.x,
+                episodes.u,
+                episodes.units,
+                schedule,
+                plant=lambda x, u: _linearised(model, x, u, dt),
+                cost=problem.cost,
+                logger=logger,
+                smoothing=smoothing,
+                model_error=model_error,
+                min_effective=min_effective,
+                resamples=n_resamples,
+                seed=seed,
+            )
         return replace(evaluation, logger_check=logger_check)
 
     def reach(self) -> dict[str, float]:

@@ -12,6 +12,7 @@ law, from the starts of the windows each reading takes.
 
 from __future__ import annotations
 
+import logging
 import math
 
 import numpy as np
@@ -26,25 +27,25 @@ STRAY, NOTICE = 1.5, 3
 
 
 def _market(
-    zones: int, seed: int, *, leave: bool = True
+    zones: int, seed: int, *, leave: bool = True, periods: int = PERIODS
 ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
-    """The rows of ``zones`` zones over twelve periods, with each zone's supply and incentive by
-    period and the last period it is observed in: the last but for a zone that strayed in time to
-    leave before it."""
+    """The rows of ``zones`` zones over ``periods`` periods, with each zone's supply and incentive
+    by period and the last period it is observed in: the last but for a zone that strayed in time
+    to leave before it."""
     rng = np.random.default_rng(seed)
     spread = math.sqrt((NOISE**2 + CHANNEL**2) / (1.0 - STEP**2))
-    supply = np.empty((zones, PERIODS))
+    supply = np.empty((zones, periods))
     supply[:, 0] = rng.normal(0.0, spread, zones)
-    incentive = rng.normal(0.0, 1.0, (zones, PERIODS))
-    shock = rng.normal(0.0, NOISE, (zones, PERIODS))
-    last = np.full(zones, PERIODS - 1)
-    for t in range(PERIODS):
-        strays = (last == PERIODS - 1) & (np.abs(supply[:, t]) > STRAY)
-        if leave and t + NOTICE < PERIODS - 1:
+    incentive = rng.normal(0.0, 1.0, (zones, periods))
+    shock = rng.normal(0.0, NOISE, (zones, periods))
+    last = np.full(zones, periods - 1)
+    for t in range(periods):
+        strays = (last == periods - 1) & (np.abs(supply[:, t]) > STRAY)
+        if leave and t + NOTICE < periods - 1:
             last[strays] = t + NOTICE
-        if t + 1 < PERIODS:
+        if t + 1 < periods:
             supply[:, t + 1] = STEP * supply[:, t] + CHANNEL * incentive[:, t] + shock[:, t]
-    zone, time = np.nonzero(np.arange(PERIODS) <= last[:, None])
+    zone, time = np.nonzero(np.arange(periods) <= last[:, None])
     rows = {
         "zone": zone,
         "time": time,
@@ -163,16 +164,57 @@ def test_the_draws_of_the_zones_are_the_callers_to_set_and_to_repeat(
     assert first.interval != other.interval
 
 
-def test_the_evaluation_refuses_what_a_bootstrap_over_the_zones_cannot_read(
+def test_the_evaluation_refuses_a_time_zero_or_a_count_of_draws_it_cannot_read(
     prescription: chc.Prescription,
 ) -> None:
     rows, _, _, _ = _market(40, seed=1, leave=False)
     panel = chc.Panel.from_frame(rows, unit="zone", time="time", seed=0)
-    alone = {name: column[rows["zone"] == 0] for name, column in rows.items()}
 
     with pytest.raises(chc.DecisionError, match="time_zero must be one of"):
         prescription.evaluate(panel, time_zero="first")  # type: ignore[arg-type]
     with pytest.raises(chc.DecisionError, match="needs at least two of them"):
         prescription.evaluate(panel, n_resamples=1)
-    with pytest.raises(chc.DecisionError, match="the windows are one unit's"):
-        prescription.evaluate(chc.Panel.from_frame(alone, unit="zone", time="time", seed=0))
+
+
+def test_one_zones_windows_are_read_as_before_and_the_reading_is_deprecated(
+    prescription: chc.Prescription, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One zone's windows leave no zones to resample. Until 1.0 they are read as they were before
+    the bootstrap over units, as independent, and every call warns once, and logs it. The readings
+    are fe39f1b's ``Prescription.evaluate`` on this panel, before the bootstrap: the smoothing
+    chosen under a binding ``min_effective``, and the logger and the smoothing given."""
+    rows, _, _, _ = _market(1, seed=7, leave=False, periods=3601)
+    panel = chc.Panel.from_frame(rows, unit="zone", time="time", seed=0)
+    logger = chc.AffinePolicy(np.zeros((1, 1)), np.zeros(1), np.eye(1))
+    calls = [
+        ({"min_effective": 400.0}, 2.36221941740616, (2.078174916606575, 2.646263918205745)),
+        (
+            {"logger": logger, "smoothing": 0.5},
+            2.3818807810249143,
+            (2.085154423058448, 2.6786071389913806),
+        ),
+    ]
+
+    for keywords, value, interval in calls:
+        caplog.clear()
+        with (
+            caplog.at_level(logging.INFO, logger="chc.decision"),
+            pytest.warns(
+                DeprecationWarning,
+                match=r"treats the windows as independent and is too narrow\. From 1\.0 a panel of "
+                "one unit raises DecisionError; evaluate on a panel of several units instead",
+            ) as caught,
+        ):
+            reading = prescription.evaluate(panel, model_error=0.5, **keywords)
+        records = [r for r in caplog.records if getattr(r, "chc_event", "") == "one_unit"]
+
+        assert [w.category for w in caught] == [DeprecationWarning]
+        assert [(r.levelno, r.getMessage(), r.windows) for r in records] == [
+            (logging.WARNING, str(caught[0].message), 1200)
+        ]
+        assert reading.bootstrap is None
+        assert reading.versus_logger is None
+        assert reading.logger_check is not None
+        assert reading.certificate.samples == 1200
+        assert reading.value == pytest.approx(value, rel=1e-9)
+        assert reading.interval == pytest.approx(interval, rel=1e-9)

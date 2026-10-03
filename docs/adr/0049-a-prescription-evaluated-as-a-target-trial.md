@@ -51,7 +51,15 @@ were wrong.
   - A draw the certificate refuses is left out, counted (`PlanEvaluation.bootstrap`, a
     `UnitBootstrap`) and logged at `WARNING` (`chc_event="unit_bootstrap"`). When every draw but
     one is refused, no spread is left and the evaluation raises `InfeasibleEvaluation`.
-  - Windows of one unit are refused (`DecisionError`): every draw would be that unit.
+  - **Windows of one unit are deprecated, not refused.** A bootstrap over units would draw that
+    unit every time, so there is no interval to read from it. But `chc.decision` is in the stable
+    tier, whose breaking changes wait for 1.0 and get a deprecation cycle, and refusing would fail
+    a call that ran before. Until 1.0 such windows are read as before: `evaluate_plan` by
+    `"pdis"`, the windows taken as independent, under an interval too narrow for them, with
+    `bootstrap` and `versus_logger` `None` and no comparator. Each such call warns once with a
+    `DeprecationWarning` saying so, that from 1.0 a panel of one unit raises `DecisionError`, and
+    to evaluate on a panel of several units instead; it logs the same at `WARNING`
+    (`chc_event="one_unit"`).
 - **The logger beside the plan.** `PlanEvaluation.versus_logger` is a `LoggerComparison`: the
   logs' own mean cost over the horizon, which is the logger's value from the windows' starts; the
   plan's value less it; and that difference's interval, read off the difference within each draw.
@@ -110,8 +118,11 @@ were wrong.
 - **Few units.** A bootstrap over few units draws few distinct panels. In the coverage test's
   world, 600 windows split over 5, 10, 20 and 60 units, 40 replicates each, the bootstrap covered
   34, 36, 34 and 37, and the windows' own interval 21, 26, 20 and 28.
-- **One unit is refused** where it was evaluated before: a single long run, one building or one
-  geo, has nothing to resample by unit. `evaluate_plan` still reads its windows as independent.
+- **One unit is read as before, deprecated**: a single long run, one building or one geo, has
+  nothing to resample by unit. `tests/test_target_trial.py` holds the reading of one zone's 1200
+  windows to `evaluate`'s on this change's base, `fe39f1b`, to `1e-9`: with the smoothing chosen
+  under a binding `min_effective`, and with the logger and the smoothing given. From 1.0 such a
+  panel raises `DecisionError`; `evaluate_plan` still reads its windows as independent.
 - An evaluation runs the analysis `n_resamples + 1` times.
 - On a panel whose units are observed throughout, the calendar's windows are those cut back, and
   the value is unchanged; the interval is the bootstrap's.
