@@ -182,7 +182,8 @@ def test_one_zones_windows_are_read_as_before_and_the_reading_is_deprecated(
     """One zone's windows leave no zones to resample. Until 1.0 they are read as they were before
     the bootstrap over units, as independent, and every call warns once, and logs it. The readings
     are fe39f1b's ``Prescription.evaluate`` on this panel, before the bootstrap: the smoothing
-    chosen under a binding ``min_effective``, and the logger and the smoothing given."""
+    chosen under a binding ``min_effective``, and the logger and the smoothing given. Two zones are
+    enough to draw."""
     rows, _, _, _ = _market(1, seed=7, leave=False, periods=3601)
     panel = chc.Panel.from_frame(rows, unit="zone", time="time", seed=0)
     logger = chc.AffinePolicy(np.zeros((1, 1)), np.zeros(1), np.eye(1))
@@ -208,7 +209,7 @@ def test_one_zones_windows_are_read_as_before_and_the_reading_is_deprecated(
             reading = prescription.evaluate(panel, model_error=0.5, **keywords)
         records = [r for r in caplog.records if getattr(r, "chc_event", "") == "one_unit"]
 
-        assert [w.category for w in caught] == [DeprecationWarning]
+        assert [(w.category, w.filename) for w in caught] == [(DeprecationWarning, __file__)]
         assert [(r.levelno, r.getMessage(), r.windows) for r in records] == [
             (logging.WARNING, str(caught[0].message), 1200)
         ]
@@ -218,3 +219,10 @@ def test_one_zones_windows_are_read_as_before_and_the_reading_is_deprecated(
         assert reading.certificate.samples == 1200
         assert reading.value == pytest.approx(value, rel=1e-9)
         assert reading.interval == pytest.approx(interval, rel=1e-9)
+
+    two, _, _, _ = _market(2, seed=7, leave=False, periods=1801)
+    drawn = prescription.evaluate(
+        chc.Panel.from_frame(two, unit="zone", time="time", seed=0), n_resamples=2
+    )
+    assert drawn.bootstrap is not None
+    assert drawn.bootstrap.units == 2
