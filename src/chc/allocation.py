@@ -41,6 +41,15 @@ the split where its curves are concave, so the worst is too, and cutting planes 
 on it from below while the splits they propose close on it from above; the two ends are the
 certificate.
 
+**A split that gains in the worst share of a posterior's draws.** A fit's draws are readings too,
+many and alike, and over them the worst case is one draw. :func:`cvar_allocate` takes the readings
+and a reference split, the plan in place, and chooses the split whose mean gain over the reference
+in the worst ``level`` share of the readings is the most: the gain's conditional value at risk
+(Rockafellar and Uryasev 2000). The reference gains nothing under any reading, so the split never
+does worse in that share than keeping it; at ``level = 1`` it is the split for the mean return. The
+share's mean gain is concave in the split where the curves are, and the same cutting planes close
+on it from above.
+
 **What a wrong channel costs the plan.** A plan made on channels whose parameters are off by ``d``
 loses ``d' W d / 2`` of the worth the true channels' plan returns, to second order:
 :func:`decision_weight` is that ``W``, the decision weight of an experiment's value of information
@@ -88,6 +97,10 @@ HONEST SCOPE:
 * A split for several readings is robust to the readings it is given and to no other: it hedges
   between the families the tests could not tell apart, not against one none of them is. On an
   S-shaped curve the regret is the envelope's.
+* A split for the worst share weighs every reading alike, as draws of a posterior are, and its
+  share is of the readings, a probability only as far as they are a posterior's draws. Where they
+  disagree on which way the budget should move, no move may gain on average in the worst share, and
+  the split is then the reference.
 * The decision weight is local: second order in the error, at the plan on the channels as given,
   and a channel held at an end of its box carries no weight. One that would leave its end under a
   small error costs more than ``W`` says, as :mod:`chc.experiment`'s pinned levers do. It is read
@@ -129,6 +142,7 @@ from chc.response import Channel, Logarithmic, Power, Saturation, relax
 __all__ = [
     "Allocation",
     "AllocationWeight",
+    "CvarAllocation",
     "GeoAllocation",
     "Goal",
     "MarginalReturnTarget",
@@ -140,6 +154,7 @@ __all__ = [
     "allocate_geos",
     "budget_for",
     "budget_for_geos",
+    "cvar_allocate",
     "decision_weight",
     "minimax_allocate",
 ]
@@ -223,6 +238,26 @@ class MinimaxAllocation:
     best: np.ndarray
     regret: np.ndarray
     worst: float
+    bound: float
+
+
+@dataclass(frozen=True)
+class CvarAllocation:
+    """A split chosen for the most mean gain over a reference in the worst share of the readings.
+
+    Attributes:
+        spend: ``(channels,)`` spend a period, in the budget's currency.
+        gain: ``(readings,)`` each reading's return on the split less its return on the reference,
+            both on its envelopes.
+        cvar: the mean of the worst ``level`` share of ``gain``, the split's; never below 0, which
+            is the reference's own.
+        bound: no split in the box at the budget has a ``cvar`` above this, so ``bound - cvar``
+            bounds how far the split is from the best.
+    """
+
+    spend: np.ndarray
+    gain: np.ndarray
+    cvar: float
     bound: float
 
 
@@ -775,6 +810,152 @@ def minimax_allocate(
     return MinimaxAllocation(
         spend=np.asarray(chosen), best=best, regret=regret, worst=worst, bound=min(floor, worst)
     )
+
+
+def cvar_allocate(
+    readings: Sequence[Sequence[Channel]],
+    budget: float,
+    periods: int,
+    *,
+    level: float,
+    against: ArrayLike,
+    lower: ArrayLike,
+    upper: ArrayLike,
+    history: ArrayLike | None = None,
+) -> CvarAllocation:
+    """Spend ``budget`` for the most mean gain over ``against`` in the worst ``level`` share of
+    ``readings`` of the channels: the gain's conditional value at risk.
+
+    Each reading is a whole set of channels, one a column, as :func:`minimax_allocate` takes them:
+    a posterior's draws, say, weighed alike. A split's gain under a reading is its return less the
+    reference's, both on the reading's envelopes, and the split returned has the most mean gain
+    over the worst ``level`` share of the readings, to a share ``1e-9`` of the reference's largest
+    return or as near as 500 rounds of cutting planes come. The reference spends the budget in the
+    box and gains nothing under any reading, so the split returned never does worse in that share
+    than keeping it. At ``level = 1`` the split has the most mean gain, the posterior's expected
+    return; as the level falls it moves only as far as the worst readings agree it gains.
+
+    The mean of the worst share is ``max_eta eta - E[(eta - gain)_+] / level`` (Rockafellar and
+    Uryasev 2000), concave in the split where every curve is concave. The cutting planes (Kelley
+    1960) are every reading's tangent at every split tried, starting from the reference, and the
+    linear program over them bounds the most from above; its solution, moved onto the budget, is
+    the next split tried.
+
+    Args:
+        readings: the readings, each with one channel a column; at least one.
+        budget, periods, lower, upper, history: as :func:`allocate` takes them.
+        level: the share of the readings, the worst, whose mean gain the split maximises, in
+            ``(0, 1]``. There is no default: it is how much of the readings the plan may not lose
+            on.
+        against: ``(channels,)`` the reference's spend a period, in the box and spending the
+            budget: the plan the split must beat, the current one at this budget, say.
+
+    Raises:
+        TypeError, ValueError: what :func:`allocate` refuses of any reading, the box or the
+            history; no readings; readings of different numbers of channels; a level outside
+            ``(0, 1]``; a reference of the wrong shape, outside the box or not spending the budget.
+    """
+    readings = tuple(tuple(reading) for reading in readings)
+    if not readings:
+        raise ValueError("no readings to plan over")
+    size = len(readings[0])
+    if any(len(reading) != size for reading in readings):
+        raise ValueError(
+            f"the readings have {sorted({len(r) for r in readings})} channels; each reads them all"
+        )
+    if not 0.0 < level <= 1.0:
+        raise ValueError(f"level={level!r} is not a share of the readings in (0, 1]")
+    lower_rates, upper_rates, spent = _inputs(readings[0], periods, lower, upper, history)
+    for reading in readings[1:]:
+        _check(reading, periods, lower_rates, upper_rates, spent)
+    rate = float(budget) / periods
+    reference = np.asarray(against, dtype=float)
+    if reference.shape != (size,) or not np.all(np.isfinite(reference)):
+        raise ValueError(f"against has shape {reference.shape}; it needs one finite rate a channel")
+    if np.any(reference < lower_rates) or np.any(reference > upper_rates):
+        raise ValueError(
+            f"the reference {reference} is outside the box [{lower_rates}, {upper_rates}]"
+        )
+    if not abs(float(reference.sum()) - rate) <= 1e-9 * abs(rate):
+        raise ValueError(
+            f"the reference spends {float(reference.sum())} a period and the budget {rate}; the "
+            "gain is read against a split of the same budget"
+        )
+    envelopes = [_worths(relax(reading), spent, periods) for reading in readings]
+
+    def returns(split: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Every reading's return on ``split``, and its slope in each channel's rate."""
+        values = np.empty(len(readings))
+        slopes = np.empty((len(readings), size))
+        for index, worths in enumerate(envelopes):
+            pairs = [
+                _value_and_slope(w, jnp.asarray(r, dtype=float))
+                for w, r in zip(worths, split, strict=True)
+            ]
+            values[index] = sum(float(value) for value, _ in pairs)
+            slopes[index] = [float(slope) for _, slope in pairs]
+        return values, slopes
+
+    base, _ = returns(reference)
+    count = len(readings)
+    scale = float(np.max(np.abs(base))) or 1.0
+    # the variables are the rates, eta and one excess u_r a reading; each plane reads
+    # u_r >= eta - (gain_r + slope_r @ (s - tried)), in units of the reference's largest return
+    rows: list[sparse.coo_array] = []
+    limits: list[np.ndarray] = []
+    lines = np.repeat(np.arange(count), size + 2)
+    columns = np.concatenate(
+        [np.tile(np.arange(size + 1), (count, 1)), size + 1 + np.arange(count)[:, None]], axis=1
+    ).ravel()
+    best, chosen, gains = -np.inf, reference, np.zeros(count)
+    ceiling = np.inf
+    splits = [reference]
+    for _ in range(_ROUNDS):
+        for tried in splits:
+            values, slopes = returns(tried)
+            gain = values - base
+            value = _cvar(gain, level)
+            if value > best:
+                best, chosen, gains = value, tried, gain
+            plane = np.concatenate([-slopes / scale, np.ones((count, 1)), -np.ones((count, 1))], 1)
+            rows.append(
+                sparse.coo_array((plane.ravel(), (lines, columns)), shape=(count, size + 1 + count))
+            )
+            limits.append((gain - slopes @ tried) / scale)
+        if ceiling - best <= _GAP * scale:
+            break
+        program = linprog(
+            np.concatenate([np.zeros(size), [-1.0], np.full(count, 1.0 / (level * count))]),
+            A_ub=sparse.vstack(rows, format="csr"),
+            b_ub=np.concatenate(limits),
+            A_eq=np.concatenate([np.ones(size), np.zeros(1 + count)])[None, :],
+            b_eq=[rate],
+            bounds=[
+                *zip(lower_rates, upper_rates, strict=True),
+                (None, None),
+                *((0.0, None) for _ in range(count)),
+            ],
+            method="highs",
+            options={"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10},
+        )
+        if program.status != 0:
+            raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
+        ceiling = min(ceiling, -float(program.fun) * scale)
+        splits = [_onto(program.x[:size], lower_rates, upper_rates, rate)]
+    return CvarAllocation(
+        spend=np.asarray(chosen), gain=gains, cvar=float(best), bound=max(ceiling, best)
+    )
+
+
+def _cvar(gain: np.ndarray, level: float) -> float:
+    """The mean of the worst ``level`` share of ``gain``, each weighed alike, the last in part."""
+    ordered = np.sort(gain)
+    share = level * ordered.size
+    whole = int(np.floor(share))
+    total = float(ordered[:whole].sum())
+    if whole < ordered.size:
+        total += (share - whole) * float(ordered[whole])
+    return total / share
 
 
 def decision_weight(

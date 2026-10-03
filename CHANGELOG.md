@@ -7,6 +7,24 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **A split for the worst share of the readings, `chc.allocation.cvar_allocate`**
+  (*experimental*, ADR 0048). A fit's draws are readings of the channels, many and alike, and over
+  them the worst case is one draw. `cvar_allocate(readings, budget, periods, *, level, against,
+  lower, upper, history=None)` returns a `CvarAllocation`: the split whose mean gain over the
+  reference split `against`, the plan in place, in the worst `level` share of the readings is the
+  most, the gain's conditional value at risk (Rockafellar and Uryasev 2000), with each reading's
+  gain and a bound above the share's mean. The reference gains nothing under any reading, so the
+  split never does worse in that share than keeping it, and at `level = 1` it is the mean return's
+  split. Kelley's cutting planes close on it as `minimax_allocate`'s do, one excess a reading in
+  the linear program. The tests hold it to closed forms on two linear readings, in any unit; on
+  three channels with carryover under thirty readings, to every split of a 241-by-241 grid at three
+  levels; to `allocate` where the readings are one; and, over random readings, levels and
+  references, to a share's mean never below 0. Fourteen mutations caught. On thirty readings of
+  three families each forty percent apart, the mean's split gains 38.4 on average and loses under
+  16 of them; at each level tried from 0.1 to 0.8 the split is the reference.
+
 ## [0.10.0] — 2026-10-03
 
 ### Added
