@@ -1,0 +1,133 @@
+/* How far a concave envelope rises above its S-shaped curve (chc.response, chc.allocation).
+
+   The envelope of g is the chord from the origin to the tangency t, g(t) = t g'(t), and the curve
+   beyond it. Its largest excess over the curve, the nonconvexity
+
+       rho = max over 0 < z < t of  m z - g(z),   m = g(t) / t,
+
+   is reached where g'(z) = m, below the inflection. rho is a number of the shape alone: a change of
+   scale moves t and z together and leaves it.
+
+   Why it matters: a budget spread over separable curves is one linear constraint, so the plan on
+   the envelopes can be taken with at most one channel strictly inside its chord (two inside chords
+   at one price trade along them at no change in the relaxed value), and the plan's shortfall from
+   the envelopes' value is at most the largest channel's coefficient times its rho: Shapley and
+   Folkman's lemma for one constraint (Aubin and Ekeland 1976; Udell and Boyd 2016).
+
+   STEP 1  Hill, g = z^n/(1 + z^n): with A = 1 + z*^n in (1, n), rho = (A - 1)(n - A)/A^2, where A
+           solves (A - 1)/(n - 1) = (A/n)^(2n/(n - 1)); the tangency is the other root, A = n
+   STEP 2  Hill at whole n: the root equation is a polynomial in t = z*^(1/2) (n even) or
+           t = z*^(1/n)... (see below), and rho is algebraic. n = 2: 4 r^3 + 12 r^2 + 14 r - 1 = 0,
+           with z* = 1/T^2 for T the tribonacci constant; n = 3: rho = 2/sqrt(3) - 1;
+           n = 5: 125 r^4 + 375 r^3 + 375 r^2 - 35 r - 32 = 0
+   STEP 3  the anchors for the tests: every S-shaped family at the tests' shapes, to double precision
+   STEP 4  the steep limit: Hill's rho rises to 1 as n grows, the step's, a knapsack's item
+   STEP 5  Kumaraswamy at b = 2 has Hill's rho at n = 2a - 1, for every a > 1: in x = z*^a for the
+           one and x = g(z*) for the other, both excesses are n x ((n - 1)/n - x), and both slope
+           conditions are x^((a - 1)/a) (1 - x) = the same constant
+
+   Run: timeout 300 maxima --very-quiet -b validation/envelope_nonconvexity.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 16$
+
+print("=== STEP 1: Hill's nonconvexity, reduced ===")$
+block([m, u, excess, stat, claimed, onroot, z, n],
+  assume(n > 1, z > 0, z < 1),
+  /* z here is z*^n / (n - 1), in (0, 1]; the tangency is z = 1 */
+  m : (n - 1)^(1 - 1/n)/n,
+  u : ((n - 1)*z)^(1/n),
+  excess : m*u - (n - 1)*z/(1 + (n - 1)*z),
+  /* the slope condition m = g'(u), cleared of its denominator */
+  stat : m - n*u^(n - 1)/(1 + (n - 1)*z)^2,
+  claimed : (1 + (n - 1)*z)^2 - n^2*z^((n - 1)/n),
+  print("slope condition over (1 + (n-1) z)^2 - n^2 z^((n-1)/n), free of z:",
+        radcan(stat*(1 + (n - 1)*z)^2/claimed)),
+  onroot : radcan(subst(z^(1/n) = n^2*z/(1 + (n - 1)*z)^2, radcan(excess))),
+  print("the excess on the root less (n-1)^2 z (1-z)/(1+(n-1) z)^2:",
+        radcan(onroot - (n - 1)^2*z*(1 - z)/(1 + (n - 1)*z)^2)),
+  /* A = 1 + (n - 1) z */
+  print("the same in A = 1 + (n-1) z, less (A-1)(n-A)/A^2:",
+        ratsimp(subst(z = (A - 1)/(n - 1), (n - 1)^2*z*(1 - z)/(1 + (n - 1)*z)^2)
+                - (A - 1)*(n - A)/A^2)),
+  forget(n > 1, z > 0, z < 1))$
+
+print("=== STEP 2: Hill at whole n, rho algebraic ===")$
+/* z = t^n (n odd) or t^(2n) (n even) turns the root equation into a polynomial with root t = 1, the
+   tangency; the other factor's root in (0, 1) is the excess's */
+rootpoly(n) := if oddp(n) then (n - 1)*t^n - n*t^((n - 1)/2) + 1
+               else (n - 1)*t^(2*n) - n*t^(n - 1) + 1$
+rho_of(n, zz) := (n - 1)^2*zz*(1 - zz)/(1 + (n - 1)*zz)^2$
+for n in [2, 3, 5] do block([e, p, q, res],
+  e : if oddp(n) then n else 2*n,
+  p : factor(rootpoly(n)),
+  q : ratsimp(rootpoly(n)/(t - 1)),
+  res : factor(resultant(q, num(ratsimp(r - rho_of(n, t^e))), t)),
+  print("n =", n, ": root polynomial", p),
+  print("        rho is a root of", res))$
+/* n = 2: q = t^3 + t^2 + t - 1, whose root is 1/T for T^3 = T^2 + T + 1, and z* = t^2 */
+print("n = 2: z* = 1/T^2 with T the tribonacci constant:",
+      float(rhs(first(sublist(allroots(t^3 + t^2 + t - 1), lambda([w], is(abs(imagpart(rhs(w))) < 1e-15))))))^2,
+      float(1/rhs(first(sublist(allroots(T^3 - T^2 - T - 1), lambda([w], is(abs(imagpart(rhs(w))) < 1e-15)))))^2))$
+print("n = 3: rho at t = (sqrt(3) - 1)/2 less 2/sqrt(3) - 1:",
+      radcan(rho_of(3, ((sqrt(3) - 1)/2)^3) - (2/sqrt(3) - 1)))$
+
+print("=== STEP 3: the anchors ===")$
+/* rho for one standard curve g on its own: the tangency, then the slope's crossing below the
+   inflection; brackets as in response_curves.mac, the inflection found inside (lo, t) */
+nonconvexity(g, lo, hi) := block([t, m, bend, zs],
+  t : find_root(g - z*diff(g, z), z, lo, hi),
+  m : float(subst(z = t, g)/t),
+  bend : find_root(diff(g, z, 2), z, 1e-6, t),
+  zs : find_root(diff(g, z) - m, z, 1e-9, bend),
+  float(m*zs - subst(z = zs, g)))$
+logistic(z) := 1/(1 + exp(-s*(z - 1)))$
+richards(z) := (1 + nu*exp(-s*(z - 1)))^(-1/nu)$
+gompertz(z) := exp(-b*exp(-z))$
+print("hill, n = 2:", nonconvexity(z^2/(1 + z^2), 0.5, 5))$
+print("hill, n = 3:", nonconvexity(z^3/(1 + z^3), 0.5, 5))$
+print("hill, n = 5:", nonconvexity(z^5/(1 + z^5), 0.5, 5))$
+print("weibull, k = 2:", nonconvexity(1 - exp(-z^2), 0.75, 5))$
+print("logistic, s = 4:", nonconvexity(subst(s = 4, (logistic(z) - logistic(0))/(1 - logistic(0))), 1, 5))$
+print("gompertz, b = 5:", nonconvexity(subst(b = 5, (gompertz(z) - gompertz(0))/(1 - gompertz(0))), log(5.0), 10))$
+print("richards, s = 3, nu = 0.5:",
+      nonconvexity(subst([s = 3, nu = 0.5], (richards(z) - richards(0))/(1 - richards(0))), 1, 6))$
+print("gamma, a = 3:", nonconvexity(1 - gamma_incomplete_regularized(3, z), 2, 20))$
+print("log-normal, sigma = 0.5:",
+      nonconvexity(subst(sigma = 0.5, (1 + erf(log(z)/(sigma*sqrt(2))))/2), exp(-0.25), 10))$
+print("burr, c = 4, k = 1.5:", nonconvexity(subst([c = 4, k = 1.5], 1 - (1 + z^c)^(-k)), 0.5, 10))$
+print("kumaraswamy, a = 3, b = 2:", nonconvexity(subst([a = 3, b = 2], 1 - (1 - z^a)^b), 0.6, 0.999999))$
+print("beta, a = 3, b = 2:", nonconvexity(4*z^3 - 3*z^4, 0.67, 0.999999))$
+print("chapman-richards, p = 3:", nonconvexity((1 - exp(-z))^3, log(3.0), 10))$
+
+print("=== STEP 4: the steep limit ===")$
+/* the closed-form tangency and inflection bracket the root, since z^n underflows near zero */
+hill_rho(n) := block([t, m, zs],
+  t : float((n - 1)^(1/n)),
+  m : float((n - 1)/n)/t,
+  zs : find_root(n*z^(n - 1)/(1 + z^n)^2 - m, z, 1e-3, float(((n - 1)/(n + 1))^(1/n))),
+  float(m*zs - zs^n/(1 + zs^n)))$
+for n in [10, 100, 1000] do block([r : hill_rho(n)],
+  print("hill, n =", n, ": rho", r, "  (1 - rho) n / log(n)", (1 - r)*n/log(float(n))))$
+
+print("=== STEP 5: Kumaraswamy at b = 2 is Hill at n = 2a - 1 ===")$
+block([n, wt, f, rhs_k, rhs_h],
+  assume(a > 1, x > 0, x < 1),
+  n : 2*a - 1,
+  /* Kumaraswamy in w = z^a: g = 2w - w^2, tangency where g = a w g'(w) */
+  wt : 2*(a - 1)/(2*a - 1),
+  print("its tangency:", ratsimp((2*wt - wt^2) - a*wt*(2 - 2*wt))),
+  /* slope condition a w^((a-1)/a) g'(w) = m, m = g(t)/t, over 2a */
+  rhs_k : radcan(((2*wt - wt^2)/wt^(1/a))/(2*a)),
+  /* Hill in f = g(z*): f^((n-1)/(n+1)) (1 - f) = n^(-2n/(n+1)) (n-1)^((n-1)/(n+1)) */
+  rhs_h : n^(-2*n/(n + 1))*(n - 1)^((n - 1)/(n + 1)),
+  print("the exponents, (n-1)/(n+1) less (a-1)/a:", ratsimp((n - 1)/(n + 1) - (a - 1)/a)),
+  print("the constants, Hill's less Kumaraswamy's:", radcan(rhs_h - rhs_k)),
+  print("Kumaraswamy's excess on its root, a w g'(w) - g, less n x (wt - x):",
+        ratsimp(a*x*(2 - 2*x) - (2*x - x^2) - n*x*(wt - x))),
+  print("its tangency less Hill's (n-1)/n:", ratsimp(wt - (n - 1)/n)),
+  forget(a > 1, x > 0, x < 1))$
+for a in [1.5, 2.5, 4] do
+  print("a =", a, ": kumaraswamy", nonconvexity(1 - (1 - z^a)^2, 0.3, 0.999999),
+        "  hill at 2a - 1", hill_rho(2*a - 1))$

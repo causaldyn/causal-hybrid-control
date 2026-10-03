@@ -286,6 +286,32 @@ class Saturation(Response):
         """The spend where the tangent from the origin touches the curve; 0 if it is concave."""
         return float(self.scale) * self._standard_tangency()
 
+    def nonconvexity(self) -> float:
+        """The most the envelope rises above the curve, ``max (envelope - curve)``; 0 if concave.
+
+        A number of the shape alone, on the curve's scale of a ceiling of 1, so a change of
+        currency leaves it. A plan made on envelopes loses at most a channel's coefficient times
+        this where it leaves the channel inside its chord (:mod:`chc.allocation`). Hill's at slope
+        2, 3 and 5 is 0.0674, 0.1547 and 0.2920, and it rises to 1, a step's, as the slope grows
+        (``validation/envelope_nonconvexity.mac``).
+        """
+        touch = self._standard_tangency()
+        if touch == 0.0:
+            return 0.0
+        chord = float(self.standard(_real(touch))) / touch
+        slope = jax.grad(self.standard)
+
+        def rise(z: float) -> float:
+            return float(slope(_real(z))) - chord
+
+        # the excess chord z - g rises while g' < chord and falls from where g' = chord, below the
+        # inflection, to the tangency, where g' = chord again: the first crossing is its peak
+        bend = self._standard_inflection()
+        if rise(0.0) >= 0.0 or rise(bend) <= 0.0:
+            return 0.0  # the convex stretch is within rounding of none
+        peak = brentq(rise, 0.0, bend, xtol=1e-15 * bend)
+        return chord * peak - float(self.standard(_real(peak)))
+
 
 class Envelope(Saturation):
     """The concave envelope of a saturation curve: the least concave curve on or above it.

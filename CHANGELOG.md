@@ -7,6 +7,17 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`Saturation.nonconvexity()`: the most a curve's concave envelope rises above it.** A number of
+  the shape alone, 0 for a curve concave from zero: Hill's is 0.0674, 0.1547 and 0.2920 at slopes
+  2, 3 and 5, roots of `4r³ + 12r² + 14r − 1`, `3r² + 6r − 1` (so `2/√3 − 1`) and
+  `125r⁴ + 375r³ + 375r² − 35r − 32`, and rises to 1, a step's, as the slope grows; Kumaraswamy's
+  at `b = 2` is Hill's at slope `2a − 1`. A plan on envelopes loses at most a channel's coefficient
+  times it where it leaves the channel inside its chord. Derived in
+  `validation/envelope_nonconvexity.mac` and checked at 80 digits by its PARI/GP counterpart; the
+  anchors for thirteen families are Maxima's.
+
 ### Deprecated
 
 - **`Prescription.evaluate` on windows of one unit; from 1.0 it raises `DecisionError` (ADR
@@ -20,6 +31,18 @@ still change).
   path caught.
 
 ### Fixed
+
+- **`allocate` and `budget_for` left every equal S-shaped channel inside its chord.** Rates that
+  jump at one price on the envelopes were mixed proportionally, so equal curves moved together:
+  two Hill curves of slope 3 at a budget of 1.6 scales were split 0.8/0.8 for a worth of 0.677,
+  both below their envelopes, a gap of 0.169 past the 0.155 one channel can cost; three at 2.4
+  returned 1.016 where 1.267 was there. Such rates are now filled one at a time, which leaves at
+  most one channel inside its chord: 1.26/0.34 for 0.705, and 1.264 for the three. With kernels
+  of length one, floors at zero and caps past the tangencies, `bound - worth` is then at most the
+  largest `periods * coefficient * nonconvexity` (Shapley and Folkman's lemma for one constraint).
+  `allocate_geos` and `minimax_allocate` return a linear program's vertex and were not affected
+  (1.26/0.34 on the same ties). `cvar_allocate` keeps its reference split wherever no split beats
+  it on the envelopes, as it promises, so a reference inside the chords stays there: 0.8/0.8.
 
 - **`Prescription.evaluate` reads a panel as the target trial it emulates (ADR 0049).** Three
   parts of that trial were wrong (Hernán and Robins, *Causal Inference: What If*, chapter 22).

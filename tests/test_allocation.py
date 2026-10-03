@@ -7,9 +7,11 @@ against the worth's own slope.
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from scipy.optimize import minimize, minimize_scalar
 
-from chc.allocation import allocate
+from chc.allocation import ReturnTarget, allocate, budget_for
 from chc.response import (
     Channel,
     DelayedAdstock,
@@ -20,6 +22,7 @@ from chc.response import (
     Power,
     Ricker,
     Tanh,
+    Weibull,
     WeibullAdstock,
 )
 
@@ -188,6 +191,75 @@ def test_an_s_curve_is_planned_on_its_envelope_and_the_gap_bounds_the_shortfall(
             assert plan.bound - plan.worth <= 1e-9 * plan.worth
         else:
             assert plan.bound - plan.worth > 1e-3
+
+
+def _equal_s_curves(slope: float, copies: int) -> tuple[Channel, ...]:
+    one = GeometricAdstock(0.0, length=1, normalized=False)
+    return tuple(Channel(one, Hill(1.0, slope), 1.0) for _ in range(copies))
+
+
+@pytest.mark.parametrize(
+    ("slope", "copies", "budget"), [(3.0, 2, 1.6), (2.0, 2, 1.2), (3.0, 3, 2.4), (5.0, 4, 3.0)]
+)
+def test_equal_s_curves_leave_at_most_one_channel_inside_its_chord(slope, copies, budget):
+    """Equal curves jump at one price on their envelopes, where every split of the jump is best
+    there. Moved together, two equal Hill curves of slope 3 at 1.6 split 0.8/0.8 for 0.677, both
+    inside their chords; filled one at a time, at most one channel is, so the gap is at most one
+    curve's nonconvexity (Shapley and Folkman's lemma for one constraint)."""
+    channels = _equal_s_curves(slope, copies)
+    plan = allocate(channels, budget, 1, lower=np.zeros(copies), upper=np.full(copies, budget))
+    touch = channels[0].curve.tangency()
+    inside = (plan.spend > 1e-12) & (plan.spend < touch * (1 - 1e-9))
+    assert inside.sum() <= 1
+    assert plan.spend.sum() == pytest.approx(budget, rel=1e-13, abs=0.0)
+    assert plan.bound - plan.worth <= channels[0].curve.nonconvexity() * (1 + 1e-9)
+
+
+def test_a_goal_on_equal_s_curves_is_met_with_at_most_one_channel_inside_its_chord():
+    channels = _equal_s_curves(3.0, 2)
+    plan = budget_for(channels, ReturnTarget(0.7), 1, lower=np.zeros(2), upper=np.full(2, 5.0))
+    touch = channels[0].curve.tangency()
+    inside = (plan.spend > 1e-12) & (plan.spend < touch * (1 - 1e-9))
+    assert inside.sum() <= 1
+    assert plan.gain == pytest.approx(0.7, rel=1e-9, abs=0.0)
+    # the first channel at its tangency, 2^(1/3), for 2/3, then the second where z^3/(1 + z^3) is
+    # the 1/30 left, at 29^(-1/3); moved together the two needed 2 x 0.8135
+    assert plan.budget == pytest.approx(2 ** (1 / 3) + 29 ** (-1 / 3), rel=1e-12, abs=0.0)
+
+
+_S_CURVE = st.tuples(
+    st.sampled_from([Hill, Weibull]),
+    st.floats(1.2, 8.0),  # the shape
+    st.floats(0.5, 2.0),  # the scale
+    st.floats(0.5, 2.0),  # the coefficient
+)
+
+
+@settings(max_examples=12, deadline=None)
+@given(
+    curves=st.lists(_S_CURVE, min_size=1, max_size=3),
+    copies=st.integers(1, 2),
+    periods=st.integers(1, 3),
+    share=st.floats(0.05, 1.5),
+)
+def test_the_gap_on_s_curves_is_at_most_one_channels_nonconvexity(curves, copies, periods, share):
+    """Before any plan: with kernels of length one, floors at zero and caps past the tangencies, at
+    most one channel is left inside its chord, so the gap is at most its excess there. Each curve
+    comes ``copies`` times, so ties are drawn as often as not."""
+    one = GeometricAdstock(0.0, length=1, normalized=False)
+    channels = tuple(
+        Channel(one, family(scale, shape), coefficient)
+        for family, shape, scale, coefficient in curves
+        for _ in range(copies)
+    )
+    touches = np.array([c.curve.tangency() for c in channels])
+    budget = periods * share * float(touches.sum())
+    upper = np.full(len(channels), 2.0 * max(budget / periods, float(touches.max())))
+    plan = allocate(channels, budget, periods, lower=np.zeros(len(channels)), upper=upper)
+    inside = (plan.spend > 1e-12 * touches) & (plan.spend < touches * (1 - 1e-9))
+    assert inside.sum() <= 1
+    most = max(periods * float(c.coefficient) * c.curve.nonconvexity() for c in channels)
+    assert plan.bound - plan.worth <= most * (1 + 1e-9) + 1e-12
 
 
 def test_a_change_of_currency_moves_the_spend_and_the_price_and_leaves_the_worth():

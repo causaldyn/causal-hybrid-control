@@ -233,6 +233,70 @@ def test_the_envelope_is_concave_and_never_below_its_curve(curve: Saturation) ->
     assert envelope.tangency() == 0.0
 
 
+@pytest.mark.parametrize(
+    ("curve", "anchor"),
+    [
+        (Hill(2.0, 2.0), 0.06744224886812294),
+        (Hill(2.0, 3.0), 0.1547005383792515),
+        (Hill(2.0, 5.0), 0.292002901391939),
+        (Weibull(2.0, 2.0), 0.1082013977031811),
+        (Logistic(2.0, 4.0), 0.2027652730511883),
+        (Gompertz(2.0, 5.0), 0.1130473059774493),
+        (Richards(2.0, 3.0, 0.5), 0.1893298084759638),
+        (GammaCDF(2.0, 3.0), 0.1141875232209258),
+        (LogNormalCDF(2.0, 0.5), 0.1876091739327744),
+        (BurrXII(2.0, 4.0, 1.5), 0.2529083420922978),
+        (Kumaraswamy(2.0, 3.0, 2.0), 0.292002901391939),
+        (BetaCDF(2.0, 3.0, 2.0), 0.2434505799448503),
+        (ChapmanRichards(2.0, 3.0), 0.1025153459085434),
+    ],
+    ids=lambda value: name(value) if isinstance(value, Response) else "",
+)
+def test_the_nonconvexity_matches_maximas(curve: Saturation, anchor: float) -> None:
+    # validation/envelope_nonconvexity.mac STEP 3
+    assert curve.nonconvexity() == pytest.approx(anchor, rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize(
+    ("slope_", "polynomial"),
+    [(2.0, [4, 12, 14, -1]), (3.0, [3, 6, -1]), (5.0, [125, 375, 375, -35, -32])],
+)
+def test_hills_nonconvexity_at_a_whole_slope_is_its_polynomials_root(
+    slope_: float, polynomial: list[int]
+) -> None:
+    # validation/envelope_nonconvexity.mac STEP 2; at slope 3 the root is 2/sqrt(3) - 1
+    (root,) = [r.real for r in np.roots(polynomial) if abs(r.imag) < 1e-12 and 0.0 < r.real < 1.0]
+    assert Hill(2.0, slope_).nonconvexity() == pytest.approx(root, rel=1e-13, abs=0.0)
+
+
+@pytest.mark.parametrize("curve", S_SHAPED, ids=name)
+def test_the_nonconvexity_is_the_envelopes_largest_excess(curve: Saturation) -> None:
+    spend = jnp.linspace(0.0, curve.tangency(), 20001)
+    excess = float(jnp.max(Envelope(curve)(spend) - curve(spend)))
+    assert excess <= curve.nonconvexity() * (1 + 1e-12)
+    assert excess >= curve.nonconvexity() * (1 - 1e-6)
+
+
+@pytest.mark.parametrize("curve", CONCAVE + CONCAVE_SHAPES, ids=name)
+def test_a_concave_curve_has_no_nonconvexity(curve: Saturation) -> None:
+    assert curve.nonconvexity() == 0.0
+    assert Envelope(curve).nonconvexity() == 0.0
+
+
+@pytest.mark.parametrize("a", [1.5, 2.0, 3.0, 4.0])
+def test_kumaraswamy_at_b_two_has_hills_nonconvexity_at_slope_two_a_less_one(a: float) -> None:
+    # validation/envelope_nonconvexity.mac STEP 5: different curves, one excess
+    assert Kumaraswamy(2.0, a, 2.0).nonconvexity() == pytest.approx(
+        Hill(5.0, 2.0 * a - 1.0).nonconvexity(), rel=1e-12, abs=0.0
+    )
+
+
+def test_the_nonconvexity_does_not_move_with_the_currency() -> None:
+    assert Hill(2000.0, 3.0).nonconvexity() == pytest.approx(
+        Hill(2.0, 3.0).nonconvexity(), rel=1e-14, abs=0.0
+    )
+
+
 def test_the_envelopes_slope_in_a_curve_parameter_is_exact_with_the_tangency_held() -> None:
     spend, n, step = 1.0, 3.0, 1e-6
     envelope = Envelope(Hill(2.0, n))

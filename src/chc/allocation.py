@@ -19,7 +19,14 @@ spends the last of the budget on the rates either side of it, both of which are 
 **An S-shaped curve is planned on its envelope.** Where a curve starts convex, the rates are the
 plan on its concave envelope (:class:`chc.response.Envelope`), whose return bounds any plan's on
 the curve: :attr:`Allocation.bound` is that best, and ``bound - worth`` bounds how far the plan is
-from the best on the true curves. On concave curves the two are one number.
+from the best on the true curves. On concave curves the two are one number. Rates that jump at one
+price, on chords of one slope, are filled one at a time, so at most one channel is left inside its
+chord, where the curve is below the envelope. With kernels of length one, floors at zero and caps
+past the tangencies, that bounds the gap before any plan is made: ``bound - worth`` is at most the
+largest ``periods * coefficient * nonconvexity`` (:meth:`chc.response.Saturation.nonconvexity`),
+Shapley and Folkman's lemma for one constraint (Aubin and Ekeland 1976; Udell and Boyd 2016). It
+is all but reached: four equal Hill curves of slope 3 at three scales leave a gap of 0.1544
+against 0.1547.
 
 **The price** is the budget's shadow price on the planned channels: the return one more currency
 unit of budget buys, spread the way the plan spends it. It is where the channels running inside
@@ -94,6 +101,11 @@ HONEST SCOPE:
   makes, and read on the true curves. The gain still rises along it, so a return target is the
   least budget of those plans, but a plan off the path may meet it for less; and a target return on
   ad spend is a budget where the average crosses the target, not proved the most.
+* The plan on the envelopes is not the best on the curves, only within ``bound - worth`` of it:
+  two Hill curves of slope 3 and scales 1 and 1.01 at a budget of 1.6 are planned at 1.27/0.33 for
+  0.705, where 1.6 on the first returns 0.804. The bound before planning holds only as stated
+  above: a longer kernel runs each period at its own adstock, and a floor or a cap inside a chord
+  holds its channel there, each with an excess of its own.
 * A split for several readings is robust to the readings it is given and to no other: it hedges
   between the families the tests could not tell apart, not against one none of them is. On an
   S-shaped curve the regret is the envelope's.
@@ -569,10 +581,8 @@ def allocate(
         else:
             few, dear = at, middle
     # both ends are best at a price within rounding of the other's, and so is any mix of them: the
-    # mix that spends the budget exactly is the plan, and it matters where a linear rate jumps
-    surplus = float(many.sum() - few.sum())
-    share = 0.0 if surplus <= 0.0 else (target - float(few.sum())) / surplus
-    spend = np.clip(few + share * (many - few), lower_rates, upper_rates)
+    # one that spends the budget exactly is the plan, and it matters where a linear rate jumps
+    spend = np.clip(_fill(few, many, target - float(few.sum())), lower_rates, upper_rates)
     bound = sum(_value(w, rate) for w, rate in zip(envelopes, spend, strict=True))
     worths = envelopes if relaxed is given else _worths(given, spent, periods)
     worth = sum(_value(w, rate) for w, rate in zip(worths, spend, strict=True))
@@ -596,7 +606,8 @@ def _cross(
     """The least rates on the path where ``excess``, which does not fall as the rates rise,
     reaches nothing: ``few`` are the rates at price ``dear``, short of it, and ``many`` at price 0,
     not. Bisected on the price as :func:`allocate` bisects it; where a linear rate jumps, the plans
-    either side are mixed to meet it, as :func:`allocate` mixes them to spend its budget."""
+    either side are mixed to meet it, as :func:`allocate` mixes them to spend its budget, one rate
+    at a time (:func:`_fill`)."""
     cheap, tolerance = 0.0, 4 * _EPS * dear
     while dear - cheap > tolerance:
         middle = 0.5 * (cheap + dear)
@@ -605,13 +616,26 @@ def _cross(
             many, cheap = at, middle
         else:
             few, dear = at, middle
+    surplus = float((many - few).sum())
 
-    def mixed(share: float) -> float:
-        return excess(few + share * (many - few))
+    def filled(amount: float) -> float:
+        return excess(_fill(few, many, amount))
 
-    if mixed(1.0) <= 0.0:  # met at the cheap end, to rounding
+    if filled(surplus) <= 0.0:  # met at the cheap end, to rounding
         return many
-    return few + brentq(mixed, 0.0, 1.0, xtol=4 * _EPS, rtol=4 * _EPS) * (many - few)
+    return _fill(few, many, brentq(filled, 0.0, surplus, xtol=4 * _EPS * surplus, rtol=4 * _EPS))
+
+
+def _fill(few: np.ndarray, many: np.ndarray, amount: float) -> np.ndarray:
+    """``few`` raised toward ``many`` by ``amount`` in all, one rate after another.
+
+    The rates either side of a price are both best there, and so is any mix of them. Where several
+    jump at one price, on envelope chords of one slope, a mix that moved them together would leave
+    each inside its chord, where the curve is below the envelope; filled in turn, at most one is.
+    """
+    steps = many - few
+    before = np.concatenate([[0.0], np.cumsum(steps)[:-1]])
+    return few + np.clip(amount - before, 0.0, steps)
 
 
 def budget_for(
