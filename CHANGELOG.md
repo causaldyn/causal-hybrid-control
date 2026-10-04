@@ -19,6 +19,13 @@ still change).
   gives `(d,)` for `()`. Over 20 000 random graphs of seven nodes no status changed, and 190 of
   the 9 932 sets for two treatments did.
 
+- **`Richards` read its floor as 0, and its slope at zero spend as `nan`, once `s + log ν` passed
+  709.8.** `ν e^s` overflowed a double before its logarithm was taken. At `s = 709` and
+  `ν = 1000` the floor is 0.489 and the curve at half its scale 0.4067, read as 0.697; at
+  `s = 1000`, `nonconvexity()` raised on the `nan`. The logarithm is now taken first, as a
+  softplus, and the curve there is Maxima's to the last digit (`validation/response_curves.mac`,
+  STEP 8).
+
 ## [0.12.0] — 2026-10-04
 
 ### Added

@@ -577,7 +577,10 @@ class Richards(Saturation):
         s, nu = self.steepness, self.asymmetry
 
         def rising(at: Array) -> Array:
-            return jnp.exp(-jnp.log1p(nu * jnp.exp(-s * (at - 1.0))) / nu)
+            # log1p(nu e^{-s (z - 1)}) as the softplus of its logarithm, which cannot overflow: at
+            # zero spend the product passes a double once s + log nu does 709.8, which reads the
+            # floor as 0 and the slope there as 0 times inf
+            return jnp.exp(-jax.nn.softplus(jnp.log(nu) - s * (at - 1.0)) / nu)
 
         floor = rising(_real(0.0))
         return (rising(z) - floor) / (1.0 - floor)

@@ -397,6 +397,20 @@ def test_the_families_nest_where_their_definitions_say() -> None:
     assert gaps[1] == pytest.approx(gaps[0] / 10.0, rel=0.05)
 
 
+def test_richards_keeps_its_floor_and_slope_where_nu_e_to_the_s_is_past_a_double() -> None:
+    # 1000 e^709 at zero spend is 8.2e310, and its floor 0.49 (validation/response_curves.mac,
+    # STEP 8): read as 0, the curve at half its scale was 0.697
+    assert float(Richards(1.0, 709.0, 1000.0)(0.5)) == pytest.approx(
+        0.4067401462626451, rel=1e-14, abs=0.0
+    )
+    # a logistic at every steepness, with the logistic's slope of 0 at zero spend, not nan
+    steep = Richards(1.0, 1000.0, 1.0)
+    assert slope(steep, 0.0) == 0.0
+    assert steep.nonconvexity() == pytest.approx(
+        Logistic(1.0, 1000.0).nonconvexity(), rel=1e-14, abs=0.0
+    )
+
+
 @settings(max_examples=60, deadline=None)
 @given(
     family=st.sampled_from([*BOUNDED, Logarithmic(2.0), Power(2.0, 0.6), Ricker(2.0)]),
