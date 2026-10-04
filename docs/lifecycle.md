@@ -101,8 +101,8 @@ documented, and what is not built yet. Every name below is importable from `chc`
   ([ADR 0049](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0049-a-prescription-evaluated-as-a-target-trial.md)).
   It refuses a plan whose levers were logged on a column outside its state, and one made against
   driver forecasts. It also asks the panel, as `prescribe` asks the one it fits, whether the levers
-  read anything besides the state and their recorded parents, and warns when they did
-  (*experimental*): a premise failing, not a measured cost
+  read anything besides the state and their recorded parents, or read those through more than a
+  quadratic, and warns when they did (*experimental*): a premise failing, not a measured cost
   ([ADR 0028](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0028-asking-the-panel-what-the-logger-read.md)).
   See [`chc.decision`](api/decision.md).
 - **`off_policy_value`.** It weights one step at a time. So it estimates a candidate's value on

@@ -88,10 +88,34 @@ only, no timing. The evidence is in `~/.cache/chc-scratch/2026-09-30/gr1/`.
   | panel | 100 × 20 | common | 5.8% | 11.4% |
   | panel | 300 × 10 | homo | 5.3% | 11.0% |
   | panel | 300 × 10 | common | 6.9% | 12.5% |
+  | panel | 4000 × 12 | homo | 5.7% | 10.6% |
+  | panel | 4000 × 12 | common | 5.6% | 11.6% |
 
   Every case is within two points of 5%, so GR1's kill criterion is met at Track O's and the
   media-mix sizes. The widest are one geo over 104 weeks, and 300 zones over 10 periods under a
-  shared shock, both at 6.9%: 2.7 standard errors above 5%. At 10% they read 12.1% and 12.5%.
+  shared shock, both at 6.9%: 2.7 standard errors above 5%. At 10% they read 12.1% and 12.5%. The
+  two rows of 4000 zones were added on 2026-10-04, and the fifteen above them reproduced exactly.
+
+- **Size where the logger reads the state through more than a quadratic**, 1000 panels a case,
+  added on 2026-10-04. In the panel world two loggers read the state alone, with Gaussian noise: one
+  clips its lever to [-1.5, 1.5] (`clip`, a box), one switches it at zero, `-tanh(2x)` in place of
+  `-0.6x` (`switch`, a threshold rule).
+
+  | world | units × periods | logger | rejects at 5% | at 10% |
+  |---|---|---|---|---|
+  | panel | 400 × 12 | clip | 4.8% | 10.2% |
+  | panel | 4000 × 12 | clip | 7.0% | 13.0% |
+  | panel | 400 × 12 | switch | 47.6% | 61.3% |
+  | panel | 4000 × 12 | switch | 100.0% | 100.0% |
+
+  Where the logger's mean given the state is linear, as in every world of the table above, the
+  lever's regression holds it. Each pair's sum is then the logger's own noise times a residual, and
+  the size does not move with the rows. Where the mean is not linear, the quadratic misfits it, and
+  each pair's sum drifts from zero by the product of that misfit and the column's, a drift that
+  grows with the rows (Shah and Peters 2020). The check then rejects a logger that read nothing
+  else. That is still a premise failing, since the logger `evaluate` fits is affine, but not the
+  one the warning named: it said the levers read another column, and it now says they read more
+  than the record says or read it through more than a quadratic.
 
 - **The alternatives**, the same worlds under the null, 500 panels a case, rejecting at 5%:
 
@@ -150,30 +174,36 @@ only, no timing. The evidence is in `~/.cache/chc-scratch/2026-09-30/gr1/`.
   In the later panels the logger also chased demand (`strength` times the period's demand), or
   kept `strength` of its last incentive at the same spread. Demand pushes supply by 0.15 in the
   test's market, and by 0.6 in the second. The error is the estimate less the plan's true cost,
-  over the interval's standard error at `model_error = 0`:
+  over the interval's standard error at `model_error = 0`. The table was measured again on
+  2026-10-04, under the bootstrap over units that ADR 0049 put in the interval's place:
 
   | logger | strength | demand's push | refused | check rejects | covers, default | covers, `model_error = 0` | its error |
   |---|---|---|---|---|---|---|---|
-  | chase | 0 | 0.15 | 0 | 5.2% | 100.0% | 99.8% | -0.07 |
-  | chase | 0.25 | 0.15 | 0 | 100.0% | 99.8% | 99.8% | -0.06 |
-  | chase | 0.5 | 0.15 | 0 | 100.0% | 99.0% | 100.0% | +0.05 |
-  | chase | 1 | 0.15 | 0 | 100.0% | 98.8% | 100.0% | +0.44 |
-  | chase | 0 | 0.6 | 0 | 4.5% | 100.0% | 100.0% | -0.06 |
-  | chase | 0.25 | 0.6 | 0 | 100.0% | 100.0% | 100.0% | +0.13 |
-  | chase | 0.5 | 0.6 | 0 | 100.0% | 99.5% | 100.0% | +0.32 |
-  | chase | 1 | 0.6 | 0 | 100.0% | 99.2% | 100.0% | +0.71 |
-  | sticky | 0.5 | 0.15 | 0 | 100.0% | 100.0% | 91.2% | +1.23 |
-  | sticky | 0.8 | 0.15 | 381 | 100.0% | 79.0% | 31.6% | +2.22 |
+  | chase | 0 | 0.15 | 0 | 5.2% | 100.0% | 100.0% | -0.05 |
+  | chase | 0.25 | 0.15 | 0 | 100.0% | 100.0% | 100.0% | -0.05 |
+  | chase | 0.5 | 0.15 | 0 | 100.0% | 99.8% | 100.0% | +0.04 |
+  | chase | 1 | 0.15 | 0 | 100.0% | 98.8% | 100.0% | +0.36 |
+  | chase | 0 | 0.6 | 0 | 4.5% | 100.0% | 100.0% | -0.05 |
+  | chase | 0.25 | 0.6 | 0 | 100.0% | 100.0% | 100.0% | +0.10 |
+  | chase | 0.5 | 0.6 | 0 | 100.0% | 100.0% | 100.0% | +0.25 |
+  | chase | 1 | 0.6 | 0 | 100.0% | 99.5% | 100.0% | +0.56 |
+  | sticky | 0.5 | 0.15 | 0 | 100.0% | 99.8% | 96.2% | +1.13 |
+  | sticky | 0.8 | 0.15 | 381 | 100.0% | 68.4% | 15.8% | +2.39 |
 
   - Where the logger read the state alone, the check passed 95% of the time, and the intervals
-    covered 99.7-100% where it passed. Both over-cover here: nominally they are 95%.
+    covered every panel where it passed. Both over-cover here: nominally they are 95%.
   - A logger that chased demand was flagged on every panel from a chase of 0.25. The estimate's
-    mean error stayed within 0.71 of its standard error, and both intervals still covered
+    mean error stayed within 0.56 of its standard error, and both intervals still covered
     98.8-100%. A flag is a premise failing, not a measured cost.
-  - A logger that kept half its last incentive was flagged on every panel, and the interval at
-    `model_error = 0` covered 91.2%, its estimate 1.23 standard errors high. The default interval,
-    widened by the model's error, covered all 400. At 0.8, `evaluate` refused 381 panels. On the
-    19 it evaluated, the check flagged each, and the intervals covered 79% and 32%.
+  - A logger that kept half its last incentive was flagged on every panel, and its estimate sat
+    1.13 standard errors high. The interval at `model_error = 0` covered 96.2%, against every panel
+    where the logger read the state alone; the default interval, widened by the model's error,
+    covered 99.8%. At 0.8, `evaluate` refused 381 panels. On the 19 it evaluated, the check
+    flagged each, and the intervals covered 68% and 16%.
+  - The check's rejection rates and the refusals reproduced the first run's exactly. The
+    intervals did not: under the earlier one, the interval at `model_error = 0` covered 91.2%
+    of the half-sticky panels, its estimate 1.23 standard errors high, and a chase's mean error
+    reached 0.71. The run is in `~/.cache/chc-scratch/2026-10-04/logger-bench/`.
 
   GR1's gate was that coverage must move where the omitted column matters, or the check is not
   wired in. It moved with the lever's own past, which the certificate let through at 0.5. It did
@@ -201,6 +231,11 @@ only, no timing. The evidence is in `~/.cache/chc-scratch/2026-09-30/gr1/`.
   seen only through what that left in the state and the levers.
 - **The weighted GCM** (Scheidegger, Hörrmann and Bühlmann), for dependence the regressions of
   degree 2 cannot represent. It waits for GR2 to show the need.
+- **Telling a logger outside the quadratic from one that read another column.** A regression whose
+  class grows with the rows would hold the logger's mean and keep the size; a second test at a
+  higher degree would say which of the two readings a rejection is. Either needs its own size table
+  on the small panels above, where a larger class costs the rows it is fitted on. Until then the
+  warning names both.
 
 ## Alternatives considered
 
@@ -223,7 +258,7 @@ only, no timing. The evidence is in `~/.cache/chc-scratch/2026-09-30/gr1/`.
   the history must block each action's back-door paths to the reward. It licenses weights that
   condition on the history. `evaluate`'s weights condition on the state alone, so they need a
   logger Markov in it. A logger that kept half its last incentive opens no back-door path given the
-  history, and it still cost the interval at `model_error = 0` its coverage (91.2%, above).
+  history, and it still put the estimate 1.13 standard errors high (above).
 - **Refusing on a rejection.** The check flags dependence well below what costs the evaluation
   its coverage: a chase was flagged on every panel while the estimate's mean error stayed within
-  0.71 standard errors. A refusal would refuse evaluations that held.
+  0.56 standard errors. A refusal would refuse evaluations that held.

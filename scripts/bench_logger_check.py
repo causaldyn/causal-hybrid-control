@@ -17,7 +17,10 @@ is all it reads, and a ``reads`` of gamma adds gamma times a column the check te
              is the current angle less dt times the velocity, so the check leaves it out.
 
 The logger's noise is Gaussian ("homo"), grows with the state ("hetero"), or has half its
-variance drawn once per period for every unit ("common", a national budget shock).
+variance drawn once per period for every unit ("common", a national budget shock). In the panel
+world two loggers read the state through more than the check's quadratic, with Gaussian noise: one
+clips its lever to [-1.5, 1.5] ("clip", a box), and one switches it at zero, -tanh(2 x) in place of
+-0.6 x ("switch", a threshold rule). Both read the state alone, so the null holds.
 
     size          the shipped check under the null, 1000 replicates a case.
     alternatives  under the null, 500 replicates a case: the plain GCM (rows, a Gaussian
@@ -81,6 +84,12 @@ CASES = {
         ("panel", 100, 20, "common", 0.0),
         ("panel", 300, 10, "homo", 0.0),
         ("panel", 300, 10, "common", 0.0),
+        ("panel", 4000, 12, "homo", 0.0),
+        ("panel", 4000, 12, "common", 0.0),
+        ("panel", 400, 12, "clip", 0.0),
+        ("panel", 4000, 12, "clip", 0.0),
+        ("panel", 400, 12, "switch", 0.0),
+        ("panel", 4000, 12, "switch", 0.0),
     ],
     "alternatives": [
         ("mm", 1, 156, "homo", 0.0),
@@ -122,7 +131,10 @@ def _panel(rng, units, periods, noise, reads):
         if t:
             x[:, t] = 0.8 * x[:, t - 1] + 0.5 * u[:, t - 1] + 0.3 * level + rng.normal(size=units)
         scale = np.sqrt((0.5 + x[:, t] ** 2) / 1.5) if noise == "hetero" else 1.0
-        u[:, t] = -0.6 * x[:, t] + reads * seen[:, t] + _noise(rng, units, noise, scale)
+        mean = -np.tanh(2.0 * x[:, t]) if noise == "switch" else -0.6 * x[:, t]
+        u[:, t] = mean + reads * seen[:, t] + _noise(rng, units, noise, scale)
+        if noise == "clip":
+            u[:, t] = np.clip(u[:, t], -1.5, 1.5)
     now, before = slice(burn, total), slice(burn - 1, total - 1)
     columns = np.stack([seen[:, now], x[:, before], u[:, before]], axis=2)
     return x[:, now, None], u[:, now], columns

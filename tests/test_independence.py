@@ -45,12 +45,19 @@ def test_partial_corr_test_is_calibrated_under_autocorrelation() -> None:
 
 
 def _logged_panel(
-    rng: np.random.Generator, units: int, periods: int, *, reads: float = 0.0, shared: float = 0.0
+    rng: np.random.Generator,
+    units: int,
+    periods: int,
+    *,
+    reads: float = 0.0,
+    shared: float = 0.0,
+    switch: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """``(lever, columns, state, period)`` over ``units x periods`` rows: an autocorrelated state
     the lever moves, a season every unit sees, and a logger that reads the state, ``reads`` times
     the season, and noise of its own, a ``shared`` share of whose variance every unit draws at
-    once. The columns are the season seen, and the state and the lever one period back."""
+    once. The columns are the season seen, and the state and the lever one period back. With
+    ``switch`` the logger's mean is ``-tanh(2 x)`` of the state ``x`` in place of ``-0.6 x``."""
     burn = 20
     season = np.sin(2 * np.pi * np.arange(periods + burn) / 12) + 0.5 * rng.standard_normal(
         periods + burn
@@ -65,7 +72,8 @@ def _logged_panel(
         noise = np.sqrt(shared) * rng.standard_normal() + np.sqrt(1 - shared) * rng.standard_normal(
             units
         )
-        lever = -0.6 * state + reads * seen + noise
+        mean = -np.tanh(2.0 * state) if switch else -0.6 * state
+        lever = mean + reads * seen + noise
         if t >= burn:
             rows.append((lever, np.column_stack([seen, *before]), state, np.full(units, t)))
     lever_rows, columns, states, periods_ = (
@@ -99,6 +107,22 @@ def test_gcm_test_catches_a_logger_that_also_reads_the_season() -> None:
         caught += test.p_value <= 0.05
         assert test.p_value >= 1 / 500  # the panel's own signs are one of the draws
     assert caught / 40 >= 0.8
+
+
+def test_gcm_test_flags_a_lever_whose_mean_its_class_cannot_hold() -> None:
+    """A logger that switches at a threshold of the state reads the state alone, but the quadratic
+    misfits its mean, and each pair's sum drifts by the product of the two misfits. Monomials up to
+    degree 9 hold the mean, and the same panels keep the level."""
+    narrow = wide = 0
+    for trial in range(10):
+        rng = np.random.default_rng(100 + trial)
+        lever, columns, state, period = _logged_panel(rng, 1000, 12, switch=True)
+        narrow += gcm_test(lever, columns, state, clusters=period, draws=499).p_value <= 0.05
+        wide += (
+            gcm_test(lever, columns, state, clusters=period, degree=9, draws=499).p_value <= 0.05
+        )
+    assert narrow == 10
+    assert wide <= 2
 
 
 def test_gcm_test_reads_partial_corr_tests_correlation_at_degree_one() -> None:

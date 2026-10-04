@@ -109,8 +109,8 @@ call, and a library that reaches for ``basicConfig`` takes it away.
 
 The records that are not ``INFO`` are the ones worth waking someone for: identifying in single
 precision, a graph that says the effect is not identified at all, a driver's forecast outside the
-range the panel logged, levers that read a column besides the state and their recorded parents,
-and an evaluation that reads one unit's windows as independent.
+range the panel logged, levers that read more than the state and their recorded parents or read
+those through more than a quadratic, and an evaluation that reads one unit's windows as independent.
 """
 
 IdentificationStatus = Literal["identified", "asserted", "not_identified"]
@@ -471,8 +471,10 @@ class Prescription:
 
         What the graph cannot say, the panel is asked: whether the levers read a column besides the
         state, or the state's past (:attr:`PlanEvaluation.logger_check`, as
-        :attr:`Prescription.logger_check` on the panel the plan was fitted on). A rejection is
-        logged as a warning and changes nothing else. *Experimental.*
+        :attr:`Prescription.logger_check` on the panel the plan was fitted on). On enough rows it
+        also flags levers that read the state through more than a quadratic, such as a logger that
+        switches at a threshold; the logger fitted here is affine, so that premise fails too. A
+        rejection is logged as a warning and changes nothing else. *Experimental.*
 
         Raises:
             NotIdentifiedError: if the effect is not identified, so there is no plan.
@@ -736,7 +738,8 @@ class Prescription:
             correlation = test.partial_correlation
             lever, column = np.unravel_index(np.nanargmax(np.abs(correlation)), correlation.shape)
             return (
-                f"- logger check: **the levers read more than the record says** ({head}); "
+                f"- logger check: **the levers read more than the record says, or read it "
+                f"through more than a quadratic** ({head}); "
                 f"strongest: `{check.levers[lever]}` on `{check.columns[column]}`, partial "
                 f"correlation {correlation[lever, column]:+.2f}"
             )
@@ -1401,7 +1404,8 @@ def _check_logger(
     rejected = check.test.p_value <= _LOGGER_CHECK_ALPHA
     _log.log(
         logging.WARNING if rejected else logging.INFO,
-        "the levers read a column besides the state and their recorded parents"
+        "the levers read more than the state and their recorded parents, or read those through "
+        "more than a quadratic"
         if rejected
         else "logger checked",
         extra={

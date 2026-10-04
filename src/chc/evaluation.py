@@ -384,9 +384,9 @@ class LoggerCheck:
     do not see. ``test.p_value`` is the chance of a dependence this large if it read nothing else.
     A pass is not a confirmation: ``test.detectable`` is the partial correlation each pair could
     have shown. Nor is a rejection a measured cost. Over 400 units and 12 periods, a logger that
-    chased demand was flagged on every panel while the estimate's mean error stayed within 0.71 of
-    its standard error; one that kept half its last incentive was flagged too, and the interval at
-    ``model_error=0`` covered 91% (ADR 0028).
+    chased demand was flagged on every panel while the estimate's mean error stayed within 0.56 of
+    its standard error; one that kept half its last incentive was flagged too, and its estimate sat
+    1.13 standard errors high (ADR 0028).
     """
 
     levers: tuple[str, ...]  # the rows of ``test``'s arrays

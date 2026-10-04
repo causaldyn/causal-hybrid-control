@@ -118,6 +118,10 @@ def gcm_test(
     that holds for rows grouped by period with any ``y`` fixed before the action, however the state
     is autocorrelated. A logger that read ``z`` and drew fresh noise makes each period's sum a
     martingale difference, and the noise it shares across units stays inside the period's sum.
+    And the regression on ``z`` must hold the conditional mean of ``x``, or of each column of
+    ``y``, as the monomials up to ``degree`` can: otherwise each pair's sum drifts from zero by the
+    product of the two misfits, a drift that grows with the rows (Shah and Peters 2020), and on
+    enough rows the test rejects a pair that is independent.
 
     Why neither cross-fitting nor clusters by unit, as a panel usually has. On one geo or five, a
     fold's regression differs from the rest's and five units are too few clusters: over 500 panels

@@ -82,6 +82,23 @@ still change).
     fail a test. An evaluation runs the analysis `n_resamples + 1` times; the smoothing's grid is
     read in one recursion batched over its levels, and the linearisation is compiled, once a model.
 
+- **The logger check's warning blamed another column when the levers read the state through more
+  than a quadratic (ADR 0028).** `gcm_test` regresses both sides on the state's monomials up to
+  degree 2. Where the logger's mean is outside that class, each pair's sum drifts from zero by the
+  product of the two regressions' misfits, and the drift grows with the rows: over 1000 null panels
+  a case, a lever clipped to a box was flagged on 4.8% of panels of 400 units by 12 periods and on
+  7.0% of 4000, and one switched at a threshold of the state on 47.6% and 100%, though both read the
+  state alone. The warning said the levers read a column besides the state, and the report that
+  they read more than the record says. Both now add that they may read it through more than a
+  quadratic; `evaluate` fits an affine logger, so that premise fails too. Where the logger's mean
+  is linear, the size holds at 4000 by 12: 5.7%, and 5.6% under a shared shock
+  (`scripts/bench_logger_check.py size`, its fifteen earlier rows reproduced exactly). A test holds
+  the drift to the class: ten threshold panels of 1000 units by 12 periods, all flagged at degree 2,
+  none at degree 9. ADR 0028's table of what the check protects was measured again under the
+  bootstrap over units: its rejections and refusals reproduced, and where the logger kept half its
+  last incentive the interval at `model_error = 0` covers 96.2% of panels, not 91.2%, the estimate
+  1.13 standard errors high.
+
 ## [0.11.0] — 2026-10-03
 
 ### Added

@@ -866,7 +866,9 @@ def test_the_logger_check_flags_a_graph_that_leaves_out_what_the_levers_read() -
     assert wrong.test.p_value <= 0.05
     strongest = np.nanargmax(np.abs(wrong.test.partial_correlation[0]))
     assert wrong.columns[strongest] == "demand"
-    assert "strongest: `incentive` on `demand`" in prescription.report()
+    report = prescription.report()
+    assert "strongest: `incentive` on `demand`" in report
+    assert "read more than the record says, or read it through more than a quadratic" in report
 
 
 def test_the_logger_check_sees_a_policy_that_keeps_part_of_its_last_incentive() -> None:
