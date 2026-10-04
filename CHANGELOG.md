@@ -99,6 +99,17 @@ still change).
   last incentive the interval at `model_error = 0` covers 96.2% of panels, not 91.2%, the estimate
   1.13 standard errors high.
 
+- **`doubly_robust_control_certificate` never read `seed`, and its slope read the noise.** Its
+  draws were fixed whatever `seed` said. Each seed's estimate less the true effect was averaged
+  into the bias, and at the smallest error, 0.05, that average's spread over seeds, `4.0e-4`, was
+  the bias's own size, `4.2e-4`: read at ten other seeds, the slope of the regret where both
+  nuisances err ran from 2.4 to 7.9, below the test's floor of 2.7 at four. Each estimate is now
+  read against the same estimator's on the same draws with both nuisances correct, which is
+  unbiased, and `seed` selects the draws: the spread falls to `3.9e-5`, and over twenty seeds the
+  slope reads 3.32, standard deviation 0.07, against its exact value on the grid, 3.335 by
+  quadrature. The bias is `dmu de E[(1/2 - e)/e_hat]`, so the propensity error moves the weight as
+  well and the slope reaches 4 only as the errors vanish. The default's numbers change.
+
 ## [0.11.0] — 2026-10-03
 
 ### Added

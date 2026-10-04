@@ -9,6 +9,7 @@ from typing import get_args
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import scipy.integrate
 import scipy.linalg
 from hypothesis import given
 from hypothesis import strategies as st
@@ -137,6 +138,38 @@ def test_doubly_robust_control_vanishes_if_either_model_correct() -> None:
     assert curve.ipw_fails > 0.005  # IPW fails when its model is wrong
     assert curve.dr_propensity_ok < 0.01 * curve.outcome_reg_fails  # AIPW robust here
     assert curve.dr_slope > 2.7  # product-quartic (super-quadratic): beyond the single-robust rate
+
+
+def _doubly_robust_exact_slope(errors: np.ndarray) -> float:
+    # the bias is dmu*de*E[(1/2 - e)/e_hat], x ~ N(0, 1) and e = sigmoid(0.8 x), read by quadrature
+    def weight(delta: float) -> float:
+        def integrand(x: float) -> float:
+            e = 0.5 * (1.0 + math.tanh(0.4 * x))
+            return (0.5 - e) / (e + delta * (0.5 - e)) * math.exp(-0.5 * x * x)
+
+        return scipy.integrate.quad(integrand, -40.0, 40.0, epsabs=1e-14)[0] / math.sqrt(
+            2 * math.pi
+        )
+
+    exact = [(d * d * weight(d)) ** 2 for d in errors]
+    return float(np.polyfit(np.log(errors), np.log(exact), 1)[0])
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_doubly_robust_slope_is_its_exact_value_on_the_grid(seed: int) -> None:
+    # 3.33 over the grid, not 4: e_hat moves with the error too. Over twenty seeds the slope read
+    # 3.32 with a standard deviation of 0.07; read against the truth rather than the same draws'
+    # oracle, from 2.4 to 7.9
+    curve = doubly_robust_control_certificate(n_seeds=16, seed=seed)
+    exact = _doubly_robust_exact_slope(curve.errors)
+    assert exact == pytest.approx(3.335, abs=0.001)
+    assert abs(curve.dr_slope - exact) < 0.25
+
+
+def test_doubly_robust_certificate_reads_its_seed() -> None:
+    first = doubly_robust_control_certificate(n=2000, n_seeds=2, seed=0)
+    second = doubly_robust_control_certificate(n=2000, n_seeds=2, seed=1)
+    assert not np.array_equal(first.dr_regret_both, second.dr_regret_both)
 
 
 def test_online_causal_control_has_log_regret() -> None:

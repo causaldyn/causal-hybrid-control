@@ -4669,7 +4669,7 @@ class DoublyRobustCurve:
 
     errors: Vector  # delta grid (both nuisances misspecified by delta together)
     dr_regret_both: Vector  # AIPW control regret when both nuisances err (~ (delta^2)^2 = delta^4)
-    dr_slope: float  # log-log slope of dr_regret_both (~4: product-quartic)
+    dr_slope: float  # log-log slope of dr_regret_both: 4 as delta -> 0, 3.33 on the default grid
     dr_outcome_ok: float  # AIPW regret with the outcome model correct, propensity wrong (-> 0)
     dr_propensity_ok: float  # AIPW regret with the propensity model correct, outcome wrong (-> 0)
     outcome_reg_fails: float  # outcome-regression regret when its outcome model is wrong (> 0)
@@ -4710,14 +4710,18 @@ def doubly_robust_control_certificate(
     ``proofs/doubly_robust.v``). For a binary intervention the AIPW estimator's bias is the PRODUCT
     of the outcome-model error and the propensity error, ``dmu*de/(e+de)`` -- so the regret is
     ``O((dmu*de)^2)`` and vanishes if EITHER nuisance model is correct (double robustness), unlike
-    outcome-regression (needs the outcome model) or IPW (needs the propensity model).
+    outcome-regression (needs the outcome model) or IPW (needs the propensity model). Here the bias
+    is ``dmu*de*E[(1/2-e)/e_hat]``: the propensity error moves the weight as well, so the slope is 4
+    only as the errors vanish, and 3.33 over the default grid. ``seed`` selects the draws.
     """
 
     def regret(dmu: float, de: float, kind: str) -> float:
-        # systematic bias isolated from sampling noise by averaging the signed error over seeds;
-        # control regret = kappa*(bias)^2, kappa = 1
+        # systematic bias isolated from sampling noise: each draw's estimate less the same
+        # estimator's on the same draws with both nuisances correct, which is unbiased, averaged
+        # over seeds; control regret = kappa*(bias)^2, kappa = 1
         biases = [
-            _aipw_effect(np.random.default_rng(1000 * s + 1), n, theta, dmu, de, kind) - theta
+            _aipw_effect(np.random.default_rng((seed, s)), n, theta, dmu, de, kind)
+            - _aipw_effect(np.random.default_rng((seed, s)), n, theta, 0.0, 0.0, kind)
             for s in range(n_seeds)
         ]
         return float(np.mean(biases)) ** 2
