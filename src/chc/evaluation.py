@@ -39,14 +39,15 @@ whether the plan changes or not. ``"pdis"`` also scores each step against its ow
 cost has one per state.
 
 A deterministic plan has no density, so the weights evaluate it smoothed, ``N(K x + k, tau^2 I)``,
-and smoothing raises its average cost by exactly ``tau^2 beta``, ``beta = tr(R + B' P B)`` (over a
-horizon, ``sum_t tr(R + B' P_{t+1} B)``). The value reported is the deployed plan's: the model's
-``tau^2 beta_hat`` is subtracted, and because its error ``tau^2 (beta - beta_hat)`` is first order
-in the model's, it is also added to the interval, times ``model_error``. The report names it, and
-the share of the weighted estimate it removed. A randomised plan -- one that carries its dither into
-deployment -- is evaluated as it is, and nothing is subtracted. The smoothing is chosen against the
-cost by predicted mean squared error; to design a logger, sweep its covariance through
-:func:`certify_evaluation`, which is cheap and reads no data.
+and smoothing moves its average cost by exactly ``tau^2 beta``, ``beta = tr(R + B' P B)`` (over a
+horizon, ``sum_t tr(R + B' P_{t+1} B)``): up for a positive semidefinite cost, either way for one
+that is not, such as a reward written as a cost. The value reported is the deployed plan's: the
+model's ``tau^2 beta_hat`` is subtracted, and because its error ``tau^2 (beta - beta_hat)`` is
+first order in the model's, its size is also added to the interval, times ``model_error``. The
+report names it, and its size as a share of the weighted estimate. A randomised plan -- one that
+carries its dither into deployment -- is evaluated as it is, and nothing is subtracted. The
+smoothing is chosen against the cost by predicted mean squared error; to design a logger, sweep its
+covariance through :func:`certify_evaluation`, which is cheap and reads no data.
 
 Scope: every number here is exact for ``x' = a x + b u + offset + w`` and an affine plan, and no
 more. A fitted CHC plant enters linearised; a receding-horizon LQ controller whose constraints do
@@ -308,8 +309,8 @@ class PlanEvaluation:
     ``value`` is the average cost per step (stationary methods) or the expected cost over the
     logged horizon from the logs' initial states (``"pdis"``) of the plan as given. For a plan the
     weights smoothed, ``model_correction`` is the model's ``tau^2 beta_hat``, subtracted from the
-    weighted estimate and added to the interval's half-width times ``model_error``, and
-    ``model_share`` is the share of the weighted estimate it removed; both are 0 otherwise.
+    weighted estimate, with its size added to the interval's half-width times ``model_error``, and
+    ``model_share`` is its size as a share of the weighted estimate's; both are 0 otherwise.
     ``effective_samples`` is the weights' own, ``(sum w)^2 / sum w^2``, beside the certificate's
     prediction, and ``None`` for ``"fqe"``. ``degrees_of_freedom`` is the stationary interval's
     Student ``t``: well below 39 when a few of the logger's excursions carry the weights, and
@@ -1586,8 +1587,10 @@ def evaluate_plan(
                 x, u, plant, held, _smoothed(held, tau) if tau > 0.0 else held, stage, method
             )
     value = weighted - correction
-    half += model_error * correction
-    share = correction / abs(weighted) if correction > 0.0 else 0.0
+    # A cost that is not positive semidefinite can have smoothing lower it, and the correction is
+    # then negative; its error is no smaller for that.
+    half += model_error * abs(correction)
+    share = abs(correction) / abs(weighted) if correction != 0.0 else 0.0
     return PlanEvaluation(
         value, (value - half, value + half), certificate, correction, share, effective, dof
     )
@@ -1688,7 +1691,7 @@ def _evaluate_by_unit(
             )
         )
     spread = np.std(np.asarray(draws), axis=0, ddof=1)
-    widened = model_error * evaluation.model_correction
+    widened = model_error * abs(evaluation.model_correction)
     half, half_difference = (_Z95 * float(deviation) + widened for deviation in spread)
     logged = _logged_cost(x, u, stages)
     difference = evaluation.value - logged

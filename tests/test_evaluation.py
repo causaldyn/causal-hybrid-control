@@ -850,6 +850,55 @@ def test_the_model_correction_is_carried_in_the_interval() -> None:
     )
 
 
+def test_a_cost_and_its_negative_read_one_interval() -> None:
+    # a reward written as a cost need not be positive semidefinite, and smoothing then lowers it:
+    # the model's correction is negative, and its error no smaller for that
+    x, u = _stationary_logs(MARKET, LOGGER, 4000, 1, seed=12)
+    logs = {"x": x[0], "u": u[0]}
+    reward = QuadraticCost(Q=-COST.Q, R=-COST.R, Qf=-COST.Qf, x_target=COST.x_target)
+
+    cost = evaluate_plan(logs, PLAN, "mis", plant=MARKET, cost=COST)
+    negated = evaluate_plan(logs, PLAN, "mis", plant=MARKET, cost=reward)
+
+    assert negated.model_correction == -cost.model_correction < 0.0
+    assert negated.value == -cost.value
+    assert negated.interval == (-cost.interval[1], -cost.interval[0])
+    assert negated.model_share == cost.model_share > 0.0
+
+
+def test_a_cost_and_its_negative_read_one_interval_over_the_units() -> None:
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    x, u, units = _unit_windows(MARKET, logger, 20, 3, 5, np.random.default_rng(61))
+    reward = QuadraticCost(Q=-COST.Q, R=-COST.R, Qf=-COST.Qf, x_target=COST.x_target)
+
+    cost, negated = (
+        _evaluate_by_unit(
+            x,
+            u,
+            units,
+            RAMP,
+            plant=lambda xs, us: MARKET,
+            cost=scored,
+            logger=None,
+            smoothing=None,
+            model_error=1.0,
+            min_effective=5.0,
+            resamples=20,
+            seed=3,
+        )
+        for scored in (COST, reward)
+    )
+
+    assert cost.versus_logger is not None
+    assert negated.versus_logger is not None
+    assert negated.model_correction == -cost.model_correction < 0.0
+    assert negated.interval == (-cost.interval[1], -cost.interval[0])
+    assert negated.versus_logger.interval == (
+        -cost.versus_logger.interval[1],
+        -cost.versus_logger.interval[0],
+    )
+
+
 def test_fit_logger_recovers_the_logging_policy() -> None:
     x, u = _stationary_logs(MARKET, LOGGER, 50_000, 1, seed=4)
 
