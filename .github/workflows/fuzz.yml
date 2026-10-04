@@ -1,0 +1,48 @@
+name: fuzz
+
+# Coverage-guided fuzzing, atheris over libFuzzer, of the two modules whose contracts can be stated
+# for every input: the adjustment criterion against path enumeration, and the saturation curves
+# against their docstrings. Five minutes a target on every change, half an hour a week; a crash
+# fails the job and uploads the input that caused it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [graph, response]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install uv
+        # setup-uv has published no moving major/minor tags since v8.0.0, so there is no major tag
+        # to track: the pin is a release commit itself.
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          # atheris 3.1.0 ships wheels for 3.12 to 3.14 only
+          python-version: "3.14"
+      - name: Sync dependencies
+        run: uv sync
+      - name: Fuzz
+        # atheris is hash-pinned in fuzz/requirements.txt rather than locked: nothing that installs
+        # the library needs it
+        run: |
+          mkdir -p crashes
+          uv run --with-requirements fuzz/requirements.txt python fuzz/fuzz_${{ matrix.target }}.py \
+            -max_total_time=${{ github.event_name == 'schedule' && 1800 || 300 }} \
+            -max_len=64 -len_control=0 -artifact_prefix=crashes/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: failure()
+        with:
+          name: crashes-${{ matrix.target }}
+          path: crashes/

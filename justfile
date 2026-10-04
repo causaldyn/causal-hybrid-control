@@ -148,6 +148,14 @@ derivations:
 crosschecks:
     ./validation/run_crosschecks.sh
 
+# ── Fuzzing ───────────────────────────────────────────────────────────────────
+
+# The corpus and any crash stay in .fuzz/; atheris is hash-pinned in fuzz/requirements.txt.
+# Fuzz one target, `graph` or `response`, for `seconds`.
+fuzz target="graph" seconds="60":
+    mkdir -p .fuzz/{{target}}
+    uv run --with-requirements fuzz/requirements.txt python fuzz/fuzz_{{target}}.py .fuzz/{{target}} -max_total_time={{seconds}} -max_len=64 -len_control=0 -artifact_prefix=.fuzz/
+
 # ── The numbers other documents quote ─────────────────────────────────────────
 
 # Counts drift, and several documents have quoted stale ones. This is the authority.

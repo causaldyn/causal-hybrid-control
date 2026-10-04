@@ -126,6 +126,7 @@ packages = ["src/chc"]
 include = [
     "/src",
     "/tests",
+    "/fuzz",
     "/proofs",
     "/validation",
     "/notebooks",

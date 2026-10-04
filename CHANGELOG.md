@@ -7,6 +7,17 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **Fuzz targets for the adjustment criterion and the saturation curves (`fuzz/`).** atheris,
+  coverage-guided over libFuzzer, decodes each input into a graph of up to seven nodes with its
+  latents, treatments and outcome, or into a curve family and its parameters, and holds
+  `chc.graph` to brute force over the skeleton's simple paths and `chc.response` to the promises
+  of its docstrings. `fuzz.yml` runs each target for five minutes on every change and half an
+  hour a week, and `just fuzz` runs one locally. atheris is hash-pinned in
+  `fuzz/requirements.txt` and kept out of the lock: nothing that installs the library needs it.
+  The two fixes below are what it found.
+
 ### Fixed
 
 - **`is_valid_adjustment_set` refused a set holding a descendant of the treatment that no causal

@@ -2,11 +2,12 @@
 
 The docstrings under `src/chc/` render into the API reference, the pages under `docs/` are the
 site, and `docs/build.sh` executes the notebooks into its tutorials. The sdist also ships
-`proofs/`, `validation/`, `scripts/` and `tests/`, and the docstrings and pages send a reader into
-them by path. `plans/<n>` and `discoveries` are paths in the author's research repository, which is
-not public: a reader who follows one finds nothing. A pointer that carries a result names the
-public file that holds it instead -- a proof under `proofs/`, a derivation under `validation/`, a
-page of the site -- and a pointer that only records where an idea came from has no reader to serve.
+`proofs/`, `validation/`, `scripts/`, `tests/` and `fuzz/`, and the docstrings and pages send a
+reader into them by path. `plans/<n>` and `discoveries` are paths in the author's research
+repository, which is not public: a reader who follows one finds nothing. A pointer that carries a
+result names the public file that holds it instead -- a proof under `proofs/`, a derivation under
+`validation/`, a page of the site -- and a pointer that only records where an idea came from has no
+reader to serve.
 """
 
 from __future__ import annotations
@@ -48,5 +49,5 @@ def test_no_docs_page_points_into_the_research_repository() -> None:
 
 def test_no_proof_derivation_script_or_test_points_into_the_research_repository() -> None:
     # The sdist ships these beside the library, and the docstrings and pages cite them by path.
-    shipped = ("proofs", "validation", "scripts", "tests")
+    shipped = ("proofs", "validation", "scripts", "tests", "fuzz")
     assert _pointers([path for name in shipped for path in _files(ROOT / name)]) == []

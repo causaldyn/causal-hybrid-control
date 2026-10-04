@@ -11,6 +11,8 @@ dist/
 
 # hypothesis' example database is a local cache, not an input
 .hypothesis/
+# and so is the fuzzers' corpus, with any crash it found (`just fuzz`)
+.fuzz/
 uv.lock.bak
 
 # tooling caches
