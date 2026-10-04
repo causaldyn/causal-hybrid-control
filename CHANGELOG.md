@@ -16,8 +16,8 @@ still change).
   of its docstrings. `fuzz.yml` runs each target for five minutes on every change and half an
   hour a week, and `just fuzz` runs one locally. atheris is hash-pinned in
   `fuzz/requirements.txt` and kept out of the lock: nothing that installs the library needs it.
-  It found the adjustment, Richards and Burr XII defects below, and chasing its reports found the
-  other two.
+  It found the adjustment, Richards, Burr XII and beta defects below, and chasing its reports
+  found the other two.
 
 ### Fixed
 
@@ -52,6 +52,11 @@ still change).
   (`validation/envelope_nonconvexity.mac`, STEP 7). Just past `b = 1`, by less than a double
   resolves, the curve turns at that corner too, and `tangency()` stopped up to 1e-15 short of it,
   where the chord cuts the curve; it now returns the corner, and says it touches there.
+
+- **The beta CDF's slope at zero spend was `nan` once `1/B(a, b)` passed a double,** as it does at
+  `a = b = 1000` (`e^1388.5`): the density there met `z^(a - 1) = 0` with an infinite normaliser.
+  Above `a = 2` the density and its slope are 0 at zero whatever the normaliser, and it is no
+  longer taken there (`validation/response_curves.mac`, STEP 10).
 
 - **`Weibull`'s slope was `nan` once `k z^(k - 1)` passed a double,** where the curve is its
   ceiling and its slope 0: from 2.10 scales at `k = 947`. Past `z^k = 40`, where `e^(-z^k)` is

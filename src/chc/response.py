@@ -187,12 +187,13 @@ def _power_jvp(primals: tuple[Array, Array], tangents: tuple[Array, Array]):
 
 def _density(power: Array, rest: Callable[[Array], Array], z: Array) -> Array:
     """``z^power exp(rest(z))``: through logarithms away from zero, so that neither factor
-    overflows, and through :func:`_power` at zero, so that its slopes there are finite."""
+    overflows, and through :func:`_power` at zero, so that its slopes there are finite. At zero a
+    power above 1 makes the density and its slope 0 whatever ``exp(rest)`` is, and that can pass a
+    double, as the beta's ``1/B(a, b)`` does at ``a = b = 1000``, so it is not taken there."""
     zero = z == 0.0
     at, away = jnp.where(zero, z, 0.0), jnp.where(zero, 0.5, z)
-    return jnp.where(
-        zero, _power(at, power) * jnp.exp(rest(at)), jnp.exp(xlogy(power, away) + rest(away))
-    )
+    scale = jnp.exp(jnp.where(power > 1.0, 0.0, rest(at)))
+    return jnp.where(zero, _power(at, power) * scale, jnp.exp(xlogy(power, away) + rest(away)))
 
 
 @jax.custom_jvp

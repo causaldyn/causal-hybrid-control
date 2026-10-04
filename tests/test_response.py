@@ -469,6 +469,14 @@ def test_weibulls_slope_short_of_its_ceiling_is_the_closed_forms() -> None:
     )
 
 
+def test_the_beta_cdfs_slope_is_finite_where_its_normaliser_is_past_a_double() -> None:
+    # 1/B(1000, 1000) = e^1388.5 (validation/response_curves.mac, STEP 10): at zero spend it met
+    # z^999 = 0 into nan
+    curve = BetaCDF(1.0, 1000.0, 1000.0)
+    assert slope(curve, 0.0) == 0.0
+    assert slope(curve, 0.5) == pytest.approx(35.67802229170864, rel=1e-12, abs=0.0)
+
+
 def test_burr_xii_keeps_its_value_and_slope_where_z_to_the_c_is_past_a_double() -> None:
     # at c = 850, z^c passes a double from z = 2.30, where the curve is 0.51
     # (validation/response_curves.mac, STEP 9): read as its ceiling, g(4) was 1 and the slope nan,
