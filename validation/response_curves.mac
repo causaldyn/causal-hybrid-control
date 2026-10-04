@@ -24,6 +24,9 @@
            test's anchors
    STEP 10 the beta CDF at a = b = 1000, whose 1/B(a, b) = e^1388.5 passes a double: its density at
            1/2, to 40 digits, is the test's anchor, and at 0 it is 0
+   STEP 11 Kumaraswamy at a = 1000 and b the double 1.3162271367087017, whose tangency is 1.4e-13
+           short of the corner: the root, and the slope at the double 0.9999999999998632, to 40
+           digits, are the tests' anchors
 
    Run: timeout 300 maxima --very-quiet -b validation/response_curves.mac */
 
@@ -227,3 +230,12 @@ print("=== STEP 10: the beta CDF where 1/B(a, b) is past a double ===")$
 block([fpprec : 40],
   print("beta, a = b = 1000: log(1/B) =", bfloat(-log(beta(1000, 1000)))),
   print("beta, a = b = 1000: density at 1/2 =", bfloat((1/2)^1998/beta(1000, 1000))))$
+print("=== STEP 11: Kumaraswamy whose tangency is 1.4e-13 short of the corner ===")$
+/* b and the points are the tests' doubles, exactly */
+block([fpprec : 40, fpprintprec : 20, a : 1000, b : 1481940010604061/1125899906842624, g],
+  g : 1 - (1 - z^a)^b,
+  print("kumaraswamy, a = 1000, b = 1.3162271367087017: tangency =",
+        bf_find_root(bfloat(g - z*diff(g, z)), z, 9007199254739731/9007199254740992,
+                     9007199254739821/9007199254740992)),
+  print("kumaraswamy, a = 1000, b = 1.3162271367087017: g'(0.9999999999998632) =",
+        bfloat(subst(z = 562949953421235/562949953421312, diff(g, z)))))$

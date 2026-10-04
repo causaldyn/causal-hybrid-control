@@ -231,12 +231,55 @@ def test_a_curve_that_turns_only_at_its_corner_touches_there(curve: Saturation) 
 
 
 def test_a_gap_that_turns_inside_the_support_is_found_there() -> None:
-    # a = b = 1 + 1.07e-4 turns at 0.797 of K; a few ulps short of K the slope reads the gap's sign
-    # wrong, so a probe there would take the corner, under whose chord the curve rises 1.6e-5
+    # a = b = 1 + 1.07e-4 turns at 0.797 of K; taken at the corner instead, its chord would leave
+    # the curve 1.6e-5 above it
     curve = Kumaraswamy(2.0, 1.0001074911103465, 1.0001074911103458)
     touch = curve.tangency()
     assert touch < 2.0
     assert float(curve(touch)) == pytest.approx(touch * slope(curve, touch), rel=1e-12, abs=0.0)
+
+
+def test_a_tangency_is_the_first_double_past_its_root() -> None:
+    # the root is 0.99999999999986329319 (validation/response_curves.mac, STEP 11), 1.4e-13 short of
+    # the corner, where the slope turns by 2.6e-4 an ulp: a root search's four ulps or more put the
+    # chord's slope outside the curve's on both sides
+    curve = Kumaraswamy(1.0, 1000.0, 1.3162271367087017)
+    touch = curve.tangency()
+    assert touch == 0.9999999999998633
+    chord = float(curve(touch)) / touch
+    assert slope(curve, touch) <= chord <= slope(curve, math.nextafter(touch, 0.0))
+
+
+@pytest.mark.parametrize(
+    ("curve", "spend", "expected", "rel"),
+    [
+        (Exponential(1.0), 40.0, math.exp(-40.0), 1e-14),
+        (Tanh(1.0), 20.0, 4.0 * math.exp(-40.0) / (1.0 + math.exp(-40.0)) ** 2, 1e-14),
+        (Weibull(1.0, 2.0), 10.0, 20.0 * math.exp(-100.0), 1e-14),
+        (ChapmanRichards(1.0, 3.0), 40.0, 3.0 * math.exp(-40.0) * math.expm1(-40.0) ** 2, 1e-14),
+        (
+            Gompertz(1.0, 5.0),
+            40.0,
+            5.0 * math.exp(-40.0 - 5.0 * math.exp(-40.0)) / -math.expm1(-5.0),
+            1e-14,
+        ),
+        (BurrXII(1.0, 2.0, 20.0), 10.0, 400.0 * 101.0**-21.0, 1e-13),
+        # STEP 11 of validation/response_curves.mac; 1 - z^a is rounded first, 7e-11 of itself
+        (
+            Kumaraswamy(1.0, 1000.0, 1.3162271367087017),
+            0.9999999999998632,
+            1.000168068085653,
+            1e-10,
+        ),
+    ],
+    ids=lambda value: name(value) if isinstance(value, Response) else "",
+)
+def test_a_slope_in_the_tail_is_the_closed_forms(
+    curve: Saturation, spend: float, expected: float, rel: float
+) -> None:
+    # jax reads expm1's slope as expm1(x) + 1, which cancels once expm1(x) is -1 to rounding: each
+    # of these read 0, half its slope, 0.7 % or 1.8e-4 off
+    assert slope(curve, spend) == pytest.approx(expected, rel=rel, abs=0.0)
 
 
 @pytest.mark.parametrize("family", [BetaCDF, Kumaraswamy], ids=lambda family: family.__name__)

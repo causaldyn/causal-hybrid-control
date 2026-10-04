@@ -155,6 +155,35 @@ def _lambert_root(rate: float) -> float:
     return brentq(gap, 0.0, high, xtol=1e-15 * high, rtol=4 * math.ulp(1.0))
 
 
+def _first_turned(gap: Callable[[float], float], low: float, high: float) -> float:
+    """The least double in ``(low, high]`` where a rising ``gap`` is positive, given
+    ``gap(low) < 0 < gap(high)``.
+
+    A root search stops within its tolerance, four ulps at the least, and a curve that bends into
+    its ceiling within a few ulps of it turns its slope by more than a tolerance an ulp: 2.6e-4 for
+    a Kumaraswamy at ``a = 1000``. So the root is bracketed again around the search's answer,
+    doubling the step from one ulp, and halved down to adjacent doubles.
+    """
+    guess = brentq(gap, low, high, xtol=1e-15 * low)
+    step = math.ulp(guess)
+    if gap(guess) > 0.0:
+        high = guess
+        while (below := high - step) > low and gap(below) > 0.0:
+            high, step = below, 2.0 * step
+        low = max(low, below)
+    else:
+        low = guess
+        while (above := low + step) < high and gap(above) <= 0.0:
+            low, step = above, 2.0 * step
+        high = min(high, above)
+    while (middle := low + 0.5 * (high - low)) not in (low, high):
+        if gap(middle) > 0.0:
+            high = middle
+        else:
+            low = middle
+    return high
+
+
 def _off_zero(base: Array, exponent: Array) -> Array:
     """``base``, but a machine epsilon where it is 0 and the power of it is not above 0."""
     epsilon = jnp.finfo(jnp.result_type(base, exponent)).eps
@@ -183,6 +212,25 @@ def _power_jvp(primals: tuple[Array, Array], tangents: tuple[Array, Array]):
     # the slope in the exponent is the value times log(base), so 0 where the value is
     log = jnp.log(jnp.where(at > 0.0, at, 1.0))
     return value, exponent * _power(base, exponent - 1.0) * base_dot + value * log * exponent_dot
+
+
+@jax.custom_jvp
+def _expm1(x: Array) -> Array:
+    """``expm1``, whose slope is ``exp(x)`` computed as such.
+
+    jax's own rule reads it as ``expm1(x) + 1``, which cancels as ``expm1(x)`` nears -1: off by
+    1.7e-4 at ``x = -30`` and 6 % at -35, and 0 from ``-54 log 2 = -37.43``, where ``expm1`` rounds
+    to -1. That is the tail of every curve written as ``-expm1(-u)``, where it moved a
+    Kumaraswamy's tangency at ``a = 1000``. jax takes ``exp(x)`` only for an expm1 asked for
+    ``AccuracyMode.HIGHEST``, which also lets the compiler pick another implementation of the value.
+    """
+    return jnp.expm1(x)
+
+
+@_expm1.defjvp
+def _expm1_jvp(primals: tuple[Array], tangents: tuple[Array]):
+    (x,), (x_dot,) = primals, tangents
+    return jnp.expm1(x), jnp.exp(x) * x_dot
 
 
 def _density(power: Array, rest: Callable[[Array], Array], z: Array) -> Array:
@@ -293,20 +341,20 @@ class Saturation(Response):
             if end == self._support:
                 break
             if gap(end) > 0.0:
-                return brentq(gap, start, end, xtol=1e-15 * start)
+                return _first_turned(gap, start, end)
         else:
             raise RuntimeError(f"{self!r}: no tangency within {end} scales")
         # Past its support a curve is flat at 1, where the gap jumps to 1, so a bracket that ends
         # there holds the jump, and a root search stops at it, short of a root inside or of the
         # corner. Walk towards the end instead, halving the distance, for a point inside where the
-        # gap has turned. The slope a few ulps short of the end can read the wrong sign, an expm1
-        # whose answer is -1 to rounding, so no single point there can say the gap never turns.
+        # gap has turned. A curve that turns closer to the corner than a double resolves has none,
+        # and the corner is its tangency.
         for halving in range(1, 64):
             inside = end - (end - start) * 2.0**-halving
             if inside >= end:
                 break
             if gap(inside) > 0.0:
-                return brentq(gap, start, inside, xtol=1e-15 * start)
+                return _first_turned(gap, start, inside)
         return end  # the gap turns only at the corner where the curve meets its ceiling
 
     def inflection(self) -> float:
@@ -430,7 +478,7 @@ class Exponential(Saturation):
     scale: Array = eqx.field(converter=_real)
 
     def standard(self, z: Array) -> Array:
-        return -jnp.expm1(-z)
+        return -_expm1(-z)
 
     def _standard_inflection(self) -> float:
         return 0.0
@@ -444,7 +492,7 @@ class Tanh(Saturation):
 
     def standard(self, z: Array) -> Array:
         # XLA's tanh falls by an ulp here and there on its way to 1; this form rises, and is closer
-        return -jnp.expm1(-2.0 * z) / (1.0 + jnp.exp(-2.0 * z))
+        return -_expm1(-2.0 * z) / (1.0 + jnp.exp(-2.0 * z))
 
     def _standard_inflection(self) -> float:
         return 0.0
@@ -532,11 +580,11 @@ class Weibull(Saturation):
         _require("shape", self.shape, 0.0)
 
     def standard(self, z: Array) -> Array:
-        # e^-z^k is below a double's resolution once z^k passes 40, so the curve is its ceiling
-        # there and its slope 0, as expm1's own slope already reads it. The power taken further
+        # e^-z^k rounds to 0 once z^k passes 746, so the curve is its ceiling there and its slope
+        # 0, which the slope e^-z^k k z^(k - 1) already reads short of it. The power taken further
         # overflows, k z^(k - 1) first, and the chain rule meets it with that 0 into nan
-        past = self.shape * jnp.log(z) > math.log(40.0)
-        return jnp.where(past, 1.0, -jnp.expm1(-_power(jnp.where(past, 1.0, z), self.shape)))
+        past = self.shape * jnp.log(z) > math.log(746.0)
+        return jnp.where(past, 1.0, -_expm1(-_power(jnp.where(past, 1.0, z), self.shape)))
 
     def _standard_inflection(self) -> float:
         k = float(self.shape)
@@ -581,7 +629,7 @@ class Gompertz(Saturation):
     def standard(self, z: Array) -> Array:
         b = self.displacement
         # exp(-b e^-z) - e^-b, written so that neither a small b nor a large z cancels
-        return jnp.exp(-b * jnp.exp(-z)) * -jnp.expm1(b * jnp.expm1(-z)) / -jnp.expm1(-b)
+        return jnp.exp(-b * jnp.exp(-z)) * -_expm1(b * _expm1(-z)) / -_expm1(-b)
 
     def _standard_inflection(self) -> float:
         return max(math.log(float(self.displacement)), 0.0)
@@ -632,7 +680,7 @@ class ChapmanRichards(Saturation):
         _require("power", self.power, 0.0)
 
     def standard(self, z: Array) -> Array:
-        return _power(-jnp.expm1(-z), self.power)
+        return _power(-_expm1(-z), self.power)
 
     def _standard_inflection(self) -> float:
         return max(math.log(float(self.power)), 0.0)
@@ -701,7 +749,7 @@ class BurrXII(Saturation):
         rising = jnp.log1p(_power(jnp.where(below, z, 1.0), self.slope))
         at = jnp.where(below, 1.0, z)
         falling = self.slope * jnp.log(at) + jnp.log1p(at**-self.slope)
-        return -jnp.expm1(-self.tail * jnp.where(below, rising, falling))
+        return -_expm1(-self.tail * jnp.where(below, rising, falling))
 
     def _standard_inflection(self) -> float:
         c, k = float(self.slope), float(self.tail)
@@ -757,7 +805,7 @@ class Kumaraswamy(Saturation):
     def standard(self, z: Array) -> Array:
         inside = z < 1.0
         at = jnp.where(inside, z, 0.5)
-        return jnp.where(inside, -jnp.expm1(self.b * jnp.log1p(-_power(at, self.a))), 1.0)
+        return jnp.where(inside, -_expm1(self.b * jnp.log1p(-_power(at, self.a))), 1.0)
 
     def _standard_inflection(self) -> float:
         a, b = float(self.a), float(self.b)
