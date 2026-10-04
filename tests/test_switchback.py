@@ -172,7 +172,8 @@ def test_the_derivative_of_the_horizon_sum_is_its_derivative(h):
     for a in (0.1, 0.5, 0.8, 0.95):
         step = 1e-6
         numeric = (_s(a + step, h) - _s(a - step, h)) / (2 * step)
-        # at h = 1 the sum is 1 for every a, so both read 0, _ds as two terms that cancel to rounding
+        # at h = 1 the sum is 1 for every a, so both read 0, _ds as two terms that cancel to
+        # rounding
         assert _ds(a, h) == pytest.approx(numeric, rel=1e-7, abs=1e-12)
 
 
