@@ -29,14 +29,26 @@ def main() -> None:
         f" ({causal.plan.task_cost:.2f} planned, {causal.true_cost:.2f} paid)."
     )
     print(
-        f"Gamma* separates them offline, before either acts: the causal plan's supply floor holds"
-        f" up to the marginal sensitivity model's Gamma {causal.certificate.gamma_star:.2f}, the"
-        f" naive one's only to {naive.certificate.gamma_star:.2f} -- a warning that needs no"
-        " ground truth."
+        f"Gamma* separates them offline, before either acts: along the causal plan's path an"
+        f" admissible action meets the supply floor's barrier condition up to the marginal"
+        f" sensitivity model's Gamma {causal.certificate.gamma_star:.2f}, along the naive one's"
+        f" only to {naive.certificate.gamma_star:.2f} -- a warning that needs no ground truth."
+    )
+    below = [
+        step
+        for step, state in enumerate(causal.true_trajectory)
+        if float(state[1]) < report.supply_floor
+    ]
+    after = (
+        f"past them it crosses the floor at step {below[0]}: the certificate audits the floor, and"
+        " this solve does not hold it"
+        if below
+        else "past them it still holds the floor"
     )
     print(
-        f"over the certified prefix the true plant stays safe (min h ="
-        f" {causal.true_barrier_min:+.3f}); past it the plan is uncertified, not proven unsafe."
+        f"Gamma* is the problem's ceiling along the path, not the plan's: the causal plan's own"
+        f" actions are certified for {causal.certificate.certified_steps} steps, over which the"
+        f" true plant stays safe (min h = {causal.true_barrier_min:+.3f}); {after}."
     )
 
 

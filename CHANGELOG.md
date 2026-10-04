@@ -37,6 +37,13 @@ still change).
   softplus, and the curve there is Maxima's to the last digit (`validation/response_curves.mac`,
   STEP 8).
 
+- **`scripts/spine_demo.py` said the adjusted plan's supply floor holds up to its `Gamma*`.**
+  `Gamma*` is the level up to which every step along the plan's path has an admissible action that
+  meets the barrier condition: a ceiling for the problem along the path, not for the plan. The
+  plan's own actions are certified for 6 of its 25 steps, and on the true plant it crosses the
+  floor at step 16, while the naive plan, at a `Gamma*` of 1.17, never does. The script now prints
+  both and the step; the README's spine row and the certificates page say the same.
+
 ## [0.12.0] — 2026-10-04
 
 ### Added

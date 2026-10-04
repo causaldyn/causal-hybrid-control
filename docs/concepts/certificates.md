@@ -34,9 +34,11 @@ design record is
   full-horizon pass.
 - **The barrier** — for a control-affine plant and a safe set `{h >= 0}`, whether the barrier
   condition survives an identification radius on the effect, step by step, and `Γ*`: the largest
-  level of the [marginal sensitivity model](gamma.md#two-models-one-symbol) under which the
-  barrier stays certified. The plan-level `Γ*` is the weakest step's, so one uncertifiable step
-  sinks the plan. Where the barrier is flat, as at the centre of a ball, the radius is zero at
+  level of the [marginal sensitivity model](gamma.md#two-models-one-symbol) at which every step
+  along the plan's path still has an admissible action that meets the condition. It is a ceiling
+  for the problem along that path, not for the plan: whether the plan's own actions meet it is
+  `planned_certified`, which a plan can fail under a comfortable `Γ*`. The plan-level `Γ*` is the
+  weakest step's, so one uncertifiable step sinks the plan. Where the barrier is flat, as at the centre of a ball, the radius is zero at
   every level and the step's `Γ*` is `inf` or `nan`.
   Where two bounds tie, as at the midpoint of a two-sided one, `prescribe` audits each and reports
   the weaker `Γ*`: an upper bound on the joint ceiling, because each bound's is reached by its own
