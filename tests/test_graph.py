@@ -90,6 +90,19 @@ def test_multiple_treatments_are_handled_as_a_set() -> None:
     assert result.covariates == ("z",)
 
 
+def test_a_descendant_of_the_treatment_off_every_causal_path_may_be_adjusted_for() -> None:
+    """``forb`` is the descendants of the causal nodes, and the treatment is not one of them."""
+    graph = CausalGraph.from_edges([("x", "w"), ("x", "m"), ("m", "y")])
+    assert graph.is_valid_adjustment_set(("w",), treatment="x", outcome="y")
+    assert not graph.is_valid_adjustment_set(("m",), treatment="x", outcome="y")
+
+    # a proper causal path meets the treatments only where it starts, so x1 -> d -> x2 -> y is
+    # not one, and d, between the treatments, is in the canonical set
+    chain = CausalGraph.from_edges([("x1", "d"), ("d", "x2"), ("x2", "y"), ("x2", "c")])
+    assert chain.adjustment_set(treatment=("x1", "x2"), outcome="y").covariates == ("d",)
+    assert chain.is_valid_adjustment_set(("c",), treatment=("x1", "x2"), outcome="y")
+
+
 def test_a_cycle_and_a_self_loop_are_refused_at_construction() -> None:
     with pytest.raises(CyclicGraphError):
         CausalGraph.from_edges([("a", "b"), ("b", "c"), ("c", "a")])

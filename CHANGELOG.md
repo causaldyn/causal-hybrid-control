@@ -7,6 +7,18 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`is_valid_adjustment_set` refused a set holding a descendant of the treatment that no causal
+  path passes through.** `cn(X, Y)`, the nodes on proper causal paths, held the treatments
+  themselves, so `forb` held every descendant of a treatment: for `x → w` and `x → m → y`, the
+  valid set `{w}` was refused. A proper causal path meets the treatments only where it starts
+  (Perković et al. 2018), and `cn` now stops at them. The error only ever refused. With one
+  treatment `adjustment_set` returns what it did. With several, one upstream of another, its
+  canonical set can now hold a node between them, valid as the old one was: `x1 → d → x2 → y`
+  gives `(d,)` for `()`. Over 20 000 random graphs of seven nodes no status changed, and 190 of
+  the 9 932 sets for two treatments did.
+
 ## [0.12.0] — 2026-10-04
 
 ### Added

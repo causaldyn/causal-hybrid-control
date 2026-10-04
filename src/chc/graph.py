@@ -399,26 +399,28 @@ class CausalGraph:
         return found
 
     def _causal_nodes(self, exposure: Sequence[str], response: Sequence[str]) -> frozenset[str]:
-        """``cn(X, Y)``: the nodes lying on proper causal paths from ``X`` to ``Y``."""
+        """``cn(X, Y)``: the nodes outside ``X`` on proper causal paths from ``X`` to ``Y``.
+
+        A proper path meets ``X`` only where it starts, so both walks stop at ``X``: forward from
+        its children, back from ``Y`` through parents. ``X`` is not a causal node (Perkovic et al.
+        2018): were it one, ``forb`` would hold every descendant of the treatment, a child that no
+        causal path passes through among them, and a set adjusting for that child is valid.
+        """
         blocked = set(exposure)
-        children = self._child_map()
+        children, parents = self._child_map(), self._parent_map()
 
-        forward: set[str] = set()
-        queue = deque(
-            child for node in exposure for child in children[node] if child not in blocked
-        )
-        forward.update(queue)
-        while queue:
-            node = queue.popleft()
-            for child in children[node]:
-                if child not in blocked and child not in forward:
-                    forward.add(child)
-                    queue.append(child)
+        def reach(starts: Iterable[str], links: dict[str, list[str]]) -> set[str]:
+            found = {node for node in starts if node not in blocked}
+            queue = deque(found)
+            while queue:
+                for node in links[queue.popleft()]:
+                    if node not in blocked and node not in found:
+                        found.add(node)
+                        queue.append(node)
+            return found
 
-        backward = {node for node in self.ancestors(response) if node not in blocked}
-        interior = forward & backward
-        heads = {node for node in exposure if set(children[node]) & interior}
-        return frozenset(interior | heads)
+        forward = reach((child for node in exposure for child in children[node]), children)
+        return frozenset(forward & reach(response, parents))
 
     def _forbidden(
         self, treatment: str | Sequence[str], outcome: str | Sequence[str]
