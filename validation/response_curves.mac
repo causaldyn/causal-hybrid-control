@@ -19,6 +19,9 @@
            tests read it at z = eps, and f and r are their anchors
    STEP 8  Richards where nu e^s at zero spend is past a double, s = 709 and nu = 1000: its floor
            is 0.49, not 0, and g(1/2), to 40 digits, is the test's anchor
+   STEP 9  Burr XII where z^c is past a double, c = 850 and k = 1/1000: from z = 2.30, where the
+           curve is 0.51, not its ceiling; g(4), g'(4) and the tangency, to 40 digits, are the
+           test's anchors
 
    Run: timeout 300 maxima --very-quiet -b validation/response_curves.mac */
 
@@ -207,3 +210,14 @@ block([fpprec : 40, floor, half],
   half : bfloat((1 + 1000*exp(709/2))^(-1/1000)),
   print("richards, s = 709, nu = 1000: 1000 e^709 =", bfloat(1000*exp(709)), "  floor =", floor),
   print("richards, s = 709, nu = 1000: g(1/2) =", (half - floor)/(1 - floor)))$
+print("=== STEP 9: Burr XII where z^c is past a double ===")$
+/* c = 850, k = 1/1000: a numeric tail, since the file assumes k > 1 */
+block([fpprec : 40, g, c : 850, tail : 1/1000],
+  g : 1 - (1 + z^c)^(-tail),
+  print("burr xii, c = 850, k = 1/1000: z^c reaches a double's largest at z =",
+        bfloat(exp(log(1.7976931348623157b308)/c)), "  where g =",
+        bfloat(1 - (1 + 1.7976931348623157b308)^(-tail))),
+  print("burr xii, c = 850, k = 1/1000: g(4) =", bfloat(subst(z = 4, g)),
+        "  g'(4) =", bfloat(subst(z = 4, diff(g, z)))),
+  print("burr xii, c = 850, k = 1/1000: tangency =",
+        bf_find_root(bfloat(g - z*diff(g, z)), z, 2, 2.2)))$

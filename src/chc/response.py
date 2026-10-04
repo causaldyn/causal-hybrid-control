@@ -269,7 +269,9 @@ class Saturation(Response):
         """Where the tangent from the origin touches the curve, ``g(z) = z g'(z)``, in scales.
 
         ``(g - z g')' = -z g''``, so ``g - z g'`` falls from 0 while the curve is convex and rises
-        once it is concave: the touching point is its one root past the inflection.
+        once it is concave: the touching point is its one root past the inflection. A curve convex
+        up to the end of its support has no root: the chord from the origin meets its ceiling at
+        the corner there, between the curve's slope on the left and the ceiling's 0 on the right.
         """
         start = self._standard_inflection()
         if start == 0.0:
@@ -281,14 +283,30 @@ class Saturation(Response):
             return float(self.standard(at) - at * slope(at))
 
         if gap(start) >= 0.0:
-            return start  # the convex stretch is within rounding of none
+            # the convex stretch is within rounding of none, or the curve is convex up to the
+            # corner at the end of its support, where the gap reads the ceiling's
+            return start
         end = start
         for _ in range(64):
-            # past its support a curve is flat at 1, where the gap is 1
             end = min(2.0 * end, self._support)
+            if end == self._support:
+                break
             if gap(end) > 0.0:
                 return brentq(gap, start, end, xtol=1e-15 * start)
-        raise RuntimeError(f"{self!r}: no tangency within {end} scales")
+        else:
+            raise RuntimeError(f"{self!r}: no tangency within {end} scales")
+        # Past its support a curve is flat at 1, where the gap jumps to 1, so a bracket that ends
+        # there holds the jump, and a root search stops at it, short of a root inside or of the
+        # corner. Walk towards the end instead, halving the distance, for a point inside where the
+        # gap has turned. The slope a few ulps short of the end can read the wrong sign, an expm1
+        # whose answer is -1 to rounding, so no single point there can say the gap never turns.
+        for halving in range(1, 64):
+            inside = end - (end - start) * 2.0**-halving
+            if inside >= end:
+                break
+            if gap(inside) > 0.0:
+                return brentq(gap, start, inside, xtol=1e-15 * start)
+        return end  # the gap turns only at the corner where the curve meets its ceiling
 
     def inflection(self) -> float:
         """Where the curve turns from convex to concave, in spend; 0 if it is concave from zero.
@@ -298,7 +316,11 @@ class Saturation(Response):
         return float(self.scale) * self._standard_inflection()
 
     def tangency(self) -> float:
-        """The spend where the tangent from the origin touches the curve; 0 if it is concave."""
+        """The spend where the tangent from the origin touches the curve; 0 if it is concave.
+
+        For a curve convex up to the end of its support, that end, where the chord from the origin
+        meets the ceiling at a corner: the beta and Kumaraswamy CDFs at ``b = 1``.
+        """
         return float(self.scale) * self._standard_tangency()
 
     def nonconvexity(self) -> float:
@@ -321,8 +343,10 @@ class Saturation(Response):
             return float(slope(_real(z))) - chord
 
         # the excess chord z - g rises while g' < chord and falls from where g' = chord, below the
-        # inflection, to the tangency, where g' = chord again: the first crossing is its peak
-        bend = self._standard_inflection()
+        # inflection, to the tangency, where g' = chord again: the first crossing is its peak. A
+        # curve convex up to the end of its support bends into its ceiling there, at a corner whose
+        # slope is the ceiling's 0, so the bracket ends just inside, on the curve's own slope
+        bend = min(self._standard_inflection(), math.nextafter(self._support, 0.0))
         if rise(0.0) >= 0.0 or rise(bend) <= 0.0:
             return 0.0  # the convex stretch is within rounding of none
         peak = brentq(rise, 0.0, bend, xtol=1e-15 * bend)
@@ -507,7 +531,11 @@ class Weibull(Saturation):
         _require("shape", self.shape, 0.0)
 
     def standard(self, z: Array) -> Array:
-        return -jnp.expm1(-_power(z, self.shape))
+        # e^-z^k is below a double's resolution once z^k passes 40, so the curve is its ceiling
+        # there and its slope 0, as expm1's own slope already reads it. The power taken further
+        # overflows, k z^(k - 1) first, and the chain rule meets it with that 0 into nan
+        past = self.shape * jnp.log(z) > math.log(40.0)
+        return jnp.where(past, 1.0, -jnp.expm1(-_power(jnp.where(past, 1.0, z), self.shape)))
 
     def _standard_inflection(self) -> float:
         k = float(self.shape)
@@ -665,7 +693,14 @@ class BurrXII(Saturation):
         _require("tail", self.tail, 0.0)
 
     def standard(self, z: Array) -> Array:
-        return -jnp.expm1(-self.tail * jnp.log1p(_power(z, self.slope)))
+        below = z <= 1.0
+        # log(1 + z^c) as c log z + log(1 + z^-c) above 1, since z^c passes a double early: from
+        # z = 2.30 at c = 850, where a tail of 0.001 has the curve at 0.51, not its ceiling. Each
+        # branch sees 1 in the other's range, where its slope is finite
+        rising = jnp.log1p(_power(jnp.where(below, z, 1.0), self.slope))
+        at = jnp.where(below, 1.0, z)
+        falling = self.slope * jnp.log(at) + jnp.log1p(at**-self.slope)
+        return -jnp.expm1(-self.tail * jnp.where(below, rising, falling))
 
     def _standard_inflection(self) -> float:
         c, k = float(self.slope), float(self.tail)

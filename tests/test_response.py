@@ -216,6 +216,48 @@ def test_a_curve_at_its_supports_end_touches_its_envelope_at_the_kink() -> None:
         assert float(Envelope(curve)(1.0)) == pytest.approx(0.5, rel=1e-14, abs=0.0)
 
 
+@pytest.mark.parametrize(
+    "curve",
+    [
+        # past b = 1 by less than a double resolves, the curve turns concave within e^(-1/(b - 1))
+        # of the corner: the search stopped 1e-15 short of it, where the chord cuts the curve
+        BetaCDF(2.0, 1.0000558545842515, 1.000000000149455),
+        Kumaraswamy(2.0, 2.999941587134027, 1.000000000000001),
+    ],
+    ids=name,
+)
+def test_a_curve_that_turns_only_at_its_corner_touches_there(curve: Saturation) -> None:
+    assert curve.tangency() == 2.0
+
+
+def test_a_gap_that_turns_inside_the_support_is_found_there() -> None:
+    # a = b = 1 + 1.07e-4 turns at 0.797 of K; a few ulps short of K the slope reads the gap's sign
+    # wrong, so a probe there would take the corner, under whose chord the curve rises 1.6e-5
+    curve = Kumaraswamy(2.0, 1.0001074911103465, 1.0001074911103458)
+    touch = curve.tangency()
+    assert touch < 2.0
+    assert float(curve(touch)) == pytest.approx(touch * slope(curve, touch), rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("family", [BetaCDF, Kumaraswamy], ids=lambda family: family.__name__)
+@pytest.mark.parametrize(("a", "anchor"), [(2.0, 0.25), (3.0, 0.3849001794597505)])
+def test_a_curve_convex_up_to_its_corner_has_the_corners_nonconvexity(
+    family: type[Saturation], a: float, anchor: float
+) -> None:
+    # validation/envelope_nonconvexity.mac STEP 7: z^a under the chord to the corner, 2/(3 sqrt(3))
+    # at a = 3. The slope at the inflection read the ceiling's 0 there, and gave no excess at all
+    assert family(2.0, a, 1.0).nonconvexity() == pytest.approx(anchor, rel=1e-14, abs=0.0)
+
+
+def test_kumaraswamys_nonconvexity_runs_on_to_the_corners_as_b_falls_to_one() -> None:
+    # validation/envelope_nonconvexity.mac STEP 7: d rho/d b = (1 - z^a) log(1 - z^a) at the peak
+    rho, slope_ = 0.3849001794597505, -0.1726141304007209
+    for eps in (1e-9, 1e-6):
+        assert Kumaraswamy(2.0, 3.0, 1.0 + eps).nonconvexity() == pytest.approx(
+            rho + slope_ * eps, rel=1e-12, abs=0.0
+        )
+
+
 @pytest.mark.parametrize("curve", BOUNDED + CONCAVE_SHAPES, ids=name)
 def test_the_envelope_is_concave_and_never_below_its_curve(curve: Saturation) -> None:
     envelope = Envelope(curve)
@@ -409,6 +451,32 @@ def test_richards_keeps_its_floor_and_slope_where_nu_e_to_the_s_is_past_a_double
     assert steep.nonconvexity() == pytest.approx(
         Logistic(1.0, 1000.0).nonconvexity(), rel=1e-14, abs=0.0
     )
+
+
+@pytest.mark.parametrize("spend", [2.10546875, 4.0])
+def test_weibulls_slope_is_zero_not_nan_where_z_to_the_k_is_past_a_double(spend: float) -> None:
+    # at k = 947, k z^(k - 1) passes a double from z = 2.10 and z^k from 2.12; the curve is its
+    # ceiling there, and its slope e^-inf
+    curve = Weibull(1.0, 947.4635256553754)
+    assert float(curve(spend)) == 1.0
+    assert slope(curve, spend) == 0.0
+
+
+def test_weibulls_slope_short_of_its_ceiling_is_the_closed_forms() -> None:
+    z, k = 1.001, 850.0
+    assert slope(Weibull(1.0, k), z) == pytest.approx(
+        k * z ** (k - 1.0) * math.exp(-(z**k)), rel=1e-12, abs=0.0
+    )
+
+
+def test_burr_xii_keeps_its_value_and_slope_where_z_to_the_c_is_past_a_double() -> None:
+    # at c = 850, z^c passes a double from z = 2.30, where the curve is 0.51
+    # (validation/response_curves.mac, STEP 9): read as its ceiling, g(4) was 1 and the slope nan,
+    # and no tangency was found
+    curve = BurrXII(1.0, 850.0, 0.001)
+    assert float(curve(4.0)) == pytest.approx(0.6922138966637709, rel=1e-14, abs=0.0)
+    assert slope(curve, 4.0) == pytest.approx(0.06540454695894868, rel=1e-13, abs=0.0)
+    assert curve.tangency() == pytest.approx(2.062147283815243, rel=1e-13, abs=0.0)
 
 
 @settings(max_examples=60, deadline=None)

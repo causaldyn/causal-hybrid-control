@@ -16,7 +16,8 @@ still change).
   of its docstrings. `fuzz.yml` runs each target for five minutes on every change and half an
   hour a week, and `just fuzz` runs one locally. atheris is hash-pinned in
   `fuzz/requirements.txt` and kept out of the lock: nothing that installs the library needs it.
-  The two fixes below are what it found.
+  It found the adjustment, Richards and Burr XII defects below, and chasing its reports found the
+  other two.
 
 ### Fixed
 
@@ -36,6 +37,25 @@ still change).
   `s = 1000`, `nonconvexity()` raised on the `nan`. The logarithm is now taken first, as a
   softplus, and the curve there is Maxima's to the last digit (`validation/response_curves.mac`,
   STEP 8).
+
+- **`BurrXII` read itself as its ceiling, and its slope as `nan`, once `z^c` passed a double.** At
+  `c = 850` that is from 2.30 scales, where a tail of 0.001 has the curve at 0.51; at 4 scales it
+  is 0.692, read as 1, and `tangency()` raised on the `nan`. `log(1 + z^c)` is now
+  `c log z + log(1 + z^-c)` above one scale, as `Hill` splits its power, and the curve, its slope
+  and its tangency are Maxima's (`validation/response_curves.mac`, STEP 9).
+
+- **`nonconvexity()` was 0 for the beta and Kumaraswamy CDFs at `b = 1`.** There they are `z^a`,
+  convex up to the end of their support, where the chord meets the ceiling at a corner. The search
+  for the excess's peak read the slope at that corner from the ceiling's side, 0, and took the
+  curve for concave: at `a = 3` the excess is `2/(3 sqrt(3))`, 0.385, and the bound a plan made on
+  envelopes leans on said nothing was lost. The slope is now read inside the support
+  (`validation/envelope_nonconvexity.mac`, STEP 7). Just past `b = 1`, by less than a double
+  resolves, the curve turns at that corner too, and `tangency()` stopped up to 1e-15 short of it,
+  where the chord cuts the curve; it now returns the corner, and says it touches there.
+
+- **`Weibull`'s slope was `nan` once `k z^(k - 1)` passed a double,** where the curve is its
+  ceiling and its slope 0: from 2.10 scales at `k = 947`. Past `z^k = 40`, where `e^(-z^k)` is
+  below a double's resolution, the curve is now its ceiling outright; no finite output moves.
 
 - **`scripts/spine_demo.py` said the adjusted plan's supply floor holds up to its `Gamma*`.**
   `Gamma*` is the level up to which every step along the plan's path has an admissible action that
