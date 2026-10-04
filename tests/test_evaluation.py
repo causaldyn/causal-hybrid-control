@@ -624,7 +624,7 @@ def test_the_batch_interval_has_as_many_degrees_of_freedom_as_batches_carry_mass
 
     assert got == pytest.approx(dof, rel=1e-12)
     assert half == pytest.approx(
-        student.ppf(0.975, dof) * means.std(ddof=1) / math.sqrt(40), rel=1e-12
+        student.ppf(0.975, dof) * means.std(ddof=1) / math.sqrt(40), rel=1e-12, abs=0.0
     )
 
 
@@ -841,10 +841,12 @@ def test_the_model_correction_is_carried_in_the_interval() -> None:
 
     width = counted.interval[1] - counted.interval[0]
     assert width == pytest.approx(
-        trusted.interval[1] - trusted.interval[0] + 2.0 * trusted.model_correction, rel=1e-12
+        trusted.interval[1] - trusted.interval[0] + 2.0 * trusted.model_correction,
+        rel=1e-12,
+        abs=0.0,
     )
     assert counted.model_share == pytest.approx(
-        trusted.model_correction / (trusted.value + trusted.model_correction), rel=1e-12
+        trusted.model_correction / (trusted.value + trusted.model_correction), rel=1e-12, abs=0.0
     )
 
 

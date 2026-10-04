@@ -104,7 +104,7 @@ def test_national_media_is_allotted_by_population(world):
     per_head = national.sum(axis=0) / world.population.sum()
     allotted = np.broadcast_to(per_head, national.shape)
     np.testing.assert_allclose(national / world.population[:, None], allotted, rtol=1e-12)
-    assert world.shares.sum() == pytest.approx(1.0, rel=1e-15)
+    assert world.shares.sum() == pytest.approx(1.0, rel=1e-14, abs=0.0)
 
 
 def test_the_log_s_spend_rises_with_the_season_by_the_policy():

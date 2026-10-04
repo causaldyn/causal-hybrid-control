@@ -156,7 +156,7 @@ def test_a_pinned_lever_costs_the_gaussian_tail_of_its_multiplier():
     (zone,) = design.pinned
     assert zone.z == pytest.approx(1.0)
     assert zone.regret == pytest.approx(
-        (s * s) * _second_partial_moment(1.0) / (2 * pin.curvature), rel=1e-12
+        (s * s) * _second_partial_moment(1.0) / (2 * pin.curvature), rel=1e-12, abs=0.0
     )
     # the lab's quadrature of the true expected regret is 7.2807e-4; the tail law, with the
     # curvature at b_hat, reads 1.45% above it

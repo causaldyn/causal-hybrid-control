@@ -126,7 +126,7 @@ def test_gcm_test_leaves_out_a_column_its_conditioning_set_determines() -> None:
     assert np.isnan(both.detectable[0, 1])
     # one regression has two right-hand sides and the other one, and the BLAS kernel the CPU
     # dispatches to may round the two differently
-    assert both.statistic == pytest.approx(alone.statistic, rel=1e-12)
+    assert both.statistic == pytest.approx(alone.statistic, rel=1e-12, abs=0.0)
     assert both.p_value == alone.p_value
 
 

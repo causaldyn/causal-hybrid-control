@@ -200,7 +200,9 @@ def test_entry_i_j_of_the_channel_is_index_i_m_plus_j(
     weight = plan.decision_weight()
     change = np.zeros((2, 2))
     change[1, 0] = 1e-3
-    assert weight.matrix[2, 2] / 2 * 1e-6 == pytest.approx(weight.regret(change), rel=1e-12)
+    assert weight.matrix[2, 2] / 2 * 1e-6 == pytest.approx(
+        weight.regret(change), rel=1e-12, abs=0.0
+    )
     assert _regret(plan, optimum, change) == pytest.approx(weight.regret(change), rel=0.02)
 
 

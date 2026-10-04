@@ -86,7 +86,7 @@ def test_a_decision_log_reads_as_the_docstring_writes_it() -> None:
     spread = sum(w[t] ** 2 * np.outer(z[t] - mean, z[t] - mean) for t in range(3)) * scale
     np.testing.assert_allclose(moved.estimate, mean[:, None], rtol=1e-13)
     np.testing.assert_allclose(moved.covariance, spread, rtol=1e-12)
-    assert moved.effective_size == pytest.approx(w.sum() ** 2 / np.sum(w**2), rel=1e-13)
+    assert moved.effective_size == pytest.approx(w.sum() ** 2 / np.sum(w**2), rel=1e-13, abs=0.0)
     with pytest.raises(ValueError, match="read-only"):
         moved.estimate[0, 0] = 1.0
     with pytest.raises(ValueError, match="read-only"):

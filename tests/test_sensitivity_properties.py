@@ -93,7 +93,7 @@ def test_symmetric_loss_recovers_certainty_equivalence(
     u_ce = certainty_equivalence_control(b_hat, target)
     u_rob = confounding_robust_control(b_hat, frac * b_hat, target, a, a)  # alpha == beta
     # symmetric -> radius does not move the gain (Rocq: kappa=0); float division is 1-ulp, not exact
-    assert u_rob == pytest.approx(u_ce, rel=1e-12)
+    assert u_rob == pytest.approx(u_ce, rel=1e-12, abs=0.0)
 
 
 @given(b_hat=_bhat, frac=_frac, target=positive, a=positive, b=positive)

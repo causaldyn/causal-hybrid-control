@@ -138,7 +138,7 @@ def test_the_draws_mixture_is_the_spread_s_posterior_by_quadrature(seed, deviati
     assert {
         "inside": 1e-6 * deviation < best < deviation,
         "least": best < 1e-6 * deviation,
-        "most": best == pytest.approx(deviation, rel=1e-12),
+        "most": best == pytest.approx(deviation, rel=1e-12, abs=0.0),
     }[where]
 
     drawn = np.log(spread.draws)
@@ -151,8 +151,8 @@ def test_the_draws_mixture_is_the_spread_s_posterior_by_quadrature(seed, deviati
     m, v = np.array(
         [_coefficient(forward_filter_geos(_at(model, [1], d), y, x)) for d in spread.draws]
     ).T
-    assert mean == pytest.approx(w @ m, rel=1e-12)
-    assert variance == pytest.approx(w @ (v + (m - mean) ** 2), rel=1e-12)
+    assert mean == pytest.approx(w @ m, rel=1e-12, abs=0.0)
+    assert variance == pytest.approx(w @ (v + (m - mean) ** 2), rel=1e-12, abs=0.0)
     # the self-normalised estimates' standard errors, by the delta method
     mean_error = math.sqrt(np.sum(w**2 * (m - mean) ** 2))
     variance_error = math.sqrt(np.sum(w**2 * (v + (m - mean) ** 2 - variance) ** 2))

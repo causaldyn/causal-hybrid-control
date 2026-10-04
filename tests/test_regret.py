@@ -1037,8 +1037,11 @@ def test_multivariate_van_trees_prices_an_alignment_where_the_scalar_floor_price
     assert diagonal.floor == pytest.approx(
         scalar_constant(1.0, x[0]) / spectrum[0] + scalar_constant(0.4, x[1]) / spectrum[1],
         rel=1e-12,
+        abs=0.0,
     )
-    assert float(diagonal.direction_floors.sum()) == pytest.approx(diagonal.floor, rel=1e-12)
+    assert float(diagonal.direction_floors.sum()) == pytest.approx(
+        diagonal.floor, rel=1e-12, abs=0.0
+    )
 
     # 2. the hand-derived Jacobian is CHECKED, not trusted -- including on a rectangular plant,
     #    where p != q and the curvature is not the effect's own Gram

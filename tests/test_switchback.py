@@ -172,7 +172,8 @@ def test_the_derivative_of_the_horizon_sum_is_its_derivative(h):
     for a in (0.1, 0.5, 0.8, 0.95):
         step = 1e-6
         numeric = (_s(a + step, h) - _s(a - step, h)) / (2 * step)
-        assert _ds(a, h) == pytest.approx(numeric, rel=1e-7)
+        # at h = 1 the sum is 1 for every a, so both read 0, _ds as two terms that cancel to rounding
+        assert _ds(a, h) == pytest.approx(numeric, rel=1e-7, abs=1e-12)
 
 
 def test_the_block_difference_in_means_reads_the_mean_effect_over_the_positions_it_keeps():
@@ -701,7 +702,7 @@ def test_fiellers_interval_is_where_the_ratio_test_does_not_reject():
             continue
         for tau in (lo, hi):
             variance = cov[1, 1] + 2 * tau * cov[0, 1] + tau * tau * cov[0, 0]
-            assert (b - tau * (1 - a)) ** 2 == pytest.approx(z * z * variance, rel=1e-8)
+            assert (b - tau * (1 - a)) ** 2 == pytest.approx(z * z * variance, rel=1e-8, abs=0.0)
         assert lo < b / (1 - a) < hi
 
 
@@ -809,7 +810,7 @@ def test_the_plan_keeps_the_level_and_power_its_mdes_are_for():
     assert (plan.alpha, plan.power) == (0.1, 0.9)
     normal = NormalDist()
     z = normal.inv_cdf(0.95) + normal.inv_cdf(0.9)
-    assert plan.reports[0].mde == pytest.approx(z * plan.reports[0].se, rel=1e-12)
+    assert plan.reports[0].mde == pytest.approx(z * plan.reports[0].se, rel=1e-12, abs=0.0)
 
 
 def _block_pilot_by_hand(settings: np.ndarray, run_blocks: int) -> tuple[float, float]:
@@ -851,7 +852,7 @@ def test_the_block_pilot_factor_is_its_transcription(run_blocks):
             continue
         lever = np.repeat(settings, 7, axis=1).astype(float)
         expected = _block_pilot_by_hand(settings, run_blocks)
-        assert _block_pilot(lever, 7, run_blocks) == pytest.approx(expected, rel=1e-12)
+        assert _block_pilot(lever, 7, run_blocks) == pytest.approx(expected, rel=1e-12, abs=0.0)
         checked += 1
 
 
@@ -868,7 +869,7 @@ def test_a_block_pilot_leaves_out_a_zone_centred_less_than_twice(run_blocks):
     )
     lever = np.repeat(settings, 3, axis=1).astype(float)
     expected = _block_pilot_by_hand(settings, run_blocks)
-    assert _block_pilot(lever, 3, run_blocks) == pytest.approx(expected, rel=1e-12)
+    assert _block_pilot(lever, 3, run_blocks) == pytest.approx(expected, rel=1e-12, abs=0.0)
 
 
 def test_a_long_block_pilot_restates_by_its_blocks():
@@ -892,10 +893,10 @@ def test_the_restated_mde_is_its_formula(alpha, power):
     restated = restate_mde(plan, Horizon(2), u[:500], y[:501])
     pilot = read_switchback(u[:500], y[:501], Horizon(2), "local_projection")
     se = pilot.se * math.sqrt(499 / 1999)
-    assert restated.se == pytest.approx(se, rel=1e-12)
+    assert restated.se == pytest.approx(se, rel=1e-12, abs=0.0)
     # the overlapping sums keep one lag, so the 499 rows have 499 / 3 degrees of freedom
     c = stats.nct.ppf(power, 499 / 3, NormalDist().inv_cdf(1.0 - alpha / 2.0))
-    assert restated.mde == pytest.approx(c * se, rel=1e-12)
+    assert restated.mde == pytest.approx(c * se, rel=1e-12, abs=0.0)
     assert (restated.estimand, restated.arm, restated.analysis) == (Horizon(2), 0, report.analysis)
     assert (restated.bias, restated.loss) == (report.bias, report.loss)
 
@@ -919,9 +920,9 @@ def test_a_regression_restates_by_its_rows_and_lags(case, analysis, lags):
     restated = restate_mde(plan, report.estimand, u[0, :, :cut], y[0, :, : cut + 1])
     pilot = read_switchback(u[0, :, :cut], y[0, :, : cut + 1], report.estimand, analysis)
     se = pilot.se * math.sqrt((cut - lags) / (run - lags))
-    assert restated.se == pytest.approx(se, rel=1e-12)
+    assert restated.se == pytest.approx(se, rel=1e-12, abs=0.0)
     c = stats.nct.ppf(0.8, 3 * (cut - lags) / (2 * lags + 1), NormalDist().inv_cdf(0.975))
-    assert restated.mde == pytest.approx(c * se + abs(report.bias), rel=1e-12)
+    assert restated.mde == pytest.approx(c * se + abs(report.bias), rel=1e-12, abs=0.0)
 
 
 def test_a_block_restatement_carries_the_plans_bias():
@@ -934,9 +935,9 @@ def test_a_block_restatement_carries_the_plans_bias():
         u[:, :cut], y[:, : cut + 1], STEADY_STATE, "block_dim", blocks=plan.arms[0].design
     )
     ratio, dof = _block_pilot(u[:, :cut], length, plan.periods // length)
-    assert restated.se == pytest.approx(pilot.se * math.sqrt(ratio), rel=1e-12)
+    assert restated.se == pytest.approx(pilot.se * math.sqrt(ratio), rel=1e-12, abs=0.0)
     c = stats.nct.ppf(0.8, dof, NormalDist().inv_cdf(0.975))
-    assert restated.mde == pytest.approx(c * restated.se - report.bias, rel=1e-12)
+    assert restated.mde == pytest.approx(c * restated.se - report.bias, rel=1e-12, abs=0.0)
     assert (restated.bias, restated.loss) == (report.bias, report.loss)
 
 

@@ -77,10 +77,10 @@ def test_a_discounted_level_settles_at_its_steady_state():
     fit = forward_filter(DynamicLinearModel((Polynomial(1, delta),), _prior(1, scale=v)), y)
     c = fit.covariance[-1, 0, 0]
     gain = fit.prior_covariance[-1, 0, 0] / fit.one_step_scale[-1]
-    assert c == pytest.approx(v * (1.0 - delta), rel=1e-12)
-    assert gain == pytest.approx(1.0 - delta, rel=1e-12)
+    assert c == pytest.approx(v * (1.0 - delta), rel=1e-12, abs=0.0)
+    assert gain == pytest.approx(1.0 - delta, rel=1e-12, abs=0.0)
     w = fit.prior_covariance[-1, 0, 0] - fit.covariance[-2, 0, 0]
-    assert w / v == pytest.approx((1.0 - delta) ** 2 / delta, rel=1e-12)
+    assert w / v == pytest.approx((1.0 - delta) ** 2 / delta, rel=1e-12, abs=0.0)
 
 
 def test_log_likelihood_sums_student_t_densities():

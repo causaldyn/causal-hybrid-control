@@ -234,14 +234,14 @@ def _ratio_for(eps: float) -> float:
 
 
 def test_the_optimal_gain_sits_at_the_double_root() -> None:
-    assert optimal_delay_gain(2.0) == pytest.approx(1.0 / (np.e * 2.0), rel=1e-15)
+    assert optimal_delay_gain(2.0) == pytest.approx(1.0 / (np.e * 2.0), rel=1e-14, abs=0.0)
     assert delay_design_loss(1.0) == 0.0  # designing for the truth gives up nothing
 
 
 def test_the_stabilising_ball_is_a_half_line_not_a_ball() -> None:
     ball = delay_ball(3.0)
-    assert ball.ratio_floor == pytest.approx(2.0 / (np.pi * np.e), rel=1e-15)
-    assert ball.shortest_safe_estimate == pytest.approx(ball.ratio_floor * 3.0, rel=1e-15)
+    assert ball.ratio_floor == pytest.approx(2.0 / (np.pi * np.e), rel=1e-14, abs=0.0)
+    assert ball.shortest_safe_estimate == pytest.approx(ball.ratio_floor * 3.0, rel=1e-14, abs=0.0)
     assert ball.relative_radius == pytest.approx(0.7658006739, abs=1e-9)
     assert delay_design_loss(0.9 * ball.ratio_floor) == float("inf")  # below the floor: no rate
     assert np.isfinite(delay_design_loss(1e6))  # ...and no ceiling, at any over-estimate

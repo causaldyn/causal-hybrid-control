@@ -778,7 +778,7 @@ def test_a_decision_reads_as_the_docstring_writes_it() -> None:
                 for b in range(8):
                     theta = side * 2.0**-b
                     expected = math.exp(theta * r * drawn[t] / sigma - (theta * r) ** 2 / 2)
-                    assert evalues[t, i, 0, s, b] == pytest.approx(expected, rel=1e-13)
+                    assert evalues[t, i, 0, s, b] == pytest.approx(expected, rel=1e-13, abs=0.0)
 
 
 def test_a_clipped_decision_is_read_with_its_draw() -> None:
@@ -940,7 +940,7 @@ def test_the_alarm_reads_the_same_whatever_the_batches(
     at = round(cut * rows)
     split.update(evalues[:at])
     split.update(evalues[at:])
-    assert split.statistic == pytest.approx(whole.statistic, rel=1e-12)
+    assert split.statistic == pytest.approx(whole.statistic, rel=1e-12, abs=0.0)
 
 
 def test_a_dither_that_is_not_the_stated_draw_is_refused() -> None:

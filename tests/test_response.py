@@ -175,7 +175,7 @@ def test_a_concave_curve_reports_no_inflection_and_no_tangency(curve: Saturation
 def test_the_tangent_from_the_origin_touches_the_curve_at_its_tangency(curve: Saturation) -> None:
     touch = curve.tangency()
     assert touch > curve.inflection()
-    assert float(curve(touch)) == pytest.approx(touch * slope(curve, touch), rel=1e-12)
+    assert float(curve(touch)) == pytest.approx(touch * slope(curve, touch), rel=1e-12, abs=0.0)
 
 
 @pytest.mark.parametrize(
@@ -196,7 +196,7 @@ def test_the_tangent_from_the_origin_touches_the_curve_at_its_tangency(curve: Sa
     ids=lambda value: name(value) if isinstance(value, Response) else "",
 )
 def test_the_tangencies_match_maximas_roots(curve: Saturation, anchor: float) -> None:
-    assert curve.tangency() == pytest.approx(2.0 * anchor, rel=1e-13)
+    assert curve.tangency() == pytest.approx(2.0 * anchor, rel=1e-13, abs=0.0)
 
 
 @pytest.mark.parametrize(
@@ -204,7 +204,7 @@ def test_the_tangencies_match_maximas_roots(curve: Saturation, anchor: float) ->
 )
 def test_a_closed_form_tangency_agrees_with_the_root_it_replaces(curve: Saturation) -> None:
     assert curve._standard_tangency() == pytest.approx(
-        Saturation._standard_tangency(curve), rel=1e-13
+        Saturation._standard_tangency(curve), rel=1e-13, abs=0.0
     )
 
 
@@ -213,7 +213,7 @@ def test_a_curve_at_its_supports_end_touches_its_envelope_at_the_kink() -> None:
     for curve in (BetaCDF(2.0, 3.0, 1.0), Kumaraswamy(2.0, 3.0, 1.0)):
         assert curve.inflection() == 2.0
         assert curve.tangency() == 2.0
-        assert float(Envelope(curve)(1.0)) == pytest.approx(0.5, rel=1e-14)
+        assert float(Envelope(curve)(1.0)) == pytest.approx(0.5, rel=1e-14, abs=0.0)
 
 
 @pytest.mark.parametrize("curve", BOUNDED + CONCAVE_SHAPES, ids=name)
@@ -439,7 +439,7 @@ def test_ricker_peaks_at_its_scale_and_falls_after() -> None:
     values = np.asarray(curve(spend))
     assert values[0] == 0.0
     assert float(spend[np.argmax(values)]) == pytest.approx(2.0)
-    assert float(curve(2.0)) == pytest.approx(1.0, rel=1e-15)
+    assert float(curve(2.0)) == pytest.approx(1.0, rel=1e-15, abs=0.0)
     assert slope(curve, 2.0) == pytest.approx(0.0, abs=1e-15)
     assert np.all(np.diff(values[np.asarray(spend) > 2.0]) < 0.0)
 
@@ -606,7 +606,7 @@ def test_a_slope_infinite_at_zero_spend_is_read_a_machine_epsilon_of_the_scale_o
         return jax.grad(eqx.tree_at(shape, curve, value))(jnp.asarray(0.0))
 
     at_eps = (f * math.log(np.finfo(np.float64).eps) + r) / 2.0
-    assert float(jax.grad(moved)(jnp.asarray(1.0))) == pytest.approx(at_eps, rel=1e-14)
+    assert float(jax.grad(moved)(jnp.asarray(1.0))) == pytest.approx(at_eps, rel=1e-14, abs=0.0)
 
 
 def test_the_beta_cdf_refuses_a_slope_in_its_shapes_and_names_the_alternative() -> None:
@@ -792,7 +792,7 @@ def test_the_kernels_weights_are_their_definitions() -> None:
     )
     for kernel in KERNELS:
         if kernel.normalized:
-            assert float(jnp.sum(kernel.weights())) == pytest.approx(1.0, rel=1e-15)
+            assert float(jnp.sum(kernel.weights())) == pytest.approx(1.0, rel=1e-14, abs=0.0)
 
 
 def test_a_kernel_without_carryover_has_a_finite_slope_in_its_retention() -> None:
@@ -810,9 +810,9 @@ def test_a_linear_channel_returns_its_coefficient_times_the_kernels_sum() -> Non
     channel = Channel(kernel, Power(1.0, 1.0), 2.0)
     padded = jnp.concatenate([SPEND, jnp.zeros(7)])  # every period's carryover inside the series
     whole = 2.0 * float(jnp.sum(kernel.weights()))
-    assert roi(channel, padded, slice(10, 20)) == pytest.approx(whole, rel=1e-13)
-    assert marginal_roi(channel, padded, slice(10, 20)) == pytest.approx(whole, rel=1e-13)
-    assert steady_state_marginal_roi(channel, 40.0) == pytest.approx(whole, rel=1e-13)
+    assert roi(channel, padded, slice(10, 20)) == pytest.approx(whole, rel=1e-13, abs=0.0)
+    assert marginal_roi(channel, padded, slice(10, 20)) == pytest.approx(whole, rel=1e-13, abs=0.0)
+    assert steady_state_marginal_roi(channel, 40.0) == pytest.approx(whole, rel=1e-13, abs=0.0)
 
 
 def test_a_contribution_is_the_return_in_its_periods_from_all_the_spend_before() -> None:
@@ -824,7 +824,7 @@ def test_a_contribution_is_the_return_in_its_periods_from_all_the_spend_before()
     quiet = SPEND.at[30:40].set(0.0)
     assert contribution(channel, quiet, slice(30, 40)) > 0.0
     assert contribution(channel, quiet, slice(30, 40), revenue_per_kpi=4.0) == pytest.approx(
-        4.0 * contribution(channel, quiet, slice(30, 40)), rel=1e-15
+        4.0 * contribution(channel, quiet, slice(30, 40)), rel=1e-15, abs=0.0
     )
 
 
@@ -852,7 +852,7 @@ def test_the_steady_state_marginal_roi_is_the_slope_of_a_long_rollout() -> None:
     moved = (settled(level + step) - settled(level - step)) / (2.0 * step)
     channel = Channel(GeometricAdstock(r, length=400, normalized=False), curve, beta)
     closed = beta * float(jax.grad(curve)(level / (1.0 - r))) / (1.0 - r)
-    assert steady_state_marginal_roi(channel, level) == pytest.approx(closed, rel=1e-12)
+    assert steady_state_marginal_roi(channel, level) == pytest.approx(closed, rel=1e-12, abs=0.0)
     assert steady_state_marginal_roi(channel, level) == pytest.approx(moved, rel=1e-7)
 
 
@@ -864,26 +864,26 @@ def test_every_return_per_unit_is_invariant_to_the_currency(currency: float) -> 
 
     home, abroad, window = channel(1.0), channel(currency), slice(10, 40)
     assert roi(abroad, SPEND * currency, window) == pytest.approx(
-        roi(home, SPEND, window), rel=1e-12
+        roi(home, SPEND, window), rel=1e-12, abs=0.0
     )
     assert marginal_roi(abroad, SPEND * currency, window) == pytest.approx(
-        marginal_roi(home, SPEND, window), rel=1e-12
+        marginal_roi(home, SPEND, window), rel=1e-12, abs=0.0
     )
     assert steady_state_marginal_roi(abroad, 40.0 * currency) == pytest.approx(
-        steady_state_marginal_roi(home, 40.0), rel=1e-12
+        steady_state_marginal_roi(home, 40.0), rel=1e-12, abs=0.0
     )
 
 
 def test_revenue_per_kpi_turns_a_kpi_return_into_revenue() -> None:
     channel = Channel(GeometricAdstock(0.5, length=6, normalized=True), Tanh(100.0), 1.5)
     assert roi(channel, SPEND, revenue_per_kpi=4.0) == pytest.approx(
-        4.0 * roi(channel, SPEND), rel=1e-15
+        4.0 * roi(channel, SPEND), rel=1e-15, abs=0.0
     )
     assert marginal_roi(channel, SPEND, revenue_per_kpi=4.0) == pytest.approx(
-        4.0 * marginal_roi(channel, SPEND), rel=1e-15
+        4.0 * marginal_roi(channel, SPEND), rel=1e-15, abs=0.0
     )
     assert steady_state_marginal_roi(channel, 40.0, revenue_per_kpi=4.0) == pytest.approx(
-        4.0 * steady_state_marginal_roi(channel, 40.0), rel=1e-15
+        4.0 * steady_state_marginal_roi(channel, 40.0), rel=1e-15, abs=0.0
     )
 
 
