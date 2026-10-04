@@ -338,7 +338,7 @@ and `shadow_price_interval` in `matching`, `channel_drift_evalues`, `DriftAlarm`
 `ChannelMove`, `MovePrice` and the `alpha_futility` field of `GateConfig` in `gate`, and
 `CausalPlan.decision_weight`, `DecisionWeight` and `CausalPlan.relaxed_cost` in `plan`.
 
-Roadmap: **0.12.0** the marketplace study, and the adaptation modules leave experimental →
+Roadmap: **0.13.0** the marketplace study, and the adaptation modules leave experimental →
 **1.0.0**, which is when the stable tier stops moving and the top level holds only the lifecycle's
 names: the 421 names that warn since 0.8.0 leave it then.
 

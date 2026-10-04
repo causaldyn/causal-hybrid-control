@@ -4,8 +4,10 @@
 
 ## Context
 
-The 0.12.0 release (0.10.0 until D35 put the media-mix release first, and 0.11.0 until a planner over a posterior's draws shipped before it) pre-registers a marketplace study whose headline is that an off-policy estimate
-of a plan predicts the plan's realised lift. The study needs a plant that every stage of the loop
+The 0.13.0 release pre-registers a marketplace study whose headline is that an off-policy estimate
+of a plan predicts the plan's realised lift. It was to be 0.10.0, until the media-mix release went
+first; 0.11.0, until a planner over a posterior's draws shipped before it; and 0.12.0, until a
+prescription's evaluation as a target trial (ADR 0049) did. The study needs a plant that every stage of the loop
 can run on:
 
 - the causal fit and the planner, which need a control-affine plant;

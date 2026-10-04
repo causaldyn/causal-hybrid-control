@@ -110,6 +110,12 @@ still change).
   quadrature. The bias is `dmu de E[(1/2 - e)/e_hat]`, so the propensity error moves the weight as
   well and the slope reaches 4 only as the errors vanish. The default's numbers change.
 
+### Notes
+
+- **The marketplace study moves to 0.13.0.** The roadmap had it as 0.12.0. A prescription's
+  evaluation as the target trial it emulates (ADR 0049) and the fixes above ship first. Nothing in
+  the study changes; ADRs 0017 and 0019 carry the new number.
+
 ## [0.11.0] — 2026-10-03
 
 ### Added
