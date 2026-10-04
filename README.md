@@ -279,7 +279,7 @@ The release-by-release record, scope corrections included, is in [`CHANGELOG.md`
 
 ## Status
 
-Early (`v0.11.0`), single-author, research code (`just counts` prints the test and proof counts;
+Early (`v0.12.0`), single-author, research code (`just counts` prints the test and proof counts;
 Python 3.11–3.15 with the free-threaded 3.14t and 3.15t, astral `ruff` + `ty`).
 Working: hybrid dynamics + adjoint (discrete and adaptive `diffrax`), LQR, system ID (one-/multi-step),
 causal identification (adjustment / IV / DML / sensitivity / refutation) plus the modern frontier —
@@ -357,7 +357,7 @@ suite, and `rocq compile` over `proofs/*.v`. Machine-readable citation metadata 
   author  = {Gradina, Ilia},
   title   = {causal-hybrid-control: physics-structured dynamics with a learned causal residual},
   year    = {2026},
-  version = {0.11.0},
+  version = {0.12.0},
   doi     = {10.5281/zenodo.21737789},
   license = {Apache-2.0},
   url     = {https://github.com/causaldyn/causal-hybrid-control}

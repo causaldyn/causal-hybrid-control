@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-10-04
+
 ### Added
 
 - **`Saturation.nonconvexity()`: the most a curve's concave envelope rises above it.** A number of
@@ -4483,6 +4485,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.12.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.12.0
 [0.11.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.11.0
 [0.10.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.10.0
 [0.9.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.9.0
