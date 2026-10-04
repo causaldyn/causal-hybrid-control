@@ -110,6 +110,16 @@ still change).
   quadrature. The bias is `dmu de E[(1/2 - e)/e_hat]`, so the propensity error moves the weight as
   well and the slope reaches 4 only as the errors vanish. The default's numbers change.
 
+- **The geo bench's importance sampler drew the world's own normals (ADR 0047).**
+  - `scripts/bench_geo_dlm.py` passed each world's seed to `fit_geo_spread`. The sampler's 64
+    draws were the world's first 256 standard normals, and in the lognormal arms 12 of each
+    channel's 64 were its geos' standardised log-effects.
+  - The sampler now draws from a stream of its own, and the four arms were rerun on the same 100
+    worlds. The plug-in fits, the pooling gate and the spread's coverage are the same to the bit.
+  - The intervals mixed over the spread's draws cover 0.882–0.891 of 0.90, where they covered
+    0.882–0.892. Paired by world, each arm moved inside its difference's 95 % half-width.
+  - `chc.dlm` is unchanged.
+
 ### Notes
 
 - **The marketplace study moves to 0.13.0.** The roadmap had it as 0.12.0. A prescription's

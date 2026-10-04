@@ -70,6 +70,13 @@ Predicted from the pilot, 20 worlds an arm, and not gated:
         hierarchy has an excess kurtosis of 3.3 and 5.9 for search and social;
     a median of 40-44 effective draws of 64; the pilot's least was 16.
 
+A deviation, 2026-10-04: the scored run passed the world's own seed to fit_geo_spread, so the
+importance sampler's 64 draws were the world's first 256 normals; in the lognormal arms 12 of
+each channel's 64 were its geos' standardised log-effects. The sampler now draws from a stream of
+its own. The four arms were rerun, the gate, the worlds and the seeds as before. Only the
+integrated effects, their intervals and the effective draws read the sampler; the rest is the
+same to the bit.
+
 Run: uv run python scripts/bench_geo_dlm.py [--replicates 100] [--seed S] [--noise 30]
      [--hierarchy lognormal] > out.json
 """
@@ -177,7 +184,9 @@ def replicate(noise: float, hierarchy: str, seed: int) -> dict[str, Any]:
         z = np.random.default_rng((seed, 1)).standard_normal((GEOS, _C))
         effect = MEAN + np.sqrt(VARIANCE) * z
     model, y, x = _model(world, effect)
-    spread = fit_geo_spread(model, y, x, range(3, _REGIONAL), DRAWS, seed, level=LEVEL)
+    # the world's seed would hand the sampler the world's own normals as its proposal's
+    sampler = int(np.random.default_rng((seed, 2)).integers(2**31))
+    spread = fit_geo_spread(model, y, x, range(3, _REGIONAL), DRAWS, sampler, level=LEVEL)
     vaguest = np.diag(model.prior.covariance)[_OWN[0]]
     # a spread's prior variance is stated at the prior's scale, the hierarchy's at V's
     at_truth = VARIANCE * model.prior.scale / (noise**2 * float(world.population.mean()))

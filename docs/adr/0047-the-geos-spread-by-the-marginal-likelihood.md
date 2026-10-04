@@ -88,20 +88,20 @@ integrate over the spread.
 Measured by `scripts/bench_geo_dlm.py --replicates 100 --noise N --hierarchy H`, each arm its own
 process: 100 worlds from seed 20261002, in double precision. G1 is the pooled error minus each
 other way's, with the paired difference's 95 % half-width. G3's ratios are by channel: search,
-social, video, tv.
+social, video, tv. G2 and the effective draws are the rerun of 2026-10-04 (the deviation below).
 
 | arm | G1, minus alone | G1, minus together | G2, integrated coverage | G3, spread coverage | G3, median ratio |
 |---|---|---|---|---|---|
-| lognormal, noise 30 | −0.025 ± 0.007 | −0.66 ± 0.05 | 0.892 | 0.8325 | 0.85, 0.71, 0.86, 0.88 |
+| lognormal, noise 30 | −0.025 ± 0.007 | −0.66 ± 0.05 | 0.891 | 0.8325 | 0.85, 0.71, 0.86, 0.88 |
 | lognormal, noise 100 | −0.259 ± 0.031 | −0.37 ± 0.04 | 0.882 | 0.835 | 0.91, 0.72, 0.72, 0.93 |
-| gaussian, noise 30 | −0.021 ± 0.007 | −0.68 ± 0.02 | 0.889 | 0.91 | 0.94, 1.03, 0.96, 1.04 |
-| gaussian, noise 100 | −0.256 ± 0.029 | −0.38 ± 0.03 | 0.890 | 0.9225 | 0.93, 1.04, 0.96, 1.10 |
+| gaussian, noise 30 | −0.021 ± 0.007 | −0.68 ± 0.02 | 0.888 | 0.91 | 0.94, 1.03, 0.96, 1.04 |
+| gaussian, noise 100 | −0.256 ± 0.029 | −0.38 ± 0.03 | 0.889 | 0.9225 | 0.93, 1.04, 0.96, 1.10 |
 
 - **As predicted from the pilot.**
-  - The integrated coverage is 0.882–0.892, against a predicted 0.88–0.89.
+  - The integrated coverage is 0.882–0.891, against a predicted 0.88–0.89.
   - The pooled error is 8.9 % and 10.6 % below each geo's alone at a noise of 30, against 7–11 %.
   - The lognormal arms' spread coverage is 0.8325 and 0.835, against 0.82–0.89.
-  - The median effective draws are 39.6–43.0 of 64, near the predicted 40–44.
+  - The median effective draws are 38.9–42.8 of 64, near the predicted 40–44.
 - **Off the prediction.**
   - At a noise of 100 the pooled error is 33.4 % and 32.9 % below alone's, against 34–36 %. In
     the lognormal arm it is 4.2 % above the error at the world's own spread, against within 4 %.
@@ -116,12 +116,24 @@ social, video, tv.
   - In the lognormal arms the most kurtotic hierarchy, social's, has the lowest ratio, 0.71 and
     0.72, as predicted. Video's is as low at a noise of 100, 0.72, and search's is not low, 0.85
     and 0.91.
-  - The least effective draws are 11.7 of 64, in the lognormal arm at a noise of 100; the pilot's
+  - The least effective draws are 12.5 of 64, in the gaussian arm at a noise of 100; the pilot's
     least was 16.
 - **The gate averages G3's coverage over the channels, as pre-registered.** In the lognormal arms
   the intervals of the two most kurtotic hierarchies cover less one by one: search's 0.74 and 0.78,
   social's 0.77 and 0.74. A variance read from 12 geos varies more the heavier the hierarchy's
   tails, and a normal hierarchy's likelihood does not see the tails.
+- **A deviation, 2026-10-04: the scored run's sampler drew the world's own normals.**
+  - The run of 2026-10-02 passed each world's seed to `fit_geo_spread`. Its 64 draws were the
+    world's first 256 standard normals, and in the lognormal arms 12 of each channel's 64 were its
+    geos' standardised log-effects.
+  - The sampler now draws from a stream of its own. The four arms were rerun with the gate, the
+    worlds and the seeds as before.
+  - The plug-in fits, G1, G3 and the pooled intervals are the same to the bit. Only the integrated
+    effects, their intervals and the effective draws read the sampler.
+  - The 2026-10-02 run's integrated coverage was 0.892, 0.882, 0.889 and 0.890. Its median
+    effective draws were 39.6–43.0, and its least was 11.7, in the lognormal arm at a noise of 100.
+  - Paired by world, the rerun moved each arm's integrated coverage by −0.0013 to +0.0002, inside
+    each difference's 95 % half-width. The gate is met as it was.
 
 ## Alternatives
 
