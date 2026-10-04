@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-10-05
+
 ### Added
 
 - **Fuzz targets for the adjustment criterion and the saturation curves (`fuzz/`).** atheris,
@@ -59,8 +61,33 @@ still change).
   longer taken there (`validation/response_curves.mac`, STEP 10).
 
 - **`Weibull`'s slope was `nan` once `k z^(k - 1)` passed a double,** where the curve is its
-  ceiling and its slope 0: from 2.10 scales at `k = 947`. Past `z^k = 40`, where `e^(-z^k)` is
-  below a double's resolution, the curve is now its ceiling outright; no finite output moves.
+  ceiling and its slope 0: from 2.10 scales at `k = 947`. Past `z^k = 746`, where `e^(-z^k)`
+  underflows, the curve is now its ceiling outright; no finite output moves.
+
+- **Every curve written as `-expm1(-u)` read its slope wrongly in its tail.** jax differentiates
+  `expm1` as `expm1(x) + 1`, which cancels as `expm1(x)` nears -1: off by 1.7e-4 at `x = -30`, 6 %
+  at -35, and 0 from `-54 ln 2 = -37.43`, where `expm1` rounds to -1. At the tests' points the
+  slopes of `Exponential`, `Weibull`, `ChapmanRichards` and `BurrXII` read 0, `Tanh`'s half its
+  own, `Gompertz`'s 0.7 % and the `Kumaraswamy`'s 1.8e-4 short, and the Kumaraswamy's tangency at
+  `a = 1000` moved with it. A custom JVP now takes `exp(x)` as it stands; jax does so itself only
+  under `AccuracyMode.HIGHEST`, which also lets the compiler change the value. Both jax 0.10.2 and
+  0.11.2 differentiate it so.
+
+- **`tangency()` could stop where the chord's slope lies outside the curve's on both sides.**
+  brentq stops within four ulps at the least, eight just below 1, and a `Kumaraswamy` at
+  `a = 1000`, `b = 1.3162271367087017`, whose tangency lies 1.4e-13 short of its corner, turns its
+  slope by 2.6e-4 an ulp there. The root is now bracketed again around brentq's answer and bisected
+  down to adjacent doubles; `validation/response_curves.mac` STEP 11 gives that root,
+  0.99999999999986329319, and the slope at the double before it to 40 digits.
+
+- **`evaluate_plan` narrowed the interval that a negative smoothing correction should widen.** It
+  subtracts the model's `tau^2 beta_hat` from a smoothed plan's weighted estimate and counts the
+  correction's error in the interval. `beta` is `tr(R + B'PB)`, never negative for a positive
+  semidefinite cost, but a cost that is not, such as a reward written as a cost, can have
+  smoothing lower it, and the negative correction then narrowed the interval, and `model_share`
+  read 0: on a scalar loop the cost `-x^2` read the mirror of `x^2`'s value with a half-width of
+  0.021 against 0.033. The interval and `model_share` now take the correction's size, in
+  `evaluate_plan` and in the units' bootstrap behind `Prescription.evaluate`.
 
 - **`scripts/spine_demo.py` said the adjusted plan's supply floor holds up to its `Gamma*`.**
   `Gamma*` is the level up to which every step along the plan's path has an admissible action that
@@ -4547,6 +4574,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.12.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.12.1
 [0.12.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.12.0
 [0.11.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.11.0
 [0.10.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.10.0
