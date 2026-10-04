@@ -25,7 +25,7 @@ jobs:
       - name: Install uv
         # setup-uv has published no moving major/minor tags since v8.0.0, so there is no `@v9` to
         # track: the pin is the v9.0.0 release commit itself.
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Sync dependencies
@@ -55,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Sync dependencies
@@ -154,7 +154,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
       - name: Sync dependencies
         run: uv sync --group docs --group notebooks
       - name: Execute the notebooks and scripts, then build the site
