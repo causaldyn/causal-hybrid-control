@@ -29,6 +29,13 @@ still change).
 
 ### Fixed
 
+- **`SplitConformal` reads the `k`-th smallest score, and refuses too few to certify**, a defect
+  since 0.2.0. With `k = ceil((n + 1)(1 - alpha))` past the `n` scores it read the largest, which
+  covers `n / (n + 1)` of exchangeable data: five scores at `alpha = 0.05` covered 0.833, not 0.95.
+  Below `n` it interpolated between two scores where the guarantee names one. It now reads the
+  `k`-th smallest, `k` in exact arithmetic on `alpha` as written, and refuses fewer than
+  `(1 - alpha) / alpha` transitions, naming how many it needs. An `alpha` outside `(0, 1)`, an
+  `eps` that is not positive and a residual that is not an `EnsembleResidual` are refused too.
 - **`sequential_g_formula` refuses `folds` outside 2 to the rows**, a defect since 0.2.0. One fold
   trained its regressions on no rows and the effect read 0; no folds left every row unwritten and
   the effect read whatever the empty array held. Cross-fitting predicts each row from a fit on the
