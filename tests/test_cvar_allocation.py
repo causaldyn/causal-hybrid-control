@@ -655,3 +655,76 @@ def test_it_refuses_what_it_cannot_plan(change, match):
             upper=UPPER,
             history=HISTORY,
         )
+
+
+@pytest.mark.parametrize(("level", "at"), [(1.0, 2), (1.0, 30), (0.2, 10)])
+def test_a_program_its_iteration_limit_stops_leaves_its_box_the_last_bound(stall, level, at):
+    """A program HiGHS stalls on ends its box's rounds, and the box keeps the bound of the programs
+    before it, which the planes added since could only have tightened. The search goes on, and its
+    bound still holds the best split's mean gain in the worst share from above."""
+    readings = _s_shaped_readings(8, seed=7)
+    box = {"level": level, "against": CURRENT, "lower": LOWER, "upper": UPPER, "history": HISTORY}
+    exact = cvar_allocate(readings, BUDGET, PERIODS, **box)
+    limits = stall(at)
+    plan = cvar_allocate(readings, BUDGET, PERIODS, **box)
+    assert len(limits) > at
+    assert min(limits) > 0
+    assert plan.bound >= exact.cvar - 1e-6
+    assert plan.cvar <= exact.bound + 1e-6
+
+
+def test_a_program_stalled_on_concave_curves_ends_the_search_with_its_gap(stall, caplog):
+    """On concave curves the one box's planes are the search, so a program HiGHS stalls on ends
+    it, with the gap the programs before it left; the plan says so as a search its cap stops."""
+    limits = stall(2)
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = cvar_allocate(
+            _readings(5, seed=3),
+            BUDGET,
+            PERIODS,
+            level=1.0,
+            against=CURRENT,
+            lower=LOWER,
+            upper=UPPER,
+            history=HISTORY,
+        )
+    assert len(limits) == 2
+    assert (plan.stopped, plan.boxes) == ("cap", 1)
+    assert plan.bound > plan.cvar + 1e-6
+    [record] = [r for r in caplog.records if r.chc_event == "allocation_cap"]
+    assert (record.cvar, record.bound) == (plan.cvar, plan.bound)
+
+
+@pytest.mark.parametrize(
+    ("builder", "level"),
+    [("_readings", 1.0), ("_s_shaped_readings", 1.0), ("_readings", 0.001)],
+)
+def test_its_programs_keep_their_costs_out_of_highs_scaling(monkeypatch, builder, level):
+    """HiGHS folds a program's costs into its scaling when the least nonzero one is under 0.1. An
+    excess cost of one over the worst share's readings stretched its factors to 2^15 at 400
+    readings: the solution then missed 1e-10 once unscaled, and HiGHS solved the unscaled program
+    again with its costs unperturbed, which at the level 1 cycled past eleven million iterations. On
+    thirty readings every cost the planes pass is at least 0.1 where it is not zero, at the level
+    1 and at 0.001, where the worst share is 0.03 of a reading."""
+    import chc.allocation
+
+    real, least = chc.allocation.linprog, []
+
+    def linprog(c, *args, **kwargs):
+        least.append(float(np.min(np.abs(c[c != 0.0]))))
+        return real(c, *args, **kwargs)
+
+    monkeypatch.setattr(chc.allocation, "linprog", linprog)
+    plan = cvar_allocate(
+        globals()[builder](30, seed=7),
+        BUDGET,
+        PERIODS,
+        level=level,
+        against=CURRENT,
+        lower=LOWER,
+        upper=UPPER,
+        history=HISTORY,
+    )
+    assert plan.stopped == "closed"
+    assert least
+    assert min(least) >= 0.1

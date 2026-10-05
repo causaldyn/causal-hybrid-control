@@ -498,3 +498,39 @@ def test_totals_refuse_bounds_that_are_not_ordered():
         Totals(least=np.array([5.0]), most=np.array([4.0]))
     with pytest.raises(ValueError, match="one bound a group"):
         Totals(least=np.zeros(2), most=np.zeros(3))
+
+
+def _tied_by(caps, floors):
+    return allocate_geos(
+        CELLS,
+        BUDGET,
+        PERIODS,
+        lower=LOWER,
+        upper=UPPER,
+        geo_totals=caps,
+        channel_totals=floors,
+        history=HISTORY,
+    )
+
+
+@pytest.mark.parametrize("at", [2, 7])
+def test_a_program_its_iteration_limit_stops_ends_the_planes_on_the_last_one_solved(stall, at):
+    """A program HiGHS stalls on ends the planes: the plan is the best they found, its bound and
+    prices the last solved program's, and Newton's method on the totals that bind makes it exact
+    from those prices."""
+    caps, floors = _totals()
+    exact = _tied_by(caps, floors)
+    limits = stall(at)
+    plan = _tied_by(caps, floors)
+    assert len(limits) == at
+    assert min(limits) > 0
+    np.testing.assert_allclose(plan.spend, exact.spend, rtol=1e-9)
+    assert plan.bound >= exact.worth - 1e-6
+
+
+def test_a_first_program_its_iteration_limit_stops_is_refused(stall):
+    """With no program solved there is neither a bound nor a price to keep."""
+    caps, floors = _totals()
+    stall(1)
+    with pytest.raises(RuntimeError, match="left it unsolved"):
+        _tied_by(caps, floors)

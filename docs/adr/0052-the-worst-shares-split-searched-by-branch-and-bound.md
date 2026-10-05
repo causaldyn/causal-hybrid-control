@@ -68,7 +68,10 @@ channels read ten thousand programs a split.
   reference in 125 boxes, at 0.5 on a split that gains 106.8 in 231, and at 1 on one that gains
   583.7 in 145, each in a peak resident memory under 490 MiB, the linear programs never past 4572
   rows. Over six such channels at 0.1 the search stopped at its cap, after 501 boxes, a cut adding
-  two, with the gap at 0.037 on 353.36, and said so.
+  two, with the gap at 0.037 on 353.36, and said so. At 1 the six close in 413 boxes, on a split
+  that gains 2678.5, none of the 940 linear programs past 0.6 iterations a row and column; until
+  the program's excess costs were written at 1, HiGHS cycled on 87 of them, and the search
+  stopped at its cap with no finite bound (the changelog's entry for 0.13.0).
 - On concave curves one box is searched, as before. The stacked reading sums each worth's periods
   in another order than a reading alone, by up to 5.5e-12 on returns near 4000, and the channels'
   returns in another order, so a split on a flat optimum moves within the tolerance: on thirty
@@ -108,3 +111,9 @@ channels read ten thousand programs a split.
 - **Stacking across channels too**: channels of one kernel and family could share a program, but
   channels differ in both as a rule, and the readings are the axis that grows. Left until a case
   needs it.
+- **The level 1 written as the mean's program**, a free gain a reading under its planes, with no
+  `eta` and no excesses: at 1 the worst share's program has an unbounded optimal face, every
+  excess's reduced cost zero, and the mean's has neither. That degeneracy cycled only in HiGHS's
+  second, unscaled solve, which the costs at 1 no longer cause: on the 87 programs that cycled,
+  their scaled solutions stood within 2.3e-11 of feasible once unscaled, so the second solve
+  never ran. Left until a program at 1 stalls with its costs at 1; the iteration limit bounds it.

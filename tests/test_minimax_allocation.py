@@ -231,3 +231,19 @@ def test_an_s_curve_s_regret_is_off_the_curves_by_at_most_the_gap_it_logs(caplog
 def test_it_refuses_readings_it_cannot_hedge_between(readings, match):
     with pytest.raises(ValueError, match=match):
         minimax_allocate(readings, BUDGET, PERIODS, lower=LOWER, upper=UPPER, history=HISTORY)
+
+
+@pytest.mark.parametrize(("at", "status"), [(1, 1), (5, 1), (5, 4)])
+def test_a_program_left_unsolved_ends_the_rounds_on_the_last_floor(stall, at, status):
+    """HiGHS can pivot without end on planes cut at nearly the same split, so each program runs
+    under an iteration limit. One stopped there, or that HiGHS ends unsolved, ends the rounds: the
+    floor of the programs before it still bounds the least worst regret from below, as the split's
+    worst regret bounds it from above."""
+    box = {"lower": LOWER, "upper": UPPER, "history": HISTORY}
+    exact = minimax_allocate(READINGS, BUDGET, PERIODS, **box)
+    limits = stall(at, status)
+    plan = minimax_allocate(READINGS, BUDGET, PERIODS, **box)
+    assert len(limits) == at
+    assert min(limits) > 0
+    assert plan.bound <= exact.worst + 1e-6
+    assert plan.worst >= exact.bound - 1e-6

@@ -6,6 +6,9 @@ matmuls run in float32 rather than TF32, whose 10-bit mantissa no tolerance here
 
 import os
 
+import pytest
+from scipy.optimize import OptimizeResult
+
 # before jax is imported, so that no backend can have started without it
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
@@ -13,3 +16,26 @@ import jax
 
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
+
+
+@pytest.fixture
+def stall(monkeypatch):
+    """Arms ``chc.allocation``'s linear programs so that the call numbered ``at`` returns a program
+    HiGHS left unsolved: status 1, its iteration limit reached, as on planes it would pivot on
+    without end, or 4, ended with its optimality conditions unmet. The list returned records each
+    call's iteration limit."""
+    import chc.allocation  # here, not above: the module must load after float64 is enabled
+
+    def arm(at: int, status: int = 1) -> list[int]:
+        real, limits = chc.allocation.linprog, []
+
+        def linprog(*args, **kwargs):
+            limits.append(kwargs["options"]["maxiter"])
+            if len(limits) == at:
+                return OptimizeResult(status=status, message=f"HiGHS left it unsolved ({status}).")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(chc.allocation, "linprog", linprog)
+        return limits
+
+    return arm

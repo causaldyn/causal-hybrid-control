@@ -178,7 +178,7 @@ from jax import Array
 from jax.flatten_util import ravel_pytree
 from jax.typing import ArrayLike
 from scipy import sparse
-from scipy.optimize import brentq, linprog
+from scipy.optimize import OptimizeResult, brentq, linprog
 
 from chc.response import (
     Channel,
@@ -223,12 +223,17 @@ _NODES = 500
 # bound is within half the box's gap to the best split of the box's best on its envelopes: a box is
 # cut sooner than its planes are refined
 _BOX_ROUNDS = 30
+# linprog's statuses for a program HiGHS leaves unsolved, stopped by _planes' iteration limit or
+# ended with its optimality conditions unmet (HiGHS's "Unknown"): it bounds nothing, and the
+# planners keep the last program's bound
+_UNSOLVED = (1, 4)
 
 SearchStatus = Literal["closed", "cap", "unsearched"]
 """Why a plan's search for the best stopped: ``closed``, its bound within the share ``1e-9`` of its
-worth; ``cap``, with the gap open after 500 boxes, or after 500 rounds of :func:`cvar_allocate`'s
-planes on concave curves; ``unsearched``, a plan on the envelopes from zero spend whose gap is open,
-which no search tried to close."""
+worth; ``cap``, with the gap open after 500 boxes, or where :func:`cvar_allocate`'s planes on
+concave curves stopped, after 500 rounds or at a program HiGHS left unsolved;
+``unsearched``, a plan on the envelopes from zero spend whose gap is open, which no search tried
+to close."""
 
 _log = logging.getLogger(__name__)
 
@@ -1013,11 +1018,13 @@ def minimax_allocate(
     channels read another way, by another curve family, say. The regret of a split under a reading
     is the reading's best return at the budget over the split's, both on its envelopes, and the
     split returned has the least worst regret, to a share ``1e-9`` of the largest best return or as
-    near as 500 rounds of cutting planes come. A reading's regret is convex in the split, so its
-    tangent at any split lies under it: the planes are every reading's tangents at every split
-    tried so far, the linear program over them is a bound from below, and each split it proposes is
-    tried next. :attr:`MinimaxAllocation.bound` is the last program's value and ``worst`` the best
-    split's, so the gap between them is what the split may still be from the least worst regret.
+    near as 500 rounds of cutting planes come, or the rounds before a program HiGHS leaves
+    unsolved, one it stalls on stopped by an iteration limit. A reading's regret is convex in the
+    split, so its tangent at any split lies under it: the planes are every reading's tangents at
+    every split tried so far, the linear program over them is a bound from below, and each split it
+    proposes is tried next. :attr:`MinimaxAllocation.bound` is the last program's value and
+    ``worst`` the best split's, so the gap between them is what the split may still be from the
+    least worst regret.
 
     Args:
         readings: the readings, each with one channel a column; at least one.
@@ -1081,16 +1088,16 @@ def minimax_allocate(
             limits.extend((values - slopes @ tried - best) / scale)
         if worst - floor <= _GAP * scale:
             break
-        program = linprog(
+        program = _planes(
             np.concatenate([np.zeros(size), [1.0]]),
-            A_ub=np.array(rows),
-            b_ub=np.array(limits),
-            A_eq=np.concatenate([np.ones(size), [0.0]])[None, :],
-            b_eq=[rate],
-            bounds=[*zip(lower_rates, upper_rates, strict=True), (0.0, None)],
-            method="highs",
-            options={"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10},
+            np.array(rows),
+            np.array(limits),
+            [*zip(lower_rates, upper_rates, strict=True), (0.0, None)],
+            np.concatenate([np.ones(size), [0.0]])[None, :],
+            [rate],
         )
+        if program.status in _UNSOLVED:
+            break  # the last program's floor stands
         if program.status != 0:
             raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
         floor = max(floor, float(program.fun) * scale)
@@ -1130,10 +1137,12 @@ def cvar_allocate(
     reference's, both on the reading's curves, and the split returned has the most mean gain over
     the worst ``level`` share of the readings, to a share ``1e-9`` of the reference's largest
     return, or as near as 500 rounds of cutting planes come on concave curves and 500 boxes of the
-    rates past them; :attr:`CvarAllocation.stopped` says which. The reference spends the budget in
-    the box and gains nothing under any reading, so the split returned never does worse in that
-    share than keeping it. At ``level = 1`` the split has the most mean gain, the posterior's
-    expected return; as the level falls it moves only as far as the worst readings agree it gains.
+    rates past them; :attr:`CvarAllocation.stopped` says which. A program HiGHS leaves unsolved,
+    one it stalls on stopped by an iteration limit, leaves its box the bound of the programs
+    before it. The reference spends the budget in the box and gains nothing under any reading, so
+    the split returned never does worse in that share than keeping it. At ``level = 1`` the split
+    has the most mean gain, the posterior's expected return; as the level falls it moves only as
+    far as the worst readings agree it gains.
 
     The mean of the worst share is ``max_eta eta - E[(eta - gain)_+] / level`` (Rockafellar and
     Uryasev 2000), concave in the split where every curve is concave. The cutting planes (Kelley
@@ -1331,12 +1340,19 @@ def _cvar_search(
     scale = float(np.max(np.abs(base))) or 1.0
     tolerance = _GAP * scale
     # the variables are the rates, eta and one excess u_r a reading; each plane reads
-    # u_r >= eta - (gain_r + slope_r @ (s - tried)), in units of the reference's largest return
+    # u_r >= eta - (gain_r + slope_r @ (s - tried)), in units of the reference's largest return.
+    # The program's value is the worst share's mean times -max(share, 1), so its least cost is 1:
+    # HiGHS folds the costs into its scaling when the least is under 0.1, and at 1 / share that
+    # stretched the scaling's factors to 2^15; the solution then missed 1e-10 once unscaled, and
+    # HiGHS's second, unscaled solve, its costs unperturbed, cycled at the level 1, where every
+    # excess's reduced cost is zero
+    share = level * count
+    weight = max(share, 1.0)
     lines = np.repeat(np.arange(count), size + 2)
     columns = np.concatenate(
         [np.tile(np.arange(size + 1), (count, 1)), size + 1 + np.arange(count)[:, None]], axis=1
     ).ravel()
-    objective = np.concatenate([np.zeros(size), [-1.0], np.full(count, 1.0 / (level * count))])
+    objective = np.concatenate([np.zeros(size), [-weight], np.full(count, weight / share)])
     best: tuple[float, np.ndarray, np.ndarray] = (-np.inf, reference, np.zeros(count))
 
     def tried(
@@ -1393,22 +1409,19 @@ def _cvar_search(
             ):
                 break
             matrix = sparse.vstack(rows, format="csr")
-            program = linprog(
+            program = _planes(
                 objective,
-                A_ub=matrix,
-                b_ub=np.concatenate(limits),
-                A_eq=np.concatenate([np.ones(size), np.zeros(1 + count)])[None, :],
-                b_eq=[rate],
-                bounds=[*zip(low, high, strict=True), (None, None), *((0.0, None),) * count],
-                method="highs",
-                options={
-                    "primal_feasibility_tolerance": 1e-10,
-                    "dual_feasibility_tolerance": 1e-10,
-                },
+                matrix,
+                np.concatenate(limits),
+                [*zip(low, high, strict=True), (None, None), *((0.0, None),) * count],
+                np.concatenate([np.ones(size), np.zeros(1 + count)])[None, :],
+                [rate],
             )
+            if program.status in _UNSOLVED:
+                break  # the box keeps its last program's bound
             if program.status != 0:
                 raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
-            ceiling = min(ceiling, -float(program.fun) * scale)
+            ceiling = min(ceiling, -float(program.fun) * scale / weight)
             slack, kept = program.ineqlin.residual, matrix.shape[0]
             splits = [_onto(program.x[:size], low, high, rate)]
         if slack is not None and not alike:
@@ -1628,12 +1641,14 @@ def allocate_geos(
 
     The plan is found by cutting planes on the cells' envelopes, each worth bounded above by its
     tangents under a linear program, until the program's value is within a share ``1e-9`` of the
-    best plan it has proposed, or after 500 rounds. Where every cell inside its box is then strictly
-    concave, Newton's method on the prices of the totals that bind closes the budget and those
-    totals with each cell's rate exact at its prices; a step that does not bring them closer is
-    replaced by the least of the dual, convex in the prices, along it. A total whose price comes out
-    on the wrong side is released and one the plan breaks is bound, until each binding total's price
-    has its side's sign and the others hold: the conditions for the best plan on concave worths.
+    best plan it has proposed, or after 500 rounds, or at a program HiGHS leaves unsolved, one it
+    stalls on stopped by an iteration limit; a first program left so is refused. Where every cell
+    inside its box is then strictly concave, Newton's method on the prices of the totals that bind
+    closes the budget and those totals with each cell's rate exact at its prices; a step that does
+    not bring them closer is replaced by the least of the dual, convex in the prices, along it. A
+    total whose price comes out on the wrong side is released and one the plan breaks is bound,
+    until each binding total's price has its side's sign and the others hold: the conditions for
+    the best plan on concave worths.
     Otherwise the cutting planes' best plan is returned, with the program's value as its bound.
 
     Args:
@@ -2056,24 +2071,27 @@ def _outer(
     box = [*zip(lower / unit, upper / unit, strict=True), *[(None, None)] * size]
 
     best, plan, ceiling = -np.inf, lower.copy(), np.inf
+    priced: tuple[OptimizeResult, int] | None = None
     for _ in range(_ROUNDS):
         solved = len(limits)
-        program = linprog(
+        program = _planes(
             objective,
-            A_ub=sparse.vstack(
+            sparse.vstack(
                 [sparse.coo_array((entries, (rows, columns)), shape=(solved, 2 * size)), totals]
             ),
-            b_ub=np.array([*limits, *side_limits]),
-            A_eq=equal if fixed else None,
-            b_eq=np.array(fixed_limits) if fixed else None,
-            bounds=box,
-            method="highs",
-            options={"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10},
+            np.array([*limits, *side_limits]),
+            box,
+            equal if fixed else None,
+            np.array(fixed_limits) if fixed else None,
         )
         if program.status == 2:
             raise ValueError("no plan meets the budget, the boxes and the totals together")
+        if program.status in _UNSOLVED and priced is not None:
+            program, solved = priced  # the last program's bound and prices stand
+            break
         if program.status != 0:
             raise RuntimeError(f"the plan's linear program failed: {program.message}")
+        priced = (program, solved)
         ceiling = min(ceiling, -float(program.fun) * scale)
         rates = np.clip(program.x[:size] * unit, lower, upper)
         heights = program.x[size:] * scale
@@ -2247,6 +2265,43 @@ def _names(parameters: Channel) -> list[str]:
         count = int(np.size(leaf))
         names += [name] if count == 1 else [f"{name}[{k}]" for k in range(count)]
     return names
+
+
+def _planes(
+    objective: np.ndarray,
+    rows: np.ndarray | sparse.sparray,
+    limits: np.ndarray,
+    bounds: Sequence[tuple[float | None, float | None]],
+    equal: np.ndarray | sparse.sparray | None,
+    totals: np.ndarray | Sequence[float] | None,
+) -> OptimizeResult:
+    """HiGHS's solution of a cutting-plane program, ``rows @ x <= limits`` and ``equal @ x =
+    totals`` within ``bounds``, at the tolerance ``1e-10`` the planes' bound is read to, and under
+    an iteration limit: status 1 where the limit stopped it, 4 where HiGHS ended it unsolved.
+
+    HiGHS can pivot without end at that tolerance: where the solution of its scaled program misses
+    the tolerance once unscaled, it solves the unscaled program again with its costs unperturbed,
+    and on a degenerate program that solve can cycle. :func:`cvar_allocate`'s programs at the
+    level 1 did, one past eleven million iterations, in HiGHS 1.12.0, which SciPy 1.18 ships, and
+    1.15.1 alike, until their costs were kept out of HiGHS's scaling. The limit is ten iterations a
+    row and a column, where the most any program took, over the tests and on 400 readings, was 0.8,
+    so one stopped there has stalled; its caller keeps the bound its last program gave, which the
+    planes added since could only have tightened."""
+    count = len(limits) + (0 if totals is None else len(totals))
+    return linprog(
+        objective,
+        A_ub=rows,
+        b_ub=limits,
+        A_eq=equal,
+        b_eq=totals,
+        bounds=bounds,
+        method="highs",
+        options={
+            "primal_feasibility_tolerance": 1e-10,
+            "dual_feasibility_tolerance": 1e-10,
+            "maxiter": 10 * (count + objective.size),
+        },
+    )
 
 
 def _onto(split: np.ndarray, lower: np.ndarray, upper: np.ndarray, rate: float) -> np.ndarray:

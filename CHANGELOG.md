@@ -58,6 +58,25 @@ still change).
 
 ### Fixed
 
+- **`cvar_allocate` no longer cycles inside HiGHS at the level 1, and no planner's cutting-plane
+  program can run without end.** `cvar_allocate`'s program weighed each reading's excess by
+  `1 / (level * readings)`. HiGHS folds a program's costs into its scaling when the least nonzero
+  one is under 0.1, and at 400 readings that weight stretched the scaling's factors to 2^15: the
+  solution then missed the tolerance `1e-10` once unscaled, by up to 1.6e-9, and HiGHS solved the
+  unscaled program again with its costs unperturbed, which at the level 1, where every excess's
+  reduced cost is zero, cycled. One program ran past eleven million iterations without ending, in
+  HiGHS 1.12.0, which SciPy 1.18 ships, and in 1.15.1; a 6-channel search over 400 readings left
+  87 of its 1042 programs unsolved and stopped at its cap with no finite bound. The program is now
+  written times `max(level * readings, 1)`, so its least cost is 1: where the worst share holds a
+  reading or more, each excess weighs 1 and `eta` `-level * readings`. HiGHS solves all 87 in at
+  most 1389 iterations, and the search closes after 413 boxes. Each cutting-plane program of
+  `minimax_allocate`, `allocate_geos` and `cvar_allocate` also runs under a limit of ten
+  iterations a row and a column, more than ten times the most any took over the tests and on 400
+  readings. One stopped there ends its rounds, and the programs before it stand:
+  `minimax_allocate`'s floor, the bound of `cvar_allocate`'s box, `allocate_geos`' bound and
+  prices; `allocate_geos` refuses a first program stopped so, with nothing to keep. The weight has
+  been so since 0.11.0; the stall was found on the search above, which solves many more programs,
+  and on concave curves at the level 1, up to 400 readings, no program stalled.
 - **`plan_regret_bound` certifies only on a curvature that holds over the box**, a defect since
   0.6.0. It took the least Hessian eigenvalue at the plan and a few random points of the box as the
   objective's modulus over the whole box, and reported the bound as certified: a pocket of negative
