@@ -3,9 +3,11 @@ coverage, and penalising that uncertainty avoids the model exploitation a greedy
 """
 
 import json
+import math
 import os
 import subprocess
 import sys
+from fractions import Fraction
 from typing import cast
 
 import equinox as eqx
@@ -13,6 +15,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from jax import Array
 
 from chc import SplitConformal
@@ -23,6 +27,9 @@ from chc.residual import MLPResidual, ZeroResidual
 from chc.uncertainty import (
     EnsembleResidual,
     NestedCVaRPenalty,
+    _conformal_rank,
+    _member_next_states,
+    _predictive_std,
     _top_tail_mean,
     cvar_upper,
     fit_ensemble,
@@ -83,6 +90,88 @@ def test_split_conformal_hits_nominal_coverage() -> None:
         test = _sample(plant, jax.random.key(8), 800, 0.4)
         conformal = SplitConformal.calibrate(model, calib, DT, alpha=alpha)
         assert abs(conformal.coverage(test) - (1.0 - alpha)) < 0.05  # finite-sample coverage holds
+
+
+def _untrained_model() -> HybridDynamics:
+    return HybridDynamics(LinearDynamics(jnp.zeros((2, 2)), jnp.zeros((2, 1))), _toy_ensemble())
+
+
+def _noise(n: int, seed: int) -> dict[str, Array]:
+    x, u, x_next = jax.random.split(jax.random.key(seed), 3)
+    return {
+        "x": jax.random.normal(x, (n, 2)),
+        "u": jax.random.normal(u, (n, 1)),
+        "x_next": jax.random.normal(x_next, (n, 2)),
+    }
+
+
+def test_split_conformal_refuses_fewer_scores_than_its_coverage_needs() -> None:
+    """Five scores at alpha 0.05 ask for the sixth smallest, which five do not hold; reading the
+    largest instead covered 5/6 of exchangeable data, not 0.95. Nineteen hold the nineteenth."""
+    with pytest.raises(ValueError, match="the 6-th smallest score, so it needs at least 19"):
+        SplitConformal.calibrate(_untrained_model(), _noise(5, 0), DT, alpha=0.05)
+    assert math.isfinite(
+        float(SplitConformal.calibrate(_untrained_model(), _noise(19, 0), DT, alpha=0.05).q_hat)
+    )
+
+
+def test_split_conformal_reads_the_kth_smallest_score() -> None:
+    """Ten scores at alpha 0.2: ``k = ceil(11 * 0.8) = 9``, the ninth smallest itself, not an
+    interpolation between two."""
+    model, data = _untrained_model(), _noise(10, 1)
+    conformal = SplitConformal.calibrate(model, data, DT, alpha=0.2)
+    ensemble = cast(EnsembleResidual, model.residual)
+
+    def score(x: Array, u: Array, x_next: Array) -> Array:
+        mean = jnp.mean(_member_next_states(model.known, ensemble, x, u, DT), axis=0)
+        sigma = _predictive_std(model.known, ensemble, x, u, DT) + 1e-6
+        return jnp.linalg.norm(x_next - mean) / sigma
+
+    scores = np.sort(np.asarray(jax.vmap(score)(data["x"], data["u"], data["x_next"])))
+    assert float(conformal.q_hat) == scores[8]
+
+
+@given(n=st.integers(0, 100_000), alpha=st.floats(1e-6, 1.0 - 1e-6))
+def test_the_conformal_rank_is_the_least_whose_coverage_reaches_the_level(n, alpha) -> None:
+    """The ``k``-th smallest of ``n`` exchangeable scores covers a new one with probability
+    ``k / (n + 1)`` (no ties): the rank is the least ``k`` that reaches ``1 - alpha``, on alpha as
+    written."""
+    rank = _conformal_rank(n, alpha)
+    level = 1 - Fraction(str(alpha))
+    assert Fraction(rank, n + 1) >= level > Fraction(rank - 1, n + 1)
+
+
+@pytest.mark.parametrize(("n", "alpha", "rank"), [(99, 0.45, 55), (9, 0.3, 7), (19, 0.05, 19)])
+def test_the_conformal_rank_is_the_formula_s_integer(n, alpha, rank) -> None:
+    """``100 * (1 - 0.45)`` is 55.00000000000001 in floating point, and ``10 * (1 - 0.3)`` exceeds
+    7 on 0.3's binary value; on the decimal written both are whole."""
+    assert _conformal_rank(n, alpha) == rank
+
+
+@pytest.mark.parametrize(
+    ("change", "error", "match"),
+    [
+        ({"alpha": 0.0}, ValueError, r"alpha=0.0 is the share left uncovered"),
+        ({"alpha": 1.0}, ValueError, r"alpha=1.0 is the share left uncovered"),
+        ({"alpha": float("nan")}, ValueError, r"alpha=nan"),
+        ({"eps": 0.0}, ValueError, r"eps=0.0 must be positive"),
+        ({"eps": -1e-6}, ValueError, r"eps=-1e-06 must be positive"),
+        ({"residual": ZeroResidual(2)}, TypeError, "the residual is a ZeroResidual"),
+        ({"rows": 0}, ValueError, "0 calibration transitions cannot certify"),
+    ],
+)
+def test_split_conformal_refuses_what_carries_no_guarantee(change, error, match) -> None:
+    model = _untrained_model()
+    if "residual" in change:
+        model = HybridDynamics(model.known, change["residual"])
+    with pytest.raises(error, match=match):
+        SplitConformal.calibrate(
+            model,
+            _noise(change.get("rows", 50), 2),
+            DT,
+            alpha=change.get("alpha", 0.1),
+            eps=change.get("eps", 1e-6),
+        )
 
 
 def test_calibrated_pessimism_avoids_model_exploitation() -> None:

@@ -4,8 +4,9 @@ scores predictive uncertainty for the offline-safety penalty (its ``U`` term).
 ``chc.support`` scores *density distance* ``D((x,u),D)``; this module supplies the complementary
 *calibrated predictive uncertainty* ``U(x,u)``. Fit K residuals as a deep ensemble; their member
 disagreement is the epistemic uncertainty of the learned dynamics (large where the members, trained
-on the same offline data, extrapolate apart), and split conformal turns it into interval widths with
-a finite-sample coverage guarantee. Both plug into the same penalty channel of
+on the same offline data, extrapolate apart), and split conformal turns it into interval widths that
+cover with probability at least ``1 - alpha`` on data exchangeable with the calibration split, given
+at least ``(1 - alpha) / alpha`` calibration transitions. Both plug into the same penalty channel of
 :func:`chc.support.pessimistic_control` via ``penalty_trajectory(xs, us) -> scalar``, so model
 exploitation is bounded, not merely discouraged.
 
@@ -17,9 +18,11 @@ cannot move the learned dynamics much.
 
 from __future__ import annotations
 
+import math
 import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any, cast
 
 import equinox as eqx
@@ -398,13 +401,28 @@ def _predictive_std(
     return jnp.sqrt(jnp.sum(jnp.var(preds, axis=0)))
 
 
+def _as_written(alpha: float) -> Fraction:
+    """``alpha`` as written, its shortest decimal: ``0.3``, not the binary value just below it."""
+    return Fraction(str(float(alpha)))
+
+
+def _conformal_rank(n: int, alpha: float) -> int:
+    """``ceil((n + 1)(1 - alpha))``, the rank of the score split conformal reads, in exact
+    arithmetic: in floating point ``100 * (1 - 0.45)`` is 55.00000000000001 and asks for the 56th
+    score where the 55th covers, and at ``n = (1 - alpha) / alpha`` such a rank passes ``n``."""
+    return math.ceil((n + 1) * (1 - _as_written(alpha)))
+
+
 class SplitConformal(eqx.Module):
     """Split-conformal calibration of the ensemble's next-state uncertainty (coverage guarantee).
 
     Calibrated on a held-out split: the normalised nonconformity score is
     ``s = ||x_next - mean|| / (sigma + eps)`` with ``sigma`` the ensemble predictive std; ``q_hat``
-    is the conformal ``(1 - alpha)`` quantile of ``s``. ``interval_width = q_hat*(sigma + eps)`` has
-    marginal coverage ``>= 1 - alpha`` on exchangeable data (measured by ``coverage``).
+    is the ``k``-th smallest of the ``n`` scores, ``k = ceil((n + 1)(1 - alpha))``.
+    ``interval_width = q_hat*(sigma + eps)`` has marginal coverage ``>= 1 - alpha`` on data
+    exchangeable with the calibration split (measured by ``coverage``). That needs ``k <= n``, so
+    ``n >= (1 - alpha) / alpha``: with fewer scores no finite width carries the guarantee, and
+    :meth:`calibrate` refuses rather than read the largest score, which covers ``n / (n + 1)``.
     """
 
     model: HybridDynamics  # known + EnsembleResidual
@@ -422,8 +440,25 @@ class SplitConformal(eqx.Module):
         alpha: float = 0.1,
         eps: float = 1e-6,
     ) -> SplitConformal:
-        known = model.known
-        ensemble = cast(EnsembleResidual, model.residual)  # calibrate is only called on ensembles
+        """Calibrate on ``data``'s transitions, held out from the ensemble's fit.
+
+        Raises:
+            TypeError: when ``model``'s residual is not an :class:`EnsembleResidual`.
+            ValueError: when ``alpha`` is not in ``(0, 1)``, ``eps`` is not positive, or ``data``
+                holds fewer than ``(1 - alpha) / alpha`` transitions.
+        """
+        if not isinstance(model.residual, EnsembleResidual):
+            raise TypeError(
+                "split conformal calibrates an ensemble's spread; the residual is a "
+                f"{type(model.residual).__name__}"
+            )
+        if not 0.0 < alpha < 1.0:
+            raise ValueError(f"alpha={alpha!r} is the share left uncovered, in (0, 1)")
+        if not eps > 0.0:
+            raise ValueError(
+                f"eps={eps!r} must be positive: it keeps a score finite where the members agree"
+            )
+        known, ensemble = model.known, model.residual
 
         def score(x: Array, u: Array, x_next: Array) -> Array:
             mean = jnp.mean(_member_next_states(known, ensemble, x, u, dt), axis=0)
@@ -431,9 +466,15 @@ class SplitConformal(eqx.Module):
             return jnp.linalg.norm(x_next - mean) / sigma
 
         scores = jax.vmap(score)(data["x"], data["u"], data["x_next"])
-        n = scores.shape[0]
-        level = jnp.minimum(jnp.ceil((n + 1) * (1.0 - alpha)) / n, 1.0)
-        return cls(model=model, q_hat=jnp.quantile(scores, level), dt=dt, alpha=alpha, eps=eps)
+        n = int(scores.shape[0])
+        rank = _conformal_rank(n, alpha)
+        if rank > n:
+            least = math.ceil((1 - _as_written(alpha)) / _as_written(alpha))
+            raise ValueError(
+                f"{n} calibration transitions cannot certify coverage {1.0 - alpha:.6g}: the "
+                f"interval is the {rank}-th smallest score, so it needs at least {least} of them"
+            )
+        return cls(model=model, q_hat=jnp.sort(scores)[rank - 1], dt=dt, alpha=alpha, eps=eps)
 
     def interval_width(self, x: Array, u: Array) -> Array:
         """Calibrated prediction-interval half-width ``q_hat * (sigma(x,u) + eps)`` (scalar)."""
