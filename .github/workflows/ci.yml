@@ -117,7 +117,8 @@ jobs:
   # The CAS half of every result was gated exactly once -- by hand, in the session that wrote it.
   # Three derivations were consequently dead from their first commit to 2026-09-01. `maxima -b` exits 0
   # on a parse error and still echoes the batch filename, so `run_all.sh` greps the output instead.
-  # The runner's apt Maxima is older than the 5.50 used locally; the check is completion-only, not an
+  # The runner's apt Maxima (5.46 on Ubuntu 24.04, 5.49 on 26.04, which `ubuntu-latest` becomes from
+  # 2026-10-19) is older than the 5.50 used locally; the check is completion-only, not an
   # output comparison, so minor version drift is tolerated -- and a version-induced failure is itself
   # worth surfacing.
   derivations:
@@ -127,13 +128,16 @@ jobs:
       - name: Install Maxima
         # maxima-share is a Recommends, so --no-install-recommends silently drops the share tree
         # that provides eigenvalues, mat_trace, kronecker_product and the loadable packages.
+        # Ubuntu 26.04's Maxima 5.49 runs on GCL 2.7, which compiles linearalgebra's Lisp with gcc
+        # as it loads it: the runner image carries gcc, and an image without it fails nine files.
         run: sudo apt-get update && sudo apt-get install -y maxima maxima-share
       - name: Run every derivation
         run: ./validation/run_all.sh
 
   # The rest of validation/ that finishes in seconds. The SMT files state their verdicts, and z3's
   # must match them; the PARI/GP and Octave files must complete, as the derivations must. The
-  # runner's apt z3 is 4.8.12, and it returns the stated verdicts on both files.
+  # runner's apt z3 is 4.8.12 on Ubuntu 24.04 and 4.13.3 on 26.04, and both return the stated
+  # verdicts on both files.
   crosschecks:
     runs-on: ubuntu-latest
     steps:
