@@ -73,8 +73,11 @@ lhs1 : integrate(bb1*r1^2*exp(-tt*cc1*r1^2)*g1, r1, minf, inf)$
 rhs1 : bb1*om1*(1+2*tt*cc1*om1)^(-3/2)$
 print("STEP 6a  n=1 residual =", ratsimp(lhs1 - rhs1), " (0 confirms)")$
 g2  : exp(-r2^2/(2*om2))/sqrt(2*%pi*om2)$
-qf  : bb1*r1^2 + 2*bb12*r1*r2 + bb2*r2^2$
-lhs2 : integrate(integrate(qf*exp(-tt*(cc1*r1^2+cc2*r2^2))*g1*g2, r1, minf, inf), r2, minf, inf)$
+/* The moment is linear in B, so each monomial of R'BR is integrated on its own: given the whole
+   form, Maxima 5.49 asks the sign of bb1, where 5.46 and 5.50 integrate it as it stands. */
+w2  : exp(-tt*(cc1*r1^2+cc2*r2^2))*g1*g2$
+mom2(m) := integrate(integrate(m*w2, r1, minf, inf), r2, minf, inf)$
+lhs2 : bb1*mom2(r1^2) + 2*bb12*mom2(r1*r2) + bb2*mom2(r2^2)$
 rhs2 : ((1+2*tt*om1*cc1)*(1+2*tt*om2*cc2))^(-1/2)
        * (bb1*om1/(1+2*tt*om1*cc1) + bb2*om2/(1+2*tt*om2*cc2))$
 print("STEP 6b  n=2 residual =", ratsimp(lhs2 - rhs2),
