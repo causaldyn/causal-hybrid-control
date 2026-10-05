@@ -66,10 +66,12 @@ in the worst ``level`` share of the readings is the most: the gain's conditional
 (Rockafellar and Uryasev 2000). Every gain is read on the curves, and the reference gains nothing
 under any reading, so the split never does worse in that share than keeping it; at ``level = 1``
 it is the split for the mean return. The share's mean gain is concave in the split where the curves
-are, and the same cutting planes close on it from above. On S-shaped curves the planes are the
-tangents of each curve's envelope over the box, which stand above the curve, so they still bound
-the share's mean gain from above, and the split returned is the best of those they propose, read
-on the curves, the reference among them.
+are, and the same cutting planes close on it from above. On S-shaped curves the rates are
+searched in boxes, as :func:`allocate` searches them: in each box the planes are the tangents of
+each curve's envelope over the box, which stand above the curve, so they bound the share's mean
+gain in the box from above, and each split they propose, read on the curves, is a candidate, the
+reference among them. Every reading's curves of a channel are read and bounded together, by one
+compiled program for each structure of curve among them.
 
 **What a wrong channel costs the plan.** A plan made on channels whose parameters are off by ``d``
 loses ``d' W d / 2`` of the worth the true channels' plan returns, to second order:
@@ -116,22 +118,22 @@ HONEST SCOPE:
   along it, so a return target is the least budget of those plans, but a plan off the path,
   :func:`allocate`'s among them, may meet it for less; and a target return on ad spend is a budget
   where the average crosses the target, not proved the most.
-* On S-shaped curves :func:`allocate`'s plan is the best only to the share ``1e-9`` of its bound,
-  or as near as 500 boxes come. Sums of S-shaped curves under a budget are NP-hard to plan (Udell
-  and Boyd 2016), so nothing short of that cap bounds the count of boxes, and many channels near
-  their thresholds at once can reach it; the gap is then reported as it stands. Each box costs one
-  bisection of the price, as a plan on concave curves does. The bound on the first box's gap holds
+* On S-shaped curves :func:`allocate`'s plan and :func:`cvar_allocate`'s split are the best only
+  to the share ``1e-9`` of the bound, or as near as 500 boxes come. Sums of S-shaped curves under a
+  budget are NP-hard to plan (Udell and Boyd 2016), so nothing short of that cap bounds the count of
+  boxes, and many channels near their thresholds at once can reach it; the gap is then reported as
+  it stands. Each box of :func:`allocate`'s costs one bisection of the price, as a plan on concave
+  curves does; each of :func:`cvar_allocate`'s up to 30 rounds of planes, every one a read of each
+  reading on its envelopes and its curves and a linear program over the planes kept, one row a
+  reading for every split tried. The bound on the first box's gap holds
   only as stated above: a longer kernel runs each period at its own adstock, and a floor or a cap
   inside a chord holds its channel there, each with an excess of its own.
-* Only :func:`allocate` searches S-shaped curves. :func:`budget_for`, :func:`minimax_allocate`,
-  :func:`allocate_geos` and :func:`budget_for_geos` plan them on their envelopes from zero spend,
-  unsearched, and their plans can fall short on the curves by as much as the envelopes stand above
-  them; each call that leaves such a gap logs one warning with its size
+* :func:`allocate` and :func:`cvar_allocate` search S-shaped curves. :func:`budget_for`,
+  :func:`minimax_allocate`, :func:`allocate_geos` and :func:`budget_for_geos` plan them on their
+  envelopes from zero spend, unsearched, and their plans can fall short on the curves by as much as
+  the envelopes stand above them; each call that leaves such a gap logs one warning with its size
   (``chc_event="allocation_unsearched"``), and a goal's plan says so in
-  :attr:`Allocation.stopped`. :func:`cvar_allocate` reads its gains on the curves and only its
-  bound on the envelopes over the box: its split never loses to the reference in the worst share,
-  but on S-shaped curves its bound can stand above the best split's by as much as the envelopes
-  stand above the curves.
+  :attr:`Allocation.stopped`.
 * A split for several readings is robust to the readings it is given and to no other: it hedges
   between the families the tests could not tell apart, not against one none of them is. On an
   S-shaped curve the regret is the envelope's.
@@ -166,7 +168,7 @@ import heapq
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 import equinox as eqx
 import jax
@@ -178,7 +180,15 @@ from jax.typing import ArrayLike
 from scipy import sparse
 from scipy.optimize import brentq, linprog
 
-from chc.response import Channel, Logarithmic, Power, Saturation, _touches, relax
+from chc.response import (
+    Channel,
+    Logarithmic,
+    Power,
+    Saturation,
+    _bisected_touches,
+    _touches,
+    relax,
+)
 
 __all__ = [
     "Allocation",
@@ -209,11 +219,16 @@ _GAP, _ROUNDS = 1e-9, 500
 # the branch-and-bound on S-shaped curves stops when every bound left is within that share of the
 # first of the best plan's worth, or after this many nodes, the gap then reported as it stands
 _NODES = 500
+# in a box of cvar_allocate's search the cutting planes stop after this many rounds, or once their
+# bound is within half the box's gap to the best split of the box's best on its envelopes: a box is
+# cut sooner than its planes are refined
+_BOX_ROUNDS = 30
 
 SearchStatus = Literal["closed", "cap", "unsearched"]
 """Why a plan's search for the best stopped: ``closed``, its bound within the share ``1e-9`` of its
-worth; ``cap``, after 500 boxes with the gap open; ``unsearched``, a plan on the envelopes from zero
-spend whose gap is open, which no search tried to close."""
+worth; ``cap``, with the gap open after 500 boxes, or after 500 rounds of :func:`cvar_allocate`'s
+planes on concave curves; ``unsearched``, a plan on the envelopes from zero spend whose gap is open,
+which no search tried to close."""
 
 _log = logging.getLogger(__name__)
 
@@ -313,14 +328,19 @@ class CvarAllocation:
         cvar: the mean of the worst ``level`` share of ``gain``, the split's; never below 0, which
             is the reference's own.
         bound: no split in the box at the budget has a ``cvar`` above this, so ``bound - cvar``
-            bounds how far the split is from the best. On S-shaped curves it is read on their
-            envelopes over the box, and may stand above every split's ``cvar``.
+            bounds how far the split is from the best. On S-shaped curves it is the largest bound
+            the search left.
+        stopped: whether ``bound - cvar`` closed to the share ``1e-9`` of the reference's largest
+            return, or the search stopped at its cap (:data:`SearchStatus`).
+        boxes: how many boxes of the rates were searched: 1 where every curve is concave.
     """
 
     spend: np.ndarray
     gain: np.ndarray
     cvar: float
     bound: float
+    stopped: SearchStatus
+    boxes: int
 
 
 @dataclass(frozen=True)
@@ -500,7 +520,14 @@ def _bounded(worth: _Worth, low: float, high: float) -> _Worth:
         return worth
     floor = (worth.carry + low * worth.reach) / curve.scale
     cap = (worth.carry + high * worth.reach) / curve.scale
-    touch = _touches(curve, floor)
+    return _chord(worth, floor, cap, _touches(curve, floor))
+
+
+def _chord(worth: _Worth, floor: Array, cap: Array, touch: Array) -> _Bounded:
+    """``worth`` with each period's curve replaced by the chord from ``floor`` to ``touch``, or to
+    ``cap`` where that comes first, and the curve beyond: :func:`_bounded`'s envelope once the
+    touches are found."""
+    curve = worth.channel.curve
     end = jnp.minimum(touch, cap)
     straight = end > floor
     base = curve.standard(floor)
@@ -1098,27 +1125,35 @@ def cvar_allocate(
     """Spend ``budget`` for the most mean gain over ``against`` in the worst ``level`` share of
     ``readings`` of the channels: the gain's conditional value at risk.
 
-    Each reading is a whole set of channels, one a column, as :func:`minimax_allocate` takes them:
-    a posterior's draws, say, weighed alike. A split's gain under a reading is its return less the
-    reference's, both on the reading's curves, and where every curve is concave the split returned
-    has the most mean gain over the worst ``level`` share of the readings, to a share ``1e-9`` of
-    the reference's largest return or as near as 500 rounds of cutting planes come. The reference
-    spends the budget in the box and gains nothing under any reading, so the split returned never
-    does worse in that share than keeping it. At ``level = 1`` the split has the most mean gain, the
-    posterior's expected return; as the level falls it moves only as far as the worst readings
-    agree it gains.
+    Each reading is a whole set of channels, one a column, as :func:`minimax_allocate` takes them: a
+    posterior's draws, say, weighed alike. A split's gain under a reading is its return less the
+    reference's, both on the reading's curves, and the split returned has the most mean gain over
+    the worst ``level`` share of the readings, to a share ``1e-9`` of the reference's largest
+    return, or as near as 500 rounds of cutting planes come on concave curves and 500 boxes of the
+    rates past them; :attr:`CvarAllocation.stopped` says which. The reference spends the budget in
+    the box and gains nothing under any reading, so the split returned never does worse in that
+    share than keeping it. At ``level = 1`` the split has the most mean gain, the posterior's
+    expected return; as the level falls it moves only as far as the worst readings agree it gains.
 
     The mean of the worst share is ``max_eta eta - E[(eta - gain)_+] / level`` (Rockafellar and
     Uryasev 2000), concave in the split where every curve is concave. The cutting planes (Kelley
     1960) are every reading's tangent at every split tried, starting from the reference, and the
     linear program over them bounds the most from above; its solution, moved onto the budget, is
-    the next split tried. A curve that starts convex is replaced, for the planes alone, by its
-    envelope over the box, which stands above it and is concave in the rate, so the program still
-    bounds the share's mean gain on the curves from above. Its splits are then candidates: the one
-    returned is the best of those tried, read on the curves, and the bound may stand above it by as
-    much as the envelopes stand above the curves. Two Hill curves of slope 3 at scales 1 and 1.01, a
-    budget of 1.6 and the reference all on the first: the planes propose ``[1.27, 0.33]``, which
-    returns 0.705 against the reference's 0.804, so the reference is returned, its ``cvar`` 0.
+    the next split tried.
+
+    Where a curve starts convex the rates are searched in boxes, as :func:`allocate` searches them
+    (Udell and Boyd 2016). In a box the planes are cut on each curve's envelope over the box, which
+    stands above the curve and is concave in the rate, so the program bounds every split in the box,
+    and each split it proposes, read on the curves, is a candidate. The box of the largest bound is
+    cut first, on the channel whose envelope stands furthest above its curve at the box's best
+    split on the envelopes, each reading weighed as the worst share weighs it there, since the
+    share's mean gain on the envelopes exceeds the curves' by no more than that weighed excess
+    (the risk envelope's dual). A box's planes stop after 30 rounds, or once their bound is within
+    half the box's gap to the best split of its best on the envelopes, and the box is cut instead;
+    a box's planes bound its halves too, so they carry over, those the last program left slack
+    dropped. Two Hill curves of slope 3 at scales 1 and 1.01, a budget of 1.6 and the reference all
+    on the first: on the envelopes the planes propose ``[1.27, 0.33]``, which returns 0.705 against
+    the reference's 0.804, and the search closes on the reference, its ``cvar`` 0.
 
     Args:
         readings: the readings, each with one channel a column; at least one.
@@ -1160,90 +1195,318 @@ def cvar_allocate(
             f"the reference spends {float(reference.sum())} a period and the budget {rate}; the "
             "gain is read against a split of the same budget"
         )
-    curves = [_worths(reading, spent, periods) for reading in readings]
-    envelopes = [
-        tuple(
-            _bounded(worth, low, high)
-            for worth, low, high in zip(worths, lower_rates, upper_rates, strict=True)
+    spend, gains, cvar, bound, boxes, stopped = _cvar_search(
+        _stacks([_worths(reading, spent, periods) for reading in readings]),
+        reference,
+        rate,
+        level,
+        lower_rates,
+        upper_rates,
+    )
+    if stopped == "cap":
+        _log.warning(
+            "cvar_allocate stopped at its cap with the gap open, after %d boxes: the split's mean "
+            "gain in the worst share is %.6g, and no split in the box has more than %.6g",
+            boxes,
+            cvar,
+            bound,
+            extra={
+                "chc_event": "allocation_cap",
+                "planner": "cvar_allocate",
+                "boxes": boxes,
+                "cvar": cvar,
+                "bound": bound,
+            },
         )
-        for worths in curves
-    ]
-    # where every curve is concave each envelope is its curve, and a split's gains are read once
-    alike = all(
-        envelope is worth
-        for pair in zip(envelopes, curves, strict=True)
-        for envelope, worth in zip(*pair, strict=True)
+    return CvarAllocation(
+        spend=spend, gain=gains, cvar=cvar, bound=bound, stopped=stopped, boxes=boxes
     )
 
-    def returns(
-        split: np.ndarray, on: Sequence[tuple[_Worth, ...]]
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Every reading's return on ``split`` read on its worths in ``on``, and its slope in each
-        channel's rate."""
-        values = np.empty(len(on))
-        slopes = np.empty((len(on), size))
-        for index, worths in enumerate(on):
-            pairs = [
-                _value_and_slope(w, jnp.asarray(r, dtype=float))
-                for w, r in zip(worths, split, strict=True)
-            ]
-            values[index] = sum(float(value) for value, _ in pairs)
-            slopes[index] = [float(slope) for _, slope in pairs]
-        return values, slopes
 
-    base, _ = returns(reference, curves)
-    count = len(readings)
+@dataclass(frozen=True)
+class _Stack:
+    """One channel's worths under every reading, in groups whose worths share a structure, each
+    group stacked on a leading axis so that one compiled program reads or bounds all of it."""
+
+    members: tuple[np.ndarray, ...]  # the readings in each group
+    worths: tuple[_Worth, ...]  # each group's worths, stacked
+    bends: tuple[np.ndarray | None, ...]  # each group's inflections; None where none is S-shaped
+
+
+def _stacks(readings: Sequence[tuple[_Worth, ...]]) -> tuple[_Stack, ...]:
+    """Each channel's worths under ``readings``, grouped by their pytree structure and shapes."""
+    stacks = []
+    for column in range(len(readings[0])):
+        groups: dict[object, list[int]] = {}
+        for index, worths in enumerate(readings):
+            leaves, tree = jax.tree.flatten(worths[column])
+            groups.setdefault((tree, tuple(jnp.shape(leaf) for leaf in leaves)), []).append(index)
+        members, stacked, bends = [], [], []
+        for indices in groups.values():
+            group = [readings[index][column] for index in indices]
+            members.append(np.asarray(indices))
+            stacked.append(jax.tree.map(lambda *leaves: jnp.stack(leaves), *group))
+            bent = np.array([_inflection(worth) for worth in group])
+            bends.append(bent if np.any(bent > 0.0) else None)
+        stacks.append(_Stack(tuple(members), tuple(stacked), tuple(bends)))
+    return tuple(stacks)
+
+
+def _inflection(worth: _Worth) -> float:
+    curve = worth.channel.curve
+    return curve._standard_inflection() if isinstance(curve, Saturation) else 0.0
+
+
+@eqx.filter_jit
+def _bounded_stack(worths: _Worth, bends: Array, low: Array, high: Array) -> tuple[_Bounded, Array]:
+    """:func:`_bounded` of every stacked worth over one box of its rate, and whether each found
+    its touches. A worth whose curve is concave from zero touches where it starts, so its chord is
+    empty and its envelope its curve."""
+
+    def one(worth: _Worth, inflection: Array) -> tuple[_Bounded, Array]:
+        # a group is bounded only where it bends, and only a saturation's curve bends
+        curve = cast(Saturation, worth.channel.curve)
+        floor = (worth.carry + low * worth.reach) / curve.scale
+        cap = (worth.carry + high * worth.reach) / curve.scale
+        touch = _bisected_touches(curve, floor, inflection, type(curve)._support)
+        return _chord(worth, floor, cap, touch), jnp.all(jnp.isfinite(touch))
+
+    return jax.vmap(one)(worths, bends)
+
+
+def _enveloped(stack: _Stack, low: float, high: float) -> _Stack:
+    """``stack``'s worths bounded over ``[low, high]`` of the channel's rate (:func:`_bounded`)."""
+    worths = []
+    for group, bends in zip(stack.worths, stack.bends, strict=True):
+        if bends is None:
+            worths.append(group)
+            continue
+        bounded, found = _bounded_stack(
+            group,
+            jnp.asarray(bends),
+            jnp.asarray(low, dtype=float),
+            jnp.asarray(high, dtype=float),
+        )
+        missing = np.flatnonzero(~np.asarray(found))
+        if missing.size:
+            first = int(missing[0])
+            curve = jax.tree.map(lambda leaf, first=first: leaf[first], group).channel.curve
+            raise RuntimeError(f"{curve!r}: no tangency within 2^64 times its inflection")
+        worths.append(bounded)
+    return _Stack(stack.members, tuple(worths), stack.bends)
+
+
+@eqx.filter_jit
+def _read_stack(worths: _Worth, rate: Array) -> tuple[Array, Array]:
+    return jax.vmap(lambda worth: jax.value_and_grad(worth)(rate))(worths)
+
+
+def _read(stacks: Sequence[_Stack], split: np.ndarray, count: int) -> tuple[np.ndarray, np.ndarray]:
+    """``(readings, channels)`` values of every reading's worths at ``split``, and their slopes."""
+    values = np.empty((count, len(stacks)))
+    slopes = np.empty((count, len(stacks)))
+    for column, (stack, rate) in enumerate(zip(stacks, split, strict=True)):
+        at = jnp.asarray(rate, dtype=float)
+        for members, worths in zip(stack.members, stack.worths, strict=True):
+            value, slope = _read_stack(worths, at)
+            values[members, column] = np.asarray(value)
+            slopes[members, column] = np.asarray(slope)
+    return values, slopes
+
+
+def _cvar_search(
+    curves: tuple[_Stack, ...],
+    reference: np.ndarray,
+    rate: float,
+    level: float,
+    lower: np.ndarray,
+    upper: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, float, float, int, SearchStatus]:
+    """:func:`cvar_allocate`'s split, its gains, their worst share's mean, a bound on every
+    split's, the boxes searched and why the search stopped."""
+    count, size = sum(members.size for members in curves[0].members), reference.size
+    # where every curve is concave each envelope is its curve: one box, each split read once
+    alike = all(bends is None for stack in curves for bends in stack.bends)
+    base = _read(curves, reference, count)[0].sum(axis=1)
     scale = float(np.max(np.abs(base))) or 1.0
+    tolerance = _GAP * scale
     # the variables are the rates, eta and one excess u_r a reading; each plane reads
     # u_r >= eta - (gain_r + slope_r @ (s - tried)), in units of the reference's largest return
-    rows: list[sparse.coo_array] = []
-    limits: list[np.ndarray] = []
     lines = np.repeat(np.arange(count), size + 2)
     columns = np.concatenate(
         [np.tile(np.arange(size + 1), (count, 1)), size + 1 + np.arange(count)[:, None]], axis=1
     ).ravel()
-    best, chosen, gains = -np.inf, reference, np.zeros(count)
-    # the most the share's mean gain reads on the envelopes, where the planes close
-    relaxed = -np.inf
-    ceiling = np.inf
-    splits = [reference]
-    for _ in range(_ROUNDS):
-        for tried in splits:
-            values, slopes = returns(tried, envelopes)
-            gain = values - base  # above the gain on the curves, by the envelope's excess
-            relaxed = max(relaxed, _cvar(gain, level))
-            actual = gain if alike else returns(tried, curves)[0] - base
-            value = _cvar(actual, level)
-            if value > best:
-                best, chosen, gains = value, tried, actual
-            plane = np.concatenate([-slopes / scale, np.ones((count, 1)), -np.ones((count, 1))], 1)
-            rows.append(
-                sparse.coo_array((plane.ravel(), (lines, columns)), shape=(count, size + 1 + count))
+    objective = np.concatenate([np.zeros(size), [-1.0], np.full(count, 1.0 / (level * count))])
+    best: tuple[float, np.ndarray, np.ndarray] = (-np.inf, reference, np.zeros(count))
+
+    def tried(
+        envelopes: tuple[_Stack, ...], split: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Each reading's gain on ``split`` read on the envelopes, its slopes, the envelopes'
+        excess over the curves by channel, and the gain on the curves, which the best split
+        returned is chosen on."""
+        nonlocal best
+        values, slopes = _read(envelopes, split, count)
+        exact = values if alike else _read(curves, split, count)[0]
+        gain = exact.sum(axis=1) - base
+        value = _cvar(gain, level)
+        if value > best[0]:
+            best = (value, split, gain)
+        return values.sum(axis=1) - base, slopes, values - exact, gain
+
+    def box(
+        low: np.ndarray,
+        high: np.ndarray,
+        envelopes: tuple[_Stack, ...],
+        rows: list[sparse.csr_array],
+        limits: list[np.ndarray],
+        start: np.ndarray,
+    ) -> tuple[float, np.ndarray, np.ndarray]:
+        """The box's bound from the planes on its envelopes, its best split on them, and their
+        excess over the curves there by channel, each reading weighed as the worst share of the
+        curves' gains weighs it. Leaves in ``rows`` and ``limits`` the planes worth keeping."""
+        ceiling, relaxed, at, excess = np.inf, -np.inf, start, np.zeros(size)
+        splits, slack, kept = [start], None, 0
+        for _ in range(_ROUNDS if alike else _BOX_ROUNDS):
+            for split in splits:
+                gain, slopes, over, actual = tried(envelopes, split)
+                value = _cvar(gain, level)
+                if value > relaxed:
+                    relaxed, at, excess = value, split, _cvar_weights(actual, level) @ over
+                plane = np.concatenate(
+                    [-slopes / scale, np.ones((count, 1)), -np.ones((count, 1))], 1
+                )
+                rows.append(
+                    sparse.csr_array(
+                        (plane.ravel(), (lines, columns)), shape=(count, size + 1 + count)
+                    )
+                )
+                limits.append((gain - slopes @ split) / scale)
+            if ceiling - best[0] <= tolerance:
+                break
+            # on concave curves the planes close; past them a box is cut once its planes come
+            # within half its gap of its best on the envelopes
+            if ceiling - relaxed <= tolerance or (
+                not alike
+                and np.isfinite(ceiling)
+                and ceiling - relaxed <= 0.5 * (ceiling - best[0])
+            ):
+                break
+            matrix = sparse.vstack(rows, format="csr")
+            program = linprog(
+                objective,
+                A_ub=matrix,
+                b_ub=np.concatenate(limits),
+                A_eq=np.concatenate([np.ones(size), np.zeros(1 + count)])[None, :],
+                b_eq=[rate],
+                bounds=[*zip(low, high, strict=True), (None, None), *((0.0, None),) * count],
+                method="highs",
+                options={
+                    "primal_feasibility_tolerance": 1e-10,
+                    "dual_feasibility_tolerance": 1e-10,
+                },
             )
-            limits.append((gain - slopes @ tried) / scale)
-        if ceiling - relaxed <= _GAP * scale:
-            break
-        program = linprog(
-            np.concatenate([np.zeros(size), [-1.0], np.full(count, 1.0 / (level * count))]),
-            A_ub=sparse.vstack(rows, format="csr"),
-            b_ub=np.concatenate(limits),
-            A_eq=np.concatenate([np.ones(size), np.zeros(1 + count)])[None, :],
-            b_eq=[rate],
-            bounds=[
-                *zip(lower_rates, upper_rates, strict=True),
-                (None, None),
-                *((0.0, None) for _ in range(count)),
-            ],
-            method="highs",
-            options={"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10},
-        )
-        if program.status != 0:
-            raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
-        ceiling = min(ceiling, -float(program.fun) * scale)
-        splits = [_onto(program.x[:size], lower_rates, upper_rates, rate)]
-    return CvarAllocation(
-        spend=np.asarray(chosen), gain=gains, cvar=float(best), bound=max(ceiling, best)
+            if program.status != 0:
+                raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
+            ceiling = min(ceiling, -float(program.fun) * scale)
+            slack, kept = program.ineqlin.residual, matrix.shape[0]
+            splits = [_onto(program.x[:size], low, high, rate)]
+        if slack is not None and not alike:
+            # the halves' bounds need only the planes the last program held tight, and those
+            # tried since; a plane dropped that a half needs is cut again at its split
+            matrix = sparse.vstack(rows, format="csr")
+            keep = np.concatenate([slack <= 1e-8, np.ones(matrix.shape[0] - kept, dtype=bool)])
+            rows[:] = [matrix[keep]]
+            limits[:] = [np.concatenate(limits)[keep]]
+        return ceiling, at, excess
+
+    envelopes = tuple(
+        _enveloped(stack, low, high) for stack, low, high in zip(curves, lower, upper, strict=True)
     )
+    rows: list[sparse.csr_array] = []
+    limits: list[np.ndarray] = []
+    ceiling, at, excess = box(lower, upper, envelopes, rows, limits, reference)
+    heap = [(-ceiling, 0, lower, upper, envelopes, rows, limits, at, excess)]
+    settled, boxes, widths = -np.inf, 1, np.maximum(upper - lower, _EPS)
+    while not alike and heap and -heap[0][0] - best[0] > tolerance and boxes < _NODES:
+        _, _, low, high, envelopes, rows, limits, at, excess = heapq.heappop(heap)
+        cut_at, halves = _cut(low, high, at, excess, rate, widths)
+        for floor, cap in halves:
+            child_low, child_high = low.copy(), high.copy()
+            child_low[cut_at], child_high[cut_at] = floor, cap
+            child = list(envelopes)
+            child[cut_at] = _enveloped(curves[cut_at], floor, cap)
+            inside = bool(np.all((child_low <= at) & (at <= child_high)))
+            start = at if inside else _onto(at, child_low, child_high, rate)
+            child_rows, child_limits = list(rows), list(limits)
+            top, child_at, child_excess = box(
+                child_low, child_high, tuple(child), child_rows, child_limits, start
+            )
+            boxes += 1
+            if top - best[0] > tolerance:
+                heapq.heappush(
+                    heap,
+                    (
+                        -top,
+                        boxes,
+                        child_low,
+                        child_high,
+                        tuple(child),
+                        child_rows,
+                        child_limits,
+                        child_at,
+                        child_excess,
+                    ),
+                )
+            else:
+                settled = max(settled, top)
+    value, spend, gains = best
+    left = -heap[0][0] if heap else -np.inf
+    bound = max(value, settled, left)
+    stopped: SearchStatus = "closed" if bound - value <= tolerance else "cap"
+    return np.asarray(spend), gains, float(value), float(bound), boxes, stopped
+
+
+def _cut(
+    low: np.ndarray,
+    high: np.ndarray,
+    at: np.ndarray,
+    excess: np.ndarray,
+    rate: float,
+    widths: np.ndarray,
+) -> tuple[int, tuple[tuple[float, float], ...]]:
+    """The channel a box of :func:`_cvar_search` is cut on, and its halves' intervals of that
+    channel's rate.
+
+    The channel is the one whose envelope stands furthest above its curve at ``at``, the box's best
+    split on its envelopes, or where none does the one whose interval is widest against
+    ``widths``. Each interval is first narrowed to the rates a split of the budget in the box can
+    give its channel, so each half holds such a split: the cut is at ``at``'s rate, which a split of
+    the budget gives, or halfway along the narrowed interval where that rate is an end of it. A
+    channel the budget leaves one rate is not cut but narrowed to it."""
+    floor = np.maximum(low, rate - (high.sum() - high))
+    cap = np.minimum(high, rate - (low.sum() - low))
+    channel = (
+        int(np.argmax(excess)) if np.max(excess) > 0.0 else int(np.argmax((cap - floor) / widths))
+    )
+    a, b = float(floor[channel]), float(cap[channel])
+    if not a < b:
+        return channel, ((min(a, b), max(a, b)),)
+    cut = float(at[channel]) if a < at[channel] < b else a + 0.5 * (b - a)
+    return channel, ((a, cut), (cut, b))
+
+
+def _cvar_weights(gain: np.ndarray, level: float) -> np.ndarray:
+    """The weight :func:`_cvar` puts on each of ``gain``: ``1 / (level * n)`` on each of the worst
+    whole share, the rest of the share on the next, none on the others."""
+    order = np.argsort(gain, kind="stable")
+    share = level * gain.size
+    whole = int(np.floor(share))
+    weights = np.zeros(gain.size)
+    weights[order[:whole]] = 1.0 / share
+    if whole < gain.size:
+        weights[order[whole]] = (share - whole) / share
+    return weights
 
 
 def _cvar(gain: np.ndarray, level: float) -> float:

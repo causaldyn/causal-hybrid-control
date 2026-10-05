@@ -40,8 +40,21 @@ still change).
   period at once, Maxima's root to `1e-14` (`validation/envelope_on_interval.mac`). Concave curves
   are planned as before, by the same code. `budget_for`, `minimax_allocate` and `allocate_geos`
   plan S-shaped curves on the envelopes from zero spend as before, so on them `budget_for`'s plan
-  is no longer what `allocate` returns at its budget (ADR 0051); `cvar_allocate` reads its gains on
-  the curves (below).
+  is no longer what `allocate` returns at its budget (ADR 0051).
+- **`cvar_allocate` searches S-shaped curves to the best split, by branch and bound.** It cut its
+  planes on each curve's envelope over the whole box, so its bound stayed open by as much as the
+  envelopes stand above the curves, and a split better than every one the envelopes proposed was
+  never tried: two Hill curves of slope 3 at scales 1 and 1.01, a budget of 1.6 and the reference
+  all on the first, the reference is the best split and the bound stayed above it. The rates are
+  now searched in boxes, as `allocate` searches them: in a box the planes are cut on the envelopes
+  over the box, and the box of the largest bound is cut first, on the channel whose envelope stands
+  furthest above its curve, each reading weighed as the worst share weighs it. The split is the
+  best to the share `1e-9` of the bound, or as near as 500 boxes come; the example closes on the
+  reference in 7 boxes. `CvarAllocation.stopped` and `CvarAllocation.boxes` say how the search
+  ended, and a search stopped by its cap logs one warning with its gap
+  (`chc_event="allocation_cap"`). Each channel's readings are read and bounded by one compiled
+  program for each structure of worth among them, not one a reading. On concave curves one box is
+  searched and the split is the same to the tolerance, though not to the bit (ADR 0052).
 
 ### Fixed
 

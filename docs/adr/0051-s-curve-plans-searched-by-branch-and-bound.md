@@ -2,7 +2,7 @@
 
 **Status:** accepted, 2026-10-05. Amends ADR 0034 (an S-shaped curve is searched, not planned on
 its envelope) and ADR 0050 (the vertex is each box's plan, the first box's where the search
-starts).
+starts). Amended 2026-10-05 by ADR 0052: `cvar_allocate` searches boxes too.
 
 ## Context
 

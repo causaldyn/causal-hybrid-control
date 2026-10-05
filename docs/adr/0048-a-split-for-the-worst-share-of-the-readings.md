@@ -1,6 +1,7 @@
 # ADR 0048 — A split for the worst share of the readings
 
-**Status:** proposed, 2026-10-03.
+**Status:** proposed, 2026-10-03. Amended 2026-10-05 by ADR 0052: a gain is read on the curves,
+and on S-shaped curves the split is searched in boxes.
 
 ## Context
 

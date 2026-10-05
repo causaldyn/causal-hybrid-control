@@ -5,11 +5,13 @@ Checked against closed forms, linear readings whose gains are lines in the split
 carryover under thirty readings against every split of a fine grid, the gains there computed from
 the channels run over the history, the plan and the tail as one series; against `allocate` where
 every reading is one; and for what holds at any readings and level: the split never does worse in
-the worst share than the reference, and its level's mean gain is the gains' own.
+the worst share than the reference, and its level's mean gain is the gains' own. On S-shaped curves
+the boxes' search is checked against every split of a grid, with and without carryover.
 """
 
 import logging
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -17,8 +19,17 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from chc.allocation import allocate, cvar_allocate
-from chc.response import Channel, Exponential, GeometricAdstock, Hill, MichaelisMenten, Power, Tanh
+from chc.allocation import _cut, _cvar, _cvar_weights, _onto, allocate, cvar_allocate
+from chc.response import (
+    Channel,
+    Exponential,
+    GeometricAdstock,
+    Hill,
+    MichaelisMenten,
+    Power,
+    Saturation,
+    Tanh,
+)
 
 ONE = GeometricAdstock(0.0, length=1, normalized=False)  # no carryover
 PERIODS = 13
@@ -137,6 +148,36 @@ def test_no_split_on_a_fine_grid_has_a_larger_mean_gain_in_the_worst_share(level
         upper=UPPER,
         history=HISTORY,
     )
+    most = _checked_on_a_grid(plan, readings, level)
+    assert (plan.stopped, plan.boxes) == ("closed", 1)
+    mean = cvar_allocate(
+        readings,
+        BUDGET,
+        PERIODS,
+        level=1.0,
+        against=CURRENT,
+        lower=LOWER,
+        upper=UPPER,
+        history=HISTORY,
+    )
+    moved = np.linalg.norm(plan.spend - CURRENT) / np.linalg.norm(mean.spend - CURRENT)
+    if level == 0.1:
+        np.testing.assert_array_equal(plan.spend, CURRENT)
+        assert plan.cvar == 0.0
+        assert most < 0.0
+    else:
+        assert plan.cvar - most < 0.01 * plan.cvar  # the grid comes close, so the case bites
+    if level == 0.3:
+        assert 0.1 < moved < 0.9
+        # the mean's best split, read in the worst share, gains less than this one
+        assert float(_tail_mean(mean.gain, level)) < plan.cvar - 0.01 * plan.cvar
+
+
+def _checked_on_a_grid(plan, readings, level: float) -> float:
+    """Checks ``plan`` on the three channels with carryover against every split of a grid of 241
+    rates a channel at the budget: it spends the budget in the box, its gains and their worst
+    share's mean are the readings' own, and no split of the grid has a larger mean there. Returns
+    the grid's largest mean."""
     rate = BUDGET / PERIODS
     assert plan.spend.sum() == pytest.approx(rate, rel=1e-12)
     assert np.all(plan.spend >= LOWER)
@@ -161,27 +202,7 @@ def test_no_split_on_a_fine_grid_has_a_larger_mean_gain_in_the_worst_share(level
     )
     most = float(_tail_mean(gains, level)[inside].max())
     assert plan.cvar >= most - 1e-9 * base.max()
-    mean = cvar_allocate(
-        readings,
-        BUDGET,
-        PERIODS,
-        level=1.0,
-        against=CURRENT,
-        lower=LOWER,
-        upper=UPPER,
-        history=HISTORY,
-    )
-    moved = np.linalg.norm(plan.spend - CURRENT) / np.linalg.norm(mean.spend - CURRENT)
-    if level == 0.1:
-        np.testing.assert_array_equal(plan.spend, CURRENT)
-        assert plan.cvar == 0.0
-        assert most < 0.0
-    else:
-        assert plan.cvar - most < 0.01 * plan.cvar  # the grid comes close, so the case bites
-    if level == 0.3:
-        assert 0.1 < moved < 0.9
-        # the mean's best split, read in the worst share, gains less than this one
-        assert float(_tail_mean(mean.gain, level)) < plan.cvar - 0.01 * plan.cvar
+    return most
 
 
 def test_one_reading_however_often_is_planned_as_allocate_plans_it():
@@ -239,9 +260,11 @@ def test_an_s_curve_s_gain_is_read_on_the_curve():
 @pytest.mark.parametrize("level", [0.1, 1.0])
 def test_a_split_the_envelopes_favour_does_not_lose_to_the_reference_on_the_curves(level):
     """Two Hill curves of slope 3 at scales 1 and 1.01, a budget of 1.6 and the reference all on
-    the first, ten readings alike: the planes propose about ``[1.27, 0.33]``, which returns 0.705 on
-    the curves against the reference's ``1.6^3 / (1.6^3 + 1)`` = 0.804, a gain of -0.099. The
-    reference is returned, its ``cvar`` 0, and the envelopes' bound stands above it."""
+    the first, ten readings alike: on the envelopes over the whole box the planes propose about
+    ``[1.27, 0.33]``, which returns 0.705 on the curves against the reference's
+    ``1.6^3 / (1.6^3 + 1)`` = 0.804, a gain of -0.099. The reference is the best split, a corner of
+    the budget's line with no rise between, so the boxes close on it: its ``cvar`` 0, and no split
+    in the box above it."""
     reading = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0))
     plan = cvar_allocate(
         [reading] * 10,
@@ -255,7 +278,8 @@ def test_a_split_the_envelopes_favour_does_not_lose_to_the_reference_on_the_curv
     np.testing.assert_array_equal(plan.spend, [1.6, 0.0])
     np.testing.assert_array_equal(plan.gain, np.zeros(10))
     assert plan.cvar == 0.0
-    assert plan.bound > 0.0
+    assert (plan.stopped, plan.boxes > 1) == ("closed", True)
+    assert plan.bound <= 1e-9 * 1.6**3 / (1.6**3 + 1.0)
 
 
 def test_a_budget_below_the_least_normal_float_is_planned():
@@ -303,11 +327,13 @@ def _hill_readings(count: int, seed: int) -> list[tuple[Channel, ...]]:
     level=st.floats(0.05, 1.0),
     share=st.floats(0.0, 1.0),
 )
-def test_on_s_curves_no_split_loses_to_the_reference_or_passes_the_bound(seed, count, level, share):
+def test_on_s_curves_no_split_on_a_grid_beats_the_split_or_passes_the_bound(
+    seed, count, level, share
+):
     """On Hill curves that start convex, whatever the readings, the level and the reference: the
     gains are the curves', the split's mean gain in the worst share is at least the reference's 0
     and is its gains' own, and no split on a grid of 2001 points of the budget has more than the
-    bound."""
+    bound, or, the search closed, than the split."""
     readings = _hill_readings(count, seed)
     budget = 2.0
     reference = np.array([budget * share, budget * (1.0 - share)])
@@ -336,7 +362,10 @@ def test_on_s_curves_no_split_loses_to_the_reference_or_passes_the_bound(seed, c
     assert plan.cvar == pytest.approx(float(_tail_mean(gain, level)), rel=1e-9, abs=1e-12)
     first = np.linspace(0.0, budget, 2001)
     grid = np.stack([returns(r, first) for r in readings]) - base[:, None]
-    assert plan.bound >= float(_tail_mean(grid, level).max()) - 1e-9 * scale
+    most = float(_tail_mean(grid, level).max())
+    assert plan.bound >= most - 1e-9 * scale
+    assert plan.stopped == "closed"
+    assert plan.cvar >= most - 1e-9 * scale
 
 
 def _s_shaped_readings(count: int, seed: int) -> list[tuple[Channel, ...]]:
@@ -356,6 +385,189 @@ def _s_shaped_readings(count: int, seed: int) -> list[tuple[Channel, ...]]:
         )
         for _ in range(count)
     ]
+
+
+@pytest.mark.parametrize(("level", "moves"), [(0.2, False), (1.0, True)])
+def test_on_s_curves_with_carryover_no_split_on_a_grid_beats_the_split(level, moves):
+    """Eight readings of three Hill channels that start convex, each with carryover: the boxes
+    close, and no split of the grid has a larger mean gain in the worst share. At 1 the split moves
+    off the reference; at 0.2 the worst share agrees on no move, and the boxes close on the
+    reference."""
+    readings = _s_shaped_readings(8, seed=7)
+    plan = cvar_allocate(
+        readings,
+        BUDGET,
+        PERIODS,
+        level=level,
+        against=CURRENT,
+        lower=LOWER,
+        upper=UPPER,
+        history=HISTORY,
+    )
+    assert plan.stopped == "closed"
+    _checked_on_a_grid(plan, readings, level)
+    assert (plan.cvar > 0.0) == moves
+
+
+def test_readings_of_mixed_families_are_read_each_on_its_own_curves():
+    """Each channel's readings mix families and slopes, Hill's of slope 1 concave from zero among
+    them: each reading's gain is its own curves', and no split of a grid of the budget has a larger
+    mean gain in the worst share."""
+    readings = [
+        (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, MichaelisMenten(0.8), 0.9)),
+        (Channel(ONE, MichaelisMenten(1.2), 1.1), Channel(ONE, Hill(0.9, 2.5), 1.0)),
+        (Channel(ONE, Hill(1.1, 1.0), 0.8), Channel(ONE, Hill(1.0, 4.0), 1.2)),
+        (Channel(ONE, Hill(0.7, 2.0), 1.0), Channel(ONE, Tanh(1.0), 0.7)),
+    ]
+    budget = 2.0
+    first = np.linspace(0.0, budget, 2001)
+    reference = np.array([0.5, 1.5])
+
+    def returns(reading: tuple[Channel, ...], spend: np.ndarray) -> np.ndarray:
+        one, two = reading
+        return np.asarray(
+            one.coefficient * one.curve(jnp.asarray(spend))
+            + two.coefficient * two.curve(jnp.asarray(budget - spend))
+        )
+
+    base = np.array([float(returns(r, reference[:1])[0]) for r in readings])
+    grid = np.stack([returns(r, first) for r in readings]) - base[:, None]
+    for level in (0.25, 0.5, 1.0):
+        plan = cvar_allocate(
+            readings,
+            budget,
+            1,
+            level=level,
+            against=reference,
+            lower=np.zeros(2),
+            upper=np.full(2, budget),
+        )
+        gain = np.array([float(returns(r, plan.spend[:1])[0]) for r in readings]) - base
+        np.testing.assert_allclose(plan.gain, gain, rtol=1e-9, atol=1e-12 * base.max())
+        assert plan.stopped == "closed"
+        assert plan.cvar >= float(_tail_mean(grid, level).max()) - 1e-9 * base.max()
+
+
+@pytest.mark.parametrize(
+    ("cap", "s_shaped"), [("_NODES", True), ("_ROUNDS", False)], ids=["boxes", "rounds"]
+)
+def test_a_search_its_cap_stops_says_so_and_logs_its_gap(monkeypatch, caplog, cap, s_shaped):
+    """Stopped by its cap, on S-shaped curves after one box or on concave ones after one round of
+    planes, the search says so, with the gap open, and logs one warning that carries it. At the
+    level 1 the readings' mean gains from a move, so one round's planes leave the gap open."""
+    monkeypatch.setattr(f"chc.allocation.{cap}", 1)
+    if s_shaped:
+        reading = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0))
+        readings, budget, periods, history = [reading] * 10, 1.6, 1, None
+        against, lower, upper = [1.6, 0.0], np.zeros(2), np.full(2, 1.6)
+    else:
+        readings, budget, periods, history = _readings(5, seed=3), BUDGET, PERIODS, HISTORY
+        against, lower, upper = CURRENT, LOWER, UPPER
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = cvar_allocate(
+            readings,
+            budget,
+            periods,
+            level=1.0,
+            against=against,
+            lower=lower,
+            upper=upper,
+            history=history,
+        )
+    assert (plan.stopped, plan.boxes) == ("cap", 1)
+    assert plan.bound > plan.cvar + 1e-6
+    [record] = [r for r in caplog.records if r.name == "chc.allocation"]
+    assert record.levelno == logging.WARNING
+    assert (record.chc_event, record.planner) == ("allocation_cap", "cvar_allocate")
+    assert (record.boxes, record.cvar, record.bound) == (plan.boxes, plan.cvar, plan.bound)
+
+
+class _Unturned(Saturation):
+    """Hill's curve of slope 3 that reports its inflection at ``1e-300`` scales: from zero spend the
+    chord's tangency is past every double the bisection reads."""
+
+    scale: jax.Array = eqx.field(converter=lambda value: jnp.asarray(value, dtype=float))
+
+    def standard(self, z: jax.Array) -> jax.Array:
+        return z**3 / (1.0 + z**3)
+
+    def _standard_inflection(self) -> float:
+        return 1e-300
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        lambda reading, box: allocate(reading, 2.0, 1, **box),
+        lambda reading, box: cvar_allocate(
+            [reading] * 3, 2.0, 1, level=0.5, against=[1.0, 1.0], **box
+        ),
+    ],
+    ids=["allocate", "cvar_allocate"],
+)
+def test_a_curve_whose_tangency_is_not_found_is_refused_by_both_planners(plan):
+    """Where the chord from a box's floor touches the curve nowhere the bisection reads, neither
+    planner bounds the box: both refuse the curve by name, as :func:`allocate` always has."""
+    reading = (Channel(ONE, _Unturned(1.0), 1.0), Channel(ONE, MichaelisMenten(1.0), 1.0))
+    box = {"lower": np.zeros(2), "upper": np.full(2, 2.0)}
+    with pytest.raises(RuntimeError, match=r"^_Unturned\(.*no tangency within 2\^64 times its"):
+        plan(reading, box)
+
+
+@settings(max_examples=300, deadline=None)
+@given(data=st.data(), size=st.integers(2, 5))
+def test_a_box_is_cut_into_halves_that_each_hold_a_split_of_the_budget(data, size):
+    """Whatever the box, its best split on the budget and the envelopes' excess there: the channel
+    cut is the one of the largest excess, the halves cover every rate a split of the budget gives
+    it, each half holds such a split, and the cut is at the split's rate where that is inside."""
+
+    def draws(least: float, most: float) -> np.ndarray:
+        return np.array(data.draw(st.lists(st.floats(least, most), min_size=size, max_size=size)))
+
+    low = draws(0.0, 10.0)
+    high = low + draws(0.0, 10.0)
+    rate = float(low.sum() + data.draw(st.floats(0.0, 1.0)) * (high.sum() - low.sum()))
+    at = _onto(low + draws(0.0, 1.0) * (high - low), low, high, rate)
+    excess = np.array(
+        data.draw(st.lists(st.just(0.0) | st.floats(0.0, 1.0), min_size=size, max_size=size))
+    )
+    channel, halves = _cut(low, high, at, excess, rate, np.ones(size))
+    floors = np.maximum(low, rate - (high.sum() - high))
+    caps = np.minimum(high, rate - (low.sum() - low))
+    # where no envelope stands above its curve, the widest interval a split of the budget allows
+    assert channel == int(np.argmax(excess if excess.max() > 0.0 else caps - floors))
+    others_low, others_high = low.sum() - low[channel], high.sum() - high[channel]
+    floor = max(low[channel], rate - others_high)
+    cap = min(high[channel], rate - others_low)
+    assert halves[0][0] == min(floor, cap)
+    assert halves[-1][1] == max(floor, cap)
+    slack = 1e-12 * max(1.0, float(high.sum()))
+    for (a, b), after in zip(halves, [*halves[1:], None], strict=True):
+        assert low[channel] - slack <= a <= b <= high[channel] + slack
+        assert others_low + a <= rate + slack  # the half's least spend is within the budget
+        assert others_high + b >= rate - slack  # and its most reaches it
+        if after is not None:
+            assert after[0] == b
+    if len(halves) == 2 and floor < at[channel] < cap:
+        assert halves[0][1] == at[channel]
+
+
+@settings(max_examples=50, deadline=None)
+@given(
+    gains=st.lists(st.floats(-1e3, 1e3), min_size=1, max_size=20),
+    level=st.floats(0.01, 1.0),
+)
+def test_the_worst_shares_weights_read_its_mean(gains, level):
+    """The weights the boxes' branching reads are the risk envelope's at the gains: none above
+    ``1 / (level * n)``, summing to 1, and their mean of the gains is the worst share's."""
+    gain = np.array(gains)
+    weights = _cvar_weights(gain, level)
+    assert np.all(weights >= 0.0)
+    assert np.all(weights <= (1.0 + 1e-12) / (level * gain.size))
+    assert weights.sum() == pytest.approx(1.0, rel=1e-12, abs=0.0)
+    assert weights @ gain == pytest.approx(
+        _cvar(gain, level), rel=1e-9, abs=1e-12 * float(np.abs(gain).max())
+    )
 
 
 def test_another_posteriors_s_shaped_draws_compile_nothing_new(caplog):
@@ -391,7 +603,8 @@ def test_another_posteriors_s_shaped_draws_compile_nothing_new(caplog):
 def test_the_split_never_loses_to_the_reference_in_its_worst_share(seed, count, level, weights):
     """Whatever the readings, the level and the reference in the box at the budget: the reference
     gains 0 under every reading, so the split's mean gain in the worst share is at least 0; it is
-    its own gains' mean there; and the bound is above it by no more than the gap."""
+    its own gains' mean there; and the bound is above it by no more than the gap, closed in one box
+    of concave curves."""
     rate = BUDGET / PERIODS
     share = np.array(weights) / np.sum(weights)
     reference = LOWER + (rate - LOWER.sum()) * share  # each above its floor, under its cap
@@ -410,6 +623,7 @@ def test_the_split_never_loses_to_the_reference_in_its_worst_share(seed, count, 
     assert plan.cvar >= 0.0
     assert plan.cvar == pytest.approx(float(_tail_mean(plan.gain, level)), rel=1e-9, abs=1e-12)
     assert plan.cvar <= plan.bound <= plan.cvar + 1e-9 * scale
+    assert (plan.stopped, plan.boxes) == ("closed", 1)
 
 
 @pytest.mark.parametrize(
