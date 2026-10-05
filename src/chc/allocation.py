@@ -202,6 +202,7 @@ __all__ = [
 ]
 
 _EPS = float(np.finfo(float).eps)
+_TINY = float(np.finfo(float).tiny)
 # the cutting planes stop when the worst regret is this share of the largest best return above
 # their bound, or after this many rounds, the gap then reported as it stands
 _GAP, _ROUNDS = 1e-9, 500
@@ -1997,4 +1998,6 @@ def _onto(split: np.ndarray, lower: np.ndarray, upper: np.ndarray, rate: float) 
         return lower.copy()
     if excess(high) <= 0.0:
         return upper.copy()
-    return np.clip(split + brentq(excess, low, high, xtol=4 * _EPS * rate), lower, upper)
+    # four ulps of a rate below about 1e-293 round to a tolerance of zero, which brentq refuses
+    tolerance = max(4 * _EPS * rate, _TINY)
+    return np.clip(split + brentq(excess, low, high, xtol=tolerance), lower, upper)

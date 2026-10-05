@@ -79,6 +79,12 @@ still change).
   the effect read whatever the empty array held. Cross-fitting predicts each row from a fit on the
   other folds, so it needs at least two and at most one a row; anything else, a float or a bool
   among them, raises.
+- **`cvar_allocate` plans a budget below about `1e-293`**, a defect since 0.11.0. It moves a split
+  onto the budget's line by a root found to four ulps of the rate, a tolerance that such a rate
+  makes subnormal or zero: scipy refused a budget of `7.59e-310` with `xtol too small`, and could
+  stall on a subnormal one. The tolerance is now at least the least normal float, so budgets above
+  about `1e-293` are planned as before, bit for bit. `minimax_allocate` moves its splits the same
+  way.
 
 ## [0.12.1] — 2026-10-05
 

@@ -258,6 +258,26 @@ def test_a_split_the_envelopes_favour_does_not_lose_to_the_reference_on_the_curv
     assert plan.bound > 0.0
 
 
+def test_a_budget_below_the_least_normal_float_is_planned():
+    """A split was moved onto the budget's line to four ulps of the rate, which a rate below about
+    ``1e-293`` rounds to a tolerance of zero, and scipy's root finder refused it: a budget of
+    ``7.59e-310`` raised ``xtol too small``."""
+    reading = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0))
+    budget = 7.59e-310
+    plan = cvar_allocate(
+        [reading] * 3,
+        budget,
+        1,
+        level=0.5,
+        against=[budget, 0.0],
+        lower=np.zeros(2),
+        upper=np.array([1.0, 4.0]),
+    )
+    assert np.all((plan.spend >= 0.0) & (plan.spend <= [1.0, 4.0]))
+    assert abs(plan.spend.sum() - budget) <= 2.0 * np.finfo(float).tiny
+    assert plan.cvar >= 0.0
+
+
 def _hill_readings(count: int, seed: int) -> list[tuple[Channel, ...]]:
     """``count`` readings of two Hill channels that start convex, without carryover, each draw with
     a scale, slope and coefficient of its own."""
