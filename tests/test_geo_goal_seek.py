@@ -7,6 +7,8 @@ budget is the least or the most that meets it; a goal the totals bind is met at 
 budgets they allow, worked out by hand.
 """
 
+import logging
+
 import numpy as np
 import pytest
 
@@ -182,14 +184,30 @@ def test_a_goal_takes_a_few_plans_and_a_marginal_target_none_at_a_budget(monkeyp
     where bisection on the budget would need forty; a marginal target needs no budget, the plan
     charging each unit it spends the target's return."""
     plans = []
+    plan = chc.allocation._plan
 
-    def counted(*args, **kwargs):
-        plans.append(args[1])
-        return allocate_geos(*args, **kwargs)
+    def counted(layout, periods, spend):
+        if not isinstance(spend, MarginalReturnTarget):
+            plans.append(spend)
+        return plan(layout, periods, spend)
 
-    monkeypatch.setattr(chc.allocation, "allocate_geos", counted)
+    monkeypatch.setattr(chc.allocation, "_plan", counted)
     _seek(goal)
     assert len(plans) <= most
+    assert (len(plans) > 0) == (most > 0)
+
+
+def test_an_s_curve_s_goal_logs_the_gap_it_leaves_once_however_many_budgets_it_tries(caplog):
+    """A gain of 300 is met with the Hill channel inside its chord, at 75.4, where the envelope
+    from zero spend stands 99 above the curve; Brent's method tries many budgets on the way."""
+    cells = ((Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),)
+    box = {"lower": np.zeros((1, 2)), "upper": np.full((1, 2), 400.0)}
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = budget_for_geos(cells, ReturnTarget(300.0), 1, **box)
+    [record] = [r for r in caplog.records if r.name == "chc.allocation"]
+    assert (record.chc_event, record.planner) == ("allocation_unsearched", "budget_for_geos")
+    assert record.gap == plan.bound - plan.worth
+    assert record.gap == pytest.approx(99.0, abs=1.0)
 
 
 def test_with_every_geo_s_total_fixed_the_budget_is_theirs():

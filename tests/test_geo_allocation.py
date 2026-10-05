@@ -7,6 +7,8 @@ three; each price against the cells' own slopes; a total a hair from binding is 
 the plan that holds it fixed; a plan made in two steps, the geos first, never returns more.
 """
 
+import logging
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -367,6 +369,18 @@ def test_an_s_curve_is_planned_on_its_envelope_as_allocate_plans_it_there():
     assert allocate_geos(
         cells, 300.0, 1, lower=np.zeros((1, 2)), upper=np.full((1, 2), 300.0)
     ).worth == (pytest.approx(1047.867, abs=1e-3))
+
+
+def test_an_s_curve_s_plan_on_its_envelope_logs_the_gap_it_leaves(caplog):
+    """At 300 the envelope's plan is the curves' and leaves no gap; at 90 it runs on the chord."""
+    cells = ((Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),)
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        allocate_geos(cells, 300.0, 1, lower=np.zeros((1, 2)), upper=np.full((1, 2), 300.0))
+        short = allocate_geos(cells, 90.0, 1, lower=np.zeros((1, 2)), upper=np.full((1, 2), 90.0))
+    [record] = [r for r in caplog.records if r.name == "chc.allocation"]
+    assert (record.chc_event, record.planner) == ("allocation_unsearched", "allocate_geos")
+    assert record.gap == short.bound - short.worth
+    assert record.gap == pytest.approx(54.6, abs=0.05)
 
 
 def test_a_straight_stretch_leaves_the_cutting_planes_plan_within_its_gap():

@@ -28,7 +28,9 @@ every plan in the box, and its plan, read on the curves, is a plan. The box of t
 is cut first, on the channel whose envelope stands furthest above its curve at the plan, at its
 rate, where both halves' envelopes meet the curve. :attr:`Allocation.bound` is the largest bound
 left when every bound is within a share ``1e-9`` of the first box's of the best plan's worth, or
-after 500 boxes; on concave curves it is the worth. Rates that jump at one price, on chords of one
+after 500 boxes; on concave curves it is the worth. :attr:`Allocation.stopped` says which, and
+:attr:`Allocation.boxes` how many boxes were planned; a search the cap stops logs a warning
+(``chc_event="allocation_cap"``) with its gap. Rates that jump at one price, on chords of one
 slope, are filled one at a time, so at most one channel is left inside its chord, where the curve
 is below the envelope. With kernels of length one, floors at zero and caps past the tangencies,
 that bounds the gap of the first box before any is cut: the largest
@@ -121,9 +123,12 @@ HONEST SCOPE:
   bisection of the price, as a plan on concave curves does. The bound on the first box's gap holds
   only as stated above: a longer kernel runs each period at its own adstock, and a floor or a cap
   inside a chord holds its channel there, each with an excess of its own.
-* :func:`minimax_allocate`, :func:`allocate_geos` and the goals plan S-shaped curves on their
-  envelopes from zero spend, unsearched, and their plans can fall short on the curves by as much as
-  the envelopes stand above them. :func:`cvar_allocate` reads its gains on the curves and only its
+* Only :func:`allocate` searches S-shaped curves. :func:`budget_for`, :func:`minimax_allocate`,
+  :func:`allocate_geos` and :func:`budget_for_geos` plan them on their envelopes from zero spend,
+  unsearched, and their plans can fall short on the curves by as much as the envelopes stand above
+  them; each call that leaves such a gap logs one warning with its size
+  (``chc_event="allocation_unsearched"``), and a goal's plan says so in
+  :attr:`Allocation.stopped`. :func:`cvar_allocate` reads its gains on the curves and only its
   bound on the envelopes over the box: its split never loses to the reference in the worst share,
   but on S-shaped curves its bound can stand above the best split's by as much as the envelopes
   stand above the curves.
@@ -158,8 +163,10 @@ HONEST SCOPE:
 from __future__ import annotations
 
 import heapq
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -183,6 +190,7 @@ __all__ = [
     "MinimaxAllocation",
     "ReturnOnSpendTarget",
     "ReturnTarget",
+    "SearchStatus",
     "Totals",
     "allocate",
     "allocate_geos",
@@ -201,6 +209,13 @@ _GAP, _ROUNDS = 1e-9, 500
 # first of the best plan's worth, or after this many nodes, the gap then reported as it stands
 _NODES = 500
 
+SearchStatus = Literal["closed", "cap", "unsearched"]
+"""Why a plan's search for the best stopped: ``closed``, its bound within the share ``1e-9`` of its
+worth; ``cap``, after 500 boxes with the gap open; ``unsearched``, a plan on the envelopes from zero
+spend whose gap is open, which no search tried to close."""
+
+_log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class Allocation:
@@ -218,6 +233,10 @@ class Allocation:
         budget: what the plan spends over its periods.
         idle: what the channels return over the same periods with nothing spent in the plan, the
             history's carryover alone.
+        stopped: whether ``bound - worth`` closed, or the search stopped at its cap, or a goal's
+            plan on the envelopes was never searched (:data:`SearchStatus`).
+        boxes: how many boxes of the rates were planned: 1 for a plan on concave curves or on the
+            envelopes from zero spend.
     """
 
     spend: np.ndarray
@@ -226,6 +245,8 @@ class Allocation:
     price: float
     budget: float
     idle: float
+    stopped: SearchStatus
+    boxes: int
 
     @property
     def gain(self) -> float:
@@ -635,9 +656,24 @@ def allocate(
     if relax(given) is given:
         return _on_envelopes(given, budget, periods, lower_rates, upper_rates, spent)
     worths = _worths(given, spent, periods)
-    spend, worth, bound, price = _branch_and_bound(
+    spend, worth, bound, price, boxes, stopped = _branch_and_bound(
         worths, lower_rates, upper_rates, periods, budget / periods
     )
+    if stopped == "cap":
+        _log.warning(
+            "allocate stopped at its cap of %d boxes with the gap open: the plan returns %.6g on "
+            "the curves, and no plan in the box more than %.6g",
+            boxes,
+            worth,
+            bound,
+            extra={
+                "chc_event": "allocation_cap",
+                "planner": "allocate",
+                "boxes": boxes,
+                "worth": worth,
+                "bound": bound,
+            },
+        )
     return Allocation(
         spend=spend,
         worth=worth,
@@ -645,6 +681,8 @@ def allocate(
         price=price,
         budget=budget,
         idle=sum(_value(w, 0.0) for w in worths),
+        stopped=stopped,
+        boxes=boxes,
     )
 
 
@@ -703,6 +741,7 @@ def _on_envelopes(
     bound = sum(_value(w, rate) for w, rate in zip(envelopes, spend, strict=True))
     worths = envelopes if relaxed is given else _worths(given, spent, periods)
     worth = sum(_value(w, rate) for w, rate in zip(worths, spend, strict=True))
+    closed = bound - worth <= _GAP * (abs(bound) or 1.0)
     return Allocation(
         spend=spend,
         worth=worth,
@@ -710,14 +749,31 @@ def _on_envelopes(
         price=price,
         budget=budget,
         idle=sum(_value(w, 0.0) for w in worths),
+        stopped="closed" if closed else "unsearched",
+        boxes=1,
     )
+
+
+def _unsearched(planner: str, reading: str, gap: float, scale: float) -> None:
+    """Log once a call that ``planner`` planned S-shaped curves on their envelopes from zero spend
+    and left ``gap`` open, where ``reading`` is the number it puts off by as much."""
+    if gap > _GAP * (abs(scale) or 1.0):
+        _log.warning(
+            "%s planned S-shaped curves on their envelopes from zero spend, unsearched: on the "
+            "curves its %s may be off by up to %.6g",
+            planner,
+            reading,
+            gap,
+            extra={"chc_event": "allocation_unsearched", "planner": planner, "gap": gap},
+        )
 
 
 def _branch_and_bound(
     worths: tuple[_Worth, ...], lower: np.ndarray, upper: np.ndarray, periods: int, target: float
-) -> tuple[np.ndarray, float, float, float]:
-    """The best split of ``target`` a period on the curves, its worth, a bound on every split's, and
-    its price: Udell and Boyd's (2016) branch-and-bound for sums of S-shaped functions.
+) -> tuple[np.ndarray, float, float, float, int, SearchStatus]:
+    """The best split of ``target`` a period on the curves, its worth, a bound on every split's, its
+    price, the boxes planned and why the search stopped: Udell and Boyd's (2016) branch-and-bound
+    for sums of S-shaped functions.
 
     A node is a box of the rates. Its bound is the split on each channel's envelope over the box
     (:func:`_bounded`), which no split in the box beats on the curves, and that split, read on the
@@ -764,7 +820,10 @@ def _branch_and_bound(
                 settled = max(settled, top)
     worth, spend, price = best
     left = -heap[0][0] if heap else -np.inf
-    return spend, worth, max(worth, settled, left), price
+    bound = max(worth, settled, left)
+    # a box was settled within the tolerance of a best plan that has only risen since
+    stopped: SearchStatus = "closed" if bound - worth <= tolerance else "cap"
+    return spend, worth, bound, price, nodes, stopped
 
 
 def _cross(
@@ -906,7 +965,9 @@ def budget_for(
                     )
                 spend = _cross(rates, lambda at: -surplus(at), peak, per_unit, upper_rates)
     budget = cost(np.clip(spend, lower_rates, upper_rates))
-    return _on_envelopes(given, budget, periods, lower_rates, upper_rates, spent)
+    plan = _on_envelopes(given, budget, periods, lower_rates, upper_rates, spent)
+    _unsearched("budget_for", "worth", plan.bound - plan.worth, plan.bound)
+    return plan
 
 
 def minimax_allocate(
@@ -1006,6 +1067,17 @@ def minimax_allocate(
             raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
         floor = max(floor, float(program.fun) * scale)
         splits = [_onto(program.x[:size], lower_rates, upper_rates, rate)]
+    # a reading's best return on the curves is between its plan's worth and bound, and the split's
+    # is below its envelopes' by their excess there, so its regret on the curves is off by at most
+    # the larger of the two
+    gap = 0.0
+    for plan, reading, worths in zip(plans, readings, envelopes, strict=True):
+        curves = _worths(reading, spent, periods)
+        excess = sum(
+            _value(e, r) - _value(c, r) for e, c, r in zip(worths, curves, chosen, strict=True)
+        )
+        gap = max(gap, plan.bound - plan.worth, excess)
+    _unsearched("minimax_allocate", "worst regret", gap, scale)
     return MinimaxAllocation(
         spend=np.asarray(chosen), best=best, regret=regret, worst=worst, bound=min(floor, worst)
     )
@@ -1326,7 +1398,10 @@ def allocate_geos(
             f"a budget of {budget} is outside what the box spends over {periods} periods, "
             f"[{least}, {most}]"
         )
-    return _plan(layout, periods, budget)
+    found = _plan(layout, periods, budget)
+    if relax(layout.cells) is not layout.cells:
+        _unsearched("allocate_geos", "worth", found.bound - found.worth, found.bound)
+    return found
 
 
 def budget_for_geos(
@@ -1382,8 +1457,15 @@ def budget_for_geos(
     value = goal.amount if isinstance(goal, ReturnTarget) else goal.per_unit
     if not np.isfinite(value):
         raise ValueError(f"the goal's value is {value}; it needs a finite one")
-    grid = tuple(tuple(row) for row in cells)
-    layout = _layout(grid, periods, lower, upper, geo_totals, channel_totals, history)
+    layout = _layout(cells, periods, lower, upper, geo_totals, channel_totals, history)
+    found = _meet(layout, periods, goal)
+    if relax(layout.cells) is not layout.cells:
+        _unsearched("budget_for_geos", "worth", found.bound - found.worth, found.bound)
+    return found
+
+
+def _meet(layout: _Layout, periods: int, goal: Goal) -> GeoAllocation:
+    """:func:`budget_for_geos`'s plan for ``goal`` over the grid ``layout`` lays out."""
     least, most = _reach(layout, periods)
     concave = relax(layout.cells) is layout.cells
     plans: dict[float, GeoAllocation] = {}
@@ -1391,16 +1473,7 @@ def budget_for_geos(
     def plan(budget: float) -> GeoAllocation:
         budget = float(np.clip(budget, least, most))
         if budget not in plans:
-            plans[budget] = allocate_geos(
-                grid,
-                budget,
-                periods,
-                lower=lower,
-                upper=upper,
-                geo_totals=geo_totals,
-                channel_totals=channel_totals,
-                history=history,
-            )
+            plans[budget] = _plan(layout, periods, budget)
         return plans[budget]
 
     match goal:

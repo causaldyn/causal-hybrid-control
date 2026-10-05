@@ -5,6 +5,8 @@ even split; and on channels with carryover against every split of a fine grid, t
 computed from the channels run over the history, the plan and the tail as one series.
 """
 
+import logging
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -178,6 +180,45 @@ def test_an_s_curve_s_regret_is_its_envelope_s():
     chord = hill * (2.0 / 3.0) / tangency
     on_envelope = 1000.0 * chord + 300.0 * other / (100.0 + other)
     assert plan.regret[0] == pytest.approx(plan.best[0] - on_envelope, rel=1e-9)
+
+
+@pytest.mark.parametrize("weight", [300.0, 30000.0], ids=["excess", "own"])
+def test_an_s_curve_s_regret_is_off_the_curves_by_at_most_the_gap_it_logs(caplog, weight):
+    """A reading's best return on the curves, :func:`allocate`'s search, lies between its plan on
+    the envelopes from zero spend read on the curves and that plan's bound; the split's return on
+    the curves is below the envelopes' by their excess there. The warning's gap is the larger of the
+    two, and bounds how far each regret on the curves is from the envelopes'. At a weight of 300 on
+    the second reading's second channel the split's excess is the larger; at 30000 that reading
+    holds the split near zero on the Hill, where its envelope stands barely above it, and the first
+    reading's own plan's gap is."""
+    readings = [
+        (Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),
+        (Channel(ONE, MichaelisMenten(60.0), 700.0), Channel(ONE, MichaelisMenten(100.0), weight)),
+    ]
+    box = {"lower": np.zeros(2), "upper": np.full(2, 90.0), "history": np.zeros((0, 2))}
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = minimax_allocate(readings, 90.0, 1, **box)
+    [record] = [r for r in caplog.records if r.name == "chc.allocation"]
+    assert (record.chc_event, record.planner) == ("allocation_unsearched", "minimax_allocate")
+    hill, other = plan.spend
+    on_curves = (
+        1000.0 * hill**3 / (100.0**3 + hill**3) + 300.0 * other / (100.0 + other),
+        700.0 * hill / (60.0 + hill) + weight * other / (100.0 + other),
+    )
+    off = [
+        allocate(reading, 90.0, 1, **box).worth - value - regret
+        for reading, value, regret in zip(readings, on_curves, plan.regret, strict=True)
+    ]
+    # the Hill's envelope from zero spend is the chord to its tangency, z^3 = 2, past the cap
+    chord = 1000.0 * (2.0 / 3.0) * 2.0 ** (-1.0 / 3.0) / 100.0
+    own = chord * 90.0 - 1000.0 * 0.9**3 / (1.0 + 0.9**3)  # its plan on them: all 90 on the Hill
+    excess = chord * hill - 1000.0 * (hill / 100.0) ** 3 / (1.0 + (hill / 100.0) ** 3)
+    assert record.gap == pytest.approx(max(own, excess), rel=1e-9, abs=0.0)
+    assert (own > excess) == (weight > 300.0)
+    # the regret on the curves is the envelopes' less what the reading's best loses to its
+    # envelopes' and plus the split's excess, so the two pull apart and each bounds a side
+    assert -own * (1 + 1e-9) <= off[0] <= excess * (1 + 1e-9)
+    assert off[1] == pytest.approx(0.0, abs=1e-9 * plan.best.max())
 
 
 @pytest.mark.parametrize(

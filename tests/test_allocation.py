@@ -5,6 +5,8 @@ tail as one spend series; the best plan against SciPy's general solver and a gri
 against the worth's own slope.
 """
 
+import logging
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -13,7 +15,9 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy.optimize import minimize, minimize_scalar
 
+import chc.allocation
 from chc.allocation import (
+    MarginalReturnTarget,
     ReturnTarget,
     _bounded,
     _on_envelopes,
@@ -390,6 +394,60 @@ def test_a_goal_on_equal_s_curves_is_met_with_at_most_one_channel_inside_its_cho
     # the first channel at its tangency, 2^(1/3), for 2/3, then the second where z^3/(1 + z^3) is
     # the 1/30 left, at 29^(-1/3); moved together the two needed 2 x 0.8135
     assert plan.budget == pytest.approx(2 ** (1 / 3) + 29 ** (-1 / 3), rel=1e-12, abs=0.0)
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [record for record in caplog.records if record.name == "chc.allocation"]
+
+
+def _untied() -> tuple[Channel, ...]:
+    one = GeometricAdstock(0.0, length=1, normalized=False)
+    return Channel(one, Hill(1.0, 3.0), 1.0), Channel(one, Hill(1.01, 3.0), 1.0)
+
+
+def test_a_search_that_closes_says_so_and_counts_its_boxes(caplog):
+    """Concave curves are planned in one box, a goal on them too; the untied example needs more."""
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        concave = _plan()
+        goal = budget_for(
+            CHANNELS,
+            MarginalReturnTarget(1.0),
+            PERIODS,
+            lower=LOWER,
+            upper=UPPER,
+            history=HISTORY,
+        )
+        searched = allocate(_untied(), 1.6, 1, lower=np.zeros(2), upper=np.full(2, 1.6))
+    assert (concave.stopped, concave.boxes) == ("closed", 1)
+    assert (goal.stopped, goal.boxes) == ("closed", 1)
+    assert searched.stopped == "closed"
+    assert searched.boxes > 1
+    assert not _warnings(caplog)
+
+
+def test_a_search_the_cap_stops_says_so_and_logs_its_gap(monkeypatch, caplog):
+    monkeypatch.setattr(chc.allocation, "_NODES", 1)
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = allocate(_untied(), 1.6, 1, lower=np.zeros(2), upper=np.full(2, 1.6))
+    assert (plan.stopped, plan.boxes) == ("cap", 1)
+    assert plan.bound - plan.worth > 1e-9 * plan.bound
+    [record] = _warnings(caplog)
+    assert (record.chc_event, record.planner) == ("allocation_cap", "allocate")
+    assert (record.boxes, record.worth, record.bound) == (1, plan.worth, plan.bound)
+
+
+def test_a_goal_planned_on_the_envelopes_says_it_was_unsearched_and_logs_its_gap(caplog):
+    """The second channel is left inside its chord, at 29^(-1/3), where the envelope from zero
+    spend stands above the curve."""
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = budget_for(
+            _equal_s_curves(3.0, 2), ReturnTarget(0.7), 1, lower=np.zeros(2), upper=np.full(2, 5.0)
+        )
+    assert (plan.stopped, plan.boxes) == ("unsearched", 1)
+    [record] = _warnings(caplog)
+    assert (record.chc_event, record.planner) == ("allocation_unsearched", "budget_for")
+    assert record.gap == plan.bound - plan.worth
+    assert record.gap > 0.1
 
 
 _S_CURVE = st.tuples(

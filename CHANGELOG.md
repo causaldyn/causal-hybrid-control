@@ -7,6 +7,21 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`Allocation.stopped` and `Allocation.boxes` say how a plan's search ended, and a plan left with
+  a gap logs it.** `stopped` is a `SearchStatus`: `closed` where the bound came within the share
+  `1e-9` of the plan's worth, `cap` where 500 boxes left the gap open, and `unsearched` for a plan
+  on the envelopes from zero spend whose gap no search tried to close; `boxes` counts the boxes
+  searched, 1 on concave curves. `allocate` stopped at its cap logs one warning with its gap
+  (`chc_event="allocation_cap"`). `budget_for`, `minimax_allocate`, `allocate_geos` and
+  `budget_for_geos` plan S-shaped curves on their envelopes from zero spend, unsearched, and each
+  call that leaves a gap logs one warning with its size (`chc_event="allocation_unsearched"`):
+  for `minimax_allocate` it is the larger of each reading's own plan's gap and the envelopes'
+  excess at the split, which bounds how far a regret read on the envelopes may be from the one on
+  the curves. Until now the cap and the envelopes left the gap in `Allocation.bound` alone, where
+  nothing read it.
+
 ### Changed
 
 - **`allocate` plans S-shaped curves to the best split, by branch and bound.** It planned them on
