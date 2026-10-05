@@ -12,9 +12,9 @@ from jax import Array
 from chc.barrier import robust_barrier_margin
 from chc.control import Bound, projected_gradient_control, projected_gradient_solve
 from chc.cost import QuadraticCost, total_cost
-from chc.dynamics import DampedOscillator, HybridDynamics, LinearDynamics
-from chc.plan import causal_plan, certify_safety, plan_regret_bound
-from chc.residual import MLPResidual, ZeroResidual
+from chc.dynamics import DampedOscillator, DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
+from chc.plan import _quadratic, causal_plan, certify_safety, plan_regret_bound
+from chc.residual import ControlAffineResidual, MLPResidual, ZeroResidual
 from chc.support import SupportModel
 from chc.uncertainty import ConfoundingRobustPenalty, confounding_robust_inflation
 
@@ -313,15 +313,18 @@ def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charge
     )
     plan = causal_plan(hybrid, x0, cost, dt, horizon, -0.5, 0.5, steps=20_000)
     curve = plan_regret_bound(hybrid_plan := plan, hybrid, x0, cost, dt, -0.5, 0.5, probes=24)
-    assert curve.ok
+    assert curve.status == "diagnostic"  # a sampled modulus bounds nothing between its samples
+    assert curve.modulus_source == "measured"
     assert curve.modulus > 0.0
     assert curve.bound >= hybrid_plan.task_cost - reached(hybrid, -0.5, 0.5, 1, 2) - 1e-12
 
-    # 4. WHERE THE MODULUS COMES FROM. For a plant affine in the action J is exactly quadratic, so
-    #    the measured curvature is the global one -- and lambda_min(R) is a valid floor under it
-    #    (STEP 7b), which STEP 4d says can only make the bound larger.
+    # 4. WHERE THE MODULUS COMES FROM. For a linear plant J is exactly quadratic, so the curvature
+    #    at the plan is the global one -- and with Q and Qf positive semidefinite lambda_min(R) is a
+    #    valid floor under it (STEP 7b), which STEP 4d says can only make the bound larger.
     slack = causal_plan(plant, x0, cost, dt, horizon, -2.0, 2.0, steps=20_000)
     measured = plan_regret_bound(slack, plant, x0, cost, dt, -2.0, 2.0, probes=16)
+    assert measured.modulus_source == "measured"
+    assert measured.status == "certified"
     hessian = jax.hessian(lambda v: total_cost(plant, x0, v.reshape(horizon, 1), dt, cost))(
         slack.actions.reshape(-1)
     )
@@ -331,6 +334,11 @@ def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charge
     assert measured.modulus >= float(jnp.min(jnp.linalg.eigvalsh(cost.R)))
     conservative = plan_regret_bound(slack, plant, x0, cost, dt, -2.0, 2.0, modulus=0.05)
     assert conservative.modulus_source == "supplied"
+    assert conservative.status == "certified"
+    with pytest.warns(
+        DeprecationWarning, match=r"^PlanRegretBound\.ok leaves in 0\.14: read status"
+    ):
+        assert conservative.ok
     assert conservative.bound >= measured.bound  # a smaller modulus is looser, never invalid
 
     # 5. AND IT REFUSES TO CERTIFY WHAT IT CANNOT. A residual large enough to make J non-convex
@@ -343,9 +351,94 @@ def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charge
     wild = HybridDynamics(DampedOscillator(1.0, 0.2), loud)
     rough = causal_plan(wild, x0, cost, dt, horizon, -6.0, 6.0, steps=4_000)
     verdict = plan_regret_bound(rough, wild, x0, cost, dt, -6.0, 6.0, probes=48)
-    assert not verdict.ok
+    assert verdict.status == "refused"
     assert verdict.modulus < 0.0
     assert np.isinf(verdict.bound)
+    with pytest.warns(
+        DeprecationWarning, match=r"^PlanRegretBound\.ok leaves in 0\.14: read status"
+    ):
+        assert not verdict.ok
 
     with pytest.raises(ValueError, match="cannot be negative"):
         plan_regret_bound(slack, plant, x0, cost, dt, -2.0, 2.0, modulus=-1.0)
+
+
+class _HiddenPocket(eqx.Module):
+    """A rate of 1 at every action but a pocket 0.02 wide at 1.3, where it falls to 0."""
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return jnp.array([1.0 - jnp.exp(-(((u[0] - 1.3) / 0.02) ** 2))])
+
+
+def test_a_sampled_curvature_is_a_diagnostic_never_a_certificate() -> None:
+    """The review's hidden pocket: the plan at 0 costs 1, the pocket's action 0.00845, so the plan's
+    regret is at least 0.99, while the curvature sampled at the plan and 16 points reads 0.01, flat,
+    and the bound 0. It was reported certified; it is that number still, and a diagnostic."""
+    model = _HiddenPocket()
+    cost = QuadraticCost(
+        Q=jnp.zeros((1, 1)), R=jnp.array([[0.01]]), Qf=jnp.array([[2.0]]), x_target=jnp.zeros(1)
+    )
+    x0 = jnp.zeros(1)
+    plan = causal_plan(model, x0, cost, 1.0, 1, -2.0, 2.0, steps=10, warm_start=jnp.zeros((1, 1)))
+    pocket = float(total_cost(model, x0, jnp.array([[1.3]]), 1.0, cost))
+    assert plan.task_cost - pocket > 0.99
+    gap = plan_regret_bound(plan, model, x0, cost, 1.0, -2.0, 2.0)
+    assert gap.bound < plan.task_cost - pocket  # the samples miss the pocket
+    assert gap.modulus_source == "measured"
+    assert gap.status == "diagnostic"
+    with pytest.warns(DeprecationWarning, match=r"^PlanRegretBound\.ok leaves in 0\.14"):
+        assert gap.ok  # what was read as a certificate
+    # a modulus the caller supplies is the caller's claim, and it certifies
+    claimed = plan_regret_bound(plan, model, x0, cost, 1.0, -2.0, 2.0, modulus=gap.modulus)
+    assert claimed.status == "certified"
+
+
+@pytest.mark.parametrize("driven", [False, True])
+@pytest.mark.parametrize(
+    ("degree", "channel_degree", "status"),
+    [(1, 0, "certified"), (0, 0, "certified"), (2, 0, "diagnostic"), (1, 1, "diagnostic")],
+)
+def test_the_objective_is_quadratic_only_where_the_field_is_affine(
+    degree: int, channel_degree: int, status: str, driven: bool
+) -> None:
+    """A drift of degree 1 beside a constant channel keeps every RK4 step affine, so one Hessian is
+    the box's; a quadratic drift or a channel that reads the state bends the rollout, however small
+    the coefficient that does it. A driver's push reads neither the state nor the action, and
+    changes neither."""
+    features = {0: 1, 1: 3, 2: 6}  # monomials of two states up to each degree, bias first
+    drift = 0.01 * jnp.ones((2, features[degree]))
+    channel = 0.01 * jnp.ones((2, 1, features[channel_degree]))
+    known = LinearDynamics(jnp.array([[0.0, 1.0], [-2.0, -0.3]]), jnp.array([[0.0], [1.0]]))
+    model: Dynamics = HybridDynamics(
+        known, ControlAffineResidual(drift, channel, degree, channel_degree)
+    )
+    if driven:
+        model = DrivenDynamics(model, jnp.ones((2, 1)), jnp.linspace(0.0, 0.3, 7)[:, None], 0.1)
+    cost = QuadraticCost(Q=jnp.eye(2), R=0.05 * jnp.eye(1), Qf=jnp.eye(2), x_target=jnp.zeros(2))
+    x0 = jnp.array([1.0, 0.0])
+    plan = causal_plan(model, x0, cost, 0.1, 6, -1.0, 1.0, steps=200)
+    gap = plan_regret_bound(plan, model, x0, cost, 0.1, -1.0, 1.0, probes=4)
+    assert gap.modulus_source == "measured"
+    assert gap.status == status
+
+
+@pytest.mark.parametrize(
+    ("model", "quadratic"),
+    [
+        (LinearDynamics(_A, _B), True),
+        (DampedOscillator(1.0, 0.2), True),
+        (_MODEL, True),  # a linear plant with a zero residual
+        (
+            HybridDynamics(
+                DampedOscillator(1.0, 0.2), MLPResidual(2, 1, 2, key=jax.random.PRNGKey(3))
+            ),
+            False,
+        ),
+        (_HiddenPocket(), False),
+    ],
+    ids=["linear", "oscillator", "zero-residual", "mlp-residual", "unnamed"],
+)
+def test_only_a_field_named_affine_makes_the_objective_quadratic(
+    model: Dynamics, quadratic: bool
+) -> None:
+    assert _quadratic(model) is quadratic

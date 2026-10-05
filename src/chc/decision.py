@@ -65,6 +65,8 @@ from chc.plan import (
     BarrierConstraint,
     CausalPlan,
     CertificateStatus,
+    PlanRegretBound,
+    RegretStatus,
     RowPrice,
     SafetyCertificate,
     causal_plan,
@@ -252,16 +254,22 @@ class DecisionCertificate:
     # not one of the solver's three. Same convention as the certified-horizon fields above.
     solver_status: SolverStatus | None
     solver_iterations: int
-    # How far the plan can be from the best one the SAME BOX allows (Result 69), certified from its
-    # own gradient with no optimum needed. ``inf`` means the objective was not convex over the box,
-    # so nothing certifies it; ``None`` means no plan was solved at all. This is a gap in the
-    # PLANNING objective -- how far the planning model is from the plant is the tube's question,
-    # and the two must not be added.
+    # How far the plan can be from the best one the SAME BOX allows on the FITTED model (Result 69),
+    # read from its own gradient with no optimum needed; ``regret_status`` says whether that is a
+    # certificate. ``inf`` means the objective was not convex where its curvature was read, so
+    # nothing bounds it; ``None`` means no plan was solved at all. This is a gap in the PLANNING
+    # objective -- how far the planning model is from the plant is the tube's question, and the two
+    # must not be added.
     regret_bound: float | None
     # The marginal sensitivity model's level the barrier's prefix was audited at, the caller's
     # ``gamma``: ``barrier_certified_steps`` counts the steps the plan clears there, and
     # ``gamma_star`` is where no action would. None where no bound was audited.
     gamma: float | None = None
+    # What ``regret_bound`` is (:data:`chc.plan.RegretStatus`): ``certified`` only where the fitted
+    # model is linear, so the objective is quadratic and its one Hessian is the box's; elsewhere the
+    # curvature is sampled at the plan and a few points, and the bound is ``diagnostic``. None where
+    # no plan was solved.
+    regret_status: RegretStatus | None = None
 
     @property
     def trustworthy_steps(self) -> int:
@@ -658,6 +666,8 @@ class Prescription:
             + f", gamma* {_show(certificate.gamma_star)} (marginal sensitivity model)",
             f"- solver: {certificate.solver_status} after "
             f"{certificate.solver_iterations} accepted steps",
+            f"- regret bound on the fitted model: {_show(certificate.regret_bound)}"
+            + ("" if certificate.regret_status is None else f", {certificate.regret_status}"),
             "",
             f"**Trustworthy prefix: {certificate.trustworthy_steps} steps.**",
             "",
@@ -692,6 +702,7 @@ class Prescription:
                 "solver_iterations": certificate.solver_iterations,
                 "trustworthy_steps": certificate.trustworthy_steps,
                 "regret_bound": certificate.regret_bound,
+                "regret_status": certificate.regret_status,
             },
             "selection": None
             if self.selection is None
@@ -1106,10 +1117,11 @@ def prescribe(
         audit = _certify(solved, model, margins, dt, gamma=gamma, u_max=u_max)
         return replace(solved, safety=audit)
 
+    def regret(solved: CausalPlan) -> PlanRegretBound:
+        return plan_regret_bound(solved, model, start, planning_cost, dt, u_lo, u_hi, probes=4)
+
     def price(solved: CausalPlan) -> float:
-        return plan_regret_bound(
-            solved, model, start, planning_cost, dt, u_lo, u_hi, probes=4
-        ).bound
+        return regret(solved).bound
 
     selection: LeverSelection | None = None
     if max_levers is None:
@@ -1143,6 +1155,7 @@ def prescribe(
         safety = _certify(plan, model, margins, dt, gamma=gamma, u_max=u_max)
     else:
         safety = None
+    gap = regret(plan)
     certificate = DecisionCertificate(
         identification=identification,
         adjustment=resolved,
@@ -1154,8 +1167,9 @@ def prescribe(
         gamma_star=None if safety is None else safety.gamma_star,
         solver_status=plan.solver_status,
         solver_iterations=plan.solver_iterations,
-        regret_bound=price(plan),
+        regret_bound=gap.bound,
         gamma=None if safety is None else float(gamma),
+        regret_status=gap.status,
     )
     _log.info(
         "decision certified",
@@ -1167,6 +1181,7 @@ def prescribe(
             "barrier_certified_steps": certificate.barrier_certified_steps,
             "trustworthy_steps": certificate.trustworthy_steps,
             "regret_bound": certificate.regret_bound,
+            "regret_status": certificate.regret_status,
         },
     )
     return Prescription(

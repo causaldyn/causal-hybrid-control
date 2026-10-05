@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import math
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -68,8 +69,9 @@ from chc.control import (
     projected_gradient_solve,
 )
 from chc.cost import QuadraticCost, total_cost
-from chc.dynamics import Dynamics
+from chc.dynamics import DampedOscillator, DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step, rollout
+from chc.residual import ControlAffineResidual, ZeroResidual
 from chc.response import relax
 from chc.support import (
     PenaltyModel,
@@ -1297,6 +1299,15 @@ def certify_safety(
 
 
 ModulusSource = Literal["supplied", "measured"]
+"""Where :attr:`PlanRegretBound.modulus` comes from: the caller, or ``J``'s Hessian. Measured, it is
+the one Hessian of an objective the model's structure makes quadratic, which is the whole box's, or
+the least eigenvalue at the plan and at random points of the box, a sample that cannot bound the
+box's least; :attr:`PlanRegretBound.status` tells the two apart."""
+
+RegretStatus = Literal["certified", "diagnostic", "refused"]
+"""What :attr:`PlanRegretBound.bound` is. ``certified`` on a supplied modulus or a quadratic
+objective's; ``diagnostic`` on a sampled modulus, which a pocket of negative curvature between the
+samples breaks; ``refused``, the bound ``inf``, where the modulus came out negative."""
 
 
 @dataclass(frozen=True)
@@ -1319,9 +1330,14 @@ class PlanRegretBound:
     The bound is on the **planning objective**, which is the question the solver was asked. How far
     the planning model itself is from the plant is the error tube's question
     (:attr:`CausalPlan.uncertainty_tube`), and the two must not be added.
+
+    It is a certificate only where the modulus is one for the whole box: supplied, or read off an
+    objective the model's structure makes quadratic (:attr:`status`). A modulus sampled at the plan
+    and a few points of the box is not: a pocket of negative curvature between the samples can hide
+    a plan much cheaper than this one, and the bound then reads small with nothing behind it.
     """
 
-    bound: float  # J(U) - min over the box of J, certified; inf when nothing certifies it
+    bound: float  # J(U) - min over the box of J where ``status`` certifies it; inf when refused
     unconstrained_bound: float  # Result 6's |grad J|^2/(2 mu), for the comparison
     frank_wolfe_gap: float  # the mu-free fallback the box guarantees; bound <= this
     modulus: float  # the mu actually used
@@ -1329,7 +1345,20 @@ class PlanRegretBound:
     gradient_norm: float
     per_lever: tuple[float, ...]  # the bound split by lever; sums to ``bound``
     pinned_actions: int  # coordinates the gradient holds against a bound: exactly free
-    ok: bool  # the objective was convex enough over the box for the bound to mean anything
+    status: RegretStatus
+
+    @property
+    def ok(self) -> bool:
+        """Whether the modulus was not negative, ``status != "refused"``. Deprecated, gone in 0.14:
+        a sampled modulus that is not negative certifies nothing, and :attr:`status` says so."""
+        warnings.warn(
+            "PlanRegretBound.ok leaves in 0.14: read status, 'certified' only on a supplied "
+            "modulus or a quadratic objective's, 'diagnostic' on a sampled one, and 'refused' "
+            "where ok is False",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.status != "refused"
 
 
 def _objective_modulus(
@@ -1340,13 +1369,14 @@ def _objective_modulus(
     probes: int,
     seed: int,
 ) -> float:
-    """Smallest Hessian eigenvalue of ``J`` over the box, at the plan and at random feasible points.
+    """Smallest Hessian eigenvalue of ``J`` at the plan and at ``probes`` random feasible points.
 
-    A local modulus, and the certificate says so: for a plant affine in the action ``J`` is exactly
-    quadratic and one evaluation is the global answer, while for a nonlinear plant this is a sample
-    and a caller who can bound the curvature should pass ``modulus`` instead. Sampling is what makes
-    a non-convex objective *visible* -- a single evaluation at the plan sits at a solver's stopping
-    point, which is the least likely place to find the negative curvature.
+    Where the objective is quadratic (:func:`_quadratic`) the Hessian is one matrix and the plan's
+    is the answer for the whole box, so no point is drawn. Elsewhere this is a sample, and a caller
+    who can bound the curvature should pass ``modulus`` instead. Sampling is what makes a
+    non-convex objective *visible* -- a single evaluation at the plan sits at a solver's stopping
+    point, which is the least likely place to find the negative curvature -- but it proves nothing
+    about the points it did not draw.
     """
     flat = actions.reshape(-1)
     drawn = jax.random.uniform(
@@ -1363,6 +1393,25 @@ def _objective_modulus(
     # vmapped rather than looped: the Hessian of a rollout is expensive to TRACE, and a Python
     # loop retraces it once per probe. Batching pays that cost once for the whole sample.
     return float(jnp.min(jax.vmap(curvature)(jnp.concatenate([flat[None, :], drawn]))))
+
+
+def _quadratic(model: Dynamics) -> bool:
+    """Whether the cost is quadratic in the actions by the model's structure alone.
+
+    A field affine in the state and the action together makes each RK4 step affine in both, so the
+    rollout is affine in the actions and the quadratic cost quadratic in them: its Hessian is one
+    matrix over the whole box. A drift past degree 1, a channel that reads the state, or any field
+    not named here may bend the rollout, and is not taken to be quadratic.
+    """
+    if isinstance(model, LinearDynamics | DampedOscillator | ZeroResidual):
+        return True
+    if isinstance(model, ControlAffineResidual):
+        return model.degree <= 1 and model.channel_degree == 0
+    if isinstance(model, HybridDynamics):
+        return _quadratic(model.known) and _quadratic(model.residual)
+    if isinstance(model, DrivenDynamics):
+        return _quadratic(model.dynamics)
+    return False
 
 
 def plan_regret_bound(
@@ -1385,17 +1434,22 @@ def plan_regret_bound(
     it prices a plan that came from anywhere -- including one an operator edited by hand.
 
     Args:
-        modulus: the strong-convexity modulus of ``J`` over the box. ``None`` measures it (see
-            :func:`_objective_modulus`). A *smaller* modulus gives a *larger* bound and is never
-            invalid (STEP 4d), so a conservative one is the safe input; for a plant affine in the
-            action ``lambda_min(R)`` is always valid and needs no eigenvalue solve on ``J``.
-        probes: random feasible points added to the curvature sample when ``modulus`` is measured.
+        modulus: the strong-convexity modulus of ``J`` over the box, which makes the bound a
+            certificate. ``None`` reads it off ``J``'s Hessian (see :func:`_objective_modulus`):
+            once at the plan where the model is linear, the Hessian then being one matrix, and
+            otherwise at the plan and ``probes`` random points, a sample that cannot certify. A
+            *smaller* modulus gives a *larger* bound and is never invalid (STEP 4d), so a
+            conservative one is the safe input; for a linear plant with positive semidefinite ``Q``
+            and ``Qf``, ``lambda_min(R)`` is always valid and needs no eigenvalue solve on ``J``.
+        probes: random feasible points added to the curvature sample when ``modulus`` is sampled.
 
     The three numbers to read together: :attr:`~PlanRegretBound.bound` is what the box certifies,
     :attr:`~PlanRegretBound.unconstrained_bound` is what Result 6 would have reported at the same
     plan, and :attr:`~PlanRegretBound.frank_wolfe_gap` is what survives if the modulus goes to zero.
-    ``ok`` is ``False`` -- and the bound ``inf`` -- exactly when the measured curvature is negative,
-    because then no convexity argument applies and a finite number would be a fabrication.
+    :attr:`~PlanRegretBound.status` says what the bound is: ``certified`` on a supplied modulus or
+    a linear model's, ``diagnostic`` on a sampled one, and ``refused`` -- the bound ``inf`` -- when
+    the modulus is negative, because then no convexity argument applies and a finite number would be
+    a fabrication.
 
     Raises:
         ValueError: if a supplied ``modulus`` is negative, which is not a curvature.
@@ -1411,12 +1465,14 @@ def plan_regret_bound(
         return total_cost(model, x0, us, dt, cost)
 
     gradient = jax.grad(objective)(actions)
-    mu = (
-        float(modulus)
-        if modulus is not None
-        else _objective_modulus(objective, actions, lo, hi, probes, seed)
-    )
-    source: ModulusSource = "supplied" if modulus is not None else "measured"
+    source: ModulusSource
+    sampled = modulus is None and not _quadratic(model)
+    if modulus is not None:
+        mu, source = float(modulus), "supplied"
+    else:
+        mu = _objective_modulus(objective, actions, lo, hi, probes if sampled else 0, seed)
+        source = "measured"
+    status: RegretStatus = "refused" if mu < 0.0 else ("diagnostic" if sampled else "certified")
 
     below, above = lo - actions, hi - actions  # the feasible moves, as offsets from the plan
     # max{-g d : d in [below, above]}: a line on an interval is largest at an endpoint, and both
@@ -1439,5 +1495,5 @@ def plan_regret_bound(
         gradient_norm=float(jnp.linalg.norm(gradient)),
         per_lever=per_lever if mu >= 0.0 else tuple(math.inf for _ in per_lever),
         pinned_actions=int(jnp.sum((certified <= 0.0) & (gradient != 0.0))),
-        ok=bool(mu >= 0.0),
+        status=status,
     )

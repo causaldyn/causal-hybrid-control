@@ -77,8 +77,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   [certificates](concepts/certificates.md).
 - **`certify_safety`.** Where along a finished plan a barrier's guarantee survives unmeasured
   confounding, and the largest Γ the whole plan tolerates.
-- **`plan_regret_bound`.** How far the plan's cost can be from the optimum, certified from its own
-  gradient.
+- **`plan_regret_bound`.** How far the plan's cost can be from the optimum on the planning model,
+  from its own gradient: a certificate on a linear model or a curvature the caller supplies, a
+  diagnostic where the curvature is sampled (`status`).
 - **The reachable tube.** [`chc.reachability`](api/reachability.md) computes the backward
   reachable tube under a partially identified effect.
 - **`evaluate_plan` and `certify_evaluation`.** They estimate what deploying a plan would cost,

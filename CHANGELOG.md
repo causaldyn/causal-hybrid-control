@@ -30,6 +30,19 @@ still change).
 
 ### Fixed
 
+- **`plan_regret_bound` certifies only on a curvature that holds over the box**, a defect since
+  0.6.0. It took the least Hessian eigenvalue at the plan and a few random points of the box as the
+  objective's modulus over the whole box, and reported the bound as certified: a pocket of negative
+  curvature between the samples, a feasible action costing 0.00845 beside a plan costing 1, read a
+  bound of 0. `PlanRegretBound.status` now says what the bound is: `certified` on a modulus the
+  caller supplies or one read off an objective the model's structure makes quadratic (a field
+  affine in the state and the action together), `diagnostic` on a modulus sampled at the plan and
+  random points of the box, and `refused`, with the bound `inf`, where the modulus is negative.
+  `PlanRegretBound.ok`, which said only that the modulus was not negative, is deprecated: it reads
+  `status != "refused"` with a `DeprecationWarning` until 0.14. `DecisionCertificate.regret_status`,
+  the JSON and the report carry the status; `prescribe`'s fitted channel reads the state, so its
+  bound is a diagnostic. The docstrings said the objective is quadratic for a plant affine in the
+  action; it needs a plant affine in the state too.
 - **`cvar_allocate` reads its gains on the curves**, a defect since 0.11.0. On S-shaped curves it
   read both a split's return and the reference's on the curves' envelopes from zero spend, so a
   split could report a gain in the worst share and lose to the reference on the curves: two Hill

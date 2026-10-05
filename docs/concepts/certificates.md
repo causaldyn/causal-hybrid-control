@@ -43,11 +43,17 @@ design record is
   Where two bounds tie, as at the midpoint of a two-sided one, `prescribe` audits each and reports
   the weaker `Γ*`: an upper bound on the joint ceiling, because each bound's is reached by its own
   best action and no single action need reach both.
-- **The optimality gap** — `plan_regret_bound` certifies how far a finished plan can be from the
-  best one its own box allows, from the plan's own gradient and with no optimum needed. It reads the
-  plan's actions, not the solver's internals, so it prices a plan that came from anywhere —
-  including one an operator edited by hand. When the measured curvature is negative no convexity
-  argument applies, and the bound is `inf` rather than a fabricated number.
+- **The optimality gap** — `plan_regret_bound` bounds how far a finished plan can be from the
+  best one its own box allows on the planning model, from the plan's own gradient and with no
+  optimum needed. It reads the plan's actions, not the solver's internals, so it prices a plan that
+  came from anywhere — including one an operator edited by hand. It is a certificate where the
+  curvature it divides by holds over the whole box: supplied by the caller, or read off a linear
+  model's objective, which is quadratic, so one Hessian is the box's (`status="certified"`).
+  Where the curvature is sampled at the plan and a few points of the box, the bound is a diagnostic
+  (`"diagnostic"`): a pocket of negative curvature between the samples can hide a much cheaper
+  plan. When the curvature read is negative no convexity argument applies, and the bound is `inf`
+  rather than a fabricated number (`"refused"`). `prescribe`'s fitted channel reads the state, so
+  its bound is a diagnostic.
 - **The regret guarantee** — [`chc.regret`](../api/regret.md) carries the LQ certainty-equivalence
   bound, quadratic in model error (Dean–Mania–Tu–Recht–Matni), and its extensions.
 

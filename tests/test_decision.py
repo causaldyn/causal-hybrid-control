@@ -494,9 +494,18 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
     assert np.allclose(payload["schedule"], np.asarray(result.plan.actions))
     assert payload["certificate"]["adjusted_for"] == ["demand"]
     assert payload["provenance"]["data_sha256"] == result.provenance.data_sha256
+    # the fitted channel reads the state, so the curvature behind the regret bound is a sample
+    assert payload["certificate"]["regret_status"] == "diagnostic"
+    assert result.certificate.regret_status == "diagnostic"
 
     report = result.report()
     assert "# Prescription for `supply`" in report
+    assert "- regret bound on the fitted model: " in report
+    assert (
+        report.split("- regret bound on the fitted model: ")[1]
+        .split("\n")[0]
+        .endswith(", diagnostic")
+    )
     assert "Trustworthy prefix: 15 steps" in report
     assert "- logger check: passed (p = " in report
     assert result.provenance.data_sha256[:16] in report
@@ -893,6 +902,8 @@ def test_every_decision_point_leaves_a_structured_record(caplog: pytest.LogCaptu
     plan = caplog.records[_events(caplog).index("plan")]
     assert getattr(plan, "rate_limited_levers", None) == []
     assert getattr(plan, "constraints_held", None) is False
+    certificate = caplog.records[_events(caplog).index("certificate")]
+    assert getattr(certificate, "regret_status", None) == "diagnostic"
 
 
 def test_the_unidentified_path_warns_rather_than_falling_silent(
