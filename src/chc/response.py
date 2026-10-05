@@ -459,6 +459,73 @@ def relax(model: Model) -> Model:
     return answer if relaxed else model
 
 
+def _touches(curve: Saturation, start: ArrayLike) -> Array:
+    """Where the chord from each point ``(z0, g(z0))`` of ``start``, in scales, touches the curve.
+
+    The tangency from the origin (:meth:`Saturation._standard_tangency`) from any start: the gap
+    ``g(z) - g(z0) - (z - z0) g'(z)`` has slope ``-(z - z0) g''(z)``, so it falls from 0 while the
+    curve is convex and rises once it is concave, and the touching point is its one root past the
+    inflection. The chord to it and the curve beyond are the concave envelope of the curve from
+    ``z0`` on. A start from the inflection on is its own touch, and so is every start on a curve
+    concave from zero.
+
+    Every start is bisected at once, to the least double where the gap is positive, as
+    :func:`_first_turned` closes on it. A bisection reads only the gap's sign, so the jump a curve
+    with an end to its support makes where it meets its ceiling is no trap for it: a gap that turns
+    only there touches at that corner.
+    """
+    inflection = curve._standard_inflection()
+    if inflection == 0.0:
+        return _real(start)
+    touch = _bisected_touches(curve, _real(start), _real(inflection), curve._support)
+    if not bool(jnp.all(jnp.isfinite(touch))):
+        raise RuntimeError(f"{curve!r}: no tangency within 2^64 times its inflection")
+    return touch
+
+
+@eqx.filter_jit
+def _bisected_touches(curve: Saturation, start: Array, inflection: Array, support: float) -> Array:
+    slope = jax.vmap(jax.grad(curve.standard))
+    below = start < inflection
+    base = curve.standard(start)
+
+    def gap(z: Array) -> Array:
+        # a start from the inflection on reads as turned everywhere, so both loops settle it at once
+        return jnp.where(below, curve.standard(z) - base - (z - start) * slope(z), 1.0)
+
+    bend = jnp.full_like(start, inflection)
+    if math.isinf(support):
+
+        def short(state: tuple[Array, Array]) -> Array:
+            high, doublings = state
+            return jnp.any(gap(high) <= 0.0) & (doublings < 64)
+
+        def widen(state: tuple[Array, Array]) -> tuple[Array, Array]:
+            high, doublings = state
+            return jnp.where(gap(high) <= 0.0, 2.0 * high, high), doublings + 1
+
+        high, _ = jax.lax.while_loop(short, widen, (2.0 * bend, jnp.asarray(0)))
+    else:
+        high = jnp.full_like(start, support)  # past its support the curve is flat at 1, and turned
+    found = gap(high) > 0.0
+
+    def unsettled(bracket: tuple[Array, Array]) -> Array:
+        low, high = bracket
+        middle = low + 0.5 * (high - low)
+        return jnp.any((middle != low) & (middle != high))
+
+    def halve(bracket: tuple[Array, Array]) -> tuple[Array, Array]:
+        low, high = bracket
+        middle = low + 0.5 * (high - low)
+        above = gap(middle) > 0.0
+        return jnp.where(above, low, middle), jnp.where(above, middle, high)
+
+    _, high = jax.lax.while_loop(unsettled, halve, (bend, high))
+    # where the convex stretch from the start is within rounding of none, the inflection
+    touch = jnp.where(gap(bend) >= 0.0, bend, high)
+    return jnp.where(below, jnp.where(found, touch, jnp.nan), start)
+
+
 class MichaelisMenten(Saturation):
     """``z / (1 + z)``: half the ceiling at ``K``. :class:`Hill` at slope 1."""
 

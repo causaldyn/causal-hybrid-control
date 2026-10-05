@@ -7,6 +7,26 @@ still change).
 
 ## [Unreleased]
 
+### Changed
+
+- **`allocate` plans S-shaped curves to the best split, by branch and bound.** It planned them on
+  their concave envelopes from zero spend, whose plan can fall well short on the curves: two Hill
+  curves of slope 3 at scales 1 and 1.01 and a budget of 1.6 were planned 1.27/0.33 for 0.705,
+  where all of it on the first returns 512/637, 0.804; a Hill and a logistic channel with carryover
+  and history returned 8.04 where 9.32 was there. The rates are now searched in boxes (Udell and
+  Boyd 2016): a box's bound is the bisection's plan on each period's envelope over the adstock the
+  box allows, the chord from its floor to where it touches the curve or to its cap, and the plan,
+  read on the curves, is a candidate; the box of the largest bound is cut first, at the rate of the
+  channel whose envelope stands furthest above its curve. The plan is the best to a share `1e-9`
+  of `Allocation.bound`, or as near as 500 boxes come. Each of the examples above closes in 5 to 7
+  boxes, and 30 Hill channels in 6 to 8. A box's envelopes also stop overvaluing a cap short of a
+  tangency: two Hill(3) channels capped at 1 were bounded by 0.815 where the best split returns
+  0.660, and now by 0.660. The touch from a start below the inflection is bisected for every
+  period at once, Maxima's root to `1e-14` (`validation/envelope_on_interval.mac`). Concave curves
+  are planned as before, by the same code. `budget_for`, `minimax_allocate`, `cvar_allocate` and
+  `allocate_geos` plan S-shaped curves on the envelopes from zero spend as before, so on them
+  `budget_for`'s plan is no longer what `allocate` returns at its budget (ADR 0051).
+
 ## [0.12.1] — 2026-10-05
 
 ### Added

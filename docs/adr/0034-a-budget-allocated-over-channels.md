@@ -1,6 +1,7 @@
 # ADR 0034 — A budget allocated over channels
 
-**Status:** proposed, 2026-09-30.
+**Status:** proposed, 2026-09-30. Amended 2026-10-05 by ADR 0051: `allocate` searches S-shaped
+curves by branch and bound, to the best split within a share `1e-9` of its bound.
 
 ## Context
 

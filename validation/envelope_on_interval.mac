@@ -1,0 +1,100 @@
+/* The concave envelope of an S-shaped curve on an interval [a, b] (chc.response, chc.allocation).
+
+   From a point (a, g(a)) below the inflection, the chord that touches the curve meets it where
+
+       gap_a(w) = g(w) - g(a) - (w - a) g'(w) = 0,   w past the inflection,
+
+   since gap_a' = -(w - a) g'': it falls from 0 at w = a while the curve is convex and rises once
+   it is concave, so the root past the inflection is the one touching point. The envelope on [a, b]
+   is that chord and the curve beyond w, or the chord to b where b comes first; the curve itself
+   where a is past the inflection. At a = 0 it is the envelope from the origin, g(t) = t g'(t).
+
+   STEP 1  Hill n = 3 from a = 1/2: the root, cleared of denominators, to 40 digits
+   STEP 2  Hill n = 2 from a = 1/4, and from a = 0, the tangency from the origin, sqrt(... ) = 1
+   STEP 3  the chord's slope is the curve's at the root, and the chord stays above the curve on
+           [a, w]: its least excess over 64 interior points is positive
+   STEP 4  the untied example of chc.allocation: two Hill curves of slope 3, scales 1 and 1.01, a
+           budget of 1.6 a period. All of it on the first returns 512/637, and no split does better:
+           the worth's derivative along the budget crosses 0 once inside, at the splits' least
+           worth (0.6696, near 0.661 on the first), so the best is an end, and the other end, 1.6
+           on the second, returns 0.7990
+   STEP 5  two more S-shaped families, where the root is transcendental: Weibull of shape 3 from
+           2/5 and the logistic of steepness 6, normalised to 0 at 0, from 1/2, each to 40 digits
+           by bf_find_root between the inflection and a point past the root, with the chord's
+           slope against the curve's there
+
+   Run: timeout 300 maxima --very-quiet -b validation/envelope_on_interval.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 40$
+ratprint : false$
+
+hill(z, n) := z^n/(1 + z^n)$
+slope(z, n) := ''(diff(hill(z, n), z))$
+
+touch(a, n) := block([w, cleared, roots, inflection],
+  inflection : ((n - 1)/(n + 1))^(1/n),
+  cleared : num(ratsimp(hill(w, n) - hill(a, n) - (w - a)*slope(w, n))),
+  roots : map(rhs, realroots(cleared, 10^-45)),
+  sublist(roots, lambda([r], r > inflection)))$
+
+print("=== STEP 1: Hill n = 3 from a = 1/2 ===")$
+block([w3],
+  w3 : touch(1/2, 3),
+  print("roots past the inflection:", map(lambda([r], bfloat(r)), w3)),
+  fpprec : 40,
+  print("w =", bfloat(first(w3))),
+  print("chord slope =", bfloat((hill(first(w3), 3) - hill(1/2, 3))/(first(w3) - 1/2))),
+  print("curve slope =", bfloat(slope(first(w3), 3))))$
+
+print("=== STEP 2: Hill n = 2 from a = 1/4 and from the origin ===")$
+block([w2, w0],
+  w2 : touch(1/4, 2),
+  w0 : touch(0, 2),
+  fpprec : 40,
+  print("from 1/4: w =", map(lambda([r], bfloat(r)), w2)),
+  print("from 0:   w =", map(lambda([r], bfloat(r)), w0), "(the tangency g = z g' of z^2/(1+z^2) is 1)"))$
+
+print("=== STEP 3: the chord touches and stays above the curve ===")$
+block([cases, a, n, w, m, least],
+  cases : [[1/2, 3], [1/4, 2], [1/10, 5], [0, 3]],
+  for c in cases do (
+    a : c[1], n : c[2], w : first(touch(a, n)),
+    m : (hill(w, n) - hill(a, n))/(w - a),
+    least : lmin(makelist(float(hill(a, n) + m*(z - a) - hill(z, n)),
+                          z, makelist(a + (w - a)*k/65, k, 1, 64))),
+    print("a =", a, "n =", n, "w =", float(w), "slope gap =", float(m - slope(w, n)),
+          "least interior excess =", least)))$
+
+print("=== STEP 4: the untied example ===")$
+block([x, worth, along, crossings],
+  worth : hill(x, 3) + hill((1.6b0 - x)/1.01b0, 3),
+  print("1.6 on the first:", rat(hill(8/5, 3)), "=", bfloat(hill(8/5, 3))),
+  print("1.6 on the second:", bfloat(hill(1.6b0/1.01b0, 3))),
+  along : diff(worth, x),
+  /* the split's interior optima are where the derivative along the budget is 0 */
+  crossings : sublist(makelist(bfloat(k*1.6b0/4000), k, 1, 3999),
+                      lambda([s], is(sign(float(subst(x = s, along))) #
+                                     sign(float(subst(x = s + 1.6b0/4000, along)))))),
+  print("sign changes of the derivative inside:", length(crossings)),
+  for s in crossings do print("  near", float(s), "worth", float(subst(x = s, worth))))$
+
+print("=== STEP 5: Weibull and the logistic, from a start below the inflection ===")$
+weibull(z) := 1 - exp(-z^3)$
+logistic(z) := (1/(1 + exp(-6*(z - 1))) - 1/(1 + exp(6)))*(1 + exp(-6))$
+block([cases, g, a, inflection, expression, gap, w, chord, slope_at, past],
+  fpprec : 40,
+  cases : [[weibull, 2/5, (2/3)^(1/3), 3], [logistic, 1/2, 1, 3]],
+  for c in cases do (
+    g : c[1], a : c[2], inflection : c[3], past : c[4],
+    expression : g(z),
+    gap : expression - g(a) - (z - a)*diff(expression, z),
+    if not (is(bfloat(subst(z = inflection, gap)) < 0) and is(bfloat(subst(z = past, gap)) > 0))
+      then error("no sign change between the inflection and", past),
+    w : bf_find_root(gap, z, bfloat(inflection), bfloat(past)),
+    chord : (bfloat(g(w)) - bfloat(g(a)))/(w - a),
+    slope_at : bfloat(subst(z = w, diff(expression, z))),
+    print(g, "from", a, ": w =", w),
+    print("  chord slope - curve slope =", chord - slope_at),
+    if abs(chord - slope_at) > 1b-30 then error("the chord does not touch at the root")))$

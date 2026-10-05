@@ -1,6 +1,7 @@
 # ADR 0050 — One channel inside its chord: S-curve plans take the vertex
 
-**Status:** accepted, 2026-10-04.
+**Status:** accepted, 2026-10-04. Amended 2026-10-05 by ADR 0051: the vertex is the plan of
+every box `allocate`'s search reads, not its answer.
 
 ## Context
 

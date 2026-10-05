@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc.allocation import allocate, minimax_allocate
+from chc.allocation import _on_envelopes, allocate, minimax_allocate
 from chc.response import (
     Channel,
     Exponential,
@@ -153,9 +153,10 @@ def test_a_single_reading_is_planned_as_allocate_plans_it():
 
 
 def test_an_s_curve_s_regret_is_its_envelope_s():
-    """On a Hill of slope 3 the reading's best is allocate's bound, on the envelope, and the
-    regret is measured there too: below the tangency, 100 * 2^(1/3), the envelope is the chord
-    from the origin to where the curve is 2/3, which the curve lies under."""
+    """On a Hill of slope 3 the reading's best is the bound of the plan on its envelope from zero
+    spend, not allocate's search, and the regret is measured there too: below the tangency,
+    100 * 2^(1/3), the envelope is the chord from the origin to where the curve is 2/3, which the
+    curve lies under."""
     readings = [
         (Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),
         (Channel(ONE, MichaelisMenten(60.0), 700.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),
@@ -168,9 +169,7 @@ def test_an_s_curve_s_regret_is_its_envelope_s():
         upper=np.full(2, 90.0),
         history=np.zeros((0, 2)),
     )
-    alone = allocate(
-        readings[0], 90.0, 1, lower=np.zeros(2), upper=np.full(2, 90.0), history=np.zeros((0, 2))
-    )
+    alone = _on_envelopes(readings[0], 90.0, 1, np.zeros(2), np.full(2, 90.0), np.zeros((0, 2)))
     assert plan.best[0] == pytest.approx(alone.bound, rel=1e-12)
     assert np.all(plan.regret >= -1e-9 * plan.best.max())
     hill, other = plan.spend

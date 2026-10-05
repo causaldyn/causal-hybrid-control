@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from scipy.optimize import minimize
 
-from chc.allocation import Totals, allocate, allocate_geos
+from chc.allocation import Totals, _on_envelopes, allocate, allocate_geos
 from chc.response import (
     Channel,
     DelayedAdstock,
@@ -349,15 +349,18 @@ def test_a_budget_a_hair_below_the_most_a_cap_allows_is_planned_exactly(short):
                 assert slope >= prices * (1 - 1e-10), (g, c)
 
 
-def test_an_s_curve_is_planned_on_its_envelope_as_allocate_plans_it():
+def test_an_s_curve_is_planned_on_its_envelope_as_allocate_plans_it_there():
     """The S-curve counterexample: a descent from zero stops at the greedy 225; on its envelope
     the plan reaches the best split, 1047.87, with no gap. With a budget short of the tangency the
-    envelope's plan runs on the chord, and the gap bounds its shortfall."""
+    envelope's plan runs on the chord, and the gap bounds its shortfall; :func:`allocate` searches
+    past it, the grid does not."""
     cells = ((Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),)
     for budget in (300.0, 90.0):
         box = {"lower": np.zeros((1, 2)), "upper": np.full((1, 2), budget)}
         plan = allocate_geos(cells, budget, 1, **box)
-        alone = allocate(cells[0], budget, 1, lower=np.zeros(2), upper=np.full(2, budget))
+        alone = _on_envelopes(
+            cells[0], budget, 1, np.zeros(2), np.full(2, budget), np.zeros((0, 2))
+        )
         np.testing.assert_allclose(plan.spend[0], alone.spend, rtol=1e-12, atol=1e-12)
         assert plan.worth == pytest.approx(alone.worth, rel=1e-12)
         assert plan.bound == pytest.approx(alone.bound, rel=1e-12)

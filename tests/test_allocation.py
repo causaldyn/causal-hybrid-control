@@ -5,19 +5,30 @@ tail as one spend series; the best plan against SciPy's general solver and a gri
 against the worth's own slope.
 """
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy.optimize import minimize, minimize_scalar
 
-from chc.allocation import ReturnTarget, allocate, budget_for
+from chc.allocation import (
+    ReturnTarget,
+    _bounded,
+    _on_envelopes,
+    _value,
+    _worths,
+    allocate,
+    budget_for,
+)
 from chc.response import (
     Channel,
     DelayedAdstock,
     Exponential,
     GeometricAdstock,
     Hill,
+    Logistic,
     MichaelisMenten,
     Power,
     Ricker,
@@ -158,11 +169,11 @@ def test_a_channel_without_carryover_on_a_curve_steep_at_zero_spend_is_planned()
     assert plan.spend[0] == pytest.approx(best.x, rel=1e-5)
 
 
-def test_an_s_curve_is_planned_on_its_envelope_and_the_gap_bounds_the_shortfall():
+def test_an_s_curve_is_planned_to_the_best_split_and_the_bound_closes_on_it():
     """The S-curve counterexample of chc.response's tests: from zero spend a descent stops at the
-    greedy 225; the plan on the envelope reaches the best split, 1047.87, with no gap, since the
-    best split spends past the tangency. With a budget short of the tangency the envelope's plan
-    runs on the chord, and the best split lies between its worth and its bound."""
+    greedy 225, and the best split, 1047.87, spends past the tangency. With a budget short of the
+    tangency the plan on the envelope from zero spend is the best split, all of it on the S-curve,
+    but its chord bounds the plan 54.6 above it; the envelope over the box closes the bound."""
     one = GeometricAdstock(0.0, length=1, normalized=False)
     channels = (Channel(one, Hill(100.0, 3.0), 1000.0), Channel(one, MichaelisMenten(100.0), 300.0))
 
@@ -174,23 +185,149 @@ def test_an_s_curve_is_planned_on_its_envelope_and_the_gap_bounds_the_shortfall(
         return float(revenue.max())
 
     for budget in (300.0, 90.0):
-        plan = allocate(
-            channels,
-            budget,
-            1,
-            lower=np.zeros(2),
-            upper=np.full(2, budget),
-            history=np.zeros((0, 2)),
-        )
-        assert plan.spend.sum() == pytest.approx(budget, rel=1e-13)
+        box = {"lower": np.zeros(2), "upper": np.full(2, budget), "history": np.zeros((0, 2))}
+        plan = allocate(channels, budget, 1, **box)
+        assert plan.spend.sum() == pytest.approx(budget, rel=1e-13, abs=0.0)
         optimum = best(budget)
-        assert plan.worth <= optimum * (1 + 1e-9)
-        assert plan.bound >= optimum * (1 - 1e-9)
+        assert plan.worth == pytest.approx(optimum, rel=1e-9, abs=0.0)
+        assert plan.bound >= optimum * (1 - 1e-12)
+        assert plan.bound - plan.worth <= 1e-9 * plan.bound
         if budget == 300.0:
             assert plan.worth == pytest.approx(1047.867, abs=1e-3)
-            assert plan.bound - plan.worth <= 1e-9 * plan.worth
         else:
-            assert plan.bound - plan.worth > 1e-3
+            envelope = _on_envelopes(channels, budget, 1, *box.values())
+            assert envelope.bound - envelope.worth > 50.0
+
+
+def test_the_untied_example_is_planned_all_on_the_first_channel():
+    """Two Hill curves of slope 3 at scales 1 and 1.01 and a budget of 1.6: on the envelopes the
+    plan is 1.27/0.33 for 0.705; all of it on the first returns 512/637, and no split does better
+    (validation/envelope_on_interval.mac, STEP 4)."""
+    one = GeometricAdstock(0.0, length=1, normalized=False)
+    channels = (Channel(one, Hill(1.0, 3.0), 1.0), Channel(one, Hill(1.01, 3.0), 1.0))
+    plan = allocate(channels, 1.6, 1, lower=np.zeros(2), upper=np.full(2, 1.6))
+    np.testing.assert_array_equal(plan.spend, [1.6, 0.0])
+    assert plan.worth == pytest.approx(512 / 637, rel=1e-15, abs=0.0)
+    assert plan.bound - plan.worth <= 1e-9 * plan.bound
+    envelope = _on_envelopes(channels, 1.6, 1, np.zeros(2), np.full(2, 1.6), np.zeros((0, 2)))
+    assert envelope.worth == pytest.approx(0.705, abs=5e-4)
+
+
+def test_a_cap_short_of_the_tangency_is_bounded_on_its_own_interval():
+    """Capped at 1, short of its tangency 2^(1/3), a Hill curve of slope 3 is bounded by the chord
+    to its cap, not by the one from the origin to the tangency, which stands above the cap's value:
+    the envelopes from zero spend bound the plan by 0.815, and the best split returns 0.660."""
+    one = GeometricAdstock(0.0, length=1, normalized=False)
+    channels = (Channel(one, Hill(1.0, 3.0), 1.0), Channel(one, Hill(1.0, 3.0), 0.9))
+    box = (np.zeros(2), np.ones(2), np.zeros((0, 2)))
+    plan = allocate(channels, 1.6, 1, lower=box[0], upper=box[1], history=box[2])
+    np.testing.assert_allclose(plan.spend, [1.0, 0.6], rtol=1e-12)
+    assert plan.worth == pytest.approx(0.5 + 0.9 * 0.216 / 1.216, rel=1e-14, abs=0.0)
+    assert plan.bound - plan.worth <= 1e-9 * plan.bound
+    assert _on_envelopes(channels, 1.6, 1, *box).bound > plan.bound + 0.15
+
+
+def _brute(channels, budget, periods, lower, upper, history, points=4001) -> float:
+    """The best split of two channels, on a grid of the first's rate and polished between its
+    neighbours, each split's worth from the channels run over history, plan and tail."""
+    rate = budget / periods
+
+    def worth(first):
+        total = 0.0
+        for column, (channel, spend) in enumerate(
+            zip(channels, (first, rate - first), strict=True)
+        ):
+            tail = jnp.zeros(channel.kernel.length - 1)
+            series = jnp.concatenate([history[:, column], jnp.full(periods, spend), tail])
+            total += jnp.sum(channel(series)[history.shape[0] :])
+        return total
+
+    low, high = max(lower[0], rate - upper[1]), min(upper[0], rate - lower[1])
+    grid = np.linspace(low, high, points)
+    values = np.asarray(jax.vmap(worth)(jnp.asarray(grid)))
+    at = int(np.argmax(values))
+    polished = minimize_scalar(
+        lambda first: -float(worth(first)),
+        bounds=(grid[max(at - 1, 0)], grid[min(at + 1, points - 1)]),
+        method="bounded",
+        options={"xatol": 1e-12},
+    )
+    return max(float(values[at]), -float(polished.fun))
+
+
+@pytest.mark.parametrize(
+    "channels",
+    [
+        (
+            Channel(GeometricAdstock(0.6, length=6, normalized=True), Hill(1.0, 3.0), 1.0),
+            Channel(GeometricAdstock(0.3, length=4, normalized=False), Logistic(1.2, 6.0), 0.7),
+        ),
+        (
+            Channel(GeometricAdstock(0.5, length=5, normalized=True), Weibull(0.8, 3.0), 0.8),
+            Channel(GeometricAdstock(0.0, length=1, normalized=False), MichaelisMenten(1.0), 0.6),
+        ),
+    ],
+    ids=["hill-logistic", "weibull-concave"],
+)
+def test_s_curves_with_carryover_and_history_are_planned_to_the_best_split(channels):
+    """A longer kernel runs each period at its own adstock, so each period's envelope is over its
+    own interval; the plan is still the best split, against a grid on the channels themselves.
+    Where a chord the cap cut short read the curve's slope at the cap, the Weibull case returned
+    11.344346 and called it the bound, where 11.345382 is there."""
+    history = np.random.default_rng(7).gamma(2.0, 0.3, size=(8, 2))
+    lower, upper, periods = np.array([0.0, 0.2]), np.full(2, 2.5), 13
+    budget = periods * 1.4
+    plan = allocate(channels, budget, periods, lower=lower, upper=upper, history=history)
+    best = _brute(channels, budget, periods, lower, upper, history)
+    assert plan.worth == pytest.approx(_worth(channels, plan.spend, history), rel=1e-12)
+    assert plan.worth >= best * (1 - 1e-9)
+    assert plan.bound >= best * (1 - 1e-12)
+    assert plan.bound - plan.worth <= 1e-9 * plan.bound
+
+
+def test_a_chord_the_cap_cuts_short_keeps_its_own_slope_at_the_cap():
+    """With carryover, each period's chord in this box is cut short by the cap. Read on the curve at
+    the cap, the envelope's slope jumped to the curve's own there, steeper than the chord's, so the
+    bisection held the channel at its cap at prices where the chords say less: the plan returned
+    1.9622452274 and called it the bound, 2.2e-7 below the best split. A case found among 40 random
+    ones, the only one of them it moved."""
+    channels = (
+        Channel(
+            GeometricAdstock(0.3606111610980326, length=4, normalized=True),
+            Hill(1.0, 3.573927321363234),
+            0.9953053039431363,
+        ),
+        Channel(
+            GeometricAdstock(0.0, length=1, normalized=False),
+            MichaelisMenten(0.6458541751309267),
+            0.8153814087978317,
+        ),
+    )
+    spent = [1.4299767185967542, 0.5263948002104396, 0.8562372506316906, 0.5626505532446576]
+    spent += [0.36167322263551166, 0.1545685893070136, 1.370787027095805, 0.4383762020156633]
+    history = np.column_stack([spent, np.zeros(8)])
+    lower, upper, periods = np.zeros(2), np.array([1.2119759132759984, 3.0]), 3
+    budget = 3.639370652709662
+    plan = allocate(channels, budget, periods, lower=lower, upper=upper, history=history)
+    best = _brute(channels, budget, periods, lower, upper, history)
+    assert plan.worth >= best * (1 - 1e-9)
+    assert plan.bound >= best * (1 - 1e-12)
+    assert plan.bound - plan.worth <= 1e-9 * plan.bound
+
+
+def test_a_box_s_envelope_bounds_the_worth_meets_it_at_both_ends_and_is_concave():
+    channel = Channel(GeometricAdstock(0.6, length=6, normalized=True), Hill(1.0, 4.0), 2.0)
+    history = np.random.default_rng(1).gamma(2.0, 0.2, size=(5, 1))
+    (worth,) = _worths((channel,), history, 9)
+    for low, high in ((0.0, 3.0), (0.4, 0.9), (1.3, 1.31), (2.0, 3.0)):
+        bounded = _bounded(worth, low, high)
+        rates = np.linspace(low, high, 401)
+        above = np.array([_value(bounded, r) for r in rates])
+        on = np.array([_value(worth, r) for r in rates])
+        assert np.all(above >= on - 1e-12)
+        assert above[0] == pytest.approx(on[0], rel=1e-14, abs=0.0)
+        assert above[-1] == pytest.approx(on[-1], rel=1e-14, abs=0.0)
+        assert np.all(np.diff(above, 2) <= 1e-12)
 
 
 def _equal_s_curves(slope: float, copies: int) -> tuple[Channel, ...]:
@@ -205,14 +342,42 @@ def test_equal_s_curves_leave_at_most_one_channel_inside_its_chord(slope, copies
     """Equal curves jump at one price on their envelopes, where every split of the jump is best
     there. Moved together, two equal Hill curves of slope 3 at 1.6 split 0.8/0.8 for 0.677, both
     inside their chords; filled one at a time, at most one channel is, so the gap is at most one
-    curve's nonconvexity (Shapley and Folkman's lemma for one constraint)."""
+    curve's nonconvexity (Shapley and Folkman's lemma for one constraint). The goals and the splits
+    for several readings plan on these envelopes, and the search starts from them."""
     channels = _equal_s_curves(slope, copies)
-    plan = allocate(channels, budget, 1, lower=np.zeros(copies), upper=np.full(copies, budget))
+    plan = _on_envelopes(
+        channels, budget, 1, np.zeros(copies), np.full(copies, budget), np.zeros((0, copies))
+    )
     touch = channels[0].curve.tangency()
     inside = (plan.spend > 1e-12) & (plan.spend < touch * (1 - 1e-9))
     assert inside.sum() <= 1
     assert plan.spend.sum() == pytest.approx(budget, rel=1e-13, abs=0.0)
     assert plan.bound - plan.worth <= channels[0].curve.nonconvexity() * (1 + 1e-9)
+
+
+@pytest.mark.parametrize(
+    ("slope", "copies", "budget"), [(3.0, 2, 1.6), (2.0, 2, 1.2), (3.0, 3, 2.4), (5.0, 4, 3.0)]
+)
+def test_equal_s_curves_are_planned_to_the_best_split(slope, copies, budget):
+    """Three Hill curves of slope 3 at 2.4 split 1.2/1.2/0 for 1.267, two of them inside their
+    chords but past the bend; the envelopes' vertex, 1.26/1.14/0, returns 1.264. Against every
+    split on a grid of steps of budget / 120 over the simplex."""
+    channels = _equal_s_curves(slope, copies)
+    plan = allocate(channels, budget, 1, lower=np.zeros(copies), upper=np.full(copies, budget))
+    steps = 120
+    shares = np.stack(
+        np.meshgrid(*[np.arange(steps + 1)] * (copies - 1), indexing="ij"), axis=-1
+    ).reshape(-1, copies - 1)
+    shares = shares[shares.sum(axis=1) <= steps]
+    split = np.concatenate([shares, steps - shares.sum(axis=1, keepdims=True)], axis=1)
+    z = split * budget / steps
+    best = float((z**slope / (1.0 + z**slope)).sum(axis=1).max())
+    assert plan.worth >= best * (1 - 1e-12)
+    assert plan.bound - plan.worth <= 1e-9 * plan.bound
+    envelope = _on_envelopes(
+        channels, budget, 1, np.zeros(copies), np.full(copies, budget), np.zeros((0, copies))
+    )
+    assert plan.worth >= envelope.worth * (1 - 1e-12)
 
 
 def test_a_goal_on_equal_s_curves_is_met_with_at_most_one_channel_inside_its_chord():
@@ -244,8 +409,9 @@ _S_CURVE = st.tuples(
 )
 def test_the_gap_on_s_curves_is_at_most_one_channels_nonconvexity(curves, copies, periods, share):
     """Before any plan: with kernels of length one, floors at zero and caps past the tangencies, at
-    most one channel is left inside its chord, so the gap is at most its excess there. Each curve
-    comes ``copies`` times, so ties are drawn as often as not."""
+    most one channel is left inside its chord on the envelopes, so their plan's gap is at most its
+    excess there, and the search, which starts from it, closes the gap. Each curve comes ``copies``
+    times, so ties are drawn as often as not."""
     one = GeometricAdstock(0.0, length=1, normalized=False)
     channels = tuple(
         Channel(one, family(scale, shape), coefficient)
@@ -254,12 +420,17 @@ def test_the_gap_on_s_curves_is_at_most_one_channels_nonconvexity(curves, copies
     )
     touches = np.array([c.curve.tangency() for c in channels])
     budget = periods * share * float(touches.sum())
+    lower = np.zeros(len(channels))
     upper = np.full(len(channels), 2.0 * max(budget / periods, float(touches.max())))
-    plan = allocate(channels, budget, periods, lower=np.zeros(len(channels)), upper=upper)
-    inside = (plan.spend > 1e-12 * touches) & (plan.spend < touches * (1 - 1e-9))
+    envelope = _on_envelopes(channels, budget, periods, lower, upper, np.zeros((0, len(channels))))
+    inside = (envelope.spend > 1e-12 * touches) & (envelope.spend < touches * (1 - 1e-9))
     assert inside.sum() <= 1
     most = max(periods * float(c.coefficient) * c.curve.nonconvexity() for c in channels)
-    assert plan.bound - plan.worth <= most * (1 + 1e-9) + 1e-12
+    assert envelope.bound - envelope.worth <= most * (1 + 1e-9) + 1e-12
+    plan = allocate(channels, budget, periods, lower=lower, upper=upper)
+    assert plan.worth >= envelope.worth - 1e-9 * envelope.bound
+    assert plan.bound <= envelope.bound * (1 + 1e-12)
+    assert plan.bound - plan.worth <= 1e-9 * envelope.bound
 
 
 def test_a_change_of_currency_moves_the_spend_and_the_price_and_leaves_the_worth():

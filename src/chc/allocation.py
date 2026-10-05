@@ -16,21 +16,30 @@ box, and ``mu`` is where the rates spend the budget. The price moves every rate 
 bisection on it is exact; where a channel is linear its rate jumps at one price, and the plan
 spends the last of the budget on the rates either side of it, both of which are best there.
 
-**An S-shaped curve is planned on its envelope.** Where a curve starts convex, the rates are the
-plan on its concave envelope (:class:`chc.response.Envelope`), whose return bounds any plan's on
-the curve: :attr:`Allocation.bound` is that best, and ``bound - worth`` bounds how far the plan is
-from the best on the true curves. On concave curves the two are one number. Rates that jump at one
-price, on chords of one slope, are filled one at a time, so at most one channel is left inside its
-chord, where the curve is below the envelope. With kernels of length one, floors at zero and caps
-past the tangencies, that bounds the gap before any plan is made: ``bound - worth`` is at most the
-largest ``periods * coefficient * nonconvexity`` (:meth:`chc.response.Saturation.nonconvexity`),
-Shapley and Folkman's lemma for one constraint (Aubin and Ekeland 1976; Udell and Boyd 2016). It
-is all but reached: four equal Hill curves of slope 3 at three scales leave a gap of 0.1544
-against 0.1547.
+**An S-shaped curve is planned by branch and bound.** Where a curve starts convex the worth is not
+concave, and the bisection's plan on each curve's concave envelope (:class:`chc.response.Envelope`)
+returns less on the curves than the best: two Hill curves of slope 3 and scales 1 and 1.01 at a
+budget of 1.6 are planned 1.27/0.33 for 0.705 there, where 1.6 on the first returns 512/637, 0.804.
+So the rates are searched in boxes (Udell and Boyd 2016). A box of a channel's rate is an interval
+of each period's adstock, and the curve's envelope over that interval is the chord from its floor
+to where it touches the curve, or to its cap where that comes first, and the curve beyond: concave
+in the rate, above the worth, and equal to it at both ends. The bisection on those envelopes bounds
+every plan in the box, and its plan, read on the curves, is a plan. The box of the largest bound
+is cut first, on the channel whose envelope stands furthest above its curve at the plan, at its
+rate, where both halves' envelopes meet the curve. :attr:`Allocation.bound` is the largest bound
+left when every bound is within a share ``1e-9`` of the first box's of the best plan's worth, or
+after 500 boxes; on concave curves it is the worth. Rates that jump at one price, on chords of one
+slope, are filled one at a time, so at most one channel is left inside its chord, where the curve
+is below the envelope. With kernels of length one, floors at zero and caps past the tangencies,
+that bounds the gap of the first box before any is cut: the largest
+``periods * coefficient * nonconvexity`` (:meth:`chc.response.Saturation.nonconvexity`), Shapley
+and Folkman's lemma for one constraint (Aubin and Ekeland 1976; Udell and Boyd 2016). It is all but
+reached: four equal Hill curves of slope 3 at three scales leave a gap of 0.1544 against 0.1547.
 
 **The price** is the budget's shadow price on the planned channels: the return one more currency
 unit of budget buys, spread the way the plan spends it. It is where the channels running inside
-their boxes meet; a channel at its cap returns more a unit and one at its floor less.
+their boxes meet; a channel at its cap returns more a unit and one at its floor less. On S-shaped
+curves it is read on the envelopes of the box the plan was found in.
 
 **A goal in place of a budget.** :func:`budget_for` finds the budget that meets a goal, and plans
 it: the least budget that gains a return (:class:`ReturnTarget`), the budget at which one more unit
@@ -97,15 +106,21 @@ HONEST SCOPE:
   the tail further up the curve, so a long kernel's tail is valued at its most.
 * :class:`chc.response.Ricker` is not monotone, and a negative coefficient turns a concave curve
   convex; the bisection proves nothing for either, and both are refused.
-* On an S-shaped curve a goal is met on the path of the envelope's plans, the ones :func:`allocate`
-  makes, and read on the true curves. The gain still rises along it, so a return target is the
-  least budget of those plans, but a plan off the path may meet it for less; and a target return on
-  ad spend is a budget where the average crosses the target, not proved the most.
-* The plan on the envelopes is not the best on the curves, only within ``bound - worth`` of it:
-  two Hill curves of slope 3 and scales 1 and 1.01 at a budget of 1.6 are planned at 1.27/0.33 for
-  0.705, where 1.6 on the first returns 0.804. The bound before planning holds only as stated
-  above: a longer kernel runs each period at its own adstock, and a floor or a cap inside a chord
-  holds its channel there, each with an excess of its own.
+* On an S-shaped curve a goal is met on the path of the plans on the envelopes from zero spend, and
+  read on the true curves; its plan is that path's, not :func:`allocate`'s. The gain still rises
+  along it, so a return target is the least budget of those plans, but a plan off the path,
+  :func:`allocate`'s among them, may meet it for less; and a target return on ad spend is a budget
+  where the average crosses the target, not proved the most.
+* On S-shaped curves :func:`allocate`'s plan is the best only to the share ``1e-9`` of its bound,
+  or as near as 500 boxes come. Sums of S-shaped curves under a budget are NP-hard to plan (Udell
+  and Boyd 2016), so nothing short of that cap bounds the count of boxes, and many channels near
+  their thresholds at once can reach it; the gap is then reported as it stands. Each box costs one
+  bisection of the price, as a plan on concave curves does. The bound on the first box's gap holds
+  only as stated above: a longer kernel runs each period at its own adstock, and a floor or a cap
+  inside a chord holds its channel there, each with an excess of its own.
+* :func:`minimax_allocate`, :func:`cvar_allocate`, :func:`allocate_geos` and the goals plan S-shaped
+  curves on their envelopes from zero spend, unsearched, and their plans can fall short on the
+  curves by as much as the envelopes stand above them.
 * A split for several readings is robust to the readings it is given and to no other: it hedges
   between the families the tests could not tell apart, not against one none of them is. On an
   S-shaped curve the regret is the envelope's.
@@ -136,6 +151,7 @@ HONEST SCOPE:
 
 from __future__ import annotations
 
+import heapq
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -149,7 +165,7 @@ from jax.typing import ArrayLike
 from scipy import sparse
 from scipy.optimize import brentq, linprog
 
-from chc.response import Channel, Logarithmic, Power, Saturation, relax
+from chc.response import Channel, Logarithmic, Power, Saturation, _touches, relax
 
 __all__ = [
     "Allocation",
@@ -175,6 +191,9 @@ _EPS = float(np.finfo(float).eps)
 # the cutting planes stop when the worst regret is this share of the largest best return above
 # their bound, or after this many rounds, the gap then reported as it stands
 _GAP, _ROUNDS = 1e-9, 500
+# the branch-and-bound on S-shaped curves stops when every bound left is within that share of the
+# first of the best plan's worth, or after this many nodes, the gap then reported as it stands
+_NODES = 500
 
 
 @dataclass(frozen=True)
@@ -184,10 +203,12 @@ class Allocation:
     Attributes:
         spend: ``(channels,)`` spend a period, in the budget's currency.
         worth: the channels' return on the plan over its periods and each kernel's length after.
-        bound: the most any plan in the box at the budget returns on the channels' concave
-            envelopes; ``bound - worth`` bounds the plan's shortfall from the best on the channels,
-            and is ``0`` when every curve is concave.
-        price: the return on one more currency unit of budget, on the envelopes.
+        bound: no plan in the box at the budget returns more on the channels; ``bound - worth``
+            bounds the plan's shortfall from the best, and is ``0`` when every curve is concave. On
+            S-shaped curves it is the largest bound :func:`allocate`'s search left, and for a goal
+            the best return on the envelopes from zero spend.
+        price: the return on one more currency unit of budget, on the envelopes the plan was found
+            on.
         budget: what the plan spends over its periods.
         idle: what the channels return over the same periods with nothing spent in the plan, the
             history's carryover alone.
@@ -417,6 +438,54 @@ class _Worth(eqx.Module):
         )
 
 
+class _Bounded(_Worth):
+    """A channel's worth bounded from above over a box of its rate: each period's curve replaced by
+    its concave envelope over the adstock the box allows there (:func:`_bounded`)."""
+
+    floor: Array  # each period's adstock at the box's floor, in the curve's scales
+    corner: Array  # where each period's chord gives way to the curve, in the curve's scales
+    base: Array  # the curve at the floor
+    rise: Array  # the chord's slope, in the curve's scales
+
+    def __call__(self, rate: Array) -> Array:
+        curve = self.channel.curve
+        z = (self.carry + rate * self.reach) / curve.scale
+        chord = self.base + (z - self.floor) * self.rise
+        return self.channel.coefficient * jnp.sum(
+            jnp.where(z <= self.corner, chord, curve.standard(z))
+        )
+
+
+def _bounded(worth: _Worth, low: float, high: float) -> _Worth:
+    """``worth`` bounded from above over ``[low, high]`` of its rate, or ``worth`` itself where its
+    curve is concave from zero.
+
+    A rate in the box leaves each period's adstock between its values at the two ends, and on that
+    interval the curve's concave envelope is the chord from the floor to where it touches the curve
+    (:func:`chc.response._touches`), or to the cap where that comes first, and the curve beyond.
+    Each period's envelope is concave in the rate, so their sum is, and it meets the worth at both
+    ends of the box, so a box split at a rate is bounded tightly there on both sides.
+    """
+    curve = worth.channel.curve
+    if not (isinstance(curve, Saturation) and curve._standard_inflection() > 0.0):
+        return worth
+    floor = (worth.carry + low * worth.reach) / curve.scale
+    cap = (worth.carry + high * worth.reach) / curve.scale
+    touch = _touches(curve, floor)
+    end = jnp.minimum(touch, cap)
+    straight = end > floor
+    base = curve.standard(floor)
+    rise = jnp.where(
+        straight, (curve.standard(end) - base) / jnp.where(straight, end - floor, 1.0), 0.0
+    )
+    # A chord that ends at the touch meets the curve there with the curve's slope, so either side
+    # may read a rate that lands on it. One cut short by the cap is the whole box's envelope: read
+    # on the curve at the cap, the slope would jump to the curve's own, steeper than the chord's,
+    # and a rate that lands an ulp either side of the cap would read either.
+    corner = jnp.where(straight, jnp.where(touch < cap, touch, jnp.inf), -jnp.inf)
+    return _Bounded(worth.channel, worth.carry, worth.reach, floor, corner, base, rise)
+
+
 @eqx.filter_jit
 def _value_and_slope(worth: _Worth, rate: Array) -> tuple[Array, Array]:
     return jax.value_and_grad(worth)(rate)
@@ -534,6 +603,9 @@ def allocate(
 ) -> Allocation:
     """Spend ``budget`` over ``periods`` at one rate a period for each channel, for the most return.
 
+    Exact where every curve is concave; on S-shaped curves the best to a share ``1e-9`` of
+    :attr:`Allocation.bound`, by branch and bound (see the module).
+
     Args:
         channels: the channels, each read as given.
         budget: what the plan spends over its periods, every channel together.
@@ -551,27 +623,50 @@ def allocate(
             negative end, or a budget the box cannot spend over the periods.
     """
     lower_rates, upper_rates, spent = _inputs(channels, periods, lower, upper, history)
+    budget = _spendable(budget, periods, lower_rates, upper_rates)
+    given = tuple(channels)
+    if relax(given) is given:
+        return _on_envelopes(given, budget, periods, lower_rates, upper_rates, spent)
+    worths = _worths(given, spent, periods)
+    spend, worth, bound, price = _branch_and_bound(
+        worths, lower_rates, upper_rates, periods, budget / periods
+    )
+    return Allocation(
+        spend=spend,
+        worth=worth,
+        bound=bound,
+        price=price,
+        budget=budget,
+        idle=sum(_value(w, 0.0) for w in worths),
+    )
+
+
+def _spendable(budget: float, periods: int, lower: np.ndarray, upper: np.ndarray) -> float:
     budget = float(budget)
-    least, most = periods * float(lower_rates.sum()), periods * float(upper_rates.sum())
+    least, most = periods * float(lower.sum()), periods * float(upper.sum())
     if not (np.isfinite(budget) and least <= budget <= most):
         raise ValueError(
             f"a budget of {budget} is outside what the box spends over {periods} periods, "
             f"[{least}, {most}]"
         )
-    given = tuple(channels)
-    relaxed = relax(given)
-    envelopes = _worths(relaxed, spent, periods)
-    target = budget / periods
+    return budget
+
+
+def _split(
+    envelopes: Sequence[_Worth], lower: np.ndarray, upper: np.ndarray, periods: int, target: float
+) -> tuple[np.ndarray, float]:
+    """The rates in the box that spend ``target`` a period where every concave worth's slope meets
+    ``periods`` times one price or presses on an end, and that price."""
 
     def rates(price: float) -> np.ndarray:
-        return _rates(envelopes, lower_rates, upper_rates, periods, price)
+        return _rates(envelopes, lower, upper, periods, price)
 
     # Every rate falls as the price rises. At no price any rate is as good as its cap, since no
     # slope is negative; at the steepest slope the floors allow, every channel sits at its floor.
     # So the caps overspend and the floors underspend, and the bisection keeps it that way.
-    cheap, many = 0.0, upper_rates
-    dear = max(0.0, *(_slope(w, low) for w, low in zip(envelopes, lower_rates, strict=True)))
-    dear, few = dear / periods, lower_rates
+    cheap, many = 0.0, upper
+    dear = max(0.0, *(_slope(w, low) for w, low in zip(envelopes, lower, strict=True)))
+    dear, few = dear / periods, lower
     tolerance = 4 * _EPS * dear
     while dear - cheap > tolerance:
         middle = 0.5 * (cheap + dear)
@@ -582,7 +677,22 @@ def allocate(
             few, dear = at, middle
     # both ends are best at a price within rounding of the other's, and so is any mix of them: the
     # one that spends the budget exactly is the plan, and it matters where a linear rate jumps
-    spend = np.clip(_fill(few, many, target - float(few.sum())), lower_rates, upper_rates)
+    return np.clip(_fill(few, many, target - float(few.sum())), lower, upper), 0.5 * (cheap + dear)
+
+
+def _on_envelopes(
+    given: tuple[Channel, ...],
+    budget: float,
+    periods: int,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    spent: np.ndarray,
+) -> Allocation:
+    """The plan on the curves' envelopes from zero spend (:func:`chc.response.relax`), with what it
+    returns on the curves: :func:`allocate`'s own where every curve is concave."""
+    relaxed = relax(given)
+    envelopes = _worths(relaxed, spent, periods)
+    spend, price = _split(envelopes, lower, upper, periods, budget / periods)
     bound = sum(_value(w, rate) for w, rate in zip(envelopes, spend, strict=True))
     worths = envelopes if relaxed is given else _worths(given, spent, periods)
     worth = sum(_value(w, rate) for w, rate in zip(worths, spend, strict=True))
@@ -590,10 +700,64 @@ def allocate(
         spend=spend,
         worth=worth,
         bound=bound,
-        price=0.5 * (cheap + dear),
+        price=price,
         budget=budget,
         idle=sum(_value(w, 0.0) for w in worths),
     )
+
+
+def _branch_and_bound(
+    worths: tuple[_Worth, ...], lower: np.ndarray, upper: np.ndarray, periods: int, target: float
+) -> tuple[np.ndarray, float, float, float]:
+    """The best split of ``target`` a period on the curves, its worth, a bound on every split's, and
+    its price: Udell and Boyd's (2016) branch-and-bound for sums of S-shaped functions.
+
+    A node is a box of the rates. Its bound is the split on each channel's envelope over the box
+    (:func:`_bounded`), which no split in the box beats on the curves, and that split, read on the
+    curves, is a plan. The node of the largest bound is split first, on the channel whose envelope
+    stands furthest above its curve at the split, at its rate there, or halfway along its interval
+    where the rate is an end of it; the envelopes of both halves meet the curve at the cut. Nodes
+    whose bound is within the share ``_GAP`` of the first node's of the best plan's worth are
+    settled, and the bound returned is the largest left or settled.
+    """
+
+    def solve(low: np.ndarray, high: np.ndarray, bounded: tuple[_Worth, ...]):
+        spend, price = _split(bounded, low, high, periods, target)
+        tops = np.array([_value(b, rate) for b, rate in zip(bounded, spend, strict=True)])
+        values = np.array([_value(w, rate) for w, rate in zip(worths, spend, strict=True)])
+        return spend, price, float(tops.sum()), float(values.sum()), tops - values
+
+    bounded = tuple(_bounded(w, a, b) for w, a, b in zip(worths, lower, upper, strict=True))
+    spend, price, bound, worth, gaps = solve(lower, upper, bounded)
+    best = (worth, spend, price)
+    tolerance = _GAP * (abs(bound) or 1.0)
+    heap = [(-bound, 0, lower, upper, bounded, spend, gaps)]
+    settled, nodes = -np.inf, 1
+    while heap and -heap[0][0] - best[0] > tolerance and nodes < _NODES:
+        _, _, low, high, bounded, spend, gaps = heapq.heappop(heap)
+        cut_at = int(np.argmax(gaps))
+        a, b = low[cut_at], high[cut_at]
+        cut = spend[cut_at] if a < spend[cut_at] < b else a + 0.5 * (b - a)
+        for floor, cap in ((a, cut), (cut, b)):
+            child_low, child_high = low.copy(), high.copy()
+            child_low[cut_at], child_high[cut_at] = floor, cap
+            if not float(child_low.sum()) <= target <= float(child_high.sum()):
+                continue  # no split of the budget fits this half
+            child = list(bounded)
+            child[cut_at] = _bounded(worths[cut_at], floor, cap)
+            rates, at, top, value, excess = solve(child_low, child_high, tuple(child))
+            nodes += 1
+            if value > best[0]:
+                best = (value, rates, at)
+            if top - best[0] > tolerance:
+                heapq.heappush(
+                    heap, (-top, nodes, child_low, child_high, tuple(child), rates, excess)
+                )
+            else:
+                settled = max(settled, top)
+    worth, spend, price = best
+    left = -heap[0][0] if heap else -np.inf
+    return spend, worth, max(worth, settled, left), price
 
 
 def _cross(
@@ -647,7 +811,8 @@ def budget_for(
     upper: ArrayLike,
     history: ArrayLike | None = None,
 ) -> Allocation:
-    """The budget that meets ``goal``, and the plan :func:`allocate` makes with it.
+    """The budget that meets ``goal``, and the plan :func:`allocate` makes with it where every
+    curve is concave; on S-shaped curves, the plan on their envelopes from zero spend.
 
     A plan's gain is :attr:`Allocation.gain`, what its spend adds to the channels' return over its
     periods and each kernel's length after. As the budget grows every rate rises along one path of
@@ -734,7 +899,7 @@ def budget_for(
                     )
                 spend = _cross(rates, lambda at: -surplus(at), peak, per_unit, upper_rates)
     budget = cost(np.clip(spend, lower_rates, upper_rates))
-    return allocate(given, budget, periods, lower=lower_rates, upper=upper_rates, history=spent)
+    return _on_envelopes(given, budget, periods, lower_rates, upper_rates, spent)
 
 
 def minimax_allocate(
@@ -775,8 +940,11 @@ def minimax_allocate(
             f"the readings have {sorted({len(r) for r in readings})} channels; each reads them all"
         )
     lower_rates, upper_rates, spent = _inputs(readings[0], periods, lower, upper, history)
+    budget = _spendable(budget, periods, lower_rates, upper_rates)
+    for reading in readings[1:]:
+        _check(reading, periods, lower_rates, upper_rates, spent)
     plans = [
-        allocate(reading, budget, periods, lower=lower_rates, upper=upper_rates, history=spent)
+        _on_envelopes(reading, budget, periods, lower_rates, upper_rates, spent)
         for reading in readings
     ]
     best = np.array([plan.bound for plan in plans])
@@ -1005,23 +1173,25 @@ def decision_weight(
     realised loss for two exponential and two Michaelis-Menten channels.
 
     Raises:
-        TypeError, ValueError: as :func:`allocate`; and ValueError on an S-shaped curve, whose plan
-            is its envelope's, or a channel inside its box whose worth is not strictly concave at
-            its rate.
+        TypeError, ValueError: as :func:`allocate`; and ValueError on an S-shaped curve, where a
+            small error can move the plan's spend from one channel to another at once, which no
+            second-order weight reads, or a channel inside its box whose worth is not strictly
+            concave at its rate.
     """
-    allocation = allocate(channels, budget, periods, lower=lower, upper=upper, history=history)
     lower_rates, upper_rates, spent = _inputs(channels, periods, lower, upper, history)
+    for column, channel in enumerate(channels):
+        if isinstance(channel.curve, Saturation) and channel.curve.inflection() > 0.0:
+            raise ValueError(
+                f"channel {column}'s curve is S-shaped, where a small error can move the plan's "
+                "spend between channels at once and the decision weight is not read"
+            )
+    allocation = allocate(channels, budget, periods, lower=lower, upper=upper, history=history)
     before = spent.shape[0]
     names: list[str] = []
     blocks: list[tuple[int, int]] = []
     curvature, response = [], []
     free = []
     for column, channel in enumerate(channels):
-        if isinstance(channel.curve, Saturation) and channel.curve.inflection() > 0.0:
-            raise ValueError(
-                f"channel {column}'s curve is S-shaped; its plan is its envelope's, where the "
-                "decision weight is not read"
-            )
         parameters, static = eqx.partition(channel, eqx.is_inexact_array)
         flat, unravel = ravel_pytree(parameters)
         start = sum(size for _, size in blocks)

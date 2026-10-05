@@ -53,6 +53,7 @@ from chc.response import (
     Tanh,
     Weibull,
     WeibullAdstock,
+    _touches,
     contribution,
     marginal_roi,
     relax,
@@ -248,6 +249,50 @@ def test_a_tangency_is_the_first_double_past_its_root() -> None:
     assert touch == 0.9999999999998633
     chord = float(curve(touch)) / touch
     assert slope(curve, touch) <= chord <= slope(curve, math.nextafter(touch, 0.0))
+
+
+@pytest.mark.parametrize(
+    "curve", [*S_SHAPED, BetaCDF(2.0, 3.0, 1.0), Kumaraswamy(2.0, 3.0, 1.0)], ids=name
+)
+def test_the_touch_from_zero_spend_is_the_tangency(curve: Saturation) -> None:
+    # the bisection across many starts closes on the double the search from the origin closes on,
+    # and on the corner of a curve convex up to the end of its support
+    touch = float(_touches(curve, jnp.zeros(1))[0])
+    assert touch == pytest.approx(Saturation._standard_tangency(curve), rel=1e-14, abs=0.0)
+
+
+@pytest.mark.parametrize(
+    ("curve", "start", "anchor"),
+    [
+        (Hill(1.0, 3.0), 0.5, 0.9590789410597730953),
+        (Hill(1.0, 2.0), 0.25, 0.7807764064044151375),
+        (Weibull(1.0, 3.0), 0.4, 1.0979963117018852953),
+        (Logistic(1.0, 6.0), 0.5, 1.2107061755031192551),
+    ],
+    ids=lambda value: name(value) if isinstance(value, Response) else "",
+)
+def test_the_touch_from_a_start_matches_maximas_root(
+    curve: Saturation, start: float, anchor: float
+) -> None:
+    # validation/envelope_on_interval.mac, STEPs 1, 2 and 5
+    touch = float(_touches(curve, jnp.asarray([start]))[0])
+    assert touch == pytest.approx(anchor, rel=1e-14, abs=0.0)
+
+
+@pytest.mark.parametrize("curve", S_SHAPED, ids=name)
+def test_the_chord_from_each_start_touches_the_curve_nearer_as_the_start_nears_the_bend(
+    curve: Saturation,
+) -> None:
+    bend = curve._standard_inflection()
+    starts = np.array([0.0, 0.3, 0.9, 1.0, 1.5]) * bend
+    touches = np.asarray(_touches(curve, jnp.asarray(starts)))
+    np.testing.assert_array_equal(touches[3:], starts[3:])  # from the bend on, each is its own
+    assert np.all(touches[:3] > bend)
+    assert np.all(np.diff(touches[:3]) < 0.0)
+    g = curve.standard
+    for start, touch in zip(starts[:3], touches[:3], strict=True):
+        chord = (float(g(touch)) - float(g(start))) / (touch - start)
+        assert chord == pytest.approx(float(jax.grad(g)(touch)), rel=1e-12, abs=0.0)
 
 
 @pytest.mark.parametrize(
