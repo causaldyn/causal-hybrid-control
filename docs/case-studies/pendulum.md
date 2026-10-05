@@ -40,10 +40,11 @@ Scope, and it bounds what the numbers mean:
   right. Deployed, it would be re-planned from each measured state (`chc.RecedingHorizon`).
 - `|omega| <= 1` is held in the solve as the barrier, at the library's class-K gain of 1 per second,
   so what binds is the approach to the speed limit, not the limit.
-- The certificate's trusted prefix is short. Its tube compounds at the hanging pendulum's
-  logarithmic norm, and it is fed the standard error of every channel coefficient, the constant
-  term included, which is the channel at upright, where the log never goes. The run on the true
-  plant shows the rest of the schedule holding; the certificate does not claim it.
+- The certificate's trusted prefix is short. Its tube compounds at the norm of the hanging
+  pendulum's slope, 15 per second, a `local` rate, since gravity bends the field away from where
+  the plan starts. It is fed the standard error of every channel coefficient, the constant term
+  included, which is the channel at upright, where the log never goes. The run on the true plant
+  shows the rest of the schedule holding; the certificate does not claim it.
 
 Code:
 [`scripts/pendulum_demo.py`](https://github.com/causaldyn/causal-hybrid-control/blob/main/scripts/pendulum_demo.py),

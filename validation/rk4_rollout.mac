@@ -1,0 +1,70 @@
+/* The RK4 error tube: two RK4 rollouts of a field and of the field off by at most eps at every
+   stage, from starts e apart. Bounding stage by stage on an L-Lipschitz field (L >= 0, z = L*h):
+
+       e_{k+1} <= e_k + h*(L*e_k + eps)*phi(z),   phi(z) = 1 + z/2 + z^2/6 + z^3/24,
+
+   so a_k = 1 + z*phi(z) = R(z), RK4's stability polynomial, and b_k = h*eps*phi(z); machine-checked
+   in proofs/lipschitz_rollout.v (rk4_stage_chain, rk4_rollout_error_bound). On a field affine in the
+   state, x' = A x + c, the gap is exactly R(hA) e + h*sum_i c_i(hA) delta_i, the delta_i being the
+   stages' errors, with sum_i c_i = phi. */
+display2d : false$
+
+/* (1) the stage chain: d_i bounds the i-th stage's difference, a = eps + L*e bounds the first */
+z : L*h$
+d1 : eps + L*e$
+d2 : eps + L*(e + h/2*d1)$
+d3 : eps + L*(e + h/2*d2)$
+d4 : eps + L*(e + h*d3)$
+phi(z) := 1 + z/2 + z^2/6 + z^3/24$
+R(z) := 1 + z + z^2/2 + z^3/6 + z^4/24$
+print("stage chain - (e + h*(L*e + eps)*phi(z)) =",
+      ratsimp(e + h/6*(d1 + 2*d2 + 2*d3 + d4) - (e + h*(L*e + eps)*phi(z))), " (= 0)")$
+print("1 + z*phi(z) - R(z) =", ratsimp(1 + z*phi(z) - R(z)), " (= 0: the growth is RK4's R)")$
+
+/* (2) a field affine in the state, a 2x2 matrix with its own error at each stage: the RK4 step of
+   x' = A x + c + delta_i less that of x' = A x + c, from starts e apart */
+A : matrix([a11, a12], [a21, a22])$
+c : matrix([c1], [c2])$
+E : matrix([e1], [e2])$
+D[i] := matrix([concat(p, i)], [concat(q, i)])$
+Y : matrix([y1], [y2])$
+rk4step(x, errors) := block([k1, k2, k3, k4],
+  k1 : A . x + c + errors[1],
+  k2 : A . (x + h/2*k1) + c + errors[2],
+  k3 : A . (x + h/2*k2) + c + errors[3],
+  k4 : A . (x + h*k3) + c + errors[4],
+  x + h/6*(k1 + 2*k2 + 2*k3 + k4))$
+zero : matrix([0], [0])$
+gap : rk4step(Y + E, [D[1], D[2], D[3], D[4]]) - rk4step(Y, [zero, zero, zero, zero])$
+I2 : ident(2)$
+M : h*A$
+Rm : I2 + M + M . M/2 + M . M . M/6 + M . M . M . M/24$
+C1 : (I2 + M + M . M/2 + M . M . M/4)/6$
+C2 : (2*I2 + M + M . M/2)/6$
+C3 : (2*I2 + M)/6$
+C4 : I2/6$
+claimed : Rm . E + h*(C1 . D[1] + C2 . D[2] + C3 . D[3] + C4 . D[4])$
+print("affine field: gap - (R(hA) e + h sum c_i(hA) delta_i) =",
+      ratsimp(gap - claimed), " (= 0)")$
+print("sum of the stages' coefficients - phi(hA) =",
+      ratsimp(C1 + C2 + C3 + C4 - (I2 + M/2 + M . M/6 + M . M . M/24)), " (= 0)")$
+
+/* (3) every coefficient is nonnegative at z >= 0, so on a scalar field (A = L) the affine tube is
+   the Lipschitz tube; and phi >= 1, R >= 1 + z there, so the RK4 tube bounds Euler's too */
+print("scalar coefficients:", [(1 + z + z^2/2 + z^3/4)/6, (2 + z + z^2/2)/6, (2 + z)/6, 1/6])$
+print("R(z) - (1 + z) =", expand(R(z) - (1 + z)), "; phi(z) - 1 =", expand(phi(z) - 1))$
+
+/* (4) the counterexample, x' = x against x' = x + 1/10, dt = 1, from one start: the tube and the
+   two rollouts' gap, in rationals */
+tube : [0]$
+for k : 1 thru 3 do tube : endcons(R(1)*last(tube) + phi(1)/10, tube)$
+rk4scalar(f, x) := block([k1, k2, k3, k4],
+  k1 : f(x), k2 : f(x + k1/2), k3 : f(x + k2/2), k4 : f(x + k3),
+  x + (k1 + 2*k2 + 2*k3 + k4)/6)$
+f0(x) := x$
+f1(x) := x + 1/10$
+x0 : 1$ x1 : 1$ gaps : [0]$
+for k : 1 thru 3 do (x0 : rk4scalar(f0, x0), x1 : rk4scalar(f1, x1), gaps : endcons(x1 - x0, gaps))$
+print("tube :", tube, "=", float(tube))$
+print("gaps :", gaps, "; tube - gaps =", tube - gaps)$
+print("Euler's recursion on it:", float(makelist(((1 + 1)^k - 1)/10, k, 0, 3)))$

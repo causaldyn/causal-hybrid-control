@@ -28,8 +28,11 @@ design record is
 
 ## What each certificate says
 
-- **The error tube** — the prefix of the plan whose Grönwall tube stays inside `tolerance`, from
-  Lipschitz or contractive-log-norm bounds. `plan.certified_actions` is that prefix and nothing
+- **The error tube** — the prefix of the plan whose error tube stays inside `tolerance`. The tube
+  follows the plan's own RK4 steps, at a rate that bounds the norm of the field's slope in the
+  state, or at the state matrix of a field affine in the state, whose RK4 propagators carry it.
+  `prescribe` says where its rate holds: `global` on a field affine in the state, `local` where
+  the slope was read at the plan's start alone. `plan.certified_actions` is that prefix and nothing
   more. With no error model supplied the certificate reports `not_evaluated` rather than a vacuous
   full-horizon pass.
 - **The barrier** — for a control-affine plant and a safe set `{h >= 0}`, whether the barrier

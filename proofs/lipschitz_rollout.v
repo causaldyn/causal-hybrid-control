@@ -166,3 +166,88 @@ Lemma constraint_tightening : forall gx ghat lg e : R,
   ghat + lg * e <= 0 ->   (* the tightened nominal constraint *)
   gx <= 0.
 Proof. intros gx ghat lg e Hlip Htight. lra. Qed.
+
+(* ---- RK4: the tube follows the integrator. ---- *)
+(* chc.integrate.rollout steps by classical RK4, whose stages read the field at four points. Two RK4
+   rollouts, of an L-Lipschitz field and of the field off by at most eps at every stage, from starts e
+   apart: stage by stage the differences d1..d4 of the four slopes obey the triangle inequality, and the
+   step's gap is at most e + h*(L*e + eps)*phi(L*h). The growth 1 + z*phi(z) is RK4's stability
+   polynomial R(z) = 1 + z + z^2/2 + z^3/6 + z^4/24 (validation/rk4_rollout.mac). *)
+Definition rk4_phi (z : R) : R := 1 + z / 2 + z ^ 2 / 6 + z ^ 3 / 24.
+
+Lemma rk4_growth_is_stability_polynomial : forall z : R,
+  1 + z * rk4_phi z = 1 + z + z ^ 2 / 2 + z ^ 3 / 6 + z ^ 4 / 24.
+Proof. intro z. unfold rk4_phi. field. Qed.
+
+Lemma rk4_stage_chain : forall L h eps e d1 d2 d3 d4 e' : R,
+  0 <= L -> 0 <= h ->
+  d1 <= eps + L * e ->
+  d2 <= eps + L * (e + h / 2 * d1) ->
+  d3 <= eps + L * (e + h / 2 * d2) ->
+  d4 <= eps + L * (e + h * d3) ->
+  e' <= e + h / 6 * (d1 + 2 * d2 + 2 * d3 + d4) ->
+  e' <= e + h * (L * e + eps) * rk4_phi (L * h).
+Proof.
+  intros L h eps e d1 d2 d3 d4 e' HL Hh H1 H2 H3 H4 Hstep.
+  assert (Hhalf : 0 <= L * (h / 2)) by (apply Rmult_le_pos; lra).
+  assert (Hfull : 0 <= L * h) by (apply Rmult_le_pos; lra).
+  (* each stage is at most a = eps + L*e times a polynomial in z = L*h *)
+  assert (B2 : d2 <= (eps + L * e) * (1 + L * h / 2)).
+  { assert (M : L * (h / 2) * d1 <= L * (h / 2) * (eps + L * e))
+      by (apply Rmult_le_compat_l; assumption).
+    lra. }
+  assert (B3 : d3 <= (eps + L * e) * (1 + L * h / 2 + (L * h) ^ 2 / 4)).
+  { assert (M : L * (h / 2) * d2 <= L * (h / 2) * ((eps + L * e) * (1 + L * h / 2)))
+      by (apply Rmult_le_compat_l; assumption).
+    nra. }
+  assert (B4 : d4 <= (eps + L * e) * (1 + L * h + (L * h) ^ 2 / 2 + (L * h) ^ 3 / 4)).
+  { assert (M : L * h * d3 <= L * h * ((eps + L * e) * (1 + L * h / 2 + (L * h) ^ 2 / 4)))
+      by (apply Rmult_le_compat_l; assumption).
+    nra. }
+  assert (Sum : d1 + 2 * d2 + 2 * d3 + d4 <= 6 * ((eps + L * e) * rk4_phi (L * h))).
+  { unfold rk4_phi. nra. }
+  assert (Scaled : h / 6 * (d1 + 2 * d2 + 2 * d3 + d4)
+                   <= h / 6 * (6 * ((eps + L * e) * rk4_phi (L * h))))
+    by (apply Rmult_le_compat_l; lra).
+  nra.
+Qed.
+
+Lemma rk4_phi_nonneg : forall z : R, 0 <= z -> 0 <= rk4_phi z.
+Proof.
+  intros z Hz. unfold rk4_phi.
+  assert (0 <= z ^ 2) by (apply pow_le; lra).
+  assert (0 <= z ^ 3) by (apply pow_le; lra).
+  lra.
+Qed.
+
+(* The tube: per step a_j = 1 + z_j*phi(z_j) >= 1 and b_j = h*eps_j*phi(z_j), z_j = L_j*h. *)
+Lemma rk4_rollout_error_bound : forall (L eps e : nat -> R) (h : R) (H : nat),
+  (forall j : nat, 0 <= L j) -> 0 <= h ->
+  e 0%nat <= 0 ->
+  (forall j : nat, e (S j) <= e j + h * (L j * e j + eps j) * rk4_phi (L j * h)) ->
+  e H <= gronwall_var (fun j => 1 + L j * h * rk4_phi (L j * h))
+                      (fun j => h * eps j * rk4_phi (L j * h)) H.
+Proof.
+  intros L eps e h H HL Hh H0 Hstep.
+  apply gronwall_var_comparison.
+  - intro j.
+    assert (Hz : 0 <= L j * h) by (apply Rmult_le_pos; [apply HL | exact Hh]).
+    assert (0 <= L j * h * rk4_phi (L j * h))
+      by (apply Rmult_le_pos; [exact Hz | apply rk4_phi_nonneg; exact Hz]).
+    lra.
+  - exact H0.
+  - intro j. specialize (Hstep j).
+    replace ((1 + L j * h * rk4_phi (L j * h)) * e j + h * eps j * rk4_phi (L j * h))
+      with (e j + h * (L j * e j + eps j) * rk4_phi (L j * h)) by ring.
+    exact Hstep.
+Qed.
+
+(* The RK4 tube is never below Euler's: phi(z) >= 1 at z >= 0, so the Euler recursion's a_j and b_j are
+   at most RK4's, and the RK4 tube bounds an Euler rollout's deviation too. *)
+Lemma rk4_phi_ge_one : forall z : R, 0 <= z -> 1 <= rk4_phi z.
+Proof.
+  intros z Hz. unfold rk4_phi.
+  assert (0 <= z ^ 2) by (apply pow_le; lra).
+  assert (0 <= z ^ 3) by (apply pow_le; lra).
+  lra.
+Qed.

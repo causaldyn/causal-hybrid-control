@@ -13,6 +13,7 @@ import json
 import logging
 import math
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -33,13 +34,23 @@ from chc.decision import (
     _episodes,
     _linearised,
     _margins,
+    _model_error,
+    _rate,
     prescribe,
 )
-from chc.dynamics import LinearDynamics
+from chc.dynamics import (
+    DampedOscillator,
+    DrivenDynamics,
+    Dynamics,
+    HybridDynamics,
+    LinearDynamics,
+)
 from chc.graph import AdjustmentSet, CausalGraph
+from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel
 from chc.plan import CausalPlan, causal_plan, certify_safety
+from chc.residual import ControlAffineResidual
 
 DT = 0.1
 B_TRUE = 0.8  # the incentive's true effect on supply, the number every arm is judged against
@@ -455,8 +466,124 @@ def test_omitting_the_tolerance_switches_the_tube_off_rather_than_setting_it_to_
     )
     assert without.certificate.certificate_status == "not_evaluated"
     assert without.certificate.certified_horizon is None
+    assert without.certificate.tube_rate is None
     assert without.certificate.trustworthy_steps == 0  # no constraint either, so nothing is proved
     assert without.plan is not None  # the plan exists; only its tube was not evaluated
+
+
+class _Bent(eqx.Module):
+    """Known physics whose slope in the state changes from one state to the next."""
+
+    def __call__(self, t: float | jax.Array, x: jax.Array, u: jax.Array) -> jax.Array:
+        return -0.3 * jnp.tanh(x)
+
+
+def test_the_tube_says_whether_its_rate_holds_at_every_state() -> None:
+    """A field affine in the state has one slope in it at every state, bounded over the levers'
+    box, so its tube bounds the rollout from anywhere; bent known physics has its slope read at the
+    start alone. The certificate, its JSON and its report say which."""
+    graph = CausalGraph.from_edges(EDGES)
+    affine = _prescribe(_panel(), graph)
+    assert affine.certificate.tube_rate == "global"
+    assert affine.to_json()["certificate"]["tube_rate"] == "global"
+    (line,) = [line for line in affine.report().splitlines() if "error tube" in line]
+    assert line.endswith(", global rate")
+
+    bent = _prescribe(_panel(), graph, known=_Bent())
+    assert bent.certificate.certified_horizon is not None
+    assert bent.certificate.tube_rate == "local"
+
+
+_BILINEAR = ControlAffineResidual(drift=jnp.array([[0.0, 0.1]]), channel=jnp.array([[[0.8, 0.5]]]))
+
+
+def test_the_rate_is_the_steepest_slope_the_levers_box_allows() -> None:
+    """``x' = 0.1 x + (0.8 + 0.5 x) u`` has the slope ``0.1 + 0.5 u`` in the state: 0.1 at no
+    action, 0.6 at the centre of the box ``[0, 2]`` and 1.1 at its edge, where the plan is free to
+    sit."""
+    rate, where = _rate(_BILINEAR, jnp.array([2.0]), jnp.array([0.0]), jnp.array([2.0]))
+    assert rate == pytest.approx(1.1, rel=1e-15, abs=0.0)
+    assert where == "global"
+
+
+@pytest.mark.parametrize(
+    ("field", "where"),
+    [
+        (LinearDynamics(jnp.array([[0.2]]), jnp.array([[1.0]])), "global"),
+        (DampedOscillator(omega=2.0, zeta=0.1), "global"),
+        (
+            HybridDynamics(
+                known=LinearDynamics(jnp.ones((1, 1)), jnp.zeros((1, 1))), residual=_BILINEAR
+            ),
+            "global",
+        ),
+        (DrivenDynamics(_BILINEAR, jnp.ones((1, 1)), jnp.ones((2, 1)), 0.1), "global"),
+        (
+            ControlAffineResidual(drift=jnp.zeros((1, 3)), channel=jnp.zeros((1, 1, 3)), degree=2),
+            "local",
+        ),
+        (
+            ControlAffineResidual(
+                drift=jnp.zeros((1, 2)), channel=jnp.zeros((1, 1, 3)), degree=1, channel_degree=2
+            ),
+            "local",
+        ),
+        (HybridDynamics(known=_Bent(), residual=_BILINEAR), "local"),
+    ],
+)
+def test_a_rate_holds_at_every_state_only_on_a_field_affine_in_it(
+    field: Dynamics, where: str
+) -> None:
+    """A drift or a channel past degree 1 in the state, or physics the check does not name, has its
+    slope read at the start alone."""
+    states = 2 if isinstance(field, DampedOscillator) else 1
+    _, read = _rate(field, jnp.full(states, 2.0), jnp.array([-1.0]), jnp.array([1.0]))
+    assert read == where
+
+
+def _growing_panel() -> Panel:
+    """One state that grows by a fifth each period, under a lever that chases the driver ``w``."""
+    rng = np.random.default_rng(0)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "x", "u", "w")}
+    for unit in range(100):
+        x = rng.normal()
+        for period in range(6):
+            w = rng.normal()
+            u = 0.9 * w + rng.normal(0.0, 0.5)
+            for name, value in (("unit", unit), ("time", period), ("x", x), ("u", u), ("w", w)):
+                rows[name].append(value)
+            x = 1.2 * x + 0.8 * u + 1.5 * w + rng.normal(0.0, 0.01)
+    logs = {name: np.asarray(values) for name, values in rows.items()}
+    return Panel.from_frame(logs, unit="unit", time="time", seed=0)
+
+
+def test_the_tube_holds_the_gap_its_model_error_opens_on_a_growing_field() -> None:
+    """The fitted field pushed by its model error along the way it grows: the plan's RK4 rollouts
+    part by more than Euler's recursion's ``dt * error`` after one step, and by no more than the
+    tube at any step."""
+    dt, horizon = 1.0, 6
+    result = prescribe(
+        _growing_panel(),
+        levers=[Lever("u", lo=-1.0, hi=1.0)],
+        target=Target("x", value=0.5),
+        adjustment=CausalGraph.from_edges([("w", "u"), ("w", "x"), ("u", "x")]),
+        horizon=horizon,
+        dt=dt,
+        tolerance=10.0,
+        x0=jnp.zeros(1),
+    )
+    assert result.plan is not None
+    assert result.plan.uncertainty_tube is not None
+    known = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    model = HybridDynamics(known=known, residual=result.model_fit.residual)
+    error = _model_error(result.model_fit, 1.0)
+    pushed = DrivenDynamics(model, jnp.array([[error]]), jnp.ones((horizon + 1, 1)), dt)
+    moved = rollout(pushed, jnp.zeros(1), result.plan.actions, dt)
+    gaps = np.abs(np.asarray(moved - result.plan.trajectory))[:, 0]
+    tube = np.asarray(result.plan.uncertainty_tube)
+    assert gaps[1] > dt * error
+    assert np.all(gaps <= tube * (1.0 + 1e-9))
+    assert result.certificate.tube_rate == "global"
 
 
 @pytest.mark.parametrize(

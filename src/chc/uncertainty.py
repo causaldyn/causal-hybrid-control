@@ -32,10 +32,11 @@ import numpy as np
 import optax
 from jax import Array
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
+from chc.dynamics_id import Integrator
 from chc.integrate import rk4_step
 from chc.residual import ContractiveResidual, LipschitzResidual, MLPResidual
 from chc.train import fit_residual, one_step_mse
@@ -829,39 +830,143 @@ def contractive_rollout_certificate(
 # ---- Result 28 UPGRADES (review): time-varying budget, safety tightening, closed loop. ----
 
 
+def _rk4_phi(z: float) -> float:
+    """RK4's weight on a step's field error, ``1 + z/2 + z^2/6 + z^3/24``: ``1 + z phi(z)`` is
+    RK4's stability polynomial."""
+    return 1.0 + z / 2.0 + z**2 / 6.0 + z**3 / 24.0
+
+
 def time_varying_rollout_bound(
-    lipschitz: list[float], model_error: list[float], dt: float
+    lipschitz: list[float],
+    model_error: list[float],
+    dt: float,
+    *,
+    integrator: Integrator = "rk4",
 ) -> Array:
     """Per-step certified error tube ``e_0..e_H`` for time-varying ``L_k`` and BUDGET ``eps_k``.
 
-    ``e_{k+1} = (1+L_k*dt) e_k + dt*eps_k``, ``e_0 = 0`` (Rocq ``gronwall_var_comparison``). Unlike
-    the constant-``L`` :func:`lipschitz_rollout_bound`, this exposes WHICH step / channel drives the
-    growth -- feed :func:`certified_horizon` for the honest ``certified_until_step``. ``eps_k`` is a
-    *budget*: it should be a CERTIFIED per-step bound (a conformal quantile, a bounded-disturbance
-    envelope, or :func:`support_calibrated_error` combining a base error with
+    Two rollouts by ``integrator`` from one start, of an ``L_k``-Lipschitz field and of the field
+    off by at most ``eps_k`` wherever step ``k`` reads it, stay within ``e_k`` of each other,
+    ``e_0 = 0``:
+
+    - ``"rk4"``, the integrator of :func:`chc.integrate.rollout` and so of every plan:
+      ``e_{k+1} = e_k + dt (L_k e_k + eps_k) phi(L_k dt)``, ``phi(z) = 1 + z/2 + z^2/6 + z^3/24``,
+      from bounding RK4's four stages one after another (Rocq ``rk4_rollout_error_bound``,
+      ``validation/rk4_rollout.mac``). Its growth ``1 + z phi(z)`` is RK4's stability polynomial,
+      and on a linear scalar field with a constant error the tube is the two rollouts' gap exactly;
+    - ``"euler"``: ``e_{k+1} = (1 + L_k dt) e_k + dt eps_k`` (Rocq ``gronwall_var_comparison``), a
+      bound on explicit-Euler rollouts only. On RK4 rollouts it is not one: ``x' = x`` against
+      ``x' = x + 0.1`` at ``dt = 1`` reads ``0.1, 0.3, 0.7`` where the RK4 gaps are
+      ``0.1708, 0.6335, 1.8866``.
+
+    Unlike the constant-``L`` :func:`lipschitz_rollout_bound`, this exposes WHICH step / channel
+    drives the growth -- feed :func:`certified_horizon` for the honest ``certified_until_step``.
+    ``eps_k`` is a *budget*: it should be a CERTIFIED per-step bound (a conformal quantile, a
+    bounded-disturbance envelope, or :func:`support_calibrated_error` combining a base error with
     :class:`chc.support.SupportModel`), not a validation-set average.
+
+    Raises:
+        ValueError: if an ``L_k`` is negative. ``L_k`` bounds ``||f(x) - f(y)|| / ||x - y||``, which
+            no field takes below zero; a contracting field's negative log-norm shrinks a tube only
+            through :func:`linear_rollout_bound`'s matrices or :func:`contractive_rollout_bound`. In
+            either recursion it can turn the radii negative, which would certify every step.
     """
+    return jnp.asarray(_tube(lipschitz, model_error, dt, integrator))
+
+
+def _tube(
+    lipschitz: Sequence[float], model_error: Sequence[float], dt: float, integrator: str
+) -> NDArray[np.float64]:
+    if integrator not in ("rk4", "euler"):
+        raise ValueError(f"integrator={integrator!r} is neither 'rk4' nor 'euler'")
+    negative = [lk for lk in lipschitz if not lk >= 0.0]
+    if negative:
+        raise ValueError(
+            f"lipschitz={negative[0]} is not a norm-Lipschitz bound, which is never negative or nan"
+        )
     e = 0.0
     tube = [0.0]
     for lk, ek in zip(lipschitz, model_error, strict=True):
-        e = (1.0 + lk * dt) * e + dt * ek
+        if integrator == "rk4":
+            e = e + dt * (lk * e + ek) * _rk4_phi(lk * dt)
+        else:
+            e = (1.0 + lk * dt) * e + dt * ek
         tube.append(e)
-    return jnp.asarray(tube)
+    return np.asarray(tube)
+
+
+def _within(tube: NDArray[np.float64], tolerance: float) -> int:
+    """The steps a tube keeps within ``tolerance``: those before its first radius above it."""
+    above = np.flatnonzero(tube[1:] > tolerance)
+    return int(above[0]) if above.size else tube.size - 1
 
 
 def certified_horizon(
-    lipschitz: list[float], model_error: list[float], dt: float, tolerance: float
+    lipschitz: list[float],
+    model_error: list[float],
+    dt: float,
+    tolerance: float,
+    *,
+    integrator: Integrator = "rk4",
 ) -> int:
     """The largest step ``H`` whose certified error ``e_H`` stays within ``tolerance``.
 
-    Past it the plan is flagged uncertain; ``e`` is monotone, so this is the first crossing.
+    Past it the plan is flagged uncertain; ``e`` is monotone, so this is the first crossing. The
+    tube is :func:`time_varying_rollout_bound`'s for ``integrator``, which raises as it does.
     """
-    e = 0.0
-    for h in range(len(lipschitz)):
-        e = (1.0 + lipschitz[h] * dt) * e + dt * model_error[h]
-        if e > tolerance:
-            return h  # e_h <= tolerance but e_{h+1} > tolerance: certified through h steps
-    return len(lipschitz)
+    return _within(_tube(lipschitz, model_error, dt, integrator), tolerance)
+
+
+def linear_rollout_bound(state_matrix: ArrayLike, model_error: list[float], dt: float) -> Array:
+    """The RK4 error tube ``e_0..e_H`` of a field affine in the state, ``x' = A x + g(t, u)``.
+
+    Two RK4 rollouts from one start, of the field and of the field off by at most ``eps_k``
+    wherever step ``k`` reads it, under the same actions, stay within
+
+        ``e_k = sum_{j<k} eps_j g_{k-1-j}``,  ``g_m = dt sum_i ||R(dt A)^m c_i(dt A)||_2``,
+
+    ``R(z) = 1 + z + z^2/2 + z^3/6 + z^4/24`` being RK4's stability polynomial and ``c_1..c_4`` the
+    weights its stages put on the field's errors, ``(1 + z + z^2/2 + z^3/4)/6``,
+    ``(2 + z + z^2/2)/6``, ``(2 + z)/6`` and ``1/6``, which sum to ``phi``: one step's gap is
+    exactly ``R(dt A) e + dt sum_i c_i(dt A) delta_i`` (``validation/rk4_rollout.mac``). The
+    matrices, not a norm of ``A``, carry the growth, so a contracting ``A`` shrinks the tube where
+    a norm-Lipschitz one could only widen it; on a scalar ``A = L >= 0`` it is
+    :func:`time_varying_rollout_bound`'s RK4 tube.
+
+    Raises:
+        ValueError: if ``state_matrix`` is not a finite square matrix.
+    """
+    return jnp.asarray(_linear_tube(state_matrix, model_error, dt))
+
+
+def _linear_tube(
+    state_matrix: ArrayLike, model_error: Sequence[float], dt: float
+) -> NDArray[np.float64]:
+    a_matrix = np.asarray(state_matrix, dtype=float)
+    if a_matrix.ndim != 2 or a_matrix.shape[0] != a_matrix.shape[1]:
+        raise ValueError(f"state_matrix of shape {a_matrix.shape} is not square")
+    if not np.all(np.isfinite(a_matrix)):
+        raise ValueError("state_matrix holds a value that is not finite")
+    eye = np.eye(a_matrix.shape[0])
+    z = dt * a_matrix
+    z2 = z @ z
+    z3 = z2 @ z
+    growth = eye + z + z2 / 2.0 + z3 / 6.0 + z3 @ z / 24.0
+    weights = (
+        (eye + z + z2 / 2.0 + z3 / 4.0) / 6.0,
+        (2.0 * eye + z + z2 / 2.0) / 6.0,
+        (2.0 * eye + z) / 6.0,
+        eye / 6.0,
+    )
+    gains = np.empty(len(model_error))
+    power = eye
+    for lag in range(gains.size):
+        gains[lag] = dt * sum(np.linalg.norm(power @ weight, 2) for weight in weights)
+        power = growth @ power
+    errors = np.asarray(model_error, dtype=float)
+    return np.array(
+        [0.0] + [float(gains[:k][::-1] @ errors[:k]) for k in range(1, errors.size + 1)]
+    )
 
 
 def closed_loop_rollout_bound(

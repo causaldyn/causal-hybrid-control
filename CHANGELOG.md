@@ -21,6 +21,18 @@ still change).
   excess at the split, which bounds how far a regret read on the envelopes may be from the one on
   the curves. Until now the cap and the envelopes left the gap in `Allocation.bound` alone, where
   nothing read it.
+- **`linear_rollout_bound`, and `causal_plan(lipschitz=A)` for a field affine in the state.** Given
+  the field's state matrix `A` of shape `(n, n)` in place of a number, the plan's tube is carried
+  by RK4's own propagators, `e_k = sum_{j<k} eps_j g_{k-1-j}` with
+  `g_m = dt sum_i ||R(dt A)^m c_i(dt A)||_2`, `R` being RK4's stability polynomial and `c_1..c_4`
+  the weights its four stages put on the field's errors (`validation/rk4_rollout.mac`). A
+  contracting `A` shrinks the tube where a norm of it could only widen it; on a scalar `A = L >= 0`
+  it is the RK4 tube of the rate `L`.
+- **`DecisionCertificate.tube_rate` says where `prescribe`'s tube holds.** `global` on a field
+  affine in the state, whose slope in the state is the same everywhere and is bounded over the
+  levers' whole box, so the tube bounds the rollout from any state; `local` where the slope was read
+  at the plan's start alone, as on known physics bent in the state; `None` where no tube was
+  evaluated. The report and `to_json()` carry it.
 
 ### Changed
 
@@ -136,6 +148,30 @@ still change).
   every scale, subnormal rates among them, the split stands within 2 ulps of the largest number
   given of the exact projection, worked in rationals. At rates near 1 a split moves by at most 2.5
   ulps of that number. `minimax_allocate` moves its splits by the same projection.
+- **A plan's error tube bounds the RK4 rollouts it is read beside, and its radii are never
+  negative**, a defect since 0.2.0. `causal_plan`'s tube followed explicit Euler's recursion,
+  `e_{k+1} = (1 + L dt) e_k + dt eps`, while every plan is an RK4 rollout: `x' = x` against
+  `x' = x + 0.1` at `dt = 1` part by 0.1708, 0.6335 and 1.8866 over three steps, where the tube
+  read 0.1, 0.3 and 0.7, so a tolerance of 0.12 certified a step the gap had already passed. The
+  tube is now RK4's, `e_{k+1} = e_k + dt (L e_k + eps) phi(L dt)` with
+  `phi(z) = 1 + z/2 + z^2/6 + z^3/24`, from bounding RK4's four stages in turn, and those three gaps
+  are its radii exactly (`validation/rk4_rollout.mac`; Rocq `rk4_rollout_error_bound` in
+  `proofs/lipschitz_rollout.v`). `time_varying_rollout_bound` and `certified_horizon` follow it,
+  and take `integrator="euler"` for the old recursion, a bound on explicit-Euler rollouts. Since
+  0.5.0 `prescribe` fed the tube the logarithmic norm of the field's slope at the start and at no
+  action: a one-sided rate, negative on a contracting field, which turned the radii negative once
+  `1 + L dt < -1` and certified every step, and read at one action where the plan moves the levers
+  over their box. Its rate is now the norm of the slope at the box's centre plus, for each lever,
+  half its width times the norm of what a unit of it adds to the slope, which bounds the slope over
+  the box, and `DecisionCertificate.tube_rate` says whether it holds at every state. `causal_plan`
+  refuses a `lipschitz` that is negative or `nan`. On the incentive panel of the tests the certified
+  horizon stays at 15 of 15 steps. The pendulum case study's adjusted schedule is trusted for 8 of
+  its 40 steps, where it was for 18: its tube compounds at the norm of the slope, 15.0 per second,
+  a `local` rate, where it compounded at the log-norm, 7.0. The media-budget case study's adjusted
+  prescription is trusted for 2 of its 12 weeks, where it was for all 12: its fitted field is
+  affine in the state, so its rate is `global`, the slope's norm over the box, 1.25 a week at
+  `dt = 1`, and a norm cannot see that the field contracts, its slope's eigenvalues running from
+  -0.25 to -0.73.
 
 ## [0.12.1] — 2026-10-05
 

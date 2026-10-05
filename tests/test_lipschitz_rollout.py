@@ -3,14 +3,22 @@
 Ties the shipped LipschitzResidual's certified constant to a machine-checked pessimism radius.
 """
 
+import equinox as eqx
+import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax import Array
 
+from chc.dynamics import DrivenDynamics, Dynamics, LinearDynamics
+from chc.integrate import rollout
 from chc.uncertainty import (
+    certified_horizon,
     contractive_rollout_bound,
     contractive_rollout_certificate,
+    linear_rollout_bound,
     lipschitz_rollout_bound,
     lipschitz_rollout_certificate,
+    time_varying_rollout_bound,
 )
 
 
@@ -121,3 +129,127 @@ def test_closed_loop_radius_exceeds_open_loop_when_replanning() -> None:
     open_loop = lipschitz_rollout_bound(1.0, 0.1, 0.05, 10)
     closed = closed_loop_rollout_bound(1.0, 0.5, 2.0, 0.1, 0.05, 10)  # L_pi=2 policy sensitivity
     assert closed > open_loop  # re-planning feeds state error through the policy -> larger tube
+
+
+class _Off(eqx.Module):
+    """A field off by exactly ``eps`` wherever it is read, in a direction that turns with the time
+    and the state, so each RK4 stage reads an error of its own."""
+
+    field: Dynamics
+    eps: float
+    first: Array
+    second: Array
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        turn = self.first * jnp.cos(3.0 * t) + self.second * jnp.sin(jnp.sum(x))
+        return self.field(t, x, u) + self.eps * turn / jnp.linalg.norm(turn)
+
+
+class _Tanh(eqx.Module):
+    """``A x + W2 tanh(W1 x) + B u``, ``||A|| + ||W2|| ||W1||``-Lipschitz in the state."""
+
+    a: Array
+    w1: Array
+    w2: Array
+    b: Array
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.a @ x + self.w2 @ jnp.tanh(self.w1 @ x) + self.b @ u
+
+
+def _gaps(field: Dynamics, off: Dynamics, x0: Array, actions: Array, dt: float) -> np.ndarray:
+    return np.linalg.norm(
+        np.asarray(rollout(off, x0, actions, dt) - rollout(field, x0, actions, dt)), axis=1
+    )
+
+
+def test_the_tube_follows_rk4_where_eulers_recursion_reads_low() -> None:
+    """``x' = x`` against ``x' = x + 0.1`` at ``dt = 1``: the RK4 rollouts every plan makes part by
+    0.1708, 0.6335 and 1.8866, which the RK4 tube reads exactly; Euler's recursion read 0.1, 0.3
+    and 0.7, so a tolerance of 0.12 was certified for a step the gap had already passed."""
+    field = LinearDynamics(jnp.array([[1.0]]), jnp.zeros((1, 1)))
+    off = DrivenDynamics(field, jnp.array([[0.1]]), jnp.ones((4, 1)), 1.0)
+    gaps = _gaps(field, off, jnp.zeros(1), jnp.zeros((3, 1)), 1.0)
+    tube = np.asarray(time_varying_rollout_bound([1.0] * 3, [0.1] * 3, 1.0))
+    np.testing.assert_allclose(tube, [0.0, 41 / 240, 3649 / 5760, 260801 / 138240], rtol=1e-15)
+    np.testing.assert_allclose(gaps, tube, rtol=1e-14, atol=0.0)
+    euler = np.asarray(time_varying_rollout_bound([1.0] * 3, [0.1] * 3, 1.0, integrator="euler"))
+    np.testing.assert_allclose(euler, [0.0, 0.1, 0.3, 0.7], rtol=1e-15)
+    assert certified_horizon([1.0] * 3, [0.1] * 3, 1.0, 0.12) == 0
+    assert certified_horizon([1.0] * 3, [0.1] * 3, 1.0, 0.12, integrator="euler") == 1
+
+
+def test_a_radius_at_the_tolerance_is_within_it() -> None:
+    tube = time_varying_rollout_bound([1.0] * 3, [0.1] * 3, 1.0)
+    assert certified_horizon([1.0] * 3, [0.1] * 3, 1.0, float(tube[2])) == 2
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_the_rk4_tube_holds_every_gap_of_a_lipschitz_field(seed: int) -> None:
+    """Two RK4 rollouts of a random ``tanh`` field, one off by ``eps`` at every stage, stay inside
+    the tube built on the field's Lipschitz bound, at every step of the horizon."""
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(1, 5))
+    a = rng.normal(size=(n, n)) * rng.uniform(0.1, 1.5)
+    w1, w2 = rng.normal(size=(8, n)), rng.normal(size=(n, 8))
+    field = _Tanh(
+        jnp.asarray(a), jnp.asarray(w1), jnp.asarray(w2), jnp.asarray(rng.normal(size=(n, 2)))
+    )
+    lipschitz = float(np.linalg.norm(a, 2) + np.linalg.norm(w2, 2) * np.linalg.norm(w1, 2))
+    eps, dt, steps = rng.uniform(0.01, 0.5), rng.uniform(0.01, 0.5), int(rng.integers(3, 30))
+    off = _Off(field, eps, jnp.asarray(rng.normal(size=n)), jnp.asarray(rng.normal(size=n)))
+    actions = jnp.asarray(rng.normal(size=(steps, 2)))
+    gaps = _gaps(field, off, jnp.asarray(rng.normal(size=n)), actions, dt)
+    tube = np.asarray(time_varying_rollout_bound([lipschitz] * steps, [eps] * steps, dt))
+    assert np.all(gaps <= tube * (1.0 + 1e-12))
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_the_matrix_tube_holds_every_gap_and_shrinks_where_the_state_matrix_contracts(
+    seed: int,
+) -> None:
+    """On a field affine in the state the tube read off RK4's propagators holds every gap of two
+    rollouts, one off by ``eps`` at every stage, and on a contracting matrix it stays below the
+    tube of the matrix's norm, which can only grow."""
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(1, 5))
+    a = rng.normal(size=(n, n))
+    a -= (np.max(np.linalg.eigvalsh((a + a.T) / 2)) + rng.uniform(0.1, 2.0)) * np.eye(n)
+    field = LinearDynamics(jnp.asarray(a), jnp.asarray(rng.normal(size=(n, 2))))
+    eps, dt, steps = rng.uniform(0.01, 0.5), rng.uniform(0.01, 0.3), int(rng.integers(3, 40))
+    off = _Off(field, eps, jnp.asarray(rng.normal(size=n)), jnp.asarray(rng.normal(size=n)))
+    actions = jnp.asarray(rng.normal(size=(steps, 2)))
+    gaps = _gaps(field, off, jnp.asarray(rng.normal(size=n)), actions, dt)
+    tube = np.asarray(linear_rollout_bound(a, [eps] * steps, dt))
+    assert np.all(gaps <= tube * (1.0 + 1e-12))
+    norm = np.asarray(time_varying_rollout_bound([np.linalg.norm(a, 2)] * steps, [eps] * steps, dt))
+    assert np.all(tube[1:] < norm[1:])
+
+
+def test_the_matrix_tube_of_a_scalar_rate_is_the_rk4_tube() -> None:
+    """On ``A = L >= 0`` every weight the stages put on the error is nonnegative, so the matrix
+    tube and the Lipschitz one are the same recursion."""
+    scalar = np.asarray(linear_rollout_bound([[0.7]], [0.2] * 25, 0.3))
+    np.testing.assert_allclose(
+        scalar, np.asarray(time_varying_rollout_bound([0.7] * 25, [0.2] * 25, 0.3)), rtol=1e-13
+    )
+
+
+@pytest.mark.parametrize("rate", [-0.5, float("nan")])
+@pytest.mark.parametrize("integrator", ["rk4", "euler"])
+def test_a_rate_no_norm_takes_is_refused(rate: float, integrator: str) -> None:
+    """A negative log-norm in either recursion turned the radii negative, and every step then
+    passed the tolerance: neither tube takes one."""
+    with pytest.raises(ValueError, match=r"is not a norm-Lipschitz bound"):
+        time_varying_rollout_bound([rate] * 4, [0.1] * 4, 0.5, integrator=integrator)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"is not a norm-Lipschitz bound"):
+        certified_horizon([rate] * 4, [0.1] * 4, 0.5, 1.0, integrator=integrator)  # type: ignore[arg-type]
+
+
+def test_what_is_neither_an_integrator_nor_a_square_matrix_is_refused() -> None:
+    with pytest.raises(ValueError, match=r"neither 'rk4' nor 'euler'"):
+        time_varying_rollout_bound([1.0], [0.1], 0.5, integrator="heun")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"is not square"):
+        linear_rollout_bound(np.ones((2, 3)), [0.1], 0.5)
+    with pytest.raises(ValueError, match=r"not finite"):
+        linear_rollout_bound([[np.inf]], [0.1], 0.5)

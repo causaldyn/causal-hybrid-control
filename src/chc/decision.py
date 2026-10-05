@@ -44,7 +44,13 @@ from numpy.typing import ArrayLike, NDArray
 
 from chc.control import LinearConstraint, SolverStatus
 from chc.cost import QuadraticCost, total_cost
-from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
+from chc.dynamics import (
+    DampedOscillator,
+    DrivenDynamics,
+    Dynamics,
+    HybridDynamics,
+    LinearDynamics,
+)
 from chc.dynamics_id import CausalDynamicsFit, Integrator, _unmoved_actions, fit_causal_residual
 from chc.evaluation import (
     AffinePolicy,
@@ -73,6 +79,7 @@ from chc.plan import (
     certify_safety,
     plan_regret_bound,
 )
+from chc.residual import ControlAffineResidual, ZeroResidual
 
 SCHEMA_VERSION = 1
 """``to_json``'s schema version. Bumped when a field changes meaning, not when one is added."""
@@ -117,6 +124,10 @@ those through more than a quadratic, and an evaluation that reads one unit's win
 
 IdentificationStatus = Literal["identified", "asserted", "not_identified"]
 """How the set was arrived at. ``asserted`` means a caller named it and nothing here checked it."""
+
+TubeRate = Literal["global", "local"]
+"""Where the error tube's rate bounds the field's slope in the state: at every state, the levers
+anywhere in their box, or at the plan's start alone."""
 
 TimeZero = Literal["calendar", "unit"]
 """Where :meth:`Prescription.evaluate`'s windows start: on one calendar for every unit, or cut back
@@ -274,6 +285,11 @@ class DecisionCertificate:
     # fit's channel for them is the ridge's, so the plan holds each at its mean logged level, and
     # with every lever here there is no plan.
     unmoved_levers: tuple[str, ...] = ()
+    # Where the tube's rate holds (:data:`TubeRate`): ``global`` on a field affine in the state,
+    # whose slope in it is the same at every state and is bounded over the levers' whole box, so
+    # the tube is a bound; ``local`` where the slope is read at the start alone, so away from it
+    # nothing proves the tube. None where no tube was evaluated.
+    tube_rate: TubeRate | None = None
 
     @property
     def trustworthy_steps(self) -> int:
@@ -672,7 +688,8 @@ class Prescription:
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
             self._logger_line(),
             f"- error tube: **{certificate.certificate_status}**, "
-            f"certified horizon {_show(certificate.certified_horizon)}",
+            f"certified horizon {_show(certificate.certified_horizon)}"
+            + ("" if certificate.tube_rate is None else f", {certificate.tube_rate} rate"),
             f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}"
             + ("" if certificate.gamma is None else f" at gamma {certificate.gamma:.4g}")
             + f", gamma* {_show(certificate.gamma_star)} (marginal sensitivity model)",
@@ -716,6 +733,7 @@ class Prescription:
                 "regret_bound": certificate.regret_bound,
                 "regret_status": certificate.regret_status,
                 "unmoved_levers": list(certificate.unmoved_levers),
+                "tube_rate": certificate.tube_rate,
             },
             "selection": None
             if self.selection is None
@@ -1142,7 +1160,7 @@ def prescribe(
 
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target, horizon)
-    lipschitz = _log_norm(model, start, n_levers)
+    lipschitz, tube_rate = _rate(model, start, u_lo, u_hi)
     model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
 
     def solve(lo: Array, hi: Array) -> CausalPlan:
@@ -1222,6 +1240,7 @@ def prescribe(
         gamma=None if safety is None else float(gamma),
         regret_status=gap.status,
         unmoved_levers=unmoved_levers,
+        tube_rate=None if plan.certified_horizon is None else tube_rate,
     )
     _log.info(
         "decision certified",
@@ -1235,6 +1254,7 @@ def prescribe(
             "regret_bound": certificate.regret_bound,
             "regret_status": certificate.regret_status,
             "unmoved_levers": list(certificate.unmoved_levers),
+            "tube_rate": certificate.tube_rate,
         },
     )
     return Prescription(
@@ -1759,16 +1779,39 @@ def _certify(
     )
 
 
-def _log_norm(model: Dynamics, x0: Array, n_levers: int) -> float:
-    """The Gronwall rate: the logarithmic norm of the drift Jacobian at ``(x0, 0)``.
+def _rate(model: Dynamics, x0: Array, u_lo: Array, u_hi: Array) -> tuple[float, TubeRate]:
+    """The tube's rate, a norm-Lipschitz bound on the field in the state, and where it holds.
 
-    ``lambda_max((A + A^T)/2)``, which is the tightest one-sided bound on ``||e||``'s growth and can
-    be negative --- a contractive plant then *shrinks* the tube (§30) rather than being clamped to
-    zero growth, which a plain spectral-norm bound would do.
+    The norm of the field's slope in the state at the box's centre, plus half each lever's width
+    times the norm of what a unit of that lever adds to the slope. A control-affine field's slope
+    is affine in the actions, so over the box it is within that sum of the centre's. On a field
+    affine in the state (:func:`_slope_free_of_state`) the slope is the same at every state and the
+    rate is ``global``; elsewhere it is read at ``x0`` and is ``local``. A log-norm is no such
+    bound: it can be negative, which turned the tube's radii negative and certified every step.
     """
-    a_matrix, _ = linearize_continuous(model, x0, jnp.zeros(n_levers))
-    symmetric = (a_matrix + a_matrix.T) / 2
-    return float(jnp.max(jnp.linalg.eigvalsh(symmetric)))
+    centre = (u_lo + u_hi) / 2.0
+    slope, _ = linearize_continuous(model, x0, centre)
+    spread = 0.0
+    for lever in range(centre.size):
+        moved, _ = linearize_continuous(model, x0, centre.at[lever].add(1.0))
+        spread += float(u_hi[lever] - u_lo[lever]) / 2.0 * float(jnp.linalg.norm(moved - slope, 2))
+    rate = float(jnp.linalg.norm(slope, 2)) + spread
+    return rate, "global" if _slope_free_of_state(model) else "local"
+
+
+def _slope_free_of_state(model: Dynamics) -> bool:
+    """Whether the field's slope in the state is the same at every state, by its structure alone:
+    affine in the state for each action, a control channel at most affine in it. A drift past
+    degree 1, a channel past degree 1, or any field not named here is not taken to be so."""
+    if isinstance(model, LinearDynamics | DampedOscillator | ZeroResidual):
+        return True
+    if isinstance(model, ControlAffineResidual):
+        return model.degree <= 1 and model.channel_degree <= 1
+    if isinstance(model, HybridDynamics):
+        return _slope_free_of_state(model.known) and _slope_free_of_state(model.residual)
+    if isinstance(model, DrivenDynamics):
+        return _slope_free_of_state(model.dynamics)
+    return False
 
 
 def _model_error(fit: CausalDynamicsFit, u_max: float) -> float:

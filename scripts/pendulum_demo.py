@@ -41,13 +41,14 @@ HONEST SCOPE:
   right. Deployed, it would be re-planned from each measured state (:class:`chc.RecedingHorizon`).
 * The barrier is held at the library's class-K gain of 1 per second, so the approach to the speed
   limit is what binds, not the limit: every schedule here stays well inside it.
-* The certificate's tube compounds at the logarithmic norm of the drift's Jacobian where the plan
-  starts, which for a hanging pendulum is ``(15 - 1)/2`` per second, and it is fed
-  ``channel_error``, the root-mean standard error of *every* channel coefficient -- the constant
-  term included, which is the channel at ``theta = 0``, upright, where this log never goes. So the
-  trusted prefix is short, and shorter in these coordinates than it would be with the angle
-  measured from hanging, for the same fit and the same schedule. The audit is what shows the rest
-  of the schedule holding; the certificate does not claim it.
+* The certificate's tube compounds at the norm of the field's slope in the state where the plan
+  starts, which for a hanging pendulum is 15 per second: a ``local`` rate, since gravity bends the
+  field away from there. It is fed ``channel_error``, the root-mean standard error of *every*
+  channel coefficient -- the constant term included, which is the channel at ``theta = 0``,
+  upright, where this log never goes. So the trusted prefix is short, and shorter in these
+  coordinates than it would be with the angle measured from hanging, for the same fit and the same
+  schedule. The audit is what shows the rest of the schedule holding; the certificate does not
+  claim it.
 
 Precision: nothing here sets ``jax_enable_x64``. The header names the precision the numbers were
 computed at, and in float32 a warning says what moves: the fits do not, the barrier-held solves do.

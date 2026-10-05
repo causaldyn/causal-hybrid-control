@@ -80,11 +80,7 @@ from chc.support import (
     _pessimistic_loop,
     pessimistic_solve,
 )
-from chc.uncertainty import (
-    certified_horizon,
-    confounding_robust_inflation,
-    time_varying_rollout_bound,
-)
+from chc.uncertainty import _linear_tube, _tube, _within, confounding_robust_inflation
 
 CertificateStatus = Literal["not_evaluated", "uncertified", "partial", "certified"]
 PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
@@ -692,7 +688,7 @@ def causal_plan(
     lam_supp: float = 0.0,
     uncertainty: PenaltyModel | None = None,
     lam_unc: float = 0.0,
-    lipschitz: float = 0.0,
+    lipschitz: ArrayLike = 0.0,
     model_error: float = 0.0,
     tolerance: float = float("inf"),
     steps: int = 10_000,
@@ -707,12 +703,17 @@ def causal_plan(
             projected-gradient OC to :func:`chc.support.pessimistic_control`.
         uncertainty: a ``PenaltyModel`` (ensemble, Wasserstein, confounding radius) weighted by
             ``lam_unc``. Requires ``support`` -- the pessimistic solver evaluates both terms.
-        lipschitz, model_error: feed the discrete-Gronwall tube ``e_{k+1} = (1+L*dt)e_k + dt*eps``.
-            ``model_error`` is what switches certification on: left at its default the tube would be
-            identically zero, so the plan reports ``certificate_status == "not_evaluated"`` and both
-            certificate fields come back ``None`` rather than a vacuous full-horizon pass. A
-            negative ``lipschitz`` is allowed and meaningful -- it is a contractive log-norm (§30),
-            and the tube then shrinks.
+        lipschitz, model_error: feed the error tube of the plan's RK4 rollout, the field off by at
+            most ``model_error`` wherever a step reads it. ``lipschitz`` is either a norm-Lipschitz
+            bound ``L >= 0`` on the field in the state, for the recursion
+            ``e_{k+1} = e_k + dt (L e_k + eps) phi(L dt)``, ``phi(z) = 1 + z/2 + z^2/6 + z^3/24``
+            (:func:`chc.uncertainty.time_varying_rollout_bound`), or, for a field affine in the
+            state, its ``(n, n)`` state matrix ``A``, whose RK4
+            propagators carry the tube (:func:`chc.uncertainty.linear_rollout_bound`) and shrink it
+            where ``A`` contracts. ``model_error`` is what switches certification on: left at its
+            default the tube would be identically zero, so the plan reports
+            ``certificate_status == "not_evaluated"`` and both certificate fields come back ``None``
+            rather than a vacuous full-horizon pass.
         tolerance: tube radius above which the plan stops being certified.
         constraints: linear rows over the whole action sequence
             (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
@@ -740,7 +741,9 @@ def causal_plan(
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
             silently drop it -- the pessimistic solver is the only consumer of that argument; if
-            ``model_error`` is negative, which is not an error budget; if a barrier is given with
+            ``model_error`` is negative, which is not an error budget; if ``lipschitz`` is a
+            negative number, which no norm of a field's slope is, or neither a number nor a square
+            matrix of the state's size; if a barrier is given with
             a box that admits no action but zero, which leaves nothing to price it with; or if
             ``warm_start`` is not a finite ``(horizon, m)`` array.
     """
@@ -781,7 +784,7 @@ def _plan(
     lam_supp: float,
     uncertainty: PenaltyModel | None,
     lam_unc: float,
-    lipschitz: float,
+    lipschitz: ArrayLike,
     model_error: float,
     tolerance: float,
     steps: int,
@@ -801,6 +804,18 @@ def _plan(
     if model_error < 0.0:
         raise ValueError(
             f"model_error is a per-step error budget and cannot be negative: {model_error}"
+        )
+    rate = np.asarray(lipschitz, dtype=float)
+    if rate.ndim == 0 and not rate >= 0.0:
+        raise ValueError(
+            f"lipschitz={float(rate)} bounds the norm of the field's slope, which is never "
+            "negative; a contracting field affine in the state passes its state matrix instead"
+        )
+    square = (np.shape(x0)[-1],) * 2
+    if rate.ndim != 0 and rate.shape != square:
+        raise ValueError(
+            f"lipschitz is a number or the field's state matrix of shape {square}, not an array of "
+            f"shape {rate.shape}"
         )
     authority = float(np.max(np.maximum(np.abs(np.asarray(u_lo)), np.abs(np.asarray(u_hi)))))
     if barrier is not None and not authority > 0.0:
@@ -899,18 +914,20 @@ def _plan(
             # the answer is where the relaxed descent stopped, and it stopped for its own reason
             status = first.solver_status
 
-    lipschitz_seq, error_seq = [lipschitz] * horizon, [model_error] * horizon
-    evaluated = model_error > 0.0
+    tube = None
+    if model_error > 0.0:
+        errors = [model_error] * horizon
+        tube = (
+            _tube([float(rate)] * horizon, errors, dt, "rk4")
+            if rate.ndim == 0
+            else _linear_tube(rate, errors, dt)
+        )
     plan = CausalPlan(
         actions=actions,
         trajectory=_trajectory(model, x0, actions, dt),
         task_cost=float(total_cost(model, x0, actions, dt, cost)),
-        uncertainty_tube=(
-            time_varying_rollout_bound(lipschitz_seq, error_seq, dt) if evaluated else None
-        ),
-        certified_horizon=(
-            certified_horizon(lipschitz_seq, error_seq, dt, tolerance) if evaluated else None
-        ),
+        uncertainty_tube=None if tube is None else jnp.asarray(tube),
+        certified_horizon=None if tube is None else _within(tube, tolerance),
         solver_status=status,
         solver_iterations=iterations,
         relaxed_cost=None if first is None else first.task_cost,

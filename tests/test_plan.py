@@ -13,6 +13,7 @@ from chc.barrier import robust_barrier_margin
 from chc.control import Bound, projected_gradient_control, projected_gradient_solve
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
+from chc.integrate import rollout
 from chc.plan import _quadratic, causal_plan, certify_safety, plan_regret_bound
 from chc.residual import ControlAffineResidual, MLPResidual, ZeroResidual
 from chc.support import SupportModel
@@ -85,6 +86,56 @@ def test_an_error_model_that_busts_tolerance_immediately_certifies_nothing() -> 
 def test_a_negative_error_budget_is_rejected_rather_than_shrinking_the_tube() -> None:
     with pytest.raises(ValueError, match="cannot be negative"):
         causal_plan(*_ARGS, lipschitz=0.8, model_error=-0.05)
+
+
+def test_the_plans_tube_is_its_rk4_rollouts_and_certifies_no_step_their_gap_has_passed() -> None:
+    """``x' = x`` planned at ``dt = 1`` against the field off by 0.1: the plan's RK4 rollout and
+    the off field's part by 0.1708 after one step, past a tolerance of 0.12 that Euler's recursion,
+    reading 0.1, certified the step under."""
+    model = LinearDynamics(jnp.array([[1.0]]), jnp.zeros((1, 1)))
+    cost = QuadraticCost(Q=jnp.zeros((1, 1)), R=jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.zeros(1))
+    plan = causal_plan(
+        model, jnp.zeros(1), cost, 1.0, 3, -1.0, 1.0, lipschitz=1.0, model_error=0.1, tolerance=0.12
+    )
+    off = DrivenDynamics(model, jnp.array([[0.1]]), jnp.ones((4, 1)), 1.0)
+    gaps = np.abs(np.asarray(rollout(off, jnp.zeros(1), plan.actions, 1.0) - plan.trajectory))[:, 0]
+    assert plan.uncertainty_tube is not None
+    np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), gaps, rtol=1e-14, atol=0.0)
+    assert plan.certified_horizon == 0
+    assert plan.certificate_status == "uncertified"
+
+
+def test_a_contracting_state_matrix_shrinks_the_tube_its_norm_would_widen() -> None:
+    """The plan's own matrix as ``lipschitz``: RK4's propagators carry the tube, below the tube of
+    the matrix's norm at every step, so at least as many steps are certified."""
+    by_matrix = causal_plan(*_ARGS, lipschitz=_A, model_error=0.05, tolerance=0.03)
+    by_norm = causal_plan(
+        *_ARGS, lipschitz=float(jnp.linalg.norm(_A, 2)), model_error=0.05, tolerance=0.03
+    )
+    assert by_matrix.uncertainty_tube is not None
+    assert by_norm.uncertainty_tube is not None
+    assert bool(jnp.all(by_matrix.uncertainty_tube[1:] < by_norm.uncertainty_tube[1:]))
+    assert by_matrix.certified_horizon is not None
+    assert by_norm.certified_horizon is not None
+    assert by_matrix.certified_horizon >= by_norm.certified_horizon
+
+
+@pytest.mark.parametrize(
+    ("lipschitz", "match"),
+    [
+        (-0.3, r"lipschitz=-0.3 bounds the norm of the field's slope, which is never negative"),
+        (float("nan"), r"lipschitz=nan bounds the norm"),
+        (jnp.eye(3), r"state matrix of shape \(2, 2\), not an array of shape \(3, 3\)"),
+        (jnp.ones(2), r"not an array of shape \(2,\)"),
+    ],
+)
+def test_a_rate_that_is_neither_a_norm_nor_the_state_matrix_is_refused(lipschitz, match) -> None:
+    """A negative log-norm turned the tube's radii negative and certified every step; it is refused
+    whether or not a tube is asked for."""
+    with pytest.raises(ValueError, match=match):
+        causal_plan(*_ARGS, lipschitz=lipschitz, model_error=0.05, tolerance=0.03)
+    with pytest.raises(ValueError, match=match):
+        causal_plan(*_ARGS, lipschitz=lipschitz)
 
 
 def test_support_penalty_pulls_the_plan_toward_the_logged_cloud() -> None:
