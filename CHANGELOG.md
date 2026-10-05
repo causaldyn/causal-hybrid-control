@@ -23,12 +23,22 @@ still change).
   tangency: two Hill(3) channels capped at 1 were bounded by 0.815 where the best split returns
   0.660, and now by 0.660. The touch from a start below the inflection is bisected for every
   period at once, Maxima's root to `1e-14` (`validation/envelope_on_interval.mac`). Concave curves
-  are planned as before, by the same code. `budget_for`, `minimax_allocate`, `cvar_allocate` and
-  `allocate_geos` plan S-shaped curves on the envelopes from zero spend as before, so on them
-  `budget_for`'s plan is no longer what `allocate` returns at its budget (ADR 0051).
+  are planned as before, by the same code. `budget_for`, `minimax_allocate` and `allocate_geos`
+  plan S-shaped curves on the envelopes from zero spend as before, so on them `budget_for`'s plan
+  is no longer what `allocate` returns at its budget (ADR 0051); `cvar_allocate` reads its gains on
+  the curves (below).
 
 ### Fixed
 
+- **`cvar_allocate` reads its gains on the curves**, a defect since 0.11.0. On S-shaped curves it
+  read both a split's return and the reference's on the curves' envelopes from zero spend, so a
+  split could report a gain in the worst share and lose to the reference on the curves: two Hill
+  curves of slope 3 at scales 1 and 1.01, a budget of 1.6 and the reference all on the first, the
+  split 1.27/0.33 reported a CVaR of 0.041 and returned 0.705 against the reference's 0.804. Each
+  gain is now a split's return on the curves less the reference's on them, and the split returned
+  is the best of those tried read that way, the reference among them at 0, so it never does worse
+  in the worst share than keeping the reference. Only the bound is read on the envelopes, now over
+  the box. On concave curves the split is the same, bit for bit.
 - **`SplitConformal` reads the `k`-th smallest score, and refuses too few to certify**, a defect
   since 0.2.0. With `k = ceil((n + 1)(1 - alpha))` past the `n` scores it read the largest, which
   covers `n / (n + 1)` of exchangeable data: five scores at `alpha = 0.05` covered 0.833, not 0.95.

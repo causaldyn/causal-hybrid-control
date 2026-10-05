@@ -205,9 +205,10 @@ def test_one_reading_however_often_is_planned_as_allocate_plans_it():
         np.testing.assert_allclose(plan.spend, alone.spend, rtol=1e-4)
 
 
-def test_an_s_curve_s_gain_is_its_envelope_s():
-    """On a Hill of slope 3 the gain is read on the envelope: below the tangency, 100 * 2^(1/3),
-    the chord from the origin to where the curve is 2/3, which the curve lies under."""
+def test_an_s_curve_s_gain_is_read_on_the_curve():
+    """On a Hill of slope 3 the gain is the curve's, not that of the envelope over the box, which
+    stands above it below the tangency: each reading's return on the split less its return on the
+    reference, both on its curves."""
     readings = [
         (Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),
         (Channel(ONE, MichaelisMenten(60.0), 700.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),
@@ -221,14 +222,101 @@ def test_an_s_curve_s_gain_is_its_envelope_s():
         lower=np.zeros(2),
         upper=np.full(2, 90.0),
     )
-    tangency = 100.0 * 2.0 ** (1 / 3)
 
-    def envelope(hill: float, other: float) -> float:
-        return 1000.0 * hill * (2.0 / 3.0) / tangency + 300.0 * other / (100.0 + other)
+    def returns(hill: float, other: float) -> np.ndarray:
+        searched = 300.0 * other / (100.0 + other)
+        return np.array(
+            [
+                1000.0 * hill**3 / (100.0**3 + hill**3) + searched,
+                700.0 * hill / (60.0 + hill) + searched,
+            ]
+        )
 
-    hill, other = plan.spend
-    assert 0.0 < hill < tangency
-    assert plan.gain[0] == pytest.approx(envelope(hill, other) - envelope(45.0, 45.0), rel=1e-9)
+    np.testing.assert_allclose(plan.gain, returns(*plan.spend) - returns(45.0, 45.0), rtol=1e-9)
+    assert 0.0 <= plan.cvar <= plan.bound
+
+
+@pytest.mark.parametrize("level", [0.1, 1.0])
+def test_a_split_the_envelopes_favour_does_not_lose_to_the_reference_on_the_curves(level):
+    """Two Hill curves of slope 3 at scales 1 and 1.01, a budget of 1.6 and the reference all on
+    the first, ten readings alike: the planes propose about ``[1.27, 0.33]``, which returns 0.705 on
+    the curves against the reference's ``1.6^3 / (1.6^3 + 1)`` = 0.804, a gain of -0.099. The
+    reference is returned, its ``cvar`` 0, and the envelopes' bound stands above it."""
+    reading = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0))
+    plan = cvar_allocate(
+        [reading] * 10,
+        1.6,
+        1,
+        level=level,
+        against=[1.6, 0.0],
+        lower=np.zeros(2),
+        upper=np.full(2, 1.6),
+    )
+    np.testing.assert_array_equal(plan.spend, [1.6, 0.0])
+    np.testing.assert_array_equal(plan.gain, np.zeros(10))
+    assert plan.cvar == 0.0
+    assert plan.bound > 0.0
+
+
+def _hill_readings(count: int, seed: int) -> list[tuple[Channel, ...]]:
+    """``count`` readings of two Hill channels that start convex, without carryover, each draw with
+    a scale, slope and coefficient of its own."""
+    rng = np.random.default_rng(seed)
+    return [
+        tuple(
+            Channel(ONE, Hill(float(s), float(n)), float(c))
+            for s, n, c in zip(
+                rng.uniform(0.5, 1.5, 2),
+                rng.uniform(1.5, 4.0, 2),
+                rng.uniform(0.5, 1.5, 2),
+                strict=True,
+            )
+        )
+        for _ in range(count)
+    ]
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    seed=st.integers(0, 2**32 - 1),
+    count=st.integers(1, 8),
+    level=st.floats(0.05, 1.0),
+    share=st.floats(0.0, 1.0),
+)
+def test_on_s_curves_no_split_loses_to_the_reference_or_passes_the_bound(seed, count, level, share):
+    """On Hill curves that start convex, whatever the readings, the level and the reference: the
+    gains are the curves', the split's mean gain in the worst share is at least the reference's 0
+    and is its gains' own, and no split on a grid of 2001 points of the budget has more than the
+    bound."""
+    readings = _hill_readings(count, seed)
+    budget = 2.0
+    reference = np.array([budget * share, budget * (1.0 - share)])
+    plan = cvar_allocate(
+        readings,
+        budget,
+        1,
+        level=level,
+        against=reference,
+        lower=np.zeros(2),
+        upper=np.full(2, budget),
+    )
+
+    def returns(reading: tuple[Channel, ...], first: np.ndarray) -> np.ndarray:
+        one, two = reading
+        return np.asarray(
+            one.coefficient * one.curve(jnp.asarray(first))
+            + two.coefficient * two.curve(jnp.asarray(budget - first))
+        )
+
+    base = np.array([float(returns(r, np.array([reference[0]]))[0]) for r in readings])
+    gain = np.array([float(returns(r, np.array([plan.spend[0]]))[0]) for r in readings]) - base
+    scale = float(np.max(np.abs(base))) or 1.0
+    np.testing.assert_allclose(plan.gain, gain, rtol=1e-9, atol=1e-12 * scale)
+    assert plan.cvar >= 0.0
+    assert plan.cvar == pytest.approx(float(_tail_mean(gain, level)), rel=1e-9, abs=1e-12)
+    first = np.linspace(0.0, budget, 2001)
+    grid = np.stack([returns(r, first) for r in readings]) - base[:, None]
+    assert plan.bound >= float(_tail_mean(grid, level).max()) - 1e-9 * scale
 
 
 def _s_shaped_readings(count: int, seed: int) -> list[tuple[Channel, ...]]:

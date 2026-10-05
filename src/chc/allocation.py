@@ -61,10 +61,13 @@ certificate.
 many and alike, and over them the worst case is one draw. :func:`cvar_allocate` takes the readings
 and a reference split, the plan in place, and chooses the split whose mean gain over the reference
 in the worst ``level`` share of the readings is the most: the gain's conditional value at risk
-(Rockafellar and Uryasev 2000). The reference gains nothing under any reading, so the split never
-does worse in that share than keeping it; at ``level = 1`` it is the split for the mean return. The
-share's mean gain is concave in the split where the curves are, and the same cutting planes close
-on it from above.
+(Rockafellar and Uryasev 2000). Every gain is read on the curves, and the reference gains nothing
+under any reading, so the split never does worse in that share than keeping it; at ``level = 1``
+it is the split for the mean return. The share's mean gain is concave in the split where the curves
+are, and the same cutting planes close on it from above. On S-shaped curves the planes are the
+tangents of each curve's envelope over the box, which stand above the curve, so they still bound
+the share's mean gain from above, and the split returned is the best of those they propose, read
+on the curves, the reference among them.
 
 **What a wrong channel costs the plan.** A plan made on channels whose parameters are off by ``d``
 loses ``d' W d / 2`` of the worth the true channels' plan returns, to second order:
@@ -118,9 +121,12 @@ HONEST SCOPE:
   bisection of the price, as a plan on concave curves does. The bound on the first box's gap holds
   only as stated above: a longer kernel runs each period at its own adstock, and a floor or a cap
   inside a chord holds its channel there, each with an excess of its own.
-* :func:`minimax_allocate`, :func:`cvar_allocate`, :func:`allocate_geos` and the goals plan S-shaped
-  curves on their envelopes from zero spend, unsearched, and their plans can fall short on the
-  curves by as much as the envelopes stand above them.
+* :func:`minimax_allocate`, :func:`allocate_geos` and the goals plan S-shaped curves on their
+  envelopes from zero spend, unsearched, and their plans can fall short on the curves by as much as
+  the envelopes stand above them. :func:`cvar_allocate` reads its gains on the curves and only its
+  bound on the envelopes over the box: its split never loses to the reference in the worst share,
+  but on S-shaped curves its bound can stand above the best split's by as much as the envelopes
+  stand above the curves.
 * A split for several readings is robust to the readings it is given and to no other: it hedges
   between the families the tests could not tell apart, not against one none of them is. On an
   S-shaped curve the regret is the envelope's.
@@ -281,11 +287,12 @@ class CvarAllocation:
     Attributes:
         spend: ``(channels,)`` spend a period, in the budget's currency.
         gain: ``(readings,)`` each reading's return on the split less its return on the reference,
-            both on its envelopes.
+            both on its curves.
         cvar: the mean of the worst ``level`` share of ``gain``, the split's; never below 0, which
             is the reference's own.
         bound: no split in the box at the budget has a ``cvar`` above this, so ``bound - cvar``
-            bounds how far the split is from the best.
+            bounds how far the split is from the best. On S-shaped curves it is read on their
+            envelopes over the box, and may stand above every split's ``cvar``.
     """
 
     spend: np.ndarray
@@ -1020,18 +1027,25 @@ def cvar_allocate(
 
     Each reading is a whole set of channels, one a column, as :func:`minimax_allocate` takes them:
     a posterior's draws, say, weighed alike. A split's gain under a reading is its return less the
-    reference's, both on the reading's envelopes, and the split returned has the most mean gain
-    over the worst ``level`` share of the readings, to a share ``1e-9`` of the reference's largest
-    return or as near as 500 rounds of cutting planes come. The reference spends the budget in the
-    box and gains nothing under any reading, so the split returned never does worse in that share
-    than keeping it. At ``level = 1`` the split has the most mean gain, the posterior's expected
-    return; as the level falls it moves only as far as the worst readings agree it gains.
+    reference's, both on the reading's curves, and where every curve is concave the split returned
+    has the most mean gain over the worst ``level`` share of the readings, to a share ``1e-9`` of
+    the reference's largest return or as near as 500 rounds of cutting planes come. The reference
+    spends the budget in the box and gains nothing under any reading, so the split returned never
+    does worse in that share than keeping it. At ``level = 1`` the split has the most mean gain, the
+    posterior's expected return; as the level falls it moves only as far as the worst readings
+    agree it gains.
 
     The mean of the worst share is ``max_eta eta - E[(eta - gain)_+] / level`` (Rockafellar and
     Uryasev 2000), concave in the split where every curve is concave. The cutting planes (Kelley
     1960) are every reading's tangent at every split tried, starting from the reference, and the
     linear program over them bounds the most from above; its solution, moved onto the budget, is
-    the next split tried.
+    the next split tried. A curve that starts convex is replaced, for the planes alone, by its
+    envelope over the box, which stands above it and is concave in the rate, so the program still
+    bounds the share's mean gain on the curves from above. Its splits are then candidates: the one
+    returned is the best of those tried, read on the curves, and the bound may stand above it by as
+    much as the envelopes stand above the curves. Two Hill curves of slope 3 at scales 1 and 1.01, a
+    budget of 1.6 and the reference all on the first: the planes propose ``[1.27, 0.33]``, which
+    returns 0.705 against the reference's 0.804, so the reference is returned, its ``cvar`` 0.
 
     Args:
         readings: the readings, each with one channel a column; at least one.
@@ -1073,13 +1087,29 @@ def cvar_allocate(
             f"the reference spends {float(reference.sum())} a period and the budget {rate}; the "
             "gain is read against a split of the same budget"
         )
-    envelopes = [_worths(relax(reading), spent, periods) for reading in readings]
+    curves = [_worths(reading, spent, periods) for reading in readings]
+    envelopes = [
+        tuple(
+            _bounded(worth, low, high)
+            for worth, low, high in zip(worths, lower_rates, upper_rates, strict=True)
+        )
+        for worths in curves
+    ]
+    # where every curve is concave each envelope is its curve, and a split's gains are read once
+    alike = all(
+        envelope is worth
+        for pair in zip(envelopes, curves, strict=True)
+        for envelope, worth in zip(*pair, strict=True)
+    )
 
-    def returns(split: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Every reading's return on ``split``, and its slope in each channel's rate."""
-        values = np.empty(len(readings))
-        slopes = np.empty((len(readings), size))
-        for index, worths in enumerate(envelopes):
+    def returns(
+        split: np.ndarray, on: Sequence[tuple[_Worth, ...]]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Every reading's return on ``split`` read on its worths in ``on``, and its slope in each
+        channel's rate."""
+        values = np.empty(len(on))
+        slopes = np.empty((len(on), size))
+        for index, worths in enumerate(on):
             pairs = [
                 _value_and_slope(w, jnp.asarray(r, dtype=float))
                 for w, r in zip(worths, split, strict=True)
@@ -1088,7 +1118,7 @@ def cvar_allocate(
             slopes[index] = [float(slope) for _, slope in pairs]
         return values, slopes
 
-    base, _ = returns(reference)
+    base, _ = returns(reference, curves)
     count = len(readings)
     scale = float(np.max(np.abs(base))) or 1.0
     # the variables are the rates, eta and one excess u_r a reading; each plane reads
@@ -1100,21 +1130,25 @@ def cvar_allocate(
         [np.tile(np.arange(size + 1), (count, 1)), size + 1 + np.arange(count)[:, None]], axis=1
     ).ravel()
     best, chosen, gains = -np.inf, reference, np.zeros(count)
+    # the most the share's mean gain reads on the envelopes, where the planes close
+    relaxed = -np.inf
     ceiling = np.inf
     splits = [reference]
     for _ in range(_ROUNDS):
         for tried in splits:
-            values, slopes = returns(tried)
-            gain = values - base
-            value = _cvar(gain, level)
+            values, slopes = returns(tried, envelopes)
+            gain = values - base  # above the gain on the curves, by the envelope's excess
+            relaxed = max(relaxed, _cvar(gain, level))
+            actual = gain if alike else returns(tried, curves)[0] - base
+            value = _cvar(actual, level)
             if value > best:
-                best, chosen, gains = value, tried, gain
+                best, chosen, gains = value, tried, actual
             plane = np.concatenate([-slopes / scale, np.ones((count, 1)), -np.ones((count, 1))], 1)
             rows.append(
                 sparse.coo_array((plane.ravel(), (lines, columns)), shape=(count, size + 1 + count))
             )
             limits.append((gain - slopes @ tried) / scale)
-        if ceiling - best <= _GAP * scale:
+        if ceiling - relaxed <= _GAP * scale:
             break
         program = linprog(
             np.concatenate([np.zeros(size), [-1.0], np.full(count, 1.0 / (level * count))]),
