@@ -212,7 +212,6 @@ __all__ = [
 ]
 
 _EPS = float(np.finfo(float).eps)
-_TINY = float(np.finfo(float).tiny)
 # the cutting planes stop when the worst regret is this share of the largest best return above
 # their bound, or after this many rounds, the gap then reported as it stands
 _GAP, _ROUNDS = 1e-9, 500
@@ -2308,14 +2307,17 @@ def _onto(split: np.ndarray, lower: np.ndarray, upper: np.ndarray, rate: float) 
     """The nearest split to ``split`` in the box whose rates sum to ``rate``: every rate shifted
     by one amount and clipped to its box, the amount where the sum is ``rate``."""
 
-    def excess(shift: float) -> float:
-        return float(np.clip(split + shift, lower, upper).sum()) - rate
-
-    low, high = float(np.min(lower - split)), float(np.max(upper - split))
-    if excess(low) >= 0.0:
+    # the sum is linear in the amount between the amounts that take a rate to its floor or its cap
+    shifts = np.unique(np.concatenate([lower - split, upper - split]))
+    sums = np.clip(split + shifts[:, None], lower, upper).sum(axis=1)
+    if sums[0] >= rate:
         return lower.copy()
-    if excess(high) <= 0.0:
+    if sums[-1] <= rate:
         return upper.copy()
-    # four ulps of a rate below about 1e-293 round to a tolerance of zero, which brentq refuses
-    tolerance = max(4 * _EPS * rate, _TINY)
-    return np.clip(split + brentq(excess, low, high, xtol=tolerance), lower, upper)
+    # the amount is read off the first piece whose end reaches the rate, as a share of the piece:
+    # a root finder's step there multiplies two of its lengths, and below about 1e-157 that product
+    # underflows to zero, which kept brentq stepping by its tolerance past its hundred iterations
+    end = int(np.searchsorted(sums, rate))
+    share = (rate - sums[end - 1]) / (sums[end] - sums[end - 1])
+    shift = shifts[end - 1] + share * (shifts[end] - shifts[end - 1])
+    return np.clip(split + shift, lower, upper)

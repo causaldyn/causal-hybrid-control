@@ -123,12 +123,19 @@ still change).
   on a log of fewer transitions than channel coefficients, a defect since 0.9.0: its thin SVD read
   one direction a transition, so three transitions under a nuisance that spans them named 3 of the
   9 unmoved directions. Each is named now.
-- **`cvar_allocate` plans a budget below about `1e-293`**, a defect since 0.11.0. It moves a split
-  onto the budget's line by a root found to four ulps of the rate, a tolerance that such a rate
-  makes subnormal or zero: scipy refused a budget of `7.59e-310` with `xtol too small`, and could
-  stall on a subnormal one. The tolerance is now at least the least normal float, so budgets above
-  about `1e-293` are planned as before, bit for bit. `minimax_allocate` moves its splits the same
-  way.
+- **`cvar_allocate` plans a budget however small**, a defect since 0.11.0. It moves a split onto
+  the budget's line, every rate shifted by one amount and clipped to its box, and found the amount
+  with scipy's `brentq` to four ulps of the rate. Below a rate of about `1e-157` brentq's
+  interpolating step, a product of two numbers of the rate's size, underflows to zero: it then
+  stepped by its tolerance, halving its bracket about every third step, and ran out of its hundred
+  iterations. A budget of `1e-160` raised `Failed to converge`, as did 922 of 1000 random
+  projections at rates from `1e-300` to `1e-150`. Below about `1e-293` the tolerance itself rounds
+  to zero, and scipy refused a budget of `7.59e-310` with `xtol too small`. The amount is now read
+  in closed form, off the piece of the clipped sum where it reaches the rate, the sum being linear
+  between the amounts that take a rate to its floor or its cap. On 20000 random projections at
+  every scale, subnormal rates among them, the split stands within 2 ulps of the largest number
+  given of the exact projection, worked in rationals. At rates near 1 a split moves by at most 2.5
+  ulps of that number. `minimax_allocate` moves its splits by the same projection.
 
 ## [0.12.1] — 2026-10-05
 

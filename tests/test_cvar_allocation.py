@@ -10,6 +10,8 @@ the boxes' search is checked against every split of a grid, with and without car
 """
 
 import logging
+from fractions import Fraction
+from itertools import pairwise
 
 import equinox as eqx
 import jax
@@ -282,12 +284,13 @@ def test_a_split_the_envelopes_favour_does_not_lose_to_the_reference_on_the_curv
     assert plan.bound <= 1e-9 * 1.6**3 / (1.6**3 + 1.0)
 
 
-def test_a_budget_below_the_least_normal_float_is_planned():
-    """A split was moved onto the budget's line to four ulps of the rate, which a rate below about
-    ``1e-293`` rounds to a tolerance of zero, and scipy's root finder refused it: a budget of
-    ``7.59e-310`` raised ``xtol too small``."""
+@pytest.mark.parametrize("budget", [1e-160, 7.59e-310])
+def test_a_budget_however_small_is_planned(budget):
+    """A split was moved onto the budget's line by scipy's root finder, to four ulps of the rate:
+    below about ``1e-157`` its interpolating steps underflowed to zero, and a budget of ``1e-160``
+    raised ``Failed to converge``; below about ``1e-293`` the tolerance rounded to zero, and a
+    budget of ``7.59e-310`` raised ``xtol too small``."""
     reading = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0))
-    budget = 7.59e-310
     plan = cvar_allocate(
         [reading] * 3,
         budget,
@@ -298,7 +301,7 @@ def test_a_budget_below_the_least_normal_float_is_planned():
         upper=np.array([1.0, 4.0]),
     )
     assert np.all((plan.spend >= 0.0) & (plan.spend <= [1.0, 4.0]))
-    assert abs(plan.spend.sum() - budget) <= 2.0 * np.finfo(float).tiny
+    assert abs(plan.spend.sum() - budget) <= 4 * np.spacing(budget)
     assert plan.cvar >= 0.0
 
 
@@ -512,6 +515,56 @@ def test_a_curve_whose_tangency_is_not_found_is_refused_by_both_planners(plan):
     box = {"lower": np.zeros(2), "upper": np.full(2, 2.0)}
     with pytest.raises(RuntimeError, match=r"^_Unturned\(.*no tangency within 2\^64 times its"):
         plan(reading, box)
+
+
+def _projected(
+    split: np.ndarray, lower: np.ndarray, upper: np.ndarray, rate: float
+) -> list[Fraction]:
+    """The box's split nearest ``split`` whose rates sum to ``rate``, in rationals: between two
+    consecutive shifts that take a rate to its floor or its cap, the rates that move are known, and
+    the shift that meets the budget spreads what the others leave over them."""
+    split_, lower_, upper_ = ([Fraction(x) for x in v] for v in (split, lower, upper))
+    budget = Fraction(rate)
+    if sum(lower_) >= budget:
+        return lower_
+    if sum(upper_) <= budget:
+        return upper_
+    bounds = list(zip(split_, lower_, upper_, strict=True))
+    kinks = sorted({a - s for s, a, _ in bounds} | {b - s for s, _, b in bounds})
+    for left, right in pairwise(kinks):
+        moving = [a - s <= left and right <= b - s for s, a, b in bounds]
+        if not any(moving):
+            continue
+        pairs = list(zip(bounds, moving, strict=True))
+        held = sum(a if a - s >= right else b for (s, a, b), m in pairs if not m)
+        free = sum(s for (s, _, _), m in pairs if m)
+        shift = (budget - held - free) / sum(moving)
+        if left <= shift <= right:
+            return [min(max(s + shift, a), b) for s, a, b in bounds]
+    raise AssertionError("no piece meets the budget")
+
+
+@settings(max_examples=300, deadline=None)
+@given(data=st.data(), size=st.integers(1, 6), exponent=st.integers(-320, 10))
+def test_a_split_is_moved_onto_the_budget_where_exact_arithmetic_puts_it(data, size, exponent):
+    """At every scale, subnormal budgets among them, the split moved onto the budget is the exact
+    projection to ``size + 3`` ulps of the largest number it is given, a rounding a rate summed and
+    three in the shift; the most over 20000 draws was 2. scipy's root finder, which found it
+    before, raised on budgets from about 1e-157 to 1e-293, its steps there underflowing to 0."""
+
+    def draws(least: float, most: float) -> np.ndarray:
+        return np.array(data.draw(st.lists(st.floats(least, most), min_size=size, max_size=size)))
+
+    scale = 10.0**exponent
+    lower = draws(0.0, 10.0) * scale
+    upper = lower + draws(0.0, 10.0) * scale
+    split = lower + draws(-0.5, 1.5) * (upper - lower)
+    rate = float(lower.sum() + data.draw(st.floats(0.0, 1.0)) * (upper.sum() - lower.sum()))
+    moved = _onto(split, lower, upper, rate)
+    exact = _projected(split, lower, upper, rate)
+    largest = float(np.max(np.abs(np.concatenate([lower, upper, split, [rate]]))))
+    error = max(abs(Fraction(x) - y) for x, y in zip(moved, exact, strict=True))
+    assert error <= (size + 3) * Fraction(np.spacing(largest))
 
 
 @settings(max_examples=300, deadline=None)
