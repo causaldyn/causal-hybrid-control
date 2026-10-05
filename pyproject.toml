@@ -44,7 +44,13 @@ dependencies = [
 # library is pure-JAX. econml/dowhy are deliberately NOT here -- econml brings numba, sparse,
 # statsmodels, shap and lightgbm for one adapter, and dowhy declares Python <3.14 -- so their adapters
 # (chc.estimators) are lazy-import, bring-your-own-env instead.
-trees = ["lightgbm>=4", "catboost>=1.2", "scikit-learn>=1.4"]  # lightgbm's sklearn API needs sklearn
+trees = [
+    "lightgbm>=4",
+    # 1.2.8 is the first catboost that loads beside numpy 2: 1.2.6 and 1.2.7 declare numpy<2, and
+    # the releases before them declare no cap and fail at import
+    "catboost>=1.2.8",
+    "scikit-learn>=1.4",  # lightgbm's sklearn API needs sklearn
+]
 # difference-in-differences inference for chc.did: Callaway-Sant'Anna's multiplier bootstrap and
 # Rambachan-Roth, lazily imported; below 4, since a major release may move the results it reads.
 # diff-diff declares Python below 3.15, so on 3.15 the extra is empty and the inference raises.
@@ -75,8 +81,10 @@ dev = [
     "ruff>=0.6",
     "ty>=0.0.61",
     # chc.frames accepts either frame library structurally and depends on neither; both are here so
-    # tests/test_frames.py can prove the two agree with each other and with a plain mapping.
-    "pandas>=2.0",
+    # tests/test_frames.py can prove the two agree with each other and with a plain mapping. 2.2.2 is
+    # the first pandas that loads beside numpy 2; 2.0 declares no cap on numpy, so a resolver would
+    # pair the two.
+    "pandas>=2.2.2",
     "polars>=1.0",
     "pytest-xdist>=3.8.0",
     # the did extra, so that CI runs chc.did's inference tests where diff-diff installs
@@ -89,7 +97,7 @@ notebooks = [
     "ipykernel>=6",
     "jupytext>=1.16",
     "matplotlib>=3.8",
-    "pandas>=2.0",
+    "pandas>=2.2.2",
 ]
 docs = [
     "mkdocs-material>=9.7.7",

@@ -328,7 +328,7 @@ viz = [
 
 [package.metadata]
 requires-dist = [
-    { name = "catboost", marker = "extra == 'trees'", specifier = ">=1.2" },
+    { name = "catboost", marker = "extra == 'trees'", specifier = ">=1.2.8" },
     { name = "diff-diff", marker = "python_full_version < '3.15' and extra == 'did'", specifier = ">=3.12,<4" },
     { name = "diffrax", specifier = ">=0.6" },
     { name = "equinox", specifier = ">=0.11.4" },
@@ -353,7 +353,7 @@ provides-extras = ["trees", "did", "cpu", "cuda13", "cuda12", "cuda13-local", "c
 dev = [
     { name = "diff-diff", marker = "python_full_version < '3.15'", specifier = ">=3.12,<4" },
     { name = "hypothesis", specifier = ">=6.100" },
-    { name = "pandas", specifier = ">=2.0" },
+    { name = "pandas", specifier = ">=2.2.2" },
     { name = "polars", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
@@ -370,7 +370,7 @@ notebooks = [
     { name = "jupytext", specifier = ">=1.16" },
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "nbconvert", specifier = ">=7" },
-    { name = "pandas", specifier = ">=2.0" },
+    { name = "pandas", specifier = ">=2.2.2" },
 ]
 viz = [{ name = "matplotlib", specifier = ">=3.8" }]
 
