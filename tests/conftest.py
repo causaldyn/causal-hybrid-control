@@ -16,6 +16,9 @@ import jax
 
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
+# jax 0.5.0 made this the default, and a key draws other numbers without it: the leg on the
+# dependency floors would otherwise test other data than every leg on the lockfile does
+jax.config.update("jax_threefry_partitionable", True)
 
 
 @pytest.fixture

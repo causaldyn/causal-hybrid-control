@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml runs the whole workflow on the tagged commit before it publishes anything.
+  workflow_call:
 
 permissions:
   contents: read
@@ -60,6 +62,23 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Sync dependencies
         run: uv sync --group dev ${{ matrix.without }}
+      - name: Tests
+        run: uv run --no-sync pytest
+
+  # The floors in pyproject.toml are published: an installer pairs chc with any version they admit,
+  # where every leg above runs the lockfile's. This one resolves each direct dependency to its
+  # floor, the `trees` extra's included, on the oldest Python, and runs the tests there; it is the
+  # one leg that installs that extra. The lockfile it resolves is not kept.
+  test-lowest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.11"
+      - name: Sync the floors
+        run: uv sync --group dev --extra trees --resolution lowest-direct
       - name: Tests
         run: uv run --no-sync pytest
 
