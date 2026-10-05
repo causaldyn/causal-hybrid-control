@@ -27,6 +27,14 @@ still change).
   `allocate_geos` plan S-shaped curves on the envelopes from zero spend as before, so on them
   `budget_for`'s plan is no longer what `allocate` returns at its budget (ADR 0051).
 
+### Fixed
+
+- **`sequential_g_formula` refuses `folds` outside 2 to the rows**, a defect since 0.2.0. One fold
+  trained its regressions on no rows and the effect read 0; no folds left every row unwritten and
+  the effect read whatever the empty array held. Cross-fitting predicts each row from a fit on the
+  other folds, so it needs at least two and at most one a row; anything else, a float or a bool
+  among them, raises.
+
 ## [0.12.1] — 2026-10-05
 
 ### Added

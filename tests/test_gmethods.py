@@ -53,3 +53,19 @@ def test_mismatched_horizon_raises() -> None:
             regime=(1.0, 1.0),
             baseline=(0.0, 0.0),
         )
+
+
+@pytest.mark.parametrize("folds", [0, 1, 201, 2.0, True])
+def test_folds_outside_two_to_the_rows_are_refused(folds) -> None:
+    """One fold trains on nothing and returned 0; none left every row unwritten and returned what
+    the empty array held."""
+    data = _time_varying_confounded(200, seed=4)
+    with pytest.raises(ValueError, match=r"folds=.*from 2 to the rows \(200\)"):
+        sequential_g_formula(data, regime=(1.0, 1.0), baseline=(0.0, 0.0), folds=folds, **SPEC)
+
+
+@pytest.mark.parametrize("folds", [2, np.int64(3), 200])
+def test_folds_from_two_to_the_rows_are_accepted(folds) -> None:
+    data = _time_varying_confounded(200, seed=4)
+    effect = sequential_g_formula(data, regime=(1.0, 1.0), baseline=(0.0, 0.0), folds=folds, **SPEC)
+    assert np.isfinite(effect)

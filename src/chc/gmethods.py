@@ -62,7 +62,12 @@ def sequential_g_formula(
     value under the two interventions. Iterated conditional expectation: regress the running
     pseudo-outcome on the history through time ``t``, set ``A_t`` to the regime value, then recurse
     to ``t = 0``, standardising over each confounder's realised post-treatment distribution rather
-    than conditioning on it. The nuisance regressions are cross-fitted.
+    than conditioning on it. The nuisance regressions are cross-fitted over ``folds`` folds, each
+    row predicted by the fit on the others, so there are at least two and at most one a row.
+
+    Raises:
+        ValueError: when the treatments, confounders, regime and baseline differ in length, or
+            ``folds`` is not a whole number from 2 to the rows.
     """
     if not len(treatments) == len(confounders) == len(regime) == len(baseline):
         msg = "treatments, confounders, regime, and baseline must share one length (the horizon)"
@@ -70,6 +75,12 @@ def sequential_g_formula(
     horizon = len(treatments)
     columns = _float64_columns(data)
     n = int(columns[outcome].shape[0])
+    if not isinstance(folds, int | np.integer) or not 2 <= folds <= n:
+        msg = (
+            f"folds={folds!r}: cross-fitting predicts each row from a fit on the other folds, so "
+            f"it needs a whole number of folds from 2 to the rows ({n})"
+        )
+        raise ValueError(msg)
     fold_indices = _folds(n, folds, seed)
 
     def g_value(values: tuple[float, ...]) -> float:
