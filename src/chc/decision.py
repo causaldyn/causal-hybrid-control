@@ -45,7 +45,7 @@ from numpy.typing import ArrayLike, NDArray
 from chc.control import LinearConstraint, SolverStatus
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
-from chc.dynamics_id import CausalDynamicsFit, Integrator, fit_causal_residual
+from chc.dynamics_id import CausalDynamicsFit, Integrator, _unmoved_actions, fit_causal_residual
 from chc.evaluation import (
     AffinePolicy,
     AffineSchedule,
@@ -270,6 +270,10 @@ class DecisionCertificate:
     # curvature is sampled at the plan and a few points, and the bound is ``diagnostic``. None where
     # no plan was solved.
     regret_status: RegretStatus | None = None
+    # The levers whose whole channel the log never moved (:attr:`CausalDynamicsFit.unmoved`): the
+    # fit's channel for them is the ridge's, so the plan holds each at its mean logged level, and
+    # with every lever here there is no plan.
+    unmoved_levers: tuple[str, ...] = ()
 
     @property
     def trustworthy_steps(self) -> int:
@@ -655,6 +659,14 @@ class Prescription:
             "",
             f"- identification: **{certificate.identification}** ({certificate.adjustment.reason})",
             f"- adjusted for: {list(certificate.adjustment.covariates) or 'nothing'}",
+            *(
+                [
+                    "- never moved by the log, so held at their logged level: "
+                    + ", ".join(f"`{name}`" for name in certificate.unmoved_levers)
+                ]
+                if certificate.unmoved_levers
+                else []
+            ),
             *self._driver_lines(),
             f"- channel standard error: {_show(certificate.identification_radius)}",
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
@@ -703,6 +715,7 @@ class Prescription:
                 "trustworthy_steps": certificate.trustworthy_steps,
                 "regret_bound": certificate.regret_bound,
                 "regret_status": certificate.regret_status,
+                "unmoved_levers": list(certificate.unmoved_levers),
             },
             "selection": None
             if self.selection is None
@@ -827,7 +840,8 @@ def prescribe(
             at zero** at every step: the level at which the fitted control-affine channel credits
             it with no effect and its ``unit_cost`` charges nothing, and the level
             :meth:`InterventionSchedule.windows` reads as inactive. So every lever's box must
-            contain zero. The steps, each with its planned cost and regret bound, are
+            contain zero. A lever the log never moved is no candidate, and stays at its logged
+            level (below). The steps, each with its planned cost and regret bound, are
             :attr:`Prescription.selection`; the certificate's regret bound stays priced against
             every lever's box, so it includes what leaving levers out cost. ``None`` plans with
             every lever, as before; a value at or above the number of levers selects them all and
@@ -880,11 +894,18 @@ def prescribe(
         KeyError: a lever, target, constraint, driver or asserted covariate names a column the
             panel does not have. The message lists the panel's columns.
 
+    A lever whose whole channel the log never moves apart from what the states and the covariates
+    predict (:attr:`~chc.dynamics_id.CausalDynamicsFit.unmoved`) is not identified on this log: the
+    fit's channel for it is the ridge's, which no transition informs. The plan holds it at its mean
+    logged level, clipped to its box, and :attr:`DecisionCertificate.unmoved_levers` names it. With
+    every lever so there is no plan, and the identification is ``not_identified``, its reason
+    naming them.
+
     Each decision point emits one ``logging`` record on ``chc.decision``, keyed by ``chc_event``
     (see :data:`_log`). Nothing is configured here; a caller that wants them calls
-    ``logging.basicConfig`` itself. An unidentified effect, a single-precision panel, a forecast
-    outside the logged range and levers that read more than the record says come through at
-    ``WARNING``.
+    ``logging.basicConfig`` itself. An unidentified effect, a lever the log never moved, a
+    single-precision panel, a forecast outside the logged range and levers that read more than the
+    record says come through at ``WARNING``.
 
     Before fitting, the panel is asked whether the levers read anything but the states and their
     recorded parents: :attr:`Prescription.logger_check` (*experimental*). It reports; it changes
@@ -1028,12 +1049,20 @@ def prescribe(
         if resolved.status == "not_identified"
         else ("identified" if isinstance(adjustment, CausalGraph) else "asserted")
     )
+    unmoved = _unmoved_actions(fit)
+    unmoved_levers = tuple(lever_names[index] for index in unmoved)
+    abort = "no schedule: no observed set identifies the effect"
+    if identification != "not_identified" and len(unmoved) == n_levers:
+        identification, abort = "not_identified", "no schedule: the log never moves a lever"
+        resolved = AdjustmentSet(
+            resolved.covariates,
+            "not_identified",
+            f"{resolved.reason}; but the log never moves {list(unmoved_levers)} apart from what "
+            "the states and the covariates predict, so no transition shows what moving them does",
+        )
 
     if identification == "not_identified":
-        _log.warning(
-            "no schedule: no observed set identifies the effect",
-            extra={"chc_event": "abort", "reason": resolved.reason},
-        )
+        _log.warning(abort, extra={"chc_event": "abort", "reason": resolved.reason})
         return Prescription(
             levers=tuple(levers),
             target=target.name,
@@ -1050,6 +1079,7 @@ def prescribe(
                 solver_status=None,
                 solver_iterations=0,
                 regret_bound=None,
+                unmoved_levers=unmoved_levers,
             ),
             model_fit=fit,
             provenance=panel.provenance,
@@ -1074,8 +1104,28 @@ def prescribe(
         forecast = jnp.stack([jnp.asarray(driver.forecast, dtype=float) for driver in drivers], 1)
         model = DrivenDynamics(model, fit.driver_gain, forecast, dt)
     start = jnp.asarray(data["x0"]) if x0 is None else jnp.asarray(x0)
-    u_lo = jnp.array([lever.lo for lever in levers])
-    u_hi = jnp.array([lever.hi for lever in levers])
+    # a lever the log never moved is held at its mean logged level, the one level the fit has seen
+    # its push at, which the drift has absorbed
+    held_at = jnp.array(unmoved, dtype=int)
+    levels = jnp.array(
+        [jnp.clip(jnp.mean(data["u"][:, i]), levers[i].lo, levers[i].hi) for i in unmoved]
+    )
+    if unmoved:
+        _log.warning(
+            "levers the log never moved are held at their logged level",
+            extra={
+                "chc_event": "unmoved",
+                "levers": list(unmoved_levers),
+                "levels": np.asarray(levels).tolist(),
+            },
+        )
+
+    def pin(lo: Array, hi: Array) -> tuple[Array, Array]:
+        return lo.at[held_at].set(levels), hi.at[held_at].set(levels)
+
+    u_lo, u_hi = pin(
+        jnp.array([lever.lo for lever in levers]), jnp.array([lever.hi for lever in levers])
+    )
     u_max = float(jnp.max(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))))
     caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
     rate = LinearConstraint.rate_limit(horizon, caps)
@@ -1096,6 +1146,7 @@ def prescribe(
     model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
 
     def solve(lo: Array, hi: Array) -> CausalPlan:
+        lo, hi = pin(lo, hi)
         solved = causal_plan(
             model,
             start,
@@ -1128,7 +1179,7 @@ def prescribe(
         plan = solve(u_lo, u_hi)
     else:
         idle = total_cost(model, start, jnp.zeros((horizon, n_levers)), dt, planning_cost)
-        plan, steps = _select_levers(levers, max_levers, solve, price)
+        plan, steps = _select_levers(levers, max_levers, solve, price, held=frozenset(unmoved))
         selection = LeverSelection(idle_cost=float(idle), steps=steps)
 
     _log.info(
@@ -1170,6 +1221,7 @@ def prescribe(
         regret_bound=gap.bound,
         gamma=None if safety is None else float(gamma),
         regret_status=gap.status,
+        unmoved_levers=unmoved_levers,
     )
     _log.info(
         "decision certified",
@@ -1182,6 +1234,7 @@ def prescribe(
             "trustworthy_steps": certificate.trustworthy_steps,
             "regret_bound": certificate.regret_bound,
             "regret_status": certificate.regret_status,
+            "unmoved_levers": list(certificate.unmoved_levers),
         },
     )
     return Prescription(
@@ -1208,22 +1261,23 @@ def _select_levers(
     max_levers: int,
     solve: Callable[[Array, Array], CausalPlan],
     price: Callable[[CausalPlan], float],
+    held: frozenset[int] = frozenset(),
 ) -> tuple[CausalPlan, tuple[SelectionStep, ...]]:
     """Greedy forward selection: add the lever whose plan ranks first, ``max_levers`` times at most.
 
     Each candidate is a cold solve on its own box, the levers not in it pinned to ``[0, 0]``, so its
     plan is the one :func:`prescribe` would make for that set alone, whatever the path to it; once
     every lever is in, the plan is the one ``max_levers=None`` makes. Ties go to the lever listed
-    first.
+    first. The levers in ``held`` are never candidates: ``solve`` holds them where they are.
     """
     chosen: list[int] = []
     plans: list[CausalPlan] = []
     steps: list[SelectionStep] = []
-    for _ in range(min(max_levers, len(levers))):
+    for _ in range(min(max_levers, len(levers) - len(held))):
         started = time.perf_counter()
         candidates: dict[int, CausalPlan] = {}
         for index in range(len(levers)):
-            if index in chosen:
+            if index in chosen or index in held:
                 continue
             keep = {*chosen, index}
             lo = jnp.array([lever.lo if i in keep else 0.0 for i, lever in enumerate(levers)])

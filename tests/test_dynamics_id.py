@@ -20,6 +20,8 @@ from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import (
     CausalDynamicsFit,
     ConfoundedControlAffineSystem,
+    _unmoved_actions,
+    _unmoved_directions,
     fit_causal_residual,
     solve_channel_moment,
 )
@@ -1117,6 +1119,72 @@ def test_the_fit_names_the_directions_its_log_never_moves(
     )
     assert fit.unmoved is not None
     assert fit.unmoved.shape[1] == unmoved
+
+
+@pytest.mark.parametrize(
+    ("rows", "actions", "nuisance_degree", "unmoved"),
+    [(3, 3, 2, 9), (2, 1, 0, 1)],
+    ids=["a nuisance that spans the rows", "a log of two transitions"],
+)
+def test_a_log_shorter_than_the_channel_names_every_direction_it_cannot_reach(
+    rows: int, actions: int, nuisance_degree: int, unmoved: int
+) -> None:
+    """Fewer transitions than channel coefficients a state, two states and an affine channel: three
+    rows under a nuisance of degree 2, which spans them and leaves nothing of the three actions, so
+    all nine directions are unmoved; two rows under the mean alone, which move two directions of
+    three and leave one. A thin SVD read only as many directions as rows, and returned three and
+    none."""
+    states = jax.random.normal(jax.random.key(0), (rows, 2))
+    taken = jax.random.normal(jax.random.key(1), (rows, actions))
+    covariates = jnp.concatenate([states, jnp.ones((rows, 1))], axis=1)
+    null = _unmoved_directions(taken, states, covariates, nuisance_degree, 1)
+    assert null.shape == (3 * actions, unmoved)
+    np.testing.assert_allclose(np.linalg.norm(null, axis=0), 1.0, rtol=1e-12)
+
+
+def _both(
+    first: Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray],
+    second: Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray],
+) -> Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray]:
+    return lambda rng, x, z: np.concatenate([first(rng, x, z), second(rng, x, z)], axis=1)
+
+
+@pytest.mark.parametrize(
+    ("actions", "channel_degree", "unmoved"),
+    [
+        (_both(_dithered, _dithered), 0, ()),
+        (_both(_determined(1.0), _dithered), 0, (0,)),
+        (_both(_dithered, _determined(1.0)), 1, (1,)),
+        (_both(_determined(1.0), _determined(2.0)), 1, (0, 1)),
+        (lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 0.0]), 0, (1,)),
+        (lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 2.0]), 1, ()),
+    ],
+    ids=[
+        "both dithered",
+        "the first determined",
+        "the second determined, affine channel",
+        "both determined",
+        "the second never used",
+        "the second twice the first",
+    ],
+)
+def test_an_action_is_unmoved_where_every_direction_of_its_own_channel_is(
+    actions: Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray],
+    channel_degree: int,
+    unmoved: tuple[int, ...],
+) -> None:
+    """Two states and two actions: an action the covariates determine, or one never used, leaves
+    its channel unmoved on both states. Two actions that move together leave unmoved a direction
+    that both share and neither owns, so neither is unmoved."""
+    fit = fit_causal_residual(
+        _known,
+        _policy_log(4000, actions),
+        0.1,
+        adjust_for=("z",),
+        nuisance_degree=2,
+        channel_degree=channel_degree,
+    )
+    assert _unmoved_actions(fit) == unmoved
 
 
 def test_a_policy_the_covariates_determine_reads_as_a_confident_wrong_channel() -> None:

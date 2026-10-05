@@ -134,6 +134,94 @@ def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
     assert "no schedule" in result.report().lower()
 
 
+def _policy_logs(offset: float, random_lever: float) -> dict[str, np.ndarray]:
+    """Eighty units of twelve periods whose lever ``u`` the policy sets from the confounder and the
+    state alone, ``offset + 0.9 z - 0.3 y``, beside a lever ``v`` drawn at random that pushes ``y``
+    by ``random_lever``."""
+    rng = np.random.default_rng(0)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "y", "u", "v", "z")}
+    for unit in range(80):
+        y = rng.normal()
+        for period in range(12):
+            z = rng.normal()
+            u, v = offset + 0.9 * z - 0.3 * y, rng.normal()
+            for name, value in zip(rows, (unit, period, y, u, v, z), strict=True):
+                rows[name].append(value)
+            rate = -0.5 * y + 0.8 * u + random_lever * v + 1.5 * z
+            y = y + DT * rate + rng.normal(0.0, 0.01)
+    return {name: np.asarray(values) for name, values in rows.items()}
+
+
+def _prescribe_policy(logs: dict[str, np.ndarray], levers: list[Lever], **kwargs: object):
+    edges = [("z", "u"), ("z", "y"), *((lever.name, "y") for lever in levers)]
+    return prescribe(
+        Panel.from_frame(logs, unit="unit", time="time", seed=0),
+        levers=levers,
+        target=Target("y", value=1.0),
+        adjustment=CausalGraph.from_edges(edges),
+        horizon=3,
+        dt=DT,
+        tolerance=0.5,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_a_lever_the_log_never_moved_gives_no_schedule(caplog) -> None:
+    """A review's case: the policy sets the lever from the confounder and the state, so nothing of
+    it is left once they are adjusted for, and the ridge sets its channel, near zero where the truth
+    is 0.8. The plan on that channel was certified over every step; now there is none."""
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        result = _prescribe_policy(
+            _policy_logs(0.0, 0.0), [Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05)]
+        )
+    certificate = result.certificate
+    assert (certificate.identification, certificate.unmoved_levers) == ("not_identified", ("u",))
+    assert certificate.adjustment.status == "not_identified"
+    assert result.plan is None
+    assert (certificate.trustworthy_steps, certificate.solver_status) == (0, None)
+    with pytest.raises(NotIdentifiedError, match=r"the log never moves \['u'\]"):
+        _ = result.schedule
+    assert result.to_json()["certificate"]["unmoved_levers"] == ["u"]
+    assert "**No schedule.**" in result.report()
+    (abort,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "abort"]
+    assert abort.getMessage() == "no schedule: the log never moves a lever"
+
+
+@pytest.mark.parametrize(
+    ("max_levers", "most"),
+    [(None, 2.0), (1, 2.0), (2, 2.0), (None, 0.25)],
+    ids=["every lever", "one lever kept", "two levers kept", "a box below the logged level"],
+)
+def test_a_lever_the_log_never_moved_is_held_at_its_logged_level(caplog, max_levers, most) -> None:
+    """Beside a lever drawn at random, the one the policy sets is held at its mean over the
+    transitions, or at its box's end where the mean lies past it, at every step; greedy selection
+    never offers it. The certificate, the JSON, the report and a warning name it, and the random
+    lever is planned."""
+    logs = _policy_logs(0.5, 0.6)
+    levers = [Lever("u", lo=-2.0, hi=most, unit_cost=0.05), Lever("v", lo=-2.0, hi=2.0)]
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
+        result = _prescribe_policy(logs, levers, max_levers=max_levers)
+    certificate = result.certificate
+    assert (certificate.identification, certificate.unmoved_levers) == ("identified", ("u",))
+    assert result.plan is not None
+    actions = np.asarray(result.plan.actions)
+    mean = float(logs["u"].reshape(80, 12)[:, :-1].mean())  # each unit's last row starts nothing
+    assert mean > 0.25
+    logged = min(mean, most)
+    np.testing.assert_allclose(actions[:, 0], logged, rtol=1e-12, atol=0.0)
+    assert np.max(np.abs(actions[:, 1])) > 0.1
+    if max_levers is not None:
+        assert result.selection is not None
+        assert [step.lever for step in result.selection.steps] == ["v"]
+        offered = [r.candidates for r in caplog.records if r.getMessage() == "lever selected"]
+        assert [sorted(candidates) for candidates in offered] == [["v"]]
+    assert result.to_json()["certificate"]["unmoved_levers"] == ["u"]
+    assert "- never moved by the log, so held at their logged level: `u`" in result.report()
+    (held,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "unmoved"]
+    assert held.levers == ["u"]
+    assert held.levels == pytest.approx([logged], rel=1e-12, abs=0.0)
+
+
 def test_a_latent_parent_the_panel_does_not_hold_leaves_the_logger_unchecked() -> None:
     """The check conditions on the levers' parents, so it cannot run without one; the rest of the
     unidentified path goes on as before, whether or not the panel holds a column by that name."""

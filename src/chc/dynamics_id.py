@@ -355,6 +355,12 @@ def _unmoved_directions(
     size = jnp.linalg.norm(_channel_design(actions, states, channel_degree), axis=0)
     scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
     residual = _channel_design(left, states, channel_degree) * scale
+    # A log of fewer transitions than coefficients has fewer singular values than directions, and a
+    # thin SVD returns no row for the rest, which no transition moves: zero rows bring them back
+    # with a singular value of 0.
+    short = residual.shape[1] - residual.shape[0]
+    if short > 0:
+        residual = jnp.concatenate([residual, jnp.zeros((short, residual.shape[1]))])
     _, singular, rows = jnp.linalg.svd(residual, full_matrices=False)
     null = rows[singular <= jnp.sqrt(jnp.finfo(singular.dtype).eps)].T * scale[:, None]
     return null / jnp.linalg.norm(null, axis=0)
@@ -376,6 +382,26 @@ def _unmoved_parameters(
             moves.append(jnp.concatenate([change.ravel(), -response.ravel()]))
     size = int(np.prod(shape)) + design.shape[1] * states
     return jnp.stack(moves, axis=1) if moves else jnp.zeros((size, 0))
+
+
+def _unmoved_actions(fit: CausalDynamicsFit) -> tuple[int, ...]:
+    """The actions whose whole channel the log never moved: every coefficient of theirs, on every
+    feature of the channel, in the span of :attr:`CausalDynamicsFit.unmoved`'s directions."""
+    states, actions, features = fit.residual.channel.shape
+    if fit.unmoved is None or fit.unmoved.shape[1] == 0:
+        return ()
+    # every state's channel is moved along the same directions, so the first state's block of its
+    # first moves holds them all
+    width = actions * features
+    basis = jnp.linalg.qr(fit.unmoved[:width, : fit.unmoved.shape[1] // states])[0]
+    moved = jnp.eye(width) - basis @ basis.T
+    precision = float(jnp.sqrt(jnp.finfo(basis.dtype).eps))
+    return tuple(
+        action
+        for action in range(actions)
+        if float(jnp.linalg.norm(moved[:, action * features : (action + 1) * features], 2))
+        <= precision
+    )
 
 
 def _state_weights(weights: Callable[[Array], Array], states: Array) -> Array:

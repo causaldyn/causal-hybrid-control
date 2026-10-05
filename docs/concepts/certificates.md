@@ -60,6 +60,9 @@ design record is
 `prescribe` gathers the tube, the barrier and the optimality gap into a `DecisionCertificate`,
 beside the identification status. The two axes are never merged: a plan can be fully certified
 against a channel nothing identifies, which is a trustworthy tube around a meaningless action.
+A lever the log never moves apart from what the states and the covariates predict is not
+identified on that log, whatever the graph says: `prescribe` holds it at its logged level and the
+certificate names it (`unmoved_levers`), and with every lever so there is no plan.
 
 ## Objectives are protected; constraints are not
 

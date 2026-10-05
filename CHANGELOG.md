@@ -79,6 +79,18 @@ still change).
   the effect read whatever the empty array held. Cross-fitting predicts each row from a fit on the
   other folds, so it needs at least two and at most one a row; anything else, a float or a bool
   among them, raises.
+- **`prescribe` no longer plans a lever the log never moved**, a defect since 0.5.0. A lever the
+  logging policy set from the states and the covariates alone leaves nothing of itself once they
+  are adjusted for, and the fit's channel for it is the ridge's: a lever logged as `0.9 z - 0.3 y`,
+  whose true channel is 0.8, was fitted near 0 with a standard error of 0.003, and the plan on it
+  was certified over every step. `prescribe` now reads `CausalDynamicsFit.unmoved`: a lever whose
+  whole channel the log never moved is held at its mean logged level, clipped to its box, and
+  greedy selection never offers it; `DecisionCertificate.unmoved_levers`, the JSON, the report and
+  a warning (`chc_event="unmoved"`) name it. With every lever unmoved there is no plan, and the
+  identification is `not_identified`, the reason naming them. `unmoved` itself missed directions
+  on a log of fewer transitions than channel coefficients, a defect since 0.9.0: its thin SVD read
+  one direction a transition, so three transitions under a nuisance that spans them named 3 of the
+  9 unmoved directions. Each is named now.
 - **`cvar_allocate` plans a budget below about `1e-293`**, a defect since 0.11.0. It moves a split
   onto the budget's line by a root found to four ulps of the rate, a tolerance that such a rate
   makes subnormal or zero: scipy refused a budget of `7.59e-310` with `xtol too small`, and could
