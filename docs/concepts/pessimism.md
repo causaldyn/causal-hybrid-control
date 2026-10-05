@@ -15,7 +15,9 @@ u* = argmin_u  J_task(u) + λ_unc·U(x,u) + λ_supp·D((x,u), 𝒟)
 - **`U` — calibrated predictive uncertainty.** [`chc.uncertainty`](../api/uncertainty.md) fits K
   residuals as a deep ensemble. Their disagreement is the epistemic uncertainty of the learned
   dynamics — large where members trained on the same data extrapolate apart — and split conformal
-  turns it into interval widths with a finite-sample coverage guarantee. A time-consistent
+  turns it into interval widths with a finite-sample marginal coverage guarantee, on data
+  exchangeable with the calibration split and from at least `(1 - alpha)/alpha` calibration
+  scores, which `calibrate` enforces. A time-consistent
   nested-CVaR aggregation keeps one very bad step from being averaged away.
 
 `pessimistic_control` combines the two, and the uncertainty scorers plug into its penalty channel,

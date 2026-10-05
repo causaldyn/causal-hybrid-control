@@ -15,11 +15,11 @@ version: 0.12.1
 date-released: "2026-10-05"
 abstract: >-
   Physics-structured dynamics with a learned causal residual, controlled by constrained optimal
-  control and MPC, and made safe on offline confounded data by an explicit pessimism and support
+  control and MPC, and hedged on offline confounded data by an explicit pessimism and support
   layer. Includes causal identification of a control-affine residual's control channel from
-  confounded logs, sensitivity-aware control under hidden confounding, control-barrier certification
-  under a partially identified effect, and a machine-checked (Rocq) result line at the causal/control
-  seam.
+  confounded logs, sensitivity-aware control under hidden confounding, a pointwise control-barrier
+  audit under a partially identified effect, and results at the causal/control seam whose algebraic
+  cores are machine-checked in Rocq.
 keywords:
   - causal inference
   - optimal control

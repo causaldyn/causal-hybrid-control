@@ -34,7 +34,9 @@ may change with a changelog entry arguing why.
 
 The README's tier table names the stable and the experimental modules one by one, and this tier as
 "`causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace`
-`mmm` and their neighbours", so every module it does not name is listed here as evolving.
+and their neighbours", so every module it does not name is listed here as evolving. `mmm` is filed
+here as a case-study plant: the saturating-carryover plant of the media-budget case study, not a
+media-mix model.
 
 ## Experimental
 

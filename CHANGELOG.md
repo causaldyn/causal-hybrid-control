@@ -173,6 +173,22 @@ still change).
   `dt = 1`, and a norm cannot see that the field contracts, its slope's eigenvalues running from
   -0.25 to -0.73.
 
+### Notes
+
+- **Each certificate's claim now carries its scope.** `docs/concepts/certificates.md` opens with a
+  table of what each certificate bounds, on what, under which premises, and where it is proved or
+  measured, and the README, the site and `CITATION.cff` link it instead of restating the claims.
+  Claims that said more than their proofs are corrected: the barrier audit checks the model's path
+  pointwise, a filter; `Γ*` is a ceiling for the problem along the plan's path, not for the plan;
+  the tube is a bound under a per-step error bound and a scale under `prescribe`; Rocq checks the
+  algebraic cores, each file's header saying what it takes as given; the evaluation certificate is
+  for a linear-Gaussian plant; split conformal needs exchangeable data and `(1 - alpha)/alpha`
+  calibration scores. The README said the BOPTEST forecast-MPC won on every KPI: it won on four of
+  five, its peak demand 2.0 % above the baseline's, and both `prescribe` comparisons on that plant
+  are void, the second with an adjusted loop that ran away once. The comparison table gains rows
+  for PyMC-Marketing, Robyn and Orbit and was read again on 2026-10-06. `chc.mmm` is filed as the
+  media-budget case study's plant.
+
 ## [0.12.1] — 2026-10-05
 
 ### Added

@@ -1,4 +1,4 @@
-"""The quickstart: from a panel of confounded logs to a certified schedule, in one call.
+"""The quickstart: from a panel of confounded logs to a schedule and its certificate, in one call.
 
 Run: uv run python docs/quickstart.py
 """

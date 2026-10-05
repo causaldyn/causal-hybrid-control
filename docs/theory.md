@@ -7,8 +7,8 @@ file, and the file is in one of the two directories below.
 
 ## Formal proofs — [`proofs/`](https://github.com/causaldyn/causal-hybrid-control/tree/main/proofs)
 
-The control and guarantee invariants are formally proved in Rocq, from the box-projection bounds
-and idempotence behind `project_box`
+The algebraic cores of the control and guarantee invariants are proved in Rocq, from the
+box-projection bounds and idempotence behind `project_box`
 ([`box_projection.v`](https://github.com/causaldyn/causal-hybrid-control/blob/main/proofs/box_projection.v))
 to the interference-aware regret certificate
 ([`interference_regret.v`](https://github.com/causaldyn/causal-hybrid-control/blob/main/proofs/interference_regret.v)).
@@ -19,7 +19,10 @@ with MathComp, at any dimension: the robust barrier margin over an operator or F
 multivariate van Trees regret identity, and the explicit constant of the certainty-equivalence
 regret bound.
 
-Two things bound what "proved" means here:
+Each file's header says what it proves and what it takes as given, and several prove only the
+algebraic core of a statement whose analytic half is derived in `validation/` and checked
+numerically. [The certificates' scopes](concepts/certificates.md#scopes) say which file stands
+behind which certificate. Two things bound what "proved" means here:
 
 - **Every lemma under `proofs/` is stated over Rocq's classical reals**, which are themselves
   axiomatic. The gate is therefore not "closed under the global context", which no such lemma can

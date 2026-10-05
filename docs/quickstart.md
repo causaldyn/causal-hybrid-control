@@ -1,8 +1,8 @@
 # Quickstart
 
-From a panel of logs to a certified schedule, in one call. The causal assumption is a **required**
-argument, because the default would be "adjust for nothing", which is a claim rather than its
-absence — and when the graph says the effect is not identified there is no schedule at all.
+From a panel of logs to a schedule and its certificate, in one call. The causal assumption is a
+**required** argument, because the default would be "adjust for nothing", which is a claim rather
+than its absence — and when the graph says the effect is not identified there is no schedule at all.
 
 Everything below is one script,
 [`docs/quickstart.py`](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/quickstart.py),
@@ -53,7 +53,9 @@ The same decision, read under two causal assumptions: once with `demand` logged,
 declared latent. `prescribe` composes what is below it and adds no new estimator, solver or
 guarantee: the adjustment set comes from the graph, the control channel from cross-fit Robinson
 DML (`fit_causal_residual`), the plan from `causal_plan`, the safety price from `certify_safety`,
-and how far the plan can be from the best one its own box allows from `plan_regret_bound`.
+and how far the plan can be from the best one its own box allows on the fitted model from
+`plan_regret_bound`, a diagnostic here: the fitted channel reads the state, so the curvature is
+sampled. What each certificate bounds, and on what: [the scopes](concepts/certificates.md#scopes).
 
 ## 4. What it printed
 
@@ -65,10 +67,12 @@ Read the first report by its two axes, which are kept apart on purpose:
 
 - **Identification** is about the data and the graph: whether an adjustment set exists, which one
   was used, and the channel's standard error.
-- **Certification** is about model error and the barrier: the error tube's certified horizon, the
-  steps that clear the constraint at the level of the marginal sensitivity model the plan was
-  audited at (`gamma`, when a bound is given), and `gamma*`, the largest level under which the
-  barrier stays certified.
+- **Certification** is about model error and the barrier: the error tube's certified horizon, over
+  the plan's RK4 steps and at the channel's standard error, so a scale rather than a bound; the
+  steps whose predicted states clear the constraint at the level of the marginal sensitivity model
+  the plan was audited at (`gamma`, when a bound is given), checked pointwise; and `gamma*`, the
+  largest level at which every step along the plan's path still has an admissible action that
+  meets the barrier, a ceiling for the problem along that path rather than for the plan.
 
 The **trustworthy prefix** is the part of the schedule that survives *both* — the number an
 operator can act on. A plan can be fully certified against a channel nothing identifies, which is a

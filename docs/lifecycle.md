@@ -73,10 +73,13 @@ documented, and what is not built yet. Every name below is importable from `chc`
 ## 3. Evaluate: before acting
 
 - **The error tube.** `CausalPlan.certificate_status` and `CausalPlan.certified_actions` say how
-  far ahead the model's error keeps the plan inside tolerance. See
-  [certificates](concepts/certificates.md).
-- **`certify_safety`.** Where along a finished plan a barrier's guarantee survives unmeasured
-  confounding, and the largest Γ the whole plan tolerates.
+  far ahead the model's error keeps the plan inside tolerance, over the plan's RK4 steps. It is a
+  bound where the per-step error supplied is one, and a scale where it is a standard error, as
+  under `prescribe`. See [the scopes](concepts/certificates.md#scopes).
+- **`certify_safety`.** Where along a finished plan's predicted path a barrier's guarantee survives
+  unmeasured confounding, checked pointwise, and `Γ*`: the largest level at which every step along
+  that path still has an admissible action that meets the condition, a ceiling for the problem
+  along the path rather than for the plan.
 - **`plan_regret_bound`.** How far the plan's cost can be from the optimum on the planning model,
   from its own gradient: a certificate on a linear model or a curvature the caller supplies, a
   diagnostic where the curvature is sampled (`status`).

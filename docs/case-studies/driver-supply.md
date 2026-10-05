@@ -4,7 +4,8 @@ Every layer of the library on one decision, so the pieces are forced to compose:
 
 1. **fit** — an incentive response estimated from logs whose behaviour policy chased a confounder,
    once naively and once with the backdoor adjustment;
-2. **plan** — constrained optimal control with a certified Grönwall error tube (`causal_plan`);
+2. **plan** — constrained optimal control with a Grönwall error tube over its RK4 steps, a bound
+   under the per-step error it is given (`causal_plan`);
 3. **certify** — the plan priced against a partially identified effect (`certify_safety`);
 4. **audit** — each plan then executed on the *true* plant, so the numbers a caller would have
    trusted offline can be compared with what actually happened.

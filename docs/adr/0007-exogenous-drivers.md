@@ -96,7 +96,10 @@ out in numpy and shares no code with the library.
   covariate.
 - `mpc_control` and `RecedingHorizon` read a driven model at absolute time. The levels must cover
   the whole run; past the last level the forecast is extrapolated linearly.
-- L8.1's rerun with all three statements needs the BOPTEST stack, and has not been run.
+- The BOPTEST rerun with all three statements has run, at `f3f9eae`: the
+  [case study](../case-studies/boptest.md) records it. Its verdict is void by the case study's own
+  checks, and under its weather drivers the adjusted loop ran away once, where its fitted channel
+  changed sign inside the comfort band.
 
 ## Alternatives
 
