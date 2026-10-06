@@ -94,8 +94,9 @@ from chc.plan import (
 )
 from chc.residual import ControlAffineResidual, ZeroResidual, control_affine_features
 
-SCHEMA_VERSION = 1
-"""``to_json``'s schema version. Bumped when a field changes meaning, not when one is added."""
+SCHEMA_VERSION = 2
+"""``to_json``'s schema version. Bumped when a field changes meaning, not when one is added: 2
+writes a number that is not finite as null (ADR 0055)."""
 
 
 class DecisionError(ValueError):
@@ -156,6 +157,12 @@ the log did along them, so every fit the log cannot tell from the fitted one pre
 path. ``not_estimable``: some such fit predicts another path from
 :attr:`DecisionCertificate.first_loaded_step` on, or no plan could keep to the log and none was
 made."""
+
+GammaStarStatus = Literal["finite", "every_level", "no_level"]
+"""What :attr:`DecisionCertificate.gamma_star` reads. ``finite``: the level past which some step's
+barrier no admissible action keeps. ``every_level``: ``inf``, every step's barrier is kept however
+strong the confounding. ``no_level``: nan, some step's barrier no admissible action keeps, not even
+at ``gamma = 1``."""
 
 
 @dataclass(frozen=True)
@@ -368,6 +375,15 @@ class DecisionCertificate:
             steps = min(steps, self.barrier_certified_steps)
         return steps if self.first_loaded_step is None else min(steps, self.first_loaded_step)
 
+    @property
+    def gamma_star_status(self) -> GammaStarStatus | None:
+        """What ``gamma_star`` reads (:data:`GammaStarStatus`); None where no bound was audited."""
+        if self.gamma_star is None:
+            return None
+        if math.isnan(self.gamma_star):
+            return "no_level"
+        return "every_level" if math.isinf(self.gamma_star) else "finite"
+
 
 @dataclass(frozen=True)
 class SelectionStep:
@@ -377,12 +393,13 @@ class SelectionStep:
     every lever's box, the levers not yet selected included. So it bounds how far below
     ``task_cost`` any plan the boxes allow can go: what the levers left out at this step could
     still buy, plus what the solve left on the table. ``inf`` when the objective was not convex
-    over the boxes, as in :attr:`DecisionCertificate.regret_bound`.
+    over the boxes, as in :attr:`DecisionCertificate.regret_bound`; ``regret_status`` says which.
     """
 
     lever: str
     task_cost: float  # the planned cost with the levers selected so far, this one included
     regret_bound: float
+    regret_status: RegretStatus | None = None  # what ``regret_bound`` is; None where not given
 
 
 @dataclass(frozen=True)
@@ -809,9 +826,15 @@ class Prescription:
         return "\n".join(lines)
 
     def to_json(self) -> dict[str, Any]:
-        """The schedule, both certificate axes and the provenance, as plain JSON-safe values."""
+        """The schedule, both certificate axes and the provenance, as plain JSON-safe values.
+
+        No number is infinite or nan: one that is not finite is None (ADR 0055). Where None has
+        more than one reading, a status beside it says which: ``regret_status`` ``refused`` for an
+        infinite ``regret_bound``, a selection step's own ``regret_status`` for its bound, and
+        ``gamma_star_status`` for ``gamma_star`` (:data:`GammaStarStatus`).
+        """
         certificate = self.certificate
-        return {
+        record = {
             "schema_version": SCHEMA_VERSION,
             "target": self.target,
             "levers": list(self.lever_names),
@@ -829,6 +852,7 @@ class Prescription:
                 "barrier_certified_steps": certificate.barrier_certified_steps,
                 "gamma": certificate.gamma,
                 "gamma_star": certificate.gamma_star,
+                "gamma_star_status": certificate.gamma_star_status,
                 "solver_status": certificate.solver_status,
                 "solver_iterations": certificate.solver_iterations,
                 "trustworthy_steps": certificate.trustworthy_steps,
@@ -857,6 +881,7 @@ class Prescription:
                         "lever": step.lever,
                         "task_cost": step.task_cost,
                         "regret_bound": step.regret_bound,
+                        "regret_status": step.regret_status,
                     }
                     for step in self.selection.steps
                 ],
@@ -876,6 +901,7 @@ class Prescription:
             ],
             "provenance": self.provenance.to_json(),
         }
+        return _strict(record)
 
     def _logger_line(self) -> str:
         check = self.logger_check
@@ -1468,15 +1494,12 @@ def prescribe(
     def regret(solved: CausalPlan) -> PlanRegretBound:
         return plan_regret_bound(solved, model, start, planning_cost, dt, u_lo, u_hi, probes=4)
 
-    def price(solved: CausalPlan) -> float:
-        return regret(solved).bound
-
     selection: LeverSelection | None = None
     if max_levers is None:
         plan = solve(u_lo, u_hi)
     else:
         idle = total_cost(model, start, jnp.zeros((horizon, n_levers)), dt, planning_cost)
-        plan, steps = _select_levers(levers, max_levers, solve, price, held=frozenset(unmoved))
+        plan, steps = _select_levers(levers, max_levers, solve, regret, held=frozenset(unmoved))
         selection = LeverSelection(idle_cost=float(idle), steps=steps)
 
     _log.info(
@@ -1601,7 +1624,7 @@ def _select_levers(
     levers: Sequence[Lever],
     max_levers: int,
     solve: Callable[[Array, Array], CausalPlan],
-    price: Callable[[CausalPlan], float],
+    price: Callable[[CausalPlan], PlanRegretBound],
     held: frozenset[int] = frozenset(),
 ) -> tuple[CausalPlan, tuple[SelectionStep, ...]]:
     """Greedy forward selection: add the lever whose plan ranks first, ``max_levers`` times at most.
@@ -1627,7 +1650,8 @@ def _select_levers(
         best = min(candidates, key=lambda index: _rank(candidates[index]))
         chosen.append(best)
         plans.append(candidates[best])
-        steps.append(SelectionStep(levers[best].name, plans[-1].task_cost, price(plans[-1])))
+        gap = price(plans[-1])
+        steps.append(SelectionStep(levers[best].name, plans[-1].task_cost, gap.bound, gap.status))
         _log.info(
             "lever selected",
             extra={
@@ -1636,6 +1660,7 @@ def _select_levers(
                 "lever": steps[-1].lever,
                 "task_cost": steps[-1].task_cost,
                 "regret_bound": steps[-1].regret_bound,
+                "regret_status": steps[-1].regret_status,
                 "candidates": {
                     levers[index].name: {
                         "task_cost": plan.task_cost,
@@ -2409,6 +2434,17 @@ def _show(value: object) -> str:
     if value is None:
         return "not evaluated"
     return f"{value:.4g}" if isinstance(value, float) else str(value)
+
+
+def _strict(value: Any) -> Any:
+    """``value`` with every float that is not finite read as None, which JSON can carry."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _strict(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_strict(item) for item in value]
+    return value
 
 
 def _show_relation(relation: LeverRelation, names: Sequence[str]) -> str:

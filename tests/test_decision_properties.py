@@ -195,7 +195,7 @@ def test_schedule_never_leaves_the_lever_box(lo: float, width: float, target: fl
 def test_to_json_round_trips_through_the_stdlib(lo: float, width: float, target: float) -> None:
     """`to_json` claims plain JSON-safe values; the only honest check is to serialise them."""
     payload = _prescribe(lo, lo + width, target).to_json()
-    assert json.loads(json.dumps(payload)) == payload
+    assert json.loads(json.dumps(payload, allow_nan=False)) == payload
 
 
 # ---- provenance: a fingerprint of the data, not of how the dictionary was typed ----

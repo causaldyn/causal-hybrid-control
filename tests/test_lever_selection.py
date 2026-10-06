@@ -307,6 +307,7 @@ def test_each_selection_step_leaves_one_structured_record(caplog: pytest.LogCapt
         assert getattr(record, "lever", None) == step.lever
         assert getattr(record, "task_cost", None) == step.task_cost
         assert getattr(record, "regret_bound", None) == step.regret_bound
+        assert getattr(record, "regret_status", None) == step.regret_status == "diagnostic"
         candidates = getattr(record, "candidates", {})
         assert len(candidates) == len(LEVERS) - number + 1
         assert candidates[step.lever]["task_cost"] == min(
@@ -329,7 +330,7 @@ def test_the_report_lists_the_levers_kept_in_the_order_greedy_added_them() -> No
 def test_the_selection_travels_in_the_json() -> None:
     result = _prescribe(max_levers=2)
     payload = json.loads(json.dumps(result.to_json()))
-    assert payload["schema_version"] == 1  # a field was added; none changed meaning
+    assert payload["schema_version"] == 2  # a number that is not finite reads null (ADR 0055)
     assert result.selection is not None
     assert payload["selection"] == {
         "idle_cost": result.selection.idle_cost,

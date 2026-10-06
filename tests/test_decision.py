@@ -857,7 +857,7 @@ def test_an_evaluation_window_does_not_span_a_period_no_unit_logged() -> None:
 def test_the_report_and_the_json_carry_the_same_decision() -> None:
     result = _prescribe(_panel(), CausalGraph.from_edges(EDGES))
     payload = json.loads(json.dumps(result.to_json()))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["target"] == "supply"
     assert payload["levers"] == ["incentive"]
     assert np.allclose(payload["schedule"], np.asarray(result.plan.actions))
@@ -878,6 +878,97 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
     assert "Trustworthy prefix: 15 steps" in report
     assert "- logger check: passed (p = " in report
     assert result.provenance.data_sha256[:16] in report
+
+
+def _small(**kwargs: object) -> Prescription:
+    return prescribe(
+        _panel(n_units=40),
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("supply", value=1.0),
+        horizon=6,
+        dt=DT,
+        **{  # type: ignore[arg-type]
+            "constraints": [Constraint("wait", hi=0.5)],
+            "adjustment": CausalGraph.from_edges(EDGES),
+            "tolerance": 0.5,
+            **kwargs,
+        },
+    )
+
+
+def _refused(result: Prescription) -> Prescription:
+    """The record of a plan whose regret bound was refused, at the certificate and at each step of
+    its selection: an objective not convex where its curvature was read. No small world reaches
+    one, so it is set by hand, as a review did."""
+    assert result.selection is not None
+    return dataclasses.replace(
+        result,
+        certificate=dataclasses.replace(
+            result.certificate, regret_bound=math.inf, regret_status="refused"
+        ),
+        selection=dataclasses.replace(
+            result.selection,
+            steps=tuple(
+                dataclasses.replace(step, regret_bound=math.inf, regret_status="refused")
+                for step in result.selection.steps
+            ),
+        ),
+    )
+
+
+STATES = {
+    "a tube not evaluated": (
+        lambda: _small(tolerance=None),
+        {"certificate_status": "not_evaluated", "certified_horizon": None},
+    ),
+    "an uncertified tube": (lambda: _small(tolerance=1e-9), {"certificate_status": "uncertified"}),
+    "a diagnostic regret bound": (lambda: _small(), {"regret_status": "diagnostic"}),
+    "a refused regret bound": (
+        lambda: _refused(_small(max_levers=1)),
+        {"regret_bound": None, "regret_status": "refused"},
+    ),
+    "a finite ceiling": (
+        lambda: _small(constraints=[Constraint("wait", hi=0.05)]),
+        {"gamma_star_status": "finite"},
+    ),
+    "an infinite ceiling": (
+        lambda: _small(constraints=[Constraint("wait", hi=100.0)]),
+        {"gamma_star": None, "gamma_star_status": "every_level"},
+    ),
+    "a nan ceiling": (
+        lambda: _small(constraints=[Constraint("wait", hi=-5.0)]),
+        {"gamma_star": None, "gamma_star_status": "no_level"},
+    ),
+    "no plan": (
+        lambda: _small(adjustment=CausalGraph.from_edges(EDGES, latent=("demand",))),
+        {"regret_bound": None, "regret_status": None, "gamma_star_status": None},
+    ),
+    "a plan the log cannot keep to": (
+        lambda: _prescribe_policy(
+            _policy_logs(0.5, 0.6),
+            [Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05), Lever("v", lo=-2.0, hi=2.0)],
+        ),
+        {"estimability": "not_estimable", "regret_bound": None},
+    ),
+}
+
+
+@pytest.mark.parametrize(("build", "reads"), STATES.values(), ids=STATES.keys())
+def test_every_state_of_the_record_is_strict_json(build, reads: dict[str, object]) -> None:
+    """A number that is not finite is null, and the status beside it says which. Python's ``json``
+    wrote ``Infinity`` and ``NaN`` for a refused regret bound and for either ceiling, which JSON
+    does not have (ADR 0055)."""
+    result = build()
+    record = result.to_json()
+    assert json.loads(json.dumps(record, allow_nan=False)) == record
+    assert {key: record["certificate"][key] for key in reads} == reads
+    assert record["certificate"]["gamma_star_status"] == result.certificate.gamma_star_status
+    if reads.get("gamma_star_status") == "finite":
+        assert record["certificate"]["gamma_star"] == result.certificate.gamma_star > 1.0
+    if reads.get("regret_status") == "refused":  # and so is each step of its selection
+        assert [
+            (step["regret_bound"], step["regret_status"]) for step in record["selection"]["steps"]
+        ] == [(None, "refused")]
 
 
 def test_the_reported_gamma_names_its_sensitivity_model() -> None:

@@ -21,6 +21,19 @@ still change).
   finite with `DecisionError` before it fits; it read one only where a constraint was given. A
   finite `Gamma` reads as before, and a plan that keeps its barrier at every level still reads
   `gamma* = inf`. Since 0.2.0.
+- **`Prescription.to_json()` writes strict JSON: a number that is not finite is `null`, and
+  `schema_version` is 2.** It promised plain JSON-safe values, but carried `gamma_star` as `inf`
+  where every level keeps the barrier, as a constraint the plan keeps with room to spare does, and
+  as nan where some step's barrier no action keeps; and a refused regret bound, the certificate's
+  or a selection step's, as `inf`. `json.dumps` wrote them as `Infinity` and `NaN`, which JSON
+  does not have, and `json.dumps(..., allow_nan=False)` raised: on `prescribe` with
+  `Constraint("wait", hi=0.5)` over a log whose wait stays near 0, the whole record did. Such a
+  number is now `null`, and the status beside it says which it was: `regret_status` `refused`; the
+  new `gamma_star_status`, `finite`, `every_level` or `no_level`
+  (`DecisionCertificate.gamma_star_status`); and each selection step's new `regret_status`
+  (`SelectionStep.regret_status`), which the step's log record carries too. The Python objects
+  keep `inf` and nan. Migration: a reader that took `Infinity` or `NaN` from Python's parser reads
+  `null` and the status beside it (ADR 0055). Since 0.5.0; the regret bounds' since 0.6.0.
 
 ## [0.14.0] — 2026-10-06
 
