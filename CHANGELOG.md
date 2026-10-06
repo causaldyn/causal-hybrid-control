@@ -90,6 +90,17 @@ still change).
   `confounding_robust_radius` as the nominal radius; both now refuse it, as
   `confounding_robust_inflation` does. Since 0.2.0; the filter's since 0.9.0, the geo filter's
   and `Totals`' since 0.10.0.
+- **A rollout bound refuses an input that is not a number, and reads `inf` past the float
+  range.** `lipschitz_rollout_bound`, `contractive_rollout_bound` and `closed_loop_rollout_bound`
+  checked none of their inputs. A nan read a nan radius; a negative budget, step or horizon a
+  negative one, which certifies every step; a negative rate read as 0 in the Gronwall bound and
+  as its square in the contractive one; a fractional horizon a radius between two; and a
+  negative control or policy constant lowered the closed loop's rate below the state's own. They
+  now refuse them, as `time_varying_rollout_bound` does, and so an infinite contraction rate.
+  `(1 + L dt)**H` and `L**2` took Python's float power, which raises `OverflowError` past the
+  float range: at `L dt = 0.1` a horizon of 10 000 steps raised, and so did a contractive bound
+  at `L = 1e155`. The bound there is now `inf`. Every input that did not raise reads as before,
+  bit for bit, over 386 000 inputs. Since 0.2.0.
 
 ## [0.14.1] — 2026-10-06
 

@@ -17,6 +17,7 @@ from chc.dynamics import DrivenDynamics, Dynamics, LinearDynamics
 from chc.integrate import rollout
 from chc.uncertainty import (
     certified_horizon,
+    closed_loop_rollout_bound,
     contractive_rollout_bound,
     contractive_rollout_certificate,
     linear_rollout_bound,
@@ -133,6 +134,76 @@ def test_closed_loop_radius_exceeds_open_loop_when_replanning() -> None:
     open_loop = lipschitz_rollout_bound(1.0, 0.1, 0.05, 10)
     closed = closed_loop_rollout_bound(1.0, 0.5, 2.0, 0.1, 0.05, 10)  # L_pi=2 policy sensitivity
     assert closed > open_loop  # re-planning feeds state error through the policy -> larger tube
+
+
+@pytest.mark.parametrize(
+    ("args", "match"),
+    [
+        ((math.nan, 0.1, 0.1, 8), "lipschitz=nan"),
+        ((-1.0, 0.1, 0.1, 8), "lipschitz=-1.0"),
+        ((math.inf, 0.1, 0.1, 8), "lipschitz=inf"),
+        ((1.0, math.nan, 0.1, 8), "model_error=nan"),
+        ((1.0, -0.1, 0.1, 8), "model_error=-0.1"),
+        ((1.0, 0.1, math.nan, 8), "dt=nan"),
+        ((1.0, 0.1, -0.1, 8), "dt=-0.1"),
+        ((1.0, 0.1, 0.1, -3), "horizon=-3"),
+        ((1.0, 0.1, 0.1, 2.5), "horizon=2.5"),
+    ],
+)
+def test_a_gronwall_input_that_is_no_number_is_refused(
+    args: tuple[float, float, float, int], match: str
+) -> None:
+    """A nan read a nan radius; a negative budget, step or horizon a negative one, which certifies
+    every step; a negative rate read as 0; and a fractional horizon a radius between two."""
+    with pytest.raises(ValueError, match=match):
+        lipschitz_rollout_bound(*args)
+
+
+@pytest.mark.parametrize(
+    ("args", "match"),
+    [
+        ((math.nan, 2.0, 0.1, 0.05, 8), "contraction_rate=nan"),
+        ((math.inf, 2.0, 0.1, 0.05, 8), "contraction_rate=inf"),
+        ((1.0, math.nan, 0.1, 0.05, 8), "lipschitz=nan"),
+        ((1.0, -2.0, 0.1, 0.05, 8), "lipschitz=-2.0"),
+        ((1.0, 2.0, math.nan, 0.05, 8), "model_error=nan"),
+        ((1.0, 2.0, -0.1, 0.05, 8), "model_error=-0.1"),
+        ((1.0, 2.0, 0.1, math.nan, 8), "dt=nan"),
+        ((1.0, 2.0, 0.1, -0.05, 8), "dt=-0.05"),
+        ((1.0, 2.0, 0.1, 0.05, -3), "horizon=-3"),
+    ],
+)
+def test_a_contractive_input_that_is_no_number_is_refused(
+    args: tuple[float, float, float, float, int], match: str
+) -> None:
+    """A nan read a nan radius and a negative budget or horizon a negative one; a negative rate
+    read as its square, and an infinite contraction or a negative step as no contraction."""
+    with pytest.raises(ValueError, match=match):
+        contractive_rollout_bound(*args)
+
+
+@pytest.mark.parametrize(
+    "rates", [(1.0, -0.5, 1.0), (1.0, 0.5, -1.0), (math.nan, 0.5, 1.0), (1.0, 0.5, math.inf)]
+)
+def test_a_closed_loop_rate_that_is_no_number_is_refused(
+    rates: tuple[float, float, float],
+) -> None:
+    """A negative control or policy constant lowered the combined rate below the state's own, and
+    a nan or an infinite one read a nan radius."""
+    with pytest.raises(ValueError, match="is not a norm-Lipschitz bound"):
+        closed_loop_rollout_bound(*rates, 0.1, 0.05, 10)
+
+
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_a_rollout_bound_past_the_float_range_is_inf() -> None:
+    """``(1 + L dt)**H`` and ``L**2`` took Python's float power, which raises ``OverflowError``
+    past the float range: at ``L dt = 0.1`` a horizon of 10 000 steps raised. The bound there is
+    ``inf``, quietly, and a zero budget still keeps the two rollouts together."""
+    assert lipschitz_rollout_bound(1.0, 0.1, 0.1, 10_000) == math.inf
+    assert lipschitz_rollout_bound(1.0, 0.0, 0.1, 10_000) == 0.0
+    assert closed_loop_rollout_bound(1.0, 0.5, 2.0, 0.1, 1.0, 1_100) == math.inf
+    assert contractive_rollout_bound(1.0, 1e155, 0.1, 0.05, 8) == math.inf
+    assert contractive_rollout_bound(1e200, 1e200, 0.1, 1e200, 8) == math.inf
 
 
 class _Off(eqx.Module):
