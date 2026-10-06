@@ -40,6 +40,10 @@ HONEST SCOPE:
 * The hierarchy is log-normal and independent across channels: no correlation between a geo's
   effects, no trend, one annual season that every geo shares.
 * The neighbours are a ring of the geos in their order, not a geography.
+* National media's spend per head is the same in every geo, so the geos hold no contrast in it: a
+  model reads its effect from the weeks alone, as a model of the whole country does, and its spread
+  over the geos from how each geo follows the same series. Only the channels a geo buys itself
+  vary across the geos.
 * The curves are JAX's. In double precision (``jax_enable_x64``) the KPI is exact to rounding; in
   single, JAX's default, each lift is good to single precision.
 """
