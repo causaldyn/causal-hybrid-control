@@ -7,6 +7,7 @@ import pytest
 from chc.benchmark import (
     ConfoundingRobustTask,
     InventoryTask,
+    MultiSeedResult,
     leaderboard_multiseed,
     run_multiseed,
 )
@@ -38,6 +39,14 @@ def test_leaderboard_multiseed_sorts_by_mean_regret_and_shows_cis(results: list)
     assert lines[-1].startswith("predictive")  # the worst mean regret sorts last
     assert "[" in lines[-1]  # each row prints a CI
     assert "]" in lines[-1]
+
+
+def test_a_five_digit_regret_keeps_its_interval_apart() -> None:
+    """The pricing task's predictive regret over 12 seeds filled the interval's column and ran into
+    it: ``13734.15[13732.55, 13735.31]``."""
+    row = MultiSeedResult("predictive", 13734.15, 13732.55, 13735.31, 1.2, 1.0, 12)
+    line = leaderboard_multiseed([row]).splitlines()[1]
+    assert line.split()[1:4] == ["13734.15", "[13732.55,", "13735.31]"]
 
 
 def test_confounding_robust_win_separates_across_seeds() -> None:

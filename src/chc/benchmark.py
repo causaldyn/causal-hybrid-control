@@ -867,10 +867,10 @@ def run_multiseed(task: BenchmarkTask, seeds: Sequence[int]) -> list[MultiSeedRe
 
 def leaderboard_multiseed(results: list[MultiSeedResult]) -> str:
     """Format multi-seed results sorted by mean regret (best first), with 95% bootstrap CIs."""
-    header = f"{'controller':<14}{'regret':>10}{'95% CI':>20}{'ood':>7}{'seeds':>7}"
+    header = f"{'controller':<14}{'regret':>10}{'95% CI':>22}{'ood':>7}{'seeds':>7}"
     rows = [
         f"{r.controller:<14}{r.regret_mean:>10.2f}"
-        f"{f'[{r.regret_lo:.2f}, {r.regret_hi:.2f}]':>20}{r.ood_mean:>7.2f}{r.n_seeds:>7d}"
+        f"{f'[{r.regret_lo:.2f}, {r.regret_hi:.2f}]':>22}{r.ood_mean:>7.2f}{r.n_seeds:>7d}"
         for r in sorted(results, key=lambda r: r.regret_mean)
     ]
     return "\n".join([header, *rows])

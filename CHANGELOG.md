@@ -238,6 +238,8 @@ still change).
   CPU. `cuda13` and `cuda13-local` now need jax 0.7, `rocm7-local` 0.9.2 and `oneapi` 0.11. The
   `trees` extra said catboost 1.2, whose releases up to 1.2.5 fail at import beside numpy 2 and
   whose 1.2.6 and 1.2.7 declare numpy below 2; it now says 1.2.8.
+- **`leaderboard_multiseed` keeps a space before each interval.** A five-digit regret's interval
+  filled its column and ran into the regret, `13734.15[13732.55, 13735.31]`.
 
 ### Notes
 
