@@ -182,17 +182,18 @@ def test_one_zones_windows_are_read_as_before_and_the_reading_is_deprecated(
     """One zone's windows leave no zones to resample. Until 1.0 they are read as they were before
     the bootstrap over units, as independent, and every call warns once, and logs it. The readings
     are fe39f1b's ``Prescription.evaluate`` on this panel, before the bootstrap: the smoothing
-    chosen under a binding ``min_effective``, and the logger and the smoothing given. Two zones are
-    enough to draw."""
+    chosen under a binding ``min_effective``, and the logger and the smoothing given. They are read
+    off the prescription fitted on the folds drawn since 0.13.0; on the folds before, they were
+    2.36221941740616 and 2.3818807810249143. Two zones are enough to draw."""
     rows, _, _, _ = _market(1, seed=7, leave=False, periods=3601)
     panel = chc.Panel.from_frame(rows, unit="zone", time="time", seed=0)
     logger = chc.AffinePolicy(np.zeros((1, 1)), np.zeros(1), np.eye(1))
     calls = [
-        ({"min_effective": 400.0}, 2.36221941740616, (2.078174916606575, 2.646263918205745)),
+        ({"min_effective": 400.0}, 2.3627057426597653, (2.078952435446563, 2.6464590498729677)),
         (
             {"logger": logger, "smoothing": 0.5},
-            2.3818807810249143,
-            (2.085154423058448, 2.6786071389913806),
+            2.3819522705817366,
+            (2.085349376072432, 2.678555165091041),
         ),
     ]
 

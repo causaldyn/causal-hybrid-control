@@ -22,7 +22,7 @@ import optax
 from jax import Array
 from numpy.typing import NDArray
 
-from chc.causal import _polynomial_features, _ridge_predict
+from chc.causal import _polynomial_features, _ridge_predict, _stream_key
 from chc.irf import peak_lag
 
 
@@ -565,19 +565,19 @@ def estimate_propagation(
 def _fold_chunks(n: int, folds: int, seed: int, groups: Array | None) -> list[Array]:
     """Row indices per cross-fitting fold, optionally keeping labelled groups intact.
 
-    ``groups is None`` is the historical path and stays byte-identical: permute rows, chunk them.
+    ``groups is None`` permutes the rows and chunks them.
     Otherwise the permutation acts on the distinct labels, so every row carrying a label lands in
     the same fold as the rest of that label.
     """
     if groups is None:
-        return jnp.array_split(jax.random.permutation(jax.random.key(seed), n), folds)
+        return jnp.array_split(jax.random.permutation(_stream_key(seed, "folds"), n), folds)
     labels = jnp.asarray(groups).reshape(-1)
     if labels.shape[0] != n:
         raise ValueError(f"fold_groups has {labels.shape[0]} entries for {n} rows")
     distinct = jnp.unique(labels)
     if distinct.shape[0] < folds:
         raise ValueError(f"{distinct.shape[0]} distinct groups cannot fill {folds} folds")
-    order = jax.random.permutation(jax.random.key(seed), distinct.shape[0])
+    order = jax.random.permutation(_stream_key(seed, "folds"), distinct.shape[0])
     assign = jnp.zeros(distinct.shape[0], dtype=jnp.int32)
     for k, part in enumerate(jnp.array_split(order, folds)):
         assign = assign.at[part].set(k)

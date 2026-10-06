@@ -5,6 +5,9 @@ Six logs were read before any threshold on a fit was written. Against one period
 fit that adjusts for the shock read the price at 0.78-1.16 and the incentive at 0.90-1.08 of it,
 zone by zone; the fit that does not read the price at -0.71 to 0.21 of it (a price rise raising
 demand in 18 of the 24 zones) and the incentive at -0.08 to 0.63, 0.18-0.39 averaged over the city.
+On the folds drawn since 0.13.0 the same six logs read the adjusted price at 0.77-1.14 and the
+incentive at 0.82-1.06; unadjusted, the price at -0.66 to 0.21 (17 of the 24 zones) and the
+incentive at -0.06 to 0.60, 0.20-0.36 averaged over the city.
 """
 
 from __future__ import annotations

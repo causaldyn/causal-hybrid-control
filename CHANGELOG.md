@@ -172,6 +172,23 @@ still change).
   affine in the state, so its rate is `global`, the slope's norm over the box, 1.25 a week at
   `dt = 1`, and a norm cannot see that the field contracts, its slope's eigenvalues running from
   -0.25 to -0.73.
+- **Cross-fitting folds and `refute_effect` draw from streams of their own**, a defect since 0.2.0
+  that JAX 0.5.0 exposed. Under its partitionable threefry, the default since that release,
+  `split(key(s), n)[i]` is `fold_in(key(s), i)` for every `n`, so a stream drawn from `key(seed)`
+  shares its children with data a caller drew from `key(seed)`. The folds of
+  `estimate_effect_dml`, `dml_point_and_se`, `DoubleML`, `fit_causal_residual` and the network
+  estimators were drawn so: in float32, up to 1625 rows, they put the rows in the order of the
+  column drawn from the key's second child, and on `ConfoundedLinearSystem` logs of 1000 rows
+  drawn on the estimator's own seed the error of `estimate_effect_dml` grew from 0.0055 to 0.096
+  (root mean square over 60 seeds). The random common cause of `refute_effect` was drawn from the
+  key the sampler drew `z` from, so it was `z`, and the refutation could not fail. Each stream now
+  folds a tag of its own, at least `2**31`, into `key(seed)`. Every cross-fitted estimate on a
+  given seed moves, as its folds are drawn again; on data not drawn from JAX keys, by the
+  estimate's fold-to-fold scatter alone. The LaLonde row of `scripts/run_benchmark.py`, double ML
+  on degree-3 nuisances, reads 1031 against the experiment's 1794, where it read 1472: over fold
+  seeds 0 to 19 it ran from 1020 to 1472 on the old folds and runs from 1023 to 1367 on the new,
+  the old seed 0 being the highest. The media-budget case study's plan buys 4.2 % more lift than
+  an equal split, where it bought 4.5 %.
 - **Each accelerator extra names the first jax that has its build**, and the `trees` extra the
   first catboost that loads. pip and uv install an extra a package does not provide as nothing,
   with a warning, so a resolution that held jax back below 0.7 installed `chc[cuda13]` on the

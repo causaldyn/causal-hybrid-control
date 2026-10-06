@@ -49,7 +49,7 @@ from jax import Array
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-from chc.causal import _polynomial_features, _ridge_predict
+from chc.causal import _polynomial_features, _ridge_predict, _stream_key
 from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics
 from chc.integrate import rk4_step
 from chc.residual import ControlAffineResidual, control_affine_features
@@ -252,7 +252,7 @@ def _cross_fit_residuals(
     """
     covariates = _standardised(covariates)
     n = target.shape[0]
-    chunks = jnp.array_split(jax.random.permutation(jax.random.key(seed), n), folds)
+    chunks = jnp.array_split(jax.random.permutation(_stream_key(seed, "folds"), n), folds)
     target_hat = jnp.zeros_like(target)
     action_hat = jnp.zeros_like(action)
     for k in range(folds):

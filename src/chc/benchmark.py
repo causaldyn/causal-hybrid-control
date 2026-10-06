@@ -570,15 +570,15 @@ class CausalDynamicsTask:
 
     HONEST TRAPS. (1) The failure is **silent on the safety channels**. The confounding attenuates
     the channel to ~0.02 of its true 1.0, so ``mse-id`` prices the actuator as useless against the
-    ``control_weight`` penalty and gives up: measured ``max|u|`` 0.22 against the oracle's 2.49, so
-    it reaches ``x = 0.12`` instead of 0.71. It never approaches the box, never leaves the logged
-    action support (99th percentile of ``|u|`` is 4.4), and reports ``viol = ood = 0`` while
+    ``control_weight`` penalty and gives up: measured ``max|u|`` 0.235 against the oracle's 2.516,
+    so it reaches ``x = 0.135`` instead of 0.712. It never approaches the box, never leaves the
+    logged action support (99th percentile of ``|u|`` is 4.4), and reports ``viol = ood = 0`` while
     conceding most of the achievable improvement. Regret is the only column that sees it -- a
     reminder that constraint and support diagnostics do not detect a mis-scaled channel. Shrinking
     ``control_weight`` flips the same bias into over-commanding, where those columns *do* fire.
     (2) The two identified rows are **not interchangeable**. Adjusting for a logged confounder gives
-    regret 0.014; the instrument gives 0.132, because it explains only ~18% of the action's variance
-    and identification rides on that share alone. Both beat the 6.41 of not identifying at all, but
+    regret 0.014; the instrument gives 0.131, because it explains only ~18% of the action's variance
+    and identification rides on that share alone. Both beat the 6.20 of not identifying at all, but
     an instrument is a weaker substitute for the confounder than the word "identified" suggests.
     (3) Only the **channel** is identified; ``a_θ`` stays an observational-conditional drift, so
     this row scores planning, not forecasting. (4) The plant is control-affine by construction,

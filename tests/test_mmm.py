@@ -8,7 +8,9 @@ Those first four moved when `prescribe` switched to `integrator="rk4"` (from 4.3
 which is the right size of move: the fitted field changed materially and the *conclusion* did not,
 because every arm here is audited on the true plant rather than on the planner's own forecast. They
 moved again in 0.7.0 (from 4.4 / 4.3 / 7.4 / 8.0), when the rk4 fit stopped halting short of its
-fixed point, after one pass on the sales row, and was solved to it.
+fixed point, after one pass on the sales row, and was solved to it. In 0.13.0 the cross-fitting
+folds were redrawn from a stream of their own, and the four read 4.2%, 5.5%, 6.4%, 8.1%, the
+confounded arm 0.87, 0.76, 0.81, 0.70.
 """
 
 from __future__ import annotations

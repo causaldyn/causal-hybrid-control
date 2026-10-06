@@ -1,8 +1,11 @@
 """Causal gate (H1): confounded fit is sign-flipped; adjusted fit recovers the true effect."""
 
+import importlib
+
 import jax
 import jax.numpy as jnp
 
+from chc import causal
 from chc.causal import (
     ConfoundedLinearSystem,
     e_value,
@@ -12,6 +15,13 @@ from chc.causal import (
     refute_effect,
     sensitivity_analysis,
 )
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 
 def _data() -> dict[str, jax.Array]:
@@ -95,6 +105,36 @@ def test_dml_recovers_effect_under_nonlinear_confounding() -> None:
     b_dml = float(estimate_effect_dml(data, covariates=("x", "z"), degree=3))
     assert abs(b_adjust - 1.0) > 0.3  # linear adjustment is biased by the z^2 confounding
     assert abs(b_dml - 1.0) < 0.1  # DML recovers the true effect
+
+
+def test_cross_fitting_folds_ignore_data_drawn_on_the_same_seed() -> None:
+    # Folds drawn from key(seed) itself put 1000 float32 rows in the order of z, which the sampler
+    # draws from that key's second child, and the estimate's error grew sixteenfold.
+    system = ConfoundedLinearSystem()
+    with enable_x64(False):
+        errors = [
+            float(estimate_effect_dml(system.sample(1_000, jax.random.key(seed)), seed=seed))
+            - system.b_true
+            for seed in range(6)
+        ]
+    assert max(abs(error) for error in errors) < 0.02
+
+
+def test_the_random_common_cause_is_drawn_apart_from_the_data(monkeypatch) -> None:
+    # It was drawn from the key the sampler drew z from, so it was z.
+    seen: list[jax.Array] = []
+
+    def spy(data: dict[str, jax.Array], adjust_for: tuple[str, ...] = ()) -> jax.Array:
+        if "_rcc" in data:
+            seen.append(data["_rcc"])
+        return estimate_control_effect(data, adjust_for)
+
+    monkeypatch.setattr(causal, "estimate_control_effect", spy)
+    data = _data()
+    refute_effect(data, adjust_for=("z",))
+    (common_cause,) = seen
+    for name, column in data.items():
+        assert abs(float(jnp.corrcoef(common_cause, column)[0, 1])) < 0.05, name
 
 
 def test_refutation_passes_for_adjusted_estimate() -> None:

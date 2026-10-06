@@ -15,6 +15,7 @@ recovers the effect under *nonlinear* confounding via cross-fitted residualisati
 from __future__ import annotations
 
 import math
+import zlib
 from dataclasses import dataclass
 from itertools import combinations_with_replacement
 
@@ -155,6 +156,19 @@ def e_value(standardized_effect: float, std_error: float | None = None) -> dict[
     return report
 
 
+def _stream_key(seed: int, stream: str) -> Array:
+    """The key of the library's own random stream ``stream``, kept apart from a caller's keys.
+
+    Under JAX's partitionable threefry, the default since jax 0.5.0, ``split(key(s), n)[i]`` is
+    ``fold_in(key(s), i)`` for every ``n``. A stream drawn from ``key(seed)`` itself shares its
+    children with data a caller drew from ``key(seed)``: cross-fitting folds drawn so put the rows
+    in the order of the column drawn from the second child, in float32 up to 1625 rows, and the
+    random common cause of :func:`refute_effect` was that column. The tag folded in is at least
+    ``2**31``, past any child a caller can split off.
+    """
+    return jax.random.fold_in(jax.random.key(seed), zlib.crc32(stream.encode()) | 1 << 31)
+
+
 def _polynomial_features(x: Array, degree: int) -> Array:
     """Monomials of ``x`` (n, d) up to total ``degree`` (with cross terms), plus a bias column."""
     n, d = x.shape
@@ -188,7 +202,7 @@ def _dml_residuals(
     y, u = data["x_next"], data["u"]
     covs = jnp.stack([data[c] for c in covariates], axis=1)
     n = y.shape[0]
-    chunks = jnp.array_split(jax.random.permutation(jax.random.key(seed), n), folds)
+    chunks = jnp.array_split(jax.random.permutation(_stream_key(seed, "folds"), n), folds)
 
     y_res = jnp.zeros(n)
     u_res = jnp.zeros(n)
@@ -258,7 +272,7 @@ def refute_effect(
 
     Returns the estimates and ``passes`` (placebo near 0, the others near the original).
     """
-    k_perm, k_rcc, k_sub = jax.random.split(jax.random.key(seed), 3)
+    k_perm, k_rcc, k_sub = jax.random.split(_stream_key(seed, "refute_effect"), 3)
     n = data["x"].shape[0]
     original = float(estimate_control_effect(data, adjust_for))
 

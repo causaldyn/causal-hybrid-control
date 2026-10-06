@@ -32,6 +32,7 @@ from chc.causal import (
     _ols_with_se,
     _polynomial_features,
     _ridge_predict,
+    _stream_key,
     dml_point_and_se,
     estimate_effect_iv,
 )
@@ -182,7 +183,9 @@ class RLearner:
         y, t = columns[outcome], columns[treatment]
         covs = jnp.stack([columns[c] for c in covariates], axis=1)
         n = y.shape[0]
-        chunks = jnp.array_split(jax.random.permutation(jax.random.key(self.seed), n), self.folds)
+        chunks = jnp.array_split(
+            jax.random.permutation(_stream_key(self.seed, "folds"), n), self.folds
+        )
         y_res, t_res = jnp.zeros(n), jnp.zeros(n)
         for k in range(self.folds):  # cross-fit the nuisances out of fold k
             test = chunks[k]
