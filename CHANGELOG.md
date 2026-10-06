@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-10-06
+
 ### Added
 
 - **`Allocation.stopped` and `Allocation.boxes` say how a plan's search ended, and a plan left with
@@ -4864,6 +4866,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.13.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.13.0
 [0.12.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.12.1
 [0.12.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.12.0
 [0.11.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.11.0
