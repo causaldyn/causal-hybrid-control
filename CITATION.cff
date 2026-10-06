@@ -11,7 +11,7 @@ repository-code: "https://github.com/causaldyn/causal-hybrid-control"
 # the concept DOI, which resolves to the newest release rather than to one version
 doi: "10.5281/zenodo.21737789"
 license: Apache-2.0
-version: 0.14.0
+version: 0.14.1
 date-released: "2026-10-06"
 abstract: >-
   Physics-structured dynamics with a learned causal residual, controlled by constrained optimal

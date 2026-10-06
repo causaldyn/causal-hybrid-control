@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-10-06
+
 ### Fixed
 
 - **A sensitivity level or a CVaR gap that is not a finite number is refused.**
@@ -5063,6 +5065,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.14.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.1
 [0.14.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.0
 [0.13.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.13.0
 [0.12.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.12.1
