@@ -556,7 +556,7 @@ def fit_causal_residual(
             was 3.6% (linear matching) and 4.6% (harmonic) off in relative RMS wherever it was
             read; the affine one was as close at the logs' mean state, 16% off at the do-nothing
             point and 159% and 123% at ``x = 0``, where :meth:`chc.decision.Prescription.reach`
-            reads it.
+            read it up to 0.12.
         nuisance_degree: flexibility of ``g`` and ``m``. Richer nuisances are the whole point of
             cross-fitting -- orthogonality is what makes their error enter only at second order.
         folds: cross-fitting folds. ``1`` fits the nuisances on the same rows it residualises.

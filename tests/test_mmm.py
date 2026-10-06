@@ -76,19 +76,22 @@ def test_the_confounded_arm_overrates_every_channel_and_underinvests(report: Mmm
         assert believed > 1.5 * adjusted.reach()[channel]  # every channel credited with the season
 
     # and the inflation is uneven, so the ORDER it would allocate by is distorted too: the true
-    # social:search ratio of incremental returns is 0.4, and the confounded arm reads 0.67-1.08 of
-    # it over four seeds, 0.28-0.67 above the adjusted arm on each. The adjusted arm's own ratio
+    # social:search ratio of incremental returns is 0.4, and the confounded arm reads 0.67-0.81
+    # over four seeds, 0.18-0.64 above the adjusted arm on each. The adjusted arm's own ratio
     # is not pinned to 0.4, and never was: its sales row carries a saturating carryover and a
     # seasonal push the model class leaves out, so where the channels land moves with how far the
-    # rk4 fit gets -- 0.43 on seed 0 read as Euler, 0.33 after one pass of the old iteration, 0.20
-    # at the fixed point -- and across seeds it spans 0.20-0.58. Up to 0.6.0 this line asserted
-    # 0.4 +- 0.1 on seed 0, where one pass happened to land.
+    # rk4 fit gets, and with the state the channel is read at -- 0.43 on seed 0 read as Euler,
+    # 0.33 after one pass of the old iteration, 0.20 at the fixed point, all at the zero state;
+    # 0.12 at the plan's start, where `reach` reads it since 0.13.0 -- and across seeds it spans
+    # 0.12-0.50. Up to 0.6.0 this line asserted 0.4 +- 0.1 on seed 0, where one pass happened to
+    # land; up to 0.12 the margin was 0.2, which four seeds read at the zero state cleared by
+    # 0.28-0.67 and which the plan's start leaves at 0.18 on seed 3.
     def ratio(prescription) -> float:
         reach = prescription.reach()
         return reach["spend_social"] / reach["spend_search"]
 
     assert ratio(confounded) > 0.6
-    assert ratio(confounded) > ratio(adjusted) + 0.2
+    assert ratio(confounded) > ratio(adjusted) + 0.1
 
     assert report.arm("confounded").total_spend < report.arm("adjusted").total_spend
     assert report.lift("confounded") < 0.95 * report.lift("adjusted")

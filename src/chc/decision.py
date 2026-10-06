@@ -383,6 +383,8 @@ class Prescription:
     logger_check: LoggerCheck | None = None
     budgets: tuple[PeriodBudget, ...] = ()  # what the plan was held to spend
     _columns: _Columns | None = field(default=None, repr=False, compare=False)
+    # The state the plan starts from, or would have: where :meth:`reach` reads the channel.
+    _start: Array | None = field(default=None, repr=False, compare=False)
     # How many of the plan's constraint rows each budget holds: the last ones, in order.
     _budget_rows: tuple[int, ...] = field(default=(), repr=False, compare=False)
 
@@ -599,21 +601,35 @@ class Prescription:
         return replace(evaluation, logger_check=logger_check)
 
     def reach(self) -> dict[str, float]:
-        """Per lever, how far it can move the target's rate across its own box.
+        """Per lever, how far it can move the target's rate across its own box, where the plan
+        starts.
 
-        ``channel[target, lever, 0] * (hi - lo)``: the constant term of the fitted control channel
-        on the target's row, times the width of the lever's box. A large coefficient on a lever
-        that may barely move is not a large lever, which is why the range is in the number and not
-        only in the footnote.
+        The fitted control channel on the target's row, read at the state the plan starts from, or
+        would have where the effect is not identified, times the width of the lever's box. A
+        channel affine in the state has no one value: up to 0.12 this read its constant term, its
+        value at ``x = 0``, which a log of rooms at 20 °C never comes near, and a fit whose channel
+        was negative everywhere in the log read positive there. A large coefficient on a lever that
+        may barely move is not a large lever, which is why the range is in the number and not only
+        in the footnote.
 
         Read from the *same* fit that produced the plan, deliberately. Ranking by a second
         estimator --- local projections, say --- invites an ordering that contradicts the schedule
         printed beside it, and two disagreeing orderings on one page is worse than one.
+
+        Raises:
+            ValueError: on a prescription that records no start, one built other than by
+                :func:`prescribe` without a plan.
         """
-        channel = np.asarray(self.model_fit.residual.channel)  # (n_states, n_levers, n_features)
-        constant = channel[0, :, 0]
+        start = self._start
+        if start is None and self.plan is not None:
+            start = self.plan.trajectory[0]
+        if start is None:
+            raise ValueError(
+                "this prescription records no state to read the channel at: build it with prescribe"
+            )
+        channel = np.asarray(self.model_fit.residual.control_channel(start))  # (states, levers)
         return {
-            lever.name: float(constant[index] * (lever.hi - lever.lo))
+            lever.name: float(channel[0, index] * (lever.hi - lever.lo))
             for index, lever in enumerate(self.levers)
         }
 
@@ -1079,6 +1095,7 @@ def prescribe(
             "the states and the covariates predict, so no transition shows what moving them does",
         )
 
+    start = jnp.asarray(data["x0"]) if x0 is None else jnp.asarray(x0)
     if identification == "not_identified":
         _log.warning(abort, extra={"chc_event": "abort", "reason": resolved.reason})
         return Prescription(
@@ -1105,6 +1122,7 @@ def prescribe(
             logger_check=logger_check,
             budgets=tuple(budgets),
             _columns=columns,
+            _start=start,
         )
 
     if not fit.identified:
@@ -1121,7 +1139,6 @@ def prescribe(
         _warn_outside_logged_range(panel, drivers)
         forecast = jnp.stack([jnp.asarray(driver.forecast, dtype=float) for driver in drivers], 1)
         model = DrivenDynamics(model, fit.driver_gain, forecast, dt)
-    start = jnp.asarray(data["x0"]) if x0 is None else jnp.asarray(x0)
     # a lever the log never moved is held at its mean logged level, the one level the fit has seen
     # its push at, which the drift has absorbed
     held_at = jnp.array(unmoved, dtype=int)
@@ -1269,6 +1286,7 @@ def prescribe(
         logger_check=logger_check,
         budgets=tuple(budgets),
         _columns=columns,
+        _start=start,
         _budget_rows=tuple(rows.matrix.shape[0] for rows in spend_rows),
     )
 

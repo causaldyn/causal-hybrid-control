@@ -738,6 +738,18 @@ def test_the_certificate_does_not_move_with_the_zero_of_the_state_scale() -> Non
     assert there.certificate.certified_horizon == here.certificate.certified_horizon
 
 
+def test_reach_reads_the_channel_at_the_state_the_plan_starts_from() -> None:
+    """The channel is affine in the state, so its constant term is its value at ``x = 0``, where a
+    log need never have been. Read there, the reach moved with the state's zero: 3.35 here and
+    9.16 there. It is read at the start, where the plan acts first."""
+    here, there = _on_two_scales()
+    assert here.plan is not None
+    start = here.plan.trajectory[0]
+    channel = here.model_fit.residual.control_channel(start)
+    assert here.reach()["incentive"] == pytest.approx(4.0 * float(channel[0, 0]), rel=1e-12)
+    assert there.reach()["incentive"] == pytest.approx(here.reach()["incentive"], rel=1e-5)
+
+
 def test_the_report_and_the_json_carry_the_same_decision() -> None:
     result = _prescribe(_panel(), CausalGraph.from_edges(EDGES))
     payload = json.loads(json.dumps(result.to_json()))

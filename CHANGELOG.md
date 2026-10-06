@@ -211,6 +211,12 @@ still change).
   where 0.12.1 read 0.0123, its 15 certified steps unchanged; the pendulum case study's adjusted
   schedule is trusted for 9 of its 40 steps, where the RK4 tube above alone gave 8, and the
   media-budget case study's for 2 of its 12 weeks, unchanged.
+- **`Prescription.reach()` reads the channel at the state the plan starts from**, a defect since
+  0.5.0. It read the channel's constant term, its value at the zero state, so the reach moved with
+  the state's zero: 3.35 on the incentive panel of the tests, 9.16 with supply 100 up. The
+  media-budget case study's confounded arm inflates the channels 2.5 to 15.4 times, where it read
+  2.4 to 8.0; its myopic arm, which ranks the channels by their reach, spends and earns as before.
+  A `Prescription` built by hand with neither a start nor a plan raises.
 - **Each accelerator extra names the first jax that has its build**, and the `trees` extra the
   first catboost that loads. pip and uv install an extra a package does not provide as nothing,
   with a warning, so a resolution that held jax back below 0.7 installed `chc[cuda13]` on the
