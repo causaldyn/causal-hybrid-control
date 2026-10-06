@@ -4,9 +4,11 @@ Under a symmetric loss CE is already minimax (pessimism = centre, §33). Under a
 pessimism radius shifts the gain and strictly beats CE (Rocq ``confounding_robust_control.v``).
 """
 
+import numpy as np
 import pytest
 
 from chc.regret import (
+    _confounded_effect_estimate,
     asymmetric_control_improvement,
     certainty_equivalence_control,
     confounding_robust_control,
@@ -80,6 +82,18 @@ def test_piecewise_improvement_matches_numeric_in_both_regimes() -> None:
 
 
 # --- Result 37: grounding on a synthetic marketplace task (full estimate -> control pipeline) ---
+
+
+def test_the_benchmarks_naive_estimate_is_the_least_squares_slope() -> None:
+    """Up to 0.12 a covariance over ``n - 1`` was divided by a variance over ``n``, which made the
+    slope ``n / (n - 1)`` too large: 1.0025 at the benchmarks' 400 periods."""
+    n = 400
+    estimate = _confounded_effect_estimate(2.0, 0.8, 1.0, 0.6, n, np.random.default_rng(0))
+    rng = np.random.default_rng(0)  # the same draws, in the order the benchmark takes them
+    z = rng.standard_normal(n)
+    u = z + 0.6 * rng.standard_normal(n)
+    y = 2.0 * u + 0.8 * z + 0.6 * rng.standard_normal(n)
+    assert estimate == pytest.approx(np.polyfit(u, y, 1)[0], rel=1e-12, abs=0.0)
 
 
 def test_benchmark_robust_bounds_the_downside_and_wins_under_confounding() -> None:

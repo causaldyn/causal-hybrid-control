@@ -224,6 +224,14 @@ still change).
   Periods that are numbers or dates now sit on the grid of their smallest spacing where every
   period falls on it, at any date resolution; others, calendar months among them, are ranked as
   before.
+- **The robust-control benchmarks read the naive slope as least squares does**, a defect since
+  0.2.0. `confounding_robust_control_benchmark`, `confounding_robust_tracking_benchmark` and
+  `confounding_regret_floor_certificate` divided a covariance over `n - 1` by a variance over `n`,
+  which made the slope `n / (n - 1)` too large, 1.0025 at the benchmarks' 400 periods. The
+  certainty-equivalent controller's cost without confounding reads 0.022 where it read 0.026;
+  the static sweep's worst cases read 1.226 and 0.348 where they read 1.233 and 0.345, the
+  premium 27 % of the downside where it read 26 %, the savings at 0.8 still 96 %; the closed
+  loop's worst cases read 18.84 and 4.84 where they read 18.97 and 4.92, its savings still 82 %.
 - **Each accelerator extra names the first jax that has its build**, and the `trees` extra the
   first catboost that loads. pip and uv install an extra a package does not provide as nothing,
   with a warning, so a resolution that held jax back below 0.7 installed `chc[cuda13]` on the

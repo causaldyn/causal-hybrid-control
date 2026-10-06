@@ -5872,7 +5872,8 @@ def confounding_regret_floor_certificate(
         z = rng.standard_normal(n)
         u = z + action_noise * rng.standard_normal(n)  # confounder drives the action
         y = b_true * u + gamma * z + action_noise * rng.standard_normal(n)  # ...and the outcome
-        b_hat = float(np.cov(u, y)[0, 1] / np.var(u))  # naive OLS slope: biased by the confounding
+        # naive OLS slope: biased by the confounding
+        b_hat = float(np.cov(u, y)[0, 1] / np.var(u, ddof=1))
         bias = abs(b_hat - b_true)
         regret = (
             kappa
@@ -5928,7 +5929,7 @@ def _confounded_effect_estimate(
     z = rng.standard_normal(n)
     u = incentive_demand_corr * z + action_noise * rng.standard_normal(n)
     y = b_true * u + confounding * z + action_noise * rng.standard_normal(n)
-    return float(np.cov(u, y)[0, 1] / np.var(u))
+    return float(np.cov(u, y)[0, 1] / np.var(u, ddof=1))
 
 
 @dataclass(frozen=True)
