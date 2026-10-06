@@ -20,8 +20,11 @@ can plan against:
   additions, because a number that quietly changed meaning is worse than one that broke loudly.
   0.5.0 moved the marketing-mix headline figures by fixing the integrator the fit used; that is the
   kind of thing it records.
-- **A patch release changes no signature and no number.** 0.5.1 fixed a wrong `__version__` and
-  nothing else.
+- **A patch release adds no feature and changes no signature, and it changes a number only to keep
+  a promise these docs make.** Where a result breaks a contract stated here, a patch may fix it, and
+  the changelog then gives the counterexample and what to change on upgrading. New models and
+  deliberate changes of a default wait for a minor. 0.5.1 fixed a wrong `__version__` and nothing
+  else.
 - **Renames get one minor of alias.** Removals get one minor of `DeprecationWarning` first, naming
   the replacement in the message.
 

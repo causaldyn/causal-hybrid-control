@@ -26,6 +26,11 @@ still change).
   3.75 % to 14.75 % clustered by unit: still above 5 % with few units, and up to 40 where half
   the noise is the unit's own. `prescribe`'s channel error, the tube's budget and the certified
   horizon move on every panel of more than one unit (ADR 0053).
+- **A patch release may fix a broken contract.** Until now a patch changed no number, so a result
+  that broke a promise the docs make waited for a minor. A patch may now fix it, and the changelog
+  then gives the counterexample and what to change on upgrading. A patch still adds no feature and
+  changes no signature, and new models and deliberate changes of a default still wait for a minor
+  (`docs/api/index.md`).
 
 ### Fixed
 
