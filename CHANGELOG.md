@@ -7,6 +7,21 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A lever, a target or a constraint that is not a number is refused, and so is a nan among the
+  barrier's inputs.** `Lever` compared `lo > hi`, which a nan passes, and the box reached the solve,
+  which clipped every action to nan. `Lever.unit_cost`, `Target.value` and `Target.weight` were
+  never checked: a nan made the task cost nan, the solve stopped where it started, and the plan
+  that never moved read certified, its `gamma*` at every level. `Constraint` compared its bounds
+  only when both were given, so a lone nan bound went unchecked. Each now raises `DecisionError`;
+  an infinite bound is still a free side. The solvers' box check refuses a nan bound as it refuses
+  an empty box. `certify_safety` refused an actuation budget `<= 0` but not a nan one;
+  `identification_radius_threshold` passed a nan `u_max`, `drift`, `channel` or `alpha_h` and
+  returned nan, which there means that no radius can save the step; and `barrier_gamma_star` read
+  a nan `grad_norm` as nan and an infinite one as exact identification. Each now refuses them.
+  Since 0.2.0 for the barrier, 0.5.0 for `prescribe`'s inputs.
+
 ## [0.14.1] — 2026-10-06
 
 ### Fixed

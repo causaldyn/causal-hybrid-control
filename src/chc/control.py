@@ -81,14 +81,18 @@ def broadcast_box(bound: Bound, shape: tuple[int, ...], name: str, dtype: Any) -
 
 
 def check_box(lo: Array, hi: Array) -> None:
-    """Reject an inverted or empty box before ``jnp.clip`` turns it into a silent answer."""
-    bad = np.asarray(lo) > np.asarray(hi)
+    """Reject an inverted or empty box, or a nan bound, before ``jnp.clip`` turns it into a silent
+    answer."""
+    lows, highs = np.asarray(lo), np.asarray(hi)
+    bad = ~(lows <= highs)  # a nan bound compares false either way, and clips every action to nan
     if bool(bad.any()):
         first = tuple(int(i) for i in np.argwhere(bad)[0])
-        raise ValueError(
-            f"empty action box at index {first}: u_lo {float(np.asarray(lo)[first])} > "
-            f"u_hi {float(np.asarray(hi)[first])}"
-        )
+        low, high = float(lows[first]), float(highs[first])
+        if np.isnan(low) or np.isnan(high):
+            raise ValueError(
+                f"action box at index {first} has a nan bound: u_lo {low}, u_hi {high}"
+            )
+        raise ValueError(f"empty action box at index {first}: u_lo {low} > u_hi {high}")
 
 
 def project_box(us: Array, lo: Bound, hi: Bound) -> Array:

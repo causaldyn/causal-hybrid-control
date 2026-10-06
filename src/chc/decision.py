@@ -194,8 +194,18 @@ class Lever:
     cap_per_step: float | None = None
 
     def __post_init__(self) -> None:
+        # a nan bound compared false and reached the solve, which clipped every action to nan
+        for side, bound in (("lo", self.lo), ("hi", self.hi)):
+            if math.isnan(bound):
+                raise DecisionError(
+                    f"lever {self.name!r} has {side}=nan; a bound is a number, inf on a free side"
+                )
         if self.lo > self.hi:
             raise DecisionError(f"lever {self.name!r} has lo={self.lo} above hi={self.hi}")
+        if not math.isfinite(self.unit_cost):
+            raise DecisionError(
+                f"lever {self.name!r} has unit_cost={self.unit_cost}; a price is a finite number"
+            )
         if self.cap_per_step is not None and not self.cap_per_step >= 0.0:
             raise DecisionError(
                 f"lever {self.name!r} has cap_per_step={self.cap_per_step}; a rate limit is a "
@@ -217,6 +227,20 @@ class Target:
     value: ArrayLike
     weight: float = 1.0
 
+    def __post_init__(self) -> None:
+        # a nan level or weight made the task cost nan, and the solve stopped where it started
+        values = np.asarray(self.value, dtype=np.float64).reshape(-1)
+        bad = np.flatnonzero(~np.isfinite(values))
+        if bad.size:
+            raise DecisionError(
+                f"target {self.name!r} has value {values[bad[0]]} at entry {bad[0]}; a level to "
+                "steer to is a finite number"
+            )
+        if not math.isfinite(self.weight):
+            raise DecisionError(
+                f"target {self.name!r} has weight={self.weight}; a weight is a finite number"
+            )
+
 
 @dataclass(frozen=True)
 class Constraint:
@@ -235,6 +259,12 @@ class Constraint:
     def __post_init__(self) -> None:
         if self.lo is None and self.hi is None:
             raise DecisionError(f"constraint on {self.state!r} bounds nothing")
+        # a lone nan bound was never compared, and held a barrier no action can keep
+        for side, bound in (("lo", self.lo), ("hi", self.hi)):
+            if bound is not None and math.isnan(bound):
+                raise DecisionError(
+                    f"constraint on {self.state!r} has {side}=nan; a bound is a number"
+                )
         if self.lo is not None and self.hi is not None and self.lo > self.hi:
             raise DecisionError(f"constraint on {self.state!r} has lo={self.lo} above hi={self.hi}")
 

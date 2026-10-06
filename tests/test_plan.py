@@ -288,6 +288,7 @@ def test_a_non_positive_cvar_gap_is_rejected_rather_than_inverted() -> None:
         ({"cvar_gap": math.inf}, "must be positive and finite to scale a sensitivity radius"),
         ({"gamma": math.nan}, "Gamma must be >= 1 and finite"),
         ({"gamma": math.inf}, "Gamma must be >= 1 and finite"),
+        ({"u_max": math.nan}, "needs a positive actuation budget; u_max is nan"),
     ],
 )
 def test_a_sensitivity_that_is_no_number_is_refused_rather_than_priced(

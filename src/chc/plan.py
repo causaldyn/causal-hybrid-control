@@ -1309,7 +1309,7 @@ def certify_safety(
     certified = guaranteed >= required
 
     authority = u_max if u_max is not None else float(jnp.max(jnp.linalg.norm(actions, axis=1)))
-    if authority <= 0.0:
+    if not authority > 0.0:  # a nan passed `authority <= 0` and priced every step's threshold nan
         source = "u_max" if u_max is not None else "the plan's largest action (it never acts)"
         raise ValueError(f"gamma_star needs a positive actuation budget; {source} is {authority}")
     per_step = tuple(
