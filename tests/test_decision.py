@@ -901,8 +901,8 @@ LEVERS_IN_TWO_ROLES = {
     ("names", "match"), LEVERS_IN_TWO_ROLES.values(), ids=LEVERS_IN_TWO_ROLES.keys()
 )
 def test_a_lever_named_twice_or_as_a_state_is_refused(names: dict, match: str) -> None:
-    """A lever named twice was planned as two levers on one column, its cost counted twice; as the
-    target or under a constraint, the decision failed inside the solve."""
+    """A lever named twice was planned as two levers on one column, each with its own action and
+    cost; as the target or under a constraint, the fit's RK4 fixed point did not converge."""
     decision = {
         "levers": [Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
         "target": Target("supply", value=1.0),

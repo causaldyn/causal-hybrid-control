@@ -7,7 +7,7 @@ import urllib.error
 import numpy as np
 import pytest
 
-from chc.estimators import BackdoorOLS, DoubleML
+from chc.estimators import BackdoorOLS, DoubleML, EffectEstimate
 from chc.lalonde import LalondeData, lalonde_ate, load_lalonde
 
 
@@ -40,6 +40,13 @@ def test_flexible_double_ml_recovers_most_of_the_effect(data: LalondeData) -> No
     assert abs(dml - data.experimental_ate) < 0.25 * abs(data.naive_ate - data.experimental_ate)
 
 
+class _TreatedShare:
+    """An estimator with no check of its own, as a caller's may be: the refusal is lalonde_ate's."""
+
+    def estimate(self, data, *, treatment="u", outcome="x_next", covariates=()):
+        return EffectEstimate(float(np.mean(np.asarray(data[treatment]))))
+
+
 @pytest.mark.parametrize("name", ["treat", "re78"])
 def test_a_covariate_named_for_the_treatment_or_the_outcome_is_refused(name: str) -> None:
     """The estimator reads the treatment and the outcome as ``treat`` and ``re78``, from the dict
@@ -52,4 +59,4 @@ def test_a_covariate_named_for_the_treatment_or_the_outcome_is_refused(name: str
         experimental_ate=0.0,
     )
     with pytest.raises(ValueError, match=f"the column '{name}' is read as the"):
-        lalonde_ate(data, BackdoorOLS())
+        lalonde_ate(data, _TreatedShare())
