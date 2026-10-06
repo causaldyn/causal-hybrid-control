@@ -193,7 +193,7 @@ release is archived on Zenodo.
   author  = {Gradina, Ilia},
   title   = {causal-hybrid-control: physics-structured dynamics with a learned causal residual},
   year    = {2026},
-  version = {0.14.2},
+  version = {0.14.3},
   doi     = {10.5281/zenodo.21737789},
   license = {Apache-2.0},
   url     = {https://github.com/causaldyn/causal-hybrid-control}

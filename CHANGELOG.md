@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.14.3] — 2026-10-07
+
 ### Fixed
 
 - **A column named in two roles is refused, rather than read in both.** The estimators read the
@@ -5216,6 +5218,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.14.3]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.3
 [0.14.2]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.2
 [0.14.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.1
 [0.14.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.0
