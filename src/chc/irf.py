@@ -39,6 +39,11 @@ def _projection_design(
     """
     if lags < 0:
         raise ValueError(f"lags must be non-negative; got {lags}")
+    if treatment in adjust_for:
+        raise ValueError(
+            f"the treatment {treatment!r} is also a covariate: read twice, its coefficient is "
+            "split between the two copies, and the response reads half its size"
+        )
     treatment_series = jnp.asarray(data[treatment])
     outcome_series = jnp.asarray(data[outcome])
     total = treatment_series.shape[0]
@@ -85,6 +90,11 @@ def local_projection_irf(
     inference: without it, a coefficient's confidence interval loses coverage on persistent data
     and at long horizons, and a plant with a delay is persistent by construction. The default stays
     ``0`` so existing callers get the estimates they had.
+
+    Raises:
+        ValueError: on negative ``lags``, a series too short for the horizon, or a ``treatment``
+            that ``adjust_for`` names too. The outcome may be adjusted for, as by default: its level
+            at ``t`` is a control for its level at ``t + h``.
     """
     return _irf_from_design(
         *_projection_design(data, horizon, treatment, outcome, adjust_for, lags)

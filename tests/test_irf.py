@@ -51,6 +51,19 @@ def test_omitting_the_confounder_biases_the_impulse_response() -> None:
     assert abs(adjusted[1] - _B) < 0.1  # ...and recovered with it
 
 
+def test_a_treatment_among_its_own_covariates_is_refused() -> None:
+    """Read twice, the treatment's coefficient was split between its copies: the one-step response
+    read half of ``_B``. The outcome stays allowed, as by default."""
+    data = _confounded_arx(2000, seed=0)
+    for call in (
+        lambda: local_projection_irf(data, 3, adjust_for=("x", "z", "u")),
+        lambda: structured_irf(data, 3, adjust_for=("z", "u")),
+        lambda: delay_estimate(data, 3, adjust_for=("u",), n_resamples=2),
+    ):
+        with pytest.raises(ValueError, match="the treatment 'u' is also a covariate"):
+            call()
+
+
 def test_structured_irf_agrees_with_local_projections() -> None:
     horizon = 6
     data = _confounded_arx(8000, seed=0)

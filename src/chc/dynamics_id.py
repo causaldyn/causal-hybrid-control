@@ -49,7 +49,14 @@ from jax import Array
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-from chc.causal import _polynomial_features, _ridge_predict, _stream_key
+from chc.causal import (
+    _ACTION_AND_OUTCOME,
+    _TRANSITION,
+    _polynomial_features,
+    _refuse_reread,
+    _ridge_predict,
+    _stream_key,
+)
 from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics
 from chc.integrate import rk4_step
 from chc.residual import ControlAffineResidual, control_affine_features
@@ -878,8 +885,27 @@ def fit_causal_residual(
     Raises:
         ValueError: on a negative ``channel_degree``; on ``clusters`` that do not label every
             transition once, or name fewer than two clusters; on an ``rk4`` fixed point that does
-            not converge.
+            not converge; on a covariate named ``u`` or ``x_next``, an instrument or a driver named
+            ``x``, ``u`` or ``x_next``, a driver named twice, or an instrument that is also a
+            covariate or a driver, at the step's start or its end. Each would read a column the fit
+            reads in another role: adjusted for the action, the channel came back as the
+            confounded regression's.
     """
+    _refuse_reread("covariate", adjust_for, _ACTION_AND_OUTCOME)
+    _refuse_reread("driver", drivers, _TRANSITION)
+    twice = sorted({name for name in drivers if drivers.count(name) > 1})
+    if twice:
+        raise ValueError(
+            f"drivers named more than once: {twice}; read twice, a driver's gain is split between "
+            "its two copies"
+        )
+    if instrument is not None:
+        _refuse_reread("instrument", (instrument,), _TRANSITION)
+        if instrument in {*adjust_for, *drivers, *(f"{name}_next" for name in drivers)}:
+            raise ValueError(
+                f"the instrument {instrument!r} is also a covariate or a driver, at the step's "
+                "start or its end, and partialled out it lends the action no move of its own"
+            )
     channel_degree = degree if channel_degree is None else channel_degree
     if channel_degree < 0:
         raise ValueError(f"channel_degree must be a non-negative integer; got {channel_degree}")

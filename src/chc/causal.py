@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 import zlib
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from itertools import combinations_with_replacement
 
@@ -55,6 +56,27 @@ class ConfoundedLinearSystem:
         return {"x": x, "z": z, "u": u, "x_next": x_next, "w": w}
 
 
+_STATE = {"x": "the state"}
+_ACTION_AND_OUTCOME = {"u": "the action", "x_next": "the next state, the outcome"}
+_TRANSITION = {**_STATE, **_ACTION_AND_OUTCOME}
+
+
+def _refuse_reread(role: str, names: Iterable[str], taken: Mapping[str, str]) -> None:
+    """Refuse a ``role`` column named for one the estimate reads in its own role already.
+
+    A transition's state, action and next state are ``x``, ``u`` and ``x_next``, and every other
+    column is read by the caller's name, all from one dict: a covariate named ``u`` adjusts the
+    action for itself, which halves its coefficient in a regression and leaves the moment nothing
+    to move in a partialling-out.
+    """
+    for name in names:
+        if name in taken:
+            raise ValueError(
+                f"the {role} {name!r} is {taken[name]}, which the estimate already reads in that "
+                "role; a column it stands for needs a name of its own"
+            )
+
+
 def _ols_with_intercept(features: Array, target: Array) -> Array:
     """Ordinary least squares with an intercept column appended; returns the coefficient vector."""
     design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
@@ -67,7 +89,11 @@ def estimate_control_effect(data: dict[str, Array], adjust_for: tuple[str, ...] 
 
     Regresses ``x_next`` on ``[x, u, *adjust_for]``. With ``adjust_for=("z",)`` (the correct
     adjustment set) the ``u`` coefficient is causal; with ``adjust_for=()`` it stays confounded.
+
+    Raises:
+        ValueError: if ``adjust_for`` names ``u`` or ``x_next``, the action and the outcome.
     """
+    _refuse_reread("covariate", adjust_for, _ACTION_AND_OUTCOME)
     columns = [data["x"], data["u"], *[data[name] for name in adjust_for]]
     features = jnp.stack(columns, axis=1)
     coeffs = _ols_with_intercept(features, data["x_next"])
@@ -87,7 +113,12 @@ def estimate_effect_iv(data: dict[str, Array], instrument: str = "w") -> Array:
     Stage 1 regresses ``u`` on ``[x, instrument]``; stage 2 regresses ``x_next`` on ``[x, û]``. The
     instrument must drive ``u``, be independent of the confounder, and affect ``x_next`` only via
     ``u`` — then the effect is recovered even when the confounder ``z`` is unobserved.
+
+    Raises:
+        ValueError: if ``instrument`` is ``x``, ``u`` or ``x_next``: the state reaches ``x_next``
+            on its own path, and the action and the outcome are what it stands between.
     """
+    _refuse_reread("instrument", (instrument,), _TRANSITION)
     x, u, w, y = data["x"], data["u"], data[instrument], data["x_next"]
     _, u_hat = _ols_fit(jnp.stack([x, w], axis=1), u)
     coeffs, _ = _ols_fit(jnp.stack([x, u_hat], axis=1), y)
@@ -114,7 +145,17 @@ def sensitivity_analysis(
     The robustness value is the ``R^2`` an unobserved confounder would need with *both* ``u`` and
     ``x_next`` to reduce the estimated effect by ``q*100%`` (toward zero). High RV = robust;
     a controller can ship this bound on how much hidden confounding its decision could tolerate.
+
+    Raises:
+        ValueError: if ``adjust_for`` names ``x``, ``u`` or ``x_next``, or a column twice. The
+            standard error inverts the design's Gram matrix, which a column read twice makes
+            singular: the error, the robustness value and the interval's E-value came out nan,
+            nan and 1.
     """
+    _refuse_reread("covariate", adjust_for, _TRANSITION)
+    twice = sorted({name for name in adjust_for if adjust_for.count(name) > 1})
+    if twice:
+        raise ValueError(f"covariates named more than once: {twice}")
     columns = [data["x"], data["u"], *[data[name] for name in adjust_for]]
     beta, se, dof = _ols_with_se(jnp.stack(columns, axis=1), data["x_next"])
     t_stat = jnp.abs(beta[1] / se[1])
@@ -198,7 +239,11 @@ def _dml_residuals(
 ) -> tuple[Array, Array]:
     """Cross-fitted partialling-out residuals ``(y_res, u_res)`` -- the shared core of the DML point
     estimate and its influence-function SE. Nuisances are polynomial-ridge, fit out of fold.
+
+    The state ``x`` is a covariate like any other here; ``u`` and ``x_next`` are refused, since
+    a nuisance that reads the action or the outcome predicts it.
     """
+    _refuse_reread("covariate", covariates, _ACTION_AND_OUTCOME)
     y, u = data["x_next"], data["u"]
     covs = jnp.stack([data[c] for c in covariates], axis=1)
     n = y.shape[0]
@@ -229,6 +274,9 @@ def estimate_effect_dml(
     Partials flexible (polynomial-ridge) predictions of ``x_next`` and ``u`` out of the covariates,
     then regresses the residuals. This is Neyman-orthogonal, so it recovers the effect even under
     *nonlinear* confounding, where the linear :func:`estimate_control_effect` adjustment is biased.
+
+    Raises:
+        ValueError: if ``covariates`` names ``u`` or ``x_next``, the action and the outcome.
     """
     y_res, u_res = _dml_residuals(data, covariates, degree, folds, ridge, seed)
     return jnp.sum(y_res * u_res) / jnp.sum(u_res * u_res)  # residual-on-residual through origin
@@ -249,6 +297,9 @@ def dml_point_and_se(
     ``sqrt(sum u_res^2 * eps^2) / sum u_res^2`` with ``eps = y_res - theta*u_res`` -- the sandwich
     variance of the Neyman-orthogonal moment. Ships EconML-grade uncertainty with the cross-fit
     effect (a 95% CI is ``theta +/- 1.96*se``).
+
+    Raises:
+        ValueError: if ``covariates`` names ``u`` or ``x_next``, the action and the outcome.
     """
     y_res, u_res = _dml_residuals(data, covariates, degree, folds, ridge, seed)
     denom = jnp.sum(u_res * u_res)
@@ -279,8 +330,11 @@ def refute_effect(
     placebo_data = {**data, "u": data["u"][jax.random.permutation(k_perm, n)]}
     placebo = float(estimate_control_effect(placebo_data, adjust_for))
 
-    rcc_data = {**data, "_rcc": jax.random.normal(k_rcc, (n,))}
-    rcc = float(estimate_control_effect(rcc_data, (*adjust_for, "_rcc")))
+    common = "_rcc"
+    while common in data:  # a name of the caller's would be replaced by the random cause
+        common = f"_{common}"
+    rcc_data = {**data, common: jax.random.normal(k_rcc, (n,))}
+    rcc = float(estimate_control_effect(rcc_data, (*adjust_for, common)))
 
     idx = jax.random.permutation(k_sub, n)[: int(subset_fraction * n)]
     subset = float(

@@ -4,10 +4,12 @@ import importlib
 
 import jax
 import jax.numpy as jnp
+import pytest
 
 from chc import causal
 from chc.causal import (
     ConfoundedLinearSystem,
+    dml_point_and_se,
     e_value,
     estimate_control_effect,
     estimate_effect_dml,
@@ -144,3 +146,72 @@ def test_refutation_passes_for_adjusted_estimate() -> None:
     assert abs(report["placebo"]) < 0.05  # permuting the treatment collapses the effect
     assert abs(report["random_common_cause"] - report["original"]) < 0.05  # stable
     assert abs(report["subset"] - report["original"]) < 0.1  # stable
+
+
+SECOND_ROLES = {
+    "the action as a covariate": (
+        lambda d: estimate_control_effect(d, ("z", "u")),
+        "the covariate 'u' is the action",
+    ),
+    "the outcome as a covariate": (
+        lambda d: estimate_control_effect(d, ("z", "x_next")),
+        "the covariate 'x_next' is the next state",
+    ),
+    "the action, for its sensitivity": (
+        lambda d: sensitivity_analysis(d, ("z", "u")),
+        "the covariate 'u' is the action",
+    ),
+    "the state, for its sensitivity": (
+        lambda d: sensitivity_analysis(d, ("z", "x")),
+        "the covariate 'x' is the state",
+    ),
+    "a covariate twice, for its sensitivity": (
+        lambda d: sensitivity_analysis(d, ("z", "z")),
+        r"covariates named more than once: \['z'\]",
+    ),
+    "the action as its instrument": (
+        lambda d: estimate_effect_iv(d, "u"),
+        "the instrument 'u' is the action",
+    ),
+    "the state as an instrument": (
+        lambda d: estimate_effect_iv(d, "x"),
+        "the instrument 'x' is the state",
+    ),
+    "the action, partialled out": (
+        lambda d: estimate_effect_dml(d, ("x", "z", "u")),
+        "the covariate 'u' is the action",
+    ),
+    "the outcome, partialled out": (
+        lambda d: dml_point_and_se(d, ("x", "z", "x_next")),
+        "the covariate 'x_next' is the next state",
+    ),
+}
+
+
+@pytest.mark.parametrize(("call", "match"), SECOND_ROLES.values(), ids=SECOND_ROLES.keys())
+def test_a_column_named_in_a_second_role_is_refused(call, match: str) -> None:
+    """The state, the action and the outcome are ``x``, ``u`` and ``x_next``, and every other column
+    is read by its name, from one dict. With the action among the covariates the effect read 0.5005
+    against a true 1.0, its coefficient split between two copies; as its own instrument, 2SLS was
+    the confounded regression; and a column read twice left the sensitivity's design singular, its
+    error nan and its interval's E-value 1."""
+    with pytest.raises(ValueError, match=match):
+        call(_data())
+
+
+def test_the_state_stays_a_covariate_where_it_repeats_no_regressor() -> None:
+    """Partialling out reads no column but the covariates, so the state is one of them there; and in
+    the adjusted regression a second copy of the state moves only its own coefficient."""
+    data = _data()
+    assert float(estimate_effect_dml(data, ("x", "z"))) == pytest.approx(1.0, abs=0.05)
+    alone = float(estimate_control_effect(data, ("z",)))
+    assert float(estimate_control_effect(data, ("z", "x"))) == pytest.approx(alone, rel=1e-9)
+
+
+def test_the_random_common_cause_takes_a_name_the_data_does_not_hold() -> None:
+    """It was added as ``_rcc``: a confounder of that name was replaced by the random column, and
+    the refutation failed an estimate that was right."""
+    data = _data()
+    named = {**{k: v for k, v in data.items() if k != "z"}, "_rcc": data["z"]}
+    report = refute_effect(named, adjust_for=("_rcc",))
+    assert report == refute_effect(data, adjust_for=("z",))

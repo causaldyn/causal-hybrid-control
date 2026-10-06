@@ -1446,3 +1446,32 @@ def test_the_influence_s_independent_terms_are_its_rows_or_its_clusters_sums() -
         summed, [rows[0].sum(0) + rows[2].sum(0), rows[1].sum(0) + rows[3].sum(0)]
     )
     np.testing.assert_array_equal(_independent(rows[:, :, 0], np.array([1, 0, 0, 0])), [81, 3])
+
+
+FIT_SECOND_ROLES = {
+    "the action as a covariate": ({"adjust_for": ("z", "u")}, "the covariate 'u' is the action"),
+    "the outcome as a covariate": (
+        {"adjust_for": ("z", "x_next")},
+        "the covariate 'x_next' is the next state",
+    ),
+    "the action as its instrument": ({"instrument": "u"}, "the instrument 'u' is the action"),
+    "the state as an instrument": ({"instrument": "x"}, "the instrument 'x' is the state"),
+    "an instrument adjusted for": (
+        {"adjust_for": ("z", "w"), "instrument": "w"},
+        "the instrument 'w' is also a covariate",
+    ),
+    "the action as a driver": ({"adjust_for": ("z",), "drivers": ("u",)}, "the driver 'u' is"),
+}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"), FIT_SECOND_ROLES.values(), ids=FIT_SECOND_ROLES.keys()
+)
+def test_a_column_named_in_a_second_role_is_refused(kwargs: dict, match: str) -> None:
+    """The fit reads the state, the action and the next state as ``x``, ``u`` and ``x_next`` and
+    every other column by its name, from one dict. Adjusted for the action as well as the
+    confounder, the channel came back as the unadjusted fit's: -0.209 where the truth is 1.0."""
+    system = _system(instrument_to_action=jnp.array([[0.8]]))
+    data = system.sample(500, jax.random.key(0), _known)
+    with pytest.raises(ValueError, match=match):
+        fit_causal_residual(_known, data, system.dt, **kwargs)
