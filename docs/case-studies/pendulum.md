@@ -42,9 +42,8 @@ Scope, and it bounds what the numbers mean:
   so what binds is the approach to the speed limit, not the limit.
 - The certificate's trusted prefix is short. Its tube compounds at the norm of the hanging
   pendulum's slope, 15 per second, a `local` rate, since gravity bends the field away from where
-  the plan starts. It is fed the standard error of every channel coefficient, the constant term
-  included, which is the channel at upright, where the log never goes. The run on the true plant
-  shows the rest of the schedule holding; the certificate does not claim it.
+  the plan starts. It is fed the channel's standard error at the states the log visited. The run
+  on the true plant shows the rest of the schedule holding; the certificate does not claim it.
 
 Code:
 [`scripts/pendulum_demo.py`](https://github.com/causaldyn/causal-hybrid-control/blob/main/scripts/pendulum_demo.py),

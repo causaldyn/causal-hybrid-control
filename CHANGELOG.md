@@ -197,6 +197,20 @@ still change).
   0.063; in float64 all 10_000 steps run, to 29.03 and 0.015. Its docstring said the schedule
   keeps infections under the cap: the cap is a penalty, and the peak ends at 0.1005 against 0.1
   in float32, 0.1004 in float64.
+- **A certificate's radius no longer moves with the zero of the state's scale**, a defect since
+  0.3.0. `CausalDynamicsFit.channel_error` was the root mean of the channel coefficients'
+  variances. On a channel that reads the state, one coefficient is the channel's value at the
+  zero state, which a log in kelvin, or one whose supply sits 100 units up, reaches only by
+  extrapolation: the incentive panel of the tests read 0.0125 and certified 15 steps, and the
+  same panel with supply 100 and the wait 50 up read 0.946 and certified 2. The error is now the
+  standard error of the channel's value at the log's states, `sqrt(mean tr(Sigma M))` with `M`
+  the mean square of the channel's features over them, the same on both scales, and the same as
+  before on a channel that does not read the state. `drift_error` follows it, so the two compare.
+  Over fresh logs the spread of the channel at the log's states came to 1.00 and 1.02 of the
+  robust error, unweighted and under the decision weight. The quickstart's radius reads 0.0078
+  where 0.12.1 read 0.0123, its 15 certified steps unchanged; the pendulum case study's adjusted
+  schedule is trusted for 9 of its 40 steps, where the RK4 tube above alone gave 8, and the
+  media-budget case study's for 2 of its 12 weeks, unchanged.
 - **Each accelerator extra names the first jax that has its build**, and the `trees` extra the
   first catboost that loads. pip and uv install an extra a package does not provide as nothing,
   with a warning, so a resolution that held jax back below 0.7 installed `chc[cuda13]` on the

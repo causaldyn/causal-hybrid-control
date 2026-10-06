@@ -131,27 +131,34 @@ class CausalDynamicsFit:
     identified: bool
     method: str  # "orthogonal" | "iv" | "observational"
     folds: int
-    # Root-mean diagonal of the channel's robust covariance, None when not identified: each row's
-    # squared structural residual carried through the fit's own linear map, cross-fitted nuisances
-    # included. Robust since 0.8.0; the homoskedastic error before it read 0.80x the channel's
-    # spread over 800 logs whose noise moves with the state, and 0.40x when the class missed the
-    # truth, where the robust one's root mean square reads 0.96x and 1.04x. On a confounded plant
-    # it came to 1.08x the channel's error against the truth on the adjustment path and 1.05x on
-    # the ``iv`` path (200 logs of 2000 rows). One log's value scatters, by 24% and 40% of itself
-    # on those 800 logs of 4000 rows: a scale, not coverage. Under ``rk4`` it is the fixed point's
-    # own, the noise carried through the RK4 map's gain on the estimate: 1.70x the Euler fit's at
-    # ``theta*dt = 0.7``, where 200 noise draws on one log scattered the channel 1.73x as far.
+    # The standard error of the fitted channel's value B(x) at the log's states, root mean square
+    # over the states and the channel's entries, None when not identified. It is read off the
+    # channel's robust covariance: each row's squared structural residual carried through the fit's
+    # own linear map, cross-fitted nuisances included. Up to 0.12 it was that covariance's
+    # root-mean diagonal, whose constant term is the value at x = 0, so it moved with the state's
+    # zero: one log read 0.0091, and 0.579 with its states moved by 100 and -50. The figures that
+    # follow compared that version with the spread of the same coefficients. Robust since 0.8.0;
+    # the homoskedastic error before it read 0.80x the channel's spread over 800 logs whose noise
+    # moves with the state, and 0.40x when the class missed the truth, where the robust one's root
+    # mean square reads 0.96x and 1.04x. On a confounded plant it came to 1.08x the channel's error
+    # against the truth on the adjustment path and 1.05x on the ``iv`` path (200 logs of 2000
+    # rows). One log's value scatters, by 24% and 40% of itself on those 800 logs of 4000 rows: a
+    # scale, not coverage. Under ``rk4`` it is the fixed point's own, the noise carried through the
+    # RK4 map's gain on the estimate: 1.70x the Euler fit's at ``theta*dt = 0.7``, where 200 noise
+    # draws on one log scattered the channel 1.73x as far.
     channel_error: float | None
-    # Root-mean diagonal of the drift stage's own homoskedastic OLS covariance, or None when the
-    # channel is not identified (the drift is then conditional on a meaningless channel). It is a
-    # DIFFERENT object from ``channel_error``: conditional on the fitted channel, whose uncertainty
-    # it does not propagate, and homoskedastic -- a scale, not coverage. Reported because on a real
-    # plant the drift, not the channel, dominated closed-loop cost. Its noise is the drift
-    # regression's residual, so it counts what the model class leaves out: on the marketing-mix
-    # plant, 3.4x the drift's scatter over noise draws. Under ``rk4`` it goes through the drift's
-    # block of the RK4 map's gain, and the map couples the drift to the channel it is conditional
-    # on: on a log the model class fits, the drift scattered 1.26x it at ``theta*dt = 0.7`` over
-    # 400 seeds, against 1.02x under Euler.
+    # The standard error of the drift regression's fitted value at the log's rows, root mean square
+    # over the rows and the states, from the drift stage's own homoskedastic OLS covariance; None
+    # when the channel is not identified (the drift is then conditional on a meaningless channel).
+    # Up to 0.12 it was that covariance's root-mean diagonal, which the figures here were read on.
+    # It is a DIFFERENT object from ``channel_error``: conditional on the fitted channel, whose
+    # uncertainty it does not propagate, and homoskedastic -- a scale, not coverage. Reported
+    # because on a real plant the drift, not the channel, dominated closed-loop cost. Its noise is
+    # the drift regression's residual, so it counts what the model class leaves out: on the
+    # marketing-mix plant, 3.4x the drift's scatter over noise draws. Under ``rk4`` it goes through
+    # the drift's block of the RK4 map's gain, and the map couples the drift to the channel it is
+    # conditional on: on a log the model class fits, the drift scattered 1.26x it at
+    # ``theta*dt = 0.7`` over 400 seeds, against 1.02x under Euler.
     drift_error: float | None
     action_residual_variance: (
         float  # overlap proxy: 0 => a deterministic policy, nothing to regress
@@ -318,6 +325,26 @@ def _robust_spread(sensitivity: Array, score: Array, n_coeff: int) -> Array:
     return jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity)
 
 
+def _error_at_rows(blocks: Array, features: Array) -> float:
+    """Root mean square, over the log's rows and the ``G`` blocks, of the standard error of a value
+    ``features[i] @ c_g`` whose coefficients ``c_g`` have the covariance ``blocks[g]``:
+    ``sqrt(mean_g tr(blocks[g] M))``, ``M`` the features' mean square over the rows.
+
+    A coefficient's own variance moves with the state's zero: the constant term is the value at
+    ``x = 0``, however far from it the log was taken. A value at the log's rows does not move.
+    """
+    moment = features.T @ features / features.shape[0]
+    return float(jnp.sqrt(jnp.mean(jnp.einsum("gab,ba->g", blocks, moment))))
+
+
+def _channel_blocks(covariance: Array, channel_shape: tuple[int, ...]) -> Array:
+    """``(n m, F, F)``: each channel entry's coefficients' covariance, out of the raveled
+    ``(n, m, F)`` channel's."""
+    entries, features = channel_shape[0] * channel_shape[1], channel_shape[2]
+    every = jnp.arange(entries)
+    return covariance.reshape(entries, features, entries, features)[every, :, every, :]
+
+
 def _influence(
     sensitivity: Array, score: Array, direct: Array, drift_score: Array, n_coeff: int
 ) -> Array:
@@ -423,17 +450,18 @@ def _state_weights(weights: Callable[[Array], Array], states: Array) -> Array:
 
 
 def _ols_error(target: Array, design: Array, coeffs: Array, ridge: float) -> float:
-    """Root-mean diagonal of ``sigma^2 (X'X)^-1`` -- the plain homoskedastic OLS covariance.
+    """The fitted value's standard error at the log's rows under ``sigma^2 (X'X)^-1``, the plain
+    homoskedastic OLS covariance, root mean square over the rows (:func:`_error_at_rows`).
 
     Used for the drift stage, which is fitted by least squares on the remainder, so there is no
     instrument and no endogenous regressor to sandwich against. Unlike the channel's robust error it
-    pools the noise over the rows, and it is a scale rather than a coverage statement.
+    pools the noise over the rows and the states; a scale rather than a coverage statement.
     """
     n, n_coeff = design.shape
     score = target - design @ coeffs
     sigma2 = jnp.sum(score**2) / (max(n - n_coeff, 1) * target.shape[1])
     covariance = sigma2 * jnp.linalg.inv(design.T @ design + ridge * jnp.eye(n_coeff))
-    return float(jnp.sqrt(jnp.mean(jnp.diag(covariance))))
+    return _error_at_rows(covariance[None], design)
 
 
 def solve_channel_moment(
@@ -875,10 +903,19 @@ def fit_causal_residual(
         drift_covariance = jnp.linalg.solve(
             drift_newton, jnp.linalg.solve(drift_newton, drift_spread).T
         )
+        # the drift's rows are its features, then its drivers, each state's coefficient beside the
+        # others': state s's coefficients are every n-th, from s
+        rows, states = design.shape[1], x.shape[1]
+        every_state = jnp.arange(states)
+        drift_blocks = drift_covariance.reshape(rows, states, rows, states)[
+            :, every_state, :, every_state
+        ]
         return dataclasses.replace(
             fit,
-            channel_error=float(jnp.sqrt(jnp.mean(jnp.diag(covariance)[:size]))),
-            drift_error=float(jnp.sqrt(jnp.mean(jnp.diag(drift_covariance)))),
+            channel_error=_error_at_rows(
+                _channel_blocks(covariance[:size, :size], channel.shape), phi_c
+            ),
+            drift_error=_error_at_rows(drift_blocks, design),
             influence=_influence(
                 carry(fit_map), score, carry(drift_direct(size)), defect(fit), regressor.shape[1]
             )
@@ -903,7 +940,7 @@ def fit_causal_residual(
         spread = _robust_spread(sensitivity[: channel.size], score, regressor.shape[1])
         fit = dataclasses.replace(
             fit,
-            channel_error=float(jnp.sqrt(jnp.mean(jnp.diag(spread)))),
+            channel_error=_error_at_rows(_channel_blocks(spread, channel.shape), phi_c),
             influence=_influence(
                 sensitivity,
                 score,

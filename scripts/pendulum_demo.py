@@ -43,12 +43,9 @@ HONEST SCOPE:
   limit is what binds, not the limit: every schedule here stays well inside it.
 * The certificate's tube compounds at the norm of the field's slope in the state where the plan
   starts, which for a hanging pendulum is 15 per second: a ``local`` rate, since gravity bends the
-  field away from there. It is fed ``channel_error``, the root-mean standard error of *every*
-  channel coefficient -- the constant term included, which is the channel at ``theta = 0``,
-  upright, where this log never goes. So the trusted prefix is short, and shorter in these
-  coordinates than it would be with the angle measured from hanging, for the same fit and the same
-  schedule. The audit is what shows the rest of the schedule holding; the certificate does not
-  claim it.
+  field away from there. It is fed ``channel_error``, the channel's standard error at the states
+  the log visited, and compounds it at that rate, so the trusted prefix is short. The audit is what
+  shows the rest of the schedule holding; the certificate does not claim it.
 
 Precision: nothing here sets ``jax_enable_x64``. The header names the precision the numbers were
 computed at, and in float32 a warning says what moves: the fits do not, the barrier-held solves do.

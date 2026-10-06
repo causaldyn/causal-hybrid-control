@@ -265,6 +265,27 @@ def test_the_fit_does_not_depend_on_the_units_the_caller_logged_in() -> None:
         assert float(jnp.linalg.norm(moved - baseline)) < 1e-5, name
 
 
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_the_errors_do_not_move_with_the_zero_of_the_state_scale(integrator: str) -> None:
+    """Logs in degrees Celsius and in kelvin are one log. Moving the state's zero moves the
+    channel's and the drift's coefficients, and their values at the logged states not at all; the
+    errors are those values'. Read off the coefficients' own variances, the value at ``x = 0``
+    among them, the channel's error was 0.0091 on these logs and 0.579 with the states moved."""
+    system = _system()
+    data = system.sample(2000, jax.random.key(0), _known)
+    shift = jnp.array([100.0, -50.0])
+    moved = {**data, "x": data["x"] + shift, "x_next": data["x_next"] + shift}
+
+    here, there = (
+        fit_causal_residual(_known, log, system.dt, adjust_for=("z",), integrator=integrator)
+        for log in (data, moved)
+    )
+
+    # the ridge weighs the moved log's larger coefficients: 8e-6 apart
+    assert there.channel_error == pytest.approx(here.channel_error, rel=1e-4)
+    assert there.drift_error == pytest.approx(here.drift_error, rel=1e-4)
+
+
 def test_the_drift_carries_its_own_scale_and_it_shrinks_like_root_n() -> None:
     """``drift_error`` has to be a standard error, not a decorative number.
 
@@ -404,23 +425,21 @@ def test_the_reported_channel_error_is_calibrated_on_both_identified_paths(
     ``chc.sensitivity`` consumes exactly this number as a radius. The robust sandwich on the
     structural residual brings both paths into band: over 200 logs it came to 1.08 and 1.05 of the
     channel's error against the truth, where the homoskedastic one ran optimistic on the IV path.
+    Both are read where the error is, at the log's states: the channel's value there against the
+    truth's.
     """
     system = _system(instrument_to_action=jnp.array([[0.8]]))
     for keywords in ({"adjust_for": ("z",)}, {"instrument": "w"}):
         deviations, reported = [], []
         for seed in range(24):
+            data = system.sample(2000, jax.random.key(seed), _known)
             fit = fit_causal_residual(
-                _known,
-                system.sample(2000, jax.random.key(seed), _known),
-                system.dt,
-                channel_degree=channel_degree,
-                **keywords,
+                _known, data, system.dt, channel_degree=channel_degree, **keywords
             )
-            deviations.extend(
-                abs(np.asarray(_channel_of(fit)).ravel() - np.asarray(CHANNEL).ravel())
-            )
+            fitted = jax.vmap(fit.residual.control_channel)(data["x"])
+            deviations.append(float(jnp.mean((fitted - CHANNEL) ** 2)))
             reported.append(fit.channel_error)
-        ratio = float(np.sqrt(np.mean(np.square(deviations))) / np.mean(reported))
+        ratio = float(np.sqrt(np.mean(deviations)) / np.mean(reported))
         assert 0.5 < ratio < 2.0, f"{keywords} SE off by {ratio:.2f}x"
 
 
@@ -594,7 +613,8 @@ def test_the_rk4_channel_error_carries_the_rk4_gain_the_spread_carries() -> None
                 base, data, dt, adjust_for=("z",), seed=0, integrator=integrator
             )
             assert fit.channel_error is not None
-            channels.append(np.asarray(fit.residual.channel).ravel())
+            # the replicates share their states, where the channel's value is read
+            channels.append(np.asarray(jax.vmap(fit.residual.control_channel)(data["x"])).ravel())
             errors.append(fit.channel_error)
         spread[integrator] = float(np.sqrt(np.mean(np.var(np.array(channels), axis=0, ddof=1))))
         reported[integrator] = float(np.mean(errors))
@@ -701,16 +721,19 @@ def _decision_variance(curvature: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 @functools.cache
-def _replicated_decision_fits() -> dict[str, tuple[np.ndarray, np.ndarray]]:
+def _replicated_decision_fits() -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """A hundred fresh logs of 4000 rows from a class that misses the truth, fitted under the
-    decision weight, and the first forty under ones as well: the lines, and the errors the fits
-    reported. A regret is a quadratic form in the line's error, so its mean over forty logs moves
-    by a fifth; the hundred are for that."""
+    decision weight, and the first forty under ones as well: the lines, the errors the fits
+    reported, and each log's mean square of the line's features ``(1, x)``, the states the errors
+    are read at. A regret is a quadratic form in the line's error, so its mean over forty logs
+    moves by a fifth; the hundred are for that."""
     weights = {"ones": lambda states: jnp.ones(states.shape[0]), "decision": _decision_weight}
     lines: dict[str, list[np.ndarray]] = {name: [] for name in weights}
     errors: dict[str, list[float]] = {name: [] for name in weights}
+    moments: dict[str, list[np.ndarray]] = {name: [] for name in weights}
     for seed in range(100):
         data = _decision_log(4000, 0.4, seed=100 + seed)
+        features = np.concatenate([np.ones_like(data["x"]), np.asarray(data["x"])], axis=1)
         for name, weight in weights.items():
             if name == "ones" and seed >= 40:
                 continue
@@ -718,7 +741,11 @@ def _replicated_decision_fits() -> dict[str, tuple[np.ndarray, np.ndarray]]:
             assert fit.channel_error is not None
             lines[name].append(_line(fit))
             errors[name].append(fit.channel_error)
-    return {name: (np.array(lines[name]), np.array(errors[name])) for name in weights}
+            moments[name].append(features.T @ features / features.shape[0])
+    return {
+        name: (np.array(lines[name]), np.array(errors[name]), np.array(moments[name]))
+        for name in weights
+    }
 
 
 def _decision_fit(data: dict[str, jax.Array], weights) -> CausalDynamicsFit:
@@ -835,12 +862,16 @@ def test_the_decision_weight_takes_the_regret_to_the_floor_of_its_class(nuisance
 
 def test_a_weighted_fit_reports_an_error_its_spread_matches() -> None:
     """The weighted fit's standard error is robust, since a weight is chosen because the rows
-    differ. Over fresh logs of a class that misses the truth, where the score's variance moves
-    with the state, the robust error weighted by ones came to 1.02 of its spread, and the decision
-    weight's to 0.96. The homoskedastic error the unweighted fit reported up to 0.7.0 came to
-    0.40."""
-    for name, (lines, errors) in _replicated_decision_fits().items():
-        spread = float(np.sqrt(np.mean(np.var(lines, axis=0, ddof=1))))
+    differ. The error is the line's at the log's states, so the spread is read there too: each
+    fit's distance from the mean line, at its own log's states. Over fresh logs of a class that
+    misses the truth, where the score's variance moves with the state, the spread came to 1.00 of
+    the robust error weighted by ones, and to 1.02 of the decision weight's. Up to 0.12 both were
+    read on the line's coefficients, where the ratios were 1.02 and 0.96, and the homoskedastic
+    error the unweighted fit reported up to 0.7.0 came to 0.40."""
+    for name, (lines, errors, moments) in _replicated_decision_fits().items():
+        apart = lines - lines.mean(axis=0)
+        at_states = np.einsum("ra,rab,rb->r", apart, moments, apart)
+        spread = float(np.sqrt(at_states.sum() / (len(lines) - 1)))
         assert spread / float(np.mean(errors)) == pytest.approx(1.0, abs=0.25), name
 
 
@@ -863,7 +894,7 @@ def test_the_decision_weights_regret_is_what_its_variance_predicts() -> None:
     the one weight whose regret this predicts. Over 400 logs the ratio was 1.14 +- 0.06: at 4000
     rows the line scatters 5% wider than its limit."""
     curvature, rows = 0.4, 4000
-    lines, _ = _replicated_decision_fits()["decision"]
+    lines = _replicated_decision_fits()["decision"][0]
     floor = curvature**2 * DECISION_VARIANCE**2
     excess = np.mean([_decision_regret(line, curvature) for line in lines]) - floor
     gram, variance = _decision_variance(curvature)
@@ -876,18 +907,21 @@ def test_the_weighted_error_carries_each_rows_noise_and_the_nuisances_error_at_t
     tilt: float,
 ) -> None:
     """On one log whose noise grows as ``exp(x)``, redraws of the noise alone scatter the channel by
-    what the fit's own linear map says, whichever end of the log the weight loads.
+    what the fit's own linear map says, whichever end of the log the weight loads. The spread is
+    the channel's at the log's states, where the error is read.
 
-    Weighed by ``exp(-x)``, towards the quiet rows, the error came to 1.04 and 1.02 of the spread
-    under the two integrators over sixteen redraws; a sandwich on the moment alone leaves out what
-    the cross-fitted nuisances pass on from the rows the weight loads, and came to 0.67. Weighed by
-    ``exp(x)``, towards the noisy rows, it came to 0.93 and 0.85; an error that pools the noise
-    over the rows came to 0.16 under ``rk4``, and agrees with the robust one on average under
-    ``exp(-x)``, so only the noisy rows can tell them apart."""
+    Weighed by ``exp(-x)``, towards the quiet rows, the spread came to 0.98 and 1.00 of the error
+    under the two integrators over sixteen redraws; weighed by ``exp(x)``, towards the noisy rows,
+    to 1.05 and 1.05. Up to 0.12 both were read on the channel's coefficients, where the ratios
+    were 1.04 and 1.02, then 0.93 and 0.85. There a sandwich on the moment alone, which leaves out
+    what the cross-fitted nuisances pass on from the rows the weight loads, came to 0.67 on the
+    quiet rows; an error that pools the noise over the rows came to 0.16 under ``rk4`` on the noisy
+    rows, and agrees with the robust one on average under ``exp(-x)``, so only the noisy rows can
+    tell them apart."""
     dt = 1.0
     base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
     for integrator in ("euler", "rk4"):
-        channels, errors = [], []
+        values, errors = [], []
         for replicate in range(16):
             data = _rk4_generated_log(0.7, n=1000, dt=dt, noise_seed=replicate, noise_growth=1.0)
             fit = fit_causal_residual(
@@ -899,9 +933,9 @@ def test_the_weighted_error_carries_each_rows_noise_and_the_nuisances_error_at_t
                 weights=lambda states: jnp.exp(tilt * states[:, 0]),
             )
             assert fit.channel_error is not None
-            channels.append(np.asarray(fit.residual.channel).ravel())
+            values.append(np.asarray(jax.vmap(fit.residual.control_channel)(data["x"])).ravel())
             errors.append(fit.channel_error)
-        spread = float(np.sqrt(np.mean(np.var(np.array(channels), axis=0, ddof=1))))
+        spread = float(np.sqrt(np.mean(np.var(np.array(values), axis=0, ddof=1))))
         assert spread / float(np.mean(errors)) == pytest.approx(1.0, abs=0.3), integrator
 
 

@@ -9,6 +9,7 @@ the layers in one call ever loses that separation, this file fails.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import logging
 import math
@@ -698,6 +699,43 @@ def test_reach_prices_a_lever_by_its_box_and_not_by_its_coefficient_alone() -> N
     )
     assert abs(wide.reach()["incentive"]) > 10 * abs(narrow.reach()["incentive"])
     assert "incentive" in wide.explain()
+
+
+@functools.cache
+def _on_two_scales() -> tuple[Prescription, Prescription]:
+    """One log and one decision, the second with each state's zero moved: supply 100 units down
+    and the wait 50, as a log in kelvin sits 273.15 from the same log in degrees Celsius."""
+    logs = _logs()
+    shifted = {**logs, "supply": logs["supply"] + 100.0, "wait": logs["wait"] + 50.0}
+    graph = CausalGraph.from_edges(EDGES)
+    here = _prescribe(Panel.from_frame(logs, unit="unit", time="time", seed=0), graph)
+    there = prescribe(
+        Panel.from_frame(shifted, unit="unit", time="time", seed=0),
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("supply", value=101.0),
+        constraints=[Constraint("wait", hi=50.5)],
+        adjustment=graph,
+        horizon=15,
+        dt=DT,
+        tolerance=0.5,
+    )
+    return here, there
+
+
+def test_the_certificate_does_not_move_with_the_zero_of_the_state_scale() -> None:
+    """The plan is the same on both scales, to the solver's tolerance, and so is how far it is
+    trusted. The radius was the root mean of the channel's coefficients' variances, its value at
+    ``x = 0`` among them, which the moved log reaches only by extrapolation: 0.0125 here and 0.946
+    there, which certified 15 steps here and 2 there."""
+    here, there = _on_two_scales()
+    assert here.plan is not None
+    assert there.plan is not None
+    assert np.asarray(there.plan.actions) == pytest.approx(np.asarray(here.plan.actions), abs=1e-5)
+    # the ridge weighs the moved log's larger coefficients: 8e-5 apart
+    assert there.certificate.identification_radius == pytest.approx(
+        here.certificate.identification_radius, rel=1e-3
+    )
+    assert there.certificate.certified_horizon == here.certificate.certified_horizon
 
 
 def test_the_report_and_the_json_carry_the_same_decision() -> None:
