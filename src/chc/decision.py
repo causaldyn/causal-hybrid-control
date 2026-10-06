@@ -709,7 +709,9 @@ class Prescription:
             f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}"
             + ("" if certificate.gamma is None else f" at gamma {certificate.gamma:.4g}")
             + f", gamma* {_show(certificate.gamma_star)} (marginal sensitivity model)",
-            f"- solver: {certificate.solver_status} after "
+            "- solver: not run"
+            if certificate.solver_status is None
+            else f"- solver: {certificate.solver_status} after "
             f"{certificate.solver_iterations} accepted steps",
             f"- regret bound on the fitted model: {_show(certificate.regret_bound)}"
             + ("" if certificate.regret_status is None else f", {certificate.regret_status}"),

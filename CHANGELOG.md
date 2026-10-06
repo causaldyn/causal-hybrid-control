@@ -240,6 +240,9 @@ still change).
   whose 1.2.6 and 1.2.7 declare numpy below 2; it now says 1.2.8.
 - **`leaderboard_multiseed` keeps a space before each interval.** A five-digit regret's interval
   filled its column and ran into the regret, `13734.15[13732.55, 13735.31]`.
+- **A prescription with no plan reports its solver as not run**, a defect since 0.5.0. The report
+  of a `not_identified` prescription read `solver: None after 0 accepted steps`; it now reads
+  `solver: not run`. The JSON still carries `solver_status: null`.
 
 ### Notes
 

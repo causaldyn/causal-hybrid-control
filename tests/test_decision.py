@@ -144,7 +144,10 @@ def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
     assert result.certificate.solver_status is None
     with pytest.raises(NotIdentifiedError, match="not identified"):
         _ = result.schedule
-    assert "no schedule" in result.report().lower()
+    report = result.report()
+    assert "no schedule" in report.lower()
+    assert "- solver: not run" in report
+    assert "None" not in report
 
 
 def _policy_logs(offset: float, random_lever: float) -> dict[str, np.ndarray]:
