@@ -9,6 +9,7 @@ the layers in one call ever loses that separation, this file fails.
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import functools
 import json
 import logging
@@ -30,15 +31,18 @@ from chc.decision import (
     Lever,
     NotIdentifiedError,
     Prescription,
+    StartState,
     Target,
     _barrier,
     _certify,
     _episodes,
+    _json_label,
     _linearised,
     _margins,
     _model_error,
     _panel_start,
     _rate,
+    _show_start,
     _transitions,
     prescribe,
 )
@@ -139,8 +143,11 @@ def test_the_graph_derived_arm_recovers_the_channel_the_confounded_one_gets_wron
 
 def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
     graph = CausalGraph.from_edges(EDGES, latent=("demand",))
-    result = _prescribe(_panel(), graph)
+    panel = _panel()
+    result = _prescribe(panel, graph)
     assert result.certificate.identification == "not_identified"
+    # where the plan would have started
+    assert result.start == _panel_start(panel, ("supply", "wait"))[1]
     assert result.plan is None
     assert result.certificate.trustworthy_steps == 0
     assert result.certificate.solver_status is None
@@ -148,6 +155,7 @@ def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
         _ = result.schedule
     report = result.report()
     assert "no schedule" in report.lower()
+    assert "\n\nStart: the mean (standard deviation) over 200 units of " in report
     assert "- solver: not run" in report
     assert "None" not in report
 
@@ -933,8 +941,133 @@ def test_the_start_is_each_units_latest_state_on_a_panel_whose_units_end_apart()
         logs["supply"][(logs["unit"] == unit) & (logs["time"] == period)][0]
         for unit, period in ((0, 3), (1, 2), (2, 3))
     ]
-    (start,) = np.asarray(_panel_start(panel, ("supply",))).tolist()
-    assert start == pytest.approx(sum(last) / 3.0, rel=1e-14, abs=0.0)
+    start, record = _panel_start(panel, ("supply",))
+    (value,) = np.asarray(start).tolist()
+    assert value == pytest.approx(sum(last) / 3.0, rel=1e-14, abs=0.0)
+    assert (record.source, record.value, record.units, record.periods) == (
+        "panel",
+        (value,),
+        3,
+        (2, 3),
+    )
+    assert record.spread == pytest.approx((float(np.std(last)),), rel=1e-12, abs=0.0)
+
+
+def test_the_record_says_where_the_plan_starts_and_over_how_many_units() -> None:
+    """A mean over units that sit far apart is a start no unit is at: the record keeps the mean the
+    plan starts from, how many units it is over, when they were logged and how far apart they
+    sit."""
+    result = _small()
+    logs = _logs(n_units=40)
+    last = np.stack([logs[name][logs["time"] == 11] for name in ("supply", "wait")], axis=1)
+    start = result.start
+    assert start is not None
+    assert (start.source, start.states, start.units, start.periods) == (
+        "panel",
+        ("supply", "wait"),
+        40,
+        (11,),
+    )
+    assert start.value == pytest.approx(tuple(last.mean(axis=0)), rel=1e-12, abs=0.0)
+    assert start.spread == pytest.approx(tuple(last.std(axis=0)), rel=1e-12, abs=0.0)
+    assert np.asarray(result._start).tolist() == list(start.value)
+
+
+def test_one_unit_s_start_is_its_own_state_and_sits_apart_from_nothing() -> None:
+    _, record = _panel_start(_panel(n_units=1, n_periods=5), ("supply", "wait"))
+    assert (record.units, record.periods, record.spread) == (1, (4,), (0.0, 0.0))
+    assert _show_start(record).startswith("Start: the one unit's last logged state, from period 4:")
+
+
+def test_a_given_start_is_recorded_as_given_and_an_integer_one_is_read_as_floats() -> None:
+    """An integer start failed inside the fit's linearisation, which differentiates only floats."""
+    result = _small(x0=[1, 0])
+    assert result.start == StartState("given", ("supply", "wait"), (1.0, 0.0))
+    assert np.asarray(result._start).tolist() == [1.0, 0.0]
+    assert "\n\nStart: `x0` as given, `supply` 1, `wait` 0.\n" in result.report()
+    assert result.to_json()["start"] == {
+        "source": "given",
+        "states": ["supply", "wait"],
+        "value": [1.0, 0.0],
+        "units": None,
+        "periods": [],
+        "spread": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("x0", "match"),
+    [
+        ([0.0], r"x0 has shape \(1,\); the plan starts from one value per state, 2 for "),
+        ([0.0, 0.0, 0.0], r"x0 has shape \(3,\)"),
+        ([[0.0, 0.0]], r"x0 has shape \(1, 2\)"),
+        (0.0, r"x0 has shape \(\)"),
+        ([math.nan, 0.0], r"x0 is \[nan, 0\.0\], and a start must be finite"),
+        ([0.0, -math.inf], r"x0 is \[0\.0, -inf\]"),
+    ],
+)
+def test_a_start_that_is_not_one_finite_value_per_state_is_refused(x0: object, match: str) -> None:
+    """A start of the wrong shape failed inside the plan's first matrix product, and a nan or an
+    infinite one was refused as a drift or a channel that is not a number."""
+    with pytest.raises(DecisionError, match=match):
+        _small(x0=x0)
+
+
+@pytest.mark.parametrize(
+    ("periods", "logged"),
+    [
+        ((7,), "from period 7: "),
+        ((6, 7), "from periods 6, 7: "),
+        ((5, 6, 7), "from periods 5, 6, 7: "),
+        ((4, 5, 6, 7), "from 4 periods, 4 to 7: "),
+    ],
+)
+def test_the_report_names_the_periods_the_units_last_states_were_logged_at(
+    periods: tuple[int, ...], logged: str
+) -> None:
+    record = StartState("panel", ("supply",), (0.5,), units=9, periods=periods, spread=(0.25,))
+    assert _show_start(record) == (
+        "Start: the mean (standard deviation) over 9 units of each unit's last logged state, "
+        f"{logged}`supply` 0.5 (0.25)."
+    )
+
+
+def test_a_dated_start_s_periods_go_to_json_as_iso_8601_or_as_the_panel_holds_them() -> None:
+    """``periods`` holds integers at ``ns`` and dates or datetimes above it; JSON has neither."""
+    result = _small()
+    days = np.datetime64("2024-03-01") + np.arange(4).astype("timedelta64[D]")
+    for resolution, label in (
+        ("D", "2024-03-04"),
+        ("s", "2024-03-04T00:00:00"),
+        ("ns", 1_709_510_400_000_000_000),
+    ):
+        panel = Panel.from_frame(
+            {
+                "home": np.zeros(4, dtype=int),
+                "day": days.astype(f"datetime64[{resolution}]"),
+                "temperature": np.linspace(20.0, 15.0, 4),
+            },
+            unit="home",
+            time="day",
+        )
+        _, record = _panel_start(panel, ("temperature",))
+        written = dataclasses.replace(result, start=record).to_json()["start"]
+        assert json.loads(json.dumps(written, allow_nan=False))["periods"] == [label]
+
+
+@pytest.mark.parametrize(
+    ("period", "label"),
+    [
+        (np.int64(3), 3),
+        (2.5, 2.5),
+        ("2024-W10", "2024-W10"),
+        (datetime.date(2024, 3, 4), "2024-03-04"),
+        (datetime.datetime(2024, 3, 4, 6, 30), "2024-03-04T06:30:00"),
+        (datetime.timedelta(days=1), "1 day, 0:00:00"),
+    ],
+)
+def test_a_period_s_label_is_a_json_number_or_text(period: object, label: object) -> None:
+    assert _json_label(period) == label
 
 
 def test_an_evaluation_window_does_not_span_a_period_no_unit_logged() -> None:
@@ -963,12 +1096,28 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
     assert np.allclose(payload["schedule"], np.asarray(result.plan.actions))
     assert payload["certificate"]["adjusted_for"] == ["demand"]
     assert payload["provenance"]["data_sha256"] == result.provenance.data_sha256
+    start = result.start
+    assert start is not None
+    assert start.spread is not None
+    assert payload["start"] == {
+        "source": "panel",
+        "states": ["supply", "wait"],
+        "value": list(start.value),
+        "units": 200,
+        "periods": [11],
+        "spread": list(start.spread),
+    }
     # the fitted channel reads the state, so the curvature behind the regret bound is a sample
     assert payload["certificate"]["regret_status"] == "diagnostic"
     assert result.certificate.regret_status == "diagnostic"
 
     report = result.report()
     assert "# Prescription for `supply`" in report
+    assert (
+        "## Decision\n\nStart: the mean (standard deviation) over 200 units of each unit's last "
+        f"logged state, from period 11: `supply` {start.value[0]:.4g} ({start.spread[0]:.4g}), "
+        f"`wait` {start.value[1]:.4g} ({start.spread[1]:.4g}).\n\n| lever |" in report
+    )
     assert "- regret bound on the fitted model: " in report
     assert (
         report.split("- regret bound on the fitted model: ")[1]
@@ -1574,7 +1723,9 @@ def test_a_panel_of_one_unit_takes_its_transitions_as_independent() -> None:
     assert certificate.identification_radius is not None
     assert (certificate.error_clustered_by, certificate.error_clusters) == (None, None)
     assert result.model_fit.clusters is None
-    assert "each transition taken as independent" in result.report()
+    report = result.report()
+    assert "each transition taken as independent" in report
+    assert "\n\nStart: the one unit's last logged state, from period 399: `supply` " in report
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,27 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`Prescription.start` records where the plan starts.** A `StartState`: `source` is `given` for
+  a caller's `x0`, or `panel` for the default, the mean over units of each unit's last logged
+  state. For the panel's, `units` counts the units in that mean, `periods` lists the periods their
+  last states were logged at, and `spread` holds each state's standard deviation over them, 0 with
+  one unit. A mean over units that sit far apart is a start no unit is at, and nothing said which
+  start a plan was made from. The report states it under the decision's heading, and `to_json`
+  writes it as `start`, a period as a JSON number or text, a date in ISO 8601. The schema version
+  stays 2: a field was added, and none changed its meaning.
+
+### Fixed
+
+- **A given start that is not one finite value per state is refused, and an integer one is read
+  as floats.** `prescribe` passed `x0` to the plan unchecked. A start of the wrong length or shape
+  failed inside jax with a `TypeError` or a `ValueError`. A nan or an infinite one planned no
+  move, its tube read certified and its `gamma*` nan; since 0.14.2 it was refused as a drift or a
+  channel that is not a number. An integer one, such as `x0=[0, 0]`, failed inside the fit's
+  linearisation, which differentiates only floats. The first two now raise a `DecisionError` that
+  names the shape or the values, and an integer start plans as its floats do. Since 0.5.0.
+
 ## [0.14.4] — 2026-10-07
 
 ### Fixed

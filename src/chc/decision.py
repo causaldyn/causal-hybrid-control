@@ -28,6 +28,7 @@ computed from a channel nothing in the log pins down.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import math
 import time
@@ -476,6 +477,26 @@ class _Columns:
 
 
 @dataclass(frozen=True)
+class StartState:
+    """The state the plan starts from, or would have, and where it came from.
+
+    ``source`` is ``"given"`` for a caller's ``x0`` and ``"panel"`` for the panel's own: the mean
+    over its units of each unit's last logged state. A mean over units that sit far apart is a
+    start no unit is at, so the panel's start keeps how many units it averages, the periods their
+    last states were logged at, and each state's spread over them.
+    """
+
+    source: Literal["given", "panel"]
+    states: tuple[str, ...]  # the plan's states, in its order: the target, then the constrained
+    value: tuple[float, ...]
+    units: int | None = None  # how many units the mean is over; None when given
+    periods: tuple[Any, ...] = ()  # the distinct periods the units' last states were logged at
+    # Each state's standard deviation over the units, as a population: 0 with one unit. None when
+    # given.
+    spread: tuple[float, ...] | None = None
+
+
+@dataclass(frozen=True)
 class Prescription:
     """The decision, the evidence for it, and what it took to get there."""
 
@@ -494,6 +515,7 @@ class Prescription:
     # rows for it. *Experimental.*
     logger_check: LoggerCheck | None = None
     budgets: tuple[PeriodBudget, ...] = ()  # what the plan was held to spend
+    start: StartState | None = None  # where the plan starts, or would have; None if not recorded
     _columns: _Columns | None = field(default=None, repr=False, compare=False)
     # The state the plan starts from, or would have: where :meth:`reach` reads the channel.
     _start: Array | None = field(default=None, repr=False, compare=False)
@@ -779,6 +801,8 @@ class Prescription:
             "",
             "## Decision",
         ]
+        if self.start is not None:
+            lines += ["", _show_start(self.start)]
         if self.plan is None:
             lines += ["", "**No schedule.** " + certificate.adjustment.reason, ""]
         else:
@@ -878,6 +902,16 @@ class Prescription:
             "schedule": None
             if self.plan is None
             else np.asarray(self.schedule.magnitudes).tolist(),
+            "start": None
+            if self.start is None
+            else {
+                "source": self.start.source,
+                "states": list(self.start.states),
+                "value": list(self.start.value),
+                "units": self.start.units,
+                "periods": [_json_label(period) for period in self.start.periods],
+                "spread": None if self.start.spread is None else list(self.start.spread),
+            },
             "certificate": {
                 "identification": certificate.identification,
                 "adjusted_for": list(certificate.adjustment.covariates),
@@ -1024,7 +1058,7 @@ def prescribe(
     dt: float = 1.0,
     gamma: float = 1.0,
     tolerance: float | None = None,
-    x0: Array | None = None,
+    x0: ArrayLike | None = None,
     folds: int = 2,
     seed: int = 0,
     integrator: Integrator = "rk4",
@@ -1093,8 +1127,10 @@ def prescribe(
             how much error a caller accepts, and a certificate with an infinite tolerance passes
             over the whole horizon while proving nothing. A tube whose rate or budget comes out
             other than a finite number is not evaluated either, and a warning says so.
-        x0: the state to plan from. Defaults to the mean over units of each unit's last observed
-            state, which is the pooled "where we are now" and is recorded as such.
+        x0: the state to plan from, one finite value per state: the target's, then each
+            constrained column's. Defaults to the mean over units of each unit's last observed
+            state, the pooled "where we are now". :attr:`Prescription.start` records which, and
+            for the panel's, over how many units, at which periods and with what spread.
         integrator: the one-step map the fit is made consistent with, passed to
             :func:`~chc.dynamics_id.fit_causal_residual`. Defaults to ``"rk4"`` here and to
             ``"euler"`` there, deliberately: the low-level fit has no idea what will consume it and
@@ -1130,7 +1166,8 @@ def prescribe(
             a panel with no consecutive pair of periods to fit a transition on, a ``cap_per_step``
             on a lever that follows its logged rule or a budget that prices one,
             ``max_levers`` where the log kept a combination of the levers away from zero, an
-            asserted adjustment set that names a lever, or a covariate or a driver whose column
+            ``x0`` that is not one finite value per state, an asserted adjustment set that names
+            a lever, or a covariate or a driver whose column
             would be read in a second role: one named ``u`` or ``x_next``, or ``x`` other than as
             the one state, under which the transitions hold the levers, the states a period on
             and the states, or one named for a driver's level a period on, ``f"{driver}_next"``.
@@ -1248,6 +1285,16 @@ def prescribe(
             "action moves"
         )
     driver_names = _check_drivers(drivers, horizon=horizon, taken=(*states, *lever_names))
+    # read as floats here: an integer start failed inside the fit's linearisation
+    given = None if x0 is None else np.asarray(x0, dtype=float)
+    if given is not None:
+        if given.shape != (len(states),):
+            raise DecisionError(
+                f"x0 has shape {given.shape}; the plan starts from one value per state, "
+                f"{len(states)} for {list(states)}"
+            )
+        if not np.all(np.isfinite(given)):
+            raise DecisionError(f"x0 is {given.tolist()}, and a start must be finite")
     for name in (*states, *lever_names, *driver_names):
         if name not in panel.columns:
             raise KeyError(
@@ -1368,7 +1415,11 @@ def prescribe(
             resolved.covariates, "not_identified", f"{resolved.reason}; but {kept.refusal}"
         )
 
-    start = _panel_start(panel, states) if x0 is None else jnp.asarray(x0)
+    if given is None:
+        start, start_state = _panel_start(panel, states)
+    else:
+        start = jnp.asarray(given)
+        start_state = StartState("given", states, tuple(given.tolist()))
     if identification == "not_identified":
         _log.warning(abort, extra={"chc_event": "abort", "reason": resolved.reason})
         return Prescription(
@@ -1397,6 +1448,7 @@ def prescribe(
             drivers=tuple(drivers),
             logger_check=logger_check,
             budgets=tuple(budgets),
+            start=start_state,
             _columns=columns,
             _start=start,
         )
@@ -1668,6 +1720,7 @@ def prescribe(
         drivers=tuple(drivers),
         logger_check=logger_check,
         budgets=tuple(budgets),
+        start=start_state,
         _columns=columns,
         _start=start,
         _budget_rows=tuple(rows.matrix.shape[0] for rows in spend_rows),
@@ -2070,9 +2123,9 @@ def _stacked(panel: Panel, names: tuple[str, ...], rows: NDArray[np.int64]) -> A
     return jnp.stack([jnp.asarray(panel._numbers(name)[rows]) for name in names], axis=1)
 
 
-def _panel_start(panel: Panel, states: tuple[str, ...]) -> Array:
+def _panel_start(panel: Panel, states: tuple[str, ...]) -> tuple[Array, StartState]:
     """The mean over units of each unit's states at its latest period, the units in code order, in
-    one pass over the rows."""
+    one pass over the rows; and its record."""
     unit_codes, _ = panel.codes()
     time_codes = _period_steps(panel)
     latest: dict[int, tuple[int, int]] = {}
@@ -2082,7 +2135,17 @@ def _panel_start(panel: Panel, states: tuple[str, ...]) -> Array:
         if unit not in latest or period > latest[unit][0]:
             latest[unit] = (period, row)
     rows = np.array([latest[unit][1] for unit in sorted(latest)], dtype=np.int64)
-    return jnp.mean(_stacked(panel, states, rows), axis=0)
+    last = _stacked(panel, states, rows)
+    start = jnp.mean(last, axis=0)
+    record = StartState(
+        "panel",
+        states,
+        tuple(float(value) for value in np.asarray(start, dtype=float)),
+        units=int(rows.size),
+        periods=tuple(sorted(set(np.asarray(panel[panel.time])[rows].tolist()))),
+        spread=tuple(float(value) for value in np.std(np.asarray(last, dtype=float), axis=0)),
+    )
+    return start, record
 
 
 # The class :func:`chc.dynamics_id.fit_causal_residual` regresses the levers on by default.
@@ -2517,6 +2580,42 @@ def _strict(value: Any) -> Any:
     if isinstance(value, list):
         return [_strict(item) for item in value]
     return value
+
+
+def _json_label(label: Any) -> Any:
+    """A period's label as JSON carries it: a number or text as it is, a date or a time in ISO
+    8601, anything else as its text."""
+    if isinstance(label, np.generic):
+        label = label.item()
+    if isinstance(label, int | float | str):
+        return label
+    if isinstance(label, datetime.date | datetime.time):
+        return label.isoformat()
+    return str(label)
+
+
+def _show_start(start: StartState) -> str:
+    named = [f"`{name}` {value:.4g}" for name, value in zip(start.states, start.value, strict=True)]
+    if start.source == "given":
+        return f"Start: `x0` as given, {', '.join(named)}."
+    periods = start.periods
+    logged = (
+        f"period {periods[0]}"
+        if len(periods) == 1
+        else "periods " + ", ".join(str(period) for period in periods)
+        if len(periods) <= 3
+        else f"{len(periods)} periods, {periods[0]} to {periods[-1]}"
+    )
+    if start.units == 1:
+        return f"Start: the one unit's last logged state, from {logged}: {', '.join(named)}."
+    assert start.spread is not None  # a panel's start keeps its spread
+    values = ", ".join(
+        f"{text} ({spread:.4g})" for text, spread in zip(named, start.spread, strict=True)
+    )
+    return (
+        f"Start: the mean (standard deviation) over {start.units} units of each unit's last "
+        f"logged state, from {logged}: {values}."
+    )
 
 
 def _show_relation(relation: LeverRelation, names: Sequence[str]) -> str:
