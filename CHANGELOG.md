@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-10-07
+
 ### Fixed
 
 - **A lever, a target or a constraint that is not a number is refused, and so is a nan among the
@@ -5166,6 +5168,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.14.2]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.2
 [0.14.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.1
 [0.14.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.0
 [0.13.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.13.0
