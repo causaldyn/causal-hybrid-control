@@ -7,6 +7,107 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A lever, a target or a constraint that is not a number is refused, and so is a nan among the
+  barrier's inputs.** `Lever` compared `lo > hi`, which a nan passes, and the box reached the solve,
+  which clipped every action to nan. `Lever.unit_cost`, `Target.value` and `Target.weight` were
+  never checked: a nan made the task cost nan, the solve stopped where it started, and the plan
+  that never moved read certified, its `gamma*` at every level. `Constraint` compared its bounds
+  only when both were given, so a lone nan bound went unchecked. Each now raises `DecisionError`;
+  an infinite bound is still a free side. The solvers' box check refuses a nan bound as it refuses
+  an empty box. `certify_safety` refused an actuation budget `<= 0` but not a nan one;
+  `identification_radius_threshold` passed a nan `u_max`, `drift`, `channel` or `alpha_h` and
+  returned nan, which there means that no radius can save the step; and `barrier_gamma_star` read
+  a nan `grad_norm` as nan and an infinite one as exact identification. Each now refuses them.
+  Since 0.2.0 for the barrier, 0.5.0 for `prescribe`'s inputs.
+- **A reachable tube or a barrier gap that is not a number is refused, rather than read `ok`.**
+  `backward_reachable_tube` checked only its CFL number, which a nan passes: a nan `radius`,
+  `u_max`, `horizon` or grid bound, or a drift, barrier or `b_matrix` that is not finite on the
+  grid, solved a tube of nan, and an infinite `u_max` failed with an `OverflowError`.
+  `barrier_reachability_gap` read that tube as no reachable point, and its condition, failing at
+  every point, as an invalid certificate: with a nan or an infinite radius it returned `ok=True`.
+  A nan `alpha` did the same, and an infinite `tolerance` read `ok` whatever the tube. Each is now
+  refused with `ValueError`: `u_max` and `radius` must be nonnegative and finite, `horizon`
+  positive and finite, each axis's bounds finite and increasing, the gains finite, and `tolerance`
+  a fraction in `[0, 1]`; `higher_order_barrier_gap` likewise. Since 0.2.0; the higher-order
+  gap's since 0.4.0.
+- **A minimax action, a van Trees floor or a ratio moment whose input is not a number is refused.**
+  `minimax_action` compared `b_hi < b_lo`, which a nan passes, and took the worse of its two
+  branches with `max`, which drops a nan: with a nan `b_hi` it answered for the interval
+  `[b_lo, b_lo]`, a finite action that is wrong, and `minimax_lq_policy` returned those gains
+  beside a nan certainty-equivalence arm. A nan `target`, `effort` or `curvature` gave a nan
+  action, and the regret criterion failed inside `brentq`. The interval's ends and `target` must
+  now be finite, `effort` positive and finite, and `curvature` nonnegative and finite; an infinite
+  end, which the cost criterion answered with `u = 0` only because `max` dropped the nan of
+  `inf * 0`, is refused too. `minimax_lq_policy` checks `state_gain`, `state_cost` and
+  `terminal_cost` likewise. `multivariate_van_trees_certificate` returned some fields nan beside
+  others that looked normal for a nan or an infinite `prior_width` or `sigma`, or a negative `rr`,
+  and raised `LinAlgError` for a nan `information_loss` or `rr`: `prior_width`, `sigma` and `rr`
+  must now be positive and finite, and `information_loss` at least 1 and finite.
+  `multivariate_action_floor` returned a nan floor for a nan in any input, since `eigh` returns
+  finite eigenvalues for a nan matrix and the definiteness check passed; `exact_ratio_moment` and
+  `exact_matrix_ratio_moment` returned nan for a nan numerator and raised `LinAlgError` for a nan
+  denominator or covariance. Each now raises `ValueError` naming the input.
+  `matrix_ratio_certificate` convicted every grid at a nan `tolerance` and none at an infinite one;
+  it must now be positive and finite. Since 0.4.0 for the ratio moments, 0.5.0 for the minimax
+  controller and the ratio certificate, 0.6.0 for the multivariate floor.
+- **A delay, a transport problem, a clock or a convexity floor that is not a number is refused.**
+  `DelayedDynamics`, `optimal_delay_gain`, `delay_ball` and `delay_ball_certificate` compared
+  `tau <= 0`, which a nan passes: the rollouts and gains came out nan, and an infinite delay froze
+  the delay line. `delay_margin` compared `gain <= abs(pole)`, and returned nan for a nan gain or
+  pole and `0.0` for an infinite gain. `delay_design_loss` handed a nan ratio to `brentq`, and
+  `robust_delay_design` took an infinite end: on `[inf, inf]` it designed `K = 0` for an interval
+  it called stabilised, and on `[1, inf]` it failed inside `brentq`. A delay must now be positive
+  and finite, a gain finite and above `|pole|`, and an interval's ends finite. `sinkhorn` checked
+  neither `eps` nor its inputs: at `eps = -0.5` it returned the coupling that maximises the cost,
+  its marginals met to 3e-16, a nan or infinite `eps`, cost or mass returned a plan of nan, and a
+  nan `tol` warned on every call. `eps` and `tol` must now be positive and finite, the cost and
+  the masses finite, and the masses nonnegative. `shadow_price_effect` and `shadow_price_interval`
+  let infinite masses through, since `inf - inf` is nan and passed the test of equal totals, and
+  `shadow_price_effect` handed a nan `eps` to LAPACK, which failed with `LinAlgError`; both are now
+  refused. `RecedingHorizon.step` read a JAX nan `t` as step 0 of the budget's period, failed
+  inside `round` on a Python nan, and planned an unbudgeted window from either; a `t` that is not
+  finite is refused. `PortHamiltonianResidual(energy="icnn")` and `convex_energy_certificate`
+  compared `convexity <= 0`, so a nan floor built an energy whose invariant radius is nan; the
+  floor must now be positive and finite. Since 0.2.0 for `sinkhorn`, 0.4.0 for the delay
+  functions, 0.6.0 for the convexity floor, 0.7.0 for the clock and 0.8.0 for the shadow prices.
+- **A filter update past the float range is refused, and five other places that returned a nan
+  or a wrong value are fixed.** `forward_filter` and `forward_filter_geos` checked each step's
+  one-step scale but not the update after it. With a learned scale, an observation of 1e160 made
+  the scale and the covariance infinite: the next step refused it one step late, and at the last
+  step nothing did, so `forecast`'s scales came out nan. With a known scale, an error past the
+  float range moved only the mean, which no check reads, and every later step filtered from it. An
+  update that is not finite now raises `FloatingPointError` at its own step.
+  `gohberg_semencul_generators` passed a nan entry through its degeneracy check and returned nan
+  generators; it now refuses one. `twoway_fixed_effects_att` and `de_chaisemartin` did not read
+  the panel through the check `callaway_santanna` uses, so one nan outcome made the effect nan;
+  they now refuse it, and a panel whose shapes do not match. `Totals` kept the caller's arrays,
+  so a nan written into them after the check reached the plan; it now holds read-only copies.
+  `robust_barrier_margin` with an infinite `u_max` read `0 * inf` where the clip binds, and
+  returned nan; the margin there is now the drift, whatever the authority. `msm_worst_case_mean`
+  read a `Gamma` below 1, whose weight box `[1/Gamma, Gamma]` is empty, as the sample mean, and
+  `confounding_robust_radius` as the nominal radius; both now refuse it, as
+  `confounding_robust_inflation` does. Since 0.2.0; the filter's since 0.9.0, the geo filter's
+  and `Totals`' since 0.10.0.
+- **A rollout bound refuses an input that is not a number, and reads `inf` past the float
+  range.** `lipschitz_rollout_bound`, `contractive_rollout_bound` and `closed_loop_rollout_bound`
+  checked none of their inputs. A nan read a nan radius; a negative budget, step or horizon a
+  negative one, which certifies every step; a negative rate read as 0 in the Gronwall bound and
+  as its square in the contractive one; a fractional horizon a radius between two; and a
+  negative control or policy constant lowered the closed loop's rate below the state's own. They
+  now refuse them, as `time_varying_rollout_bound` does, and so an infinite contraction rate.
+  `(1 + L dt)**H` and `L**2` took Python's float power, which raises `OverflowError` past the
+  float range: at `L dt = 0.1` a horizon of 10 000 steps raised, and so did a contractive bound
+  at `L = 1e155`. The bound there is now `inf`. Every input that did not raise reads as before,
+  bit for bit, over 386 000 inputs. Since 0.2.0.
+- **A plan whose task cost leaves the float range is not weighed.**
+  `CausalPlan.decision_weight` read the cost's derivatives at the plan into `eigvalsh` unchecked.
+  Where the model's rollout overflows, as at `a = 60` over 30 steps of a scalar plant, LAPACK
+  failed with `LinAlgError: Eigenvalues did not converge`, and numpy reads a nan matrix's
+  eigenvalues as finite. Derivatives that are not finite are now refused with a `ValueError`
+  that says so, in `misspecification_cost` too, which weighs through it. Since 0.8.0.
+
 ## [0.14.1] — 2026-10-06
 
 ### Fixed

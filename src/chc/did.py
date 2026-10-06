@@ -336,8 +336,7 @@ def twoway_fixed_effects_att(
     ``D[i,t] = 1{t >= group[i]}``. Under staggered timing with dynamic effects this is a
     negative-weighted average of the ``ATT(g,t)`` (Goodman-Bacon), not the average effect.
     """
-    outcomes = np.asarray(outcomes, dtype=np.float64)
-    group = np.asarray(group, dtype=np.int64)
+    outcomes, group = _panel(outcomes, group)
     treated = np.zeros_like(outcomes)
     for i, g in enumerate(group.tolist()):
         if g != never_treated:
@@ -363,8 +362,7 @@ def de_chaisemartin(outcomes: Outcomes, group: Groups, *, never_treated: int = -
     the effect at the moment of switching (relative time ``e = 0``), not the size-weighted average
     over post periods -- a growing effect yields the first-period impact, not the overall ATT.
     """
-    outcomes = np.asarray(outcomes, dtype=np.float64)
-    group = np.asarray(group, dtype=np.int64)
+    outcomes, group = _panel(outcomes, group)
     n_periods = int(outcomes.shape[1])
     numerator = denominator = 0.0
     for t in range(1, n_periods):

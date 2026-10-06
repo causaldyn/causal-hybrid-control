@@ -242,10 +242,13 @@ class RecedingHorizon:
         step needs it: the budget's rows are set from it and from where ``t`` falls in the period.
 
         Raises:
-            ValueError: on ``spent`` without a budget, or a budget without ``spent``; on a
-                budgeted step whose ``t`` is not on the ``dt`` grid from the budget's start.
+            ValueError: on a ``t`` that is not finite; on ``spent`` without a budget, or a budget
+                without ``spent``; on a budgeted step whose ``t`` is not on the ``dt`` grid from the
+                budget's start.
         """
         _refuse_moving_target(self.cost, "RecedingHorizon")
+        if not np.isfinite(t):
+            raise ValueError(f"t is the loop's clock and must be finite, got {t}")
         constraints = tuple(self.constraints)
         if self.budget is not None:
             constraints = (*constraints, self._budget_rows(self.budget, t, spent))

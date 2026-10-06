@@ -431,10 +431,10 @@ class PortHamiltonianResidual(eqx.Module):
     ) -> None:
         if energy not in ("mlp", "icnn"):
             raise ValueError(f'energy is "mlp" or "icnn": got {energy!r}')
-        if energy == "icnn" and convexity <= 0.0:
+        if energy == "icnn" and not 0.0 < convexity < math.inf:
             raise ValueError(
-                "an input-convex energy needs a positive convexity floor: it IS the invariant "
-                f"radius sqrt(2c/eps), and got {convexity}"
+                "an input-convex energy needs a positive convexity floor, and a finite one: it IS "
+                f"the invariant radius sqrt(2c/eps), and got {convexity}"
             )
         k_h, k_g, k_a, k_l = jax.random.split(key, 4)
         self.state_dim = state_dim
@@ -739,8 +739,11 @@ def convex_energy_certificate(
     against the predicted radius; and the number of distinct near-equilibria reached from a grid of
     starts.
     """
-    if convexity <= 0.0:
-        raise ValueError("the convexity floor eps must be positive: it IS the invariant radius")
+    if not 0.0 < convexity < math.inf:
+        raise ValueError(
+            f"the convexity floor eps must be positive and finite: it IS the invariant radius, "
+            f"got {convexity}"
+        )
     k_mlp, k_icnn, k_state, k_control = jax.random.split(jax.random.PRNGKey(seed), 4)
     plain = PortHamiltonianResidual(state_dim, control_dim, key=k_mlp)
     convex = PortHamiltonianResidual(

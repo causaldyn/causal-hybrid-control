@@ -257,7 +257,8 @@ class CausalPlan:
                 one solved with pessimism penalties, whose regret on the task cost has a
                 first-order term; on one that carries no problem, as one built by hand does; or
                 where ``M`` is not positive definite, so the plan is not a strict local minimum
-                and its regret is not quadratic in ``E``.
+                and its regret is not quadratic in ``E``; or where the task cost's derivatives at
+                the plan are not finite.
         """
         problem = _weighable(self._problem)
         shape = self.actions.shape
@@ -322,6 +323,12 @@ def _regret_curvature(
     gradient = np.asarray(jax.grad(cost)(flat, still), dtype=np.float64)
     hessian = np.asarray(jax.hessian(cost)(flat, still), dtype=np.float64)
     mixed = np.asarray(jax.jacfwd(jax.grad(cost), argnums=1)(flat, still), dtype=np.float64)
+    # numpy's eigvalsh reads a nan matrix as finite, and LAPACK fails on an infinite one
+    if not all(np.isfinite(d).all() for d in (gradient, hessian, mixed)):
+        raise ValueError(
+            "the task cost's derivatives at the plan are not finite, as where the model's rollout "
+            "leaves the float range: the regret has no curvature to read"
+        )
     present = [row for row in problem.constraints if row.matrix.shape[0]]
     n_actions = flat.size
     matrix = np.vstack([row.matrix for row in present]) if present else np.zeros((0, n_actions))
@@ -1309,7 +1316,7 @@ def certify_safety(
     certified = guaranteed >= required
 
     authority = u_max if u_max is not None else float(jnp.max(jnp.linalg.norm(actions, axis=1)))
-    if authority <= 0.0:
+    if not authority > 0.0:  # a nan passed `authority <= 0` and priced every step's threshold nan
         source = "u_max" if u_max is not None else "the plan's largest action (it never acts)"
         raise ValueError(f"gamma_star needs a positive actuation budget; {source} is {authority}")
     per_step = tuple(

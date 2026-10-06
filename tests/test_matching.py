@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import jax.numpy as jnp
 import numpy as np
@@ -92,6 +93,30 @@ def test_sinkhorn_is_quiet_once_its_marginals_hold(caplog: pytest.LogCaptureFixt
 def test_sinkhorn_refuses_a_tolerance_that_cannot_be_met() -> None:
     with pytest.raises(ValueError, match="tol must be positive"):
         sinkhorn(COST, SUPPLY, DEMAND, tol=0.0)
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"eps": math.nan}, "eps must be positive and finite"),
+        ({"eps": -0.5}, "eps must be positive and finite"),
+        ({"eps": 0.0}, "eps must be positive and finite"),
+        ({"eps": math.inf}, "eps must be positive and finite"),
+        ({"tol": math.nan}, "tol must be positive and finite"),
+        ({"tol": math.inf}, "tol must be positive and finite"),
+        ({"cost": COST.at[0, 1].set(jnp.nan)}, "cost must be finite"),
+        ({"supply": SUPPLY.at[0].set(jnp.nan)}, "supply must be finite"),
+        ({"supply": SUPPLY.at[0].set(jnp.inf), "demand": DEMAND.at[0].set(jnp.inf)}, "finite"),
+        ({"supply": SUPPLY.at[0].set(-4.0), "demand": DEMAND.at[0].set(-2.0)}, "negative"),
+    ],
+)
+def test_sinkhorn_refuses_a_problem_that_is_no_number(change: dict, match: str) -> None:
+    """At ``eps = -0.5`` the solve returned the coupling that maximises the cost, its marginals
+    met to 1e-16; a nan or infinite ``eps`` or mass gave a plan of nan, and a nan ``tol`` warned on
+    every call."""
+    problem = {"cost": COST, "supply": SUPPLY, "demand": DEMAND}
+    with pytest.raises(ValueError, match=match):
+        sinkhorn(**{**problem, **change})
 
 
 # ---- the global effect of an experiment on a matching, read off its rents ----
@@ -596,10 +621,23 @@ def test_at_eps_zero_the_effect_is_the_superdifferential_of_welfare_in_the_share
     assert low == pytest.approx(slope, abs=1e-6)
 
 
+def test_a_market_of_infinite_mass_is_refused() -> None:
+    """``inf - inf`` is nan, so infinite masses passed the test that compares the totals."""
+    values, supply, demand, direction = _market(0)
+    cost, masses, capacities, treated = _split(values, supply, demand, 0.5 * direction, 0.5)
+    masses[0], capacities[0] = np.inf, np.inf
+    with pytest.raises(ValueError, match="positive and finite"):
+        shadow_price_interval(cost, masses, capacities, treated)
+    with pytest.raises(ValueError, match="positive and finite"):
+        shadow_price_effect(cost, masses, capacities, treated, eps=0.3)
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
         ({"eps": 0.0}, "see shadow_price_interval"),
+        ({"eps": math.nan}, "positive and finite; at eps = 0"),
+        ({"eps": math.inf}, "positive and finite; at eps = 0"),
         ({"demand": np.array([0.5, 0.3, 0.1])}, "equal totals"),
         ({"treated": np.array([1, 1, 0, 0, 1, 0, 0, 0])}, "one bool per row"),
         ({"treated": np.arange(8) < 1}, "at least two treated rows"),

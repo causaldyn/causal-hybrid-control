@@ -322,6 +322,10 @@ def test_an_ambiguous_or_empty_box_is_rejected_rather_than_broadcast() -> None:
     with pytest.raises(ValueError, match="empty action box"):
         projected_gradient_control(dyn, x0, us0, DT, cost, jnp.array([-1.0, 0.5]), 0.1)
 
+    # a nan bound compared false either way, and the clip returned nan for every action
+    with pytest.raises(ValueError, match="has a nan bound"):
+        projected_gradient_control(dyn, x0, us0, DT, cost, jnp.array([-1.0, jnp.nan]), 1.0)
+
 
 def test_pessimistic_control_takes_a_per_lever_box_too() -> None:
     dyn, cost, x0, us0 = _two_lever_problem()

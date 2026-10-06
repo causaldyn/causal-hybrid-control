@@ -25,6 +25,14 @@ def _brute_force_margin(drift: float, channel: float, radius: float, u_max: floa
     )
 
 
+@pytest.mark.parametrize("radius", [0.6, 0.5])
+def test_infinite_authority_buys_nothing_past_the_channel(radius: float) -> None:
+    """Where the clip binds, ``(channel - radius)_+ * u_max`` was ``0 * inf``, a nan; the margin
+    there is the drift, whatever the authority."""
+    assert robust_barrier_margin(-0.3, 0.5, radius, np.inf) == -0.3
+    assert robust_barrier_margin(-0.3, 0.5, 0.4, np.inf) == np.inf
+
+
 @pytest.mark.parametrize("radius", [0.0, 0.3, 0.9, 1.0, 1.7])
 def test_robust_margin_matches_a_brute_force_search_over_both_players(radius: float) -> None:
     drift, channel, u_max = -0.4, 1.0, 2.5
@@ -87,6 +95,9 @@ def test_a_flat_barrier_holds_at_every_gamma_or_at_none() -> None:
     assert np.isnan(barrier_gamma_star(float("nan"), 1.0, 0.0))
     with pytest.raises(ValueError, match="nonnegative"):
         barrier_gamma_star(0.4, 1.0, -1.0)
+    for norm in (float("nan"), float("inf")):  # read nan, and a radius of 0: exact identification
+        with pytest.raises(ValueError, match="nonnegative and finite"):
+            barrier_gamma_star(0.4, 1.0, norm)
 
 
 def test_a_nominally_infeasible_barrier_is_not_reported_as_certified_at_gamma_one() -> None:
@@ -231,6 +242,16 @@ def test_a_negative_actuation_limit_is_rejected_rather_than_flipping_the_bound()
         robust_barrier_margin(0.0, 1.0, 0.1, -1.0)
     with pytest.raises(ValueError, match="must be positive"):
         identification_radius_threshold(-0.9, 0.6, 0.0, 0.5)
+    with pytest.raises(ValueError, match="must be positive"):
+        identification_radius_threshold(-0.9, 0.6, float("nan"), 0.5)
+
+
+@pytest.mark.parametrize("name", ["drift", "channel", "alpha_h"])
+def test_a_threshold_of_no_number_is_refused_rather_than_read_infeasible(name: str) -> None:
+    """A nan read nan, which this function returns for a problem no radius can save."""
+    values = {"drift": -0.9, "channel": 0.6, "u_max": 2.0, "alpha_h": 0.5, name: float("nan")}
+    with pytest.raises(ValueError, match=f"{name} must be numbers, not nan"):
+        identification_radius_threshold(**values)
 
 
 @pytest.mark.parametrize("name", ["u_nominal", "channel", "radius", "u_max", "drift", "alpha_h"])

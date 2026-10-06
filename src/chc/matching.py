@@ -72,10 +72,17 @@ def sinkhorn(
     ``tol`` is logged as a warning, because potentials read off an unconverged plan are not the
     market-clearing prices.
     """
-    if tol <= 0.0:
-        raise ValueError("tol must be positive")
+    if not 0.0 < eps < np.inf:
+        raise ValueError(f"eps must be positive and finite, got {eps}")
+    if not 0.0 < tol < np.inf:
+        raise ValueError(f"tol must be positive and finite, got {tol}")
     cost = jnp.asarray(cost)
     a, b = jnp.asarray(supply), jnp.asarray(demand)
+    for name, values in (("cost", cost), ("supply", a), ("demand", b)):
+        if not bool(jnp.all(jnp.isfinite(values))):
+            raise ValueError(f"{name} must be finite")
+    if bool(jnp.any(a < 0.0)) or bool(jnp.any(b < 0.0)):
+        raise ValueError("supply and demand are masses, and cannot be negative")
     log_a, log_b = jnp.log(a), jnp.log(b)
 
     def step(carry: tuple[Array, Array], _: Array) -> tuple[tuple[Array, Array], None]:
@@ -151,8 +158,8 @@ def _experiment_strata(
             f"cost must be (m, n) with supply (m,) and demand (n,); got {cost.shape}, "
             f"{supply.shape} and {demand.shape}"
         )
-    if not (np.all(supply > 0.0) and np.all(demand > 0.0)):
-        raise ValueError("supply and demand must be positive")
+    if not all(np.all((mass > 0.0) & (mass < np.inf)) for mass in (supply, demand)):
+        raise ValueError("supply and demand must be positive and finite")
     if abs(supply.sum() - demand.sum()) > 1e-9 * supply.sum():
         raise ValueError(
             f"supply and demand must have equal totals; got {supply.sum()} and {demand.sum()}"
@@ -269,14 +276,16 @@ def shadow_price_effect(
     markets, at ``eps = 0.3``.
 
     Raises:
-        ValueError: on ``eps <= 0`` (see :func:`shadow_price_interval`), shapes that do not agree,
-            masses that are not positive or do not balance, a ``treated`` or ``randomised`` that is
-            not one bool per row, ``strata`` that are not one label per row, or fewer than two rows
-            in either arm of the experiment or of a stratum.
+        ValueError: on an ``eps`` that is not positive and finite (see
+            :func:`shadow_price_interval`), shapes that do not agree, masses that are not positive
+            and finite or do not balance, a ``treated`` or ``randomised`` that is not one bool per
+            row, ``strata`` that are not one label per row, or fewer than two rows in either arm of
+            the experiment or of a stratum.
     """
-    if eps <= 0.0:
+    if not 0.0 < eps < np.inf:
         raise ValueError(
-            "eps must be positive; at eps = 0 the rents are not unique, see shadow_price_interval"
+            "eps must be positive and finite; at eps = 0 the rents are not unique, see "
+            f"shadow_price_interval. Got {eps}"
         )
     costs, masses, capacities = (np.asarray(v, dtype=float) for v in (cost, supply, demand))
     blocks = _experiment_strata(costs, masses, capacities, treated, randomised, strata)

@@ -98,7 +98,8 @@ def robust_barrier_margin(drift: float, channel: float, radius: float, u_max: fl
     _numbers(drift=drift, channel=channel, radius=radius, u_max=u_max)
     if u_max < 0.0:
         raise ValueError(f"actuation limit must be nonnegative, got {u_max}")
-    return drift + max(0.0, channel - radius) * u_max
+    gap = channel - radius
+    return drift + gap * u_max if gap > 0.0 else drift
 
 
 def robust_safe_action(
@@ -138,8 +139,10 @@ def identification_radius_threshold(
     * ``0 < D <= u_max * channel`` -- the case worth having a threshold for: ``d*`` lands in
       ``[0, channel)`` and certification holds **iff** ``radius <= d*``.
     """
-    if u_max <= 0.0:
+    # a nan passed `u_max <= 0` and returned nan, which here says "infeasible", not "no number"
+    if not u_max > 0.0:
         raise ValueError(f"actuation limit must be positive to have a threshold, got {u_max}")
+    _numbers(drift=drift, channel=channel, alpha_h=alpha_h)
     deficit = -alpha_h - drift
     if deficit <= 0.0:
         return float("inf")
@@ -167,11 +170,12 @@ def barrier_gamma_star(threshold_radius: float, cvar_gap: float, grad_norm: floa
     the radius ``Delta * grad_norm`` is zero at every ``Gamma``: the step holds at every level or at
     none, ``inf`` when ``threshold_radius >= 0`` and ``nan`` otherwise.
     """
-    # a nan gap passed `cvar_gap <= 0` and read no Gamma at all, and an infinite one inf/inf
-    if not 0.0 < cvar_gap < math.inf or grad_norm < 0.0:
+    # a nan gap passed `cvar_gap <= 0` and read no Gamma at all, and an infinite one inf/inf; a nan
+    # gradient norm read nan, and an infinite one a radius of 0, exact identification
+    if not (0.0 < cvar_gap < math.inf and 0.0 <= grad_norm < math.inf):
         raise ValueError(
-            "cvar_gap must be positive and finite and grad_norm nonnegative to invert the radius, "
-            f"got cvar_gap={cvar_gap}, grad_norm={grad_norm}"
+            "cvar_gap must be positive and finite and grad_norm nonnegative and finite to invert "
+            f"the radius, got cvar_gap={cvar_gap}, grad_norm={grad_norm}"
         )
     if grad_norm == 0.0:
         return float("inf") if threshold_radius >= 0.0 else float("nan")

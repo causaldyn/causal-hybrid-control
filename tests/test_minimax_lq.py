@@ -5,10 +5,13 @@ robust controller unbuilt. These pin the closed form against brute force, agains
 the structural claim that makes the horizon case work -- the adversary never switches endpoints.
 """
 
+import math
+
 import numpy as np
 import pytest
 
 from chc.regret import (
+    MinimaxCriterion,
     _closed_loop_cost,
     minimax_action,
     minimax_lq_certificate,
@@ -60,6 +63,55 @@ def test_an_empty_interval_and_a_free_action_are_rejected_not_answered() -> None
         minimax_action(1.0, 1.5, 0.5, effort=1.0)
     with pytest.raises(ValueError, match="effort must be positive"):
         minimax_action(1.0, 0.5, 1.5, effort=0.0)
+
+
+@pytest.mark.parametrize("criterion", ["cost", "regret"])
+@pytest.mark.parametrize(
+    ("args", "match"),
+    [
+        ((1.0, 0.5, math.nan, 1.0), "b_hi must be finite"),
+        ((1.0, 0.5, math.inf, 1.0), "b_hi must be finite"),
+        ((1.0, math.nan, 1.5, 1.0), "b_lo must be finite"),
+        ((1.0, -math.inf, 1.5, 1.0), "b_lo must be finite"),
+        ((math.nan, 0.5, 1.5, 1.0), "target must be finite"),
+        ((1.0, 0.5, 1.5, math.nan), "effort must be positive and finite"),
+        ((1.0, 0.5, 1.5, math.inf), "effort must be positive and finite"),
+        ((1.0, 0.5, 1.5, 1.0, math.nan), "infinite or nan"),
+        ((1.0, 0.5, 1.5, 1.0, math.inf), "infinite or nan"),
+    ],
+)
+def test_an_interval_or_a_weight_that_is_no_number_is_refused(
+    args: tuple, match: str, criterion: MinimaxCriterion
+) -> None:
+    """A nan ``b_hi`` passed ``b_hi < b_lo``, and ``max`` dropped its branch: the cost criterion
+    answered for the interval ``[b_lo, b_lo]``, finite and wrong. The regret criterion failed
+    inside ``brentq``."""
+    with pytest.raises(ValueError, match=match):
+        minimax_action(*args, criterion=criterion)
+
+
+@pytest.mark.parametrize(
+    ("change", "name"),
+    [
+        ({"state_gain": math.nan}, "state_gain"),
+        ({"state_cost": math.inf}, "state_cost"),
+        ({"terminal_cost": math.nan}, "terminal_cost"),
+        ({"b_hi": math.nan}, "b_hi"),
+    ],
+)
+def test_a_horizon_problem_that_is_no_number_is_refused(change: dict, name: str) -> None:
+    """A nan ``b_hi`` gave the robust gains of ``[b_lo, b_lo]`` beside a nan CE arm."""
+    problem = {
+        "state_gain": 1.0,
+        "b_lo": 0.5,
+        "b_hi": 1.5,
+        "state_cost": 1.0,
+        "effort": 1.0,
+        "terminal_cost": 1.0,
+        "horizon": 3,
+    }
+    with pytest.raises(ValueError, match=f"{name} must be finite"):
+        minimax_lq_policy(**{**problem, **change})
 
 
 def _regret_brute_force(

@@ -167,6 +167,70 @@ def test_cfl_violation_raises_instead_of_reporting_an_optimistic_set() -> None:
         )
 
 
+_GRID = {
+    "lower": (-1.5, -1.5),
+    "upper": (1.5, 1.5),
+    "resolution": (21, 21),
+    "horizon": 1.0,
+    "steps": 200,
+    "u_max": 1.0,
+    "radius": 0.3,
+}
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"radius": float("nan")}, "radius must be nonnegative and finite"),
+        ({"radius": float("inf")}, "radius must be nonnegative and finite"),
+        ({"radius": -0.1}, "radius must be nonnegative and finite"),
+        ({"u_max": float("nan")}, "u_max must be nonnegative and finite"),
+        ({"u_max": float("inf")}, "u_max must be nonnegative and finite"),
+        ({"horizon": float("nan")}, "horizon must be positive and finite"),
+        ({"lower": (float("nan"), -1.5)}, "axis 0 must run between finite bounds"),
+        ({"upper": (1.5, -2.0)}, "axis 1 must run between finite bounds"),
+    ],
+)
+def test_a_tube_of_no_number_is_refused_rather_than_solved_as_nan(change: dict, match: str) -> None:
+    """A nan passed ``cfl > 1`` and solved a tube of nan; with a nan radius the gap report read
+    ``ok``, over a tube with no reachable point."""
+    with pytest.raises(ValueError, match=match):
+        backward_reachable_tube(_supply_floor, _zone_drift, ZONE_B, **{**_GRID, **change})
+    with pytest.raises(ValueError, match=match):
+        barrier_reachability_gap(_supply_floor, _zone_drift, ZONE_B, **{**_GRID, **change})
+
+
+@pytest.mark.parametrize("name", ["barrier", "drift", "b_matrix"])
+def test_a_field_that_is_not_finite_on_the_grid_is_refused(name: str) -> None:
+    parts = {"barrier": _supply_floor, "drift": _zone_drift, "b_matrix": ZONE_B}
+    parts[name] = {
+        "barrier": lambda x: jnp.where(x[0] > 1.0, jnp.nan, x[1] + 0.4),
+        "drift": lambda x: ZONE_A @ x * jnp.where(x[1] > 1.0, jnp.inf, 1.0),
+        "b_matrix": jnp.array([[1.0], [jnp.nan]]),
+    }[name]
+    with pytest.raises(ValueError, match=f"the {name} is not finite on the grid"):
+        backward_reachable_tube(parts["barrier"], parts["drift"], parts["b_matrix"], **_GRID)
+
+
+@pytest.mark.parametrize(
+    ("gap", "gains", "match"),
+    [
+        (barrier_reachability_gap, {"alpha": float("nan")}, "alpha must be a finite gain"),
+        (barrier_reachability_gap, {"tolerance": float("inf")}, "tolerance is a grid fraction"),
+        (higher_order_barrier_gap, {"alpha1": float("nan")}, "alpha1 must be a finite gain"),
+        (higher_order_barrier_gap, {"alpha2": float("inf")}, "alpha2 must be a finite gain"),
+        (higher_order_barrier_gap, {"tolerance": float("nan")}, "tolerance is a grid fraction"),
+    ],
+)
+def test_a_gap_whose_gain_or_tolerance_is_no_number_is_refused(
+    gap, gains: dict, match: str
+) -> None:
+    """A nan gain failed the condition at every point, so the certificate read invalid and ``ok``
+    True; an infinite tolerance read ``ok`` whatever the tube."""
+    with pytest.raises(ValueError, match=match):
+        gap(_supply_floor, _zone_drift, ZONE_B, **_GRID, **gains)
+
+
 @pytest.mark.parametrize("radius", [0.0, 0.4, 1.2])
 def test_hamiltonian_is_the_barrier_margin_with_a_solved_for_gradient(radius: float) -> None:
     """The two modules run the same algebra; only the gradient's provenance differs."""

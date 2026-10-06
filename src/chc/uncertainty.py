@@ -655,11 +655,24 @@ def lipschitz_rollout_bound(lipschitz: float, model_error: float, dt: float, hor
     contraction metric (:class:`~chc.residual.ContractiveResidual`, log-norm ``mu<0``) removes the
     exponential; the open loop assumes a FIXED action sequence -- for re-planning use
     :func:`closed_loop_rollout_bound`; for per-step ``L_k`` use :func:`time_varying_rollout_bound`.
+
+    Raises:
+        ValueError: if ``lipschitz`` or ``model_error`` is negative, infinite or nan, if ``dt`` is
+            not a finite positive step, or if ``horizon`` is not a whole number of steps. A
+            negative budget, step or horizon reads a negative radius, which certifies every step.
+            A bound past the float range is ``inf``.
     """
+    _check_rates([lipschitz])
+    _check_budget([model_error], dt)
+    _check_horizon(horizon)
     growth = 1.0 + lipschitz * dt
     if lipschitz <= 0.0:  # L -> 0: the Gronwall closed form degrades to the linear envelope
         return model_error * dt * horizon
-    return model_error * (growth**horizon - 1.0) / lipschitz
+    # a float power past the float range raises OverflowError; numpy's is the same pow, and reads
+    # inf. A zero budget keeps the two rollouts together however fast the field grows.
+    with np.errstate(over="ignore"):
+        power = float(np.float64(growth) ** horizon)
+    return model_error * (power - 1.0) / lipschitz if model_error > 0.0 else 0.0
 
 
 class _PerturbedField(eqx.Module):
@@ -750,10 +763,24 @@ def contractive_rollout_bound(
     (:class:`~chc.residual.ContractiveResidual`) over the non-negative ``||.||``-Lipschitz of
     :class:`~chc.residual.LipschitzResidual`; the ``q < 1`` cap uses ``gronwall_bounded``. Returns
     ``+inf`` if not contracting or the step is too large (``dt >= 2c/L^2``), where Euler overshoots.
+
+    Raises:
+        ValueError: if ``contraction_rate`` is not finite, if ``lipschitz`` or ``model_error`` is
+            negative, infinite or nan, if ``dt`` is not a finite positive step, or if ``horizon``
+            is not a whole number of steps.
     """
+    if not math.isfinite(contraction_rate):
+        raise ValueError(
+            f"contraction_rate={contraction_rate} is not a log-norm bound, which is finite"
+        )
+    _check_rates([lipschitz])
+    _check_budget([model_error], dt)
+    _check_horizon(horizon)
     c = contraction_rate
-    q_squared = 1.0 - 2.0 * c * dt + lipschitz**2 * dt**2  # = 1 + 2*mu*dt + L^2*dt^2, mu = -c
-    if c <= 0.0 or q_squared >= 1.0 or q_squared < 0.0:  # not contracting / step too large
+    # past the float range q^2 reads inf, or inf - inf, a nan: either way the step is too large
+    with np.errstate(over="ignore", invalid="ignore"):
+        q_squared = float(1.0 - 2.0 * c * dt + np.float64(lipschitz) ** 2 * np.float64(dt) ** 2)
+    if c <= 0.0 or not 0.0 <= q_squared < 1.0:  # not contracting / step too large
         return float("inf")
     q = q_squared**0.5
     return model_error * dt * (1.0 - q**horizon) / (1.0 - q)
@@ -886,12 +913,7 @@ def _tube(
 ) -> NDArray[np.float64]:
     if integrator not in ("rk4", "euler"):
         raise ValueError(f"integrator={integrator!r} is neither 'rk4' nor 'euler'")
-    negative = [lk for lk in lipschitz if not 0.0 <= lk < math.inf]
-    if negative:
-        raise ValueError(
-            f"lipschitz={negative[0]} is not a norm-Lipschitz bound, which is finite and never "
-            "negative or nan"
-        )
+    _check_rates(lipschitz)
     _check_budget(model_error, dt)
     e = 0.0
     tube = [0.0]
@@ -902,6 +924,22 @@ def _tube(
             e = (1.0 + lk * dt) * e + dt * ek
         tube.append(e)
     return np.asarray(tube)
+
+
+def _check_rates(lipschitz: Sequence[float]) -> None:
+    """Refuse a step rate no norm takes."""
+    negative = [lk for lk in lipschitz if not 0.0 <= lk < math.inf]
+    if negative:
+        raise ValueError(
+            f"lipschitz={negative[0]} is not a norm-Lipschitz bound, which is finite and never "
+            "negative or nan"
+        )
+
+
+def _check_horizon(horizon: int) -> None:
+    """Refuse a horizon that is not a count of steps."""
+    if not (isinstance(horizon, (int, np.integer)) and horizon >= 0):
+        raise ValueError(f"horizon={horizon!r} is not a number of steps, a whole number >= 0")
 
 
 def _check_budget(model_error: Sequence[float], dt: float) -> None:
@@ -1022,7 +1060,12 @@ def closed_loop_rollout_bound(
     Reduces to :func:`lipschitz_rollout_bound` with the combined constant. CAVEAT: for a clipping /
     active-set / threshold MPC ``L_pi`` may be unbounded (not globally Lipschitz); use this only
     where the controller is Lipschitz (a fixed feedback gain, or a smooth relaxation).
+
+    Raises:
+        ValueError: if a Lipschitz constant is negative, infinite or nan: a negative one lowered
+            the combined rate below the state's own. Otherwise as :func:`lipschitz_rollout_bound`.
     """
+    _check_rates([state_lipschitz, control_lipschitz, policy_lipschitz])
     return lipschitz_rollout_bound(
         state_lipschitz + control_lipschitz * policy_lipschitz, model_error, dt, horizon
     )
@@ -1136,9 +1179,12 @@ def msm_worst_case_mean(outcomes: NDArray[np.float64], gamma: float) -> float:
     # a nan Gamma reached the tail's length as nan, and an infinite one an empty tail
     if not math.isfinite(gamma):
         raise ValueError(f"MSM sensitivity Gamma must be finite, got {gamma}")
+    # below 1 the weight box [1/Gamma, Gamma] is empty, and the sample mean came back as its bound
+    if gamma < 1.0:
+        raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {gamma}")
     y = np.asarray(outcomes, dtype=np.float64)
     mu = float(np.mean(y))
-    if gamma <= 1.0:
+    if gamma == 1.0:
         return mu
     tau = 1.0 / (gamma + 1.0)
     cvar_upper = _top_tail_mean(y, tau)  # mean of the worst (largest) tau-tail

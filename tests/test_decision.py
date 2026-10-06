@@ -1503,6 +1503,35 @@ def test_a_step_or_a_tolerance_that_is_no_number_is_refused_before_the_fit(
         )
 
 
+@pytest.mark.parametrize(
+    ("build", "match"),
+    [
+        (lambda: Lever("incentive", lo=math.nan, hi=2.0), r"lever 'incentive' has lo=nan"),
+        (lambda: Lever("incentive", lo=-2.0, hi=math.nan), r"lever 'incentive' has hi=nan"),
+        (lambda: Lever("incentive", lo=-2.0, hi=2.0, unit_cost=math.nan), r"unit_cost=nan; a"),
+        (lambda: Lever("incentive", lo=-2.0, hi=2.0, unit_cost=math.inf), r"unit_cost=inf; a"),
+        (lambda: Target("supply", value=math.nan), r"'supply' has value nan at entry 0"),
+        (lambda: Target("supply", value=[1.0, 1.0, math.inf]), r"has value inf at entry 2"),
+        (lambda: Target("supply", value=1.0, weight=math.nan), r"'supply' has weight=nan"),
+        (lambda: Target("supply", value=1.0, weight=math.inf), r"'supply' has weight=inf"),
+        (lambda: Constraint("wait", hi=math.nan), r"constraint on 'wait' has hi=nan"),
+        (lambda: Constraint("wait", lo=math.nan, hi=0.5), r"constraint on 'wait' has lo=nan"),
+    ],
+)
+def test_a_lever_a_target_or_a_constraint_of_no_number_is_refused(build, match: str) -> None:
+    """Each passed its checks or had none. A nan bound clipped every action to nan; a nan price,
+    level or weight made the task cost nan, and the solve stopped where it started, a plan that
+    never moved and read certified at every level; a lone nan constraint bound went uncompared."""
+    with pytest.raises(DecisionError, match=match):
+        build()
+
+
+def test_a_free_side_is_still_a_bound() -> None:
+    lever = Lever("incentive", lo=-math.inf, hi=math.inf)
+    assert (lever.lo, lever.hi) == (-math.inf, math.inf)
+    assert Constraint("wait", lo=-math.inf).lo == -math.inf
+
+
 def test_a_tube_whose_rate_is_not_finite_is_not_evaluated(monkeypatch, caplog) -> None:
     """A rate of ``inf`` read the tube ``[0, nan, ...]``, which certified every step."""
     monkeypatch.setattr("chc.decision._rate", lambda *args: (math.inf, "global"))

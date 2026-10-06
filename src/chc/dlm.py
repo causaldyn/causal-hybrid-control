@@ -440,6 +440,13 @@ def _sym(m: _Array) -> _Array:
     return 0.5 * (m + m.T)
 
 
+def _finite_update(t: int, scale: float, mean: _Array, covariance: _Array) -> None:
+    """Refuse an update past the float range. The next step's one-step scale reads the covariance,
+    which carries the scale, but never the mean, and after the last step nothing reads either."""
+    if not (np.isfinite(mean).all() and np.isfinite(covariance).all()):
+        raise FloatingPointError(f"step {t}: the update is not finite, its scale {scale}")
+
+
 def _evolve(s: _Structure, form: DiscountForm, p: _Array, active: _Array) -> _Array:
     """``R`` from ``P = G C G'``: each block's discount, skipped on idle held coordinates."""
     live = np.where(s.hold, active, True)
@@ -520,7 +527,8 @@ def forward_filter(
         ValueError: on a ``y`` that is not a vector of finite values and ``NaN``, an ``x`` whose
             shape is not ``(T, model.regressors)`` or that is not finite, or an intervention at a
             step outside ``y`` or with a discount outside ``(0, 1]``.
-        FloatingPointError: on a step whose one-step squared scale is not positive and finite.
+        FloatingPointError: on a step whose one-step squared scale is not positive and finite, or
+            whose update leaves a scale or a state that is not finite.
     """
     ys = np.array(y, dtype=np.float64)
     if ys.ndim != 1 or ys.shape[0] == 0:
@@ -586,6 +594,7 @@ def forward_filter(
             shrink = eye - np.outer(gain, f_row)
             c = _sym((v_new / v) * (shrink @ r @ shrink.T + np.outer(gain, gain) * v))
             m = a + gain * e
+            _finite_update(t, v_new, m, c)
             score[t] = _log_t(e, nu, q)
             n, v = n_new, v_new
         m_all[t], c_all[t], n_all[t], s_all[t] = m, c, n, v
@@ -1692,7 +1701,7 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
         ValueError: on a ``y`` that is not ``(T, geos)`` of finite values and ``NaN``, or an ``x``
             whose shape is not ``(T, geos, model.regressors)`` or that is not finite.
         FloatingPointError: on a step whose observed geos' one-step squared scale is not positive
-            definite and finite.
+            definite and finite, or whose update leaves a scale or a state that is not finite.
     """
     ys = np.array(y, dtype=np.float64)
     if ys.ndim != 2 or ys.shape[0] == 0 or ys.shape[1] != model.geos:
@@ -1754,6 +1763,7 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
             shrink = eye - gain @ observed
             c = _sym((v_new / v) * (shrink @ r @ shrink.T + (gain * (v * weights[seen])) @ gain.T))
             m = a + gain @ e
+            _finite_update(t, v_new, m, c)
             log_det = 2.0 * float(np.sum(np.log(np.diag(root[0]))))
             score[t] = _log_multivariate_t(quad, log_det, k, nu)
             n, v = n_new, v_new

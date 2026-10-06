@@ -5,6 +5,7 @@ Structured-operator primitives for the dynamic-effect route (``chc.irf``).
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from scipy.linalg import circulant, toeplitz
 
 from chc.toeplitz import (
@@ -147,3 +148,12 @@ def test_composed_norm_is_strictly_below_the_product_of_norms() -> None:
         circulant_operator_norm(jnp.asarray(high))
     )
     assert separate > 1.5 * exact
+
+
+@pytest.mark.parametrize("which", ["first_col", "first_row"])
+def test_gohberg_semencul_refuses_a_matrix_that_is_no_number(which: str) -> None:
+    """A nan entry passed the degeneracy check ``abs(x[0]) < 1e-12`` and gave nan generators."""
+    entries = {"first_col": np.array([4.0, 1.0, 0.5]), "first_row": np.array([4.0, 0.8, 0.2])}
+    entries[which][1] = np.nan
+    with pytest.raises(ValueError, match="must be finite"):
+        gohberg_semencul_generators(entries["first_col"], entries["first_row"])

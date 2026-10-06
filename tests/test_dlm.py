@@ -965,3 +965,23 @@ def test_invalid_data_raise():
         forward_filter(model, np.array([np.inf, 0.0]), np.ones((2, 2)))
     with pytest.raises(ValueError, match="outside"):
         forward_filter(model, np.zeros(2), np.ones((2, 2)), interventions={5: 0.5})
+
+
+@pytest.mark.parametrize("step", [29, 10])
+def test_an_update_that_overflows_is_refused_at_its_own_step(step):
+    """A learned scale squares the forecast error, and an observation of 1e160 made it infinite. At
+    the last step nothing came after it to notice, and the forecast's scales came out nan."""
+    y = np.random.default_rng(2).standard_normal(30)
+    y[step] = 1e160
+    model = DynamicLinearModel((Polynomial(1, 0.9),), _prior(1, dof=1.0))
+    with pytest.raises(FloatingPointError, match=f"step {step}: the update is not finite"):
+        forward_filter(model, y)
+
+
+def test_a_mean_that_overflows_is_refused_with_a_known_scale():
+    """With the scale known, an error past the float range moved only the mean, to -inf, and every
+    later step filtered from it: the one-step scale never reads the mean."""
+    y = np.zeros(20)
+    y[8], y[9] = 1.7e308, -1.7e308
+    with pytest.raises(FloatingPointError, match="step 9: the update is not finite"):
+        forward_filter(DynamicLinearModel((Polynomial(1, 0.9),), _prior(1)), y)
