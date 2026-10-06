@@ -387,10 +387,6 @@ def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charge
     conservative = plan_regret_bound(slack, plant, x0, cost, dt, -2.0, 2.0, modulus=0.05)
     assert conservative.modulus_source == "supplied"
     assert conservative.status == "certified"
-    with pytest.warns(
-        DeprecationWarning, match=r"^PlanRegretBound\.ok leaves in 0\.14: read status"
-    ):
-        assert conservative.ok
     assert conservative.bound >= measured.bound  # a smaller modulus is looser, never invalid
 
     # 5. AND IT REFUSES TO CERTIFY WHAT IT CANNOT. A residual large enough to make J non-convex
@@ -406,10 +402,6 @@ def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charge
     assert verdict.status == "refused"
     assert verdict.modulus < 0.0
     assert np.isinf(verdict.bound)
-    with pytest.warns(
-        DeprecationWarning, match=r"^PlanRegretBound\.ok leaves in 0\.14: read status"
-    ):
-        assert not verdict.ok
 
     with pytest.raises(ValueError, match="cannot be negative"):
         plan_regret_bound(slack, plant, x0, cost, dt, -2.0, 2.0, modulus=-1.0)
@@ -438,8 +430,6 @@ def test_a_sampled_curvature_is_a_diagnostic_never_a_certificate() -> None:
     assert gap.bound < plan.task_cost - pocket  # the samples miss the pocket
     assert gap.modulus_source == "measured"
     assert gap.status == "diagnostic"
-    with pytest.warns(DeprecationWarning, match=r"^PlanRegretBound\.ok leaves in 0\.14"):
-        assert gap.ok  # what was read as a certificate
     # a modulus the caller supplies is the caller's claim, and it certifies
     claimed = plan_regret_bound(plan, model, x0, cost, 1.0, -2.0, 2.0, modulus=gap.modulus)
     assert claimed.status == "certified"

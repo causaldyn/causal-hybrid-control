@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import logging
 import math
-import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -1382,19 +1381,6 @@ class PlanRegretBound:
     per_lever: tuple[float, ...]  # the bound split by lever; sums to ``bound``
     pinned_actions: int  # coordinates the gradient holds against a bound: exactly free
     status: RegretStatus
-
-    @property
-    def ok(self) -> bool:
-        """Whether the modulus was not negative, ``status != "refused"``. Deprecated, gone in 0.14:
-        a sampled modulus that is not negative certifies nothing, and :attr:`status` says so."""
-        warnings.warn(
-            "PlanRegretBound.ok leaves in 0.14: read status, 'certified' only on a supplied "
-            "modulus or a quadratic objective's, 'diagnostic' on a sampled one, and 'refused' "
-            "where ok is False",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.status != "refused"
 
 
 def _objective_modulus(

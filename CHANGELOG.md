@@ -32,6 +32,14 @@ still change).
   changes no signature, and new models and deliberate changes of a default still wait for a minor
   (`docs/api/index.md`).
 
+### Removed
+
+- **`PlanRegretBound.ok`, deprecated in 0.13.0.** It said only that the modulus was not negative,
+  so a sampled modulus read as a certificate. Read `bound.status == "certified"` where a
+  certificate is meant: on a modulus the caller supplies, or one read off an objective the model's
+  structure makes quadratic. `bound.status != "refused"` is what `ok` returned, and `"diagnostic"`
+  marks a sampled modulus. The property had warned for one minor, as promised.
+
 ### Fixed
 
 - **A number that is not finite no longer certifies a step or a regret bound.** A step counted as
