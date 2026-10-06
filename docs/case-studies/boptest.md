@@ -223,3 +223,22 @@ Results:
 [`results/boptest_rerun/results.md`](https://github.com/causaldyn/causaldyn-bench/blob/main/results/boptest_rerun/results.md).
 Code:
 [`causaldyn_bench/boptest_rerun.py`](https://github.com/causaldyn/causaldyn-bench/blob/main/src/causaldyn_bench/boptest_rerun.py).
+
+## Before `prescribe`: forecast-MPC against the baseline
+
+The first run on this emulator did not go through `prescribe`. It identified a thermal model from a
+slow pseudo-random exploration, `T_next = 0.980·T + 0.243·u + 5.76` with `u` the heat pump's
+modulation in `[0, 1]`, and drove the house with a forecast-driven comfort MPC, over a one-day
+episode at a 30-minute step:
+
+| KPI | BOPTEST's baseline | forecast-MPC |
+|---|---:|---:|
+| `tdis_tot` (thermal discomfort, K·h) | 8.01 | **7.32** |
+| `ener_tot` (energy) | 0.393 | **0.354** |
+| `cost_tot` | 0.100 | **0.090** |
+| `emis_tot` (emissions) | 0.066 | **0.059** |
+| `pele_tot` (peak electrical demand) | 0.0190 | 0.0194 |
+
+It beat the tuned baseline on discomfort, energy, cost and emissions at once, four KPIs of five; its
+peak electrical demand was 2.0 % above the baseline's. Results:
+[`results/boptest.md`](https://github.com/causaldyn/causaldyn-bench/blob/main/results/boptest.md).

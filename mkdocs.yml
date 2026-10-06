@@ -66,6 +66,7 @@ nav:
   - Why, and when not to: why.md
   - Quickstart: quickstart.md
   - The decision lifecycle: lifecycle.md
+  - What's inside: modules.md
   - Concepts:
       - Identification: concepts/identification.md
       - Pessimism: concepts/pessimism.md

@@ -1,4 +1,4 @@
-"""The two checks behind the README's EconML row: what EconML already estimates, run on it.
+"""The two checks behind the EconML row on the why page: what EconML already estimates, run on it.
 
     matrix   ``econml.dml.LinearDML`` on one-step control-affine data, ``y = B(x) u + g(x, z) + e``,
              with ``u`` confounded by ``z`` and ``B(x) = B0 + B1 x`` a 2x2 matrix. Its
@@ -7,8 +7,9 @@
              that reads the state and an observed confounder. Its per-period effects on the last
              period's outcome are the plant's impulse response ``c' A^(m-1-t) B``.
 
-Measured 2026-09-28 with EconML 0.17.0 and pandas 3.0.6, on Python 3.12 and 3.14: the matrix to
-0.068 at worst, the impulse response to 0.013, and every period's 95% interval covering the truth.
+Measured 2026-09-28 with EconML 0.17.0 and pandas 3.0.6, on Python 3.12 and 3.14, and again on
+2026-10-06: the matrix to 0.068 at worst, the impulse response to 0.013, and every period's 95%
+interval covering the truth.
 
 EconML is not a dependency of chc (``chc.estimators`` says why), so this runs in a throwaway
 environment:

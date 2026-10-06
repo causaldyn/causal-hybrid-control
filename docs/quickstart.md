@@ -86,12 +86,53 @@ confounding the decision can tolerate — [the sensitivity level Γ](concepts/ga
 
 `out.to_json()` carries the same schedule, both axes and the provenance as plain JSON values.
 
+## The expert path
+
+`prescribe` wraps [`fit_causal_residual`](api/dynamics_id.md) and [`causal_plan`](api/plan.md),
+and both take a hand-built plant, cost and barrier. Below, the model is built by hand: a known
+oscillator plus a residual fitted to logged transitions. The actions in this log were drawn at
+random, so plain least squares (`fit_residual`) is enough; on a confounded log,
+`fit_causal_residual` fits the control channel instead. The script is
+[`docs/expert_path.py`](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/expert_path.py).
+
+<!-- fmt:off -->
+```python
+--8<-- "docs/expert_path.py:fit"
+```
+
+[`mpc_control`](api/mpc.md) then re-plans at every step on the fitted model and applies the first
+action to the plant, which `prescribe` does not:
+
+```python
+--8<-- "docs/expert_path.py:mpc"
+```
+
+Online, where the plant is the world rather than a simulation, `RecedingHorizon` plans from each
+measured state and returns the whole `causal_plan`: actions, tube and audit together.
+
+```python
+--8<-- "docs/expert_path.py:receding"
+```
+<!-- fmt:on -->
+
+What it printed when this site was built:
+
+```text
+--8<-- "docs/output/expert_path.txt"
+```
+
+Each step starts from the last plan and the barrier's multipliers, shifted one step on: 35 % fewer
+descent steps than cold solves on an oscillator's velocity floor, for the same closed-loop cost to
+`2e-6` (ADR 0003, [receding-horizon warm starts](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0003-receding-horizon-warm-starts.md)).
+A program compiles the first time a step needs it and is reused after, so steps stop compiling as
+long as the model, the cost and the barrier's function stay the same objects: a new `lambda` per
+step compiles the descent per step. For a process that restarts, set `jax_compilation_cache_dir`
+and lower `jax_persistent_cache_min_compile_time_secs` to 0: at its default of one second JAX wrote
+none of a first step's programs to disk.
+
 ## Where next
 
 - [Concepts](concepts/identification.md) — what each part of the report means, and what it does
   not promise.
-- [Tutorials](tutorials/index.md) — the executed notebooks, from the sign flip to real data.
-- The expert path — [`fit_causal_residual`](api/dynamics_id.md) and [`causal_plan`](api/plan.md)
-  are what `prescribe` wraps, and take a hand-built plant, cost and barrier.
-  [`mpc_control` and `RecedingHorizon`](api/mpc.md) re-plan the same problem in a closed loop,
-  which `prescribe` does not.
+- [Tutorials](tutorials/index.md) — the executed notebooks, from a first decision to real data.
+- [What's inside](modules.md) — every module, with what it does and what was measured.

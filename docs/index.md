@@ -37,10 +37,13 @@ and nightly builds, and what changes for chc on an accelerator.
   call.
 - [The decision lifecycle](lifecycle.md) — identify, plan, evaluate, experiment, deploy, adapt:
   what is built for each stage, where it is documented, and what is not built yet.
+- [What's inside](modules.md) — every area of the library, what it does, and where its evidence
+  is.
 - **Concepts** — [identification](concepts/identification.md),
   [pessimism](concepts/pessimism.md), [certificates](concepts/certificates.md),
   [the sensitivity level Γ](concepts/gamma.md) and [the dtype policy](concepts/dtype-policy.md).
-- [Tutorials](tutorials/index.md) — the eight notebooks, executed when this site was built.
+- [Tutorials](tutorials/index.md) — the notebooks, from a first decision to real data, executed
+  when this site was built.
 - [Case studies](case-studies/index.md) — one command each, and what it printed.
 - [API reference](api/index.md) — every public module, grouped by what a break would cost you.
 - [Theory](theory.md), [Benchmarks](benchmarks.md), [Security](security.md), [Cite](cite.md).

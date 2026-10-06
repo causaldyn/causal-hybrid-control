@@ -52,9 +52,13 @@ shipped, installable implementation this could be run against. That is the gap C
 and stating it as an absence is more honest than a row of dashes against a paper.
 
 Where a row says *no* it is not a criticism: do-mpc solves control problems CHC cannot state, and
-EconML answers effect questions CHC does not ask. The claim is narrower — that **going from a
-confounded log to a schedule and its certificate in one place** is what nothing above does end to
-end.
+EconML answers effect questions CHC does not ask. The EconML row's *yes* was run, not read:
+[`scripts/econml_reference.py`](https://github.com/causaldyn/causal-hybrid-control/blob/main/scripts/econml_reference.py)
+gives `LinearDML` a 2×2 channel `B(x)` behind a confounded action, which it recovers to 0.068 at
+worst, and `DynamicDML` a linear plant logged over three periods, whose impulse response it
+recovers to 0.013, every period's 95 % interval covering the truth (EconML 0.17.0, 2026-10-06).
+The claim is narrower — that **going from a confounded log to a schedule and its certificate in
+one place** is what nothing above does end to end.
 
 ## When not to use it
 

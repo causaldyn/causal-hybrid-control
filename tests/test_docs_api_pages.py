@@ -4,8 +4,8 @@ The reference is static Markdown -- one `docs/api/<module>.md` per module, holdi
 `::: chc.<module>` directive -- so it drifts in both directions without a sound: a new module ships
 with no page, or a renamed one leaves a page behind that fails only when someone builds the site.
 Each page also states its stability tier, and `mkdocs.yml` files it under one; both are copies of
-the README's tier table, and a page promising "stable" for a module the README calls experimental
-is a promise nobody made.
+the tier table on the reference's index page, and a page promising "stable" for a module the table
+calls experimental is a promise nobody made.
 """
 
 from __future__ import annotations
@@ -22,13 +22,13 @@ MODULES = sorted(m.name for m in pkgutil.iter_modules(chc.__path__) if not m.nam
 PAGES = sorted(path.stem for path in API.glob("*.md") if path.stem != "index")
 
 
-def _readme_tiers() -> dict[str, str]:
-    """The README names the stable and the experimental modules; the rest are evolving."""
-    text = (ROOT / "README.md").read_text()
+def _declared_tiers() -> dict[str, str]:
+    """The index page names the stable and the experimental modules; the rest are evolving."""
+    text = (API / "index.md").read_text()
     named: dict[str, str] = {}
     for tier in ("stable", "experimental"):
         row = re.search(rf"^\| \*\*{tier}\*\* \| (.+?) \|", text, re.MULTILINE)
-        assert row is not None, f"README.md's tier table has no `{tier}` row"
+        assert row is not None, f"docs/api/index.md's tier table has no `{tier}` row"
         named |= dict.fromkeys(re.findall(r"`(\w+)`", row.group(1)), tier)
     return {module: named.get(module, "evolving") for module in MODULES}
 
@@ -58,16 +58,16 @@ def test_every_api_page_renders_the_module_it_is_named_after() -> None:
     assert wrong == {}
 
 
-def test_each_page_states_the_readme_tier_and_is_filed_under_it() -> None:
-    readme, nav = _readme_tiers(), _nav_tiers()
+def test_each_page_states_the_declared_tier_and_is_filed_under_it() -> None:
+    declared, nav = _declared_tiers(), _nav_tiers()
     stated = {}
     for page in PAGES:
         text = (API / f"{page}.md").read_text()
         found = re.search(r"\*\*Stability tier: \[(\w+)\]\(index\.md#\1\)\.\*\*", text)
         stated[page] = found.group(1) if found else None
     wrong = {
-        module: (readme[module], stated.get(module), nav.get(module))
+        module: (declared[module], stated.get(module), nav.get(module))
         for module in MODULES
-        if not readme[module] == stated.get(module) == nav.get(module)
+        if not declared[module] == stated.get(module) == nav.get(module)
     }
     assert wrong == {}

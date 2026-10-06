@@ -41,6 +41,8 @@ still change).
   weather, the fit reads heating as cooling the room and its plan overheats it at midnight and
   leaves it 2.5 degrees cold at breakfast; adjusted, the plan stays in the comfort band; with the
   weather never logged, `prescribe` makes no plan.
+- **A "What's inside" page** (`docs/modules.md`): every public module, grouped by what it is for,
+  with what was measured. The README's module table, tier table and roadmap moved there.
 - **`just notebooks`** runs every notebook again in place, JAX's flags unset.
 
 ### Changed
@@ -268,6 +270,9 @@ still change).
   are void, the second with an adjusted loop that ran away once. The comparison table gains rows
   for PyMC-Marketing, Robyn and Orbit and was read again on 2026-10-06. `chc.mmm` is filed as the
   media-budget case study's plant.
+- **The README is shorter and leaves the detail to the site**, 212 lines where it had 395. Its
+  links are absolute, so they resolve on PyPI too, and a test checks that each link into the
+  repository names a file on `main`.
 - **Every notebook was run again and read against what it prints.** What the text said and the
   run did not: in notebook 1 the predictive controller does not diverge, it pushes the state the
   wrong way to the actuator's limit, near -20 against a target of +2 (`scripts/flagship_demo.py`
