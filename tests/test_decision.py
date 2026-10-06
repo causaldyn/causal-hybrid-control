@@ -1007,8 +1007,8 @@ def test_a_given_start_is_recorded_as_given_and_an_integer_one_is_read_as_floats
     ],
 )
 def test_a_start_that_is_not_one_finite_value_per_state_is_refused(x0: object, match: str) -> None:
-    """A start of the wrong shape failed inside the plan's first matrix product, and a nan or an
-    infinite one was refused as a drift or a channel that is not a number."""
+    """A start of the wrong shape failed inside jax, and a nan or an infinite one was refused as a
+    drift or a channel that is not a number."""
     with pytest.raises(DecisionError, match=match):
         _small(x0=x0)
 
