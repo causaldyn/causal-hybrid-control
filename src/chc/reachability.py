@@ -35,6 +35,7 @@ problems, not to replace it on large ones.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -135,6 +136,37 @@ def _wave_speeds(drifts: Array, b_matrix: Array, u_max: float, radius: float) ->
     return jnp.max(jnp.abs(drifts), axis=(0, 1)) + 1.05 * jnp.max(speeds, axis=0)
 
 
+def _problem(
+    lower: tuple[float, float],
+    upper: tuple[float, float],
+    horizon: float,
+    u_max: float,
+    radius: float,
+) -> None:
+    """Refuse what the CFL check cannot see. A comparison with nan is false, so a nan budget,
+    radius, horizon or grid bound passed ``cfl > 1`` and solved a tube of nan, which a gap report
+    read as no safe point and, its condition failing everywhere too, as ``ok``."""
+    for name, value in (("u_max", u_max), ("radius", radius)):
+        if not 0.0 <= value < math.inf:
+            raise ValueError(f"{name} must be nonnegative and finite, got {value}")
+    if not 0.0 < horizon < math.inf:
+        raise ValueError(f"horizon must be positive and finite, got {horizon}")
+    for axis, (lo, hi) in enumerate(zip(lower, upper, strict=True)):
+        if not -math.inf < lo < hi < math.inf:
+            raise ValueError(f"axis {axis} must run between finite bounds, low first: [{lo}, {hi}]")
+
+
+def _gains(tolerance: float, **gains: float) -> None:
+    """Refuse a gain that is not finite, or a tolerance that is no grid fraction: a nan gain failed
+    the condition at every point, so the certificate read invalid and ``ok`` True, and an infinite
+    tolerance read ``ok`` whatever the tube."""
+    for name, value in gains.items():
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite gain, got {value}")
+    if not 0.0 <= tolerance <= 1.0:
+        raise ValueError(f"tolerance is a grid fraction, in [0, 1], got {tolerance}")
+
+
 def backward_reachable_tube(
     barrier: Callable[[Array], Array],
     drift: Callable[[Array], Array],
@@ -161,8 +193,12 @@ def backward_reachable_tube(
 
     Raises:
         ValueError: if the step violates the CFL condition, which would let the scheme report a
-            *larger* safe set than the truth -- the one failure mode a safety tool must not have.
+            *larger* safe set than the truth -- the one failure mode a safety tool must not have;
+            on a ``u_max`` or ``radius`` that is negative or not finite, a ``horizon`` that is not
+            positive and finite, a grid axis whose bounds are not finite and increasing, or a
+            barrier, drift or ``b_matrix`` that is not finite on the grid.
     """
+    _problem(lower, upper, horizon, u_max, radius)
     axes = tuple(
         jnp.linspace(lo, hi, n) for lo, hi, n in zip(lower, upper, resolution, strict=True)
     )
@@ -171,6 +207,9 @@ def backward_reachable_tube(
 
     h_values = jax.vmap(jax.vmap(lambda x: jnp.squeeze(barrier(x))))(mesh)
     drifts = jax.vmap(jax.vmap(drift))(mesh)  # (n1, n2, 2)
+    for name, values in (("barrier", h_values), ("drift", drifts), ("b_matrix", b_matrix)):
+        if not bool(jnp.isfinite(values).all()):
+            raise ValueError(f"the {name} is not finite on the grid, so no tube can be solved")
 
     alpha = _wave_speeds(drifts, b_matrix, u_max, radius)
     dt = horizon / steps
@@ -254,7 +293,12 @@ def barrier_reachability_gap(
         alpha: the class-K gain of the barrier condition, matching :func:`chc.plan.certify_safety`.
         tolerance: grid-fraction slack when comparing the tube to ``{h >= 0}``, absorbing the
             Lax-Friedrichs dissipation that erodes the zero level set by ``O(dx)``.
+
+    Raises:
+        ValueError: as :func:`backward_reachable_tube` does, and on an ``alpha`` that is not
+            finite or a ``tolerance`` outside ``[0, 1]``.
     """
+    _gains(tolerance, alpha=alpha)
     tube = backward_reachable_tube(
         barrier,
         drift,
@@ -348,7 +392,12 @@ def higher_order_barrier_gap(
     Scope: PURE relative degree 2. Where ``B^T grad h != 0`` the true ``hdot`` has a control term
     that ``psi1`` drops, and this condition is a different certificate, not a sharper one -- use
     :func:`barrier_reachability_gap` there.
+
+    Raises:
+        ValueError: as :func:`backward_reachable_tube` does, and on an ``alpha1`` or ``alpha2``
+            that is not finite or a ``tolerance`` outside ``[0, 1]``.
     """
+    _gains(tolerance, alpha1=alpha1, alpha2=alpha2)
     tube = backward_reachable_tube(
         barrier,
         drift,

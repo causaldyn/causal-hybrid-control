@@ -21,6 +21,17 @@ still change).
   returned nan, which there means that no radius can save the step; and `barrier_gamma_star` read
   a nan `grad_norm` as nan and an infinite one as exact identification. Each now refuses them.
   Since 0.2.0 for the barrier, 0.5.0 for `prescribe`'s inputs.
+- **A reachable tube or a barrier gap that is not a number is refused, rather than read `ok`.**
+  `backward_reachable_tube` checked only its CFL number, which a nan passes: a nan `radius`,
+  `u_max`, `horizon` or grid bound, or a drift, barrier or `b_matrix` that is not finite on the
+  grid, solved a tube of nan, and an infinite `u_max` failed with an `OverflowError`.
+  `barrier_reachability_gap` read that tube as no reachable point, and its condition, failing at
+  every point, as an invalid certificate: with a nan or an infinite radius it returned `ok=True`.
+  A nan `alpha` did the same, and an infinite `tolerance` read `ok` whatever the tube. Each is now
+  refused with `ValueError`: `u_max` and `radius` must be nonnegative and finite, `horizon`
+  positive and finite, each axis's bounds finite and increasing, the gains finite, and `tolerance`
+  a fraction in `[0, 1]`; `higher_order_barrier_gap` likewise. Since 0.2.0; the higher-order
+  gap's since 0.4.0.
 
 ## [0.14.1] — 2026-10-06
 
