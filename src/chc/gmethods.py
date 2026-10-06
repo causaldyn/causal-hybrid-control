@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from chc.frames import ColumnData, as_columns
+from chc.frames import ColumnData, _refuse_shared_names, as_columns
 
 Data = ColumnData
 Vector = NDArray[np.float64]
@@ -43,6 +43,23 @@ def _folds(n: int, k: int, seed: int) -> list[NDArray[np.intp]]:
     return [order[i::k] for i in range(k)]  # deterministic k-way split of a shuffled index
 
 
+def _pooled_confounders(
+    treatments: tuple[str, ...], confounders: tuple[tuple[str, ...], ...], outcome: str
+) -> tuple[str, ...]:
+    """Every confounder any set names, once each, after refusing an outcome named among the
+    treatments or the confounders and a treatment named twice. A confounder may sit in several
+    sets: a baseline is measured before every treatment."""
+    pooled = tuple(dict.fromkeys(name for block in confounders for name in block))
+    _refuse_shared_names(
+        {
+            "the outcome": (outcome,),
+            "a treatment": treatments,
+            "a confounder": tuple(name for name in pooled if name not in treatments),
+        }
+    )
+    return pooled
+
+
 def sequential_g_formula(
     data: Data,
     *,
@@ -65,13 +82,29 @@ def sequential_g_formula(
     than conditioning on it. The nuisance regressions are cross-fitted over ``folds`` folds, each
     row predicted by the fit on the others, so there are at least two and at most one a row.
 
+    A treatment may be a confounder of a later one, measured before it; one set at its own step
+    and also among the confounders measured before that step would be held at its logged value
+    where it is set.
+
     Raises:
-        ValueError: when the treatments, confounders, regime and baseline differ in length, or
-            ``folds`` is not a whole number from 2 to the rows.
+        ValueError: when the treatments, confounders, regime and baseline differ in length,
+            ``folds`` is not a whole number from 2 to the rows, the outcome is named among the
+            treatments or the confounders, a treatment is named twice, or a treatment is among
+            the confounders of its own step or an earlier one.
     """
     if not len(treatments) == len(confounders) == len(regime) == len(baseline):
         msg = "treatments, confounders, regime, and baseline must share one length (the horizon)"
         raise ValueError(msg)
+    _pooled_confounders(treatments, confounders, outcome)
+    for step, treatment in enumerate(treatments):
+        for earlier in range(step + 1):
+            if treatment in confounders[earlier]:
+                msg = (
+                    f"the treatment {treatment!r} is set at step {step} and is a confounder "
+                    f"measured before step {earlier}, so it would be held at its logged value "
+                    "where it is set; a treatment may confound only the later ones"
+                )
+                raise ValueError(msg)
     horizon = len(treatments)
     columns = _float64_columns(data)
     n = int(columns[outcome].shape[0])
@@ -112,7 +145,20 @@ def naive_pooled_effect(
     """The biased baseline: one pooled regression of ``outcome`` on all treatments and confounders,
     summing the treatment coefficients. Wrong under time-varying confounding -- it conditions on the
     post-treatment confounders that the g-formula standardises over.
+
+    Raises:
+        ValueError: when the outcome is named among the treatments or the confounders, a treatment
+            is named twice, or a treatment is among the confounders: pooled, its coefficient
+            would be split with its own copy.
     """
+    pooled = _pooled_confounders(treatments, confounders, outcome)
+    clash = sorted(set(pooled) & set(treatments))
+    if clash:
+        msg = (
+            f"the treatments {clash} are also confounders; one pooled regression would split each "
+            "one's coefficient with its own copy, and the sum would miss the copy's share"
+        )
+        raise ValueError(msg)
     columns = _float64_columns(data)
     treat = [columns[a] for a in treatments]
     covariates = [columns[c] for block in confounders for c in block]

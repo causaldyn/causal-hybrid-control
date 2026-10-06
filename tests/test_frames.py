@@ -87,3 +87,13 @@ def test_a_mapping_passes_through_without_a_host_copy() -> None:
 def test_as_columns_names_the_type_it_cannot_read() -> None:
     with pytest.raises(TypeError, match="got list"):
         as_columns([1.0, 2.0])  # type: ignore[arg-type]
+
+
+def test_two_labels_with_one_text_are_refused() -> None:
+    """A label is read as text, so ``0`` and ``"0"`` named one column and the second replaced the
+    first; a pandas frame that repeats a label did the same."""
+    with pytest.raises(ValueError, match="two columns go by the name '0'"):
+        as_columns({0: np.zeros(3), "0": np.ones(3)})
+    frame = pd.DataFrame(np.zeros((3, 2)), columns=["u", "u"])
+    with pytest.raises(ValueError, match="two columns go by the name 'u'"):
+        as_columns(frame)

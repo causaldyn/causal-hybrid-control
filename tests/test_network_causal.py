@@ -370,3 +370,50 @@ def test_the_fold_heuristic_finds_the_exact_optimum_off_the_cycle() -> None:
     # The Ky Fan bound is a separate quantity and is loose even at the true optimum; conflating
     # "the design is optimal" with "the certificate is tight" is the easy mistake here.
     assert float(certificate.kyfan_gap.min()) > 0.0
+
+
+NETWORK_SECOND_ROLES = {
+    "the treatment as the exposure": (
+        {"exposure": "u"},
+        "the column 'u' is read as the treatment and as the exposure",
+    ),
+    "the outcome as a covariate": (
+        {"covariates": ("x", "z", "x_next")},
+        "the column 'x_next' is read as the outcome and as a covariate",
+    ),
+    "the exposure as a covariate": (
+        {"covariates": ("x", "z", "e")},
+        "the column 'e' is read as the exposure and as a covariate",
+    ),
+    "the cluster as a covariate": (
+        {"covariates": ("x", "z", "cid")},
+        "the column 'cid' is read as the cluster and as a covariate",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("names", "match"), NETWORK_SECOND_ROLES.values(), ids=NETWORK_SECOND_ROLES.keys()
+)
+def test_the_network_estimate_refuses_a_column_in_two_roles(names: dict, match: str) -> None:
+    """The outcome, the treatment and the cluster are read as ``x_next``, ``u`` and ``cid``. The
+    treatment as its own exposure read nan for both effects, and a covariate named ``cid`` was the
+    cluster as well."""
+    data = dict(_data())
+    data["cid"] = np.arange(data["u"].shape[0]) % 40  # forty clusters
+    with pytest.raises(ValueError, match=match):
+        estimate_network_effects(data, **names)
+
+
+@pytest.mark.parametrize(
+    ("names", "match"),
+    [
+        ({"exposure": "u"}, "the column 'u' is read as the treatment and as the exposure"),
+        ({"features": ("x", "z", "u")}, "the column 'u' is read as the treatment and as a feature"),
+        ({"features": ("x", "e")}, "the column 'e' is read as the exposure and as a feature"),
+    ],
+)
+def test_the_gnn_estimate_refuses_a_column_in_two_roles(names: dict, match: str) -> None:
+    data = _data()
+    with pytest.raises(ValueError, match=match):
+        estimate_network_effects_gnn(data, data["neighbours"], **names)

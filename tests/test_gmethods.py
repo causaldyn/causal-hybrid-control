@@ -69,3 +69,69 @@ def test_folds_from_two_to_the_rows_are_accepted(folds) -> None:
     data = _time_varying_confounded(200, seed=4)
     effect = sequential_g_formula(data, regime=(1.0, 1.0), baseline=(0.0, 0.0), folds=folds, **SPEC)
     assert np.isfinite(effect)
+
+
+G_SECOND_ROLES = {
+    "a treatment among its own step's confounders": (
+        {"confounders": (("l0", "a0"), ("l1",))},
+        "the treatment 'a0' is set at step 0 and is a confounder measured before step 0",
+    ),
+    "a later treatment among an earlier step's confounders": (
+        {"confounders": (("l0", "a1"), ("l1",))},
+        "the treatment 'a1' is set at step 1 and is a confounder measured before step 0",
+    ),
+    "the outcome among the confounders": (
+        {"confounders": (("l0",), ("l1", "y"))},
+        "the column 'y' is read as the outcome and as a confounder",
+    ),
+    "the outcome as a treatment": (
+        {"treatments": ("a0", "y")},
+        "the column 'y' is read as the outcome and as a treatment",
+    ),
+    "a treatment twice": (
+        {"treatments": ("a0", "a0")},
+        "the column 'a0' is read twice as a treatment",
+    ),
+}
+
+
+@pytest.mark.parametrize(("names", "match"), G_SECOND_ROLES.values(), ids=G_SECOND_ROLES.keys())
+def test_the_g_formula_refuses_a_column_in_two_roles(names: dict, match: str) -> None:
+    """A treatment among the confounders of its own step was set in one column of the design and
+    kept at its logged value in the other, and the outcome among them explained itself."""
+    data = _time_varying_confounded(200, seed=5)
+    spec = SPEC | names
+    with pytest.raises(ValueError, match=match):
+        sequential_g_formula(data, regime=(1.0, 1.0), baseline=(0.0, 0.0), **spec)
+
+
+def test_an_earlier_treatment_may_confound_a_later_one() -> None:
+    """Measured before the later treatment, the earlier one is one of its confounders: it is set
+    at its own step, before the later step's design reads it."""
+    data = _time_varying_confounded(40_000, seed=0)
+    spec = SPEC | {"confounders": (("l0",), ("l1", "a0"))}
+    effect = sequential_g_formula(data, regime=(1.0, 1.0), baseline=(0.0, 0.0), **spec)
+    assert effect == pytest.approx(TRUE_EFFECT, abs=0.1)
+
+
+@pytest.mark.parametrize(
+    ("names", "match"),
+    [
+        (
+            {"confounders": (("l0",), ("l1", "a0"))},
+            r"the treatments \['a0'\] are also confounders",
+        ),
+        (
+            {"confounders": (("l0", "y"), ("l1",))},
+            "the column 'y' is read as the outcome and as a confounder",
+        ),
+    ],
+)
+def test_the_pooled_regression_refuses_a_treatment_or_the_outcome_among_the_confounders(
+    names: dict, match: str
+) -> None:
+    """Pooled, a treatment that is also a confounder splits its coefficient with its own copy, and
+    the sum of the treatments' coefficients misses the copy's share."""
+    data = _time_varying_confounded(200, seed=6)
+    with pytest.raises(ValueError, match=match):
+        naive_pooled_effect(data, **(SPEC | names))

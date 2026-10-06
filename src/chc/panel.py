@@ -161,11 +161,12 @@ class Panel:
                 the routines that cannot take one say so themselves.
 
         Raises:
-            PanelError: for a missing index column, a non-1-D or ragged column, a non-finite value,
-                a duplicated ``(unit, time)`` pair, an object column whose values are not of one
-                type (a missing value among strings, say) or whose values' text is their address in
-                memory, or --- under ``require_balanced`` --- a hole. Every message names the
-                column and the offending entity.
+            PanelError: for a missing index column, one column named as both the unit and the
+                time, a non-1-D or ragged column, a non-finite value, a duplicated
+                ``(unit, time)`` pair, an object column whose values are not of one type (a missing
+                value among strings, say) or whose values' text is their address in memory, or ---
+                under ``require_balanced`` --- a hole. Every message names the column and the
+                offending entity.
         """
         raw = as_columns(data)
         # copied before it is checked, so that the bytes checked and hashed are the bytes held
@@ -175,6 +176,11 @@ class Panel:
                 raise PanelError(
                     f"{role} column {name!r} is not in the frame; columns are {sorted(columns)}"
                 )
+        if unit == time:
+            raise PanelError(
+                f"unit and time are both {unit!r}; a panel is indexed by a unit and a period, two "
+                "columns, and one column read as both gives each unit one period of its own"
+            )
         if not columns:
             raise PanelError("the frame has no columns")
 

@@ -12,7 +12,7 @@ caller column data where it asked for column names.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Protocol
 
 import numpy as np
@@ -44,9 +44,14 @@ def as_columns(data: ColumnData) -> dict[str, Any]:
     branch materialises, and it stops at NumPy -- precision is the caller's decision, and the two
     consumers disagree on purpose (:mod:`chc.gmethods` is float64 by contract, the estimators follow
     JAX's x64 flag).
+
+    Raises:
+        TypeError: when ``data`` is neither a mapping nor a frame with ``.columns``.
+        ValueError: when two columns go by one name as text -- ``0`` and ``"0"``, or a label a
+            pandas frame repeats -- so that one would replace the other.
     """
     if isinstance(data, Mapping):
-        return {str(name): column for name, column in data.items()}
+        return _by_name(data.items())
     names = getattr(data, "columns", None)
     if names is None:
         msg = (
@@ -54,4 +59,37 @@ def as_columns(data: ColumnData) -> dict[str, Any]:
             f"(pandas / polars), got {type(data).__name__}"
         )
         raise TypeError(msg)
-    return {str(name): np.asarray(data[name]) for name in names}
+    return _by_name((name, np.asarray(data[name])) for name in names)
+
+
+def _by_name(pairs: Iterable[tuple[Any, Any]]) -> dict[str, Any]:
+    columns: dict[str, Any] = {}
+    for label, column in pairs:
+        name = str(label)
+        if name in columns:
+            raise ValueError(
+                f"two columns go by the name {name!r}; chc reads a column by its name as text, so "
+                "one would replace the other"
+            )
+        columns[name] = column
+    return columns
+
+
+def _refuse_shared_names(roles: Mapping[str, Iterable[str]]) -> None:
+    """Refuse a column named in two of ``roles``, or twice in one.
+
+    Each role reads the column its name picks, so a column named in two is read in both: a
+    treatment that is also a covariate is partialled out of itself, and its effect reads as none.
+    """
+    seen: dict[str, str] = {}
+    for role, names in roles.items():
+        for name in names:
+            if name not in seen:
+                seen[name] = role
+            elif seen[name] == role:
+                raise ValueError(f"the column {name!r} is read twice as {role}; name it once")
+            else:
+                raise ValueError(
+                    f"the column {name!r} is read as {seen[name]} and as {role}; each role needs "
+                    "a column of its own"
+                )

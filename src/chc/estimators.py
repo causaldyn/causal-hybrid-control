@@ -36,7 +36,7 @@ from chc.causal import (
     dml_point_and_se,
     estimate_effect_iv,
 )
-from chc.frames import ColumnData, as_columns
+from chc.frames import ColumnData, _refuse_shared_names, as_columns
 
 Data = ColumnData
 
@@ -61,6 +61,9 @@ class CausalEffectEstimator(Protocol):
     """Estimate the interventional effect of ``treatment`` on ``outcome`` given ``covariates``.
 
     ``covariates`` is the conditioning set (backdoor adjustment set / DML nuisances / EconML X).
+    Every estimator here refuses, with ``ValueError``, a column named in two roles -- the treatment
+    as the outcome or as a covariate, the outcome as a covariate, a covariate twice: read in both,
+    the treatment is partialled out of itself, or the outcome explained by itself.
     """
 
     def estimate(
@@ -76,6 +79,12 @@ class CausalEffectEstimator(Protocol):
 def _columns(data: Data) -> dict[str, Array]:
     """Any accepted frame as JAX arrays -- the estimators' dtype, which follows the x64 flag."""
     return {name: jnp.asarray(column) for name, column in as_columns(data).items()}
+
+
+def _check_roles(treatment: str, outcome: str, covariates: tuple[str, ...]) -> None:
+    _refuse_shared_names(
+        {"the treatment": (treatment,), "the outcome": (outcome,), "a covariate": covariates}
+    )
 
 
 def _alias(data: Data, treatment: str, outcome: str) -> dict[str, Array]:
@@ -96,6 +105,7 @@ class BackdoorOLS:
         outcome: str = "x_next",
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
+        _check_roles(treatment, outcome, covariates)
         columns = _columns(data)
         design = [columns[treatment]] + [columns[c] for c in covariates]
         beta, se, _ = _ols_with_se(jnp.stack(design, axis=1), columns[outcome])
@@ -105,7 +115,12 @@ class BackdoorOLS:
 
 @dataclass(frozen=True)
 class IV2SLS:
-    """Two-stage least squares using ``instrument`` for a latent confounder (built-in)."""
+    """Two-stage least squares using ``instrument`` for a latent confounder (built-in).
+
+    Both stages condition on the column ``x``, as :func:`chc.causal.estimate_effect_iv` does, and
+    ``covariates`` is not read, so the treatment, the outcome and the instrument must each be a
+    column other than ``x``.
+    """
 
     instrument: str = "w"
 
@@ -117,6 +132,14 @@ class IV2SLS:
         outcome: str = "x_next",
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
+        _refuse_shared_names(
+            {
+                "the state": ("x",),
+                "the treatment": (treatment,),
+                "the outcome": (outcome,),
+                "the instrument": (self.instrument,),
+            }
+        )
         effect = float(
             estimate_effect_iv(_alias(data, treatment, outcome), instrument=self.instrument)
         )
@@ -139,6 +162,7 @@ class DoubleML:
         outcome: str = "x_next",
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
+        _check_roles(treatment, outcome, covariates)
         effect, se = dml_point_and_se(
             _alias(data, treatment, outcome),
             covariates=covariates,
@@ -179,6 +203,7 @@ class RLearner:
         outcome: str = "x_next",
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
+        _check_roles(treatment, outcome, covariates)
         columns = _columns(data)
         y, t = columns[outcome], columns[treatment]
         covs = jnp.stack([columns[c] for c in covariates], axis=1)
@@ -233,6 +258,7 @@ class EconMLDoubleML:
         outcome: str = "x_next",
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
+        _check_roles(treatment, outcome, covariates)
         try:
             from econml.dml import LinearDML
         except ImportError as exc:  # pragma: no cover - exercised only without econml
@@ -274,6 +300,7 @@ class DoWhyEstimator:
         outcome: str = "x_next",
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
+        _check_roles(treatment, outcome, covariates)
         try:
             import pandas as pd
             from dowhy import CausalModel

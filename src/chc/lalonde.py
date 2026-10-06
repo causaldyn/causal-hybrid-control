@@ -24,6 +24,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from chc.estimators import CausalEffectEstimator
+from chc.frames import _refuse_shared_names
 
 _BASE_URL = "https://vincentarelbundock.github.io/Rdatasets/csv/causaldata/{name}.csv"
 _COVARIATES = ("age", "educ", "black", "hisp", "marr", "nodegree", "re74", "re75")
@@ -88,8 +89,15 @@ def lalonde_ate(data: LalondeData, estimator: CausalEffectEstimator) -> float:
 
     Covariates are standardised (raw ``re74``/``re75`` earnings would blow up polynomial nuisances)
     and the outcome scaled to $1000s for conditioning, then the estimate scaled back to dollars.
+
+    Raises:
+        ValueError: when a covariate is named ``treat`` or ``re78``, the names the estimator reads
+            the treatment and the outcome by: the covariate would replace either one.
     """
     names = tuple(data.covariates)
+    _refuse_shared_names(
+        {"the treatment": ("treat",), "the outcome": ("re78",), "a covariate": names}
+    )
     matrix = np.column_stack([data.covariates[name] for name in names])
     standardized = (matrix - matrix.mean(axis=0)) / (matrix.std(axis=0) + 1e-9)
     payload: dict[str, jnp.ndarray] = {

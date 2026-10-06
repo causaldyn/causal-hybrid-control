@@ -96,6 +96,15 @@ def test_a_missing_index_column_lists_the_columns_that_do_exist() -> None:
         Panel.from_frame(_long(), unit="region", time="quarter")
 
 
+def test_one_column_named_as_both_the_unit_and_the_time_is_refused() -> None:
+    """Read as both, a column of distinct values made each row a unit with one period of its own,
+    and a column that repeats a value failed as a duplicated ``(unit, time)`` pair."""
+    long = _long()
+    long["row"] = np.arange(len(long["region"]))
+    with pytest.raises(PanelError, match="unit and time are both 'row'"):
+        Panel.from_frame(long, unit="row", time="row")
+
+
 def test_codes_rank_labels_rather_than_assuming_they_are_indices() -> None:
     long = _long(n_units=3, n_periods=2)
     long["week"] = np.tile(np.array([2020, 2021]), 3)  # periods are years, not 0..T-1

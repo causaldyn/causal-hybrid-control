@@ -23,6 +23,7 @@ from jax import Array
 from numpy.typing import NDArray
 
 from chc.causal import _polynomial_features, _ridge_predict, _stream_key
+from chc.frames import _refuse_shared_names
 from chc.irf import peak_lag
 
 
@@ -648,7 +649,22 @@ def estimate_network_effects(
     an i.i.d. SE is not conservative-or-not, it is wrong: the score correlates across units that
     share a spillover, and the cluster is the only level at which independence is credible here. A
     95% interval is ``effect +/- 1.96 * se``.
+
+    Raises:
+        ValueError: when a column is read in two roles -- the exposure or a covariate named
+            ``x_next``, ``u`` or ``cid``, which this reads as the outcome, the treatment and the
+            cluster, the exposure among the covariates, or a covariate named twice; or when the
+            neighbour exclusion leaves a fold too few training rows.
     """
+    _refuse_shared_names(
+        {
+            "the outcome": ("x_next",),
+            "the treatment": ("u",),
+            "the cluster": ("cid",),
+            "the exposure": (exposure,),
+            "a covariate": covariates,
+        }
+    )
     y, u, e = data["x_next"], data["u"], data[exposure]
     covs = jnp.stack([data[c] for c in covariates], axis=1)
     n = y.shape[0]
@@ -786,7 +802,19 @@ def estimate_network_effects_gnn(
     BOTH intervals -- a scalar ``Psi`` cannot produce a channel-dependent answer at all, so the
     two-column sandwich is what governs here. An independent-arm standard error is not valid for
     this comparison; assuming one is what left an earlier 150-replication run unable to decide.
+
+    Raises:
+        ValueError: when a column is read in two roles: the outcome is ``x_next``, and the
+            treatment, the exposure and each feature must be columns of their own.
     """
+    _refuse_shared_names(
+        {
+            "the outcome": ("x_next",),
+            "the treatment": (treatment,),
+            "the exposure": (exposure,),
+            "a feature": features,
+        }
+    )
     y, u, e = data["x_next"], data[treatment], data[exposure]
     feats = jnp.stack([data[f] for f in features], axis=1)
     n = int(y.shape[0])

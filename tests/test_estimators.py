@@ -14,6 +14,7 @@ from chc.estimators import (
     DoWhyEstimator,
     EconMLDoubleML,
     EffectEstimate,
+    RLearner,
 )
 
 
@@ -93,3 +94,81 @@ def test_a_nan_standard_error_reads_a_nan_statistic() -> None:
     data["x_next"] = data["x_next"].at[5].set(float("nan"))
     result = DoubleML().estimate(data, covariates=("x", "z"))
     assert math.isnan(result.diagnostics["t_stat"])
+
+
+SECOND_ROLES = {
+    "the treatment as a covariate": (
+        BackdoorOLS(),
+        {"covariates": ("x", "z", "u")},
+        "the column 'u' is read as the treatment and as a covariate",
+    ),
+    "the outcome as a covariate": (
+        BackdoorOLS(),
+        {"covariates": ("x", "z", "x_next")},
+        "the column 'x_next' is read as the outcome and as a covariate",
+    ),
+    "the treatment as the outcome": (
+        BackdoorOLS(),
+        {"outcome": "u"},
+        "the column 'u' is read as the treatment and as the outcome",
+    ),
+    "a covariate twice": (
+        BackdoorOLS(),
+        {"covariates": ("x", "z", "z")},
+        "the column 'z' is read twice as a covariate",
+    ),
+    "the treatment as its instrument": (
+        IV2SLS(instrument="u"),
+        {},
+        "the column 'u' is read as the treatment and as the instrument",
+    ),
+    "the state as the treatment of 2SLS": (
+        IV2SLS(),
+        {"treatment": "x"},
+        "the column 'x' is read as the state and as the treatment",
+    ),
+    "DML's treatment as a covariate": (
+        DoubleML(),
+        {"covariates": ("x", "z", "u")},
+        "the column 'u' is read as the treatment and as a covariate",
+    ),
+    "DML's outcome as a covariate": (
+        DoubleML(),
+        {"covariates": ("x", "z", "x_next")},
+        "the column 'x_next' is read as the outcome and as a covariate",
+    ),
+    "the R-learner's treatment as a covariate": (
+        RLearner(),
+        {"covariates": ("x", "z", "u")},
+        "the column 'u' is read as the treatment and as a covariate",
+    ),
+    "the R-learner's outcome as a covariate": (
+        RLearner(),
+        {"covariates": ("x", "z", "x_next")},
+        "the column 'x_next' is read as the outcome and as a covariate",
+    ),
+    "EconML's treatment as a covariate": (
+        EconMLDoubleML(),
+        {"covariates": ("x", "z", "u")},
+        "the column 'u' is read as the treatment and as a covariate",
+    ),
+    "DoWhy's outcome as a covariate": (
+        DoWhyEstimator(),
+        {"covariates": ("x", "z", "x_next")},
+        "the column 'x_next' is read as the outcome and as a covariate",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("estimator", "names", "match"), SECOND_ROLES.values(), ids=SECOND_ROLES.keys()
+)
+def test_a_column_named_in_two_roles_is_refused(
+    estimator: CausalEffectEstimator, names: dict, match: str
+) -> None:
+    """Each role reads the column its name picks, so a column named in two was read in both: the
+    treatment among its covariates was partialled out of itself, and the outcome among them
+    explained itself. The refusal comes before an optional backend's import."""
+    data = ConfoundedLinearSystem(gamma=1.0).sample(500, jax.random.key(0))
+    with pytest.raises(ValueError, match=match):
+        estimator.estimate(data, **names)

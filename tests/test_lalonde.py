@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import urllib.error
 
+import numpy as np
 import pytest
 
 from chc.estimators import BackdoorOLS, DoubleML
@@ -37,3 +38,18 @@ def test_flexible_double_ml_recovers_most_of_the_effect(data: LalondeData) -> No
     dml = lalonde_ate(data, DoubleML(degree=3, folds=5))
     assert dml > backdoor  # cross-fitted flexible nuisances beat linear adjustment
     assert abs(dml - data.experimental_ate) < 0.25 * abs(data.naive_ate - data.experimental_ate)
+
+
+@pytest.mark.parametrize("name", ["treat", "re78"])
+def test_a_covariate_named_for_the_treatment_or_the_outcome_is_refused(name: str) -> None:
+    """The estimator reads the treatment and the outcome as ``treat`` and ``re78``, from the dict
+    the covariates are written into after them: a covariate of either name replaced it."""
+    rng = np.random.default_rng(0)
+    data = LalondeData(
+        treatment=(rng.random(50) < 0.5).astype(float),
+        outcome=rng.normal(5000.0, 1000.0, 50),
+        covariates={"age": rng.normal(30.0, 5.0, 50), name: rng.normal(0.0, 1.0, 50)},
+        experimental_ate=0.0,
+    )
+    with pytest.raises(ValueError, match=f"the column '{name}' is read as the"):
+        lalonde_ate(data, BackdoorOLS())
