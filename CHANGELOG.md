@@ -72,6 +72,24 @@ still change).
   compared `convexity <= 0`, so a nan floor built an energy whose invariant radius is nan; the
   floor must now be positive and finite. Since 0.2.0 for `sinkhorn`, 0.4.0 for the delay
   functions, 0.6.0 for the convexity floor, 0.7.0 for the clock and 0.8.0 for the shadow prices.
+- **A filter update past the float range is refused, and five other places that returned a nan
+  or a wrong value are fixed.** `forward_filter` and `forward_filter_geos` checked each step's
+  one-step scale but not the update after it. With a learned scale, an observation of 1e160 made
+  the scale and the covariance infinite: the next step refused it one step late, and at the last
+  step nothing did, so `forecast`'s scales came out nan. With a known scale, an error past the
+  float range moved only the mean, which no check reads, and every later step filtered from it. An
+  update that is not finite now raises `FloatingPointError` at its own step.
+  `gohberg_semencul_generators` passed a nan entry through its degeneracy check and returned nan
+  generators; it now refuses one. `twoway_fixed_effects_att` and `de_chaisemartin` did not read
+  the panel through the check `callaway_santanna` uses, so one nan outcome made the effect nan;
+  they now refuse it, and a panel whose shapes do not match. `Totals` kept the caller's arrays,
+  so a nan written into them after the check reached the plan; it now holds read-only copies.
+  `robust_barrier_margin` with an infinite `u_max` read `0 * inf` where the clip binds, and
+  returned nan; the margin there is now the drift, whatever the authority. `msm_worst_case_mean`
+  read a `Gamma` below 1, whose weight box `[1/Gamma, Gamma]` is empty, as the sample mean, and
+  `confounding_robust_radius` as the nominal radius; both now refuse it, as
+  `confounding_robust_inflation` does. Since 0.2.0; the filter's since 0.9.0, the geo filter's
+  and `Totals`' since 0.10.0.
 
 ## [0.14.1] — 2026-10-06
 

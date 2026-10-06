@@ -25,6 +25,14 @@ def _brute_force_margin(drift: float, channel: float, radius: float, u_max: floa
     )
 
 
+@pytest.mark.parametrize("radius", [0.6, 0.5])
+def test_infinite_authority_buys_nothing_past_the_channel(radius: float) -> None:
+    """Where the clip binds, ``(channel - radius)_+ * u_max`` was ``0 * inf``, a nan; the margin
+    there is the drift, whatever the authority."""
+    assert robust_barrier_margin(-0.3, 0.5, radius, np.inf) == -0.3
+    assert robust_barrier_margin(-0.3, 0.5, 0.4, np.inf) == np.inf
+
+
 @pytest.mark.parametrize("radius", [0.0, 0.3, 0.9, 1.0, 1.7])
 def test_robust_margin_matches_a_brute_force_search_over_both_players(radius: float) -> None:
     drift, channel, u_max = -0.4, 1.0, 2.5

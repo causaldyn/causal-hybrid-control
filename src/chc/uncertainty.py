@@ -1136,9 +1136,12 @@ def msm_worst_case_mean(outcomes: NDArray[np.float64], gamma: float) -> float:
     # a nan Gamma reached the tail's length as nan, and an infinite one an empty tail
     if not math.isfinite(gamma):
         raise ValueError(f"MSM sensitivity Gamma must be finite, got {gamma}")
+    # below 1 the weight box [1/Gamma, Gamma] is empty, and the sample mean came back as its bound
+    if gamma < 1.0:
+        raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {gamma}")
     y = np.asarray(outcomes, dtype=np.float64)
     mu = float(np.mean(y))
-    if gamma <= 1.0:
+    if gamma == 1.0:
         return mu
     tau = 1.0 / (gamma + 1.0)
     cvar_upper = _top_tail_mean(y, tau)  # mean of the worst (largest) tau-tail

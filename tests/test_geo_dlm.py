@@ -384,3 +384,14 @@ def test_draws_over_geos_have_the_smoother_s_moments_with_a_moving_variance():
 def test_it_refuses_what_it_cannot_filter(build, match):
     with pytest.raises(ValueError, match=match):
         build()
+
+
+def test_an_update_that_overflows_is_refused_at_its_own_step():
+    """An observation of 1e160 at the last step left an infinite scale, with no step after it to
+    notice."""
+    geos = 2
+    model = GeoDLM(NATIONAL, (Polynomial(1, 0.9),), geos, stacked_prior(_prior(2), _prior(1), geos))
+    y, x = _panel(3, geos, 2)
+    y[-1, 0] = 1e160
+    with pytest.raises(FloatingPointError, match=f"step {T - 1}: the update is not finite"):
+        forward_filter_geos(model, y, x)

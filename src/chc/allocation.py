@@ -398,8 +398,8 @@ class Totals:
     most: np.ndarray
 
     def __post_init__(self) -> None:
-        least = np.asarray(self.least, dtype=float)
-        most = np.asarray(self.most, dtype=float)
+        least = np.array(self.least, dtype=float)
+        most = np.array(self.most, dtype=float)
         if least.ndim != 1 or most.shape != least.shape:
             raise ValueError(
                 f"least has shape {least.shape} and most {most.shape}; they need one bound a group"
@@ -411,6 +411,8 @@ class Totals:
             and np.all(most >= least)
         ):
             raise ValueError(f"the totals [{least}, {most}] are not 0 <= least <= most")
+        least.setflags(write=False)
+        most.setflags(write=False)
         object.__setattr__(self, "least", least)
         object.__setattr__(self, "most", most)
 

@@ -500,6 +500,18 @@ def test_totals_refuse_bounds_that_are_not_ordered():
         Totals(least=np.zeros(2), most=np.zeros(3))
 
 
+def test_totals_hold_a_copy_the_caller_cannot_change():
+    """Totals kept the caller's arrays, so a nan written into them later passed every check."""
+    least, most = np.zeros(2), np.array([5.0, np.inf])
+    totals = Totals(least=least, most=most)
+    least[0], most[0] = np.nan, -1.0
+    np.testing.assert_array_equal(totals.least, [0.0, 0.0])
+    np.testing.assert_array_equal(totals.most, [5.0, np.inf])
+    for bound in (totals.least, totals.most):
+        with pytest.raises(ValueError, match="read-only"):
+            bound[0] = np.nan
+
+
 def _tied_by(caps, floors):
     return allocate_geos(
         CELLS,

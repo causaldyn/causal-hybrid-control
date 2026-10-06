@@ -141,6 +141,8 @@ def gohberg_semencul_generators(
     """
     first_col = np.asarray(first_col, dtype=np.float64)
     first_row = np.asarray(first_row, dtype=np.float64)
+    if not (np.isfinite(first_col).all() and np.isfinite(first_row).all()):
+        raise ValueError("first_col and first_row must be finite")
     n = first_col.shape[0]
     matrix = _dense_toeplitz(first_col, first_row)
     unit_first, unit_last = np.zeros(n), np.zeros(n)

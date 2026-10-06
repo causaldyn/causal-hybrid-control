@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from chc.did import callaway_santanna, de_chaisemartin, twoway_fixed_effects_att
 
@@ -73,3 +74,13 @@ def test_de_chaisemartin_recovers_the_instantaneous_effect() -> None:
     outcomes, group, _ = _staggered_panel(seed=5)
     instantaneous = de_chaisemartin(outcomes, group)
     assert abs(instantaneous - DELTA) < 0.1  # DID_M targets the e=0 first-exposure effect (DELTA)
+
+
+@pytest.mark.parametrize("estimator", [twoway_fixed_effects_att, de_chaisemartin])
+def test_an_outcome_that_is_no_number_is_refused(estimator) -> None:
+    """Neither estimator read the panel through its check, so one nan outcome made the effect
+    nan."""
+    outcomes, group, _ = _staggered_panel(0)
+    outcomes[0, 4] = np.nan
+    with pytest.raises(ValueError, match="outcomes must be finite"):
+        estimator(outcomes, group)

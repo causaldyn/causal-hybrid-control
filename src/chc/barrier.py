@@ -98,7 +98,8 @@ def robust_barrier_margin(drift: float, channel: float, radius: float, u_max: fl
     _numbers(drift=drift, channel=channel, radius=radius, u_max=u_max)
     if u_max < 0.0:
         raise ValueError(f"actuation limit must be nonnegative, got {u_max}")
-    return drift + max(0.0, channel - radius) * u_max
+    gap = channel - radius
+    return drift + gap * u_max if gap > 0.0 else drift
 
 
 def robust_safe_action(

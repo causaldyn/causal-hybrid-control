@@ -57,6 +57,16 @@ def test_inflation_rejects_gamma_below_one() -> None:
         confounding_robust_inflation(4.0, 2.0, 0.5)
 
 
+@pytest.mark.parametrize("gamma", [0.5, 0.0, -1.0])
+def test_the_worst_case_mean_rejects_gamma_below_one_as_its_inflation_does(gamma: float) -> None:
+    """A Gamma below 1 read the sample mean, and the robust radius the nominal one, where the
+    inflation they are built on refuses it."""
+    with pytest.raises(ValueError, match="Gamma must be >= 1"):
+        msm_worst_case_mean(np.arange(10.0), gamma)
+    with pytest.raises(ValueError, match="Gamma must be >= 1"):
+        confounding_robust_radius(0.1, np.arange(10.0), gamma)
+
+
 @pytest.mark.parametrize("gamma", [float("nan"), float("inf")])
 def test_a_gamma_that_is_not_finite_is_refused(gamma: float) -> None:
     """A nan passed ``gamma < 1`` and read a nan half-width, and an infinite level read inf/inf;
