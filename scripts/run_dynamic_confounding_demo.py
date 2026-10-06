@@ -29,7 +29,7 @@ def main() -> None:
     print(f"   savings at realistic confounding : {curve.savings_at_target_pct:.0f}%")
     print(f"   premium when unconfounded : {curve.unconfounded_premium_pct:.0f}% of CE downside")
     print(
-        "\n   The static §35 minimax is now a closed-loop controller: pessimism bounds the"
+        "\n   The static minimax controller now runs in closed loop: pessimism bounds the"
         "\n   accumulated downside, wins beyond a confounding threshold, pays a bounded premium."
     )
 

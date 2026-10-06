@@ -48,7 +48,9 @@ class TaskResult:
 
     controller: str
     cost: float
-    regret: float  # cost - oracle_cost (>= 0; the oracle knows the true effect)
+    # cost - oracle_cost. The oracle is the same controller on the true effect, a reference rather
+    # than a floor, so on one noise path a controller can land a little below it.
+    regret: float
     constraint_violations: float  # fraction of steps outside the safe state set
     ood_rate: float  # fraction of actions outside the logged action support
 

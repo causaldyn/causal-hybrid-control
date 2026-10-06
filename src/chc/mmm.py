@@ -3,8 +3,9 @@
 The case study the facade was built for, in a domain where the confounding is not hypothetical.
 Media spend is *planned against demand*: a marketer raises budget in the weeks a product sells
 anyway, so a model fitted on the log credits the channel with the season. Fit that model and
-optimise against it and the plan over-spends on whichever channel the planner favoured, which is
-the observational-response failure :mod:`chc.dynamics_id` exists to stop --- here with the channel
+optimise against it and the plan under-invests: crediting every channel with the season, it
+believes it needs less spend to reach its sales target than it does. That is the
+observational-response failure :mod:`chc.dynamics_id` exists to stop --- here with the channel
 being an incremental return and the plant a saturating carryover system.
 
 The plant, control-affine by construction so identification and safety read the same object:

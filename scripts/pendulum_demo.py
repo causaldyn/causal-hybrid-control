@@ -40,7 +40,7 @@ HONEST SCOPE:
 * The schedule is open loop on a frictionless plant, and it lands because the fitted model is
   right. Deployed, it would be re-planned from each measured state (:class:`chc.RecedingHorizon`).
 * The barrier is held at the library's class-K gain of 1 per second, so the approach to the speed
-  limit is what binds, not the limit: every schedule here stays well inside it.
+  limit is what binds, not the limit: every schedule here stays below it.
 * The certificate's tube compounds at the norm of the field's slope in the state where the plan
   starts, which for a hanging pendulum is 15 per second: a ``local`` rate, since gravity bends the
   field away from there. It is fed ``channel_error``, the channel's standard error at the states

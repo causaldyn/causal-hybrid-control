@@ -3,7 +3,8 @@
 Marketing-mix budget scheduling: which channel to spend on, and when, from confounded logs. Media
 spend is *planned against demand* — a marketer raises budget in the weeks a product sells anyway —
 so a model fitted on the log credits the channel with the season. Optimise against that model and
-the plan over-spends on whichever channel the planner favoured.
+the plan under-invests: crediting every channel with the season, it believes it needs less spend to
+reach its sales target than it does.
 
 The plant is control-affine by construction, so identification and safety read the same object:
 

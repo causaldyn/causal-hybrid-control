@@ -100,8 +100,8 @@ def main() -> None:
         f" shrinks from {tight.reachable_fraction:.3f} to {loose.reachable_fraction:.3f}."
     )
     print(
-        f"So {loose.certified_but_unreachable:.1%} of the grid is certified by the §40 check and"
-        f" unreachable in truth. A per-step certified prefix is a filter, not a proof --"
+        f"So {loose.certified_but_unreachable:.1%} of the grid is certified by the pointwise"
+        f" check and unreachable in truth. A per-step certified prefix is a filter, not a proof --"
         f" the proof needs the condition on the whole set, which is what `valid_cbf` reports."
     )
 

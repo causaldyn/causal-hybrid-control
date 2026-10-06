@@ -29,11 +29,15 @@ def main() -> None:
         print(f"{name:16}{believed:>12.3f}{naive:>12.3f}{naive / believed:>11.2f}x")
 
     flat_gap = report.lift("adjusted") / report.lift("flat") - 1.0
+    myopic_gap = report.lift("myopic") / report.lift("flat") - 1.0
     print(
         f"\nAt the same total budget ({report.arm('adjusted').total_spend:.1f}) the prescribed"
         f" schedule buys {flat_gap:+.1%} more lift than an equal split (cumulative sales over the"
-        " do-nothing arm) -- it front-loads to build carryover and then tapers, which is why"
-        " cumulative sales and not the terminal value are scored."
+        f" do-nothing arm), and the myopic rule on the same fit buys {myopic_gap:+.1%}. The myopic"
+        " rule differs from the equal split only in how it splits each week's budget across the"
+        " channels, so that gap is what identification buys; the gap between the prescribed"
+        " schedule and the myopic rule is what the horizon buys, and its sign is a property of"
+        " this plant."
     )
     print(
         f"The confounded arm credits every channel with the season, so it believes it needs less:"
