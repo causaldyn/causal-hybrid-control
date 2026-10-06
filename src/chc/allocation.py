@@ -533,11 +533,11 @@ def _chord(worth: _Worth, floor: Array, cap: Array, touch: Array) -> _Bounded:
     touches are found."""
     curve = worth.channel.curve
     end = jnp.minimum(touch, cap)
-    straight = end > floor
+    # XLA flushes a subnormal difference to zero on the CPU, where the ends still compare unequal
+    width = end - floor
+    straight = width > 0.0
     base = curve.standard(floor)
-    rise = jnp.where(
-        straight, (curve.standard(end) - base) / jnp.where(straight, end - floor, 1.0), 0.0
-    )
+    rise = jnp.where(straight, (curve.standard(end) - base) / jnp.where(straight, width, 1.0), 0.0)
     # A chord that ends at the touch meets the curve there with the curve's slope, so either side
     # may read a rate that lands on it. One cut short by the cap is the whole box's envelope: read
     # on the curve at the cap, the slope would jump to the curve's own, steeper than the chord's,

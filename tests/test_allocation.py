@@ -21,7 +21,9 @@ from chc.allocation import (
     ReturnTarget,
     _bounded,
     _on_envelopes,
+    _slope,
     _value,
+    _Worth,
     _worths,
     allocate,
     budget_for,
@@ -332,6 +334,19 @@ def test_a_box_s_envelope_bounds_the_worth_meets_it_at_both_ends_and_is_concave(
         assert above[0] == pytest.approx(on[0], rel=1e-14, abs=0.0)
         assert above[-1] == pytest.approx(on[-1], rel=1e-14, abs=0.0)
         assert np.all(np.diff(above, 2) <= 1e-12)
+
+
+def test_a_box_whose_adstock_spans_less_than_a_normal_double_reads_the_curve():
+    """Both ends of this box leave a normal double of adstock, 2.5e-308 and 2.6e-308, but their
+    difference is subnormal, and XLA flushes it to zero on the CPU while the ends still compare
+    unequal: the chord's slope read 0 / 0, and a search handed its linear program a nan. A tail
+    period that keeps almost nothing of a unit of spend's adstock leaves such a box."""
+    channel = Channel(GeometricAdstock(0.0, length=1, normalized=False), Hill(1.0, 2.0), 1.0)
+    worth = _Worth(channel, jnp.zeros(1), jnp.array([1e-307]))
+    bounded = _bounded(worth, 0.25, 0.26)
+    for rate in (0.25, 0.255, 0.26):
+        assert _value(bounded, rate) == _value(worth, rate)
+        assert np.isfinite(_slope(bounded, rate))
 
 
 def _equal_s_curves(slope: float, copies: int) -> tuple[Channel, ...]:
