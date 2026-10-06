@@ -802,7 +802,8 @@ def test_a_curve_built_inside_a_trace_fits_by_gradient() -> None:
         return jnp.sum((Hill(scale, slope)(spend) - target) ** 2)
 
     at_truth = jnp.log(jnp.array([2.0, 3.0]))
-    assert float(loss(at_truth)) == 0.0
+    # not 0 exactly: jax 0.4.30's exp(log(2)) is a last bit off 2
+    assert float(loss(at_truth)) < 1e-30
     np.testing.assert_allclose(jax.grad(loss)(at_truth), 0.0, atol=1e-15)
     assert np.all(np.isfinite(jax.grad(loss)(at_truth + 0.1)))
 

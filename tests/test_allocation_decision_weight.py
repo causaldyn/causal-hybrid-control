@@ -6,6 +6,8 @@ itself: the plan re-made on perturbed channels and scored on the true ones, each
 the history, the plan and the tail as one series.
 """
 
+import importlib
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -15,6 +17,13 @@ from jax.flatten_util import ravel_pytree
 
 from chc.allocation import allocate, decision_weight
 from chc.response import Channel, Exponential, GeometricAdstock, Hill, MichaelisMenten, Tanh
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 ONE = GeometricAdstock(0.0, length=1, normalized=False)  # no carryover
 PERIODS = 13
@@ -118,7 +127,7 @@ def _directions():
 def test_the_weight_is_the_second_order_loss_of_a_plan_on_moved_channels() -> None:
     """Twice the loss over the step squared is d' W d plus a term linear in the step, from the
     loss's third order, which one Richardson step removes."""
-    with jax.enable_x64(True):
+    with enable_x64(True):
         weight, directions = _directions()
         assert weight.pinned == ()
         for direction in directions:
@@ -133,7 +142,7 @@ def test_the_weight_is_the_second_order_loss_of_a_plan_on_moved_channels() -> No
 def test_the_quadratic_reads_the_loss_within_a_tenth_for_errors_a_tenth_of_each_parameter() -> None:
     """How far the second order reaches on these channels: each parameter off by a tenth of its
     size, in a standard normal's units, and the plan re-made."""
-    with jax.enable_x64(True):
+    with enable_x64(True):
         weight, directions = _directions()
         for direction in directions:
             predicted = 0.5 * float(direction @ weight.matrix @ direction) * 0.1**2
@@ -143,7 +152,7 @@ def test_the_quadratic_reads_the_loss_within_a_tenth_for_errors_a_tenth_of_each_
 def test_a_channel_at_an_end_of_its_box_carries_no_weight() -> None:
     capped = UPPER.copy()
     capped[2] = 25.0  # the exponential channel's cap binds
-    with jax.enable_x64(True):
+    with enable_x64(True):
         weight = decision_weight(
             CHANNELS, BUDGET, PERIODS, lower=LOWER, upper=capped, history=HISTORY
         )
