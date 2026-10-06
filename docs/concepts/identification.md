@@ -83,7 +83,7 @@ accident. An unidentified effect produces no schedule at all.
 ## See it
 
 - [Tutorial 1](../tutorials/01_causal_vs_predictive_control.md) — the naive fit flips the sign, and
-  the controller built on it diverges.
+  the controller built on it drives the state the wrong way, as far as its actuator allows.
 - [Tutorial 3](../tutorials/03_causal_inference_toolkit.md) — adjustment, IV/2SLS, Double ML,
   sensitivity and refutation, side by side.
 - [Tutorial 7](../tutorials/07_real_data_lalonde.md) — real data with an experimental ground truth.

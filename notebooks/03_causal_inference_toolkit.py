@@ -1,7 +1,7 @@
 # %% [markdown]
 # # 3 · The causal inference toolkit
 #
-# For control we need the **interventional** effect $\partial x'/\partial\,\mathrm{do}(u)$, not a
+# For control we need the **interventional** effect `∂x′/∂do(u)`, not a
 # correlation. `chc` ships a small, self-contained causal layer that goes well beyond a naive regression:
 #
 # | tool | when to use |
@@ -12,17 +12,19 @@
 # | **sensitivity** | quantify how much *hidden* confounding your decision tolerates |
 # | **refutation** | placebo / random-cause / subset robustness checks |
 #
-# (For heavy production estimators — causal forests, dynamic DML — `chc` is designed to interoperate with
-# EconML/DoWhy rather than reimplement them.)
+# (For heavier estimators `chc` wraps other libraries instead of reimplementing them.
+# `chc.estimators.EconMLDoubleML` takes any EconML DML estimator that fits on outcome, treatment and
+# covariates, such as `CausalForestDML`. `chc.estimators.DoWhyEstimator` runs DoWhy's
+# identify-then-estimate workflow. Neither library is a `chc` dependency.)
 
 # %%
 import jax
-import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import pandas as pd
 
 jax.config.update("jax_enable_x64", True)
-%matplotlib inline
+jax.config.update("jax_platforms", "cpu")  # the outputs below were made on a CPU
+# %matplotlib inline
 
 from chc.causal import (
     ConfoundedLinearSystem,
@@ -76,8 +78,11 @@ pd.DataFrame(
 # ## 3 · Double ML: *nonlinear* confounding
 #
 # When the confounder enters nonlinearly (here `z²`), a linear adjustment is biased. Double/debiased ML
-# partials out flexible predictions of the outcome and the action, then regresses the residuals
-# (Neyman-orthogonal, cross-fitted) — and recovers the effect.
+# predicts the outcome and the action from the covariates with a flexible model, subtracts the
+# predictions, and regresses what is left of the outcome on what is left of the action. Each prediction
+# comes from a model fitted on the other half of the data (cross-fitting). Small errors in those
+# predictions then do not bias the effect to first order (Neyman orthogonality). It recovers the
+# effect.
 
 # %%
 k = jax.random.split(jax.random.key(1), 4)
@@ -101,23 +106,34 @@ pd.DataFrame(
 # %% [markdown]
 # ## 4 · Sensitivity: how much hidden confounding would overturn the decision?
 #
-# The **Cinelli–Hazlett robustness value** is the strength (R²) an unobserved confounder would need with
-# *both* the action and the outcome to drive the estimate to zero. A correctly-adjusted strong effect is
-# near-1 (robust); a confounded estimate is fragile.
+# The **Cinelli–Hazlett robustness value** is the share of the remaining variance (partial R²) that an
+# unobserved confounder would have to explain in *both* the action and the outcome to drive the
+# estimate to zero. It measures how much hidden confounding an estimate can absorb. It does not tell
+# whether the estimate is confounded. On the IV data of section 2, the estimate that adjusts for `z`
+# survives a confounder that explains up to 99 %. The estimate that omits `z` (0.14) is small against
+# its noise, and a confounder that explains 19.5 % would erase it. A confounded estimate can still
+# look robust. The third row omits `z` on data where the confounder pulls the action up instead of
+# down (`kappa = +1.5` against the default −1.5). The confounding then adds to the effect: the naive
+# estimate is 1.86 against a true 1.0, and its robustness value is 0.90.
 
 # %%
+same_way = ConfoundedLinearSystem(gamma=1.0, kappa=1.5).sample(40_000, jax.random.key(0))
 rv = pd.DataFrame(
-    [sensitivity_analysis(iv_data, adjust_for=("z",)), sensitivity_analysis(iv_data, adjust_for=())],
-    index=["adjusted (robust)", "confounded (fragile)"],
-)
-rv.round(3)
+    [
+        sensitivity_analysis(iv_data, adjust_for=("z",)),
+        sensitivity_analysis(iv_data, adjust_for=()),
+        sensitivity_analysis(same_way, adjust_for=()),
+    ],
+    index=["adjusts for z", "omits z", "omits z, kappa = +1.5"],
+)[["effect", "std_error", "robustness_value"]]
+rv.round(4)
 
 # %%
-fig, ax = plt.subplots(figsize=(6, 3))
-ax.barh(rv.index, rv["robustness_value"], color=["#54A24B", "#E45756"])
+fig, ax = plt.subplots(figsize=(6, 3.2))
+ax.barh(rv.index, rv["robustness_value"], color=["#54A24B", "#E45756", "#F58518"])
 ax.set_xlim(0, 1)
 ax.set_xlabel("robustness value  (R² needed to overturn the decision)")
-ax.set_title("A controller can ship a robustness bound on its own decision")
+ax.set_title("A robust estimate can still be confounded")
 for i, v in enumerate(rv["robustness_value"]):
     ax.text(v + 0.01, i, f"{v:.2f}", va="center", fontweight="bold")
 plt.tight_layout()

@@ -167,7 +167,7 @@ jobs:
         run: ./validation/run_crosschecks.sh
 
   # The site shows what the code prints, so building it means running the code: `docs/build.sh`
-  # executes the eight notebooks and the scripts the pages quote, then builds with `--strict`. Run
+  # executes the notebooks and the scripts the pages quote, then builds with `--strict`. Run
   # here, a library change that breaks a tutorial fails its own PR rather than the release deploy,
   # which runs the same script.
   docs:

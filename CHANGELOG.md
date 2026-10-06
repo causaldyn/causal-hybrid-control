@@ -33,6 +33,15 @@ still change).
   levers' whole box, so the tube bounds the rollout from any state; `local` where the slope was read
   at the plan's start alone, as on known physics bent in the state; `None` where no tube was
   evaluated. The report and `to_json()` carry it.
+- **Three notebooks for a first read.** `00_start_here` runs the whole loop on one everyday
+  problem: the trap in the logs, the effect, the plan and how far to trust it.
+  `08_splitting_a_budget` splits an advertising budget across three channels, and shows why the
+  best split equalises the next euro's return and when the TV channel switches on.
+  `09_heating_a_room` plans a thermostat's night from logs the weather confounds: ignoring the
+  weather, the fit reads heating as cooling the room and its plan overheats it at midnight and
+  leaves it 2.5 degrees cold at breakfast; adjusted, the plan stays in the comfort band; with the
+  weather never logged, `prescribe` makes no plan.
+- **`just notebooks`** runs every notebook again in place, JAX's flags unset.
 
 ### Changed
 
@@ -259,6 +268,25 @@ still change).
   are void, the second with an adjusted loop that ran away once. The comparison table gains rows
   for PyMC-Marketing, Robyn and Orbit and was read again on 2026-10-06. `chc.mmm` is filed as the
   media-budget case study's plant.
+- **Every notebook was run again and read against what it prints.** What the text said and the
+  run did not: in notebook 1 the predictive controller does not diverge, it pushes the state the
+  wrong way to the actuator's limit, near -20 against a target of +2 (`scripts/flagship_demo.py`
+  said the same); notebook 2's multi-step training is shown on noisy measurements, which is where
+  it helps; notebook 3's robustness value is shown passing a confounded estimate, since it measures
+  how much confounding an estimate can absorb, not whether it is confounded; notebook 4's schedule
+  is solved to the default number of steps, and its peak is read as a penalty's, just above the
+  cap. The scoreboard says what its `violations` column counts in each task: on inventory the
+  stockout rate, 20 % by design at the newsvendor optimum. The robust-control notebook adds the case where the bias runs the other way and the
+  hedge costs more than certainty equivalence at every level, and what `Gamma` buys. The cruise
+  notebook estimates the effect three ways, not four, and its naive estimate's robustness value is
+  0.395, not near zero. The LaLonde notebook gives the experiment its own 95 % interval, +479 to
+  +3,109 a year, inside which both adjusted estimates fall, and shows Double ML moving from +1,388
+  to +1,520 over ten fold seeds.
+- **Each notebook pins JAX to the CPU**, so its committed outputs do not depend on the machine that
+  made them: run beside an NVIDIA GPU with a CPU-only jaxlib, a notebook's first output carried
+  JAX's "Falling back to cpu" warning. Tests check that each notebook's outputs come from one run,
+  top to bottom, with no error and no such warning, and the docs build stops when a notebook's
+  `.py` and `.ipynb` differ.
 
 ## [0.12.1] — 2026-10-05
 

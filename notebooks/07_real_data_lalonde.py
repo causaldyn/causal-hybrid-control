@@ -24,9 +24,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 jax.config.update("jax_enable_x64", True)
-%matplotlib inline
+jax.config.update("jax_platforms", "cpu")  # the outputs below were made on a CPU
+# %matplotlib inline
 
-from chc.causal import estimate_control_effect, estimate_effect_dml
+from chc.causal import dml_point_and_se, estimate_control_effect, estimate_effect_dml
 
 DATA = pathlib.Path("data")
 DATA.mkdir(exist_ok=True)
@@ -59,31 +60,33 @@ def to_chc(df: pd.DataFrame) -> dict:
 # %% [markdown]
 # ## The experimental benchmark (ground truth)
 #
-# Because treatment was randomised, a plain difference in mean 1978 earnings is already unbiased.
+# Because treatment was randomised, a plain difference in mean 1978 earnings is already unbiased. It is
+# still an estimate from a few hundred men, so it carries a standard error of its own.
 
 # %%
-truth = float(
-    experimental.loc[experimental.treat == 1, "re78"].mean()
-    - experimental.loc[experimental.treat == 0, "re78"].mean()
-)
+treated = experimental.loc[experimental.treat == 1, "re78"]
+controls = experimental.loc[experimental.treat == 0, "re78"]
+truth = float(treated.mean() - controls.mean())
+truth_se = float((treated.var() / len(treated) + controls.var() / len(controls)) ** 0.5)
 print(f"experimental ATT (randomised, difference in means) = {truth * 1000:+,.0f} $/yr")
-print(f"  {int((experimental.treat == 1).sum())} treated vs "
-      f"{int((experimental.treat == 0).sum())} randomised controls")
+print(
+    f"  95% interval {(truth - 1.96 * truth_se) * 1000:+,.0f} to "
+    f"{(truth + 1.96 * truth_se) * 1000:+,.0f} $/yr (standard error {truth_se * 1000:,.0f})"
+)
+print(f"  {len(treated)} treated vs {len(controls)} randomised controls")
 
 # %% [markdown]
 # ## The observational trap: a comparison group that isn't comparable
 #
 # Now replace the randomised controls with the CPS survey group — what an analyst *without* an experiment
-# would use. The groups differ sharply on every covariate (the CPS men are older, more educated, married,
-# and earned far more before the program), so any naive contrast confounds the program with these gaps.
+# would use. The groups differ sharply on almost every covariate: the CPS men are older, more educated,
+# more often married, less often Black, more often finished high school, and earned far more before the
+# program. Only the Hispanic share is similar: 6 % of the NSW men against 7 % of the CPS men. So any
+# naive contrast confounds the program with these gaps.
 
 # %%
 obs = pd.concat([experimental[experimental.treat == 1], cps], ignore_index=True)
-balance = (
-    obs.groupby("treat")[["age", "education", "married", "re74", "re75"]]
-    .mean()
-    .rename(index={0: "CPS comparison", 1: "NSW treated"})
-)
+balance = obs.groupby("treat")[COV].mean().rename(index={0: "CPS comparison", 1: "NSW treated"})
 balance.round(2)
 
 # %% [markdown]
@@ -91,13 +94,26 @@ balance.round(2)
 #
 # - **naive** (difference in means): what a predictive/associational read of the logs says;
 # - **OLS-adjusted** (`estimate_control_effect`): linear backdoor adjustment for the covariates;
-# - **Double ML** (`estimate_effect_dml`): cross-fitted, Neyman-orthogonal residualisation with flexible
-#   (polynomial) nuisances — the estimator meant to survive this kind of imbalance.
+# - **Double ML** (`dml_point_and_se`): predict both earnings and treatment from the covariates with
+#   flexible (polynomial) models, each fitted on the other folds of the data (cross-fitting). Then
+#   regress the earnings the covariates do not explain on the treatment they do not explain. Small
+#   errors in the two predictions barely move this residual-on-residual estimate, so it is the
+#   estimator meant to survive this kind of imbalance. It also returns a standard error.
 
 # %%
+obs_chc = to_chc(obs)
 naive = float(obs.loc[obs.treat == 1, "re78"].mean() - obs.loc[obs.treat == 0, "re78"].mean())
-ols_adj = float(estimate_control_effect(to_chc(obs), adjust_for=tuple(COV[1:])))
-dml = float(estimate_effect_dml(to_chc(obs), covariates=tuple(COV), degree=2, folds=5, ridge=1.0))
+ols_adj = float(estimate_control_effect(obs_chc, adjust_for=tuple(COV[1:])))
+dml, dml_se = dml_point_and_se(obs_chc, covariates=tuple(COV), degree=2, folds=5, ridge=1.0)
+# the folds are a random split; refit with ten fold seeds to see how far the point moves
+dml_by_seed = [
+    float(estimate_effect_dml(obs_chc, covariates=tuple(COV), degree=2, folds=5, ridge=1.0, seed=s))
+    for s in range(10)
+]
+print(
+    f"Double ML: standard error {dml_se * 1000:,.0f} $/yr; over fold seeds 0-9 the point runs "
+    f"from {min(dml_by_seed) * 1000:+,.0f} to {max(dml_by_seed) * 1000:+,.0f} $/yr"
+)
 
 table = pd.DataFrame(
     {"estimate ($/yr)": [truth * 1000, naive * 1000, ols_adj * 1000, dml * 1000]},
@@ -108,27 +124,43 @@ table = pd.DataFrame(
         "Double ML (CHC)",
     ],
 ).round(0)
-table["error vs truth"] = ((table["estimate ($/yr)"] - truth * 1000)).round(0)
+table["error vs truth"] = table["estimate ($/yr)"] - round(truth * 1000)
 table
 
 # %% [markdown]
 # The naive observational estimate is **the wrong sign** — it says the program *destroyed* about
 # \$8,500/yr of earnings. A decision driven by that predictive read ("kill the program") would be exactly
-# backwards. CHC's backdoor adjustment restores the correct sign, and **Double ML lands within a few
-# hundred dollars of the randomised truth** on the same confounded data.
+# backwards. CHC's backdoor adjustment restores the correct sign but lands 1,095 below the truth, and
+# **Double ML lands 292 below it** on the same confounded data. Both estimates fall inside the
+# experiment's own 95 % interval, +479 to +3,109 per year: with 445 men in the experiment, the
+# benchmark itself is uncertain by more than either gap.
 
 # %%
 fig, ax = plt.subplots(figsize=(8, 4.6))
 methods = ["naive\n(predictive)", "OLS-adjusted\n(CHC)", "Double ML\n(CHC)"]
 vals = [naive * 1000, ols_adj * 1000, dml * 1000]
 colors = ["#E45756", "#F2A900", "#54A24B"]
-ax.axhspan(truth * 1000 - 300, truth * 1000 + 300, color="#4C78A8", alpha=0.15)
-ax.axhline(truth * 1000, color="#4C78A8", lw=2, ls="--", label=f"experimental truth  ${truth * 1000:+,.0f}")
+lo, hi = (truth - 1.96 * truth_se) * 1000, (truth + 1.96 * truth_se) * 1000
+ax.axhspan(lo, hi, color="#4C78A8", alpha=0.15, label="experiment's 95% interval")
+ax.axhline(
+    truth * 1000,
+    color="#4C78A8",
+    lw=2,
+    ls="--",
+    label=f"experimental truth  {truth * 1000:+,.0f} $/yr",
+)
 ax.axhline(0, color="0.6", lw=0.8)
 bars = ax.bar(methods, vals, color=colors, width=0.6)
-for b, v in zip(bars, vals, strict=True):
-    ax.text(b.get_x() + b.get_width() / 2, v + (300 if v > 0 else -700),
-            f"${v:+,.0f}", ha="center", fontweight="bold")
+for b, v in zip(bars, vals, strict=True):  # label inside the bar's end, clear of the truth line
+    ax.annotate(
+        f"{v:+,.0f}",
+        (b.get_x() + b.get_width() / 2, v),
+        xytext=(0, -4 if v > 0 else 4),
+        textcoords="offset points",
+        ha="center",
+        va="top" if v > 0 else "bottom",
+        fontweight="bold",
+    )
 ax.set_ylabel("estimated program effect on 1978 earnings ($/yr)")
 ax.set_title("Real data, experimental ground truth: prediction flips the sign, causal recovers it")
 ax.legend(loc="lower right")
@@ -140,12 +172,16 @@ plt.show()
 #
 # **Yes, the gap bites on real data.** On the LaLonde NSW data the predictive/associational estimate is
 # not merely biased — it has the **wrong sign**, and a decision made from it would be the opposite of
-# correct. CHC's causal estimators (adjustment, and especially Double ML) recover the randomised
-# experimental truth from the confounded observational data.
+# correct. CHC's causal estimators restore the sign from the confounded observational data: adjustment
+# lands 1,095 below the randomised truth, and Double ML lands 292 below it.
 #
 # **Scope, stated honestly:** this validates the *identification* half of CHC — the effect that feeds the
 # controller — on real data with a checkable ground truth. It does **not** by itself validate the control
-# loop on real dynamics (that remains the synthetic demo), and the DML number depends on the nuisance
-# learner (here degree-2 polynomials; richer learners land in the same \$1.0–1.8k range reported in the
-# literature). What it does settle: the load-bearing premise of the whole library — *use the intervention,
-# not the prediction, to make the decision* — is real, and expensive to ignore.
+# loop on real dynamics (that remains the synthetic demo). The Double ML number depends on the nuisance
+# learner (here degree-2 polynomials) and on the random fold split: ten fold seeds move it from
+# +1,388 to +1,520. The benchmarks page runs the same rows through `chc.lalonde`, which
+# standardises the covariates and fits degree-3 nuisances: its OLS row matches the one here, and its
+# Double ML row differs. Both regressions also estimate a variance-weighted average of the effect, not
+# the effect on the treated that the experiment measures; the two coincide if the effect is the same
+# for everyone. What it does settle: the load-bearing premise of the whole library — *use the
+# intervention, not the prediction, to make the decision* — is real, and expensive to ignore.

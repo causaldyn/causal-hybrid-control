@@ -14,6 +14,14 @@ cd "$(dirname "$0")/.."
 unset JAX_ENABLE_X64
 export JAX_PLATFORMS=cpu
 
+# Each notebook's .py is the source a reviewer reads, and its .ipynb holds the outputs GitHub shows.
+# A pair edited on one side only drifts apart, so a pair that does not round-trip stops the build.
+for notebook in notebooks/*.ipynb; do
+  uv run --group notebooks jupytext --to py:percent -o - "$notebook" |
+    diff -u "${notebook%.ipynb}.py" - ||
+    { echo "$notebook and its .py differ; regenerate one from the other with jupytext" >&2; exit 1; }
+done
+
 timeout 3600 uv run --group notebooks jupyter nbconvert --to markdown --execute \
   --ExecutePreprocessor.timeout=1200 --output-dir docs/tutorials notebooks/*.ipynb
 

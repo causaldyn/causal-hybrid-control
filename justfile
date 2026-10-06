@@ -186,3 +186,15 @@ flagship:
 # Needs `uv sync --group docs --group notebooks`.
 docs:
     ./docs/build.sh
+
+# Execute every notebook in place, so the outputs GitHub shows are this checkout's. JAX_PLATFORMS
+# stays unset: the pin each notebook makes is then what keeps JAX's accelerator probe out of them.
+# Needs `uv sync --group notebooks`.
+notebooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unset JAX_PLATFORMS JAX_ENABLE_X64
+    for notebook in notebooks/*.ipynb; do
+      timeout 1800 uv run --group notebooks jupyter nbconvert --to notebook --execute --inplace \
+        --ExecutePreprocessor.timeout=1200 "$notebook"
+    done

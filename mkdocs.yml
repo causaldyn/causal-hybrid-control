@@ -74,6 +74,7 @@ nav:
       - The dtype policy: concepts/dtype-policy.md
   - Tutorials:
       - tutorials/index.md
+      - tutorials/00_start_here.md
       - tutorials/01_causal_vs_predictive_control.md
       - tutorials/02_learn_hidden_physics.md
       - tutorials/03_causal_inference_toolkit.md
@@ -82,6 +83,8 @@ nav:
       - tutorials/05_confounding_robust_control.md
       - tutorials/06_cruise_control_confounded.md
       - tutorials/07_real_data_lalonde.md
+      - tutorials/08_splitting_a_budget.md
+      - tutorials/09_heating_a_room.md
   - Case studies:
       - case-studies/index.md
       - case-studies/pricing.md
