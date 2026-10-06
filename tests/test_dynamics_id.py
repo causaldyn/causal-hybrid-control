@@ -1270,11 +1270,13 @@ def test_where_the_moment_has_no_data_the_fit_keeps_to_the_log_in_any_units() ->
         np.testing.assert_allclose(
             change, [[[0.0, 0.2, 0.0]], [[0.0, 0.0, 0.0]]], rtol=0.0, atol=1e-9
         )
+    # At 1e6 the log's rates carry a term of 2e5 that the drift absorbs, which float64 rounds at
+    # about 5e-11. From that alone the fits differed by 4.5e-10 on CI, and by 5.6e-10 at 2**20.
     np.testing.assert_allclose(
         np.asarray(fits[1e6][0].residual.channel) * 1e6,
         np.asarray(fits[1.0][0].residual.channel),
-        rtol=1e-6,
-        atol=1e-12,
+        rtol=0.0,
+        atol=2e-8,
     )
     assert fits[1e6][0].integrator_defect == pytest.approx(
         fits[1.0][0].integrator_defect, rel=1e-6, abs=0.0
