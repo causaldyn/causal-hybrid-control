@@ -7,6 +7,21 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A sensitivity level or a CVaR gap that is not a finite number is refused.**
+  `confounding_robust_inflation` refused a `Gamma` below 1 but passed a nan, and read an infinite
+  one as `inf/inf`: either way the half-width was nan. `prescribe(gamma=inf)` then certified no
+  barrier step where `gamma*` read `inf`, a plan that keeps its barrier at every level, and under
+  `hold_constraints` the solve ran out its 10 000 steps against a nan barrier.
+  `msm_worst_case_mean` read a nan `Gamma` as a nan tail length and divided by an empty tail at an
+  infinite one. `certify_safety` and `barrier_gamma_star` passed a nan `cvar_gap`, and
+  `BarrierConstraint` an infinite `gamma` or `cvar_gap`. Each now refuses them, and
+  `negative_control_gamma` an infinite `gamma_max`. `prescribe` refuses a `gamma` below 1 or not
+  finite with `DecisionError` before it fits; it read one only where a constraint was given. A
+  finite `Gamma` reads as before, and a plan that keeps its barrier at every level still reads
+  `gamma* = inf`. Since 0.2.0.
+
 ## [0.14.0] — 2026-10-06
 
 ### Changed

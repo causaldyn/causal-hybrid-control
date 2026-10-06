@@ -74,6 +74,9 @@ def test_gamma_star_reports_the_degenerate_ends_instead_of_a_misleading_number()
     assert barrier_gamma_star(2.0, 1.0, 1.0) == float("inf")  # beyond what the model can produce
     with pytest.raises(ValueError, match="must be positive"):
         barrier_gamma_star(0.4, 0.0, 1.0)
+    for gap in (float("nan"), float("inf")):  # read no Gamma at all, and inf/inf
+        with pytest.raises(ValueError, match="must be positive and finite"):
+            barrier_gamma_star(0.4, gap, 1.0)
 
 
 def test_a_flat_barrier_holds_at_every_gamma_or_at_none() -> None:

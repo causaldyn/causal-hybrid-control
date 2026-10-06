@@ -1062,9 +1062,10 @@ def prescribe(
             finite levels, a budget that does not weigh one spend per lever, starts its periods
             anywhere but the plan's first step, or allows less than the levers' boxes spend at
             the least, a ``dt`` that is not a finite positive step, a ``tolerance`` that is
-            negative or nan, a panel with no consecutive pair of periods to fit a transition on, a
-            ``cap_per_step`` on a lever that follows its logged rule or a budget that prices one,
-            or ``max_levers`` where the log kept a combination of the levers away from zero.
+            negative or nan, a ``gamma`` below 1 or not finite, which is not a sensitivity level,
+            a panel with no consecutive pair of periods to fit a transition on, a ``cap_per_step``
+            on a lever that follows its logged rule or a budget that prices one, or
+            ``max_levers`` where the log kept a combination of the levers away from zero.
         KeyError: a lever, target, constraint, driver or asserted covariate names a column the
             panel does not have. The message lists the panel's columns.
 
@@ -1108,6 +1109,11 @@ def prescribe(
         raise DecisionError(
             f"tolerance={tolerance} is not a radius, which is never negative or nan; leave it "
             "None to evaluate no tube"
+        )
+    if not 1.0 <= gamma < math.inf:
+        raise DecisionError(
+            f"gamma={gamma} is not a sensitivity level, which is finite and at least 1; a plan "
+            "that keeps its barrier at every level reads gamma* = inf"
         )
     if np.shape(target.value) not in ((), (horizon,)):
         raise DecisionError(

@@ -9,6 +9,7 @@ change of variables and Lawson & Hanson's least-distance program, one NNLS call.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 
 import jax
@@ -344,7 +345,11 @@ def test_the_rounds_keep_the_plans_own_pessimism() -> None:
     ("kwargs", "message"),
     [
         ({"gamma": 0.9}, "gamma is a marginal sensitivity model level"),
+        ({"gamma": math.nan}, "gamma is a marginal sensitivity model level"),
+        ({"gamma": math.inf}, "gamma is a marginal sensitivity model level"),
         ({"cvar_gap": 0.0}, "cvar_gap must be"),
+        ({"cvar_gap": math.nan}, "cvar_gap must be"),
+        ({"cvar_gap": math.inf}, "cvar_gap must be"),
     ],
 )
 def test_a_barrier_constraint_refuses_what_certify_safety_could_not_price(

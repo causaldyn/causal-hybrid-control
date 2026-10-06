@@ -273,3 +273,5 @@ def test_a_nan_negative_control_is_refused_rather_than_calibrated_at_the_ceiling
         negative_control_gamma(outcomes, tol=float("nan"))
     with pytest.raises(ValueError, match="gamma_max at least 1"):
         negative_control_gamma(outcomes, gamma_max=float("nan"))
+    with pytest.raises(ValueError, match="gamma_max at least 1 and finite"):
+        negative_control_gamma(outcomes, gamma_max=float("inf"))

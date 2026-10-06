@@ -57,6 +57,16 @@ def test_inflation_rejects_gamma_below_one() -> None:
         confounding_robust_inflation(4.0, 2.0, 0.5)
 
 
+@pytest.mark.parametrize("gamma", [float("nan"), float("inf")])
+def test_a_gamma_that_is_not_finite_is_refused(gamma: float) -> None:
+    """A nan passed ``gamma < 1`` and read a nan half-width, and an infinite level read inf/inf;
+    the worst case took a nan tail's length, or divided by an empty tail."""
+    with pytest.raises(ValueError, match="Gamma must be >= 1 and finite"):
+        confounding_robust_inflation(4.0, 2.0, gamma)
+    with pytest.raises(ValueError, match="Gamma must be finite"):
+        msm_worst_case_mean(np.arange(10.0), gamma)
+
+
 def test_robust_radius_grows_from_the_nominal_and_is_monotone() -> None:
     rng = np.random.default_rng(2)
     y = rng.standard_normal(200)

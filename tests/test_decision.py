@@ -1393,6 +1393,9 @@ def test_a_panel_of_one_unit_takes_its_transitions_as_independent() -> None:
         ({"dt": math.nan}, r"dt=nan is not a step"),
         ({"tolerance": math.nan}, r"tolerance=nan is not a radius"),
         ({"tolerance": -1.0}, r"tolerance=-1\.0 is not a radius"),
+        ({"gamma": 0.5}, r"gamma=0\.5 is not a sensitivity level"),
+        ({"gamma": math.nan}, r"gamma=nan is not a sensitivity level"),
+        ({"gamma": math.inf}, r"gamma=inf is not a sensitivity level"),
     ],
 )
 def test_a_step_or_a_tolerance_that_is_no_number_is_refused_before_the_fit(

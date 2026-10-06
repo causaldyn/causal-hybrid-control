@@ -660,8 +660,9 @@ class BarrierConstraint:
     and the calibration burden on ``cvar_gap`` are :func:`certify_safety`'s.
 
     Raises:
-        ValueError: on ``gamma < 1``, which is not a sensitivity level, or ``cvar_gap <= 0``, which
-            scales no radius -- here, rather than after the solve that would have used them.
+        ValueError: on a ``gamma`` below 1 or not finite, which is not a sensitivity level, or a
+            ``cvar_gap`` not positive or not finite, which scales no radius -- here, rather than
+            after the solve that would have used them.
     """
 
     barrier: Callable[[Array], Array]
@@ -670,13 +671,15 @@ class BarrierConstraint:
     cvar_gap: float = 1.0
 
     def __post_init__(self) -> None:
-        if not self.gamma >= 1.0:
+        if not 1.0 <= self.gamma < math.inf:
             raise ValueError(
-                f"gamma is a marginal sensitivity model level and must be >= 1, got {self.gamma}"
+                "gamma is a marginal sensitivity model level and must be >= 1 and finite, got "
+                f"{self.gamma}"
             )
-        if not self.cvar_gap > 0.0:
+        if not 0.0 < self.cvar_gap < math.inf:
             raise ValueError(
-                f"cvar_gap must be positive to scale a sensitivity radius, got {self.cvar_gap}"
+                "cvar_gap must be positive and finite to scale a sensitivity radius, got "
+                f"{self.cvar_gap}"
             )
 
 
@@ -1287,17 +1290,20 @@ def certify_safety(
     literature; what is certified is the pointwise condition.
 
     Raises:
-        ValueError: if ``cvar_gap`` is non-positive, which would make the radius meaningless and
-            :func:`chc.barrier.barrier_gamma_star` uninvertible; or if the actuation budget backing
-            ``gamma_star`` is non-positive, which asks how much confounding a controller with no
-            authority tolerates.
+        ValueError: if ``cvar_gap`` is not positive or not finite, which would make the radius
+            meaningless and :func:`chc.barrier.barrier_gamma_star` uninvertible; if ``gamma`` is
+            below 1 or not finite, which is not a sensitivity level; or if the actuation budget
+            backing ``gamma_star`` is non-positive, which asks how much confounding a controller
+            with no authority tolerates.
     """
-    if cvar_gap <= 0.0:
-        raise ValueError(f"cvar_gap must be positive to scale a sensitivity radius, got {cvar_gap}")
+    if not 0.0 < cvar_gap < math.inf:
+        raise ValueError(
+            f"cvar_gap must be positive and finite to scale a sensitivity radius, got {cvar_gap}"
+        )
+    delta = confounding_robust_inflation(cvar_gap, 0.0, gamma)
 
     states, actions = plan.trajectory[:-1], plan.actions
     h_values, grad_norm, drift, channel = _barrier_terms(model, barrier, states, actions, dt)
-    delta = confounding_robust_inflation(cvar_gap, 0.0, gamma)
     guaranteed = _guaranteed(drift, channel, grad_norm, actions, delta)
     required = -alpha * h_values
     certified = guaranteed >= required

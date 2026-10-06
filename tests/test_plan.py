@@ -281,6 +281,24 @@ def test_a_non_positive_cvar_gap_is_rejected_rather_than_inverted() -> None:
         certify_safety(_PLAN, _MODEL, _mixed, 0.1, cvar_gap=0.0)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"cvar_gap": math.nan}, "must be positive and finite to scale a sensitivity radius"),
+        ({"cvar_gap": math.inf}, "must be positive and finite to scale a sensitivity radius"),
+        ({"gamma": math.nan}, "Gamma must be >= 1 and finite"),
+        ({"gamma": math.inf}, "Gamma must be >= 1 and finite"),
+    ],
+)
+def test_a_sensitivity_that_is_no_number_is_refused_rather_than_priced(
+    kwargs: dict[str, float], match: str
+) -> None:
+    """A nan passed both checks, and an infinite level read inf/inf: either way the radius was nan,
+    and the audit certified no step, where the limit of an infinite level is the whole gap."""
+    with pytest.raises(ValueError, match=match):
+        certify_safety(_PLAN, _MODEL, _mixed, 0.1, **kwargs)
+
+
 def test_a_plan_that_never_acts_names_itself_rather_than_the_inner_threshold() -> None:
     """The default budget is the plan's own action, so an idle plan must say *that*, not "u_max"."""
     idle = causal_plan(_MODEL, jnp.zeros(2), _COST, 0.1, 12, -5.0, 5.0)

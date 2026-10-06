@@ -1115,8 +1115,9 @@ def confounding_robust_inflation(cvar_upper: float, cvar_lower: float, gamma: fl
     ID), nonnegative, monotone in ``Gamma``. Dorn-Guo (2023); Oprescu et al., B-Learner (2023); Tan
     (2006).
     """
-    if gamma < 1.0:
-        raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {gamma}")
+    # a nan passed `gamma < 1`, and an infinite Gamma read inf/inf, a nan half-width
+    if not 1.0 <= gamma < math.inf:
+        raise ValueError(f"MSM sensitivity Gamma must be >= 1 and finite, got {gamma}")
     return (gamma - 1.0) / (gamma + 1.0) * (cvar_upper - cvar_lower)
 
 
@@ -1128,6 +1129,9 @@ def msm_worst_case_mean(outcomes: NDArray[np.float64], gamma: float) -> float:
     the CVaR tails of :func:`confounding_robust_inflation`; reduces to the sample mean at
     ``Gamma=1``.
     """
+    # a nan Gamma reached the tail's length as nan, and an infinite one an empty tail
+    if not math.isfinite(gamma):
+        raise ValueError(f"MSM sensitivity Gamma must be finite, got {gamma}")
     y = np.asarray(outcomes, dtype=np.float64)
     mu = float(np.mean(y))
     if gamma <= 1.0:
@@ -1562,9 +1566,9 @@ def negative_control_gamma(
     # a nan returned gamma_max, as if it were the confounding measured
     if not np.isfinite(y).all():
         raise ValueError("the negative control's outcomes must be finite")
-    if not (tol > 0.0 and gamma_max >= 1.0):
+    if not (tol > 0.0 and 1.0 <= gamma_max < math.inf):
         raise ValueError(
-            f"tol must be positive and gamma_max at least 1, got {tol} and {gamma_max}"
+            f"tol must be positive and gamma_max at least 1 and finite, got {tol} and {gamma_max}"
         )
     mu = float(np.mean(y))
     if mu == 0.0:

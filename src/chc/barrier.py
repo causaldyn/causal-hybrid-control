@@ -45,6 +45,7 @@ Maxima ``validation/barrier_feasibility.mac``, Rocq ``proofs/barrier_feasibility
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -166,10 +167,11 @@ def barrier_gamma_star(threshold_radius: float, cvar_gap: float, grad_norm: floa
     the radius ``Delta * grad_norm`` is zero at every ``Gamma``: the step holds at every level or at
     none, ``inf`` when ``threshold_radius >= 0`` and ``nan`` otherwise.
     """
-    if cvar_gap <= 0.0 or grad_norm < 0.0:
+    # a nan gap passed `cvar_gap <= 0` and read no Gamma at all, and an infinite one inf/inf
+    if not 0.0 < cvar_gap < math.inf or grad_norm < 0.0:
         raise ValueError(
-            "cvar_gap must be positive and grad_norm nonnegative to invert the radius, got "
-            f"cvar_gap={cvar_gap}, grad_norm={grad_norm}"
+            "cvar_gap must be positive and finite and grad_norm nonnegative to invert the radius, "
+            f"got cvar_gap={cvar_gap}, grad_norm={grad_norm}"
         )
     if grad_norm == 0.0:
         return float("inf") if threshold_radius >= 0.0 else float("nan")
