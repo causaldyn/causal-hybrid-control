@@ -411,6 +411,14 @@ class MultivariateActionFloor:
     direction_alignment: Vector  # the same weight per SUPPLIED direction: diag(Psi' M Psi')
 
 
+def _finite(**arrays: NDArray[np.float64]) -> None:
+    """Refuse a nan or an inf at entry: numpy's ``eigh`` returns finite eigenvalues for a nan
+    matrix and ``cholesky`` a nan factor, so the definiteness checks after this let either pass."""
+    for name, array in arrays.items():
+        if not np.isfinite(array).all():
+            raise ValueError(f"{name} must be finite: it has a nan or an inf entry")
+
+
 def _action_and_curvature(
     effect: Matrix, state_weight: Matrix, action_weight: Matrix, target: Vector
 ) -> tuple[Vector, Matrix]:
@@ -531,6 +539,14 @@ def multivariate_action_floor(
             f"the information matrix is d-by-d in the direction basis: "
             f"expected {(basis.shape[0], basis.shape[0])}, got {information.shape}"
         )
+    _finite(
+        effect=effect,
+        state_weight=state_weight,
+        action_weight=action_weight,
+        target=target,
+        information=information,
+        directions=basis,
+    )
     action, curvature = _action_and_curvature(effect, state_weight, action_weight, target)
     sensitivity = _action_sensitivity(effect, state_weight, action_weight, target, basis)
     spectrum, rotation = np.linalg.eigh(0.5 * (information + information.T))
@@ -617,10 +633,18 @@ def multivariate_van_trees_certificate(
        model this is a measure-zero curiosity; here it is one entry of a vector that a real plant
        can sit near without anything else degenerating.
     """
-    if prior_width <= 0.0:
-        raise ValueError("the prior width is a standard deviation and must be positive")
-    if information_loss < 1.0:
-        raise ValueError("information_loss is a factor by which information is CUT: it is >= 1")
+    for name, value in (("rr", rr), ("sigma", sigma)):
+        if not 0.0 < value < np.inf:
+            raise ValueError(f"{name} must be positive and finite, got {value}")
+    if not 0.0 < prior_width < np.inf:
+        raise ValueError(
+            f"the prior width is a standard deviation, positive and finite: got {prior_width}"
+        )
+    if not 1.0 <= information_loss < np.inf:
+        raise ValueError(
+            "information_loss is a factor by which information is CUT: it is >= 1 and finite, "
+            f"got {information_loss}"
+        )
     b1, b2 = gains
     x = np.asarray(target, dtype=np.float64)
     weight = np.eye(2)
@@ -1976,6 +2000,7 @@ def exact_ratio_moment(
     n = om.shape[0]
     if b.shape != (n, n) or c.shape != (n, n) or om.shape != (n, n):
         raise ValueError("numerator, denominator and regressor_cov must be square, same shape")
+    _finite(numerator=b, denominator=c, regressor_cov=om)
     root = np.linalg.cholesky(om)  # not PD -> LinAlgError at the boundary, not deep in quad
     eigenvalues, vectors = np.linalg.eigh(root.T @ c @ root)
     tol = n * float(np.finfo(np.float64).eps) * max(float(eigenvalues[-1]), 1.0)
@@ -2351,6 +2376,7 @@ def exact_matrix_ratio_moment(
         raise ValueError("numerator and denominator must be square and of the same shape")
     if om.ndim != 2 or om.shape[0] != om.shape[1] or om.shape[0] % n:
         raise ValueError("regressor_cov must be qn-by-qn: the covariance of vec(X), X n-by-q")
+    _finite(numerator=b, denominator=c, regressor_cov=om)
     q = om.shape[0] // n
     if not 2 <= q <= 3:
         raise ValueError(
@@ -2622,8 +2648,8 @@ def matrix_ratio_certificate(
     ``convicted``, so adding the second can only tighten the verdict; neither can certify it
     (:data:`MatrixRatioStatus`).
     """
-    if tolerance <= 0.0:
-        raise ValueError("tolerance must be positive")
+    if not 0.0 < tolerance < np.inf:
+        raise ValueError(f"tolerance must be positive and finite, got {tolerance}")
     om = np.asarray(regressor_cov, dtype=np.float64)
     n = np.asarray(denominator, dtype=np.float64).shape[0]
     if om.ndim != 2 or om.shape[0] != om.shape[1] or om.shape[0] % n:
@@ -5386,13 +5412,17 @@ def minimax_action(
     the endpoints and the turn, is convex in ``u``, and is minimised over the range of ``u*`` by
     golden section.
     """
+    for name, value in (("target", target), ("b_lo", b_lo), ("b_hi", b_hi)):
+        if not np.isfinite(value):
+            raise ValueError(f"{name} must be finite, got {value}")
     if b_hi < b_lo:
         raise ValueError(f"empty identified interval: b_lo={b_lo} > b_hi={b_hi}")
-    if effort <= 0.0:
-        raise ValueError(f"effort must be positive to bound the action; got {effort}")
-    if curvature < 0.0:
+    if not 0.0 < effort < np.inf:
+        raise ValueError(f"effort must be positive and finite to bound the action; got {effort}")
+    if not 0.0 <= curvature < np.inf:
         raise ValueError(
-            f"curvature is a cost-to-go coefficient and cannot be negative: {curvature}"
+            f"curvature is a cost-to-go coefficient and cannot be negative, infinite or nan: "
+            f"{curvature}"
         )
     if criterion == "regret":
         return _minimax_regret_action(target, b_lo, b_hi, effort, curvature)
@@ -5536,6 +5566,13 @@ def minimax_lq_policy(
     """
     if horizon < 1:
         raise ValueError(f"horizon must be at least one step; got {horizon}")
+    for name, value in (
+        ("state_gain", state_gain),
+        ("state_cost", state_cost),
+        ("terminal_cost", terminal_cost),
+    ):
+        if not np.isfinite(value):
+            raise ValueError(f"{name} must be finite, got {value}")
     b_hat = 0.5 * (b_lo + b_hi)
 
     p = terminal_cost

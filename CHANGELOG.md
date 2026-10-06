@@ -32,6 +32,26 @@ still change).
   positive and finite, each axis's bounds finite and increasing, the gains finite, and `tolerance`
   a fraction in `[0, 1]`; `higher_order_barrier_gap` likewise. Since 0.2.0; the higher-order
   gap's since 0.4.0.
+- **A minimax action, a van Trees floor or a ratio moment whose input is not a number is refused.**
+  `minimax_action` compared `b_hi < b_lo`, which a nan passes, and took the worse of its two
+  branches with `max`, which drops a nan: with a nan `b_hi` it answered for the interval
+  `[b_lo, b_lo]`, a finite action that is wrong, and `minimax_lq_policy` returned those gains
+  beside a nan certainty-equivalence arm. A nan `target`, `effort` or `curvature` gave a nan
+  action, and the regret criterion failed inside `brentq`. The interval's ends and `target` must
+  now be finite, `effort` positive and finite, and `curvature` nonnegative and finite; an infinite
+  end, which the cost criterion answered with `u = 0` only because `max` dropped the nan of
+  `inf * 0`, is refused too. `minimax_lq_policy` checks `state_gain`, `state_cost` and
+  `terminal_cost` likewise. `multivariate_van_trees_certificate` returned some fields nan beside
+  others that looked normal for a nan or an infinite `prior_width` or `sigma`, or a negative `rr`,
+  and raised `LinAlgError` for a nan `information_loss` or `rr`: `prior_width`, `sigma` and `rr`
+  must now be positive and finite, and `information_loss` at least 1 and finite.
+  `multivariate_action_floor` returned a nan floor for a nan in any input, since `eigh` returns
+  finite eigenvalues for a nan matrix and the definiteness check passed; `exact_ratio_moment` and
+  `exact_matrix_ratio_moment` returned nan for a nan numerator and raised `LinAlgError` for a nan
+  denominator or covariance. Each now raises `ValueError` naming the input.
+  `matrix_ratio_certificate` convicted every grid at a nan `tolerance` and none at an infinite one;
+  it must now be positive and finite. Since 0.4.0 for the ratio moments, 0.5.0 for the minimax
+  controller and the ratio certificate, 0.6.0 for the multivariate floor.
 
 ## [0.14.1] — 2026-10-06
 

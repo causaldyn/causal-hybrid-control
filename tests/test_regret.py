@@ -1222,6 +1222,72 @@ def test_multivariate_van_trees_prices_an_alignment_where_the_scalar_floor_price
         multivariate_van_trees_certificate(prior_width=0.0)
 
 
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"prior_width": math.nan}, "prior width"),
+        ({"prior_width": math.inf}, "prior width"),
+        ({"information_loss": math.nan}, "information is CUT"),
+        ({"information_loss": math.inf}, "information is CUT"),
+        ({"sigma": math.nan}, "sigma must be positive and finite"),
+        ({"sigma": math.inf}, "sigma must be positive and finite"),
+        ({"rr": math.nan}, "rr must be positive and finite"),
+        ({"rr": 0.0}, "rr must be positive and finite"),
+    ],
+)
+def test_a_van_trees_input_that_is_no_number_is_refused(change: dict, match: str) -> None:
+    """A nan prior width or sigma left fields nan beside others that looked normal, and a nan
+    information loss raised ``LinAlgError`` from inside ``eigh``."""
+    with pytest.raises(ValueError, match=match):
+        multivariate_van_trees_certificate(**change)
+
+
+@pytest.mark.parametrize(
+    "name", ["effect", "state_weight", "action_weight", "target", "information", "directions"]
+)
+def test_an_action_floor_input_that_is_no_number_is_refused(name: str) -> None:
+    """Each gave a nan floor: a nan information matrix passed the positive-definite check,
+    since ``eigh`` returns finite eigenvalues for it."""
+    inputs = {
+        "effect": np.array([[1.0, 0.2], [0.1, 0.8]]),
+        "state_weight": np.eye(2),
+        "action_weight": np.eye(2),
+        "target": np.array([1.0, 0.5]),
+        "information": np.diag([3.0, 2.0, 4.0, 5.0]),
+        "directions": np.eye(4).reshape(4, 2, 2),
+    }
+    inputs[name].flat[0] = math.nan
+    with pytest.raises(ValueError, match=f"{name} must be finite"):
+        multivariate_action_floor(**inputs)
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf])
+@pytest.mark.parametrize("name", ["numerator", "denominator", "regressor_cov"])
+@pytest.mark.parametrize("channels", [1, 2])
+def test_a_ratio_moment_input_that_is_no_number_is_refused(
+    channels: int, name: str, value: float
+) -> None:
+    """A nan numerator gave a nan moment, and a nan denominator or covariance a ``LinAlgError``
+    from ``eigh``, after ``cholesky`` had returned a nan factor rather than raise."""
+    n = 5
+    inputs = {
+        "numerator": np.eye(n),
+        "denominator": np.eye(n),
+        "regressor_cov": np.eye(channels * n),
+    }
+    inputs[name][0, 0] = value
+    moment = exact_ratio_moment if channels == 1 else exact_matrix_ratio_moment
+    with pytest.raises(ValueError, match=f"{name} must be finite"):
+        moment(inputs["numerator"], inputs["denominator"], inputs["regressor_cov"])
+
+
+@pytest.mark.parametrize("tolerance", [math.nan, math.inf])
+def test_a_ratio_tolerance_that_is_no_number_is_refused(tolerance: float) -> None:
+    """A nan tolerance convicted every grid, and an infinite one could convict none."""
+    with pytest.raises(ValueError, match="tolerance must be positive and finite"):
+        matrix_ratio_certificate(np.eye(5), np.eye(5), np.eye(10), tolerance=tolerance)
+
+
 def test_exact_matrix_ratio_moment_matches_the_haar_law_and_prices_the_two_channel_gap() -> None:
     # Result 54, validation/matrix_ratio_moment.mac, proofs/matrix_ratio_moment.v.
 
