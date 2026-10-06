@@ -297,6 +297,7 @@ def test_each_selection_step_leaves_one_structured_record(caplog: pytest.LogCapt
         "selection",
         "selection",
         "plan",
+        "estimability",
         "certificate",
     ]
     assert result.selection is not None

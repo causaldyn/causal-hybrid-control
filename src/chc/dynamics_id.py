@@ -192,8 +192,11 @@ class CausalDynamicsFit:
     # (p, r), in ``influence``'s order: the directions the log's actions never move. Each moves one
     # state's channel where the action residuals, scaled to the raw actions' size, fall below the
     # square root of the working precision, with the drift regression's response to it on this log.
-    # The moment has no data there and the ridge sets the channel, whatever ``channel_error`` says.
-    # ``r`` is 0 when the log moves every direction.
+    # The moment has no data there. Where the drift's features take up a direction's push on the
+    # log, no rate of the log tells it apart, and the channel is held at zero along it, in the
+    # actions' scaled units; where they cannot, the log's rates rule out all but one value, and the
+    # channel takes it by least squares beside the drift: what the log did, not an effect, whatever
+    # ``channel_error`` says (ADR 0054). ``r`` is 0 when the log moves every direction.
     unmoved: Array | None = None
     # (N, n, q), kept with ``influence``, ``q`` the channel's size in its raveled order: ``N`` times
     # each transition's weight, per state, in each channel coefficient through the channel's moment
@@ -303,8 +306,10 @@ def _channel_coefficients(
     instrument: Array,
     ridge: float,
     weights: Array | None = None,
+    penalty: Array | None = None,
 ) -> Array:
-    """Solve the just-identified moment ``Z'(y_res - D c) = 0`` for ``c``, ridge-stabilised.
+    """Solve the just-identified moment ``Z'(y_res - D c) = 0`` for ``c``, ridge-stabilised: the
+    ridge times ``penalty``, the identity where it is None, added to ``Z'D``.
 
     ``Z is D`` reduces to ordinary least squares; a different ``Z`` is two-stage least squares.
     Writing it as one solve rather than "regress on the projection" matters: the two agree only for
@@ -313,7 +318,8 @@ def _channel_coefficients(
     """
     if weights is not None:
         instrument = instrument * weights[:, None]
-    gram = instrument.T @ regressor + ridge * jnp.eye(regressor.shape[1])
+    shape = jnp.eye(regressor.shape[1]) if penalty is None else penalty
+    gram = instrument.T @ regressor + ridge * shape
     return jnp.linalg.solve(gram, instrument.T @ state_residual)
 
 
@@ -410,6 +416,21 @@ def _representer(sensitivity: Array) -> Array:
     return sensitivity.shape[1] * jnp.transpose(sensitivity, (1, 2, 0))
 
 
+def _kept(residual: Array, scale: Array) -> Array:
+    """Unit columns ``(k, r)``, in the units ``scale`` divides out: the combinations of
+    ``residual``'s columns that, scaled, keep less than the square root of the working precision."""
+    residual = residual * scale
+    # A log of fewer transitions than coefficients has fewer singular values than directions, and a
+    # thin SVD returns no row for the rest, which no transition moves: zero rows bring them back
+    # with a singular value of 0.
+    short = residual.shape[1] - residual.shape[0]
+    if short > 0:
+        residual = jnp.concatenate([residual, jnp.zeros((short, residual.shape[1]))])
+    _, singular, rows = jnp.linalg.svd(residual, full_matrices=False)
+    null = rows[singular <= jnp.sqrt(jnp.finfo(singular.dtype).eps)].T * scale[:, None]
+    return null / jnp.linalg.norm(null, axis=0)
+
+
 def _unmoved_directions(
     actions: Array, states: Array, covariates: Array, nuisance_degree: int, channel_degree: int
 ) -> Array:
@@ -425,16 +446,7 @@ def _unmoved_directions(
     left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
     size = jnp.linalg.norm(_channel_design(actions, states, channel_degree), axis=0)
     scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
-    residual = _channel_design(left, states, channel_degree) * scale
-    # A log of fewer transitions than coefficients has fewer singular values than directions, and a
-    # thin SVD returns no row for the rest, which no transition moves: zero rows bring them back
-    # with a singular value of 0.
-    short = residual.shape[1] - residual.shape[0]
-    if short > 0:
-        residual = jnp.concatenate([residual, jnp.zeros((short, residual.shape[1]))])
-    _, singular, rows = jnp.linalg.svd(residual, full_matrices=False)
-    null = rows[singular <= jnp.sqrt(jnp.finfo(singular.dtype).eps)].T * scale[:, None]
-    return null / jnp.linalg.norm(null, axis=0)
+    return _kept(_channel_design(left, states, channel_degree), scale)
 
 
 def _unmoved_parameters(
@@ -455,6 +467,56 @@ def _unmoved_parameters(
     return jnp.stack(moves, axis=1) if moves else jnp.zeros((size, 0))
 
 
+@dataclass(frozen=True)
+class _Unmoved:
+    """The span of the channel's unmoved directions, split by what the drift regression does with
+    their push on the log's raw actions (ADR 0054).
+
+    ``basis`` ``(m k, r)`` spans it and ``free`` ``(m k, m k - r)`` the rest of the channel, the
+    columns of both orthonormal once scaled to the raw actions' size, so the split reads the same
+    in any units. The channel's moment is solved on ``free`` alone, where it has data. ``taken``
+    ``(r, t)`` holds the combinations of ``basis`` whose push the drift's features take up exactly,
+    by least squares, so no rate of the log tells them apart, and the fit leaves the channel at
+    zero along them. ``pinned`` ``(m k, N)`` reads the rest off a rate, as least squares beside the
+    drift's features does: there the log rules out all but one value."""
+
+    raw: Array  # (N, m k): the channel's design on the log's raw actions
+    basis: Array
+    free: Array
+    taken: Array
+    pinned: Array
+
+    def hold(self, channel: Array, rate: Array) -> Array:
+        """``channel`` ``(n, m, k)``, solved on ``free``, with what the log's ``rate`` ``(N, n)``
+        reads along ``basis`` beside the drift added. Linear in both."""
+        rows = channel.reshape(channel.shape[0], -1)
+        rows = rows + (self.pinned @ (rate - self.raw @ rows.T)).T
+        return rows.reshape(channel.shape)
+
+
+def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
+    """:class:`_Unmoved` for the unit columns ``directions`` ``(m k, r)``, with ``raw`` the
+    channel's design on the log's raw actions and ``design`` the drift regression's."""
+    size = jnp.linalg.norm(raw, axis=0)
+    scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
+    unit = scale[:, None] * jnp.linalg.qr(directions / scale[:, None], mode="complete")[0]
+    basis, free = unit[:, : directions.shape[1]], unit[:, directions.shape[1] :]
+    push = raw @ basis
+    left = push - design @ jnp.linalg.lstsq(design, push)[0]
+    # as in _kept: a log of fewer transitions than directions leaves the rest a zero singular value
+    short = left.shape[1] - left.shape[0]
+    padded = jnp.concatenate([left, jnp.zeros((short, left.shape[1]))]) if short > 0 else left
+    out, singular, rows = jnp.linalg.svd(padded, full_matrices=False)
+    seen = singular > jnp.sqrt(jnp.finfo(singular.dtype).eps)
+    return _Unmoved(
+        raw=raw,
+        basis=basis,
+        free=free,
+        taken=rows[~seen].T,
+        pinned=basis @ (rows[seen].T / singular[seen]) @ out[: left.shape[0], seen].T,
+    )
+
+
 def _unmoved_actions(fit: CausalDynamicsFit) -> tuple[int, ...]:
     """The actions whose whole channel the log never moved: every coefficient of theirs, on every
     feature of the channel, in the span of :attr:`CausalDynamicsFit.unmoved`'s directions."""
@@ -473,6 +535,104 @@ def _unmoved_actions(fit: CausalDynamicsFit) -> tuple[int, ...]:
         if float(jnp.linalg.norm(moved[:, action * features : (action + 1) * features], 2))
         <= precision
     )
+
+
+@dataclass(frozen=True)
+class _LoggedRelations:
+    """What the log's actions kept to: orthonormal bases ``(m, r)``, in the actions' own units, of
+    the combinations it kept at one level, of those the state alone predicts, and of those its
+    covariates predict, each span holding the one before; and each action's least-squares rule of
+    the state, the nuisance's polynomial of the state standardised as the log's was."""
+
+    constant: np.ndarray
+    state: np.ndarray
+    covariates: np.ndarray
+    means: np.ndarray  # (m,): a constant combination's level is its weights times these
+    centre: Array  # (n,)
+    spread: Array  # (n,)
+    rule: Array  # (features, m)
+
+
+def _logged_relations(
+    actions: Array, states: Array, covariates: Array, nuisance_degree: int
+) -> _LoggedRelations:
+    """The combinations of the log's actions that a constant, the state or the covariates predict
+    to the precision :func:`_unmoved_directions` reads, projected the same way."""
+    size = jnp.linalg.norm(actions, axis=0)
+    scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
+
+    def kept(features: Array) -> np.ndarray:
+        left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
+        columns = np.asarray(_kept(left, scale), dtype=np.float64)
+        return np.linalg.qr(columns)[0] if columns.shape[1] else columns
+
+    centre = jnp.mean(states, axis=0)
+    spread = jnp.std(states, axis=0)
+    spread = jnp.where(spread > 1e-12, spread, 1.0)
+    features = _polynomial_features((states - centre) / spread, nuisance_degree)
+    return _LoggedRelations(
+        constant=kept(jnp.ones((actions.shape[0], 1), dtype=actions.dtype)),
+        state=kept(features),
+        covariates=kept(_polynomial_features(_standardised(covariates), nuisance_degree)),
+        means=np.asarray(jnp.mean(actions, axis=0), dtype=np.float64),
+        centre=centre,
+        spread=spread,
+        rule=jnp.linalg.lstsq(features, actions)[0],
+    )
+
+
+def _absorbed(
+    fit: CausalDynamicsFit, states: Array, actions: Array, drift_design: Array
+) -> tuple[Array, Array]:
+    """The moves of the fit no transition of the log tells from it (ADR 0054): the unmoved channel
+    directions (:attr:`CausalDynamicsFit.unmoved`) whose push on the log's own actions the drift
+    regression takes up exactly, ``(m k, r)``, and that regression's response, ``(features +
+    drivers, r)``.
+
+    The response is by least squares, not the fit's ridge, so each move leaves every predicted rate
+    of the log as it was to rounding. A direction whose push the drift cannot take up moves the
+    log's own predicted rates, so within the model class the log rules it out, though the channel's
+    moment has no data along it, and the fit reads it off the log's rate (:class:`_Unmoved`, the
+    same split). Scaled to the push its coefficients would make on actions of the log's raw size,
+    the test reads the same in any units."""
+    states_n, levers, features = fit.residual.channel.shape
+    width = levers * features
+    if fit.unmoved is None or fit.unmoved.shape[1] == 0:
+        return jnp.zeros((width, 0)), jnp.zeros((drift_design.shape[1], 0))
+    raw = _channel_design(actions, states, fit.residual.channel_degree)
+    split = _split_unmoved(
+        fit.unmoved[:width, : fit.unmoved.shape[1] // states_n], raw, drift_design
+    )
+    taken = split.basis @ split.taken
+    push = raw @ taken
+    # A push that cancels to the working precision of its terms is none: its regression would read
+    # the rounding as a response, which no action at the plan's points could cancel.
+    precision = jnp.sqrt(jnp.finfo(push.dtype).eps)
+    size = jnp.linalg.norm(jnp.abs(raw) @ jnp.abs(taken), axis=0)
+    none = jnp.linalg.norm(push, axis=0) <= precision * size
+    return taken, jnp.linalg.lstsq(drift_design, jnp.where(none, 0.0, push))[0]
+
+
+def _nuisance_inputs(
+    data: dict[str, Array],
+    adjust_for: Sequence[str],
+    drivers: Sequence[str],
+    integrator: Integrator,
+) -> tuple[Array, Array, Array, Array]:
+    """``(covariates, start, end, read)``: what the nuisances read -- the state, the adjustment
+    set, each driver not in it at the transition's start, and every driver at its end -- and the
+    drivers at the transition's two ends and as its rate reads them."""
+    x = data["x"]
+    start = jnp.concatenate([x[:, :0], *[data[name] for name in drivers]], axis=1)
+    end = jnp.concatenate([x[:, :0], *[data[f"{name}_next"] for name in drivers]], axis=1)
+    # What a transition's rate sees of a driver: its mean over the step, exact for the linear path
+    # between the two ends, or its value at the start, which is all the Euler map reads.
+    read = start if integrator == "euler" else 0.5 * (start + end)
+    unadjusted = [data[name] for name in drivers if name not in adjust_for]
+    covariates = jnp.concatenate(
+        [x, *[data[name] for name in adjust_for], *unadjusted, end], axis=1
+    )
+    return covariates, start, end, read
 
 
 def _state_weights(weights: Callable[[Array], Array], states: Array) -> Array:
@@ -728,14 +888,8 @@ def fit_causal_residual(
     known_rate = jax.vmap(lambda xi, ui: known(0.0, xi, ui))(x, u)
 
     identified = bool(adjust_for) or instrument is not None
-    driver_start = jnp.concatenate([x[:, :0], *[data[name] for name in drivers]], axis=1)
-    driver_end = jnp.concatenate([x[:, :0], *[data[f"{name}_next"] for name in drivers]], axis=1)
-    # What a transition's rate sees of a driver: its mean over the step, exact for the linear path
-    # between the two ends, or its value at the start, which is all the Euler map reads.
-    driver_read = driver_start if integrator == "euler" else 0.5 * (driver_start + driver_end)
-    unadjusted = [data[name] for name in drivers if name not in adjust_for]
-    covariates = jnp.concatenate(
-        [x, *[data[name] for name in adjust_for], *unadjusted, driver_end], axis=1
+    covariates, driver_start, driver_end, driver_read = _nuisance_inputs(
+        data, adjust_for, drivers, integrator
     )
 
     method = "orthogonal" if adjust_for else ("iv" if instrument else "observational")
@@ -758,25 +912,41 @@ def fit_causal_residual(
     design = jnp.concatenate([phi_x, driver_read], axis=1)
 
     row_weight = None if weights is None else _state_weights(weights, x)
-    unmoved = _unmoved_parameters(
-        _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree),
-        phi_c,
-        u,
-        design,
-        ridge,
-        x.shape[1],
+    directions = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree)
+    unmoved = _unmoved_parameters(directions, phi_c, u, design, ridge, x.shape[1])
+    # The moment has no data along these directions, and its ridge would set the channel there by
+    # the ratio of two roundings, which grows as the square of the actions' units: the fit then
+    # missed the log's own rates by ten times their noise in units a thousand times larger.
+    split = (
+        _split_unmoved(directions, _channel_design(u, x, channel_degree), design)
+        if directions.shape[1]
+        else None
     )
 
     def moment(y_res: Array, u_res: Array) -> Array:
-        return solve_channel_moment(
-            y_res,
-            u_res,
-            x,
-            instrument_action=instrument_action,
-            degree=channel_degree,
-            ridge=ridge,
-            weights=row_weight,
+        if split is None:
+            return solve_channel_moment(
+                y_res,
+                u_res,
+                x,
+                instrument_action=instrument_action,
+                degree=channel_degree,
+                ridge=ridge,
+                weights=row_weight,
+            )
+        # Only where the moment has data: an unmoved direction's regressor is what the nuisance's
+        # ridge left of an action the covariates determine, and solved beside the rest it moved
+        # them as far as the actions' units made it. The ridge keeps its meaning on the raw channel.
+        regressor = _channel_design(u_res, x, channel_degree) @ split.free
+        instrument = (
+            regressor
+            if instrument_action is None
+            else _channel_design(instrument_action, x, channel_degree) @ split.free
         )
+        coeffs = split.free @ _channel_coefficients(
+            y_res, regressor, instrument, ridge, row_weight, penalty=split.free.T @ split.free
+        )
+        return coeffs.T.reshape(y_res.shape[1], u_res.shape[1], -1)
 
     def solve(y: Array) -> tuple[Array, Array, tuple[Array, Array, Array, Array, Array]]:
         """The channel and the drift regression's coefficients a target ``y`` fits to, with the
@@ -785,6 +955,8 @@ def fit_causal_residual(
             y, u, covariates, degree=nuisance_degree, folds=folds, ridge=ridge, seed=seed
         )
         channel = moment(y_res, u_res)
+        if split is not None:
+            channel = split.hold(channel, y)
         fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_c, u)
         remainder = _solve_ridge(design, y - fitted, ridge)  # (features + drivers, n)
         return channel, remainder, (y_res, u_res, y_hat, u_hat, fitted)
@@ -813,6 +985,8 @@ def fit_causal_residual(
 
         def respond(y_res: Array) -> Array:
             channel = moment(y_res, u_res)
+            if split is not None:  # the row's rate moves y_res and the rate alike
+                channel = split.hold(channel, y_res)
             fitted = jax.vmap(lambda c, ui: (channel @ c) @ ui)(phi_c, u)
             return jnp.concatenate([channel.ravel(), -_solve_ridge(design, fitted, ridge).ravel()])
 

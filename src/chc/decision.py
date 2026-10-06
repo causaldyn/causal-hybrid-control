@@ -37,11 +37,13 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, get_args
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 
+from chc.causal import _polynomial_features
 from chc.control import LinearConstraint, SolverStatus
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import (
@@ -51,7 +53,18 @@ from chc.dynamics import (
     HybridDynamics,
     LinearDynamics,
 )
-from chc.dynamics_id import CausalDynamicsFit, Integrator, _unmoved_actions, fit_causal_residual
+from chc.dynamics_id import (
+    CausalDynamicsFit,
+    Integrator,
+    _absorbed,
+    _channel_design,
+    _logged_relations,
+    _LoggedRelations,
+    _nuisance_inputs,
+    _standardised,
+    _unmoved_actions,
+    fit_causal_residual,
+)
 from chc.evaluation import (
     AffinePolicy,
     AffineSchedule,
@@ -79,7 +92,7 @@ from chc.plan import (
     certify_safety,
     plan_regret_bound,
 )
-from chc.residual import ControlAffineResidual, ZeroResidual
+from chc.residual import ControlAffineResidual, ZeroResidual, control_affine_features
 
 SCHEMA_VERSION = 1
 """``to_json``'s schema version. Bumped when a field changes meaning, not when one is added."""
@@ -110,9 +123,9 @@ _log = logging.getLogger(__name__)
 """Decision-point log for :func:`prescribe`, on the stdlib and nothing else.
 
 Every record carries a ``chc_event`` key in its ``extra`` payload naming the point it was emitted
-at --- ``precision``, ``adjustment``, ``logger_check``, ``fit``, ``abort``, ``unmoved``, ``tube``,
-``selection`` (one per step under ``max_levers``), ``driver_range``, ``plan``, ``certificate``, and
-``one_unit`` from
+at --- ``precision``, ``adjustment``, ``logger_check``, ``fit``, ``abort``, ``unmoved``, ``rule``,
+``relation``, ``tube``, ``selection`` (one per step under ``max_levers``), ``driver_range``,
+``plan``, ``estimability``, ``certificate``, and ``one_unit`` from
 :meth:`Prescription.evaluate` --- so a JSON formatter downstream can route on one field rather than
 parse a sentence. The library installs no handler and sets no level: that is the application's
 call, and a library that reaches for ``basicConfig`` takes it away.
@@ -120,8 +133,9 @@ call, and a library that reaches for ``basicConfig`` takes it away.
 The records that are not ``INFO`` are the ones worth waking someone for: identifying in single
 precision, a graph that says the effect is not identified at all, a driver's forecast outside the
 range the panel logged, levers that read more than the state and their recorded parents or read
-those through more than a quadratic, a tube whose rate or budget is not a finite number, and an
-evaluation that reads one unit's windows as independent.
+those through more than a quadratic, levers held to what the log did with them, a plan some fit
+the log cannot tell apart predicts differently, a tube whose rate or budget is not a finite
+number, and an evaluation that reads one unit's windows as independent.
 """
 
 IdentificationStatus = Literal["identified", "asserted", "not_identified"]
@@ -134,6 +148,23 @@ anywhere in their box, or at the plan's start alone."""
 TimeZero = Literal["calendar", "unit"]
 """Where :meth:`Prescription.evaluate`'s windows start: on one calendar for every unit, or cut back
 from each unit's own latest period."""
+
+Estimability = Literal["estimable", "held_to_log", "not_estimable"]
+"""Whether the log determines the plan's predicted path (ADR 0054). ``estimable``: the log moved
+every direction of the channel. ``held_to_log``: it left some unmoved, and the plan keeps to what
+the log did along them, so every fit the log cannot tell from the fitted one predicts the same
+path. ``not_estimable``: some such fit predicts another path from
+:attr:`DecisionCertificate.first_loaded_step` on, or no plan could keep to the log and none was
+made."""
+
+
+@dataclass(frozen=True)
+class LeverRelation:
+    """A combination of the levers the log kept at one level, ``sum_j weights[j] u_j = level``,
+    which the plan keeps at every step. ``weights`` has one entry per lever and unit length."""
+
+    weights: tuple[float, ...]
+    level: float
 
 
 @dataclass(frozen=True)
@@ -222,6 +253,9 @@ class InterventionSchedule:
 
     levers: tuple[str, ...]
     magnitudes: Array  # (horizon, m)
+    # The levers whose column is the rule of the state the log set them by, read along the
+    # predicted path: set them from the state as it comes, not to these numbers.
+    rules: tuple[str, ...] = ()
 
     def windows(self, *, tol: float = 1e-6) -> dict[str, tuple[int, int] | None]:
         """First and last step at which each lever is active, or ``None`` if it never is.
@@ -283,9 +317,10 @@ class DecisionCertificate:
     # curvature is sampled at the plan and a few points, and the bound is ``diagnostic``. None where
     # no plan was solved.
     regret_status: RegretStatus | None = None
-    # The levers whose whole channel the log never moved (:attr:`CausalDynamicsFit.unmoved`): the
-    # fit's channel for them is the ridge's, so the plan holds each at its mean logged level, and
-    # with every lever here there is no plan.
+    # The levers whose whole channel the log never moved (:attr:`CausalDynamicsFit.unmoved`): no
+    # transition shows what moving them does, so the plan keeps each to what the log did, at its
+    # logged level or on its logged rule of the state (``rule_levers``), and with every lever here
+    # there is no plan.
     unmoved_levers: tuple[str, ...] = ()
     # Where the tube's rate holds (:data:`TubeRate`): ``global`` on a field affine in the state,
     # whose slope in it is the same at every state and is bounded over the levers' whole box, so
@@ -298,13 +333,29 @@ class DecisionCertificate:
     # each transition as independent; ``error_clusters`` counts the groups.
     error_clustered_by: str | None = None
     error_clusters: int | None = None
+    # Whether the log determines the plan's predicted path (:data:`Estimability`, ADR 0054); None
+    # where the effect is not identified and nothing was asked of the log's actions.
+    estimability: Estimability | None = None
+    # Per state, how many directions of the channel's coefficients the log's actions moved, and how
+    # many they did not (:attr:`CausalDynamicsFit.unmoved`).
+    identification_rank: int | None = None
+    unmoved_directions: int | None = None
+    # The first step at which a fit the log cannot tell from the fitted one predicts another path;
+    # None where none does. ``trustworthy_steps`` ends there.
+    first_loaded_step: int | None = None
+    # The combinations of the levers the log kept at one level, which the plan keeps by an equality
+    # row at every step, and the levers the log set from the state alone, which follow that rule
+    # along the plan.
+    relations: tuple[LeverRelation, ...] = ()
+    rule_levers: tuple[str, ...] = ()
 
     @property
     def trustworthy_steps(self) -> int:
         """The prefix that survives *both* axes --- the number an operator can act on.
 
         Zero whenever the effect is not identified, whatever the tube says, and never longer than
-        the shorter of the two certified prefixes. The two ``None`` values mean different things.
+        the shorter of the two certified prefixes, nor past the first step a fit the log cannot
+        tell apart predicts differently. The two ``None`` values mean different things.
         ``certified_horizon is None`` means the tube was not evaluated, so nothing bounds the
         trajectory's error and it contributes zero rather than infinity --- a barrier cleared by an
         unbounded trajectory proves nothing. ``barrier_certified_steps is None`` means no state was
@@ -312,9 +363,10 @@ class DecisionCertificate:
         """
         if self.identification == "not_identified" or self.certified_horizon is None:
             return 0
-        if self.barrier_certified_steps is None:
-            return self.certified_horizon
-        return min(self.certified_horizon, self.barrier_certified_steps)
+        steps = self.certified_horizon
+        if self.barrier_certified_steps is not None:
+            steps = min(steps, self.barrier_certified_steps)
+        return steps if self.first_loaded_step is None else min(steps, self.first_loaded_step)
 
 
 @dataclass(frozen=True)
@@ -395,6 +447,9 @@ class Prescription:
     _start: Array | None = field(default=None, repr=False, compare=False)
     # How many of the plan's constraint rows each budget holds: the last ones, in order.
     _budget_rows: tuple[int, ...] = field(default=(), repr=False, compare=False)
+    # The plan's actions with each lever that follows its logged rule read off that rule along the
+    # predicted path; None where no lever does, and the schedule is the plan's actions.
+    _magnitudes: Array | None = field(default=None, repr=False, compare=False)
 
     @property
     def lever_names(self) -> tuple[str, ...]:
@@ -416,7 +471,11 @@ class Prescription:
                 "the effect is not identified, so no schedule was computed: "
                 f"{self.certificate.adjustment.reason}"
             )
-        return InterventionSchedule(levers=self.lever_names, magnitudes=self.plan.actions)
+        return InterventionSchedule(
+            levers=self.lever_names,
+            magnitudes=self.plan.actions if self._magnitudes is None else self._magnitudes,
+            rules=self.certificate.rule_levers,
+        )
 
     def budget_prices(self, tolerance: float | None = None) -> tuple[tuple[RowPrice, ...], ...]:
         """What each budget is worth to the plan: one price per period it holds in the plan.
@@ -518,8 +577,9 @@ class Prescription:
             NotIdentifiedError: if the effect is not identified, so there is no plan.
             DecisionError: on a ``time_zero`` other than ``"calendar"`` and ``"unit"``; fewer than
                 two resamples; a plan made against driver forecasts, whose plant changes with the
-                step; a plan whose levers were logged on a column outside its state, or whose
-                record does not say; or a panel with fewer than two windows.
+                step; a plan with a lever that follows its logged rule of the state, which no
+                open-loop schedule carries; a plan whose levers were logged on a column outside its
+                state, or whose record does not say; or a panel with fewer than two windows.
             InfeasibleEvaluation: when the evaluation's certificate refuses, on the panel or on
                 every draw but one.
         """
@@ -540,6 +600,11 @@ class Prescription:
             raise DecisionError(
                 "the plan was made against driver forecasts, so its plant changes with the step, "
                 "and the evaluation's plant is one step for every step"
+            )
+        if self.certificate.rule_levers:
+            raise DecisionError(
+                f"{list(self.certificate.rule_levers)} follow their logged rule of the state, a "
+                "policy the evaluation's open-loop schedule cannot carry"
             )
         columns = self._columns
         if columns is None:
@@ -665,12 +730,20 @@ class Prescription:
         else:
             windows = self.schedule.windows()
             lines += ["", "| lever | active steps | first | last |", "|---|---|---|---|"]
-            magnitudes = np.asarray(self.plan.actions)
+            magnitudes = np.asarray(self.schedule.magnitudes)
             for index, name in enumerate(self.lever_names):
                 window = windows[name]
                 span = "never" if window is None else f"{window[0]}-{window[1]}"
                 first, last = magnitudes[0, index], magnitudes[-1, index]
                 lines.append(f"| `{name}` | {span} | {first:+.4g} | {last:+.4g} |")
+            if certificate.rule_levers:
+                lines += [
+                    "",
+                    "Set "
+                    + ", ".join(f"`{name}`" for name in certificate.rule_levers)
+                    + " from the state as it comes, by the rule the log set them by: their columns "
+                    "are that rule read along the predicted path.",
+                ]
             lines += ["", f"Planned task cost: {self.plan.task_cost:.6g}.", ""]
             # a plan held under the constraints' barrier carries no row prices
             priced = self.budget_prices() if self.budgets and self.plan.safety is None else None
@@ -699,14 +772,7 @@ class Prescription:
             "",
             f"- identification: **{certificate.identification}** ({certificate.adjustment.reason})",
             f"- adjusted for: {list(certificate.adjustment.covariates) or 'nothing'}",
-            *(
-                [
-                    "- never moved by the log, so held at their logged level: "
-                    + ", ".join(f"`{name}`" for name in certificate.unmoved_levers)
-                ]
-                if certificate.unmoved_levers
-                else []
-            ),
+            *self._estimability_lines(),
             *self._driver_lines(),
             f"- channel standard error: {_show(certificate.identification_radius)}"
             + (
@@ -749,7 +815,9 @@ class Prescription:
             "schema_version": SCHEMA_VERSION,
             "target": self.target,
             "levers": list(self.lever_names),
-            "schedule": None if self.plan is None else np.asarray(self.plan.actions).tolist(),
+            "schedule": None
+            if self.plan is None
+            else np.asarray(self.schedule.magnitudes).tolist(),
             "certificate": {
                 "identification": certificate.identification,
                 "adjusted_for": list(certificate.adjustment.covariates),
@@ -770,6 +838,15 @@ class Prescription:
                 "tube_rate": certificate.tube_rate,
                 "error_clustered_by": certificate.error_clustered_by,
                 "error_clusters": certificate.error_clusters,
+                "estimability": certificate.estimability,
+                "identification_rank": certificate.identification_rank,
+                "unmoved_directions": certificate.unmoved_directions,
+                "first_loaded_step": certificate.first_loaded_step,
+                "relations": [
+                    {"weights": list(relation.weights), "level": relation.level}
+                    for relation in certificate.relations
+                ],
+                "rule_levers": list(certificate.rule_levers),
             },
             "selection": None
             if self.selection is None
@@ -824,6 +901,39 @@ class Prescription:
         seen = test.detectable[np.isfinite(test.detectable)]
         missed = f"a partial correlation up to {seen.max():.2g}" if seen.size else "any dependence"
         return f"- logger check: passed ({head}); a pass can miss {missed}"
+
+    def _estimability_lines(self) -> list[str]:
+        certificate = self.certificate
+        held = [name for name in certificate.unmoved_levers if name not in certificate.rule_levers]
+        lines = []
+        if held:
+            names = ", ".join(f"`{name}`" for name in held)
+            lines.append(f"- never moved by the log, so held at their logged level: {names}")
+        if certificate.rule_levers:
+            names = ", ".join(f"`{name}`" for name in certificate.rule_levers)
+            lines.append(
+                f"- set by the log from the state alone, so they follow that rule: {names}"
+            )
+        if certificate.relations:
+            kept = "; ".join(
+                _show_relation(relation, self.lever_names) for relation in certificate.relations
+            )
+            lines.append(f"- kept at the level the log kept them: {kept}")
+        if certificate.estimability is not None:
+            line = f"- estimability: **{certificate.estimability}**"
+            if certificate.identification_rank is not None:
+                total = certificate.identification_rank + (certificate.unmoved_directions or 0)
+                line += (
+                    f", the log moved {certificate.identification_rank} of the channel's {total} "
+                    "directions a state"
+                )
+            if certificate.first_loaded_step is not None:
+                line += (
+                    "; a fit the log cannot tell apart predicts another path from step "
+                    f"{certificate.first_loaded_step}"
+                )
+            lines.append(line)
+        return lines
 
     def _driver_lines(self) -> list[str]:
         gain = self.model_fit.driver_gain
@@ -900,8 +1010,8 @@ def prescribe(
             at zero** at every step: the level at which the fitted control-affine channel credits
             it with no effect and its ``unit_cost`` charges nothing, and the level
             :meth:`InterventionSchedule.windows` reads as inactive. So every lever's box must
-            contain zero. A lever the log never moved is no candidate, and stays at its logged
-            level (below). The steps, each with its planned cost and regret bound, are
+            contain zero. A lever the log never moved is no candidate, and stays on what the log
+            did (below). The steps, each with its planned cost and regret bound, are
             :attr:`Prescription.selection`; the certificate's regret bound stays priced against
             every lever's box, so it includes what leaving levers out cost. ``None`` plans with
             every lever, as before; a value at or above the number of levers selects them all and
@@ -952,20 +1062,33 @@ def prescribe(
             finite levels, a budget that does not weigh one spend per lever, starts its periods
             anywhere but the plan's first step, or allows less than the levers' boxes spend at
             the least, a ``dt`` that is not a finite positive step, a ``tolerance`` that is
-            negative or nan, or a panel with no consecutive pair of periods to fit a transition on.
+            negative or nan, a panel with no consecutive pair of periods to fit a transition on, a
+            ``cap_per_step`` on a lever that follows its logged rule or a budget that prices one,
+            or ``max_levers`` where the log kept a combination of the levers away from zero.
         KeyError: a lever, target, constraint, driver or asserted covariate names a column the
             panel does not have. The message lists the panel's columns.
 
-    A lever whose whole channel the log never moves apart from what the states and the covariates
-    predict (:attr:`~chc.dynamics_id.CausalDynamicsFit.unmoved`) is not identified on this log: the
-    fit's channel for it is the ridge's, which no transition informs. The plan holds it at its mean
-    logged level, clipped to its box, and :attr:`DecisionCertificate.unmoved_levers` names it. With
-    every lever so there is no plan, and the identification is ``not_identified``, its reason
-    naming them.
+    A direction of the channel the log never moves apart from what the states and the covariates
+    predict (:attr:`~chc.dynamics_id.CausalDynamicsFit.unmoved`) is not identified on this log, and
+    the plan keeps to what the log did along it (ADR 0054). A lever whose whole channel is so is
+    held at its mean logged level, clipped to its box, where the log kept it at one level, and
+    follows the log's least-squares rule of the state inside the plan's field where the log set it
+    from the state alone; :attr:`DecisionCertificate.unmoved_levers` and
+    :attr:`~DecisionCertificate.rule_levers` name them, and the schedule's column carries the rule
+    read along the predicted path. Among the other levers, a combination the log kept at one level
+    is held there by an equality row at every step (:attr:`~DecisionCertificate.relations`). A lever
+    or a combination the log set from anything else gives no plan, and neither does a log that
+    moves no lever: the identification is then ``not_identified``, its reason naming the levers and
+    the columns they were set from. The plan is checked exactly: the fits the log cannot tell apart
+    differ along directions in which the field is linear, and
+    :attr:`~DecisionCertificate.first_loaded_step` is the first step at one of whose RK4 stages any
+    of them moves the field, where the trustworthy prefix ends.
+    :attr:`~DecisionCertificate.estimability` says which case holds.
 
     Each decision point emits one ``logging`` record on ``chc.decision``, keyed by ``chc_event``
     (see :data:`_log`). Nothing is configured here; a caller that wants them calls
-    ``logging.basicConfig`` itself. An unidentified effect, a lever the log never moved, a
+    ``logging.basicConfig`` itself. An unidentified effect, a lever the log never moved, one on its
+    logged rule, a combination kept at its logged level, a plan the log does not determine, a
     single-precision panel, a forecast outside the logged range and levers that read more than the
     record says come through at ``WARNING``.
 
@@ -1097,6 +1220,7 @@ def prescribe(
         integrator=integrator,
         drivers=driver_names,
         clusters=None if clustered_by is None else cluster,
+        nuisance_degree=_NUISANCE_DEGREE,
     )
     _log.info(
         "control channel fitted",
@@ -1125,14 +1249,34 @@ def prescribe(
     )
     unmoved = _unmoved_actions(fit)
     unmoved_levers = tuple(lever_names[index] for index in unmoved)
+    per_state = int(fit.unmoved.shape[1]) // n_states if fit.unmoved is not None else None
+    rank = None if per_state is None else int(fit.residual.channel[0].size) - per_state
+    covariates, _, _, driver_read = _nuisance_inputs(
+        data, resolved.covariates, driver_names, integrator
+    )
+    covariate_names = (
+        *states,
+        *resolved.covariates,
+        *(name for name in driver_names if name not in resolved.covariates),
+        *(f"{name} (next period)" for name in driver_names),
+    )
+    kept = _keep_to_log(fit, data, unmoved, covariates, covariate_names, lever_names, n_states)
     abort = "no schedule: no observed set identifies the effect"
+    estimability: Estimability | None = None
     if identification != "not_identified" and len(unmoved) == n_levers:
         identification, abort = "not_identified", "no schedule: the log never moves a lever"
+        estimability = "not_estimable"
         resolved = AdjustmentSet(
             resolved.covariates,
             "not_identified",
             f"{resolved.reason}; but the log never moves {list(unmoved_levers)} apart from what "
             "the states and the covariates predict, so no transition shows what moving them does",
+        )
+    elif identification != "not_identified" and kept.refusal is not None:
+        identification, abort = "not_identified", "no schedule: no plan keeps to what the log did"
+        estimability = "not_estimable"
+        resolved = AdjustmentSet(
+            resolved.covariates, "not_identified", f"{resolved.reason}; but {kept.refusal}"
         )
 
     start = jnp.asarray(data["x0"]) if x0 is None else jnp.asarray(x0)
@@ -1155,6 +1299,9 @@ def prescribe(
                 solver_iterations=0,
                 regret_bound=None,
                 unmoved_levers=unmoved_levers,
+                estimability=estimability,
+                identification_rank=rank,
+                unmoved_directions=per_state,
             ),
             model_fit=fit,
             provenance=panel.provenance,
@@ -1174,24 +1321,82 @@ def prescribe(
             "observational fit, which is the interventional one only if the lever is unconfounded",
         )
 
+    rule_levers = tuple(lever_names[index] for index in kept.rules)
+    capped = [
+        name
+        for index, name in zip(kept.rules, rule_levers, strict=True)
+        if levers[index].cap_per_step is not None
+    ]
+    if capped:
+        raise DecisionError(
+            f"{capped} follow the rule of the state the log set them by, which moves them as the "
+            "state moves, so no cap on their steps can hold"
+        )
+    priced = [
+        name
+        for index, name in zip(kept.rules, rule_levers, strict=True)
+        if any(budget.weights[index] != 0.0 for budget in budgets)
+    ]
+    if priced:
+        raise DecisionError(
+            f"a budget prices {priced}, which follow the rule of the state the log set them by: "
+            "their spend is set by the path, and a budget's rows hold the plan's own actions"
+        )
+    if max_levers is not None and any(relation.level != 0.0 for relation in kept.relations):
+        raise DecisionError(
+            "the log kept "
+            + "; ".join(_show_relation(relation, lever_names) for relation in kept.relations)
+            + ", and max_levers holds an unselected lever at zero, which leaves that level"
+        )
+
     model: Dynamics = HybridDynamics(known=base, residual=fit.residual)
+    driven: DrivenDynamics | None = None
     if drivers and fit.driver_gain is not None:
         _warn_outside_logged_range(panel, drivers)
         forecast = jnp.stack([jnp.asarray(driver.forecast, dtype=float) for driver in drivers], 1)
-        model = DrivenDynamics(model, fit.driver_gain, forecast, dt)
-    # a lever the log never moved is held at its mean logged level, the one level the fit has seen
-    # its push at, which the drift has absorbed
+        model = driven = DrivenDynamics(model, fit.driver_gain, forecast, dt)
+    if kept.logged is not None and kept.rules:
+        model = _Ruled(
+            model,
+            levers=kept.rules,
+            centre=kept.logged.centre,
+            spread=kept.logged.spread,
+            coefficients=kept.logged.rule[:, jnp.array(kept.rules)],
+            lo=jnp.array([levers[index].lo for index in kept.rules]),
+            hi=jnp.array([levers[index].hi for index in kept.rules]),
+            degree=_NUISANCE_DEGREE,
+        )
+        _log.warning(
+            "levers the log set from the state alone follow that rule",
+            extra={"chc_event": "rule", "levers": list(rule_levers)},
+        )
+    # A lever the log never moved is held at its mean logged level: the one level the fit has seen
+    # its push at, which the drift has absorbed, where the log kept it there. One the log set from
+    # the state follows that rule in the field, and its column is held there only so the planner
+    # spends nothing on it.
     held_at = jnp.array(unmoved, dtype=int)
     levels = jnp.array(
         [jnp.clip(jnp.mean(data["u"][:, i]), levers[i].lo, levers[i].hi) for i in unmoved]
     )
-    if unmoved:
+    if unmoved and len(kept.rules) < len(unmoved):
         _log.warning(
             "levers the log never moved are held at their logged level",
             extra={
                 "chc_event": "unmoved",
-                "levers": list(unmoved_levers),
-                "levels": np.asarray(levels).tolist(),
+                "levers": [name for name in unmoved_levers if name not in rule_levers],
+                "levels": [
+                    float(level)
+                    for index, level in zip(unmoved, np.asarray(levels), strict=True)
+                    if index not in kept.rules
+                ],
+            },
+        )
+    if kept.relations:
+        _log.warning(
+            "combinations of the levers the log kept at one level are kept there",
+            extra={
+                "chc_event": "relation",
+                "relations": [_show_relation(relation, lever_names) for relation in kept.relations],
             },
         )
 
@@ -1204,6 +1409,9 @@ def prescribe(
     u_max = float(jnp.max(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))))
     caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
     rate = LinearConstraint.rate_limit(horizon, caps)
+    relation_rows = tuple(
+        _relation_rows(relation, horizon, u_lo, u_hi) for relation in kept.relations
+    )
     # a prescription is the first step of a loop at t = 0 with nothing spent, and reads a budget so
     spend_rows = tuple(
         _period_rows(
@@ -1240,7 +1448,8 @@ def prescribe(
             lipschitz=lipschitz,
             model_error=model_error,
             tolerance=float("inf") if tolerance is None else tolerance,
-            constraints=(rate, *spend_rows),
+            # the budgets' rows last: :meth:`Prescription.budget_prices` reads them there
+            constraints=(rate, *relation_rows, *spend_rows),
             barrier=held,
         )
         if held is None:
@@ -1289,6 +1498,38 @@ def prescribe(
     else:
         safety = None
     gap = regret(plan)
+    directions, response = _absorbed(
+        fit,
+        data["x"],
+        data["u"],
+        jnp.concatenate(
+            [
+                jax.vmap(control_affine_features, in_axes=(0, None))(
+                    data["x"], fit.residual.degree
+                ),
+                driver_read,
+            ],
+            axis=1,
+        ),
+    )
+    first_loaded = _first_loaded(
+        model, plan, dt, fit, directions, response, None if driven is None else driven.drivers
+    )
+    estimability = (
+        "estimable"
+        if not per_state
+        else ("held_to_log" if first_loaded is None else "not_estimable")
+    )
+    (_log.info if estimability != "not_estimable" else _log.warning)(
+        "what the log determines of the plan's path",
+        extra={
+            "chc_event": "estimability",
+            "estimability": estimability,
+            "identification_rank": rank,
+            "unmoved_directions": per_state,
+            "first_loaded_step": first_loaded,
+        },
+    )
     certificate = DecisionCertificate(
         identification=identification,
         adjustment=resolved,
@@ -1307,6 +1548,12 @@ def prescribe(
         tube_rate=None if plan.certified_horizon is None else tube_rate,
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
+        estimability=estimability,
+        identification_rank=rank,
+        unmoved_directions=per_state,
+        first_loaded_step=first_loaded,
+        relations=kept.relations,
+        rule_levers=rule_levers,
     )
     _log.info(
         "decision certified",
@@ -1337,6 +1584,7 @@ def prescribe(
         _columns=columns,
         _start=start,
         _budget_rows=tuple(rows.matrix.shape[0] for rows in spend_rows),
+        _magnitudes=_ruled_schedule(model, plan),
     )
 
 
@@ -1405,6 +1653,222 @@ def _rank(plan: CausalPlan) -> tuple[int, float]:
     """
     cleared = 0 if plan.safety is None else plan.safety.certified_steps
     return -cleared, plan.task_cost
+
+
+@dataclass(frozen=True)
+class _Kept:
+    """What a plan keeps to of what the log did along the directions it never moved (ADR 0054)."""
+
+    rules: tuple[int, ...] = ()  # whole levers the log set from the state alone
+    relations: tuple[LeverRelation, ...] = ()  # combinations of the rest it kept at one level
+    refusal: str | None = None  # why no plan keeps to what the log did
+    logged: _LoggedRelations | None = None
+
+
+def _keep_to_log(
+    fit: CausalDynamicsFit,
+    data: dict[str, Array],
+    unmoved: tuple[int, ...],
+    covariates: Array,
+    covariate_names: Sequence[str],
+    lever_names: Sequence[str],
+    n_states: int,
+) -> _Kept:
+    """How a plan keeps to the log along the directions it never moved, or why none can.
+
+    A lever whose whole channel the log never moved is held at its level where the log kept it
+    there, and follows its rule where the log set it from the state alone. One the log set from a
+    column outside the state has a rule no plan can read: it is refused. Among the other levers, a
+    combination the log kept at one level is kept there by an equality row; one it set from
+    anything else is refused, since no row of the plan's actions holds it."""
+    if fit.unmoved is None or fit.unmoved.shape[1] == 0:
+        return _Kept()
+    x, u = data["x"], data["u"]
+    logged = _logged_relations(u, x, covariates, _NUISANCE_DEGREE)
+    precision = float(np.sqrt(np.finfo(np.asarray(u).dtype).eps))
+    identity = np.eye(len(lever_names))
+    rules = tuple(
+        index
+        for index in unmoved
+        if not _within(logged.constant, identity[index], precision)
+        and _within(logged.state, identity[index], precision)
+    )
+    outside = [index for index in unmoved if not _within(logged.state, identity[index], precision)]
+    if outside:
+        read = "; ".join(
+            f"`{lever_names[index]}` from "
+            + ", ".join(
+                f"`{name}`"
+                for name in _read_from(u[:, index], covariates, covariate_names, n_states)
+            )
+            for index in outside
+        )
+        return _Kept(
+            refusal=f"the log set {read}, outside the plan's state, so no plan keeps to what "
+            "the log did: leave them out of the levers, where they stay on that rule, or log them "
+            "moving apart from what they read",
+            logged=logged,
+        )
+    free = [index for index in range(len(lever_names)) if index not in unmoved]
+    among = _logged_relations(u[:, jnp.array(free)], x, covariates, _NUISANCE_DEGREE)
+
+    def named(inner: np.ndarray, outer: np.ndarray) -> str:
+        left = outer - inner @ (inner.T @ outer)
+        column = left[:, int(np.argmax(np.linalg.norm(left, axis=0)))]
+        column = column if column[np.argmax(np.abs(column))] > 0.0 else -column
+        weights = np.zeros(len(lever_names))
+        weights[free] = column / np.linalg.norm(column)
+        return _show_relation(LeverRelation(tuple(weights), 0.0), lever_names).removesuffix(" = 0")
+
+    if among.covariates.shape[1] > among.state.shape[1]:
+        combination = named(among.state, among.covariates)
+        return _Kept(
+            refusal=f"the log set {combination} from columns outside the plan's state, which no "
+            "plan reads",
+            logged=logged,
+        )
+    if among.state.shape[1] > among.constant.shape[1]:
+        combination = named(among.constant, among.state)
+        return _Kept(
+            refusal=f"the log set {combination} from the state, which no row of the plan's "
+            "actions holds",
+            logged=logged,
+        )
+    spread = np.sqrt(np.mean(np.asarray(u[:, jnp.array(free)], dtype=np.float64) ** 2, axis=0))
+    relations = []
+    for column in among.constant.T:
+        column = column if column[np.argmax(np.abs(column))] > 0.0 else -column
+        level = float(column @ among.means)
+        if abs(level) <= precision * float(np.abs(column) @ spread):
+            level = 0.0  # a combination the log kept at zero, read through rounding
+        weights = np.zeros(len(lever_names))
+        weights[free] = column
+        relations.append(LeverRelation(tuple(float(weight) for weight in weights), level))
+    return _Kept(rules=rules, relations=tuple(relations), logged=logged)
+
+
+def _within(basis: np.ndarray, vector: np.ndarray, precision: float) -> bool:
+    """Whether ``vector`` lies in the span of ``basis``'s orthonormal columns."""
+    return float(np.linalg.norm(vector - basis @ (basis.T @ vector))) <= precision
+
+
+def _read_from(
+    action: Array, covariates: Array, names: Sequence[str], n_states: int
+) -> tuple[str, ...]:
+    """The columns outside the state an action's logged rule reads: each one without which the
+    others no longer predict it to the precision :func:`chc.dynamics_id._logged_relations` reads,
+    or every one, where none is needed alone."""
+    precision = float(jnp.sqrt(jnp.finfo(action.dtype).eps))
+    size = float(jnp.linalg.norm(action))
+    needed = []
+    for column in range(n_states, covariates.shape[1]):
+        rest = jnp.delete(covariates, column, axis=1)
+        features = _polynomial_features(_standardised(rest), _NUISANCE_DEGREE)
+        left = action - features @ jnp.linalg.lstsq(features, action)[0]
+        if not float(jnp.linalg.norm(left)) <= precision * size:
+            needed.append(names[column])
+    return tuple(needed) or tuple(names[n_states:])
+
+
+def _relation_rows(
+    relation: LeverRelation, horizon: int, u_lo: Array, u_hi: Array
+) -> LinearConstraint:
+    """``relation`` held by an equality row at every step: at its level, or at the nearest level
+    the boxes reach where they do not reach it, which leaves the log's relation, and the
+    estimability test reads that."""
+    weights = np.asarray(relation.weights)
+    lo, hi = np.asarray(u_lo, dtype=np.float64), np.asarray(u_hi, dtype=np.float64)
+    moved = weights != 0.0  # a free lever's unbounded side must not read as 0 * inf
+    low = float(np.minimum(weights * lo, weights * hi)[moved].sum())
+    high = float(np.maximum(weights * lo, weights * hi)[moved].sum())
+    level = min(max(relation.level, low), high)
+    levels = np.full(horizon, level)
+    return LinearConstraint(np.kron(np.eye(horizon), weights), levels, levels)
+
+
+class _Ruled(eqx.Module):
+    """The plan's field with the levers the log set from the state alone following that rule: the
+    log's least-squares polynomial of the state, clipped to their boxes (ADR 0054). Their columns
+    of the plan's actions are not read."""
+
+    dynamics: Dynamics
+    centre: Array  # (n,)
+    spread: Array  # (n,)
+    coefficients: Array  # (features, r)
+    lo: Array  # (r,)
+    hi: Array  # (r,)
+    levers: tuple[int, ...] = eqx.field(static=True)
+    degree: int = eqx.field(static=True)
+
+    def levels(self, x: Array) -> Array:
+        """The ruled levers' levels at ``x``."""
+        standard = ((x - self.centre) / self.spread)[None, :]
+        rule = _polynomial_features(standard, self.degree)[0] @ self.coefficients
+        return jnp.clip(rule, self.lo, self.hi)
+
+    def read(self, x: Array, u: Array) -> Array:
+        """The action the field reads at ``x``: ``u`` with the ruled levers on their rule."""
+        return u.at[jnp.array(self.levers)].set(self.levels(x))
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.dynamics(t, x, self.read(x, u))
+
+
+def _ruled_schedule(model: Dynamics, plan: CausalPlan) -> Array | None:
+    """The plan's actions with each ruled lever read off its rule along the predicted path; None
+    where no lever follows a rule."""
+    if not isinstance(model, _Ruled):
+        return None
+    return jax.vmap(model.read)(plan.trajectory[:-1], plan.actions)
+
+
+def _first_loaded(
+    model: Dynamics,
+    plan: CausalPlan,
+    dt: float,
+    fit: CausalDynamicsFit,
+    directions: Array,
+    response: Array,
+    drivers: Callable[[Array], Array] | None,
+) -> int | None:
+    """The first step at which a fit the log cannot tell from the fitted one predicts another
+    path, or None where none does (ADR 0054).
+
+    Each such fit is the fitted one moved along a column of ``directions`` with the drift
+    regression's ``response`` (:func:`chc.dynamics_id._absorbed`), by any amount. The field is
+    linear in the parameters, so where a move leaves the field as it was at every point RK4 reads
+    it at in a step, the step lands where it did whatever the amount, and the path is the same,
+    not only to first order. The move counts as zero where the terms that make it up cancel to the
+    square root of the working precision; a nan does not."""
+    if directions.shape[1] == 0 or plan.actions.shape[0] == 0:
+        return None
+    precision = jnp.sqrt(jnp.finfo(directions.dtype).eps)
+
+    def clear(t: Array, x: Array, u: Array) -> Array:
+        action = model.read(x, u) if isinstance(model, _Ruled) else u
+        design = _channel_design(action[None, :], x[None, :], fit.residual.channel_degree)[0]
+        features = control_affine_features(x, fit.residual.degree)
+        if drivers is not None:
+            features = jnp.concatenate([features, drivers(t)])
+        moved = design @ directions - features @ response
+        size = jnp.abs(design) @ jnp.abs(directions) + jnp.abs(features) @ jnp.abs(response)
+        return jnp.all(jnp.abs(moved) <= precision * size)
+
+    def step(t: Array, x: Array, u: Array) -> Array:
+        k1 = model(t, x, u)
+        k2 = model(t + 0.5 * dt, x + 0.5 * dt * k1, u)
+        k3 = model(t + 0.5 * dt, x + 0.5 * dt * k2, u)
+        return (
+            clear(t, x, u)
+            & clear(t + 0.5 * dt, x + 0.5 * dt * k1, u)
+            & clear(t + 0.5 * dt, x + 0.5 * dt * k2, u)
+            & clear(t + dt, x + dt * k3, u)
+        )
+
+    times = dt * jnp.arange(plan.actions.shape[0], dtype=plan.trajectory.dtype)
+    clean = np.asarray(jax.vmap(step)(times, plan.trajectory[:-1], plan.actions))
+    loaded = np.flatnonzero(~clean)
+    return int(loaded[0]) if loaded.size else None
 
 
 def _resolve_adjustment(
@@ -1527,6 +1991,9 @@ def _transitions(
 
 # The class :func:`chc.dynamics_id.fit_causal_residual` regresses the levers on by default.
 _LOGGER_CHECK_DEGREE = 2
+# The degree of the nuisances' polynomial prescribe fits with, and so of the rules of the state the
+# log's actions are read against (ADR 0054).
+_NUISANCE_DEGREE = 2
 _LOGGER_CHECK_ALPHA = 0.05  # the level at which a check is logged as a warning
 
 
@@ -1936,6 +2403,16 @@ def _show(value: object) -> str:
     if value is None:
         return "not evaluated"
     return f"{value:.4g}" if isinstance(value, float) else str(value)
+
+
+def _show_relation(relation: LeverRelation, names: Sequence[str]) -> str:
+    terms = " ".join(
+        f"{'-' if weight < 0.0 else '+'} {abs(weight):.4g} `{name}`"
+        for weight, name in zip(relation.weights, names, strict=True)
+        if weight != 0.0
+    )
+    head = "" if terms.startswith("+") else "-"
+    return f"{head}{terms[2:]} = {relation.level:.4g}"
 
 
 def _show_price(price: RowPrice) -> str:

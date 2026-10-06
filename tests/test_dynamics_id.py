@@ -1226,8 +1226,9 @@ def test_an_action_is_unmoved_where_every_direction_of_its_own_channel_is(
 
 def test_a_policy_the_covariates_determine_reads_as_a_confident_wrong_channel() -> None:
     """Why the field exists: with nothing left of the action once the covariates are taken out, the
-    ridge sets the channel, near zero where the truth is 0.8, and its error says 0.0013. Only
-    ``unmoved`` tells the caller that every direction of the channel is unread."""
+    moment has no data, and the log's rates set the channel by least squares beside the drift, at
+    2.47 where the truth is 0.8: the confounder's push, read as the action's. Its error says 0.0018.
+    Only ``unmoved`` tells the caller that every direction of the channel is unread."""
     fit = fit_causal_residual(
         _known,
         _policy_log(4000, _determined(1.0)),
@@ -1241,6 +1242,76 @@ def test_a_policy_the_covariates_determine_reads_as_a_confident_wrong_channel() 
     assert abs(float(fit.residual.channel[0, 0, 0]) - 0.8) > 0.5
     assert fit.unmoved is not None
     assert fit.unmoved.shape[1] == fit.residual.channel.size
+
+
+RULED = {"adjust_for": ("z",), "nuisance_degree": 2, "channel_degree": 1}
+
+
+def _ruled(scale: float) -> Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray]:
+    return lambda rng, x, z: scale * (-0.3 * x[:, 0])[:, None]
+
+
+def test_where_the_moment_has_no_data_the_fit_keeps_to_the_log_in_any_units() -> None:
+    """A lever the first state sets, ``-0.3 x0``, leaves its whole affine channel unmoved. Its push
+    along the constant feature, ``-0.3 x0``, the drift takes up, and the fit holds the channel at
+    zero there; along ``x0`` and ``x1`` it cannot, so the log's rates rule out all but one value,
+    and the fit takes it. The moment's ridge set all three: a slope of 0.2 in ``x0`` added to the
+    log moved the fit by 2e-11, and with the lever logged in millionths the fit's rates missed the
+    log's by 1.6e6, against 1.06 (ADR 0054)."""
+    fits = {}
+    for scale in (1.0, 1e6):
+        log = _policy_log(4000, _ruled(scale))
+        slope = 0.1 * 0.2 * log["x"][:, :1] * log["u"] / scale * jnp.array([1.0, 0.0])
+        sloped = dict(log, x_next=log["x_next"] + slope)
+        fits[scale] = [fit_causal_residual(_known, data, 0.1, **RULED) for data in (log, sloped)]
+    for scale, (fit, other) in fits.items():
+        np.testing.assert_allclose(np.asarray(fit.residual.channel)[:, 0, 0], 0.0, atol=1e-12)
+        change = (np.asarray(other.residual.channel) - np.asarray(fit.residual.channel)) * scale
+        np.testing.assert_allclose(
+            change, [[[0.0, 0.2, 0.0]], [[0.0, 0.0, 0.0]]], rtol=0.0, atol=1e-9
+        )
+    np.testing.assert_allclose(
+        np.asarray(fits[1e6][0].residual.channel) * 1e6,
+        np.asarray(fits[1.0][0].residual.channel),
+        rtol=1e-6,
+        atol=1e-12,
+    )
+    assert fits[1e6][0].integrator_defect == pytest.approx(
+        fits[1.0][0].integrator_defect, rel=1e-6, abs=0.0
+    )
+
+
+def test_the_representer_carries_what_the_log_reads_where_the_moment_has_no_data() -> None:
+    """On the ruled log no direction is moved, so the channel is what the log's rates read along
+    the directions the drift cannot take up, linear in the rates and in nothing the nuisances fit.
+    A row's weight on it, the representer, is then the change one row makes, to rounding."""
+    log = _policy_log(400, _ruled(1.0))
+    fit = fit_causal_residual(_known, log, 0.1, influence=True, **RULED)
+    assert fit.representer is not None
+    for row, state in ((3, 0), (250, 1)):
+        moved = dict(log, x_next=log["x_next"].at[row, state].add(1e-3))
+        change = np.asarray(fit_causal_residual(_known, moved, 0.1, **RULED).residual.channel)
+        change = (change - np.asarray(fit.residual.channel)).ravel() / (1e-3 / 0.1)
+        np.testing.assert_allclose(
+            np.asarray(fit.representer)[row, state] / 400, change, rtol=0.0, atol=1e-8
+        )
+    assert float(np.max(np.abs(np.asarray(fit.representer)))) > 1.0
+
+
+def test_a_channel_the_log_cannot_split_is_split_the_same_in_any_units() -> None:
+    """The second action twice the first: the log fixes ``B1 + 2 B2`` on each feature and nothing
+    of how it splits. The fit splits it at zero along the unmoved direction once each action is
+    scaled to its own size, so logging the second in thousandths moves its coefficients by that
+    factor and nothing else."""
+    log = _policy_log(4000, lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 2.0]))
+    milli = dict(log, u=log["u"] * jnp.array([1.0, 1e3]))
+    one, other = (fit_causal_residual(_known, data, 0.1, **RULED) for data in (log, milli))
+    np.testing.assert_allclose(
+        np.asarray(other.residual.channel) * np.array([1.0, 1e3])[None, :, None],
+        np.asarray(one.residual.channel),
+        rtol=1e-6,
+        atol=1e-12,
+    )
 
 
 # ---- a channel error summed within clusters ----

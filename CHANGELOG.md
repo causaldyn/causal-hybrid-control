@@ -47,6 +47,50 @@ still change).
   fits, and leaves the tube `not_evaluated` where its rate or budget comes out other than a finite
   number, with a warning (`chc_event="tube"`). The tube's test dates from 0.2.0, the regret
   bound's from 0.6.0.
+- **A plan keeps to what the log did along the directions it never moved.** `prescribe` held a
+  lever whose whole channel the log never moved at its mean logged level, and planned every other
+  lever over its box. Where no single lever is unmoved, as with `u2 = 2 u1` in every row, the plan
+  moved the levers apart, to `u1 = 2` and `u2 = 0.10`, along a direction the channel's moment never
+  saw, and certified 3 steps: two channels the log cannot tell apart, `[0.8, 0.1]` and
+  `[0.2, 0.4]`, run different paths under it. Where the logger set the lever from the state,
+  `u1 = -0.3 y`, the mean, 0.0074, is a level the log never ran, whose push the log does not fix.
+  Now a lever the log kept at one level is held there, as before; one it set from the state alone
+  follows the log's least-squares rule of the state inside the plan's field, clipped to its box,
+  and the schedule's column carries the rule read along the predicted path
+  (`InterventionSchedule.rules` names it); one it set from a column outside the state gives no
+  plan, the reason naming the column. Among the other levers, a combination the log kept at one
+  level is held there by an equality row at every step, and one it set from anything else gives no
+  plan. The plan is then checked exactly: the fits the log cannot tell apart differ along
+  directions in which the field is linear, so where none of them moves the field at a point RK4
+  reads in a step, each runs the plan's path, not only to first order. `DecisionCertificate` gains
+  `estimability` (`estimable`, `held_to_log`, `not_estimable`), `identification_rank` and
+  `unmoved_directions` a state, `relations` (`LeverRelation`), `rule_levers`, and
+  `first_loaded_step`, where `trustworthy_steps` ends; the report, `to_json()` and warnings
+  (`chc_event="rule"`, `"relation"`, `"estimability"`) carry them. A lever that follows a rule takes
+  no `cap_per_step` and no budget, `evaluate` refuses its plan, and `max_levers` refuses a
+  combination kept away from zero, each with `DecisionError`. A log that moves every direction
+  gives the plan it gave, bit for bit. The joint case dates from 0.5.0, the mean hold from 0.13.0
+  (ADR 0054).
+- **Where the channel's moment has no data, the fit keeps to the log, in any units.** Along the
+  directions `CausalDynamicsFit.unmoved` names, `fit_causal_residual`'s ridge set the channel by the
+  ratio of two roundings, which grows as the square of the actions' units, and, solved beside the
+  rest, moved those too. On a log whose state sets the lever, `u1 = -0.3 y`, logged in units 1000
+  and 1e6 times its own, the fit's rates missed the log's by 14.7 and 8.7e4 against the noise's
+  1.47, and the `rk4` fixed point did not converge; on one with `u = -0.3 x0` and an affine
+  channel, a slope of 0.2 in `x0` added to the log moved the fit by 2e-11. Now the moment is solved
+  on the directions it has data on alone, split from the rest once each coefficient is scaled to
+  the raw actions' size. Along a combination of the rest whose push on the log the drift
+  regression takes up exactly, no rate of the log tells the fits apart, and the channel is zero;
+  along the others the log's rates rule out all but one value within the class, and the channel
+  takes it, by least squares beside the drift's features. That value is what the log did, not an
+  effect: on a log whose policy the covariates determine whole, the channel reads 2.47 where the
+  truth is 0.8, where the ridge read 0.0004, and `unmoved` names the direction either way. On a log
+  whose second action was always twice the first, a plan free to move the two apart lost 0.0014
+  against the truth, where it lost 0.55. From 1 to 1e6 times the actions' units, the channel times
+  the units now agrees to 2e-8. Below, the moment's ridge, absolute in the actions' units, still
+  shrinks a channel the log moved: by 0.2 % at a thousandth. A fit with no unmoved direction is
+  unchanged, bit for bit; every fit with one moves, and so does every plan made on it. Since 0.3.0
+  (ADR 0054).
 
 ## [0.13.0] — 2026-10-06
 

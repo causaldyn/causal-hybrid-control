@@ -1,0 +1,132 @@
+# ADR 0054 — A plan keeps to the log where the log never moved
+
+**Status:** accepted, 2026-10-06.
+
+## Context
+
+`fit_causal_residual` reads the channel off the Robinson moment, which has data only along the
+directions of the channel that the action residuals move. `CausalDynamicsFit.unmoved` names the
+rest: the directions along which the log's actions, less what the covariates predict, keep less
+than the square root of the working precision of their raw size (ADR 0024). Since 0.13.0
+`prescribe` held a lever whose whole channel is unmoved at its mean logged level, and planned every
+other lever over its box. A review of 0.13.0 found three ways that fails, and fixing them found a
+fourth.
+
+- **A direction no single lever owns.** A log with `u2 = 2 u1` in every row leaves the direction
+  `(2, -1)` unmoved on each feature of the channel, and no lever whole. The plan moved the levers
+  apart, to `u1 = 2` and `u2 = 0.10`, where the log fixes only `B1 + 2 B2`, and the certificate
+  read 3 trustworthy steps. Two channels the log cannot tell apart, `[0.8, 0.1]` and `[0.2, 0.4]`,
+  run different paths under that plan.
+- **A lever the log set from the state.** With `u1 = -0.3 y` in every row, the log fixes `A - 0.3
+  B1`, not `A` and `B1` apart: `A = -0.74 + 0.3 k` and `B1 = k` make the same log for every `k`.
+  Held at its mean, 0.0074, `u1` moves the rate by `k (0.0074 + 0.3 y)`, which depends on `k`.
+- **A lever the log set from a column outside the state**, `u1 = 0.7 z`. No level reproduces the
+  rule, and where `z` moves with the state, its mean does not keep the expected rate either.
+- **The fit along the unmoved directions.** The moment's ridge set the channel there by the ratio
+  of two roundings, which grows as the square of the actions' units, and, solved beside the moved
+  directions, moved those too. A direction whose push on the log the drift's features cannot take
+  up, `u1 y` above, which pushes `-0.3 y^2` past an affine drift, is fixed by the log's rates within
+  the model class, and the fit did not take it from them. With the levers logged in units 1000 and
+  1e6 times their own, the fit's rates missed the log's by 14.7 and 8.7e4, root mean square,
+  against the noise's 1.47; the `rk4` fixed point did not converge, and under `euler` 0.13.0's
+  plan predicted a path that reached 4e47 in three steps. On a log with `u = -0.3 x0` and an
+  affine channel, a slope of 0.2 in `x0` added to the log moved the fit by 2e-11.
+
+## Decision
+
+**The fit keeps to the log where its moment has no data.**
+
+- The moment is solved on the directions it has data on alone: the complement of `unmoved`'s
+  span, orthogonal to it once each coefficient is scaled to the raw actions' size, the scale
+  `unmoved` is read in, so the split reads the same in any units. The ridge keeps its meaning on
+  the raw channel.
+- Along a combination of `unmoved`'s directions whose push on the log's raw actions the drift
+  regression takes up exactly, by least squares, no rate of the log tells the fits apart, and the
+  channel is held at zero, in those scaled units.
+- Along the rest, the log's rates rule out all but one value within the class, and the channel
+  takes it, by least squares on the rate beside the drift's features. That value is what the log
+  did, not an effect. The fit stays linear in its target, so the `rk4` fixed point, `influence`
+  and the representer carry it.
+- A log that moves every direction fits as before, bit for bit.
+
+**A plan keeps to the log along the directions it never moved.** From the log's actions,
+`prescribe` reads three nested spans, each to the precision `unmoved` is read to: the combinations
+the log kept at one level, those the state alone predicts, and those the covariates predict.
+
+- A lever whose whole channel is unmoved:
+  - kept at one level, it is held at its mean, clipped to its box, as in 0.13.0;
+  - set from the state alone, it follows the log's least-squares rule of the state, the nuisance's
+    degree-2 polynomial, clipped to its box, inside the plan's field. The schedule's column carries
+    the rule read along the predicted path, and `InterventionSchedule.rules` names the lever;
+  - set from a column outside the state, it gives no plan. The certificate reads `not_identified`
+    and names the columns the rule reads.
+- Among the other levers:
+  - a combination kept at one level is held there by an equality row at every step. The level is
+    clipped to what the boxes reach, and a level within rounding of zero is zero;
+  - a combination set from the state, or from other columns, gives no plan, since no row of the
+    plan's actions holds it.
+- **The test, which is exact.** The fits the log cannot tell apart are the fitted one moved along a
+  combination the drift takes up, with the drift regression's response, by any amount. The field
+  is linear in the parameters. So where such a move leaves the field as it was at every point RK4
+  reads in a step, the step lands where it did whatever the amount, not only to first order. The
+  move counts as zero where its terms cancel to the square root of the working precision of their
+  size, and a nan does not count. A direction whose push on the log cancels to that precision has
+  no drift response: the regression would read the rounding as one, which a plan that moves
+  nothing could not cancel. The first step where a move is not zero is `first_loaded_step`, and the
+  trustworthy prefix ends there.
+- **The certificate** gains `estimability`: `estimable` where the log moved every direction,
+  `held_to_log` where it did not and the plan keeps to it at every step, `not_estimable` for a
+  refusal or a loaded step. It gains `identification_rank` and `unmoved_directions`, a state each,
+  and `relations`, `rule_levers` and `first_loaded_step`. The report and `to_json` carry them all.
+- **What a ruled lever does not take:** a cap on its steps, or a budget that prices it, since the
+  rule moves it as the state moves; and `evaluate`, whose open-loop schedule cannot carry a rule.
+  Each raises `DecisionError`. `max_levers` refuses a combination kept away from zero, which an
+  unselected lever held at zero would leave.
+
+## Consequences
+
+- On the review's logs, one state and two levers over 100 units of 15 periods:
+  - `u2 = 2 u1`: the plan keeps `u2 - 2 u1` at zero to 1e-9, and the two channels run one path, to
+    1e-12;
+  - `u2 = 2 u1 + 0.4`: the plan keeps 0.4; where the boxes reach no higher than -1, it holds -1,
+    and reads `not_estimable` from its first step;
+  - `u1 = -0.3 y` and `u1 = 0.1 y^2`: the schedule's `u1` is the rule along the predicted path, to
+    1e-9, and the worlds `k = 0`, 0.8 and 2 run one path, to 1e-12. With `u1`'s box ending at
+    -0.27, the rule leaves the box inside the second step, and `first_loaded_step` is 1;
+  - `u1 = 0.7 z` and `u2 - 2 u1 = -0.3 y` give no plan, and the reason names `z` and the
+    combination;
+  - a log that moves every direction gives 0.13.0's plan, bit for bit.
+- The fit along unmoved directions:
+  - logged in units 1 to 1e6 times their own, the channel times the units agrees to 2e-8, the fit's
+    rates miss the log's by its noise in each, and `rk4` converges in each;
+  - a slope added to the log is read back exactly;
+  - on a log whose second action was always twice the first, a plan free to move the two apart
+    lost 0.0014 against the truth, where it lost 0.55;
+  - on a log whose policy the covariates determine whole, `u = 0.9 z - 0.3 x0`, the channel reads
+    2.47 where the truth is 0.8, the confounder's push read as the action's; the ridge read 0.0004.
+    Neither is an effect, and `unmoved` names every direction; only the first reproduces the log,
+    which is what a plan that keeps to the log needs.
+- Every fit with an unmoved direction moves, and every plan made on one. So does what
+  `misspecification_cost` compares along those directions: ADR 0024's "the ridge sets it in both"
+  becomes "both hold it at zero or read it off the log's rates".
+- **What this does not do.** The moment's ridge is still absolute in the actions' units, and
+  shrinks a channel the log did move where the actions are small: logged at a millionth of their
+  units, the review's moved lever read 5.1e-5 where it reads 0.0977. Fixing that moves every fit,
+  so it is a change of its own.
+
+## Alternatives
+
+- **Refuse every plan along an unmoved direction**, the review's remedy for all but a fixed
+  relation. Rejected for levers set from the state: the log does determine the plan's path there,
+  as long as the plan keeps the rule.
+- **The test along every unmoved direction, not only those the drift takes up.** Rejected: `u1 y`'s
+  push, `-0.3 y^2`, is ruled out by the log within the class, though the moment has no data on it,
+  and the test would refuse the right plan in the held case at an affine channel.
+- **A rule of a column outside the state held at its mean**, with the column named and
+  `held_to_log` scoped to it, the review's other answer. Rejected: the mean keeps the expected rate
+  only where the column is independent of the state, which nothing here can check.
+- **The ridge's value along the unmoved directions**, as before. Rejected: it moves with the
+  actions' units, and it leaves the fit off the log along the directions the log fixes.
+- **The covariates partialled out of the log's reading too**, which would keep the confounder out
+  of it. Rejected: the plan follows the log's rule without the confounder, so the path it must
+  predict is the log's given the state, as the drift's is.

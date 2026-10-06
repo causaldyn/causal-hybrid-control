@@ -51,8 +51,8 @@ class MisspecificationCost:
     noise: float  # tr(W S) / 2: what d' W d / 2 reads on average when the class holds the truth
     p_value: float  # the chance d' W d reads at least this large when the class holds the truth
     # directions the log's actions never moved (CausalDynamicsFit.unmoved) that the plan's regret
-    # weighs: both fits carry the ridge's channel there, so neither the cost nor the p-value can see
-    # a miss along them, and a pass says nothing about them
+    # weighs: neither fit's moment has data there, so neither the cost nor the p-value can see a
+    # miss along them, and a pass says nothing about them
     unseen: int
 
 
@@ -106,15 +106,16 @@ def misspecification_cost(
     regret between the fits' plans within 1% on average at every setting.
 
     What it cannot see: a direction of the channel the log's actions never moved
-    (:attr:`chc.dynamics_id.CausalDynamicsFit.unmoved`) has no data in either fit, both carry the
-    ridge's value there, and they cannot differ along it. ``unseen`` counts the directions the
+    (:attr:`chc.dynamics_id.CausalDynamicsFit.unmoved`) has no data in either fit's moment: both
+    hold the channel at zero along it, or read it off the log's rates as least squares does, which
+    no effect enters, and a miss along it is not theirs to see. ``unseen`` counts the directions the
     plan's regret weighs. A log whose actions the covariates' features determine, as an undithered
     deployed plan's own may be, leaves every direction unmoved. On a log whose second action was
-    always twice the first, the gate read ``p = 0.33`` and two unseen directions while the plan
-    lost 0.55 against the truth; held to the log's ratio, the plan had none unseen and lost
-    ``5e-6`` (section ``unseen``). Nor can it see the error both fits share: on the zone plant, the
-    plan lost 0.38 to 0.51 against the truth at every setting, including where the class held, 32 to
-    106 times the regret between the fits' plans.
+    always twice the first, the gate read ``p = 0.39`` and two unseen directions while the plan lost
+    0.0014 against the truth; held to the log's ratio, the plan had none unseen and lost ``5e-6``
+    (section ``unseen``). Nor can it see the error both fits share: on the zone plant, the plan lost
+    0.38 to 0.51 against the truth at every setting, including where the class held, 32 to 106 times
+    the regret between the fits' plans.
 
     Raises:
         ValueError: on a fit made without ``influence=True``; two fits whose classes, integrators,

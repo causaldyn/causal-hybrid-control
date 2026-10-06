@@ -339,8 +339,8 @@ def _pair_log(rows: int, seed: int) -> dict[str, jax.Array]:
 )
 def test_a_direction_the_log_never_moved_is_reported_not_priced(held: bool, unseen: int) -> None:
     """The class holds the truth, so the gate has nothing to find where the log looked, and it does
-    not fire. Where the log never looked, one direction per state, both fits carry the ridge's
-    channel: the gate cannot see a miss there, and says so for each direction the plan weighs. A
+    not fire. Where the log never looked, one direction per state, both fits hold the channel at
+    zero: the gate cannot see a miss there, and says so for each direction the plan weighs. A
     plan held to the log's own ratio of the two actions weighs none of them."""
     cost = dataclasses.replace(COST, R=0.05 * jnp.eye(2))
     reference, alternative = _fits(_pair_log(4000, 0))

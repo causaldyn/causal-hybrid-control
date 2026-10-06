@@ -1,6 +1,8 @@
 # ADR 0024 — Pricing a model class's miss in the plan's regret
 
-**Status:** proposed, 2026-09-30.
+**Status:** proposed, 2026-09-30. Amended 2026-10-06 by ADR 0054: along an unmoved direction
+both fits hold the channel at zero, or read it off the log's rates where the drift cannot take
+up its push, rather than leave the ridge's value.
 
 ## Context
 

@@ -150,17 +150,19 @@ def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
     assert "None" not in report
 
 
-def _policy_logs(offset: float, random_lever: float) -> dict[str, np.ndarray]:
+def _policy_logs(
+    offset: float, random_lever: float, reads: tuple[float, float] = (0.9, -0.3)
+) -> dict[str, np.ndarray]:
     """Eighty units of twelve periods whose lever ``u`` the policy sets from the confounder and the
-    state alone, ``offset + 0.9 z - 0.3 y``, beside a lever ``v`` drawn at random that pushes ``y``
-    by ``random_lever``."""
+    state alone, ``offset + reads[0] z + reads[1] y``, beside a lever ``v`` drawn at random that
+    pushes ``y`` by ``random_lever``."""
     rng = np.random.default_rng(0)
     rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "y", "u", "v", "z")}
     for unit in range(80):
         y = rng.normal()
         for period in range(12):
             z = rng.normal()
-            u, v = offset + 0.9 * z - 0.3 * y, rng.normal()
+            u, v = offset + reads[0] * z + reads[1] * y, rng.normal()
             for name, value in zip(rows, (unit, period, y, u, v, z), strict=True):
                 rows[name].append(value)
             rate = -0.5 * y + 0.8 * u + random_lever * v + 1.5 * z
@@ -184,8 +186,9 @@ def _prescribe_policy(logs: dict[str, np.ndarray], levers: list[Lever], **kwargs
 
 def test_a_lever_the_log_never_moved_gives_no_schedule(caplog) -> None:
     """A review's case: the policy sets the lever from the confounder and the state, so nothing of
-    it is left once they are adjusted for, and the ridge sets its channel, near zero where the truth
-    is 0.8. The plan on that channel was certified over every step; now there is none."""
+    it is left once they are adjusted for, and the moment has no data on its channel. Up to 0.13 the
+    ridge read it as near zero where the truth is 0.8, and the plan on that channel was certified
+    over every step; now there is none."""
     with caplog.at_level(logging.WARNING, logger="chc.decision"):
         result = _prescribe_policy(
             _policy_logs(0.0, 0.0), [Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05)]
@@ -209,11 +212,11 @@ def test_a_lever_the_log_never_moved_gives_no_schedule(caplog) -> None:
     ids=["every lever", "one lever kept", "two levers kept", "a box below the logged level"],
 )
 def test_a_lever_the_log_never_moved_is_held_at_its_logged_level(caplog, max_levers, most) -> None:
-    """Beside a lever drawn at random, the one the policy sets is held at its mean over the
-    transitions, or at its box's end where the mean lies past it, at every step; greedy selection
-    never offers it. The certificate, the JSON, the report and a warning name it, and the random
-    lever is planned."""
-    logs = _policy_logs(0.5, 0.6)
+    """Beside a lever drawn at random, the one the policy kept at one level is held there, or at its
+    box's end where the level lies past it, at every step; greedy selection never offers it. The
+    certificate, the JSON, the report and a warning name it, and the random lever is planned. Held
+    at its box's end the plan leaves what the log did from the first step, and says so."""
+    logs = _policy_logs(0.5, 0.6, reads=(0.0, 0.0))
     levers = [Lever("u", lo=-2.0, hi=most, unit_cost=0.05), Lever("v", lo=-2.0, hi=2.0)]
     with caplog.at_level(logging.INFO, logger="chc.decision"):
         result = _prescribe_policy(logs, levers, max_levers=max_levers)
@@ -236,6 +239,34 @@ def test_a_lever_the_log_never_moved_is_held_at_its_logged_level(caplog, max_lev
     (held,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "unmoved"]
     assert held.levers == ["u"]
     assert held.levels == pytest.approx([logged], rel=1e-12, abs=0.0)
+    inside = most >= mean
+    assert certificate.estimability == ("held_to_log" if inside else "not_estimable")
+    assert certificate.first_loaded_step == (None if inside else 0)
+    assert (certificate.trustworthy_steps > 0) == inside
+
+
+def test_a_lever_set_from_a_column_outside_the_state_gives_no_schedule(caplog) -> None:
+    """The policy sets ``u`` from the confounder as well as the state: no level is that rule, and
+    the plan cannot read the confounder, so there is no schedule, and the reason names it. The
+    mean hold, the answer up to 0.13, kept the confounder's push only where it is independent of
+    the state, and moved the state's part to a level the log never ran."""
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        result = _prescribe_policy(
+            _policy_logs(0.5, 0.6),
+            [Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05), Lever("v", lo=-2.0, hi=2.0)],
+        )
+    certificate = result.certificate
+    assert result.plan is None
+    assert (certificate.identification, certificate.estimability) == (
+        "not_identified",
+        "not_estimable",
+    )
+    assert certificate.unmoved_levers == ("u",)
+    assert "the log set `u` from `z`, outside the plan's state" in certificate.adjustment.reason
+    with pytest.raises(NotIdentifiedError, match="no plan keeps to what the log did"):
+        _ = result.schedule
+    (abort,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "abort"]
+    assert abort.getMessage() == "no schedule: no plan keeps to what the log did"
 
 
 def test_a_latent_parent_the_panel_does_not_hold_leaves_the_logger_unchecked() -> None:
@@ -1233,13 +1264,23 @@ def test_every_decision_point_leaves_a_structured_record(caplog: pytest.LogCaptu
     """Each record names its point in `chc_event`, so a handler routes on a field, not on prose."""
     with caplog.at_level(logging.INFO, logger="chc.decision"):
         _prescribe(_panel(n_units=40, n_periods=8), CausalGraph.from_edges(EDGES))
-    assert _events(caplog) == ["adjustment", "logger_check", "fit", "plan", "certificate"]
+    assert _events(caplog) == [
+        "adjustment",
+        "logger_check",
+        "fit",
+        "plan",
+        "estimability",
+        "certificate",
+    ]
     fit = caplog.records[_events(caplog).index("fit")]
     assert getattr(fit, "method", None) == "orthogonal"
     assert getattr(fit, "transitions", 0) > 0
     plan = caplog.records[_events(caplog).index("plan")]
     assert getattr(plan, "rate_limited_levers", None) == []
     assert getattr(plan, "constraints_held", None) is False
+    estimability = caplog.records[_events(caplog).index("estimability")]
+    assert estimability.levelno == logging.INFO
+    assert getattr(estimability, "estimability", None) == "estimable"
     certificate = caplog.records[_events(caplog).index("certificate")]
     assert getattr(certificate, "regret_status", None) == "diagnostic"
 
