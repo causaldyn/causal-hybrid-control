@@ -189,6 +189,14 @@ still change).
   seeds 0 to 19 it ran from 1020 to 1472 on the old folds and runs from 1023 to 1367 on the new,
   the old seed 0 being the highest. The media-budget case study's plan buys 4.2 % more lift than
   an equal split, where it bought 4.5 %.
+- **`optimal_npi` descends past 400 steps by default**, a defect since 0.2.0. Its `steps`
+  defaulted to 400, where the other projected-gradient solvers have defaulted to 10_000 since
+  0.4.0. On the epidemic of the case study, 400 steps stopped the descent at a cost of 29.67, with
+  the schedule's largest day-to-day move between days 20 and 60 at 0.148. The default is now
+  10_000. In float32 the stopping rule ends the descent first, after 2,887 steps, at 29.09 and
+  0.063; in float64 all 10_000 steps run, to 29.03 and 0.015. Its docstring said the schedule
+  keeps infections under the cap: the cap is a penalty, and the peak ends at 0.1005 against 0.1
+  in float32, 0.1004 in float64.
 - **Each accelerator extra names the first jax that has its build**, and the `trees` extra the
   first catboost that loads. pip and uv install an extra a package does not provide as nothing,
   with a warning, so a resolution that held jax back below 0.7 installed `chc[cuda13]` on the

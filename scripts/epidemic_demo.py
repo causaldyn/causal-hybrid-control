@@ -1,4 +1,4 @@
-"""Epidemic flagship: optimal NPI flattens the curve under a hospital-capacity constraint.
+"""Epidemic flagship: optimal NPI flattens the curve down to a hospital capacity.
 
 Run: uv run python scripts/epidemic_demo.py                  (prints peaks)
      uv run --group viz python scripts/epidemic_demo.py      (also writes outputs/epidemic.png)
@@ -18,7 +18,7 @@ def main() -> None:
     dt, horizon, i_max = 1.0, 100, 0.1
 
     xs_free = rollout(model, x0, jnp.zeros((horizon, 1)), dt)
-    us = optimal_npi(model, x0, dt, horizon, i_max, steps=400)
+    us = optimal_npi(model, x0, dt, horizon, i_max)
     xs_ctrl = rollout(model, x0, us, dt)
 
     print(f"capacity I_max      = {i_max:.3f}")

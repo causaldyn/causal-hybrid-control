@@ -1,8 +1,9 @@
-"""Scientific flagship: SIR epidemic control — flatten the curve under a capacity constraint.
+"""Scientific flagship: SIR epidemic control — flatten the curve down to a hospital capacity.
 
 Nonlinear known dynamics (compartmental SIR) with an NPI control ``u`` that scales transmission
-``beta -> beta*(1-u)``. Optimal control keeps infections under a hospital-capacity threshold with
-minimal intervention — constrained OC on a classic nonlinear population model (the Bazykin /
+``beta -> beta*(1-u)``. Optimal control holds infections at a hospital-capacity threshold with
+minimal intervention, the threshold a steep penalty rather than a hard limit — optimal control on
+a classic nonlinear population model (the Bazykin /
 Riznichenko / Marchuk-immunology lineage). In observational logs the intervention effect is
 confounded (policy reacts to case counts); here the plant is the true system and control is planned
 against it.
@@ -70,10 +71,18 @@ def optimal_npi(
     u_max: float = 0.9,
     w_npi: float = 1.0,
     w_peak: float = 1.0e4,
-    steps: int = 400,
+    steps: int = 10_000,
     lr0: float = 0.5,
 ) -> Array:
-    """Open-loop optimal NPI: least intervention that keeps ``I <= i_max`` (projected gradient)."""
+    """Open-loop optimal NPI: the least intervention that holds ``I`` at ``i_max``.
+
+    Projected gradient on :func:`epidemic_cost`, which prices the capacity as ``w_peak`` times the
+    squared excess, not as a hard limit, so the peak can end a little above ``i_max``. The descent
+    stops where 30 halvings of the step find no cost lower by ``1e-12``, or after ``steps`` steps,
+    so where it stops depends on the precision. At ``R0 = 6`` a float32 descent stops after 2,887
+    steps, the peak at 0.1005 against 0.1; a float64 one runs all 10_000, to 0.1004. 400 steps
+    leave the cost 2 % above either.
+    """
 
     def obj(us: Array) -> Array:
         return epidemic_cost(model, x0, us, dt, i_max, w_npi, w_peak)

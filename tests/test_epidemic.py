@@ -2,7 +2,7 @@
 
 import jax.numpy as jnp
 
-from chc.epidemic import SIRDynamics, optimal_npi
+from chc.epidemic import SIRDynamics, epidemic_cost, optimal_npi
 from chc.integrate import rollout
 
 DT = 1.0
@@ -24,3 +24,15 @@ def test_optimal_npi_flattens_the_curve() -> None:
     assert float(jnp.sum(us)) > 0.0  # it actually intervenes
     assert bool((us >= 0.0).all())  # within the lower box bound
     assert bool((us <= U_MAX + 1e-6).all())  # within the upper box bound
+
+
+def test_optimal_npi_descends_past_400_steps_by_default() -> None:
+    # 400 steps leave the cost 2 % above the default's, in float32 and in float64
+    model = SIRDynamics(beta=0.6, gamma=0.1)
+    x0 = jnp.array([0.99, 0.01])
+
+    def cost(us: jnp.ndarray) -> float:
+        return float(epidemic_cost(model, x0, us, DT, I_MAX, 1.0, 1.0e4))
+
+    short = cost(optimal_npi(model, x0, DT, 100, I_MAX, steps=400))
+    assert cost(optimal_npi(model, x0, DT, 100, I_MAX)) < 0.99 * short

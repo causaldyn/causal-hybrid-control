@@ -9,7 +9,7 @@ emulator, and its page quotes the committed results of that run.
 | case study | the decision | command |
 |---|---|---|
 | [Pricing under confounding](pricing.md) | steer a KPI to target from logs whose action was aimed at the customers most likely to churn | `uv run python scripts/flagship_demo.py` |
-| [Flatten the curve](epidemic.md) | the least intervention that keeps an epidemic under hospital capacity | `uv run python scripts/epidemic_demo.py` |
+| [Flatten the curve](epidemic.md) | the least intervention that holds an epidemic at hospital capacity | `uv run python scripts/epidemic_demo.py` |
 | [A pendulum from a confounded log](pendulum.md) | raise a pendulum and hold it, from a log whose torque an operator used to cancel the wind | `uv run python scripts/pendulum_demo.py` |
 | [Media budgets](media-budgets.md) | which channel to spend on, and when, from logs planned against demand | `uv run python scripts/mmm_demo.py` |
 | [Marketplace dispatch](marketplace-dispatch.md) | which drivers to send where, and the surge prices that fall out of the same optimisation | `uv run python scripts/run_marketplace_demo.py` |
