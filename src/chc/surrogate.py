@@ -39,7 +39,9 @@ def _make_regressor(backend: str, params: dict[str, Any]) -> Any:
             from catboost import CatBoostRegressor
         except ImportError as exc:
             raise ImportError(_TREES_HINT) from exc
-        return CatBoostRegressor(**{"verbose": False, "iterations": 300, **params})
+        # CatBoost writes its training log to catboost_info/ in the working directory by default
+        defaults = {"verbose": False, "iterations": 300, "allow_writing_files": False}
+        return CatBoostRegressor(**{**defaults, **params})
     raise ValueError(f"unknown backend {backend!r}; use 'lightgbm' or 'catboost'")
 
 

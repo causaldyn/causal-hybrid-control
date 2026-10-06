@@ -254,6 +254,10 @@ still change).
 - **A prescription with no plan reports its solver as not run**, a defect since 0.5.0. The report
   of a `not_identified` prescription read `solver: None after 0 accepted steps`; it now reads
   `solver: not run`. The JSON still carries `solver_status: null`.
+- **`GradientBoostedDynamics(backend="catboost")` writes nothing into the working directory**, a
+  defect since 0.2.0. CatBoost writes its training log to `catboost_info/` in the working directory
+  unless told not to, so each fit left that directory wherever the caller ran it. The regressor is
+  built with `allow_writing_files=False`, which `params` can still override.
 
 ### Notes
 

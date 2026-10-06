@@ -1,5 +1,7 @@
 """Gradient-boosted surrogate dynamics predict next state (Track A/B baseline; trees extra)."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -40,6 +42,16 @@ def test_rollout_shape() -> None:
     model = GradientBoostedDynamics().fit(x, u, x_next)
     states = model.rollout(np.zeros(2), np.zeros((10, 1)))
     assert states.shape == (11, 2)
+
+
+def test_a_catboost_fit_writes_nothing_into_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("catboost")
+    monkeypatch.chdir(tmp_path)
+    x, u, x_next = _transitions(n=200)
+    GradientBoostedDynamics(backend="catboost", params={"iterations": 10}).fit(x, u, x_next)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_unknown_backend_raises() -> None:
