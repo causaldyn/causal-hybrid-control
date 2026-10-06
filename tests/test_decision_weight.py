@@ -339,3 +339,14 @@ def test_a_change_that_is_not_the_channel_s_shape_is_refused(change: np.ndarray)
     weight = causal_plan(SCALAR, ONE, SCALAR_COST, DT, 1, -10.0, 10.0).decision_weight()
     with pytest.raises(ValueError, match=r"finite \(1, 1\) matrix"):
         weight.regret(change)
+
+
+@pytest.mark.parametrize(("a", "horizon"), [(60.0, 30), (200.0, 20)])
+def test_a_plan_whose_rollout_leaves_the_float_range_is_not_weighed(a: float, horizon: int) -> None:
+    """At ``a = 60`` over 30 steps the rollout overflows, and the cost's derivatives with it: LAPACK
+    failed to converge on the Hessian, and numpy reads a nan matrix's eigenvalues as finite. At
+    ``a = 200`` over 20 the channel's mixed derivative stays finite while the others do not."""
+    model = LinearDynamics(jnp.array([[a]]), jnp.array([[1.0]]))
+    plan = causal_plan(model, ONE, SCALAR_COST, 1.0, horizon, -1.0, 1.0)
+    with pytest.raises(ValueError, match="derivatives at the plan are not finite"):
+        plan.decision_weight()

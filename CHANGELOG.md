@@ -101,6 +101,12 @@ still change).
   float range: at `L dt = 0.1` a horizon of 10 000 steps raised, and so did a contractive bound
   at `L = 1e155`. The bound there is now `inf`. Every input that did not raise reads as before,
   bit for bit, over 386 000 inputs. Since 0.2.0.
+- **A plan whose task cost leaves the float range is not weighed.**
+  `CausalPlan.decision_weight` read the cost's derivatives at the plan into `eigvalsh` unchecked.
+  Where the model's rollout overflows, as at `a = 60` over 30 steps of a scalar plant, LAPACK
+  failed with `LinAlgError: Eigenvalues did not converge`, and numpy reads a nan matrix's
+  eigenvalues as finite. Derivatives that are not finite are now refused with a `ValueError`
+  that says so, in `misspecification_cost` too, which weighs through it. Since 0.8.0.
 
 ## [0.14.1] — 2026-10-06
 
