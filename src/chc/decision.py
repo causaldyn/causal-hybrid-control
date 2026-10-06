@@ -110,8 +110,9 @@ _log = logging.getLogger(__name__)
 """Decision-point log for :func:`prescribe`, on the stdlib and nothing else.
 
 Every record carries a ``chc_event`` key in its ``extra`` payload naming the point it was emitted
-at --- ``precision``, ``adjustment``, ``logger_check``, ``fit``, ``abort``, ``selection`` (one per
-step under ``max_levers``), ``driver_range``, ``plan``, ``certificate``, and ``one_unit`` from
+at --- ``precision``, ``adjustment``, ``logger_check``, ``fit``, ``abort``, ``unmoved``, ``tube``,
+``selection`` (one per step under ``max_levers``), ``driver_range``, ``plan``, ``certificate``, and
+``one_unit`` from
 :meth:`Prescription.evaluate` --- so a JSON formatter downstream can route on one field rather than
 parse a sentence. The library installs no handler and sets no level: that is the application's
 call, and a library that reaches for ``basicConfig`` takes it away.
@@ -119,7 +120,8 @@ call, and a library that reaches for ``basicConfig`` takes it away.
 The records that are not ``INFO`` are the ones worth waking someone for: identifying in single
 precision, a graph that says the effect is not identified at all, a driver's forecast outside the
 range the panel logged, levers that read more than the state and their recorded parents or read
-those through more than a quadratic, and an evaluation that reads one unit's windows as independent.
+those through more than a quadratic, a tube whose rate or budget is not a finite number, and an
+evaluation that reads one unit's windows as independent.
 """
 
 IdentificationStatus = Literal["identified", "asserted", "not_identified"]
@@ -916,7 +918,8 @@ def prescribe(
         tolerance: the trajectory error above which the plan stops being certified. **Omitting it
             switches the tube off** rather than setting it to infinity: this library cannot know
             how much error a caller accepts, and a certificate with an infinite tolerance passes
-            over the whole horizon while proving nothing.
+            over the whole horizon while proving nothing. A tube whose rate or budget comes out
+            other than a finite number is not evaluated either, and a warning says so.
         x0: the state to plan from. Defaults to the mean over units of each unit's last observed
             state, which is the pooled "where we are now" and is recorded as such.
         integrator: the one-step map the fit is made consistent with, passed to
@@ -948,7 +951,8 @@ def prescribe(
             is also a lever or a state or is named twice, a forecast that is not ``horizon + 1``
             finite levels, a budget that does not weigh one spend per lever, starts its periods
             anywhere but the plan's first step, or allows less than the levers' boxes spend at
-            the least, or a panel with no consecutive pair of periods to fit a transition on.
+            the least, a ``dt`` that is not a finite positive step, a ``tolerance`` that is
+            negative or nan, or a panel with no consecutive pair of periods to fit a transition on.
         KeyError: a lever, target, constraint, driver or asserted covariate names a column the
             panel does not have. The message lists the panel's columns.
 
@@ -975,6 +979,13 @@ def prescribe(
         )
     if hold_constraints and not constraints:
         raise DecisionError("hold_constraints was set, but no constraint was given to hold")
+    if not 0.0 < dt < math.inf:
+        raise DecisionError(f"dt={dt} is not a step, which is finite and positive")
+    if tolerance is not None and not tolerance >= 0.0:
+        raise DecisionError(
+            f"tolerance={tolerance} is not a radius, which is never negative or nan; leave it "
+            "None to evaluate no tube"
+        )
     if np.shape(target.value) not in ((), (horizon,)):
         raise DecisionError(
             f"target {target.name!r} has a schedule of shape {np.shape(target.value)}; a schedule "
@@ -1208,6 +1219,13 @@ def prescribe(
     planning_cost = _cost(states, levers, target, horizon)
     lipschitz, tube_rate = _rate(model, start, u_lo, u_hi)
     model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
+    if tolerance is not None and not (math.isfinite(lipschitz) and math.isfinite(model_error)):
+        # a nan radius once read as within every tolerance; no tube is the answer that holds
+        _log.warning(
+            "the error tube is not evaluated: its rate or its budget is not a finite number",
+            extra={"chc_event": "tube", "rate": lipschitz, "model_error": model_error},
+        )
+        lipschitz, model_error = 0.0, 0.0
 
     def solve(lo: Array, hi: Array) -> CausalPlan:
         lo, hi = pin(lo, hi)

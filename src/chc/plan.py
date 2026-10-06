@@ -80,7 +80,13 @@ from chc.support import (
     _pessimistic_loop,
     pessimistic_solve,
 )
-from chc.uncertainty import _linear_tube, _tube, _within, confounding_robust_inflation
+from chc.uncertainty import (
+    _check_tolerance,
+    _linear_tube,
+    _tube,
+    _within,
+    confounding_robust_inflation,
+)
 
 CertificateStatus = Literal["not_evaluated", "uncertified", "partial", "certified"]
 PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
@@ -741,9 +747,10 @@ def causal_plan(
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
             silently drop it -- the pessimistic solver is the only consumer of that argument; if
-            ``model_error`` is negative, which is not an error budget; if ``lipschitz`` is a
-            negative number, which no norm of a field's slope is, or neither a number nor a square
-            matrix of the state's size; if a barrier is given with
+            ``model_error`` is negative, infinite or nan, which is not an error budget; if
+            ``lipschitz`` is a negative, infinite or nan number, which no norm of a field's slope
+            is, or neither a number nor a square matrix of the state's size; if ``tolerance`` is
+            negative or nan, or ``dt`` is not a finite positive step; if a barrier is given with
             a box that admits no action but zero, which leaves nothing to price it with; or if
             ``warm_start`` is not a finite ``(horizon, m)`` array.
     """
@@ -801,15 +808,26 @@ def _plan(
     """
     if uncertainty is not None and support is None:
         raise ValueError("uncertainty penalty requires a support model; it is unused without one")
-    if model_error < 0.0:
+    # A nan budget passed `model_error < 0` and then read as no budget, `model_error > 0` being
+    # false too: the plan came back unevaluated with no word of why.
+    if not 0.0 <= model_error < math.inf:
         raise ValueError(
-            f"model_error is a per-step error budget and cannot be negative: {model_error}"
+            "model_error is a per-step error budget and cannot be negative, infinite or nan: "
+            f"{model_error}"
         )
+    if not 0.0 < dt < math.inf:
+        raise ValueError(f"dt={dt} is not a step, which is finite and positive")
+    _check_tolerance(tolerance)
     rate = np.asarray(lipschitz, dtype=float)
     if rate.ndim == 0 and not rate >= 0.0:
         raise ValueError(
             f"lipschitz={float(rate)} bounds the norm of the field's slope, which is never "
             "negative; a contracting field affine in the state passes its state matrix instead"
+        )
+    if rate.ndim == 0 and rate == math.inf:
+        raise ValueError(
+            "lipschitz=inf bounds nothing: a norm of the field's slope is finite, and the tube's "
+            "first step would read inf * 0"
         )
     square = (np.shape(x0)[-1],) * 2
     if rate.ndim != 0 and rate.shape != square:
@@ -1324,7 +1342,8 @@ box's least; :attr:`PlanRegretBound.status` tells the two apart."""
 RegretStatus = Literal["certified", "diagnostic", "refused"]
 """What :attr:`PlanRegretBound.bound` is. ``certified`` on a supplied modulus or a quadratic
 objective's; ``diagnostic`` on a sampled modulus, which a pocket of negative curvature between the
-samples breaks; ``refused``, the bound ``inf``, where the modulus came out negative."""
+samples breaks; ``refused``, the bound ``inf``, where the modulus came out negative or not a finite
+number, or the bound itself did not come out finite."""
 
 
 @dataclass(frozen=True)
@@ -1466,13 +1485,16 @@ def plan_regret_bound(
     :attr:`~PlanRegretBound.status` says what the bound is: ``certified`` on a supplied modulus or
     a linear model's, ``diagnostic`` on a sampled one, and ``refused`` -- the bound ``inf`` -- when
     the modulus is negative, because then no convexity argument applies and a finite number would be
-    a fabrication.
+    a fabrication, and when the modulus or the bound is not a finite number.
 
     Raises:
-        ValueError: if a supplied ``modulus`` is negative, which is not a curvature.
+        ValueError: if a supplied ``modulus`` is negative, infinite or nan, which is not a
+            curvature.
     """
-    if modulus is not None and modulus < 0.0:
-        raise ValueError(f"modulus is a curvature and cannot be negative: {modulus}")
+    if modulus is not None and not 0.0 <= modulus < math.inf:
+        raise ValueError(
+            f"modulus is a curvature and cannot be negative, infinite or nan: {modulus}"
+        )
 
     actions = plan.actions
     lo = broadcast_box(u_lo, actions.shape, "u_lo", actions.dtype)
@@ -1489,7 +1511,6 @@ def plan_regret_bound(
     else:
         mu = _objective_modulus(objective, actions, lo, hi, probes if sampled else 0, seed)
         source = "measured"
-    status: RegretStatus = "refused" if mu < 0.0 else ("diagnostic" if sampled else "certified")
 
     below, above = lo - actions, hi - actions  # the feasible moves, as offsets from the plan
     # max{-g d : d in [below, above]}: a line on an interval is largest at an endpoint, and both
@@ -1503,14 +1524,18 @@ def plan_regret_bound(
 
     per_lever = tuple(float(v) for v in jnp.sum(certified, axis=0))
     total = float(jnp.sum(certified))
+    # Refused unless every number the bound rests on is finite: a nan modulus read neither below 0
+    # nor certifying nothing, and certified an infinite bound; a nan gradient certified a nan one.
+    refused = not (0.0 <= mu < math.inf and math.isfinite(total))
+    status: RegretStatus = "refused" if refused else ("diagnostic" if sampled else "certified")
     return PlanRegretBound(
-        bound=total if mu >= 0.0 else math.inf,
+        bound=math.inf if refused else total,
         unconstrained_bound=(float(jnp.sum(gradient**2)) / (2.0 * mu) if mu > 0.0 else math.inf),
         frank_wolfe_gap=float(jnp.sum(linear)),
         modulus=mu,
         modulus_source=source,
         gradient_norm=float(jnp.linalg.norm(gradient)),
-        per_lever=per_lever if mu >= 0.0 else tuple(math.inf for _ in per_lever),
+        per_lever=tuple(math.inf for _ in per_lever) if refused else per_lever,
         pinned_actions=int(jnp.sum((certified <= 0.0) & (gradient != 0.0))),
         status=status,
     )

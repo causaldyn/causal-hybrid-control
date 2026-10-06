@@ -1343,3 +1343,40 @@ def test_a_panel_of_one_unit_takes_its_transitions_as_independent() -> None:
     assert (certificate.error_clustered_by, certificate.error_clusters) == (None, None)
     assert result.model_fit.clusters is None
     assert "each transition taken as independent" in result.report()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"dt": 0.0}, r"dt=0\.0 is not a step"),
+        ({"dt": math.nan}, r"dt=nan is not a step"),
+        ({"tolerance": math.nan}, r"tolerance=nan is not a radius"),
+        ({"tolerance": -1.0}, r"tolerance=-1\.0 is not a radius"),
+    ],
+)
+def test_a_step_or_a_tolerance_that_is_no_number_is_refused_before_the_fit(
+    kwargs: dict, match: str
+) -> None:
+    with pytest.raises(DecisionError, match=match):
+        prescribe(
+            _panel(),
+            levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+            target=Target("supply", value=1.0),
+            adjustment=CausalGraph.from_edges(EDGES),
+            horizon=5,
+            **{"dt": DT, "tolerance": 0.5, **kwargs},  # type: ignore[arg-type]
+        )
+
+
+def test_a_tube_whose_rate_is_not_finite_is_not_evaluated(monkeypatch, caplog) -> None:
+    """A rate of ``inf`` read the tube ``[0, nan, ...]``, which certified every step."""
+    monkeypatch.setattr("chc.decision._rate", lambda *args: (math.inf, "global"))
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        result = _prescribe(_panel(), CausalGraph.from_edges(EDGES))
+    certificate = result.certificate
+    assert certificate.certificate_status == "not_evaluated"
+    assert certificate.certified_horizon is None
+    assert certificate.tube_rate is None
+    assert certificate.trustworthy_steps == 0
+    (tube,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "tube"]
+    assert tube.rate == math.inf

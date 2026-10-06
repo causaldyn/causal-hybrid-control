@@ -3,10 +3,14 @@
 Ties the shipped LipschitzResidual's certified constant to a machine-checked pessimism radius.
 """
 
+import math
+
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from jax import Array
 
 from chc.dynamics import DrivenDynamics, Dynamics, LinearDynamics
@@ -253,3 +257,89 @@ def test_what_is_neither_an_integrator_nor_a_square_matrix_is_refused() -> None:
         linear_rollout_bound(np.ones((2, 3)), [0.1], 0.5)
     with pytest.raises(ValueError, match=r"not finite"):
         linear_rollout_bound([[np.inf]], [0.1], 0.5)
+
+
+@pytest.mark.parametrize(
+    ("rate", "budget", "dt", "match"),
+    [
+        (math.inf, 0.1, 1.0, r"lipschitz=inf is not a norm-Lipschitz bound"),
+        (1.0, math.nan, 1.0, r"model_error=nan is not a per-step error budget"),
+        (1.0, -0.1, 1.0, r"model_error=-0\.1 is not a per-step error budget"),
+        (1.0, math.inf, 1.0, r"model_error=inf is not a per-step error budget"),
+        (1.0, 0.1, 0.0, r"dt=0\.0 is not a step"),
+        (1.0, 0.1, -1.0, r"dt=-1\.0 is not a step"),
+        (1.0, 0.1, math.nan, r"dt=nan is not a step"),
+        (1.0, 0.1, math.inf, r"dt=inf is not a step"),
+    ],
+)
+@pytest.mark.parametrize("integrator", ["rk4", "euler"])
+def test_what_no_tube_can_be_read_on_is_refused(
+    rate: float, budget: float, dt: float, match: str, integrator: str
+) -> None:
+    """An infinite rate read ``inf * 0`` at the first step, a nan budget a nan radius, and a
+    negative budget negative radii: each tube certified all 3 steps at a tolerance of 0.12."""
+    with pytest.raises(ValueError, match=match):
+        time_varying_rollout_bound([rate] * 3, [budget] * 3, dt, integrator=integrator)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=match):
+        certified_horizon([rate] * 3, [budget] * 3, dt, 0.12, integrator=integrator)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("budget", "dt", "match"),
+    [
+        (math.nan, 0.5, r"model_error=nan"),
+        (-0.1, 0.5, r"model_error=-0\.1"),
+        (math.inf, 0.5, r"model_error=inf"),
+        (0.1, 0.0, r"dt=0\.0"),
+        (0.1, math.nan, r"dt=nan"),
+    ],
+)
+def test_the_matrix_tube_refuses_what_no_tube_can_be_read_on(
+    budget: float, dt: float, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        linear_rollout_bound([[-0.5]], [budget] * 3, dt)
+
+
+@pytest.mark.parametrize("tolerance", [math.nan, -0.1])
+def test_a_tolerance_that_is_no_radius_is_refused(tolerance: float) -> None:
+    """A nan tolerance compared false with every radius and certified all 3 steps."""
+    with pytest.raises(ValueError, match=r"is not a radius"):
+        certified_horizon([1.0] * 3, [0.1] * 3, 1.0, tolerance)
+
+
+def test_a_radius_that_overflows_is_within_no_tolerance() -> None:
+    """``inf`` keeps every finite radius and no other. A budget of 1e308 over a step of 10
+    overflows to ``inf`` at the first step, and with a rate of 0 the next reads ``0 * inf``, a nan:
+    the tube ``[0, inf, nan, nan]`` was certified for all 3 steps under an infinite tolerance."""
+    assert certified_horizon([1.0] * 3, [0.1] * 3, 1.0, math.inf) == 3
+    tube = np.asarray(time_varying_rollout_bound([0.0] * 3, [1e308] * 3, 10.0))
+    assert np.isinf(tube[1])
+    assert np.isnan(tube[2])
+    assert certified_horizon([0.0] * 3, [1e308] * 3, 10.0, math.inf) == 0
+    assert certified_horizon([0.0] * 3, [1e307] * 3, 1.0, math.inf) == 3
+
+
+@given(
+    rates=st.lists(st.floats(allow_nan=True, allow_infinity=True), min_size=1, max_size=6),
+    budget=st.floats(allow_nan=True, allow_infinity=True),
+    dt=st.floats(allow_nan=True, allow_infinity=True),
+    tolerance=st.floats(allow_nan=True, allow_infinity=True),
+    integrator=st.sampled_from(["rk4", "euler"]),
+)
+def test_a_certified_step_is_a_finite_radius_within_the_tolerance(
+    rates: list[float], budget: float, dt: float, tolerance: float, integrator: str
+) -> None:
+    """Whatever the inputs, either they are refused or every step counted has a radius that is a
+    finite number within the tolerance, and the first step not counted has not."""
+    budgets = [budget] * len(rates)
+    try:
+        steps = certified_horizon(rates, budgets, dt, tolerance, integrator=integrator)  # type: ignore[arg-type]
+    except ValueError:
+        return
+    tube = np.asarray(time_varying_rollout_bound(rates, budgets, dt, integrator=integrator))  # type: ignore[arg-type]
+    kept = tube[1 : steps + 1]
+    assert np.all(np.isfinite(kept))
+    assert np.all(kept <= tolerance)
+    if steps < len(rates):
+        assert not (np.isfinite(tube[steps + 1]) and tube[steps + 1] <= tolerance)

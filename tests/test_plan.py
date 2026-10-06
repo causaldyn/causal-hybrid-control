@@ -1,5 +1,6 @@
 """The one-call spine: a plan that carries its own certificate."""
 
+import math
 from itertools import pairwise
 
 import equinox as eqx
@@ -493,3 +494,54 @@ def test_only_a_field_named_affine_makes_the_objective_quadratic(
     model: Dynamics, quadratic: bool
 ) -> None:
     assert _quadratic(model) is quadratic
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"lipschitz": math.inf, "model_error": 0.1}, r"lipschitz=inf bounds nothing"),
+        ({"lipschitz": 1.0, "model_error": math.nan}, r"infinite or nan: nan"),
+        ({"lipschitz": 1.0, "model_error": math.inf}, r"infinite or nan: inf"),
+        ({"lipschitz": 1.0, "model_error": 0.1, "tolerance": math.nan}, r"tolerance=nan is not"),
+        ({"lipschitz": 1.0, "model_error": 0.1, "tolerance": -0.1}, r"tolerance=-0\.1 is not"),
+    ],
+)
+def test_a_plan_refuses_what_its_tube_cannot_be_read_on(kwargs: dict, match: str) -> None:
+    """``lipschitz=inf`` read the tube ``[0, nan, nan, nan]`` and certified 3 steps of 3 at a
+    tolerance of 0.12; a nan budget read no tube at all, and said nothing of why."""
+    model = LinearDynamics(jnp.array([[1.0]]), jnp.zeros((1, 1)))
+    cost = QuadraticCost(Q=jnp.zeros((1, 1)), R=jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.zeros(1))
+    with pytest.raises(ValueError, match=match):
+        causal_plan(
+            model, jnp.zeros(1), cost, 1.0, 3, -1.0, 1.0, steps=2, **{"tolerance": 0.12, **kwargs}
+        )
+
+
+@pytest.mark.parametrize("dt", [0.0, -1.0, math.nan, math.inf])
+def test_a_plan_refuses_a_step_that_is_no_step(dt: float) -> None:
+    with pytest.raises(ValueError, match=r"is not a step"):
+        causal_plan(_MODEL, _X0, _COST, dt, 12, -5.0, 5.0)
+
+
+@pytest.mark.parametrize("modulus", [math.nan, math.inf])
+def test_a_modulus_that_is_no_curvature_is_refused(modulus: float) -> None:
+    """``modulus=nan`` read ``certified`` with the bound ``inf``, and ``modulus=inf`` ``certified``
+    with the bound nan."""
+    plan = causal_plan(*_ARGS)
+    with pytest.raises(ValueError, match=r"cannot be negative, infinite or nan"):
+        plan_regret_bound(plan, _MODEL, _X0, _COST, 0.1, -5.0, 5.0, modulus=modulus)
+
+
+def test_a_bound_read_off_numbers_that_are_not_finite_is_refused() -> None:
+    """A nan in the model makes the Hessian's least eigenvalue nan, which is neither below 0 nor a
+    curvature: it read ``certified`` with an infinite bound. On a supplied modulus the gradient is
+    nan, and so was the certified bound."""
+    plan = causal_plan(*_ARGS)
+    broken = HybridDynamics(
+        known=LinearDynamics(_A.at[0, 0].set(jnp.nan), _B), residual=ZeroResidual(2)
+    )
+    for modulus in (None, 0.05):
+        verdict = plan_regret_bound(plan, broken, _X0, _COST, 0.1, -5.0, 5.0, modulus=modulus)
+        assert verdict.status == "refused"
+        assert math.isinf(verdict.bound)
+        assert all(math.isinf(share) for share in verdict.per_lever)

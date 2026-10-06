@@ -27,6 +27,27 @@ still change).
   the noise is the unit's own. `prescribe`'s channel error, the tube's budget and the certified
   horizon move on every panel of more than one unit (ADR 0053).
 
+### Fixed
+
+- **A number that is not finite no longer certifies a step or a regret bound.** A step counted as
+  certified unless its radius was above the tolerance, and a comparison with nan is false, so a
+  nan radius or a nan tolerance passed: `causal_plan(lipschitz=inf, model_error=0.1,
+  tolerance=0.12)` read the tube `[0, nan, nan, nan]` and certified 3 steps of 3, and
+  `certified_horizon` did the same on a nan budget, on a negative one, whose radii were negative,
+  and on a nan tolerance. `plan_regret_bound(modulus=nan)` read `certified` with the bound `inf`,
+  and `modulus=inf` `certified` with the bound nan. A step now counts only where its radius is a
+  finite number within the tolerance, so an overflow ends the prefix too.
+  `time_varying_rollout_bound`, `certified_horizon`, `linear_rollout_bound` and `causal_plan`
+  refuse a rate that is infinite, a budget that is negative, infinite or nan, a `dt` that is not a
+  finite positive step, and a tolerance that is negative or nan; `inf` stays the tolerance that
+  keeps every finite radius. `causal_plan` refused a negative budget, but read a nan one as none
+  and said nothing. `plan_regret_bound` refuses a supplied modulus that is infinite or nan, and
+  reads `refused`, with the bound `inf`, where a measured modulus or the bound itself is not a
+  finite number. `prescribe` refuses such a `dt` or `tolerance` with `DecisionError` before it
+  fits, and leaves the tube `not_evaluated` where its rate or budget comes out other than a finite
+  number, with a warning (`chc_event="tube"`). The tube's test dates from 0.2.0, the regret
+  bound's from 0.6.0.
+
 ## [0.13.0] — 2026-10-06
 
 ### Added

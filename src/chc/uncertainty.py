@@ -866,10 +866,13 @@ def time_varying_rollout_bound(
     :class:`chc.support.SupportModel`), not a validation-set average.
 
     Raises:
-        ValueError: if an ``L_k`` is negative. ``L_k`` bounds ``||f(x) - f(y)|| / ||x - y||``, which
-            no field takes below zero; a contracting field's negative log-norm shrinks a tube only
-            through :func:`linear_rollout_bound`'s matrices or :func:`contractive_rollout_bound`. In
-            either recursion it can turn the radii negative, which would certify every step.
+        ValueError: if an ``L_k`` is negative, infinite or nan. ``L_k`` bounds
+            ``||f(x) - f(y)|| / ||x - y||``, which no field takes below zero; a contracting field's
+            negative log-norm shrinks a tube only through :func:`linear_rollout_bound`'s matrices or
+            :func:`contractive_rollout_bound`. In either recursion it can turn the radii negative,
+            which would certify every step, and an infinite one reads ``inf * 0``, a nan. Also if
+            an ``eps_k`` is negative, infinite or nan, which no budget is, or if ``dt`` is not a
+            finite positive step.
     """
     return jnp.asarray(_tube(lipschitz, model_error, dt, integrator))
 
@@ -879,11 +882,13 @@ def _tube(
 ) -> NDArray[np.float64]:
     if integrator not in ("rk4", "euler"):
         raise ValueError(f"integrator={integrator!r} is neither 'rk4' nor 'euler'")
-    negative = [lk for lk in lipschitz if not lk >= 0.0]
+    negative = [lk for lk in lipschitz if not 0.0 <= lk < math.inf]
     if negative:
         raise ValueError(
-            f"lipschitz={negative[0]} is not a norm-Lipschitz bound, which is never negative or nan"
+            f"lipschitz={negative[0]} is not a norm-Lipschitz bound, which is finite and never "
+            "negative or nan"
         )
+    _check_budget(model_error, dt)
     e = 0.0
     tube = [0.0]
     for lk, ek in zip(lipschitz, model_error, strict=True):
@@ -895,10 +900,34 @@ def _tube(
     return np.asarray(tube)
 
 
+def _check_budget(model_error: Sequence[float], dt: float) -> None:
+    """Refuse a step budget or a step no tube can be read on."""
+    bad = [ek for ek in model_error if not 0.0 <= ek < math.inf]
+    if bad:
+        raise ValueError(
+            f"model_error={bad[0]} is not a per-step error budget, which is finite and never "
+            "negative or nan"
+        )
+    if not 0.0 < dt < math.inf:
+        raise ValueError(f"dt={dt} is not a step, which is finite and positive")
+
+
 def _within(tube: NDArray[np.float64], tolerance: float) -> int:
-    """The steps a tube keeps within ``tolerance``: those before its first radius above it."""
-    above = np.flatnonzero(tube[1:] > tolerance)
-    return int(above[0]) if above.size else tube.size - 1
+    """The steps a tube keeps within ``tolerance``: those before its first radius not shown within
+    it. A radius that is not a finite number is within no tolerance, ``inf`` included, so a nan or
+    an overflow ends the prefix: a comparison with nan is false, and reading the steps above the
+    tolerance instead counted every nan radius within it."""
+    radii = tube[1:]
+    outside = np.flatnonzero(~(np.isfinite(radii) & (radii <= tolerance)))
+    return int(outside[0]) if outside.size else tube.size - 1
+
+
+def _check_tolerance(tolerance: float) -> None:
+    if not tolerance >= 0.0:
+        raise ValueError(
+            f"tolerance={tolerance} is not a radius, which is never negative or nan; inf keeps "
+            "every finite radius"
+        )
 
 
 def certified_horizon(
@@ -911,9 +940,12 @@ def certified_horizon(
 ) -> int:
     """The largest step ``H`` whose certified error ``e_H`` stays within ``tolerance``.
 
-    Past it the plan is flagged uncertain; ``e`` is monotone, so this is the first crossing. The
-    tube is :func:`time_varying_rollout_bound`'s for ``integrator``, which raises as it does.
+    Past it the plan is flagged uncertain; ``e`` is monotone, so this is the first crossing. A
+    radius that overflows to ``inf`` is within no tolerance, ``inf`` included. The tube is
+    :func:`time_varying_rollout_bound`'s for ``integrator``, which raises as it does; a
+    ``tolerance`` that is negative or nan raises too.
     """
+    _check_tolerance(tolerance)
     return _within(_tube(lipschitz, model_error, dt, integrator), tolerance)
 
 
@@ -934,7 +966,8 @@ def linear_rollout_bound(state_matrix: ArrayLike, model_error: list[float], dt: 
     :func:`time_varying_rollout_bound`'s RK4 tube.
 
     Raises:
-        ValueError: if ``state_matrix`` is not a finite square matrix.
+        ValueError: if ``state_matrix`` is not a finite square matrix, an ``eps_k`` is negative,
+            infinite or nan, or ``dt`` is not a finite positive step.
     """
     return jnp.asarray(_linear_tube(state_matrix, model_error, dt))
 
@@ -947,6 +980,7 @@ def _linear_tube(
         raise ValueError(f"state_matrix of shape {a_matrix.shape} is not square")
     if not np.all(np.isfinite(a_matrix)):
         raise ValueError("state_matrix holds a value that is not finite")
+    _check_budget(model_error, dt)
     eye = np.eye(a_matrix.shape[0])
     z = dt * a_matrix
     z2 = z @ z
