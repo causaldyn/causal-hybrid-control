@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from chc.allocation import _cut, _cvar, _cvar_weights, _onto, allocate, cvar_allocate
@@ -610,16 +610,24 @@ def test_a_box_is_cut_into_halves_that_each_hold_a_split_of_the_budget(data, siz
     gains=st.lists(st.floats(-1e3, 1e3), min_size=1, max_size=20),
     level=st.floats(0.01, 1.0),
 )
+@example(gains=[5e-324], level=0.5)
+@example(gains=[49 * 5e-324], level=0.01)
 def test_the_worst_shares_weights_read_its_mean(gains, level):
     """The weights the boxes' branching reads are the risk envelope's at the gains: none above
-    ``1 / (level * n)``, summing to 1, and their mean of the gains is the worst share's."""
+    ``1 / (level * n)``, summing to 1, and their mean of the gains is the worst share's.
+
+    Below the least normal double a product's rounding error is bounded by half a subnormal's
+    spacing, not by a share of the product. The weights' mean takes one such error a product;
+    ``_cvar`` takes one on its partial product and divides it by the share: ``0.5 * 5e-324``
+    rounds to 0, so ``_cvar`` reads ``[5e-324]`` at 0.5 as 0, and ``[49 * 5e-324]`` at 0.01 too."""
     gain = np.array(gains)
     weights = _cvar_weights(gain, level)
     assert np.all(weights >= 0.0)
     assert np.all(weights <= (1.0 + 1e-12) / (level * gain.size))
     assert weights.sum() == pytest.approx(1.0, rel=1e-12, abs=0.0)
+    underflow = (gain.size + 1 + 1 / (level * gain.size)) * np.finfo(float).smallest_subnormal
     assert weights @ gain == pytest.approx(
-        _cvar(gain, level), rel=1e-9, abs=1e-12 * float(np.abs(gain).max())
+        _cvar(gain, level), rel=1e-9, abs=1e-12 * float(np.abs(gain).max()) + underflow
     )
 
 
