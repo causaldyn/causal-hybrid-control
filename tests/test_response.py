@@ -217,6 +217,17 @@ def test_a_curve_at_its_supports_end_touches_its_envelope_at_the_kink() -> None:
         assert float(Envelope(curve)(1.0)) == pytest.approx(0.5, rel=1e-14, abs=0.0)
 
 
+@pytest.mark.parametrize("a", [1.0000000000006113, 1.0 + 2.0**-52, 1.000000002])
+def test_a_beta_cdf_at_b_one_turns_at_its_corner_however_close_a_is_to_one(a: float) -> None:
+    # a + b - 2 cancels near a = b = 1: these read the inflection 3.6e-4 past the corner, where the
+    # tangency then sat and the chord ran below the curve; a zero to divide by; and 1.1e-7 short
+    curve = BetaCDF(2.0, a, 1.0)
+    assert curve.inflection() == 2.0
+    assert curve.tangency() == 2.0
+    chord = float(curve(2.0)) / 2.0  # the slope on the left is the chord's to rounding near a = 1
+    assert slope(curve, 2.0) <= chord <= slope(curve, math.nextafter(2.0, 0.0)) * (1.0 + 1e-12)
+
+
 @pytest.mark.parametrize(
     "curve",
     [

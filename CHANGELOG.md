@@ -146,6 +146,15 @@ still change).
   shrinks a channel the log moved: by 0.2 % at a thousandth. A fit with no unmoved direction is
   unchanged, bit for bit; every fit with one moves, and so does every plan made on it. Since 0.3.0
   (ADR 0054).
+- **`BetaCDF` at `b = 1` turns at its corner however close `a` is to 1.** Its inflection, the mode
+  `(a - 1)/(a + b - 2)`, cancelled in `a + b - 2` near `a = b = 1`. At `b = 1`, where the curve is
+  `z^a` up to its scale and its tangency is that corner, `a = 1 + 6.1e-13` read the inflection
+  3.6e-4 of a scale past the corner, and the tangency with it: the envelope's chord ran below the
+  curve there, and its slope, 0.99964, was neither of the curve's. `a = 1 + 2^-52` divided by zero,
+  and `a = 1 + 2e-9` read the inflection 1.1e-7 short. The mode is now
+  `(a - 1)/((a - 1) + (b - 1))`, whose differences are exact near 1. The fuzzer found it. Elsewhere
+  a beta CDF's inflection moves by rounding, at most 6.5e-14 of itself over 200 000 random
+  parameters, and every other family is unchanged. Since 0.10.0.
 
 ## [0.13.0] — 2026-10-06
 

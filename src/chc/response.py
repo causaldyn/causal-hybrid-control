@@ -848,7 +848,9 @@ class BetaCDF(Saturation):
 
     def _standard_inflection(self) -> float:
         a, b = float(self.a), float(self.b)
-        return (a - 1.0) / (a + b - 2.0) if a > 1.0 else 0.0
+        # a + b - 2 cancels near a = b = 1, and at b = 1 could put the mode past the corner; the
+        # two differences are exact there, and their sum is never below the numerator
+        return (a - 1.0) / ((a - 1.0) + (b - 1.0)) if a > 1.0 else 0.0
 
 
 class Kumaraswamy(Saturation):
