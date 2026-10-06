@@ -217,6 +217,13 @@ still change).
   media-budget case study's confounded arm inflates the channels 2.5 to 15.4 times, where it read
   2.4 to 8.0; its myopic arm, which ranks the channels by their reach, spends and earns as before.
   A `Prescription` built by hand with neither a start nor a plan raises.
+- **`prescribe` no longer joins the periods on either side of one no unit logged**, a defect since
+  0.5.0. Its transitions, the logger check and the evaluation windows took each period's rank
+  among those logged, so hours 22, 23, 46 and 47 were four periods in a row, and a home logged
+  then alone gave a transition across the day that beside a home logged every hour it did not.
+  Periods that are numbers or dates now sit on the grid of their smallest spacing where every
+  period falls on it, at any date resolution; others, calendar months among them, are ranked as
+  before.
 - **Each accelerator extra names the first jax that has its build**, and the `trees` extra the
   first catboost that loads. pip and uv install an extra a package does not provide as nothing,
   with a warning, so a resolution that held jax back below 0.7 installed `chc[cuda13]` on the

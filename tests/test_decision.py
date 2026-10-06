@@ -37,6 +37,7 @@ from chc.decision import (
     _margins,
     _model_error,
     _rate,
+    _transitions,
     prescribe,
 )
 from chc.dynamics import (
@@ -748,6 +749,75 @@ def test_reach_reads_the_channel_at_the_state_the_plan_starts_from() -> None:
     channel = here.model_fit.residual.control_channel(start)
     assert here.reach()["incentive"] == pytest.approx(4.0 * float(channel[0, 0]), rel=1e-12)
     assert there.reach()["incentive"] == pytest.approx(here.reach()["incentive"], rel=1e-5)
+
+
+def test_a_period_no_unit_logged_parts_the_periods_on_either_side_of_it() -> None:
+    """Hours 22, 23, 46 and 47 are two pairs a day apart. Ranked, they were four periods in a row,
+    so a home logged at those hours alone gave a transition from 19.9 to 15.0 across the day, and
+    beside a home logged every hour it did not. Whole-number periods sit on the grid of their
+    smallest spacing, so logs taken every other week stay consecutive."""
+    alone = {
+        "home": np.zeros(4, dtype=int),
+        "hour": np.array([22, 23, 46, 47]),
+        "temperature": np.array([20.0, 19.9, 15.0, 15.1]),
+        "heater": np.ones(4),
+    }
+    data = _transitions(
+        Panel.from_frame(alone, unit="home", time="hour"),
+        states=("temperature",),
+        levers=("heater",),
+        adjust_for=(),
+    )
+    assert np.asarray(data["x"])[:, 0].tolist() == [20.0, 15.0]
+    assert np.asarray(data["x_next"])[:, 0].tolist() == [19.9, 15.1]
+
+    logs = _logs(n_units=40)
+    every_other = Panel.from_frame({**logs, "time": 2 * logs["time"]}, unit="unit", time="time")
+    data = _transitions(every_other, states=("supply",), levers=("incentive",), adjust_for=())
+    assert data["x"].shape == (40 * 11, 1)
+
+
+@pytest.mark.parametrize("resolution", ["ns", "us", "D"])
+def test_dated_periods_part_at_a_missing_week_and_calendar_months_stay_in_a_row(
+    resolution: str,
+) -> None:
+    """Dates sit on the grid of their smallest spacing at every resolution, though ``periods``
+    holds integers at ``ns`` and dates above it: ten weeks with the fifth missing give seven
+    transitions, not eight. Calendar months, 29 to 31 days apart here, lie on no such grid and are
+    ranked, so twelve give eleven; on the grid of their greatest common spacing, a day, they gave
+    none."""
+
+    def count(periods: np.ndarray) -> int:
+        frame = {
+            "home": np.zeros(periods.size, dtype=int),
+            "period": periods.astype(f"datetime64[{resolution}]"),
+            "temperature": np.linspace(20.0, 15.0, periods.size),
+            "heater": np.ones(periods.size),
+        }
+        panel = Panel.from_frame(frame, unit="home", time="period")
+        data = _transitions(panel, states=("temperature",), levers=("heater",), adjust_for=())
+        return int(data["x"].shape[0])
+
+    weeks = np.datetime64("2024-01-01") + np.timedelta64(7, "D") * np.arange(10)
+    assert count(np.delete(weeks, 4)) == 7
+    assert count(np.arange("2024-01", "2025-01", dtype="datetime64[M]")) == 11
+
+
+def test_an_evaluation_window_does_not_span_a_period_no_unit_logged() -> None:
+    logs = _logs(n_units=40)
+    kept = logs["time"] != 5
+    panel = Panel.from_frame(
+        {name: column[kept] for name, column in logs.items()}, unit="unit", time="time"
+    )
+    for time_zero in ("calendar", "unit"):
+        episodes = _episodes(
+            panel, states=("supply",), levers=("incentive",), horizon=3, time_zero=time_zero
+        )
+        held = {float(value) for value in logs["supply"][logs["time"] == 4]}
+        after = {float(value) for value in logs["supply"][logs["time"] == 6]}
+        for window in episodes.x[:, :, 0]:
+            pairs = set(zip(window[:-1].tolist(), window[1:].tolist(), strict=True))
+            assert not any(a in held and b in after for a, b in pairs), time_zero
 
 
 def test_the_report_and_the_json_carry_the_same_decision() -> None:

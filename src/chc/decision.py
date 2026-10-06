@@ -1380,6 +1380,37 @@ def _resolve_adjustment(
     )
 
 
+def _period_steps(panel: Panel) -> NDArray[np.int64]:
+    """Each row's period as a step on the panel's time grid: two periods are one step apart only
+    where no period lies between them.
+
+    Periods that are numbers or dates sit on the grid of their smallest spacing where every period
+    falls on it, so a period no unit logged still parts the two on either side of it. Periods off
+    such a grid, calendar months among them, and text are ranked as :meth:`chc.panel.Panel.codes`
+    ranks them: the periods logged are the grid, and a period no unit logged is not seen. A
+    number read as a grid point and not as a position, such as 202412 for a month, puts each year's
+    turn 89 steps from the month before it, so no transition crosses it.
+    """
+    _, ranks = panel.codes()
+    column = np.asarray(panel[panel.time])
+    if column.dtype.kind == "M":  # any resolution: `periods` holds ints at ns, datetimes above
+        column = column.astype(np.int64)
+    distinct = np.unique(column)
+    if distinct.size < 2 or column.dtype.kind not in "iuf":
+        return ranks
+    offsets = column - distinct[0]
+    spacing = np.min(np.diff(distinct))
+    if column.dtype.kind in "iu":
+        if np.any(offsets % spacing):
+            return ranks
+        return (offsets // spacing).astype(np.int64)
+    steps = offsets / spacing
+    grid = np.rint(steps)
+    if not np.allclose(steps, grid, rtol=1e-9, atol=1e-9):
+        return ranks
+    return grid.astype(np.int64)
+
+
 def _transitions(
     panel: Panel,
     *,
@@ -1392,11 +1423,13 @@ def _transitions(
     each driver at both ends of the transition (``name`` and ``f"{name}_next"``).
 
     Gaps are dropped, not interpolated: a unit missing period ``t`` contributes the transitions on
-    either side of the hole and nothing across it. That is why an unbalanced panel is allowed here
+    either side of the hole and nothing across it, and so does a period no unit logged, where the
+    periods are numbers (:func:`_period_steps`). That is why an unbalanced panel is allowed here
     while :meth:`chc.panel.Panel.wide` refuses one --- a transition needs two adjacent rows, not a
     rectangle.
     """
-    unit_codes, time_codes = panel.codes()
+    unit_codes, _ = panel.codes()
+    time_codes = _period_steps(panel)
     row_of = {
         (int(unit), int(period)): row
         for row, (unit, period) in enumerate(zip(unit_codes, time_codes, strict=True))
@@ -1468,7 +1501,8 @@ def _check_logger(
         )
         return None
     given = columns.given
-    unit_codes, time_codes = panel.codes()
+    unit_codes, _ = panel.codes()
+    time_codes = _period_steps(panel)
     row_of = {
         (int(unit), int(period)): row
         for row, (unit, period) in enumerate(zip(unit_codes, time_codes, strict=True))
@@ -1557,13 +1591,14 @@ def _episodes(
     Raises:
         DecisionError: on fewer than two windows.
     """
-    unit_codes, time_codes = panel.codes()
+    unit_codes, _ = panel.codes()
+    time_codes = _period_steps(panel)
     order = np.lexsort((time_codes, unit_codes))
     if time_zero == "calendar":
         # Sorted by unit and period, a unit's periods rise strictly: H + 1 rows in a row of one
         # unit whose periods differ by H are H + 1 consecutive periods.
         units, times = unit_codes[order], time_codes[order]
-        last = panel.n_periods - 1
+        last = int(time_codes.max())
         first = np.flatnonzero(((last - times) % horizon == 0) & (times + horizon <= last))
         first = first[first + horizon < order.size]
         end = first + horizon
