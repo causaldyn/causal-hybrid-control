@@ -1,5 +1,7 @@
 """chc.residual structured backbones: port-Hamiltonian passivity + certified-Lipschitz gain."""
 
+import math
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -132,6 +134,16 @@ def test_a_convex_energy_turns_the_passivity_inequality_into_an_invariant_ball()
         PortHamiltonianResidual(2, 1, energy="icnn", convexity=0.0, key=k_mlp)
     with pytest.raises(ValueError, match="convexity floor eps must be positive"):
         convex_energy_certificate(convexity=0.0)
+
+
+@pytest.mark.parametrize("convexity", [math.nan, math.inf])
+def test_a_convexity_floor_that_is_no_number_is_refused(convexity: float) -> None:
+    """A nan floor passed ``convexity <= 0``: the energy was built with a nan invariant radius, and
+    the certificate ran its sweep before ``max`` hid the nan among its residuals."""
+    with pytest.raises(ValueError, match="positive convexity floor, and a finite one"):
+        PortHamiltonianResidual(2, 1, energy="icnn", convexity=convexity, key=jax.random.PRNGKey(0))
+    with pytest.raises(ValueError, match="convexity floor eps must be positive and finite"):
+        convex_energy_certificate(convexity=convexity)
 
 
 def test_damping_injection_certificate_dissipates_closed_loop_energy() -> None:

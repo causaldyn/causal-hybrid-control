@@ -52,6 +52,26 @@ still change).
   `matrix_ratio_certificate` convicted every grid at a nan `tolerance` and none at an infinite one;
   it must now be positive and finite. Since 0.4.0 for the ratio moments, 0.5.0 for the minimax
   controller and the ratio certificate, 0.6.0 for the multivariate floor.
+- **A delay, a transport problem, a clock or a convexity floor that is not a number is refused.**
+  `DelayedDynamics`, `optimal_delay_gain`, `delay_ball` and `delay_ball_certificate` compared
+  `tau <= 0`, which a nan passes: the rollouts and gains came out nan, and an infinite delay froze
+  the delay line. `delay_margin` compared `gain <= abs(pole)`, and returned nan for a nan gain or
+  pole and `0.0` for an infinite gain. `delay_design_loss` handed a nan ratio to `brentq`, and
+  `robust_delay_design` took an infinite end: on `[inf, inf]` it designed `K = 0` for an interval
+  it called stabilised, and on `[1, inf]` it failed inside `brentq`. A delay must now be positive
+  and finite, a gain finite and above `|pole|`, and an interval's ends finite. `sinkhorn` checked
+  neither `eps` nor its inputs: at `eps = -0.5` it returned the coupling that maximises the cost,
+  its marginals met to 3e-16, a nan or infinite `eps`, cost or mass returned a plan of nan, and a
+  nan `tol` warned on every call. `eps` and `tol` must now be positive and finite, the cost and
+  the masses finite, and the masses nonnegative. `shadow_price_effect` and `shadow_price_interval`
+  let infinite masses through, since `inf - inf` is nan and passed the test of equal totals, and
+  `shadow_price_effect` handed a nan `eps` to LAPACK, which failed with `LinAlgError`; both are now
+  refused. `RecedingHorizon.step` read a JAX nan `t` as step 0 of the budget's period, failed
+  inside `round` on a Python nan, and planned an unbudgeted window from either; a `t` that is not
+  finite is refused. `PortHamiltonianResidual(energy="icnn")` and `convex_energy_certificate`
+  compared `convexity <= 0`, so a nan floor built an energy whose invariant radius is nan; the
+  floor must now be positive and finite. Since 0.2.0 for `sinkhorn`, 0.4.0 for the delay
+  functions, 0.6.0 for the convexity floor, 0.7.0 for the clock and 0.8.0 for the shadow prices.
 
 ## [0.14.1] — 2026-10-06
 

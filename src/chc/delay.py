@@ -115,9 +115,9 @@ class DelayedDynamics(eqx.Module):
     state_dim: int = eqx.field(static=True)
 
     def __init__(self, core: DelayedField, tau: float, stages: int, state_dim: int) -> None:
-        if tau <= 0.0:
+        if not 0.0 < tau < np.inf:
             raise ValueError(
-                f"tau must be positive; a plant with no delay is just `core`. Got {tau}"
+                f"tau must be positive and finite; a plant with no delay is just `core`. Got {tau}"
             )
         if stages < 1:
             raise ValueError(f"stages must be at least 1; got {stages}")
@@ -242,10 +242,10 @@ def delay_margin(pole: float, gain: float) -> float:
     fundamental limit -- ``tau_c -> 1/pole`` as ``gain -> pole+``, and it *decreases* in ``gain``
     from there, so an unstable pole admits **no** gain past ``tau = 1/pole``.
     """
-    if gain <= abs(pole):
+    if not abs(pole) < gain < np.inf:
         raise ValueError(
-            f"gain must exceed |pole| for the delay-free loop to be stable; got gain={gain}, "
-            f"pole={pole}"
+            f"gain must exceed |pole| for the delay-free loop to be stable, and both must be "
+            f"finite; got gain={gain}, pole={pole}"
         )
     return float(np.arccos(pole / gain) / np.sqrt(gain**2 - pole**2))
 
@@ -339,8 +339,8 @@ def optimal_delay_gain(tau: float) -> float:
     the source of every asymmetry in :func:`delay_ball` and :func:`delay_design_loss`: perturbing a
     parameter away from a defective root moves it like a square root, not linearly.
     """
-    if tau <= 0.0:
-        raise ValueError(f"tau must be positive; got {tau}")
+    if not 0.0 < tau < np.inf:
+        raise ValueError(f"tau must be positive and finite; got {tau}")
     return _OPTIMAL_GAIN_CONSTANT / tau
 
 
@@ -362,8 +362,8 @@ def delay_ball(tau: float) -> DelayBall:
     *sufficient* condition with an unquantified gap; the characteristic equation gives the exact
     boundary, so an LKF here would be strictly weaker evidence, not stronger.
     """
-    if tau <= 0.0:
-        raise ValueError(f"tau must be positive; got {tau}")
+    if not 0.0 < tau < np.inf:
+        raise ValueError(f"tau must be positive and finite; got {tau}")
     return DelayBall(
         tau=tau,
         gain=optimal_delay_gain(tau),
@@ -393,7 +393,7 @@ def delay_design_loss(ratio: float) -> float:
     So the two failure directions want opposite things: stability wants ``tau_hat`` large, the decay
     rate wants it small. :func:`robust_delay_design` resolves that against an interval.
     """
-    if ratio <= 0.0:
+    if not ratio > 0.0:
         raise ValueError(f"ratio must be positive; got {ratio}")
     if ratio <= STABILISING_RATIO_FLOOR:
         return float("inf")  # the design does not stabilise the plant at all; no rate to give up
@@ -451,8 +451,8 @@ def robust_delay_design(lo: float, hi: float) -> RobustDelayDesign:
     the edge of the horizon, so ``hi`` bounds nothing -- the true delay may be far larger, and that
     is the direction :func:`delay_ball` says is unsafe to under-shoot.
     """
-    if not 0.0 < lo <= hi:
-        raise ValueError(f"need 0 < lo <= hi; got lo={lo}, hi={hi}")
+    if not 0.0 < lo <= hi < np.inf:
+        raise ValueError(f"need 0 < lo <= hi < inf; got lo={lo}, hi={hi}")
     if lo == hi:
         return RobustDelayDesign(lo, optimal_delay_gain(lo), 0.0, True)
     # L(t/hi) - L(t/lo) is positive at t = lo (only the far end is mis-specified) and negative at
@@ -510,8 +510,8 @@ def delay_ball_certificate(
     the floor does not separate them, or the measured loss departs from the closed form by more than
     the discretisation can account for.
     """
-    if tau <= 0.0:
-        raise ValueError(f"tau must be positive; got {tau}")
+    if not 0.0 < tau < np.inf:
+        raise ValueError(f"tau must be positive and finite; got {tau}")
     floor = STABILISING_RATIO_FLOOR
     x0 = jnp.array([1.0])
     steps = int(horizon / dt)

@@ -308,6 +308,36 @@ def test_a_delay_interval_that_is_empty_or_inverted_is_rejected() -> None:
         optimal_delay_gain(0.0)
 
 
+def _held(t, x, x_delayed, u):
+    return -x_delayed
+
+
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [
+        (lambda: DelayedDynamics(_held, math.nan, 4, 1), "tau must be positive and finite"),
+        (lambda: DelayedDynamics(_held, math.inf, 4, 1), "tau must be positive and finite"),
+        (lambda: delay_margin(0.0, math.nan), "both must be finite"),
+        (lambda: delay_margin(math.nan, 1.0), "both must be finite"),
+        (lambda: delay_margin(0.0, math.inf), "both must be finite"),
+        (lambda: optimal_delay_gain(math.nan), "tau must be positive and finite"),
+        (lambda: optimal_delay_gain(math.inf), "tau must be positive and finite"),
+        (lambda: delay_ball(math.nan), "tau must be positive and finite"),
+        (lambda: delay_ball(math.inf), "tau must be positive and finite"),
+        (lambda: delay_ball_certificate(tau=math.nan), "tau must be positive and finite"),
+        (lambda: delay_ball_certificate(tau=math.inf), "tau must be positive and finite"),
+        (lambda: delay_design_loss(math.nan), "ratio must be positive"),
+        (lambda: robust_delay_design(1.0, math.inf), "0 < lo <= hi < inf"),
+        (lambda: robust_delay_design(math.inf, math.inf), "0 < lo <= hi < inf"),
+    ],
+)
+def test_a_delay_or_a_gain_that_is_no_number_is_refused(call, match: str) -> None:
+    """A nan delay passed ``tau <= 0`` and gave nan rollouts, gains and margins; an infinite one
+    froze the delay line, and designed ``K = 0`` for an interval it then called stabilised."""
+    with pytest.raises(ValueError, match=match):
+        call()
+
+
 def test_a_degenerate_interval_designs_for_the_point_it_names() -> None:
     design = robust_delay_design(1.5, 1.5)
     assert design.tau_design == 1.5

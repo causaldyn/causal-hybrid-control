@@ -377,6 +377,17 @@ def test_a_budgeted_loop_compiles_nothing_after_its_first_two_steps() -> None:
     assert compiled == []
 
 
+@pytest.mark.parametrize("budgeted", [True, False])
+@pytest.mark.parametrize("t", [np.nan, np.inf, jnp.asarray(np.nan)])
+def test_a_clock_that_is_no_number_is_refused(t: float, budgeted: bool) -> None:
+    """A JAX nan rounded to step 0 of the period, so a budgeted step read that step's rows; a
+    Python nan failed inside ``round``, and an unbudgeted step planned from it."""
+    budget = PeriodBudget(np.ones(1), 3.0, period=HORIZON) if budgeted else None
+    controller = RecedingHorizon(OSCILLATOR, COST, DT, HORIZON, -U_MAX, U_MAX, budget=budget)
+    with pytest.raises(ValueError, match="clock and must be finite"):
+        controller.step(X0, t=t, spent=0.0 if budgeted else None)
+
+
 class _Onset(eqx.Module):
     """``x' = u + p(t)``, a push rising from 0 to 5 around ``t = 1``."""
 
