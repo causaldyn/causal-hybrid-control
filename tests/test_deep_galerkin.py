@@ -356,3 +356,10 @@ def test_nonlinear_dwr_certificate_holds() -> None:
     assert curve.affine_adjoint_exponent == pytest.approx(1.0, abs=0.15)
     assert curve.affine_model_exponent == pytest.approx(0.0, abs=0.15)
     assert curve.affine_adjoint_errors[-1] > 100.0 * curve.congested_errors[-1]
+
+
+def test_a_shooting_miss_that_is_nan_has_not_closed() -> None:
+    """At a congestion of 5e4 the terminal row's miss is nan, which the closing test read as within
+    tolerance: the solve returned a path 99.9% nan."""
+    with pytest.raises(ValueError, match="did not close"):
+        CongestedMeanFieldGame(base=_monotone_game(), congestion=5e4).solve()

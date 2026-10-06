@@ -4180,6 +4180,8 @@ def capped_exploration_policy(
         raise ValueError(
             f"a cap schedule needs one entry per round: got {caps.shape} for horizon {horizon}"
         )
+    if np.isnan(caps).any() or (budget is not None and np.isnan(budget)):
+        raise ValueError("the caps and the budget must be numbers, not nan")
     if caps.min() < 0.0:
         raise ValueError("a cap bounds the action, so it cannot be negative")
     if caps.max() <= 0.0:

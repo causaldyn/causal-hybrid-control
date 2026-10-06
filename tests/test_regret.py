@@ -1748,3 +1748,12 @@ def test_optimal_fold_partition_recovers_the_stripe_law_and_certifies() -> None:
     # 4. equal fold sizes are a precondition of the law, not a silent approximation.
     with pytest.raises(ValueError, match="divisible"):
         optimal_fold_partition(shells6, gammas, 0.4, lag=1, k_folds=4)
+
+
+def test_a_nan_cap_or_budget_is_refused() -> None:
+    """Both passed the sign tests: the policy explored for no rounds, where a cap of 0.03 explores
+    for 13, and priced its taper at nan."""
+    with pytest.raises(ValueError, match="not nan"):
+        capped_exploration_policy(horizon=50, cap=float("nan"))
+    with pytest.raises(ValueError, match="not nan"):
+        capped_exploration_policy(horizon=50, cap=0.03, budget=float("nan"))

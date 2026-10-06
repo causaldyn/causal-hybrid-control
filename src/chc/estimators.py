@@ -147,7 +147,7 @@ class DoubleML:
             ridge=self.ridge,
         )
         lo, hi = effect - 1.96 * se, effect + 1.96 * se
-        t_stat = effect / se if se > 0.0 else float("inf")
+        t_stat = float("inf") if se == 0.0 else effect / se  # a nan error reads a nan statistic
         return EffectEstimate(
             effect, std_error=se, diagnostics={"t_stat": t_stat, "ci95_low": lo, "ci95_high": hi}
         )

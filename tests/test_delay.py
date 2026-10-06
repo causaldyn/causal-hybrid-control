@@ -1,10 +1,13 @@
 """Delay gate: the linear-chain delay line is a plain Dynamics, and the whole stack runs on it."""
 
+import math
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import chc.delay
 from chc import QuadraticCost, causal_plan
 from chc.adjoint import control_gradient_adjoint
 from chc.control import projected_gradient_control
@@ -326,3 +329,12 @@ def test_an_estimated_delay_interval_drives_the_robust_design() -> None:
     design = robust_delay_design(max(estimate.lo, 1e-6), estimate.hi)
     assert design.stabilises_interval
     assert estimate.lo <= design.tau_design <= estimate.hi
+
+
+def test_a_nan_decay_rate_fails_the_certificate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """At a horizon of 200 under float32 every tail underflows to zero and reads a nan decay rate,
+    and ``max`` dropped the nans: the worst loss error read exactly 0."""
+    monkeypatch.setattr(chc.delay, "_envelope_decay_rate", lambda xs, dt: float("nan"))
+    certificate = delay_ball_certificate(dt=0.004, horizon=40.0)
+    assert math.isnan(certificate.worst_loss_error)
+    assert not certificate.ok

@@ -840,6 +840,16 @@ def _plug_in(theta: np.ndarray, cov: np.ndarray, h: float) -> tuple[np.ndarray, 
     return b * _s(a, h), np.einsum("...i,...ij,...j->...", gradient, cov, gradient)
 
 
+def _finite_variance(variance: float) -> None:
+    """A nan variance passes every sign test, and its standard error would leave
+    :func:`randomisation_interval` stepping forever."""
+    if not math.isfinite(variance):
+        raise ValueError(
+            "the reading's variance is not a finite number: the outcome is too large for the "
+            "squares its covariance sums; rescale it"
+        )
+
+
 def _plant(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
     theta, cov = _plant_fit(u, y, analysis)
     # u_t is independent of everything y_t carries when the lever is i.i.d., so the channel is
@@ -868,6 +878,7 @@ def _plant(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
             "state to read"
         )
     estimate, variance = (float(v) for v in _plug_in(theta, cov, h))
+    _finite_variance(variance)
     if variance <= 0.0:
         raise ValueError(
             "the scores' lag-one autocovariance is below minus half their variance, which the "
@@ -898,6 +909,7 @@ def _projection(u, y, h: int, z: float):
             f"{lag_one:.3f}"
         )
     estimate, variance = (float(v) for v in _projection_fit(u, y, h))
+    _finite_variance(variance)
     if variance <= 0.0:
         raise ValueError(
             f"the scores' autocovariances to lag {h - 1} sum to a negative variance, which the "

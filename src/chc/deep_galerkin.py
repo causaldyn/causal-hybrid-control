@@ -1295,7 +1295,7 @@ class CongestedMeanFieldGame:
             previous, miss_previous = current, miss_current
             current = current - step
             miss_current = miss(current)
-        if abs(miss_current) > _SHOOTING_TOLERANCE:
+        if not abs(miss_current) <= _SHOOTING_TOLERANCE:  # a nan miss has not closed either
             raise ValueError(
                 f"the congested two-point problem did not close: terminal row {miss_current:.3e} "
                 f"at S(0) = {current:.6f}; the fixed point may have degenerated"

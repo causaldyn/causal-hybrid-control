@@ -9,6 +9,8 @@ gradient with Dykstra's alternating projections.
 
 from __future__ import annotations
 
+import math
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -17,6 +19,7 @@ from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from scipy.optimize import nnls
 
+import chc.control
 from chc import LinearConstraint, QuadraticCost, SupportModel, causal_plan
 from chc.control import (
     _constraint_blocks,
@@ -365,3 +368,11 @@ def test_a_lever_capped_at_zero_is_held_at_its_clipped_mean(shift: float) -> Non
         _no_duals(HORIZON, blocks, jnp.float64),
     )
     np.testing.assert_allclose(projected, np.clip(y.mean(), -1.0, 1.0), rtol=0, atol=1e-10)
+
+
+def test_nan_actions_break_every_row_rather_than_none() -> None:
+    """``max`` dropped the nan, so a solve that ended on nan actions reported a
+    ``constraint_violation`` of 0."""
+    row = LinearConstraint(np.array([[1.0, 1.0]]), np.array([0.0]), np.array([1.0]))
+    assert chc.control._violation(jnp.array([0.2, 0.3]), [row]) == 0.0
+    assert math.isnan(chc.control._violation(jnp.array([np.nan, 0.3]), [row]))

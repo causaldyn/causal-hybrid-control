@@ -1,5 +1,7 @@
 """Estimator adapters: one Strategy interface, swappable causal backends recover the true effect."""
 
+import math
+
 import jax
 import pytest
 
@@ -82,3 +84,12 @@ def test_dowhy_adapter_raises_actionable_error_when_uninstalled() -> None:
     """The DoWhy adapter is lazy-imported too: fail loudly with a hint, never a hard dependency."""
     with pytest.raises(ImportError, match="dowhy"):
         DoWhyEstimator().estimate(_data())
+
+
+def test_a_nan_standard_error_reads_a_nan_statistic() -> None:
+    """``se > 0`` is false for a nan, so a nan outcome read a t-statistic of inf, the strongest
+    evidence there is, for an effect that was nan."""
+    data = dict(_data())
+    data["x_next"] = data["x_next"].at[5].set(float("nan"))
+    result = DoubleML().estimate(data, covariates=("x", "z"))
+    assert math.isnan(result.diagnostics["t_stat"])

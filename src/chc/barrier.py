@@ -67,6 +67,15 @@ __all__ = [
 ]
 
 
+def _numbers(**values: float | NDArray[np.float64]) -> None:
+    """Refuse a nan among ``values``. Every comparison with nan is false, so given a nan radius,
+    channel, drift or rate the filter would pass the nominal action unfiltered, and
+    :func:`robust_safe_action` would grant full authority."""
+    named = [name for name, value in values.items() if np.isnan(value).any()]
+    if named:
+        raise ValueError(f"{', '.join(named)} must be numbers, not nan")
+
+
 def control_channel(grad_h: NDArray[np.float64], b_hat: NDArray[np.float64]) -> float:
     """``||B^T grad h||`` -- how strongly the control can move the barrier, in the best direction.
 
@@ -85,6 +94,7 @@ def robust_barrier_margin(drift: float, channel: float, radius: float, u_max: fl
     first order in the radius until the authority runs out, then constant. Exact for a Euclidean
     action ball and an isotropic channel radius (see the module docstring).
     """
+    _numbers(drift=drift, channel=channel, radius=radius, u_max=u_max)
     if u_max < 0.0:
         raise ValueError(f"actuation limit must be nonnegative, got {u_max}")
     return drift + max(0.0, channel - radius) * u_max
@@ -102,6 +112,7 @@ def robust_safe_action(
     not conservatism -- it is the optimum: with the channel's sign unidentified, every nonzero
     action has a worst case at least as bad as standing still.
     """
+    _numbers(grad_h=np.asarray(grad_h), b_hat=np.asarray(b_hat), radius=radius, u_max=u_max)
     w = np.atleast_2d(b_hat).T @ np.asarray(grad_h, dtype=np.float64)
     norm_w = float(np.linalg.norm(w))
     if norm_w <= radius or norm_w == 0.0:
@@ -188,6 +199,7 @@ def admissible_action_interval(
     The control that serves the task is exactly the one that can spend the drift's slack and cross
     the boundary, so both ends are computed from the branch slopes in every case.
     """
+    _numbers(channel=channel, radius=radius, u_max=u_max, drift=drift, alpha_h=alpha_h)
     if u_max < 0.0:
         raise ValueError(f"actuation limit must be nonnegative, got {u_max}")
     deficit = -alpha_h - drift
@@ -217,6 +229,7 @@ def robust_safety_filter(
     margin-maximising action ``sign(channel)*u_max`` is returned: it does not certify, and the
     caller should already know that from :func:`identification_radius_threshold`.
     """
+    _numbers(u_nominal=u_nominal)
     lo, hi = admissible_action_interval(channel, radius, u_max, drift, alpha_h)
     if np.isnan(lo):
         return 0.0 if abs(channel) <= radius else float(np.sign(channel) * u_max)

@@ -1483,7 +1483,7 @@ def benchmark_gamma(
     a benchmark is only as good as that model, which is why the covariates should already carry the
     basis expansion the analyst believes.
     """
-    if assumed_gamma < 1.0:
+    if not assumed_gamma >= 1.0:
         raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {assumed_gamma}")
     if not 0.0 < quantile <= 1.0:
         raise ValueError(f"quantile must lie in (0, 1]; got {quantile}")
@@ -1493,6 +1493,9 @@ def benchmark_gamma(
     if x.shape[1] == 0:
         raise ValueError("benchmarking needs at least one observed covariate")
     t = np.asarray(treated, dtype=np.float64).ravel()
+    # one nan read every covariate's implied Gamma as 1, no confounding at all
+    if not (np.isfinite(x).all() and np.isfinite(t).all()):
+        raise ValueError("the treatment and the covariates must be finite")
     labels = tuple(names) if names is not None else tuple(f"x{j}" for j in range(x.shape[1]))
     if len(labels) != x.shape[1]:
         raise ValueError(f"got {len(labels)} names for {x.shape[1]} covariates")
@@ -1556,6 +1559,13 @@ def negative_control_gamma(
     are used in the direction that actually binds rather than the convenient one.
     """
     y = np.asarray(outcomes, dtype=np.float64).ravel()
+    # a nan returned gamma_max, as if it were the confounding measured
+    if not np.isfinite(y).all():
+        raise ValueError("the negative control's outcomes must be finite")
+    if not (tol > 0.0 and gamma_max >= 1.0):
+        raise ValueError(
+            f"tol must be positive and gamma_max at least 1, got {tol} and {gamma_max}"
+        )
     mu = float(np.mean(y))
     if mu == 0.0:
         return 1.0

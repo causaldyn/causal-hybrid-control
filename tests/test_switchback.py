@@ -1090,3 +1090,14 @@ def test_a_restatement_is_logged(caplog):
     assert record.chc_event == "switchback_pilot"
     assert record.restated_se == restated.se
     assert record.planned_se == plan.reports[0].se
+
+
+def test_an_outcome_too_large_to_square_is_refused() -> None:
+    """At 1e200 times its scale the outcome's covariance overflows to nan, which passed the sign
+    test: the reading's estimate and standard error came back nan, and ``randomisation_interval``
+    was still stepping after two minutes."""
+    u, y = _run(200)
+    with pytest.raises(ValueError, match="not a finite number"):
+        read_switchback(u, 1e200 * y, CHANNEL, "state_aware")
+    with pytest.raises(ValueError, match="not a finite number"):
+        read_switchback(u, 1e200 * y, Horizon(3), "local_projection")

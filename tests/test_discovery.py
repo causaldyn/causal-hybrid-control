@@ -1,6 +1,7 @@
 """chc.discovery: MCI forward selection recovers true lagged parents; naive marginal over-links."""
 
 import numpy as np
+import pytest
 
 from chc.discovery import discover_lagged_parents
 from chc.independence import partial_corr_test
@@ -56,3 +57,23 @@ def test_discovery_beats_naive_marginal_screening() -> None:
                 if float(p) < 0.01:
                     naive.add((j, i, lag))
     assert _f1(found, _TRUE_EDGES) > _f1(naive, _TRUE_EDGES)
+
+
+def test_a_nan_series_is_refused_rather_than_read_as_a_parent() -> None:
+    """A nan reads a nan p-value, and the selection's minimum picked it when it came first: with one
+    parent allowed, a nan in the first column made it a parent of every component."""
+    series = np.random.default_rng(3).normal(size=(200, 2))
+    series[50, 0] = np.nan
+    with pytest.raises(ValueError, match="must be finite"):
+        discover_lagged_parents(series, max_parents=1)
+
+
+def test_a_nan_p_value_from_finite_data_is_not_a_parent() -> None:
+    """At 1e200 the sums of squares overflow and every p-value reads nan: the selection's minimum
+    picked the first candidate, and a nan passed the significance test, so column 0 became its own
+    parent. The edge the log has, 0 to 1, is lost to the overflow either way."""
+    series = np.random.default_rng(3).normal(size=(300, 2))
+    series[1:, 1] += 0.8 * series[:-1, 0]
+    with np.errstate(over="ignore", invalid="ignore"):
+        graph = discover_lagged_parents(1e200 * series, max_lag=2, max_parents=1)
+    assert not np.asarray(graph.state_parents)[0].any()

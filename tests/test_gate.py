@@ -1034,3 +1034,16 @@ def test_a_gate_fed_the_dither_evalues_holds_a_zone_whose_channel_moved() -> Non
         )
     assert verdicts[:3] == ["shadow"] * 3
     assert "hold" in verdicts[3:]
+
+
+def test_a_propensity_whose_weight_overflows_is_refused() -> None:
+    """A shadow zone logged at 1e-310 weighs its candidate at inf, and inf times a reward of 0 is
+    nan: the zone's improvement e-value read nan from then on. e-BH sorts a nan first, so beside
+    it a zone with a log e-value of 3.1 deployed, where beside a zone with none it does not."""
+    with pytest.raises(ValueError, match="importance weight overflow"):
+        ZoneBatch(
+            reward=np.array([0.0, 1.0]),
+            candidate=np.array([1.0, 0.5]),
+            baseline=np.array([1e-310, 0.5]),
+            logged=np.array([1e-310, 0.5]),
+        )

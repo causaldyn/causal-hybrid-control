@@ -52,6 +52,41 @@ still change).
   fits, and leaves the tube `not_evaluated` where its rate or budget comes out other than a finite
   number, with a warning (`chc_event="tube"`). The tube's test dates from 0.2.0, the regret
   bound's from 0.6.0.
+- **A nan no longer passes for a number where a comparison decides.** A test written
+  `if x > limit: raise` passes a nan, since every comparison with nan is false, and `max()` drops
+  one. An audit of the other comparisons that certify, filter or select found these:
+  - `robust_safety_filter` passed the nominal action unfiltered where its channel, radius, drift
+    or `alpha_h` was nan: 5.0, where a radius of 0.99 allows 0.5025. `robust_safe_action` granted
+    full authority on a nan radius. They, `robust_barrier_margin` and `admissible_action_interval`
+    refuse a nan argument.
+  - `benchmark_gamma` read every implied Gamma as 1 on one nan covariate, and an assumed Gamma of
+    2 as infinitely many times the strongest. `negative_control_gamma` returned `gamma_max`, 1e6,
+    on a nan outcome or a nan `tol`, where the sample measures 1.37. Both refuse data that are not
+    finite, and the second a `tol` that is not positive or a `gamma_max` below 1.
+  - On a nan outcome `callaway_santanna` read a cell nan, where diff-diff drops the unit-period,
+    and `callaway_santanna_inference`'s cross-check read the two as agreeing. Both refuse a panel
+    whose outcomes are not finite, and the cross-check fails on a nan.
+  - `delay_ball_certificate` read a worst loss error of 0 where every decay rate was nan, as at a
+    horizon of 200 under float32. The error now reads nan, and the certificate fails.
+  - `discover_lagged_parents` made a nan's column a parent of every component, and on finite data
+    at 1e200, whose p-values overflow to nan, a column its own parent. It refuses data that are
+    not finite, and a nan p-value ends the selection.
+  - `CongestedMeanFieldGame.solve` returned a path 99.9 % nan at a congestion of 5e4, where the
+    shooting's miss was nan. It raises.
+  - A solve that ended on nan actions reported a `constraint_violation` of 0. It reads nan.
+  - `DoubleML`'s t-statistic read inf where its standard error was nan. It reads nan.
+  - `capped_exploration_policy` read a nan cap or budget as no exploration, and priced its taper
+    at nan. It refuses them.
+  - `read_switchback` returned a nan estimate and standard error where the outcome's covariance
+    overflowed, and `randomisation_interval` was still stepping after two minutes. Both raise.
+  - `ZoneBatch` took a logged propensity small enough to overflow an importance weight. On a
+    reward of 0 the zone's improvement e-value then read nan from then on, and e-BH, which sorts a
+    nan first, let a zone with a log e-value of 3.1 deploy beside it, where beside a zone with none
+    it does not. `ZoneBatch` refuses such a batch.
+
+  On upgrading, a call that passed a nan, an outcome that is not finite or a panel with a missing
+  outcome raises `ValueError`: impute or drop those rows first. The oldest of these, the filter,
+  the DiD estimator, `discover_lagged_parents` and `DoubleML`'s statistic, date from 0.2.0.
 - **A plan keeps to what the log did along the directions it never moved.** `prescribe` held a
   lever whose whole channel the log never moved at its mean logged level, and planned every other
   lever over its box. Where no single lever is unmoved, as with `u2 = 2 u1` in every row, the plan

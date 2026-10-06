@@ -121,6 +121,10 @@ def _panel(outcomes: Outcomes, group: Groups) -> tuple[Outcomes, Groups]:
     if outcomes.ndim != 2 or group.shape != (outcomes.shape[0],):
         msg = "outcomes must be (N, T) and group (N,) with matching N"
         raise ValueError(msg)
+    if not np.isfinite(outcomes).all():
+        # a cell's mean would carry a nan, where diff-diff drops the unit-period and reads the rest
+        msg = "outcomes must be finite: the estimator reads a balanced panel"
+        raise ValueError(msg)
     return outcomes, group
 
 
@@ -303,19 +307,22 @@ def _agree(
             f"only callaway_santanna {sorted(set(estimate.att) - set(cells))}"
         )
         raise RuntimeError(msg)
-    worst = max(estimate.att, key=lambda k: abs(cells[k] - estimate.att[k]))
-    if abs(cells[worst] - estimate.att[worst]) > tolerance:
+    # each test holds only on a number within the tolerance: a nan, which every comparison reads
+    # as false, does not pass
+    apart = [k for k in estimate.att if not abs(cells[k] - estimate.att[k]) <= tolerance]
+    if apart:
+        worst = max(apart, key=lambda k: np.nan_to_num(abs(cells[k] - estimate.att[k]), nan=np.inf))
         msg = (
             f"diff-diff's ATT{worst} is {cells[worst]!r}, callaway_santanna's "
             f"{estimate.att[worst]!r}"
         )
         raise RuntimeError(msg)
-    if set(event_study) != set(estimate.event_study) or any(
-        abs(event_study[e] - estimate.event_study[e]) > tolerance for e in event_study
+    if set(event_study) != set(estimate.event_study) or not all(
+        abs(event_study[e] - estimate.event_study[e]) <= tolerance for e in event_study
     ):
         msg = "diff-diff's event study is not callaway_santanna's"
         raise RuntimeError(msg)
-    if abs(overall - estimate.overall) > tolerance:
+    if not abs(overall - estimate.overall) <= tolerance:
         msg = f"diff-diff's overall ATT is {overall!r}, callaway_santanna's {estimate.overall!r}"
         raise RuntimeError(msg)
 

@@ -93,7 +93,7 @@ def _select_parents(
             for c in remaining
         ]
         best_p, best_c = min(scored)
-        if best_p >= alpha:
+        if not best_p < alpha:
             break  # nothing left is a significant parent given what we already have
         selected.append(best_c)
         remaining.remove(best_c)
@@ -116,6 +116,9 @@ def discover_lagged_parents(
     if series.ndim != 2:
         raise ValueError(f"series must be (T, d_state); got shape {series.shape}")
     controls = None if controls is None else np.asarray(controls, dtype=float)
+    # a nan reads a nan p-value, which no test rejects and the selection's minimum may still pick
+    if not (np.isfinite(series).all() and (controls is None or np.isfinite(controls).all())):
+        raise ValueError("series and controls must be finite")
     d_state = series.shape[1]
     d_control = 0 if controls is None else controls.shape[1]
     design, tags = _lagged_design(series, controls, max_lag)

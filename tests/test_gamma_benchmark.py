@@ -250,3 +250,26 @@ def test_a_null_outcome_needs_the_benchmark_only_when_the_confounder_is_the_outc
     assert needed[-1] < benchmark
     sharp = negative_control_gamma(u[treated == 1] - u[treated == 0].mean())
     assert sharp == pytest.approx(benchmark, rel=1e-6)
+
+
+def test_a_nan_covariate_is_refused_rather_than_read_as_no_confounding() -> None:
+    """One nan covariate read every implied Gamma as 1.0, where they are 6.1 and 3.2, and an
+    assumed Gamma of 2 as infinitely many times the strongest covariate."""
+    treated, covariates = _design(400, [1.0, 0.5])
+    covariates[3, 1] = np.nan
+    with pytest.raises(ValueError, match="must be finite"):
+        benchmark_gamma(treated, covariates, assumed_gamma=2.0)
+    with pytest.raises(ValueError, match="must be >= 1"):
+        benchmark_gamma(treated, np.nan_to_num(covariates), assumed_gamma=float("nan"))
+
+
+def test_a_nan_negative_control_is_refused_rather_than_calibrated_at_the_ceiling() -> None:
+    """A nan outcome, or a nan ``tol``, returned ``gamma_max``, 1e6, as the confounding the
+    negative control measured, where it measures 1.37."""
+    outcomes = np.random.default_rng(1).normal(0.3, 1.0, 200)
+    with pytest.raises(ValueError, match="must be finite"):
+        negative_control_gamma(np.where(np.arange(200) == 5, np.nan, outcomes))
+    with pytest.raises(ValueError, match="tol must be positive"):
+        negative_control_gamma(outcomes, tol=float("nan"))
+    with pytest.raises(ValueError, match="gamma_max at least 1"):
+        negative_control_gamma(outcomes, gamma_max=float("nan"))

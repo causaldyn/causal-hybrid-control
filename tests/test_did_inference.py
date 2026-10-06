@@ -216,3 +216,33 @@ def test_the_robust_interval_refuses_a_negative_bound() -> None:
     inference = callaway_santanna_inference(*_panel(14), draws=199)
     with pytest.raises(ValueError, match="m must be at least 0"):
         inference.robust_interval(-0.1)
+
+
+def test_it_refuses_a_nan_outcome_rather_than_read_another_sample() -> None:
+    """A nan outcome made the estimate's cell (3, 1) nan, where diff-diff drops the unit-period
+    and reads -0.177. Every comparison with nan is false, so the cross-check read the two as
+    agreeing, and the inference returned diff-diff's bands, read on a panel without that
+    unit-period."""
+    outcomes, group = _panel(8)
+    outcomes[0, 1] = np.nan
+    with pytest.raises(ValueError, match="outcomes must be finite"):
+        callaway_santanna(outcomes, group)
+    with pytest.raises(ValueError, match="outcomes must be finite"):
+        callaway_santanna_inference(outcomes, group)
+
+
+@pytest.mark.parametrize("where", ["cell", "event study", "overall"])
+def test_a_nan_does_not_pass_the_cross_check(where: str) -> None:
+    """Every comparison with nan is false, so each of the cross-check's three tests read a nan as
+    agreeing."""
+    estimate = callaway_santanna(*_panel(4))
+    cells, studied, overall = dict(estimate.att), dict(estimate.event_study), estimate.overall
+    chc.did._agree(estimate, cells, studied, overall)
+    if where == "cell":
+        cells[next(iter(cells))] = np.nan
+    elif where == "event study":
+        studied[next(iter(studied))] = np.nan
+    else:
+        overall = np.nan
+    with pytest.raises(RuntimeError, match="diff-diff's"):
+        chc.did._agree(estimate, cells, studied, overall)

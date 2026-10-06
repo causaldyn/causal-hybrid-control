@@ -462,13 +462,15 @@ _project_once = eqx.filter_jit(_dykstra)
 def _violation(us: Array, constraints: Sequence[LinearConstraint]) -> float:
     """Worst amount by which ``us`` breaks a constraint row, in that row's own units."""
     flat = np.asarray(us, dtype=np.float64).ravel()
-    worst = 0.0
+    excesses = [0.0]
     for constraint in constraints:
         if constraint.matrix.shape[0]:
             level = constraint.matrix @ flat
-            excess = np.maximum(constraint.lower - level, level - constraint.upper)
-            worst = max(worst, float(np.max(excess)))
-    return worst
+            excesses.append(
+                float(np.max(np.maximum(constraint.lower - level, level - constraint.upper)))
+            )
+    # np.max keeps a nan, where max() drops it: nan actions break every row
+    return float(np.max(excesses))
 
 
 def _polytope_stationarity(

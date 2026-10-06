@@ -228,3 +228,25 @@ def test_a_negative_actuation_limit_is_rejected_rather_than_flipping_the_bound()
         robust_barrier_margin(0.0, 1.0, 0.1, -1.0)
     with pytest.raises(ValueError, match="must be positive"):
         identification_radius_threshold(-0.9, 0.6, 0.0, 0.5)
+
+
+@pytest.mark.parametrize("name", ["u_nominal", "channel", "radius", "u_max", "drift", "alpha_h"])
+def test_a_nan_input_is_refused_rather_than_left_unfiltered(name: str) -> None:
+    """Every comparison with nan is false, so a nan radius, channel, drift or rate passed the
+    nominal action unfiltered: 5.0, where a radius of 0.99 allows 0.5025. A nan nominal or limit
+    came back as a nan action."""
+    inputs = {"u_nominal": 5.0, "channel": -1.0, "radius": 0.99, "u_max": 6.0, "drift": 0.0}
+    inputs |= {"alpha_h": 1.0, name: float("nan")}
+    with pytest.raises(ValueError, match="not nan"):
+        robust_safety_filter(**inputs)
+
+
+def test_a_nan_radius_buys_no_authority() -> None:
+    """``robust_safe_action`` returned full authority, and ``robust_barrier_margin`` the drift."""
+    nan = float("nan")
+    with pytest.raises(ValueError, match="radius must be numbers, not nan"):
+        robust_safe_action(np.array([1.0]), np.array([[1.0]]), nan, 6.0)
+    with pytest.raises(ValueError, match="radius must be numbers, not nan"):
+        robust_barrier_margin(0.0, 1.0, nan, 6.0)
+    with pytest.raises(ValueError, match="grad_h must be numbers, not nan"):
+        robust_safe_action(np.array([nan]), np.array([[1.0]]), 0.5, 6.0)

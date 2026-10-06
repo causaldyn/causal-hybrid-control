@@ -533,11 +533,13 @@ def delay_ball_certificate(
         late = float(jnp.max(jnp.abs(xs[-steps // 4 :])))
         (unstable if late > early else stable).append(ratio)
 
-    worst_loss_error = 0.0
+    errors = [0.0]
     for ratio in loss_ratios:
         xs = np.asarray(simulate(ratio))[:, 0]
         measured = 1.0 - tau * _envelope_decay_rate(xs, dt)
-        worst_loss_error = max(worst_loss_error, abs(measured - delay_design_loss(ratio)))
+        errors.append(abs(measured - delay_design_loss(ratio)))
+    # np.max keeps a nan, where max() drops it: a tail that underflows to zero reads a nan rate
+    worst_loss_error = float(np.max(errors))
 
     largest_unstable = max(unstable) if unstable else 0.0
     smallest_stable = min(stable) if stable else float("inf")

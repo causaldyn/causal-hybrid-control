@@ -394,6 +394,14 @@ class ZoneBatch:
             object.__setattr__(self, name, array)
         if size and np.min(self.logged) <= 0.0:
             raise ValueError("a logged propensity is 0: the action could not have been drawn")
+        with np.errstate(over="ignore"):
+            weights = np.concatenate([self.candidate, self.baseline]) / np.tile(self.logged, 2)
+        if not np.isfinite(weights).all():
+            # an infinite weight times a reward of 0 is nan: the e-value keeps it until its epoch
+            # restarts, and e-BH sorts a nan first, which lowers the bar the other zones meet
+            raise ValueError(
+                f"a logged propensity of {np.min(self.logged)} makes an importance weight overflow"
+            )
         if self.drift is not None:
             object.__setattr__(self, "drift", _evalues(self.drift, "drift", size))
 
