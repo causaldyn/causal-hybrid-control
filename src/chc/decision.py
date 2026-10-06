@@ -290,6 +290,12 @@ class DecisionCertificate:
     # the tube is a bound; ``local`` where the slope is read at the start alone, so away from it
     # nothing proves the tube. None where no tube was evaluated.
     tube_rate: TubeRate | None = None
+    # The column whose groups ``identification_radius`` sums the scores within before squaring them
+    # (CR1): the panel's cluster where it declares one, else its unit, whose transitions share any
+    # persistent noise. None where the transitions name one group alone, and the error then takes
+    # each transition as independent; ``error_clusters`` counts the groups.
+    error_clustered_by: str | None = None
+    error_clusters: int | None = None
 
     @property
     def trustworthy_steps(self) -> int:
@@ -700,7 +706,15 @@ class Prescription:
                 else []
             ),
             *self._driver_lines(),
-            f"- channel standard error: {_show(certificate.identification_radius)}",
+            f"- channel standard error: {_show(certificate.identification_radius)}"
+            + (
+                ""
+                if certificate.identification_radius is None
+                else f", summed within {certificate.error_clusters} groups of "
+                f"`{certificate.error_clustered_by}` (CR1)"
+                if certificate.error_clustered_by is not None
+                else ", each transition taken as independent"
+            ),
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
             self._logger_line(),
             f"- error tube: **{certificate.certificate_status}**, "
@@ -752,6 +766,8 @@ class Prescription:
                 "regret_status": certificate.regret_status,
                 "unmoved_levers": list(certificate.unmoved_levers),
                 "tube_rate": certificate.tube_rate,
+                "error_clustered_by": certificate.error_clustered_by,
+                "error_clusters": certificate.error_clusters,
             },
             "selection": None
             if self.selection is None
@@ -844,7 +860,13 @@ def prescribe(
     Args:
         panel: long-format logs. Consecutive periods within a unit become the ``(x, u, x_next)``
             transitions the channel is fitted on; gaps are dropped rather than interpolated, so an
-            unbalanced panel is fine and a silently invented row is not.
+            unbalanced panel is fine and a silently invented row is not. The channel's standard
+            error, and with it the tube's budget, sums the scores within each group of the panel's
+            declared cluster, or of its unit where it declares none, before squaring them
+            (``clusters`` in :func:`~chc.dynamics_id.fit_causal_residual`): the transitions of
+            one unit share whatever persistent noise the model leaves out. A panel whose
+            transitions all fall in one group takes them as independent, and the certificate says
+            which it was (:attr:`DecisionCertificate.error_clustered_by`).
         levers, target, constraints: the decision, in the domain's own names. States are the target
             column followed by each other constrained column, in that order. A constraint may name
             the target column itself: it then bounds the steered state, which gets the barrier and
@@ -1041,13 +1063,15 @@ def prescribe(
         },
     )
     logger_check = _check_logger(panel, levers=lever_names, columns=columns)
-    data = _transitions(
+    data, cluster = _transitions(
         panel,
         states=states,
         levers=lever_names,
         adjust_for=resolved.covariates,
         drivers=driver_names,
     )
+    groups = int(np.unique(cluster).size)
+    clustered_by = (panel.cluster or panel.unit) if groups > 1 else None
     n_states, n_levers = len(states), len(lever_names)
 
     base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
@@ -1061,6 +1085,7 @@ def prescribe(
         seed=seed,
         integrator=integrator,
         drivers=driver_names,
+        clusters=None if clustered_by is None else cluster,
     )
     _log.info(
         "control channel fitted",
@@ -1069,6 +1094,8 @@ def prescribe(
             "method": fit.method,
             "identified": fit.identified,
             "channel_error": fit.channel_error,
+            "clustered_by": clustered_by,
+            "clusters": groups if clustered_by is not None else None,
             "integrator": fit.integrator,
             "integrator_defect": fit.integrator_defect,
             "overlap": fit.action_residual_variance,
@@ -1260,6 +1287,8 @@ def prescribe(
         regret_status=gap.status,
         unmoved_levers=unmoved_levers,
         tube_rate=None if plan.certified_horizon is None else tube_rate,
+        error_clustered_by=clustered_by,
+        error_clusters=groups if clustered_by is not None else None,
     )
     _log.info(
         "decision certified",
@@ -1420,9 +1449,11 @@ def _transitions(
     levers: tuple[str, ...],
     adjust_for: tuple[str, ...],
     drivers: tuple[str, ...] = (),
-) -> dict[str, Array]:
+) -> tuple[dict[str, Array], NDArray[Any]]:
     """``(x, u, x_next)`` over consecutive periods within a unit, plus the adjustment columns, and
-    each driver at both ends of the transition (``name`` and ``f"{name}_next"``).
+    each driver at both ends of the transition (``name`` and ``f"{name}_next"``); beside them, each
+    transition's cluster: the panel's cluster column at its first period where the panel declares
+    one, and its unit's code where not.
 
     Gaps are dropped, not interpolated: a unit missing period ``t`` contributes the transitions on
     either side of the hole and nothing across it, and so does a period no unit logged, where the
@@ -1472,7 +1503,8 @@ def _transitions(
         [row_of[(unit, max(p for u, p in row_of if u == unit))] for unit in units], dtype=np.int64
     )
     data["x0"] = jnp.mean(stack(states, final_rows), axis=0)
-    return data
+    cluster = unit_codes if panel.cluster is None else np.asarray(panel[panel.cluster])
+    return data, cluster[current]
 
 
 # The class :func:`chc.dynamics_id.fit_causal_residual` regresses the levers on by default.

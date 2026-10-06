@@ -383,6 +383,43 @@ def test_fits_of_two_classes_or_two_logs_are_refused() -> None:
         misspecification_cost(plan, reference, other_log)
 
 
+def test_fits_that_sum_over_different_clusters_are_refused() -> None:
+    reference, alternative, plan = _case(4000, 7, 0.0, 0.0)
+    blocks = np.arange(4000) // 40
+    clustered, other = _fits(_log(4000, 7, 0.0), clusters=blocks)
+    with pytest.raises(ValueError, match="different clusters"):
+        misspecification_cost(plan, reference, other)
+    with pytest.raises(ValueError, match="different clusters"):
+        misspecification_cost(plan, clustered, alternative)
+    shifted = dataclasses.replace(other, clusters=(blocks + 1) % 100)
+    with pytest.raises(ValueError, match="different clusters"):
+        misspecification_cost(plan, clustered, shifted)
+
+
+def test_repeated_rows_clustered_by_their_original_price_as_the_original_does() -> None:
+    """Each row of a log of 1000 repeated 4 times, the class missing the truth: summed within each
+    row's copies, the difference's covariance is the original's summed within each row, so the
+    cost, its error, the noise and the p-value are the original's; summed row by row and state by
+    state the noise reads a quarter of the original's, as 4000 independent rows would."""
+    data = _log(1000, 11, 1.0)
+    copies = {name: jnp.repeat(column, 4, axis=0) for name, column in data.items()}
+    original = _fits(data, folds=1, clusters=np.arange(1000))
+    repeated = _fits(copies, folds=1, clusters=np.repeat(np.arange(1000), 4))
+
+    def priced(fits: tuple[CausalDynamicsFit, CausalDynamicsFit]):
+        plan = _plan(fits[0].residual)
+        plan = dataclasses.replace(plan, actions=_optimum(fits[0].residual, plan.actions))
+        return misspecification_cost(plan, *fits)
+
+    expected, got = priced(original), priced(repeated)
+    for name in ("cost", "cost_error", "noise", "p_value"):
+        assert getattr(got, name) == pytest.approx(getattr(expected, name), rel=1e-5), name
+    assert got.unseen == expected.unseen
+    rows = priced(_fits(copies, folds=1))
+    each = priced(_fits(data, folds=1))
+    assert rows.noise == pytest.approx(each.noise / 4.0, rel=0.01)
+
+
 def test_a_plan_made_on_another_model_is_refused() -> None:
     reference, alternative, plan = _case(4000, 7, 0.0, 0.0)
     with pytest.raises(ValueError, match="reference fit's model"):

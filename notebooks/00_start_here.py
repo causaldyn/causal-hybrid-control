@@ -176,7 +176,8 @@ print(prescription.report())
 # **Certificate** says how far to trust it, line by line:
 #
 # - *identification*: the graph left one set to adjust for, `demand`, and the logs hold it;
-# - *channel standard error*: how precisely the logs pin the incentive's effect down;
+# - *channel standard error*: how precisely the logs pin the incentive's effect down, each
+#   region's weeks read as one group, since they share whatever the model leaves out;
 # - *overlap*: how much the incentive moved once demand is read; at 0 the logs teach nothing;
 # - *logger check*: whether the team's incentive followed anything the graph does not show; a
 #   pass can miss a weak link, and the line says how weak;

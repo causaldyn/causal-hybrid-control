@@ -134,7 +134,8 @@ class CausalDynamicsFit:
     # The standard error of the fitted channel's value B(x) at the log's states, root mean square
     # over the states and the channel's entries, None when not identified. It is read off the
     # channel's robust covariance: each row's squared structural residual carried through the fit's
-    # own linear map, cross-fitted nuisances included. Up to 0.12 it was that covariance's
+    # own linear map, cross-fitted nuisances included, or under ``clusters`` each cluster's summed
+    # score squared (CR1). Up to 0.12 it was that covariance's
     # root-mean diagonal, whose constant term is the value at x = 0, so it moved with the state's
     # zero: one log read 0.0091, and 0.579 with its states moved by 100 and -50. The figures that
     # follow compared that version with the spread of the same coefficients. Robust since 0.8.0;
@@ -204,6 +205,11 @@ class CausalDynamicsFit:
     representer: Array | None = None
     # (N, n), kept with ``influence``: the channel moment's residual, ``y_res - D c``, per state.
     moment_residual: Array | None = None
+    # (N,), each transition's cluster as a code from 0 where the fit was given ``clusters``: the
+    # channel's covariance then sums each cluster's scores over its transitions and states before
+    # squaring them (CR1), and a reader of ``influence`` sums its rows the same way
+    # (:func:`_independent`). None where each transition's each state is its own.
+    clusters: np.ndarray | None = None
 
 
 def _r_squared(target: Array, prediction: Array) -> float:
@@ -311,18 +317,49 @@ def _channel_coefficients(
     return jnp.linalg.solve(gram, instrument.T @ state_residual)
 
 
-def _robust_spread(sensitivity: Array, score: Array, n_coeff: int) -> Array:
-    """``sum_i J_i diag(e_i^2) J_i'`` for a fit linear in its target ``y``, ``J = d coeffs / d y``.
+def _small_sample(rows: int, n_coeff: int, clusters: int | None) -> float:
+    """The robust covariance's small-sample factor: ``N / (N - k)`` over rows, and CR1's
+    ``G / (G - 1) (N - 1) / (N - k)`` over ``G`` clusters, which is the same where each row is its
+    own."""
+    if clusters is None:
+        return rows / max(rows - n_coeff, 1)
+    return clusters / (clusters - 1) * (rows - 1) / max(rows - n_coeff, 1)
+
+
+def _robust_spread(
+    sensitivity: Array, score: Array, n_coeff: int, clusters: np.ndarray | None = None
+) -> Array:
+    """``sum_i J_i diag(e_i^2) J_i'`` for a fit linear in its target ``y``, ``J = d coeffs / d y``;
+    under ``clusters``, ``sum_g s_g s_g'`` with ``s_g = sum_{i in g} J_i e_i``.
 
     Each row's own squared residual stands in for its noise, so it holds when the noise differs
     across rows, and ``J`` runs through the cross-fitted nuisances as well as the moment. A weight
     that loads a few rows loads the nuisance fits' error at them too, which a sandwich on the moment
     alone misses: on a log whose noise grew as ``exp(x)``, weighed by ``exp(-x)``, that sandwich
-    came to 0.67 of the channel's spread over sixteen redraws of the noise, and this to 1.04.
+    came to 0.67 of the channel's spread over sixteen redraws of the noise, and this to 1.04. Summed
+    within a cluster first, it holds as well when the scores of one cluster's rows and states
+    depend on one another in any way.
     """
     n = score.shape[0]
-    scale = n / max(n - n_coeff, 1)
-    return jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity)
+    if clusters is None:
+        scale = _small_sample(n, n_coeff, None)
+        return jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity)
+    count = int(clusters.max()) + 1
+    summed = jax.ops.segment_sum(
+        jnp.einsum("pis,is->ip", sensitivity, score), jnp.asarray(clusters), num_segments=count
+    )
+    return _small_sample(n, n_coeff, count) * summed.T @ summed
+
+
+def _independent(rows: np.ndarray, clusters: np.ndarray | None) -> np.ndarray:
+    """``rows``, ``(N, n, ...)`` per transition and state as :attr:`CausalDynamicsFit.influence`
+    is, as the independent terms whose outer products sum to their covariance: one a transition
+    and state, or under ``clusters`` one a cluster, its transitions' and states' summed."""
+    if clusters is None:
+        return rows.reshape(-1, *rows.shape[2:])
+    summed = np.zeros((int(clusters.max()) + 1, *rows.shape[2:]))
+    np.add.at(summed, clusters, rows.sum(axis=1))
+    return summed
 
 
 def _error_at_rows(blocks: Array, features: Array) -> float:
@@ -346,15 +383,22 @@ def _channel_blocks(covariance: Array, channel_shape: tuple[int, ...]) -> Array:
 
 
 def _influence(
-    sensitivity: Array, score: Array, direct: Array, drift_score: Array, n_coeff: int
+    sensitivity: Array,
+    score: Array,
+    direct: Array,
+    drift_score: Array,
+    n_coeff: int,
+    clusters: np.ndarray | None = None,
 ) -> Array:
     """``psi[i, s] = sqrt(n / (n - k)) (J[:, i, s] e[i, s] + D[:, i, s] (r[i, s] - e[i, s]))``,
     shape ``(N, n, p)``: each row's and state's share of the error. ``J`` is the whole fit's
     response to the row's rate and ``D`` the part of it that reaches the drift directly, not
     through the channel, so the channel reads the moment's residual ``e`` and the drift's direct
-    part its own regression's residual ``r``, which holds what the drift's features leave."""
+    part its own regression's residual ``r``, which holds what the drift's features leave. Under
+    ``clusters`` the factor is CR1's (:func:`_small_sample`), for sums within each cluster."""
     n = score.shape[0]
-    return jnp.sqrt(n / max(n - n_coeff, 1)) * (
+    count = None if clusters is None else int(clusters.max()) + 1
+    return jnp.sqrt(_small_sample(n, n_coeff, count)) * (
         jnp.einsum("pis,is->isp", sensitivity, score)
         + jnp.einsum("pis,is->isp", direct, drift_score - score)
     )
@@ -530,6 +574,7 @@ def fit_causal_residual(
     drivers: tuple[str, ...] = (),
     weights: Callable[[Array], Array] | None = None,
     influence: bool = False,
+    clusters: np.ndarray | Array | None = None,
 ) -> CausalDynamicsFit:
     """Fit a :class:`ControlAffineResidual` whose channel is the *interventional* control response.
 
@@ -655,14 +700,31 @@ def fit_causal_residual(
             :func:`omitted_confounder_bound` reads. Off by default: under ``euler`` it costs a
             reverse pass per parameter rather than per channel coefficient, and it is ``N n p``
             numbers the fit then carries, and ``N n q`` more.
+        clusters: each transition's cluster, ``N`` labels of any one sortable kind, at least two
+            distinct. The channel's covariance then sums each cluster's scores over its transitions
+            and states before squaring them, CR1 with the factor ``G / (G - 1) (N - 1) / (N - k)``
+            over ``G`` clusters and ``k`` coefficients a state, so it holds whatever the dependence
+            within a cluster; and a reader of ``influence`` sums its rows the same way. ``None``
+            takes every transition's every state as independent of the rest, which a log of units
+            followed over time breaks wherever the model leaves out something that persists: the
+            transitions of one unit then share it. The estimate does not move; only its error does.
+            On panels of 5 to 80 units whose noise persists within each unit, a 5 % test of a zero
+            channel rejects 12.5 % to 35.5 % of the time row by row and 3.75 % to 14.75 % by
+            unit: CR1 still over-rejects with few clusters (ADR 0053).
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
+
+    Raises:
+        ValueError: on a negative ``channel_degree``; on ``clusters`` that do not label every
+            transition once, or name fewer than two clusters; on an ``rk4`` fixed point that does
+            not converge.
     """
     channel_degree = degree if channel_degree is None else channel_degree
     if channel_degree < 0:
         raise ValueError(f"channel_degree must be a non-negative integer; got {channel_degree}")
     x, u, x_next = data["x"], data["u"], data["x_next"]
+    codes = None if clusters is None else _cluster_codes(clusters, x.shape[0])
     known_rate = jax.vmap(lambda xi, ui: known(0.0, xi, ui))(x, u)
 
     identified = bool(adjust_for) or instrument is not None
@@ -886,7 +948,7 @@ def fit_causal_residual(
         regressor = _channel_design(u_res, x, channel_degree)
         score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
         newton, sensitivity = newton_matrix(theta)
-        spread = _robust_spread(fit_map, score, regressor.shape[1])
+        spread = _robust_spread(fit_map, score, regressor.shape[1], codes)
         covariance = jnp.linalg.solve(newton, jnp.linalg.solve(newton, spread).T)
 
         # A row reaches the fixed point through K^-1 G, as the covariance says the noise does.
@@ -917,7 +979,12 @@ def fit_causal_residual(
             ),
             drift_error=_error_at_rows(drift_blocks, design),
             influence=_influence(
-                carry(fit_map), score, carry(drift_direct(size)), defect(fit), regressor.shape[1]
+                carry(fit_map),
+                score,
+                carry(drift_direct(size)),
+                defect(fit),
+                regressor.shape[1],
+                codes,
             )
             if influence
             else None,
@@ -937,7 +1004,7 @@ def fit_causal_residual(
             sensitivity = jax.jacrev(lambda target: _parameters(solve(target)))(jnp.zeros_like(y))
         else:
             sensitivity = jax.jacrev(lambda target: solve(target)[0].ravel())(jnp.zeros_like(y))
-        spread = _robust_spread(sensitivity[: channel.size], score, regressor.shape[1])
+        spread = _robust_spread(sensitivity[: channel.size], score, regressor.shape[1], codes)
         fit = dataclasses.replace(
             fit,
             channel_error=_error_at_rows(_channel_blocks(spread, channel.shape), phi_c),
@@ -947,13 +1014,33 @@ def fit_causal_residual(
                 drift_direct(channel.size),
                 y - fitted - design @ remainder,
                 regressor.shape[1],
+                codes,
             )
             if influence
             else None,
             representer=_representer(held(u_res)[: channel.size]) if influence else None,
             moment_residual=score if influence else None,
         )
-    return dataclasses.replace(fit, integrator_defect=float(jnp.sqrt(jnp.mean(defect(fit) ** 2))))
+    return dataclasses.replace(
+        fit, integrator_defect=float(jnp.sqrt(jnp.mean(defect(fit) ** 2))), clusters=codes
+    )
+
+
+def _cluster_codes(clusters: np.ndarray | Array, rows: int) -> np.ndarray:
+    """Each transition's cluster as a code from 0, in the labels' sorted order."""
+    labels = np.asarray(clusters)
+    if labels.shape != (rows,):
+        raise ValueError(
+            f"clusters label each of the {rows} transitions once; got an array of shape "
+            f"{labels.shape}"
+        )
+    distinct, codes = np.unique(labels, return_inverse=True)
+    if distinct.size < 2:
+        raise ValueError(
+            "clusters name one cluster; a covariance summed within clusters needs two at least, "
+            "since one cluster's sum leaves no spread between clusters to read"
+        )
+    return codes.astype(np.int64)
 
 
 # --- MM7: how strong a confounder the adjustment set left out would have to be ---
@@ -1017,7 +1104,8 @@ def omitted_confounder_bound(
     The sampling error follows DoubleML's: each confidence bound is one-sided at ``level``, and
     carries the estimate's influence and ``bias_scale``'s, whose ``nu^2`` part is ``nu^2 -
     alpha^2`` for a representer ``alpha``. Its sign convention for the estimate differs from this
-    one in the cross term of the two influences, which vanishes in expectation.
+    one in the cross term of the two influences, which vanishes in expectation. A fit given
+    ``clusters`` has both influences summed within each cluster, as its channel's error is.
 
     Args:
         fit: an identified fit of :func:`fit_causal_residual`, by adjustment, unweighted, made
@@ -1066,6 +1154,7 @@ def omitted_confounder_bound(
     residual = np.asarray(fit.moment_residual, dtype=np.float64)
     psi = np.asarray(fit.influence, dtype=np.float64)[:, :, : w.size] @ w  # the estimate's
     rows = residual.shape[0]
+    clusters = fit.clusters
     sigma2, nu2 = np.mean(residual**2, axis=0), np.mean(alpha**2, axis=0)
     product = np.sqrt(sigma2 * nu2)
     scale = float(np.sum(product))
@@ -1080,8 +1169,9 @@ def omitted_confounder_bound(
 
     def bounds(strength: float) -> tuple[float, float, float, float]:
         low, high = estimate - strength * scale, estimate + strength * scale
-        spread_low = float(np.sqrt(np.sum((psi - strength * scale_psi / rows) ** 2)))
-        spread_high = float(np.sqrt(np.sum((psi + strength * scale_psi / rows) ** 2)))
+        moved = strength * scale_psi / rows
+        spread_low = float(np.sqrt(np.sum(_independent(psi - moved, clusters) ** 2)))
+        spread_high = float(np.sqrt(np.sum(_independent(psi + moved, clusters) ** 2)))
         return low, high, low - quantile * spread_low, high + quantile * spread_high
 
     def at_share(share: float) -> float:

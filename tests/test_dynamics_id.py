@@ -5,8 +5,10 @@ actually confounded, so each recovery test also pins down what the *un*-adjusted
 same rows.
 """
 
+import dataclasses
 import functools
 import itertools
+import math
 from collections.abc import Callable
 
 import jax
@@ -20,6 +22,7 @@ from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import (
     CausalDynamicsFit,
     ConfoundedControlAffineSystem,
+    _independent,
     _unmoved_actions,
     _unmoved_directions,
     fit_causal_residual,
@@ -1238,3 +1241,135 @@ def test_a_policy_the_covariates_determine_reads_as_a_confident_wrong_channel() 
     assert abs(float(fit.residual.channel[0, 0, 0]) - 0.8) > 0.5
     assert fit.unmoved is not None
     assert fit.unmoved.shape[1] == fit.residual.channel.size
+
+
+# ---- a channel error summed within clusters ----
+
+CLUSTERED = {"adjust_for": ("z",), "channel_degree": 0, "nuisance_degree": 1, "folds": 1}
+
+
+def _clustered_log(rows: int = 100, seed: int = 23) -> dict[str, jax.Array]:
+    """One state and one lever, confounded by ``z``, the lever's own part ``a`` and the rate's
+    noise ``e`` drawn afresh on each row."""
+    rng = np.random.default_rng(seed)
+    x, z, a, e = rng.normal(size=(4, rows))
+    u = z + a
+    after = x + 0.1 * (-0.5 * x + 0.8 * u + 1.5 * z + 0.2 * e)
+    return {
+        "x": jnp.asarray(x[:, None]),
+        "u": jnp.asarray(u[:, None]),
+        "z": jnp.asarray(z[:, None]),
+        "x_next": jnp.asarray(after[:, None]),
+    }
+
+
+def _repeated(data: dict[str, jax.Array], times: int) -> dict[str, jax.Array]:
+    return {name: jnp.repeat(column, times, axis=0) for name, column in data.items()}
+
+
+def test_rows_repeated_and_clustered_by_their_original_read_the_original_error() -> None:
+    """Each row of a log of 100 repeated 16 times: row by row the error reads a quarter of the
+    original's, as 1600 independent rows would; summed within each row's copies it reads the
+    original's, since ``(N - 1) / (N - k)`` is 1 at one coefficient and ``G / (G - 1)`` is the
+    original's ``N / (N - k)``."""
+    data = _clustered_log()
+    original = fit_causal_residual(_known, data, 0.1, **CLUSTERED)
+    copies = _repeated(data, 16)
+    rows = fit_causal_residual(_known, copies, 0.1, **CLUSTERED)
+    clustered = fit_causal_residual(
+        _known, copies, 0.1, **CLUSTERED, clusters=np.repeat(np.arange(100), 16)
+    )
+    assert original.channel_error is not None
+    assert rows.channel_error is not None
+    assert rows.channel_error / original.channel_error == pytest.approx(0.25, abs=0.002)
+    assert clustered.channel_error == pytest.approx(original.channel_error, rel=1e-6, abs=0.0)
+    assert clustered.residual.channel == pytest.approx(original.residual.channel, abs=1e-7)
+
+
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_each_transition_its_own_cluster_is_the_row_by_row_error_on_one_state(
+    integrator: str,
+) -> None:
+    data = _clustered_log(400, seed=4)
+    options = {**CLUSTERED, "integrator": integrator, "influence": True}
+    rows = fit_causal_residual(_known, data, 0.1, **options)
+    own = fit_causal_residual(_known, data, 0.1, **options, clusters=np.arange(400))
+    assert own.channel_error == pytest.approx(rows.channel_error, rel=1e-12, abs=0.0)
+    np.testing.assert_allclose(own.influence, rows.influence, rtol=1e-12, atol=0.0)
+    assert own.clusters is not None
+    assert own.clusters.tolist() == list(range(400))
+    assert rows.clusters is None
+
+
+def test_under_euler_a_row_s_states_summed_leave_every_state_s_channel_error_as_it_was() -> None:
+    """Under Euler each state's channel reads its own column of rates, so summing a row's states
+    within its cluster adds only the covariances between two states' channels, which the error does
+    not read: each transition its own cluster reads the row-by-row error on every state."""
+    data = _system().sample(600, jax.random.key(3), _known)
+    rows = fit_causal_residual(_known, data, 0.1, adjust_for=("z",))
+    own = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), clusters=np.arange(600))
+    assert own.channel_error == pytest.approx(rows.channel_error, rel=1e-12, abs=0.0)
+
+
+def test_the_clustered_error_is_cr1_by_hand() -> None:
+    """Own-sample partialling-out on a linear basis with no ridge is Frisch-Waugh-Lovell, so the
+    channel is ``u_res' y / u_res' u_res`` and each row moves it by ``u_res_i / u_res' u_res``: the
+    error is CR1's over the clusters' summed scores, whatever their sizes."""
+    rows = 300
+    data = _clustered_log(rows, seed=5)
+    labels = np.array([f"g{g:02d}" for g in np.random.default_rng(1).integers(0, 30, rows)])
+    fit = fit_causal_residual(_known, data, 0.1, **CLUSTERED, ridge=0.0, clusters=labels)
+
+    x, z, u = (np.asarray(data[name])[:, 0] for name in ("x", "z", "u"))
+    y = (np.asarray(data["x_next"])[:, 0] - x) / 0.1
+    basis = np.column_stack([np.ones(rows), x, z])
+    projector = basis @ np.linalg.pinv(basis)
+    u_res, y_res = u - projector @ u, y - projector @ y
+    channel = u_res @ y_res / (u_res @ u_res)
+    score = u_res / (u_res @ u_res) * (y_res - channel * u_res)
+    _, codes = np.unique(labels, return_inverse=True)
+    summed = np.bincount(codes, weights=score)
+    groups = summed.size  # (N - 1) / (N - k) is 1 at one coefficient
+    variance = groups / (groups - 1) * np.sum(summed**2)
+    assert float(fit.residual.channel[0, 0, 0]) == pytest.approx(channel, rel=1e-9, abs=0.0)
+    assert fit.channel_error == pytest.approx(math.sqrt(variance), rel=1e-9, abs=0.0)
+
+
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_clusters_move_the_error_and_nothing_else(integrator: str) -> None:
+    data = _clustered_log(400, seed=6)
+    options = {**CLUSTERED, "integrator": integrator, "influence": True}
+    rows = fit_causal_residual(_known, data, 0.1, **options)
+    clustered = fit_causal_residual(_known, data, 0.1, **options, clusters=np.arange(400) // 8)
+    assert clustered.channel_error != rows.channel_error
+    # each row's influence is the same but for the factor: CR1's over 50 clusters, not N / (N - k)
+    factor = math.sqrt((50 / 49 * 399 / 399) / (400 / 399))
+    np.testing.assert_allclose(clustered.influence, factor * rows.influence, rtol=1e-12, atol=0)
+    np.testing.assert_array_equal(clustered.residual.channel, rows.residual.channel)
+    np.testing.assert_array_equal(clustered.residual.drift, rows.residual.drift)
+    np.testing.assert_array_equal(clustered.representer, rows.representer)
+    np.testing.assert_array_equal(clustered.moment_residual, rows.moment_residual)
+    moved = {"channel_error", "influence", "clusters"}
+    for field in dataclasses.fields(CausalDynamicsFit):
+        if field.name not in moved | {"residual", "representer", "moment_residual", "unmoved"}:
+            assert getattr(clustered, field.name) == getattr(rows, field.name), field.name
+
+
+def test_clusters_are_refused_unless_they_label_every_transition_and_name_two() -> None:
+    data = _clustered_log(50)
+    with pytest.raises(ValueError, match="label each of the 50 transitions once"):
+        fit_causal_residual(_known, data, 0.1, **CLUSTERED, clusters=np.arange(49))
+    with pytest.raises(ValueError, match="label each of the 50 transitions once"):
+        fit_causal_residual(_known, data, 0.1, **CLUSTERED, clusters=np.zeros((50, 1)))
+    with pytest.raises(ValueError, match="name one cluster"):
+        fit_causal_residual(_known, data, 0.1, **CLUSTERED, clusters=np.full(50, "store"))
+
+
+def test_the_influence_s_independent_terms_are_its_rows_or_its_clusters_sums() -> None:
+    rows = np.arange(24.0).reshape(4, 2, 3)
+    np.testing.assert_array_equal(_independent(rows, None), rows.reshape(8, 3))
+    summed = _independent(rows, np.array([0, 1, 0, 1]))
+    np.testing.assert_array_equal(
+        summed, [rows[0].sum(0) + rows[2].sum(0), rows[1].sum(0) + rows[3].sum(0)]
+    )
+    np.testing.assert_array_equal(_independent(rows[:, :, 0], np.array([1, 0, 0, 0])), [81, 3])

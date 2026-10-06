@@ -765,7 +765,7 @@ def test_a_period_no_unit_logged_parts_the_periods_on_either_side_of_it() -> Non
         "temperature": np.array([20.0, 19.9, 15.0, 15.1]),
         "heater": np.ones(4),
     }
-    data = _transitions(
+    data, _ = _transitions(
         Panel.from_frame(alone, unit="home", time="hour"),
         states=("temperature",),
         levers=("heater",),
@@ -776,7 +776,7 @@ def test_a_period_no_unit_logged_parts_the_periods_on_either_side_of_it() -> Non
 
     logs = _logs(n_units=40)
     every_other = Panel.from_frame({**logs, "time": 2 * logs["time"]}, unit="unit", time="time")
-    data = _transitions(every_other, states=("supply",), levers=("incentive",), adjust_for=())
+    data, _ = _transitions(every_other, states=("supply",), levers=("incentive",), adjust_for=())
     assert data["x"].shape == (40 * 11, 1)
 
 
@@ -798,7 +798,7 @@ def test_dated_periods_part_at_a_missing_week_and_calendar_months_stay_in_a_row(
             "heater": np.ones(periods.size),
         }
         panel = Panel.from_frame(frame, unit="home", time="period")
-        data = _transitions(panel, states=("temperature",), levers=("heater",), adjust_for=())
+        data, _ = _transitions(panel, states=("temperature",), levers=("heater",), adjust_for=())
         return int(data["x"].shape[0])
 
     weeks = np.datetime64("2024-01-01") + np.timedelta64(7, "D") * np.arange(10)
@@ -1307,3 +1307,39 @@ def test_a_mis_specified_decision_and_an_unidentified_one_are_different_types() 
     )
     with pytest.raises(NotIdentifiedError):
         _ = blocked.schedule
+
+
+# --- the channel's error, summed within each unit or declared cluster ----------------------------
+
+
+def test_the_channel_s_error_sums_within_each_unit_unless_the_panel_declares_a_cluster() -> None:
+    logs = _logs(n_units=40)
+    by_unit = _prescribe(Panel.from_frame(logs, unit="unit", time="time"), ["demand"])
+    certificate = by_unit.certificate
+    assert (certificate.error_clustered_by, certificate.error_clusters) == ("unit", 40)
+    assert by_unit.model_fit.clusters is not None
+    assert by_unit.model_fit.clusters.tolist() == np.repeat(np.arange(40), 11).tolist()
+    assert "summed within 40 groups of `unit` (CR1)" in by_unit.report()
+    shown = by_unit.to_json()["certificate"]
+    assert (shown["error_clustered_by"], shown["error_clusters"]) == ("unit", 40)
+
+    regions = {**logs, "region": np.array(["north", "south", "east", "west"])[logs["unit"] % 4]}
+    panel = Panel.from_frame(regions, unit="unit", time="time", cluster="region")
+    by_region = _prescribe(panel, ["demand"])
+    assert (by_region.certificate.error_clustered_by, by_region.certificate.error_clusters) == (
+        "region",
+        4,
+    )
+    np.testing.assert_array_equal(
+        by_region.model_fit.residual.channel, by_unit.model_fit.residual.channel
+    )
+    assert by_region.certificate.identification_radius != certificate.identification_radius
+
+
+def test_a_panel_of_one_unit_takes_its_transitions_as_independent() -> None:
+    result = _prescribe(_panel(n_units=1, n_periods=400), ["demand"])
+    certificate = result.certificate
+    assert certificate.identification_radius is not None
+    assert (certificate.error_clustered_by, certificate.error_clusters) == (None, None)
+    assert result.model_fit.clusters is None
+    assert "each transition taken as independent" in result.report()

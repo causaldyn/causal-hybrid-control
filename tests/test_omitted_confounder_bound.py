@@ -267,3 +267,33 @@ def test_the_bound_refuses_what_it_is_not_derived_for() -> None:
         omitted_confounder_bound(fit, one, rho=1.5, **shares)
     with pytest.raises(ValueError, match="level"):
         omitted_confounder_bound(fit, one, level=0.4, **shares)
+
+
+def test_repeated_rows_clustered_by_their_original_bound_as_the_original_does() -> None:
+    """A log of 400 rows each repeated 16 times: summed within each row's copies, both influences
+    are the original's, so the confidence bounds are; summed row by row they narrow fourfold."""
+    channel, to_action, to_rate = np.array([1.0]), np.array([[0.5]]), np.array([0.5])
+    data = _log(channel, to_action, to_rate, dt=0.05, scheme="euler", n=400, seed=3)
+    options = {
+        "adjust_for": ("observed",),
+        "channel_degree": 0,
+        "nuisance_degree": 1,
+        "folds": 1,
+        "influence": True,
+    }
+    copies = {name: jnp.repeat(column, 16, axis=0) for name, column in data.items()}
+    original = fit_causal_residual(_known, data, 0.05, **options)
+    rows = fit_causal_residual(_known, copies, 0.05, **options)
+    clustered = fit_causal_residual(
+        _known, copies, 0.05, **options, clusters=np.repeat(np.arange(400), 16)
+    )
+    one, shares = np.ones((1, 1, 1)), {"cf_y": 0.05, "cf_d": 0.05}
+    expected = omitted_confounder_bound(original, one, **shares)
+    got = omitted_confounder_bound(clustered, one, **shares)
+    for name in ("estimate", "bias_scale", "lower", "upper"):
+        assert getattr(got, name) == pytest.approx(getattr(expected, name), rel=1e-7), name
+    for name in ("ci_lower", "ci_upper", "robustness_value_ci"):
+        assert getattr(got, name) == pytest.approx(getattr(expected, name), rel=1e-6), name
+    narrow = omitted_confounder_bound(rows, one, **shares)
+    width = expected.ci_upper - expected.upper
+    assert narrow.ci_upper - narrow.upper == pytest.approx(width / 4.0, rel=0.01)

@@ -7,6 +7,26 @@ still change).
 
 ## [Unreleased]
 
+### Changed
+
+- **The channel's standard error sums within clusters, and `prescribe` clusters by unit.**
+  `fit_causal_residual(clusters=...)` takes each transition's cluster. The channel's covariance
+  then sums each cluster's scores over its transitions and states before squaring them, with CR1's
+  factor `G / (G - 1) (N - 1) / (N - k)`, under both integrators; `omitted_confounder_bound` and
+  `misspecification_cost` sum the fit's influence the same way (`CausalDynamicsFit.clusters`), and
+  `misspecification_cost` refuses two fits whose clusters differ. The estimate does not move.
+  `prescribe` passes the panel's declared cluster, or its unit where it declares none: a unit's
+  transitions share whatever persistent noise the model leaves out. A panel whose transitions fall
+  in one group keeps the row-by-row error. `DecisionCertificate.error_clustered_by` and
+  `error_clusters` name the grouping, and the report and `to_json()` carry them. Until now
+  `Panel.cluster`, declared for cluster-robust inference since 0.5.0, was read by nothing, and a log
+  of 100 transitions each repeated 16 times read a quarter of its error; clustered by the row each
+  copy repeats, it reads the log's own. On panels of 5 to 80 units whose noise persists within
+  each unit, a 5 % test of a zero channel rejected 12.5 % to 35.5 % of the time row by row and
+  3.75 % to 14.75 % clustered by unit: still above 5 % with few units, and up to 40 where half
+  the noise is the unit's own. `prescribe`'s channel error, the tube's budget and the certified
+  horizon move on every panel of more than one unit (ADR 0053).
+
 ## [0.13.0] — 2026-10-06
 
 ### Added

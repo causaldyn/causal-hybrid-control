@@ -32,7 +32,7 @@ from scipy import integrate
 
 from chc.cost import total_cost
 from chc.dynamics import HybridDynamics
-from chc.dynamics_id import CausalDynamicsFit
+from chc.dynamics_id import CausalDynamicsFit, _independent
 from chc.plan import CausalPlan, _regret_curvature, _weighable
 from chc.residual import ControlAffineResidual
 
@@ -79,9 +79,10 @@ def misspecification_cost(
 
     ``S`` sums, row by row and state by state, the outer products of the difference between the
     two fits' influences, each with its own score, so it holds whether the class does or not, and
-    whichever folds each fit drew. That needs the fits to read one log's rows, which the function
-    cannot check. Over 200 logs of 4000 rows each (section ``calibration``), when the class held,
-    the test rejected 1.0%, 6.0% and 11.5% of them at 1, 5 and 10%, and ``cost_error`` was twice
+    whichever folds each fit drew; for fits given ``clusters``, it sums each cluster's difference
+    first. That needs the fits to read one log's rows, which the function cannot check. Over 200
+    logs of 4000 rows each (section ``calibration``), when the class held, the test rejected 1.0%,
+    6.0% and 11.5% of them at 1, 5 and 10%, and ``cost_error`` was twice
     the cost's spread. When it missed, the cost fell within 1.96 ``cost_error`` of its value on
     400 000 rows in 0.915 of them: it read low by a quarter of ``cost_error`` on average and spread
     1.13 times it, and ``noise`` matched the difference's realised spread to 1.1 of its standard
@@ -116,9 +117,9 @@ def misspecification_cost(
     106 times the regret between the fits' plans.
 
     Raises:
-        ValueError: on a fit made without ``influence=True``; two fits whose classes, integrators
-            or rows differ, or that carry drivers, whose gain's price needs the plan's forecast; a
-            plan that was not made on ``reference``'s model; and whatever
+        ValueError: on a fit made without ``influence=True``; two fits whose classes, integrators,
+            rows or clusters differ, or that carry drivers, whose gain's price needs the plan's
+            forecast; a plan that was not made on ``reference``'s model; and whatever
             :meth:`chc.plan.CausalPlan.decision_weight` refuses.
     """
     for name, fit in (("reference", reference), ("alternative", alternative)):
@@ -152,8 +153,21 @@ def misspecification_cost(
             f"{unmoved.shape[1]} and {other_unmoved.shape[1]} directions unmoved: they were not "
             "made on one log's rows"
         )
+    clusters, other_clusters = reference.clusters, alternative.clusters
+    if not (
+        clusters is other_clusters
+        or (
+            clusters is not None
+            and other_clusters is not None
+            and np.array_equal(clusters, other_clusters)
+        )
+    ):
+        raise ValueError(
+            "the fits sum their influences over different clusters: fit both with the same "
+            "clusters, or both with none"
+        )
     d = _parameters(theirs) - _parameters(ours)
-    spread = (other - influence).reshape(-1, d.size)
+    spread = _independent(other - influence, clusters)
     covariance = spread.T @ spread
     weight = _parameter_weight(plan, ours, tolerance)
     # W vanishes along a direction the plan does not move to second order in rounding, so the
