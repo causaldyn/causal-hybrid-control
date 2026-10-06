@@ -172,6 +172,12 @@ still change).
   affine in the state, so its rate is `global`, the slope's norm over the box, 1.25 a week at
   `dt = 1`, and a norm cannot see that the field contracts, its slope's eigenvalues running from
   -0.25 to -0.73.
+- **Each accelerator extra names the first jax that has its build**, and the `trees` extra the
+  first catboost that loads. pip and uv install an extra a package does not provide as nothing,
+  with a warning, so a resolution that held jax back below 0.7 installed `chc[cuda13]` on the
+  CPU. `cuda13` and `cuda13-local` now need jax 0.7, `rocm7-local` 0.9.2 and `oneapi` 0.11. The
+  `trees` extra said catboost 1.2, whose releases up to 1.2.5 fail at import beside numpy 2 and
+  whose 1.2.6 and 1.2.7 declare numpy below 2; it now says 1.2.8.
 
 ### Notes
 

@@ -57,15 +57,16 @@ trees = [
 did = ["diff-diff>=3.12,<4 ; python_version < '3.15'"]
 # JAX's build for an accelerator, chosen at install time: `pip install "causal-hybrid-control[cuda13]"`.
 # Each extra is JAX's own of the same name, which pins jaxlib and the plugin to jax's version, so
-# the two cannot drift apart. The CUDA, ROCm, TPU and oneAPI builds are Linux wheels.
+# the two cannot drift apart, from the first jax that has it: a jax without the extra installs it
+# as nothing, with a warning. The CUDA, ROCm, TPU and oneAPI builds are Linux wheels.
 cpu = ["jax[cpu]"]
-cuda13 = ["jax[cuda13]"]  # NVIDIA driver >= 580, GPUs of compute capability 7.5 or newer
+cuda13 = ["jax[cuda13]>=0.7"]  # NVIDIA driver >= 580, GPUs of compute capability 7.5 or newer
 cuda12 = ["jax[cuda12]"]  # NVIDIA driver >= 525
-cuda13-local = ["jax[cuda13-local]"]  # CUDA 13 installed on the system rather than from wheels
+cuda13-local = ["jax[cuda13-local]>=0.7"]  # CUDA 13 installed on the system rather than from wheels
 cuda12-local = ["jax[cuda12-local]"]
-rocm7-local = ["jax[rocm7-local]"]  # AMD GPUs; ROCm 7 installed on the system
+rocm7-local = ["jax[rocm7-local]>=0.9.2"]  # AMD GPUs; ROCm 7 installed on the system
 tpu = ["jax[tpu]"]  # Google Cloud TPU VMs
-oneapi = ["jax[oneapi] ; python_version >= '3.12'"]  # Intel GPUs; JAX has no oneAPI build for 3.11
+oneapi = ["jax[oneapi]>=0.11 ; python_version >= '3.12'"]  # Intel GPUs; no oneAPI build for 3.11
 
 [project.urls]
 Homepage = "https://github.com/causaldyn/causal-hybrid-control"
