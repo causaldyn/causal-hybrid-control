@@ -833,7 +833,11 @@ def contractive_rollout_certificate(
 def _rk4_phi(z: float) -> float:
     """RK4's weight on a step's field error, ``1 + z/2 + z^2/6 + z^3/24``: ``1 + z phi(z)`` is
     RK4's stability polynomial."""
-    return 1.0 + z / 2.0 + z**2 / 6.0 + z**3 / 24.0
+    # a float power that overflows raises OverflowError; numpy's scalar power is the same pow, and
+    # reads inf
+    w = np.float64(z)
+    with np.errstate(over="ignore"):
+        return float(1.0 + w / 2.0 + w**2 / 6.0 + w**3 / 24.0)
 
 
 def time_varying_rollout_bound(

@@ -45,6 +45,13 @@ still change).
   mapping that takes no new column, and it still pickles. A panel with no object column hashes as
   before; one with an object column hashes otherwise, under `schema_version` 2 (ADR 0056). Since
   0.5.0.
+- **An RK4 error tube whose step weight overflows reads `inf`, rather than raising.**
+  `time_varying_rollout_bound` and `certified_horizon` took RK4's weight on a step's field error,
+  `phi(L dt)`, with Python's float power, which raises `OverflowError` past the float range. Past
+  `L dt = 5.6e102` both raised: `certified_horizon([1e103], [0.1], 1.0, inf)` did, where a radius
+  that overflows to `inf` is within no tolerance, as its docstring states, and the answer is 0
+  steps. The weight now takes numpy's scalar power, the same `pow`, which reads `inf` there; below
+  the overflow every weight is as before, bit for bit, over 2 million rates. Since 0.13.0.
 
 ## [0.14.0] — 2026-10-06
 

@@ -9,7 +9,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 from jax import Array
 
@@ -320,6 +320,17 @@ def test_a_radius_that_overflows_is_within_no_tolerance() -> None:
     assert certified_horizon([0.0] * 3, [1e307] * 3, 1.0, math.inf) == 3
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+@pytest.mark.parametrize("rate", [1e103, 1e155])
+def test_a_step_weight_that_overflows_is_within_no_tolerance(rate: float) -> None:
+    """RK4's weight ``phi(L dt)`` took ``z**2`` and ``z**3``, and a float power that overflows
+    raises ``OverflowError``: past ``L dt = 5.6e102`` the tube raised. It now reads ``inf``, and
+    quietly, since that is the answer and not an accident."""
+    assert np.isinf(np.asarray(time_varying_rollout_bound([rate], [0.1], 1.0))[1])
+    assert certified_horizon([rate], [0.1], 1.0, math.inf) == 0
+    assert certified_horizon([rate / 1e51, 1.0], [0.1, 0.1], 1e51, 1.0) == 0
+
+
 @given(
     rates=st.lists(st.floats(allow_nan=True, allow_infinity=True), min_size=1, max_size=6),
     budget=st.floats(allow_nan=True, allow_infinity=True),
@@ -327,6 +338,7 @@ def test_a_radius_that_overflows_is_within_no_tolerance() -> None:
     tolerance=st.floats(allow_nan=True, allow_infinity=True),
     integrator=st.sampled_from(["rk4", "euler"]),
 )
+@example(rates=[5.643803094122362e102], budget=0.0, dt=1.0, tolerance=0.0, integrator="rk4")
 def test_a_certified_step_is_a_finite_radius_within_the_tolerance(
     rates: list[float], budget: float, dt: float, tolerance: float, integrator: str
 ) -> None:
