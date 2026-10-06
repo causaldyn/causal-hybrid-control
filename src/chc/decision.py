@@ -1111,17 +1111,22 @@ def prescribe(
         :attr:`Prescription.schedule`, which raises when the effect is not identified.
 
     Raises:
-        DecisionError: the decision is mis-specified --- no lever, a column constrained twice,
-            a target schedule whose length is not ``horizon``, constraints to hold with none
-            given, ``max_levers`` below one or with a lever whose box excludes zero, a driver that
+        DecisionError: the decision is mis-specified --- no lever, a lever named twice or also
+            the target or a constraint, a column constrained twice, a target schedule whose
+            length is not ``horizon``, constraints to hold with none given, ``max_levers`` below
+            one or with a lever whose box excludes zero, a driver that
             is also a lever or a state or is named twice, a forecast that is not ``horizon + 1``
             finite levels, a budget that does not weigh one spend per lever, starts its periods
             anywhere but the plan's first step, or allows less than the levers' boxes spend at
             the least, a ``dt`` that is not a finite positive step, a ``tolerance`` that is
             negative or nan, a ``gamma`` below 1 or not finite, which is not a sensitivity level,
             a panel with no consecutive pair of periods to fit a transition on, a ``cap_per_step``
-            on a lever that follows its logged rule or a budget that prices one, or
-            ``max_levers`` where the log kept a combination of the levers away from zero.
+            on a lever that follows its logged rule or a budget that prices one,
+            ``max_levers`` where the log kept a combination of the levers away from zero, an
+            asserted adjustment set that names a lever, or a covariate or a driver whose column
+            would be read in a second role: one named ``u`` or ``x_next``, or ``x`` other than as
+            the one state, under which the transitions hold the levers, the states a period on
+            and the states, or one named for a driver's level a period on, ``f"{driver}_next"``.
         KeyError: a lever, target, constraint, driver or asserted covariate names a column the
             panel does not have. The message lists the panel's columns.
 
@@ -1220,6 +1225,16 @@ def prescribe(
     # same column would hand the fit two identical rows, one of them with nothing to steer it.
     states = (target.name, *(name for name in constrained if name != target.name))
     lever_names = tuple(lever.name for lever in levers)
+    twice = sorted({name for name in lever_names if lever_names.count(name) > 1})
+    if twice:
+        raise DecisionError(f"levers named more than once: {twice}; give each column one Lever")
+    moved = sorted(set(lever_names) & set(states))
+    if moved:
+        raise DecisionError(
+            f"columns {moved} are named as levers and as the target or a constraint; a lever is "
+            "the action, which its box bounds, and the target and the constraints are states the "
+            "action moves"
+        )
     driver_names = _check_drivers(drivers, horizon=horizon, taken=(*states, *lever_names))
     for name in (*states, *lever_names, *driver_names):
         if name not in panel.columns:
@@ -1341,7 +1356,7 @@ def prescribe(
             resolved.covariates, "not_identified", f"{resolved.reason}; but {kept.refusal}"
         )
 
-    start = jnp.asarray(data["x0"]) if x0 is None else jnp.asarray(x0)
+    start = _panel_start(panel, states) if x0 is None else jnp.asarray(x0)
     if identification == "not_identified":
         _log.warning(abort, extra={"chc_event": "abort", "reason": resolved.reason})
         return Prescription(
@@ -1947,6 +1962,12 @@ def _resolve_adjustment(
     missing = sorted(set(named) - set(panel.names))
     if missing:
         raise KeyError(f"asserted adjustment set names columns not in the panel: {missing}")
+    acted = sorted(set(named) & set(levers))
+    if acted:
+        raise DecisionError(
+            f"the asserted adjustment set names the levers {acted}: a lever is the action, and "
+            "adjusting for it leaves the log no move of its own to learn from"
+        )
     return AdjustmentSet(
         named,
         "identified",
@@ -2023,31 +2044,58 @@ def _transitions(
         dtype=np.int64,
     )
 
-    def stack(names: tuple[str, ...], rows: np.ndarray) -> Array:
-        if not names:
-            return jnp.zeros((rows.size, 0))
-        return jnp.stack(
-            [jnp.asarray(np.asarray(panel[name], dtype=float)[rows]) for name in names], axis=1
-        )
-
     data: dict[str, Array] = {
-        "x": stack(states, current),
-        "u": stack(levers, current),
-        "x_next": stack(states, following),
+        "x": _stacked(panel, states, current),
+        "u": _stacked(panel, levers, current),
+        "x_next": _stacked(panel, states, following),
     }
-    for name in adjust_for:
-        data[name] = stack((name,), current)
-    for name in drivers:
-        data[name] = stack((name,), current)
-        data[f"{name}_next"] = stack((name,), following)
+    holds = {"x": "the states", "u": "the levers", "x_next": "the states a period on"}
 
-    units = sorted({unit for unit, _ in row_of})
-    final_rows = np.array(
-        [row_of[(unit, max(p for u, p in row_of if u == unit))] for unit in units], dtype=np.int64
-    )
-    data["x0"] = jnp.mean(stack(states, final_rows), axis=0)
+    def put(key: str, name: str, rows: NDArray[np.int64], what: str) -> None:
+        # The fit reads x, u and x_next by role and every other column by its name, all from this
+        # one dict: a name that is already a key would be read in two roles.
+        if key in holds:
+            raise DecisionError(
+                f"{what} would be read as {key!r}, which already holds {holds[key]}; rename the "
+                "panel's column"
+            )
+        holds[key] = what
+        data[key] = _stacked(panel, (name,), rows)
+
+    for name in adjust_for:
+        if name == "x" and states == ("x",):
+            continue  # the one state, adjusted for: "x" already holds its column
+        put(name, name, current, f"the covariate {name!r}")
+    for name in drivers:
+        if name not in adjust_for:  # a driver may be a covariate as well: one column, read once
+            put(name, name, current, f"the driver {name!r}")
+        put(f"{name}_next", name, following, f"the driver {name!r} a period on")
     cluster = unit_codes if panel.cluster is None else np.asarray(panel[panel.cluster])
     return data, cluster[current]
+
+
+def _stacked(panel: Panel, names: tuple[str, ...], rows: NDArray[np.int64]) -> Array:
+    """The columns ``names`` at ``rows``, one column each, as the fit reads them."""
+    if not names:
+        return jnp.zeros((rows.size, 0))
+    return jnp.stack(
+        [jnp.asarray(np.asarray(panel[name], dtype=float)[rows]) for name in names], axis=1
+    )
+
+
+def _panel_start(panel: Panel, states: tuple[str, ...]) -> Array:
+    """The mean over units of each unit's states at its latest period, the units in code order, in
+    one pass over the rows."""
+    unit_codes, _ = panel.codes()
+    time_codes = _period_steps(panel)
+    latest: dict[int, tuple[int, int]] = {}
+    for row, (unit, period) in enumerate(
+        zip(unit_codes.tolist(), time_codes.tolist(), strict=True)
+    ):
+        if unit not in latest or period > latest[unit][0]:
+            latest[unit] = (period, row)
+    rows = np.array([latest[unit][1] for unit in sorted(latest)], dtype=np.int64)
+    return jnp.mean(_stacked(panel, states, rows), axis=0)
 
 
 # The class :func:`chc.dynamics_id.fit_causal_residual` regresses the levers on by default.

@@ -236,6 +236,33 @@ def test_the_fit_recovers_the_push_and_the_decay_it_used_to_absorb() -> None:
     assert blind.integrator_defect > 0.5
 
 
+@pytest.mark.parametrize(
+    ("names", "match"),
+    [
+        (
+            {"adjust_for": ("outdoor",), "drivers": ("outdoor", "outdoor")},
+            r"drivers named more than once: \['outdoor'\]",
+        ),
+        (
+            {"drivers": ("outdoor",), "instrument": "outdoor"},
+            "the instrument 'outdoor' is also a covariate or a driver",
+        ),
+        (
+            {"drivers": ("outdoor",), "instrument": "outdoor_next"},
+            "the instrument 'outdoor_next' is also a covariate or a driver",
+        ),
+    ],
+)
+def test_the_fit_refuses_a_driver_named_twice_or_as_the_instrument(names: dict, match: str) -> None:
+    """Named twice, a driver was fitted as two, its gain split between the copies; as the
+    instrument, it was partialled out with the drivers, at the step's start or its end, and lent
+    the action no move of its own."""
+    data = _transitions(*_simulate())
+    zero = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    with pytest.raises(ValueError, match=match):
+        fit_causal_residual(zero, data, DT, integrator="rk4", **names)
+
+
 def test_a_policy_that_reads_the_forecast_is_adjusted_through_the_driver_s_next_level() -> None:
     """A logger that heats against where the weather is going sets the action on the driver's
     next level, which pushes the zone across the whole step: read at the start alone, the driver
@@ -407,6 +434,40 @@ def test_a_driver_the_decision_cannot_read_is_refused_before_the_fit(
 ) -> None:
     with pytest.raises(error, match=match):
         _prescribe(panel, drivers=drivers)
+
+
+def test_a_driver_whose_column_the_transitions_hold_in_another_role_is_refused() -> None:
+    """The fit reads each driver by its column's name and a period on as ``f"{name}_next"``, from
+    the dict that holds the covariates by their names and the levers as ``u``: a covariate named
+    ``outdoor_next`` was replaced by the weather a period on, and a driver named ``u`` replaced the
+    lever's column."""
+    temp, heat, outdoor = _simulate()
+    n_units, n_periods = heat.shape
+    frame = {
+        "unit": np.repeat(np.arange(n_units), n_periods),
+        "time": np.tile(np.arange(n_periods), n_units),
+        "temp": temp[:, :-1].ravel(),
+        "heat": heat.ravel(),
+        "outdoor": outdoor[:, :-1].ravel(),
+    }
+    noise = np.random.default_rng(1).normal(size=heat.size)
+    beside = Panel.from_frame({**frame, "outdoor_next": noise}, unit="unit", time="time")
+    kwargs = {"levers": [LEVER], "target": TARGET, "horizon": HORIZON, "dt": DT}
+    with pytest.raises(
+        DecisionError,
+        match="the driver 'outdoor' a period on would be read as 'outdoor_next', which already "
+        "holds the covariate 'outdoor_next'",
+    ):
+        prescribe(
+            beside,
+            adjustment=("outdoor", "outdoor_next"),
+            drivers=[Driver("outdoor", _forecast())],
+            **kwargs,  # type: ignore[arg-type]
+        )
+    frame["u"] = frame.pop("outdoor")
+    renamed = Panel.from_frame(frame, unit="unit", time="time")
+    with pytest.raises(DecisionError, match="the driver 'u' would be read as 'u', which already"):
+        prescribe(renamed, adjustment=(), drivers=[Driver("u", _forecast())], **kwargs)  # type: ignore[arg-type]
 
 
 def test_a_forecast_past_the_logged_range_is_logged_as_extrapolation(

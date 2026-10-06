@@ -36,6 +36,7 @@ from chc.decision import (
     _linearised,
     _margins,
     _model_error,
+    _panel_start,
     _rate,
     _transitions,
     prescribe,
@@ -835,6 +836,104 @@ def test_dated_periods_part_at_a_missing_week_and_calendar_months_stay_in_a_row(
     weeks = np.datetime64("2024-01-01") + np.timedelta64(7, "D") * np.arange(10)
     assert count(np.delete(weeks, 4)) == 7
     assert count(np.arange("2024-01", "2025-01", dtype="datetime64[M]")) == 11
+
+
+def _renamed_confounder(name: str) -> tuple[Panel, CausalGraph]:
+    """The tests' world with its confounder's column, ``demand``, named ``name``."""
+    logs = _logs(n_units=40)
+    logs[name] = logs.pop("demand")
+    edges = [(name if a == "demand" else a, name if b == "demand" else b) for a, b in EDGES]
+    return Panel.from_frame(logs, unit="unit", time="time"), CausalGraph.from_edges(edges)
+
+
+@pytest.mark.parametrize("name", ["u", "x", "x_next"])
+def test_a_covariate_whose_name_the_transitions_hold_in_another_role_is_refused(name: str) -> None:
+    """The fit reads the levers, the states and the states a period on as ``u``, ``x`` and
+    ``x_next``, and each covariate by its column's name, from one dict. A confounder named ``u``
+    replaced the lever's column there: the channel read 2.28 where the confounder's other names
+    read 0.84, and the decision was refused as a lever the log never moved. Named ``x`` or
+    ``x_next`` it failed inside the fit."""
+    panel, graph = _renamed_confounder(name)
+    with pytest.raises(DecisionError, match=f"the covariate '{name}' would be read as '{name}'"):
+        _prescribe(panel, graph)
+
+
+def test_a_covariate_named_x0_reads_as_under_any_other_name() -> None:
+    """The start was kept in the same dict as ``x0``, after the covariates, so a confounder of that
+    name failed inside the fit; the start is now computed apart from it."""
+    plain = _prescribe(*_renamed_confounder("demand"))
+    renamed = _prescribe(*_renamed_confounder("x0"))
+    assert plain.plan is not None
+    assert renamed.plan is not None
+    assert np.array_equal(
+        np.asarray(renamed.model_fit.residual.channel), np.asarray(plain.model_fit.residual.channel)
+    )
+    assert np.array_equal(np.asarray(renamed.plan.actions), np.asarray(plain.plan.actions))
+    assert np.array_equal(
+        np.asarray(renamed.plan.trajectory[0]), np.asarray(plain.plan.trajectory[0])
+    )
+
+
+def test_an_asserted_adjustment_set_that_names_a_lever_is_refused() -> None:
+    """Adjusted for, the action leaves no move of its own: the decision was refused as a lever the
+    log never moved, which was not the reason."""
+    with pytest.raises(DecisionError, match=r"names the levers \['incentive'\]"):
+        _prescribe(_panel(n_units=40), ("demand", "incentive"))
+
+
+LEVERS_IN_TWO_ROLES = {
+    "a lever twice": (
+        {"levers": [Lever("incentive", -2.0, 2.0, 0.05), Lever("incentive", -2.0, 2.0, 0.05)]},
+        r"levers named more than once: \['incentive'\]",
+    ),
+    "a lever as the target": (
+        {"target": Target("incentive", value=1.0)},
+        r"columns \['incentive'\] are named as levers and as the target or a constraint",
+    ),
+    "a lever under a constraint": (
+        {"constraints": [Constraint("incentive", hi=1.0)]},
+        r"columns \['incentive'\] are named as levers and as the target or a constraint",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("names", "match"), LEVERS_IN_TWO_ROLES.values(), ids=LEVERS_IN_TWO_ROLES.keys()
+)
+def test_a_lever_named_twice_or_as_a_state_is_refused(names: dict, match: str) -> None:
+    """A lever named twice was planned as two levers on one column, its cost counted twice; as the
+    target or under a constraint, the decision failed inside the solve."""
+    decision = {
+        "levers": [Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        "target": Target("supply", value=1.0),
+        "constraints": [Constraint("wait", hi=0.5)],
+    } | names
+    with pytest.raises(DecisionError, match=match):
+        prescribe(
+            _panel(n_units=40),
+            adjustment=("demand",),
+            horizon=15,
+            dt=DT,
+            tolerance=0.5,
+            **decision,  # type: ignore[arg-type]
+        )
+
+
+def test_the_start_is_each_units_latest_state_on_a_panel_whose_units_end_apart() -> None:
+    """The mean over units of each unit's state at its own latest period, whatever the rows'
+    order."""
+    logs = _logs(n_units=3, n_periods=4)
+    kept = ~((logs["unit"] == 1) & (logs["time"] == 3))
+    order = np.random.default_rng(1).permutation(int(kept.sum()))
+    panel = Panel.from_frame(
+        {name: column[kept][order] for name, column in logs.items()}, unit="unit", time="time"
+    )
+    last = [
+        logs["supply"][(logs["unit"] == unit) & (logs["time"] == period)][0]
+        for unit, period in ((0, 3), (1, 2), (2, 3))
+    ]
+    (start,) = np.asarray(_panel_start(panel, ("supply",))).tolist()
+    assert start == pytest.approx(sum(last) / 3.0, rel=1e-14, abs=0.0)
 
 
 def test_an_evaluation_window_does_not_span_a_period_no_unit_logged() -> None:
