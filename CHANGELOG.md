@@ -34,6 +34,17 @@ still change).
   (`SelectionStep.regret_status`), which the step's log record carries too. The Python objects
   keep `inf` and nan. Migration: a reader that took `Infinity` or `NaN` from Python's parser reads
   `null` and the status beside it (ADR 0055). Since 0.5.0; the regret bounds' since 0.6.0.
+- **A panel's hash names its data, and the data cannot change under it.** `Panel.from_frame`
+  hashed an object column by its bytes, which are pointers: two panels of the same strings, as a
+  unit column read from pandas holds, hashed apart, and no other run could rebuild the hash. It
+  also held views of the caller's arrays, so a write to one changed the panel under its recorded
+  hash. An object column is now hashed by its values, each value's type and text with its length.
+  One whose values are not of one type, a missing value among strings say, is refused with
+  `PanelError` naming the unit and the time, as a nan in a float column is; so is one whose
+  values' text is their address in memory. The panel holds a read-only copy of each column, in a
+  mapping that takes no new column, and it still pickles. A panel with no object column hashes as
+  before; one with an object column hashes otherwise, under `schema_version` 2 (ADR 0056). Since
+  0.5.0.
 
 ## [0.14.0] — 2026-10-06
 

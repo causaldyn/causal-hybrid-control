@@ -9,21 +9,23 @@ last, a missing one silently becomes a zero, and neither shows up until an effec
 already in a slide.
 
 :class:`Panel` does that pivot once, refuses to do it when the data cannot support it, and says
-which unit and which period were responsible. It holds the columns it was given --- it is a checked
-view over data, not a copy of it in a new format --- so the cost of passing one around is the cost
-of passing a dict around.
+which unit and which period were responsible. It holds a read-only copy of the columns it was
+given, made once, so that the data cannot change under its hash; passing one around costs what
+passing a dict does.
 
 :class:`Provenance` travels with it. A number is reproducible only together with the bytes it came
 from and the precision it was computed in, and this library has already been bitten by the second:
 JAX's ``x64`` flag changes which sample a seed draws, so a seed alone does not name a dataset. The
 hash is over the column bytes, so two panels that agree numerically but differ in dtype hash
-differently --- which is the honest answer, because they will not produce the same numbers.
+differently --- which is the honest answer, because they will not produce the same numbers. An
+object column's bytes are pointers, which no two runs share, so it is hashed by its values: each
+value's type and text, each with its length.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,7 +48,7 @@ class Provenance:
     recorded without it cannot be repeated. See ``docs/concepts/dtype-policy.md``.
     """
 
-    data_sha256: str  # over column name, dtype, shape and bytes, in sorted name order
+    data_sha256: str  # over column name, dtype, shape and bytes or values, in sorted name order
     chc_version: str
     n_rows: int
     columns: tuple[str, ...]
@@ -72,8 +74,50 @@ def _fingerprint(columns: Mapping[str, NDArray[Any]]) -> str:
         digest.update(name.encode())
         digest.update(str(array.dtype).encode())
         digest.update(str(array.shape).encode())
-        digest.update(array.tobytes())
+        digest.update(_values(array) if array.dtype == object else array.tobytes())
     return digest.hexdigest()
+
+
+def _values(column: NDArray[Any]) -> bytes:
+    """An object column's bytes by value, which its pointers are not: each value's type and text,
+    each with its length, so that no two values run together."""
+    out = bytearray()
+    for value in column.tolist():
+        for part in (type(value).__qualname__, str(value)):
+            text = part.encode("utf-8", "surrogatepass")
+            out += len(text).to_bytes(8, "little") + text
+    return bytes(out)
+
+
+class _Columns(Mapping[str, NDArray[Any]]):
+    """A panel's columns, read-only, in a mapping that takes no new column.
+
+    A copy of a ``dict`` would still take ``panel.columns[name] = ...``, and a ``MappingProxyType``
+    does not pickle, so a panel could not reach a worker process.
+    """
+
+    __slots__ = ("_columns",)
+
+    def __init__(self, columns: Mapping[str, NDArray[Any]]) -> None:
+        for column in columns.values():
+            column.setflags(write=False)
+        self._columns = dict(columns)
+
+    def __getitem__(self, name: str) -> NDArray[Any]:
+        return self._columns[name]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._columns)
+
+    def __len__(self) -> int:
+        return len(self._columns)
+
+    def __repr__(self) -> str:
+        return repr(self._columns)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # a deep copy rebuilds the arrays writable; rebuilding through __init__ sets the flag again
+        return (_Columns, (self._columns,))
 
 
 @dataclass(frozen=True, eq=False)
@@ -118,11 +162,14 @@ class Panel:
 
         Raises:
             PanelError: for a missing index column, a non-1-D or ragged column, a non-finite value,
-                a duplicated ``(unit, time)`` pair, or --- under ``require_balanced`` --- a hole.
-                Every message names the column and the offending entity.
+                a duplicated ``(unit, time)`` pair, an object column whose values are not of one
+                type (a missing value among strings, say) or whose values' text is their address in
+                memory, or --- under ``require_balanced`` --- a hole. Every message names the
+                column and the offending entity.
         """
         raw = as_columns(data)
-        columns = {name: np.asarray(column) for name, column in raw.items()}
+        # copied before it is checked, so that the bytes checked and hashed are the bytes held
+        columns = {name: np.array(column, copy=True) for name, column in raw.items()}
         for role, name in (("unit", unit), ("time", time), ("cluster", cluster)):
             if name is not None and name not in columns:
                 raise PanelError(
@@ -161,8 +208,27 @@ class Panel:
                     f"{times[row]!r} ({bad.size} of {n_rows} rows are not finite)"
                 )
 
+        for name, column in columns.items():
+            if column.dtype != object or not n_rows:
+                continue
+            values = column.tolist()
+            kind = type(values[0])
+            odd = next((row for row, value in enumerate(values) if type(value) is not kind), None)
+            if odd is not None:
+                label, period = units.tolist()[odd], times.tolist()[odd]
+                raise PanelError(
+                    f"column {name!r} is {values[odd]!r} for unit {label!r} at time {period!r}: "
+                    f"type {type(values[odd]).__name__}, where row 0 is type {kind.__name__}; an "
+                    "object column holds values of one type, so fill or drop a missing value"
+                )
+            if kind is not str and " at 0x" in str(values[0]):
+                raise PanelError(
+                    f"column {name!r} holds {kind.__name__} values, whose text is their address in "
+                    f"memory ({values[0]}), so no other run could hash them the same"
+                )
+
         panel = cls(
-            columns=columns,
+            columns=_Columns(columns),
             unit=unit,
             time=time,
             cluster=cluster,
