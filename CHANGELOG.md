@@ -7,6 +7,54 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A column named in two roles is refused, rather than read in both.** The estimators read the
+  state, the action and the next state as `x`, `u` and `x_next`, and every other column by the
+  caller's name, from one mapping, and nothing checked that a name stood for one role.
+  `estimate_control_effect` with the action among its covariates read 0.5005 where the truth is
+  1.0, the action's coefficient split between its two copies, and with the outcome among them 0;
+  `sensitivity_analysis` did the same, and with a covariate named twice, or the state again, its
+  design was singular: the standard error and the robustness value read nan, and the interval's
+  E-value 1. `estimate_effect_iv` with the action as its instrument returned the confounded
+  least-squares value. `fit_causal_residual` adjusted for the action returned the confounded
+  channel, -0.209 where the truth is 1.0; a driver named twice was fitted as two, its gain split
+  between them (0.599 each, where one read 1.198); and an instrument among the drivers was
+  partialled out with them. `local_projection_irf`, `structured_irf` and `delay_estimate` with the
+  treatment among the covariates read half the response. The adapters in `chc.estimators` took
+  the treatment or the outcome among the covariates, or the treatment as the outcome: with the
+  treatment among them `BackdoorOLS` read 0.4999 with a nan standard error, `DoubleML` 4.04 and
+  `RLearner` 0.0005, where the truth is 1.0, and a covariate named twice left `BackdoorOLS`'s
+  standard error about 190 times too small. `IV2SLS` read `x` as the state whatever the treatment's
+  name. `sequential_g_formula` with a treatment among the confounders of its own step or an
+  earlier one held it at its logged value where it set it: 2.40 and 2.00 where the truth is 3.3.
+  `naive_pooled_effect` split a treatment's coefficient with its copy. `estimate_network_effects`
+  with the treatment as the exposure read nan for both effects, and a covariate named `cid` was
+  the cluster as well; `estimate_network_effects_gnn` took the treatment or the exposure among
+  its features. `lalonde_ate` let a covariate named `treat` or `re78` replace the treatment or the
+  outcome. Each now raises `ValueError` naming the column and both roles. The overlaps that are
+  meant are kept: the IRF's outcome among its own controls, which is its default, and
+  `causal_pathway`'s self-edge; the state among the double-ML covariates; a driver that is also a
+  covariate; an earlier treatment among a later step's confounders. `refute_effect` adds its
+  random common cause under a name the data does not hold, where it replaced a column named
+  `_rcc`. Since 0.2.0; the drivers' since 0.7.0, `delay_estimate`'s since 0.4.0.
+- **`prescribe` refuses a column it would read in two roles.** It wrote the covariates and the
+  drivers into the mapping that holds the levers, the states and the states a period on as `u`, `x`
+  and `x_next`, and the start as `x0`. A confounder named `u` replaced the levers' column: the
+  channel read 2.28 where its other names read 0.84, and the decision was refused as a lever the log
+  never moved; named `x`, `x_next` or `x0` it failed inside the fit. A driver named `x`, `u` or
+  `x_next` was read as the states, the levers or the outcome. A lever named twice was planned as two
+  levers on one column, each with its own action and cost; as the target or under a constraint, the
+  decision failed inside the fit; and an asserted adjustment set that named a lever was refused as a
+  lever the log never moved. Each is now a `DecisionError` that names the column. The start is read
+  from the panel apart from the fit's columns, so a covariate named `x0` plans as under any other
+  name, bit for bit. Since 0.5.0; the drivers' since 0.7.0.
+- **Two labels with one name, and one column as a panel's unit and time, are refused.**
+  `as_columns` reads a label as text, so `0` and `"0"`, or a label a pandas frame repeats, named
+  one column, and the second replaced the first. `Panel.from_frame` with one column as the unit and
+  the time made each row a unit with one period of its own, or failed as a duplicated
+  `(unit, time)` pair. Both now raise. Since 0.3.0 and 0.5.0.
+
 ## [0.14.2] — 2026-10-07
 
 ### Fixed
