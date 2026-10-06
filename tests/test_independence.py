@@ -4,7 +4,7 @@ generalised covariance measure holds its level on a logged panel whose units sha
 import numpy as np
 import pytest
 
-from chc.independence import gcm_test, partial_corr_test
+from chc.independence import _own_units, gcm_test, partial_corr_test
 
 
 def _ar1(rng: np.random.Generator, n: int, phi: float) -> np.ndarray:
@@ -194,3 +194,48 @@ def test_gcm_test_refuses_fewer_rows_than_twice_its_regressions_terms() -> None:
     rng = np.random.default_rng(6)
     with pytest.raises(ValueError, match="twice as many rows"):
         gcm_test(rng.standard_normal(25), rng.standard_normal(25), rng.standard_normal((25, 4)))
+
+
+def _dependent(n: int, seed: int = 3) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    z = rng.normal(size=n)
+    x = 0.5 * z + rng.normal(size=n)
+    return x, 0.3 * x + 0.4 * z + rng.normal(size=n), z
+
+
+@pytest.mark.parametrize(
+    "units", [(1e-150,) * 3, (1e-8,) * 3, (1e8,) * 3, (1e150,) * 3, (1e-200, 1e8, 1e200)]
+)
+def test_a_dependence_reads_the_same_in_any_units(units: tuple[float, float, float]) -> None:
+    """An absolute 1e-12 in the denominator and the raw squares made the tests read units. This
+    dependence, rho 0.31 and p 2e-8, read p 0.87 at 1e-8 of its units, p 1 at 1e80 and nan at
+    1e200; the GCM's p-value read nan at 1e-150 and 1 at 1e80."""
+    x, y, z = _dependent(300)
+    scaled = (units[0] * x, units[1] * y, units[2] * z)
+    unit = partial_corr_test(x, y, z)
+    assert partial_corr_test(*scaled) == pytest.approx(unit, rel=1e-12, abs=0.0)
+    gcm, read = gcm_test(x, y, z, draws=199), gcm_test(*scaled, draws=199)
+    assert read.p_value == gcm.p_value
+    assert read.statistic == pytest.approx(gcm.statistic, rel=1e-12, abs=0.0)
+    assert read.partial_correlation == pytest.approx(gcm.partial_correlation, rel=1e-12, abs=0.0)
+    assert read.detectable == pytest.approx(gcm.detectable, rel=1e-12, abs=0.0)
+
+
+def test_a_power_of_two_moves_no_bit() -> None:
+    """Each column is read in the power of two nearest its spread, an exact rescaling."""
+    x, y, z = _dependent(300)
+    scaled = (2.0**-30 * x, 2.0**40 * y, 2.0**7 * z)
+    assert partial_corr_test(*scaled) == partial_corr_test(x, y, z)
+    assert gcm_test(*scaled, draws=199).statistic == gcm_test(x, y, z, draws=199).statistic
+
+
+def test_a_column_of_spread_near_one_is_read_as_given() -> None:
+    """A column whose spread rounds to 1 in powers of two is left as it is, so data in such units
+    read bit for bit as before the rescaling; others move by the power of two nearest their
+    spread, and a constant column does not move."""
+    x, y, z = _dependent(300)
+    scaled = _own_units(np.column_stack([x, 3.0 * y, 1e-8 * z, np.ones(300)]))
+    assert (scaled[:, 0] == x).all()
+    assert (scaled[:, 1] == np.ldexp(3.0 * y, -2)).all()
+    assert (scaled[:, 2] == np.ldexp(1e-8 * z, 27)).all()
+    assert (scaled[:, 3] == 1.0).all()

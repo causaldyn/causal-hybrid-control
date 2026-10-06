@@ -33,20 +33,37 @@ _POWER_QUANTILE = 0.8416212335729143  # the standard normal's 0.8 quantile: ``de
 _DRAW_CHUNK = 256  # sign draws per matrix product, so the draws never hold draws x clusters at once
 
 
+def _own_units(columns: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Each column times the power of two nearest the reciprocal of its spread.
+
+    The rescaling is exact, so a test here reads a column logged in any units as it reads it in
+    these: its absolute floors sit at one share of every column, and no square overflows or
+    underflows. A column whose spread is already near 1 is left as it is, bit for bit.
+    """
+    centred = columns - columns.mean(axis=0)
+    peak = np.max(np.abs(centred), axis=0)
+    flat = peak == 0.0  # a constant column: nothing to rescale
+    peak = np.where(flat, 1.0, peak)
+    spread = np.where(flat, 1.0, peak * np.sqrt(np.mean((centred / peak) ** 2, axis=0)))
+    return np.ldexp(columns, -np.round(np.log2(spread)).astype(int))
+
+
 def _residualize(target: ArrayLike, conditioning: ArrayLike | None) -> tuple[np.ndarray, int]:
     """Residual of ``target`` after linear regression on ``[1, conditioning]``; returns (resid, k).
 
-    ``k`` is the number of conditioning columns (0 when ``conditioning`` is ``None``) -- the
+    ``target`` and each column of ``conditioning`` are read in their own units (:func:`_own_units`),
+    so the residual is in ``target``'s, a power of two times the one in the units given. ``k`` is
+    the number of conditioning columns (0 when ``conditioning`` is ``None``) -- the
     degrees-of-freedom correction for the Fisher-z statistic. A ``(n,)`` or ``(n, k)`` conditioning
     set is accepted; a ``(k, n)`` one is transposed to rows-are-samples.
     """
-    target = np.asarray(target, dtype=np.float64).ravel()
+    target = _own_units(np.asarray(target, dtype=np.float64).ravel()[:, None])[:, 0]
     if conditioning is None:
         return target - target.mean(), 0
     cond = np.atleast_2d(np.asarray(conditioning, dtype=np.float64))
     if cond.shape[0] != target.shape[0]:
         cond = cond.T
-    design = np.column_stack([np.ones(target.shape[0]), cond])
+    design = np.column_stack([np.ones(target.shape[0]), _own_units(cond)])
     coeffs, *_ = np.linalg.lstsq(design, target, rcond=None)
     return target - design @ coeffs, cond.shape[1]
 
@@ -58,7 +75,8 @@ def partial_corr_test(
 
     With ``z=None`` this is the plain marginal-correlation test -- the miscalibrated one under
     autocorrelation. Pass the lagged parents as ``z`` for the calibrated MCI variant. ``z`` may be a
-    single covariate ``(n,)`` or several stacked as ``(n, k)``. The p-value is two-sided.
+    single covariate ``(n,)`` or several stacked as ``(n, k)``. The p-value is two-sided, and the
+    same in whatever units each column is logged.
     """
     residual_x, k = _residualize(x, z)
     residual_y, _ = _residualize(y, z)
@@ -160,11 +178,11 @@ def gcm_test(
         raise ValueError(f"alpha must lie in (0, 1); got {alpha}")
     if draws < 1:
         raise ValueError(f"draws must be positive; got {draws}")
-    left, right = _as_columns(x, "x"), _as_columns(y, "y")
+    left, right = _own_units(_as_columns(x, "x")), _own_units(_as_columns(y, "y"))
     rows = left.shape[0]
     if right.shape[0] != rows:
         raise ValueError(f"x has {rows} rows and y {right.shape[0]}")
-    design = _monomials(None if z is None else _as_columns(z, "z"), degree, rows)
+    design = _monomials(None if z is None else _own_units(_as_columns(z, "z")), degree, rows)
     if rows < 2 * design.shape[1]:
         raise ValueError(
             f"{rows} rows for a regression with {design.shape[1]} terms: the in-sample residuals "

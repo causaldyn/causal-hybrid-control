@@ -68,9 +68,8 @@ still change).
     whose outcomes are not finite, and the cross-check fails on a nan.
   - `delay_ball_certificate` read a worst loss error of 0 where every decay rate was nan, as at a
     horizon of 200 under float32. The error now reads nan, and the certificate fails.
-  - `discover_lagged_parents` made a nan's column a parent of every component, and on finite data
-    at 1e200, whose p-values overflow to nan, a column its own parent. It refuses data that are
-    not finite, and a nan p-value ends the selection.
+  - `discover_lagged_parents` made a nan's column a parent of every component. It refuses data
+    that are not finite, and a nan p-value ends the selection.
   - `CongestedMeanFieldGame.solve` returned a path 99.9 % nan at a congestion of 5e4, where the
     shooting's miss was nan. It raises.
   - A solve that ended on nan actions reported a `constraint_violation` of 0. It reads nan.
@@ -87,6 +86,14 @@ still change).
   On upgrading, a call that passed a nan, an outcome that is not finite or a panel with a missing
   outcome raises `ValueError`: impute or drop those rows first. The oldest of these, the filter,
   the DiD estimator, `discover_lagged_parents` and `DoubleML`'s statistic, date from 0.2.0.
+- **A dependence reads the same in any units.** `partial_corr_test` added an absolute 1e-12 to its
+  denominator and squared the raw residuals, so it read the data's units. One dependence that reads
+  rho 0.31 and p 2e-8 read p 0.87 with its data in 1e-8 of their units, p 1 at 1e80, and nan at
+  1e200, and `discover_lagged_parents`, which screens with it, lost every edge of a series logged in
+  such units. `gcm_test` read nan at 1e-150 and p 1 at 1e80. Both now read each column in the power
+  of two nearest its spread, an exact rescaling: a column whose spread rounds to 1 reads bit for bit
+  as before, and one dependence reads one p-value, to 1e-12, from 1e-200 to 1e200. The first test
+  dates from 0.2.0, the second from 0.9.0.
 - **A plan keeps to what the log did along the directions it never moved.** `prescribe` held a
   lever whose whole channel the log never moved at its mean logged level, and planned every other
   lever over its box. Where no single lever is unmoved, as with `u2 = 2 u1` in every row, the plan

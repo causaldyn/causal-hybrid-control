@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+import chc.discovery
 from chc.discovery import discover_lagged_parents
 from chc.independence import partial_corr_test
 
@@ -68,12 +69,19 @@ def test_a_nan_series_is_refused_rather_than_read_as_a_parent() -> None:
         discover_lagged_parents(series, max_parents=1)
 
 
-def test_a_nan_p_value_from_finite_data_is_not_a_parent() -> None:
-    """At 1e200 the sums of squares overflow and every p-value reads nan: the selection's minimum
-    picked the first candidate, and a nan passed the significance test, so column 0 became its own
-    parent. The edge the log has, 0 to 1, is lost to the overflow either way."""
+def test_a_nan_p_value_is_not_a_parent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A nan passed the significance test, and the selection's minimum picks whichever comes first:
+    with every p-value nan, every candidate became a parent of every component."""
+    monkeypatch.setattr(chc.discovery, "partial_corr_test", lambda x, y, z=None: (np.nan, np.nan))
+    graph = discover_lagged_parents(np.random.default_rng(3).normal(size=(300, 2)), max_lag=2)
+    assert not np.asarray(graph.state_parents).any()
+
+
+@pytest.mark.parametrize("scale", [1e-8, 1e200])
+def test_a_series_reads_the_same_parents_in_any_units(scale: float) -> None:
+    """The screen's p-values read units: at 1e-8 every p-value of the series below read 1 or near
+    it, and at 1e200 nan, so the edge from 0 to 1 was lost in both."""
     series = np.random.default_rng(3).normal(size=(300, 2))
     series[1:, 1] += 0.8 * series[:-1, 0]
-    with np.errstate(over="ignore", invalid="ignore"):
-        graph = discover_lagged_parents(1e200 * series, max_lag=2, max_parents=1)
-    assert not np.asarray(graph.state_parents)[0].any()
+    graph = discover_lagged_parents(scale * series, max_lag=2, max_parents=1)
+    assert np.argwhere(np.asarray(graph.state_parents)).tolist() == [[1, 0, 0]]
