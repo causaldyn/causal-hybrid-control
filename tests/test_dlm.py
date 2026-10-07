@@ -938,6 +938,8 @@ def test_an_intervention_lets_the_level_catch_a_break():
         (lambda: Prior(np.zeros(2), np.eye(3), 1.0, 1.0), "covariance must be a finite"),
         (lambda: Prior(np.zeros(1), -np.eye(1), 1.0, 1.0), "not positive definite"),
         (lambda: Prior(np.zeros(2), np.diag([1.0, 0.0]), 1.0, 1.0), "not positive definite"),
+        # all zero is exactly symmetric; what it is not is positive definite
+        (lambda: Prior(np.zeros(2), np.zeros((2, 2)), 1.0, 1.0), "not positive definite"),
         (lambda: Prior(np.zeros(1), np.eye(1), 0.0, 1.0), "scale must be positive"),
         (lambda: Prior(np.zeros(1), np.eye(1), 1.0, 0.0), "dof must be positive"),
         (lambda: DynamicLinearModel((), _prior(1)), "at least one block"),
@@ -951,6 +953,30 @@ def test_an_intervention_lets_the_level_catch_a_break():
 def test_invalid_specifications_raise(build, match):
     with pytest.raises(ValueError, match=match):
         build()
+
+
+@pytest.mark.parametrize("units", [1e-300, 1e-14, 1e-12, 1e-6, 1.0, 1e6])
+def test_a_covariance_that_is_not_symmetric_is_refused_in_any_units(units):
+    """The tolerance on the asymmetry was 1e-12 of the largest entry, or 1e-12 itself where that
+    entry was below 1, so a covariance in small units was hardly checked. An off-diagonal pair at
+    0.3 and 0.1 of the diagonal was refused at 1e-11 of its units, and passed as symmetric at 1e-12
+    and 1e-14, where the prior kept the matrix as it was given."""
+    asymmetric = units * np.array([[1.0, 0.3], [0.1, 1.0]])
+    with pytest.raises(ValueError, match="covariance is not symmetric"):
+        Prior(np.zeros(2), asymmetric, 1.0, 10.0)
+
+
+@pytest.mark.parametrize("units", [1e-300, 1e-14, 1e-12, 1.0, 1e12, 1e300])
+def test_a_covariance_symmetric_up_to_rounding_is_accepted_in_any_units(units):
+    """What rounding leaves is accepted: an off-diagonal one ulp from its mirror, and one at 1e-17
+    of the diagonal whose mirror is zero."""
+    symmetric = units * np.array([[1.0, 0.3], [0.3, 1.0]])
+    one_ulp = symmetric.copy()
+    one_ulp[0, 1] = np.nextafter(one_ulp[0, 1], np.inf)
+    near_zero = units * np.array([[1.0, 1e-17], [0.0, 1.0]])
+    for covariance in (symmetric, one_ulp, near_zero):
+        prior = Prior(np.zeros(2), covariance, 1.0, 10.0)
+        np.testing.assert_array_equal(prior.covariance, covariance)
 
 
 def test_invalid_data_raise():

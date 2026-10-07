@@ -102,28 +102,62 @@ def synthetic_control(
 
 
 def augmented_synthetic_control(
-    outcomes: Outcomes, treated_unit: int, n_pre: int, *, ridge: float = 1.0, steps: int = 5000
+    outcomes: Outcomes, treated_unit: int, n_pre: int, *, ridge: float = 0.1, steps: int = 5000
 ) -> SyntheticControlResult:
     """Ridge-augmented synthetic control (Ben-Michael-Feller-Rothstein).
 
     Starts from the SCM donor weights, then de-biases each post period by the residual pre-period
     imbalance passed through a ridge outcome model fit on the donors:
-    ``Y_1(0)_t = w' Y_post_t + (treated_pre - w' donor_pre)' theta_t`` with
-    ``theta_t = (Z'Z + ridge*I)^{-1} Z' Y_post_t`` and ``Z`` the donor pre-period matrix. The
-    correction vanishes when SCM already balances the pre-period; ``ridge`` controls how far the
-    outcome model may extrapolate. ``weights`` are the (interpretable) SCM donor weights; the
-    augmentation is an additive outcome correction, not folded into them.
+    ``Y_1(0)_t = w' Y_post_t + (treated_pre - w' donor_pre)' theta_t``, with ``theta_t`` the
+    slopes of a ridge regression of the donors' ``Y_post_t`` on their pre-period outcomes with a
+    free intercept, as Ben-Michael, Feller and Rothstein's has: ``theta_t = (Zc'Zc + ridge * v *
+    I)^{-1} Zc' Y_post_t``, with ``Zc`` each pre-period centred on the donors' mean and ``v`` the
+    mean of ``Zc**2``, the donors' variance before treatment. The intercept cancels from the
+    estimate, since the weights sum to one. The correction vanishes when SCM already balances the
+    pre-period; ``ridge`` controls how far the outcome model may extrapolate, and ``ridge = lam /
+    v`` is a ridge of ``lam`` in the outcomes' squared units. As a share of ``v`` it shrinks the
+    same in any units and from any origin: a ridge in the outcomes' squared units outweighed donors
+    logged in small ones, so that at 1e-6 of them the estimate was plain SCM's, and without the
+    intercept the estimate moved with the outcomes' level. ``weights`` are the (interpretable) SCM
+    donor weights; the augmentation is an additive outcome correction, not folded into them.
+
+    The default share is a tenth, a compromise, since no one share suits every panel. On 200 panels
+    of 30 donors and 25 periods before treatment, the root mean squared error of the effect at a
+    tenth was 0.0526 where the factors are white noise, against 0.0502 at the best share, 1. Where
+    they are random walks it was 0.110, against 0.105 at the best share, 0.03, and 0.359 at 1. With
+    those panels indexed to their first period it was 0.142, against 0.126 at the best, 0.01: a
+    tenth errs by up to 1.133 times the best fixed share. 0.07 would have stayed within 1.1 times it
+    on all three kinds, but the default was set before they were measured, and moving it to suit
+    them would tune it on them. The earlier default, a ridge of 1 in the outcomes' squared units,
+    erred less on these panels, 0.0497, 0.107 and 0.113, by a coincidence of units: their noise is
+    0.1 in those units, so it was a fixed multiple of the noise variance. At 1e-3 of the units it
+    gave plain SCM's estimate.
     """
     donor_pre, donor_post, treated_pre, treated_post = _split(outcomes, treated_unit, n_pre)
     w = _scm_weights(donor_pre, treated_pre, steps)
     imbalance = treated_pre - donor_pre.T @ w  # (T0,) pre-period residual SCM cannot balance
     pre_rmspe = float(np.sqrt(np.mean(imbalance**2)))
     n_pre_periods = donor_pre.shape[1]
-    gram = donor_pre.T @ donor_pre + ridge * np.eye(n_pre_periods)  # (T0, T0)
-    theta = np.linalg.solve(gram, donor_pre.T @ donor_post)  # (T0,T1): one ridge model per period
+    # solved in centred coordinates, so that the outcomes' level costs the slopes no digits
+    centred = donor_pre - donor_pre.mean(axis=0)
+    gram = centred.T @ centred + ridge * _ridge_scale(donor_pre) * np.eye(n_pre_periods)
+    theta = np.linalg.solve(gram, centred.T @ (donor_post - donor_post.mean(axis=0)))  # (T0, T1)
     counterfactual = donor_post.T @ w + theta.T @ imbalance  # SCM + ridge bias correction
     att = treated_post - counterfactual
     return SyntheticControlResult(att, float(att.mean()), w, pre_rmspe)
+
+
+def _ridge_scale(donor_pre: Outcomes) -> float:
+    """The unit the outcome model's slopes are penalised in: the donors' variance about each
+    period's mean, pooled over the periods, which are one outcome in one unit. Donors that move
+    apart by rounding alone (a deviation about the means at most 64 eps of their root mean square)
+    keep their mean square, and donors at zero keep 1, so that the solve stays regular; their
+    centred outcomes, and so the slopes, are then zero up to rounding."""
+    variance = float(np.mean((donor_pre - donor_pre.mean(axis=0)) ** 2))
+    mean_square = float(np.mean(donor_pre**2))
+    if variance > (64 * np.finfo(np.float64).eps) ** 2 * mean_square:
+        return variance
+    return mean_square or 1.0
 
 
 @dataclass(frozen=True)

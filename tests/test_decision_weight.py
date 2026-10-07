@@ -322,6 +322,24 @@ def test_a_lever_that_does_nothing_at_no_price_is_refused() -> None:
         plan.decision_weight()
 
 
+def test_a_cost_in_small_units_is_still_a_strict_minimum() -> None:
+    """The curvature's floor was ``1e3 eps`` of at least 1, so it was absolute for a cost whose
+    curvature is below 1: with the two-step scalar plan's cost at 1e-12 of these units, the
+    smallest eigenvalue, 1.06e-13, fell under it and the strict minimum was refused. ``W`` is in
+    the cost's units, so it scales with them."""
+    optimum = np.array([[-2.023822333873833], [-1.248583272170075]])
+    for scale in (1e-15, 1e-12, 1e-6, 1e3, 1e6):
+        cost = QuadraticCost(
+            Q=scale * SCALAR_COST.Q,
+            R=scale * SCALAR_COST.R,
+            Qf=scale * SCALAR_COST.Qf,
+            x_target=SCALAR_COST.x_target,
+        )
+        plan = causal_plan(SCALAR, ONE, cost, DT, 2, -10.0, 10.0)
+        weight = _at(plan, optimum).decision_weight()
+        assert weight.matrix[0, 0] / scale == pytest.approx(4.706933453397004, rel=1e-10, abs=0.0)
+
+
 def test_a_barrier_held_pessimistic_or_hand_built_plan_is_not_weighed() -> None:
     barrier = BarrierConstraint(lambda x: 2.0 - x[0])
     held = causal_plan(SCALAR, ONE, SCALAR_COST, DT, 3, -10.0, 10.0, barrier=barrier)

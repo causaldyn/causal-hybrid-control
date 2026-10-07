@@ -368,8 +368,10 @@ def _regret_curvature(
         basis = basis @ null_space(matrix[kkt.active][:, free])
     curvature = basis.T @ hessian @ basis
     eigenvalues = np.linalg.eigvalsh(curvature) if basis.shape[1] else np.zeros(0)
-    if eigenvalues.size and eigenvalues[0] <= 1e3 * np.finfo(np.float64).eps * max(
-        1.0, float(np.abs(eigenvalues).max())
+    # a share of the largest eigenvalue, not of at least 1: a cost in units that put its whole
+    # curvature below 2e-13 was refused at a strict minimum
+    if eigenvalues.size and eigenvalues[0] <= 1e3 * np.finfo(np.float64).eps * float(
+        np.abs(eigenvalues).max()
     ):
         raise ValueError(
             f"the task cost's Hessian along the plan's free directions has eigenvalue "

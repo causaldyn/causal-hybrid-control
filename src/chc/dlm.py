@@ -318,7 +318,8 @@ class Prior:
         cov = np.array(self.covariance, dtype=np.float64)
         if cov.shape != (p, p) or not np.all(np.isfinite(cov)):
             raise ValueError(f"covariance must be a finite ({p}, {p}) matrix, got {cov.shape}")
-        scale_of = max(1.0, float(np.abs(cov).max()))
+        # all zero, the tolerance is zero and the matrix symmetric: Cholesky refuses it below
+        scale_of = float(np.abs(cov).max())
         if not np.allclose(cov, cov.T, rtol=0.0, atol=1e-12 * scale_of):
             raise ValueError("covariance is not symmetric")
         try:

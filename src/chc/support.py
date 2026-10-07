@@ -59,12 +59,64 @@ class SupportModel(eqx.Module):
 
     @classmethod
     def fit(cls, xs: Array, us: Array, ridge: float = 1e-3) -> SupportModel:
+        """The log's mean and the inverse of its covariance, each variance raised by ``ridge`` of
+        itself.
+
+        Raising each variance by a share of itself shrinks the correlations and counts the distance
+        in each coordinate's own standard deviations: a point ``k`` of them off the log, along a
+        coordinate the log moved apart from the others, scores about ``k**2 / (1 + ridge)`` in any
+        units and from any origin, and coordinates the log moved in step keep a finite distance
+        across their line. A ridge added in the caller's units outweighed a coordinate logged in
+        small ones: at 1e-3 of its units, a point 4 standard deviations off scored 0.016 where it
+        scored 16.0.
+
+        Raises:
+            ValueError: on a coordinate the log never moved, or moved by rounding alone (a spread
+                about its mean of at most 64 eps of its root mean square, eps its precision's),
+                whose distance is unbounded in any units: a finite stand-in would be set by the
+                units it was logged in, or by its rounding. And on a coordinate whose spread the
+                precision cannot hold in the caller's units, where the inverse of its square
+                overflows or underflows the precision's dtype and every point would read as off
+                the support, or on it.
+        """
         z = jnp.concatenate([xs, us], axis=1)
-        mean = jnp.mean(z, axis=0)
-        centered = z - mean
-        cov = (centered.T @ centered) / z.shape[0]
-        precision = jnp.linalg.inv(cov + ridge * jnp.eye(z.shape[1]))
-        return cls(mean=mean, precision=precision)
+        n = xs.shape[1]
+        # each column as a share of its largest entry, so that no square overflows or underflows
+        # and a column that does not move has a deviation of exactly 0
+        peak = jnp.max(jnp.abs(z), axis=0)
+        scaled = z / jnp.where(peak == 0.0, 1.0, peak)
+        centred = scaled - jnp.mean(scaled, axis=0)
+        deviation = jnp.sqrt(jnp.mean(centred**2, axis=0))
+        size = jnp.sqrt(jnp.mean(scaled**2, axis=0))
+        rounding = deviation <= 64 * jnp.finfo(scaled.dtype).eps * size
+        held = [k for k, still in enumerate(rounding.tolist()) if still]
+        if held:
+            names = ", ".join(_label(k, n) for k in held)
+            raise ValueError(
+                f"the log never moved {names}: every row holds one value, up to rounding (a "
+                "spread about the mean of at most 64 eps of its size), so a deviation along it has "
+                "no logged spread to be measured in, and any finite distance would be set by the "
+                "units it was logged in; leave it out of the problem, or build "
+                "SupportModel(mean, precision) with the spread it should be measured in"
+            )
+        cov = (centred.T @ centred) / z.shape[0]
+        spread = jnp.sqrt(jnp.diag(cov))
+        inner = jnp.linalg.inv(cov / jnp.outer(spread, spread) + ridge * jnp.eye(z.shape[1]))
+        # back in the caller's units one coordinate at a time, so that an entry leaves the range
+        # only where the precision itself cannot hold it
+        spread = peak * spread
+        precision = inner / spread[:, None] / spread[None, :]
+        holds = jnp.all(jnp.isfinite(precision), axis=1) & (jnp.diagonal(precision) > 0.0)
+        outside = [k for k, ok in enumerate(holds.tolist()) if not ok]
+        if outside:
+            names = ", ".join(f"{_label(k, n)} (spread {float(spread[k]):.3g})" for k in outside)
+            raise ValueError(
+                f"the log's spread along {names} is outside what the precision can hold in these "
+                f"units: the inverse of its square overflows or underflows {precision.dtype}, so "
+                "every point would read as off the support, or on it; rescale the column, and the "
+                "points scored against it, nearer a spread of 1, and every distance stays the same"
+            )
+        return cls(mean=jnp.mean(z, axis=0), precision=precision)
 
     def squared_distance(self, x: Array, u: Array) -> Array:
         d = jnp.concatenate([x, u]) - self.mean
@@ -73,6 +125,10 @@ class SupportModel(eqx.Module):
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
         """Total off-support penalty over the visited (x, u) pairs (xs: (H,n), us: (H,m))."""
         return jnp.sum(jax.vmap(self.squared_distance)(xs, us))
+
+
+def _label(column: int, states: int) -> str:
+    return f"state {column}" if column < states else f"action {column - states}"
 
 
 def _augmented(
