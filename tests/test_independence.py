@@ -190,6 +190,19 @@ def test_gcm_test_reads_what_it_could_detect_off_the_clusters_spread_not_their_m
     assert found.detectable[0, 0] < 1.5 * null
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_gcm_test_on_one_cluster_can_detect_nothing() -> None:
+    """One cluster's sum flips to its own size, so no dependence rejects: every pair's
+    ``detectable`` is inf. Its spread about its own mean is nothing, and inf times nothing read
+    nan, with a warning."""
+    rng = np.random.default_rng(8)
+    x, y = rng.standard_normal(200), rng.standard_normal((200, 2))
+    one = gcm_test(x, y, clusters=np.zeros(200))
+    assert one.clusters == 1
+    assert one.p_value == 1.0
+    assert np.all(np.isposinf(one.detectable))
+
+
 def test_gcm_test_refuses_fewer_rows_than_twice_its_regressions_terms() -> None:
     rng = np.random.default_rng(6)
     with pytest.raises(ValueError, match="twice as many rows"):

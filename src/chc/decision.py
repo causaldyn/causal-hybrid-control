@@ -1001,6 +1001,8 @@ class Prescription:
         test = check.test
         if math.isnan(test.p_value):
             return "- logger check: nothing to test, the state determines every column"
+        if test.clusters < 2:
+            return "- logger check: nothing to test, every row it can test falls in one period"
         head = f"p = {test.p_value:.3g} over {test.clusters} periods"
         if test.p_value <= _LOGGER_CHECK_ALPHA:
             correlation = test.partial_correlation

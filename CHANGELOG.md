@@ -71,6 +71,13 @@ still change).
 
 ### Fixed
 
+- **`gcm_test` on one cluster reads every pair as undetectable, and `prescribe` no longer passes a
+  logger check it could not run.** One cluster's sum flips only to itself, so no dependence
+  rejects, and the least correlation the test detects is infinite. The spread of that one sum about
+  its own mean is nothing, and infinity times nothing read nan, with a `RuntimeWarning`; every
+  pair's `detectable` is now `inf`. On a panel whose testable rows all fall in one period, the
+  report said `passed (p = 1 over 1 periods); a pass can miss any dependence`; it now says there
+  is nothing to test, as it does where the state determines every column. Since 0.9.0.
 - **A missing date is refused, as a nan is.** `Panel.from_frame` took a `NaT` in the time column,
   and the panel's periods then failed to sort, a `TypeError` that compared a date or a number with
   `None`. It now raises `PanelError` naming the column, the unit and the time, as for a nan, in any

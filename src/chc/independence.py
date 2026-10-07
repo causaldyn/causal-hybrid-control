@@ -230,8 +230,11 @@ def gcm_test(
     # The spread is centred: the scale above carries the dependence itself once there is any.
     critical = float(np.quantile(flipped, 1.0 - alpha, method="higher"))
     spread = np.sqrt(np.sum((sums - sums.mean(axis=0)) ** 2, axis=0))
+    reach = _reach(critical, blocks)
     detectable = np.full(live.size, np.nan)
-    detectable[tested] = _reach(critical, blocks) * spread / rows
+    # too few clusters let no dependence reject, however little their sums spread: one cluster's
+    # spread is nothing, and inf times nothing is no number
+    detectable[tested] = reach * spread / rows if math.isfinite(reach) else math.inf
     with np.errstate(divide="ignore", invalid="ignore"):
         detectable = detectable.reshape(live.shape) / np.outer(size_x, size_y)
     return GcmTest(statistic, p_value, correlation, detectable, blocks)

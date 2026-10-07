@@ -1840,6 +1840,7 @@ def test_the_channel_s_error_sums_within_each_unit_or_declared_cluster_and_each_
     assert region.identification_radius != certificate.identification_radius
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
 def test_a_panel_whose_transitions_all_start_in_one_period_sums_within_its_units_alone() -> None:
     result = _prescribe(_panel(n_units=400, n_periods=2), ["demand"])
     certificate = result.certificate
@@ -1852,6 +1853,10 @@ def test_a_panel_whose_transitions_all_start_in_one_period_sums_within_its_units
     assert result.model_fit.clusters is not None
     assert result.model_fit.clusters.tolist() == list(range(400))
     assert "summed within 400 groups of `unit` (CR1)" in result.report()
+    assert (
+        "- logger check: nothing to test, every row it can test falls in one period"
+        in result.report()
+    )
     assert result.to_json()["certificate"]["error_periods"] is None
 
 
