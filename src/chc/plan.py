@@ -69,7 +69,14 @@ from chc.control import (
     projected_gradient_solve,
 )
 from chc.cost import QuadraticCost, total_cost
-from chc.dynamics import DampedOscillator, DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
+from chc.dynamics import (
+    DampedOscillator,
+    DrivenDynamics,
+    Dynamics,
+    HybridDynamics,
+    LinearDynamics,
+    _SetAtStep,
+)
 from chc.integrate import rk4_step, rollout
 from chc.residual import ControlAffineResidual, ZeroResidual
 from chc.response import relax
@@ -401,9 +408,10 @@ class _Rule(eqx.Module):
         return u.at[jnp.array(self.levers)].set(self.levels(x))
 
 
-class _Ruled(eqx.Module):
+class _Ruled(_SetAtStep):
     """A field whose ruled levers follow their rule. Their columns of the plan's actions are not
-    read."""
+    read. A step sets them at the state it starts from and holds them over the step, as the log
+    held them over a period; a call reads the rule at the state it is given."""
 
     dynamics: Dynamics
     rule: _Rule
@@ -411,6 +419,9 @@ class _Ruled(eqx.Module):
     def read(self, x: Array, u: Array) -> Array:
         """The action the field reads at ``x``."""
         return self.rule.read(x, u)
+
+    def at_step(self, x: Array, u: Array) -> tuple[Dynamics, Array]:
+        return self.dynamics, self.rule.read(x, u)
 
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
         return self.dynamics(t, x, self.rule.read(x, u))

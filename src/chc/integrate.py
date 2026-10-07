@@ -5,11 +5,14 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jax import Array, lax
 
-from chc.dynamics import Dynamics
+from chc.dynamics import Dynamics, _SetAtStep
 
 
 def rk4_step(dyn: Dynamics, t: float | Array, x: Array, u: Array, dt: float) -> Array:
-    """One classical Runge-Kutta 4 step with the control held constant over the step."""
+    """One classical Runge-Kutta 4 step with the control held constant over the step. A field
+    that sets part of the action from the state sets it at ``x``."""
+    if isinstance(dyn, _SetAtStep):
+        dyn, u = dyn.at_step(x, u)
     k1 = dyn(t, x, u)
     k2 = dyn(t + 0.5 * dt, x + 0.5 * dt * k1, u)
     k3 = dyn(t + 0.5 * dt, x + 0.5 * dt * k2, u)

@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc.cost import total_cost
+from chc.cost import QuadraticCost, total_cost
 from chc.decision import (
     DecisionError,
     Lever,
@@ -26,8 +26,10 @@ from chc.decision import (
     prescribe,
 )
 from chc.graph import CausalGraph
+from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel
+from chc.plan import _Ruled
 
 DT = 0.1
 EDGES = [("z", "y"), ("u1", "y"), ("u2", "y"), ("z", "u1"), ("z", "u2")]
@@ -219,8 +221,10 @@ def test_the_test_reads_the_same_in_any_units() -> None:
 
 def test_a_rule_that_leaves_its_box_leaves_the_log_from_that_step(caplog) -> None:
     """``u1``'s box stops at -0.27, which the rule ``-0.3 y`` crosses as ``y`` falls through 0.9:
-    inside the second step, before the third starts. From there the plan holds ``u1`` where the
-    log never did, and the trustworthy prefix ends."""
+    inside the second step, before the third starts. A step holds ``u1`` at the rule's level at the
+    state it starts from, as the log did, so the second step is one of the log's own; the third
+    starts below 0.9 and holds ``u1`` at -0.27, where the log never did, and the trustworthy prefix
+    ends. 0.14 read the rule inside the step and ended it a step early."""
     levers = [Lever("u1", lo=-2.0, hi=-0.27, unit_cost=0.01), Lever("u2", lo=-2.0, hi=2.0)]
     with caplog.at_level(logging.WARNING, logger="chc.decision"):
         result = _prescribe("state", levers=levers)
@@ -228,11 +232,14 @@ def test_a_rule_that_leaves_its_box_leaves_the_log_from_that_step(caplog) -> Non
     assert result.plan is not None
     path = np.asarray(result.plan.trajectory)[:, 0]
     assert path[1] > 0.9 > path[2]
-    assert (certificate.estimability, certificate.first_loaded_step) == ("not_estimable", 1)
-    assert certificate.trustworthy_steps <= 1
-    assert "a fit the log cannot tell apart predicts another path from step 1" in result.report()
+    held = np.asarray(result.schedule.magnitudes)[:, 0]
+    assert held[1] == pytest.approx(-0.3 * path[1], rel=1e-12, abs=0.0)
+    assert held[2] == -0.27
+    assert (certificate.estimability, certificate.first_loaded_step) == ("not_estimable", 2)
+    assert certificate.trustworthy_steps <= 2
+    assert "a fit the log cannot tell apart predicts another path from step 2" in result.report()
     (event,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "estimability"]
-    assert event.first_loaded_step == 1
+    assert event.first_loaded_step == 2
 
 
 def test_a_lever_set_from_outside_the_state_gives_no_schedule() -> None:
@@ -366,3 +373,23 @@ def test_nothing_reads_a_ruled_lever_s_column() -> None:
     np.testing.assert_allclose(
         moved.decision_weight().matrix, plan.decision_weight().matrix, rtol=1e-12, atol=0.0
     )
+
+
+@pytest.mark.parametrize("policy", ["state", "state_squared"])
+def test_a_ruled_lever_is_held_over_each_step_as_the_log_held_it(policy: str) -> None:
+    """The log set ``u1`` at each period's start and held it over the period, and the fit reads a
+    step so. 0.14 read the rule at every point RK4 reads in a step, so the level moved with the
+    state inside the step. The plan's path and its cost are now the schedule's, each level held
+    over its step, under the fitted field without the rule."""
+    result = _prescribe(policy)
+    plan = result.plan
+    assert plan is not None
+    problem = plan._problem
+    assert problem is not None
+    assert isinstance(problem.model, _Ruled)
+    field, schedule = problem.model.dynamics, jnp.asarray(result.schedule.magnitudes)
+    held = rollout(field, problem.x0, schedule, problem.dt)
+    np.testing.assert_allclose(np.asarray(plan.trajectory), np.asarray(held), rtol=1e-12, atol=0.0)
+    price = QuadraticCost(problem.cost.Q, problem.cost.R, problem.cost.Qf, problem.cost.x_target)
+    cost = total_cost(field, problem.x0, schedule, problem.dt, price)
+    assert float(cost) == pytest.approx(plan.task_cost, rel=1e-12, abs=0.0)

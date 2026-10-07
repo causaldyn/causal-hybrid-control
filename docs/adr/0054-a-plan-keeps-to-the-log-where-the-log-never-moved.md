@@ -2,7 +2,9 @@
 
 **Status:** accepted, 2026-10-06. Amended 2026-10-07: the plan's cost and its decision weight read
 a ruled lever at its rule's level, as its field does; until 0.14.3 they read its column of the
-plan, which nothing else reads.
+plan, which nothing else reads. Amended again 2026-10-07: a step holds a ruled lever at its rule's
+level at the state it starts from, as the log held it over a period; until 0.14.3 the field read
+the rule at every point RK4 reads inside a step.
 
 ## Context
 
@@ -59,8 +61,9 @@ the log kept at one level, those the state alone predicts, and those the covaria
   - kept at one level, it is held at its mean, clipped to its box, as in 0.13.0;
   - set from the state alone, it follows the log's least-squares rule of the state, the nuisance's
     degree-2 polynomial, clipped to its box, inside the plan's field, and the plan's cost prices it
-    at that level. The schedule's column carries the rule read along the predicted path, and
-    `InterventionSchedule.rules` names the lever;
+    at that level. A step sets it at the state the step starts from and holds it over the step, as
+    the log held it over a period and as the fit reads a step. The schedule's column carries the
+    rule read along the predicted path, and `InterventionSchedule.rules` names the lever;
   - set from a column outside the state, it gives no plan. The certificate reads `not_identified`
     and names the columns the rule reads.
 - Among the other levers:
@@ -68,15 +71,19 @@ the log kept at one level, those the state alone predicts, and those the covaria
     clipped to what the boxes reach, and a level within rounding of zero is zero;
   - a combination set from the state, or from other columns, gives no plan, since no row of the
     plan's actions holds it.
-- **The test, which is exact.** The fits the log cannot tell apart are the fitted one moved along a
-  combination the drift takes up, with the drift regression's response, by any amount. The field
-  is linear in the parameters. So where such a move leaves the field as it was at every point RK4
-  reads in a step, the step lands where it did whatever the amount, not only to first order. The
-  move counts as zero where its terms cancel to the square root of the working precision of their
-  size, and a nan does not count. A direction whose push on the log cancels to that precision has
-  no drift response: the regression would read the rounding as one, which a plan that moves
-  nothing could not cancel. The first step where a move is not zero is `first_loaded_step`, and the
-  trustworthy prefix ends there.
+- **The test.** The fits the log cannot tell apart are the fitted one moved along a combination
+  the drift takes up, with the drift regression's response, by any amount. The field is linear in
+  the parameters. So where such a move leaves the field as it was at every point RK4 reads in a
+  step, the step lands where it did whatever the amount, not only to first order: there the test is
+  exact. A step that holds a ruled lever is not such a step, and neither are the log's own: inside
+  it the state moves and the lever does not, so a move does not cancel there. The test reads such
+  a step at the state it starts from and the level it holds there, and a step that passes is one
+  of the log's own: from that state, the level the log would have set. The move counts as zero
+  where its terms cancel to the square root of the working precision of their size, and a nan
+  does not count. A direction whose push on the log cancels to that precision has no drift
+  response: the regression would read the rounding as one, which a plan that moves nothing could
+  not cancel. The first step where a move is not zero is `first_loaded_step`, and the trustworthy
+  prefix ends there.
 - **The certificate** gains `estimability`: `estimable` where the log moved every direction,
   `held_to_log` where it did not and the plan keeps to it at every step, `not_estimable` for a
   refusal or a loaded step. It gains `identification_rank` and `unmoved_directions`, a state each,
@@ -95,7 +102,8 @@ the log kept at one level, those the state alone predicts, and those the covaria
     and reads `not_estimable` from its first step;
   - `u1 = -0.3 y` and `u1 = 0.1 y^2`: the schedule's `u1` is the rule along the predicted path, to
     1e-9, and the worlds `k = 0`, 0.8 and 2 run one path, to 1e-12. With `u1`'s box ending at
-    -0.27, the rule leaves the box inside the second step, and `first_loaded_step` is 1;
+    -0.27, the rule leaves the box inside the second step, the third starts outside it, and
+    `first_loaded_step` is 2 (1 until 0.14.3, which read the rule inside the step);
   - `u1 = 0.7 z` and `u2 - 2 u1 = -0.3 y` give no plan, and the reason names `z` and the
     combination;
   - a log that moves every direction gives 0.13.0's plan, bit for bit.
@@ -125,6 +133,11 @@ the log kept at one level, those the state alone predicts, and those the covaria
 - **The test along every unmoved direction, not only those the drift takes up.** Rejected: `u1 y`'s
   push, `-0.3 y^2`, is ruled out by the log within the class, though the moment has no data on it,
   and the test would refuse the right plan in the held case at an affine channel.
+- **The rule read at every point RK4 reads**, as until 0.14.3. Rejected: the log set the lever
+  once a period and held it, and the fit reads a step so. Read inside the step, the plan's path was
+  not the path of the schedule it reports, each level held over its step: on the review's log
+  `u1 = 0.1 y^2` they parted by 1.0e-3 in three steps, and the plan reported a task cost 1.5%
+  above its schedule's. The test was exact on that field, which is not the one the log ran.
 - **A rule of a column outside the state held at its mean**, with the column named and
   `held_to_log` scoped to it, the review's other answer. Rejected: the mean keeps the expected rate
   only where the column is independent of the state, which nothing here can check.

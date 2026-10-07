@@ -52,6 +52,7 @@ from chc.dynamics import (
     Dynamics,
     HybridDynamics,
     LinearDynamics,
+    _SetAtStep,
 )
 from chc.dynamics_id import (
     CausalDynamicsFit,
@@ -91,7 +92,6 @@ from chc.plan import (
     _Rule,
     _Ruled,
     _RuledCost,
-    _taken,
     causal_plan,
     certify_safety,
     plan_regret_bound,
@@ -1891,14 +1891,16 @@ def _first_loaded(
     regression's ``response`` (:func:`chc.dynamics_id._absorbed`), by any amount. The field is
     linear in the parameters, so where a move leaves the field as it was at every point RK4 reads
     it at in a step, the step lands where it did whatever the amount, and the path is the same,
-    not only to first order. The move counts as zero where the terms that make it up cancel to the
-    square root of the working precision; a nan does not."""
+    not only to first order. A step that sets ruled levers holds them over the step at their level
+    at its start, as the log held them over a period, so inside the step the move does not cancel,
+    in the log's own steps either: such a step is one of the log's own where the move cancels at
+    the state it starts from and the action it holds. The move counts as zero where the terms that
+    make it up cancel to the square root of the working precision; a nan does not."""
     if directions.shape[1] == 0 or plan.actions.shape[0] == 0:
         return None
     precision = jnp.sqrt(jnp.finfo(directions.dtype).eps)
 
-    def clear(t: Array, x: Array, u: Array) -> Array:
-        action = _taken(model, x, u)
+    def clear(t: Array, x: Array, action: Array) -> Array:
         design = _channel_design(action[None, :], x[None, :], fit.residual.channel_degree)[0]
         features = control_affine_features(x, fit.residual.degree)
         if drivers is not None:
@@ -1908,6 +1910,8 @@ def _first_loaded(
         return jnp.all(jnp.abs(moved) <= precision * size)
 
     def step(t: Array, x: Array, u: Array) -> Array:
+        if isinstance(model, _SetAtStep):
+            return clear(t, x, model.at_step(x, u)[1])
         k1 = model(t, x, u)
         k2 = model(t + 0.5 * dt, x + 0.5 * dt * k1, u)
         k3 = model(t + 0.5 * dt, x + 0.5 * dt * k2, u)

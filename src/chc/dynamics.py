@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import abc
 from typing import Protocol
 
 import equinox as eqx
@@ -12,6 +13,20 @@ from jax import Array
 class Dynamics(Protocol):
     """A vector field f(t, x, u) -> dx/dt."""
 
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array: ...
+
+
+class _SetAtStep(eqx.Module):
+    """A field that sets part of its action from the state. A step sets it at the state it starts
+    from and holds it over the step, as it holds the rest of the action:
+    :func:`chc.integrate.rk4_step` integrates the field :meth:`at_step` gives at the action it
+    gives."""
+
+    @abc.abstractmethod
+    def at_step(self, x: Array, u: Array) -> tuple[Dynamics, Array]:
+        """The field a step from ``x`` integrates, and the action it holds over the step."""
+
+    @abc.abstractmethod
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array: ...
 
 
