@@ -33,7 +33,7 @@ import logging
 import math
 import time
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib import metadata
 from typing import Any, Literal, get_args
@@ -104,6 +104,10 @@ from chc.residual import ControlAffineResidual, ZeroResidual, control_affine_fea
 SCHEMA_VERSION = 2
 """``to_json``'s schema version. Bumped when a field changes meaning, not when one is added: 2
 writes a number that is not finite as null (ADR 0055)."""
+
+POLICY_SCHEMA_VERSION = 1
+""":meth:`PrescribedPolicy.to_json`'s schema version, which :meth:`PrescribedPolicy.from_json`
+reads, and no other."""
 
 
 class DecisionError(ValueError):
@@ -298,7 +302,8 @@ class InterventionSchedule:
     levers: tuple[str, ...]
     magnitudes: Array  # (horizon, m)
     # The levers whose column is the rule of the state the log set them by, read along the
-    # predicted path: set them from the state as it comes, not to these numbers.
+    # predicted path: set them from the state as it comes (:meth:`Prescription.policy`), not to
+    # these numbers.
     rules: tuple[str, ...] = ()
 
     def windows(self, *, tol: float = 1e-6) -> dict[str, tuple[int, int] | None]:
@@ -313,6 +318,225 @@ class InterventionSchedule:
             active = np.flatnonzero(np.abs(magnitudes[:, index]) > tol)
             out[name] = (int(active[0]), int(active[-1])) if active.size else None
         return out
+
+
+@dataclass(frozen=True)
+class PrescribedPolicy:
+    """The decision as a rule to run, step by step, in the state each step reaches.
+
+    A lever the plan moves takes the schedule's level at the step. A lever the log set from the
+    state alone (:attr:`DecisionCertificate.rule_levers`) takes the log's rule at the state it is
+    given, as the plan's field and its price read it (ADR 0054), so its column of
+    :attr:`schedule` is nan. A lever the plan holds to the log, or one the selection left out,
+    keeps the level the schedule holds it at. Along the path the plan predicts, the actions are
+    :attr:`Prescription.schedule`'s. *Experimental.*
+    """
+
+    levers: tuple[str, ...]
+    states: tuple[str, ...]  # the order :meth:`actions_at` reads a state's values in
+    dt: float
+    schedule: NDArray[np.float64]  # (horizon, levers); a ruled lever's column is nan
+    _rule: _Rule | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def horizon(self) -> int:
+        """How many steps the policy runs."""
+        return int(self.schedule.shape[0])
+
+    @property
+    def ruled(self) -> tuple[str, ...]:
+        """The levers set from the state on the log's rule, in the order of :attr:`levers`."""
+        rule = self._rule
+        return () if rule is None else tuple(self.levers[index] for index in rule.levers)
+
+    def actions_at(self, step: int, state: ArrayLike | Mapping[str, float]) -> NDArray[np.float64]:
+        """Each lever's level at ``step`` in ``state``, in the order of :attr:`levers`.
+
+        ``state`` is the states' values in the order of :attr:`states`, or a mapping that names
+        each of them; a name it holds besides is not read.
+
+        Raises:
+            ValueError: on a step that is not an integer from 0 to ``horizon - 1``, or a state
+                that does not give each of :attr:`states` a finite value.
+        """
+        if isinstance(step, bool) or not isinstance(step, int | np.integer):
+            raise ValueError(f"a step is an integer, not {step!r}")
+        if not 0 <= step < self.horizon:
+            raise ValueError(f"the policy runs steps 0 to {self.horizon - 1}, not {step}")
+        return _act(self._rule, self._read(state), self.schedule[step])
+
+    def _read(self, state: ArrayLike | Mapping[str, float]) -> NDArray[np.float64]:
+        if isinstance(state, Mapping):
+            missing = [name for name in self.states if name not in state]
+            if missing:
+                raise ValueError(f"the state does not name {missing}")
+            state = [state[name] for name in self.states]
+        x = np.asarray(state, dtype=np.float64)
+        if x.shape != (len(self.states),):
+            raise ValueError(
+                f"a state holds one value for each of {list(self.states)}, not shape {x.shape}"
+            )
+        if not np.all(np.isfinite(x)):
+            raise ValueError(f"a state's values are finite numbers, not {x.tolist()}")
+        return x
+
+    def to_json(self) -> dict[str, Any]:
+        """The policy as plain JSON-safe values, which :meth:`from_json` reads back to the bit.
+
+        No number is infinite or nan (ADR 0055). A ruled lever's column of ``schedule`` is None,
+        as its rule sets it; ``rule`` names those levers and holds the rule, an infinite bound of
+        its as None: ``lo``'s is -inf, ``hi``'s inf. ``precision`` names the floats the rule
+        reads the state in, None where there is no rule.
+        """
+        rule = self._rule
+
+        def floats(values: ArrayLike) -> Any:
+            return np.asarray(values, dtype=np.float64).tolist()
+
+        return _strict(
+            {
+                "schema_version": POLICY_SCHEMA_VERSION,
+                "levers": list(self.levers),
+                "states": list(self.states),
+                "dt": float(self.dt),
+                "precision": None if rule is None else str(rule.centre.dtype),
+                "schedule": floats(self.schedule),
+                "rule": None
+                if rule is None
+                else {
+                    "levers": list(self.ruled),
+                    "degree": rule.degree,
+                    "centre": floats(rule.centre),
+                    "shift": floats(rule.shift),
+                    "factor": floats(rule.factor),
+                    "coefficients": floats(rule.coefficients),
+                    "lo": floats(rule.lo),
+                    "hi": floats(rule.hi),
+                },
+            }
+        )
+
+    @classmethod
+    def from_json(cls, record: Mapping[str, Any]) -> PrescribedPolicy:
+        """The policy :meth:`to_json` wrote.
+
+        Raises:
+            ValueError: on a record of another schema version, or one that does not run: names
+                that are not distinct, a schedule that is not a finite number for each lever at
+                each step, a ruled lever's None excepted, a rule that does not fit the levers and
+                the states, or a rule read in a precision JAX does not now run in.
+        """
+        if record.get("schema_version") != POLICY_SCHEMA_VERSION:
+            raise ValueError(
+                f"this version reads schema_version {POLICY_SCHEMA_VERSION}, not "
+                f"{record.get('schema_version')!r}"
+            )
+        levers, states = _names(record, "levers"), _names(record, "states")
+        dt = record.get("dt")
+        if isinstance(dt, bool) or not isinstance(dt, int | float) or not 0.0 < dt < math.inf:
+            raise ValueError(f"dt is a finite step above 0, not {dt!r}")
+        written = record.get("rule")
+        rule = None if written is None else _read_rule(written, levers, states, record)
+        ruled = set() if rule is None else set(rule.levers)
+        rows = record.get("schedule")
+        if (
+            not isinstance(rows, list)
+            or not rows
+            or not all(isinstance(row, list) and len(row) == len(levers) for row in rows)
+        ):
+            raise ValueError(f"the schedule is a row of {len(levers)} levels for each step")
+        for row in rows:
+            for index, value in enumerate(row):
+                if (value is None) != (index in ruled) or not (value is None or _number(value)):
+                    raise ValueError(
+                        f"a ruled lever's level is None, as its rule sets it, and every other "
+                        f"lever's a finite number; {levers[index]!r} reads {value!r}"
+                    )
+        schedule = np.array(
+            [[np.nan if value is None else value for value in row] for row in rows],
+            dtype=np.float64,
+        )
+        return cls(levers=levers, states=states, dt=float(dt), schedule=schedule, _rule=rule)
+
+
+def _names(record: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    names = record.get(key)
+    if (
+        not isinstance(names, list)
+        or not names
+        or not all(isinstance(name, str) for name in names)
+        or len(set(names)) != len(names)
+    ):
+        raise ValueError(f"{key} is a list of distinct names, not {names!r}")
+    return tuple(names)
+
+
+def _number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _read_rule(
+    written: object, levers: tuple[str, ...], states: tuple[str, ...], record: Mapping[str, Any]
+) -> _Rule:
+    """The rule :meth:`PrescribedPolicy.to_json` wrote, in the floats it was read in."""
+    if not isinstance(written, Mapping):
+        raise ValueError(f"the rule is a mapping, not {written!r}")
+    names = _names(written, "levers")
+    unknown = [name for name in names if name not in levers]
+    if unknown:
+        raise ValueError(f"the rule sets {unknown}, which are not among the levers {list(levers)}")
+    degree = written.get("degree")
+    if isinstance(degree, bool) or not isinstance(degree, int) or degree < 0:
+        raise ValueError(f"the rule's degree is a whole number, not {degree!r}")
+    precision = record.get("precision")
+    if precision not in ("float32", "float64"):
+        raise ValueError(f"a rule's precision is float32 or float64, not {precision!r}")
+    if (precision == "float64") != _x64_enabled():
+        raise ValueError(
+            f"the rule was read in {precision} and JAX now runs in the other precision: set "
+            "jax_enable_x64 as it was set where the rule was written, so it runs as written"
+        )
+    dtype = jnp.float64 if precision == "float64" else jnp.float32
+    features = _polynomial_features(jnp.zeros((1, len(states))), degree).shape[1]
+    shapes = {
+        "centre": (len(states),),
+        "shift": (len(states),),
+        "factor": (len(states),),
+        "coefficients": (features, len(names)),
+        "lo": (len(names),),
+        "hi": (len(names),),
+    }
+    arrays = {}
+    for key, shape in shapes.items():
+        values = written.get(key)
+        if key in ("lo", "hi") and isinstance(values, list):
+            free = -math.inf if key == "lo" else math.inf
+            values = [free if value is None else value for value in values]
+        array = np.asarray(values, dtype=np.float64) if _numeric(values) else None
+        if array is None or array.shape != shape or np.isnan(array).any():
+            raise ValueError(f"the rule's {key} is {shape} numbers, not {values!r}")
+        arrays[key] = array
+    if not all(np.isfinite(arrays[key]).all() for key in ("centre", "shift", "coefficients")):
+        raise ValueError("the rule's centre, shift and coefficients are finite numbers")
+    # a state the log held at one level reads 0 in the rule, by a factor of 0
+    if not (np.isfinite(arrays["factor"]).all() and (arrays["factor"] >= 0.0).all()):
+        raise ValueError(
+            f"the rule's factor is finite and at least 0, not {arrays['factor'].tolist()}"
+        )
+    if not (arrays["lo"] <= arrays["hi"]).all():
+        raise ValueError("the rule's lo lies at or below its hi")
+    return _Rule(
+        **{key: jnp.asarray(array, dtype=dtype) for key, array in arrays.items()},
+        levers=tuple(levers.index(name) for name in names),
+        degree=degree,
+    )
+
+
+def _numeric(values: object) -> bool:
+    """Whether ``values`` is a nested list of numbers that are not booleans."""
+    if isinstance(values, list):
+        return all(_numeric(value) for value in values)
+    return isinstance(values, int | float) and not isinstance(values, bool)
 
 
 @dataclass(frozen=True)
@@ -638,6 +862,39 @@ class Prescription:
             levers=self.lever_names,
             magnitudes=self.plan.actions if self._magnitudes is None else self._magnitudes,
             rules=self.certificate.rule_levers,
+        )
+
+    def policy(self) -> PrescribedPolicy:
+        """The decision as a rule to run step by step in the states it reaches: the schedule for
+        the levers the plan moves, the log's rule of the state for those the log set from it.
+
+        Raises:
+            NotIdentifiedError: if the effect is not identified, as :attr:`schedule` does.
+            ValueError: on a prescription :func:`prescribe` did not build, which does not record
+                its states or the rule its levers keep to.
+        """
+        plan = self.plan
+        if plan is None:
+            raise NotIdentifiedError(
+                "the effect is not identified, so no policy was computed: "
+                f"{self.certificate.adjustment.reason}"
+            )
+        problem = plan._problem
+        if self._columns is None or problem is None:
+            raise ValueError(
+                "this prescription does not record its states and its levers' rule: build it "
+                "with prescribe"
+            )
+        rule = problem.model.rule if isinstance(problem.model, _Ruled) else None
+        schedule = np.array(plan.actions, dtype=np.float64)
+        if rule is not None:
+            schedule[:, list(rule.levers)] = np.nan  # nothing reads them: the rule sets them
+        return PrescribedPolicy(
+            levers=self.lever_names,
+            states=self._columns.states,
+            dt=float(problem.dt),
+            schedule=schedule,
+            _rule=rule,
         )
 
     def budget_prices(self, tolerance: float | None = None) -> tuple[tuple[RowPrice, ...], ...]:
@@ -2191,11 +2448,25 @@ def _alone(fit: CausalDynamicsFit, data: dict[str, Array], start: Array) -> tupl
 
 
 def _ruled_schedule(model: Dynamics, plan: CausalPlan) -> Array | None:
-    """The plan's actions with each ruled lever read off its rule along the predicted path; None
-    where no lever follows a rule."""
+    """The plan's actions with each ruled lever read off its rule along the predicted path, a
+    step at a time as :meth:`PrescribedPolicy.actions_at` reads it; None where no lever follows a
+    rule."""
     if not isinstance(model, _Ruled):
         return None
-    return jax.vmap(model.read)(plan.trajectory[:-1], plan.actions)
+    path, actions = np.asarray(plan.trajectory[:-1]), np.asarray(plan.actions)
+    return jnp.asarray(
+        np.stack([_act(model.rule, x, u) for x, u in zip(path, actions, strict=True)])
+    )
+
+
+def _act(rule: _Rule | None, x: NDArray[Any], u: NDArray[Any]) -> NDArray[np.float64]:
+    """The action taken at ``x`` for the schedule's ``u``: ``u`` with each ruled lever on its
+    rule, read in the floats the rule holds."""
+    if rule is None:
+        return np.array(u, dtype=np.float64)
+    dtype = rule.centre.dtype
+    action = rule.read(jnp.asarray(x, dtype=dtype), jnp.asarray(u, dtype=dtype))
+    return np.asarray(action, dtype=np.float64)
 
 
 def _first_loaded(

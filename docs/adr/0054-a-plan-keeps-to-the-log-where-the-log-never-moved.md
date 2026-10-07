@@ -4,7 +4,8 @@
 a ruled lever at its rule's level, as its field does; until 0.14.3 they read its column of the
 plan, which nothing else reads. Amended again 2026-10-07: a step holds a ruled lever at its rule's
 level at the state it starts from, as the log held it over a period; until 0.14.3 the field read
-the rule at every point RK4 reads inside a step.
+the rule at every point RK4 reads inside a step. And `Prescription.policy()` sets it from the state
+reached (ADR 0070).
 
 ## Context
 
@@ -64,6 +65,7 @@ the log kept at one level, those the state alone predicts, and those the covaria
     at that level. A step sets it at the state the step starts from and holds it over the step, as
     the log held it over a period and as the fit reads a step. The schedule's column carries the
     rule read along the predicted path, and `InterventionSchedule.rules` names the lever;
+    `Prescription.policy()` reads the rule in the state reached (ADR 0070);
   - set from a column outside the state, it gives no plan. The certificate reads `not_identified`
     and names the columns the rule reads.
 - Among the other levers:

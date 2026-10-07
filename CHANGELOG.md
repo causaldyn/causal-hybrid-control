@@ -9,6 +9,16 @@ still change).
 
 ### Added
 
+- **`Prescription.policy()` runs the decision step by step in the states it reaches.** It returns a
+  `chc.decision.PrescribedPolicy`, whose `actions_at(step, state)` gives each lever's level: the
+  schedule's for a lever the plan moves, the log's rule of the state for one the log set from it,
+  the logged level for one the log never moved. Until now the schedule carried a ruled lever's rule
+  only along the predicted path, and nothing gave the rule to set it by in another state. Along the
+  path the policy reads the schedule to the bit: the schedule's ruled columns are read through it, a
+  step at a time, so in single precision their last bits move (-0.30000025 to -0.30000028 on a
+  test's log). `to_json` writes it as strict JSON, a ruled lever's column `null`, and `from_json`
+  reads it back to the bit, in the precision it was written in, and refuses a record that does not
+  run. *Experimental* (ADR 0070).
 - **`allocate` and `cvar_allocate` take their search's tolerance and cap: `rtol`, `atol` and
   `max_boxes`.** The branch and bound on S-shaped curves stopped at a share `1e-9` of its scale or
   after 500 boxes, both fixed in the module. It now stops where every bound is within the larger of
