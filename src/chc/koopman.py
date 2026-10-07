@@ -15,9 +15,8 @@ from itertools import combinations_with_replacement
 
 import numpy as np
 
-from chc.regret import dlqr
-
 from chc import _units
+from chc.regret import dlqr
 
 
 def _lift(x: np.ndarray, degree: int) -> np.ndarray:

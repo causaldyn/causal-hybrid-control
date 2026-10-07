@@ -117,10 +117,6 @@ def _ols_fit(features: Array, target: Array) -> tuple[Array, Array]:
     return coeffs, design @ coeffs
 
 
-_ROUNDING = 64
-"""A spread within this many eps of its column's root mean square is rounding, so no spread."""
-
-
 def _instrument_relevance(state: Array, action: Array, instrument: Array) -> Array:
     """How far ``instrument`` moves ``action`` beyond what ``state`` and a constant explain: the
     canonical correlation between the first stage's push on the action and the action, each less
@@ -130,15 +126,15 @@ def _instrument_relevance(state: Array, action: Array, instrument: Array) -> Arr
 
     It reads 0 where 2SLS's moment has no rank: where the product of the instrument and the action,
     each beyond the state, is no more than their rounding could make of it. Each column is known
-    to ``_ROUNDING`` eps of its root mean square, the eps that of the coarsest precision the three
-    columns come in, so the action's rounding moves the product by that much of the action's root
-    mean square times the instrument's spread beyond the state, and the instrument's rounding by
-    that much of its own times the action's spread. A column with no spread beyond the state, or
-    none beyond its rounding, reads 0 so. Each column is centred before its projection, and the
-    state scaled to unit spread, so the reading is the same in any units of the three and at any
-    level of them.
+    to ``chc._units.ROUNDING`` eps of its root mean square, the eps that of the coarsest precision
+    the three columns come in, so the action's rounding moves the product by that much of the
+    action's root mean square times the instrument's spread beyond the state, and the instrument's
+    rounding by that much of its own times the action's spread. A column with no spread beyond the
+    state, or none beyond its rounding, reads 0 so. Each column is centred before its projection,
+    and the state scaled to unit spread, so the reading is the same in any units of the three and
+    at any level of them.
     """
-    rounding = _ROUNDING * max(
+    rounding = _units.ROUNDING * max(
         float(jnp.finfo(jnp.result_type(column, float)).eps)
         for column in (state, action, instrument)
     )

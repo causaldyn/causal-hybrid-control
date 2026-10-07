@@ -15,8 +15,8 @@ Only the columns a call names are read, each as float64 where it holds real numb
 integer or a floating dtype, or ``bool``, ``int``, ``float``, ``Decimal`` or ``Fraction`` values. A
 column of text, dates, times, durations, complex numbers or other objects is refused, and so is a
 number finite in its own type that is an infinity in float64, naming the column and the row; a
-float64 cast read the text ``"0.5"`` as 0.5 and a date as its count of days. A nan is read as it
-is, and the effect reads nan.
+float64 cast read the text ``"0.5"`` as 0.5 and a date as its count of days. A nan or an
+infinity is read as it is, and the effect reads nan.
 """
 
 from __future__ import annotations
@@ -39,6 +39,12 @@ def _float64_columns(data: Data, names: Iterable[str]) -> dict[str, Vector]:
     column the call does not name is not read, so a label column of text is no obstacle."""
     columns = as_columns(data)
     return {name: _numbers(columns[name], name) for name in dict.fromkeys(names)}
+
+
+def _finite(columns: dict[str, Vector]) -> bool:
+    """Whether every cell is finite. A cell that is not reaches every fit, so the effect reads nan
+    without fitting; fitted, it read nan all the same, and warned of an infinity less itself."""
+    return all(bool(np.isfinite(column).all()) for column in columns.values())
 
 
 def _ridge_fit(design: NDArray[np.float64], target: Vector, ridge: float) -> Vector:
@@ -143,6 +149,8 @@ def sequential_g_formula(
             f"it needs a whole number of folds from 2 to the rows ({n})"
         )
         raise ValueError(msg)
+    if not _finite(columns):
+        return float("nan")
     fold_indices = _folds(n, folds, seed)
 
     def g_value(values: tuple[float, ...]) -> float:
@@ -190,6 +198,8 @@ def naive_pooled_effect(
         )
         raise ValueError(msg)
     columns = _float64_columns(data, (outcome, *treatments, *pooled))
+    if not _finite(columns):
+        return float("nan")
     treat = [columns[a] for a in treatments]
     covariates = [columns[c] for block in confounders for c in block]
     beta = _ridge_fit(np.column_stack([*treat, *covariates]), columns[outcome], 1e-6)

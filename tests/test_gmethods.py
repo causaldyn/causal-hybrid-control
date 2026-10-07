@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from decimal import Decimal
 
 import numpy as np
@@ -242,13 +243,17 @@ def test_a_nan_or_an_infinity_of_the_columns_own_type_is_read_as_it_is(
     value: object, dtype: type
 ) -> None:
     """The rule refuses a finite number float64 cannot hold, not the nan or the infinity a column
-    holds as such: those read as a float column's do, and the effect reads nan."""
+    holds as such: those read as a float column's do, and the effect reads nan, with no warning:
+    computed in each column's own units, an infinity less itself warned of an invalid value."""
     data = _time_varying_confounded(200, seed=10)
     kind = Decimal if isinstance(value, Decimal) else float
     cells = np.array([kind(float(level)) for level in data["l0"]], dtype=object)
     cells[5] = value
     data["l0"] = cells.astype(dtype)
-    assert all(np.isnan(effect) for effect in _estimates(data))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        effects = _estimates(data)
+    assert all(np.isnan(effect) for effect in effects)
 
 
 UNITS = [1e-9, 1e-6, 1e-3, 1e3, 1e6]

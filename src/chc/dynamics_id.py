@@ -78,9 +78,6 @@ _MAX_NEWTON_STEPS = 20
 """Cap on Newton's method for the ``rk4`` fixed point. From the Euler fit it converges in three to
 six steps up to ``|A|dt = 1.2``, so reaching the cap means there is no fixed point to reach."""
 
-_ROUNDING = 64
-"""A spread within this many eps of its column's root mean square is rounding, so no spread."""
-
 _NOT_IDENTIFIED = (
     "no adjustment set and no instrument: the control channel is not identified from this log. "
     "Use chc.sensitivity to price the identification radius instead of trusting the estimate."
@@ -609,17 +606,18 @@ def _instrument_relevance(
     whitened, so the count of those above 0 is its rank.
 
     The push is the actions' least-squares fit on the first stage's features of the state and the
-    instrument, without the ridge. A push of at most ``_ROUNDING`` eps of the raw actions' size
-    along a direction is none, and so is a correlation of at most ``_ROUNDING`` eps: both read 0.
-    Scaled to the raw actions, on features standardised as the nuisance's are, and whitened, the
-    reading is the same in any units of the instrument, the actions and the state."""
+    instrument, without the ridge. A push of at most ``chc._units.ROUNDING`` eps of the raw
+    actions' size along a direction is none, and so is a correlation of at most
+    ``chc._units.ROUNDING`` eps: both read 0. Scaled to the raw actions, on features standardised
+    as the nuisance's are, and whitened, the reading is the same in any units of the instrument,
+    the actions and the state."""
     raw = _channel_design(actions, states, channel_degree)
     size = jnp.linalg.norm(raw, axis=0)
     along = jnp.diag(1.0 / jnp.where(size > 0.0, size, 1.0)) if free is None else free
     correlations = jnp.zeros(along.shape[1], dtype=raw.dtype)
     if along.shape[1] == 0:
         return correlations
-    rounding = _ROUNDING * jnp.finfo(raw.dtype).eps
+    rounding = _units.ROUNDING * jnp.finfo(raw.dtype).eps
     features = _polynomial_features(_units.standardised(covariates), nuisance_degree)
     first = _polynomial_features(
         _units.standardised(jnp.concatenate([states, shifter], axis=1)), nuisance_degree
