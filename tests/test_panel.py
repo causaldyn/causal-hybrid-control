@@ -540,11 +540,11 @@ def test_a_column_that_is_not_numbers_is_held_and_refused_when_read_as_numbers(
 
 
 def test_text_from_a_pandas_or_a_polars_frame_is_refused_when_read_as_numbers() -> None:
-    """pandas 3 reads text as its ``str`` dtype and hands it over as objects, polars as fixed-width
-    text: a float64 cast read either as numbers."""
+    """pandas 3 reads text as its ``str`` dtype and pandas 2 as objects, each handed over as
+    objects, and polars as fixed-width text: a float64 cast read each as numbers."""
     frame = pd.DataFrame(_labelled())
     frame["y"] = frame["y"].astype("str")
-    assert str(frame["y"].dtype) == "str"
+    assert str(frame["y"].dtype) == ("object" if pd.__version__.startswith("2.") else "str")
     polars = pl.DataFrame({"unit": ["region-A"] * 3, "time": [0, 1, 2], "y": ["0.0", "1", "2"]})
     for source, shown in ((frame, r"'0\.0'"), (polars, r"np\.str_\('0\.0'\)")):
         panel = Panel.from_frame(source, unit="unit", time="time")
