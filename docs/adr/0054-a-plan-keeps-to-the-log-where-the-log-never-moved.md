@@ -7,7 +7,7 @@ level at the state it starts from, as the log held it over a period; until 0.14.
 the rule at every point RK4 reads inside a step. And `Prescription.policy()` sets it from the state
 reached (ADR 0070). Amended a third time, 2026-10-07: which levers the log never moved, and the
 drift's response to a move no transition tells apart, are read in the units the fit reads
-`unmoved` in; until 0.15.0 they were read in raw units, and moved with the units of the state and
+`unmoved` in; until 0.15.1 they were read in raw units, and moved with the units of the state and
 of the levers.
 
 ## Context
@@ -134,7 +134,7 @@ the log kept at one level, those the state alone predicts, and those the covaria
 - **In any units of the state.** With the state logged in 1e-15 to 1e15 of its units, and the
   target, the start, the tube's tolerance and the levers' prices with it, every log above reads as
   in the state's own units: the levers unmoved and ruled, the relations and the estimability
-  exactly, the schedules to 6.7e-16. Until 0.15.0, read in raw units, at 1e-12 and at 1e12
+  exactly, the schedules to 6.7e-16. Until 0.15.1, read in raw units, at 1e-12 and at 1e12
   `u1 = -0.3 y`'s channel lay 2.5e-5 and 6.3e-6 off the unmoved span, past the square root of the
   precision: the log read as having set `1 u1 - 1.3e-18 u2` from the state, and gave no plan. At
   1e-9 `u1 = 0.7 z` was refused for such a combination, not for `u1`. With the levers read right,
@@ -142,24 +142,26 @@ the log kept at one level, those the state alone predicts, and those the covaria
   plan read `not_estimable` from its first step.
 - **In other units of a lever.** With `u1` logged in 1e-12 to 1e9 of its units, its box and its
   price with it, `u2 = 2 u1` and `u1 = -0.3 y` read as in its own units: the levers unmoved and
-  ruled and the estimability exactly, the schedules to 3.2e-10 of `u1`'s own units. Until 0.15.0,
+  ruled and the estimability exactly, the schedules to 3.2e-10 of `u1`'s own units. Until 0.15.1,
   at 1e9 the direction `u2 = 2 u1` never moved lay 2e-9 of the way along `u1`, under the
   precision: `u2` read as never moved and was held at its mean, and the schedule moved by 0.69. At
   1e-9 `u1` read so.
-- **What this does not do.** The moment's ridge is still absolute in the actions' units, and
-  shrinks a channel the log did move where the actions are small: logged at a millionth of their
-  units, the review's moved lever read 5.1e-5 where it reads 0.0977. Fixing that moves every fit,
-  so it is a change of its own. The spans of what the log kept, from the levers' own logged
-  values, are still orthonormalised in the levers' raw units. With `u1` logged at 1e12 of its
-  units, QR there reads `u2 = 2 u1`'s weight on `u1` as -1.99996e-12 where -2e-12, and its level
-  as 4.4e-7 where 0: the plan holds that row, and reads `not_estimable` from its first step. And
-  `u1 = -0.3 y` is refused there as set from outside the state. At 1e9 QR reads the weight of
-  `u2 = 2 u1 + 0.4` on `u1` to 2.8e-8 of itself, and that plan moves by 5.5e-9 of `u1`'s units.
+- **What this does not do.** Until 0.15.0 the moment's ridge was absolute in the actions' units, and
+  shrank a channel the log did move where the actions are small: logged at a millionth of their
+  units, the review's moved lever read 5.1e-5 where it reads 0.0977. Since 0.15.0 each of its terms
+  is scaled by the mean square of its column of the channel's design on the log's raw actions,
+  weighted as the moment weighs the rows (ADR 0057), a change that moved every fit. The spans of
+  what the log kept, from the levers' own logged values, are still orthonormalised in the levers'
+  raw units. With `u1` logged at 1e12 of its units, QR there reads `u2 = 2 u1`'s weight on `u1` as
+  -1.99996e-12 where -2e-12, and its level as 4.4e-7 where 0: the plan holds that row, and reads
+  `not_estimable` from its first step. And `u1 = -0.3 y` is refused there as set from outside the
+  state. At 1e9 QR reads the weight of `u2 = 2 u1 + 0.4` on `u1` to 2.8e-8 of itself, and that plan
+  moves by 5.5e-9 of `u1`'s units.
 
 ## Alternatives
 
 - **The levers the log never moved read off `unmoved` as it is, in raw coefficient units**, as
-  until 0.15.0. Rejected: no basis of a span reads well in both units, and the precision the fit
+  until 0.15.1. Rejected: no basis of a span reads well in both units, and the precision the fit
   reads the span to is the scaled units'. A direction that lies 2e-9 of the way along a lever in
   raw units lies under the square root of the precision there, whatever the basis.
 - **The scale recomputed from the log by each reader**, as `reach` reads it (ADR 0069). Rejected:
