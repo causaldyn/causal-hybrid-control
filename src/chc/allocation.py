@@ -1074,44 +1074,51 @@ def minimax_allocate(
         return values, slopes
 
     # t >= best - value - slope @ (s - split) for every reading, over s in the box spending the
-    # budget; the variables are the rates and t, and t is the worst regret the planes allow. Both
-    # sides are read in units of the largest best return: HiGHS refuses a program with an entry past
-    # 1e15, and a reading's slope in currency reaches that when its fit has run to the edge of its
-    # family, a coefficient of 1e35 on a curve barely bent
+    # budget; the variables are the rates and t, and t is the worst regret the planes allow. The
+    # rates are read in a power of two of the budget a period, each held at most the budget, which
+    # the budget's row implies, and the regrets in one of the largest best return: HiGHS leaves out
+    # every entry of at most 1e-9, where a slope a currency unit over that return falls from a
+    # budget a period of 1e9, and refuses one past 1e15, which a slope in currency passes where a
+    # reading's fit has run to the edge of its family, a coefficient of 1e35 on a curve barely
+    # bent. A power of two scales each number exactly, so the bound and the split come back exactly
     rows: list[np.ndarray] = []
     limits: list[float] = []
     worst, chosen, regret = np.inf, plans[0].spend, best
     splits = [plan.spend for plan in plans]
     floor = 0.0
     scale = float(np.max(np.abs(best))) or 1.0
+    unit, measure = _unit(rate), _unit(scale)
+    floors, caps = lower_rates / unit, np.minimum(upper_rates, rate) / unit
     for _ in range(_ROUNDS):
         for tried in splits:
             values, slopes = returns(tried)
             losses = best - values
             if losses.max() < worst:
                 worst, chosen, regret = float(losses.max()), tried, losses
-            rows.extend(np.concatenate([-slopes / scale, -np.ones((len(readings), 1))], axis=1))
-            limits.extend((values - slopes @ tried - best) / scale)
+            rows.extend(
+                np.concatenate([-slopes * (unit / measure), -np.ones((len(readings), 1))], axis=1)
+            )
+            limits.extend((values - slopes @ tried - best) / measure)
         if worst - floor <= _GAP * scale:
             break
         matrix, ends = np.array(rows), np.array(limits)
-        least, _ = _spans(matrix, ends, lower_rates, upper_rates)
+        least, _ = _spans(matrix, ends, floors, caps)
         program = _planes(
             np.concatenate([np.zeros(size), [1.0]]),
             matrix,
             ends,
-            [*zip(lower_rates, upper_rates, strict=True), (0.0, None)],
+            [*zip(floors, caps, strict=True), (0.0, None)],
             np.concatenate([np.ones(size), [0.0]])[None, :],
-            [rate],
+            [rate / unit],
             # the least t is nothing or the most regret a plane reads at the split
-            [*zip(lower_rates, upper_rates, strict=True), (0.0, max(0.0, -least))],
+            [*zip(floors, caps, strict=True), (0.0, max(0.0, -least))],
         )
         if program.status in _UNSOLVED:
             break  # the last program's floor stands
         if program.status != 0:
             raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
-        floor = max(floor, _outward(float(program.fun), scale, 1.0, -math.inf))
-        splits = [_onto(program.x[:size], lower_rates, upper_rates, rate)]
+        floor = max(floor, _outward(float(program.fun), measure, 1.0, -math.inf))
+        splits = [_onto(program.x[:size] * unit, lower_rates, upper_rates, rate)]
     # a reading's best return on the curves is between its plan's worth and bound, and the split's
     # is below its envelopes' by their excess there, so its regret on the curves is off by at most
     # the larger of the two
@@ -1350,7 +1357,8 @@ def _cvar_search(
     scale = float(np.max(np.abs(base))) or 1.0
     tolerance = _GAP * scale
     # the variables are the rates, eta and one excess u_r a reading; each plane reads
-    # u_r >= eta - (gain_r + slope_r @ (s - tried)), in units of the reference's largest return.
+    # u_r >= eta - (gain_r + slope_r @ (s - tried)), the rates in a power of two of the budget a
+    # period and the gains in one of the reference's largest return, as minimax_allocate reads them.
     # The program's value is the worst share's mean times -max(share, 1), so its least cost is 1:
     # HiGHS folds the costs into its scaling when the least is under 0.1, and at 1 / share that
     # stretched the scaling's factors to 2^15; the solution then missed 1e-10 once unscaled, and
@@ -1363,6 +1371,7 @@ def _cvar_search(
         [np.tile(np.arange(size + 1), (count, 1)), size + 1 + np.arange(count)[:, None]], axis=1
     ).ravel()
     objective = np.concatenate([np.zeros(size), [-weight], np.full(count, weight / share)])
+    unit, measure = _unit(rate), _unit(scale)
     best: tuple[float, np.ndarray, np.ndarray] = (-np.inf, reference, np.zeros(count))
 
     def tried(
@@ -1393,6 +1402,7 @@ def _cvar_search(
         curves' gains weighs it. Leaves in ``rows`` and ``limits`` the planes worth keeping."""
         ceiling, relaxed, at, excess = np.inf, -np.inf, start, np.zeros(size)
         splits, slack, kept = [start], None, 0
+        floors, caps = low / unit, np.minimum(high, rate) / unit
         for _ in range(_ROUNDS if alike else _BOX_ROUNDS):
             for split in splits:
                 gain, slopes, over, actual = tried(envelopes, split)
@@ -1400,14 +1410,14 @@ def _cvar_search(
                 if value > relaxed:
                     relaxed, at, excess = value, split, _cvar_weights(actual, level) @ over
                 plane = np.concatenate(
-                    [-slopes / scale, np.ones((count, 1)), -np.ones((count, 1))], 1
+                    [-slopes * (unit / measure), np.ones((count, 1)), -np.ones((count, 1))], 1
                 )
                 rows.append(
                     sparse.csr_array(
                         (plane.ravel(), (lines, columns)), shape=(count, size + 1 + count)
                     )
                 )
-                limits.append((gain - slopes @ split) / scale)
+                limits.append((gain - slopes @ split) / measure)
             if ceiling - best[0] <= tolerance:
                 break
             # on concave curves the planes close; past them a box is cut once its planes come
@@ -1419,20 +1429,20 @@ def _cvar_search(
             ):
                 break
             matrix, ends = sparse.vstack(rows, format="csr"), np.concatenate(limits)
-            least, most = _spans(matrix, ends, low, high)
+            least, most = _spans(matrix, ends, floors, caps)
             # each plane's reading, read off the excess column, its last
             reading = np.maximum.reduceat(matrix.indices, matrix.indptr[:-1]) - size - 1
             program = _planes(
                 objective,
                 matrix,
                 ends,
-                [*zip(low, high, strict=True), (None, None), *((0.0, None),) * count],
+                [*zip(floors, caps, strict=True), (None, None), *((0.0, None),) * count],
                 np.concatenate([np.ones(size), np.zeros(1 + count)])[None, :],
-                [rate],
+                [rate / unit],
                 # a best eta is one of the readings' least planes at the split, and each excess
                 # its distance below eta
                 [
-                    *zip(low, high, strict=True),
+                    *zip(floors, caps, strict=True),
                     (least, most),
                     *((0.0, float(np.nextafter(most - least, np.inf))),) * count,
                 ],
@@ -1442,9 +1452,9 @@ def _cvar_search(
                 break  # the box keeps its last program's bound
             if program.status != 0:
                 raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
-            ceiling = min(ceiling, _outward(-float(program.fun), scale, weight, math.inf))
+            ceiling = min(ceiling, _outward(-float(program.fun), measure, weight, math.inf))
             slack, kept = program.ineqlin.residual, matrix.shape[0]
-            splits = [_onto(program.x[:size], low, high, rate)]
+            splits = [_onto(program.x[:size] * unit, low, high, rate)]
         if slack is not None and not alike:
             # the halves' bounds need only the planes the last program held tight, and those
             # tried since; a plane dropped that a half needs is cut again at its split
@@ -2391,11 +2401,23 @@ def _outward(value: float, factor: float, divisor: float, toward: float) -> floa
     """``value * factor / divisor`` for positive ``factor`` and ``divisor``, each rounding moved a
     place past the exact value toward ``toward``, so a bound read in a program's units stays one in
     the caller's; nothing stays nothing, which a search whose tolerance is a share of its bound
-    needs to close there."""
+    needs to close there. A power of two scales exactly unless the result leaves the normal
+    doubles, which scaling it back tells, and an exact scaling is not moved."""
     if value == 0.0:
         return 0.0
-    scaled = math.nextafter(value * factor, toward)
-    return scaled if divisor == 1.0 else math.nextafter(scaled / divisor, toward)
+    scaled = value * factor
+    if not (math.frexp(factor)[0] == 0.5 and scaled / factor == value):
+        scaled = math.nextafter(scaled, toward)
+    quotient = scaled / divisor
+    if not (math.frexp(divisor)[0] == 0.5 and quotient * divisor == scaled):
+        quotient = math.nextafter(quotient, toward)
+    return quotient
+
+
+def _unit(amount: float) -> float:
+    """The power of two at or below ``amount``, or 1 for nothing: a program written in it holds the
+    caller's numbers each scaled exactly, unless one leaves the normal doubles."""
+    return math.ldexp(1.0, math.frexp(amount)[1] - 1) if amount > 0.0 else 1.0
 
 
 def _least(

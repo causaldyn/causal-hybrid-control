@@ -1,7 +1,8 @@
 # ADR 0038 — A split for several readings of the channels
 
 **Status:** proposed, 2026-10-01. Amended 2026-10-07 by ADR 0060: the bound is read from the
-program's duals, rounded outward, not from HiGHS's objective.
+program's duals, rounded outward, not from HiGHS's objective, and the rates are read in a power of
+two of the budget a period, the regrets in one of the largest best return.
 
 ## Context
 

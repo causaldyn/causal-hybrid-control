@@ -4,19 +4,22 @@ exactly and rounded down, never HiGHS's objective.
 Checked against the same bound worked in rational arithmetic from the same duals, on random programs
 and duals good and bad, each product split into two doubles that sum to it; against the least of
 small programs found exactly at their vertices; on two programs whose HiGHS objective passes their
-least, by a slope HiGHS leaves out and by a rounding, and on two plans at a budget whose every slope
-HiGHS leaves out; on the boxes the planners' free and one-sided columns are read in, each planner's
-around HiGHS's solutions; on the duals a cvar program's readings are evened to; and on a plan with
-nothing to gain, whose bound of nothing closes its search.
+least, by a slope HiGHS leaves out and by a rounding; on two plans at budgets from 1e9 to 1e15,
+where read in currency HiGHS leaves out every slope, and on one plan at budgets from 1 to 1e12, each
+closing on its best; on the powers of two a program's rates and returns are written in, which scale
+it and its bound exactly; on the boxes the planners' free and one-sided columns are read in, each
+planner's around HiGHS's solutions; on the duals a cvar program's readings are evened to; and on a
+plan with nothing to gain, whose bound of nothing closes its search.
 """
 
 import math
+import sys
 from fractions import Fraction
 from itertools import combinations
 
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from scipy import sparse
 from scipy.optimize import linprog
@@ -138,13 +141,14 @@ def _linear(*coefficients: float) -> tuple[Channel, ...]:
     return tuple(Channel(ONE, Power(100.0, 1.0), c) for c in coefficients)
 
 
-def test_a_split_whose_slopes_highs_leaves_out_keeps_its_bound_under_the_least_worst_regret():
-    """At a budget of 1e10 each slope over the largest best return is 1e-10, which HiGHS leaves
-    out. Readings returning 2 and 1 a unit, and 1 and 2, are each best all on the better channel,
-    at 2e10, and the least worst regret is a quarter of that, 5e9, at the even split. HiGHS's
-    objective on the program without its slopes read 1e10, the worst regret of the split all on
-    one channel, and closed there; the bound read from its duals holds."""
-    budget = 1e10
+@pytest.mark.parametrize("budget", [1e9, 1e10, 1e12, 1e15])
+def test_a_split_hedged_at_a_large_budget_closes_on_the_least_worst_regret(budget):
+    """Readings returning 2 and 1 a unit, and 1 and 2, are each best all on the better channel, at
+    twice the budget, and the least worst regret is a quarter of that, at the even split. Read over
+    the largest best return a slope a currency unit is one over the budget, which HiGHS leaves out
+    from 1e9: its objective then read half the best return, the worst regret of the split all on
+    one channel, and the search closed there. Read over a power of two of the budget the slopes are
+    about 1, and the search closes on the even split."""
     plan = minimax_allocate(
         [_linear(200.0, 100.0), _linear(100.0, 200.0)],
         budget,
@@ -153,16 +157,17 @@ def test_a_split_whose_slopes_highs_leaves_out_keeps_its_bound_under_the_least_w
         upper=np.full(2, budget),
         history=np.zeros((0, 2)),
     )
-    assert plan.bound <= 5e9 <= plan.worst
+    np.testing.assert_allclose(plan.spend, [budget / 2, budget / 2], rtol=0.0, atol=1e-9 * budget)
+    assert plan.bound <= budget / 2 <= plan.worst
+    assert plan.worst - plan.bound <= 1e-9 * plan.best.max()
 
 
-def test_a_worst_share_split_whose_slopes_highs_leaves_out_keeps_its_bound_over_the_best():
+@pytest.mark.parametrize("budget", [1e9, 1e10, 1e12, 1e15])
+def test_a_worst_share_split_at_a_large_budget_closes_on_the_best(budget):
     """At the level 1, readings returning 2 and 1 a unit, and 1 and 1.5, against all on the second
-    channel: the mean gain is a quarter of the spend on the first, 2.5e9 all on it at a budget of
-    1e10, where HiGHS leaves out every slope. Its objective read 0, the reference's, and closed
-    there; the bound read from its duals holds, and the search closes only where the split is
-    within its tolerance of it."""
-    budget = 1e10
+    channel: the mean gain is a quarter of the spend on the first, a quarter of the budget all on
+    it. Where HiGHS left every slope out its objective read 0, the reference's gain, and the search
+    closed there; read over a power of two of the budget it closes on all on the first channel."""
     plan = cvar_allocate(
         [_linear(200.0, 100.0), _linear(100.0, 150.0)],
         budget,
@@ -173,8 +178,121 @@ def test_a_worst_share_split_whose_slopes_highs_leaves_out_keeps_its_bound_over_
         upper=np.full(2, budget),
         history=np.zeros((0, 2)),
     )
-    assert plan.bound >= 2.5e9
-    assert plan.stopped == "cap" or plan.cvar >= 2.5e9 * (1.0 - 1e-9)
+    np.testing.assert_allclose(plan.spend, [budget, 0.0], rtol=0.0, atol=1e-9 * budget)
+    assert plan.stopped == "closed"
+    assert plan.cvar <= budget / 4 <= plan.bound
+    assert plan.bound - plan.cvar <= 1e-9 * 1.5 * budget
+
+
+# two readings of two Michaelis-Menten channels, each curve's scale and coefficient a share of the
+# budget; against all on the second channel, the worse reading's gain is best where it meets the
+# other's, so the least worst regret and the most gain in the worst half are each at a crossing
+CROSSING = (((1.0, 1.9), (1.7, 0.9)), ((0.04, 0.7), (0.32, 1.9)))
+
+
+def _crossing(budget: float) -> list[tuple[Channel, ...]]:
+    """The crossing readings at ``budget``."""
+    return [
+        tuple(Channel(ONE, MichaelisMenten(k * budget), c * budget) for k, c in reading)
+        for reading in CROSSING
+    ]
+
+
+@pytest.mark.parametrize("planner", ["minimax", "cvar"])
+def test_a_plan_grown_with_its_budget_keeps_its_split_and_bound_in_shares_of_it(planner):
+    """One plan at budgets of 1, 1e6 and 1e12, each curve's scale and coefficient and the box grown
+    with the budget: the search closes, and its split and bound, in shares of the budget, stay
+    where they were, to the search's tolerance. Read over the largest return a slope a currency unit
+    is about 1e-12 at the last, which HiGHS leaves out; read over a power of two of the budget it is
+    the same at every budget."""
+    plans = []
+    for budget in (1.0, 1e6, 1e12):
+        box = {"lower": np.zeros(2), "upper": np.full(2, budget)}
+        if planner == "minimax":
+            plan = minimax_allocate(_crossing(budget), budget, 1, **box)
+            gap, largest = plan.worst - plan.bound, float(plan.best.max())
+        else:
+            plan = cvar_allocate(
+                _crossing(budget), budget, 1, level=0.5, against=np.array([0.0, budget]), **box
+            )
+            assert plan.stopped == "closed"
+            # the reference returns under twice the budget
+            gap, largest = plan.bound - plan.cvar, 2.0 * budget
+        assert gap <= 1e-9 * largest
+        plans.append((budget, plan, largest))
+    _, first, _ = plans[0]
+    for budget, plan, largest in plans[1:]:
+        np.testing.assert_allclose(plan.spend / budget, first.spend, rtol=0.0, atol=1e-9)
+        assert abs(plan.bound / budget - first.bound) <= 1e-9 * largest / budget
+
+
+@pytest.mark.parametrize("planner", ["minimax", "cvar", "crossing"])
+def test_a_program_is_written_in_powers_of_two_and_its_bound_comes_back_exactly(
+    monkeypatch, planner
+):
+    """The rates in the power of two at or below the budget a period, each held at most the budget,
+    which the budget's row implies, and the returns in the power of two at or below the largest:
+    each number scales exactly, and so does the bound read from the duals, coming back. Linear
+    readings at 60 a period over two periods, the box four times that: the least worst regret, 60,
+    a quarter of the best return, and the most gain in the worst share at the level 1, 30, read
+    exactly, the cvar's bound over its weight 2. On the crossing readings at a budget of 1, the box
+    four times that, the bound stays below the worst regret, the highest program's value scaled
+    exactly."""
+    real, programs = allocation._planes, []
+
+    def recorded(objective, rows, limits, bounds, equal, totals, box=None, evened=None):
+        program = real(objective, rows, limits, bounds, equal, totals, box, evened)
+        programs.append((program, bounds, totals))
+        return program
+
+    monkeypatch.setattr(allocation, "_planes", recorded)
+    box = {"lower": np.zeros(2), "upper": np.full(2, 240.0), "history": np.zeros((0, 2))}
+    if planner == "minimax":
+        plan = minimax_allocate([_linear(200.0, 100.0), _linear(100.0, 200.0)], 120.0, 2, **box)
+        assert plan.best.max() == 240.0  # so the unit is 128
+        assert plan.bound == plan.worst == 60.0
+        assert plan.bound == max(program.fun for program, _, _ in programs) * 128.0
+        total = 60.0 / 32.0
+    elif planner == "cvar":
+        plan = cvar_allocate(
+            [_linear(200.0, 100.0), _linear(100.0, 150.0)],
+            120.0,
+            2,
+            level=1.0,
+            against=np.array([0.0, 60.0]),
+            **box,
+        )
+        assert plan.bound == plan.cvar == 30.0
+        # the reference returns 120 and 180, so the unit is 128
+        assert plan.bound == min(-program.fun for program, _, _ in programs) * 128.0 / 2.0
+        total = 60.0 / 32.0
+    else:
+        plan = minimax_allocate(_crossing(1.0), 1.0, 1, lower=np.zeros(2), upper=np.full(2, 4.0))
+        measure = math.ldexp(1.0, math.frexp(plan.best.max())[1] - 1)
+        assert plan.bound < plan.worst
+        assert plan.bound == max(program.fun for program, _, _ in programs) * measure
+        total = 1.0
+    for program, bounds, totals in programs:
+        assert program.status == 0
+        assert totals[0] == total
+        assert all(0.0 <= low <= high <= totals[0] for low, high in bounds[:2])
+
+
+@pytest.mark.parametrize(
+    ("amount", "unit"),
+    [
+        (1.0, 1.0),
+        (3.0, 2.0),
+        (0.75, 0.5),
+        (1e10, 2.0**33),
+        (7.59e-310, 2.0**-1027),
+        (5e-324, 5e-324),
+        (0.0, 1.0),
+    ],
+)
+def test_a_unit_is_the_power_of_two_at_or_below_an_amount(amount, unit):
+    """A subnormal amount's among them; nothing's is 1."""
+    assert allocation._unit(amount) == unit
 
 
 @settings(max_examples=300, deadline=None)
@@ -431,28 +549,67 @@ def test_a_free_eta_and_excesses_held_above_nothing_are_read_in_their_implied_bo
     assert Fraction(bound) <= least
 
 
-MIXED = (
-    (Channel(ONE, MichaelisMenten(10.0), 1000.0), Channel(ONE, MichaelisMenten(20.0), 300.0)),
-    (Channel(ONE, MichaelisMenten(30.0), 500.0), Channel(ONE, Hill(5.0, 2.0), 700.0)),
-    (Channel(ONE, MichaelisMenten(5.0), 200.0), Channel(ONE, MichaelisMenten(40.0), 900.0)),
-)
-PLANNERS = {
-    "minimax": lambda: minimax_allocate(
-        MIXED[:2], 60.0, 1, lower=np.zeros(2), upper=np.full(2, 60.0), history=np.zeros((0, 2))
-    ),
-    "cvar": lambda: cvar_allocate(
-        MIXED,
-        60.0,
+def _mixed(currency: float) -> tuple[tuple[Channel, ...], ...]:
+    """Three readings of two channels, Michaelis-Menten curves and a Hill curve of slope 2 among
+    them, each curve's scale and coefficient counted in ``currency``."""
+    return (
+        (
+            Channel(ONE, MichaelisMenten(10.0 * currency), 1000.0 * currency),
+            Channel(ONE, MichaelisMenten(20.0 * currency), 300.0 * currency),
+        ),
+        (
+            Channel(ONE, MichaelisMenten(30.0 * currency), 500.0 * currency),
+            Channel(ONE, Hill(5.0 * currency, 2.0), 700.0 * currency),
+        ),
+        (
+            Channel(ONE, MichaelisMenten(5.0 * currency), 200.0 * currency),
+            Channel(ONE, MichaelisMenten(40.0 * currency), 900.0 * currency),
+        ),
+    )
+
+
+def _minimax(currency: float = 1.0, floor: float = 0.0):
+    """Two of the mixed readings hedged at a budget of 60, each rate at least ``floor``, counted in
+    ``currency``."""
+    budget = 60.0 * currency
+    return minimax_allocate(
+        _mixed(currency)[:2],
+        budget,
+        1,
+        lower=np.full(2, floor * currency),
+        upper=np.full(2, budget),
+        history=np.zeros((0, 2)),
+    )
+
+
+def _worst_share(currency: float = 1.0):
+    """The mixed readings' worst 0.7 against all on the second channel at a budget of 60, counted
+    in ``currency``."""
+    budget = 60.0 * currency
+    return cvar_allocate(
+        _mixed(currency),
+        budget,
         1,
         level=0.7,
-        against=np.array([0.0, 60.0]),
+        against=np.array([0.0, budget]),
         lower=np.zeros(2),
-        upper=np.full(2, 60.0),
+        upper=np.full(2, budget),
         history=np.zeros((0, 2)),
-    ),
+    )
+
+
+MIXED = _mixed(1.0)
+# the small plans are the others counted in a currency 1024 times larger: a budget under 1, whose
+# power of two the rates are read in is under 1 too; the floored plan holds each rate at least 10
+PLANNERS = {
+    "minimax": _minimax,
+    "cvar": _worst_share,
     "geos": lambda: allocate_geos(
         [MIXED[0], MIXED[2]], 20.0, 1, lower=np.zeros((2, 2)), upper=np.full((2, 2), 10.0)
     ),
+    "minimax-small": lambda: _minimax(2.0**-10),
+    "cvar-small": lambda: _worst_share(2.0**-10),
+    "minimax-floored": lambda: _minimax(1.0, 10.0),
 }
 
 
@@ -571,6 +728,42 @@ def test_a_bound_scaled_into_the_callers_units_stays_a_bound(value, factor, divi
         assert Fraction(down) <= exact
     if math.isfinite(up):
         assert Fraction(up) >= exact
+
+
+def _double(value: Fraction) -> float | None:
+    """The double equal to ``value``, or None where no double is."""
+    if abs(value) > Fraction(sys.float_info.max):
+        return None
+    nearest = float(value)
+    return nearest if Fraction(nearest) == value else None
+
+
+@settings(max_examples=300, deadline=None)
+@given(
+    value=st.floats(allow_nan=False, allow_infinity=False),
+    factor=st.integers(-1074, 1023).map(lambda k: math.ldexp(1.0, k)),
+    divisor=st.just(3.0) | st.integers(-60, 60).map(lambda k: math.ldexp(1.0, k)),
+)
+@example(value=1.5, factor=2.0**-1074, divisor=1.0)
+@example(value=1.0, factor=2.0**-1074, divisor=1.0)
+@example(value=1.5, factor=2.0**-1073, divisor=2.0)
+@example(value=1.0, factor=1.0, divisor=3.0)
+def test_a_bound_scaled_by_a_power_of_two_is_exact_where_a_double_holds_it(value, factor, divisor):
+    """A power of two scales exactly unless the value leaves the normal doubles: where a double
+    holds the product, and then the quotient by a power of two, the bound is that double, neither
+    rounding moved; where none does, among the subnormals, it is moved past the exact value, as a
+    quotient by 3 is, though the double nearest a third, times 3, rounds back to 1."""
+    exact = Fraction(value) * Fraction(factor) / Fraction(divisor)
+    down = allocation._outward(value, factor, divisor, -math.inf)
+    up = allocation._outward(value, factor, divisor, math.inf)
+    if math.isfinite(down):
+        assert Fraction(down) <= exact
+    if math.isfinite(up):
+        assert Fraction(up) >= exact
+    product = _double(Fraction(value) * Fraction(factor))
+    quotient = None if product is None else _double(Fraction(product) / Fraction(divisor))
+    if quotient is not None and math.frexp(divisor)[0] == 0.5:
+        assert down == up == quotient
 
 
 def test_a_plan_with_nothing_to_gain_closes_on_its_first_program(monkeypatch):

@@ -2,7 +2,8 @@
 
 **Status:** proposed, 2026-10-03. Amended 2026-10-05 by ADR 0052: a gain is read on the curves,
 and on S-shaped curves the split is searched in boxes. Amended 2026-10-07 by ADR 0060: the bound
-is read from the program's duals, rounded outward, not from HiGHS's objective.
+is read from the program's duals, rounded outward, not from HiGHS's objective, and the rates are
+read in a power of two of the budget a period, the gains in one of the reference's largest return.
 
 ## Context
 

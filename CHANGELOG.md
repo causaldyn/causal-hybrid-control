@@ -158,8 +158,8 @@ still change).
   plan.** The bounds of `minimax_allocate`, `cvar_allocate`, `allocate_geos` and
   `budget_for_geos` were HiGHS's objective on their last cutting-plane program, which is not a
   bound. HiGHS leaves out of the program it solves every entry of at most 1e-9, and
-  `minimax_allocate` and `cvar_allocate` write a slope as a return a currency unit over the
-  largest return, which falls that low at a budget of 1e9. On two linear readings returning 2 and
+  `minimax_allocate` and `cvar_allocate` wrote a slope as a return a currency unit over the
+  largest return, which fell that low at a budget of 1e9. On two linear readings returning 2 and
   1 a unit on two channels, and 1 and 2, at a budget of 1e10, `minimax_allocate` returned the
   split all on the first channel with its worst regret, half the best return, as its bound, where
   the even split's is a quarter. On readings returning 2 and 1, and 1 and 1.5, `cvar_allocate` at
@@ -170,13 +170,17 @@ still change).
   above the program's least in 10. Each bound is now read from HiGHS's duals on the program as
   written (Neumaier and Shcherbina 2004), its free and one-sided columns within the box their
   planes imply. It is worked exactly, rounded down, and scaled into currency rounded outward, so it
-  holds whatever the duals are, and an entry HiGHS left out only loosens it. A search whose slopes
-  HiGHS leaves out no longer closes on that bound: the two above stop with their gap, 0.5 of the
-  best return and 1.5 of the budget. `cvar_allocate` also reads the bound from its duals rescaled
-  reading by reading, whose masses HiGHS missed by up to 3e-7 on the 400 readings. On the tests no
-  search's rounds, boxes or status moved, and each program's bound stayed within 3e-12 of HiGHS's
-  objective, relative to its size past 1 (ADR 0060). Since 0.10.0; `cvar_allocate`'s since
-  0.11.0.
+  holds whatever the duals are, and an entry HiGHS left out only loosens it. `minimax_allocate` and
+  `cvar_allocate` now write their programs in powers of two of the budget a period and of the
+  largest return, which scale each number exactly, so a slope is about the return a period's budget
+  brings over the largest, whatever the currency: at budgets of 1e9, 1e10, 1e12 and 1e15 the two
+  above close on their first program, on the even split and on all on the first channel, their
+  bounds exactly a quarter of the best return and a quarter of the budget. `cvar_allocate` also
+  reads the bound from its duals rescaled reading by reading, whose masses HiGHS missed by up to
+  3e-7 on the 400 readings. On the tests at a fixed seed no search's status moved, one search cut 25
+  boxes for 23 to the same split, each worst regret or cvar that moved did so by at most 0.016 of
+  its search's gap, and each program's bound stayed within 2.2e-11 of HiGHS's objective, relative to
+  its size past 1 (ADR 0060). Since 0.10.0; `cvar_allocate`'s since 0.11.0.
 - **A plan under linear rows could break them and report `converged`.** The projection onto the
   box and the rows ends in an active-set polish that moves one constraint a step, and it gave up
   after 16 steps. A trial far outside the box, as a first step from a guess far from its plan
