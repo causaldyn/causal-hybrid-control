@@ -16,6 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import scipy.linalg
+import scipy.stats
 
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
@@ -30,6 +31,7 @@ from chc.dynamics_id import (
     _unmoved_directions,
     fit_causal_residual,
     omitted_confounder_bound,
+    persistence_check,
     solve_channel_moment,
 )
 from chc.integrate import rk4_step
@@ -2020,3 +2022,150 @@ def test_a_weight_that_drops_the_rows_the_instrument_moves_leaves_no_rank() -> N
         weighted, fit_causal_residual(_known, data, 0.1, weights=first_level, **ONE_FEATURE)
     )
     assert weighted.instrument_rank == 0
+
+
+def _persistent_log(
+    noise: float, units: int = 100, periods: int = 30, seed: int = 0
+) -> tuple[dict[str, jax.Array], np.ndarray, np.ndarray]:
+    """``x' = 0.95 x + 0.1 (0.8 u + 1.5 z) + e``, ``u = a + 0.9 z``, ``a`` AR(0.7) and ``e``
+    AR(``noise``) within each unit, ``z`` drawn afresh; rows period-major, with each transition's
+    unit and period."""
+    rng = np.random.default_rng(seed)
+
+    def ar(rho: float, spread: float) -> np.ndarray:
+        out = np.empty((periods, units))
+        out[0] = rng.normal(0.0, spread, units)
+        for t in range(1, periods):
+            out[t] = rho * out[t - 1] + rng.normal(0.0, spread * math.sqrt(1.0 - rho**2), units)
+        return out
+
+    z = rng.normal(size=(periods, units))
+    u = ar(0.7, 0.5) + 0.9 * z
+    e = ar(noise, 0.05)
+    x = np.empty((periods + 1, units))
+    x[0] = rng.normal(size=units)
+    for t in range(periods):
+        x[t + 1] = 0.95 * x[t] + 0.1 * (0.8 * u[t] + 1.5 * z[t]) + e[t]
+    data = {
+        name: jnp.asarray(values.reshape(-1, 1))
+        for name, values in (("x", x[:-1]), ("u", u), ("z", z), ("x_next", x[1:]))
+    }
+    labels = np.tile(np.arange(units), periods)
+    steps = np.repeat(np.arange(periods), units)
+    return data, labels, steps
+
+
+def test_the_persistence_check_reads_noise_that_persists_within_units() -> None:
+    """With the noise AR(0.7) within each unit, the moment's residual reads its persistence; drawn
+    afresh, it reads none. Each of the 100 units pairs 29 transitions."""
+    for noise, low, high in ((0.7, 0.6, 0.75), (0.0, -0.1, 0.1)):
+        data, units, periods = _persistent_log(noise)
+        fit = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0)
+        check = persistence_check(fit, units, periods)
+        assert (check.pairs, check.units) == (100 * 29, 100)
+        assert low < check.correlation < high, noise
+    assert check.p_value > 1e-3
+    data, units, periods = _persistent_log(0.7)
+    fit = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0)
+    assert persistence_check(fit, units, periods).p_value < 1e-12
+
+
+def test_the_persistence_check_pairs_a_unit_s_consecutive_periods_by_hand() -> None:
+    """Units of any sortable kind, rows in any order, and a gap: ``c``'s periods 1 and 3 make no
+    pair. Each state is read in its own units, and the units' sums of products are tested against
+    ``t(G - 1)`` with CR1's factor, each sum less its pairs' share of the total."""
+    data, _, _ = _persistent_log(0.0, units=4, periods=10)
+    fit = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0)
+    rows = 7
+    residual = np.random.default_rng(3).normal(size=(rows, 2)) * np.array([1.0, 1e6])
+    units = np.array(["b", "a", "b", "a", "b", "c", "c"])
+    periods = np.array([3, 1, 1, 2, 2, 1, 3])
+    pairs = [(1, 3), (2, 4), (4, 0)]  # (earlier row, later row): a 1-2, b 1-2, b 2-3
+    unit = np.array([units[later] for _, later in pairs])
+    scaled = residual / np.sqrt(np.mean(residual**2, axis=0))
+    products = np.array([scaled[later] @ scaled[earlier] for earlier, later in pairs])
+    earlier = np.array([scaled[row] for row, _ in pairs])
+    later = np.array([scaled[row] for _, row in pairs])
+    correlation = products.sum() / math.sqrt(np.sum(later**2) * np.sum(earlier**2))
+    sums = np.array([products[unit == name].sum() for name in ("a", "b")])
+    centred = sums - np.array([1.0, 2.0]) * products.sum() / 3.0
+    statistic = sums.sum() / math.sqrt(2.0 * np.sum(centred**2))
+    p_value = 2.0 * scipy.stats.t.sf(abs(statistic), 1)
+    for order in (np.arange(rows), np.random.default_rng(4).permutation(rows)):
+        moved = dataclasses.replace(fit, moment_residual=jnp.asarray(residual[order]))
+        check = persistence_check(moved, units[order], periods[order])
+        assert (check.pairs, check.units) == (3, 2)
+        assert check.correlation == pytest.approx(correlation, rel=1e-12, abs=0.0)
+        assert check.p_value == pytest.approx(p_value, rel=1e-10, abs=0.0)
+
+
+def test_the_persistence_check_on_units_alike_is_student_s_one_sample_t() -> None:
+    """Where every unit pairs alike, the statistic is Student's one-sample t on the units' sums,
+    exact against ``t(G - 1)`` where those sums are normal."""
+    data, units, periods = _persistent_log(0.3, units=5, periods=12)
+    fit = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0)
+    residual = np.asarray(fit.moment_residual)
+    scaled = (residual / np.sqrt(np.mean(residual**2, axis=0))).reshape(12, 5, -1)
+    sums = np.einsum("tgn,tgn->g", scaled[1:], scaled[:-1])
+    expected = float(scipy.stats.ttest_1samp(sums, 0.0).pvalue)
+    check = persistence_check(fit, units, periods)
+    assert (check.pairs, check.units) == (55, 5)
+    assert check.p_value == pytest.approx(expected, rel=1e-10, abs=0.0)
+
+
+def test_the_persistence_check_reads_each_state_in_its_own_units() -> None:
+    data, units, periods = _persistent_log(0.3, units=30, periods=12)
+    fit = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0)
+    residual = np.asarray(fit.moment_residual)
+    two = np.column_stack([residual[:, 0], np.roll(residual[:, 0], 7)])
+    one = persistence_check(
+        dataclasses.replace(fit, moment_residual=jnp.asarray(two)), units, periods
+    )
+    for scale in (1e-9, 1e9):
+        moved = dataclasses.replace(fit, moment_residual=jnp.asarray(two * np.array([1.0, scale])))
+        other = persistence_check(moved, units, periods)
+        assert other.correlation == pytest.approx(one.correlation, rel=1e-12, abs=0.0)
+        assert other.p_value == pytest.approx(one.p_value, rel=1e-10, abs=0.0)
+
+
+def test_the_persistence_check_on_one_unit_or_no_pair_reads_no_test() -> None:
+    data, _, _ = _persistent_log(0.0, units=4, periods=10)
+    fit = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0)
+    rows = np.asarray(fit.moment_residual).shape[0]
+    one = persistence_check(fit, np.zeros(rows, dtype=int), np.arange(rows))
+    assert (one.pairs, one.units) == (rows - 1, 1)
+    assert math.isfinite(one.correlation)
+    assert math.isnan(one.p_value)
+    none = persistence_check(fit, np.arange(rows), np.zeros(rows, dtype=int))
+    assert (none.pairs, none.units) == (0, 0)
+    assert math.isnan(none.correlation)
+    assert math.isnan(none.p_value)
+
+
+def test_the_persistence_check_refuses_what_it_cannot_pair() -> None:
+    data, units, periods = _persistent_log(0.0, units=4, periods=10)
+    fit = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0)
+    with pytest.raises(ValueError, match="not identified"):
+        persistence_check(dataclasses.replace(fit, moment_residual=None), units, periods)
+    with pytest.raises(ValueError, match="one each"):
+        persistence_check(fit, units[1:], periods)
+    with pytest.raises(ValueError, match="whole numbers"):
+        persistence_check(fit, units, periods.astype(float))
+    with pytest.raises(ValueError, match="two transitions starting in one period"):
+        persistence_check(fit, units, np.zeros_like(periods))
+
+
+def test_an_identified_fit_keeps_its_moment_residual_without_its_influence() -> None:
+    data, _, _ = _persistent_log(0.0, units=10, periods=10)
+    options = {"adjust_for": ("z",), "channel_degree": 0}
+    for integrator in ("euler", "rk4"):
+        lean = fit_causal_residual(_known, data, 0.1, **options, integrator=integrator)
+        full = fit_causal_residual(
+            _known, data, 0.1, **options, integrator=integrator, influence=True
+        )
+        assert lean.influence is None
+        assert lean.moment_residual is not None
+        np.testing.assert_array_equal(lean.moment_residual, full.moment_residual)
+    blind = fit_causal_residual(_known, data, 0.1, channel_degree=0)
+    assert not blind.identified
+    assert blind.moment_residual is None

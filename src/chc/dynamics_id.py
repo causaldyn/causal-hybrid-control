@@ -18,7 +18,7 @@ channel error is *second* order in nuisance error, which is exactly Results 18 (
 ``p -> 2p``) and 19 (debias every channel via cross-fit Robinson DML). This module is those
 results' missing consumer, not a new one.
 
-HONEST SCOPE, three limits worth stating before the code:
+HONEST SCOPE, four limits worth stating before the code:
 
 * Only the **channel** ``B_θ`` is interventional. ``a_θ`` is fitted on the remainder and therefore
   absorbs whatever the omitted confounder contributes to the drift in-sample, so it is an
@@ -34,11 +34,18 @@ HONEST SCOPE, three limits worth stating before the code:
   instrument identifies it only along the directions it moves the action. The estimator reports
   ``identified=False`` in both cases rather than returning a confident wrong answer -- that case
   belongs to :mod:`chc.sensitivity`, which prices the radius instead of pretending it away.
+* The premise is Markov: given ``x``, ``z`` and ``u``, a transition's noise does not depend on the
+  past. Where the noise persists within a unit and a lever persists too, the state is a common
+  effect of the past lever and the past noise, so ``E[eps | x, z, u - m]`` is not 0 and the channel
+  is biased by an amount ``channel_error`` does not cover. :func:`persistence_check` reads the
+  noise's persistence off the moment's residual; adjusting for the state, the levers and ``z`` a
+  period earlier removes the bias where the noise is AR(1) (ADR 0064).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -47,6 +54,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from numpy.typing import ArrayLike
 from scipy.optimize import brentq
 from scipy.stats import t as student_t
 
@@ -220,7 +228,8 @@ class CausalDynamicsFit:
     # :func:`omitted_confounder_bound` reads. Under ``rk4`` it goes through the fixed point, to
     # first order, as ``influence`` does.
     representer: Array | None = None
-    # (N, n), kept with ``influence``: the channel moment's residual, ``y_res - D c``, per state.
+    # (N, n), where the channel is identified: its moment's residual, ``y_res - D c``, per state,
+    # which :func:`persistence_check` reads.
     moment_residual: Array | None = None
     # (N,), each transition's cluster as a code from 0 where the fit was given ``clusters``, or
     # (N, 2) where it was given two, a code a dimension: the channel's covariance then sums each
@@ -1025,8 +1034,8 @@ def fit_causal_residual(
         influence: whether to keep each transition's influence on the fitted parameters,
             :attr:`CausalDynamicsFit.influence`, which
             :func:`chc.misspecification.misspecification_cost` reads to compare two fits of one
-            log, and beside it the channel's representer and moment residual, which
-            :func:`omitted_confounder_bound` reads. Off by default: under ``euler`` it costs a
+            log, and beside it the channel's representer, which :func:`omitted_confounder_bound`
+            reads with the moment residual. Off by default: under ``euler`` it costs a
             reverse pass per parameter rather than per channel coefficient, and it is ``N n p``
             numbers the fit then carries, and ``N n q`` more.
         clusters: each transition's cluster, ``N`` labels of any one sortable kind, at least two
@@ -1381,7 +1390,7 @@ def fit_causal_residual(
             if influence
             else None,
             representer=_representer(carry(held(u_res))[:size]) if influence else None,
-            moment_residual=score if influence else None,
+            moment_residual=score,
         )
 
     fit = fit_to((x_next - x) / dt)
@@ -1413,7 +1422,7 @@ def fit_causal_residual(
             if influence
             else None,
             representer=_representer(held(u_res)[: channel.size]) if influence else None,
-            moment_residual=score if influence else None,
+            moment_residual=score,
         )
     return dataclasses.replace(
         fit,
@@ -1622,6 +1631,93 @@ def omitted_confounder_bound(
         robustness_value=robustness,
         robustness_value_ci=robustness_ci,
     )
+
+
+@dataclass(frozen=True)
+class PersistenceCheck:
+    """Whether a fit's transition noise persists within units, read off its channel moment's
+    residual by :func:`persistence_check`. *Experimental.*
+
+    The fit's premise is Markov: given the state, the levers and the adjustment set, a transition's
+    noise does not depend on the past. Where the noise persists within a unit and a lever persists
+    too, the state is a common effect of the past lever and the past noise, so given the state this
+    period's lever and noise move together, and the channel is biased by an amount its error does
+    not cover (ADR 0064).
+    """
+
+    correlation: float  # lag-1, pooled over the pairs and the states, each state in its own units
+    p_value: float  # two-sided against none, off ``t(G - 1)``; nan below two units
+    pairs: int  # transitions whose unit's transition a period earlier is in the log
+    units: int  # ``G``: the units with a pair
+
+
+def persistence_check(
+    fit: CausalDynamicsFit, units: ArrayLike, periods: ArrayLike
+) -> PersistenceCheck:
+    """The lag-1 autocorrelation of ``fit``'s moment residual within units. *Experimental.*
+
+    ``units`` and ``periods`` label the fit's transitions, ``N`` each: the unit, of any one
+    sortable kind, and the period the transition starts in, a whole number of steps. Two
+    transitions of one unit whose periods differ by one are a pair. Each state's residual is
+    divided by its root mean square, so each state counts alike in any units. The pairs' products,
+    summed over the states, are summed within each unit before the test, since the transitions of
+    one unit need not be independent; the statistic is their total over its CR1 spread, each
+    unit's sum less its pairs' share of the total, against ``t(G - 1)`` (ADR 0062).
+
+    A rejection says the premise fails, not by how much the channel is off: that depends on how
+    far a lever persists as well (:class:`PersistenceCheck`). Adjusting the fit for the state, the
+    levers and the adjustment set a period earlier removes the bias where the noise is AR(1): on
+    panels of 200 units over 100 periods whose noise and lever are AR(0.7), a channel of 0.8 read
+    0.0130 low, 0.0007 low with them, and 0.0250 low with the state's lag alone (ADR 0064).
+
+    Raises:
+        ValueError: the fit kept no moment residual, as where its channel is not identified; the
+            labels are not one a transition; a period is not a whole number; or a unit has two
+            transitions starting in one period.
+    """
+    if fit.moment_residual is None:
+        raise ValueError("the fit kept no moment residual: its channel is not identified")
+    residual = np.asarray(fit.moment_residual, dtype=np.float64)
+    labels, steps = np.asarray(units).reshape(-1), np.asarray(periods).reshape(-1)
+    if labels.size != residual.shape[0] or steps.size != residual.shape[0]:
+        raise ValueError(
+            f"units and periods label the fit's {residual.shape[0]} transitions, one each; got "
+            f"{labels.size} and {steps.size}"
+        )
+    if not np.issubdtype(steps.dtype, np.integer):
+        raise ValueError(f"periods are whole numbers of steps; got dtype {steps.dtype}")
+    codes = np.unique(labels, return_inverse=True)[1].reshape(-1)
+    order = np.lexsort((steps, codes))
+    earlier, later = order[:-1], order[1:]
+    same = codes[earlier] == codes[later]
+    if np.any(same & (steps[earlier] == steps[later])):
+        raise ValueError("a unit has two transitions starting in one period")
+    paired = same & (steps[later] - steps[earlier] == 1)
+    earlier, later = earlier[paired], later[paired]
+    peak = np.max(np.abs(residual), axis=0)
+    live = peak > 0.0
+    scaled = residual[:, live] / peak[live]
+    scaled = scaled / np.sqrt(np.mean(scaled**2, axis=0))
+    products = np.sum(scaled[later] * scaled[earlier], axis=1)
+    pairs, count = int(products.size), int(np.unique(codes[later]).size)
+    if pairs == 0 or not np.any(live):
+        return PersistenceCheck(math.nan, math.nan, pairs, count)
+    correlation = float(
+        np.sum(products)
+        / math.sqrt(float(np.sum(scaled[later] ** 2)) * float(np.sum(scaled[earlier] ** 2)))
+    )
+    present = np.unique(codes[later])
+    sums = np.bincount(codes[later], weights=products)[present]
+    # centred, as CR1 centres a regression's scores: uncentred, the statistic stays under
+    # sqrt(G - 1), so at six units or fewer it never clears t(G - 1)'s 5 % quantile
+    centred = sums - np.bincount(codes[later])[present] * (float(np.sum(products)) / pairs)
+    spread = math.sqrt(count / (count - 1) * float(np.sum(centred**2))) if count > 1 else 0.0
+    p_value = (
+        float(2.0 * student_t.sf(abs(float(np.sum(sums))) / spread, count - 1))
+        if spread > 0.0
+        else math.nan
+    )
+    return PersistenceCheck(correlation, p_value, pairs, count)
 
 
 # --- Result 41 (A7): what a tracked log identifies, and what it does not ---

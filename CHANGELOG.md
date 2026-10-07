@@ -57,6 +57,21 @@ still change).
   the larger way alone. `omitted_confounder_bound` and `misspecification_cost` read a two-way fit's
   influence the same way, the cost off the covariance whose noise reads largest. A dimension that
   names one cluster is refused.
+- **`persistence_check` reads whether a fit's noise persists within units**, *experimental*.
+  `fit_causal_residual` takes a transition's noise to be independent of the past, given the state,
+  the levers and the adjustment set. Where the noise persists within a unit and a lever persists
+  too, the state is a common effect of the past lever and the past noise, and the channel is biased
+  by an amount its error does not cover: on panels of 200 units over 100 periods whose lever is
+  AR(0.7), noise AR(0.7) read the channel 1.6 % low and AR(0.9) 3.6 % low, 1.1 and 2.1 times the
+  estimate's spread across panels. The check reads the lag-1 autocorrelation of the channel moment's
+  residual within units, each state in its own units, and tests it against none, the units' sums at
+  CR1 against `t(G - 1)`: at 5 to 200 units over 40 periods, a 5 % test rejected 3.5 % to 4.75 % of
+  panels whose noise is fresh, and 63 % at 5 units and 99 % from 10 of those whose noise is AR(0.3).
+  `prescribe` reads it: `DecisionCertificate.noise_persistence` and `noise_persistence_p` hold the
+  correlation and the p-value, the report states them and at 5 % names noise that persists, and
+  `to_json` writes both. The schema version stays 2: keys were added, and none changed its meaning.
+  Adjusting for the state, the levers and the adjustment set a period earlier removed the bias;
+  adjusting for the state's lag alone made it 1.4 to 3.2 times as large (ADR 0064).
 
 ### Changed
 
@@ -82,6 +97,9 @@ still change).
   the channel rejected 9.75 % and 14.75 % of panels at 5 units (ADR 0053); against `t(4)`'s, 3.25 %
   and 5.75 %. The bounds widen by 30 % at 5 clusters, 11 % at 10 and 2.4 % at 40, and by 0.23 % at
   400 rows without clusters; `robustness_value_ci` moves with them (ADR 0062).
+- **An identified fit keeps its channel moment's residual**, `CausalDynamicsFit.moment_residual`,
+  with or without `influence=True`, since `persistence_check` reads it: `N` by `n` floats. A fit
+  whose channel is not identified keeps none, as before.
 
 ### Deprecated
 

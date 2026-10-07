@@ -88,17 +88,21 @@ EDGES = [
 
 
 def _logs(
-    n_units: int = 200, n_periods: int = 12, seed: int = 0, sticky: float = 0.0
+    n_units: int = 200,
+    n_periods: int = 12,
+    seed: int = 0,
+    sticky: float = 0.0,
+    persistent: float = 0.0,
 ) -> dict[str, np.ndarray]:
     """Two zones of a driver pool under one incentive, logged by a policy that chases demand, and
-    that keeps ``sticky`` of its last incentive."""
+    that keeps ``sticky`` of its last incentive; each state's noise is AR(``persistent``)."""
     rng = np.random.default_rng(seed)
     rows: dict[str, list[float]] = {
         name: [] for name in ("unit", "time", "supply", "wait", "incentive", "demand")
     }
     for unit in range(n_units):
         supply, wait = rng.normal(0.0, 0.2), rng.normal(0.0, 0.2)
-        incentive = 0.0
+        incentive = noise_supply = noise_wait = 0.0
         for period in range(n_periods):
             demand = rng.normal(0.0, 1.0)
             incentive = 0.9 * demand + sticky * incentive + rng.normal(0.0, 0.5)
@@ -112,12 +116,14 @@ def _logs(
                 -0.6 * supply + 0.3 * wait + B_TRUE * incentive + 1.5 * demand
             )
             wait_next = wait + DT * (0.25 * wait + WAIT_CHANNEL * incentive)
-            supply = supply_next + rng.normal(0.0, 0.01)
-            wait = wait_next + rng.normal(0.0, 0.01)
+            fresh = math.sqrt(1.0 - persistent**2)
+            noise_supply = persistent * noise_supply + fresh * rng.normal(0.0, 0.01)
+            noise_wait = persistent * noise_wait + fresh * rng.normal(0.0, 0.01)
+            supply, wait = supply_next + noise_supply, wait_next + noise_wait
     return {name: np.asarray(values) for name, values in rows.items()}
 
 
-def _panel(**kwargs: int) -> Panel:
+def _panel(**kwargs: float) -> Panel:
     return Panel.from_frame(_logs(**kwargs), unit="unit", time="time", seed=0)
 
 
@@ -160,6 +166,8 @@ def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
     panel = _panel()
     result = _prescribe(panel, graph)
     assert result.certificate.identification == "not_identified"
+    assert result.certificate.noise_persistence is None
+    assert "- noise persistence: not read, the channel is not identified" in result.report()
     # where the plan would have started
     assert result.start == _panel_start(panel, ("supply", "wait"))[1]
     assert result.plan is None
@@ -2336,3 +2344,33 @@ def test_the_episodes_read_a_column_as_numbers_only_where_it_holds_them() -> Non
         match=r"column 'incentive' is '.+' for unit np\.int64\(0\) at time np\.int64\(0\): type",
     ):
         _episodes(panel, states=("supply",), levers=("incentive",), horizon=2, time_zero="unit")
+
+
+def test_the_certificate_names_noise_that_persists_within_units() -> None:
+    """Each zone's noise AR(0.8) under an incentive that keeps 0.7 of its last value: the state is
+    a common effect of the past incentive and the past noise, so the certificate reads the noise's
+    persistence off the moment's residual, and the report names it. Drawn afresh, it reads none."""
+    graph = CausalGraph.from_edges(EDGES)
+    persistent = _prescribe(_panel(sticky=0.7, persistent=0.8), graph)
+    certificate = persistent.certificate
+    assert certificate.noise_persistence is not None
+    assert certificate.noise_persistence > 0.5
+    assert certificate.noise_persistence_p is not None
+    assert certificate.noise_persistence_p < 1e-6
+    (line,) = [line for line in persistent.report().splitlines() if "noise persistence" in line]
+    assert line.startswith("- noise persistence: **the noise persists within units** (lag-1")
+    record = persistent.to_json()["certificate"]
+    assert record["noise_persistence"] == certificate.noise_persistence
+    assert record["noise_persistence_p"] == certificate.noise_persistence_p
+    fresh = _prescribe(_panel(sticky=0.7), graph).certificate
+    assert fresh.noise_persistence is not None
+    assert abs(fresh.noise_persistence) < 0.1
+
+
+def test_a_panel_of_one_unit_reads_the_noise_s_persistence_untested() -> None:
+    result = _prescribe(_panel(n_units=1, n_periods=200), CausalGraph.from_edges(EDGES))
+    certificate = result.certificate
+    assert certificate.noise_persistence is not None
+    assert certificate.noise_persistence_p is None
+    assert "within units, not tested on one unit" in result.report()
+    assert result.to_json()["certificate"]["noise_persistence_p"] is None

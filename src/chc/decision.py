@@ -67,6 +67,7 @@ from chc.dynamics_id import (
     _standardised,
     _unmoved_actions,
     fit_causal_residual,
+    persistence_check,
 )
 from chc.evaluation import (
     AffinePolicy,
@@ -382,6 +383,13 @@ class DecisionCertificate:
     error_clustered_by: str | None = None
     error_clusters: int | None = None
     error_periods: int | None = None
+    # The lag-1 autocorrelation of the channel moment's residual within units, and its two-sided
+    # p-value (:func:`chc.dynamics_id.persistence_check`): where the noise persists and a lever does
+    # too, the channel is biased by an amount its error does not cover (ADR 0064). None where the
+    # channel is not identified or no unit has two consecutive transitions; the p-value is None on
+    # one unit as well.
+    noise_persistence: float | None = None
+    noise_persistence_p: float | None = None
     # Whether the log determines the plan's predicted path (:data:`Estimability`, ADR 0054); None
     # where the effect is not identified and nothing was asked of the log's actions.
     estimability: Estimability | None = None
@@ -934,6 +942,7 @@ class Prescription:
             + self._error_grouping(),
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
             self._logger_line(),
+            self._persistence_line(),
             f"- error tube: **{certificate.certificate_status}**, "
             f"certified horizon {_show(certificate.certified_horizon)}"
             + ("" if certificate.tube_rate is None else f", {certificate.tube_rate} rate"),
@@ -1006,6 +1015,8 @@ class Prescription:
                 "error_clustered_by": certificate.error_clustered_by,
                 "error_clusters": certificate.error_clusters,
                 "error_periods": certificate.error_periods,
+                "noise_persistence": certificate.noise_persistence,
+                "noise_persistence_p": certificate.noise_persistence_p,
                 "estimability": certificate.estimability,
                 "identification_rank": certificate.identification_rank,
                 "unmoved_directions": certificate.unmoved_directions,
@@ -1080,6 +1091,25 @@ class Prescription:
         return (
             f"{grouped}, within each of {certificate.error_periods} periods, and within both, "
             "whichever reads largest (two-way CR1)"
+        )
+
+    def _persistence_line(self) -> str:
+        certificate = self.certificate
+        correlation, p_value = certificate.noise_persistence, certificate.noise_persistence_p
+        if correlation is None:
+            if certificate.identification == "not_identified":
+                return "- noise persistence: not read, the channel is not identified"
+            return "- noise persistence: not read, no unit has two consecutive transitions"
+        head = f"lag-1 autocorrelation {correlation:+.2f} within units"
+        if p_value is None:
+            return f"- noise persistence: {head}, not tested on one unit"
+        if p_value > _PERSISTENCE_ALPHA:
+            return f"- noise persistence: {head} (p = {p_value:.3g})"
+        return (
+            f"- noise persistence: **the noise persists within units** ({head}, "
+            f"p = {p_value:.3g}): where a lever persists too, the channel is biased by an amount "
+            "its error does not cover; adjust for the states, the levers and the adjustment set "
+            "a period earlier"
         )
 
     def _logger_line(self) -> str:
@@ -1459,7 +1489,7 @@ def prescribe(
         adjust_for=resolved.covariates,
         drivers=driver_names,
     )
-    groups, periods = (int(np.unique(column).size) for column in labels.T)
+    groups, periods = (int(np.unique(column).size) for column in labels[:, :2].T)
     clustered_by = (panel.cluster or panel.unit) if groups > 1 else None
     two_way = clustered_by is not None and periods > 1
     n_states, n_levers = len(states), len(lever_names)
@@ -1475,7 +1505,7 @@ def prescribe(
         seed=seed,
         integrator=integrator,
         drivers=driver_names,
-        clusters=None if clustered_by is None else labels if two_way else labels[:, 0],
+        clusters=None if clustered_by is None else labels[:, :2] if two_way else labels[:, 0],
         nuisance_degree=_NUISANCE_DEGREE,
         ridge=_RIDGE,
     )
@@ -1520,6 +1550,11 @@ def prescribe(
         tolerance=None if tolerance is None else float(tolerance),
         hold_constraints=bool(hold_constraints),
         max_levers=None if max_levers is None else int(max_levers),
+    )
+    persistence = (
+        None
+        if fit.moment_residual is None
+        else persistence_check(fit, units=labels[:, 2], periods=labels[:, 1])
     )
     identification: IdentificationStatus = (
         "not_identified"
@@ -1839,6 +1874,8 @@ def prescribe(
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
         error_periods=periods if two_way else None,
+        noise_persistence=None if persistence is None else _finite(persistence.correlation),
+        noise_persistence_p=None if persistence is None else _finite(persistence.p_value),
         estimability=estimability,
         identification_rank=rank,
         unmoved_directions=per_state,
@@ -2201,8 +2238,9 @@ def _transitions(
 ) -> tuple[dict[str, Array], NDArray[Any]]:
     """``(x, u, x_next)`` over consecutive periods within a unit, plus the adjustment columns, and
     each driver at both ends of the transition (``name`` and ``f"{name}_next"``); beside them, two
-    labels a transition, ``(N, 2)`` codes: its cluster, the panel's cluster column at its first
-    period where the panel declares one and its unit where not, and the period it starts in.
+    labels a transition, ``(N, 3)`` codes: its cluster, the panel's cluster column at its first
+    period where the panel declares one and its unit where not, the period it starts in, in steps,
+    and its unit.
 
     Gaps are dropped, not interpolated: a unit missing period ``t`` contributes the transitions on
     either side of the hole and nothing across it, and so does a period no unit logged, where the
@@ -2260,7 +2298,9 @@ def _transitions(
         if panel.cluster is None
         else np.unique(np.asarray(panel[panel.cluster]), return_inverse=True)[1].reshape(-1)
     )
-    return data, np.column_stack([cluster[current], time_codes[current]]).astype(np.int64)
+    return data, np.column_stack(
+        [cluster[current], time_codes[current], unit_codes[current]]
+    ).astype(np.int64)
 
 
 def _stacked(panel: Panel, names: tuple[str, ...], rows: NDArray[np.int64]) -> Array:
@@ -2301,6 +2341,7 @@ _LOGGER_CHECK_DEGREE = 2
 # log's actions are read against (ADR 0054).
 _NUISANCE_DEGREE = 2
 _LOGGER_CHECK_ALPHA = 0.05  # the level at which a check is logged as a warning
+_PERSISTENCE_ALPHA = 0.05  # the level at which the report names the noise's persistence
 # The fit's ridge and each descent's budget of steps, the fit's and the planner's defaults, passed
 # by name so that the run's record holds what the calls were given (ADR 0063).
 _RIDGE = 1e-6
@@ -2323,6 +2364,10 @@ def _versions() -> tuple[tuple[str, str], ...]:
         except metadata.PackageNotFoundError:
             found.append((name, "unknown"))
     return tuple(found)
+
+
+def _finite(value: float) -> float | None:
+    return value if math.isfinite(value) else None
 
 
 def _readable(panel: Panel, name: str) -> bool:

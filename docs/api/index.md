@@ -64,12 +64,13 @@ on the zone plant, for the response curves `response` in the plans they warm-sta
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
 any release. Pin an exact version if you depend on one.
 
-Twenty-seven entries in modules of other tiers are experimental on the same terms, for the same
+Thirty-two entries in modules of other tiers are experimental on the same terms, for the same
 reason:
 the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its `influence` argument
-with the fields it keeps, the `unmoved`, `instrument_relevance` and `instrument_rank` fields of
-`CausalDynamicsFit`, and `omitted_confounder_bound` and `OmittedConfounderBound` in
-`chc.dynamics_id`,
+with the fields it keeps, the `unmoved`, `moment_residual`, `instrument_relevance` and
+`instrument_rank` fields of `CausalDynamicsFit`, `omitted_confounder_bound`,
+`OmittedConfounderBound`, `persistence_check` and `PersistenceCheck` in `chc.dynamics_id`, the
+`noise_persistence` and `noise_persistence_p` fields of `DecisionCertificate` in `chc.decision`,
 `callaway_santanna_inference` and `EventStudyInference` in `chc.did`, `synthetic_control_inference`
 and `SyntheticControlInference` in `chc.scm`, `gcm_test` and `GcmTest` in `chc.independence`,
 `LoggerCheck` in `chc.evaluation`, the `logger_check` field of `Prescription` and `PlanEvaluation`,

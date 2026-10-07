@@ -1,0 +1,63 @@
+/* What persistent noise does to the fitted channel when the lever persists too.
+   Plant, one state and one lever:  x' = phi x + dt (b u + g z) + e,  u = a + k z,
+   a ~ AR(ru) with spread sa, e ~ AR(re) with spread se, z i.i.d. N(0, 1), all three independent.
+   The fit regresses the rate (x' - x)/dt on u, adjusting for x and z, so the channel's limit is
+   b + Cov(u~, e) / (dt Var(u~)), u~ = u - L(u | x, z). z is drawn afresh and is independent of a
+   and of x, so L(u | x, z) = k z + Cov(a, x)/Var(x) x and u~ = a - Cov(a, x)/Var(x) x.
+   Every moment below is the stationary one. Read by ADR 0064 and scripts/bench_persistent_noise.py. */
+display2d : false$
+
+/* STEP 1. The moments, as the sums they are: x_t = sum_{j>=1} phi^(j-1) w_{t-j}, w = dt b a +
+   dt (g + b k) z + e. Each sum is geometric; checked over N terms, whose remainder (phi r)^N goes to
+   0 as N grows, since |phi r| < 1. */
+geometric : sum(phi^(j-1)*r^j, j, 1, N), simpsum$
+if ratsimp((1 - phi*r)*geometric - r*(1 - (phi*r)^N)) # 0 then error("STEP 1: the lag sum")$
+/* Cov(a_t, x_t) = dt b sum_j phi^(j-1) Cov(a_t, a_{t-j}), Cov(x_t, e_t) = sum_j phi^(j-1) Cov(e_{t-j}, e_t) */
+cax : dt*b*sa^2*ru/(1 - phi*ru)$
+cxe : se^2*re/(1 - phi*re)$
+/* Var(x) of an AR(phi) driven by w: (gw(0) + 2 sum_h phi^h gw(h)) / (1 - phi^2); an AR(r) part of
+   variance v contributes v (1 + phi r)/(1 - phi r), an i.i.d. one its variance. */
+spectral : 1 + 2*sum(phi^h*r^h, h, 1, N), simpsum$
+if ratsimp((1 - phi*r)*spectral - ((1 + phi*r) - 2*(phi*r)^(N + 1))) # 0 then
+  error("STEP 1: an AR part's variance")$
+vx : ((dt*b)^2*sa^2*(1 + phi*ru)/(1 - phi*ru) + (dt*(g + b*k))^2 + se^2*(1 + phi*re)/(1 - phi*re))
+     / (1 - phi^2)$
+print("STEP 1 Cov(a, x) =", cax, "  Cov(x, e) =", cxe)$
+
+/* STEP 2. The bias. Cov(u~, e) = Cov(a, e) - Cov(a, x)/Var(x) Cov(x, e), and a is independent of e.
+   It is nothing where the noise does not persist, where the lever does not, or where the channel
+   is 0 and the lever does not move the state. Where b ru > 0 its sign is the opposite of re's:
+   Cov(a, x) has b ru's sign, Cov(x, e) re's, and dt, Var(x) and Var(u~) are positive. */
+vu : sa^2 - cax^2/vx$
+bias : -cax*cxe/(dt*vx*vu)$
+for zero in [re = 0, ru = 0, b = 0] do (
+  if ratsimp(ev(bias, zero)) # 0 then error("STEP 2: the bias is not nothing at", zero),
+  print("STEP 2 the bias at", zero, "is 0"))$
+
+/* STEP 3. At the bench's plant: phi 0.95, dt 0.1, b 0.8, g 1.5, k 0.9, sa 0.5, se 0.05, ru 0.7. */
+at_bench : [phi = 19/20, dt = 1/10, b = 4/5, g = 3/2, k = 9/10, sa = 1/2, se = 1/20, ru = 7/10]$
+persistences : [0, 3/10, 7/10, 9/10]$
+expected : [0.0, -0.0028005, -0.0123428, -0.0285649]$
+for i thru 4 do (
+  got : float(ev(bias, at_bench, re = persistences[i])),
+  print("STEP 3 re =", persistences[i], " bias =", got, " share of the channel =", got/0.8),
+  if abs(got - expected[i]) > 5e-8 then error("STEP 3: the bias moved at re =", persistences[i]))$
+
+/* STEP 4. Adjusting for the state, the lever and z a period earlier as well. Write every variable
+   in [x_{t-1}, a_{t-1}, e_{t-1}, z_{t-1}, z_t], which may correlate among themselves, and the
+   innovations n_a = a_t - ru a_{t-1} and n_e = e_t - re e_{t-1}, independent of all five and of each
+   other. The set S = [x_t, z_t, x_{t-1}, u_{t-1}, z_{t-1}] is that basis through M below: where M is
+   invertible, S spans the five, so u_t less its projection on S is n_a, e_t less its projection is
+   n_e, and their covariance, the bias's numerator, is 0. */
+M : matrix([phi, dt*b, 1, dt*(b*k + g), 0],
+           [0, 0, 0, 0, 1],
+           [1, 0, 0, 0, 0],
+           [0, 1, 0, k, 0],
+           [0, 0, 0, 1, 0])$
+if ratsimp(determinant(M)) = 0 then error("STEP 4: the lags do not span the past noise")$
+print("STEP 4 det M =", ratsimp(determinant(M)), "(not 0: the lags pin e_{t-1}, the bias is 0)")$
+/* The state's lag alone, S' = [x_t, z_t, x_{t-1}], spans three of the five, and e_{t-1} is not
+   among them: the collider stays. */
+Mx : matrix([phi, dt*b, 1, dt*(b*k + g), 0], [0, 0, 0, 0, 1], [1, 0, 0, 0, 0])$
+if rank(addrow(Mx, [0, 0, 1, 0, 0])) # rank(Mx) + 1 then error("STEP 4: the state's lag pins e_{t-1}")$
+print("STEP 4 the state's lag alone spans", rank(Mx), "of 5, without e_{t-1}")$
