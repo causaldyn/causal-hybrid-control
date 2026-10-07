@@ -121,9 +121,10 @@ What it printed when this site was built:
 --8<-- "docs/output/expert_path.txt"
 ```
 
-Each step starts from the last plan and the barrier's multipliers, shifted one step on: 35 % fewer
+Each step starts from the last plan and the barrier's multipliers, shifted one step on: 30 % fewer
 descent steps than cold solves on an oscillator's velocity floor, for the same closed-loop cost to
-`2e-6` (ADR 0003, [receding-horizon warm starts](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0003-receding-horizon-warm-starts.md)).
+`1e-6` (ADR 0003, [receding-horizon warm starts](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0003-receding-horizon-warm-starts.md),
+measured again for the scaled descent in [ADR 0059](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0059-the-planner-reads-the-problem-in-any-units.md)).
 A program compiles the first time a step needs it and is reused after, so steps stop compiling as
 long as the model, the cost and the barrier's function stay the same objects: a new `lambda` per
 step compiles the descent per step. For a process that restarts, set `jax_compilation_cache_dir`

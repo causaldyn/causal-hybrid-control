@@ -6,9 +6,12 @@ every iterate stays feasible; see ``docs/adr/0001-linear-action-constraints.md``
 
 Both minimise the same Bolza objective from the same discrete adjoint
 (:func:`chc.adjoint.control_gradient_adjoint`); they differ only in how they use it.
-:func:`projected_gradient_control` takes backtracked steepest-descent steps, which is monotone and
-dependency-free but first-order, so an ill-conditioned instance needs *many* of them -- thousands,
-not hundreds. Its ``steps`` is therefore a cap rather than a bill: the descent runs inside one
+:func:`projected_gradient_control` takes backtracked steepest-descent steps in variables scaled
+action by action, so it plans a problem the same in any units of its levers and of its cost
+(``docs/adr/0059-the-planner-reads-the-problem-in-any-units.md``). It is monotone and
+dependency-free but first-order: the scale is a diagonal, one number per action, so an instance
+whose actions act on the cost together still needs *many* steps -- thousands, not hundreds. Its
+``steps`` is therefore a cap rather than a bill: the descent runs inside one
 compiled program that stops the moment the line search fails, so an unused step costs nothing and
 the default is loose enough for the stopping rule to decide. :func:`lbfgs_box_control` hands the
 same gradient to SciPy's L-BFGS-B, which curves the step with a limited-memory secant
@@ -34,12 +37,13 @@ from scipy.optimize import linprog, minimize
 from chc.adjoint import control_gradient_adjoint
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics
+from chc.integrate import rk4_step, rollout
 from chc.residual import MLPResidual, ZeroResidual
 
 _MAX_BACKTRACK = 40
 _MAX_SWEEPS = 4_096  # Dykstra sweeps per projection, a multiple of the polishing period
 _POLISH_EVERY = 32  # sweeps between attempts to finish a projection by the active-set polish
-_ACTIVE_SET_STEPS = 16  # dual active-set steps per polishing attempt
+_ACTIVE_SET_STEPS = 16  # least dual active-set steps per polishing attempt
 
 Bound = float | Array
 """One side of the action box: a scalar shared by every lever, or a per-lever array.
@@ -187,7 +191,12 @@ Duals = tuple[Array, tuple[Array, ...]]
 
 
 def _constraint_blocks(
-    constraints: Sequence[LinearConstraint], lo: Array, hi: Array, dtype: Any
+    constraints: Sequence[LinearConstraint],
+    lo: Array,
+    hi: Array,
+    dtype: Any,
+    *,
+    disjoint: bool = False,
 ) -> Blocks:
     """Stack, check and colour the rows; ``()`` means the box alone and the old code path.
 
@@ -195,6 +204,11 @@ def _constraint_blocks(
     exactly, since orthogonal normals do not interact -- and a sweep costs one matrix-vector product
     per class rather than one sequential update per row. A rate band on a chain needs two classes
     (even and odd steps); a budget row of ones is orthogonal to every difference row and joins one.
+
+    ``disjoint`` puts two rows in one class only where no action enters both, which keeps them
+    orthogonal however each column is rescaled, as the projected gradient's change of variables
+    does. A budget row then takes a class of its own, and ``(1, 1)`` and ``(1, -1)`` over two
+    levers, orthogonal only in sum, take one each.
 
     Raises:
         ValueError: if a constraint's width is not the flattened action size, or if no action
@@ -235,7 +249,10 @@ def _constraint_blocks(
             f"no action sequence satisfies both the box and the {matrix.shape[0]} constraint rows"
         )
 
-    overlaps = np.abs(matrix @ matrix.T) > 0.0
+    if disjoint:
+        overlaps = (np.abs(matrix) @ np.abs(matrix).T) > 0.0
+    else:
+        overlaps = np.abs(matrix @ matrix.T) > 0.0
     classes: list[list[int]] = []
     blocked: list[NDArray[np.bool_]] = []
     for row in range(matrix.shape[0]):
@@ -274,7 +291,7 @@ def _polish(
     blocks: Blocks,
     duals: Duals,
     tolerance: Array,
-    steps: int = _ACTIVE_SET_STEPS,
+    steps: int | None = None,
 ) -> tuple[Array, Array, Duals]:
     """Finish the projection with a dual active-set method started from Dykstra's increments.
 
@@ -298,7 +315,11 @@ def _polish(
     The result is kept only if it passes the projection's KKT conditions -- primal feasibility and
     the right sign on every multiplier -- which for this strictly convex problem make it the
     projection; otherwise Dykstra carries on. Each step is one ``O(p^3)`` solve in the number of
-    constraint rows, and there are at most ``steps``.
+    constraint rows, and there are at most ``steps``: by default two for each coordinate and one for
+    each row, and never fewer than 16. A step releases or catches one constraint at a time, so from
+    a point far outside the box, every coordinate pinned to a side, a coordinate the projection
+    takes to the other side needs a step to leave the first and one to be caught at the second.
+    Dykstra itself creeps there: its row multipliers grow by a sliver of the box per sweep.
     """
     _, multipliers = duals  # the box's sides are read off the pull the row multipliers leave
     rows = jnp.concatenate([block[0] for block in blocks])
@@ -308,6 +329,7 @@ def _polish(
     root = jnp.sqrt(norms)
     two_sided = lower < upper
     ridge = 256 * jnp.finfo(y.dtype).eps * norms
+    budget = max(_ACTIVE_SET_STEPS, 2 * y.size + rows.shape[0]) if steps is None else steps
 
     def point(box_side: Array, nu: Array) -> tuple[Array, Array, Array]:
         pull = y - rows.T @ nu
@@ -318,7 +340,7 @@ def _polish(
 
     def unsettled(state: State) -> Array:
         *_, count, settled = state
-        return ~settled & (count < steps)
+        return ~settled & (count < budget)
 
     def step(state: State) -> State:
         row_side, box_side, nu, count, _ = state
@@ -391,6 +413,12 @@ def _polish(
     return kkt, x, (pull - x, tuple(jnp.split(nu, sizes)))
 
 
+def _projection_tolerance(y: Array) -> Array:
+    """How closely :func:`_dykstra`, projecting ``y``, holds each side of the box, and each row's
+    level to this times the row's norm."""
+    return 256 * jnp.finfo(y.dtype).eps * (1 + jnp.max(jnp.abs(y)))
+
+
 def _dykstra(y: Array, lo: Array, hi: Array, blocks: Blocks, duals: Duals) -> tuple[Array, Duals]:
     """Euclidean projection of flat ``y`` onto ``box ∩ blocks``, warm-started from ``duals``.
 
@@ -418,7 +446,7 @@ def _dykstra(y: Array, lo: Array, hi: Array, blocks: Blocks, duals: Duals) -> tu
     x = y - box_increment
     for (rows, *_), nu in zip(blocks, multipliers, strict=True):
         x = x - rows.T @ nu
-    tolerance = 256 * jnp.finfo(y.dtype).eps * (1 + jnp.max(jnp.abs(y)))
+    tolerance = _projection_tolerance(y)
 
     def unsettled(state: tuple[Array, Array, tuple[Array, ...], Array, Array]) -> Array:
         _, _, _, count, change = state
@@ -488,22 +516,67 @@ def _polytope_stationarity(
     return float(jnp.linalg.norm(us.ravel() - projected))
 
 
+def _unresolved(
+    start: Array, end: Array, lo: Array, hi: Array, blocks: Blocks, tolerance: Array
+) -> Array:
+    """Whether the move from ``start`` to ``end``, both flat, is the projection's error rather than
+    a step: within ``tolerance`` of a move only across the sides and rows held at both ends.
+
+    :func:`_dykstra` holds each side and row to ``tolerance`` (:func:`_projection_tolerance`), but
+    that keeps a projection as near the exact one only where the constraints pinning it meet square
+    on. A row that meets a side of the box at an angle ``a`` holds a point on that side to
+    ``tolerance / sin(a)`` along it. A row with weights ``1.03`` and ``-0.046`` on two actions, the
+    first pinned at zero by its box, left the second at ``1.1e-12``, ten times the tolerance, where
+    the projection is ``0``. Such a move keeps every constraint where it was, so whatever it lowers
+    the cost by, it lowers it by breaking them by rounding. A move along a held constraint, or onto
+    or off one, is a step.
+    """
+    held = ((start <= lo) & (end <= lo + tolerance)) | ((start >= hi) & (end >= hi - tolerance))
+    rows = jnp.concatenate([block[0] for block in blocks])
+    lower = jnp.concatenate([block[1] for block in blocks])
+    upper = jnp.concatenate([block[2] for block in blocks])
+    norms = jnp.concatenate([block[3] for block in blocks])
+    slack = tolerance * jnp.sqrt(norms)
+    before, after = rows @ start, rows @ end
+
+    def at(bound: Array) -> Array:
+        return (jnp.abs(before - bound) <= slack) & (jnp.abs(after - bound) <= slack)
+
+    kept = at(lower) | at(upper)
+    move = jnp.where(held, 0.0, end - start)
+    normals = jnp.where(kept[:, None] & ~held[None, :], rows, 0.0)
+    ridge = jnp.where(kept, 256 * jnp.finfo(move.dtype).eps * norms, 1.0)
+    across = normals.T @ jnp.linalg.solve(normals @ normals.T + jnp.diag(ridge), normals @ move)
+    return jnp.max(jnp.abs(move - across)) <= tolerance
+
+
 def _backtrack(
     us: Array,
     current: Array,
     grad: Array,
     u_lo: Array,
     u_hi: Array,
-    lr0: float,
-    tol: float,
+    lr0: float | Array,
+    tol: float | Array,
     value_of: Callable[[Array], Array],
     blocks: Blocks,
     duals: Duals,
+    *,
+    resolve: bool = False,
 ) -> tuple[Array, Array, Array, Duals]:
-    """Halve the step until it strictly decreases ``value_of``; report whether one ever did.
+    """Halve the step until it decreases ``value_of`` by more than ``tol``; report whether one did.
+
+    ``lr0`` and ``tol`` are taken as given, in the units of ``us`` and of ``value_of``: the
+    projected gradient hands in its own, scaled (:func:`_action_units`), and the penalised descent
+    of :mod:`chc.support` its defaults, in the caller's units.
 
     With constraint ``blocks`` every trial is projected by Dykstra, starting from the ``duals`` of
     the current iterate, and the accepted trial's duals are handed back to warm-start the next step.
+    With ``resolve`` as well, a trial that moves ``us`` by the projection's error alone
+    (:func:`_unresolved`) ends the search with no step, whatever the cost reads there: a relative
+    ``tol`` is fine enough to count the fall such a trial buys by breaking the constraints by
+    rounding. No shorter step moves further, since a projected step lengthens with the step
+    (Calamai & Moré 1987).
     """
 
     def searching(state: tuple[Array, Array, Array, Array, Array, Duals]) -> Array:
@@ -534,7 +607,15 @@ def _backtrack(
             candidate = jnp.clip(us - lr * grad, u_lo, u_hi).astype(us.dtype)
             trial_duals = duals
         value = value_of(candidate)
-        return trial + 1, lr * 0.5, candidate, value, value < current - tol, trial_duals
+        accepted = value < current - tol
+        if not (resolve and blocks):
+            return trial + 1, lr * 0.5, candidate, value, accepted, trial_duals
+        tolerance = _projection_tolerance((us - lr * grad).astype(us.dtype))
+        still = _unresolved(
+            us.ravel(), candidate.ravel(), u_lo.ravel(), u_hi.ravel(), blocks, tolerance
+        )
+        ended = jnp.where(still, _MAX_BACKTRACK, trial + 1)
+        return ended, lr * 0.5, candidate, value, accepted & ~still, trial_duals
 
     _, _, candidate, value, accepted, trial_duals = jax.lax.while_loop(
         searching,
@@ -543,6 +624,70 @@ def _backtrack(
     )
     kept = jax.tree.map(lambda new, old: jnp.where(accepted, new, old), trial_duals, duals)
     return jnp.where(accepted, candidate, us), jnp.where(accepted, value, current), accepted, kept
+
+
+def _action_units(
+    dyn: Dynamics, x0: Array, us: Array, dt: float, cost: QuadraticCost, u_lo: Array, u_hi: Array
+) -> tuple[Array, Array, Array]:
+    """``(sigma, scale, level)``: the descent's variables ``v = sigma * u``, one factor per action,
+    and the cost at ``us`` that they and the stopping rule are measured against.
+
+    ``sigma_kj^2`` is the cost's curvature along lever ``j`` at step ``k`` alone, over
+    ``scale = |J(us)|``. The lever in units ``s`` times larger moves that curvature by ``1 / s^2``,
+    so ``sigma_kj u_kj`` is the same number in any units of the lever, and the cost in other units
+    moves the curvature and ``scale`` alike, so ``v`` is a pure number. The descent in ``v`` is then
+    the same iteration in any units, and a unit step in ``v`` is the Newton step along each action
+    alone: Jacobi's diagonal scaling.
+
+    The curvature is the Gauss-Newton one, the cost's second derivative along the rollout's
+    first-order answer to the action: ``R_jj + b' P_{k+1} b``, where ``b`` is the action's column of
+    step ``k``'s Jacobian and ``P`` weighs the states after the step, ``P_H = Qf`` and
+    ``P_k = Q + A_k' P_{k+1} A_k`` -- one backward pass over the steps' Jacobians. With ``Q`` and
+    ``Qf`` positive semidefinite it is ``R_jj`` plus a square, so a non-convex plant never reads as
+    a negative step; on a plant affine in the state and the action it is the Hessian's diagonal
+    itself. Where it is not a positive normal number -- an action the cost neither charges for nor
+    feels at ``us`` at first order, or a rollout that left the float range -- ``sigma_kj`` is the
+    inverse of the action's box side, so that a unit step crosses the box, which moves with the
+    lever's units as the curvature does; with no finite side it is 1, which does not.
+
+    ``scale`` is 1 where ``J(us)`` is zero or not finite, so ``v`` stays defined; ``level`` is
+    ``|J(us)|`` where it is finite and 0 otherwise, so that a zero cost at the start takes any
+    strict decrease, and an infinite one any finite value.
+    """
+    cost_at = total_cost(dyn, x0, us, dt, cost)
+    level = jnp.where(jnp.isfinite(cost_at), jnp.abs(cost_at), 0.0)
+    scale = jnp.where(level > 0.0, level, 1.0)
+    states = rollout(dyn, x0, us, dt)
+
+    def linearised(t: Array, step: tuple[Array, Array]) -> tuple[Array, tuple[Array, Array]]:
+        x, u = step
+        # Reverse mode, as the adjoint's: a plant with a reverse rule only, a ``jax.custom_vjp``
+        # such as :func:`chc.games.fixed_point`, has no forward one, and would not plan.
+        return t + dt, jax.jacobian(lambda y, a: rk4_step(dyn, t, y, a, dt), (0, 1))(x, u)
+
+    _, (a, b) = jax.lax.scan(linearised, jnp.asarray(0.0), (states[:-1], us))
+
+    def felt(ahead: Array, step: tuple[Array, Array]) -> tuple[Array, Array]:
+        a_k, b_k = step
+        return cost.Q + a_k.T @ ahead @ a_k, jnp.einsum("im,ij,jm->m", b_k, ahead, b_k)
+
+    terminal = cost.Qf.astype(jnp.result_type(cost.Q, cost.Qf, a))
+    _, through_states = jax.lax.scan(felt, terminal, (a, b), reverse=True)
+    curvature = jnp.diagonal(cost.R) + through_states
+    by_curvature = jnp.sqrt(curvature / scale).astype(us.dtype)
+    by_box = (1.0 / (u_hi - u_lo)).astype(us.dtype)
+
+    def usable(factor: Array) -> Array:
+        # Normal numbers only: XLA on the CPU flushes a subnormal to zero, and a backend that kept
+        # one would lose the actions' digits in ``u * sigma``.
+        return jnp.isfinite(factor) & (factor >= jnp.finfo(us.dtype).tiny)
+
+    sigma = jnp.where(
+        usable(by_curvature),
+        by_curvature,
+        jnp.where(usable(by_box), by_box, jnp.ones_like(by_box)),
+    )
+    return sigma, scale, level
 
 
 @eqx.filter_jit
@@ -558,6 +703,7 @@ def _projected_gradient_loop(
     lr0: float,
     tol: float,
     blocks: Blocks = (),
+    scaled: bool = True,
 ) -> tuple[Array, Array, Array]:
     """The whole descent as one XLA program, outer ``while_loop`` and inner ``while_loop``.
 
@@ -574,14 +720,49 @@ def _projected_gradient_loop(
     With constraint ``blocks`` the initial guess and every trial step are projected onto
     ``box ∩ constraints`` instead of clipped, and Dykstra's duals ride in the carry so each
     projection starts from the last accepted one's; without them the program is the box-only one.
+    A trial the projection moves off the iterate by its own error alone is not a step
+    (:func:`_backtrack`'s ``resolve``), so a descent from a point the constraints pin stays on it.
+
+    The steps are taken in the variables ``v = sigma * u`` of :func:`_action_units`, read off the
+    guess clipped to the box, which is the projection in any metric that scales the actions: the
+    box, the rows and the gradient are taken into ``v``, the line search starts at ``lr0`` Newton
+    steps, and a step counts where it lowers the cost by more than ``tol`` times the cost at that
+    guess. The projection is Euclidean in ``v``. A step scaled action by action and then projected
+    in the caller's units would stop at points that are not stationary; projected in ``v`` it stops
+    exactly at the problem's KKT points, which are the same in either variables. ``blocks`` must be
+    coloured ``disjoint``, so their classes stay orthogonal in ``v``.
+
+    The iterate itself is carried in the caller's units. A trial is read back from ``v`` with every
+    action that ``v`` puts on a side of its box set to the side itself, since ``v / sigma`` can
+    round off it: a plan on its box lies on it exactly, and a descent that takes no step returns
+    its start bit for bit. ``scaled=False`` is the descent in the caller's units, ``sigma`` being 1:
+    ``lr0`` a step in action units per unit of gradient, ``tol`` a fall in the cost's own units.
     """
+    start = project_box(us0, u_lo, u_hi)
+    if scaled:
+        sigma, scale, level = _action_units(dyn, x0, start, dt, cost, u_lo, u_hi)
+        across = sigma.ravel()  # lever j at step k is column k * m + j, as in the rows
+        blocks = tuple(
+            (rows / across, lower, upper, jnp.sum((rows / across) ** 2, axis=1))
+            for rows, lower, upper, _ in blocks
+        )
+    else:
+        sigma, scale, level = jnp.ones_like(start), 1.0, 1.0
+    lo, hi = u_lo * sigma, u_hi * sigma
+
+    def actions_of(vs: Array) -> Array:
+        return jnp.where(
+            vs <= lo, u_lo, jnp.where(vs >= hi, u_hi, jnp.clip(vs / sigma, u_lo, u_hi))
+        )
+
+    def value_of(vs: Array) -> Array:
+        return total_cost(dyn, x0, actions_of(vs), dt, cost)
+
     duals = _no_duals(us0.size, blocks, us0.dtype)
     if blocks:
-        flat, duals = _dykstra(us0.ravel(), u_lo.ravel(), u_hi.ravel(), blocks, duals)
-        us = flat.reshape(us0.shape)
-    else:
-        us = project_box(us0, u_lo, u_hi)
-    initial = total_cost(dyn, x0, us, dt, cost)
+        flat, duals = _dykstra((us0 * sigma).ravel(), lo.ravel(), hi.ravel(), blocks, duals)
+        start = actions_of(flat.reshape(us0.shape))
+    initial = total_cost(dyn, x0, start, dt, cost)
     values = jnp.zeros((steps + 1,), dtype=initial.dtype).at[0].set(initial)
 
     def descending(carry: tuple[Array, Array, Array, Array, Array, Duals]) -> Array:
@@ -592,26 +773,28 @@ def _projected_gradient_loop(
         carry: tuple[Array, Array, Array, Array, Array, Duals],
     ) -> tuple[Array, Array, Array, Array, Array, Duals]:
         taken, us, current, values, _, duals = carry
-        grad = control_gradient_adjoint(dyn, x0, us, dt, cost)
-        us, current, accepted, duals = _backtrack(
-            us,
+        grad = control_gradient_adjoint(dyn, x0, us, dt, cost) / sigma
+        vs, current, accepted, duals = _backtrack(
+            us * sigma,
             current,
             grad,
-            u_lo,
-            u_hi,
-            lr0,
-            tol,
-            lambda candidate: total_cost(dyn, x0, candidate, dt, cost),
+            lo,
+            hi,
+            lr0 / scale,
+            tol * level,
+            value_of,
             blocks,
             duals,
+            resolve=True,
         )
+        us = jnp.where(accepted, actions_of(vs), us)
         # On rejection ``taken`` does not advance and the write lands back on its own slot, so the
         # buffer holds exactly the accepted prefix whichever way the step went.
         taken = jnp.where(accepted, taken + 1, taken)
         return taken, us, current, values.at[taken].set(current), accepted, duals
 
     taken, optimised, _, values, _, _ = jax.lax.while_loop(
-        descending, descend, (jnp.asarray(0), us, initial, values, jnp.asarray(True), duals)
+        descending, descend, (jnp.asarray(0), start, initial, values, jnp.asarray(True), duals)
     )
     return optimised, values, taken
 
@@ -620,10 +803,14 @@ SolverStatus = Literal["converged", "max_iterations", "no_progress"]
 """Why the descent stopped -- reported, because "it stopped" and "it arrived" are different claims.
 
 ``converged`` is the method's own stopping rule: the backtracking line search could not find a step
-that lowered the cost by more than ``tol``. ``max_iterations`` means the budget ran out first, so
-the answer is wherever the descent happened to be. ``no_progress`` means not one step was accepted,
-so the result *is* the caller's initial guess -- which is either an already-optimal guess or a badly
-scaled problem, and :attr:`SolverResult.stationarity` is what tells the two apart.
+that lowered the cost by more than ``tol`` -- times the cost at the guess clipped to the box in
+:func:`projected_gradient_solve`, in the cost's own units in :func:`chc.support.pessimistic_solve`.
+Under linear constraints :func:`projected_gradient_solve` also stops at a trial that moves the plan
+by the projection's error alone.
+``max_iterations`` means the budget ran out first, so the answer is wherever the descent happened to
+be. ``no_progress`` means not one step was accepted, so the result *is* the caller's initial guess
+-- which is either an already-optimal guess or a badly scaled problem, and
+:attr:`SolverResult.stationarity` is what tells the two apart.
 
 The status deliberately does not claim optimality. A stalled line search is a statement about steps,
 not about gradients, and on an ill-scaled instance the two come apart; the stationarity residual is
@@ -670,8 +857,8 @@ def projected_gradient_solve(
     u_lo: Bound,
     u_hi: Bound,
     steps: int = 10_000,
-    lr0: float = 0.2,
-    tol: float = 1e-9,
+    lr0: float = 1.0,
+    tol: float = 1e-14,
     *,
     constraints: Sequence[LinearConstraint] = (),
 ) -> SolverResult:
@@ -681,18 +868,44 @@ def projected_gradient_solve(
     It exists because the compact form cannot distinguish a descent that reached its stopping rule
     from one that ran out of budget, and a planner that acts on the second without knowing is
     acting on an unfinished solve. Costs one extra gradient evaluation, for the stationarity
-    residual -- negligible against the thousands the descent already spent.
+    residual -- negligible against the ones the descent already spent.
+
+    ``lr0`` is the line search's first step in the descent's scaled variables, and ``tol`` a fall
+    of the cost relative to its value at the guess; :func:`projected_gradient_control` says how.
 
     ``constraints`` add linear rows over the whole sequence (:class:`LinearConstraint`); the
     stationarity residual then projects onto the box *and* the rows, and
-    :attr:`SolverResult.constraint_violation` reports how closely the rows hold.
+    :attr:`SolverResult.constraint_violation` reports how closely the rows hold. The residual is
+    in the caller's units, so it is zero at a KKT point in any units but its size is not.
     """
+    return _projected_gradient_solve(
+        dyn, x0, us0, dt, cost, u_lo, u_hi, steps, lr0, tol, constraints, scaled=True
+    )
+
+
+def _projected_gradient_solve(
+    dyn: Dynamics,
+    x0: Array,
+    us0: Array,
+    dt: float,
+    cost: QuadraticCost,
+    u_lo: Bound,
+    u_hi: Bound,
+    steps: int,
+    lr0: float,
+    tol: float,
+    constraints: Sequence[LinearConstraint],
+    *,
+    scaled: bool,
+) -> SolverResult:
+    """:func:`projected_gradient_solve`, or with ``scaled=False`` its descent in the caller's units:
+    ``lr0`` a step in action units per unit of gradient, ``tol`` a fall in the cost's own units."""
     lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
     hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
     check_box(lo, hi)
-    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype)
+    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype, disjoint=scaled)
     optimised, values, taken = _projected_gradient_loop(
-        dyn, x0, us0, dt, cost, lo, hi, steps, lr0, tol, blocks
+        dyn, x0, us0, dt, cost, lo, hi, steps, lr0, tol, blocks, scaled
     )
     iterations = int(taken)
     return SolverResult(
@@ -720,8 +933,8 @@ def projected_gradient_control(
     u_lo: Bound,
     u_hi: Bound,
     steps: int = 10_000,
-    lr0: float = 0.2,
-    tol: float = 1e-9,
+    lr0: float = 1.0,
+    tol: float = 1e-14,
     *,
     constraints: Sequence[LinearConstraint] = (),
 ) -> tuple[Array, Array]:
@@ -730,6 +943,25 @@ def projected_gradient_control(
     Uses the discrete adjoint (:func:`chc.adjoint.control_gradient_adjoint`) for the gradient and
     backtracking line search, so every accepted step strictly decreases the cost. Returns the
     optimised controls and the cost history (length ``1 + accepted steps``).
+
+    The step is scaled action by action, so a problem is planned the same in any units of each
+    lever and of the cost. The descent runs in ``v_kj = sigma_kj u_kj``: ``sigma_kj^2`` is the
+    cost's Gauss-Newton curvature along lever ``j`` at step ``k`` alone, over the cost at the guess
+    clipped to the box. The box and the rows are carried into ``v`` and the projection is Euclidean
+    there, so the descent stops at the problem's own KKT points.
+
+    * ``lr0`` is the first step the line search tries, in ``v``: 1 is the Newton step along each
+      action alone. It is halved until the cost falls.
+    * ``tol`` is relative: a step counts where it lowers the cost by more than ``tol`` times the
+      cost at the clipped guess, and from a guess that costs nothing any decrease counts. A cost
+      mostly out of a plan's reach -- a target no plan comes near -- stops further from its optimum
+      in what a plan can change, and may want a smaller ``tol``.
+
+    Both used to be absolute: ``lr0`` a step of 0.2 action units per unit of gradient and ``tol`` a
+    fall of ``1e-9`` in the cost's own units, so in units a thousand times a problem's own the
+    descent ran out of steps (``docs/adr/0059-the-planner-reads-the-problem-in-any-units.md``). A
+    fall ``eps`` in the cost's own units is ``tol = eps / |J|``, with ``J`` the cost of the guess
+    clipped to the box.
 
     The descent runs inside a single compiled program (:func:`_projected_gradient_scan`); only the
     trim to the accepted prefix happens on the host, so the return shape stays what a Python loop
@@ -742,7 +974,9 @@ def projected_gradient_control(
     convention :func:`chc.cost.total_cost` already uses for ``dt``.
 
     ``constraints`` intersect the box with linear rows over the whole sequence
-    (:class:`LinearConstraint`), and every iterate stays inside both.
+    (:class:`LinearConstraint`), and every iterate stays inside both. The projection holds the rows
+    to its tolerance, and a trial it moves off the plan by that alone is not a step: from a plan the
+    rows and the box pin to one point, the descent stays on it.
 
     Returns only where the descent landed. :func:`projected_gradient_solve` returns *why it
     stopped* as well, which is what a caller needs before acting on the answer.
@@ -750,7 +984,7 @@ def projected_gradient_control(
     lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
     hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
     check_box(lo, hi)
-    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype)
+    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype, disjoint=True)
     optimised, values, taken = _projected_gradient_loop(
         dyn, x0, us0, dt, cost, lo, hi, steps, lr0, tol, blocks
     )
@@ -856,7 +1090,7 @@ class NLPSolverCertificate:
 
 
 def nlp_solver_certificate(
-    horizon: int = 40, dt: float = 0.1, pg_steps: int = 150, seed: int = 3
+    horizon: int = 40, dt: float = 0.1, pg_steps: int = 50, seed: int = 3
 ) -> NLPSolverCertificate:
     """Sweep the control weight and confirm both halves of the claim about the first-order solver.
 
@@ -868,9 +1102,12 @@ def nlp_solver_certificate(
     stops showing one (the reframing would no longer be justified).
 
     ``pg_steps`` is deliberately far below the shipped default: the effect being exhibited is what
-    a *short* first-order budget costs on an ill-conditioned instance, and at the shipped cap the
-    projected gradient runs to its own stopping rule and the gap closes to a few hundredths of a
-    percent. This measures the conditioning, not the library's behaviour.
+    a *short* first-order budget costs on an ill-conditioned instance. At the shipped cap the
+    projected gradient ends within ``1e-7`` of L-BFGS-B's cost on every instance, and below it: the
+    two better-conditioned instances stop on their own rule, and the ill-conditioned one, which
+    needs 10 644 steps, at the cap. 50 steps is short of the 181 where the well-conditioned instance
+    stops on its own rule, so that every instance shows a truncated descent. This measures the
+    conditioning, not the library's behaviour.
     """
     x0 = jnp.array([1.0, 0.0])
     u_lo, u_hi = -5.0, 5.0

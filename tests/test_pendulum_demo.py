@@ -96,6 +96,18 @@ def test_on_the_true_pendulum_the_adjusted_schedule_holds_and_the_asserted_one_g
     assert asserted.rms_error > 2.0 * adjusted.rms_error
 
 
+def test_the_held_barrier_is_planned_from_the_descent_in_the_callers_units(
+    case: PendulumCase,
+) -> None:
+    """The planner descends in variables scaled action by action, the barrier's rounds in the
+    caller's units. Started from the scaled plan, the rounds held the barrier at a task cost of
+    0.632; started from the descent in the caller's units, as the planner does where a barrier
+    binds, they hold it at 0.435, the plan of the descent before it was scaled."""
+    plan = case.reading("adjusted").prescription.plan
+    assert plan is not None
+    assert plan.task_cost < 0.5
+
+
 def test_the_log_stays_inside_pendulum_v1s_clips() -> None:
     """Beyond either clip the logged torque stops being the applied one, and the fitted class
     stops containing the plant; the design stays well clear of both, as Track J's does."""

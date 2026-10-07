@@ -75,6 +75,35 @@ still change).
 
 ### Changed
 
+- **The planner reads a problem the same in any units of its levers and of its cost.**
+  `projected_gradient_solve` and `projected_gradient_control` started each line search at 0.2
+  action units per unit of gradient, and counted a step that lowered the cost by `1e-9` in its own
+  units, so one problem was planned differently in other units. On `test_plan`'s one-lever problem,
+  whose plan costs 2.9023, the lever in units 1e3 times its own ran out of the 10 000 steps at
+  4.4227, and in units 1e6 times its own took no step; the cost 1e6 times smaller took no step; two
+  levers in units 1e-3 and 1e3 reported `converged` with the second lever moved by 3.2e-11. The
+  descent now runs in variables scaled action by action, by the cost's Gauss-Newton curvature along
+  each action alone over the cost at the guess clipped to the box. The box and the linear rows are
+  carried into those variables and projected on there. Each of those problems now converges to one
+  plan in every one of those units, to 4.1e-8 of the box or nearer, the one-lever problem in 41
+  steps where it took 615. On 27 problems that mirror the planner's tests the descent takes fewer
+  steps on 25 and ends at a lower cost on 21: 4 726 steps against 5 574 on the two-lever test,
+  5.4e-11 above the least cost reached against 4.7e-7. A learned residual that moves its plant hard
+  takes 29 927 steps against 12 355, and a harvest whose cost is one square of the final state
+  18 081 against 4 885, both above the default cap; a KAN residual stops at another stationary
+  point, 1.3e-5 higher. `lr0` is now the first step in the scaled variables, 1 being the Newton step
+  along each action alone, and no value of it reproduces the old step. `tol` is now relative: a
+  step counts where it lowers the cost by more than `tol` times the cost at the guess clipped to the
+  box, `1e-14` by default, and from a guess that costs nothing any decrease counts. To keep a fall
+  `eps` in the cost's own units, pass `tol = eps / |J|`, with `J` that cost. A cost mostly out of a
+  plan's reach, as a target no plan comes near, stops further from its optimum in what a plan can
+  change, and may want a smaller `tol`. `mpc_control`'s 40 inner steps now come within 0.001 % of
+  the closed-loop cost of the loop run to convergence on a damped oscillator, on the known plant
+  and with an MLP residual, where they were 1.9 % and 1.2 % above it. `nlp_solver_certificate`
+  defaults to `pg_steps=50`, not 150, short of where its well-conditioned instance now stops on
+  its own rule, 181 steps. `pessimistic_solve`, `pessimistic_control`, the barrier rounds inside
+  `causal_plan` and `lbfgs_box_control` keep their units, and where a barrier binds `causal_plan`
+  starts its rounds from the descent in the caller's units, as before (ADR 0059). Since 0.2.0.
 - **Augmented synthetic control's ridge is a share of the donors' variance, 0.1 by default.**
   `augmented_synthetic_control`'s `ridge` was in the outcomes' squared units, 1.0 by default, so
   it outweighed donors logged in small units: at 1e-3 of the outcomes' units the effect read
@@ -125,6 +154,27 @@ still change).
 
 ### Fixed
 
+- **A plan under linear rows could break them and report `converged`.** The projection onto the
+  box and the rows ends in an active-set polish that moves one constraint a step, and it gave up
+  after 16 steps. A trial far outside the box, as a first step from a guess far from its plan
+  takes, needs about two steps for each action the projection moves across the box, so the
+  projection ran out its sweeps over the rows and the line search took the point: on the oracle
+  test's budget of 35.5 over 100 steps, with the lever in units 1e-3 times its own or the cost 1e6
+  times, the plan spent 68 and reported `converged`. The polish now takes up to two steps for each
+  action and one for each row, and never fewer than 16, and that plan spends 35.5 as the oracle
+  does, in every one of those units. `pessimistic_solve` and `pessimistic_control` project through
+  the same polish. Since 0.6.0.
+- **A plan the rows and the box pin to one point could step off it.** The projection onto the box
+  and the rows holds each to its tolerance, which pins a point where a row meets a side of the box
+  at a narrow angle only to the tolerance over the angle's sine. The line search took a trial that
+  came back that far off the point as a step wherever the fall it bought beat `tol`. With the cost
+  1e5 times its own units or more, `prescribe` with `max_levers=1`, on a log that kept `u2 = 3 u1`,
+  planned a lever 1.1e-12 of its unit off zero, 2.3e-10 with the cost 1e9 times, where the relation
+  and the other lever's box hold it, and read the plan as `not_estimable`. A trial that moves the
+  plan only across the sides and rows held at both its ends, to the projection's tolerance, now
+  ends the line search with no step, and that plan is zero and `held_to_log` with the cost from
+  1e-3 to 1e9 times its own and the levers from 1e-6 to 1e6. `pessimistic_solve` and
+  `pessimistic_control` keep the old line search. Since 0.6.0.
 - **The fit's ridge reads the same in any units.** `fit_causal_residual` added `ridge` as a
   constant to the Gram matrices of the channel's moment, the drift regression and the
   instrument's first stage, each built from the caller's raw columns, so a column logged in small

@@ -367,9 +367,19 @@ def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charge
     assert pinned.task_cost - reached(plant, -0.2, 0.2, 1, 0) <= 1e-9
 
     # 2. THE GATE THAT CAN FAIL: on genuinely unconverged plans the bound must sit ABOVE the
-    #    realised gap, and it is worth having only if it does so without being vacuous.
+    #    realised gap, and it is worth having only if it does so without being vacuous. The plans
+    #    are steepest descent's, in the caller's units and cut short: the planner's own steps,
+    #    scaled by the cost's curvature, take the 0.4 box's plan to its optimum in one, and leave
+    #    the 2.0 box's 0.29 from it after three, where the bound measured 3.5 times that.
+    from chc.control import _projected_gradient_solve
+
     for lo, hi, steps, ceiling in ((-2.0, 2.0, 3, 2.0), (-2.0, 2.0, 200, 1.5), (-0.4, 0.4, 3, 1.2)):
-        plan = causal_plan(plant, x0, cost, dt, horizon, lo, hi, steps=steps)
+        descent = _projected_gradient_solve(
+            plant, x0, jnp.zeros((horizon, 1)), dt, cost, lo, hi, steps, 0.2, 1e-9, (), scaled=False
+        )
+        plan = causal_plan(
+            plant, x0, cost, dt, horizon, lo, hi, steps=0, warm_start=descent.actions
+        )
         curve = plan_regret_bound(plan, plant, x0, cost, dt, lo, hi, probes=8)
         realised = plan.task_cost - reached(plant, lo, hi, 1, 0)
         assert curve.bound >= realised - 1e-12  # valid

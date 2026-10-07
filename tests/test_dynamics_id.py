@@ -235,7 +235,7 @@ def test_control_regret_collapses_for_the_causal_fit() -> None:
     unadjusted_regret = realised_cost(planner()) - oracle
 
     assert causal_regret < 0.05  # measured 0.014
-    assert unadjusted_regret > 1.0  # measured 6.42 against a 6.10 oracle cost
+    assert unadjusted_regret > 1.0  # measured 6.20 against a 6.10 oracle cost
     assert unadjusted_regret > 50.0 * max(causal_regret, 1e-6)
 
 

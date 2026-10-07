@@ -78,9 +78,11 @@ def test_mpc_steps_its_plant_on_the_loops_clock() -> None:
 
 
 def test_mpc_plans_each_window_from_the_time_it_starts() -> None:
+    """The loop leans to -0.227 at t = 0.7 and holds the state at -0.031 at t = 0.8, as it does
+    run to convergence; with every window planned from t = 0, both stay within 5e-5 of zero."""
     xs, us = mpc_control(
         _Onset(), jnp.zeros(1), SCALAR, DT, horizon=5, u_lo=-50.0, u_hi=50.0, n_steps=14
     )
     assert abs(float(us[0, 0])) < 1e-3  # at t = 0 the push is a second away, past the window
-    assert float(us[7, 0]) < -0.3  # at t = 0.7 the window reaches it, and the plan leans into it
-    assert float(xs[8, 0]) < -0.05  # the state moves before the push, which is 0.002 at t = 0.8
+    assert float(us[7, 0]) < -0.2  # at t = 0.7 the window reaches it, and the plan leans into it
+    assert float(xs[8, 0]) < -0.02  # the state moves before the push, which is 0.002 at t = 0.8

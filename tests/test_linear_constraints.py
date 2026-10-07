@@ -30,7 +30,7 @@ from chc.control import (
     projected_gradient_solve,
 )
 from chc.cost import total_cost
-from chc.dynamics import DampedOscillator
+from chc.dynamics import DampedOscillator, LinearDynamics
 from chc.support import pessimistic_solve
 
 DT = 0.1
@@ -349,6 +349,113 @@ def test_the_polish_vouches_only_for_the_projection(steps: int) -> None:
             exact = _exact_projection(y, lo, hi, matrix, lower, upper)
             assert np.max(np.abs(np.asarray(x) - exact)) < 1e-9, seed
     assert accepted > 0
+
+
+def test_rows_orthogonal_only_in_sum_take_a_class_each_for_the_planner() -> None:
+    """``(1, 1)`` and ``(1, -1)`` over two levers are orthogonal, so Dykstra may project onto both
+    at once, and a budget row of ones joins a rate band's class. The planner's descent scales each
+    action's column by its own factor, and scaled apart such rows are not orthogonal, so for it
+    rows share a class only where no action enters both. On the plans tried the polish finished
+    every projection either way; the classes keep the sweeps exact where it does not."""
+    pair = LinearConstraint(
+        np.array([[1.0, 1.0], [1.0, -1.0]]), np.array([-1.0, -np.inf]), np.array([np.inf, 0.6])
+    )
+    lo, hi = jnp.full((1, 2), -5.0), jnp.full((1, 2), 5.0)
+    assert len(_constraint_blocks([pair], lo, hi, jnp.float64)) == 1
+    assert len(_constraint_blocks([pair], lo, hi, jnp.float64, disjoint=True)) == 2
+    rate = LinearConstraint.rate_limit(4, [1.0])
+    budget = LinearConstraint(np.ones((1, 4)), -np.inf, 3.0)
+    lo, hi = jnp.full((4, 1), -5.0), jnp.full((4, 1), 5.0)
+    assert len(_constraint_blocks([rate, budget], lo, hi, jnp.float64)) == 2
+    assert len(_constraint_blocks([rate, budget], lo, hi, jnp.float64, disjoint=True)) == 3
+
+
+def test_the_planner_projects_on_classes_its_scaling_keeps_orthogonal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both entry points hand the descent rows coloured for its scaled variables: in every class
+    no action enters two rows, so a rate band and a budget, orthogonal in the caller's units, are
+    projected on apart."""
+    seen = []
+    loop = chc.control._projected_gradient_loop
+
+    def recorded(*args):
+        seen.append(args[10])  # the constraint blocks
+        return loop(*args)
+
+    monkeypatch.setattr(chc.control, "_projected_gradient_loop", recorded)
+    dyn, cost, x0, *_ = _problem()
+    rate = LinearConstraint.rate_limit(HORIZON, [0.5])
+    budget = LinearConstraint(np.ones((1, HORIZON)), -np.inf, 2.0)
+    us0 = jnp.zeros((HORIZON, 1))
+    for solve in (projected_gradient_solve, projected_gradient_control):
+        solve(dyn, x0, us0, DT, cost, -U_MAX, U_MAX, steps=3, constraints=(rate, budget))
+    assert len(seen) == 2
+    for blocks in seen:
+        assert sum(rows.shape[0] for rows, *_ in blocks) == HORIZON  # the band's 29, the budget
+        for rows, *_ in blocks:
+            support = (np.abs(np.asarray(rows)) > 0.0).astype(int)
+            shared = support @ support.T
+            assert np.array_equal(shared, np.diag(np.diag(shared)))
+
+
+@pytest.mark.parametrize("pinned", [0, 1])
+@pytest.mark.parametrize("scale", [1.0, 1e6])
+def test_a_plan_the_rows_and_the_box_pin_to_one_point_stays_on_it(
+    pinned: int, scale: float
+) -> None:
+    """``3 u1 = u2`` at every step, with one lever's box pinned at zero, leaves the zero plan alone
+    feasible, and the projection holds the row only to its tolerance. With the cost 1e6 times its
+    own, the descent in the caller's units took a trial that put the free lever 1e-12 off zero as a
+    step, since it lowered the cost by more than ``1e-9``; scaled, with ``tol`` relative, a trial
+    5e-14 off, which lowered it by 1.9e-14 and 1.4e-13 of itself, in any units. Either way it
+    reported ``converged`` with the plan off the row. A trial that moves the plan by the
+    projection's error alone is not a step."""
+    horizon = 3
+    model = LinearDynamics(jnp.array([[-0.5]]), jnp.array([[0.8, 0.1]]))
+    cost = QuadraticCost(
+        Q=scale * jnp.eye(1),
+        R=scale * jnp.diag(jnp.array([0.01, 1.0])),
+        Qf=scale * jnp.eye(1),
+        x_target=jnp.array([1.0]),
+    )
+    tie = LinearConstraint(np.kron(np.eye(horizon), [[3.0, -1.0]]) / np.sqrt(10.0), 0.0, 0.0)
+    lo, hi = np.full((horizon, 2), -2.0), np.full((horizon, 2), 2.0)
+    lo[:, pinned] = hi[:, pinned] = 0.0
+    solve = projected_gradient_solve(
+        model, jnp.ones(1), jnp.zeros((horizon, 2)), DT, cost, lo, hi, constraints=(tie,)
+    )
+    assert solve.status == "no_progress"
+    assert np.asarray(solve.actions).tolist() == [[0.0, 0.0]] * horizon
+
+
+@pytest.mark.parametrize(
+    ("side", "row", "start", "end", "unresolved"),
+    [
+        # across the row and the side that pin the plan: the polish left this, 10 tolerances out
+        ((0.0, 1.0), (1.03, -0.046, 0.0, 0.0), (0.0, 0.0), (0.0, 1.1e-12), True),
+        ((1.0, 1.0), (1.0, 1.0, 0.0, 0.0), (0.0, 0.0), (0.3, -0.3), False),  # along a held row
+        ((1.0, 1.0), (1.0, 0.0, -np.inf, 0.5), (0.0, 0.0), (0.5, 0.0), False),  # onto a row
+        ((1.0, 1.0), (0.0, 1.0, -1.0, 1.0), (0.5, 0.0), (1.0, 0.0), False),  # onto a side
+    ],
+)
+def test_a_move_only_across_what_holds_the_plan_at_both_ends_is_not_a_step(
+    side: tuple[float, float],
+    row: tuple[float, float, float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+    unresolved: bool,
+) -> None:
+    """Dykstra holds each side and row to its tolerance, which pins a vertex where a row meets a
+    side at a narrow angle only to the tolerance over the angle's sine. What a move does beyond the
+    constraints held at both of its ends is a step; what it does across them alone is not."""
+    from chc.control import _unresolved
+
+    hi = jnp.asarray(side)
+    rows = LinearConstraint(np.array([row[:2]]), np.array([row[2]]), np.array([row[3]]))
+    blocks = _constraint_blocks([rows], -hi, hi, jnp.float64)
+    verdict = _unresolved(jnp.asarray(start), jnp.asarray(end), -hi, hi, blocks, jnp.asarray(1e-13))
+    assert bool(verdict) is unresolved
 
 
 @pytest.mark.parametrize("shift", [0.0, 2.5, -4.0])

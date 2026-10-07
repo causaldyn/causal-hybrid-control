@@ -64,6 +64,7 @@ from chc.control import (
     SolverResult,
     SolverStatus,
     _constraint_blocks,
+    _projected_gradient_solve,
     broadcast_box,
     check_box,
     projected_gradient_solve,
@@ -1006,6 +1007,7 @@ def _plan(
             constraints,
             barrier,
             solve,
+            guess=guess,
             support=support,
             lam_supp=lam_supp,
             uncertainty=uncertainty,
@@ -1133,6 +1135,7 @@ def _hold_barrier(
     barrier: BarrierConstraint,
     start: SolverResult,
     *,
+    guess: Array,
     support: SupportModel | None,
     lam_supp: float,
     uncertainty: PenaltyModel | None,
@@ -1154,6 +1157,14 @@ def _hold_barrier(
     ``start``, so the rounds settle inside the condition: an active step solved exactly sits on it,
     and rounding alone would then fail the audit about half the time. A ``start`` that clears the
     shifted condition is returned untouched, which is what makes a slack barrier free.
+
+    The rounds descend in the caller's units, by the penalised descent of :mod:`chc.support`, while
+    :func:`chc.control.projected_gradient_solve` descends in the problem's own. On the pendulum of
+    ``scripts/pendulum_demo.py``, started from the scaled descent's plan, the rounds held the
+    barrier at a task cost of 0.632, where from the plan of the descent in the caller's units they
+    hold it at 0.435. So where a barrier binds at a scaled ``start``, the rounds start from
+    ``guess`` descended in the caller's units, as they did before the planner was scaled; that
+    descent's steps are the ones counted, and the scaled one only said the barrier binds.
 
     ``multipliers`` seed the rounds in place of zeros -- a receding horizon's last, shifted. The
     penalty is chosen afresh all the same: one grown for the last state left the first round
@@ -1181,9 +1192,19 @@ def _hold_barrier(
         rest=uncertainty,
         rest_weight=lam_unc,
     )
-    scale, shortfall = _barrier_state(model, x0, actions, dt, held)
-    backoff = _BARRIER_BACKOFF * float(scale)
-    excess = np.asarray(shortfall, dtype=np.float64) + backoff
+
+    def excess_at(actions: Array) -> tuple[float, NDArray[np.float64]]:
+        scale, shortfall = _barrier_state(model, x0, actions, dt, held)
+        backoff = _BARRIER_BACKOFF * float(scale)
+        return backoff, np.asarray(shortfall, dtype=np.float64) + backoff
+
+    backoff, excess = excess_at(actions)
+    if float(np.max(excess)) > 0.0 and support is None:
+        start = _projected_gradient_solve(
+            model, x0, guess, dt, cost, u_lo, u_hi, steps, 0.2, 1e-9, constraints, scaled=False
+        )
+        actions = start.actions
+        backoff, excess = excess_at(actions)
     if float(np.max(excess)) <= 0.0:
         return actions, start.status, start.iterations, np.zeros_like(excess)
 
@@ -1212,7 +1233,7 @@ def _hold_barrier(
                 jnp.asarray(backoff, actions.dtype),
             ),
         )
-        # lr0 and tol are the solvers' defaults, which the unconstrained solve above also used.
+        # lr0 and tol in the caller's units, the same as the descent the rounds start from.
         actions, _, taken = _pessimistic_loop(
             model,
             x0,

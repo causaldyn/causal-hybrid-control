@@ -346,7 +346,7 @@ def _tracking_cost() -> QuadraticCost:
 
 
 def test_a_known_forecast_plans_the_oracle_schedule() -> None:
-    """The plan agrees with the hand-written optimum to the solver's tolerance (0.001 measured,
+    """The plan agrees with the hand-written optimum to the solver's tolerance (2e-6 measured,
     against actions up to 2.3), and each way of misreading the forecast misses it by far more:
     one step late by 0.27, not at all by 0.98."""
     oracle = _oracle(_forecast(), X0, 1.0, 0.05, 1.0)

@@ -2,6 +2,7 @@
 
 import time
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -17,7 +18,8 @@ from chc.control import (
     projected_gradient_solve,
 )
 from chc.cost import total_cost
-from chc.dynamics import DampedOscillator, LinearDynamics
+from chc.dynamics import DampedOscillator, DrivenDynamics, LinearDynamics
+from chc.games import fixed_point
 from chc.integrate import rollout
 from chc.residual import (
     ContractiveResidual,
@@ -90,6 +92,38 @@ def test_lbfgs_box_control_preserves_the_caller_dtype() -> None:
 # --- the compiled descent must reproduce the loop it replaced, on every residual backend --------
 
 _ULP_BUDGET = 500.0
+_SCALE_ULPS = 8.0  # two routes to one number: at most 2 ULP apart on these backends
+
+
+def _action_scale(
+    dyn: object, x0: jnp.ndarray, us: jnp.ndarray, dt: float, cost: QuadraticCost
+) -> jnp.ndarray:
+    """Each action's ``sigma``, read off the rollout's whole Jacobian and the cost's matrices.
+
+    The solver runs one backward pass over the steps' Jacobians instead, so the two routes agree to
+    rounding, not to the bit.
+    """
+    level = abs(float(total_cost(dyn, x0, us, dt, cost)))
+    paths = jax.jacfwd(lambda actions: rollout(dyn, x0, actions, dt))(us)  # (H + 1, n, H, m)
+    curvature = (
+        jnp.einsum("tikm,ij,tjkm->km", paths[:-1], cost.Q, paths[:-1])
+        + jnp.diagonal(cost.R)
+        + jnp.einsum("ikm,ij,jkm->km", paths[-1], cost.Qf, paths[-1])
+    )
+    return jnp.sqrt(curvature / level)
+
+
+def _checked_scale(
+    dyn: object, x0: jnp.ndarray, us: jnp.ndarray, dt: float, cost: QuadraticCost, bound: float
+) -> jnp.ndarray:
+    """The solver's own ``sigma`` for a box ``[-bound, bound]``, once it matches the other route."""
+    from chc.control import _action_units
+
+    sigma, _, _ = _action_units(
+        dyn, x0, us, dt, cost, jnp.full(us.shape, -bound), jnp.full(us.shape, bound)
+    )
+    assert _ulp_gap(sigma, _action_scale(dyn, x0, us, dt, cost)) <= _SCALE_ULPS
+    return sigma
 
 
 def _naive_projected_gradient(
@@ -101,24 +135,33 @@ def _naive_projected_gradient(
     u_lo: float,
     u_hi: float,
     steps: int,
-    lr0: float = 0.2,
-    tol: float = 1e-9,
+    sigma: jnp.ndarray,
+    lr0: float = 1.0,
+    tol: float = 1e-14,
 ) -> tuple[jnp.ndarray, list[float]]:
     """The plain Python recursion, kept as the oracle the compiled solver is checked against.
 
     It is deliberately *not* imported from ``chc``: an oracle that shares the implementation under
-    test cannot detect the implementation changing.
+    test cannot detect the implementation changing. It takes the actions' ``sigma`` as given, and
+    :func:`_checked_scale` hands it the solver's once :func:`_action_scale` has matched it, since a
+    last bit apart in ``sigma`` grows over the steps to hundreds of ULP of an action near zero.
     """
     us = jnp.clip(us0, u_lo, u_hi)
     current = total_cost(dyn, x0, us, dt, cost)
+    level = abs(float(current))
+    lo, hi = u_lo * sigma, u_hi * sigma
     history = [float(current)]
     for _ in range(steps):
-        grad = control_gradient_adjoint(dyn, x0, us, dt, cost)
-        lr, improved, candidate, candidate_cost = lr0, False, us, current
+        grad = control_gradient_adjoint(dyn, x0, us, dt, cost) / sigma
+        lr, improved, candidate, candidate_cost = lr0 / level, False, us, current
         for _ls in range(40):
-            candidate = jnp.clip(us - lr * grad, u_lo, u_hi)
+            trial = jnp.clip(us * sigma - lr * grad, lo, hi)
+            # Read back onto the box's sides exactly: ``trial / sigma`` can round off them.
+            candidate = jnp.where(
+                trial <= lo, u_lo, jnp.where(trial >= hi, u_hi, jnp.clip(trial / sigma, u_lo, u_hi))
+            )
             candidate_cost = total_cost(dyn, x0, candidate, dt, cost)
-            if candidate_cost < current - tol:
+            if candidate_cost < current - tol * level:
                 improved = True
                 break
             lr *= 0.5
@@ -190,12 +233,58 @@ def test_compiled_descent_matches_the_python_recursion(name: str) -> None:
     )
     x0, us0 = jnp.array([1.0, 0.0]), jnp.zeros((20, control_dim))
 
-    us_ref, history_ref = _naive_projected_gradient(dyn, x0, us0, DT, cost, -2.0, 2.0, steps=60)
+    sigma = _checked_scale(dyn, x0, us0, DT, cost, 2.0)
+    us_ref, history_ref = _naive_projected_gradient(
+        dyn, x0, us0, DT, cost, -2.0, 2.0, steps=60, sigma=sigma
+    )
     us, history = projected_gradient_control(dyn, x0, us0, DT, cost, -2.0, 2.0, steps=60)
 
     assert len(history) == len(history_ref)  # the scan stops where the break would have
     assert _ulp_gap(us, us_ref) < _ULP_BUDGET
     assert _ulp_gap(history, jnp.asarray(history_ref)) < _ULP_BUDGET
+
+
+def test_the_scale_reads_each_step_at_its_own_time() -> None:
+    """A driver that moves over the plan pushes the learned residual's states around, so each
+    step's Jacobian depends on the step's time as well as its state: the solver's ``sigma`` still
+    matches the one read off the rollout's whole Jacobian."""
+    plant = DrivenDynamics(
+        HybridDynamics(
+            known=DampedOscillator(omega=2.0, zeta=0.1),
+            residual=MLPResidual(2, 1, 2, 16, 2, key=jax.random.key(5)),
+        ),
+        gain=jnp.array([[0.0], [1.0]]),
+        levels=jnp.linspace(-3.0, 3.0, 21)[:, None],
+        dt=DT,
+    )
+    cost = QuadraticCost(
+        Q=jnp.eye(2), R=0.05 * jnp.eye(1), Qf=5.0 * jnp.eye(2), x_target=jnp.array([0.5, 0.0])
+    )
+    _checked_scale(plant, jnp.array([1.0, 0.0]), jnp.zeros((20, 1)), DT, cost, 2.0)
+
+
+class _Equilibrium(eqx.Module):
+    """``x' = z - x``, with ``z`` the fixed point of ``z = z / 2 + u``: ``x' = 2 u - x``, solved
+    by :func:`chc.games.fixed_point`, whose rule is reverse-mode only."""
+
+    def __call__(self, t: float | jnp.ndarray, x: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
+        z = fixed_point(lambda push, w: 0.5 * w + push, u, jnp.zeros_like(u), tol=1e-12).x
+        return z - x
+
+
+def test_a_plant_with_a_reverse_rule_only_still_plans() -> None:
+    """The adjoint reads each step's Jacobian in reverse mode, and so does the scale. In forward
+    mode a step with no forward rule, a ``jax.custom_vjp`` as in an equilibrium solve, raised
+    ``TypeError`` where the descent in the caller's units converged in 253 steps. Read in reverse,
+    it converges in 36, as the same plant written out does, to 2.4e-12 of the box."""
+    cost = QuadraticCost(Q=jnp.eye(1), R=0.1 * jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.ones(1))
+    guess = jnp.zeros((8, 1))
+    solved, written = (
+        projected_gradient_solve(plant, jnp.zeros(1), guess, DT, cost, -2.0, 2.0)
+        for plant in (_Equilibrium(), LinearDynamics(-jnp.eye(1), 2.0 * jnp.eye(1)))
+    )
+    assert solved.status == written.status == "converged"
+    assert float(jnp.max(jnp.abs(solved.actions - written.actions))) <= 1e-9
 
 
 def test_compiled_descent_stops_where_the_line_search_fails() -> None:
@@ -209,7 +298,10 @@ def test_compiled_descent_stops_where_the_line_search_fails() -> None:
     )
     x0, us0 = jnp.array([1.0, 0.0]), jnp.zeros((20, 1))
 
-    us_ref, history_ref = _naive_projected_gradient(dyn, x0, us0, DT, cost, -2.0, 2.0, steps=400)
+    sigma = _checked_scale(dyn, x0, us0, DT, cost, 2.0)
+    us_ref, history_ref = _naive_projected_gradient(
+        dyn, x0, us0, DT, cost, -2.0, 2.0, steps=400, sigma=sigma
+    )
     us, history = projected_gradient_control(dyn, x0, us0, DT, cost, -2.0, 2.0, steps=400)
 
     assert len(history_ref) < 400  # the oracle really does break early
@@ -363,10 +455,10 @@ def test_the_solver_reports_why_it_stopped_not_only_where() -> None:
     assert short.status == "max_iterations"
     assert short.iterations == 3
 
-    # This instance needs 5 574 steps under float64. At 5 000 the residual is already down to
-    # 1e-4 and the answer looks finished -- and it is not. That gap is the whole reason the status
+    # This instance needs 4 726 steps under float64. At 4 000 the residual is already down to
+    # 9e-5 and the answer looks finished -- and it is not. That gap is the whole reason the status
     # exists: a small residual is not evidence that the solver reached its stopping rule.
-    truncated = projected_gradient_solve(dyn, x0, us0, DT, cost, -5.0, 5.0, steps=5000)
+    truncated = projected_gradient_solve(dyn, x0, us0, DT, cost, -5.0, 5.0, steps=4000)
     assert truncated.status == "max_iterations"
     assert truncated.stationarity < 1e-3
 
