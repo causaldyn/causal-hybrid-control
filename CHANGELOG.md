@@ -154,6 +154,29 @@ still change).
 
 ### Fixed
 
+- **The planners' bounds are read from HiGHS's duals and rounded outward, so none passes the best
+  plan.** The bounds of `minimax_allocate`, `cvar_allocate`, `allocate_geos` and
+  `budget_for_geos` were HiGHS's objective on their last cutting-plane program, which is not a
+  bound. HiGHS leaves out of the program it solves every entry of at most 1e-9, and
+  `minimax_allocate` and `cvar_allocate` write a slope as a return a currency unit over the
+  largest return, which falls that low at a budget of 1e9. On two linear readings returning 2 and
+  1 a unit on two channels, and 1 and 2, at a budget of 1e10, `minimax_allocate` returned the
+  split all on the first channel with its worst regret, half the best return, as its bound, where
+  the even split's is a quarter. On readings returning 2 and 1, and 1 and 1.5, `cvar_allocate` at
+  the level 1 against all on the second channel returned that reference with a bound of 0, where
+  all on the first gains a quarter of the budget. And where HiGHS solves the whole program, its
+  objective is its basis's value worked in floating point: on a search over 400 readings it stood
+  above that value's exact figure in 47 of 87 programs, by up to 1e-7 of the program's units, and
+  above the program's least in 10. Each bound is now read from HiGHS's duals on the program as
+  written (Neumaier and Shcherbina 2004), its free and one-sided columns within the box their
+  planes imply. It is worked exactly, rounded down, and scaled into currency rounded outward, so it
+  holds whatever the duals are, and an entry HiGHS left out only loosens it. A search whose slopes
+  HiGHS leaves out no longer closes on that bound: the two above stop with their gap, 0.5 of the
+  best return and 1.5 of the budget. `cvar_allocate` also reads the bound from its duals rescaled
+  reading by reading, whose masses HiGHS missed by up to 3e-7 on the 400 readings. On the tests no
+  search's rounds, boxes or status moved, and each program's bound stayed within 3e-12 of HiGHS's
+  objective, relative to its size past 1 (ADR 0060). Since 0.10.0; `cvar_allocate`'s since
+  0.11.0.
 - **A plan under linear rows could break them and report `converged`.** The projection onto the
   box and the rows ends in an active-set polish that moves one constraint a step, and it gave up
   after 16 steps. A trial far outside the box, as a first step from a guess far from its plan

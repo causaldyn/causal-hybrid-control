@@ -1,6 +1,7 @@
 # ADR 0038 — A split for several readings of the channels
 
-**Status:** proposed, 2026-10-01.
+**Status:** proposed, 2026-10-01. Amended 2026-10-07 by ADR 0060: the bound is read from the
+program's duals, rounded outward, not from HiGHS's objective.
 
 ## Context
 

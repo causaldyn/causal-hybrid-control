@@ -166,8 +166,10 @@ from __future__ import annotations
 
 import heapq
 import logging
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Literal, cast
 
 import equinox as eqx
@@ -212,6 +214,8 @@ __all__ = [
 ]
 
 _EPS = float(np.finfo(float).eps)
+_TINY = float(np.finfo(float).smallest_subnormal)
+_HUGE = 2.0**300
 # the cutting planes stop when the worst regret is this share of the largest best return above
 # their bound, or after this many rounds, the gap then reported as it stands
 _GAP, _ROUNDS = 1e-9, 500
@@ -1023,9 +1027,10 @@ def minimax_allocate(
     unsolved, one it stalls on stopped by an iteration limit. A reading's regret is convex in the
     split, so its tangent at any split lies under it: the planes are every reading's tangents at
     every split tried so far, the linear program over them is a bound from below, and each split it
-    proposes is tried next. :attr:`MinimaxAllocation.bound` is the last program's value and
-    ``worst`` the best split's, so the gap between them is what the split may still be from the
-    least worst regret.
+    proposes is tried next. :attr:`MinimaxAllocation.bound` is the last program's bound, read from
+    HiGHS's duals on the program as written and rounded down, not HiGHS's objective, which can
+    stand above the program's least; ``worst`` is the best split's, so the gap between them is what
+    the split may still be from the least worst regret.
 
     Args:
         readings: the readings, each with one channel a column; at least one.
@@ -1089,19 +1094,23 @@ def minimax_allocate(
             limits.extend((values - slopes @ tried - best) / scale)
         if worst - floor <= _GAP * scale:
             break
+        matrix, ends = np.array(rows), np.array(limits)
+        least, _ = _spans(matrix, ends, lower_rates, upper_rates)
         program = _planes(
             np.concatenate([np.zeros(size), [1.0]]),
-            np.array(rows),
-            np.array(limits),
+            matrix,
+            ends,
             [*zip(lower_rates, upper_rates, strict=True), (0.0, None)],
             np.concatenate([np.ones(size), [0.0]])[None, :],
             [rate],
+            # the least t is nothing or the most regret a plane reads at the split
+            [*zip(lower_rates, upper_rates, strict=True), (0.0, max(0.0, -least))],
         )
         if program.status in _UNSOLVED:
             break  # the last program's floor stands
         if program.status != 0:
             raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
-        floor = max(floor, float(program.fun) * scale)
+        floor = max(floor, _outward(float(program.fun), scale, 1.0, -math.inf))
         splits = [_onto(program.x[:size], lower_rates, upper_rates, rate)]
     # a reading's best return on the curves is between its plan's worth and bound, and the split's
     # is below its envelopes' by their excess there, so its regret on the curves is off by at most
@@ -1409,20 +1418,31 @@ def _cvar_search(
                 and ceiling - relaxed <= 0.5 * (ceiling - best[0])
             ):
                 break
-            matrix = sparse.vstack(rows, format="csr")
+            matrix, ends = sparse.vstack(rows, format="csr"), np.concatenate(limits)
+            least, most = _spans(matrix, ends, low, high)
+            # each plane's reading, read off the excess column, its last
+            reading = np.maximum.reduceat(matrix.indices, matrix.indptr[:-1]) - size - 1
             program = _planes(
                 objective,
                 matrix,
-                np.concatenate(limits),
+                ends,
                 [*zip(low, high, strict=True), (None, None), *((0.0, None),) * count],
                 np.concatenate([np.ones(size), np.zeros(1 + count)])[None, :],
                 [rate],
+                # a best eta is one of the readings' least planes at the split, and each excess
+                # its distance below eta
+                [
+                    *zip(low, high, strict=True),
+                    (least, most),
+                    *((0.0, float(np.nextafter(most - least, np.inf))),) * count,
+                ],
+                partial(_evened, reading=reading, count=count, cap=weight / share, total=weight),
             )
             if program.status in _UNSOLVED:
                 break  # the box keeps its last program's bound
             if program.status != 0:
                 raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
-            ceiling = min(ceiling, -float(program.fun) * scale / weight)
+            ceiling = min(ceiling, _outward(-float(program.fun), scale, weight, math.inf))
             slack, kept = program.ineqlin.residual, matrix.shape[0]
             splits = [_onto(program.x[:size], low, high, rate)]
         if slack is not None and not alike:
@@ -1508,6 +1528,30 @@ def _cut(
         return channel, ((min(a, b), max(a, b)),)
     cut = float(at[channel]) if a < at[channel] < b else a + 0.5 * (b - a)
     return channel, ((a, cut), (cut, b))
+
+
+def _evened(
+    duals: np.ndarray, reading: np.ndarray, count: int, cap: float, total: float
+) -> np.ndarray:
+    """The duals of :func:`_cvar_search`'s planes rescaled reading by reading, ``reading`` each
+    plane's, so that no reading's mass passes ``cap``, its excess's cost, and the masses come to
+    ``total``, eta's, as far as the readings with a mass can take them.
+
+    A reading's mass past its excess's cost leaves that excess's reduced cost below nothing, and
+    masses that miss eta's cost leave eta's off nothing; either costs the bound read from them the
+    reduced cost times its column's far end. On a search over 400 readings HiGHS's masses stood off
+    by up to 3e-7, which cost the bound 1.4e-9 of the reference's largest return, past the
+    search's tolerance of 1e-9; from the masses rescaled, 2e-11."""
+    mass = np.bincount(reading, weights=np.maximum(-duals, 0.0), minlength=count)
+    target = np.minimum(mass, cap)
+    room = np.where(target > 0.0, cap - target, 0.0)
+    short = total - target.sum()
+    if short < 0.0:
+        target = target * (total / target.sum())
+    elif room.sum() > 0.0:
+        target = target + room * min(1.0, short / room.sum())
+    factor = np.divide(target, mass, out=np.zeros(count), where=mass > 0.0)
+    return np.where(duals < 0.0, duals * factor[reading], 0.0)
 
 
 def _cvar_weights(gain: np.ndarray, level: float) -> np.ndarray:
@@ -1641,7 +1685,7 @@ def allocate_geos(
     ``geo_totals``, and each channel's, its geos together, within ``channel_totals``.
 
     The plan is found by cutting planes on the cells' envelopes, each worth bounded above by its
-    tangents under a linear program, until the program's value is within a share ``1e-9`` of the
+    tangents under a linear program, until the program's bound is within a share ``1e-9`` of the
     best plan it has proposed, or after 500 rounds, or at a program HiGHS leaves unsolved, one it
     stalls on stopped by an iteration limit; a first program left so is refused. Where every cell
     inside its box is then strictly concave, Newton's method on the prices of the totals that bind
@@ -1650,7 +1694,9 @@ def allocate_geos(
     total whose price comes out on the wrong side is released and one the plan breaks is bound,
     until each binding total's price has its side's sign and the others hold: the conditions for
     the best plan on concave worths.
-    Otherwise the cutting planes' best plan is returned, with the program's value as its bound.
+    Otherwise the cutting planes' best plan is returned, with the least bound their programs gave.
+    Each program's bound is read from HiGHS's duals and rounded up, not HiGHS's objective, which
+    can fall below the program's most.
 
     Args:
         cells: one row a geo, each with the same channels in the same order.
@@ -2006,9 +2052,10 @@ def _outer(
 
     Each cell's worth is bounded above by its value at its cap and by its tangents; the linear
     program maximises the bounds less the charge over the plans that meet the constraints, and each
-    plan it proposes adds a tangent where a cell's bound is loose. The program's value bounds every
-    plan from above; the plans it proposes approach it from below. Returns the best plan's rates,
-    the last value, and each group's price, the last program's duals in return a currency unit.
+    plan it proposes adds a tangent where a cell's bound is loose. The bound each program's duals
+    give bounds every plan from above; the plans it proposes approach it from below. Returns the
+    best plan's rates, the least of those bounds, and each group's price, the last program's duals
+    in return a currency unit.
     """
     size = len(envelopes)
     # rates are read in units of the largest cap, and worths in units of every cap's together:
@@ -2075,15 +2122,17 @@ def _outer(
     priced: tuple[OptimizeResult, int] | None = None
     for _ in range(_ROUNDS):
         solved = len(limits)
+        cuts = sparse.coo_array((entries, (rows, columns)), shape=(solved, 2 * size))
+        least, most = _spans(cuts, np.array(limits), lower / unit, upper / unit)
         program = _planes(
             objective,
-            sparse.vstack(
-                [sparse.coo_array((entries, (rows, columns)), shape=(solved, 2 * size)), totals]
-            ),
+            sparse.vstack([cuts, totals]),
             np.array([*limits, *side_limits]),
             box,
             equal if fixed else None,
             np.array(fixed_limits) if fixed else None,
+            # a best height is its cell's least bound at the plan's rate
+            [*box[:size], *((least, most),) * size],
         )
         if program.status == 2:
             raise ValueError("no plan meets the budget, the boxes and the totals together")
@@ -2093,7 +2142,7 @@ def _outer(
         if program.status != 0:
             raise RuntimeError(f"the plan's linear program failed: {program.message}")
         priced = (program, solved)
-        ceiling = min(ceiling, -float(program.fun) * scale)
+        ceiling = min(ceiling, _outward(-float(program.fun), scale, 1.0, math.inf))
         rates = np.clip(program.x[:size] * unit, lower, upper)
         heights = program.x[size:] * scale
         pairs = [tangent(cell, float(r)) for cell, r in enumerate(rates)]
@@ -2275,10 +2324,22 @@ def _planes(
     bounds: Sequence[tuple[float | None, float | None]],
     equal: np.ndarray | sparse.sparray | None,
     totals: np.ndarray | Sequence[float] | None,
+    box: Sequence[tuple[float | None, float | None]] | None = None,
+    evened: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> OptimizeResult:
     """HiGHS's solution of a cutting-plane program, ``rows @ x <= limits`` and ``equal @ x =
     totals`` within ``bounds``, at the tolerance ``1e-10`` the planes' bound is read to, and under
     an iteration limit: status 1 where the limit stopped it, 4 where HiGHS ended it unsolved.
+
+    A solved program's ``fun`` is not HiGHS's objective but the bound :func:`_least` reads from
+    HiGHS's duals, below every point of the program as written, within ``box``: a box that holds
+    a least point of the program, ``bounds`` where none is given. Where ``evened`` is given it is
+    also read from the duals ``evened`` makes of the planes', and the higher bound kept. HiGHS's
+    objective is its basis's value worked in floating point: on the ill-conditioned bases of a
+    search over 400 readings it stood off that value by up to 1e-7 of the program's units, above
+    it in 47 of 87 programs, and in 10 above the least of the program, by up to 9e-8. HiGHS also
+    leaves out of the program it solves every entry of at most 1e-9, its ``small_matrix_value``,
+    which moves the program by up to that times its column's range.
 
     HiGHS can pivot without end at that tolerance: where the solution of its scaled program misses
     the tolerance once unscaled, it solves the unscaled program again with its costs unperturbed,
@@ -2289,7 +2350,7 @@ def _planes(
     so one stopped there has stalled; its caller keeps the bound its last program gave, which the
     planes added since could only have tightened."""
     count = len(limits) + (0 if totals is None else len(totals))
-    return linprog(
+    program = linprog(
         objective,
         A_ub=rows,
         b_ub=limits,
@@ -2303,6 +2364,159 @@ def _planes(
             "maxiter": 10 * (count + objective.size),
         },
     )
+    if program.status != 0:
+        return program  # SciPy keeps no duals for a program HiGHS did not solve
+    matrix, fixed = sparse.csr_array(rows), np.zeros(0)
+    if equal is not None and totals is not None:
+        matrix = sparse.vstack([matrix, sparse.csr_array(equal)], format="csr")
+        fixed = np.asarray(totals, dtype=float)
+    columns = bounds if box is None else box
+    sides = (
+        np.concatenate([np.full(len(limits), -np.inf), fixed]),
+        np.concatenate([limits, fixed]),
+    )
+    ends = (
+        np.array([-np.inf if low is None else low for low, _ in columns], dtype=float),
+        np.array([np.inf if high is None else high for _, high in columns], dtype=float),
+    )
+    planes = program.ineqlin.marginals
+    program.fun = max(
+        _least(objective, matrix, sides, ends, np.concatenate([duals, program.eqlin.marginals]))
+        for duals in ([planes] if evened is None else [planes, evened(planes)])
+    )
+    return program
+
+
+def _outward(value: float, factor: float, divisor: float, toward: float) -> float:
+    """``value * factor / divisor`` for positive ``factor`` and ``divisor``, each rounding moved a
+    place past the exact value toward ``toward``, so a bound read in a program's units stays one in
+    the caller's; nothing stays nothing, which a search whose tolerance is a share of its bound
+    needs to close there."""
+    if value == 0.0:
+        return 0.0
+    scaled = math.nextafter(value * factor, toward)
+    return scaled if divisor == 1.0 else math.nextafter(scaled / divisor, toward)
+
+
+def _least(
+    objective: np.ndarray,
+    matrix: np.ndarray | sparse.sparray,
+    sides: tuple[np.ndarray, np.ndarray],
+    box: tuple[np.ndarray, np.ndarray],
+    duals: np.ndarray,
+) -> float:
+    """A bound ``objective @ x`` never falls below where ``sides[0] <= matrix @ x <= sides[1]``
+    and ``box[0] <= x <= box[1]``, read from any row ``duals`` (Neumaier and Shcherbina 2004;
+    Jansson 2004).
+
+    For any ``y``, ``objective @ x = y @ (matrix @ x) + d @ x`` with ``d = objective - matrix.T @
+    y``. Over the program each row's term is at least its dual times the side its sign presses on,
+    and each column's at least its reduced cost times the end of its box that cost presses on, so
+    the bound holds whatever the duals are, a dual whose side is infinite read as nothing. The
+    bound is worked exactly and rounded down: each product is split into two doubles that sum to
+    it (Dekker 1971), and each reduced cost's sign, and the bound, are read off :func:`math.fsum`
+    of the parts, which rounds their exact sum correctly. So a bound of nothing comes out nothing,
+    as a search whose tolerance is a share of its bound needs to close there. Where a product's
+    factors are too small for its split to be exact its rounding is allowed for instead. The bound
+    is ``-inf`` where a reduced cost presses on an infinite end, or where a number it multiplies
+    passes ``2**300``, past which the split could overflow.
+    """
+    least, most = sides
+    low, high = box
+    y = np.where(np.isfinite(duals), duals, 0.0)
+    y = np.where(((y > 0.0) & np.isfinite(least)) | ((y < 0.0) & np.isfinite(most)), y, 0.0)
+    used = np.flatnonzero(y)
+    weights = y[used]
+    side = np.where(weights > 0.0, least[used], most[used])
+    rows = sparse.csc_array(sparse.csr_array(matrix)[used])
+    size = objective.size
+    if (
+        max(np.abs(part).max(initial=0.0) for part in (objective, rows.data, weights, side))
+        >= _HUGE
+    ):
+        return -np.inf
+    # each column's reduced cost in parts: its cost, and less the split product of each of its
+    # entries with that row's dual
+    column = np.repeat(np.arange(size), np.diff(rows.indptr))
+    upper, lower, miss = _product(rows.data, weights[rows.indices])
+    parts = np.concatenate([objective, -upper, -lower])
+    owner = np.concatenate([np.arange(size), column, column])
+    values = parts[np.argsort(owner, kind="stable")].tolist()
+    stops = np.cumsum(np.bincount(owner, minlength=size)).tolist()
+    reduced = np.array(
+        [math.fsum(values[a:b]) for a, b in zip([0, *stops[:-1]], stops, strict=True)]
+    )
+    end = np.where(reduced > 0.0, low, high)
+    pressed = reduced != 0.0
+    # where a split was not exact the reduced cost may stand off its parts' sum by the misses,
+    # which moves its column's term by at most their sum times the farthest end of its box
+    off = np.bincount(column, weights=miss, minlength=size)
+    fragile = off > 0.0
+    reach = np.maximum(np.abs(low[fragile]), np.abs(high[fragile]))
+    if np.any(pressed & ~(np.abs(end) < _HUGE)) or not np.all(np.isfinite(reach)):
+        return -np.inf
+    # the misses' sum, rounded at most once an entry, raised past its exact value
+    slack = np.nextafter(off[fragile] * (1.0 + 2.0**-30) * reach, np.inf)
+    taken = pressed[owner]
+    upper_term, lower_term, miss_term = _product(parts[taken], end[owner[taken]])
+    upper_row, lower_row, miss_row = _product(weights, side)
+    terms = np.concatenate(
+        [upper_term, lower_term, upper_row, lower_row, -miss_term, -miss_row, -slack]
+    ).tolist()
+    total = math.fsum(terms)
+    # the sum rounded to nearest, and where that is above the terms' exact sum the double below
+    return math.nextafter(total, -math.inf) if math.fsum([*terms, -total]) < 0.0 else total
+
+
+def _product(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Each ``a * b`` as its rounding and the rest, two doubles whose sum is the exact product, and
+    what that pair can miss the product by.
+
+    The split is Dekker's (1971): each factor is cut into halves whose products are exact, and the
+    rest is worked from them. :func:`_least` keeps the factors under ``2**600`` and the products
+    under ``2**900``, so nothing overflows, and the rest is exact where a factor is nothing or
+    their exponents come to -900 or more together, for it then has no bit below the least normal
+    double. Elsewhere the rest is taken as nothing and the miss covers the rounding: a share
+    ``2**-52`` of the product, and the least subnormal for an underflow."""
+    upper = a * b
+    halves = []
+    for factor in (a, b):
+        cut = 134217729.0 * factor  # 2**27 + 1 leaves each half 26 bits
+        top = cut - (cut - factor)
+        halves.append((top, factor - top))
+    (a_top, a_rest), (b_top, b_rest) = halves
+    lower = a_rest * b_rest - (((upper - a_top * b_top) - a_rest * b_top) - a_top * b_rest)
+    exact = (a == 0.0) | (b == 0.0) | (np.frexp(a)[1] + np.frexp(b)[1] >= -900)
+    return upper, np.where(exact, lower, 0.0), np.where(exact, 0.0, np.abs(upper) * _EPS + _TINY)
+
+
+def _spans(
+    rows: np.ndarray | sparse.sparray, limits: np.ndarray, low: np.ndarray, high: np.ndarray
+) -> tuple[float, float]:
+    """The least and the most any of ``rows`` reaches over the box ``low <= x <= high`` of their
+    first ``low.size`` columns, each read as its limit less its product with ``x`` there, rounded
+    outward.
+
+    A cutting-plane program's other columns are its levels, free or held above nothing, which the
+    planes bound: at some least point each lies between these two, or below the most by no more
+    than the most less the least, and :func:`_least` reads a program within such a box."""
+    part = sparse.csr_array(rows)[:, : low.size]
+    columns = part.indices
+    at_low, at_high = part.data * low[columns], part.data * high[columns]
+
+    def summed(values: np.ndarray) -> np.ndarray:
+        return sparse.csr_array((values, columns, part.indptr), shape=part.shape).sum(axis=1)
+
+    top = summed(np.maximum(at_low, at_high))
+    bottom = summed(np.minimum(at_low, at_high))
+    # as _least's reduced costs: a unit in the last place of the magnitudes for each entry, and two
+    # more for the limit's subtraction and the magnitudes' own rounding
+    count = np.diff(part.indptr) + 2
+    size = np.abs(limits) + summed(np.maximum(np.abs(at_low), np.abs(at_high)))
+    error = count * _EPS * size + count * _TINY
+    least = np.nextafter(np.min(limits - top - error), -np.inf)
+    most = np.nextafter(np.max(limits - bottom + error), np.inf)
+    return float(least), float(most)
 
 
 def _onto(split: np.ndarray, lower: np.ndarray, upper: np.ndarray, rate: float) -> np.ndarray:

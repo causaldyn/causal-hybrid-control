@@ -1,6 +1,7 @@
 # ADR 0043 — One budget over geos and channels
 
-**Status:** proposed, 2026-10-02. Experimental, as `chc.allocation` is.
+**Status:** proposed, 2026-10-02. Experimental, as `chc.allocation` is. Amended 2026-10-07 by
+ADR 0060: the bound is read from the program's duals, rounded outward, not from HiGHS's objective.
 
 ## Context
 
@@ -49,7 +50,8 @@ fixed.
   primal-dual active-set step. The plan is kept when each binding total's price
   has its side's sign and the free totals hold, the conditions for the best plan on concave worths
   with the rates exact at their prices; where the set keeps changing, after twice as many rounds as
-  there are totals, the cutting planes' plan is returned, with the program's value as its bound.
+  there are totals, the cutting planes' plan is returned, with the least bound their programs'
+  duals gave (ADR 0060).
 - **An S-shaped curve is planned on its envelope**, as `allocate` plans it.
 
 ## Consequences
