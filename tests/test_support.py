@@ -164,10 +164,14 @@ def _ulp_gap(a: jnp.ndarray, b: jnp.ndarray) -> float:
     return float(np.max(np.abs(left - right) / np.maximum(spacing, np.finfo(np.float64).tiny)))
 
 
-@pytest.mark.parametrize("lam_supp", [20.0, 1.0])
-def test_compiled_pessimistic_descent_matches_the_python_recursion(lam_supp: float) -> None:
+@pytest.mark.parametrize(("lam_supp", "guess"), [(20.0, 0.0), (1.0, 0.0), (20.0, 1.0)])
+def test_compiled_pessimistic_descent_matches_the_python_recursion(
+    lam_supp: float, guess: float
+) -> None:
     """At a support weight of 1 the search in the measured scale fails after 10 steps, and the 11th
-    is the search's from the floor, so the comparison reaches the retry as well."""
+    is the search's from the floor, so the comparison reaches the retry as well. From a guess of 1,
+    off the log's support, the penalty there is 22 times the task cost, and the scale and the
+    stopping rule are read against the two together."""
     k_x, k_u = jax.random.split(jax.random.key(4))
     support = SupportModel.fit(
         jax.random.normal(k_x, (500, 2)), 0.3 * jax.random.normal(k_u, (500, 1))
@@ -181,7 +185,7 @@ def test_compiled_pessimistic_descent_matches_the_python_recursion(lam_supp: flo
         Qf=jnp.diag(jnp.array([10.0, 1.0])),
         x_target=jnp.array([-3.0, 0.0]),
     )
-    x0, us0 = jnp.zeros(2), jnp.zeros((15, 1))
+    x0, us0 = jnp.zeros(2), jnp.full((15, 1), guess)
 
     us_ref, history_ref = _naive_pessimistic(
         model, x0, us0, cost, support, lam_supp, -5.0, 5.0, steps=60
