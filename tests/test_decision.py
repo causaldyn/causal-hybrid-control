@@ -277,6 +277,22 @@ def test_a_lever_the_log_never_moved_is_held_at_its_logged_level(caplog, max_lev
     assert (certificate.trustworthy_steps > 0) == inside
 
 
+def test_the_logger_check_leaves_out_a_lever_the_log_never_moved() -> None:
+    """The held lever's residual and its own lag's were the regression's rounding of one level,
+    nearly equal: the statistic sat at its ceiling, and the check warned that the levers read more
+    than the record says at p = 0.002, of a log whose policy read nothing."""
+    logs = _policy_logs(0.5, 0.6, reads=(0.0, 0.0))
+    result = _prescribe_policy(
+        logs, [Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05), Lever("v", lo=-2.0, hi=2.0)]
+    )
+    check = result.logger_check
+    assert check is not None
+    assert np.isnan(check.test.partial_correlation[check.levers.index("u")]).all()
+    assert np.isnan(check.test.partial_correlation[:, check.columns.index("u[t-1]")]).all()
+    assert check.test.p_value > 0.05
+    assert "- logger check: passed" in result.report()
+
+
 def test_a_lever_set_from_a_column_outside_the_state_gives_no_schedule(caplog) -> None:
     """The policy sets ``u`` from the confounder as well as the state: no level is that rule, and
     the plan cannot read the confounder, so there is no schedule, and the reason names it. The

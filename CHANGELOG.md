@@ -252,11 +252,19 @@ still change).
   is at most 64 eps of its size for a constant and standardise the rest in their own units. At
   unit scale `lalonde_ate` moves by at most 6e-14 of itself and `gcm_test`'s statistic by 2.4e-12,
   and its p-values by the sign draws whose signs all agree, which reproduce the statistic up to
-  its rounding: one draw of 500 with 12 clusters, three of 2000 with 11. A tested column that held
-  one value is read in its own units now, not scaled by the reciprocal of its mean's rounding: with
-  a lever the log never moved, as in `prescribe`'s logger check, the statistic moves by 6.9e-6 of
-  itself and the lever's partial correlation with its own lag from -0.972 to -0.988. Since 0.9.0
-  for `gcm_test`, 0.2.0 for `lalonde_ate`.
+  its rounding: one draw of 500 with 12 clusters, three of 2000 with 11. Since 0.9.0 for
+  `gcm_test`, 0.2.0 for `lalonde_ate`.
+- **The logger check no longer warns of a lever the log never moved.** `gcm_test` tested a column
+  that held one value: its residual was the regression's rounding of that value, nearly equal to
+  its own lag's, so the two read a correlation of -0.97, every period's sum took one sign, and the
+  statistic sat at its ceiling, the root of the periods' count. On a log whose policy held one
+  lever and drew the other at random, `prescribe`'s report said the levers read more than the
+  record says, at p = 0.002, naming the held lever against its own lag. A tested column whose
+  spread is at most 64 eps of its size now has nothing to test: its pairs read nan and stay out of
+  the maximum, and that log's check passes at p = 0.521. `partial_corr_test` read two columns held
+  at 3e9 as correlated 0.997 at p 0, and at 0.5 as 4e-16 at p 1, by an absolute floor in its
+  denominator; a column held at one value now reads 0 at p 1. Since 0.9.0 for `gcm_test`, 0.2.0
+  for `partial_corr_test`.
 - **`prescribe` warns about single precision where the run is in it, not where the panel was built
   in it.** The `precision` warning read the panel's `x64`, set when the panel was built, which
   moves no number of the fit: the panel holds NumPy's columns, and the fit reads them in the run's

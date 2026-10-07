@@ -169,6 +169,51 @@ def test_gcm_test_counts_no_term_for_a_conditioning_column_that_holds_one_value(
     assert with_it.p_value == alone.p_value
 
 
+@pytest.mark.parametrize("value", [0.1, 0.5, 21.3, 3e9])
+def test_gcm_test_leaves_out_a_tested_column_that_holds_one_value(value: float) -> None:
+    """A lever the log never moved, tested against its own lag as the logger check tests it. Both
+    residuals were the regression's rounding of one value, nearly equal, so every cluster's sum
+    took one sign and the statistic sat at its ceiling, the root of the clusters' count: the
+    logger check warned at p = 0.002 on a log whose policy never moved the lever."""
+    rng = np.random.default_rng(8)
+    rows = 480
+    clusters = np.arange(rows) % 12
+    z = rng.standard_normal((rows, 2))
+    lever = 0.5 * z[:, 0] + rng.standard_normal(rows)
+    against = rng.standard_normal(rows)
+    held = np.full(rows, value)
+    both = gcm_test(
+        np.column_stack([lever, held]),
+        np.column_stack([against, held]),
+        z,
+        clusters=clusters,
+        draws=199,
+    )
+    alone = gcm_test(lever, against, z, clusters=clusters, draws=199)
+    for read in (both.partial_correlation, both.detectable):
+        assert np.isnan(read[1, :]).all()
+        assert np.isnan(read[:, 1]).all()
+    assert both.statistic == pytest.approx(alone.statistic, rel=1e-12, abs=0.0)
+    assert both.p_value == alone.p_value
+    only = gcm_test(held, held.copy(), z, clusters=clusters, draws=199)
+    assert np.isnan(only.statistic)
+    assert np.isnan(only.p_value)
+
+
+@pytest.mark.parametrize("value", [0.5, 3e9])
+def test_partial_corr_test_reads_a_column_that_holds_one_value_as_independent(
+    value: float,
+) -> None:
+    """Two columns logged at one value each kept the regression's rounding of their levels, which
+    at 3e9 outweighed the denominator's floor: they read a correlation of 1 and a p-value of 0."""
+    rng = np.random.default_rng(9)
+    z = rng.standard_normal((300, 2))
+    held = np.full(300, value)
+    assert partial_corr_test(held, held.copy(), z) == (0.0, 1.0)
+    assert partial_corr_test(held, 2.0 * held, z) == (0.0, 1.0)
+    assert partial_corr_test(held, rng.standard_normal(300), z) == (0.0, 1.0)
+
+
 @pytest.mark.parametrize("clusters", [1000, 10])
 def test_gcm_test_detects_about_eight_in_ten_at_its_own_detectable_correlation(
     clusters: int,

@@ -128,7 +128,7 @@ The sites, and what each does now:
 | `fit_behavior_policy` | the states; the actions | the states centred twice, a rounding state zeroed, least squares in each column's own units; the spread floored at 1e-8 of the actions' own |
 | `augmented_synthetic_control` | the donors' periods before treatment, in NumPy | each period centred twice, a rounding period zeroed; the ridge a share of the donors' pooled variance |
 | `SupportModel.fit` | the states and the actions | each column relative to its largest entry, centred twice; a rounding coordinate refused |
-| `partial_corr_test`, `gcm_test` | the conditioning set, in NumPy | each column in its power-of-two units, a rounding column left as it is; the GCM's basis drops a rounding column |
+| `partial_corr_test`, `gcm_test` | the conditioning set and the tested columns, in NumPy | each column in its power-of-two units, a rounding column left as it is; the GCM's basis drops a rounding column, and a rounding tested column has nothing to test: its pairs read nan, its partial correlation 0 at p 1 |
 | `lalonde_ate` | the covariates, in NumPy | standardised |
 | `CausalPlan.decision_weight`'s curvature test, `Prior`'s symmetry test | eigenvalues; a covariance | tolerances relative to the largest eigenvalue and the largest entry |
 
@@ -163,8 +163,8 @@ The sites, and what each does now:
   | `ConfoundingRobustPenalty`; `ConfoundingRobustTask` | a closed loop's cost; the robust regret | 3.3e-5; 3.0 %, from 3.82 to 3.94 |
   | `fit_behavior_policy`; `off_policy_value` | every output | 5.6e-6; 1.3e-7 |
   | `augmented_synthetic_control` | the effect | 2.1 % |
-  | `gcm_test` | the statistic | 2.4e-12; 6.9e-6 with a lever the log never moved |
-  | `partial_corr_test` | every output | 0 |
+  | `gcm_test` | the statistic | 2.4e-12; a lever the log never moved is left out, its pairs nan |
+  | `partial_corr_test` | every output | 0; a column held at one value reads 0 at p 1 |
   | `lalonde_ate` | the effect, beyond its estimator's move | 6e-14 |
   | `panel_estimator_certificate` | the two-cluster ratio at 300 draws | from 0.324 to 0.357 |
 

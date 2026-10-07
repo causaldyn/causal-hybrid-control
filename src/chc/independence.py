@@ -51,12 +51,16 @@ def _residualize(target: ArrayLike, conditioning: ArrayLike | None) -> tuple[np.
     """Residual of ``target`` after linear regression on ``[1, conditioning]``; returns (resid, k).
 
     ``target`` and each column of ``conditioning`` are read in their own units (:func:`_own_units`),
-    so the residual is in ``target``'s, a power of two times the one in the units given. ``k`` is
-    the number of conditioning columns (0 when ``conditioning`` is ``None``) -- the
-    degrees-of-freedom correction for the Fisher-z statistic. A ``(n,)`` or ``(n, k)`` conditioning
-    set is accepted; a ``(k, n)`` one is transposed to rows-are-samples.
+    so the residual is in ``target``'s, a power of two times the one in the units given. A
+    ``target`` whose spread is rounding (:mod:`chc._units`) has a residual of zeros: what is left of
+    it is the regression's rounding, at the scale of its level. ``k`` is the number of conditioning
+    columns (0 when ``conditioning`` is ``None``) -- the degrees-of-freedom correction for the
+    Fisher-z statistic. A ``(n,)`` or ``(n, k)`` conditioning set is accepted; a ``(k, n)`` one is
+    transposed to rows-are-samples.
     """
     target = _own_units(np.asarray(target, dtype=np.float64).ravel()[:, None])[:, 0]
+    if _units.spread_and_rounding_np(target[:, None])[1][0]:
+        target = np.zeros_like(target)
     if conditioning is None:
         return target - target.mean(), 0
     cond = np.atleast_2d(np.asarray(conditioning, dtype=np.float64))
@@ -75,7 +79,8 @@ def partial_corr_test(
     With ``z=None`` this is the plain marginal-correlation test -- the miscalibrated one under
     autocorrelation. Pass the lagged parents as ``z`` for the calibrated MCI variant. ``z`` may be a
     single covariate ``(n,)`` or several stacked as ``(n, k)``. The p-value is two-sided, and the
-    same in whatever units each column is logged.
+    same in whatever units each column is logged. A column that moved by rounding alone, such as
+    one logged at a single value, reads a correlation of 0 and a p-value of 1.
     """
     residual_x, k = _residualize(x, z)
     residual_y, _ = _residualize(y, z)
@@ -163,8 +168,9 @@ def gcm_test(
 
     Returns:
         A :class:`GcmTest`. A column ``z`` determines, such as the lagged state of a discretised
-        ODE given the current one, has no residual left to test. Its pairs read nan and stay out
-        of the maximum.
+        ODE given the current one, has no residual left to test, nor has one that moved by rounding
+        alone, such as a lever the log never moved. Their pairs read nan and stay out of the
+        maximum.
 
     Raises:
         ValueError: on rows of different lengths, a value that is not finite, ``clusters`` of the
@@ -198,9 +204,12 @@ def gcm_test(
 
     residual_x = _residual(left, design)
     residual_y = _residual(right, design)
+    # A column of one value has a variance of 0, which no residual's rounding falls below
+    _, flat_x = _units.spread_and_rounding_np(left)
+    _, flat_y = _units.spread_and_rounding_np(right)
     live = np.outer(
-        residual_x.var(axis=0) > _DETERMINED * left.var(axis=0),
-        residual_y.var(axis=0) > _DETERMINED * right.var(axis=0),
+        ~flat_x & (residual_x.var(axis=0) > _DETERMINED * left.var(axis=0)),
+        ~flat_y & (residual_y.var(axis=0) > _DETERMINED * right.var(axis=0)),
     )
     size_x = np.sqrt(np.mean(residual_x**2, axis=0))
     size_y = np.sqrt(np.mean(residual_y**2, axis=0))
