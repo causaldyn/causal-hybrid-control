@@ -132,8 +132,12 @@ still change).
   5.4e-11 above the least cost reached against 4.7e-7. A learned residual that moves its plant hard
   takes 29 927 steps against 12 355, and a harvest whose cost is one square of the final state
   18 081 against 4 885, both above the default cap; a KAN residual stops at another stationary
-  point, 1.3e-5 higher. `lr0` is now the first step in the scaled variables, 1 being the Newton step
-  along each action alone, and no value of it reproduces the old step. `tol` is now relative: a
+  point, 1.3e-5 higher. `SupportShiftTask`'s plant, whose effect collapses beyond its sweet spot,
+  is read as linear at the zero guess, so the first step sets actions up to 6.2: its oracle settles
+  with four actions near -2.2, where the plant no longer answers them, at a true cost of 21.088
+  against 20.645, so the task measures every regret against a plan 0.443 worse. `lr0` is now the
+  first step in the scaled variables, 1 being the Newton step along each action alone, and no
+  value of it reproduces the old step. `tol` is now relative: a
   step counts where it lowers the cost by more than `tol` times the cost at the guess clipped to the
   box, `1e-14` by default, and from a guess that costs nothing any decrease counts. To keep a fall
   `eps` in the cost's own units, pass `tol = eps / |J|`, with `J` that cost. A cost mostly out of a

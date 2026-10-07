@@ -172,6 +172,16 @@ trial far outside the box came back from the projection over budget, and the lin
 - **Actions that act together still take many steps.** The scale is a diagonal. The
   ill-conditioned oscillator needs 10 644 steps, the loud residual 29 927 where it took 12 355,
   and the harvest 18 081 where it took 4 885.
+- **A first step read where the plant is linear can carry an action past a collapse.** The scale
+  is read at the guess, so the first step is the Newton step of the plant as it acts there.
+  `SupportShiftTask`'s plant acts through `u exp(-(u / 0.8)^2)`, linear at 0 and spent beyond
+  about 2. From the zero guess the first step sets actions up to 6.2, a step that still lowers
+  the cost, and the descent settles at another stationary point: four actions near -2.2, where
+  the plant no longer answers them, at a true cost of 21.088. The descent in the caller's units
+  reached 20.645, every action at or inside the sweet spot, ±0.565. The task's oracle is that
+  plan, so the task measures every regret against a plan 0.443 worse. The line search accepts any
+  fall; a rule of sufficient decrease that would refuse such a step is left to a change of its
+  own, measured on the problems above.
 - **A truncated plan's regret bound is looser against its regret.** On `test_plan`'s boxed problem,
   three steps leave the plan 0.29 above its optimum, where they left the old descent's 5.46, and
   `plan_regret_bound` reads 1.02, where it read 9.57: 3.5 times the regret, where it was 1.75
