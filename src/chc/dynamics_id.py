@@ -476,7 +476,8 @@ def _clustered_squares(rows: np.ndarray, clusters: np.ndarray | None) -> tuple[n
     alone = []
     for one, codes in ((first, clusters[:, 0]), (second, clusters[:, 1])):
         count = int(codes.max()) + 1
-        alone.append(one * (count / (count - 1)) / (smaller / (smaller - 1)))
+        # the factor whole, so a dimension of the smaller count keeps its sums bit for bit
+        alone.append(one * ((count / (count - 1)) / (smaller / (smaller - 1))))
     return (both, *alone)
 
 
