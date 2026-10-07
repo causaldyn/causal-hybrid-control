@@ -196,7 +196,8 @@ The sites, and what each does now:
   least squares reads in each column's units. With an original effect of exactly 0,
   `refute_effect`'s tolerance is 0. A ridge still shrinks a direction the log moved little next to
   the column's own size, as at unit scale: that is what it is for. `panel_estimator_certificate`'s
-  default `draws` stays 120, where under float64 at its default seed it reports `ok=False`.
+  default `draws` stayed 120 here, where under float64 at its default seed it reports `ok=False`;
+  0.16.0 raises it to 300, where its table was measured.
 
 ## Alternatives considered
 

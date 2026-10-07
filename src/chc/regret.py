@@ -6501,7 +6501,7 @@ def panel_estimator_certificate(
     phi: float = 0.9,
     lag: int = 1,
     k_folds: int = 2,
-    draws: int = 120,
+    draws: int = 300,
     bootstrap: int = 2000,
     disturbance_scale: float = 2.0,
     seed: int = 20260904,
@@ -6558,8 +6558,8 @@ def panel_estimator_certificate(
     TWO SAMPLING FACTS THIS DEPENDS ON. ``draws`` must not be small: a variance ratio from a few
     dozen paired draws is noisy, and the conservatism finding rests on the two-cluster cell. At
     ``phi = 0.9`` on the default seeds it holds under float32 at 40, 80, 120 and 300 draws; under
-    ``jax_enable_x64`` it fails at 40, 80 and 120, the default, where the two-cluster ratio reads
-    0.544, 0.537 and 0.484 against the prediction 0.469, and holds at 300, where the table and the
+    ``jax_enable_x64`` it fails at 40, 80 and 120, where the two-cluster ratio reads 0.544, 0.537
+    and 0.484 against the prediction 0.469, and holds at 300, the default, where the table and the
     claims above were measured. And
     :meth:`chc.network_causal.DelayedNetworkPanel.sample` derives its NumPy seed from a JAX key, so
     the panel DRAWN AT A GIVEN SEED DIFFERS between ``jax_enable_x64`` settings -- ``randint`` on

@@ -9,6 +9,11 @@ still change).
 
 ### Changed
 
+- **`panel_estimator_certificate` draws 300 panels a cell by default, not 120.** Its table and
+  its claims were measured at 300. At 120, under float64 at its default seed, the two-cluster
+  ratio read 0.484 against the functional's 0.469, so the conservatism the docstring reports
+  failed and the gate read `ok=False`; at 300 it reads as the table does. A call at the defaults
+  takes about 2.5 times as long.
 - **Dates off a uniform grid, read with no `frequency`, are refused.** 0.15.0 read them in the
   order logged under a `FutureWarning`, so a period no unit logged was not seen: in a monthly log
   with July missing for every unit, June and August read as consecutive. `Panel.from_frame` now
