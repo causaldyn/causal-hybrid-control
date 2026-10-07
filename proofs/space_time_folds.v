@@ -1,4 +1,4 @@
-(* Rocq (SPACE-TIME FOLDS): plan 24's P2.5. Result 51 showed the delayed-network covariance is
+(* Rocq (SPACE-TIME FOLDS). Result 51 showed the delayed-network covariance is
    separable only at delta = 0; Result 52 designed folds on the SPACE axis alone. This file proves
    the algebra that makes the TWO-axis problem tractable and says what the one-axis restriction
    costs, as derived in validation/space_time_folds.mac.

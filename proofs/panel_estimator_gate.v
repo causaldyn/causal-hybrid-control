@@ -1,4 +1,4 @@
-(* Rocq (DOES Psi DESCRIBE AN ESTIMATOR?): plan 24's P2.6. Result 51 shipped Psi with a scope note
+(* Rocq (DOES Psi DESCRIBE AN ESTIMATOR?). Result 51 shipped Psi with a scope note
    saying it is a functional of the PROCESS, evaluated with the fold operator held fixed, and not a
    re-derived estimator. This file proves the algebra that says what the experiment can and cannot
    show, as derived in validation/panel_estimator_gate.mac.
