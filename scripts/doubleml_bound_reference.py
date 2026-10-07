@@ -15,7 +15,7 @@ Measured 2026-10-07 with DoubleML 0.11.4 on Python 3.13, 4000 transitions, ``cf_
 on the cross-fitting folds chc draws since 0.13.0: the bounds agree to 3.8e-10 in every row, the
 ridge on chc's moment, scaled by the actions' mean square, 1.88 on this log; unscaled, it left
 2e-10. The confidence bounds agree to 1.6e-6 under DoubleML's influence, to 2.1e-5 under chc's
-sign and to 7.8e-5 under chc's own influence, which is robust to unequal noise and carries the
+sign and to 8e-5 under chc's own influence, which is robust to unequal noise and carries the
 nuisances' error and the degrees of freedom. chc reads them against ``t(3999)``'s quantile and
 DoubleML against the normal's (ADR 0062); on the normal's they agree to 3.8e-10 under DoubleML's
 influence. The robustness values differ by 1.7e-6, and by 5e-7 at the confidence bound under
