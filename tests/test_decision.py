@@ -293,6 +293,25 @@ def test_the_logger_check_leaves_out_a_lever_the_log_never_moved() -> None:
     assert "- logger check: passed" in result.report()
 
 
+@pytest.mark.parametrize("reads", [(0.0, 0.0), (0.0, -0.3)], ids=["held", "on a rule"])
+def test_a_lone_lever_the_log_never_moved_gives_no_schedule(caplog, reads) -> None:
+    """Every lever is held or on its rule, so no combination of the others is left for the plan to
+    keep. Since 0.14.0 the search for one indexed the levers with an empty float array and raised
+    TypeError."""
+    logs = _policy_logs(0.5, 0.6, reads=reads)
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        result = _prescribe_policy(logs, [Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05)])
+    certificate = result.certificate
+    assert (certificate.identification, certificate.unmoved_levers) == ("not_identified", ("u",))
+    assert result.plan is None
+    (abort,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "abort"]
+    assert abort.getMessage() == "no schedule: the log never moves a lever"
+    assert (
+        "- logger check: nothing to test, the state determines every column or the log never "
+        "moved it" in result.report()
+    )
+
+
 def test_a_lever_set_from_a_column_outside_the_state_gives_no_schedule(caplog) -> None:
     """The policy sets ``u`` from the confounder as well as the state: no level is that rule, and
     the plan cannot read the confounder, so there is no schedule, and the reason names it. The

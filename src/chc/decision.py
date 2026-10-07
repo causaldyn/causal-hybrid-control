@@ -2046,6 +2046,8 @@ def _keep_to_log(
             logged=logged,
         )
     free = [index for index in range(len(lever_names)) if index not in unmoved]
+    if not free:  # every lever is held or on its rule: no combination of the rest is left to keep
+        return _Kept(rules=rules, logged=logged)
     among = _logged_relations(u[:, jnp.array(free)], x, covariates, _NUISANCE_DEGREE)
 
     def named(inner: np.ndarray, outer: np.ndarray) -> str:

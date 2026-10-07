@@ -265,6 +265,12 @@ still change).
   at 3e9 as correlated 0.997 at p 0, and at 0.5 as 4e-16 at p 1, by an absolute floor in its
   denominator; a column held at one value now reads 0 at p 1. Since 0.9.0 for `gcm_test`, 0.2.0
   for `partial_corr_test`.
+- **`prescribe` gives no schedule, rather than raising `TypeError`, where the log moved no
+  lever.** Where every lever was held at one level or set from the state alone, no combination
+  of the others was left for the plan to keep, and the search for one indexed the levers with an
+  empty float array. It now gives no schedule, as where the log moves no lever apart from what
+  the state and the covariates predict: "no schedule: the log never moves a lever". Since
+  0.14.0.
 - **`prescribe` warns about single precision where the run is in it, not where the panel was built
   in it.** The `precision` warning read the panel's `x64`, set when the panel was built, which
   moves no number of the fit: the panel holds NumPy's columns, and the fit reads them in the run's
