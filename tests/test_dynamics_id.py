@@ -26,7 +26,12 @@ from chc.dynamics_id import (
     ConfoundedControlAffineSystem,
     _clustered_squares,
     _less_below_nothing,
+    _logged_relations,
+    _ridge_inverse,
+    _ridge_scales,
+    _ridge_weight,
     _robust_spreads,
+    _solve_ridge,
     _unmoved_actions,
     _unmoved_directions,
     fit_causal_residual,
@@ -1322,6 +1327,307 @@ def test_a_channel_the_log_cannot_split_is_split_the_same_in_any_units() -> None
     )
 
 
+def _twice(rng: np.random.Generator, x: np.ndarray, z: np.ndarray) -> np.ndarray:
+    """Two actions, the second twice the first, so the moment is solved on the moved directions."""
+    return _dithered(rng, x, z) * np.array([1.0, 2.0])
+
+
+@pytest.mark.parametrize("units", [1e-15, 1e-9, 1e-6, 1e-3, 1e3, 1e6, 1e15])
+@pytest.mark.parametrize("actions", [_dithered, _twice], ids=["moved", "split"])
+def test_the_channel_reads_the_same_with_the_actions_in_any_units(
+    actions: Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray], units: float
+) -> None:
+    """The moment's ridge was a constant on a Gram in the actions' units squared: logged in
+    millionths of their units, the actions read a channel of 0.0008 and -0.0004 where the fit reads
+    0.805 and -0.398, the log's being 0.8 and -0.4."""
+    log = _policy_log(4000, actions)
+    scaled = dict(log, u=log["u"] * units)
+    one, other = (fit_causal_residual(_known, data, 0.1, **RULED) for data in (log, scaled))
+    np.testing.assert_allclose(
+        np.asarray(other.residual.channel) * units,
+        np.asarray(one.residual.channel),
+        rtol=0.0,
+        atol=1e-6,
+    )
+    assert other.channel_error is not None
+    assert other.channel_error * units == pytest.approx(one.channel_error, rel=1e-6, abs=0.0)
+
+
+@pytest.mark.parametrize("units", [1e-13, 1e-6, 1e-3, 1e3, 1e6, 1e15])
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_the_fit_reads_the_same_with_the_state_in_any_units(integrator: str, units: float) -> None:
+    """The drift regression's ridge was a constant on a Gram of the raw state's monomials: logged
+    in millionths of its units, the state read a drift slope of -0.0020 where the fit reads -0.475,
+    the log's being -0.5. Below 1e-12 of its units the nuisances took the state for a constant and
+    left it unscaled under their ridge: at 1e-13 the channel moved by 0.46. A rate scales with the
+    state, so the drift's and the channel's intercepts do, and so do the errors, which are read at
+    the log's states; the slopes in the state do not."""
+    log = _policy_log(4000, _dithered)
+    scaled = dict(log, x=log["x"] * units, x_next=log["x_next"] * units)
+    one, other = (
+        fit_causal_residual(_known, data, 0.1, integrator=integrator, **RULED)
+        for data in (log, scaled)
+    )
+    per_feature = np.array([units, 1.0, 1.0])
+    for part in ("drift", "channel"):
+        np.testing.assert_allclose(
+            np.asarray(getattr(other.residual, part)) / per_feature,
+            np.asarray(getattr(one.residual, part)),
+            rtol=0.0,
+            atol=1e-6,
+            err_msg=part,
+        )
+    for error in ("drift_error", "channel_error"):
+        assert getattr(other, error) / units == pytest.approx(
+            getattr(one, error), rel=1e-6, abs=0.0
+        ), error
+
+
+@pytest.mark.parametrize(("offset", "tolerance"), [(1e2, 1e-12), (1e4, 1e-10)])
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_the_fit_reads_the_same_with_the_state_far_from_zero(
+    integrator: str, offset: float, tolerance: float
+) -> None:
+    """The drift's bias takes up a state's offset, so the drift's slopes and the channel do not
+    move, and its intercept moves by the slopes times the offset. The ridge scaled the slopes'
+    terms by the state's mean square, which grows with the offset, and penalised the bias, whose
+    size does: with the state a hundred spreads from zero the slopes moved by 3.8e-6 of the
+    largest, and ten thousand away by 0.036; the channel, under the RK4 map, by 7.6e-8 and 7.3e-4.
+    Solved on the uncentred Gram the slopes moved by 1.7e-11 and 4.3e-7, the rounding at the
+    offset's square; with the columns centred, by 2e-15 and 4e-13."""
+    log = _policy_log(4000, _dithered)
+    shifted = dict(log, x=log["x"] + offset, x_next=log["x_next"] + offset)
+    settings = {"adjust_for": ("z",), "nuisance_degree": 2, "channel_degree": 0}
+    one, other = (
+        fit_causal_residual(_known, data, 0.1, integrator=integrator, **settings)
+        for data in (log, shifted)
+    )
+    drift, moved = np.asarray(one.residual.drift), np.asarray(other.residual.drift)
+    np.testing.assert_allclose(moved[:, 1:], drift[:, 1:], rtol=0.0, atol=tolerance)
+    np.testing.assert_allclose(
+        moved[:, 0],
+        drift[:, 0] - offset * drift[:, 1:].sum(axis=1),
+        rtol=0.0,
+        atol=tolerance * offset,
+    )
+    channel = np.asarray(one.residual.channel)
+    np.testing.assert_allclose(
+        np.asarray(other.residual.channel), channel, rtol=0.0, atol=tolerance
+    )
+
+
+def test_a_ridge_solve_reads_the_same_with_a_column_far_from_zero() -> None:
+    """With its bias free and each other column's term scaled by its variance, a ridge solve's fit
+    does not see a column's origin, at any ridge: at 0.1 on 50 rows, with the bias penalised and
+    the column's term scaled by its mean square, a column a thousand spreads from zero lost 0.9994
+    of its slope."""
+    rng = np.random.default_rng(3)
+    x = rng.normal(0.0, 1.0, 50)
+    target = jnp.asarray((2.0 + 3.0 * x + rng.normal(0.0, 0.1, 50))[:, None])
+    fits = []
+    for offset in (0.0, 1e3):
+        design = jnp.stack([jnp.ones(50), jnp.asarray(x + offset)], axis=1)
+        fits.append(np.asarray(design @ _solve_ridge(design, target, 0.1)))
+    np.testing.assert_allclose(fits[1], fits[0], rtol=1e-6, atol=0.0)
+
+
+@pytest.mark.parametrize("units", [1e-6, 1e6])
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_each_row_s_influence_reads_the_same_with_the_state_in_any_units(
+    integrator: str, units: float
+) -> None:
+    """A row's influence reads the drift's direct response to it through the drift regression,
+    under that regression's ridge: logged in millionths of its units, the state moved the influence
+    by its own size. Each parameter's influence scales as the parameter does."""
+    log = _policy_log(4000, _dithered)
+    scaled = dict(log, x=log["x"] * units, x_next=log["x_next"] * units)
+    one, other = (
+        fit_causal_residual(_known, data, 0.1, integrator=integrator, influence=True, **RULED)
+        for data in (log, scaled)
+    )
+    assert one.influence is not None
+    assert other.influence is not None
+    per_feature = np.array([units, 1.0, 1.0])
+    channel = np.broadcast_to(per_feature, np.asarray(one.residual.channel).shape).ravel()
+    # the drift's rows are its features, each beside every state's coefficient on it
+    drift = np.repeat(per_feature, np.asarray(one.residual.drift).shape[0])
+    psi = np.asarray(one.influence)
+    np.testing.assert_allclose(
+        np.asarray(other.influence) / np.concatenate([channel, drift]),
+        psi,
+        rtol=0.0,
+        atol=1e-8 * float(np.max(np.abs(psi))),
+    )
+
+
+@pytest.mark.parametrize(("units", "offset"), [(1e-15, 0.0), (1e15, 0.0), (1e-6, 1e3)])
+def test_the_channel_reads_the_same_with_the_adjustment_set_in_any_units(
+    units: float, offset: float
+) -> None:
+    """The nuisances standardise the adjustment set, but took a column whose spread was under 1e-12
+    in the caller's units for a constant and left it unscaled under their ridge: logged at 1e-13 of
+    its units, the confounder was not adjusted for, and the channel moved by 1.27 and its error 2.6
+    times. A column is constant now to within 1e-12 of its own size, which an offset, as kelvin
+    carry, does not change; the offset's rounding of the column moves the channel by 3e-9."""
+    log = _policy_log(4000, _dithered)
+    one, other = (
+        fit_causal_residual(_known, data, 0.1, **RULED)
+        for data in (log, dict(log, z=log["z"] * units + offset))
+    )
+    np.testing.assert_allclose(
+        np.asarray(other.residual.channel), np.asarray(one.residual.channel), rtol=0.0, atol=1e-8
+    )
+    assert other.channel_error == pytest.approx(one.channel_error, rel=1e-8, abs=0.0)
+
+
+@pytest.mark.parametrize("units", [1e-15, 1e15])
+def test_the_rule_the_log_set_from_the_state_reads_the_same_in_any_units(units: float) -> None:
+    """A plan follows the rule the log set a lever by, read on the state standardised as the log
+    was. A state whose spread was under 1e-12 in the caller's units was left unscaled: at 1e-15 of
+    its units the rule read 0.30 off, and the state predicted no combination of the actions."""
+    log = _policy_log(4000, _ruled(1.0))
+
+    def read(scale: float):
+        x = log["x"] * scale
+        return _logged_relations(log["u"], x, jnp.concatenate([x, log["z"]], axis=1), 2)
+
+    one, other = read(1.0), read(units)
+    np.testing.assert_allclose(np.asarray(other.rule), np.asarray(one.rule), rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(
+        np.asarray(other.spread) / units, np.asarray(one.spread), rtol=1e-12, atol=0.0
+    )
+    for span in ("constant", "state", "covariates"):
+        mine, theirs = np.asarray(getattr(other, span)), np.asarray(getattr(one, span))
+        assert mine.shape == theirs.shape, span
+        np.testing.assert_allclose(mine @ mine.T, theirs @ theirs.T, rtol=0.0, atol=1e-12)
+
+
+@pytest.mark.parametrize("units", [1e-15, 1e-12, 1e15])
+def test_where_the_moment_has_no_data_the_fit_reads_the_same_with_the_state_in_any_units(
+    units: float,
+) -> None:
+    """On the ruled log the fit splits the channel by least squares on the drift's design, whose
+    cutoff is relative to its largest singular value: with the state at 1e-12 of its units, the
+    state's columns fell under it beside the constant's, and the channel moved by 50; at 1e15 the
+    constant's did, and it moved by 0.02 (ADR 0054)."""
+    log = _policy_log(4000, _ruled(1.0))
+    scaled = dict(log, x=log["x"] * units, x_next=log["x_next"] * units)
+    one, other = (fit_causal_residual(_known, data, 0.1, **RULED) for data in (log, scaled))
+    per_feature = np.array([units, 1.0, 1.0])
+    for part in ("drift", "channel"):
+        np.testing.assert_allclose(
+            np.asarray(getattr(other.residual, part)) / per_feature,
+            np.asarray(getattr(one.residual, part)),
+            rtol=0.0,
+            atol=1e-9,
+            err_msg=part,
+        )
+
+
+@pytest.mark.parametrize("units", [1e-15, 1e-6, 1e6, 1e15])
+def test_the_channel_reads_the_same_with_the_instrument_in_any_units(units: float) -> None:
+    """The instrument's first stage regressed the action on the raw monomials of the state and the
+    instrument under a constant ridge: logged in millionths of its units, the instrument moved the
+    channel by up to 0.36."""
+    system = _system(instrument_to_action=jnp.array([[0.8]]))
+    data = system.sample(4000, jax.random.key(0), _known)
+    scaled = dict(data, w=data["w"] * units)
+    one, other = (
+        fit_causal_residual(_known, log, system.dt, instrument="w") for log in (data, scaled)
+    )
+    np.testing.assert_allclose(
+        np.asarray(other.residual.channel), np.asarray(one.residual.channel), rtol=0.0, atol=1e-6
+    )
+
+
+def test_a_column_of_zeros_keeps_a_ridge_term_and_reads_a_coefficient_of_zero() -> None:
+    """A state or a driver logged at zero in every row has no mean square to scale the ridge by,
+    and without a term of its own the Gram is singular there."""
+    design = jnp.stack([jnp.ones(50), jnp.linspace(-1.0, 1.0, 50), jnp.zeros(50)], axis=1)
+    coefficients = _solve_ridge(design, 2.0 * design[:, 1:2] + 1.0, 1e-6)
+    np.testing.assert_allclose(
+        np.asarray(coefficients).ravel(), [1.0, 2.0, 0.0], rtol=0.0, atol=1e-6
+    )
+
+
+def test_the_centred_ridge_parts_are_the_raw_gram_s_own() -> None:
+    """Put together from the centred columns, the inverse, the rows' weights and the solve are the
+    raw Gram's under the same ridge, where that Gram is well conditioned."""
+    rng = np.random.default_rng(7)
+    design = jnp.asarray(np.column_stack([np.ones(40), rng.normal(2.0, 1.0, (40, 3))]))
+    target = jnp.asarray(rng.normal(size=(40, 2)))
+    gram = design.T @ design + 0.3 * jnp.diag(_ridge_scales(design))
+    inverse = np.linalg.inv(np.asarray(gram))
+    weight = inverse @ np.asarray(design).T
+    np.testing.assert_allclose(_ridge_inverse(design, 0.3), inverse, rtol=1e-10, atol=1e-13)
+    np.testing.assert_allclose(_ridge_weight(design, 0.3), weight, rtol=1e-10, atol=1e-13)
+    np.testing.assert_allclose(
+        _solve_ridge(design, target, 0.3), weight @ np.asarray(target), rtol=1e-10, atol=1e-13
+    )
+
+
+def _near_constant(column: np.ndarray, noise: float = 0.01) -> tuple[jax.Array, jax.Array]:
+    """A ridge solve's coefficients and fitted values on a bias, a slope and ``column``, with the
+    target moving with the slope by 2 and with a standard normal ``z`` by 0.5."""
+    rng = np.random.default_rng(4)
+    x = np.linspace(-1.0, 1.0, 50)
+    z = rng.normal(0.0, 1.0, 50)
+    target = jnp.asarray((1.0 + 2.0 * x + 0.5 * z + rng.normal(0.0, noise, 50))[:, None])
+    design = jnp.stack([jnp.ones(50), jnp.asarray(x), jnp.asarray(column)], axis=1)
+    coefficients = _solve_ridge(design, target, 1e-6)
+    return coefficients, design @ coefficients
+
+
+def test_a_column_close_to_a_constant_is_one_far_from_zero() -> None:
+    """A column whose spread is 1e-11 of its size is a column in small units far from zero, and the
+    solve reads it as it reads the same column standardised: its slope over its spread. On the
+    uncentred Gram it was the bias's twin to rounding, under a term scaled to its spread, and the
+    solve read nan."""
+    z = np.random.default_rng(4).normal(0.0, 1.0, 50)  # the target's z, as _near_constant draws it
+    near, near_fitted = _near_constant(1.0 + 1e-11 * z)
+    standard, standard_fitted = _near_constant(z)
+    assert np.all(np.isfinite(np.asarray(near)))
+    np.testing.assert_allclose(np.asarray(near_fitted), np.asarray(standard_fitted), atol=1e-4)
+    assert float(near[2, 0]) * 1e-11 == pytest.approx(float(standard[2, 0]), rel=1e-4, abs=0.0)
+
+
+def test_a_column_constant_but_for_rounding_keeps_its_mean_square() -> None:
+    """Within 1e-12 of its own size a column counts as constant: it keeps its mean square, beside
+    the bias it repeats, and reads a coefficient of zero. Under a term scaled to its spread, about
+    1e-26 of its square, it took up the target's noise with a coefficient of 1e10."""
+    rounding = 1e-13 * np.random.default_rng(5).choice([-1.0, 1.0], 50)
+    coefficients, _ = _near_constant(1.0 + rounding)
+    without, _ = _near_constant(np.zeros(50))
+    assert abs(float(coefficients[2, 0])) < 1e-6
+    np.testing.assert_allclose(
+        np.asarray(coefficients)[:2], np.asarray(without)[:2], rtol=0.0, atol=1e-6
+    )
+
+
+def test_the_public_moment_reads_a_state_logged_at_zero_as_no_slope() -> None:
+    """A state logged at zero in every row makes its slope's column of the moment zero; the
+    moment's penalty keeps a term of 1 there, without which its Gram is singular."""
+    rng = np.random.default_rng(6)
+    u_res = jnp.asarray(rng.normal(size=(500, 1)))
+    y_res = 0.8 * u_res + 0.1 * jnp.asarray(rng.normal(size=(500, 1)))
+    channel = np.asarray(solve_channel_moment(y_res, u_res, jnp.zeros((500, 1))))
+    assert channel[0, 0, 1] == 0.0
+    assert channel[0, 0, 0] == pytest.approx(0.8, abs=0.02)
+
+
+def test_the_public_moment_reads_the_same_in_any_units() -> None:
+    """``solve_channel_moment`` scales its ridge by the regressor's own columns, the only size it
+    is given: residuals in millionths of their units read a channel of 0.0016 and 0.0007 where they
+    read 0.80 and 0.40."""
+    rng = np.random.default_rng(5)
+    x = jnp.asarray(rng.normal(size=(2000, 1)))
+    u_res = jnp.asarray(rng.normal(size=(2000, 1)))
+    y_res = 0.8 * u_res * (1.0 + 0.5 * x) + 0.1 * jnp.asarray(rng.normal(size=(2000, 1)))
+    one = np.asarray(solve_channel_moment(y_res, u_res, x))
+    small = np.asarray(solve_channel_moment(y_res, 1e-6 * u_res, x))
+    np.testing.assert_allclose(small * 1e-6, one, rtol=1e-9, atol=0.0)
+
+
 # ---- a channel error summed within clusters ----
 
 CLUSTERED = {"adjust_for": ("z",), "channel_degree": 0, "nuisance_degree": 1, "folds": 1}
@@ -1927,18 +2233,18 @@ def test_a_weakening_instrument_reads_a_falling_relevance_and_stays_identified()
         (
             "euler",
             [
-                [1.0401683840501454, -0.028600245053311126, 0.10613137781759098],
-                [0.5189711733041126, -0.016148790711315582, 0.05010220098820722],
+                [1.0401683819451792, -0.02860024480332746, 0.10613137707962442],
+                [0.5189711722550808, -0.016148790583162567, 0.050102200625694565],
             ],
-            (0.0880621316215113, 0.06558687130969618),
+            (0.08806213130166844, 0.06558687121445604),
         ),
         (
             "rk4",
             [
-                [1.0508991277589257, -0.029127364192318574, 0.10820857404763345],
-                [0.5222761413780578, -0.01641441784158229, 0.0508734083213673],
+                [1.0508991256123608, -0.029127363934056676, 0.10820857328551325],
+                [0.5222761403167667, -0.016414417710067162, 0.05087340795001539],
             ],
-            (0.0899126463751265, 0.06674476962807059),
+            (0.08991264604299758, 0.06674476953031243),
         ),
     ],
 )
@@ -1947,7 +2253,7 @@ def test_a_relevant_instrument_fits_as_it_did(
 ) -> None:
     """The positive control: an instrument that moves the lever, as on the reference plant, leaves
     the fit identified, near the truth, and as the fit read it before the rank check, pinned here
-    to 1e-9."""
+    to 1e-9. The ridge read in each column's own units moved these by at most 9e-9 of each."""
     fit = fit_causal_residual(
         _known, _iv_log(), IV_SYSTEM.dt, instrument="w", integrator=integrator
     )

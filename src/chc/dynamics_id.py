@@ -281,12 +281,29 @@ def _standardised(covariates: Array) -> Array:
     is unchanged by it; only the ridge's meaning moves, and pinning that to the data's own scale is
     the point. Per-fold statistics would make the penalty fold-dependent for no gain.
 
-    A zero-variance column keeps scale 1, because dividing a constant column by its own zero spread
-    is how a conditioning fix becomes a ``nan`` of its own.
+    A constant column keeps scale 1, because dividing a constant column by its own zero spread is
+    how a conditioning fix becomes a ``nan`` of its own (:func:`_spread`).
     """
-    centre = jnp.mean(covariates, axis=0, keepdims=True)
-    spread = jnp.std(covariates, axis=0, keepdims=True)
-    return (covariates - centre) / jnp.where(spread > 1e-12, spread, 1.0)
+    return (covariates - jnp.mean(covariates, axis=0)) / _spread(covariates)
+
+
+def _spread(columns: Array) -> Array:
+    """Each column's standard deviation, or 1 for a column constant to within 1e-12 of its own root
+    mean square. The floor is the column's own: one of 1e-12 in the caller's units took a column
+    logged in small units for a constant, and left it unscaled under the nuisances' ridge."""
+    size = jnp.sqrt(jnp.mean(columns**2, axis=0))
+    spread = jnp.std(columns, axis=0)
+    return jnp.where(spread > 1e-12 * size, spread, 1.0)
+
+
+def _own_scale(columns: Array) -> Array:
+    """Each column's power of two nearest the reciprocal of its root mean square, 1 for a column of
+    zeros. A least-squares solve on the columns times these cuts its rank at the same share of each
+    column in any units, where on the raw columns its cutoff, relative to the largest singular
+    value, dropped a column logged in units far from the others'. The rescaling is exact."""
+    size = jnp.sqrt(jnp.mean(columns**2, axis=0))
+    exponent = jnp.round(jnp.log2(jnp.where(size > 0.0, size, 1.0)))
+    return jnp.exp2(-exponent)
 
 
 def _cross_fit_residuals(
@@ -326,9 +343,60 @@ def _cross_fit_residuals(
     return target - target_hat, action - action_hat, target_hat, action_hat
 
 
+def _mean_squares(columns: Array, weights: Array | None = None) -> Array:
+    """Each column's mean square, its rows weighted by ``weights``, and 1 for a column of zeros."""
+    squares = columns**2 if weights is None else weights[:, None] * columns**2
+    rows = columns.shape[0] if weights is None else jnp.sum(weights)
+    size = jnp.sum(squares, axis=0) / rows
+    return jnp.where(size > 0.0, size, 1.0)
+
+
+def _ridge_scales(design: Array) -> Array:
+    """The ridge's scale on each coefficient of a design whose first column is its bias, as
+    :func:`chc.residual.control_affine_features` and :func:`chc.causal._polynomial_features` put
+    it: 0 on the bias, left free to take up each column's mean, and each other column's variance
+    about its mean, or its mean square where it is constant to within 1e-12 of its own size, or 1
+    where it is all zero (ADR 0057). Scaled by its mean square, a column far from zero, such as a
+    temperature in kelvin, had its slope shrunk by the square of its offset over its spread."""
+    spread = jnp.var(design, axis=0)
+    size = jnp.mean(design**2, axis=0)
+    varies = jnp.sqrt(spread) > 1e-12 * jnp.sqrt(size)
+    return jnp.where(varies, spread, jnp.where(size > 0.0, size, 1.0)).at[0].set(0.0)
+
+
+def _ridge_parts(design: Array, ridge: float) -> tuple[Array, Array, Array]:
+    """The columns after the bias, centred, their means, and the inverse of their Gram under the
+    ridge :func:`_ridge_scales` scales: a ridge solve of ``X'X + ridge diag(s)`` written with the
+    columns centred, where the bias is apart from the rest. The solve is the same, and a column
+    far from zero costs it no digits: on the raw Gram, a column 1e-11 of its size from constant
+    was the bias's twin to rounding, under a term too small to tell them apart, and read nan.
+    Added as a constant, the ridge outweighed a column logged in units a millionth of its own, and
+    set its coefficient near zero."""
+    mean = jnp.mean(design[:, 1:], axis=0)
+    centred = design[:, 1:] - mean
+    scales = _ridge_scales(design)[1:]
+    return centred, mean, jnp.linalg.inv(centred.T @ centred + ridge * jnp.diag(scales))
+
+
 def _solve_ridge(design: Array, target: Array, ridge: float) -> Array:
-    gram = design.T @ design + ridge * jnp.eye(design.shape[1])
-    return jnp.linalg.solve(gram, design.T @ target)
+    centred, mean, inner = _ridge_parts(design, ridge)
+    slopes = inner @ (centred.T @ target)
+    return jnp.concatenate([(jnp.mean(target, axis=0) - mean @ slopes)[None], slopes])
+
+
+def _ridge_weight(design: Array, ridge: float) -> Array:
+    """``(X'X + ridge diag(s))^-1 X'``: each row's weight on each coefficient of the solve."""
+    centred, mean, inner = _ridge_parts(design, ridge)
+    slopes = inner @ centred.T
+    return jnp.concatenate([(1.0 / design.shape[0] - mean @ slopes)[None], slopes])
+
+
+def _ridge_inverse(design: Array, ridge: float) -> Array:
+    """``(X'X + ridge diag(s))^-1``, put together from the centred columns' own."""
+    _, mean, inner = _ridge_parts(design, ridge)
+    corner = 1.0 / design.shape[0] + mean @ inner @ mean
+    edge = -(inner @ mean)
+    return jnp.block([[corner[None, None], edge[None, :]], [edge[:, None], inner]])
 
 
 def _channel_design(action_residual: Array, states: Array, degree: int) -> Array:
@@ -344,11 +412,12 @@ def _channel_coefficients(
     regressor: Array,
     instrument: Array,
     ridge: float,
+    penalty: Array,
     weights: Array | None = None,
-    penalty: Array | None = None,
 ) -> Array:
     """Solve the just-identified moment ``Z'(y_res - D c) = 0`` for ``c``, ridge-stabilised: the
-    ridge times ``penalty``, the identity where it is None, added to ``Z'D``.
+    ridge times ``penalty`` added to ``Z'D``. The penalty scales each coefficient to its column's
+    size, so the ridge reads the same in any units of the actions and the state.
 
     ``Z is D`` reduces to ordinary least squares; a different ``Z`` is two-stage least squares.
     Writing it as one solve rather than "regress on the projection" matters: the two agree only for
@@ -357,8 +426,7 @@ def _channel_coefficients(
     """
     if weights is not None:
         instrument = instrument * weights[:, None]
-    shape = jnp.eye(regressor.shape[1]) if penalty is None else penalty
-    gram = instrument.T @ regressor + ridge * shape
+    gram = instrument.T @ regressor + ridge * penalty
     return jnp.linalg.solve(gram, instrument.T @ state_residual)
 
 
@@ -653,7 +721,8 @@ def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
     unit = scale[:, None] * jnp.linalg.qr(directions / scale[:, None], mode="complete")[0]
     basis, free = unit[:, : directions.shape[1]], unit[:, directions.shape[1] :]
     push = raw @ basis
-    left = push - design @ jnp.linalg.lstsq(design, push)[0]
+    own = _own_scale(design)
+    left = push - design @ (own[:, None] * jnp.linalg.lstsq(design * own, push)[0])
     # as in _kept: a log of fewer transitions than directions leaves the rest a zero singular value
     short = left.shape[1] - left.shape[0]
     padded = jnp.concatenate([left, jnp.zeros((short, left.shape[1]))]) if short > 0 else left
@@ -718,8 +787,7 @@ def _logged_relations(
         return np.linalg.qr(columns)[0] if columns.shape[1] else columns
 
     centre = jnp.mean(states, axis=0)
-    spread = jnp.std(states, axis=0)
-    spread = jnp.where(spread > 1e-12, spread, 1.0)
+    spread = _spread(states)
     features = _polynomial_features((states - centre) / spread, nuisance_degree)
     return _LoggedRelations(
         constant=kept(jnp.ones((actions.shape[0], 1), dtype=actions.dtype)),
@@ -815,7 +883,7 @@ def _ols_error(target: Array, design: Array, coeffs: Array, ridge: float) -> flo
     n, n_coeff = design.shape
     score = target - design @ coeffs
     sigma2 = jnp.sum(score**2) / (max(n - n_coeff, 1) * target.shape[1])
-    covariance = sigma2 * jnp.linalg.inv(design.T @ design + ridge * jnp.eye(n_coeff))
+    covariance = sigma2 * _ridge_inverse(design, ridge)
     return _error_at_rows(covariance[None], design)
 
 
@@ -853,7 +921,10 @@ def solve_channel_moment(
             where the confounder is latent. ``None`` means the action residual instruments itself,
             which is the orthogonal (adjusted) case.
         degree: monomial degree of ``B_θ``'s dependence on the state.
-        ridge: Tikhonov term on the moment's Gram matrix.
+        ridge: Tikhonov term on the moment's Gram matrix, on each coefficient scaled by its
+            regressor column's mean square, weighted as the rows are, so that it reads the same in
+            any units of the actions and the state. Added as a constant, it outweighed actions
+            logged in units a millionth of their own, and set their channel near zero.
         weights: one weight per transition, shape ``(N,)``, on its moment; ``None`` weighs all
             alike. A weight that is a function of the state alone keeps the moment orthogonal (see
             :func:`fit_causal_residual`). Experimental: it may change or be withdrawn in any
@@ -869,7 +940,8 @@ def solve_channel_moment(
         if instrument_action is None
         else _channel_design(instrument_action, states, degree)
     )
-    coeffs = _channel_coefficients(state_residual, regressor, moment, ridge, weights)
+    penalty = jnp.diag(_mean_squares(regressor, weights))
+    coeffs = _channel_coefficients(state_residual, regressor, moment, ridge, penalty, weights)
     n_features = regressor.shape[1] // action_residual.shape[1]
     return coeffs.T.reshape(state_residual.shape[1], action_residual.shape[1], n_features)
 
@@ -950,6 +1022,13 @@ def fit_causal_residual(
             Cross-fitting earns its keep against learners whose fit is adaptive to the sample
             (feature selection, trees, early stopping) or saturated enough to memorise it, where
             own-sample residuals collapse; ``folds>=2`` is the safe default for that reason.
+        ridge: the Tikhonov term of the nuisances, the channel's moment, the drift regression and
+            the instrument's first stage. The nuisances read standardised covariates; the others
+            scale each coefficient's term by its column's mean square, the moment's on the log's
+            raw actions. So the ridge reads the same in any units of the state, the actions, the
+            drivers and the instrument. Added as a constant, it outweighed a column logged in units
+            a millionth of its own: such actions read a channel near zero, and such a state a drift
+            slope near zero.
         integrator: the one-step map the fitted field is made consistent with.
 
             ``"euler"`` (default, and what every release so far did) reads the rate off the log as
@@ -1117,16 +1196,15 @@ def fit_causal_residual(
     design = jnp.concatenate([phi_x, driver_read], axis=1)
 
     row_weight = None if weights is None else _state_weights(weights, x)
+    raw = _channel_design(u, x, channel_degree)
+    # the moment's ridge, scaled to the raw actions' size, as the unmoved directions are
+    penalty = jnp.diag(_mean_squares(raw, row_weight))
     directions = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree)
     unmoved = _unmoved_parameters(directions, phi_c, u, design, ridge, x.shape[1])
     # The moment has no data along these directions, and its ridge would set the channel there by
     # the ratio of two roundings, which grows as the square of the actions' units: the fit then
     # missed the log's own rates by ten times their noise in units a thousand times larger.
-    split = (
-        _split_unmoved(directions, _channel_design(u, x, channel_degree), design)
-        if directions.shape[1]
-        else None
-    )
+    split = _split_unmoved(directions, raw, design) if directions.shape[1] else None
     relevance: Array | None = None
     rank: int | None = None
     if instrument is not None:
@@ -1148,28 +1226,26 @@ def fit_causal_residual(
             identified, method, instrument_action = False, "observational", None
 
     def moment(y_res: Array, u_res: Array) -> Array:
-        if split is None:
-            return solve_channel_moment(
-                y_res,
-                u_res,
-                x,
-                instrument_action=instrument_action,
-                degree=channel_degree,
-                ridge=ridge,
-                weights=row_weight,
-            )
-        # Only where the moment has data: an unmoved direction's regressor is what the nuisance's
-        # ridge left of an action the covariates determine, and solved beside the rest it moved
-        # them as far as the actions' units made it. The ridge keeps its meaning on the raw channel.
-        regressor = _channel_design(u_res, x, channel_degree) @ split.free
+        regressor = _channel_design(u_res, x, channel_degree)
         instrument = (
             regressor
             if instrument_action is None
-            else _channel_design(instrument_action, x, channel_degree) @ split.free
+            else _channel_design(instrument_action, x, channel_degree)
         )
-        coeffs = split.free @ _channel_coefficients(
-            y_res, regressor, instrument, ridge, row_weight, penalty=split.free.T @ split.free
-        )
+        if split is None:
+            coeffs = _channel_coefficients(y_res, regressor, instrument, ridge, penalty, row_weight)
+        else:
+            # Only where the moment has data: an unmoved direction's regressor is what the
+            # nuisance's ridge left of an action the covariates determine, and solved beside the
+            # rest it moved them as far as the actions' units made it.
+            coeffs = split.free @ _channel_coefficients(
+                y_res,
+                regressor @ split.free,
+                instrument @ split.free,
+                ridge,
+                split.free.T @ penalty @ split.free,
+                row_weight,
+            )
         return coeffs.T.reshape(y_res.shape[1], u_res.shape[1], -1)
 
     def solve(y: Array) -> tuple[Array, Array, tuple[Array, Array, Array, Array, Array]]:
@@ -1193,9 +1269,7 @@ def fit_causal_residual(
         """``(p, N, n)``: how a row's rate moves the drift regression's rows other than through the
         channel -- the regression's own weight on the row, in the row's state's column."""
         states = x.shape[1]
-        weight = jnp.linalg.solve(
-            design.T @ design + ridge * jnp.eye(design.shape[1]), design.T
-        )  # (features + drivers, N)
+        weight = _ridge_weight(design, ridge)  # (features + drivers, N)
         rows = jnp.einsum("fi,ts->ftis", weight, jnp.eye(states))
         rows = rows.reshape(weight.shape[0] * states, x.shape[0], states)
         return jnp.concatenate([jnp.zeros((channel_size, x.shape[0], states)), rows])
@@ -1357,9 +1431,11 @@ def fit_causal_residual(
 
         # The drift keeps the defect, which is its own regression's residual, as under Euler.
         noise = jnp.sum(defect(fit) ** 2, axis=0) / max(x.shape[0] - design.shape[1], 1)
-        gram = jnp.linalg.inv(design.T @ design + ridge * jnp.eye(design.shape[1]))
+        gram = _ridge_inverse(design, ridge)
         drift_size = theta.size - size
-        drift_gained = jnp.einsum("fi,isq->fsq", gram @ design.T, sensitivity[:, :, size:])
+        drift_gained = jnp.einsum(
+            "fi,isq->fsq", _ridge_weight(design, ridge), sensitivity[:, :, size:]
+        )
         drift_newton = jnp.eye(drift_size) - drift_gained.reshape(drift_size, drift_size)
         drift_spread = jnp.kron(gram, jnp.diag(noise))
         drift_covariance = jnp.linalg.solve(

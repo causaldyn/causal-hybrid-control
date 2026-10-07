@@ -111,6 +111,28 @@ still change).
 
 ### Fixed
 
+- **The fit's ridge reads the same in any units.** `fit_causal_residual` added `ridge` as a
+  constant to the Gram matrices of the channel's moment, the drift regression and the
+  instrument's first stage, each built from the caller's raw columns, so a column logged in small
+  units was outweighed by it and its coefficient set near zero, with no error. On the tests' log,
+  with the actions in millionths of their units the channel read 0.0008 and -0.0004 where it reads
+  0.805 and -0.398; with the state in millionths the drift's slope read -0.0020 where -0.475; with
+  a driver in millionths its gain read 0.0013 where 1.198; and an instrument in millionths moved
+  the channel by up to 0.36. `solve_channel_moment` on residuals in millionths read 0.0016 where
+  0.80. Each ridge term is now scaled by its column's variance where the design has a bias, which
+  goes free, and by its mean square where it has none, the moment's by the raw actions' columns
+  (ADR 0057). The drift's ridge penalised its bias and scaled each slope's term by the state's
+  size, so a state far from zero shrank the slopes: ten thousand spreads away by 0.036. The bias
+  goes free now, and a design with one is solved on its centred columns, so the slopes there move
+  by 4e-13, the rounding of the state's own values. Two floors were in the caller's units too: the
+  nuisances took a column whose spread was under 1e-12 for a constant, so a confounder logged at
+  1e-13 of its units was not adjusted for and the channel moved by 1.27; and where the moment has
+  no data, a least squares on the raw drift design dropped the state's columns at 1e-12 of its
+  units, moving the channel by 50. A column is constant now within 1e-12 of its own size, and that
+  least squares reads each column in its own units. The fit reads the same from 1e-15 to 1e15 of
+  each column's units. Every fit moves at unit scale: on the tests' logs a coefficient by at most
+  6e-9 of the largest, a standard error by 1.3e-8 and a plan's actions by 4e-10. Since 0.3.0; the
+  drivers' since 0.7.0.
 - **`prescribe` warns about single precision where the run is in it, not where the panel was built
   in it.** The `precision` warning read the panel's `x64`, set when the panel was built, which
   moves no number of the fit: the panel holds NumPy's columns, and the fit reads them in the run's

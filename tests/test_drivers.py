@@ -211,6 +211,30 @@ def _transitions(temp: np.ndarray, heat: np.ndarray, outdoor: np.ndarray) -> dic
     }
 
 
+@pytest.mark.parametrize("units", [1e-15, 1e-6, 1e6, 1e15])
+def test_a_driver_s_gain_reads_the_same_in_any_units(units: float) -> None:
+    """The driver joins the drift regression in its raw units, under a ridge that was a constant:
+    logged in millionths of its units, the driver read a gain of 0.0013 where it reads 1.198, and
+    the channel 0.778 where 0.796."""
+    data = _transitions(*_simulate())
+    scaled = dict(data, outdoor=data["outdoor"] * units, outdoor_next=data["outdoor_next"] * units)
+    zero = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    one, other = (
+        fit_causal_residual(
+            zero, log, DT, adjust_for=("outdoor",), integrator="rk4", drivers=("outdoor",)
+        )
+        for log in (data, scaled)
+    )
+    assert one.driver_gain is not None
+    assert other.driver_gain is not None
+    np.testing.assert_allclose(
+        np.asarray(other.driver_gain) * units, np.asarray(one.driver_gain), rtol=0.0, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.asarray(other.residual.channel), np.asarray(one.residual.channel), rtol=0.0, atol=1e-6
+    )
+
+
 def test_the_fit_recovers_the_push_and_the_decay_it_used_to_absorb() -> None:
     """Without the driver the drift carries its correlation with the state: over eight seeds the
     decay came back between -0.18 and -0.005 against a true -0.5, and the defect sat at 8x the
