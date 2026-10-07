@@ -38,6 +38,7 @@ from chc import _units
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.dynamics_id import Integrator
+from chc.frames import _real_entries, _real_numbers
 from chc.integrate import rk4_step
 from chc.residual import ContractiveResidual, LipschitzResidual, MLPResidual
 from chc.train import fit_residual, one_step_mse
@@ -102,6 +103,7 @@ def fit_ensemble(
     the same recursion -- :func:`sharded_ensemble_certificate` pins the agreement in ULP.
     """
     known = model.known
+    data = _real_entries(data, ("x", "u", "x_next"))
     xs, us, x_next = data["x"], data["u"], data["x_next"]
     n = xs.shape[0]
     state_dim, control_dim, out_dim = xs.shape[1], us.shape[1], x_next.shape[1]
@@ -467,6 +469,7 @@ class SplitConformal(eqx.Module):
             sigma = _predictive_std(known, ensemble, x, u, dt) + eps
             return jnp.linalg.norm(x_next - mean) / sigma
 
+        data = _real_entries(data, ("x", "u", "x_next"))
         scores = jax.vmap(score)(data["x"], data["u"], data["x_next"])
         n = int(scores.shape[0])
         rank = _conformal_rank(n, alpha)
@@ -493,6 +496,7 @@ class SplitConformal(eqx.Module):
             mean = jnp.mean(_member_next_states(known, ensemble, x, u, self.dt), axis=0)
             return jnp.linalg.norm(x_next - mean) <= self.interval_width(x, u)
 
+        data = _real_entries(data, ("x", "u", "x_next"))
         return float(jnp.mean(jax.vmap(covered)(data["x"], data["u"], data["x_next"])))
 
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
@@ -1187,7 +1191,7 @@ def msm_worst_case_mean(outcomes: NDArray[np.float64], gamma: float) -> float:
     # below 1 the weight box [1/Gamma, Gamma] is empty, and the sample mean came back as its bound
     if gamma < 1.0:
         raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {gamma}")
-    y = np.asarray(outcomes, dtype=np.float64)
+    y = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64)
     mu = float(np.mean(y))
     if gamma == 1.0:
         return mu
@@ -1206,6 +1210,7 @@ def confounding_robust_radius(
     below ``nominal_radius`` (pessimism only grows under assumed confounding) and is monotone in
     ``Gamma``. Feeds :func:`chc.support.pessimistic_control` as a widened uncertainty budget.
     """
+    outcomes = _real_numbers(outcomes, "outcomes")
     mu = float(np.mean(np.asarray(outcomes, dtype=np.float64)))
     return nominal_radius + (msm_worst_case_mean(outcomes, gamma) - mu)
 
@@ -1562,12 +1567,12 @@ def benchmark_gamma(
         raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {assumed_gamma}")
     if not 0.0 < quantile <= 1.0:
         raise ValueError(f"quantile must lie in (0, 1]; got {quantile}")
-    x = np.asarray(covariates, dtype=np.float64)
+    x = np.asarray(_real_numbers(covariates, "covariates"), dtype=np.float64)
     if x.ndim != 2:
         raise ValueError(f"covariates must be 2-D (n, p); got shape {x.shape}")
     if x.shape[1] == 0:
         raise ValueError("benchmarking needs at least one observed covariate")
-    t = np.asarray(treated, dtype=np.float64).ravel()
+    t = np.asarray(_real_numbers(treated, "treated"), dtype=np.float64).ravel()
     # one nan read every covariate's implied Gamma as 1, no confounding at all
     if not (np.isfinite(x).all() and np.isfinite(t).all()):
         raise ValueError("the treatment and the covariates must be finite")
@@ -1633,7 +1638,7 @@ def negative_control_gamma(
     upper-endpoint routine :func:`msm_worst_case_mean` computes, which is why the sharp CVaR tails
     are used in the direction that actually binds rather than the convenient one.
     """
-    y = np.asarray(outcomes, dtype=np.float64).ravel()
+    y = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64).ravel()
     # a nan returned gamma_max, as if it were the confounding measured
     if not np.isfinite(y).all():
         raise ValueError("the negative control's outcomes must be finite")

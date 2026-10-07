@@ -24,6 +24,8 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import NDArray
 
+from chc.frames import _real_numbers
+
 Outcomes = NDArray[np.float64]
 Groups = NDArray[np.int64]
 
@@ -116,8 +118,8 @@ def callaway_santanna(
 
 
 def _panel(outcomes: Outcomes, group: Groups) -> tuple[Outcomes, Groups]:
-    outcomes = np.asarray(outcomes, dtype=np.float64)
-    group = np.asarray(group, dtype=np.int64)
+    outcomes = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64)
+    group = np.asarray(_real_numbers(group, "group"), dtype=np.int64)
     if outcomes.ndim != 2 or group.shape != (outcomes.shape[0],):
         msg = "outcomes must be (N, T) and group (N,) with matching N"
         raise ValueError(msg)

@@ -23,6 +23,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from chc import _units
+from chc.frames import _real_entries, _real_numbers
 
 
 class GaussianPolicy(eqx.Module):
@@ -51,6 +52,7 @@ def fit_behavior_policy(xs: Array, us: Array) -> GaussianPolicy:
     simulated on heteroscedastic logs, that bias took the type-I error from 0.013 to 1.000. Where
     the propensity was logged at decision time, use it instead.
     """
+    xs, us = _real_numbers(xs, "xs"), _real_numbers(us, "us")
     n = xs.shape[1]
     # lstsq cuts singular values below a share of the largest, so in float32 a state logged in
     # units far from the others', or far from zero, fell under the cut and read a weight of exactly
@@ -86,6 +88,7 @@ def off_policy_value(
     largest normalised weight, ``max w / sum w``, a share of the total rather than a weight -- and
     ``overlap_ok``, whether the ESS fraction clears ``ess_fraction_threshold``.
     """
+    data = _real_entries(data, ("x", "u", "r"))
     xs, us, rs = data["x"], data["u"], data["r"]
     log_w = jax.vmap(target.log_prob)(xs, us) - jax.vmap(behavior.log_prob)(xs, us)
     raw_w = jnp.exp(log_w)

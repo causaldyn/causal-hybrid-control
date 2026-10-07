@@ -32,6 +32,7 @@ from numpy.typing import NDArray
 from scipy.optimize import nnls
 
 from chc import _units
+from chc.frames import _real_numbers
 
 Outcomes = NDArray[np.float64]
 Vector = NDArray[np.float64]
@@ -70,7 +71,7 @@ def _scm_weights(donor_pre: Outcomes, treated_pre: Vector, steps: int) -> Vector
 def _split(
     outcomes: Outcomes, treated_unit: int, n_pre: int
 ) -> tuple[Outcomes, Outcomes, Vector, Vector]:
-    outcomes = np.asarray(outcomes, dtype=np.float64)
+    outcomes = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64)
     n_units, n_periods = outcomes.shape
     if not 0 <= treated_unit < n_units:
         msg = f"treated_unit {treated_unit} out of range for {n_units} units"

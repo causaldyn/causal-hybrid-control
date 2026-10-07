@@ -193,6 +193,7 @@ from jax.typing import ArrayLike
 from scipy import sparse
 from scipy.optimize import OptimizeResult, brentq, linprog
 
+from chc.frames import _real_numbers
 from chc.response import (
     Channel,
     Logarithmic,
@@ -731,7 +732,11 @@ def _inputs(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     lower_rates = np.asarray(lower, dtype=float)
     upper_rates = np.asarray(upper, dtype=float)
-    spent = np.zeros((0, len(channels))) if history is None else np.asarray(history, dtype=float)
+    spent = (
+        np.zeros((0, len(channels)))
+        if history is None
+        else np.asarray(_real_numbers(history, "history"), dtype=float)
+    )
     _check(channels, periods, lower_rates, upper_rates, spent)
     return lower_rates, upper_rates, spent
 
@@ -2184,7 +2189,11 @@ def _layout(
             raise ValueError(
                 f"{name} has shape {rates.shape}; it needs {(geos, width)}, one a cell"
             )
-    spent = np.zeros((0, geos, width)) if history is None else np.asarray(history, dtype=float)
+    spent = (
+        np.zeros((0, geos, width))
+        if history is None
+        else np.asarray(_real_numbers(history, "history"), dtype=float)
+    )
     if spent.ndim != 3 or spent.shape[1:] != (geos, width):
         raise ValueError(f"history has shape {spent.shape}; it needs (T, {geos}, {width})")
     names = [f"geo {g}'s channel {c}" for g in range(geos) for c in range(width)]

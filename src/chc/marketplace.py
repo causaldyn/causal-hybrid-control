@@ -27,6 +27,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from chc import _units
+from chc.frames import _real_entries
 from chc.games import softmax_congestion_equilibrium, stackelberg_allocation
 
 
@@ -135,6 +136,7 @@ def _zone_slope(u: Array, y: Array, extra: Array) -> tuple[Array, Array]:
 
 
 def _calibrate(logs: dict[str, Array], covariates: tuple[str, ...]) -> ExposureResponse:
+    logs = _real_entries(logs, ("u", "y", *covariates), "logs")
     n_zones = logs["u"].shape[1]
     # In the incentive's dtype: under x64 a default block is float64, and joined to a float32 log
     # it would decide the zone's solve, not the log.

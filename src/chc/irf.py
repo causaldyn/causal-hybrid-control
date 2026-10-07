@@ -20,6 +20,7 @@ from jax import Array
 from numpy.typing import ArrayLike
 
 from chc.causal import _ols_with_intercept
+from chc.frames import _real_entries, _real_numbers
 from chc.toeplitz import levinson_durbin, sample_autocorrelation, solve_toeplitz
 
 
@@ -44,6 +45,7 @@ def _projection_design(
             f"the treatment {treatment!r} is also a covariate: read twice, its coefficient is "
             "split between the two copies, and the response reads half its size"
         )
+    data = _real_entries(data, (treatment, outcome, *adjust_for))
     treatment_series = jnp.asarray(data[treatment])
     outcome_series = jnp.asarray(data[outcome])
     total = treatment_series.shape[0]
@@ -274,7 +276,7 @@ def innovations(series: ArrayLike, order: int) -> np.ndarray:
     is removed. Prewhitening both series before cross-correlating de-biases it under autocorrelation
     -- a classical complement to the MCI test in :mod:`chc.independence`.
     """
-    series = np.asarray(series, dtype=np.float64)
+    series = np.asarray(_real_numbers(series, "series"), dtype=np.float64)
     ar, _reflection, _error = levinson_durbin(sample_autocorrelation(series, order))
     n = series.shape[0]
     prediction = sum(ar[i - 1] * series[order - i : n - i] for i in range(1, order + 1))
@@ -296,6 +298,7 @@ def structured_irf(
     projection), then propagates ``g_0 = 0``, ``g_1 = impact``, ``g_h = sum_i a_i g_{h-i}``. Agrees
     with the local-projections IRF but makes the AR structure explicit (reflection coeffs).
     """
+    data = _real_entries(data, (treatment, outcome, *adjust_for))
     ar, _reflection, _error = levinson_durbin(sample_autocorrelation(data[outcome], order))
     impact = float(local_projection_irf(data, 1, treatment, outcome, adjust_for)[1])
     response = np.zeros(horizon + 1)
@@ -315,7 +318,7 @@ def irf_control_sequence(irf: ArrayLike, target: ArrayLike) -> np.ndarray:
     over-actuates on a delayed plant (steady-state error ``sum_h g_h / g_1``).
     """
     kernel = np.asarray(irf, dtype=np.float64)[1:]  # drop g_0 = 0; the causal impulse response
-    target = np.asarray(target, dtype=np.float64)
+    target = np.asarray(_real_numbers(target, "target"), dtype=np.float64)
     horizon = target.shape[0]
     first_col = np.zeros(horizon)
     first_col[: min(kernel.shape[0], horizon)] = kernel[:horizon]

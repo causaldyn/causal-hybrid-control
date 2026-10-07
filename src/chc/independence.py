@@ -26,6 +26,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from chc import _units
+from chc.frames import _real_numbers
 
 _EPS = 1e-12
 # A residual whose variance is below this share of its column's has nothing left to test: ``z``
@@ -82,6 +83,8 @@ def partial_corr_test(
     same in whatever units each column is logged. A column that moved by rounding alone, such as
     one logged at a single value, reads a correlation of 0 and a p-value of 1.
     """
+    x, y = _real_numbers(x, "x"), _real_numbers(y, "y")
+    z = None if z is None else _real_numbers(z, "z")
     residual_x, k = _residualize(x, z)
     residual_y, _ = _residualize(y, z)
     n = residual_x.shape[0]
@@ -269,7 +272,7 @@ def _reach(critical: float, clusters: int) -> float:
 
 
 def _as_columns(values: ArrayLike, name: str) -> NDArray[np.float64]:
-    array = np.asarray(values, dtype=np.float64)
+    array = np.asarray(_real_numbers(values, name), dtype=np.float64)
     if array.ndim == 1:
         array = array[:, None]
     if array.ndim != 2:

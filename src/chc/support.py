@@ -39,6 +39,7 @@ from chc.control import (
 )
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
+from chc.frames import _real_numbers
 from chc.integrate import rollout
 
 
@@ -80,6 +81,7 @@ class SupportModel(eqx.Module):
                 overflows or underflows the precision's dtype and every point would read as off
                 the support, or on it.
         """
+        xs, us = _real_numbers(xs, "xs"), _real_numbers(us, "us")
         z = jnp.concatenate([xs, us], axis=1)
         n = xs.shape[1]
         # each column as a share of its largest entry, so that no square overflows or underflows,

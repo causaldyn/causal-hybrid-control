@@ -1,6 +1,7 @@
 # ADR 0072 — A column is read as numbers only where it holds them
 
-**Status:** accepted, 2026-10-07.
+**Status:** accepted, 2026-10-07. Amended 2026-10-07: the entry points that take a caller's
+data as arrays read it by the same rule, and the logger check reads what the rule reads.
 
 ## Context
 
@@ -29,6 +30,14 @@ objects, and polars its text as a fixed-width string, so either reached the read
 treatment read as numbers, and a text label column failed the call. `as_columns` handed a masked
 array on, or converted it with `np.asarray`, and the mask was lost either way.
 
+The entry points that take a caller's data as arrays, or as a mapping of arrays, cast it the same
+way: NumPy's cast as the table says, JAX's by refusing text, dates and objects with a message that
+named no argument and by taking complex numbers into the fit. Of 207 such arguments of 85 entry
+points, 144 read one of the values above without an error. `chc.estimators` cast every column of
+the frame, as `chc.gmethods` did, and `lalonde_ate` standardised a float32 caller's covariates in
+float32. The logger check read a column only of a NumPy number dtype, so it took a column of
+booleans, which a panel reads as 0 and 1, for one it cannot read.
+
 ## Decision
 
 - **One rule says what is read as numbers.** A column whose dtype is boolean, integer or floating,
@@ -56,6 +65,21 @@ array on, or converted it with `np.asarray`, and the mask was lost either way.
   (ADR 0068). A g-method reads it, and its effect reads nan.
 - **A dtype NumPy holds as neither numbers nor text is left to the cast.** The cast refuses a
   structured dtype, and reads `ml_dtypes`' `bfloat16`, of kind `V`, as the number it is.
+- **An entry point reads a caller's arrays through the same rule as they enter.** One reader in
+  `chc.frames` takes an argument and its name, refuses what the rule does not read, naming the
+  argument, the value and where it lies, and hands the argument on as the caller gave it; the
+  entry point casts it after, as before. A JAX array holds no text, dates or objects, and under
+  `jax.jit` its values are unknown, so its dtype alone decides, and a traced entry point keeps
+  tracing. A mapping's entries and a frame's columns are read only where an argument names them.
+  The rule applies to what a caller logged: logs, samples, series, outcomes, treatments,
+  covariates, histories, stored decisions, forecasts and a target's levels, `prescribe`'s start
+  and a policy's state. `Target`, `Driver` and `prescribe`'s start raise `DecisionError`, the
+  others `ValueError`.
+- **`lalonde_ate` reads its data in float64**, as a panel reads its columns, whatever the
+  caller's dtype; the estimator casts it to its own after.
+- **The logger check reads what a panel reads as numbers.** A column of a boolean, an integer, a
+  floating, a complex or a duration dtype, or an object column the rule reads; the panel's reader
+  refuses the complex and the durations among them.
 
 ## Consequences
 
@@ -72,13 +96,23 @@ array on, or converted it with `np.asarray`, and the mask was lost either way.
   count of seconds.
 - A g-method no longer fails on a text column it does not read, and an estimator in
   `chc.estimators` names a masked column where JAX refused it without the name.
-- *Left*: the functions that take arrays, not named columns, still cast them as NumPy does: the
-  outcome matrices of `chc.did` and `chc.scm`, the samples of `chc.independence`, the logs of
-  `chc.evaluation.evaluate_plan`, the histories of `chc.allocation`, the series of `chc.dlm`,
-  `chc.switchback`, `chc.lift`, `chc.metrics` and `chc.toeplitz`, the records of `chc.gate`, and a
-  `Target`'s level and a `Driver`'s forecast, among others. The rule is there for them. The
-  estimators in `chc.estimators` refuse text, dates and other objects through JAX, with JAX's
-  message; its EconML and DoWhy adapters hand the columns to those packages, whose checks apply.
+- An entry point reads numbers as before, bit for bit: it receives the caller's own array and casts
+  it as it did. A masked array that masks no cell is now its data where JAX refused it, and a
+  float32 caller's LaLonde data reads as its float64 widening. A stored decision's field that holds
+  a NumPy array of objects with no dimensions, which NumPy keeps whole among a list's values, is
+  refused, as a panel refuses one; it was read as its value.
+- An estimator in `chc.estimators` no longer fails on a column it does not read, and its EconML and
+  DoWhy adapters refuse a column that is not numbers before they import those packages.
+- The logger check runs where a lever's parent is a column of booleans, and tests a column of
+  booleans beside the plan; it skipped both.
+- The reader costs a dtype test on an array of numbers and a pass over an object array, and a list
+  is converted by `np.asarray` once more.
+- *Left*: an argument that is a model's rather than a log's is cast as before: a box's bounds in
+  `chc.allocation`, a Toeplitz operator's columns and generators and `levinson_durbin`'s
+  autocorrelation, a channel's response at a spend, `cvar_upper`'s values, and the states and
+  actions a fitted model is asked about (`predict`, `rollout`, an estimate's `cate`, the planners'
+  start). So are labels --- clusters, units, periods, strata --- which are read as labels, not as
+  numbers. An object array of numbers reaches JAX as NumPy holds it, and JAX refuses it, as before.
 
 ## Alternatives considered
 
@@ -99,3 +133,9 @@ array on, or converted it with `np.asarray`, and the mask was lost either way.
   and a column of text is the caller's to convert.
 - **`numbers.Real` as the test of a number.** Rejected: neither `Decimal` nor NumPy's `bool_` is
   registered as one.
+- **A reader of arrays that returns them cast.** Rejected: the entry points cast to different
+  precisions on purpose --- float64 in NumPy, the x64 flag's in JAX, a float32 caller's own where an
+  estimator keeps it --- and NumPy's cast of a traced array fails. Handed on uncast, each entry
+  point's numbers are what they were.
+- **A check of its own at each entry point.** Rejected for the reason a guard in each reader was:
+  some 85 copies, each free to drift from the rule.

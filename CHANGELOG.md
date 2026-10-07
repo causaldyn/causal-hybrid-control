@@ -7,6 +7,45 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An entry point that takes a caller's data reads it as a panel reads a column.** The functions
+  that take logs, samples, series, outcomes, histories, stored decisions, forecasts or a target's
+  levels as arrays, or as a mapping or a frame of them, cast them with NumPy's or JAX's cast, which
+  reads far more than numbers. Of 207 such arguments of 85 entry points, 144 read one of these
+  without an error: the text `"0.5"` as 0.5 in 87, a date as its count of days in 71, a duration as
+  its count of seconds in 79, a complex number as its real part or into the fit in 118, a `Decimal`
+  of `1E+400` as an infinity in 25, and the values under a masked array's mask in 129.
+  `callaway_santanna` estimated from outcomes of text, and `DecisionLog.from_records` read a stored
+  propensity of `"0.7"` as 0.7. The others refused most of them with a message that named no
+  argument, JAX's `TypeError` among them, or failed deep in the fit, as `estimate_control_effect`
+  did with `ldexp not supported`. Each entry point now reads a caller's arrays by the rule a
+  panel's columns are read by as they enter, and refuses one that is not numbers with `ValueError`
+  naming the argument, the value and where it lies; `Target`, `Driver` and `prescribe`'s `x0` raise
+  `DecisionError`. A JAX array is read by its dtype alone, so a traced entry point keeps tracing.
+  Numbers are handed on as the caller gave them and read as before, bit for bit, and a masked array
+  that masks no cell is read as its data, where JAX refused it. A model's parameters, a box's
+  bounds, an operator's coefficients and labels are read as before (ADR 0072). Since 0.2.0, each
+  entry point since it was added.
+- **An estimator no longer fails on a column it does not read.** `BackdoorOLS`, `IV2SLS`,
+  `DoubleML` and `RLearner` cast every column of the frame with JAX's cast, so a label column of
+  text or of dates that no argument named failed the estimate with JAX's `TypeError`. They now read
+  only the treatment, the outcome and the covariates they name, as the g-methods do;
+  `EconMLDoubleML` and `DoWhyEstimator` read theirs before importing the package. Since 0.3.0.
+- **The logger check reads a lever's parent of booleans.** `prescribe`'s logger check read a
+  column only where its dtype was a NumPy number, so it took a boolean column, which the panel holds
+  and reads as 0 and 1, for one it cannot read: with a holiday flag among an incentive's parents
+  the check was not run and `logger_check` was `None`, and a boolean column beside the plan was
+  left out of the test. It now reads a boolean column, and an object column of numbers, as the
+  panel reads them, and the flag checks as its 0.0s and 1.0s do, bit for bit. Since 0.9.0.
+- **`lalonde_ate` reads a float32 caller's data in float64.** It standardised the covariates and
+  scaled the outcome in the caller's dtype, and NumPy sums a matrix's columns row by row, so in
+  float32 the means were rounded more with every row: at a million rows a covariate of 10,000 give
+  or take 1 reached the estimator up to 1.7 times its spread off, and at ten million one of 14,000
+  give or take 9,500 up to 4.4% of its spread. The treatment, the outcome and each covariate are
+  now read as float64, as a panel's columns are, and refused, naming them, where they are not
+  numbers; float32 data reads as its float64 widening, bit for bit. Since 0.2.0.
+
 ## [0.15.0] — 2026-10-07
 
 ### Added

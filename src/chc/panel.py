@@ -49,7 +49,7 @@ from uuid import UUID
 import numpy as np
 from numpy.typing import NDArray
 
-from chc.frames import ColumnData, _not_numbers, as_columns
+from chc.frames import _NOT_READ, ColumnData, _not_numbers, as_columns
 
 # The types an object column holds: none changes in place, and the text of each names its value,
 # which is what the hash reads. A subclass counts, so a pandas Timestamp is a datetime; `int`
@@ -474,7 +474,7 @@ class Panel:
             row, why = problem
             raise PanelError(
                 f"column {name!r} is {column[row]!r} for unit {self.columns[self.unit][row]!r} at "
-                f"time {self.columns[self.time][row]!r}: {why}"
+                f"time {self.columns[self.time][row]!r}: {why}, {_NOT_READ}"
             )
         return np.asarray(column, dtype=np.float64)
 

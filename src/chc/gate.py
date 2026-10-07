@@ -55,6 +55,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import special
 
+from chc.frames import _real_numbers
 from chc.plan import DecisionWeight
 
 _log = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ _DITHER_LEVEL = 1e-9  # a dither this far from its stated scale is a slip, not a
 
 
 def _vector(value: ArrayLike, name: str) -> _Array:
-    array = np.array(value, dtype=np.float64)
+    array = np.array(_real_numbers(value, name), dtype=np.float64)
     if array.ndim != 1:
         raise ValueError(f"{name} must be a vector, got shape {array.shape}")
     if not np.all(np.isfinite(array)):
@@ -83,7 +84,7 @@ def _vector(value: ArrayLike, name: str) -> _Array:
 
 def _evalues(value: ArrayLike, name: str, size: int | None = None) -> _Array:
     """E-values as one row per decision and one column per detector."""
-    evalues = np.array(value, dtype=np.float64)
+    evalues = np.array(_real_numbers(value, name), dtype=np.float64)
     if evalues.ndim == 1:
         evalues = evalues[:, None]
     rows = "decisions" if size is None else size
@@ -205,6 +206,12 @@ def _column(records: list[Mapping[str, object]], key: str) -> list[object]:
     return [record[key] for record in records]
 
 
+def _record_numbers(records: list[Mapping[str, object]], key: str) -> _Array:
+    """Field ``key`` of every record as float64, where it holds real numbers: a record's row is its
+    position among ``records``."""
+    return np.array(_real_numbers(_column(records, key), key), dtype=np.float64)
+
+
 @dataclass(frozen=True)
 class DecisionLog:
     """What each decision recorded when it was taken, one entry per decision.
@@ -242,14 +249,14 @@ class DecisionLog:
                 f"a logged propensity must be positive, got {np.min(propensity)}: the action could"
                 " not have been drawn"
             )
-        action = np.array(self.action, dtype=np.float64)
+        action = np.array(_real_numbers(self.action, "action"), dtype=np.float64)
         if action.ndim not in (1, 2) or action.shape[0] != size:
             raise ValueError(
                 f"action must have shape ({size},) or ({size}, actions), got {action.shape}"
             )
         if not np.all(np.isfinite(action)):
             raise ValueError("action is not finite")
-        saturated = np.array(self.saturated)
+        saturated = np.array(_real_numbers(self.saturated, "saturated"))
         if saturated.size == 0:
             saturated = saturated.astype(np.bool_)
         if saturated.dtype != np.bool_ or saturated.shape != (size,):
@@ -265,7 +272,7 @@ class DecisionLog:
             array.setflags(write=False)
             object.__setattr__(self, name, array)
         if self.dither is not None:
-            dither = np.array(self.dither, dtype=np.float64)
+            dither = np.array(_real_numbers(self.dither, "dither"), dtype=np.float64)
             if dither.shape != action.shape:
                 raise ValueError(f"dither has shape {dither.shape}, the action {action.shape}")
             if not np.all(np.isfinite(dither)):
@@ -313,10 +320,10 @@ class DecisionLog:
                 " every decision or of none"
             )
         return cls(
-            action=np.array(_column(rows, "action"), dtype=np.float64),
-            propensity=np.array(_column(rows, "propensity"), dtype=np.float64),
+            action=_record_numbers(rows, "action"),
+            propensity=_record_numbers(rows, "propensity"),
             saturated=np.array(saturated, dtype=np.bool_),
-            dither=np.array(_column(rows, "dither"), dtype=np.float64) if with_dither else None,
+            dither=_record_numbers(rows, "dither") if with_dither else None,
         )
 
     def to_records(self) -> list[dict[str, object]]:
@@ -424,7 +431,7 @@ class ZoneBatch:
 
 
 def _entries(value: ArrayLike, shape: tuple[int, ...], name: str) -> _Array:
-    array = np.array(value, dtype=np.float64)
+    array = np.array(_real_numbers(value, name), dtype=np.float64)
     if array.ndim and array.shape != shape:
         raise ValueError(f"{name} must be a scalar or of shape {shape}, got {array.shape}")
     if not np.all(np.isfinite(array)):
@@ -434,7 +441,7 @@ def _entries(value: ArrayLike, shape: tuple[int, ...], name: str) -> _Array:
 
 def _residual_rows(residual: ArrayLike, size: int) -> _Array:
     """The residual as one row per decision and one column per state."""
-    rows = np.array(residual, dtype=np.float64)
+    rows = np.array(_real_numbers(residual, "residual"), dtype=np.float64)
     if rows.ndim == 1:
         rows = rows[:, None]
     if rows.ndim != 2 or rows.shape[0] != size:

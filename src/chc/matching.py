@@ -28,6 +28,7 @@ from jax.typing import ArrayLike
 from scipy import sparse, special
 from scipy.optimize import linprog
 
+from chc.frames import _real_numbers
 from chc.games import project_simplex
 
 _log = logging.getLogger(__name__)
@@ -165,8 +166,12 @@ def _experiment_strata(
             f"supply and demand must have equal totals; got {supply.sum()} and {demand.sum()}"
         )
     rows = cost.shape[0]
-    in_experiment = np.ones(rows, dtype=bool) if randomised is None else np.asarray(randomised)
-    assignment = np.asarray(treated)
+    in_experiment = (
+        np.ones(rows, dtype=bool)
+        if randomised is None
+        else np.asarray(_real_numbers(randomised, "randomised"))
+    )
+    assignment = np.asarray(_real_numbers(treated, "treated"))
     for name, mask in (("treated", assignment), ("randomised", in_experiment)):
         if mask.dtype != bool or mask.shape != (rows,):
             raise ValueError(f"{name} must be one bool per row, shape ({rows},)")
@@ -287,7 +292,10 @@ def shadow_price_effect(
             "eps must be positive and finite; at eps = 0 the rents are not unique, see "
             f"shadow_price_interval. Got {eps}"
         )
-    costs, masses, capacities = (np.asarray(v, dtype=float) for v in (cost, supply, demand))
+    costs, masses, capacities = (
+        np.asarray(_real_numbers(v, name), dtype=float)
+        for v, name in ((cost, "cost"), (supply, "supply"), (demand, "demand"))
+    )
     blocks = _experiment_strata(costs, masses, capacities, treated, randomised, strata)
     total = sum(block[0] for block in blocks)
     share = sum(block[1] for block in blocks) / total
@@ -383,7 +391,10 @@ def shadow_price_interval(
         ValueError: as :func:`shadow_price_effect`.
         RuntimeError: when HiGHS does not solve an LP a balanced market always has a solution to.
     """
-    costs, masses, capacities = (np.asarray(v, dtype=float) for v in (cost, supply, demand))
+    costs, masses, capacities = (
+        np.asarray(_real_numbers(v, name), dtype=float)
+        for v, name in ((cost, "cost"), (supply, "supply"), (demand, "demand"))
+    )
     blocks = _experiment_strata(costs, masses, capacities, treated, randomised, strata)
     contrast = sum(mass * (on - off) for mass, _, on, off in blocks)
     rows, columns = costs.shape

@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from chc.frames import _real_numbers
 from chc.independence import partial_corr_test
 
 
@@ -112,10 +113,12 @@ def discover_lagged_parents(
     ``series`` is ``(T, d_state)``; ``controls`` an optional ``(T, d_control)``. ``max_parents``
     caps the forward selection per target (default: the candidate count). Returns a ``LaggedGraph``.
     """
-    series = np.asarray(series, dtype=float)
+    series = np.asarray(_real_numbers(series, "series"), dtype=float)
     if series.ndim != 2:
         raise ValueError(f"series must be (T, d_state); got shape {series.shape}")
-    controls = None if controls is None else np.asarray(controls, dtype=float)
+    controls = (
+        None if controls is None else np.asarray(_real_numbers(controls, "controls"), dtype=float)
+    )
     # a nan reads a nan p-value, which no test rejects and the selection's minimum may still pick
     if not (np.isfinite(series).all() and (controls is None or np.isfinite(controls).all())):
         raise ValueError("series and controls must be finite")
@@ -166,6 +169,12 @@ class TigramiteDiscovery:
         self, series: np.ndarray, controls: np.ndarray | None = None, max_lag: int = 3
     ) -> LaggedGraph:
         """Run PCMCI on ``[series, controls]`` and return the state components' lagged parents."""
+        series = np.asarray(_real_numbers(series, "series"), dtype=float)
+        controls = (
+            None
+            if controls is None
+            else np.asarray(_real_numbers(controls, "controls"), dtype=float)
+        )
         try:
             from tigramite import data_processing as pp
             from tigramite.independence_tests.parcorr import ParCorr
@@ -173,9 +182,7 @@ class TigramiteDiscovery:
         except ImportError as exc:  # pragma: no cover - exercised only without tigramite
             raise ImportError(_TIGRAMITE_HINT) from exc
 
-        series = np.asarray(series, dtype=float)
         d_state = series.shape[1]
-        controls = None if controls is None else np.asarray(controls, dtype=float)
         stacked = series if controls is None else np.column_stack([series, controls])
         test = self.cond_ind_test if self.cond_ind_test is not None else ParCorr()
         pcmci = PCMCI(dataframe=pp.DataFrame(stacked), cond_ind_test=test, verbosity=0)

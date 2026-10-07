@@ -68,6 +68,7 @@ from chc.causal import (
     _stream_key,
 )
 from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics
+from chc.frames import _real_entries, _real_numbers
 from chc.integrate import rk4_step
 from chc.residual import ControlAffineResidual, control_affine_features
 
@@ -1142,6 +1143,9 @@ def fit_causal_residual(
     channel_degree = degree if channel_degree is None else channel_degree
     if channel_degree < 0:
         raise ValueError(f"channel_degree must be a non-negative integer; got {channel_degree}")
+    shifter = () if instrument is None else (instrument,)
+    ends = tuple(f"{name}_next" for name in drivers)
+    data = _real_entries(data, ("x", "u", "x_next", *adjust_for, *drivers, *ends, *shifter))
     x, u, x_next = data["x"], data["u"], data["x_next"]
     codes = None if clusters is None else _cluster_codes(clusters, x.shape[0])
     known_rate = jax.vmap(lambda xi, ui: known(0.0, xi, ui))(x, u)
@@ -1847,9 +1851,9 @@ def closed_loop_gain_attribution(
     design's rank, and with it the separation of ``a`` from ``b0``. Reading a pole off a fit whose
     budget is ~0 is reading the regulariser.
     """
-    x = jnp.asarray(states, dtype=jnp.float64).ravel()
-    u = jnp.asarray(actions, dtype=jnp.float64).ravel()
-    y = jnp.asarray(rates, dtype=jnp.float64).ravel()
+    x = jnp.asarray(_real_numbers(states, "states"), dtype=jnp.float64).ravel()
+    u = jnp.asarray(_real_numbers(actions, "actions"), dtype=jnp.float64).ravel()
+    y = jnp.asarray(_real_numbers(rates, "rates"), dtype=jnp.float64).ravel()
 
     affine = jnp.stack([jnp.ones_like(u), u], axis=1)
     manifold = jnp.linalg.lstsq(affine, x, rcond=None)[0]

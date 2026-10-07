@@ -16,6 +16,7 @@ import optax
 from jax import Array
 
 from chc.dynamics import Dynamics
+from chc.frames import _real_numbers
 from chc.toeplitz import (
     circulant_matvec,
     circulant_operator_norm,
@@ -985,14 +986,14 @@ def fit_spectral_residual(
     projection rather than a loss: for real data those bins of ``x``, ``u`` and ``y`` are all real,
     so the exact solution there is real too, and what is discarded is float noise.
     """
-    spec_x = jnp.fft.rfft(xs, axis=1)
-    spec_y = jnp.fft.rfft(ys, axis=1)
+    spec_x = jnp.fft.rfft(_real_numbers(xs, "xs"), axis=1)
+    spec_y = jnp.fft.rfft(_real_numbers(ys, "ys"), axis=1)
     n = model.grid
     if not model.has_control:
         gain = jnp.sum(jnp.conj(spec_x) * spec_y, axis=0) / jnp.sum(jnp.abs(spec_x) ** 2, axis=0)
         return eqx.tree_at(lambda m: m.state_kernel, model, jnp.fft.irfft(gain, n=n))
 
-    spec_u = jnp.fft.rfft(us, axis=1)
+    spec_u = jnp.fft.rfft(_real_numbers(us, "us"), axis=1)
 
     def solve_bin(x_k: Array, u_k: Array, y_k: Array) -> Array:
         design = jnp.stack([x_k, u_k], axis=1)

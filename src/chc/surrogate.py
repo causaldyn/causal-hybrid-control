@@ -19,6 +19,8 @@ from typing import Any
 
 import numpy as np
 
+from chc.frames import _real_numbers
+
 _TREES_HINT = (
     "GradientBoostedDynamics needs the 'trees' extra: pip install 'causal-hybrid-control[trees]'."
 )
@@ -59,7 +61,10 @@ class GradientBoostedDynamics:
     _models: list[Any] = field(default_factory=list, init=False, repr=False)
 
     def fit(self, x: np.ndarray, u: np.ndarray, x_next: np.ndarray) -> GradientBoostedDynamics:
-        x, u, y = np.asarray(x, float), np.asarray(u, float), np.asarray(x_next, float)
+        x, u, y = (
+            np.asarray(_real_numbers(v, name), float)
+            for v, name in ((x, "x"), (u, "u"), (x_next, "x_next"))
+        )
         target = y - self.known(x, u) if self.known is not None else y
         feats = np.column_stack([x, u])
         self._models = []

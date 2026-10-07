@@ -17,6 +17,7 @@ import optax
 from jax import Array
 
 from chc.dynamics import Dynamics, HybridDynamics
+from chc.frames import _real_entries
 from chc.integrate import rk4_step, rollout
 
 
@@ -66,6 +67,7 @@ def fit_residual(
     """
     known = model.known
     residual = model.residual
+    data = _real_entries(data, ("x", "u", "x_next"))
     xs, us, x_next = data["x"], data["u"], data["x_next"]
 
     @eqx.filter_value_and_grad
@@ -98,6 +100,7 @@ def fit_residual_multistep(
     """
     known = model.known
     residual = model.residual
+    data = _real_entries(data, ("x0", "us", "xs"))
     x0s, us, xs = data["x0"], data["us"], data["xs"]
 
     @eqx.filter_value_and_grad

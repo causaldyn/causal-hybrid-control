@@ -60,6 +60,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy import optimize, stats
 
 from chc.barrier import barrier_gamma_star
+from chc.frames import _real_numbers
 from chc.response import Channel
 
 _Array = NDArray[np.float64]
@@ -87,7 +88,7 @@ _SLACK = 1e-6
 
 
 def _series(value: ArrayLike, name: str) -> _Array:
-    array = np.array(value, dtype=np.float64)
+    array = np.array(_real_numbers(value, name), dtype=np.float64)
     if array.ndim != 1 or array.size == 0:
         raise ValueError(f"{name} must be a non-empty vector, got shape {array.shape}")
     if not np.all(np.isfinite(array)):

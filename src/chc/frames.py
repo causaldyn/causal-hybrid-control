@@ -13,7 +13,9 @@ A column read as numbers holds real numbers. NumPy's cast to float64 takes far m
 text ``"1.5"`` as 1.5, a date as its count of days since 1970, and a ``Decimal`` of ``1E+400`` as
 an infinity. So a reader of numbers reads a caller's column through one check, which refuses
 text, dates, times, durations, complex numbers and any other object that is not a real number,
-and a real number that is finite but past float64's range, naming the column and the row.
+and a real number that is finite but past float64's range, naming the column and the row. An entry
+point that takes a caller's data as arrays, not as named columns, reads each through the same
+check as it enters (:func:`_real_numbers`), naming the argument.
 """
 
 from __future__ import annotations
@@ -22,8 +24,9 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
 from fractions import Fraction
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
+import jax
 import numpy as np
 from numpy.typing import NDArray
 
@@ -42,7 +45,9 @@ _NOT_REAL = {
     "c": "complex numbers",
 }
 _NOT_READ = "so the column is not read as numbers"
-_PAST_FLOAT64 = f"a finite number past float64's range, where it is an infinity, {_NOT_READ}"
+_PAST_FLOAT64 = "a finite number past float64's range, where it is an infinity"
+
+_Value = TypeVar("_Value")
 
 
 class ColumnFrame(Protocol):
@@ -84,7 +89,9 @@ def as_columns(data: ColumnData) -> dict[str, Any]:
             masked array that masks a cell, naming the column, the row and how many are masked.
     """
     if isinstance(data, Mapping):
-        return _by_name((label, _unmasked(label, column)) for label, column in data.items())
+        return _by_name(
+            (label, _unmasked(f"column {str(label)!r}", column)) for label, column in data.items()
+        )
     names = getattr(data, "columns", None)
     if names is None:
         msg = (
@@ -92,18 +99,20 @@ def as_columns(data: ColumnData) -> dict[str, Any]:
             f"(pandas / polars), got {type(data).__name__}"
         )
         raise TypeError(msg)
-    return _by_name((name, np.asarray(_unmasked(name, data[name]))) for name in names)
+    return _by_name(
+        (name, np.asarray(_unmasked(f"column {str(name)!r}", data[name]))) for name in names
+    )
 
 
-def _unmasked(label: Any, column: Any) -> Any:
+def _unmasked(name: str, column: Any, error: type[ValueError] = ValueError) -> Any:
     """``column`` as it is, or a masked array's data where it masks no cell; ``np.asarray`` drops a
-    mask and keeps what lies under it."""
+    mask and keeps what lies under it. ``name`` is how the refusal names the column."""
     if not isinstance(column, np.ma.MaskedArray):
         return column
     masked = np.flatnonzero(np.ma.getmaskarray(column))
     if masked.size:
-        raise ValueError(
-            f"column {str(label)!r} is masked at {_at(column.shape, int(masked[0]))} "
+        raise error(
+            f"{name} is masked{_where(column.shape, int(masked[0]))} "
             f"({masked.size} of {column.size} cells): a masked cell is a missing value, which chc "
             "does not read; fill it, or drop its row"
         )
@@ -119,14 +128,58 @@ def _numbers(column: Any, name: str) -> NDArray[np.float64]:
         position, why = problem
         raise ValueError(
             f"column {name!r} is {array.reshape(-1)[position]!r} at "
-            f"{_at(array.shape, position)}: {why}"
+            f"{_at(array.shape, position)}: {why}, {_NOT_READ}"
         )
     return np.asarray(array, dtype=np.float64)
 
 
-def _not_numbers(column: NDArray[Any]) -> tuple[int, str] | None:
+def _real_numbers(value: _Value, name: str, error: type[ValueError] = ValueError) -> _Value:
+    """``value``, a caller's data, as the caller gave it, where it holds real numbers by
+    :func:`_not_numbers`; a masked array that masks no cell as its data.
+
+    The rule a panel's columns are read by, for an argument: each entry point that takes a caller's
+    data as an array passes it through here as it enters, and casts it after as its own precision
+    requires. Nothing is converted, so data that is numbers is read as before, bit for bit. A JAX
+    array holds no text, dates or objects, and is checked by its dtype alone: under ``jax.jit`` its
+    values are not known, and a traced entry point keeps tracing. A list or another sequence is
+    read as ``np.asarray`` reads it, so one that holds a traced JAX array is refused by NumPy.
+
+    Raises:
+        ValueError: or ``error``, naming ``name``, the value refused and where it lies, or the
+            masked cells and how many.
+    """
+    if isinstance(value, jax.Array):
+        problem = _not_numbers(value)
+        if problem is not None:
+            raise error(f"{name} has {problem[1]}, so it is not read as numbers")
+        return value
+    data = _unmasked(name, value, error)
+    array = np.asarray(data)
+    problem = _not_numbers(array)
+    if problem is not None:
+        position, why = problem
+        raise error(
+            f"{name} is {array.reshape(-1)[position]!r}{_where(array.shape, position)}: {why}, so "
+            "it is not read as numbers"
+        )
+    return data
+
+
+def _real_entries(
+    data: Mapping[str, Any], names: Iterable[str], label: str = "data"
+) -> dict[str, Any]:
+    """``data`` with each entry ``names`` picks read by :func:`_real_numbers`, named
+    ``label['name']``, and the others as they are: an entry no argument names is not read."""
+    read = dict(data)
+    for name in dict.fromkeys(names):
+        read[name] = _real_numbers(data[name], f"{label}[{name!r}]")
+    return read
+
+
+def _not_numbers(column: NDArray[Any] | jax.Array) -> tuple[int, str] | None:
     """The first position, flat, of a value in ``column`` that is not read as a number, and why;
-    ``None`` where every value is.
+    ``None`` where every value is. ``column`` is a NumPy array, or a JAX array, traced or not, whose
+    dtype alone decides.
 
     Read as numbers: a column of a boolean, an integer or a floating dtype, and an object column
     of ``bool``, ``int``, ``float``, ``Decimal`` or ``Fraction`` values, or NumPy's scalars of
@@ -144,7 +197,7 @@ def _not_numbers(column: NDArray[Any]) -> tuple[int, str] | None:
     if kind in _NOT_REAL:
         return (
             0,
-            f"dtype {column.dtype}, which holds {_NOT_REAL[kind]}, not real numbers, {_NOT_READ}",
+            f"dtype {column.dtype}, which holds {_NOT_REAL[kind]}, not real numbers",
         )
     if kind == "f" and column.dtype.itemsize > 8:  # only a float wider than float64 can pass it
         with np.errstate(over="ignore"):
@@ -154,7 +207,7 @@ def _not_numbers(column: NDArray[Any]) -> tuple[int, str] | None:
         return None
     for position, value in enumerate(column.reshape(-1).tolist()):
         if not isinstance(value, _REAL) or isinstance(value, np.timedelta64):
-            return position, f"type {type(value).__name__}, not a real number, {_NOT_READ}"
+            return position, f"type {type(value).__name__}, not a real number"
         if _past_float64(value):
             return position, _PAST_FLOAT64
     return None
@@ -178,6 +231,11 @@ def _at(shape: tuple[int, ...], position: int) -> str:
     if len(shape) == 1:
         return f"row {position}"
     return f"index {tuple(int(i) for i in np.unravel_index(position, shape))}"
+
+
+def _where(shape: tuple[int, ...], position: int) -> str:
+    """`` at`` where a flat position lies, as :func:`_at` says; nothing for a single value."""
+    return f" at {_at(shape, position)}" if shape else ""
 
 
 def _by_name(pairs: Iterable[tuple[Any, Any]]) -> dict[str, Any]:

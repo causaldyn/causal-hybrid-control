@@ -77,6 +77,7 @@ from scipy.linalg import solve_discrete_lyapunov
 from scipy.stats import t as student
 
 from chc.cost import QuadraticCost
+from chc.frames import _real_numbers
 from chc.independence import GcmTest
 
 _log = logging.getLogger(__name__)
@@ -257,7 +258,8 @@ def fit_logger(x: ArrayLike, u: ArrayLike) -> AffinePolicy:
         ValueError: on ``x`` and ``u`` that are not row-aligned matrices, or no more rows than
             coefficients per action.
     """
-    xs, us = np.asarray(x, dtype=np.float64), np.asarray(u, dtype=np.float64)
+    xs = np.asarray(_real_numbers(x, "x"), dtype=np.float64)
+    us = np.asarray(_real_numbers(u, "u"), dtype=np.float64)
     if xs.ndim != 2 or us.ndim != 2 or xs.shape[0] != us.shape[0]:
         raise ValueError(
             f"x (N, n) and u (N, m) must be row-aligned, got {xs.shape} and {us.shape}"
@@ -1224,8 +1226,8 @@ def _parse_logs(
     missing = sorted({"x", "u"} - set(logs))
     if missing:
         raise KeyError(f"logs need 'x' and 'u'; missing {missing}")
-    x = np.asarray(logs["x"], dtype=np.float64)
-    u = np.asarray(logs["u"], dtype=np.float64)
+    x = np.asarray(_real_numbers(logs["x"], "logs['x']"), dtype=np.float64)
+    u = np.asarray(_real_numbers(logs["u"], "logs['u']"), dtype=np.float64)
     n, m = plant.states, plant.actions
     if method == "pdis":
         ok = x.ndim == 3 and u.ndim == 3 and x.shape[0] == u.shape[0] >= 2

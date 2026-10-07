@@ -24,7 +24,7 @@ from numpy.typing import NDArray
 
 from chc import _units
 from chc.causal import _centred_ridge_predict, _polynomial_features, _stream_key
-from chc.frames import _refuse_shared_names
+from chc.frames import _real_entries, _real_numbers, _refuse_shared_names
 from chc.irf import peak_lag
 
 
@@ -469,6 +469,7 @@ def within_ar1(series: NDArray[np.float64], corrections: int = 3) -> float:
     ``n_times`` in 20-160, and to 0.022 in the worst corner measured (``phi = 0.85``,
     ``n_times = 20``), where the bias being removed is itself 0.097.
     """
+    series = _real_numbers(series, "series")
     resid = (
         series
         - series.mean(-1, keepdims=True)
@@ -523,6 +524,8 @@ def estimate_propagation(
         raise ValueError(f"level must lie in (0, 1); got {level}")
     if len(shells) < 2:
         raise ValueError(f"need at least one non-zero shell; got {len(shells)}")
+    treatments = _real_numbers(treatments, "treatments")
+    outcomes = _real_numbers(outcomes, "outcomes")
     if outcomes.shape[-1] - horizon < 2:
         raise ValueError(
             f"{outcomes.shape[-1]} times cannot carry a horizon of {horizon}: "
@@ -669,6 +672,7 @@ def estimate_network_effects(
             "a covariate": covariates,
         }
     )
+    data = _real_entries(data, ("x_next", "u", exposure, *covariates))
     y, u, e = data["x_next"], data["u"], data[exposure]
     covs = _units.standardised(jnp.stack([data[c] for c in covariates], axis=1))
     n = y.shape[0]
@@ -825,6 +829,7 @@ def estimate_network_effects_gnn(
             "a feature": features,
         }
     )
+    data = _real_entries(data, ("x_next", treatment, exposure, *features))
     y, u, e = data["x_next"], data[treatment], data[exposure]
     feats = jnp.stack([data[f] for f in features], axis=1)
     n = int(y.shape[0])
