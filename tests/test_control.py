@@ -89,6 +89,63 @@ def test_lbfgs_box_control_preserves_the_caller_dtype() -> None:
     assert bool((jnp.abs(us) <= 5.0 + 1e-6).all())
 
 
+def _one_lever_in_units(units: float, scale: float) -> tuple[HybridDynamics, QuadraticCost]:
+    """``test_plan``'s one-lever problem with the lever in units ``units`` times its own and the
+    cost ``scale`` times its own: the channel over the units, ``R`` over their square."""
+    model = HybridDynamics(
+        known=LinearDynamics(
+            jnp.array([[-0.5, 1.0], [0.0, -0.3]]), jnp.array([[0.0], [1.0]]) / units
+        ),
+        residual=ZeroResidual(out_dim=2),
+    )
+    cost = QuadraticCost(
+        Q=scale * jnp.diag(jnp.array([1.0, 0.1])),
+        R=scale * jnp.array([[0.05]]) / units**2,
+        Qf=scale * jnp.diag(jnp.array([5.0, 1.0])),
+        x_target=jnp.zeros(2),
+    )
+    return model, cost
+
+
+@pytest.mark.parametrize("guess", [0.0, 0.5])
+@pytest.mark.parametrize(
+    ("units", "scale"),
+    [(units, 1.0) for units in (1e-6, 1e-3, 1e3, 1e6)]
+    + [(1.0, scale) for scale in (1e-6, 1e-3, 1e3, 1e6)],
+)
+def test_lbfgs_reads_one_problem_the_same_in_any_units(
+    units: float, scale: float, guess: float
+) -> None:
+    """L-BFGS-B stops where the projected gradient is under 1e-5, or where the objective falls by
+    under 2.2e-9 of the larger of it and 1: in the caller's units, a gradient and a cost. From zero,
+    with the lever in units 1e-6 or 1e6 times its own, or the cost 1e-6 times, it took no step, 0.27
+    of the box from the plan; with the lever 1e3 times or the cost 1e-3 times it stopped 6.0e-3 of
+    the box from it. In the planner's scaled variables each takes 8 iterations to the plan it
+    reaches in the problem's own units, to 8.9e-17 of the box, from zero or from 0.5 in the lever's
+    own units, and 9.3e-6 and 1.4e-5 of the box from the planner's."""
+    x0, us0, width = jnp.array([1.0, 0.0]), jnp.full((12, 1), guess), 10.0
+    model, cost = _one_lever_in_units(1.0, 1.0)
+    own, _ = lbfgs_box_control(model, x0, us0, DT, cost, -5.0, 5.0)
+    planned, _ = projected_gradient_control(model, x0, us0, DT, cost, -5.0, 5.0)
+    model, cost = _one_lever_in_units(units, scale)
+    us, _ = lbfgs_box_control(model, x0, us0 * units, DT, cost, -5.0 * units, 5.0 * units)
+    assert float(jnp.abs(us / units - own).max()) <= 1e-9 * width
+    assert float(jnp.abs(own - planned).max()) <= 1e-4 * width
+
+
+@pytest.mark.parametrize("side", [0.46, 0.47])
+def test_an_lbfgs_plan_on_a_side_of_its_box_is_read_back_on_it(side: float) -> None:
+    """L-BFGS-B steps in ``v = sigma u`` as the planner does, and its answer is read back as the
+    planner reads its own: ``side * sigma / sigma`` rounds one ulp inside the box for 0.46 and one
+    ulp past it for 0.47, and the plan lands on the side either way."""
+    cost = QuadraticCost(
+        Q=jnp.zeros((1, 1)), R=jnp.array([[0.05]]), Qf=jnp.eye(1), x_target=jnp.array([10.0])
+    )
+    model = LinearDynamics(jnp.zeros((1, 1)), jnp.ones((1, 1)))
+    us, _ = lbfgs_box_control(model, jnp.zeros(1), jnp.zeros((3, 1)), DT, cost, -side, side)
+    assert np.asarray(us).tolist() == [[side], [side], [side]]
+
+
 # --- the compiled descent must reproduce the loop it replaced, on every residual backend --------
 
 _ULP_BUDGET = 500.0

@@ -1,7 +1,8 @@
 # ADR 0073 — The penalised descent reads its penalty as it goes
 
 **Status:** accepted, 2026-10-07. Amends ADR 0059: `pessimistic_solve` and `pessimistic_control`
-descend as the planner does, and every penalised descent checks the projection's error.
+descend as the planner does, every penalised descent checks the projection's error, and
+`lbfgs_box_control` minimises in the planner's variables.
 
 ## Context
 
@@ -79,6 +80,12 @@ read once at the guess either misses the kink or reads the guess's.
   four. So the rounds run the penalised descent unscaled, with `lr0 = 0.2` and `tol = 1e-9`, and
   where a barrier binds at the planner's scaled plan they start from the descent in the caller's
   units, as ADR 0059 decided.
+- **L-BFGS-B minimises in the planner's variables too.** `lbfgs_box_control` hands SciPy
+  `J / |J(ū)|` over `v = σ u`, `σ` the planner's read at `ū`, with the gradient `∇J / (σ |J(ū)|)`
+  and the box in `v`, and reads the answer back as the planner reads its own, an action on a side
+  of its box set to the side. Its `pgtol` and `ftol` were a gradient and a cost in the caller's
+  units; in `v` they are pure numbers. It needs no secant of its own: its limited-memory one
+  already reads the curvature as it goes.
 
 ## Consequences
 
@@ -152,6 +159,16 @@ read once at the guess either misses the kink or reads the guess's.
 - **The barrier rounds still read other units differently.** Removing the tie's jump, by holding
   each margin's own condition, would hold a stronger condition than the least margin's and change
   what a prescription certifies. That is a decision of its own.
+- **`lbfgs_box_control` reads a problem the same in any units.** On the one-lever problem it took
+  no step with the lever × 1e-6 or × 1e6, or the cost × 1e-6, and stopped 6.0e-3 of the box from
+  the plan with the lever × 1e3 or the cost × 1e-3 (ADR 0059). Now it takes 8 iterations in every
+  one of those units, to plans 8.9e-17 of the box apart, 9.3e-6 of the box from the planner's; in
+  the lever's own units it ended 3.1e-6 from it (`tests/test_control.py`). Its rules now read the
+  scaled gradient and the cost over its value at `ū`, so on `nlp_solver_certificate`'s instances,
+  `R` = 1e-3 / 1e-2 / 1e-1, it ends 2.0e-7 / 1.3e-7 / 4.4e-9 above the planner at its cap, where it
+  ended 4.1e-8 / 1.1e-8 / 9.2e-10 above, after 104 / 47 / 12 iterations against 82 / 48 / 18, at
+  stationarity 8.5e-5 / 1.6e-4 / 7.0e-5 against 1.1e-4 / 6.9e-5 / 2.4e-5. The certificate's least
+  ratio of the planner's stationarity to L-BFGS-B's is 214, where it was 618; it asks for 10.
 
 ## Alternatives considered
 

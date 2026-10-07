@@ -3,7 +3,8 @@
 **Status:** accepted, 2026-10-07. Amended 2026-10-07 by ADR 0073: `pessimistic_solve` and
 `pessimistic_control` descend in the scaled variables too, their scale raised by the secant of the
 penalised cost's curvature as they go, and every penalised descent checks the projection's error;
-the barrier's rounds keep their units.
+the barrier's rounds keep their units. `lbfgs_box_control` minimises in the planner's scaled
+variables.
 
 ## Context
 

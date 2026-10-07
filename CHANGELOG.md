@@ -34,6 +34,18 @@ still change).
   of several margins, as `prescribe` holds a two-sided bound, has a condition that jumps where two
   margins tie, and scaled rounds ended on such a tie on each of four logs of the pendulum demo, two
   of which then held the barrier for 2 and 0 of its 40 steps (ADR 0073). Since 0.2.0.
+- **`lbfgs_box_control` reads a problem the same in any units of its levers and of its cost.** It
+  handed L-BFGS-B the cost and its gradient in the caller's units, so its stopping rules, a
+  projected gradient under `1e-5` and a fall under `2.2e-9` of the larger of the cost and 1, read
+  the units. On `test_plan`'s one-lever problem it took no step with the lever in units 1e-6 or 1e6
+  times its own, or the cost 1e-6 times, 0.27 of the box from the plan, and stopped 6.0e-3 of the
+  box from it with the lever 1e3 times or the cost 1e-3 times. It now minimises the cost over its
+  value at the guess clipped to the box, in the planner's scaled variables, and reads the answer
+  back as the planner does: 8 iterations in every one of those units, to plans 8.9e-17 of the box
+  apart, 9.3e-6 of the box from the planner's, where in the lever's own units it ended 3.1e-6 from
+  it. On `nlp_solver_certificate`'s instances it ends 4.4e-9 to 2.0e-7 above the planner at its
+  cap, where it ended 9.2e-10 to 4.1e-8 above, and the certificate's least stationarity ratio is
+  214, where it was 618 (ADR 0073). Since 0.4.0.
 
 ### Fixed
 

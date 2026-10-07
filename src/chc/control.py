@@ -14,10 +14,11 @@ whose actions act on the cost together still needs *many* steps -- thousands, no
 ``steps`` is therefore a cap rather than a bill: the descent runs inside one
 compiled program that stops the moment the line search fails, so an unused step costs nothing and
 the default is loose enough for the stopping rule to decide. :func:`lbfgs_box_control` hands the
-same gradient to SciPy's L-BFGS-B, which curves the step with a limited-memory secant
-approximation and reaches stationarity in tens of iterations rather than thousands -- but crosses
-the Python boundary on each one, so it cannot be compiled and is the reference rather than the
-workhorse. :func:`nlp_solver_certificate` measures the gap rather than asserting it in prose.
+same gradient, in the same scaled variables, to SciPy's L-BFGS-B, which curves the step with a
+limited-memory secant approximation and reaches stationarity in about a hundred iterations or
+fewer rather than thousands -- but crosses the Python boundary on each one, so it cannot be
+compiled and is the reference rather than the workhorse. :func:`nlp_solver_certificate` measures
+the gap rather than asserting it in prose.
 """
 
 from __future__ import annotations
@@ -711,6 +712,14 @@ def _secant_units(
     return jnp.where(fresh, jnp.maximum(floor, measured), sigma).astype(sigma.dtype)
 
 
+def _actions_of(vs: Array, sigma: Array, u_lo: Array, u_hi: Array) -> Array:
+    """The actions that ``v = sigma * u`` names, every one that ``v`` puts on a side of its box set
+    to the side itself, since ``v / sigma`` can round off it: a plan on its box lies on it
+    exactly."""
+    lo, hi = u_lo * sigma, u_hi * sigma
+    return jnp.where(vs <= lo, u_lo, jnp.where(vs >= hi, u_hi, jnp.clip(vs / sigma, u_lo, u_hi)))
+
+
 def _descend(
     value_of: Callable[[Array], Array],
     gradient_of: Callable[[Array], Array],
@@ -755,10 +764,9 @@ def _descend(
     1: ``lr0`` a step in action units per unit of gradient, ``tol`` a fall in the objective's own
     units.
 
-    The iterate itself is carried in the caller's units. A trial is read back from ``v`` with every
-    action that ``v`` puts on a side of its box set to the side itself, since ``v / sigma`` can
-    round off it: a plan on its box lies on it exactly, and a descent that takes no step returns
-    its start bit for bit.
+    The iterate itself is carried in the caller's units. A trial is read back from ``v`` by
+    :func:`_actions_of`, so a plan on its box lies on it exactly, and a descent that takes no step
+    returns its start bit for bit.
 
     With ``secant`` the ``sigma`` of ``units`` is the floor of a metric read as the descent goes
     (:func:`_secant_units`): after each accepted step, each action's factor is the secant of the
@@ -780,18 +788,12 @@ def _descend(
         )
         return u_lo * sigma, u_hi * sigma, carried
 
-    def actions_of(vs: Array, sigma: Array) -> Array:
-        lo, hi = u_lo * sigma, u_hi * sigma
-        return jnp.where(
-            vs <= lo, u_lo, jnp.where(vs >= hi, u_hi, jnp.clip(vs / sigma, u_lo, u_hi))
-        )
-
     lo, hi, rows = into(floor)
     start = project_box(us0, u_lo, u_hi)
     duals = _no_duals(us0.size, rows, us0.dtype)
     if blocks:
         flat, duals = _dykstra((us0 * floor).ravel(), lo.ravel(), hi.ravel(), rows, duals)
-        start = actions_of(flat.reshape(us0.shape), floor)
+        start = _actions_of(flat.reshape(us0.shape), floor, u_lo, u_hi)
     initial = value_of(start)
     values = jnp.zeros((steps + 1,), dtype=initial.dtype).at[0].set(record_of(start, initial))
     # The secant's metric needs the gradient at both ends of a step, so it is carried; the fixed
@@ -818,11 +820,11 @@ def _descend(
             hi_v,
             lr0 / scale,
             tol * level,
-            lambda vs: value_of(actions_of(vs, sigma)),
+            lambda vs: value_of(_actions_of(vs, sigma, u_lo, u_hi)),
             rows_v,
             duals,
         )
-        moved = jnp.where(accepted, actions_of(vs, sigma), us)
+        moved = jnp.where(accepted, _actions_of(vs, sigma, u_lo, u_hi), us)
         # On rejection ``taken`` does not advance and the write lands back on its own slot, so the
         # buffer holds exactly the accepted prefix whichever way the step went.
         taken = jnp.where(accepted, taken + 1, taken)
@@ -1104,6 +1106,13 @@ def lbfgs_box_control(
     iterations, not gradient evaluations, and it converges well inside the default on the instances
     :func:`nlp_solver_certificate` sweeps.
 
+    It minimises ``J`` over its value at the guess clipped to the box, in the planner's variables
+    ``v = sigma * u`` read there (:func:`_action_units`), and reads the answer back as the planner
+    does (:func:`_actions_of`), so it reads a problem the same in any units of its levers and of its
+    cost. L-BFGS-B's stopping rules, a projected gradient under ``pgtol`` and a fall under ``ftol``
+    of the larger of the objective and 1, are pure numbers there; in the caller's units they are a
+    gradient and a cost.
+
     SciPy is the trust boundary: the objective and gradient cross it as float64 NumPy and the answer
     is cast back to ``us0``'s dtype, so a float32 caller is not silently promoted.
     """
@@ -1111,38 +1120,39 @@ def lbfgs_box_control(
     lo = broadcast_box(u_lo, shape, "u_lo", us0.dtype)
     hi = broadcast_box(u_hi, shape, "u_hi", us0.dtype)
     check_box(lo, hi)
-    history = [float(total_cost(dyn, x0, project_box(us0, lo, hi), dt, cost))]
+    start = project_box(us0, lo, hi)
+    sigma, scale, _ = _action_units(dyn, x0, start, dt, cost, lo, hi)
+    history = [float(total_cost(dyn, x0, start, dt, cost))]
     seen: dict[bytes, float] = {}
 
-    def objective(flat: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
-        us = jnp.asarray(flat, dtype=us0.dtype).reshape(shape)
+    def flat(array: Array) -> NDArray[np.float64]:
+        return np.asarray(array, dtype=np.float64).ravel()
+
+    def actions(vs: NDArray[np.float64]) -> Array:
+        return _actions_of(jnp.asarray(vs, dtype=us0.dtype).reshape(shape), sigma, lo, hi)
+
+    def objective(vs: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
+        us = actions(vs)
         value = float(total_cost(dyn, x0, us, dt, cost))
-        seen[flat.tobytes()] = value
-        gradient = control_gradient_adjoint(dyn, x0, us, dt, cost)
-        return value, np.asarray(gradient, dtype=np.float64).ravel()
+        seen[vs.tobytes()] = value
+        gradient = control_gradient_adjoint(dyn, x0, us, dt, cost) / sigma / scale
+        return value / float(scale), flat(gradient)
 
     def record(xk: NDArray[np.float64]) -> None:
         history.append(seen.get(xk.tobytes(), history[-1]))
 
     result = minimize(
         objective,
-        np.asarray(project_box(us0, lo, hi), dtype=np.float64).ravel(),
+        flat(start * sigma),
         jac=True,
         method="L-BFGS-B",
         # Per element, not per problem: L-BFGS-B keeps one bound pair per coordinate, which is
         # what makes a per-lever box expressible here at all.
-        bounds=list(
-            zip(
-                np.asarray(lo, dtype=np.float64).ravel(),
-                np.asarray(hi, dtype=np.float64).ravel(),
-                strict=True,
-            )
-        ),
+        bounds=list(zip(flat(lo * sigma), flat(hi * sigma), strict=True)),
         callback=record,
         options={"maxiter": steps},
     )
-    optimised = jnp.asarray(result.x, dtype=us0.dtype).reshape(shape)
-    return project_box(optimised, lo, hi), jnp.asarray(history)
+    return actions(result.x), jnp.asarray(history)
 
 
 def box_stationarity(
@@ -1198,7 +1208,7 @@ def nlp_solver_certificate(
 
     ``pg_steps`` is deliberately far below the shipped default: the effect being exhibited is what
     a *short* first-order budget costs on an ill-conditioned instance. At the shipped cap the
-    projected gradient ends within ``1e-7`` of L-BFGS-B's cost on every instance, and below it: the
+    projected gradient ends below L-BFGS-B's cost on every instance, by ``4e-9`` to ``2e-7``: the
     two better-conditioned instances stop on their own rule, and the ill-conditioned one, which
     needs 10 644 steps, at the cap. 50 steps is short of the 181 where the well-conditioned instance
     stops on its own rule, so that every instance shows a truncated descent. This measures the
