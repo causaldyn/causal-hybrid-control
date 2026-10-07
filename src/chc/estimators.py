@@ -29,9 +29,10 @@ import numpy as np
 from jax import Array
 
 from chc.causal import (
+    _centred_ridge_predict,
     _ols_with_se,
     _polynomial_features,
-    _ridge_predict,
+    _standardising,
     _stream_key,
     _two_stage,
     dml_point_and_se,
@@ -151,7 +152,12 @@ class IV2SLS:
 
 @dataclass(frozen=True)
 class DoubleML:
-    """Cross-fitted, Neyman-orthogonal Double ML with polynomial nuisances (built-in)."""
+    """Cross-fitted, Neyman-orthogonal Double ML with polynomial nuisances (built-in).
+
+    The nuisances are :func:`chc.causal.dml_point_and_se`'s, built on the centred and scaled
+    covariates with the intercept free of the ridge, so ``ridge`` reads the same in any units of
+    the covariates and at any level of them, of the treatment and of the outcome.
+    """
 
     degree: int = 2
     folds: int = 5
@@ -190,6 +196,12 @@ class RLearner:
     confounding where a naive treatment-on-outcome regression is biased. Returns the average effect
     as ``effect`` and ``tau(x)`` as ``cate`` (call it on the covariate matrix). ``cate_degree=1`` is
     linear heterogeneity; raise it for nonlinear ``tau``.
+
+    ``ridge`` reads the same in any units of the covariates and the treatment, and at any level of
+    the covariates, the treatment and the outcome: the nuisances and ``tau`` are built on the
+    centred and scaled covariates, the nuisances' intercept takes no ridge, and the ridge on each
+    coefficient of ``tau`` is scaled by its column's mean square in the R-loss, which has no
+    intercept. ``cate`` takes the covariates in the caller's units.
     """
 
     degree: int = 3  # nuisance flexibility
@@ -210,6 +222,8 @@ class RLearner:
         columns = _columns(data)
         y, t = columns[outcome], columns[treatment]
         covs = jnp.stack([columns[c] for c in covariates], axis=1)
+        centre, factor = _standardising(covs)
+        standardised = (covs - centre) * factor
         n = y.shape[0]
         chunks = jnp.array_split(
             jax.random.permutation(_stream_key(self.seed, "folds"), n), self.folds
@@ -218,21 +232,27 @@ class RLearner:
         for k in range(self.folds):  # cross-fit the nuisances out of fold k
             test = chunks[k]
             train = jnp.concatenate([chunks[j] for j in range(self.folds) if j != k])
-            phi_tr = _polynomial_features(covs[train], self.degree)
-            phi_te = _polynomial_features(covs[test], self.degree)
-            m_hat = _ridge_predict(phi_tr, y[train], phi_te, self.ridge)
-            e_hat = _ridge_predict(phi_tr, t[train], phi_te, self.ridge)
+            phi_tr = _polynomial_features(standardised[train], self.degree)
+            phi_te = _polynomial_features(standardised[test], self.degree)
+            m_hat = _centred_ridge_predict(phi_tr, y[train], phi_te, self.ridge)
+            e_hat = _centred_ridge_predict(phi_tr, t[train], phi_te, self.ridge)
             y_res = y_res.at[test].set(y[test] - m_hat)
             t_res = t_res.at[test].set(t[test] - e_hat)
 
-        features = _polynomial_features(covs, self.cate_degree)
+        features = _polynomial_features(standardised, self.cate_degree)
         design = features * t_res[:, None]  # R-loss: regress y_res on tau-features scaled by t_res
-        theta = jnp.linalg.solve(
-            design.T @ design + self.ridge * jnp.eye(design.shape[1]), design.T @ y_res
-        )
+        # the design has no intercept and carries the treatment's units, so the ridge on each
+        # coefficient is scaled by its column's mean square, the Gram's diagonal over the rows
+        gram = design.T @ design
+        size = jnp.diagonal(gram) / n
+        penalty = self.ridge * jnp.where(size > 0.0, size, 1.0)
+        theta = jnp.linalg.solve(gram + jnp.diag(penalty), design.T @ y_res)
         return EffectEstimate(
             effect=float(jnp.mean(features @ theta)),
-            cate=lambda covs_q: _polynomial_features(jnp.asarray(covs_q), self.cate_degree) @ theta,
+            cate=lambda covs_q: (
+                _polynomial_features((jnp.asarray(covs_q) - centre) * factor, self.cate_degree)
+                @ theta
+            ),
         )
 
 

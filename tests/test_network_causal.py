@@ -1,12 +1,15 @@
 """Network causal gate: naive DML is blind to spillover; network DML recovers direct + spillover."""
 
+import importlib
 import itertools
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+from chc import network_causal
 from chc.estimators import DoubleML
 from chc.network_causal import (
     ConfoundedNetworkSystem,
@@ -20,6 +23,13 @@ from chc.network_causal import (
     within_ar1,
 )
 from chc.regret import _fold_sandwich, delayed_network_certificate, fold_heuristic_certificate
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 
 def _data() -> dict[str, jax.Array]:
@@ -39,6 +49,79 @@ def test_naive_dml_is_blind_to_spillover() -> None:
     effects = estimate_network_effects(data)
     # naive's per-unit read (direct only) undershoots the true total effect direct + spillover:
     assert naive_direct < effects["direct"] + effects["spillover"] - 0.2
+
+
+@pytest.mark.parametrize("units", [1e-9, 1e-3, 1e3, 1e6])
+def test_the_network_effects_read_the_same_with_the_covariates_in_any_units(units: float) -> None:
+    """The nuisances' ridge was a constant on the Gram of the raw covariates' monomials: logged in
+    thousandths of their units, the covariates read a direct effect of 0.479 and a spillover of
+    0.284 where they read 1.001 and 0.603, and standard errors eight times as wide."""
+    data = _data()
+    covariates = ("x", "z", "x_nb", "z_nb")
+    one = estimate_network_effects(data)
+    other = estimate_network_effects({**data, **{c: data[c] * units for c in covariates}})
+    for name, value in one.items():
+        assert other[name] == pytest.approx(value, rel=1e-9, abs=0.0), name
+
+
+@pytest.mark.parametrize("level", [1e3, 1e6])
+def test_the_network_effects_read_the_same_with_a_covariate_at_any_level(level: float) -> None:
+    """The basis was the raw monomials, which a covariate far from zero makes nearly collinear under
+    the ridge: with the confounder logged about 1e6 rather than about 0, the spillover read 0.60273
+    where it reads 0.60341, with a standard error 0.19% wider, and a ridge scaled to each column's
+    variance on the raw monomials still read 0.60285. Logged there, the confounder keeps its values
+    to 1e6 eps of its spread, 2e-10, and the estimates now move by at most 2.5e-11."""
+    data = _data()
+    one = estimate_network_effects(data)
+    other = estimate_network_effects({**data, "z": data["z"] + level})
+    for name, value in one.items():
+        assert other[name] == pytest.approx(value, rel=1e-9, abs=0.0), name
+
+
+@pytest.mark.parametrize("moved", ["x_next", "u", "e"])
+def test_the_network_effects_read_the_same_with_the_outcome_or_a_treatment_far_from_zero(
+    moved: str,
+) -> None:
+    """The nuisances' ridge was on their intercept too, which left a share of a level in the
+    residuals: logged 1e3 of its spreads from zero, the treatment read a direct effect of 0.674
+    where it reads 1.001, the exposure a spillover of 0.411 where it reads 0.603, and the outcome
+    standard errors 6.8 and 6.6 times as wide. Moved there and into millionths of its units, the
+    column keeps its values to 1e3 eps of its spread, 2e-13, and the estimates now move by at most
+    6e-14."""
+    data = _data()
+    column = data[moved]
+    direct = {"x_next": 1e-6, "u": 1e6, "e": 1.0}[moved]
+    spillover = {"x_next": 1e-6, "u": 1.0, "e": 1e6}[moved]
+    per_unit = {
+        "direct": direct,
+        "direct_se": direct,
+        "spillover": spillover,
+        "spillover_se": spillover,
+    }
+    one = estimate_network_effects(data)
+    other = estimate_network_effects({**data, moved: (column + 1e3 * jnp.std(column)) * 1e-6})
+    for name, value in one.items():
+        assert other[name] / per_unit[name] == pytest.approx(value, rel=1e-11, abs=0.0), name
+
+
+@pytest.mark.parametrize("units", [1e-9, 1e-6, 1e-3, 1e3, 1e6])
+def test_the_gnn_estimate_reads_the_same_with_the_treatment_in_any_units_in_float32(
+    monkeypatch, units: float
+) -> None:
+    """Read through nuisances that predict nothing, so that the final least squares is all the
+    units can move: in float32 its cutoff dropped a treatment logged in millionths of its units,
+    and the direct effect read 0 where it reads 0.482."""
+
+    def predicts_nothing(feats, neighbours, target, mask, **training) -> jax.Array:
+        return jnp.zeros_like(target)
+
+    monkeypatch.setattr(network_causal, "_fit_gnn_nuisance", predicts_nothing)
+    with enable_x64(False):
+        data = ConfoundedNetworkSystem(n=1500).sample(jax.random.key(1))
+        one = estimate_network_effects_gnn(data, data["neighbours"])
+        other = estimate_network_effects_gnn({**data, "u": data["u"] * units}, data["neighbours"])
+    assert other["direct"] * units == pytest.approx(one["direct"], rel=1e-4, abs=0.0)
+    assert other["spillover"] == pytest.approx(one["spillover"], rel=1e-4, abs=0.0)
 
 
 def test_gnn_nuisance_recovers_direct_and_spillover() -> None:

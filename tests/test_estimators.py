@@ -1,5 +1,6 @@
 """Estimator adapters: one Strategy interface, swappable causal backends recover the true effect."""
 
+import importlib
 import itertools
 import math
 
@@ -19,6 +20,13 @@ from chc.estimators import (
     EffectEstimate,
     RLearner,
 )
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 
 def _data(**kw) -> dict[str, jax.Array]:
@@ -131,6 +139,55 @@ def test_iv_reports_the_instrument_s_relevance_in_any_units() -> None:
             assert moved.diagnostics["instrument_relevance"] == pytest.approx(
                 relevance, rel=1e-12, abs=0.0
             ), (column, factor)
+
+
+@pytest.mark.parametrize("units", [1e-9, 1e-3, 1e3, 1e6])
+def test_double_ml_reads_the_same_with_the_covariates_in_any_units(units: float) -> None:
+    """The nuisances' ridge, 1.0 here, was a constant on the Gram of the raw covariates' monomials:
+    logged in thousandths of their units, the covariates read an effect of -0.201 where they read
+    1.004, the unadjusted regression's -0.200."""
+    data = ConfoundedLinearSystem().sample(2_000, jax.random.key(0))
+    one = DoubleML().estimate(data)
+    other = DoubleML().estimate({**data, "x": data["x"] * units, "z": data["z"] * units})
+    assert other.effect == pytest.approx(one.effect, rel=1e-9, abs=0.0)
+    assert other.std_error == pytest.approx(one.std_error, rel=1e-9, abs=0.0)
+
+
+@pytest.mark.parametrize("name", ["x_next", "u"])
+def test_double_ml_reads_the_same_with_the_outcome_or_the_treatment_far_from_zero(
+    name: str,
+) -> None:
+    """The nuisances' ridge, 1.0 here, was on their intercept too, which left a share of a level in
+    the residuals: logged 1e3 of its spreads from zero, the treatment read an effect of 0.107
+    where it reads 1.004, and the outcome a standard error 8.3 times its own. Moved there and into
+    millionths of its units, the column keeps its values to 1e3 eps of its spread, 2e-13, and the
+    estimates now move by at most 2e-13."""
+    data = ConfoundedLinearSystem().sample(2_000, jax.random.key(0))
+    column = data[name]
+    per_unit = 1e-6 if name == "x_next" else 1e6
+    one = DoubleML().estimate(data)
+    other = DoubleML().estimate({**data, name: (column + 1e3 * column.std()) * 1e-6})
+    assert one.std_error is not None
+    assert other.std_error is not None
+    assert other.effect / per_unit == pytest.approx(one.effect, rel=1e-11, abs=0.0)
+    assert other.std_error / per_unit == pytest.approx(one.std_error, rel=1e-11, abs=0.0)
+
+
+@pytest.mark.parametrize("units", [1e-9, 1e-6, 1e-3, 1e3, 1e6])
+def test_backdoor_ols_and_its_error_read_the_same_with_the_treatment_in_any_units_in_float32(
+    units: float,
+) -> None:
+    """In float32 the least-squares cutoff dropped a treatment logged in millionths of its units:
+    the effect read 0 where it reads 1.0015, with a standard error ten times its own. Logged in
+    millions, the treatment pushed the other columns under the cutoff, and the effect read 0.035."""
+    with enable_x64(False):
+        data = ConfoundedLinearSystem(gamma=0.8).sample(2_000, jax.random.key(0))
+        one = BackdoorOLS().estimate(data)
+        other = BackdoorOLS().estimate({**data, "u": data["u"] * units})
+    assert one.std_error is not None
+    assert other.std_error is not None
+    assert other.effect * units == pytest.approx(one.effect, rel=1e-4, abs=0.0)
+    assert other.std_error * units == pytest.approx(one.std_error, rel=1e-4, abs=0.0)
 
 
 def test_backends_are_swappable_behind_one_interface() -> None:

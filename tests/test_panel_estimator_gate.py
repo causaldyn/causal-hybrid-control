@@ -86,10 +86,11 @@ def test_the_ordering_does_not_flip_with_the_cluster_count() -> None:
 
 
 def test_the_gate_against_a_real_estimator() -> None:
-    # 120 draws, not 40: at 40 the sample variance ratio is biased toward 1 and the conservatism
-    # finding flips on a lucky sample -- measured under both JAX precisions, which draw DIFFERENT
-    # panels because the sampler derives its NumPy seed from a JAX key
-    gate = panel_estimator_certificate(cluster_counts=(2, 20), draws=120, bootstrap=400)
+    # 300 draws, the docstring table's, not 120 or 40: from fewer the sample variance ratio is
+    # biased toward 1 and the conservatism finding flips on a lucky sample -- at 120 the g = 2
+    # ratio reads 0.484 against a predicted 0.469 -- measured under both JAX precisions, which draw
+    # DIFFERENT panels because the sampler derives its NumPy seed from a JAX key
+    gate = panel_estimator_certificate(cluster_counts=(2, 20), draws=300, bootstrap=400)
     assert gate.signs_agree
     assert gate.predicted_washout
     assert gate.measured_washout

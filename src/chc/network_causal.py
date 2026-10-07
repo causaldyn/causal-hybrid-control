@@ -22,7 +22,13 @@ import optax
 from jax import Array
 from numpy.typing import NDArray
 
-from chc.causal import _polynomial_features, _ridge_predict, _stream_key
+from chc.causal import (
+    _centred_ridge_predict,
+    _least_squares,
+    _polynomial_features,
+    _standardised,
+    _stream_key,
+)
 from chc.frames import _refuse_shared_names
 from chc.irf import peak_lag
 
@@ -625,7 +631,10 @@ def estimate_network_effects(
 
     Residualises the outcome, treatment ``u``, and exposure ``e`` on flexible predictions from the
     (own + mean-neighbour) covariates, then regresses the outcome residual on the two treatment
-    residuals -- the coefficients are the direct and spillover effects.
+    residuals -- the coefficients are the direct and spillover effects. The covariates are centred
+    and scaled before the polynomial basis is built, and the intercept takes no ridge, so ``ridge``
+    reads the same in any units of the covariates and at any level of them, of the treatment, the
+    exposure and the outcome.
 
     ``fold_groups`` labels each row with a unit that must not be split across folds; whole labels
     are permuted and chunked instead of rows. The default of ``None`` permutes rows, which is
@@ -666,7 +675,7 @@ def estimate_network_effects(
         }
     )
     y, u, e = data["x_next"], data["u"], data[exposure]
-    covs = jnp.stack([data[c] for c in covariates], axis=1)
+    covs = _standardised(jnp.stack([data[c] for c in covariates], axis=1))
     n = y.shape[0]
     chunks = _fold_chunks(n, folds, seed, fold_groups)
     banned = _neighbour_units(data) if exclude_neighbours else None
@@ -687,9 +696,15 @@ def estimate_network_effects(
                 )
         phi_tr = _polynomial_features(covs[train], degree)
         phi_te = _polynomial_features(covs[test], degree)
-        y_res = y_res.at[test].set(y[test] - _ridge_predict(phi_tr, y[train], phi_te, ridge))
-        u_res = u_res.at[test].set(u[test] - _ridge_predict(phi_tr, u[train], phi_te, ridge))
-        e_res = e_res.at[test].set(e[test] - _ridge_predict(phi_tr, e[train], phi_te, ridge))
+        y_res = y_res.at[test].set(
+            y[test] - _centred_ridge_predict(phi_tr, y[train], phi_te, ridge)
+        )
+        u_res = u_res.at[test].set(
+            u[test] - _centred_ridge_predict(phi_tr, u[train], phi_te, ridge)
+        )
+        e_res = e_res.at[test].set(
+            e[test] - _centred_ridge_predict(phi_tr, e[train], phi_te, ridge)
+        )
     design = jnp.stack([u_res, e_res], axis=1)
     gram = design.T @ design
     coef = jnp.linalg.solve(gram, design.T @ y_res)
@@ -832,5 +847,5 @@ def estimate_network_effects_gnn(
         y_res = y_res.at[test].set(y[test] - pred_y[test])
         u_res = u_res.at[test].set(u[test] - pred_u[test])
         e_res = e_res.at[test].set(e[test] - pred_e[test])
-    coef, *_ = jnp.linalg.lstsq(jnp.stack([u_res, e_res], axis=1), y_res, rcond=None)
+    coef = _least_squares(jnp.stack([u_res, e_res], axis=1), y_res)
     return {"direct": float(coef[0]), "spillover": float(coef[1])}

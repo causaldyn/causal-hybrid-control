@@ -77,11 +77,43 @@ def _refuse_reread(role: str, names: Iterable[str], taken: Mapping[str, str]) ->
             )
 
 
+def _root_mean_square(columns: Array) -> Array:
+    """Each column's root mean square, taken relative to its largest entry so that no square under-
+    or overflows in any units; 0 for a column of zeros."""
+    peak = jnp.max(jnp.abs(columns), axis=0)
+    unit = jnp.where(peak > 0.0, peak, 1.0)
+    return unit * jnp.sqrt(jnp.mean((columns / unit) ** 2, axis=0))
+
+
+def _own_units(design: Array) -> Array:
+    """Each column's power of two nearest the reciprocal of its root mean square, 1 for a column of
+    zeros.
+
+    ``jnp.linalg.lstsq`` with ``rcond=None`` cuts the rank at ``eps * max(N, p)`` of the largest
+    singular value, 2.4e-4 of it in float32 at 2000 rows. On the raw columns an action logged in
+    millionths of its units fell under that cutoff, and the adjusted effect read 0 where it reads
+    1.0015; logged in millions, the action pushed the other columns under it, and the effect read
+    0.035. On the columns times these, each sits at about its own size. Multiplying by a power of
+    two is exact, so the coefficients scaled back are the raw columns' own to rounding, and a column
+    already near unit size moves no bit.
+    """
+    size = _root_mean_square(design)
+    exponent = jnp.round(jnp.log2(jnp.where(size > 0.0, size, 1.0))).astype(jnp.int32)
+    return jnp.ldexp(jnp.ones_like(size), -exponent)
+
+
+def _least_squares(design: Array, target: Array) -> Array:
+    """Least-squares coefficients of ``target`` (n,) on ``design``, solved in its columns' own
+    units (:func:`_own_units`)."""
+    scale = _own_units(design)
+    coeffs, *_ = jnp.linalg.lstsq(design * scale, target, rcond=None)
+    return scale * coeffs
+
+
 def _ols_with_intercept(features: Array, target: Array) -> Array:
     """Ordinary least squares with an intercept column appended; returns the coefficient vector."""
     design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
-    coeffs, *_ = jnp.linalg.lstsq(design, target, rcond=None)
-    return coeffs
+    return _least_squares(design, target)
 
 
 def estimate_control_effect(data: dict[str, Array], adjust_for: tuple[str, ...] = ()) -> Array:
@@ -103,7 +135,7 @@ def estimate_control_effect(data: dict[str, Array], adjust_for: tuple[str, ...] 
 def _ols_fit(features: Array, target: Array) -> tuple[Array, Array]:
     """OLS with intercept; returns (coefficients, fitted values)."""
     design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
-    coeffs, *_ = jnp.linalg.lstsq(design, target, rcond=None)
+    coeffs = _least_squares(design, target)
     return coeffs, design @ coeffs
 
 
@@ -197,12 +229,14 @@ def _ols_with_se(features: Array, target: Array) -> tuple[Array, Array, int]:
     """OLS with intercept; returns (coefficients, standard errors, residual degrees of freedom)."""
     design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
     n, p = design.shape
-    beta, *_ = jnp.linalg.lstsq(design, target, rcond=None)
-    residual = target - design @ beta
+    scale = _own_units(design)
+    scaled = design * scale  # the Gram inverted below as well, in the columns' own units
+    beta, *_ = jnp.linalg.lstsq(scaled, target, rcond=None)
+    residual = target - scaled @ beta
     dof = n - p
     sigma2 = (residual @ residual) / dof
-    cov = sigma2 * jnp.linalg.inv(design.T @ design)
-    return beta, jnp.sqrt(jnp.diag(cov)), dof
+    cov = sigma2 * jnp.linalg.inv(scaled.T @ scaled)
+    return scale * beta, scale * jnp.sqrt(jnp.diag(cov)), dof
 
 
 def sensitivity_analysis(
@@ -229,7 +263,7 @@ def sensitivity_analysis(
     t_stat = jnp.abs(beta[1] / se[1])
     f = q * t_stat / jnp.sqrt(float(dof))
     rv = 0.5 * (jnp.sqrt(f**4 + 4.0 * f**2) - f**2)
-    scale = float(jnp.std(data["u"]) / (jnp.std(data["x_next"]) + 1e-12))  # to standardised units
+    scale = float(jnp.std(data["u"]) / _spread(data["x_next"]))  # to standardised units
     report = {
         "effect": float(beta[1]),
         "std_error": float(se[1]),
@@ -291,10 +325,91 @@ def _polynomial_features(x: Array, degree: int) -> Array:
     return jnp.stack(features, axis=1)
 
 
+# A spread within this many eps of its column's root mean square is rounding: deviations from a
+# computed mean keep the mean's rounding, which alone gave a constant column a spread of up to 5.8
+# eps, from 2 to 1e7 rows, in float32 and float64.
+_ROUNDING = 64
+
+
+def _centred(columns: Array) -> tuple[Array, Array]:
+    """Each column's mean, and its deviations from it: exactly 0 in a column whose entries are all
+    equal, where the rounding of the computed mean would be left in every row."""
+    centre = jnp.mean(columns, axis=0)
+    constant = jnp.max(columns, axis=0) == jnp.min(columns, axis=0)
+    return centre, jnp.where(constant, 0.0, columns - centre)
+
+
+def _spread_and_rounding(columns: Array) -> tuple[Array, Array]:
+    """Each column's standard deviation, and whether it is rounding: within ``_ROUNDING`` eps of the
+    column's own root mean square, so the test reads the same in any units. A column whose entries
+    are all equal has a spread of exactly 0."""
+    spread = _root_mean_square(_centred(columns)[1])
+    level = _ROUNDING * jnp.finfo(spread.dtype).eps * _root_mean_square(columns)
+    return spread, spread <= level
+
+
+def _spread(columns: Array) -> Array:
+    """Each column's standard deviation, or 1 for a column whose spread is rounding."""
+    spread, rounding = _spread_and_rounding(columns)
+    return jnp.where(rounding, 1.0, spread)
+
+
+def _standardising(covariates: Array) -> tuple[Array, Array]:
+    """The centre and the factor that standardise each covariate as ``(x - centre) * factor``: its
+    mean and the reciprocal of its spread, so that a basis built on them reads the same in any units
+    of the covariates and at any level of them. A covariate whose spread is rounding gets a factor
+    of 0 and reads 0 in every row: divided by its spread, a column of zeros would be nan, and one
+    constant to its last bit a coin flip blown up to unit size.
+
+    The statistics are the full sample's, not each fold's, so every fold reads one basis.
+    """
+    spread, rounding = _spread_and_rounding(covariates)
+    factor = jnp.where(rounding, 0.0, 1.0 / jnp.where(rounding, 1.0, spread))
+    return jnp.mean(covariates, axis=0), factor
+
+
+def _standardised(covariates: Array) -> Array:
+    """The covariates standardised by :func:`_standardising`."""
+    centre, factor = _standardising(covariates)
+    return (covariates - centre) * factor
+
+
 def _ridge_predict(x_train: Array, y_train: Array, x_test: Array, alpha: float) -> Array:
     p = x_train.shape[1]
     beta = jnp.linalg.solve(x_train.T @ x_train + alpha * jnp.eye(p), x_train.T @ y_train)
     return x_test @ beta
+
+
+def _centred_ridge_fit(train: Array, target: Array, ridge: float) -> tuple[Array, Array, Array]:
+    """Ridge fit of ``target`` on ``train``, a basis whose first column is the bias column of
+    :func:`_polynomial_features`: the target's mean, and the other columns' means and slopes.
+
+    The intercept is free, and the ridge on every other column is scaled by the column's variance
+    about its mean, so the predictions read the same at any level of the target, and, on a basis
+    linear in its columns, in any units of a column and at any level of it. :func:`_ridge_predict`
+    puts one ridge on the intercept and on every column: on the raw covariates' monomials of a
+    :class:`ConfoundedLinearSystem` log in thousandths of their units, the effect read -0.18 where
+    it reads 1.00, and in millionths the unadjusted regression's -0.20. A column whose spread is
+    rounding (:func:`_spread_and_rounding`) counts as constant and keeps its mean square, so that a
+    constant column, collinear with the intercept, still has a ridge term; a column of zeros keeps
+    1. A column whose entries are all equal has deviations of exactly 0 (:func:`_centred`), so its
+    slope is exactly 0.
+    """
+    columns = train[:, 1:]
+    centre, deviations = _centred(columns)
+    spread, constant = _spread_and_rounding(columns)
+    scale = jnp.where(constant, _root_mean_square(columns), spread)
+    scale = jnp.where(scale > 0.0, scale, 1.0)
+    level = jnp.mean(target, axis=0)
+    gram = deviations.T @ deviations + jnp.diag(ridge * scale**2)
+    return level, centre, jnp.linalg.solve(gram, deviations.T @ (target - level))
+
+
+def _centred_ridge_predict(train: Array, target: Array, test: Array, ridge: float) -> Array:
+    """Predictions at ``test`` of the ridge fit of ``target`` on ``train`` by
+    :func:`_centred_ridge_fit`."""
+    level, centre, slopes = _centred_ridge_fit(train, target, ridge)
+    return level + (test[:, 1:] - centre) @ slopes
 
 
 def _dml_residuals(
@@ -306,14 +421,15 @@ def _dml_residuals(
     seed: int,
 ) -> tuple[Array, Array]:
     """Cross-fitted partialling-out residuals ``(y_res, u_res)`` -- the shared core of the DML point
-    estimate and its influence-function SE. Nuisances are polynomial-ridge, fit out of fold.
+    estimate and its influence-function SE. Nuisances are polynomial-ridge on the standardised
+    covariates (:func:`_standardised`, :func:`_centred_ridge_predict`), fit out of fold.
 
     The state ``x`` is a covariate like any other here; ``u`` and ``x_next`` are refused, since
     a nuisance that reads the action or the outcome predicts it.
     """
     _refuse_reread("covariate", covariates, _ACTION_AND_OUTCOME)
     y, u = data["x_next"], data["u"]
-    covs = jnp.stack([data[c] for c in covariates], axis=1)
+    covs = _standardised(jnp.stack([data[c] for c in covariates], axis=1))
     n = y.shape[0]
     chunks = jnp.array_split(jax.random.permutation(_stream_key(seed, "folds"), n), folds)
 
@@ -324,8 +440,10 @@ def _dml_residuals(
         train = jnp.concatenate([chunks[j] for j in range(folds) if j != k])
         phi_train = _polynomial_features(covs[train], degree)
         phi_test = _polynomial_features(covs[test], degree)
-        y_res = y_res.at[test].set(y[test] - _ridge_predict(phi_train, y[train], phi_test, ridge))
-        u_res = u_res.at[test].set(u[test] - _ridge_predict(phi_train, u[train], phi_test, ridge))
+        y_hat = _centred_ridge_predict(phi_train, y[train], phi_test, ridge)
+        u_hat = _centred_ridge_predict(phi_train, u[train], phi_test, ridge)
+        y_res = y_res.at[test].set(y[test] - y_hat)
+        u_res = u_res.at[test].set(u[test] - u_hat)
     return y_res, u_res
 
 
@@ -342,6 +460,9 @@ def estimate_effect_dml(
     Partials flexible (polynomial-ridge) predictions of ``x_next`` and ``u`` out of the covariates,
     then regresses the residuals. This is Neyman-orthogonal, so it recovers the effect even under
     *nonlinear* confounding, where the linear :func:`estimate_control_effect` adjustment is biased.
+    The covariates are centred and scaled before the polynomial basis is built, and the intercept
+    takes no ridge, so ``ridge`` reads the same in any units of the covariates and at any level of
+    them, of the action and of the outcome.
 
     Raises:
         ValueError: if ``covariates`` names ``u`` or ``x_next``, the action and the outcome.
@@ -364,7 +485,9 @@ def dml_point_and_se(
     ``theta = <u_res, y_res>/<u_res, u_res>`` and the (robust, HC-style) SE is
     ``sqrt(sum u_res^2 * eps^2) / sum u_res^2`` with ``eps = y_res - theta*u_res`` -- the sandwich
     variance of the Neyman-orthogonal moment. Ships EconML-grade uncertainty with the cross-fit
-    effect (a 95% CI is ``theta +/- 1.96*se``).
+    effect (a 95% CI is ``theta +/- 1.96*se``). The nuisances are those of
+    :func:`estimate_effect_dml`, so ``ridge`` reads the same in any units of the covariates and at
+    any level of them, of the action and of the outcome.
 
     Raises:
         ValueError: if ``covariates`` names ``u`` or ``x_next``, the action and the outcome.
@@ -409,7 +532,7 @@ def refute_effect(
         estimate_control_effect({key: val[idx] for key, val in data.items()}, adjust_for)
     )
 
-    scale = abs(original) + 1e-9
+    scale = abs(original)  # no floor: one of 1e-9 passed failing refutations in small units
     passes = (
         abs(placebo) < 0.1 * scale
         and abs(rcc - original) < 0.1 * scale
