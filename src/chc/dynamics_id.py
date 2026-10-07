@@ -217,7 +217,10 @@ class CausalDynamicsFit:
     # log, no rate of the log tells it apart, and the channel is held at zero along it, in the
     # actions' scaled units; where they cannot, the log's rates rule out all but one value, and the
     # channel takes it by least squares beside the drift: what the log did, not an effect, whatever
-    # ``channel_error`` says (ADR 0054). ``r`` is 0 when the log moves every direction.
+    # ``channel_error`` says (ADR 0054). The directions are orthogonal with each channel coefficient
+    # scaled to its column of the channel's design on the log's raw actions, and a span of them is
+    # read there: in raw units, where the units of the state and of the actions set those columns'
+    # sizes apart, they lean together. ``r`` is 0 when the log moves every direction.
     unmoved: Array | None = None
     # (N, n, q), kept with ``influence``, ``q`` the channel's size in its raveled order: ``N`` times
     # each transition's weight, per state, in each channel coefficient through the channel's moment
@@ -251,6 +254,10 @@ class CausalDynamicsFit:
     # Experimental, as ``instrument_relevance``: how many of its entries are above 0, the rank of
     # the instrument's moment along the directions the log moves. None without an instrument.
     instrument_rank: int | None = None
+    # (m k,), set with ``unmoved``: the norm of each column of the channel's design on the log's raw
+    # actions, 1 for a column of zeros. ``unmoved``'s directions, each coefficient times it, are the
+    # orthogonal directions the fit read, and a reader of their span reads it there.
+    _unmoved_size: Array | None = dataclasses.field(default=None, repr=False, compare=False)
 
 
 def _r_squared(target: Array, prediction: Array) -> float:
@@ -712,14 +719,23 @@ def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
 
 def _unmoved_actions(fit: CausalDynamicsFit) -> tuple[int, ...]:
     """The actions whose whole channel the log never moved: every coefficient of theirs, on every
-    feature of the channel, in the span of :attr:`CausalDynamicsFit.unmoved`'s directions."""
+    feature of the channel, in the span of :attr:`CausalDynamicsFit.unmoved`'s directions.
+
+    The span is read where the fit read it, each coefficient scaled to its column of the channel's
+    design on the log's raw actions, where the directions are orthogonal. In raw coefficient units
+    they lean together as the units of the state and of the actions set those columns' sizes apart:
+    with the state at 1e-12 of its units, QR there missed the span by 2.5e-5, and a lever the log
+    set from the state read as moved; with one lever at 1e9 of its units, a direction both share
+    lay 2e-9 of the way along it, under the precision, and the other read as never moved."""
     states, actions, features = fit.residual.channel.shape
     if fit.unmoved is None or fit.unmoved.shape[1] == 0:
         return ()
+    assert fit._unmoved_size is not None  # the fit sets it with unmoved
     # every state's channel is moved along the same directions, so the first state's block of its
     # first moves holds them all
     width = actions * features
-    basis = jnp.linalg.qr(fit.unmoved[:width, : fit.unmoved.shape[1] // states])[0]
+    directions = fit.unmoved[:width, : fit.unmoved.shape[1] // states]
+    basis = jnp.linalg.qr(directions * fit._unmoved_size[:, None])[0]
     moved = jnp.eye(width) - basis @ basis.T
     precision = float(jnp.sqrt(jnp.finfo(basis.dtype).eps))
     return tuple(
@@ -788,7 +804,11 @@ def _absorbed(
     log's own predicted rates, so within the model class the log rules it out, though the channel's
     moment has no data along it, and the fit reads it off the log's rate (:class:`_Unmoved`, the
     same split). Scaled to the push its coefficients would make on actions of the log's raw size,
-    the test reads the same in any units."""
+    the test reads the same in any units.
+
+    The least squares reads each column in its own units, as the split does. On the raw columns it
+    left 1.6e-3 of a push with the state at 1e-12 of its units, and all of it at 1e-13, where the
+    rank cutoff dropped the state's columns."""
     states_n, levers, features = fit.residual.channel.shape
     width = levers * features
     if fit.unmoved is None or fit.unmoved.shape[1] == 0:
@@ -804,7 +824,7 @@ def _absorbed(
     precision = jnp.sqrt(jnp.finfo(push.dtype).eps)
     size = jnp.linalg.norm(jnp.abs(raw) @ jnp.abs(taken), axis=0)
     none = jnp.linalg.norm(push, axis=0) <= precision * size
-    return taken, jnp.linalg.lstsq(drift_design, jnp.where(none, 0.0, push))[0]
+    return taken, _units.least_squares(drift_design, jnp.where(none, 0.0, push))
 
 
 def _nuisance_inputs(
@@ -1176,6 +1196,7 @@ def fit_causal_residual(
 
     row_weight = None if weights is None else _state_weights(weights, x)
     raw = _channel_design(u, x, channel_degree)
+    raw_size = jnp.linalg.norm(raw, axis=0)
     # the moment's ridge, scaled to the raw actions' size, as the unmoved directions are
     penalty = jnp.diag(_units.mean_squares(raw, row_weight))
     directions = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree)
@@ -1308,6 +1329,7 @@ def fit_causal_residual(
             if row_weight is None
             else float(jnp.sum(row_weight) ** 2 / jnp.sum(row_weight**2)),
             unmoved=unmoved,
+            _unmoved_size=jnp.where(raw_size > 0.0, raw_size, 1.0),
         )
 
     def predicted(residual: ControlAffineResidual, gain: Array) -> Array:

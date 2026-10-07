@@ -248,6 +248,108 @@ def test_the_test_reads_the_same_in_any_units() -> None:
     )
 
 
+@functools.cache
+def _state_in(policy: str, units: float) -> Prescription:
+    """``policy``'s log with the state logged in ``units`` times its own, and the problem with it:
+    the target, the start and the tube's tolerance times ``units``, the levers' prices times its
+    square, as the state's cost is."""
+    columns = dict(_panel(policy).columns)
+    columns["y"] = units * np.asarray(columns["y"])
+    return prescribe(
+        Panel.from_frame(columns, unit="unit", time="time"),
+        levers=[
+            Lever("u1", lo=-2.0, hi=2.0, unit_cost=0.01 * units**2),
+            Lever("u2", lo=-2.0, hi=2.0, unit_cost=1.0 * units**2),
+        ],
+        target=Target("y", value=units),
+        adjustment=CausalGraph.from_edges(EDGES),
+        horizon=3,
+        dt=DT,
+        tolerance=0.5 * units,
+        x0=jnp.full(1, units),
+    )
+
+
+def _kept_to(result: Prescription) -> tuple[object, ...]:
+    """What a prescription reads the log kept to, and why it plans or not."""
+    certificate = result.certificate
+    return (
+        certificate.identification,
+        certificate.estimability,
+        certificate.unmoved_levers,
+        certificate.rule_levers,
+        certificate.first_loaded_step,
+        certificate.adjustment.reason,
+        result.plan is None,
+    )
+
+
+@pytest.mark.parametrize("units", [1e-15, 1e-12, 1e-9, 1e9, 1e12, 1e15])
+@pytest.mark.parametrize("policy", ["state", "state_squared", "confounder", "together"])
+def test_a_log_reads_the_same_in_any_units_of_the_state(policy: str, units: float) -> None:
+    """The state logged in ``units`` times its own, and the problem with it. The fit's unmoved
+    directions were read in raw coefficient units, where the state's feature parts from the
+    constant's by ``units``. There, at 1e-12, ``u1``'s channel on the log that set it from the
+    state lay 2.5e-5 off their span, past the square root of the precision: the log read as having
+    set ``1 u1 - 1.3e-18 u2`` from the state, and gave no schedule. At 1e-9, on the log that set
+    ``u1`` from ``z``, it lay 7.0e-8 off, and the reason named that combination, not ``u1``. With
+    that read right, the drift's response to a move no transition tells apart, read on the raw
+    drift design, lost the state's column from 1e-13, and the plan read ``not_estimable`` from its
+    first step. The schedules now agree to 2.2e-16."""
+    one, other = _state_in(policy, 1.0), _state_in(policy, units)
+    assert _kept_to(other) == _kept_to(one)
+    assert other.certificate.relations == one.certificate.relations
+    if one.plan is not None:
+        np.testing.assert_allclose(
+            np.asarray(other.schedule.magnitudes),
+            np.asarray(one.schedule.magnitudes),
+            rtol=0.0,
+            atol=1e-12,
+        )
+
+
+@functools.cache
+def _lever_in(policy: str, units: float) -> Prescription:
+    """``policy``'s log with ``u1`` logged in ``units`` times its own, its box times ``units`` and
+    its price over its square."""
+    columns = dict(_panel(policy).columns)
+    columns["u1"] = units * np.asarray(columns["u1"])
+    return prescribe(
+        Panel.from_frame(columns, unit="unit", time="time"),
+        levers=[
+            Lever("u1", lo=-2.0 * units, hi=2.0 * units, unit_cost=0.01 / units**2),
+            Lever("u2", lo=-2.0, hi=2.0, unit_cost=1.0),
+        ],
+        target=Target("y", value=1.0),
+        adjustment=CausalGraph.from_edges(EDGES),
+        horizon=3,
+        dt=DT,
+        tolerance=0.5,
+        x0=jnp.ones(1),
+    )
+
+
+@pytest.mark.parametrize("units", [1e-12, 1e-9, 1e9])
+@pytest.mark.parametrize("policy", ["state", "together"])
+def test_a_log_reads_the_same_with_one_lever_in_other_units(policy: str, units: float) -> None:
+    """``u1`` logged in ``units`` times its own, its box and its price with it. Read in raw
+    coefficient units, the direction the log that kept ``u2 = 2 u1`` never moved lies 2e-9 of the
+    way along ``u1`` at 1e9, under the square root of the precision: ``u2`` read as never moved and
+    was held at its mean, and the schedule moved by 0.69; at 1e-9 and 1e-12 ``u1`` did. On the log
+    that set ``u1`` from the state, ``u2``'s rounding put ``u1``'s channel 6.8e-8 off the span at
+    1e9, and the log gave no schedule. The schedules now agree to 3.2e-10 of ``u1``'s units at 1e9,
+    where the relations the log kept are read in the levers' raw units, and to 3.3e-16 elsewhere."""
+    one, other = _lever_in(policy, 1.0), _lever_in(policy, units)
+    assert _kept_to(other) == _kept_to(one)
+    assert len(other.certificate.relations) == len(one.certificate.relations)
+    np.testing.assert_allclose(
+        np.asarray(other.schedule.magnitudes) / np.array([units, 1.0]),
+        np.asarray(one.schedule.magnitudes),
+        rtol=0.0,
+        atol=1e-8,
+    )
+
+
 def test_a_rule_that_leaves_its_box_leaves_the_log_from_that_step(caplog) -> None:
     """``u1``'s box stops at -0.27, which the rule ``-0.3 y`` crosses as ``y`` falls through 0.9:
     inside the second step, before the third starts. A step holds ``u1`` at the rule's level at the
