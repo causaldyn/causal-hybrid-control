@@ -7,6 +7,20 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A lever that follows the log's rule is priced at the level it takes.** `prescribe` has a lever
+  the log set from the state alone follow that rule in the plan's field, but priced it at its
+  column of the plan, which nothing else reads and which sits at the lever's mean logged level.
+  The reported `task_cost` was not the cost of the schedule the plan runs, and the other levers
+  did not answer the lever's price: on a log whose `u1` was set to `-0.3 y`, at a unit cost of
+  1000 the plan reported 1.255 for a schedule that costs 115.46, where a plan that brings `y` down
+  with the free lever costs 114.15. `CausalPlan.decision_weight` moved the channel by the same
+  column, and weighed an error in that lever's channel 84 times too light, its cross term with the
+  other lever's of the wrong sign. The field, the cost and the decision weight now read one action.
+  Plans with a ruled lever move: at a unit cost of 0.01 the same log's plan reports 0.040286 where
+  it reported 0.039144. Plans without one are unchanged. Since 0.14.0.
+
 ## [0.14.3] — 2026-10-07
 
 ### Fixed

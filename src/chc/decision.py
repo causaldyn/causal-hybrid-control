@@ -88,6 +88,10 @@ from chc.plan import (
     RegretStatus,
     RowPrice,
     SafetyCertificate,
+    _Rule,
+    _Ruled,
+    _RuledCost,
+    _taken,
     causal_plan,
     certify_safety,
     plan_regret_bound,
@@ -1432,25 +1436,26 @@ def prescribe(
         _warn_outside_logged_range(panel, drivers)
         forecast = jnp.stack([jnp.asarray(driver.forecast, dtype=float) for driver in drivers], 1)
         model = driven = DrivenDynamics(model, fit.driver_gain, forecast, dt)
+    rule: _Rule | None = None
     if kept.logged is not None and kept.rules:
-        model = _Ruled(
-            model,
-            levers=kept.rules,
+        rule = _Rule(
             centre=kept.logged.centre,
             spread=kept.logged.spread,
             coefficients=kept.logged.rule[:, jnp.array(kept.rules)],
             lo=jnp.array([levers[index].lo for index in kept.rules]),
             hi=jnp.array([levers[index].hi for index in kept.rules]),
+            levers=kept.rules,
             degree=_NUISANCE_DEGREE,
         )
+        model = _Ruled(model, rule)
         _log.warning(
             "levers the log set from the state alone follow that rule",
             extra={"chc_event": "rule", "levers": list(rule_levers)},
         )
     # A lever the log never moved is held at its mean logged level: the one level the fit has seen
     # its push at, which the drift has absorbed, where the log kept it there. One the log set from
-    # the state follows that rule in the field, and its column is held there only so the planner
-    # spends nothing on it.
+    # the state follows that rule in the field and in the price, and its column, which neither
+    # reads, is held there too.
     held_at = jnp.array(unmoved, dtype=int)
     levels = jnp.array(
         [jnp.clip(jnp.mean(data["u"][:, i]), levers[i].lo, levers[i].hi) for i in unmoved]
@@ -1501,7 +1506,7 @@ def prescribe(
     held = BarrierConstraint(_barrier(margins), gamma=gamma) if hold_constraints else None
 
     started = time.perf_counter()
-    planning_cost = _cost(states, levers, target, horizon)
+    planning_cost = _cost(states, levers, target, horizon, rule)
     lipschitz, tube_rate = _rate(model, start, u_lo, u_hi)
     model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
     if tolerance is not None and not (math.isfinite(lipschitz) and math.isfinite(model_error)):
@@ -1862,34 +1867,6 @@ def _relation_rows(
     return LinearConstraint(np.kron(np.eye(horizon), weights), levels, levels)
 
 
-class _Ruled(eqx.Module):
-    """The plan's field with the levers the log set from the state alone following that rule: the
-    log's least-squares polynomial of the state, clipped to their boxes (ADR 0054). Their columns
-    of the plan's actions are not read."""
-
-    dynamics: Dynamics
-    centre: Array  # (n,)
-    spread: Array  # (n,)
-    coefficients: Array  # (features, r)
-    lo: Array  # (r,)
-    hi: Array  # (r,)
-    levers: tuple[int, ...] = eqx.field(static=True)
-    degree: int = eqx.field(static=True)
-
-    def levels(self, x: Array) -> Array:
-        """The ruled levers' levels at ``x``."""
-        standard = ((x - self.centre) / self.spread)[None, :]
-        rule = _polynomial_features(standard, self.degree)[0] @ self.coefficients
-        return jnp.clip(rule, self.lo, self.hi)
-
-    def read(self, x: Array, u: Array) -> Array:
-        """The action the field reads at ``x``: ``u`` with the ruled levers on their rule."""
-        return u.at[jnp.array(self.levers)].set(self.levels(x))
-
-    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
-        return self.dynamics(t, x, self.read(x, u))
-
-
 def _ruled_schedule(model: Dynamics, plan: CausalPlan) -> Array | None:
     """The plan's actions with each ruled lever read off its rule along the predicted path; None
     where no lever follows a rule."""
@@ -1921,7 +1898,7 @@ def _first_loaded(
     precision = jnp.sqrt(jnp.finfo(directions.dtype).eps)
 
     def clear(t: Array, x: Array, u: Array) -> Array:
-        action = model.read(x, u) if isinstance(model, _Ruled) else u
+        action = _taken(model, x, u)
         design = _channel_design(action[None, :], x[None, :], fit.residual.channel_degree)[0]
         features = control_affine_features(x, fit.residual.degree)
         if drivers is not None:
@@ -2330,7 +2307,11 @@ def _warn_outside_logged_range(panel: Panel, drivers: Sequence[Driver]) -> None:
 
 
 def _cost(
-    states: tuple[str, ...], levers: Sequence[Lever], target: Target, horizon: int
+    states: tuple[str, ...],
+    levers: Sequence[Lever],
+    target: Target,
+    horizon: int,
+    rule: _Rule | None = None,
 ) -> QuadraticCost:
     """Weight the target's own coordinate and price each lever; constrained states are free.
 
@@ -2340,6 +2321,8 @@ def _cost(
 
     A schedule becomes one target per state. The start's row repeats the first level; no action
     reaches the start, so that row moves the reported cost and nothing the plan does.
+
+    A lever on ``rule`` is priced at the level the rule sets, the action the field takes.
     """
     weights = jnp.array([target.weight] + [0.0] * (len(states) - 1))
     if np.ndim(target.value) == 0:
@@ -2349,9 +2332,10 @@ def _cost(
         path = jnp.concatenate([levels[:1], levels])
         goal = jnp.zeros((horizon + 1, len(states))).at[:, 0].set(path)
     q = jnp.diag(weights)
-    return QuadraticCost(
-        Q=q, R=jnp.diag(jnp.array([lever.unit_cost for lever in levers])), Qf=q, x_target=goal
-    )
+    r = jnp.diag(jnp.array([lever.unit_cost for lever in levers]))
+    if rule is None:
+        return QuadraticCost(Q=q, R=r, Qf=q, x_target=goal)
+    return _RuledCost(Q=q, R=r, Qf=q, x_target=goal, rule=rule)
 
 
 def _margins(states: tuple[str, ...], constraints: Sequence[Constraint]) -> tuple[_Margin, ...]:

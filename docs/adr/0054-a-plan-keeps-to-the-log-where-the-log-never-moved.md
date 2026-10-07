@@ -1,6 +1,8 @@
 # ADR 0054 — A plan keeps to the log where the log never moved
 
-**Status:** accepted, 2026-10-06.
+**Status:** accepted, 2026-10-06. Amended 2026-10-07: the plan's cost and its decision weight read
+a ruled lever at its rule's level, as its field does; until 0.14.3 they read its column of the
+plan, which nothing else reads.
 
 ## Context
 
@@ -56,8 +58,9 @@ the log kept at one level, those the state alone predicts, and those the covaria
 - A lever whose whole channel is unmoved:
   - kept at one level, it is held at its mean, clipped to its box, as in 0.13.0;
   - set from the state alone, it follows the log's least-squares rule of the state, the nuisance's
-    degree-2 polynomial, clipped to its box, inside the plan's field. The schedule's column carries
-    the rule read along the predicted path, and `InterventionSchedule.rules` names the lever;
+    degree-2 polynomial, clipped to its box, inside the plan's field, and the plan's cost prices it
+    at that level. The schedule's column carries the rule read along the predicted path, and
+    `InterventionSchedule.rules` names the lever;
   - set from a column outside the state, it gives no plan. The certificate reads `not_identified`
     and names the columns the rule reads.
 - Among the other levers:

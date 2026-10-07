@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import functools
 import logging
+from dataclasses import replace
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from chc.cost import total_cost
 from chc.decision import (
     DecisionError,
     Lever,
@@ -80,10 +82,11 @@ def _prescribe(policy: str, *, scale: float = 1.0, **kwargs: object) -> Prescrip
             Lever("u2", lo=-2.0 * scale, hi=2.0 * scale, unit_cost=1.0 / scale**2),
         ],
     )
+    target = kwargs.pop("target", Target("y", value=1.0))
     return prescribe(
         _panel(policy, scale),
         levers=levers,  # type: ignore[arg-type]
-        target=Target("y", value=1.0),
+        target=target,  # type: ignore[arg-type]
         adjustment=CausalGraph.from_edges(EDGES),
         horizon=3,
         dt=DT,
@@ -299,3 +302,67 @@ def test_a_ruled_lever_takes_no_cap_and_no_budget_and_no_evaluation() -> None:
         _prescribe("state", budgets=[budget])
     with pytest.raises(DecisionError, match="open-loop schedule cannot carry"):
         _prescribe("state").evaluate(_panel("state"))
+
+
+def _priced(unit_cost: float, level: float | tuple[float, ...] = 1.0) -> Prescription:
+    levers = [
+        Lever("u1", lo=-2.0, hi=2.0, unit_cost=unit_cost),
+        Lever("u2", lo=-2.0, hi=2.0, unit_cost=1.0),
+    ]
+    return _prescribe("state", levers=levers, target=Target("y", value=level))
+
+
+@pytest.mark.parametrize("level", [1.0, (1.0, 0.9, 0.8)], ids=["a level", "a path"])
+def test_a_ruled_lever_is_priced_at_the_level_it_takes(level: float | tuple[float, ...]) -> None:
+    """0.14 priced ``u1`` at its column of the plan, which nothing reads and which sits at its mean
+    logged level, 0.028, where the field takes the rule's ``-0.3 y``: at a unit cost of 1000 the
+    plan reported 1.255 for a schedule that costs 115.46. The reported cost is now the schedule's,
+    summed by hand; a path's start repeats its first level."""
+    result = _priced(1000.0, level)
+    assert result.plan is not None
+    path = np.asarray(result.plan.trajectory)[:, 0]
+    schedule = np.asarray(result.schedule.magnitudes)
+    goal = np.broadcast_to(level, 3)
+    goal = np.concatenate([goal[:1], goal])
+    by_hand = 0.5 * np.sum((path - goal) ** 2) + 0.5 * np.sum(schedule**2 @ np.array([1000.0, 1.0]))
+    assert result.plan.task_cost == pytest.approx(by_hand, rel=1e-12, abs=0.0)
+
+
+def test_a_dear_ruled_lever_moves_the_free_one() -> None:
+    """Under ``u1 = -0.3 y`` a lower ``y`` sets less of ``u1``: at a unit cost of 1000 the plan
+    pushes ``y`` down with ``u2`` and pays 114.15, where the plan made at 0.01 would pay 115.46.
+    0.14 made one plan at both prices."""
+    cheap, dear = _priced(0.01), _priced(1000.0)
+    assert cheap.plan is not None
+    assert dear.plan is not None
+    problem = dear.plan._problem
+    assert problem is not None
+    assert (
+        np.asarray(dear.schedule.magnitudes)[0, 1] < np.asarray(cheap.schedule.magnitudes)[0, 1] - 1
+    )
+    kept = total_cost(problem.model, problem.x0, cheap.plan.actions, problem.dt, problem.cost)
+    assert dear.plan.task_cost < float(kept) - 1.0
+
+
+def test_nothing_reads_a_ruled_lever_s_column() -> None:
+    """The plan holds ``u1``'s column at its mean logged level only so it has one: moved to 1.7
+    with its box, it moves neither the plan's cost nor what an error in the channel costs the plan.
+    0.14 priced the column, and weighed an error in ``u1``'s channel at it."""
+    plan = _prescribe("state").plan
+    assert plan is not None
+    problem = plan._problem
+    assert problem is not None
+    moved = replace(
+        plan,
+        actions=plan.actions.at[:, 0].set(1.7),
+        _problem=replace(
+            problem,
+            u_lo=jnp.asarray(problem.u_lo).at[..., 0].set(1.7),
+            u_hi=jnp.asarray(problem.u_hi).at[..., 0].set(1.7),
+        ),
+    )
+    cost = total_cost(problem.model, problem.x0, moved.actions, problem.dt, problem.cost)
+    assert float(cost) == pytest.approx(plan.task_cost, rel=1e-12, abs=0.0)
+    np.testing.assert_allclose(
+        moved.decision_weight().matrix, plan.decision_weight().matrix, rtol=1e-12, atol=0.0
+    )

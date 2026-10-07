@@ -57,6 +57,7 @@ from scipy.optimize import linprog
 
 from chc.adjoint import control_gradient_adjoint
 from chc.barrier import barrier_gamma_star, identification_radius_threshold
+from chc.causal import _polynomial_features
 from chc.control import (
     Bound,
     LinearConstraint,
@@ -231,7 +232,9 @@ class CausalPlan:
         the envelope theorem ``W = J_Eu M^-1 J_uE``, with ``M`` the Hessian of the task cost in
         the directions the plan may move and ``J_uE`` its mixed derivative in those directions and
         ``E``. The directions are the actions off the box, along the binding rows, with
-        :meth:`shadow_prices`' rule for what binds.
+        :meth:`shadow_prices`' rule for what binds. ``u`` is the action the field takes: a lever
+        :func:`chc.decision.prescribe` keeps on the log's rule of the state enters at its rule's
+        level, not at its column of :attr:`actions`.
 
         ``W`` is the regret's curvature at ``E = 0``, and three things bound how far it reaches:
 
@@ -373,14 +376,70 @@ def _regret_curvature(
     )
 
 
+class _Rule(eqx.Module):
+    """Levers set from the state alone, on a rule: a polynomial of the standardised state, clipped
+    to their boxes, as :func:`chc.decision.prescribe` reads one off a log (ADR 0054). The plan's
+    field, its price and its decision weight read the action through :meth:`read`, so each sees the
+    action the plan takes."""
+
+    centre: Array  # (n,)
+    spread: Array  # (n,)
+    coefficients: Array  # (features, r)
+    lo: Array  # (r,)
+    hi: Array  # (r,)
+    levers: tuple[int, ...] = eqx.field(static=True)
+    degree: int = eqx.field(static=True)
+
+    def levels(self, x: Array) -> Array:
+        """The ruled levers' levels at ``x``."""
+        standard = ((x - self.centre) / self.spread)[None, :]
+        rule = _polynomial_features(standard, self.degree)[0] @ self.coefficients
+        return jnp.clip(rule, self.lo, self.hi)
+
+    def read(self, x: Array, u: Array) -> Array:
+        """The action taken at ``x``: ``u`` with the ruled levers on their rule."""
+        return u.at[jnp.array(self.levers)].set(self.levels(x))
+
+
+class _Ruled(eqx.Module):
+    """A field whose ruled levers follow their rule. Their columns of the plan's actions are not
+    read."""
+
+    dynamics: Dynamics
+    rule: _Rule
+
+    def read(self, x: Array, u: Array) -> Array:
+        """The action the field reads at ``x``."""
+        return self.rule.read(x, u)
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.dynamics(t, x, self.rule.read(x, u))
+
+
+class _RuledCost(QuadraticCost):
+    """The cost at the action :class:`_Ruled` reads: a ruled lever is priced at its rule's level,
+    not at its column of the plan, which nothing reads."""
+
+    rule: _Rule
+
+    def running(self, x: Array, u: Array, target: Array | None = None) -> Array:
+        return QuadraticCost.running(self, x, self.rule.read(x, u), target)
+
+
+def _taken(model: Dynamics, x: Array, u: Array) -> Array:
+    """The action ``model``'s field takes at ``x`` for the plan's ``u``."""
+    return model.read(x, u) if isinstance(model, _Ruled) else u
+
+
 def _perturbed_task_cost(problem: _PlanProblem, actions: Array, change: Array) -> Array:
     """The task cost of ``actions`` when each step's one-step map is the model's plus
-    ``change @ u``: the rollout :func:`chc.integrate.rollout` makes, with the channel moved."""
+    ``change @ u``, ``u`` the action the field takes: the rollout :func:`chc.integrate.rollout`
+    makes, with the channel moved."""
     targets = problem.cost.targets(actions.shape[0])
 
     def body(carry: tuple[Array, Array], u: Array) -> tuple[tuple[Array, Array], Array]:
         t, x = carry
-        x_next = rk4_step(problem.model, t, x, u, problem.dt) + change @ u
+        x_next = rk4_step(problem.model, t, x, u, problem.dt) + change @ _taken(problem.model, x, u)
         return (t + problem.dt, x_next), x_next
 
     start = (jnp.asarray(0.0, dtype=problem.x0.dtype), problem.x0)
