@@ -762,6 +762,12 @@ def solve_channel_moment(
     score is that ``g`` and ``m`` may come from any learner -- gradient boosting, a neural net, a
     model the caller already had -- so the caller needs a way in that does not go through ours.
 
+    It solves the moment it is handed and checks no rank. Along a direction of the channel that
+    ``instrument_action`` does not move, the moment holds at every channel, and the ridge picks
+    one. Whether an instrument identifies the channel is the caller's to settle before the solve,
+    which sees neither the raw shifter nor the covariates the nuisances took out, and a rank that
+    decides it reads both.
+
     Args:
         state_residual: ``y - g(x, z)``, shape ``(N, n)``.
         action_residual: ``u - m(x, z)``, shape ``(N, m)`` -- the regressor.

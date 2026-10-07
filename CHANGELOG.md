@@ -59,6 +59,25 @@ still change).
   and its relevance grades it: columns of noise drawn apart from the action read 0.002 to 0.035
   where the plant's instrument reads 0.39 to 0.48. At `nuisance_degree=0` the first stage is a
   constant, which no instrument enters, so no instrument has rank there (ADR 0067). Since 0.3.0.
+- **Two-stage least squares refuses an instrument that does not move the action beyond the
+  state.** `estimate_effect_iv`, and `IV2SLS` through it, checked no relevance. Where the
+  instrument moved the action nowhere beyond what the state and a constant explain, the second
+  stage's design was collinear, and least squares returned its minimum-norm coefficient. On 40,000
+  rows of `ConfoundedLinearSystem(gamma=1.0)`, where the truth is 1.0, an instrument of zeros, a
+  constant one and noise less its projection on the state and the action each read -0.0032; the
+  state's affine copy, where the action moves with the state, read 0.63, though it correlates with
+  the action at 0.39, and 2.61 with the log in single precision and 0.15 with the state alone in
+  it; and a log whose state sets the action read 0.88. Each now raises `ValueError`. The check
+  reads the product of the instrument and the action, each beyond the state, against what 64 eps
+  of each one's own size could make of it, the same in any units and at any level, at the
+  coarsest precision the columns come in. An instrument that moves the action estimates as
+  before, bit for bit, and `IV2SLS` reports its relevance, the partial correlation of the
+  treatment and the instrument given the state, as `diagnostics["instrument_relevance"]`,
+  experimental: a column of noise drawn apart from the action keeps the rank and reads 0.263, its
+  relevance 0.0087 where the log's own instrument's is 0.53. The check reads the data, so
+  `estimate_effect_iv` no longer traces under `jax.jit`. `solve_channel_moment`, which solves the
+  moment for the caller's own instrument, still checks no rank, and its docstring now says so
+  (ADR 0071). Since 0.2.0.
 - **A panel refuses an object value that can change in place, so that its data cannot change
   under its hash.** `Panel.from_frame` copied an object column, but the copy held the caller's
   objects: a write to a dict the caller still held, or to one read back through

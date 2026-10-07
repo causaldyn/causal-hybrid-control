@@ -107,6 +107,65 @@ def _ols_fit(features: Array, target: Array) -> tuple[Array, Array]:
     return coeffs, design @ coeffs
 
 
+_ROUNDING = 64
+"""A spread within this many eps of its column's root mean square is rounding, so no spread."""
+
+
+def _instrument_relevance(state: Array, action: Array, instrument: Array) -> Array:
+    """How far ``instrument`` moves ``action`` beyond what ``state`` and a constant explain: the
+    canonical correlation between the first stage's push on the action and the action, each less
+    its least-squares projection on a constant and the state. For one action and one instrument it
+    is their partial correlation given the state, in absolute value: the root of the first stage's
+    partial ``R^2``.
+
+    It reads 0 where 2SLS's moment has no rank: where the product of the instrument and the action,
+    each beyond the state, is no more than their rounding could make of it. Each column is known
+    to ``_ROUNDING`` eps of its root mean square, the eps that of the coarsest precision the three
+    columns come in, so the action's rounding moves the product by that much of the action's root
+    mean square times the instrument's spread beyond the state, and the instrument's rounding by
+    that much of its own times the action's spread. A column with no spread beyond the state, or
+    none beyond its rounding, reads 0 so. Each column is centred before its projection, and the
+    state scaled to unit spread, so the reading is the same in any units of the three and at any
+    level of them.
+    """
+    rounding = _ROUNDING * max(
+        float(jnp.finfo(jnp.result_type(column, float)).eps)
+        for column in (state, action, instrument)
+    )
+    centred = state - jnp.mean(state)
+    spread = jnp.sqrt(jnp.mean(centred**2))
+    flat = spread <= rounding * jnp.sqrt(jnp.mean(state**2))
+    scaled = jnp.where(flat, 0.0, centred / jnp.where(flat, 1.0, spread))
+    basis = jnp.stack([jnp.ones_like(scaled), scaled], axis=1)
+
+    def beyond_state(column: Array) -> Array:
+        column = column - jnp.mean(column)
+        return column - basis @ jnp.linalg.lstsq(basis, column)[0]
+
+    shifted, moved = beyond_state(instrument), beyond_state(action)
+    size, swing = jnp.linalg.norm(shifted), jnp.linalg.norm(moved)
+    overlap = jnp.abs(shifted @ moved)
+    if overlap <= rounding * (jnp.linalg.norm(action) * size + jnp.linalg.norm(instrument) * swing):
+        return jnp.zeros((), overlap.dtype)
+    return overlap / size / swing
+
+
+def _two_stage(data: dict[str, Array], instrument: str) -> tuple[Array, Array]:
+    """:func:`estimate_effect_iv`'s estimate and its instrument's relevance
+    (:func:`_instrument_relevance`), refused where the relevance is 0."""
+    _refuse_reread("instrument", (instrument,), _TRANSITION)
+    x, u, w, y = data["x"], data["u"], data[instrument], data["x_next"]
+    relevance = _instrument_relevance(x, u, w)
+    if relevance == 0.0:
+        raise ValueError(
+            f"the instrument {instrument!r} does not move the action beyond what the state "
+            "explains: 2SLS's moment has no rank, so the effect is not identified"
+        )
+    _, u_hat = _ols_fit(jnp.stack([x, w], axis=1), u)
+    coeffs, _ = _ols_fit(jnp.stack([x, u_hat], axis=1), y)
+    return coeffs[1], relevance  # coefficient on the fitted (exogenous) part of u
+
+
 def estimate_effect_iv(data: dict[str, Array], instrument: str = "w") -> Array:
     """Two-stage least squares for ``∂x_next/∂u`` using an instrument for a *latent* confounder.
 
@@ -114,15 +173,24 @@ def estimate_effect_iv(data: dict[str, Array], instrument: str = "w") -> Array:
     instrument must drive ``u``, be independent of the confounder, and affect ``x_next`` only via
     ``u`` — then the effect is recovered even when the confounder ``z`` is unobserved.
 
+    The log can check the first of the three, and the estimate does: the instrument must move
+    ``u`` beyond what ``x`` and a constant explain. The product of the two beyond them must be more
+    than 64 eps of each one's own size could make of it, read the same in any units and at any
+    level. Short of that, 2SLS's moment has no rank, ``û`` is collinear with ``x`` and the
+    constant, and least squares returned its minimum-norm coefficient: on 40,000 rows of
+    :class:`ConfoundedLinearSystem` with ``gamma=1``, where the truth is 1.0, -0.0032 for an
+    instrument of zeros and 0.63 for an affine copy of ``x`` where ``u`` moves with ``x``. A weak
+    instrument keeps the rank and is estimated: a column of noise drawn apart from ``u`` read 0.263
+    there, its partial correlation with ``u`` given ``x`` 0.0087 where the log's own instrument's
+    is 0.53 (:class:`chc.estimators.IV2SLS` reports it). No inference here is robust to a weak
+    instrument.
+
     Raises:
         ValueError: if ``instrument`` is ``x``, ``u`` or ``x_next``: the state reaches ``x_next``
-            on its own path, and the action and the outcome are what it stands between.
+            on its own path, and the action and the outcome are what it stands between; or if it
+            does not move ``u`` beyond what ``x`` explains, which leaves the effect not identified.
     """
-    _refuse_reread("instrument", (instrument,), _TRANSITION)
-    x, u, w, y = data["x"], data["u"], data[instrument], data["x_next"]
-    _, u_hat = _ols_fit(jnp.stack([x, w], axis=1), u)
-    coeffs, _ = _ols_fit(jnp.stack([x, u_hat], axis=1), y)
-    return coeffs[1]  # coefficient on the fitted (exogenous) part of u
+    return _two_stage(data, instrument)[0]
 
 
 def _ols_with_se(features: Array, target: Array) -> tuple[Array, Array, int]:

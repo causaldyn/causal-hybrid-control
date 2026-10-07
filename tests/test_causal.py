@@ -1,9 +1,12 @@
 """Causal gate (H1): confounded fit is sign-flipped; adjusted fit recovers the true effect."""
 
 import importlib
+import itertools
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from chc import causal
@@ -215,3 +218,167 @@ def test_the_random_common_cause_takes_a_name_the_data_does_not_hold() -> None:
     named = {**{k: v for k, v in data.items() if k != "z"}, "_rcc": data["z"]}
     report = refute_effect(named, adjust_for=("_rcc",))
     assert report == refute_effect(data, adjust_for=("z",))
+
+
+# ---- the instrument's rank ----
+
+NOT_MOVED = "does not move the action beyond what the state explains"
+
+
+def _iv_data() -> dict[str, jax.Array]:
+    return ConfoundedLinearSystem(gamma=1.0).sample(40_000, jax.random.key(0))
+
+
+def _less(column: jax.Array, *on: jax.Array) -> jax.Array:
+    """``column`` less its least-squares projection on a constant and the columns ``on``, each
+    centred first: the same projection, which least squares rounds less beside a column far from
+    zero."""
+    on_centred = (np.asarray(c) - np.mean(np.asarray(c)) for c in on)
+    design = np.column_stack([np.ones(column.shape[0]), *on_centred])
+    values = np.asarray(column)
+    return jnp.asarray(values - design @ np.linalg.lstsq(design, values, rcond=None)[0])
+
+
+def _with_action(data: dict[str, jax.Array], action: jax.Array) -> dict[str, jax.Array]:
+    """The log with another action, and the outcome moved by it at the effect, 1.0."""
+    return {**data, "u": action, "x_next": data["x_next"] + action - data["u"]}
+
+
+def _state_copy(data: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    """An action that moves with the state as well, and an instrument that is the state's affine
+    copy: it moves the action as the state does, and no further."""
+    return {**_with_action(data, data["u"] + 0.8 * data["x"]), "w": 2.0 * data["x"] + 3.0}
+
+
+def _single_state_copy(data: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    """:func:`_state_copy`'s log in single precision, its copy of the state computed there."""
+    log = {name: column.astype(jnp.float32) for name, column in _state_copy(data).items()}
+    return {**log, "w": 2.0 * log["x"] + 3.0}
+
+
+def _single_state(data: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    """:func:`_state_copy`'s log with the state alone in single precision: the copy, computed in
+    double, differs from it by the state's rounding."""
+    log = _state_copy(data)
+    return {**log, "x": log["x"].astype(jnp.float32)}
+
+
+NO_RANK: dict[str, Callable[[dict[str, jax.Array]], dict[str, jax.Array]]] = {
+    "an instrument of zeros": lambda d: {**d, "w": jnp.zeros_like(d["w"])},
+    "a constant instrument": lambda d: {**d, "w": jnp.full_like(d["w"], 5.0)},
+    "noise less its projection on the state and the action": lambda d: {
+        **d,
+        "w": _less(jax.random.normal(jax.random.key(7), d["w"].shape), d["x"], d["u"]),
+    },
+    "the state's copy, where the action moves with the state": _state_copy,
+    "the state's copy, in single precision": _single_state_copy,
+    "the state in single precision, its copy in double": _single_state,
+    "an action the state sets": lambda d: _with_action(d, 0.7 * d["x"] + 2.0),
+}
+
+
+@pytest.mark.parametrize("log", NO_RANK.values(), ids=NO_RANK.keys())
+def test_an_instrument_that_moves_the_action_nowhere_beyond_the_state_is_refused(log) -> None:
+    """2SLS's moment has rank only where the instrument moves the action beyond what the state and
+    a constant explain. Short of it the second stage's design is collinear, and least squares
+    returned its minimum-norm coefficient where the truth is 1.0: -0.0032 for an instrument of
+    zeros, a constant or noise less its projection on the state and the action; 0.63 for the
+    state's affine copy where the action moves with the state, though the copy correlates with the
+    action at 0.39; 2.61 for that copy computed in single precision, and 0.15 for one computed in
+    double beside the state in single, each of which leaves the copy the state's rounding; and 0.88
+    where the state sets the action, which no instrument then moves."""
+    with pytest.raises(ValueError, match=NOT_MOVED):
+        estimate_effect_iv(log(_iv_data()), instrument="w")
+
+
+@pytest.mark.parametrize("level", [0.0, 4.0])
+def test_a_state_that_never_moves_leaves_the_instrument_alone_to_move_the_action(
+    level: float,
+) -> None:
+    """A state that never moves explains nothing a constant does not, so the plant's instrument
+    still estimates the effect, and an instrument of zeros is still refused: it read 5.1e-5 beside
+    a state of zeros and 3.0e-6 beside one of fours, where the truth is 1.0."""
+    data = {**_iv_data(), "x": jnp.full((40_000,), level)}
+    assert float(estimate_effect_iv(data, instrument="w")) == pytest.approx(1.0, abs=0.01)
+    with pytest.raises(ValueError, match=NOT_MOVED):
+        estimate_effect_iv({**data, "w": jnp.zeros_like(data["w"])}, instrument="w")
+
+
+def test_a_relevant_instrument_estimates_as_it_did() -> None:
+    """The positive control: the plant's instrument, whose estimate is the unfixed release's two
+    stages bit for bit, on any machine, and 1.0085126809414267 where they were measured."""
+    data = _iv_data()
+    x, u, w, y = data["x"], data["u"], data["w"], data["x_next"]
+    ones = jnp.ones((x.shape[0], 1))
+    first = jnp.concatenate([jnp.stack([x, w], axis=1), ones], axis=1)
+    pushed = first @ jnp.linalg.lstsq(first, u, rcond=None)[0]
+    second = jnp.concatenate([jnp.stack([x, pushed], axis=1), ones], axis=1)
+    unfixed = float(jnp.linalg.lstsq(second, y, rcond=None)[0][1])
+    effect = float(estimate_effect_iv(data, instrument="w"))
+    assert effect == unfixed
+    assert effect == pytest.approx(1.0085126809414267, rel=1e-12, abs=0.0)
+
+
+UNITS = list(itertools.product(("w", "u", "x"), (1e-6, 1e6, -1.0)))
+
+
+@pytest.mark.parametrize(("column", "factor"), UNITS)
+def test_a_relevant_instrument_estimates_in_any_units(column: str, factor: float) -> None:
+    """The instrument, the action and the state each logged in a millionth of their units, in a
+    million times them and with the sign flipped: the plant's instrument still estimates the
+    effect, in the action's units."""
+    data = _iv_data()
+    base = float(estimate_effect_iv(data, instrument="w"))
+    moved = {**data, column: data[column] * factor}
+    assert float(estimate_effect_iv(moved, instrument="w")) == pytest.approx(
+        base / factor if column == "u" else base, rel=1e-9, abs=0.0
+    )
+
+
+FAR_UNITS = list(itertools.product(("w", "u", "x"), (1e-12, 1e-6, 1e6, 1e12, -1.0)))
+
+
+@pytest.mark.parametrize(
+    ("log", "column", "factor"),
+    [(log, *units) for log, units in itertools.product(NO_RANK.values(), FAR_UNITS)],
+    ids=[f"{name}, {c} * {f:g}" for name, (c, f) in itertools.product(NO_RANK, FAR_UNITS)],
+)
+def test_an_instrument_short_of_rank_is_refused_in_any_units(
+    log, column: str, factor: float
+) -> None:
+    """Each log short of rank, with the instrument, the action or the state logged in a millionth
+    or a million millionth of its units, a million or a million million times them, or with the
+    sign flipped. The state is scaled to unit spread before its projection, so least squares does
+    not drop it as rounding, as it drops a column 1e-12 the size of the constant."""
+    short = log(_iv_data())
+    with pytest.raises(ValueError, match=NOT_MOVED):
+        estimate_effect_iv({**short, column: short[column] * factor}, instrument="w")
+
+
+LEVELS = list(itertools.product(("w", "u", "x"), (1e6, -1e6)))
+
+
+@pytest.mark.parametrize(
+    ("log", "column", "level"),
+    [(log, *at) for log, at in itertools.product(NO_RANK.values(), LEVELS)],
+    ids=[f"{name}, {c} + {lv:g}" for name, (c, lv) in itertools.product(NO_RANK, LEVELS)],
+)
+def test_an_instrument_short_of_rank_is_refused_at_any_level(
+    log, column: str, level: float
+) -> None:
+    """Each log short of rank, with the instrument or the action logged a million above or below
+    zero, or drawn from a state that far from it. A column so far from zero is known only to its
+    rounding there, which moves the product of the two by itself: noise less its projection, a
+    million above zero, moves the action by 4.4e-13 of a correlation, its rounding's alone. A
+    state so far out is all but collinear with the constant, and least squares on the two as they
+    come leaves its copy a spread beyond them; centred first, the state is read in full. It is
+    shifted before the log is drawn from it: shifted after, its rounding there is information the
+    copy keeps and the state does not."""
+    data = _iv_data()
+    if column == "x":
+        short = log({**data, "x": data["x"] + level})
+    else:
+        drawn = log(data)
+        short = {**drawn, column: drawn[column] + level}
+    with pytest.raises(ValueError, match=NOT_MOVED):
+        estimate_effect_iv(short, instrument="w")

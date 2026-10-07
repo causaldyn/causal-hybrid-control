@@ -33,8 +33,8 @@ from chc.causal import (
     _polynomial_features,
     _ridge_predict,
     _stream_key,
+    _two_stage,
     dml_point_and_se,
-    estimate_effect_iv,
 )
 from chc.frames import ColumnData, _refuse_shared_names, as_columns
 
@@ -119,7 +119,12 @@ class IV2SLS:
 
     Both stages condition on the column ``x``, as :func:`chc.causal.estimate_effect_iv` does, and
     ``covariates`` is not read, so the treatment, the outcome and the instrument must each be a
-    column other than ``x``.
+    column other than ``x``. An instrument that does not move the treatment beyond what ``x``
+    explains leaves the effect not identified, and is refused with ``ValueError``.
+
+    ``diagnostics["instrument_relevance"]``, experimental, is the partial correlation of the
+    treatment and the instrument given ``x``, in absolute value: how far the instrument moves the
+    treatment, which grades a weak instrument and is not a test.
     """
 
     instrument: str = "w"
@@ -140,10 +145,8 @@ class IV2SLS:
                 "the instrument": (self.instrument,),
             }
         )
-        effect = float(
-            estimate_effect_iv(_alias(data, treatment, outcome), instrument=self.instrument)
-        )
-        return EffectEstimate(effect)
+        effect, relevance = _two_stage(_alias(data, treatment, outcome), self.instrument)
+        return EffectEstimate(float(effect), diagnostics={"instrument_relevance": float(relevance)})
 
 
 @dataclass(frozen=True)
