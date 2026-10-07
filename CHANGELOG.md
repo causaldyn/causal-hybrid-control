@@ -18,20 +18,22 @@ still change).
   with the free lever costs 114.15. `CausalPlan.decision_weight` moved the channel by the same
   column, and weighed an error in that lever's channel 84 times too light, its cross term with the
   other lever's of the wrong sign. The field, the cost and the decision weight now read one action.
-  Plans with a ruled lever move: at a unit cost of 0.01 the same log's plan reports 0.040286 where
-  it reported 0.039144. Plans without one are unchanged. Since 0.14.0.
+  Plans with a ruled lever move: at a unit cost of 0.01 the same log's plan reports 0.040345 where
+  it reported 0.039144, with the lever held over each step as the next entry says. Plans without
+  one are unchanged. Since 0.14.0.
 - **A lever that follows the log's rule is held over each step, as the log held it.** The log set
   such a lever at the start of a period and held it over the period, and the fit reads a step so,
   but the plan's field read the rule at every point RK4 reads inside a step, so the lever's level
   moved with the state within the step. The predicted path was not the path of the schedule the
   plan reports, each level held over its step: on a log whose `u1` was set to `0.1 y^2`, the plan
-  predicted `y = 0.86552` after three steps where its schedule runs to 0.86652, and reported a task
-  cost of 0.014422 for a schedule that costs 0.014204. A step now sets the lever at the state it
-  starts from and holds it, and the plan's path and cost are its schedule's, to the bit. The
-  estimability test reads such a step at the state it starts from and the level it holds: with
-  `u1`'s box ending at a level the rule crosses inside the second step, `first_loaded_step` reads
-  2 where it read 1, since the second step starts inside the box and holds the log's own level.
-  Plans with a ruled lever move; plans without one are unchanged. Since 0.14.0.
+  predicted `y = 0.86552` after three steps where its schedule runs to 0.86652, and, with the price
+  read as the entry above says, a task cost of 0.014422 for a schedule that costs 0.014204. A step
+  now sets the lever at the state it starts from and holds it, and the plan's path and cost are its
+  schedule's: to the bit in double precision, to rounding in single. The estimability test reads
+  such a step at the state it starts from and the level it holds: with `u1`'s box ending at a level
+  the rule crosses inside the second step, `first_loaded_step` reads 2 where it read 1, since the
+  second step starts inside the box and holds the log's own level. Plans with a ruled lever move;
+  plans without one are unchanged. Since 0.14.0.
 - **An action its box fixes is not counted as a bound met with no pull.**
   `CausalPlan.decision_weight` counts in `weakly_active` the bounds the plan meets with a zero
   multiplier, where the regret is piecewise quadratic. It counted an action whose box has zero
