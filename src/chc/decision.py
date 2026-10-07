@@ -325,8 +325,9 @@ class DecisionCertificate:
     identification: IdentificationStatus
     # The adjustment set and how it was justified. Note this is a DIFFERENT question from
     # ``Prescription.model_fit.identified``, which is the estimator's own mechanical flag: "was I
-    # handed covariates or an instrument?". With an unconfounded lever a graph can prove the effect
-    # identified while that flag is False, because there was correctly nothing to adjust for.
+    # handed covariates, or an instrument whose moment has rank?". With an unconfounded lever a
+    # graph can prove the effect identified while that flag is False, because there was correctly
+    # nothing to adjust for.
     adjustment: AdjustmentSet
     identification_radius: float | None  # channel standard error; None when not identified
     overlap: float  # residualised action variance: 0 means the log has no variation to learn from

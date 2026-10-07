@@ -39,6 +39,24 @@ still change).
   box, so the regret has no other branch there. A plan `prescribe` makes with a lever on the log's
   rule, whose column the plan fixes and nothing reads, counted that column at each step: 3 on a
   3-step plan that meets no bound with a zero multiplier. Since 0.8.0.
+- **An instrument identifies the channel only where its moment has rank.** `fit_causal_residual`
+  read a fit identified whenever an instrument was named, and nothing checked that the instrument
+  moved the actions; where it did not, the moment's ridge and its noise set the channel. On a log
+  of 200 rows an instrument of zeros read a channel of exactly 0.0 with an error of 0.0, where the
+  log's own is 0.8. On the confounded reference plant, 2000 rows, it read `[0.81, -0.06]` with an
+  error of 6.0, where the truth is `[1.0, 0.5]`; a column of noise less its projection on the
+  state and the action read an error of 321; and two instruments that move one of two levers read
+  the other at -1.51, where it is -0.4. The fit now reads how far the instrument moves each
+  direction of the channel the log moves: the canonical correlations between the first stage's
+  push on the actions and the actions, each less what the covariates' features predict, without
+  the ridge, the same in any units. Where one is zero, at most 64 eps, or the log moves no
+  direction, the fit reads as one with no adjustment and no instrument: `identified=False`,
+  `method="observational"`, the observational channel kept to compare, and no error, beside
+  `adjust_for` as well. `CausalDynamicsFit` gains `instrument_relevance` and `instrument_rank`,
+  both experimental. A relevant instrument fits as before, bit for bit. A weak one keeps its rank,
+  and its relevance grades it: columns of noise drawn apart from the action read 0.002 to 0.035
+  where the plant's instrument reads 0.39 to 0.48. At `nuisance_degree=0` the first stage is a
+  constant, which no instrument enters, so no instrument has rank there (ADR 0067). Since 0.3.0.
 
 ## [0.14.3] — 2026-10-07
 

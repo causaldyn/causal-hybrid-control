@@ -1475,3 +1475,324 @@ def test_a_column_named_in_a_second_role_is_refused(kwargs: dict, match: str) ->
     data = system.sample(500, jax.random.key(0), _known)
     with pytest.raises(ValueError, match=match):
         fit_causal_residual(_known, data, system.dt, **kwargs)
+
+
+# ---- the instrument's rank ----
+
+IV_SYSTEM = _system(instrument_to_action=jnp.array([[0.8]]))
+ONE_FEATURE = {"nuisance_degree": 1, "channel_degree": 0}
+
+
+def _iv_log(rows: int = 2000) -> dict[str, jax.Array]:
+    return IV_SYSTEM.sample(rows, jax.random.key(0), _known)
+
+
+def _assert_not_identified(fit: CausalDynamicsFit, without: CausalDynamicsFit) -> None:
+    """``fit`` reads as a fit with no instrument and no adjustment does: no error, and the channel
+    of ``without``, the same fit with no instrument, kept to compare."""
+    assert fit.identified is False
+    assert fit.method == "observational"
+    assert fit.channel_error is None
+    assert fit.drift_error is None
+    np.testing.assert_array_equal(
+        np.asarray(fit.residual.channel), np.asarray(without.residual.channel)
+    )
+
+
+def test_the_review_s_zero_instrument_identifies_nothing() -> None:
+    """No state, a lever that alternates in sign, and an instrument of zeros: its moment holds at
+    every channel. Before the rank check the fit read identified, the channel an exact 0.0, its
+    error 0.0 and the moment's norm 0.0, where the log's own channel is 0.8. Its nuisance is of
+    degree 0, whose first stage is a constant that no instrument enters; the plant's logs below
+    read a zero instrument under first stages that one would enter."""
+    rows = 200
+    u = np.tile([-1.0, 1.0, -1.0, 1.0], rows // 4)
+    e = np.tile([-1.0, -1.0, 1.0, 1.0], rows // 4)
+    data = {
+        "x": jnp.zeros((rows, 1)),
+        "u": jnp.asarray(u[:, None]),
+        "x_next": jnp.asarray((0.1 * (0.8 * u + 0.1 * e))[:, None]),
+        "iv": jnp.zeros((rows, 1)),
+    }
+    keywords = {"degree": 0, "channel_degree": 0, "nuisance_degree": 0, "folds": 1}
+    fit = fit_causal_residual(_known, data, 0.1, instrument="iv", **keywords)
+    _assert_not_identified(fit, fit_causal_residual(_known, data, 0.1, **keywords))
+    assert fit.instrument_rank == 0
+    np.testing.assert_array_equal(np.asarray(fit.instrument_relevance), [0.0])
+
+
+@pytest.mark.parametrize(
+    ("rows", "keywords"),
+    [
+        (2000, {}),
+        (2000, ONE_FEATURE),
+        (2000, {"integrator": "rk4"}),
+        (2000, {"adjust_for": ("z",)}),
+        (200, {"nuisance_degree": 3}),
+    ],
+    ids=[
+        "affine channel",
+        "constant channel",
+        "rk4",
+        "beside an adjustment set",
+        "200 rows, a nuisance of degree 3",
+    ],
+)
+def test_a_zero_instrument_leaves_the_fit_unidentified(rows: int, keywords: dict) -> None:
+    """The confounded plant with its instrument set to zero. Before the rank check the affine
+    channel read identified at ``[0.81, -0.06]`` with an error of 6.0, where the truth is
+    ``[1.0, 0.5]``. Beside an adjustment set, the instrument names a confounder the covariates
+    leave, so the fit does not fall back on them. On 200 rows under a nuisance of degree 3 the
+    push of zeros is rounding of up to 6 eps of the lever's size, which reads as none."""
+    data = {**_iv_log(rows), "w": jnp.zeros((rows, 1))}
+    fit = fit_causal_residual(
+        _known, data, IV_SYSTEM.dt, instrument="w", influence=True, **keywords
+    )
+    _assert_not_identified(fit, fit_causal_residual(_known, data, IV_SYSTEM.dt, **keywords))
+    assert fit.influence is None
+    assert fit.instrument_rank == 0
+    np.testing.assert_array_equal(np.asarray(fit.instrument_relevance), 0.0)
+
+
+def test_an_instrument_orthogonal_to_the_action_identifies_nothing() -> None:
+    """A column of noise less its least-squares projection on the state and the action, under a
+    first stage linear in the state and the instrument, so the action moves with no part of it."""
+    data = _iv_log()
+    noise = jax.random.normal(jax.random.key(7), (2000, 1))
+    design = jnp.concatenate([jnp.ones((2000, 1)), data["x"], data["u"]], axis=1)
+    data["w"] = noise - design @ jnp.linalg.lstsq(design, noise)[0]
+    keywords = {"nuisance_degree": 1}
+    fit = fit_causal_residual(_known, data, IV_SYSTEM.dt, instrument="w", **keywords)
+    _assert_not_identified(fit, fit_causal_residual(_known, data, IV_SYSTEM.dt, **keywords))
+    assert fit.instrument_rank == 0
+    np.testing.assert_array_equal(np.asarray(fit.instrument_relevance), [0.0, 0.0, 0.0])
+
+
+def _two_lever_log(second: str, rows: int = 2000) -> dict[str, jax.Array]:
+    """One state and two levers, confounded by a latent ``z``, and two instruments that move the
+    first lever. The second they move as well (``"moved"``), or not at all, its part they would
+    explain taken out (``"blind"``), or the log never uses it (``"unused"``)."""
+    rng = np.random.default_rng(11)
+    x, z = rng.normal(size=(2, rows, 1))
+    w = rng.normal(size=(rows, 2))
+    first = -1.5 * z + 0.5 * rng.normal(size=(rows, 1)) + w @ np.array([[0.6], [0.4]])
+    other = z + 0.5 * rng.normal(size=(rows, 1)) + w @ np.array([[0.3], [-0.5]])
+    if second == "blind":
+        state = np.column_stack([np.ones(rows), x])
+        shifted = w - state @ np.linalg.lstsq(state, w, rcond=None)[0]
+        other = other - shifted @ np.linalg.lstsq(shifted, other, rcond=None)[0]
+    elif second == "unused":
+        other = np.zeros((rows, 1))
+    u = np.column_stack([first, other])
+    rate = -0.5 * x + u @ np.array([[0.8], [-0.4]]) + 1.5 * z
+    return {
+        "x": jnp.asarray(x),
+        "u": jnp.asarray(u),
+        "x_next": jnp.asarray(x + 0.1 * rate + 0.01 * rng.normal(size=(rows, 1))),
+        "w": jnp.asarray(w),
+    }
+
+
+def test_two_instruments_that_move_one_lever_leave_the_moment_short_of_rank() -> None:
+    """Two channel coefficients and two instruments, both of which move the first lever alone: the
+    moment has rank 1. Where they move the second lever as well, it has rank 2, and the fit reads
+    both levers' channels."""
+    blind = _two_lever_log("blind")
+    fit = fit_causal_residual(_known, blind, 0.1, instrument="w", **ONE_FEATURE)
+    _assert_not_identified(fit, fit_causal_residual(_known, blind, 0.1, **ONE_FEATURE))
+    assert fit.instrument_rank == 1
+    relevance = np.asarray(fit.instrument_relevance)
+    assert relevance.shape == (2,)
+    assert relevance[0] > 0.1
+    assert relevance[1] == 0.0
+
+    moved = fit_causal_residual(_known, _two_lever_log("moved"), 0.1, instrument="w", **ONE_FEATURE)
+    assert moved.identified
+    assert moved.method == "iv"
+    assert moved.instrument_rank == 2
+    assert moved.channel_error is not None
+    np.testing.assert_allclose(np.asarray(moved.residual.channel)[0, :, 0], [0.8, -0.4], atol=0.1)
+
+
+def test_a_lever_the_log_never_used_leaves_the_rank_to_the_levers_it_did() -> None:
+    """The second lever never used: its channel is unmoved, as it is under an adjustment set, and
+    the rank counts the directions the log moves, which the instruments move in full."""
+    fit = fit_causal_residual(_known, _two_lever_log("unused"), 0.1, instrument="w", **ONE_FEATURE)
+    assert fit.unmoved is not None
+    assert fit.unmoved.shape[1] == 1
+    assert fit.identified
+    assert fit.method == "iv"
+    assert fit.instrument_rank == 1
+    assert np.asarray(fit.instrument_relevance).shape == (1,)
+
+
+def test_an_instrument_identifies_nothing_where_the_log_moves_no_direction() -> None:
+    """A lever the state sets, ``-0.3 x0``: the log moves no direction of its channel, so no
+    instrument moves one either. Adjusted, the fit keeps its flag and names every direction
+    unmoved (ADR 0054); through an instrument it is not identified, whatever the instrument."""
+    log = _policy_log(4000, _ruled(1.0))
+    log["w"] = jax.random.normal(jax.random.key(3), (4000, 1))
+    keywords = {"nuisance_degree": 2, "channel_degree": 1}
+    fit = fit_causal_residual(_known, log, 0.1, instrument="w", **keywords)
+    _assert_not_identified(fit, fit_causal_residual(_known, log, 0.1, **keywords))
+    assert fit.unmoved is not None
+    assert fit.unmoved.shape[1] == fit.residual.channel.size
+    assert fit.instrument_rank == 0
+    assert np.asarray(fit.instrument_relevance).shape == (0,)
+    assert fit_causal_residual(_known, log, 0.1, **RULED).identified
+
+
+def _weakened_log(gain: float, rows: int = 2000) -> tuple[dict[str, jax.Array], float]:
+    """One state and one lever, confounded by a latent ``z``, and an instrument that moves the
+    lever by ``gain``, the rest of the lever made blind to it. With the first stage linear and the
+    channel constant, the relevance is the lever's partial correlation with the instrument given
+    the state, ``gain a / hypot(b, gain a)``, ``a`` and ``b`` the instrument's and the rest's
+    norms less their projection on the state; returned beside the log."""
+    rng = np.random.default_rng(4)
+    x, z, w = rng.normal(size=(3, rows, 1))
+    state = np.column_stack([np.ones(rows), x])
+
+    def less_state(columns: np.ndarray) -> np.ndarray:
+        return columns - state @ np.linalg.lstsq(state, columns, rcond=None)[0]
+
+    shifted = less_state(w)
+    rest = -1.5 * z + 0.5 * rng.normal(size=(rows, 1))
+    rest = rest - shifted @ np.linalg.lstsq(shifted, rest, rcond=None)[0]
+    u = rest + gain * w
+    rate = -0.5 * x + u + 2.0 * z
+    data = {
+        "x": jnp.asarray(x),
+        "u": jnp.asarray(u),
+        "x_next": jnp.asarray(x + 0.1 * rate + 0.01 * rng.normal(size=(rows, 1))),
+        "w": jnp.asarray(w),
+    }
+    a, b = np.linalg.norm(shifted), np.linalg.norm(less_state(rest))
+    return data, float(gain * a / np.hypot(b, gain * a))
+
+
+def test_a_weakening_instrument_reads_a_falling_relevance_and_stays_identified() -> None:
+    """The relevance falls with the instrument's gain on the lever, as the partial correlation in
+    closed form does, and the fit stays identified as long as the gain is not zero."""
+    relevances = []
+    for gain in (1.0, 0.1, 0.01, 1e-4, 1e-8):
+        data, closed = _weakened_log(gain)
+        fit = fit_causal_residual(_known, data, 0.1, instrument="w", **ONE_FEATURE)
+        assert fit.identified, gain
+        assert fit.method == "iv"
+        assert fit.instrument_rank == 1
+        assert fit.channel_error is not None
+        (relevance,) = np.asarray(fit.instrument_relevance)
+        # Near a right angle, the push's rounding turns the correlation by its share of the push,
+        # so it grows as the gain's inverse square: 5.6e-12 of the value at 1e-4, 3.7e-3 at 1e-8.
+        assert relevance == pytest.approx(closed, rel=1e-9 if gain >= 1e-4 else 0.05, abs=0.0)
+        relevances.append(relevance)
+    assert all(weak < strong for strong, weak in itertools.pairwise(relevances))
+
+    data, closed = _weakened_log(0.0)
+    fit = fit_causal_residual(_known, data, 0.1, instrument="w", **ONE_FEATURE)
+    assert closed == 0.0
+    _assert_not_identified(fit, fit_causal_residual(_known, data, 0.1, **ONE_FEATURE))
+    assert fit.instrument_rank == 0
+
+
+@pytest.mark.parametrize(
+    ("integrator", "channel", "errors"),
+    [
+        (
+            "euler",
+            [
+                [1.0401683840501454, -0.028600245053311126, 0.10613137781759098],
+                [0.5189711733041126, -0.016148790711315582, 0.05010220098820722],
+            ],
+            (0.0880621316215113, 0.06558687130969618),
+        ),
+        (
+            "rk4",
+            [
+                [1.0508991277589257, -0.029127364192318574, 0.10820857404763345],
+                [0.5222761413780578, -0.01641441784158229, 0.0508734083213673],
+            ],
+            (0.0899126463751265, 0.06674476962807059),
+        ),
+    ],
+)
+def test_a_relevant_instrument_fits_as_it_did(
+    integrator: str, channel: list[list[float]], errors: tuple[float, float]
+) -> None:
+    """The positive control: an instrument that moves the lever, as on the reference plant, leaves
+    the fit identified, near the truth, and as the fit read it before the rank check, pinned here
+    to 1e-9."""
+    fit = fit_causal_residual(
+        _known, _iv_log(), IV_SYSTEM.dt, instrument="w", integrator=integrator
+    )
+    assert fit.identified
+    assert fit.method == "iv"
+    assert fit.instrument_rank == 3
+    relevance = np.asarray(fit.instrument_relevance)
+    assert relevance.shape == (3,)
+    assert np.all(np.diff(relevance) <= 0.0)
+    assert relevance[-1] > 0.3  # measured 0.36 to 0.46
+    assert relevance[0] < 0.6
+    assert _error(_channel_of(fit)) < 0.1
+    np.testing.assert_allclose(
+        np.asarray(fit.residual.channel)[:, 0, :], channel, rtol=1e-9, atol=0.0
+    )
+    assert (fit.channel_error, fit.drift_error) == pytest.approx(errors, rel=1e-9, abs=0.0)
+
+
+@pytest.mark.parametrize("log", ["relevant", "short of rank"])
+def test_the_instrument_s_rank_and_relevance_read_the_same_in_any_units(log: str) -> None:
+    """The instrument, the levers and the state each logged in units a millionth of their own and
+    a million times them."""
+    data, dt, keywords = (
+        (_iv_log(), IV_SYSTEM.dt, {})
+        if log == "relevant"
+        else (_two_lever_log("blind"), 0.1, ONE_FEATURE)
+    )
+    base = fit_causal_residual(_known, data, dt, instrument="w", **keywords)
+    for column, factor in itertools.product(("w", "u", "x"), (1e-6, 1e6)):
+        moved = {**data, column: data[column] * factor}
+        if column == "x":
+            moved["x_next"] = data["x_next"] * factor
+        fit = fit_causal_residual(_known, moved, dt, instrument="w", **keywords)
+        assert (fit.identified, fit.instrument_rank) == (base.identified, base.instrument_rank)
+        np.testing.assert_allclose(
+            np.asarray(fit.instrument_relevance),
+            np.asarray(base.instrument_relevance),
+            rtol=1e-9,
+            atol=0.0,
+            err_msg=f"{column} * {factor:g}",
+        )
+
+
+def test_a_weight_that_drops_the_rows_the_instrument_moves_leaves_no_rank() -> None:
+    """The rank is the weighted moment's. The state sits at one of two levels and the instrument
+    moves the lever at the second alone; a weight of zero there leaves the moment no row the
+    instrument moves."""
+    rows = 2000
+    rng = np.random.default_rng(5)
+    x = (rng.random((rows, 1)) < 0.5).astype(float)
+    z, e = rng.normal(size=(2, rows, 1))
+    w = rng.normal(size=(rows, 1)) * x
+    u = -1.5 * z + 0.5 * e + 0.8 * w
+    rate = -0.5 * x + u + 2.0 * z
+    data = {
+        "x": jnp.asarray(x),
+        "u": jnp.asarray(u),
+        "x_next": jnp.asarray(x + 0.1 * rate + 0.01 * rng.normal(size=(rows, 1))),
+        "w": jnp.asarray(w),
+    }
+
+    def first_level(states: jax.Array) -> jax.Array:
+        return (states[:, 0] == 0.0).astype(states.dtype)
+
+    unweighted = fit_causal_residual(_known, data, 0.1, instrument="w", **ONE_FEATURE)
+    assert unweighted.identified
+    assert unweighted.instrument_rank == 1
+    weighted = fit_causal_residual(
+        _known, data, 0.1, instrument="w", weights=first_level, **ONE_FEATURE
+    )
+    _assert_not_identified(
+        weighted, fit_causal_residual(_known, data, 0.1, weights=first_level, **ONE_FEATURE)
+    )
+    assert weighted.instrument_rank == 0

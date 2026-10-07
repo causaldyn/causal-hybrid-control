@@ -30,9 +30,10 @@ HONEST SCOPE, three limits worth stating before the code:
   drivers a place in the drift as regressors instead of leaving them only in ``adjust_for``.
 * The residual must be control-affine (:class:`chc.residual.ControlAffineResidual`). A general
   ``r_θ(x, u)`` has no partialling-out moment and gets no guarantee here.
-* With no adjustment set and no instrument nothing in the log identifies the channel. The
-  estimator reports ``identified=False`` rather than returning a confident wrong answer -- that
-  case belongs to :mod:`chc.sensitivity`, which prices the radius instead of pretending it away.
+* With no adjustment set and no instrument nothing in the log identifies the channel, and an
+  instrument identifies it only along the directions it moves the action. The estimator reports
+  ``identified=False`` in both cases rather than returning a confident wrong answer -- that case
+  belongs to :mod:`chc.sensitivity`, which prices the radius instead of pretending it away.
 """
 
 from __future__ import annotations
@@ -67,6 +68,9 @@ Integrator = Literal["euler", "rk4"]
 _MAX_NEWTON_STEPS = 20
 """Cap on Newton's method for the ``rk4`` fixed point. From the Euler fit it converges in three to
 six steps up to ``|A|dt = 1.2``, so reaching the cap means there is no fixed point to reach."""
+
+_ROUNDING = 64
+"""A spread within this many eps of its column's root mean square is rounding, so no spread."""
 
 _NOT_IDENTIFIED = (
     "no adjustment set and no instrument: the control channel is not identified from this log. "
@@ -130,8 +134,10 @@ class ConfoundedControlAffineSystem:
 class CausalDynamicsFit:
     """A fitted causal residual next to what is and is not known about it.
 
-    ``identified`` is the load-bearing field: ``False`` means the log cannot pin the channel down
-    at all, and the residual is then the observational fit, kept only so the caller can compare.
+    ``identified`` is the load-bearing field: ``False`` means nothing the fit was given pins the
+    channel down from the log -- no adjustment set and no instrument, or an instrument whose moment
+    falls short of rank (``instrument_rank``) -- and the residual is then the observational fit,
+    kept only so the caller can compare.
     """
 
     residual: ControlAffineResidual
@@ -220,6 +226,21 @@ class CausalDynamicsFit:
     # squaring them (CR1), and a reader of ``influence`` sums its rows the same way
     # (:func:`_independent`). None where each transition's each state is its own.
     clusters: np.ndarray | None = None
+    # Experimental: it may change or be withdrawn in any release. Under ``instrument``, ``(p,)``:
+    # how far the instrument moves each of the ``p`` directions a state of the channel the log's
+    # actions move, all but ``unmoved``'s. They are the canonical correlations, largest first,
+    # between the first stage's push on the actions, fitted without the ridge, and the actions,
+    # each less its least-squares projection on the nuisance's features, on the channel's features
+    # and with the moment's weights: the unregularised moment's singular values with each side
+    # whitened, read the same in any units of the instrument, the actions and the state. A push of
+    # at most 64 eps of the raw actions' size reads 0, as does a correlation of at most 64 eps. A 0
+    # leaves the moment short of rank, and the fit not identified; so does ``p = 0``, a log that
+    # moves no direction, which leaves the instrument none to move. The smallest says how weak the
+    # instrument is where it is weakest; it is not a test. None without an instrument.
+    instrument_relevance: Array | None = None
+    # Experimental, as ``instrument_relevance``: how many of its entries are above 0, the rank of
+    # the instrument's moment along the directions the log moves. None without an instrument.
+    instrument_rank: int | None = None
 
 
 def _r_squared(target: Array, prediction: Array) -> float:
@@ -454,6 +475,54 @@ def _unmoved_directions(
     size = jnp.linalg.norm(_channel_design(actions, states, channel_degree), axis=0)
     scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
     return _kept(_channel_design(left, states, channel_degree), scale)
+
+
+def _instrument_relevance(
+    actions: Array,
+    states: Array,
+    covariates: Array,
+    shifter: Array,
+    nuisance_degree: int,
+    channel_degree: int,
+    free: Array | None,
+    weights: Array | None,
+) -> Array:
+    """How far the instrument ``shifter`` moves each direction of the channel: ``(p,)``, along
+    ``free``'s ``p`` columns, or every coefficient where it is None. They are the canonical
+    correlations, largest first, between the first stage's push on the actions and the actions,
+    each less its least-squares projection on the nuisance's features, on the channel's features,
+    each row weighed by ``weights``: the singular values of the unregularised moment with each side
+    whitened, so the count of those above 0 is its rank.
+
+    The push is the actions' least-squares fit on the first stage's features of the state and the
+    instrument, without the ridge. A push of at most ``_ROUNDING`` eps of the raw actions' size
+    along a direction is none, and so is a correlation of at most ``_ROUNDING`` eps: both read 0.
+    Scaled to the raw actions, on features standardised as the nuisance's are, and whitened, the
+    reading is the same in any units of the instrument, the actions and the state."""
+    raw = _channel_design(actions, states, channel_degree)
+    size = jnp.linalg.norm(raw, axis=0)
+    along = jnp.diag(1.0 / jnp.where(size > 0.0, size, 1.0)) if free is None else free
+    correlations = jnp.zeros(along.shape[1], dtype=raw.dtype)
+    if along.shape[1] == 0:
+        return correlations
+    rounding = _ROUNDING * jnp.finfo(raw.dtype).eps
+    features = _polynomial_features(_standardised(covariates), nuisance_degree)
+    first = _polynomial_features(
+        _standardised(jnp.concatenate([states, shifter], axis=1)), nuisance_degree
+    )
+    root = jnp.ones(raw.shape[0], dtype=raw.dtype) if weights is None else jnp.sqrt(weights)
+
+    def span(columns: Array) -> Array:
+        left = columns - features @ jnp.linalg.lstsq(features, columns)[0]
+        design = root[:, None] * _channel_design(left, states, channel_degree) @ along
+        out, singular, _ = jnp.linalg.svd(design, full_matrices=False)
+        return out[:, singular > rounding]
+
+    pushed, moved = span(first @ jnp.linalg.lstsq(first, actions)[0]), span(actions)
+    if pushed.shape[1] and moved.shape[1]:
+        found = jnp.linalg.svd(pushed.T @ moved, compute_uv=False)
+        correlations = correlations.at[: found.size].set(found)
+    return jnp.where(correlations > rounding, correlations, 0.0)
 
 
 def _unmoved_parameters(
@@ -756,6 +825,27 @@ def fit_causal_residual(
             the action the shifter explains, and on the reference DGP that is 18%, which costs
             roughly an order of magnitude in channel error against adjusting for a logged
             confounder (0.10 vs 0.002 at ``N=4000``). Still ~10x better than not identifying at all.
+
+            It identifies the channel only where its moment has rank: where the first stage's push
+            on the actions moves with the actions along every direction of the channel the actions
+            move (all but ``unmoved``'s), each less what the covariates' features predict, read
+            without the ridge and in any units (:attr:`CausalDynamicsFit.instrument_relevance`),
+            and the actions move one at least. Short of that rank, the moment holds at every
+            channel along a direction it misses, and the fit reads as one with no adjustment and
+            no instrument: ``identified=False``, ``method="observational"``, the channel of the
+            action residuals as their own instrument, kept to compare, and no error. It does so
+            beside ``adjust_for`` too: naming an instrument says the covariates leave a
+            confounder, so the fit does not fall back on them. Without the check an instrument of
+            zeros read identified, the channel set by the moment's ridge and noise: on the
+            reference plant ``[0.81, -0.06]`` with an error of 6.0, where the truth is
+            ``[1.0, 0.5]``. At ``nuisance_degree=0`` the first stage is a constant, which no
+            instrument enters, so no instrument has rank there.
+
+            The rank does not grade an instrument: a column of noise drawn apart from the action
+            keeps it, and reads identified with a channel that misses. Its relevance grades it: on
+            the reference plant such columns read 0.002 to 0.035, the medians of eight at 500,
+            2000 and 8000 rows, of the order of ``1 / sqrt(N)``, where the plant's instrument read
+            0.39 to 0.48. No inference here is robust to a weak instrument.
         degree: the feature degree of the drift, and of the channel unless ``channel_degree``
             says otherwise. ``1`` fits an affine drift and, by default, a channel affine in the
             state, which contains the constant channel §18/§19 cover without being restricted to it.
@@ -948,6 +1038,25 @@ def fit_causal_residual(
         if directions.shape[1]
         else None
     )
+    relevance: Array | None = None
+    rank: int | None = None
+    if instrument is not None:
+        relevance = _instrument_relevance(
+            u,
+            x,
+            covariates,
+            data[instrument],
+            nuisance_degree,
+            channel_degree,
+            None if split is None else split.free,
+            row_weight,
+        )
+        rank = int(jnp.sum(relevance > 0.0))
+        if rank == 0 or rank < relevance.shape[0]:
+            # The moment has no rank along a direction the instrument does not move: its ridge and
+            # its noise set the channel there, and an instrument of zeros read an exact zero, error
+            # zero. Where the log moves no direction, the instrument identifies none.
+            identified, method, instrument_action = False, "observational", None
 
     def moment(y_res: Array, u_res: Array) -> Array:
         if split is None:
@@ -1222,7 +1331,11 @@ def fit_causal_residual(
             moment_residual=score if influence else None,
         )
     return dataclasses.replace(
-        fit, integrator_defect=float(jnp.sqrt(jnp.mean(defect(fit) ** 2))), clusters=codes
+        fit,
+        integrator_defect=float(jnp.sqrt(jnp.mean(defect(fit) ** 2))),
+        clusters=codes,
+        instrument_relevance=relevance,
+        instrument_rank=rank,
     )
 
 
