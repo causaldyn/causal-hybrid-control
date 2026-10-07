@@ -634,6 +634,8 @@ class Prescription:
                 state, or whose record does not say; or a panel with fewer than two windows.
             InfeasibleEvaluation: when the evaluation's certificate refuses, on the panel or on
                 every draw but one.
+            PanelError: when a state's or a lever's column of ``panel`` does not hold real
+                numbers, as :func:`prescribe` refuses it.
         """
         if time_zero not in get_args(TimeZero):
             raise DecisionError(f"time_zero must be one of {get_args(TimeZero)}, got {time_zero!r}")
@@ -1134,6 +1136,11 @@ def prescribe(
             and the states, or one named for a driver's level a period on, ``f"{driver}_next"``.
         KeyError: a lever, target, constraint, driver or asserted covariate names a column the
             panel does not have. The message lists the panel's columns.
+        PanelError: a column the fit reads as numbers --- a lever's, a state's, a covariate's or
+            a driver's --- holds text, dates, times, durations, complex numbers or any other value
+            that is not a real number, or a number finite in its own type that is an infinity in
+            float64, as :meth:`chc.panel.Panel.wide` refuses it. The message names the column, the
+            value, its unit and its time.
 
     A direction of the channel the log never moves apart from what the states and the covariates
     predict (:attr:`~chc.dynamics_id.CausalDynamicsFit.unmoved`) is not identified on this log, and
@@ -2060,9 +2067,7 @@ def _stacked(panel: Panel, names: tuple[str, ...], rows: NDArray[np.int64]) -> A
     """The columns ``names`` at ``rows``, one column each, as the fit reads them."""
     if not names:
         return jnp.zeros((rows.size, 0))
-    return jnp.stack(
-        [jnp.asarray(np.asarray(panel[name], dtype=float)[rows]) for name in names], axis=1
-    )
+    return jnp.stack([jnp.asarray(panel._numbers(name)[rows]) for name in names], axis=1)
 
 
 def _panel_start(panel: Panel, states: tuple[str, ...]) -> Array:
@@ -2133,7 +2138,7 @@ def _check_logger(
     before = np.array([previous for _, previous in pairs], dtype=np.int64)
 
     def read(names: Sequence[str], rows: NDArray[np.int64]) -> NDArray[np.float64]:
-        return np.column_stack([np.asarray(panel[name], dtype=np.float64)[rows] for name in names])
+        return np.column_stack([panel._numbers(name)[rows] for name in names])
 
     present = tuple(name for name in columns.unlogged if _readable(panel, name))
     past = (*given, *levers)
@@ -2232,7 +2237,7 @@ def _episodes(
         )
 
     def stack(names: tuple[str, ...]) -> NDArray[np.float64]:
-        return np.stack([np.asarray(panel[name], dtype=np.float64) for name in names], axis=1)
+        return np.stack([panel._numbers(name) for name in names], axis=1)
 
     return _Episodes(stack(states)[rows], stack(levers)[rows[:, :-1]], unit_codes[rows[:, 0]])
 
@@ -2292,7 +2297,7 @@ def _check_drivers(
 
 def _warn_outside_logged_range(panel: Panel, drivers: Sequence[Driver]) -> None:
     for driver in drivers:
-        logged = np.asarray(panel[driver.name], dtype=float)
+        logged = panel._numbers(driver.name)
         low, high = float(logged.min()), float(logged.max())
         levels = np.asarray(driver.forecast, dtype=float)
         if levels.min() < low or levels.max() > high:

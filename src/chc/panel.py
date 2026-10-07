@@ -13,6 +13,11 @@ which unit and which period were responsible. It holds a read-only copy of the c
 given, made once, and in an object column only values that cannot change in place, so that the
 data cannot change under its hash; passing one around costs what passing a dict does.
 
+A panel holds text, dates and times as well as numbers: a unit's name, a period's date. Which
+columns are numbers is the reader's question, so a column is checked when it is read as numbers,
+by :meth:`Panel.wide` and by every routine here that reads a panel's column as float64, and
+refused there, naming the column, the unit and the time, unless it holds real numbers.
+
 :class:`Provenance` travels with it. A number is reproducible only together with the bytes it came
 from and the precision it was computed in, and this library has already been bitten by the second:
 JAX's ``x64`` flag changes which sample a seed draws, so a seed alone does not name a dataset. The
@@ -36,7 +41,7 @@ from uuid import UUID
 import numpy as np
 from numpy.typing import NDArray
 
-from chc.frames import ColumnData, as_columns
+from chc.frames import ColumnData, _not_numbers, as_columns
 
 # The types an object column holds: none changes in place, and the text of each names its value,
 # which is what the hash reads. A subclass counts, so a pandas Timestamp is a datetime; `int`
@@ -192,7 +197,15 @@ class Panel:
         rather than copied, since a copy would still change through ``panel[name][row]``. So are
         ``None`` and pandas' ``NA``, which is how a frame hands over a missing value, and any other
         type, a tuple or a pandas ``Period`` among them: fill or drop a missing value, and convert
-        any other value to text, or a ``Period`` to a timestamp.
+        any other value to text, or a ``Period`` to a timestamp. A masked array's masked cell is a
+        missing value too, refused by :func:`chc.frames.as_columns`.
+
+        A column of text, dates, times, durations or complex numbers is held, as a label is, and
+        so is a number past float64's range. Each is refused where it is read as numbers, by
+        :meth:`wide` and by :func:`chc.decision.prescribe` among others: a column is read as
+        numbers only where its dtype is boolean, integer or floating, or its values are ``bool``,
+        ``int``, ``float``, ``Decimal`` or ``Fraction``, NumPy's among them, and each is finite in
+        float64 where it is finite in its own type.
 
         Args:
             unit, time: the column names holding the entity and the period. Values may be any
@@ -214,6 +227,8 @@ class Panel:
                 address in memory, or whose values' type a panel does not hold, or --- under
                 ``require_balanced`` --- a hole. Every message names the column and the offending
                 entity.
+            ValueError: from :func:`chc.frames.as_columns`, for two columns of one name or a
+                masked cell, naming the column and its row.
         """
         raw = as_columns(data)
         # copied before it is checked, so that the bytes checked and hashed are the bytes held
@@ -377,9 +392,12 @@ class Panel:
         does not move with a global flag.
 
         Raises:
-            PanelError: if the panel is unbalanced, naming the first missing ``(unit, time)``.
+            PanelError: if the column does not hold real numbers --- text, dates, times,
+                durations, complex numbers, any other object --- or holds one that is finite in its
+                own type and an infinity in float64, naming the first such value's unit and time;
+                or if the panel is unbalanced, naming the first missing ``(unit, time)``.
         """
-        column = self[name]
+        values = self._numbers(name)
         if not self.is_balanced:
             missing = self._first_hole()
             raise PanelError(
@@ -388,8 +406,26 @@ class Panel:
             )
         units, times = self.codes()
         out = np.empty((self.n_units, self.n_periods), dtype=np.float64)
-        out[units, times] = np.asarray(column, dtype=np.float64)
+        out[units, times] = values
         return out
+
+    def _numbers(self, name: str) -> NDArray[np.float64]:
+        """Column ``name`` as float64 in row order, where it holds real numbers
+        (:func:`chc.frames._not_numbers`): the one way the library reads a panel's column as
+        numbers.
+
+        Raises:
+            PanelError: naming the column, the value refused, its unit and its time.
+        """
+        column = self[name]
+        problem = _not_numbers(column)
+        if problem is not None:
+            row, why = problem
+            raise PanelError(
+                f"column {name!r} is {column[row]!r} for unit {self.columns[self.unit][row]!r} at "
+                f"time {self.columns[self.time][row]!r}: {why}"
+            )
+        return np.asarray(column, dtype=np.float64)
 
     def _first_hole(self) -> tuple[Any, Any]:
         present = set(

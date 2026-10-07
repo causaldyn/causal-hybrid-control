@@ -386,7 +386,7 @@ def _start_state(panel: Panel, states: tuple[str, ...]) -> Array:
             last[int(unit)] = row
     rows = np.array(sorted(last.values()), dtype=np.int64)
     return jnp.mean(
-        jnp.stack([jnp.asarray(np.asarray(panel[name], dtype=float)[rows]) for name in states], 1),
+        jnp.stack([jnp.asarray(panel._numbers(name)[rows]) for name in states], 1),
         axis=0,
     )
 

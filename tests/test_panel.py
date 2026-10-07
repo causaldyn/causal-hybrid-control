@@ -460,3 +460,195 @@ def test_the_cluster_column_is_declared_once_and_carried() -> None:
         _panel(cluster="market")
     with pytest.raises(KeyError, match="no column"):
         panel["market"]
+
+
+_WIDE_LONGDOUBLE = np.finfo(np.longdouble).max > np.finfo(np.float64).max
+_NOT_READ = ", so the column is not read as numbers"
+
+
+@pytest.mark.parametrize(
+    ("values", "shown", "why"),
+    [
+        (_cells("0.5", "nan", "2"), r"'0\.5'", "type str, not a real number"),
+        (np.array(["0.5", "1", "2"]), r"np\.str_\('0\.5'\)", "dtype <U3, which holds text"),
+        (
+            np.array(["0.5", "1", "2"], dtype=np.dtypes.StringDType()),
+            r"'0\.5'",
+            r"dtype StringDType\(\), which holds text",
+        ),
+        (
+            np.array(["2024-01-01", "NaT", "2024-01-03"], dtype="datetime64[D]"),
+            r"np\.datetime64\('2024-01-01'\)",
+            r"dtype datetime64\[D\], which holds dates or times",
+        ),
+        (
+            np.arange(3).astype("timedelta64[s]"),
+            r"np\.timedelta64\(0,'s'\)",
+            r"dtype timedelta64\[s\], which holds durations",
+        ),
+        (
+            np.array([0.5, 1.0, 2.0]) + 0j,
+            r"np\.complex128\(0\.5\+0j\)",
+            "dtype complex128, which holds complex numbers",
+        ),
+        (
+            _cells(*(np.timedelta64(day, "D") for day in (1, 2, 3))),
+            r"np\.timedelta64\(1,'D'\)",
+            "type timedelta64, not a real number",
+        ),
+        (
+            _cells(*(dt.date(2024, 1, day) for day in (1, 2, 3))),
+            r"datetime\.date\(2024, 1, 1\)",
+            "type date, not a real number",
+        ),
+        (_cells(1 + 0j, 2 + 0j, 3 + 0j), r"\(1\+0j\)", "type complex, not a real number"),
+        (
+            _cells(UUID(int=1), UUID(int=2), UUID(int=3)),
+            r"UUID\('0{8}-0{4}-0{4}-0{4}-0{11}1'\)",
+            "type UUID, not a real number",
+        ),
+    ],
+    ids=[
+        "text",
+        "fixed-width-text",
+        "numpy-string",
+        "datetime64",
+        "timedelta64",
+        "complex",
+        "object-timedelta64",
+        "object-date",
+        "object-complex",
+        "object-uuid",
+    ],
+)
+def test_a_column_that_is_not_numbers_is_held_and_refused_when_read_as_numbers(
+    values: np.ndarray, shown: str, why: str
+) -> None:
+    """NumPy's cast to float64 read the text ``"0.5"`` as 0.5 and ``"nan"`` as nan, a date as its
+    count of days and NaT as -9.2e18, a duration as its count of seconds and a complex number as
+    its real part, and ``wide`` returned what it read. The panel holds such a column, as it holds
+    a label, and refuses it where it is read as numbers, naming the unit and the time of row 0."""
+    data = _labelled()
+    data["y"] = values
+    panel = Panel.from_frame(data, unit="unit", time="time")
+    with pytest.raises(
+        PanelError,
+        match=rf"column 'y' is {shown} for unit 'region-A' at time np\.int64\(0\): {why}.*"
+        + _NOT_READ,
+    ):
+        panel.wide("y")
+
+
+def test_text_from_a_pandas_or_a_polars_frame_is_refused_when_read_as_numbers() -> None:
+    """pandas 3 reads text as its ``str`` dtype and hands it over as objects, polars as fixed-width
+    text: a float64 cast read either as numbers."""
+    frame = pd.DataFrame(_labelled())
+    frame["y"] = frame["y"].astype("str")
+    assert str(frame["y"].dtype) == "str"
+    polars = pl.DataFrame({"unit": ["region-A"] * 3, "time": [0, 1, 2], "y": ["0.0", "1", "2"]})
+    for source, shown in ((frame, r"'0\.0'"), (polars, r"np\.str_\('0\.0'\)")):
+        panel = Panel.from_frame(source, unit="unit", time="time")
+        with pytest.raises(PanelError, match=rf"column 'y' is {shown} for unit .*region-A.*"):
+            panel.wide("y")
+
+
+@pytest.mark.parametrize(
+    ("values", "shown"),
+    [
+        (_cells(Decimal(1), Decimal("1E+400"), Decimal(2)), r"Decimal\('1E\+400'\)"),
+        (_cells(Decimal(0), Decimal("-1E+400"), Decimal(2)), r"Decimal\('-1E\+400'\)"),
+        (_cells(1, 10**400, 2), "10{400}"),
+        (_cells(Fraction(1), Fraction(10**400, 3), Fraction(2)), r"Fraction\(10{400}, 3\)"),
+        pytest.param(
+            np.array(["1", "1e400", "2"]).astype(np.longdouble),
+            r"np\.longdouble\('1e\+400'\)",
+            marks=pytest.mark.skipif(not _WIDE_LONGDOUBLE, reason="longdouble is float64 here"),
+        ),
+        pytest.param(
+            _cells(np.longdouble(1), np.longdouble("1e400"), np.longdouble(2)),
+            r"np\.longdouble\('1e\+400'\)",
+            marks=pytest.mark.skipif(not _WIDE_LONGDOUBLE, reason="longdouble is float64 here"),
+        ),
+    ],
+    ids=["decimal", "negative-decimal", "int", "fraction", "longdouble", "object-longdouble"],
+)
+def test_a_finite_number_past_float64s_range_is_held_and_refused_when_read(
+    values: np.ndarray, shown: str
+) -> None:
+    """A float64 cast read a ``Decimal`` of ``1E+400`` and a ``longdouble`` of 1e400 as infinities,
+    and raised a bare ``OverflowError`` on an ``int`` or a ``Fraction`` of 400 digits. Each is
+    finite in its own type, so the panel holds it, and refuses it where it is read as numbers."""
+    data = _labelled()
+    data["y"] = values
+    panel = Panel.from_frame(data, unit="unit", time="time")
+    with pytest.raises(
+        PanelError,
+        match=rf"column 'y' is {shown} for unit 'region-A' at time np\.int64\(1\): a finite "
+        r"number past float64's range, where it is an infinity" + _NOT_READ,
+    ):
+        panel.wide("y")
+
+
+def test_a_masked_cell_is_refused_and_an_array_that_masks_none_is_its_data() -> None:
+    """The copy of a masked array dropped its mask, and ``wide`` read what lay under it."""
+    data = _labelled()
+    data["y"] = np.ma.masked_array([0.0, 999.0, 2.0], mask=[False, True, False])
+    with pytest.raises(ValueError, match=r"column 'y' is masked at row 1 \(1 of 3 cells\)"):
+        Panel.from_frame(data, unit="unit", time="time")
+    data["y"] = np.ma.masked_array([0.0, 1.0, 2.0], mask=False)
+    held = Panel.from_frame(data, unit="unit", time="time")
+    plain = Panel.from_frame(_labelled(), unit="unit", time="time")
+    assert held.provenance.data_sha256 == plain.provenance.data_sha256
+    assert held.wide("y").tolist() == [[0.0, 1.0, 2.0]]
+
+
+def test_numbers_are_read_as_a_float64_cast_reads_them() -> None:
+    """Booleans, integers and floats of every width, pandas' nullable numbers with no value
+    missing, and an object column of real numbers, NumPy's among them: each read bit for bit as a
+    float64 cast reads it."""
+    held = _held()
+    columns = {
+        "flag": np.array([True, False, True]),
+        "small": np.array([1, -2, 3], dtype=np.int8),
+        "big": np.array([0, 1, 2**64 - 1], dtype=np.uint64),
+        "half": np.array([0.1, -2.5, 65504.0], dtype=np.float16),
+        "single": np.array([0.1, 1e-45, 3.4e38], dtype=np.float32),
+        **{
+            f"object_{name}": held[name]
+            for name in ("flag", "count", "share", "price", "ratio", "np_count", "np_share")
+        },
+        "object_np_flag": held["np_flag"],
+    }
+    frame = pd.DataFrame({**_labelled(), **columns})
+    frame["nullable_int"] = pd.array([1, 2, 3], dtype="Int64")
+    frame["nullable_float"] = pd.array([0.5, 1.5, 2.5], dtype="Float64")
+    frame["nullable_bool"] = pd.array([True, False, True], dtype="boolean")
+    panel = Panel.from_frame(frame, unit="unit", time="time")
+    for name in (*columns, "nullable_int", "nullable_float", "nullable_bool"):
+        expected = np.asarray(np.asarray(frame[name]), dtype=np.float64)
+        assert panel.wide(name).ravel().tobytes() == expected.tobytes(), name
+
+
+@pytest.mark.parametrize(
+    ("array", "message"),
+    [
+        (pd.array([1, None, 3], dtype="Int64"), r"column 'y' is nan for unit 'region-A' at time"),
+        (pd.array([0.5, None, 2.5], dtype="Float64"), r"column 'y' is nan for unit 'region-A'"),
+        (pd.array([True, None, False], dtype="boolean"), r"column 'y' is <NA> .*type NAType"),
+    ],
+    ids=["Int64", "Float64", "boolean"],
+)
+def test_a_nullable_column_with_a_missing_value_is_refused(array: object, message: str) -> None:
+    """pandas hands over a nullable number's NA as nan, and a nullable boolean's as ``NA`` among
+    objects: each is a missing value, which a panel refuses, naming the column, the unit and the
+    time, before anything reads it."""
+    frame = pd.DataFrame(_labelled())
+    frame["y"] = array
+    with pytest.raises(PanelError, match=message):
+        Panel.from_frame(frame, unit="unit", time="time")
+
+
+def test_an_empty_column_has_no_value_to_refuse() -> None:
+    empty = {name: column[:0] for name, column in _labelled().items()}
+    empty["y"] = np.array([], dtype="<U3")
+    assert Panel.from_frame(empty, unit="unit", time="time").wide("y").shape == (0, 0)

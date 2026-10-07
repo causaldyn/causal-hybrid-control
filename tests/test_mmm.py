@@ -19,7 +19,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc.mmm import MarketingMixSystem, MmmReport, run_marketing_mix
+from chc.mmm import SALES, MarketingMixSystem, MmmReport, _start_state, run_marketing_mix
+from chc.panel import Panel, PanelError
 
 DT = 1.0
 
@@ -201,3 +202,17 @@ def test_the_case_study_reaches_a_decision_in_under_ten_lines() -> None:
     )
     assert out.schedule.magnitudes.shape == (6, 3)
     assert "Prescription for `sales`" in out.report()
+
+
+def test_the_start_state_reads_a_state_as_numbers_only_where_it_holds_them() -> None:
+    """The pooled start read each state with a float64 cast, which read text as the numbers it
+    spells."""
+    logs = MarketingMixSystem().sample(n_regions=2, n_weeks=3, seed=0)
+    logs[SALES] = logs[SALES].astype(str)
+    panel = Panel.from_frame(logs, unit="region", time="week")
+    with pytest.raises(
+        PanelError,
+        match=r"column 'sales' is np\.str_\('.+'\) for unit np\.int64\(0\) at time np\.int64\(0\): "
+        r"dtype <U\d+, which holds text",
+    ):
+        _start_state(panel, (SALES,))

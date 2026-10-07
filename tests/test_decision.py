@@ -13,6 +13,7 @@ import functools
 import json
 import logging
 import math
+from decimal import Decimal
 
 import equinox as eqx
 import jax
@@ -51,7 +52,7 @@ from chc.dynamics import (
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
-from chc.panel import Panel
+from chc.panel import Panel, PanelError
 from chc.plan import CausalPlan, causal_plan, certify_safety
 from chc.residual import ControlAffineResidual
 
@@ -1643,3 +1644,88 @@ def test_a_tube_whose_rate_is_not_finite_is_not_evaluated(monkeypatch, caplog) -
     assert certificate.trustworthy_steps == 0
     (tube,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "tube"]
     assert tube.rate == math.inf
+
+
+def _as_text(values: np.ndarray) -> np.ndarray:
+    """The column as pandas 3 hands over its ``str`` dtype: text among objects."""
+    return values.astype(str).astype(object)
+
+
+def _as_dates(values: np.ndarray) -> np.ndarray:
+    return np.datetime64("2024-01-01") + np.arange(values.size)
+
+
+def _past_float64(values: np.ndarray) -> np.ndarray:
+    cells = np.array([Decimal(float(value)) for value in values], dtype=object)
+    cells[0] = Decimal("1E+400")
+    return cells
+
+
+@pytest.mark.parametrize(
+    ("column", "convert", "why"),
+    [
+        ("incentive", _as_text, "type str, not a real number"),
+        ("supply", _as_dates, r"dtype datetime64\[D\], which holds dates or times"),
+        ("wait", _as_text, "type str, not a real number"),
+        ("demand", _past_float64, "a finite number past float64's range, where it is an infinity"),
+    ],
+    ids=["lever", "target", "constraint", "covariate"],
+)
+def test_a_column_prescribe_reads_as_numbers_is_refused_unless_it_holds_them(
+    column: str, convert, why: str
+) -> None:
+    """The fit and the logger check read each lever, state and covariate with a float64 cast,
+    which read text as the numbers it spells, a date as its count of days and a Decimal of 1E+400
+    as an infinity: a plan came back from text and from dates."""
+    logs = _logs(n_units=20, n_periods=6)
+    logs[column] = convert(logs[column])
+    panel = Panel.from_frame(logs, unit="unit", time="time")
+    with pytest.raises(
+        PanelError,
+        match=rf"column '{column}' is .+ for unit np\.int64\(0\) at time np\.int64\(0\): {why}",
+    ):
+        _prescribe(panel, ("demand",))
+
+
+def test_a_driver_column_of_text_is_refused() -> None:
+    logs = _logs(n_units=20, n_periods=6)
+    logs["demand"] = _as_text(logs["demand"])
+    panel = Panel.from_frame(logs, unit="unit", time="time")
+    with pytest.raises(PanelError, match=r"column 'demand' is '.+' for unit np\.int64\(0\) at"):
+        _prescribe(panel, (), drivers=[Driver("demand", np.zeros(16))])
+
+
+def test_the_evaluation_reads_its_panel_as_numbers_only_where_it_holds_them() -> None:
+    """The windows were read with a float64 cast, so a lever logged as text was read as the
+    numbers it spells, and the evaluation went on to price them."""
+    logs = _logs(n_units=40, n_periods=20)
+    prescription = _prescribe(Panel.from_frame(logs, unit="unit", time="time"), ())
+    logs["incentive"] = _as_text(logs["incentive"])
+    panel = Panel.from_frame(logs, unit="unit", time="time")
+    with pytest.raises(PanelError, match=r"column 'incentive' is '.+' for unit .+: type str"):
+        prescription.evaluate(panel)
+
+
+def test_the_logger_check_reads_a_column_beside_the_plan_only_where_it_holds_numbers() -> None:
+    """The logger check reads the columns the graph names beside the plan's, which nothing else
+    reads, and read a complex one as its real part, with a warning at most."""
+    logs = _logs(n_units=20, n_periods=6)
+    logs["noise"] = logs["demand"] + 1j
+    panel = Panel.from_frame(logs, unit="unit", time="time")
+    graph = CausalGraph.from_edges([*EDGES, ("noise", "wait")])
+    assert graph.adjustment_set(treatment=("incentive",), outcome="supply").covariates == (
+        "demand",
+    )
+    with pytest.raises(PanelError, match=r"column 'noise' is .+: dtype complex128, which holds"):
+        _prescribe(panel, graph)
+
+
+def test_the_episodes_read_a_column_as_numbers_only_where_it_holds_them() -> None:
+    logs = _logs(n_units=4, n_periods=6)
+    logs["incentive"] = _as_text(logs["incentive"])
+    panel = Panel.from_frame(logs, unit="unit", time="time")
+    with pytest.raises(
+        PanelError,
+        match=r"column 'incentive' is '.+' for unit np\.int64\(0\) at time np\.int64\(0\): type",
+    ):
+        _episodes(panel, states=("supply",), levers=("incentive",), horizon=2, time_zero="unit")

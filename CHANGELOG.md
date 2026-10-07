@@ -98,6 +98,36 @@ still change).
   and a complex column passed the same way. Each now raises `PanelError` naming the column, the
   unit and the time, as a float column's nan does, and before the index check, where a `Decimal`'s
   signalling nan as a unit or a period failed with `TypeError`. Since 0.5.0.
+- **A panel's column is read as numbers only where it holds real numbers.** `Panel.wide`,
+  `prescribe` and `Prescription.evaluate` read each column they take as numbers with NumPy's cast
+  to float64, which reads far more than numbers: the text `"1.5"` as 1.5 and `"nan"` as nan,
+  pandas 3's `str` dtype and polars' text among it; a date as its count of days since 1970 and
+  NaT as -9.2e18; a duration as its count of seconds; a complex number as its real part, with a
+  warning at most. `prescribe` made a plan from a lever logged as text, the plan the numbers it
+  spells give, and from one logged as dates, read as days since 1970. A finite `Decimal` of
+  `1E+400` and a `longdouble` of 1e400 read as infinities, and an `int` or a `Fraction` of 400
+  digits raised a bare `OverflowError`. A panel still holds such a column, as it holds a label;
+  reading one as numbers now raises `PanelError` naming the column, the value, its unit and its
+  time. A column is read as numbers where its dtype is boolean, integer or floating, or its values
+  are `bool`, `int`, `float`, `Decimal` or `Fraction`, NumPy's among them, each finite in float64
+  where it is finite in its own type; such columns read as before, bit for bit, pandas' nullable
+  numbers with no value missing among them. Migration: convert such a column to numbers first,
+  text with `pd.to_numeric` or polars' `.cast(pl.Float64)` (ADR 0072). Since 0.5.0.
+- **The g-methods read only the columns they name, each only where it holds real numbers.**
+  `sequential_g_formula` and `naive_pooled_effect` cast every column of the frame to float64: a
+  treatment of text read as the numbers it spells, of dates as their count of days, a `Decimal` of
+  `1E+400` as an infinity that made the effect nan, and a label column of text that no argument
+  named failed the call with `could not convert string to float`. A column they read is now
+  refused as a panel's is, with `ValueError` naming the column, the value and the row, and a
+  column they do not name is not read. Numbers read as before, bit for bit, and a nan, a nullable
+  column's missing value among them, still makes the effect nan. Since 0.3.0.
+- **A masked array's masked cell is refused, not read as what lies under the mask.**
+  `as_columns` passed a NumPy masked array on, or converted it with `np.asarray`, and either way
+  the mask was dropped: a panel held the values under it, `sequential_g_formula` read a treatment
+  masked over 999 as 999, and the estimators failed in JAX with a message that named no column. A
+  masked cell is a missing value, which no reader of named columns takes, so `as_columns` now
+  refuses it with `ValueError` naming the column, the row and how many cells are masked; a masked
+  array that masks no cell is read as its data. Since 0.3.0.
 - **Richards' curve is 0 at zero spend in a vector of spends too, and keeps its digits near it.**
   `Richards` took its value at zero spend off the curve and divided by one less that value, so near
   zero spend the subtraction cancelled: at a steepness of 1.5 and an asymmetry of 4, the curve at

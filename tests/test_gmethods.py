@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import numpy as np
 import pytest
 
@@ -135,3 +137,115 @@ def test_the_pooled_regression_refuses_a_treatment_or_the_outcome_among_the_conf
     data = _time_varying_confounded(200, seed=6)
     with pytest.raises(ValueError, match=match):
         naive_pooled_effect(data, **(SPEC | names))
+
+
+def _estimates(data: object) -> tuple[float, float]:
+    """The g-formula's effect and the pooled regression's, on one frame."""
+    return (
+        sequential_g_formula(data, regime=(1.0, 1.0), baseline=(0.0, 0.0), **SPEC),
+        naive_pooled_effect(data, **SPEC),
+    )
+
+
+def _past_float64(values: np.ndarray) -> np.ndarray:
+    cells = np.array([Decimal(float(value)) for value in values], dtype=object)
+    cells[0] = Decimal("1E+400")
+    return cells
+
+
+def _masked(values: np.ndarray) -> np.ma.MaskedArray:
+    return np.ma.masked_array(values, mask=np.arange(values.size) == 3)
+
+
+@pytest.mark.parametrize(
+    ("convert", "message"),
+    [
+        (lambda v: v.astype(str).astype(object), r"'.+' at row 0: type str, not a real number"),
+        (lambda v: v.astype(str), r"np\.str_\('.+'\) at row 0: dtype <U\d+, which holds text"),
+        (
+            lambda v: np.datetime64("2024-01-01") + np.arange(v.size),
+            r"np\.datetime64\('2024-01-01'\) at row 0: dtype datetime64\[D\], which holds dates",
+        ),
+        (
+            lambda v: np.arange(v.size).astype("timedelta64[s]"),
+            r"np\.timedelta64\(0,'s'\) at row 0: dtype timedelta64\[s\], which holds",
+        ),
+        (
+            lambda v: v + 1j,
+            r"np\.complex128\(.+\+1j\) at row 0: dtype complex128, which holds complex",
+        ),
+        (
+            _past_float64,
+            r"Decimal\('1E\+400'\) at row 0: a finite number past float64's range, where it is",
+        ),
+        (_masked, r"masked at row 3 \(1 of 200 cells\): a masked cell is a missing value"),
+    ],
+    ids=["text", "fixed-width-text", "datetime64", "timedelta64", "complex", "decimal", "masked"],
+)
+def test_a_column_that_is_not_numbers_is_refused_naming_it_and_its_row(
+    convert, message: str
+) -> None:
+    """Every column was read with a float64 cast, which read the text "0.5" as 0.5, a date as its
+    count of days, a duration as its seconds and a complex number as its real part; a Decimal of
+    1E+400 became an infinity and the effect nan; a masked array was read under its mask."""
+    data = _time_varying_confounded(200, seed=7)
+    data["a1"] = convert(data["a1"])
+    with pytest.raises(ValueError, match=rf"column 'a1' is {message}"):
+        sequential_g_formula(data, regime=(1.0, 1.0), baseline=(0.0, 0.0), **SPEC)
+    with pytest.raises(ValueError, match=rf"column 'a1' is {message}"):
+        naive_pooled_effect(data, **SPEC)
+
+
+def test_a_pandas_text_column_is_refused_and_a_column_not_named_is_not_read() -> None:
+    """pandas 3 hands its ``str`` dtype over as text among objects. A label column the call does
+    not name, which the float64 cast of every column refused when it was text, is not read."""
+    pd = pytest.importorskip("pandas")
+    data = _time_varying_confounded(200, seed=8)
+    frame = pd.DataFrame(data)
+    frame["l1"] = frame["l1"].astype("str")
+    with pytest.raises(ValueError, match=r"column 'l1' is '.+' at row 0: type str, not a real"):
+        _estimates(frame)
+    labelled = dict(data)
+    labelled["region"] = np.array([f"r{row % 3}" for row in range(200)])
+    labelled["day"] = np.datetime64("2024-01-01") + np.arange(200)
+    assert _estimates(labelled) == _estimates(data)
+
+
+def test_numbers_are_read_as_a_float64_cast_reads_them_and_a_missing_one_reads_nan() -> None:
+    """A boolean treatment and pandas' nullable integers read as before, bit for bit; a nullable
+    column's NA comes over as nan, as a float column's nan does, and the effect reads nan."""
+    pd = pytest.importorskip("pandas")
+    data = _time_varying_confounded(200, seed=9)
+    data["a0"] = data["a0"] > 0.0
+    as_floats = dict(data, a0=data["a0"].astype(np.float64))
+    assert _estimates(data) == _estimates(as_floats)
+    rounded = dict(data, l0=np.round(data["l0"] * 10.0))
+    frame = pd.DataFrame(rounded)
+    frame["l0"] = frame["l0"].astype("Int64")
+    assert _estimates(frame) == _estimates(rounded)
+    frame.loc[5, "l0"] = pd.NA
+    assert all(np.isnan(effect) for effect in _estimates(frame))
+
+
+@pytest.mark.parametrize(
+    ("value", "dtype"),
+    [
+        (Decimal("Infinity"), object),
+        (Decimal("NaN"), object),
+        (np.inf, object),
+        (np.nan, object),
+        (np.inf, np.longdouble),
+    ],
+    ids=["decimal-infinity", "decimal-nan", "infinity", "nan", "longdouble-infinity"],
+)
+def test_a_nan_or_an_infinity_of_the_columns_own_type_is_read_as_it_is(
+    value: object, dtype: type
+) -> None:
+    """The rule refuses a finite number float64 cannot hold, not the nan or the infinity a column
+    holds as such: those read as a float column's do, and the effect reads nan."""
+    data = _time_varying_confounded(200, seed=10)
+    kind = Decimal if isinstance(value, Decimal) else float
+    cells = np.array([kind(float(level)) for level in data["l0"]], dtype=object)
+    cells[5] = value
+    data["l0"] = cells.astype(dtype)
+    assert all(np.isnan(effect) for effect in _estimates(data))

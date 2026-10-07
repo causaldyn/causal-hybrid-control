@@ -58,8 +58,8 @@ A review of 0.14.2 reproduced both.
   `Fraction`'s slots, or `object.__setattr__`), can still change under the hash. A column
   that is NaT in every row is held: pandas' NaT is a `datetime`, NumPy's is a `datetime64`, and a
   datetime column holds a NaT too. A number that is finite in its own type but past float64's
-  range, a `Decimal` of `1E+400` or a `longdouble` say, is held, and a reader that takes float64
-  reads it as an infinity, as it did from a `longdouble` column.
+  range, a `Decimal` of `1E+400` or a `longdouble` say, is held. A reader that takes float64 read
+  it as an infinity, as it did from a `longdouble` column; it now refuses it (ADR 0072).
 
 ## Alternatives considered
 

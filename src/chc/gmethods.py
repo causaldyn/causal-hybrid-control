@@ -10,22 +10,34 @@ outcome, with K-fold cross-fitting of the nuisance regressions (the Double-ML ho
 
 A statistical estimator, NumPy float64 throughout (like :mod:`chc.did` / :mod:`chc.scm`) -- x64-flag
 independent. Continuous or binary treatments; ridge nuisances.
+
+Only the columns a call names are read, each as float64 where it holds real numbers: a boolean, an
+integer or a floating dtype, or ``bool``, ``int``, ``float``, ``Decimal`` or ``Fraction`` values. A
+column of text, dates, times, durations, complex numbers or other objects is refused, and so is a
+number finite in its own type that is an infinity in float64, naming the column and the row; a
+float64 cast read the text ``"0.5"`` as 0.5 and a date as its count of days. A nan is read as it
+is, and the effect reads nan.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import numpy as np
 from numpy.typing import NDArray
 
-from chc.frames import ColumnData, _refuse_shared_names, as_columns
+from chc.frames import ColumnData, _numbers, _refuse_shared_names, as_columns
 
 Data = ColumnData
 Vector = NDArray[np.float64]
 
 
-def _float64_columns(data: Data) -> dict[str, Vector]:
-    """Any accepted frame as float64 columns -- this module's contract, whatever the x64 flag."""
-    return {name: np.asarray(column, dtype=np.float64) for name, column in as_columns(data).items()}
+def _float64_columns(data: Data, names: Iterable[str]) -> dict[str, Vector]:
+    """The columns ``names`` of any accepted frame as float64 -- this module's contract, whatever
+    the x64 flag -- each read only where it holds real numbers (:func:`chc.frames._numbers`). A
+    column the call does not name is not read, so a label column of text is no obstacle."""
+    columns = as_columns(data)
+    return {name: _numbers(columns[name], name) for name in dict.fromkeys(names)}
 
 
 def _ridge_fit(design: NDArray[np.float64], target: Vector, ridge: float) -> Vector:
@@ -90,12 +102,14 @@ def sequential_g_formula(
         ValueError: when the treatments, confounders, regime and baseline differ in length,
             ``folds`` is not a whole number from 2 to the rows, the outcome is named among the
             treatments or the confounders, a treatment is named twice, or a treatment is among
-            the confounders of its own step or an earlier one.
+            the confounders of its own step or an earlier one; or when a column it reads does
+            not hold real numbers, or is a masked array that masks a cell, naming the column and
+            the row.
     """
     if not len(treatments) == len(confounders) == len(regime) == len(baseline):
         msg = "treatments, confounders, regime, and baseline must share one length (the horizon)"
         raise ValueError(msg)
-    _pooled_confounders(treatments, confounders, outcome)
+    pooled = _pooled_confounders(treatments, confounders, outcome)
     for step, treatment in enumerate(treatments):
         for earlier in range(step + 1):
             if treatment in confounders[earlier]:
@@ -106,7 +120,7 @@ def sequential_g_formula(
                 )
                 raise ValueError(msg)
     horizon = len(treatments)
-    columns = _float64_columns(data)
+    columns = _float64_columns(data, (outcome, *treatments, *pooled))
     n = int(columns[outcome].shape[0])
     if not isinstance(folds, int | np.integer) or not 2 <= folds <= n:
         msg = (
@@ -149,7 +163,8 @@ def naive_pooled_effect(
     Raises:
         ValueError: when the outcome is named among the treatments or the confounders, a treatment
             is named twice, or a treatment is among the confounders: pooled, its coefficient
-            would be split with its own copy.
+            would be split with its own copy; or when a column it reads does not hold real
+            numbers, or is a masked array that masks a cell, naming the column and the row.
     """
     pooled = _pooled_confounders(treatments, confounders, outcome)
     clash = sorted(set(pooled) & set(treatments))
@@ -159,7 +174,7 @@ def naive_pooled_effect(
             "one's coefficient with its own copy, and the sum would miss the copy's share"
         )
         raise ValueError(msg)
-    columns = _float64_columns(data)
+    columns = _float64_columns(data, (outcome, *treatments, *pooled))
     treat = [columns[a] for a in treatments]
     covariates = [columns[c] for block in confounders for c in block]
     beta = _ridge_fit(np.column_stack([*treat, *covariates]), columns[outcome], 1e-6)

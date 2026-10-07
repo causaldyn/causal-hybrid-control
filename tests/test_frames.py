@@ -97,3 +97,38 @@ def test_two_labels_with_one_text_are_refused() -> None:
     frame = pd.DataFrame(np.zeros((3, 2)), columns=["u", "u"])
     with pytest.raises(ValueError, match="two columns go by the name 'u'"):
         as_columns(frame)
+
+
+class _MaskedFrame:
+    """A frame whose column is a masked array: ``np.asarray`` dropped the mask."""
+
+    columns = ("u",)
+
+    def __getitem__(self, name: str) -> np.ma.MaskedArray:
+        return np.ma.masked_array([1.0, 999.0, 3.0], mask=[False, True, False])
+
+
+def test_a_masked_cell_is_refused_in_a_mapping_and_in_a_frame() -> None:
+    """A masked cell is a missing value: ``np.asarray`` read what lay under it."""
+    masked = np.ma.masked_array(np.arange(6.0).reshape(3, 2), mask=[[0, 0], [0, 1], [1, 0]])
+    with pytest.raises(
+        ValueError, match=r"column 'x' is masked at index \(1, 1\) \(2 of 6 cells\)"
+    ):
+        as_columns({"x": masked})
+    with pytest.raises(ValueError, match=r"column 'u' is masked at row 1 \(1 of 3 cells\)"):
+        as_columns(_MaskedFrame())
+
+
+def test_a_masked_array_that_masks_no_cell_is_its_data() -> None:
+    column = np.ma.masked_array([1.0, 2.0])
+    read = as_columns({"u": column})["u"]
+    assert type(read) is np.ndarray
+    assert read.tolist() == [1.0, 2.0]
+
+
+def test_an_estimator_names_a_masked_column() -> None:
+    """JAX refused a masked array without naming the column."""
+    data = _as_numpy(_effect_data())
+    data["z"] = np.ma.masked_array(data["z"], mask=np.arange(data["z"].shape[0]) == 7)
+    with pytest.raises(ValueError, match=r"column 'z' is masked at row 7 \(1 of 4000 cells\)"):
+        BackdoorOLS().estimate(data)
