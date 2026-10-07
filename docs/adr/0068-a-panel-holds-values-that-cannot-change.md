@@ -11,7 +11,12 @@ the caller still held changed the panel: after `meta[1]["tag"] = 999`, `panel["m
 cells, not the objects in them, so a write through `panel["meta"][1]` did the same. A list as a
 unit failed the index check with a bare `TypeError`.
 
-A review of 0.14.2 reproduced this.
+The finite check read the columns of a floating dtype only. An object column of floats passed nan
+and the infinities: `Panel.wide` returned them, and `chc.decision` read them as float64 among its
+states, to fail later with a message that named no row. A `Decimal`'s nan, NumPy's `float32` among
+objects, and a complex column passed the same way.
+
+A review of 0.14.2 reproduced both.
 
 ## Decision
 
@@ -27,8 +32,14 @@ A review of 0.14.2 reproduced this.
   the missing values a frame hands over (`None`, pandas' `NA`), and the types the library cannot
   vouch for (a tuple, a pandas `Period`). A value whose text is its address in memory keeps the
   reason ADR 0056 gave.
-- **The object columns are checked before the index.** A unit or a period that is not hashable is
-  refused with `PanelError`, as every other value is.
+- **A number that has a nan or an infinity is checked as a float column is.** In an object column
+  that is a `float`, a `complex` or a `Decimal`, NumPy's inexact scalars among them, and a complex
+  column is checked too. A nan or an infinity is refused with the message a float column gives,
+  which names the column, the unit and the time. A `Decimal` answers by its own `is_finite`, since
+  `float` raises on its signalling nan. An `int`, a `Fraction` and a `bool` have no nan. A NaT of
+  `datetime64` or `timedelta64` is held, as a datetime or a timedelta column holds one.
+- **The values are checked before the index.** A unit or a period that is not hashable, a list or
+  a `Decimal`'s signalling nan, is refused with `PanelError`, as every other value is.
 
 ## Consequences
 
@@ -40,11 +51,15 @@ A review of 0.14.2 reproduced this.
 - A panel that held any other value is refused: a column of dicts, of lists, of tuples, of pandas
   `Period`s, or of `None` in every row. Convert the column first: a dict's fields to columns of
   their own, a tuple to text, a `Period` to a timestamp (`.dt.to_timestamp()`) or to text.
+- A missing number is refused in each form a frame hands it over: nan in a float, a complex or an
+  object column, `None`, and pandas' `NA`.
 - *Left*: a subclass whose text reads state of its own, a `datetime` or a `time` whose `tzinfo` is
   an object of the caller's own class, and a value changed through its private state (a
   `Fraction`'s slots, or `object.__setattr__`), can still change under the hash. A column
   that is NaT in every row is held: pandas' NaT is a `datetime`, NumPy's is a `datetime64`, and a
-  datetime column holds a NaT too.
+  datetime column holds a NaT too. A number that is finite in its own type but past float64's
+  range, a `Decimal` of `1E+400` or a `longdouble` say, is held, and a reader that takes float64
+  reads it as an infinity, as it did from a `longdouble` column.
 
 ## Alternatives considered
 
@@ -64,3 +79,8 @@ A review of 0.14.2 reproduced this.
 - **Pandas' `Period` among the types.** Rejected: pandas is not a dependency, so the panel could
   know the type only by importing pandas or by its name, and a `Period` column converts in one
   call.
+- **Numbers refused in an object column.** Rejected: ADR 0056 holds them, a column of `Decimal`s
+  is an object column, and a panel of finite numbers that was accepted would be refused.
+- **Each number checked as float64, the precision the readers take.** Rejected: it would refuse a
+  finite value as not finite, where a `longdouble` column is checked in its own precision, which
+  this decision leaves as it was. `float` also raises on a `Decimal`'s signalling nan.

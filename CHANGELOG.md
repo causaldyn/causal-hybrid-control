@@ -69,6 +69,14 @@ still change).
   `Period`, and `None` or pandas' `NA` in every row. A list as a unit, which failed the index
   check with `TypeError`, is refused the same way. Migration: convert such a column first, a
   `Period` with `.dt.to_timestamp()` (ADR 0068). Since 0.5.0.
+- **A nan or an infinity in an object or a complex column is refused, as in a float column.**
+  `Panel.from_frame` checked only the columns of a floating dtype, so an object column of floats
+  passed nan and the infinities on to its readers: `Panel.wide` returned them, and `prescribe` read
+  them among its states, where its logger check failed with a `ValueError` that named no row. A
+  `Decimal`'s nan, signalling nan and infinities, NumPy's `float32` and `complex64` among objects,
+  and a complex column passed the same way. Each now raises `PanelError` naming the column, the
+  unit and the time, as a float column's nan does, and before the index check, where a `Decimal`'s
+  signalling nan as a unit or a period failed with `TypeError`. Since 0.5.0.
 
 ## [0.14.3] — 2026-10-07
 

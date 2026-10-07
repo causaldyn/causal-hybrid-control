@@ -396,6 +396,62 @@ def test_a_pandas_column_of_aware_timestamps_is_held() -> None:
     assert panel.periods[0] == pd.Timestamp("2024-01-01", tz="UTC")
 
 
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf], ids=["nan", "inf", "-inf"])
+def test_a_non_finite_float_in_an_object_column_is_refused(value: float) -> None:
+    """The finite check read float columns only: an object column of floats passed nan and the
+    infinities, which a fit reads as float64 among its states."""
+    data = _labelled()
+    data["y"] = np.array([0.0, value, 2.0], dtype=object)
+    with pytest.raises(
+        PanelError,
+        match=rf"column 'y' is {value} for unit 'region-A' at time np\.int64\(1\) \(1 of 3 rows "
+        "are not finite\\)",
+    ):
+        Panel.from_frame(data, unit="unit", time="time")
+
+
+@pytest.mark.parametrize(
+    ("values", "shown"),
+    [
+        ([Decimal(1), Decimal("NaN"), Decimal(2)], "NaN"),
+        ([Decimal(1), Decimal("sNaN"), Decimal(2)], "sNaN"),
+        ([Decimal(1), Decimal("-Infinity"), Decimal(2)], "-Infinity"),
+        ([1 + 0j, complex(0.0, np.inf), 2j], "infj"),
+        ([np.float32(1), np.float32(np.nan), np.float32(2)], "nan"),
+        ([np.complex64(1), np.complex64(complex(np.nan, 0.0)), np.complex64(2)], r"\(nan\+0j\)"),
+    ],
+    ids=["decimal-nan", "decimal-snan", "decimal-inf", "complex", "float32", "complex64"],
+)
+def test_a_non_finite_number_of_another_type_is_refused(values: list[object], shown: str) -> None:
+    """Each number type with a nan or an infinity is checked as a float is. A Decimal answers by
+    its own test, since ``float`` raises on its signalling nan."""
+    data = _labelled()
+    data["y"] = _cells(*values)
+    with pytest.raises(
+        PanelError, match=rf"column 'y' is {shown} for unit 'region-A' at time np\.int64\(1\) \("
+    ):
+        Panel.from_frame(data, unit="unit", time="time")
+
+
+def test_a_complex_column_is_checked_as_a_float_column_is() -> None:
+    """A complex column passed nan for the reason an object column did: the check read floats."""
+    data = _labelled()
+    data["z"] = np.array([0j, complex(np.nan, 1.0), 2j])
+    with pytest.raises(PanelError, match=r"column 'z' is \(nan\+1j\) for unit 'region-A' at time"):
+        Panel.from_frame(data, unit="unit", time="time")
+
+
+def test_a_period_that_is_not_finite_is_refused_before_the_index_is_read() -> None:
+    """A Decimal's signalling nan raises ``TypeError`` when it is hashed, as the index check
+    hashes each period."""
+    data = _labelled()
+    data["time"] = _cells(Decimal(0), Decimal("sNaN"), Decimal(2))
+    with pytest.raises(
+        PanelError, match=r"column 'time' is sNaN for unit 'region-A' at time Decimal\('sNaN'\)"
+    ):
+        Panel.from_frame(data, unit="unit", time="time")
+
+
 def test_the_cluster_column_is_declared_once_and_carried() -> None:
     panel = _panel(cluster="cluster")
     assert panel.cluster == "cluster"

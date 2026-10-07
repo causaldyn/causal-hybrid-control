@@ -58,6 +58,8 @@ _HELD: tuple[type, ...] = (
     np.number,
     np.datetime64,
 )
+# The numbers among them that have a nan or an infinity.
+_INEXACT: tuple[type, ...] = (float, complex, Decimal, np.inexact)
 
 
 class PanelError(ValueError):
@@ -101,6 +103,12 @@ def _fingerprint(columns: Mapping[str, NDArray[Any]]) -> str:
         digest.update(str(array.shape).encode())
         digest.update(_values(array) if array.dtype == object else array.tobytes())
     return digest.hexdigest()
+
+
+def _finite(number: Any) -> bool:
+    """Whether a number is neither nan nor infinite; a Decimal answers by its own test, since
+    ``float`` raises on its signalling nan."""
+    return number.is_finite() if isinstance(number, Decimal) else bool(np.isfinite(number))
 
 
 def _values(column: NDArray[Any]) -> bytes:
@@ -178,12 +186,13 @@ class Panel:
         ``float``, ``complex``, ``Decimal``, ``Fraction``, ``UUID``, ``date``, ``time``,
         ``datetime`` or ``timedelta``, a subclass of one (a pandas ``Timestamp`` is a
         ``datetime``), or NumPy's scalar of one of these kinds. Each value is hashed by its type and
-        its text. A value that can change in place --- a dict, a list, a set, a bytearray, an
-        array, an object of the caller's own class --- is refused rather than copied, since a copy
-        would still change through ``panel[name][row]``. So are ``None`` and pandas' ``NA``, which
-        is how a frame hands over a missing value, and any other type, a tuple or a pandas
-        ``Period`` among them: fill or drop a missing value, and convert any other value to text,
-        or a ``Period`` to a timestamp.
+        its text. A ``float``, a ``complex`` or a ``Decimal``, NumPy's among them, is refused when
+        it is nan or infinite, as in a float column. A value that can change in place --- a dict, a
+        list, a set, a bytearray, an array, an object of the caller's own class --- is refused
+        rather than copied, since a copy would still change through ``panel[name][row]``. So are
+        ``None`` and pandas' ``NA``, which is how a frame hands over a missing value, and any other
+        type, a tuple or a pandas ``Period`` among them: fill or drop a missing value, and convert
+        any other value to text, or a ``Period`` to a timestamp.
 
         Args:
             unit, time: the column names holding the entity and the period. Values may be any
@@ -199,11 +208,12 @@ class Panel:
 
         Raises:
             PanelError: for a missing index column, one column named as both the unit and the
-                time, a non-1-D or ragged column, a non-finite value, a duplicated
-                ``(unit, time)`` pair, an object column whose values are not of one type (a missing
-                value among strings, say), whose values' text is their address in memory, or whose
-                values' type a panel does not hold, or --- under ``require_balanced`` --- a hole.
-                Every message names the column and the offending entity.
+                time, a non-1-D or ragged column, a non-finite number in a float, a complex or an
+                object column, a duplicated ``(unit, time)`` pair, an object column whose values are
+                not of one type (a missing value among strings, say), whose values' text is their
+                address in memory, or whose values' type a panel does not hold, or --- under
+                ``require_balanced`` --- a hole. Every message names the column and the offending
+                entity.
         """
         raw = as_columns(data)
         # copied before it is checked, so that the bytes checked and hashed are the bytes held
@@ -231,8 +241,8 @@ class Panel:
                 )
 
         units, times = columns[unit], columns[time]
-        # before the index check, which fails with a bare TypeError on a unit or a period that is
-        # not hashable
+        # the values before the index, whose check fails with a bare TypeError on a unit or a
+        # period that is not hashable: a list, or a Decimal's signalling nan
         for name, column in columns.items():
             if column.dtype != object or not n_rows:
                 continue
@@ -262,6 +272,21 @@ class Panel:
                     "other value to one of them"
                 )
 
+        for name, column in columns.items():
+            if np.issubdtype(column.dtype, np.inexact):
+                finite = np.isfinite(column)
+            elif column.dtype == object and n_rows and isinstance(column[0], _INEXACT):
+                finite = np.array([_finite(value) for value in column.tolist()], dtype=bool)
+            else:
+                continue
+            bad = np.flatnonzero(~finite)
+            if bad.size:
+                row = int(bad[0])
+                raise PanelError(
+                    f"column {name!r} is {column[row]} for unit {units[row]!r} at time "
+                    f"{times[row]!r} ({bad.size} of {n_rows} rows are not finite)"
+                )
+
         seen: dict[tuple[Any, Any], int] = {}
         for row, key in enumerate(zip(units.tolist(), times.tolist(), strict=True)):
             if key in seen:
@@ -270,17 +295,6 @@ class Panel:
                     f"{row}); a panel is indexed by (unit, time), so one of them would be lost"
                 )
             seen[key] = row
-
-        for name, column in columns.items():
-            if not np.issubdtype(column.dtype, np.floating):
-                continue
-            bad = np.flatnonzero(~np.isfinite(column))
-            if bad.size:
-                row = int(bad[0])
-                raise PanelError(
-                    f"column {name!r} is {column[row]} for unit {units[row]!r} at time "
-                    f"{times[row]!r} ({bad.size} of {n_rows} rows are not finite)"
-                )
 
         panel = cls(
             columns=_Columns(columns),
