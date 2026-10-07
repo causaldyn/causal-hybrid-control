@@ -9,6 +9,7 @@ the worst share than the reference, and its level's mean gain is the gains' own.
 the boxes' search is checked against every split of a grid, with and without carryover.
 """
 
+import importlib
 import logging
 from fractions import Fraction
 from itertools import pairwise
@@ -27,11 +28,19 @@ from chc.response import (
     Exponential,
     GeometricAdstock,
     Hill,
+    Logistic,
     MichaelisMenten,
     Power,
     Saturation,
     Tanh,
 )
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 ONE = GeometricAdstock(0.0, length=1, normalized=False)  # no carryover
 PERIODS = 13
@@ -452,20 +461,22 @@ def test_readings_of_mixed_families_are_read_each_on_its_own_curves():
 
 
 @pytest.mark.parametrize(
-    ("cap", "s_shaped"), [("_NODES", True), ("_ROUNDS", False)], ids=["boxes", "rounds"]
+    ("limit", "s_shaped"), [("max_boxes", True), ("rounds", False)], ids=["boxes", "rounds"]
 )
-def test_a_search_its_cap_stops_says_so_and_logs_its_gap(monkeypatch, caplog, cap, s_shaped):
+def test_a_search_its_cap_stops_says_so_and_logs_its_gap(monkeypatch, caplog, limit, s_shaped):
     """Stopped by its cap, on S-shaped curves after one box or on concave ones after one round of
     planes, the search says so, with the gap open, and logs one warning that carries it. At the
     level 1 the readings' mean gains from a move, so one round's planes leave the gap open."""
-    monkeypatch.setattr(f"chc.allocation.{cap}", 1)
     if s_shaped:
+        cap = {"max_boxes": 1}
         reading = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0))
         readings, budget, periods, history = [reading] * 10, 1.6, 1, None
         against, lower, upper = [1.6, 0.0], np.zeros(2), np.full(2, 1.6)
     else:
         readings, budget, periods, history = _readings(5, seed=3), BUDGET, PERIODS, HISTORY
         against, lower, upper = CURRENT, LOWER, UPPER
+        cap = {}
+        monkeypatch.setattr("chc.allocation._ROUNDS", 1)
     with caplog.at_level(logging.WARNING, logger="chc.allocation"):
         plan = cvar_allocate(
             readings,
@@ -476,13 +487,117 @@ def test_a_search_its_cap_stops_says_so_and_logs_its_gap(monkeypatch, caplog, ca
             lower=lower,
             upper=upper,
             history=history,
+            **cap,
         )
-    assert (plan.stopped, plan.boxes) == ("cap", 1)
+    assert (plan.stopped, plan.boxes, plan.limit) == ("cap", 1, limit)
     assert plan.bound > plan.cvar + 1e-6
+    assert plan.gap == plan.bound - plan.cvar > plan.tolerance
+    assert (plan.unsolved, plan.readings) == ((), len(readings))
     [record] = [r for r in caplog.records if r.name == "chc.allocation"]
     assert record.levelno == logging.WARNING
     assert (record.chc_event, record.planner) == ("allocation_cap", "cvar_allocate")
     assert (record.boxes, record.cvar, record.bound) == (plan.boxes, plan.cvar, plan.bound)
+    assert record.limit == limit
+
+
+def _untied_readings() -> tuple[list[tuple[Channel, ...]], dict]:
+    """Ten readings of the untied example, the reference all on the first channel, and the box."""
+    reading = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0))
+    box = {"level": 0.1, "against": [1.6, 0.0], "lower": np.zeros(2), "upper": np.full(2, 1.6)}
+    return [reading] * 10, box
+
+
+@pytest.mark.parametrize(
+    ("max_boxes", "stopped", "boxes"),
+    [(1, "cap", 1), (2, "cap", 1), (3, "cap", 3), (4, "cap", 3), (7, "closed", 7)],
+)
+def test_no_box_is_searched_past_the_cap(max_boxes, stopped, boxes):
+    """A cut searches two boxes, so the search stops where the next cut would pass the cap, with
+    the split of a search capped there. Ten readings of the untied example close in seven."""
+    readings, box = _untied_readings()
+    plan = cvar_allocate(readings, 1.6, 1, max_boxes=max_boxes, **box)
+    assert (plan.stopped, plan.boxes) == (stopped, boxes)
+    assert plan.limit == ("max_boxes" if stopped == "cap" else None)
+    same = cvar_allocate(readings, 1.6, 1, max_boxes=boxes, **box)
+    assert (plan.cvar, plan.bound, plan.boxes) == (same.cvar, same.bound, same.boxes)
+    np.testing.assert_array_equal(plan.spend, same.spend)
+
+
+@pytest.mark.parametrize(
+    ("rtol", "atol", "boxes"), [(1e-9, 0.0, 7), (0.05, 0.0, 3), (0.0, 0.04, 3), (0.0, 0.0, 7)]
+)
+def test_the_search_closes_at_the_larger_of_atol_and_rtol_of_the_reference_s_return(
+    rtol, atol, boxes
+):
+    """Under each reading the reference returns ``1.6^3 / (1 + 1.6^3)``, 0.804; the first box
+    leaves a gap of 0.042, three 0.037, five 0.014 and seven none. Each tolerance stops the search
+    at the first count whose gap it covers. Asked for none, it closes to 64 epsilons of the
+    reference's return, and says the floor raised its tolerance."""
+    readings, box = _untied_readings()
+    plan = cvar_allocate(readings, 1.6, 1, rtol=rtol, atol=atol, **box)
+    scale = 1.6**3 / (1.0 + 1.6**3)
+    asked, floor = max(atol, rtol * scale), 64 * np.finfo(float).eps * scale
+    assert plan.tolerance == pytest.approx(max(asked, floor), rel=1e-14, abs=0.0)
+    assert plan.floored == (floor > asked)
+    assert (plan.stopped, plan.boxes, plan.limit) == ("closed", boxes, None)
+    assert plan.gap == plan.bound - plan.cvar <= plan.tolerance
+    assert plan.relative_gap == pytest.approx(plan.gap / scale, rel=1e-14, abs=0.0)
+    assert (plan.unsolved, plan.readings) == ((), 10)
+
+
+def test_a_float32_search_closes_where_rounding_leaves_its_gap():
+    """One reading of two channels with carryover, read in float32: the default share 1e-9 of the
+    reference's return is a hundredth of float32's epsilon, and the gap stops falling near two
+    epsilons of it, where a search without a floor ran to its cap of 500 boxes. At the floor, 64
+    epsilons, it closes, and the split says the floor raised its tolerance. Asked for the share 1,
+    a search's tolerance is the reference's return itself."""
+    history = np.array([[80.1, 73.2], [11.0, 133.1], [97.8, 50.7], [29.1, 81.8], [20.7, 48.7]])
+    rate = 74.1655
+    box = {
+        "level": 0.3,
+        "against": np.array([47.6885, rate - 47.6885]),
+        "lower": np.array([29.786, 23.04]),
+        "upper": np.array([81.087, 155.605]),
+        "history": history,
+    }
+    with enable_x64(False):
+        reading = (
+            Channel(GeometricAdstock(0.49, length=5, normalized=True), Hill(149.25, 1.74), 774.1),
+            Channel(
+                GeometricAdstock(0.05, length=5, normalized=True), Logistic(117.51, 7.9), 530.6
+            ),
+        )
+        plan = cvar_allocate([reading], 10 * rate, 10, **box)
+        scale = cvar_allocate([reading], 10 * rate, 10, rtol=1.0, **box).tolerance
+    eps = float(np.finfo(np.float32).eps)
+    assert (plan.tolerance, plan.floored) == (64 * eps * scale, True)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert plan.gap <= plan.tolerance
+    assert plan.boxes < 50
+
+
+@pytest.mark.parametrize(
+    ("setting", "match"),
+    [
+        ({"rtol": -0.5}, r"^rtol=-0.5 is not a finite tolerance of at least 0$"),
+        ({"atol": float("nan")}, r"^atol=nan is not a finite tolerance"),
+        ({"max_boxes": 0}, r"^max_boxes=0 is not a whole number of boxes, at least 1$"),
+        ({"max_boxes": 1.0}, r"^max_boxes=1.0 is not a whole number"),
+    ],
+)
+def test_it_refuses_a_tolerance_or_a_cap_no_search_meets(setting, match):
+    with pytest.raises(ValueError, match=match):
+        cvar_allocate(
+            _readings(2, seed=1),
+            BUDGET,
+            PERIODS,
+            level=0.5,
+            against=CURRENT,
+            lower=LOWER,
+            upper=UPPER,
+            history=HISTORY,
+            **setting,
+        )
 
 
 class _Unturned(Saturation):
@@ -649,9 +764,11 @@ def test_another_posteriors_s_shaped_draws_compile_nothing_new(caplog):
 
     plan(_s_shaped_readings(6, seed=1))
     with jax.log_compiles(True), caplog.at_level(logging.WARNING):
-        plan(_s_shaped_readings(6, seed=2))
+        second = plan(_s_shaped_readings(6, seed=2))
     compiled = [r.getMessage() for r in caplog.records if "XLA compilation" in r.getMessage()]
     assert compiled == []
+    assert second.compile_seconds == 0.0
+    assert second.search_seconds > 0.0
 
 
 @settings(max_examples=25, deadline=None)
@@ -732,12 +849,16 @@ def test_a_program_its_iteration_limit_stops_leaves_its_box_the_last_bound(stall
     assert min(limits) > 0
     assert plan.bound >= exact.cvar - 1e-6
     assert plan.cvar <= exact.bound + 1e-6
+    assert (exact.unsolved, plan.unsolved) == ((), (limits[at - 1],))
 
 
-def test_a_program_stalled_on_concave_curves_ends_the_search_with_its_gap(stall, caplog):
+@pytest.mark.parametrize("status", [1, 4])
+def test_a_program_stalled_on_concave_curves_ends_the_search_with_its_gap(stall, caplog, status):
     """On concave curves the one box's planes are the search, so a program HiGHS stalls on ends
-    it, with the gap the programs before it left; the plan says so as a search its cap stops."""
-    limits = stall(2)
+    it, with the gap the programs before it left; the plan says so as a search its cap stops,
+    names the program as its limit, and records its iterations: all it was allowed at status 1,
+    the iteration limit, and half as many at 4, as the stall fixture reports them."""
+    limits = stall(2, status)
     with caplog.at_level(logging.WARNING, logger="chc.allocation"):
         plan = cvar_allocate(
             _readings(5, seed=3),
@@ -750,10 +871,11 @@ def test_a_program_stalled_on_concave_curves_ends_the_search_with_its_gap(stall,
             history=HISTORY,
         )
     assert len(limits) == 2
-    assert (plan.stopped, plan.boxes) == ("cap", 1)
+    assert (plan.stopped, plan.boxes, plan.limit) == ("cap", 1, "unsolved")
     assert plan.bound > plan.cvar + 1e-6
+    assert plan.unsolved == ((limits[1] if status == 1 else limits[1] // 2),)
     [record] = [r for r in caplog.records if r.chc_event == "allocation_cap"]
-    assert (record.cvar, record.bound) == (plan.cvar, plan.bound)
+    assert (record.cvar, record.bound, record.limit) == (plan.cvar, plan.bound, "unsolved")
 
 
 @pytest.mark.parametrize(

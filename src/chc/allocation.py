@@ -27,13 +27,17 @@ in the rate, above the worth, and equal to it at both ends. The bisection on tho
 every plan in the box, and its plan, read on the curves, is a plan. The box of the largest bound
 is cut first, on the channel whose envelope stands furthest above its curve at the plan, at its
 rate, where both halves' envelopes meet the curve. :attr:`Allocation.bound` is the largest bound
-left when every bound is within a share ``1e-9`` of the first box's of the best plan's worth, or
-after 500 boxes; on concave curves it is the worth. :attr:`Allocation.stopped` says which, and
-:attr:`Allocation.boxes` how many boxes were planned; a search the cap stops logs a warning
-(``chc_event="allocation_cap"``) with its gap. Rates that jump at one price, on chords of one
-slope, are filled one at a time, so at most one channel is left inside its chord, where the curve
-is below the envelope. With kernels of length one, floors at zero and caps past the tangencies,
-that bounds the gap of the first box before any is cut: the largest
+left when every bound is within the search's tolerance of the best plan's worth, or once the next
+cut would plan past ``max_boxes`` boxes, 500 by default; on concave curves it is the worth. The
+tolerance is the caller's: the larger of ``atol`` and ``rtol`` of the first box's bound, a share
+``1e-9`` by default, but never below 64 epsilons of the dtype the curves are read in, of that
+bound, where the gap is rounding that no cut closes. :attr:`Allocation.stopped` says which,
+:attr:`Allocation.limit` what stopped the search, and :attr:`Allocation.boxes` how many boxes
+were planned; a search the cap stops logs a warning (``chc_event="allocation_cap"``) with its
+gap. Rates that jump at one price, on chords of one slope, are filled one at a time, so at most
+one channel is left inside its chord, where the curve is below the envelope. With kernels of
+length one, floors at zero and caps past the tangencies, that bounds the gap of the first box
+before any is cut: the largest
 ``periods * coefficient * nonconvexity`` (:meth:`chc.response.Saturation.nonconvexity`), Shapley
 and Folkman's lemma for one constraint (Aubin and Ekeland 1976; Udell and Boyd 2016). It is all but
 reached: four equal Hill curves of slope 3 at three scales leave a gap of 0.1544 against 0.1547.
@@ -119,13 +123,14 @@ HONEST SCOPE:
   :func:`allocate`'s among them, may meet it for less; and a target return on ad spend is a budget
   where the average crosses the target, not proved the most.
 * On S-shaped curves :func:`allocate`'s plan and :func:`cvar_allocate`'s split are the best only
-  to the share ``1e-9`` of the bound, or as near as 500 boxes come. Sums of S-shaped curves under a
-  budget are NP-hard to plan (Udell and Boyd 2016), so nothing short of that cap bounds the count of
-  boxes, and many channels near their thresholds at once can reach it; the gap is then reported as
-  it stands. Each box of :func:`allocate`'s costs one bisection of the price, as a plan on concave
-  curves does; each of :func:`cvar_allocate`'s up to 30 rounds of planes, every one a read of each
-  reading on its envelopes and its curves and a linear program over the planes kept, one row a
-  reading for every split tried. The bound on the first box's gap holds
+  to the search's tolerance, a share ``1e-9`` of the bound by default and never finer than 64
+  epsilons of the dtype, or as near as ``max_boxes`` boxes come, 500 by default. Sums of S-shaped
+  curves under a budget are NP-hard to plan (Udell and Boyd 2016), so nothing short of that cap
+  bounds the count of boxes, and many channels near their thresholds at once can reach it; the gap
+  is then reported as it stands. Each box of :func:`allocate`'s costs one bisection of the price,
+  as a plan on concave curves does; each of :func:`cvar_allocate`'s up to 30 rounds of planes,
+  every one a read of each reading on its envelopes and its curves and a linear program over the
+  planes kept, one row a reading for every split tried. The bound on the first box's gap holds
   only as stated above: a longer kernel runs each period at its own adstock, and a floor or a cap
   inside a chord holds its channel there, each with an excess of its own.
 * :func:`allocate` and :func:`cvar_allocate` search S-shaped curves. :func:`budget_for`,
@@ -165,15 +170,21 @@ HONEST SCOPE:
 from __future__ import annotations
 
 import heapq
+import importlib
 import logging
 import math
+import numbers
+import threading
+import time
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from functools import partial
 from typing import Literal, cast
 
 import equinox as eqx
 import jax
+import jax.monitoring
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
@@ -202,6 +213,7 @@ __all__ = [
     "MinimaxAllocation",
     "ReturnOnSpendTarget",
     "ReturnTarget",
+    "SearchLimit",
     "SearchStatus",
     "Totals",
     "allocate",
@@ -217,11 +229,28 @@ _EPS = float(np.finfo(float).eps)
 _TINY = float(np.finfo(float).smallest_subnormal)
 _HUGE = 2.0**300
 # the cutting planes stop when the worst regret is this share of the largest best return above
-# their bound, or after this many rounds, the gap then reported as it stands
+# their bound, or after this many rounds, the gap then reported as it stands; the planners that do
+# not search judge a plan's gap closed at that share of its bound
 _GAP, _ROUNDS = 1e-9, 500
-# the branch-and-bound on S-shaped curves stops when every bound left is within that share of the
-# first of the best plan's worth, or after this many nodes, the gap then reported as it stands
-_NODES = 500
+# a search's tolerance is never below this many epsilons of the dtype its curves are read in, of
+# the scale its rtol is a share of: below it the gap is rounding, which no box closes
+_ROUNDING = 64
+# the phases of a compile JAX reports a duration for: tracing, lowering and the backend's compile
+_COMPILING = frozenset(
+    {
+        "/jax/core/compile/jaxpr_trace_duration",
+        "/jax/core/compile/jaxpr_to_mlir_module_duration",
+        "/jax/core/compile/backend_compile_duration",
+    }
+)
+# jax.monitoring publishes a way to remove a listener from jax 0.8.1; up to 0.8.0 its own module
+# holds one
+if hasattr(jax.monitoring, "unregister_event_duration_listener"):
+    _unlisten = jax.monitoring.unregister_event_duration_listener
+else:
+    _unlisten = vars(importlib.import_module("jax._src.monitoring"))[
+        "_unregister_event_duration_listener_by_callback"
+    ]
 # in a box of cvar_allocate's search the cutting planes stop after this many rounds, or once their
 # bound is within half the box's gap to the best split of the box's best on its envelopes: a box is
 # cut sooner than its planes are refined
@@ -232,11 +261,15 @@ _BOX_ROUNDS = 30
 _UNSOLVED = (1, 4)
 
 SearchStatus = Literal["closed", "cap", "unsearched"]
-"""Why a plan's search for the best stopped: ``closed``, its bound within the share ``1e-9`` of its
-worth; ``cap``, with the gap open after 500 boxes, or where :func:`cvar_allocate`'s planes on
-concave curves stopped, after 500 rounds or at a program HiGHS left unsolved;
-``unsearched``, a plan on the envelopes from zero spend whose gap is open, which no search tried
-to close."""
+"""Why a plan's search for the best stopped: ``closed``, its bound within the search's tolerance of
+its worth; ``cap``, with the gap open at a limit (:data:`SearchLimit`); ``unsearched``, a plan on
+the envelopes from zero spend whose gap is open, which no search tried to close."""
+
+SearchLimit = Literal["max_boxes", "rounds", "unsolved"]
+"""What stopped a search with its gap open: ``max_boxes``, the caller's cap, where the next box's
+split would plan past it; ``rounds``, the 500 rounds of :func:`cvar_allocate`'s planes in its one
+box of concave curves; ``unsolved``, a linear program HiGHS left unsolved there, at its iteration
+limit or with its optimality conditions unmet, which ends that box's planes."""
 
 _log = logging.getLogger(__name__)
 
@@ -261,6 +294,19 @@ class Allocation:
             plan on the envelopes was never searched (:data:`SearchStatus`).
         boxes: how many boxes of the rates were planned: 1 for a plan on concave curves or on the
             envelopes from zero spend.
+        gap: ``bound - worth``.
+        relative_gap: ``gap`` as a share of the first box's bound, the scale ``rtol`` is a share
+            of, or of 1 where that bound is 0.
+        tolerance: the gap the search closes at: the larger of ``atol`` and ``rtol`` of the first
+            box's bound, but not below 64 epsilons of the dtype the curves are read in, of that
+            bound. A goal's plan is judged at the share ``1e-9`` of its bound.
+        floored: whether that floor, the dtype's rounding, raised the tolerance above the
+            caller's.
+        limit: what stopped a search with its gap open (:data:`SearchLimit`); ``None`` where the
+            gap closed or nothing was searched.
+        compile_seconds: the seconds JAX spent compiling during the call: tracing, lowering and
+            the backend's compile, none where every program was compiled before.
+        search_seconds: the rest of the call's seconds. Both are recorded, not promised.
     """
 
     spend: np.ndarray
@@ -271,6 +317,13 @@ class Allocation:
     idle: float
     stopped: SearchStatus
     boxes: int
+    gap: float
+    relative_gap: float
+    tolerance: float
+    floored: bool
+    limit: SearchLimit | None
+    compile_seconds: float
+    search_seconds: float
 
     @property
     def gain(self) -> float:
@@ -338,9 +391,25 @@ class CvarAllocation:
         bound: no split in the box at the budget has a ``cvar`` above this, so ``bound - cvar``
             bounds how far the split is from the best. On S-shaped curves it is the largest bound
             the search left.
-        stopped: whether ``bound - cvar`` closed to the share ``1e-9`` of the reference's largest
-            return, or the search stopped at its cap (:data:`SearchStatus`).
+        stopped: whether ``bound - cvar`` closed to the search's tolerance, or the search stopped
+            at its cap (:data:`SearchStatus`).
         boxes: how many boxes of the rates were searched: 1 where every curve is concave.
+        gap: ``bound - cvar``.
+        relative_gap: ``gap`` as a share of the reference's largest return, the scale ``rtol`` is
+            a share of, or of 1 where every return on the reference is 0.
+        tolerance: the gap the search closes at: the larger of ``atol`` and ``rtol`` of the
+            reference's largest return, but not below 64 epsilons of the dtype the curves are read
+            in, of that return.
+        floored: whether that floor, the dtype's rounding, raised the tolerance above the
+            caller's.
+        limit: what stopped the search with its gap open (:data:`SearchLimit`); ``None`` where
+            the gap closed.
+        unsolved: the iterations of each linear program HiGHS left unsolved, in the order they
+            were solved; each left its box the bound of the programs before it.
+        readings: how many readings the split was chosen over.
+        compile_seconds: the seconds JAX spent compiling during the call: tracing, lowering and
+            the backend's compile, none where every program was compiled before.
+        search_seconds: the rest of the call's seconds. Both are recorded, not promised.
     """
 
     spend: np.ndarray
@@ -349,6 +418,15 @@ class CvarAllocation:
     bound: float
     stopped: SearchStatus
     boxes: int
+    gap: float
+    relative_gap: float
+    tolerance: float
+    floored: bool
+    limit: SearchLimit | None
+    unsolved: tuple[int, ...]
+    readings: int
+    compile_seconds: float
+    search_seconds: float
 
 
 @dataclass(frozen=True)
@@ -666,11 +744,14 @@ def allocate(
     lower: ArrayLike,
     upper: ArrayLike,
     history: ArrayLike | None = None,
+    rtol: float = 1e-9,
+    atol: float = 0.0,
+    max_boxes: int = 500,
 ) -> Allocation:
     """Spend ``budget`` over ``periods`` at one rate a period for each channel, for the most return.
 
-    Exact where every curve is concave; on S-shaped curves the best to a share ``1e-9`` of
-    :attr:`Allocation.bound`, by branch and bound (see the module).
+    Exact where every curve is concave; on S-shaped curves the best to the tolerance ``rtol`` and
+    ``atol`` set, by branch and bound (see the module).
 
     Args:
         channels: the channels, each read as given.
@@ -681,33 +762,48 @@ def allocate(
             where nothing measured them.
         history: ``(T, channels)`` spend in the periods before the plan, whose adstock runs into
             it; nothing spent before the plan when omitted.
+        rtol: the share of the first box's bound the search closes the gap to.
+        atol: the gap the search closes to, in the channels' units. The search stops at the
+            larger of the two, but not below 64 epsilons of the dtype the curves are read in, of
+            the first box's bound: there the gap is rounding (:attr:`Allocation.floored`).
+        max_boxes: the most boxes the search plans. A box is cut only where its halves fit
+            within the count.
 
     Raises:
         TypeError: a channel is not a :class:`chc.response.Channel`.
         ValueError: a curve the bisection cannot certify on (see the module's scope), a negative
             coefficient, a box or history of the wrong shape, a box with ``lower > upper`` or a
-            negative end, or a budget the box cannot spend over the periods.
+            negative end, a budget the box cannot spend over the periods, an ``rtol`` or ``atol``
+            that is negative or not finite, or a ``max_boxes`` that is not a whole number of at
+            least 1.
     """
+    settings = _Settings(rtol, atol, max_boxes)
     lower_rates, upper_rates, spent = _inputs(channels, periods, lower, upper, history)
     budget = _spendable(budget, periods, lower_rates, upper_rates)
     given = tuple(channels)
-    if relax(given) is given:
-        return _on_envelopes(given, budget, periods, lower_rates, upper_rates, spent)
-    worths = _worths(given, spent, periods)
-    spend, worth, bound, price, boxes, stopped = _branch_and_bound(
-        worths, lower_rates, upper_rates, periods, budget / periods
-    )
-    if stopped == "cap":
+    with _Stopwatch() as clock:
+        if relax(given) is given:
+            return _on_envelopes(
+                given, budget, periods, lower_rates, upper_rates, spent, settings, clock
+            )
+        worths = _worths(given, spent, periods)
+        spend, worth, bound, price, ending = _branch_and_bound(
+            worths, lower_rates, upper_rates, periods, budget / periods, settings
+        )
+        idle = sum(_value(w, 0.0) for w in worths)
+        compiling, searching = clock.read()
+    if ending.stopped == "cap":
         _log.warning(
-            "allocate stopped at its cap of %d boxes with the gap open: the plan returns %.6g on "
-            "the curves, and no plan in the box more than %.6g",
-            boxes,
+            "allocate stopped at its cap with the gap open, after %d boxes: the plan returns "
+            "%.6g on the curves, and no plan in the box more than %.6g",
+            ending.boxes,
             worth,
             bound,
             extra={
                 "chc_event": "allocation_cap",
                 "planner": "allocate",
-                "boxes": boxes,
+                "boxes": ending.boxes,
+                "limit": ending.limit,
                 "worth": worth,
                 "bound": bound,
             },
@@ -718,10 +814,100 @@ def allocate(
         bound=bound,
         price=price,
         budget=budget,
-        idle=sum(_value(w, 0.0) for w in worths),
-        stopped=stopped,
-        boxes=boxes,
+        idle=idle,
+        stopped=ending.stopped,
+        boxes=ending.boxes,
+        gap=bound - worth,
+        relative_gap=(bound - worth) / ending.scale,
+        tolerance=ending.tolerance,
+        floored=ending.floored,
+        limit=ending.limit,
+        compile_seconds=compiling,
+        search_seconds=searching,
     )
+
+
+@dataclass(frozen=True)
+class _Settings:
+    """A search's settings: it closes the gap to the larger of ``atol`` and ``rtol`` of a scale,
+    but to no less than ``rounding`` epsilons of the dtype it reads, of the scale, and plans at
+    most ``max_boxes`` boxes.
+
+    Raises:
+        ValueError: an ``rtol`` or ``atol`` that is negative or not finite, or a ``max_boxes``
+            that is not a whole number of at least 1.
+    """
+
+    rtol: float
+    atol: float
+    max_boxes: int
+    rounding: float = _ROUNDING
+
+    def __post_init__(self) -> None:
+        for name in ("rtol", "atol"):
+            value = getattr(self, name)
+            if not (np.isfinite(value) and value >= 0.0):
+                raise ValueError(f"{name}={value!r} is not a finite tolerance of at least 0")
+            object.__setattr__(self, name, float(value))
+        if not (isinstance(self.max_boxes, numbers.Integral) and self.max_boxes >= 1):
+            raise ValueError(
+                f"max_boxes={self.max_boxes!r} is not a whole number of boxes, at least 1"
+            )
+        object.__setattr__(self, "max_boxes", int(self.max_boxes))
+
+    def tolerance(self, scale: float, eps: float) -> tuple[float, bool]:
+        """The gap a search closes to on ``scale``, read in a dtype whose epsilon is ``eps``, and
+        whether the floor raised it above the caller's."""
+        asked = max(self.atol, self.rtol * scale)
+        floor = self.rounding * eps * scale
+        return max(asked, floor), floor > asked
+
+
+# the planners that do not search judge a plan's gap at the share _GAP of its bound, unfloored
+_UNSEARCHED = _Settings(_GAP, 0.0, 1, 0.0)
+
+
+def _rounding(worths: object) -> float:
+    """The epsilon of the dtype ``worths``, a pytree of them, are read in."""
+    leaves = jax.tree.leaves(eqx.filter(worths, eqx.is_inexact_array))
+    return float(jnp.finfo(jnp.result_type(*leaves)).eps)
+
+
+class _Stopwatch:
+    """The seconds since it started, and how many of them JAX spent compiling in its thread.
+
+    JAX reports a compile's phases as they end, each by its duration, so each is read as the span
+    that ends as it is reported; a phase inside another, as jax before 0.10 reports a jit traced
+    inside another's trace, counts once, within the other.
+    """
+
+    def __init__(self) -> None:
+        self._thread = threading.get_ident()
+        self._spans: list[tuple[float, float]] = []
+        self._started = 0.0
+        self._listener = self._heard
+
+    def _heard(self, event: str, duration_secs: float, **kwargs: str | int) -> None:
+        if event in _COMPILING and threading.get_ident() == self._thread:
+            end = time.perf_counter()
+            self._spans.append((end - duration_secs, end))
+
+    def __enter__(self) -> _Stopwatch:
+        jax.monitoring.register_event_duration_secs_listener(self._listener)
+        self._started = time.perf_counter()
+        return self
+
+    def __exit__(self, *exception: object) -> None:
+        _unlisten(self._listener)
+
+    def read(self) -> tuple[float, float]:
+        """The seconds spent compiling so far, and the others since it started."""
+        compiling, reach = 0.0, -np.inf
+        for start, end in sorted(self._spans):
+            if end > reach:
+                compiling += end - max(start, reach)
+                reach = end
+        return compiling, max(time.perf_counter() - self._started - compiling, 0.0)
 
 
 def _spendable(budget: float, periods: int, lower: np.ndarray, upper: np.ndarray) -> float:
@@ -770,25 +956,39 @@ def _on_envelopes(
     lower: np.ndarray,
     upper: np.ndarray,
     spent: np.ndarray,
+    settings: _Settings = _UNSEARCHED,
+    clock: _Stopwatch | None = None,
 ) -> Allocation:
     """The plan on the curves' envelopes from zero spend (:func:`chc.response.relax`), with what it
-    returns on the curves: :func:`allocate`'s own where every curve is concave."""
-    relaxed = relax(given)
-    envelopes = _worths(relaxed, spent, periods)
-    spend, price = _split(envelopes, lower, upper, periods, budget / periods)
-    bound = sum(_value(w, rate) for w, rate in zip(envelopes, spend, strict=True))
-    worths = envelopes if relaxed is given else _worths(given, spent, periods)
-    worth = sum(_value(w, rate) for w, rate in zip(worths, spend, strict=True))
-    closed = bound - worth <= _GAP * (abs(bound) or 1.0)
+    returns on the curves: :func:`allocate`'s own where every curve is concave. Its gap is judged
+    by ``settings`` on its bound, and its seconds are ``clock``'s, or its own where none runs."""
+    with nullcontext(clock) if clock is not None else _Stopwatch() as running:
+        relaxed = relax(given)
+        envelopes = _worths(relaxed, spent, periods)
+        spend, price = _split(envelopes, lower, upper, periods, budget / periods)
+        bound = sum(_value(w, rate) for w, rate in zip(envelopes, spend, strict=True))
+        worths = envelopes if relaxed is given else _worths(given, spent, periods)
+        worth = sum(_value(w, rate) for w, rate in zip(worths, spend, strict=True))
+        scale = abs(bound) or 1.0
+        tolerance, floored = settings.tolerance(scale, _rounding(worths))
+        idle = sum(_value(w, 0.0) for w in worths)
+        compiling, searching = running.read()
     return Allocation(
         spend=spend,
         worth=worth,
         bound=bound,
         price=price,
         budget=budget,
-        idle=sum(_value(w, 0.0) for w in worths),
-        stopped="closed" if closed else "unsearched",
+        idle=idle,
+        stopped="closed" if bound - worth <= tolerance else "unsearched",
         boxes=1,
+        gap=bound - worth,
+        relative_gap=(bound - worth) / scale,
+        tolerance=tolerance,
+        floored=floored,
+        limit=None,
+        compile_seconds=compiling,
+        search_seconds=searching,
     )
 
 
@@ -806,20 +1006,42 @@ def _unsearched(planner: str, reading: str, gap: float, scale: float) -> None:
         )
 
 
+@dataclass(frozen=True)
+class _Ending:
+    """How a search ended: the boxes it planned, why it stopped and at what limit, the gap it
+    closes to and whether the floor raised that, the scale its relative gap reads, and the
+    iterations of each program HiGHS left unsolved."""
+
+    boxes: int
+    stopped: SearchStatus
+    limit: SearchLimit | None
+    tolerance: float
+    floored: bool
+    scale: float
+    unsolved: tuple[int, ...] = ()
+
+
 def _branch_and_bound(
-    worths: tuple[_Worth, ...], lower: np.ndarray, upper: np.ndarray, periods: int, target: float
-) -> tuple[np.ndarray, float, float, float, int, SearchStatus]:
+    worths: tuple[_Worth, ...],
+    lower: np.ndarray,
+    upper: np.ndarray,
+    periods: int,
+    target: float,
+    settings: _Settings,
+) -> tuple[np.ndarray, float, float, float, _Ending]:
     """The best split of ``target`` a period on the curves, its worth, a bound on every split's, its
-    price, the boxes planned and why the search stopped: Udell and Boyd's (2016) branch-and-bound
-    for sums of S-shaped functions.
+    price, and how the search ended: Udell and Boyd's (2016) branch-and-bound for sums of S-shaped
+    functions.
 
     A node is a box of the rates. Its bound is the split on each channel's envelope over the box
     (:func:`_bounded`), which no split in the box beats on the curves, and that split, read on the
     curves, is a plan. The node of the largest bound is split first, on the channel whose envelope
     stands furthest above its curve at the split, at its rate there, or halfway along its interval
     where the rate is an end of it; the envelopes of both halves meet the curve at the cut. Nodes
-    whose bound is within the share ``_GAP`` of the first node's of the best plan's worth are
-    settled, and the bound returned is the largest left or settled.
+    whose bound is within the tolerance ``settings`` sets on the first node's bound of the best
+    plan's worth are settled, and the bound returned is the largest left or settled. A node is
+    split only where the count of nodes, with the halves that hold a split of the budget, stays
+    within ``settings.max_boxes``.
     """
 
     def solve(low: np.ndarray, high: np.ndarray, bounded: tuple[_Worth, ...]):
@@ -831,19 +1053,25 @@ def _branch_and_bound(
     bounded = tuple(_bounded(w, a, b) for w, a, b in zip(worths, lower, upper, strict=True))
     spend, price, bound, worth, gaps = solve(lower, upper, bounded)
     best = (worth, spend, price)
-    tolerance = _GAP * (abs(bound) or 1.0)
+    scale = abs(bound) or 1.0
+    tolerance, floored = settings.tolerance(scale, _rounding(worths))
     heap = [(-bound, 0, lower, upper, bounded, spend, gaps)]
     settled, nodes = -np.inf, 1
-    while heap and -heap[0][0] - best[0] > tolerance and nodes < _NODES:
-        _, _, low, high, bounded, spend, gaps = heapq.heappop(heap)
+    while heap and -heap[0][0] - best[0] > tolerance:
+        _, _, low, high, bounded, spend, gaps = heap[0]
         cut_at = int(np.argmax(gaps))
         a, b = low[cut_at], high[cut_at]
         cut = spend[cut_at] if a < spend[cut_at] < b else a + 0.5 * (b - a)
+        halves = []
         for floor, cap in ((a, cut), (cut, b)):
             child_low, child_high = low.copy(), high.copy()
             child_low[cut_at], child_high[cut_at] = floor, cap
-            if not float(child_low.sum()) <= target <= float(child_high.sum()):
-                continue  # no split of the budget fits this half
+            if float(child_low.sum()) <= target <= float(child_high.sum()):
+                halves.append((floor, cap, child_low, child_high))  # a split of the budget fits
+        if nodes + len(halves) > settings.max_boxes:
+            break
+        heapq.heappop(heap)
+        for floor, cap, child_low, child_high in halves:
             child = list(bounded)
             child[cut_at] = _bounded(worths[cut_at], floor, cap)
             rates, at, top, value, excess = solve(child_low, child_high, tuple(child))
@@ -859,9 +1087,18 @@ def _branch_and_bound(
     worth, spend, price = best
     left = -heap[0][0] if heap else -np.inf
     bound = max(worth, settled, left)
-    # a box was settled within the tolerance of a best plan that has only risen since
-    stopped: SearchStatus = "closed" if bound - worth <= tolerance else "cap"
-    return spend, worth, bound, price, nodes, stopped
+    # a box was settled within the tolerance of a best plan that has only risen since, so a gap
+    # left open is the open boxes', which only the cap left uncut
+    closed = bound - worth <= tolerance
+    ending = _Ending(
+        boxes=nodes,
+        stopped="closed" if closed else "cap",
+        limit=None if closed else "max_boxes",
+        tolerance=tolerance,
+        floored=floored,
+        scale=scale,
+    )
+    return spend, worth, bound, price, ending
 
 
 def _cross(
@@ -945,6 +1182,22 @@ def budget_for(
             not finite; a gain beyond what the box returns at its caps; a return on spend that no
             budget in the box reaches, which the error says by how much it falls short at the peak.
     """
+    with _Stopwatch() as clock:
+        plan = _budget_for(channels, goal, periods, lower, upper, history, clock)
+    _unsearched("budget_for", "worth", plan.bound - plan.worth, plan.bound)
+    return plan
+
+
+def _budget_for(
+    channels: Sequence[Channel],
+    goal: Goal,
+    periods: int,
+    lower: ArrayLike,
+    upper: ArrayLike,
+    history: ArrayLike | None,
+    clock: _Stopwatch,
+) -> Allocation:
+    """:func:`budget_for`'s plan, its seconds read on ``clock``."""
     if not isinstance(goal, ReturnTarget | MarginalReturnTarget | ReturnOnSpendTarget):
         raise TypeError(f"goal is a {type(goal).__name__}, not a Goal")
     value = goal.amount if isinstance(goal, ReturnTarget) else goal.per_unit
@@ -1003,9 +1256,9 @@ def budget_for(
                     )
                 spend = _cross(rates, lambda at: -surplus(at), peak, per_unit, upper_rates)
     budget = cost(np.clip(spend, lower_rates, upper_rates))
-    plan = _on_envelopes(given, budget, periods, lower_rates, upper_rates, spent)
-    _unsearched("budget_for", "worth", plan.bound - plan.worth, plan.bound)
-    return plan
+    return _on_envelopes(
+        given, budget, periods, lower_rates, upper_rates, spent, _UNSEARCHED, clock
+    )
 
 
 def minimax_allocate(
@@ -1145,6 +1398,9 @@ def cvar_allocate(
     lower: ArrayLike,
     upper: ArrayLike,
     history: ArrayLike | None = None,
+    rtol: float = 1e-9,
+    atol: float = 0.0,
+    max_boxes: int = 500,
 ) -> CvarAllocation:
     """Spend ``budget`` for the most mean gain over ``against`` in the worst ``level`` share of
     ``readings`` of the channels: the gain's conditional value at risk.
@@ -1152,14 +1408,14 @@ def cvar_allocate(
     Each reading is a whole set of channels, one a column, as :func:`minimax_allocate` takes them: a
     posterior's draws, say, weighed alike. A split's gain under a reading is its return less the
     reference's, both on the reading's curves, and the split returned has the most mean gain over
-    the worst ``level`` share of the readings, to a share ``1e-9`` of the reference's largest
-    return, or as near as 500 rounds of cutting planes come on concave curves and 500 boxes of the
-    rates past them; :attr:`CvarAllocation.stopped` says which. A program HiGHS leaves unsolved,
-    one it stalls on stopped by an iteration limit, leaves its box the bound of the programs
-    before it. The reference spends the budget in the box and gains nothing under any reading, so
-    the split returned never does worse in that share than keeping it. At ``level = 1`` the split
-    has the most mean gain, the posterior's expected return; as the level falls it moves only as
-    far as the worst readings agree it gains.
+    the worst ``level`` share of the readings, to the tolerance ``rtol`` and ``atol`` set, or as
+    near as 500 rounds of cutting planes come on concave curves and ``max_boxes`` boxes of the
+    rates past them; :attr:`CvarAllocation.stopped` says which, and :attr:`CvarAllocation.limit`
+    what stopped it. A program HiGHS leaves unsolved, one it stalls on stopped by an iteration
+    limit, leaves its box the bound of the programs before it. The reference spends the budget in
+    the box and gains nothing under any reading, so the split returned never does worse in that
+    share than keeping it. At ``level = 1`` the split has the most mean gain, the posterior's
+    expected return; as the level falls it moves only as far as the worst readings agree it gains.
 
     The mean of the worst share is ``max_eta eta - E[(eta - gain)_+] / level`` (Rockafellar and
     Uryasev 2000), concave in the split where every curve is concave. The cutting planes (Kelley
@@ -1189,12 +1445,21 @@ def cvar_allocate(
             on.
         against: ``(channels,)`` the reference's spend a period, in the box and spending the
             budget: the plan the split must beat, the current one at this budget, say.
+        rtol: the share of the reference's largest return the search closes the gap to.
+        atol: the gap the search closes to, in the channels' units. The search stops at the
+            larger of the two, but not below 64 epsilons of the dtype the curves are read in, of
+            the reference's largest return: there the gap is rounding
+            (:attr:`CvarAllocation.floored`).
+        max_boxes: the most boxes the search plans. A box is cut only where its halves fit
+            within the count.
 
     Raises:
-        TypeError, ValueError: what :func:`allocate` refuses of any reading, the box or the
-            history; no readings; readings of different numbers of channels; a level outside
-            ``(0, 1]``; a reference of the wrong shape, outside the box or not spending the budget.
+        TypeError, ValueError: what :func:`allocate` refuses of any reading, the box, the history
+            or the search's settings; no readings; readings of different numbers of channels; a
+            level outside ``(0, 1]``; a reference of the wrong shape, outside the box or not
+            spending the budget.
     """
+    settings = _Settings(rtol, atol, max_boxes)
     readings = tuple(tuple(reading) for reading in readings)
     if not readings:
         raise ValueError("no readings to plan over")
@@ -1221,31 +1486,49 @@ def cvar_allocate(
             f"the reference spends {float(reference.sum())} a period and the budget {rate}; the "
             "gain is read against a split of the same budget"
         )
-    spend, gains, cvar, bound, boxes, stopped = _cvar_search(
-        _stacks([_worths(reading, spent, periods) for reading in readings]),
-        reference,
-        rate,
-        level,
-        lower_rates,
-        upper_rates,
-    )
-    if stopped == "cap":
+    with _Stopwatch() as clock:
+        spend, gains, cvar, bound, ending = _cvar_search(
+            _stacks([_worths(reading, spent, periods) for reading in readings]),
+            reference,
+            rate,
+            level,
+            lower_rates,
+            upper_rates,
+            settings,
+        )
+        compiling, searching = clock.read()
+    if ending.stopped == "cap":
         _log.warning(
             "cvar_allocate stopped at its cap with the gap open, after %d boxes: the split's mean "
             "gain in the worst share is %.6g, and no split in the box has more than %.6g",
-            boxes,
+            ending.boxes,
             cvar,
             bound,
             extra={
                 "chc_event": "allocation_cap",
                 "planner": "cvar_allocate",
-                "boxes": boxes,
+                "boxes": ending.boxes,
+                "limit": ending.limit,
                 "cvar": cvar,
                 "bound": bound,
             },
         )
     return CvarAllocation(
-        spend=spend, gain=gains, cvar=cvar, bound=bound, stopped=stopped, boxes=boxes
+        spend=spend,
+        gain=gains,
+        cvar=cvar,
+        bound=bound,
+        stopped=ending.stopped,
+        boxes=ending.boxes,
+        gap=bound - cvar,
+        relative_gap=(bound - cvar) / ending.scale,
+        tolerance=ending.tolerance,
+        floored=ending.floored,
+        limit=ending.limit,
+        unsolved=ending.unsolved,
+        readings=len(readings),
+        compile_seconds=compiling,
+        search_seconds=searching,
     )
 
 
@@ -1347,15 +1630,19 @@ def _cvar_search(
     level: float,
     lower: np.ndarray,
     upper: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, float, float, int, SearchStatus]:
+    settings: _Settings,
+) -> tuple[np.ndarray, np.ndarray, float, float, _Ending]:
     """:func:`cvar_allocate`'s split, its gains, their worst share's mean, a bound on every
-    split's, the boxes searched and why the search stopped."""
+    split's, and how the search ended, its tolerance set by ``settings`` on the reference's largest
+    return. A box is cut only where the count of boxes, with its halves, stays within
+    ``settings.max_boxes``."""
     count, size = sum(members.size for members in curves[0].members), reference.size
     # where every curve is concave each envelope is its curve: one box, each split read once
     alike = all(bends is None for stack in curves for bends in stack.bends)
     base = _read(curves, reference, count)[0].sum(axis=1)
     scale = float(np.max(np.abs(base))) or 1.0
-    tolerance = _GAP * scale
+    tolerance, floored = settings.tolerance(scale, _rounding(tuple(s.worths for s in curves)))
+    unsolved: list[int] = []
     # the variables are the rates, eta and one excess u_r a reading; each plane reads
     # u_r >= eta - (gain_r + slope_r @ (s - tried)), the rates in a power of two of the budget a
     # period and the gains in one of the reference's largest return, as minimax_allocate reads them.
@@ -1449,6 +1736,7 @@ def _cvar_search(
                 partial(_evened, reading=reading, count=count, cap=weight / share, total=weight),
             )
             if program.status in _UNSOLVED:
+                unsolved.append(int(program.nit))
                 break  # the box keeps its last program's bound
             if program.status != 0:
                 raise RuntimeError(f"the cutting planes' linear program failed: {program.message}")
@@ -1472,9 +1760,12 @@ def _cvar_search(
     ceiling, at, excess = box(lower, upper, envelopes, rows, limits, reference)
     heap = [(-ceiling, 0, lower, upper, envelopes, rows, limits, at, excess)]
     settled, boxes, widths = -np.inf, 1, np.maximum(upper - lower, _EPS)
-    while not alike and heap and -heap[0][0] - best[0] > tolerance and boxes < _NODES:
-        _, _, low, high, envelopes, rows, limits, at, excess = heapq.heappop(heap)
+    while not alike and heap and -heap[0][0] - best[0] > tolerance:
+        _, _, low, high, envelopes, rows, limits, at, excess = heap[0]
         cut_at, halves = _cut(low, high, at, excess, rate, widths)
+        if boxes + len(halves) > settings.max_boxes:
+            break
+        heapq.heappop(heap)
         for floor, cap in halves:
             child_low, child_high = low.copy(), high.copy()
             child_low[cut_at], child_high[cut_at] = floor, cap
@@ -1507,8 +1798,22 @@ def _cvar_search(
     value, spend, gains = best
     left = -heap[0][0] if heap else -np.inf
     bound = max(value, settled, left)
-    stopped: SearchStatus = "closed" if bound - value <= tolerance else "cap"
-    return np.asarray(spend), gains, float(value), float(bound), boxes, stopped
+    closed = bound - value <= tolerance
+    # past concave curves a gap left open is the open boxes', which only the cap left uncut; on
+    # them it is the one box's, whose planes ran out of rounds or stopped at a program unsolved
+    limit: SearchLimit | None = (
+        None if closed else "max_boxes" if not alike else "unsolved" if unsolved else "rounds"
+    )
+    ending = _Ending(
+        boxes=boxes,
+        stopped="closed" if closed else "cap",
+        limit=limit,
+        tolerance=tolerance,
+        floored=floored,
+        scale=scale,
+        unsolved=tuple(unsolved),
+    )
+    return np.asarray(spend), gains, float(value), float(bound), ending
 
 
 def _cut(

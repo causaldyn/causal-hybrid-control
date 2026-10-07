@@ -5,7 +5,9 @@ tail as one spend series; the best plan against SciPy's general solver and a gri
 against the worth's own slope.
 """
 
+import importlib
 import logging
+import threading
 
 import jax
 import jax.numpy as jnp
@@ -42,6 +44,13 @@ from chc.response import (
     Weibull,
     WeibullAdstock,
 )
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 PERIODS = 13
 CHANNELS = (
@@ -437,18 +446,157 @@ def test_a_search_that_closes_says_so_and_counts_its_boxes(caplog):
     assert (goal.stopped, goal.boxes) == ("closed", 1)
     assert searched.stopped == "closed"
     assert searched.boxes > 1
+    assert concave.limit is goal.limit is searched.limit is None
+    assert searched.gap == searched.bound - searched.worth <= searched.tolerance
     assert not _warnings(caplog)
 
 
-def test_a_search_the_cap_stops_says_so_and_logs_its_gap(monkeypatch, caplog):
-    monkeypatch.setattr(chc.allocation, "_NODES", 1)
+def test_a_search_the_cap_stops_says_so_and_logs_its_gap(caplog):
     with caplog.at_level(logging.WARNING, logger="chc.allocation"):
-        plan = allocate(_untied(), 1.6, 1, lower=np.zeros(2), upper=np.full(2, 1.6))
-    assert (plan.stopped, plan.boxes) == ("cap", 1)
+        plan = allocate(_untied(), 1.6, 1, lower=np.zeros(2), upper=np.full(2, 1.6), max_boxes=1)
+    assert (plan.stopped, plan.boxes, plan.limit) == ("cap", 1, "max_boxes")
     assert plan.bound - plan.worth > 1e-9 * plan.bound
+    assert plan.gap == plan.bound - plan.worth > plan.tolerance
     [record] = _warnings(caplog)
     assert (record.chc_event, record.planner) == ("allocation_cap", "allocate")
     assert (record.boxes, record.worth, record.bound) == (1, plan.worth, plan.bound)
+    assert record.limit == "max_boxes"
+
+
+@pytest.mark.parametrize(
+    ("max_boxes", "stopped", "boxes"),
+    [(1, "cap", 1), (2, "cap", 1), (3, "cap", 3), (4, "cap", 3), (5, "closed", 5)],
+)
+def test_no_box_is_planned_past_the_cap(max_boxes, stopped, boxes):
+    """A cut plans two boxes, so the search stops where the next cut would pass the cap: at one box
+    under a cap of 2, at three under 4, with the plan of a search capped there. The untied example
+    closes in five."""
+    box = {"lower": np.zeros(2), "upper": np.full(2, 1.6)}
+    plan = allocate(_untied(), 1.6, 1, max_boxes=max_boxes, **box)
+    assert (plan.stopped, plan.boxes) == (stopped, boxes)
+    assert plan.limit == ("max_boxes" if stopped == "cap" else None)
+    same = allocate(_untied(), 1.6, 1, max_boxes=boxes, **box)
+    assert (plan.worth, plan.bound, plan.boxes) == (same.worth, same.bound, same.boxes)
+    np.testing.assert_array_equal(plan.spend, same.spend)
+
+
+@pytest.mark.parametrize(
+    ("rtol", "atol", "boxes"),
+    [
+        (1e-9, 0.0, 5),
+        (0.05, 0.0, 3),
+        (0.0, 0.04, 3),
+        (0.01, 0.03, 5),
+        (0.06, 0.01, 3),
+        (0.2, 0.0, 1),
+    ],
+)
+def test_the_search_closes_at_the_larger_of_atol_and_rtol_of_the_first_box_s_bound(
+    rtol, atol, boxes
+):
+    """The untied example's first box bounds it at 0.845 with a gap of 0.140; three boxes leave
+    0.036 and five none. Each tolerance stops the search at the first count whose gap it covers:
+    0.03 of atol over 0.0084 of rtol does not cover 0.036, which their sum would."""
+    box = {"lower": np.zeros(2), "upper": np.full(2, 1.6)}
+    first = allocate(_untied(), 1.6, 1, max_boxes=1, **box)
+    plan = allocate(_untied(), 1.6, 1, rtol=rtol, atol=atol, **box)
+    assert plan.tolerance == max(atol, rtol * first.bound)
+    assert not plan.floored
+    assert (plan.stopped, plan.boxes, plan.limit) == ("closed", boxes, None)
+    assert plan.gap == plan.bound - plan.worth <= plan.tolerance
+    assert plan.relative_gap == plan.gap / first.bound
+
+
+def test_a_tolerance_finer_than_rounding_is_raised_to_it():
+    """Asked to close the gap to nothing, the search closes it to 64 epsilons of the first box's
+    bound, and says the floor raised its tolerance."""
+    box = {"lower": np.zeros(2), "upper": np.full(2, 1.6)}
+    first = allocate(_untied(), 1.6, 1, max_boxes=1, **box)
+    plan = allocate(_untied(), 1.6, 1, rtol=0.0, atol=0.0, **box)
+    assert plan.tolerance == 64 * np.finfo(float).eps * first.bound
+    assert plan.floored
+    assert (plan.stopped, plan.boxes) == ("closed", 5)
+
+
+def test_a_float32_search_closes_at_its_own_rounding_and_says_so():
+    """Read in float32, the default share 1e-9 of the bound is a hundredth of an epsilon; the floor
+    raises it to 64 epsilons of float32, the search closes there, and the plan says the floor
+    raised it. On concave curves the one box is judged at the same floor."""
+    box = {"lower": np.zeros(2), "upper": np.full(2, 1.6)}
+    eps = float(np.finfo(np.float32).eps)
+    with enable_x64(False):
+        first = allocate(_untied(), 1.6, 1, max_boxes=1, **box)
+        plan = allocate(_untied(), 1.6, 1, **box)
+        one = GeometricAdstock(0.0, length=1, normalized=False)
+        concave = allocate(
+            (Channel(one, MichaelisMenten(1.0), 1.0), Channel(one, Tanh(2.0), 1.5)), 1.6, 1, **box
+        )
+    assert plan.tolerance == 64 * eps * first.bound
+    assert plan.floored
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert plan.gap <= plan.tolerance
+    assert concave.tolerance == 64 * eps * abs(concave.bound)
+    assert (concave.floored, concave.stopped, concave.boxes) == (True, "closed", 1)
+
+
+@pytest.mark.parametrize(
+    ("setting", "match"),
+    [
+        ({"rtol": -1e-9}, r"^rtol=-1e-09 is not a finite tolerance of at least 0$"),
+        ({"rtol": float("nan")}, r"^rtol=nan is not a finite tolerance"),
+        ({"atol": float("inf")}, r"^atol=inf is not a finite tolerance"),
+        ({"atol": -1.0}, r"^atol=-1.0 is not a finite tolerance"),
+        ({"max_boxes": 0}, r"^max_boxes=0 is not a whole number of boxes, at least 1$"),
+        ({"max_boxes": -2}, r"^max_boxes=-2 is not a whole number"),
+        ({"max_boxes": 2.5}, r"^max_boxes=2.5 is not a whole number"),
+    ],
+)
+def test_it_refuses_a_tolerance_or_a_cap_no_search_meets(setting, match):
+    with pytest.raises(ValueError, match=match):
+        allocate(_untied(), 1.6, 1, lower=np.zeros(2), upper=np.full(2, 1.6), **setting)
+
+
+def test_a_cap_may_be_any_whole_number():
+    plan = allocate(
+        _untied(), 1.6, 1, lower=np.zeros(2), upper=np.full(2, 1.6), max_boxes=np.int64(3)
+    )
+    assert (plan.stopped, plan.boxes) == ("cap", 3)
+
+
+def test_the_stopwatch_counts_each_compile_of_its_own_thread_once():
+    """JAX reports a compile's phases as they end, each by its duration: a phase inside another
+    counts once, within it; another thread's compile and other events count nothing; and nothing
+    is heard once it stops."""
+    record = jax.monitoring.record_event_duration_secs
+    with chc.allocation._Stopwatch() as clock:
+        record("/jax/core/compile/jaxpr_to_mlir_module_duration", 0.25)
+        record("/jax/core/compile/jaxpr_trace_duration", 1.0)  # began before the one above
+        record("/jax/core/compile/backend_compile_duration", 0.5)
+        record("/jax/core/dispatch/other_duration", 7.0)
+        other = threading.Thread(
+            target=record, args=("/jax/core/compile/backend_compile_duration", 7.0)
+        )
+        other.start()
+        other.join()
+        compiling, searching = clock.read()
+    record("/jax/core/compile/backend_compile_duration", 9.0)
+    assert compiling == pytest.approx(1.0, abs=0.05)
+    assert searching == 0.0  # what the clock ran is less than the compiles it was told of
+    assert clock.read()[0] == compiling
+
+
+def test_a_plan_records_the_seconds_jax_spent_compiling_it():
+    """Curves whose kernel is of a length no other test reads are compiled for on the first plan;
+    the same plan again compiles nothing."""
+    kernel = GeometricAdstock(0.2, length=37, normalized=True)
+    channels = (Channel(kernel, Hill(1.0, 3.0), 1.0), Channel(kernel, Hill(1.01, 3.0), 1.0))
+    box = {"lower": np.zeros(2), "upper": np.full(2, 1.6)}
+    first = allocate(channels, 1.6, 1, **box)
+    again = allocate(channels, 1.6, 1, **box)
+    assert first.compile_seconds > 0.0
+    assert again.compile_seconds == 0.0
+    assert first.search_seconds > 0.0
+    assert again.search_seconds > 0.0
 
 
 def test_a_goal_planned_on_the_envelopes_says_it_was_unsearched_and_logs_its_gap(caplog):
@@ -458,11 +606,12 @@ def test_a_goal_planned_on_the_envelopes_says_it_was_unsearched_and_logs_its_gap
         plan = budget_for(
             _equal_s_curves(3.0, 2), ReturnTarget(0.7), 1, lower=np.zeros(2), upper=np.full(2, 5.0)
         )
-    assert (plan.stopped, plan.boxes) == ("unsearched", 1)
+    assert (plan.stopped, plan.boxes, plan.limit) == ("unsearched", 1, None)
     [record] = _warnings(caplog)
     assert (record.chc_event, record.planner) == ("allocation_unsearched", "budget_for")
-    assert record.gap == plan.bound - plan.worth
+    assert record.gap == plan.bound - plan.worth == plan.gap
     assert record.gap > 0.1
+    assert (plan.tolerance, plan.floored) == (1e-9 * plan.bound, False)
 
 
 _S_CURVE = st.tuples(

@@ -2,6 +2,8 @@
 
 **Status:** accepted, 2026-10-05. Amends ADR 0048 (a gain is read on the curves, and on S-shaped
 curves the split is searched) and ADR 0051 (`cvar_allocate` searches boxes as `allocate` does).
+Amended 2026-10-07 by ADR 0065: the tolerance and the cap are the caller's, no cut plans past the
+cap, and a search in float32 closes at its rounding.
 
 ## Context
 

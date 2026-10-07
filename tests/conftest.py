@@ -25,8 +25,8 @@ jax.config.update("jax_threefry_partitionable", True)
 def stall(monkeypatch):
     """Arms ``chc.allocation``'s linear programs so that the call numbered ``at`` returns a program
     HiGHS left unsolved: status 1, its iteration limit reached, as on planes it would pivot on
-    without end, or 4, ended with its optimality conditions unmet. The list returned records each
-    call's iteration limit."""
+    without end, or 4, ended with its optimality conditions unmet after half as many iterations.
+    The list returned records each call's iteration limit."""
     import chc.allocation  # here, not above: the module must load after float64 is enabled
 
     def arm(at: int, status: int = 1) -> list[int]:
@@ -35,7 +35,11 @@ def stall(monkeypatch):
         def linprog(*args, **kwargs):
             limits.append(kwargs["options"]["maxiter"])
             if len(limits) == at:
-                return OptimizeResult(status=status, message=f"HiGHS left it unsolved ({status}).")
+                return OptimizeResult(
+                    status=status,
+                    nit=limits[-1] if status == 1 else limits[-1] // 2,
+                    message=f"HiGHS left it unsolved ({status}).",
+                )
             return real(*args, **kwargs)
 
         monkeypatch.setattr(chc.allocation, "linprog", linprog)

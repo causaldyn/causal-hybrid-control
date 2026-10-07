@@ -9,6 +9,26 @@ still change).
 
 ### Added
 
+- **`allocate` and `cvar_allocate` take their search's tolerance and cap: `rtol`, `atol` and
+  `max_boxes`.** The branch and bound on S-shaped curves stopped at a share `1e-9` of its scale or
+  after 500 boxes, both fixed in the module. It now stops where every bound is within the larger of
+  `atol` and `rtol` of the scale of the best plan's worth, or where the next cut would plan past
+  `max_boxes` boxes; the scale is the first box's bound for `allocate` and the reference's largest
+  return for `cvar_allocate`, as before. The defaults, `1e-9`, `0` and `500`, plan as before, to
+  the bit, on every plan the tests make. No cut plans past the cap: a cut plans two boxes, and a
+  search the cap stopped planned 501 of them. The tolerance is never under 64 epsilons of the dtype
+  the curves are read in, of the scale. In float32 the share `1e-9` is under the gap's rounding:
+  on random cases 4 of 40 searches of `allocate` and 2 of 21 of `cvar_allocate` ran to a cap of
+  150 boxes on gaps of 0.011 to 2.5 epsilons, which float64 closed in 3 to 11 boxes; at the floor
+  they close in as many boxes as float64 takes. A tolerance that is negative or not finite, or a
+  cap that is not a whole number of at least 1, is refused with a `ValueError` that names it.
+  `Allocation` and `CvarAllocation` add the gap, `bound - worth` and as a share of the scale; the
+  tolerance the search used, and whether the floor raised it (`floored`); the limit that stopped a
+  search with its gap open (`limit`, a `SearchLimit`: `max_boxes`, `rounds` or `unsolved`); and
+  the seconds JAX spent compiling during the call and the rest (`compile_seconds`,
+  `search_seconds`), recorded, not promised. `CvarAllocation` also adds the iterations of each
+  linear program HiGHS left unsolved (`unsolved`) and how many readings the split was chosen over
+  (`readings`) (ADR 0065).
 - **`Prescription.run` records what the run used.** A `RunProvenance`: `x64` as `prescribe` ran;
   the platform and the kind of the device the fit ran on; the dtype of the transitions the fit ran
   on and of the actions the solve returned, why the solve stopped and after how many steps; the
