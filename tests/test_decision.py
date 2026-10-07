@@ -1795,38 +1795,76 @@ def test_a_mis_specified_decision_and_an_unidentified_one_are_different_types() 
         _ = blocked.schedule
 
 
-# --- the channel's error, summed within each unit or declared cluster ----------------------------
+# --- the channel's error, summed within each unit or declared cluster, and each period ----------
 
 
-def test_the_channel_s_error_sums_within_each_unit_unless_the_panel_declares_a_cluster() -> None:
+def test_the_channel_s_error_sums_within_each_unit_or_declared_cluster_and_each_period() -> None:
     logs = _logs(n_units=40)
     by_unit = _prescribe(Panel.from_frame(logs, unit="unit", time="time"), ["demand"])
     certificate = by_unit.certificate
-    assert (certificate.error_clustered_by, certificate.error_clusters) == ("unit", 40)
-    assert by_unit.model_fit.clusters is not None
-    assert by_unit.model_fit.clusters.tolist() == np.repeat(np.arange(40), 11).tolist()
-    assert "summed within 40 groups of `unit` (CR1)" in by_unit.report()
+    grouping = (
+        certificate.error_clustered_by,
+        certificate.error_clusters,
+        certificate.error_periods,
+    )
+    assert grouping == ("unit", 40, 11)
+    clusters = by_unit.model_fit.clusters
+    assert clusters is not None
+    assert clusters[:, 0].tolist() == np.repeat(np.arange(40), 11).tolist()
+    assert clusters[:, 1].tolist() == np.tile(np.arange(11), 40).tolist()
+    assert (
+        "summed within 40 groups of `unit`, within each of 11 periods, and within both, "
+        "whichever reads largest (two-way CR1)" in by_unit.report()
+    )
     shown = by_unit.to_json()["certificate"]
-    assert (shown["error_clustered_by"], shown["error_clusters"]) == ("unit", 40)
+    assert (
+        shown["error_clustered_by"],
+        shown["error_clusters"],
+        shown["error_periods"],
+    ) == grouping
 
     regions = {**logs, "region": np.array(["north", "south", "east", "west"])[logs["unit"] % 4]}
     panel = Panel.from_frame(regions, unit="unit", time="time", cluster="region")
     by_region = _prescribe(panel, ["demand"])
-    assert (by_region.certificate.error_clustered_by, by_region.certificate.error_clusters) == (
+    region = by_region.certificate
+    assert (region.error_clustered_by, region.error_clusters, region.error_periods) == (
         "region",
         4,
+        11,
     )
+    assert by_region.model_fit.clusters is not None
+    assert by_region.model_fit.clusters[:, 0].tolist() == np.repeat([1, 2, 0, 3] * 10, 11).tolist()
     np.testing.assert_array_equal(
         by_region.model_fit.residual.channel, by_unit.model_fit.residual.channel
     )
-    assert by_region.certificate.identification_radius != certificate.identification_radius
+    assert region.identification_radius != certificate.identification_radius
+
+
+def test_a_panel_whose_transitions_all_start_in_one_period_sums_within_its_units_alone() -> None:
+    result = _prescribe(_panel(n_units=400, n_periods=2), ["demand"])
+    certificate = result.certificate
+    grouping = (
+        certificate.error_clustered_by,
+        certificate.error_clusters,
+        certificate.error_periods,
+    )
+    assert grouping == ("unit", 400, None)
+    assert result.model_fit.clusters is not None
+    assert result.model_fit.clusters.tolist() == list(range(400))
+    assert "summed within 400 groups of `unit` (CR1)" in result.report()
+    assert result.to_json()["certificate"]["error_periods"] is None
 
 
 def test_a_panel_of_one_unit_takes_its_transitions_as_independent() -> None:
     result = _prescribe(_panel(n_units=1, n_periods=400), ["demand"])
     certificate = result.certificate
     assert certificate.identification_radius is not None
-    assert (certificate.error_clustered_by, certificate.error_clusters) == (None, None)
+    grouping = (
+        certificate.error_clustered_by,
+        certificate.error_clusters,
+        certificate.error_periods,
+    )
+    assert grouping == (None, None, None)
     assert result.model_fit.clusters is None
     report = result.report()
     assert "each transition taken as independent" in report

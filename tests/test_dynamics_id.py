@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import scipy.linalg
 
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
@@ -22,10 +23,13 @@ from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import (
     CausalDynamicsFit,
     ConfoundedControlAffineSystem,
-    _independent,
+    _clustered_squares,
+    _less_below_nothing,
+    _robust_spreads,
     _unmoved_actions,
     _unmoved_directions,
     fit_causal_residual,
+    omitted_confounder_bound,
     solve_channel_moment,
 )
 from chc.integrate import rk4_step
@@ -1436,16 +1440,236 @@ def test_clusters_are_refused_unless_they_label_every_transition_and_name_two() 
         fit_causal_residual(_known, data, 0.1, **CLUSTERED, clusters=np.zeros((50, 1)))
     with pytest.raises(ValueError, match="name one cluster"):
         fit_causal_residual(_known, data, 0.1, **CLUSTERED, clusters=np.full(50, "store"))
+    with pytest.raises(ValueError, match="label each of the 50 transitions once"):
+        fit_causal_residual(_known, data, 0.1, **CLUSTERED, clusters=np.zeros((50, 3)))
+    one_period = np.column_stack([np.arange(50) % 5, np.zeros(50)])
+    with pytest.raises(ValueError, match="name one cluster in one of their two dimensions"):
+        fit_causal_residual(_known, data, 0.1, **CLUSTERED, clusters=one_period)
 
 
-def test_the_influence_s_independent_terms_are_its_rows_or_its_clusters_sums() -> None:
+def test_the_influence_s_square_is_its_rows_or_its_clusters_sums_squared() -> None:
     rows = np.arange(24.0).reshape(4, 2, 3)
-    np.testing.assert_array_equal(_independent(rows, None), rows.reshape(8, 3))
-    summed = _independent(rows, np.array([0, 1, 0, 1]))
-    np.testing.assert_array_equal(
-        summed, [rows[0].sum(0) + rows[2].sum(0), rows[1].sum(0) + rows[3].sum(0)]
+    flat = rows.reshape(8, 3)
+    (independent,) = _clustered_squares(rows, None)
+    np.testing.assert_array_equal(independent, flat.T @ flat)
+    summed = np.array([rows[0].sum(0) + rows[2].sum(0), rows[1].sum(0) + rows[3].sum(0)])
+    (clustered,) = _clustered_squares(rows, np.array([0, 1, 0, 1]))
+    np.testing.assert_array_equal(clustered, summed.T @ summed)
+    assert _clustered_squares(rows[:, :, 0], np.array([1, 0, 0, 0])) == (81**2 + 3**2,)
+
+
+# ---- clustered two ways ----
+
+
+def _two_way_sums(rows: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """The two dimensions' sums squared less their cells', nothing read as nothing."""
+
+    def square(codes: np.ndarray) -> np.ndarray:
+        group = np.unique(codes, axis=0, return_inverse=True)[1].reshape(-1)
+        summed = np.zeros((group.max() + 1, rows.shape[1]))
+        np.add.at(summed, group, rows)
+        return summed.T @ summed
+
+    return square(labels[:, 0]) + square(labels[:, 1]) - square(labels)
+
+
+def test_two_ways_read_their_sums_and_each_way_s_alone() -> None:
+    """Units (0, 0, 0, 1, 1, 1) over periods (0, 1, 2, 0, 1, 2), the values 1 to 6: the units'
+    sums 6 and 15 square to 261, the periods' 5, 7 and 9 to 155, and the cells' to 91, so two
+    ways read 261 + 155 - 91 = 325 (Cameron, Gelbach and Miller 2011). The values carry CR1's
+    factor for the 2 units, ``2 / 1``, as an influence does; the 3 periods' own is ``3 / 2``, so
+    they alone read 155 * 0.75."""
+    codes = np.column_stack([np.repeat([0, 1], 3), np.tile([0, 1, 2], 2)])
+    values = np.arange(1.0, 7.0)[:, None]
+    assert _clustered_squares(values, codes) == (325.0, 261.0, 116.25)
+    assert _clustered_squares(values, codes[:, ::-1]) == (325.0, 116.25, 261.0)
+
+
+def test_the_two_way_error_is_the_largest_of_three_by_hand() -> None:
+    """Two labels a transition, a unit and a period say. Two ways read the units' summed scores
+    squared, plus the periods', less the cells', which both count, at CR1's factor for the smaller
+    dimension's ``G``; each way alone reads its own sums at its own. The error is the largest of
+    the three (MacKinnon, Nielsen and Webb 2024), here the two ways'. The channel is the
+    Frisch-Waugh-Lovell one of the one-way test."""
+    rows = 300
+    data = _clustered_log(rows, seed=5)
+    rng = np.random.default_rng(7)
+    labels = np.column_stack([rng.integers(0, 30, rows), rng.integers(0, 12, rows)])
+    fit = fit_causal_residual(_known, data, 0.1, **CLUSTERED, ridge=0.0, clusters=labels)
+
+    x, z, u = (np.asarray(data[name])[:, 0] for name in ("x", "z", "u"))
+    y = (np.asarray(data["x_next"])[:, 0] - x) / 0.1
+    basis = np.column_stack([np.ones(rows), x, z])
+    projector = basis @ np.linalg.pinv(basis)
+    u_res, y_res = u - projector @ u, y - projector @ y
+    channel = u_res @ y_res / (u_res @ u_res)
+    score = u_res / (u_res @ u_res) * (y_res - channel * u_res)
+
+    def squared(codes: np.ndarray) -> float:
+        group = np.unique(codes, axis=0, return_inverse=True)[1].reshape(-1)
+        return float(np.sum(np.bincount(group, weights=score) ** 2))
+
+    units, periods = (np.unique(labels[:, k]).size for k in (0, 1))
+    assert (units, periods) == (30, 12)  # (N - 1) / (N - k) is 1 at one coefficient
+    two_way = squared(labels[:, 0]) + squared(labels[:, 1]) - squared(labels)
+    reads = (
+        periods / (periods - 1) * two_way,
+        units / (units - 1) * squared(labels[:, 0]),
+        periods / (periods - 1) * squared(labels[:, 1]),
     )
-    np.testing.assert_array_equal(_independent(rows[:, :, 0], np.array([1, 0, 0, 0])), [81, 3])
+    assert len(set(reads)) == 3
+    assert max(reads) == reads[0]
+    assert fit.clusters is not None
+    assert fit.clusters.shape == (rows, 2)
+    assert fit.channel_error == pytest.approx(math.sqrt(max(reads)), rel=1e-9, abs=0.0)
+
+
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_a_second_way_that_holds_each_transition_alone_reads_the_first_way(
+    integrator: str,
+) -> None:
+    """Periods each one transition's own add each row's square and take it away as the cells', so
+    two ways read the units' sums, and in either order of the two. Each of 50 transitions is
+    logged 8 times, a unit its copies, so the rows alone read less than the units do."""
+    data = _repeated(_clustered_log(50, seed=6), 8)
+    options = {**CLUSTERED, "integrator": integrator, "influence": True}
+    units, alone = np.arange(400) // 8, np.arange(400)
+    one_way = fit_causal_residual(_known, data, 0.1, **options, clusters=units)
+    rows = fit_causal_residual(_known, data, 0.1, **options, clusters=alone)
+    assert rows.channel_error < one_way.channel_error
+    for labels in (np.column_stack([units, alone]), np.column_stack([alone, units])):
+        two_way = fit_causal_residual(_known, data, 0.1, **options, clusters=labels)
+        assert two_way.channel_error == pytest.approx(one_way.channel_error, rel=1e-12, abs=0.0)
+        np.testing.assert_allclose(two_way.influence, one_way.influence, rtol=1e-12, atol=0.0)
+        np.testing.assert_array_equal(two_way.residual.channel, one_way.residual.channel)
+
+
+def test_a_two_way_direction_read_below_nothing_is_read_as_nothing() -> None:
+    """Scores that cancel within each unit and each period but not within a cell: two ways read
+    nothing and the cells 4, so that direction reads -4 and is read as 0, while a direction the
+    same in every row keeps its 8 + 8 - 4, and each way alone reads 8 there. The fit's spreads
+    are the same, with CR1's factor."""
+    codes = np.array([[0, 0], [0, 1], [1, 0], [1, 1]])
+    cancelling = np.array([1.0, -1.0, -1.0, 1.0])
+    assert _clustered_squares(cancelling[:, None], codes) == (0.0, 0.0, 0.0)
+    rows = np.column_stack([cancelling, np.ones(4)])
+    expected = (np.diag([0.0, 12.0]), np.diag([0.0, 8.0]), np.diag([0.0, 8.0]))
+    for got, want in zip(_clustered_squares(rows[:, None, :], codes), expected, strict=True):
+        np.testing.assert_allclose(got, want, rtol=0.0, atol=1e-12)
+    sensitivity = jnp.asarray(rows.T[:, :, None])  # (coefficients, transitions, states)
+    spreads = _robust_spreads(sensitivity, jnp.ones((4, 1)), 1, codes)
+    for got, want in zip(spreads, expected, strict=True):
+        np.testing.assert_allclose(got, 2.0 * want, rtol=0.0, atol=1e-12)  # G / (G - 1) = 2
+
+
+def test_the_part_read_as_nothing_moves_with_the_coefficients() -> None:
+    """The scores' columns mixed, ``rows @ B``, mix every covariance as ``B' V B``, the part read
+    as nothing included, since it is found against the three sums together, which mix the same
+    way. Clipped along the two ways' own eigenvectors instead (Cameron, Gelbach and Miller 2011),
+    the mixed sums ``[[8, 12], [12, 12]]`` read ``[[9.26, 10.93], [10.93, 12.90]]``, not
+    ``B' diag(0, 12) B``. A covariance with no part below nothing keeps every bit."""
+    codes = np.array([[0, 0], [0, 1], [1, 0], [1, 1]])
+    rows = np.column_stack([[1.0, -1.0, -1.0, 1.0], np.ones(4)])
+    mix = np.array([[1.0, 0.0], [1.0, 1.0]])
+    plain = _clustered_squares(rows[:, None, :], codes)
+    mixed = _clustered_squares((rows @ mix)[:, None, :], codes)
+    for one, other in zip(plain, mixed, strict=True):
+        np.testing.assert_allclose(other, mix.T @ one @ mix, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(mixed[0], np.full((2, 2), 12.0), rtol=1e-12, atol=0.0)
+    definite = np.array([[2.0, 1.0], [1.0, 3.0]])
+    np.testing.assert_array_equal(_less_below_nothing(definite, 3.0 * definite), definite)
+
+
+def test_the_part_below_nothing_is_measured_against_the_three_sums_together() -> None:
+    """``every``, the three sums with every sign a plus, bounds the two ways' sums on both sides,
+    so the generalised eigenproblem ``spread v = l every v``, ``v' every v = 1``, has its ``l`` in
+    ``[-1, 1]``, and the part below nothing is ``every V min(L, 0) V' every``. SciPy's
+    generalised solver, a route of its own, reads the same. Like ``every``, the cells' sums alone
+    and the units' and periods' together are each ``a spread + b cells``, so they have its
+    eigenvectors and take away the same part; the units' alone do not."""
+    codes = np.column_stack([np.repeat(np.arange(3), 4), np.tile(np.arange(4), 3)])
+    rows = np.random.default_rng(0).normal(size=(12, 3))
+
+    def square(labels: np.ndarray) -> np.ndarray:
+        group = np.unique(labels, axis=0, return_inverse=True)[1].reshape(-1)
+        summed = np.zeros((group.max() + 1, 3))
+        np.add.at(summed, group, rows)
+        return summed.T @ summed
+
+    first, second, cells = square(codes[:, 0]), square(codes[:, 1]), square(codes)
+    spread, every = first + second - cells, first + second + cells
+    shares, vectors = scipy.linalg.eigh(spread, every)
+    assert shares[0] < 0.0 < shares[1]
+    assert shares[0] >= -1.0
+    assert shares[-1] <= 1.0
+    lifted = every @ vectors
+    expected = spread - (lifted * np.minimum(shares, 0.0)) @ lifted.T
+    np.testing.assert_allclose(_clustered_squares(rows[:, None, :], codes)[0], expected, rtol=1e-10)
+    for alike in (cells, first + second):
+        np.testing.assert_allclose(_less_below_nothing(spread, alike), expected, rtol=1e-10)
+    assert not np.allclose(_less_below_nothing(spread, first), expected, rtol=1e-3)
+
+
+def test_two_ways_that_read_nothing_read_the_larger_way_alone() -> None:
+    """On 3 units over 4 periods the two ways' sums read below nothing in every direction of the
+    channel, so read as nothing they would say the channel is known exactly. The error is the
+    larger way's alone, the units'."""
+    data = _clustered_log(60, seed=0)
+    labels = np.column_stack([np.arange(60) // 20, np.arange(60) % 4])
+    options = {**CLUSTERED, "channel_degree": 1, "ridge": 0.0, "influence": True}
+    both, units, periods = (
+        fit_causal_residual(_known, data, 0.1, **options, clusters=clusters)
+        for clusters in (labels, labels[:, 0], labels[:, 1])
+    )
+    size = both.residual.channel.size
+    influence = np.asarray(both.influence)[:, :, :size]
+    assert np.all(np.linalg.eigvalsh(_two_way_sums(influence.sum(axis=1), labels)) < 0.0)
+    squares = _clustered_squares(influence, labels)
+    np.testing.assert_allclose(squares[0], 0.0, rtol=0.0, atol=1e-12 * np.abs(squares[1]).max())
+    assert units.channel_error > periods.channel_error
+    assert both.channel_error == pytest.approx(units.channel_error, rel=1e-12, abs=0.0)
+
+
+def test_two_ways_whose_sums_read_less_than_a_way_alone_bound_as_that_way() -> None:
+    """On 3 units over 4 periods the two ways' sums of the channel's influence read 2.8e-4, the
+    periods' 7.7e-4 and the units' 1.1e-3, so the error, and the omitted confounder's interval
+    about the bias bounds, are the units'."""
+    data = _clustered_log(60, seed=0)
+    labels = np.column_stack([np.arange(60) // 20, np.arange(60) % 4])
+    options = {**CLUSTERED, "ridge": 0.0, "influence": True}
+    both, units = (
+        fit_causal_residual(_known, data, 0.1, **options, clusters=clusters)
+        for clusters in (labels, labels[:, 0])
+    )
+    sums, by_unit, by_period = _clustered_squares(np.asarray(both.influence)[:, :, :1], labels)
+    assert 0.0 < sums < by_period < by_unit
+    assert both.channel_error == pytest.approx(units.channel_error, rel=1e-12, abs=0.0)
+    shares = {"cf_y": 0.05, "cf_d": 0.05}
+    got, want = (
+        omitted_confounder_bound(fit, np.ones((1, 1, 1)), **shares) for fit in (both, units)
+    )
+    for name in ("ci_lower", "ci_upper"):
+        assert getattr(got, name) == pytest.approx(getattr(want, name), rel=1e-12, abs=0.0), name
+
+
+def test_a_two_way_error_does_not_move_with_the_zero_of_the_state() -> None:
+    """The channel affine in the state, moving the state's zero mixes its coefficients. On 4
+    units over 3 periods the two ways' sums read a direction below nothing, and still more than
+    either way alone, so the error is theirs, and it does not move."""
+    data = _clustered_log(60, seed=1)
+    labels = np.column_stack([np.arange(60) // 15, np.arange(60) % 3])
+    options = {**CLUSTERED, "channel_degree": 1, "ridge": 0.0, "influence": True}
+    here = fit_causal_residual(_known, data, 0.1, **options, clusters=labels)
+    moved = {**data, "x": data["x"] + 3.0, "x_next": data["x_next"] + 3.0}
+    there = fit_causal_residual(_known, moved, 0.1, **options, clusters=labels)
+    influence = np.asarray(here.influence)[:, :, : here.residual.channel.size].sum(axis=1)
+    assert np.linalg.eigvalsh(_two_way_sums(influence, labels))[0] < 0.0
+    alone = (
+        fit_causal_residual(_known, data, 0.1, **options, clusters=labels[:, k]).channel_error
+        for k in (0, 1)
+    )
+    assert here.channel_error > max(alone)
+    assert there.channel_error == pytest.approx(here.channel_error, rel=1e-12, abs=0.0)
 
 
 FIT_SECOND_ROLES = {

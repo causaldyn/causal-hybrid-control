@@ -373,9 +373,14 @@ class DecisionCertificate:
     # The column whose groups ``identification_radius`` sums the scores within before squaring them
     # (CR1): the panel's cluster where it declares one, else its unit, whose transitions share any
     # persistent noise. None where the transitions name one group alone, and the error then takes
-    # each transition as independent; ``error_clusters`` counts the groups.
+    # each transition as independent; ``error_clusters`` counts the groups. ``error_periods``
+    # counts the periods the transitions start in where the error is read two ways (ADR 0061), so
+    # that a shock every unit shares in a period is read: the largest of the groups' and the
+    # periods' sums together and of each alone. None where it is not, as where they all start in
+    # one.
     error_clustered_by: str | None = None
     error_clusters: int | None = None
+    error_periods: int | None = None
     # Whether the log determines the plan's predicted path (:data:`Estimability`, ADR 0054); None
     # where the effect is not identified and nothing was asked of the log's actions.
     estimability: Estimability | None = None
@@ -853,14 +858,7 @@ class Prescription:
             *self._estimability_lines(),
             *self._driver_lines(),
             f"- channel standard error: {_show(certificate.identification_radius)}"
-            + (
-                ""
-                if certificate.identification_radius is None
-                else f", summed within {certificate.error_clusters} groups of "
-                f"`{certificate.error_clustered_by}` (CR1)"
-                if certificate.error_clustered_by is not None
-                else ", each transition taken as independent"
-            ),
+            + self._error_grouping(),
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
             self._logger_line(),
             f"- error tube: **{certificate.certificate_status}**, "
@@ -933,6 +931,7 @@ class Prescription:
                 "tube_rate": certificate.tube_rate,
                 "error_clustered_by": certificate.error_clustered_by,
                 "error_clusters": certificate.error_clusters,
+                "error_periods": certificate.error_periods,
                 "estimability": certificate.estimability,
                 "identification_rank": certificate.identification_rank,
                 "unmoved_directions": certificate.unmoved_directions,
@@ -973,6 +972,23 @@ class Prescription:
             "provenance": self.provenance.to_json(),
         }
         return _strict(record)
+
+    def _error_grouping(self) -> str:
+        certificate = self.certificate
+        if certificate.identification_radius is None:
+            return ""
+        if certificate.error_clustered_by is None:
+            return ", each transition taken as independent"
+        grouped = (
+            f", summed within {certificate.error_clusters} groups of "
+            f"`{certificate.error_clustered_by}`"
+        )
+        if certificate.error_periods is None:
+            return f"{grouped} (CR1)"
+        return (
+            f"{grouped}, within each of {certificate.error_periods} periods, and within both, "
+            "whichever reads largest (two-way CR1)"
+        )
 
     def _logger_line(self) -> str:
         check = self.logger_check
@@ -1073,9 +1089,15 @@ def prescribe(
             error, and with it the tube's budget, sums the scores within each group of the panel's
             declared cluster, or of its unit where it declares none, before squaring them
             (``clusters`` in :func:`~chc.dynamics_id.fit_causal_residual`): the transitions of
-            one unit share whatever persistent noise the model leaves out. A panel whose
-            transitions all fall in one group takes them as independent, and the certificate says
-            which it was (:attr:`DecisionCertificate.error_clustered_by`).
+            one unit share whatever persistent noise the model leaves out. It sums them within
+            each period as well, and the error is the largest of the groups' and the periods' sums
+            together and of each alone (ADR 0061): a shock every unit shares in a period, met by
+            levers the units move together, makes the transitions of one period move together
+            across units, and summed by unit alone the error read 0.29 to 0.58 of the estimate's
+            spread. A panel whose transitions all fall in one group takes them as independent, one
+            whose transitions all start in one period sums within groups alone, and the
+            certificate says which it was
+            (:attr:`DecisionCertificate.error_clustered_by`, ``error_periods``).
         levers, target, constraints: the decision, in the domain's own names. States are the target
             column followed by each other constrained column, in that order. A constraint may name
             the target column itself: it then bounds the steered state, which gets the barrier and
@@ -1333,15 +1355,16 @@ def prescribe(
         },
     )
     logger_check = _check_logger(panel, levers=lever_names, columns=columns)
-    data, cluster = _transitions(
+    data, labels = _transitions(
         panel,
         states=states,
         levers=lever_names,
         adjust_for=resolved.covariates,
         drivers=driver_names,
     )
-    groups = int(np.unique(cluster).size)
+    groups, periods = (int(np.unique(column).size) for column in labels.T)
     clustered_by = (panel.cluster or panel.unit) if groups > 1 else None
+    two_way = clustered_by is not None and periods > 1
     n_states, n_levers = len(states), len(lever_names)
 
     base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
@@ -1355,7 +1378,7 @@ def prescribe(
         seed=seed,
         integrator=integrator,
         drivers=driver_names,
-        clusters=None if clustered_by is None else cluster,
+        clusters=None if clustered_by is None else labels if two_way else labels[:, 0],
         nuisance_degree=_NUISANCE_DEGREE,
     )
     _log.info(
@@ -1687,6 +1710,7 @@ def prescribe(
         tube_rate=None if plan.certified_horizon is None else tube_rate,
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
+        error_periods=periods if two_way else None,
         estimability=estimability,
         identification_rank=rank,
         unmoved_directions=per_state,
@@ -2047,9 +2071,9 @@ def _transitions(
     drivers: tuple[str, ...] = (),
 ) -> tuple[dict[str, Array], NDArray[Any]]:
     """``(x, u, x_next)`` over consecutive periods within a unit, plus the adjustment columns, and
-    each driver at both ends of the transition (``name`` and ``f"{name}_next"``); beside them, each
-    transition's cluster: the panel's cluster column at its first period where the panel declares
-    one, and its unit's code where not.
+    each driver at both ends of the transition (``name`` and ``f"{name}_next"``); beside them, two
+    labels a transition, ``(N, 2)`` codes: its cluster, the panel's cluster column at its first
+    period where the panel declares one and its unit where not, and the period it starts in.
 
     Gaps are dropped, not interpolated: a unit missing period ``t`` contributes the transitions on
     either side of the hole and nothing across it, and so does a period no unit logged, where the
@@ -2102,8 +2126,12 @@ def _transitions(
         if name not in adjust_for:  # a driver may be a covariate as well: one column, read once
             put(name, name, current, f"the driver {name!r}")
         put(f"{name}_next", name, following, f"the driver {name!r} a period on")
-    cluster = unit_codes if panel.cluster is None else np.asarray(panel[panel.cluster])
-    return data, cluster[current]
+    cluster = (
+        unit_codes
+        if panel.cluster is None
+        else np.unique(np.asarray(panel[panel.cluster]), return_inverse=True)[1].reshape(-1)
+    )
+    return data, np.column_stack([cluster[current], time_codes[current]]).astype(np.int64)
 
 
 def _stacked(panel: Panel, names: tuple[str, ...], rows: NDArray[np.int64]) -> Array:

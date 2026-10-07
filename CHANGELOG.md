@@ -29,6 +29,37 @@ still change).
   share one label, the earliest stamp logged in it. `Provenance` records the frequency, its JSON
   writes it, and the data hash takes it in where one is declared; an undeclared panel hashes as
   before.
+- **`fit_causal_residual` clusters two ways.** `clusters` takes two labels a transition, shape
+  `(N, 2)`, a unit and a period say. The channel's error is then the largest of three reads
+  (MacKinnon, Nielsen and Webb 2024): the units' summed scores squared, plus the periods', less
+  those of the cells both count (Cameron, Gelbach and Miller 2011), at CR1's factor for the smaller
+  dimension's count; and each dimension's sums alone, at its own. Where the two ways' sums read a
+  direction below nothing, that part is taken away, measured against the three sums added, so no
+  error moves with the coefficients' units or the state's zero: clipped in the coefficients' own
+  basis instead, moving the state's zero moved an error from 0.008164 to 0.009408. On 3 units over
+  4 periods the two ways' sums read nothing of a channel affine in the state, and the error reads
+  the larger way alone. `omitted_confounder_bound` and `misspecification_cost` read a two-way fit's
+  influence the same way, the cost off the covariance whose noise reads largest. A dimension that
+  names one cluster is refused.
+
+### Changed
+
+- **`prescribe` reads the channel's error by period as well as by unit.** A shock every unit shares
+  in a period, met by levers the units move together, makes the transitions of one period move
+  together across units, and a sum within units leaves that out: on panels with such a shock the
+  error read 0.29 to 0.58 of the estimate's spread, and a 5 % test of the channel rejected 28 % to
+  58 % of the time. The error is now the largest of the groups' and the periods' sums together and
+  of each alone: 0.82 to 1.03 of the spread on those panels, rejecting 6.0 % to 8.2 % from 20
+  periods, and 0.96 to 1.09 where there is no such shock, against 0.94 to 1.05 by unit. Where the
+  transitions all start in one period it sums within groups alone, and where they name one group it
+  takes them as independent, as before. `DecisionCertificate.error_periods` counts the periods, and
+  is None where the error is not two-way; the report says "within each of N periods, and within
+  both, whichever reads largest (two-way CR1)", and `to_json` writes `error_periods`. The schema
+  version stays 2: a key was added, and none changed its meaning. The quickstart's channel error
+  reads 0.008159, against 0.007851 by region alone, and nothing else in its report moves. The
+  pendulum demo's adjusted schedule is trusted for 9 steps, where it was 10: its steps alone read
+  more than its episodes, whose scores partly offset one another, and the largest of three does not
+  credit that (ADR 0061).
 
 ### Deprecated
 

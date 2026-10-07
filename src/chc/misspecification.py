@@ -32,7 +32,7 @@ from scipy import integrate
 
 from chc.cost import total_cost
 from chc.dynamics import HybridDynamics
-from chc.dynamics_id import CausalDynamicsFit, _independent
+from chc.dynamics_id import CausalDynamicsFit, _clustered_squares
 from chc.plan import CausalPlan, _regret_curvature, _weighable
 from chc.residual import ControlAffineResidual
 
@@ -80,9 +80,10 @@ def misspecification_cost(
     ``S`` sums, row by row and state by state, the outer products of the difference between the
     two fits' influences, each with its own score, so it holds whether the class does or not, and
     whichever folds each fit drew; for fits given ``clusters``, it sums each cluster's difference
-    first. That needs the fits to read one log's rows, which the function cannot check. Over 200
-    logs of 4000 rows each (section ``calibration``), when the class held, the test rejected 1.0%,
-    6.0% and 11.5% of them at 1, 5 and 10%, and ``cost_error`` was twice
+    first, and two-way it is whichever of the three sums the channel's error reads off has the
+    largest ``tr(W S)``. That needs the fits to read one log's rows, which the function cannot
+    check. Over 200 logs of 4000 rows each (section ``calibration``), when the class held, the
+    test rejected 1.0%, 6.0% and 11.5% of them at 1, 5 and 10%, and ``cost_error`` was twice
     the cost's spread. When it missed, the cost fell within 1.96 ``cost_error`` of its value on
     400 000 rows in 0.915 of them: it read low by a quarter of ``cost_error`` on average and spread
     1.13 times it, and ``noise`` matched the difference's realised spread to 1.1 of its standard
@@ -168,9 +169,11 @@ def misspecification_cost(
             "clusters, or both with none"
         )
     d = _parameters(theirs) - _parameters(ours)
-    spread = _independent(other - influence, clusters)
-    covariance = spread.T @ spread
     weight = _parameter_weight(plan, ours, tolerance)
+    covariance = max(
+        _clustered_squares(other - influence, clusters),
+        key=lambda square: float(np.trace(weight @ square)),
+    )
     # W vanishes along a direction the plan does not move to second order in rounding, so the
     # square root of the precision separates it from one the plan weighs at all
     weighed = np.linalg.eigvalsh(unmoved.T @ weight @ unmoved) if unmoved.shape[1] else np.zeros(0)

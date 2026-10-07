@@ -297,3 +297,45 @@ def test_repeated_rows_clustered_by_their_original_bound_as_the_original_does() 
     narrow = omitted_confounder_bound(rows, one, **shares)
     width = expected.ci_upper - expected.upper
     assert narrow.ci_upper - narrow.upper == pytest.approx(width / 4.0, rel=0.01)
+
+
+def test_two_way_clusters_bound_as_each_way_reads_them() -> None:
+    """Each of 50 rows logged 8 times, a unit its copies, so the rows alone read less than the
+    units: a second way that holds each row alone reads the first way's bounds, in either order.
+    Two ways that both group rows read their own, the same in either order."""
+    channel, to_action, to_rate = np.array([1.0]), np.array([[0.5]]), np.array([0.5])
+    data = {
+        name: jnp.repeat(column, 8, axis=0)
+        for name, column in _log(
+            channel, to_action, to_rate, dt=0.05, scheme="euler", n=50, seed=3
+        ).items()
+    }
+    options = {
+        "adjust_for": ("observed",),
+        "channel_degree": 0,
+        "nuisance_degree": 1,
+        "folds": 1,
+        "influence": True,
+    }
+    units, alone, periods = np.arange(400) // 8, np.arange(400), np.arange(400) % 10
+    one, shares = np.ones((1, 1, 1)), {"cf_y": 0.05, "cf_d": 0.05}
+
+    def bound(clusters: np.ndarray):
+        fit = fit_causal_residual(_known, data, 0.05, **options, clusters=clusters)
+        return omitted_confounder_bound(fit, one, **shares)
+
+    expected = bound(units)
+    names = ("lower", "upper", "ci_lower", "ci_upper", "robustness_value_ci")
+    for labels in (np.column_stack([units, alone]), np.column_stack([alone, units])):
+        got = bound(labels)
+        for name in names:
+            assert getattr(got, name) == pytest.approx(
+                getattr(expected, name), rel=1e-10, abs=0.0
+            ), name
+    both, swapped = (
+        bound(np.column_stack([units, periods])),
+        bound(np.column_stack([periods, units])),
+    )
+    for name in names:
+        assert getattr(both, name) == pytest.approx(getattr(swapped, name), rel=1e-10, abs=0.0)
+    assert both.ci_upper != pytest.approx(expected.ci_upper, rel=1e-6, abs=0.0)

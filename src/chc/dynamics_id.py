@@ -148,7 +148,7 @@ class CausalDynamicsFit:
     # over the states and the channel's entries, None when not identified. It is read off the
     # channel's robust covariance: each row's squared structural residual carried through the fit's
     # own linear map, cross-fitted nuisances included, or under ``clusters`` each cluster's summed
-    # score squared (CR1). Up to 0.12 it was that covariance's
+    # score squared (CR1; two-way, the largest of three reads). Up to 0.12 it was that covariance's
     # root-mean diagonal, whose constant term is the value at x = 0, so it moved with the state's
     # zero: one log read 0.0091, and 0.579 with its states moved by 100 and -50. The figures that
     # follow compared that version with the spread of the same coefficients. Robust since 0.8.0;
@@ -221,10 +221,11 @@ class CausalDynamicsFit:
     representer: Array | None = None
     # (N, n), kept with ``influence``: the channel moment's residual, ``y_res - D c``, per state.
     moment_residual: Array | None = None
-    # (N,), each transition's cluster as a code from 0 where the fit was given ``clusters``: the
-    # channel's covariance then sums each cluster's scores over its transitions and states before
-    # squaring them (CR1), and a reader of ``influence`` sums its rows the same way
-    # (:func:`_independent`). None where each transition's each state is its own.
+    # (N,), each transition's cluster as a code from 0 where the fit was given ``clusters``, or
+    # (N, 2) where it was given two, a code a dimension: the channel's covariance then sums each
+    # cluster's scores over its transitions and states before squaring them (CR1), two-way the
+    # largest read of the two ways and of each alone, and a reader of ``influence`` sums its rows
+    # the same way (:func:`_clustered_squares`). None where each transition's each state is its own.
     clusters: np.ndarray | None = None
     # Experimental: it may change or be withdrawn in any release. Under ``instrument``, ``(p,)``:
     # how far the instrument moves each of the ``p`` directions a state of the channel the log's
@@ -360,11 +361,12 @@ def _small_sample(rows: int, n_coeff: int, clusters: int | None) -> float:
     return clusters / (clusters - 1) * (rows - 1) / max(rows - n_coeff, 1)
 
 
-def _robust_spread(
+def _robust_spreads(
     sensitivity: Array, score: Array, n_coeff: int, clusters: np.ndarray | None = None
-) -> Array:
+) -> tuple[Array, ...]:
     """``sum_i J_i diag(e_i^2) J_i'`` for a fit linear in its target ``y``, ``J = d coeffs / d y``;
-    under ``clusters``, ``sum_g s_g s_g'`` with ``s_g = sum_{i in g} J_i e_i``.
+    under ``clusters``, ``sum_g s_g s_g'`` with ``s_g = sum_{i in g} J_i e_i``. Two-way, the three
+    spreads of :func:`_clustered_squares`, and an error read off them is the largest of their reads.
 
     Each row's own squared residual stands in for its noise, so it holds when the noise differs
     across rows, and ``J`` runs through the cross-fitted nuisances as well as the moment. A weight
@@ -377,23 +379,85 @@ def _robust_spread(
     n = score.shape[0]
     if clusters is None:
         scale = _small_sample(n, n_coeff, None)
-        return jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity)
-    count = int(clusters.max()) + 1
-    summed = jax.ops.segment_sum(
-        jnp.einsum("pis,is->ip", sensitivity, score), jnp.asarray(clusters), num_segments=count
-    )
-    return _small_sample(n, n_coeff, count) * summed.T @ summed
+        return (jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity),)
+    scores = jnp.einsum("pis,is->ip", sensitivity, score)
+    factor = _small_sample(n, n_coeff, _cluster_count(clusters))
+    if clusters.ndim == 1:
+        summed = jax.ops.segment_sum(
+            scores, jnp.asarray(clusters), num_segments=int(clusters.max()) + 1
+        )
+        return (factor * summed.T @ summed,)
+    squares = _clustered_squares(np.asarray(scores)[:, None], clusters)
+    return tuple(factor * jnp.asarray(square) for square in squares)
 
 
-def _independent(rows: np.ndarray, clusters: np.ndarray | None) -> np.ndarray:
-    """``rows``, ``(N, n, ...)`` per transition and state as :attr:`CausalDynamicsFit.influence`
-    is, as the independent terms whose outer products sum to their covariance: one a transition
-    and state, or under ``clusters`` one a cluster, its transitions' and states' summed."""
+def _cluster_count(clusters: np.ndarray) -> int:
+    """``G`` in CR1's factor: the clusters' count, or two-way the smaller dimension's, which bounds
+    how many independent terms the error is read from (Cameron, Gelbach and Miller 2011)."""
+    return int(np.min(clusters.max(axis=0))) + 1
+
+
+def _clustered_squares(rows: np.ndarray, clusters: np.ndarray | None) -> tuple[np.ndarray, ...]:
+    """``rows``' covariance, ``(N, n, ...)`` per transition and state as
+    :attr:`CausalDynamicsFit.influence` is: the sum of the outer products of its independent
+    terms, each a transition and state, or under ``clusters`` a cluster's transitions and states
+    summed.
+
+    Two-way, three covariances, and a reader takes the one it reads largest (MacKinnon, Nielsen
+    and Webb 2024): the two dimensions' sums less their intersection's, which both count (Cameron,
+    Gelbach and Miller 2011), less any part that reads below nothing (:func:`_less_below_nothing`);
+    then each dimension's sums alone, moved from the smaller dimension's CR1 factor, which
+    ``rows`` carry, to its own. The two-way sums alone can read less than either dimension does:
+    on a log of 3 units over 4 periods they read nothing of a channel affine in the state.
+    """
     if clusters is None:
-        return rows.reshape(-1, *rows.shape[2:])
-    summed = np.zeros((int(clusters.max()) + 1, *rows.shape[2:]))
-    np.add.at(summed, clusters, rows.sum(axis=1))
-    return summed
+        terms = rows.reshape(-1, *rows.shape[2:])
+        return (np.tensordot(terms, terms, axes=(0, 0)),)
+    per_row = rows.sum(axis=1)
+
+    def square(codes: np.ndarray) -> np.ndarray:
+        summed = np.zeros((int(codes.max()) + 1, *per_row.shape[1:]))
+        np.add.at(summed, codes, per_row)
+        return np.tensordot(summed, summed, axes=(0, 0))
+
+    if clusters.ndim == 1:
+        return (square(clusters),)
+    first, second = square(clusters[:, 0]), square(clusters[:, 1])
+    cells = square(np.unique(clusters, axis=0, return_inverse=True)[1].reshape(-1))
+    spread, every = first + second - cells, first + second + cells
+    both = np.maximum(spread, 0.0) if spread.ndim == 0 else _less_below_nothing(spread, every)
+    smaller = _cluster_count(clusters)
+    alone = []
+    for one, codes in ((first, clusters[:, 0]), (second, clusters[:, 1])):
+        count = int(codes.max()) + 1
+        alone.append(one * (count / (count - 1)) / (smaller / (smaller - 1)))
+    return (both, *alone)
+
+
+def _less_below_nothing(spread: np.ndarray, every: np.ndarray) -> np.ndarray:
+    """``spread`` less the part it reads below nothing, measured against ``every``, its sums with
+    every sign a plus: ``spread - T Q min(L, 0) Q' T'``, ``every = T T'`` and ``Q L Q'`` the
+    eigendecomposition of ``T^+ spread T^+'``. ``-every <= spread <= every``, so ``L`` lies in
+    ``[-1, 1]``, and a spread with no part below nothing keeps every bit. ``every`` is
+    ``spread`` plus twice the cells' sums, and any reference ``a spread + b cells``, the cells'
+    sums alone or the units' and the periods' together among them, has the same generalised
+    eigenvectors ``v``; each part taken away, ``spread v v' spread / v' spread v``, depends on
+    ``v`` alone, so they all take away the same part.
+
+    Both move with the coefficients as the scores do, so a change of their units or of the
+    state's zero changes no value read off the result. The eigenvalues of ``spread`` itself, which
+    Cameron, Gelbach and Miller (2011) clip, move with them: on a panel of 200 regions over 11
+    periods, moving the state's zero moved the channel's error from 0.008164 to 0.009408.
+    """
+    values, vectors = np.linalg.eigh(every)
+    kept = values > values[-1] * values.size * np.finfo(np.float64).eps
+    root, whitening = (
+        vectors[:, kept] * np.sqrt(values[kept]),
+        vectors[:, kept] / np.sqrt(values[kept]),
+    )
+    shares, turns = np.linalg.eigh(whitening.T @ spread @ whitening)
+    lifted = root @ turns
+    return spread - (lifted * np.minimum(shares, 0.0)) @ lifted.T
 
 
 def _error_at_rows(blocks: Array, features: Array) -> float:
@@ -405,7 +469,8 @@ def _error_at_rows(blocks: Array, features: Array) -> float:
     ``x = 0``, however far from it the log was taken. A value at the log's rows does not move.
     """
     moment = features.T @ features / features.shape[0]
-    return float(jnp.sqrt(jnp.mean(jnp.einsum("gab,ba->g", blocks, moment))))
+    # a covariance two ways read nothing in reads its zero only to rounding, either side of it
+    return float(jnp.sqrt(jnp.maximum(jnp.mean(jnp.einsum("gab,ba->g", blocks, moment)), 0.0)))
 
 
 def _channel_blocks(covariance: Array, channel_shape: tuple[int, ...]) -> Array:
@@ -431,7 +496,7 @@ def _influence(
     part its own regression's residual ``r``, which holds what the drift's features leave. Under
     ``clusters`` the factor is CR1's (:func:`_small_sample`), for sums within each cluster."""
     n = score.shape[0]
-    count = None if clusters is None else int(clusters.max()) + 1
+    count = None if clusters is None else _cluster_count(clusters)
     return jnp.sqrt(_small_sample(n, n_coeff, count)) * (
         jnp.einsum("pis,is->isp", sensitivity, score)
         + jnp.einsum("pis,is->isp", direct, drift_score - score)
@@ -973,14 +1038,22 @@ def fit_causal_residual(
             transitions of one unit then share it. The estimate does not move; only its error does.
             On panels of 5 to 80 units whose noise persists within each unit, a 5 % test of a zero
             channel rejects 12.5 % to 35.5 % of the time row by row and 3.75 % to 14.75 % by
-            unit: CR1 still over-rejects with few clusters (ADR 0053).
+            unit: CR1 still over-rejects with few clusters (ADR 0053). Two labels a transition,
+            shape ``(N, 2)``, cluster it two ways, by its unit and by its period say. The error is
+            then the largest of three (MacKinnon, Nielsen and Webb 2024): the two dimensions' sums
+            less their intersection's (Cameron, Gelbach and Miller 2011), at CR1's factor for the
+            smaller dimension's ``G`` and less any part that reads below nothing; and each
+            dimension's sums alone, at its own. A shock every unit shares in a period, met by
+            levers every unit moves together, makes one period's scores move together across
+            units, which a sum within units leaves out (ADR 0061).
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
 
     Raises:
         ValueError: on a negative ``channel_degree``; on ``clusters`` that do not label every
-            transition once, or name fewer than two clusters; on an ``rk4`` fixed point that does
+            transition once or once in each of two dimensions, or name fewer than two clusters in
+            a dimension; on an ``rk4`` fixed point that does
             not converge; on a covariate named ``u`` or ``x_next``, an instrument or a driver named
             ``x``, ``u`` or ``x_next``, a driver named twice, or an instrument that is also a
             covariate or a driver, at the step's start or its end. Each would read a column the fit
@@ -1263,8 +1336,10 @@ def fit_causal_residual(
         regressor = _channel_design(u_res, x, channel_degree)
         score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
         newton, sensitivity = newton_matrix(theta)
-        spread = _robust_spread(fit_map, score, regressor.shape[1], codes)
-        covariance = jnp.linalg.solve(newton, jnp.linalg.solve(newton, spread).T)
+        covariances = [
+            jnp.linalg.solve(newton, jnp.linalg.solve(newton, spread).T)
+            for spread in _robust_spreads(fit_map, score, regressor.shape[1], codes)
+        ]
 
         # A row reaches the fixed point through K^-1 G, as the covariance says the noise does.
         def carry(rows: Array) -> Array:
@@ -1289,8 +1364,9 @@ def fit_causal_residual(
         ]
         return dataclasses.replace(
             fit,
-            channel_error=_error_at_rows(
-                _channel_blocks(covariance[:size, :size], channel.shape), phi_c
+            channel_error=max(
+                _error_at_rows(_channel_blocks(covariance[:size, :size], channel.shape), phi_c)
+                for covariance in covariances
             ),
             drift_error=_error_at_rows(drift_blocks, design),
             influence=_influence(
@@ -1319,10 +1395,12 @@ def fit_causal_residual(
             sensitivity = jax.jacrev(lambda target: _parameters(solve(target)))(jnp.zeros_like(y))
         else:
             sensitivity = jax.jacrev(lambda target: solve(target)[0].ravel())(jnp.zeros_like(y))
-        spread = _robust_spread(sensitivity[: channel.size], score, regressor.shape[1], codes)
+        spreads = _robust_spreads(sensitivity[: channel.size], score, regressor.shape[1], codes)
         fit = dataclasses.replace(
             fit,
-            channel_error=_error_at_rows(_channel_blocks(spread, channel.shape), phi_c),
+            channel_error=max(
+                _error_at_rows(_channel_blocks(spread, channel.shape), phi_c) for spread in spreads
+            ),
             influence=_influence(
                 sensitivity,
                 score,
@@ -1346,20 +1424,26 @@ def fit_causal_residual(
 
 
 def _cluster_codes(clusters: np.ndarray | Array, rows: int) -> np.ndarray:
-    """Each transition's cluster as a code from 0, in the labels' sorted order."""
+    """Each transition's cluster as a code from 0, in the labels' sorted order, or two-way a code
+    a dimension, ``(N, 2)``."""
     labels = np.asarray(clusters)
-    if labels.shape != (rows,):
+    if labels.shape not in ((rows,), (rows, 2)):
         raise ValueError(
-            f"clusters label each of the {rows} transitions once; got an array of shape "
-            f"{labels.shape}"
+            f"clusters label each of the {rows} transitions once, shape ({rows},), or once in each "
+            f"of two dimensions, shape ({rows}, 2); got an array of shape {labels.shape}"
         )
-    distinct, codes = np.unique(labels, return_inverse=True)
-    if distinct.size < 2:
-        raise ValueError(
-            "clusters name one cluster; a covariance summed within clusters needs two at least, "
-            "since one cluster's sum leaves no spread between clusters to read"
-        )
-    return codes.astype(np.int64)
+    codes = []
+    for column in labels.reshape(rows, -1).T:
+        distinct, code = np.unique(column, return_inverse=True)
+        if distinct.size < 2:
+            raise ValueError(
+                "clusters name one cluster"
+                + ("" if labels.ndim == 1 else " in one of their two dimensions")
+                + "; a covariance summed within clusters needs two at least, since one cluster's "
+                "sum leaves no spread between clusters to read"
+            )
+        codes.append(code.astype(np.int64))
+    return codes[0] if labels.ndim == 1 else np.column_stack(codes)
 
 
 # --- MM7: how strong a confounder the adjustment set left out would have to be ---
@@ -1489,8 +1573,8 @@ def omitted_confounder_bound(
     def bounds(strength: float) -> tuple[float, float, float, float]:
         low, high = estimate - strength * scale, estimate + strength * scale
         moved = strength * scale_psi / rows
-        spread_low = float(np.sqrt(np.sum(_independent(psi - moved, clusters) ** 2)))
-        spread_high = float(np.sqrt(np.sum(_independent(psi + moved, clusters) ** 2)))
+        spread_low = float(np.sqrt(max(_clustered_squares(psi - moved, clusters))))
+        spread_high = float(np.sqrt(max(_clustered_squares(psi + moved, clusters))))
         return low, high, low - quantile * spread_low, high + quantile * spread_high
 
     def at_share(share: float) -> float:

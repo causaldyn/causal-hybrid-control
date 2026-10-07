@@ -420,6 +420,45 @@ def test_repeated_rows_clustered_by_their_original_price_as_the_original_does() 
     assert rows.noise == pytest.approx(each.noise / 4.0, rel=0.01)
 
 
+def test_two_way_clusters_price_as_each_way_reads_them() -> None:
+    """Each of 100 rows logged 10 times, a unit its copies, so the rows alone read less than the
+    units: a second way that holds each row alone prices as the first way does, in either order."""
+    data = {name: jnp.repeat(column, 10, axis=0) for name, column in _log(100, 11, 1.0).items()}
+    units, alone = np.arange(1000) // 10, np.arange(1000)
+
+    def priced(clusters: np.ndarray):
+        fits = _fits(data, folds=1, clusters=clusters)
+        plan = _plan(fits[0].residual)
+        plan = dataclasses.replace(plan, actions=_optimum(fits[0].residual, plan.actions))
+        return misspecification_cost(plan, *fits)
+
+    expected = priced(units)
+    for labels in (np.column_stack([units, alone]), np.column_stack([alone, units])):
+        got = priced(labels)
+        for name in ("cost", "cost_error", "noise", "p_value"):
+            assert getattr(got, name) == pytest.approx(
+                getattr(expected, name), rel=1e-9, abs=0.0
+            ), name
+
+
+def test_two_ways_whose_sums_read_less_noise_than_a_way_alone_price_as_that_way() -> None:
+    """On 10 units over 20 periods the units' sums read the most noise, and two ways price as
+    the units alone do."""
+    data = _log(400, 11, 1.0)
+    labels = np.column_stack([np.arange(400) // 40, np.arange(400) % 20])
+
+    def priced(clusters: np.ndarray):
+        fits = _fits(data, folds=1, clusters=clusters)
+        plan = _plan(fits[0].residual)
+        plan = dataclasses.replace(plan, actions=_optimum(fits[0].residual, plan.actions))
+        return misspecification_cost(plan, *fits)
+
+    both, units, periods = priced(labels), priced(labels[:, 0]), priced(labels[:, 1])
+    assert periods.noise < units.noise
+    for name in ("cost", "cost_error", "noise", "p_value"):
+        assert getattr(both, name) == pytest.approx(getattr(units, name), rel=1e-9, abs=0.0), name
+
+
 def test_a_plan_made_on_another_model_is_refused() -> None:
     reference, alternative, plan = _case(4000, 7, 0.0, 0.0)
     with pytest.raises(ValueError, match="reference fit's model"):
