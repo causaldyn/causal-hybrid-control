@@ -552,6 +552,31 @@ def test_richards_keeps_its_floor_and_slope_where_nu_e_to_the_s_is_past_a_double
     )
 
 
+@pytest.mark.parametrize(
+    ("steepness", "asymmetry", "anchors"),
+    [
+        # the floor 0.971: in a vector the curve read 3.8e-15 at zero spend, where alone it read 0
+        (
+            0.001000053526891461,
+            176.627704067942,
+            [1.891480872416736e-16, 1.891480872416741e-10, 1.891480872422056e-7],
+        ),
+        # the floor 1 - 1.4e-5: the curve read 0 up to 1e-6 and erred by 7.8e-4 at 1e-3
+        (1e-6, 1e6, [7.238183079151661e-20, 7.238183079151661e-14, 7.238183079151662e-11]),
+    ],
+    ids=["floor 0.971", "floor 1 - 1.4e-5"],
+)
+def test_richards_keeps_its_relative_accuracy_near_zero_spend_where_its_floor_nears_one(
+    steepness: float, asymmetry: float, anchors: list[float]
+) -> None:
+    # the curve less its floor, over 1 less it, carried the floor's rounding up as 1 / (1 - floor)
+    # (validation/response_curves.mac, STEP 12)
+    curve = Richards(1.0, steepness, asymmetry)
+    values = np.asarray(curve(jnp.asarray([0.0, 1e-12, 1e-6, 1e-3])))
+    assert values[0] == 0.0
+    np.testing.assert_allclose(values[1:], anchors, rtol=4e-15, atol=0.0)
+
+
 @pytest.mark.parametrize("spend", [2.10546875, 4.0])
 def test_weibulls_slope_is_zero_not_nan_where_z_to_the_k_is_past_a_double(spend: float) -> None:
     # at k = 947, k z^(k - 1) passes a double from z = 2.10 and z^k from 2.12; the curve is its

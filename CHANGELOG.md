@@ -98,6 +98,19 @@ still change).
   and a complex column passed the same way. Each now raises `PanelError` naming the column, the
   unit and the time, as a float column's nan does, and before the index check, where a `Decimal`'s
   signalling nan as a unit or a period failed with `TypeError`. Since 0.5.0.
+- **Richards' curve is 0 at zero spend in a vector of spends too, and keeps its digits near it.**
+  `Richards` took its value at zero spend off the curve and divided by one less that value, so near
+  zero spend the subtraction cancelled: at a steepness of 1.5 and an asymmetry of 4, the curve at
+  1e-12 of its scale erred by 1.1e-4 of itself. Where that floor nears 1, at a gentle steepness and
+  a large asymmetry, the division carried the floor's rounding up by 1 / (1 - floor) as well: at a
+  steepness of 0.001 and an asymmetry of 177, whose floor is 0.971, a vector of spends read 3.8e-15
+  at zero spend, where one spend alone read 0, and the curve at 1e-12 of its scale read 20 times its
+  value; at a steepness of 1e-6 and an asymmetry of 1e6, whose floor is 1 - 1.4e-5, it read 0 up to
+  1e-6 of its scale and erred by 8e-4 of itself at 1e-3. The rise from zero spend is now written so
+  that it is exactly 0 there and does not cancel near it: within 7e-16 of Maxima's values from 1e-12
+  of the scale to 8 times it, at six pairs of the parameters, in a vector and alone. Away from zero
+  spend the curve moves by up to 3e-13 of itself, each of the six largest moves toward Maxima's
+  value. Since 0.10.0.
 
 ## [0.14.3] — 2026-10-07
 

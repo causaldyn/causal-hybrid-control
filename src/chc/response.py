@@ -719,15 +719,38 @@ class Richards(Saturation):
 
     def standard(self, z: Array) -> Array:
         s, nu = self.steepness, self.asymmetry
-
-        def rising(at: Array) -> Array:
-            # log1p(nu e^{-s (z - 1)}) as the softplus of its logarithm, which cannot overflow: at
-            # zero spend the product passes a double once s + log nu does 709.8, which reads the
-            # floor as 0 and the slope there as 0 times inf
-            return jnp.exp(-jax.nn.softplus(jnp.log(nu) - s * (at - 1.0)) / nu)
-
-        floor = rising(_real(0.0))
-        return (rising(z) - floor) / (1.0 - floor)
+        # log1p(nu e^{-s (z - 1)}) as the softplus of its logarithm, which cannot overflow: at zero
+        # spend the product passes a double once s + log nu does 709.8, which reads the floor as 0
+        # and the slope there as 0 times inf
+        level = jnp.log(nu) + s
+        top = jax.nn.softplus(level)
+        floor = jnp.exp(-top / nu)
+        t = s * z
+        # How far the curve's logarithm has risen since zero spend, times nu: softplus(level) less
+        # softplus(level - t). Up to t = 1 it is written log1p(sigmoid(level - t) expm1(t)), which
+        # is 0 at zero spend and does not cancel near it; the curve less its floor, divided by
+        # 1 - floor, carried the floor's rounding, one ulp apart between a scalar and a vector,
+        # up 35 times where nu = 177 and s = 0.001. Past t = 1, expm1(t) would overflow, and the
+        # difference cancels by no more than its own size.
+        near = t <= 1.0
+        rise = (
+            jnp.where(
+                near,
+                jnp.log1p(jax.nn.sigmoid(level - t) * _expm1(jnp.where(near, t, 0.0))),
+                top - jax.nn.softplus(level - t),
+            )
+            / nu
+        )
+        # The curve above its floor: floor * expm1(rise) up to a rise of 1, past it the curve less
+        # its floor, which neither cancels by more than a bit nor overflows where the floor
+        # underflows.
+        low = rise <= 1.0
+        above = jnp.where(
+            low,
+            floor * _expm1(jnp.where(low, rise, 0.0)),
+            jnp.exp(-jax.nn.softplus(level - t) / nu) - floor,
+        )
+        return above / -_expm1(-top / nu)
 
     def _standard_inflection(self) -> float:
         return 1.0
