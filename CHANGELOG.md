@@ -32,6 +32,13 @@ still change).
   `u1`'s box ending at a level the rule crosses inside the second step, `first_loaded_step` reads
   2 where it read 1, since the second step starts inside the box and holds the log's own level.
   Plans with a ruled lever move; plans without one are unchanged. Since 0.14.0.
+- **An action its box fixes is not counted as a bound met with no pull.**
+  `CausalPlan.decision_weight` counts in `weakly_active` the bounds the plan meets with a zero
+  multiplier, where the regret is piecewise quadratic. It counted an action whose box has zero
+  width wherever nothing pulled it, though no change of the channel moves such an action off its
+  box, so the regret has no other branch there. A plan `prescribe` makes with a lever on the log's
+  rule, whose column the plan fixes and nothing reads, counted that column at each step: 3 on a
+  3-step plan that meets no bound with a zero multiplier. Since 0.8.0.
 
 ## [0.14.3] — 2026-10-07
 

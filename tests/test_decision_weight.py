@@ -272,6 +272,25 @@ def test_a_bound_met_with_no_pull_is_counted_as_weakly_active() -> None:
     assert weight.matrix[0, 0] == 0.0
 
 
+def test_an_action_its_box_fixes_is_not_counted_as_weakly_active() -> None:
+    """A box of zero width fixes its action: no change of the channel moves the action off it, so
+    the regret has no other branch there, whatever its pull. 0.14 counted it as a bound met with
+    no pull wherever nothing pulls it, as here, where the field does not read the second lever and
+    it is held at zero: each step counted once. The first lever's weight is the one-lever plan's."""
+    plant = LinearDynamics(jnp.array([[-0.5]]), jnp.array([[1.2, 0.0]]))
+    cost = QuadraticCost(
+        Q=jnp.eye(1),
+        R=jnp.diag(jnp.array([0.1, 1.0])),
+        Qf=jnp.array([[2.0]]),
+        x_target=jnp.zeros(1),
+    )
+    plan = causal_plan(plant, ONE, cost, DT, 2, jnp.array([-10.0, 0.0]), jnp.array([10.0, 0.0]))
+    optimum = np.array([[-2.023822333873833, 0.0], [-1.248583272170075, 0.0]])
+    weight = _at(plan, optimum).decision_weight()
+    assert (weight.free, weight.weakly_active) == (2, 0)
+    assert weight.matrix[0, 0] == pytest.approx(4.706933453397004, rel=1e-10, abs=0.0)
+
+
 def test_a_row_met_with_no_pull_is_counted_as_weakly_active() -> None:
     """The row ``u_0 + u_1 >= c``, with ``c`` the free plan's own sum: it binds with a zero
     multiplier, and ``W`` is the branch that holds it, 0.997, where the free plan's is 4.707 (the

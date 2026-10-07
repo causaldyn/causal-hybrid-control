@@ -29,7 +29,7 @@ from chc.graph import CausalGraph
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel
-from chc.plan import _Ruled
+from chc.plan import _perturbed_task_cost, _Ruled
 
 DT = 0.1
 EDGES = [("z", "y"), ("u1", "y"), ("u2", "y"), ("z", "u1"), ("z", "u2")]
@@ -189,7 +189,35 @@ def test_a_lever_set_from_the_state_follows_that_rule(policy, rule) -> None:
         result.report()
     )
     assert "from the state as it comes" in result.report()
-    assert result.to_json()["certificate"]["rule_levers"] == ["u1"]
+    record = result.to_json()
+    assert record["certificate"]["rule_levers"] == ["u1"]
+    np.testing.assert_allclose(np.asarray(record["schedule"])[:, 0], rule(path), atol=1e-9)
+    # the column the plan keeps for u1 is no bound: the box fixes it, and nothing reads it
+    assert result.plan.decision_weight().weakly_active == 0
+
+
+@pytest.mark.parametrize("policy", ["state", "state_squared"])
+def test_the_column_a_ruled_lever_keeps_in_the_plan_moves_nothing(policy: str) -> None:
+    """The plan's actions keep a column for ``u1``, which its field, its price and the channel's
+    move never read: moved anywhere, the path, the cost and the cost under a moved channel stay
+    where they were, to the bit."""
+    plan = _prescribe(policy).plan
+    assert plan is not None
+    problem = plan._problem
+    assert problem is not None
+    moved = plan.actions.at[:, 0].add(0.7)
+    for actions in (moved, plan.actions.at[:, 0].set(-50.0)):
+        np.testing.assert_array_equal(
+            np.asarray(rollout(problem.model, problem.x0, actions, problem.dt)),
+            np.asarray(rollout(problem.model, problem.x0, plan.actions, problem.dt)),
+        )
+        assert float(total_cost(problem.model, problem.x0, actions, problem.dt, problem.cost)) == (
+            float(total_cost(problem.model, problem.x0, plan.actions, problem.dt, problem.cost))
+        )
+        change = jnp.array([[0.05, -0.03]])
+        assert float(_perturbed_task_cost(problem, actions, change)) == float(
+            _perturbed_task_cost(problem, plan.actions, change)
+        )
 
 
 def test_worlds_the_logged_rule_leaves_apart_run_one_path() -> None:

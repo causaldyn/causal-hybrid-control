@@ -342,18 +342,22 @@ def _regret_curvature(
     present = [row for row in problem.constraints if row.matrix.shape[0]]
     n_actions = flat.size
     matrix = np.vstack([row.matrix for row in present]) if present else np.zeros((0, n_actions))
+    lo = np.asarray(broadcast_box(problem.u_lo, shape, "u_lo", dtype), np.float64).ravel()
+    hi = np.asarray(broadcast_box(problem.u_hi, shape, "u_hi", dtype), np.float64).ravel()
     kkt = _kkt(
         gradient,
         np.asarray(flat, dtype=np.float64),
         matrix,
         np.concatenate([row.lower for row in present]) if present else np.zeros(0),
         np.concatenate([row.upper for row in present]) if present else np.zeros(0),
-        np.asarray(broadcast_box(problem.u_lo, shape, "u_lo", dtype), np.float64).ravel(),
-        np.asarray(broadcast_box(problem.u_hi, shape, "u_hi", dtype), np.float64).ravel(),
+        lo,
+        hi,
         tolerance,
     )
     free = kkt.free
-    pinned = kkt.at_hi | kkt.at_lo
+    # A box of zero width fixes its action: no change of the channel moves it off, so it is no
+    # branch of the regret, whatever its pull.
+    pinned = (kkt.at_hi | kkt.at_lo) & (hi > lo)
     weak_rows = np.abs(kkt.multipliers) * np.linalg.norm(kkt.columns[free], axis=0)
     weakly_active = int(np.sum(np.abs(kkt.remainder[pinned]) <= kkt.slack)) + int(
         np.sum(weak_rows <= kkt.slack)
@@ -511,7 +515,9 @@ class DecisionWeight:
     matrix: NDArray[np.float64]
     channel_shape: tuple[int, int]  # (n, m)
     free: int  # the directions the plan may move in: actions off the box, less the binding rows
-    weakly_active: int  # bounds and rows the plan meets with a zero multiplier
+    # bounds and rows the plan meets with a zero multiplier; a box of zero width fixes its action
+    # and is none
+    weakly_active: int
     residual: float  # stationarity miss along the free directions, over max(1, |gradient there|)
 
     def regret(self, change: ArrayLike) -> float:
