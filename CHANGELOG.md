@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-10-07
+
 ### Added
 
 - **`Prescription.policy()` runs the decision step by step in the states it reaches.** It returns a
@@ -5776,6 +5778,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.15.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.0
 [0.14.4]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.4
 [0.14.3]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.3
 [0.14.2]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.2
