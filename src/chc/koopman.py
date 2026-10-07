@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from itertools import combinations_with_replacement
 
 import numpy as np
-from scipy.linalg import solve_discrete_are
+
+from chc.regret import dlqr
 
 from chc import _units
 
@@ -85,8 +86,7 @@ def koopman_lqr_gain(model: KoopmanModel, q_state: np.ndarray, r: np.ndarray) ->
     lift_q[: model.state_dim, : model.state_dim] = np.asarray(
         q_state, float
     )  # cost only on raw state
-    p = solve_discrete_are(a, b, lift_q, np.asarray(r, float))
-    return np.linalg.solve(np.asarray(r, float) + b.T @ p @ b, b.T @ p @ a)  # gain G
+    return dlqr(a, b, lift_q, np.asarray(r, float))[0]  # gain G
 
 
 def koopman_controller(model: KoopmanModel, gain: np.ndarray, x_target: np.ndarray):

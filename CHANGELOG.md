@@ -174,6 +174,16 @@ still change).
 
 ### Fixed
 
+- **An LQR gain reads the same in any units of the actions.** `dlqr`, `continuous_lqr` and
+  `koopman_lqr_gain` handed `B` and `R` to SciPy's Riccati solvers as given, and those read the two
+  apart, so one problem in other units of a lever read another gain, with no error. With the
+  levers in a billionth of their units, `dlqr`'s gain was off by 3e-5 of its size,
+  `continuous_lqr`'s by 2e-5 and the Koopman gain by 4e-4; at 1e-12 both solvers refused the
+  problem as having eigenvalues too close to the boundary. Each action is now rescaled by the
+  power of two that brings its diagonal entry of `R` within a factor of 2 of 1, and the gain is
+  mapped back. The rescaling is exact, so a problem in other units of the levers, or of the cost,
+  reads the same gain to 2e-14, and in powers of two to the bit. A gain moves by rounding where an
+  entry of `R`'s diagonal lies outside 1/2 to 2, and is unchanged elsewhere. Since 0.2.0.
 - **The planners' bounds are read from HiGHS's duals and rounded outward, so none passes the best
   plan.** The bounds of `minimax_allocate`, `cvar_allocate`, `allocate_geos` and
   `budget_for_geos` were HiGHS's objective on their last cutting-plane program, which is not a

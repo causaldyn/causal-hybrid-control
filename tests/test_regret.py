@@ -89,6 +89,50 @@ def test_dlqr_solves_the_dare_and_stabilises() -> None:
     assert np.max(np.abs(np.linalg.eigvals(A - B @ k))) < 1.0  # the optimal loop is stable
 
 
+def _two_levers() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    a = np.eye(3) + 0.05 * np.array([[0.0, 1.0, 0.0], [-2.0, -0.3, 0.5], [0.1, 0.0, -1.0]])
+    b = 0.05 * np.array([[0.3, -1.2], [1.0, 0.4], [-0.5, 0.8]])
+    return a, b, np.diag([10.0, 1.0, 0.5]), np.array([[0.1, 0.02], [0.02, 0.3]])
+
+
+@pytest.mark.parametrize("units", [(2.0**-40, 2.0**20), (1e-12, 1.0), (1e-9, 1e6), (1e12, 1e-3)])
+def test_dlqr_reads_one_gain_in_any_units_of_each_action(units: tuple[float, float]) -> None:
+    """Each lever in units `s` divides its column of B by `s` and R by `s s'`: one problem.
+
+    SciPy's DARE reads B and R apart: at a billionth of the units it read a gain off by 3e-5, and
+    at 1e-12 it refused the problem as too close to the unit circle. In powers of two the
+    problem is now the same to the bit.
+    """
+    a, b, q, r = _two_levers()
+    k, p = dlqr(a, b, q, r)
+    s = np.array(units)
+    k_units, p_units = dlqr(a, b / s, q, r / np.outer(s, s))
+    if np.all(np.log2(s) == np.round(np.log2(s))):
+        np.testing.assert_array_equal(k_units / s[:, None], k)
+        np.testing.assert_array_equal(p_units, p)
+    else:
+        assert np.max(np.abs(k_units / s[:, None] - k)) <= 1e-12 * np.max(np.abs(k))
+        assert np.max(np.abs(p_units - p)) <= 1e-12 * np.max(np.abs(p))
+
+
+@pytest.mark.parametrize("cost_units", [1e-12, 1e12])
+def test_dlqr_reads_one_gain_in_any_units_of_the_cost(cost_units: float) -> None:
+    """Q and R in other units of the cost give the same gain, and P in those units."""
+    a, b, q, r = _two_levers()
+    k, p = dlqr(a, b, q, r)
+    k_units, p_units = dlqr(a, b, cost_units * q, cost_units * r)
+    assert np.max(np.abs(k_units - k)) <= 1e-12 * np.max(np.abs(k))
+    assert np.max(np.abs(p_units / cost_units - p)) <= 1e-12 * np.max(np.abs(p))
+
+
+def test_dlqr_solves_an_r_with_a_negative_entry_as_scipy_does() -> None:
+    """No unit rescales a negative cost, so that action keeps its units, and SciPy's solve."""
+    a, b, q, _ = _two_levers()
+    r = np.diag([1.0, -5.0])
+    _, p = dlqr(a, b, q, r)
+    np.testing.assert_array_equal(p, scipy.linalg.solve_discrete_are(a, b, q, r))
+
+
 def test_closed_loop_cost_matches_the_riccati_value_and_diverges_when_unstable() -> None:
     k, p = dlqr(A, B, Q, R)
     assert np.isclose(closed_loop_cost(A, B, k, Q, R, X0), float(X0 @ p @ X0))  # cost = x0' P x0

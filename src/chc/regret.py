@@ -58,10 +58,24 @@ class RegretCurve:
     # reported rather than dropped -- ce_explicit_constant_certificate prices the same event)
 
 
+def _action_units(r: Matrix) -> Vector:
+    """A power of two per action that brings ``r``'s diagonal to within a factor of 2 of 1.
+
+    SciPy's Riccati solvers read ``b`` and ``r`` apart, so one problem written in other units of
+    the actions read another gain: off by 1e-4 at a billionth of the units, and refused at 1e-12.
+    Solved in these units, every such problem is one problem to the bit, since a power of two
+    rescales exactly. An action whose diagonal entry is not positive keeps its units.
+    """
+    diagonal = np.diag(np.atleast_2d(r))
+    return np.exp2(-np.round(np.log2(np.where(diagonal > 0.0, diagonal, 1.0)) / 2.0))
+
+
 def dlqr(a: Matrix, b: Matrix, q: Matrix, r: Matrix) -> tuple[Matrix, Matrix]:
     """Infinite-horizon discrete LQR: optimal gain ``K`` and cost-to-go ``P`` (via the DARE)."""
-    p = solve_discrete_are(a, b, q, r)
-    k = np.linalg.solve(r + b.T @ p @ b, b.T @ p @ a)
+    scale = _action_units(r)
+    b_unit, r_unit = b * scale, scale[:, None] * r * scale
+    p = solve_discrete_are(a, b_unit, q, r_unit)
+    k = scale[:, None] * np.linalg.solve(r_unit + b_unit.T @ p @ b_unit, b_unit.T @ p @ a)
     return k, p
 
 

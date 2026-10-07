@@ -15,7 +15,7 @@ from scipy.linalg import solve_continuous_are
 
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
-from chc.regret import certainty_equivalence_gap
+from chc.regret import _action_units, certainty_equivalence_gap
 
 
 def linearize_continuous(dyn: Dynamics, x: Array, u: Array) -> tuple[Array, Array]:
@@ -34,8 +34,11 @@ def linearize_discrete(dyn: Dynamics, x: Array, u: Array, dt: float) -> tuple[Ar
 
 def continuous_lqr(a: Array, b: Array, q: Array, r: Array) -> tuple[Array, Array]:
     """Solve the continuous ARE; return ``(P, K)`` with the optimal feedback ``u = -K x``."""
-    p = solve_continuous_are(np.asarray(a), np.asarray(b), np.asarray(q), np.asarray(r))
-    k = np.linalg.solve(np.asarray(r), np.asarray(b).T @ p)
+    r_np = np.asarray(r)
+    scale = _action_units(r_np)
+    b_unit, r_unit = np.asarray(b) * scale, scale[:, None] * r_np * scale
+    p = solve_continuous_are(np.asarray(a), b_unit, np.asarray(q), r_unit)
+    k = scale[:, None] * np.linalg.solve(r_unit, b_unit.T @ p)
     return jnp.asarray(p), jnp.asarray(k)
 
 

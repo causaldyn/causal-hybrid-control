@@ -1,5 +1,7 @@
 """Koopman gate: an EDMD lift makes the nonlinear system linear enough to predict and control."""
 
+import copy
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -38,6 +40,27 @@ def test_koopman_predicts_the_lifted_nonlinear_dynamics() -> None:
     model = KoopmanModel(degree=3).fit(xs, us, x_next)
     rmse = float(np.sqrt(np.mean((model.predict(xs, us) - x_next) ** 2)))
     assert rmse < 0.01  # the polynomial lift makes the cubic oscillator near-linear
+
+
+@pytest.mark.parametrize("units", [2.0**-30, 1e-9, 1e6])
+def test_the_lqr_gain_reads_the_same_in_any_units_of_the_action(units: float) -> None:
+    """The model's B in units `s` of the action, and R in units `s^2`: the same gain in `s`.
+
+    SciPy's DARE read B and R apart, so at a billionth of the action's units the gain was off by
+    4e-4.
+    """
+    xs, us, x_next = _transitions()
+    model = KoopmanModel(degree=3).fit(xs, us, x_next)
+    q, r = np.diag([10.0, 1.0]), np.array([[0.1]])
+    gain = koopman_lqr_gain(model, q, r)
+    in_units = copy.copy(model)
+    assert model._b is not None
+    in_units._b = model._b / units
+    read = koopman_lqr_gain(in_units, q, r / units**2) / units
+    if units == 2.0**-30:
+        np.testing.assert_array_equal(read, gain)
+    else:
+        assert np.max(np.abs(read - gain)) <= 1e-12 * np.max(np.abs(gain))
 
 
 def test_koopman_lqr_regulates_the_true_system_to_target() -> None:
