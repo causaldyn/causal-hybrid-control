@@ -844,7 +844,112 @@ def test_dated_periods_part_at_a_missing_week_and_calendar_months_stay_in_a_row(
 
     weeks = np.datetime64("2024-01-01") + np.timedelta64(7, "D") * np.arange(10)
     assert count(np.delete(weeks, 4)) == 7
-    assert count(np.arange("2024-01", "2025-01", dtype="datetime64[M]")) == 11
+    with pytest.warns(FutureWarning, match="frequency"):
+        assert count(np.arange("2024-01", "2025-01", dtype="datetime64[M]")) == 11
+
+
+def _monthly(written: str) -> dict[str, np.ndarray]:
+    """Two homes over the sixteen months from November 2023 to February 2025, stamped on each
+    month's last day, February 2024's the 29th; home ``a`` misses March 2024, and both miss July
+    2024. A home's temperature is its month's count since 1970, plus 1000 for home ``b``, so a
+    transition between consecutive months moves it by one."""
+    rows = [
+        (home, month)
+        for home in ("a", "b")
+        for month in np.arange("2023-11", "2025-03", dtype="datetime64[M]").tolist()
+        if month != datetime.date(2024, 7, 1) and (home, month) != ("a", datetime.date(2024, 3, 1))
+    ]
+    home = np.array([home for home, _ in rows])
+    month = np.array([month for _, month in rows], dtype="datetime64[M]")
+    last_day = (month + np.timedelta64(1, "M")).astype("datetime64[D]") - np.timedelta64(1, "D")
+    return {
+        "home": home,
+        "month": month if written == "M" else last_day.astype(f"datetime64[{written}]"),
+        "temperature": month.astype(np.int64) + 1000.0 * (home == "b"),
+        "heater": np.ones(home.size),
+    }
+
+
+def _steps_taken(panel: Panel) -> np.ndarray:
+    data, _ = _transitions(panel, states=("temperature",), levers=("heater",), adjust_for=())
+    return np.asarray(data["x_next"])[:, 0] - np.asarray(data["x"])[:, 0]
+
+
+@pytest.mark.parametrize("written", ["M", "D", "ns"])
+def test_one_monthly_calendar_gives_the_same_transitions_however_it_is_written(
+    written: str,
+) -> None:
+    """Declared monthly, the periods are months whether stamped as months, days or nanoseconds. A
+    transition joins two consecutive months: across both years' ends and from the leap day, and
+    over no month a home missed. Undeclared, month ends are ranked: July, which no home logged,
+    is not seen, and June to August reads as one step for each home."""
+    frame = _monthly(written)
+    data, _ = _transitions(
+        Panel.from_frame(frame, unit="home", time="month", frequency="M"),
+        states=("temperature",),
+        levers=("heater",),
+        adjust_for=(),
+    )
+    x = np.asarray(data["x"])[:, 0]
+    assert np.all(np.asarray(data["x_next"])[:, 0] - x == 1.0)
+    december_2023, february_2024, june_2024, december_2024 = 647, 649, 653, 659
+    assert sorted(x.tolist()) == sorted(
+        [*range(646, 649), *range(651, 653), *range(655, 661)]
+        + [1000 + month for month in [*range(646, 653), *range(655, 661)]]
+    )
+    assert {december_2023, december_2024, 1000 + december_2023, 1000 + december_2024} <= set(x)
+    assert 1000 + february_2024 in x  # b's leap day to its March 31st
+    assert february_2024 not in x  # a missed March
+    assert june_2024 not in x  # no home logged July
+    assert 1000 + june_2024 not in x
+    if written != "M":
+        with pytest.warns(FutureWarning, match="frequency"):
+            ranked = Panel.from_frame(frame, unit="home", time="month")
+        assert sorted(_steps_taken(ranked).tolist()) == [1.0] * 24 + [2.0] * 2
+
+
+@pytest.mark.parametrize(
+    ("frequency", "stamps", "transitions"),
+    [
+        ("D", ["2024-02-28", "2024-02-29", "2024-03-01", "2024-03-03"], 2),
+        ("W", ["2024-01-01", "2024-01-08", "2024-01-22", "2024-01-29"], 2),
+        ("Q", ["2023-12-31", "2024-03-31", "2024-06-30", "2024-12-31"], 2),
+        ("Y", ["2022-12-31", "2023-12-31", "2024-12-31", "2026-12-31"], 2),
+    ],
+)
+def test_each_calendar_unit_parts_its_periods_at_a_missing_one(
+    frequency: str, stamps: list[str], transitions: int
+) -> None:
+    """A day, a week, a quarter across a year's end, a year across a leap year: two of three
+    consecutive pairs are a step apart, and the third is two."""
+    frame = {
+        "home": np.zeros(4, dtype=int),
+        "month": np.array(stamps, dtype="datetime64[D]"),
+        "temperature": np.arange(4.0),
+        "heater": np.ones(4),
+    }
+    panel = Panel.from_frame(frame, unit="home", time="month", frequency=frequency)
+    assert _steps_taken(panel).size == transitions
+
+
+def test_a_declared_step_or_the_order_logged_replaces_the_least_spacing() -> None:
+    """Weeks 0, 2, 4 and 8 sit, undeclared, on a grid of two: two transitions, 4 to 8 being two
+    steps. Declared a step of one, no two are consecutive; of two, as undeclared; ``"observed"``
+    ranks them, and 4 to 8 is one step."""
+    frame = {
+        "home": np.zeros(4, dtype=int),
+        "week": np.array([0, 2, 4, 8]),
+        "temperature": np.arange(4.0),
+        "heater": np.ones(4),
+    }
+
+    def taken(frequency: object) -> int:
+        panel = Panel.from_frame(frame, unit="home", time="week", frequency=frequency)  # type: ignore[arg-type]
+        return int(_steps_taken(panel).size)
+
+    assert [taken(None), taken(2), taken("observed")] == [2, 2, 3]
+    with pytest.raises(DecisionError, match="no unit has two consecutive periods"):
+        taken(1)
 
 
 def _renamed_confounder(name: str) -> tuple[Panel, CausalGraph]:

@@ -25,12 +25,20 @@ hash is over the column bytes, so two panels that agree numerically but differ i
 differently --- which is the honest answer, because they will not produce the same numbers. An
 object column's bytes are pointers, which no two runs share, so it is hashed by its values: each
 value's type and text, each with its length.
+
+A panel reads its periods on a calendar only where the caller declares one, as ``frequency``:
+calendar months stamped as dates lie 28 to 31 days apart, on no grid a library could infer, and
+read in the order logged a month no unit logged is not seen. The declared frequency is part of
+the dataset's identity, so it enters the hash.
 """
 
 from __future__ import annotations
 
 import datetime
 import hashlib
+import math
+import numbers
+import warnings
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -66,6 +74,8 @@ _HELD: tuple[type, ...] = (
 # The numbers among them that have a nan or an infinity.
 _INEXACT: tuple[type, ...] = (float, complex, Decimal, np.inexact)
 
+_CALENDAR = ("D", "W", "M", "Q", "Y")
+
 
 class PanelError(ValueError):
     """A frame could not be read as a panel; the message names the column and the entity."""
@@ -80,12 +90,15 @@ class Provenance:
     recorded without it cannot be repeated. See ``docs/concepts/dtype-policy.md``.
     """
 
-    data_sha256: str  # over column name, dtype, shape and bytes or values, in sorted name order
+    # over column name, dtype, shape and bytes or values, in sorted name order, and the frequency
+    # where one is declared
+    data_sha256: str
     chc_version: str
     n_rows: int
     columns: tuple[str, ...]
     x64: bool  # jax.config.jax_enable_x64 at the moment the panel was built
     seed: int | None = None  # the generator's seed where the data is simulated; None for observed
+    frequency: str | float | None = None  # the calendar the periods are read on, where declared
 
     def to_json(self) -> dict[str, Any]:
         """A plain dict, ready for ``json.dumps`` beside the result it describes."""
@@ -96,10 +109,11 @@ class Provenance:
             "columns": list(self.columns),
             "x64": self.x64,
             "seed": self.seed,
+            "frequency": self.frequency,
         }
 
 
-def _fingerprint(columns: Mapping[str, NDArray[Any]]) -> str:
+def _fingerprint(columns: Mapping[str, NDArray[Any]], frequency: str | float | None = None) -> str:
     digest = hashlib.sha256()
     for name in sorted(columns):
         array = np.ascontiguousarray(columns[name])
@@ -107,6 +121,8 @@ def _fingerprint(columns: Mapping[str, NDArray[Any]]) -> str:
         digest.update(str(array.dtype).encode())
         digest.update(str(array.shape).encode())
         digest.update(_values(array) if array.dtype == object else array.tobytes())
+    if frequency is not None:
+        digest.update(f"frequency {frequency!r}".encode())
     return digest.hexdigest()
 
 
@@ -180,6 +196,7 @@ class Panel:
         *,
         unit: str,
         time: str,
+        frequency: str | float | None = None,
         cluster: str | None = None,
         seed: int | None = None,
         require_balanced: bool = False,
@@ -210,6 +227,16 @@ class Panel:
         Args:
             unit, time: the column names holding the entity and the period. Values may be any
                 sortable type; periods are ranked, not assumed to be ``0..T-1``.
+            frequency: the calendar the periods are read on, which says which two periods are
+                consecutive. For dates, ``"D"``, ``"W"``, ``"M"``, ``"Q"`` or ``"Y"``: a row's
+                period is the day, week, month, quarter or year its stamp falls in, by numpy's
+                calendar units, a week running from a Thursday as 1970-01-01 did, a quarter being
+                three months from January. For numbers, a positive step: a period is a whole
+                number of steps from the first. Either way the rows of one period share one label,
+                the earliest stamp logged in it. ``"observed"`` reads the periods in the order
+                logged, as consecutive where no period lies between them. Undeclared, numbers and
+                dates on a uniform grid are read on it, and other periods in the order logged;
+                dates off a grid, calendar months among them, warn, and are refused from 0.16.
             cluster: an optional column naming the group cluster-robust inference should use ---
                 declared here rather than at the call site, because it is a property of the sampling
                 design and not of the estimator.
@@ -222,11 +249,12 @@ class Panel:
         Raises:
             PanelError: for a missing index column, one column named as both the unit and the
                 time, a non-1-D or ragged column, a non-finite number in a float, a complex or an
-                object column, a duplicated ``(unit, time)`` pair, an object column whose values are
-                not of one type (a missing value among strings, say), whose values' text is their
-                address in memory, or whose values' type a panel does not hold, or --- under
-                ``require_balanced`` --- a hole. Every message names the column and the offending
-                entity.
+                object column, a missing date, a duplicated ``(unit, time)`` pair, an object column
+                whose values are not of one type (a missing value among strings, say), whose values'
+                text is their address in memory, or whose values' type a panel does not hold, a
+                frequency the time column cannot be read in, a period off the declared step, a unit
+                with two rows in one declared period, or --- under ``require_balanced`` --- a hole.
+                Every message names the column and the offending entity.
             ValueError: from :func:`chc.frames.as_columns`, for two columns of one name or a
                 masked cell, naming the column and its row.
         """
@@ -288,7 +316,7 @@ class Panel:
                 )
 
         for name, column in columns.items():
-            if np.issubdtype(column.dtype, np.inexact):
+            if np.issubdtype(column.dtype, np.inexact) or column.dtype.kind in "mM":
                 finite = np.isfinite(column)
             elif column.dtype == object and n_rows and isinstance(column[0], _INEXACT):
                 finite = np.array([_finite(value) for value in column.tolist()], dtype=bool)
@@ -311,18 +339,41 @@ class Panel:
                 )
             seen[key] = row
 
+        frequency = _frequency(times, frequency, time)
+        if frequency is not None and frequency != "observed":
+            first: dict[tuple[Any, int], int] = {}
+            periods = _ordinals(times, frequency).tolist()
+            for row, key in enumerate(zip(units.tolist(), periods, strict=True)):
+                if key in first:
+                    raise PanelError(
+                        f"unit {key[0]!r} has rows {first[key]} and {row} in one period of "
+                        f"frequency {frequency!r}, at {times[first[key]]} and {times[row]}; a "
+                        "panel is indexed by (unit, period), so one of them would be lost"
+                    )
+                first[key] = row
+        elif frequency is None and times.dtype.kind == "M" and _grid_steps(times) is None:
+            warnings.warn(
+                f"time column {time!r} holds dates on no uniform grid, so its periods are read in "
+                "the order logged and a period no unit logged is not seen; declare their calendar "
+                "with frequency='D', 'W', 'M', 'Q' or 'Y', or frequency='observed' to keep this "
+                "reading. Undeclared, such dates are refused from chc 0.16",
+                FutureWarning,
+                stacklevel=2,
+            )
+
         panel = cls(
             columns=_Columns(columns),
             unit=unit,
             time=time,
             cluster=cluster,
             provenance=Provenance(
-                data_sha256=_fingerprint(columns),
+                data_sha256=_fingerprint(columns, frequency),
                 chc_version=installed_version(),
                 n_rows=n_rows,
                 columns=tuple(sorted(columns)),
                 x64=_x64_enabled(),
                 seed=seed,
+                frequency=frequency,
             ),
         )
         if require_balanced and not panel.is_balanced:
@@ -349,7 +400,7 @@ class Panel:
     @property
     def periods(self) -> tuple[Any, ...]:
         """The distinct period labels, sorted --- the column order of :meth:`wide`."""
-        return tuple(sorted(set(self.columns[self.time].tolist())))
+        return tuple(sorted(set(self._labels())))
 
     @property
     def n_units(self) -> int:
@@ -381,7 +432,7 @@ class Panel:
         unit_rank = {label: index for index, label in enumerate(self.units)}
         time_rank = {label: index for index, label in enumerate(self.periods)}
         units = np.array([unit_rank[u] for u in self.columns[self.unit].tolist()], dtype=np.int64)
-        times = np.array([time_rank[t] for t in self.columns[self.time].tolist()], dtype=np.int64)
+        times = np.array([time_rank[t] for t in self._labels()], dtype=np.int64)
         return units, times
 
     def wide(self, name: str) -> NDArray[np.float64]:
@@ -427,15 +478,108 @@ class Panel:
             )
         return np.asarray(column, dtype=np.float64)
 
+    def _labels(self) -> list[Any]:
+        """Each row's period label: its stamp, or under a declared calendar or step the earliest
+        stamp logged in its period, so that the rows of one period share one label."""
+        column = self.columns[self.time]
+        frequency = self.provenance.frequency
+        if frequency is None or frequency == "observed":
+            return column.tolist()
+        periods = _ordinals(column, frequency)
+        _, inverse = np.unique(periods, return_inverse=True)
+        order = np.lexsort((column, periods))  # by period, then by stamp
+        earliest = order[np.unique(periods[order], return_index=True)[1]]
+        return column[earliest][inverse].tolist()
+
     def _first_hole(self) -> tuple[Any, Any]:
-        present = set(
-            zip(self.columns[self.unit].tolist(), self.columns[self.time].tolist(), strict=True)
-        )
+        present = set(zip(self.columns[self.unit].tolist(), self._labels(), strict=True))
         for label in self.units:
             for period in self.periods:
                 if (label, period) not in present:
                     return label, period
         raise AssertionError("panel is balanced; _first_hole must not be called")
+
+
+def _frequency(column: NDArray[Any], frequency: object, name: str) -> str | float | None:
+    """``frequency`` as :class:`Provenance` records it, a step as a float, once the time column
+    can be read in it."""
+    if frequency is None:
+        return None
+    if frequency == "observed":
+        return "observed"
+    if isinstance(frequency, str):
+        if frequency not in _CALENDAR:
+            raise PanelError(
+                f"frequency {frequency!r} is none of {', '.join(map(repr, _CALENDAR))}, a positive "
+                "step or 'observed'"
+            )
+        if column.dtype.kind != "M":
+            raise PanelError(
+                f"frequency {frequency!r} reads dates, and time column {name!r} holds "
+                f"{column.dtype}; numbers take a positive step"
+            )
+        return frequency
+    step = (
+        float(frequency)
+        if isinstance(frequency, numbers.Real) and not isinstance(frequency, bool | np.bool_)
+        else math.nan
+    )
+    if not 0.0 < step < math.inf:
+        raise PanelError(
+            f"frequency {frequency!r} is no positive step, nor one of "
+            f"{', '.join(map(repr, _CALENDAR))} or 'observed'"
+        )
+    if column.dtype.kind not in "iuf":
+        raise PanelError(
+            f"a step of {frequency} reads numbers, and time column {name!r} holds {column.dtype}; "
+            f"dates take one of {', '.join(map(repr, _CALENDAR))}"
+        )
+    if column.size:
+        off = np.flatnonzero(_whole_steps(column - column.min(), step)[1])
+        if off.size:
+            row = int(off[0])
+            raise PanelError(
+                f"time column {name!r} is {column[row]} at row {row}, which is no whole number of "
+                f"steps of {step:g} from its first period, {column.min()}"
+            )
+    return step
+
+
+def _whole_steps(offsets: NDArray[Any], step: float) -> tuple[NDArray[np.int64], NDArray[np.bool_]]:
+    """Each offset as a whole number of steps, and where it is not one: exactly for whole numbers
+    over a whole step, to a part in 1e9 otherwise."""
+    if offsets.dtype.kind in "iu" and float(step).is_integer():
+        whole, rest = np.divmod(offsets, int(step))
+        return whole.astype(np.int64), rest != 0
+    ratio = offsets / step
+    whole = np.rint(ratio)
+    return whole.astype(np.int64), ~np.isclose(ratio, whole, rtol=1e-9, atol=1e-9)
+
+
+def _ordinals(column: NDArray[Any], frequency: str | float) -> NDArray[np.int64]:
+    """Each row's period under a declared calendar or step: a date's count of days, weeks, months,
+    quarters or years since 1970, a number's count of steps from the first period."""
+    if isinstance(frequency, str):
+        unit = "M" if frequency == "Q" else frequency
+        counted = column.astype(f"datetime64[{unit}]").astype(np.int64)
+        return counted // 3 if frequency == "Q" else counted
+    if not column.size:
+        return np.zeros(0, dtype=np.int64)
+    return _whole_steps(column - column.min(), frequency)[0]
+
+
+def _grid_steps(column: NDArray[Any]) -> NDArray[np.int64] | None:
+    """Each row's period as a whole number of the least spacing between the periods logged, where
+    every period is one; None for text and for periods off such a grid."""
+    if column.dtype.kind == "M":  # any resolution: `periods` holds ints at ns, datetimes above
+        column = column.astype(np.int64)
+    if column.dtype.kind not in "iuf":
+        return None
+    distinct = np.unique(column)
+    if distinct.size < 2:
+        return np.zeros(column.size, dtype=np.int64)
+    whole, off = _whole_steps(column - distinct[0], np.min(np.diff(distinct)))
+    return None if off.any() else whole
 
 
 def installed_version() -> str:

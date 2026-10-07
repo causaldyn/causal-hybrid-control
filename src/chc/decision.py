@@ -81,7 +81,7 @@ from chc.independence import gcm_test
 from chc.integrate import rk4_step
 from chc.lqr import linearize_continuous, linearize_discrete
 from chc.mpc import PeriodBudget, _period_rows
-from chc.panel import Panel, Provenance
+from chc.panel import Panel, Provenance, _grid_steps, _ordinals
 from chc.plan import (
     BarrierConstraint,
     CausalPlan,
@@ -2021,31 +2021,21 @@ def _period_steps(panel: Panel) -> NDArray[np.int64]:
     """Each row's period as a step on the panel's time grid: two periods are one step apart only
     where no period lies between them.
 
-    Periods that are numbers or dates sit on the grid of their smallest spacing where every period
-    falls on it, so a period no unit logged still parts the two on either side of it. Periods off
-    such a grid, calendar months among them, and text are ranked as :meth:`chc.panel.Panel.codes`
-    ranks them: the periods logged are the grid, and a period no unit logged is not seen. A
-    number read as a grid point and not as a position, such as 202412 for a month, puts each year's
-    turn 89 steps from the month before it, so no transition crosses it.
+    The grid is the panel's declared ``frequency``, a calendar's or a step's, where it has one, so
+    a period no unit logged still parts the two on either side of it; ``"observed"`` ranks the
+    periods as :meth:`chc.panel.Panel.codes` ranks them. Undeclared, periods that are numbers or
+    dates sit on the grid of their smallest spacing where every period falls on it. Periods off
+    such a grid, calendar months stamped as dates among them, and text are ranked: the periods
+    logged are the grid, and a period no unit logged is not seen. A number read as a grid point and
+    not as a position, such as 202412 for a month, puts each year's turn 89 steps from the month
+    before it, so no transition crosses it.
     """
-    _, ranks = panel.codes()
     column = np.asarray(panel[panel.time])
-    if column.dtype.kind == "M":  # any resolution: `periods` holds ints at ns, datetimes above
-        column = column.astype(np.int64)
-    distinct = np.unique(column)
-    if distinct.size < 2 or column.dtype.kind not in "iuf":
-        return ranks
-    offsets = column - distinct[0]
-    spacing = np.min(np.diff(distinct))
-    if column.dtype.kind in "iu":
-        if np.any(offsets % spacing):
-            return ranks
-        return (offsets // spacing).astype(np.int64)
-    steps = offsets / spacing
-    grid = np.rint(steps)
-    if not np.allclose(steps, grid, rtol=1e-9, atol=1e-9):
-        return ranks
-    return grid.astype(np.int64)
+    frequency = panel.provenance.frequency
+    if frequency is not None and frequency != "observed":
+        return _ordinals(column, frequency)
+    steps = None if frequency == "observed" else _grid_steps(column)
+    return panel.codes()[1] if steps is None else steps
 
 
 def _transitions(

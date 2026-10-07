@@ -17,9 +17,33 @@ still change).
   start a plan was made from. The report states it under the decision's heading, and `to_json`
   writes it as `start`, a period as a JSON number or text, a date in ISO 8601. The schema version
   stays 2: a field was added, and none changed its meaning.
+- **`Panel.from_frame` takes the calendar its periods are read on, as `frequency`.** For dates,
+  `"D"`, `"W"`, `"M"`, `"Q"` or `"Y"`: a row's period is the day, week, month, quarter or year
+  its stamp falls in, by numpy's calendar units, so one monthly calendar stamped as months, as
+  days or as nanoseconds gives the same transitions. For numbers, a positive step: a period is a
+  whole number of steps from the first, counted exactly for whole numbers. `"observed"` reads the
+  periods in the order logged. Declared monthly, a month no unit logged parts the months on either
+  side of it, where month ends were ranked and June to August read as one step; a year's end, and
+  a February stamped on the 29th, are one step like any other. A unit with two rows in one declared
+  period, and a number off the declared step, are refused, naming the rows. The rows of one period
+  share one label, the earliest stamp logged in it. `Provenance` records the frequency, its JSON
+  writes it, and the data hash takes it in where one is declared; an undeclared panel hashes as
+  before.
+
+### Deprecated
+
+- **Dates off a uniform grid, read with no `frequency`, warn.** Months, quarters and years stamped
+  as dates lie on no uniform grid, so their periods are read in the order logged, and a period no
+  unit logged is not seen. `Panel.from_frame` now emits a `FutureWarning` that names `frequency`.
+  From 0.16 such dates are refused unless a frequency is declared, `"observed"` among them.
+  Numbers, and dates on a uniform grid, weekly ones among them, are read as before.
 
 ### Fixed
 
+- **A missing date is refused, as a nan is.** `Panel.from_frame` took a `NaT` in the time column,
+  and the panel's periods then failed to sort, a `TypeError` that compared a date or a number with
+  `None`. It now raises `PanelError` naming the column, the unit and the time, as for a nan, in any
+  column of dates or durations. Since 0.5.0.
 - **A given start that is not one finite value per state is refused, and an integer one is read
   as floats.** `prescribe` passed `x0` to the plan unchecked. A start of the wrong length or shape
   failed inside jax with a `TypeError` or a `ValueError`. A nan or an infinite one planned no

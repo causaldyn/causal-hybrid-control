@@ -11,6 +11,7 @@ import copy
 import datetime as dt
 import json
 import pickle
+import warnings
 from decimal import Decimal
 from fractions import Fraction
 from uuid import UUID
@@ -477,7 +478,7 @@ _NOT_READ = ", so the column is not read as numbers"
             r"dtype StringDType\(\), which holds text",
         ),
         (
-            np.array(["2024-01-01", "NaT", "2024-01-03"], dtype="datetime64[D]"),
+            np.array(["2024-01-01", "2024-01-02", "2024-01-03"], dtype="datetime64[D]"),
             r"np\.datetime64\('2024-01-01'\)",
             r"dtype datetime64\[D\], which holds dates or times",
         ),
@@ -525,9 +526,10 @@ def test_a_column_that_is_not_numbers_is_held_and_refused_when_read_as_numbers(
     values: np.ndarray, shown: str, why: str
 ) -> None:
     """NumPy's cast to float64 read the text ``"0.5"`` as 0.5 and ``"nan"`` as nan, a date as its
-    count of days and NaT as -9.2e18, a duration as its count of seconds and a complex number as
-    its real part, and ``wide`` returned what it read. The panel holds such a column, as it holds
-    a label, and refuses it where it is read as numbers, naming the unit and the time of row 0."""
+    count of days, a duration as its count of seconds and a complex number as its real part, and
+    ``wide`` returned what it read. The panel holds such a column, as it holds a label, and refuses
+    it where it is read as numbers, naming the unit and the time of row 0. A NaT, which the cast
+    read as -9.2e18, the panel refuses as it refuses a nan."""
     data = _labelled()
     data["y"] = values
     panel = Panel.from_frame(data, unit="unit", time="time")
@@ -652,3 +654,154 @@ def test_an_empty_column_has_no_value_to_refuse() -> None:
     empty = {name: column[:0] for name, column in _labelled().items()}
     empty["y"] = np.array([], dtype="<U3")
     assert Panel.from_frame(empty, unit="unit", time="time").wide("y").shape == (0, 0)
+
+
+def _dated(
+    stamps: list[str], homes: list[str] | None = None, unit: str = "D"
+) -> dict[str, np.ndarray]:
+    """One row per stamp, each of home ``a`` unless ``homes`` names its home."""
+    return {
+        "home": np.array(homes if homes is not None else ["a"] * len(stamps)),
+        "month": np.array(stamps, dtype=f"datetime64[{unit}]"),
+        "week": np.arange(len(stamps)),
+        "label": np.array([f"p{row}" for row in range(len(stamps))]),
+        "y": np.arange(len(stamps), dtype=float),
+    }
+
+
+@pytest.mark.parametrize(
+    ("frequency", "stamps"),
+    [
+        ("M", ["2024-01-05", "2024-01-20"]),
+        ("Q", ["2024-01-01", "2024-03-31"]),
+        ("Y", ["2024-01-01", "2024-12-31"]),
+        ("W", ["2024-01-04", "2024-01-10"]),  # numpy's weeks run from a Thursday, as 1970-01-01
+    ],
+)
+def test_a_unit_with_two_rows_in_one_declared_period_is_refused(
+    frequency: str, stamps: list[str]
+) -> None:
+    """Declared monthly, the 5th and the 20th of January are one period, so a home logged on both
+    has two rows in it, as a home logged twice on one day has undeclared."""
+    with pytest.raises(
+        PanelError,
+        match=rf"unit 'a' has rows 0 and 1 in one period of frequency '{frequency}', at "
+        rf"{stamps[0]} and {stamps[1]}",
+    ):
+        Panel.from_frame(_dated(stamps), unit="home", time="month", frequency=frequency)
+    assert Panel.from_frame(_dated(stamps), unit="home", time="month", frequency="D").n_periods == 2
+
+
+def test_two_numbers_within_a_part_in_1e9_of_one_step_are_one_period() -> None:
+    frame = {"home": np.array(["a", "a"]), "t": np.array([0.3, 0.1 * 3]), "y": np.zeros(2)}
+    with pytest.raises(PanelError, match=r"has rows 0 and 1 in one period of frequency 0\.1"):
+        Panel.from_frame(frame, unit="home", time="t", frequency=0.1)
+
+
+def test_the_rows_of_one_declared_period_share_its_earliest_stamp() -> None:
+    """Two homes stamp January and February on different days. Declared monthly, the panel has two
+    periods, each named by the earliest stamp logged in it, and no hole; undeclared, four periods
+    and two holes."""
+    frame = _dated(
+        ["2024-01-31", "2024-02-29", "2024-01-15", "2024-02-15"], homes=["a", "a", "b", "b"]
+    )
+    monthly = Panel.from_frame(frame, unit="home", time="month", frequency="M")
+    assert monthly.periods == (dt.date(2024, 1, 15), dt.date(2024, 2, 15))
+    assert monthly.codes()[1].tolist() == [0, 1, 0, 1]
+    assert monthly.wide("y").tolist() == [[0.0, 1.0], [2.0, 3.0]]
+    with pytest.warns(FutureWarning, match="frequency"):
+        undeclared = Panel.from_frame(frame, unit="home", time="month")
+    assert undeclared.n_periods == 4
+    assert not undeclared.is_balanced
+
+
+@pytest.mark.parametrize(
+    ("time", "frequency", "message"),
+    [
+        ("week", "M", r"frequency 'M' reads dates, and time column 'week' holds int64"),
+        ("label", "M", r"frequency 'M' reads dates, and time column 'label' holds <U2"),
+        ("month", 7, r"a step of 7 reads numbers, and time column 'month' holds datetime64\[D\]"),
+        ("label", 1, r"a step of 1 reads numbers, and time column 'label' holds <U2"),
+        ("month", "month", r"frequency 'month' is none of 'D', 'W', 'M', 'Q', 'Y', a positive"),
+        ("month", "m", r"frequency 'm' is none of"),
+        ("week", 0, r"frequency 0 is no positive step"),
+        ("week", -1.0, r"frequency -1.0 is no positive step"),
+        ("week", float("nan"), r"frequency nan is no positive step"),
+        ("week", float("inf"), r"frequency inf is no positive step"),
+        ("week", True, r"frequency True is no positive step"),
+    ],
+)
+def test_a_frequency_the_time_column_cannot_be_read_in_is_refused(
+    time: str, frequency: object, message: str
+) -> None:
+    frame = _dated(["2024-01-31", "2024-02-29"])
+    with pytest.raises(PanelError, match=message):
+        Panel.from_frame(frame, unit="home", time=time, frequency=frequency)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("periods", "step", "message"),
+    [
+        ([3, 10, 18], 7, r"time column 't' is 18 at row 2, which is no whole number of steps"),
+        ([0.0, 0.1, 0.25], 0.1, r"time column 't' is 0.25 at row 2, which is no whole number of "),
+        ([0, 7, 7 * 10**12 + 1], 7, r"is 7000000000001 at row 2"),
+    ],
+)
+def test_a_period_off_the_declared_step_is_refused(
+    periods: list[float], step: float, message: str
+) -> None:
+    """Whole numbers are counted exactly, so 7e12 + 1 is off a step of 7 though it is within a
+    part in 1e9 of one; other numbers to a part in 1e9."""
+    frame = {"home": np.array(["a"] * 3), "t": np.array(periods), "y": np.zeros(3)}
+    with pytest.raises(PanelError, match=message):
+        Panel.from_frame(frame, unit="home", time="t", frequency=step)
+
+
+def test_dates_off_a_uniform_grid_warn_until_a_frequency_is_declared() -> None:
+    """Month ends are 29 to 31 days apart, so undeclared they are read in the order logged; the
+    warning names the keyword that says otherwise. Weekly dates and numbers lie on a grid, and a
+    declared frequency, ``"observed"`` among them, is not warned about."""
+    months = _dated(["2024-01-31", "2024-02-29", "2024-03-31"])
+    with pytest.warns(FutureWarning, match=r"time column 'month' holds dates on no uniform grid"):
+        Panel.from_frame(months, unit="home", time="month")
+    weeks = _dated(["2024-01-01", "2024-01-08", "2024-01-22"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for frequency in ("M", "observed"):
+            Panel.from_frame(months, unit="home", time="month", frequency=frequency)
+        Panel.from_frame(weeks, unit="home", time="month")
+        Panel.from_frame(months, unit="home", time="week")
+
+
+def test_the_frequency_is_recorded_and_hashed() -> None:
+    """Two readings of one frame are two datasets, so the declared frequency enters the hash; a
+    whole-number step is recorded as the number it is, so 1 and 1.0 are one reading. Undeclared,
+    the hash is the frame's, as it was before the keyword."""
+    frame = _dated(["2024-01-07", "2024-01-14", "2024-01-21"], homes=["a", "b", "c"])
+
+    def read(time: str, frequency: object) -> Panel:
+        return Panel.from_frame(frame, unit="home", time=time, frequency=frequency)  # type: ignore[arg-type]
+
+    undeclared = read("month", None)
+    assert undeclared.provenance.frequency is None
+    assert undeclared.provenance.data_sha256 == _fingerprint(undeclared.columns)
+    assert undeclared.provenance.to_json()["frequency"] is None
+    readings = [read("month", frequency) for frequency in ("D", "W", "M", "Q", "Y", "observed")]
+    recorded = [panel.provenance.frequency for panel in readings]
+    assert recorded == ["D", "W", "M", "Q", "Y", "observed"]
+    assert json.loads(json.dumps(readings[2].provenance.to_json()))["frequency"] == "M"
+    hashes = {panel.provenance.data_sha256 for panel in [undeclared, *readings]}
+    assert len(hashes) == 7
+    whole, real = read("week", 1), read("week", 1.0)
+    assert whole.provenance.frequency == real.provenance.frequency == 1.0
+    assert whole.provenance.data_sha256 == real.provenance.data_sha256
+    assert whole.provenance.data_sha256 != read("week", None).provenance.data_sha256
+
+
+@pytest.mark.parametrize("unit", ["D", "ns"])
+def test_a_missing_date_is_refused_as_a_nan_is(unit: str) -> None:
+    """A ``NaT`` in the time column was taken, and the panel's periods then failed to sort, a date
+    or a number against ``None``."""
+    frame = _dated(["2024-01-31", "NaT", "2024-03-31"], homes=["a", "a", "b"], unit=unit)
+    with pytest.raises(PanelError, match=r"column 'month' is NaT for unit .*\(1 of 3 rows are not"):
+        Panel.from_frame(frame, unit="home", time="month", frequency="M")
