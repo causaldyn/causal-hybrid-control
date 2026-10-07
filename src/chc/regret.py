@@ -6509,19 +6509,21 @@ def panel_estimator_certificate(
     300 draws per cell, this routine at its defaults under float32::
 
         g   phi  predicted  measured           95% CI   covers
-        2   0.3     0.8241    0.7689  [0.6668, 0.8953]   yes
-        6   0.3     0.9343    0.9941  [0.8816, 1.1057]   yes
-        20  0.3     0.9794    0.9715  [0.9088, 1.0416]   yes
-        2   0.9     0.4689    0.3241  [0.2402, 0.4336]   no
-        6   0.9     0.7396    0.5764  [0.4714, 0.7021]   no
-        20  0.9     0.9064    0.7569  [0.6515, 0.8901]   no
+        2   0.3     0.8241    0.7521  [0.6501, 0.8811]   yes
+        6   0.3     0.9343    1.0087  [0.8921, 1.1267]   yes
+        20  0.3     0.9794    0.9702  [0.9072, 1.0420]   yes
+        2   0.9     0.4689    0.3566  [0.2743, 0.4671]   no
+        6   0.9     0.7396    0.5781  [0.4668, 0.7126]   no
+        20  0.9     0.9064    0.7556  [0.6467, 0.8912]   no
 
     Where the effect is large enough to resolve, the verdict is sharp. At ``phi = 0.9`` every
     interval excludes 1 on the predicted side, the ratio washes out toward 1 with ``g`` exactly as
     the algebra says, and the functional is CONSERVATIVE in every cell -- the real estimator gains
-    more from the good partition than ``Psi`` predicts, by 17% to 31% -- with the interval excluding
+    more from the good partition than ``Psi`` predicts, by 17% to 24% -- with the interval excluding
     the prediction each time. ``seed=20000``, and the default seeds under ``jax_enable_x64``, repeat
-    all of it in every cell (15% to 32%). **As a ranking rule the functional holds; as a point
+    the conservatism in every cell, by 14% to 26%, and every interval there excludes 1, but three of
+    their six intervals cover the prediction: at ``g = 2`` on both streams, and at ``g = 20`` on
+    ``seed=20000``. **As a ranking rule the functional holds; as a point
     predictor of an estimator's variance ratio it does not**, and Result 51's scope note is now
     specific rather than cautious. The likely reason is in plain sight: ``Psi`` models the
     nuisance step as an exact projection onto fold indicators, while the estimator uses a ridge
@@ -6530,7 +6532,7 @@ def panel_estimator_certificate(
     At ``phi = 0.3`` the predicted reduction is 18% at ``g = 2`` -- resolved from 1 on all three
     streams, and covered -- and 2% to 7% at ``g >= 6``, below what 300 draws can see: the six
     estimates there, across the three streams, span 0.80 to 1.04, on both sides of the prediction
-    and of 1.
+    and of 1, and one of their six intervals, ``seed=20000``'s at ``g = 6``, excludes both.
 
     The gates are the three claims the functional makes: sign agreement in every cell, washout in
     both sequences, and conservatism. At ``phi = 0.9`` they hold on every stream tried. At
@@ -6539,9 +6541,12 @@ def panel_estimator_certificate(
     which is what it should report. Coverage is counted and reported, never gated -- a certificate
     that gated on it would have to be tuned until it passed, which is the opposite of a gate.
 
-    TWO SAMPLING FACTS THIS DEPENDS ON. ``draws`` must not be small: a sample variance ratio from a
-    few dozen paired draws is biased toward 1, and at 40 draws the conservatism finding flips on a
-    lucky sample where it holds comfortably from 80 up. And
+    TWO SAMPLING FACTS THIS DEPENDS ON. ``draws`` must not be small: a variance ratio from a few
+    dozen paired draws is noisy, and the conservatism finding rests on the two-cluster cell. At
+    ``phi = 0.9`` on the default seeds it holds under float32 at 40, 80, 120 and 300 draws; under
+    ``jax_enable_x64`` it fails at 40, 80 and 120, the default, where the two-cluster ratio reads
+    0.544, 0.537 and 0.484 against the prediction 0.469, and holds at 300, where the table and the
+    claims above were measured. And
     :meth:`chc.network_causal.DelayedNetworkPanel.sample` derives its NumPy seed from a JAX key, so
     the panel DRAWN AT A GIVEN SEED DIFFERS between ``jax_enable_x64`` settings -- ``randint`` on
     the same key returns 1563838340 at x32 and 358276949 at x64 -- which is why the x64 run above

@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc import causal
+from chc import _units, causal
 from chc.causal import (
     ConfoundedLinearSystem,
     dml_point_and_se,
@@ -489,9 +489,9 @@ def test_the_nuisance_ridge_reads_the_same_with_a_column_far_from_zero(moved: st
     ids=["zeros", "0.1 to its last bit", "1e6 to its last bit"],
 )
 def test_a_constant_column_moves_no_nuisance_prediction(column, x64: bool) -> None:
-    """A column whose spread is at most 64 eps of its root mean square counts as constant and keeps
-    its mean square as its ridge, and a column of zeros a ridge of 1: the predictions do not move,
-    in either precision. With its ridge scaled by its own spread, the rounding of a column constant
+    """A column whose spread is at most 64 eps of its root mean square is rounding, and a column of
+    zeros too: each is zeroed, with a ridge of 1, and the predictions do not move, in either
+    precision. With its ridge scaled by its own spread, the rounding of a column constant
     to its last bit was fit as a column of its own size, and moved the predictions by 0.0063 of the
     target's spread at 1e6; a floor of 1e-12 of the root mean square, below float32's rounding,
     counted that rounding as spread in float32, and moved them by 0.018 there. With one ridge on
@@ -518,8 +518,8 @@ def _near_constant() -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
 
 def _coefficients(train: jax.Array, target: jax.Array) -> jax.Array:
     """The intercept and the slopes the nuisance ridge fits."""
-    level, centre, slopes = causal._centred_ridge_fit(train, target, 1.0)
-    return jnp.concatenate([jnp.atleast_1d(level - centre @ slopes), slopes])
+    level, centre, shift, slopes = causal._centred_ridge_fit(train, target, 1.0)
+    return jnp.concatenate([jnp.atleast_1d(level - centre @ slopes - shift @ slopes), slopes])
 
 
 def test_a_column_just_above_the_constant_floor_keeps_its_slope() -> None:
@@ -544,10 +544,11 @@ def test_a_column_just_above_the_constant_floor_keeps_its_slope() -> None:
 
 
 def test_a_column_just_below_the_constant_floor_takes_no_coefficient() -> None:
-    """A column whose spread is 16 eps of its root mean square counts as constant and keeps its mean
-    square as its ridge: its coefficient reads -2.2e-14, and the others read those of the fit with
-    the column all zero, to 2.2e-14. Counted as varying, as any spread above zero would count it,
-    its ridge shrank with its spread and its sign pattern was fit at full size: the coefficient read
+    """A column whose spread is 16 eps of its root mean square is rounding, and is zeroed: its
+    coefficient reads exactly 0, and the others read those of the fit with the column all zero, bit
+    for bit. Kept with its mean square as its ridge, its coefficient read -2.2e-14, and the others
+    those of that fit to 2.2e-14. Counted as varying, as any spread above zero would count it, its
+    ridge shrank with its spread and its sign pattern was fit at full size: the coefficient read
     -8.5e12, and the intercept 8.5e12 where it reads 1.02. With one ridge on the intercept and on
     every column alike, the column took half the intercept, 0.51."""
     x, _, signs, y = _near_constant()
@@ -555,20 +556,21 @@ def test_a_column_just_below_the_constant_floor_takes_no_coefficient() -> None:
     eps = float(jnp.finfo(y.dtype).eps)
     below = _coefficients(jnp.column_stack([ones, x, 1.0 + 16 * eps * signs]), y)
     zero = _coefficients(jnp.column_stack([ones, x, jnp.zeros(200)]), y)
-    assert abs(float(below[2])) < 1e-6
-    assert float(jnp.max(jnp.abs(below[:2] - zero[:2]))) < 1e-6
+    assert float(below[2]) == 0.0
+    assert bool(jnp.array_equal(below[:2], zero[:2]))
 
 
 @pytest.mark.parametrize("x64", [False, True], ids=["float32", "float64"])
-@pytest.mark.parametrize("rows", [100, 10_000, 1_000_000])
-@pytest.mark.parametrize("value", [21.3, 0.1])
+@pytest.mark.parametrize("rows", [100, 1000, 10_000, 1_000_000])
+@pytest.mark.parametrize("value", [21.3, 0.1, 1e-13])
 def test_an_exactly_constant_column_reads_no_spread(value: float, rows: int, x64: bool) -> None:
     """A column whose entries are all equal reads a spread of exactly 0, and counts as rounding.
     Its computed mean is rounded, and deviations from that mean read the rounding as a spread: 1.5
     eps of the column's root mean square at 21.3 in 100 rows of float32, and up to 1.25 eps at 0.1
-    in float64."""
+    in float64. Centred twice, the deviations still read 2.7e-7 eps at 1e-13 in 1000 rows of
+    float32."""
     with enable_x64(x64):
-        spread, rounding = causal._spread_and_rounding(jnp.full((rows, 1), value))
+        spread, rounding = _units.spread_and_rounding(jnp.full((rows, 1), value))
     assert float(spread[0]) == 0.0
     assert bool(rounding[0])
 
@@ -628,14 +630,17 @@ def test_the_refutation_reads_the_same_with_the_outcome_in_any_units(units: floa
         assert other[name] / units == pytest.approx(one[name], rel=1e-9, abs=0.0), name
 
 
-@pytest.mark.parametrize("units", [1e-9, 1e-6, 1e-3, 1e3, 1e6])
+@pytest.mark.parametrize("units", [1e-20, 1e-9, 1e-6, 1e-3, 1e3, 1e6, 1e20])
 def test_the_adjusted_effect_reads_the_same_with_the_action_in_any_units_in_float32(
     units: float,
 ) -> None:
     """Least squares cut its rank at a share of the largest singular value, 2.4e-4 of it in float32
     at 2000 rows: in millionths of its units, the action fell under the cutoff and the adjusted
     effect read 0 where it reads 1.0015, with a standard error ten times its own; in millions, the
-    action pushed the other columns under it, and the effect read 0.035."""
+    action pushed the other columns under it, and the effect read 0.035. Each size is taken
+    relative to its column's largest entry, so no square under- or overflows: the action's spread,
+    taken directly, read 0 at 1e-20 of its units, and the E-value 1 where it reads 7.51, and at
+    1e20 it overflowed, and the E-value read inf."""
     with enable_x64(False):
         data = ConfoundedLinearSystem(gamma=0.8).sample(2_000, jax.random.key(0))
         moved = {**data, "u": data["u"] * units}
@@ -662,6 +667,21 @@ def test_two_stage_least_squares_reads_the_same_with_the_instrument_in_any_units
         one = float(estimate_effect_iv(data))
         other = float(estimate_effect_iv({**data, "w": data["w"] * units}))
     assert other == pytest.approx(one, rel=1e-4, abs=0.0)
+
+
+@pytest.mark.parametrize("power", [-30, 3, 40])
+def test_the_adjusted_effect_reads_the_same_bits_with_the_action_in_power_of_two_units(
+    power: int,
+) -> None:
+    """Least squares scales each column by the power of two nearest the reciprocal of its root mean
+    square, which ``jnp.ldexp`` makes exactly, so an action logged in ``2**power`` of its units
+    reads the same effect over ``2**power`` to the bit. ``jnp.exp2`` is inexact on XLA's CPU
+    backend: in float64 it returns 2**k exactly for 21 of the integers from -120 to 120."""
+    data = _data()
+    units = 2.0**power
+    one = float(estimate_control_effect(data, ("z",)))
+    other = float(estimate_control_effect({**data, "u": data["u"] * units}, ("z",)))
+    assert other * units == one
 
 
 def test_a_column_of_zeros_among_the_covariates_moves_no_estimate() -> None:

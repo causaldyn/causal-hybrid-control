@@ -26,6 +26,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from chc import _units
 from chc.games import softmax_congestion_equilibrium, stackelberg_allocation
 
 
@@ -103,23 +104,6 @@ class ExposureResponse:
     se: Array  # (n_zones,) heteroskedastic-robust SE of ``marginal``
 
 
-def _ridge_scales(columns: Array) -> tuple[Array, Array]:
-    """Each column's variance about its mean, the scale of its ridge beside a free intercept, and
-    which columns count as constant. A column whose spread about its mean is at most 64 epsilons
-    of its dtype times its root mean square counts as constant: its centred values are zeroed, so
-    its coefficient is exactly zero, and its ridge is scaled by 1, which keeps the solve regular
-    and moves nothing else. The spread is the corrected two-pass variance of Chan, Golub and
-    LeVeque (1983), the deviations' own mean taken off their mean square: a constant column
-    deviates from its computed mean by that mean's rounding alone, which squared would read as a
-    spread in float32 at any length."""
-    size = jnp.mean(columns**2, axis=0)
-    deviation = columns - jnp.mean(columns, axis=0)
-    variance = jnp.mean(deviation**2, axis=0) - jnp.mean(deviation, axis=0) ** 2
-    rounding = (64.0 * jnp.finfo(size.dtype).eps) ** 2
-    constant = variance <= rounding * size
-    return jnp.where(constant, 1.0, variance), constant
-
-
 def _zone_slope(u: Array, y: Array, extra: Array) -> tuple[Array, Array]:
     """Per-zone OLS slope of ``y`` on ``u`` controlling ``extra`` (blocks x k), + robust SE. Returns
     the incentive slope and its sandwich SE.
@@ -131,18 +115,18 @@ def _zone_slope(u: Array, y: Array, extra: Array) -> tuple[Array, Array]:
     read a response no log can identify. The slopes and their sandwich are solved about the
     columns' means, where the intercept drops out of both: in the Gram of the raw columns a
     column's spread drowns in the rounding of its offset, and an incentive constant but for 1e-11
-    of its size read a slope of zero. A column that counts as constant is zeroed about its mean,
-    so an incentive that does reads a slope and an SE of exactly zero. The deviations' own mean is
-    taken off them too: in float32, JAX's default, a mean is rounded to about 1e-7 of its size,
-    which an incentive near constant carries into the residuals through its large slope; without
-    it, one whose spread is about 100 epsilons of its size read an SE 1.2e-3 off.
+    of its size read a slope of zero. A column whose spread is rounding (:mod:`chc._units`) is
+    zeroed about its mean, so an incentive logged at one level reads a slope and an SE of exactly
+    zero, and its ridge scale is 1, which keeps the solve regular and moves nothing else. The
+    deviations' own mean is taken off them too: in float32, JAX's default, a mean is rounded to
+    about 1e-7 of its size, which an incentive near constant carries into the residuals through its
+    large slope; without it, one whose spread is about 100 epsilons of its size read an SE 1.2e-3
+    off.
     """
-    columns = jnp.concatenate([u[:, None], extra], axis=1)
-    scales, constant = _ridge_scales(columns)
-    centred = columns - jnp.mean(columns, axis=0)
-    centred = jnp.where(constant, 0.0, centred - jnp.mean(centred, axis=0))
+    columns = _units.centred(jnp.concatenate([u[:, None], extra], axis=1))
+    centred = columns.deviations
     outcome = y - jnp.mean(y)
-    gram_inv = jnp.linalg.inv(centred.T @ centred + jnp.diag(1e-4 * scales))
+    gram_inv = jnp.linalg.inv(centred.T @ centred + jnp.diag(1e-4 * columns.scales))
     coef = gram_inv @ centred.T @ outcome
     resid = outcome - centred @ coef
     meat = (centred * resid[:, None]).T @ (centred * resid[:, None])

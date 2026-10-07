@@ -34,6 +34,7 @@ from jax import Array
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike, NDArray
 
+from chc import _units
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.dynamics_id import Integrator
@@ -1457,25 +1458,6 @@ def confounding_cost_bound_certificate(
 # --- Result 32 (A19): Gamma is unfalsifiable only if nobody benchmarks it ---
 
 
-def _ridge_scales(
-    columns: NDArray[np.float64],
-) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
-    """Each column's variance about its mean, the scale of its ridge beside a free intercept, and
-    which columns count as constant. A column whose spread about its mean is at most 64 epsilons
-    of its dtype times its root mean square counts as constant: its centred values are zeroed, so
-    its coefficient is exactly zero, and its ridge is scaled by 1, which keeps the solve regular
-    and moves nothing else. The spread is the corrected two-pass variance of Chan, Golub and
-    LeVeque (1983), the deviations' own mean taken off their mean square: a constant column
-    deviates from its computed mean by that mean's rounding alone, which squared would read as a
-    spread past 1e5 rows."""
-    size = np.mean(columns**2, axis=0)
-    deviation = columns - np.mean(columns, axis=0)
-    variance = np.mean(deviation**2, axis=0) - np.mean(deviation, axis=0) ** 2
-    rounding = (64.0 * np.finfo(size.dtype).eps) ** 2
-    constant = variance <= rounding * size
-    return np.where(constant, 1.0, variance), constant
-
-
 def _logistic_fit(
     design: NDArray[np.float64],
     treated: NDArray[np.float64],
@@ -1492,23 +1474,24 @@ def _logistic_fit(
     millionths of its units and set its slope near zero. Each Newton step solves for the slopes
     about the columns' means under that step's weights and recovers the intercept from them: in
     the Hessian of the raw columns a column's spread drowns in the rounding of its offset, and one
-    constant but for 1e-11 of its size left it singular. A column that counts as constant is zeroed
-    about its mean, so its slope is exactly zero. ``design``'s first column is the intercept's.
+    constant but for 1e-11 of its size left it singular. A column whose spread is rounding
+    (:mod:`chc._units`) is zeroed about its mean, so its slope is exactly zero, and its ridge scale
+    is 1. ``design``'s first column is the intercept's.
     Converges in a handful of steps on the well-separated designs a benchmark sweeps, and the
     iteration is stopped on the coefficient step rather than the likelihood, which is what a caller
     comparing two *nested* fits needs: the difference of two half-converged logits is not an odds
     ratio.
     """
     columns = design[:, 1:]
-    scales, constant = _ridge_scales(columns)
-    penalty = ridge * scales
+    measured = _units.centred_np(columns)
+    penalty = ridge * measured.scales
     coefficients = np.zeros(design.shape[1], dtype=np.float64)
     for _ in range(steps):
         probability = 1.0 / (1.0 + np.exp(-design @ coefficients))
         weights = np.clip(probability * (1.0 - probability), 1e-12, None)
         residual = treated - probability
         mean = weights @ columns / np.sum(weights)
-        centred = np.where(constant, 0.0, columns - mean)
+        centred = np.where(measured.rounding, 0.0, columns - mean)
         hessian = centred.T @ (centred * weights[:, None]) + np.diag(penalty)
         slopes = np.linalg.solve(hessian, centred.T @ residual - penalty * coefficients[1:])
         step = np.concatenate([[np.sum(residual) / np.sum(weights) - mean @ slopes], slopes])

@@ -26,6 +26,7 @@ from collections.abc import Iterable
 import numpy as np
 from numpy.typing import NDArray
 
+from chc import _units
 from chc.frames import ColumnData, _numbers, _refuse_shared_names, as_columns
 
 Data = ColumnData
@@ -40,23 +41,6 @@ def _float64_columns(data: Data, names: Iterable[str]) -> dict[str, Vector]:
     return {name: _numbers(columns[name], name) for name in dict.fromkeys(names)}
 
 
-def _ridge_scales(columns: NDArray[np.float64]) -> tuple[Vector, NDArray[np.bool_]]:
-    """Each column's variance about its mean, the scale of its ridge beside a free intercept, and
-    which columns count as constant. A column whose spread about its mean is at most 64 epsilons
-    of its dtype times its root mean square counts as constant: its centred values are zeroed, so
-    its coefficient is exactly zero, and its ridge is scaled by 1, which keeps the solve regular
-    and moves nothing else. The spread is the corrected two-pass variance of Chan, Golub and
-    LeVeque (1983), the deviations' own mean taken off their mean square: a constant column
-    deviates from its computed mean by that mean's rounding alone, which squared would read as a
-    spread past 1e5 rows."""
-    size = np.mean(columns**2, axis=0)
-    deviation = columns - np.mean(columns, axis=0)
-    variance = np.mean(deviation**2, axis=0) - np.mean(deviation, axis=0) ** 2
-    rounding = (64.0 * np.finfo(size.dtype).eps) ** 2
-    constant = variance <= rounding * size
-    return np.where(constant, 1.0, variance), constant
-
-
 def _ridge_fit(design: NDArray[np.float64], target: Vector, ridge: float) -> Vector:
     """Ridge regression on a free intercept and ``design``, the ridge on each column's coefficient
     scaled by the column's variance, so that the fit reads the same in any units of a column and
@@ -65,15 +49,13 @@ def _ridge_fit(design: NDArray[np.float64], target: Vector, ridge: float) -> Vec
     would shrink the coefficient of a column that sits far from zero. The slopes are solved about
     the columns' means and the intercept recovered from them: in the Gram of the raw columns a
     column's spread drowns in the rounding of its offset, and one constant but for 1e-11 of its
-    size left it singular. A column that counts as constant is zeroed about its mean, so its
-    coefficient is exactly zero and the intercept carries its level."""
-    mean = np.mean(design, axis=0)
+    size left it singular. A column whose spread is rounding (:mod:`chc._units`) is zeroed about
+    its mean, so its coefficient is exactly zero and the intercept carries its level."""
+    columns = _units.centred_np(design)
     level = np.mean(target)
-    scales, constant = _ridge_scales(design)
-    centred = np.where(constant, 0.0, design - mean)
-    gram = centred.T @ centred + np.diag(ridge * scales)
-    slopes = np.linalg.solve(gram, centred.T @ (target - level))
-    return np.concatenate([[level - mean @ slopes], slopes])
+    gram = columns.deviations.T @ columns.deviations + np.diag(ridge * columns.scales)
+    slopes = np.linalg.solve(gram, columns.deviations.T @ (target - level))
+    return np.concatenate([[level - columns.centre @ slopes - columns.shift @ slopes], slopes])
 
 
 def _ridge_predict(beta: Vector, design: NDArray[np.float64]) -> Vector:

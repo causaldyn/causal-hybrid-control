@@ -23,6 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
+from chc import _units
 from chc.estimators import CausalEffectEstimator
 from chc.frames import _refuse_shared_names
 
@@ -89,6 +90,10 @@ def lalonde_ate(data: LalondeData, estimator: CausalEffectEstimator) -> float:
 
     Covariates are standardised (raw ``re74``/``re75`` earnings would blow up polynomial nuisances)
     and the outcome scaled to $1000s for conditioning, then the estimate scaled back to dollars.
+    Each covariate reaches the estimator at unit spread in any units, and one whose spread is
+    rounding (:mod:`chc._units`) at 0 in every row: a floor of 1e-9 added to the spread was in the
+    covariate's units, and earnings with a spread of 5,000 dollars, logged in units of 1e13
+    dollars, reached it at a third of their spread.
 
     Raises:
         ValueError: when a covariate is named ``treat`` or ``re78``, the names the estimator reads
@@ -99,7 +104,7 @@ def lalonde_ate(data: LalondeData, estimator: CausalEffectEstimator) -> float:
         {"the treatment": ("treat",), "the outcome": ("re78",), "a covariate": names}
     )
     matrix = np.column_stack([data.covariates[name] for name in names])
-    standardized = (matrix - matrix.mean(axis=0)) / (matrix.std(axis=0) + 1e-9)
+    standardized = _units.standardised_np(matrix)
     payload: dict[str, jnp.ndarray] = {
         "treat": jnp.asarray(data.treatment),
         "re78": jnp.asarray(data.outcome / 1000.0),

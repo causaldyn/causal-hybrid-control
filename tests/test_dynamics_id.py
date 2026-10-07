@@ -7,6 +7,7 @@ same rows.
 
 import dataclasses
 import functools
+import importlib
 import itertools
 import math
 from collections.abc import Callable
@@ -18,6 +19,7 @@ import pytest
 import scipy.linalg
 import scipy.stats
 
+from chc import _units
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
@@ -28,7 +30,6 @@ from chc.dynamics_id import (
     _less_below_nothing,
     _logged_relations,
     _ridge_inverse,
-    _ridge_scales,
     _ridge_weight,
     _robust_spreads,
     _solve_ridge,
@@ -42,6 +43,13 @@ from chc.dynamics_id import (
 from chc.integrate import rk4_step
 from chc.residual import ControlAffineResidual
 from chc.train import fit_residual
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 DRIFT = jnp.array([[-0.5, 0.1], [0.0, -0.3]])
 CHANNEL = jnp.array([[1.0], [0.5]])  # the estimand
@@ -1394,7 +1402,7 @@ def test_the_fit_reads_the_same_with_the_state_far_from_zero(
     size does: with the state a hundred spreads from zero the slopes moved by 3.8e-6 of the
     largest, and ten thousand away by 0.036; the channel, under the RK4 map, by 7.6e-8 and 7.3e-4.
     Solved on the uncentred Gram the slopes moved by 1.7e-11 and 4.3e-7, the rounding at the
-    offset's square; with the columns centred, by 2e-15 and 4e-13."""
+    offset's square; with the columns centred, by 5.9e-15 and 4.5e-13."""
     log = _policy_log(4000, _dithered)
     shifted = dict(log, x=log["x"] + offset, x_next=log["x_next"] + offset)
     settings = {"adjust_for": ("z",), "nuisance_degree": 2, "channel_degree": 0}
@@ -1467,8 +1475,9 @@ def test_the_channel_reads_the_same_with_the_adjustment_set_in_any_units(
     """The nuisances standardise the adjustment set, but took a column whose spread was under 1e-12
     in the caller's units for a constant and left it unscaled under their ridge: logged at 1e-13 of
     its units, the confounder was not adjusted for, and the channel moved by 1.27 and its error 2.6
-    times. A column is constant now to within 1e-12 of its own size, which an offset, as kelvin
-    carry, does not change; the offset's rounding of the column moves the channel by 3e-9."""
+    times. A column is rounding now when its spread is at most 64 eps of its own size (ADR 0057),
+    which an offset of the size kelvin carry does not make it; the offset's rounding of the column
+    moves the channel by 2.5e-9."""
     log = _policy_log(4000, _dithered)
     one, other = (
         fit_causal_residual(_known, data, 0.1, **RULED)
@@ -1478,6 +1487,51 @@ def test_the_channel_reads_the_same_with_the_adjustment_set_in_any_units(
         np.asarray(other.residual.channel), np.asarray(one.residual.channel), rtol=0.0, atol=1e-8
     )
     assert other.channel_error == pytest.approx(one.channel_error, rel=1e-8, abs=0.0)
+
+
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+@pytest.mark.parametrize(("state", "action"), [(1e-6, 1e6), (1e6, 1e-6)])
+def test_the_channel_reads_the_same_in_odd_units_far_from_zero_in_float32(
+    integrator: str, state: float, action: float
+) -> None:
+    """In float32, JAX's default, with the state and the confounder in ``state`` of their units, the
+    action in ``action`` of its own, and each column 300 of its units from zero, the channel and
+    its error read as at unit scale, to the log's own rounding. In float32 an entry 300 spreads
+    from zero is rounded by up to 1.6e-5 of the spread, and that rounding alone, fitted in float64,
+    moved the channel by up to 7.7e-5 on these logs; the float32 fit moved it by up to 6.9e-5, and
+    its error by 1.4e-4 of itself. The bounds, 2e-4, a sixteenth of the channel's error, and 1e-3,
+    are about three and seven times those. Under ``rk4`` the Newton steps were solved in the
+    caller's units: the channel moved by 4.4e-4, and its error by 3.4% of itself, and by 30 times
+    itself with the columns at their own origin."""
+    settings = {"adjust_for": ("z",), "nuisance_degree": 2, "channel_degree": 0}
+    log = {name: np.asarray(column) for name, column in _policy_log(4000, _dithered).items()}
+    moved = {
+        "x": state * (log["x"] + 300.0),
+        "x_next": state * (log["x_next"] + 300.0),
+        "u": action * (log["u"] + 300.0),
+        "z": state * (log["z"] + 300.0),
+    }
+    with enable_x64(False):
+        one, other = (
+            fit_causal_residual(
+                _known,
+                {name: jnp.asarray(column, dtype=jnp.float32) for name, column in data.items()},
+                0.1,
+                integrator=integrator,
+                **settings,
+            )
+            for data in (log, moved)
+        )
+    assert other.residual.channel.dtype == jnp.float32
+    per_unit = state / action
+    np.testing.assert_allclose(
+        np.asarray(other.residual.channel) / per_unit,
+        np.asarray(one.residual.channel),
+        rtol=0.0,
+        atol=2e-4,
+    )
+    assert other.channel_error is not None
+    assert other.channel_error / per_unit == pytest.approx(one.channel_error, rel=1e-3, abs=0.0)
 
 
 @pytest.mark.parametrize("units", [1e-15, 1e15])
@@ -1494,7 +1548,7 @@ def test_the_rule_the_log_set_from_the_state_reads_the_same_in_any_units(units: 
     one, other = read(1.0), read(units)
     np.testing.assert_allclose(np.asarray(other.rule), np.asarray(one.rule), rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(
-        np.asarray(other.spread) / units, np.asarray(one.spread), rtol=1e-12, atol=0.0
+        np.asarray(other.factor) * units, np.asarray(one.factor), rtol=1e-12, atol=0.0
     )
     for span in ("constant", "state", "covariates"):
         mine, theirs = np.asarray(getattr(other, span)), np.asarray(getattr(one, span))
@@ -1556,7 +1610,8 @@ def test_the_centred_ridge_parts_are_the_raw_gram_s_own() -> None:
     rng = np.random.default_rng(7)
     design = jnp.asarray(np.column_stack([np.ones(40), rng.normal(2.0, 1.0, (40, 3))]))
     target = jnp.asarray(rng.normal(size=(40, 2)))
-    gram = design.T @ design + 0.3 * jnp.diag(_ridge_scales(design))
+    scales = jnp.concatenate([jnp.zeros(1), _units.centred(design[:, 1:]).scales])
+    gram = design.T @ design + 0.3 * jnp.diag(scales)
     inverse = np.linalg.inv(np.asarray(gram))
     weight = inverse @ np.asarray(design).T
     np.testing.assert_allclose(_ridge_inverse(design, 0.3), inverse, rtol=1e-10, atol=1e-13)
@@ -1591,17 +1646,43 @@ def test_a_column_close_to_a_constant_is_one_far_from_zero() -> None:
     assert float(near[2, 0]) * 1e-11 == pytest.approx(float(standard[2, 0]), rel=1e-4, abs=0.0)
 
 
-def test_a_column_constant_but_for_rounding_keeps_its_mean_square() -> None:
-    """Within 1e-12 of its own size a column counts as constant: it keeps its mean square, beside
-    the bias it repeats, and reads a coefficient of zero. Under a term scaled to its spread, about
-    1e-26 of its square, it took up the target's noise with a coefficient of 1e10."""
-    rounding = 1e-13 * np.random.default_rng(5).choice([-1.0, 1.0], 50)
-    coefficients, _ = _near_constant(1.0 + rounding)
-    without, _ = _near_constant(np.zeros(50))
-    assert abs(float(coefficients[2, 0])) < 1e-6
-    np.testing.assert_allclose(
-        np.asarray(coefficients)[:2], np.asarray(without)[:2], rtol=0.0, atol=1e-6
-    )
+@pytest.mark.parametrize("level", [1.0, 1e12])
+def test_a_column_constant_but_for_rounding_is_zeroed(level: float) -> None:
+    """A column whose spread is rounding, here 16 eps of its size, is zeroed about its mean: its
+    coefficient is exactly zero, and the bias and the slope are the solve's without it. Kept beside
+    the bias it repeats under a ridge scaled by its mean square, it read -2.2e-8 and moved them by
+    as much; under a term scaled to its spread, it took up the target's noise with a coefficient of
+    -3.0e13, which moved the fitted values by 0.12. With its row and column of the inverse 0 but
+    its deviations kept, at 1e12 they moved the slope by 1.2e-3 through the other columns' block."""
+    rounding = 16.0 * np.finfo(np.float64).eps * np.random.default_rng(5).choice([-1.0, 1.0], 50)
+    coefficients, fitted = _near_constant(level * (1.0 + rounding))
+    without, fitted_without = _near_constant(np.zeros(50))
+    assert float(coefficients[2, 0]) == 0.0
+    assert bool(jnp.array_equal(coefficients[:2], without[:2]))
+    assert bool(jnp.array_equal(fitted, fitted_without))
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        np.full(50, 21.3),
+        1.0 + 16.0 * np.finfo(np.float64).eps * np.random.default_rng(5).choice([-1.0, 1.0], 50),
+        np.zeros(50),
+    ],
+    ids=["21.3 in every row", "constant but for rounding", "zeros"],
+)
+def test_a_rounding_column_leaves_the_bias_s_variance_as_without_it(column: np.ndarray) -> None:
+    """A zeroed column's row and column of the solve's inverse are 0: its coefficient is exactly 0,
+    with no variance, and the bias and the slope read the variances of the solve without it. Kept
+    beside the bias it repeats, under a ridge scaled by its mean square, a column at 21.3 or at 1
+    gave the bias a variance of 1e6, the inverse of the ridge, where the solve without it reads
+    0.02; a column of zeros kept a variance of its own of 1e6."""
+    x = jnp.linspace(-1.0, 1.0, 50)
+    without = _ridge_inverse(jnp.stack([jnp.ones(50), x], axis=1), 1e-6)
+    inverse = _ridge_inverse(jnp.stack([jnp.ones(50), x, jnp.asarray(column)], axis=1), 1e-6)
+    np.testing.assert_allclose(inverse[:2, :2], without, rtol=0.0, atol=1e-15)
+    assert bool(jnp.all(inverse[2] == 0.0))
+    assert bool(jnp.all(inverse[:, 2] == 0.0))
 
 
 def test_the_public_moment_reads_a_state_logged_at_zero_as_no_slope() -> None:

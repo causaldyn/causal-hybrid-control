@@ -25,6 +25,8 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from chc import _units
+
 _EPS = 1e-12
 # A residual whose variance is below this share of its column's has nothing left to test: ``z``
 # determines the column, as the current state determines the last one in a discretised ODE.
@@ -34,18 +36,15 @@ _DRAW_CHUNK = 256  # sign draws per matrix product, so the draws never hold draw
 
 
 def _own_units(columns: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Each column times the power of two nearest the reciprocal of its spread.
+    """Each column times the power of two nearest the reciprocal of its spread, or 1 where the
+    spread is rounding (:mod:`chc._units`), so a constant column is left as it is.
 
     The rescaling is exact, so a test here reads a column logged in any units as it reads it in
     these: its absolute floors sit at one share of every column, and no square overflows or
     underflows. A column whose spread is already near 1 is left as it is, bit for bit.
     """
-    centred = columns - columns.mean(axis=0)
-    peak = np.max(np.abs(centred), axis=0)
-    flat = peak == 0.0  # a constant column: nothing to rescale
-    peak = np.where(flat, 1.0, peak)
-    spread = np.where(flat, 1.0, peak * np.sqrt(np.mean((centred / peak) ** 2, axis=0)))
-    return np.ldexp(columns, -np.round(np.log2(spread)).astype(int))
+    spread, rounding = _units.spread_and_rounding_np(columns)
+    return columns * _units.power_of_two_np(np.where(rounding, 1.0, spread))
 
 
 def _residualize(target: ArrayLike, conditioning: ArrayLike | None) -> tuple[np.ndarray, int]:
@@ -273,11 +272,13 @@ def _as_columns(values: ArrayLike, name: str) -> NDArray[np.float64]:
 
 def _monomials(z: NDArray[np.float64] | None, degree: int, rows: int) -> NDArray[np.float64]:
     """``[1, z, z (x) z, ...]`` up to ``degree``, over ``z`` standardised so the powers stay
-    conditioned in any units; a constant column of ``z`` is the intercept's and is dropped."""
+    conditioned in any units. A column of ``z`` whose spread is rounding (:mod:`chc._units`) is
+    the intercept's and is dropped: tested for a spread above zero, a column holding one value
+    kept its mean's rounding, which divided by its own spread entered as a column of unit size."""
     columns = [np.ones(rows)]
     if z is not None:
-        spread = z.std(axis=0)
-        kept = (z[:, spread > 0] - z.mean(axis=0)[spread > 0]) / spread[spread > 0]
+        _, rounding = _units.spread_and_rounding_np(z)
+        kept = _units.standardised_np(z[:, ~rounding])
         columns.extend(
             np.prod(kept[:, list(combination)], axis=1)
             for power in range(1, degree + 1)

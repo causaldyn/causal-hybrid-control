@@ -244,7 +244,7 @@ when the class holds — a Hausman test in the plan's metric.
 All four layers on **one** decision: confounded logs → causal gain → constrained plan → `Gamma*`
 certificate → the same plan run on the *true* plant. Two zones of a mobile driver pool, one
 incentive lever whose `[+b, -b]` column is driver conservation, and a supply floor in the zone it
-drains. The confounded arm plans 13.59 and pays 38.97. `Gamma*` tells the two arms apart (7.46
+drains. The confounded arm plans 13.59 and pays 38.96. `Gamma*` tells the two arms apart (7.46
 against 1.17) **before either acts**, without ground truth. It is a ceiling for the problem along
 each plan's path, not for the plan: the adjusted plan's own actions certify 6 of 25 steps, and it
 crosses the floor at step 16. `uv run python scripts/spine_demo.py`

@@ -45,6 +45,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 
+from chc import _units
 from chc.causal import _polynomial_features
 from chc.control import LinearConstraint, SolverStatus
 from chc.cost import QuadraticCost, total_cost
@@ -64,7 +65,6 @@ from chc.dynamics_id import (
     _logged_relations,
     _LoggedRelations,
     _nuisance_inputs,
-    _standardised,
     _unmoved_actions,
     fit_causal_residual,
     persistence_check,
@@ -1679,7 +1679,8 @@ def prescribe(
     if kept.logged is not None and kept.rules:
         rule = _Rule(
             centre=kept.logged.centre,
-            spread=kept.logged.spread,
+            shift=kept.logged.shift,
+            factor=kept.logged.factor,
             coefficients=kept.logged.rule[:, jnp.array(kept.rules)],
             lo=jnp.array([levers[index].lo for index in kept.rules]),
             hi=jnp.array([levers[index].hi for index in kept.rules]),
@@ -2095,7 +2096,7 @@ def _read_from(
     needed = []
     for column in range(n_states, covariates.shape[1]):
         rest = jnp.delete(covariates, column, axis=1)
-        features = _polynomial_features(_standardised(rest), _NUISANCE_DEGREE)
+        features = _polynomial_features(_units.standardised(rest), _NUISANCE_DEGREE)
         left = action - features @ jnp.linalg.lstsq(features, action)[0]
         if not float(jnp.linalg.norm(left)) <= precision * size:
             needed.append(names[column])

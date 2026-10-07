@@ -405,3 +405,19 @@ def test_a_column_that_never_moves_counts_as_constant_at_a_million_rows(ridge: f
     reference = _ridge_fit(np.column_stack([x, z, np.zeros_like(x)]), y, ridge)
     assert beta[3] == 0.0
     np.testing.assert_allclose(beta[:3], reference[:3], rtol=0.0, atol=1e-12)
+
+
+@pytest.mark.parametrize("ridge", [1e-3, 1e-6], ids=["g-formula", "pooled"])
+def test_a_column_constant_but_for_rounding_counts_as_constant_at_many_rows(ridge: float) -> None:
+    """NumPy sums a 2-D array's columns row by row, so the rounding of a column's computed mean
+    grows with the rows. About a column constant but for 16 eps of its size, deviations from that
+    mean alone spread 8,488 eps at 100,000 rows, above the 64 at which a spread is rounding. With
+    the deviations' own mean taken off them, they spread 16 eps, the column is zeroed, and the fit
+    is the one with the column all zero, bit for bit."""
+    x, z, y = _plane(100_000)
+    eps = np.finfo(np.float64).eps
+    signs = np.where(np.random.default_rng(1).random(x.shape[0]) < 0.5, -1.0, 1.0)
+    beta = _ridge_fit(np.column_stack([x, z, 0.4 * (1.0 + 16 * eps * signs)]), y, ridge)
+    reference = _ridge_fit(np.column_stack([x, z, np.zeros_like(x)]), y, ridge)
+    assert beta[3] == 0.0
+    np.testing.assert_array_equal(beta, reference)

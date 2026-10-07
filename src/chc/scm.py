@@ -31,6 +31,8 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import nnls
 
+from chc import _units
+
 Outcomes = NDArray[np.float64]
 Vector = NDArray[np.float64]
 
@@ -111,15 +113,17 @@ def augmented_synthetic_control(
     ``Y_1(0)_t = w' Y_post_t + (treated_pre - w' donor_pre)' theta_t``, with ``theta_t`` the
     slopes of a ridge regression of the donors' ``Y_post_t`` on their pre-period outcomes with a
     free intercept, as Ben-Michael, Feller and Rothstein's has: ``theta_t = (Zc'Zc + ridge * v *
-    I)^{-1} Zc' Y_post_t``, with ``Zc`` each pre-period centred on the donors' mean and ``v`` the
-    mean of ``Zc**2``, the donors' variance before treatment. The intercept cancels from the
-    estimate, since the weights sum to one. The correction vanishes when SCM already balances the
-    pre-period; ``ridge`` controls how far the outcome model may extrapolate, and ``ridge = lam /
-    v`` is a ridge of ``lam`` in the outcomes' squared units. As a share of ``v`` it shrinks the
-    same in any units and from any origin: a ridge in the outcomes' squared units outweighed donors
-    logged in small ones, so that at 1e-6 of them the estimate was plain SCM's, and without the
-    intercept the estimate moved with the outcomes' level. ``weights`` are the (interpretable) SCM
-    donor weights; the augmentation is an additive outcome correction, not folded into them.
+    I)^{-1} Zc' Y_post_t``, with ``Zc`` each pre-period centred on the donors' mean, or zero where
+    the donors moved apart by rounding alone (:mod:`chc._units`), and ``v`` the mean of ``Zc**2``,
+    the donors' variance before treatment, or 1 where ``Zc`` is all zero. The intercept cancels
+    from the estimate, since the weights sum to one. The correction vanishes when SCM already
+    balances the pre-period; ``ridge`` controls how far the outcome model may extrapolate, and
+    ``ridge = lam / v`` is a ridge of ``lam`` in the outcomes' squared units. As a share of ``v``
+    it shrinks the same in any units and from any origin: a ridge in the outcomes' squared units
+    outweighed donors logged in small ones, so that at 1e-6 of them the estimate was plain SCM's,
+    and without the intercept the estimate moved with the outcomes' level. ``weights`` are the
+    (interpretable) SCM donor weights; the augmentation is an additive outcome correction, not
+    folded into them.
 
     The default share is a tenth, a compromise, since no one share suits every panel. On 200 panels
     of 30 donors and 25 periods before treatment, the root mean squared error of the effect at a
@@ -138,26 +142,17 @@ def augmented_synthetic_control(
     imbalance = treated_pre - donor_pre.T @ w  # (T0,) pre-period residual SCM cannot balance
     pre_rmspe = float(np.sqrt(np.mean(imbalance**2)))
     n_pre_periods = donor_pre.shape[1]
-    # solved in centred coordinates, so that the outcomes' level costs the slopes no digits
-    centred = donor_pre - donor_pre.mean(axis=0)
-    gram = centred.T @ centred + ridge * _ridge_scale(donor_pre) * np.eye(n_pre_periods)
+    # Solved in centred coordinates, so that the outcomes' level costs the slopes no digits. The
+    # ridge's unit is the donors' variance pooled over the periods, which are one outcome in one
+    # unit: a share of each period's own let a period the donors barely moved in take a slope as
+    # large as its spread was small.
+    centred = _units.centred_np(donor_pre).deviations
+    variance = float(np.mean(centred**2)) or 1.0
+    gram = centred.T @ centred + ridge * variance * np.eye(n_pre_periods)
     theta = np.linalg.solve(gram, centred.T @ (donor_post - donor_post.mean(axis=0)))  # (T0, T1)
     counterfactual = donor_post.T @ w + theta.T @ imbalance  # SCM + ridge bias correction
     att = treated_post - counterfactual
     return SyntheticControlResult(att, float(att.mean()), w, pre_rmspe)
-
-
-def _ridge_scale(donor_pre: Outcomes) -> float:
-    """The unit the outcome model's slopes are penalised in: the donors' variance about each
-    period's mean, pooled over the periods, which are one outcome in one unit. Donors that move
-    apart by rounding alone (a deviation about the means at most 64 eps of their root mean square)
-    keep their mean square, and donors at zero keep 1, so that the solve stays regular; their
-    centred outcomes, and so the slopes, are then zero up to rounding."""
-    variance = float(np.mean((donor_pre - donor_pre.mean(axis=0)) ** 2))
-    mean_square = float(np.mean(donor_pre**2))
-    if variance > (64 * np.finfo(np.float64).eps) ** 2 * mean_square:
-        return variance
-    return mean_square or 1.0
 
 
 @dataclass(frozen=True)

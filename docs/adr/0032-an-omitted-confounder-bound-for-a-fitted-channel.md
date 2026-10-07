@@ -44,7 +44,7 @@ channel.
 - Over 500 worlds with drawn loadings, half read by Euler and half by `rk4`, the confidence bounds
   covered the true reallocation in 0.940 of them (Clopper-Pearson 0.915-0.959) at a nominal 0.95,
   every miss on the side the bias points to (`scripts/bench_omitted_confounder.py`).
-- DoubleML 0.11.4, fed the same cross-fitted predictions, gives the same bounds to 2e-10, the
+- DoubleML 0.11.4, fed the same cross-fitted predictions, gives the same bounds to 3.8e-10, the
   ridge on CHC's moment. The confidence bounds differ by 1e-4, since CHC's influence of the
   estimate is its own, robust to unequal noise; DoubleML's robustness values stop at its scalar
   minimiser's tolerance, 2.4e-5 from the null (`scripts/doubleml_bound_reference.py`).

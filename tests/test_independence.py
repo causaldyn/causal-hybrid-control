@@ -154,6 +154,21 @@ def test_gcm_test_leaves_out_a_column_its_conditioning_set_determines() -> None:
     assert both.p_value == alone.p_value
 
 
+@pytest.mark.parametrize("value", [0.1, 21.3, 1e6 + 0.1])
+def test_gcm_test_counts_no_term_for_a_conditioning_column_that_holds_one_value(
+    value: float,
+) -> None:
+    """A column of ``z`` that holds one value is the intercept's and adds no term. Tested for a
+    spread above zero, it kept its mean's rounding, which divided by that spread entered as a
+    column of unit size, with its products: on 10 rows the test counted 6 terms where it has 3, and
+    refused to run."""
+    x, y, z = _dependent(10)
+    with_it = gcm_test(x, y, np.column_stack([z, np.full(10, value)]), draws=199)
+    alone = gcm_test(x, y, z, draws=199)
+    assert with_it.statistic == pytest.approx(alone.statistic, rel=1e-12, abs=0.0)
+    assert with_it.p_value == alone.p_value
+
+
 @pytest.mark.parametrize("clusters", [1000, 10])
 def test_gcm_test_detects_about_eight_in_ten_at_its_own_detectable_correlation(
     clusters: int,

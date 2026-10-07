@@ -174,19 +174,20 @@ def test_the_augmented_estimate_is_the_same_with_the_outcomes_far_from_zero(
 
 
 @pytest.mark.parametrize(
-    ("donors", "rtol"),
-    [("at zero", 0.0), ("all alike", 0.0), ("apart by 4e-15 of their level", 1e-9)],
+    "donors",
+    ["at zero", "all alike", "apart by 4e-15 of their level"],
     ids=["at zero", "all alike", "apart by rounding"],
 )
 def test_donors_that_do_not_move_apart_before_treatment_leave_the_synthetic_control(
-    donors: str, rtol: float
+    donors: str,
 ) -> None:
     """With nothing before treatment to tell the donors apart the outcome model has nothing to fit,
     so the correction is zero and the estimate is the synthetic control's. Donors all alike centre
     to their mean's rounding, a deviation of 1.7 eps of their size here, and donors apart by 4e-15
-    of their level, 18 eps, move apart by rounding alone: a deviation of at most 64 eps counts as
-    none. A ridge scaled by the deviation let the slopes fit the rounding, and one period's effect
-    moved by 206, and by 1e15."""
+    of their level, 18 eps, move apart by rounding alone: a period whose spread is at most 64 eps
+    is zeroed, so the slopes are exactly zero. A ridge scaled by the deviation let the slopes fit
+    the rounding, and one period's effect moved by 206, and by 1e15; kept under a ridge scaled by
+    the donors' mean square, the rounding moved the effect by 7e-12 of itself."""
     outcomes = _factor_panel(seed=2, treated_loading=_in_hull)
     outcomes[1:, :N_PRE] = 0.0 if donors == "at zero" else outcomes[1, :N_PRE] + 0.1
     if donors == "apart by 4e-15 of their level":
@@ -194,8 +195,7 @@ def test_donors_that_do_not_move_apart_before_treatment_leave_the_synthetic_cont
         outcomes[1:, :N_PRE] *= 1.0 + 4e-15 * signs
     scm = synthetic_control(outcomes, treated_unit=0, n_pre=N_PRE)
     ascm = augmented_synthetic_control(outcomes, treated_unit=0, n_pre=N_PRE)
-    # apart by rounding, the slopes are the rounding over the donors' mean square: 7e-12 here
-    np.testing.assert_allclose(ascm.att, scm.att, rtol=rtol, atol=0.0)
+    np.testing.assert_array_equal(ascm.att, scm.att)
 
 
 def test_a_period_the_donors_barely_moved_in_counts_as_left_out() -> None:

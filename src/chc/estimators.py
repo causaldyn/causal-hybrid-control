@@ -28,11 +28,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from chc import _units
 from chc.causal import (
     _centred_ridge_predict,
     _ols_with_se,
     _polynomial_features,
-    _standardising,
     _stream_key,
     _two_stage,
     dml_point_and_se,
@@ -222,8 +222,8 @@ class RLearner:
         columns = _columns(data)
         y, t = columns[outcome], columns[treatment]
         covs = jnp.stack([columns[c] for c in covariates], axis=1)
-        centre, factor = _standardising(covs)
-        standardised = (covs - centre) * factor
+        centre, shift, factor = _units.standardising(covs)
+        standardised = (covs - centre - shift) * factor
         n = y.shape[0]
         chunks = jnp.array_split(
             jax.random.permutation(_stream_key(self.seed, "folds"), n), self.folds
@@ -242,15 +242,15 @@ class RLearner:
         features = _polynomial_features(standardised, self.cate_degree)
         design = features * t_res[:, None]  # R-loss: regress y_res on tau-features scaled by t_res
         # the design has no intercept and carries the treatment's units, so the ridge on each
-        # coefficient is scaled by its column's mean square, the Gram's diagonal over the rows
-        gram = design.T @ design
-        size = jnp.diagonal(gram) / n
-        penalty = self.ridge * jnp.where(size > 0.0, size, 1.0)
-        theta = jnp.linalg.solve(gram + jnp.diag(penalty), design.T @ y_res)
+        # coefficient is scaled by its column's mean square
+        penalty = self.ridge * _units.mean_squares(design)
+        theta = jnp.linalg.solve(design.T @ design + jnp.diag(penalty), design.T @ y_res)
         return EffectEstimate(
             effect=float(jnp.mean(features @ theta)),
             cate=lambda covs_q: (
-                _polynomial_features((jnp.asarray(covs_q) - centre) * factor, self.cate_degree)
+                _polynomial_features(
+                    (jnp.asarray(covs_q) - centre - shift) * factor, self.cate_degree
+                )
                 @ theta
             ),
         )

@@ -1,5 +1,8 @@
 """chc.irf: local projections recover the analytic impulse response; dropping z biases it."""
 
+import importlib
+
+import jax
 import numpy as np
 import pytest
 
@@ -14,6 +17,13 @@ from chc.irf import (
     structured_irf,
 )
 from chc.toeplitz import levinson_durbin, sample_autocorrelation
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 # x_{t+1} = a x_t + b u_t + c z_t + noise, with the policy u_t = kappa z_t + eta (confounded by z).
 _A, _B, _C, _KAPPA = 0.6, 1.0, 1.5, -1.2
@@ -49,6 +59,24 @@ def test_omitting_the_confounder_biases_the_impulse_response() -> None:
     adjusted = np.asarray(local_projection_irf(data, horizon, adjust_for=("x", "z")))
     assert abs(naive[1] - _B) > 0.3  # the one-step effect is badly confounded without z
     assert abs(adjusted[1] - _B) < 0.1  # ...and recovered with it
+
+
+@pytest.mark.parametrize("units", [1e-6, 1e6])
+def test_the_impulse_response_reads_the_same_with_the_treatment_in_any_units_in_float32(
+    units: float,
+) -> None:
+    """In float32, JAX's default, least squares cut its rank at a share of the largest singular
+    value: with the treatment in millionths of its units its column fell under the cut, and the
+    response read 0 at every horizon where it reads 1.0024 one step out; in millions the other
+    columns fell under it, and it read -0.069 there. Float32 reads the response 7.5e-7 from float64
+    at unit scale, and these units move it by up to 1.3e-6; the bound is 1e-5."""
+    data = _confounded_arx(2000, seed=0)
+    moved = {**data, "u": data["u"] * units}
+    with enable_x64(False):
+        one = np.asarray(local_projection_irf(data, 3, adjust_for=("x", "z")))
+        other = np.asarray(local_projection_irf(moved, 3, adjust_for=("x", "z")))
+    assert one.dtype == np.float32
+    np.testing.assert_allclose(other * units, one, rtol=0.0, atol=1e-5)
 
 
 def test_a_treatment_among_its_own_covariates_is_refused() -> None:

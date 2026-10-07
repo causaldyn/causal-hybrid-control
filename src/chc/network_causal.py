@@ -22,13 +22,8 @@ import optax
 from jax import Array
 from numpy.typing import NDArray
 
-from chc.causal import (
-    _centred_ridge_predict,
-    _least_squares,
-    _polynomial_features,
-    _standardised,
-    _stream_key,
-)
+from chc import _units
+from chc.causal import _centred_ridge_predict, _polynomial_features, _stream_key
 from chc.frames import _refuse_shared_names
 from chc.irf import peak_lag
 
@@ -675,7 +670,7 @@ def estimate_network_effects(
         }
     )
     y, u, e = data["x_next"], data["u"], data[exposure]
-    covs = _standardised(jnp.stack([data[c] for c in covariates], axis=1))
+    covs = _units.standardised(jnp.stack([data[c] for c in covariates], axis=1))
     n = y.shape[0]
     chunks = _fold_chunks(n, folds, seed, fold_groups)
     banned = _neighbour_units(data) if exclude_neighbours else None
@@ -847,5 +842,5 @@ def estimate_network_effects_gnn(
         y_res = y_res.at[test].set(y[test] - pred_y[test])
         u_res = u_res.at[test].set(u[test] - pred_u[test])
         e_res = e_res.at[test].set(e[test] - pred_e[test])
-    coef = _least_squares(jnp.stack([u_res, e_res], axis=1), y_res)
+    coef = _units.least_squares(jnp.stack([u_res, e_res], axis=1), y_res)
     return {"direct": float(coef[0]), "spillover": float(coef[1])}

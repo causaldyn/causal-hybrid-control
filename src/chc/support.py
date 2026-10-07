@@ -18,6 +18,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from chc import _units
 from chc.control import (
     Blocks,
     Bound,
@@ -81,15 +82,11 @@ class SupportModel(eqx.Module):
         """
         z = jnp.concatenate([xs, us], axis=1)
         n = xs.shape[1]
-        # each column as a share of its largest entry, so that no square overflows or underflows
-        # and a column that does not move has a deviation of exactly 0
+        # each column as a share of its largest entry, so that no square overflows or underflows,
+        # centred twice (chc._units)
         peak = jnp.max(jnp.abs(z), axis=0)
-        scaled = z / jnp.where(peak == 0.0, 1.0, peak)
-        centred = scaled - jnp.mean(scaled, axis=0)
-        deviation = jnp.sqrt(jnp.mean(centred**2, axis=0))
-        size = jnp.sqrt(jnp.mean(scaled**2, axis=0))
-        rounding = deviation <= 64 * jnp.finfo(scaled.dtype).eps * size
-        held = [k for k, still in enumerate(rounding.tolist()) if still]
+        columns = _units.centred(z / jnp.where(peak == 0.0, 1.0, peak))
+        held = [k for k, still in enumerate(columns.rounding.tolist()) if still]
         if held:
             names = ", ".join(_label(k, n) for k in held)
             raise ValueError(
@@ -99,6 +96,7 @@ class SupportModel(eqx.Module):
                 "units it was logged in; leave it out of the problem, or build "
                 "SupportModel(mean, precision) with the spread it should be measured in"
             )
+        centred = columns.deviations
         cov = (centred.T @ centred) / z.shape[0]
         spread = jnp.sqrt(jnp.diag(cov))
         inner = jnp.linalg.inv(cov / jnp.outer(spread, spread) + ridge * jnp.eye(z.shape[1]))

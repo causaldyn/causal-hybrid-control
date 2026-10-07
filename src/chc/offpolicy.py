@@ -22,6 +22,8 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from chc import _units
+
 
 class GaussianPolicy(eqx.Module):
     """Diagonal-Gaussian policy ``u ~ N(W x + b, diag(exp(log_std))^2)``."""
@@ -50,39 +52,24 @@ def fit_behavior_policy(xs: Array, us: Array) -> GaussianPolicy:
     the propensity was logged at decision time, use it instead.
     """
     n = xs.shape[1]
-    ones = jnp.ones((xs.shape[0], 1))
     # lstsq cuts singular values below a share of the largest, so in float32 a state logged in
     # units far from the others', or far from zero, fell under the cut and read a weight of exactly
-    # 0. Each state is solved for centred, the intercept carrying its level, and divided by the
-    # power of two nearest its spread: exact, so a column whose spread is near 1 keeps every bit.
-    exponent = jnp.round(jnp.log2(_spread(jnp.concatenate([xs, ones], axis=1)))).astype(jnp.int32)
-    level = jnp.mean(xs, axis=0)
-    design = jnp.concatenate([xs - level, ones], axis=1)
-    coef, *_ = jnp.linalg.lstsq(jnp.ldexp(design, -exponent), us, rcond=None)  # (n+1, m)
-    coef = jnp.ldexp(coef, -exponent[:, None])
+    # 0. Each state is solved for centred, the intercept carrying its level, in its own units
+    # (chc._units): scaled by the power of two nearest its spread, exact, so a column whose spread
+    # is near 1 keeps every bit. A state the log moved by rounding alone is zeroed: weight 0.
+    states = _units.centred(xs)
+    design = jnp.concatenate([states.deviations, jnp.ones((xs.shape[0], 1))], axis=1)
+    coef = _units.least_squares(design, us)  # (n+1, m)
     std = jnp.std(us - design @ coef, axis=0)
     # a logger that set its action from the state alone leaves no spread to read; the floor is a
-    # share of the actions' own spread, since an absolute one outweighed actions logged in small
-    # units, and one of their size grew with their distance from zero
-    floor = 1e-8 * _spread(us)
-    return GaussianPolicy(
-        weight=coef[:n].T, bias=coef[n] - level @ coef[:n], log_std=jnp.log(jnp.maximum(std, floor))
-    )
-
-
-def _spread(columns: Array) -> Array:
-    """Each column's standard deviation about its mean; its root mean square where the deviation is
-    at most 64 eps of that, eps its precision's, as for a column that moves by rounding alone; and
-    1 for a column of zeros. Each is computed as a share of the column's largest entry, so that no
-    square overflows or underflows and a column that does not move has a deviation of exactly 0."""
-    peak = jnp.max(jnp.abs(columns), axis=0)
-    zero = peak == 0.0
-    scaled = columns / jnp.where(zero, 1.0, peak)
-    centred = scaled - jnp.mean(scaled, axis=0)
-    spread = jnp.sqrt(jnp.mean(centred**2, axis=0))
-    size = jnp.sqrt(jnp.mean(scaled**2, axis=0))
-    rounding = 64 * jnp.finfo(scaled.dtype).eps
-    return jnp.where(zero, 1.0, peak * jnp.where(spread > rounding * size, spread, size))
+    # share of the actions' own spread, or of their root mean square where that spread is rounding,
+    # since an absolute one outweighed actions logged in small units, and one of their size grew
+    # with their distance from zero
+    spread, rounding = _units.spread_and_rounding(us)
+    size = jnp.where(rounding, _units.root_mean_square(us), spread)
+    floor = 1e-8 * jnp.where(size > 0.0, size, 1.0)
+    bias = coef[n] - states.centre @ coef[:n] - states.shift @ coef[:n]
+    return GaussianPolicy(weight=coef[:n].T, bias=bias, log_std=jnp.log(jnp.maximum(std, floor)))
 
 
 def off_policy_value(

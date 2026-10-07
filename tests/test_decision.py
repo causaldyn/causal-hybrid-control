@@ -798,7 +798,7 @@ def test_the_certificate_does_not_move_with_the_zero_of_the_state_scale() -> Non
     assert here.plan is not None
     assert there.plan is not None
     assert np.asarray(there.plan.actions) == pytest.approx(np.asarray(here.plan.actions), abs=1e-5)
-    # the ridge weighs the moved log's larger coefficients: 8e-5 apart
+    # the ridge weighs the moved log's larger coefficients: 1.5e-4 apart
     assert there.certificate.identification_radius == pytest.approx(
         here.certificate.identification_radius, rel=1e-3
     )

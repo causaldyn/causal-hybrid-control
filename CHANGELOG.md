@@ -75,6 +75,20 @@ still change).
 
 ### Changed
 
+- **Augmented synthetic control's ridge is a share of the donors' variance, 0.1 by default.**
+  `augmented_synthetic_control`'s `ridge` was in the outcomes' squared units, 1.0 by default, so
+  it outweighed donors logged in small units: at 1e-3 of the outcomes' units the effect read
+  2.266, plain synthetic control's, where it reads 1.966 against a truth of 2.0, and at 1e3 of
+  them 1.946. It is now a share of the donors' variance before treatment, pooled over the periods,
+  so it shrinks the same in any units and from any origin; a ridge of `lam` in the outcomes'
+  squared units is the share `lam` over that variance. No one share suits every panel. On 200
+  panels of 30 donors and 25 periods before treatment, the effect's root mean squared error at a
+  tenth is 0.0526 where the factors are white noise, 0.110 where they are random walks and 0.142
+  with those indexed to their first period, at most 1.133 times the best fixed share's. The old
+  default erred less on these panels, 0.0497, 0.107 and 0.113, by a coincidence of units: their
+  noise is 0.1 in them. Every estimate whose pre-period the synthetic control leaves unbalanced
+  moves; on the tests' panels, with the free intercept below, by up to 2.1 % of the largest
+  effect.
 - **`prescribe` reads the channel's error by period as well as by unit.** A shock every unit shares
   in a period, met by levers the units move together, makes the transitions of one period move
   together across units, and a sum within units leaves that out: on panels with such a shock the
@@ -124,15 +138,125 @@ still change).
   (ADR 0057). The drift's ridge penalised its bias and scaled each slope's term by the state's
   size, so a state far from zero shrank the slopes: ten thousand spreads away by 0.036. The bias
   goes free now, and a design with one is solved on its centred columns, so the slopes there move
-  by 4e-13, the rounding of the state's own values. Two floors were in the caller's units too: the
+  by 4.5e-13, the rounding of the state's own values. Two floors were in the caller's units too: the
   nuisances took a column whose spread was under 1e-12 for a constant, so a confounder logged at
   1e-13 of its units was not adjusted for and the channel moved by 1.27; and where the moment has
   no data, a least squares on the raw drift design dropped the state's columns at 1e-12 of its
-  units, moving the channel by 50. A column is constant now within 1e-12 of its own size, and that
-  least squares reads each column in its own units. The fit reads the same from 1e-15 to 1e15 of
-  each column's units. Every fit moves at unit scale: on the tests' logs a coefficient by at most
-  6e-9 of the largest, a standard error by 1.3e-8 and a plan's actions by 4e-10. Since 0.3.0; the
-  drivers' since 0.7.0.
+  units, moving the channel by 50. A column is constant now where its spread is at most 64 eps of
+  its size, the rule every fix below shares, and beside a bias it takes a coefficient of exactly 0
+  with no variance; that least squares reads each column in its own units. The fit reads the same
+  from 1e-15 to 1e15 of each column's units, and in float32 to 2e-4 with the state, the actions
+  and a confounder in millionths and in millions, 300 of their units from zero. There `rk4`'s
+  fixed point, solved in the caller's units, pivoted on a drift row's rounding: the channel moved
+  by 4.4e-4, and with the columns at their own origin its error read 30 times its own. Its Newton
+  steps are now solved in each parameter's own units. Every fit moves at unit scale. On the tests'
+  logs the coefficients move by at most 1.7e-5 of the largest, their standard errors by 1.3e-5 of
+  the largest and a plan's `uncertainty_tube` by 2.7e-5, each on a panel of one unit, and a plan's
+  actions by 4.8e-9; with the state's zero moved, by 6.3e-5, 6.3e-5, 6.3e-5 and 1.5e-6. Where the
+  ridge outweighs what the log moved, it sets the fit, which moves with the ridge's scale: on a log
+  whose actions differ from what the covariates determine by a dither of a millionth, that scale,
+  the actions' mean square, is 0.88, and the channel and its error move by 14 %, the drift by 25 %
+  and its error by 21 %. Since 0.3.0; the drivers' since 0.7.0, `rk4`'s since 0.5.0.
+- **Double ML, the R-learner and the network effects read the same in any units of their
+  columns.** Their nuisances put one ridge, 1.0 by default, on the Gram of the raw covariates'
+  monomials, the intercept's column included, so a covariate logged in small units lost its
+  adjustment, and a column far from zero left part of its level in the residuals. With the
+  covariates in thousandths of their units, `estimate_effect_dml` and `dml_point_and_se` read
+  -0.176 where they read 1.003, and in millionths -0.201, the unadjusted regression's; `DoubleML`
+  read -0.201 where it reads 1.004; the R-learner 2.10 where it reads 0.996; and
+  `estimate_network_effects` a direct effect of 0.479 and a spillover of 0.284 where they read
+  1.001 and 0.603, with standard errors eight times as wide. A treatment 1e3 spreads from zero
+  moved `DoubleML` to 0.107 and the direct effect to 0.674, and an outcome there widened
+  `DoubleML`'s standard error 8.3 times; with an effect modifier about 1e3 the R-learner read the
+  effect's slope in it as 0.13 where 0.80. The covariates are now standardised before the basis,
+  a covariate whose spread is rounding reads 0, the intercept goes free and every other term's
+  ridge is scaled by its column's variance; in the R-loss, which has no intercept, by its mean
+  square. At unit scale the effects move by at most 3.5e-4 of themselves (the LaLonde double-ML
+  estimate, 1.03066 to 1.03102 thousand dollars), the R-learner's by 7.7e-6, and the network
+  effects by 2.5e-3, their cluster-robust errors by up to 13 % on a six-cluster panel, where the
+  old ridge was 2 % to 14 % of the confounders' Gram diagonal. `panel_estimator_certificate`'s
+  two-cluster ratio moves from 0.324 to 0.357 at 300 draws. Since 0.2.0.
+- **Least squares reads each column in its own units, in float32 too.** `lstsq` with
+  `rcond=None` cuts singular values below `eps * max(N, p)` of the largest, 2.4e-4 of it in float32
+  at 2000 rows, so a column logged in units far from the others' fell under the cut. With the
+  action in millionths, in float32, `estimate_control_effect` and `BackdoorOLS` read 0 where they
+  read 1.0015, with a standard error ten times their own, and in millions 0.035;
+  `sensitivity_analysis`'s robustness value read 7e-13 where 0.990, and its E-value 1.000001
+  where 7.51; with the instrument in millionths `estimate_effect_iv` and `IV2SLS` read -0.0036
+  where 1.020; the GNN's final stage read a direct effect of 0 where 0.482; and
+  `local_projection_irf`, `delay_estimate` and `causal_pathway` read 0 in millionths and -0.069
+  in millions, where 1.0024. Each column is now multiplied by the power of two nearest the
+  reciprocal of its root mean square before the solve, and the coefficients and their errors by
+  the same powers after, which moves no bit. The E-value took the action's spread from its raw
+  squares, which in float32 read 0 at 1e-20 of its units, and the E-value 1 where 7.51, and
+  overflowed at 1e20; it added 1e-12 in the outcome's units to the outcome's spread, so in
+  billionths it read 6.666 where 6.673. `refute_effect` added 1e-9 in the outcome's units to each
+  tolerance, so in billionths a refutation whose subset estimate was 36 % off passed. The spreads
+  are now taken relative to each column's largest entry, and the floors are gone. At unit scale
+  these results move by at most 1.4e-13 of themselves, the E-value by 1.0e-12. Since 0.2.0;
+  `delay_estimate`'s since 0.4.0.
+- **The g-formula, the Koopman fit, the zones' slopes and the implied Gamma read the same in any
+  units.** Each added a ridge as a constant to the Gram of its raw columns, the intercept's
+  included where it had one, so it outweighed a column logged in small units and shrank one far
+  from zero. With the treatments in millionths of their units `sequential_g_formula` read 0.0001
+  where it reads 3.305, and with the confounders there 3.427; `naive_pooled_effect` read 0.094 per
+  original unit where 2.500; and a confounder a thousand spreads from zero, in millionths, moved
+  the g-formula to 3.834. With the action in millionths `KoopmanModel`'s `B` read 0.00004 per
+  original unit where 0.0497, and its LQR gain was 0.99 off. With the incentive in millionths,
+  every zone of `calibrate_predictive`, `calibrate_naive_causal` and `calibrate_shared_state` read
+  a response of zero; with the demand there the de-confounded responses were 0.69 and 0.38 off;
+  and an incentive a thousand spreads from zero moved the first zone's response to 0.658 where
+  0.823. With the strong covariate in millionths, `benchmark_gamma`'s implied Gamma read 1.0009
+  where 10.12, and the weak covariate was reported the strongest. `ConfoundingRobustPenalty`
+  smoothed its norm over 1e-6 in the actions' units, so with the actions in millionths, and the
+  radius scaled to match, it read 2.031 where 1.065. Each ridge is now scaled by its column's
+  variance beside a free intercept, and by its mean square in the Koopman fit, which has none;
+  the slopes are solved about the columns' means; a column whose spread is rounding is zeroed, so
+  its coefficient is exactly 0; and the penalty's smoothing length is a millionth of the actions'
+  root mean square. At unit scale the g-formula's effect moves by at most 1.0e-5 of itself, a
+  zone's response by 4.9e-5 of the largest and its standard error by 7.5e-5, the Koopman fit by
+  2.3e-9 and an implied Gamma by 7.5e-9; `ConfoundingRobustTask`'s robust regret, solved under
+  the smoothed penalty, moves by up to 3 %, from 3.82 to 3.94 on its default task. Since 0.2.0;
+  `benchmark_gamma`'s since 0.5.0.
+- **The logged policy, the support, augmented synthetic control, the plan's curvature and the
+  DLM's prior read the same in any units.** `fit_behavior_policy` added 1e-8 in the actions'
+  units to their fitted spread, which at 1e-6 of those units read 0.5183 where 0.5083, moving an
+  IPS value from -0.2518 to -0.2499, and at 1e-9 of them 21 times its size. Its least squares, in
+  float32, cut a state logged at 1e-6 of the other columns' units to a weight of 0, and an IPS
+  value of a target restated in those units read -1.487 where -0.252; a state 1e3 spreads from
+  zero was lost the same way. `SupportModel` added `1e-3 * I` in the caller's units to the
+  covariance, so a point 4 standard deviations off along a coordinate logged at 1e-3 of its units
+  scored 0.016 where it scores 16.0, and a plan off the logged support read as on it.
+  `augmented_synthetic_control`'s outcome model had no intercept, so every outcome raised by 10
+  moved its estimate from 1.966 to 1.988. `CausalPlan.decision_weight`'s curvature test floored
+  the smallest eigenvalue at `1e3 eps` of at least 1 in the cost's units, so with the cost at
+  1e-12 of its units a strict minimum was refused; and `Prior` read a covariance's asymmetry
+  against 1e-12 itself where its largest entry was below 1, so at 1e-12 of its units an
+  asymmetric covariance passed. The policy's states are now centred twice and solved in their own
+  units, and its spread floored at 1e-8 of the actions' own; the support counts each deviation in
+  its coordinate's spread about the log's mean and refuses a coordinate the log moved by rounding
+  alone; the outcome model has a free intercept; and both tolerances are relative. At unit scale
+  the support's precision moves by up to 44 % on a log whose spread, 0.05, made the old ridge
+  40 % of its variance, and by 9.3 % on one whose actions' spread, 0.1, made it 10 %; elsewhere
+  by at most 1.2 %. A plan the support penalises moves by up to 10 % of its largest action. The
+  logged policy moves by at most 5.6e-6 and `off_policy_value`'s outputs by 1.3e-7. Since 0.2.0;
+  the curvature test's since 0.8.0, `Prior`'s since 0.9.0.
+- **`gcm_test` and `lalonde_ate` tell a column that never moved by its rounding.** `gcm_test`
+  dropped a conditioning column from its basis only where its spread was exactly 0, so a column
+  logged at one value, such as 0.1, kept its mean's rounding, which, divided by its own spread,
+  entered the basis at unit size: at degree 2 the regression counted 6 terms where it has 3, and
+  a log of 10 or 11 rows was refused as too short for them. `lalonde_ate` divided each covariate
+  by its spread plus 1e-9 in the covariate's units, so earnings with a spread of 5,000 dollars,
+  logged in units of 1e13 dollars, reached the estimator at a third of their spread, and a
+  covariate at one level at 3.5e-6 in every row rather than 0. Both now take a column whose spread
+  is at most 64 eps of its size for a constant and standardise the rest in their own units. At
+  unit scale `lalonde_ate` moves by at most 6e-14 of itself and `gcm_test`'s statistic by 2.4e-12,
+  and its p-values by the sign draws whose signs all agree, which reproduce the statistic up to
+  its rounding: one draw of 500 with 12 clusters, three of 2000 with 11. A tested column that held
+  one value is read in its own units now, not scaled by the reciprocal of its mean's rounding: with
+  a lever the log never moved, as in `prescribe`'s logger check, the statistic moves by 6.9e-6 of
+  itself and the lever's partial correlation with its own lag from -0.972 to -0.988. Since 0.9.0
+  for `gcm_test`, 0.2.0 for `lalonde_ate`.
 - **`prescribe` warns about single precision where the run is in it, not where the panel was built
   in it.** The `precision` warning read the panel's `x64`, set when the panel was built, which
   moves no number of the fit: the panel holds NumPy's columns, and the fit reads them in the run's

@@ -179,7 +179,7 @@ plt.show()
 # controller — on real data with a checkable ground truth. It does **not** by itself validate the control
 # loop on real dynamics (that remains the synthetic demo). The Double ML number depends on the nuisance
 # learner (here degree-2 polynomials) and on the random fold split: ten fold seeds move it from
-# +1,388 to +1,520. The benchmarks page runs the same rows through `chc.lalonde`, which
+# +1,385 to +1,520. The benchmarks page runs the same rows through `chc.lalonde`, which
 # standardises the covariates and fits degree-3 nuisances: its OLS row matches the one here, and its
 # Double ML row differs. Both regressions also estimate a variance-weighted average of the effect, not
 # the effect on the treated that the experiment measures; the two coincide if the effect is the same

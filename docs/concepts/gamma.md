@@ -98,7 +98,7 @@ loadings, half read by Euler and half by `rk4` at steps up to 1.4, its confidenc
 reallocation's true value in 0.940 of them (Clopper–Pearson 0.915–0.959) at a nominal 0.95; at half
 the shares in 0.216, and with none, the fit's own interval, in 0.138
 (`scripts/bench_omitted_confounder.py`). DoubleML 0.11.4, fed the same cross-fitted predictions,
-gives the same bounds to 2e-10 (`scripts/doubleml_bound_reference.py`).
+gives the same bounds to 3.8e-10 (`scripts/doubleml_bound_reference.py`).
 
 The two models do not convert into each other: `Γ` bounds how far a confounder moves the odds of
 treatment, the shares how much of two variances it explains. Where both apply, report both.

@@ -396,7 +396,8 @@ class _Rule(eqx.Module):
     action the plan takes."""
 
     centre: Array  # (n,)
-    spread: Array  # (n,)
+    shift: Array  # (n,)
+    factor: Array  # (n,)
     coefficients: Array  # (features, r)
     lo: Array  # (r,)
     hi: Array  # (r,)
@@ -405,7 +406,7 @@ class _Rule(eqx.Module):
 
     def levels(self, x: Array) -> Array:
         """The ruled levers' levels at ``x``."""
-        standard = ((x - self.centre) / self.spread)[None, :]
+        standard = ((x - self.centre - self.shift) * self.factor)[None, :]
         rule = _polynomial_features(standard, self.degree)[0] @ self.coefficients
         return jnp.clip(rule, self.lo, self.hi)
 
