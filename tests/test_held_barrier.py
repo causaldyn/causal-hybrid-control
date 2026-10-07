@@ -27,6 +27,7 @@ from chc import (
     causal_plan,
     certify_safety,
 )
+from chc.control import LinearConstraint
 from chc.cost import total_cost
 from chc.dynamics import DampedOscillator, HybridDynamics, LinearDynamics
 from chc.epidemic import SIRDynamics
@@ -285,6 +286,42 @@ def test_an_unreachable_barrier_is_reported_by_the_audit_rather_than_raised() ->
     assert plan.solver_status == "max_iterations"
     assert plan.safety.certified_steps == 0
     assert np.isnan(plan.safety.step_gamma_star[0])  # no radius and no action certifies step 0
+
+
+@pytest.mark.parametrize("pinned", [0, 1])
+@pytest.mark.parametrize("scale", [1.0, 1e6])
+def test_rounds_from_a_plan_the_rows_and_the_box_pin_to_one_point_stay_on_it(
+    pinned: int, scale: float
+) -> None:
+    """``3 u1 = u2`` at every step, with one lever's box pinned at zero, leaves the zero plan alone
+    feasible, and the projection holds the row only to its tolerance; a barrier no plan clears
+    sends it to the rounds. Their descent took a trial that moved the plan by that tolerance alone
+    as a step where it lowered the penalised cost by more than ``1e-9``, and as the penalty grew
+    the plan walked 1.9e-9 to 3.1e-5 off zero, across the row. A move only across the constraints
+    held at both of its ends is not a step."""
+    horizon = 3
+    cost = QuadraticCost(
+        Q=scale * jnp.eye(1),
+        R=scale * jnp.diag(jnp.array([0.01, 1.0])),
+        Qf=scale * jnp.eye(1),
+        x_target=jnp.array([1.0]),
+    )
+    tie = LinearConstraint(np.kron(np.eye(horizon), [[3.0, -1.0]]) / np.sqrt(10.0), 0.0, 0.0)
+    lo, hi = np.full((horizon, 2), -2.0), np.full((horizon, 2), 2.0)
+    lo[:, pinned] = hi[:, pinned] = 0.0
+    plan = causal_plan(
+        LinearDynamics(jnp.array([[-0.5]]), jnp.array([[0.8, 0.1]])),
+        jnp.ones(1),
+        cost,
+        DT,
+        horizon,
+        lo,
+        hi,
+        constraints=(tie,),
+        barrier=BarrierConstraint(lambda x: x[0] - 2.0, alpha=1.0),
+    )
+    assert plan.solver_status == "max_iterations"  # no plan clears it, and none is claimed to
+    assert np.asarray(plan.actions).tolist() == [[0.0, 0.0]] * horizon
 
 
 def test_the_rounds_keep_the_plans_own_pessimism() -> None:

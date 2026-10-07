@@ -65,6 +65,36 @@ def test_pessimism_keeps_control_in_support() -> None:
 _ULP_BUDGET = 500.0
 
 
+def _floor(
+    model: object,
+    x0: jnp.ndarray,
+    us: jnp.ndarray,
+    cost: QuadraticCost,
+    augmented: object,
+    bound: float,
+) -> jnp.ndarray:
+    """The solver's own floor of ``sigma`` for a box ``[-bound, bound]``, once it matches the cost's
+    Gauss-Newton curvature read off the rollout's whole Jacobian, over the augmented cost at ``us``.
+
+    The solver runs one backward pass over the steps' Jacobians instead, so the two routes agree to
+    rounding, not to the bit, and a last bit apart in ``sigma`` grows over the steps.
+    """
+    from chc.control import _action_units
+
+    level = augmented(us)
+    paths = jax.jacfwd(lambda actions: rollout(model, x0, actions, DT))(us)  # (H + 1, n, H, m)
+    curvature = (
+        jnp.einsum("tikm,ij,tjkm->km", paths[:-1], cost.Q, paths[:-1])
+        + jnp.diagonal(cost.R)
+        + jnp.einsum("ikm,ij,jkm->km", paths[-1], cost.Qf, paths[-1])
+    )
+    floor, _, _ = _action_units(
+        model, x0, us, DT, cost, jnp.full(us.shape, -bound), jnp.full(us.shape, bound), level
+    )
+    assert _ulp_gap(floor, jnp.sqrt(curvature / abs(float(level)))) <= 8.0
+    return floor
+
+
 def _naive_pessimistic(
     model: object,
     x0: jnp.ndarray,
@@ -75,10 +105,15 @@ def _naive_pessimistic(
     u_lo: float,
     u_hi: float,
     steps: int,
-    lr0: float = 0.2,
-    tol: float = 1e-9,
+    lr0: float = 1.0,
+    tol: float = 1e-14,
 ) -> tuple[jnp.ndarray, list[float]]:
-    """The plain Python recursion for the penalised objective, kept as the oracle."""
+    """The plain Python recursion for the penalised objective, kept as the oracle.
+
+    Steps in ``v = sigma * u`` from ``sigma`` at its floor; after each accepted step each action's
+    ``sigma`` is the secant of the augmented cost's curvature along it over the step, where that is
+    above the floor, and a search that fails off the floor is tried again from it.
+    """
 
     def task(us: jnp.ndarray) -> jnp.ndarray:
         return total_cost(model, x0, us, DT, cost)
@@ -89,21 +124,36 @@ def _naive_pessimistic(
 
     grad_aug = jax.grad(augmented)
     us = jnp.clip(us0, u_lo, u_hi)
+    floor = _floor(model, x0, us, cost, augmented, u_hi)
     current = augmented(us)
+    level = abs(float(current))
     history = [float(task(us))]
-    for _ in range(steps):
-        grad = grad_aug(us)
-        lr, improved, candidate, candidate_cost = lr0, False, us, current
+    sigma, grad = floor, grad_aug(us)
+    while len(history) <= steps:
+        lo, hi, scaled = u_lo * sigma, u_hi * sigma, grad / sigma
+        lr, improved, candidate, candidate_cost = lr0 / level, False, us, current
         for _ls in range(40):
-            candidate = jnp.clip(us - lr * grad, u_lo, u_hi)
+            trial = jnp.clip(us * sigma - lr * scaled, lo, hi)
+            candidate = jnp.where(
+                trial <= lo, u_lo, jnp.where(trial >= hi, u_hi, jnp.clip(trial / sigma, u_lo, u_hi))
+            )
             candidate_cost = augmented(candidate)
-            if candidate_cost < current - tol:
+            if candidate_cost < current - tol * level:
                 improved = True
                 break
             lr *= 0.5
         if not improved:
-            break
-        us, current = candidate, candidate_cost
+            if bool(jnp.all(sigma == floor)):
+                break
+            sigma = floor
+            continue
+        following = grad_aug(candidate)
+        step, change = candidate - us, following - grad
+        ratio = change / jnp.where(step != 0.0, step, 1.0) / level
+        measured = jnp.sqrt(ratio)
+        fresh = (step != 0.0) & (ratio > 0.0) & jnp.isfinite(measured)
+        sigma = jnp.where(fresh, jnp.maximum(floor, measured), sigma)
+        us, current, grad = candidate, candidate_cost, following
         history.append(float(task(us)))
     return us, history
 
@@ -114,7 +164,10 @@ def _ulp_gap(a: jnp.ndarray, b: jnp.ndarray) -> float:
     return float(np.max(np.abs(left - right) / np.maximum(spacing, np.finfo(np.float64).tiny)))
 
 
-def test_compiled_pessimistic_descent_matches_the_python_recursion() -> None:
+@pytest.mark.parametrize("lam_supp", [20.0, 1.0])
+def test_compiled_pessimistic_descent_matches_the_python_recursion(lam_supp: float) -> None:
+    """At a support weight of 1 the search in the measured scale fails after 10 steps, and the 11th
+    is the search's from the floor, so the comparison reaches the retry as well."""
     k_x, k_u = jax.random.split(jax.random.key(4))
     support = SupportModel.fit(
         jax.random.normal(k_x, (500, 2)), 0.3 * jax.random.normal(k_u, (500, 1))
@@ -131,10 +184,10 @@ def test_compiled_pessimistic_descent_matches_the_python_recursion() -> None:
     x0, us0 = jnp.zeros(2), jnp.zeros((15, 1))
 
     us_ref, history_ref = _naive_pessimistic(
-        model, x0, us0, cost, support, 20.0, -5.0, 5.0, steps=60
+        model, x0, us0, cost, support, lam_supp, -5.0, 5.0, steps=60
     )
     us, history = pessimistic_control(
-        model, x0, us0, DT, cost, support, lam_supp=20.0, u_lo=-5.0, u_hi=5.0, steps=60
+        model, x0, us0, DT, cost, support, lam_supp=lam_supp, u_lo=-5.0, u_hi=5.0, steps=60
     )
 
     assert len(history) == len(history_ref)

@@ -78,6 +78,17 @@ def test_confounding_robust_sensitivity_radius_beats_greedy() -> None:
     assert results["greedy"].ood_rate > results["robust"].ood_rate
 
 
+def test_confounding_robust_regret_is_read_at_the_converged_plan() -> None:
+    """The robust plan puts 16 of its 25 actions at zero, where the radius' norm, smoothed over a
+    millionth of the plan's size, has 6.7e2 to 4.5e6 times the cost's curvature. The descent ran
+    out of its 10 000 steps with the gradient's projection 0.19 from zero and a regret of 3.937, and
+    of 100 000 at 3.823. Newton's method on the exact Hessian reaches the problem's KKT point, to
+    2.3e-16, at a regret of 3.470575; the descent now converges in 1 202 steps 1.5e-4 from it, at a
+    regret 5e-6 off."""
+    results = {r.controller: r for r in ConfoundingRobustTask().run()}
+    assert results["robust"].regret == pytest.approx(3.470575, rel=0.0, abs=1e-4)
+
+
 def test_confounding_robust_greedy_degrades_with_hidden_confounding() -> None:
     """The task is genuinely about confounding: greedy regret grows with the latent driver."""
     regrets = [

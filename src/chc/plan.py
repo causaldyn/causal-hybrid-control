@@ -1158,13 +1158,20 @@ def _hold_barrier(
     and rounding alone would then fail the audit about half the time. A ``start`` that clears the
     shifted condition is returned untouched, which is what makes a slack barrier free.
 
-    The rounds descend in the caller's units, by the penalised descent of :mod:`chc.support`, while
-    :func:`chc.control.projected_gradient_solve` descends in the problem's own. On the pendulum of
-    ``scripts/pendulum_demo.py``, started from the scaled descent's plan, the rounds held the
-    barrier at a task cost of 0.632, where from the plan of the descent in the caller's units they
-    hold it at 0.435. So where a barrier binds at a scaled ``start``, the rounds start from
-    ``guess`` descended in the caller's units, as they did before the planner was scaled; that
-    descent's steps are the ones counted, and the scaled one only said the barrier binds.
+    The rounds descend in the caller's units, by the penalised descent of :mod:`chc.support` run
+    unscaled, while :func:`chc.control.projected_gradient_solve` and
+    :func:`chc.support.pessimistic_solve` descend in the problem's own. A barrier that is the least
+    of several margins, as :func:`chc.prescribe` holds a two-sided bound, has a condition that jumps
+    where two margins tie, each side reading its own margin's gradient. Scaled, the rounds solved
+    each round to its stopping rule and ended on such a tie on each of four logs of the pendulum of
+    ``scripts/pendulum_demo.py``: a move of ``1e-12`` raised the shortfall there by 2.8 to 6.1, and
+    no step was taken. On two of the logs the barrier was then held for 2 and 0 of its 40 steps;
+    unscaled, the rounds hold it for all 40 on all four. On that pendulum, started from the scaled
+    descent's plan, the unscaled rounds held the barrier at a task cost of 0.632, where from the
+    plan of the descent in the caller's units they hold it at 0.435. So where a barrier binds at the
+    planner's scaled ``start``, the rounds start from ``guess`` descended in the caller's units, as
+    they did before the planner was scaled; that descent's steps are the ones counted, and the
+    scaled one only said the barrier binds.
 
     ``multipliers`` seed the rounds in place of zeros -- a receding horizon's last, shifted. The
     penalty is chosen afresh all the same: one grown for the last state left the first round
@@ -1250,6 +1257,7 @@ def _hold_barrier(
             held,
             1.0,
             blocks,
+            False,
         )
         iterations += int(taken)
         _, shortfall = _barrier_state(model, x0, actions, dt, held)

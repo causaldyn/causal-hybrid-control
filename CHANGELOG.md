@@ -7,6 +7,51 @@ still change).
 
 ## [Unreleased]
 
+### Changed
+
+- **The penalised descent reads a problem the same in any units of its levers and of its cost.**
+  `pessimistic_solve` and `pessimistic_control` started each line search at 0.2 action units per
+  unit of gradient and counted a step that lowered the penalised cost by `1e-9` in its own units, as
+  the planner did until 0.15.0. On `test_plan`'s one-lever problem under a support penalty, the
+  lever in units 1e3 times its own ran out of the 10 000 steps 5.8e-2 of the box from the plan, in
+  units 1e6 times its own took no step, and two levers in units 1e-3 and 1e3 reported `converged`
+  half the box away. The descent is now the planner's, in its scaled variables, with its line search
+  and its stopping rule, and it reads the penalties' curvature as it goes: each action's scale
+  starts at the planner's, over the penalised cost, and after each accepted step is raised to the
+  secant of the penalised cost's curvature along that action. A search that fails in that scale is
+  tried again in the planner's, and the descent stops only where that fails too. The confounding
+  radius needs it: its norm, smoothed over a millionth of the plan's size, puts curvature up to
+  4.5e6 times the cost's at the actions the plan holds at zero, where no scale read at the guess
+  sees it. Each of those problems now converges to one plan in every one of those units, to 1.2e-7
+  of the box or nearer; under the radius, where the old descent ran out of its steps in the
+  problem's own units, each converges in 102 to 119 steps, to 1.9e-7 of the box. On the planner's 27
+  test problems under a support penalty and under the radius, the descent takes fewer steps on 45 of
+  the 54 solves, ends lower on 49, and runs out of its steps on 1 where it did on 19: 41 736 steps
+  in all, against 218 089. `lr0` and `tol` take the planner's meaning: `lr0` is the first step in
+  the scaled variables, 1 by default, and `tol` is relative, `1e-14` by default. A fall `eps` in the
+  penalised cost's own units is `tol = eps / |F|`, with `F` the penalised cost of the guess clipped
+  to the box. The barrier rounds inside `causal_plan` keep their units: a barrier that is the least
+  of several margins, as `prescribe` holds a two-sided bound, has a condition that jumps where two
+  margins tie, and scaled rounds ended on such a tie on each of four logs of the pendulum demo, two
+  of which then held the barrier for 2 and 0 of its 40 steps (ADR 0073). Since 0.2.0.
+
+### Fixed
+
+- **A penalised plan, and the barrier's rounds, could step off a point the rows and the box pin.**
+  Since 0.15.0 the planner ends its line search with no step where a trial moves the plan only
+  across the sides and rows held at both its ends, to the projection's tolerance;
+  `pessimistic_solve`, `pessimistic_control` and the barrier rounds inside `causal_plan` kept the
+  old line search. `pessimistic_solve` with the cost 1e6 times its own took a step 1.2e-12 off a
+  plan so pinned and reported `converged`, and under a barrier no plan clears, the rounds walked the
+  plan 1.9e-9 to 3.1e-5 off it as their penalty grew. They now end their line searches the same way,
+  and both plans stay on the point (ADR 0073). Since 0.6.0.
+- **`ConfoundingRobustTask`'s robust row reads the regret of the optimal plan.** Its solve ran out
+  of its 10 000 steps with the stationarity residual at 0.19 and reported a regret of 3.937, 0.662
+  of greedy's; after 100 000 steps it read 3.823. Newton's method on the exact Hessian reaches the
+  problem's KKT point, its residual 2.3e-16, at a regret of 3.470575, 0.583 of greedy's. The
+  penalised descent now converges there in 1 202 steps, 2.9e-11 above the optimum's penalised cost,
+  at a regret of 3.470570 (the penalised descent's units, under Changed; ADR 0073). Since 0.2.0.
+
 ## [0.15.0] — 2026-10-07
 
 ### Added

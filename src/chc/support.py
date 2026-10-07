@@ -22,14 +22,12 @@ from chc import _units
 from chc.control import (
     Blocks,
     Bound,
-    Duals,
     LinearConstraint,
     SolverResult,
-    _backtrack,
+    _action_units,
     _constraint_blocks,
-    _dykstra,
+    _descend,
     _history,
-    _no_duals,
     _polytope_stationarity,
     _status,
     _violation,
@@ -170,17 +168,26 @@ def _pessimistic_loop(
     uncertainty: PenaltyModel | None,
     lam_unc: float,
     blocks: Blocks = (),
+    scaled: bool = True,
 ) -> tuple[Array, Array, Array]:
-    """The penalised descent as one XLA program, mirroring :func:`chc.control`'s shape exactly.
+    """The penalised descent as one XLA program: the planner's (:func:`chc.control._descend`) on the
+    task cost plus the penalties, in variables scaled action by action.
 
     Module level for the same reason: the jitted objective and its gradient used to be built inside
     :func:`pessimistic_control`, so each call got an empty compilation cache and recompiled the
     augmented gradient every solve instead of once per problem shape.
 
-    Acceptance is on the *augmented* cost and the recorded history is the *task* cost, so both are
-    carried through the loop -- runs at different penalty weights stay comparable. ``support`` may
-    be ``None``: :func:`chc.plan.causal_plan` runs its barrier rounds through this descent with a
-    penalty of their own and no support model.
+    Acceptance is on the *augmented* cost and the recorded history is the *task* cost, so runs at
+    different penalty weights stay comparable. ``support`` may be ``None``:
+    :func:`chc.plan.causal_plan` runs its barrier rounds through this descent with a penalty of
+    their own and no support model, and ``scaled=False``: in the caller's units, ``lr0`` a step in
+    action units per unit of gradient and ``tol`` a fall in the objective's own units.
+
+    The scale is the planner's, the cost's Gauss-Newton curvature along each action at the guess
+    clipped to the box, over the augmented cost there, which also sets the stopping rule. It is a
+    floor: a penalty has no curvature the guess can be relied on to show, so the descent reads it
+    as it goes, by the secant along each action over each accepted step. Scaled, ``blocks`` must be
+    coloured ``disjoint``.
     """
 
     def task(us: Array) -> Array:
@@ -189,34 +196,27 @@ def _pessimistic_loop(
     def augmented(us: Array) -> Array:
         return _augmented(model, x0, us, dt, cost, support, lam_supp, uncertainty, lam_unc)
 
-    grad_aug = jax.grad(augmented)
-    duals = _no_duals(us0.size, blocks, us0.dtype)
-    if blocks:
-        flat, duals = _dykstra(us0.ravel(), u_lo.ravel(), u_hi.ravel(), blocks, duals)
-        us = flat.reshape(us0.shape)
-    else:
-        us = jnp.clip(us0, u_lo, u_hi)
-    initial = augmented(us)
-    values = jnp.zeros((steps + 1,), dtype=initial.dtype).at[0].set(task(us))
-
-    def descending(carry: tuple[Array, Array, Array, Array, Array, Duals]) -> Array:
-        taken, _, _, _, alive, _ = carry
-        return jnp.logical_and(taken < steps, alive)
-
-    def descend(
-        carry: tuple[Array, Array, Array, Array, Array, Duals],
-    ) -> tuple[Array, Array, Array, Array, Array, Duals]:
-        taken, us, current, values, _, duals = carry
-        us, current, accepted, duals = _backtrack(
-            us, current, grad_aug(us), u_lo, u_hi, lr0, tol, augmented, blocks, duals
-        )
-        taken = jnp.where(accepted, taken + 1, taken)
-        return taken, us, current, values.at[taken].set(task(us)), accepted, duals
-
-    taken, optimised, _, values, _, _ = jax.lax.while_loop(
-        descending, descend, (jnp.asarray(0), us, initial, values, jnp.asarray(True), duals)
+    start = project_box(us0, u_lo, u_hi)
+    units = (
+        _action_units(model, x0, start, dt, cost, u_lo, u_hi, augmented(start))
+        if scaled
+        else (jnp.ones_like(start), 1.0, 1.0)
     )
-    return optimised, values, taken
+    return _descend(
+        augmented,
+        jax.grad(augmented),
+        lambda us, _: task(us),
+        us0,
+        u_lo,
+        u_hi,
+        units,
+        steps,
+        lr0,
+        tol,
+        blocks,
+        scaled=scaled,
+        secant=scaled,
+    )
 
 
 def pessimistic_solve(
@@ -230,8 +230,8 @@ def pessimistic_solve(
     u_lo: Bound,
     u_hi: Bound,
     steps: int = 10_000,
-    lr0: float = 0.2,
-    tol: float = 1e-9,
+    lr0: float = 1.0,
+    tol: float = 1e-14,
     uncertainty: PenaltyModel | None = None,
     lam_unc: float = 0.0,
     *,
@@ -242,12 +242,14 @@ def pessimistic_solve(
     The stationarity residual is of the **augmented** objective, not the task cost: the penalties
     are what the descent actually minimised, so a residual measured on the task alone would be
     non-zero at the very point the solver was right to stop. With ``constraints`` it projects onto
-    the box and the rows together, as :func:`chc.control.projected_gradient_solve` does.
+    the box and the rows together, as :func:`chc.control.projected_gradient_solve` does. The
+    residual is in the caller's units, so it is zero at a KKT point in any units but its size is
+    not.
     """
     lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
     hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
     check_box(lo, hi)
-    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype)
+    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype, disjoint=True)
     optimised, values, taken = _pessimistic_loop(
         model,
         x0,
@@ -294,8 +296,8 @@ def pessimistic_control(
     u_lo: Bound,
     u_hi: Bound,
     steps: int = 10_000,
-    lr0: float = 0.2,
-    tol: float = 1e-9,
+    lr0: float = 1.0,
+    tol: float = 1e-14,
     uncertainty: PenaltyModel | None = None,
     lam_unc: float = 0.0,
     *,
@@ -312,11 +314,32 @@ def pessimistic_control(
     ``u_lo`` / ``u_hi`` take the same scalar, per-lever or full-schedule forms, and
     ``constraints`` the same linear rows, that :func:`chc.control.projected_gradient_control`
     accepts.
+
+    The descent is the planner's, so a problem is planned the same in any units of each lever and
+    of the cost and penalties together. It runs in ``v_kj = sigma_kj u_kj``: ``sigma_kj^2`` starts
+    as the cost's Gauss-Newton curvature along lever ``j`` at step ``k`` alone, over the augmented
+    cost at the guess clipped to the box, and after each accepted step it is raised to the secant
+    of the augmented cost's curvature along that action over the step. A penalty with a kink -- the
+    confounding radius' norm, smoothed over a millionth of the plan's size -- puts its curvature
+    where no scale read at the guess sees it; read as the descent goes, it is measured where the
+    plan is.
+
+    * ``lr0`` is the first step the line search tries, in ``v``: 1 is the Newton step along each
+      action alone. It is halved until the augmented cost falls.
+    * ``tol`` is relative: a step counts where it lowers the augmented cost by more than ``tol``
+      times its value at the clipped guess, and from a guess where it is zero any decrease counts.
+
+    Both used to be absolute, in the caller's units: ``lr0`` a step of 0.2 action units per unit of
+    gradient and ``tol`` a fall of ``1e-9`` in the cost's own units, so with a lever in units a
+    thousand times its own the descent ran out of steps, and in a million times took none
+    (``docs/adr/0073-the-penalised-descent-reads-its-penalty-as-it-goes.md``). A fall ``eps`` in
+    the cost's own units is ``tol = eps / |F|``, with ``F`` the augmented cost of the guess clipped
+    to the box.
     """
     lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
     hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
     check_box(lo, hi)
-    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype)
+    blocks = _constraint_blocks(constraints, lo, hi, us0.dtype, disjoint=True)
     optimised, values, taken = _pessimistic_loop(
         model,
         x0,
