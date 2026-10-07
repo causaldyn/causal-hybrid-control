@@ -8,8 +8,12 @@ the column and the entity responsible.
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import json
 import pickle
+from decimal import Decimal
+from fractions import Fraction
+from uuid import UUID
 
 import numpy as np
 import pytest
@@ -263,6 +267,133 @@ def test_an_object_column_whose_text_is_its_address_is_refused() -> None:
     data["tag"] = np.array([object() for _ in range(3)], dtype=object)
     with pytest.raises(PanelError, match="whose text is their address in memory"):
         Panel.from_frame(data, unit="unit", time="time")
+
+
+def _cells(*values: object) -> np.ndarray:
+    """An object column of ``values`` as they are: ``np.array`` reads a list, a tuple or an array
+    as a row of its items, not as one value."""
+    column = np.empty(len(values), dtype=object)
+    for row, value in enumerate(values):
+        column[row] = value
+    return column
+
+
+class _Tag:
+    """A value of the caller's own class: its text names it, and a write to it changes both."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __str__(self) -> str:
+        return self.name
+
+
+def test_a_dict_the_caller_still_holds_is_refused() -> None:
+    """The copy of an object column held the caller's objects: a write to a dict the caller still
+    held, or to one read back through ``panel[name][row]``, changed the panel under its hash."""
+    data = _labelled()
+    data["meta"] = _cells({"tag": 1}, {"tag": 2}, {"tag": 3})
+    with pytest.raises(
+        PanelError,
+        match=r"column 'meta' is \{'tag': 1\} for unit 'region-A' at time 0: type dict, which a "
+        "panel does not hold",
+    ):
+        Panel.from_frame(data, unit="unit", time="time")
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [["a"], ["b"], ["c"]],
+        [{"a"}, {"b"}, {"c"}],
+        [bytearray(b"a"), bytearray(b"b"), bytearray(b"c")],
+        [np.zeros(1), np.zeros(1), np.zeros(1)],
+        [_Tag("a"), _Tag("b"), _Tag("c")],
+        [("a", 1), ("b", 2), ("c", 3)],
+        [pd.Period(f"2024-0{month}", freq="M") for month in (1, 2, 3)],
+        [None, None, None],
+        [pd.NA, pd.NA, pd.NA],
+    ],
+    ids=["list", "set", "bytearray", "array", "own-class", "tuple", "period", "none", "pandas-na"],
+)
+def test_a_value_that_can_change_or_is_missing_is_refused(values: list[object]) -> None:
+    """A copy of a value that changes in place still changes through ``panel[name][row]``, so it is
+    refused. So is a tuple, which can hold such a value and whose text is its items' ``repr``; a
+    type the panel does not list, a pandas ``Period`` among them; and a value missing in every row,
+    which a reader of numbers takes as nan, or fails on."""
+    data = _labelled()
+    data["meta"] = _cells(*values)
+    kind = type(values[0]).__name__
+    with pytest.raises(
+        PanelError,
+        match=rf"column 'meta' is .+ for unit 'region-A' at time 0: type {kind}, which a panel "
+        "does not hold",
+    ):
+        Panel.from_frame(data, unit="unit", time="time")
+
+
+def test_a_unit_that_can_change_is_refused_before_the_index_is_read() -> None:
+    """A list as a unit failed the duplicate check with ``TypeError``, a list being unhashable,
+    and not with the panel's own error."""
+    data = _labelled()
+    data["unit"] = _cells(["a"], ["b"], ["c"])
+    with pytest.raises(
+        PanelError, match=r"column 'unit' is \['a'\] for unit \['a'\] at time 0: type list"
+    ):
+        Panel.from_frame(data, unit="unit", time="time")
+
+
+def test_bytes_whose_text_reads_as_an_address_are_held() -> None:
+    """The address check reads only the types a panel does not hold: the text of bytes names their
+    value, as the text of a str does."""
+    data = _labelled()
+    data["raw"] = _cells(b"<object at 0x10>", b"", b"a")
+    Panel.from_frame(data, unit="unit", time="time")
+
+
+def _held() -> dict[str, np.ndarray]:
+    """A column of each type an object column holds, NumPy's scalars among them."""
+    utc = dt.UTC
+    return {
+        "text": _cells("a", "", "\ud800"),
+        "raw": _cells(b"a", b"", b"\xff"),
+        "flag": _cells(True, False, True),
+        "count": _cells(1, -2, 10**30),
+        "share": _cells(0.5, -1.25, 1e-300),
+        "phasor": _cells(1 + 2j, -0.5j, 3 + 0j),
+        "price": _cells(Decimal("0.10"), Decimal(2), Decimal("-3.5E+2")),
+        "ratio": _cells(Fraction(1, 3), Fraction(2), Fraction(-7, 4)),
+        "id": _cells(UUID(int=1), UUID(int=2), UUID(int=3)),
+        "day": _cells(dt.date(2024, 1, 1), dt.date(2024, 2, 1), dt.date(2024, 3, 1)),
+        "clock": _cells(dt.time(9), dt.time(12, 30), dt.time(23, 59, 59, 999999)),
+        "stamp": _cells(*(dt.datetime(2024, 1, day, tzinfo=utc) for day in (1, 2, 3))),
+        "lag": _cells(dt.timedelta(days=1), dt.timedelta(hours=-3), dt.timedelta(0)),
+        "np_count": _cells(np.int64(1), np.int64(-2), np.int64(3)),
+        "np_share": _cells(np.float32(0.5), np.float32(-1.25), np.float32(3)),
+        "np_phasor": _cells(np.complex64(1j), np.complex64(-2), np.complex64(0)),
+        "np_flag": _cells(np.True_, np.False_, np.True_),
+        "np_text": _cells(np.str_("a"), np.str_("b"), np.str_("c")),
+        "np_day": _cells(*(np.datetime64(f"2024-01-0{day}") for day in (1, 2, 3))),
+        "np_lag": _cells(np.timedelta64(1, "D"), np.timedelta64(-2, "h"), np.timedelta64(0, "s")),
+    }
+
+
+def test_the_values_a_panel_holds_are_hashed_as_before() -> None:
+    """Text, numbers and times, none of which changes in place: each is held and hashed by its type
+    and its text, as ADR 0056 hashes it. The digest is the one 0.14.2 gave this panel."""
+    panel = Panel.from_frame({**_labelled(), **_held()}, unit="unit", time="time")
+    assert panel.provenance.data_sha256 == (
+        "1199bc86f9942db4c79246236706e995cbfda4a3ca9aa05bc2753db455b909d9"
+    )
+
+
+def test_a_pandas_column_of_aware_timestamps_is_held() -> None:
+    """pandas hands over a column of time-zone-aware timestamps as objects, each a ``datetime``."""
+    frame = pd.DataFrame(_labelled())
+    frame["time"] = pd.date_range("2024-01-01", periods=3, tz="UTC")
+    panel = Panel.from_frame(frame, unit="unit", time="time")
+    assert panel["time"].dtype == object
+    assert panel.periods[0] == pd.Timestamp("2024-01-01", tz="UTC")
 
 
 def test_the_cluster_column_is_declared_once_and_carried() -> None:

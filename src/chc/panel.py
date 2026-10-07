@@ -10,8 +10,8 @@ already in a slide.
 
 :class:`Panel` does that pivot once, refuses to do it when the data cannot support it, and says
 which unit and which period were responsible. It holds a read-only copy of the columns it was
-given, made once, so that the data cannot change under its hash; passing one around costs what
-passing a dict does.
+given, made once, and in an object column only values that cannot change in place, so that the
+data cannot change under its hash; passing one around costs what passing a dict does.
 
 :class:`Provenance` travels with it. A number is reproducible only together with the bytes it came
 from and the precision it was computed in, and this library has already been bitten by the second:
@@ -24,15 +24,40 @@ value's type and text, each with its length.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
+from fractions import Fraction
 from typing import Any
+from uuid import UUID
 
 import numpy as np
 from numpy.typing import NDArray
 
 from chc.frames import ColumnData, as_columns
+
+# The types an object column holds: none changes in place, and the text of each names its value,
+# which is what the hash reads. A subclass counts, so a pandas Timestamp is a datetime; `int`
+# covers `bool`, `date` covers `datetime`, and NumPy's scalars of text and numbers subclass `str`,
+# `bytes` or `np.number`. `np.void`, a structured array's element, writes through to that array.
+_HELD: tuple[type, ...] = (
+    str,
+    bytes,
+    int,
+    float,
+    complex,
+    Decimal,
+    Fraction,
+    UUID,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+    np.bool_,
+    np.number,
+    np.datetime64,
+)
 
 
 class PanelError(ValueError):
@@ -148,6 +173,18 @@ class Panel:
     ) -> Panel:
         """Read a pandas/polars frame or a column mapping as a panel, or say exactly why not.
 
+        An object column, which is how pandas hands over text, holds values of one type that
+        cannot change in place and whose text names them: ``str``, ``bytes``, ``bool``, ``int``,
+        ``float``, ``complex``, ``Decimal``, ``Fraction``, ``UUID``, ``date``, ``time``,
+        ``datetime`` or ``timedelta``, a subclass of one (a pandas ``Timestamp`` is a
+        ``datetime``), or NumPy's scalar of one of these kinds. Each value is hashed by its type and
+        its text. A value that can change in place --- a dict, a list, a set, a bytearray, an
+        array, an object of the caller's own class --- is refused rather than copied, since a copy
+        would still change through ``panel[name][row]``. So are ``None`` and pandas' ``NA``, which
+        is how a frame hands over a missing value, and any other type, a tuple or a pandas
+        ``Period`` among them: fill or drop a missing value, and convert any other value to text,
+        or a ``Period`` to a timestamp.
+
         Args:
             unit, time: the column names holding the entity and the period. Values may be any
                 sortable type; periods are ranked, not assumed to be ``0..T-1``.
@@ -164,9 +201,9 @@ class Panel:
             PanelError: for a missing index column, one column named as both the unit and the
                 time, a non-1-D or ragged column, a non-finite value, a duplicated
                 ``(unit, time)`` pair, an object column whose values are not of one type (a missing
-                value among strings, say) or whose values' text is their address in memory, or ---
-                under ``require_balanced`` --- a hole. Every message names the column and the
-                offending entity.
+                value among strings, say), whose values' text is their address in memory, or whose
+                values' type a panel does not hold, or --- under ``require_balanced`` --- a hole.
+                Every message names the column and the offending entity.
         """
         raw = as_columns(data)
         # copied before it is checked, so that the bytes checked and hashed are the bytes held
@@ -194,6 +231,37 @@ class Panel:
                 )
 
         units, times = columns[unit], columns[time]
+        # before the index check, which fails with a bare TypeError on a unit or a period that is
+        # not hashable
+        for name, column in columns.items():
+            if column.dtype != object or not n_rows:
+                continue
+            values = column.tolist()
+            kind = type(values[0])
+            odd = next((row for row, value in enumerate(values) if type(value) is not kind), None)
+            if odd is not None:
+                label, period = units.tolist()[odd], times.tolist()[odd]
+                raise PanelError(
+                    f"column {name!r} is {values[odd]!r} for unit {label!r} at time {period!r}: "
+                    f"type {type(values[odd]).__name__}, where row 0 is type {kind.__name__}; an "
+                    "object column holds values of one type, so fill or drop a missing value"
+                )
+            if not issubclass(kind, _HELD):
+                label, period = units.tolist()[0], times.tolist()[0]
+                where = f"column {name!r} is {values[0]!r} for unit {label!r} at time {period!r}"
+                if " at 0x" in str(values[0]):
+                    raise PanelError(
+                        f"{where}: {kind.__name__} values, whose text is their address in memory, "
+                        "so no other run could hash them the same"
+                    )
+                raise PanelError(
+                    f"{where}: type {kind.__name__}, which a panel does not hold; an object column "
+                    "holds values that cannot change in place, of type str, bytes, bool, int, "
+                    "float, complex, Decimal, Fraction, UUID, date, time, datetime or timedelta, "
+                    "or NumPy's scalars of these: fill or drop a missing value, and convert any "
+                    "other value to one of them"
+                )
+
         seen: dict[tuple[Any, Any], int] = {}
         for row, key in enumerate(zip(units.tolist(), times.tolist(), strict=True)):
             if key in seen:
@@ -212,25 +280,6 @@ class Panel:
                 raise PanelError(
                     f"column {name!r} is {column[row]} for unit {units[row]!r} at time "
                     f"{times[row]!r} ({bad.size} of {n_rows} rows are not finite)"
-                )
-
-        for name, column in columns.items():
-            if column.dtype != object or not n_rows:
-                continue
-            values = column.tolist()
-            kind = type(values[0])
-            odd = next((row for row, value in enumerate(values) if type(value) is not kind), None)
-            if odd is not None:
-                label, period = units.tolist()[odd], times.tolist()[odd]
-                raise PanelError(
-                    f"column {name!r} is {values[odd]!r} for unit {label!r} at time {period!r}: "
-                    f"type {type(values[odd]).__name__}, where row 0 is type {kind.__name__}; an "
-                    "object column holds values of one type, so fill or drop a missing value"
-                )
-            if kind is not str and " at 0x" in str(values[0]):
-                raise PanelError(
-                    f"column {name!r} holds {kind.__name__} values, whose text is their address in "
-                    f"memory ({values[0]}), so no other run could hash them the same"
                 )
 
         panel = cls(

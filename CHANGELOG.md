@@ -57,6 +57,18 @@ still change).
   and its relevance grades it: columns of noise drawn apart from the action read 0.002 to 0.035
   where the plant's instrument reads 0.39 to 0.48. At `nuisance_degree=0` the first stage is a
   constant, which no instrument enters, so no instrument has rank there (ADR 0067). Since 0.3.0.
+- **A panel refuses an object value that can change in place, so that its data cannot change
+  under its hash.** `Panel.from_frame` copied an object column, but the copy held the caller's
+  objects: a write to a dict the caller still held, or to one read back through
+  `panel[name][row]`, changed the panel, and `data_sha256` no longer named its data. An object
+  column now holds values of `str`, `bytes`, `bool`, `int`, `float`, `complex`, `Decimal`,
+  `Fraction`, `UUID`, `date`, `time`, `datetime` or `timedelta`, of a subclass of one (a pandas
+  `Timestamp` is a `datetime`), or NumPy's scalars of these, each hashed as before. Any other
+  value is refused with `PanelError` naming the column, the value, the unit and the time: a dict,
+  a list, a set, a bytearray, an array, an object of the caller's own class, a tuple, a pandas
+  `Period`, and `None` or pandas' `NA` in every row. A list as a unit, which failed the index
+  check with `TypeError`, is refused the same way. Migration: convert such a column first, a
+  `Period` with `.dt.to_timestamp()` (ADR 0068). Since 0.5.0.
 
 ## [0.14.3] — 2026-10-07
 
