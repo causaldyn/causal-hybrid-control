@@ -4,13 +4,14 @@
 
 ## Context
 
-The 0.15.0 release pre-registers a marketplace study whose headline is that an off-policy estimate
+The 0.16.0 release pre-registers a marketplace study whose headline is that an off-policy estimate
 of a plan predicts the plan's realised lift. It was to be 0.10.0, until the media-mix release went
 first; 0.11.0, until a planner over a posterior's draws shipped before it; 0.12.0, until a
 prescription's evaluation as a target trial (ADR 0049) did; 0.13.0, until S-curve plans
-searched by branch and bound (ADRs 0051 and 0052) did; and 0.14.0, until a plan checked along
-every direction its log never moved (ADR 0054) did. The study needs a plant that every stage of the loop
-can run on:
+searched by branch and bound (ADRs 0051 and 0052) did; 0.14.0, until a plan checked along
+every direction its log never moved (ADR 0054) did; and 0.15.0, until every fit and the planner
+read their columns in their own units (ADRs 0057 and 0059) did. The study needs a plant that every
+stage of the loop can run on:
 
 - the causal fit and the planner, which need a control-affine plant;
 - `evaluate_plan`, which needs a `LinearGaussianPlant`;
