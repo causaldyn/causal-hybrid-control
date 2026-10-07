@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 from chc.uncertainty import (
+    _logistic_fit,
     _top_tail_mean,
     benchmark_gamma,
     gamma_benchmark_certificate,
@@ -275,3 +276,105 @@ def test_a_nan_negative_control_is_refused_rather_than_calibrated_at_the_ceiling
         negative_control_gamma(outcomes, gamma_max=float("nan"))
     with pytest.raises(ValueError, match="gamma_max at least 1 and finite"):
         negative_control_gamma(outcomes, gamma_max=float("inf"))
+
+
+@pytest.mark.parametrize("units", [1e-9, 1e-6, 1e-3, 1e3, 1e6])
+@pytest.mark.parametrize("column", [0, 1, 2], ids=["strong", "weak", "null"])
+def test_the_benchmark_reads_the_same_with_a_covariate_in_any_units(
+    column: int, units: float
+) -> None:
+    """An implied Gamma is an odds ratio, and the propensity's ridge was a constant on the raw
+    slopes: with the strong covariate logged in millionths of its units its Gamma read 1.0009
+    where it reads 10.12, and the weak one was reported the strongest; with the weak one in
+    millionths, its own read 1.0004 where 3.03."""
+    treated, covariates = _design(2000, [1.2, 0.5, 0.0])
+    scaled = covariates.copy()
+    scaled[:, column] *= units
+    names = ("strong", "weak", "null")
+    one, other = (benchmark_gamma(treated, x, 2.0, names=names) for x in (covariates, scaled))
+    np.testing.assert_allclose(other.implied_gamma, one.implied_gamma, rtol=1e-9, atol=0.0)
+    assert other.strongest == one.strongest == "strong"
+
+
+@pytest.mark.parametrize("column", [0, 1, 2], ids=["strong", "weak", "null"])
+def test_the_benchmark_reads_the_same_with_a_covariate_far_from_zero(column: int) -> None:
+    """The propensity has an intercept, so a covariate's origin carries no information. The
+    intercept was already free and the slopes' ridge a constant, so a shift alone moved nothing;
+    shifted by a thousand of its spreads and in millionths of its units, the strong covariate read
+    1.0009 where it reads 10.12. A ridge scaled by each column's mean square, or one on the
+    intercept, would read 10.03 for it. Each Newton step is solved about the columns' means, so the
+    shift costs no digits in the solve and three in the logits, and rounding moves a Gamma by
+    1e-13."""
+    treated, covariates = _design(2000, [1.2, 0.5, 0.0])
+    moved = covariates.copy()
+    moved[:, column] = 1e-6 * (covariates[:, column] + 1e3 * np.std(covariates[:, column]))
+    names = ("strong", "weak", "null")
+    one, other = (benchmark_gamma(treated, x, 2.0, names=names) for x in (covariates, moved))
+    np.testing.assert_allclose(other.implied_gamma, one.implied_gamma, rtol=1e-11, atol=0.0)
+    assert other.strongest == one.strongest == "strong"
+
+
+def test_a_covariate_that_never_moves_reads_no_confounding_and_changes_nothing() -> None:
+    """A constant covariate is the intercept's column again. It has no variance to scale its ridge
+    by and counts as constant: its centred values are zeroed, so its slope is zero, dropping it
+    moves no logit, and the others read as without it. Its relative jitter of 1e-14, 45 epsilons,
+    is under the 64 at which a column's spread is rounding."""
+    treated, covariates = _design(2000, [1.2, 0.5, 0.0])
+    still = 7.3 * (1.0 + 1e-14 * np.random.default_rng(3).standard_normal(2000))
+    one = benchmark_gamma(treated, covariates, 2.0)
+    other = benchmark_gamma(treated, np.column_stack([covariates, still]), 2.0)
+    assert other.implied_gamma[3] == 1.0
+    np.testing.assert_allclose(other.implied_gamma[:3], one.implied_gamma, rtol=1e-9, atol=0.0)
+
+
+@pytest.mark.parametrize("offset", [1e-11, 1e-13], ids=["1e-11", "1e-13"])
+def test_a_covariate_constant_but_for_1e_11_or_1e_13_of_its_size_reads_its_slope(
+    offset: float,
+) -> None:
+    """``1 + s z`` is ``z`` in units of ``s``, 45,000 or 450 epsilons of its size, so it is data:
+    its slope is z's over ``s`` and the logits are the same. The column holds z to five significant
+    digits at 1e-11 and three at 1e-13, so the fit agrees to 1e-15 / s: the logits to 1.3e-6 and
+    1.7e-4 of the largest, the slope to 6e-7 and 1.6e-4. In the Hessian of the raw columns its
+    spread drowned in the rounding of its offset and left the Hessian singular; with the ridge a
+    constant its slope read zero and the logits moved by 1.8. A floor of 1e-12 of its size counted
+    the 1e-13 column as constant, and its slope read zero."""
+    treated, x = _design(1_000, [2.0, 0.5])
+    ones = np.ones(1_000)
+    near = np.column_stack([ones, x[:, 0], 1.0 + offset * x[:, 1]])
+    plain = np.column_stack([ones, x])
+    beta, reference = _logistic_fit(near, treated), _logistic_fit(plain, treated)
+    assert np.all(np.isfinite(beta))
+    logits, tolerance = plain @ reference, 1e-15 / offset
+    np.testing.assert_allclose(
+        near @ beta, logits, rtol=0.0, atol=tolerance * np.max(np.abs(logits))
+    )
+    assert beta[2] * offset == pytest.approx(reference[2], rel=tolerance, abs=0.0)
+
+
+def test_a_covariate_constant_to_4e_15_of_its_size_reads_no_slope() -> None:
+    """4e-15 of its size is 18 epsilons, under the 64 at which a column's spread is rounding, so
+    the column counts as constant: its centred values are zeroed, its coefficient is exactly zero,
+    and the fit is that with the column exactly constant. Kept, its centred values took up the
+    noise along their 4e-15: with the ridge scaled by the column's mean square its coefficient
+    read 2.8e-8, and by its variance, 1.6e-29 of that, 1.2e13."""
+    treated, x = _design(1_000, [2.0, 0.5])
+    ones = np.ones(1_000)
+    signs = np.where(np.random.default_rng(1).random(1_000) < 0.5, -1.0, 1.0)
+    beta = _logistic_fit(np.column_stack([ones, x, 1.0 + 4e-15 * signs]), treated)
+    reference = _logistic_fit(np.column_stack([ones, x, ones]), treated)
+    assert beta[3] == 0.0
+    np.testing.assert_allclose(beta, reference, rtol=1e-14, atol=0.0)
+
+
+def test_a_covariate_that_never_moves_counts_as_constant_at_a_million_rows() -> None:
+    """A constant covariate deviates from its computed mean by that mean's rounding alone. At a
+    million rows the rounding squared to more than the floor, so the covariate's ridge was scaled
+    by it and the Newton steps never settled: after all 60 its slope read -7.7e11. With the
+    deviations' own mean taken off, it counts as constant, the fit converges in 7 steps, and its
+    slope is zero, where with its centred values kept it read 4e-20."""
+    treated, x = _design(1_000_000, [2.0, 0.5])
+    ones = np.ones(1_000_000)
+    beta = _logistic_fit(np.column_stack([ones, x, np.full(1_000_000, 0.4)]), treated)
+    reference = _logistic_fit(np.column_stack([ones, x, np.zeros(1_000_000)]), treated)
+    assert beta[3] == 0.0
+    np.testing.assert_allclose(beta[:3], reference[:3], rtol=0.0, atol=1e-12)

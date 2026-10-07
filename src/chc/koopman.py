@@ -30,9 +30,20 @@ def _lift(x: np.ndarray, degree: int) -> np.ndarray:
     return np.column_stack(feats)
 
 
+def _mean_squares(columns: np.ndarray) -> np.ndarray:
+    """Each column's mean square, and 1 for a column of zeros."""
+    size = np.mean(columns**2, axis=0)
+    return np.where(size > 0.0, size, 1.0)
+
+
 @dataclass
 class KoopmanModel:
-    """Koopman model ``phi(x') ~ A phi(x) + B u`` fit by least squares on a polynomial lift."""
+    """Koopman model ``phi(x') ~ A phi(x) + B u`` fit by least squares on a polynomial lift.
+
+    ``ridge`` is the Tikhonov term on each coefficient, in units of its column's mean square, so
+    the fit reads the same in any units of the state and the action. Added as a constant, it
+    outweighed an action logged in millionths of its units and set ``B`` near zero.
+    """
 
     degree: int = 3
     ridge: float = 1e-6
@@ -45,7 +56,7 @@ class KoopmanModel:
         object.__setattr__(self, "state_dim", x.shape[1])
         phi, phi_next, u2 = _lift(x, self.degree), _lift(x_next, self.degree), np.atleast_2d(u)
         design = np.column_stack([phi, u2])  # [phi(x), u] -> phi(x')
-        gram = design.T @ design + self.ridge * np.eye(design.shape[1])
+        gram = design.T @ design + self.ridge * np.diag(_mean_squares(design))
         coef = np.linalg.solve(gram, design.T @ phi_next)  # (n_feat + d_u, n_feat)
         n_feat = phi.shape[1]
         self._a, self._b = coef[:n_feat].T, coef[n_feat:].T  # A (n_feat,n_feat), B (n_feat,d_u)

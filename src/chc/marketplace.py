@@ -103,22 +103,58 @@ class ExposureResponse:
     se: Array  # (n_zones,) heteroskedastic-robust SE of ``marginal``
 
 
+def _ridge_scales(columns: Array) -> tuple[Array, Array]:
+    """Each column's variance about its mean, the scale of its ridge beside a free intercept, and
+    which columns count as constant. A column whose spread about its mean is at most 64 epsilons
+    of its dtype times its root mean square counts as constant: its centred values are zeroed, so
+    its coefficient is exactly zero, and its ridge is scaled by 1, which keeps the solve regular
+    and moves nothing else. The spread is the corrected two-pass variance of Chan, Golub and
+    LeVeque (1983), the deviations' own mean taken off their mean square: a constant column
+    deviates from its computed mean by that mean's rounding alone, which squared would read as a
+    spread in float32 at any length."""
+    size = jnp.mean(columns**2, axis=0)
+    deviation = columns - jnp.mean(columns, axis=0)
+    variance = jnp.mean(deviation**2, axis=0) - jnp.mean(deviation, axis=0) ** 2
+    rounding = (64.0 * jnp.finfo(size.dtype).eps) ** 2
+    constant = variance <= rounding * size
+    return jnp.where(constant, 1.0, variance), constant
+
+
 def _zone_slope(u: Array, y: Array, extra: Array) -> tuple[Array, Array]:
     """Per-zone OLS slope of ``y`` on ``u`` controlling ``extra`` (blocks x k), + robust SE. Returns
-    the incentive slope (index 1) and its sandwich SE.
+    the incentive slope and its sandwich SE.
+
+    The intercept is free, and the ridge on each other coefficient is scaled by its column's
+    variance, so that the slope reads the same in any units and from any origin of the incentive
+    and the covariates. Added as a constant, the ridge outweighed an incentive logged in millionths
+    of its units and set every zone's slope to zero, and a zone logged at one incentive throughout
+    read a response no log can identify. The slopes and their sandwich are solved about the
+    columns' means, where the intercept drops out of both: in the Gram of the raw columns a
+    column's spread drowns in the rounding of its offset, and an incentive constant but for 1e-11
+    of its size read a slope of zero. A column that counts as constant is zeroed about its mean,
+    so an incentive that does reads a slope and an SE of exactly zero. The deviations' own mean is
+    taken off them too: in float32, JAX's default, a mean is rounded to about 1e-7 of its size,
+    which an incentive near constant carries into the residuals through its large slope; without
+    it, one whose spread is about 100 epsilons of its size read an SE 1.2e-3 off.
     """
-    features = jnp.concatenate([jnp.ones((u.shape[0], 1)), u[:, None], extra], axis=1)
-    gram_inv = jnp.linalg.inv(features.T @ features + 1e-4 * jnp.eye(features.shape[1]))
-    coef = gram_inv @ features.T @ y
-    resid = y - features @ coef
-    meat = (features * resid[:, None]).T @ (features * resid[:, None])
+    columns = jnp.concatenate([u[:, None], extra], axis=1)
+    scales, constant = _ridge_scales(columns)
+    centred = columns - jnp.mean(columns, axis=0)
+    centred = jnp.where(constant, 0.0, centred - jnp.mean(centred, axis=0))
+    outcome = y - jnp.mean(y)
+    gram_inv = jnp.linalg.inv(centred.T @ centred + jnp.diag(1e-4 * scales))
+    coef = gram_inv @ centred.T @ outcome
+    resid = outcome - centred @ coef
+    meat = (centred * resid[:, None]).T @ (centred * resid[:, None])
     cov = gram_inv @ meat @ gram_inv
-    return coef[1], jnp.sqrt(jnp.maximum(cov[1, 1], 0.0))
+    return coef[0], jnp.sqrt(jnp.maximum(cov[0, 0], 0.0))
 
 
 def _calibrate(logs: dict[str, Array], covariates: tuple[str, ...]) -> ExposureResponse:
     n_zones = logs["u"].shape[1]
-    empty = jnp.zeros((logs["u"].shape[0], 0))
+    # In the incentive's dtype: under x64 a default block is float64, and joined to a float32 log
+    # it would decide the zone's solve, not the log.
+    empty = jnp.zeros((logs["u"].shape[0], 0), dtype=logs["u"].dtype)
 
     def one_zone(i: Array) -> tuple[Array, Array]:
         extra = jnp.stack([logs[c][:, i] for c in covariates], axis=1) if covariates else empty
@@ -148,7 +184,11 @@ def calibrate_shared_state(logs: dict[str, Array]) -> ExposureResponse:
 def sutva_allocation(market: SharedStateMarket, response: ExposureResponse, radius: float) -> Array:
     """Baseline allocation: fund zones by their pessimistic local uplift (the SUTVA assumption)."""
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)  # W-DRO shrink of a reward
-    return market.budget * pess / (jnp.sum(pess) + 1e-9)
+    total = jnp.sum(pess)
+    # Shares of the budget, so the uplift's units cancel. A floor of 1e-9 added to the total was
+    # absolute in them: completions logged in millionths of their units moved the shares by 2e-4
+    # of the largest. With no uplift positive the total is zero, and so is every share.
+    return market.budget * pess / jnp.where(total > 0.0, total, 1.0)
 
 
 def pessimistic_equilibrium_allocation(

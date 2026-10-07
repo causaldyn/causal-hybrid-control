@@ -6,6 +6,8 @@ shrinks the closed-loop action magnitude in pessimistic_control as the assumed c
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
 from jax import Array
 
 from chc.cost import QuadraticCost
@@ -156,3 +158,38 @@ def test_an_adversary_cannot_beat_the_certified_bound_but_beats_the_first_order_
     # The point of the second-order term: the first-order expression is asymptotically tight, so
     # the curvature it drops makes it fail as an upper bound at every radius, not only large ones.
     assert all(r > 1.0 for r in curve.first_order_ratio)
+
+
+@pytest.mark.parametrize("units", [1e-9, 1e-6, 1e-3, 1e3, 1e6])
+def test_the_penalty_reads_the_same_with_the_actions_in_any_units(units: float) -> None:
+    """The norm was smoothed over a fixed length of 1e-6 in the caller's units: with the actions
+    logged in millionths of theirs, and the radius per unit scaled to match, the penalty read 2.031
+    where it reads 1.065, and its gradient was 0.95 off; in billionths it read 1500."""
+    us = jnp.array([[0.5], [1.0], [-2.0], [0.0], [0.05]])
+    xs = jnp.zeros((5, 2))
+
+    def value_and_gradient(radius: float, actions: Array) -> tuple[Array, Array]:
+        penalty = ConfoundingRobustPenalty(radius=radius)
+        return jax.value_and_grad(lambda u: penalty.penalty_trajectory(xs, u))(actions)
+
+    value, gradient = value_and_gradient(0.3, us)
+    other_value, other_gradient = value_and_gradient(0.3 / units, us * units)
+    assert float(other_value) == pytest.approx(float(value), rel=1e-9, abs=0.0)
+    np.testing.assert_allclose(
+        np.asarray(other_gradient) * units,
+        np.asarray(gradient),
+        rtol=0.0,
+        atol=1e-9 * float(jnp.max(jnp.abs(gradient))),
+    )
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_all_zero_actions_have_a_gradient_of_zero_rather_than_nan(dtype) -> None:
+    """The solver starts from all-zero actions, where the norm has no derivative and the actions
+    have no size to smooth over; the smallest normal number, below every action, keeps the
+    gradient there zero."""
+    xs = jnp.zeros((4, 2), dtype=dtype)
+    penalty = ConfoundingRobustPenalty(radius=0.3)
+    gradient = jax.grad(lambda u: penalty.penalty_trajectory(xs, u))(jnp.zeros((4, 2), dtype=dtype))
+    assert gradient.dtype == dtype
+    assert bool(jnp.all(gradient == 0.0))

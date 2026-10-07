@@ -624,11 +624,15 @@ class ConfoundingRobustPenalty(eqx.Module):
         """
         del xs  # the confounded effect error scales with the ACTION magnitude (§34), not the state
         # smoothed L2 norm sqrt(||u||^2 + eps^2): ||u|| is non-differentiable at u=0 (NaN grad) and
-        # the solver starts from us0=0 exactly on that singularity, so the floor is squared -- it
-        # lives in ||u||^2 units, smoothing over a length scale eps=1e-6. Stays ABOVE ||u||, which
-        # is what the §34 upper bound needs; the price is a constant eps per step at u=0, which
-        # shifts the reported objective by lam_unc*radius*T*eps without moving the optimiser.
-        per_step = jnp.sqrt(jnp.sum(us**2, axis=-1) + 1e-6**2)
+        # the solver starts from us0=0 exactly on that singularity. eps is a millionth of the
+        # root-mean-square ||u_t|| over these very actions, the one size of them every caller hands
+        # over, so the penalty reads the same in any units of the actions; a fixed eps=1e-6
+        # outweighed actions logged in millionths of their units. Stays ABOVE ||u||, which is what
+        # the §34 upper bound needs, by at most eps per step. All-zero actions have no size, and
+        # there the floor is the smallest normal number, which keeps their gradient zero, not NaN.
+        squares = jnp.sum(us**2, axis=-1)
+        relative = 1e-6**2 * jnp.mean(squares)
+        per_step = jnp.sqrt(squares + jnp.maximum(relative, jnp.finfo(relative.dtype).tiny))
         if self.cost_to_go is not None:
             per_step = per_step * self.cost_to_go
         return self.radius * jnp.sum(per_step)
@@ -1453,6 +1457,25 @@ def confounding_cost_bound_certificate(
 # --- Result 32 (A19): Gamma is unfalsifiable only if nobody benchmarks it ---
 
 
+def _ridge_scales(
+    columns: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    """Each column's variance about its mean, the scale of its ridge beside a free intercept, and
+    which columns count as constant. A column whose spread about its mean is at most 64 epsilons
+    of its dtype times its root mean square counts as constant: its centred values are zeroed, so
+    its coefficient is exactly zero, and its ridge is scaled by 1, which keeps the solve regular
+    and moves nothing else. The spread is the corrected two-pass variance of Chan, Golub and
+    LeVeque (1983), the deviations' own mean taken off their mean square: a constant column
+    deviates from its computed mean by that mean's rounding alone, which squared would read as a
+    spread past 1e5 rows."""
+    size = np.mean(columns**2, axis=0)
+    deviation = columns - np.mean(columns, axis=0)
+    variance = np.mean(deviation**2, axis=0) - np.mean(deviation, axis=0) ** 2
+    rounding = (64.0 * np.finfo(size.dtype).eps) ** 2
+    constant = variance <= rounding * size
+    return np.where(constant, 1.0, variance), constant
+
+
 def _logistic_fit(
     design: NDArray[np.float64],
     treated: NDArray[np.float64],
@@ -1463,20 +1486,32 @@ def _logistic_fit(
     """Ridge-penalised logistic regression by IRLS -- the propensity model benchmarking needs.
 
     Newton on the penalised log-likelihood; the ridge is on the slopes only, so an intercept-only
-    model is unpenalised and the fit stays invariant to shifting the outcome's base rate. Converges
-    in a handful of steps on the well-separated designs a benchmark sweeps, and the iteration is
-    stopped on the coefficient step rather than the likelihood, which is what a caller comparing two
-    *nested* fits needs: the difference of two half-converged logits is not an odds ratio.
+    model is unpenalised and the fit stays invariant to shifting the outcome's base rate. Each
+    slope's ridge is scaled by its column's variance, so the fit reads the same in any units and
+    from any origin of the covariates: added as a constant, it outweighed a covariate logged in
+    millionths of its units and set its slope near zero. Each Newton step solves for the slopes
+    about the columns' means under that step's weights and recovers the intercept from them: in
+    the Hessian of the raw columns a column's spread drowns in the rounding of its offset, and one
+    constant but for 1e-11 of its size left it singular. A column that counts as constant is zeroed
+    about its mean, so its slope is exactly zero. ``design``'s first column is the intercept's.
+    Converges in a handful of steps on the well-separated designs a benchmark sweeps, and the
+    iteration is stopped on the coefficient step rather than the likelihood, which is what a caller
+    comparing two *nested* fits needs: the difference of two half-converged logits is not an odds
+    ratio.
     """
+    columns = design[:, 1:]
+    scales, constant = _ridge_scales(columns)
+    penalty = ridge * scales
     coefficients = np.zeros(design.shape[1], dtype=np.float64)
-    penalty = ridge * np.eye(design.shape[1])
-    penalty[0, 0] = 0.0
     for _ in range(steps):
         probability = 1.0 / (1.0 + np.exp(-design @ coefficients))
         weights = np.clip(probability * (1.0 - probability), 1e-12, None)
-        gradient = design.T @ (treated - probability) - penalty @ coefficients
-        hessian = design.T @ (design * weights[:, None]) + penalty
-        step = np.linalg.solve(hessian, gradient)
+        residual = treated - probability
+        mean = weights @ columns / np.sum(weights)
+        centred = np.where(constant, 0.0, columns - mean)
+        hessian = centred.T @ (centred * weights[:, None]) + np.diag(penalty)
+        slopes = np.linalg.solve(hessian, centred.T @ residual - penalty * coefficients[1:])
+        step = np.concatenate([[np.sum(residual) / np.sum(weights) - mean @ slopes], slopes])
         coefficients = coefficients + step
         if float(np.max(np.abs(step))) < tol:
             break
@@ -1536,6 +1571,9 @@ def benchmark_gamma(
     unobserved confounder resembles it. The propensity is logistic-linear in the columns as passed;
     a benchmark is only as good as that model, which is why the covariates should already carry the
     basis expansion the analyst believes.
+
+    ``ridge`` penalises each slope of the propensity in units of its column's variance, so an
+    implied ``Gamma`` reads the same in any units and from any origin of the covariates.
     """
     if not assumed_gamma >= 1.0:
         raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {assumed_gamma}")
