@@ -15,11 +15,20 @@ confounded arm 0.87, 0.76, 0.81, 0.70.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc.mmm import SALES, MarketingMixSystem, MmmReport, _start_state, run_marketing_mix
+from chc.mmm import (
+    SALES,
+    MarketingMixSystem,
+    MmmReport,
+    _myopic_spend,
+    _start_state,
+    run_marketing_mix,
+)
 from chc.panel import Panel, PanelError
 
 DT = 1.0
@@ -116,6 +125,16 @@ def test_the_channel_ordering_matches_the_true_incremental_returns(report: MmmRe
     assert reach["spend_search"] > reach["spend_video"] > reach["spend_social"]
     system = MarketingMixSystem()
     assert system.gamma[0] > system.gamma[2] > system.gamma[1]
+
+
+def test_the_myopic_arm_refuses_a_channel_whose_own_return_the_log_does_not_identify(
+    report: MmmReport,
+) -> None:
+    prescription = report.arm("adjusted").prescription
+    assert prescription is not None
+    hidden = replace(prescription, _alone=(False,) + (True,) * (len(prescription.levers) - 1))
+    with pytest.raises(ValueError, match=r"does not identify for \['spend_"):
+        _myopic_spend(hidden, MarketingMixSystem(), 12, 1.0)
 
 
 def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_integrator(

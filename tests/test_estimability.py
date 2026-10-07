@@ -12,6 +12,7 @@ import functools
 import logging
 from dataclasses import replace
 
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -421,3 +422,96 @@ def test_a_ruled_lever_is_held_over_each_step_as_the_log_held_it(policy: str) ->
     price = QuadraticCost(problem.cost.Q, problem.cost.R, problem.cost.Qf, problem.cost.x_target)
     cost = total_cost(field, problem.x0, schedule, problem.dt, price)
     assert float(cost) == pytest.approx(plan.task_cost, rel=1e-12, abs=0.0)
+
+
+def _entries(result: Prescription, residual: object | None = None) -> np.ndarray:
+    """The channel's entries on the target's row where :meth:`Prescription.reach` reads them."""
+    start = result._start
+    assert start is not None
+    fitted = result.model_fit.residual if residual is None else residual
+    return np.asarray(fitted.control_channel(start))[0]  # type: ignore[attr-defined]
+
+
+def test_levers_the_log_moved_together_have_no_reach_of_their_own() -> None:
+    """``u2 = 2 u1`` in every row: the log identifies their joint push and no split of it. Up to
+    0.14 ``reach`` read 2.05 for ``u1`` and 1.02 for ``u2``, the fit's convention along the
+    direction the log never moved, and ``explain`` ranked them on it."""
+    result = _prescribe("together")
+    assert result.reach() == {"u1": None, "u2": None}
+    assert result.explain().splitlines()[1:] == [
+        "not ranked, the log set them from the state or moved them only together with other "
+        "levers, so it does not identify their own effect: u1, u2"
+    ]
+
+
+def test_a_ruled_lever_has_no_reach_of_its_own_and_the_free_one_keeps_its_own() -> None:
+    result = _prescribe("state")
+    reach = result.reach()
+    assert reach["u1"] is None
+    assert reach["u2"] == pytest.approx(4.0 * _entries(result)[1], rel=1e-12, abs=0.0)
+    lines = result.explain().splitlines()
+    assert lines[1].split()[0] == "u2"
+    assert lines[2].endswith("own effect: u1")
+
+
+def test_a_log_that_moved_every_lever_reads_every_reach_as_before() -> None:
+    result = _prescribe("free")
+    assert result.reach() == pytest.approx(
+        dict(zip(("u1", "u2"), 4.0 * _entries(result), strict=True)), rel=1e-12, abs=0.0
+    )
+
+
+@pytest.mark.parametrize(
+    "policy", ["together", "together_offset", "thrice", "state", "state_squared", "free"]
+)
+def test_a_reach_is_its_own_where_no_unmoved_direction_moves_it(policy: str) -> None:
+    """The fit moved along a direction the log never moved fits the log as well. A lever's reach
+    that does not move with any such direction is read; one that moves with one reads None."""
+    result = _prescribe(policy)
+    fit = result.model_fit
+    assert fit.unmoved is not None
+    states, actions, features = fit.residual.channel.shape
+    before = _entries(result)
+    moves = []
+    for column in range(fit.unmoved.shape[1] // states):
+        direction = fit.unmoved[: actions * features, column].reshape(actions, features)
+        channel = fit.residual.channel.at[0].add(0.7 * direction)
+        residual = eqx.tree_at(lambda r: r.channel, fit.residual, channel)
+        moves.append(_entries(result, residual) - before)
+    moved = np.max(np.abs(np.stack(moves)), axis=0) if moves else np.zeros(actions)
+    for index, (name, value) in enumerate(result.reach().items()):
+        if value is None:
+            assert moved[index] > 1e-6, name
+        else:
+            assert moved[index] <= 1e-12, name
+
+
+@pytest.mark.parametrize("scale", [1e-9, 1e9])
+def test_whether_a_reach_is_a_lever_s_own_reads_the_same_in_any_units(scale: float) -> None:
+    """``u2 = 2 u1`` with ``u1`` logged in ``scale`` times its units. At 1e9 the direction the log
+    never moved lies 2e-9 of the way along ``u1`` in raw units, under the square root of the
+    precision, so a test read there would take ``u1``'s reach for its own."""
+    columns = dict(_panel("together").columns)
+    columns["u1"] = scale * np.asarray(columns["u1"])
+    levers = [
+        Lever("u1", lo=-2.0 * scale, hi=2.0 * scale, unit_cost=0.01 / scale**2),
+        Lever("u2", lo=-2.0, hi=2.0, unit_cost=1.0),
+    ]
+    result = prescribe(
+        Panel.from_frame(columns, unit="unit", time="time"),
+        levers=levers,
+        target=Target("y", value=1.0),
+        adjustment=CausalGraph.from_edges(EDGES),
+        horizon=3,
+        dt=DT,
+        tolerance=0.5,
+        x0=jnp.ones(1),
+    )
+    assert result.reach() == {"u1": None, "u2": None}
+
+
+def test_a_prescription_that_does_not_record_what_the_log_identifies_reads_no_reach() -> None:
+    with pytest.raises(ValueError, match="does not record which levers the log identifies alone"):
+        replace(_prescribe("together"), _alone=None).reach()
+    free = _prescribe("free")
+    assert replace(free, _alone=None).reach() == free.reach()

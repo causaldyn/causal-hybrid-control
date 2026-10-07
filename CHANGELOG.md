@@ -95,6 +95,17 @@ still change).
 
 ### Changed
 
+- **`Prescription.reach()` reads `None` for a lever whose own effect the log does not identify.**
+  A lever the log set from the state, or moved only together with other levers, has an entry of
+  the channel that leans on a direction the log never moved, where the fit holds the channel by a
+  convention. `reach()` read that convention as the lever's reach, and `explain()` ranked on it: on
+  a log whose second lever was always twice the first, 2.05 and 1.02, a split of their joint effect
+  that any other split fits as well; on a log that set a lever from the state, 0.2456 for it. Such
+  a lever now reads `None`, `explain()` names it apart from the ranking, and the values are
+  `float | None`. Whether a reach is the lever's own reads the same in any units of the actions.
+  `run_marketing_mix`'s myopic arm refuses a channel whose own return the log does not identify,
+  and `reach()` on a prescription `prescribe` did not build refuses where its fit left a direction
+  unmoved (ADR 0069).
 - **The planner reads a problem the same in any units of its levers and of its cost.**
   `projected_gradient_solve` and `projected_gradient_control` started each line search at 0.2
   action units per unit of gradient, and counted a step that lowered the cost by `1e-9` in its own

@@ -304,6 +304,10 @@ def run_marketing_mix(
 
     Audited at ``season = 0``: the plan is for an average week, and letting an arm be scored on a
     season it did not know about would measure the draw rather than the allocation.
+
+    Raises:
+        ValueError: where the log does not identify a channel's own return, by which the
+            ``myopic`` arm ranks the channels.
     """
     system = system or MarketingMixSystem()
     logs = system.sample(n_regions=n_regions, n_weeks=n_weeks, dt=dt, seed=seed)
@@ -364,7 +368,13 @@ def _myopic_spend(
     this plant the two orderings genuinely disagree, because ``beta_c/theta_c`` ranks the channels
     in the opposite direction to ``gamma_c``.
     """
-    reach = prescription.reach()
+    reach = {name: value for name, value in prescription.reach().items() if value is not None}
+    unranked = [name for name in system.spend_columns if name not in reach]
+    if unranked:
+        raise ValueError(
+            "the myopic arm ranks the channels by their own fitted return, which the log does not "
+            f"identify for {unranked}"
+        )
     week = np.full(len(system.channels), system.spend_floor)
     remaining = weekly_budget - float(week.sum())
     index = {name: position for position, name in enumerate(system.spend_columns)}

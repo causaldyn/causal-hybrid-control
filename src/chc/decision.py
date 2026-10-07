@@ -605,6 +605,9 @@ class Prescription:
     _columns: _Columns | None = field(default=None, repr=False, compare=False)
     # The state the plan starts from, or would have: where :meth:`reach` reads the channel.
     _start: Array | None = field(default=None, repr=False, compare=False)
+    # Per lever, whether the log identifies its own effect where :meth:`reach` reads it; None on a
+    # prescription :func:`prescribe` did not build.
+    _alone: tuple[bool, ...] | None = field(default=None, repr=False, compare=False)
     # How many of the plan's constraint rows each budget holds: the last ones, in order.
     _budget_rows: tuple[int, ...] = field(default=(), repr=False, compare=False)
     # The plan's actions with each lever that follows its logged rule read off that rule along the
@@ -835,9 +838,9 @@ class Prescription:
             )
         return replace(evaluation, logger_check=logger_check)
 
-    def reach(self) -> dict[str, float]:
+    def reach(self) -> dict[str, float | None]:
         """Per lever, how far it can move the target's rate across its own box, where the plan
-        starts.
+        starts; None where the log does not identify the lever's own effect.
 
         The fitted control channel on the target's row, read at the state the plan starts from, or
         would have where the effect is not identified, times the width of the lever's box. A
@@ -847,13 +850,22 @@ class Prescription:
         may barely move is not a large lever, which is why the range is in the number and not only
         in the footnote.
 
+        A lever the log set from the state, or moved only together with others, reads None. Its
+        entry of the channel there leans on a direction the log never moved
+        (:attr:`chc.dynamics_id.CausalDynamicsFit.unmoved`), where the fit holds the channel by a
+        convention, not an estimate: on a log whose second lever was always twice the first, up to
+        0.14 this read 2.05 and 1.02, a split of their joint effect that any other split fits as
+        well.
+
         Read from the *same* fit that produced the plan, deliberately. Ranking by a second
         estimator --- local projections, say --- invites an ordering that contradicts the schedule
         printed beside it, and two disagreeing orderings on one page is worse than one.
 
         Raises:
             ValueError: on a prescription that records no start, one built other than by
-                :func:`prescribe` without a plan.
+                :func:`prescribe` without a plan; or on one whose fit left a direction unmoved
+                and that does not record which levers the log identifies alone, one built other
+                than by :func:`prescribe`.
         """
         start = self._start
         if start is None and self.plan is not None:
@@ -862,17 +874,37 @@ class Prescription:
             raise ValueError(
                 "this prescription records no state to read the channel at: build it with prescribe"
             )
+        alone = self._alone
+        if alone is None:
+            unmoved = self.model_fit.unmoved
+            if unmoved is not None and unmoved.shape[1] > 0:
+                raise ValueError(
+                    "the fit left directions of the channel unmoved, and this prescription does "
+                    "not record which levers the log identifies alone: build it with prescribe"
+                )
+            alone = (True,) * len(self.levers)
         channel = np.asarray(self.model_fit.residual.control_channel(start))  # (states, levers)
         return {
-            lever.name: float(channel[0, index] * (lever.hi - lever.lo))
+            lever.name: float(channel[0, index] * (lever.hi - lever.lo)) if alone[index] else None
             for index, lever in enumerate(self.levers)
         }
 
     def explain(self) -> str:
-        """The levers ranked by :meth:`reach`, widest first, as text."""
-        ranked = sorted(self.reach().items(), key=lambda item: -abs(item[1]))
+        """The levers ranked by :meth:`reach`, widest first, as text, and those whose own effect
+        the log does not identify, by name."""
+        reach = self.reach()
+        ranked = sorted(
+            ((name, value) for name, value in reach.items() if value is not None),
+            key=lambda item: -abs(item[1]),
+        )
         lines = [f"levers ranked by reach on {self.target!r} (channel x box width):"]
         lines += [f"  {name:<20} {value:+.4g}" for name, value in ranked]
+        joint = [name for name, value in reach.items() if value is None]
+        if joint:
+            lines.append(
+                "not ranked, the log set them from the state or moved them only together with "
+                f"other levers, so it does not identify their own effect: {', '.join(joint)}"
+            )
         return "\n".join(lines)
 
     def report(self) -> str:
@@ -1601,6 +1633,7 @@ def prescribe(
     else:
         start = jnp.asarray(given)
         start_state = StartState("given", states, tuple(given.tolist()))
+    alone = _alone(fit, data, start)
     if identification == "not_identified":
         _log.warning(abort, extra={"chc_event": "abort", "reason": resolved.reason})
         return Prescription(
@@ -1633,6 +1666,7 @@ def prescribe(
             run=run,
             _columns=columns,
             _start=start,
+            _alone=alone,
         )
 
     if not fit.identified:
@@ -1917,6 +1951,7 @@ def prescribe(
         run=run,
         _columns=columns,
         _start=start,
+        _alone=alone,
         _budget_rows=tuple(rows.matrix.shape[0] for rows in spend_rows),
         _magnitudes=_ruled_schedule(model, plan),
     )
@@ -2122,6 +2157,37 @@ def _relation_rows(
     level = min(max(relation.level, low), high)
     levels = np.full(horizon, level)
     return LinearConstraint(np.kron(np.eye(horizon), weights), levels, levels)
+
+
+def _alone(fit: CausalDynamicsFit, data: dict[str, Array], start: Array) -> tuple[bool, ...]:
+    """Per lever, whether the log identifies its own entry of the channel on the target's row at
+    ``start``: whether that entry, a linear functional of the channel's coefficients, is
+    orthogonal to every direction the log never moved (:attr:`CausalDynamicsFit.unmoved`).
+
+    Read with each coefficient scaled by its column of the channel's design on the log's raw
+    actions, as the fit splits the directions, so the test reads the same in any units. In raw
+    units a lever logged in 1e9 of its units shares a direction with another only 2e-9 of the way
+    along it, under the square root of the precision."""
+    states, actions, features = fit.residual.channel.shape
+    if fit.unmoved is None or fit.unmoved.shape[1] == 0:
+        return (True,) * actions
+    # every state's channel is moved along the same directions, so the target's block holds them
+    width = actions * features
+    directions = fit.unmoved[:width, : fit.unmoved.shape[1] // states]
+    size = jnp.linalg.norm(
+        _channel_design(data["u"], data["x"], fit.residual.channel_degree), axis=0
+    )
+    size = jnp.where(size > 0.0, size, 1.0)
+    basis = jnp.linalg.qr(directions * size[:, None])[0]
+    phi = control_affine_features(start, fit.residual.channel_degree)
+    precision = float(jnp.sqrt(jnp.finfo(basis.dtype).eps))
+    alone = []
+    for action in range(actions):
+        functional = jnp.zeros((actions, features)).at[action].set(phi).ravel() / size
+        norm = float(jnp.linalg.norm(functional))
+        leaning = float(jnp.linalg.norm(basis.T @ functional))
+        alone.append(leaning <= precision * norm)
+    return tuple(alone)
 
 
 def _ruled_schedule(model: Dynamics, plan: CausalPlan) -> Array | None:
