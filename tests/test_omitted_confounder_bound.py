@@ -13,7 +13,7 @@ import math
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy.stats import norm
+from scipy.stats import norm, t
 
 from chc.dynamics_id import _cross_fit_residuals, fit_causal_residual, omitted_confounder_bound
 
@@ -339,3 +339,28 @@ def test_two_way_clusters_bound_as_each_way_reads_them() -> None:
     for name in names:
         assert getattr(both, name) == pytest.approx(getattr(swapped, name), rel=1e-10, abs=0.0)
     assert both.ci_upper != pytest.approx(expected.ci_upper, rel=1e-6, abs=0.0)
+
+
+def test_the_confidence_bounds_read_t_s_quantile_at_one_fewer_than_the_clusters() -> None:
+    """At a strength of 0 each confidence bound is the estimate less, or plus, a quantile times one
+    spread, so two levels' widths stand as their quantiles do: a ``t``'s at ``G - 1`` degrees of
+    freedom, ``G`` 4 clusters, 3 two-way, or the 400 rows where there are none."""
+    channel, to_action, to_rate = np.array([1.0]), np.array([[0.5]]), np.array([0.5])
+    data = _log(channel, to_action, to_rate, dt=0.05, scheme="euler", n=400, seed=5)
+    options = {"adjust_for": ("observed",), "channel_degree": 0, "influence": True}
+    one, shares = np.ones((1, 1, 1)), {"cf_y": 0.0, "cf_d": 0.0}
+    units, periods = np.arange(400) // 100, np.arange(400) % 3
+    for clusters, freedom in (
+        (None, 399),
+        (units, 3),
+        (np.column_stack([units, periods]), 2),
+        (np.column_stack([periods, units]), 2),
+    ):
+        fit = fit_causal_residual(_known, data, 0.05, **options, clusters=clusters)
+        wide, narrow = (
+            omitted_confounder_bound(fit, one, level=level, **shares) for level in (0.95, 0.75)
+        )
+        ratio = (wide.estimate - wide.ci_lower) / (narrow.estimate - narrow.ci_lower)
+        expected = t.ppf(0.95, freedom) / t.ppf(0.75, freedom)
+        assert ratio == pytest.approx(expected, rel=1e-9, abs=0.0), freedom
+        assert ratio != pytest.approx(norm.ppf(0.95) / norm.ppf(0.75), rel=1e-4, abs=0.0)

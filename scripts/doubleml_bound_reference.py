@@ -11,15 +11,17 @@ robustness value, the confidence bounds and their robustness value:
     sign       the same with ``+alpha e``, chc's sign, which moves the confidence bounds by the
                cross term of the two influences alone
 
-Measured 2026-10-06 with DoubleML 0.11.4 on Python 3.13, 4000 transitions, ``cf_y = cf_d = 0.1``,
+Measured 2026-10-07 with DoubleML 0.11.4 on Python 3.13, 4000 transitions, ``cf_y = cf_d = 0.1``,
 on the cross-fitting folds chc draws since 0.13.0: the bounds agree to 2e-10 in every row, the
-ridge on chc's moment. The confidence bounds agree to 2e-10 under DoubleML's influence, to 2.1e-5
-under chc's sign and to 7.8e-5 under chc's own influence, which is robust to unequal noise and
-carries the nuisances' error and the degrees of freedom. The robustness values differ by 1.7e-6,
-and by 1.6e-7 at the confidence bound under DoubleML's influence, because DoubleML finds them by
-bounded minimisation of the squared distance at scipy's default tolerance: the lower bound at chc's
-robustness value is 5.6e-15 from the null, at DoubleML's 2.9e-5. On the folds before, measured
-2026-09-30, those read 3.1e-5, 1e-4, 1.4e-6, 1.8e-7, 1.7e-14 and 2.4e-5.
+ridge on chc's moment. The confidence bounds agree to 1.6e-6 under DoubleML's influence, to 2.1e-5
+under chc's sign and to 8e-5 under chc's own influence, which is robust to unequal noise and
+carries the nuisances' error and the degrees of freedom. chc reads them against ``t(3999)``'s
+quantile and DoubleML against the normal's (ADR 0062); on the normal's, measured 2026-10-06, they
+agreed to 2e-10 under DoubleML's influence. The robustness values differ by 1.7e-6, and by 5e-7 at
+the confidence bound under DoubleML's influence (1.6e-7 on the normal's), because DoubleML finds
+them by bounded minimisation of the squared distance at scipy's default tolerance: the lower bound
+at chc's robustness value is 5.6e-15 from the null, at DoubleML's 2.9e-5. On the folds before,
+measured 2026-09-30, those read 3.1e-5, 1e-4, 1.4e-6, 1.8e-7, 1.7e-14 and 2.4e-5.
 
 DoubleML is not a dependency of chc, so this runs in a throwaway environment:
 

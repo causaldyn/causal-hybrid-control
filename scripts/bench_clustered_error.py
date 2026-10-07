@@ -10,8 +10,8 @@ ratios only, no wall time.
               variance of ``e`` and of ``a`` is the unit's, constant over its periods, and ``w`` is
               AR(0.7); in ``iid`` all three are drawn afresh at each period. Each of --logs panels
               is fitted twice, row by row and summed within units, and the Wald test of the true
-              channel, ``|b| > 1.96`` standard errors, is counted: its size, with the median ratio
-              of the two errors.
+              channel, ``|b| > 1.96`` standard errors, is counted: its size, by unit at
+              ``t(G - 1)``'s quantile too, with the median ratio of the two errors.
     two_way   Panels of a unit count and a period count each (--cell, or all twelve), one state
               and one lever, whose channel is 0: ``x_next = x + 0.1 (-0.5 x + 0 u + 1.5 z) + e``,
               the lever ``u = c + a + 0.9 z`` and ``z`` adjusted for, ``z`` drawn afresh. The
@@ -125,7 +125,8 @@ def repeated() -> dict[str, float]:
 def size(design: str, units: int, periods: int, dt: float, logs: int, seed: int) -> dict:
     rng = np.random.default_rng([seed, units, periods])
     labels = np.repeat(np.arange(units), periods)
-    rejected = {"rows": 0, "units": 0}
+    rejected = {"rows": 0, "units": 0, "units_t": 0}
+    quantile = float(stats.t.ppf(0.975, units - 1))
     ratios = []
     for _ in range(logs):
         data = _panel(rng, design, units, periods, dt)
@@ -136,6 +137,7 @@ def size(design: str, units: int, periods: int, dt: float, logs: int, seed: int)
         channel = float(rows.residual.channel[0, 0, 0])
         rejected["rows"] += abs(channel) > 1.96 * rows.channel_error
         rejected["units"] += abs(channel) > 1.96 * clustered.channel_error
+        rejected["units_t"] += abs(channel) > quantile * clustered.channel_error
         ratios.append(clustered.channel_error / rows.channel_error)
     return {
         "design": design,
@@ -145,6 +147,7 @@ def size(design: str, units: int, periods: int, dt: float, logs: int, seed: int)
         "logs": logs,
         "size_rows": rejected["rows"] / logs,
         "size_units": rejected["units"] / logs,
+        "size_units_t": rejected["units_t"] / logs,
         "error_ratio_median": float(np.median(ratios)),
     }
 

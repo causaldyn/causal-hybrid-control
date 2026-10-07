@@ -48,7 +48,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from scipy.optimize import brentq
-from scipy.stats import norm
+from scipy.stats import t as student_t
 
 from chc.causal import (
     _ACTION_AND_OUTCOME,
@@ -159,7 +159,8 @@ class CausalDynamicsFit:
     # rows). One log's value scatters, by 24% and 40% of itself on those 800 logs of 4000 rows: a
     # scale, not coverage. Under ``rk4`` it is the fixed point's own, the noise carried through the
     # RK4 map's gain on the estimate: 1.70x the Euler fit's at ``theta*dt = 0.7``, where 200 noise
-    # draws on one log scattered the channel 1.73x as far.
+    # draws on one log scattered the channel 1.73x as far. Read from ``G`` clusters' sums, a test
+    # read off it sizes better against ``t(G - 1)``'s quantile than the normal's (ADR 0062).
     channel_error: float | None
     # The standard error of the drift regression's fitted value at the log's rows, root mean square
     # over the rows and the states, from the drift stage's own homoskedastic OLS covariance; None
@@ -1508,7 +1509,11 @@ def omitted_confounder_bound(
     carries the estimate's influence and ``bias_scale``'s, whose ``nu^2`` part is ``nu^2 -
     alpha^2`` for a representer ``alpha``. Its sign convention for the estimate differs from this
     one in the cross term of the two influences, which vanishes in expectation. A fit given
-    ``clusters`` has both influences summed within each cluster, as its channel's error is.
+    ``clusters`` has both influences summed within each cluster, as its channel's error is. The
+    bounds take a ``t``'s quantile with ``G - 1`` degrees of freedom, ``G`` the clusters, two-way
+    the smaller dimension's count, or the rows where there are none. At 5 units, a 5 % test of
+    the channel read off its error rejected 9.75 % and 14.75 % of panels against the normal's
+    quantile, and 3.25 % and 5.75 % against ``t(4)``'s (ADR 0062). DoubleML takes the normal's.
 
     Args:
         fit: an identified fit of :func:`fit_causal_residual`, by adjustment, unweighted, made
@@ -1568,7 +1573,9 @@ def omitted_confounder_bound(
         out=np.zeros_like(residual),
         where=product > 0.0,
     )
-    quantile = float(norm.ppf(level))
+    # one degree of freedom fewer than the independent terms the spreads sum (ADR 0062)
+    count = rows if clusters is None else _cluster_count(clusters)
+    quantile = float(student_t.ppf(level, count - 1))
 
     def bounds(strength: float) -> tuple[float, float, float, float]:
         low, high = estimate - strength * scale, estimate + strength * scale

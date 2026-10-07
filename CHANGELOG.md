@@ -60,6 +60,12 @@ still change).
   pendulum demo's adjusted schedule is trusted for 9 steps, where it was 10: its steps alone read
   more than its episodes, whose scores partly offset one another, and the largest of three does not
   credit that (ADR 0061).
+- **`omitted_confounder_bound` reads its confidence bounds against a `t` with `G - 1` degrees of
+  freedom**: `G` the fit's clusters, two-way the smaller dimension's count, or its rows where it has
+  none. A clustered spread is read from `G` sums, and against the normal's quantile a 5 % test of
+  the channel rejected 9.75 % and 14.75 % of panels at 5 units (ADR 0053); against `t(4)`'s, 3.25 %
+  and 5.75 %. The bounds widen by 30 % at 5 clusters, 11 % at 10 and 2.4 % at 40, and by 0.23 % at
+  400 rows without clusters; `robustness_value_ci` moves with them (ADR 0062).
 
 ### Deprecated
 
