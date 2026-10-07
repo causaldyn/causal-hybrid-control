@@ -94,6 +94,7 @@ def _prescribe(max_levers: int | None, levers: list[Lever] | None = None, **kwar
 def _without_selection(result: Prescription) -> str:
     payload = result.to_json()
     del payload["selection"]
+    del payload["run"]["max_levers"]  # the cap, the one setting the two runs were given apart
     return json.dumps(payload, sort_keys=True)
 
 
@@ -324,7 +325,7 @@ def test_the_report_lists_the_levers_kept_in_the_order_greedy_added_them() -> No
     assert [row.split("|")[2].strip() for row in rows] == [
         f"`{lever}`" for lever in selected.selection.selected
     ]
-    assert "max_levers" not in _prescribe(None).report()
+    assert "kept under `max_levers`" not in _prescribe(None).report()
 
 
 def test_the_selection_travels_in_the_json() -> None:

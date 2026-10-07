@@ -23,7 +23,7 @@ python quickstart.py
 
 JAX computes in single precision unless told otherwise, and an identified channel is a number
 someone will act on. Set the flag before anything creates an array. `prescribe` does not refuse a
-single-precision panel; it warns, and records the flag in the result's provenance. The
+run in single precision; it warns, and records the flag in the result's `run`. The
 [dtype policy](concepts/dtype-policy.md) says why.
 
 ## 2. The logs

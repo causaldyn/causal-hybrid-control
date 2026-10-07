@@ -11,10 +11,15 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import functools
+import importlib
+import inspect
 import json
 import logging
 import math
+import types
 from decimal import Decimal
+from importlib import metadata
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -31,6 +36,7 @@ from chc.decision import (
     Lever,
     NotIdentifiedError,
     Prescription,
+    RunProvenance,
     StartState,
     Target,
     _barrier,
@@ -53,12 +59,20 @@ from chc.dynamics import (
     HybridDynamics,
     LinearDynamics,
 )
+from chc.dynamics_id import fit_causal_residual
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel, PanelError
 from chc.plan import CausalPlan, causal_plan, certify_safety
 from chc.residual import ControlAffineResidual
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 DT = 0.1
 B_TRUE = 0.8  # the incentive's true effect on supply, the number every arm is judged against
@@ -1232,11 +1246,22 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
     assert "Trustworthy prefix: 15 steps" in report
     assert "- logger check: passed (p = " in report
     assert result.provenance.data_sha256[:16] in report
+    run = result.run
+    assert run is not None
+    assert payload["run"] == run.to_json()
+    versions = ", ".join(f"{name} {version}" for name, version in run.versions)
+    assert (
+        f"- run: on {jax.default_backend()} ({jax.devices()[0].device_kind}), x64=True, "
+        "fit in float64, solve in float64, seed=0, integrator=rk4\n"
+        "- settings: folds=2, degree=1, channel_degree=1, nuisance_degree=2, ridge=1e-06, "
+        "steps=10000, tolerance=0.5, hold_constraints=False, max_levers=none\n"
+        f"- versions: {versions}"
+    ) in report
 
 
-def _small(**kwargs: object) -> Prescription:
+def _small(panel: Panel | None = None, **kwargs: object) -> Prescription:
     return prescribe(
-        _panel(n_units=40),
+        _panel(n_units=40) if panel is None else panel,
         levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
         target=Target("supply", value=1.0),
         horizon=6,
@@ -1323,6 +1348,264 @@ def test_every_state_of_the_record_is_strict_json(build, reads: dict[str, object
         assert [
             (step["regret_bound"], step["regret_status"]) for step in record["selection"]["steps"]
         ] == [(None, "refused")]
+    # the run's record rides along in every state, its solve read off the plan, none where none ran
+    plan = result.plan
+    assert (
+        record["run"]["solve_dtype"],
+        record["run"]["solver_status"],
+        record["run"]["solver_iterations"],
+    ) == (
+        (None, None, None)
+        if plan is None
+        else ("float64", plan.solver_status, plan.solver_iterations)
+    )
+
+
+def _recorded(real: Any, calls: list[tuple[inspect.BoundArguments, Any]]) -> Any:
+    """``real``, keeping each call bound to its signature with the defaults filled in, beside what
+    it returned."""
+    signature = inspect.signature(real)
+
+    def call(*args: Any, **kwargs: Any) -> Any:
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        out = real(*args, **kwargs)
+        calls.append((bound, out))
+        return out
+
+    return call
+
+
+@pytest.fixture
+def calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[tuple[inspect.BoundArguments, Any]]]:
+    """What ``prescribe`` gave the fit and the planner, read off each call rather than off the
+    record under test."""
+    seen: dict[str, list[tuple[inspect.BoundArguments, Any]]] = {"fit": [], "plan": []}
+    monkeypatch.setattr(
+        "chc.decision.fit_causal_residual", _recorded(fit_causal_residual, seen["fit"])
+    )
+    monkeypatch.setattr("chc.decision.causal_plan", _recorded(causal_plan, seen["plan"]))
+    return seen
+
+
+@pytest.fixture(scope="module")
+def default_run() -> RunProvenance:
+    """The run's record at ``_small``'s defaults, before any test moves a setting."""
+    run = _small().run
+    assert run is not None
+    return run
+
+
+def _check_against(
+    calls: dict[str, list[tuple[inspect.BoundArguments, Any]]], run: RunProvenance
+) -> None:
+    """Every field of ``run`` but the precision and the versions is what a call was given, or read
+    off what it ran on or returned: the device and the dtype of the transitions the fit read, and
+    the dtype of the actions of the one solve and why it stopped, after how many steps."""
+    ((fit, _),) = calls["fit"]
+    given = fit.arguments
+    channel_degree = given["degree"] if given["channel_degree"] is None else given["channel_degree"]
+    (device,) = given["data"]["x"].devices()
+    assert (
+        run.backend,
+        run.device_kind,
+        run.fit_dtype,
+        run.seed,
+        run.integrator,
+        run.folds,
+        run.degree,
+        run.channel_degree,
+        run.nuisance_degree,
+        run.ridge,
+    ) == (
+        device.platform,
+        device.device_kind,
+        str(given["data"]["x"].dtype),
+        given["seed"],
+        given["integrator"],
+        given["folds"],
+        given["degree"],
+        channel_degree,
+        given["nuisance_degree"],
+        given["ridge"],
+    )
+    solves = [
+        (
+            bound.arguments["steps"],
+            bound.arguments["tolerance"],
+            bound.arguments["barrier"] is not None,
+            str(plan.actions.dtype),
+            plan.solver_status,
+            plan.solver_iterations,
+        )
+        for bound, plan in calls["plan"]
+    ]
+    tolerance = math.inf if run.tolerance is None else run.tolerance  # no tube is an infinite one
+    recorded = (
+        run.steps,
+        tolerance,
+        run.hold_constraints,
+        run.solve_dtype,
+        run.solver_status,
+        run.solver_iterations,
+    )
+    assert solves == ([] if run.solve_dtype is None else [recorded])
+
+
+def _without_the_stop(run: RunProvenance) -> RunProvenance:
+    """``run`` without why the descent stopped and after how many steps, which a changed fit moves
+    as well: :func:`_check_against` reads them off the planner instead."""
+    return dataclasses.replace(run, solver_status=None, solver_iterations=None)
+
+
+@pytest.mark.parametrize("x64", [True, False], ids=["x64", "x32"])
+def test_the_run_records_what_the_fit_and_the_solve_were_given(calls, x64: bool) -> None:
+    """A review found ``x64`` recorded True beside a fit on float32 transitions: the panel's flag,
+    read when it was built, standing in for the run's. The panel is built in float64 here and its
+    record keeps saying so; the run's says what the run did, field by field what the fit and the
+    planner were given, defaults included, and why the planner stopped as the plan it returned
+    says. The ridge and the steps ``prescribe`` passes are the fit's and the planner's own
+    defaults, so passing them moved no number."""
+    panel = _panel(n_units=40)
+    with enable_x64(x64):
+        result = _small(panel)
+    run = result.run
+    assert run is not None
+    assert run.x64 is x64
+    assert result.provenance.x64 is True
+    assert run.fit_dtype == run.solve_dtype == ("float64" if x64 else "float32")
+    _check_against(calls, run)
+    defaults = (
+        inspect.signature(fit_causal_residual).parameters["ridge"].default,
+        inspect.signature(causal_plan).parameters["steps"].default,
+    )
+    assert (run.ridge, run.steps) == defaults
+    certificate = result.certificate
+    assert (run.solver_status, run.solver_iterations) == (
+        certificate.solver_status,
+        certificate.solver_iterations,
+    )
+
+
+CHANGES = {
+    "folds": ({"folds": 3}, {}, {"folds": 3}),
+    "a numpy seed": ({"seed": np.int64(1)}, {}, {"seed": 1}),
+    "integrator": ({"integrator": "euler"}, {}, {"integrator": "euler"}),
+    "no tube": ({"tolerance": None}, {}, {"tolerance": None}),
+    "held constraints": ({"hold_constraints": True}, {}, {"hold_constraints": True}),
+    "max_levers": ({"max_levers": 1}, {}, {"max_levers": 1}),
+    "ridge": ({}, {"_RIDGE": 1e-4}, {"ridge": 1e-4}),
+    "steps": ({}, {"_PLAN_STEPS": 7}, {"steps": 7}),
+    "nuisance degree": ({}, {"_NUISANCE_DEGREE": 1}, {"nuisance_degree": 1}),
+}
+
+
+@pytest.mark.parametrize(("arguments", "constants", "moved"), CHANGES.values(), ids=CHANGES.keys())
+def test_a_changed_setting_moves_its_own_field_of_the_run_record_and_no_other(
+    calls, default_run: RunProvenance, monkeypatch, arguments, constants, moved
+) -> None:
+    """Whether the caller passes the setting or the library fixes it, it reaches the record as the
+    fit or the planner was given it, and the record stays plain JSON: a numpy seed reads as an int,
+    which ``json`` can write. The report prints no ``None``: no tube and no cap read ``none``."""
+    for name, value in constants.items():
+        monkeypatch.setattr(f"chc.decision.{name}", value)
+    result = _small(**arguments)
+    run = result.run
+    assert run is not None
+    assert _without_the_stop(run) == _without_the_stop(dataclasses.replace(default_run, **moved))
+    _check_against(calls, run)
+    assert json.loads(json.dumps(run.to_json(), allow_nan=False)) == run.to_json()
+    assert "None" not in result.report()
+
+
+def test_the_run_reads_the_degrees_off_the_fit(calls, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``prescribe`` leaves the drift's and the channel's feature degrees to the fit, so the record
+    reads them off the fit it got: one made at other degrees is recorded at those."""
+    other = functools.partial(fit_causal_residual, degree=2, channel_degree=1)
+    monkeypatch.setattr("chc.decision.fit_causal_residual", _recorded(other, calls["fit"]))
+    run = _small().run
+    assert run is not None
+    assert (run.degree, run.channel_degree) == (2, 1)
+    _check_against(calls, run)
+
+
+def test_a_solve_stopped_by_its_budget_is_recorded_as_stopped_there(
+    calls, default_run: RunProvenance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Why the planner stopped is the plan's own word, set where its descent stopped: by its rule
+    on the default budget, and on the budget at 7 steps. The certificate reads the same."""
+    monkeypatch.setattr("chc.decision._PLAN_STEPS", 7)
+    result = _small()
+    run = result.run
+    assert run is not None
+    assert default_run.solver_status == "converged"
+    assert (run.solver_status, run.solver_iterations) == ("max_iterations", 7)
+    certificate = result.certificate
+    assert (certificate.solver_status, certificate.solver_iterations) == ("max_iterations", 7)
+    _check_against(calls, run)
+
+
+def test_the_run_names_the_device_the_fit_ran_on_and_not_jax_s_default(
+    calls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside a ``jax.default_device`` block the fit runs on the block's device, which on a machine
+    with a GPU need not be the default backend's. jax is made to name a GPU as its default here, as
+    it would there, and the record names the device the fit's transitions sat on."""
+    gpu = types.SimpleNamespace(platform="gpu", device_kind="a GPU")
+    monkeypatch.setattr(jax, "default_backend", lambda: gpu.platform)
+    monkeypatch.setattr(jax, "devices", lambda backend=None: [gpu])
+    run = _small().run
+    assert run is not None
+    assert (run.backend, run.device_kind) != (gpu.platform, gpu.device_kind)
+    _check_against(calls, run)
+
+
+def test_the_run_records_the_installed_versions_of_what_computed_it(
+    default_run: RunProvenance,
+) -> None:
+    """From each distribution's metadata, which the installer writes, and not from a module's
+    ``__version__``, a second copy that can lag."""
+    names = ("causal-hybrid-control", "jax", "jaxlib", "numpy", "scipy")
+    expected = {name: metadata.version(name) for name in names}
+    assert dict(default_run.versions) == expected
+    assert default_run.to_json()["versions"] == expected
+
+
+def test_the_run_goes_to_json_as_plain_values(default_run: RunProvenance) -> None:
+    """Under ``allow_nan=False``, as ADR 0055 holds the record to, inside the prescription's and on
+    its own: the versions an object and an infinite tolerance null, as any number that is not
+    finite is; the certificate's status says a tube was evaluated, where no tolerance would have
+    evaluated none."""
+    result = _small(tolerance=math.inf)
+    run = result.run
+    assert run is not None
+    assert run == dataclasses.replace(default_run, tolerance=math.inf)
+    assert result.certificate.certificate_status == "certified"
+    record = result.to_json()
+    assert json.loads(json.dumps(record, allow_nan=False)) == record
+    assert json.loads(json.dumps(run.to_json(), allow_nan=False)) == record["run"]
+    assert result.plan is not None
+    assert record["run"] == {
+        "x64": True,
+        "backend": jax.default_backend(),
+        "device_kind": jax.devices()[0].device_kind,
+        "fit_dtype": "float64",
+        "solve_dtype": "float64",
+        "solver_status": result.plan.solver_status,
+        "solver_iterations": result.plan.solver_iterations,
+        "seed": 0,
+        "integrator": "rk4",
+        "versions": dict(default_run.versions),
+        "folds": 2,
+        "degree": 1,
+        "channel_degree": 1,
+        "nuisance_degree": 2,
+        "ridge": 1e-6,
+        "steps": 10_000,
+        "tolerance": None,
+        "hold_constraints": False,
+        "max_levers": None,
+    }
 
 
 def test_the_reported_gamma_names_its_sensitivity_model() -> None:
@@ -1755,19 +2038,44 @@ def test_the_library_installs_no_handler_and_sets_no_level() -> None:
 def test_single_precision_is_warned_about_and_not_refused(caplog: pytest.LogCaptureFixture) -> None:
     """JAX is float32 by default and the harm is plant-specific, so this is a warning, not a gate.
 
-    The precision is on :class:`~chc.panel.Provenance` of every result either way; what the log adds
-    is that it reaches an operator who never opens the provenance. Forged here rather than by
-    flipping ``jax_enable_x64``, which is process-global and would leak into every later test.
+    The precision warned about is the run's, which :attr:`Prescription.run` records: a panel built
+    in float64 and planned on with ``x64`` off fits on float32 transitions, while the panel's own
+    record still reads True. What the log adds is that it reaches an operator who never opens
+    either record. ``enable_x64`` sets the flag for its block alone, so nothing leaks into a
+    later test.
     """
     panel = _panel(n_units=40, n_periods=8)
-    single = dataclasses.replace(panel, provenance=dataclasses.replace(panel.provenance, x64=False))
-    with caplog.at_level(logging.INFO, logger="chc.decision"):
-        result = _prescribe(single, CausalGraph.from_edges(EDGES))
+    with caplog.at_level(logging.INFO, logger="chc.decision"), enable_x64(False):
+        result = _prescribe(panel, CausalGraph.from_edges(EDGES))
     events = _events(caplog)
     assert events[0] == "precision"
     assert caplog.records[0].levelno == logging.WARNING
     assert "plan" in events  # warned, then carried on: the schedule is still produced
+    assert result.provenance.x64 is True
+    assert result.run is not None
+    assert result.run.x64 is False
+    report = result.report()
+    assert "- panel: chc " in report
+    device = f"{jax.default_backend()} ({jax.devices()[0].device_kind})"
+    assert (
+        f", x64=True, seed=0\n- run: on {device}, x64=False, fit in float32, solve in float32, "
+        in report
+    )
+
+
+def test_a_panel_built_in_single_precision_is_not_warned_about_on_a_run_in_double(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The panel's flag says how JAX was set when the panel was built, which moves no number of the
+    fit: the panel holds NumPy's columns, and the fit reads them in the run's precision."""
+    with enable_x64(False):
+        panel = _panel(n_units=40, n_periods=8)
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
+        result = _prescribe(panel, CausalGraph.from_edges(EDGES))
+    assert "precision" not in _events(caplog)
     assert result.provenance.x64 is False
+    assert result.run is not None
+    assert (result.run.x64, result.run.fit_dtype) == (True, "float64")
 
 
 def test_a_mis_specified_decision_and_an_unidentified_one_are_different_types() -> None:

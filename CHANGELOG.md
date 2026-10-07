@@ -9,6 +9,22 @@ still change).
 
 ### Added
 
+- **`Prescription.run` records what the run used.** A `RunProvenance`: `x64` as `prescribe` ran;
+  the platform and the kind of the device the fit ran on; the dtype of the transitions the fit ran
+  on and of the actions the solve returned, why the solve stopped and after how many steps; the
+  fit's seed, integrator, folds, degrees and ridge; the planner's budget of steps, the tube's
+  tolerance, whether the constraints were held, and `max_levers`; and the installed versions of
+  causal-hybrid-control, jax, jaxlib, numpy and scipy, read from their metadata.
+  `Prescription.provenance` is the panel's, made when the panel was built, and a run need not
+  match it: a panel built in float64 and planned on with `x64` off fitted on float32 transitions
+  while its record read `x64` True. On the tests' world of 40 units that moved the schedule by up
+  to 0.017 in a box of width 4, and the solve stopped after 266 steps, where it took 485 in
+  float64. Each field is read where the run used it: the device off the transitions the fit ran
+  on, not `jax.default_backend()`, and the stop off the plan the planner returned. `prescribe` now
+  passes the fit's ridge and the planner's budget of steps by name, at their defaults, so no number
+  moves. The report prints the run under the panel's line, and `to_json` writes it as `run`, an
+  infinite tolerance as null. The schema version stays 2: a key was added, and none changed its
+  meaning (ADR 0063).
 - **`Prescription.start` records where the plan starts.** A `StartState`: `source` is `given` for
   a caller's `x0`, or `panel` for the default, the mean over units of each unit's last logged
   state. For the panel's, `units` counts the units in that mean, `periods` lists the periods their
@@ -77,6 +93,12 @@ still change).
 
 ### Fixed
 
+- **`prescribe` warns about single precision where the run is in it, not where the panel was built
+  in it.** The `precision` warning read the panel's `x64`, set when the panel was built, which
+  moves no number of the fit: the panel holds NumPy's columns, and the fit reads them in the run's
+  precision. A panel built in float64 and planned on in float32 fitted on float32 transitions with
+  no warning, and a panel built in float32 and planned on in float64 was warned about. The warning
+  now reads the run's flag, the one `Prescription.run.x64` records. Since 0.5.0.
 - **`gcm_test` on one cluster reads every pair as undetectable, and `prescribe` no longer passes a
   logger check it could not run.** One cluster's sum flips only to itself, so no dependence
   rejects, and the least correlation the test detects is infinite. The spread of that one sum about

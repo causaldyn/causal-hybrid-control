@@ -35,6 +35,7 @@ import time
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from importlib import metadata
 from typing import Any, Literal, get_args
 
 import equinox as eqx
@@ -81,7 +82,7 @@ from chc.independence import gcm_test
 from chc.integrate import rk4_step
 from chc.lqr import linearize_continuous, linearize_discrete
 from chc.mpc import PeriodBudget, _period_rows
-from chc.panel import Panel, Provenance, _grid_steps, _ordinals
+from chc.panel import Panel, Provenance, _grid_steps, _ordinals, _x64_enabled
 from chc.plan import (
     BarrierConstraint,
     CausalPlan,
@@ -502,6 +503,77 @@ class StartState:
 
 
 @dataclass(frozen=True)
+class RunProvenance:
+    """What the run used, beside the panel's :class:`~chc.panel.Provenance` (ADR 0063).
+
+    The panel's record is made when the panel is built, and a run need not match it: a panel built
+    under JAX's ``x64`` and planned on with it off fits on float32 transitions while its record
+    reads True. So each field here is read where the run used it: ``x64`` as :func:`prescribe` ran;
+    the device and the fit's dtype off the transitions the fit ran on; the solve's dtype, why it
+    stopped and after how many steps off the plan the planner returned; each setting as the fit and
+    the planner were given it; and each version from the installed distribution's metadata.
+    """
+
+    x64: bool  # jax_enable_x64 when prescribe ran
+    # The device the fit's transitions sat on, where jax ran the fit: its platform, as
+    # jax.default_backend() names one ("cpu", "gpu", "tpu"), and its kind. Inside a
+    # jax.default_device block that is the block's device, which the default backend need not hold.
+    backend: str
+    device_kind: str
+    fit_dtype: str  # of the transitions the fit ran on
+    # The plan the planner returned, the one Prescription.plan holds: the dtype of its actions, why
+    # its descent stopped (chc.control.SolverStatus) and its accepted steps, as the certificate
+    # reads them too. None where no plan was solved.
+    solve_dtype: str | None
+    solver_status: SolverStatus | None
+    solver_iterations: int | None
+    seed: int  # the cross-fitting folds' seed
+    integrator: Integrator  # the one-step map the fit was made consistent with
+    # (distribution, version): the library and those that compute its numbers, from their metadata;
+    # "unknown" for one installed without any
+    versions: tuple[tuple[str, str], ...]
+    folds: int
+    degree: int  # the drift's feature degree
+    channel_degree: int  # the channel's feature degree
+    nuisance_degree: int  # the cross-fitted nuisances' polynomial degree
+    ridge: float  # the fit's ridge
+    steps: int  # the most steps each of the planner's descents takes
+    # The tube's radius past which a step is not certified; None where no tube was asked for. JSON
+    # writes an infinite one as null as well, and the certificate's status says whether a tube was
+    # evaluated.
+    tolerance: float | None
+    hold_constraints: bool  # whether the solve held the constraints, or only the audit priced them
+    max_levers: int | None  # the greedy selection's cap; None where every lever was planned with
+
+    def to_json(self) -> dict[str, Any]:
+        """A plain dict, ready for ``json.dumps(..., allow_nan=False)``: the versions an object
+        keyed by distribution, and an infinite tolerance null."""
+        return _strict(
+            {
+                "x64": self.x64,
+                "backend": self.backend,
+                "device_kind": self.device_kind,
+                "fit_dtype": self.fit_dtype,
+                "solve_dtype": self.solve_dtype,
+                "solver_status": self.solver_status,
+                "solver_iterations": self.solver_iterations,
+                "seed": self.seed,
+                "integrator": self.integrator,
+                "versions": dict(self.versions),
+                "folds": self.folds,
+                "degree": self.degree,
+                "channel_degree": self.channel_degree,
+                "nuisance_degree": self.nuisance_degree,
+                "ridge": self.ridge,
+                "steps": self.steps,
+                "tolerance": self.tolerance,
+                "hold_constraints": self.hold_constraints,
+                "max_levers": self.max_levers,
+            }
+        )
+
+
+@dataclass(frozen=True)
 class Prescription:
     """The decision, the evidence for it, and what it took to get there."""
 
@@ -521,6 +593,7 @@ class Prescription:
     logger_check: LoggerCheck | None = None
     budgets: tuple[PeriodBudget, ...] = ()  # what the plan was held to spend
     start: StartState | None = None  # where the plan starts, or would have; None if not recorded
+    run: RunProvenance | None = None  # what the run used; None if not recorded
     _columns: _Columns | None = field(default=None, repr=False, compare=False)
     # The state the plan starts from, or would have: where :meth:`reach` reads the channel.
     _start: Array | None = field(default=None, repr=False, compare=False)
@@ -879,8 +952,9 @@ class Prescription:
             "## Provenance",
             "",
             f"- data sha256: `{self.provenance.data_sha256[:16]}...`",
-            f"- chc {self.provenance.chc_version}, {self.provenance.n_rows} rows, "
+            f"- panel: chc {self.provenance.chc_version}, {self.provenance.n_rows} rows, "
             f"x64={self.provenance.x64}, seed={self.provenance.seed}",
+            *self._run_lines(),
         ]
         return "\n".join(lines)
 
@@ -970,8 +1044,26 @@ class Prescription:
                 for budget in self.budgets
             ],
             "provenance": self.provenance.to_json(),
+            "run": None if self.run is None else self.run.to_json(),
         }
         return _strict(record)
+
+    def _run_lines(self) -> list[str]:
+        run = self.run
+        if run is None:
+            return []
+        solve = "no solve" if run.solve_dtype is None else f"solve in {run.solve_dtype}"
+        tolerance = "none" if run.tolerance is None else f"{run.tolerance:g}"
+        cap = "none" if run.max_levers is None else str(run.max_levers)
+        return [
+            f"- run: on {run.backend} ({run.device_kind}), x64={run.x64}, fit in {run.fit_dtype}, "
+            f"{solve}, seed={run.seed}, integrator={run.integrator}",
+            f"- settings: folds={run.folds}, degree={run.degree}, "
+            f"channel_degree={run.channel_degree}, nuisance_degree={run.nuisance_degree}, "
+            f"ridge={run.ridge:g}, steps={run.steps}, tolerance={tolerance}, "
+            f"hold_constraints={run.hold_constraints}, max_levers={cap}",
+            "- versions: " + ", ".join(f"{name} {version}" for name, version in run.versions),
+        ]
 
     def _error_grouping(self) -> str:
         certificate = self.certificate
@@ -1176,6 +1268,7 @@ def prescribe(
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
         :attr:`Prescription.schedule`, which raises when the effect is not identified.
+        :attr:`Prescription.run` records what the run used (:class:`RunProvenance`).
 
     Raises:
         DecisionError: the decision is mis-specified --- no lever, a lever named twice or also
@@ -1223,8 +1316,8 @@ def prescribe(
     Each decision point emits one ``logging`` record on ``chc.decision``, keyed by ``chc_event``
     (see :data:`_log`). Nothing is configured here; a caller that wants them calls
     ``logging.basicConfig`` itself. An unidentified effect, a lever the log never moved, one on its
-    logged rule, a combination kept at its logged level, a plan the log does not determine, a
-    single-precision panel, a forecast outside the logged range and levers that read more than the
+    logged rule, a combination kept at its logged level, a plan the log does not determine, a run
+    in single precision, a forecast outside the logged range and levers that read more than the
     record says come through at ``WARNING``.
 
     Before fitting, the panel is asked whether the levers read anything but the states and their
@@ -1325,7 +1418,9 @@ def prescribe(
                 f"column {name!r} is not in the panel; columns are {sorted(panel.names)}"
             )
 
-    if not panel.provenance.x64:
+    # the run's precision; the panel's flag was read when the panel was built, and need not match
+    x64 = _x64_enabled()
+    if not x64:
         _log.warning(
             "identifying in single precision; export JAX_ENABLE_X64=1 if the fit is load-bearing",
             extra={"chc_event": "precision", "x64": False, "rows": panel.provenance.n_rows},
@@ -1382,6 +1477,7 @@ def prescribe(
         drivers=driver_names,
         clusters=None if clustered_by is None else labels if two_way else labels[:, 0],
         nuisance_degree=_NUISANCE_DEGREE,
+        ridge=_RIDGE,
     )
     _log.info(
         "control channel fitted",
@@ -1402,6 +1498,28 @@ def prescribe(
             "transitions": int(jnp.asarray(data["x"]).shape[0]),
             "seconds": time.perf_counter() - started,
         },
+    )
+    (device,) = data["x"].devices()
+    run = RunProvenance(
+        x64=x64,
+        backend=device.platform,
+        device_kind=device.device_kind,
+        fit_dtype=str(data["x"].dtype),
+        solve_dtype=None,
+        solver_status=None,
+        solver_iterations=None,
+        seed=int(seed),
+        integrator=fit.integrator,
+        versions=_versions(),
+        folds=int(fit.folds),
+        degree=fit.residual.degree,
+        channel_degree=fit.residual.channel_degree,
+        nuisance_degree=_NUISANCE_DEGREE,
+        ridge=_RIDGE,
+        steps=_PLAN_STEPS,
+        tolerance=None if tolerance is None else float(tolerance),
+        hold_constraints=bool(hold_constraints),
+        max_levers=None if max_levers is None else int(max_levers),
     )
     identification: IdentificationStatus = (
         "not_identified"
@@ -1474,6 +1592,7 @@ def prescribe(
             logger_check=logger_check,
             budgets=tuple(budgets),
             start=start_state,
+            run=run,
             _columns=columns,
             _start=start,
         )
@@ -1615,6 +1734,7 @@ def prescribe(
             lipschitz=lipschitz,
             model_error=model_error,
             tolerance=float("inf") if tolerance is None else tolerance,
+            steps=_PLAN_STEPS,
             # the budgets' rows last: :meth:`Prescription.budget_prices` reads them there
             constraints=(rate, *relation_rows, *spend_rows),
             barrier=held,
@@ -1636,6 +1756,12 @@ def prescribe(
         idle = total_cost(model, start, jnp.zeros((horizon, n_levers)), dt, planning_cost)
         plan, steps = _select_levers(levers, max_levers, solve, regret, held=frozenset(unmoved))
         selection = LeverSelection(idle_cost=float(idle), steps=steps)
+    run = replace(
+        run,
+        solve_dtype=str(plan.actions.dtype),
+        solver_status=plan.solver_status,
+        solver_iterations=plan.solver_iterations,
+    )
 
     _log.info(
         "plan solved",
@@ -1747,6 +1873,7 @@ def prescribe(
         logger_check=logger_check,
         budgets=tuple(budgets),
         start=start_state,
+        run=run,
         _columns=columns,
         _start=start,
         _budget_rows=tuple(rows.matrix.shape[0] for rows in spend_rows),
@@ -2174,6 +2301,28 @@ _LOGGER_CHECK_DEGREE = 2
 # log's actions are read against (ADR 0054).
 _NUISANCE_DEGREE = 2
 _LOGGER_CHECK_ALPHA = 0.05  # the level at which a check is logged as a warning
+# The fit's ridge and each descent's budget of steps, the fit's and the planner's defaults, passed
+# by name so that the run's record holds what the calls were given (ADR 0063).
+_RIDGE = 1e-6
+_PLAN_STEPS = 10_000
+# The distributions whose versions a run records: the library and those that compute its numbers.
+_VERSIONED = ("causal-hybrid-control", "jax", "jaxlib", "numpy", "scipy")
+
+
+def _versions() -> tuple[tuple[str, str], ...]:
+    """Each of :data:`_VERSIONED` at the version installed, read from its metadata.
+
+    A module's ``__version__`` is a second copy of that, which can lag, as ``chc.__version__`` did
+    (:func:`chc.panel.installed_version`). ``"unknown"`` where a distribution has no metadata, as a
+    source tree that was never installed has none.
+    """
+    found = []
+    for name in _VERSIONED:
+        try:
+            found.append((name, metadata.version(name)))
+        except metadata.PackageNotFoundError:
+            found.append((name, "unknown"))
+    return tuple(found)
 
 
 def _readable(panel: Panel, name: str) -> bool:

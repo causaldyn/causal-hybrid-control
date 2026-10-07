@@ -14,8 +14,8 @@ every result that depends on it.
 
 ## What the library does
 
-- **`prescribe` warns, and does not refuse.** A panel built without `x64` produces a `WARNING`
-  record on the `chc.decision` logger — `chc_event="precision"` — and the fit proceeds. JAX is
+- **`prescribe` warns, and does not refuse.** A run without `x64` produces a `WARNING` record on
+  the `chc.decision` logger — `chc_event="precision"` — and the fit proceeds. JAX is
   single-precision by default and the harm is plant-specific, so a caller who needs the guarantee
   asserts on the provenance rather than having a default chosen for them. The library installs no
   handler and sets no level; that decision belongs to the application.
@@ -24,6 +24,12 @@ every result that depends on it.
   `seed`, and `x64` — `jax_enable_x64` at the moment the panel was built. Two panels that agree
   numerically but differ in dtype hash differently, which is the honest answer, because they will
   not produce the same numbers. `Prescription.report()` prints it and `to_json()` carries it.
+- **`RunProvenance` records the run.** A panel is built once and planned on many times, and a run
+  need not match it: built with `x64` on and planned on with it off, the fit runs in float32 while
+  the panel's record reads True. `Prescription.run` holds `x64` as `prescribe` ran, the device and
+  the dtypes the fit and the solve ran in, why the solve stopped, the fit's seed and settings, the
+  planner's, and the versions of the packages that computed the numbers. The report prints it under
+  the panel's line, and `to_json()` carries it as `run`.
 
 ## What you do
 
@@ -41,7 +47,8 @@ import jax
 jax.config.update("jax_enable_x64", True)
 ```
 
-`out.provenance.x64` then says whether it was on when the panel was built.
+`out.provenance.x64` then says whether it was on when the panel was built, and `out.run.x64`
+whether it was on when `prescribe` ran.
 
 ## On this site
 
