@@ -9,6 +9,12 @@ still change).
 
 ### Changed
 
+- **Dates off a uniform grid, read with no `frequency`, are refused.** 0.15.0 read them in the
+  order logged under a `FutureWarning`, so a period no unit logged was not seen: in a monthly log
+  with July missing for every unit, June and August read as consecutive. `Panel.from_frame` now
+  raises `PanelError`, naming `frequency`: declare the calendar, `"D"`, `"W"`, `"M"`, `"Q"` or
+  `"Y"`, or `frequency="observed"` for 0.15.0's reading. Numbers, and dates on a uniform grid,
+  weekly ones among them, are read as before (ADR 0058).
 - **The penalised descent reads a problem the same in any units of its levers and of its cost.**
   `pessimistic_solve` and `pessimistic_control` started each line search at 0.2 action units per
   unit of gradient and counted a step that lowered the penalised cost by `1e-9` in its own units, as

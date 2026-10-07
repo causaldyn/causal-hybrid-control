@@ -700,8 +700,8 @@ def test_two_numbers_within_a_part_in_1e9_of_one_step_are_one_period() -> None:
 
 def test_the_rows_of_one_declared_period_share_its_earliest_stamp() -> None:
     """Two homes stamp January and February on different days. Declared monthly, the panel has two
-    periods, each named by the earliest stamp logged in it, and no hole; undeclared, four periods
-    and two holes."""
+    periods, each named by the earliest stamp logged in it, and no hole; read as observed, four
+    periods and two holes; undeclared, it is refused."""
     frame = _dated(
         ["2024-01-31", "2024-02-29", "2024-01-15", "2024-02-15"], homes=["a", "a", "b", "b"]
     )
@@ -709,10 +709,11 @@ def test_the_rows_of_one_declared_period_share_its_earliest_stamp() -> None:
     assert monthly.periods == (dt.date(2024, 1, 15), dt.date(2024, 2, 15))
     assert monthly.codes()[1].tolist() == [0, 1, 0, 1]
     assert monthly.wide("y").tolist() == [[0.0, 1.0], [2.0, 3.0]]
-    with pytest.warns(FutureWarning, match="frequency"):
-        undeclared = Panel.from_frame(frame, unit="home", time="month")
-    assert undeclared.n_periods == 4
-    assert not undeclared.is_balanced
+    observed = Panel.from_frame(frame, unit="home", time="month", frequency="observed")
+    assert observed.n_periods == 4
+    assert not observed.is_balanced
+    with pytest.raises(PanelError, match="frequency"):
+        Panel.from_frame(frame, unit="home", time="month")
 
 
 @pytest.mark.parametrize(
@@ -757,12 +758,16 @@ def test_a_period_off_the_declared_step_is_refused(
         Panel.from_frame(frame, unit="home", time="t", frequency=step)
 
 
-def test_dates_off_a_uniform_grid_warn_until_a_frequency_is_declared() -> None:
-    """Month ends are 29 to 31 days apart, so undeclared they are read in the order logged; the
-    warning names the keyword that says otherwise. Weekly dates and numbers lie on a grid, and a
-    declared frequency, ``"observed"`` among them, is not warned about."""
+def test_dates_off_a_uniform_grid_are_refused_until_a_frequency_is_declared() -> None:
+    """Month ends are 29 to 31 days apart, so undeclared their stamps do not say which months are
+    consecutive, and they are refused; the message names the keyword that does. Weekly dates and
+    numbers lie on a grid, and a declared frequency, ``"observed"`` among them, is read without a
+    warning."""
     months = _dated(["2024-01-31", "2024-02-29", "2024-03-31"])
-    with pytest.warns(FutureWarning, match=r"time column 'month' holds dates on no uniform grid"):
+    with pytest.raises(
+        PanelError,
+        match=r"time column 'month' holds dates on no uniform grid.*frequency='observed'",
+    ):
         Panel.from_frame(months, unit="home", time="month")
     weeks = _dated(["2024-01-01", "2024-01-08", "2024-01-22"])
     with warnings.catch_warnings():

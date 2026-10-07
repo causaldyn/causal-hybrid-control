@@ -38,7 +38,6 @@ import datetime
 import hashlib
 import math
 import numbers
-import warnings
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -235,8 +234,8 @@ class Panel:
                 number of steps from the first. Either way the rows of one period share one label,
                 the earliest stamp logged in it. ``"observed"`` reads the periods in the order
                 logged, as consecutive where no period lies between them. Undeclared, numbers and
-                dates on a uniform grid are read on it, and other periods in the order logged;
-                dates off a grid, calendar months among them, warn, and are refused from 0.16.
+                dates on a uniform grid are read on it, other numbers and labels in the order
+                logged, and dates off a grid, calendar months among them, are refused.
             cluster: an optional column naming the group cluster-robust inference should use ---
                 declared here rather than at the call site, because it is a property of the sampling
                 design and not of the estimator.
@@ -252,8 +251,9 @@ class Panel:
                 object column, a missing date, a duplicated ``(unit, time)`` pair, an object column
                 whose values are not of one type (a missing value among strings, say), whose values'
                 text is their address in memory, or whose values' type a panel does not hold, a
-                frequency the time column cannot be read in, a period off the declared step, a unit
-                with two rows in one declared period, or --- under ``require_balanced`` --- a hole.
+                frequency the time column cannot be read in, dates off a uniform grid with no
+                frequency declared, a period off the declared step, a unit with two rows in one
+                declared period, or --- under ``require_balanced`` --- a hole.
                 Every message names the column and the offending entity.
             ValueError: from :func:`chc.frames.as_columns`, for two columns of one name or a
                 masked cell, naming the column and its row.
@@ -352,13 +352,11 @@ class Panel:
                     )
                 first[key] = row
         elif frequency is None and times.dtype.kind == "M" and _grid_steps(times) is None:
-            warnings.warn(
-                f"time column {time!r} holds dates on no uniform grid, so its periods are read in "
-                "the order logged and a period no unit logged is not seen; declare their calendar "
-                "with frequency='D', 'W', 'M', 'Q' or 'Y', or frequency='observed' to keep this "
-                "reading. Undeclared, such dates are refused from chc 0.16",
-                FutureWarning,
-                stacklevel=2,
+            raise PanelError(
+                f"time column {time!r} holds dates on no uniform grid, so its stamps do not say "
+                "which periods are consecutive; declare their calendar with frequency='D', 'W', "
+                "'M', 'Q' or 'Y', or frequency='observed' to read the periods logged in their "
+                "order, where a period no unit logged is not seen"
             )
 
         panel = cls(

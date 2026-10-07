@@ -1,6 +1,7 @@
 # ADR 0058 — A panel's calendar is declared
 
-**Status:** accepted, 2026-10-07.
+**Status:** accepted, 2026-10-07. Amended 2026-10-08: from 0.16.0, undeclared dates off a uniform
+grid are refused, as 0.15.0 announced.
 
 ## Context
 
@@ -34,6 +35,8 @@ ends, stamps four weeks apart and an irregular sample can show the same spacings
   `periods`, `codes`, `wide` and the balance check group the rows by period.
 - **Undeclared, the reading is unchanged**, and dates off a uniform grid emit a `FutureWarning`
   that names `frequency`. From 0.16 they are refused unless a frequency is declared.
+  - *From 0.16.0:* they are refused with a `PanelError` that names `frequency`;
+    `frequency="observed"` gives 0.15.0's reading.
 - **The frequency is part of the dataset's identity.**
   - `Provenance` records it, and its JSON writes it.
   - The hash takes it in where one is declared, so an undeclared panel hashes as before.

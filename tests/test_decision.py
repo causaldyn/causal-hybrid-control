@@ -884,25 +884,27 @@ def test_dated_periods_part_at_a_missing_week_and_calendar_months_stay_in_a_row(
 ) -> None:
     """Dates sit on the grid of their smallest spacing at every resolution, though ``periods``
     holds integers at ``ns`` and dates above it: ten weeks with the fifth missing give seven
-    transitions, not eight. Calendar months, 29 to 31 days apart here, lie on no such grid and are
-    ranked, so twelve give eleven; on the grid of their greatest common spacing, a day, they gave
-    none."""
+    transitions, not eight. Calendar months, 29 to 31 days apart here, lie on no such grid:
+    undeclared they are refused, and read as observed or as months, twelve give eleven; on the grid
+    of their greatest common spacing, a day, they gave none."""
 
-    def count(periods: np.ndarray) -> int:
+    def count(periods: np.ndarray, frequency: str | None = None) -> int:
         frame = {
             "home": np.zeros(periods.size, dtype=int),
             "period": periods.astype(f"datetime64[{resolution}]"),
             "temperature": np.linspace(20.0, 15.0, periods.size),
             "heater": np.ones(periods.size),
         }
-        panel = Panel.from_frame(frame, unit="home", time="period")
+        panel = Panel.from_frame(frame, unit="home", time="period", frequency=frequency)
         data, _ = _transitions(panel, states=("temperature",), levers=("heater",), adjust_for=())
         return int(data["x"].shape[0])
 
     weeks = np.datetime64("2024-01-01") + np.timedelta64(7, "D") * np.arange(10)
     assert count(np.delete(weeks, 4)) == 7
-    with pytest.warns(FutureWarning, match="frequency"):
-        assert count(np.arange("2024-01", "2025-01", dtype="datetime64[M]")) == 11
+    months = np.arange("2024-01", "2025-01", dtype="datetime64[M]")
+    with pytest.raises(PanelError, match="frequency"):
+        count(months)
+    assert count(months, "observed") == count(months, "M") == 11
 
 
 def _monthly(written: str) -> dict[str, np.ndarray]:
@@ -938,8 +940,9 @@ def test_one_monthly_calendar_gives_the_same_transitions_however_it_is_written(
 ) -> None:
     """Declared monthly, the periods are months whether stamped as months, days or nanoseconds. A
     transition joins two consecutive months: across both years' ends and from the leap day, and
-    over no month a home missed. Undeclared, month ends are ranked: July, which no home logged,
-    is not seen, and June to August reads as one step for each home."""
+    over no month a home missed. Read as observed, month ends are ranked: July, which no home
+    logged, is not seen, and June to August reads as one step for each home. Undeclared, they are
+    refused."""
     frame = _monthly(written)
     data, _ = _transitions(
         Panel.from_frame(frame, unit="home", time="month", frequency="M"),
@@ -960,8 +963,9 @@ def test_one_monthly_calendar_gives_the_same_transitions_however_it_is_written(
     assert june_2024 not in x  # no home logged July
     assert 1000 + june_2024 not in x
     if written != "M":
-        with pytest.warns(FutureWarning, match="frequency"):
-            ranked = Panel.from_frame(frame, unit="home", time="month")
+        with pytest.raises(PanelError, match="frequency"):
+            Panel.from_frame(frame, unit="home", time="month")
+        ranked = Panel.from_frame(frame, unit="home", time="month", frequency="observed")
         assert sorted(_steps_taken(ranked).tolist()) == [1.0] * 24 + [2.0] * 2
 
 
