@@ -595,8 +595,7 @@ def _unmoved_directions(
     zeros, and its coefficients come back whole."""
     features = _polynomial_features(_units.standardised(covariates), nuisance_degree)
     left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
-    size = jnp.linalg.norm(_channel_design(actions, states, channel_degree), axis=0)
-    scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
+    scale = 1.0 / _units.norms(_channel_design(actions, states, channel_degree))
     return _kept(_channel_design(left, states, channel_degree), scale)
 
 
@@ -624,8 +623,7 @@ def _instrument_relevance(
     as the nuisance's are, and whitened, the reading is the same in any units of the instrument,
     the actions and the state."""
     raw = _channel_design(actions, states, channel_degree)
-    size = jnp.linalg.norm(raw, axis=0)
-    along = jnp.diag(1.0 / jnp.where(size > 0.0, size, 1.0)) if free is None else free
+    along = jnp.diag(1.0 / _units.norms(raw)) if free is None else free
     correlations = jnp.zeros(along.shape[1], dtype=raw.dtype)
     if along.shape[1] == 0:
         return correlations
@@ -697,8 +695,7 @@ class _Unmoved:
 def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
     """:class:`_Unmoved` for the unit columns ``directions`` ``(m k, r)``, with ``raw`` the
     channel's design on the log's raw actions and ``design`` the drift regression's."""
-    size = jnp.linalg.norm(raw, axis=0)
-    scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
+    scale = 1.0 / _units.norms(raw)
     unit = scale[:, None] * jnp.linalg.qr(directions / scale[:, None], mode="complete")[0]
     basis, free = unit[:, : directions.shape[1]], unit[:, directions.shape[1] :]
     push = raw @ basis
@@ -781,8 +778,7 @@ def _logged_relations(
     Orthonormalised over the raw actions, a span moved with their units: with one action at 1e12 of
     its units, the span the state predicts lay 3.0e-7 off that action's axis, past the square root
     of the precision, and ``u2 = 2 u1`` read its weight on ``u1`` as -1.99996e-12 where -2e-12."""
-    size = jnp.linalg.norm(actions, axis=0)
-    size = jnp.where(size > 0.0, size, 1.0)
+    size = _units.norms(actions)
     scale = 1.0 / size
 
     def kept(features: Array) -> np.ndarray:
@@ -1910,8 +1906,7 @@ def closed_loop_gain_attribution(
 
     design = jnp.stack([jnp.ones_like(x), x, u, x * u], axis=1)
     coefficients = jnp.linalg.lstsq(design, y, rcond=None)[0]
-    scale = jnp.linalg.norm(design, axis=0)
-    condition = float(jnp.linalg.cond(design / jnp.where(scale > 0.0, scale, 1.0)))
+    condition = float(jnp.linalg.cond(design / _units.norms(design)))
 
     state_variance = float(jnp.var(x))
     return ClosedLoopAttribution(

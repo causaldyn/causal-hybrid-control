@@ -2442,10 +2442,7 @@ def _alone(fit: CausalDynamicsFit, data: dict[str, Array], start: Array) -> tupl
     # every state's channel is moved along the same directions, so the target's block holds them
     width = actions * features
     directions = fit.unmoved[:width, : fit.unmoved.shape[1] // states]
-    size = jnp.linalg.norm(
-        _channel_design(data["u"], data["x"], fit.residual.channel_degree), axis=0
-    )
-    size = jnp.where(size > 0.0, size, 1.0)
+    size = _units.norms(_channel_design(data["u"], data["x"], fit.residual.channel_degree))
     basis = jnp.linalg.qr(directions * size[:, None])[0]
     phi = control_affine_features(start, fit.residual.channel_degree)
     precision = float(jnp.sqrt(jnp.finfo(basis.dtype).eps))
