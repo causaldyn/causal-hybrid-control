@@ -1,6 +1,7 @@
 # ADR 0037 — A goal in place of a budget
 
-**Status:** proposed, 2026-10-01.
+**Status:** proposed, 2026-10-01. Amended 2026-10-08 by ADR 0076: on S-shaped curves each budget's
+plan is `allocate`'s search, and a goal is met over those plans by Brent's method on the budget.
 
 ## Context
 

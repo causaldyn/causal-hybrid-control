@@ -18,6 +18,7 @@ from chc.allocation import (
     ReturnOnSpendTarget,
     ReturnTarget,
     Totals,
+    allocate,
     allocate_geos,
     budget_for,
     budget_for_geos,
@@ -197,17 +198,89 @@ def test_a_goal_takes_a_few_plans_and_a_marginal_target_none_at_a_budget(monkeyp
     assert (len(plans) > 0) == (most > 0)
 
 
-def test_an_s_curve_s_goal_logs_the_gap_it_leaves_once_however_many_budgets_it_tries(caplog):
-    """A gain of 300 is met with the Hill channel inside its chord, at 75.4, where the envelope
-    from zero spend stands 99 above the curve; Brent's method tries many budgets on the way."""
+def test_an_s_curve_s_goal_is_searched_and_logs_nothing_once_it_closes(caplog):
+    """A gain of 300 is met with the Hill channel inside its chord, at ``100 (3/7)^(1/3)``, 75.4.
+    On the envelope from zero spend that plan's bound stood 99 above it, and the gap was logged;
+    searched, the bound closes on it."""
     cells = ((Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),)
     box = {"lower": np.zeros((1, 2)), "upper": np.full((1, 2), 400.0)}
     with caplog.at_level(logging.WARNING, logger="chc.allocation"):
         plan = budget_for_geos(cells, ReturnTarget(300.0), 1, **box)
+    assert not [r for r in caplog.records if r.name == "chc.allocation"]
+    np.testing.assert_allclose(plan.spend, [[100.0 * (3.0 / 7.0) ** (1.0 / 3.0), 0.0]], rtol=1e-12)
+    assert plan.gain == pytest.approx(300.0, rel=1e-12, abs=0.0)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert plan.gap <= plan.tolerance
+
+
+def test_an_s_curve_s_goal_logs_the_gap_its_cap_leaves_once_however_many_budgets_it_tries(caplog):
+    """In one box a search is the envelope's plan, 99 under its bound at 75.4; Brent's method tries
+    many budgets on the way, and only the plan it returns is logged."""
+    cells = ((Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),)
+    box = {"lower": np.zeros((1, 2)), "upper": np.full((1, 2), 400.0)}
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = budget_for_geos(cells, ReturnTarget(300.0), 1, **box, max_boxes=1)
     [record] = [r for r in caplog.records if r.name == "chc.allocation"]
-    assert (record.chc_event, record.planner) == ("allocation_unsearched", "budget_for_geos")
-    assert record.gap == plan.bound - plan.worth
-    assert record.gap == pytest.approx(99.0, abs=1.0)
+    assert (record.chc_event, record.planner) == ("allocation_cap", "budget_for_geos")
+    assert (plan.stopped, plan.boxes, plan.limit) == ("cap", 1, "max_boxes")
+    assert (record.worth, record.bound) == (plan.worth, plan.bound)
+    assert plan.gap == plan.bound - plan.worth == pytest.approx(99.0, abs=1.0)
+
+
+S_CELLS = (
+    (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0)),
+    (Channel(ONE, Hill(0.8, 4.0), 0.7), Channel(ONE, Hill(1.2, 2.5), 1.2)),
+)
+S_BOX = {"lower": np.zeros((2, 2)), "upper": np.full((2, 2), 2.0)}
+
+
+def _cells_alone(budget: float):
+    """:func:`allocate`'s plan of the grid's four cells, no geo apart."""
+    flat = S_CELLS[0] + S_CELLS[1]
+    return allocate(flat, budget, 1, lower=np.zeros(4), upper=np.full(4, 2.0))
+
+
+@pytest.mark.parametrize(
+    ("amount", "envelopes"), [(1.2, 2.317499), (2.4, 4.778682)], ids=["1.2", "2.4"]
+)
+def test_s_curves_over_two_geos_meet_a_return_target_at_the_least_budget_allocate_meets_it(
+    amount, envelopes
+):
+    """Brent's method on the budget over the grid's searched plans: :func:`allocate`'s plan of its
+    four cells gains the target there, and a hair short of it does not. Along the plans on the
+    envelopes from zero spend the budgets were ``envelopes``, where that plan gains 1.2104 and
+    2.4612."""
+    plan = budget_for_geos(S_CELLS, ReturnTarget(amount), 1, **S_BOX)
+    assert plan.gain == pytest.approx(amount, rel=1e-12, abs=0.0)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert _cells_alone(plan.budget).gain == pytest.approx(amount, rel=1e-9, abs=0.0)
+    assert _cells_alone(plan.budget * (1 - 1e-6)).gain < amount
+    assert envelopes - plan.budget > 0.01
+
+
+def test_s_curves_over_two_geos_take_a_budget_that_rises_with_the_return_target():
+    """Each budget's plan is :func:`allocate_geos`' there and gains its target."""
+    amounts = (0.6, 1.2, 2.4)
+    plans = [budget_for_geos(S_CELLS, ReturnTarget(a), 1, **S_BOX) for a in amounts]
+    assert plans[0].budget < plans[1].budget < plans[2].budget
+    for amount, plan in zip(amounts, plans, strict=True):
+        at = allocate_geos(S_CELLS, plan.budget, 1, **S_BOX)
+        np.testing.assert_array_equal(at.spend, plan.spend)
+        assert at.gain == pytest.approx(amount, rel=1e-12, abs=0.0)
+
+
+def test_one_geo_s_marginal_target_on_an_s_curve_with_a_floor_is_budget_for_s():
+    """A floor of 1 on the Hill, inside its chord from zero spend, whose slope is 0.53: on the
+    envelope the Hill was held at its floor for 0.55 a unit, where its own slope is 0.75. Searched,
+    the Hill takes 1.2353, where its slope meets 0.55, as :func:`budget_for` plans it."""
+    pair = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, MichaelisMenten(1.0), 0.5))
+    lower, upper = np.array([1.0, 0.0]), np.full(2, 3.0)
+    goal = MarginalReturnTarget(0.55)
+    alone = budget_for(pair, goal, 1, lower=lower, upper=upper)
+    plan = budget_for_geos((pair,), goal, 1, lower=lower[None], upper=upper[None])
+    assert plan.budget == pytest.approx(alone.budget, rel=1e-12, abs=0.0)
+    np.testing.assert_allclose(plan.spend[0], alone.spend, rtol=1e-12, atol=0.0)
+    assert plan.budget > 1.2
 
 
 def test_with_every_geo_s_total_fixed_the_budget_is_theirs():
@@ -289,8 +362,8 @@ def test_past_the_peak_the_plans_meet_a_negative_marginal_return_and_a_return_on
     ids=["return", "marginal", "on-spend"],
 )
 def test_an_s_curve_s_goal_is_met_on_the_true_curve_as_budget_for_meets_it(goal):
-    """The plans are the envelopes', the gain the true curves', which are not concave in the
-    budget: a return target and a return on spend are met where the true gain crosses them."""
+    """The plans are searched, their gain not concave in the budget: a return target and a return
+    on spend are met where it crosses them."""
     cells = ((Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),)
     box = {"lower": np.zeros((1, 2)), "upper": np.full((1, 2), 400.0)}
     plan = budget_for_geos(cells, goal, 1, **box)

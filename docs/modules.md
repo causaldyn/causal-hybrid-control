@@ -388,13 +388,13 @@ intervals close. `just track-m2-lift` in `causaldyn-bench`
 each `chc.response` channel within its box, for the most return, with the history's carryover
 running into the plan and the plan's running on after it. Exact where every curve is concave, by
 bisection on the budget's price, a linear channel's jump spent to the budget exactly, and the
-budget's shadow price reported. S-curves are searched in boxes to the best split by `allocate` and
-`cvar_allocate`, and planned on their concave envelopes by the others, each such plan's gap logged.
-The box is required: it is where the channels were seen. **Every geo's channels under one budget**
+budget's shadow price reported. S-curves are searched in boxes to the best split by every planner,
+a goal's budget met over searched plans, and a search its cap stops logs its gap. The box is
+required: it is where the channels were seen. **Every geo's channels under one budget**
 (`allocate_geos`): caps and floors on what each geo and each channel spends, with a price for each,
 certified by cutting planes and made exact by Newton's method on the totals that bind. A return, a
 marginal return or a return on spend can stand over the grid in place of the budget
-(`budget_for_geos`), met in a few plans. [Tutorial 8](tutorials/08_splitting_a_budget.md) splits a
+(`budget_for_geos`), met in a few plans where every curve is concave. [Tutorial 8](tutorials/08_splitting_a_budget.md) splits a
 budget step by step.
 
 **A geo world** (`geo_world`): geos to score a geo model and a geo plan on. Each geo's KPI is made

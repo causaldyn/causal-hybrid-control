@@ -6,6 +6,8 @@ twice. On channels with carryover and a history, each goal is checked on the pla
 channels themselves return it, run over the history, the plan and the tail as one series.
 """
 
+from itertools import pairwise
+
 import numpy as np
 import pytest
 from scipy.special import lambertw
@@ -198,6 +200,83 @@ def test_an_s_curve_s_return_target_is_met_on_the_true_curve():
     revenue = 1000.0 * s[0] ** 3 / (100.0**3 + s[0] ** 3) + 300.0 * s[1] / (100.0 + s[1])
     assert revenue == pytest.approx(900.0, rel=1e-10)
     assert plan.gain == pytest.approx(900.0, rel=1e-10)
+
+
+def _untied() -> tuple[Channel, Channel]:
+    """Two Hill curves of slope 3 at scales 1 and 1.01, no carryover."""
+    return Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0)
+
+
+UNTIED_BOX = {"lower": np.zeros(2), "upper": np.full(2, 3.0)}
+
+
+@pytest.mark.parametrize(
+    ("amount", "envelopes"), [(0.7, 1.583356), (0.75, 1.713718)], ids=["0.7", "0.75"]
+)
+def test_an_s_curve_s_return_target_is_met_at_the_least_budget_allocate_s_plan_meets_it(
+    amount, envelopes
+):
+    """All of a budget on the first Hill gains ``z^3 / (1 + z^3)`` at ``z``, and is the best plan
+    up to these gains, so a gain ``a`` takes ``(a / (1 - a))^(1/3)``: 1.3264 for 0.7 and 1.4422 for
+    0.75 (validation/goal_seek.mac STEP 4). Along the plans on the envelopes from zero spend the
+    budgets were ``envelopes``, where :func:`allocate`'s plan gains 0.799 and 0.834."""
+    plan = budget_for(_untied(), ReturnTarget(amount), 1, **UNTIED_BOX)
+    least = (amount / (1.0 - amount)) ** (1.0 / 3.0)
+    assert plan.budget == pytest.approx(least, rel=1e-12, abs=0.0)
+    assert plan.gain == pytest.approx(amount, rel=1e-12, abs=0.0)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    # allocate's plan at the budget meets the goal, and a hair short of it does not
+    at = allocate(_untied(), plan.budget, 1, **UNTIED_BOX)
+    assert at.gain == pytest.approx(amount, rel=1e-12, abs=0.0)
+    assert allocate(_untied(), plan.budget * (1 - 1e-6), 1, **UNTIED_BOX).gain < amount
+    assert envelopes - plan.budget > 0.25
+
+
+def test_an_s_curve_s_budget_rises_with_its_return_target():
+    """From one channel to both: each budget's plan is :func:`allocate`'s and gains its target, and
+    a larger target takes a larger budget."""
+    amounts = (0.3, 0.75, 1.5)
+    plans = [budget_for(_untied(), ReturnTarget(a), 1, **UNTIED_BOX) for a in amounts]
+    assert all(a.budget < b.budget for a, b in pairwise(plans))
+    assert np.count_nonzero(plans[-1].spend) == 2
+    for amount, plan in zip(amounts, plans, strict=True):
+        at = allocate(_untied(), plan.budget, 1, **UNTIED_BOX)
+        np.testing.assert_array_equal(at.spend, plan.spend)
+        assert at.gain == pytest.approx(amount, rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("periods", [1, 3])
+def test_an_s_curve_s_marginal_target_is_searched_with_its_budget_free(periods):
+    """A floor of 1 on the Hill, past its inflection and short of its tangency, 2^(1/3): there the
+    envelope from zero spend is the chord, of slope 0.53, so at 0.55 a unit it held the Hill at its
+    floor, a budget of 1 a period. On the curve the slope ``3 z^2 / (1 + z^3)^2`` meets 0.55 at
+    1.2353; the other channel's slope is at most 0.5 (validation/goal_seek.mac STEP 5). Without
+    carryover each period is planned alike. No budget's plan has a larger gain net of 0.55 a
+    unit."""
+    pair = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, MichaelisMenten(1.0), 0.5))
+    box = {"lower": np.array([1.0, 0.0]), "upper": np.full(2, 3.0)}
+    plan = budget_for(pair, MarginalReturnTarget(0.55), periods, **box)
+    z = plan.spend[0]
+    assert 3.0 * z**2 / (1.0 + z**3) ** 2 == pytest.approx(0.55, rel=1e-12, abs=0.0)
+    assert plan.spend[1] == 0.0
+    assert plan.budget == pytest.approx(periods * z, rel=1e-15, abs=0.0)
+    assert z > 1.2
+    surplus = plan.gain - 0.55 * plan.budget
+    for budget in np.linspace(1.0, 6.0, 11):
+        at = allocate(pair, periods * float(budget), periods, **box)
+        assert at.gain - 0.55 * at.budget <= surplus + 1e-12 * periods
+
+
+def test_an_s_curve_s_return_on_spend_is_met_where_allocate_s_plan_falls_through_it():
+    """Two equal Hill curves of slope 3: past the peak both run alike, and ``z^2 / (1 + z^3)``
+    falls through 1/2 at the golden ratio, so a return of 0.5 a unit is met at ``1 + sqrt(5)``
+    (validation/goal_seek.mac STEP 6)."""
+    equal = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.0, 3.0), 1.0))
+    plan = budget_for(equal, ReturnOnSpendTarget(0.5), 1, **UNTIED_BOX)
+    assert plan.budget == pytest.approx(1.0 + np.sqrt(5.0), rel=1e-12, abs=0.0)
+    assert plan.gain == pytest.approx(0.5 * plan.budget, rel=1e-12, abs=0.0)
+    more = allocate(equal, plan.budget * (1 + 1e-6), 1, **UNTIED_BOX)
+    assert more.gain < 0.5 * more.budget
 
 
 @pytest.mark.parametrize(

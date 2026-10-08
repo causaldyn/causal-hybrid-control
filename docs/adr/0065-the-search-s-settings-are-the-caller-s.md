@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-07. Amends ADR 0051 and ADR 0052: their searches stop at the
 caller's tolerance and cap, no cut plans past the cap, and the tolerance has a floor at the rounding
-of the dtype the curves are read in.
+of the dtype the curves are read in. Amended 2026-10-08 by ADR 0076: every planner searches and
+takes the settings, and no plan is `unsearched`.
 
 ## Context
 

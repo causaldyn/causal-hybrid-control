@@ -2,6 +2,8 @@
 
 **Status:** proposed, 2026-10-02. Experimental, as `chc.allocation` is. Amended 2026-10-07 by
 ADR 0060: the bound is read from the program's duals, rounded outward, not from HiGHS's objective.
+Amended 2026-10-08 by ADR 0076: S-shaped cells are searched in boxes, and the search's tolerance
+and cap are the caller's.
 
 ## Context
 

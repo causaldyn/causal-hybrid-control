@@ -7,6 +7,65 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`budget_for`, `minimax_allocate`, `allocate_geos` and `budget_for_geos` take their search's
+  tolerance and cap: `rtol`, `atol` and `max_boxes`**, as `allocate` takes them, with the same
+  defaults, floor and refusals. `GeoAllocation` and `MinimaxAllocation` now record how the search
+  ended, as `Allocation` does: `stopped`, `boxes`, `gap`, `relative_gap`, `tolerance`, `floored`,
+  `limit`, `compile_seconds` and `search_seconds`. `MinimaxAllocation` also records the iterations
+  of each program HiGHS left unsolved (`unsolved`). A search that its cap stops logs
+  `chc_event="allocation_cap"` with its gap; `minimax_allocate`'s record gives the split's worst
+  regret and the bound under it (ADR 0076).
+
+### Removed
+
+- **`SearchStatus` drops `unsearched`, and the warning `chc_event="allocation_unsearched"` is
+  gone.** They marked a plan made on the envelopes from zero spend, which no planner returns now. A
+  gap left open is a search's that its cap stopped: `stopped="cap"`, logged as `allocation_cap`.
+
+### Fixed
+
+- **`allocate_geos` searches S-shaped curves for the best plan, as `allocate` does.** It planned
+  them on their concave envelopes from zero spend, whose plan is not the best. Two Hill curves of
+  slope 3 at scales 1 and 1.01 in one geo, with a budget of 1.6, were planned 1.27/0.33 for 0.7048,
+  where all of it on the first returns 0.8038. With a second geo of two more Hill cells, at budgets
+  of 1.6 and 3.2, the plans returned 0.7048 and 1.5523, where the best plans return 0.8069 and
+  1.6334. With each geo's total fixed at 1.6, the plan returned 1.4369 where the best returns
+  1.6107. The cells' rates are now searched in boxes, each bounded by the cutting planes on the
+  cells' envelopes over it, the totals among the program's rows. Each case above now returns the
+  best plan to `1e-9` of its bound: the plan `allocate` makes of the cells, or of each geo's cells
+  under its total. In a box, Newton's method on the totals' prices stops at its first step that
+  does not shrink their miss. With a line search it circled the jump that an envelope's chord
+  makes in a cell's rate: one search of 19 boxes read a slope 2,093,555 times, where the guarded
+  steps read it 687 times for the same plan. Concave curves plan as before (ADR 0076). Since
+  0.10.0.
+- **A goal on S-shaped curves is met at the budget where `allocate`'s plan meets it.**
+  `budget_for` and `budget_for_geos` met a goal along the plans on the envelopes from zero spend,
+  and those plans are not `allocate`'s. On the same two Hill curves a gain of 0.7 took a budget of
+  1.5834, where `allocate`'s plan gains 0.7988, and 0.75 took 1.7137 for 0.8342. A floor of 1 on a
+  Hill, short of its tangency, held it at its floor for a marginal return of 0.55, where its own
+  slope there is 0.75. Each budget's plan is now the planner's search there. A return target is met
+  by Brent's method on the budget: 0.7 at (7/3)^(1/3), 1.3264, and 0.75 at 3^(1/3), 1.4422, all
+  on the first channel. A marginal target is the best plan with the budget free and each unit
+  charged the target, searched in boxes; the Hill goes to 1.2353, where its slope meets 0.55. A
+  return on spend is met by Brent's method past that plan's budget. On the two-geo grid of the
+  bullet above, a gain of 1.2 took 2.3175 and 2.4 took 4.7787, where `allocate`'s plan of the four
+  cells gains 1.2104 and 2.4612; they now take 2.3009 and 4.6717. Concave curves are met as before
+  (ADR 0076). Since 0.10.0.
+- **`minimax_allocate` reads each regret on the curves, against `allocate`'s best, and searches
+  the split in boxes.** It read each reading's best as the bound of its plan on the envelopes from
+  zero spend, and its regrets on those envelopes. Two Hill curves at scales 1 and 1.01, read once
+  each way round with a budget of 1.6, were split evenly. The worst regret was 0.0024 on the
+  envelopes and 0.1332 on the curves, where all on either channel leaves 0.00475. A Hill reading
+  beside a saturating one, with a budget of 90, put 87.6 on the Hill: a worst regret of 12.42 on
+  the curves, where 6.65 is the least. Each reading's best is now the return of `allocate`'s
+  plan. The split with the least worst regret is `cvar_allocate`'s worst share at one reading of
+  n, searched in boxes from every reading's own plan; the two cases return 0.00475 and 6.65.
+  One reading, and two mirrored linear readings, plan as before to the bit. Over the tests' four
+  concave readings with carryover, now on `cvar_allocate`'s program, the worst regret falls by
+  1.3e-9 of 213.2, within the search's gap (ADR 0076). Since 0.10.0.
+
 ## [0.15.0] — 2026-10-07
 
 ### Added

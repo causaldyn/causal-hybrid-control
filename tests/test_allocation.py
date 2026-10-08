@@ -370,8 +370,8 @@ def test_equal_s_curves_leave_at_most_one_channel_inside_its_chord(slope, copies
     """Equal curves jump at one price on their envelopes, where every split of the jump is best
     there. Moved together, two equal Hill curves of slope 3 at 1.6 split 0.8/0.8 for 0.677, both
     inside their chords; filled one at a time, at most one channel is, so the gap is at most one
-    curve's nonconvexity (Shapley and Folkman's lemma for one constraint). The goals and the splits
-    for several readings plan on these envelopes, and the search starts from them."""
+    curve's nonconvexity (Shapley and Folkman's lemma for one constraint). The search starts from
+    them."""
     channels = _equal_s_curves(slope, copies)
     plan = _on_envelopes(
         channels, budget, 1, np.zeros(copies), np.full(copies, budget), np.zeros((0, copies))
@@ -415,9 +415,10 @@ def test_a_goal_on_equal_s_curves_is_met_with_at_most_one_channel_inside_its_cho
     inside = (plan.spend > 1e-12) & (plan.spend < touch * (1 - 1e-9))
     assert inside.sum() <= 1
     assert plan.gain == pytest.approx(0.7, rel=1e-9, abs=0.0)
-    # the first channel at its tangency, 2^(1/3), for 2/3, then the second where z^3/(1 + z^3) is
-    # the 1/30 left, at 29^(-1/3); moved together the two needed 2 x 0.8135
-    assert plan.budget == pytest.approx(2 ** (1 / 3) + 29 ** (-1 / 3), rel=1e-12, abs=0.0)
+    # all of it on one channel, where z^3/(1 + z^3) is 0.7, at (7/3)^(1/3): 1.3264. On the
+    # envelopes the first channel stopped at its tangency, 2^(1/3), for 2/3, and the second took the
+    # 1/30 left at 29^(-1/3), 1.5854 in all; moved together the two needed 2 x 0.8135
+    assert plan.budget == pytest.approx((7 / 3) ** (1 / 3), rel=1e-12, abs=0.0)
 
 
 def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -599,19 +600,36 @@ def test_a_plan_records_the_seconds_jax_spent_compiling_it():
     assert again.search_seconds > 0.0
 
 
-def test_a_goal_planned_on_the_envelopes_says_it_was_unsearched_and_logs_its_gap(caplog):
-    """The second channel is left inside its chord, at 29^(-1/3), where the envelope from zero
-    spend stands above the curve."""
+def test_a_goal_on_s_curves_is_searched_and_logs_nothing_once_it_closes(caplog):
+    """On the envelopes the second channel was left inside its chord, at 29^(-1/3), where the
+    envelope from zero spend stands above the curve, and the plan was logged with a gap of 0.11."""
     with caplog.at_level(logging.WARNING, logger="chc.allocation"):
         plan = budget_for(
             _equal_s_curves(3.0, 2), ReturnTarget(0.7), 1, lower=np.zeros(2), upper=np.full(2, 5.0)
         )
-    assert (plan.stopped, plan.boxes, plan.limit) == ("unsearched", 1, None)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert plan.boxes > 1
+    assert plan.gap <= plan.tolerance
+    assert not plan.floored
+    assert not _warnings(caplog)
+
+
+def test_a_goal_whose_searches_the_cap_stops_logs_the_gap_of_its_plan_once(caplog):
+    """Each budget the goal tries is searched in one box, and only the plan it returns is logged."""
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = budget_for(
+            _equal_s_curves(3.0, 2),
+            ReturnTarget(0.7),
+            1,
+            lower=np.zeros(2),
+            upper=np.full(2, 5.0),
+            max_boxes=1,
+        )
+    assert (plan.stopped, plan.boxes, plan.limit) == ("cap", 1, "max_boxes")
     [record] = _warnings(caplog)
-    assert (record.chc_event, record.planner) == ("allocation_unsearched", "budget_for")
-    assert record.gap == plan.bound - plan.worth == plan.gap
-    assert record.gap > 0.1
-    assert (plan.tolerance, plan.floored) == (1e-9 * plan.bound, False)
+    assert (record.chc_event, record.planner) == ("allocation_cap", "budget_for")
+    assert (record.worth, record.bound) == (plan.worth, plan.bound)
+    assert plan.gap == plan.bound - plan.worth > 0.1
 
 
 _S_CURVE = st.tuples(

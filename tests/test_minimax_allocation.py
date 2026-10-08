@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc.allocation import _on_envelopes, allocate, minimax_allocate
+from chc.allocation import allocate, minimax_allocate
 from chc.response import (
     Channel,
     Exponential,
@@ -154,71 +154,124 @@ def test_a_single_reading_is_planned_as_allocate_plans_it():
     assert plan.worst <= 1e-9 * alone.worth
 
 
-def test_an_s_curve_s_regret_is_its_envelope_s():
-    """On a Hill of slope 3 the reading's best is the bound of the plan on its envelope from zero
-    spend, not allocate's search, and the regret is measured there too: below the tangency,
-    100 * 2^(1/3), the envelope is the chord from the origin to where the curve is 2/3, which the
-    curve lies under."""
-    readings = [
-        (Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),
-        (Channel(ONE, MichaelisMenten(60.0), 700.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),
-    ]
-    plan = minimax_allocate(
-        readings,
-        90.0,
-        1,
-        lower=np.zeros(2),
-        upper=np.full(2, 90.0),
-        history=np.zeros((0, 2)),
-    )
-    alone = _on_envelopes(readings[0], 90.0, 1, np.zeros(2), np.full(2, 90.0), np.zeros((0, 2)))
-    assert plan.best[0] == pytest.approx(alone.bound, rel=1e-12)
-    assert np.all(plan.regret >= -1e-9 * plan.best.max())
-    hill, other = plan.spend
-    tangency = 100.0 * 2.0 ** (1 / 3)  # where h = 2/3, the chord's end
-    assert 0.0 < hill < tangency
-    chord = hill * (2.0 / 3.0) / tangency
-    on_envelope = 1000.0 * chord + 300.0 * other / (100.0 + other)
-    assert plan.regret[0] == pytest.approx(plan.best[0] - on_envelope, rel=1e-9)
-
-
-@pytest.mark.parametrize("weight", [300.0, 30000.0], ids=["excess", "own"])
-def test_an_s_curve_s_regret_is_off_the_curves_by_at_most_the_gap_it_logs(caplog, weight):
-    """A reading's best return on the curves, :func:`allocate`'s search, lies between its plan on
-    the envelopes from zero spend read on the curves and that plan's bound; the split's return on
-    the curves is below the envelopes' by their excess there. The warning's gap is the larger of the
-    two, and bounds how far each regret on the curves is from the envelopes'. At a weight of 300 on
-    the second reading's second channel the split's excess is the larger; at 30000 that reading
-    holds the split near zero on the Hill, where its envelope stands barely above it, and the first
-    reading's own plan's gap is."""
-    readings = [
+def _hill_and_saturating(weight: float) -> list[tuple[Channel, Channel]]:
+    """The first reading a Hill of slope 3 and a saturating curve, the second two saturating curves,
+    its second weighed ``weight``."""
+    return [
         (Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),
         (Channel(ONE, MichaelisMenten(60.0), 700.0), Channel(ONE, MichaelisMenten(100.0), weight)),
     ]
-    box = {"lower": np.zeros(2), "upper": np.full(2, 90.0), "history": np.zeros((0, 2))}
-    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
-        plan = minimax_allocate(readings, 90.0, 1, **box)
-    [record] = [r for r in caplog.records if r.name == "chc.allocation"]
-    assert (record.chc_event, record.planner) == ("allocation_unsearched", "minimax_allocate")
-    hill, other = plan.spend
-    on_curves = (
-        1000.0 * hill**3 / (100.0**3 + hill**3) + 300.0 * other / (100.0 + other),
-        700.0 * hill / (60.0 + hill) + weight * other / (100.0 + other),
+
+
+def _on_the_curves(weight: float, hill, other) -> np.ndarray:
+    return np.array(
+        [
+            1000.0 * hill**3 / (100.0**3 + hill**3) + 300.0 * other / (100.0 + other),
+            700.0 * hill / (60.0 + hill) + weight * other / (100.0 + other),
+        ]
     )
-    off = [
-        allocate(reading, 90.0, 1, **box).worth - value - regret
-        for reading, value, regret in zip(readings, on_curves, plan.regret, strict=True)
-    ]
-    # the Hill's envelope from zero spend is the chord to its tangency, z^3 = 2, past the cap
-    chord = 1000.0 * (2.0 / 3.0) * 2.0 ** (-1.0 / 3.0) / 100.0
-    own = chord * 90.0 - 1000.0 * 0.9**3 / (1.0 + 0.9**3)  # its plan on them: all 90 on the Hill
-    excess = chord * hill - 1000.0 * (hill / 100.0) ** 3 / (1.0 + (hill / 100.0) ** 3)
-    assert record.gap == pytest.approx(max(own, excess), rel=1e-9, abs=0.0)
-    assert (own > excess) == (weight > 300.0)
-    # the regret on the curves is the envelopes' less what the reading's best loses to its
-    # envelopes' and plus the split's excess, so the two pull apart and each bounds a side
-    assert -own * (1 + 1e-9) <= off[0] <= excess * (1 + 1e-9)
-    assert off[1] == pytest.approx(0.0, abs=1e-9 * plan.best.max())
+
+
+S_BOX = {"lower": np.zeros(2), "upper": np.full(2, 90.0), "history": np.zeros((0, 2))}
+
+
+@pytest.mark.parametrize(
+    ("weight", "worst"),
+    [(300.0, 6.647329059634728), (30000.0, 279.5257374204743)],
+    ids=["split", "corner"],
+)
+def test_an_s_curve_s_regret_is_read_on_the_curves_against_allocate_s_best(caplog, weight, worst):
+    """Each reading's best is :func:`allocate`'s plan's return, all 90 on the Hill for the first,
+    421.63, and each regret is read on the curves. On the envelopes from zero spend the first best
+    was their plan's bound, 476.22, and the regrets were read on them too: at a weight of 300 on
+    the second reading's second channel the split put 87.6 on the Hill, a worst regret on the
+    curves of 12.42; at 30000 it put 4.25 there, where the Hill's chord returned 5.29 a unit and
+    the curve returns 0.08 in all, a worst regret of 315.22. Against every split of a grid of steps
+    of 0.001."""
+    readings = _hill_and_saturating(weight)
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = minimax_allocate(readings, 90.0, 1, **S_BOX)
+    assert not [r for r in caplog.records if r.name == "chc.allocation"]
+    best = np.array([allocate(reading, 90.0, 1, **S_BOX).worth for reading in readings])
+    np.testing.assert_array_equal(plan.best, best)
+    assert best[0] == pytest.approx(1000.0 * 0.9**3 / (1.0 + 0.9**3), rel=1e-12, abs=0.0)
+    np.testing.assert_allclose(
+        plan.regret,
+        best - _on_the_curves(weight, *plan.spend),
+        rtol=1e-12,
+        atol=1e-12 * best.max(),
+    )
+    assert plan.worst == plan.regret.max()
+    assert plan.worst == pytest.approx(worst, rel=1e-9, abs=0.0)
+    assert not np.signbit(plan.regret).any()  # a regret of nothing reads 0.0
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert 0.0 <= plan.worst - plan.bound <= plan.tolerance
+    hill = np.linspace(0.0, 90.0, 90001)
+    least = float((best[:, None] - _on_the_curves(weight, hill, 90.0 - hill)).max(axis=0).min())
+    assert plan.worst <= least + plan.tolerance
+    assert least - plan.worst < 1e-3 * plan.worst
+
+
+def test_mirrored_s_curve_readings_are_hedged_all_on_one_channel():
+    """Two Hill curves of slope 3 at scales 1 and 1.01, read once each way round: each reading's
+    best is all of 1.6 on its channel at scale 1, ``512/637``. All on either channel leaves one
+    reading nothing to regret and the other ``512/637 - h(1.6/1.01)``, 0.00475; the even split, the
+    plan on the envelopes from zero spend, leaves both 0.133
+    (validation/envelope_on_interval.mac, STEP 4)."""
+    untied = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0))
+    plan = minimax_allocate(
+        [untied, untied[::-1]], 1.6, 1, lower=np.zeros(2), upper=np.full(2, 1.6)
+    )
+    np.testing.assert_allclose(np.sort(plan.spend), [0.0, 1.6], rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(plan.best, [512 / 637, 512 / 637], rtol=1e-12, atol=0.0)
+    z = 1.6 / 1.01
+    assert plan.worst == pytest.approx(512 / 637 - z**3 / (1 + z**3), rel=1e-9, abs=0.0)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    s = np.linspace(0.0, 1.6, 16001)
+    h = lambda x, scale: (x / scale) ** 3 / (1.0 + (x / scale) ** 3)  # noqa: E731
+    worst = np.maximum(
+        512 / 637 - h(s, 1.0) - h(1.6 - s, 1.01), 512 / 637 - h(s, 1.01) - h(1.6 - s, 1.0)
+    )
+    assert plan.worst <= float(worst.min()) + plan.tolerance
+
+
+def test_a_minimax_search_its_cap_stops_says_so_and_logs_its_gap(caplog):
+    """The mirrored readings in one box: each reading's own search is the plan on the envelopes
+    from zero spend, 1.27/0.33 for 0.7048 under a bound of 0.8448, and logs that gap as
+    :func:`allocate` does. The best is that plan's return, not its bound; against such bests a
+    split can gain up to the least of those gaps, so no worst regret is bounded above its
+    negation until a box is cut."""
+    untied = (Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0))
+    readings = [untied, untied[::-1]]
+    box = {"lower": np.zeros(2), "upper": np.full(2, 1.6)}
+    own = [allocate(reading, 1.6, 1, **box, max_boxes=1) for reading in readings]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = minimax_allocate(readings, 1.6, 1, **box, max_boxes=1)
+    assert (plan.stopped, plan.boxes, plan.limit) == ("cap", 1, "max_boxes")
+    np.testing.assert_array_equal(plan.best, [p.worth for p in own])
+    gaps = [p.bound - p.worth for p in own]
+    assert min(gaps) > 0.1
+    assert plan.bound >= -min(gaps) * (1 + 1e-12)
+    records = [r for r in caplog.records if r.name == "chc.allocation"]
+    assert [r.planner for r in records] == ["allocate", "allocate", "minimax_allocate"]
+    record = records[-1]
+    assert record.chc_event == "allocation_cap"
+    assert (record.boxes, record.limit) == (1, "max_boxes")
+    assert (record.worst, record.bound) == (plan.worst, plan.bound)
+    assert plan.gap == plan.worst - plan.bound
+    assert plan.gap > 0.1
+
+
+@pytest.mark.parametrize(
+    ("setting", "match"),
+    [({"rtol": -1.0}, "rtol"), ({"atol": np.inf}, "atol"), ({"max_boxes": 0}, "max_boxes")],
+)
+def test_it_refuses_search_settings_it_cannot_search_to(setting, match):
+    with pytest.raises(ValueError, match=match):
+        minimax_allocate(
+            READINGS, BUDGET, PERIODS, lower=LOWER, upper=UPPER, history=HISTORY, **setting
+        )
 
 
 @pytest.mark.parametrize(

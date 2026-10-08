@@ -2,7 +2,9 @@
 
 **Status:** proposed, 2026-10-01. Amended 2026-10-07 by ADR 0060: the bound is read from the
 program's duals, rounded outward, not from HiGHS's objective, and the rates are read in a power of
-two of the budget a period, the regrets in one of the largest best return.
+two of the budget a period, the regrets in one of the largest best return. Amended 2026-10-08 by
+ADR 0076: a reading's best is `allocate`'s plan's return, each regret is read on the curves, and
+the split is searched in boxes as `cvar_allocate`'s worst share at one reading of n.
 
 ## Context
 
