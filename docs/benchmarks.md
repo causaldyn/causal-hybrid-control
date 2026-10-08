@@ -15,7 +15,7 @@ causal control beats predictive control, and to be honest where it does not.
 | column | meaning |
 |---|---|
 | `cost` | the controller's task cost on the true plant |
-| `regret` | the controller's cost minus the oracle's; the oracle knows the true effect |
+| `regret` | the controller's cost minus the oracle's, the best plan found on the true system; each task's docstring says how far from the best it is known to be |
 | `95% CI` | percentile bootstrap over the seeds, for the mean regret |
 | `ood` | fraction of actions outside the logged action support |
 | `viol` | fraction of steps outside the safe state set |

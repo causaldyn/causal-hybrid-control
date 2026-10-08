@@ -11,6 +11,8 @@ all in the same ``TaskResult`` / ``leaderboard`` shape.
 
 from __future__ import annotations
 
+import functools
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -23,10 +25,10 @@ import numpy as np
 from jax import Array
 
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
-from chc.control import projected_gradient_control
+from chc.control import lbfgs_box_control, projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.delay import exact_delayed_rollout, robust_delay_design
-from chc.dynamics import HybridDynamics, LinearDynamics
+from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.dynamics_id import ConfoundedControlAffineSystem, fit_causal_residual
 from chc.estimators import BackdoorOLS, CausalEffectEstimator
 from chc.flagship import closed_loop
@@ -70,7 +72,17 @@ class MultiSeedResult:
 
 @dataclass(frozen=True)
 class PricingTask:
-    """Confounded linear steering: drive x to a target; effect of u is confounded in the logs."""
+    """Confounded linear steering: drive x to a target; effect of u is confounded in the logs.
+
+    The oracle is the controllers' own rule, the one-step certainty-equivalent action, at the true
+    effect and on the same noise path, so a regret is what the estimate costs under that rule. It
+    is not the best policy: the rule ignores ``control_weight``, which the finite-horizon LQR policy
+    weighs, and over 4 000 noise paths that policy costs 0.00098 less on average (standard error
+    0.0001), 0.0095 less on the path the task draws, in float64. A rule tuned to the drawn path, an
+    effect of 1.03, costs 0.029 less there and 0.018 more on average, and a plan that reads the
+    path's noise 0.29 less; neither is open to a controller. A controller can therefore land a
+    little below the oracle on one path.
+    """
 
     x0: float = 0.0
     x_target: float = 2.0
@@ -156,6 +168,11 @@ class InventoryTask:
     A fixed-intensity promo lifts demand; in the logs the promo was correlated with a demand driver
     ``z`` (a confounder), so the promo effect is biased. The retailer orders to a newsvendor level
     from its estimated demand model, so a wrong estimate systematically over- or under-orders.
+
+    The oracle orders the critical fractile of the true demand, the order of least expected cost,
+    and is scored on the same ``n_eval`` draws as every controller. On those 5 000 draws the order
+    at their own fractile costs 5.7e-5 less in float64, an order that reads the draws it is scored
+    on.
     """
 
     d0: float = 5.0  # base demand
@@ -240,6 +257,15 @@ class SupportShiftTask:
     A linear model matches the true plant on the offline action support, but the plant's control
     effectiveness collapses for large actions. The greedy controller extrapolates off-support to
     chase gains the model promises and stalls; pessimism keeps actions in-support and stays safe.
+
+    The oracle is the planner's descent from zero on the true plant, and it is the best plan. Past
+    ``u_sat / sqrt(2)`` an action buys an effect a smaller one gives for less, and inside it the
+    effect rises with the action and the action's cost is convex in the effect, while the plant is
+    linear in the effect: there the problem is convex. The oracle's actions all lie inside, so
+    where it stops on its rule, its stationarity 8.4e-7 in float64, is the problem's minimum.
+    Descents from 73 starts -- zero, each side of the box throughout, at each step, and for the
+    first 1, 2, 3, 5 or 10 steps, the other two plans and 8 seeded draws -- end on 39 plans, none
+    below the oracle by more than 2.2e-12.
     """
 
     x0: float = 2.0  # start far from target so the controller wants a big push
@@ -333,6 +359,69 @@ class _CubicDragActuator(eqx.Module):
         return self.a_matrix @ x + self.b_matrix @ (u - self.drag * u**3)
 
 
+# The oracle's starts on a plant whose effect reverses: zero, then each side of the box held for the
+# first k of these steps. The edge is where the reversed effect is strongest.
+_EDGE_PREFIXES = (1, 2, 3)
+
+
+def _best_descent(
+    plant: Dynamics,
+    x0: Array,
+    cost: QuadraticCost,
+    dt: float,
+    horizon: int,
+    u_lo: float,
+    u_hi: float,
+    steps: int,
+) -> Array:
+    """The cheapest plan on ``plant`` found by descents from a fixed set of starts.
+
+    The starts are zero, then the upper and the lower side of the box held for the first ``k``
+    steps and zero after, for each ``k`` in ``_EDGE_PREFIXES``: seven, in that order. From each the
+    planner descends, L-BFGS-B goes on from where it stopped, and the planner descends again to its
+    own rule; each runs to ``steps`` at most. The planner alone crawls along this plant's ravines:
+    from the upper side held for two steps it ended 10 000 steps at 3.926 and 200 000 at 3.773716,
+    its stationarity 3.3e-3, where the three in turn stop on the planner's rule at 3.773697. A
+    later plan replaces an earlier one only where it costs strictly less, so a tie keeps the
+    earlier start's plan.
+    """
+    levers = cost.R.shape[0]
+    starts = [jnp.zeros((horizon, levers))]
+    for k in _EDGE_PREFIXES:
+        starts += [jnp.zeros((horizon, levers)).at[:k].set(side) for side in (u_hi, u_lo)]
+    best, best_cost = starts[0], math.inf
+    for start in starts:
+        us, _ = projected_gradient_control(plant, x0, start, dt, cost, u_lo, u_hi, steps=steps)
+        us, _ = lbfgs_box_control(plant, x0, us, dt, cost, u_lo, u_hi, steps=steps)
+        us, _ = projected_gradient_control(plant, x0, us, dt, cost, u_lo, u_hi, steps=steps)
+        value = float(total_cost(plant, x0, us, dt, cost))
+        if value < best_cost:
+            best, best_cost = us, value
+    return best
+
+
+@functools.cache
+def _cubic_drag_oracle(task: ModelUncertaintyTask, dtype: np.dtype) -> Array:
+    """:class:`ModelUncertaintyTask`'s oracle, searched once per task and precision.
+
+    It reads no data, so every seed of a task shares it; ``dtype`` keys the precision it ran in.
+    """
+    del dtype
+    a = jnp.array([[0.0, 1.0], [-1.0, -0.2]])
+    b = jnp.array([[0.0], [1.0]])
+    plant = _CubicDragActuator(a_matrix=a, b_matrix=b, drag=task.drag)
+    return _best_descent(
+        plant,
+        jnp.array([task.x0, 0.0]),
+        task._cost(),
+        task.dt,
+        task.horizon,
+        task.u_lo,
+        task.u_hi,
+        task.inner_steps,
+    )
+
+
 @dataclass(frozen=True)
 class ModelUncertaintyTask:
     """Model exploitation where the safeguard is calibrated model uncertainty, not support distance.
@@ -342,6 +431,21 @@ class ModelUncertaintyTask:
     that high-uncertainty region, where the true plant's cubic drag backfires; calibrated pessimism
     penalises the ensemble disagreement and stays where the learned model is trustworthy -- the
     ``chc.uncertainty`` ``U`` term, complementing the density-distance ``D`` of ``SupportShift``.
+
+    The oracle is the cheapest of seven descents on the true plant, from zero and from each side of
+    the box held for the first one, two or three steps (``_best_descent``), searched once per task
+    and shared by its seeds. The plant acts through ``u - drag u^3``, which turns over at
+    ``|u| = 2.58`` and reaches -68.8 on the box's edge, so the best plan pushes through the reversed
+    effect: at 3.773697 in float64 its first four actions are 8, 6.63, -8 and -6.81, and the rest
+    stay inside the turn. The descent from zero alone stops at the effect's peak, at 15.520831, and
+    regrets read against it were 11.75 too low. No plan found costs less: descents from 152 starts,
+    each run to 210 000 steps and polished by L-BFGS-B, and a dynamic programme over the state, end
+    on many plans, none below 3.773697. Every plan costs at least 3.76084, the minimum of the
+    problem relaxed to the effects, in which the plant is linear and the action's cost is replaced
+    by its convex envelope (``tests/test_benchmark.py``), so the oracle is within 0.0129 of the best
+    plan there is. Against it the calibrated plan's regret is 12.40 and greedy's 1360.58: the row
+    measures what planning on the learned model costs against a plan that knows the plant's turn,
+    which no model fit on the logged support can see.
     """
 
     x0: float = 2.0
@@ -357,6 +461,14 @@ class ModelUncertaintyTask:
     n_members: int = 5
     fit_steps: int = 1000
     inner_steps: int = 10_000
+
+    def _cost(self) -> QuadraticCost:
+        return QuadraticCost(
+            Q=jnp.diag(jnp.array([1.0, 0.0])),
+            R=jnp.array([[self.control_weight]]),
+            Qf=jnp.diag(jnp.array([10.0, 1.0])),
+            x_target=jnp.array([self.x_target, 0.0]),
+        )
 
     def run(self, seed_data: int = 0) -> list[TaskResult]:
         """Fit an ensemble on the support, then score greedy/calibrated/oracle on the plant."""
@@ -380,12 +492,7 @@ class ModelUncertaintyTask:
         )
         uncertainty = EnsembleUncertainty(ensemble=cast(EnsembleResidual, model_ens.residual))
 
-        cost = QuadraticCost(
-            Q=jnp.diag(jnp.array([1.0, 0.0])),
-            R=jnp.array([[self.control_weight]]),
-            Qf=jnp.diag(jnp.array([10.0, 1.0])),
-            x_target=jnp.array([self.x_target, 0.0]),
-        )
+        cost = self._cost()
         x0 = jnp.array([self.x0, 0.0])
         us0 = jnp.zeros((self.horizon, 1))
 
@@ -406,9 +513,7 @@ class ModelUncertaintyTask:
             uncertainty=uncertainty,
             lam_unc=self.lam_unc,
         )
-        us_oracle, _ = projected_gradient_control(
-            plant, x0, us0, self.dt, cost, self.u_lo, self.u_hi, steps=self.inner_steps
-        )
+        us_oracle = _cubic_drag_oracle(self, jax.dtypes.canonicalize_dtype(jnp.float64))
 
         def true_cost(us: Array) -> float:
             return float(total_cost(plant, x0, us, self.dt, cost))
@@ -452,6 +557,11 @@ class ConfoundingRobustTask:
     problem-dependent confounding threshold -- at half the default confounding it still loses.
     (4) This is an OPEN-LOOP plan scored on the plant; the closed-loop counterpart is
     ``chc.sensitivity.confounding_robust_tracking_benchmark``.
+
+    The oracle is the planner's descent from zero on the true plant. The plant is linear, so the
+    cost is a convex quadratic in the plan and the descent's plan is the best one: the exact
+    minimiser over the box, by bounded-variable least squares (Stark and Parker 1995), is 6.9e-11
+    below it in float64, and descents from 73 starts end on the same plan.
     """
 
     x0: float = 2.0
@@ -586,6 +696,11 @@ class CausalDynamicsTask:
     this row scores planning, not forecasting. (4) The plant is control-affine by construction,
     which is the class the estimator and :func:`chc.plan.certify_safety` share -- a general
     nonlinear residual gets no orthogonality guarantee and no row here.
+
+    The oracle is the planner's descent from zero on the true plant. The plant is linear in the
+    state and the action, so the cost is a convex quadratic in the plan and the descent's plan is
+    the best one: the exact minimiser over the box, by bounded-variable least squares, is 3.4e-13
+    below it in float64, and descents from 74 starts end on the same plan.
     """
 
     x_target: float = 1.0
@@ -710,6 +825,11 @@ class DelayOscillationTask:
     (5) The estimate lands **below** the truth, which by ``chc.delay.delay_ball`` is the
     destabilising direction. It is harmless here only because that ball has 76% of relative slack;
     on a plant with a tighter one the same 5.3% would matter.
+
+    The oracle's gain is the best of the grid: on its 400 gains the cost has one minimum, at
+    0.7175, and 20 001 gains between that one's neighbours find 0.7199, 1.6e-5 cheaper, less than
+    the 8.3e-5 the cost rises to the nearer neighbour. It is the best proportional gain to the
+    grid's resolution; no other feedback law is searched.
     """
 
     tau: float = 1.0

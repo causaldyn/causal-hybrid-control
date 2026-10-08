@@ -60,6 +60,20 @@ still change).
 
 ### Fixed
 
+- **`ModelUncertaintyTask` reads its regrets against the best plan found.** Its plant acts through
+  `u - 0.15 u^3` in a box of ±8, so past `|u| = 2.58` the effect reverses, and on the box's edge
+  it is -68.8. The oracle was the planner's descent from zero, which stops at the forward effect's
+  peak, at 15.520831; a plan that pushes through the reversed effect, its first four actions 8,
+  6.63, -8 and -6.81, costs 3.773697. The oracle is now the cheapest of seven descents on the true
+  plant, from zero and from each side of the box held for the first one, two or three steps, each
+  descended, polished by L-BFGS-B and descended again; it reaches 3.773697, searched once per task
+  and shared by its seeds. Under float64 the calibrated plan's regret is 12.400, where it read
+  0.653, and greedy's 1360.58, where it read 1348.84. No plan found by 152 other starts or a
+  dynamic programme over the state costs less, and relaxing the problem to the plant's effects
+  bounds every plan below by 3.76084, so the oracle is within 0.0129 of the best plan there is.
+  The other six tasks' oracles are already the best plans found, to their solvers' tolerance, and
+  keep their costs to the bit; each task's docstring now says what its oracle is and how far from
+  the best it is known to be (ADR 0077). Since 0.1.0.
 - **On a panel of one unit, `prescribe` read the channel's error as if each transition were
   independent.** A panel of several units sums the channel's scores within each unit (ADR 0053);
   one unit has no second to sum within, so its error was the rows' own. Each score is the lever's
