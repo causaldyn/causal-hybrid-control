@@ -29,7 +29,9 @@ from chc.control import (
     _descend,
     _history,
     _polytope_stationarity,
+    _shrink,
     _status,
+    _step_norms,
     _violation,
     broadcast_box,
     check_box,
@@ -38,6 +40,7 @@ from chc.control import (
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
+from chc.uncertainty import ConfoundingRobustPenalty
 
 
 class PenaltyModel(Protocol):
@@ -151,6 +154,36 @@ def _augmented(
 _augmented_gradient = eqx.filter_jit(jax.grad(_augmented, argnums=2))
 
 
+def _radius_norms(
+    uncertainty: PenaltyModel | None, lam_unc: float, us: Array, blocks: Blocks
+) -> Array | None:
+    """The weight of each step's ``||u_t||`` in the penalised cost, where the uncertainty channel is
+    the confounding radius and the descent takes its norm by a proximal step; ``None`` elsewhere.
+
+    :class:`chc.uncertainty.ConfoundingRobustPenalty` penalises ``lam_unc * radius * sum_t L_t
+    ||u_t||``, its norm smoothed so that it has a gradient. The smoothing puts a curvature of the
+    radius' weight over a millionth of the plan's size at every ``u_t = 0``, where a plan holds the
+    actions it does not use: in float32 that is the plan's rounding, and from a zero guess the
+    gradient reads no kink at all. Taken exactly by a proximal step, the norm needs no gradient. A
+    weight of zero, a radius of zero or linear rows leave the descent as it was: the rows'
+    projection is not the norm's proximal map, so under rows the smoothed norm is descended by its
+    gradient.
+    """
+    if not isinstance(uncertainty, ConfoundingRobustPenalty) or blocks:
+        return None
+    if (isinstance(lam_unc, int | float) and lam_unc == 0.0) or uncertainty.radius == 0.0:
+        return None
+    reach = jnp.ones(us.shape[0]) if uncertainty.cost_to_go is None else uncertainty.cost_to_go
+    return lam_unc * uncertainty.radius * reach
+
+
+def _smooth(
+    uncertainty: PenaltyModel | None, lam_unc: float, norms: Array | None
+) -> tuple[PenaltyModel | None, float]:
+    """The uncertainty channel the gradient reads: none where the descent takes it as a norm."""
+    return (None, 0.0) if norms is not None else (uncertainty, lam_unc)
+
+
 @eqx.filter_jit
 def _pessimistic_loop(
     model: Dynamics,
@@ -188,13 +221,28 @@ def _pessimistic_loop(
     floor: a penalty has no curvature the guess can be relied on to show, so the descent reads it
     as it goes, by the secant along each action over each accepted step. Scaled, ``blocks`` must be
     coloured ``disjoint``.
+
+    The confounding radius' norm is not differentiated: with no ``blocks`` the augmented cost holds
+    it unsmoothed, and each step takes it, with the box, by its proximal map
+    (:func:`_radius_norms`, :func:`chc.control._descend`).
     """
 
     def task(us: Array) -> Array:
         return total_cost(model, x0, us, dt, cost)
 
+    norms = _radius_norms(uncertainty, lam_unc, us0, blocks)
+    smooth_unc, smooth_lam = _smooth(uncertainty, lam_unc, norms)
+
+    def smooth(us: Array) -> Array:
+        return _augmented(model, x0, us, dt, cost, support, lam_supp, smooth_unc, smooth_lam)
+
     def augmented(us: Array) -> Array:
-        return _augmented(model, x0, us, dt, cost, support, lam_supp, uncertainty, lam_unc)
+        value = smooth(us)
+        if norms is None:
+            return value
+        # in the smooth part's precision: a cost whose weights are float64 reads float32 actions
+        # in float64, and the norm summed in float32 would round away every fall below its eps
+        return value + _step_norms(us.astype(value.dtype), norms, jnp.ones((), value.dtype))
 
     start = project_box(us0, u_lo, u_hi)
     units = (
@@ -204,7 +252,7 @@ def _pessimistic_loop(
     )
     return _descend(
         augmented,
-        jax.grad(augmented),
+        jax.grad(smooth),
         lambda us, _: task(us),
         us0,
         u_lo,
@@ -216,6 +264,7 @@ def _pessimistic_loop(
         blocks,
         scaled=scaled,
         secant=scaled,
+        norms=norms,
     )
 
 
@@ -242,9 +291,12 @@ def pessimistic_solve(
     The stationarity residual is of the **augmented** objective, not the task cost: the penalties
     are what the descent actually minimised, so a residual measured on the task alone would be
     non-zero at the very point the solver was right to stop. With ``constraints`` it projects onto
-    the box and the rows together, as :func:`chc.control.projected_gradient_solve` does. The
-    residual is in the caller's units, so it is zero at a KKT point in any units but its size is
-    not.
+    the box and the rows together, as :func:`chc.control.projected_gradient_solve` does. Under the
+    confounding radius with no ``constraints`` it is ``||u - prox(u - grad f)||``, ``f`` the
+    augmented cost less the radius' norm and ``prox`` the norm's proximal map with the box: zero
+    exactly where the unsmoothed problem is stationary, where the smoothed norm's gradient reads
+    zero at an action on the kink whatever the cost's gradient there. The residual is in the
+    caller's units, so it is zero at a KKT point in any units but its size is not.
     """
     lo = broadcast_box(u_lo, us0.shape, "u_lo", us0.dtype)
     hi = broadcast_box(u_hi, us0.shape, "u_hi", us0.dtype)
@@ -268,19 +320,25 @@ def pessimistic_solve(
         blocks,
     )
     iterations = int(taken)
+    norms = _radius_norms(uncertainty, lam_unc, us0, blocks)
     gradient = _augmented_gradient(
-        model, x0, optimised, dt, cost, support, lam_supp, uncertainty, lam_unc
+        model, x0, optimised, dt, cost, support, lam_supp, *_smooth(uncertainty, lam_unc, norms)
     )
+    if blocks:
+        stationarity = _polytope_stationarity(optimised, gradient, lo, hi, blocks)
+    elif norms is None:
+        stationarity = float(jnp.linalg.norm(optimised - project_box(optimised - gradient, lo, hi)))
+    else:
+        stepped = (optimised - gradient).astype(optimised.dtype)
+        reach = jnp.asarray(norms, optimised.dtype)
+        landed = _shrink(stepped, reach, jnp.ones_like(optimised), lo, hi)
+        stationarity = float(jnp.linalg.norm(optimised - landed))
     return SolverResult(
         actions=optimised,
         cost_history=_history(values, iterations),
         status=_status(iterations, steps),
         iterations=iterations,
-        stationarity=(
-            _polytope_stationarity(optimised, gradient, lo, hi, blocks)
-            if blocks
-            else float(jnp.linalg.norm(optimised - project_box(optimised - gradient, lo, hi)))
-        ),
+        stationarity=stationarity,
         constraint_violation=_violation(optimised, constraints),
     )
 
@@ -319,10 +377,19 @@ def pessimistic_control(
     of the cost and penalties together. It runs in ``v_kj = sigma_kj u_kj``: ``sigma_kj^2`` starts
     as the cost's Gauss-Newton curvature along lever ``j`` at step ``k`` alone, over the augmented
     cost at the guess clipped to the box, and after each accepted step it is raised to the secant
-    of the augmented cost's curvature along that action over the step. A penalty with a kink -- the
-    confounding radius' norm, smoothed over a millionth of the plan's size -- puts its curvature
-    where no scale read at the guess sees it; read as the descent goes, it is measured where the
-    plan is.
+    of the augmented cost's curvature along that action over the step: a penalty's curvature is
+    measured where the plan is, not where the guess was.
+
+    The confounding radius (:class:`chc.uncertainty.ConfoundingRobustPenalty`) has a kink at every
+    ``u_t = 0``, where a plan holds the actions it does not use. Its norm is not differentiated:
+    the descent minimises it unsmoothed, read in the cost's precision, and takes it by its proximal
+    map with the box at each step, a forward-backward step whose line search asks a third of the
+    fall the smooth part's gradient and the norm predict together. A plan holds an unused action at
+    exactly zero, and from a zero guess the search finds a step wherever the proximal map moves it
+    and the step lowers the cost by more than ``tol`` asks; in float32 the descent no longer stops
+    at the kink's rounding (``docs/adr/0078-the-radius-norm-is-taken-by-its-proximal-map.md``).
+    Under ``constraints`` the rows' projection is not the norm's proximal map, and the descent
+    takes the smoothed norm's gradient as before: a zero guess on the kink may take no step there.
 
     * ``lr0`` is the first step the line search tries, in ``v``: 1 is the Newton step along each
       action alone. It is halved until the augmented cost falls by a third of what the gradient

@@ -624,13 +624,16 @@ class ConfoundingRobustPenalty(eqx.Module):
         certified upper bound on the cost gap rather than a scale-free direction.
         """
         del xs  # the confounded effect error scales with the ACTION magnitude (§34), not the state
-        # smoothed L2 norm sqrt(||u||^2 + eps^2): ||u|| is non-differentiable at u=0 (NaN grad) and
-        # the solver starts from us0=0 exactly on that singularity. eps is a millionth of the
-        # root-mean-square ||u_t|| over these very actions, the one size of them every caller hands
-        # over, so the penalty reads the same in any units of the actions; a fixed eps=1e-6
-        # outweighed actions logged in millionths of their units. Stays ABOVE ||u||, which is what
-        # the §34 upper bound needs, by at most eps per step. All-zero actions have no size, and
-        # there the floor is the smallest normal number, which keeps their gradient zero, not NaN.
+        # smoothed L2 norm sqrt(||u||^2 + eps^2): ||u|| is non-differentiable at u=0 (NaN grad), and
+        # a caller differentiating this penalty may start from us0=0 exactly on that singularity.
+        # The penalised descent of chc.support does not: without linear rows it minimises the norm
+        # unsmoothed, by its proximal map (ADR 0078), and only reads radius and cost_to_go from
+        # here. eps is a millionth of the root-mean-square ||u_t|| over these very actions, the one
+        # size of them every caller hands over, so the penalty reads the same in any units of the
+        # actions; a fixed eps=1e-6 outweighed actions logged in millionths of their units. Stays
+        # ABOVE ||u||, which is what the §34 upper bound needs, by at most eps per step. All-zero
+        # actions have no size, and there the floor is the smallest normal number, which keeps
+        # their gradient zero, not NaN.
         squares = jnp.sum(us**2, axis=-1)
         relative = 1e-6**2 * jnp.mean(squares)
         per_step = jnp.sqrt(squares + jnp.maximum(relative, jnp.finfo(relative.dtype).tiny))
