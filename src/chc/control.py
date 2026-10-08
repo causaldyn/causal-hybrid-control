@@ -46,6 +46,7 @@ _SUFFICIENT_DECREASE = 1.0 / 3.0  # of the fall a step's gradient predicts; see 
 _MAX_SWEEPS = 4_096  # Dykstra sweeps per projection, a multiple of the polishing period
 _POLISH_EVERY = 32  # sweeps between attempts to finish a projection by the active-set polish
 _ACTIVE_SET_STEPS = 16  # least dual active-set steps per polishing attempt
+_SHRINK_HALVINGS = 96  # bisections of log(mu) in a group's shrinkage; see _shrink
 
 Bound = float | Array
 """One side of the action box: a scalar shared by every lever, or a per-lever array.
@@ -552,6 +553,64 @@ def _unresolved(
     return jnp.max(jnp.abs(move - across)) <= tolerance
 
 
+def _step_norms(vs: Array, weights: Array, sigma: Array) -> Array:
+    """``sum_t weights_t ||u_t||`` at the actions ``u = vs / sigma``: the norm term a proximal
+    step takes exactly (:func:`_shrink`), read in the variables the step is taken in."""
+    return jnp.sum(weights * jnp.linalg.norm(vs / sigma, axis=-1))
+
+
+def _shrink(ys: Array, thresholds: Array, sigma: Array, lo: Array, hi: Array) -> Array:
+    """The proximal map of ``sum_t thresholds_t ||v_t / sigma_t||`` plus the box ``[lo, hi]``, at
+    ``ys``, step by step: each row ``x_t`` minimises
+    ``||x - y_t||^2 / 2 + thresholds_t ||x / sigma_t||`` over the box.
+
+    One lever a step, the norm is ``|x| / sigma_t``, and the answer is the soft-threshold of
+    ``y_t`` at ``thresholds_t / sigma_t`` clipped to the box, since the minimum of a convex
+    function of one variable over an interval is its minimum clipped there. It is exact, and an
+    action the threshold reaches is exactly zero.
+
+    Several levers, the norm couples them. Where the answer ``x`` is not zero it satisfies
+    ``x = clip(y / (1 + mu / sigma^2))`` with ``mu = thresholds_t / ||x / sigma||``: for a fixed
+    ``mu`` the problem is a separable quadratic, minimised over the box one lever at a time. The
+    product ``mu ||x(mu) / sigma||`` rises with ``mu``, each lever's share of it rising, so ``mu``
+    is found by bisecting its logarithm over the dtype's finite range; where the product never
+    reaches the threshold, zero is in the box and is the answer. A zero threshold is the projection
+    onto the box.
+    """
+    if ys.shape[-1] == 1:
+        reach = thresholds[:, None] / sigma
+        return jnp.clip(jnp.sign(ys) * jnp.maximum(jnp.abs(ys) - reach, 0.0), lo, hi)
+
+    tiny, huge = jnp.finfo(ys.dtype).tiny, jnp.finfo(ys.dtype).max
+
+    def at(mu: Array) -> tuple[Array, Array]:
+        """``x(mu)`` and ``mu ||x(mu) / sigma||``, read where ``mu / sigma^2`` overflows too."""
+        nu = mu[:, None] / sigma**2
+        shrunk = ys / (1.0 + nu)
+        x = jnp.clip(shrunk, lo, hi)
+        free = x == shrunk
+        # mu x / sigma, which for a free lever is sigma y nu / (1 + nu), held finite at nu = inf,
+        # and zero for a lever held at a side of its box at zero, whatever mu is
+        held = jnp.where(x == 0.0, 0.0, mu[:, None] * x / sigma)
+        pull = jnp.where(free, sigma * ys / (1.0 + 1.0 / nu), held)
+        return x, jnp.linalg.norm(pull, axis=-1)
+
+    def halve(_: int, bracket: tuple[Array, Array]) -> tuple[Array, Array]:
+        below, above = bracket
+        middle = 0.5 * (below + above)
+        rises = at(jnp.exp(middle))[1] >= thresholds
+        return jnp.where(rises, below, middle), jnp.where(rises, middle, above)
+
+    width = thresholds.shape
+    below = jnp.full(width, jnp.log(tiny), ys.dtype)
+    above = jnp.full(width, jnp.log(huge), ys.dtype)
+    _, above = jax.lax.fori_loop(0, _SHRINK_HALVINGS, halve, (below, above))
+    x, _ = at(jnp.exp(above))
+    never = at(jnp.full(width, huge, ys.dtype))[1] < thresholds
+    x = jnp.where(never[:, None], jnp.zeros_like(x), x)
+    return jnp.where((thresholds > 0.0)[:, None], x, jnp.clip(ys, lo, hi))
+
+
 def _backtrack(
     us: Array,
     current: Array,
@@ -563,6 +622,7 @@ def _backtrack(
     value_of: Callable[[Array], Array],
     blocks: Blocks,
     duals: Duals,
+    norms: tuple[Array, Array] | None = None,
 ) -> tuple[Array, Array, Array, Duals]:
     """Halve the step until it buys a third of the fall the gradient predicts for it, and more than
     ``tol``; failing that at every halving, take the longest trial that fell by more than ``tol``.
@@ -590,6 +650,14 @@ def _backtrack(
     with no step, whatever the cost reads there: a relative ``tol`` is fine enough to count the fall
     such a trial buys by breaking the constraints by rounding. No shorter step moves further, since
     a projected step lengthens with the step (Calamai & Moré 1987).
+
+    With ``norms = (weights, sigma)`` the objective is a smooth part, whose gradient is ``grad``,
+    plus ``sum_t weights_t ||u_t||`` over the actions ``u = us / sigma``, which ``value_of``
+    includes and ``grad`` does not. Each trial is then the proximal step, the norm and the box
+    taken exactly (:func:`_shrink`), with no ``blocks``. The predicted fall is the smooth part's
+    linear one plus the norm's own fall, the rule of Tseng & Yun (2009): a proximal step's
+    prediction is at least its squared length over the step, so the rule holds for a short enough
+    step from any point the proximal map moves, a kink included.
     """
 
     State = tuple[Array, Array, Array, Array, Duals, Array, Array]
@@ -617,13 +685,28 @@ def _backtrack(
             # promotes, the candidate re-enters the carry one dtype wider than it left, and
             # `lax.while_loop` rejects the body outright. Casting here -- at the point that decides
             # what the carry holds -- keeps the whole descent in the caller's precision.
-            candidate = jnp.clip(us - lr * grad, u_lo, u_hi).astype(us.dtype)
+            if norms is None:
+                candidate = jnp.clip(us - lr * grad, u_lo, u_hi).astype(us.dtype)
+            else:
+                weights, sigma = norms
+                stepped = (us - lr * grad).astype(us.dtype)
+                reach = (lr * weights).astype(us.dtype)
+                candidate = _shrink(stepped, reach, sigma, u_lo, u_hi).astype(us.dtype)
             trial_duals = duals
         value = value_of(candidate)
         falls = value < current - tol
-        sufficient = falls & (
-            current - value >= _SUFFICIENT_DECREASE * jnp.sum(grad * (us - candidate))
-        )
+        predicted = jnp.sum(grad * (us - candidate))
+        if norms is not None:
+            # in the objective's precision, as value_of reads the norm: the fall the norm predicts
+            # is a difference of two sums, and in a narrower dtype their rounding outweighs it
+            weights, sigma = norms
+            wide = jnp.result_type(current, predicted)
+            predicted = (
+                predicted
+                + _step_norms(us.astype(wide), weights, sigma.astype(wide))
+                - _step_norms(candidate.astype(wide), weights, sigma.astype(wide))
+            )
+        sufficient = falls & (current - value >= _SUFFICIENT_DECREASE * predicted)
         ended = trial + 1
         if blocks:
             tolerance = _projection_tolerance((us - lr * grad).astype(us.dtype))
@@ -766,6 +849,7 @@ def _descend(
     *,
     scaled: bool,
     secant: bool,
+    norms: Array | None = None,
 ) -> tuple[Array, Array, Array]:
     """The projected descent the planner and the penalised descent of :mod:`chc.support` share.
 
@@ -806,7 +890,16 @@ def _descend(
     curvature can sit where no scale read once sees it. A search that fails in the measured metric
     is tried again from the floor, so the descent stops only where a step in the floor's variables
     does not count either.
+
+    With ``norms``, one weight per step, ``value_of`` is a smooth part plus ``sum_t norms_t
+    ||u_t||`` and ``gradient_of`` the smooth part's gradient alone, and every trial is a proximal
+    step, the norm and the box taken exactly (:func:`_backtrack`, :func:`_shrink`): a forward-
+    backward step (Combettes & Wajs 2005) in ``v``. The norm's kink at each ``u_t = 0`` is then
+    never differentiated, so a plan that holds an action there holds it at exactly zero, and the
+    secant reads the smooth part's curvature alone. It takes no ``blocks``.
     """
+    if norms is not None and blocks:
+        raise ValueError("a proximal step for the norm takes the box alone, not linear rows")
     floor, scale, level = units
 
     def into(sigma: Array) -> tuple[Array, Array, Blocks]:
@@ -855,6 +948,7 @@ def _descend(
             lambda vs: value_of(_actions_of(vs, sigma, u_lo, u_hi)),
             rows_v,
             duals,
+            None if norms is None else (norms, sigma),
         )
         moved = jnp.where(accepted, _actions_of(vs, sigma, u_lo, u_hi), us)
         # On rejection ``taken`` does not advance and the write lands back on its own slot, so the

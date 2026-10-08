@@ -172,8 +172,9 @@ def test_a_plan_under_the_confounding_radius_converges_in_any_units(
     sees it. The descent ran out of its 10 000 steps in the problem's own units; with the lever in
     units 1e-6 to 1e6 times its own, or the cost 1e-6 or 1e6 times, it stopped 1.9e-2 to 0.20 of
     the box from there, and took no step at all with the lever 1e6 times or the cost 1e-6 times.
-    Read as the descent goes, the curvature is measured where the plan is, and each converges in 85
-    to 97 steps, to 2.6e-7 of the box."""
+    Read as the descent goes, the curvature is measured where the plan is, and each converged in 89
+    to 97 steps, to 2.2e-7 of the box. With the norm unsmoothed and taken by its proximal map, no
+    curvature sits at the kink: each converges in 45 steps, to 3.6e-15 of the box."""
     reference, width = _REFERENCE["one radius"], _ONE[3] - _ONE[2]
     solve = _solve(_ONE, (units,), scale, "radius")
     assert reference.status == solve.status == "converged"
