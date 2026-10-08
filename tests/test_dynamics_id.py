@@ -1955,9 +1955,11 @@ def test_clusters_move_the_error_and_nothing_else(integrator: str) -> None:
     np.testing.assert_array_equal(clustered.residual.drift, rows.residual.drift)
     np.testing.assert_array_equal(clustered.representer, rows.representer)
     np.testing.assert_array_equal(clustered.moment_residual, rows.moment_residual)
+    np.testing.assert_array_equal(clustered._parameter_size, rows._parameter_size)
     moved = {"channel_error", "influence", "clusters"}
+    arrays = {"residual", "representer", "moment_residual", "unmoved", "_parameter_size"}
     for field in dataclasses.fields(CausalDynamicsFit):
-        if field.name not in moved | {"residual", "representer", "moment_residual", "unmoved"}:
+        if field.name not in moved | arrays:
             assert getattr(clustered, field.name) == getattr(rows, field.name), field.name
 
 
