@@ -53,6 +53,15 @@ still change).
   at its scale on the log, the norm of its column of the fit's design over its state's (ADR 0024):
   the two directions sit 5.7e5 and 1.5e7 times above the floor from 1e-12 to 1e12 of the states'
   units and from 1e-3 to 1e6 of a lever's. Since 0.9.0.
+- **`misspecification_cost`'s p-value reads the same in any units of the state and of the levers.**
+  It took the square root of the fits' difference's covariance `S` in raw parameter units, where
+  the units set its eigenvalues orders apart and the small ones are the largest's rounding, and the
+  regret's curvature, large where `S` is small, made that rounding weights of the chi-square
+  mixture. With both states logged at 1e-12 of their units the weights summed to 31.7 against
+  `tr(W S) = 3.3e-5`, and a gate that read `p = 0.983` at unit scale read 0.5; with the first state
+  at 1e-6 it read 0.998. The weights are now read with each parameter at its scale on the log
+  (ADR 0024), and the p-value is the same to 1e-12 from 1e-12 to 1e12 of the states' units and from
+  1e-3 to 1e6 of a lever's. Since 0.9.0.
 - **An entry point that takes a caller's data reads it as a panel reads a column.** The functions
   that take logs, samples, series, outcomes, histories, stored decisions, forecasts or a target's
   levels as arrays, or as a mapping or a frame of them, cast them with NumPy's or JAX's cast, which

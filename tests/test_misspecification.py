@@ -432,6 +432,21 @@ def test_what_the_gate_cannot_see_reads_the_same_in_any_units(
     assert _gate_in(states, lever, held).unseen == unseen
 
 
+@IN_OTHER_UNITS
+@pytest.mark.parametrize("held", [False, True], ids=["free", "held to the log's ratio"])
+def test_the_gate_s_p_value_reads_the_same_in_any_units(
+    states: tuple[float, float], lever: float, held: bool
+) -> None:
+    """The p-value is the tail of a chi-square mixture weighted by the eigenvalues of ``W S``, which
+    are the same in any units. Read off ``S``'s square root in raw parameter units, where its small
+    eigenvalues were its largest's rounding, the weights summed to 31.7 against ``tr(W S)`` of
+    3.3e-5 with both states at 1e-12, and the free plan's p-value read 0.5 against 0.983 at unit
+    scale; with the first state at 1e-6 it read 0.998. Read with each parameter at its scale on the
+    log, every unit here reads the unit scale's p-value to 1e-12."""
+    at_unit_scale = _gate_in((1.0, 1.0), 1.0, held).p_value
+    assert abs(_gate_in(states, lever, held).p_value - at_unit_scale) <= 1e-10
+
+
 # --- refusals -------------------------------------------------------------------------------------
 
 

@@ -193,11 +193,16 @@ def misspecification_cost(
     trace, trace_squared = float(np.trace(ws)), float(np.trace(ws @ ws))
     leverage = max(float(d @ ws @ weight @ d) - trace_squared, 0.0)
     quadratic = float(d @ weight @ d)
+    # The mixture's weights, the eigenvalues of W S, are the same with each parameter at its scale
+    # on the log, where S's square root keeps every direction. In raw units S's small eigenvalues
+    # are its largest's rounding, and W, large where S is small, made that rounding weights: with
+    # both states logged at 1e-12 of their units they summed to 31.7, against tr(W S) = 3.3e-5.
+    mixture = _mixture_weights(scaled, covariance * np.outer(size, size))
     return MisspecificationCost(
         cost=(quadratic - trace) / 2.0,
         cost_error=math.sqrt(4.0 * leverage + 2.0 * trace_squared) / 2.0,
         noise=trace / 2.0,
-        p_value=_chi_square_mixture_survival(quadratic, _mixture_weights(weight, covariance)),
+        p_value=_chi_square_mixture_survival(quadratic, mixture),
         unseen=int(np.sum(weighed > floor)),
     )
 
