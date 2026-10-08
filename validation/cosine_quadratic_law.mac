@@ -1,0 +1,96 @@
+/* The law of a quadratic form read against a covariance estimated by nu cosines: the law
+   chc.misspecification.misspecification_cost reads its p-value off for fits given periods
+   (ADR 0075).
+
+   dh ~ N(0, S) in p dimensions, W >= 0, and S read as Shat = sum_{j=1}^{nu} c_j c_j', the c_j
+   N(0, S / nu), independent of each other and of dh: the cosines' estimate as the log grows at a
+   fixed nu (Sun 2013; Lazarus, Lewis, Stock and Watson 2018). Q = dh' W dh. With
+   S^(1/2) W S^(1/2) = U diag(w) U', z = U' S^(-1/2) dh and g_j = U' S^(-1/2) sqrt(nu) c_j are
+   independent standard normal vectors, so Q = sum_k w_k z_k^2 and
+   tr(W Shat) = (1/nu) sum_k w_k sum_j g_jk^2. The ratio R = Q / tr(W Shat) is then
+   sum_k w_k X_k / (sum_k w_k Y_k / nu), X_k ~ chi2(1) and Y_k ~ chi2(nu) all independent, and
+   P(R > r) = P(sum_k w_k X_k - (r / nu) sum_k w_k Y_k > 0), which Imhof's (1961) inversion
+   gives at 0.
+
+   STEP 1  one weight: R = nu X / Y is F(1, nu), each nu from 1 to 13, 21 and 40.
+   STEP 2  m equal weights: R = nu chi2(m) / chi2(m nu) is F(m, m nu).
+   STEP 3  Imhof at 0 against F(1, nu)'s and F(3, 3 nu)'s survival, numerically.
+   STEP 4  unequal weights 1, 0.3 and 0.05: the values tests/test_misspecification.py holds the
+           library's implementation to.
+   STEP 5  as nu grows, the law nears the mixture with S known, sum_k w_k X_k against
+           r sum_k w_k. */
+display2d : false$
+load(distrib)$
+ratprint : false$
+
+chi2(x, n) := x^(n/2 - 1) * exp(-x/2) / (2^(n/2) * gamma(n/2))$
+fdensity(r, a, b) := gamma((a + b)/2) / (gamma(a/2) * gamma(b/2)) * (a/b)^(a/2) * r^(a/2 - 1)
+                     * (1 + a*r/b)^(-(a + b)/2)$
+assume(r > 0, y > 0)$
+
+/* STEP 1. Given Y = y, R = nu X / Y has density (y / nu) chi2(r y / nu, 1) at r. Each nu on its
+   own: with nu a symbol, integrate asks whether (nu + 1)/2 is a whole number. */
+for n in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 21, 40] do block([gap],
+  gap : ratsimp(radcan(makegamma(integrate((y/n) * chi2(r*y/n, 1) * chi2(y, n), y, 0, inf))
+                       / fdensity(r, 1, n))) - 1,
+  if gap # 0 then error("STEP 1: nu X / Y is not F(1, nu) at nu =", n, gap))$
+print("STEP 1  nu X / Y is F(1, nu) for nu in 1..13, 21 and 40")$
+
+/* STEP 2. Equal weights cancel: R = nu chi2(m) / chi2(m nu). */
+for p in [[2, 5], [3, 5], [3, 13], [4, 21]] do block([gap],
+  gap : ratsimp(radcan(makegamma(
+          integrate((y/p[2]) * chi2(r*y/p[2], p[1]) * chi2(y, p[1]*p[2]), y, 0, inf))
+          / fdensity(r, p[1], p[1]*p[2]))) - 1,
+  if gap # 0 then error("STEP 2: nu chi2(m) / chi2(m nu) is not F(m, m nu) at", p, gap))$
+print("STEP 2  nu chi2(m) / chi2(m nu) is F(m, m nu) for (m, nu) in (2, 5), (3, 5), (3, 13),",
+      "(4, 21)")$
+forget(r > 0, y > 0)$
+
+/* STEP 3. P(sum_k w_k chi2(h_k) > 0) = 1/2 + (1/pi) int_0^inf sin(theta(u)) / (u rho(u)) du,
+   theta(u) = (1/2) sum_k h_k atan(w_k u), rho(u) = prod_k (1 + w_k^2 u^2)^(h_k/4). */
+imhof(ws, hs) := block([f, value],
+  f : sin((1/2) * sum(hs[k] * atan(ws[k] * u), k, 1, length(ws)))
+      / (u * prod((1 + ws[k]^2 * u^2)^(hs[k]/4), k, 1, length(ws))),
+  value : quad_qagi(f, u, 0, inf, 'epsrel = 1d-12, 'epsabs = 1d-14, 'limit = 2000),
+  if value[4] # 0 then error("quad_qagi failed, code", value[4]),
+  0.5 + value[1] / %pi)$
+/* the ratio's survival: weights w with one degree of freedom each, -r w / nu with nu */
+ratio_survival(ws, ratio, n) :=
+  float(imhof(append(ws, -ratio * ws / n),
+              append(makelist(1, length(ws)), makelist(n, length(ws)))))$
+worst : 0$
+for n in [5, 8, 13, 21, 40] do
+  for ratio in [0.5, 1.0, 3.84, 6.6, 12.0] do
+    worst : max(worst,
+                abs(ratio_survival([2.5], ratio, n) - (1 - float(cdf_f(ratio, 1, n)))),
+                abs(ratio_survival([0.7, 0.7, 0.7], ratio, n) - (1 - float(cdf_f(ratio, 3, 3*n)))))$
+if worst > 1d-9 then error("STEP 3: Imhof at 0 misses the F laws by", worst)$
+print("STEP 3  Imhof at 0 reads F(1, nu)'s and F(3, 3 nu)'s survival within", worst,
+      "over nu = 5, 8, 13, 21, 40 and five ratios")$
+print("        at the chi2(1) 5 % point, 3.8415, F(1, nu)'s survival for nu = 5, 8, 13, 21, 40:",
+      map(lambda([n], float(1 - cdf_f(3.841458820694124, 1, n))), [5, 8, 13, 21, 40]))$
+
+/* STEP 4. Unequal weights. */
+expected : [[5, 1.0, 0.3870040089344542], [5, 3.0, 0.10183028881862782],
+            [5, 8.0, 0.0118472979512933], [13, 1.0, 0.3611507291438919],
+            [13, 3.0, 0.07451390094040111], [13, 8.0, 0.004142972366473874],
+            [40, 1.0, 0.34911668954393593], [40, 3.0, 0.06288838365449628],
+            [40, 8.0, 0.0020222356685781206]]$
+for row in expected do block([got],
+  got : ratio_survival([1.0, 0.3, 0.05], row[2], row[1]),
+  if abs(got - row[3]) > 1d-9 * row[3] then
+    error("STEP 4: at nu =", row[1], "and r =", row[2], "the law reads", got),
+  print("STEP 4  weights 1, 0.3, 0.05, nu =", row[1], " r =", row[2], ":", got))$
+
+/* STEP 5. As nu grows the denominator settles at sum_k w_k, 1.35 here. */
+imhof_at(ws, q) := block([f, value],
+  f : sin((1/2) * sum(atan(ws[k] * u), k, 1, length(ws)) - q*u/2)
+      / (u * prod((1 + ws[k]^2 * u^2)^(1/4), k, 1, length(ws))),
+  value : quad_qagi(f, u, 0, inf, 'epsrel = 1d-10, 'epsabs = 1d-12, 'limit = 5000),
+  0.5 + value[1] / %pi)$
+known : float(imhof_at([1.0, 0.3, 0.05], 3.0 * 1.35))$
+gaps : map(lambda([n], abs(ratio_survival([1.0, 0.3, 0.05], 3.0, n) - known)), [40, 400, 4000])$
+if not (gaps[1] > gaps[2] and gaps[2] > gaps[3] and gaps[3] < 1d-4) then
+  error("STEP 5: the law does not near the mixture with S known:", gaps)$
+print("STEP 5  S known, P(Q > 3 tr(W S)) =", known, "; the law's distance from it at nu = 40,",
+      "400, 4000:", gaps)$

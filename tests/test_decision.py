@@ -59,7 +59,7 @@ from chc.dynamics import (
     HybridDynamics,
     LinearDynamics,
 )
-from chc.dynamics_id import fit_causal_residual
+from chc.dynamics_id import fit_causal_residual, persistence_check
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
@@ -2253,6 +2253,75 @@ def test_a_panel_of_several_units_reads_no_cosines() -> None:
     shown = result.to_json()["certificate"]
     assert "error_cosines" in shown
     assert shown["error_cosines"] is None
+
+
+def _one_market(n_units: int, n_periods: int, **kwargs: float) -> Panel:
+    """``_logs``' zones, every one in the one declared market."""
+    logs = _logs(n_units=n_units, n_periods=n_periods, **kwargs)
+    market = np.full(logs["unit"].size, "north")
+    return Panel.from_frame(
+        {**logs, "market": market}, unit="unit", time="time", cluster="market", seed=0
+    )
+
+
+def test_several_units_in_one_declared_cluster_read_their_period_sums_by_cosines(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Four zones in one declared market: the market has no second group to sum within, so the
+    error sums each period's transitions over the zones and reads the sums across the 99 periods
+    they start in by 8 cosines of them. The certificate names the market's one group, and the
+    report, the JSON and the fit's log event say so. The persistence check reads the zones' pairs
+    the same way, not as four independent units."""
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
+        result = _prescribe(_one_market(4, 100), ["demand"])
+    (event,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "fit"]
+    assert (event.clustered_by, event.clusters, event.cosines) == ("market", 1, 8)
+    certificate = result.certificate
+    assert certificate.identification_radius is not None
+    grouping = (
+        certificate.error_clustered_by,
+        certificate.error_clusters,
+        certificate.error_periods,
+        certificate.error_cosines,
+    )
+    assert grouping == ("market", 1, None, 8)
+    fit = result.model_fit
+    assert fit.clusters is None
+    assert fit.periods is not None
+    assert fit.periods.tolist() == np.tile(np.arange(99), 4).tolist()
+    report = result.report()
+    assert (
+        ", summed within each period over the units of the one group of `market`, then read "
+        "across the periods by 8 cosines of them (Driscoll-Kraay, EWC)" in report
+    )
+    assert "each transition taken as independent" not in report
+    shown = result.to_json()["certificate"]
+    assert (
+        shown["error_clustered_by"],
+        shown["error_clusters"],
+        shown["error_periods"],
+        shown["error_cosines"],
+    ) == grouping
+    units, periods = np.repeat(np.arange(4), 99), np.tile(np.arange(99), 4)
+    assert certificate.noise_persistence_p == persistence_check(fit, units, periods).p_value
+    by_unit = persistence_check(dataclasses.replace(fit, periods=None), units, periods)
+    assert certificate.noise_persistence_p != pytest.approx(by_unit.p_value, rel=1e-3, abs=0.0)
+
+
+def test_one_declared_cluster_whose_transitions_all_start_in_one_period_reads_rows() -> None:
+    """Fifty zones in one market over two periods: one period's sum leaves no spread across the
+    periods to read, so the error takes each transition as independent, as before."""
+    result = _prescribe(_one_market(50, 2), ["demand"])
+    certificate = result.certificate
+    grouping = (
+        certificate.error_clustered_by,
+        certificate.error_clusters,
+        certificate.error_periods,
+        certificate.error_cosines,
+    )
+    assert grouping == (None, None, None, None)
+    assert (result.model_fit.clusters, result.model_fit.periods) == (None, None)
+    assert ", each transition taken as independent" in result.report()
 
 
 @pytest.mark.parametrize(

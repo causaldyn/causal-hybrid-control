@@ -26,8 +26,10 @@ still change).
   read across the unit's periods, and `to_json()` writes `error_cosines`, `null` where the error
   is not read so. `omitted_confounder_bound` reads a fit given periods by the same cosines
   against `t(nu)`, and `misspecification_cost` reads the difference's covariance by them and
-  refuses two fits read over different periods. On several units every number is as it was, to
-  the bit (ADR 0075). Since 0.5.0.
+  refuses two fits read over different periods. Read by `nu` cosines, that covariance is an
+  estimate, so the test reads `d' W d` over its `tr(W S)` against their ratio's law, which is
+  `F(1, nu)` where `W S` has one weight, not against the chi-square mixture with `S` known:
+  PART2_CHANGELOG On several units every number is as it was, to the bit (ADR 0075). Since 0.5.0.
 - **`persistence_check` read no test on one unit.** Its p-value was `nan` wherever the pairs were
   one unit's, since its spread came from the units' sums, and `prescribe`'s report said "not
   tested on one unit". One unit's pairs are now read across their periods as the fit's error is:
@@ -36,6 +38,34 @@ still change).
   5 % test rejected 6.75 % of 400 logs whose noise was drawn afresh, 92 % where it was AR(0.3) and
   all 400 where it was AR(0.7). The p-value is `nan` below two pairs, and the report then says
   the pairs leave no spread to read (ADR 0075). Since 0.15.0.
+- **On a panel whose units all fall in one declared cluster, `prescribe` read the channel's error
+  as if each transition were independent.** A declared cluster sums the scores within each cluster
+  (ADR 0053); one cluster leaves no second to sum within, so the error was the rows' own, and
+  `fit_causal_residual` refused `clusters` that name one cluster. The units of one cluster share
+  its shocks: a shock every unit takes in a period moves that period's scores together across the
+  units, and where the shock persists and the levers do too, the period's sums persist across the
+  periods. On ten units of one cluster over 200 periods that half share a lever AR(0.7) and share
+  a shock AR(0.9), a 95 % interval read off the rows covered the channel on 0.442 of 1000 logs.
+  `fit_causal_residual(periods=...)` now takes a period that several transitions share: it sums
+  each period's scores before the cosines read across the periods, Driscoll and Kraay's (1998)
+  reading, and counts `nu` over the periods. On the same logs its interval covered 0.909, and over
+  24 settings of three and ten units, 50 and 200 periods, 0.909 to 0.962. `prescribe` passes the
+  periods where every transition falls in one group and they start in two periods at least:
+  `error_clustered_by` names the cluster, `error_clusters` reads 1 and `error_cosines` counts the
+  cosines, in the certificate, the report and `to_json()`. `omitted_confounder_bound` and
+  `misspecification_cost` read such a fit's influence by the same sums. Periods that name one
+  period are refused, and `clusters` that name one cluster still are, the refusal now pointing to
+  `periods`. On every panel of two groups or more every number is as it was, to the bit
+  (ADR 0075). Since 0.5.0.
+- **`persistence_check` read the units of one declared cluster as independent.** In `prescribe`, a
+  panel whose units all fall in one cluster had its pairs' products summed within each unit and
+  read by CR1 against `t(G - 1)`, though the units share the cluster's shocks. Where they share a
+  shock drawn afresh, so that the noise does not persist, a 5 % test rejected 10.75 % of 400 logs
+  of three units over 200 periods, and 28.5 % of ten units. A fit given periods now has its
+  pairs' products summed within each period and read across the periods by cosines against
+  `t(nu)`, as its error is: on the same logs 5.75 % and 6.0 %, and where the shock is AR(0.3),
+  69 % and 88 %. Pairs that all fall in one period leave no spread to read, and the p-value is
+  `nan` (ADR 0075). Since 0.15.0.
 
 ## [0.15.0] — 2026-10-07
 

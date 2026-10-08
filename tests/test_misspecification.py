@@ -495,6 +495,64 @@ def test_one_unit_s_periods_price_the_noise_by_cosines() -> None:
     assert rows.cost + rows.noise == pytest.approx(gate.cost + gate.noise, rel=1e-9, abs=0.0)
 
 
+def test_one_cluster_s_periods_price_the_noise_by_period_sums_and_cosines() -> None:
+    """Fits given periods that name each of 100 periods for four transitions, the units of one
+    cluster, read the difference of their influences summed within each period, projected on 8
+    cosines of the 100 periods and squared: ``noise`` is half of ``tr(W S)``, and the p-value
+    reads the ratio's law with 8 degrees of freedom, the periods' count, not the 400 transitions',
+    which reads 21."""
+    from chc.misspecification import _cosine_ratio_survival
+
+    data = _log(400, 11, 0.0)
+    periods = np.repeat(np.arange(100), 4)
+    reference, alternative = _fits(data, folds=1, periods=periods)
+    plan = _plan(reference.residual)
+    plan = dataclasses.replace(plan, actions=_optimum(reference.residual, plan.actions))
+    gate = misspecification_cost(plan, reference, alternative)
+    weight = _parameter_weight(plan, reference.residual, None)
+    difference = (np.asarray(alternative.influence) - np.asarray(reference.influence)).sum(axis=1)
+    sums = np.stack([difference[periods == period].sum(axis=0) for period in range(100)])
+    frequencies = np.arange(1, 9)[:, None]
+    projected = math.sqrt(2.0 / 8.0) * np.cos(np.pi * frequencies * (np.arange(100) + 0.5) / 100)
+    projected = projected @ sums
+    expected = float(np.trace(weight @ projected.T @ projected)) / 2.0
+    assert gate.noise == pytest.approx(expected, rel=1e-9, abs=0.0)
+    d = _parameters(alternative.residual) - _parameters(reference.residual)
+    mixture = _mixture_weights(weight, projected.T @ projected)
+    quadratic = float(d @ weight @ d)
+    p_value = _cosine_ratio_survival(quadratic, mixture, 8)
+    assert gate.p_value == pytest.approx(p_value, rel=1e-9, abs=1e-12)
+    by_transitions = _cosine_ratio_survival(quadratic, mixture, 21)
+    assert gate.p_value != pytest.approx(by_transitions, rel=1e-3, abs=0.0)
+
+
+def test_a_test_against_cosines_reads_its_s_as_an_estimate() -> None:
+    """Read by 21 cosines, ``S`` is an estimate with 21 degrees of freedom, and the p-value is the
+    chance that ``d' W d`` over ``tr(W S)`` reads at least its value under their ratio's law, not
+    the chance ``d' W d`` does under the mixture with ``S`` known."""
+    from chc.misspecification import _cosine_ratio_survival
+
+    data = _log(400, 11, 0.0)
+    periods = np.arange(400)
+    reference, alternative = _fits(data, folds=1, periods=periods)
+    plan = _plan(reference.residual)
+    plan = dataclasses.replace(plan, actions=_optimum(reference.residual, plan.actions))
+    gate = misspecification_cost(plan, reference, alternative)
+    weight = _parameter_weight(plan, reference.residual, None)
+    d = _parameters(alternative.residual) - _parameters(reference.residual)
+    difference = (np.asarray(alternative.influence) - np.asarray(reference.influence)).sum(axis=1)
+    frequencies = np.arange(1, 22)[:, None]
+    projected = math.sqrt(2.0 / 21.0) * np.cos(np.pi * frequencies * (periods + 0.5) / 400)
+    projected = projected @ difference
+    covariance = projected.T @ projected
+    mixture = _mixture_weights(weight, covariance)
+    quadratic = float(d @ weight @ d)
+    expected = _cosine_ratio_survival(quadratic, mixture, 21)
+    assert gate.p_value == pytest.approx(expected, rel=1e-9, abs=1e-12)
+    known = _chi_square_mixture_survival(quadratic, mixture)
+    assert gate.p_value != pytest.approx(known, rel=1e-3, abs=0.0)
+
+
 def test_a_plan_made_on_another_model_is_refused() -> None:
     reference, alternative, plan = _case(4000, 7, 0.0, 0.0)
     with pytest.raises(ValueError, match="reference fit's model"):
@@ -548,3 +606,52 @@ def test_unequal_weights_give_the_convolution_s_tail(q: float) -> None:
 def test_no_weight_is_a_point_mass_at_zero() -> None:
     assert _chi_square_mixture_survival(0.5, np.zeros(3)) == 0.0
     assert _chi_square_mixture_survival(0.0, np.zeros(3)) == 1.0
+
+
+@pytest.mark.parametrize("nu", [1, 5, 13, 40])
+@pytest.mark.parametrize("ratio", [1e-8, 0.5, 3.84, 12.0, 1e5])
+def test_the_cosine_ratio_law_is_f_with_one_weight_or_equal_ones(nu: int, ratio: float) -> None:
+    """``d' W d`` over ``tr(W S)``, ``S`` read by ``nu`` cosines: one weight makes the ratio
+    ``F(1, nu)`` and three equal ones ``F(3, 3 nu)`` (``validation/cosine_quadratic_law.mac``),
+    out to ratios whose integrand turns many orders of ``u`` apart."""
+    from chc.misspecification import _cosine_ratio_survival
+
+    one = _cosine_ratio_survival(ratio * 2.5, np.array([2.5]), nu)
+    three = _cosine_ratio_survival(ratio * 2.1, np.full(3, 0.7), nu)
+    assert one == pytest.approx(stats.f.sf(ratio, 1, nu), rel=1e-9, abs=1e-14)
+    assert three == pytest.approx(stats.f.sf(ratio, 3, 3 * nu), rel=1e-9, abs=1e-14)
+
+
+def test_the_cosine_ratio_law_with_unequal_weights_reads_as_maxima_reads_it() -> None:
+    """Weights 1, 0.3 and 0.05 at three ratios and three counts: Imhof's inversion at 0, which
+    Maxima's ``quad_qagi`` reads (``validation/cosine_quadratic_law.mac``). As ``nu`` grows the
+    law nears the mixture with ``S`` known."""
+    from chc.misspecification import _cosine_ratio_survival
+
+    weights = np.array([1.0, 0.3, 0.05])
+    maxima = {
+        (5, 1.0): 0.3870040089344542,
+        (5, 3.0): 0.10183028881862782,
+        (5, 8.0): 0.0118472979512933,
+        (13, 1.0): 0.3611507291438919,
+        (13, 3.0): 0.07451390094040111,
+        (13, 8.0): 0.004142972366473874,
+        (40, 1.0): 0.34911668954393593,
+        (40, 3.0): 0.06288838365449628,
+        (40, 8.0): 0.0020222356685781206,
+    }
+    for (nu, ratio), value in maxima.items():
+        got = _cosine_ratio_survival(ratio * 1.35, weights, nu)
+        assert got == pytest.approx(value, rel=1e-9, abs=1e-14), (nu, ratio)
+    known = _chi_square_mixture_survival(3.0 * 1.35, weights)
+    gaps = [abs(_cosine_ratio_survival(3.0 * 1.35, weights, nu) - known) for nu in (40, 400, 4000)]
+    assert gaps[0] > gaps[1] > gaps[2]
+    assert gaps[2] < 1e-4
+
+
+def test_the_cosine_ratio_law_of_no_weight_or_no_quadratic() -> None:
+    from chc.misspecification import _cosine_ratio_survival
+
+    assert _cosine_ratio_survival(0.5, np.zeros(3), 5) == 0.0
+    assert _cosine_ratio_survival(0.0, np.zeros(3), 5) == 1.0
+    assert _cosine_ratio_survival(0.0, np.array([1.0, 0.3]), 5) == 1.0

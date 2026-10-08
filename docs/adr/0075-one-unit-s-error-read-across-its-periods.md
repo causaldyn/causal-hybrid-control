@@ -1,6 +1,8 @@
 # ADR 0075 — One unit's channel error read across its periods by cosines
 
-**Status:** accepted, 2026-10-08. Amends ADR 0053 and ADR 0064.
+**Status:** accepted, 2026-10-08. Amends ADR 0053 and ADR 0064. Amended 2026-10-08, before any
+release: the units of one declared cluster are read by their period sums across the periods, and
+`misspecification_cost` sizes its test given periods against `S` read by the cosines.
 
 ## Context
 
@@ -104,33 +106,165 @@ standard errors over the standard deviation of the estimates:
 | 0.9 | 0.7 | 0.0 | 1000 | 0.508 | 0.925 | 0.947 | 0.979 | 0.952 |
 | 0.9 | 0.0 | 0.8 | 1000 | 1.007 | 1.005 | 0.977 | 0.996 | 0.998 |
 
+**Several units in one declared cluster.** ADR 0053 sums the scores within each declared cluster.
+A panel whose units all fall in one cluster, as one market's zones do, has no second cluster to
+sum within, and its units name each period several times, which the periods above refused.
+`prescribe` passed the fit neither, and the fit took each transition as independent, as on one
+unit; `fit_causal_residual` refused `clusters` that name one cluster, or one in a dimension of
+two. The units of one cluster share its shocks. A shock every unit takes in a period moves that
+period's scores together across the units, and where the shock persists and the levers do too, the
+period's sums persist across the periods. The rows' error reads neither. What reached it:
+
+- `fit_causal_residual`: the rows' sandwich.
+- `prescribe`: that error, in `identification_radius`, in the tube's model error, in the report,
+  "each transition taken as independent", and in `to_json()`, whose four `error_*` fields read
+  `null`.
+- `persistence_check`, in `prescribe`: the units' sums by CR1 against `t(G - 1)`, as if the units
+  were independent.
+- `omitted_confounder_bound` and `misspecification_cost`: the influence's rows, as the fit read
+  them.
+- The logger check, `gcm_test` clustered by period: a period's sum holds whatever the dependence
+  across its units, and under its null the sums are martingale differences in time, so it holds as
+  it stands.
+- `Prescription.evaluate`: it resamples the units as independent, as it does on several clusters.
+
+**The measurement, on one cluster.** `G` units of one cluster, each
+`x' = 0.95 x + 0.1 (0.8 u + 1.5 z) + e`, `u = a + 0.9 z`, `z` drawn afresh and adjusted for. The
+noise is a shock every unit shares, AR(`r_e`), plus each unit's own drawn afresh, each of spread
+`0.05 / sqrt(2)`. The lever's own part `a` is AR(0.7) of spread 0.5: each unit's own (*own*), or
+one every unit shares and the unit's own, summed over `sqrt(2)` (*shared*). 300 periods before the
+log, then `T`. Each log is fitted as above; a cell draws 1000 logs, each from its own seed spawned
+from one `SeedSequence`. Each reading reads the influence's channel column at the rows' factor:
+
+- *rows*: as above.
+- *period sums*: the scores summed within each period over the units, projected on `nu` cosines of
+  the `T` periods, squared and summed, `nu = 0.4 T^(2/3)` rounded down, 5 at 50 periods and 13 at
+  200, against `t(nu)`: Driscoll and Kraay's (1998) reading, with the cosines in place of their
+  Bartlett kernel. It is `fit_causal_residual`'s own error given the periods, which agreed with it
+  to 1e-15 on each cell's first log.
+- *units, CR1*: the units as clusters (ADR 0053), against `t(G - 1)`.
+- *two-way*: by unit and by period, whichever of the three sums reads largest (ADR 0061), against
+  `t(min(G, T) - 1)`: what `prescribe` reads where the panel declares no cluster.
+
+A refusal reads no interval. The coverage of the 95 % interval:
+
+| lever | `G` | `r_e` | `T` | rows | period sums | units, CR1 | two-way |
+|---|---|---|---|---|---|---|---|
+| own | 3 | 0.0 | 50 | 0.962 | 0.962 | 0.993 | 1.000 |
+| own | 3 | 0.5 | 50 | 0.920 | 0.952 | 0.983 | 1.000 |
+| own | 3 | 0.9 | 50 | 0.886 | 0.955 | 0.982 | 0.998 |
+| own | 3 | 0.0 | 200 | 0.955 | 0.948 | 0.974 | 1.000 |
+| own | 3 | 0.5 | 200 | 0.906 | 0.950 | 0.965 | 1.000 |
+| own | 3 | 0.9 | 200 | 0.798 | 0.931 | 0.959 | 0.998 |
+| own | 10 | 0.0 | 50 | 0.959 | 0.956 | 0.955 | 0.986 |
+| own | 10 | 0.5 | 50 | 0.908 | 0.950 | 0.953 | 0.971 |
+| own | 10 | 0.9 | 50 | 0.850 | 0.945 | 0.957 | 0.967 |
+| own | 10 | 0.0 | 200 | 0.956 | 0.953 | 0.954 | 0.982 |
+| own | 10 | 0.5 | 200 | 0.897 | 0.954 | 0.956 | 0.969 |
+| own | 10 | 0.9 | 200 | 0.759 | 0.934 | 0.922 | 0.933 |
+| shared | 3 | 0.0 | 50 | 0.931 | 0.962 | 0.970 | 1.000 |
+| shared | 3 | 0.5 | 50 | 0.817 | 0.924 | 0.946 | 0.999 |
+| shared | 3 | 0.9 | 50 | 0.820 | 0.934 | 0.954 | 0.997 |
+| shared | 3 | 0.0 | 200 | 0.903 | 0.944 | 0.949 | 1.000 |
+| shared | 3 | 0.5 | 200 | 0.787 | 0.946 | 0.916 | 1.000 |
+| shared | 3 | 0.9 | 200 | 0.692 | 0.934 | 0.897 | 0.992 |
+| shared | 10 | 0.0 | 50 | 0.753 | 0.930 | 0.750 | 0.973 |
+| shared | 10 | 0.5 | 50 | 0.634 | 0.929 | 0.694 | 0.921 |
+| shared | 10 | 0.9 | 50 | 0.586 | 0.914 | 0.665 | 0.814 |
+| shared | 10 | 0.0 | 200 | 0.749 | 0.944 | 0.721 | 0.973 |
+| shared | 10 | 0.5 | 200 | 0.575 | 0.938 | 0.625 | 0.913 |
+| shared | 10 | 0.9 | 200 | 0.442 | 0.909 | 0.586 | 0.812 |
+
+A coverage's Monte Carlo standard error is 0.006 to 0.016. How far each error reads the estimate's
+spread across the logs, as above:
+
+| lever | `G` | `r_e` | `T` | rows | period sums | units, CR1 | two-way |
+|---|---|---|---|---|---|---|---|
+| own | 3 | 0.0 | 50 | 1.104 | 1.137 | 1.284 | 1.424 |
+| own | 3 | 0.5 | 50 | 0.909 | 1.012 | 1.125 | 1.218 |
+| own | 3 | 0.9 | 50 | 0.797 | 0.969 | 1.127 | 1.190 |
+| own | 3 | 0.0 | 200 | 1.017 | 1.017 | 1.071 | 1.223 |
+| own | 3 | 0.5 | 200 | 0.847 | 0.995 | 1.052 | 1.141 |
+| own | 3 | 0.9 | 200 | 0.668 | 0.939 | 1.024 | 1.066 |
+| own | 10 | 0.0 | 50 | 1.052 | 1.025 | 1.060 | 1.167 |
+| own | 10 | 0.5 | 50 | 0.840 | 0.950 | 1.010 | 1.057 |
+| own | 10 | 0.9 | 50 | 0.738 | 0.910 | 1.019 | 1.046 |
+| own | 10 | 0.0 | 200 | 1.028 | 1.019 | 1.019 | 1.123 |
+| own | 10 | 0.5 | 200 | 0.832 | 1.009 | 1.016 | 1.054 |
+| own | 10 | 0.9 | 200 | 0.630 | 0.925 | 0.964 | 0.978 |
+| shared | 3 | 0.0 | 50 | 0.938 | 1.078 | 1.050 | 1.275 |
+| shared | 3 | 0.5 | 50 | 0.712 | 0.905 | 0.802 | 0.960 |
+| shared | 3 | 0.9 | 50 | 0.660 | 0.906 | 0.826 | 0.939 |
+| shared | 3 | 0.0 | 200 | 0.837 | 0.996 | 0.804 | 1.118 |
+| shared | 3 | 0.5 | 200 | 0.665 | 0.991 | 0.697 | 0.922 |
+| shared | 3 | 0.9 | 200 | 0.509 | 0.918 | 0.634 | 0.762 |
+| shared | 10 | 0.0 | 50 | 0.603 | 0.957 | 0.562 | 1.013 |
+| shared | 10 | 0.5 | 50 | 0.474 | 0.946 | 0.494 | 0.806 |
+| shared | 10 | 0.9 | 50 | 0.382 | 0.833 | 0.453 | 0.630 |
+| shared | 10 | 0.0 | 200 | 0.565 | 0.986 | 0.495 | 1.013 |
+| shared | 10 | 0.5 | 200 | 0.413 | 0.947 | 0.419 | 0.759 |
+| shared | 10 | 0.9 | 200 | 0.308 | 0.875 | 0.386 | 0.580 |
+
+PART2_CONTEXT
+
 ## Decision
 
-- **`fit_causal_residual(periods=...)`** takes each transition's period on a log of one unit, a
-  whole number of steps, one a transition and no period twice, and reads the channel's covariance
-  across them by cosines: `V = N / (N - k) sum_j c_j c_j'`, with
+- **`fit_causal_residual(periods=...)`** takes each transition's period, a whole number of steps,
+  on a log whose transitions fall in one group: one unit's, or the units' of one declared cluster.
+  It reads the channel's covariance across them by cosines: `V = N / (N - k) sum_j c_j c_j'`, with
   `c_j = sum_i sqrt(2 / nu) cos(pi j (p_i + 1/2) / P) s_i` for `j` from 1 to `nu`, `s_i` the
   transition's scores summed over its states, `p_i` its period counted from the log's first, and
-  `P` the periods the log spans. A period the log lacks holds no score, as Parzen (1963) reads a
-  series with gaps. `nu` is the most whole cosines at or below `0.4 N^(2/3)`, read in whole
-  numbers, `1000 nu^3 <= 64 N^2`, so that 1000 transitions read 40 and not 39; and one at the
-  least. `CausalDynamicsFit.periods` keeps the periods and `error_cosines` gives `nu`. Each row's
+  `P` the periods the log spans. The transitions of one period share its weights, so `c_j` reads
+  the sums of each period's scores, whatever their dependence within the period: Driscoll and
+  Kraay's (1998) reading, with the cosines in place of their Bartlett kernel. A period the log
+  lacks holds no score, as Parzen (1963) reads a series with gaps. `nu` is the most whole cosines
+  at or below `0.4 T^(2/3)` for `T` distinct periods, read in whole numbers, `1000 nu^3 <= 64 T^2`,
+  so that 1000 periods read 40 and not 39; and one at the least. On one unit `T` is `N`. Periods
+  that name one period are refused, since one period's sum leaves no spread across the periods.
+  `CausalDynamicsFit.periods` keeps the periods and `error_cosines` gives `nu`. Each row's
   `influence` is the rows' own, factor and all; its readers sum it by the same cosines. `clusters`
-  and `periods` together are refused: they are two readings of one dependence.
-- **A test read off it takes `t(nu)`.** As the log grows at a fixed `nu`, the `c_j` read as
+  and `periods` together are refused: they are two readings of one dependence. `clusters` that
+  name one cluster, or one in a dimension of two, are refused as before, and the refusal points to
+  `periods`.
+- **A test read off it takes `t(nu)`.** As the periods grow at a fixed `nu`, the `c_j` read as
   independent normals, so the statistic is a `t(nu)` (Sun 2013; Lazarus, Lewis, Stock and Watson
-  2018). `omitted_confounder_bound` takes `t(nu)`'s quantile and reads both influences by the
-  cosines; `misspecification_cost` reads the difference's covariance by them, and refuses two fits
-  read over different periods.
-- **`prescribe` passes the periods on a panel of one unit**, the one case with no second group.
-  `DecisionCertificate.error_cosines` counts the cosines, `to_json()` writes it, `null` where the
-  error is not read so, the fit's log event carries it as `cosines`, and the report reads
-  "read across the one unit's periods by 21 cosines of them (EWC)" for 399 transitions.
-- **`persistence_check` on one unit reads its pairs across their periods** the same way: the total
-  of the pairs' products over the root of their projections on `nu` cosines of the later
-  transitions' periods, squared and summed, against `t(nu)`, `nu` counted over the pairs. Below two
-  pairs it reads `nan`, and the report says the pairs leave no spread to read.
-- **Unchanged:** every panel of several units, to the bit; the logger check; and
+  2018); a period's sum is one term of a series in the periods, as Vogelsang (2012) reads Driscoll
+  and Kraay's sums under fixed-b. `omitted_confounder_bound` takes `t(nu)`'s quantile and reads
+  both influences by the cosines; `misspecification_cost` reads the difference's covariance by
+  them, sizes its test as the next bullet but one says, and refuses two fits read over different
+  periods.
+- **`prescribe` passes the periods where every transition falls in one group**, one unit or one
+  declared cluster, and they start in two periods at least. `DecisionCertificate.error_cosines`
+  counts the cosines, `to_json()` writes it, `null` where the error is not read so, and the fit's
+  log event carries it as `cosines`. On one unit `error_clustered_by` stays `None`, and the report
+  reads "read across the one unit's periods by 21 cosines of them (EWC)" for 399 transitions. On
+  one declared cluster `error_clustered_by` names the cluster's column and `error_clusters` reads
+  1, and the report reads "summed within each period over the units of the one group of `market`,
+  then read across the periods by 8 cosines of them (Driscoll-Kraay, EWC)" for four units over 100
+  periods. One group whose transitions all start in one period takes them as independent, as
+  before: one period's sum leaves nothing to read across.
+- **`persistence_check` reads one unit's pairs, and a fit's given periods, across their periods**
+  the same way: the pairs' products summed within each period, and their total over the root of
+  the sums' projections on `nu` cosines of the later transitions' periods, squared and summed,
+  against `t(nu)`, `nu` counted over the pairs' periods. A fit given periods says its units share
+  one group's noise, so its pairs are read so whatever their units' count; given none, the pairs
+  of several units are read by CR1 over the units, as before. Pairs that leave no spread, as
+  below two pairs or in one period, read `nan`, and the report says the pairs leave no spread to
+  read.
+- **`misspecification_cost`'s p-value under `periods` reads `S` as the estimate it is.** With `S`'s
+  estimate `sum_j c_j c_j'`, the `c_j` independent `N(0, S / nu)`, as the cosines read as the
+  periods grow at a fixed `nu`, `dh' W dh` over the estimate's `tr(W S)` is
+  `sum_k w_k X_k / (sum_k w_k Y_k / nu)`: `X_k` chi-square with one degree of freedom, `Y_k` with
+  `nu`, all independent, and `w_k` the eigenvalues of `W S`. One weight makes it `F(1, nu)`, `m`
+  equal ones `F(m, m nu)`, and as `nu` grows it nears the mixture with `S` known. The p-value is
+  its tail at the ratio the log reads, `r`: Imhof's (1961) inversion at 0 of
+  `sum_k w_k X_k - (r / nu) sum_k w_k Y_k`, read over `log u`, where the integrand falls
+  exponentially both ways; the weights are read off the estimate. `validation/cosine_quadratic_law.mac`
+  derives the two F laws in Maxima, reads Imhof's inversion against them and against the values
+  the tests hold for unequal weights, and checks the approach to the mixture. `cost`,
+  `cost_error`, `noise` and `unseen` do not move.
+- **Unchanged:** every panel of two groups or more, to the bit; one unit's error; the logger
+  check, whose period sums hold whatever the dependence across one period's units; and
   `Prescription.evaluate`, which keeps ADR 0049's path.
 
 **Why the cosines.** Over the fifteen cells they covered 0.925 to 0.978, against a `t` whose
@@ -145,6 +279,19 @@ final stage alone, the cross-fitted nuisances held, where the error's sensitivit
 them too, and it costs 499 draws a fit. A refusal would leave every log of one unit, a
 building's or a pendulum's, without an error.
 
+**Why the period sums.** Over the 24 cells on one cluster they covered 0.909 to 0.962 and read
+0.83 to 1.14 of the estimate's spread. The rows covered 0.442 where ten units share a lever and a
+shock AR(0.9) over 200 periods. CR1 over the units takes them as independent, which a shared shock
+breaks: where they share the lever too it covered 0.586 to 0.750 at ten units, and at three units
+it covered by width alone, its interval read off `t(2)` 1.9 to 3.0 times the rows'. Two-way reads
+a shock within each period and the persistence within each unit, but not a shock that persists,
+which ties one unit's period to another unit's next: where ten units share the lever and the shock
+is AR(0.9) it covered 0.814 at 50 periods and 0.812 at 200, and at three units its interval was 2.6
+to 3.3 times the rows'. The period sums read the shock within each period and its
+persistence across them, against a `t` whose degrees of freedom are the periods' count.
+
+PART2_WHY
+
 ## Consequences
 
 - *On one unit the error widens where the scores persist*: where `r_e` is 0.9 and `r_u` 0.7 it
@@ -157,20 +304,40 @@ building's or a pendulum's, without an error.
 - *A collider bias stays uncovered.* At `r_e` 0.9, `r_u` 0.7, `b` 0.8 and 1000 transitions the
   channel reads 0.0226 low, 0.39 of its spread (ADR 0064), and the cosines' 0.941 is what is
   left of 95 % beside it.
-- *`misspecification_cost`'s chi-square mixture* reads `S` as known; read by `nu` cosines it is
-  itself noisy, as at few clusters (ADR 0062), and the analogue for several directions at once is
-  not built.
-- *Several units in one declared cluster* still read their transitions as independent: there the
-  panel names a second dimension the error could read across, and nothing reads it yet.
+- *On one declared cluster the error widens where its units share a lever and a shock that
+  persists*: at ten units, the shock AR(0.5) or AR(0.9), it reads 0.83 to 0.95 of the estimate's
+  spread, where the rows read 0.31 to 0.47, and its interval is 2.5 to 3.0 times the rows'.
+- *It widens where nothing persists too*: where each unit moves its own lever and the shock is
+  drawn afresh, the mean interval is 21 to 27 % wider than the rows' at 50 periods and 7 to 8 % at
+  200, the price of `t(nu)` with `nu` counted over the periods.
+- *`prescribe`'s certificate names the one declared cluster*: `error_clustered_by` its column and
+  `error_clusters` 1, where all four `error_*` fields read `null`. No key was added, so
+  `to_json()`'s schema version stays 2.
+- *`persistence_check` on one declared cluster holds its size*: where the units share a shock
+  drawn afresh, the units' CR1 rejected 10.75 % of 400 logs of three units over 200 periods at 5 %
+  and 28.5 % of ten, and the period sums 5.75 % and 6.0 %. Where the shock is AR(0.3) the period
+  sums caught 69 % and 88 %, and AR(0.7) 99.5 % and all.
+- PART2_CONSEQUENCE
 - *`Prescription.evaluate`* keeps reading one unit's windows as independent, warned of, until 1.0
   refuses them. Its windows are `H + 1` periods long, so a log of a few hundred periods holds a
-  few dozen, and cosines over them would read `t(3)` or so; that reading was not measured.
+  few dozen, and cosines over them would read `t(3)` or so; that reading was not measured. On one
+  declared cluster it resamples the units as independent, as it does on several clusters, though
+  the units of one cluster share its shocks; that reading was not measured either.
 - *Tests*: on one unit of 200 transitions with noise AR(0.9), 200 seeded logs, the cosines covered
   at least 0.87 and the rows at most 0.80; the error by hand on Frisch-Waugh-Lovell's partialling,
   with the periods offset, a gap and shuffled; the periods move the error and nothing else, under
   both integrators; the refusals; the cosine count in whole numbers; the bound's `t(21)`, the
   misspecification's `S`, and the persistence check, by hand; the certificate, the report, the
-  JSON and the log event on one unit, and `null` on several.
+  JSON and the log event on one unit, and `null` on several. On three units of one cluster over
+  200 periods, a shock they share AR(0.9) and a lever they half share AR(0.7), 200 seeded logs,
+  the period sums covered at least 0.88 and the rows at most 0.79; the error and the influence's
+  square summed within each period, by hand, with `nu` counted over the periods; the bound's
+  `t(8)`, the misspecification's `S` and the 8 degrees of freedom of its p-value, and the
+  persistence check of four units, by hand; `nan` for pairs in one period; the refusals of one
+  period and of one cluster; the certificate, the report, the JSON and the log event on one
+  declared cluster, and the rows where its transitions all start in one period. The ratio's law
+  against `F(1, nu)` and `F(3, 3 nu)` at ratios from `1e-8` to `1e5`, against Maxima's values for
+  unequal weights, and nearing the mixture as `nu` grows.
 
 ## Alternatives
 
@@ -189,6 +356,19 @@ building's or a pendulum's, without an error.
   time times the draws.
 - **A refusal on one unit.** Rejected: one unit is a common log, and the cosines read it at the
   coverage the table gives.
+- **The rows on one declared cluster**, as before. Rejected: they covered 0.442 to 0.753 where ten
+  units share a lever.
+- **CR1 over the units of the one cluster**, each unit a cluster. Rejected: it takes the units as
+  independent, which their shared shock breaks, and covered 0.586 to 0.750 where ten units share
+  a lever.
+- **Two-way, by unit and by period**, as on a panel that declares no cluster (ADR 0061). Rejected:
+  it misses a shock that persists, 0.814 and 0.812 where ten units share a lever and the shock is
+  AR(0.9), and at three units its interval was 2.6 to 3.3 times the rows'.
+- **`clusters` that name one cluster read as the period sums.** Rejected: an argument named for
+  clusters would read the periods, which it is not given; the refusal names the argument to give.
+- **A refusal on one declared cluster.** Rejected: one market's zones are a common panel, and the
+  period sums read it at the coverage the table gives.
+PART2_ALTERNATIVES
 - **`periods` read on several units as well**, a unit's own cosines summed. Not built: CR1 within
   units already holds whatever the dependence within a unit, and ADR 0061's second way reads the
   periods' shocks.

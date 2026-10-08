@@ -598,15 +598,18 @@ class DecisionCertificate:
     tube_rate: TubeRate | None = None
     # The column whose groups ``identification_radius`` sums the scores within before squaring them
     # (CR1): the panel's cluster where it declares one, else its unit, whose transitions share any
-    # persistent noise. None where the transitions name one group alone, and the error then takes
-    # each transition as independent; ``error_clusters`` counts the groups. ``error_periods``
-    # counts the periods the transitions start in where the error is read two ways (ADR 0061), so
-    # that a shock every unit shares in a period is read: the largest of the groups' and the
-    # periods' sums together and of each alone. None where it is not, as where they all start in
-    # one. ``error_cosines`` counts the cosines of the periods the error is read with on a panel of
-    # one unit, which has no second group to sum within, in place of taking each transition as
-    # independent (EWC, ADR 0075); a test read off the error is then sized against
-    # ``t(error_cosines)``. None where it is not.
+    # persistent noise; ``error_clusters`` counts the groups. ``error_periods`` counts the periods
+    # the transitions start in where the error is read two ways (ADR 0061), so that a shock every
+    # unit shares in a period is read: the largest of the groups' and the periods' sums together
+    # and of each alone. None where it is not, as where they all start in one. ``error_cosines``
+    # counts the cosines of the periods the error is read with where the transitions name one group
+    # alone, which leaves no second group to sum within (EWC, ADR 0075): on one unit, whose
+    # ``error_clustered_by`` is None, and on several units in one declared cluster, whose
+    # ``error_clustered_by`` names it with ``error_clusters`` 1 and whose transitions are summed
+    # within each period first (Driscoll-Kraay). A test read off the error is then sized against
+    # ``t(error_cosines)``. None where it is not, and so is ``error_clustered_by`` where the one
+    # group's transitions all start in one period: the error then takes each transition as
+    # independent.
     error_clustered_by: str | None = None
     error_clusters: int | None = None
     error_periods: int | None = None
@@ -615,8 +618,9 @@ class DecisionCertificate:
     # p-value (:func:`chc.dynamics_id.persistence_check`): where the noise persists and a lever does
     # too, the channel is biased by an amount its error does not cover (ADR 0064). None where the
     # channel is not identified or no unit has two consecutive transitions; the p-value is None
-    # where the pairs leave no spread to read, as one pair does. On one unit the p-value reads
-    # the pairs across its periods, as the error does (ADR 0075).
+    # where the pairs leave no spread to read, as one pair does. Where the error is read across the
+    # periods (``error_cosines``), the p-value reads the pairs' products the same way, summed
+    # within each period first (ADR 0075).
     noise_persistence: float | None = None
     noise_persistence_p: float | None = None
     # Whether the log determines the plan's predicted path (:data:`Estimability`, ADR 0054); None
@@ -1375,10 +1379,16 @@ class Prescription:
         certificate = self.certificate
         if certificate.identification_radius is None:
             return ""
-        if certificate.error_cosines is not None:
+        if certificate.error_cosines is not None and certificate.error_clustered_by is None:
             return (
                 f", read across the one unit's periods by {certificate.error_cosines} cosines of "
                 "them (EWC)"
+            )
+        if certificate.error_cosines is not None:
+            return (
+                f", summed within each period over the units of the one group of "
+                f"`{certificate.error_clustered_by}`, then read across the periods by "
+                f"{certificate.error_cosines} cosines of them (Driscoll-Kraay, EWC)"
             )
         if certificate.error_clustered_by is None:
             return ", each transition taken as independent"
@@ -1521,12 +1531,13 @@ def prescribe(
             together and of each alone (ADR 0061): a shock every unit shares in a period, met by
             levers the units move together, makes the transitions of one period move together
             across units, and summed by unit alone the error read 0.29 to 0.58 of the estimate's
-            spread. A panel of one unit, which has no second group, reads its transitions'
-            dependence across their periods by cosines of them (``periods`` in
-            :func:`~chc.dynamics_id.fit_causal_residual`, ADR 0075); one of several units whose
-            transitions all fall in one declared group takes them as independent; one whose
-            transitions all start in one period sums within groups alone; and the certificate says
-            which it was (:attr:`DecisionCertificate.error_clustered_by`, ``error_periods``,
+            spread. A panel whose transitions all fall in one group, one unit's or one declared
+            cluster's, has no second group: it sums its transitions' scores within each period
+            and reads the sums' dependence across the periods by cosines of them (``periods`` in
+            :func:`~chc.dynamics_id.fit_causal_residual`, ADR 0075), and where they all start in
+            one period as well, takes them as independent. One whose transitions all start in one
+            period sums within groups alone. The certificate says which it was
+            (:attr:`DecisionCertificate.error_clustered_by`, ``error_periods``,
             ``error_cosines``).
         levers, target, constraints: the decision, in the domain's own names. States are the target
             column followed by each other constrained column, in that order. A constraint may name
@@ -1796,11 +1807,11 @@ def prescribe(
         drivers=driver_names,
     )
     groups, periods, units = (int(np.unique(column).size) for column in labels.T)
-    clustered_by = (panel.cluster or panel.unit) if groups > 1 else None
-    two_way = clustered_by is not None and periods > 1
-    # one unit has no second group to read a spread between: its transitions are read across their
-    # periods instead (ADR 0075)
-    serial = clustered_by is None and units == 1
+    # one group, one unit's or one declared cluster's, has no second to read a spread between: its
+    # transitions are summed within each period and read across the periods instead (ADR 0075)
+    serial = groups == 1 and periods > 1
+    clustered_by = (panel.cluster or panel.unit) if groups > 1 or (serial and units > 1) else None
+    two_way = groups > 1 and periods > 1
     n_states, n_levers = len(states), len(lever_names)
 
     base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
@@ -1814,7 +1825,7 @@ def prescribe(
         seed=seed,
         integrator=integrator,
         drivers=driver_names,
-        clusters=None if clustered_by is None else labels[:, :2] if two_way else labels[:, 0],
+        clusters=None if groups == 1 else labels[:, :2] if two_way else labels[:, 0],
         periods=labels[:, 1] if serial else None,
         nuisance_degree=_NUISANCE_DEGREE,
         ridge=_RIDGE,

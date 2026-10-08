@@ -32,7 +32,7 @@ from scipy import integrate
 
 from chc.cost import total_cost
 from chc.dynamics import HybridDynamics
-from chc.dynamics_id import CausalDynamicsFit, _clustered_squares
+from chc.dynamics_id import CausalDynamicsFit, _clustered_squares, _period_cosines
 from chc.plan import CausalPlan, _regret_curvature, _weighable
 from chc.residual import ControlAffineResidual
 
@@ -49,7 +49,9 @@ class MisspecificationCost:
     cost: float
     cost_error: float  # its standard error: a scale, not coverage
     noise: float  # tr(W S) / 2: what d' W d / 2 reads on average when the class holds the truth
-    p_value: float  # the chance d' W d reads at least this large when the class holds the truth
+    # the chance d' W d reads at least this large when the class holds the truth; for fits given
+    # periods, the chance it does over tr(W S), S read by the cosines and so itself an estimate
+    p_value: float
     # directions the log's actions never moved (CausalDynamicsFit.unmoved) that the plan's regret
     # weighs: neither fit's moment has data there, so neither the cost nor the p-value can see a
     # miss along them, and a pass says nothing about them
@@ -183,11 +185,14 @@ def misspecification_cost(
     trace, trace_squared = float(np.trace(ws)), float(np.trace(ws @ ws))
     leverage = max(float(d @ ws @ weight @ d) - trace_squared, 0.0)
     quadratic = float(d @ weight @ d)
+    mixture = _mixture_weights(weight, covariance)
     return MisspecificationCost(
         cost=(quadratic - trace) / 2.0,
         cost_error=math.sqrt(4.0 * leverage + 2.0 * trace_squared) / 2.0,
         noise=trace / 2.0,
-        p_value=_chi_square_mixture_survival(quadratic, _mixture_weights(weight, covariance)),
+        p_value=_chi_square_mixture_survival(quadratic, mixture)
+        if periods is None
+        else _cosine_ratio_survival(quadratic, mixture, _period_cosines(periods)),
         unseen=int(np.sum(weighed > floor)),
     )
 
@@ -303,3 +308,55 @@ def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> floa
         limlst=200,
     )
     return min(max(0.5 + (head + cosine - sine) / math.pi, 0.0), 1.0)
+
+
+def _cosine_ratio_survival(q: float, weights: NDArray[np.float64], nu: int) -> float:
+    """``P(sum_k w_k X_k > q sum_k w_k Y_k / (nu sum_k w_k))``, ``X_k ~ chi2(1)`` and
+    ``Y_k ~ chi2(nu)`` all independent: the chance ``dh' W dh`` over ``tr(W S)`` reads at least
+    ``q / tr(W S)`` where ``S`` is read by ``nu`` cosines, by Imhof's inversion at 0.
+
+    With ``dh ~ N(0, S)`` and ``S``'s estimate ``sum_j c_j c_j'``, ``c_j ~ N(0, S / nu)``
+    independent of ``dh`` and of each other, as the cosines read as the log grows at a fixed
+    ``nu``: in the eigenvectors of ``S^1/2 W S^1/2``, whose eigenvalues ``w`` are, ``dh' W dh`` is
+    ``sum_k w_k X_k`` and the estimate's ``tr(W S)`` is ``sum_k w_k Y_k / nu``, the ``Y_k`` the
+    squared projections of ``nu`` independent normal vectors on distinct axes. One weight makes the
+    ratio ``F(1, nu)``, and ``m`` equal ones ``F(m, m nu)``; as ``nu`` grows it reads the mixture
+    with ``S`` known (``validation/cosine_quadratic_law.mac``). The weights are read off the
+    estimate.
+
+    At 0 Imhof's phase is ``sum_k (atan(w_k u) - nu atan(r w_k u / nu)) / 2``, ``r`` the ratio: it
+    moves between two constants and does not oscillate. The integrand turns at ``u = 1`` and at
+    ``u = nu / r`` for the largest weight, set to 1, which a ratio of ``1e5`` or ``1e-8`` puts many
+    orders apart, so it is read over ``s = log u``, where it falls exponentially both ways. Below
+    ``e^low``, ``|sin| <= |phase| <= (1 + r) u sum_k w_k / 2``; above ``e^high``, the largest
+    weight's factors alone hold the amplitude below ``u^(-1/2) (r u / nu)^(-nu/2)``. Each tail
+    left out holds less than ``1e-17``.
+    """
+    largest = float(np.max(weights, initial=0.0))
+    if largest <= 0.0:
+        return 1.0 if q <= 0.0 else 0.0
+    if q <= 0.0:
+        return 1.0
+    weights = weights[weights > 1e-12 * largest] / largest
+    total = float(np.sum(weights))
+    ratio = q / largest / total
+    against = ratio * weights / nu
+
+    def integrand(s: float) -> float:
+        u = math.exp(s)
+        phase = 0.5 * float(np.sum(np.arctan(weights * u) - nu * np.arctan(against * u)))
+        log_amplitude = 0.25 * float(
+            np.sum(np.log1p((weights * u) ** 2) + nu * np.log1p((against * u) ** 2))
+        )
+        return math.sin(phase) * math.exp(-log_amplitude)
+
+    floor, turn = 1e-17, math.log(nu / ratio)
+    low = math.log(2.0 * floor / ((1.0 + ratio) * total))
+    high = max(
+        0.0, turn, 2.0 / (nu + 1.0) * (math.log(2.0 / ((nu + 1.0) * floor)) + 0.5 * nu * turn)
+    )
+    points = sorted(point for point in {0.0, turn} if low < point < high)
+    value, _ = integrate.quad(
+        integrand, low, high, points=points or None, limit=2000, epsabs=1e-13, epsrel=1e-12
+    )
+    return min(max(0.5 + value / math.pi, 0.0), 1.0)
