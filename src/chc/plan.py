@@ -1167,7 +1167,7 @@ def _hold_barrier(
     ``scripts/pendulum_demo.py``: a move of ``1e-12`` raised the shortfall there by 2.8 to 6.1, and
     no step was taken. On two of the logs the barrier was then held for 2 and 0 of its 40 steps;
     unscaled, the rounds hold it for all 40 on all four. On that pendulum, started from the scaled
-    descent's plan, the unscaled rounds held the barrier at a task cost of 0.632, where from the
+    descent's plan, the unscaled rounds hold the barrier at a task cost of 0.620, where from the
     plan of the descent in the caller's units they hold it at 0.435. So where a barrier binds at the
     planner's scaled ``start``, the rounds start from ``guess`` descended in the caller's units, as
     they did before the planner was scaled; that descent's steps are the ones counted, and the

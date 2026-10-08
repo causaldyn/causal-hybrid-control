@@ -100,8 +100,8 @@ def test_the_held_barrier_is_planned_from_the_descent_in_the_callers_units(
     case: PendulumCase,
 ) -> None:
     """The planner descends in variables scaled action by action, the barrier's rounds in the
-    caller's units. Started from the scaled plan, the rounds held the barrier at a task cost of
-    0.632; started from the descent in the caller's units, as the planner does where a barrier
+    caller's units. Started from the scaled plan, the rounds hold the barrier at a task cost of
+    0.620; started from the descent in the caller's units, as the planner does where a barrier
     binds, they hold it at 0.435, the plan of the descent before it was scaled."""
     plan = case.reading("adjusted").prescription.plan
     assert plan is not None
