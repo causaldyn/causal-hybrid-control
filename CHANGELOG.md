@@ -45,6 +45,15 @@ still change).
   give or take 9,500 up to 4.4% of its spread. The treatment, the outcome and each covariate are
   now read as float64, as a panel's columns are, and refused, naming them, where they are not
   numbers; float32 data reads as its float64 widening, bit for bit. Since 0.2.0.
+- **`chc.did` refuses a group that is no whole number, or is missing.** `callaway_santanna`,
+  `callaway_santanna_inference`, `twoway_fixed_effects_att` and `de_chaisemartin` cast `group` to
+  int64, which truncates: a unit's group of 2.5 was read as 2, 3.5 as 3 and -0.5 as 0, a
+  first-period adopter; a nan, an infinity or 1e300 as -2**63, with NumPy's `RuntimeWarning`
+  alone, where `callaway_santanna_inference` refused it as a first-treated period outside the
+  panel; a `Fraction` of 7/2 as 3; and a uint64 of 2**64 - 1 as -1, never treated. An `int` of
+  2**70 failed with `OverflowError`, naming nothing. Each now refuses such a group with
+  `ValueError`, naming `group`, the value and its row, and a group of whole numbers held as floats,
+  `Decimal`s or `Fraction`s reads as its integers, bit for bit. Since 0.1.0.
 - **The marketplace's calibrations take NumPy logs.** `calibrate_predictive`,
   `calibrate_naive_causal` and `calibrate_shared_state` took each zone's columns by a traced index
   under `jax.vmap`, which a NumPy array cannot take, so logs of NumPy arrays failed with JAX's

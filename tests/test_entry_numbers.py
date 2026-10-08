@@ -1159,6 +1159,74 @@ def test_a_stored_decision_that_is_not_numbers_is_refused_naming_its_field(
         gate.DecisionLog.from_records(records)
 
 
+def _group(label: object, dtype: Any = np.float64) -> np.ndarray:
+    """``_did``'s groups, row 3's replaced by ``label``; never treated is -1, or 5 where the dtype
+    is unsigned."""
+    group = _did()["group"]
+    if np.dtype(dtype).kind == "u":
+        group = np.where(group < 0, 5, group)
+    group = group.astype(dtype)
+    group[3] = label
+    return group
+
+
+_NOT_GROUPS = {
+    "a-half": (_group(2.5), "2.5", "no whole number"),
+    "a-negative-half": (_group(-0.5), "-0.5", "no whole number"),
+    "an-infinity": (_group(np.inf), "inf", "no whole number"),
+    "a-fraction": (_group(Fraction(7, 2), object), "Fraction(7, 2)", "no whole number"),
+    "a-nan": (_group(np.nan), "nan", "missing"),
+    "a-decimal-nan": (_group(Decimal("NaN"), object), "Decimal('NaN')", "missing"),
+    "a-float-past-int64": (_group(1e300), "1e+300", "past int64's range"),
+    "an-int-past-int64": (_group(2**70, object), str(2**70), "past int64's range"),
+    "a-uint64-past-int64": (_group(2**64 - 1, np.uint64), str(2**64 - 1), "past int64's range"),
+}
+_DID_ESTIMATES = {
+    "callaway_santanna": did.callaway_santanna,
+    "callaway_santanna_inference": did.callaway_santanna_inference,
+    "twoway_fixed_effects_att": did.twoway_fixed_effects_att,
+    "de_chaisemartin": did.de_chaisemartin,
+}
+
+
+@pytest.mark.parametrize("estimate", list(_DID_ESTIMATES.values()), ids=list(_DID_ESTIMATES))
+@pytest.mark.parametrize(
+    ("group", "shown", "what"), list(_NOT_GROUPS.values()), ids=list(_NOT_GROUPS)
+)
+def test_a_group_that_is_no_whole_number_or_is_missing_is_refused_naming_it(
+    estimate: Callable[..., object], group: np.ndarray, shown: str, what: str
+) -> None:
+    """NumPy's cast to int64 truncated a unit's group: 2.5 read as 2 and -0.5 as 0, a first-period
+    adopter; a nan, an infinity or 1e300 as -2**63; a ``Fraction`` of 7/2 as 3; and 2**64 - 1 as
+    -1, never treated. An ``int`` of 2**70 failed with ``OverflowError``, naming nothing."""
+    with pytest.raises(
+        ValueError, match=rf"^group is {re.escape(shown)} at row 3, which is {what}: "
+    ):
+        estimate(_did()["outcomes"], group)
+
+
+def _objects(group: np.ndarray) -> np.ndarray:
+    held = (Decimal, Fraction, float)
+    return np.array([held[i % 3](int(g)) for i, g in enumerate(group)], dtype=object)
+
+
+@pytest.mark.parametrize(
+    "estimate",
+    [did.callaway_santanna, did.twoway_fixed_effects_att, did.de_chaisemartin],
+    ids=["callaway_santanna", "twoway_fixed_effects_att", "de_chaisemartin"],
+)
+@pytest.mark.parametrize(
+    "held",
+    [lambda group: group.astype(np.float64), lambda group: group.astype(np.float32), _objects],
+    ids=["float64", "float32", "objects"],
+)
+def test_a_group_of_whole_numbers_held_as_floats_reads_as_its_integers(
+    estimate: Callable[..., object], held: Callable[[np.ndarray], np.ndarray]
+) -> None:
+    a = _did()
+    assert _same(estimate(a["outcomes"], held(a["group"])), estimate(a["outcomes"], a["group"]))
+
+
 @pytest.mark.parametrize(
     "value",
     [

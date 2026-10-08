@@ -1,7 +1,8 @@
 # ADR 0072 — A column is read as numbers only where it holds them
 
 **Status:** accepted, 2026-10-07. Amended 2026-10-07: the entry points that take a caller's
-data as arrays read it by the same rule, and the logger check reads what the rule reads.
+data as arrays read it by the same rule, and the logger check reads what the rule reads. Amended
+2026-10-08: `chc.did` reads a group as a whole number.
 
 ## Context
 
@@ -37,6 +38,9 @@ points, 144 read one of the values above without an error. `chc.estimators` cast
 the frame, as `chc.gmethods` did, and `lalonde_ate` standardised a float32 caller's covariates in
 float32. The logger check read a column only of a NumPy number dtype, so it took a column of
 booleans, which a panel reads as 0 and 1, for one it cannot read.
+
+`chc.did` cast a unit's group, a period, to int64, which truncates 2.5 to 2 and reads a nan as
+-2**63.
 
 ## Decision
 
@@ -80,6 +84,9 @@ booleans, which a panel reads as 0 and 1, for one it cannot read.
 - **The logger check reads what a panel reads as numbers.** A column of a boolean, an integer, a
   floating, a complex or a duration dtype, or an object column the rule reads; the panel's reader
   refuses the complex and the durations among them.
+- **A `chc.did` group is read as a whole number.** It is a period, which the estimators cast to
+  int64: a label that is no whole number, is missing or lies past int64's range is refused, naming
+  its row, and whole numbers held as floats, `Decimal`s or `Fraction`s read as their integers.
 
 ## Consequences
 
@@ -107,12 +114,14 @@ booleans, which a panel reads as 0 and 1, for one it cannot read.
   booleans beside the plan; it skipped both.
 - The reader costs a dtype test on an array of numbers and a pass over an object array, and a list
   is converted by `np.asarray` once more.
+- A `chc.did` group of 2.5 or nan is refused; it was read as 2, or as -2**63.
 - *Left*: an argument that is a model's rather than a log's is cast as before: a box's bounds in
   `chc.allocation`, a Toeplitz operator's columns and generators and `levinson_durbin`'s
   autocorrelation, a channel's response at a spend, `cvar_upper`'s values, and the states and
   actions a fitted model is asked about (`predict`, `rollout`, an estimate's `cate`, the planners'
   start). So are labels --- clusters, units, periods, strata --- which are read as labels, not as
-  numbers. An object array of numbers reaches JAX as NumPy holds it, and JAX refuses it, as before.
+  numbers; a `chc.did` group, a period cast to int64, is read as a whole number. An object array of
+  numbers reaches JAX as NumPy holds it, and JAX refuses it, as before.
 
 ## Alternatives considered
 

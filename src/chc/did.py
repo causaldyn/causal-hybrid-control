@@ -19,12 +19,13 @@ from __future__ import annotations
 import math
 import warnings
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
-from chc.frames import _real_numbers
+from chc.frames import _real_numbers, _where
 
 Outcomes = NDArray[np.float64]
 Groups = NDArray[np.int64]
@@ -119,7 +120,7 @@ def callaway_santanna(
 
 def _panel(outcomes: Outcomes, group: Groups) -> tuple[Outcomes, Groups]:
     outcomes = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64)
-    group = np.asarray(_real_numbers(group, "group"), dtype=np.int64)
+    group = _groups(group)
     if outcomes.ndim != 2 or group.shape != (outcomes.shape[0],):
         msg = "outcomes must be (N, T) and group (N,) with matching N"
         raise ValueError(msg)
@@ -128,6 +129,41 @@ def _panel(outcomes: Outcomes, group: Groups) -> tuple[Outcomes, Groups]:
         msg = "outcomes must be finite: the estimator reads a balanced panel"
         raise ValueError(msg)
     return outcomes, group
+
+
+def _groups(group: Groups) -> Groups:
+    """Each unit's group as int64, where every label is a whole number int64 holds; refused,
+    naming the first that is not, where one is not. NumPy's cast to int64 truncated 2.5 to 2, and
+    read a nan or an infinity as -2**63 and 2**64 - 1 as -1, never treated."""
+    labels = np.asarray(_real_numbers(group, "group"))
+    if labels.dtype.kind not in "bi":
+        for row, label in enumerate(labels.reshape(-1).tolist()):
+            what = _not_a_group(label)
+            if what is not None:
+                msg = (
+                    f"group is {label!r}{_where(labels.shape, row)}, which is {what}: a group is "
+                    "the period a unit is first treated in, or never_treated"
+                )
+                raise ValueError(msg)
+    return np.asarray(labels, dtype=np.int64)
+
+
+def _not_a_group(label: Any) -> str | None:
+    """What keeps a real number from being a group, a whole number int64 holds; ``None`` where
+    nothing does."""
+    if isinstance(label, Decimal):
+        missing, finite = label.is_nan(), label.is_finite()
+    elif isinstance(label, float | np.floating):
+        missing, finite = math.isnan(label), math.isfinite(label)
+    else:  # an int, a Fraction or a NumPy integer, none of which is missing or infinite
+        missing, finite = False, True
+    if missing:
+        return "missing"
+    if not finite or int(label) != label:
+        return "no whole number"
+    if not -(2**63) <= int(label) < 2**63:
+        return "past int64's range"
+    return None
 
 
 @dataclass(frozen=True)
