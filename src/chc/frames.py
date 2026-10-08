@@ -27,6 +27,7 @@ from fractions import Fraction
 from typing import Any, Protocol, TypeVar
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
@@ -46,6 +47,7 @@ _NOT_REAL = {
 }
 _NOT_READ = "so the column is not read as numbers"
 _PAST_FLOAT64 = "a finite number past float64's range, where it is an infinity"
+_MISSING = "a masked cell is a missing value, which chc does not read; fill it, or drop its row"
 
 _Value = TypeVar("_Value")
 
@@ -106,17 +108,40 @@ def as_columns(data: ColumnData) -> dict[str, Any]:
 
 def _unmasked(name: str, column: Any, error: type[ValueError] = ValueError) -> Any:
     """``column`` as it is, or a masked array's data where it masks no cell; ``np.asarray`` drops a
-    mask and keeps what lies under it. ``name`` is how the refusal names the column."""
+    mask and keeps what lies under it. A list or a tuple is refused where an item masks a cell, at
+    any depth: ``np.asarray`` reads the masked constant among a list's values as nan, and a masked
+    array's cells as what lies under them. ``name`` is how the refusal names the column."""
+    if isinstance(column, list | tuple):
+        rows = [row for row, item in enumerate(column) if _masks(item)]
+        if rows:
+            raise error(
+                f"{name} is masked at row {rows[0]} ({len(rows)} of {len(column)} rows): {_MISSING}"
+            )
+        return column
     if not isinstance(column, np.ma.MaskedArray):
         return column
     masked = np.flatnonzero(np.ma.getmaskarray(column))
     if masked.size:
         raise error(
             f"{name} is masked{_where(column.shape, int(masked[0]))} "
-            f"({masked.size} of {column.size} cells): a masked cell is a missing value, which chc "
-            "does not read; fill it, or drop its row"
+            f"({masked.size} of {column.size} cells): {_MISSING}"
         )
     return np.ma.getdata(column)
+
+
+def _masks(item: object) -> bool:
+    """Whether a list's item masks a cell: a masked array that does, or a list or a tuple that
+    holds one."""
+    if isinstance(item, np.ma.MaskedArray):
+        return bool(np.ma.is_masked(item))
+    return isinstance(item, list | tuple) and any(_masks(value) for value in item)
+
+
+def _holds_jax(value: object) -> bool:
+    """Whether a list or a tuple holds a JAX array, traced or not, at any depth."""
+    return isinstance(value, list | tuple) and any(
+        isinstance(item, jax.Array) or _holds_jax(item) for item in value
+    )
 
 
 def _numbers(column: Any, name: str) -> NDArray[np.float64]:
@@ -141,19 +166,21 @@ def _real_numbers(value: _Value, name: str, error: type[ValueError] = ValueError
     data as an array passes it through here as it enters, and casts it after as its own precision
     requires. Nothing is converted, so data that is numbers is read as before, bit for bit. A JAX
     array holds no text, dates or objects, and is checked by its dtype alone: under ``jax.jit`` its
-    values are not known, and a traced entry point keeps tracing. A list or another sequence is
-    read as ``np.asarray`` reads it, so one that holds a traced JAX array is refused by NumPy.
+    values are not known, and a traced entry point keeps tracing. So is a list or a tuple that holds
+    one, by the dtype ``jnp.asarray`` stacks it into, as the entry point's own cast stacks it:
+    NumPy cannot convert a traced array. Another list or sequence is read as ``np.asarray`` reads
+    it, and a list is refused where an item is masked.
 
     Raises:
         ValueError: or ``error``, naming ``name``, the value refused and where it lies, or the
-            masked cells and how many.
+            masked cells, or a list's masked rows, and how many.
     """
-    if isinstance(value, jax.Array):
-        problem = _not_numbers(value)
+    data = _unmasked(name, value, error)
+    if isinstance(data, jax.Array) or _holds_jax(data):
+        problem = _not_numbers(data if isinstance(data, jax.Array) else jnp.asarray(data))
         if problem is not None:
             raise error(f"{name} has {problem[1]}, so it is not read as numbers")
-        return value
-    data = _unmasked(name, value, error)
+        return data
     array = np.asarray(data)
     problem = _not_numbers(array)
     if problem is not None:

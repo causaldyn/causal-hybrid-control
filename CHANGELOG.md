@@ -22,11 +22,12 @@ still change).
   did with `ldexp not supported`. Each entry point now reads a caller's arrays by the rule a
   panel's columns are read by as they enter, and refuses one that is not numbers with `ValueError`
   naming the argument, the value and where it lies; `Target`, `Driver` and `prescribe`'s `x0` raise
-  `DecisionError`. A JAX array is read by its dtype alone, so a traced entry point keeps tracing.
-  Numbers are handed on as the caller gave them and read as before, bit for bit, and a masked array
-  that masks no cell is read as its data, where JAX refused it. A model's parameters, a box's
-  bounds, an operator's coefficients and labels are read as before (ADR 0072). Since 0.2.0, each
-  entry point since it was added.
+  `DecisionError`. A JAX array, or a list or a tuple that holds one, is read by its dtype alone, as
+  `jnp.asarray` gives it, so a traced entry point keeps tracing. Numbers are handed on as the
+  caller gave them and read as before, bit for bit, and a masked array that masks no cell is read
+  as its data, where JAX refused it. A model's parameters, a box's bounds, an operator's
+  coefficients and labels are read as before (ADR 0072). Since 0.2.0, each entry point since it
+  was added.
 - **An estimator no longer fails on a column it does not read.** `BackdoorOLS`, `IV2SLS`,
   `DoubleML` and `RLearner` cast every column of the frame with JAX's cast, so a label column of
   text or of dates that no argument named failed the estimate with JAX's `TypeError`. They now read
@@ -54,6 +55,15 @@ still change).
   2**70 failed with `OverflowError`, naming nothing. Each now refuses such a group with
   `ValueError`, naming `group`, the value and its row, and a group of whole numbers held as floats,
   `Decimal`s or `Fraction`s reads as its integers, bit for bit. Since 0.1.0.
+- **A list that holds a masked value is refused as missing.** An entry point read a list as
+  `np.asarray` reads one, which takes the masked constant among its values as nan, and a masked
+  array's cells as what lies under them. `DecisionLog.from_records` reads each field of the records
+  as such a list: a stored decision whose propensity was masked was refused as `propensity is not
+  finite`, one whose action or dither was masked failed on NumPy's inhomogeneous shape, and an
+  action or a dither with one cell masked was read as the value under the mask, without a word. A
+  list or a tuple whose item masks a cell, at any depth, is now refused as a masked array is,
+  naming the argument, the first such row and how many; one that masks nothing reads as before.
+  Since 0.8.0, and for another entry point since it was added.
 - **The marketplace's calibrations take NumPy logs.** `calibrate_predictive`,
   `calibrate_naive_causal` and `calibrate_shared_state` took each zone's columns by a traced index
   under `jax.vmap`, which a NumPy array cannot take, so logs of NumPy arrays failed with JAX's

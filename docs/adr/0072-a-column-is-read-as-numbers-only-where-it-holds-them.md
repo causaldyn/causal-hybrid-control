@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-07. Amended 2026-10-07: the entry points that take a caller's
 data as arrays read it by the same rule, and the logger check reads what the rule reads. Amended
-2026-10-08: `chc.did` reads a group as a whole number.
+2026-10-08: a list that holds a JAX array is read by JAX's dtype, a masked item of a list is
+missing, and `chc.did` reads a group as a whole number.
 
 ## Context
 
@@ -39,6 +40,12 @@ the frame, as `chc.gmethods` did, and `lalonde_ate` standardised a float32 calle
 float32. The logger check read a column only of a NumPy number dtype, so it took a column of
 booleans, which a panel reads as 0 and 1, for one it cannot read.
 
+NumPy cannot convert a traced array, so a list of them, which JAX stacks, was refused under
+`jax.jit` once the entry points read a list as NumPy does; `local_projection_irf` had traced on
+one. NumPy reads the masked constant among a list's values as nan, and a masked array's cells as
+what lies under them: a stored decision with a masked field was refused as not finite, failed on
+its shape, or was read as the value under the mask.
+
 `chc.did` cast a unit's group, a period, to int64, which truncates 2.5 to 2 and reads a nan as
 -2**63.
 
@@ -74,7 +81,9 @@ booleans, which a panel reads as 0 and 1, for one it cannot read.
   argument, the value and where it lies, and hands the argument on as the caller gave it; the
   entry point casts it after, as before. A JAX array holds no text, dates or objects, and under
   `jax.jit` its values are unknown, so its dtype alone decides, and a traced entry point keeps
-  tracing. A mapping's entries and a frame's columns are read only where an argument names them.
+  tracing. A list or a tuple that holds a JAX array is read so too, by the dtype `jnp.asarray`
+  stacks it into, as the entry point's own cast stacks it. A mapping's entries and a frame's
+  columns are read only where an argument names them.
   The rule applies to what a caller logged: logs, samples, series, outcomes, treatments,
   covariates, histories, stored decisions, forecasts and a target's levels, `prescribe`'s start
   and a policy's state. `Target`, `Driver` and `prescribe`'s start raise `DecisionError`, the
@@ -84,6 +93,9 @@ booleans, which a panel reads as 0 and 1, for one it cannot read.
 - **The logger check reads what a panel reads as numbers.** A column of a boolean, an integer, a
   floating, a complex or a duration dtype, or an object column the rule reads; the panel's reader
   refuses the complex and the durations among them.
+- **A masked item of a list is a missing value**, as a masked cell is. A list or a tuple that
+  holds the masked constant, or a masked array that masks a cell, at any depth, is refused at the
+  first such item's row. A stored decision's field is read as such a list, a record a row.
 - **A `chc.did` group is read as a whole number.** It is a period, which the estimators cast to
   int64: a label that is no whole number, is missing or lies past int64's range is refused, naming
   its row, and whole numbers held as floats, `Decimal`s or `Fraction`s read as their integers.
@@ -112,8 +124,11 @@ booleans, which a panel reads as 0 and 1, for one it cannot read.
   DoWhy adapters refuse a column that is not numbers before they import those packages.
 - The logger check runs where a lever's parent is a column of booleans, and tests a column of
   booleans beside the plan; it skipped both.
-- The reader costs a dtype test on an array of numbers and a pass over an object array, and a list
-  is converted by `np.asarray` once more.
+- The reader costs a dtype test on an array of numbers and a pass over an object array. A list
+  costs a pass over its items, for a masked one and a JAX array, and a conversion more: by
+  `jnp.asarray` where it holds a JAX array, by `np.asarray` where not.
+- A stored decision with a masked field is refused as missing, naming the field and the record's
+  row; it was refused as not finite, failed on its shape, or was read as the value under the mask.
 - A `chc.did` group of 2.5 or nan is refused; it was read as 2, or as -2**63.
 - *Left*: an argument that is a model's rather than a log's is cast as before: a box's bounds in
   `chc.allocation`, a Toeplitz operator's columns and generators and `levinson_durbin`'s

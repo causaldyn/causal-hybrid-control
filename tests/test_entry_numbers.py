@@ -1159,6 +1159,83 @@ def test_a_stored_decision_that_is_not_numbers_is_refused_naming_its_field(
         gate.DecisionLog.from_records(records)
 
 
+def _masked_constant(value: Any) -> Any:
+    return np.ma.masked
+
+
+def _all_masked(value: Any) -> np.ma.MaskedArray:
+    return np.ma.masked_array(value, mask=np.ones(np.shape(value), dtype=bool))
+
+
+def _first_cell_masked(value: Any) -> np.ma.MaskedArray:
+    mask = np.zeros(np.shape(value), dtype=bool)
+    mask.reshape(-1)[0] = True
+    return np.ma.masked_array(value, mask=mask)
+
+
+def _masked_in_a_list(value: Any) -> list[Any]:
+    return [np.ma.masked, *value[1:]]
+
+
+@pytest.mark.parametrize(
+    ("field", "mask"),
+    [
+        pytest.param(field, mask, id=f"{field}-{mask.__name__.strip('_')}")
+        for field in ("action", "propensity", "dither")
+        for mask in (_masked_constant, _all_masked)
+    ]
+    + [
+        pytest.param(field, mask, id=f"{field}-{mask.__name__.strip('_')}")
+        for field in ("action", "dither")
+        for mask in (_first_cell_masked, _masked_in_a_list)
+    ],
+)
+def test_a_stored_decision_that_is_masked_is_refused_as_missing(
+    field: str, mask: Callable[[Any], Any]
+) -> None:
+    """NumPy read a masked value among a list's as nan, and a masked cell as what lies under it: a
+    masked propensity was refused as not finite, a masked action failed on its shape, and an
+    action with one cell masked was read as if none were."""
+    records = gate.DecisionLog(**_decisions()).to_records()
+    records[3] = {**records[3], field: mask(records[3][field])}
+    with pytest.raises(
+        ValueError,
+        match=rf"^{field} is masked at row 3 \(1 of 30 rows\): a masked cell is a missing value",
+    ):
+        gate.DecisionLog.from_records(records)
+
+
+def test_a_stored_decision_that_masks_nothing_reads_as_its_values() -> None:
+    log = gate.DecisionLog(**_decisions())
+    records = log.to_records()
+    records[3] = {
+        name: np.ma.masked_array(value, mask=False)
+        if name in ("action", "propensity", "dither")
+        else value
+        for name, value in records[3].items()
+    }
+    assert _same(gate.DecisionLog.from_records(records), log)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [0.5, np.ma.masked, np.ma.masked_array([1.0], mask=[True])],
+        [[0.5, 1.0], [np.ma.masked, 2.0], [3.0, np.ma.masked_array(4.0, mask=True)]],
+        [jnp.asarray(0.5), np.ma.masked, np.ma.masked_array(1.0, mask=True)],
+    ],
+    ids=["flat", "nested", "beside-a-jax-array"],
+)
+def test_a_list_that_holds_a_masked_value_is_refused_as_missing(values: list[Any]) -> None:
+    """NumPy reads the masked constant among a list's values as nan, and a masked array's cells as
+    what lies under them."""
+    with pytest.raises(
+        ValueError,
+        match=r"^value is masked at row 1 \(2 of 3 rows\): a masked cell is a missing value",
+    ):
+        frames._real_numbers(values, "value")
+
+
 def _group(label: object, dtype: Any = np.float64) -> np.ndarray:
     """``_did``'s groups, row 3's replaced by ``label``; never treated is -1, or 5 where the dtype
     is unsigned."""
@@ -1289,6 +1366,39 @@ def test_a_traced_array_is_read_by_its_dtype_and_keeps_tracing() -> None:
         r"so it is not read as numbers",
     ):
         effect({**data, "u": data["u"] + 0j})
+
+
+@pytest.mark.parametrize("sequence", [list, tuple])
+def test_a_list_of_traced_arrays_is_read_by_the_dtype_they_stack_into(sequence: type) -> None:
+    """NumPy cannot convert a traced array, so a list of them, which JAX stacks, was refused under
+    ``jax.jit`` where the entry point had traced; it is read by the dtype ``jnp.asarray`` gives
+    it."""
+    data = {name: jnp.asarray(column) for name, column in _series()["data"].items()}
+
+    @jax.jit
+    def response(data: dict[str, jax.Array]) -> jax.Array:
+        return irf.local_projection_irf({name: sequence(data[name]) for name in data}, 3)
+
+    expected = irf.local_projection_irf(data, 3)
+    np.testing.assert_allclose(response(data), expected, rtol=1e-12, atol=0.0)
+    with pytest.raises(
+        ValueError,
+        match=r"^data\['u'\] has dtype complex128, which holds complex numbers, not real numbers, "
+        r"so it is not read as numbers",
+    ):
+        response({**data, "u": data["u"] + 0j})
+
+
+def test_a_list_of_lists_of_traced_arrays_keeps_tracing() -> None:
+    matrix = jnp.arange(6.0).reshape(3, 2)
+
+    @jax.jit
+    def read(matrix: jax.Array) -> jax.Array:
+        return jnp.asarray(frames._real_numbers([list(row) for row in matrix], "rows"))
+
+    np.testing.assert_array_equal(read(matrix), matrix)
+    with pytest.raises(ValueError, match=r"^rows has dtype complex128, which holds complex"):
+        read(matrix + 0j)
 
 
 def _leaves(value: object) -> list[np.ndarray]:
