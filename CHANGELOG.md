@@ -64,11 +64,12 @@ still change).
   list or a tuple whose item masks a cell, at any depth, is now refused as a masked array is,
   naming the argument, the first such row and how many; one that masks nothing reads as before.
   Since 0.8.0, and for another entry point since it was added.
-- **The marketplace's calibrations take NumPy logs.** `calibrate_predictive`,
+- **The marketplace's calibrations take NumPy logs, and lists.** `calibrate_predictive`,
   `calibrate_naive_causal` and `calibrate_shared_state` took each zone's columns by a traced index
   under `jax.vmap`, which a NumPy array cannot take, so logs of NumPy arrays failed with JAX's
-  `TracerArrayConversionError`. The incentive, the completions and the covariates are now read as
-  JAX arrays first, and NumPy logs calibrate as the same logs in JAX do, bit for bit. Since 0.2.0.
+  `TracerArrayConversionError`, and logs of lists failed too. The incentive, the completions and
+  the covariates are now read as JAX arrays first, and such logs calibrate as the same logs in JAX
+  arrays do, bit for bit. Since 0.2.0.
 
 ## [0.15.0] — 2026-10-07
 
