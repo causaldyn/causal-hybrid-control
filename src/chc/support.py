@@ -325,7 +325,8 @@ def pessimistic_control(
     plan is.
 
     * ``lr0`` is the first step the line search tries, in ``v``: 1 is the Newton step along each
-      action alone. It is halved until the augmented cost falls.
+      action alone. It is halved until the augmented cost falls by a third of what the gradient
+      predicts for the step; where no halving does, the longest step that lowers it is taken.
     * ``tol`` is relative: a step counts where it lowers the augmented cost by more than ``tol``
       times its value at the clipped guess, and from a guess where it is zero any decrease counts.
 

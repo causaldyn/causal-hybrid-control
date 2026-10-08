@@ -42,6 +42,7 @@ from chc.integrate import rk4_step, rollout
 from chc.residual import MLPResidual, ZeroResidual
 
 _MAX_BACKTRACK = 40
+_SUFFICIENT_DECREASE = 1.0 / 3.0  # of the fall a step's gradient predicts; see _backtrack
 _MAX_SWEEPS = 4_096  # Dykstra sweeps per projection, a multiple of the polishing period
 _POLISH_EVERY = 32  # sweeps between attempts to finish a projection by the active-set polish
 _ACTIVE_SET_STEPS = 16  # least dual active-set steps per polishing attempt
@@ -563,11 +564,25 @@ def _backtrack(
     blocks: Blocks,
     duals: Duals,
 ) -> tuple[Array, Array, Array, Duals]:
-    """Halve the step until it decreases ``value_of`` by more than ``tol``; report whether one did.
+    """Halve the step until it buys a third of the fall the gradient predicts for it, and more than
+    ``tol``; failing that at every halving, take the longest trial that fell by more than ``tol``.
+    Report whether a step was taken.
+
+    The prediction is the gradient's inner product with the move, the move being the projected
+    trial's: Armijo's rule along the projection arc (Armijo 1966; Bertsekas 1976). Any fall is
+    not enough: a trial far past the cost's minimum along the step can still be lower than the
+    start, where an effect it overshoots into has saturated, and a descent that takes it settles in
+    another basin. On a quadratic, a step ``s`` times the one to the minimum along it buys
+    ``1 - s / 2`` of its prediction. A first trial with ``s <= 4/3`` is taken whole, the Newton
+    step's ``s = 1`` among them; a longer one is halved into ``(2/3, 4/3]``, which leaves at most
+    ``1/9`` of the fall the line offers, the least worst case of any fraction in place of a third.
+    On a smooth cost the ratio tends to 1 as the step shrinks; across a kink it need not, and there
+    the longest falling trial is what the search took before. So the descent stops where it stopped
+    before: where no halving falls by more than ``tol``.
 
     ``lr0`` and ``tol`` are taken as given, in the units of ``us`` and of ``value_of``:
     :func:`_descend` hands in its own, scaled (:func:`_action_units`) unless it runs in the
-    caller's units.
+    caller's units. The rule reads a fall against a fall, so it is the same in any units.
 
     With constraint ``blocks`` every trial is projected by Dykstra, starting from the ``duals`` of
     the current iterate, and the accepted trial's duals are handed back to warm-start the next step.
@@ -577,14 +592,14 @@ def _backtrack(
     a projected step lengthens with the step (Calamai & Moré 1987).
     """
 
-    def searching(state: tuple[Array, Array, Array, Array, Array, Duals]) -> Array:
-        trial, _, _, _, accepted, _ = state
-        return jnp.logical_and(trial < _MAX_BACKTRACK, jnp.logical_not(accepted))
+    State = tuple[Array, Array, Array, Array, Duals, Array, Array]
 
-    def halve(
-        state: tuple[Array, Array, Array, Array, Array, Duals],
-    ) -> tuple[Array, Array, Array, Array, Array, Duals]:
-        trial, lr, _, _, _, _ = state
+    def searching(state: State) -> Array:
+        trial, _, _, _, _, _, sufficient = state
+        return jnp.logical_and(trial < _MAX_BACKTRACK, jnp.logical_not(sufficient))
+
+    def halve(state: State) -> State:
+        trial, lr, kept, kept_value, kept_duals, fell, _ = state
         if blocks:
             flat, trial_duals = _dykstra(
                 (us - lr * grad).astype(us.dtype).ravel(),
@@ -605,23 +620,39 @@ def _backtrack(
             candidate = jnp.clip(us - lr * grad, u_lo, u_hi).astype(us.dtype)
             trial_duals = duals
         value = value_of(candidate)
-        accepted = value < current - tol
-        if not blocks:
-            return trial + 1, lr * 0.5, candidate, value, accepted, trial_duals
-        tolerance = _projection_tolerance((us - lr * grad).astype(us.dtype))
-        still = _unresolved(
-            us.ravel(), candidate.ravel(), u_lo.ravel(), u_hi.ravel(), blocks, tolerance
+        falls = value < current - tol
+        sufficient = falls & (
+            current - value >= _SUFFICIENT_DECREASE * jnp.sum(grad * (us - candidate))
         )
-        ended = jnp.where(still, _MAX_BACKTRACK, trial + 1)
-        return ended, lr * 0.5, candidate, value, accepted & ~still, trial_duals
+        ended = trial + 1
+        if blocks:
+            tolerance = _projection_tolerance((us - lr * grad).astype(us.dtype))
+            still = _unresolved(
+                us.ravel(), candidate.ravel(), u_lo.ravel(), u_hi.ravel(), blocks, tolerance
+            )
+            ended = jnp.where(still, _MAX_BACKTRACK, ended)
+            falls, sufficient = falls & ~still, sufficient & ~still
+        take = sufficient | (falls & ~fell)
+        kept_duals = jax.tree.map(
+            lambda new, old: jnp.where(take, new, old), trial_duals, kept_duals
+        )
+        kept, kept_value = jnp.where(take, candidate, kept), jnp.where(take, value, kept_value)
+        return ended, lr * 0.5, kept, kept_value, kept_duals, fell | falls, sufficient
 
-    _, _, candidate, value, accepted, trial_duals = jax.lax.while_loop(
+    _, _, kept, kept_value, kept_duals, fell, _ = jax.lax.while_loop(
         searching,
         halve,
-        (jnp.asarray(0), jnp.asarray(lr0, dtype=us.dtype), us, current, jnp.asarray(False), duals),
+        (
+            jnp.asarray(0),
+            jnp.asarray(lr0, dtype=us.dtype),
+            us,
+            current,
+            duals,
+            jnp.asarray(False),
+            jnp.asarray(False),
+        ),
     )
-    kept = jax.tree.map(lambda new, old: jnp.where(accepted, new, old), trial_duals, duals)
-    return jnp.where(accepted, candidate, us), jnp.where(accepted, value, current), accepted, kept
+    return kept, kept_value, fell, kept_duals
 
 
 def _action_units(
@@ -755,8 +786,9 @@ def _descend(
     The steps are taken in the variables ``v = sigma * u`` that ``units = (sigma, scale, level)``
     names (:func:`_action_units`), read off the guess clipped to the box, which is the projection
     in any metric that scales the actions: the box, the rows and the gradient are taken into ``v``,
-    the line search starts at ``lr0`` Newton steps, and a step counts where it lowers the objective
-    by more than ``tol * level``. The projection is Euclidean in ``v``. A step scaled action by
+    the line search starts at ``lr0`` Newton steps and asks a step for a third of the fall its
+    gradient predicts (:func:`_backtrack`), and a step counts where it lowers the objective by more
+    than ``tol * level``. The projection is Euclidean in ``v``. A step scaled action by
     action and then projected in the caller's units would stop at points that are not stationary;
     projected in ``v`` it stops exactly at the problem's KKT points, which are the same in either
     variables. ``blocks`` must be coloured ``disjoint``, so their classes stay orthogonal in ``v``.
@@ -1048,7 +1080,9 @@ def projected_gradient_control(
     there, so the descent stops at the problem's own KKT points.
 
     * ``lr0`` is the first step the line search tries, in ``v``: 1 is the Newton step along each
-      action alone. It is halved until the cost falls.
+      action alone. It is halved until the cost falls by a third of what the gradient predicts for
+      the step, as a Newton step on a quadratic does; where no halving does, the longest step that
+      lowers the cost is taken.
     * ``tol`` is relative: a step counts where it lowers the cost by more than ``tol`` times the
       cost at the clipped guess, and from a guess that costs nothing any decrease counts. A cost
       mostly out of a plan's reach -- a target no plan comes near -- stops further from its optimum
@@ -1208,11 +1242,10 @@ def nlp_solver_certificate(
 
     ``pg_steps`` is deliberately far below the shipped default: the effect being exhibited is what
     a *short* first-order budget costs on an ill-conditioned instance. At the shipped cap the
-    projected gradient ends below L-BFGS-B's cost on every instance, by ``4e-9`` to ``2e-7``: the
-    two better-conditioned instances stop on their own rule, and the ill-conditioned one, which
-    needs 10 644 steps, at the cap. 50 steps is short of the 181 where the well-conditioned instance
-    stops on its own rule, so that every instance shows a truncated descent. This measures the
-    conditioning, not the library's behaviour.
+    projected gradient ends below L-BFGS-B's cost on every instance, by ``4e-9`` to ``2e-7``, each
+    on its own rule, the ill-conditioned one after 8 083 steps. 50 steps is short of the 180 where
+    the well-conditioned instance stops on its own rule, so that every instance shows a truncated
+    descent. This measures the conditioning, not the library's behaviour.
     """
     x0 = jnp.array([1.0, 0.0])
     u_lo, u_hi = -5.0, 5.0

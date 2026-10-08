@@ -88,7 +88,7 @@ def test_a_plan_reads_the_same_in_any_units_of_its_lever(units: float) -> None:
     the cost fell by 1e-9 in its own units. With the lever in units 1e3 times its own it ran its
     10 000 steps and stopped at a cost of 4.4227 against 2.9023, its regret bound 8.0; at 1e6 it
     took no step, and at 1e-3 it stopped 8e-5 of the box from the plan in the lever's own units.
-    Now every one of them converges in 41 steps to the plan, to 1.7e-16 of the box."""
+    Now every one of them converges in 36 steps to the plan, to 9.7e-17 of the box."""
     reference, width = _REFERENCE["one"], _ONE[3] - _ONE[2]
     plan = _plan(_ONE[0], _ONE[1], (units,), _ONE[2], _ONE[3])
     assert reference.solver_status == plan.solver_status == "converged"
@@ -104,8 +104,7 @@ def test_a_plan_reads_the_same_with_each_lever_in_its_own_units(
     thousandfold and the second's shrinks as much, and no one step size serves both. There the
     descent reported ``converged`` after 23 steps with the second lever moved by 3e-11, at a cost of
     2.9023 where the plan in the levers' own units costs 2.5592; in 1e3 and 1e-3 it ran out of
-    steps at 3.5740. Now each converges in 43 steps to the plan, to 4.1e-8 of the box: nearer than
-    the plans stop to where the descent goes with ``tol = 0``, 8e-8 to 1.2e-7 of the box."""
+    steps at 3.5740. Now each converges in 35 steps to the plan, to 9.7e-17 of the box."""
     reference, width = _REFERENCE["two"], _TWO[3] - _TWO[2]
     plan = _plan(_TWO[0], _TWO[1], units, _TWO[2], _TWO[3])
     assert reference.solver_status == plan.solver_status == "converged"
@@ -123,7 +122,7 @@ def test_a_plan_under_rows_reads_the_same_with_each_lever_in_its_own_units(
     """The rows are carried into the descent's variables with the levers, and projected on there.
     In units 1e-3 and 1e3 the descent reported ``converged`` after 124 steps at a cost of 3.1112,
     where the plan in the levers' own units costs 2.7675, and in 1e3 and 1e-3 it ran out of steps
-    at 3.5740. Now each converges in 44 steps to the plan, to 9.4e-17 of the box."""
+    at 3.5740. Now each converges in 17 steps to the plan, to 7.6e-17 of the box."""
     reference, width = _REFERENCE["rows"], _TWO[3] - _TWO[2]
     rows = _rows(units)
     plan = _plan(_TWO[0], _TWO[1], units, _TWO[2], _TWO[3], rows=rows)
@@ -170,7 +169,7 @@ def test_a_plan_reads_the_same_in_any_units_of_its_cost(scale: float) -> None:
     """A step counted where the cost fell by 1e-9, whatever the cost's size: with the cost in units
     1e6 or 1e9 times smaller no step did, and the plan was the zero guess at a cost of 4.4246
     against 2.9023; 1e3 times smaller, the descent ran out of steps at 3.4113. Now each converges
-    in 41 steps to the plan, to 1.1e-16 of the box, its cost to the bit."""
+    in 36 steps to the plan, to 1.1e-16 of the box, its cost to 3.1e-16."""
     reference, width = _REFERENCE["one"], _ONE[3] - _ONE[2]
     plan = _plan(_ONE[0], _ONE[1], (1.0,), _ONE[2], _ONE[3], scale=scale)
     assert plan.solver_status == "converged"
@@ -185,9 +184,9 @@ def test_the_first_step_is_the_newton_step_along_each_action_alone(
 ) -> None:
     """``lr0 = 1`` is the step to the cost's minimum along each action alone, ``-g / H_ii``, clipped
     to the box: on a plant affine in the state and the action the Gauss-Newton curvature is the
-    Hessian's diagonal itself. With the Hessian scaled by that diagonal its largest eigenvalue is
-    1.52 here, under 2, so the cost falls at the full step and the line search takes it, in any
-    units of the levers."""
+    Hessian's diagonal itself. The full step buys 0.41 of the fall the gradient predicts for it,
+    more than the third the line search asks, so the line search takes it, in any units of the
+    levers."""
     size = np.asarray(units)
     channel, _, lo, hi = _TWO
     model = LinearDynamics(_A, channel / jnp.asarray(size))
@@ -269,7 +268,7 @@ def test_a_lever_the_cost_does_not_feel_at_the_start_is_measured_by_its_box(unit
     """At the zero guess the cost has no curvature along the first lever and does not charge for
     it, so its curvature gives it no size; its box does. It used to stop with that lever never
     moved, at a cost of 8.61 against 3.50: at 1e3 after its 10 000 steps, and at 1e6 reporting
-    ``converged``. Now each converges in 44 steps to the plan in the levers' own units, which it
+    ``converged``. Now each converges in 34 steps to the plan in the levers' own units, which it
     matched to the bit when measured."""
     size = np.array([units, 1.0])
     weights = jnp.diag(jnp.array([0.0, 0.05]))

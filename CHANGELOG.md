@@ -24,9 +24,9 @@ still change).
   4.5e6 times the cost's at the actions the plan holds at zero, where no scale read at the guess
   sees it. Each of those problems now converges to one plan in every one of those units, to 1.2e-7
   of the box or nearer; under the radius, where the old descent ran out of its steps in the
-  problem's own units, each converges in 102 to 119 steps, to 1.9e-7 of the box. On the planner's 27
-  test problems under a support penalty and under the radius, the descent takes fewer steps on 45 of
-  the 54 solves, ends lower on 49, and runs out of its steps on 1 where it did on 19: 41 736 steps
+  problem's own units, each converges in 85 to 97 steps, to 2.6e-7 of the box. On the planner's 27
+  test problems under a support penalty and under the radius, the descent takes fewer steps on 47 of
+  the 54 solves, ends lower on 49, and runs out of its steps on 2 where it did on 19: 52 665 steps
   in all, against 218 089. `lr0` and `tol` take the planner's meaning: `lr0` is the first step in
   the scaled variables, 1 by default, and `tol` is relative, `1e-14` by default. A fall `eps` in the
   penalised cost's own units is `tol = eps / |F|`, with `F` the penalised cost of the guess clipped
@@ -45,7 +45,7 @@ still change).
   apart, 9.3e-6 of the box from the planner's, where in the lever's own units it ended 3.1e-6 from
   it. On `nlp_solver_certificate`'s instances it ends 4.4e-9 to 2.0e-7 above the planner at its
   cap, where it ended 9.2e-10 to 4.1e-8 above, and the certificate's least stationarity ratio is
-  214, where it was 618 (ADR 0073). Since 0.4.0.
+  147, where it was 618 (ADR 0073). Since 0.4.0.
 
 ### Fixed
 
@@ -61,8 +61,30 @@ still change).
   of its 10 000 steps with the stationarity residual at 0.19 and reported a regret of 3.937, 0.662
   of greedy's; after 100 000 steps it read 3.823. Newton's method on the exact Hessian reaches the
   problem's KKT point, its residual 2.3e-16, at a regret of 3.470575, 0.583 of greedy's. The
-  penalised descent now converges there in 1 202 steps, 2.9e-11 above the optimum's penalised cost,
+  penalised descent now converges there in 1 268 steps, 5.4e-11 above the optimum's penalised cost,
   at a regret of 3.470570 (the penalised descent's units, under Changed; ADR 0073). Since 0.2.0.
+- **A plan on a plant whose effect saturates no longer runs past the collapse on its first step.**
+  Since 0.15.0 the planner's line search starts at the Newton step along each action alone, read
+  where the plant acts at the guess, and it took any trial that lowered the cost by more than `tol`.
+  `SupportShiftTask`'s plant acts through `u exp(-(u / 0.8)^2)`. From the zero guess the first
+  step, halved twice, set actions up to 6.2, where the plant is spent, and still lowered the cost,
+  by 0.4 % of the fall its gradient predicted. The oracle then settled with five actions near -2.2
+  at a true cost of 21.104508 (21.087929 in float32), where 0.14.4 reached 20.645 with every action
+  inside the sweet spot. So the task read its regrets against a plan 0.459 worse: 1.784 for the
+  pessimistic plan and 6.901 for greedy, where they are 2.243 and 7.360. A trial now counts only
+  where it buys a third of the fall its gradient predicts for the move, Armijo's rule along the
+  projection arc. Where no halving does, the search takes the longest trial that lowers the cost by
+  more than `tol`, as before, so the stopping rule is unchanged. The oracle reaches 20.645063 after
+  69 steps, where it took 510. The planner, the penalised descent and the barrier rounds share the
+  rule. On the planner's 27 test problems it takes 61 030 steps where it took 71 892, fewer on 22
+  and more on one (149 against 147), every cost within a relative 1e-11 of where it ended before.
+  The penalised descent pays in steps: its 54 solves take 52 665 where they took 41 736, three of
+  them most of the rise. `ModelUncertaintyTask`'s oracle on its cubic-drag plant converges after 50
+  steps at 15.520831, 0.14.4's plan, at the effect's peak; it ran out of its 10 000 steps at
+  14.675420, lower, with actions out to 6.2, past where the effect turns over. Its regrets read
+  0.655 for the calibrated plan and 1348.48 for greedy, where they read 1.501 and 1349.32. Neither
+  oracle is that task's best plan: one with an action on the box's edge costs 4.797 (ADR 0059).
+  Since 0.15.0.
 
 ## [0.15.0] — 2026-10-07
 

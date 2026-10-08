@@ -112,7 +112,9 @@ def _naive_pessimistic(
 
     Steps in ``v = sigma * u`` from ``sigma`` at its floor; after each accepted step each action's
     ``sigma`` is the secant of the augmented cost's curvature along it over the step, where that is
-    above the floor, and a search that fails off the floor is tried again from it.
+    above the floor, and a search that fails off the floor is tried again from it. A trial counts
+    where it lowers the augmented cost by a third of the fall its gradient predicts, and by more
+    than ``tol``; where no halving does, the first one that fell by more than ``tol``.
     """
 
     def task(us: jnp.ndarray) -> jnp.ndarray:
@@ -131,7 +133,7 @@ def _naive_pessimistic(
     sigma, grad = floor, grad_aug(us)
     while len(history) <= steps:
         lo, hi, scaled = u_lo * sigma, u_hi * sigma, grad / sigma
-        lr, improved, candidate, candidate_cost = lr0 / level, False, us, current
+        lr, chosen = lr0 / level, None
         for _ls in range(40):
             trial = jnp.clip(us * sigma - lr * scaled, lo, hi)
             candidate = jnp.where(
@@ -139,14 +141,18 @@ def _naive_pessimistic(
             )
             candidate_cost = augmented(candidate)
             if candidate_cost < current - tol * level:
-                improved = True
-                break
+                predicted = float(jnp.sum(scaled * (us * sigma - trial)))
+                if float(current - candidate_cost) >= (1.0 / 3.0) * predicted:
+                    chosen = candidate, candidate_cost
+                    break
+                chosen = (candidate, candidate_cost) if chosen is None else chosen
             lr *= 0.5
-        if not improved:
+        if chosen is None:
             if bool(jnp.all(sigma == floor)):
                 break
             sigma = floor
             continue
+        candidate, candidate_cost = chosen
         following = grad_aug(candidate)
         step, change = candidate - us, following - grad
         ratio = change / jnp.where(step != 0.0, step, 1.0) / level
@@ -164,14 +170,16 @@ def _ulp_gap(a: jnp.ndarray, b: jnp.ndarray) -> float:
     return float(np.max(np.abs(left - right) / np.maximum(spacing, np.finfo(np.float64).tiny)))
 
 
-@pytest.mark.parametrize(("lam_supp", "guess"), [(20.0, 0.0), (1.0, 0.0), (20.0, 1.0)])
+@pytest.mark.parametrize(
+    ("lam_supp", "guess"), [(20.0, 0.0), (1.0, 0.0), (20.0, 1.0), (20.0, -1.0)]
+)
 def test_compiled_pessimistic_descent_matches_the_python_recursion(
     lam_supp: float, guess: float
 ) -> None:
-    """At a support weight of 1 the search in the measured scale fails after 10 steps, and the 11th
-    is the search's from the floor, so the comparison reaches the retry as well. From a guess of 1,
-    off the log's support, the penalty there is 22 times the task cost, and the scale and the
-    stopping rule are read against the two together."""
+    """From a guess of -1 at a support weight of 20 the search in the measured scale fails after 8
+    steps, and the 9th is the search's from the floor, so the comparison reaches the retry as well.
+    From a guess of 1, off the log's support, the penalty there is 22 times the task cost, and the
+    scale and the stopping rule are read against the two together."""
     k_x, k_u = jax.random.split(jax.random.key(4))
     support = SupportModel.fit(
         jax.random.normal(k_x, (500, 2)), 0.3 * jax.random.normal(k_u, (500, 1))

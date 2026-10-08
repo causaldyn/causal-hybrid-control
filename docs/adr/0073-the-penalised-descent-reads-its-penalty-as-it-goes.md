@@ -2,7 +2,9 @@
 
 **Status:** accepted, 2026-10-07. Amends ADR 0059: `pessimistic_solve` and `pessimistic_control`
 descend as the planner does, every penalised descent checks the projection's error, and
-`lbfgs_box_control` minimises in the planner's variables.
+`lbfgs_box_control` minimises in the planner's variables. Amended 2026-10-08 by ADR 0059's
+amendment: the line search asks a step for a third of the fall its gradient predicts; the step
+counts below were measured before it, and ADR 0059 gives them after.
 
 ## Context
 

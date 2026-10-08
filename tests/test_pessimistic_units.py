@@ -94,7 +94,7 @@ def test_a_penalised_plan_reads_the_same_in_any_units_of_its_lever(units: float)
     cost's own units. With the lever in units 1e3 times its own it ran its 10 000 steps and stopped
     5.8e-2 of the box from where it stopped in the lever's own units, at 1e-6 and 1e-3 times it
     stopped 7.0e-6 and 7.4e-6 of the box from there, and at 1e6 times it took no step. Now each
-    converges in 20 steps to the same plan, to 1.2e-15 of the box."""
+    converges in 13 steps to the same plan, to 3.9e-17 of the box."""
     reference, width = _REFERENCE["one support"], _ONE[3] - _ONE[2]
     solve = _solve(_ONE, (units,), 1.0, "support")
     assert reference.status == solve.status == "converged"
@@ -105,7 +105,7 @@ def test_a_penalised_plan_reads_the_same_in_any_units_of_its_lever(units: float)
 def test_a_penalised_plan_reads_the_same_in_any_units_of_its_cost(scale: float) -> None:
     """With the cost and the penalty's weight 1e6 times smaller the descent took no step, and 1e3
     times smaller it ran out of steps 9.4e-3 of the box from the plan; larger, it stopped 5.6e-6
-    of the box from it. Now each converges in 20 steps, to 5.3e-16 of the box."""
+    of the box from it. Now each converges in 13 steps, to 5.6e-17 of the box."""
     reference, width = _REFERENCE["one support"], _ONE[3] - _ONE[2]
     solve = _solve(_ONE, (1.0,), scale, "support")
     assert reference.status == solve.status == "converged"
@@ -118,7 +118,7 @@ def test_a_penalised_plan_reads_the_same_with_each_lever_in_its_own_units(
 ) -> None:
     """Two levers in units 1e-3 and 1e3 times their own: no one step in the caller's units serves
     both, and the descent reported ``converged`` half the box from the plan, or a tenth with the
-    units the other way round. Now each converges in 16 steps, to 2.9e-15 of the box."""
+    units the other way round. Now each converges in 26 steps, to 2.3e-13 of the box."""
     reference, width = _REFERENCE["two support"], _TWO[3] - _TWO[2]
     solve = _solve(_TWO, units, 1.0, "support")
     assert reference.status == solve.status == "converged"
@@ -172,8 +172,8 @@ def test_a_plan_under_the_confounding_radius_converges_in_any_units(
     sees it. The descent ran out of its 10 000 steps in the problem's own units; with the lever in
     units 1e-6 to 1e6 times its own, or the cost 1e-6 or 1e6 times, it stopped 1.9e-2 to 0.20 of
     the box from there, and took no step at all with the lever 1e6 times or the cost 1e-6 times.
-    Read as the descent goes, the curvature is measured where the plan is, and each converges in 102
-    to 119 steps, to 1.9e-7 of the box."""
+    Read as the descent goes, the curvature is measured where the plan is, and each converges in 85
+    to 97 steps, to 2.6e-7 of the box."""
     reference, width = _REFERENCE["one radius"], _ONE[3] - _ONE[2]
     solve = _solve(_ONE, (units,), scale, "radius")
     assert reference.status == solve.status == "converged"

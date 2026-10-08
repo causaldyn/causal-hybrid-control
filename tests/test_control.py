@@ -10,6 +10,7 @@ import pytest
 
 from chc import HybridDynamics, QuadraticCost, SupportModel
 from chc.adjoint import control_gradient_adjoint
+from chc.benchmark import SupportShiftTask, _BumpActuator
 from chc.control import (
     box_stationarity,
     lbfgs_box_control,
@@ -33,6 +34,7 @@ from chc.residual import (
     ZeroResidual,
 )
 from chc.support import pessimistic_control, pessimistic_solve
+from chc.uncertainty import ConfoundingRobustPenalty
 
 DT = 0.1
 
@@ -202,6 +204,9 @@ def _naive_projected_gradient(
     test cannot detect the implementation changing. It takes the actions' ``sigma`` as given, and
     :func:`_checked_scale` hands it the solver's once :func:`_action_scale` has matched it, since a
     last bit apart in ``sigma`` grows over the steps to hundreds of ULP of an action near zero.
+
+    A trial counts where it lowers the cost by a third of the fall its gradient predicts, and by
+    more than ``tol``; where no halving does, the first one that fell by more than ``tol``.
     """
     us = jnp.clip(us0, u_lo, u_hi)
     current = total_cost(dyn, x0, us, dt, cost)
@@ -210,7 +215,7 @@ def _naive_projected_gradient(
     history = [float(current)]
     for _ in range(steps):
         grad = control_gradient_adjoint(dyn, x0, us, dt, cost) / sigma
-        lr, improved, candidate, candidate_cost = lr0 / level, False, us, current
+        lr, chosen = lr0 / level, None
         for _ls in range(40):
             trial = jnp.clip(us * sigma - lr * grad, lo, hi)
             # Read back onto the box's sides exactly: ``trial / sigma`` can round off them.
@@ -219,12 +224,15 @@ def _naive_projected_gradient(
             )
             candidate_cost = total_cost(dyn, x0, candidate, dt, cost)
             if candidate_cost < current - tol * level:
-                improved = True
-                break
+                predicted = float(jnp.sum(grad * (us * sigma - trial)))
+                if float(current - candidate_cost) >= (1.0 / 3.0) * predicted:
+                    chosen = candidate, candidate_cost
+                    break
+                chosen = (candidate, candidate_cost) if chosen is None else chosen
             lr *= 0.5
-        if not improved:
+        if chosen is None:
             break
-        us, current = candidate, candidate_cost
+        us, current = chosen
         history.append(float(current))
     return us, history
 
@@ -512,10 +520,10 @@ def test_the_solver_reports_why_it_stopped_not_only_where() -> None:
     assert short.status == "max_iterations"
     assert short.iterations == 3
 
-    # This instance needs 4 726 steps under float64. At 4 000 the residual is already down to
-    # 9e-5 and the answer looks finished -- and it is not. That gap is the whole reason the status
+    # This instance needs 3 801 steps under float64. At 3 000 the residual is already down to
+    # 6e-6 and the answer looks finished -- and it is not. That gap is the whole reason the status
     # exists: a small residual is not evidence that the solver reached its stopping rule.
-    truncated = projected_gradient_solve(dyn, x0, us0, DT, cost, -5.0, 5.0, steps=4000)
+    truncated = projected_gradient_solve(dyn, x0, us0, DT, cost, -5.0, 5.0, steps=3000)
     assert truncated.status == "max_iterations"
     assert truncated.stationarity < 1e-3
 
@@ -553,3 +561,84 @@ def test_pessimistic_stationarity_is_measured_on_what_was_minimised() -> None:
     assert result.status == "converged"
     task_only = box_stationarity(dyn, x0, result.actions, DT, cost, -5.0, 5.0)
     assert result.stationarity < 0.1 * task_only
+
+
+def test_a_plant_whose_effect_collapses_is_planned_where_it_still_answers() -> None:
+    """``SupportShiftTask``'s oracle: its plant acts through ``u exp(-(u / 0.8)^2)``, linear at zero
+    and spent beyond about 2. The first step from zero is the Newton step of the plant as it acts
+    there; halved twice, it sets actions up to 6.2 and still lowers the cost, by 0.4 % of the fall
+    the gradient predicts for it. A search that took any fall took it, and the descent settled with
+    five actions near -2.2, where the plant no longer answers them, at a cost of 21.104508. A step
+    now counts only where it buys a third of that prediction: every action ends at or inside the
+    effect's peak, ``0.8 / sqrt(2)``, at 20.645063, the plan the descent in the caller's units
+    found."""
+    task = SupportShiftTask()
+    plant = _BumpActuator(
+        a_matrix=jnp.array([[0.0, 1.0], [-1.0, -0.2]]),
+        b_matrix=jnp.array([[0.0], [1.0]]),
+        u_sat=task.u_sat,
+    )
+    cost = QuadraticCost(
+        Q=jnp.diag(jnp.array([1.0, 0.0])),
+        R=jnp.array([[task.control_weight]]),
+        Qf=jnp.diag(jnp.array([10.0, 1.0])),
+        x_target=jnp.array([task.x_target, 0.0]),
+    )
+    x0, us0 = jnp.array([task.x0, 0.0]), jnp.zeros((task.horizon, 1))
+    solve = projected_gradient_solve(plant, x0, us0, task.dt, cost, task.u_lo, task.u_hi)
+    assert solve.status == "converged"
+    assert float(jnp.abs(solve.actions).max()) <= task.u_sat / np.sqrt(2.0)
+    assert float(total_cost(plant, x0, solve.actions, task.dt, cost)) == pytest.approx(
+        20.645063, rel=0.0, abs=1e-6
+    )
+
+
+def test_a_quadratic_takes_the_newton_step_along_each_action_whole() -> None:
+    """Two levers in units a thousand times apart, each driving its own state over one step: the
+    cost is a quadratic with a diagonal Hessian, so the Newton step along each action alone is its
+    minimiser, and that step lowers the cost by half the fall the gradient predicts for it. The line
+    search takes it whole, so one step lands on the closed form."""
+    gain, weight, terminal = jnp.array([1.0, 1e-3]), jnp.array([0.05, 2e-8]), jnp.array([5.0, 1.0])
+    x0 = jnp.array([1.0, -2.0])
+    dyn = LinearDynamics(jnp.zeros((2, 2)), jnp.diag(gain))
+    cost = QuadraticCost(
+        Q=jnp.zeros((2, 2)), R=jnp.diag(weight), Qf=jnp.diag(terminal), x_target=jnp.zeros(2)
+    )
+    minimiser = -terminal * DT * gain * x0 / (weight + terminal * DT**2 * gain**2)
+    one = projected_gradient_solve(dyn, x0, jnp.zeros((1, 2)), DT, cost, -1e5, 1e5, steps=1)
+    assert one.iterations == 1
+    np.testing.assert_allclose(one.actions[0], minimiser, rtol=1e-12, atol=0.0)
+
+
+def test_a_penalised_plan_that_starts_on_the_radius_kink_still_descends() -> None:
+    """The confounding radius' norm has a kink at a plan of zeros. From there, on a damped
+    oscillator with a learned residual, its lever boxed at ±0.5 and the radius charging a tenth of
+    the zero plan's cost on the box's edge, a trial buys 0.034 of the fall the gradient predicts
+    for it however short the step, so no halving buys a third. The search then takes its longest
+    trial that fell, which moves the lever 0.119, the step a search that took any fall took, and
+    the descent converges from there. A search that refused every such trial would stop at the
+    zero guess, and one that took the shortest would move the lever 7e-12."""
+    dyn = HybridDynamics(
+        DampedOscillator(1.0, 0.2), MLPResidual(2, 1, 2, key=jax.random.PRNGKey(3))
+    )
+    cost = QuadraticCost(
+        Q=jnp.eye(2), R=0.05 * jnp.eye(1), Qf=3.0 * jnp.eye(2), x_target=jnp.zeros(2)
+    )
+    x0, us0 = jnp.array([1.5, 0.0]), jnp.zeros((12, 1))
+    start = float(total_cost(dyn, x0, us0, DT, cost))
+    support = SupportModel.fit(
+        jax.random.normal(jax.random.key(2), (400, 2)),
+        0.25 * jax.random.normal(jax.random.key(1), (400, 1)),
+    )
+    radius = ConfoundingRobustPenalty(radius=0.3)
+    weight = 0.1 * start / (0.3 * 12 * 0.5)
+    first = pessimistic_solve(
+        dyn, x0, us0, DT, cost, support, 0.0, -0.5, 0.5, steps=1, uncertainty=radius, lam_unc=weight
+    )
+    assert first.iterations == 1
+    assert float(jnp.abs(first.actions).max()) > 0.1
+    solve = pessimistic_solve(
+        dyn, x0, us0, DT, cost, support, 0.0, -0.5, 0.5, uncertainty=radius, lam_unc=weight
+    )
+    assert solve.status == "converged"
+    assert float(total_cost(dyn, x0, solve.actions, DT, cost)) < start - 0.5

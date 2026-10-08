@@ -55,7 +55,7 @@ def mpc_control(
     so the truncation buys latency rather than hiding an unconverged answer. Priced rather than
     assumed -- against the same loop run to convergence over 25 replans of a damped oscillator, 40
     steps come within 0.001% of its closed-loop cost, on the known plant and with an MLP residual,
-    in 922 and 994 steps where the converged loops take 1 004 and 14 960. Raise it if the loop is
+    in 808 and 761 steps where the converged loops take 844 and 779. Raise it if the loop is
     offline; the solve stops on its own once the line search fails.
 
     The loop keeps one clock: step ``k`` applies its action to the plant at ``t = k * dt``, and the

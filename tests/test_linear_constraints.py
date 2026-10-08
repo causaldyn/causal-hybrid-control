@@ -22,6 +22,7 @@ from scipy.optimize import nnls
 import chc.control
 from chc import LinearConstraint, QuadraticCost, SupportModel, causal_plan
 from chc.control import (
+    _backtrack,
     _constraint_blocks,
     _dykstra,
     _no_duals,
@@ -427,6 +428,59 @@ def test_a_plan_the_rows_and_the_box_pin_to_one_point_stays_on_it(
     )
     assert solve.status == "no_progress"
     assert np.asarray(solve.actions).tolist() == [[0.0, 0.0]] * horizon
+
+
+@pytest.mark.parametrize("pinned", [0, 1])
+def test_a_search_that_ends_on_an_unsettled_projection_reports_the_cost_of_its_plan(
+    pinned: int,
+) -> None:
+    """On the pinned plan above, the trial the projection moved by its own error alone reads 1.9e-14
+    and 1.4e-13 below the start's cost. The line search holds a trial that fell while it halves on
+    for one that buys its share of the predicted fall; a trial whose projection did not settle is
+    neither a step nor a value it holds, so the solve reports the cost of the plan it returns."""
+    horizon = 3
+    model = LinearDynamics(jnp.array([[-0.5]]), jnp.array([[0.8, 0.1]]))
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=jnp.diag(jnp.array([0.01, 1.0])), Qf=jnp.eye(1), x_target=jnp.array([1.0])
+    )
+    tie = LinearConstraint(np.kron(np.eye(horizon), [[3.0, -1.0]]) / np.sqrt(10.0), 0.0, 0.0)
+    lo, hi = np.full((horizon, 2), -2.0), np.full((horizon, 2), 2.0)
+    lo[:, pinned] = hi[:, pinned] = 0.0
+    solve = projected_gradient_solve(
+        model, jnp.ones(1), jnp.zeros((horizon, 2)), DT, cost, lo, hi, constraints=(tie,)
+    )
+    at_plan = float(total_cost(model, jnp.ones(1), solve.actions, DT, cost))
+    assert solve.iterations == 0
+    assert float(solve.cost_history[-1]) == pytest.approx(at_plan, rel=5e-15, abs=0.0)
+
+
+def test_the_line_search_hands_back_the_duals_of_the_trial_it_takes() -> None:
+    """Each trial is projected by Dykstra from the iterate's duals, and the duals of the trial the
+    search takes come back with it, to warm-start the next step's projection. Here the first trial
+    buys 0.875 of the fall its gradient predicts and is taken, and the budget row binds there, so
+    its multiplier is not the zero the search started from."""
+    us, lo, hi = jnp.zeros(2), jnp.full(2, -5.0), jnp.full(2, 5.0)
+    blocks = _constraint_blocks(
+        (LinearConstraint(np.ones((1, 2)), -np.inf, 1.0),), lo, hi, us.dtype
+    )
+    duals = _no_duals(2, blocks, us.dtype)
+    target = jnp.array([2.0, 2.0])
+
+    def value_of(actions: jnp.ndarray) -> jnp.ndarray:
+        return jnp.sum((actions - target) ** 2)
+
+    grad = 2.0 * (us - target)
+    taken, _, accepted, taken_duals = _backtrack(
+        us, value_of(us), grad, lo, hi, 1.0, 0.0, value_of, blocks, duals
+    )
+    first, first_duals = _dykstra(us - grad, lo, hi, blocks, duals)
+    assert bool(accepted)
+    np.testing.assert_allclose(taken, first, rtol=1e-12, atol=0.0)
+    assert float(first_duals[1][0][0]) != 0.0
+    for kept, expected in zip(
+        jax.tree.leaves(taken_duals), jax.tree.leaves(first_duals), strict=True
+    ):
+        np.testing.assert_allclose(kept, expected, rtol=1e-12, atol=1e-15)
 
 
 @pytest.mark.parametrize(

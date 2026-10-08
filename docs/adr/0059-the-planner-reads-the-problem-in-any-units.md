@@ -4,7 +4,9 @@
 `pessimistic_control` descend in the scaled variables too, their scale raised by the secant of the
 penalised cost's curvature as they go, and every penalised descent checks the projection's error;
 the barrier's rounds keep their units. `lbfgs_box_control` minimises in the planner's scaled
-variables.
+variables. Amended 2026-10-08: the line search asks a step for a third of the fall its gradient
+predicts, where in 0.15.0 it took any fall that beat `tol`; from the zero guess
+`SupportShiftTask`'s oracle had settled 0.459 above the plan 0.14.4 reached (Consequences).
 
 ## Context
 
@@ -79,9 +81,10 @@ trial far outside the box came back from the projection over budget, and the lin
   that `v` puts on a side of its box set to the side itself, since `v / σ` can round off it. A plan
   on its box lies on it exactly, and a solve that takes no step returns its start bit for bit.
 - **`lr0 = 1`, and `tol` is relative, `1e-14` by default.** The line search starts at the Newton
-  step along each action alone, in `v`, and halves. A step counts where it lowers the cost by more
-  than `tol · |J(ū)|`. Where `J(ū)` is zero any strict decrease counts, and where it is not finite
-  any finite value does.
+  step along each action alone, in `v`, and halves: since the amendment, until a step buys a third
+  of the fall its gradient predicts, or else to the longest step that counts (Consequences). A step
+  counts where it lowers the cost by more than `tol · |J(ū)|`. Where `J(ū)` is zero any strict
+  decrease counts, and where it is not finite any finite value does.
 - **The projection finishes a trial far outside the box.** A scaled step from a guess far from its
   plan can land many boxes out. Dykstra's row multipliers grow towards such a point by a sliver of
   the box per sweep, and the dual active-set polish that finishes a projection (ADR 0001) moves one
@@ -151,12 +154,15 @@ trial far outside the box came back from the projection over budget, and the lin
   Fewer steps on 25 of the 27, and a lower cost on 21. The costs are relative. The KAN residual
   now stops at another stationary point, 1.3e-5 above the one the old descent found. The loud
   residual and the ill-conditioned instance need more than the default cap of 10 000 either way,
-  and the harvest now does too.
+  and the harvest now does too. With the amended line search the ill-conditioned instance converges
+  after 8 083 (the consequence on the first step, below).
 - **The warm start still saves a share.** On ADR 0003's oscillator loops (horizon 20, 40 steps a
   replan), reproduced before the change, the warm-started controller took 65 317 and 166 115
   descent steps against cold solves' 100 084 and 260 012, under the velocity floors 0.8 and 0.3:
   35 % and 36 % fewer. Now it takes 69 791 and 166 601 against 100 261 and 257 810: 30 % and 35 %
-  fewer, its realised cost within 7.7e-7 and 5.2e-8 of the cold loop's.
+  fewer, its realised cost within 7.7e-7 and 5.2e-8 of the cold loop's. With the amended line
+  search it takes 67 097 and 165 909 against 91 390 and 255 980: 27 % and 35 % fewer, within 7.8e-7
+  and 1.6e-7.
 - **`mpc_control`'s 40 inner steps come nearer the converged loop.** Over 25 replans of a damped
   oscillator they come within 0.001 % of the closed-loop cost of the same loop run to convergence,
   on the known plant and with an MLP residual. Before, they were 1.9 % and 1.2 % above it.
@@ -175,17 +181,96 @@ trial far outside the box came back from the projection over budget, and the lin
   test holds to `1e-6`.
 - **Actions that act together still take many steps.** The scale is a diagonal. The
   ill-conditioned oscillator needs 10 644 steps, the loud residual 29 927 where it took 12 355,
-  and the harvest 18 081 where it took 4 885.
-- **A first step read where the plant is linear can carry an action past a collapse.** The scale
-  is read at the guess, so the first step is the Newton step of the plant as it acts there.
-  `SupportShiftTask`'s plant acts through `u exp(-(u / 0.8)^2)`, linear at 0 and spent beyond
-  about 2. From the zero guess the first step sets actions up to 6.2, a step that still lowers
-  the cost, and the descent settles at another stationary point: four actions near -2.2, where
-  the plant no longer answers them, at a true cost of 21.088. The descent in the caller's units
-  reached 20.645, every action at or inside the sweet spot, ±0.565. The task's oracle is that
-  plan, so the task measures every regret against a plan 0.443 worse. The line search accepts any
-  fall; a rule of sufficient decrease that would refuse such a step is left to a change of its
-  own, measured on the problems above.
+  and the harvest 18 081 where it took 4 885; with the amended line search, 8 083, 25 761 and
+  16 281.
+- **A first step read where the plant is linear carried an action past a collapse, until the line
+  search asked for sufficient decrease** (amended 2026-10-08). The scale is read at the guess, so
+  the first step is the Newton step of the plant as it acts there, along each action alone.
+  `SupportShiftTask`'s 25 actions act together: on its linear model, from the zero guess, that step
+  is 17 times the step to the cost's minimum along it. Its plant acts through
+  `u exp(-(u / 0.8)^2)`, linear at 0 and spent beyond about 2. Halved twice, the first step set
+  actions up to 6.2 and still lowered the cost, by 0.4 % of the fall its gradient predicted, and
+  the line search, which took any fall that beat `tol`, took it. The descent settled at another
+  stationary point: the last five actions near -2.2, where the plant no longer answers them, at a
+  true cost of 21.104508; in float32, four, at 21.087929. The descent in the caller's units reached
+  20.645, every action at or inside the sweet spot, ±0.565. The task's oracle is that plan, so the
+  task measured every regret against a plan 0.459 worse, 0.443 in float32.
+
+  The line search now asks a trial for a third of the fall its gradient predicts for the move,
+  `g · (v - v')` to the projected trial `v'`: Armijo's sufficient decrease (Armijo 1966) along the
+  projection arc (Bertsekas 1976). It reads a fall against a fall, so it is the same in any units.
+  On a quadratic, a step `s` times the one to the minimum along it buys `1 - s/2` of the
+  prediction. A first trial with `s ≤ 4/3` is taken whole, the Newton step's `s = 1` among them; a
+  longer one is halved into `(2/3, 4/3]`, which leaves at most 1/9 of the fall the line offers. A
+  fraction `c` in place of a third leaves `max(c², (1 - 2c)²)`, least at `c = 1/3`. Where no
+  halving buys a third, across a kink, the search takes the longest trial that counts, the one it
+  took before: at a plan of zeros the confounding radius' smoothed norm holds a trial's share at
+  0.034 however short the step. So the descent stops where it stopped before, and `converged`
+  means what it meant. The planner, the penalised descent (ADR 0073) and the barrier's rounds share
+  the line search, and with it the rule.
+
+  The benchmark tasks' plans, each from the zero guess, at the true cost the task reads (`*`: out
+  of the 10 000 steps):
+
+  | plan | steps, any fall | a third | true cost, any fall | a third |
+  |---|---:|---:|---:|---:|
+  | `SupportShiftTask`'s oracle | 510 | 69 | 21.104508 | 20.645063 |
+  | its pessimistic plan | 15 | 14 | 22.888169 | 22.888169 |
+  | its greedy plan, on its linear model | 6 962 | 2 845 | 28.005507 | 28.005477 |
+  | `ConfoundingRobustTask`'s oracle, the same linear plan | 6 962 | 2 845 | 8.306852 | 8.306852 |
+  | its robust plan, at a regret of 3.470570 either way | 1 202 | 1 268 | 11.777422 | 11.777422 |
+  | its greedy plan | 1 632 | 1 451 | 14.258292 | 14.258295 |
+  | `ModelUncertaintyTask`'s oracle, on its cubic-drag plant | 10 000* | 50 | 14.675420 | 15.520831 |
+  | its calibrated plan | 61 | 56 | 16.176229 | 16.176229 |
+  | its greedy plan | 7 196 | 6 782 | 1 363.999465 | 1 363.998762 |
+
+  `SupportShiftTask` reads the pessimistic plan's regret as 2.243, where it read 1.784, and
+  greedy's as 7.360, where it read 6.901. From seven more guesses, constant at -0.3, 0.3 and 0.6, a
+  ramp from -0.5 to 0.5 and three draws of noise of scale 0.3, the bump plant's descent ends at the
+  sweet spot from 3 of them, where any fall reached it from 1 and 0.14.4 from 5. The rule keeps
+  the descent in the basin its guess reads; it does not search for a lower one. The cubic-drag
+  plant's effect, `u - 0.15 u³`, peaks at 1.49 and turns over past 2.58. There any fall's long
+  steps reached plans that use the turn, at 14.675 and 14.884, lower than 0.14.4's, from 6 of the
+  8 guesses, 2 of them out of steps; with the rule each guess ends at 0.14.4's plan, 15.520831, at
+  the peak, in 38 to 57 steps. From every guess on the bump plant the rule ends at or below where
+  any fall ended; on the cubic drag, at or above. A plan with an action on the box's edge, where the
+  effect is -68.8, costs 4.797: that task's oracle is a local plan under either rule.
+
+  On the 27 problems above, against the least cost any measured run reached:
+
+  | problem | steps, any fall | a third | cost above the least, any fall | a third |
+  |---|---:|---:|---:|---:|
+  | one lever, 12 steps | 41 | 36 | 6.6e-15 | 0 |
+  | two levers, 20 steps, box ±5 | 4 726 | 3 801 | 5.3e-11 | 6.2e-11 |
+  | two levers, box ±1 | 1 158 | 1 008 | 1.0e-11 | 9.4e-12 |
+  | eight residual backends | 18–174 | 17–77 | ≤ 6.3e-13 | ≤ 6.3e-13 |
+  | a KAN residual | 65 | 62 | 1.3e-5 | 1.3e-5 |
+  | `nlp_solver_certificate`'s instances, `R` = 1e-3 / 1e-2 / 1e-1 | 10 644 / 1 462 / 181 | 8 083 / 1 360 / 180 | 3.5e-11 / 4.1e-12 / 1.2e-12 | 3.7e-11 / 4.3e-12 / 1.2e-12 |
+  | boxed plants and a hybrid, 4 boxes | 1–30 | 1–24 | ≤ 2.3e-12 | ≤ 2.3e-12 |
+  | a loud learned residual, box ±6 | 29 927 | 25 761 | 3.1e-10 | 3.0e-10 |
+  | revenue, Hill / Michaelis–Menten, under a budget | 11 / 16 | 8 / 12 | 4.6e-13 / 8.0e-15 | 4.7e-13 / 0 |
+  | two levers under a rate limit / a budget that never binds | 43 / 4 726 | 31 / 3 801 | 7.9e-12 / 5.3e-11 | 8.6e-12 / 6.2e-11 |
+  | the golden rule, `dt` = 1 / 0.5 | 147 / 184 | 149 / 127 | 1.5e-12 / 0 | 1.5e-12 / 2.1e-12 |
+  | a harvest, one square of the final state | 18 081 | 16 281 | 4.2e-11 | 4.4e-11 |
+
+  61 030 steps against 71 892: fewer on 22, as many on 4, and more on one, the golden rule at
+  `dt` = 1, 149 against 147. Every cost is within 9.6e-12 of the one any fall reached. The searches
+  that found a step read the cost 497 601 times against 582 341, and one of them fell back to its
+  longest falling trial, on the two levers under a rate limit. The units table above now reads 36,
+  36, 35, 17, 1 and 34 steps, row by row, and the two-lever plans stop 9.7e-17 of the box apart,
+  where they stopped 4.1e-8 apart. `nlp_solver_certificate`'s least ratio of the descent's
+  stationarity to L-BFGS-B's, at its 50 steps, is 147, where it was 214.
+
+  The penalised descent pays in steps. On its 54 solves (ADR 0073) it takes 52 665 against 41 736,
+  fewer on 27 and more on 22, and the searches that found a step read `F` 71 604 times against
+  50 847. Three solves make the rise. The loud residual under the support penalty takes 9 232 steps
+  against 5 858 and ends at the stationary point the descent before ADR 0073 found, 1.3e-4 above
+  the other. The ill-conditioned instance under the radius takes 7 368 against 4 077, to 1.4e-10 of
+  the least `F` where it came to 2.5e-11. The harvest under the radius runs out of its 10 000 steps
+  at the least `F` any run reached, where it stopped after 5 087, 2.0e-8 above it. The other 51
+  take 26 065 steps against 26 714. Against the descent before ADR 0073, 218 089 steps, the 54 take
+  under a quarter. In all 54 the search fell back to its longest falling trial once, on the boxed
+  hybrid under the radius.
 - **A truncated plan's regret bound is looser against its regret.** On `test_plan`'s boxed problem,
   three steps leave the plan 0.29 above its optimum, where they left the old descent's 5.46, and
   `plan_regret_bound` reads 1.02, where it read 9.57: 3.5 times the regret, where it was 1.75
@@ -252,3 +337,57 @@ Measured on the 27 problems above, at `tol = 1e-14`, against one scale per actio
   budget's overspend from 98 to 95 of 35.5: the sweeps a far trial needs grow with how far out it
   lands. **Refusing a trial whose projection did not settle** would need `_dykstra` to report it,
   a change to a function `chc.support` shares.
+
+For the line search's rule (amended 2026-10-08), measured on the 27 problems, the penalised
+descent's 54 solves (ADR 0073), and the bump and cubic-drag plants from zero and from the eight
+guesses:
+
+- **Armijo's rule at another fraction.** At the textbooks' `1e-4` (Nocedal & Wright 2006) the
+  bump's oracle takes the step at issue, which buys 0.004, and ends at 21.104508; at `1e-2` it ends
+  at 20.746, with actions out to 2.12. Each fraction measured from 0.1 to 0.5 ends at 20.645063.
+  At 0.1 the 27 take 68 669 steps, the linear model 6 947 and the 54 penalised solves 46 507; from
+  the eight guesses the bump's descent reaches the sweet spot from 2 and the cubic drag's 0.14.4's
+  plan from 6, and from zero the drag's oracle ends at 14.884. At 0.25 the 27 take 61 822 steps
+  and the linear model 6 157, both without the fallback. At 0.4 the 27 take 57 245, the 54
+  47 410, every `F` within 3.2e-8 of the least, and the linear model 2 777 without the fallback,
+  and each of the eight guesses ends where it ends at a third: fewer steps than a third on every
+  count. The 27's count falls as the fraction rises, and the linear model's up to a half; the 54's
+  moves with the paths three solves take, 46 507 at 0.1 and 52 665 at a third. Past a half a
+  quadratic's Newton step, which buys a half, is refused. A third is kept for the worst case, not
+  for these counts: on a line of a quadratic it leaves at most 1/9 of the fall, where 0.4 leaves
+  0.16, and it stays clear of the half a nearly quadratic cost's Newton step buys.
+  `test_plan_units`' two levers buy 0.41 at the Newton step, which 0.4 would take by 0.01.
+- **Armijo's rule with no fallback.** Where no halving buys a third it takes no step: on the boxed
+  hybrid under the radius the descent takes none from its guess of zeros, at the kink, and stops
+  6.1e-3 above the least; the 54 take 52 582 steps.
+- **A ratio test against the scaled diagonal model**, the test a trust region reads its step by
+  (Moré 1983; Conn, Gould & Toint 2000): the fall over `L - scale |Δv|²/2`, `L` the gradient's
+  prediction. Along the gradient, at `λ` Newton steps, the model's fall is `L (1 - λ/2)`, so the
+  test is Armijo's rule with a fraction that shrinks to half its own as the step grows to the
+  Newton step. At 0.25 the 27 take 61 634 steps and the bump's oracle ends at 20.645063; at 0.1 the
+  cubic drag's ends at 14.884. It measured no better than Armijo's rule, and it adds a model.
+- **A trust region on the first step only**, the step's quadratic term `scale |Δv|²` held to `r²`
+  of the cost: at `r` = 0.3 and 0.1 the bump's oracle ends at 20.645063, and at 1 at 21.104508. It
+  needs a radius the descent has no reading of, and it guards the first step alone, as the next
+  does.
+- **Armijo's rule on the first step only**: 69 782 steps on the 27 and 42 203 on the 54; the bump's
+  oracle ends at 20.645063 after 106 steps, and from the eight guesses the bump's descent reaches
+  the sweet spot from 3 and the cubic drag's 0.14.4's plan from 7. It keeps the long steps after
+  the first: the 27 save 3 % of their steps, where the rule saves 15 %.
+- **Armijo's rule in the planner's metric only**, the penalised descent's steps from a scale its
+  secant raised taking any fall: the planner as with the rule, and 42 386 steps on the 54, every
+  `F` within 1.3e-8 of the least. It is two rules for one search, and it takes a step from a raised
+  scale on the rule this amendment replaces, though the secant reads the curvature along the last
+  step, not along the next.
+- **Re-reading the scale at the iterate**, so that each step is the Newton step along each action
+  where the plan is: the bump's oracle ends at 21.326 after 8 850 steps, and each step linearises
+  the rollout, `H` Jacobians.
+- **Barzilai–Borwein steps** (Barzilai & Borwein 1988; Raydan 1997) under a non-monotone line
+  search (Grippo, Lampariello & Lucidi 1986; Birgin, Martínez & Raydan 2000). Not measured. The
+  first step has no secant to read, so it is the step at issue, and a non-monotone search asks a
+  step for a small fraction of its prediction below the highest cost in a window, which the step at
+  issue passes.
+- **Wolfe's curvature condition** (Wolfe 1969) or **Goldstein's two-sided test** (Goldstein 1965).
+  Not measured. Both refuse a step that is too short as well as one too long, which a halving from
+  the Newton step does not need, and Wolfe's reads the gradient at each trial, an adjoint pass
+  where Armijo's reads a rollout.

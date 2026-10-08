@@ -184,18 +184,21 @@ def test_one_zones_windows_are_read_as_before_and_the_reading_is_deprecated(
     are fe39f1b's ``Prescription.evaluate`` on this panel, before the bootstrap: the smoothing
     chosen under a binding ``min_effective``, and the logger and the smoothing given. They are read
     off the prescription fitted on the folds drawn since 0.13.0 and planned by the descent scaled
-    action by action. Planned in the caller's units, which stopped 1.0e-8 above this plan's cost
-    where the plan's regret bound read 1.1e-8, they were 2.3627057426597653 and 2.3819522705817366;
-    on the folds before, 2.36221941740616 and 2.3818807810249143. Two zones are enough to draw."""
+    action by action, its line search asking a step for a third of the fall its gradient predicts.
+    Where the search took any fall, the plan ended 1.4e-15 below this one's cost with an action
+    1.1e-7 away, and they were 2.3627186497681754 and 2.381944098330016. Planned in the caller's
+    units, which stopped 1.0e-8 above this plan's cost where the plan's regret bound read 1.1e-8,
+    they were 2.3627057426597653 and 2.3819522705817366; on the folds before, 2.36221941740616 and
+    2.3818807810249143. Two zones are enough to draw."""
     rows, _, _, _ = _market(1, seed=7, leave=False, periods=3601)
     panel = chc.Panel.from_frame(rows, unit="zone", time="time", seed=0)
     logger = chc.AffinePolicy(np.zeros((1, 1)), np.zeros(1), np.eye(1))
     calls = [
-        ({"min_effective": 400.0}, 2.3627186497681754, (2.0789630900863485, 2.6464742094500022)),
+        ({"min_effective": 400.0}, 2.3627186368821773, (2.078963075243828, 2.6464741985205267)),
         (
             {"logger": logger, "smoothing": 0.5},
-            2.381944098330016,
-            (2.085337145051625, 2.678551051608407),
+            2.381944086249068,
+            (2.0853371323596193, 2.678551040138517),
         ),
     ]
 
