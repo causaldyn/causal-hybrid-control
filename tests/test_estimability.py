@@ -162,6 +162,26 @@ def test_a_relation_kept_at_zero_to_rounding_is_kept_at_zero() -> None:
     assert result.certificate.estimability == "held_to_log"
 
 
+@pytest.mark.parametrize(
+    ("policy", "ratio", "offset"),
+    [("together_offset", 2.0, 0.4), ("thrice", 3.0, 0.0)],
+    ids=["u2 = 2 u1 + 0.4", "u2 = 3 u1"],
+)
+def test_a_relation_reads_with_its_largest_weight_on_the_levers_as_logged_positive(
+    policy: str, ratio: float, offset: float
+) -> None:
+    """``u2 = r u1 + c`` reads as ``r u1 - u2 = -c`` over the norm of ``(r, -1)``, as ``u2 = 2 u1``
+    does: the largest of the weights on the levers as logged is positive. Signed by the weights
+    over the levers each scaled to its norm on the log, where ``u2``'s is as large or larger, each
+    of these relations read with every sign flipped."""
+    (relation,) = _prescribe(policy).certificate.relations
+    norm = np.hypot(ratio, 1.0)
+    np.testing.assert_allclose(
+        relation.weights, np.array([ratio, -1.0]) / norm, rtol=0.0, atol=1e-12
+    )
+    assert relation.level == pytest.approx(-offset / norm, rel=0.0, abs=1e-12)
+
+
 def test_max_levers_cannot_hold_a_relation_kept_away_from_zero() -> None:
     with pytest.raises(DecisionError, match="max_levers holds an unselected lever at zero"):
         _prescribe("together_offset", max_levers=1)
