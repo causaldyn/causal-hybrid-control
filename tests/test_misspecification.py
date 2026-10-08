@@ -396,6 +396,19 @@ def test_fits_that_sum_over_different_clusters_are_refused() -> None:
         misspecification_cost(plan, clustered, shifted)
 
 
+def test_fits_that_read_different_periods_are_refused() -> None:
+    reference, alternative, plan = _case(4000, 7, 0.0, 0.0)
+    steps = np.arange(4000)
+    serial, other = _fits(_log(4000, 7, 0.0), periods=steps)
+    with pytest.raises(ValueError, match="different periods"):
+        misspecification_cost(plan, reference, other)
+    with pytest.raises(ValueError, match="different periods"):
+        misspecification_cost(plan, serial, alternative)
+    gapped = dataclasses.replace(other, periods=np.concatenate([steps[:2000], steps[2000:] + 1]))
+    with pytest.raises(ValueError, match="different periods"):
+        misspecification_cost(plan, serial, gapped)
+
+
 def test_repeated_rows_clustered_by_their_original_price_as_the_original_does() -> None:
     """Each row of a log of 1000 repeated 4 times, the class missing the truth: summed within each
     row's copies, the difference's covariance is the original's summed within each row, so the
@@ -457,6 +470,29 @@ def test_two_ways_whose_sums_read_less_noise_than_a_way_alone_price_as_that_way(
     assert periods.noise < units.noise
     for name in ("cost", "cost_error", "noise", "p_value"):
         assert getattr(both, name) == pytest.approx(getattr(units, name), rel=1e-9, abs=0.0), name
+
+
+def test_one_unit_s_periods_price_the_noise_by_cosines() -> None:
+    """Fits given one unit's periods read the difference of their influences across them as the
+    channel's error is read: ``noise`` is half of ``tr(W S)``, ``S`` the difference's states
+    summed, projected on 21 cosines of the 400 periods and squared. The parameters' difference
+    is the rows' own, so the cost moves by as much as the noise does, the other way."""
+    data = _log(400, 11, 1.0)
+    periods = np.arange(400)
+    reference, alternative = _fits(data, folds=1, periods=periods)
+    plan = _plan(reference.residual)
+    plan = dataclasses.replace(plan, actions=_optimum(reference.residual, plan.actions))
+    gate = misspecification_cost(plan, reference, alternative)
+    weight = _parameter_weight(plan, reference.residual, None)
+    difference = (np.asarray(alternative.influence) - np.asarray(reference.influence)).sum(axis=1)
+    frequencies = np.arange(1, 22)[:, None]
+    projected = math.sqrt(2.0 / 21.0) * np.cos(np.pi * frequencies * (periods + 0.5) / 400)
+    projected = projected @ difference
+    expected = float(np.trace(weight @ projected.T @ projected)) / 2.0
+    assert gate.noise == pytest.approx(expected, rel=1e-9, abs=0.0)
+    rows = misspecification_cost(plan, *_fits(data, folds=1))
+    assert rows.noise != pytest.approx(gate.noise, rel=1e-3, abs=0.0)
+    assert rows.cost + rows.noise == pytest.approx(gate.cost + gate.noise, rel=1e-9, abs=0.0)
 
 
 def test_a_plan_made_on_another_model_is_refused() -> None:

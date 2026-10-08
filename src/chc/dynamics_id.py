@@ -166,7 +166,9 @@ class CausalDynamicsFit:
     # scale, not coverage. Under ``rk4`` it is the fixed point's own, the noise carried through the
     # RK4 map's gain on the estimate: 1.70x the Euler fit's at ``theta*dt = 0.7``, where 200 noise
     # draws on one log scattered the channel 1.73x as far. Read from ``G`` clusters' sums, a test
-    # read off it sizes better against ``t(G - 1)``'s quantile than the normal's (ADR 0062).
+    # read off it sizes better against ``t(G - 1)``'s quantile than the normal's (ADR 0062). Under
+    # ``periods``, one unit's, the covariance is read from the scores' projections on ``nu``
+    # cosines of the periods (EWC), and a test read off it against ``t(nu)``'s (ADR 0075).
     channel_error: float | None
     # The standard error of the drift regression's fitted value at the log's rows, root mean square
     # over the rows and the states, from the drift stage's own homoskedastic OLS covariance; None
@@ -250,6 +252,19 @@ class CausalDynamicsFit:
     # Experimental, as ``instrument_relevance``: how many of its entries are above 0, the rank of
     # the instrument's moment along the directions the log moves. None without an instrument.
     instrument_rank: int | None = None
+    # (N,), each transition's period as steps from the log's first where the fit was given
+    # ``periods``, one unit's transitions: the channel's covariance then sums each transition's
+    # scores over its states and reads their dependence across the periods by ``nu`` cosines of
+    # them (EWC, :attr:`error_cosines`), and a reader of ``influence`` sums its rows the same way
+    # (:func:`_clustered_squares`). None where the fit was given none.
+    periods: np.ndarray | None = None
+
+    @property
+    def error_cosines(self) -> int | None:
+        """``nu``, the cosines of the periods the channel's error was read with where the fit was
+        given ``periods``, and the degrees of freedom of the ``t`` a test read off it is sized
+        against; None where it was given none."""
+        return None if self.periods is None else _cosine_count(self.periods.size)
 
 
 def _r_squared(target: Array, prediction: Array) -> float:
@@ -408,11 +423,17 @@ def _small_sample(rows: int, n_coeff: int, clusters: int | None) -> float:
 
 
 def _robust_spreads(
-    sensitivity: Array, score: Array, n_coeff: int, clusters: np.ndarray | None = None
+    sensitivity: Array,
+    score: Array,
+    n_coeff: int,
+    clusters: np.ndarray | None = None,
+    periods: np.ndarray | None = None,
 ) -> tuple[Array, ...]:
     """``sum_i J_i diag(e_i^2) J_i'`` for a fit linear in its target ``y``, ``J = d coeffs / d y``;
     under ``clusters``, ``sum_g s_g s_g'`` with ``s_g = sum_{i in g} J_i e_i``. Two-way, the three
     spreads of :func:`_clustered_squares`, and an error read off them is the largest of their reads.
+    Under ``periods``, one unit's, ``sum_j c_j c_j'`` with ``c_j = sum_i w_ji J_i e_i`` over the
+    weights ``w`` of :func:`_cosines`, at the rows' factor ``N / (N - k)``.
 
     Each row's own squared residual stands in for its noise, so it holds when the noise differs
     across rows, and ``J`` runs through the cross-fitted nuisances as well as the moment. A weight
@@ -423,6 +444,9 @@ def _robust_spreads(
     depend on one another in any way.
     """
     n = score.shape[0]
+    if periods is not None:
+        projected = jnp.asarray(_cosines(periods)) @ jnp.einsum("pis,is->ip", sensitivity, score)
+        return (_small_sample(n, n_coeff, None) * projected.T @ projected,)
     if clusters is None:
         scale = _small_sample(n, n_coeff, None)
         return (jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity),)
@@ -443,11 +467,56 @@ def _cluster_count(clusters: np.ndarray) -> int:
     return int(np.min(clusters.max(axis=0))) + 1
 
 
-def _clustered_squares(rows: np.ndarray, clusters: np.ndarray | None) -> tuple[np.ndarray, ...]:
+def _cosine_count(rows: int) -> int:
+    """``nu``, the cosines one unit's ``N`` transitions are read with: the most whole ones at or
+    below ``0.4 N^(2/3)``, the count Lazarus, Lewis, Stock and Watson (2018) recommend, and one at
+    the least. Read in whole numbers, ``1000 nu^3 <= 64 N^2``, since in floating point
+    ``0.4 * 1000 ** (2 / 3)`` falls short of 40."""
+    count = max(int(0.4 * rows ** (2.0 / 3.0)), 1)
+    while 1000 * (count + 1) ** 3 <= 64 * rows**2:
+        count += 1
+    while count > 1 and 1000 * count**3 > 64 * rows**2:
+        count -= 1
+    return count
+
+
+def _cosines(periods: np.ndarray) -> np.ndarray:
+    """``(nu, N)``: ``sqrt(2 / nu) cos(pi j (p_i + 1/2) / P)`` for ``j`` from 1 to ``nu``
+    (:func:`_cosine_count`), at each transition's period ``p_i`` counted from the log's first, over
+    the ``P`` periods it spans, a period it lacks holding no score, as Parzen (1963) reads a series
+    with gaps.
+
+    ``sum_j c_j c_j'`` with ``c_j = sum_i w_ji s_i`` is the equal-weighted cosine estimate of the
+    covariance of the scores' sum (Lazarus, Lewis, Stock and Watson 2018). Over a span without
+    gaps each cosine sums to nothing, so a mean of the scores, which the moment sets to nothing,
+    moves none of it. Where the scores are independent each ``c_j c_j'`` reads their covariance;
+    where they persist, the cosines' low frequencies read the long-run one. As the log grows at a
+    fixed ``nu`` the ``c_j`` read as independent normals, so a ``t`` statistic read off the
+    estimate is a ``t(nu)``.
+    """
+    count = _cosine_count(periods.size)
+    span = int(periods.max()) + 1
+    frequencies = np.arange(1, count + 1)[:, None]
+    return math.sqrt(2.0 / count) * np.cos(math.pi * frequencies * (periods[None, :] + 0.5) / span)
+
+
+def _degrees_of_freedom(rows: int, clusters: np.ndarray | None, periods: np.ndarray | None) -> int:
+    """The ``t`` a test read off the channel's error is sized against: one fewer than the
+    independent terms its spread sums, the rows or the clusters (ADR 0062), or ``nu`` over one
+    unit's periods, whose cosines leave out the mean the moment sets to nothing (ADR 0075)."""
+    if periods is not None:
+        return _cosine_count(rows)
+    return (rows if clusters is None else _cluster_count(clusters)) - 1
+
+
+def _clustered_squares(
+    rows: np.ndarray, clusters: np.ndarray | None, periods: np.ndarray | None = None
+) -> tuple[np.ndarray, ...]:
     """``rows``' covariance, ``(N, n, ...)`` per transition and state as
     :attr:`CausalDynamicsFit.influence` is: the sum of the outer products of its independent
     terms, each a transition and state, or under ``clusters`` a cluster's transitions and states
-    summed.
+    summed. Under ``periods``, one unit's, each transition's states summed and projected on the
+    cosines of :func:`_cosines`, as the channel's error is read.
 
     Two-way, three covariances, and a reader takes the one it reads largest (MacKinnon, Nielsen
     and Webb 2024): the two dimensions' sums less their intersection's, which both count (Cameron,
@@ -456,6 +525,9 @@ def _clustered_squares(rows: np.ndarray, clusters: np.ndarray | None) -> tuple[n
     ``rows`` carry, to its own. The two-way sums alone can read less than either dimension does:
     on a log of 3 units over 4 periods they read nothing of a channel affine in the state.
     """
+    if periods is not None:
+        projected = np.tensordot(_cosines(periods), rows.sum(axis=1), axes=(1, 0))
+        return (np.tensordot(projected, projected, axes=(0, 0)),)
     if clusters is None:
         terms = rows.reshape(-1, *rows.shape[2:])
         return (np.tensordot(terms, terms, axes=(0, 0)),)
@@ -938,6 +1010,7 @@ def fit_causal_residual(
     weights: Callable[[Array], Array] | None = None,
     influence: bool = False,
     clusters: np.ndarray | Array | None = None,
+    periods: ArrayLike | None = None,
 ) -> CausalDynamicsFit:
     """Fit a :class:`ControlAffineResidual` whose channel is the *interventional* control response.
 
@@ -1110,6 +1183,19 @@ def fit_causal_residual(
             dimension's sums alone, at its own. A shock every unit shares in a period, met by
             levers every unit moves together, makes one period's scores move together across
             units, which a sum within units leaves out (ADR 0061).
+        periods: each transition's period, a whole number of steps, on a log of one unit, which
+            has no second cluster to sum within: one label a transition, no period twice. The
+            channel's covariance then sums each transition's scores over its states and reads
+            their dependence across the periods by ``nu`` cosines of them, the equal-weighted
+            cosine estimate with ``nu`` the most whole cosines at or below ``0.4 N^(2/3)`` (Lazarus,
+            Lewis, Stock and Watson 2018), at the rows' factor ``N / (N - k)``, and a reader of
+            ``influence`` sums its rows the same way. A test read off it is sized against
+            ``t(nu)`` (:attr:`CausalDynamicsFit.error_cosines`). ``None`` takes the transitions
+            as independent, which a unit's persistent noise met by a lever that persists breaks:
+            the scores, each the lever's residual times the noise, then persist too. On one unit
+            of 200 transitions whose noise is AR(0.9) and whose lever is AR(0.7), a 95 % interval
+            covered the channel on 0.703 of 1000 logs row by row and on 0.925 by cosines; where
+            the noise is drawn afresh, the cosines' interval is 11 % wider (ADR 0075).
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
@@ -1117,7 +1203,9 @@ def fit_causal_residual(
     Raises:
         ValueError: on a negative ``channel_degree``; on ``clusters`` that do not label every
             transition once or once in each of two dimensions, or name fewer than two clusters in
-            a dimension; on an ``rk4`` fixed point that does
+            a dimension; on ``periods`` that do not label every transition once with a whole
+            number, or name a period twice, or that come with ``clusters``; on an ``rk4`` fixed
+            point that does
             not converge; on a covariate named ``u`` or ``x_next``, an instrument or a driver named
             ``x``, ``u`` or ``x_next``, a driver named twice, or an instrument that is also a
             covariate or a driver, at the step's start or its end. Each would read a column the fit
@@ -1143,7 +1231,13 @@ def fit_causal_residual(
     if channel_degree < 0:
         raise ValueError(f"channel_degree must be a non-negative integer; got {channel_degree}")
     x, u, x_next = data["x"], data["u"], data["x_next"]
+    if clusters is not None and periods is not None:
+        raise ValueError(
+            "clusters and periods are two readings of the error's dependence: clusters read it "
+            "within each cluster, periods across one unit's periods; give one"
+        )
     codes = None if clusters is None else _cluster_codes(clusters, x.shape[0])
+    steps = None if periods is None else _period_codes(periods, x.shape[0])
     known_rate = jax.vmap(lambda xi, ui: known(0.0, xi, ui))(x, u)
 
     identified = bool(adjust_for) or instrument is not None
@@ -1415,7 +1509,7 @@ def fit_causal_residual(
             unit[:, None]
             * jnp.linalg.solve(newton, jnp.linalg.solve(newton, spread / unit[:, None] / unit).T)
             * unit
-            for spread in _robust_spreads(fit_map, score, regressor.shape[1], codes)
+            for spread in _robust_spreads(fit_map, score, regressor.shape[1], codes, steps)
         ]
 
         # A row reaches the fixed point through K^-1 G, as the covariance says the noise does.
@@ -1480,7 +1574,9 @@ def fit_causal_residual(
             sensitivity = jax.jacrev(lambda target: _parameters(solve(target)))(jnp.zeros_like(y))
         else:
             sensitivity = jax.jacrev(lambda target: solve(target)[0].ravel())(jnp.zeros_like(y))
-        spreads = _robust_spreads(sensitivity[: channel.size], score, regressor.shape[1], codes)
+        spreads = _robust_spreads(
+            sensitivity[: channel.size], score, regressor.shape[1], codes, steps
+        )
         fit = dataclasses.replace(
             fit,
             channel_error=max(
@@ -1505,7 +1601,27 @@ def fit_causal_residual(
         clusters=codes,
         instrument_relevance=relevance,
         instrument_rank=rank,
+        periods=steps,
     )
+
+
+def _period_codes(periods: ArrayLike, rows: int) -> np.ndarray:
+    """Each transition's period as steps from the log's first, one unit's: whole numbers, one a
+    transition and no period twice."""
+    steps = np.asarray(periods)
+    if steps.shape != (rows,):
+        raise ValueError(
+            f"periods label each of the {rows} transitions once, shape ({rows},); got an array of "
+            f"shape {steps.shape}"
+        )
+    if not np.issubdtype(steps.dtype, np.integer):
+        raise ValueError(f"periods are whole numbers of steps; got dtype {steps.dtype}")
+    if np.unique(steps).size < rows:
+        raise ValueError(
+            "periods name a period twice: they label one unit's transitions, one a period. A log "
+            "of several units reads its error within each unit by clusters"
+        )
+    return (steps - steps.min()).astype(np.int64)
 
 
 def _cluster_codes(clusters: np.ndarray | Array, rows: int) -> np.ndarray:
@@ -1593,11 +1709,13 @@ def omitted_confounder_bound(
     carries the estimate's influence and ``bias_scale``'s, whose ``nu^2`` part is ``nu^2 -
     alpha^2`` for a representer ``alpha``. Its sign convention for the estimate differs from this
     one in the cross term of the two influences, which vanishes in expectation. A fit given
-    ``clusters`` has both influences summed within each cluster, as its channel's error is. The
-    bounds take a ``t``'s quantile with ``G - 1`` degrees of freedom, ``G`` the clusters, two-way
-    the smaller dimension's count, or the rows where there are none. At 5 units, a 5 % test of
-    the channel read off its error rejected 9.75 % and 14.75 % of panels against the normal's
-    quantile, and 3.25 % and 5.75 % against ``t(4)``'s (ADR 0062). DoubleML takes the normal's.
+    ``clusters`` has both influences summed within each cluster, as its channel's error is, and
+    one given ``periods`` reads them across its periods by cosines. The bounds take a ``t``'s
+    quantile with ``G - 1`` degrees of freedom, ``G`` the clusters, two-way the smaller
+    dimension's count, or the rows where there are none; or ``nu``, the cosines', under
+    ``periods`` (ADR 0075). At 5 units, a 5 % test of the channel read off its error rejected
+    9.75 % and 14.75 % of panels against the normal's quantile, and 3.25 % and 5.75 % against
+    ``t(4)``'s (ADR 0062). DoubleML takes the normal's.
 
     Args:
         fit: an identified fit of :func:`fit_causal_residual`, by adjustment, unweighted, made
@@ -1657,15 +1775,13 @@ def omitted_confounder_bound(
         out=np.zeros_like(residual),
         where=product > 0.0,
     )
-    # one degree of freedom fewer than the independent terms the spreads sum (ADR 0062)
-    count = rows if clusters is None else _cluster_count(clusters)
-    quantile = float(student_t.ppf(level, count - 1))
+    quantile = float(student_t.ppf(level, _degrees_of_freedom(rows, clusters, fit.periods)))
 
     def bounds(strength: float) -> tuple[float, float, float, float]:
         low, high = estimate - strength * scale, estimate + strength * scale
         moved = strength * scale_psi / rows
-        spread_low = float(np.sqrt(max(_clustered_squares(psi - moved, clusters))))
-        spread_high = float(np.sqrt(max(_clustered_squares(psi + moved, clusters))))
+        spread_low = float(np.sqrt(max(_clustered_squares(psi - moved, clusters, fit.periods))))
+        spread_high = float(np.sqrt(max(_clustered_squares(psi + moved, clusters, fit.periods))))
         return low, high, low - quantile * spread_low, high + quantile * spread_high
 
     def at_share(share: float) -> float:
@@ -1721,7 +1837,9 @@ class PersistenceCheck:
     """
 
     correlation: float  # lag-1, pooled over the pairs and the states, each state in its own units
-    p_value: float  # two-sided against none, off ``t(G - 1)``; nan below two units
+    # two-sided against none, off ``t(G - 1)``, or on one unit off ``t(nu)`` across its periods
+    # (ADR 0075); nan below two pairs
+    p_value: float
     pairs: int  # transitions whose unit's transition a period earlier is in the log
     units: int  # ``G``: the units with a pair
 
@@ -1737,7 +1855,10 @@ def persistence_check(
     divided by its root mean square, so each state counts alike in any units. The pairs' products,
     summed over the states, are summed within each unit before the test, since the transitions of
     one unit need not be independent; the statistic is their total over its CR1 spread, each
-    unit's sum less its pairs' share of the total, against ``t(G - 1)`` (ADR 0062).
+    unit's sum less its pairs' share of the total, against ``t(G - 1)`` (ADR 0062). Pairs of one
+    unit alone are read across their periods instead: the total over the spread of its
+    projections on ``nu`` cosines of the pairs' periods, against ``t(nu)``, as a fit given
+    ``periods`` reads its error (ADR 0075).
 
     A rejection says the premise fails, not by how much the channel is off: that depends on how
     far a lever persists as well (:class:`PersistenceCheck`). Adjusting the fit for the state, the
@@ -1787,8 +1908,14 @@ def persistence_check(
     # sqrt(G - 1), so at six units or fewer it never clears t(G - 1)'s 5 % quantile
     centred = sums - np.bincount(codes[later])[present] * (float(np.sum(products)) / pairs)
     spread = math.sqrt(count / (count - 1) * float(np.sum(centred**2))) if count > 1 else 0.0
+    freedom = count - 1
+    if count == 1 and pairs > 1:
+        # one unit leaves no second unit's sum to read a spread from: its products are read
+        # across its periods by cosines, as a fit given periods reads its error (ADR 0075)
+        projected = _cosines(steps[later] - steps[later].min()) @ products
+        spread, freedom = math.sqrt(float(projected @ projected)), _cosine_count(pairs)
     p_value = (
-        float(2.0 * student_t.sf(abs(float(np.sum(sums))) / spread, count - 1))
+        float(2.0 * student_t.sf(abs(float(np.sum(sums))) / spread, freedom))
         if spread > 0.0
         else math.nan
     )

@@ -2211,20 +2211,48 @@ def test_a_panel_whose_transitions_all_start_in_one_period_sums_within_its_units
     assert result.to_json()["certificate"]["error_periods"] is None
 
 
-def test_a_panel_of_one_unit_takes_its_transitions_as_independent() -> None:
-    result = _prescribe(_panel(n_units=1, n_periods=400), ["demand"])
+def test_a_panel_of_one_unit_reads_its_error_across_its_periods_by_cosines(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One unit has no second group to sum within: its 399 transitions are read across the periods
+    they start in by 21 cosines of them, and the certificate, the report, the JSON and the fit's
+    log event say so."""
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
+        result = _prescribe(_panel(n_units=1, n_periods=400), ["demand"])
+    (event,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "fit"]
+    assert (event.clustered_by, event.cosines) == (None, 21)
     certificate = result.certificate
     assert certificate.identification_radius is not None
     grouping = (
         certificate.error_clustered_by,
         certificate.error_clusters,
         certificate.error_periods,
+        certificate.error_cosines,
     )
-    assert grouping == (None, None, None)
+    assert grouping == (None, None, None, 21)
     assert result.model_fit.clusters is None
+    assert result.model_fit.periods is not None
+    assert result.model_fit.periods.tolist() == list(range(399))
     report = result.report()
-    assert "each transition taken as independent" in report
+    assert ", read across the one unit's periods by 21 cosines of them (EWC)" in report
+    assert "each transition taken as independent" not in report
     assert "\n\nStart: the one unit's last logged state, from period 399: `supply` " in report
+    shown = result.to_json()["certificate"]
+    assert (
+        shown["error_clustered_by"],
+        shown["error_clusters"],
+        shown["error_periods"],
+        shown["error_cosines"],
+    ) == grouping
+
+
+def test_a_panel_of_several_units_reads_no_cosines() -> None:
+    result = _prescribe(_panel(n_units=40, n_periods=6), ["demand"])
+    assert result.certificate.error_cosines is None
+    assert result.model_fit.periods is None
+    shown = result.to_json()["certificate"]
+    assert "error_cosines" in shown
+    assert shown["error_cosines"] is None
 
 
 @pytest.mark.parametrize(
@@ -2402,10 +2430,25 @@ def test_the_certificate_names_noise_that_persists_within_units() -> None:
     assert abs(fresh.noise_persistence) < 0.1
 
 
-def test_a_panel_of_one_unit_reads_the_noise_s_persistence_untested() -> None:
-    result = _prescribe(_panel(n_units=1, n_periods=200), CausalGraph.from_edges(EDGES))
-    certificate = result.certificate
+def test_a_panel_of_one_unit_tests_the_noise_s_persistence_across_its_periods() -> None:
+    """One zone over 200 periods: its noise AR(0.8) under an incentive that keeps 0.7 of its last
+    value is caught across its periods, as it is across units; drawn afresh, it is not. A p-value
+    that pairs leave no spread to read says so."""
+    graph = CausalGraph.from_edges(EDGES)
+    persistent = _prescribe(_panel(n_units=1, n_periods=200, sticky=0.7, persistent=0.8), graph)
+    certificate = persistent.certificate
     assert certificate.noise_persistence is not None
-    assert certificate.noise_persistence_p is None
-    assert "within units, not tested on one unit" in result.report()
-    assert result.to_json()["certificate"]["noise_persistence_p"] is None
+    assert certificate.noise_persistence > 0.5
+    assert certificate.noise_persistence_p is not None
+    assert certificate.noise_persistence_p < 1e-3
+    (line,) = [line for line in persistent.report().splitlines() if "noise persistence" in line]
+    assert line.startswith("- noise persistence: **the noise persists within units** (lag-1")
+    record = persistent.to_json()["certificate"]
+    assert record["noise_persistence_p"] == certificate.noise_persistence_p
+    fresh = _prescribe(_panel(n_units=1, n_periods=200), graph)
+    assert fresh.certificate.noise_persistence_p is not None
+    assert fresh.certificate.noise_persistence_p > 0.05
+    untested = dataclasses.replace(
+        fresh, certificate=dataclasses.replace(fresh.certificate, noise_persistence_p=None)
+    )
+    assert "within units, not tested: its pairs leave no spread to read" in untested.report()

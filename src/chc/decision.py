@@ -603,15 +603,20 @@ class DecisionCertificate:
     # counts the periods the transitions start in where the error is read two ways (ADR 0061), so
     # that a shock every unit shares in a period is read: the largest of the groups' and the
     # periods' sums together and of each alone. None where it is not, as where they all start in
-    # one.
+    # one. ``error_cosines`` counts the cosines of the periods the error is read with on a panel of
+    # one unit, which has no second group to sum within, in place of taking each transition as
+    # independent (EWC, ADR 0075); a test read off the error is then sized against
+    # ``t(error_cosines)``. None where it is not.
     error_clustered_by: str | None = None
     error_clusters: int | None = None
     error_periods: int | None = None
+    error_cosines: int | None = None
     # The lag-1 autocorrelation of the channel moment's residual within units, and its two-sided
     # p-value (:func:`chc.dynamics_id.persistence_check`): where the noise persists and a lever does
     # too, the channel is biased by an amount its error does not cover (ADR 0064). None where the
-    # channel is not identified or no unit has two consecutive transitions; the p-value is None on
-    # one unit as well.
+    # channel is not identified or no unit has two consecutive transitions; the p-value is None
+    # where the pairs leave no spread to read, as one pair does. On one unit the p-value reads
+    # the pairs across its periods, as the error does (ADR 0075).
     noise_persistence: float | None = None
     noise_persistence_p: float | None = None
     # Whether the log determines the plan's predicted path (:data:`Estimability`, ADR 0054); None
@@ -1304,6 +1309,7 @@ class Prescription:
                 "error_clustered_by": certificate.error_clustered_by,
                 "error_clusters": certificate.error_clusters,
                 "error_periods": certificate.error_periods,
+                "error_cosines": certificate.error_cosines,
                 "noise_persistence": certificate.noise_persistence,
                 "noise_persistence_p": certificate.noise_persistence_p,
                 "estimability": certificate.estimability,
@@ -1369,6 +1375,11 @@ class Prescription:
         certificate = self.certificate
         if certificate.identification_radius is None:
             return ""
+        if certificate.error_cosines is not None:
+            return (
+                f", read across the one unit's periods by {certificate.error_cosines} cosines of "
+                "them (EWC)"
+            )
         if certificate.error_clustered_by is None:
             return ", each transition taken as independent"
         grouped = (
@@ -1391,7 +1402,7 @@ class Prescription:
             return "- noise persistence: not read, no unit has two consecutive transitions"
         head = f"lag-1 autocorrelation {correlation:+.2f} within units"
         if p_value is None:
-            return f"- noise persistence: {head}, not tested on one unit"
+            return f"- noise persistence: {head}, not tested: its pairs leave no spread to read"
         if p_value > _PERSISTENCE_ALPHA:
             return f"- noise persistence: {head} (p = {p_value:.3g})"
         return (
@@ -1510,10 +1521,13 @@ def prescribe(
             together and of each alone (ADR 0061): a shock every unit shares in a period, met by
             levers the units move together, makes the transitions of one period move together
             across units, and summed by unit alone the error read 0.29 to 0.58 of the estimate's
-            spread. A panel whose transitions all fall in one group takes them as independent, one
-            whose transitions all start in one period sums within groups alone, and the
-            certificate says which it was
-            (:attr:`DecisionCertificate.error_clustered_by`, ``error_periods``).
+            spread. A panel of one unit, which has no second group, reads its transitions'
+            dependence across their periods by cosines of them (``periods`` in
+            :func:`~chc.dynamics_id.fit_causal_residual`, ADR 0075); one of several units whose
+            transitions all fall in one declared group takes them as independent; one whose
+            transitions all start in one period sums within groups alone; and the certificate says
+            which it was (:attr:`DecisionCertificate.error_clustered_by`, ``error_periods``,
+            ``error_cosines``).
         levers, target, constraints: the decision, in the domain's own names. States are the target
             column followed by each other constrained column, in that order. A constraint may name
             the target column itself: it then bounds the steered state, which gets the barrier and
@@ -1781,9 +1795,12 @@ def prescribe(
         adjust_for=resolved.covariates,
         drivers=driver_names,
     )
-    groups, periods = (int(np.unique(column).size) for column in labels[:, :2].T)
+    groups, periods, units = (int(np.unique(column).size) for column in labels.T)
     clustered_by = (panel.cluster or panel.unit) if groups > 1 else None
     two_way = clustered_by is not None and periods > 1
+    # one unit has no second group to read a spread between: its transitions are read across their
+    # periods instead (ADR 0075)
+    serial = clustered_by is None and units == 1
     n_states, n_levers = len(states), len(lever_names)
 
     base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
@@ -1798,6 +1815,7 @@ def prescribe(
         integrator=integrator,
         drivers=driver_names,
         clusters=None if clustered_by is None else labels[:, :2] if two_way else labels[:, 0],
+        periods=labels[:, 1] if serial else None,
         nuisance_degree=_NUISANCE_DEGREE,
         ridge=_RIDGE,
     )
@@ -1810,6 +1828,7 @@ def prescribe(
             "channel_error": fit.channel_error,
             "clustered_by": clustered_by,
             "clusters": groups if clustered_by is not None else None,
+            "cosines": fit.error_cosines,
             "integrator": fit.integrator,
             "integrator_defect": fit.integrator_defect,
             "overlap": fit.action_residual_variance,
@@ -2169,6 +2188,7 @@ def prescribe(
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
         error_periods=periods if two_way else None,
+        error_cosines=fit.error_cosines,
         noise_persistence=None if persistence is None else _finite(persistence.correlation),
         noise_persistence_p=None if persistence is None else _finite(persistence.p_value),
         estimability=estimability,
