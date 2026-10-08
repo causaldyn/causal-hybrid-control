@@ -1303,9 +1303,9 @@ def test_the_unmoved_directions_are_orthogonal_in_the_units_the_fit_read_them(
     )
     states, actions, features = fit.residual.channel.shape
     assert fit.unmoved is not None
-    assert fit._unmoved_size is not None
+    assert fit._parameter_size is not None
     directions = fit.unmoved[: actions * features, : fit.unmoved.shape[1] // states]
-    scaled = np.asarray(directions * fit._unmoved_size[:, None])
+    scaled = np.asarray(directions * fit._parameter_size[: actions * features, None])
     assert scaled.shape[1] == 3
     unit = scaled / np.linalg.norm(scaled, axis=0)
     np.testing.assert_allclose(unit.T @ unit, np.eye(3), rtol=0.0, atol=1e-12)

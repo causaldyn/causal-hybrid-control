@@ -44,6 +44,15 @@ still change).
   those logs read the same relations, to 2.2e-16 in the levers' own units, and the same schedules,
   to 6.1e-16. At unit scale a log that kept a relation plans as before to 3.3e-16, and the rest to
   the bit. Since 0.14.0.
+- **`misspecification_cost` counts what it cannot see the same in any units of the state and of
+  the levers.** `unseen` weighed the log's unmoved directions by the regret's curvature in raw
+  parameter units, where those units set the parameters' sizes as many orders apart, and the floor
+  follows the largest. On a log whose second lever was always twice the first, a plan that weighs
+  two unmoved directions read none with both states, or either one, logged at 1e6 or 1e12 of their
+  units, or the first lever at 1e6, and one with either state at 1e-6. Each parameter is now read
+  at its scale on the log, the norm of its column of the fit's design over its state's (ADR 0024):
+  the two directions sit 5.7e5 and 1.5e7 times above the floor from 1e-12 to 1e12 of the states'
+  units and from 1e-3 to 1e6 of a lever's. Since 0.9.0.
 - **An entry point that takes a caller's data reads it as a panel reads a column.** The functions
   that take logs, samples, series, outcomes, histories, stored decisions, forecasts or a target's
   levels as arrays, or as a mapping or a frame of them, cast them with NumPy's or JAX's cast, which

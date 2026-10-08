@@ -25,6 +25,7 @@ from chc.dynamics import HybridDynamics
 from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual
 from chc.integrate import rk4_step
 from chc.misspecification import (
+    MisspecificationCost,
     _chi_square_mixture_survival,
     _mixture_weights,
     _parameter_weight,
@@ -352,6 +353,83 @@ def test_a_direction_the_log_never_moved_is_reported_not_priced(held: bool, unse
     assert np.shape(reference.unmoved) == (reference.influence.shape[-1], 2)
     assert gate.unseen == unseen
     assert gate.p_value > 1e-3
+
+
+@functools.cache
+def _gate_in(states: tuple[float, float], lever: float, held: bool) -> MisspecificationCost:
+    """The gate on the pair log with each state and the first action logged in units of their own,
+    the cost, the target, the box, the ratio held and the alternative's weights with them: one
+    problem in other units."""
+    x_units, u_units = jnp.asarray(states), jnp.array([lever, 1.0])
+    data = _pair_log(4000, 0)
+    data = dict(data, x=data["x"] * x_units, x_next=data["x_next"] * x_units, u=data["u"] * u_units)
+    options = {**FIT, "influence": True}
+    reference = fit_causal_residual(_known, data, DT, **options)
+    alternative = fit_causal_residual(
+        _known, data, DT, weights=lambda x: jnp.exp(x[:, 0] / states[0]), **options
+    )
+    over = jnp.diag(1.0 / x_units)
+    cost = QuadraticCost(
+        Q=over @ COST.Q @ over,
+        R=0.05 * jnp.diag(1.0 / u_units**2),
+        Qf=over @ COST.Qf @ over,
+        x_target=COST.x_target * x_units,
+    )
+    constraints = (
+        (LinearConstraint(np.kron(np.eye(HORIZON), [[-2.0 / lever, 1.0]]), 0.0, 0.0),)
+        if held
+        else ()
+    )
+    plan = causal_plan(
+        _model(reference.residual),
+        START * x_units,
+        cost,
+        DT,
+        HORIZON,
+        -BOX * u_units,
+        BOX * u_units,
+        steps=20_000,
+        constraints=constraints,
+    )
+    return misspecification_cost(plan, reference, alternative)
+
+
+IN_OTHER_UNITS = pytest.mark.parametrize(
+    ("states", "lever"),
+    [
+        ((1e-12, 1e-12), 1.0),
+        ((1e12, 1e12), 1.0),
+        ((1e-6, 1.0), 1.0),
+        ((1e12, 1.0), 1.0),
+        ((1.0, 1e12), 1.0),
+        ((1.0, 1.0), 1e-3),
+        ((1.0, 1.0), 1e6),
+    ],
+    ids=[
+        "both states at 1e-12",
+        "both states at 1e12",
+        "the first state at 1e-6",
+        "the first state at 1e12",
+        "the second state at 1e12",
+        "the first action at 1e-3",
+        "the first action at 1e6",
+    ],
+)
+
+
+@IN_OTHER_UNITS
+@pytest.mark.parametrize(
+    ("held", "unseen"), [(False, 2), (True, 0)], ids=["free", "held to the log's ratio"]
+)
+def test_what_the_gate_cannot_see_reads_the_same_in_any_units(
+    states: tuple[float, float], lever: float, held: bool, unseen: int
+) -> None:
+    """Read in raw parameter units, where the units set the parameters' sizes apart, the regret's
+    curvature along a direction the plan weighs fell under the floor: with both states at 1e12 of
+    their units, either state alone at 1e12 or the first action at 1e6, the free plan's two unseen
+    directions read none, and with the first state at 1e-6, one. Read at each parameter's scale on
+    the log, the two read 5.7e5 and 1.5e7 times the floor in every unit here."""
+    assert _gate_in(states, lever, held).unseen == unseen
 
 
 # --- refusals -------------------------------------------------------------------------------------

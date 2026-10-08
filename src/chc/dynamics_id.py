@@ -254,10 +254,13 @@ class CausalDynamicsFit:
     # Experimental, as ``instrument_relevance``: how many of its entries are above 0, the rank of
     # the instrument's moment along the directions the log moves. None without an instrument.
     instrument_rank: int | None = None
-    # (m k,), set with ``unmoved``: the norm of each column of the channel's design on the log's raw
-    # actions, 1 for a column of zeros. ``unmoved``'s directions, each coefficient times it, are the
-    # orthogonal directions the fit read, and a reader of their span reads it there.
-    _unmoved_size: Array | None = dataclasses.field(default=None, repr=False, compare=False)
+    # (p,), set with ``unmoved``, in ``influence``'s order: each parameter's scale on the log, the
+    # norm of its column of the channel's design on the log's raw actions, or of the drift
+    # regression's, over the norm of its state's column of the log, each 1 for a column of zeros. A
+    # parameter times it reads the same in any units of the state and of the actions. ``unmoved``'s
+    # directions so scaled are orthogonal on each state's channel, where the fit read them, and a
+    # reader of their span reads it there.
+    _parameter_size: Array | None = dataclasses.field(default=None, repr=False, compare=False)
 
 
 def _r_squared(target: Array, prediction: Array) -> float:
@@ -730,12 +733,13 @@ def _unmoved_actions(fit: CausalDynamicsFit) -> tuple[int, ...]:
     states, actions, features = fit.residual.channel.shape
     if fit.unmoved is None or fit.unmoved.shape[1] == 0:
         return ()
-    assert fit._unmoved_size is not None  # the fit sets it with unmoved
+    assert fit._parameter_size is not None  # the fit sets it with unmoved
     # every state's channel is moved along the same directions, so the first state's block of its
     # first moves holds them all
     width = actions * features
     directions = fit.unmoved[:width, : fit.unmoved.shape[1] // states]
-    basis = jnp.linalg.qr(directions * fit._unmoved_size[:, None])[0]
+    # the first state's channel: its columns' norms over that state's, one factor for the block
+    basis = jnp.linalg.qr(directions * fit._parameter_size[:width, None])[0]
     moved = jnp.eye(width) - basis @ basis.T
     precision = float(jnp.sqrt(jnp.finfo(basis.dtype).eps))
     return tuple(
@@ -1206,7 +1210,15 @@ def fit_causal_residual(
 
     row_weight = None if weights is None else _state_weights(weights, x)
     raw = _channel_design(u, x, channel_degree)
-    raw_size = jnp.linalg.norm(raw, axis=0)
+    # each parameter's scale on the log, in influence's order: the channel's, state by state, then
+    # the drift regression's, feature by feature
+    state_size = _units.norms(x)
+    parameter_size = jnp.concatenate(
+        [
+            (_units.norms(raw)[None, :] / state_size[:, None]).ravel(),
+            (_units.norms(design)[:, None] / state_size[None, :]).ravel(),
+        ]
+    )
     # the moment's ridge, scaled to the raw actions' size, as the unmoved directions are
     penalty = jnp.diag(_units.mean_squares(raw, row_weight))
     directions = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree)
@@ -1339,7 +1351,7 @@ def fit_causal_residual(
             if row_weight is None
             else float(jnp.sum(row_weight) ** 2 / jnp.sum(row_weight**2)),
             unmoved=unmoved,
-            _unmoved_size=jnp.where(raw_size > 0.0, raw_size, 1.0),
+            _parameter_size=parameter_size,
         )
 
     def predicted(residual: ControlAffineResidual, gain: Array) -> Array:

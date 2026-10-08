@@ -110,13 +110,14 @@ def misspecification_cost(
     (:attr:`chc.dynamics_id.CausalDynamicsFit.unmoved`) has no data in either fit's moment: both
     hold the channel at zero along it, or read it off the log's rates as least squares does, which
     no effect enters, and a miss along it is not theirs to see. ``unseen`` counts the directions the
-    plan's regret weighs. A log whose actions the covariates' features determine, as an undithered
-    deployed plan's own may be, leaves every direction unmoved. On a log whose second action was
-    always twice the first, the gate read ``p = 0.39`` and two unseen directions while the plan lost
-    0.0014 against the truth; held to the log's ratio, the plan had none unseen and lost ``5e-6``
-    (section ``unseen``). Nor can it see the error both fits share: on the zone plant, the plan lost
-    0.38 to 0.51 against the truth at every setting, including where the class held, 32 to 106 times
-    the regret between the fits' plans.
+    plan's regret weighs, each parameter read at its scale on the log, so the count is the same in
+    any units of the state and of the actions. A log whose actions the covariates' features
+    determine, as an undithered deployed plan's own may be, leaves every direction unmoved. On a log
+    whose second action was always twice the first, the gate read ``p = 0.39`` and two unseen
+    directions while the plan lost 0.0014 against the truth; held to the log's ratio, the plan had
+    none unseen and lost ``5e-6`` (section ``unseen``). Nor can it see the error both fits share: on
+    the zone plant, the plan lost 0.38 to 0.51 against the truth at every setting, including where
+    the class held, 32 to 106 times the regret between the fits' plans.
 
     Raises:
         ValueError: on a fit made without ``influence=True``; two fits whose classes, integrators,
@@ -175,9 +176,19 @@ def misspecification_cost(
         key=lambda square: float(np.trace(weight @ square)),
     )
     # W vanishes along a direction the plan does not move to second order in rounding, so the
-    # square root of the precision separates it from one the plan weighs at all
-    weighed = np.linalg.eigvalsh(unmoved.T @ weight @ unmoved) if unmoved.shape[1] else np.zeros(0)
-    floor = math.sqrt(np.finfo(np.float64).eps) * float(np.linalg.norm(weight, 2))
+    # square root of the precision separates it from one the plan weighs at all. Both are read at
+    # each parameter's scale on the log, on an orthonormal basis of unmoved's span there, where
+    # they read the same in any units of the state and of the actions. In raw units those set the
+    # parameters' sizes apart: with both states logged at 1e12 of their units, and the problem
+    # with them, the two directions a plan weighed read as weighing nothing.
+    assert reference._parameter_size is not None  # the fit sets it with unmoved
+    size = np.asarray(reference._parameter_size, dtype=np.float64)
+    scaled = weight / np.outer(size, size)
+    weighed = np.zeros(0)
+    if unmoved.shape[1]:
+        basis = np.linalg.qr(unmoved * size[:, None])[0]
+        weighed = np.linalg.eigvalsh(basis.T @ scaled @ basis)
+    floor = math.sqrt(np.finfo(np.float64).eps) * float(np.linalg.norm(scaled, 2))
     ws = weight @ covariance
     trace, trace_squared = float(np.trace(ws)), float(np.trace(ws @ ws))
     leverage = max(float(d @ ws @ weight @ d) - trace_squared, 0.0)

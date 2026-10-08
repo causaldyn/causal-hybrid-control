@@ -2,7 +2,9 @@
 
 **Status:** proposed, 2026-09-30. Amended 2026-10-06 by ADR 0054: along an unmoved direction
 both fits hold the channel at zero, or read it off the log's rates where the drift cannot take
-up its push, rather than leave the ridge's value.
+up its push, rather than leave the ridge's value. Amended 2026-10-08: `unseen` weighs the unmoved
+directions with each parameter at its scale on the log; until 0.15.1 it weighed them in raw
+parameter units, and its count moved with the units of the state and of the levers.
 
 ## Context
 
@@ -45,7 +47,10 @@ Three pieces were missing.
     integrand is a slowly moving amplitude times a pure oscillation, and QUADPACK's Fourier rule
     takes that part to the end.
   - `unseen` counts the unmoved directions the plan's regret weighs: the eigenvalues of `V' W V`
-    above `sqrt(eps) ||W||`, with `V` the fit's `unmoved`.
+    above `sqrt(eps) ||W||`. Both are read with each parameter at its scale on the log, the norm
+    of its column of the fit's design over the norm of its state's column of the log, where they
+    read the same in any units of the state and of the levers. `V` is an orthonormal basis there of
+    the span of the fit's `unmoved`.
 - **`fit_causal_residual(influence=True)`** keeps `influence`, `(N, n, p)`:
   `psi = sqrt(n / (n - k)) (J e + D (r - e))`.
   - `J` is the whole fit's response to the row's rate, and `e` the moment's residual.
@@ -121,6 +126,17 @@ first state at a given slope, fitted by the constant-channel class unweighted an
 - **What it cannot see** (section `unseen`). The log's second action was always twice the first,
   and the class held the truth. The gate read `p = 0.33` and two unseen directions, and the plan
   lost 0.55 against the truth. Held to the log's ratio, the plan had none unseen and lost `5e-6`.
+- **`unseen` in other units.** On that log, with the cost, the start and the box in the units of
+  the log, `unseen` read in raw parameter units counted none of the two directions with both
+  states, or either one, at 1e6 or 1e12 of their units, or the first lever at 1e6. With either
+  state at 1e-6 it counted one. The units set the parameters' sizes as many orders apart, and the
+  floor follows the largest. Read with each parameter at its scale on the log, the two directions
+  sit 5.7e5 and 1.5e7 times above the floor from 1e-12 to 1e12 of the states' units and from 1e-3
+  to 1e6 of a lever's, and the plan held to the log's ratio weighs none. Past those units of a lever,
+  `decision_weight`'s own reading of the plan moves first. It takes an action within
+  `tolerance (1 + |bound|)` of its bound as bound, and at 1e-9 that took every one of the lever's
+  actions. It refuses a plan whose Hessian's smallest eigenvalue in the actions' raw units is under
+  `1e3 eps` of its largest, and it refused the plan at 1e-6, 1e9 and 1e12.
 - **The trap `unmoved` names.** A log whose actions the covariates' features determine leaves every
   direction unmoved. In float64 the fit was identified and read the channel as `0.0009 ± 0.0013`
   against a true 0.8. In float32 the rounding left in the actions is read as data instead, and the
