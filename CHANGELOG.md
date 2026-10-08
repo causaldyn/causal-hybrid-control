@@ -45,6 +45,11 @@ still change).
   give or take 9,500 up to 4.4% of its spread. The treatment, the outcome and each covariate are
   now read as float64, as a panel's columns are, and refused, naming them, where they are not
   numbers; float32 data reads as its float64 widening, bit for bit. Since 0.2.0.
+- **The marketplace's calibrations take NumPy logs.** `calibrate_predictive`,
+  `calibrate_naive_causal` and `calibrate_shared_state` took each zone's columns by a traced index
+  under `jax.vmap`, which a NumPy array cannot take, so logs of NumPy arrays failed with JAX's
+  `TracerArrayConversionError`. The incentive, the completions and the covariates are now read as
+  JAX arrays first, and NumPy logs calibrate as the same logs in JAX do, bit for bit. Since 0.2.0.
 
 ## [0.15.0] — 2026-10-07
 

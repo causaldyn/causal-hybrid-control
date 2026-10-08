@@ -192,6 +192,18 @@ def test_the_calibrated_response_reads_the_same_with_a_column_far_from_zero(
     _assert_close(other.se * units, one.se, 1e-11, "se")
 
 
+@pytest.mark.parametrize("calibrate", CALIBRATIONS, ids=lambda f: f.__name__)
+def test_numpy_logs_calibrate_as_the_same_logs_in_jax(env: dict, calibrate) -> None:
+    """Each zone's columns are taken by a traced index under ``jax.vmap``, which a NumPy array
+    cannot take: logs of NumPy arrays failed with JAX's ``TracerArrayConversionError``."""
+    logs = env["logs"]
+    one = calibrate(logs)
+    other = calibrate({name: np.asarray(column) for name, column in logs.items()})
+    for part in ("marginal", "se"):
+        left, right = np.asarray(getattr(other, part)), np.asarray(getattr(one, part))
+        assert (left.dtype, left.tobytes()) == (right.dtype, right.tobytes()), part
+
+
 def _plane(n: int = 1_000) -> tuple[jax.Array, jax.Array, jax.Array]:
     """``y = 1 + 2 x + 0.5 z`` and a tenth of a unit of noise."""
     x, z, noise = np.random.default_rng(0).standard_normal((3, n))

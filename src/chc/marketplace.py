@@ -136,7 +136,9 @@ def _zone_slope(u: Array, y: Array, extra: Array) -> tuple[Array, Array]:
 
 
 def _calibrate(logs: dict[str, Array], covariates: tuple[str, ...]) -> ExposureResponse:
-    logs = _real_entries(logs, ("u", "y", *covariates), "logs")
+    read = _real_entries(logs, ("u", "y", *covariates), "logs")
+    # A zone's columns are taken by a traced index under vmap, which a NumPy array cannot take.
+    logs = {name: jnp.asarray(read[name]) for name in ("u", "y", *covariates)}
     n_zones = logs["u"].shape[1]
     # In the incentive's dtype: under x64 a default block is float64, and joined to a float32 log
     # it would decide the zone's solve, not the log.
