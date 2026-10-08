@@ -364,3 +364,30 @@ def test_the_confidence_bounds_read_t_s_quantile_at_one_fewer_than_the_clusters(
         expected = t.ppf(0.95, freedom) / t.ppf(0.75, freedom)
         assert ratio == pytest.approx(expected, rel=1e-9, abs=0.0), freedom
         assert ratio != pytest.approx(norm.ppf(0.95) / norm.ppf(0.75), rel=1e-4, abs=0.0)
+
+
+def test_one_unit_s_confidence_bounds_read_its_periods_by_cosines_against_t_nu() -> None:
+    """Given one unit's periods, the bounds read the influences across them as the channel's error
+    does: at a strength of 0 each confidence bound is the estimate less, or plus, ``t(21)``'s
+    quantile times the root of the influence's projections on 21 cosines of the 400 periods,
+    squared and summed. The rows read the same estimate with a different spread."""
+    channel, to_action, to_rate = np.array([1.0]), np.array([[0.5]]), np.array([0.5])
+    data = _log(channel, to_action, to_rate, dt=0.05, scheme="euler", n=400, seed=5)
+    options = {"adjust_for": ("observed",), "channel_degree": 0, "influence": True}
+    one, shares = np.ones((1, 1, 1)), {"cf_y": 0.0, "cf_d": 0.0}
+    periods = np.arange(400)
+    fit = fit_causal_residual(_known, data, 0.05, **options, periods=periods)
+    bound = omitted_confounder_bound(fit, one, level=0.95, **shares)
+    assert fit.influence is not None
+    psi = np.asarray(fit.influence)[:, 0, 0]
+    frequencies = np.arange(1, 22)[:, None]
+    weights = math.sqrt(2.0 / 21.0) * np.cos(np.pi * frequencies * (periods + 0.5) / 400)
+    reach = t.ppf(0.95, 21) * math.sqrt(float(np.sum((weights @ psi) ** 2)))
+    assert fit.error_cosines == 21
+    assert bound.estimate - bound.ci_lower == pytest.approx(reach, rel=1e-9, abs=0.0)
+    assert bound.ci_upper - bound.estimate == pytest.approx(reach, rel=1e-9, abs=0.0)
+    rows = omitted_confounder_bound(
+        fit_causal_residual(_known, data, 0.05, **options), one, level=0.95, **shares
+    )
+    assert rows.estimate == bound.estimate
+    assert rows.ci_lower != pytest.approx(bound.ci_lower, rel=1e-6, abs=0.0)

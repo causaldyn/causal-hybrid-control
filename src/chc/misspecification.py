@@ -89,7 +89,8 @@ def misspecification_cost(
     1.13 times it, and ``noise`` matched the difference's realised spread to 1.1 of its standard
     errors. The power grows with the miss: at 5% it caught 13%, 30%, 78% and 97% of the logs as the
     channel's slope in the state went 0.005, 0.01, 0.02 and 0.03, where the logs above had 1
-    (section ``power``).
+    (section ``power``). For fits given ``periods``, one unit's, ``S`` reads the difference across
+    them by the cosines the channel's error is read with (ADR 0075).
 
     On two zones of :mod:`chc.zones`' market, fitted under ``rk4`` unweighted and weighted by the
     first zone's supply (section ``zones``), it rejected 0.5%, 3.25% and 7.5% of 400 logs at 1, 5
@@ -120,8 +121,8 @@ def misspecification_cost(
 
     Raises:
         ValueError: on a fit made without ``influence=True``; two fits whose classes, integrators,
-            rows or clusters differ, or that carry drivers, whose gain's price needs the plan's
-            forecast; a plan that was not made on ``reference``'s model; and whatever
+            rows, clusters or periods differ, or that carry drivers, whose gain's price needs the
+            plan's forecast; a plan that was not made on ``reference``'s model; and whatever
             :meth:`chc.plan.CausalPlan.decision_weight` refuses.
     """
     for name, fit in (("reference", reference), ("alternative", alternative)):
@@ -155,23 +156,23 @@ def misspecification_cost(
             f"{unmoved.shape[1]} and {other_unmoved.shape[1]} directions unmoved: they were not "
             "made on one log's rows"
         )
-    clusters, other_clusters = reference.clusters, alternative.clusters
-    if not (
-        clusters is other_clusters
-        or (
-            clusters is not None
-            and other_clusters is not None
-            and np.array_equal(clusters, other_clusters)
-        )
+    clusters, periods = reference.clusters, reference.periods
+    for name, first, second in (
+        ("clusters", clusters, alternative.clusters),
+        ("periods", periods, alternative.periods),
     ):
-        raise ValueError(
-            "the fits sum their influences over different clusters: fit both with the same "
-            "clusters, or both with none"
-        )
+        if not (
+            first is second
+            or (first is not None and second is not None and np.array_equal(first, second))
+        ):
+            raise ValueError(
+                f"the fits sum their influences over different {name}: fit both with the same "
+                f"{name}, or both with none"
+            )
     d = _parameters(theirs) - _parameters(ours)
     weight = _parameter_weight(plan, ours, tolerance)
     covariance = max(
-        _clustered_squares(other - influence, clusters),
+        _clustered_squares(other - influence, clusters, periods),
         key=lambda square: float(np.trace(weight @ square)),
     )
     # W vanishes along a direction the plan does not move to second order in rounding, so the

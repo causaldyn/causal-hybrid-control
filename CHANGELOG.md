@@ -7,6 +7,36 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **On a panel of one unit, `prescribe` read the channel's error as if each transition were
+  independent.** A panel of several units sums the channel's scores within each unit (ADR 0053);
+  one unit has no second to sum within, so its error was the rows' own. Each score is the lever's
+  residual times the noise, so where the noise persists and the lever does too, as in ADR 0064's
+  plant, the scores persist and that error reads too little: on one unit of 200 transitions with
+  noise AR(0.9) and a lever AR(0.7), a 95 % interval read off it covered the channel on 0.703 of
+  1000 logs, and on 0.651 at 1000 transitions. `fit_causal_residual` now takes `periods`, each
+  transition's period on a log of one unit, and reads the channel's covariance across them by
+  `nu` cosines of the periods, the equal-weighted cosine estimate with `nu` the most whole cosines
+  at or below `0.4 N^(2/3)` (Lazarus, Lewis, Stock and Watson 2018); a test read off it is sized
+  against `t(nu)`, and on the same logs its 95 % intervals covered 0.925 and 0.941. Where the
+  noise is drawn afresh, the interval is wider by the price of the cosines' `t`: on average 35 %
+  at 50 transitions, 11 % at 200 and 2.5 % at 1000. `prescribe` passes the periods on a panel of
+  one unit: `DecisionCertificate.error_cosines` counts the cosines, the report says the error was
+  read across the unit's periods, and `to_json()` writes `error_cosines`, `null` where the error
+  is not read so. `omitted_confounder_bound` reads a fit given periods by the same cosines
+  against `t(nu)`, and `misspecification_cost` reads the difference's covariance by them and
+  refuses two fits read over different periods. On several units every number is as it was, to
+  the bit (ADR 0075). Since 0.5.0.
+- **`persistence_check` read no test on one unit.** Its p-value was `nan` wherever the pairs were
+  one unit's, since its spread came from the units' sums, and `prescribe`'s report said "not
+  tested on one unit". One unit's pairs are now read across their periods as the fit's error is:
+  their products' total over the root of their projections on `nu` cosines of the pairs' periods,
+  squared and summed, against `t(nu)`. On one unit of 200 transitions under ADR 0064's plant, a
+  5 % test rejected 6.75 % of 400 logs whose noise was drawn afresh, 92 % where it was AR(0.3) and
+  all 400 where it was AR(0.7). The p-value is `nan` below two pairs, and the report then says
+  the pairs leave no spread to read (ADR 0075). Since 0.15.0.
+
 ## [0.15.0] — 2026-10-07
 
 ### Added
