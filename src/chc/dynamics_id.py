@@ -748,14 +748,17 @@ def _unmoved_actions(fit: CausalDynamicsFit) -> tuple[int, ...]:
 
 @dataclass(frozen=True)
 class _LoggedRelations:
-    """What the log's actions kept to: orthonormal bases ``(m, r)``, in the actions' own units, of
-    the combinations it kept at one level, of those the state alone predicts, and of those its
-    covariates predict, each span holding the one before; and each action's least-squares rule of
-    the state, the nuisance's polynomial of the state standardised as the log's was."""
+    """What the log's actions kept to: orthonormal bases ``(m, r)``, over the actions each divided
+    by ``size``, of the combinations it kept at one level, of those the state alone predicts, and of
+    those its covariates predict, each span holding the one before; and each action's least-squares
+    rule of the state, the nuisance's polynomial of the state standardised as the log's was."""
 
     constant: np.ndarray
     state: np.ndarray
     covariates: np.ndarray
+    # (m,): each action's norm on the log, 1 for one never used. A basis column over it is a
+    # combination's weights on the actions as logged.
+    size: np.ndarray
     means: np.ndarray  # (m,): a constant combination's level is its weights times these
     # (n,) each: the state standardised as (x - centre - shift) * factor (chc._units.standardising)
     centre: Array
@@ -768,13 +771,19 @@ def _logged_relations(
     actions: Array, states: Array, covariates: Array, nuisance_degree: int
 ) -> _LoggedRelations:
     """The combinations of the log's actions that a constant, the state or the covariates predict
-    to the precision :func:`_unmoved_directions` reads, projected the same way."""
+    to the precision :func:`_unmoved_directions` reads, projected the same way.
+
+    Each span is orthonormal over the actions scaled to their size, where :func:`_kept` reads it.
+    Orthonormalised over the raw actions, a span moved with their units: with one action at 1e12 of
+    its units, the span the state predicts lay 3.0e-7 off that action's axis, past the square root
+    of the precision, and ``u2 = 2 u1`` read its weight on ``u1`` as -1.99996e-12 where -2e-12."""
     size = jnp.linalg.norm(actions, axis=0)
-    scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
+    size = jnp.where(size > 0.0, size, 1.0)
+    scale = 1.0 / size
 
     def kept(features: Array) -> np.ndarray:
         left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
-        columns = np.asarray(_kept(left, scale), dtype=np.float64)
+        columns = np.asarray(_kept(left, scale) * size[:, None], dtype=np.float64)
         return np.linalg.qr(columns)[0] if columns.shape[1] else columns
 
     centre, shift, factor = _units.standardising(states)
@@ -783,6 +792,7 @@ def _logged_relations(
         constant=kept(jnp.ones((actions.shape[0], 1), dtype=actions.dtype)),
         state=kept(features),
         covariates=kept(_polynomial_features(_units.standardised(covariates), nuisance_degree)),
+        size=np.asarray(size, dtype=np.float64),
         means=np.asarray(jnp.mean(actions, axis=0), dtype=np.float64),
         centre=centre,
         shift=shift,

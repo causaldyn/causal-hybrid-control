@@ -2353,7 +2353,7 @@ def _keep_to_log(
 
     def named(inner: np.ndarray, outer: np.ndarray) -> str:
         left = outer - inner @ (inner.T @ outer)
-        column = left[:, int(np.argmax(np.linalg.norm(left, axis=0)))]
+        column = left[:, int(np.argmax(np.linalg.norm(left, axis=0)))] / among.size
         column = column if column[np.argmax(np.abs(column))] > 0.0 else -column
         weights = np.zeros(len(lever_names))
         weights[free] = column / np.linalg.norm(column)
@@ -2376,6 +2376,8 @@ def _keep_to_log(
     spread = np.sqrt(np.mean(np.asarray(u[:, jnp.array(free)], dtype=np.float64) ** 2, axis=0))
     relations = []
     for column in among.constant.T:
+        column = column / among.size  # the weights on the levers as logged
+        column = column / np.linalg.norm(column)
         column = column if column[np.argmax(np.abs(column))] > 0.0 else -column
         level = float(column @ among.means)
         if abs(level) <= precision * float(np.abs(column) @ spread):

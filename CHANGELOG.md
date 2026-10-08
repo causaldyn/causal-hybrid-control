@@ -26,10 +26,24 @@ still change).
   its units, and all of it at 1e-13, where the plan read `not_estimable` from its first step. The
   fit now keeps each coefficient's scale beside the directions, `prescribe` reads their span in it,
   and the response is least squares in each column's own units (ADR 0054, ADR 0057). Those logs read
-  the same from 1e-15 to 1e15 of the state's units, the schedules to 6.7e-16, and with one lever
-  from 1e-12 to 1e9 of its units, to 5.5e-9 of them; from 1e12 of a lever's units the relations the
-  log kept, still read in raw units, move the plan. At unit scale the tests' estimability logs plan
-  as before, to the bit. Since 0.13.0; the drift's response since 0.14.0.
+  the same from 1e-15 to 1e15 of the state's units, the schedules to 6.7e-16, and, with the
+  relations the log kept read as the next entry says, from 1e-12 to 1e12 of a lever's units. At unit
+  scale the tests' estimability logs plan as before, to the bit. Since 0.13.0; the drift's response
+  since 0.14.0.
+- **`prescribe` reads the relations a log kept among its levers the same in any units of a lever.**
+  The spans of what the log kept, at one level, as a rule of the state and as one of the covariates,
+  were orthonormalised over the levers' raw values, where a relation's weights spread over as many
+  orders as the levers' units and QR keeps the small ones only to the precision of the large. With
+  `u1` logged at 1e12 of its units, its box and its price with it, a log that kept `u2 = 2 u1` read
+  the weight on `u1` as -1.99996e-12 where -2e-12 and the level as 4.4e-7 where 0: the plan held a
+  row the log never kept, and read `not_estimable` from its first step. A log that set `u1` from the
+  state read as having set it from a confounder, and gave no plan. At 1e9 the weight of
+  `u2 = 2 u1 + 0.4` on `u1` read to 2.8e-8 of itself, and the plan moved by 5.5e-9 of `u1`'s units.
+  Each span is now orthonormal over the levers each scaled to its norm on the log, and a relation's
+  weights are read back on the levers as logged (ADR 0054). From 1e-12 to 1e12 of a lever's units
+  those logs read the same relations, to 2.2e-16 in the levers' own units, and the same schedules,
+  to 6.1e-16. At unit scale a log that kept a relation plans as before to 3.3e-16, and the rest to
+  the bit. Since 0.14.0.
 - **An entry point that takes a caller's data reads it as a panel reads a column.** The functions
   that take logs, samples, series, outcomes, histories, stored decisions, forecasts or a target's
   levels as arrays, or as a mapping or a frame of them, cast them with NumPy's or JAX's cast, which

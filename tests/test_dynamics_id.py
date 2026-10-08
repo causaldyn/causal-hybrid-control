@@ -1645,6 +1645,57 @@ def test_the_rule_the_log_set_from_the_state_reads_the_same_in_any_units(units: 
         np.testing.assert_allclose(mine @ mine.T, theirs @ theirs.T, rtol=0.0, atol=1e-12)
 
 
+@pytest.mark.parametrize("units", [1e-12, 1e-9, 1e9, 1e12])
+@pytest.mark.parametrize(
+    "actions",
+    [
+        _both(_ruled(1.0), _dithered),
+        lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 2.0]),
+    ],
+    ids=["the first set from the state", "the second twice the first"],
+)
+def test_what_the_log_kept_reads_the_same_with_one_action_in_other_units(
+    actions: Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray], units: float
+) -> None:
+    """The first action logged in ``units`` times its own. Whether an action is kept at one level,
+    or set from the state or the covariates, is whether its axis lies in that span, to the square
+    root of the precision; the distance reads the same in any units of the actions. Orthonormalised
+    over the raw actions, the span the state predicts lay 3.0e-7 off the first action's axis at
+    1e12, and the log read as having set it from outside the state; and the combination kept at
+    one level, ``u2 = 2 u1``, lay 2e-12 of the way along ``u1``, so the second action's axis read
+    as in that span, and the relation's weight on ``u1`` as -1.99996e-12 where -2e-12."""
+    log = _policy_log(4000, actions)
+    covariates = jnp.concatenate([log["x"], log["z"]], axis=1)
+
+    def off(scale: float) -> np.ndarray:
+        logged = _logged_relations(
+            log["u"] * jnp.array([scale, 1.0]), log["x"], covariates, nuisance_degree=2
+        )
+        distances = []
+        for span in ("constant", "state", "covariates"):
+            basis = np.asarray(getattr(logged, span))
+            distances.append(
+                [np.linalg.norm(axis - basis @ (basis.T @ axis)) for axis in np.eye(2)]
+            )
+        return np.array(distances)
+
+    np.testing.assert_allclose(off(units), off(1.0), rtol=0.0, atol=1e-12)
+
+
+def test_an_action_the_log_never_used_is_each_span_it_kept() -> None:
+    """The second action never used: its column of the log is zeros, whose size reads 1, and its
+    axis is the whole of each span, the one kept at one level first, in any units of the first."""
+    log = _policy_log(4000, lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 0.0]))
+    covariates = jnp.concatenate([log["x"], log["z"]], axis=1)
+    for units in (1e-12, 1.0, 1e12):
+        logged = _logged_relations(
+            log["u"] * jnp.array([units, 1.0]), log["x"], covariates, nuisance_degree=2
+        )
+        for span in ("constant", "state", "covariates"):
+            basis = np.abs(np.asarray(getattr(logged, span)))
+            np.testing.assert_allclose(basis, [[0.0], [1.0]], rtol=0.0, atol=1e-12, err_msg=span)
+
+
 @pytest.mark.parametrize("units", [1e-15, 1e-12, 1e15])
 def test_where_the_moment_has_no_data_the_fit_reads_the_same_with_the_state_in_any_units(
     units: float,

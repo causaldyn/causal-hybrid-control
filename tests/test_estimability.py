@@ -329,24 +329,37 @@ def _lever_in(policy: str, units: float) -> Prescription:
     )
 
 
-@pytest.mark.parametrize("units", [1e-12, 1e-9, 1e9])
-@pytest.mark.parametrize("policy", ["state", "together"])
+@pytest.mark.parametrize("units", [1e-12, 1e-9, 1e-6, 1e6, 1e9, 1e12])
+@pytest.mark.parametrize(
+    "policy", ["state", "state_squared", "together", "thrice", "together_offset"]
+)
 def test_a_log_reads_the_same_with_one_lever_in_other_units(policy: str, units: float) -> None:
-    """``u1`` logged in ``units`` times its own, its box and its price with it. Read in raw
-    coefficient units, the direction the log that kept ``u2 = 2 u1`` never moved lies 2e-9 of the
-    way along ``u1`` at 1e9, under the square root of the precision: ``u2`` read as never moved and
-    was held at its mean, and the schedule moved by 0.69; at 1e-9 and 1e-12 ``u1`` did. On the log
-    that set ``u1`` from the state, ``u2``'s rounding put ``u1``'s channel 6.8e-8 off the span at
-    1e9, and the log gave no schedule. The schedules now agree to 3.2e-10 of ``u1``'s units at 1e9,
-    where the relations the log kept are read in the levers' raw units, and to 3.3e-16 elsewhere."""
+    """``u1`` logged in ``units`` times its own, its box and its price with it: what the log kept
+    to, each relation's weights and level read back in the levers' own units, and the schedule
+    read the same. Read in raw coefficient units, the direction the log that kept ``u2 = 2 u1``
+    never moved lies 2e-9 of the way along ``u1`` at 1e9, under the square root of the precision:
+    ``u2`` read as never moved and was held at its mean, and the schedule moved by 0.69; at 1e-9
+    and 1e-12 ``u1`` did. On the log that set ``u1`` from the state, ``u2``'s rounding put
+    ``u1``'s channel 6.8e-8 off the span at 1e9, and the log gave no schedule. With those read
+    right, the relations the log kept were orthonormalised over the levers' raw values: at 1e12
+    ``u2 = 2 u1``'s weight on ``u1`` read -1.99996e-12 where -2e-12 and its level 4.4e-7 where 0,
+    and the plan read ``not_estimable`` from its first step; at 1e9 ``u2 = 2 u1 + 0.4`` moved the
+    schedule by 5.5e-9; and at 1e12 the log that set ``u1`` from the state read as having set it
+    from ``z``. The schedules now agree to 6.1e-16 of the levers' own units."""
     one, other = _lever_in(policy, 1.0), _lever_in(policy, units)
     assert _kept_to(other) == _kept_to(one)
-    assert len(other.certificate.relations) == len(one.certificate.relations)
+    per = np.array([units, 1.0])
+    for mine, theirs in zip(other.certificate.relations, one.certificate.relations, strict=True):
+        weights = np.asarray(mine.weights) * per
+        length = float(np.linalg.norm(weights))
+        sign = float(np.sign(weights @ np.asarray(theirs.weights)))
+        np.testing.assert_allclose(sign * weights / length, theirs.weights, rtol=0.0, atol=1e-12)
+        assert sign * mine.level / length == pytest.approx(theirs.level, rel=0.0, abs=1e-12)
     np.testing.assert_allclose(
-        np.asarray(other.schedule.magnitudes) / np.array([units, 1.0]),
+        np.asarray(other.schedule.magnitudes) / per,
         np.asarray(one.schedule.magnitudes),
         rtol=0.0,
-        atol=1e-8,
+        atol=1e-12,
     )
 
 
