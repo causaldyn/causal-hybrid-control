@@ -1242,10 +1242,11 @@ def nlp_solver_certificate(
 
     ``pg_steps`` is deliberately far below the shipped default: the effect being exhibited is what
     a *short* first-order budget costs on an ill-conditioned instance. At the shipped cap the
-    projected gradient ends below L-BFGS-B's cost on every instance, by ``4e-9`` to ``2e-7``, each
-    on its own rule, the ill-conditioned one after 8 083 steps. 50 steps is short of the 180 where
-    the well-conditioned instance stops on its own rule, so that every instance shows a truncated
-    descent. This measures the conditioning, not the library's behaviour.
+    projected gradient ends below L-BFGS-B's cost on every instance, each on its own rule, the
+    ill-conditioned one after 8 083 steps: by a relative ``1.1e-9`` to ``1.0e-7``, the
+    certificate's ``relative_gap``, or ``4.4e-9`` to ``1.9e-7`` of the cost. 50 steps is short of
+    the 180 where the well-conditioned instance stops on its own rule, so that every instance shows
+    a truncated descent. This measures the conditioning, not the library's behaviour.
     """
     x0 = jnp.array([1.0, 0.0])
     u_lo, u_hi = -5.0, 5.0

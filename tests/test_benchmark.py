@@ -1,20 +1,32 @@
 """Benchmark gate: causal control is near-oracle on pricing; predictive is catastrophic."""
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.optimize import minimize
+from scipy.spatial import ConvexHull
 
 from chc.benchmark import (
     CausalDynamicsTask,
     ConfoundingRobustTask,
     DelayOscillationTask,
     InventoryTask,
+    ModelUncertaintyTask,
     PricingTask,
     SupportShiftTask,
+    TaskResult,
     leaderboard,
 )
+from chc.cost import QuadraticCost, total_cost
 from chc.delay import STABILISING_RATIO_FLOOR, delay_margin, robust_delay_design
+from chc.dynamics import LinearDynamics
 from chc.estimators import DoubleML
 from chc.irf import delay_estimate
+
+# The cheapest plan found on ModelUncertaintyTask's true plant, in float64 as the suite runs
+# (test_the_model_uncertainty_oracle_is_the_best_plan_found says how it was searched).
+BEST_FOUND = 3.773696940720913
 
 
 def test_pricing_benchmark_ranks_causal_above_predictive() -> None:
@@ -65,6 +77,90 @@ def test_support_shift_pessimism_beats_greedy() -> None:
     assert results["pessimistic"].regret < 0.7 * results["greedy"].regret  # pessimism helps
     assert results["greedy"].ood_rate > 0.3  # greedy exploits the model off-support
     assert results["pessimistic"].ood_rate < 0.1  # pessimism stays in-support
+
+
+@pytest.fixture(scope="module")
+def model_uncertainty() -> dict[str, TaskResult]:
+    return {r.controller: r for r in ModelUncertaintyTask().run()}
+
+
+def test_the_model_uncertainty_oracle_is_the_best_plan_found(
+    model_uncertainty: dict[str, TaskResult],
+) -> None:
+    """The plant acts through ``u - 0.15 u^3`` in a box of 8, so past ``|u| = 2.58`` the effect
+    reverses, and on the box's edge it is -68.8. The descent from zero stopped at the effect's peak,
+    15.520831. Descents from 152 starts -- zero, each side of the box held throughout, at one step,
+    on opposite sides at two of the first eight steps, and for the first 1, 2, 3, 5 or 10 steps,
+    the relaxation's plan below read back through its cheapest actions, and 32 seeded draws -- each
+    run to 210 000 steps and polished by L-BFGS-B, the two controllers' plans, and a dynamic
+    programme over the state end on many plans. The cheapest, 3.773697, starts 8, 6.63, -8, -6.81,
+    from the start that holds the upper side for two steps. The oracle is the best of a fixed set
+    of starts that holds that one, and lands on it."""
+    assert model_uncertainty["oracle"].cost <= BEST_FOUND + 1e-9
+
+
+def _effect_relaxation_bound(task: ModelUncertaintyTask) -> float:
+    """A lower bound on the cost of every plan on the cubic-drag plant.
+
+    The plant is linear in the effect ``e = u - drag u^3``, which covers ``|e| <= e_max``, so the
+    state's cost is a convex quadratic in the effects. The control's cost, ``R u^2 / 2``, is at
+    least ``R / 2`` times the convex envelope of ``c(e) = min{u^2 : e(u) = e, |u| <= u_hi}``, the
+    lower hull of the points ``(e(u), u^2)``, lowered by ``1e-6`` past the hull of a grid of them.
+    The relaxed problem is convex, and at any point ``e`` with a subgradient ``g`` its minimum is
+    at least ``F(e) + min over the box of g (e' - e)`` (Frank and Wolfe 1956)."""
+    a = jnp.array([[0.0, 1.0], [-1.0, -0.2]])
+    b = jnp.array([[0.0], [1.0]])
+    x0 = jnp.array([task.x0, 0.0])
+    state = QuadraticCost(
+        Q=jnp.diag(jnp.array([1.0, 0.0])),
+        R=jnp.zeros((1, 1)),
+        Qf=jnp.diag(jnp.array([10.0, 1.0])),
+        x_target=jnp.array([task.x_target, 0.0]),
+    )
+
+    def quadratic(effects: jax.Array) -> jax.Array:
+        return total_cost(LinearDynamics(a, b), x0, effects[:, None], task.dt, state)
+
+    zero = jnp.zeros(task.horizon)
+    q0 = float(quadratic(zero))
+    g0 = np.asarray(jax.grad(quadratic)(zero))
+    hessian = np.asarray(jax.hessian(quadratic)(zero))
+    u = np.linspace(task.u_lo, task.u_hi, 4_000_001)
+    points = np.stack([u - task.drag * u**3, u**2], axis=1)
+    hull = points[ConvexHull(points).vertices]
+    hull = hull[np.argsort(hull[:, 0])]  # one edge joins the ends at u_hi^2; the rest is the floor
+    knots, floor = hull[:, 0], hull[:, 1] - 1e-6
+    slopes = np.diff(floor) / np.diff(knots)
+    weight = 0.5 * task.control_weight
+    e_max = float(knots[-1])
+
+    def relaxed(effects: np.ndarray) -> tuple[float, np.ndarray]:
+        segment = np.clip(np.searchsorted(knots, effects) - 1, 0, slopes.size - 1)
+        value = q0 + g0 @ effects + 0.5 * effects @ hessian @ effects
+        value += weight * float(np.sum(np.interp(effects, knots, floor)))
+        return value, g0 + hessian @ effects + weight * slopes[segment]
+
+    point = minimize(
+        relaxed,
+        np.zeros(task.horizon),
+        jac=True,
+        method="L-BFGS-B",
+        bounds=[(-e_max, e_max)] * task.horizon,
+        options={"maxiter": 10_000, "maxcor": 50, "ftol": 1e-16, "gtol": 1e-13},
+    ).x
+    value, gradient = relaxed(point)
+    corner = np.where(gradient > 0.0, -e_max, e_max)
+    return value + float(gradient @ (corner - point))
+
+
+def test_the_model_uncertainty_oracle_is_within_its_bound_of_the_optimum(
+    model_uncertainty: dict[str, TaskResult],
+) -> None:
+    """The relaxation over the effects bounds every plan's cost below by 3.76084, so the oracle,
+    at 3.773697, is within 0.0129 of the best plan there is."""
+    bound = _effect_relaxation_bound(ModelUncertaintyTask())
+    assert bound == pytest.approx(3.76084, rel=0.0, abs=1e-4)
+    assert bound <= model_uncertainty["oracle"].cost < bound + 0.013
 
 
 def test_confounding_robust_sensitivity_radius_beats_greedy() -> None:
