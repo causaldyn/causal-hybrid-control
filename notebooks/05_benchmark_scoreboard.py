@@ -151,6 +151,6 @@ factor
 # response** (inventory), CHC matches the oracle. There the predictive baseline costs about 3,000 times
 # the oracle on pricing (13,740 against 4.59) and about 2.5 times it on inventory (1.80 against 0.71).
 # Under **off-support model exploitation** (support-shift), pessimism rather than causality is the
-# safeguard, and the margin is smaller: regret 2.4 against the greedy controller's 6.8. Each task here
+# safeguard, and the margin is smaller: regret 2.4 against the greedy controller's 7.4. Each task here
 # runs one seed; the 12-seed bootstrap intervals on the benchmarks page give the same ordering. The
 # benchmark, with its ground-truth effects, is what lets us *quantify* the win instead of asserting it.
