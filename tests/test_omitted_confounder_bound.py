@@ -391,3 +391,25 @@ def test_one_unit_s_confidence_bounds_read_its_periods_by_cosines_against_t_nu()
     )
     assert rows.estimate == bound.estimate
     assert rows.ci_lower != pytest.approx(bound.ci_lower, rel=1e-6, abs=0.0)
+
+
+def test_one_cluster_s_confidence_bounds_sum_each_period_before_the_cosines() -> None:
+    """Given periods that name each of 100 periods for four transitions, the units of one cluster,
+    the bounds read the influence summed within each period and projected on 8 cosines of the 100
+    periods, against ``t(8)``: the count of the periods, not of the 400 transitions, which would
+    read ``t(21)``."""
+    channel, to_action, to_rate = np.array([1.0]), np.array([[0.5]]), np.array([0.5])
+    data = _log(channel, to_action, to_rate, dt=0.05, scheme="euler", n=400, seed=5)
+    options = {"adjust_for": ("observed",), "channel_degree": 0, "influence": True}
+    one, shares = np.ones((1, 1, 1)), {"cf_y": 0.0, "cf_d": 0.0}
+    periods = np.repeat(np.arange(100), 4)
+    fit = fit_causal_residual(_known, data, 0.05, **options, periods=periods)
+    bound = omitted_confounder_bound(fit, one, level=0.95, **shares)
+    assert fit.influence is not None
+    sums = np.bincount(periods, weights=np.asarray(fit.influence)[:, 0, 0])
+    frequencies = np.arange(1, 9)[:, None]
+    weights = math.sqrt(2.0 / 8.0) * np.cos(np.pi * frequencies * (np.arange(100) + 0.5) / 100)
+    reach = t.ppf(0.95, 8) * math.sqrt(float(np.sum((weights @ sums) ** 2)))
+    assert fit.error_cosines == 8
+    assert bound.estimate - bound.ci_lower == pytest.approx(reach, rel=1e-9, abs=0.0)
+    assert bound.ci_upper - bound.estimate == pytest.approx(reach, rel=1e-9, abs=0.0)

@@ -89,8 +89,12 @@ def misspecification_cost(
     1.13 times it, and ``noise`` matched the difference's realised spread to 1.1 of its standard
     errors. The power grows with the miss: at 5% it caught 13%, 30%, 78% and 97% of the logs as the
     channel's slope in the state went 0.005, 0.01, 0.02 and 0.03, where the logs above had 1
-    (section ``power``). For fits given ``periods``, one unit's, ``S`` reads the difference across
-    them by the cosines the channel's error is read with (ADR 0075).
+    (section ``power``). For fits given ``periods``, one unit's or the units' of one declared
+    cluster, ``S`` reads the difference across them by the cosines the channel's error is read
+    with, each period's transitions summed first (ADR 0075). Read so, ``S`` is an estimate the
+    mixture takes as known; on one unit whose noise was drawn afresh or AR(0.7), at 5% the test
+    rejected 1.5% to 5.6% of 1000 logs over 50 to 1000 periods, 5 to 40 cosines, below the level
+    where the cosines are few, since ``tr(W S)`` there read the difference high.
 
     On two zones of :mod:`chc.zones`' market, fitted under ``rk4`` unweighted and weighted by the
     first zone's supply (section ``zones``), it rejected 0.5%, 3.25% and 7.5% of 400 logs at 1, 5

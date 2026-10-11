@@ -2215,8 +2215,8 @@ def test_periods_are_refused_unless_whole_numbers_one_a_transition_without_clust
         fit_causal_residual(_known, data, 0.1, **CLUSTERED, periods=np.arange(50)[:, None])
     with pytest.raises(ValueError, match="whole numbers of steps"):
         fit_causal_residual(_known, data, 0.1, **CLUSTERED, periods=np.arange(50.0))
-    with pytest.raises(ValueError, match="name a period twice"):
-        fit_causal_residual(_known, data, 0.1, **CLUSTERED, periods=np.arange(50) // 2)
+    with pytest.raises(ValueError, match="name one period"):
+        fit_causal_residual(_known, data, 0.1, **CLUSTERED, periods=np.full(50, 7))
     with pytest.raises(ValueError, match="give one"):
         fit_causal_residual(
             _known, data, 0.1, **CLUSTERED, clusters=np.arange(50) % 5, periods=np.arange(50)
@@ -2260,6 +2260,132 @@ def test_the_cosines_are_the_most_whole_ones_at_or_below_0_4_n_to_the_two_thirds
     for n in range(4, 3000):
         count = _cosine_count(n)
         assert 1000 * count**3 <= 64 * n**2 < 1000 * (count + 1) ** 3, n
+
+
+# ---- the units of one cluster read across their periods ----
+
+
+def _one_cluster_log(
+    seed: np.random.SeedSequence, units: int, periods: int, noise: float
+) -> tuple[dict[str, jax.Array], np.ndarray, np.ndarray]:
+    """``units`` units of one cluster, each ``x' = 0.95 x + 0.1 (0.8 u + 1.5 z) + e``,
+    ``u = a + 0.9 z``: ``a`` the mean of an AR(0.7) every unit shares and the unit's own, each of
+    spread 0.5, over ``sqrt(2)``; ``e`` a shock every unit shares, AR(``noise``), plus the unit's
+    own drawn afresh, each of spread ``0.05 / sqrt(2)``; ``z`` drawn afresh. 300 periods before the
+    log; rows period-major, with each transition's unit and period."""
+    rng = np.random.default_rng(seed)
+    steps = 300 + periods
+
+    def ar(rho: float, spread: float, size: int) -> np.ndarray:
+        out = np.empty((steps, size))
+        out[0] = rng.normal(0.0, spread, size)
+        shocks = rng.normal(0.0, spread * math.sqrt(1.0 - rho**2), (steps, size))
+        for t in range(1, steps):
+            out[t] = rho * out[t - 1] + shocks[t]
+        return out
+
+    z = rng.normal(size=(steps, units))
+    u = (ar(0.7, 0.5, 1) + ar(0.7, 0.5, units)) / math.sqrt(2.0) + 0.9 * z
+    half = 0.05 / math.sqrt(2.0)
+    e = ar(noise, half, 1) + rng.normal(0.0, half, (steps, units))
+    x = np.empty((steps + 1, units))
+    x[0] = rng.normal(0.0, 0.5, units)
+    for t in range(steps):
+        x[t + 1] = 0.95 * x[t] + 0.1 * (0.8 * u[t] + 1.5 * z[t]) + e[t]
+    kept = slice(300, steps)
+    data = {
+        name: jnp.asarray(values.reshape(-1, 1))
+        for name, values in (
+            ("x", x[kept]),
+            ("u", u[kept]),
+            ("z", z[kept]),
+            ("x_next", x[301:]),
+        )
+    }
+    return data, np.tile(np.arange(units), periods), np.repeat(np.arange(periods), units)
+
+
+def test_on_one_cluster_whose_shock_and_lever_persist_the_period_sums_cover() -> None:
+    """Three units of one cluster over 200 periods, a shock they share AR(0.9) and a lever they
+    half share AR(0.7): one period's scores move together across the units and persist across the
+    periods, so the 95 % interval read off the rows' error, which takes the transitions as
+    independent, covered the channel of 0.8 on 0.692 of 1000 logs, and the scores summed within
+    each period and read across the periods by 13 cosines, against ``t(13)``, on 0.934 (ADR 0075).
+    Here 200 logs, each from its own seed of one sequence, three of their Monte Carlo errors from
+    those: at least 0.88 and at most 0.79. The rows' error is the influence's rows squared, as a
+    fit given no periods reads it, against the normal's quantile."""
+    rows_in = cosines_in = 0
+    options = {"adjust_for": ("z",), "channel_degree": 0}
+    for index, seed in enumerate(np.random.SeedSequence(20261009).spawn(200)):
+        data, _, periods = _one_cluster_log(seed, 3, 200, noise=0.9)
+        fit = fit_causal_residual(_known, data, 0.1, **options, influence=True, periods=periods)
+        assert fit.influence is not None
+        assert fit.channel_error is not None
+        assert fit.error_cosines == 13
+        rows_error = math.sqrt(float(np.sum(np.asarray(fit.influence)[:, :, 0] ** 2)))
+        if index == 0:
+            plain = fit_causal_residual(_known, data, 0.1, **options)
+            assert plain.channel_error == pytest.approx(rows_error, rel=1e-10, abs=0.0)
+        miss = abs(float(fit.residual.channel[0, 0, 0]) - 0.8)
+        rows_in += int(miss <= scipy.stats.norm.ppf(0.975) * rows_error)
+        cosines_in += int(miss <= scipy.stats.t.ppf(0.975, 13) * fit.channel_error)
+    assert cosines_in >= 176
+    assert rows_in <= 158
+
+
+def test_one_cluster_s_error_sums_each_period_and_reads_the_sums_by_cosines_by_hand() -> None:
+    """Frisch-Waugh-Lovell's moves, as on one unit: given periods that name each of 100 periods for
+    three transitions, the error is ``N / (N - 1)`` times the squared projections on 8 cosines of
+    the 100 periods of the moves summed within each period, summed; 8 is the count of 100
+    periods, not of the 300 transitions, which reads 17. The periods offset, ten missing between
+    two runs of 50, and the rows in any order."""
+    rows = 300
+    data = _clustered_log(rows, seed=5)
+    steps = 40 + np.repeat(np.concatenate([np.arange(50), np.arange(60, 110)]), 3)
+    labels = steps[np.random.default_rng(2).permutation(rows)]
+    fit = fit_causal_residual(_known, data, 0.1, **CLUSTERED, ridge=0.0, periods=labels)
+
+    x, z, u = (np.asarray(data[name])[:, 0] for name in ("x", "z", "u"))
+    y = (np.asarray(data["x_next"])[:, 0] - x) / 0.1
+    basis = np.column_stack([np.ones(rows), x, z])
+    projector = basis @ np.linalg.pinv(basis)
+    u_res, y_res = u - projector @ u, y - projector @ y
+    channel = u_res @ y_res / (u_res @ u_res)
+    score = u_res / (u_res @ u_res) * (y_res - channel * u_res)
+    present = np.unique(labels)
+    sums = np.array([score[labels == period].sum() for period in present])
+    projected = _cosine_weights(present, 8) @ sums
+    variance = rows / (rows - 1) * np.sum(projected**2)
+    assert fit.error_cosines == 8
+    assert fit.periods is not None
+    assert fit.periods.tolist() == (labels - 40).tolist()
+    assert float(fit.residual.channel[0, 0, 0]) == pytest.approx(channel, rel=1e-9, abs=0.0)
+    assert fit.channel_error == pytest.approx(math.sqrt(variance), rel=1e-9, abs=0.0)
+
+
+def test_one_cluster_s_influence_square_sums_each_period_before_the_cosines() -> None:
+    """Rows of four transitions a period over 30 periods: the square is the period sums' projections
+    on the 3 cosines of 30 periods, squared, and a shift every transition shares moves none of
+    it."""
+    rows = np.random.default_rng(8).normal(size=(120, 2, 3))
+    periods = np.random.default_rng(9).permutation(np.repeat(np.arange(30), 4))
+    sums = np.stack([rows[periods == period].sum(axis=(0, 1)) for period in range(30)])
+    projected = _cosine_weights(np.arange(30), 3) @ sums
+    (square,) = _clustered_squares(rows, None, periods)
+    np.testing.assert_allclose(square, projected.T @ projected, rtol=1e-12, atol=0.0)
+    (shifted,) = _clustered_squares(rows + np.array([1.0, -2.0, 3.0]), None, periods)
+    np.testing.assert_allclose(shifted, square, rtol=1e-9, atol=1e-12)
+
+
+def test_one_cluster_named_to_the_fit_points_to_its_periods() -> None:
+    """One cluster, or one group in a dimension of two, leaves no spread between clusters: the
+    refusal says the periods read the one cluster's sums across them."""
+    data = _clustered_log(50)
+    one = np.zeros(50, dtype=int)
+    for clusters in (one, np.column_stack([one, np.arange(50) % 5])):
+        with pytest.raises(ValueError, match="name one cluster") as refused:
+            fit_causal_residual(_known, data, 0.1, **CLUSTERED, clusters=clusters)
+        assert "Give the transitions' periods as periods instead" in str(refused.value)
 
 
 # ---- the instrument's rank ----
@@ -2740,6 +2866,47 @@ def test_the_persistence_check_on_one_pair_or_none_reads_no_test() -> None:
     assert (none.pairs, none.units) == (0, 0)
     assert math.isnan(none.correlation)
     assert math.isnan(none.p_value)
+
+
+def test_the_persistence_check_of_a_fit_given_periods_sums_each_period_s_products() -> None:
+    """A fit given its transitions' periods reads its units as one group's: the check sums the
+    pairs' products within each period and tests their total over the spread of the sums'
+    projections on ``nu`` cosines of the pairs' periods, against ``t(nu)``: 6 cosines for the 59
+    periods of 4 units' 236 pairs. Rows in any order. Given no periods, the fit's check reads the
+    four units' sums by CR1 instead."""
+    data, units, periods = _persistent_log(0.0, units=4, periods=60)
+    options = {"adjust_for": ("z",), "channel_degree": 0}
+    fit = fit_causal_residual(_known, data, 0.1, **options, periods=periods)
+    residual = np.random.default_rng(3).normal(size=(240, 2)) * np.array([1.0, 1e6])
+    scaled = residual / np.sqrt(np.mean(residual**2, axis=0))
+    # rows period-major: unit i's transition in period t is row 4 t + i
+    sums = np.array(
+        [sum(scaled[4 * t + i] @ scaled[4 * t - 4 + i] for i in range(4)) for t in range(1, 60)]
+    )
+    weights = _cosine_weights(np.arange(59), 6)
+    statistic = sums.sum() / math.sqrt(np.sum((weights @ sums) ** 2))
+    p_value = 2.0 * scipy.stats.t.sf(abs(statistic), 6)
+    for order in (np.arange(240), np.random.default_rng(4).permutation(240)):
+        moved = dataclasses.replace(fit, moment_residual=jnp.asarray(residual[order]))
+        check = persistence_check(moved, units[order], periods[order])
+        assert (check.pairs, check.units) == (236, 4)
+        assert check.p_value == pytest.approx(p_value, rel=1e-10, abs=0.0)
+        apart = dataclasses.replace(moved, periods=None)
+        by_unit = persistence_check(apart, units[order], periods[order])
+        assert by_unit.p_value != pytest.approx(p_value, rel=1e-3, abs=0.0)
+
+
+def test_the_persistence_check_of_pairs_in_one_period_reads_no_test() -> None:
+    """A fit given periods whose pairs all fall in one period: their sum leaves no spread across
+    the periods to read."""
+    data, units, periods = _persistent_log(0.0, units=50, periods=2)
+    fit = fit_causal_residual(
+        _known, data, 0.1, adjust_for=("z",), channel_degree=0, periods=periods
+    )
+    check = persistence_check(fit, units, periods)
+    assert (check.pairs, check.units) == (50, 50)
+    assert math.isfinite(check.correlation)
+    assert math.isnan(check.p_value)
 
 
 def test_the_persistence_check_refuses_what_it_cannot_pair() -> None:

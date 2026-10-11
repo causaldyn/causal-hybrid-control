@@ -495,6 +495,32 @@ def test_one_unit_s_periods_price_the_noise_by_cosines() -> None:
     assert rows.cost + rows.noise == pytest.approx(gate.cost + gate.noise, rel=1e-9, abs=0.0)
 
 
+def test_one_cluster_s_periods_price_the_noise_by_period_sums_and_cosines() -> None:
+    """Fits given periods that name each of 100 periods for four transitions, the units of one
+    cluster, read the difference of their influences summed within each period, projected on 8
+    cosines of the 100 periods and squared, 8 the count of the periods, not of the 400
+    transitions, which reads 21: ``noise`` is half of ``tr(W S)``, and the p-value reads the
+    mixture with that ``S``."""
+    data = _log(400, 11, 0.0)
+    periods = np.repeat(np.arange(100), 4)
+    reference, alternative = _fits(data, folds=1, periods=periods)
+    plan = _plan(reference.residual)
+    plan = dataclasses.replace(plan, actions=_optimum(reference.residual, plan.actions))
+    gate = misspecification_cost(plan, reference, alternative)
+    weight = _parameter_weight(plan, reference.residual, None)
+    difference = (np.asarray(alternative.influence) - np.asarray(reference.influence)).sum(axis=1)
+    sums = np.stack([difference[periods == period].sum(axis=0) for period in range(100)])
+    frequencies = np.arange(1, 9)[:, None]
+    projected = math.sqrt(2.0 / 8.0) * np.cos(np.pi * frequencies * (np.arange(100) + 0.5) / 100)
+    projected = projected @ sums
+    expected = float(np.trace(weight @ projected.T @ projected)) / 2.0
+    assert gate.noise == pytest.approx(expected, rel=1e-9, abs=0.0)
+    d = _parameters(alternative.residual) - _parameters(reference.residual)
+    mixture = _mixture_weights(weight, projected.T @ projected)
+    p_value = _chi_square_mixture_survival(float(d @ weight @ d), mixture)
+    assert gate.p_value == pytest.approx(p_value, rel=1e-9, abs=1e-12)
+
+
 def test_a_plan_made_on_another_model_is_refused() -> None:
     reference, alternative, plan = _case(4000, 7, 0.0, 0.0)
     with pytest.raises(ValueError, match="reference fit's model"):
