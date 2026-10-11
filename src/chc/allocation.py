@@ -112,6 +112,16 @@ concave curves the best plan's gain is concave in the budget and its slope is th
 so Newton's method on the budget meets a return target or a return on spend in a few plans, and a
 marginal target is one plan, the budget left free and each unit of it charged the target's return.
 
+**A channel bought nationally.** A channel bought once for every geo, as national media allotted
+by population is, has one spend a period, of which each geo's cell spends a fixed share
+(:class:`National`). Both geo planners then choose that national spend, within its own box, in
+place of its cells' rates. Its worth is its cells' summed, each reading its share, so it is
+concave where their curves are; it counts in the budget and in its channel's total whole, and in
+each geo's total by the geo's share. Inside its box it returns, a currency unit, the budget's price
+plus its channel's and each geo's weighted by the geo's share. On S-shaped cells its worth over a
+box of the national spend is bounded by its cells' envelopes over the box, summed: concave, above
+the worth and equal to it at both ends of the box, so the box search cuts it as it cuts a cell.
+
 HONEST SCOPE:
 
 * The channels are read as given: a fitted channel's error goes straight into the plan. Where the
@@ -169,6 +179,9 @@ HONEST SCOPE:
 * A goal over geos and channels on an S-shaped curve is met where the searched plans' gain crosses
   it, not proved the least or the most budget: under totals the best plan's gain need not rise with
   the budget.
+* A national channel's shares are the caller's and held fixed: the plan chooses how much to buy,
+  not where it lands. Its bound over a box of its spend, the sum of its cells' envelopes, can stand
+  above the sum's own envelope, so on S-shaped cells it may take more boxes than one cell's.
 """
 
 from __future__ import annotations
@@ -180,7 +193,7 @@ import math
 import numbers
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from functools import partial
@@ -216,6 +229,7 @@ __all__ = [
     "Goal",
     "MarginalReturnTarget",
     "MinimaxAllocation",
+    "National",
     "ReturnOnSpendTarget",
     "ReturnTarget",
     "SearchLimit",
@@ -537,12 +551,58 @@ class Totals:
 
 
 @dataclass(frozen=True)
+class National:
+    """A channel bought once for every geo: one spend a period, of which each geo's cell spends its
+    share, as national media allotted by population is.
+
+    :func:`allocate_geos` and :func:`budget_for_geos` take one for each national channel, keyed by
+    the channel's column in the grid. The plan chooses the national spend a period, between
+    ``lower`` and ``upper``; geo ``g``'s cell of the channel spends ``shares[g]`` of it and reads
+    that on its own curve, carryover and history. The cells have no box of their own.
+
+    Attributes:
+        shares: ``(geos,)`` each geo's share of the national spend, held as given.
+        lower, upper: the least and the most national spend a period.
+
+    Raises:
+        ValueError: shares that are not one a geo, each positive and finite, summing to 1 within
+            as many epsilons as there are shares: rounding, as shares a population divides into
+            leave; bounds that are not finite with ``0 <= lower <= upper``.
+    """
+
+    shares: np.ndarray
+    lower: float
+    upper: float
+
+    def __post_init__(self) -> None:
+        shares = np.array(self.shares, dtype=float)
+        if shares.ndim != 1 or shares.size == 0:
+            raise ValueError(f"shares has shape {shares.shape}; it needs one share a geo")
+        if not np.all(np.isfinite(shares) & (shares > 0.0)):
+            raise ValueError(f"the shares {shares} are not each positive and finite")
+        total = math.fsum(shares.tolist())
+        if abs(total - 1.0) > shares.size * _EPS:
+            raise ValueError(f"the shares sum to {total!r}, not 1: divide them by their sum")
+        lower, upper = float(self.lower), float(self.upper)
+        if not (math.isfinite(upper) and 0.0 <= lower <= upper):
+            raise ValueError(
+                f"the national box [{lower}, {upper}] is not 0 <= lower <= upper, finite"
+            )
+        shares.setflags(write=False)
+        object.__setattr__(self, "shares", shares)
+        object.__setattr__(self, "lower", lower)
+        object.__setattr__(self, "upper", upper)
+
+
+@dataclass(frozen=True)
 class GeoAllocation:
     """A plan's spend a period for each geo's channels, what it returns, and what each constraint
     is worth.
 
     Attributes:
-        spend: ``(geos, channels)`` spend a period, in the budget's currency.
+        spend: ``(geos, channels)`` spend a period, in the budget's currency. A national
+            channel's column holds each geo's share of its national spend, which the column
+            sums to, to rounding.
         worth: the cells' return on the plan over its periods and each kernel's length after.
         bound: no plan meeting the constraints and spending as much returns more on the cells;
             ``bound - worth`` bounds the plan's shortfall from the best, and is ``0`` when every
@@ -554,7 +614,8 @@ class GeoAllocation:
         geo_prices: ``(geos,)`` the return on one more currency unit of room in each geo's total:
             positive where the total binds at its most, negative at its least, ``0`` where it does
             not bind or no geo totals were given.
-        channel_prices: ``(channels,)`` the same for each channel's total across the geos.
+        channel_prices: ``(channels,)`` the same for each channel's total across the geos, a
+            national channel's its national spend over the plan.
         budget: what the plan spends over its periods.
         idle: what the cells return over the same periods with nothing spent in the plan, the
             history's carryover alone.
@@ -605,24 +666,31 @@ _Plan = TypeVar("_Plan", Allocation, GeoAllocation)
 
 @dataclass(frozen=True)
 class _Group:
-    """One total: the cells it sums, in the grid's flat order, and its bounds over the plan."""
+    """One total: the planned rates it sums, by index, each weighted by the share of it the total
+    counts, and its bounds over the plan."""
 
     members: np.ndarray
     least: float
     most: float
+    weights: np.ndarray
 
 
 @dataclass(frozen=True)
 class _Layout:
-    """A grid of cells in one row, geo by geo, with each cell's box and history and the totals'
-    groups, as :func:`allocate_geos` accepts them, and the settings its plans are searched to."""
+    """A grid of cells in one row, geo by geo, with each cell's history, as :func:`allocate_geos`
+    accepts them; the rates its plans choose, every geo's own cell in the grid's order and then
+    each national channel in its column's, with each rate's box and the totals' groups over them;
+    and the settings its plans are searched to."""
 
     geos: int
     width: int
     cells: tuple[Channel, ...]
+    history: np.ndarray
+    owner: np.ndarray  # each cell's rate
+    share: np.ndarray  # the share of its rate each cell spends
+    national: int  # how many rates, the last, are national channels'
     lower: np.ndarray
     upper: np.ndarray
-    history: np.ndarray
     geo_totals: Totals | None
     channel_totals: Totals | None
     groups: tuple[_Group, ...]  # the geos' totals, then the channels'
@@ -658,6 +726,40 @@ class _Bounded(_Worth):
         return self.channel.coefficient * jnp.sum(
             jnp.where(z <= self.corner, chord, curve.standard(z))
         )
+
+
+class _National(eqx.Module):
+    """A national channel's return on the plan, as a function of its national spend a period: each
+    geo's cell reads its share of it, its ``reach`` scaled by the share, and the cells add."""
+
+    parts: tuple[_Worth, ...]
+
+    def __call__(self, rate: Array) -> Array:
+        total = self.parts[0](rate)
+        for part in self.parts[1:]:
+            total = total + part(rate)
+        return total
+
+
+_Variable = _Worth | _National
+"""What the geo planners choose a rate for: a geo's own cell, or a national channel over its geos'
+cells."""
+
+
+def _boxed(variable: _Variable, low: float, high: float) -> _Variable:
+    """``variable`` bounded from above over ``[low, high]`` of its rate: a cell as
+    :func:`_bounded` bounds it, a national channel by its cells' bounds over the box, or itself
+    where none of its curves is S-shaped.
+
+    Each cell's bound is concave in the national rate, above its worth and equal to it at both ends
+    of the box, so their sum is too: no tighter than the sum's own envelope, but as good for a
+    search, which cuts the box until the bound meets the worth."""
+    if isinstance(variable, _Worth):
+        return _bounded(variable, low, high)
+    parts = tuple(_bounded(part, low, high) for part in variable.parts)
+    if all(new is old for new, old in zip(parts, variable.parts, strict=True)):
+        return variable
+    return _National(parts)
 
 
 def _bounded(worth: _Worth, low: float, high: float) -> _Worth:
@@ -698,12 +800,12 @@ def _chord(worth: _Worth, floor: Array, cap: Array, touch: Array) -> _Bounded:
 
 
 @eqx.filter_jit
-def _value_and_slope(worth: _Worth, rate: Array) -> tuple[Array, Array]:
+def _value_and_slope(worth: _Variable, rate: Array) -> tuple[Array, Array]:
     return jax.value_and_grad(worth)(rate)
 
 
 @eqx.filter_jit
-def _curvature(worth: _Worth, rate: Array) -> Array:
+def _curvature(worth: _Variable, rate: Array) -> Array:
     return jax.grad(jax.grad(worth))(rate)
 
 
@@ -720,15 +822,15 @@ def _worths(channels: Sequence[Channel], history: np.ndarray, periods: int) -> t
     return tuple(worths)
 
 
-def _value(worth: _Worth, rate: float) -> float:
+def _value(worth: _Variable, rate: float) -> float:
     return float(_value_and_slope(worth, jnp.asarray(rate, dtype=float))[0])
 
 
-def _slope(worth: _Worth, rate: float) -> float:
+def _slope(worth: _Variable, rate: float) -> float:
     return float(_value_and_slope(worth, jnp.asarray(rate, dtype=float))[1])
 
 
-def _rate(worth: _Worth, low: float, high: float, target: float) -> float:
+def _rate(worth: _Variable, low: float, high: float, target: float) -> float:
     """Where the worth's slope meets ``target``, or the end of the box it presses on."""
     if _slope(worth, low) <= target:
         return low
@@ -2170,6 +2272,7 @@ def allocate_geos(
     upper: ArrayLike,
     geo_totals: Totals | None = None,
     channel_totals: Totals | None = None,
+    national: Mapping[int, National] | None = None,
     history: ArrayLike | None = None,
     rtol: float = 1e-9,
     atol: float = 0.0,
@@ -2181,6 +2284,13 @@ def allocate_geos(
     worth counted the same way, carryover in from its history and out after the plan. The budget is
     spent exactly; each geo's spend over the plan, its channels together, stays within
     ``geo_totals``, and each channel's, its geos together, within ``channel_totals``.
+
+    A channel bought once for every geo (:class:`National`) is one rate, its national spend a
+    period, within its own box: each geo's cell spends its share of it. The plan chooses that rate
+    as it chooses a cell's. Its worth is its cells' summed, each reading its share, and it counts in
+    the budget and its channel's total whole and in each geo's total by the geo's share. Inside its
+    box it returns, a currency unit, the budget's price plus its channel's and each geo's weighted
+    by the geo's share.
 
     The plan is found by cutting planes on the cells' worths, each bounded above by its tangents
     under a linear program, until the program's bound is within the tolerance ``rtol`` and ``atol``
@@ -2205,30 +2315,40 @@ def allocate_geos(
     halves hold that plan. :attr:`GeoAllocation.bound` is the largest bound left when every bound is
     within the tolerance of the best plan's worth, or once the next cut would plan past
     ``max_boxes`` boxes; :attr:`GeoAllocation.stopped` says which, and a search the cap stops logs a
-    warning (``chc_event="allocation_cap"``) with its gap.
+    warning (``chc_event="allocation_cap"``) with its gap. A national channel's worth over a box of
+    its spend is bounded by its cells' envelopes over the box, summed, and it is cut as a cell is.
 
     Args:
         cells: one row a geo, each with the same channels in the same order.
         budget, periods: as :func:`allocate` takes them.
-        lower, upper: ``(geos, channels)`` each cell's least and most spend a period.
+        lower, upper: ``(geos, channels)`` each cell's least and most spend a period; ``nan`` in a
+            national channel's column, whose cells have no box of their own.
         geo_totals: what each geo spends over the plan, its channels together; no bound when
             omitted.
         channel_totals: what each channel spends over the plan, its geos together; no bound when
             omitted.
+        national: the channels bought once for every geo, each by its column in the grid; none
+            when omitted.
         history: ``(T, geos, channels)`` spend in the periods before the plan, whose adstock runs
-            into it; nothing spent before the plan when omitted.
+            into it; nothing spent before the plan when omitted. A national channel's cells keep
+            their own: each geo's share of the past need not be its share of the plan.
         rtol, atol, max_boxes: as :func:`allocate` takes them; the scale ``rtol`` is a share of is
             the first box's bound.
 
     Raises:
-        TypeError: a cell is not a :class:`chc.response.Channel`, or a total is not a
-            :class:`Totals`.
+        TypeError: a cell is not a :class:`chc.response.Channel`, a total is not a
+            :class:`Totals`, ``national`` is not a mapping, or one of its keys not a column or its
+            values not a :class:`National`.
         ValueError: what :func:`allocate` refuses of a cell, its box, its history or the search's
             settings; rows of different lengths; totals of the wrong length, or one outside what
-            its cells' boxes spend; and a budget, boxes and totals no plan meets together.
+            its cells' boxes spend; a national channel the grid has no column for, or with shares
+            not one a geo; a channel both national and given a box of its own in ``lower`` or
+            ``upper``; and a budget, boxes and totals no plan meets together.
     """
     settings = _Settings(rtol, atol, max_boxes)
-    layout = _layout(cells, periods, lower, upper, geo_totals, channel_totals, history, settings)
+    layout = _layout(
+        cells, periods, lower, upper, geo_totals, channel_totals, history, settings, national
+    )
     budget = float(budget)
     least, most = periods * float(layout.lower.sum()), periods * float(layout.upper.sum())
     if not (np.isfinite(budget) and least <= budget <= most):
@@ -2250,6 +2370,7 @@ def budget_for_geos(
     upper: ArrayLike,
     geo_totals: Totals | None = None,
     channel_totals: Totals | None = None,
+    national: Mapping[int, National] | None = None,
     history: ArrayLike | None = None,
     rtol: float = 1e-9,
     atol: float = 0.0,
@@ -2269,7 +2390,8 @@ def budget_for_geos(
       above the most any plan gains, the plan with nothing charged for its spend.
     * :class:`MarginalReturnTarget`: one plan, its budget left free and each currency unit it
       spends charged ``per_unit`` of return: every cell inside its box then returns ``per_unit`` a
-      unit plus its totals' prices, and the budget is what the plan spends, an end of the budgets
+      unit plus its totals' prices, a national channel ``per_unit`` plus its channel's and each
+      geo's weighted by its share, and the budget is what the plan spends, an end of the budgets
       where the price stays on one side of ``per_unit`` across them.
     * :class:`ReturnOnSpendTarget`: the most budget whose gain is ``per_unit`` times the budget or
       more. The gain less ``per_unit`` a unit is concave in the budget and peaks where the price is
@@ -2282,7 +2404,7 @@ def budget_for_geos(
     proved the least or the most. The marginal target's plan is searched with its budget free.
 
     Args:
-        cells, periods, lower, upper, geo_totals, channel_totals, history: as
+        cells, periods, lower, upper, geo_totals, channel_totals, national, history: as
             :func:`allocate_geos` takes them.
         goal: what the budget must meet.
         rtol, atol, max_boxes: each plan's search's, as :func:`allocate_geos` takes them.
@@ -2302,7 +2424,7 @@ def budget_for_geos(
         raise ValueError(f"the goal's value is {value}; it needs a finite one")
     with _Stopwatch() as clock:
         layout = _layout(
-            cells, periods, lower, upper, geo_totals, channel_totals, history, settings
+            cells, periods, lower, upper, geo_totals, channel_totals, history, settings, national
         )
         found = _meet(layout, periods, goal)
         compiling, searching = clock.read()
@@ -2374,9 +2496,11 @@ def _layout(
     channel_totals: Totals | None,
     history: ArrayLike | None,
     settings: _Settings,
+    national: Mapping[int, National] | None,
 ) -> _Layout:
     """The grid laid out for planning, after what :func:`allocate_geos` refuses of it, its plans
-    searched to ``settings``."""
+    searched to ``settings``: a rate for every geo's own cell, and one for each ``national``
+    channel, whose cells spend their shares of it."""
     grid = tuple(tuple(row) for row in cells)
     if not grid or not grid[0]:
         raise ValueError("no cells to allocate over: it needs a geo with a channel")
@@ -2386,7 +2510,7 @@ def _layout(
             f"the geos have {sorted({len(row) for row in grid})} channels; each needs every channel"
         )
     flat = tuple(channel for row in grid for channel in row)
-    low, high = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    low, high = np.array(lower, dtype=float), np.array(upper, dtype=float)
     for name, rates in (("lower", low), ("upper", high)):
         if rates.shape != (geos, width):
             raise ValueError(
@@ -2399,14 +2523,38 @@ def _layout(
     )
     if spent.ndim != 3 or spent.shape[1:] != (geos, width):
         raise ValueError(f"history has shape {spent.shape}; it needs (T, {geos}, {width})")
+    bought = _bought(national, geos, width)
+    for column, channel in bought.items():
+        if not (np.all(np.isnan(low[:, column])) and np.all(np.isnan(high[:, column]))):
+            raise ValueError(
+                f"channel {column} is national, and lower and upper give its cells a box of their "
+                "own: they spend their shares of its national spend, within its own box; give "
+                "nan there"
+            )
+        # each cell's share of the national box, for _check to read; the plan reads the box
+        low[:, column] = channel.shares * channel.lower
+        high[:, column] = channel.shares * channel.upper
     names = [f"geo {g}'s channel {c}" for g in range(geos) for c in range(width)]
     low, high, spent = low.ravel(), high.ravel(), spent.reshape(spent.shape[0], geos * width)
     _check(flat, periods, low, high, spent, names)
     cell = np.arange(geos * width).reshape(geos, width)
+    order = sorted(bought)
+    own = cell[:, [c for c in range(width) if c not in bought]].ravel()
+    owner, share = np.empty(geos * width, dtype=int), np.ones(geos * width)
+    owner[own] = np.arange(own.size)
+    for k, column in enumerate(order):
+        owner[cell[:, column]] = own.size + k
+        share[cell[:, column]] = bought[column].shares
+    least = np.concatenate([low[own], [bought[c].lower for c in order]])
+    most = np.concatenate([high[own], [bought[c].upper for c in order]])
+    channels = [
+        (owner[column[:1]], np.ones(1)) if c in bought else (owner[column], share[column])
+        for c, column in enumerate(cell.T)
+    ]
     groups: list[_Group] = []
     for kind, totals, members in (
-        ("geo", geo_totals, list(cell)),
-        ("channel", channel_totals, list(cell.T)),
+        ("geo", geo_totals, [(owner[row], share[row]) for row in cell]),
+        ("channel", channel_totals, channels),
     ):
         if totals is None:
             continue
@@ -2416,19 +2564,86 @@ def _layout(
             raise ValueError(
                 f"{kind}_totals bound {totals.least.size} groups; there are {len(members)} {kind}s"
             )
-        for index, (group, floor, cap) in enumerate(
+        for index, ((group, weights), floor, cap) in enumerate(
             zip(members, totals.least, totals.most, strict=True)
         ):
-            reach = periods * float(low[group].sum()), periods * float(high[group].sum())
+            reach = (
+                periods * float((least[group] * weights).sum()),
+                periods * float((most[group] * weights).sum()),
+            )
             if floor > reach[1] or cap < reach[0]:
                 raise ValueError(
                     f"{kind} {index}'s total [{floor}, {cap}] is outside what its cells' boxes "
                     f"spend over {periods} periods, [{reach[0]}, {reach[1]}]"
                 )
-            groups.append(_Group(group, float(floor), float(cap)))
+            groups.append(_Group(group, float(floor), float(cap), weights))
     return _Layout(
-        geos, width, flat, low, high, spent, geo_totals, channel_totals, tuple(groups), settings
+        geos,
+        width,
+        flat,
+        spent,
+        owner,
+        share,
+        len(order),
+        least,
+        most,
+        geo_totals,
+        channel_totals,
+        tuple(groups),
+        settings,
     )
+
+
+def _bought(national: Mapping[int, National] | None, geos: int, width: int) -> dict[int, National]:
+    """The national channels by column, after what :func:`allocate_geos` refuses of them."""
+    if national is None:
+        return {}
+    if not isinstance(national, Mapping):
+        raise TypeError(
+            f"national is a {type(national).__name__}, not a mapping of channels' columns to "
+            "National"
+        )
+    bought: dict[int, National] = {}
+    for column, channel in national.items():
+        if isinstance(column, bool) or not isinstance(column, numbers.Integral):
+            raise TypeError(f"national names {column!r}, not a channel's column")
+        if not 0 <= column < width:
+            raise ValueError(
+                f"national names channel {column}, and the grid has no channel {column}: its "
+                f"columns are 0 to {width - 1}"
+            )
+        if not isinstance(channel, National):
+            raise TypeError(
+                f"national channel {column} is a {type(channel).__name__}, not a National"
+            )
+        if channel.shares.size != geos:
+            raise ValueError(
+                f"national channel {column} has {channel.shares.size} shares; {geos} geos need "
+                "one each"
+            )
+        bought[int(column)] = channel
+    return bought
+
+
+def _variables(layout: _Layout, periods: int) -> tuple[_Variable, ...]:
+    """The worth of each rate ``layout`` plans: a geo's own cell's, or a national channel's, its
+    cells' each reading its share of the national spend."""
+    worths = _worths(layout.cells, layout.history, periods)
+    if not layout.national:
+        return worths
+    local = layout.lower.size - layout.national
+    own = [worth for worth, rate in zip(worths, layout.owner, strict=True) if rate < local]
+    shared = [
+        _National(
+            tuple(
+                _Worth(worth.channel, worth.carry, float(share) * worth.reach)
+                for worth, rate, share in zip(worths, layout.owner, layout.share, strict=True)
+                if rate == k
+            )
+        )
+        for k in range(local, layout.lower.size)
+    ]
+    return (*own, *shared)
 
 
 def _plan(layout: _Layout, periods: int, spend: float | MarginalReturnTarget) -> GeoAllocation:
@@ -2437,15 +2652,17 @@ def _plan(layout: _Layout, periods: int, spend: float | MarginalReturnTarget) ->
     that return. Searched in boxes where a curve is S-shaped (:func:`_geo_search`), to the
     tolerance and cap ``layout.settings`` sets.
 
-    A budget is one more total, every cell's, fixed at the budget.
+    A budget is one more total, every rate's, fixed at the budget: a national channel's shares
+    sum to 1, so it counts whole.
     """
+    size = layout.lower.size
     if isinstance(spend, MarginalReturnTarget):
         groups, charge = layout.groups, spend.per_unit
     else:
-        everything = _Group(np.arange(layout.lower.size), spend, spend)
+        everything = _Group(np.arange(size), spend, spend, np.ones(size))
         groups, charge = (everything, *layout.groups), 0.0
     with _Stopwatch() as clock:
-        worths = _worths(layout.cells, layout.history, periods)
+        worths = _variables(layout, periods)
         found, bound, ending = _geo_search(
             worths, layout.lower, layout.upper, groups, periods, charge, layout.settings
         )
@@ -2464,13 +2681,14 @@ def _plan(layout: _Layout, periods: int, spend: float | MarginalReturnTarget) ->
     )
     channel_prices = np.zeros(width) if channel_totals is None else np.array(list(split))
     # every geo's total fixed, or every channel's, fixes the budget, whose price is then theirs: a
-    # cell is in one geo and one channel, so the sum it meets does not move
+    # cell is in one geo and one channel, and a national channel in every geo by shares that sum
+    # to 1, so the sum each meets does not move
     if geo_totals is not None and np.array_equal(geo_totals.least, geo_totals.most):
         geo_prices, price = geo_prices + price, 0.0
     elif channel_totals is not None and np.array_equal(channel_totals.least, channel_totals.most):
         channel_prices, price = channel_prices + price, 0.0
     return GeoAllocation(
-        spend=rates.reshape(geos, width),
+        spend=(rates[layout.owner] * layout.share).reshape(geos, width),
         worth=worth,
         bound=bound,
         price=price,
@@ -2510,8 +2728,8 @@ class _Planned:
 
 
 def _geo_box(
-    worths: tuple[_Worth, ...],
-    bounded: tuple[_Worth, ...],
+    worths: tuple[_Variable, ...],
+    bounded: tuple[_Variable, ...],
     low: np.ndarray,
     high: np.ndarray,
     groups: Sequence[_Group],
@@ -2549,7 +2767,7 @@ def _geo_box(
 
 
 def _geo_search(
-    worths: tuple[_Worth, ...],
+    worths: tuple[_Variable, ...],
     lower: np.ndarray,
     upper: np.ndarray,
     groups: Sequence[_Group],
@@ -2576,7 +2794,7 @@ def _geo_search(
     box's bound is within it of the best plan's.
     """
     eps = _rounding(worths)
-    bounded = tuple(_bounded(w, a, b) for w, a, b in zip(worths, lower, upper, strict=True))
+    bounded = tuple(_boxed(w, a, b) for w, a, b in zip(worths, lower, upper, strict=True))
     searching = any(b is not w for b, w in zip(bounded, worths, strict=True))
     first = _geo_box(
         worths,
@@ -2628,7 +2846,7 @@ def _geo_search(
             child_low, child_high = low.copy(), high.copy()
             child_low[cut_at], child_high[cut_at] = floor, cap
             child = list(boxed)
-            child[cut_at] = _bounded(worths[cut_at], floor, cap)
+            child[cut_at] = _boxed(worths[cut_at], floor, cap)
             planned = _geo_box(
                 worths,
                 tuple(child),
@@ -2683,7 +2901,7 @@ def _reach(layout: _Layout, periods: int) -> tuple[float, float]:
     limits: list[float] = []
     for group in layout.groups:
         member = np.zeros(size)
-        member[group.members] = 1.0
+        member[group.members] = group.weights
         if np.isfinite(group.most):
             rows.append(member)
             limits.append(group.most / per)
@@ -2749,7 +2967,7 @@ def _crossing(
 
 
 def _outer(
-    envelopes: Sequence[_Worth],
+    envelopes: Sequence[_Variable],
     lower: np.ndarray,
     upper: np.ndarray,
     groups: Sequence[_Group],
@@ -2809,7 +3027,7 @@ def _outer(
     fixed_limits: list[float] = []
     for index, group in enumerate(groups):
         member = np.zeros(size)
-        member[group.members] = 1.0
+        member[group.members] = group.weights
         if group.least == group.most:
             fixed.append(index)
             fixed_rows.append(member)
@@ -2885,7 +3103,7 @@ def _outer(
 
 
 def _polish(
-    envelopes: Sequence[_Worth],
+    envelopes: Sequence[_Variable],
     lower: np.ndarray,
     upper: np.ndarray,
     groups: Sequence[_Group],
@@ -2923,7 +3141,7 @@ def _polish(
         )
         membership = np.zeros((len(binding), size))
         for row, k in enumerate(binding):
-            membership[row, groups[k].members] = 1.0
+            membership[row, groups[k].members] = groups[k].weights
         closed = _close(
             envelopes,
             lower,
@@ -2944,7 +3162,9 @@ def _polish(
         floor = -1e-9 * float(np.max(np.abs(unknown), initial=charge))
         # held at its most and better spending less, or at its least and better spending more
         wrong = [k for k in binding if sides[k] * full[k] < floor]
-        spent = np.array([periods * exact[group.members].sum() for group in groups])
+        spent = np.array(
+            [periods * (exact[group.members] * group.weights).sum() for group in groups]
+        )
         broken = {
             k: 1.0 if spent[k] > group.most else -1.0
             for k, group in enumerate(groups)
@@ -2959,7 +3179,7 @@ def _polish(
 
 
 def _close(
-    envelopes: Sequence[_Worth],
+    envelopes: Sequence[_Variable],
     lower: np.ndarray,
     upper: np.ndarray,
     membership: np.ndarray,

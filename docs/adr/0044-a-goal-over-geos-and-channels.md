@@ -1,7 +1,8 @@
 # ADR 0044 — A goal over geos and channels
 
 **Status:** proposed, 2026-10-02. Experimental, as `chc.allocation` is. Amended 2026-10-08 by
-ADR 0076: on S-shaped curves each budget's plan is `allocate_geos`' search.
+ADR 0076: on S-shaped curves each budget's plan is `allocate_geos`' search. Extended 2026-10-11 by
+ADR 0079: a goal runs over national channels' spend as over a cell's.
 
 ## Context
 
