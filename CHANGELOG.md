@@ -60,6 +60,20 @@ still change).
 
 ### Fixed
 
+- **`ModelUncertaintyTask` reads its regrets against the best plan found.** Its plant acts through
+  `u - 0.15 u^3` in a box of ±8, so past `|u| = 2.58` the effect reverses, and on the box's edge
+  it is -68.8. The oracle was the planner's descent from zero, which stops at the forward effect's
+  peak, at 15.520831; a plan that pushes through the reversed effect, its first four actions 8,
+  6.63, -8 and -6.81, costs 3.773697. The oracle is now the cheapest of seven descents on the true
+  plant, from zero and from each side of the box held for the first one, two or three steps, each
+  descended, polished by L-BFGS-B and descended again; it reaches 3.773697, searched once per task
+  and shared by its seeds. Under float64 the calibrated plan's regret is 12.403, where it read
+  0.655, and greedy's 1360.23, where it read 1348.48. No plan found by 152 other starts or a
+  dynamic programme over the state costs less, and relaxing the problem to the plant's effects
+  bounds every plan below by 3.76084, so the oracle is within 0.0129 of the best plan there is.
+  The other six tasks' oracles are already the best plans found, to their solvers' tolerance, and
+  keep their costs to the bit; each task's docstring now says what its oracle is and how far from
+  the best it is known to be (ADR 0077). Since 0.1.0.
 - **On a panel of one unit, `prescribe` read the channel's error as if each transition were
   independent.** A panel of several units sums the channel's scores within each unit (ADR 0053);
   one unit has no second to sum within, so its error was the rows' own. Each score is the lever's
@@ -121,7 +135,8 @@ still change).
   steps at 15.520831, 0.14.4's plan, at the effect's peak; it ran out of its 10 000 steps at
   14.675420, lower, with actions out to 6.2, past where the effect turns over. Its regrets read
   0.655 for the calibrated plan and 1348.48 for greedy, where they read 1.501 and 1349.32. Neither
-  oracle is that task's best plan: one with an action on the box's edge costs 4.797 (ADR 0059).
+  oracle was that task's best plan: one with an action on the box's edge costs 4.797 (ADR 0059),
+  and the task now reads its regrets against the best plan found, at 3.773697 (above, ADR 0077).
   Since 0.15.0.
 
 ## [0.15.0] — 2026-10-07
