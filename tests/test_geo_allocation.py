@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from scipy.optimize import minimize
 
+import chc.allocation
 from chc.allocation import Totals, _on_envelopes, allocate, allocate_geos
 from chc.response import (
     Channel,
@@ -351,36 +352,271 @@ def test_a_budget_a_hair_below_the_most_a_cap_allows_is_planned_exactly(short):
                 assert slope >= prices * (1 - 1e-10), (g, c)
 
 
-def test_an_s_curve_is_planned_on_its_envelope_as_allocate_plans_it_there():
-    """The S-curve counterexample: a descent from zero stops at the greedy 225; on its envelope
-    the plan reaches the best split, 1047.87, with no gap. With a budget short of the tangency the
-    envelope's plan runs on the chord, and the gap bounds its shortfall; :func:`allocate` searches
-    past it, the grid does not."""
+def test_an_s_curve_is_searched_as_allocate_searches_it():
+    """The S-curve counterexample: a descent from zero stops at the greedy 225; at a budget of 300
+    the plan on the envelopes from zero spend is already the best split, 1047.87, with no gap. At
+    90, short of the Hill's tangency, that plan put all 90 on the Hill, for 421.6, but its bound was
+    the chord's, 476.2; the search plans the same and closes the gap, as :func:`allocate` does."""
     cells = ((Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),)
     for budget in (300.0, 90.0):
         box = {"lower": np.zeros((1, 2)), "upper": np.full((1, 2), budget)}
         plan = allocate_geos(cells, budget, 1, **box)
-        alone = _on_envelopes(
+        alone = allocate(cells[0], budget, 1, lower=np.zeros(2), upper=np.full(2, budget))
+        envelope = _on_envelopes(
             cells[0], budget, 1, np.zeros(2), np.full(2, budget), np.zeros((0, 2))
         )
         np.testing.assert_allclose(plan.spend[0], alone.spend, rtol=1e-12, atol=1e-12)
         assert plan.worth == pytest.approx(alone.worth, rel=1e-12)
-        assert plan.bound == pytest.approx(alone.bound, rel=1e-12)
+        assert plan.spend.sum() == pytest.approx(budget, rel=1e-12)
+        assert (plan.stopped, plan.limit) == ("closed", None)
+        assert 0.0 <= plan.gap <= plan.tolerance
+        assert plan.worth >= envelope.worth * (1 - 1e-12)
+    np.testing.assert_array_equal(plan.spend, [[90.0, 0.0]])
+    assert plan.worth == pytest.approx(1000.0 * 0.9**3 / (1.0 + 0.9**3), rel=1e-12)
+    assert envelope.bound - plan.bound > 54.0
     assert allocate_geos(
         cells, 300.0, 1, lower=np.zeros((1, 2)), upper=np.full((1, 2), 300.0)
     ).worth == (pytest.approx(1047.867, abs=1e-3))
 
 
-def test_an_s_curve_s_plan_on_its_envelope_logs_the_gap_it_leaves(caplog):
-    """At 300 the envelope's plan is the curves' and leaves no gap; at 90 it runs on the chord."""
+def test_an_s_curve_searched_to_its_tolerance_logs_nothing(caplog):
+    """At 90 the plan on the envelopes from zero spend left a gap of 54.6, which a warning logged;
+    the search closes it and has nothing to log."""
     cells = ((Channel(ONE, Hill(100.0, 3.0), 1000.0), Channel(ONE, MichaelisMenten(100.0), 300.0)),)
     with caplog.at_level(logging.WARNING, logger="chc.allocation"):
-        allocate_geos(cells, 300.0, 1, lower=np.zeros((1, 2)), upper=np.full((1, 2), 300.0))
         short = allocate_geos(cells, 90.0, 1, lower=np.zeros((1, 2)), upper=np.full((1, 2), 90.0))
+    assert not [r for r in caplog.records if r.name == "chc.allocation"]
+    assert short.stopped == "closed"
+    assert short.bound - short.worth <= short.tolerance
+
+
+def _untied() -> tuple[Channel, Channel]:
+    """Two Hill curves of slope 3 at scales 1 and 1.01, no carryover."""
+    return Channel(ONE, Hill(1.0, 3.0), 1.0), Channel(ONE, Hill(1.01, 3.0), 1.0)
+
+
+S_GRID = (_untied(), (Channel(ONE, Hill(0.8, 4.0), 0.7), Channel(ONE, Hill(1.2, 2.5), 1.2)))
+S_BOX = {"lower": np.zeros((2, 2)), "upper": np.full((2, 2), 2.0)}
+
+
+def _s_worth(spend: np.ndarray) -> float:
+    """What a plan of ``S_GRID`` returns, read on each cell's curve."""
+    return sum(
+        float(cell(np.array([spend[g, c]]))[0])
+        for g, row in enumerate(S_GRID)
+        for c, cell in enumerate(row)
+    )
+
+
+def test_one_geo_of_s_curves_is_searched_to_allocate_s_plan():
+    """At a budget of 1.6 the cutting planes on the envelopes from zero spend planned 1.27/0.33,
+    for 0.705 against a bound of 0.845; the search plans all of it on the first curve, for
+    512/637, 0.804, as :func:`allocate` does."""
+    pair = _untied()
+    plan = allocate_geos((pair,), 1.6, 1, lower=np.zeros((1, 2)), upper=np.full((1, 2), 1.6))
+    alone = allocate(pair, 1.6, 1, lower=np.zeros(2), upper=np.full(2, 1.6))
+    np.testing.assert_allclose(plan.spend[0], alone.spend, rtol=0.0, atol=1e-12)
+    assert plan.worth == pytest.approx(512.0 / 637.0, rel=1e-12, abs=0.0)
+    assert plan.worth == pytest.approx(alone.worth, rel=1e-12, abs=0.0)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert 0.0 <= plan.gap <= plan.tolerance
+    assert plan.boxes > 1
+
+
+@pytest.mark.parametrize(
+    ("budget", "envelopes"), [(1.6, 0.704806), (3.2, 1.552281)], ids=["short", "long"]
+)
+def test_s_curves_over_two_geos_are_searched_to_allocate_s_plan_of_their_cells(budget, envelopes):
+    """With no totals the grid's cells are :func:`allocate`'s channels, and its search the oracle:
+    each search's worth is within its gap of the best, which both bounds hold. On the envelopes
+    from zero spend the planes planned ``envelopes``, short of the best by 0.10 and 0.081."""
+    plan = allocate_geos(S_GRID, budget, 1, **S_BOX)
+    cells = [cell for row in S_GRID for cell in row]
+    flat = allocate(cells, budget, 1, lower=np.zeros(4), upper=np.full(4, 2.0))
+    assert plan.spend.sum() == pytest.approx(budget, rel=1e-12)
+    assert np.all((plan.spend >= 0.0) & (plan.spend <= 2.0))
+    assert plan.worth == pytest.approx(_s_worth(plan.spend), rel=1e-12)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert 0.0 <= plan.gap <= plan.tolerance
+    assert flat.worth - plan.worth <= plan.gap + 1e-15  # the two meet the budget to an ulp
+    assert plan.worth - flat.worth <= flat.gap + 1e-15
+    assert plan.worth - envelopes > 0.08
+
+
+SLOW = GeometricAdstock(0.5, length=4, normalized=True)
+CARRY_GRID = (
+    (
+        Channel(SLOW, Hill(1.0, 3.0), 1.0),
+        Channel(GeometricAdstock(0.3, length=3, normalized=True), Hill(1.01, 3.0), 1.0),
+    ),
+    (Channel(ONE, Hill(0.8, 4.0), 0.7), Channel(SLOW, Hill(1.2, 2.5), 1.2)),
+)
+CARRY_HISTORY = np.random.default_rng(5).gamma(2.0, 0.2, size=(6, 2, 2))
+
+
+@pytest.mark.parametrize(
+    ("rate", "envelopes"), [(1.6, 1.832848), (3.2, 4.056499)], ids=["short", "long"]
+)
+def test_s_curves_with_carryover_over_two_geos_are_searched_to_allocate_s_plan_of_their_cells(
+    rate, envelopes
+):
+    """Three periods, each cell run over its history at its own adstock: :func:`allocate`'s search
+    of the four cells is the oracle, 2.2896 and 4.6326, and the plan's worth is read on the cells
+    themselves. On the envelopes from zero spend the planes planned ``envelopes``, short of it by
+    0.46 and 0.58."""
+    periods = 3
+    plan = allocate_geos(CARRY_GRID, periods * rate, periods, **S_BOX, history=CARRY_HISTORY)
+    flat = allocate(
+        CARRY_GRID[0] + CARRY_GRID[1],
+        periods * rate,
+        periods,
+        lower=np.zeros(4),
+        upper=np.full(4, 2.0),
+        history=CARRY_HISTORY.reshape(6, 4),
+    )
+    assert plan.spend.sum() == pytest.approx(rate, rel=1e-12)
+    assert plan.worth == pytest.approx(
+        _worth(CARRY_GRID, plan.spend, CARRY_HISTORY, periods), rel=1e-12
+    )
+    assert plan.worth - envelopes > 0.4
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert flat.worth - plan.worth <= plan.gap + 1e-15
+    assert plan.worth - flat.worth <= flat.gap + 1e-15
+
+
+def test_a_box_s_bound_is_its_envelopes_where_newton_s_method_closes_its_plan_on_them():
+    """With carryover a cell's periods run at their own adstocks, so its envelope over a box bends
+    where the plan's periods are past their chords and the tail's are on them: Newton's method then
+    makes the box's plan exact on the envelopes, which stand above the curves there. The box's
+    bound is the envelopes' at that plan, 0.23 above :func:`allocate`'s best; read on the curves
+    it would be the plan's own worth, 0.033 short of the best, and the search would stop in its
+    first box. On the envelopes from zero spend the plan returned 4.2580, 0.046 short."""
+    cells = (
+        Channel(GeometricAdstock(0.5, length=2, normalized=True), Hill(0.67, 4.2), 1.3),
+        Channel(GeometricAdstock(0.3, length=5, normalized=True), Hill(0.65, 3.2), 0.65),
+    )
+    history = np.random.default_rng(1).gamma(2.0, 0.2, size=(5, 2))
+    budget, periods, upper = 6.45, 2, np.full(2, 3.0)
+    alone = allocate(cells, budget, periods, lower=np.zeros(2), upper=upper, history=history)
+    box = {"lower": np.zeros((1, 2)), "upper": upper[None], "history": history[:, None, :]}
+    plan = allocate_geos((cells,), budget, periods, **box)
+    assert plan.worth == pytest.approx(alone.worth, rel=1e-12, abs=0.0)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert alone.worth - plan.worth <= plan.gap + 1e-15
+    assert plan.worth - alone.worth <= alone.gap + 1e-15
+    one = allocate_geos((cells,), budget, periods, **box, max_boxes=1)
+    assert (one.stopped, one.boxes, one.limit) == ("cap", 1, "max_boxes")
+    assert alone.worth - one.worth > 0.03
+    assert one.bound - alone.worth > 0.2
+
+
+def test_a_search_of_the_grid_reads_a_cell_s_slope_hundreds_of_times_not_millions(monkeypatch):
+    """An envelope's chord holds its cell at one end of it at every price but the chord's slope,
+    where its rate jumps across the chord. In a box Newton's method on the totals' prices stops at
+    its first step that does not shrink their miss: the search of the grid at 1.6 reads a cell's
+    slope 687 times. With a line search along each such step it circled the jump, and read it
+    2,093,555 times for the same plan."""
+    reads = 0
+    slope = chc.allocation._slope
+
+    def counted(worth, rate):
+        nonlocal reads
+        reads += 1
+        return slope(worth, rate)
+
+    monkeypatch.setattr(chc.allocation, "_slope", counted)
+    plan = allocate_geos(S_GRID, 1.6, 1, **S_BOX)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert reads < 5_000
+
+
+@pytest.mark.parametrize(
+    ("kind", "fixed"),
+    [("geo", np.array([1.6, 1.6])), ("channel", np.array([2.0, 1.2]))],
+    ids=["geos", "channels"],
+)
+def test_s_curves_under_fixed_totals_are_searched_to_each_group_s_own_plan(kind, fixed):
+    """Every geo's total fixed, the grid is each geo's :func:`allocate`; every channel's, each
+    channel's over the geos. The search meets that oracle within each search's gap."""
+    groups = list(S_GRID) if kind == "geo" else [(S_GRID[0][c], S_GRID[1][c]) for c in range(2)]
+    totals = {f"{kind}_totals": Totals(least=fixed, most=fixed)}
+    plan = allocate_geos(S_GRID, float(fixed.sum()), 1, **S_BOX, **totals)
+    own = [
+        allocate(group, total, 1, lower=np.zeros(2), upper=np.full(2, 2.0))
+        for group, total in zip(groups, fixed, strict=True)
+    ]
+    spent = plan.spend.sum(axis=1 if kind == "geo" else 0)
+    np.testing.assert_allclose(spent, fixed, rtol=1e-12)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert sum(p.worth for p in own) - plan.worth <= plan.gap
+    assert plan.worth - sum(p.worth for p in own) <= sum(p.gap for p in own) + 1e-15
+
+
+def test_s_curves_under_totals_on_two_geos_no_lattice_plan_returns_more():
+    """A cap of 1.5 on channel 0's total and a floor of 1.0 on geo 1's, at a budget of 3.2: every
+    plan whose four rates are whole steps of a 400th of the budget, within the boxes and the
+    totals, returns no more than the plan, within its gap, and the best is within the lattice's
+    reach of it."""
+    budget, steps = 3.2, 400
+    caps = Totals(least=np.zeros(2), most=np.array([1.5, np.inf]))
+    floors = Totals(least=np.array([0.0, 1.0]), most=np.full(2, np.inf))
+    plan = allocate_geos(S_GRID, budget, 1, **S_BOX, channel_totals=caps, geo_totals=floors)
+    assert plan.spend.sum() == pytest.approx(budget, rel=1e-12)
+    assert plan.spend[:, 0].sum() <= 1.5 * (1 + 1e-12)
+    assert plan.spend[1].sum() >= 1.0 * (1 - 1e-12)
+    assert plan.stopped == "closed"
+    unit = budget / steps
+    top = round(2.0 / unit)
+    table = [[np.asarray(cell(np.arange(top + 1) * unit)) for cell in row] for row in S_GRID]
+    b, c = np.meshgrid(np.arange(top + 1), np.arange(top + 1), indexing="ij")
+    best = -np.inf
+    for a in range(top + 1):
+        d = steps - a - b - c
+        keep = (d >= 0) & (d <= top) & ((a + c) * unit <= 1.5) & ((c + d) * unit >= 1.0)
+        if keep.any():
+            revenue = (
+                table[0][0][a] + table[0][1][b[keep]] + table[1][0][c[keep]] + table[1][1][d[keep]]
+            )
+            best = max(best, float(revenue.max()))
+    assert best <= plan.worth + plan.gap
+    assert plan.worth - best <= 1e-4 * plan.worth
+
+
+def test_a_search_of_the_grid_its_cap_stops_says_so_and_logs_its_gap(caplog):
+    """One box leaves the untied pair's gap open, 0.14, and logs it; five close it."""
+    pair = (_untied(),)
+    box = {"lower": np.zeros((1, 2)), "upper": np.full((1, 2), 1.6)}
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = allocate_geos(pair, 1.6, 1, **box, max_boxes=1)
+    assert (plan.stopped, plan.boxes, plan.limit) == ("cap", 1, "max_boxes")
+    assert plan.gap == plan.bound - plan.worth
+    assert plan.gap > 0.1
     [record] = [r for r in caplog.records if r.name == "chc.allocation"]
-    assert (record.chc_event, record.planner) == ("allocation_unsearched", "allocate_geos")
-    assert record.gap == short.bound - short.worth
-    assert record.gap == pytest.approx(54.6, abs=0.05)
+    assert (record.chc_event, record.planner, record.limit) == (
+        "allocation_cap",
+        "allocate_geos",
+        "max_boxes",
+    )
+    assert (record.boxes, record.worth, record.bound) == (1, plan.worth, plan.bound)
+    closed = allocate_geos(pair, 1.6, 1, **box, max_boxes=5)
+    assert (closed.stopped, closed.boxes) == ("closed", 5)
+
+
+def test_concave_cells_are_planned_in_one_box():
+    plan = _tied()
+    assert (plan.stopped, plan.boxes, plan.limit) == ("closed", 1, None)
+    assert plan.gap == 0.0
+    assert plan.tolerance == pytest.approx(1e-9 * plan.bound, rel=1e-12)
+    assert not plan.floored
+
+
+@pytest.mark.parametrize(
+    ("setting", "match"),
+    [({"rtol": -1.0}, "rtol"), ({"atol": np.inf}, "atol"), ({"max_boxes": 0}, "max_boxes")],
+)
+def test_it_refuses_search_settings_it_cannot_search_to(setting, match):
+    with pytest.raises(ValueError, match=match):
+        _plan(**setting)
 
 
 def test_a_straight_stretch_leaves_the_cutting_planes_plan_within_its_gap():

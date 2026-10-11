@@ -17,7 +17,11 @@
            budget of 1.6 a period. All of it on the first returns 512/637, and no split does better:
            the worth's derivative along the budget crosses 0 once inside, at the splits' least
            worth (0.6696, near 0.661 on the first), so the best is an end, and the other end, 1.6
-           on the second, returns 0.7990
+           on the second, returns 0.7990. Read once each way round, as two readings of the
+           channels, a split's worse regret is 512/637 less the smaller of the two worths, the
+           second's at x the first's at 1.6 - x. The first's passes its value at 0 again only past
+           0.8, so both exceed it nowhere: the least worse regret, 512/637 - 0.7990 = 0.00475, is
+           at an end, and the even split's is 0.1332
    STEP 5  two more S-shaped families, where the root is transcendental: Weibull of shape 3 from
            2/5 and the logistic of steepness 6, normalised to 0 at 0, from 1/2, each to 40 digits
            by bf_find_root between the inflection and a point past the root, with the chord's
@@ -78,7 +82,12 @@ block([x, worth, along, crossings],
                       lambda([s], is(sign(float(subst(x = s, along))) #
                                      sign(float(subst(x = s + 1.6b0/4000, along)))))),
   print("sign changes of the derivative inside:", length(crossings)),
-  for s in crossings do print("  near", float(s), "worth", float(subst(x = s, worth))))$
+  for s in crossings do print("  near", float(s), "worth", float(subst(x = s, worth))),
+  fpprec : 40,
+  print("mirrored, the first's worth back at its value at 0 at",
+        bf_find_root(worth - subst(x = 0, worth), x, 0.9b0, 1.6b0)),
+  print("mirrored, the worse regret at an end", float(hill(8/5, 3) - hill(1.6b0/1.01b0, 3)),
+        "and at the even split", float(hill(8/5, 3) - subst(x = 0.8b0, worth))))$
 
 print("=== STEP 5: Weibull and the logistic, from a start below the inflection ===")$
 weibull(z) := 1 - exp(-z^3)$

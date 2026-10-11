@@ -3,7 +3,9 @@
 **Status:** accepted, 2026-10-05. Amends ADR 0034 (an S-shaped curve is searched, not planned on
 its envelope) and ADR 0050 (the vertex is each box's plan, the first box's where the search
 starts). Amended 2026-10-05 by ADR 0052: `cvar_allocate` searches boxes too. Amended 2026-10-07
-by ADR 0065: the tolerance and the cap are the caller's, and no cut plans past the cap.
+by ADR 0065: the tolerance and the cap are the caller's, and no cut plans past the cap. Amended
+2026-10-08 by ADR 0076: the other planners search too, and none keeps the envelope from zero
+spend.
 
 ## Context
 
