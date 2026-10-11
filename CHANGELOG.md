@@ -52,7 +52,9 @@ still change).
   units, or the first lever at 1e6, and one with either state at 1e-6. Each parameter is now read
   at its scale on the log, the norm of its column of the fit's design over its state's (ADR 0024):
   the two directions sit 5.7e5 and 1.5e7 times above the floor from 1e-12 to 1e12 of the states'
-  units and from 1e-3 to 1e6 of a lever's. Since 0.9.0.
+  units and from 1e-3 to 1e6 of a lever's. A fit made by `fit_causal_residual` keeps those scales
+  beside `unmoved`; one kept from an earlier release, or made by hand, carries none and is refused
+  with a `ValueError` that says to refit it. Since 0.9.0.
 - **`misspecification_cost`'s p-value reads the same in any units of the state and of the levers.**
   It took the square root of the fits' difference's covariance `S` in raw parameter units, where
   the units set its eigenvalues orders apart and the small ones are the largest's rounding, and the

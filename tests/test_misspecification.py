@@ -460,6 +460,20 @@ def test_fits_without_their_influence_are_refused() -> None:
             misspecification_cost(plan, bare, alternative)
 
 
+def test_a_fit_without_its_parameter_scale_is_refused() -> None:
+    """A fit made by hand, or kept from before 0.15.1, carries ``unmoved`` without each
+    parameter's scale on the log, which the gate reads ``unmoved``'s span at: it is refused as
+    the caller's input, not read on a missing scale."""
+    reference, alternative, plan = _case(4000, 7, 0.0, 0.0)
+    bare = dataclasses.replace(reference, _parameter_size=None)
+    for pair in (
+        (bare, alternative),
+        (reference, dataclasses.replace(alternative, _parameter_size=None)),
+    ):
+        with pytest.raises(ValueError, match="each parameter's scale"):
+            misspecification_cost(plan, *pair)
+
+
 def test_fits_of_two_classes_or_two_logs_are_refused() -> None:
     reference, _, plan = _case(4000, 7, 0.0, 0.0)
     other_class = fit_causal_residual(

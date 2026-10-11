@@ -120,9 +120,10 @@ def misspecification_cost(
     the class held, 32 to 106 times the regret between the fits' plans.
 
     Raises:
-        ValueError: on a fit made without ``influence=True``; two fits whose classes, integrators,
-            rows or clusters differ, or that carry drivers, whose gain's price needs the plan's
-            forecast; a plan that was not made on ``reference``'s model; and whatever
+        ValueError: on a fit made without ``influence=True``, or one without each parameter's
+            scale (made by hand, or kept from a release before 0.15.1); two fits whose classes,
+            integrators, rows or clusters differ, or that carry drivers, whose gain's price needs
+            the plan's forecast; a plan that was not made on ``reference``'s model; and whatever
             :meth:`chc.plan.CausalPlan.decision_weight` refuses.
     """
     for name, fit in (("reference", reference), ("alternative", alternative)):
@@ -130,6 +131,12 @@ def misspecification_cost(
             raise ValueError(
                 f"the {name} fit carries no influence: fit both by fit_causal_residual with "
                 "influence=True, since the difference's covariance sums their influences row by row"
+            )
+        if fit._parameter_size is None:
+            raise ValueError(
+                f"the {name} fit carries unmoved but not each parameter's scale on the log, which "
+                "fit_causal_residual keeps beside it since 0.15.1: refit it there, since the gate "
+                "reads unmoved's span at those scales"
             )
         if fit.drivers:
             raise ValueError(
@@ -181,7 +188,6 @@ def misspecification_cost(
     # they read the same in any units of the state and of the actions. In raw units those set the
     # parameters' sizes apart: with both states logged at 1e12 of their units, and the problem
     # with them, the two directions a plan weighed read as weighing nothing.
-    assert reference._parameter_size is not None  # the fit sets it with unmoved
     size = np.asarray(reference._parameter_size, dtype=np.float64)
     scaled = weight / np.outer(size, size)
     weighed = np.zeros(0)
