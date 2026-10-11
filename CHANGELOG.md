@@ -233,7 +233,8 @@ still change).
   Hill, short of its tangency, held it at its floor for a marginal return of 0.55, where its own
   slope there is 0.75. Each budget's plan is now the planner's search there. A return target is met
   by Brent's method on the budget: 0.7 at (7/3)^(1/3), 1.3264, and 0.75 at 3^(1/3), 1.4422, all
-  on the first channel. A marginal target is the best plan with the budget free and each unit
+  on the first channel. Each budget the method tries is one search of the planner, 37 for 0.7 and
+  7 for 0.75, where the envelopes' plans took none. A marginal target is the best plan with the budget free and each unit
   charged the target, searched in boxes; the Hill goes to 1.2353, where its slope meets 0.55. With
   carryover over three periods, a Hill beside a saturating channel at 0.45 a unit was planned at a
   budget of 4.960, netting 0.1449 over 0.45 a unit, where 5.470 nets 0.1600; it is now 5.470. A
