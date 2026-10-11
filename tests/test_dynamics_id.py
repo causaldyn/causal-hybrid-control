@@ -2339,13 +2339,13 @@ def test_periods_move_the_error_and_nothing_else(integrator: str) -> None:
     assert serial.periods is not None
     assert serial.periods.tolist() == list(range(400))
     # each row's influence is the rows' own, factor and all: a reader sums it across the periods
-    for name in ("influence", "representer", "moment_residual", "unmoved"):
+    arrays = ("influence", "representer", "moment_residual", "unmoved", "_parameter_size")
+    for name in arrays:
         np.testing.assert_array_equal(getattr(serial, name), getattr(rows, name))
     np.testing.assert_array_equal(serial.residual.channel, rows.residual.channel)
     np.testing.assert_array_equal(serial.residual.drift, rows.residual.drift)
-    arrays = {"influence", "representer", "moment_residual", "unmoved", "residual"}
     for field in dataclasses.fields(CausalDynamicsFit):
-        if field.name not in arrays | {"channel_error", "periods"}:
+        if field.name not in {*arrays, "residual", "channel_error", "periods"}:
             assert getattr(serial, field.name) == getattr(rows, field.name), field.name
 
 
