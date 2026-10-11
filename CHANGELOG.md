@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-11
+
 ### Added
 
 - **`budget_for`, `minimax_allocate`, `allocate_geos` and `budget_for_geos` take their search's
@@ -6175,6 +6177,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.16.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.16.0
 [0.15.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.1
 [0.15.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.0
 [0.14.4]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.4
