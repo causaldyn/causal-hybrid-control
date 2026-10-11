@@ -11,8 +11,8 @@ oracle is the best plan, and four of the oracles are a local descent from a plan
 `ModelUncertaintyTask`'s plant acts through `u - 0.15 u^3` in a box of ±8. Past `|u| = 2.58` the
 effect reverses, and on the box's edge it is -68.8, so a plan can push harder through the reversed
 effect than through the forward one, whose peak is 0.99. The descent from zero stops at that peak,
-at 15.520831, and ADR 0059 measured a plan with one action on the edge at 4.797. Its regrets, 0.653
-for the calibrated plan and 1348.84 for greedy, read 11.75 too low.
+at 15.520831, and ADR 0059 measured a plan with one action on the edge at 4.797. Its regrets, 0.655
+for the calibrated plan and 1348.48 for greedy, read 11.75 too low.
 
 Each oracle, and every reference a regret is read against, was searched for a better plan. The
 plan tasks were descended by `projected_gradient_solve` from 73 or 74 starts: zero, each side of the
@@ -69,7 +69,7 @@ Every figure is in float64, as the suite runs.
 - **Each start is descended, polished and descended again.** The planner alone crawls along this
   plant's ravines: from the upper side held for two steps it ended 10 000 steps at 3.926 and
   200 000 at 3.773716, its stationarity 3.3e-3. `lbfgs_box_control` goes on from where it stopped,
-  and the planner descends again to its own rule, at 3.773697, its stationarity 3.7e-6. Each of the
+  and the planner descends again to its own rule, at 3.773697, its stationarity 4.9e-6. Each of the
   three runs to the task's `inner_steps` at most.
 - **The search runs once per task.** It reads no data, so `run_multiseed`'s seeds share it; it is
   kept per task and per precision.
@@ -79,8 +79,8 @@ Every figure is in float64, as the suite runs.
 ## Consequences
 
 - **`ModelUncertaintyTask`'s regrets are read against the best plan found.** Its oracle costs
-  3.773697, where it cost 15.520831; the calibrated plan's regret is 12.400, where it read 0.653,
-  and greedy's 1360.58, where it read 1348.84. The oracle leaves the logged action support at 4 of
+  3.773697, where it cost 15.520831; the calibrated plan's regret is 12.403, where it read 0.655,
+  and greedy's 1360.23, where it read 1348.48. The oracle leaves the logged action support at 4 of
   its 25 steps, where it left it at 24. `tests/test_benchmark.py` holds the oracle at or below the
   best plan found, to `1e-9`, and within 0.013 of the relaxation's bound.
 - **The calibrated row now reads what staying on the learned model costs.** A regret of 12.4 is
@@ -102,7 +102,7 @@ Every figure is in float64, as the suite runs.
 - **L-BFGS-B alone.** Rejected: from the upper side held for two steps it ends at 11.50, a plan at
   the forward effect's peak.
 - **The relaxation's plan, read back through the cheapest action for each effect, as the start.**
-  Rejected: under the same three solves it ends at 3.774214, a nearby plan 5.2e-4 above the best,
+  Rejected: under the same three solves it ends at 3.774507, a nearby plan 8.1e-4 above the best,
   and it needs a plant linear in a scalar effect, which this task is by construction and a plant
   in general is not.
 - **A dynamic programme over the state.** Rejected: its grid's interpolation lands it on nearby

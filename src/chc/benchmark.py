@@ -443,7 +443,7 @@ class ModelUncertaintyTask:
     on many plans, none below 3.773697. Every plan costs at least 3.76084, the minimum of the
     problem relaxed to the effects, in which the plant is linear and the action's cost is replaced
     by its convex envelope (``tests/test_benchmark.py``), so the oracle is within 0.0129 of the best
-    plan there is. Against it the calibrated plan's regret is 12.40 and greedy's 1360.58: the row
+    plan there is. Against it the calibrated plan's regret is 12.40 and greedy's 1360.23: the row
     measures what planning on the learned model costs against a plan that knows the plant's turn,
     which no model fit on the logged support can see.
     """

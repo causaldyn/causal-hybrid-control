@@ -1244,7 +1244,7 @@ def nlp_solver_certificate(
     a *short* first-order budget costs on an ill-conditioned instance. At the shipped cap the
     projected gradient ends below L-BFGS-B's cost on every instance, each on its own rule, the
     ill-conditioned one after 8 083 steps: by a relative ``1.1e-9`` to ``1.0e-7``, the
-    certificate's ``relative_gap``, or ``4.4e-9`` to ``1.9e-7`` of the cost. 50 steps is short of
+    certificate's ``relative_gap``, or ``4.4e-9`` to ``2.0e-7`` of the cost. 50 steps is short of
     the 180 where the well-conditioned instance stops on its own rule, so that every instance shows
     a truncated descent. This measures the conditioning, not the library's behaviour.
     """
