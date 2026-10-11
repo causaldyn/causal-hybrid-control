@@ -17,6 +17,19 @@ still change).
   of each program HiGHS left unsolved (`unsolved`). A search that its cap stops logs
   `chc_event="allocation_cap"` with its gap; `minimax_allocate`'s record gives the split's worst
   regret and the bound under it (ADR 0076).
+- **`allocate_geos` and `budget_for_geos` plan channels bought once for every geo:
+  `national={column: National(shares, lower, upper)}`.** Such a channel's spend a period is one
+  rate within its own box, and each geo's cell spends its share of it, on its own curve, carryover
+  and history. Before, every cell was its own rate, so a channel such as national TV was planned
+  geo by geo, at ratios no national buy makes. On the tests' three geos the per-geo plan bought
+  channel 1 at 43.9, 22.7 and 10.0. That total spread at population shares of 0.2, 0.5 and 0.3
+  gains 24,418.2, and the plan with channel 1 national gains 24,504.5. The national rate counts
+  whole in the budget and in its channel's total, and in each geo's total by the geo's share. Its
+  price is the budget's plus its channel's plus each geo's weighted by the geo's share. On S-shaped
+  cells it is searched in boxes, its bound the sum of its cells' envelopes. Its column of `lower`
+  and `upper` holds `nan`; a channel both national and given a box of its own there is refused, as
+  are shares that are not positive, one a geo and summing to 1 to rounding. With no national
+  channel every plan is unchanged, bit for bit (ADR 0079).
 
 ### Changed
 

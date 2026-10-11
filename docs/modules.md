@@ -392,9 +392,11 @@ budget's shadow price reported. S-curves are searched in boxes to the best split
 a goal's budget met over searched plans, and a search its cap stops logs its gap. The box is
 required: it is where the channels were seen. **Every geo's channels under one budget**
 (`allocate_geos`): caps and floors on what each geo and each channel spends, with a price for each,
-certified by cutting planes and made exact by Newton's method on the totals that bind. A return, a
-marginal return or a return on spend can stand over the grid in place of the budget
-(`budget_for_geos`), met in a few plans where every curve is concave.
+certified by cutting planes and made exact by Newton's method on the totals that bind. A channel
+bought once for every geo, national TV allotted by population, is one spend a period that each
+geo's cell takes its share of (`National`), planned as one rate. A return, a marginal return or a
+return on spend can stand over the grid in place of the budget (`budget_for_geos`), met in a few
+plans where every curve is concave.
 [Tutorial 8](tutorials/08_splitting_a_budget.md) splits a budget step by step.
 
 **A geo world** (`geo_world`): geos to score a geo model and a geo plan on. Each geo's KPI is made
