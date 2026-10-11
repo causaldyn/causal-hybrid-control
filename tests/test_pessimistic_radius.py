@@ -10,6 +10,7 @@ from scipy.optimize import minimize
 from chc.control import SolverResult
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
+from chc.plan import causal_plan
 from chc.residual import ZeroResidual
 from chc.support import SupportModel, pessimistic_solve
 from chc.uncertainty import ConfoundingRobustPenalty
@@ -149,6 +150,38 @@ def test_a_zero_guess_on_the_radius_kink_moves_where_zero_is_not_stationary(
     residual = _prox_residual(np.asarray(solve.actions), task_gradient(solve.actions), weight, 0.2)
     assert residual <= 1e-6
     assert solve.stationarity <= 1e-6
+
+
+@pytest.mark.parametrize(
+    ("levers", "box", "lam_unc"), [(1, 0.2, 3.1), (2, 0.2, 3.25), (1, 2.0, 1.55), (2, 2.0, 1.55)]
+)
+def test_a_plan_under_the_radius_is_priced_stationary_where_its_descent_stopped(
+    levers: int, box: float, lam_unc: float
+) -> None:
+    """Without rows the descent holds the steps it does not use at exactly zero, on the norm's
+    kink, where the smoothed norm's gradient reads zero whatever the cost's gradient there. The
+    shadow prices read that gradient: at each of these converged plans their residual was 0.68 to
+    1.0, as if the descent had stopped short. At a step on the kink the gradient is the least-norm
+    element of the norm's subdifferential, zero exactly where that step is stationary."""
+    plant, cost, x0 = _oscillator(levers)
+    plan = causal_plan(
+        plant,
+        x0,
+        cost,
+        0.1,
+        12,
+        -box,
+        box,
+        support=_support(levers),
+        uncertainty=ConfoundingRobustPenalty(radius=0.3),
+        lam_unc=lam_unc,
+    )
+    actions = np.asarray(plan.actions)
+    assert plan.solver_status == "converged"
+    assert np.any(np.all(actions == 0.0, axis=-1))  # a step on the kink
+    prices = plan.shadow_prices()
+    assert prices.residual <= 1e-6
+    assert prices.dual_feasible
 
 
 def test_the_group_shrinkage_is_the_proximal_map_of_the_scaled_norm_and_the_box() -> None:

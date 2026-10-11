@@ -155,7 +155,7 @@ _augmented_gradient = eqx.filter_jit(jax.grad(_augmented, argnums=2))
 
 
 def _radius_norms(
-    uncertainty: PenaltyModel | None, lam_unc: float, us: Array, blocks: Blocks
+    uncertainty: PenaltyModel | None, lam_unc: float, us: Array, rows: bool
 ) -> Array | None:
     """The weight of each step's ``||u_t||`` in the penalised cost, where the uncertainty channel is
     the confounding radius and the descent takes its norm by a proximal step; ``None`` elsewhere.
@@ -169,7 +169,7 @@ def _radius_norms(
     projection is not the norm's proximal map, so under rows the smoothed norm is descended by its
     gradient.
     """
-    if not isinstance(uncertainty, ConfoundingRobustPenalty) or blocks:
+    if not isinstance(uncertainty, ConfoundingRobustPenalty) or rows:
         return None
     if (isinstance(lam_unc, int | float) and lam_unc == 0.0) or uncertainty.radius == 0.0:
         return None
@@ -182,6 +182,40 @@ def _smooth(
 ) -> tuple[PenaltyModel | None, float]:
     """The uncertainty channel the gradient reads: none where the descent takes it as a norm."""
     return (None, 0.0) if norms is not None else (uncertainty, lam_unc)
+
+
+def _penalised_gradient(
+    model: Dynamics,
+    x0: Array,
+    us: Array,
+    dt: float,
+    cost: QuadraticCost,
+    support: SupportModel | None,
+    lam_supp: float,
+    uncertainty: PenaltyModel | None,
+    lam_unc: float,
+    rows: bool,
+) -> Array:
+    """The gradient of the objective the penalised descent minimised, at ``us``.
+
+    Where the descent takes the radius' norm by its proximal map (:func:`_radius_norms`), the norm
+    is differentiated unsmoothed: ``w_t u_t / ||u_t||`` at a step off the kink, and at a step on it,
+    where the norm has no gradient, the least-norm element of the smooth part's gradient ``g_t``
+    plus the norm's subdifferential, ``g_t (1 - w_t / ||g_t||)+``, zero exactly where that step is
+    stationary. The smoothed norm's gradient reads zero there whatever ``g_t`` is.
+    """
+    norms = _radius_norms(uncertainty, lam_unc, us, rows)
+    gradient = _augmented_gradient(
+        model, x0, us, dt, cost, support, lam_supp, *_smooth(uncertainty, lam_unc, norms)
+    )
+    if norms is None:
+        return gradient
+    weights = jnp.asarray(norms, gradient.dtype)[:, None]
+    size = jnp.linalg.norm(us, axis=-1, keepdims=True)
+    kink = size == 0.0
+    length = jnp.linalg.norm(gradient, axis=-1, keepdims=True)
+    held = gradient * jnp.maximum(0.0, 1.0 - weights / jnp.where(length > 0.0, length, 1.0))
+    return jnp.where(kink, held, gradient + weights * us / jnp.where(kink, 1.0, size))
 
 
 @eqx.filter_jit
@@ -230,7 +264,7 @@ def _pessimistic_loop(
     def task(us: Array) -> Array:
         return total_cost(model, x0, us, dt, cost)
 
-    norms = _radius_norms(uncertainty, lam_unc, us0, blocks)
+    norms = _radius_norms(uncertainty, lam_unc, us0, bool(blocks))
     smooth_unc, smooth_lam = _smooth(uncertainty, lam_unc, norms)
 
     def smooth(us: Array) -> Array:
@@ -320,7 +354,7 @@ def pessimistic_solve(
         blocks,
     )
     iterations = int(taken)
-    norms = _radius_norms(uncertainty, lam_unc, us0, blocks)
+    norms = _radius_norms(uncertainty, lam_unc, us0, bool(blocks))
     gradient = _augmented_gradient(
         model, x0, optimised, dt, cost, support, lam_supp, *_smooth(uncertainty, lam_unc, norms)
     )
