@@ -4,7 +4,12 @@
 descend as the planner does, every penalised descent checks the projection's error, and
 `lbfgs_box_control` minimises in the planner's variables. Amended 2026-10-08 by ADR 0059's
 amendment: the line search asks a step for a third of the fall its gradient predicts; the step
-counts below were measured before it, and ADR 0059 gives them after.
+counts below were measured before it, and ADR 0059 gives them after. Amended 2026-10-08 by ADR 0078:
+the confounding radius' norm is no longer differentiated but taken, with the box, by its proximal
+map, so a plan under the radius no longer puts the kink's curvature in the secant, a zero guess on
+the kink moves where zero is not stationary, and float32 converges as float64 does; the radius'
+numbers below, the float32 consequence and the residual of 0.69 at the box ±0.2 are superseded
+there.
 
 ## Context
 

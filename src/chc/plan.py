@@ -84,7 +84,7 @@ from chc.response import relax
 from chc.support import (
     PenaltyModel,
     SupportModel,
-    _augmented_gradient,
+    _penalised_gradient,
     _pessimistic_loop,
     pessimistic_solve,
 )
@@ -559,11 +559,13 @@ class _PlanProblem:
     barrier: bool
 
     def gradient(self, actions: Array) -> NDArray[np.float64]:
-        """The solve's objective, differentiated at ``actions`` and flattened as the rows are."""
+        """The solve's objective, differentiated at ``actions`` and flattened as the rows are: at a
+        step the descent holds on the confounding radius' kink, the least-norm element of its
+        subdifferential (:func:`chc.support._penalised_gradient`)."""
         if self.support is None:
             gradient = control_gradient_adjoint(self.model, self.x0, actions, self.dt, self.cost)
         else:
-            gradient = _augmented_gradient(
+            gradient = _penalised_gradient(
                 self.model,
                 self.x0,
                 actions,
@@ -573,6 +575,7 @@ class _PlanProblem:
                 self.lam_supp,
                 self.uncertainty,
                 self.lam_unc,
+                any(row.matrix.shape[0] for row in self.constraints),
             )
         return np.asarray(gradient, dtype=np.float64).ravel()
 
