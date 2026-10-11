@@ -1,5 +1,8 @@
 """Benchmark gate: causal control is near-oracle on pricing; predictive is catastrophic."""
 
+import functools
+import importlib
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -7,6 +10,7 @@ import pytest
 from scipy.optimize import minimize
 from scipy.spatial import ConvexHull
 
+from chc import benchmark
 from chc.benchmark import (
     CausalDynamicsTask,
     ConfoundingRobustTask,
@@ -23,6 +27,13 @@ from chc.delay import STABILISING_RATIO_FLOOR, delay_margin, robust_delay_design
 from chc.dynamics import LinearDynamics
 from chc.estimators import DoubleML
 from chc.irf import delay_estimate
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which jax 0.11 no longer has.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 # The cheapest plan found on ModelUncertaintyTask's true plant, in float64 as the suite runs
 # (test_the_model_uncertainty_oracle_is_the_best_plan_found says how it was searched).
@@ -161,6 +172,37 @@ def test_the_model_uncertainty_oracle_is_within_its_bound_of_the_optimum(
     bound = _effect_relaxation_bound(ModelUncertaintyTask())
     assert bound == pytest.approx(3.76084, rel=0.0, abs=1e-4)
     assert bound <= model_uncertainty["oracle"].cost < bound + 0.013
+
+
+def test_the_model_uncertainty_oracle_is_searched_once_per_task_and_precision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The oracle reads no data, so a task's seeds share one search; a plan searched in float64 is
+    not the oracle of a run in float32, which searches its own."""
+    searched: list[np.dtype] = []
+
+    def search(
+        plant: object,
+        x0: jax.Array,
+        cost: object,
+        dt: float,
+        horizon: int,
+        u_lo: float,
+        u_hi: float,
+        steps: int,
+    ) -> jax.Array:
+        searched.append(x0.dtype)
+        return jnp.zeros((horizon, 1), x0.dtype)
+
+    monkeypatch.setattr(benchmark, "_best_descent", search)
+    fresh = functools.cache(benchmark._cubic_drag_oracle.__wrapped__)
+    monkeypatch.setattr(benchmark, "_cubic_drag_oracle", fresh)
+    task = ModelUncertaintyTask(n_data=200, n_members=2, fit_steps=20, inner_steps=20)
+    task.run()
+    task.run(seed_data=1)
+    with enable_x64(False):
+        task.run()
+    assert searched == [np.dtype(np.float64), np.dtype(np.float32)]
 
 
 def test_confounding_robust_sensitivity_radius_beats_greedy() -> None:
