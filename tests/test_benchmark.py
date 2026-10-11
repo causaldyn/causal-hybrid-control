@@ -84,8 +84,8 @@ def test_confounding_robust_regret_is_read_at_the_converged_plan() -> None:
     out of its 10 000 steps with the gradient's projection 0.19 from zero and a regret of 3.937, and
     of 100 000 at 3.823. Newton's method on the exact Hessian reaches the problem's KKT point, to
     2.3e-16, at a regret of 3.470575. The descent, reading the smoothed norm's curvature as it went,
-    converged in 1 184 steps at a regret of 3.470583; with the norm unsmoothed and taken by its
-    proximal map, in 1 005 steps at 3.470573."""
+    converged in 1 268 steps at a regret of 3.470570; with the norm unsmoothed and taken by its
+    proximal map, in 1 141 steps at 3.470573."""
     results = {r.controller: r for r in ConfoundingRobustTask().run()}
     assert results["robust"].regret == pytest.approx(3.470575, rel=0.0, abs=1e-4)
 

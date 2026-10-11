@@ -61,13 +61,13 @@ def test_a_float32_plan_under_the_radius_lands_on_the_float64_plan(
     levers: int, within: float
 ) -> None:
     """The radius' norm was smoothed over a millionth of the plan's size, and summed in the actions'
-    dtype while the cost around it read them in float64. In float32 the descent stopped 1.0e-3 of
-    the box from the float64 plan with one lever, after 69 steps against 89, and 1.9e-3 with two,
-    after 55 against 102; under the support penalty the two plans are 2.5e-8 apart. With the norm
+    dtype while the cost around it read them in float64. In float32 the descent stopped 3.7e-5 of
+    the box from the float64 plan with one lever, after 70 steps against 91, and 8.5e-5 with two,
+    after 1 521 against 95; under the support penalty the two plans are 2.5e-8 apart. With the norm
     taken by a proximal step and read in the cost's precision, one lever takes 45 steps in either
     dtype, to 1.4e-7 of the box, and two take 46 against 50, to 2.7e-6: there the float64 plan
-    itself stops 1.8e-6 of the box from where the descent goes with ``tol = 0``, and the float32
-    plan 8.3e-7."""
+    itself stops 1.9e-6 of the box from where the descent goes with ``tol = 0``, and the float32
+    plan 7.2e-7."""
     wide, width = _units_problem(levers, jnp.float64)
     narrow, _ = _units_problem(levers, jnp.float32)
     assert wide.status == narrow.status == "converged"

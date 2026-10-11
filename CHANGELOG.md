@@ -103,7 +103,7 @@ still change).
   at a regret of 3.470570 (the penalised descent's units, under Changed; ADR 0073). Since 0.2.0.
 - **Under the confounding radius, a float32 plan stopped short of the float64 one.** On the
   units tests' one-lever problem under `ConfoundingRobustPenalty(radius=0.3)` at `lam_unc=0.2`,
-  float32 converged 1.0e-3 of the box from the float64 plan, and 1.9e-3 with two levers, where under
+  float32 converged 3.7e-5 of the box from the float64 plan, and 8.5e-5 with two levers, where under
   the support penalty the two are 2.5e-8 apart. The smoothed norm put its kink's curvature at the
   plan's rounding, and the penalty was summed in float32 while the cost read the same actions in
   float64, so its rounding outweighed every fall near the plan. The penalised descent now leaves the
@@ -111,12 +111,12 @@ still change).
   each step, a forward-backward step whose line search asks a third of the fall the gradient and the
   norm predict together, and reads the norm in the cost's precision. One lever converges after 45
   steps in either dtype, 1.4e-7 of the box apart, and two after 50 and 46, 2.7e-6 apart, where
-  float64 itself stops 1.8e-6 from where `tol = 0` goes. A plan holds the actions it does not use at
+  float64 itself stops 1.9e-6 from where `tol = 0` goes. A plan holds the actions it does not use at
   exactly zero. In every units of the units tests the plan under the radius converges after 45 steps,
-  to 3.6e-15 of the box, where it took 89 to 97 steps to 2.2e-7; `ConfoundingRobustTask`'s robust
-  solve after 1 005 steps where it took 1 184, at a regret of 3.470573. Plans without the radius, or
-  at a weight or radius of zero, are unchanged bit for bit. Under linear rows the descent still
-  differentiates the smoothed norm (ADR 0078). Since 0.2.0.
+  to 3.6e-15 of the box, where it took 85 to 97 steps to 2.6e-7; `ConfoundingRobustTask`'s robust
+  solve after 1 141 steps where it took 1 268, at a regret of 3.470573. Plans without the radius, or
+  at a weight or radius of zero, are unchanged bit for bit. Under linear rows, and in a barrier's
+  rounds, the descent still differentiates the smoothed norm (ADR 0078). Since 0.2.0.
 - **Under the confounding radius, a zero guess could take no step where zero is not stationary.**
   At `u_t = 0` the smoothed norm reads no slope, so the descent stepped along the task's gradient
   alone and every trial paid the norm's slope. On `test_plan`'s boxed oscillator in the box ±0.2,
@@ -126,7 +126,8 @@ still change).
   with two levers. `pessimistic_solve`'s residual under the radius is now the proximal one,
   `||u - prox(u - grad f)||`, zero exactly where the unsmoothed problem is stationary: at that zero
   plan it read 0.69, the smoothed gradient's, where the unsmoothed problem's is 0.115 (ADR 0078).
-  Since 0.2.0.
+  A plan's shadow prices read the same objective: at a step held at zero, the least-norm element
+  of the norm's subdifferential. Since 0.2.0.
 - **A plan on a plant whose effect saturates no longer runs past the collapse on its first step.**
   Since 0.15.0 the planner's line search starts at the Newton step along each action alone, read
   where the plant acts at the guess, and it took any trial that lowered the cost by more than `tol`.

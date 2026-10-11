@@ -15,18 +15,20 @@ curvature this puts at the kink by a secant as the descent goes. Two defects rem
 `tol` and `steps` at their defaults:
 
 - **Float32 stopped short of the plan.** On `tests/test_pessimistic_units.py`'s one-lever problem
-  under the radius 0.3 at a weight of 0.2, from a zero guess, float64 converged after 89 steps and
-  float32 after 69, 1.0e-3 of the box from float64's plan, its stationarity residual 2.1e-3
-  against 6.5e-7. On the two-lever problem, 102 steps against 55, 1.9e-3 of the box apart. Under
-  the support penalty instead, 13 against 14 steps, 2.5e-8 apart. ADR 0073 quoted 102 and 6 172
-  steps, 1.1e-4 apart; at the parent of ADR 0059's amendment (the line search's third), this
-  measured 104 and 98 steps, 3.1e-5 apart, so neither count reproduces now, while the gap has grown.
+  under the radius 0.3 at a weight of 0.2, from a zero guess, float64 converged after 91 steps and
+  float32 after 70, 3.7e-5 of the box from float64's plan, its stationarity residual 3.3e-5
+  against 1.2e-7. On the two-lever problem, 95 steps against 1 521, 8.5e-5 of the box apart. Under
+  the support penalty instead, 13 against 14 steps, 2.5e-8 apart. ADR 0073's 102 and 6 172 steps,
+  1.1e-4 apart, reproduce at the parent of ADR 0059's amendment (the line search's third), which
+  brought them to 91 and 70.
   There were two causes. The kink's curvature, the radius' weight over a millionth of the plan's
   size, sits at the plan's rounding in float32. And the penalty was summed in float32: the cost
   reads float32 actions in float64, its weights being float64, but `penalty_trajectory` squares and
   sums them in their own dtype, so the norm term of `F`, 0.33 at the plan, was rounded at 3e-8,
   while the falls near the plan are 1e-9. With the norm taken by its proximal map but still summed
-  in float32, the descent stopped after 30 steps, 1.8e-5 of the box away.
+  in float32, float32 converged after 47 steps, 1.1e-7 of the box from float64's plan: how much the
+  sum's rounding costs depends on the machine's, and where this ADR was first measured it stopped
+  after 30 steps, 1.8e-5 away.
 - **A zero guess on the kink took no step, where zero is not stationary.** At `u_t = 0` the smoothed
   norm's gradient is zero, so the descent stepped along the task's gradient alone, and every action
   that gradient moved paid the norm's full slope for a fall the gradient predicted without it. The
@@ -73,10 +75,10 @@ curvature this puts at the kink by a secant as the descent goes. Two defects rem
 
 - **Float32 converges as float64 does.** The one-lever problem converges after 45 steps in
   either dtype, its plans 1.4e-7 of the box apart; two levers after 50 and 46, 2.7e-6 apart, where
-  the float64 plan itself stops 1.8e-6 of the box from where the descent goes with `tol = 0` and
-  the float32 plan 8.3e-7 (`tests/test_pessimistic_radius.py`). With float64 off altogether the
+  the float64 plan itself stops 1.9e-6 of the box from where the descent goes with `tol = 0` and
+  the float32 plan 7.2e-7 (`tests/test_pessimistic_radius.py`). With float64 off altogether the
   one-lever problem converges after 20 steps, 2.3e-4 of the box from the float64 plan, its cost
-  2.6e-7 above that plan's, under float32's resolution of it, 3.9e-7; it took 59 steps to 4.3e-4.
+  2.6e-7 above that plan's, under float32's resolution of it, 3.9e-7; it took 64 steps to 9.3e-4.
   Under the support penalty in pure float32 the plans are 4.7e-3 apart.
 - **A non-stationary zero guess moves.** The one-lever oscillator converges after 3 steps, three
   actions at the box's edge and the rest at exactly zero, its penalised cost 22.3219 where zero's
@@ -84,10 +86,10 @@ curvature this puts at the kink by a secant as the descent goes. Two defects rem
   stationary the descent still takes no step, and now reports a residual of 0 there.
 - **Every unit's plan is one plan.** The units problem under the radius, in its own units, the
   lever in units 1e-6 to 1e6 times its own, and the cost 1e-6 and 1e6 times, converges after 45
-  steps in each, to 3.6e-15 of the box, where it took 89 to 97 steps to 2.2e-7
+  steps in each, to 3.6e-15 of the box, where it took 85 to 97 steps to 2.6e-7
   (`tests/test_pessimistic_units.py`).
-- **`ConfoundingRobustTask`'s robust plan** converges after 1 005 steps where it took 1 184, at a
-  regret of 3.470573 where it read 3.470583; the KKT point of the smoothed problem reads 3.470575.
+- **`ConfoundingRobustTask`'s robust plan** converges after 1 141 steps where it took 1 268, at a
+  regret of 3.470573 where it read 3.470570; the KKT point of the smoothed problem reads 3.470575.
   It holds 16 of its 25 actions at exactly zero, the least of the rest 0.52; the regret is 0.583 of
   greedy's, as before (`tests/test_benchmark.py`).
 - **Plans without the radius do not move, bit for bit.** Compared before and after, actions, cost
@@ -103,8 +105,15 @@ curvature this puts at the kink by a secant as the descent goes. Two defects rem
   only its radius and weights.
 - **A trial with several levers a step bisects 96 times**, on arrays of the horizon's length; one
   lever a step costs a soft-threshold.
-- **Under rows both defects remain.** A plan under the radius and linear rows, from a zero guess on
-  the kink, can take no step where zero is not stationary, and its float32 plan stops short.
+- **A plan's shadow prices read the objective the descent minimised.** At a step held at zero the
+  norm has no gradient, and `CausalPlan.shadow_prices` reads the least-norm element of its
+  subdifferential there (`chc.support._penalised_gradient`), zero exactly where the step is
+  stationary: read on the smoothed norm's gradient, four converged oscillator plans showed a
+  residual of 0.68 to 1.0.
+- **Under rows, and in a barrier's rounds, both defects remain.** A plan under the radius and linear
+  rows, from a zero guess on the kink, can take no step where zero is not stationary, and its
+  float32 plan stops short. A barrier's rounds carry the radius inside their own penalty, which the
+  descent differentiates, so they start from the proximal plan and descend the smoothed norm.
 
 ## Alternatives considered
 
@@ -113,7 +122,11 @@ Measured on three problems, each from a zero guess in float64 and float32: the u
 rows run the library's descent with the penalty smoothed over `ε` times the plan's root mean
 square; the orthant row and its proximal control run a loop with the library's floor scale, third
 and fallback, and stopping rule, but no secant. "From the plan" is from the library's proximal plan,
-as a share of the box; `F` is the unsmoothed penalised cost.
+as a share of the box; `F` is the unsmoothed penalised cost. The table was measured on a machine
+whose rounding differs from the one the figures above were measured on. There the proximal rows
+take the same steps; the smoothed rows' steps and float32 distances differ, the units problem's
+row before this change reading 91 / 70 steps and 3.7e-5, and the proximal step still lands the
+float32 plan nearest float64's.
 
 | problem | method | steps, float64 / float32 | float32 from float64 | `F` above the plan | from the plan |
 |---|---|---:|---:|---:|---:|
@@ -145,7 +158,7 @@ as a share of the box; `F` is the unsmoothed penalised cost.
   than into an orthant, and it needs a pseudo-gradient and an orthant carried beside the gradient.
   The proximal map is one rule for one lever or several, the box taken in the same map.
 - **No secant on the proximal path.** With the radius the only penalty it takes fewer steps, 31
-  against 45 on the units problem, 33 against 50 on two levers and 862 against 1 005 on
+  against 45 on the units problem, 33 against 50 on two levers and 862 against 1 141 on
   `ConfoundingRobustTask`, at a regret of 3.470575. Under a support penalty that weighs, with the
   radius, it takes more: on the units problem at a support weight of 0.5 and 5, 13 and 13 steps
   against 8 and 7, and on two levers 21 and 18 against 12 and 14. The floor is the cost's curvature
