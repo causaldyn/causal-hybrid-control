@@ -70,6 +70,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy import optimize, signal, stats
 
+from chc.frames import _real_numbers
+
 _log = logging.getLogger(__name__)
 
 SwitchbackAnalysis = Literal["state_aware", "iv", "local_projection", "block_dim"]
@@ -1029,8 +1031,8 @@ def read_switchback(
             i.i.d., the steady state is read off a fit with ``a_hat >= 1``, or a variance with lags
             comes out negative, which the working model's errors cannot produce.
     """
-    u = np.atleast_2d(np.asarray(lever, dtype=np.float64))
-    y = np.atleast_2d(np.asarray(outcome, dtype=np.float64))
+    u = np.atleast_2d(np.asarray(_real_numbers(lever, "lever"), dtype=np.float64))
+    y = np.atleast_2d(np.asarray(_real_numbers(outcome, "outcome"), dtype=np.float64))
     zones, periods = u.shape
     if y.shape != (zones, periods + 1):
         raise ValueError(
@@ -1171,7 +1173,7 @@ def restate_mde(
         )
     blocks = plan.arms[report.arm].design
     run = round(plan.arms[report.arm].share * plan.periods)
-    u = np.atleast_2d(np.asarray(lever, dtype=np.float64))
+    u = np.atleast_2d(np.asarray(_real_numbers(lever, "lever"), dtype=np.float64))
     zones, periods = u.shape
     if zones != plan.zones or periods >= run:
         raise ValueError(

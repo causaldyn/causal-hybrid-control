@@ -115,18 +115,21 @@ def misspecification_cost(
     (:attr:`chc.dynamics_id.CausalDynamicsFit.unmoved`) has no data in either fit's moment: both
     hold the channel at zero along it, or read it off the log's rates as least squares does, which
     no effect enters, and a miss along it is not theirs to see. ``unseen`` counts the directions the
-    plan's regret weighs. A log whose actions the covariates' features determine, as an undithered
-    deployed plan's own may be, leaves every direction unmoved. On a log whose second action was
-    always twice the first, the gate read ``p = 0.39`` and two unseen directions while the plan lost
-    0.0014 against the truth; held to the log's ratio, the plan had none unseen and lost ``5e-6``
-    (section ``unseen``). Nor can it see the error both fits share: on the zone plant, the plan lost
-    0.38 to 0.51 against the truth at every setting, including where the class held, 32 to 106 times
-    the regret between the fits' plans.
+    plan's regret weighs, each parameter read at its scale on the log, so the count is the same in
+    any units of the state and of the actions. A log whose actions the covariates' features
+    determine, as an undithered deployed plan's own may be, leaves every direction unmoved. On a log
+    whose second action was always twice the first, the gate read ``p = 0.39`` and two unseen
+    directions while the plan lost 0.0014 against the truth; held to the log's ratio, the plan had
+    none unseen and lost ``5e-6`` (section ``unseen``). Nor can it see the error both fits share: on
+    the zone plant, the plan lost 0.38 to 0.51 against the truth at every setting, including where
+    the class held, 32 to 106 times the regret between the fits' plans.
 
     Raises:
-        ValueError: on a fit made without ``influence=True``; two fits whose classes, integrators,
-            rows, clusters or periods differ, or that carry drivers, whose gain's price needs the
-            plan's forecast; a plan that was not made on ``reference``'s model; and whatever
+        ValueError: on a fit made without ``influence=True``, or one without each parameter's
+            scale (made by hand, or kept from a release before 0.15.1); two fits whose classes,
+            integrators, rows, clusters or periods differ, or that carry drivers, whose gain's
+            price needs the plan's forecast; a plan that was not made on ``reference``'s model;
+            and whatever
             :meth:`chc.plan.CausalPlan.decision_weight` refuses.
     """
     for name, fit in (("reference", reference), ("alternative", alternative)):
@@ -134,6 +137,12 @@ def misspecification_cost(
             raise ValueError(
                 f"the {name} fit carries no influence: fit both by fit_causal_residual with "
                 "influence=True, since the difference's covariance sums their influences row by row"
+            )
+        if fit._parameter_size is None:
+            raise ValueError(
+                f"the {name} fit carries unmoved but not each parameter's scale on the log, which "
+                "fit_causal_residual keeps beside it since 0.15.1: refit it there, since the gate "
+                "reads unmoved's span at those scales"
             )
         if fit.drivers:
             raise ValueError(
@@ -180,18 +189,32 @@ def misspecification_cost(
         key=lambda square: float(np.trace(weight @ square)),
     )
     # W vanishes along a direction the plan does not move to second order in rounding, so the
-    # square root of the precision separates it from one the plan weighs at all
-    weighed = np.linalg.eigvalsh(unmoved.T @ weight @ unmoved) if unmoved.shape[1] else np.zeros(0)
-    floor = math.sqrt(np.finfo(np.float64).eps) * float(np.linalg.norm(weight, 2))
+    # square root of the precision separates it from one the plan weighs at all. Both are read at
+    # each parameter's scale on the log, on an orthonormal basis of unmoved's span there, where
+    # they read the same in any units of the state and of the actions. In raw units those set the
+    # parameters' sizes apart: with both states logged at 1e12 of their units, and the problem
+    # with them, the two directions a plan weighed read as weighing nothing.
+    size = np.asarray(reference._parameter_size, dtype=np.float64)
+    scaled = weight / np.outer(size, size)
+    weighed = np.zeros(0)
+    if unmoved.shape[1]:
+        basis = np.linalg.qr(unmoved * size[:, None])[0]
+        weighed = np.linalg.eigvalsh(basis.T @ scaled @ basis)
+    floor = math.sqrt(np.finfo(np.float64).eps) * float(np.linalg.norm(scaled, 2))
     ws = weight @ covariance
     trace, trace_squared = float(np.trace(ws)), float(np.trace(ws @ ws))
     leverage = max(float(d @ ws @ weight @ d) - trace_squared, 0.0)
     quadratic = float(d @ weight @ d)
+    # The mixture's weights, the eigenvalues of W S, are the same with each parameter at its scale
+    # on the log, where S's square root keeps every direction. In raw units S's small eigenvalues
+    # are its largest's rounding, and W, large where S is small, made that rounding weights: with
+    # both states logged at 1e-12 of their units they summed to 31.7, against tr(W S) = 3.3e-5.
+    mixture = _mixture_weights(scaled, covariance * np.outer(size, size))
     return MisspecificationCost(
         cost=(quadratic - trace) / 2.0,
         cost_error=math.sqrt(4.0 * leverage + 2.0 * trace_squared) / 2.0,
         noise=trace / 2.0,
-        p_value=_chi_square_mixture_survival(quadratic, _mixture_weights(weight, covariance)),
+        p_value=_chi_square_mixture_survival(quadratic, mixture),
         unseen=int(np.sum(weighed > floor)),
     )
 

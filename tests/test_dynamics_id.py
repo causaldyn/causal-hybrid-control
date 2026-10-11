@@ -26,6 +26,8 @@ from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import (
     CausalDynamicsFit,
     ConfoundedControlAffineSystem,
+    _absorbed,
+    _channel_design,
     _clustered_squares,
     _less_below_nothing,
     _logged_relations,
@@ -41,7 +43,7 @@ from chc.dynamics_id import (
     solve_channel_moment,
 )
 from chc.integrate import rk4_step
-from chc.residual import ControlAffineResidual
+from chc.residual import ControlAffineResidual, control_affine_features
 from chc.train import fit_residual
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
@@ -1243,6 +1245,72 @@ def test_an_action_is_unmoved_where_every_direction_of_its_own_channel_is(
     assert _unmoved_actions(fit) == unmoved
 
 
+@pytest.mark.parametrize(
+    ("actions", "column", "units", "unmoved"),
+    [
+        (_both(_determined(1.0), _dithered), "x", 1e-12, (0,)),
+        (_both(_determined(1.0), _dithered), "x", 1e12, (0,)),
+        (_both(_determined(1.0), _dithered), "u", 1e9, (0,)),
+        (lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 2.0]), "u", 1e-9, ()),
+        (lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 2.0]), "u", 1e9, ()),
+    ],
+    ids=[
+        "the first determined, the state at 1e-12",
+        "the first determined, the state at 1e12",
+        "the first determined, logged at 1e9",
+        "the second twice the first, the first at 1e-9",
+        "the second twice the first, the first at 1e9",
+    ],
+)
+def test_an_action_is_unmoved_in_any_units_of_the_state_and_of_the_actions(
+    actions: Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray],
+    column: str,
+    units: float,
+    unmoved: tuple[int, ...],
+) -> None:
+    """The state, or the first action, logged in ``units`` times its own, with an affine channel.
+    The fit's directions are unit columns in raw coefficient units, where the state's features part
+    from the constant's, and one action's columns from the other's, by those units. Read there, the
+    first action's channel lay 3.7e-5 off their span with the state at 1e-12 of its units, 5.2e-5
+    at 1e12, and 1.6e-7 with the action at 1e9, each past the square root of the precision. Where
+    the second is twice the first, the direction the two share lies 2e-9 of the way along the
+    first at 1e9, and read as the second's own; at 1e-9, as the first's."""
+    log = _policy_log(4000, actions)
+    if column == "x":
+        log = dict(log, x=log["x"] * units, x_next=log["x_next"] * units)
+    else:
+        log = dict(log, u=log["u"] * jnp.array([units, 1.0]))
+    fit = fit_causal_residual(
+        _known, log, 0.1, adjust_for=("z",), nuisance_degree=2, channel_degree=1
+    )
+    assert _unmoved_actions(fit) == unmoved
+
+
+@pytest.mark.parametrize("units", [1e-12, 1.0, 1e12])
+def test_the_unmoved_directions_are_orthogonal_in_the_units_the_fit_read_them(
+    units: float,
+) -> None:
+    """The covariates determine the first action, so its channel on the constant and on each of the
+    two states is unmoved: three directions. Each coefficient times the size the fit keeps beside
+    them, they are the orthogonal directions the fit read, in any units of the state. In raw
+    coefficient units the state's units part its features from the constant's: at 1e-12 and 1e12
+    of them the three directions are independent only to 3.5e-12 and 1.9e-12, their least singular
+    value."""
+    log = _policy_log(4000, _both(_determined(1.0), _dithered))
+    log = dict(log, x=log["x"] * units, x_next=log["x_next"] * units)
+    fit = fit_causal_residual(
+        _known, log, 0.1, adjust_for=("z",), nuisance_degree=2, channel_degree=1
+    )
+    states, actions, features = fit.residual.channel.shape
+    assert fit.unmoved is not None
+    assert fit._parameter_size is not None
+    directions = fit.unmoved[: actions * features, : fit.unmoved.shape[1] // states]
+    scaled = np.asarray(directions * fit._parameter_size[: actions * features, None])
+    assert scaled.shape[1] == 3
+    unit = scaled / np.linalg.norm(scaled, axis=0)
+    np.testing.assert_allclose(unit.T @ unit, np.eye(3), rtol=0.0, atol=1e-12)
+
+
 def test_a_policy_the_covariates_determine_reads_as_a_confident_wrong_channel() -> None:
     """Why the field exists: with nothing left of the action once the covariates are taken out, the
     moment has no data, and the log's rates set the channel by least squares beside the drift, at
@@ -1300,6 +1368,27 @@ def test_where_the_moment_has_no_data_the_fit_keeps_to_the_log_in_any_units() ->
     assert fits[1e6][0].integrator_defect == pytest.approx(
         fits[1.0][0].integrator_defect, rel=1e-6, abs=0.0
     )
+
+
+@pytest.mark.parametrize("units", [1e-12, 1.0, 1e12])
+def test_the_drift_takes_up_each_absorbed_move_in_any_units_of_the_state(units: float) -> None:
+    """``_absorbed`` returns the moves of the fit no transition tells from it: unmoved directions
+    whose push on the log the drift's features take up, with the drift regression's response, which
+    a plan's test reads to tell whether a move cancels at the plan's points. On the ruled log, the
+    lever's push along the constant feature is ``-0.3 x0``, which the drift's ``x0`` takes up. Read
+    by least squares on the raw drift design, with the state at 1e-12 of its units, the response
+    left 1.6e-3 of the push, where the plan's test reads a move as none only within 1.5e-8 of its
+    terms; at 1e-13 the rank cutoff dropped the state's columns, and it left all of it."""
+    log = _policy_log(4000, _ruled(1.0))
+    log = dict(log, x=log["x"] * units, x_next=log["x_next"] * units)
+    fit = fit_causal_residual(_known, log, 0.1, **RULED)
+    design = jax.vmap(control_affine_features, in_axes=(0, None))(log["x"], fit.residual.degree)
+    directions, response = _absorbed(fit, log["x"], log["u"], design)
+    assert directions.shape[1] == 1
+    raw = _channel_design(log["u"], log["x"], fit.residual.channel_degree)
+    push = np.asarray(raw @ directions)
+    left = np.linalg.norm(push - np.asarray(design @ response), axis=0)
+    assert float(np.max(left / np.linalg.norm(push, axis=0))) < 1e-12
 
 
 def test_the_representer_carries_what_the_log_reads_where_the_moment_has_no_data() -> None:
@@ -1554,6 +1643,57 @@ def test_the_rule_the_log_set_from_the_state_reads_the_same_in_any_units(units: 
         mine, theirs = np.asarray(getattr(other, span)), np.asarray(getattr(one, span))
         assert mine.shape == theirs.shape, span
         np.testing.assert_allclose(mine @ mine.T, theirs @ theirs.T, rtol=0.0, atol=1e-12)
+
+
+@pytest.mark.parametrize("units", [1e-12, 1e-9, 1e9, 1e12])
+@pytest.mark.parametrize(
+    "actions",
+    [
+        _both(_ruled(1.0), _dithered),
+        lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 2.0]),
+    ],
+    ids=["the first set from the state", "the second twice the first"],
+)
+def test_what_the_log_kept_reads_the_same_with_one_action_in_other_units(
+    actions: Callable[[np.random.Generator, np.ndarray, np.ndarray], np.ndarray], units: float
+) -> None:
+    """The first action logged in ``units`` times its own. Whether an action is kept at one level,
+    or set from the state or the covariates, is whether its axis lies in that span, to the square
+    root of the precision; the distance reads the same in any units of the actions. Orthonormalised
+    over the raw actions, the span the state predicts lay 3.0e-7 off the first action's axis at
+    1e12, and the log read as having set it from outside the state; and the combination kept at
+    one level, ``u2 = 2 u1``, lay 2e-12 of the way along ``u1``, so the second action's axis read
+    as in that span, and the relation's weight on ``u1`` as -1.99996e-12 where -2e-12."""
+    log = _policy_log(4000, actions)
+    covariates = jnp.concatenate([log["x"], log["z"]], axis=1)
+
+    def off(scale: float) -> np.ndarray:
+        logged = _logged_relations(
+            log["u"] * jnp.array([scale, 1.0]), log["x"], covariates, nuisance_degree=2
+        )
+        distances = []
+        for span in ("constant", "state", "covariates"):
+            basis = np.asarray(getattr(logged, span))
+            distances.append(
+                [np.linalg.norm(axis - basis @ (basis.T @ axis)) for axis in np.eye(2)]
+            )
+        return np.array(distances)
+
+    np.testing.assert_allclose(off(units), off(1.0), rtol=0.0, atol=1e-12)
+
+
+def test_an_action_the_log_never_used_is_each_span_it_kept() -> None:
+    """The second action never used: its column of the log is zeros, whose size reads 1, and its
+    axis is the whole of each span, the one kept at one level first, in any units of the first."""
+    log = _policy_log(4000, lambda rng, x, z: _dithered(rng, x, z) * np.array([1.0, 0.0]))
+    covariates = jnp.concatenate([log["x"], log["z"]], axis=1)
+    for units in (1e-12, 1.0, 1e12):
+        logged = _logged_relations(
+            log["u"] * jnp.array([units, 1.0]), log["x"], covariates, nuisance_degree=2
+        )
+        for span in ("constant", "state", "covariates"):
+            basis = np.abs(np.asarray(getattr(logged, span)))
+            np.testing.assert_allclose(basis, [[0.0], [1.0]], rtol=0.0, atol=1e-12, err_msg=span)
 
 
 @pytest.mark.parametrize("units", [1e-15, 1e-12, 1e15])
@@ -1815,9 +1955,11 @@ def test_clusters_move_the_error_and_nothing_else(integrator: str) -> None:
     np.testing.assert_array_equal(clustered.residual.drift, rows.residual.drift)
     np.testing.assert_array_equal(clustered.representer, rows.representer)
     np.testing.assert_array_equal(clustered.moment_residual, rows.moment_residual)
+    np.testing.assert_array_equal(clustered._parameter_size, rows._parameter_size)
     moved = {"channel_error", "influence", "clusters"}
+    arrays = {"residual", "representer", "moment_residual", "unmoved", "_parameter_size"}
     for field in dataclasses.fields(CausalDynamicsFit):
-        if field.name not in moved | {"residual", "representer", "moment_residual", "unmoved"}:
+        if field.name not in moved | arrays:
             assert getattr(clustered, field.name) == getattr(rows, field.name), field.name
 
 

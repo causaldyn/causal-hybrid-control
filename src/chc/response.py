@@ -105,6 +105,8 @@ from jax.scipy.special import betainc, betaln, erf, gammainc, gammaln, ndtr, xlo
 from jax.typing import ArrayLike
 from scipy.optimize import brentq
 
+from chc.frames import _real_numbers
+
 Model = TypeVar("Model")
 
 
@@ -1052,7 +1054,7 @@ class Channel(eqx.Module):
 
 
 def _series(spend: ArrayLike) -> Array:
-    series = jnp.asarray(spend, dtype=float)
+    series = jnp.asarray(_real_numbers(spend, "spend"), dtype=float)
     if series.ndim != 1:
         raise ValueError(f"spend has shape {series.shape}; a return is read one channel at a time")
     return series

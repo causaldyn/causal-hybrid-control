@@ -25,7 +25,7 @@ from numpy.typing import NDArray
 
 from chc import _units
 from chc.estimators import CausalEffectEstimator
-from chc.frames import _refuse_shared_names
+from chc.frames import _real_numbers, _refuse_shared_names
 
 _BASE_URL = "https://vincentarelbundock.github.io/Rdatasets/csv/causaldata/{name}.csv"
 _COVARIATES = ("age", "educ", "black", "hisp", "marr", "nodegree", "re74", "re75")
@@ -95,19 +95,35 @@ def lalonde_ate(data: LalondeData, estimator: CausalEffectEstimator) -> float:
     covariate's units, and earnings with a spread of 5,000 dollars, logged in units of 1e13
     dollars, reached it at a third of their spread.
 
+    The treatment, the outcome and each covariate are read as float64, as a panel's columns are,
+    where they hold real numbers (:func:`chc.frames._real_numbers`); the estimator casts them to its
+    own dtype after. NumPy sums a matrix's columns row by row, so in float32 their means were
+    rounded more with every row: at a million rows, a covariate of 10,000 give or take 1 reached
+    the estimator up to 1.7 times its spread off, and at ten million one of 14,000 give or take
+    9,500 up to 4.4% of its spread.
+
     Raises:
         ValueError: when a covariate is named ``treat`` or ``re78``, the names the estimator reads
-            the treatment and the outcome by: the covariate would replace either one.
+            the treatment and the outcome by: the covariate would replace either one; or when the
+            treatment, the outcome or a covariate holds a value that is not a real number, or is
+            masked, naming it.
     """
     names = tuple(data.covariates)
     _refuse_shared_names(
         {"the treatment": ("treat",), "the outcome": ("re78",), "a covariate": names}
     )
-    matrix = np.column_stack([data.covariates[name] for name in names])
+
+    def read(values: NDArray[np.float64], name: str) -> NDArray[np.float64]:
+        return np.asarray(_real_numbers(values, name), dtype=np.float64)
+
+    treatment, outcome = read(data.treatment, "the treatment"), read(data.outcome, "the outcome")
+    matrix = np.column_stack(
+        [read(data.covariates[name], f"the covariate {name!r}") for name in names]
+    )
     standardized = _units.standardised_np(matrix)
     payload: dict[str, jnp.ndarray] = {
-        "treat": jnp.asarray(data.treatment),
-        "re78": jnp.asarray(data.outcome / 1000.0),
+        "treat": jnp.asarray(treatment),
+        "re78": jnp.asarray(outcome / 1000.0),
     }
     for i, name in enumerate(names):
         payload[name] = jnp.asarray(standardized[:, i])

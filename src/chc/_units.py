@@ -131,6 +131,13 @@ def mean_squares(columns: Array, weights: Array | None = None) -> Array:
     return jnp.where(size > 0.0, size, 1.0)
 
 
+def norms(columns: Array) -> Array:
+    """Each column's norm, and 1 for a column of zeros: a coefficient on the column times it is in
+    the units of what the column predicts, whatever the column's own."""
+    size = jnp.linalg.norm(columns, axis=0)
+    return jnp.where(size > 0.0, size, 1.0)
+
+
 def root_mean_square_np(columns: NDArray[np.float64]) -> NDArray[np.float64]:
     """:func:`root_mean_square` in NumPy."""
     peak = np.max(np.abs(columns), axis=0)

@@ -43,6 +43,7 @@ import numpy as np
 from jax import Array
 
 from chc.discovery import discover_lagged_parents
+from chc.frames import _real_numbers
 from chc.irf import local_projection_irf, structured_irf
 
 _SIGN_TOL = 1e-8
@@ -137,10 +138,12 @@ def causal_pathway(
     the lagged graph, reaches every ancestor of ``target``, estimates each ancestor's signed total
     dynamic effect over ``horizon`` steps, and returns them ranked by cumulative ``|effect|``.
     """
-    series = np.asarray(series, dtype=float)
+    series = np.asarray(_real_numbers(series, "series"), dtype=float)
     if series.ndim != 2:
         raise ValueError(f"series must be (T, d_state); got shape {series.shape}")
-    controls = None if controls is None else np.asarray(controls, dtype=float)
+    controls = (
+        None if controls is None else np.asarray(_real_numbers(controls, "controls"), dtype=float)
+    )
 
     graph = discover_lagged_parents(series, controls, max_lag=max_lag, alpha=alpha)
     onsets = _ancestor_onsets(graph.edges(), target)

@@ -6506,7 +6506,7 @@ def panel_estimator_certificate(
     disturbance_scale: float = 2.0,
     seed: int = 20260904,
 ) -> PanelEstimatorGate:
-    """RESULT 60 -- Result 51's ``Psi`` against a real cross-fitted DML fit (plan 24's P2.6).
+    """RESULT 60 -- Result 51's ``Psi`` against a real cross-fitted DML fit.
 
     Result 51 says in its own scope note that ``Psi`` is a functional of the process, evaluated with
     the fold operator held fixed, and "not a re-derived estimator". This runs the comparison that

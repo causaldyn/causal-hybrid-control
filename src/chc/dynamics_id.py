@@ -68,6 +68,7 @@ from chc.causal import (
     _stream_key,
 )
 from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics
+from chc.frames import _real_entries, _real_numbers
 from chc.integrate import rk4_step
 from chc.residual import ControlAffineResidual, control_affine_features
 
@@ -219,7 +220,10 @@ class CausalDynamicsFit:
     # log, no rate of the log tells it apart, and the channel is held at zero along it, in the
     # actions' scaled units; where they cannot, the log's rates rule out all but one value, and the
     # channel takes it by least squares beside the drift: what the log did, not an effect, whatever
-    # ``channel_error`` says (ADR 0054). ``r`` is 0 when the log moves every direction.
+    # ``channel_error`` says (ADR 0054). The directions are orthogonal with each channel coefficient
+    # scaled to its column of the channel's design on the log's raw actions, and a span of them is
+    # read there: in raw units, where the units of the state and of the actions set those columns'
+    # sizes apart, they lean together. ``r`` is 0 when the log moves every direction.
     unmoved: Array | None = None
     # (N, n, q), kept with ``influence``, ``q`` the channel's size in its raveled order: ``N`` times
     # each transition's weight, per state, in each channel coefficient through the channel's moment
@@ -260,6 +264,13 @@ class CausalDynamicsFit:
     # :attr:`error_cosines`), and a reader of ``influence`` sums its rows the same way
     # (:func:`_clustered_squares`). None where the fit was given none.
     periods: np.ndarray | None = None
+    # (p,), set with ``unmoved``, in ``influence``'s order: each parameter's scale on the log, the
+    # norm of its column of the channel's design on the log's raw actions, or of the drift
+    # regression's, over the norm of its state's column of the log, each 1 for a column of zeros. A
+    # parameter times it reads the same in any units of the state and of the actions. ``unmoved``'s
+    # directions so scaled are orthogonal on each state's channel, where the fit read them, and a
+    # reader of their span reads it there.
+    _parameter_size: Array | None = dataclasses.field(default=None, repr=False, compare=False)
 
     @property
     def error_cosines(self) -> int | None:
@@ -669,8 +680,7 @@ def _unmoved_directions(
     zeros, and its coefficients come back whole."""
     features = _polynomial_features(_units.standardised(covariates), nuisance_degree)
     left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
-    size = jnp.linalg.norm(_channel_design(actions, states, channel_degree), axis=0)
-    scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
+    scale = 1.0 / _units.norms(_channel_design(actions, states, channel_degree))
     return _kept(_channel_design(left, states, channel_degree), scale)
 
 
@@ -698,8 +708,7 @@ def _instrument_relevance(
     as the nuisance's are, and whitened, the reading is the same in any units of the instrument,
     the actions and the state."""
     raw = _channel_design(actions, states, channel_degree)
-    size = jnp.linalg.norm(raw, axis=0)
-    along = jnp.diag(1.0 / jnp.where(size > 0.0, size, 1.0)) if free is None else free
+    along = jnp.diag(1.0 / _units.norms(raw)) if free is None else free
     correlations = jnp.zeros(along.shape[1], dtype=raw.dtype)
     if along.shape[1] == 0:
         return correlations
@@ -771,8 +780,7 @@ class _Unmoved:
 def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
     """:class:`_Unmoved` for the unit columns ``directions`` ``(m k, r)``, with ``raw`` the
     channel's design on the log's raw actions and ``design`` the drift regression's."""
-    size = jnp.linalg.norm(raw, axis=0)
-    scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
+    scale = 1.0 / _units.norms(raw)
     unit = scale[:, None] * jnp.linalg.qr(directions / scale[:, None], mode="complete")[0]
     basis, free = unit[:, : directions.shape[1]], unit[:, directions.shape[1] :]
     push = raw @ basis
@@ -796,14 +804,24 @@ def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
 
 def _unmoved_actions(fit: CausalDynamicsFit) -> tuple[int, ...]:
     """The actions whose whole channel the log never moved: every coefficient of theirs, on every
-    feature of the channel, in the span of :attr:`CausalDynamicsFit.unmoved`'s directions."""
+    feature of the channel, in the span of :attr:`CausalDynamicsFit.unmoved`'s directions.
+
+    The span is read where the fit read it, each coefficient scaled to its column of the channel's
+    design on the log's raw actions, where the directions are orthogonal. In raw coefficient units
+    they lean together as the units of the state and of the actions set those columns' sizes apart:
+    with the state at 1e-12 of its units, QR there missed the span by 2.5e-5, and a lever the log
+    set from the state read as moved; with one lever at 1e9 of its units, a direction both share
+    lay 2e-9 of the way along it, under the precision, and the other read as never moved."""
     states, actions, features = fit.residual.channel.shape
     if fit.unmoved is None or fit.unmoved.shape[1] == 0:
         return ()
+    assert fit._parameter_size is not None  # the fit sets it with unmoved
     # every state's channel is moved along the same directions, so the first state's block of its
     # first moves holds them all
     width = actions * features
-    basis = jnp.linalg.qr(fit.unmoved[:width, : fit.unmoved.shape[1] // states])[0]
+    directions = fit.unmoved[:width, : fit.unmoved.shape[1] // states]
+    # the first state's channel: its columns' norms over that state's, one factor for the block
+    basis = jnp.linalg.qr(directions * fit._parameter_size[:width, None])[0]
     moved = jnp.eye(width) - basis @ basis.T
     precision = float(jnp.sqrt(jnp.finfo(basis.dtype).eps))
     return tuple(
@@ -816,14 +834,17 @@ def _unmoved_actions(fit: CausalDynamicsFit) -> tuple[int, ...]:
 
 @dataclass(frozen=True)
 class _LoggedRelations:
-    """What the log's actions kept to: orthonormal bases ``(m, r)``, in the actions' own units, of
-    the combinations it kept at one level, of those the state alone predicts, and of those its
-    covariates predict, each span holding the one before; and each action's least-squares rule of
-    the state, the nuisance's polynomial of the state standardised as the log's was."""
+    """What the log's actions kept to: orthonormal bases ``(m, r)``, over the actions each divided
+    by ``size``, of the combinations it kept at one level, of those the state alone predicts, and of
+    those its covariates predict, each span holding the one before; and each action's least-squares
+    rule of the state, the nuisance's polynomial of the state standardised as the log's was."""
 
     constant: np.ndarray
     state: np.ndarray
     covariates: np.ndarray
+    # (m,): each action's norm on the log, 1 for one never used. A basis column over it is a
+    # combination's weights on the actions as logged.
+    size: np.ndarray
     means: np.ndarray  # (m,): a constant combination's level is its weights times these
     # (n,) each: the state standardised as (x - centre - shift) * factor (chc._units.standardising)
     centre: Array
@@ -836,13 +857,18 @@ def _logged_relations(
     actions: Array, states: Array, covariates: Array, nuisance_degree: int
 ) -> _LoggedRelations:
     """The combinations of the log's actions that a constant, the state or the covariates predict
-    to the precision :func:`_unmoved_directions` reads, projected the same way."""
-    size = jnp.linalg.norm(actions, axis=0)
-    scale = 1.0 / jnp.where(size > 0.0, size, 1.0)
+    to the precision :func:`_unmoved_directions` reads, projected the same way.
+
+    Each span is orthonormal over the actions scaled to their size, where :func:`_kept` reads it.
+    Orthonormalised over the raw actions, a span moved with their units: with one action at 1e12 of
+    its units, the span the state predicts lay 3.0e-7 off that action's axis, past the square root
+    of the precision, and ``u2 = 2 u1`` read its weight on ``u1`` as -1.99996e-12 where -2e-12."""
+    size = _units.norms(actions)
+    scale = 1.0 / size
 
     def kept(features: Array) -> np.ndarray:
         left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
-        columns = np.asarray(_kept(left, scale), dtype=np.float64)
+        columns = np.asarray(_kept(left, scale) * size[:, None], dtype=np.float64)
         return np.linalg.qr(columns)[0] if columns.shape[1] else columns
 
     centre, shift, factor = _units.standardising(states)
@@ -851,6 +877,7 @@ def _logged_relations(
         constant=kept(jnp.ones((actions.shape[0], 1), dtype=actions.dtype)),
         state=kept(features),
         covariates=kept(_polynomial_features(_units.standardised(covariates), nuisance_degree)),
+        size=np.asarray(size, dtype=np.float64),
         means=np.asarray(jnp.mean(actions, axis=0), dtype=np.float64),
         centre=centre,
         shift=shift,
@@ -872,7 +899,11 @@ def _absorbed(
     log's own predicted rates, so within the model class the log rules it out, though the channel's
     moment has no data along it, and the fit reads it off the log's rate (:class:`_Unmoved`, the
     same split). Scaled to the push its coefficients would make on actions of the log's raw size,
-    the test reads the same in any units."""
+    the test reads the same in any units.
+
+    The least squares reads each column in its own units, as the split does. On the raw columns it
+    left 1.6e-3 of a push with the state at 1e-12 of its units, and all of it at 1e-13, where the
+    rank cutoff dropped the state's columns."""
     states_n, levers, features = fit.residual.channel.shape
     width = levers * features
     if fit.unmoved is None or fit.unmoved.shape[1] == 0:
@@ -888,7 +919,7 @@ def _absorbed(
     precision = jnp.sqrt(jnp.finfo(push.dtype).eps)
     size = jnp.linalg.norm(jnp.abs(raw) @ jnp.abs(taken), axis=0)
     none = jnp.linalg.norm(push, axis=0) <= precision * size
-    return taken, jnp.linalg.lstsq(drift_design, jnp.where(none, 0.0, push))[0]
+    return taken, _units.least_squares(drift_design, jnp.where(none, 0.0, push))
 
 
 def _nuisance_inputs(
@@ -1250,6 +1281,9 @@ def fit_causal_residual(
     channel_degree = degree if channel_degree is None else channel_degree
     if channel_degree < 0:
         raise ValueError(f"channel_degree must be a non-negative integer; got {channel_degree}")
+    shifter = () if instrument is None else (instrument,)
+    ends = tuple(f"{name}_next" for name in drivers)
+    data = _real_entries(data, ("x", "u", "x_next", *adjust_for, *drivers, *ends, *shifter))
     x, u, x_next = data["x"], data["u"], data["x_next"]
     if clusters is not None and periods is not None:
         raise ValueError(
@@ -1286,6 +1320,15 @@ def fit_causal_residual(
 
     row_weight = None if weights is None else _state_weights(weights, x)
     raw = _channel_design(u, x, channel_degree)
+    # each parameter's scale on the log, in influence's order: the channel's, state by state, then
+    # the drift regression's, feature by feature
+    state_size = _units.norms(x)
+    parameter_size = jnp.concatenate(
+        [
+            (_units.norms(raw)[None, :] / state_size[:, None]).ravel(),
+            (_units.norms(design)[:, None] / state_size[None, :]).ravel(),
+        ]
+    )
     # the moment's ridge, scaled to the raw actions' size, as the unmoved directions are
     penalty = jnp.diag(_units.mean_squares(raw, row_weight))
     directions = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree)
@@ -1418,6 +1461,7 @@ def fit_causal_residual(
             if row_weight is None
             else float(jnp.sum(row_weight) ** 2 / jnp.sum(row_weight**2)),
             unmoved=unmoved,
+            _parameter_size=parameter_size,
         )
 
     def predicted(residual: ControlAffineResidual, gain: Array) -> Array:
@@ -2003,9 +2047,9 @@ def closed_loop_gain_attribution(
     design's rank, and with it the separation of ``a`` from ``b0``. Reading a pole off a fit whose
     budget is ~0 is reading the regulariser.
     """
-    x = jnp.asarray(states, dtype=jnp.float64).ravel()
-    u = jnp.asarray(actions, dtype=jnp.float64).ravel()
-    y = jnp.asarray(rates, dtype=jnp.float64).ravel()
+    x = jnp.asarray(_real_numbers(states, "states"), dtype=jnp.float64).ravel()
+    u = jnp.asarray(_real_numbers(actions, "actions"), dtype=jnp.float64).ravel()
+    y = jnp.asarray(_real_numbers(rates, "rates"), dtype=jnp.float64).ravel()
 
     affine = jnp.stack([jnp.ones_like(u), u], axis=1)
     manifold = jnp.linalg.lstsq(affine, x, rcond=None)[0]
@@ -2018,8 +2062,7 @@ def closed_loop_gain_attribution(
 
     design = jnp.stack([jnp.ones_like(x), x, u, x * u], axis=1)
     coefficients = jnp.linalg.lstsq(design, y, rcond=None)[0]
-    scale = jnp.linalg.norm(design, axis=0)
-    condition = float(jnp.linalg.cond(design / jnp.where(scale > 0.0, scale, 1.0)))
+    condition = float(jnp.linalg.cond(design / _units.norms(design)))
 
     state_variance = float(jnp.var(x))
     return ClosedLoopAttribution(

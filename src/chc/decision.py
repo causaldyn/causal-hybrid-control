@@ -78,6 +78,7 @@ from chc.evaluation import (
     _evaluate_by_unit,
     evaluate_plan,
 )
+from chc.frames import _not_numbers, _real_numbers
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.independence import gcm_test
 from chc.integrate import rk4_step
@@ -239,8 +240,10 @@ class Target:
     weight: float = 1.0
 
     def __post_init__(self) -> None:
+        value = _real_numbers(self.value, f"the value of target {self.name!r}", DecisionError)
+        object.__setattr__(self, "value", value)
         # a nan level or weight made the task cost nan, and the solve stopped where it started
-        values = np.asarray(self.value, dtype=np.float64).reshape(-1)
+        values = np.asarray(value, dtype=np.float64).reshape(-1)
         bad = np.flatnonzero(~np.isfinite(values))
         if bad.size:
             raise DecisionError(
@@ -293,6 +296,12 @@ class Driver:
 
     name: str
     forecast: ArrayLike
+
+    def __post_init__(self) -> None:
+        forecast = _real_numbers(
+            self.forecast, f"the forecast of driver {self.name!r}", DecisionError
+        )
+        object.__setattr__(self, "forecast", forecast)
 
 
 @dataclass(frozen=True)
@@ -371,7 +380,7 @@ class PrescribedPolicy:
             if missing:
                 raise ValueError(f"the state does not name {missing}")
             state = [state[name] for name in self.states]
-        x = np.asarray(state, dtype=np.float64)
+        x = np.asarray(_real_numbers(state, "state"), dtype=np.float64)
         if x.shape != (len(self.states),):
             raise ValueError(
                 f"a state holds one value for each of {list(self.states)}, not shape {x.shape}"
@@ -1750,7 +1759,7 @@ def prescribe(
         )
     driver_names = _check_drivers(drivers, horizon=horizon, taken=(*states, *lever_names))
     # read as floats here: an integer start failed inside the fit's linearisation
-    given = None if x0 is None else np.asarray(x0, dtype=float)
+    given = None if x0 is None else np.asarray(_real_numbers(x0, "x0", DecisionError), dtype=float)
     if given is not None:
         if given.shape != (len(states),):
             raise DecisionError(
@@ -2375,7 +2384,7 @@ def _keep_to_log(
 
     def named(inner: np.ndarray, outer: np.ndarray) -> str:
         left = outer - inner @ (inner.T @ outer)
-        column = left[:, int(np.argmax(np.linalg.norm(left, axis=0)))]
+        column = left[:, int(np.argmax(np.linalg.norm(left, axis=0)))] / among.size
         column = column if column[np.argmax(np.abs(column))] > 0.0 else -column
         weights = np.zeros(len(lever_names))
         weights[free] = column / np.linalg.norm(column)
@@ -2398,6 +2407,8 @@ def _keep_to_log(
     spread = np.sqrt(np.mean(np.asarray(u[:, jnp.array(free)], dtype=np.float64) ** 2, axis=0))
     relations = []
     for column in among.constant.T:
+        column = column / among.size  # the weights on the levers as logged
+        column = column / np.linalg.norm(column)
         column = column if column[np.argmax(np.abs(column))] > 0.0 else -column
         level = float(column @ among.means)
         if abs(level) <= precision * float(np.abs(column) @ spread):
@@ -2462,10 +2473,7 @@ def _alone(fit: CausalDynamicsFit, data: dict[str, Array], start: Array) -> tupl
     # every state's channel is moved along the same directions, so the target's block holds them
     width = actions * features
     directions = fit.unmoved[:width, : fit.unmoved.shape[1] // states]
-    size = jnp.linalg.norm(
-        _channel_design(data["u"], data["x"], fit.residual.channel_degree), axis=0
-    )
-    size = jnp.where(size > 0.0, size, 1.0)
+    size = _units.norms(_channel_design(data["u"], data["x"], fit.residual.channel_degree))
     basis = jnp.linalg.qr(directions * size[:, None])[0]
     phi = control_affine_features(start, fit.residual.channel_degree)
     precision = float(jnp.sqrt(jnp.finfo(basis.dtype).eps))
@@ -2745,7 +2753,16 @@ def _finite(value: float) -> float | None:
 
 
 def _readable(panel: Panel, name: str) -> bool:
-    return name in panel.columns and np.issubdtype(panel[name].dtype, np.number)
+    """Whether the logger check reads column ``name``: a column the panel holds of a boolean, an
+    integer, a floating, a complex or a duration dtype, or an object column the rule reads as
+    numbers (:func:`chc.frames._not_numbers`). The reader refuses complex numbers and durations
+    (:meth:`chc.panel.Panel._numbers`); text, dates and an object column of other values are a
+    panel's labels, and are not read."""
+    if name not in panel.columns:
+        return False
+    column = panel[name]
+    kind = column.dtype.kind
+    return kind in "biufcm" or (kind == "O" and _not_numbers(column) is None)
 
 
 def _check_logger(

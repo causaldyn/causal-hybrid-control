@@ -269,6 +269,127 @@ still change).
   `scripts/bench_boptest_tube.py` makes the logs and reads them under the library on the path.
   Since 0.13.0.
 
+## [0.15.1] — 2026-10-11
+
+### Fixed
+
+- **`prescribe` reads which levers a log never moved the same in any units of the state.** The fit
+  finds the channel's directions the log never moved with each coefficient scaled to its column of
+  the channel's design, and keeps them in raw coefficient units, where the units of the state and of
+  the levers set those columns' sizes apart and the directions lean together; `prescribe` read their
+  span there. With the state logged at 1e-12 and at 1e12 of its units, and the target, the start,
+  the tolerance and the levers' prices with it, the channel of a lever the log set from the state
+  lay 2.5e-5 and 6.3e-6 off that span, past the square root of the precision: the log read as having
+  set a combination such as `1 u1 - 1.3e-18 u2` from the state, and gave no plan where it plans
+  `held_to_log`. At 1e-15, 1e-12, 1e-9, 1e9 and 1e12 a lever set from a confounder was refused for
+  such a combination, not for the lever. With one lever logged at 1e9 of its units, a log that kept
+  `u2 = 2 u1` read `u2` as never moved and held it at its mean, and the plan moved by 0.69; at 1e-9
+  and 1e-12 it read `u1` so, and the plan moved by 7.5e-3; and a log that set `u1` from the state
+  gave no plan. With the levers read right, the drift's response to a move no transition tells
+  apart, a least squares on the raw drift design, left 1.6e-3 of the push with the state at 1e-12 of
+  its units, and all of it at 1e-13, where the plan read `not_estimable` from its first step. The
+  fit now keeps each coefficient's scale beside the directions, `prescribe` reads their span in it,
+  and the response is least squares in each column's own units (ADR 0054, ADR 0057). Those logs read
+  the same from 1e-15 to 1e15 of the state's units, the schedules to 5.0e-16, and, with the
+  relations the log kept read as the next entry says, from 1e-12 to 1e12 of a lever's units. At unit
+  scale the tests' estimability logs plan as before, to the bit. Since 0.13.0; the drift's response
+  since 0.14.0.
+- **`prescribe` reads the relations a log kept among its levers the same in any units of a lever.**
+  The spans of what the log kept, at one level, as a rule of the state and as one of the covariates,
+  were orthonormalised over the levers' raw values, where a relation's weights spread over as many
+  orders as the levers' units and QR keeps the small ones only to the precision of the large. With
+  `u1` logged at 1e12 of its units, its box and its price with it, a log that kept `u2 = 2 u1` read
+  the weight on `u1` as -1.99996e-12 where -2e-12 and the level as 4.4e-7 where 0: the plan held a
+  row the log never kept, and read `not_estimable` from its first step. A log that set `u1` from the
+  state read as having set it from a confounder, and gave no plan. At 1e9 the weight of
+  `u2 = 2 u1 + 0.4` on `u1` read to 2.8e-8 of itself, and the plan moved by 5.5e-9 of `u1`'s units.
+  Each span is now orthonormal over the levers each scaled to its norm on the log, and a relation's
+  weights are read back on the levers as logged (ADR 0054). From 1e-12 to 1e12 of a lever's units
+  those logs read the same relations, to 2.2e-16 in the levers' own units, and the same schedules,
+  to 6.1e-16. At unit scale a log that kept a relation plans as before to 3.3e-16, and the rest to
+  the bit. Since 0.14.0.
+- **`misspecification_cost` counts what it cannot see the same in any units of the state and of
+  the levers.** `unseen` weighed the log's unmoved directions by the regret's curvature in raw
+  parameter units, where those units set the parameters' sizes as many orders apart, and the floor
+  follows the largest. On a log whose second lever was always twice the first, a plan that weighs
+  two unmoved directions read none with both states, or either one, logged at 1e6 or 1e12 of their
+  units, or the first lever at 1e6, and one with either state at 1e-6. Each parameter is now read
+  at its scale on the log, the norm of its column of the fit's design over its state's (ADR 0024):
+  the two directions sit 5.7e5 and 1.5e7 times above the floor from 1e-12 to 1e12 of the states'
+  units and from 1e-3 to 1e6 of a lever's. A fit made by `fit_causal_residual` keeps those scales
+  beside `unmoved`; one kept from an earlier release, or made by hand, carries none and is refused
+  with a `ValueError` that says to refit it. Since 0.9.0.
+- **`misspecification_cost`'s p-value reads the same in any units of the state and of the levers.**
+  It took the square root of the fits' difference's covariance `S` in raw parameter units, where
+  the units set its eigenvalues orders apart and the small ones are the largest's rounding, and the
+  regret's curvature, large where `S` is small, made that rounding weights of the chi-square
+  mixture. With both states logged at 1e-12 of their units the weights summed to 31.7 against
+  `tr(W S) = 3.3e-5`, and a gate that read `p = 0.983` at unit scale read 0.5; with the first state
+  at 1e-6 it read 0.998. The weights are now read with each parameter at its scale on the log
+  (ADR 0024), and the p-value is the same to 1.6e-12 from 1e-12 to 1e12 of the states' units and
+  from 1e-3 to 1e6 of a lever's. Since 0.9.0.
+- **An entry point that takes a caller's data reads it as a panel reads a column.** The functions
+  that take logs, samples, series, outcomes, histories, stored decisions, forecasts or a target's
+  levels as arrays, or as a mapping or a frame of them, cast them with NumPy's or JAX's cast, which
+  reads far more than numbers. Of 207 such arguments of 85 entry points, 144 read one of these
+  without an error: the text `"0.5"` as 0.5 in 87, a date as its count of days in 71, a duration as
+  its count of seconds in 79, a complex number as its real part or into the fit in 118, a `Decimal`
+  of `1E+400` as an infinity in 25, and the values under a masked array's mask in 129.
+  `callaway_santanna` estimated from outcomes of text, and `DecisionLog.from_records` read a stored
+  propensity of `"0.7"` as 0.7. The others refused most of them with a message that named no
+  argument, JAX's `TypeError` among them, or failed deep in the fit, as `estimate_control_effect`
+  did with `ldexp not supported`. Each entry point now reads a caller's arrays by the rule a
+  panel's columns are read by as they enter, and refuses one that is not numbers with `ValueError`
+  naming the argument, the value and where it lies; `Target`, `Driver` and `prescribe`'s `x0` raise
+  `DecisionError`. A JAX array, or a list or a tuple that holds one, is read by its dtype alone, as
+  `jnp.asarray` gives it, so a traced entry point keeps tracing. Numbers are handed on as the
+  caller gave them and read as before, bit for bit, and a masked array that masks no cell is read
+  as its data, where JAX refused it. A model's parameters, a box's bounds, an operator's
+  coefficients and labels are read as before (ADR 0072). Since 0.2.0, each entry point since it
+  was added.
+- **An estimator no longer fails on a column it does not read.** `BackdoorOLS`, `IV2SLS`,
+  `DoubleML` and `RLearner` cast every column of the frame with JAX's cast, so a label column of
+  text or of dates that no argument named failed the estimate with JAX's `TypeError`. They now read
+  only the treatment, the outcome and the covariates they name, as the g-methods do;
+  `EconMLDoubleML` and `DoWhyEstimator` read theirs before importing the package. Since 0.3.0.
+- **The logger check reads a lever's parent of booleans.** `prescribe`'s logger check read a
+  column only where its dtype was a NumPy number, so it took a boolean column, which the panel holds
+  and reads as 0 and 1, for one it cannot read: with a holiday flag among an incentive's parents
+  the check was not run and `logger_check` was `None`, and a boolean column beside the plan was
+  left out of the test. It now reads a boolean column, and an object column of numbers, as the
+  panel reads them, and the flag checks as its 0.0s and 1.0s do, bit for bit. Since 0.9.0.
+- **`lalonde_ate` reads a float32 caller's data in float64.** It standardised the covariates and
+  scaled the outcome in the caller's dtype, and NumPy sums a matrix's columns row by row, so in
+  float32 the means were rounded more with every row: at a million rows a covariate of 10,000 give
+  or take 1 reached the estimator up to 1.7 times its spread off, and at ten million one of 14,000
+  give or take 9,500 up to 4.4% of its spread. The treatment, the outcome and each covariate are
+  now read as float64, as a panel's columns are, and refused, naming them, where they are not
+  numbers; float32 data reads as its float64 widening, bit for bit. Since 0.2.0.
+- **`chc.did` refuses a group that is no whole number, or is missing.** `callaway_santanna`,
+  `callaway_santanna_inference`, `twoway_fixed_effects_att` and `de_chaisemartin` cast `group` to
+  int64, which truncates: a unit's group of 2.5 was read as 2, 3.5 as 3 and -0.5 as 0, a
+  first-period adopter; a nan, an infinity or 1e300 as -2**63, with NumPy's `RuntimeWarning`
+  alone, where `callaway_santanna_inference` refused it as a first-treated period outside the
+  panel; a `Fraction` of 7/2 as 3; and a uint64 of 2**64 - 1 as -1, never treated. An `int` of
+  2**70 failed with `OverflowError`, naming nothing. Each now refuses such a group with
+  `ValueError`, naming `group`, the value and its row, and a group of whole numbers held as floats,
+  `Decimal`s or `Fraction`s reads as its integers, bit for bit. Since 0.2.0.
+- **A list that holds a masked value is refused as missing.** An entry point read a list as
+  `np.asarray` reads one, which takes the masked constant among its values as nan, and a masked
+  array's cells as what lies under them. `DecisionLog.from_records` reads each field of the records
+  as such a list: a stored decision whose propensity was masked was refused as `propensity is not
+  finite`, one whose action or dither was masked failed on NumPy's inhomogeneous shape, and an
+  action or a dither with one cell masked was read as the value under the mask, without a word. A
+  list or a tuple whose item masks a cell, at any depth, is now refused as a masked array is,
+  naming the argument, the first such row and how many; one that masks nothing reads as before.
+  Since 0.8.0, and for another entry point since it was added.
+- **The marketplace's calibrations take NumPy logs, and lists.** `calibrate_predictive`,
+  `calibrate_naive_causal` and `calibrate_shared_state` took each zone's columns by a traced index
+  under `jax.vmap`, which a NumPy array cannot take, so logs of NumPy arrays failed with JAX's
+  `TracerArrayConversionError`, and logs of lists failed too. The incentive, the completions and
+  the covariates are now read as JAX arrays first, and such logs calibrate as the same logs in JAX
+  arrays do, bit for bit. Since 0.2.0.
+
 ## [0.15.0] — 2026-10-07
 
 ### Added
@@ -6040,6 +6161,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.15.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.1
 [0.15.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.0
 [0.14.4]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.4
 [0.14.3]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.3

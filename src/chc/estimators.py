@@ -19,7 +19,7 @@ ignores what it does not need, so every backend is swappable without touching th
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -37,7 +37,7 @@ from chc.causal import (
     _two_stage,
     dml_point_and_se,
 )
-from chc.frames import ColumnData, _refuse_shared_names, as_columns
+from chc.frames import ColumnData, _real_numbers, _refuse_shared_names, as_columns
 
 Data = ColumnData
 
@@ -77,9 +77,18 @@ class CausalEffectEstimator(Protocol):
     ) -> EffectEstimate: ...
 
 
-def _columns(data: Data) -> dict[str, Array]:
-    """Any accepted frame as JAX arrays -- the estimators' dtype, which follows the x64 flag."""
-    return {name: jnp.asarray(column) for name, column in as_columns(data).items()}
+def _read(data: Data, names: Iterable[str]) -> dict[str, Any]:
+    """The columns ``names`` picks of any accepted frame, as the caller gave them, each read only
+    where it holds real numbers (:func:`chc.frames._real_numbers`). A column no argument names is
+    not read, so a label column of text is no obstacle."""
+    columns = as_columns(data)
+    return {name: _real_numbers(columns[name], f"column {name!r}") for name in dict.fromkeys(names)}
+
+
+def _columns(data: Data, names: Iterable[str]) -> dict[str, Array]:
+    """The columns ``names`` picks, read by :func:`_read`, as JAX arrays -- the estimators' dtype,
+    which follows the x64 flag."""
+    return {name: jnp.asarray(column) for name, column in _read(data, names).items()}
 
 
 def _check_roles(treatment: str, outcome: str, covariates: tuple[str, ...]) -> None:
@@ -88,9 +97,12 @@ def _check_roles(treatment: str, outcome: str, covariates: tuple[str, ...]) -> N
     )
 
 
-def _alias(data: Data, treatment: str, outcome: str) -> dict[str, Array]:
-    """View of ``data`` with ``treatment``/``outcome`` also exposed as builtin ``u``/``x_next``."""
-    cols = _columns(data)
+def _alias(data: Data, treatment: str, outcome: str, names: tuple[str, ...]) -> dict[str, Array]:
+    """The columns ``treatment``, ``outcome`` and ``names`` by :func:`_columns`, with
+    ``treatment``/``outcome`` also exposed as builtin ``u``/``x_next``, which replace a column of
+    either name: one named among ``names`` is not read."""
+    read = (treatment, outcome, *(name for name in names if name not in ("u", "x_next")))
+    cols = _columns(data, read)
     return {**cols, "u": cols[treatment], "x_next": cols[outcome]}
 
 
@@ -107,7 +119,7 @@ class BackdoorOLS:
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
         _check_roles(treatment, outcome, covariates)
-        columns = _columns(data)
+        columns = _columns(data, (treatment, outcome, *covariates))
         design = [columns[treatment]] + [columns[c] for c in covariates]
         beta, se, _ = _ols_with_se(jnp.stack(design, axis=1), columns[outcome])
         effect, stderr = float(beta[0]), float(se[0])  # treatment is column 0
@@ -146,7 +158,9 @@ class IV2SLS:
                 "the instrument": (self.instrument,),
             }
         )
-        effect, relevance = _two_stage(_alias(data, treatment, outcome), self.instrument)
+        effect, relevance = _two_stage(
+            _alias(data, treatment, outcome, ("x", self.instrument)), self.instrument
+        )
         return EffectEstimate(float(effect), diagnostics={"instrument_relevance": float(relevance)})
 
 
@@ -173,7 +187,7 @@ class DoubleML:
     ) -> EffectEstimate:
         _check_roles(treatment, outcome, covariates)
         effect, se = dml_point_and_se(
-            _alias(data, treatment, outcome),
+            _alias(data, treatment, outcome, covariates),
             covariates=covariates,
             degree=self.degree,
             folds=self.folds,
@@ -219,7 +233,7 @@ class RLearner:
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
         _check_roles(treatment, outcome, covariates)
-        columns = _columns(data)
+        columns = _columns(data, (treatment, outcome, *covariates))
         y, t = columns[outcome], columns[treatment]
         covs = jnp.stack([columns[c] for c in covariates], axis=1)
         centre, shift, factor = _units.standardising(covs)
@@ -282,11 +296,11 @@ class EconMLDoubleML:
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
         _check_roles(treatment, outcome, covariates)
+        columns = _read(data, (outcome, treatment, *covariates))
         try:
             from econml.dml import LinearDML
         except ImportError as exc:  # pragma: no cover - exercised only without econml
             raise ImportError(_ECONML_HINT) from exc
-        columns = as_columns(data)
         y = np.asarray(columns[outcome])
         t = np.asarray(columns[treatment])
         x = np.column_stack([np.asarray(columns[c]) for c in covariates])
@@ -324,12 +338,12 @@ class DoWhyEstimator:
         covariates: tuple[str, ...] = ("x", "z"),
     ) -> EffectEstimate:
         _check_roles(treatment, outcome, covariates)
+        columns = _read(data, (treatment, outcome, *covariates))
         try:
             import pandas as pd
             from dowhy import CausalModel
         except ImportError as exc:  # pragma: no cover - exercised only without dowhy
             raise ImportError(_DOWHY_HINT) from exc
-        columns = as_columns(data)
         frame = pd.DataFrame(
             {
                 treatment: np.asarray(columns[treatment]),

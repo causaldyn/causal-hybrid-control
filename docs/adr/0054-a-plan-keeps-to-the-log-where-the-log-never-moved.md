@@ -5,7 +5,12 @@ a ruled lever at its rule's level, as its field does; until 0.14.3 they read its
 plan, which nothing else reads. Amended again 2026-10-07: a step holds a ruled lever at its rule's
 level at the state it starts from, as the log held it over a period; until 0.14.3 the field read
 the rule at every point RK4 reads inside a step. And `Prescription.policy()` sets it from the state
-reached (ADR 0070).
+reached (ADR 0070). Amended a third time, 2026-10-07: which levers the log never moved, and the
+drift's response to a move no transition tells apart, are read in the units the fit reads
+`unmoved` in; until 0.15.1 they were read in raw units, and moved with the units of the state and
+of the levers. Amended a fourth time, 2026-10-08: the spans of what the log kept are orthonormalised
+over the levers each scaled to its norm on the log; until 0.15.1 they were orthonormalised over the
+levers' raw values, and moved with a lever's units.
 
 ## Context
 
@@ -58,6 +63,15 @@ fourth.
 `prescribe` reads three nested spans, each to the precision `unmoved` is read to: the combinations
 the log kept at one level, those the state alone predicts, and those the covariates predict.
 
+- **Which levers the log never moved** is read where the fit read `unmoved`'s directions: each
+  channel coefficient scaled to its column of the channel's design on the log's raw actions, a
+  scale the fit records beside them. There the directions are orthogonal. In raw coefficient units
+  the units of the state and of the levers set those columns' sizes apart, the directions lean
+  together, and a span read there moves with the units.
+- **What the log kept** is read over the levers each scaled to its norm on the log, as the fit reads
+  `unmoved` over the channel's design scaled to its columns' norms: each span is orthonormal there,
+  a lever's axis lies in it or not to the square root of the precision, and a relation's weights are
+  read back on the levers as logged, at unit length and with the largest positive.
 - A lever whose whole channel is unmoved:
   - kept at one level, it is held at its mean, clipped to its box, as in 0.13.0;
   - set from the state alone, it follows the log's least-squares rule of the state, the nuisance's
@@ -84,8 +98,9 @@ the log kept at one level, those the state alone predicts, and those the covaria
   where its terms cancel to the square root of the working precision of their size, and a nan
   does not count. A direction whose push on the log cancels to that precision has no drift
   response: the regression would read the rounding as one, which a plan that moves nothing could
-  not cancel. The first step where a move is not zero is `first_loaded_step`, and the trustworthy
-  prefix ends there.
+  not cancel. The response is least squares in each column's own units (ADR 0057), as the fit's
+  split reads it. The first step where a move is not zero is `first_loaded_step`, and the
+  trustworthy prefix ends there.
 - **The certificate** gains `estimability`: `estimable` where the log moved every direction,
   `held_to_log` where it did not and the plan keeps to it at every step, `not_estimable` for a
   refusal or a loaded step. It gains `identification_rank` and `unmoved_directions`, a state each,
@@ -122,13 +137,47 @@ the log kept at one level, those the state alone predicts, and those the covaria
 - Every fit with an unmoved direction moves, and every plan made on one. So does what
   `misspecification_cost` compares along those directions: ADR 0024's "the ridge sets it in both"
   becomes "both hold it at zero or read it off the log's rates".
-- **What this does not do.** The moment's ridge is still absolute in the actions' units, and
-  shrinks a channel the log did move where the actions are small: logged at a millionth of their
-  units, the review's moved lever read 5.1e-5 where it reads 0.0977. Fixing that moves every fit,
-  so it is a change of its own.
+- **In any units of the state.** With the state logged in 1e-15 to 1e15 of its units, and the
+  target, the start, the tube's tolerance and the levers' prices with it, every log above reads as
+  in the state's own units: the levers unmoved and ruled, the relations and the estimability
+  exactly, the schedules to 5.0e-16. Until 0.15.1, read in raw units, at 1e-12 and at 1e12
+  `u1 = -0.3 y`'s channel lay 2.5e-5 and 6.3e-6 off the unmoved span, past the square root of the
+  precision: the log read as having set `1 u1 - 1.3e-18 u2` from the state, and gave no plan. At
+  1e-9 `u1 = 0.7 z` was refused for such a combination, not for `u1`. With the levers read right,
+  the drift's response read on the raw drift design lost the state's columns from 1e-13, and the
+  plan read `not_estimable` from its first step.
+- **In other units of a lever.** With `u1` logged in 1e-12 to 1e12 of its units, its box and its
+  price with it, `u2 = 2 u1`, `u2 = 3 u1`, `u2 = 2 u1 + 0.4`, `u1 = -0.3 y` and `u1 = 0.1 y^2` read
+  as in its own units: the levers unmoved and ruled and the estimability exactly, each relation's
+  weights and level, read back in the levers' own units, to 2.2e-16, and the schedules to 6.1e-16 of
+  the levers' own units. Until 0.15.1, at 1e9 the direction `u2 = 2 u1` never moved lay 2e-9 of the
+  way along `u1`, under the precision: `u2` read as never moved and was held at its mean, and the
+  schedule moved by 0.69. At 1e-9 `u1` read so. With the spans orthonormalised over the levers' raw
+  values, at 1e12 QR read `u2 = 2 u1`'s weight on `u1` as -1.99996e-12 where -2e-12, and its level
+  as 4.4e-7 where 0: the plan held that row, and read `not_estimable` from its first step.
+  `u1 = -0.3 y` was refused there as set from `z`. At 1e9 QR read the weight of `u2 = 2 u1 + 0.4` on
+  `u1` to 2.8e-8 of itself, and that plan moved by 5.5e-9 of `u1`'s units. At unit scale a log that
+  kept a relation plans as before to 3.3e-16, and the rest to the bit.
+- **What this does not do.** Until 0.15.0 the moment's ridge was absolute in the actions' units, and
+  shrank a channel the log did move where the actions are small: logged at a millionth of their
+  units, the review's moved lever read 5.1e-5 where it reads 0.0977. Since 0.15.0 each of its terms
+  is scaled by the mean square of its column of the channel's design on the log's raw actions,
+  weighted as the moment weighs the rows (ADR 0057), a change that moved every fit.
 
 ## Alternatives
 
+- **The levers the log never moved read off `unmoved` as it is, in raw coefficient units**, as
+  until 0.15.1. Rejected: no basis of a span reads well in both units, and the precision the fit
+  reads the span to is the scaled units'. A direction that lies 2e-9 of the way along a lever in
+  raw units lies under the square root of the precision there, whatever the basis.
+- **The spans of what the log kept orthonormalised over the levers' raw values**, as until 0.15.1.
+  Rejected: there a relation's weights spread over as many orders as the levers' units, and QR keeps
+  the small ones only to the precision of the large; and an axis's distance from a span, which the
+  square root of the precision is read against, moves with the units: at 1e12 `u2`'s axis lay 2e-12
+  from the span `u2 = 2 u1` was kept in.
+- **The scale recomputed from the log by each reader**, as `reach` reads it (ADR 0069). Rejected:
+  the fit computes it beside the directions, and carried with them it is one scale for every
+  reader, one that holds the fit alone among them.
 - **Refuse every plan along an unmoved direction**, the review's remedy for all but a fixed
   relation. Rejected for levers set from the state: the log does determine the plan's path there,
   as long as the plan keeps the rule.

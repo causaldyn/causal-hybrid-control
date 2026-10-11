@@ -25,6 +25,7 @@ from chc.dynamics import HybridDynamics
 from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual
 from chc.integrate import rk4_step
 from chc.misspecification import (
+    MisspecificationCost,
     _chi_square_mixture_survival,
     _mixture_weights,
     _parameter_weight,
@@ -354,6 +355,98 @@ def test_a_direction_the_log_never_moved_is_reported_not_priced(held: bool, unse
     assert gate.p_value > 1e-3
 
 
+@functools.cache
+def _gate_in(states: tuple[float, float], lever: float, held: bool) -> MisspecificationCost:
+    """The gate on the pair log with each state and the first action logged in units of their own,
+    the cost, the target, the box, the ratio held and the alternative's weights with them: one
+    problem in other units."""
+    x_units, u_units = jnp.asarray(states), jnp.array([lever, 1.0])
+    data = _pair_log(4000, 0)
+    data = dict(data, x=data["x"] * x_units, x_next=data["x_next"] * x_units, u=data["u"] * u_units)
+    options = {**FIT, "influence": True}
+    reference = fit_causal_residual(_known, data, DT, **options)
+    alternative = fit_causal_residual(
+        _known, data, DT, weights=lambda x: jnp.exp(x[:, 0] / states[0]), **options
+    )
+    over = jnp.diag(1.0 / x_units)
+    cost = QuadraticCost(
+        Q=over @ COST.Q @ over,
+        R=0.05 * jnp.diag(1.0 / u_units**2),
+        Qf=over @ COST.Qf @ over,
+        x_target=COST.x_target * x_units,
+    )
+    constraints = (
+        (LinearConstraint(np.kron(np.eye(HORIZON), [[-2.0 / lever, 1.0]]), 0.0, 0.0),)
+        if held
+        else ()
+    )
+    plan = causal_plan(
+        _model(reference.residual),
+        START * x_units,
+        cost,
+        DT,
+        HORIZON,
+        -BOX * u_units,
+        BOX * u_units,
+        steps=20_000,
+        constraints=constraints,
+    )
+    return misspecification_cost(plan, reference, alternative)
+
+
+IN_OTHER_UNITS = pytest.mark.parametrize(
+    ("states", "lever"),
+    [
+        ((1e-12, 1e-12), 1.0),
+        ((1e12, 1e12), 1.0),
+        ((1e-6, 1.0), 1.0),
+        ((1e12, 1.0), 1.0),
+        ((1.0, 1e12), 1.0),
+        ((1.0, 1.0), 1e-3),
+        ((1.0, 1.0), 1e6),
+    ],
+    ids=[
+        "both states at 1e-12",
+        "both states at 1e12",
+        "the first state at 1e-6",
+        "the first state at 1e12",
+        "the second state at 1e12",
+        "the first action at 1e-3",
+        "the first action at 1e6",
+    ],
+)
+
+
+@IN_OTHER_UNITS
+@pytest.mark.parametrize(
+    ("held", "unseen"), [(False, 2), (True, 0)], ids=["free", "held to the log's ratio"]
+)
+def test_what_the_gate_cannot_see_reads_the_same_in_any_units(
+    states: tuple[float, float], lever: float, held: bool, unseen: int
+) -> None:
+    """Read in raw parameter units, where the units set the parameters' sizes apart, the regret's
+    curvature along a direction the plan weighs fell under the floor: with both states at 1e12 of
+    their units, either state alone at 1e12 or the first action at 1e6, the free plan's two unseen
+    directions read none, and with the first state at 1e-6, one. Read at each parameter's scale on
+    the log, the two read 5.7e5 and 1.5e7 times the floor in every unit here."""
+    assert _gate_in(states, lever, held).unseen == unseen
+
+
+@IN_OTHER_UNITS
+@pytest.mark.parametrize("held", [False, True], ids=["free", "held to the log's ratio"])
+def test_the_gate_s_p_value_reads_the_same_in_any_units(
+    states: tuple[float, float], lever: float, held: bool
+) -> None:
+    """The p-value is the tail of a chi-square mixture weighted by the eigenvalues of ``W S``, which
+    are the same in any units. Read off ``S``'s square root in raw parameter units, where its small
+    eigenvalues were its largest's rounding, the weights summed to 31.7 against ``tr(W S)`` of
+    3.3e-5 with both states at 1e-12, and the free plan's p-value read 0.5 against 0.983 at unit
+    scale; with the first state at 1e-6 it read 0.998. Read with each parameter at its scale on the
+    log, every unit here reads the unit scale's p-value to 1e-12."""
+    at_unit_scale = _gate_in((1.0, 1.0), 1.0, held).p_value
+    assert abs(_gate_in(states, lever, held).p_value - at_unit_scale) <= 1e-10
+
+
 # --- refusals -------------------------------------------------------------------------------------
 
 
@@ -365,6 +458,20 @@ def test_fits_without_their_influence_are_refused() -> None:
     ):
         with pytest.raises(ValueError, match="influence=True"):
             misspecification_cost(plan, bare, alternative)
+
+
+def test_a_fit_without_its_parameter_scale_is_refused() -> None:
+    """A fit made by hand, or kept from before 0.15.1, carries ``unmoved`` without each
+    parameter's scale on the log, which the gate reads ``unmoved``'s span at: it is refused as
+    the caller's input, not read on a missing scale."""
+    reference, alternative, plan = _case(4000, 7, 0.0, 0.0)
+    bare = dataclasses.replace(reference, _parameter_size=None)
+    for pair in (
+        (bare, alternative),
+        (reference, dataclasses.replace(alternative, _parameter_size=None)),
+    ):
+        with pytest.raises(ValueError, match="each parameter's scale"):
+            misspecification_cost(plan, *pair)
 
 
 def test_fits_of_two_classes_or_two_logs_are_refused() -> None:

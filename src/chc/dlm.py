@@ -142,6 +142,8 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import integrate, linalg, optimize, special
 
+from chc.frames import _real_numbers
+
 _log = logging.getLogger(__name__)
 
 _Array = NDArray[np.float64]
@@ -531,7 +533,7 @@ def forward_filter(
         FloatingPointError: on a step whose one-step squared scale is not positive and finite, or
             whose update leaves a scale or a state that is not finite.
     """
-    ys = np.array(y, dtype=np.float64)
+    ys = np.array(_real_numbers(y, "y"), dtype=np.float64)
     if ys.ndim != 1 or ys.shape[0] == 0:
         raise ValueError(f"y must be a non-empty vector, got shape {ys.shape}")
     if np.any(np.isinf(ys)):
@@ -624,7 +626,7 @@ def _regressors(model: DynamicLinearModel, x: ArrayLike | None, horizon: int) ->
         if k:
             raise ValueError(f"the model's regression blocks need x with {k} columns")
         return np.zeros((horizon, 0))
-    xs = np.array(x, dtype=np.float64)
+    xs = np.array(_real_numbers(x, "x"), dtype=np.float64)
     if xs.ndim == 1 and k == 1:
         xs = xs[:, None]
     if xs.shape != (horizon, k):
@@ -1704,7 +1706,7 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
         FloatingPointError: on a step whose observed geos' one-step squared scale is not positive
             definite and finite, or whose update leaves a scale or a state that is not finite.
     """
-    ys = np.array(y, dtype=np.float64)
+    ys = np.array(_real_numbers(y, "y"), dtype=np.float64)
     if ys.ndim != 2 or ys.shape[0] == 0 or ys.shape[1] != model.geos:
         raise ValueError(f"y must be (T, {model.geos}), a column a geo, got shape {ys.shape}")
     if np.any(np.isinf(ys)):
@@ -1797,7 +1799,7 @@ def _geo_design(model: GeoDLM, s: _Structure, x: ArrayLike | None, horizon: int)
             raise ValueError(f"the model's regression blocks need x with {k} columns a geo")
         xs = np.zeros((horizon, geos, 0))
     else:
-        xs = np.array(x, dtype=np.float64)
+        xs = np.array(_real_numbers(x, "x"), dtype=np.float64)
         if xs.shape != (horizon, geos, k):
             raise ValueError(f"x must have shape ({horizon}, {geos}, {k}), got {xs.shape}")
         if not np.all(np.isfinite(xs)):
@@ -1993,8 +1995,8 @@ def fit_geo_spread(
     if not 0.0 < level < 1.0:
         raise ValueError(f"level must be in (0, 1), got {level}")
     coordinates, vaguest = _vaguest(model, pooled)
-    ys = np.array(y, dtype=np.float64)
-    xs = None if x is None else np.array(x, dtype=np.float64)
+    ys = np.array(_real_numbers(y, "y"), dtype=np.float64)
+    xs = None if x is None else np.array(_real_numbers(x, "x"), dtype=np.float64)
     k = len(coordinates)
     high = np.log(vaguest)
     low = high + math.log(_LEAST_SPREAD)

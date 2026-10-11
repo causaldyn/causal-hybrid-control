@@ -16,6 +16,7 @@ from itertools import combinations_with_replacement
 import numpy as np
 
 from chc import _units
+from chc.frames import _real_numbers
 from chc.regret import dlqr
 
 
@@ -48,7 +49,10 @@ class KoopmanModel:
     _b: np.ndarray | None = field(default=None, init=False, repr=False)
 
     def fit(self, x: np.ndarray, u: np.ndarray, x_next: np.ndarray) -> KoopmanModel:
-        x, u, x_next = (np.asarray(v, float) for v in (x, u, x_next))
+        x, u, x_next = (
+            np.asarray(_real_numbers(v, name), float)
+            for v, name in ((x, "x"), (u, "u"), (x_next, "x_next"))
+        )
         object.__setattr__(self, "state_dim", x.shape[1])
         phi, phi_next, u2 = _lift(x, self.degree), _lift(x_next, self.degree), np.atleast_2d(u)
         design = np.column_stack([phi, u2])  # [phi(x), u] -> phi(x')

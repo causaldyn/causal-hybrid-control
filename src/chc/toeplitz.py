@@ -22,6 +22,8 @@ from jax import Array
 from numpy.typing import ArrayLike
 from scipy.linalg import toeplitz as _dense_toeplitz
 
+from chc.frames import _real_numbers
+
 
 def toeplitz_matvec(first_col: Array, first_row: Array, x: Array) -> Array:
     """Toeplitz matrix-vector product ``T x`` in ``O(L log L)`` via circulant embedding + FFT.
@@ -84,7 +86,7 @@ def sample_autocorrelation(x: ArrayLike, max_lag: int) -> np.ndarray:
     unbiased estimator can be non-PD with reflection coefficients outside ``(-1, 1)``. The robust
     distillation of Gohberg-Semencul covariance estimation (arXiv:2311.14995).
     """
-    x = np.asarray(x, dtype=np.float64)
+    x = np.asarray(_real_numbers(x, "x"), dtype=np.float64)
     x = x - x.mean()
     n = x.shape[0]
     return np.array([float(np.dot(x[: n - k], x[k:])) / n for k in range(max_lag + 1)])
@@ -118,8 +120,9 @@ def solve_toeplitz(first_col: ArrayLike, first_row: ArrayLike, rhs: ArrayLike) -
     One-shot dense solve. For many right-hand sides through one operator, use Gohberg-Semencul
     (compute generators once, then apply ``T^{-1}`` in ``O(L log L)`` per vector).
     """
+    response = np.asarray(_real_numbers(rhs, "rhs"), dtype=np.float64)
     matrix = _dense_toeplitz(np.asarray(first_col, dtype=np.float64), np.asarray(first_row))
-    return np.linalg.solve(matrix, np.asarray(rhs, dtype=np.float64))
+    return np.linalg.solve(matrix, response)
 
 
 def _toeplitz_matvec_np(first_col: np.ndarray, first_row: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -172,7 +175,7 @@ def gohberg_semencul_covariance(
     ``N`` is large. Empirically ~30x lower NMSE than the SCM at ``N << size`` on matched AR data,
     fading to a tie as ``N`` grows.
     """
-    rows = np.atleast_2d(np.asarray(snapshots, dtype=np.float64))
+    rows = np.atleast_2d(np.asarray(_real_numbers(snapshots, "snapshots"), dtype=np.float64))
     size = rows.shape[1] if size is None else size
     autocov = np.mean([sample_autocorrelation(row, order) for row in rows], axis=0)
     ar, _reflection, _error = levinson_durbin(autocov)
@@ -190,7 +193,8 @@ def gohberg_semencul_apply(x: ArrayLike, y: ArrayLike, v: ArrayLike) -> np.ndarr
     Toeplitz, ``J`` reverse and ``S`` down-shift; each factor is applied by FFT. Amortises over many
     right-hand sides that share the operator.
     """
-    x, y, v = np.asarray(x, np.float64), np.asarray(y, np.float64), np.asarray(v, np.float64)
+    x, y = np.asarray(x, np.float64), np.asarray(y, np.float64)
+    v = np.asarray(_real_numbers(v, "v"), np.float64)
 
     def lower(col: np.ndarray, w: np.ndarray) -> np.ndarray:  # L(col) @ w
         return _toeplitz_matvec_np(col, np.concatenate([col[:1], np.zeros(col.shape[0] - 1)]), w)

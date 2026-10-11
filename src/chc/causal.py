@@ -25,6 +25,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from chc import _units
+from chc.frames import _real_entries
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ def estimate_control_effect(data: dict[str, Array], adjust_for: tuple[str, ...] 
         ValueError: if ``adjust_for`` names ``u`` or ``x_next``, the action and the outcome.
     """
     _refuse_reread("covariate", adjust_for, _ACTION_AND_OUTCOME)
+    data = _real_entries(data, ("x", "u", "x_next", *adjust_for))
     columns = [data["x"], data["u"], *[data[name] for name in adjust_for]]
     features = jnp.stack(columns, axis=1)
     coeffs = _ols_with_intercept(features, data["x_next"])
@@ -160,6 +162,7 @@ def _two_stage(data: dict[str, Array], instrument: str) -> tuple[Array, Array]:
     """:func:`estimate_effect_iv`'s estimate and its instrument's relevance
     (:func:`_instrument_relevance`), refused where the relevance is 0."""
     _refuse_reread("instrument", (instrument,), _TRANSITION)
+    data = _real_entries(data, ("x", "u", instrument, "x_next"))
     x, u, w, y = data["x"], data["u"], data[instrument], data["x_next"]
     relevance = _instrument_relevance(x, u, w)
     if relevance == 0.0:
@@ -232,6 +235,7 @@ def sensitivity_analysis(
     twice = sorted({name for name in adjust_for if adjust_for.count(name) > 1})
     if twice:
         raise ValueError(f"covariates named more than once: {twice}")
+    data = _real_entries(data, ("x", "u", "x_next", *adjust_for))
     columns = [data["x"], data["u"], *[data[name] for name in adjust_for]]
     beta, se, dof = _ols_with_se(jnp.stack(columns, axis=1), data["x_next"])
     t_stat = jnp.abs(beta[1] / se[1])
@@ -358,6 +362,7 @@ def _dml_residuals(
     a nuisance that reads the action or the outcome predicts it.
     """
     _refuse_reread("covariate", covariates, _ACTION_AND_OUTCOME)
+    data = _real_entries(data, ("x_next", "u", *covariates))
     y, u = data["x_next"], data["u"]
     covs = _units.standardised(jnp.stack([data[c] for c in covariates], axis=1))
     n = y.shape[0]
@@ -444,6 +449,7 @@ def refute_effect(
 
     Returns the estimates and ``passes`` (placebo near 0, the others near the original).
     """
+    data = _real_entries(data, ("x", "u", "x_next", *adjust_for))
     k_perm, k_rcc, k_sub = jax.random.split(_stream_key(seed, "refute_effect"), 3)
     n = data["x"].shape[0]
     original = float(estimate_control_effect(data, adjust_for))

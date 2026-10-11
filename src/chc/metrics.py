@@ -14,11 +14,13 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from chc.frames import _real_numbers
+
 Signal = NDArray[np.float64]
 
 
 def _prepare(signal: Signal, initial: float | None) -> tuple[Signal, float]:
-    s = np.asarray(signal, dtype=np.float64)
+    s = np.asarray(_real_numbers(signal, "signal"), dtype=np.float64)
     x0 = float(s[0]) if initial is None else float(initial)
     return s, x0
 
@@ -75,5 +77,5 @@ def rise_time(
 
 def steady_state_error(signal: Signal, target: float, *, window: int = 1) -> float:
     """Absolute error at rest: ``|mean(signal[-window:]) - target|`` (final value by default)."""
-    s = np.asarray(signal, dtype=np.float64)
+    s = np.asarray(_real_numbers(signal, "signal"), dtype=np.float64)
     return float(abs(float(np.mean(s[-window:])) - target))
