@@ -101,8 +101,25 @@ Where they disagree:
 
 - The adjusted certificate trusted one step on every call, with an error tube of 0.29 K on average.
   The plant's one-step error left that tube on 4.1% of steps, reaching 0.79 K. The tube prices the
-  channel's standard error, which is a scale and not a coverage guarantee, and which was then
-  the homoskedastic one. From 0.8.0 it is robust to noise that moves with the state.
+  channel's standard error, which is a scale and not a coverage guarantee.
+- That error has been read three other ways since, and the run was not repeated under any of them.
+  It was the homoskedastic one; from 0.8.0 it is robust to noise that moves with the state. It was
+  the root mean of the variances of the channel's two coefficients, and one of them is the
+  channel's value at 0 C, which a log in Celsius reaches only by extrapolation; from 0.13.0 it is
+  the error of the channel's value at the log's states. It took each half-hour as independent;
+  from 0.16.0 one unit's error is read across its periods by cosines
+  ([ADR 0075](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0075-one-unit-s-error-read-across-its-periods.md)),
+  wider where the scores persist. The run's logs were not kept, so they cannot be refitted. On 600
+  logs simulated with this case's logging policy, size and units, the noise drawn afresh or
+  persisting up to AR(0.99) a half-hour
+  ([`scripts/bench_boptest_tube.py`](https://github.com/causaldyn/causal-hybrid-control/blob/main/scripts/bench_boptest_tube.py)),
+  the run's library read the tube one step ahead at 0.25 K on average and 0.16.0 at 0.051 K, 0.11
+  to 0.43 of it on nine logs in ten. The cosines widened it, 1.0 times where the noise was drawn
+  afresh and 1.8 times where it was AR(0.99), and the error at the log's states narrowed it to 0.12
+  to 0.23 of what it was. Those ratios put the run's 0.29 K at 0.033 to 0.125 K, under the plant's
+  one-step error of 0.1305 K rms, and how often the plant would have left such a tube is not known.
+  On the simulated logs 0.16.0's certificate trusted 6 to 13 steps on nine logs in ten, where the
+  run's library trusted 1 to 5.
 - The regret bound stayed small wherever it was finite, the runaway weeks included. It is a gap in
   the planning objective on the fitted model, not a statement about the plant. It was infinite, the
   objective not convex over the box, on 3.4% of the adjusted calls and 12.1% of the naive ones.
@@ -214,6 +231,12 @@ where the first run's were trusted for one step on every call. The tube one step
 0.31 K, and the plant stayed inside it on 98.1% of steps, against 95.9% in the first run. The tube
 now prices a standard error that is robust to noise moving with the state. The naive plans were
 trusted for no step, as before.
+
+That error was still the root mean of the coefficients' variances, each half-hour taken as
+independent, and the rerun was not repeated either. On the same simulated logs, under the rerun's
+call, 0.16.0 read the tube one step ahead at 0.10 to 0.42 of the rerun's library's on nine logs in
+ten, which puts the rerun's 0.31 K at 0.032 to 0.131 K, and its certificate trusted 6 to 13 steps on
+nine in ten, where the rerun's library trusted 1 to 5.
 
 Scope: the same six replicates, the same shared log days, and the same zero lever price as above.
 Neither verdict stands, so this page makes no claim about what adjustment costs or saves on this

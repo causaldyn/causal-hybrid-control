@@ -253,6 +253,21 @@ still change).
   One reading, and two mirrored linear readings, plan as before to the bit. Over the tests' four
   concave readings with carryover, now on `cvar_allocate`'s program, the worst regret falls by
   1.3e-9 of 213.2, within the search's gap (ADR 0076). Since 0.10.0.
+- **The BOPTEST case study gave its error tubes as if the channel's error still read as it did
+  then.** It put the adjusted certificate's tube one step ahead at 0.29 K, and at 0.31 K in the
+  rerun, read under 0.5.1 and 0.8.0, when the error was the root mean of the variances of the
+  channel's coefficients. One of them is the channel's value at 0 C, which a log in Celsius reaches
+  only by extrapolation. 0.13.0 read the error at the log's states and left the page as it was, and
+  one unit's error is now read across its periods by cosines (above, ADR 0075). The runs' logs were
+  not kept, and the runs were not repeated. On 600 logs simulated with the case's logging policy,
+  size and units, the first run's library read the tube at 0.25 K on average and this one at
+  0.051 K, 0.11 to 0.43 of it on nine logs in ten, which puts the run's 0.29 K at 0.033 to 0.125 K,
+  under the plant's one-step error of 0.1305 K rms; its certificate trusted 6 to 13 steps on nine
+  logs in ten, where the first run's library trusted 1 to 5. Under the rerun's call the ratio is
+  0.10 to 0.42. The cosines alone widened the tube 1.0 times where the noise was drawn afresh and
+  1.8 times where it was AR(0.99) a half-hour. The page now says so beside the runs' figures, and
+  `scripts/bench_boptest_tube.py` makes the logs and reads them under the library on the path.
+  Since 0.13.0.
 
 ## [0.15.0] — 2026-10-07
 
