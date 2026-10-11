@@ -17,8 +17,8 @@ still change).
   the tolerance and the levers' prices with it, the channel of a lever the log set from the state
   lay 2.5e-5 and 6.3e-6 off that span, past the square root of the precision: the log read as having
   set a combination such as `1 u1 - 1.3e-18 u2` from the state, and gave no plan where it plans
-  `held_to_log`. At 1e-12, 1e-9, 1e9 and 1e12 a lever set from a confounder was refused for such a
-  combination, not for the lever. With one lever logged at 1e9 of its units, a log that kept
+  `held_to_log`. At 1e-15, 1e-12, 1e-9, 1e9 and 1e12 a lever set from a confounder was refused for
+  such a combination, not for the lever. With one lever logged at 1e9 of its units, a log that kept
   `u2 = 2 u1` read `u2` as never moved and held it at its mean, and the plan moved by 0.69; at 1e-9
   and 1e-12 it read `u1` so, and the plan moved by 7.5e-3; and a log that set `u1` from the state
   gave no plan. With the levers read right, the drift's response to a move no transition tells
@@ -26,7 +26,7 @@ still change).
   its units, and all of it at 1e-13, where the plan read `not_estimable` from its first step. The
   fit now keeps each coefficient's scale beside the directions, `prescribe` reads their span in it,
   and the response is least squares in each column's own units (ADR 0054, ADR 0057). Those logs read
-  the same from 1e-15 to 1e15 of the state's units, the schedules to 6.7e-16, and, with the
+  the same from 1e-15 to 1e15 of the state's units, the schedules to 5.0e-16, and, with the
   relations the log kept read as the next entry says, from 1e-12 to 1e12 of a lever's units. At unit
   scale the tests' estimability logs plan as before, to the bit. Since 0.13.0; the drift's response
   since 0.14.0.
@@ -60,8 +60,8 @@ still change).
   mixture. With both states logged at 1e-12 of their units the weights summed to 31.7 against
   `tr(W S) = 3.3e-5`, and a gate that read `p = 0.983` at unit scale read 0.5; with the first state
   at 1e-6 it read 0.998. The weights are now read with each parameter at its scale on the log
-  (ADR 0024), and the p-value is the same to 1e-12 from 1e-12 to 1e12 of the states' units and from
-  1e-3 to 1e6 of a lever's. Since 0.9.0.
+  (ADR 0024), and the p-value is the same to 1.6e-12 from 1e-12 to 1e12 of the states' units and
+  from 1e-3 to 1e6 of a lever's. Since 0.9.0.
 - **An entry point that takes a caller's data reads it as a panel reads a column.** The functions
   that take logs, samples, series, outcomes, histories, stored decisions, forecasts or a target's
   levels as arrays, or as a mapping or a frame of them, cast them with NumPy's or JAX's cast, which
@@ -107,7 +107,7 @@ still change).
   panel; a `Fraction` of 7/2 as 3; and a uint64 of 2**64 - 1 as -1, never treated. An `int` of
   2**70 failed with `OverflowError`, naming nothing. Each now refuses such a group with
   `ValueError`, naming `group`, the value and its row, and a group of whole numbers held as floats,
-  `Decimal`s or `Fraction`s reads as its integers, bit for bit. Since 0.1.0.
+  `Decimal`s or `Fraction`s reads as its integers, bit for bit. Since 0.2.0.
 - **A list that holds a masked value is refused as missing.** An entry point read a list as
   `np.asarray` reads one, which takes the masked constant among its values as nan, and a masked
   array's cells as what lies under them. `DecisionLog.from_records` reads each field of the records

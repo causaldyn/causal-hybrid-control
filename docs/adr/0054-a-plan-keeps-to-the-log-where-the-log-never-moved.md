@@ -140,7 +140,7 @@ the log kept at one level, those the state alone predicts, and those the covaria
 - **In any units of the state.** With the state logged in 1e-15 to 1e15 of its units, and the
   target, the start, the tube's tolerance and the levers' prices with it, every log above reads as
   in the state's own units: the levers unmoved and ruled, the relations and the estimability
-  exactly, the schedules to 6.7e-16. Until 0.15.1, read in raw units, at 1e-12 and at 1e12
+  exactly, the schedules to 5.0e-16. Until 0.15.1, read in raw units, at 1e-12 and at 1e12
   `u1 = -0.3 y`'s channel lay 2.5e-5 and 6.3e-6 off the unmoved span, past the square root of the
   precision: the log read as having set `1 u1 - 1.3e-18 u2` from the state, and gave no plan. At
   1e-9 `u1 = 0.7 z` was refused for such a combination, not for `u1`. With the levers read right,
