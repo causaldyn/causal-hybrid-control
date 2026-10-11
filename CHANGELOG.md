@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-10-11
+
 ### Fixed
 
 - **`prescribe` reads which levers a log never moved the same in any units of the state.** The fit
@@ -5897,6 +5899,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.15.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.1
 [0.15.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.0
 [0.14.4]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.4
 [0.14.3]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.14.3
