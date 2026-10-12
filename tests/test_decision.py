@@ -57,7 +57,7 @@ from chc.dynamics import (
     HybridDynamics,
     LinearDynamics,
 )
-from chc.dynamics_id import fit_causal_residual, persistence_check
+from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual, persistence_check
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
@@ -689,6 +689,67 @@ def test_the_tube_holds_the_gap_its_model_error_opens_on_a_growing_field() -> No
     assert gaps[1] > dt * error
     assert np.all(gaps <= tube * (1.0 + 1e-9))
     assert result.certificate.tube_rate == "global"
+
+
+def _fit_reading(errors: np.ndarray | None) -> CausalDynamicsFit:
+    """A fit of one state and two levers whose channel's error, read lever by lever off each
+    covariance, is ``errors``; nothing else of it is read here."""
+    return CausalDynamicsFit(
+        residual=ControlAffineResidual(drift=jnp.zeros((1, 2)), channel=jnp.zeros((1, 2, 2))),
+        identified=errors is not None,
+        method="orthogonal",
+        folds=2,
+        channel_error=None if errors is None else float(np.sqrt(np.mean(errors**2, 1)).max()),
+        drift_error=None,
+        action_residual_variance=1.0,
+        nuisance_r2_state=0.0,
+        nuisance_r2_action=0.0,
+        moment_norm=0.0,
+        _lever_errors=errors,
+    )
+
+
+def test_the_tube_s_rate_error_reads_each_lever_at_its_own_largest_action() -> None:
+    """Off each covariance, the root mean over the levers of each lever's error times its own
+    largest action; then the largest read. The three reads here, as two ways give, each put the
+    error on other levers, so which read is the largest is for the boxes to say: at boxes of 2 and
+    5 the third, ``sqrt((2^2 + 10^2) / 2)``, at 5 and 2 the first, ``15 / sqrt(2)``, where the
+    first is also the read ``channel_error`` takes. A lever whose box allows no action but zero
+    adds no error, but counts in the mean; none that can act leaves none, a free side no finite
+    one, and a fit with no channel error none."""
+    errors = np.array([[3.0, 0.0], [0.0, 1.0], [1.0, 2.0]])
+    fit = _fit_reading(errors)
+    assert fit.channel_error == pytest.approx(3.0 / math.sqrt(2.0), rel=1e-15, abs=0.0)
+    for reach, expected in (([2.0, 5.0], 52.0), ([5.0, 2.0], 112.5), ([2.0, 0.0], 18.0)):
+        error = _model_error(fit, np.array(reach))
+        assert error == pytest.approx(math.sqrt(expected), rel=1e-15, abs=0.0), reach
+    # each lever in units ``c`` times its own: its error over ``c``, its action times ``c``
+    units = np.array([1e-3, 1e3])
+    error = _model_error(_fit_reading(errors / units), np.array([2.0, 5.0]) * units)
+    assert error == pytest.approx(math.sqrt(52.0), rel=1e-15, abs=0.0)
+    assert _model_error(fit, np.zeros(2)) == 0.0
+    assert _model_error(_fit_reading(errors + 1.0), np.array([2.0, math.inf])) == math.inf
+    assert _model_error(_fit_reading(None), np.array([2.0, 5.0])) == 0.0
+
+
+def test_with_one_lever_the_tube_s_rate_error_is_as_it_was_to_the_bit() -> None:
+    """One lever's error, read alone, is the channel's, so the tube's rate error is the channel's
+    standard error times the largest action the lever's box allows, as before, bit for bit."""
+    result = prescribe(
+        _growing_panel(),
+        levers=[Lever("u", lo=-1.0, hi=3.0)],
+        target=Target("x", value=0.5),
+        adjustment=CausalGraph.from_edges([("w", "u"), ("w", "x"), ("u", "x")]),
+        horizon=4,
+        dt=1.0,
+        tolerance=10.0,
+        x0=jnp.zeros(1),
+    )
+    fit = result.model_fit
+    assert fit.channel_error is not None
+    assert result.certificate.certified_horizon is not None
+    for reach in (3.0, 0.7, 1e-3, 1e3):
+        assert _model_error(fit, np.array([reach])) == fit.channel_error * reach
 
 
 @pytest.mark.parametrize(

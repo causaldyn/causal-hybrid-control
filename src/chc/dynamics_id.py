@@ -170,7 +170,9 @@ class CausalDynamicsFit:
     # read off it sizes better against ``t(G - 1)``'s quantile than the normal's (ADR 0062). Under
     # ``periods``, one group's, the covariance is read from the scores' projections on ``nu``
     # cosines of the periods (EWC), each period's transitions summed first, and a test read off
-    # it against ``t(nu)``'s (ADR 0075).
+    # it against ``t(nu)``'s (ADR 0075). Its mean adds entries in the units of different levers,
+    # so where the levers' units differ it reads them; ``_lever_errors`` holds it lever by lever,
+    # and the plan's tube reads that, each lever at its own largest action (ADR 0087).
     channel_error: float | None
     # The standard error of the drift regression's fitted value at the log's rows, root mean square
     # over the rows and the states, from the drift stage's own homoskedastic OLS covariance; None
