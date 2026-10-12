@@ -130,6 +130,91 @@ print("        eigenvalue solve, and STEP 4d says using it only loosens the boun
 print("STEP 7c with a nonlinear plant J is not quadratic and mu is an estimate over the box; the")$
 print("        certificate reports which of the two it used rather than silently mixing them")$
 
+/* ===== STEP 8: the moves in each lever's own scale, so no lever's units move the bound ===== */
+
+print("=== STEP 8: a diagonal change of variables, one scale per lever ===")$
+
+/* Read U = D V with D = diag(s), s > 0.  The box maps to a box, V's objective has gradient D g
+   and Hessian D H D, and STEPs 1-5 hold in V word for word.  The modulus they need is
+   lambda_min(D H D), which is NOT lambda_min(H): with levers in different units H's least
+   eigenvalue is the cheapest lever's curvature, and an isotropic bound charges every lever's
+   moves at it. */
+assume(s1 > 0, s2 > 0, c1 > 0, c2 > 0, al > 0, kap > 0)$
+Dm : matrix([s1, 0], [0, s2])$
+H2 : matrix([h11, h12], [h12, h22])$
+print("STEP 8a congruence: D (H - mu D^-2) D - (D H D - mu I) =",
+      ratsimp( Dm . (H2 - mu*invert(Dm) . invert(Dm)) . Dm - (Dm . H2 . Dm - mu*ident(2)) ),
+      " (0), so D H D >= mu I  <=>  H >= mu D^-2: strong convexity in the norm |D^-1 d|")$
+print("STEP 8b the gain of a move in V, back in U's units (dv = d/s, gv = s g):")$
+qv(mu, g, d) := -g*d - (mu/2)*d^2$
+print("        qv(mu, s g, d/s) - [-g d - (mu/s^2)/2 d^2] =",
+      ratsimp( qv(mu, s1*gg, dd/s1) - (-gg*dd - ((mu/s1^2)/2)*dd^2) ), " (0):")$
+print("        each coordinate is STEP 3's gain with its own curvature kappa_i = mu/s_i^2, and the")$
+print("        box [aa, bb] in U is [aa/s, bb/s] in V, so the clipped maximiser maps back as")$
+print("        s * (-(s g)/mu) - (-g/kappa) =", ratsimp( s1*(-(s1*gg)/mu) - (-gg/(mu/s1^2)) ), " (0)")$
+print("        and clip commutes with a positive scale.  The bound needs no division by a box")$
+print("        width, so a lever free on one side, a bound of inf, is read as before")$
+print("STEP 8c lever 1 in units c1 times its own, lever 2 in c2: u = C u' gives g' = C g and")$
+print("        H' = C H C, and in the new units read the Jacobi scale s'_j = c_j^-1 s_j up to one")$
+print("        common factor al (STEP 8e's normalisation) -- below, s_j in u' units:")$
+Cm : matrix([1/c1, 0], [0, 1/c2])$
+Hp : Cm . H2 . Cm$
+print("        the diagonal moves as h'_jj = h_jj / c_j^2:", ratsimp(Hp[1,1] - h11/c1^2),
+      ratsimp(Hp[2,2] - h22/c2^2), " (0 0), so h^(-1/2) moves as c_j: s'_j = al c_j s_j")$
+Dp : matrix([al*c1*s1, 0], [0, al*c2*s2])$
+print("        D' H' D' - al^2 D H D =", ratsimp( Dp . Hp . Dp - al^2 * (Dm . H2 . Dm) ),
+      " (0 matrix): mu' = al^2 mu, the same matrix up to the common factor")$
+print("        kappa'_1 - kappa_1/c1^2 =", ratsimp( (al^2*mu)/(al*c1*s1)^2 - (mu/s1^2)/c1^2 ), " (0)")$
+print("        and lever 1's gain at the same move, d' = c1 d, g' = g/c1:")$
+print("        qv(kappa'_1, g/c1, c1 d) - qv(kappa_1, g, d) =",
+      ratsimp( qv((al^2*mu)/(al*c1*s1)^2, gg/c1, c1*dd) - qv(mu/s1^2, gg, dd) ), " (0)")$
+print("        Every lever's term, its clipped maximiser and their sum read the same in any units of")$
+print("        each lever separately: the bound is INVARIANT, and al cancels out of it")$
+print("STEP 8d the scale must move with its own lever's units.  A box width does (s_j = hi_j - lo_j)")$
+print("        and so does the Jacobi scale s_j = h_jj^(-1/2); a constant does not, and with s = 1")$
+print("        every term reads kappa = lambda_min(C H C), which tends to 0 as c1 -> inf: the")$
+print("        isotropic bound grows without end in a lever's units")$
+iso : ratsimp( subst([h12 = 0], Hp) )$
+print("        e.g. h12 = 0: H' =", iso, " so lambda_min(H') = min(h11/c1^2, h22/c2^2)")$
+print("STEP 8e normalisation: s_j = (h_ref/h_jj)^(1/2), h_ref the stiffest lever's, makes the scale")$
+print("        exactly 1 for one lever or for levers of equal curvature, so there the bound, the")$
+print("        modulus and every term are STEPs 1-7's to the bit.  Check s^2 h = h_ref:",
+      ratsimp( (sqrt(href/h11))^2 * h11 - href ), " (0)")$
+print("STEP 8f STEP 4d per coordinate: d/dkappa of the clipped term is",
+      diff(-gg*dd - (kap/2)*dd^2, kap), " (<= 0), so ANY positive scale gives a valid bound:")$
+print("        the choice of s decides only how tight it is, never whether it holds")$
+
+/* STEP 8g: numbers.  An interior optimum, so the exact regret is (1/2) e' H e with e = U - U*.
+   H couples a stiff lever and a soft one; the Jacobi-scaled bound and the isotropic one are both
+   above the exact regret, and the isotropic one moves with the units while the scaled one does
+   not. */
+fpprec : 40$
+Hn : matrix([100b0, 9.9b0], [9.9b0, 1b0])$
+en : matrix([0.03b0], [-0.4b0])$
+gn : Hn . en$
+regret : bfloat( (transpose(en) . Hn . en) / 2 )$
+lmin(M) := bfloat( lmin2(M[1,1], M[1,2], M[2,2]) )$
+lmin2(a, b, c) := (a + c)/2 - sqrt( ((a - c)/2)^2 + b^2 )$
+/* interior case: the box does not bind, the bound is sum g_i^2/(2 kappa_i) */
+isobound(H, g) := bfloat( (g[1,1]^2 + g[2,1]^2) / (2*lmin(H)) )$
+scaledbound(H, g) := block([sv, Ds, m],
+  sv : [sqrt(max(H[1,1], H[2,2])/H[1,1]), sqrt(max(H[1,1], H[2,2])/H[2,2])],
+  Ds : matrix([sv[1], 0], [0, sv[2]]),
+  m : lmin(Ds . H . Ds),
+  bfloat( (sv[1]^2*g[1,1]^2 + sv[2]^2*g[2,1]^2) / (2*m) ))$
+Cn : matrix([1/1000b0, 0], [0, 1b0])$
+print("STEP 8g H = [[100, 9.9], [9.9, 1]], U - U* = (0.03, -0.4), an interior optimum:")$
+print("        exact regret", regret)$
+print("        isotropic bound", isobound(Hn, gn), " scaled bound", scaledbound(Hn, gn))$
+print("        lever 1 in units 1e3 times its own (g' = C g, H' = C H C):")$
+print("        isotropic bound", isobound(Cn . Hn . Cn, Cn . gn),
+      " scaled bound", scaledbound(Cn . Hn . Cn, Cn . gn))$
+print("        scaled bound's move, relative:",
+      bfloat( abs(scaledbound(Cn . Hn . Cn, Cn . gn) / scaledbound(Hn, gn) - 1) ), " (0 to fpprec)")$
+print("        both bounds >= the exact regret:",
+      is(isobound(Hn, gn) >= regret), is(scaledbound(Hn, gn) >= regret),
+      is(isobound(Cn . Hn . Cn, Cn . gn) >= regret), is(scaledbound(Cn . Hn . Cn, Cn . gn) >= regret))$
+
 print("================================================================")$
-print("STEPs 1-7 complete; residuals at 1a, 2c, 3a, 3c, 5a, 6d are 0")$
+print("STEPs 1-8 complete; residuals at 1a, 2c, 3a, 3c, 5a, 6d, 8a, 8b, 8c, 8e are 0")$
 print("================================================================")$
