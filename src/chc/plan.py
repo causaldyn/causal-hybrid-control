@@ -1633,6 +1633,15 @@ class PlanRegretBound:
     gradient pins, and still finite as ``mu -> 0``, where it degrades to :attr:`frank_wolfe_gap`
     rather than to infinity.
 
+    The moves are measured lever by lever, each in its own scale (STEP 8 of the same file): the
+    modulus is the curvature in the norm ``|D^-1 d|``, ``D`` one scale per lever that moves with
+    that lever's units, and a move's curvature along lever ``j`` is ``mu / s_j^2``. In the plain
+    norm the modulus is the cheapest lever's curvature, which charges a stiff lever's moves at a
+    cheap one's, and the bound read the levers' units: lever ``u1`` in units 1e3 times its own
+    took one plan's bound from 0.0266 to 0.0576, where it now reads 0.0214 in both. Measured, the
+    scales come from the Hessian's diagonal (:func:`_objective_modulus`); a supplied modulus is
+    the plain norm's, every scale 1.
+
     The bound is on the **planning objective**, which is the question the solver was asked. How far
     the planning model itself is from the plant is the error tube's question
     (:attr:`CausalPlan.uncertainty_tube`), and the two must not be added.
@@ -1646,9 +1655,9 @@ class PlanRegretBound:
     bound: float  # J(U) - min over the box of J where ``status`` certifies it; inf when refused
     unconstrained_bound: float  # Result 6's |grad J|^2/(2 mu), for the comparison
     frank_wolfe_gap: float  # the mu-free fallback the box guarantees; bound <= this
-    modulus: float  # the mu actually used, over the actions the box lets move
+    modulus: float  # the mu actually used, over the actions the box lets move, in its norm
     modulus_source: ModulusSource
-    gradient_norm: float
+    gradient_norm: float  # in the dual norm, so unconstrained_bound = gradient_norm^2/(2 mu)
     per_lever: tuple[float, ...]  # the bound split by lever; sums to ``bound``
     pinned_actions: int  # coordinates the gradient holds against a bound: exactly free
     status: RegretStatus
@@ -1661,27 +1670,42 @@ def _objective_modulus(
     hi: Array,
     probes: int,
     seed: int,
-) -> float:
+) -> tuple[float, Array]:
     """Smallest Hessian eigenvalue of ``J`` at the plan and at ``probes`` random feasible points,
-    over the actions the box lets move.
+    over the actions the box lets move, each lever's actions in its own scale; and those scales,
+    one per lever.
+
+    Lever ``j``'s scale is ``s_j = (h / h_j)^(1/2)``, ``h_j`` the mean of the Hessian's diagonal
+    over its moving actions at the plan and ``h`` the stiffest lever's. The modulus is the least
+    eigenvalue of ``D H D``, ``D`` the scales along the actions: the curvature in the norm
+    ``|D^-1 d|``, which charges each lever's moves at its own curvature. Each scale moves with its
+    own lever's units, so the bound reads none of them; the Hessian's least eigenvalue is the
+    cheapest lever's curvature, and in other units of one lever the bound read those units. One
+    lever, or levers of equal curvature, have the scale 1 and the plain Hessian's least
+    eigenvalue. A lever with no positive curvature keeps the scale 1: some diagonal entry of the
+    block is then not positive, so no scale makes the modulus positive, and it reads the
+    Frank-Wolfe gap or a refusal whatever the units.
 
     A box of zero width fixes its action, so every feasible move is zero there and the bound needs
     ``J``'s curvature along the other actions alone: the least eigenvalue of the Hessian's block on
     them, never below the whole Hessian's (Cauchy interlacing). The whole Hessian's reads an action
     nothing reads, a lever on the log's rule, as a direction of no curvature, and the bound was
-    refused. With no action free every move is zero, and the modulus is 0.
+    refused. With no action free every move is zero, and the modulus is 0. A lever none of whose
+    actions moves takes its scale from all its actions, which only the unconstrained bound reads.
 
     Where the objective is quadratic (:func:`_quadratic`) the Hessian is one matrix and the plan's
     is the answer for the whole box, so no point is drawn. Elsewhere this is a sample, and a caller
     who can bound the curvature should pass ``modulus`` instead. Sampling is what makes a
     non-convex objective *visible* -- a single evaluation at the plan sits at a solver's stopping
     point, which is the least likely place to find the negative curvature -- but it proves nothing
-    about the points it did not draw.
+    about the points it did not draw. The scales are the plan's at every point drawn: any positive
+    scales give a valid bound, and only their tightness depends on where they are read.
     """
     flat = actions.reshape(-1)
-    moving = np.flatnonzero(np.asarray(hi > lo).reshape(-1))
+    mask = np.asarray(hi > lo).reshape(actions.shape)
+    moving = np.flatnonzero(mask.reshape(-1))
     if moving.size == 0:
-        return 0.0
+        return 0.0, jnp.ones(actions.shape[1:], dtype=actions.dtype)
     drawn = jax.random.uniform(
         jax.random.PRNGKey(seed),
         (max(probes, 0), flat.size),
@@ -1689,14 +1713,26 @@ def _objective_modulus(
         maxval=hi.reshape(-1),
     )
 
-    def curvature(point: Array) -> Array:
-        hessian = jax.hessian(lambda v: objective(v.reshape(actions.shape)))(point)
-        hessian = hessian[moving][:, moving]
-        return jnp.min(jnp.linalg.eigvalsh(0.5 * (hessian + hessian.T)))
+    def hessian(point: Array) -> Array:
+        return jax.hessian(lambda v: objective(v.reshape(actions.shape)))(point)
 
     # vmapped rather than looped: the Hessian of a rollout is expensive to TRACE, and a Python
     # loop retraces it once per probe. Batching pays that cost once for the whole sample.
-    return float(jnp.min(jax.vmap(curvature)(jnp.concatenate([flat[None, :], drawn]))))
+    hessians = jax.vmap(hessian)(jnp.concatenate([flat[None, :], drawn]))
+    diagonal = np.asarray(jnp.diagonal(hessians[0])).reshape(actions.shape)
+    read = np.where(mask.any(axis=0), mask, True)  # a lever that cannot move reads all its own
+    curvature = np.sum(np.where(read, diagonal, 0.0), axis=0) / np.sum(read, axis=0)
+    stiff = curvature > 0.0  # a nan curvature is not, and leaves its nan in the Hessian
+    reference = stiff & mask.any(axis=0)
+    if reference.any():
+        stiffest = np.max(curvature[reference])
+        scale = np.where(stiff, np.sqrt(stiffest / np.where(stiff, curvature, 1.0)), 1.0)
+    else:  # no lever that moves has a positive curvature: no scale makes the modulus positive
+        scale = np.ones_like(curvature)
+    along = jnp.asarray(np.broadcast_to(scale, actions.shape).reshape(-1)[moving], actions.dtype)
+    block = hessians[:, moving][:, :, moving] * along[None, :, None] * along[None, None, :]
+    least = jnp.min(jnp.linalg.eigvalsh(0.5 * (block + jnp.swapaxes(block, 1, 2))))
+    return float(least), jnp.asarray(scale, dtype=actions.dtype)
 
 
 def _quadratic(model: Dynamics) -> bool:
@@ -1745,6 +1781,8 @@ def plan_regret_bound(
             *smaller* modulus gives a *larger* bound and is never invalid (STEP 4d), so a
             conservative one is the safe input; for a linear plant with positive semidefinite ``Q``
             and ``Qf``, ``lambda_min(R)`` is always valid and needs no eigenvalue solve on ``J``.
+            A supplied modulus is the plain norm's, in the levers' own units, and the bound then
+            reads those units; read off the Hessian, each lever's moves are in its own scale.
         probes: random feasible points added to the curvature sample when ``modulus`` is sampled.
 
     The three numbers to read together: :attr:`~PlanRegretBound.bound` is what the box certifies,
@@ -1776,8 +1814,9 @@ def plan_regret_bound(
     sampled = modulus is None and not _quadratic(model)
     if modulus is not None:
         mu, source = float(modulus), "supplied"
+        scale = jnp.ones(actions.shape[1:], dtype=actions.dtype)
     else:
-        mu = _objective_modulus(objective, actions, lo, hi, probes if sampled else 0, seed)
+        mu, scale = _objective_modulus(objective, actions, lo, hi, probes if sampled else 0, seed)
         source = "measured"
 
     below, above = lo - actions, hi - actions  # the feasible moves, as offsets from the plan
@@ -1785,8 +1824,9 @@ def plan_regret_bound(
     # candidates are >= 0 because 0 is feasible.
     linear = jnp.maximum(-gradient * below, -gradient * above)
     if mu > 0.0:
-        step = jnp.clip(-gradient / mu, below, above)
-        certified = -gradient * step - 0.5 * mu * step**2
+        curvature = mu / scale**2  # the modulus read back in each lever's units (STEP 8b)
+        step = jnp.clip(-gradient / curvature, below, above)
+        certified = -gradient * step - 0.5 * curvature * step**2
     else:
         certified = linear
 
@@ -1798,11 +1838,13 @@ def plan_regret_bound(
     status: RegretStatus = "refused" if refused else ("diagnostic" if sampled else "certified")
     return PlanRegretBound(
         bound=math.inf if refused else total,
-        unconstrained_bound=(float(jnp.sum(gradient**2)) / (2.0 * mu) if mu > 0.0 else math.inf),
+        unconstrained_bound=(
+            float(jnp.sum((scale * gradient) ** 2)) / (2.0 * mu) if mu > 0.0 else math.inf
+        ),
         frank_wolfe_gap=float(jnp.sum(linear)),
         modulus=mu,
         modulus_source=source,
-        gradient_norm=float(jnp.linalg.norm(gradient)),
+        gradient_norm=float(jnp.linalg.norm(scale * gradient)),
         per_lever=tuple(math.inf for _ in per_lever) if refused else per_lever,
         pinned_actions=int(jnp.sum((certified <= 0.0) & (gradient != 0.0))),
         status=status,

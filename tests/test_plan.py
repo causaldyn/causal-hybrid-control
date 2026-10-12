@@ -1,7 +1,7 @@
 """The one-call spine: a plan that carries its own certificate."""
 
 import math
-from itertools import pairwise
+from itertools import pairwise, product
 
 import equinox as eqx
 import jax
@@ -434,6 +434,177 @@ def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charge
 
     with pytest.raises(ValueError, match="cannot be negative"):
         plan_regret_bound(slack, plant, x0, cost, dt, -2.0, 2.0, modulus=-1.0)
+
+
+def _box_minimum(hessian: np.ndarray, linear: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> float:
+    """``min 0.5 x'Hx + c'x`` over a box, ``H`` positive definite, exactly: each action free, at
+    its lower bound or at its upper one, the free ones solving their rows. The optimum's own
+    pattern is among them and every feasible candidate is a point of the box, so the least
+    feasible value is the minimum."""
+    best = math.inf
+    for pattern in product((0, 1, 2), repeat=linear.size):
+        at = np.array(pattern)
+        x = np.where(at == 1, lo, np.where(at == 2, hi, 0.0))
+        if not np.all(np.isfinite(x)):
+            continue  # pinned to a side the box leaves open
+        free, held = at == 0, at != 0
+        if free.any():
+            rows = -linear[free] - hessian[np.ix_(free, held)] @ x[held]
+            x[free] = np.linalg.solve(hessian[np.ix_(free, free)], rows)
+        if np.all(x >= lo) and np.all(x <= hi):
+            best = min(best, float(0.5 * x @ hessian @ x + linear @ x))
+    return best
+
+
+def _exact_minimum(
+    plant: LinearDynamics,
+    x0: Array,
+    cost: QuadraticCost,
+    dt: float,
+    horizon: int,
+    lo: np.ndarray,
+    hi: np.ndarray,
+) -> float:
+    """The least cost a linear plant's box allows: its cost is quadratic in the actions, read off
+    at zero and minimised by :func:`_box_minimum`."""
+    levers = lo.size
+
+    def objective(us: Array) -> Array:
+        return total_cost(plant, x0, us.reshape(horizon, levers), dt, cost)
+
+    zero = jnp.zeros(horizon * levers)
+    least = _box_minimum(
+        np.asarray(jax.hessian(objective)(zero)),
+        np.asarray(jax.grad(objective)(zero)),
+        np.tile(lo, horizon),
+        np.tile(hi, horizon),
+    )
+    return least + float(objective(zero))
+
+
+def test_the_regret_bound_reads_no_lever_s_units_and_holds_on_the_exact_optimum() -> None:
+    """Levers priced 1e-3 to 10 a unit, boxes of unlike widths, one side left open on some: the
+    bound is at least the exact regret, the box's quadratic programme solved by enumeration, and
+    reads the same with any lever in units 1e-3 or 1e3 times its own, alone or with the others.
+    Its modulus was the Hessian's least eigenvalue, the cheapest lever's curvature in whatever
+    units the levers came in, and the bound read those units."""
+    rng = np.random.default_rng(86)
+    dt = 0.1
+    for _ in range(12):
+        levers = int(rng.integers(2, 4))
+        horizon = 6 // levers
+        states = int(rng.integers(1, 4))
+        drift = jnp.asarray(rng.normal(scale=0.7, size=(states, states)))
+        channel = jnp.asarray(rng.normal(size=(states, levers)))
+        plant = LinearDynamics(drift, channel)
+        prices = np.exp(rng.uniform(np.log(1e-3), np.log(10.0), size=levers))
+        cost = QuadraticCost(
+            Q=jnp.eye(states),
+            R=jnp.diag(jnp.asarray(prices)),
+            Qf=2.0 * jnp.eye(states),
+            x_target=jnp.asarray(rng.normal(size=states)),
+        )
+        x0 = jnp.asarray(rng.normal(size=states))
+        lo = -np.exp(rng.uniform(np.log(0.1), np.log(3.0), size=levers))
+        hi = np.exp(rng.uniform(np.log(0.1), np.log(3.0), size=levers))
+        start = rng.uniform(lo, hi, size=(horizon, levers))
+        hi[rng.random(levers) < 0.3] = np.inf
+        plan = causal_plan(plant, x0, cost, dt, horizon, lo, hi, steps=0, warm_start=start)
+        gap = plan_regret_bound(plan, plant, x0, cost, dt, lo, hi)
+        assert gap.status == "certified"
+
+        best = _exact_minimum(plant, x0, cost, dt, horizon, lo, hi)
+        regret = plan.task_cost - best
+        assert gap.bound >= regret - 1e-12 * plan.task_cost
+
+        for units in ((1e3, 1.0), (1.0, 1e-3), (1e-3, 1e3)):
+            c = np.resize(np.asarray(units), levers)  # u = c u', so B u = (B / c) u'
+            moved = LinearDynamics(drift, channel / c)
+            priced = QuadraticCost(
+                Q=cost.Q, R=cost.R / np.outer(c, c), Qf=cost.Qf, x_target=cost.x_target
+            )
+            replanned = causal_plan(
+                moved, x0, priced, dt, horizon, c * lo, c * hi, steps=0, warm_start=c * start
+            )
+            other = plan_regret_bound(replanned, moved, x0, priced, dt, c * lo, c * hi)
+            assert other.status == "certified"
+            assert other.bound == pytest.approx(gap.bound, rel=1e-9, abs=0.0), units
+            np.testing.assert_allclose(other.per_lever, gap.per_lever, rtol=1e-9, atol=0.0)
+            assert other.unconstrained_bound == pytest.approx(
+                gap.unconstrained_bound, rel=1e-9, abs=0.0
+            )
+        assert gap.unconstrained_bound == pytest.approx(
+            gap.gradient_norm**2 / (2.0 * gap.modulus), rel=1e-12, abs=0.0
+        )
+
+
+def test_one_lever_that_moves_has_the_plain_norm_s_regret_bound_to_the_bit() -> None:
+    """One lever that moves has scale 1, beside a lever its box pins, however stiff: the measured
+    modulus is the least eigenvalue of the moving lever's Hessian, and the bound is the one that
+    modulus gives supplied, in the plain norm, bit for bit, as before the levers were scaled."""
+    plant = LinearDynamics(
+        jnp.array([[0.0, 1.0], [-2.0, -0.3]]), jnp.array([[0.0, 0.5], [1.0, 0.2]])
+    )
+    cost = QuadraticCost(
+        Q=jnp.eye(2),
+        R=jnp.diag(jnp.array([0.05, 30.0])),
+        Qf=3.0 * jnp.eye(2),
+        x_target=jnp.zeros(2),
+    )
+    x0 = jnp.array([1.5, 0.0])
+    lo, hi = jnp.array([-2.0, 0.7]), jnp.array([2.0, 0.7])
+    plan = causal_plan(plant, x0, cost, 0.1, 12, lo, hi, steps=3)
+    measured = plan_regret_bound(plan, plant, x0, cost, 0.1, lo, hi)
+    plain = plan_regret_bound(plan, plant, x0, cost, 0.1, lo, hi, modulus=measured.modulus)
+    hessian = jax.hessian(lambda v: total_cost(plant, x0, v.reshape(12, 2), 0.1, cost))(
+        plan.actions.reshape(-1)
+    )
+    moving = np.asarray(hessian)[0::2, 0::2]
+    assert measured.modulus == pytest.approx(np.linalg.eigvalsh(moving)[0], rel=1e-12, abs=0.0)
+    assert measured.bound > 0.0
+    assert (measured.bound, measured.per_lever) == (plain.bound, plain.per_lever)
+
+
+class _Convex(eqx.Module):
+    """A rate convex in the cheap lever: the objective's curvature along it moves over the box."""
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return jnp.array([-x[0] + u[0] + 0.3 * u[0] ** 2 + 0.5 * u[1]])
+
+
+def test_a_sampled_modulus_reads_every_point_drawn_in_the_plan_s_scales() -> None:
+    """The levers' scales come from the Hessian's diagonal at the plan and stay fixed over the
+    sample: the modulus is the least eigenvalue of ``D H D`` over the plan and every point drawn,
+    one ``D``. Scales read at another point are as valid but measure each point in other units."""
+    model = _Convex()
+    cost = QuadraticCost(
+        Q=jnp.eye(1),
+        R=jnp.diag(jnp.array([0.01, 1.0])),
+        Qf=2.0 * jnp.eye(1),
+        x_target=jnp.array([-3.0]),
+    )
+    x0, dt, horizon, probes = jnp.zeros(1), 0.1, 3, 4
+    lo, hi = jnp.array([-1.0, -0.5]), jnp.array([1.0, 1.5])
+    plan = causal_plan(model, x0, cost, dt, horizon, lo, hi, steps=0, warm_start=jnp.zeros((3, 2)))
+    hessian = jax.hessian(lambda v: total_cost(model, x0, v.reshape(horizon, 2), dt, cost))
+    for seed in range(3):
+        gap = plan_regret_bound(plan, model, x0, cost, dt, lo, hi, probes=probes, seed=seed)
+        assert gap.status == "diagnostic"
+        drawn = jax.random.uniform(
+            jax.random.PRNGKey(seed),
+            (probes, 2 * horizon),
+            minval=jnp.tile(lo, horizon),
+            maxval=jnp.tile(hi, horizon),
+        )
+        points = jnp.concatenate([plan.actions.reshape(1, -1), drawn])
+        curvature = np.diag(np.asarray(hessian(points[0]))).reshape(horizon, 2).mean(axis=0)
+        scale = np.tile(np.sqrt(curvature.max() / curvature), horizon)
+        least = min(
+            np.linalg.eigvalsh(scale[:, None] * np.asarray(hessian(point)) * scale[None, :])[0]
+            for point in points
+        )
+        assert least > 0.0
+        assert gap.modulus == pytest.approx(least, rel=1e-12, abs=0.0)
 
 
 class _HiddenPocket(eqx.Module):

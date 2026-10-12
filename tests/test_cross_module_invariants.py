@@ -441,6 +441,29 @@ def test_the_certificate_reads_the_same_in_any_units_the_levers_share(
     _same(other, one, _decide(policy).plan.task_cost)  # type: ignore[union-attr]
 
 
+@pytest.mark.parametrize("levers_in", [(1e3, 1.0), (1.0, 1e-3), (1e-3, 1e3)])
+@pytest.mark.parametrize(
+    ("policy", "budget"), [("free", False), ("together", False), ("free", True)]
+)
+def test_the_regret_bound_reads_the_same_in_any_units_of_each_lever(
+    policy: str, budget: bool, levers_in: tuple[float, float]
+) -> None:
+    """Each lever in units of its own, the other left as it was or in others. The bound's modulus
+    was the Hessian's least eigenvalue, the cheapest lever's curvature in whatever units the
+    levers came in, which charged both levers' moves at it: with ``u1`` in units 1e3 times its
+    own, ``together``'s bound read 0.0576 where it read 0.0266, and ``free``'s 5.4e-12 where it
+    read 1.8e-16. Each lever's moves are now measured in its own scale, and it reads 0.0214 and
+    1.7e-16 in any units."""
+    reference = _decide(policy, budget=budget)
+    one = reference.certificate
+    other = _decide(policy, levers_in=levers_in, budget=budget).certificate
+    assert other.regret_status == one.regret_status == "diagnostic"
+    assert reference.plan is not None
+    assert other.regret_bound == pytest.approx(
+        one.regret_bound, rel=1e-9, abs=1e-12 * reference.plan.task_cost
+    )
+
+
 @pytest.mark.parametrize("units", [1e-3, 1e3])
 def test_the_certificate_reads_the_same_in_any_units_of_the_state(units: float) -> None:
     """The state logged in ``units`` times its own, the target, the start and the tolerance with

@@ -116,6 +116,23 @@ still change).
   every row's is zero. Where both are below 1 a smaller push now reads as a price, and where the
   guess's is the larger and above 1 a larger push reads as zero. Since 0.7.0; the decision weight
   since 0.8.0.
+- **`plan_regret_bound` reads none of the levers' units.** Its modulus, read off the Hessian, was
+  the least eigenvalue in the plain norm, the cheapest lever's curvature in whatever units the
+  levers came in, and the bound charged every lever's moves at it. On a two-lever log whose
+  prescription read a bound of 0.0266, `u1` in units 1e3 times its own, its box and price with it,
+  read 0.0576, and in thousandths 0.0719. The bound stayed valid, but a change of units moved it
+  by up to 2.7 times, and a bound at rounding by 3.4e7 times. Each lever's moves are now measured
+  in its own scale, `(h / h_j)^(1/2)`, `h_j` the lever's mean curvature at the plan and `h` the
+  stiffest moving lever's. The modulus is the least eigenvalue of the scaled Hessian, and along
+  lever `j` a move's curvature is the modulus over its scale squared
+  (`validation/constrained_plan_regret.mac` STEP 8). That log's bound reads 0.0214 in any units.
+  On 300 random plants with two or three levers it was a median 1.50 times the exact regret, where
+  the plain bound was 2.18, and above it on every plant. On 32 of the 300 it is looser than the
+  plain bound, by up to 3.0 times, where the levers' curvatures are close and the levers coupled.
+  A plan with one moving lever, or levers of equal curvature, keeps its bound to the bit. A
+  supplied `modulus` is still the plain norm's. `gradient_norm` is now the scaled gradient's, so
+  `unconstrained_bound` is `gradient_norm^2 / (2 modulus)` in the same norm (ADR 0086). Since
+  0.6.0.
 
 ## [0.16.0] — 2026-10-11
 
