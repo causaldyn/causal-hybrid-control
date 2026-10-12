@@ -107,13 +107,16 @@ those of `cvar_allocate` do. The bound was not the obstacle; two things were:
   the curves at the plan, in the caller's boxes: the prices that miss the conditions for the best
   plan least, each miss weighted by how far the plan stands from the end of its box or the total
   that would excuse it, the totals' misses first, so a total the plan does not hold is priced
-  nothing; under a budget no rate below its cap returns more than its price. Of the prices that
-  tie, the budget's is the one nearest nothing and then the totals' are the least in the sum of
-  their sizes. One geo with no totals is then priced as `allocate` prices its channels, and fixed
-  geo or channel totals carry the budget's price, as on concave curves. The three channels with
-  carryover, planned at 40, 95 and 15, were priced 4.88, and 4.29 with spend in thousandths, where
-  one more unit returns 5.61; a cap on a geo's total was priced 0.054 and one on a channel's 0.84,
-  where the cells under them return 1.60 and 1.57 over the budget's price on the curves.
+  nothing. Under a budget the misses of rates that return more than their price come before the
+  rest, so no rate with room below its cap returns more than its price; a rate HiGHS leaves a
+  rounding below its cap has none, where reading two ulps as room priced a grid's budget 0.387
+  and one more unit returns 0.0297. Of the prices that tie, the budget's is the one nearest
+  nothing and then the totals' are the least in the sum of their sizes. One geo with no totals is
+  then priced as `allocate` prices its channels, and fixed geo or channel totals carry the
+  budget's price, as on concave curves. The three channels with carryover, planned at 40, 95 and
+  15, were priced 4.88, and 4.29 with spend in thousandths, where one more unit returns 5.61; a
+  cap on a geo's total was priced 0.054 and one on a channel's 0.84, where the cells under them
+  return 1.60 and 1.57 over the budget's price on the curves.
 - A plan that the planes leave inside a cell's interval, short of exact rates, is within its box's
   gap of the best. Without the polish in a box, the grid's rates came back 1e-5 from the best
   split's, though within the tolerance. With the guarded Newton steps the worths of the grid's

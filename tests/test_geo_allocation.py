@@ -826,6 +826,54 @@ def test_the_budget_s_price_nearest_nothing_stands_while_the_totals_prices_are_m
     np.testing.assert_allclose(prices, [0.5, 2.5], rtol=1e-12, atol=0.0)
 
 
+def test_under_a_budget_a_rate_a_rounding_below_its_cap_has_no_room_to_price():
+    """No rate with room below its cap returns more than the budget's price, but HiGHS can leave a
+    rate it holds at its cap a rounding below it. Of two rates, one two ulps short of its cap of 1,
+    where its curve returns 1 a unit, and one inside its box returning 0.25, the price is 0.25:
+    read as room, the two ulps priced the budget 1."""
+    cells = (Channel(ONE, MichaelisMenten(1.0), 4.0), Channel(ONE, MichaelisMenten(1.0), 4.0))
+    worths = _worths(cells, np.zeros((0, 2)), 1)
+    rates = np.array([1.0 - 2.0**-52, 3.0])
+    budget = _Group(np.arange(2), float(rates.sum()), float(rates.sum()), np.ones(2))
+    [price] = _priced(worths, rates, np.zeros(2), np.array([1.0, 10.0]), [budget], 1, 0.0, True)
+    assert price == pytest.approx(0.25, rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_under_the_budget_alone_any_plan_is_priced_as_allocate_prices_it(seed):
+    """With the budget the only total, a plan off its best misses the conditions whatever its price,
+    and its price is still the one :func:`allocate` reads: the steepest slope of a rate below its
+    cap, however far the other rates stand from their floors and caps."""
+    rng = np.random.default_rng(seed)
+    cells = tuple(Channel(ONE, MichaelisMenten(1.0), size) for size in rng.uniform(1.0, 100.0, 5))
+    worths = _worths(cells, np.zeros((0, 5)), 1)
+    upper = np.full(5, 10.0)
+    rates = rng.uniform(0.0, 10.0, 5)
+    rates[:2] = 0.0, 10.0
+    budget = _Group(np.arange(5), float(rates.sum()), float(rates.sum()), np.ones(5))
+    [price] = _priced(worths, rates, np.zeros(5), upper, [budget], 1, 0.0, True)
+    alone = chc.allocation._marginal(worths, rates, upper, 1)
+    assert price == pytest.approx(alone, rel=1e-12, abs=0.0)
+
+
+def test_a_cell_a_rounding_below_its_cap_leaves_the_budget_s_price_to_the_cell_with_room():
+    """Caps drawn at random on the S-curve grid: every cell but geo 0's second ends at its cap, and
+    the planes' program leaves geo 0's first two ulps below it, where its curve returns 0.387 a
+    unit. Read as room, those ulps priced the budget 0.387, 13 times what one more unit returns on
+    the only cell with room: 0.0297 on its curve."""
+    upper = np.array(
+        [[1.4460624847872807, 0.5732431358810791], [1.297579627393073, 1.8858181113512407]]
+    )
+    plan = allocate_geos(S_GRID, 4.730640195168108, 1, lower=np.zeros((2, 2)), upper=upper)
+    held = np.ones((2, 2), dtype=bool)
+    held[0, 1] = False
+    np.testing.assert_allclose(plan.spend[held], upper[held], rtol=1e-15, atol=0.0)
+    rate, cell = plan.spend[0, 1], S_GRID[0][1]
+    step = 1e-6 * rate
+    rise = float(cell(np.array([rate + step]))[0]) - float(cell(np.array([rate - step]))[0])
+    assert plan.price == pytest.approx(rise / (2 * step), rel=1e-6, abs=0.0)
+
+
 def test_a_marginal_target_on_s_curves_prices_a_total_that_binds_on_the_curves():
     """With the budget free and each unit charged 4, the cap on geo 0 binds, and the search finds
     the plan in a box cut at its rate. The budget's price is the charge, and geo 0's the rest of

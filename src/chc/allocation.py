@@ -2948,12 +2948,16 @@ def _priced(
     slackness gap, nothing at a plan that meets them. The totals' misses are made least first, so
     a total the plan does not hold is priced nothing though the rates, searched only to a
     tolerance, meet their prices only to it; the rates' misses after. Where ``budget`` the first
-    group is the budget, and no rate below its cap returns more than its price, so that, as
-    :func:`_marginal` reads :func:`allocate`'s price, one more currency unit returns no more than
-    the price wherever it goes. Where several prices leave the same gaps, the budget's is the one
-    nearest nothing, and then the totals' are the least in the sum of their sizes: one geo with no
-    totals is priced as :func:`allocate` prices its channels, and where every geo's total is fixed,
-    which fixes the budget, the budget's price is nothing and theirs carry it.
+    group is the budget, and the misses of rates that return more than their price are made least
+    before those that return less, so that no rate with room below its cap returns more than its
+    price: as :func:`_marginal` reads :func:`allocate`'s price, one more currency unit returns no
+    more than the price wherever it goes. A rate a rounding below its cap, where HiGHS can leave a
+    rate it holds at its cap, has no room to weigh: a weight under about ``1e-9`` of the largest
+    is taken as nothing (:func:`_lexicographic`). Where several prices leave the same gaps, the
+    budget's is the one nearest nothing, and then the totals' are the least in the sum of their
+    sizes: one geo with no totals is priced as :func:`allocate` prices its channels, and where
+    every geo's total is fixed, which fixes the budget, the budget's price is nothing and theirs
+    carry it.
 
     The program is written in a power of two of the steepest slope and of the largest weight, so
     the prices move with the units of currency and of return.
@@ -2996,13 +3000,15 @@ def _priced(
         *(open_ if free else (0.0, 0.0) for free in raised),
         *(open_ if free else (0.0, 0.0) for free in lowered),
         *(open_ if free else (0.0, 0.0) for free in above),
-        # under a budget no rate below its cap returns more than its price
-        *(open_ if free and not budget else (0.0, 0.0) for free in below),
+        *(open_ if free else (0.0, 0.0) for free in below),
     ]
     totals = np.concatenate([weights[: 2 * count], np.zeros(2 * size)])
     sizes = np.concatenate([np.ones(2 * count), np.zeros(2 * size)])
     objectives = [totals, weights - totals]
     if budget:
+        # a rate's slope above its price first, weighted by its room below its cap
+        short = np.concatenate([np.zeros(2 * count + size), weights[2 * count + size :]])
+        objectives[1:] = [short, weights - totals - short]
         first = np.zeros(count)
         first[0] = 1.0
         objectives.append(np.concatenate([first, first, np.zeros(2 * size)]))
