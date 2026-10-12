@@ -318,7 +318,9 @@ class PlanEvaluation:
     Student ``t``: well below 39 when a few of the logger's excursions carry the weights, and
     ``None`` for ``"fqe"`` and ``"pdis"``, whose intervals are normal. From
     :meth:`chc.decision.Prescription.evaluate` the interval is normal too, its spread read from a
-    bootstrap over the units the episodes came from (``bootstrap``) rather than across episodes.
+    bootstrap over the units the episodes came from (``bootstrap``) rather than across episodes;
+    on one unit's episodes it is Student's ``t`` with ``degrees_of_freedom`` the cosines the
+    episodes' influences were read across their time by, and ``bootstrap`` is ``None``.
     """
 
     value: float
@@ -335,7 +337,8 @@ class PlanEvaluation:
     # the plan against the policy that logged the episodes, and the bootstrap over units both its
     # interval and ``interval`` were read from: filled by
     # :meth:`chc.decision.Prescription.evaluate`, which knows each episode's unit, and None from
-    # :func:`evaluate_plan`, which takes its episodes as independent
+    # :func:`evaluate_plan`, which takes its episodes as independent; on one unit's episodes
+    # ``versus_logger`` is read across their time as ``interval`` is, and ``bootstrap`` is None
     versus_logger: LoggerComparison | None = None
     bootstrap: UnitBootstrap | None = None
 
@@ -348,8 +351,10 @@ class LoggerComparison:
     episodes' initial states, what deploying the plan would replace. ``difference`` is the plan's
     value less it. ``interval`` is read off the difference within each resample of the units, both
     values computed on the same draw, so what the two share --- which units were drawn, the states
-    they started from --- cancels in it; two marginal intervals combined would count it twice. The
-    plan's model correction widens it as it widens the plan's own interval.
+    they started from --- cancels in it; two marginal intervals combined would count it twice. On
+    one unit's episodes it is read off the difference's influences, the plan's less each episode's
+    logged cost, across their time. The plan's model correction widens it as it widens the plan's
+    own interval.
 
     A plan's value alone does not say that switching to it helps: the policy in place can do better
     than the plan, and better than any other fixed alternative a trial would compare it with
@@ -1352,14 +1357,27 @@ def _episodes_estimate(
     """Per-decision importance sampling, each step's weights normalised to mean one: the estimate
     of ``target``'s expected cost over the horizon, step ``t`` scored by ``costs[t]``, its
     half-width by the delta method over episodes, and the last step's effective sample size."""
+    per_step, influence, w = _episodes_terms(x, u, logger, target, costs)
+    half = _Z95 * float(influence.std(ddof=1)) / math.sqrt(x.shape[0])
+    return float(per_step.sum()), half, _effective(w[:, -1])
+
+
+def _episodes_terms(
+    x: _Array,
+    u: _Array,
+    logger: AffinePolicy,
+    target: AffineSchedule,
+    costs: tuple[_StageCost, ...],
+) -> tuple[_Array, _Array, _Array]:
+    """Per-decision importance sampling's terms: each step's estimate ``(H,)``, each episode's
+    influence on their sum ``(E,)``, and the weights ``(E, H)``, each step's normalised to mean
+    one."""
     xs = x[:, :-1]
     c = _stage_costs(x, u, costs)
     log_w = np.cumsum(_log_policy(target, xs, u) - _log_policy(logger, xs, u), axis=1)
     w = _normalised(log_w)
     per_step = np.mean(w * c, axis=0)
-    influence = np.sum(w * (c - per_step), axis=1)
-    half = _Z95 * float(influence.std(ddof=1)) / math.sqrt(x.shape[0])
-    return float(per_step.sum()), half, _effective(w[:, -1])
+    return per_step, np.sum(w * (c - per_step), axis=1), w
 
 
 def _episode_smoothing(
@@ -1704,4 +1722,74 @@ def _evaluate_by_unit(
             logged, difference, (difference - half_difference, difference + half_difference)
         ),
         bootstrap=UnitBootstrap(int(labels.size), resamples, refused),
+    )
+
+
+def _evaluate_across_time(
+    x: _Array,
+    u: _Array,
+    cosines: _Array,
+    plan: AffineSchedule,
+    *,
+    plant: LinearGaussianPlant,
+    cost: QuadraticCost,
+    logger: AffinePolicy | None,
+    smoothing: float | None,
+    model_error: float,
+    min_effective: float,
+) -> PlanEvaluation:
+    """:func:`evaluate_plan` by ``"pdis"`` on one unit's episodes ``x``, ``u``, beside the plan
+    against the logger on them, both intervals read across the episodes' time by ``cosines``.
+
+    ``cosines`` is ``(nu, E)``, each row a cosine over the episodes' time zeros, scaled so that
+    the squares of the rows' products with the episodes' influences sum to the equal-weighted
+    cosine estimate of the spread of the influences' sum (Lazarus, Lewis, Stock and Watson 2018).
+    One unit's episodes follow each other and share its state and its noise, so their influences
+    persist; the cosines' low frequencies read the long-run spread, and the half-width is
+    Student's ``t`` with ``nu`` degrees of freedom on it, widened by the plan's model correction
+    as :func:`evaluate_plan` widens its own. The difference's influence is the plan's less each
+    episode's logged cost about their mean. The logger and the smoothing are those of the
+    estimate, held at their values: the delta method's reading, which :func:`evaluate_plan` makes
+    across independent episodes.
+
+    Raises:
+        InfeasibleEvaluation: when the certificate refuses the episodes.
+    """
+    n, m = x.shape[-1], u.shape[-1]
+    if logger is None:
+        logger = fit_logger(x[:, :-1].reshape(-1, n), u.reshape(-1, m))
+    evaluation = evaluate_plan(
+        {"x": x, "u": u},
+        plan,
+        "pdis",
+        plant=plant,
+        cost=cost,
+        logger=logger,
+        smoothing=smoothing,
+        model_error=model_error,
+        min_effective=min_effective,
+    )
+    stages = _StageCost.steps(cost, n, m, plan.horizon)
+    tau = evaluation.certificate.smoothing
+    _, influence, _ = _episodes_terms(
+        x, u, logger, _smoothed(plan, tau) if tau > 0.0 else plan, stages
+    )
+    logged_each = _stage_costs(x, u, stages).sum(axis=1)
+    logged = float(logged_each.mean())
+    sums = cosines @ np.stack([influence, influence - (logged_each - logged)], axis=1)
+    count = cosines.shape[0]
+    quantile = float(student.ppf(0.975, count))
+    widened = model_error * abs(evaluation.model_correction)
+    half, half_difference = (
+        quantile * math.sqrt(float(square)) / x.shape[0] + widened
+        for square in np.sum(sums * sums, axis=0)
+    )
+    difference = evaluation.value - logged
+    return replace(
+        evaluation,
+        interval=(evaluation.value - half, evaluation.value + half),
+        degrees_of_freedom=float(count),
+        versus_logger=LoggerComparison(
+            logged, difference, (difference - half_difference, difference + half_difference)
+        ),
     )

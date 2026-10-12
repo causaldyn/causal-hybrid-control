@@ -7,6 +7,24 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **On a panel of one unit, `Prescription.evaluate` read its windows as independent, under an
+  interval too narrow for them, and from 1.0 was to refuse them.** One unit's windows follow each
+  other through its state and its noise, so their influences on the estimate persist. On simulated
+  units whose loop keeps 0.8 of the state a step and whose noise is AR(0.9), the 95 % interval
+  covered the plan's value on 0.64 to 0.85 of 1000 logs, from 25 to 1600 windows. Each window's
+  influence is now read across the windows' time zeros by `nu` cosines, `nu` the most whole ones
+  at or below `0.4 E^(2/3)` of `E` windows, as `fit_causal_residual` reads one unit's periods, and
+  each interval is Student's `t(nu)` on it: 0.82 to 0.95 on the same logs, and 0.87 to 0.99
+  wherever the loop or the noise persists less. Where the windows are close to independent the
+  interval is wider by the price of the `t`: 1.66 times at 25 windows of fresh noise, 1.11 at 800.
+  The value is unchanged. `PlanEvaluation.degrees_of_freedom` holds `nu`, `versus_logger` is
+  filled, read off the difference's influences the same way, and `bootstrap` stays `None`. The
+  `DeprecationWarning` is gone, the planned refusal at 1.0 dropped, and the call logs
+  `chc_event="one_unit"` at `INFO` with the windows and the cosines counted (ADR 0083). Since
+  0.9.0; deprecated since 0.12.0.
+
 ## [0.16.0] — 2026-10-11
 
 ### Added

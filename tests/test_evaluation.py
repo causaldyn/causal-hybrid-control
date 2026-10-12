@@ -39,6 +39,7 @@ from chc.evaluation import (
     PlanEvaluation,
     _batch_half_width,
     _episode_smoothing,
+    _evaluate_across_time,
     _evaluate_by_unit,
     _smoothed_log_moments,
     _StageCost,
@@ -1131,6 +1132,179 @@ def test_draws_the_certificate_refuses_are_counted_and_too_many_refuse_the_evalu
     ]
     with pytest.raises(InfeasibleEvaluation, match="which leaves no spread to read"):
         evaluate(2)
+
+
+# ------------------------------------------------------------------------- one unit's episodes
+
+# One unit whose noise persists: x' = a x + u + e_t, e AR(0.9) of spread 0.5, logged by
+# u = -0.1 x + 0.2 + N(0, 1), so that its loop keeps ``a - 0.1`` of the state a step.
+PERSIST, SPREAD = 0.9, 0.5
+ONE_UNIT_GAIN, ONE_UNIT_OFFSET = -0.1, 0.2
+ONE_UNIT_COST = QuadraticCost(
+    Q=jnp.array([[1.0]]), R=jnp.array([[0.1]]), Qf=jnp.zeros((1, 1)), x_target=jnp.zeros(1)
+)
+
+
+def _one_unit_actions(a: float, horizon: int) -> np.ndarray:
+    """The logger's mean action at its stationary mean state, plus a cosine of amplitude 0.3."""
+    mean = ONE_UNIT_GAIN * ONE_UNIT_OFFSET / (1.0 - a - ONE_UNIT_GAIN) + ONE_UNIT_OFFSET
+    return (mean + 0.3 * np.cos(0.7 * np.arange(horizon)))[:, None]
+
+
+def _one_unit_windows(
+    a: float, horizon: int, windows: int, logs: int, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray]:
+    """``logs`` runs of one unit, each cut into ``windows`` windows of ``horizon + 1`` periods
+    sharing their boundary periods, earliest first: ``(logs, E, H + 1, 1)`` and ``(logs, E, H,
+    1)``. Each run starts 300 periods before its log, from the noise's stationary law."""
+    periods = windows * horizon + 1
+    x, noise = np.zeros(logs), rng.normal(0.0, SPREAD, logs)
+    xs, us = np.empty((logs, periods)), np.empty((logs, periods))
+    for t in range(-300, periods):
+        u = ONE_UNIT_GAIN * x + ONE_UNIT_OFFSET + rng.normal(size=logs)
+        if t >= 0:
+            xs[:, t], us[:, t] = x, u
+        noise = PERSIST * noise + SPREAD * math.sqrt(1.0 - PERSIST**2) * rng.normal(size=logs)
+        x = a * x + u + noise
+    rows = horizon * np.arange(windows)[:, None] + np.arange(horizon + 1)
+    return xs[:, rows, None], us[:, rows[:, :-1], None]
+
+
+def _one_unit_truth(a: float, horizon: int) -> float:
+    """The plan's expected cost over the horizon from the logger's stationary law, on the state
+    and last noise together: ``(x, e)' = [[a, rho], [0, rho]] (x, e) + (u, 0) + (1, 1) d``."""
+    f = np.array([[a + ONE_UNIT_GAIN, PERSIST], [0.0, PERSIST]])
+    shock = (1.0 - PERSIST**2) * SPREAD**2 * np.ones((2, 2))
+    covariance = solve_discrete_lyapunov(f, shock + np.diag([1.0, 0.0]))
+    mean = np.array([ONE_UNIT_OFFSET / (1.0 - a - ONE_UNIT_GAIN), 0.0])
+    step = np.array([[a, PERSIST], [0.0, PERSIST]])
+    total = 0.0
+    for action in _one_unit_actions(a, horizon)[:, 0]:
+        total += 0.5 * (mean[0] ** 2 + covariance[0, 0]) + 0.05 * action**2
+        mean = step @ mean + np.array([action, 0.0])
+        covariance = step @ covariance @ step.T + shock
+    return total
+
+
+def _cosine_rows(places: np.ndarray) -> np.ndarray:
+    """``sqrt(2 / nu) cos(pi j (p + 1/2) / P)``, ``j`` from 1 to ``nu`` = the most whole ones at
+    or below ``0.4 E^(2/3)``, over the ``P`` places the ``E`` episodes span."""
+    count = int(0.4 * places.size ** (2.0 / 3.0))
+    span = int(places.max()) + 1
+    j = np.arange(1, count + 1)[:, None]
+    return math.sqrt(2.0 / count) * np.cos(math.pi * j * (places + 0.5) / span)
+
+
+def test_one_unit_s_episodes_are_read_across_their_time_by_cosines_by_hand() -> None:
+    """The weights, the estimate and its correction, each episode's influence and its logged cost
+    by hand; the cosines' products with the influences, squared and summed, are the spread of their
+    sum, and the half-width is Student's ``t(nu)`` on it plus the share of the correction counted
+    as unverified. The episodes are passed latest first, as a prescription cuts them, each with its
+    own place."""
+    a, horizon, windows, tau = 0.6, 4, 60, 0.8
+    x, u = _one_unit_windows(a, horizon, windows, 1, np.random.default_rng(83))
+    x, u = x[0, ::-1], u[0, ::-1]
+    places = np.arange(windows)[::-1]
+    cosines = _cosine_rows(places)
+    logger = _scalar_policy(ONE_UNIT_GAIN, ONE_UNIT_OFFSET, 1.0)
+    schedule = AffineSchedule.open_loop(_one_unit_actions(a, horizon), 1)
+
+    result = _evaluate_across_time(
+        x,
+        u,
+        cosines,
+        schedule,
+        plant=_scalar_plant(a, 1.0, SPREAD**2),
+        cost=ONE_UNIT_COST,
+        logger=logger,
+        smoothing=tau,
+        model_error=0.5,
+        min_effective=10.0,
+    )
+
+    smoothed = AffineSchedule.open_loop(_one_unit_actions(a, horizon), 1, [[tau * tau]])
+    xs = x[:, :-1]
+    cost = 0.5 * xs[..., 0] ** 2 + 0.05 * u[..., 0] ** 2
+    log_w = np.cumsum(_log_density(smoothed, xs, u) - _log_density(logger, xs, u), axis=1)
+    w = np.exp(log_w - log_w.max(axis=0))
+    w /= w.mean(axis=0)
+    beta, curvature = 0.0, 0.0
+    for _ in range(horizon):
+        beta += 0.05 + curvature
+        curvature = a * a * curvature + 0.5
+    correction = tau * tau * beta
+    value = float(np.sum(np.mean(w * cost, axis=0))) - correction
+    plan = np.sum(w * (cost - np.mean(w * cost, axis=0)), axis=1)
+    logged = cost.sum(axis=1)
+    nu = cosines.shape[0]
+
+    def half(influence: np.ndarray) -> float:
+        sums = np.array(
+            [sum(cosines[j, i] * influence[i] for i in range(windows)) for j in range(nu)]
+        )
+        return float(student.ppf(0.975, nu)) * math.sqrt(float(sums @ sums)) / windows
+
+    comparison = result.versus_logger
+    assert comparison is not None
+    assert nu == 6
+    assert result.degrees_of_freedom == 6.0
+    assert result.bootstrap is None
+    assert result.certificate.smoothing == tau
+    assert result.model_correction == pytest.approx(correction, rel=1e-12)
+    assert result.value == pytest.approx(value, rel=1e-12)
+    spread = half(plan) + 0.5 * correction
+    assert result.interval == pytest.approx((value - spread, value + spread), rel=1e-12)
+    assert comparison.logger_value == pytest.approx(logged.mean(), rel=1e-12)
+    assert comparison.difference == pytest.approx(value - logged.mean(), rel=1e-12)
+    paired = half(plan - (logged - logged.mean())) + 0.5 * correction
+    assert comparison.interval == pytest.approx(
+        (value - logged.mean() - paired, value - logged.mean() + paired), rel=1e-12
+    )
+
+
+def test_where_one_unit_s_state_and_noise_persist_the_cosines_cover() -> None:
+    """On one unit whose loop keeps 0.8 of its state a step and whose noise is AR(0.9), 200 windows
+    of four steps, 200 seeded logs, the logger fitted and the smoothing chosen on each: the windows'
+    own interval, ``evaluate_plan``'s, reads them as independent and covered 160; read across their
+    time by cosines, against ``t(13)``, 185. Over 1000 other such logs they covered 0.762 and
+    0.886, and the cosines' interval was 1.55 times as wide."""
+    a, horizon, windows = 0.9, 4, 200
+    x, u = _one_unit_windows(a, horizon, windows, 200, np.random.default_rng(97))
+    cosines = _cosine_rows(np.arange(windows))
+    schedule = AffineSchedule.open_loop(_one_unit_actions(a, horizon), 1)
+    plant = _scalar_plant(a, 1.0, SPREAD**2)
+    truth = _one_unit_truth(a, horizon)
+
+    independent, across = 0, 0
+    for xs, us in zip(x, u, strict=True):
+        low, high = evaluate_plan(
+            {"x": xs, "u": us},
+            schedule,
+            "pdis",
+            plant=plant,
+            cost=ONE_UNIT_COST,
+            model_error=0.0,
+            min_effective=10.0,
+        ).interval
+        independent += low <= truth <= high
+        reading = _evaluate_across_time(
+            xs,
+            us,
+            cosines,
+            schedule,
+            plant=plant,
+            cost=ONE_UNIT_COST,
+            logger=None,
+            smoothing=None,
+            model_error=0.0,
+            min_effective=10.0,
+        )
+        assert reading.degrees_of_freedom == 13.0
+        across += reading.interval[0] <= truth <= reading.interval[1]
+
+    assert across >= 172
+    assert independent <= 168
+    assert across - independent >= 15
 
 
 # ------------------------------------------------------------------------------ what is refused

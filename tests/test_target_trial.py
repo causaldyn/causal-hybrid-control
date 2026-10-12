@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import logging
 import math
+import warnings
 
 import numpy as np
 import pytest
 
 import chc
+from chc.decision import _linearised
+from chc.evaluation import AffineSchedule, PlanEvaluation, _evaluate_across_time
 
 DT = 0.1
 STEP, CHANNEL, NOISE = 0.5, 0.5, 1.0
@@ -176,55 +179,83 @@ def test_the_evaluation_refuses_a_time_zero_or_a_count_of_draws_it_cannot_read(
         prescription.evaluate(panel, n_resamples=1)
 
 
-def test_one_zones_windows_are_read_as_before_and_the_reading_is_deprecated(
+def _one_zone_by_hand(
+    prescription: chc.Prescription,
+    supply: np.ndarray,
+    incentive: np.ndarray,
+    starts: np.ndarray,
+    places: np.ndarray,
+    **keywords: object,
+) -> PlanEvaluation:
+    """One zone's windows starting at ``starts``, latest first, at ``places`` on the grid of
+    ``HORIZON`` periods, handed to the reading across time with cosines written out: ``sqrt(2 /
+    nu) cos(pi j (p + 1/2) / P)``, ``j`` from 1 to ``nu = floor(0.4 E^(2/3))``, over the ``P``
+    places the ``E`` windows span."""
+    plan = prescription.plan
+    assert plan is not None
+    problem = plan._problem
+    assert problem is not None
+    rows = starts[:, None] + np.arange(HORIZON + 1)
+    x, u = supply[0, rows][..., None], incentive[0, rows[:, :-1]][..., None]
+    count = int(0.4 * starts.size ** (2.0 / 3.0))
+    frequencies = np.arange(1, count + 1)[:, None]
+    span = int(places.max()) + 1
+    cosines = math.sqrt(2.0 / count) * np.cos(math.pi * frequencies * (places + 0.5) / span)
+    return _evaluate_across_time(
+        x,
+        u,
+        cosines,
+        AffineSchedule.open_loop(np.asarray(plan.actions), 1),
+        plant=_linearised(problem.model, x, u, problem.dt),
+        cost=problem.cost,
+        logger=keywords.get("logger"),  # type: ignore[arg-type]
+        smoothing=keywords.get("smoothing"),  # type: ignore[arg-type]
+        model_error=0.5,
+        min_effective=keywords.get("min_effective", 100.0),  # type: ignore[arg-type]
+    )
+
+
+def test_one_zones_windows_are_read_across_their_time_zeros_by_cosines(
     prescription: chc.Prescription, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """One zone's windows leave no zones to resample. Until 1.0 they are read as they were before
-    the bootstrap over units, as independent, and every call warns once, and logs it. The readings
-    are fe39f1b's ``Prescription.evaluate`` on this panel, before the bootstrap: the smoothing
-    chosen under a binding ``min_effective``, and the logger and the smoothing given. They are read
-    off the prescription fitted on the folds drawn since 0.13.0 and planned by the descent scaled
-    action by action, its line search asking a step for a third of the fall its gradient predicts.
-    Where the search took any fall, the plan ended 1.4e-15 below this one's cost with an action
-    1.1e-7 away, and they were 2.3627186497681754 and 2.381944098330016. Planned in the caller's
-    units, which stopped 1.0e-8 above this plan's cost where the plan's regret bound read 1.1e-8,
-    they were 2.3627057426597653 and 2.3819522705817366; on the folds before, 2.36221941740616 and
-    2.3818807810249143. Two zones are enough to draw."""
-    rows, _, _, _ = _market(1, seed=7, leave=False, periods=3601)
+    """One zone's windows leave no zones to resample, and they follow each other through its
+    supply. Each interval reads the windows' influences across their time zeros by 45 cosines,
+    against ``t(45)``, the plan's against the logger's too; no warning is raised. The values are
+    those read before, when the windows were taken as independent: the smoothing chosen under a
+    binding ``min_effective``, and the logger and the smoothing given. Two zones are enough to
+    draw."""
+    rows, supply, incentive, _ = _market(1, seed=7, leave=False, periods=3601)
     panel = chc.Panel.from_frame(rows, unit="zone", time="time", seed=0)
     logger = chc.AffinePolicy(np.zeros((1, 1)), np.zeros(1), np.eye(1))
-    calls = [
-        ({"min_effective": 400.0}, 2.3627186368821773, (2.078963075243828, 2.6464741985205267)),
-        (
-            {"logger": logger, "smoothing": 0.5},
-            2.381944086249068,
-            (2.0853371323596193, 2.678551040138517),
-        ),
+    starts = np.arange(3600 - HORIZON, -1, -HORIZON)
+    calls: list[tuple[dict[str, object], float]] = [
+        ({"min_effective": 400.0}, 2.3627186368821773),
+        ({"logger": logger, "smoothing": 0.5}, 2.381944086249068),
     ]
 
-    for keywords, value, interval in calls:
+    for keywords, value in calls:
         caplog.clear()
-        with (
-            caplog.at_level(logging.INFO, logger="chc.decision"),
-            pytest.warns(
-                DeprecationWarning,
-                match=r"treats the windows as independent and is too narrow\. From 1\.0 a panel of "
-                "one unit raises DecisionError; evaluate on a panel of several units instead",
-            ) as caught,
-        ):
-            reading = prescription.evaluate(panel, model_error=0.5, **keywords)
+        with caplog.at_level(logging.INFO, logger="chc.decision"), warnings.catch_warnings():
+            warnings.simplefilter("error")
+            reading = prescription.evaluate(panel, model_error=0.5, **keywords)  # type: ignore[arg-type]
         records = [r for r in caplog.records if getattr(r, "chc_event", "") == "one_unit"]
+        by_hand = _one_zone_by_hand(
+            prescription, supply, incentive, starts, starts // HORIZON, **keywords
+        )
 
-        assert [(w.category, w.filename) for w in caught] == [(DeprecationWarning, __file__)]
-        assert [(r.levelno, r.getMessage(), r.windows) for r in records] == [
-            (logging.WARNING, str(caught[0].message), 1200)
-        ]
+        assert [(r.levelno, r.windows, r.cosines) for r in records] == [(logging.INFO, 1200, 45)]
         assert reading.bootstrap is None
-        assert reading.versus_logger is None
         assert reading.logger_check is not None
         assert reading.certificate.samples == 1200
+        assert reading.degrees_of_freedom == 45.0
         assert reading.value == pytest.approx(value, rel=1e-9)
-        assert reading.interval == pytest.approx(interval, rel=1e-9)
+        assert reading.value == pytest.approx(by_hand.value, rel=1e-12, abs=0.0)
+        assert reading.interval == pytest.approx(by_hand.interval, rel=1e-12, abs=0.0)
+        assert reading.versus_logger is not None
+        assert by_hand.versus_logger is not None
+        assert reading.versus_logger.interval == pytest.approx(
+            by_hand.versus_logger.interval, rel=1e-12, abs=0.0
+        )
 
     two, _, _, _ = _market(2, seed=7, leave=False, periods=1801)
     drawn = prescription.evaluate(
@@ -232,3 +263,48 @@ def test_one_zones_windows_are_read_as_before_and_the_reading_is_deprecated(
     )
     assert drawn.bootstrap is not None
     assert drawn.bootstrap.units == 2
+    assert drawn.degrees_of_freedom is None
+
+
+@pytest.mark.parametrize(
+    ("time_zero", "starts", "places"),
+    [
+        (
+            "calendar",
+            np.r_[3597:1001:-3, 996:-1:-3],
+            np.r_[1199:333:-1, 332:-1:-1],
+        ),
+        (
+            "unit",
+            np.r_[996:-1:-3, 3597:1001:-3],
+            np.r_[332:-1:-1, 1199:333:-1],
+        ),
+    ],
+)
+def test_one_zones_windows_across_a_gap_keep_their_places_on_the_grid(
+    prescription: chc.Prescription, time_zero: str, starts: np.ndarray, places: np.ndarray
+) -> None:
+    """Period 1000 missing, the calendar drops the window that holds it and leaves its place empty;
+    cut back from each run's end, the later run's windows start at 1002 and the earlier's end at
+    999, each run's windows latest first. The runs are of unequal length, so the places are not
+    symmetric about their middle, where reading them in reverse would be a reflection, which the
+    cosines' squares cannot see."""
+    rows, supply, incentive, _ = _market(1, seed=7, leave=False, periods=3601)
+    kept = rows["time"] != 1000
+    panel = chc.Panel.from_frame(
+        {name: column[kept] for name, column in rows.items()}, unit="zone", time="time", seed=0
+    )
+
+    reading = prescription.evaluate(
+        panel,
+        model_error=0.5,
+        min_effective=400.0,
+        time_zero=time_zero,  # type: ignore[arg-type]
+    )
+    by_hand = _one_zone_by_hand(
+        prescription, supply, incentive, starts, places, min_effective=400.0
+    )
+
+    assert reading.certificate.samples == starts.size
+    assert reading.degrees_of_freedom == int(0.4 * starts.size ** (2.0 / 3.0))
+    assert reading.interval == pytest.approx(by_hand.interval, rel=1e-12, abs=0.0)

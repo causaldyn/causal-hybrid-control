@@ -1,6 +1,7 @@
 # ADR 0049 — A prescription evaluated as a target trial
 
-**Status:** proposed, 2026-10-03.
+**Status:** proposed, 2026-10-03. Amended by ADR 0083, 2026-10-12: windows of one unit are read
+across their time zeros by cosines, no longer deprecated, and not refused from 1.0.
 
 ## Context
 
