@@ -3165,9 +3165,11 @@ def _model_error(fit: CausalDynamicsFit, u_max: float) -> float:
     It is a *scale*, not coverage: ``channel_error`` is the robust standard error, root-mean over
     the entries and the log's states, calibrated on average but scattering from one log to the
     next, so one fit's tube is as wide as that fit's reading. The docstring of
-    :class:`chc.dynamics_id.CausalDynamicsFit` says by how much.
+    :class:`chc.dynamics_id.CausalDynamicsFit` says by how much. The error is per unit of a lever
+    and the action is in the levers' units, so their product reads the same in any units the levers
+    share; a box that admits no action but zero leaves the channel nothing to move, and no tube.
     """
-    return 0.0 if fit.channel_error is None else float(fit.channel_error) * max(u_max, 1.0)
+    return 0.0 if fit.channel_error is None else float(fit.channel_error) * u_max
 
 
 def _show(value: object) -> str:

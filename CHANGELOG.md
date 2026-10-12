@@ -7,6 +7,39 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A plan with a lever on the log's rule has a regret bound.** `plan_regret_bound` read the
+  cost's curvature off the Hessian over every action, and a plan keeps a column for a lever on
+  the log's rule of the state that nothing reads: its box has zero width, and the field and the
+  price read the rule's level. That column's row of the Hessian is zero, so its least eigenvalue
+  was 0 to rounding, -2.2e-16 on a log that set `u1 = -0.3 y`, and `prescribe` refused the bound:
+  `regret_bound` `inf` and `regret_status` `refused` on every such plan, and on each step of a
+  selection. The modulus is now the least eigenvalue of the Hessian's block on the actions the box
+  lets move, never below the whole Hessian's: a box of zero width admits no move, so the bound
+  needs no curvature along it. That plan's bound reads 3.6e-20, `diagnostic`, where its task cost
+  is 0.040. A plan whose every box has width keeps its bound to the bit. Since 0.14.4, and since
+  0.14.0 for a lever on a rule at no price.
+- **`prescribe`'s error tube reads the same in any units the levers share.** The tube's rate error
+  was the channel's standard error, per unit of a lever, times the largest action the box allows,
+  but times at least 1: a floor in the levers' units. With both levers logged in thousandths of
+  their units, their boxes and their prices with them, the tube ended at 2.2 where it ends at
+  0.0044, and certified none of the three steps it certifies. The floor is gone. A box that admits
+  no action but zero now leaves the tube unevaluated: the channel has nothing to move, and its
+  error adds none. A plan whose largest action is 1 or more is unchanged, to the bit. Since 0.5.0.
+- **A row's multiplier reads as zero or not the same in any units of the actions and of the
+  cost.** `CausalPlan.shadow_prices` and `CausalPlan.decision_weight` read a multiplier as zero
+  where the row's push on the free actions fell below 1e-3 of the larger of 1 and the gradient's
+  norm there: a floor in the cost's units per unit of an action. On a log that kept `u2 = 2 u1`
+  the three rows that keep it push 8.9e-3 to 1.7e-2; with the levers logged in thousands of their
+  units, or the state in thousandths, they push 8.9e-6 to 1.7e-5, read as zero, and the decision
+  weight counted three weakly active rows where it counts none. The share is now of the larger of
+  the gradient's norm on the free actions and the gradient's at the descent's guess, zeros clipped
+  to the box: the cost's slope before the plan moves, which stands in for a row's push where
+  every row's is zero. Where both are below 1 a smaller push now reads as a price, and where the
+  guess's is the larger and above 1 a larger push reads as zero. Since 0.7.0; the decision weight
+  since 0.8.0.
+
 ## [0.16.0] — 2026-10-11
 
 ### Added
