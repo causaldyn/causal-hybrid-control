@@ -92,7 +92,6 @@ from chc.plan import (
     PlanRegretBound,
     RegretStatus,
     RowPrice,
-    SafetyCertificate,
     _Rule,
     _Ruled,
     _RuledCost,
@@ -259,6 +258,10 @@ class Target:
 @dataclass(frozen=True)
 class Constraint:
     """A state that must stay inside a range --- what the safety certificate is priced against.
+
+    Each finite bound is a barrier of its own, ``x - lo`` or ``hi - x``, and a step is certified
+    where the condition of every bound holds, the far one's as well as the near one's: the state
+    approaches neither faster than the class-K gain times its distance to it.
 
     ``state`` may be the target column: the steered state is then bounded as well as steered, which
     is how a comfort band around a set point is stated. A target value outside its own bound is
@@ -570,10 +573,9 @@ class DecisionCertificate:
     certificate_status: CertificateStatus
     certified_horizon: int | None  # steps the Gronwall tube keeps inside ``tolerance``
     barrier_certified_steps: int | None  # leading prefix clearing the barrier; None if no bound
-    # The weakest step's confounding ceiling; None if unconstrained. At a step where two bounds tie
-    # (the midpoint of a two-sided bound) it is the weaker tied margin's ceiling, an upper bound on
-    # the joint one: each margin's is reached by its own best action, and no one action need reach
-    # both.
+    # The weakest step's confounding ceiling; None if unconstrained. With several bounds a step's
+    # is the weakest bound's ceiling, an upper bound on the joint one: each bound's is reached by
+    # its own best action, and no one action need reach them all.
     gamma_star: float | None
     # None when the effect is not identified: no solve was attempted, which is a third answer and
     # not one of the solver's three. Same convention as the certified-horizon fields above.
@@ -1559,9 +1561,9 @@ def prescribe(
             (:class:`chc.plan.BarrierConstraint`), rather than only price the plan against them.
             Off by default, so no existing schedule moves; the certificate reads the same audit
             either way, and it is still the verdict -- a solve stopped by its budget can come back
-            short of the condition, and where two bounds tie the solve holds only the first. The
-            regret bound then includes what holding cost, since it is still priced against the
-            box alone.
+            short of the condition. Each bound's condition is held on its own, as the audit reads
+            it. The regret bound then includes what holding cost, since it is still priced against
+            the box alone.
         budgets: what the plan may spend (:class:`chc.mpc.PeriodBudget`): at most ``amount`` in
             each ``period`` steps from the plan's first, a step spending ``weights @ u``, with each
             lever's spend per unit in the levers' order. A period the horizon cuts short gets its
@@ -2076,7 +2078,7 @@ def prescribe(
     )
 
     margins = _margins(states, constraints)
-    held = BarrierConstraint(_barrier(margins), gamma=gamma) if hold_constraints else None
+    held = BarrierConstraint(margins, gamma=gamma) if hold_constraints else None
 
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target, horizon, rule)
@@ -2110,9 +2112,10 @@ def prescribe(
         )
         if held is None:
             return solved
-        # The solve's own audit reads one margin at a tie. Greedy ranks candidates on, and the
-        # certificate reports, the audit of every tied margin, so the two cannot disagree.
-        audit = _certify(solved, model, margins, dt, gamma=gamma, u_max=u_max)
+        # The solve prices gamma_star at its own box's largest action, which a candidate of the
+        # greedy selection narrows. Greedy ranks candidates on, and the certificate reports, the
+        # audit at the whole box's, so the two cannot disagree.
+        audit = certify_safety(solved, model, margins, dt, gamma=gamma, u_max=u_max)
         return replace(solved, safety=audit)
 
     def regret(solved: CausalPlan) -> PlanRegretBound:
@@ -2151,9 +2154,9 @@ def prescribe(
     )
 
     if held is not None:
-        safety = plan.safety  # solve() already audited every tied margin
+        safety = plan.safety  # solve() already audited it at the whole box's u_max
     elif margins:
-        safety = _certify(plan, model, margins, dt, gamma=gamma, u_max=u_max)
+        safety = certify_safety(plan, model, margins, dt, gamma=gamma, u_max=u_max)
     else:
         safety = None
     gap = regret(plan)
@@ -3048,78 +3051,6 @@ class _Margin(eqx.Module):
 
 def _margin(position: int, bound: float, sign: float) -> _Margin:
     return _Margin(position, sign, jnp.asarray(bound, dtype=float))
-
-
-class _Barrier(eqx.Module):
-    """``h(x) = min_j m_j(x)``, safe where ``h >= 0``: the one barrier a held solve takes.
-
-    Where margins tie the minimum has no gradient, and the solve reads one anyway: the first tied
-    margin's, selected explicitly, because ``jnp.min`` averages tied gradients and the two margins
-    of a two-sided bound tie at its midpoint with opposite ones --- a zero gradient, which held
-    nothing there. The audit does not read this gradient; :func:`_certify` checks every tied margin.
-    """
-
-    margins: tuple[_Margin, ...]
-
-    def __call__(self, x: Array) -> Array:
-        stacked = jnp.stack([margin(x) for margin in self.margins])
-        return stacked[jnp.argmin(stacked)]
-
-
-def _barrier(margins: Sequence[_Margin]) -> _Barrier:
-    return _Barrier(tuple(margins))
-
-
-def _certify(
-    plan: CausalPlan,
-    model: Dynamics,
-    margins: Sequence[Callable[[Array], Array]],
-    dt: float,
-    *,
-    gamma: float,
-    u_max: float,
-) -> SafetyCertificate:
-    """:func:`chc.plan.certify_safety` for ``h = min_j m_j``, run on each margin as its own barrier.
-
-    Along a trajectory the right derivative of a minimum is the smallest of its tied terms', so the
-    condition on ``h`` holds at a step iff it holds for every margin at the minimum there, and the
-    step is certified only if each of them is. At a tie ``h`` has no gradient, and one margin's
-    would pass a state leaving through another: at the midpoint of a two-sided bound, a state moving
-    fast towards ``hi`` clears ``lo``'s condition. Where one margin is the minimum --- the ordinary
-    case --- this is the audit of ``h`` itself.
-
-    A tied step's ``gamma_star`` is the weakest of its margins', an upper bound rather than the
-    ceiling itself: each margin's is reached by its own best action, and no one action need reach
-    the smallest. The two agree when every tied margin holds with no action at all, where both are
-    infinite.
-    """
-    audits = [
-        certify_safety(plan, model, margin, dt, gamma=gamma, u_max=u_max) for margin in margins
-    ]
-    values = jnp.stack([audit.barrier_values for audit in audits])
-    tied = values == jnp.min(values, axis=0)  # no margin at all where a value is nan
-    passed = jnp.stack([audit.planned_certified for audit in audits])
-    certified = jnp.any(tied, axis=0) & jnp.all(passed | ~tied, axis=0)
-    guaranteed = jnp.stack([audit.guaranteed_derivative for audit in audits])
-    ceilings, rows = np.asarray([audit.step_gamma_star for audit in audits]), np.asarray(tied)
-    step_gamma_star = tuple(
-        float(np.min(column[on])) if on.any() else math.nan
-        for column, on in zip(ceilings.T, rows.T, strict=True)
-    )
-    return SafetyCertificate(
-        barrier_values=jnp.min(values, axis=0),
-        guaranteed_derivative=jnp.nanmin(jnp.where(tied, guaranteed, jnp.nan), axis=0),
-        required=jnp.max(jnp.stack([audit.required for audit in audits]), axis=0),  # -alpha * h
-        planned_certified=certified,
-        certified_steps=(
-            int(jnp.argmin(certified)) if not bool(jnp.all(certified)) else int(certified.shape[0])
-        ),
-        gamma_star=(
-            math.nan if any(math.isnan(g) for g in step_gamma_star) else min(step_gamma_star)
-        ),
-        step_gamma_star=step_gamma_star,
-        radius=max(audit.radius for audit in audits),
-    )
 
 
 def _rate(model: Dynamics, x0: Array, u_lo: Array, u_hi: Array) -> tuple[float, TubeRate]:

@@ -235,10 +235,11 @@ def test_held_constraints_rank_a_lever_that_cannot_hold_them_last(
 
 
 def test_held_constraints_rank_candidates_on_the_audit_the_certificate_reports() -> None:
-    """From the midpoint of a two-sided supply bound both margins are the minimum, and a held solve
-    enforces only the first there, so ``incentive``, the cheaper route to the target, leaves through
-    ``hi`` at the first step. The certificate audits every tied margin and clears no step of that
-    plan; ranked on the solve's own audit, greedy kept it anyway."""
+    """From the midpoint of a two-sided supply bound both margins are the least. A held solve that
+    read only the first of them let ``incentive``, then the cheaper route to the target, leave
+    through ``hi`` at the first step, and greedy, ranking on the solve's own audit, kept it. Each
+    bound now holds its own condition, so every candidate stays inside the band, the solve and the
+    certificate clear the same steps, and greedy keeps the cheapest of them."""
     boxes = {"incentive": 2.0, "boost": 2.0, "calm": 0.3}
 
     def run(keep: tuple[str, ...], max_levers: int | None) -> Prescription:
@@ -264,12 +265,14 @@ def test_held_constraints_rank_candidates_on_the_audit_the_certificate_reports()
             max_levers=max_levers,
         )
 
-    incentive, calm = run(("incentive",), None), run(("calm",), None)
-    assert incentive.plan is not None
-    assert calm.plan is not None
-    assert incentive.plan.task_cost < calm.plan.task_cost
-    assert incentive.certificate.barrier_certified_steps == 0
-    assert calm.certificate.barrier_certified_steps == 12
+    costs = {}
+    for name in boxes:
+        alone = run((name,), None)
+        assert alone.plan is not None
+        assert alone.certificate.barrier_certified_steps == 12
+        assert np.all(np.abs(np.asarray(alone.plan.trajectory)[:, 1]) <= 0.2)  # supply
+        costs[name] = alone.plan.task_cost
+    assert min(costs, key=costs.__getitem__) == "calm"
 
     selected = run(tuple(boxes), max_levers=1)
     assert selected.selection is not None

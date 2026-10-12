@@ -91,13 +91,32 @@ def _floor_rows(flat: Array, gamma: float, floor: float) -> Array:
     )
 
 
+def _ceiling_rows(flat: Array, gamma: float, ceiling: float) -> Array:
+    """A velocity ceiling ``ceiling - x[1]``'s condition at ``gamma``, as :func:`_floor_rows`."""
+    spread = confounding_robust_inflation(1.0, 0.0, gamma)
+    us = flat.reshape(HORIZON, 1)
+    xs = rollout(OSCILLATOR, X0, us, DT)[:-1]
+    drift = OMEGA**2 * xs[:, 0] + 2.0 * ZETA * OMEGA * xs[:, 1]
+    required = -ALPHA * (ceiling - xs[:, 1])
+    return jnp.concatenate(
+        [
+            drift - (1.0 - spread) * us[:, 0] - required,
+            drift - (1.0 + spread) * us[:, 0] - required,
+        ]
+    )
+
+
 def _exact_floor_optimum(
-    gamma: float, floor: float = FLOOR, penalty: Callable[[Array, Array], Array] | None = None
+    gamma: float,
+    floor: float = FLOOR,
+    penalty: Callable[[Array, Array], Array] | None = None,
+    ceiling: float | None = None,
 ) -> tuple[np.ndarray, float]:
     """The exact optimum under a velocity floor's condition at ``gamma``, and its objective.
 
     ``penalty(xs, us)`` joins the task cost, and must stay quadratic in the actions -- as a support
-    model's is on this linear plant -- for the Hessian taken at zero to be the program's own.
+    model's is on this linear plant -- for the Hessian taken at zero to be the program's own. A
+    ``ceiling`` adds its own condition to the floor's.
     """
 
     def value(flat: Array) -> Array:
@@ -108,7 +127,10 @@ def _exact_floor_optimum(
         return task + penalty(rollout(OSCILLATOR, X0, us, DT)[:-1], us)
 
     def condition(flat: Array) -> Array:
-        return _floor_rows(flat, gamma, floor)
+        rows = _floor_rows(flat, gamma, floor)
+        if ceiling is None:
+            return rows
+        return jnp.concatenate([rows, _ceiling_rows(flat, gamma, ceiling)])
 
     zero = jnp.zeros(HORIZON)
     hessian = np.asarray(jax.hessian(value)(zero))
@@ -153,6 +175,61 @@ def test_the_held_condition_lands_on_the_exact_optimum(gamma: float) -> None:
     assert (plan.task_cost - optimum) / optimum < GAP
 
 
+@pytest.mark.parametrize("unit", [1.0, 1e-6])
+@pytest.mark.parametrize("gamma", [1.0, 2.0])
+def test_a_band_holds_each_bound_s_condition_and_lands_on_the_exact_optimum(
+    gamma: float, unit: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Under the floor and a ceiling ``0.1 - v`` the velocity falls through the band's midpoint, and
+    the optimum binds the ceiling's condition on steps where the floor is the nearer bound, as it
+    brakes: the least of the two margins asks nothing of the ceiling there. Each barrier of the
+    tuple holds its own condition, and the log counts a step where any of them binds.
+
+    The ceiling in units a millionth of the floor's is held as in its own. Read in its own units,
+    the rounds' one back-off, a millionth of the floor's terms, was as large as the ceiling's own
+    terms, and the rounds stopped short with the ceiling held on 16 or 17 steps of 20."""
+    ceiling = 0.1
+
+    def velocity_ceiling(x: Array) -> Array:
+        return unit * (ceiling - x[1])
+
+    with caplog.at_level(logging.INFO, logger="chc.plan"):
+        plan = causal_plan(
+            OSCILLATOR,
+            X0,
+            COST,
+            DT,
+            HORIZON,
+            -U_MAX,
+            U_MAX,
+            barrier=BarrierConstraint(
+                (velocity_ceiling, _velocity_floor), alpha=ALPHA, gamma=gamma
+            ),
+        )
+    actions, optimum = _exact_floor_optimum(gamma, ceiling=ceiling)
+    floor_rows = np.asarray(_floor_rows(jnp.asarray(actions), gamma, FLOOR))
+    rows = np.asarray(_ceiling_rows(jnp.asarray(actions), gamma, ceiling))
+    slack = np.minimum(
+        np.minimum(floor_rows[:HORIZON], floor_rows[HORIZON:]),
+        np.minimum(rows[:HORIZON], rows[HORIZON:]),
+    )
+    binds = np.minimum(rows[:HORIZON], rows[HORIZON:]) <= 1e-9
+    speed = np.asarray(rollout(OSCILLATOR, X0, jnp.asarray(actions).reshape(-1, 1), DT))[:-1, 1]
+    assert np.any(binds & (speed + FLOOR < ceiling - speed))
+    [held] = [r for r in caplog.records if getattr(r, "chc_event", None) == "barrier"]
+    assert np.min(slack[slack > 1e-9]) > 1e-3  # the active set is unambiguous here
+    assert getattr(held, "active_steps", None) == int(np.sum(slack <= 1e-9))
+
+    assert plan.solver_status == "converged"
+    assert plan.safety is not None
+    assert plan.safety.certified_steps == HORIZON
+    for barrier in (_velocity_floor, velocity_ceiling):
+        own = certify_safety(plan, OSCILLATOR, barrier, DT, alpha=ALPHA, gamma=gamma)
+        assert own.certified_steps == HORIZON
+    assert plan.task_cost >= optimum * (1.0 - 1e-12)
+    assert (plan.task_cost - optimum) / optimum < GAP
+
+
 def test_the_log_counts_the_steps_the_exact_optimum_binds_on(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -177,6 +254,26 @@ def test_the_log_counts_the_steps_the_exact_optimum_binds_on(
     [held] = [r for r in caplog.records if getattr(r, "chc_event", None) == "barrier"]
     assert np.min(slack[slack > 1e-9]) > 0.1  # the active set is unambiguous at this floor
     assert getattr(held, "active_steps", None) == int(np.sum(slack <= 1e-9)) == 13
+
+
+def test_a_barrier_given_twice_counts_each_step_once(caplog: pytest.LogCaptureFixture) -> None:
+    """Both columns of a repeated barrier bind on the same steps: the log counts steps, not the
+    pairs of a step and a barrier, so it reads the optimum's 13, as the barrier given once does."""
+    with caplog.at_level(logging.INFO, logger="chc.plan"):
+        plan = causal_plan(
+            OSCILLATOR,
+            X0,
+            COST,
+            DT,
+            HORIZON,
+            -U_MAX,
+            U_MAX,
+            barrier=BarrierConstraint((_velocity_floor, _velocity_floor), alpha=ALPHA),
+        )
+    [held] = [r for r in caplog.records if getattr(r, "chc_event", None) == "barrier"]
+    assert getattr(held, "active_steps", None) == 13
+    assert plan.safety is not None
+    assert plan.safety.certified_steps == HORIZON
 
 
 @pytest.mark.parametrize("steps", [10_000, 5])
@@ -394,6 +491,52 @@ def test_a_barrier_constraint_refuses_what_certify_safety_could_not_price(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         BarrierConstraint(_velocity_floor, **kwargs)
+
+
+def test_a_tuple_is_audited_barrier_by_barrier_and_read_as_one() -> None:
+    """Each step reads every barrier: certified where all are, its value the least, its pair the
+    one with the least room, its ceiling the least; the radius is the widest, here the ceiling's,
+    whose gradient is twice the floor's."""
+    plan = causal_plan(OSCILLATOR, X0, COST, DT, HORIZON, -U_MAX, U_MAX)
+
+    def velocity_ceiling(x: Array) -> Array:
+        return 2.0 * (0.1 - x[1])
+
+    barriers = (_velocity_floor, velocity_ceiling)
+    kwargs = {"alpha": ALPHA, "gamma": 2.0, "u_max": U_MAX}
+    floor, ceiling = (certify_safety(plan, OSCILLATOR, b, DT, **kwargs) for b in barriers)
+    both = certify_safety(plan, OSCILLATOR, barriers, DT, **kwargs)
+
+    held = np.asarray(floor.planned_certified) & np.asarray(ceiling.planned_certified)
+    assert held.any()
+    assert not held.all()
+    np.testing.assert_array_equal(np.asarray(both.planned_certified), held)
+    assert both.certified_steps == min(floor.certified_steps, ceiling.certified_steps)
+    np.testing.assert_array_equal(
+        np.asarray(both.barrier_values),
+        np.minimum(np.asarray(floor.barrier_values), np.asarray(ceiling.barrier_values)),
+    )
+    rooms = [np.asarray(a.guaranteed_derivative - a.required) for a in (floor, ceiling)]
+    pick = np.where(rooms[0] <= rooms[1], 0, 1)
+    assert 0 < pick.sum() < HORIZON  # each barrier has the least room somewhere
+    for field in ("guaranteed_derivative", "required"):
+        values = np.stack([np.asarray(getattr(a, field)) for a in (floor, ceiling)])
+        np.testing.assert_array_equal(
+            np.asarray(getattr(both, field)), values[pick, np.arange(HORIZON)]
+        )
+    assert both.step_gamma_star == tuple(
+        min(a, b) for a, b in zip(floor.step_gamma_star, ceiling.step_gamma_star, strict=True)
+    )
+    assert both.gamma_star == min(floor.gamma_star, ceiling.gamma_star)
+    assert both.radius == ceiling.radius == 2.0 * floor.radius > 0.0
+
+
+def test_an_empty_tuple_of_barriers_is_refused() -> None:
+    with pytest.raises(ValueError, match="empty tuple of barriers"):
+        BarrierConstraint(())
+    plan = causal_plan(OSCILLATOR, X0, COST, DT, HORIZON, -U_MAX, U_MAX, steps=1)
+    with pytest.raises(ValueError, match="empty tuple of barriers"):
+        certify_safety(plan, OSCILLATOR, (), DT, u_max=U_MAX)
 
 
 def test_a_barrier_needs_a_box_that_admits_an_action() -> None:
