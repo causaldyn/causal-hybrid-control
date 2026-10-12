@@ -44,7 +44,7 @@ from chc.response import (
     Tanh,
     WeibullAdstock,
 )
-from chc.uncertainty import _tube
+from chc.uncertainty import _noise_tube, _tube
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64.
 if hasattr(jax, "enable_x64"):
@@ -351,7 +351,8 @@ def test_the_tube_prices_the_channel_s_error_at_the_largest_action_the_box_allow
 ) -> None:
     """The tube's rate error is the channel's standard error, per unit of a lever, times the
     largest action either box allows, ``2 units``: the tube RK4's recursion carries at the field's
-    rate, whatever the levers' units."""
+    rate, whatever the levers' units. The plant's own noise, in the state's units, adds its
+    radius on top, which the levers' units do not move."""
     result = _decide("free", levers_in=(units, units))
     plan = result.plan
     assert plan is not None
@@ -359,8 +360,13 @@ def test_the_tube_prices_the_channel_s_error_at_the_largest_action_the_box_allow
     assert problem is not None
     error = result.model_fit.channel_error
     assert error is not None
+    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
+    assert noise is not None
+    assert persistence is not None
     rate, _ = _rate(problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi))
-    expected = _tube([rate] * HORIZON, [error * 2.0 * units] * HORIZON, DT, "rk4")
+    expected = _tube([rate] * HORIZON, [error * 2.0 * units] * HORIZON, DT, "rk4") + _noise_tube(
+        np.asarray(rate), np.array([[noise**2]]), persistence, DT, HORIZON
+    )
     assert plan.uncertainty_tube is not None
     np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
 
