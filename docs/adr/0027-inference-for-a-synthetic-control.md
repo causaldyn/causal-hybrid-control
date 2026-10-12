@@ -108,7 +108,9 @@ evidence is in `~/.cache/chc-scratch/2026-09-30/ca2/`.
   the placebo rejected 27.8% at 5% and 42.4% at 10% (diff-diff's 28.7% and 43.2%). The interval
   covered 94.4% at 0.05 and 81.7% at 0.10, and was empty 17 times in 1000 at 0.10. Choosing on
   the fit breaks both tests' premises: the ranks are no longer exchangeable, and the residuals
-  before treatment are selected small.
+  before treatment are selected small. Abadie and Zhao (arXiv 2108.02196 v5, §3) state the same
+  for designs that select treated and control units by an optimality criterion: methods that
+  reassign treatment across units are not appropriate there.
 
 - **The conformal p-value is not monotone in the effect.** On a panel whose effect alternates
   between +10 and -10, the test accepts effects near +10 and near -10, at `p = 2/30`, and rejects
@@ -124,7 +126,9 @@ evidence is in `~/.cache/chc-scratch/2026-09-30/ca2/`.
 - **Per-period conformal intervals, in-time placebos, leave-one-out.** diff-diff has them; no
   consumer asks yet.
 - **Inference for a design that chose its treated unit.** Neither test holds there (above). A
-  designed test needs a reading its design justifies, which this does not provide.
+  designed test needs a reading its design justifies, which this does not provide. Abadie and
+  Zhao's is one: it permutes the estimated effects over blank periods, held out of the design, and
+  the periods after treatment.
 - **Covariates and predictor weights.** The synthetic control matches on the pre-period outcomes,
   weighted alike, as `chc.scm` always has.
 

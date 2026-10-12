@@ -2,10 +2,14 @@
 
 The Koopman idea: in a lifted feature space ``phi(x)`` the dynamics are approximately *linear*,
 ``phi(x') ~ A phi(x) + B u``. Fit ``A, B`` from transitions by least squares (EDMD); the nonlinear
-system becomes linear, so control is a fast, exact **discrete LQR** in the lifted space, not a
-gradient-descent MPC. This mirrors the CHC hybrid philosophy (a structured global model plus a
-correction); the modern, Residual-Koopman-MPC-lineage control backend. The
-dictionary is polynomial; the first ``state_dim`` features are the raw state, decoding is a slice.
+system becomes linear, so control is a fast **discrete LQR** in the lifted space, not a
+gradient-descent MPC. The LQR is exact for the linear surrogate, not for the plant: through a
+nonlinear dictionary the input of even a control-affine plant can enter the lift with a
+state-dependent gain, so a linear lift is misspecified there in general, and LQR or MPC on it
+carries no closed-loop guarantee for the plant (Strässer et al. 2026, Annual Reviews in Control
+61). This mirrors the CHC hybrid philosophy (a structured global model plus a correction); the
+modern, Residual-Koopman-MPC-lineage control backend. The dictionary is polynomial; the first
+``state_dim`` features are the raw state, decoding is a slice.
 """
 
 from __future__ import annotations

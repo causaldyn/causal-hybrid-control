@@ -17,9 +17,9 @@ zone:
 Each verdict is an e-process crossing a threshold: a mixture over constant bets of
 ``prod(1 + lam Y_t)``, with ``Y_t`` a decision's weighted contrast less the margin, scaled so that
 ``Y_t >= -1``. Only the baseline's weight needs a bound, and the logging design supplies it
-(Waudby-Smith et al. 2022, arXiv:2210.10768). Across zones, e-BH over e-values that freeze when
-their zone stops gathering keeps the false-deploy rate at every read (Wang, Dandapanthula and
-Ramdas 2025, arXiv:2502.08539).
+(Waudby-Smith et al. 2024, ACM/IMS Journal of Data Science 1(3), doi:10.1145/3643693). Across
+zones, e-BH over e-values that freeze when their zone stops gathering keeps the false-deploy rate
+at every read (Wang, Dandapanthula and Ramdas 2025, arXiv:2502.08539).
 
 What the guarantee needs, and the gate cannot check:
 

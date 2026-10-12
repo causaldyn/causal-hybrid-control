@@ -37,6 +37,14 @@ verifier checked it:
   - linearising a pinned lever's multiplier at the estimate gave 0.16–0.70 of Monte Carlo on a
     multi-lever plant.
 
+The weight is prior art. It is the model-task Hessian of Wagenmaker, Simchowitz and Jamieson (ICML
+2021): the Hessian in the parameter of the loss of the certainty-equivalent decision, whose trace
+against the inverse information an exploration gathers their task-optimal design minimises. It is
+also the Hessian of the application cost in application-oriented input design (Bombois et al.
+2006; Annergren et al. 2017), whose ellipsoid bounds the models an application can accept (Ebadat
+et al. 2014, arXiv 1403.6953, §3.1). What this ADR adds is the pinned levers' Gaussian tail, the
+weight averaged over the prior's sigma points, and the verdict to deploy, experiment or abstain.
+
 ## Decision
 
 - **`design_experiment(decision, prior, experiment, budget, *, uses, level, draws, seed)`** returns

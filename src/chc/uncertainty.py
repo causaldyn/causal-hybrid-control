@@ -1253,6 +1253,13 @@ def confounding_robust_inflation(cvar_upper: float, cvar_lower: float, gamma: fl
     (Maxima ``confounding_robust_cvar.mac``; Rocq ``msm_inflation_*``): ``0`` at ``Gamma=1`` (point
     ID), nonnegative, monotone in ``Gamma``. Dorn-Guo (2023); Oprescu et al., B-Learner (2023); Tan
     (2006).
+
+    For a continuous lever the same closed form is the sharp bound on the mean outcome at one dose
+    level under the continuous MSM (Jesson et al. 2022; Frauen, Melnychuk and Feuerriegel 2023,
+    Thm 1). It bounds a level, not a slope: a contrast of two levels is bounded by the upper bound
+    at one less the lower bound at the other (Frauen et al., Lemma 3). A channel radius spent as
+    ``radius * ||u||`` (:class:`ConfoundingRobustPenalty`) is a structural sensitivity model of its
+    own, not the MSM's bound.
     """
     # a nan passed `gamma < 1`, and an infinite Gamma read inf/inf, a nan half-width
     if not 1.0 <= gamma < math.inf:
@@ -1707,8 +1714,11 @@ def negative_control_gamma(
     The other half of calibration, and the half that can refute. On an outcome whose true effect is
     zero, any nonzero estimate is confounding, so the smallest ``Gamma`` that reconciles the two is
     a **lower bound on the confounding actually present**: assuming less than it is refuted by the
-    data rather than merely unappealing. Monotonicity of the MSM inflation in ``Gamma`` makes the
-    search a bisection, exact to ``tol``.
+    data rather than merely unappealing. That transfers to the outcome of interest only when the
+    control is U-comparable, confounded by the same unobserved causes (Lipsitch, Tchetgen Tchetgen
+    and Cohen 2010). A control confounded by more than the outcome overstates the outcome's
+    ``Gamma``, and one confounded by less understates it (Baitairian et al., arXiv 2510.16560).
+    Monotonicity of the MSM inflation in ``Gamma`` makes the search a bisection, exact to ``tol``.
 
     Returns ``inf`` when no ``Gamma`` reconciles the null -- the endpoint saturates at the extreme
     order statistic as ``Gamma -> inf``, so a sample whose values all share the mean's sign cannot

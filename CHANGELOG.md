@@ -168,6 +168,30 @@ still change).
   `influence=True`, the flag the caller had passed. It now names the unidentified channel. Since
   0.9.0.
 
+### Notes
+
+- **Public statements that the 2024–26 literature refuted or dated are corrected.** Each changed
+  sentence was checked against its source.
+  - `docs/why.md` called Delphic offline RL the one method that penalises the uncertainty hidden
+    confounding leaves. Robust fitted-Q iteration (Bruns-Smith and Zhou) and confounding-robust
+    DQN (Li, Zhang and Bareinboim 2025) do too. Its DoWhy row now says that DoWhy has found a
+    minimal valid set by Perković et al.'s generalised adjustment criterion since 0.13. Its note
+    on causal Bayesian optimisation names the nearest code, cCBO, which is not on PyPI.
+  - `negative_control_gamma` and the Γ page read a known-null outcome's `Γ` as a lower bound on
+    the confounding present. That holds for the outcome of interest only when the control is
+    U-comparable to it. A control confounded by more overstates its `Γ`, and one confounded by
+    less understates it.
+  - `confounding_robust_inflation` and the Γ page now say that for a continuous lever the CVaR
+    form is the sharp bound at one dose level (Jesson et al. 2022; Frauen et al. 2023), not on a
+    slope.
+  - `chc.koopman` called its LQR exact: it is exact for the linear surrogate, not for the plant.
+  - `chc.evaluation` called SCOPE-RL maintained, but it has had no release since 2023-07.
+  - `chc.gate` now cites the journal version of Waudby-Smith et al.
+  - ADRs 0011, 0012, 0014 and 0027 cite the prior art they lacked: the model-task Hessian and
+    application-oriented input design; the 2026 switchback designs; Bright, Delarue and Lobel's
+    Theorem 8; and Abadie and Zhao on optimised designs.
+  - ADR 0050's bound before planning holds at any floors and caps (Udell and Boyd, Theorem 1).
+
 ## [0.16.0] — 2026-10-11
 
 ### Added

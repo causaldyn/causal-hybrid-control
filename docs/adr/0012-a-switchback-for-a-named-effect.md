@@ -7,10 +7,16 @@
 `chc.gate` assumes no carryover, and `design_experiment` plans a one-shot decision. Neither says how
 to randomise a lever over time in a zone whose state remembers what the lever did. There the
 periods are not independent units, and which design is best depends on which effect is wanted.
-Switchback designs in the literature target the switchback average effect under a carryover of
-known order (Bojinov, Simchi-Levi and Zhao 2023). A controller needs specific effects instead: the
-channel `b` to plan with, the effect `tau_H` of holding the lever on for `H` periods, and the steady
-state.
+Switchback designs in the literature began with the switchback average effect under a carryover
+of known order (Bojinov, Simchi-Levi and Zhao 2023). By 2026 they also target other effects:
+Markov designs tuned to cumulative and lag-specific effects under a finite-order impulse response
+(Guo and Liang, arXiv 2606.28200), runs of random duration under finite carryover (Hu, arXiv
+2609.13698), switchbacks rerandomised for balance (Zeng et al., arXiv 2604.02489), and designs
+for a surrogate state that carries the past (Chen and Simchi-Levi, Management Science 2026). A
+controller needs specific effects of a state model: the channel `b` to plan with, the effect
+`tau_H` of holding the lever on for `H` periods, and the steady state. This is the state-model
+variant: a first-order state per zone, a design minimax over an interval of its persistence, and
+IV under measurement noise.
 
 The lab's switchback thread worked this out for a first-order state per zone,
 `x_{t+1} = a x_t + b u_t + eps_t`, and an independent verifier checked it with several CAS:

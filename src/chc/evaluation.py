@@ -58,9 +58,10 @@ independent, and a slowly mixing logger has fewer; the stationary interval reads
 freedom off the batches the weights actually used, so it widens where the certificate cannot see.
 The intervals are fixed-``n``, not anytime-valid.
 
-What maintained packages already do: SCOPE-RL has the sequential estimators, doubly robust and DICE
-among them, for gym environments. What none of them computes is the certificate, which is why this
-module exists.
+What packages already do: SCOPE-RL has the sequential estimators, doubly robust and DICE among
+them, for gym environments, and Open Bandit Pipeline the bandit ones. Neither is maintained: no
+release since SCOPE-RL 0.2.1 (2023-07) and OBP 0.5.7 (2023-04). What none of them computes is the
+certificate, which is why this module exists.
 """
 
 from __future__ import annotations
