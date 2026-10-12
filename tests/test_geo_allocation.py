@@ -19,7 +19,10 @@ import chc.allocation
 from chc.allocation import (
     MarginalReturnTarget,
     Totals,
+    _Group,
     _on_envelopes,
+    _priced,
+    _worths,
     allocate,
     allocate_geos,
     budget_for_geos,
@@ -773,6 +776,54 @@ def test_s_curves_under_fixed_geo_totals_carry_the_price_in_the_geos():
         alone = allocate(row, fixed[g], 1, lower=np.zeros(2), upper=np.full(2, 2.0))
         np.testing.assert_allclose(plan.spend[g], alone.spend, rtol=0.0, atol=1e-12)
         assert plan.geo_prices[g] == pytest.approx(alone.price, rel=1e-12, abs=0.0)
+
+
+def test_s_curves_under_geo_caps_that_spend_the_budget_carry_its_price_in_the_geos():
+    """Caps on the geos' totals that sum to the budget fix it as fixed totals do, though each
+    total may spend less: the budget's price is nothing, and each geo's the price
+    :func:`allocate` reads on its own plan."""
+    caps = np.array([1.6, 1.6])
+    plan = allocate_geos(S_GRID, 3.2, 1, **S_BOX, geo_totals=Totals(least=np.zeros(2), most=caps))
+    assert plan.price == 0.0
+    for g, row in enumerate(S_GRID):
+        alone = allocate(row, caps[g], 1, lower=np.zeros(2), upper=np.full(2, 2.0))
+        np.testing.assert_allclose(plan.spend[g], alone.spend, rtol=0.0, atol=1e-12)
+        assert plan.geo_prices[g] == pytest.approx(alone.price, rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("outcome", [1.0, 1e-20, 1e20])
+def test_prices_no_plan_meets_miss_least_where_the_plan_stands_nearest_the_excusing_end(outcome):
+    """Off a best plan no price meets every slope. Two rates under a total held at its most,
+    nothing charged a unit: 8 of a box of 10 on the steeper curve, 1 on the shallower. A price at
+    the steeper slope misses the shallower's, and that rate stands 1 from the floor that would
+    excuse the miss; a price at the shallower misses the steeper's, whose rate stands 2 from the
+    cap that would. Weighted by those distances the miss is least at the steeper slope,
+    ``100 / 81``, in any units of return."""
+    cells = (
+        Channel(ONE, MichaelisMenten(1.0), 100.0 * outcome),
+        Channel(ONE, MichaelisMenten(1.0), outcome),
+    )
+    worths = _worths(cells, np.zeros((0, 2)), 1)
+    held = _Group(np.arange(2), 0.0, 9.0, np.ones(2))
+    [price] = _priced(
+        worths, np.array([8.0, 1.0]), np.zeros(2), np.full(2, 10.0), [held], 1, 0.0, False
+    )
+    assert price == pytest.approx(outcome * 100.0 / 81.0, rel=1e-12, abs=0.0)
+
+
+def test_the_budget_s_price_nearest_nothing_stands_while_the_totals_prices_are_made_least():
+    """A plan that meets the conditions at a range of prices: geo 0's two rates at their cap and
+    their floor leave the budget's price anywhere from 0.5 to 1, and geo 1's rate inside its box
+    under a cap on the geo's total returns 3, the budget's price plus the cap's. The budget's price
+    is the end nearest nothing, 0.5, and the cap's the rest, 2.5, though a budget's price of 1
+    would leave the cap's less."""
+    cells = tuple(Channel(ONE, MichaelisMenten(1.0), size) for size in (121.0, 0.5, 12.0, 1.0))
+    worths = _worths(cells, np.zeros((0, 4)), 1)
+    rates = np.array([10.0, 0.0, 1.0, 0.0])
+    budget = _Group(np.arange(4), 11.0, 11.0, np.ones(4))
+    cap = _Group(np.array([2, 3]), 0.0, 1.0, np.ones(2))
+    prices = _priced(worths, rates, np.zeros(4), np.full(4, 10.0), [budget, cap], 1, 0.0, True)
+    np.testing.assert_allclose(prices, [0.5, 2.5], rtol=1e-12, atol=0.0)
 
 
 def test_a_marginal_target_on_s_curves_prices_a_total_that_binds_on_the_curves():
