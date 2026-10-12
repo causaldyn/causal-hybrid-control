@@ -55,6 +55,17 @@ still change).
 
 ### Fixed
 
+- **On S-shaped curves `allocate`'s price is what one more currency unit returns on the curves
+  at the plan, the same in any units and on any dependency.** It was read on the envelopes of the
+  box the search found the plan in, and the search cuts a channel at the plan's own rate, so both
+  halves hold the plan, each priced otherwise; which half's worth came out an ulp higher decided
+  the price. On three channels with carryover planned at 40, 95 and 15 a period, the price read
+  4.88, or 4.29 with spend in thousandths on the lowest dependencies, where one more unit returns
+  5.61 on the middle channel's curve. The price is now the steepest slope a period, on the curves,
+  of a channel below its cap: where a channel runs inside its box, its slope; where none does, the
+  return of one more unit, the lower end of the budget's prices, and 0 with every channel at its
+  cap. Plans and bounds are unchanged. Since 0.13.0.
+
 - **On a panel of one unit, `Prescription.evaluate` read its windows as independent, under an
   interval too narrow for them, and from 1.0 was to refuse them.** One unit's windows follow each
   other through its state and its noise, so their influences on the estimate persist. On simulated

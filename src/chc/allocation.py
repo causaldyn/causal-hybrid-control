@@ -45,7 +45,8 @@ reached: four equal Hill curves of slope 3 at three scales leave a gap of 0.1544
 **The price** is the budget's shadow price on the planned channels: the return one more currency
 unit of budget buys, spread the way the plan spends it. It is where the channels running inside
 their boxes meet; a channel at its cap returns more a unit and one at its floor less. On S-shaped
-curves it is read on the envelopes of the box the plan was found in.
+curves it is read on the curves at the plan, in the caller's box: the slope of the channel below
+its cap where one more unit returns the most, the same in whichever box the search found the plan.
 
 **A goal in place of a budget.** :func:`budget_for` finds the budget that meets a goal, and plans
 it: the least budget that gains a return (:class:`ReturnTarget`), the budget at which one more unit
@@ -305,8 +306,9 @@ class Allocation:
         bound: no plan in the box at the budget returns more on the channels; ``bound - worth``
             bounds the plan's shortfall from the best, and is ``0`` when every curve is concave. On
             S-shaped curves it is the largest bound :func:`allocate`'s search left.
-        price: the return on one more currency unit of budget, on the envelopes the plan was found
-            on.
+        price: the return on one more currency unit of budget: on concave curves the budget's
+            shadow price, on S-shaped curves read on the curves at the plan, where the unit goes to
+            the channel below its cap that returns the most a unit.
         budget: what the plan spends over its periods.
         idle: what the channels return over the same periods with nothing spent in the plan, the
             history's carryover alone.
@@ -1204,6 +1206,21 @@ class _Ending:
     unsolved: tuple[int, ...] = ()
 
 
+def _marginal(
+    worths: Sequence[_Worth], spend: np.ndarray, upper: np.ndarray, periods: int
+) -> float:
+    """The return one more currency unit of budget buys on the curves at ``spend``: the steepest
+    slope a period of a channel below its cap, where the unit returns the most, and 0 where every
+    channel is at its cap. At a best plan every channel inside its box has that slope, one at its
+    floor no steeper and one at its cap no shallower; where no channel is inside, the budget's
+    price is an interval, and this is its lower end, the return of one more unit, not of one
+    less."""
+    slopes = (
+        _slope(w, rate) for w, rate, cap in zip(worths, spend, upper, strict=True) if rate < cap
+    )
+    return max(slopes, default=0.0) / periods
+
+
 def _branch_and_bound(
     worths: tuple[_Worth, ...],
     lower: np.ndarray,
@@ -1231,22 +1248,26 @@ def _branch_and_bound(
     return: a node's split is each channel's rate at that price on its envelope over the box, the
     worth and the bounds are read less the charge, and ``target`` is not read. The scale of the
     tolerance is still the first node's bound in worth.
+
+    The price is ``charge``, or else the best plan's own (:func:`_marginal`), read on the curves
+    in the caller's box: a box's envelopes and its cut ends price the plan differently in each box
+    that holds it, and a cut at the plan's own rate puts it in two.
     """
 
     def solve(low: np.ndarray, high: np.ndarray, bounded: tuple[_Worth, ...]):
         if charge is None:
-            spend, price = _split(bounded, low, high, periods, target)
+            spend = _split(bounded, low, high, periods, target)[0]
             spent = 0.0
         else:
-            spend, price = _rates(bounded, low, high, periods, charge), charge
+            spend = _rates(bounded, low, high, periods, charge)
             spent = charge * periods * float(spend.sum())
         tops = np.array([_value(b, rate) for b, rate in zip(bounded, spend, strict=True)])
         values = np.array([_value(w, rate) for w, rate in zip(worths, spend, strict=True)])
-        return spend, price, float(tops.sum()) - spent, float(values.sum()) - spent, tops - values
+        return spend, float(tops.sum()) - spent, float(values.sum()) - spent, tops - values
 
     bounded = tuple(_bounded(w, a, b) for w, a, b in zip(worths, lower, upper, strict=True))
-    spend, price, bound, worth, gaps = solve(lower, upper, bounded)
-    best = (worth, spend, price)
+    spend, bound, worth, gaps = solve(lower, upper, bounded)
+    best = (worth, spend)
     charged = 0.0 if charge is None else charge * periods * float(spend.sum())
     scale = abs(bound + charged) or 1.0
     tolerance, floored = settings.tolerance(scale, _rounding(worths))
@@ -1270,17 +1291,18 @@ def _branch_and_bound(
         for floor, cap, child_low, child_high in halves:
             child = list(bounded)
             child[cut_at] = _bounded(worths[cut_at], floor, cap)
-            rates, at, top, value, excess = solve(child_low, child_high, tuple(child))
+            rates, top, value, excess = solve(child_low, child_high, tuple(child))
             nodes += 1
             if value > best[0]:
-                best = (value, rates, at)
+                best = (value, rates)
             if top - best[0] > tolerance:
                 heapq.heappush(
                     heap, (-top, nodes, child_low, child_high, tuple(child), rates, excess)
                 )
             else:
                 settled = max(settled, top)
-    worth, spend, price = best
+    worth, spend = best
+    price = _marginal(worths, spend, upper, periods) if charge is None else charge
     left = -heap[0][0] if heap else -np.inf
     bound = max(worth, settled, left)
     # a box was settled within the tolerance of a best plan that has only risen since, so a gap

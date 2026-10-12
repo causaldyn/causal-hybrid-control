@@ -24,6 +24,7 @@ from chc.allocation import (
     _bounded,
     _on_envelopes,
     _slope,
+    _split,
     _value,
     _Worth,
     _worths,
@@ -240,6 +241,66 @@ def test_a_cap_short_of_the_tangency_is_bounded_on_its_own_interval():
     assert plan.worth == pytest.approx(0.5 + 0.9 * 0.216 / 1.216, rel=1e-14, abs=0.0)
     assert plan.bound - plan.worth <= 1e-9 * plan.bound
     assert _on_envelopes(channels, 1.6, 1, *box).bound > plan.bound + 0.15
+
+
+@pytest.mark.parametrize(
+    ("scale", "coefficient", "budget", "upper", "price"),
+    [
+        # the second channel runs inside its box: 0.9 * 3 x^2 / (1 + x^3)^2 at x = 0.6
+        (1.0, 0.9, 1.6, 1.0, 0.9 * 3 * 0.36 / 1.216**2),
+        # the untied pair: the first at its cap, the second at its floor, where its slope is 0
+        (1.01, 1.0, 1.6, 1.6, 0.0),
+        # every channel at its cap: no unit more can be spent
+        (1.0, 0.9, 2.0, 1.0, 0.0),
+    ],
+)
+def test_on_s_curves_the_price_is_what_one_more_unit_returns_on_the_curves(
+    scale, coefficient, budget, upper, price
+):
+    """One more currency unit goes to the channel below its cap where it returns the most, and
+    returns that channel's slope on its curve at the plan."""
+    one = GeometricAdstock(0.0, length=1, normalized=False)
+    channels = (Channel(one, Hill(1.0, 3.0), 1.0), Channel(one, Hill(scale, 3.0), coefficient))
+    plan = allocate(channels, budget, 1, lower=np.zeros(2), upper=np.full(2, upper))
+    assert plan.price == pytest.approx(price, rel=1e-10, abs=0.0)
+
+
+S_CHANNELS = (
+    Channel(GeometricAdstock(0.3, length=6, normalized=True), Tanh(250.0), 1100.0),
+    Channel(DelayedAdstock(0.6, 1.5, length=8, normalized=True), Hill(110.0, 2.5), 900.0),
+    Channel(WeibullAdstock(1.2, 3.0, length=10, normalized=True), Hill(200.0, 3.0), 1400.0),
+)
+
+
+def test_a_plan_on_its_own_cut_is_priced_on_the_curves_not_by_either_half():
+    """The first box plans the middle channel at 95, inside its box, and the search cuts it there,
+    so both halves hold the plan, the channel at an end of each. Each half's envelopes price it
+    otherwise, 4.29 and 5.62, as the first box's do, 4.88, and which half's worth comes out an ulp
+    higher once decided the price. One more unit returns 5.61 on the curve, the price at every
+    rounding of the plan."""
+    plan = _plan(S_CHANNELS)
+    assert plan.boxes == 3
+    np.testing.assert_allclose(plan.spend, [LOWER[0], 95.0, LOWER[2]], rtol=1e-12, atol=0.0)
+    cut = plan.spend[1]
+    worths = _worths(S_CHANNELS, HISTORY, PERIODS)
+    halves = []
+    for low, high in ((LOWER[1], cut), (cut, UPPER[1])):
+        floors, caps = LOWER.copy(), UPPER.copy()
+        floors[1], caps[1] = low, high
+        envelopes = tuple(_bounded(w, a, b) for w, a, b in zip(worths, floors, caps, strict=True))
+        spend, price = _split(envelopes, floors, caps, PERIODS, BUDGET / PERIODS)
+        np.testing.assert_allclose(spend, plan.spend, rtol=1e-12, atol=0.0)
+        halves.append(price)
+    assert halves[1] - halves[0] > 0.2 * plan.price
+    slopes = []
+    for column in range(3):
+        step = 1e-4 * plan.spend[column]
+        up, down = plan.spend.copy(), plan.spend.copy()
+        up[column] += step
+        down[column] -= step
+        slopes.append((_worth(S_CHANNELS, up) - _worth(S_CHANNELS, down)) / (2 * step) / PERIODS)
+    assert plan.price == pytest.approx(slopes[1], rel=1e-7, abs=0.0)
+    assert max(slopes[0], slopes[2]) < plan.price
 
 
 def _brute(channels, budget, periods, lower, upper, history, points=4001) -> float:
