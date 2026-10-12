@@ -60,6 +60,9 @@ What the solution had to keep:
 
 ## Evidence
 
+The numbers below were re-measured on 0.17.0; every method picks the sets it picked in the first
+run.
+
 Costs and counts only: no wall time was taken. `scripts/bench_max_levers.py instances` plans every
 subset of each instance's levers through the public `prescribe`, the others pinned to `[0, 0]`,
 and compares greedy with the exhaustive best at every size short of all the levers. Four
@@ -74,12 +77,12 @@ best.
 
 | instance | size | exhaustive best | greedy | path | screen | swaps | backward |
 |---|---|---|---|---|---|---|---|
-| driver pool | 1 | boost `1.5526` | = | = | = | = | = |
-| | 2 | incentive, boost `1.2446` | = | = | = | = | = |
-| marketing mix, spend from zero | 1 | search `47.689` | = | social `53.180` | = | = | = |
-| | 2 | search, social `6.7048` | = | = | = | = | = |
-| saturation | 1 | wide `0.8947` | = | narrow_a `1.2423` | narrow_a `1.2423` | = | narrow_a `1.2423` |
-| | 2 | narrow_a, narrow_b `0.0500` | narrow_a, wide `0.1757` | = | narrow_a, wide `0.1757` | = | = |
+| driver pool | 1 | boost `1.5528` | = | = | = | = | = |
+| | 2 | incentive, boost `1.2442` | = | = | = | = | = |
+| marketing mix, spend from zero | 1 | search `42.458` | = | social `46.253` | = | = | = |
+| | 2 | search, social `6.9254` | = | = | = | = | = |
+| saturation | 1 | wide `0.8996` | = | narrow_a `1.2512` | narrow_a `1.2512` | = | narrow_a `1.2512` |
+| | 2 | narrow_a, narrow_b `0.0503` | narrow_a, wide `0.1786` | = | narrow_a, wide `0.1786` | = | = |
 
 The driver pool is `tests/test_lever_selection.py`'s plant; the marketing mix is `chc.mmm`'s case
 study with each channel's spend allowed down to zero. Over the six cells greedy finds the best set
@@ -88,8 +91,8 @@ in 5, the path in 4, the screen in 4, swaps in 6 and backward elimination in 5.
 The saturation plant — one state, three levers — is built for greedy to miss: two cheap levers whose
 boxes each stop short of the target, and a wider, dearer one that gets closest alone. Greedy takes
 the wide lever first, as the best single lever, and its best partner is then a cheap one, at
-`0.1757`; the two cheap levers together plan to `0.0500`, a relative excess for greedy of `2.52`.
-The step's regret bound, `0.381`, covers the gap, as it must. The path finds the cheap pair but
+`0.1786`; the two cheap levers together plan to `0.0503`, a relative excess for greedy of `2.55`.
+The step's regret bound, `0.387`, covers the gap, as it must. The path finds the cheap pair but
 enters a cheap lever first, so it misses at size 1 instead. The screen misses at size 1, because the
 path's first two-lever support leaves the wide lever out, and at size 2 it admits all three levers
 and repeats greedy. Backward elimination is greedy's mirror image, wrong at size 1 and right at
@@ -102,14 +105,14 @@ both. On two of them no lever lowers the cost, every set ties at the idle plan, 
 out. Over the 84 cells of the other 28, greedy finds the best set in all 84 — in all 28 at size 2
 and all 28 at size 3, where it could miss — and so do swaps and backward elimination. The screen
 finds it in 83 and the path in 69, skipping a size 6 times where two levers enter together to
-within its resolution; with no miss to repair, the two only break hits, 1 and 15. Nine of greedy's
+within its resolution; with no miss to repair, the two only break hits, 1 and 15. Six of greedy's
 step bounds are infinite, where the measured curvature of the fitted objective is negative and the
 bound declines to certify.
 
 A full greedy ranking spent `m(m + 1)/2` solves — 6 on each named plant, 10 on each random one —
 and its last step's plan was the unrestricted plan to the bit on every instance. The descent steps
-of those solves came to `2.16`–`6.09` times the unrestricted plan's single solve on the named
-plants, and `4.03`–`12.72`, median `6.02`, on the random ones.
+of those solves came to `1.17`–`2.92` times the unrestricted plan's single solve on the named
+plants, and `3.36`–`7.67`, median `5.05`, on the random ones.
 
 Without `max_levers` nothing moved: `scripts/bench_max_levers.py fingerprint` hashes four
 prescriptions — the driver pool with three levers, with a rate-limited lever under a priced bound,
@@ -159,7 +162,7 @@ checks each candidate's cleared prefix.
   it repaired the saturation miss, broke 2 hits on the named plants and 15 on the random ones, and
   skipped a size 6 times. The first lever to enter the path is the one that pulls hardest at the
   idle plan — the norm of the gradient on its column — and that is not the lever whose plan is
-  cheapest: on the marketing mix social pulls hardest, `34.7` against search's `26.5`, and search
+  cheapest: on the marketing mix social pulls hardest, `34.6` against search's `29.1`, and search
   alone plans cheaper. Nor is greedy impractical at these sizes: its cost is a known polynomial,
   `m(m + 1)/2` solves for a full ranking, not a search that can blow up. A screen earns its place
   when `m` solves per step become the bottleneck, and the instance where that happens is the one to
