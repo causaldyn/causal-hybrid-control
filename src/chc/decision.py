@@ -2115,7 +2115,8 @@ def prescribe(
     u_lo, u_hi = pin(
         jnp.array([lever.lo for lever in levers]), jnp.array([lever.hi for lever in levers])
     )
-    u_max = float(jnp.max(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))))
+    reach = jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))  # each lever's largest action, in its units
+    u_max = float(jnp.max(reach))
     caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
     rate = LinearConstraint.rate_limit(horizon, caps)
     relation_rows = tuple(
@@ -2135,7 +2136,9 @@ def prescribe(
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target, horizon, rule)
     lipschitz, tube_rate = _rate(model, start, u_lo, u_hi)
-    model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
+    model_error = (
+        0.0 if tolerance is None else _model_error(fit, np.asarray(reach, dtype=np.float64))
+    )
     # with no channel error nothing bounds the field the plan rolls out, and the noise alone would
     # switch on a tube that trusts it
     step_noise, step_persistence = (
@@ -3173,19 +3176,30 @@ def _slope_free_of_state(model: Dynamics) -> bool:
     return False
 
 
-def _model_error(fit: CausalDynamicsFit, u_max: float) -> float:
+def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     """Turn the channel's standard error into the per-step rate error the Gronwall tube wants.
 
-    ``channel_error`` is the scale of ``B_hat(x) - B(x)`` per entry at the log's states; the rate
-    error it induces is that times the largest action the box allows, which is what this returns.
+    ``channel_error`` is the scale of ``B_hat(x) - B(x)`` per entry at the log's states. Entry
+    ``(i, j)`` is in the states' units per unit of lever ``j``, and ``reach[j]``, the largest action
+    lever ``j``'s box allows, is in lever ``j``'s units: their product is the rate error that action
+    induces, in the states' units, whatever lever ``j``'s units are. This returns its root mean over
+    the channel's entries, read off each covariance ``channel_error`` is read off, the largest read
+    taken (ADR 0087). With one lever it is ``channel_error`` times the lever's largest action, bit
+    for bit; with levers in one unit whose boxes allow the same largest action, that to rounding.
+    Up to 0.16.0 it was ``channel_error`` times the largest action of any lever, which mixed the
+    levers' units: with one of two levers in units 1e3 or 1e-3 times its own, its box with it, the
+    tube moved 7 times wider and trusted no step. A lever whose box allows no action but zero adds
+    no error, and boxes that allow none but zero leave the channel nothing to move, and no tube.
+
     It is a *scale*, not coverage: ``channel_error`` is the robust standard error, root-mean over
     the entries and the log's states, calibrated on average but scattering from one log to the
     next, so one fit's tube is as wide as that fit's reading. The docstring of
-    :class:`chc.dynamics_id.CausalDynamicsFit` says by how much. The error is per unit of a lever
-    and the action is in the levers' units, so their product reads the same in any units the levers
-    share; a box that admits no action but zero leaves the channel nothing to move, and no tube.
+    :class:`chc.dynamics_id.CausalDynamicsFit` says by how much.
     """
-    return 0.0 if fit.channel_error is None else float(fit.channel_error) * u_max
+    if fit._lever_errors is None:
+        return 0.0
+    rates = fit._lever_errors * reach
+    return float(np.max(np.sqrt(np.mean(rates * rates, axis=1))))
 
 
 def _step_noise(
