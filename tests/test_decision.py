@@ -64,6 +64,7 @@ from chc.mpc import PeriodBudget
 from chc.panel import Panel, PanelError
 from chc.plan import CausalPlan, causal_plan, certify_safety
 from chc.residual import ControlAffineResidual
+from chc.uncertainty import _noise_tube, _tube
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
 # which jax 0.11 no longer has.
@@ -734,14 +735,16 @@ def test_the_tube_s_rate_error_reads_each_lever_at_its_own_largest_action() -> N
 
 def test_with_one_lever_the_tube_s_rate_error_is_as_it_was_to_the_bit() -> None:
     """One lever's error, read alone, is the channel's, so the tube's rate error is the channel's
-    standard error times the largest action the lever's box allows, as before, bit for bit."""
+    standard error times the largest action the lever's box allows, as before, bit for bit. Here
+    that action is 3, below zero, and the plan's tube carries it."""
+    horizon, dt = 4, 1.0
     result = prescribe(
         _growing_panel(),
-        levers=[Lever("u", lo=-1.0, hi=3.0)],
+        levers=[Lever("u", lo=-3.0, hi=1.0)],
         target=Target("x", value=0.5),
         adjustment=CausalGraph.from_edges([("w", "u"), ("w", "x"), ("u", "x")]),
-        horizon=4,
-        dt=1.0,
+        horizon=horizon,
+        dt=dt,
         tolerance=10.0,
         x0=jnp.zeros(1),
     )
@@ -750,6 +753,18 @@ def test_with_one_lever_the_tube_s_rate_error_is_as_it_was_to_the_bit() -> None:
     assert result.certificate.certified_horizon is not None
     for reach in (3.0, 0.7, 1e-3, 1e3):
         assert _model_error(fit, np.array([reach])) == fit.channel_error * reach
+    plan = result.plan
+    assert plan is not None
+    assert plan.uncertainty_tube is not None
+    problem = plan._problem
+    assert problem is not None
+    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
+    assert noise is not None
+    assert persistence is not None
+    rate, _ = _rate(problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi))
+    expected = _tube([rate] * horizon, [fit.channel_error * 3.0] * horizon, dt, "rk4")
+    expected += _noise_tube(np.asarray(rate), np.array([[noise**2]]), persistence, dt, horizon)
+    np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
 
 
 @pytest.mark.parametrize(

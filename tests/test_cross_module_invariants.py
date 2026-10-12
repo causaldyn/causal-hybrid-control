@@ -418,6 +418,36 @@ def test_the_tube_prices_each_lever_s_error_at_that_lever_s_largest_action(
     assert result.certificate.certified_horizon == _decide("free").certificate.certified_horizon
 
 
+def test_a_lever_the_plan_holds_adds_its_error_at_the_level_it_holds_it_at() -> None:
+    """``state``'s log sets ``u1`` from the state alone, and the plan holds that lever's column at
+    its mean logged level, 0.028: the tube prices ``u1``'s share of the channel's error at that
+    level, off each covariance, and ``u2``'s at 2, the largest action its box allows. Priced at
+    the box's largest action, as the channel's error was, the tube ended at 0.551 where it ends
+    at 0.549."""
+    result = _decide("state")
+    plan = result.plan
+    assert plan is not None
+    problem = plan._problem
+    assert problem is not None
+    lo, hi = np.asarray(problem.u_lo), np.asarray(problem.u_hi)
+    assert lo[0] == hi[0]
+    assert 0.02 < lo[0] < 0.03
+    errors = result.model_fit._lever_errors
+    assert errors is not None
+    assert errors.shape == (3, 2)
+    rates = errors * np.array([abs(lo[0]), 2.0])
+    error = float(np.max(np.sqrt(np.mean(rates * rates, axis=1))))
+    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
+    assert noise is not None
+    assert persistence is not None
+    rate, _ = _rate(problem.model, problem.x0, jnp.asarray(lo), jnp.asarray(hi))
+    expected = _tube([rate] * HORIZON, [error] * HORIZON, DT, "rk4") + _noise_tube(
+        np.asarray(rate), np.array([[noise**2]]), persistence, DT, HORIZON
+    )
+    assert plan.uncertainty_tube is not None
+    np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
+
+
 def test_a_plan_whose_every_box_is_pinned_has_no_regret() -> None:
     """Every action fixed by its box: no move is feasible, so the bound is 0, certified, whatever
     the cost's curvature."""

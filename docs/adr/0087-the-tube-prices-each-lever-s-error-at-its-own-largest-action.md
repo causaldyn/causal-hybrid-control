@@ -33,8 +33,8 @@ reads the problem in any units (ADR 0059), but its certificate read the units of
   `_parameter_size`. `channel_error` is computed as before, to the bit.
 - **The tube prices each lever's error at that lever's largest action.** `reach_j` is the largest
   action that lever `j`'s box allows, `max(|lo_j|, |hi_j|)`, in lever `j`'s units, after
-  `prescribe` holds the levers the log never moved at their logged levels. `e_rj reach_j` is in
-  the states' units. The rate error is
+  `prescribe` holds each lever the log never moved, or set from the state alone, at its mean
+  logged level. `e_rj reach_j` is in the states' units. The rate error is
 
   ```text
   eps = max_r sqrt( mean_j (e_rj reach_j)^2 ),
@@ -65,9 +65,10 @@ reads the problem in any units (ADR 0059), but its certificate read the units of
   `mean_j e_rj^2` is the mean over all entries, so each read is `channel_error`'s read times that
   action.
 - **What a lever adds.** A lever whose box allows no action but zero adds no error, but it counts
-  in the mean, as an entry of zero error does. A lever that the log never moved is held at its
-  logged level `a`, so it adds its column's error times `|a|`. Before, that column's error entered
-  `channel_error` and was priced at the largest action of any lever. A fit with no channel error
+  in the mean, as an entry of zero error does. A lever that the log never moved, or set from the
+  state alone, is held at its mean logged level `a`, so it adds its column's error times `|a|`.
+  Before, that column's error entered `channel_error` and was priced at the largest action of any
+  lever. A fit with no channel error
   has no lever errors: `eps` is 0 and the tube is not evaluated, as before. A free side gives
   `eps = inf`, and the tube is not evaluated, with the warning, as before.
 
