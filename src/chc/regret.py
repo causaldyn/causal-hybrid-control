@@ -28,8 +28,8 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.integrate import quad
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
-from scipy.optimize import brentq
-from scipy.special import psi
+from scipy.optimize import brentq, minimize
+from scipy.special import expit, psi
 
 from chc.network_causal import (
     ar1_innovations,
@@ -2715,6 +2715,75 @@ def _fold_weight_matrix(
     return q
 
 
+def _shifted_kyfan_bound(
+    q: NDArray[np.float64],
+    k_folds: int,
+    levels: Sequence[float] = (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7),
+) -> tuple[float, float]:
+    """``(shifted, plain)``: lower bounds on ``sum_f 1_f' Q 1_f`` over balanced ``K``-partitions.
+
+    ``plain`` is the Ky Fan bound (Donath-Hoffman 1973), ``(m/K)(1'Q1/m + sum_{j<K} lambda_j)``
+    with ``lambda`` the ascending eigenvalues of ``V'QV`` and ``V`` an orthonormal basis of the
+    mean-free subspace. ``shifted`` is the same bound on ``Q - D``, ``D = diag(u)``, plus
+    ``sum(u)``, maximised over ``u`` -- Boppana's (1987) diagonal shift, among the bisection
+    relaxations Poljak and Rendl (1995) compare. Each unit sits in exactly one fold, so the
+    same-fold matrix has unit diagonal and ``tr(QF) = tr((Q - D)F) + sum(u)`` for EVERY ``u``:
+    each shift gives a valid bound, and ``u = 0`` is the plain one
+    (``validation/fold_shifted_bound.mac``). The bound is concave in ``u`` and blind to a uniform
+    shift, so on a vertex-transitive ``Q`` -- a cycle, any circulant -- averaging over the
+    automorphisms shows the best shift is uniform, and the shifted bound IS the plain one.
+
+    The eigenvalue sum is ``max_nu (K-1) nu - sum_j (nu - lambda_j)_+``, nonsmooth wherever the
+    ``(K-1)``-th and ``K``-th smallest eigenvalues coincide -- at ``u = 0`` on a star or a barbell,
+    where L-BFGS on the exact bound stops at its first step. Replacing ``(.)_+`` by
+    ``t log(1 + exp(./t))`` makes it a smooth trace function of ``nu I - V'(Q - D)V``, jointly
+    concave in ``(u, nu)``, so one start is enough: the smoothing temperature is continued down
+    ``max|Q| * levels``. The smoothed value only steers ``u``; what is returned is the EXACT bound
+    at the final ``u``, and never less than ``plain``.
+    """
+    m = q.shape[0]
+    ones = np.ones(m)
+    basis = np.linalg.svd(np.ones((1, m)))[2][1:].T
+    rank = k_folds - 1
+
+    def exact(u: NDArray[np.float64]) -> float:
+        moved = q - np.diag(u)
+        low = np.linalg.eigvalsh(basis.T @ moved @ basis)[:rank]
+        return float(u.sum()) + (m / k_folds) * (float(ones @ moved @ ones) / m + float(low.sum()))
+
+    plain = exact(np.zeros(m))
+    if not 0 < rank < m - 1:
+        # one fold or singleton folds: the bound is the objective itself and no shift moves it
+        return plain, plain
+
+    def smoothed(z: NDArray[np.float64], t: float) -> tuple[float, NDArray[np.float64]]:
+        u, nu = z[:-1], z[-1]
+        moved = q - np.diag(u)
+        lam, vec = np.linalg.eigh(basis.T @ moved @ basis)
+        arg = (nu - lam) / t
+        value = float(u.sum()) + (m / k_folds) * (
+            float(ones @ moved @ ones) / m + rank * nu - t * float(np.logaddexp(0.0, arg).sum())
+        )
+        weight = expit(arg)
+        grad_u = 1.0 - (m / k_folds) * (1.0 / m + ((basis @ vec) ** 2) @ weight)
+        grad_nu = (m / k_folds) * (rank - float(weight.sum()))
+        return -value, -np.append(grad_u, grad_nu)
+
+    lam0 = np.linalg.eigvalsh(basis.T @ q @ basis)
+    z = np.append(np.zeros(m), 0.5 * (lam0[rank - 1] + lam0[rank]))
+    scale = float(np.abs(q).max()) or 1.0
+    for level in levels:
+        z = minimize(
+            smoothed,
+            z,
+            args=(scale * float(level),),
+            jac=True,
+            method="L-BFGS-B",
+            options={"maxiter": 3000, "gtol": 1e-10},
+        ).x
+    return max(exact(z[:-1]), plain), plain
+
+
 def _circulant_band(
     weights: NDArray[np.float64], tol: float = 1e-10
 ) -> tuple[NDArray[np.float64], int] | None:
@@ -2833,15 +2902,17 @@ class FoldDesign:
 
     ``objective`` is the partition-dependent part of the sandwich, the same-fold weighted 2-walk
     count ``sum_f 1_f' Q(x) 1_f`` -- ``Psi`` is affine in it with positive weight, so smaller is
-    better. ``lower_bound`` is the Ky Fan spectral bound (exact eigensolve, no relaxation error on
-    the bound side), and ``gap = (objective - lower_bound) / max(|lower_bound|, 1)``. When
-    ``exhaustive`` is True the returned fold is the global optimum regardless of the gap -- the
-    gap then measures the looseness of the spectral bound, not of the design.
+    better. ``lower_bound`` is the diagonally shifted Ky Fan bound and ``kyfan_bound`` the plain one
+    it never falls below (both an exact eigensolve, no relaxation error on the bound side), and
+    ``gap = (objective - lower_bound) / max(|lower_bound|, 1)``. When ``exhaustive`` is True the
+    returned fold is the global optimum regardless of the gap -- the gap then measures the
+    looseness of the spectral bound, not of the design.
     """
 
     fold: NDArray[np.int_]
     objective: float
     lower_bound: float
+    kyfan_bound: float
     gap: float
     exhaustive: bool
     route: Literal["enumeration", "banded-dp", "spectral-swap"] = "spectral-swap"
@@ -2886,9 +2957,15 @@ def optimal_fold_partition(
     Fiedler-style spectral rounding plus balanced-swap local search run from ``restarts`` starts;
     ``banded_exact=False`` forces that path so the search can be PRICED against the exact answer
     (:func:`fold_exactness_certificate` does exactly this). The certificate is then the Ky Fan bound
-    ``(m/K) (1'Q1/m + sum of the K-1 smallest eigenvalues of Q on the mean-free subspace)``,
-    which every balanced partition obeys. A large gap on the local-search path is an honest
-    "could not certify", not a silent success.
+    ``(m/K) (1'Q1/m + sum of the K-1 smallest eigenvalues of Q on the mean-free subspace)``
+    (Donath-Hoffman 1973), which every balanced partition obeys, tightened by the diagonal shift
+    of Boppana (1987): ``sum(u)`` plus the same bound on ``Q - diag(u)``, maximised over ``u``
+    (:func:`_shifted_kyfan_bound`). ``lower_bound`` is the shifted bound, ``kyfan_bound`` the
+    plain one. On a cycle they are equal. Off it the shift can close most of the bound's
+    looseness: on the 16-unit path at ``x = 0.01`` from ``4.40%`` to ``0.34%``, on the 80-unit
+    path the search's certified gap from ``5.82%`` to ``1.31%``, and on a star to zero within
+    ``1e-8``. It can also close little: ``3.31%`` to ``2.95%`` on the 16-unit path at ``x = 0.6``.
+    A large gap on the local-search path is an honest "could not certify", not a silent success.
 
     ``time_axis`` opts into the TWO-AXIS problem (Result 59). Left at ``None`` the design set is the
     ``m`` units and nothing changes. Given the panel length ``p`` it becomes the ``m*p``
@@ -2925,12 +3002,8 @@ def optimal_fold_partition(
         return float(q[same].sum())
 
     # Ky Fan lower bound: sum_f 1_f' Q 1_f = (m/K) tr(U'QU) over an orthonormal K-frame whose
-    # span contains the all-ones direction.
-    basis = np.linalg.svd(np.ones((1, m)))[2][1:].T
-    reduced = np.linalg.eigvalsh(basis.T @ q @ basis)
-    lower = (m / k_folds) * (
-        float(np.ones(m) @ q @ np.ones(m)) / m + float(reduced[: k_folds - 1].sum())
-    )
+    # span contains the all-ones direction -- on Q - diag(u), at the best shift u found.
+    lower, kyfan = _shifted_kyfan_bound(q, k_folds)
 
     size = m // k_folds
     best: NDArray[np.int_] | None = None
@@ -2958,6 +3031,7 @@ def optimal_fold_partition(
                 best, best_val = fold, val
     else:
         rng = np.random.default_rng(seed)
+        basis = np.linalg.svd(np.ones((1, m)))[2][1:].T
         fiedler = np.argsort(basis @ np.linalg.eigh(basis.T @ q @ basis)[1][:, 0])
         for trial in range(restarts):
             order = fiedler if trial == 0 else rng.permutation(m)
@@ -2985,6 +3059,7 @@ def optimal_fold_partition(
         fold=best,
         objective=best_val,
         lower_bound=lower,
+        kyfan_bound=kyfan,
         gap=float(gap),
         exhaustive=exhaustive,
         route=route,
@@ -3009,6 +3084,7 @@ class FoldHeuristicCurve:
     heuristic: Vector  # the same objective at the spectral-plus-swap design
     ratio: Vector  # heuristic / exact; 1.0 means the fallback found the optimum
     kyfan_gap: Vector  # (exact - Ky Fan bound) / |bound| -- the bound's own looseness
+    shifted_gap: Vector  # the same for the diagonally shifted bound the design reports
     worst_ratio: float
     ok: bool
 
@@ -3085,12 +3161,14 @@ class FoldExactnessCurve:
     exact: Vector  # global optimum from the banded dynamic program
     heuristic: Vector  # spectral rounding plus balanced swaps, forced with banded_exact=False
     kyfan: Vector  # the spectral lower bound
+    shifted: Vector  # the diagonally shifted bound; equal to kyfan on a circulant
     heuristic_shortfall: Vector  # (heuristic - exact) / exact -- how good the design is
     bound_looseness: Vector  # (exact - kyfan) / exact -- how loose the bound is at the optimum
     certified_gap: Vector  # (heuristic - kyfan) / |kyfan| -- what the fallback actually reports
     enumeration_match: float  # max |dp - enumeration| where both can run
     max_shortfall: float
     max_looseness: float
+    shift_gain: float  # max (shifted - kyfan) / kyfan: what the diagonal shift buys on a cycle
     gap_dominates_shortfall: bool  # the reported gap never under-states the true shortfall
     duality_residual: float  # max |internal - (1'Q1 - 2*cut)|
     cut_is_maximal: bool  # the min-internal design attains the MAX cut, on the enumerable grid
@@ -3135,10 +3213,20 @@ def fold_exactness_certificate(
     The structural gates are the reason the objective can be named at all. ``internal = 1'Q1 -
     2*cut`` with ``1'Q1`` partition-free, so **minimising the same-fold 2-walk mass is MAXIMISING
     the cut of** ``Q(x)`` -- a max-bisection, not the "minimum-weight balanced cut" Result 52 (a)
-    called it, and the distinction is not cosmetic: max-bisection has a constant-factor SDP
-    approximation and min-bisection has none. The design still keeps *adjacent* units together
-    (adjacency cut 6 of 12 on ``C_12``, against parity's 12), which is what made the min-cut
-    reading feel right: ``Q``'s edges are 2-walks, not edges.
+    called it, and the distinction is not cosmetic. Max-bisection has a 0.8776-approximation by
+    semidefinite programming (Austrin, Benabbas and Georgiou 2013), and under the Unique Games
+    Conjecture no polynomial-time algorithm approximates it beyond ``alpha_GW ~ 0.8786`` (Khot,
+    Kindler, Mossel and O'Donnell 2007 prove it for max-cut; two disjoint copies of a graph have a
+    maximum bisection of twice its maximum cut). For min-bisection no constant-factor
+    approximation is known: the best is ``O(log n)`` (Räcke 2008). These are statements about
+    the general problems; ``Q(x)`` is a restricted family of weights, and nothing here is a
+    hardness result for the fold design. The bound :func:`optimal_fold_partition` computes is the
+    eigenvalue bound of Donath and Hoffman (1973) with Boppana's (1987) diagonal shift, one of the
+    bisection relaxations Poljak and Rendl (1995) compare.
+
+    The design still keeps *adjacent* units together (adjacency cut 6 of 12 on ``C_12``, against
+    parity's 12), which is what made the min-cut reading feel right: ``Q``'s edges are 2-walks,
+    not edges.
 
     Cross-checked outside Python: polymake 4.15 maximises the same objective by exact rational LP
     over the convex hull of the 35 balanced cut vectors at ``m = 8`` and returns ``188/25``, so
@@ -3148,7 +3236,7 @@ def fold_exactness_certificate(
     hypersimplex at ``m = 8, 10, 12, 14`` and gets ``70, 252, 924, 3432`` -- exactly ``C(m, m/2)``,
     every one of them 0/1, so the enumeration's feasible set is complete.
     """
-    exact, heuristic, kyfan, reported = [], [], [], []
+    exact, heuristic, kyfan, shifted, reported = [], [], [], [], []
     for m in sizes:
         shells = cycle_shells(int(m), dmax)
         for x in decays:
@@ -3167,12 +3255,15 @@ def fold_exactness_certificate(
             )
             exact.append(best.objective)
             heuristic.append(fallback.objective)
-            kyfan.append(best.lower_bound)
+            kyfan.append(best.kyfan_bound)
+            shifted.append(best.lower_bound)
             reported.append(fallback.gap)
 
     exact_arr = np.asarray(exact)
     heuristic_arr = np.asarray(heuristic)
     kyfan_arr = np.asarray(kyfan)
+    shifted_arr = np.asarray(shifted)
+    gain = float(((shifted_arr - kyfan_arr) / kyfan_arr).max())
     shortfall = (heuristic_arr - exact_arr) / exact_arr
     looseness = (exact_arr - kyfan_arr) / exact_arr
     certified = np.asarray(reported)
@@ -3238,12 +3329,14 @@ def fold_exactness_certificate(
         exact=exact_arr,
         heuristic=heuristic_arr,
         kyfan=kyfan_arr,
+        shifted=shifted_arr,
         heuristic_shortfall=shortfall,
         bound_looseness=looseness,
         certified_gap=certified,
         enumeration_match=float(mismatch),
         max_shortfall=float(shortfall.max()),
         max_looseness=float(looseness.max()),
+        shift_gain=gain,
         gap_dominates_shortfall=bool(np.all(certified >= shortfall - 1e-12)),
         duality_residual=float(duality),
         cut_is_maximal=bool(maximal),
@@ -3255,6 +3348,7 @@ def fold_exactness_certificate(
             mismatch < 1e-9
             and float(shortfall.min()) > -1e-9
             and float(looseness.min()) > -1e-9
+            and gain < 1e-9
             and float(shortfall.max()) < 0.05
             and bool(np.all(certified >= shortfall - 1e-12))
             and maximal
@@ -3293,16 +3387,19 @@ def fold_heuristic_certificate(
     exactly where a design would be used and exactly where this comparison stops being available.
 
     Both arms use :func:`chc.network_causal.graph_shells`, so the exact arm is not a special case
-    of the cycle: it is the same objective the heuristic minimises, enumerated. ``ok`` asks only
-    that the fallback never *beats* the enumeration (which would mean one of them is wrong) and
-    that it stays within 1% of it; a larger shortfall is the finding, not a failure of the test.
+    of the cycle: it is the same objective the heuristic minimises, enumerated. ``ok`` asks that
+    the fallback never *beats* the enumeration (which would mean one of them is wrong), that it
+    stays within 1% of it -- a larger shortfall is the finding, not a failure of the test -- and
+    that the shifted bound stays under the optimum and over the plain one.
 
     The Ky Fan gap is reported beside it because the two are different quantities and conflating
     them is the easy mistake: ``ratio`` is how good the design is, ``kyfan_gap`` is how loose the
     *bound* is at the true optimum. A large Ky Fan gap with ``ratio == 1`` says the certificate is
-    weak, not the design.
+    weak, not the design. ``shifted_gap`` is the same looseness for the diagonally shifted bound
+    :func:`optimal_fold_partition` reports: at ``m = 12``, ``phi = 0.6`` it is zero to ``1e-8`` on
+    the star, which the plain bound misses by ``0.77%``, and equal to it on the cycle.
     """
-    names, exact, heuristic, gaps = [], [], [], []
+    names, exact, heuristic, gaps, shifted = [], [], [], [], []
     for name, adjacency in _named_topologies(m, n_random=n_random).items():
         shells = graph_shells(adjacency, dmax)
         best = optimal_fold_partition(shells, gammas, phi, lag=lag, seed=seed)
@@ -3321,20 +3418,28 @@ def fold_heuristic_certificate(
         names.append(name)
         exact.append(best.objective)
         heuristic.append(fallback.objective)
-        gaps.append(best.gap)
+        gaps.append((best.objective - best.kyfan_bound) / max(abs(best.kyfan_bound), 1.0))
+        shifted.append(best.gap)
 
     exact_arr = np.asarray(exact)
     heuristic_arr = np.asarray(heuristic)
     ratio = heuristic_arr / exact_arr
     worst = float(ratio.max())
+    kyfan_gap, shifted_gap = np.asarray(gaps), np.asarray(shifted)
     return FoldHeuristicCurve(
         names=tuple(names),
         exact=exact_arr,
         heuristic=heuristic_arr,
         ratio=ratio,
-        kyfan_gap=np.asarray(gaps),
+        kyfan_gap=kyfan_gap,
+        shifted_gap=shifted_gap,
         worst_ratio=worst,
-        ok=bool(np.all(ratio >= 1.0 - 1e-9) and worst <= 1.01),
+        ok=bool(
+            np.all(ratio >= 1.0 - 1e-9)
+            and worst <= 1.01
+            and np.all(shifted_gap >= -1e-12)
+            and np.all(shifted_gap <= kyfan_gap)
+        ),
     )
 
 
