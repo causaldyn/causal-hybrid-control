@@ -1,6 +1,7 @@
 # ADR 0027 — Inference for a synthetic control, owned
 
-**Status:** proposed, 2026-09-30.
+**Status:** proposed, 2026-09-30. ADR 0092, 2026-10-13, adds a reading for a design that chose
+its treated unit.
 
 ## Context
 

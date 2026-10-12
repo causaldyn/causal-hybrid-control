@@ -7,6 +7,27 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **A reading for a geo test whose design chose its treated unit** (*experimental*, ADR 0092).
+  `chc.scm.blank_period_inference(outcomes, treated_unit, n_pre, n_blank)` fits the synthetic
+  control on the periods before treatment less the last `n_blank`, which stay blank. Its p-value
+  ranks the post periods' mean absolute gap among every choice of as many periods from the blank
+  and post ones, enumerated exactly, as Abadie and Zhao's (arXiv 2108.02196 v5) does. Its
+  per-period intervals are split conformal from the blank gaps, at the finite-sample rank.
+  `synthetic_control_inference`'s placebo rejected a true null 27.8% of the time at 5% on such a
+  design.
+  - **Where the noise does not persist, it holds its level.** On factor panels of 19 donors with
+    15 fitting, 5 blank and 5 post periods, white-noise factors and errors, and the treated unit
+    the one fitted best, it rejected 4.4% at 5% (4000 panels; Abadie and Zhao's bound is 4.6-5%).
+    The in-space placebo rejected 23.5% on 400 such panels.
+  - **Errors that persist break it.** With AR(1) errors of coefficient 0.5, as in the bench's own
+    panels, it rejected 8.7%; at 0.8, 21.4%. Persistent factors did not, 4.8%. A design that chose
+    its unit on the blank periods too rejected 18.8%.
+  - **13 tests**, among them the p-value over every arrangement of the blank and post periods,
+    which takes each step of `1/|Π|` once, and each interval's coverage over every place its
+    period could take among the blank ones. Fourteen mutations caught.
+
 ## [0.17.0] — 2026-10-13
 
 ### Added

@@ -1,0 +1,117 @@
+# ADR 0092 — A designed test is read from the periods it left blank
+
+**Status:** proposed, 2026-10-13. Adds to ADR 0027, whose two tests stay as they are.
+
+## Context
+
+ADR 0027's two tests do not hold when a design chose the treated unit. A design that picks its
+test market chooses the unit its donors fit best. On the bench's factor panels, with that unit
+treated and no effect, the in-space placebo rejected 27.8% of the time at 5%. The conformal
+interval covered 81.7% at 0.10. The placebo needs the treated unit drawn at random. The conformal
+test needs the residuals before treatment to be like those after it, and the design selected them
+small.
+
+Abadie and Zhao (*Synthetic Controls for Experimental Design*, arXiv 2108.02196 v5, §3) give a
+reading that a design justifies. The weights fit on some periods before treatment, `E`. The other
+periods before treatment, `B`, stay blank: the weights never see them. The gaps of the treated
+unit from its synthetic control, over `B` and the post periods, are then compared.
+
+- **The test (their eq. 19).** The statistic is the mean absolute gap over the post periods. The
+  p-value is the share of the `C(T_B + T_post, T_post)` choices of `T_post` periods from `B` and
+  the post periods whose statistic is at least the observed one.
+- **Theorem 2.** Its conditions are a linear factor model, noise i.i.d. over time for each unit,
+  factors exchangeable over `B` and the post periods and independent of the noise, and a perfect
+  fit on the observed covariates. `chc.scm` uses no covariates, so the last condition is empty;
+  the fit on the outcomes in `E` need not be perfect. Then the gaps over `B` and the post periods
+  are exchangeable, and `alpha - 1/|Π| <= P(p <= alpha) <= alpha`, with `|Π|` the count of
+  choices.
+- **The interval (their eq. 20-21).** It is split conformal: each post period's gap, plus or minus
+  a quantile of the absolute gaps in `B`. Their Theorem 3 gives its coverage as `T_B` and `T_E`
+  grow.
+
+## Decision
+
+- **`chc.scm.blank_period_inference(outcomes, treated_unit, n_pre, n_blank, *, alpha=0.05)`**
+  (*experimental*) returns a `BlankPeriodInference`. Its fields are the `estimate` fitted on `E`
+  alone, the `blank_gaps`, the `p_value`, the per-period `intervals`, `alpha`, and the count of
+  `arrangements`. No existing function or default changes.
+- **`B` is the last `n_blank` periods before treatment.** Then a season or a trend separates `B`
+  from the post periods as little as the panel allows. The caller cannot choose other blank
+  periods. A free choice of `B` invites a choice made after seeing the data.
+- **The p-value is enumerated exactly.** The function refuses more than a million arrangements.
+  Abadie and Zhao allow a random sample of them; that would add a seed and a Monte Carlo error to
+  a test whose size is its point.
+- **A tie counts as a tie.** Two sums of `T_post` non-negative gaps that are equal in exact
+  arithmetic can differ by rounding. Sums within `T_post` units of roundoff of the largest count as
+  at least the observed one. This keeps the upper bound, which counts ties against the test.
+- **The interval uses split conformal's finite-sample rank.** The radius is the
+  `ceil((1 - alpha)(T_B + 1))`-th smallest absolute blank gap. It is infinite when that rank exceeds
+  `T_B`. Under exchangeability its coverage is at least `1 - alpha`, exactly `rank / (T_B + 1)`
+  without ties. Abadie and Zhao's eq. 20 takes the `ceil((1 - alpha) T_B)`-th. With 5 blank periods
+  that is the largest at every `alpha < 0.2`, and covers 5/6 = 83.3% whatever `alpha` asked for.
+  The product `(1 - alpha)(T_B + 1)` is rounded to nine decimals before the ceiling. Without that,
+  `0.3 * 10` reads `3.0000000000000004` and takes rank 4.
+
+## Consequences
+
+Measured by `scripts/bench_scm_inference.py blank` on the bench's panels: 19 donors, 20 periods
+before treatment and 5 after, `T_E = 15` and `T_B = 5`, so `|Π| = 252`. The factors and the errors
+are AR(1) with coefficient 0.5 unless stated. There are 4000 panels per case, and the treated unit
+is the one its donors fit best on `E` unless stated. Rates only, no timing. The diagnosis below
+ran from scratch scripts beside the bench, on the same panel generator.
+
+| case | rejects at 5% | at 10% | interval covers, `alpha = 0.20` |
+|---|---|---|---|
+| no effect | 8.7% (s.e. 0.4) | 15.3% | 79.6% |
+| no effect, unit chosen on all 20 periods | 18.8% | 31.2% | 67.1% |
+| no effect, unit drawn at random | 9.7% | 16.6% | 79.9% |
+| no effect, factors and errors white noise | 4.4% (s.e. 0.3) | 9.5% | 83.6% |
+| effect 1 | 19.7% | 29.9% | 79.0% |
+| effect 2 | 44.3% | 56.4% | 79.7% |
+| no effect, 10 blank periods, `|Π| = 3003` | 10.7% | 16.9% | 79.3% |
+
+- **Where Theorem 2's conditions hold, the test holds its level.** With white-noise factors and
+  errors, it rejected 4.4% at 5%. The bracket is [4.6%, 5%], 0.7 standard errors away. On the same
+  kind of panels, 400 of them, ADR 0027's placebo rejected 23.5% with the unit chosen on `E` and
+  28.2% with it chosen on all 20 periods.
+- **Persistent errors break it; persistent factors do not.** On the bench's own panels it
+  rejected 8.7% at 5%, against the placebo's 27.8%: better, not valid. A further 3000 panels per
+  case find the cause. With AR(1) errors and white-noise factors it rejected 9.2%. With AR(1)
+  factors and white-noise errors it rejected 4.8%. The rate grows with the errors' coefficient:
+  5.5% at 0.2, 8.7% at 0.5 and 21.4% at 0.8. The design adds little to it: with the unit drawn at
+  random it rejected 7.9% (errors AR, factors white). Three unused periods between `E` and `B`
+  left it at 8.9%, and 40 fitting periods at 8.4%. So the cause is not a leak of the fit into `B`.
+  It is the post periods' contiguity: under positive serial correlation the mean over five
+  adjacent periods varies more than the mean over five scattered ones.
+- **A design that looks at `B` breaks the test.** A unit chosen for its fit on all 20 periods has
+  blank gaps selected small. The test then rejected 18.8%.
+- **The interval needs `alpha >= 1/(T_B + 1)`.** With 5 blank periods every interval at 0.05 and
+  0.10 was unbounded. At 0.20 the intervals covered 83.6% where the noise is white, against the
+  exact 5/6. On the bench's panels they covered 79.6%. With 10 blank periods they covered 88.5% at
+  0.10, against 90.9% under exchangeability, with median width 5.1.
+- **The blank periods leave the fit.** The weights see 15 periods, not 20. The p-value moves in
+  steps of `1/|Π|`: 1/252 with 5 blank and 5 post periods, 1/6 with 1 blank period, so then no test
+  at 5% rejects.
+
+## Not built
+
+- **A remedy for persistent errors.** Permuting blocks of adjacent periods needs `B` many times
+  longer than the post period. Whitening the gaps first needs the errors' process, which the test
+  does not model. `chc.dynamics_id.persistence_check` (ADR 0064) reads persistence in a fitted
+  channel, not in a synthetic control's gaps. The docstring states the condition. Nothing in the
+  data checks it.
+- **A random sample of the arrangements** (above).
+- **Blank periods other than the last ones before treatment** (above).
+- **Abadie and Zhao's designs**, which choose treated and control units together as weighted
+  averages. `chc.scm` treats one unit; the caller does the design.
+- **Their approximate validity for fixed factors (Theorem OA.1).** It holds as `T_E` grows, at a
+  rate the bench's 15 periods do not reach.
+
+## Alternatives considered
+
+- **Abadie and Zhao's eq. 20 as printed.** Rejected: its coverage reaches `1 - alpha` only as
+  `T_B` grows, and with the 5 blank periods a geo test has it does not depend on `alpha` below 0.2.
+- **Placing the blank periods first, next to nothing after them.** Rejected: a trend or a season
+  then separates them from the post periods by the whole fitting window.
+- **A test that permutes all periods before treatment, as ADR 0027's conformal test does.**
+  Rejected: the design selected the residuals in `E` small, which is the failure this ADR answers.
