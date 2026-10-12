@@ -125,14 +125,19 @@ def misspecification_cost(
     the class held, 32 to 106 times the regret between the fits' plans.
 
     Raises:
-        ValueError: on a fit made without ``influence=True``, or one without each parameter's
-            scale (made by hand, or kept from a release before 0.15.1); two fits whose classes,
-            integrators, rows, clusters or periods differ, or that carry drivers, whose gain's
-            price needs the plan's forecast; a plan that was not made on ``reference``'s model;
-            and whatever
+        ValueError: on a fit whose channel is not identified, one made without
+            ``influence=True``, or one without each parameter's scale (made by hand, or kept from
+            a release before 0.15.1); two fits whose classes, integrators, rows, clusters or
+            periods differ, or that carry drivers, whose gain's price needs the plan's forecast; a
+            plan that was not made on ``reference``'s model; and whatever
             :meth:`chc.plan.CausalPlan.decision_weight` refuses.
     """
     for name, fit in (("reference", reference), ("alternative", alternative)):
+        if not fit.identified:
+            raise ValueError(
+                f"the {name} fit's channel is not identified, so it keeps no influence whatever "
+                "influence= said: the gate prices the difference between two identified fits"
+            )
         if fit.influence is None or fit.unmoved is None:
             raise ValueError(
                 f"the {name} fit carries no influence: fit both by fit_causal_residual with "

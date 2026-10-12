@@ -162,6 +162,11 @@ still change).
   to the bit. A supplied `modulus` is still the plain norm's. `gradient_norm` is now the scaled
   gradient's, so `unconstrained_bound` is `gradient_norm^2 / (2 modulus)` in the same norm
   (ADR 0086). Since 0.6.0.
+- **`misspecification_cost` refuses a fit whose channel is not identified by saying so.** A log
+  fitted with no adjustment set and no instrument leaves the channel unidentified, and the fit
+  keeps no influence whatever `influence=` asked; the gate refused it as a fit made without
+  `influence=True`, the flag the caller had passed. It now names the unidentified channel. Since
+  0.9.0.
 
 ## [0.16.0] — 2026-10-11
 

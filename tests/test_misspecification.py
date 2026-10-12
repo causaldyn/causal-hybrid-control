@@ -460,6 +460,21 @@ def test_fits_without_their_influence_are_refused() -> None:
             misspecification_cost(plan, bare, alternative)
 
 
+def test_a_fit_whose_channel_is_not_identified_is_refused_as_such() -> None:
+    """A log fitted with no adjustment set and no instrument leaves the channel unidentified, so
+    the fit keeps no influence even with ``influence=True``: the refusal names that, not the flag
+    the caller did pass."""
+    reference, alternative, plan = _case(4000, 7, 0.0, 0.0)
+    unidentified = fit_causal_residual(
+        _known, _log(4000, 7, 0.0), DT, influence=True, **{**FIT, "adjust_for": ()}
+    )
+    assert not unidentified.identified
+    for pair in ((unidentified, alternative), (reference, unidentified)):
+        with pytest.raises(ValueError, match="not identified") as refusal:
+            misspecification_cost(plan, *pair)
+        assert "influence=True" not in str(refusal.value)
+
+
 def test_a_fit_without_its_parameter_scale_is_refused() -> None:
     """A fit made by hand, or kept from before 0.15.1, carries ``unmoved`` without each
     parameter's scale on the log, which the gate reads ``unmoved``'s span at: it is refused as
