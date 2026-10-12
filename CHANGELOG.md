@@ -17,6 +17,17 @@ still change).
   rounds scale each condition to the largest barrier's before their one back-off and penalty read
   it, so a barrier in units a millionth of another's is held as in its own. One barrier plans and
   audits as before, bit for bit (ADR 0081).
+- **`CausalPlan.planned_cost_bias` states the planned cost's bias, with its sign, and the cost
+  corrected for it.** *Experimental.* A plan made on an estimated channel reads its cost on the
+  estimate; in expectation over the estimate's error it pays `tr(W S) - tr(J_ee S) / 2 - J_e .
+  E[e]` more on the plant, `W` the decision weight and `S` the error's covariance. The first term
+  is never negative, the second never positive where the cost is convex in the channel, so the
+  sign is the plan's own: on one step it reads high for `q b^2 / r` between 0.438 and 4.562 and
+  low outside. On a Monte Carlo of 4000 least-squares refits of a two-lever plant the bias read
+  0.01274 where the gaps averaged 0.01290 +- 0.00027; the optimism alone read 0.01552.
+  `chc.misspecification.planned_cost_bias(plan, fit)` reads `S` off the fit's influence, the
+  drift's error included. Both refuse a plan whose active set moves with the error and a missing
+  covariance (ADR 0088).
 
 ### Changed
 

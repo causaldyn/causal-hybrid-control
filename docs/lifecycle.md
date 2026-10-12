@@ -58,6 +58,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   channel costs the plan, to second order: `W`, the Hessian of its regret in the channel's entries.
   Its entries are the ones the drift monitor watches, so a radius or a detected move can be priced
   in the plan's own cost.
+- **`CausalPlan.planned_cost_bias()`** (*experimental*). How far the plan's own cost reads from
+  what it pays the plant, in expectation over the channel's error, with its sign, and the cost
+  corrected for it; `chc.misspecification.planned_cost_bias` reads the error off a fit's influence.
 - **`minimax_action`.** The robust action over an identified interval, minimising the worst cost
   or the worst regret. See [`chc.regret`](api/regret.md).
 - **The case studies**, each one decision from its logs to a plan:
