@@ -7,6 +7,25 @@ still change).
 
 ## [Unreleased]
 
+### Changed
+
+- **`prescribe`'s error tube now carries the plant's own noise, so `certified_horizon` and
+  `trustworthy_steps` count the steps the plant itself stays inside `tolerance`.** The tube
+  carried the channel's standard error alone: the drift of a plant with no noise, which no plant
+  is. On 600 one-unit logs shaped like the BOPTEST case's, it read 0.051 K one step ahead, where
+  the plant's error one step ahead reached 0.16 to 0.22 K at 95 %. The plant was inside it at the
+  first step on 40 % of draws, and the certificate trusted 6 to 13 of 16 steps on nine logs in
+  ten, where the plant's error stays within the tolerance of 0.5 K for 2 or 3. The tube now adds
+  the radius that holds the plan's one-step error on the log at each step with probability 0.95.
+  That error is read off the fit's defect with its lag-1 correlation within units, and carried
+  through the field's rate. On the same logs the plant is inside the tube at the first step on
+  97 % to 99 % of draws, and the certificate trusts 1 or 2 steps, 3 at most. The quickstart's
+  plan is trusted for 1 week, not 15; its plant stays within the tolerance for 3. The certificate
+  reports the noise as `tube_noise` and `tube_persistence`, in the report and in `to_json()`.
+  `causal_plan` and `RecedingHorizon` take it as `noise` and `noise_persistence`; both default
+  to zero, which leaves every tube as it was. `CausalDynamicsFit.defect` keeps the defect row by
+  row (ADR 0080). Since 0.5.0.
+
 ## [0.16.0] — 2026-10-11
 
 ### Added

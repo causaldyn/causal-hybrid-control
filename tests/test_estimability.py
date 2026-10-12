@@ -200,7 +200,9 @@ def test_a_lever_set_from_the_state_follows_that_rule(policy, rule) -> None:
     certificate = result.certificate
     assert (certificate.estimability, certificate.first_loaded_step) == ("held_to_log", None)
     assert certificate.rule_levers == certificate.unmoved_levers == ("u1",)
-    assert certificate.trustworthy_steps == 3
+    # the confounder, adjusted for and not forecast, moves y by 0.15 a step: the tube that holds
+    # that noise passes the tolerance of 0.5 at the third step (ADR 0080)
+    assert certificate.trustworthy_steps == 2
     schedule = result.schedule
     assert schedule.rules == ("u1",)
     assert result.plan is not None

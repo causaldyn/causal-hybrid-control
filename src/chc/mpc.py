@@ -22,7 +22,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from chc.control import Bound, LinearConstraint, broadcast_box, projected_gradient_control
 from chc.cost import QuadraticCost
@@ -223,6 +223,8 @@ class RecedingHorizon:
     lam_unc: float = 0.0
     lipschitz: float = 0.0
     model_error: float = 0.0
+    noise: ArrayLike = 0.0
+    noise_persistence: float = 0.0
     tolerance: float = float("inf")
     steps: int = 10_000
     constraints: Sequence[LinearConstraint] = ()
@@ -270,6 +272,8 @@ class RecedingHorizon:
             lam_unc=self.lam_unc,
             lipschitz=self.lipschitz,
             model_error=self.model_error,
+            noise=self.noise,
+            noise_persistence=self.noise_persistence,
             tolerance=self.tolerance,
             steps=self.steps,
             constraints=constraints,

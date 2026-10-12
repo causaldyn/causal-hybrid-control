@@ -24,11 +24,19 @@ tube one step ahead of the call the case made. Run it once under each library, i
     rerun   The rerun's call on its held forecast: the same, the band's upper edge 24 C held,
             the outdoor air and the sun as drivers in the drift, 21 C at every step.
     ratio   Two runs' tubes one step ahead, log by log, the first over the second, per cell.
+    cover   The plant's own error against the tube: on each log, the call (--call, first by
+            default), then the plant run on from the log's last row under the plan's actions,
+            --draws times, its noise going on from the log's, the weather past the log drawn on
+            from its own. Per cell: the certificate's trusted steps; the share of draws inside the
+            tube at each step, averaged over the logs, with its standard error across them; the
+            95% quantile of the plant's error at each step, pooled over the logs and the draws, and
+            the steps it stays within the tolerance, which is what the plant's error allows.
 
 Run: JAX_ENABLE_X64=1 JAX_PLATFORMS=cpu uv run python scripts/bench_boptest_tube.py first > new.json
      PYTHONPATH=<a checkout of 7796c69>/src JAX_ENABLE_X64=1 JAX_PLATFORMS=cpu \
          python scripts/bench_boptest_tube.py first > old.json
      python scripts/bench_boptest_tube.py ratio new.json old.json
+     JAX_ENABLE_X64=1 JAX_PLATFORMS=cpu uv run python scripts/bench_boptest_tube.py cover > c.json
 """
 
 from __future__ import annotations
@@ -40,7 +48,7 @@ from typing import Any
 
 import numpy as np
 
-ROWS, DT, SUBSTEPS = 960, 0.5, 6
+ROWS, DT, SUBSTEPS, HORIZON, TOLERANCE = 960, 0.5, 6, 16, 0.5
 CELLS = ("one,0.0", "one,0.5", "one,0.9", "one,0.99", "slab,0.0", "slab,0.9")
 EDGES = (
     ("outdoor", "modulation"),
@@ -53,28 +61,63 @@ EDGES = (
 )
 
 
-def weather(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    t = np.arange(ROWS + 1)
+def weather(
+    rng: np.random.Generator, more: np.random.Generator | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The log's ROWS + 1 points of weather, and with ``more`` the plan's steps past the log's last
+    row too, drawn from ``more`` so that the log's own points are the same either way."""
+    logged = ROWS + 1
+    size = logged if more is None else max(logged, ROWS - 1 + HORIZON)
+    t = np.arange(size)
     hour = (t % 48) / 2.0
     day = t // 48 + int(rng.integers(0, 7))
-    synoptic = np.empty(ROWS + 1)
+    synoptic = np.empty(size)
     phi = np.exp(-DT / 36.0)
     synoptic[0] = rng.normal(0.0, 3.0)
-    for i in range(1, ROWS + 1):
+    for i in range(1, logged):
         synoptic[i] = phi * synoptic[i - 1] + rng.normal(0.0, 3.0 * np.sqrt(1 - phi**2))
+    clearness = rng.uniform(0.15, 1.0, size=day[:logged].max() + 1)
+    if more is not None:
+        for i in range(logged, size):
+            synoptic[i] = phi * synoptic[i - 1] + more.normal(0.0, 3.0 * np.sqrt(1 - phi**2))
+        later = more.uniform(0.15, 1.0, size=day.max() + 1 - clearness.size)
+        clearness = np.concatenate([clearness, later])
     outdoor = 4.0 + 2.5 * np.sin(2 * np.pi * (hour - 9.0) / 24.0) + synoptic
-    clearness = rng.uniform(0.15, 1.0, size=day.max() + 1)[day]
-    solar = 0.25 * clearness * np.clip(np.sin(np.pi * (hour - 8.5) / 8.0), 0.0, None)
+    solar = 0.25 * clearness[day] * np.clip(np.sin(np.pi * (hour - 8.5) / 8.0), 0.0, None)
     solar[(hour < 8.5) | (hour > 16.5)] = 0.0
     occupied = ((day % 7) >= 5) | (hour < 7.0) | (hour >= 20.0)
     return outdoor, solar, np.where(occupied, 21.0, 15.0)
 
 
-def make_log(rng: np.random.Generator, kind: str, rho: float) -> dict[str, np.ndarray]:
-    outdoor, solar, bound = weather(rng)
+def advance(
+    zone: float, floor: float, u: float, noise: float, kind: str, weather: tuple[Any, Any, Any]
+) -> tuple[float, float]:
+    """The plant over one half-hour, from ``(zone, floor)`` under ``u``, the weather
+    ``(outdoor, solar, occupied)`` held."""
+    outdoor, solar, occupied = weather
+    for _ in range(SUBSTEPS):
+        gains = -0.03 * (zone - outdoor) + 2.0 * solar + 0.1 * occupied
+        if kind == "one":
+            zone += DT / SUBSTEPS * (gains + (1.2 - 0.025 * zone) * u + noise)
+        else:
+            to_floor = 2.4 * (2.0 - 0.05 * floor) * u - 0.6 * (floor - zone)
+            zone, floor = (
+                zone + DT / SUBSTEPS * (gains + 0.25 * (floor - zone) + noise),
+                floor + DT / SUBSTEPS * to_floor,
+            )
+    return zone, floor
+
+
+def make_log(
+    rng: np.random.Generator, kind: str, rho: float, more: np.random.Generator | None = None
+) -> tuple[dict[str, np.ndarray], tuple[tuple[float, float, float], tuple[np.ndarray, ...]]]:
+    """The log, and the world past it: the plant's zone, floor and noise as its last row starts,
+    and the weather, with ``more`` drawn on past the log."""
+    outdoor, solar, bound = weather(rng, more)
     occupied = (bound > 18.0).astype(float)
     zone, floor, noise, level = 19.0, 22.0, rng.normal(0.0, 0.18), 0.0
     rows: dict[str, list[float]] = {name: [] for name in ("zone", "modulation")}
+    last = (zone, floor, noise)
     for i in range(ROWS):
         if i % 4 == 0:
             level = rng.normal(0.0, 0.12)
@@ -82,27 +125,20 @@ def make_log(rng: np.random.Generator, kind: str, rho: float) -> dict[str, np.nd
         u = float(np.clip(raw, 0.0, 1.0))
         rows["zone"].append(zone)
         rows["modulation"].append(u)
+        last = (zone, floor, noise)
         noise = rho * noise + np.sqrt(1.0 - rho**2) * rng.normal(0.0, 0.18)
-        for _ in range(SUBSTEPS):
-            gains = -0.03 * (zone - outdoor[i]) + 2.0 * solar[i] + 0.1 * occupied[i]
-            if kind == "one":
-                zone += DT / SUBSTEPS * (gains + (1.2 - 0.025 * zone) * u + noise)
-            else:
-                to_floor = 2.4 * (2.0 - 0.05 * floor) * u - 0.6 * (floor - zone)
-                zone, floor = (
-                    zone + DT / SUBSTEPS * (gains + 0.25 * (floor - zone) + noise),
-                    floor + DT / SUBSTEPS * to_floor,
-                )
-    return {
+        zone, floor = advance(zone, floor, u, noise, kind, (outdoor[i], solar[i], occupied[i]))
+    log = {
         "zone": np.asarray(rows["zone"]),
         "modulation": np.asarray(rows["modulation"]),
         "outdoor": outdoor[:ROWS],
         "solar": solar[:ROWS],
         "bound": bound[:ROWS],
     }
+    return log, (last, (outdoor, solar, occupied))
 
 
-def read(log: dict[str, np.ndarray], call: str, seed: int) -> dict[str, Any]:
+def prescription(log: dict[str, np.ndarray], call: str, seed: int) -> Any:
     import jax.numpy as jnp
 
     from chc import CausalGraph, Lever, Panel, Target, prescribe
@@ -115,10 +151,10 @@ def read(log: dict[str, np.ndarray], call: str, seed: int) -> dict[str, Any]:
     )
     common: dict[str, Any] = {
         "levers": [Lever("modulation", 0.0, 1.0, unit_cost=0.0)],
-        "horizon": 16,
+        "horizon": HORIZON,
         "adjustment": CausalGraph.from_edges(EDGES, latent=("occupancy",)),
         "dt": DT,
-        "tolerance": 0.5,
+        "tolerance": TOLERANCE,
         "x0": jnp.asarray([float(log["zone"][-1])]),
     }
     if call == "first":
@@ -126,7 +162,7 @@ def read(log: dict[str, np.ndarray], call: str, seed: int) -> dict[str, Any]:
     else:
         from chc import Constraint, Driver
 
-        held = np.ones(17)
+        held = np.ones(HORIZON + 1)
         decided = prescribe(
             panel,
             target=Target("zone", value=21.0 * held[1:]),
@@ -138,6 +174,11 @@ def read(log: dict[str, np.ndarray], call: str, seed: int) -> dict[str, Any]:
             ],
             **common,
         )
+    return decided
+
+
+def read(log: dict[str, np.ndarray], call: str, seed: int) -> dict[str, Any]:
+    decided = prescription(log, call, seed)
     tube = decided.plan.uncertainty_tube
     return {
         "tube": None if tube is None else float(tube[1]),
@@ -153,9 +194,61 @@ def run(call: str, cells: list[str], logs: int, seed: int) -> dict[str, list[dic
         kind, rho = cell.split(",")
         children = np.random.SeedSequence([seed, index]).spawn(logs)
         out[cell] = [
-            read(make_log(np.random.default_rng(child), kind, float(rho)), call, k)
+            read(make_log(np.random.default_rng(child), kind, float(rho))[0], call, k)
             for k, child in enumerate(children)
         ]
+    return out
+
+
+def cover(call: str, cells: list[str], logs: int, seed: int, draws: int) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for index, cell in enumerate(cells):
+        kind, rho = cell.split(",")
+        rows, pooled = [], []
+        for k, child in enumerate(np.random.SeedSequence([seed, index]).spawn(logs)):
+            more, plant = (np.random.default_rng(spawned) for spawned in child.spawn(2))
+            log, (last, world) = make_log(np.random.default_rng(child), kind, float(rho), more)
+            decided = prescription(log, call, k)
+            tube = np.asarray(decided.plan.uncertainty_tube)
+            predicted = np.asarray(decided.plan.trajectory)[1:, 0]
+            actions = np.asarray(decided.plan.actions)[:, 0]
+            errors = np.empty((draws, HORIZON))
+            for draw in range(draws):
+                zone, floor, noise = last
+                for step, u in enumerate(actions):
+                    noise = float(rho) * noise + np.sqrt(1.0 - float(rho) ** 2) * plant.normal(
+                        0.0, 0.18
+                    )
+                    at = ROWS - 1 + step
+                    zone, floor = advance(
+                        zone, floor, float(u), noise, kind, tuple(w[at] for w in world)
+                    )
+                    errors[draw, step] = abs(zone - predicted[step])
+            pooled.append(errors)
+            rows.append(
+                {
+                    "trusted": int(decided.certificate.trustworthy_steps),
+                    "tube": tube.tolist(),
+                    "inside": np.mean(errors <= tube[1:], axis=0).tolist(),
+                    "q95": np.quantile(errors, 0.95, axis=0).tolist(),
+                }
+            )
+        inside = np.array([row["inside"] for row in rows])
+        q95 = np.quantile(np.concatenate(pooled), 0.95, axis=0)
+        beyond = np.flatnonzero(q95 > TOLERANCE)
+        trusted = np.array([row["trusted"] for row in rows])
+        out[cell] = {
+            "trusted": {
+                "min": int(trusted.min()),
+                **_quantiles(trusted.astype(float)),
+                "max": int(trusted.max()),
+            },
+            "inside": inside.mean(axis=0).tolist(),
+            "inside_se": (inside.std(axis=0, ddof=1) / np.sqrt(len(rows))).tolist(),
+            "q95": q95.tolist(),
+            "allowed": int(beyond[0]) if beyond.size else HORIZON,
+            "logs": rows,
+        }
     return out
 
 
@@ -185,14 +278,19 @@ def _quantiles(values: np.ndarray) -> dict[str, float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("mode", choices=("first", "rerun", "ratio"))
+    parser.add_argument("mode", choices=("first", "rerun", "ratio", "cover"))
     parser.add_argument("files", nargs="*", type=Path)
     parser.add_argument("--cell", action="append")
     parser.add_argument("--logs", type=int, default=100)
     parser.add_argument("--seed", type=int, default=20261011)
+    parser.add_argument("--call", choices=("first", "rerun"), default="first")
+    parser.add_argument("--draws", type=int, default=200)
     args = parser.parse_args()
     if args.mode == "ratio":
         print(json.dumps(ratio(*args.files), indent=1))
+    elif args.mode == "cover":
+        cells = args.cell or list(CELLS)
+        print(json.dumps(cover(args.call, cells, args.logs, args.seed, args.draws)))
     else:
         print(json.dumps(run(args.mode, args.cell or list(CELLS), args.logs, args.seed)))
 

@@ -545,12 +545,16 @@ def test_the_schedule_respects_the_box_and_its_windows_agree_with_the_magnitudes
 
 
 def test_the_two_certificate_axes_are_reported_separately() -> None:
-    """A plan certified over a channel nothing identifies must not read as a certified decision."""
+    """A plan certified over a channel nothing identifies must not read as a certified decision.
+
+    The identified plan is trusted for one step: demand, adjusted for and not forecast, moves supply
+    by 0.15 a period, and the tube that holds that noise passes the tolerance of 0.5 at the second
+    step (ADR 0080). Read off the channel's error alone, it trusted all 15."""
     identified = _prescribe(_panel(), CausalGraph.from_edges(EDGES))
-    assert identified.certificate.certificate_status == "certified"
-    assert identified.certificate.certified_horizon == 15
+    assert identified.certificate.certificate_status == "partial"
+    assert identified.certificate.certified_horizon == 1
     assert identified.certificate.barrier_certified_steps is not None
-    assert identified.certificate.trustworthy_steps == 15
+    assert identified.certificate.trustworthy_steps == 1
 
     blocked = _prescribe(_panel(), CausalGraph.from_edges(EDGES, latent=("demand",)))
     assert blocked.certificate.certificate_status == "not_evaluated"
@@ -1290,7 +1294,9 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
         .split("\n")[0]
         .endswith(", diagnostic")
     )
-    assert "Trustworthy prefix: 15 steps" in report
+    steps = payload["certificate"]["trustworthy_steps"]
+    assert steps == result.certificate.trustworthy_steps == 1
+    assert f"Trustworthy prefix: {steps} steps" in report
     assert "- logger check: passed (p = " in report
     assert result.provenance.data_sha256[:16] in report
     run = result.run

@@ -33,6 +33,7 @@ import optax
 from jax import Array
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike, NDArray
+from scipy.stats import chi2
 
 from chc import _units
 from chc.cost import QuadraticCost
@@ -1055,6 +1056,85 @@ def _linear_tube(
     return np.array(
         [0.0] + [float(gains[:k][::-1] @ errors[:k]) for k in range(1, errors.size + 1)]
     )
+
+
+_TUBE_COVERAGE = 0.95
+"""The probability with which a plan's tube holds the plant's own error at each step, where it is
+given the plant's one-step noise (:func:`chc.plan.causal_plan`'s ``noise``)."""
+
+
+def _noise_covariance(noise: ArrayLike, states: int) -> NDArray[np.float64]:
+    """``noise`` as the ``(n, n)`` covariance of the plant's one-step error, a number being each
+    state's variance with none shared; refused where it is not finite, not of the state's size, or
+    not a covariance, which is symmetric with no negative eigenvalue."""
+    matrix = np.asarray(noise, dtype=float)
+    if matrix.ndim == 0:
+        matrix = matrix * np.eye(states)
+    if matrix.shape != (states, states):
+        raise ValueError(
+            f"noise is a variance or the one-step error's covariance of shape {(states, states)}, "
+            f"not an array of shape {matrix.shape}"
+        )
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("noise holds a value that is not finite, and a covariance holds none")
+    scale = float(np.max(np.abs(matrix)))
+    eigenvalues = np.linalg.eigvalsh(matrix)
+    if np.max(np.abs(matrix - matrix.T)) > 1e-12 * scale or eigenvalues[0] < -1e-12 * scale:
+        raise ValueError(
+            "noise is not a covariance, which is symmetric with no negative eigenvalue; its "
+            f"eigenvalues run from {eigenvalues[0]:.6g} to {eigenvalues[-1]:.6g}"
+        )
+    return matrix
+
+
+def _noise_tube(
+    rate: NDArray[np.float64],
+    noise: NDArray[np.float64],
+    persistence: float,
+    dt: float,
+    horizon: int,
+) -> NDArray[np.float64]:
+    """The radii ``r_0..r_H`` within which a plant off the plan's own step by ``w_k`` at each step
+    stays at each step with probability :data:`_TUBE_COVERAGE`, ``w_k`` Gaussian of covariance
+    ``noise = S`` and AR(1) at ``persistence = rho``: ``Cov(w_i, w_j) = rho^|i - j| S``.
+
+    The gap ``e_{k+1} = M e_k + w_k`` from ``e_0 = 0`` has covariance ``P_k``, with
+    ``P_{k+1} = M P_k M' + M C_k + C_k' M' + S`` and ``C_{k+1} = rho (M C_k + S)``, ``C_k`` the
+    gap's covariance with ``w_k`` (``validation/predictive_tube.mac``). On a state matrix ``A``,
+    ``M = R(dt A)``, RK4's step of a field affine in the state, and the gap is that field's to first
+    order. On a norm-Lipschitz bound ``L``, ``g = R(L dt)`` bounds the norm of the step's slope in
+    the state, and ``p_{k+1} = g^2 p_k + 2 g c_k + q``, ``c_{k+1} = |rho| (g c_k + q)``, ``q`` the
+    largest eigenvalue of ``S``, bounds ``P_k``'s largest. A Gaussian of covariance ``P`` on ``n``
+    states lies within ``sqrt(chi2_n(level) lambda_max(P))`` of its mean with probability at least
+    ``level``, and exactly ``level`` on one state.
+    """
+    variances = np.zeros(horizon + 1)
+    if rate.ndim == 0:
+        z = float(rate) * dt
+        growth = 1.0 + z * _rk4_phi(z)
+        largest, spread, cross = float(np.linalg.eigvalsh(noise)[-1]), 0.0, 0.0
+        for step in range(1, horizon + 1):
+            spread, cross = (
+                growth * growth * spread + 2.0 * growth * cross + largest,
+                abs(persistence) * (growth * cross + largest),
+            )
+            variances[step] = spread
+    else:
+        z = dt * rate
+        z2 = z @ z
+        step_matrix = np.eye(z.shape[0]) + z + z2 / 2.0 + z2 @ z / 6.0 + z2 @ z2 / 24.0
+        covariance, cross_matrix = np.zeros_like(noise), np.zeros_like(noise)
+        for step in range(1, horizon + 1):
+            covariance, cross_matrix = (
+                step_matrix @ covariance @ step_matrix.T
+                + step_matrix @ cross_matrix
+                + cross_matrix.T @ step_matrix.T
+                + noise,
+                persistence * (step_matrix @ cross_matrix + noise),
+            )
+            variances[step] = np.linalg.eigvalsh(covariance)[-1]
+    level = float(chi2.ppf(_TUBE_COVERAGE, noise.shape[0]))
+    return np.sqrt(level * np.maximum(variances, 0.0))
 
 
 def closed_loop_rollout_bound(

@@ -409,7 +409,8 @@ plt.show()
 #   `asserted` means we only claimed it.
 # - **Trustworthy steps**: for how many hours does the plan's forecast stay within the tolerance we
 #   set? The library adds up, hour by hour, the worst error that the remaining uncertainty in the
-#   heater's effect could cause, and stops trusting the plan when that error passes the tolerance.
+#   heater's effect could cause and the room's own hour-to-hour noise that the logs show, and
+#   stops trusting the plan when that error passes the tolerance.
 
 # %%
 for key, prescription in plans.items():
@@ -424,9 +425,11 @@ print(f"standard error of the adjusted heater effect: {radius:.3f} °C per hour 
 
 # %% [markdown]
 # The plan that adjusted for the weather is identified, and the certificate trusts all 8 of its
-# hours. The certificate is cautious by design: it assumes that the error adds up in the worst
-# direction every hour. Here the logs pin the heater's effect down to a standard error of 0.015 °C
-# per hour for each kW, so even that worst case stays within the 1 °C tolerance until 07:00. The
+# hours. The certificate is cautious by design: it assumes that the effect's error adds up in the
+# worst direction every hour, and it holds the noise with probability 0.95 at every hour. Here the
+# logs pin the heater's effect down to a standard error of 0.015 °C per hour for each kW, and the
+# room moves by 0.05 °C an hour that the fitted model does not explain. The two together reach
+# 0.78 °C by 07:00, still within the 1 °C tolerance. The
 # plan that ignored the weather is only asserted. Its fit adjusted for nothing, so it reports no
 # error on the heater's effect and nothing bounds its forecast: the certificate trusts none of its
 # hours, whatever its model predicts.
