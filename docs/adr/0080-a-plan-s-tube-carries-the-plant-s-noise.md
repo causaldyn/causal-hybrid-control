@@ -1,7 +1,9 @@
 # ADR 0080 — A plan's tube carries the plant's noise
 
 **Status:** accepted, 2026-10-12. Amends the error tube of `causal_plan` and `prescribe`. The
-channel's error that ADR 0053 and ADR 0075 read stays the tube's other part.
+channel's error that ADR 0053 and ADR 0075 read stays the tube's other part. Amended by ADR 0087,
+2026-10-12: `eps` prices each lever's share of the channel's error at that lever's own largest
+action, so it reads no lever's units.
 
 ## Context
 
