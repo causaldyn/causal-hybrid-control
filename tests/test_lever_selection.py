@@ -234,47 +234,82 @@ def test_held_constraints_rank_a_lever_that_cannot_hold_them_last(
     assert held.certificate.barrier_certified_steps == 12
 
 
+def _held_towards_calm_wait(
+    boxes: dict[str, float],
+    keep: tuple[str, ...],
+    constraints: list[Constraint],
+    x0: list[float],
+    max_levers: int | None,
+) -> Prescription:
+    """Wait towards ``-1`` with ``constraints`` held; a lever not in ``keep`` is pinned to zero."""
+    levers = [
+        Lever(
+            name, lo=-box if name in keep else 0.0, hi=box if name in keep else 0.0, unit_cost=0.05
+        )
+        for name, box in boxes.items()
+    ]
+    return prescribe(
+        PANEL,
+        levers=levers,
+        target=Target("wait", value=-1.0),
+        constraints=constraints,
+        hold_constraints=True,
+        adjustment=GRAPH,
+        horizon=12,
+        dt=DT,
+        x0=x0,
+        max_levers=max_levers,
+    )
+
+
 def test_held_constraints_rank_candidates_on_the_audit_the_certificate_reports() -> None:
-    """From the midpoint of a two-sided supply bound both margins are the minimum, and a held solve
-    enforces only the first there, so ``incentive``, the cheaper route to the target, leaves through
-    ``hi`` at the first step. The certificate audits every tied margin and clears no step of that
-    plan; ranked on the solve's own audit, greedy kept it anyway."""
+    """From the midpoint of a two-sided supply bound both margins are the least. A held solve that
+    read only the first of them let ``incentive``, then the cheaper route to the target, leave
+    through ``hi`` at the first step, and greedy, ranking on the solve's own audit, kept it. Each
+    bound now holds its own condition, so every candidate stays inside the band, the solve and the
+    certificate clear the same steps, and greedy keeps the cheapest of them."""
     boxes = {"incentive": 2.0, "boost": 2.0, "calm": 0.3}
+    band = [Constraint("supply", lo=-0.2, hi=0.2)]
 
     def run(keep: tuple[str, ...], max_levers: int | None) -> Prescription:
-        levers = [
-            Lever(
-                name,
-                lo=-box if name in keep else 0.0,
-                hi=box if name in keep else 0.0,
-                unit_cost=0.05,
-            )
-            for name, box in boxes.items()
-        ]
-        return prescribe(
-            PANEL,
-            levers=levers,
-            target=Target("wait", value=-1.0),
-            constraints=[Constraint("supply", lo=-0.2, hi=0.2)],
-            hold_constraints=True,
-            adjustment=GRAPH,
-            horizon=12,
-            dt=DT,
-            x0=[0.0, 0.0],
-            max_levers=max_levers,
-        )
+        return _held_towards_calm_wait(boxes, keep, band, [0.0, 0.0], max_levers)
 
-    incentive, calm = run(("incentive",), None), run(("calm",), None)
-    assert incentive.plan is not None
-    assert calm.plan is not None
-    assert incentive.plan.task_cost < calm.plan.task_cost
-    assert incentive.certificate.barrier_certified_steps == 0
-    assert calm.certificate.barrier_certified_steps == 12
+    costs = {}
+    for name in boxes:
+        alone = run((name,), None)
+        assert alone.plan is not None
+        assert alone.certificate.barrier_certified_steps == 12
+        assert np.all(np.abs(np.asarray(alone.plan.trajectory)[:, 1]) <= 0.2)  # supply
+        costs[name] = alone.plan.task_cost
+    assert min(costs, key=costs.__getitem__) == "calm"
 
     selected = run(tuple(boxes), max_levers=1)
     assert selected.selection is not None
     assert selected.selection.selected == ("calm",)
     assert selected.certificate.barrier_certified_steps == 12
+
+
+def test_the_selected_plan_is_certified_against_every_lever_s_box() -> None:
+    """``wait >= -1.05`` from ``wait = -0.95``: wait's own drift carries it outwards, so a step's
+    ``gamma_star`` is finite and grows with the action the audit allows. Greedy keeps ``calm``,
+    solved in its own box of 1; the certificate audits that plan in the box of every lever, the
+    largest 2, as it would had the caller planned on all of them, and so reports more than the
+    narrowed box's audit of the very same plan."""
+    boxes = {"incentive": 2.0, "boost": 2.0, "calm": 1.0}
+    floor = [Constraint("wait", lo=-1.05)]
+    selected = _held_towards_calm_wait(boxes, tuple(boxes), floor, [-0.95], max_levers=1)
+    alone = _held_towards_calm_wait(boxes, ("calm",), floor, [-0.95], max_levers=None)
+    assert selected.selection is not None
+    assert selected.selection.selected == ("calm",)
+    assert selected.plan is not None
+    assert alone.plan is not None
+    assert np.array_equal(np.asarray(selected.plan.actions), np.asarray(alone.plan.actions))
+    assert selected.certificate.barrier_certified_steps == alone.certificate.barrier_certified_steps
+    assert alone.certificate.gamma_star is not None
+    assert selected.certificate.gamma_star is not None
+    assert np.isfinite(alone.certificate.gamma_star)
+    assert np.isfinite(selected.certificate.gamma_star)
+    assert selected.certificate.gamma_star > alone.certificate.gamma_star
 
 
 def test_a_max_levers_that_cannot_be_honoured_is_refused() -> None:

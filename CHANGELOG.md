@@ -55,6 +55,36 @@ still change).
   `DeprecationWarning` is gone, the planned refusal at 1.0 dropped, and the call logs
   `chc_event="one_unit"` at `INFO` with the windows and the cosines counted (ADR 0083). Since
   0.9.0; deprecated since 0.12.0.
+### Added
+
+- **`BarrierConstraint` and `certify_safety` take a tuple of barriers, each held and audited on
+  its own.** `causal_plan(barrier=BarrierConstraint((h1, h2)))` holds each barrier's condition with
+  a multiplier per step and barrier, and its audit certifies a step where every one holds. The
+  audit's `barrier_values` are the least barrier's, `guaranteed_derivative` and `required` the pair
+  of the barrier with the least room, and `step_gamma_star` the least of their ceilings. The
+  rounds scale each condition to the largest barrier's before their one back-off and penalty read
+  it, so a barrier in units a millionth of another's is held as in its own. One barrier plans and
+  audits as before, bit for bit (ADR 0081).
+
+### Fixed
+
+- **`prescribe` holds and certifies each bound's own barrier condition, not the least margin's.**
+  It held, and its certificate read, one barrier, the least of its bounds' margins, whose condition
+  asks nothing of a bound until that bound is the nearest. On the pendulum demo's four logs the
+  certificate read all 40 steps held, while the upper speed bound's own condition failed on 4 or 5
+  of them. Steering `supply` from 0 towards 1 inside `[-0.1, 1.5]` on the tests' panel, the priced
+  plan read 5 steps held and the held one 15, and `hi`'s own condition failed at the first step of
+  both. That condition also jumps where two margins tie, so a descent that ends on a tie takes no
+  step, and which margin is the least depends on the states' units: with `wait` in units 1e3 times
+  its own, a held plan certified no step, where in its own units it certified all 15. Each bound
+  is now a barrier of its own, held and audited at every step, so a state approaches no bound
+  faster than the class-K gain times its distance to it. On three such problems, `wait` in units
+  1e-3, 1 or 1e3 times its own now gives one plan, to ten digits of its cost, and one certificate.
+  Certificates can read fewer steps, the priced plan above none, and held plans can cost more
+  where the far bound binds: 6.5 % and 20 % on two bands of the tests' panel. On the pendulum the
+  four logs' plans now cost 0.4360 to 0.4362, where two of them cost 0.4579. A held plan under one
+  bound moves by rounding only, at most 1.1e-16 on the tests' panel. A step's `gamma_star` is the
+  weakest bound's ceiling, as a tie's was (ADR 0081). Since 0.6.0.
 
 ## [0.16.0] — 2026-10-11
 

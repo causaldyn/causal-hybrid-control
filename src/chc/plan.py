@@ -744,6 +744,10 @@ def _multiplier_range(
     return float(ends[0]), float(ends[1]), feasible
 
 
+Barrier = Callable[[Array], Array] | tuple[Callable[[Array], Array], ...]
+"""``h``, safe where ``h >= 0``; or a tuple of them, safe where each is, each its own condition."""
+
+
 @dataclass(frozen=True)
 class BarrierConstraint:
     """``grad h . xdot >= -alpha * h`` at every planned step, against every effect the data allow.
@@ -755,18 +759,26 @@ class BarrierConstraint:
     worst case over the identified set and ``gamma = 1`` is the ordinary CBF condition. The defaults
     and the calibration burden on ``cvar_gap`` are :func:`certify_safety`'s.
 
+    Several bounds are a tuple of barriers, safe where every one is ``>= 0``, and each holds its own
+    condition at every step. Their least is no substitute: its condition jumps where two tie,
+    reading on each side that side's gradient, so a solve that ends on the tie cannot step off it,
+    and the condition it holds asks nothing of a bound until that bound is the nearest.
+
     Raises:
-        ValueError: on a ``gamma`` below 1 or not finite, which is not a sensitivity level, or a
-            ``cvar_gap`` not positive or not finite, which scales no radius -- here, rather than
-            after the solve that would have used them.
+        ValueError: on a ``gamma`` below 1 or not finite, which is not a sensitivity level, a
+            ``cvar_gap`` not positive or not finite, which scales no radius, or an empty tuple of
+            barriers, which holds nothing -- here, rather than after the solve that would have
+            used them.
     """
 
-    barrier: Callable[[Array], Array]
+    barrier: Barrier
     alpha: float = 1.0
     gamma: float = 1.0
     cvar_gap: float = 1.0
 
     def __post_init__(self) -> None:
+        if isinstance(self.barrier, tuple) and not self.barrier:
+            raise ValueError("an empty tuple of barriers holds no condition")
         if not 1.0 <= self.gamma < math.inf:
             raise ValueError(
                 "gamma is a marginal sensitivity model level and must be >= 1 and finite, got "
@@ -837,14 +849,14 @@ def causal_plan(
         constraints: linear rows over the whole action sequence
             (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
             only by the answer.
-        barrier: a condition to hold at every planned step (:class:`BarrierConstraint`), by
-            augmented-Lagrangian rounds around the same descent. Unlike ``constraints`` it binds the
-            answer, not every iterate, and the plan comes back with :attr:`CausalPlan.safety` --
-            :func:`certify_safety` run on the finished plan, the verdict to read. Its ``gamma_star``
-            is priced at the largest magnitude any lever may take, the budget :func:`chc.prescribe`
-            uses. A barrier the unconstrained plan already clears changes no action, even when
-            that solve stopped on its budget. ``steps`` then caps each descent, of which there are
-            at most ``1 + _BARRIER_ROUNDS``.
+        barrier: a condition to hold at every planned step (:class:`BarrierConstraint`), or one
+            per barrier of a tuple, by augmented-Lagrangian rounds around the same descent. Unlike
+            ``constraints`` it binds the answer, not every iterate, and the plan comes back with
+            :attr:`CausalPlan.safety` -- :func:`certify_safety` run on the finished plan, the
+            verdict to read. Its ``gamma_star`` is priced at the largest magnitude any lever may
+            take, the budget :func:`chc.prescribe` uses. A barrier the unconstrained plan already
+            clears changes no action, even when that solve stopped on its budget. ``steps`` then
+            caps each descent, of which there are at most ``1 + _BARRIER_ROUNDS``.
         warm_start: the ``(horizon, m)`` actions the descent starts from, zeros when omitted --
             typically the last plan shifted one step, which :class:`chc.mpc.RecedingHorizon` passes
             along with the barrier's multipliers. It is projected onto the box and the rows before
@@ -1115,32 +1127,54 @@ class _HeldBarrier(eqx.Module):
     It is a :class:`~chc.support.PenaltyModel`, so the penalised descent of :mod:`chc.support`
     minimises it unchanged. That descent has one penalty slot besides the support model's, so
     ``rest`` carries the uncertainty penalty the plan may already have.
+
+    A tuple of barriers holds each one's condition: the shortfall, and the multipliers with it, have
+    a column per barrier, ``(steps, barriers)``, where one barrier's are ``(steps,)``. Each column
+    is multiplied by its ``factors`` entry, the largest barrier's scale over its own, so one
+    back-off and one penalty read every condition alike, whatever the units of the state it bounds.
     """
 
     model: Dynamics
     # not static: a barrier that is a module keeps its arrays traced, so a replanning loop whose
     # bounds move compiles once; filter_jit keys on a plain function either way
-    barrier: Callable[[Array], Array]
+    barrier: Barrier
     dt: float = eqx.field(static=True)
     alpha: float = eqx.field(static=True)
     delta: float = eqx.field(static=True)
     multipliers: Array
     weight: Array
     backoff: Array
+    factors: Array | None = None  # one per barrier of a tuple, None for one barrier
     rest: PenaltyModel | None = None
     rest_weight: float = eqx.field(static=True, default=0.0)
 
     def shortfall(self, states: Array, actions: Array) -> Array:
         """``-alpha h - (a + <w, u> - d ||u||)`` per step: positive where the audit fails."""
+        if isinstance(self.barrier, tuple):
+            columns = jnp.stack(
+                [self._shortfall(barrier, states, actions) for barrier in self.barrier], axis=1
+            )
+            return columns if self.factors is None else columns * self.factors
+        return self._shortfall(self.barrier, states, actions)
+
+    def _shortfall(self, barrier: Callable[[Array], Array], states: Array, actions: Array) -> Array:
         h_values, grad_norm, drift, channel = _barrier_terms(
-            self.model, self.barrier, states, actions, self.dt
+            self.model, barrier, states, actions, self.dt
         )
         return -self.alpha * h_values - _guaranteed(drift, channel, grad_norm, actions, self.delta)
 
     def scale(self, states: Array, actions: Array) -> Array:
-        """The largest term of the condition over the plan: what rounding in it is relative to."""
+        """The largest term of the condition over the plan: what rounding in it is relative to.
+
+        One per barrier of a tuple, each its own condition's, before ``factors``.
+        """
+        if isinstance(self.barrier, tuple):
+            return jnp.stack([self._scale(barrier, states, actions) for barrier in self.barrier])
+        return self._scale(self.barrier, states, actions)
+
+    def _scale(self, barrier: Callable[[Array], Array], states: Array, actions: Array) -> Array:
         h_values, grad_norm, drift, channel = _barrier_terms(
-            self.model, self.barrier, states, actions, self.dt
+            self.model, barrier, states, actions, self.dt
         )
         push = jnp.einsum("km,km->k", channel, actions)
         spread = self.delta * grad_norm * _norm(actions)
@@ -1200,18 +1234,13 @@ def _hold_barrier(
 
     The rounds descend in the caller's units, by the penalised descent of :mod:`chc.support` run
     unscaled, while :func:`chc.control.projected_gradient_solve` and
-    :func:`chc.support.pessimistic_solve` descend in the problem's own. A barrier that is the least
-    of several margins, as :func:`chc.prescribe` holds a two-sided bound, has a condition that jumps
-    where two margins tie, each side reading its own margin's gradient. Scaled, the rounds solved
-    each round to its stopping rule and ended on such a tie on each of four logs of the pendulum of
-    ``scripts/pendulum_demo.py``: a move of ``1e-12`` raised the shortfall there by 2.8 to 6.1, and
-    no step was taken. On two of the logs the barrier was then held for 2 and 0 of its 40 steps;
-    unscaled, the rounds hold it for all 40 on all four. On that pendulum, started from the scaled
-    descent's plan, the unscaled rounds hold the barrier at a task cost of 0.620, where from the
-    plan of the descent in the caller's units they hold it at 0.435. So where a barrier binds at the
-    planner's scaled ``start``, the rounds start from ``guess`` descended in the caller's units, as
-    they did before the planner was scaled; that descent's steps are the ones counted, and the
-    scaled one only said the barrier binds.
+    :func:`chc.support.pessimistic_solve` descend in the problem's own. On the pendulum of
+    ``scripts/pendulum_demo.py``, four logs, the barrier its two speed bounds, scaled rounds hold
+    the barrier for all 40 steps at the same task cost, within 1.4e-5, but take 83 834 to 128 435
+    descent steps where these take 34 349 to 34 398, most of their rounds running out of their
+    steps. Where a barrier binds at the planner's scaled ``start``, the rounds start from ``guess``
+    descended in the caller's units, as they did before the planner was scaled; that descent's
+    steps are the ones counted, and the scaled one only said the barrier binds.
 
     ``multipliers`` seed the rounds in place of zeros -- a receding horizon's last, shifted. The
     penalty is chosen afresh all the same: one grown for the last state left the first round
@@ -1227,22 +1256,34 @@ def _hold_barrier(
     hi = broadcast_box(u_hi, actions.shape, "u_hi", actions.dtype)
     check_box(lo, hi)
     blocks = _constraint_blocks(constraints, lo, hi, actions.dtype)
+    several = isinstance(barrier.barrier, tuple)
+    columns = (len(barrier.barrier),) if several else ()
     held = _HeldBarrier(
         model=model,
         barrier=barrier.barrier,
         dt=dt,
         alpha=barrier.alpha,
         delta=confounding_robust_inflation(barrier.cvar_gap, 0.0, barrier.gamma),
-        multipliers=jnp.zeros(actions.shape[0], actions.dtype),
+        multipliers=jnp.zeros(actions.shape[:1] + columns, actions.dtype),
         weight=jnp.asarray(1.0, actions.dtype),
         backoff=jnp.asarray(0.0, actions.dtype),
+        factors=jnp.ones(columns, actions.dtype) if several else None,
         rest=uncertainty,
         rest_weight=lam_unc,
     )
 
     def excess_at(actions: Array) -> tuple[float, NDArray[np.float64]]:
+        nonlocal held
         scale, shortfall = _barrier_state(model, x0, actions, dt, held)
-        backoff = _BARRIER_BACKOFF * float(scale)
+        scales = np.asarray(scale, dtype=np.float64)
+        largest = float(np.max(scales))
+        if several:
+            # a barrier with no term at all has no units to read, and keeps the caller's
+            factors, positive = np.ones_like(scales), scales > 0.0
+            factors[positive] = largest / scales[positive]
+            held = eqx.tree_at(lambda term: term.factors, held, jnp.asarray(factors, actions.dtype))
+            _, shortfall = _barrier_state(model, x0, actions, dt, held)
+        backoff = _BARRIER_BACKOFF * largest
         return backoff, np.asarray(shortfall, dtype=np.float64) + backoff
 
     backoff, excess = excess_at(actions)
@@ -1332,7 +1373,7 @@ def _hold_barrier(
             "penalty": weight,
             "measure": measure,
             "backoff": backoff,
-            "active_steps": int(np.sum(multipliers > 0.0)),
+            "active_steps": int(np.sum(np.any(multipliers.reshape(len(multipliers), -1) > 0.0, 1))),
         },
     )
     return actions, status, iterations, multipliers
@@ -1353,7 +1394,9 @@ class SafetyCertificate:
     """
 
     barrier_values: Array  # h(x_k) along the nominal trajectory, k = 0 .. horizon-1
-    guaranteed_derivative: Array  # a_k + <w_k, u_k> - d_k*||u_k||, the worst case AT the plan
+    # a_k + <w_k, u_k> - d_k*||u_k||, the worst case AT the plan; with several barriers, the one
+    # with the least room's at each step, as is ``required``
+    guaranteed_derivative: Array
     required: Array  # -alpha * h(x_k); certification asks guaranteed >= required
     planned_certified: Array  # bool per step
     certified_steps: int  # leading certified PREFIX, as in ``certified_horizon``, not a pass count
@@ -1406,7 +1449,7 @@ def _guaranteed(
 def certify_safety(
     plan: CausalPlan,
     model: Dynamics,
-    barrier: Callable[[Array], Array],
+    barrier: Barrier,
     dt: float,
     *,
     alpha: float = 1.0,
@@ -1425,7 +1468,13 @@ def certify_safety(
 
     Args:
         barrier: ``h(x)``, safe where ``h >= 0``. Differentiated with :func:`jax.grad`, so it must
-            be a JAX-traceable scalar function.
+            be a JAX-traceable scalar function. A tuple of them is audited each on its own and
+            read as one: a step is certified where every barrier's condition holds there, and
+            the step's ``barrier_values`` are the least barrier's, its ``guaranteed_derivative``
+            and ``required`` the pair of the barrier with the least room, and its
+            ``step_gamma_star`` the least of theirs -- an upper bound rather than the step's own
+            ceiling, since each is reached by its own best action and no one action need reach
+            the least.
         alpha: the class-K gain in ``grad h . xdot >= -alpha*h``.
         gamma, cvar_gap: the marginal sensitivity model's level and the gap it scales, combined into
             ``Delta = (gamma-1)/(gamma+1) * cvar_gap``. ``gamma = 1`` is exact identification --
@@ -1451,6 +1500,16 @@ def certify_safety(
             backing ``gamma_star`` is non-positive, which asks how much confounding a controller
             with no authority tolerates.
     """
+    if isinstance(barrier, tuple):
+        if not barrier:
+            raise ValueError("an empty tuple of barriers holds no condition")
+        audits = [
+            certify_safety(
+                plan, model, one, dt, alpha=alpha, gamma=gamma, cvar_gap=cvar_gap, u_max=u_max
+            )
+            for one in barrier
+        ]
+        return _every_barrier(audits)
     if not 0.0 < cvar_gap < math.inf:
         raise ValueError(
             f"cvar_gap must be positive and finite to scale a sensitivity radius, got {cvar_gap}"
@@ -1490,6 +1549,35 @@ def certify_safety(
         gamma_star=float("nan") if any(np.isnan(per_step)) else min(per_step),
         step_gamma_star=per_step,
         radius=delta * float(jnp.max(grad_norm)),
+    )
+
+
+def _every_barrier(audits: Sequence[SafetyCertificate]) -> SafetyCertificate:
+    """Several barriers' audits read as one, a step certified where each is: see certify_safety."""
+    room = jnp.stack([audit.guaranteed_derivative - audit.required for audit in audits])
+    least = jnp.argmin(room, axis=0)[None]  # nan room is least, and certifies nothing
+
+    def binding(values: Array) -> Array:
+        return jnp.take_along_axis(values, least, axis=0)[0]
+
+    certified = jnp.all(jnp.stack([audit.planned_certified for audit in audits]), axis=0)
+    step_gamma_star = tuple(
+        float(np.min(column))  # a nan in any barrier's column is the step's
+        for column in np.asarray([audit.step_gamma_star for audit in audits]).T
+    )
+    return SafetyCertificate(
+        barrier_values=jnp.min(jnp.stack([audit.barrier_values for audit in audits]), axis=0),
+        guaranteed_derivative=binding(jnp.stack([audit.guaranteed_derivative for audit in audits])),
+        required=binding(jnp.stack([audit.required for audit in audits])),
+        planned_certified=certified,
+        certified_steps=(
+            int(jnp.argmin(certified)) if not bool(jnp.all(certified)) else int(certified.shape[0])
+        ),
+        gamma_star=(
+            math.nan if any(math.isnan(g) for g in step_gamma_star) else min(step_gamma_star)
+        ),
+        step_gamma_star=step_gamma_star,
+        radius=max(audit.radius for audit in audits),
     )
 
 

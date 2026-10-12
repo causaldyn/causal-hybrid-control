@@ -39,8 +39,6 @@ from chc.decision import (
     RunProvenance,
     StartState,
     Target,
-    _barrier,
-    _certify,
     _episodes,
     _json_label,
     _linearised,
@@ -724,12 +722,9 @@ def test_an_unevaluated_tube_vouches_for_no_step_whatever_the_barrier_says(
 def test_a_state_in_the_middle_of_a_two_sided_bound_is_audited_rather_than_skipped() -> None:
     """At the midpoint the two margins tie with opposite gradients, and ``jnp.min`` averages tied
     gradients, so the barrier's was zero: that step's check vanished and ``gamma_star`` raised. A
-    plan that starts in the middle of a two-sided bound sits exactly there at its first step. The
-    audit now reads each margin; a held solve still reads one gradient, and it is a margin's."""
+    plan that starts in the middle of a two-sided bound sits exactly there at its first step. Each
+    bound is now a barrier of its own, with its own gradient, wherever the state is."""
     bounds = [Constraint("wait", lo=-0.5, hi=0.5)]
-    barrier = _barrier(_margins(("supply", "wait"), bounds))
-    assert np.allclose(jax.grad(barrier)(jnp.zeros(2)), [0.0, 1.0])  # the first tied margin, lo's
-
     result = prescribe(
         _panel(n_units=40, n_periods=8),
         levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
@@ -767,7 +762,7 @@ def test_a_tie_is_certified_only_if_every_tied_margin_is() -> None:
     assert bool(first.planned_certified[0])
     assert not bool(second.planned_certified[0])
 
-    audit = _certify(plan, model, (lo, hi), DT, gamma=1.0, u_max=2.0)
+    audit = certify_safety(plan, model, (lo, hi), DT, gamma=1.0, u_max=2.0)
     assert not bool(audit.planned_certified[0])
     assert audit.certified_steps == 0
     assert np.isinf(first.step_gamma_star[0])
@@ -775,14 +770,58 @@ def test_a_tie_is_certified_only_if_every_tied_margin_is() -> None:
     assert audit.step_gamma_star[0] == second.step_gamma_star[0] == pytest.approx(7.0)
 
 
-def test_off_a_tie_the_audit_is_certify_safety_on_the_barrier_itself() -> None:
-    """With ``lo`` the only minimum at every step, reading margins one by one changes nothing."""
+def test_where_the_far_bound_has_room_the_audit_is_the_near_bound_s_own() -> None:
+    """With ``lo`` the least margin, and the one with the least room, at every step, the audit of
+    both margins is ``lo``'s alone: ``hi = 20`` holds with no action at all."""
     model, plan = _dash()
     margins = _margins(("wait",), [Constraint("wait", lo=0.5, hi=20.0)])
-    combined = _certify(plan, model, margins, DT, gamma=2.0, u_max=2.0)
-    direct = certify_safety(plan, model, _barrier(margins), DT, gamma=2.0, u_max=2.0)
+    combined = certify_safety(plan, model, margins, DT, gamma=2.0, u_max=2.0)
+    direct = certify_safety(plan, model, margins[0], DT, gamma=2.0, u_max=2.0)
     for field in dataclasses.fields(direct):
         np.testing.assert_array_equal(getattr(combined, field.name), getattr(direct, field.name))
+
+
+def test_a_band_is_priced_and_held_by_each_bound_s_own_condition() -> None:
+    """Supply steered from 0 towards 1 inside ``[-0.1, 1.5]``: ``lo`` is the nearer bound up to the
+    midpoint, and the free plan rises faster from its first step than ``hi``'s own condition
+    allows, the class-K gain times the distance to ``hi``. Read as the least of the two margins, a
+    bound's condition counted only where it was the nearer: the priced plan was certified for 5
+    steps, and the held one, rising as fast, for all 15. Each bound's condition is now read at every
+    step, so the priced plan certifies none, and the held one clears both at every step."""
+    panel, graph = _panel(), CausalGraph.from_edges(EDGES)
+    bounds = [Constraint("supply", lo=-0.1, hi=1.5)]
+
+    def decide(hold: bool) -> Prescription:
+        return prescribe(
+            panel,
+            levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+            target=Target("supply", value=1.0),
+            constraints=bounds,
+            hold_constraints=hold,
+            adjustment=graph,
+            horizon=15,
+            dt=DT,
+            tolerance=0.5,
+            x0=jnp.zeros(1),
+        )
+
+    priced, held = decide(False), decide(True)
+    assert priced.plan is not None
+    assert held.plan is not None
+    known = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    model = HybridDynamics(known=known, residual=held.model_fit.residual)
+    margins = _margins(("supply",), bounds)
+
+    def prefixes(plan: CausalPlan) -> list[int]:
+        return [
+            certify_safety(plan, model, margin, DT, u_max=2.0).certified_steps for margin in margins
+        ]
+
+    assert prefixes(priced.plan) == [15, 0]
+    assert priced.certificate.barrier_certified_steps == 0
+    assert prefixes(held.plan) == [15, 15]
+    assert held.certificate.barrier_certified_steps == 15
+    assert held.plan.solver_status == "converged"
 
 
 def test_reach_prices_a_lever_by_its_box_and_not_by_its_coefficient_alone() -> None:
