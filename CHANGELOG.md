@@ -7,6 +7,14 @@ still change).
 
 ## [Unreleased]
 
+### Notes
+
+- **The module overview's pendulum reads what 0.17.0 prints.** It said the certificate trusts the
+  adjusted schedule for 9 steps of 40: from 0.17.0 the tube carries the plant's own noise, and it
+  trusts 1. The schedule's final angle errors, which the float32 barrier-held solve moves, read
+  0.006 and 0.607 rad, where the page said 0.004 and 0.608. The other numbers the pages, the README
+  and the scripts quote, re-run on 0.17.0, are unchanged.
+
 ## [0.17.0] — 2026-10-13
 
 ### Added
