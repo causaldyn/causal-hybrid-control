@@ -3,6 +3,7 @@
 **Status:** accepted, 2026-10-08. Amends ADR 0053 and ADR 0064. Amended 2026-10-11, before any
 release: the units of one declared cluster are read by their period sums across the periods, and
 the size of `misspecification_cost`'s test given periods is measured and the test left as it was.
+ADR 0083 measures `Prescription.evaluate` on one unit and reads its windows by the same cosines.
 
 ## Context
 

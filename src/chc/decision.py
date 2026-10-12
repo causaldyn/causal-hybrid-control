@@ -32,7 +32,6 @@ import datetime
 import logging
 import math
 import time
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib import metadata
@@ -62,6 +61,7 @@ from chc.dynamics_id import (
     Integrator,
     _absorbed,
     _channel_design,
+    _cosines,
     _logged_relations,
     _LoggedRelations,
     _nuisance_inputs,
@@ -76,8 +76,8 @@ from chc.evaluation import (
     LinearGaussianPlant,
     LoggerCheck,
     PlanEvaluation,
+    _evaluate_across_time,
     _evaluate_by_unit,
-    evaluate_plan,
 )
 from chc.frames import _not_numbers, _real_numbers
 from chc.graph import AdjustmentSet, CausalGraph
@@ -994,10 +994,21 @@ class Prescription:
         1.96 standard deviations of its draws, widened by the model's correction as
         :func:`~chc.evaluation.evaluate_plan` widens its own; a draw the certificate refuses is
         left out and counted (:attr:`PlanEvaluation.bootstrap`). With few units the draws are
-        few distinct panels and the intervals too narrow. Windows of one unit leave nothing to
-        resample, so they are read as before, as independent, under an interval too narrow for
-        them, with ``bootstrap`` and ``versus_logger`` ``None``: deprecated, the call warns with a
-        :class:`DeprecationWarning`, and from 1.0 it raises :class:`DecisionError`.
+        few distinct panels and the intervals too narrow.
+
+        Windows of one unit leave nothing to resample, and they follow each other through its
+        state and its noise. Each window's influence on the estimate, the delta method's, is read
+        across the windows' time zeros by the equal-weighted cosine estimate, ``nu`` cosines of
+        ``E`` windows, ``nu`` the most whole ones at or below ``0.4 E^(2/3)``, and each interval is
+        Student's ``t(nu)`` on it (Lazarus, Lewis, Stock and Watson 2018), widened by the model's
+        correction; :attr:`PlanEvaluation.degrees_of_freedom` is ``nu`` and ``bootstrap`` is
+        ``None``. A window's time zero takes its place on the grid of ``H`` periods, so a gap leaves
+        its places empty. The logger and the smoothing are held at the estimate's. Measured on one
+        simulated unit (a loop keeping 0.5 or 0.8 of its state a step, its noise AR(0), AR(0.5) or
+        AR(0.9), horizons 4 and 10, 25 to 1600 windows, 1000 logs a cell), the 95 % intervals
+        covered 0.87 to 0.99, where the windows taken as independent covered 0.75 to 0.99; where
+        the loop keeps 0.8 and the noise is AR(0.9), 0.82 to 0.95 against 0.64 to 0.85. They were
+        1.04 to 2.3 times as wide, 1.66 at 25 windows of fresh noise (ADR 0083).
 
         :attr:`PlanEvaluation.versus_logger` holds the plan's value less the logged policy's, on
         the same windows, its interval read off the difference within each draw. The policy in
@@ -1086,21 +1097,23 @@ class Prescription:
         model, dt = problem.model, problem.dt
         schedule = AffineSchedule.open_loop(actions, len(columns.states))
         if np.unique(episodes.units).size < 2:
-            # A break on the stable tier waits for 1.0 behind a DeprecationWarning: until then one
-            # unit's windows are read as they were before the bootstrap over units.
-            message = (
-                "the windows are one unit's, so there are no units to resample: the interval "
-                "treats the windows as independent and is too narrow. From 1.0 a panel of one "
-                "unit raises DecisionError; evaluate on a panel of several units instead"
+            # Windows H periods apart, or further across a gap, each hold a place of their own on
+            # the grid of H periods.
+            places = (episodes.starts - episodes.starts.min()) // len(actions)
+            cosines = _cosines(places)
+            _log.info(
+                "one unit's windows read across their time zeros by cosines",
+                extra={
+                    "chc_event": "one_unit",
+                    "windows": int(episodes.x.shape[0]),
+                    "cosines": int(cosines.shape[0]),
+                },
             )
-            warnings.warn(message, DeprecationWarning, stacklevel=2)
-            _log.warning(
-                message, extra={"chc_event": "one_unit", "windows": int(episodes.x.shape[0])}
-            )
-            evaluation = evaluate_plan(
-                {"x": episodes.x, "u": episodes.u},
+            evaluation = _evaluate_across_time(
+                episodes.x,
+                episodes.u,
+                cosines,
                 schedule,
-                "pdis",
                 plant=_linearised(model, episodes.x, episodes.u, dt),
                 cost=problem.cost,
                 logger=logger,
@@ -2910,12 +2923,14 @@ def _check_logger(
 
 @dataclass(frozen=True)
 class _Episodes:
-    """The windows :meth:`Prescription.evaluate` reads: ``x (E, H + 1, n)``, ``u (E, H, m)``, and
-    ``units (E,)``, each window's unit as :meth:`chc.panel.Panel.codes` codes it."""
+    """The windows :meth:`Prescription.evaluate` reads: ``x (E, H + 1, n)``, ``u (E, H, m)``,
+    ``units (E,)``, each window's unit as :meth:`chc.panel.Panel.codes` codes it, and ``starts
+    (E,)``, each window's first period as a step of the panel's grid."""
 
     x: NDArray[np.float64]
     u: NDArray[np.float64]
     units: NDArray[np.int64]
+    starts: NDArray[np.int64]
 
 
 def _episodes(
@@ -2971,7 +2986,12 @@ def _episodes(
     def stack(names: tuple[str, ...]) -> NDArray[np.float64]:
         return np.stack([panel._numbers(name) for name in names], axis=1)
 
-    return _Episodes(stack(states)[rows], stack(levers)[rows[:, :-1]], unit_codes[rows[:, 0]])
+    return _Episodes(
+        stack(states)[rows],
+        stack(levers)[rows[:, :-1]],
+        unit_codes[rows[:, 0]],
+        time_codes[rows[:, 0]],
+    )
 
 
 @eqx.filter_jit
