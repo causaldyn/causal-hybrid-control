@@ -839,6 +839,43 @@ def test_under_a_budget_a_rate_a_rounding_below_its_cap_has_no_room_to_price():
     assert price == pytest.approx(0.25, rel=1e-12, abs=0.0)
 
 
+def test_a_rate_its_box_pins_sets_no_scale_for_the_prices():
+    """A rate its box pins holds no row, however steep its curve stands there: a power of 0.2 reads
+    6.7e11 a unit at nothing. As the program's scale it left the slope of the rate inside its box,
+    0.25, under HiGHS's tolerance, and the budget's price came out 0."""
+    cells = (Channel(ONE, Power(1.0, 0.2), 1.0), Channel(ONE, MichaelisMenten(1.0), 4.0))
+    worths = _worths(cells, np.zeros((0, 2)), 1)
+    budget = _Group(np.arange(2), 3.0, 3.0, np.ones(2))
+    rates, upper = np.array([0.0, 3.0]), np.array([0.0, 10.0])
+    [price] = _priced(worths, rates, np.zeros(2), upper, [budget], 1, 0.0, True)
+    assert price == pytest.approx(0.25, rel=1e-12, abs=0.0)
+
+
+def test_a_cell_its_box_pins_at_nothing_leaves_the_price_to_the_cells_it_frees():
+    """Geo 1's first channel does not run there: its box pins it at nothing, on a power of 0.2 with
+    no carryover, where its curve stands at 2.9e12 a unit. The budget's price is what the cells
+    inside their boxes return, 5.635; read with that slope as the prices' scale, it was 0."""
+    row = (Channel(KERNELS[0], Power(250.0, 0.2), 1100.0), *CUT_ROW[1:])
+    grid = (CUT_ROW, row)
+    history = CUT_GRID_HISTORY.copy()
+    history[:, 1, 0] = 0.0
+    lower, upper = CUT_BOX["lower"].copy(), CUT_BOX["upper"].copy()
+    lower[1, 0] = upper[1, 0] = 0.0
+    budget = 2 * CUT_BUDGET - PERIODS * CUT_LOWER[0]
+    plan = allocate_geos(grid, budget, PERIODS, lower=lower, upper=upper, history=history)
+    at_end = np.isclose(plan.spend, lower, rtol=1e-12, atol=0.0) | np.isclose(
+        plan.spend, upper, rtol=1e-12, atol=0.0
+    )
+    assert (~at_end).sum() == 2
+    for g, c in zip(*np.nonzero(~at_end), strict=True):
+        step = 1e-4 * plan.spend[g, c]
+        up, down = plan.spend.copy(), plan.spend.copy()
+        up[g, c] += step
+        down[g, c] -= step
+        slope = (_worth(grid, up, history) - _worth(grid, down, history)) / (2 * step) / PERIODS
+        assert plan.price == pytest.approx(slope, rel=1e-5, abs=0.0), (g, c)
+
+
 def test_a_price_program_its_iteration_limit_stops_is_refused(stall):
     """The prices' programs run under the planes' limit of iterations: weights down to roundings
     put their costs in HiGHS's scaling, where at their tolerance it can pivot on a degenerate

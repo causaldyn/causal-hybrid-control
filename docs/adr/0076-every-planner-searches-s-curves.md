@@ -110,6 +110,9 @@ those of `cvar_allocate` do. The bound was not the obstacle; two things were:
   nothing. Each weight is read against the farthest a rate stands from an end of its box, and a
   total's slack weighs at most that: read on its own scale, a cap 1e12 short of binding made every
   rate's weight a rounding and priced the cap that binds beside it 0.054 where it returns 1.60.
+  The slopes are read in a power of two of the steepest a rate its box leaves free: a channel
+  pinned at nothing on a power of 0.2 stands at 2.9e12 a unit, and as the scale it left every other
+  slope under HiGHS's tolerance and the budget's price 0 where the cells inside return 5.635.
   Under a budget the misses of rates that return more than their price come before the rest, so
   no rate with room below its cap returns more than its price; a rate HiGHS leaves a rounding
   below its cap has none, where reading two ulps as room priced a grid's budget 0.387 and one

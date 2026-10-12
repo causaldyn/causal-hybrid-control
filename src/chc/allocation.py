@@ -2959,15 +2959,20 @@ def _priced(
     prices its channels, and where every geo's total is fixed, which fixes the budget, the budget's
     price is nothing and theirs carry it.
 
-    The program is written in a power of two of the steepest slope and of the farthest a rate
-    stands from an end of its box, so the prices move with the units of currency and of return. A
-    total's slack weighs at most that far: the totals' misses can always be nothing, so a slack
-    only frees a price or holds it, and read on its own scale a total 1e12 short of binding made
-    every rate's weight a rounding.
+    The program is written in a power of two of the steepest slope of a rate its box leaves free
+    and of the farthest a rate stands from an end of its box, so the prices move with the units of
+    currency and of return. A cell its box pins, as at nothing where its channel does not run,
+    holds no row: a power of 0.2 from nothing stands at 2.9e12 a unit there, and as the scale it
+    left every other slope under HiGHS's tolerance and the budget's price 0. A total's slack
+    weighs at most that far: the totals' misses can always be nothing, so a slack only frees a
+    price or holds it, and read on its own scale a total 1e12 short of binding made every rate's
+    weight a rounding.
     """
     size, count = rates.size, len(groups)
     slopes = np.array([_slope(w, r) for w, r in zip(worths, rates, strict=True)]) / periods
-    unit = _unit(float(np.max(np.abs(slopes), initial=abs(charge))))
+    below, above = rates < upper, rates > lower
+    # a rate its box pins holds no row, however steep its curve stands there
+    unit = _unit(float(np.max(np.abs(slopes[below | above]), initial=abs(charge))))
     member = np.zeros((count, size))
     for k, group in enumerate(groups):
         member[k, group.members] = group.weights
@@ -2977,7 +2982,6 @@ def _priced(
     least = np.array([group.least for group in groups], dtype=float)
     raised = fixed | np.isfinite(most)  # a price that can be positive
     lowered = fixed | (least > 0.0)  # and one that can be negative
-    below, above = rates < upper, rates > lower
     # how far the plan stands from what would excuse each miss, in currency over the plan, read in
     # a power of two of the farthest a rate stands from an end of its box
     distances = periods * np.concatenate([rates - lower, upper - rates])
