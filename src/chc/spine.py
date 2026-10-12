@@ -98,8 +98,9 @@ def run_spine(
     """Run both arms through all four layers and report them side by side.
 
     Args:
-        gamma, cvar_gap: the assumed sensitivity level and the gap it scales, passed straight to
-            :func:`chc.plan.certify_safety`. They price the *plan*; they do not change it.
+        gamma, cvar_gap: the assumed sensitivity level and the gap it scales, a share of each
+            arm's own believed channel, passed straight to :func:`chc.plan.certify_safety`. They
+            price the *plan*; they do not change it.
         supply_floor: the barrier is ``h(x) = x_B - supply_floor``, safe where ``h >= 0``.
         u_max: the actuation budget backing ``gamma_star`` -- the box bound, not the plan's own
             largest action, since ``gamma_star`` asks what the *best admissible* action could hold.

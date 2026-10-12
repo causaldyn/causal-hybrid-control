@@ -777,9 +777,10 @@ class BarrierConstraint:
     The condition :func:`certify_safety` audits, handed to :func:`causal_plan` to hold in the solve
     rather than to price after it. ``barrier`` is ``h`` -- safe where ``h >= 0``, a JAX-traceable
     scalar function; ``alpha`` is the class-K gain; ``gamma`` and ``cvar_gap`` set the
-    identification radius ``(gamma-1)/(gamma+1) * cvar_gap`` on the effect, so the condition is the
-    worst case over the identified set and ``gamma = 1`` is the ordinary CBF condition. The defaults
-    and the calibration burden on ``cvar_gap`` are :func:`certify_safety`'s.
+    identification radius ``(gamma-1)/(gamma+1) * cvar_gap * ||B_hat(x0)||_2`` on the effect,
+    ``cvar_gap`` a share of the channel's operator norm at the plan's start, so the condition is
+    the worst case over the identified set and ``gamma = 1`` is the ordinary CBF condition. The
+    defaults and the calibration burden on ``cvar_gap`` are :func:`certify_safety`'s.
 
     Several bounds are a tuple of barriers, safe where every one is ``>= 0``, and each holds its own
     condition at every step. Their least is no substitute: its condition jumps where two tie,
@@ -1162,7 +1163,7 @@ class _HeldBarrier(eqx.Module):
     barrier: Barrier
     dt: float = eqx.field(static=True)
     alpha: float = eqx.field(static=True)
-    delta: float = eqx.field(static=True)
+    delta: Array  # a value, not a program: it moves with the start's channel in a replanning loop
     multipliers: Array
     weight: Array
     backoff: Array
@@ -1285,7 +1286,11 @@ def _hold_barrier(
         barrier=barrier.barrier,
         dt=dt,
         alpha=barrier.alpha,
-        delta=confounding_robust_inflation(barrier.cvar_gap, 0.0, barrier.gamma),
+        delta=jnp.asarray(
+            confounding_robust_inflation(barrier.cvar_gap, 0.0, barrier.gamma)
+            * _channel_size(model, x0, actions.shape[1]),
+            actions.dtype,
+        ),
         multipliers=jnp.zeros(actions.shape[:1] + columns, actions.dtype),
         weight=jnp.asarray(1.0, actions.dtype),
         backoff=jnp.asarray(0.0, actions.dtype),
@@ -1424,7 +1429,8 @@ class SafetyCertificate:
     certified_steps: int  # leading certified PREFIX, as in ``certified_horizon``, not a pass count
     gamma_star: float  # weakest step's §40 ceiling; nan if some step certifies at no Gamma at all
     step_gamma_star: tuple[float, ...]  # per-step ceilings, so the weak link is locatable
-    radius: float  # largest d_k = Delta(Gamma)*||grad h(x_k)|| applied along the plan
+    # largest d_k = Delta(Gamma)*||grad h(x_k)|| along the plan, Delta in the channel's units
+    radius: float
 
 
 def _norm(vectors: Array) -> Array:
@@ -1461,8 +1467,25 @@ def _barrier_terms(
     return h_values, _norm(grad_h), drift, channel
 
 
+def _channel_size(model: Dynamics, x0: Array, levers: int) -> float:
+    """``||B_hat(x0)||_2``, the fitted channel's operator norm at the plan's first state: what
+    ``cvar_gap`` is a share of, so the identification radius is in the channel's own units and
+    ``gamma_star`` reads the same in any units of the state or of the levers.
+
+    Raises:
+        ValueError: if it is not a finite number, which scales no radius.
+    """
+    channel = jax.jacobian(model, argnums=2)(0.0, x0, jnp.zeros(levers, x0.dtype))
+    size = float(jnp.linalg.norm(channel, 2))
+    if not math.isfinite(size):
+        raise ValueError(
+            f"the fitted channel at the plan's first state has norm {size}, which scales no radius"
+        )
+    return size
+
+
 def _guaranteed(
-    drift: Array, channel: Array, grad_norm: Array, actions: Array, delta: float
+    drift: Array, channel: Array, grad_norm: Array, actions: Array, delta: float | Array
 ) -> Array:
     """``a + <w, u> - d ||u||``, ``d = delta ||grad h||``: the worst case at the planned action."""
     return drift + jnp.einsum("km,km->k", channel, actions) - delta * grad_norm * _norm(actions)
@@ -1499,12 +1522,16 @@ def certify_safety(
             the least.
         alpha: the class-K gain in ``grad h . xdot >= -alpha*h``.
         gamma, cvar_gap: the marginal sensitivity model's level and the gap it scales, combined into
-            ``Delta = (gamma-1)/(gamma+1) * cvar_gap``. ``gamma = 1`` is exact identification --
-            zero radius, and this degenerates to the ordinary CBF check. NOTE the calibration
+            ``Delta = (gamma-1)/(gamma+1) * cvar_gap * ||B_hat(x0)||_2``: ``cvar_gap`` is a
+            *share* of the model's channel, its operator norm at the plan's first state, so the
+            radius is in the channel's units and ``gamma_star`` reads the same in any units of the
+            state or of the levers. The default, 1, is the channel's own size, the calibration
+            ``cvar_gap := b_hat`` of :mod:`chc.sensitivity`. ``gamma = 1`` is exact identification
+            -- zero radius, and this degenerates to the ordinary CBF check. NOTE the calibration
             burden: ``Delta`` is used here as an **operator-norm radius on the effect matrix**, and
-            §32's scalar CVaR gap does not by itself establish one. Supplying ``cvar_gap`` in
-            matrix operator-norm units is the caller's externally calibrated input, exactly as
-            ``gamma`` is.
+            §32's scalar CVaR gap does not by itself establish one. The share is the caller's
+            externally calibrated input, exactly as ``gamma`` is; an absolute radius ``r`` is the
+            share ``r / ||B_hat(x0)||_2``.
         u_max: actuation limit, used for ``gamma_star`` only -- that is the *best admissible action*
             question, which needs a budget the plan's own choice does not define. Defaults to the
             largest action norm the plan actually uses, answering the narrower "how much confounding
@@ -1517,7 +1544,8 @@ def certify_safety(
 
     Raises:
         ValueError: if ``cvar_gap`` is not positive or not finite, which would make the radius
-            meaningless and :func:`chc.barrier.barrier_gamma_star` uninvertible; if ``gamma`` is
+            meaningless and :func:`chc.barrier.barrier_gamma_star` uninvertible, or the channel at
+            the plan's first state is not a finite number; if ``gamma`` is
             below 1 or not finite, which is not a sensitivity level; or if the actuation budget
             backing ``gamma_star`` is non-positive, which asks how much confounding a controller
             with no authority tolerates.
@@ -1536,9 +1564,9 @@ def certify_safety(
         raise ValueError(
             f"cvar_gap must be positive and finite to scale a sensitivity radius, got {cvar_gap}"
         )
-    delta = confounding_robust_inflation(cvar_gap, 0.0, gamma)
-
     states, actions = plan.trajectory[:-1], plan.actions
+    size = _channel_size(model, states[0], actions.shape[1])
+    delta = confounding_robust_inflation(cvar_gap, 0.0, gamma) * size
     h_values, grad_norm, drift, channel = _barrier_terms(model, barrier, states, actions, dt)
     guaranteed = _guaranteed(drift, channel, grad_norm, actions, delta)
     required = -alpha * h_values
@@ -1554,7 +1582,9 @@ def certify_safety(
                 drift=float(a), channel=float(c), u_max=authority, alpha_h=float(alpha * h)
             ),
             cvar_gap,
-            float(n),
+            # the gap is a share of the channel's size: carried with the gradient, where a zero
+            # channel reads as a flat barrier does, a radius of zero at every level
+            size * float(n),
         )
         for a, c, h, n in zip(
             drift, jnp.linalg.norm(channel, axis=1), h_values, grad_norm, strict=True

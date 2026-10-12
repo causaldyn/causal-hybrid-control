@@ -1,6 +1,7 @@
 # ADR 0002 — The barrier condition held inside the solve
 
-**Status:** accepted, 2026-09-26.
+**Status:** accepted, 2026-09-26. Amended by ADR 0085, 2026-10-12: `cvar_gap` is a share of the
+channel's operator norm at the plan's first state, so `delta` carries the channel's units.
 
 ## Context
 

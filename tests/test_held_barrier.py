@@ -230,6 +230,35 @@ def test_a_band_holds_each_bound_s_condition_and_lands_on_the_exact_optimum(
     assert (plan.task_cost - optimum) / optimum < GAP
 
 
+@pytest.mark.parametrize("unit", [0.1, 10.0])
+def test_the_held_condition_lands_on_the_exact_optimum_in_any_units_of_the_force(
+    unit: float,
+) -> None:
+    """The force in ``unit`` times its own units, its box and its price with it: the plan is the
+    same one, read in those units. The radius was ``(gamma-1)/(gamma+1)`` in the channel's units,
+    ``1/unit`` here, so tenths held the floor at a tenth of the radius the audit prices and tens at
+    ten times it."""
+    drift = jnp.array([[0.0, 1.0], [-(OMEGA**2), -2.0 * ZETA * OMEGA]])
+    model = LinearDynamics(drift, jnp.array([[0.0], [1.0 / unit]]))
+    cost = QuadraticCost(Q=COST.Q, R=COST.R / unit**2, Qf=COST.Qf, x_target=COST.x_target)
+    plan = causal_plan(
+        model,
+        X0,
+        cost,
+        DT,
+        HORIZON,
+        -U_MAX * unit,
+        U_MAX * unit,
+        barrier=BarrierConstraint(_velocity_floor, alpha=ALPHA, gamma=2.0),
+    )
+    _, optimum = _exact_floor_optimum(2.0)
+
+    assert plan.safety is not None
+    assert plan.safety.certified_steps == HORIZON
+    assert plan.task_cost >= optimum * (1.0 - 1e-12)
+    assert (plan.task_cost - optimum) / optimum < GAP
+
+
 def test_the_log_counts_the_steps_the_exact_optimum_binds_on(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -71,6 +71,10 @@ design record is
   `planned_certified`, which a plan can fail under a comfortable `Γ*`. The plan-level `Γ*` is the
   weakest step's, so one uncertifiable step sinks the plan. Where the barrier is flat, as at the centre of a ball, the radius is zero at
   every level and the step's `Γ*` is `inf` or `nan`.
+  The radius is `(Γ-1)/(Γ+1)·cvar_gap` times the channel's operator norm at the plan's first
+  state: `cvar_gap` is a share of the channel, 1 by default, so `Γ*` and the certified steps read
+  the same in any units of the state or of the levers
+  ([ADR 0085](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0085-gamma-star-s-gap-is-a-share-of-the-channel.md)).
   Where two bounds tie, as at the midpoint of a two-sided one, `prescribe` audits each and reports
   the weaker `Γ*`: an upper bound on the joint ceiling, because each bound's is reached by its own
   best action and no single action need reach both.
