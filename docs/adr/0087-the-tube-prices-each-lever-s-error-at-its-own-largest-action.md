@@ -1,6 +1,7 @@
 # ADR 0087 — The tube prices each lever's error at its own largest action
 
-**Status:** accepted, 2026-10-12. Amends the rate error of `prescribe`'s tube (ADR 0080).
+**Status:** accepted, 2026-10-12. Amends the rate error of `prescribe`'s tube (ADR 0080). Amended by
+ADR 0091, 2026-10-13: each lever's error is priced from the log's mean action, not from its zero.
 
 ## Context
 

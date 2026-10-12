@@ -93,6 +93,7 @@ def _decide(
     policy: str,
     *,
     levers_in: tuple[float, float] = (1.0, 1.0),
+    levers_at: tuple[float, float] = (0.0, 0.0),
     state_in: float = 1.0,
     unread: bool = False,
     budget: bool = False,
@@ -106,11 +107,12 @@ def _decide(
     same number. ``unread`` adds a column no lever, target or covariate names. ``budget`` holds
     the plan to spend at most 0.6 over the horizon, ``u1`` at 1 a unit and ``u2`` at 3, on boxes
     from 0, where it binds. ``floor`` bounds the state to ``[floor, 1.1]`` in its own units, audited
-    at ``gamma = 1.5``, and ``hold`` holds the bounds in the solve."""
+    at ``gamma = 1.5``, and ``hold`` holds the bounds in the solve. ``levers_at`` moves each
+    lever's zero, the log and the box with it."""
     columns = dict(_columns(policy))
     first, second = levers_in
-    columns["u1"] = first * columns["u1"]
-    columns["u2"] = second * columns["u2"]
+    columns["u1"] = first * columns["u1"] + levers_at[0]
+    columns["u2"] = second * columns["u2"] + levers_at[1]
     columns["y"] = state_in * columns["y"]
     if unread:
         columns["w"] = np.random.default_rng(7).normal(scale=1e6, size=columns["y"].size)
@@ -123,8 +125,18 @@ def _decide(
     return prescribe(
         Panel.from_frame(columns, unit="unit", time="time"),
         levers=[
-            Lever("u1", lo=low * first, hi=2.0 * first, unit_cost=0.01 * (state_in / first) ** 2),
-            Lever("u2", lo=low * second, hi=2.0 * second, unit_cost=(state_in / second) ** 2),
+            Lever(
+                "u1",
+                lo=low * first + levers_at[0],
+                hi=2.0 * first + levers_at[0],
+                unit_cost=0.01 * (state_in / first) ** 2,
+            ),
+            Lever(
+                "u2",
+                lo=low * second + levers_at[1],
+                hi=2.0 * second + levers_at[1],
+                unit_cost=(state_in / second) ** 2,
+            ),
         ],
         target=Target("y", value=(2.0 if budget else 1.0) * state_in),
         adjustment=CausalGraph.from_edges(EDGES),
@@ -361,69 +373,77 @@ def test_a_row_met_with_no_pull_reads_so_in_its_price_and_its_weight_in_any_unit
     assert at.decision_weight().weakly_active == 1
 
 
-@pytest.mark.parametrize("units", [1e-3, 1.0, 1e3])
-def test_the_tube_prices_the_channel_s_error_at_the_largest_action_the_box_allows(
-    units: float,
-) -> None:
-    """The tube's rate error is the channel's standard error, per unit of a lever, times the
-    largest action either box allows, ``2 units``: the tube RK4's recursion carries at the field's
-    rate, whatever the levers' units. The plant's own noise, in the state's units, adds its
-    radius on top, which the levers' units do not move."""
-    result = _decide("free", levers_in=(units, units))
+def _logged_mean(
+    policy: str,
+    levers_in: tuple[float, float] = (1.0, 1.0),
+    levers_at: tuple[float, float] = (0.0, 0.0),
+) -> np.ndarray:
+    """Each lever's mean over the log's transitions, every period but each unit's last."""
+    columns = _columns(policy)
+    rows = columns["time"] < columns["time"].max()
+    return np.array(
+        [
+            scale * float(np.mean(columns[name][rows])) + at
+            for name, scale, at in zip(("u1", "u2"), levers_in, levers_at, strict=True)
+        ]
+    )
+
+
+def _tube_at(result: Prescription, reach: np.ndarray) -> np.ndarray:
+    """The tube the plan's own rate, noise and persistence carry, each lever's error read off each
+    covariance and priced at ``reach``, the largest read taken."""
     plan = result.plan
     assert plan is not None
     problem = plan._problem
     assert problem is not None
-    error = result.model_fit.channel_error
-    assert error is not None
+    errors = result.model_fit._lever_errors
+    assert errors is not None
+    rates = errors * reach
+    error = float(np.max(np.sqrt(np.mean(rates * rates, axis=1))))
     noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
     assert noise is not None
     assert persistence is not None
     rate, _ = _rate(problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi))
-    expected = _tube([rate] * HORIZON, [error * 2.0 * units] * HORIZON, DT, "rk4") + _noise_tube(
+    return _tube([rate] * HORIZON, [error] * HORIZON, DT, "rk4") + _noise_tube(
         np.asarray(rate), np.array([[noise**2]]), persistence, DT, HORIZON
     )
-    assert plan.uncertainty_tube is not None
-    np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
 
 
-@pytest.mark.parametrize("levers_in", [(1e-3, 1.0), (1e3, 1.0), (1.0, 1e3), (1e-3, 1e3)])
-def test_the_tube_prices_each_lever_s_error_at_that_lever_s_largest_action(
+@pytest.mark.parametrize(
+    "levers_in",
+    [(1.0, 1.0), (1e-3, 1e-3), (1e3, 1e3), (1e-3, 1.0), (1e3, 1.0), (1.0, 1e3), (1e-3, 1e3)],
+)
+def test_the_tube_prices_each_lever_s_error_at_its_largest_distance_from_the_log_s_action(
     levers_in: tuple[float, float],
 ) -> None:
     """Each lever in units of its own, its box with it. Lever ``j``'s share of the channel's
-    standard error, per unit of it, times the largest action its box allows, ``2 levers_in[j]``,
-    reads the same in any units of the lever, and the tube's rate error is its root mean over the
-    channel's entries: the channel's standard error in the levers' own units times 2, as above.
-    It was the channel's standard error in the units the levers came in, an average over levers
-    in units of their own, times the largest action of either box. With ``u1`` in units 1e3 times
-    its own, the tube ended at 3.89 where it ends at 0.538, and certified none of the two steps it
-    certifies; in thousandths, at 4.04."""
-    error = _decide("free").model_fit.channel_error
-    assert error is not None
+    standard error, per unit of it, times the largest distance its box allows from the log's mean
+    action, ``2 levers_in[j]`` give or take that mean, reads the same in any units of the lever,
+    and the tube's rate error is its root mean over the channel's entries, the largest read
+    taken. Before the fix, priced at the largest action of either box, ``u1`` in units 1e3 times
+    its own ended the tube at 3.89 where it ends at 0.538; in thousandths, at 4.04. Priced at each
+    lever's largest action from its zero, the reading ADR 0087 left, the drift's absorbing the
+    channel at the log's mean action went unread."""
     result = _decide("free", levers_in=levers_in)
     plan = result.plan
     assert plan is not None
-    problem = plan._problem
-    assert problem is not None
-    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
-    assert noise is not None
-    assert persistence is not None
-    rate, _ = _rate(problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi))
-    expected = _tube([rate] * HORIZON, [error * 2.0] * HORIZON, DT, "rk4") + _noise_tube(
-        np.asarray(rate), np.array([[noise**2]]), persistence, DT, HORIZON
+    mean = _logged_mean("free", levers_in)
+    reach = np.maximum(
+        np.abs(-2.0 * np.asarray(levers_in) - mean), np.abs(2.0 * np.asarray(levers_in) - mean)
     )
     assert plan.uncertainty_tube is not None
-    np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
+    np.testing.assert_allclose(
+        np.asarray(plan.uncertainty_tube), _tube_at(result, reach), rtol=1e-12, atol=0.0
+    )
     assert result.certificate.certified_horizon == _decide("free").certificate.certified_horizon
 
 
-def test_a_lever_the_plan_holds_adds_its_error_at_the_level_it_holds_it_at() -> None:
+def test_a_lever_the_plan_holds_at_its_logged_level_adds_no_error() -> None:
     """``state``'s log sets ``u1`` from the state alone, and the plan holds that lever's column at
-    its mean logged level, 0.028: the tube prices ``u1``'s share of the channel's error at that
-    level, off each covariance, and ``u2``'s at 2, the largest action its box allows. Priced at
-    the box's largest action, as the channel's error was, the tube ended at 0.551 where it ends
-    at 0.549."""
+    its mean logged level, 0.028: the action the drift absorbed the channel at, so ``u1``'s share
+    of the channel's error moves the field by nothing there, and the tube prices ``u2``'s alone,
+    at its largest distance from its own mean. Priced from the lever's zero, at 0.028 and 2, the
+    tube ended at 0.548948 where it ends at 0.548963; at the box's largest action, at 0.551."""
     result = _decide("state")
     plan = result.plan
     assert plan is not None
@@ -432,20 +452,37 @@ def test_a_lever_the_plan_holds_adds_its_error_at_the_level_it_holds_it_at() -> 
     lo, hi = np.asarray(problem.u_lo), np.asarray(problem.u_hi)
     assert lo[0] == hi[0]
     assert 0.02 < lo[0] < 0.03
-    errors = result.model_fit._lever_errors
-    assert errors is not None
-    assert errors.shape == (3, 2)
-    rates = errors * np.array([abs(lo[0]), 2.0])
-    error = float(np.max(np.sqrt(np.mean(rates * rates, axis=1))))
-    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
-    assert noise is not None
-    assert persistence is not None
-    rate, _ = _rate(problem.model, problem.x0, jnp.asarray(lo), jnp.asarray(hi))
-    expected = _tube([rate] * HORIZON, [error] * HORIZON, DT, "rk4") + _noise_tube(
-        np.asarray(rate), np.array([[noise**2]]), persistence, DT, HORIZON
-    )
+    assert result.model_fit._lever_errors is not None
+    assert result.model_fit._lever_errors.shape == (3, 2)
+    mean = _logged_mean("state")
+    reach = np.array([0.0, max(abs(-2.0 - mean[1]), abs(2.0 - mean[1]))])
     assert plan.uncertainty_tube is not None
-    np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
+    np.testing.assert_allclose(
+        np.asarray(plan.uncertainty_tube), _tube_at(result, reach), rtol=1e-12, atol=0.0
+    )
+
+
+@pytest.mark.parametrize("levers_at", [(3.0, 0.0), (0.0, -5.0), (100.0, 0.0)])
+@pytest.mark.parametrize("policy", ["free", "state"])
+def test_the_tube_reads_the_same_wherever_a_lever_s_zero_is(
+    policy: str, levers_at: tuple[float, float]
+) -> None:
+    """Each lever's zero moved, the log and the box with it. The fit's drift absorbs the channel at
+    the log's action, so the field it fits is the same one, read at the moved action, and so is its
+    error at each action. The tube priced each lever's error from its zero: ``free``'s ended at
+    0.5431 with ``u1`` moved by 3, where it ends at 0.5384, and at 0.7126 moved by 100, where it
+    certified one step where it certifies two. It now prices it from the log's mean action, which
+    moves with the zero."""
+    one = _decide(policy).plan
+    other = _decide(policy, levers_at=levers_at).plan
+    assert one is not None
+    assert other is not None
+    assert one.uncertainty_tube is not None
+    assert other.uncertainty_tube is not None
+    np.testing.assert_allclose(
+        np.asarray(other.uncertainty_tube), np.asarray(one.uncertainty_tube), rtol=1e-4, atol=0.0
+    )
+    assert other.certified_horizon == one.certified_horizon
 
 
 def test_a_plan_whose_every_box_is_pinned_has_no_regret() -> None:
@@ -625,6 +662,43 @@ def test_a_held_barrier_clears_every_step_in_any_units(
     assert float(np.max(np.abs(_schedule(other)))) > 0.0
 
 
+EACH_LEVER = [(1e3, 1.0), (1.0, 1e-3), (1e-3, 1e3)]
+
+
+@pytest.mark.parametrize("levers_in", EACH_LEVER)
+@pytest.mark.parametrize(("policy", "floor"), [(p, 0.2) for p in POLICIES] + [("free", 0.8)])
+def test_gamma_star_and_the_barrier_s_steps_read_the_same_in_any_units_of_each_lever(
+    policy: str, floor: float, levers_in: tuple[float, float]
+) -> None:
+    """Each lever logged in units of its own, its box with it. The audit read the levers through
+    one number, the largest action of either box, and one ball in the levers' units: bounded to
+    ``[0.2, 1.1]``, ``free``'s and ``together``'s barrier cleared three steps of three, and none
+    with ``u1`` in thousands or ``u2`` in thousandths, so the trusted steps fell from two to none;
+    on ``state``'s log ``gamma*`` read 118 where it reads 6.17. It now reads each lever in units of
+    its own largest action."""
+    one = _decide(policy, floor=floor).certificate
+    other = _decide(policy, levers_in=levers_in, floor=floor).certificate
+    assert one.barrier_certified_steps is not None
+    assert other.barrier_certified_steps == one.barrier_certified_steps
+    assert other.trustworthy_steps == one.trustworthy_steps
+    assert other.gamma_star_status == one.gamma_star_status
+    assert other.gamma_star == pytest.approx(one.gamma_star, rel=1e-9, abs=0.0)
+
+
+@pytest.mark.parametrize("levers_in", EACH_LEVER)
+def test_a_held_barrier_clears_every_step_in_any_units_of_each_lever(
+    levers_in: tuple[float, float],
+) -> None:
+    """``state``'s log, the bounds ``[0.2, 1.1]`` held in the solve. The held condition read the
+    levers' units as one: with ``u1`` in thousands, or ``u2`` in thousandths, the held plan cleared
+    no step of three. It now holds, and the audit reads, each lever in units of its own largest
+    action, and every step clears."""
+    one = _decide("state", floor=0.2, hold=True).certificate
+    other = _decide("state", levers_in=levers_in, floor=0.2, hold=True).certificate
+    assert one.barrier_certified_steps == HORIZON
+    assert other.barrier_certified_steps == HORIZON
+
+
 # ---- the allocation planner: currency, outcome units, and a channel no plan can buy ----
 
 PERIODS = 13
@@ -746,3 +820,70 @@ def test_a_channel_no_plan_can_buy_moves_nothing(level: float) -> None:
     assert moved.worth - own == pytest.approx(plan.worth, rel=1e-12, abs=0.0)
     assert moved.bound - own == pytest.approx(plan.bound, rel=1e-12, abs=0.0)
     assert moved.price == pytest.approx(plan.price, rel=1e-12, abs=0.0)
+
+
+@functools.cache
+def _two_states(supply_in: float, wait_in: float) -> Prescription:
+    """The quickstart's problem on sixty regions, ``supply`` and ``wait`` logged in ``supply_in``
+    and ``wait_in`` times their units, the target, the bound and the price with them, and the
+    tolerance in ``supply``'s."""
+    rng = np.random.default_rng(0)
+    names = ("region", "week", "supply", "wait", "incentive", "demand")
+    rows: dict[str, list[float]] = {name: [] for name in names}
+    for region in range(60):
+        supply, wait = rng.normal(0.0, 0.2), rng.normal(0.0, 0.2)
+        for week in range(12):
+            demand = rng.normal(0.0, 1.0)
+            incentive = 0.9 * demand + rng.normal(0.0, 0.5)
+            for name, value in zip(
+                names, (region, week, supply, wait, incentive, demand), strict=True
+            ):
+                rows[name].append(value)
+            supply, wait = (
+                supply
+                + DT * (-0.6 * supply + 0.3 * wait + 0.8 * incentive + 1.5 * demand)
+                + rng.normal(0.0, 0.01),
+                wait + DT * (0.25 * wait - 0.4 * incentive) + rng.normal(0.0, 0.01),
+            )
+    columns = {name: np.asarray(values) for name, values in rows.items()}
+    columns["supply"] = supply_in * columns["supply"]
+    columns["wait"] = wait_in * columns["wait"]
+    edges = [
+        ("demand", "incentive"),
+        ("demand", "supply"),
+        ("incentive", "supply"),
+        ("incentive", "wait"),
+        ("wait", "supply"),
+    ]
+    return prescribe(
+        Panel.from_frame(columns, unit="region", time="week", seed=0),
+        adjustment=CausalGraph.from_edges(edges),
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05 * supply_in**2)],
+        target=Target("supply", value=1.0 * supply_in),
+        constraints=[Constraint("wait", hi=0.5 * wait_in)],
+        horizon=5,
+        dt=DT,
+        tolerance=0.5 * supply_in,
+    )
+
+
+def test_the_tube_is_one_norm_over_states_in_the_units_they_share() -> None:
+    """The tube is a norm over the states, and its rate error a root mean over them: it reads the
+    same, by the factor, in any units the states share, and states in units unlike each other mix
+    in it. ``tolerance`` is one number in the states' units, and a caller who logs each state in
+    units of the error accepted on it gives each state its own scale."""
+    one = _two_states(1.0, 1.0).plan
+    shared = _two_states(1e3, 1e3).plan
+    apart = _two_states(1.0, 1e3).plan
+    assert one is not None
+    assert shared is not None
+    assert apart is not None
+    assert one.uncertainty_tube is not None
+    np.testing.assert_allclose(
+        np.asarray(shared.uncertainty_tube) / 1e3,
+        np.asarray(one.uncertainty_tube),
+        rtol=1e-9,
+        atol=0.0,
+    )
+    assert apart.uncertainty_tube is not None
+    assert float(apart.uncertainty_tube[-1]) > 10.0 * float(one.uncertainty_tube[-1])

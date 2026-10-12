@@ -238,6 +238,7 @@ def _pessimistic_loop(
     lam_unc: float,
     blocks: Blocks = (),
     scaled: bool = True,
+    metric: Array | None = None,
 ) -> tuple[Array, Array, Array]:
     """The penalised descent as one XLA program: the planner's (:func:`chc.control._descend`) on the
     task cost plus the penalties, in variables scaled action by action.
@@ -257,6 +258,12 @@ def _pessimistic_loop(
     floor: a penalty has no curvature the guess can be relied on to show, so the descent reads it
     as it goes, by the secant along each action over each accepted step. Scaled, ``blocks`` must be
     coloured ``disjoint``.
+
+    ``metric``, with ``scaled=False``, is a fixed scale per action the steps are taken in instead of
+    the caller's units, ``v = metric * u``, the box and the rows carried into it as scaled ones
+    are: the barrier rounds pass one over each lever's largest action, so each lever steps in
+    units of it, where their condition is a ball (:func:`chc.plan._action_shape`). ``lr0`` is then
+    a step in those units per unit of gradient; ``tol`` keeps its meaning.
 
     The confounding radius' norm is not differentiated: with no ``blocks`` the augmented cost holds
     it unsmoothed, and each step takes it, with the box, by its proximal map
@@ -281,11 +288,12 @@ def _pessimistic_loop(
         return value + _step_norms(us.astype(value.dtype), norms, jnp.ones((), value.dtype))
 
     start = project_box(us0, u_lo, u_hi)
-    units = (
-        _action_units(model, x0, start, dt, cost, u_lo, u_hi, augmented(start))
-        if scaled
-        else (jnp.ones_like(start), 1.0, 1.0)
-    )
+    if scaled:
+        units = _action_units(model, x0, start, dt, cost, u_lo, u_hi, augmented(start))
+    elif metric is not None:
+        units = (jnp.broadcast_to(metric, start.shape).astype(start.dtype), 1.0, 1.0)
+    else:
+        units = (jnp.ones_like(start), 1.0, 1.0)
     return _descend(
         augmented,
         jax.grad(smooth),
@@ -298,7 +306,7 @@ def _pessimistic_loop(
         lr0,
         tol,
         blocks,
-        scaled=scaled,
+        scaled=scaled or metric is not None,
         secant=scaled,
         norms=norms,
     )
