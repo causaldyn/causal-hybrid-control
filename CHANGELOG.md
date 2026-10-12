@@ -31,8 +31,11 @@ still change).
   That error is read off the fit's defect with its lag-1 correlation within units, and carried
   through the field's rate. On the same logs the plant is inside the tube at the first step on
   97 % to 99 % of draws, and the certificate trusts 1 or 2 steps, 3 at most. The quickstart's
-  plan is trusted for 1 week, not 15; its plant stays within the tolerance for 3. The certificate
-  reports the noise as `tube_noise` and `tube_persistence`, in the report and in `to_json()`.
+  plan is trusted for 1 week, not 15; its plant stays within the tolerance for 3. A media-mix
+  report's prescription, whose season is adjusted for and not forecast, is trusted for no week,
+  not 2: the season moves sales by about 1.24 a week that the fitted field leaves unexplained.
+  The certificate reports the noise as `tube_noise` and `tube_persistence`, in the report and in
+  `to_json()`.
   `causal_plan` and `RecedingHorizon` take it as `noise` and `noise_persistence`; both default
   to zero, which leaves every tube as it was. `CausalDynamicsFit.defect` keeps the defect row by
   row (ADR 0080). Since 0.5.0.
