@@ -1,0 +1,142 @@
+/* The fold design's spectral certificate, tightened by a diagonal shift.
+ *
+ * The design minimises tr(Q F) over balanced K-partitions of m units, F = sum_f 1_f 1_f' the
+ * same-fold matrix.  The bound the library reports is the diagonally shifted Ky Fan bound
+ * (Donath-Hoffman 1973; Boppana 1987; Poljak-Rendl 1995):
+ *
+ *   LB(u) = sum(u) + (m/K) (1'(Q - D)1/m + sum_{j<K} lambda_j(V'(Q - D)V)),   D = diag(u),
+ *
+ * V an orthonormal basis of the mean-free subspace.  STEP 1 is why it holds for EVERY u: each unit
+ * sits in exactly one fold, so diag(F) = 1 and tr(QF) = tr((Q - D)F) + sum(u); the plain Ky Fan
+ * argument then applies to Q - D.  STEP 2 is why a uniform shift buys nothing, so on a
+ * vertex-transitive Q the best shift is uniform and the bound is the plain one.  STEP 3 checks
+ * validity, and the bound's concavity in u, on exact rational Q(x) at K = 2 and K = 3; STEP 4
+ * checks validity where the bound is tight, at the shifts the library's search converges to.
+ *
+ *   timeout 300 maxima --very-quiet -b validation/fold_shifted_bound.mac
+ */
+
+tr(M) := sum(M[i,i], i, 1, length(M))$
+same_fold(lab) := genmatrix(lambda([i,j], if lab[i] = lab[j] then 1 else 0),
+                            length(lab), length(lab))$
+
+print("=== STEP 1: diag(F) = 1 makes every diagonal shift exact ===")$
+
+m1 : 6$
+Qs : genmatrix(lambda([i,j], q[min(i,j), max(i,j)]), m1, m1)$
+us : makelist(concat(u, i), i, 1, m1)$
+Ds : apply(diag_matrix, us)$
+for lab in [[0,0,0,1,1,1], [0,1,0,1,1,0], [0,0,1,1,2,2], [2,0,1,0,2,1]] do block([F],
+  F : same_fold(lab),
+  print("(1)", lab, " diag(F) =", makelist(F[i,i], i, 1, m1),
+        " tr(QF) - tr((Q-D)F) - sum(u) =", expand(tr(Qs . F) - tr((Qs - Ds) . F) - apply("+", us))))$
+
+/* The frame behind the Ky Fan step: F = (m/K) U U' with U = [1_f / sqrt(m/K)] orthonormal and
+ * the all-ones vector in its span, so tr((Q - D)F) = (m/K)(1'(Q-D)1/m + tr(W'(Q-D)W)) for an
+ * orthonormal (K-1)-frame W of the mean-free subspace, and Ky Fan bounds tr(W'(Q-D)W) below by
+ * the sum of the K-1 smallest eigenvalues of V'(Q-D)V. */
+lab3 : [0,0,1,1,2,2]$
+U : genmatrix(lambda([i,f], if lab3[i] = f - 1 then 1/sqrt(2) else 0), m1, 3)$
+print("(2) U'U - I =", ratsimp(transpose(U) . U - ident(3)),
+      " (m/K) U U' - F =", ratsimp(2 * U . transpose(U) - same_fold(lab3)),
+      " 1 - sqrt(m/K) U 1 =", ratsimp(transpose(makelist(1, i, 1, m1)) - sqrt(2) * U . [1,1,1]))$
+
+print("=== STEP 2: a uniform shift moves the bound by nothing ===")$
+
+/* A rational basis of the mean-free subspace, B = [e_i - e_m], and the compression
+ * C(A) = (B'B)^-1 B'AB.  B = V T with T invertible, so C(A) = T^-1 (V'AV) T has the eigenvalues
+ * of V'AV -- checked against an exact orthonormal (Helmert) V at m = 4. */
+m2 : 4$
+B : genmatrix(lambda([i,j], if i = j then 1 elseif i = m2 then -1 else 0), m2, m2 - 1)$
+compress(A) := invert(transpose(B) . B) . transpose(B) . A . B$
+As : genmatrix(lambda([i,j], a[min(i,j), max(i,j)]), m2, m2)$
+V : transpose(matrix([1/sqrt(2), -1/sqrt(2), 0, 0],
+                     [1/sqrt(6), 1/sqrt(6), -2/sqrt(6), 0],
+                     [1/sqrt(12), 1/sqrt(12), 1/sqrt(12), -3/sqrt(12)]))$
+print("(3) V'V - I =", ratsimp(transpose(V) . V - ident(m2 - 1)),
+      " V'1 =", ratsimp(transpose(V) . makelist(1, i, 1, m2)))$
+print("(4) charpoly(V'AV) - charpoly(C(A)) =",
+      ratsimp(charpoly(transpose(V) . As . V, z) - charpoly(compress(As), z)))$
+print("(5) C(A - c I) - (C(A) - c I) =",
+      ratsimp(compress(As - c * ident(m2)) - (compress(As) - c * ident(m2 - 1))))$
+
+/* So u -> u + c 1 moves sum(u) by m c, 1'(Q - D)1/m by -c and each compressed eigenvalue by -c. */
+lb_scalar(sigma, s, lam) := sigma + (mm/kk) * (s/mm + lam)$
+print("(6) LB(u + c 1) - LB(u) =",
+      ratsimp(lb_scalar(su + mm*c, s - mm*c, L - (kk - 1)*c) - lb_scalar(su, s, L)))$
+
+print("=== STEP 3: valid at every u, concave in u, on exact rational Q(x) ===")$
+
+/* Q(x) = sum_{d,e} g_d g_e x^|d-e| S_d S_e with S_d the distance-d indicator, gammas (1, 7/10,
+ * 2/5), dmax = 2 -- the library's weight -- on the path and the star with m = 6. */
+fpprec : 40$
+gam : [1, 7/10, 2/5]$
+distances(adj) := block([n : length(adj), d],
+  d : genmatrix(lambda([i,j], if i = j then 0 elseif adj[i,j] = 1 then 1 else 99), n, n),
+  for k : 1 thru n do for i : 1 thru n do for j : 1 thru n do
+    d[i,j] : min(d[i,j], d[i,k] + d[k,j]),
+  d)$
+weight(adj, x) := block([n : length(adj), dist, S],
+  dist : distances(adj),
+  S : makelist(genmatrix(lambda([i,j], if dist[i,j] = dd then 1 else 0), n, n), dd, 0, 2),
+  sum(sum(gam[d+1] * gam[e+1] * x^abs(d - e) * (S[d+1] . S[e+1]), e, 0, 2), d, 0, 2))$
+path6 : genmatrix(lambda([i,j], if abs(i - j) = 1 then 1 else 0), 6, 6)$
+star6 : genmatrix(lambda([i,j], if i # j and (i = 1 or j = 1) then 1 else 0), 6, 6)$
+
+m3 : 6$
+B : genmatrix(lambda([i,j], if i = j then 1 elseif i = m3 then -1 else 0), m3, m3 - 1)$
+/* realroots isolates the roots of the exact rational characteristic polynomial and reports their
+ * multiplicities; a star's spectrum is degenerate, and a float root finder can fail on it. */
+smallest(M, r) := block([rts, ev : []],
+  rts : realroots(expand(charpoly(M, z)), 10^-35),
+  for i : 1 thru length(rts) do ev : append(ev, makelist(rhs(rts[i]), multiplicities[i])),
+  ev : sort(ev),
+  sum(ev[j], j, 1, r))$
+lb(Q, uu, K) := block([A : Q - apply(diag_matrix, uu)],
+  bfloat(apply("+", uu)
+         + (m3/K) * (sum(sum(A[i,j], j, 1, m3), i, 1, m3)/m3 + smallest(compress(A), K - 1))))$
+balanced(K) := sublist(
+  map(lambda([w], makelist(mod(floor(w / K^(i-1)), K), i, 1, m3)), makelist(w, w, 0, K^m3 - 1)),
+  lambda([lab], every(lambda([f], length(sublist(lab, lambda([l], l = f))) = m3/K),
+                      makelist(f, f, 0, K - 1))))$
+/* deterministic shifts on the scale of Q's diagonal, no generator state involved */
+shifts : makelist(makelist((mod(s*i^2 + 3*i + s, 11) - 5)/4, i, 1, m3), s, 1, 12)$
+
+for K in [2, 3] do for graph in [["path", path6], ["star", star6]] do for x in [1/100, 3/5] do
+  block([Q, opt, plain, vals, worst, concave],
+    Q : weight(second(graph), x),
+    opt : lmin(map(lambda([lab], tr(Q . same_fold(lab))), balanced(K))),
+    plain : lb(Q, makelist(0, i, 1, m3), K),
+    vals : map(lambda([uu], lb(Q, uu, K)), shifts),
+    worst : lmax(vals) - opt,
+    concave : lmin(makelist(
+      lb(Q, (shifts[s] + shifts[s+1])/2, K) - (vals[s] + vals[s+1])/2, s, 1, length(shifts) - 1)),
+    print("(7) K =", K, first(graph), " x =", x, " optimum =", float(opt),
+          " Ky Fan gap =", float(opt - plain),
+          " max over shifts of LB(u) - optimum =", float(worst),
+          if worst <= 0 then "(valid)" else "(INVALID)",
+          " concavity margin =", float(concave),
+          if concave >= -10^-30 then "(concave)" else "(NOT CONCAVE)"))$
+
+print("=== STEP 4: valid where it is tight, at the shift the library's search finds ===")$
+
+/* The shifts chc.regret._shifted_kyfan_bound converges to at x = 1/100, rounded to rationals.
+ * At K = 2 the bound reaches the optimum on both graphs, so a bound that were invalid near its
+ * maximum would show a positive excess here; the random shifts of STEP 3 sit far below it. */
+tight : [[2, "path", path6, [-141647/824937, 326379/999037, -143827/927993, -143827/927993,
+                             326379/999037, -141647/824937]],
+         [2, "star", star6, [1570169/587023, -259791/485627, -259791/485627, -259791/485627,
+                             -259791/485627, -259791/485627]],
+         [3, "path", path6, [-131651/837758, 207798/669337, -153299/999950, -153299/999950,
+                             207798/669337, -131651/837758]],
+         [3, "star", star6, [1155848/432125, -81361/152088, -81361/152088, -81361/152088,
+                             -81361/152088, -81361/152088]]]$
+for case in tight do block([K : case[1], Q, opt, excess],
+  Q : weight(case[3], 1/100),
+  opt : lmin(map(lambda([lab], tr(Q . same_fold(lab))), balanced(K))),
+  excess : lb(Q, case[4], K) - opt,
+  print("(8) K =", K, case[2], " LB(u*) - optimum =", float(excess),
+        if excess <= 0 then "(valid)" else "(INVALID)",
+        " Ky Fan - optimum =", float(lb(Q, makelist(0, i, 1, m3), K) - opt)))$
+
+print("=== done ===")$

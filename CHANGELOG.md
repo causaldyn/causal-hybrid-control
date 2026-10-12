@@ -25,6 +25,19 @@ still change).
   `causal_plan` and `RecedingHorizon` take it as `noise` and `noise_persistence`; both default
   to zero, which leaves every tube as it was. `CausalDynamicsFit.defect` keeps the defect row by
   row (ADR 0080). Since 0.5.0.
+- **`optimal_fold_partition` certifies its design with the diagonally shifted Ky Fan bound.** The
+  plain Ky Fan bound left a design loose by its own slack: on an 80-unit path at `x = 0.01` the
+  spectral-plus-swap design's certified gap was 5.82 %, and on a 16-unit path, where enumeration
+  finds the optimum, the bound still missed it by 4.40 %. `lower_bound` is now the bound of
+  `Q - diag(u)` plus `sum(u)`, maximised over the shift `u` (Boppana's shift). Every unit sits in
+  exactly one fold, so each shift gives a valid bound (`validation/fold_shifted_bound.mac`). The
+  two gaps are now 1.31 % and 0.34 %, a star's is zero within 1e-8, and on a cycle or any other
+  circulant the shift buys nothing, so those gaps are unchanged. `FoldDesign.kyfan_bound` keeps
+  the plain bound; the new field comes after `lower_bound`, so positional construction changes.
+  `FoldHeuristicCurve.shifted_gap`, `FoldExactnessCurve.shifted` and `shift_gain` report the
+  shifted bound beside `kyfan_gap` and `kyfan`, which keep the plain one. The
+  `fold_exactness_certificate` docstring no longer says min-bisection has no constant-factor
+  approximation: none is known, and the best is O(log n). Since 0.4.0.
 
 ## [0.16.0] — 2026-10-11
 
