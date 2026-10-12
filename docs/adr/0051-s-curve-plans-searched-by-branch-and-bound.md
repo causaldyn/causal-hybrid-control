@@ -5,7 +5,8 @@ its envelope) and ADR 0050 (the vertex is each box's plan, the first box's where
 starts). Amended 2026-10-05 by ADR 0052: `cvar_allocate` searches boxes too. Amended 2026-10-07
 by ADR 0065: the tolerance and the cap are the caller's, and no cut plans past the cap. Amended
 2026-10-08 by ADR 0076: the other planners search too, and none keeps the envelope from zero
-spend.
+spend. Amended 2026-10-12: `Allocation.price` is read on the curves at the plan, not on a box's
+envelopes.
 
 ## Context
 
@@ -69,8 +70,10 @@ planned.
   15) in 6, 8 and 6, each to a gap of 0.
 - Sums of S-shaped curves under a budget are NP-hard to plan, so nothing short of the cap bounds
   the count of boxes. A plan that reaches it reports its gap as it stands.
-- `Allocation.bound` on S-curves is the search's bound, and `Allocation.price` is read on the
-  envelopes of the box the plan was found in.
+- `Allocation.bound` on S-curves is the search's bound. `Allocation.price` was read on the
+  envelopes of the box the plan was found in; since 2026-10-12 it is read on the curves at the
+  plan, in the caller's box. A cut at the plan's own rate puts the plan in both halves, each of
+  whose envelopes priced it otherwise, and a rounding decided which half's price was reported.
 - ADR 0050's bound on the first box's gap still holds, since with floors at zero and caps past the
   tangencies the first box's envelopes are the envelopes from zero spend; it now bounds where the
   search starts, not what it returns.
