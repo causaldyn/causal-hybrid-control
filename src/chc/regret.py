@@ -2733,6 +2733,14 @@ def _shifted_kyfan_bound(
     shift, so on a vertex-transitive ``Q`` -- a cycle, any circulant -- averaging over the
     automorphisms shows the best shift is uniform, and the shifted bound IS the plain one.
 
+    At ``K = 2`` the maximised shifted bound is exactly ``(1'Q1 + SDP) / 2``, with ``SDP`` the basic
+    bisection relaxation ``min tr(QX)`` over ``diag X = 1``, ``X1 = 0``, ``X`` psd. A balanced
+    bisection ``x`` in ``{-1, 1}^m`` has ``sum_f 1_f' Q 1_f = (1'Q1 + x'Qx) / 2``, and the shifted
+    bound is half that SDP's dual plus ``1'Q1 / 2``, with no duality gap since both sides are
+    strictly feasible. That is Poljak and Rendl's (1995) equality of Boppana's bound and the
+    semidefinite one; the algebra is the ``.mac`` file's STEP 5. The smoothed search below stops
+    short of that maximum by less than 2e-6 of it on the enumerable instances the tests hold.
+
     The eigenvalue sum is ``max_nu (K-1) nu - sum_j (nu - lambda_j)_+``, nonsmooth wherever the
     ``(K-1)``-th and ``K``-th smallest eigenvalues coincide -- at ``u = 0`` on a star or a barbell,
     where L-BFGS on the exact bound stops at its first step. Replacing ``(.)_+`` by

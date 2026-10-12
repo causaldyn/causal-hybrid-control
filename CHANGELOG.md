@@ -191,6 +191,13 @@ still change).
     application-oriented input design; the 2026 switchback designs; Bright, Delarue and Lobel's
     Theorem 8; and Abadie and Zhao on optimised designs.
   - ADR 0050's bound before planning holds at any floors and caps (Udell and Boyd, Theorem 1).
+- **At two folds the shifted Ky Fan bound is the bisection SDP, so a semidefinite solver would buy
+  nothing there.** The maximised bound equals `(1'Q1 + SDP) / 2`, with `SDP` the basic relaxation
+  `min tr(QX)` over `diag X = 1`, `X1 = 0`, `X` psd (Poljak and Rendl 1995). The algebra is STEP 5 of
+  `validation/fold_shifted_bound.mac`. A test holds `optimal_fold_partition`'s `lower_bound` against
+  an independent barrier-Newton dual of that SDP on 54 enumerable instances of 12 and 16 units. It
+  falls short by at most 1.55e-6 of the bound, on a 16-unit grid at `x = 0.9`, and never exceeds
+  the SDP. What a design leaves past it at two folds is the relaxation's own gap. No number moves.
 
 ## [0.16.0] — 2026-10-11
 

@@ -12,6 +12,8 @@
  * vertex-transitive Q the best shift is uniform and the bound is the plain one.  STEP 3 checks
  * validity, and the bound's concavity in u, on exact rational Q(x) at K = 2 and K = 3; STEP 4
  * checks validity where the bound is tight, at the shifts the library's search converges to.
+ * STEP 5 is the two-fold case: there the maximised bound is (1'Q1 + SDP)/2, with SDP the basic
+ * bisection relaxation min tr(QX) over diag X = 1, X1 = 0, X psd (Poljak-Rendl 1995).
  *
  *   timeout 300 maxima --very-quiet -b validation/fold_shifted_bound.mac
  */
@@ -138,5 +140,58 @@ for case in tight do block([K : case[1], Q, opt, excess],
   print("(8) K =", K, case[2], " LB(u*) - optimum =", float(excess),
         if excess <= 0 then "(valid)" else "(INVALID)",
         " Ky Fan - optimum =", float(lb(Q, makelist(0, i, 1, m3), K) - opt)))$
+
+print("=== STEP 5: at K = 2 the maximised shifted bound is (1'Q1 + SDP)/2 ===")$
+
+/* A balanced bisection is x in {-1, 1}^m with 1'x = 0, its folds 1_f = (1 + x)/2 and (1 - x)/2,
+ * so the objective is (1'Q1 + x'Qx)/2, and X = xx' has diag X = 1, X1 = 0, X psd: the SDP
+ * relaxes the least x'Qx.  Its dual is max_y sum(y) s.t. V'(Q - diag(y))V psd.  A uniform shift
+ * y + c 1 moves sum(y) by m c and V'(Q - diag(y))V by -c I, so the dual is also
+ * max_y sum(y) + m lambda_min(V'(Q - diag(y))V), unconstrained.  At K = 2, LB(u) is
+ * (1'Q1 + sum(u) + m lambda_min(V'(Q - D)V))/2: the same function of u, halved and moved by
+ * 1'Q1/2.  Both sides are strictly feasible -- X = (m/(m-1))(I - 11'/m) on the primal side,
+ * y = (lambda_min(V'QV) - 1) 1 on the dual -- so there is no duality gap, and the maximised
+ * shifted bound is (1'Q1 + SDP)/2. */
+check(label, expr) := print(label, expr,
+  if (if matrixp(expr) then every(lambda([e], e = 0), flatten(args(expr))) else expr = 0)
+  then "(ok)" else "(FAIL)")$
+ones6 : makelist(1, i, 1, m1)$
+for lab in [[0,0,0,1,1,1], [0,1,0,1,1,0], [1,1,0,0,1,0]] do block([x],
+  x : makelist(if lab[i] = 0 then 1 else -1, i, 1, m1),
+  check(sconcat("(9) ", lab, " tr(QF) - (1'Q1 + x'Qx)/2 = "),
+        expand(tr(Qs . same_fold(lab)) - (ones6 . Qs . ones6 + x . Qs . x)/2)),
+  check("    sum of (x_i^2 - 1)^2 + (1'x)^2 = ",
+        sum((x[i]^2 - 1)^2, i, 1, m1) + (x . ones6)^2))$
+
+/* The bound's K = 2 form, from STEP 2's scalar LB with s = 1'Q1, su = sum(u), L = lambda_min of
+ * the shifted compression: LB = s/2 + (su + mm L)/2. */
+check("(10) LB at K = 2 - (1'Q1 + sum(u) + m lambda_min)/2 = ",
+      ratsimp(subst(kk = 2, lb_scalar(su, s - su, L)) - (s + su + mm*L)/2))$
+/* The dual objective is blind to a uniform shift, so dropping its constraint changes nothing. */
+check("(11) dual(y + c 1) - dual(y) = ", ratsimp((sy + mm*c + mm*(L - c)) - (sy + mm*L)))$
+
+/* Weak duality on the face X = V Y V' (X1 = 0 and X psd iff Y psd): with diag X = 1,
+ * tr(QX) - sum(y) = tr(V'(Q - diag(y))V Y), checked on a generic symmetric Y at m = 4 with the
+ * Helmert V of STEP 2; diag X = 1 enters as the substitution of each sum(y_i X_ii) by sum(y). */
+Ys : genmatrix(lambda([i,j], w[min(i,j), max(i,j)]), m2 - 1, m2 - 1)$
+ys : makelist(concat(y, i), i, 1, m2)$
+Xs : V . Ys . transpose(V)$
+check("(12) tr((Q - diag y) X) - tr(V'(Q - diag y)V Y) = ",
+      ratsimp(tr((As - apply(diag_matrix, ys)) . Xs)
+              - tr(transpose(V) . (As - apply(diag_matrix, ys)) . V . Ys)))$
+check("     tr(QX) - sum(y_i X_ii) - tr((Q - diag y) X) = ",
+      ratsimp(tr(As . Xs) - sum(ys[i] * Xs[i,i], i, 1, m2)
+              - tr((As - apply(diag_matrix, ys)) . Xs)))$
+
+/* Slater on both sides: the primal point has unit diagonal, X1 = 0 and eigenvalues m/(m-1)
+ * (m-1 times) and 0; it is interior to the face X = V Y V' as Y = (m/(m-1)) I.  The dual point
+ * leaves V'(Q - diag(y))V = V'QV - (lambda_min - 1) I, whose least eigenvalue is 1. */
+X0 : (m2/(m2 - 1)) * (ident(m2) - genmatrix(lambda([i,j], 1/m2), m2, m2))$
+check("(13) diag(X0) - 1, X0 1, X0 - V (m/(m-1)) I V' = ",
+      ratsimp(sum((X0[i,i] - 1)^2, i, 1, m2) + sum((X0 . makelist(1, i, 1, m2))[i,1]^2, i, 1, m2)
+              + sum(sum((X0 - (m2/(m2 - 1)) * V . transpose(V))[i,j]^2, j, 1, m2), i, 1, m2)))$
+check("(14) V'(Q - diag((l - 1) 1))V - (V'QV - (l - 1) I) = ",
+      ratsimp(transpose(V) . (As - (l - 1) * ident(m2)) . V
+              - (transpose(V) . As . V - (l - 1) * ident(m2 - 1))))$
 
 print("=== done ===")$
