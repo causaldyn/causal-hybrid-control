@@ -1957,7 +1957,11 @@ def test_clusters_move_the_error_and_nothing_else(integrator: str) -> None:
     np.testing.assert_array_equal(clustered.moment_residual, rows.moment_residual)
     np.testing.assert_array_equal(clustered._parameter_size, rows._parameter_size)
     np.testing.assert_array_equal(clustered.defect, rows.defect)
-    moved = {"channel_error", "influence", "clusters"}
+    # the one lever's error is the channel's, and moves with it
+    for fit in (rows, clustered):
+        assert fit._lever_errors is not None
+        assert fit._lever_errors.tolist() == [[fit.channel_error]]
+    moved = {"channel_error", "_lever_errors", "influence", "clusters"}
     arrays = {"residual", "representer", "moment_residual", "unmoved", "_parameter_size", "defect"}
     for field in dataclasses.fields(CausalDynamicsFit):
         if field.name not in moved | arrays:
@@ -2233,6 +2237,88 @@ def test_a_column_named_in_a_second_role_is_refused(kwargs: dict, match: str) ->
         fit_causal_residual(_known, data, system.dt, **kwargs)
 
 
+# ---- the channel's error read lever by lever ----
+
+
+@pytest.mark.parametrize("double", [True, False], ids=["float64", "float32"])
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+@pytest.mark.parametrize("read", ["rows", "clusters", "two ways", "periods"])
+def test_with_one_lever_its_error_is_each_read_of_the_channel_s_to_the_bit(
+    read: str, integrator: str, double: bool
+) -> None:
+    """Each covariance the channel's error is read off is also read over each lever's column alone,
+    which the plan's tube prices at that lever's own largest action. With one lever the column is
+    the channel, so the lever's error is the covariance's read, and the largest of them is
+    ``channel_error``, bit for bit, on every path to it and in either precision. Two ways read
+    three covariances, and here three numbers."""
+    rows = 300
+    data = _clustered_log(rows, seed=5)
+    rng = np.random.default_rng(7)
+    labels = np.column_stack([rng.integers(0, 30, rows), rng.integers(0, 12, rows)])
+    grouping = {
+        "rows": {},
+        "clusters": {"clusters": labels[:, 0]},
+        "two ways": {"clusters": labels},
+        "periods": {"periods": np.arange(rows)},
+    }[read]
+    dtype = jnp.float64 if double else jnp.float32
+    for degree in (0, 1):
+        options = {**CLUSTERED, "channel_degree": degree, "integrator": integrator}
+        with enable_x64(double):
+            fit = fit_causal_residual(
+                _known,
+                {name: jnp.asarray(column, dtype=dtype) for name, column in data.items()},
+                0.1,
+                **options,
+                **grouping,
+            )
+        assert fit.residual.channel.dtype == dtype
+        assert fit._lever_errors is not None
+        assert fit._lever_errors.shape == (3 if read == "two ways" else 1, 1)
+        assert max(fit._lever_errors[:, 0]) == fit.channel_error
+        if read == "two ways":
+            assert len(set(fit._lever_errors[:, 0].tolist())) == 3
+
+
+def _two_levers(rng: np.random.Generator, x: np.ndarray, z: np.ndarray) -> np.ndarray:
+    first = 0.9 * z - 0.3 * x[:, 0] + rng.normal(0.0, 0.5, z.size)
+    return np.column_stack([first, rng.normal(0.0, 0.6, z.size)])
+
+
+@pytest.mark.parametrize("units", [(1e3, 1.0), (1.0, 1e-3)])
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_each_lever_s_error_reads_in_that_lever_s_units(
+    integrator: str, units: tuple[float, float]
+) -> None:
+    """Two states and two levers, one of them logged in units 1e3 times its own or the other in
+    thousandths of its own, the log read two ways. On each of the three covariances each lever's
+    error per unit of it reads the same times its units, to 1e-11, so each times an action of that
+    lever reads the same. ``channel_error``, the largest of the reads' root means over the levers,
+    which averages levers in units of their own, read 0.0049 or 4.9 where it read 0.0075 in Euler's
+    fit."""
+    rows = 2000
+    log = _policy_log(rows, _two_levers)
+    rng = np.random.default_rng(3)
+    labels = np.column_stack([rng.integers(0, 40, rows), rng.integers(0, 10, rows)])
+    scaled = dict(log, u=log["u"] * jnp.array(units))
+    one, other = (
+        fit_causal_residual(_known, data, 0.1, **RULED, integrator=integrator, clusters=labels)
+        for data in (log, scaled)
+    )
+    assert one._lever_errors is not None
+    assert other._lever_errors is not None
+    assert one._lever_errors.shape == (3, 2)
+    np.testing.assert_allclose(
+        other._lever_errors * np.array(units), one._lever_errors, rtol=1e-11, atol=0.0
+    )
+    for fit in (one, other):
+        reads = np.sqrt(np.mean(fit._lever_errors**2, axis=1))
+        assert fit.channel_error == pytest.approx(max(reads), rel=1e-12, abs=0.0)
+    assert one.channel_error is not None
+    assert other.channel_error is not None
+    assert abs(other.channel_error / one.channel_error - 1.0) > 0.3  # 0.65 and 650
+
+
 # ---- one unit's error read across its periods ----
 
 
@@ -2345,8 +2431,11 @@ def test_periods_move_the_error_and_nothing_else(integrator: str) -> None:
         np.testing.assert_array_equal(getattr(serial, name), getattr(rows, name))
     np.testing.assert_array_equal(serial.residual.channel, rows.residual.channel)
     np.testing.assert_array_equal(serial.residual.drift, rows.residual.drift)
+    # the one lever's error is the channel's, and moves with it
+    assert serial._lever_errors is not None
+    assert serial._lever_errors.tolist() == [[serial.channel_error]]
     for field in dataclasses.fields(CausalDynamicsFit):
-        if field.name not in {*arrays, "residual", "channel_error", "periods"}:
+        if field.name not in {*arrays, "residual", "channel_error", "_lever_errors", "periods"}:
             assert getattr(serial, field.name) == getattr(rows, field.name), field.name
 
 

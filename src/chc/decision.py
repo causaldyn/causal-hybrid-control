@@ -572,9 +572,10 @@ class DecisionCertificate:
     identification_radius: float | None  # channel standard error; None when not identified
     overlap: float  # residualised action variance: 0 means the log has no variation to learn from
     certificate_status: CertificateStatus
-    # steps the tube keeps inside ``tolerance``: the channel's error carried by the Gronwall
-    # recursion, plus the radius that holds the plan's one-step error on the log, carried the same
-    # way, with probability 0.95 at each step (``tube_noise``)
+    # steps the tube keeps inside ``tolerance``: the channel's error, each lever's at that lever's
+    # largest action, carried by the Gronwall recursion, plus the radius that holds the plan's
+    # one-step error on the log, carried the same way, with probability 0.95 at each step
+    # (``tube_noise``)
     certified_horizon: int | None
     barrier_certified_steps: int | None  # leading prefix clearing the barrier; None if no bound
     # The weakest step's confounding ceiling; None if unconstrained. With several bounds a step's
@@ -1641,18 +1642,19 @@ def prescribe(
             how much error a caller accepts, and a certificate with an infinite tolerance passes
             over the whole horizon while proving nothing. The tube carries two errors over the
             plan's RK4 steps at the rate :attr:`DecisionCertificate.tube_rate` names: the channel's
-            standard error times the largest action the box allows, a scale and not a bound, and
-            the plant's own noise, the plan's one-step error on the log, read off the fit's defect
-            with its lag-1 correlation within units, at the radius that holds it at each step with
-            probability 0.95 where the noise is Gaussian and AR(1) (ADR 0080,
-            :attr:`DecisionCertificate.tube_noise`). Up to 0.16.0 the tube carried the channel's
-            error alone: on 600 one-unit logs shaped like the BOPTEST case's it read 0.051 K one
-            step ahead, where the plant's error one step ahead reached 0.16 to 0.22 K at 95 %; it
-            held the plant at the first step on 40 % of draws and trusted 6 to 13 steps on nine
-            logs in ten. It now holds the plant at the first step on 97 % to 99 % of draws and
-            trusts 1 or 2 steps, where the plant's error stays within the tolerance of 0.5 K at
-            95 % for 2 or 3. A tube whose rate, budget or noise comes out other than a finite
-            number is not evaluated, and a warning says so.
+            standard error, each lever's share of it times the largest action that lever's box
+            allows, root mean over the channel's entries, which reads the same in any units of each
+            lever (ADR 0087), a scale and not a bound; and the plant's own noise, the plan's
+            one-step error on the log, read off the fit's defect with its lag-1 correlation within
+            units, at the radius that holds it at each step with probability 0.95 where the noise
+            is Gaussian and AR(1) (ADR 0080, :attr:`DecisionCertificate.tube_noise`). Up to 0.16.0
+            the tube carried the channel's error alone: on 600 one-unit logs shaped like the
+            BOPTEST case's it read 0.051 K one step ahead, where the plant's error one step ahead
+            reached 0.16 to 0.22 K at 95 %; it held the plant at the first step on 40 % of draws
+            and trusted 6 to 13 steps on nine logs in ten. It now holds the plant at the first step
+            on 97 % to 99 % of draws and trusts 1 or 2 steps, where the plant's error stays within
+            the tolerance of 0.5 K at 95 % for 2 or 3. A tube whose rate, budget or noise comes out
+            other than a finite number is not evaluated, and a warning says so.
         x0: the state to plan from, one finite value per state: the target's, then each
             constrained column's. Defaults to the mean over units of each unit's last observed
             state, the pooled "where we are now". :attr:`Prescription.start` records which, and
@@ -2115,7 +2117,8 @@ def prescribe(
     u_lo, u_hi = pin(
         jnp.array([lever.lo for lever in levers]), jnp.array([lever.hi for lever in levers])
     )
-    u_max = float(jnp.max(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))))
+    reach = jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))  # each lever's largest action, in its units
+    u_max = float(jnp.max(reach))
     caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
     rate = LinearConstraint.rate_limit(horizon, caps)
     relation_rows = tuple(
@@ -2135,7 +2138,9 @@ def prescribe(
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target, horizon, rule)
     lipschitz, tube_rate = _rate(model, start, u_lo, u_hi)
-    model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
+    model_error = (
+        0.0 if tolerance is None else _model_error(fit, np.asarray(reach, dtype=np.float64))
+    )
     # with no channel error nothing bounds the field the plan rolls out, and the noise alone would
     # switch on a tube that trusts it
     step_noise, step_persistence = (
@@ -3173,19 +3178,32 @@ def _slope_free_of_state(model: Dynamics) -> bool:
     return False
 
 
-def _model_error(fit: CausalDynamicsFit, u_max: float) -> float:
+def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     """Turn the channel's standard error into the per-step rate error the Gronwall tube wants.
 
-    ``channel_error`` is the scale of ``B_hat(x) - B(x)`` per entry at the log's states; the rate
-    error it induces is that times the largest action the box allows, which is what this returns.
+    ``channel_error`` is the scale of ``B_hat(x) - B(x)`` per entry at the log's states. Entry
+    ``(i, j)`` is in the states' units per unit of lever ``j``, and ``reach[j]``, the largest action
+    lever ``j``'s box allows, is in lever ``j``'s units: their product is the rate error that action
+    induces, in the states' units, whatever lever ``j``'s units are. This returns its root mean over
+    the channel's entries, from each lever's read of each covariance ``channel_error`` is read off
+    (``CausalDynamicsFit._lever_errors``), the largest read taken once the levers are priced
+    (ADR 0087). With one lever it is ``channel_error`` times the lever's largest action, bit for
+    bit; with levers in one unit whose boxes allow the same largest action, that to rounding. Up to
+    0.16.0 it was ``channel_error`` times the largest action of any lever, which mixed the levers'
+    units: on a log of one state and two levers in ``[-2, 2]``, either lever in units 1e3 or 1e-3
+    times its own, its box with it, ended the tube 7 times as wide and certified neither of the two
+    steps it certifies. A lever whose box allows no action but zero adds no error, though it counts
+    in the mean, and boxes that allow none but zero leave the channel nothing to move, and no tube.
+
     It is a *scale*, not coverage: ``channel_error`` is the robust standard error, root-mean over
     the entries and the log's states, calibrated on average but scattering from one log to the
     next, so one fit's tube is as wide as that fit's reading. The docstring of
-    :class:`chc.dynamics_id.CausalDynamicsFit` says by how much. The error is per unit of a lever
-    and the action is in the levers' units, so their product reads the same in any units the levers
-    share; a box that admits no action but zero leaves the channel nothing to move, and no tube.
+    :class:`chc.dynamics_id.CausalDynamicsFit` says by how much.
     """
-    return 0.0 if fit.channel_error is None else float(fit.channel_error) * u_max
+    if fit._lever_errors is None:
+        return 0.0
+    rates = fit._lever_errors * reach
+    return float(np.max(np.sqrt(np.mean(rates * rates, axis=1))))
 
 
 def _step_noise(

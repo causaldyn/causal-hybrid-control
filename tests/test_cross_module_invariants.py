@@ -387,6 +387,67 @@ def test_the_tube_prices_the_channel_s_error_at_the_largest_action_the_box_allow
     np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
 
 
+@pytest.mark.parametrize("levers_in", [(1e-3, 1.0), (1e3, 1.0), (1.0, 1e3), (1e-3, 1e3)])
+def test_the_tube_prices_each_lever_s_error_at_that_lever_s_largest_action(
+    levers_in: tuple[float, float],
+) -> None:
+    """Each lever in units of its own, its box with it. Lever ``j``'s share of the channel's
+    standard error, per unit of it, times the largest action its box allows, ``2 levers_in[j]``,
+    reads the same in any units of the lever, and the tube's rate error is its root mean over the
+    channel's entries: the channel's standard error in the levers' own units times 2, as above.
+    It was the channel's standard error in the units the levers came in, an average over levers
+    in units of their own, times the largest action of either box. With ``u1`` in units 1e3 times
+    its own, the tube ended at 3.89 where it ends at 0.538, and certified none of the two steps it
+    certifies; in thousandths, at 4.04."""
+    error = _decide("free").model_fit.channel_error
+    assert error is not None
+    result = _decide("free", levers_in=levers_in)
+    plan = result.plan
+    assert plan is not None
+    problem = plan._problem
+    assert problem is not None
+    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
+    assert noise is not None
+    assert persistence is not None
+    rate, _ = _rate(problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi))
+    expected = _tube([rate] * HORIZON, [error * 2.0] * HORIZON, DT, "rk4") + _noise_tube(
+        np.asarray(rate), np.array([[noise**2]]), persistence, DT, HORIZON
+    )
+    assert plan.uncertainty_tube is not None
+    np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
+    assert result.certificate.certified_horizon == _decide("free").certificate.certified_horizon
+
+
+def test_a_lever_the_plan_holds_adds_its_error_at_the_level_it_holds_it_at() -> None:
+    """``state``'s log sets ``u1`` from the state alone, and the plan holds that lever's column at
+    its mean logged level, 0.028: the tube prices ``u1``'s share of the channel's error at that
+    level, off each covariance, and ``u2``'s at 2, the largest action its box allows. Priced at
+    the box's largest action, as the channel's error was, the tube ended at 0.551 where it ends
+    at 0.549."""
+    result = _decide("state")
+    plan = result.plan
+    assert plan is not None
+    problem = plan._problem
+    assert problem is not None
+    lo, hi = np.asarray(problem.u_lo), np.asarray(problem.u_hi)
+    assert lo[0] == hi[0]
+    assert 0.02 < lo[0] < 0.03
+    errors = result.model_fit._lever_errors
+    assert errors is not None
+    assert errors.shape == (3, 2)
+    rates = errors * np.array([abs(lo[0]), 2.0])
+    error = float(np.max(np.sqrt(np.mean(rates * rates, axis=1))))
+    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
+    assert noise is not None
+    assert persistence is not None
+    rate, _ = _rate(problem.model, problem.x0, jnp.asarray(lo), jnp.asarray(hi))
+    expected = _tube([rate] * HORIZON, [error] * HORIZON, DT, "rk4") + _noise_tube(
+        np.asarray(rate), np.array([[noise**2]]), persistence, DT, HORIZON
+    )
+    assert plan.uncertainty_tube is not None
+    np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
+
+
 def test_a_plan_whose_every_box_is_pinned_has_no_regret() -> None:
     """Every action fixed by its box: no move is feasible, so the bound is 0, certified, whatever
     the cost's curvature."""
@@ -406,9 +467,12 @@ def test_a_plan_whose_every_box_is_pinned_has_no_regret() -> None:
 # ---- a problem posed in other units reads the same ----
 
 
-def _certificate_in(result: Prescription, levers_in: float, state_in: float) -> dict[str, object]:
+def _certificate_in(
+    result: Prescription, levers_in: float | tuple[float, float], state_in: float
+) -> dict[str, object]:
     """What the certificate reads, each number brought back to the problem's own units: the cost
-    and the regret in the cost's, which the prices keep, the tube in the state's."""
+    and the regret in the cost's, which the prices keep, the tube in the state's, the schedule in
+    each lever's."""
     plan = result.plan
     assert plan is not None
     certificate = result.certificate
@@ -455,6 +519,24 @@ def test_the_certificate_reads_the_same_in_any_units_the_levers_share(
     one = _certificate_in(_decide(policy), 1.0, 1.0)
     other = _certificate_in(_decide(policy, levers_in=(units, units)), units, 1.0)
     _same(other, one, _decide(policy).plan.task_cost)  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("levers_in", [(1e3, 1.0), (1.0, 1e-3), (1e-3, 1e3)])
+@pytest.mark.parametrize("policy", POLICIES)
+def test_the_certificate_reads_the_same_in_any_units_of_each_lever(
+    policy: str, levers_in: tuple[float, float]
+) -> None:
+    """Each lever logged in units of its own, its box with it and its price over their square. The
+    tube read one lever's units: with ``u1`` in units 1e3 times its own, ``free``'s tube ended at
+    3.89 and ``together``'s at 1.40, where both end near 0.54, and neither certified a step, where
+    both certify two; on ``state``'s log, whose ``u1`` the plan holds to the log's rule, with
+    ``u1`` in thousandths and ``u2`` in thousands it ended at 4.2e3. Every number now reads the
+    same: the schedule in each lever's units, the cost, the regret bound, the decision weight, the
+    tube and the certified horizon in the problem's own."""
+    one = _certificate_in(_decide(policy), 1.0, 1.0)
+    other = _certificate_in(_decide(policy, levers_in=levers_in), levers_in, 1.0)
+    _same(other, one, _decide(policy).plan.task_cost)  # type: ignore[union-attr]
+    assert other["certified_horizon"] == 2
 
 
 @pytest.mark.parametrize("levers_in", [(1e3, 1.0), (1.0, 1e-3), (1e-3, 1e3)])

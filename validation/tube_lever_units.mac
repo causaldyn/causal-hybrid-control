@@ -1,0 +1,57 @@
+/* The tube's rate error read the same in any units of each lever (ADR 0087).
+
+   Setting (chc.decision._model_error, chc.dynamics_id._channel_errors). The channel has n states
+   and m levers. S[i,j] is entry (i, j)'s mean square standard error at the log's states, in state
+   i's units squared per lever j's unit squared, off one covariance; r[j] is the largest action
+   lever j's box allows, in lever j's units. The tube takes the largest read after it prices the
+   levers, so each statement below holds read by read.
+
+       channel_error^2 = mean_ij S[i,j],
+       before:  eps0^2 = channel_error^2 * max_j r[j]^2,
+       now:     eps^2  = mean_ij S[i,j] r[j]^2,
+
+   and e[j]^2 = mean_i S[i,j] is lever j's read, which the fit keeps. Here n = 2, m = 3, and m = 1
+   for one lever. */
+display2d : false$
+assume(c1 > 0, c2 > 0, c3 > 0, R > 0, a > 0)$
+
+entries(n, m) := genmatrix(lambda([i, j], S[i, j]), n, m)$
+mean_entries(f, n, m) := sum(sum(f(i, j), j, 1, m), i, 1, n) / (n*m)$
+eps2(s, r, n, m) := mean_entries(lambda([i, j], s[i, j] * r[j]^2), n, m)$
+channel2(s, n, m) := mean_entries(lambda([i, j], s[i, j]), n, m)$
+lever2(s, j, n) := sum(s[i, j], i, 1, n) / n$
+
+s : entries(2, 3)$
+r : [r1, r2, r3]$
+c : [c1, c2, c3]$
+
+/* (1) Each lever j in c[j] times its own units: its column of the channel and that column's
+   standard error move as 1/c[j], so S[i,j] moves as 1/c[j]^2, and its box as c[j]. */
+moved : genmatrix(lambda([i, j], s[i, j] / c[j]^2), 2, 3)$
+print("(1) eps^2 moved by", ratsimp(eps2(moved, c * r, 2, 3) - eps2(s, r, 2, 3)), "  (=0)")$
+print("    channel_error^2 moved by", factor(channel2(moved, 2, 3) - channel2(s, 2, 3)),
+      "  (nonzero: it mixes the levers' units)")$
+
+/* (2) The reduction to the levers' reads the fit keeps: eps^2 = mean_j r[j]^2 e[j]^2. */
+print("(2)", ratsimp(eps2(s, r, 2, 3) - sum(r[j]^2 * lever2(s, j, 2), j, 1, 3) / 3), "  (=0)")$
+
+/* (3) Levers that share units, each box allowing R: eps = channel_error * R, as before. */
+print("(3)", ratsimp(eps2(s, [R, R, R], 2, 3) - channel2(s, 2, 3) * R^2), "  (=0)")$
+
+/* (4) One lever: its read is the channel's, and eps = channel_error * r[1], as before. */
+one : entries(2, 1)$
+print("(4)", ratsimp(lever2(one, 1, 2) - channel2(one, 2, 1)), "  (=0)  ",
+      ratsimp(eps2(one, [r1], 2, 1) - channel2(one, 2, 1) * r1^2), "  (=0)")$
+
+/* (5) Levers that share units: eps <= eps0, since every r[j] <= R = max_j r[j] and
+   eps0^2 - eps^2 = mean_ij S[i,j] (R^2 - r[j]^2), a mean of terms none of which is negative. */
+print("(5)", ratsimp(channel2(s, 2, 3) * R^2 - eps2(s, r, 2, 3)
+                     - mean_entries(lambda([i, j], s[i, j] * (R^2 - r[j]^2)), 2, 3)), "  (=0)")$
+
+/* (6) The forms ADR 0087 rejects, where every lever's read times its action is one number a:
+   the root sum of squares over the levers is sqrt(m) times the root mean, and the triangle
+   inequality's sum m times. */
+rms(v) := sqrt(sum(v[j]^2, j, 1, length(v)) / length(v))$
+rss(v) := sqrt(sum(v[j]^2, j, 1, length(v)))$
+print("(6) root sum of squares over root mean:", radcan(rss([a, a, a]) / rms([a, a, a])),
+      "  (=sqrt(3))  sum over root mean:", radcan((a + a + a) / rms([a, a, a])), "  (=3)")$

@@ -118,6 +118,23 @@ still change).
   0.0044, and certified none of the three steps it certifies. The floor is gone. A box that admits
   no action but zero now leaves the tube unevaluated: the channel has nothing to move, and its
   error adds none. A plan whose largest action is 1 or more is unchanged, to the bit. Since 0.5.0.
+- **`prescribe`'s error tube reads the same in any units of each lever.** The tube's rate error
+  was the channel's standard error times the largest action of any lever's box. That error is a
+  root mean over the channel's entries, each in the state's units per unit of its own lever, so
+  both factors mixed the levers' units, and only units the levers share left their product alone.
+  On a log of one state and two levers in `[-2, 2]`, whose tube ended at 0.538 and certified two
+  steps of three, `u1` logged in units 1e3 times its own, its box and price with it, ended the
+  tube at 3.89 and certified none; in thousandths, at 4.04. The fit now also reads the channel's
+  error over each lever's column alone, off each covariance it reads that error off, and the tube
+  prices each lever's at that lever's own largest action: the root mean over the channel's entries
+  of each entry's error times its lever's largest action, the largest read taken. That tube reads
+  the same in any units of each lever, to 2e-14 of itself on that log. Where the levers share
+  units it can only narrow. On that log's three logging policies, with one lever's box a quarter
+  of the other's or a lever held at its logged level, its rate error narrows by 10 % to 50 % and
+  its end by 0.04 % to 0.34 %, and the certified horizon does not move. One lever's tube, as in
+  the quickstart, notebooks 00 and 09 and the BOPTEST and pendulum case studies, is the same to
+  the bit, and levers that share units and boxes keep theirs to rounding. `gamma*` and the
+  barrier's certified steps still read the units of one lever alone (ADR 0087). Since 0.5.0.
 - **A row's multiplier reads as zero or not the same in any units of the actions and of the
   cost.** `CausalPlan.shadow_prices` and `CausalPlan.decision_weight` read a multiplier as zero
   where the row's push on the free actions fell below 1e-3 of the larger of 1 and the gradient's

@@ -170,7 +170,9 @@ class CausalDynamicsFit:
     # read off it sizes better against ``t(G - 1)``'s quantile than the normal's (ADR 0062). Under
     # ``periods``, one group's, the covariance is read from the scores' projections on ``nu``
     # cosines of the periods (EWC), each period's transitions summed first, and a test read off
-    # it against ``t(nu)``'s (ADR 0075).
+    # it against ``t(nu)``'s (ADR 0075). Its mean adds entries in the units of different levers,
+    # so where the levers' units differ it reads them; ``_lever_errors`` holds it lever by lever,
+    # and the plan's tube reads that, each lever at its own largest action (ADR 0087).
     channel_error: float | None
     # The standard error of the drift regression's fitted value at the log's rows, root mean square
     # over the rows and the states, from the drift stage's own homoskedastic OLS covariance; None
@@ -274,6 +276,12 @@ class CausalDynamicsFit:
     # directions so scaled are orthogonal on each state's channel, where the fit read them, and a
     # reader of their span reads it there.
     _parameter_size: Array | None = dataclasses.field(default=None, repr=False, compare=False)
+    # (r, m), set with ``channel_error``: the same error read over each lever's column of the
+    # channel alone, off each of the ``r`` covariances ``channel_error`` is the largest read of, one
+    # or, under two clusterings, three. Lever ``j``'s is in the states' units per unit of lever
+    # ``j``, where ``channel_error`` averages over levers in units of their own; with one lever it
+    # is the covariance's read, bit for bit. The tube reads it at each lever's largest action.
+    _lever_errors: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
 
     @property
     def error_cosines(self) -> int | None:
@@ -625,6 +633,21 @@ def _channel_blocks(covariance: Array, channel_shape: tuple[int, ...]) -> Array:
     entries, features = channel_shape[0] * channel_shape[1], channel_shape[2]
     every = jnp.arange(entries)
     return covariance.reshape(entries, features, entries, features)[every, :, every, :]
+
+
+def _channel_errors(
+    covariances: Sequence[Array], channel_shape: tuple[int, ...], features: Array
+) -> tuple[float, np.ndarray]:
+    """``channel_error``, the largest of the covariances' reads by :func:`_error_at_rows` over the
+    channel's entries, and ``(r, m)``: each covariance's read over each lever's column alone, whose
+    entries are every ``m``-th of :func:`_channel_blocks`', from the lever's. With one lever the
+    column is the whole channel, and its read is the covariance's, bit for bit."""
+    levers = channel_shape[1]
+    blocks = [_channel_blocks(covariance, channel_shape) for covariance in covariances]
+    by_lever = np.array(
+        [[_error_at_rows(block[j::levers], features) for j in range(levers)] for block in blocks]
+    )
+    return max(_error_at_rows(block, features) for block in blocks), by_lever
 
 
 def _influence(
@@ -1608,12 +1631,13 @@ def fit_causal_residual(
         drift_blocks = drift_covariance.reshape(rows, states, rows, states)[
             :, every_state, :, every_state
         ]
+        channel_error, lever_errors = _channel_errors(
+            [covariance[:size, :size] for covariance in covariances], channel.shape, phi_c
+        )
         return dataclasses.replace(
             fit,
-            channel_error=max(
-                _error_at_rows(_channel_blocks(covariance[:size, :size], channel.shape), phi_c)
-                for covariance in covariances
-            ),
+            channel_error=channel_error,
+            _lever_errors=lever_errors,
             drift_error=_error_at_rows(drift_blocks, design),
             influence=_influence(
                 carry(fit_map),
@@ -1644,11 +1668,11 @@ def fit_causal_residual(
         spreads = _robust_spreads(
             sensitivity[: channel.size], score, regressor.shape[1], codes, steps
         )
+        channel_error, lever_errors = _channel_errors(spreads, channel.shape, phi_c)
         fit = dataclasses.replace(
             fit,
-            channel_error=max(
-                _error_at_rows(_channel_blocks(spread, channel.shape), phi_c) for spread in spreads
-            ),
+            channel_error=channel_error,
+            _lever_errors=lever_errors,
             influence=_influence(
                 sensitivity,
                 score,
