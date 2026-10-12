@@ -769,14 +769,15 @@ def test_a_bound_scaled_by_a_power_of_two_is_exact_where_a_double_holds_it(value
 def test_a_plan_with_nothing_to_gain_closes_on_its_first_program(monkeypatch):
     """A budget of nothing: every plan's worth is nothing, and so is the bound read from the first
     program's duals, exactly, and that closes the search, whose tolerance is a share of the bound.
-    A bound a rounding below nothing would not close it before 500 rounds."""
-    real, programs = allocation.linprog, []
+    A bound a rounding below nothing would not close it before 500 rounds. The prices read on
+    the curves at the plan after the search take programs of their own, not counted."""
+    real, programs = allocation._planes, []
 
     def counted(*args, **kwargs):
         programs.append(None)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(allocation, "linprog", counted)
+    monkeypatch.setattr(allocation, "_planes", counted)
     cells = [
         [Channel(ONE, MichaelisMenten(10.0), 1000.0), Channel(ONE, MichaelisMenten(20.0), 300.0)],
         [Channel(ONE, MichaelisMenten(5.0), 10.0), Channel(ONE, Hill(5.0, 2.0), 700.0)],

@@ -169,11 +169,14 @@ HONEST SCOPE:
   search's tolerance of the bound or as near as 500 rounds come; its rates are as near the best as
   that gap allows, not exact to rounding, and its prices are the last program's duals, which
   certify the bound but need not be the best plan's where the program is degenerate and several
-  prices nearly certify it. In a search Newton's method on the prices stops at its first step that
-  does not shrink the totals' miss: a chord holds its cell at an end of it at every price but its
-  slope, and at that price the rate jumps across it, which a line search would circle.
-  Where every geo's spend and every channel's are fixed, the split of the price between the geos'
-  totals and the channels' is the one the solver reaches; the sum each cell meets is the same
+  prices nearly certify it. A searched plan is priced on the curves at the plan instead, by the
+  prices that miss the conditions for the best plan least, the totals' misses first: its rates
+  meet their prices only to the search's tolerance. In a search Newton's method on the prices
+  stops at its first step that does not shrink the totals' miss: a chord holds its cell at an end
+  of it at every price but its slope, and at that price the rate jumps across it, which a line
+  search would circle. Where every geo's spend and every channel's are fixed, the split of the
+  price between the geos' totals and the channels' is the one the solver reaches, or on S-shaped
+  curves the one least in the sum of the prices' sizes; the sum each cell meets is the same
   however it is split. In single precision, JAX's default, Newton's method does not close and the
   cutting planes' plan comes back: its worth and bound are good to single precision, its rates
   only as near as the gap allows.
@@ -610,9 +613,12 @@ class GeoAllocation:
             ``bound - worth`` bounds the plan's shortfall from the best, and is ``0`` when every
             curve is concave and the plan is exact. On S-shaped curves it is the largest bound
             :func:`allocate_geos`' search left.
-        price: the return on one more currency unit of budget, on the envelopes of the box the plan
-            was found in; ``0`` where every geo's total is fixed, or every channel's, which fixes
-            the budget and carries its price.
+        price: the return on one more currency unit of budget; ``0`` where every geo's total is
+            fixed, or every channel's, which fixes the budget and carries its price. On S-shaped
+            curves it and the totals' prices are read on the curves at the plan: the prices that
+            meet the conditions for the best plan there, or miss them least, the budget's nearest
+            nothing and then the totals' least; one geo with no totals is priced as
+            :func:`allocate` prices its channels.
         geo_prices: ``(geos,)`` the return on one more currency unit of room in each geo's total:
             positive where the total binds at its most, negative at its least, ``0`` where it does
             not bind or no geo totals were given.
@@ -2686,7 +2692,14 @@ def _plan(layout: _Layout, periods: int, spend: float | MarginalReturnTarget) ->
     with _Stopwatch() as clock:
         worths = _variables(layout, periods)
         found, bound, ending = _geo_search(
-            worths, layout.lower, layout.upper, groups, periods, charge, layout.settings
+            worths,
+            layout.lower,
+            layout.upper,
+            groups,
+            periods,
+            charge,
+            layout.settings,
+            not isinstance(spend, MarginalReturnTarget),
         )
         idle = sum(_value(w, 0.0) for w in worths)
         compiling, searching = clock.read()
@@ -2796,9 +2809,11 @@ def _geo_search(
     periods: int,
     charge: float,
     settings: _Settings,
+    budget: bool,
 ) -> tuple[_Planned, float, _Ending]:
     """The best plan of the cells under ``groups``' totals, each currency unit it spends charged
     ``charge``; a bound on the worth of every plan spending as much; and how the search ended.
+    Where ``budget``, the first group is the budget, fixed.
 
     Where every curve is concave one box is planned (:func:`_geo_box`), its planes closing to the
     tolerance ``settings`` sets on their bound. Where a curve is S-shaped the rates are searched in
@@ -2813,7 +2828,9 @@ def _geo_search(
     tolerance is the larger of ``settings``' ``atol`` and ``rtol`` of the first box's bound, but not
     below its rounding; a box is cut only where the count of boxes, with its two halves, stays
     within ``settings.max_boxes``, and each box's planes close to the tolerance or stop once the
-    box's bound is within it of the best plan's.
+    box's bound is within it of the best plan's. A searched plan's prices are read on the curves at
+    the plan (:func:`_priced`), not on the envelopes of the box it was found in: a cut at the plan's
+    own rate puts it in both halves, and each half's envelopes price it otherwise.
     """
     eps = _rounding(worths)
     bounded = tuple(_boxed(w, a, b) for w, a, b in zip(worths, lower, upper, strict=True))
@@ -2906,7 +2923,139 @@ def _geo_search(
         floored=floored,
         scale=scale,
     )
-    return best, top + best.charged, ending
+    prices = _priced(worths, best.rates, lower, upper, groups, periods, charge, budget)
+    return replace(best, prices=prices), top + best.charged, ending
+
+
+def _priced(
+    worths: Sequence[_Variable],
+    rates: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    groups: Sequence[_Group],
+    periods: int,
+    charge: float,
+    budget: bool,
+) -> np.ndarray:
+    """Each group's price for the plan ``rates``, read on the curves ``worths`` at the plan.
+
+    A rate's price is ``charge`` plus its groups' prices, each weighted by the rate's share in the
+    group. At a best plan a rate inside its box returns its price a currency unit, one at its floor
+    no more and one at its cap no less; a group's price is not negative where its total is held at
+    its most, not positive at its least, and nothing where the total is not held (Karush, Kuhn and
+    Tucker). The prices are those that miss these conditions least, each miss weighted by how far
+    the plan stands from the end of the box or the total that would excuse it: the complementary
+    slackness gap, nothing at a plan that meets them. The totals' misses are made least first, so
+    a total the plan does not hold is priced nothing though the rates, searched only to a
+    tolerance, meet their prices only to it; the rates' misses after. Where ``budget`` the first
+    group is the budget, and no rate below its cap returns more than its price, so that, as
+    :func:`_marginal` reads :func:`allocate`'s price, one more currency unit returns no more than
+    the price wherever it goes. Where several prices leave the same gaps, the budget's is the one
+    nearest nothing, and then the totals' are the least in the sum of their sizes: one geo with no
+    totals is priced as :func:`allocate` prices its channels, and where every geo's total is fixed,
+    which fixes the budget, the budget's price is nothing and theirs carry it.
+
+    The program is written in a power of two of the steepest slope and of the largest weight, so
+    the prices move with the units of currency and of return.
+    """
+    size, count = rates.size, len(groups)
+    slopes = np.array([_slope(w, r) for w, r in zip(worths, rates, strict=True)]) / periods
+    unit = _unit(float(np.max(np.abs(slopes), initial=abs(charge))))
+    member = np.zeros((count, size))
+    for k, group in enumerate(groups):
+        member[k, group.members] = group.weights
+    spent = periods * (member @ rates)
+    fixed = np.array([group.least == group.most for group in groups], dtype=bool)
+    most = np.array([group.most for group in groups], dtype=float)
+    least = np.array([group.least for group in groups], dtype=float)
+    raised = fixed | np.isfinite(most)  # a price that can be positive
+    lowered = fixed | (least > 0.0)  # and one that can be negative
+    below, above = rates < upper, rates > lower
+    # how far the plan stands from what would excuse each miss, in currency over the plan
+    weights = np.concatenate(
+        [
+            np.where(fixed | ~np.isfinite(most), 0.0, np.maximum(most - spent, 0.0)),
+            np.where(fixed, 0.0, np.maximum(spent - least, 0.0)),
+            periods * (rates - lower),
+            periods * (upper - rates),
+        ]
+    )
+    weights = weights / _unit(float(np.max(weights, initial=0.0)))
+    # columns: each group's positive part, its negative part, each rate's price above its slope
+    # past its floor, and below its slope short of its cap
+    rows, limits = [], []
+    eye = np.eye(size)
+    for i in np.flatnonzero(below):
+        rows.append(np.concatenate([-member[:, i], member[:, i], np.zeros(size), -eye[i]]))
+        limits.append((charge - slopes[i]) / unit)
+    for i in np.flatnonzero(above):
+        rows.append(np.concatenate([member[:, i], -member[:, i], -eye[i], np.zeros(size)]))
+        limits.append((slopes[i] - charge) / unit)
+    open_ = (0.0, None)
+    bounds = [
+        *(open_ if free else (0.0, 0.0) for free in raised),
+        *(open_ if free else (0.0, 0.0) for free in lowered),
+        *(open_ if free else (0.0, 0.0) for free in above),
+        # under a budget no rate below its cap returns more than its price
+        *(open_ if free and not budget else (0.0, 0.0) for free in below),
+    ]
+    totals = np.concatenate([weights[: 2 * count], np.zeros(2 * size)])
+    sizes = np.concatenate([np.ones(2 * count), np.zeros(2 * size)])
+    objectives = [totals, weights - totals]
+    if budget:
+        first = np.zeros(count)
+        first[0] = 1.0
+        objectives.append(np.concatenate([first, first, np.zeros(2 * size)]))
+        sizes[[0, count]] = 0.0
+    objectives.append(sizes)
+    matrix = np.array(rows, dtype=float).reshape(len(rows), 2 * (count + size))
+    x = _lexicographic(objectives, matrix, np.array(limits, dtype=float), bounds)
+    return (x[:count] - x[count : 2 * count]) * unit
+
+
+def _lexicographic(
+    objectives: Sequence[np.ndarray],
+    rows: np.ndarray,
+    limits: np.ndarray,
+    bounds: Sequence[tuple[float, float | None]],
+) -> np.ndarray:
+    """A point of ``rows @ x <= limits`` within ``bounds`` that is least in each objective in turn
+    among the points least in those before it.
+
+    Each program's optimal face bounds the next: every least point meets complementary slackness
+    with any one optimal dual (Goldman and Tucker 1956), so it holds a column whose reduced cost is
+    not nothing at the end that cost presses on, and a row whose dual is not nothing at its limit.
+    The objectives' weights are at most 1, and a reduced cost or a dual within ``1e-9`` is taken
+    as nothing: a column it would hold is left free, so a later objective may move an earlier one
+    by about that much a unit the column moves.
+    """
+    bounds = list(bounds)
+    held = np.zeros(len(limits), dtype=bool)
+    x = np.zeros(len(bounds))
+    for cost in objectives:
+        loose, tight = rows[~held], rows[held]
+        program = linprog(
+            cost,
+            A_ub=loose if len(loose) else None,
+            b_ub=limits[~held] if len(loose) else None,
+            A_eq=tight if len(tight) else None,
+            b_eq=limits[held] if len(tight) else None,
+            bounds=bounds,
+            method="highs",
+            options={"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10},
+        )
+        if program.status != 0:
+            raise RuntimeError(f"the prices' linear program failed: {program.message}")
+        x = program.x
+        floor = 1e-9
+        for column, (low, high) in enumerate(bounds):
+            if program.lower.marginals[column] > floor:
+                bounds[column] = (low, low)
+            elif high is not None and program.upper.marginals[column] < -floor:
+                bounds[column] = (high, high)
+        if len(loose):
+            held[np.flatnonzero(~held)[program.ineqlin.marginals < -floor]] = True
+    return x
 
 
 def _reach(layout: _Layout, periods: int) -> tuple[float, float]:
