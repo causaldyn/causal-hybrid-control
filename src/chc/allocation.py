@@ -2966,7 +2966,8 @@ def _priced(
     left every other slope under HiGHS's tolerance and the budget's price 0. A total's slack
     weighs at most that far: the totals' misses can always be nothing, so a slack only frees a
     price or holds it, and read on its own scale a total 1e12 short of binding made every rate's
-    weight a rounding.
+    weight a rounding. Uncapped on the rates' scale, a slack past 1e20 of it is a cost HiGHS reads
+    as infinite, and a cap 1e30 short of binding was priced 4.23 and the budget 0.
     """
     size, count = rates.size, len(groups)
     slopes = np.array([_slope(w, r) for w, r in zip(worths, rates, strict=True)]) / periods

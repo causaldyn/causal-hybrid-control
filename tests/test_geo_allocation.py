@@ -927,21 +927,24 @@ def test_a_cell_a_rounding_below_its_cap_leaves_the_budget_s_price_to_the_cell_w
     assert plan.price == pytest.approx(rise / (2 * step), rel=1e-6, abs=0.0)
 
 
+@pytest.mark.parametrize("far", [1e12, 1e30])
 @pytest.mark.parametrize("kind", ["geo", "channel"])
-def test_a_total_far_from_binding_leaves_the_one_that_binds_its_price(kind):
-    """A cap the plan stands 1e12 short of holds nothing, and the cap that binds beside it is
-    priced as it is with no cap there. Read beside that 1e12, every rate's distance from the ends
-    of its box was a rounding, and the binding cap on geo 0's total was priced 0.054 where it
-    returns 1.60, the one on channel 1's 0 where it returns 1.57."""
+def test_a_total_far_from_binding_leaves_the_one_that_binds_its_price(kind, far):
+    """A cap the plan stands 1e12 or 1e30 short of holds nothing, and the cap that binds beside it
+    is priced as it is with no cap there. Read beside that 1e12, every rate's distance from the
+    ends of its box was a rounding, and the binding cap on geo 0's total was priced 0.054 where it
+    returns 1.60, the one on channel 1's 0 where it returns 1.57. A slack weighed uncapped past
+    1e20, a cost HiGHS reads as infinite, priced the cap 1e30 short of binding on geo 1 4.23 and
+    the budget 0."""
     if kind == "geo":
         alone = _cut_plan(geo_totals=GEO_CAP)
         plan = _cut_plan(
-            geo_totals=Totals(least=np.zeros(2), most=np.array([GEO_CAP.most[0], 1e12]))
+            geo_totals=Totals(least=np.zeros(2), most=np.array([GEO_CAP.most[0], far]))
         )
     else:
         alone = _cut_plan(channel_totals=CHANNEL_CAP)
         plan = _cut_plan(
-            channel_totals=Totals(least=np.zeros(3), most=np.array([1e12, *CHANNEL_CAP.most[1:]]))
+            channel_totals=Totals(least=np.zeros(3), most=np.array([far, *CHANNEL_CAP.most[1:]]))
         )
     np.testing.assert_allclose(plan.spend, alone.spend, rtol=1e-12, atol=0.0)
     assert plan.price == pytest.approx(alone.price, rel=1e-12, abs=0.0)
