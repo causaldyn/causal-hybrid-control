@@ -226,15 +226,18 @@ class CausalPlan:
             tolerance = max(1e-6, 1e3 * float(jnp.finfo(dtype).eps))
         present = [row for row in problem.constraints if row.matrix.shape[0]]
         size = int(np.prod(shape))
+        lo = broadcast_box(problem.u_lo, shape, "u_lo", dtype)
+        hi = broadcast_box(problem.u_hi, shape, "u_hi", dtype)
         return _row_prices(
             problem.gradient(self.actions),
             np.asarray(self.actions, dtype=np.float64).ravel(),
             np.vstack([row.matrix for row in present]) if present else np.zeros((0, size)),
             np.concatenate([row.lower for row in present]) if present else np.zeros(0),
             np.concatenate([row.upper for row in present]) if present else np.zeros(0),
-            np.asarray(broadcast_box(problem.u_lo, shape, "u_lo", dtype), np.float64).ravel(),
-            np.asarray(broadcast_box(problem.u_hi, shape, "u_hi", dtype), np.float64).ravel(),
+            np.asarray(lo, np.float64).ravel(),
+            np.asarray(hi, np.float64).ravel(),
             tolerance,
+            problem.gradient(_guess(lo, hi)),
         )
 
     def decision_weight(self, tolerance: float | None = None) -> DecisionWeight:
@@ -349,8 +352,9 @@ def _regret_curvature(
     present = [row for row in problem.constraints if row.matrix.shape[0]]
     n_actions = flat.size
     matrix = np.vstack([row.matrix for row in present]) if present else np.zeros((0, n_actions))
-    lo = np.asarray(broadcast_box(problem.u_lo, shape, "u_lo", dtype), np.float64).ravel()
-    hi = np.asarray(broadcast_box(problem.u_hi, shape, "u_hi", dtype), np.float64).ravel()
+    box_lo = broadcast_box(problem.u_lo, shape, "u_lo", dtype)
+    box_hi = broadcast_box(problem.u_hi, shape, "u_hi", dtype)
+    lo, hi = np.asarray(box_lo, np.float64).ravel(), np.asarray(box_hi, np.float64).ravel()
     kkt = _kkt(
         gradient,
         np.asarray(flat, dtype=np.float64),
@@ -360,6 +364,7 @@ def _regret_curvature(
         lo,
         hi,
         tolerance,
+        np.asarray(jax.grad(cost)(_guess(box_lo, box_hi).ravel(), still), dtype=np.float64),
     )
     free = kkt.free
     # A box of zero width fixes its action: no change of the channel moves it off, so it is no
@@ -600,12 +605,18 @@ class _Kkt:
     singular: NDArray[np.float64]  # the binding rows' singular values on the free actions
     residual: float  # stationarity miss on the free actions, over ``scale``
     scale: float  # max(1, |gradient on the free actions|)
-    slack: float  # what counts as zero in a multiplier
+    slack: float  # what counts as zero in a multiplier, a share of the larger of the gradient's
+    # norm on the free actions and the guess's
     remainder: NDArray[np.float64]  # the gradient less the rows' push: the box's multipliers
 
     @property
     def free(self) -> NDArray[np.bool_]:
         return ~(self.at_hi | self.at_lo)
+
+
+def _guess(lo: Array, hi: Array) -> Array:
+    """The actions the descent starts from where it is given none: zeros, clipped to the box."""
+    return jnp.clip(jnp.zeros_like(lo), lo, hi)
 
 
 def _kkt(
@@ -617,9 +628,17 @@ def _kkt(
     lo: NDArray[np.float64],
     hi: NDArray[np.float64],
     tolerance: float,
+    reference: NDArray[np.float64],
 ) -> _Kkt:
     """The binding bounds and rows at ``actions``, within ``tolerance * (1 + |bound|)``, and the
-    rows' multipliers from the gradient on the actions left off the box."""
+    rows' multipliers from the gradient on the actions left off the box.
+
+    What counts as zero in a multiplier is a share of the larger of the gradient's norm on the
+    free actions and ``reference``'s, the gradient at the guess the descent starts from,
+    zeros clipped to the box. Both are in the cost's units per unit of an action, so a multiplier
+    reads as zero or not the same in any units the actions share and in any units of the cost.
+    The guess's gradient is the cost's slope before the plan moves, which is there to compare a
+    row's push with when every row's is zero and the plan's own gradient is rounding."""
     with np.errstate(invalid="ignore"):  # an infinite bound is never binding
         at_hi = np.isfinite(hi) & (actions >= hi - tolerance * (1.0 + np.abs(hi)))
         at_lo = np.isfinite(lo) & (actions <= lo + tolerance * (1.0 + np.abs(lo))) & ~at_hi
@@ -632,6 +651,7 @@ def _kkt(
     columns = (matrix[active] * np.where(down[active] & ~up[active], -1.0, 1.0)[:, None]).T
     local, pull = columns[free], gradient[free]
     scale = max(1.0, float(np.linalg.norm(pull)))
+    size = max(float(np.linalg.norm(pull)), float(np.linalg.norm(reference)))
     multipliers, singular = np.zeros(active.size), np.zeros(0)
     if active.size and local.shape[0]:
         multipliers = np.linalg.lstsq(local, -pull, rcond=None)[0]
@@ -646,7 +666,7 @@ def _kkt(
         singular=singular,
         residual=float(np.linalg.norm(pull + local @ multipliers)) / scale,
         scale=scale,
-        slack=1e3 * tolerance * scale,
+        slack=1e3 * tolerance * size,
         remainder=gradient + columns @ multipliers,
     )
 
@@ -660,9 +680,11 @@ def _row_prices(
     lo: NDArray[np.float64],
     hi: NDArray[np.float64],
     tolerance: float,
+    reference: NDArray[np.float64],
 ) -> ShadowPrices:
-    """The rows' multipliers at ``actions``, from the gradient on the actions left off the box."""
-    kkt = _kkt(gradient, actions, matrix, lower, upper, lo, hi, tolerance)
+    """The rows' multipliers at ``actions``, from the gradient on the actions left off the box;
+    ``reference`` is :func:`_kkt`'s."""
+    kkt = _kkt(gradient, actions, matrix, lower, upper, lo, hi, tolerance, reference)
     at_hi, at_lo, active, equality = kkt.at_hi, kkt.at_lo, kkt.active, kkt.equality
     columns, multipliers, singular = kkt.columns, kkt.multipliers, kkt.singular
     residual, scale, slack, remainder = kkt.residual, kkt.scale, kkt.slack, kkt.remainder
@@ -1624,7 +1646,7 @@ class PlanRegretBound:
     bound: float  # J(U) - min over the box of J where ``status`` certifies it; inf when refused
     unconstrained_bound: float  # Result 6's |grad J|^2/(2 mu), for the comparison
     frank_wolfe_gap: float  # the mu-free fallback the box guarantees; bound <= this
-    modulus: float  # the mu actually used
+    modulus: float  # the mu actually used, over the actions the box lets move
     modulus_source: ModulusSource
     gradient_norm: float
     per_lever: tuple[float, ...]  # the bound split by lever; sums to ``bound``
@@ -1640,7 +1662,14 @@ def _objective_modulus(
     probes: int,
     seed: int,
 ) -> float:
-    """Smallest Hessian eigenvalue of ``J`` at the plan and at ``probes`` random feasible points.
+    """Smallest Hessian eigenvalue of ``J`` at the plan and at ``probes`` random feasible points,
+    over the actions the box lets move.
+
+    A box of zero width fixes its action, so every feasible move is zero there and the bound needs
+    ``J``'s curvature along the other actions alone: the least eigenvalue of the Hessian's block on
+    them, never below the whole Hessian's (Cauchy interlacing). The whole Hessian's reads an action
+    nothing reads, a lever on the log's rule, as a direction of no curvature, and the bound was
+    refused. With no action free every move is zero, and the modulus is 0.
 
     Where the objective is quadratic (:func:`_quadratic`) the Hessian is one matrix and the plan's
     is the answer for the whole box, so no point is drawn. Elsewhere this is a sample, and a caller
@@ -1650,6 +1679,9 @@ def _objective_modulus(
     about the points it did not draw.
     """
     flat = actions.reshape(-1)
+    moving = np.flatnonzero(np.asarray(hi > lo).reshape(-1))
+    if moving.size == 0:
+        return 0.0
     drawn = jax.random.uniform(
         jax.random.PRNGKey(seed),
         (max(probes, 0), flat.size),
@@ -1659,6 +1691,7 @@ def _objective_modulus(
 
     def curvature(point: Array) -> Array:
         hessian = jax.hessian(lambda v: objective(v.reshape(actions.shape)))(point)
+        hessian = hessian[moving][:, moving]
         return jnp.min(jnp.linalg.eigvalsh(0.5 * (hessian + hessian.T)))
 
     # vmapped rather than looped: the Hessian of a rollout is expensive to TRACE, and a Python

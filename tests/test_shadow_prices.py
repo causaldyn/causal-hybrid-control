@@ -66,6 +66,7 @@ def _prices(u: np.ndarray, rows: list[tuple[np.ndarray, float, float]], hi: floa
         np.zeros(u.size),
         np.full(u.size, hi),
         1e-7,
+        -PULL,
     )
 
 
@@ -124,6 +125,7 @@ def test_a_budget_that_meets_every_cap_has_a_range_of_prices() -> None:
         np.zeros(24),
         np.full(24, 0.4),
         1e-7,
+        -np.ones(24),
     ).rows
     assert (row.status, row.price) == ("degenerate", None)
     assert row.interval == pytest.approx((0.0, 0.6), abs=1e-5)
@@ -169,6 +171,7 @@ def test_two_different_rows_are_each_priced_at_their_own_slope() -> None:
         np.zeros(24),
         np.full(24, np.inf),
         1e-6,
+        -PULL,
     )
     step = 1e-3
     slopes = (
@@ -255,6 +258,7 @@ def test_every_exact_price_is_the_slope_of_the_optimum() -> None:
             np.zeros(n),
             hi,
             1e-6,
+            -g,
         )
         assert prices.residual < 1e-6
         assert prices.dual_feasible
