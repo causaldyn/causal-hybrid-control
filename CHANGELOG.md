@@ -7,6 +7,17 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`BarrierConstraint` and `certify_safety` take a tuple of barriers, each held and audited on
+  its own.** `causal_plan(barrier=BarrierConstraint((h1, h2)))` holds each barrier's condition with
+  a multiplier per step and barrier, and its audit certifies a step where every one holds. The
+  audit's `barrier_values` are the least barrier's, `guaranteed_derivative` and `required` the pair
+  of the barrier with the least room, and `step_gamma_star` the least of their ceilings. The
+  rounds scale each condition to the largest barrier's before their one back-off and penalty read
+  it, so a barrier in units a millionth of another's is held as in its own. One barrier plans and
+  audits as before, bit for bit (ADR 0081).
+
 ### Changed
 
 - **`prescribe`'s error tube now carries the plant's own noise, so `certified_horizon` and
@@ -38,6 +49,7 @@ still change).
   shifted bound beside `kyfan_gap` and `kyfan`, which keep the plain one. The
   `fold_exactness_certificate` docstring no longer says min-bisection has no constant-factor
   approximation: none is known, and the best is O(log n). Since 0.4.0.
+
 ### Fixed
 
 - **On a panel of one unit, `Prescription.evaluate` read its windows as independent, under an
@@ -55,18 +67,6 @@ still change).
   `DeprecationWarning` is gone, the planned refusal at 1.0 dropped, and the call logs
   `chc_event="one_unit"` at `INFO` with the windows and the cosines counted (ADR 0083). Since
   0.9.0; deprecated since 0.12.0.
-### Added
-
-- **`BarrierConstraint` and `certify_safety` take a tuple of barriers, each held and audited on
-  its own.** `causal_plan(barrier=BarrierConstraint((h1, h2)))` holds each barrier's condition with
-  a multiplier per step and barrier, and its audit certifies a step where every one holds. The
-  audit's `barrier_values` are the least barrier's, `guaranteed_derivative` and `required` the pair
-  of the barrier with the least room, and `step_gamma_star` the least of their ceilings. The
-  rounds scale each condition to the largest barrier's before their one back-off and penalty read
-  it, so a barrier in units a millionth of another's is held as in its own. One barrier plans and
-  audits as before, bit for bit (ADR 0081).
-
-### Fixed
 
 - **`prescribe` holds and certifies each bound's own barrier condition, not the least margin's.**
   It held, and its certificate read, one barrier, the least of its bounds' margins, whose condition
@@ -85,7 +85,6 @@ still change).
   four logs' plans now cost 0.4360 to 0.4362, where two of them cost 0.4579. A held plan under one
   bound moves by rounding only, at most 1.1e-16 on the tests' panel. A step's `gamma_star` is the
   weakest bound's ceiling, as a tie's was (ADR 0081). Since 0.6.0.
-### Fixed
 
 - **A plan with a lever on the log's rule has a regret bound.** `plan_regret_bound` read the
   cost's curvature off the Hessian over every action, and a plan keeps a column for a lever on
