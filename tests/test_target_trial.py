@@ -179,6 +179,25 @@ def test_the_evaluation_refuses_a_time_zero_or_a_count_of_draws_it_cannot_read(
         prescription.evaluate(panel, n_resamples=1)
 
 
+def test_the_share_of_refused_draws_the_reading_tolerates_is_the_callers_to_set(
+    prescription: chc.Prescription,
+) -> None:
+    """``max_refused`` reaches the bootstrap's record, from 0 up to but not including 1; a share
+    outside that is refused before any draw is taken."""
+    rows, _, _, _ = _market(400, seed=1, leave=False)
+    panel = chc.Panel.from_frame(rows, unit="zone", time="time", seed=0)
+
+    for bound in (-0.01, 1.0, math.nan):
+        with pytest.raises(chc.DecisionError, match=r"lies in \[0, 1\)"):
+            prescription.evaluate(panel, max_refused=bound)
+    for bound in (0.0, 0.2):
+        bootstrap = prescription.evaluate(panel, n_resamples=20, max_refused=bound).bootstrap
+        assert bootstrap is not None
+        assert bootstrap.max_refused == bound
+        assert bootstrap.accepted == bootstrap.resamples - bootstrap.refused == 20
+        assert bootstrap.reading == "complete"
+
+
 def _one_zone_by_hand(
     prescription: chc.Prescription,
     supply: np.ndarray,

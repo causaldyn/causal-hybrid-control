@@ -67,7 +67,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import Literal, TypeVar, get_args
 
@@ -83,12 +83,14 @@ from chc.independence import GcmTest
 _log = logging.getLogger(__name__)
 
 EvaluationMethod = Literal["dr", "mis", "fqe", "pdis"]
+BootstrapReading = Literal["complete", "conditional", "inconclusive"]
 
 _Array = NDArray[np.float64]
 
 _Z95 = 1.959963984540054
 _BATCHES = 40  # contiguous batches for a stationary interval under the logs' Markov dependence
 _GRID = 200  # geometric grid over (0, tau_max) for the smoothing
+_BIAS_SHARE = 0.05  # the share of a half-width past which the normalisation's bias is warned of
 
 
 def _matrix(value: ArrayLike, name: str, shape: tuple[int, ...]) -> _Array:
@@ -321,6 +323,16 @@ class PlanEvaluation:
     bootstrap over the units the episodes came from (``bootstrap``) rather than across episodes;
     on one unit's episodes it is Student's ``t`` with ``degrees_of_freedom`` the cosines the
     episodes' influences were read across their time by, and ``bootstrap`` is ``None``.
+
+    ``"pdis"`` normalises each step's weights to mean one, which makes its estimate a ratio, biased
+    at order ``1 / n``. ``normalisation_bias`` is that order's bias under the model, for
+    independent episodes, ``-sum_t E_b[W_t^2] (E*_t[c_t] - J_t) / n`` (Cochran, *Sampling
+    Techniques*, 1977, section 6.8): ``E*_t`` reads step ``t``'s state and action under the
+    logger's law tilted by ``W_t^2``, ``J_t`` is the plan's expected cost at the step. A warning
+    is logged where it exceeds 0.05 of the interval's half-width. The estimate's actual bias can
+    be several times it: on one unit's windows, whose state and noise persist, it was 2 to 9
+    times, and 0.27 to 0.59 of the estimate's standard deviation at a horizon of 20 steps, where
+    the interval covered 0.63 (ADR 0095).
     """
 
     value: float
@@ -341,6 +353,8 @@ class PlanEvaluation:
     # ``versus_logger`` is read across their time as ``interval`` is, and ``bootstrap`` is None
     versus_logger: LoggerComparison | None = None
     bootstrap: UnitBootstrap | None = None
+    # "pdis": the first-order bias of its weights' normalisation under the model; None otherwise
+    normalisation_bias: float | None = None
 
 
 @dataclass(frozen=True)
@@ -373,13 +387,25 @@ class UnitBootstrap:
     units with replacement, every episode of a drawn unit kept, the whole analysis run again on
     each draw.
 
-    ``refused`` counts the draws whose certificate refused; the intervals read the others, so a
-    count well above zero says the evaluation sits near the certificate's edge.
+    ``refused`` counts the draws whose certificate refused; the intervals read the others,
+    ``accepted`` of them, ``accepted_share`` of the draws. A draw is refused where its units start
+    wider or weigh heavier than the panel's, so the draws left out are the spread's far side, and
+    the draws read are conditional on certification. ``reading`` says what the intervals are:
+
+    * ``"complete"`` -- no draw was refused;
+    * ``"conditional"`` -- some were, at most ``max_refused`` of them: the intervals read the
+      certified draws alone, conditional on certification;
+    * ``"inconclusive"`` -- more were: the evaluation sits at the certificate's edge, the draws
+      read are too few and too narrow, and the intervals cover less than they state.
     """
 
     units: int  # the units that contributed an episode
     resamples: int
     refused: int
+    accepted: int  # the draws the intervals read, resamples - refused
+    accepted_share: float  # accepted / resamples
+    max_refused: float  # the refused share above which the reading is inconclusive
+    reading: BootstrapReading
 
 
 @dataclass(frozen=True)
@@ -539,7 +565,23 @@ def _trajectory_log_moments(
     alpha: float,
 ) -> _Array:
     """``log E_b[W_h^alpha]`` for ``h = 1..plan.horizon``, ``inf`` from the first ``h`` at which it
-    diverges.
+    diverges (:func:`_starred_steps`)."""
+    out = np.full(plan.horizon, math.inf)
+    for t, (log_mass, *_) in enumerate(_starred_steps(plant, logger, plan, initial, alpha)):
+        out[t] = log_mass
+    return out
+
+
+def _starred_steps(
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    plan: AffineSchedule,
+    initial: InitialLaw,
+    alpha: float,
+) -> Iterator[tuple[float, _Array, _Array, _Array, _Array, _Array]]:
+    """Each step's ``log E_b[W_t^alpha]``, and the law ``b W_t^alpha`` normalised gives the step's
+    state and action: the state's mean and covariance, and the action's gain, offset and
+    covariance given the state. It stops at the first step whose moment diverges.
 
     Integrating one step's action against ``b (pi_t / b)^alpha`` leaves a Gaussian factor in the
     state and an action law tilted toward the plan; the next state under that law is the "starred"
@@ -547,11 +589,10 @@ def _trajectory_log_moments(
     factor tilts the law and adds its log mass, which after ``h`` steps is ``log E_b[W_h^alpha]``.
     One pass serves every ``h``, and the loop may change with the step.
     """
-    out = np.full(plan.horizon, math.inf)
     sb, sp = logger.covariance, plan.covariance
     gap = alpha * sb - (alpha - 1.0) * sp
     if _min_eig(gap) <= 0.0 or _min_eig(sp) <= 0.0 or _min_eig(sb) <= 0.0:
-        return out
+        return
     potential = 0.5 * alpha * (alpha - 1.0) * np.linalg.inv(gap)
     log_c0 = float(
         0.5 * alpha * np.linalg.slogdet(sb)[1]
@@ -562,7 +603,7 @@ def _trajectory_log_moments(
     s_star = np.linalg.inv(alpha * spi - (alpha - 1.0) * sbi)
     v_star = plant.b @ s_star @ plant.b.T + plant.noise
     mean, cov, log_mass = initial.mean, initial.covariance, 0.0
-    for t, (gain, offset) in enumerate(zip(plan.gains, plan.offsets, strict=True)):
+    for gain, offset in zip(plan.gains, plan.offsets, strict=True):
         d_gain, d_offset = gain - logger.gain, offset - logger.offset
         p = d_gain.T @ potential @ d_gain
         q = d_gain.T @ potential @ d_offset
@@ -572,7 +613,7 @@ def _trajectory_log_moments(
         root = _sqrt_psd(cov)
         core = _sym(np.eye(p.shape[0]) - 2.0 * root @ p @ root)
         if _min_eig(core) <= 0.0:
-            return out
+            return
         tilt = root @ np.linalg.solve(core, root)
         g = p @ mean + q
         log_mass += (
@@ -583,7 +624,15 @@ def _trajectory_log_moments(
             + 2.0 * float(g @ tilt @ g)
             - 0.5 * float(np.linalg.slogdet(core)[1])
         )
-        out[t] = log_mass
+        tilted = mean + 2.0 * tilt @ g
+        yield (
+            log_mass,
+            tilted,
+            tilt,
+            s_star @ (alpha * spi @ gain - (alpha - 1.0) * sbi @ logger.gain),
+            s_star @ (alpha * spi @ offset - (alpha - 1.0) * sbi @ logger.offset),
+            s_star,
+        )
         a_star = plant.a + plant.b @ s_star @ (
             alpha * spi @ gain - (alpha - 1.0) * sbi @ logger.gain
         )
@@ -591,9 +640,8 @@ def _trajectory_log_moments(
             plant.b @ s_star @ (alpha * spi @ offset - (alpha - 1.0) * sbi @ logger.offset)
             + plant.offset
         )
-        mean = a_star @ (mean + 2.0 * tilt @ g) + b_star
+        mean = a_star @ tilted + b_star
         cov = _sym(a_star @ tilt @ a_star.T + v_star)
-    return out
 
 
 def _smoothed_log_moments(
@@ -815,6 +863,35 @@ def _episode_value(
         mx = f @ mx + plant.b @ policy.offset + plant.offset
         sx = _sym(f @ sx @ f.T + drive)
     return total
+
+
+def _normalisation_bias(
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    plan: AffineSchedule,
+    costs: tuple[_StageCost, ...],
+    initial: InitialLaw,
+    samples: int,
+) -> float:
+    """The first-order bias of ``"pdis"``'s estimate of ``plan``'s cost from ``samples``
+    independent episodes, each step's weights normalised to mean one: a ratio estimator's,
+    ``-sum_t E_b[W_t^2] (E*_t[c_t] - J_t) / n``. ``E*_t`` reads step ``t``'s state and action
+    under the law ``b W_t^2`` normalised (:func:`_starred_steps`), ``J_t`` is the plan's expected
+    cost at the step; ``inf`` where a second moment diverges."""
+    drive = plant.b @ plan.covariance @ plant.b.T + plant.noise
+    mx, sx = initial.mean, initial.covariance
+    total, steps = 0.0, 0
+    for t, (log_mass, mean, cov, gain, offset, spread) in enumerate(
+        _starred_steps(plant, logger, plan, initial, 2.0)
+    ):
+        policy = plan.step(t)
+        tilted = costs[t].mean(*_joint(mean, cov, AffinePolicy(gain, offset, _sym(spread))))
+        total += math.exp(log_mass) * (tilted - costs[t].mean(*_joint(mx, sx, policy)))
+        f = plant.a + plant.b @ policy.gain
+        mx = f @ mx + plant.b @ policy.offset + plant.offset
+        sx = _sym(f @ sx @ f.T + drive)
+        steps = t + 1
+    return -total / samples if steps == plan.horizon else math.inf
 
 
 # ------------------------------------------------------------------------------------- certificate
@@ -1449,6 +1526,12 @@ def _stationary_smoothing(
     return _best_on_grid(limit, stationary_mse)
 
 
+def _starts_law(x: _Array) -> InitialLaw:
+    """The law the episodes ``x`` start from, fitted to their first states."""
+    starts = x[:, 0]
+    return InitialLaw(starts.mean(axis=0), np.atleast_2d(np.cov(starts, rowvar=False)))
+
+
 def _episode_certificate(
     x: _Array,
     plant: LinearGaussianPlant,
@@ -1463,8 +1546,7 @@ def _episode_certificate(
     ``smoothing`` or else at the ``tau`` :func:`_episode_smoothing` chooses: the verdict
     :func:`evaluate_plan` admits, before it is logged."""
     samples = x.shape[0]
-    starts = x[:, 0]
-    initial = InitialLaw(starts.mean(axis=0), np.atleast_2d(np.cov(starts, rowvar=False)))
+    initial = _starts_law(x)
     if smoothing is None and not _has_density(schedule):
         smoothing = _episode_smoothing(
             plant, logger, schedule, stages, initial, samples, model_error, min_effective
@@ -1547,7 +1629,9 @@ def evaluate_plan(
 
     The interval is a nominal 95 % one: from 40 contiguous batch means and Student's ``t`` with
     Satterthwaite's degrees of freedom for ``"mis"`` and ``"dr"``, a sandwich for ``"fqe"``, and
-    the delta method over episodes for ``"pdis"``.
+    the delta method over episodes for ``"pdis"``. For ``"pdis"`` a warning is logged where the
+    normalisation's first-order bias exceeds 0.05 of the half-width
+    (:attr:`PlanEvaluation.normalisation_bias`).
 
     Raises:
         InfeasibleEvaluation: when the certificate refuses; it carries the certificate.
@@ -1556,6 +1640,35 @@ def evaluate_plan(
             cost with a target per state for a stationary method or with other than ``H + 1`` of
             them for ``"pdis"``, and every error :func:`certify_evaluation` raises.
     """
+    return _warn_of_bias(
+        _evaluate_plan(
+            logs,
+            plan,
+            method,
+            plant=plant,
+            cost=cost,
+            logger=logger,
+            smoothing=smoothing,
+            model_error=model_error,
+            min_effective=min_effective,
+        )
+    )
+
+
+def _evaluate_plan(
+    logs: Mapping[str, ArrayLike],
+    plan: AffinePolicy | AffineSchedule,
+    method: EvaluationMethod,
+    *,
+    plant: LinearGaussianPlant,
+    cost: QuadraticCost,
+    logger: AffinePolicy | None,
+    smoothing: float | None,
+    model_error: float,
+    min_effective: float,
+) -> PlanEvaluation:
+    """:func:`evaluate_plan` without its warning of the normalisation's bias, for a caller that
+    reads an interval of its own and warns against that."""
     if method not in get_args(EvaluationMethod):
         raise ValueError(f"method must be one of {get_args(EvaluationMethod)}, got {method!r}")
     if not (math.isfinite(model_error) and model_error >= 0.0):
@@ -1569,6 +1682,7 @@ def evaluate_plan(
     samples = u.shape[0]
     effective: float | None
     dof: float | None = None
+    bias: float | None = None
     if held is None:
         schedule = _schedule(plan, u.shape[1])
         stages = _StageCost.steps(cost, n, m, schedule.horizon)
@@ -1579,6 +1693,15 @@ def evaluate_plan(
         )
         weighted, half, effective, correction = _episode_estimate(
             x, u, plant, logger, schedule, stages, certificate.smoothing
+        )
+        tau = certificate.smoothing
+        bias = _normalisation_bias(
+            plant,
+            logger,
+            _smoothed(schedule, tau) if tau > 0.0 else schedule,
+            stages,
+            _starts_law(x),
+            samples,
         )
     else:
         stage = _StageCost.of(cost, n, m)
@@ -1612,8 +1735,34 @@ def evaluate_plan(
     half += model_error * abs(correction)
     share = abs(correction) / abs(weighted) if correction != 0.0 else 0.0
     return PlanEvaluation(
-        value, (value - half, value + half), certificate, correction, share, effective, dof
+        value,
+        (value - half, value + half),
+        certificate,
+        correction,
+        share,
+        effective,
+        dof,
+        normalisation_bias=bias,
     )
+
+
+def _warn_of_bias(evaluation: PlanEvaluation) -> PlanEvaluation:
+    """Log a warning where the normalisation's first-order bias exceeds :data:`_BIAS_SHARE` of the
+    interval's half-width, and return the evaluation."""
+    bias = evaluation.normalisation_bias
+    half = (evaluation.interval[1] - evaluation.interval[0]) / 2.0
+    if bias is not None and abs(bias) > _BIAS_SHARE * half:
+        _log.warning(
+            "the normalised weights' first-order bias exceeds a share of the interval's "
+            "half-width, and the estimate's own bias can be several times it",
+            extra={
+                "chc_event": "pdis_bias",
+                "normalisation_bias": bias,
+                "half_width": half,
+                "share": _BIAS_SHARE,
+            },
+        )
+    return evaluation
 
 
 def _logged_cost(x: _Array, u: _Array, costs: tuple[_StageCost, ...]) -> float:
@@ -1635,6 +1784,7 @@ def _evaluate_by_unit(
     min_effective: float,
     resamples: int,
     seed: int,
+    max_refused: float = 0.05,
 ) -> PlanEvaluation:
     """:func:`evaluate_plan` by ``"pdis"`` on the episodes ``x``, ``u`` of ``units``, beside the
     plan against the logger on them, both intervals read from a bootstrap over the units.
@@ -1646,13 +1796,15 @@ def _evaluate_by_unit(
     are computed again. A draw the certificate refuses is counted and left out. Each interval is
     its estimate plus or minus 1.96 standard deviations of its draws, widened by the plan's model
     correction as :func:`evaluate_plan` widens its own; the difference's draws are the difference
-    within each draw. ``resamples`` is at least two, the caller's to check.
+    within each draw. ``resamples`` is at least two, the caller's to check. The bootstrap's
+    ``reading`` is ``"inconclusive"`` where more than ``max_refused`` of the draws were refused,
+    and is logged as a warning.
 
     Raises:
         InfeasibleEvaluation: when the certificate refuses the episodes, or refuses all draws but
             one, which leaves no spread to read.
     """
-    evaluation = evaluate_plan(
+    evaluation = _evaluate_plan(
         {"x": x, "u": u},
         plan,
         "pdis",
@@ -1689,17 +1841,32 @@ def _evaluate_by_unit(
             xs, us, model, fitted, plan, stages, certificate.smoothing
         )
         draws.append((weighted - correction, weighted - correction - _logged_cost(xs, us, stages)))
-    refused = resamples - len(draws)
+    accepted = len(draws)
+    refused = resamples - accepted
+    reading: BootstrapReading = (
+        "complete"
+        if refused == 0
+        else "conditional"
+        if refused / resamples <= max_refused
+        else "inconclusive"
+    )
     _log.log(
         logging.WARNING if refused else logging.INFO,
-        "the certificate refused resamples of the units, and the intervals read the rest"
-        if refused
-        else "units resampled",
+        {
+            "complete": "units resampled",
+            "conditional": "the certificate refused resamples of the units, and the intervals "
+            "read the rest, conditional on certification",
+            "inconclusive": "the certificate refused more resamples of the units than "
+            "max_refused allows: the intervals read too few draws, and are inconclusive",
+        }[reading],
         extra={
             "chc_event": "unit_bootstrap",
             "units": int(labels.size),
             "resamples": resamples,
             "refused": refused,
+            "accepted": accepted,
+            "accepted_share": accepted / resamples,
+            "reading": reading,
         },
     )
     if refusal is not None and len(draws) < 2:
@@ -1715,13 +1882,23 @@ def _evaluate_by_unit(
     half, half_difference = (_Z95 * float(deviation) + widened for deviation in spread)
     logged = _logged_cost(x, u, stages)
     difference = evaluation.value - logged
-    return replace(
-        evaluation,
-        interval=(evaluation.value - half, evaluation.value + half),
-        versus_logger=LoggerComparison(
-            logged, difference, (difference - half_difference, difference + half_difference)
-        ),
-        bootstrap=UnitBootstrap(int(labels.size), resamples, refused),
+    return _warn_of_bias(
+        replace(
+            evaluation,
+            interval=(evaluation.value - half, evaluation.value + half),
+            versus_logger=LoggerComparison(
+                logged, difference, (difference - half_difference, difference + half_difference)
+            ),
+            bootstrap=UnitBootstrap(
+                int(labels.size),
+                resamples,
+                refused,
+                accepted,
+                accepted / resamples,
+                max_refused,
+                reading,
+            ),
+        )
     )
 
 
@@ -1758,7 +1935,7 @@ def _evaluate_across_time(
     n, m = x.shape[-1], u.shape[-1]
     if logger is None:
         logger = fit_logger(x[:, :-1].reshape(-1, n), u.reshape(-1, m))
-    evaluation = evaluate_plan(
+    evaluation = _evaluate_plan(
         {"x": x, "u": u},
         plan,
         "pdis",
@@ -1785,11 +1962,13 @@ def _evaluate_across_time(
         for square in np.sum(sums * sums, axis=0)
     )
     difference = evaluation.value - logged
-    return replace(
-        evaluation,
-        interval=(evaluation.value - half, evaluation.value + half),
-        degrees_of_freedom=float(count),
-        versus_logger=LoggerComparison(
-            logged, difference, (difference - half_difference, difference + half_difference)
-        ),
+    return _warn_of_bias(
+        replace(
+            evaluation,
+            interval=(evaluation.value - half, evaluation.value + half),
+            degrees_of_freedom=float(count),
+            versus_logger=LoggerComparison(
+                logged, difference, (difference - half_difference, difference + half_difference)
+            ),
+        )
     )

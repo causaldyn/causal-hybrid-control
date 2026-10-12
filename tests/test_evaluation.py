@@ -1134,6 +1134,66 @@ def test_draws_the_certificate_refuses_are_counted_and_too_many_refuse_the_evalu
         evaluate(2)
 
 
+def test_the_bootstrap_counts_the_draws_it_read_and_says_whether_they_are_conditional(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same panel at the certificate's edge and well inside it. Inside, no draw is refused and
+    the reading is complete. At the edge, the draws read are counted with their share, and the
+    reading is conditional on certification where the refused share is at most ``max_refused``
+    and inconclusive above it, the bound itself conditional. The label moves nothing else."""
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    x, u, units = _unit_windows(MARKET, logger, 100, 3, 5, np.random.default_rng(51))
+    starts = x[:, 0]
+    initial = InitialLaw(starts.mean(axis=0), np.cov(starts, rowvar=False))
+    edge = certify_evaluation(
+        MARKET, logger, RAMP, "pdis", x.shape[0], smoothing=0.5, initial=initial
+    ).effective_samples
+
+    def evaluate(min_effective: float, **bound: float) -> PlanEvaluation:
+        return _evaluate_by_unit(
+            x,
+            u,
+            units,
+            RAMP,
+            plant=lambda xs, us: MARKET,
+            cost=COST,
+            logger=logger,
+            smoothing=0.5,
+            model_error=0.0,
+            min_effective=min_effective,
+            resamples=40,
+            seed=0,
+            **bound,
+        )
+
+    inside = evaluate(0.3 * edge).bootstrap
+    with caplog.at_level(logging.INFO, logger="chc.evaluation"):
+        result = evaluate(0.999 * edge)
+    records = [r for r in caplog.records if getattr(r, "chc_event", "") == "unit_bootstrap"]
+    bootstrap = result.bootstrap
+    assert inside is not None
+    assert bootstrap is not None
+    refused = bootstrap.refused
+    at_bound = evaluate(0.999 * edge, max_refused=refused / 40)
+    below_bound = evaluate(0.999 * edge, max_refused=math.nextafter(refused / 40, 0.0))
+
+    assert (inside.refused, inside.accepted, inside.accepted_share) == (0, 40, 1.0)
+    assert (inside.max_refused, inside.reading) == (0.05, "complete")
+    assert 2 < refused < 38
+    assert (bootstrap.accepted, bootstrap.accepted_share) == (40 - refused, (40 - refused) / 40)
+    assert (bootstrap.max_refused, bootstrap.reading) == (0.05, "inconclusive")
+    assert [(r.levelno, r.refused, r.accepted, r.accepted_share, r.reading) for r in records] == [
+        (logging.WARNING, refused, 40 - refused, (40 - refused) / 40, "inconclusive")
+    ]
+    assert at_bound.bootstrap is not None
+    assert below_bound.bootstrap is not None
+    assert at_bound.bootstrap.reading == "conditional"
+    assert below_bound.bootstrap.reading == "inconclusive"
+    for other in (at_bound, below_bound):
+        assert (other.value, other.interval) == (result.value, result.interval)
+        assert other.versus_logger == result.versus_logger
+
+
 # ------------------------------------------------------------------------- one unit's episodes
 
 # One unit whose noise persists: x' = a x + u + e_t, e AR(0.9) of spread 0.5, logged by
