@@ -128,11 +128,12 @@ still change).
   (`validation/constrained_plan_regret.mac` STEP 8). That log's bound reads 0.0214 in any units.
   On 300 random plants with two or three levers it was a median 1.50 times the exact regret, where
   the plain bound was 2.18, and above it on every plant. On 32 of the 300 it is looser than the
-  plain bound, by up to 3.0 times, where the levers' curvatures are close and the levers coupled.
-  A plan with one moving lever, or levers of equal curvature, keeps its bound to the bit. A
-  supplied `modulus` is still the plain norm's. `gradient_norm` is now the scaled gradient's, so
-  `unconstrained_bound` is `gradient_norm^2 / (2 modulus)` in the same norm (ADR 0086). Since
-  0.6.0.
+  plain bound, by up to 3.0 times, where the levers' curvatures are close and the levers coupled,
+  and so are four of the eight finite step bounds of the lever selection's three benchmark plants,
+  by up to 2.2 times. A plan with one moving lever, or levers of equal curvature, keeps its bound
+  to the bit. A supplied `modulus` is still the plain norm's. `gradient_norm` is now the scaled
+  gradient's, so `unconstrained_bound` is `gradient_norm^2 / (2 modulus)` in the same norm
+  (ADR 0086). Since 0.6.0.
 
 ## [0.16.0] — 2026-10-11
 

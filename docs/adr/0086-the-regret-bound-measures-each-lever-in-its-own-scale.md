@@ -93,12 +93,25 @@ between two levers' actions in the Hessian is a median 0.55, against 0.17. There
 already near the levers' scales, and the scaled block's least eigenvalue charges some moves at
 less than the plain one does.
 
+The greedy selection's step bounds on the three named plants of ADR 0004
+(`scripts/bench_max_levers.py`), each priced against every lever's box, before and after:
+
+| plant | step 1 | step 2 | step 3 |
+|---|---|---|---|
+| saturation | 2.2816, 2.2816 | 0.38661, 0.38723 | 4.7e-12, 4.5e-12 |
+| driver pool | 0.5124, 0.6037 | 3.88e-5, 8.56e-5 | 8.2e-13, 8.1e-13 |
+| marketing mix | refused, refused | 2.3047, 2.5588 | 2.9e-11, 2.7e-11 |
+
+Four of the eight finite bounds are looser after, by up to 2.2 times on the driver pool's second
+step. No step changes between finite and refused: `D H D` and `H` have the same inertia, so the modulus
+has the same sign at each point drawn.
+
 ## Consequences
 
 - **A prescription with two or more levers reports a different regret bound, in any units.** On
   the panel above it is 20 % and 7 % lower in the levers' own units, and the same in all others.
-  On most problems it is lower. On some, where the levers' curvatures are close and the levers
-  coupled, it is higher.
+  On most random problems it is lower. On some, where the levers' curvatures are close and the
+  levers coupled, it is higher, as on four steps of ADR 0004's named plants.
 - **`PlanRegretBound.modulus` is the curvature in the scaled norm.** Its units are those of the
   stiffest moving lever. One lever, or levers of equal curvature, read the plain Hessian's least
   eigenvalue as before.
