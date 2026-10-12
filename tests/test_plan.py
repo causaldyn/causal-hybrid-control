@@ -1,6 +1,8 @@
 """The one-call spine: a plan that carries its own certificate."""
 
 import math
+from collections.abc import Callable
+from dataclasses import replace
 from itertools import pairwise
 
 import equinox as eqx
@@ -15,7 +17,7 @@ from chc.control import Bound, projected_gradient_control, projected_gradient_so
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rollout
-from chc.plan import _quadratic, causal_plan, certify_safety, plan_regret_bound
+from chc.plan import CausalPlan, _quadratic, causal_plan, certify_safety, plan_regret_bound
 from chc.residual import ControlAffineResidual, MLPResidual, ZeroResidual
 from chc.support import SupportModel
 from chc.uncertainty import ConfoundingRobustPenalty, confounding_robust_inflation
@@ -274,6 +276,110 @@ def test_a_plan_can_fail_a_guarantee_the_problem_itself_tolerates() -> None:
     # and the per-step flags recover later, which is why ``certified_steps`` is a prefix length --
     # like ``CausalPlan.certified_horizon`` -- rather than a count of the steps that happen to pass.
     assert bool(jnp.any(cert.planned_certified))
+
+
+# ---- the identification radius is a share of the channel ----
+
+_DRIFT, _GAIN, _FLOOR, _ALPHA, _BUDGET = -1.0, 0.3, 0.5, 0.5, 4.0
+_COST_1 = QuadraticCost(Q=jnp.eye(1), R=jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.zeros(1))
+
+
+def _scalar(state_in: float, lever_in: float) -> tuple[CausalPlan, LinearDynamics, Callable]:
+    """``x' = -x + 0.3 u`` from ``x = 1`` under a fixed schedule, its floor ``x >= 0.5``: the
+    state in ``state_in`` times its units and the lever in ``lever_in`` times its own."""
+    model = LinearDynamics(jnp.array([[_DRIFT]]), jnp.array([[_GAIN * state_in / lever_in]]))
+    actions = lever_in * jnp.linspace(4.0, -1.0, 12)[:, None]
+    plan = causal_plan(model, jnp.array([state_in]), _COST_1, 0.1, 12, -5.0, 5.0)
+    plan = replace(
+        plan, actions=actions, trajectory=rollout(model, jnp.array([state_in]), actions, 0.1)
+    )
+
+    def floor(x: Array) -> Array:
+        return x[0] - _FLOOR * state_in
+
+    return plan, model, floor
+
+
+def test_gamma_star_is_the_closed_form_in_the_channel_s_units() -> None:
+    """At the default share, the channel's own size, a floor ``x - lo`` on ``x' = a x + b u`` has
+    the ceiling ``2 b U / D - 1`` at a step whose deficit is ``0 < D < b U``
+    (``validation/gamma_star_units.mac`` (4)). With a gap of 1 in the channel's units, ``b = 0.3``
+    read as a channel a third of the radius's unit, and the weakest step's ceiling was 1.25 where
+    it is 2.15."""
+    plan, model, floor = _scalar(1.0, 1.0)
+    cert = certify_safety(plan, model, floor, 0.1, alpha=_ALPHA, gamma=2.0, u_max=_BUDGET)
+    x = np.asarray(plan.trajectory[:-1, 0])
+    deficit = -_ALPHA * (x - _FLOOR) - _DRIFT * x
+    assert np.all((deficit > 0.0) & (deficit < _GAIN * _BUDGET))  # every step in the finite case
+    np.testing.assert_allclose(
+        cert.step_gamma_star, 2.0 * _GAIN * _BUDGET / deficit - 1.0, rtol=1e-12, atol=0.0
+    )
+    assert cert.radius == pytest.approx(
+        confounding_robust_inflation(1.0, 0.0, 2.0) * _GAIN, rel=1e-12, abs=0.0
+    )
+
+
+@pytest.mark.parametrize(
+    ("state_in", "lever_in"), [(1e-3, 1.0), (1e3, 1.0), (1.0, 1e-3), (1.0, 1e3), (1e3, 1e-3)]
+)
+def test_gamma_star_and_the_certified_steps_read_the_same_in_any_units(
+    state_in: float, lever_in: float
+) -> None:
+    """The same plan posed with the state in ``state_in`` times its units and the lever in
+    ``lever_in`` times its own, the budget with it. The radius was a gap of 1 in the channel's
+    units, which move with both: in thousandths of the state the channel, 3e-4, ceded every level
+    above 1.0002, and in thousands, 300, it held every level and certified four steps of twelve
+    where one is."""
+    plan, model, floor = _scalar(1.0, 1.0)
+    one = certify_safety(plan, model, floor, 0.1, alpha=_ALPHA, gamma=2.0, u_max=_BUDGET)
+    plan, model, floor = _scalar(state_in, lever_in)
+    other = certify_safety(
+        plan, model, floor, 0.1, alpha=_ALPHA, gamma=2.0, u_max=lever_in * _BUDGET
+    )
+    assert 0 < one.certified_steps < 12  # a real cut
+    assert other.certified_steps == one.certified_steps
+    np.testing.assert_array_equal(other.planned_certified, one.planned_certified)
+    np.testing.assert_allclose(other.step_gamma_star, one.step_gamma_star, rtol=1e-9, atol=0.0)
+    assert other.radius == pytest.approx(one.radius * state_in / lever_in, rel=1e-9, abs=0.0)
+
+
+def test_the_radius_is_a_share_of_the_channel_s_operator_norm() -> None:
+    """Two levers whose columns are not orthogonal: the operator norm, ``1 + sqrt 2``, not the
+    Frobenius norm, ``sqrt 6``, is the channel's size."""
+    model = LinearDynamics(-jnp.eye(2), jnp.array([[1.0, 2.0], [0.0, 1.0]]))
+    cost = QuadraticCost(Q=_COST.Q, R=0.05 * jnp.eye(2), Qf=_COST.Qf, x_target=_COST.x_target)
+    plan = causal_plan(model, jnp.ones(2), cost, 0.1, 12, -5.0, 5.0)
+    cert = certify_safety(plan, model, _mixed, 0.1, gamma=3.0, cvar_gap=0.5, u_max=5.0)
+    expected = confounding_robust_inflation(0.5, 0.0, 3.0) * (1.0 + math.sqrt(2.0))
+    assert cert.radius == pytest.approx(expected * math.hypot(0.5, 1.0), rel=1e-12, abs=0.0)
+
+
+class _Gain(eqx.Module):
+    """``x' = -x + (1 + x) u``: a channel that grows with the state."""
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return -x + (1.0 + x) * u
+
+
+def test_the_radius_is_read_at_the_plan_s_first_state() -> None:
+    """A channel that moves with the state is sized once, where the plan starts: ``1 + x0``."""
+    plan = causal_plan(_Gain(), jnp.array([2.0]), _COST_1, 0.1, 12, -1.0, 1.0)
+    assert float(jnp.ptp(plan.trajectory)) > 0.1  # the channel moves along the plan
+
+    def floor(x: Array) -> Array:
+        return x[0] + 1.0
+
+    cert = certify_safety(plan, _Gain(), floor, 0.1, gamma=2.0, u_max=1.0)
+    assert cert.radius == pytest.approx(
+        confounding_robust_inflation(1.0, 0.0, 2.0) * 3.0, rel=1e-12, abs=0.0
+    )
+
+
+def test_a_channel_that_is_not_a_number_scales_no_radius() -> None:
+    model = LinearDynamics(-jnp.eye(1), jnp.array([[math.nan]]))
+    plan = _scalar(1.0, 1.0)[0]
+    with pytest.raises(ValueError, match="scales no radius"):
+        certify_safety(plan, model, lambda x: x[0], 0.1, gamma=2.0, u_max=1.0)
 
 
 def test_a_non_positive_cvar_gap_is_rejected_rather_than_inverted() -> None:

@@ -1633,8 +1633,9 @@ def prescribe(
             vector field is the fitted residual.
         dt: the time step one panel period represents.
         gamma: the marginal sensitivity model's level the barrier is priced at (§40), passed to
-            :func:`chc.plan.certify_safety`. It prices the plan, and changes it only under
-            ``hold_constraints``.
+            :func:`chc.plan.certify_safety` with its default gap, the fitted channel's own size,
+            so ``gamma_star`` reads the same in any units of the state or of the levers. It
+            prices the plan, and changes it only under ``hold_constraints``.
         tolerance: the trajectory error above which the plan stops being certified. **Omitting it
             switches the tube off** rather than setting it to infinity: this library cannot know
             how much error a caller accepts, and a certificate with an infinite tolerance passes

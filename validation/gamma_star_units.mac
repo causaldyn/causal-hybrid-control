@@ -1,0 +1,38 @@
+/* Gamma* in the channel's units: the barrier's sensitivity ceiling read the same in any units of
+   the state, the levers or the barrier.
+
+   Setting (chc.plan.certify_safety, chc.barrier.barrier_gamma_star). At a step, a = grad h . f is
+   the drift term, w = B^T grad h the channel along the barrier, nh = ||grad h||, U the actuation
+   budget and D = -alpha*h - a the deficit the drift leaves. The best admissible action certifies
+   while the identification radius d = Delta * nh stays below c* = ||w|| - D/U, and
+   Delta(Gamma) = (Gamma-1)/(Gamma+1) * gap. Inverting at c*:
+
+       Gamma* = (gap*nh + c*) / (gap*nh - c*).
+
+   Delta is an operator-norm radius on B, so gap must carry B's units. An absolute gap does not:
+   (2) shows the ceiling then moves with the units. The fix takes gap = r * ||B||, r a share of
+   the channel's own operator norm, and (3) shows that ceiling is unit-free. (4) is the scalar
+   closed form the tests pin. */
+display2d : false$
+assume(U > 0, nh > 0, nw > 0, nb > 0, r > 0, gap > 0, sx > 0, su > 0, sh > 0, b > 0, D > 0)$
+
+gstar(gp, nh, nw, D, U) := block([c : nw - D/U], (gp*nh + c)/(gp*nh - c))$
+
+/* (1) Units. The state in sx times its units, the levers in su times theirs and the barrier in sh
+   times its own: grad h -> sh*grad h/sx, f -> sx*f, B -> sx*B/su, U -> su*U. So a and D scale by
+   sh, ||w|| by sh/su, nh by sh/sx and ||B|| by sx/su. */
+nh2 : sh*nh/sx$  nw2 : sh*nw/su$  D2 : sh*D$  U2 : su*U$  nb2 : sx*nb/su$
+
+/* (2) An absolute gap: the ceiling moves with the units of the state and of the levers. */
+moved : ratsimp(gstar(gap, nh2, nw2, D2, U2) - gstar(gap, nh, nw, D, U))$
+print("(2) absolute gap, change in Gamma* =", factor(moved), "  (nonzero)")$
+print("    at sx = su = 1 it is", ratsimp(subst([sx = 1, su = 1], moved)), "  (=0)")$
+
+/* (3) The gap a share of ||B||: unit-free. */
+print("(3) relative gap, change in Gamma* =",
+      ratsimp(gstar(r*nb2, nh2, nw2, D2, U2) - gstar(r*nb, nh, nw, D, U)), "  (=0)")$
+
+/* (4) One state, one lever, h = x - lo: nh = 1, ||w|| = ||B|| = b, and at r = 1 (the default, the
+   channel's own size) the ceiling is 2 b U / D - 1. */
+print("(4) scalar closed form minus 2*b*U/D - 1 =",
+      ratsimp(gstar(1*b, 1, b, D, U) - (2*b*U/D - 1)), "  (=0)")$

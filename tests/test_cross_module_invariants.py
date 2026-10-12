@@ -29,7 +29,15 @@ from hypothesis import strategies as st
 from chc.allocation import ReturnTarget, allocate, budget_for
 from chc.control import LinearConstraint
 from chc.cost import QuadraticCost, total_cost
-from chc.decision import Lever, PrescribedPolicy, Prescription, Target, _rate, prescribe
+from chc.decision import (
+    Constraint,
+    Lever,
+    PrescribedPolicy,
+    Prescription,
+    Target,
+    _rate,
+    prescribe,
+)
 from chc.dynamics import LinearDynamics
 from chc.graph import CausalGraph
 from chc.integrate import rollout
@@ -89,13 +97,16 @@ def _decide(
     unread: bool = False,
     budget: bool = False,
     max_levers: int | None = None,
+    floor: float | None = None,
+    hold: bool = False,
 ) -> Prescription:
     """``policy``'s log and problem, each lever logged in ``levers_in`` times its units and the
     state in ``state_in`` times its own: the boxes and a budget's weights with the levers, the
     target, the start and the tube's tolerance with the state, and the prices so the cost is the
     same number. ``unread`` adds a column no lever, target or covariate names. ``budget`` holds
     the plan to spend at most 0.6 over the horizon, ``u1`` at 1 a unit and ``u2`` at 3, on boxes
-    from 0, where it binds."""
+    from 0, where it binds. ``floor`` bounds the state to ``[floor, 1.1]`` in its own units, audited
+    at ``gamma = 1.5``, and ``hold`` holds the bounds in the solve."""
     columns = dict(_columns(policy))
     first, second = levers_in
     columns["u1"] = first * columns["u1"]
@@ -119,6 +130,11 @@ def _decide(
         adjustment=CausalGraph.from_edges(EDGES),
         budgets=budgets,
         max_levers=max_levers,
+        constraints=(
+            [] if floor is None else [Constraint("y", lo=floor * state_in, hi=1.1 * state_in)]
+        ),
+        hold_constraints=hold,
+        gamma=1.0 if floor is None else 1.5,
         horizon=HORIZON,
         dt=DT,
         tolerance=0.5 * state_in,
@@ -467,6 +483,41 @@ def test_a_budget_s_price_reads_the_same_in_any_units(
         state_in,
     )
     _same(other, one, reference.plan.task_cost)  # type: ignore[union-attr]
+
+
+OTHER_UNITS = [((1e-3, 1e-3), 1.0), ((1e3, 1e3), 1.0), ((1.0, 1.0), 1e-3), ((1.0, 1.0), 1e3)]
+
+
+@pytest.mark.parametrize(("levers_in", "state_in"), OTHER_UNITS)
+def test_gamma_star_and_the_barrier_s_steps_read_the_same_in_any_units(
+    levers_in: tuple[float, float], state_in: float
+) -> None:
+    """The state bounded to ``[0.8, 1.1]`` and audited at ``gamma = 1.5``. The identification radius
+    was ``(gamma-1)/(gamma+1)`` times a gap of 1 in the channel's units, which are the state's per
+    the levers': with the levers in thousands or the state in thousandths, gamma* read 1.0014
+    where it reads 10.9 and the barrier cleared none of the two steps it clears; the other way,
+    every level. The gap is now a share of the channel's own size."""
+    one = _decide("free", floor=0.8).certificate
+    other = _decide("free", levers_in=levers_in, state_in=state_in, floor=0.8).certificate
+    assert one.gamma_star_status == "finite"
+    assert one.barrier_certified_steps is not None
+    assert 0 < one.barrier_certified_steps < HORIZON  # a real cut
+    assert other.barrier_certified_steps == one.barrier_certified_steps
+    assert other.gamma_star == pytest.approx(one.gamma_star, rel=1e-9, abs=0.0)
+
+
+@pytest.mark.parametrize(("levers_in", "state_in"), OTHER_UNITS)
+def test_a_held_barrier_clears_every_step_in_any_units(
+    levers_in: tuple[float, float], state_in: float
+) -> None:
+    """The bounds held in the solve, at the radius the audit prices. In the channel's units that
+    radius made the levers in thousands or the state in thousandths stand still and clear no step
+    of three. The plans themselves are not compared: the rounds descend in the caller's units."""
+    one = _decide("free", floor=0.8, hold=True).certificate
+    other = _decide("free", levers_in=levers_in, state_in=state_in, floor=0.8, hold=True)
+    assert one.barrier_certified_steps == HORIZON
+    assert other.certificate.barrier_certified_steps == HORIZON
+    assert float(np.max(np.abs(_schedule(other)))) > 0.0
 
 
 # ---- the allocation planner: currency, outcome units, and a channel no plan can buy ----

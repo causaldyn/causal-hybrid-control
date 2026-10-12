@@ -119,6 +119,20 @@ still change).
   every row's is zero. Where both are below 1 a smaller push now reads as a price, and where the
   guess's is the larger and above 1 a larger push reads as zero. Since 0.7.0; the decision weight
   since 0.8.0.
+- **`gamma*` and the barrier's certified steps read the same in any units of the state or of the
+  levers.** The identification radius was `(gamma-1)/(gamma+1) * cvar_gap` with `cvar_gap = 1`, an
+  operator-norm radius on the channel in the channel's own units: one unit of the state per unit
+  of a lever, whatever those were. On a log of one state and two levers, the state bounded to
+  `[0.8, 1.1]` and audited at `gamma = 1.5`, `prescribe` read `gamma*` 5.28 and one certified step
+  of three; with the levers in thousands or the state in thousandths, 1.0014 and none; the other
+  way round, every level and two. `cvar_gap` in `certify_safety`, `BarrierConstraint` and
+  `run_spine` is now a share of the model's channel, its operator norm at the plan's first state,
+  1 by default: the channel's own size, the calibration `chc.benchmark` already uses. That log
+  now reads `gamma*` 10.88 and two steps in every set of units. Wherever the channel's norm is not
+  1 the numbers move: the driver-supply demo's arms read `gamma*` 3.34 and 1.79, where they read
+  7.48 and 1.17, and the naive arm's certified prefix is 7 steps of 25, not 5. A plant whose
+  channel has norm 1 reads as before. An absolute radius `r` is the share `r` over the channel's
+  norm (ADR 0085). Since 0.2.0; in `prescribe` since 0.5.0.
 
 ## [0.16.0] — 2026-10-11
 
