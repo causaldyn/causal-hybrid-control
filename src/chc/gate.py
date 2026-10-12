@@ -33,8 +33,41 @@ What the guarantee needs, and the gate cannot check:
 * **No carryover**: a decision's reward does not depend on earlier decisions. On a plant with
   memory, per-decision increments certify the myopic contrast; in the lab they deployed, with
   probability 1.000, a candidate that was +0.029 better myopically and -0.010 worse in the long run.
-  :func:`chc.evaluation.evaluate_plan` estimates a plan's value on such a plant.
+  On such a plant, run the gate in blocks (below), or estimate a plan's value with
+  :func:`chc.evaluation.evaluate_plan`.
 * **Rewards in** ``[0, 1]``.
+
+**Plants with memory: the gate in blocks** (*experimental*). With ``GateConfig(block_length=L,
+burn_in=b)``, a zone's evidence comes from an experiment on policies, not on decisions: each block
+of ``L`` periods draws one policy, the candidate with probability ``rho``, runs it for the whole
+block, and logs the probability of that draw. A :class:`BlockBatch` carries the blocks. The gate
+drops the first ``b`` periods of each block, averages the reward over the last ``r = L - b``, and
+weighs the block by the inverse of its logged probability. One block is one increment of the same
+e-processes, and e-BH reads them as before. The inference is design-based: the only randomness it
+uses is the gate's own draw, so the dependence between one zone's blocks does not matter (Bojinov
+and Shephard 2019; Ham, Bojinov, Lindon and Tingley 2026). What a DEPLOY then claims is that the
+candidate's mean reward over the read periods beats the baseline's by more than ``delta``, block by
+block, given everything before the block.
+
+* **Carryover of order** ``p <= b`` (a reward depends on the decisions of the last ``p`` periods
+  only; Bojinov and Shephard's ``m``-period causal impact): the read periods see only their own
+  block's policy, so the contrast is the sustained one, that of running the candidate rather than
+  the baseline for good.
+* **Geometric memory**: a plant whose expected reward ``t`` periods after a policy takes over lies
+  within ``C a^t`` of that policy's long-run value ``V``, whatever the state it took over in. The
+  block's contrast then lies within ``2 C a^b (1 - a^r) / (r (1 - a))``, of order ``a^b``, of
+  ``V_new - V_base`` (``validation/gate_block_contrast.mac``), and a DEPLOY claims only
+  ``V_new - V_base > delta`` less that bias: ``delta`` must cover it. On the lab's plant above
+  (``a = 0.9``), with ``r = 10``, the block's contrast is +0.014 from a start at 0.2, the
+  stationary mean under ``rho = 0.5``, and +0.062 from one at -1.1: the wrong sign. With
+  ``b = 40`` it lies between -0.0115 and -0.0069 for every start in ``[-1.1, 1.5]``, against
+  -0.0096 in the long run, and the gate in blocks deployed the candidate on 5 of 1000 paths of
+  20 000 periods, where without blocks it deployed on every path.
+* The gate cannot test ``p`` or ``a`` on its own data.
+* A block is one increment however long it is, and its burned periods read nothing. Under
+  carryover of order 1, a candidate +0.3 better sustained was deployed after a median of 562
+  periods in blocks of 2 with 1 burned, 978 in blocks of 5 with 1 burned, and 1288 in blocks of 5
+  with 4 burned.
 
 A zone's channel is watched through per-decision drift e-values. :func:`channel_drift_evalues`
 reads them off the Gaussian dither a :class:`DecisionLog` records, and :class:`DriftAlarm` turns
@@ -123,11 +156,18 @@ class GateConfig:
     wrong, stopping a candidate that does beat the baseline by more than ``delta + min_effect``,
     with probability at most ``alpha_futility``.
 
+    ``block_length`` (*experimental*), unset by default, runs the gate in blocks of that many
+    periods, for a plant with memory (see :mod:`chc.gate`), and ``burn_in``, the periods at the
+    start of each block that are not read, must be at least the plant's carryover order. In blocks,
+    ``rho`` is the probability that a block runs the candidate, and ``horizon`` and the zones'
+    :class:`ZonePlan` are not read.
+
     Raises:
         ValueError: on a margin outside ``[0, 1)``, a level or ``rho`` outside ``(0, 1)``, a
             ``min_effect`` that is not positive, a ``horizon`` below 1, a ``drift_arl`` not above
-            1, or an ``alpha_futility`` with ``delta + min_effect`` not below 1, which no reward
-            in ``[0, 1]`` can beat.
+            1, an ``alpha_futility`` with ``delta + min_effect`` not below 1, which no reward
+            in ``[0, 1]`` can beat, a ``block_length`` below 1, or a ``burn_in`` that is negative,
+            leaves no period of a block to read, or is set without a ``block_length``.
     """
 
     delta: float
@@ -139,6 +179,8 @@ class GateConfig:
     drift_arl: float = 10_000.0
     rho: float = 0.5
     alpha_futility: float | None = None
+    block_length: int | None = None
+    burn_in: int = 0
 
     def __post_init__(self) -> None:
         for name in ("delta", "delta_harm"):
@@ -163,6 +205,19 @@ class GateConfig:
             raise ValueError(f"horizon must be at least 1 decision, got {self.horizon}")
         if not self.drift_arl > 1.0:
             raise ValueError(f"drift_arl must exceed 1, got {self.drift_arl}")
+        if self.block_length is None:
+            if self.burn_in != 0:
+                raise ValueError(
+                    f"burn_in = {self.burn_in} without a block_length: a burn-in is the start of a"
+                    " block"
+                )
+        elif self.block_length < 1:
+            raise ValueError(f"block_length must be at least 1 period, got {self.block_length}")
+        elif not 0 <= self.burn_in < self.block_length:
+            raise ValueError(
+                f"burn_in must lie in [0, block_length) = [0, {self.block_length}), so that a"
+                f" block has a period to read, got {self.burn_in}"
+            )
 
 
 @dataclass(frozen=True)
@@ -428,6 +483,70 @@ class ZoneBatch:
             ValueError: on what the constructor refuses.
         """
         return cls(reward, candidate, baseline, log.propensity, drift)
+
+
+@dataclass(frozen=True)
+class BlockBatch:
+    """One zone's blocks since the gate was last read, for a gate in blocks. *Experimental.*
+
+    ``reward`` holds one row per block and one column per period of it, burn-in included.
+    ``candidate`` says whether the block ran the candidate, and ``logged`` is the probability with
+    which the block's draw chose the policy it ran, recorded at the draw: ``rho`` or ``1 - rho`` in
+    an experiment, and 1 when the zone's mode left no choice. ``drift``, optional, is a
+    :class:`ZoneBatch`'s, with one row per period, block by block.
+
+    Raises:
+        ValueError: on rewards that are not one row per block of at least one period, a non-finite
+            entry, a reward outside ``[0, 1]``, a ``candidate`` that is not one boolean per block,
+            a ``logged`` that is not one probability in ``(0, 1]`` per block, or a negative
+            e-value.
+    """
+
+    reward: NDArray[np.float64]
+    candidate: NDArray[np.bool_]
+    logged: NDArray[np.float64]
+    drift: NDArray[np.float64] | None = None
+
+    def __post_init__(self) -> None:
+        reward = np.array(_real_numbers(self.reward, "reward"), dtype=np.float64)
+        if reward.ndim != 2 or reward.shape[1] == 0:
+            raise ValueError(
+                f"reward must have shape (blocks, periods), at least one period, got {reward.shape}"
+            )
+        if not np.all(np.isfinite(reward)):
+            raise ValueError("reward is not finite")
+        if reward.size and not (np.min(reward) >= 0.0 and np.max(reward) <= 1.0):
+            raise ValueError(
+                f"rewards must lie in [0, 1], got [{np.min(reward)}, {np.max(reward)}]"
+            )
+        blocks = reward.shape[0]
+        candidate = np.array(_real_numbers(self.candidate, "candidate"))
+        if candidate.size == 0:
+            candidate = candidate.astype(np.bool_)
+        if candidate.dtype != np.bool_ or candidate.shape != (blocks,):
+            raise ValueError(
+                f"candidate must hold {blocks} booleans, got {candidate.dtype} of shape"
+                f" {candidate.shape}"
+            )
+        logged = _vector(self.logged, "logged")
+        if logged.shape != (blocks,):
+            raise ValueError(f"logged has {logged.shape[0]} entries for {blocks} blocks")
+        if blocks and not (np.min(logged) > 0.0 and np.max(logged) <= 1.0):
+            raise ValueError(
+                f"a logged probability must lie in (0, 1], got [{np.min(logged)}, {np.max(logged)}]"
+            )
+        for name, array in (("reward", reward), ("candidate", candidate), ("logged", logged)):
+            array.setflags(write=False)
+            object.__setattr__(self, name, array)
+        if self.drift is not None:
+            object.__setattr__(self, "drift", _evalues(self.drift, "drift", reward.size))
+
+
+def _per_block(batch: BlockBatch, burn_in: int) -> ZoneBatch:
+    """One decision per block: the policy drawn is the action, so the candidate's propensity is 1
+    on its own blocks and 0 on the baseline's, and the reward is the read periods' mean."""
+    ran = batch.candidate.astype(np.float64)
+    return ZoneBatch(batch.reward[:, burn_in:].mean(axis=1), ran, 1.0 - ran, batch.logged)
 
 
 def _entries(value: ArrayLike, shape: tuple[int, ...], name: str) -> _Array:
@@ -946,6 +1065,13 @@ class DeploymentGate:
     ``(1 - rho) baseline + rho candidate`` in ``"experiment"``, and under the candidate once
     ``"deployed"``. The gate keeps its evidence in memory, and one caller updates it at a time.
 
+    In blocks (``GateConfig.block_length``), each zone is fed a :class:`BlockBatch` and starts in
+    ``"experiment"``, where each block runs the candidate with probability ``rho``. ``"shadow"``,
+    after a futility stop, runs the baseline's blocks, and ``"deployed"`` the candidate's. Shadow
+    blocks are no evidence for the candidate, so rule 5 sends a shadow zone back to the experiment
+    as soon as it may enter one, and a deployed zone's rollback evidence has no baseline block to
+    read: only a drift alarm rolls it back.
+
     Raises:
         ValueError: on no zones.
     """
@@ -954,37 +1080,44 @@ class DeploymentGate:
         if not plans:
             raise ValueError("the gate needs at least one zone")
         self.config = config
+        start: GateMode = "shadow" if config.block_length is None else "experiment"
         self._zones = {
-            name: _Zone(plan, DriftAlarm(config.drift_arl)) for name, plan in plans.items()
+            name: _Zone(plan, DriftAlarm(config.drift_arl), start) for name, plan in plans.items()
         }
 
     def mode(self, zone: str) -> GateMode:
         return self._zones[zone].mode
 
-    def update(self, batches: Mapping[str, ZoneBatch]) -> dict[str, Verdict]:
+    def update(self, batches: Mapping[str, ZoneBatch | BlockBatch]) -> dict[str, Verdict]:
         """Add each zone's batch to its evidence and return every zone's verdict.
 
         A zone without a batch keeps its evidence and still gets a verdict, since e-BH reads every
-        zone's; a retired zone's batch is ignored. Every batch is checked before any is added.
+        zone's; a retired zone's batch is ignored. Every batch is checked before any is added. A
+        gate in blocks reads each block as one decision, whose action is the policy drawn.
 
         Raises:
             KeyError: on a zone the gate has no plan for.
-            ValueError: on a batch whose logged propensities are not the mode's, or whose drift
-                e-values change their number of detectors mid-run.
+            TypeError: on a :class:`BlockBatch` for a gate not in blocks, or a :class:`ZoneBatch`
+                for one that is.
+            ValueError: on a batch whose logged propensities are not the mode's, blocks whose
+                length is not ``block_length``, or drift e-values that change their number of
+                detectors mid-run.
         """
         cfg = self.config
         unknown = sorted(set(batches) - set(self._zones))
         if unknown:
             raise KeyError(f"the gate has no plan for zones {unknown}")
-        live = {z: b for z, b in batches.items() if self._zones[z].mode != "retired"}
+        given = {z: b for z, b in batches.items() if self._zones[z].mode != "retired"}
+        live = {z: self._decisions(z, b) for z, b in given.items()}
         for z, b in live.items():
-            self._check(z, b)
+            self._check(z, b, given[z].drift)
         alarms = {
-            z: b.drift is not None and self._zones[z].drift.update(b.drift) for z, b in live.items()
+            z: b.drift is not None and self._zones[z].drift.update(b.drift)
+            for z, b in given.items()
         }
         for z, b in live.items():
             zone = self._zones[z]
-            zone.decisions += b.reward.shape[0]
+            zone.decisions += given[z].reward.size
             w_new, w_base, r = b.candidate / b.logged, b.baseline / b.logged, b.reward
             if zone.mode == "deployed":
                 zone.rollback.add(((w_base - w_new) * r - cfg.delta_harm) / (1 + cfg.delta_harm))
@@ -1032,7 +1165,29 @@ class DeploymentGate:
                 )
         return verdicts
 
-    def _check(self, name: str, batch: ZoneBatch) -> None:
+    def _decisions(self, name: str, batch: ZoneBatch | BlockBatch) -> ZoneBatch:
+        """The batch as decisions: as given, or, in blocks, one per block."""
+        length = self.config.block_length
+        if length is None:
+            if not isinstance(batch, ZoneBatch):
+                raise TypeError(
+                    f"zone {name!r}: a gate not in blocks reads a ZoneBatch, got"
+                    f" {type(batch).__name__}"
+                )
+            return batch
+        if not isinstance(batch, BlockBatch):
+            raise TypeError(
+                f"zone {name!r}: a gate in blocks of {length} periods reads a BlockBatch, got"
+                f" {type(batch).__name__}"
+            )
+        if batch.reward.shape[1] != length:
+            raise ValueError(
+                f"zone {name!r}: blocks of {batch.reward.shape[1]} periods, where the gate's are"
+                f" {length}"
+            )
+        return _per_block(batch, self.config.burn_in)
+
+    def _check(self, name: str, batch: ZoneBatch, drift: _Array | None) -> None:
         zone, rho = self._zones[name], self.config.rho
         if zone.mode == "shadow":
             expected, policy = batch.baseline, "the baseline"
@@ -1051,9 +1206,9 @@ class DeploymentGate:
                 " a logged one"
             )
         detectors = zone.drift.detectors
-        if batch.drift is not None and detectors is not None and batch.drift.shape[1] != detectors:
+        if drift is not None and detectors is not None and drift.shape[1] != detectors:
             raise ValueError(
-                f"zone {name!r}: {batch.drift.shape[1]} drift detectors, where the running"
+                f"zone {name!r}: {drift.shape[1]} drift detectors, where the running"
                 f" statistic has {detectors}"
             )
 
@@ -1077,7 +1232,9 @@ class DeploymentGate:
         if self._futile(zone):
             zone.mode = "shadow"
             return "shadow"
-        if zone.mode == "shadow" and self._experiment_is_faster(zone):
+        if zone.mode == "shadow" and (
+            self.config.block_length is not None or self._experiment_is_faster(zone)
+        ):
             zone.mode = "experiment"
             return "experiment"
         return "shadow" if zone.mode == "shadow" else "experiment"

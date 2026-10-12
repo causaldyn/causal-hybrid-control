@@ -170,7 +170,10 @@ documented, and what is not built yet. Every name below is importable from `chc`
   the action, the propensity it was drawn with, a flag for a clipped action and the dither as
   drawn. With `alpha_futility` (*experimental*), an experiment whose candidate is not worth
   `min_effect` returns to shadow, each such stop wrong with probability at most `alpha_futility`.
-  See [`chc.gate`](api/gate.md).
+  On a plant with memory, `block_length` and `burn_in` (*experimental*) run the experiment in
+  blocks: each block runs one policy, drawn at random, and the gate reads a `BlockBatch` of them
+  after each block's burn-in, so that a deploy certifies the sustained effect, not the effect of
+  one decision. See [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 

@@ -1,0 +1,54 @@
+/* The contrast a block of chc.gate's experiment in blocks reads (ADR 0090), on the two plants of
+   tests/test_gate_blocks.py.
+
+   A block of L = b + r periods runs one policy; the gate reads the mean reward over its last r
+   periods, inverse-probability weighted by the block's draw, so given everything before the
+   block an increment's mean is the read periods' mean reward under the candidate less that under
+   the baseline, from the same start.
+
+   STEP 1  geometric memory: when each period's expected reward t periods into a block lies within
+           C a^t of the policy's long-run value, the read mean lies within
+           2 C a^b (1 - a^r) / (r (1 - a)) of V_new - V_base
+   STEP 2  the lab's plant, x' = a x + u / 10 + eps / 5, u ~ N(mu, 1), reward mean
+           3/10 exp(-(u - 1)^2 / 2) + 7/10 exp(-x^2 / 2), baseline mu = 0, candidate mu = 2/5:
+           x_t ~ N(a^t x0 + (1 - a^t) mu, (1 - a^(2t)) vss) from a start x0, and
+           E[exp(-x^2 / 2)] = exp(-m^2 / (2 (1 + v))) / sqrt(1 + v) for x ~ N(m, v)
+   STEP 3  carryover of order 1, reward mean 1/2 + gain u_t - cost u_(t-1), u = 1 under the
+           candidate and 0 under the baseline: read after one burned period, the contrast is
+           gain - cost whatever the block before; read over both periods, it is gain - cost / 2
+
+   Run: timeout 120 maxima --very-quiet -b validation/gate_block_contrast.mac */
+
+fpprec : 30$
+fpprintprec : 10$
+display2d : false$
+load("simplify_sum")$
+
+/* STEP 1 */
+step1 : ratsimp(simplify_sum(sum(2 * C * a^t, t, b, b + r - 1)) / r
+                - 2 * C * a^b * (1 - a^r) / (r * (1 - a)))$
+print("STEP 1 the read mean's bound less its closed form (expect 0):", step1)$
+
+/* STEP 2 */
+la : 9/10$
+vss : (1/100 + 4/100) / (1 - la^2)$
+h(m, v) := exp(-m^2 / (2 * (1 + v))) / sqrt(1 + v)$
+g(m) := exp(-(m - 1)^2 / 4) / sqrt(2)$
+myopic : 3/10 * (g(2/5) - g(0))$
+longrun : myopic + 7/10 * (h(2/5, vss) - h(0, vss))$
+contrast(x0, b, r) := myopic + 7/10 / r * sum(
+  h(la^t * x0 + (1 - la^t) * 2/5, (1 - la^(2*t)) * vss) - h(la^t * x0, (1 - la^(2*t)) * vss),
+  t, b, b + r - 1)$
+print("STEP 2 myopic contrast (expect +0.0287):", bfloat(myopic))$
+print("STEP 2 long-run contrast (expect -0.0096):", bfloat(longrun))$
+for start in [1/5, -11/10, 3/2] do (
+  print("STEP 2 start", start, "b = 0, r = 10:", bfloat(contrast(start, 0, 10))),
+  print("STEP 2 start", start, "b = 40, r = 10:", bfloat(contrast(start, 40, 10))))$
+
+/* STEP 3: reward of a period given its own action and the one before */
+reward(u, last) := 1/2 + gain * u - cost * last$
+for last in [0, 1] do (
+  print("STEP 3 block before ran", last, ": one burned (expect gain - cost):",
+        ratsimp(reward(1, 1) - reward(0, 0))),
+  print("STEP 3 block before ran", last, ": none burned (expect gain - cost / 2):",
+        ratsimp((reward(1, last) + reward(1, 1)) / 2 - (reward(0, last) + reward(0, 0)) / 2)))$

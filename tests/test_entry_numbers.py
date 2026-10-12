@@ -354,6 +354,16 @@ def _batch() -> dict[str, Any]:
 
 
 @functools.cache
+def _blocks() -> dict[str, Any]:
+    return {
+        "reward": np.random.default_rng(14).random((5, 3)),
+        "candidate": np.array([True, False, True, True, False]),
+        "logged": np.full(5, 0.5),
+        "drift": np.ones((15, 2)),
+    }
+
+
+@functools.cache
 def _facade() -> dict[str, Any]:
     rng = np.random.default_rng(13)
     units, periods = 10, 6
@@ -741,6 +751,12 @@ ENTRIES = (
         _batch,
         lambda a: gate.ZoneBatch(**a),
         _named("reward", "candidate", "baseline", "logged", "drift"),
+    ),
+    Entry(
+        "gate.BlockBatch",
+        _blocks,
+        lambda a: gate.BlockBatch(**a),
+        _named("reward", "candidate", "logged", "drift"),
     ),
     Entry(
         "gate.channel_drift_evalues",

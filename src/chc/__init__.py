@@ -109,6 +109,7 @@ from chc.evaluation import (
 )
 from chc.experiment import ChannelPrior, ZoneDecision, ZoneExperiment, design_experiment
 from chc.gate import (
+    BlockBatch,
     DecisionLog,
     DeploymentGate,
     DriftAlarm,
@@ -155,6 +156,7 @@ __all__ = [
     "AffinePolicy",
     "AffineSchedule",
     "BarrierConstraint",
+    "BlockBatch",
     "BlockDesign",
     "CausalGraph",
     "CausalPlan",
