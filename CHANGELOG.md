@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-10-13
+
 ### Added
 
 - **`BarrierConstraint` and `certify_safety` take a tuple of barriers, each held and audited on
@@ -6369,6 +6371,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.17.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.17.0
 [0.16.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.16.0
 [0.15.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.1
 [0.15.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.0
