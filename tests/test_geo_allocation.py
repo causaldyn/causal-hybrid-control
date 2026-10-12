@@ -16,7 +16,17 @@ import pytest
 from scipy.optimize import minimize
 
 import chc.allocation
-from chc.allocation import Totals, _on_envelopes, allocate, allocate_geos
+from chc.allocation import (
+    MarginalReturnTarget,
+    Totals,
+    _Group,
+    _on_envelopes,
+    _priced,
+    _worths,
+    allocate,
+    allocate_geos,
+    budget_for_geos,
+)
 from chc.response import (
     Channel,
     DelayedAdstock,
@@ -580,6 +590,385 @@ def test_s_curves_under_totals_on_two_geos_no_lattice_plan_returns_more():
             best = max(best, float(revenue.max()))
     assert best <= plan.worth + plan.gap
     assert plan.worth - best <= 1e-4 * plan.worth
+
+
+CUT_ROW = (
+    Channel(KERNELS[0], Tanh(250.0), 1100.0),
+    Channel(KERNELS[1], Hill(110.0, 2.5), 900.0),
+    Channel(KERNELS[2], Hill(200.0, 3.0), 1400.0),
+)
+CUT_HISTORY = np.random.default_rng(3).gamma(4.0, 20.0, size=(30, 3))
+CUT_LOWER = np.array([40.0, 25.0, 15.0])
+CUT_UPPER = np.array([160.0, 100.0, 60.0])
+CUT_BUDGET = PERIODS * 150.0
+# the row twice, the second geo's history 0.7 of the first's
+CUT_GRID = (CUT_ROW, CUT_ROW)
+CUT_GRID_HISTORY = np.stack([CUT_HISTORY, 0.7 * CUT_HISTORY], axis=1)
+CUT_BOX = {"lower": np.stack([CUT_LOWER] * 2), "upper": np.stack([CUT_UPPER] * 2)}
+
+
+def _in(cell: Channel, currency: float, outcome: float) -> Channel:
+    """``cell`` with spend in ``currency`` times its units and return in ``outcome`` times."""
+    curve = cell.curve
+    scaled = (
+        Hill(currency * curve.scale, curve.slope)
+        if isinstance(curve, Hill)
+        else type(curve)(currency * curve.scale)  # type: ignore[call-arg]
+    )
+    return Channel(cell.kernel, scaled, outcome * cell.coefficient)
+
+
+def _cut_plan(currency=1.0, outcome=1.0, **totals):
+    """The two geos of ``CUT_ROW`` planned at twice its budget, in ``currency`` and ``outcome``
+    times the units, under ``totals`` given in the units."""
+    grid = tuple(tuple(_in(cell, currency, outcome) for cell in row) for row in CUT_GRID)
+    scaled = {
+        name: Totals(least=currency * bound.least, most=currency * bound.most)
+        for name, bound in totals.items()
+    }
+    return allocate_geos(
+        grid,
+        currency * 2 * CUT_BUDGET,
+        PERIODS,
+        lower=currency * CUT_BOX["lower"],
+        upper=currency * CUT_BOX["upper"],
+        history=currency * CUT_GRID_HISTORY,
+        **scaled,
+    )
+
+
+def _meets_its_prices(plan, grid, history, lower, upper, held=(), rel=1e-6) -> int:
+    """Each cell's slope a currency unit, by central differences of its return over history, plan
+    and tail, against its price, the budget's plus its geo's and its channel's: equal inside its
+    box, no more at its floor, no less at its cap. A total named in ``held`` is held, and every
+    other total's price is nothing. Returns how many cells run inside their boxes."""
+    held_geos = {k for kind, k in held if kind == "geo"}
+    held_channels = {k for kind, k in held if kind == "channel"}
+    for g, price in enumerate(plan.geo_prices):
+        assert (price != 0.0) == (g in held_geos), ("geo", g, price)
+    for c, price in enumerate(plan.channel_prices):
+        assert (price != 0.0) == (c in held_channels), ("channel", c, price)
+    inside = 0
+    # a rate the search planned at an end of its box can stand a rounding off it
+    at_floor = np.isclose(plan.spend, lower, rtol=1e-12, atol=0.0)
+    at_cap = np.isclose(plan.spend, upper, rtol=1e-12, atol=0.0)
+    for g, row in enumerate(grid):
+        for c in range(len(row)):
+            step = 1e-4 * plan.spend[g, c]
+            up, down = plan.spend.copy(), plan.spend.copy()
+            up[g, c] += step
+            down[g, c] -= step
+            rise = _worth(grid, up, history) - _worth(grid, down, history)
+            slope = rise / (2 * step) / PERIODS
+            price = plan.price + plan.geo_prices[g] + plan.channel_prices[c]
+            if at_floor[g, c]:
+                assert slope <= price * (1 + rel), (g, c)
+            elif at_cap[g, c]:
+                assert slope >= price * (1 - rel), (g, c)
+            else:
+                inside += 1
+                assert slope == pytest.approx(price, rel=rel, abs=0.0), (g, c)
+    return inside
+
+
+@pytest.mark.parametrize(
+    ("currency", "outcome"), [(1.0, 1.0), (1e-3, 1.0), (1e3, 1.0), (1.0, 1e-3), (1.0, 1e3)]
+)
+def test_one_geo_cut_at_its_own_plan_is_priced_on_the_curves_as_allocate_prices_it(
+    currency, outcome
+):
+    """The search cuts the middle channel at its plan, 95, so both halves hold the plan; each
+    half's envelopes price it otherwise, and the plan was priced 4.88 in the units and 4.29 with
+    spend in thousandths. On the curves one more unit returns 5.61 on the middle channel, in any
+    units, as :func:`allocate` prices it."""
+    row = tuple(_in(cell, currency, outcome) for cell in CUT_ROW)
+    box = {"lower": currency * CUT_LOWER, "upper": currency * CUT_UPPER}
+    plan = allocate_geos(
+        (row,),
+        currency * CUT_BUDGET,
+        PERIODS,
+        lower=box["lower"][None],
+        upper=box["upper"][None],
+        history=currency * CUT_HISTORY[:, None, :],
+    )
+    alone = allocate(row, currency * CUT_BUDGET, PERIODS, **box, history=currency * CUT_HISTORY)
+    np.testing.assert_allclose(plan.spend[0] / currency, [40.0, 95.0, 15.0], rtol=1e-12)
+    assert plan.boxes == 3
+    assert plan.price == pytest.approx(alone.price, rel=1e-12, abs=0.0)
+    assert plan.price * currency / outcome == pytest.approx(5.6122, rel=1e-4, abs=0.0)
+    inside = _meets_its_prices(
+        plan,
+        (row,),
+        currency * CUT_HISTORY[:, None, :],
+        box["lower"][None],
+        box["upper"][None],
+    )
+    assert inside == 1
+
+
+GEO_CAP = Totals(least=np.zeros(2), most=np.array([0.9 * CUT_BUDGET, np.inf]))
+CHANNEL_CAP = Totals(least=np.zeros(3), most=np.array([np.inf, PERIODS * 120.0, np.inf]))
+GEO_FLOOR = Totals(least=np.array([0.0, 1.1 * CUT_BUDGET]), most=np.full(2, np.inf))
+
+
+@pytest.mark.parametrize(
+    ("totals", "held", "price"),
+    [
+        ({"geo_totals": GEO_CAP}, ("geo", 0), 1.604),
+        ({"channel_totals": CHANNEL_CAP}, ("channel", 1), 1.5705),
+        ({"geo_totals": GEO_FLOOR}, ("geo", 1), -1.604),
+    ],
+    ids=["geo", "channel", "floor"],
+)
+@pytest.mark.parametrize(("currency", "outcome"), [(1.0, 1.0), (1e-3, 1e3), (1e3, 1e-3)])
+def test_a_total_that_binds_on_s_curves_is_priced_on_the_curves_at_the_plan(
+    totals, held, price, currency, outcome
+):
+    """A cap on geo 0's total, 0.9 of one geo's budget, or on channel 1's, 120 a period, binds,
+    or a floor on geo 1's, 1.1 of it, and the search finds the plan in a box cut at the plan's own
+    rate. That box's envelopes priced geo 0's room 0.054, channel 1's 0.84 and geo 1's -0.054, short
+    of what a cell inside its box under them returns over the budget's price: 1.604, 1.5705 and
+    -1.604 on the curves. Every cell meets its prices on the curves, in any units."""
+    plan = _cut_plan(currency, outcome, **totals)
+    kind, index = held
+    room = plan.geo_prices if kind == "geo" else plan.channel_prices
+    assert room[index] * currency / outcome == pytest.approx(price, rel=1e-3, abs=0.0)
+    grid = tuple(tuple(_in(cell, currency, outcome) for cell in row) for row in CUT_GRID)
+    inside = _meets_its_prices(
+        plan,
+        grid,
+        currency * CUT_GRID_HISTORY,
+        currency * CUT_BOX["lower"],
+        currency * CUT_BOX["upper"],
+        held=(held,),
+    )
+    assert inside >= 2
+    if (currency, outcome) != (1.0, 1.0):
+        base = _cut_plan(**totals)
+        np.testing.assert_allclose(plan.spend, currency * base.spend, rtol=1e-12, atol=0.0)
+        ratio = outcome / currency
+        assert plan.price == pytest.approx(ratio * base.price, rel=1e-12, abs=0.0)
+        np.testing.assert_allclose(plan.geo_prices, ratio * base.geo_prices, rtol=1e-12, atol=0.0)
+        np.testing.assert_allclose(
+            plan.channel_prices, ratio * base.channel_prices, rtol=1e-12, atol=0.0
+        )
+
+
+def test_a_total_a_searched_plan_does_not_hold_is_priced_nothing():
+    """A cap on geo 0's total at one geo's budget leaves it 11 short of the cap. The searched
+    rates inside their boxes return a currency unit within 4e-6 of each other, not the same, and
+    pricing their miss alongside the cap's priced the cap 1.9e-5; it holds nothing, and its price
+    is nothing."""
+    cap = Totals(least=np.zeros(2), most=np.array([CUT_BUDGET, np.inf]))
+    plan = _cut_plan(geo_totals=cap)
+    assert cap.most[0] - PERIODS * plan.spend[0].sum() > 10.0
+    np.testing.assert_array_equal(plan.geo_prices, 0.0)
+    assert _meets_its_prices(plan, CUT_GRID, CUT_GRID_HISTORY, **CUT_BOX, rel=1e-5) == 2
+
+
+def test_s_curves_under_fixed_geo_totals_carry_the_price_in_the_geos():
+    """Every geo's total fixed fixes the budget: its price is nothing, and each geo's is the price
+    :func:`allocate` reads on its own plan, one more unit on its curves."""
+    fixed = np.array([1.6, 1.6])
+    plan = allocate_geos(S_GRID, 3.2, 1, **S_BOX, geo_totals=Totals(least=fixed, most=fixed))
+    assert plan.price == 0.0
+    for g, row in enumerate(S_GRID):
+        alone = allocate(row, fixed[g], 1, lower=np.zeros(2), upper=np.full(2, 2.0))
+        np.testing.assert_allclose(plan.spend[g], alone.spend, rtol=0.0, atol=1e-12)
+        assert plan.geo_prices[g] == pytest.approx(alone.price, rel=1e-12, abs=0.0)
+
+
+def test_s_curves_under_geo_caps_that_spend_the_budget_carry_its_price_in_the_geos():
+    """Caps on the geos' totals that sum to the budget fix it as fixed totals do, though each
+    total may spend less: the budget's price is nothing, and each geo's the price
+    :func:`allocate` reads on its own plan."""
+    caps = np.array([1.6, 1.6])
+    plan = allocate_geos(S_GRID, 3.2, 1, **S_BOX, geo_totals=Totals(least=np.zeros(2), most=caps))
+    assert plan.price == 0.0
+    for g, row in enumerate(S_GRID):
+        alone = allocate(row, caps[g], 1, lower=np.zeros(2), upper=np.full(2, 2.0))
+        np.testing.assert_allclose(plan.spend[g], alone.spend, rtol=0.0, atol=1e-12)
+        assert plan.geo_prices[g] == pytest.approx(alone.price, rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("outcome", [1.0, 1e-20, 1e20])
+def test_prices_no_plan_meets_miss_least_where_the_plan_stands_nearest_the_excusing_end(outcome):
+    """Off a best plan no price meets every slope. Two rates under a total held at its most,
+    nothing charged a unit: 8 of a box of 10 on the steeper curve, 1 on the shallower. A price at
+    the steeper slope misses the shallower's, and that rate stands 1 from the floor that would
+    excuse the miss; a price at the shallower misses the steeper's, whose rate stands 2 from the
+    cap that would. Weighted by those distances the miss is least at the steeper slope,
+    ``100 / 81``, in any units of return."""
+    cells = (
+        Channel(ONE, MichaelisMenten(1.0), 100.0 * outcome),
+        Channel(ONE, MichaelisMenten(1.0), outcome),
+    )
+    worths = _worths(cells, np.zeros((0, 2)), 1)
+    held = _Group(np.arange(2), 0.0, 9.0, np.ones(2))
+    [price] = _priced(
+        worths, np.array([8.0, 1.0]), np.zeros(2), np.full(2, 10.0), [held], 1, 0.0, False
+    )
+    assert price == pytest.approx(outcome * 100.0 / 81.0, rel=1e-12, abs=0.0)
+
+
+def test_the_budget_s_price_nearest_nothing_stands_while_the_totals_prices_are_made_least():
+    """A plan that meets the conditions at a range of prices: geo 0's two rates at their cap and
+    their floor leave the budget's price anywhere from 0.5 to 1, and geo 1's rate inside its box
+    under a cap on the geo's total returns 3, the budget's price plus the cap's. The budget's price
+    is the end nearest nothing, 0.5, and the cap's the rest, 2.5, though a budget's price of 1
+    would leave the cap's less."""
+    cells = tuple(Channel(ONE, MichaelisMenten(1.0), size) for size in (121.0, 0.5, 12.0, 1.0))
+    worths = _worths(cells, np.zeros((0, 4)), 1)
+    rates = np.array([10.0, 0.0, 1.0, 0.0])
+    budget = _Group(np.arange(4), 11.0, 11.0, np.ones(4))
+    cap = _Group(np.array([2, 3]), 0.0, 1.0, np.ones(2))
+    prices = _priced(worths, rates, np.zeros(4), np.full(4, 10.0), [budget, cap], 1, 0.0, True)
+    np.testing.assert_allclose(prices, [0.5, 2.5], rtol=1e-12, atol=0.0)
+
+
+def test_under_a_budget_a_rate_a_rounding_below_its_cap_has_no_room_to_price():
+    """No rate with room below its cap returns more than the budget's price, but HiGHS can leave a
+    rate it holds at its cap a rounding below it. Of two rates, one two ulps short of its cap of 1,
+    where its curve returns 1 a unit, and one inside its box returning 0.25, the price is 0.25:
+    read as room, the two ulps priced the budget 1."""
+    cells = (Channel(ONE, MichaelisMenten(1.0), 4.0), Channel(ONE, MichaelisMenten(1.0), 4.0))
+    worths = _worths(cells, np.zeros((0, 2)), 1)
+    rates = np.array([1.0 - 2.0**-52, 3.0])
+    budget = _Group(np.arange(2), float(rates.sum()), float(rates.sum()), np.ones(2))
+    [price] = _priced(worths, rates, np.zeros(2), np.array([1.0, 10.0]), [budget], 1, 0.0, True)
+    assert price == pytest.approx(0.25, rel=1e-12, abs=0.0)
+
+
+def test_a_rate_its_box_pins_sets_no_scale_for_the_prices():
+    """A rate its box pins holds no row, however steep its curve stands there: a power of 0.2 reads
+    6.7e11 a unit at nothing. As the program's scale it left the slope of the rate inside its box,
+    0.25, under HiGHS's tolerance, and the budget's price came out 0."""
+    cells = (Channel(ONE, Power(1.0, 0.2), 1.0), Channel(ONE, MichaelisMenten(1.0), 4.0))
+    worths = _worths(cells, np.zeros((0, 2)), 1)
+    budget = _Group(np.arange(2), 3.0, 3.0, np.ones(2))
+    rates, upper = np.array([0.0, 3.0]), np.array([0.0, 10.0])
+    [price] = _priced(worths, rates, np.zeros(2), upper, [budget], 1, 0.0, True)
+    assert price == pytest.approx(0.25, rel=1e-12, abs=0.0)
+
+
+def test_a_cell_its_box_pins_at_nothing_leaves_the_price_to_the_cells_it_frees():
+    """Geo 1's first channel does not run there: its box pins it at nothing, on a power of 0.2 with
+    no carryover, where its curve stands at 2.9e12 a unit. The budget's price is what the cells
+    inside their boxes return, 5.635; read with that slope as the prices' scale, it was 0."""
+    row = (Channel(KERNELS[0], Power(250.0, 0.2), 1100.0), *CUT_ROW[1:])
+    grid = (CUT_ROW, row)
+    history = CUT_GRID_HISTORY.copy()
+    history[:, 1, 0] = 0.0
+    lower, upper = CUT_BOX["lower"].copy(), CUT_BOX["upper"].copy()
+    lower[1, 0] = upper[1, 0] = 0.0
+    budget = 2 * CUT_BUDGET - PERIODS * CUT_LOWER[0]
+    plan = allocate_geos(grid, budget, PERIODS, lower=lower, upper=upper, history=history)
+    at_end = np.isclose(plan.spend, lower, rtol=1e-12, atol=0.0) | np.isclose(
+        plan.spend, upper, rtol=1e-12, atol=0.0
+    )
+    assert (~at_end).sum() == 2
+    for g, c in zip(*np.nonzero(~at_end), strict=True):
+        step = 1e-4 * plan.spend[g, c]
+        up, down = plan.spend.copy(), plan.spend.copy()
+        up[g, c] += step
+        down[g, c] -= step
+        slope = (_worth(grid, up, history) - _worth(grid, down, history)) / (2 * step) / PERIODS
+        assert plan.price == pytest.approx(slope, rel=1e-5, abs=0.0), (g, c)
+
+
+def test_a_price_program_its_iteration_limit_stops_is_refused(stall):
+    """The prices' programs run under the planes' limit of iterations: weights down to roundings
+    put their costs in HiGHS's scaling, where at their tolerance it can pivot on a degenerate
+    program without end. A program the limit stops leaves no price to read."""
+    limits = stall(1)
+    cells = (Channel(ONE, MichaelisMenten(1.0), 4.0), Channel(ONE, MichaelisMenten(1.0), 4.0))
+    worths = _worths(cells, np.zeros((0, 2)), 1)
+    budget = _Group(np.arange(2), 4.0, 4.0, np.ones(2))
+    with pytest.raises(RuntimeError, match="prices' linear program failed"):
+        _priced(
+            worths, np.array([1.0, 3.0]), np.zeros(2), np.array([1.0, 10.0]), [budget], 1, 0.0, True
+        )
+    assert len(limits) == 1
+    assert limits[0] > 0
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_under_the_budget_alone_any_plan_is_priced_as_allocate_prices_it(seed):
+    """With the budget the only total, a plan off its best misses the conditions whatever its price,
+    and its price is still the one :func:`allocate` reads: the steepest slope of a rate below its
+    cap, however far the other rates stand from their floors and caps."""
+    rng = np.random.default_rng(seed)
+    cells = tuple(Channel(ONE, MichaelisMenten(1.0), size) for size in rng.uniform(1.0, 100.0, 5))
+    worths = _worths(cells, np.zeros((0, 5)), 1)
+    upper = np.full(5, 10.0)
+    rates = rng.uniform(0.0, 10.0, 5)
+    rates[:2] = 0.0, 10.0
+    budget = _Group(np.arange(5), float(rates.sum()), float(rates.sum()), np.ones(5))
+    [price] = _priced(worths, rates, np.zeros(5), upper, [budget], 1, 0.0, True)
+    alone = chc.allocation._marginal(worths, rates, upper, 1)
+    assert price == pytest.approx(alone, rel=1e-12, abs=0.0)
+
+
+def test_a_cell_a_rounding_below_its_cap_leaves_the_budget_s_price_to_the_cell_with_room():
+    """Caps drawn at random on the S-curve grid: every cell but geo 0's second ends at its cap, and
+    the planes' program leaves geo 0's first two ulps below it, where its curve returns 0.387 a
+    unit. Read as room, those ulps priced the budget 0.387, 13 times what one more unit returns on
+    the only cell with room: 0.0297 on its curve."""
+    upper = np.array(
+        [[1.4460624847872807, 0.5732431358810791], [1.297579627393073, 1.8858181113512407]]
+    )
+    plan = allocate_geos(S_GRID, 4.730640195168108, 1, lower=np.zeros((2, 2)), upper=upper)
+    held = np.ones((2, 2), dtype=bool)
+    held[0, 1] = False
+    np.testing.assert_allclose(plan.spend[held], upper[held], rtol=1e-15, atol=0.0)
+    rate, cell = plan.spend[0, 1], S_GRID[0][1]
+    step = 1e-6 * rate
+    rise = float(cell(np.array([rate + step]))[0]) - float(cell(np.array([rate - step]))[0])
+    assert plan.price == pytest.approx(rise / (2 * step), rel=1e-6, abs=0.0)
+
+
+@pytest.mark.parametrize("far", [1e12, 1e30])
+@pytest.mark.parametrize("kind", ["geo", "channel"])
+def test_a_total_far_from_binding_leaves_the_one_that_binds_its_price(kind, far):
+    """A cap the plan stands 1e12 or 1e30 short of holds nothing, and the cap that binds beside it
+    is priced as it is with no cap there. Read beside that 1e12, every rate's distance from the
+    ends of its box was a rounding, and the binding cap on geo 0's total was priced 0.054 where it
+    returns 1.60, the one on channel 1's 0 where it returns 1.57. A slack weighed uncapped past
+    1e20, a cost HiGHS reads as infinite, priced the cap 1e30 short of binding on geo 1 4.23 and
+    the budget 0."""
+    if kind == "geo":
+        alone = _cut_plan(geo_totals=GEO_CAP)
+        plan = _cut_plan(
+            geo_totals=Totals(least=np.zeros(2), most=np.array([GEO_CAP.most[0], far]))
+        )
+    else:
+        alone = _cut_plan(channel_totals=CHANNEL_CAP)
+        plan = _cut_plan(
+            channel_totals=Totals(least=np.zeros(3), most=np.array([far, *CHANNEL_CAP.most[1:]]))
+        )
+    np.testing.assert_allclose(plan.spend, alone.spend, rtol=1e-12, atol=0.0)
+    assert plan.price == pytest.approx(alone.price, rel=1e-12, abs=0.0)
+    np.testing.assert_allclose(plan.geo_prices, alone.geo_prices, rtol=1e-12, atol=0.0)
+    np.testing.assert_allclose(plan.channel_prices, alone.channel_prices, rtol=1e-12, atol=0.0)
+
+
+def test_a_marginal_target_on_s_curves_prices_a_total_that_binds_on_the_curves():
+    """With the budget free and each unit charged 4, the cap on geo 0 binds, and the search finds
+    the plan in a box cut at its rate. The budget's price is the charge, and geo 0's the rest of
+    what its middle channel, inside its box, returns: 1.84 on the curves, where that box's
+    envelopes priced it 0.90."""
+    plan = budget_for_geos(
+        CUT_GRID,
+        MarginalReturnTarget(4.0),
+        PERIODS,
+        **CUT_BOX,
+        geo_totals=GEO_CAP,
+        history=CUT_GRID_HISTORY,
+    )
+    assert plan.price == 4.0
+    assert plan.geo_prices[0] == pytest.approx(1.838, rel=1e-3, abs=0.0)
+    assert PERIODS * plan.spend[0].sum() == pytest.approx(GEO_CAP.most[0], rel=1e-12)
+    assert _meets_its_prices(plan, CUT_GRID, CUT_GRID_HISTORY, **CUT_BOX, held=[("geo", 0)]) >= 2
 
 
 def test_a_search_of_the_grid_its_cap_stops_says_so_and_logs_its_gap(caplog):

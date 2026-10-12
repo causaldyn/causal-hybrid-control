@@ -66,6 +66,20 @@ still change).
   return of one more unit, the lower end of the budget's prices, and 0 with every channel at its
   cap. Plans and bounds are unchanged. Since 0.13.0.
 
+- **On S-shaped curves `allocate_geos` and `budget_for_geos` price a plan on the curves at the
+  plan, its budget and its totals alike, the same in any units.** The prices were the box's the
+  search found the plan in, read on its envelopes, and the search cuts a cell at the plan's own
+  rate, so both halves hold the plan, each priced otherwise. One geo of three channels with
+  carryover, planned at 40, 95 and 15 a period, was priced 4.88, or 4.29 with spend in
+  thousandths, where `allocate` now says 5.61; two such geos under a cap on one geo's total
+  priced the cap 0.054, and under a cap on a channel's total that cap 0.84, where a cell inside
+  its box under them returns 1.60 and 1.57 a unit over the budget's price. The prices are now
+  those that meet the conditions for the best plan on the curves, or miss them least, the totals'
+  misses first, so a total the plan does not hold is priced 0; of the prices that tie, the
+  budget's nearest 0 and then the totals' least. One geo with no totals is priced as `allocate`
+  prices its channels. Plans and bounds are unchanged; concave curves are priced as before.
+  Since 0.16.0.
+
 - **On a panel of one unit, `Prescription.evaluate` read its windows as independent, under an
   interval too narrow for them, and from 1.0 was to refuse them.** One unit's windows follow each
   other through its state and its noise, so their influences on the estimate persist. On simulated

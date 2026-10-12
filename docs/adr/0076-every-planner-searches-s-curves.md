@@ -5,7 +5,8 @@ zero spend: `budget_for`, `minimax_allocate`, `allocate_geos` and `budget_for_ge
 `allocate` does. Amends ADR 0037 and ADR 0044 (a goal on S-curves is met over searched plans),
 ADR 0038 (a regret is read on the curves, against `allocate`'s best), ADR 0043 (S-shaped cells are
 searched in boxes) and ADR 0065 (every planner takes the search's settings, and no plan is
-`unsearched`).
+`unsearched`). Amended 2026-10-12: a searched `GeoAllocation` is priced on the curves at the plan,
+not on the envelopes of the box it was found in.
 
 ## Context
 
@@ -100,6 +101,28 @@ those of `cvar_allocate` do. The bound was not the obstacle; two things were:
   4.6326, and the marginal target nets 0.1600 at 5.470. The goal of 300 returns the same plan, now
   closed. With the guarded Newton steps the search above at 1.6 reads a slope 687 times, in place
   of 2,093,555, for the same worth to the bit.
+- A searched plan's prices, the budget's and the totals', were the prices of the box it was found
+  in, read on that box's envelopes. The search cuts a cell at the plan's own rate, so both halves
+  hold the plan, and each half's envelopes price it otherwise. Since 2026-10-12 they are read on
+  the curves at the plan, in the caller's boxes: the prices that miss the conditions for the best
+  plan least, each miss weighted by how far the plan stands from the end of its box or the total
+  that would excuse it, the totals' misses first, so a total the plan does not hold is priced
+  nothing. Each weight is read against the farthest a rate stands from an end of its box, and a
+  total's slack weighs at most that: read on its own scale, a cap 1e12 short of binding made every
+  rate's weight a rounding and priced the cap that binds beside it 0.054 where it returns 1.60.
+  The slopes are read in a power of two of the steepest a rate its box leaves free: a channel
+  pinned at nothing on a power of 0.2 stands at 2.9e12 a unit, and as the scale it left every other
+  slope under HiGHS's tolerance and the budget's price 0 where the cells inside return 5.635.
+  Under a budget the misses of rates that return more than their price come before the rest, so
+  no rate with room below its cap returns more than its price; a rate HiGHS leaves a rounding
+  below its cap has none, where reading two ulps as room priced a grid's budget 0.387 and one
+  more unit returns 0.0297. Of the prices that tie, the budget's is the one nearest nothing and
+  then the totals' are the least in the sum of their sizes. One geo with no totals is then priced
+  as `allocate` prices its channels, and fixed geo or channel totals carry the budget's price, as
+  on concave curves. The three channels with carryover, planned at 40, 95 and 15, were priced
+  4.88, and 4.29 with spend in thousandths, where one more unit returns 5.61; a cap on a geo's
+  total was priced 0.054 and one on a channel's 0.84, where the cells under them return 1.60 and
+  1.57 over the budget's price on the curves.
 - A plan that the planes leave inside a cell's interval, short of exact rates, is within its box's
   gap of the best. Without the polish in a box, the grid's rates came back 1e-5 from the best
   split's, though within the tolerance. With the guarded Newton steps the worths of the grid's
