@@ -197,6 +197,9 @@ class CausalDynamicsFit:
     # zero; above that it is what the model class leaves out, since an ``rk4`` fit that cannot
     # reach its fixed point raises instead.
     integrator_defect: float | None = None
+    # (N, n): that defect on each transition, per state, in rate units, ``integrator_defect`` its
+    # root mean square: the noise and what the model class leaves out of the log, row by row.
+    defect: Array | None = None
     drivers: tuple[str, ...] = ()  # the exogenous columns fitted into the drift, in gain order
     # (n, d): each driver's push on each state's rate, fitted jointly with the drift; None without
     # drivers. :class:`chc.dynamics.DrivenDynamics` replays it against a forecast.
@@ -1659,9 +1662,11 @@ def fit_causal_residual(
             representer=_representer(held(u_res)[: channel.size]) if influence else None,
             moment_residual=score,
         )
+    left = defect(fit)
     return dataclasses.replace(
         fit,
-        integrator_defect=float(jnp.sqrt(jnp.mean(defect(fit) ** 2))),
+        integrator_defect=float(jnp.sqrt(jnp.mean(left**2))),
+        defect=left,
         clusters=codes,
         instrument_relevance=relevance,
         instrument_rank=rank,
@@ -1941,7 +1946,15 @@ def persistence_check(
     """
     if fit.moment_residual is None:
         raise ValueError("the fit kept no moment residual: its channel is not identified")
-    residual = np.asarray(fit.moment_residual, dtype=np.float64)
+    return _persistence(fit.moment_residual, units, periods, fit.periods is not None)
+
+
+def _persistence(
+    residual: ArrayLike, units: ArrayLike, periods: ArrayLike, across_periods: bool
+) -> PersistenceCheck:
+    """:func:`persistence_check` on a residual of the fit's transitions, ``(N, n)``, read across
+    the periods where ``across_periods`` says the fit was given them."""
+    residual = np.asarray(residual, dtype=np.float64)
     labels, steps = np.asarray(units).reshape(-1), np.asarray(periods).reshape(-1)
     if labels.size != residual.shape[0] or steps.size != residual.shape[0]:
         raise ValueError(
@@ -1978,7 +1991,7 @@ def persistence_check(
     spread = math.sqrt(count / (count - 1) * float(np.sum(centred**2))) if count > 1 else 0.0
     freedom = count - 1
     paired_periods = steps[later] - steps[later].min()
-    if count == 1 or fit.periods is not None:
+    if count == 1 or across_periods:
         # one unit leaves no second unit's sum to read a spread from, and a fit given periods says
         # its units share one group's noise: the products are summed within each period and read
         # across the periods by cosines, as the fit reads its error (ADR 0075)

@@ -181,8 +181,11 @@ print(prescription.report())
 # - *overlap*: how much the incentive moved once demand is read; at 0 the logs teach nothing;
 # - *logger check*: whether the team's incentive followed anything the graph does not show; a
 #   pass can miss a weak link, and the line says how weak;
-# - *error tube*: for how many weeks the forecast's estimated error stays under the error you
-#   allowed (`tolerance`);
+# - *error tube*: for how many weeks the forecast stays within the error you allowed
+#   (`tolerance`), counting the error in the incentive's estimated effect and the week-to-week
+#   noise the logs show;
+# - *the tube's noise*: that noise, the part of each logged week the fitted model does not
+#   explain;
 # - *barrier*: for how many weeks the forecast keeps `wait` under its limit;
 # - *solver* and *regret bound*: whether the optimiser finished, and how far its plan can be from
 #   the best plan on the fitted model;
@@ -270,8 +273,14 @@ pd.DataFrame(
 # little time left to move supply inside the 15 weeks. Its forecast, the dashed green line, runs
 # above the truth by up to 0.17. The logs pin the incentive's effect down well, as the small
 # standard error in the report says. What supply does on its own is fitted less precisely: the
-# logs' demand shocks are large next to it. The gap stays under the error of 0.5 the plan was
-# allowed, so its 15 trustworthy weeks held here.
+# logs' demand shocks are large next to it. Here demand sits at its average, so the gap stays
+# under the error of 0.5 the plan was allowed. A real week's demand does not sit there. In the
+# logs it moves supply by 0.15 a week, and the plan cannot see it coming. The certificate counts
+# that noise: its tube holds the noise with probability 0.95 each week and passes 0.5 in the
+# second week, so the plan is trusted for 1 week. Run 20,000 times with demand drawn as in the
+# logs, the true system stays within 0.5 of the forecast at 95 % for 3 weeks. The tube is
+# cautious: it gives each state the noise of the noisier one, and grows the noise at the field's
+# steepest rate.
 
 # %% [markdown]
 # ## 6 · When the logs cannot answer

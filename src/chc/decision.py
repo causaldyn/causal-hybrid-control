@@ -65,6 +65,7 @@ from chc.dynamics_id import (
     _logged_relations,
     _LoggedRelations,
     _nuisance_inputs,
+    _persistence,
     _unmoved_actions,
     fit_causal_residual,
     persistence_check,
@@ -568,7 +569,10 @@ class DecisionCertificate:
     identification_radius: float | None  # channel standard error; None when not identified
     overlap: float  # residualised action variance: 0 means the log has no variation to learn from
     certificate_status: CertificateStatus
-    certified_horizon: int | None  # steps the Gronwall tube keeps inside ``tolerance``
+    # steps the tube keeps inside ``tolerance``: the channel's error carried by the Gronwall
+    # recursion, plus the radius that holds the plan's one-step error on the log, carried the same
+    # way, with probability 0.95 at each step (``tube_noise``)
+    certified_horizon: int | None
     barrier_certified_steps: int | None  # leading prefix clearing the barrier; None if no bound
     # The weakest step's confounding ceiling; None if unconstrained. At a step where two bounds tie
     # (the midpoint of a two-sided bound) it is the weaker tied margin's ceiling, an upper bound on
@@ -605,6 +609,14 @@ class DecisionCertificate:
     # the tube is a bound; ``local`` where the slope is read at the start alone, so away from it
     # nothing proves the tube. None where no tube was evaluated.
     tube_rate: TubeRate | None = None
+    # The plant's own noise the tube carries (ADR 0080): the plan's one-step error on the log, the
+    # next state less the plan's step of the fitted field from the logged state and levers, which
+    # the channel's error does not cover. ``tube_noise`` is the root of its covariance's largest
+    # eigenvalue, in the states' units, the error's standard deviation on one state; and
+    # ``tube_persistence`` its lag-1 correlation within units, which carries it AR(1) from step
+    # to step, 0 where no unit has two consecutive transitions. None where no tube was evaluated.
+    tube_noise: float | None = None
+    tube_persistence: float | None = None
     # The column whose groups ``identification_radius`` sums the scores within before squaring them
     # (CR1): the panel's cluster where it declares one, else its unit, whose transitions share any
     # persistent noise; ``error_clusters`` counts the groups. ``error_periods`` counts the periods
@@ -1253,6 +1265,7 @@ class Prescription:
             f"- error tube: **{certificate.certificate_status}**, "
             f"certified horizon {_show(certificate.certified_horizon)}"
             + ("" if certificate.tube_rate is None else f", {certificate.tube_rate} rate"),
+            *self._noise_lines(),
             f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}"
             + ("" if certificate.gamma is None else f" at gamma {certificate.gamma:.4g}")
             + f", gamma* {_show(certificate.gamma_star)} (marginal sensitivity model)",
@@ -1319,6 +1332,8 @@ class Prescription:
                 "regret_status": certificate.regret_status,
                 "unmoved_levers": list(certificate.unmoved_levers),
                 "tube_rate": certificate.tube_rate,
+                "tube_noise": certificate.tube_noise,
+                "tube_persistence": certificate.tube_persistence,
                 "error_clustered_by": certificate.error_clustered_by,
                 "error_clusters": certificate.error_clusters,
                 "error_periods": certificate.error_periods,
@@ -1430,6 +1445,17 @@ class Prescription:
             "its error does not cover; adjust for the states, the levers and the adjustment set "
             "a period earlier"
         )
+
+    def _noise_lines(self) -> list[str]:
+        certificate = self.certificate
+        if certificate.tube_noise is None or certificate.tube_persistence is None:
+            return []
+        return [
+            f"- the tube's noise: the plan's one-step error on the log, standard deviation "
+            f"{certificate.tube_noise:.4g}, lag-1 autocorrelation "
+            f"{certificate.tube_persistence:+.2f}; with the channel's error the tube holds the "
+            "plant at each step with probability 0.95"
+        ]
 
     def _logger_line(self) -> str:
         check = self.logger_check
@@ -1597,8 +1623,20 @@ def prescribe(
         tolerance: the trajectory error above which the plan stops being certified. **Omitting it
             switches the tube off** rather than setting it to infinity: this library cannot know
             how much error a caller accepts, and a certificate with an infinite tolerance passes
-            over the whole horizon while proving nothing. A tube whose rate or budget comes out
-            other than a finite number is not evaluated either, and a warning says so.
+            over the whole horizon while proving nothing. The tube carries two errors over the
+            plan's RK4 steps at the rate :attr:`DecisionCertificate.tube_rate` names: the channel's
+            standard error times the largest action the box allows, a scale and not a bound, and
+            the plant's own noise, the plan's one-step error on the log, read off the fit's defect
+            with its lag-1 correlation within units, at the radius that holds it at each step with
+            probability 0.95 where the noise is Gaussian and AR(1) (ADR 0080,
+            :attr:`DecisionCertificate.tube_noise`). Up to 0.16.0 the tube carried the channel's
+            error alone: on 600 one-unit logs shaped like the BOPTEST case's it read 0.051 K one
+            step ahead, where the plant's error one step ahead reached 0.16 to 0.22 K at 95 %; it
+            held the plant at the first step on 40 % of draws and trusted 6 to 13 steps on nine
+            logs in ten. It now holds the plant at the first step on 97 % to 99 % of draws and
+            trusts 1 or 2 steps, where the plant's error stays within the tolerance of 0.5 K at
+            95 % for 2 or 3. A tube whose rate, budget or noise comes out other than a finite
+            number is not evaluated, and a warning says so.
         x0: the state to plan from, one finite value per state: the target's, then each
             constrained column's. Defaults to the mean over units of each unit's last observed
             state, the pooled "where we are now". :attr:`Prescription.start` records which, and
@@ -2082,13 +2120,33 @@ def prescribe(
     planning_cost = _cost(states, levers, target, horizon, rule)
     lipschitz, tube_rate = _rate(model, start, u_lo, u_hi)
     model_error = 0.0 if tolerance is None else _model_error(fit, u_max)
-    if tolerance is not None and not (math.isfinite(lipschitz) and math.isfinite(model_error)):
+    # with no channel error nothing bounds the field the plan rolls out, and the noise alone would
+    # switch on a tube that trusts it
+    step_noise, step_persistence = (
+        _step_noise(fit, dt, labels)
+        if tolerance is not None and fit.channel_error is not None
+        else (np.zeros((n_states, n_states)), 0.0)
+    )
+    if tolerance is not None and not (
+        math.isfinite(lipschitz)
+        and math.isfinite(model_error)
+        and bool(np.all(np.isfinite(step_noise)))
+        and math.isfinite(step_persistence)
+    ):
         # a nan radius once read as within every tolerance; no tube is the answer that holds
         _log.warning(
-            "the error tube is not evaluated: its rate or its budget is not a finite number",
-            extra={"chc_event": "tube", "rate": lipschitz, "model_error": model_error},
+            "the error tube is not evaluated: its rate, its budget or its noise is not a finite "
+            "number",
+            extra={
+                "chc_event": "tube",
+                "rate": lipschitz,
+                "model_error": model_error,
+                "noise": step_noise.tolist(),
+                "noise_persistence": step_persistence,
+            },
         )
         lipschitz, model_error = 0.0, 0.0
+        step_noise, step_persistence = np.zeros_like(step_noise), 0.0
 
     def solve(lo: Array, hi: Array) -> CausalPlan:
         lo, hi = pin(lo, hi)
@@ -2102,6 +2160,8 @@ def prescribe(
             hi,
             lipschitz=lipschitz,
             model_error=model_error,
+            noise=step_noise,
+            noise_persistence=step_persistence,
             tolerance=float("inf") if tolerance is None else tolerance,
             steps=_PLAN_STEPS,
             # the budgets' rows last: :meth:`Prescription.budget_prices` reads them there
@@ -2205,6 +2265,10 @@ def prescribe(
         regret_status=gap.status,
         unmoved_levers=unmoved_levers,
         tube_rate=None if plan.certified_horizon is None else tube_rate,
+        tube_noise=None
+        if plan.certified_horizon is None
+        else math.sqrt(max(float(np.linalg.eigvalsh(step_noise)[-1]), 0.0)),
+        tube_persistence=None if plan.certified_horizon is None else step_persistence,
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
         error_periods=periods if two_way else None,
@@ -3168,6 +3232,24 @@ def _model_error(fit: CausalDynamicsFit, u_max: float) -> float:
     :class:`chc.dynamics_id.CausalDynamicsFit` says by how much.
     """
     return 0.0 if fit.channel_error is None else float(fit.channel_error) * max(u_max, 1.0)
+
+
+def _step_noise(
+    fit: CausalDynamicsFit, dt: float, labels: NDArray[Any]
+) -> tuple[NDArray[np.float64], float]:
+    """The plant's noise as the tube reads it: the plan's one-step error on the log, ``dt`` times
+    the fit's defect, its covariance in the states' units, the mean of its outer products, and its
+    lag-1 correlation within units, pooled over the states as
+    :func:`~chc.dynamics_id.persistence_check` pools them, 0 where no unit has two consecutive
+    transitions. ``labels`` are :func:`_transitions`' group, period and unit of each transition.
+    The defect is the fit's integrator's, ``rk4`` by default, the step the plan rolls out by."""
+    assert fit.defect is not None  # every fit keeps its defect
+    error = dt * np.asarray(fit.defect, dtype=np.float64)
+    covariance = error.T @ error / error.shape[0]
+    correlation = _persistence(
+        error, labels[:, 2], labels[:, 1], fit.periods is not None
+    ).correlation
+    return covariance, 0.0 if math.isnan(correlation) else correlation
 
 
 def _show(value: object) -> str:

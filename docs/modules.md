@@ -126,7 +126,8 @@ adjustment set asserted gives `2.15`; with the confounder latent there is no sch
 - **Rollout error tubes**: RK4 recursions at a Lipschitz rate or a state matrix, or Euler's on
   request, giving a time-varying uncertainty tube, safety tightening, and the horizon the tube
   trusts. The tube is a bound where the per-step error is one, and a scale where it is a standard
-  error. Rocq proves that the recursions bound the error under those premises.
+  error; given the plant's one-step noise, it adds the radius that holds the noise at each step
+  with probability 0.95. Rocq proves that the recursions bound the error under those premises.
 
 The ensemble trains as one sharded program (`vmap` over a member axis, `lax.scan` over the Adam
 steps, `NamedSharding` over the device mesh) rather than K sequential fits: 3.6× on one device and

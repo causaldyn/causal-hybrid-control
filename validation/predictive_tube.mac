@@ -1,0 +1,86 @@
+/* The predictive tube's noise part: a plant off the plan's own step by w_k at each step,
+   e_{k+1} = M e_k + w_k from e_0 = 0, its one-step error persisting AR(1):
+   Cov(w_i, w_j) = rho^|i - j| S, so w_{k+1} = rho w_k + v_k with Cov(v_k) = (1 - rho^2) S.
+
+   The recursion the library runs, with C_k = Cov(e_k, w_k):
+
+       P_{k+1} = M P_k M' + M C_k + C_k' M' + S,   C_{k+1} = rho (M C_k + S),   P_0 = C_0 = 0,
+
+   is the covariance of e_k = sum_{j<k} M^(k-1-j) w_j, which is the double sum
+   sum_{i,j<k} M^(k-1-i) rho^|i-j| S M'^(k-1-j). On a norm bound ||M|| <= g it reads, by
+   Cauchy-Schwarz on each term, v' P_k v <= q sum_{i,j<k} |rho|^|i-j| g^(k-1-i) g^(k-1-j) for every
+   unit v, q = ||S||: the scalar recursion p_{k+1} = g^2 p_k + 2 g c_k + q, c_{k+1} = |rho| (g c_k + q).
+   Checked here: (1) the matrix recursion against the double sum at k = 1..4 on a symbolic 2x2 M,
+   S and rho; (2) the scalar recursion against its double sum and its closed forms at rho = 0 and
+   rho = 1; (3) the AR(1) innovation keeps S; (4) bigfloat values the tests pin. */
+display2d : false$
+fpprec : 40$
+/* a check that fails stops the batch with "-- an error.", which validation/run_all.sh reads */
+vanishes(label, x) := if (if matrixp(x) then every(lambda([e], is(e = 0)), flatten(args(x)))
+                          else is(x = 0))
+  then print(label, "= 0") else error(label, "is not zero:", x)$
+
+/* (1) matrix recursion = double-sum covariance, 2x2, symbolic */
+M : matrix([m11, m12], [m21, m22])$
+S : matrix([s11, s12], [s12, s22])$
+zero : zeromatrix(2, 2)$
+P : zero$ C : zero$
+recursion : []$
+for k : 1 thru 4 do (
+  [P, C] : [M . P . transpose(M) + M . C + transpose(C) . transpose(M) + S, rho*(M . C + S)],
+  recursion : endcons(P, recursion))$
+mpow(n) := if n = 0 then ident(2) else M^^n$
+double(k) := sum(sum(mpow(k - 1 - i) . (rho^abs(i - j) * S) . transpose(mpow(k - 1 - j)),
+                     j, 0, k - 1), i, 0, k - 1)$
+for k : 1 thru 4 do
+  vanishes(sconcat("(1) k = ", k, ": recursion - double sum"),
+           ratsimp(expand(recursion[k] - double(k))))$
+
+/* (2) the scalar bound: the recursion, the double sum and the closed forms */
+p : 0$ c : 0$ scalar : []$
+for k : 1 thru 6 do (
+  [p, c] : [g^2*p + 2*g*c + q, r*(g*c + q)],
+  scalar : endcons(p, scalar))$
+for k : 1 thru 6 do (
+  vanishes(sconcat("(2) k = ", k, ": scalar recursion - q sum r^|i-j| g^(k-1-i) g^(k-1-j)"),
+           ratsimp(scalar[k] - q*sum(sum(r^abs(i - j)*g^(2*k - 2 - i - j), j, 0, k - 1), i, 0, k - 1))),
+  vanishes(sconcat("(2) k = ", k, ": at r = 0, - q (g^(2k) - 1)/(g^2 - 1)"),
+           ratsimp(subst(r = 0, scalar[k]) - q*(g^(2*k) - 1)/(g^2 - 1))),
+  vanishes(sconcat("(2) k = ", k, ": at r = 1, - q ((g^k - 1)/(g - 1))^2"),
+           ratsimp(subst(r = 1, scalar[k]) - q*((g^k - 1)/(g - 1))^2)))$
+/* at g = 1, r = 0 the variance grows as k, a random walk; at g = 1, r = 1 as k^2, one offset */
+print("g = 1:", makelist(subst([g = 1, r = 0], scalar[k]), k, 1, 6),
+      makelist(subst([g = 1, r = 1], scalar[k]), k, 1, 6))$
+
+/* (3) the AR(1) innovation keeps the stationary covariance, so every w_k has covariance S */
+vanishes("(3) rho^2 S + (1 - rho^2) S - S", ratsimp(rho^2*S + (1 - rho^2)*S - S))$
+
+/* (4) values the tests pin: the matrix recursion's largest eigenvalue at k = 1..4 for the state
+   matrix A = [[-1, 1/2], [0, -2]] at dt = 1/10, M = R(dt A) its RK4 step, S = [[4, 1], [1, 2]]/100,
+   rho = 1/2; and the scalar bound at L = 1, dt = 1/10, g = R(L dt), q = 4/100, |rho| = 1/2 */
+R(z) := 1 + z + z^2/2 + z^3/6 + z^4/24$
+numA : matrix([-1, 1/2], [0, -2])$
+Z : numA/10$
+numM : ident(2) + Z + Z . Z/2 + Z . Z . Z/6 + Z . Z . Z . Z/24$
+numS : matrix([4/100, 1/100], [1/100, 2/100])$
+lmax(A) := block([t : A[1, 1] + A[2, 2], d : determinant(A)], (t + sqrt(t^2 - 4*d))/2)$
+P : zeromatrix(2, 2)$ C : zeromatrix(2, 2)$
+for k : 1 thru 4 do (
+  [P, C] : [numM . P . transpose(numM) + numM . C + transpose(C) . transpose(numM) + numS,
+            (1/2)*(numM . C + numS)],
+  print("matrix k =", k, ": lambda_max(P) =", bfloat(lmax(P))))$
+for k : 1 thru 4 do
+  print("scalar k =", k, ": p =", bfloat(subst([g = R(1/10), q = 4/100, r = 1/2], scalar[k])))$
+
+/* (5) the bound itself, on the non-normal step of (4): with g = ||M||_2 and q = lambda_max(S),
+   the scalar recursion at |rho| bounds lambda_max(P_k) for rho = 1/2 and rho = -1/2 alike */
+gM : sqrt(lmax(transpose(numM) . numM))$
+qS : lmax(numS)$
+for signed in [1/2, -1/2] do (
+  P : zeromatrix(2, 2), C : zeromatrix(2, 2),
+  for k : 1 thru 6 do (
+    [P, C] : [numM . P . transpose(numM) + numM . C + transpose(C) . transpose(numM) + numS,
+              signed*(numM . C + numS)],
+    bound : bfloat(subst([g = gM, q = qS, r = abs(signed)], scalar[k])),
+    if bfloat(lmax(P)) > bound then error("(5) the scalar recursion does not bound P at k =", k),
+    print("(5) rho =", signed, "k =", k, ": lambda_max(P) =", bfloat(lmax(P)), "<=", bound)))$

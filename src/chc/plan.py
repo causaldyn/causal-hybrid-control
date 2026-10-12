@@ -22,7 +22,8 @@ promise nothing that was not asked for.
 * **plan** -- :func:`causal_plan`. Box constraints in the solve -- optionally intersected with
   linear rows over the whole sequence, such as a budget or a rate limit -- plus an *a-priori*
   Gronwall error tube that says how far ahead the plan may be trusted. The tube is computed from
-  ``lipschitz`` and ``model_error``; it does not enter the objective and does not move a single
+  ``lipschitz`` and ``model_error``, and from the plant's own one-step ``noise`` where it is given;
+  it does not enter the objective and does not move a single
   action. A :class:`BarrierConstraint` does: passed as ``barrier=``, the audit's own condition is
   held in the solve by augmented-Lagrangian rounds (``docs/adr/0002-barrier-in-the-solve.md``).
 * **audit** -- :func:`certify_safety`. Given a barrier and a sensitivity level ``Gamma``, it prices
@@ -91,6 +92,8 @@ from chc.support import (
 from chc.uncertainty import (
     _check_tolerance,
     _linear_tube,
+    _noise_covariance,
+    _noise_tube,
     _tube,
     _within,
     confounding_robust_inflation,
@@ -135,7 +138,10 @@ class CausalPlan:
     actions: Array  # (horizon, m)
     trajectory: Array  # (horizon + 1, n) nominal rollout under the planning model
     task_cost: float  # cost of the plan, penalties excluded, so weights stay comparable
-    uncertainty_tube: Array | None  # (horizon + 1,) per-step error radius; None if not evaluated
+    # (horizon + 1,) per-step error radius, the model error's plus, where the plant's one-step
+    # noise was given, the radius holding the noise's part of the gap at each step with probability
+    # 0.95; None if not evaluated
+    uncertainty_tube: Array | None
     certified_horizon: int | None  # last step inside ``tolerance``; None if not evaluated
     solver_status: SolverStatus  # why the descent stopped -- see :data:`chc.control.SolverStatus`
     solver_iterations: int  # accepted descent steps
@@ -788,6 +794,8 @@ def causal_plan(
     lam_unc: float = 0.0,
     lipschitz: ArrayLike = 0.0,
     model_error: float = 0.0,
+    noise: ArrayLike = 0.0,
+    noise_persistence: float = 0.0,
     tolerance: float = float("inf"),
     steps: int = 10_000,
     constraints: Sequence[LinearConstraint] = (),
@@ -808,10 +816,23 @@ def causal_plan(
             (:func:`chc.uncertainty.time_varying_rollout_bound`), or, for a field affine in the
             state, its ``(n, n)`` state matrix ``A``, whose RK4
             propagators carry the tube (:func:`chc.uncertainty.linear_rollout_bound`) and shrink it
-            where ``A`` contracts. ``model_error`` is what switches certification on: left at its
-            default the tube would be identically zero, so the plan reports
+            where ``A`` contracts. ``model_error`` or ``noise`` is what switches certification on:
+            with neither the tube would be identically zero, so the plan reports
             ``certificate_status == "not_evaluated"`` and both certificate fields come back ``None``
             rather than a vacuous full-horizon pass.
+        noise, noise_persistence: the plant's own error at each step, which no model error
+            covers: ``w_k = x_{k+1} - step(x_k, u_k)``, the plant's next state less the plan's RK4
+            step of the model from the plant's state, Gaussian, AR(1) from one step to the next,
+            ``Cov(w_i, w_j) = noise_persistence^|i - j| noise``. ``noise`` is its covariance in the
+            state's units, a number for each state's variance with none shared, or an ``(n, n)``
+            matrix; ``noise_persistence`` its lag-1 correlation, in ``[-1, 1]``. The tube adds to
+            the model error's radius the one within which the noise's part of the gap stays at each
+            step with probability 0.95, carried through the same ``lipschitz``: through ``R(dt A)``
+            on a state matrix, exactly to first order, and on a norm bound ``L`` through
+            ``R(L dt)``, which bounds it (``validation/predictive_tube.mac``). On ``n`` states the
+            radius is ``sqrt(chi2_n(0.95))`` times the root of the largest variance along any
+            direction, so it holds with probability 0.95 on one state and more on several. Zero by
+            default, which leaves the tube the model error's alone, as before.
         tolerance: tube radius above which the plan stops being certified.
         constraints: linear rows over the whole action sequence
             (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
@@ -841,7 +862,10 @@ def causal_plan(
             silently drop it -- the pessimistic solver is the only consumer of that argument; if
             ``model_error`` is negative, infinite or nan, which is not an error budget; if
             ``lipschitz`` is a negative, infinite or nan number, which no norm of a field's slope
-            is, or neither a number nor a square matrix of the state's size; if ``tolerance`` is
+            is, or neither a number nor a square matrix of the state's size; if ``noise`` is not
+            finite, not a number or a matrix of the state's size, or not a covariance, which is
+            symmetric with no negative eigenvalue, or ``noise_persistence`` is not in ``[-1, 1]``;
+            if ``tolerance`` is
             negative or nan, or ``dt`` is not a finite positive step; if a barrier is given with
             a box that admits no action but zero, which leaves nothing to price it with; or if
             ``warm_start`` is not a finite ``(horizon, m)`` array.
@@ -860,6 +884,8 @@ def causal_plan(
         lam_unc=lam_unc,
         lipschitz=lipschitz,
         model_error=model_error,
+        noise=noise,
+        noise_persistence=noise_persistence,
         tolerance=tolerance,
         steps=steps,
         constraints=constraints,
@@ -891,6 +917,8 @@ def _plan(
     barrier: BarrierConstraint | None,
     warm_start: Array | NDArray[np.float64] | None,
     multipliers: NDArray[np.float64] | None,
+    noise: ArrayLike = 0.0,
+    noise_persistence: float = 0.0,
 ) -> tuple[CausalPlan, NDArray[np.float64] | None]:
     """:func:`causal_plan`, with the barrier's multipliers passed in and handed back.
 
@@ -927,6 +955,11 @@ def _plan(
             f"lipschitz is a number or the field's state matrix of shape {square}, not an array of "
             f"shape {rate.shape}"
         )
+    covariance = _noise_covariance(noise, square[0])
+    if not -1.0 <= noise_persistence <= 1.0:
+        raise ValueError(
+            f"noise_persistence={noise_persistence} is not a correlation, which lies in [-1, 1]"
+        )
     authority = float(np.max(np.maximum(np.abs(np.asarray(u_lo)), np.abs(np.asarray(u_hi)))))
     if barrier is not None and not authority > 0.0:
         raise ValueError(
@@ -955,6 +988,8 @@ def _plan(
             barrier=barrier,
             warm_start=None,
             multipliers=multipliers,
+            noise=noise,
+            noise_persistence=noise_persistence,
         )
         warm_start = first.actions
         _log.info(
@@ -1026,13 +1061,15 @@ def _plan(
             status = first.solver_status
 
     tube = None
-    if model_error > 0.0:
+    if model_error > 0.0 or covariance.any():
         errors = [model_error] * horizon
         tube = (
             _tube([float(rate)] * horizon, errors, dt, "rk4")
             if rate.ndim == 0
             else _linear_tube(rate, errors, dt)
         )
+        if covariance.any():
+            tube = tube + _noise_tube(rate, covariance, noise_persistence, dt, horizon)
     plan = CausalPlan(
         actions=actions,
         trajectory=_trajectory(model, x0, actions, dt),

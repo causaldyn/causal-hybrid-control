@@ -100,8 +100,8 @@ left at the zero guess:
 Where they disagree:
 
 - The adjusted certificate trusted one step on every call, with an error tube of 0.29 K on average.
-  The plant's one-step error left that tube on 4.1% of steps, reaching 0.79 K. The tube prices the
-  channel's standard error, which is a scale and not a coverage guarantee.
+  The plant's one-step error left that tube on 4.1% of steps, reaching 0.79 K. The tube priced the
+  channel's standard error alone, which is a scale and not a coverage guarantee.
 - That error has been read three other ways since, and the run was not repeated under any of them.
   It was the homoskedastic one; from 0.8.0 it is robust to noise that moves with the state. It was
   the root mean of the variances of the channel's two coefficients, and one of them is the
@@ -120,6 +120,17 @@ Where they disagree:
   one-step error of 0.1305 K rms, and how often the plant would have left such a tube is not known.
   On the simulated logs 0.16.0's certificate trusted 6 to 13 steps on nine logs in ten, where the
   run's library trusted 1 to 5.
+- None of those tubes held the plant's own noise. From 0.17.0 the tube carries it
+  ([ADR 0080](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0080-a-plan-s-tube-carries-the-plant-s-noise.md)):
+  it adds the radius that holds the plan's one-step error on the log with probability 0.95 at
+  each step, the error read off the fit's defect with its lag-1 correlation. The same 600 logs
+  were each run on from their last row 200 times under the plan, the noise and the weather going
+  on from the log's (`cover`). The plant's error one step ahead reached 0.16 to 0.22 K at 95%,
+  cell by cell, and it passed the tolerance of 0.5 K at 95% after 2 or 3 steps. 0.16.0's tube read
+  0.051 K one step ahead on average and held the plant at the first step on 40% of draws. The new
+  tube reads 0.21 to 0.29 K and holds it at the first step on 97% to 99% of draws, cell by cell,
+  and on 98.8% of the steps it trusts. Its certificate trusts 1 or 2 steps on nine logs in ten
+  and 3 at most, and more than the log's own plant allows on 0 to 2% of the logs in a cell.
 - The regret bound stayed small wherever it was finite, the runaway weeks included. It is a gap in
   the planning objective on the fitted model, not a statement about the plant. It was infinite, the
   objective not convex over the box, on 3.4% of the adjusted calls and 12.1% of the naive ones.
@@ -237,6 +248,14 @@ independent, and the rerun was not repeated either. On the same simulated logs, 
 call, 0.16.0 read the tube one step ahead at 0.10 to 0.42 of the rerun's library's on nine logs in
 ten, which puts the rerun's 0.31 K at 0.032 to 0.131 K, and its certificate trusted 6 to 13 steps on
 nine in ten, where the rerun's library trusted 1 to 5.
+
+From 0.17.0 the tube carries the plant's own noise here too. Run on as above, with the drivers
+held at their last logged values in the plan and drawn on in the plant, the plant's error stays
+within 0.5 K at 95% for 2 to 5 steps, cell by cell. 0.16.0's tube held the plant at the first
+step on 35% to 51% of draws. The new one holds it there on 98% to 99% of draws, and on 98.6% of
+the steps it trusts. Its certificate trusts 2 or 3 steps on nine logs in ten, 4 at most, and more
+than the log's own plant allows on 0 to 2% of the logs in a cell. The held forecast's own error is
+not in the tube, and over these few steps the weather moves little.
 
 Scope: the same six replicates, the same shared log days, and the same zero lever price as above.
 Neither verdict stands, so this page makes no claim about what adjustment costs or saves on this

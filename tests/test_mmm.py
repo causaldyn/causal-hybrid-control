@@ -174,20 +174,25 @@ def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_
     assert corrected[0] < 0.1 * gaps[0]  # and on the fastest row, where the gap is largest, 0.004
 
 
-def test_the_prescription_is_identified_and_its_tube_certifies_a_prefix(
+def test_the_prescription_is_identified_and_its_tube_carries_the_season(
     report: MmmReport,
 ) -> None:
     """The fitted field is affine in the state, so the tube's rate is global: the slope's norm
-    over the levers' box, 1.25 a week. At `dt = 1` RK4 carries the tube by about 3.5 a step, and
-    it leaves the tolerance 1.0 at the third step (0.11, 0.49, 1.82). The field contracts, its
-    slope's eigenvalues -0.25 to -0.73 at the box's centre, which a norm cannot see; the twelve
-    steps this certified before came from a negative log-norm in Euler's recursion, no bound."""
+    over the levers' box, 1.25 a week. The field contracts, its slope's eigenvalues -0.25 to -0.73
+    at the box's centre, which a norm cannot see; the twelve steps this certified before came from
+    a negative log-norm in Euler's recursion, no bound. The season, adjusted for and not forecast,
+    moves sales by about 1.24 a week that the fitted field leaves unexplained, and the tube holds
+    that noise (ADR 0080): it passes the tolerance of 1.0 in the first week, so no week is
+    certified. On the channel's error alone the tube read 0.11, 0.49, 1.82 and certified two
+    weeks, the error of a week with no season, which no week is."""
     certificate = report.arm("adjusted").prescription.certificate  # type: ignore[union-attr]
     assert certificate.identification == "identified"
     assert certificate.adjustment.covariates == ("season",)
-    assert certificate.certificate_status == "partial"
+    assert certificate.certificate_status == "uncertified"
     assert certificate.tube_rate == "global"
-    assert certificate.trustworthy_steps == 2
+    assert certificate.tube_noise is not None
+    assert certificate.tube_noise > 1.0
+    assert certificate.trustworthy_steps == 0
     assert report.arm("flat").prescription is None  # a fixed rule has nothing to certify
 
 

@@ -68,7 +68,8 @@ Read the first report by its two axes, which are kept apart on purpose:
 - **Identification** is about the data and the graph: whether an adjustment set exists, which one
   was used, and the channel's standard error.
 - **Certification** is about model error and the barrier: the error tube's certified horizon, over
-  the plan's RK4 steps and at the channel's standard error, so a scale rather than a bound; the
+  the plan's RK4 steps, at the channel's standard error, a scale rather than a bound, plus the
+  plant's own one-step error on the log, held with probability 0.95 at each step; the
   steps whose predicted states clear the constraint at the level of the marginal sensitivity model
   the plan was audited at (`gamma`, when a bound is given), checked pointwise; and `gamma*`, the
   largest level at which every step along the plan's path still has an admissible action that
