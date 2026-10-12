@@ -29,7 +29,7 @@ from numpy.typing import NDArray
 from scipy.integrate import quad
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
 from scipy.optimize import brentq, minimize
-from scipy.special import expit, psi
+from scipy.special import erf, expit, ndtr, psi
 
 from chc.network_causal import (
     ar1_innovations,
@@ -5624,6 +5624,174 @@ def _minimax_regret_action(
             worst_right = worst(right)
     action = float(0.5 * (lo + hi))
     return MinimaxAction(action=action, worst_case=float(worst(action)), binding="interior")
+
+
+MoveRule = Literal["sign", "linear"]
+"""Which minimax-regret rule :func:`minimax_regret_move` took: ``sign`` makes the whole move where
+its estimate is not negative and holds otherwise; ``linear`` makes a share of it that rises
+linearly from 0 to 1 across ``[-threshold, threshold]``."""
+
+
+@dataclass(frozen=True)
+class MinimaxRegretMove:
+    """How much of a move to make where its value is known only to an interval around a noisy
+    estimate, and what that costs at worst. *Experimental.*
+
+    See :func:`minimax_regret_move`.
+    """
+
+    # The share of the move to make, in [0, 1]: 1 the whole move, 0 holding. A share in between is
+    # the probability of making the move, or, where the move's value is linear in its size, the
+    # fraction of it to make, which pays the same in expectation.
+    share: float
+    rule: MoveRule
+    threshold: float  # rho: the half-width of the band the share rises across; 0 under ``sign``
+    halfwidth: float  # k = (gamma - 1)/(gamma + 1) * cvar_gap * size: how far the value may sit
+    worst_regret: float  # the rule's worst regret over every value the data allow: the minimax one
+    sign_regret: float  # the sign rule's worst regret, which is ``worst_regret`` under ``sign``
+    # The largest Gamma at which this estimate still makes the whole move, sampling noise included:
+    # inf where no Gamma takes it away, nan where no Gamma makes it, as where the estimate is
+    # negative. With no noise it is the flip (G + d)/(G - d) of the identified set alone; noise
+    # moves it up.
+    full_move_gamma: float
+
+
+def minimax_regret_move(
+    estimate: float,
+    standard_error: float,
+    gamma: float,
+    cvar_gap: float = 1.0,
+    size: float = 1.0,
+) -> MinimaxRegretMove:
+    """How much of a move to make when its value is linear in the channel, its estimate is noisy,
+    and confounding up to ``gamma`` may bias it: the minimax-regret rule of Montiel Olea, Qiu and
+    Stoye (Review of Economic Studies 2026; arXiv 2312.17623 v3, Section 4.2). *Experimental.*
+
+    The move's estimated value is ``estimate ~ N(beta, standard_error^2)``, the standard error its
+    influence's, and its true value lies in ``[beta - k, beta + k]``, ``k = (gamma - 1)/(gamma + 1)
+    * cvar_gap * size``: the marginal sensitivity model's half-width, with the gap a share of
+    ``size``, the channel's size on the move's scale, as ADR 0085 sizes it; ``size = 1`` reads
+    ``cvar_gap`` in the move's own units. A rule makes the move with probability ``d``. Where the
+    move's value is ``u > 0`` its regret is ``u (1 - E d)``, and where ``u < 0`` it is ``-u E d``.
+
+    * ``k <= sqrt(pi/2) standard_error``: the sign rule, the whole move where the estimate is not
+      negative, is minimax regret, and essentially the only rule that is. Its worst regret is
+      ``max over beta of (beta + k) Phi(-beta / standard_error)``.
+    * Past it every minimax-regret rule randomises, the minimax regret is ``k / 2``, and the rule
+      that randomises least makes ``clip((estimate + rho) / (2 rho), 0, 1)`` of the move, with
+      ``rho = k (1 - 2 Phi(-rho / standard_error))``, the one root in ``(0, k]``. The sign rule
+      loses more there: 1.0509 against 1.000 at ``k = 2``, ``standard_error = 1``, and 3.371
+      against 2.5 at ``k = 5`` (``validation/minimax_regret_move.mac``).
+
+    :attr:`MinimaxRegretMove.full_move_gamma` is the largest ``gamma`` at which the estimate still
+    makes the whole move. The share is 1 while ``rho <= estimate``, and ``rho`` grows with ``k``,
+    so the move is whole up to ``k = estimate / erf(estimate / (standard_error sqrt 2))``, which
+    exceeds ``estimate``. So the move stays whole past the flip ``(G + d)/(G - d)`` of the
+    noiseless identified set, where the set already holds values below zero: the noise is a regret
+    the confounding's hedge cannot buy back, and below ``sqrt(pi/2) standard_error`` the sign rule
+    moves whole on any estimate that is not negative. The Gamma falls to the flip as the error
+    shrinks.
+
+    For linear welfare only: a value linear in the move, an estimate Gaussian about its mean, and a
+    half-width that does not depend on the data. A cost quadratic in the action, as
+    :func:`minimax_action`'s, has another minimax rule, which this one does not approximate.
+
+    Raises:
+        ValueError: on an estimate that is not finite, a standard error that is negative or not
+            finite, a ``gamma`` below 1 or not finite, or a ``cvar_gap`` or ``size`` that is
+            negative or not finite.
+    """
+    if not np.isfinite(estimate):
+        raise ValueError(f"estimate must be finite, got {estimate}")
+    if not 0.0 <= standard_error < np.inf:
+        raise ValueError(f"standard_error must be nonnegative and finite, got {standard_error}")
+    if not 1.0 <= gamma < np.inf:
+        raise ValueError(f"gamma is a sensitivity level, at least 1 and finite, got {gamma}")
+    for name, value in (("cvar_gap", cvar_gap), ("size", size)):
+        if not 0.0 <= value < np.inf:
+            raise ValueError(f"{name} must be nonnegative and finite, got {value}")
+    gap = float(cvar_gap) * float(size)
+    k = (float(gamma) - 1.0) / (float(gamma) + 1.0) * gap
+    sigma = float(standard_error)
+    sign_regret = _sign_rule_regret(k, sigma)
+    full = _full_move_gamma(float(estimate), sigma, gap)
+    # the threshold read as the inverse's bracket reads it, so the two agree at the boundary
+    if k == 0.0 if sigma == 0.0 else k / sigma <= _whole_move(0.0):
+        return MinimaxRegretMove(
+            share=1.0 if estimate >= 0.0 else 0.0,
+            rule="sign",
+            threshold=0.0,
+            halfwidth=k,
+            worst_regret=sign_regret,
+            sign_regret=sign_regret,
+            full_move_gamma=full,
+        )
+    rho = k if sigma == 0.0 else sigma * _whole_move_inverse(k / sigma)
+    return MinimaxRegretMove(
+        share=float(np.clip((estimate + rho) / (2.0 * rho), 0.0, 1.0)),
+        rule="linear",
+        threshold=rho,
+        halfwidth=k,
+        worst_regret=k / 2.0,
+        sign_regret=sign_regret,
+        full_move_gamma=full,
+    )
+
+
+def _whole_move(t: float) -> float:
+    """``t / erf(t / sqrt 2)``: the half-width, in standard errors, at which the least-randomising
+    rule's threshold is ``t`` standard errors. Rising from ``sqrt(pi/2)`` at ``t = 0``."""
+    return float(np.sqrt(np.pi / 2.0)) if t == 0.0 else t / float(erf(t / np.sqrt(2.0)))
+
+
+def _whole_move_inverse(scale: float) -> float:
+    """The threshold, in standard errors, at a half-width of ``scale > sqrt(pi/2)`` of them: the
+    root of :func:`_whole_move`, which rises from ``sqrt(pi/2)`` and is at least ``t``, so the root
+    lies in ``(0, scale]``. Read through ``t / erf``, not ``t - scale erf``, whose two terms cancel
+    near the threshold."""
+    return float(
+        brentq(
+            lambda t: _whole_move(t) - scale,
+            0.0,
+            scale,
+            xtol=float(np.finfo(float).tiny),
+            rtol=4.0 * np.finfo(float).eps,
+        )
+    )
+
+
+def _sign_rule_regret(k: float, sigma: float) -> float:
+    """The sign rule's worst regret, ``max over beta of (beta + k) Phi(-beta / sigma)``, the larger
+    branch by symmetry. In ``z = beta / sigma`` the product is log-concave on ``z > -k / sigma``, so
+    its slope ``Phi(-z) - (z + k / sigma) phi(z)`` changes sign once: it is ``Phi(k / sigma)``,
+    positive, at ``z = -k / sigma``, and negative at ``z = 1``, where ``Phi(-1) < phi(1)``."""
+    if sigma == 0.0:
+        return k  # the supremum as beta rises to 0 from below, where the rule holds
+    scale = k / sigma
+
+    def slope(z: float) -> float:
+        return float(ndtr(-z)) - (z + scale) * float(np.exp(-0.5 * z * z) / np.sqrt(2.0 * np.pi))
+
+    z = float(brentq(slope, -scale, 1.0, xtol=1e-15, rtol=4.0 * np.finfo(float).eps))
+    return float(sigma * (z + scale) * ndtr(-z))
+
+
+def _full_move_gamma(estimate: float, sigma: float, gap: float) -> float:
+    """The largest Gamma at which ``estimate`` makes the whole move: the half-width it stays whole
+    up to, ``sigma`` times :func:`_whole_move` of it in standard errors, inverted through
+    ``(gamma - 1)/(gamma + 1) gap``."""
+    if estimate < 0.0:
+        return float("nan")
+    if sigma == 0.0:
+        # with no noise the threshold is k itself, and the share 1/2 at an estimate of 0 once k > 0
+        if estimate == 0.0:
+            return float("inf") if gap == 0.0 else 1.0
+        reach = estimate
+    else:
+        reach = sigma * _whole_move(estimate / sigma)
+    if reach >= gap:
+        return float("inf")
+    return float((gap + reach) / (gap - reach))
 
 
 @dataclass(frozen=True)

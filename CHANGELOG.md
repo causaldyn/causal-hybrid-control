@@ -28,6 +28,15 @@ still change).
   `chc.misspecification.planned_cost_bias(plan, fit)` reads `S` off the fit's influence, the
   drift's error included. Both refuse a plan whose active set moves with the error and a missing
   covariance (ADR 0088).
+- **`chc.regret.minimax_regret_move` says how much of a move to make when confounding and the
+  estimate's noise both leave its sign open.** *Experimental.* With the move's value in
+  `[beta - k, beta + k]`, `k = (Gamma - 1)/(Gamma + 1) G`, and its estimate `N(beta, sigma^2)`, it
+  returns Montiel Olea, Qiu and Stoye's minimax-regret rule (Review of Economic Studies 2026): the
+  whole move on a positive estimate while `k <= sqrt(pi/2) sigma`, and past it the share
+  `clip((estimate + rho) / (2 rho), 0, 1)`, whose worst regret is `k / 2` where the sign rule's
+  is 1.051 at `k = 2 sigma` and 3.371 at `k = 5 sigma`. `full_move_gamma` is the largest `Gamma`
+  at which the estimate still makes the whole move; noise moves it past the noiseless flip
+  (ADR 0089).
 
 ### Changed
 

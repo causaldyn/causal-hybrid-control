@@ -63,6 +63,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   corrected for it; `chc.misspecification.planned_cost_bias` reads the error off a fit's influence.
 - **`minimax_action`.** The robust action over an identified interval, minimising the worst cost
   or the worst regret. See [`chc.regret`](api/regret.md).
+- **`chc.regret.minimax_regret_move`** (*experimental*). How much of a move whose value is linear
+  to make when confounding up to `Γ` and the estimate's noise both leave its sign open: the whole
+  move, a share, or none, with the minimax regret.
 - **The case studies**, each one decision from its logs to a plan:
   - [pricing under confounding](case-studies/pricing.md);
   - [an epidemic under hospital capacity](case-studies/epidemic.md);
