@@ -839,6 +839,22 @@ def test_under_a_budget_a_rate_a_rounding_below_its_cap_has_no_room_to_price():
     assert price == pytest.approx(0.25, rel=1e-12, abs=0.0)
 
 
+def test_a_price_program_its_iteration_limit_stops_is_refused(stall):
+    """The prices' programs run under the planes' limit of iterations: weights down to roundings
+    put their costs in HiGHS's scaling, where at their tolerance it can pivot on a degenerate
+    program without end. A program the limit stops leaves no price to read."""
+    limits = stall(1)
+    cells = (Channel(ONE, MichaelisMenten(1.0), 4.0), Channel(ONE, MichaelisMenten(1.0), 4.0))
+    worths = _worths(cells, np.zeros((0, 2)), 1)
+    budget = _Group(np.arange(2), 4.0, 4.0, np.ones(2))
+    with pytest.raises(RuntimeError, match="prices' linear program failed"):
+        _priced(
+            worths, np.array([1.0, 3.0]), np.zeros(2), np.array([1.0, 10.0]), [budget], 1, 0.0, True
+        )
+    assert len(limits) == 1
+    assert limits[0] > 0
+
+
 @pytest.mark.parametrize("seed", range(6))
 def test_under_the_budget_alone_any_plan_is_priced_as_allocate_prices_it(seed):
     """With the budget the only total, a plan off its best misses the conditions whatever its price,
