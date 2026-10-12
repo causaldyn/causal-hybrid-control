@@ -874,6 +874,28 @@ def test_a_cell_a_rounding_below_its_cap_leaves_the_budget_s_price_to_the_cell_w
     assert plan.price == pytest.approx(rise / (2 * step), rel=1e-6, abs=0.0)
 
 
+@pytest.mark.parametrize("kind", ["geo", "channel"])
+def test_a_total_far_from_binding_leaves_the_one_that_binds_its_price(kind):
+    """A cap the plan stands 1e12 short of holds nothing, and the cap that binds beside it is
+    priced as it is with no cap there. Read beside that 1e12, every rate's distance from the ends
+    of its box was a rounding, and the binding cap on geo 0's total was priced 0.054 where it
+    returns 1.60, the one on channel 1's 0 where it returns 1.57."""
+    if kind == "geo":
+        alone = _cut_plan(geo_totals=GEO_CAP)
+        plan = _cut_plan(
+            geo_totals=Totals(least=np.zeros(2), most=np.array([GEO_CAP.most[0], 1e12]))
+        )
+    else:
+        alone = _cut_plan(channel_totals=CHANNEL_CAP)
+        plan = _cut_plan(
+            channel_totals=Totals(least=np.zeros(3), most=np.array([1e12, *CHANNEL_CAP.most[1:]]))
+        )
+    np.testing.assert_allclose(plan.spend, alone.spend, rtol=1e-12, atol=0.0)
+    assert plan.price == pytest.approx(alone.price, rel=1e-12, abs=0.0)
+    np.testing.assert_allclose(plan.geo_prices, alone.geo_prices, rtol=1e-12, atol=0.0)
+    np.testing.assert_allclose(plan.channel_prices, alone.channel_prices, rtol=1e-12, atol=0.0)
+
+
 def test_a_marginal_target_on_s_curves_prices_a_total_that_binds_on_the_curves():
     """With the budget free and each unit charged 4, the cap on geo 0 binds, and the search finds
     the plan in a box cut at its rate. The budget's price is the charge, and geo 0's the rest of

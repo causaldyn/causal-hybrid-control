@@ -2952,15 +2952,18 @@ def _priced(
     before those that return less, so that no rate with room below its cap returns more than its
     price: as :func:`_marginal` reads :func:`allocate`'s price, one more currency unit returns no
     more than the price wherever it goes. A rate a rounding below its cap, where HiGHS can leave a
-    rate it holds at its cap, has no room to weigh: a weight under about ``1e-9`` of the largest
-    is taken as nothing (:func:`_lexicographic`). Where several prices leave the same gaps, the
-    budget's is the one nearest nothing, and then the totals' are the least in the sum of their
-    sizes: one geo with no totals is priced as :func:`allocate` prices its channels, and where
-    every geo's total is fixed, which fixes the budget, the budget's price is nothing and theirs
-    carry it.
+    rate it holds at its cap, has no room to weigh: a weight under about ``1e-9`` of the farthest a
+    rate stands from an end of its box is taken as nothing (:func:`_lexicographic`). Where several
+    prices leave the same gaps, the budget's is the one nearest nothing, and then the totals' are
+    the least in the sum of their sizes: one geo with no totals is priced as :func:`allocate`
+    prices its channels, and where every geo's total is fixed, which fixes the budget, the budget's
+    price is nothing and theirs carry it.
 
-    The program is written in a power of two of the steepest slope and of the largest weight, so
-    the prices move with the units of currency and of return.
+    The program is written in a power of two of the steepest slope and of the farthest a rate
+    stands from an end of its box, so the prices move with the units of currency and of return. A
+    total's slack weighs at most that far: the totals' misses can always be nothing, so a slack
+    only frees a price or holds it, and read on its own scale a total 1e12 short of binding made
+    every rate's weight a rounding.
     """
     size, count = rates.size, len(groups)
     slopes = np.array([_slope(w, r) for w, r in zip(worths, rates, strict=True)]) / periods
@@ -2975,16 +2978,17 @@ def _priced(
     raised = fixed | np.isfinite(most)  # a price that can be positive
     lowered = fixed | (least > 0.0)  # and one that can be negative
     below, above = rates < upper, rates > lower
-    # how far the plan stands from what would excuse each miss, in currency over the plan
-    weights = np.concatenate(
+    # how far the plan stands from what would excuse each miss, in currency over the plan, read in
+    # a power of two of the farthest a rate stands from an end of its box
+    distances = periods * np.concatenate([rates - lower, upper - rates])
+    scale = _unit(float(np.max(distances, initial=0.0)))
+    slacks = np.concatenate(
         [
             np.where(fixed | ~np.isfinite(most), 0.0, np.maximum(most - spent, 0.0)),
             np.where(fixed, 0.0, np.maximum(spent - least, 0.0)),
-            periods * (rates - lower),
-            periods * (upper - rates),
         ]
     )
-    weights = weights / _unit(float(np.max(weights, initial=0.0)))
+    weights = np.concatenate([np.minimum(slacks / scale, 1.0), distances / scale])
     # columns: each group's positive part, its negative part, each rate's price above its slope
     # past its floor, and below its slope short of its cap
     rows, limits = [], []
@@ -3031,9 +3035,9 @@ def _lexicographic(
     Each program's optimal face bounds the next: every least point meets complementary slackness
     with any one optimal dual (Goldman and Tucker 1956), so it holds a column whose reduced cost is
     not nothing at the end that cost presses on, and a row whose dual is not nothing at its limit.
-    The objectives' weights are at most 1, and a reduced cost or a dual within ``1e-9`` is taken
-    as nothing: a column it would hold is left free, so a later objective may move an earlier one
-    by about that much a unit the column moves.
+    The objectives' weights are below 2, and a reduced cost or a dual within ``1e-9`` is taken as
+    nothing: a column it would hold is left free, so a later objective may move an earlier one by
+    about that much a unit the column moves.
     """
     bounds = list(bounds)
     held = np.zeros(len(limits), dtype=bool)
