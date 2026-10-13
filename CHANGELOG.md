@@ -103,6 +103,14 @@ still change).
   It is now `expm1(H log1p(L dt))`, within 1e-13 of exact rational arithmetic on the same inputs
   at every rate from 1e-20 to 3. `closed_loop_rollout_bound` and
   `confounding_robust_closed_loop_bound` read through it. Since 0.2.0.
+- **The safe step of `time_varying_rollout_certificate` and
+  `confounding_robust_closed_loop_certificate` is the last step that holds, not the first that
+  does not.** `safe_until_step`, `nominal_safe_step` and `robust_safe_step` are each the largest
+  step whose tightened constraint holds up to it, but they read the first step past the
+  constraint, one step more than holds, and `horizon + 1` where every step held, a step the
+  plan does not have. At their defaults `time_varying_rollout_certificate` now reads 20 of 20
+  steps where it read 21, and `confounding_robust_closed_loop_certificate` at `gamma = 3` reads
+  25 and 20 of 25 where it read 26 and 21. Since 0.2.0.
 
 ## [0.18.0] — 2026-10-13
 

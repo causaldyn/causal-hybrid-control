@@ -101,6 +101,25 @@ def test_bound_holds_the_closed_form_where_the_rate_is_below_the_precision(
     assert bound >= model_error * dt * horizon * (1.0 - 1e-15)
 
 
+def test_time_varying_safe_step_is_the_last_step_whose_margin_holds() -> None:
+    """``safe_until_step`` read the first step past the constraint, one more than holds, and
+    ``horizon + 1`` where every step held. Recomputed from the public pieces with the
+    certificate's own numbers."""
+    from chc.uncertainty import constraint_margin, time_varying_rollout_certificate
+
+    dt = 0.05
+    for steps in (20, 60):
+        ramp = np.linspace(0.5, 3.0, steps)
+        budget = [0.05 + 0.05 * abs(math.sin(3.0 * float(v))) for v in ramp]
+        cert = time_varying_rollout_certificate(horizon=steps, dt=dt)
+        tube = time_varying_rollout_bound([float(v) for v in ramp], budget, dt)
+        margins = np.asarray(constraint_margin(-0.5 * np.ones(steps + 1), 1.0, tube))
+        safe = cert.safe_until_step
+        assert -1 <= safe <= steps
+        assert np.all(margins[: safe + 1] <= 0.0)
+        assert safe == steps or margins[safe + 1] > 0.0
+
+
 def test_bound_is_monotone_in_model_error_and_horizon() -> None:
     small = lipschitz_rollout_bound(1.0, 0.1, 0.05, 8)
     more_error = lipschitz_rollout_bound(1.0, 0.2, 0.05, 8)

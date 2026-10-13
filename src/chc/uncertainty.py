@@ -1682,7 +1682,7 @@ def time_varying_rollout_certificate(
     until = certified_horizon(lipschitz, budget, dt, tolerance)
     nominal_g = -0.5 * jnp.ones(horizon + 1)  # a nominal margin of 0.5 to the constraint g <= 0
     margins = constraint_margin(nominal_g, 1.0, varying)  # L_g = 1
-    safe = int(jnp.argmax(margins > 0.0)) if bool(jnp.any(margins > 0.0)) else horizon + 1
+    safe = _last_safe_step(margins)
     _ = key
     return TimeVaryingRolloutCertificate(
         certified_until_step=until,
@@ -1691,6 +1691,15 @@ def time_varying_rollout_certificate(
         safe_until_step=safe,
         ok=float(varying[-1]) <= float(constant[-1]) + 1e-9 and until <= horizon,
     )
+
+
+def _last_safe_step(margins: Array) -> int:
+    """The largest ``k`` whose tightened margins ``0..k`` are all ``<= 0``: the step before the
+    first one past the constraint, the horizon where none is, -1 where step 0 already is. Up to
+    0.18.0 the certificates read the first step past it, one step more than holds, and
+    ``horizon + 1`` where every step held."""
+    past = np.asarray(margins) > 0.0
+    return int(np.argmax(past)) - 1 if past.any() else past.size - 1
 
 
 def _top_tail_mean(outcomes: NDArray[np.float64], tau: float) -> float:
@@ -1888,8 +1897,7 @@ def confounding_robust_closed_loop_certificate(
         inflated = base_error + control_magnitude * confounding_robust_inflation(cvar_gap, 0.0, g)
         tube = time_varying_rollout_bound([l_cl] * horizon, [inflated] * horizon, dt)
         margins = constraint_margin(nominal_g * jnp.ones(horizon + 1), lipschitz_g, tube)
-        safe = int(jnp.argmax(margins > 0.0)) if bool(jnp.any(margins > 0.0)) else horizon + 1
-        return float(tube[-1]), safe
+        return float(tube[-1]), _last_safe_step(margins)
 
     nominal_radius, nominal_safe = tube_and_safe(1.0)
     robust_radius, robust_safe = tube_and_safe(gamma)
