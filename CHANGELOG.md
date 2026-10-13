@@ -27,6 +27,25 @@ still change).
   - **13 tests**, among them the p-value over every arrangement of the blank and post periods,
     which takes each step of `1/|Π|` once, and each interval's coverage over every place its
     period could take among the blank ones. Fourteen mutations caught.
+- **`blank_period_inference(..., serial="ar1")` reads a designed test whose errors persist**
+  (*experimental*, ADR 0092 amended). The default reading rejected a true null 8.7% of the time at
+  5% with AR(1) factors and errors of coefficient 0.5 and 21.5% at 0.8. The new reading estimates
+  the gaps' AR(1) coefficient from the donors alone, each fitted on the first half of the fitting
+  periods, by Han, Phillips and Sul's panel fully aggregated estimator, and returns it as
+  `ar_coefficient`. It ranks the gaps' innovations over the blank and post periods by a constant
+  effect's score, over each choice of post innovations and which of them comes first. The default
+  and the intervals do not change.
+  - **It holds the level.** On the bench's panels, 19 donors, 15 fitting, 5 blank and 5 post
+    periods, the unit chosen on the fitting periods, 4000 a case, it rejected 4.9%, 4.8% and 5.3%
+    at coefficients 0, 0.5 and 0.8. With 10 blank periods it rejected 5.5% on 12000 panels.
+  - **Its power is for a constant effect.** Effects of 1 and 2 at 0.5: 14.9% and 45.2%, against
+    the default's 19.7% and 44.3% at its size of 8.7%. Without persistence, 27.5% and 76.8%
+    against 13.5% and 48.5%.
+  - **Not fixed:** the intervals still assume exchangeable gaps; at 0.8 the 80% intervals covered
+    70.7%.
+  - **8 tests (10 cases)**, among them the p-value over every arrangement of the innovations,
+    which takes each step of `1/|Π|` once, and the coefficient against the estimator written out.
+    Fifteen mutations caught.
 
 ## [0.17.0] — 2026-10-13
 

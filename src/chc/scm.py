@@ -23,7 +23,8 @@ is a few lines.
 Neither test holds when a design chose the treated unit, as a design that picks its test market
 does. :func:`blank_period_inference` gives such a test the reading Abadie and Zhao's design
 justifies: the weights fit on the earlier periods before treatment, the latest ones left blank,
-and the gaps after treatment ranked against every arrangement of the blank and post periods.
+and the gaps after treatment ranked against every arrangement of the blank and post periods. Its
+``serial="ar1"`` reading keeps that test's level where the errors persist, as a geo panel's do.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ import itertools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -320,6 +322,14 @@ class BlankPeriodInference:
     post periods whose mean absolute gap is at least the post periods'. It moves in steps of
     ``1 / arrangements``, ``C(T_blank + T_post, T_post)``, and is never below one step.
 
+    Read with ``serial="ar1"``, ``ar_coefficient`` is an AR(1) coefficient of the gaps, estimated
+    from the donors alone, and ``p_value`` ranks the gaps' innovations instead: ``e_t = u_t -
+    ar_coefficient * u_{t-1}`` over the blank and post periods, ``u`` the gaps and the first lag
+    the last fitting period's. Its statistic is ``|e_first + (1 - ar_coefficient) * (sum of the
+    other post innovations)|``, which a constant effect moves most. The ``arrangements`` are each
+    choice of ``T_post`` innovations and which of them comes first, ``T_post C(T_blank + T_post,
+    T_post)`` of them. ``ar_coefficient`` is ``None`` in the default reading.
+
     ``intervals[k]`` holds the effect in post period ``k`` with probability at least ``1 - alpha``:
     the gap there, plus or minus the ``ceil((1 - alpha) (T_blank + 1))``-th smallest absolute
     blank gap, which is infinite when that rank exceeds ``T_blank``, as it does for every ``alpha
@@ -332,8 +342,10 @@ class BlankPeriodInference:
     rejected a true null 4.4% of the time at 5%, where :func:`synthetic_control_inference`'s
     placebo rejected 23.5% on 400 such panels. With AR(1) factors and errors of coefficient 0.5 it
     rejected 8.7%, against that placebo's 27.8%: errors that persist break the exchangeability, and
-    the rate grew to 21.4% at 0.8. Factors that persist did not, 4.8% with white-noise errors. The
-    intervals at ``alpha = 0.2`` covered 83.6% and 79.6%; at 0.05 and 0.10 they were unbounded.
+    the rate grew to 21.5% at 0.8. Factors that persist did not, 4.8% with white-noise errors. The
+    ``serial="ar1"`` reading rejected 4.9%, 4.8% and 5.3% at coefficients 0, 0.5 and 0.8 (standard
+    errors 0.35). The intervals, the same in both readings, covered 83.6%, 79.6% and 70.7% at
+    ``alpha = 0.2``; at 0.05 and 0.10 they were unbounded.
     """
 
     estimate: SyntheticControlResult
@@ -342,10 +354,17 @@ class BlankPeriodInference:
     intervals: NDArray[np.float64]  # (T_post, 2): each post period's lower and upper end
     alpha: float
     arrangements: int
+    ar_coefficient: float | None = None
 
 
 def blank_period_inference(
-    outcomes: Outcomes, treated_unit: int, n_pre: int, n_blank: int, *, alpha: float = 0.05
+    outcomes: Outcomes,
+    treated_unit: int,
+    n_pre: int,
+    n_blank: int,
+    *,
+    alpha: float = 0.05,
+    serial: Literal["exchangeable", "ar1"] = "exchangeable",
 ) -> BlankPeriodInference:
     """A designed geo test read as Abadie and Zhao read it: fit on the earlier periods before
     treatment, hold out the last ``n_blank`` of them, permute over the blank and post periods.
@@ -365,7 +384,7 @@ def blank_period_inference(
 
     - Noise that persists over time breaks it: the mean gap over adjacent post periods then varies
       more than over scattered ones, and the test rejects too often, 8.7% at 5% with AR(1) errors
-      of coefficient 0.5. Factors that persist do not.
+      of coefficient 0.5. Factors that persist do not. ``serial="ar1"`` is the remedy, below.
     - The design must not look at the blank periods. A unit chosen for its fit there has blank gaps
       selected small, and the test then rejects too often.
     - The blank periods are the latest before treatment, so that a season or a trend moves them as
@@ -379,13 +398,43 @@ def blank_period_inference(
     ``intervals`` hold under the same exchangeability, the effect being additive and the noise
     after treatment distributed as before it, one period at a time, not jointly.
 
+    ``serial="ar1"`` reads gaps that follow an AR(1), ``u_t = c + rho u_{t-1} + e_t`` with ``e``
+    i.i.d., as they do when every unit's errors and the factors share one coefficient. Then the
+    innovations over the blank and post periods are i.i.d. given the fitting periods, and with the
+    true ``rho`` the test is exact again, whatever the design did with the fitting periods
+    (Chernozhukov, Wüthrich and Zhu, JASA 2021, §2.4.2 and Lemma 7, filter a synthetic control's
+    residuals so before permuting them). ``rho`` is estimated:
+
+    - Not from the treated unit's gaps over the fitting periods. The fit absorbs their persistence:
+      on the bench's panels their AR(1) estimate averaged -0.13 where the errors' was 0.5.
+    - From the donors: each donor's synthetic control from the other donors, the treated unit left
+      out, fitted on the first ``ceil(T_fit / 2)`` periods; its gaps on every later period; and
+      Han, Phillips and Sul's panel fully aggregated estimator over them (Econometric Theory 30,
+      2014, §2), which removes each donor's level without the within-estimator's bias, kept in
+      ``[-1, 1]``. An effect on the treated unit does not reach it. It assumes the donors' gaps
+      persist as the treated unit's do.
+    - An estimate below ``rho`` leaves the innovations positively correlated, and the test rejects
+      too often: with ``rho`` fixed 0.1 low, 5.8% at 5% at 0.5. On the bench's panels the estimate
+      averaged 0.49 at 0.5 (s.d. 0.08) and 0.77 at 0.8, and the test rejected 4.8% and 5.3%. With
+      10 blank periods, 5 fitting for the donors, it rejected 5.5% on 12000 panels.
+    - Its power is for a constant effect: an effect of 1 and 2 on the bench's panels, rejected
+      14.9% and 45.2% at 0.5, where the exchangeable reading rejected 19.7% and 44.3% at a size of
+      8.7%, and 27.5% and 76.8% where the errors do not persist, against 13.5% and 48.5%.
+    - The intervals are the exchangeable reading's, and persistence breaks them: at 0.8 the 80%
+      intervals covered 70.7%.
+
     Raises:
         ValueError: on :func:`synthetic_control`'s refusals; when ``n_blank`` is not in ``[1,
-            n_pre - 1]``; when ``alpha`` is outside ``(0, 1)``; or when there are more than a
-            million arrangements to enumerate.
+            n_pre - 1]``; when ``alpha`` is outside ``(0, 1)``; when ``serial`` is neither
+            reading; when there are more than a million arrangements to enumerate; or, for
+            ``"ar1"``, with fewer than two donors or when the donors' gaps cannot give an AR(1)
+            coefficient (fewer than four periods after their fit, or none that move).
     """
     if not 0.0 < alpha < 1.0:
         msg = f"alpha must lie in (0, 1), got {alpha}"
+        raise ValueError(msg)
+    if serial not in ("exchangeable", "ar1"):
+        msg = f"serial must be 'exchangeable' or 'ar1', got {serial!r}"
         raise ValueError(msg)
     donor_pre, donor_post, treated_pre, treated_post = _split(outcomes, treated_unit, n_pre)
     if not 1 <= n_blank < n_pre:
@@ -401,8 +450,8 @@ def blank_period_inference(
     estimate = SyntheticControlResult(att, float(att.mean()), weights, fit_rmspe)
 
     n_post = att.size
-    gaps = np.abs(np.concatenate([blank_gaps, att]))
-    arrangements = math.comb(gaps.size, n_post)
+    n_held = n_blank + n_post
+    arrangements = math.comb(n_held, n_post) * (n_post if serial == "ar1" else 1)
     if arrangements > _MAX_ARRANGEMENTS:
         msg = (
             f"{arrangements} arrangements of {n_blank} blank and {n_post} post periods exceed "
@@ -410,19 +459,72 @@ def blank_period_inference(
         )
         raise ValueError(msg)
     chosen = np.fromiter(
-        itertools.chain.from_iterable(itertools.combinations(range(gaps.size), n_post)),
+        itertools.chain.from_iterable(itertools.combinations(range(n_held), n_post)),
         dtype=np.intp,
-        count=arrangements * n_post,
-    ).reshape(arrangements, n_post)
-    sums = gaps[chosen].sum(axis=1)
-    # the last combination in lexicographic order is the post periods; two sums of n_post
-    # non-negative terms that are equal in exact arithmetic differ by under n_post * eps of the
-    # larger, so a tie counts as one, as the p-value's definition has it
-    tolerance = n_post * np.finfo(np.float64).eps * float(sums.max())
-    p_value = float(np.mean(sums >= sums[-1] - tolerance))
+        count=math.comb(n_held, n_post) * n_post,
+    ).reshape(-1, n_post)
+    # the last combination in lexicographic order is the post periods
+    ar_coefficient = None
+    if serial == "ar1":
+        ar_coefficient = _ar1_coefficient(np.concatenate([donor_pre, donor_post], axis=1), n_fit)
+        last_fit_gap = treated_pre[n_fit - 1] - donor_pre[:, n_fit - 1] @ weights
+        path = np.concatenate([[last_fit_gap], blank_gaps, att])
+        innovations = path[1:] - ar_coefficient * path[:-1]
+        # a constant effect d adds d to the first post period's innovation and (1 - rho) d to each
+        # later one: the statistic weighs them so, each arrangement once for each of its periods
+        # that could come first
+        totals = innovations[chosen].sum(axis=1)
+        stats = np.abs(
+            (1.0 - ar_coefficient) * totals[:, None] + ar_coefficient * innovations[chosen]
+        )
+        observed = stats[-1, 0]
+        # a statistic is a sum of n_post + 1 terms each at most this large, so two that are equal
+        # in exact arithmetic differ by under (n_post + 2) eps of it
+        largest = (abs(1.0 - ar_coefficient) * n_post + abs(ar_coefficient)) * float(
+            np.max(np.abs(innovations))
+        )
+        tolerance = (n_post + 2) * np.finfo(np.float64).eps * largest
+    else:
+        stats = np.abs(np.concatenate([blank_gaps, att]))[chosen].sum(axis=1)
+        observed = stats[-1]
+        # two sums of n_post non-negative gaps that are equal in exact arithmetic differ by under
+        # n_post * eps of the larger, so a tie counts as one, as the p-value's definition has it
+        tolerance = n_post * np.finfo(np.float64).eps * float(stats.max())
+    p_value = float(np.mean(stats >= observed - tolerance))
 
     # rounded first, so that (1 - alpha) (n_blank + 1) one ulp above a whole number takes its rank
     rank = math.ceil(round((1.0 - alpha) * (n_blank + 1), 9))
     radius = float(np.sort(np.abs(blank_gaps))[rank - 1]) if rank <= n_blank else math.inf
     intervals = np.column_stack([att - radius, att + radius])
-    return BlankPeriodInference(estimate, blank_gaps, p_value, intervals, alpha, arrangements)
+    return BlankPeriodInference(
+        estimate, blank_gaps, p_value, intervals, alpha, arrangements, ar_coefficient
+    )
+
+
+def _ar1_coefficient(donors: Outcomes, n_fit: int) -> float:
+    """The AR(1) coefficient of the donors' synthetic controls' gaps outside their fit: each donor
+    against the others, fitted on the first half of the fitting periods, by Han, Phillips and Sul's
+    panel fully aggregated estimator, kept in ``[-1, 1]``."""
+    n_donors, n_periods = donors.shape
+    if n_donors < 2:
+        msg = "serial='ar1' needs at least two donors: each donor's gaps come from the others"
+        raise ValueError(msg)
+    n_seen = (n_fit + 1) // 2
+    gaps = np.empty((n_donors, n_periods - n_seen))
+    for j in range(n_donors):
+        others = np.delete(donors, j, axis=0)
+        w = _scm_weights(others[:, :n_seen], donors[j, :n_seen], 5000)
+        gaps[j] = donors[j, n_seen:] - others[:, n_seen:].T @ w
+    # y_t - y_s = rho (y_{t-1} - y_{s+1}) + an error uncorrelated with the regressor, for t >= s + 3
+    pairs = [(s, t) for s, t in itertools.combinations(range(gaps.shape[1]), 2) if t - s >= 3]
+    start, end = np.array(pairs, dtype=np.intp).reshape(-1, 2).T
+    regressor = gaps[:, end - 1] - gaps[:, start + 1]
+    denominator = float(np.sum(regressor**2))
+    if denominator == 0.0:
+        msg = (
+            f"serial='ar1' cannot read an AR(1) coefficient from the donors' gaps over the last "
+            f"{gaps.shape[1]} periods: it needs four that move"
+        )
+        raise ValueError(msg)
+    estimate = float(np.sum(regressor * (gaps[:, end] - gaps[:, start]))) / denominator
+    return min(max(estimate, -1.0), 1.0)

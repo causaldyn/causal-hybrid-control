@@ -17,15 +17,18 @@ the treated unit out of every placebo's donor pool, from the same exact weights.
     blank     blank_period_inference, 19 donors: the designed case with its unit chosen on the
               first 15 periods and the last 5 before treatment blank; the same chosen on all 20,
               which looks at the blank periods; drawn at random; an effect of 1 and of 2; factors
-              and errors white noise, where the theorem's exchangeability holds; and 10 blank.
+              and errors white noise, where the theorem's exchangeability holds; 10 blank; and
+              effects of 0, 1 and 2 with white-noise factors and errors and with AR(1) 0.8.
 
 Each of the first three reports the placebo's rejections at 5% and 10%, both constructions and the
 replicates where only one rejects; and, at alpha = 0.05 (the default) and 0.10, how often the
 interval covers the effect, excludes 0, leaves out the estimate, is empty or is unbounded, and its
 median width.
 
-The blank section reports the test's rejections at 5% and 10%, and at alpha = 0.05, 0.10 and 0.20
-how often each period's interval covers its effect, how many are unbounded, and their median width.
+The blank section reports the test's rejections at 5% and 10%, the same for its serial="ar1"
+reading with the mean and spread of the AR(1) coefficient that reading estimates, and at alpha =
+0.05, 0.10 and 0.20 how often each period's interval covers its effect, how many are unbounded, and
+their median width.
 
 Run: uv run python scripts/bench_scm_inference.py {size,power,designed,blank} [--replicates N]
      [--workers W]
@@ -64,6 +67,11 @@ BLANK_CASES = [
     (19, 0.5, 2.0, "fit", 5),
     (19, 0.0, 0.0, "fit", 5),
     (19, 0.5, 0.0, "fit", 10),
+    (19, 0.0, 1.0, "fit", 5),
+    (19, 0.0, 2.0, "fit", 5),
+    (19, 0.8, 0.0, "fit", 5),
+    (19, 0.8, 1.0, "fit", 5),
+    (19, 0.8, 2.0, "fit", 5),
 ]
 BLANK_ALPHAS = (0.05, 0.10, 0.20)
 
@@ -145,7 +153,8 @@ def _blank_replicate(job) -> dict:
         fits = [synthetic_control(outcomes, unit, n_seen).pre_rmspe for unit in range(donors + 1)]
         treated = int(np.argmin(fits))
     outcomes[treated, N_PRE:] += effect
-    row: dict = {}
+    ar1 = blank_period_inference(outcomes, treated, N_PRE, n_blank, serial="ar1")
+    row: dict = {"p_ar1": ar1.p_value, "ar_coefficient": ar1.ar_coefficient}
     for alpha in BLANK_ALPHAS:
         found = blank_period_inference(outcomes, treated, N_PRE, n_blank, alpha=alpha)
         row["p"] = found.p_value
@@ -172,6 +181,13 @@ def _blank_summary(case, rows: list[dict]) -> dict:
     }
     for level in (0.05, 0.10):
         out[f"rejects_{level:.2f}"] = _rate(sum(r["p"] <= level for r in rows), n)
+    for level in (0.05, 0.10):
+        out[f"ar1_rejects_{level:.2f}"] = _rate(sum(r["p_ar1"] <= level for r in rows), n)
+    coefficients = [r["ar_coefficient"] for r in rows]
+    out["ar_coefficient"] = {
+        "mean": round(float(np.mean(coefficients)), 4),
+        "sd": round(float(np.std(coefficients)), 4),
+    }
     for alpha in BLANK_ALPHAS:
         widths = [w for r in rows for w in r[alpha]["widths"]]
         out[f"interval_{alpha:.2f}"] = {
