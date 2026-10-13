@@ -978,14 +978,16 @@ def lipschitz_rollout_bound(lipschitz: float, model_error: float, dt: float, hor
     _check_rates([lipschitz])
     _check_budget([model_error], dt)
     _check_horizon(horizon)
-    growth = 1.0 + lipschitz * dt
     if lipschitz <= 0.0:  # L -> 0: the Gronwall closed form degrades to the linear envelope
         return model_error * dt * horizon
-    # a float power past the float range raises OverflowError; numpy's is the same pow, and reads
-    # inf. A zero budget keeps the two rollouts together however fast the field grows.
+    # ``(1 + L dt)^H - 1`` as ``expm1(H log1p(L dt))``: formed as written, the power rounds to 1
+    # where ``L dt`` is below the precision, and the difference cancels to 0, a radius that
+    # certified every step where the bound is ``model_error dt H``. Past the float range the
+    # bound reads inf, and a zero budget keeps the two rollouts together however fast the field
+    # grows.
     with np.errstate(over="ignore"):
-        power = float(np.float64(growth) ** horizon)
-    return model_error * (power - 1.0) / lipschitz if model_error > 0.0 else 0.0
+        growth = float(np.expm1(horizon * np.log1p(np.float64(lipschitz) * dt)))
+    return model_error * growth / lipschitz if model_error > 0.0 else 0.0
 
 
 class _PerturbedField(eqx.Module):
