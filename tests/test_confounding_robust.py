@@ -110,6 +110,28 @@ def test_closed_loop_bound_widens_monotonically_with_gamma() -> None:
     assert bound(3.0) > bound(1.0)  # strictly wider under real confounding
 
 
+@pytest.mark.parametrize("gamma", [1.0, 3.0, 20.0])
+def test_certified_safe_step_is_the_last_step_whose_margin_holds(gamma: float) -> None:
+    """``nominal_safe_step`` and ``robust_safe_step`` read the first step past the constraint, one
+    more than holds. Recomputed here from the public pieces with the certificate's own numbers:
+    every margin up to the safe step is at most 0, and the next one, where there is one, is not."""
+    from chc.uncertainty import (
+        confounding_robust_inflation,
+        constraint_margin,
+        time_varying_rollout_bound,
+    )
+
+    horizon, dt = 25, 0.05
+    cert = confounding_robust_closed_loop_certificate(gamma=gamma, horizon=horizon, dt=dt)
+    for level, safe in ((1.0, cert.nominal_safe_step), (gamma, cert.robust_safe_step)):
+        budget = 0.05 + 0.8 * confounding_robust_inflation(0.4, 0.0, level)
+        tube = time_varying_rollout_bound([1.75] * horizon, [budget] * horizon, dt)
+        margins = np.asarray(constraint_margin(-0.6 * np.ones(horizon + 1), 1.0, tube))
+        assert -1 <= safe <= horizon
+        assert np.all(margins[: safe + 1] <= 0.0)
+        assert safe == horizon or margins[safe + 1] > 0.0
+
+
 def test_certificate_confirms_shrinking_safe_horizon() -> None:
     cert = confounding_robust_closed_loop_certificate(gamma=3.0)
     assert cert.ok
