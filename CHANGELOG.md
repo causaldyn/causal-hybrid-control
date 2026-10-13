@@ -167,6 +167,22 @@ still change).
     which takes each step of `1/|Π|` once, and the coefficient against the estimator written out.
     Fifteen mutations caught.
 
+- **The tube's levels, measured beside it: `HorizonConformal`, one conformal scale over the whole
+  horizon, and `channel_region`, a region for the fitted channel.** *Experimental.* The tube holds
+  each step at 0.95 and states no level for every step at once: on logging-policy windows of three
+  plants it held all of them on 0.835, 0.929 and 0.774 of windows. `HorizonConformal.calibrate`
+  scores each window by `max_k ||e_k|| / r_k` with `r_k` the tube's own radii, and its band
+  `scale * r_k` holds every step at once at `1 - delta` on i.i.d. windows (Cleaveland et al., AAAI
+  2024): 0.9488, 0.9506 and 0.9510 +- 0.0012 at 0.95 over 100 logs a plant. `horizon_errors` cuts the
+  windows; on one series `mixing_penalty` and `gaussian_mixing` state `1 - delta - eta` (Oliveira et
+  al., JMLR 2024) and refuse where `eta >= delta`. `chc.dynamics_id.channel_region(fit, level)` is
+  the self-normalised ellipsoid of an Euler fit's channel (Abbasi-Yadkori et al., NeurIPS 2011),
+  valid on closed-loop logs; at 0.9 it held the channel on all 300 logs and, under a hidden
+  confounder, on none. Its `rate_error` reads the tube's rate error at a level, 4.6 to 6.5 times its
+  one-standard-error scale, and `stability_level` gives a certainty-equivalent radius a
+  probability. Both cover the logging policy's data, not the plan's actions, and move no number of
+  the tube (ADR 0099).
+
 ### Changed
 
 - **`koopman_lqr_gain` refuses a lift that does not close.** It returned the LQR gain of any fitted

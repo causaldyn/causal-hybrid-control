@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 import operator
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any, cast
@@ -34,6 +34,7 @@ from jax import Array
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike, NDArray
 from scipy import integrate
+from scipy import linalg as scipy_linalg
 from scipy.optimize import brentq
 from scipy.stats import chi2
 
@@ -505,6 +506,301 @@ class SplitConformal(eqx.Module):
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
         """Total calibrated interval width over the visited ``(x, u)`` pairs (a penalty)."""
         return jnp.sum(jax.vmap(self.interval_width)(xs, us))
+
+
+def horizon_errors(
+    model: Dynamics,
+    states: ArrayLike,
+    actions: ArrayLike,
+    dt: float,
+    horizon: int,
+    *,
+    stride: int | None = None,
+) -> NDArray[np.float64]:
+    """The ``(W, horizon, n)`` errors of the model's open loop over one unit's logged windows.
+
+    Window ``i`` starts at ``t = i * stride`` (``stride`` defaults to ``horizon``, so the windows
+    tile the log and each transition is in one) and runs the model's RK4 steps from the logged
+    ``x_t`` under the logged ``u_t, ..., u_{t + horizon - 1}``. Its row ``k - 1`` is
+    ``x_{t + k} - x_hat_{t + k}``, the plant's state less the open loop's at step ``k``.
+    :meth:`HorizonConformal.calibrate` scores them.
+
+    Args:
+        model: the field the plan rolls out, read as :func:`chc.integrate.rollout` reads it.
+        states: ``(T + 1, n)``, one unit's consecutive logged states.
+        actions: ``(T, m)``, the actions logged between them.
+        dt: the step.
+        horizon: the window's number of steps, at least 1.
+        stride: the steps between window starts, at least 1.
+
+    Raises:
+        ValueError: on states and actions of lengths that do not pair, a ``horizon`` or ``stride``
+            below 1, entries that are not finite, or a log too short for one window.
+    """
+    xs = np.asarray(states, dtype=np.float64)
+    us = np.asarray(actions, dtype=np.float64)
+    stride = horizon if stride is None else stride
+    if xs.ndim != 2 or us.ndim != 2 or xs.shape[0] != us.shape[0] + 1:
+        raise ValueError(
+            f"states {xs.shape} and actions {us.shape} must be (T + 1, n) and (T, m): one action "
+            "between each two states"
+        )
+    if horizon < 1 or stride < 1:
+        raise ValueError(f"horizon={horizon} and stride={stride} must both be at least 1")
+    if not (np.all(np.isfinite(xs)) and np.all(np.isfinite(us))):
+        raise ValueError("the states and actions must be finite")
+    starts = np.arange(0, us.shape[0] - horizon + 1, stride)
+    if starts.size == 0:
+        raise ValueError(f"a log of {us.shape[0]} transitions holds no window of {horizon} steps")
+    dtype = jnp.result_type(float)
+    windows = np.stack([us[start : start + horizon] for start in starts])
+
+    def open_loop(x0: Array, window: Array) -> Array:
+        def body(x: Array, u: Array) -> tuple[Array, Array]:
+            x_next = rk4_step(model, 0.0, x, u, dt)
+            return x_next, x_next
+
+        return jax.lax.scan(body, x0, window)[1]
+
+    predicted = jax.vmap(open_loop)(
+        jnp.asarray(xs[starts], dtype=dtype), jnp.asarray(windows, dtype=dtype)
+    )
+    logged = np.stack([xs[start + 1 : start + horizon + 1] for start in starts])
+    return logged - np.asarray(predicted, dtype=np.float64)
+
+
+def _horizon_scores(errors: ArrayLike, profile: Sequence[float]) -> NDArray[np.float64]:
+    """Each window's ``max_k ||e_k|| / r_k``, refusing errors and a profile that do not pair."""
+    found = np.asarray(errors, dtype=np.float64)
+    radii = np.asarray(profile, dtype=np.float64)
+    if radii.ndim != 1 or radii.size == 0:
+        raise ValueError(f"the profile must be one radius per step, got shape {radii.shape}")
+    if not np.all(np.isfinite(radii)) or not np.all(radii > 0.0):
+        raise ValueError(
+            "every radius of the profile must be positive and finite: a step of radius 0 scores "
+            "every window past it at infinity"
+        )
+    if found.ndim != 3 or found.shape[1] != radii.size:
+        raise ValueError(
+            f"errors of shape {found.shape} must be (windows, {radii.size}, states), one row per "
+            "step of the profile"
+        )
+    if not np.all(np.isfinite(found)):
+        raise ValueError("the errors must be finite")
+    return np.max(np.linalg.norm(found, axis=2) / radii, axis=1)
+
+
+def mixing_penalty(
+    mixing: Callable[[int], float], calibration: int, train_lag: int | None = None
+) -> float:
+    """``eta``, the coverage that split conformal pays on one beta-mixing series.
+
+    Oliveira, Orenstein, Ramos and Romano (JMLR 2024, Theorem 4): on a stationary beta-mixing
+    sequence, the score at a test index ``i`` falls within the empirical ``1 - alpha`` quantile of
+    ``calibration`` consecutive scores with probability at least ``1 - alpha - eta``,
+    ``eta = eps_cal + eps_train + delta_cal``, where ``eps_train = beta(i - n_train)`` and
+
+    ``eps_cal = inf over (a, m, r) of sigma(a) sqrt(4 L / (n - r + 1)) + L / (3 m) + (r - 1) / n``
+
+    with ``L = log(4 / (delta_cal - 4 (m - 1) beta(a) - beta(r)))``, ``2 m a = n - r + 1``,
+    ``delta_cal > 4 (m - 1) beta(a) + beta(r)`` and
+    ``sigma(a) = sqrt(1/4 + (2 / a) sum_{j < a} (a - j) beta(j))``. The theorem holds at every
+    ``delta_cal > 0``, so this takes the least ``eta`` over every block ``(a, m, r)`` and a grid of
+    ``delta_cal``: any point of it is a valid penalty, the least one the tightest found.
+
+    Args:
+        mixing: ``beta(j)``, the beta-mixing coefficient of the score sequence at a lag of ``j``
+            scores, in ``[0, 1]`` (the supremum over events of the gap between the joint law of
+            the past and the future and their product, Bradley's convention). A value outside
+            ``[0, 1]`` is clipped into it. :func:`gaussian_mixing` gives a bound for windows of a
+            stable Gaussian VAR(1).
+        calibration: ``n``, the number of consecutive calibration scores.
+        train_lag: the lag, in scores, from the last score the model or the profile was fitted
+            on to the test window, which adds ``beta(train_lag)``; None where they were fitted on
+            data independent of the series, which adds nothing.
+
+    Raises:
+        ValueError: on fewer than 2 calibration scores or a ``train_lag`` below 1.
+    """
+    if calibration < 2:
+        raise ValueError(f"calibration={calibration}: a block needs two scores at least")
+    if train_lag is not None and train_lag < 1:
+        raise ValueError(f"train_lag={train_lag} must be at least 1, or None")
+    n = calibration
+    beta = np.clip(np.array([float(mixing(j)) for j in range(1, n + 1)]), 0.0, 1.0)
+    lags = np.arange(1, n + 1, dtype=np.float64)
+    first = np.concatenate([[0.0], np.cumsum(beta)])  # first[a - 1] = sum_{j < a} beta(j)
+    second = np.concatenate([[0.0], np.cumsum(lags * beta)])
+    blocks = [(a, m) for a in range(1, n // 2 + 1) for m in range(1, n // (2 * a) + 1)]
+    a = np.array([block[0] for block in blocks])
+    m = np.array([block[1] for block in blocks], dtype=np.float64)
+    r = n + 1 - 2 * m.astype(np.int64) * a
+    spread = np.sqrt(0.25 + 2.0 / a * (a * first[a - 1] - second[a - 1]))
+    floor = 4.0 * (m - 1.0) * beta[a - 1] + beta[r - 1]
+    least = math.inf
+    for slack in np.geomspace(1e-9, 1.0, 241):
+        log_term = math.log(4.0 / slack)
+        total = (
+            spread * np.sqrt(4.0 * log_term / (2.0 * m * a))
+            + log_term / (3.0 * m)
+            + (r - 1) / n
+            + floor
+            + slack
+        )
+        least = min(least, float(np.min(total)))
+    return least + (0.0 if train_lag is None else float(np.clip(mixing(train_lag), 0.0, 1.0)))
+
+
+def gaussian_mixing(
+    state_matrix: ArrayLike, noise_covariance: ArrayLike, *, stride: int = 1, span: int = 0
+) -> Callable[[int], float]:
+    """A bound on the beta-mixing coefficient of a stable Gaussian VAR(1) ``s' = F s + w``,
+    ``w ~ N(0, Q)``, at a lag of ``j`` windows that start ``stride`` steps apart and each span
+    ``span`` steps: ``beta(j * stride - span)``, or 1 where the windows meet.
+
+    For a stationary Markov chain ``beta(k)`` is the mean over the stationary law of the total
+    variation from ``P^k(s, .)`` to it. By Pinsker's inequality and Jensen's, it is at most
+    ``sqrt(E KL / 2)``, and for this chain ``E KL = -log det(I - S^-1 F^k S F^k') / 2``, ``S`` the
+    stationary covariance: ``beta(k) <= sqrt(-log det(I - S^-1 F^k S F^k')) / 2``
+    (``validation/tube_levels.mac``). On one state of correlation ``rho`` it is
+    ``sqrt(-log(1 - rho^(2k))) / 2``.
+
+    ``s`` must be the whole state the scores are read off: on a log under a policy with its own
+    persistence, the policy's state belongs in it.
+
+    Raises:
+        ValueError: on a matrix that is not square, a covariance not of its size, not symmetric
+            or not positive definite, a spectral radius of 1 or more, or ``stride`` below 1 or
+            ``span`` below 0.
+    """
+    transition = np.atleast_2d(np.asarray(state_matrix, dtype=np.float64))
+    covariance = np.atleast_2d(np.asarray(noise_covariance, dtype=np.float64))
+    size = transition.shape[0]
+    if transition.shape != (size, size) or covariance.shape != (size, size):
+        raise ValueError(
+            f"state_matrix {transition.shape} and noise_covariance {covariance.shape} must be "
+            "square and of one size"
+        )
+    if not np.allclose(covariance, covariance.T) or np.min(np.linalg.eigvalsh(covariance)) <= 0:
+        raise ValueError("noise_covariance must be symmetric and positive definite")
+    if np.max(np.abs(np.linalg.eigvals(transition))) >= 1.0:
+        raise ValueError("the chain is not stable: its spectral radius is 1 or more")
+    if stride < 1 or span < 0:
+        raise ValueError(f"stride={stride} must be at least 1 and span={span} at least 0")
+    stationary = scipy_linalg.solve_discrete_lyapunov(transition, covariance)
+    root = np.linalg.cholesky(stationary)
+
+    def beta(j: int) -> float:
+        k = j * stride - span
+        if k <= 0:
+            return 1.0
+        carried = np.linalg.solve(root, np.linalg.matrix_power(transition, k) @ root)
+        shares = np.clip(np.linalg.eigvalsh(carried @ carried.T), 0.0, 1.0)
+        if np.any(shares >= 1.0):
+            return 1.0
+        return min(1.0, 0.5 * math.sqrt(-float(np.sum(np.log1p(-shares)))))
+
+    return beta
+
+
+@dataclass(frozen=True)
+class HorizonConformal:
+    """One conformal scale for every step of a horizon: a simultaneous band ``scale * r_k``.
+
+    *Experimental: it may change or be withdrawn in any release.* Each calibration window is
+    scored by ``max_k ||x_{t+k} - x_hat_{t+k}|| / r_k`` over the horizon, ``r_k`` a fixed profile
+    such as the plan's tube (``CausalPlan.uncertainty_tube[1:]``), and ``scale`` is the
+    ``ceil((n + 1)(1 - delta))``-th smallest of the ``n`` scores. Cleaveland, Lee, Pappas and
+    Lindemann (AAAI 2024, Theorem 3 and Corollary 1): on windows drawn i.i.d., a fresh window's
+    every step lies within ``scale * r_k`` with probability at least ``1 - delta``, and, its
+    scores tied with probability 0, at most ``1 - delta + 1 / (n + 1)``. The profile and the
+    model must not be fitted on the calibration windows. Per step at ``1 - delta`` each, the
+    steps together hold less; split ``delta / H`` per step (Bonferroni), they hold more than
+    needed.
+
+    On one series rather than i.i.d. windows, :meth:`calibrate` with ``mixing`` states
+    ``1 - delta - eta``, ``eta`` from :func:`mixing_penalty`, and refuses where ``eta >= delta``.
+
+    What it covers: windows of the policy that logged the calibration windows, under that
+    policy's actions. Not the plan's own actions, which move the plant elsewhere; and it moves no
+    number of the tube, which it reads as a profile only.
+    """
+
+    profile: tuple[float, ...]
+    delta: float
+    windows: int
+    rank: int
+    scale: float
+    eta: float | None = None
+
+    @property
+    def band(self) -> tuple[float, ...]:
+        """``scale * r_k`` at each step: every step's radius at the joint level."""
+        return tuple(self.scale * radius for radius in self.profile)
+
+    @property
+    def level(self) -> float:
+        """The joint level the band holds: ``1 - delta``, less ``eta`` on one series."""
+        return 1.0 - self.delta - (self.eta or 0.0)
+
+    @classmethod
+    def calibrate(
+        cls,
+        errors: ArrayLike,
+        profile: Sequence[float],
+        delta: float = 0.05,
+        *,
+        mixing: Callable[[int], float] | None = None,
+        train_lag: int | None = None,
+    ) -> HorizonConformal:
+        """Calibrate on ``errors``, ``(n, H, states)``, one row per window as
+        :func:`horizon_errors` returns them, against ``profile``, one positive radius per step.
+
+        Args:
+            mixing: on windows cut from one series, ``beta(j)`` at a lag of ``j`` windows
+                (:func:`mixing_penalty`); None where the windows are i.i.d.
+            train_lag: with ``mixing``, the lag in windows from the data the model and the
+                profile were fitted on to the test window (:func:`mixing_penalty`).
+
+        Raises:
+            ValueError: when ``delta`` is not in ``(0, 1)``, the errors and the profile do not
+                pair, too few windows certify ``1 - delta``, ``train_lag`` is given without
+                ``mixing``, or the series' ``eta`` is at least ``delta``.
+        """
+        if not 0.0 < delta < 1.0:
+            raise ValueError(f"delta={delta!r} is the share left uncovered, in (0, 1)")
+        if train_lag is not None and mixing is None:
+            raise ValueError("train_lag is read with mixing only: i.i.d. windows have no lag")
+        scores = _horizon_scores(errors, profile)
+        n = int(scores.size)
+        rank = _conformal_rank(n, delta)
+        if rank > n:
+            least = math.ceil((1 - _as_written(delta)) / _as_written(delta))
+            raise ValueError(
+                f"{n} calibration windows cannot certify a joint level {1.0 - delta:.6g}: the "
+                f"scale is the {rank}-th smallest score, so it needs at least {least} of them"
+            )
+        penalty = None
+        if mixing is not None:
+            penalty = mixing_penalty(mixing, n, train_lag)
+            if penalty >= delta:
+                raise ValueError(
+                    f"on one series {n} windows pay eta = {penalty:.4g} of coverage for their "
+                    f"dependence, at least delta = {delta:.6g}: no joint level is left to state"
+                )
+        return cls(
+            profile=tuple(float(radius) for radius in profile),
+            delta=float(delta),
+            windows=n,
+            rank=rank,
+            scale=float(np.sort(scores)[rank - 1]),
+            eta=penalty,
+        )
+
+    def covers(self, errors: ArrayLike) -> NDArray[np.bool_]:
+        """Whether each window of ``errors``, ``(W, H, states)``, lies within the band at every
+        step."""
+        return _horizon_scores(errors, self.profile) <= self.scale
 
 
 class WassersteinPenalty(eqx.Module):
