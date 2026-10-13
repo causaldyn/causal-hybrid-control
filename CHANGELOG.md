@@ -7,6 +7,23 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`read_switchback(..., se="design")` reads a local projection with its standard error over the
+  lever's coins, the noise held fixed** (Liang and Recht, Biometrika 2025), for a lever drawn by a
+  fair coin each period. The default standard error comes from a model of the outcome's errors,
+  and on a short run whose noise persists, or on a noise that trends, its interval did not hold
+  its level: on `x' = 0.8 x + 2 u + eps` with AR(0.8) shocks, it covered 0.903 of 1000 runs of
+  `tau_3` over 60 periods and 0.881 over 40, and 0.919 of the channel on one trending noise path.
+  The design's estimate is the local projection read by the design's moments, each zone from its
+  first reading, unbiased for `tau_H` at every run length on any linear time-invariant plant
+  whose noise the coins do not move; its variance is exact over the coins, and its plug-in covered
+  0.969, 0.977 and 0.960 of the same runs. It uses neither the intercept nor `y_t`, so it is 3.8
+  to 6.6 times wider on those shocks, and far wider on a trend: where the model's interval holds,
+  it reads closer. It refuses another analysis, the steady state, a lever that is not i.i.d. or
+  not a fair coin, and a run no longer than the `6 log T` lags its plug-in reads. The default is
+  unchanged (ADR 0098).
+
 ## [0.17.0] — 2026-10-13
 
 ### Added

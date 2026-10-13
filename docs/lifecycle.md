@@ -139,8 +139,11 @@ documented, and what is not built yet. Every name below is importable from `chc`
   rests on. `restate_mde` re-reads an effect's standard error from the run's first periods, an
   internal pilot, and restates the minimum detectable effect the whole run can detect, so a plan
   whose working model missed a second state or spillover is corrected by the run itself.
-  `randomisation_test` draws the design's schedule again to test the sharp null that the lever
-  moves nothing: exact at any number of blocks and whatever the plant's memory, where
+  `read_switchback(..., se="design")` reads a local projection of a lever drawn by a fair coin
+  each period with its standard error over the coins, the noise held fixed, so a noise that
+  persists or trends does not move the interval's level; it is several times wider than the
+  model's. `randomisation_test` draws the design's schedule again to test the sharp null that the
+  lever moves nothing: exact at any number of blocks and whatever the plant's memory, where
   `read_switchback`'s interval is asymptotic. `randomisation_interval` inverts it under the working
   model's joint null of persistence and channel, exact given a range for the persistence. Scope: a
   first-order state per zone, and a plan that takes the zones as independent. See

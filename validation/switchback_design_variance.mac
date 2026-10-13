@@ -1,0 +1,122 @@
+/* The design standard error behind chc.switchback.read_switchback(..., se="design"): Liang and
+   Recht's (Biometrika 2025) moment estimator of tau_H on a lever drawn by a fair coin each
+   period, and its exact variance over the coins with the outcome's noise held fixed.
+
+   The reading after lever t is y_t = sum_{s<=t} g_s x_{t-s} + e_t, x_t in {0, 1} i.i.d. fair,
+   z_t = 2 x_t - 1, g the impulse response and e anything the coins do not move: the shocks, the
+   state before the run, a trend. tau_H = g_0 + ... + g_(H-1). The estimator reads each lag over
+   the T - s pairs it has,
+
+       tau_hat = sum_{s<H} 2/(T - s) sum_{i=0}^{T-1-s} z_i (y_{i+s} - c),
+
+   c a baseline fixed before the coins (the reading before the first lever). It is Liang and
+   Recht's eq. (2.4) at q_s = T/(T - s), s < H, so its target <D_T q, g> is tau_H itself.
+
+   STEP 1  over all 2^T designs at T = 4, H = 1, 2, 3: the mean is tau_H and the variance is their
+           eq. (2.5), T^2 var = |M|_F^2 + tr(M M) - 2 sum M_ii^2 + |l|^2, M = T_q' T_g,
+           l = T_q' (T_g 1 + 2 (e - c)); the mean does not move with c, and the variance holds e
+           and c only through e - c
+   STEP 2  the channel's variance has no e_t e_s term at t != s; at H the only ones are |t - s| < H,
+           the H readings each lag sums, and none is an expectation over the noise: the noise's
+           autocorrelation does not enter
+   STEP 3  for any T: the estimator is (z' M z + z' l)/T with x = (1 + z)/2, and the variance of a
+           Rademacher chaos is sum_{i != j} (M_ij^2 + M_ij M_ji) + |l|^2, checked for a generic
+           M and l at n = 3, 4, 5 by enumeration; the mean, tr(M)/T, is tau_H for every T
+   STEP 4  the plug-in: 1 * g_hat + 2 e_hat with e_hat = y - x * g_hat is 2 y - z * g_hat
+
+   Run: timeout 300 maxima --very-quiet --suppress-input-echo -Q -b validation/switchback_design_variance.mac */
+
+linel : 110$
+display2d : false$
+
+/* lists are 1-based; g[s + 1] is g_s and e[t + 1] is e_t */
+designs(n) := makelist(makelist(mod(floor(k/2^(i - 1)), 2), i, 1, n), k, 0, 2^n - 1)$
+response(x, g, e, n) := makelist(sum(g[s + 1]*x[t - s + 1], s, 0, t) + e[t + 1], t, 0, n - 1)$
+estimate(x, y, n, h, c) := sum(2/(n - s)*sum((2*x[i + 1] - 1)*(y[i + s + 1] - c), i, 0, n - 1 - s),
+                               s, 0, h - 1)$
+toeplitz(v, n) := genmatrix(lambda([i, j], if i >= j then v[i - j + 1] else 0), n, n)$
+weights(n, h) := makelist(if s < h then n/(n - s) else 0, s, 0, n - 1)$
+formula(g, e, n, h, c) := block([tq, tg, m, l, ones],
+  tq : toeplitz(weights(n, h), n),
+  tg : toeplitz(g, n),
+  m : transpose(tq) . tg,
+  ones : transpose(matrix(makelist(1, i, 1, n))),
+  l : transpose(tq) . (tg . ones + 2*(transpose(matrix(e)) - c*ones)),
+  (sum(sum(m[i, j]^2, j, 1, n), i, 1, n) + sum(sum(m[i, j]*m[j, i], j, 1, n), i, 1, n)
+   - 2*sum(m[i, i]^2, i, 1, n) + sum(l[i, 1]^2, i, 1, n))/n^2)$
+moments(g, e, n, h, c) := block([ds, vs, mean],
+  ds : designs(n),
+  vs : map(lambda([x], estimate(x, response(x, g, e, n), n, h, c)), ds),
+  mean : ratsimp(apply("+", vs)/length(ds)),
+  [mean, ratsimp(apply("+", map(lambda([v], (v - mean)^2), vs))/length(ds))])$
+
+print("=== STEP 1: the mean is tau_H and the variance is eq. (2.5), at T = 4 ===")$
+gs : [g0, g1, g2, g3]$
+es : [e0, e1, e2, e3]$
+for h in [1, 2, 3] do block([mv],
+  mv : moments(gs, es, 4, h, c),
+  print("STEP 1 H =", h, ": mean - tau_H =", ratsimp(mv[1] - sum(gs[s], s, 1, h)), " (0)"),
+  print("STEP 1 H =", h, ": var - (2.5) =", ratsimp(mv[2] - formula(gs, es, 4, h, c)), " (0)"))$
+/* a shifted noise e + k with the baseline c + k reads the same: only e - c enters */
+block([mv0, mv1],
+  mv0 : moments(gs, es, 4, 2, c),
+  mv1 : moments(gs, es + k, 4, 2, c + k),
+  print("STEP 1 H = 2: var(e + k, c + k) - var(e, c) =", ratsimp(mv1[2] - mv0[2]), " (0)"))$
+
+print("=== STEP 2: which products of the noise the variance holds ===")$
+cross(v, n) := sublist(
+  create_list([i, j], i, 0, n - 1, j, 0, n - 1),
+  lambda([p], p[1] < p[2]
+              and ratsimp(diff(diff(v, concat(e, p[1])), concat(e, p[2]))) # 0))$
+for h in [1, 2, 3] do
+  print("STEP 2 H =", h, ": the pairs (t, s), t < s, whose e_t e_s enters:",
+        cross(moments(gs, es, 4, h, 0)[2], 4), " (|t - s| < H only)")$
+/* the report's check at T = 4 is the circular model, Liang and Recht's Prop. 1, with g = (g0, g1):
+   T^2 var = sum_t (g0 + g1 + 2 e_t)^2 + T g1^2; the linear model here keeps the run's edges */
+print("STEP 2 the channel at g = (g0, g1, 0, 0), c = 0:",
+      ratsimp(4^2*moments([g0, g1, 0, 0], es, 4, 1, 0)[2]))$
+print("STEP 2 its terms in e_t alone, e.g. e2:",
+      ratsimp(coeff(expand(4^2*moments([g0, g1, 0, 0], es, 4, 1, 0)[2]), e2, 1)),
+      " (no other e_s)")$
+
+print("=== STEP 3: the Rademacher chaos, for any T ===")$
+/* tau_hat * T = z' M z + z' l with x = (1 + z)/2: checked at T = 5, H = 2 symbolically */
+block([n : 5, h : 2, g5, e5, z5, tq, tg, m, l, lhs, rhs],
+  g5 : makelist(concat(g, i), i, 0, n - 1),
+  e5 : makelist(concat(e, i), i, 0, n - 1),
+  z5 : makelist(concat(z, i), i, 0, n - 1),
+  tq : toeplitz(weights(n, h), n), tg : toeplitz(g5, n),
+  m : transpose(tq) . tg,
+  l : transpose(tq) . (tg . transpose(matrix(makelist(1, i, 1, n))) + 2*transpose(matrix(e5))),
+  lhs : n*estimate(makelist((1 + z5[i])/2, i, 1, n),
+                   response(makelist((1 + z5[i])/2, i, 1, n), g5, e5, n), n, h, 0),
+  rhs : (matrix(z5) . m . transpose(matrix(z5)) + matrix(z5) . l),
+  print("STEP 3 T = 5, H = 2: T tau_hat - (z'Mz + z'l) =", ratsimp(lhs - rhs), " (0)"))$
+chaos(n) := block([mm, ll, ds, vals, mean],
+  mm : genmatrix(lambda([i, j], concat(m, i, j)), n, n),
+  ll : makelist(concat(l, i), i, 1, n),
+  ds : map(lambda([x], 2*x - 1), designs(n)),
+  vals : map(lambda([z], sum(sum(z[i]*mm[i, j]*z[j], j, 1, n), i, 1, n)
+                         + sum(z[i]*ll[i], i, 1, n)), ds),
+  mean : ratsimp(apply("+", vals)/length(ds)),
+  [ratsimp(mean - sum(mm[i, i], i, 1, n)),
+   ratsimp(apply("+", map(lambda([v], (v - mean)^2), vals))/length(ds)
+           - sum(sum(if i # j then mm[i, j]^2 + mm[i, j]*mm[j, i] else 0, j, 1, n), i, 1, n)
+           - sum(ll[i]^2, i, 1, n))])$
+for n in [3, 4, 5] do
+  print("STEP 3 n =", n, ": mean - tr(M), var - (sum_{i#j}(M_ij^2 + M_ij M_ji) + |l|^2) =",
+        chaos(n), " ([0, 0])")$
+/* the fourth moments of fair signs pair up, E z_i z_j z_k z_l = 1 iff the indices match in pairs,
+   which is why the identity holds at every n; the mean is tr(M)/T, and M_ii sums q_s g_s over the
+   T - s rows that reach lag s, so tr(M)/T = sum_{s<H} (T - s) (T/(T - s)) g_s / T = tau_H */
+print("STEP 3 any T: sum_{s<H} (T - s) q_s g_s / T - tau_H =",
+      ratsimp(sum((T - s)*(T/(T - s))*g[s], s, 0, H - 1)/T - sum(g[s], s, 0, H - 1)), " (0)")$
+
+print("=== STEP 4: the plug-in noise ===")$
+block([xs, gh, conv],
+  xs : [x0, x1, x2, x3], gh : [h0, h1, h2, h3],
+  conv(a, b) := makelist(sum(a[s + 1]*b[t - s + 1], s, 0, t), t, 0, 3),
+  ys : [y0, y1, y2, y3],
+  print("STEP 4 (1 * g_hat + 2 (y - x * g_hat)) - (2 y - z * g_hat) =",
+        ratsimp(conv(gh, [1, 1, 1, 1]) + 2*(ys - conv(gh, xs))
+                - (2*ys - conv(gh, 2*xs - 1))), " ([0, 0, 0, 0])"))$
