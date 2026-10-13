@@ -77,6 +77,19 @@ still change).
   - **13 tests**, among them the p-value over every arrangement of the blank and post periods,
     which takes each step of `1/|Π|` once, and each interval's coverage over every place its
     period could take among the blank ones. Fourteen mutations caught.
+- **`KoopmanModel(form="bilinear")`, the lift's closure residuals, and a Koopman LQR gain that
+  refuses a lift that does not close.** The linear lift `phi(x') ~ A phi(x) + B u` cannot carry
+  the action-times-state term a control-affine plant puts on each nonlinear feature: on the plant
+  `x' = A x + b u + c x1 u` its error is `c x1 u` at each transition, and on Gaussian data it
+  leaves `sqrt(10/19) = 0.73` of a feature's root mean square unpredicted. The bilinear form adds
+  `sum_j u_j H_j phi(x)`, and predicts that plant to round-off. `fit` now reports
+  `closure_residuals`: each lifted feature's root mean square error on transitions held out of the
+  fit, over its own, read across five contiguous blocks. `residuals(x, u, x_next)` returns each
+  transition's error on transitions the caller held out. `koopman_lqr_gain` raises where a
+  feature's residual exceeds `max_residual` (0.5 by default: the tests' cubic oscillator reads
+  0.156 at its worst feature), and takes a bilinear model's gain at `x_target`, the state its
+  channel `KoopmanModel.channel` is read at. The default `form="linear"` fits, predicts and
+  returns its gain as before, bit for bit (ADR 0093).
 
 ### Fixed
 

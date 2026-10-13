@@ -1,0 +1,63 @@
+/* A linear Koopman lift of a bilinear plant does not close, and a bilinear one does (ADR 0093).
+
+   Setting (chc.koopman.KoopmanModel, degree 1, so the lift is the state). Two states, one action:
+
+       x'[k] = a[k,1] x1 + a[k,2] x2 + b[k] u + c[k] x1 u,     k = 1, 2.
+
+   The linear form regresses x' on (x1, x2, u); the bilinear form on (x1, x2, u, u x1, u x2).
+   Both fits are least squares; the ridge is left out here. */
+display2d : false$
+assume(s > 0)$
+
+xp(k) := a[k,1]*x1 + a[k,2]*x2 + b[k]*u + c[k]*x1*u$
+
+/* (1) A sample closed under the sign flips (x, u) -> (-x, u), (x, -u), (-x, -u). The column x1 u
+   the linear form misses is orthogonal to each of its columns over every such quadruple, so the
+   normal equations return (a[k,1], a[k,2], b[k]) and the residual is c[k] x1 u, at each
+   transition: proportional to |x1 u|. */
+flips : [[1, 1], [-1, 1], [1, -1], [-1, -1]]$
+at_flip(f, e) := subst([x1 = e[1]*x1, x2 = e[1]*x2, u = e[2]*u], f)$
+missed : x1*u$
+print("(1) sum over the flips of each linear column times x1 u:",
+      map(lambda([col], expand(sum(at_flip(col*missed, flips[i]), i, 1, 4))), [x1, x2, u]),
+      "  (=[0,0,0])")$
+print("    the linear residual, the target less its projection:",
+      makelist(expand(xp(k) - (a[k,1]*x1 + a[k,2]*x2 + b[k]*u)), k, 1, 2),
+      "  (=c[k] x1 u)")$
+
+/* (2) The bilinear form's columns hold x1 u, so the plant is in their span with coefficients
+   (a[k,1], a[k,2], b[k], c[k], 0): its residual is zero at every transition. */
+bil : [x1, x2, u, u*x1, u*x2]$
+theta(k) := [a[k,1], a[k,2], b[k], c[k], 0]$
+print("(2) the bilinear residual:",
+      makelist(expand(xp(k) - sum(theta(k)[i]*bil[i], i, 1, 5)), k, 1, 2), "  (=[0,0])")$
+
+/* (3) Independent x1, x2 ~ N(0, 1) and u ~ N(0, s^2). The population projection of x1 u on the
+   linear columns is zero, as in (1), and the closure residual of feature k, the root mean square
+   of its residual over that of x'[k], is
+
+       rho[k] = |c[k]| s / sqrt(a[k,1]^2 + a[k,2]^2 + (b[k]^2 + c[k]^2) s^2). */
+gm(p) := if oddp(p) then 0 else product(2*i - 1, i, 1, p/2)$
+moment(t) := block([p : hipow(t, x1), q : hipow(t, x2), r : hipow(t, u)],
+  (t / (x1^p * x2^q * u^r)) * gm(p) * gm(q) * gm(r) * s^r)$
+expect(f) := block([g : expand(f)],
+  if atom(g) or op(g) # "+" then moment(g) else apply("+", map(moment, args(g))))$
+print("(3) E[x1 u x1], E[x1 u x2], E[x1 u u]:", map(lambda([col], expect(col*missed)), [x1, x2, u]),
+      "  (=[0,0,0])")$
+rho2(k) := expect((c[k]*missed)^2) / expect(xp(k)^2)$
+print("    rho[k]^2 less the closed form:",
+      makelist(ratsimp(rho2(k) - c[k]^2*s^2 / (a[k,1]^2 + a[k,2]^2 + (b[k]^2 + c[k]^2)*s^2)),
+               k, 1, 2), "  (=[0,0])")$
+
+/* (4) The test's plant: a = [[0.9, 0.1], [-0.1, 0.8]], b = [0, 0.5], c = [0.2, 1], s = 1. The
+   linear form's worst feature reads 1/sqrt(1.9) = 0.7255, above the default threshold of 0.5;
+   the bilinear form's reads 0. */
+vals : [a[1,1] = 9/10, a[1,2] = 1/10, a[2,1] = -1/10, a[2,2] = 8/10, b[1] = 0, b[2] = 1/2,
+        c[1] = 1/5, c[2] = 1, s = 1]$
+rho_test : makelist(sqrt(subst(vals, c[k]^2*s^2 / (a[k,1]^2 + a[k,2]^2 + (b[k]^2 + c[k]^2)*s^2))),
+                    k, 1, 2)$
+print("(4) rho on the test's plant:", rho_test, "=", float(rho_test))$
+
+/* (5) The bilinear model's channel at a state x: d x' / d u = b + c x1, the column the LQR is
+   linearised on at the target. */
+print("(5) d x'[k] / d u:", makelist(diff(xp(k), u) - (b[k] + c[k]*x1), k, 1, 2), "  (=[0,0])")$

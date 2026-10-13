@@ -11,7 +11,8 @@ import pytest
 from chc import HybridDynamics
 from chc.dynamics import DampedOscillator
 from chc.integrate import rk4_step
-from chc.koopman import KoopmanModel, koopman_controller, koopman_lqr_gain
+from chc.koopman import KoopmanModel, _lift, koopman_controller, koopman_lqr_gain
+from chc.regret import dlqr
 
 DT = 0.05
 
@@ -160,3 +161,211 @@ def test_an_action_logged_at_zero_keeps_a_ridge_term_and_reads_no_channel() -> N
     assert np.all(padded._b[:, 1] == 0.0)
     _assert_close(padded._b[:, :1], one._b, 1e-12)
     _assert_close(padded._a, one._a, 1e-12)
+
+
+# A bilinear plant x' = A x + b u + c x1 u (validation/koopman_bilinear_closure.mac (4)).
+BIL_A = np.array([[0.9, 0.1], [-0.1, 0.8]])
+BIL_B, BIL_C = np.array([0.0, 0.5]), np.array([0.2, 1.0])
+BIL_RHO = np.sqrt([2.0 / 43.0, 10.0 / 19.0])  # the linear form's closure residuals, s = 1
+
+
+def _bilinear_plant(x: np.ndarray, u: np.ndarray) -> np.ndarray:
+    return x @ BIL_A.T + u * BIL_B + (x[:, :1] * u) * BIL_C
+
+
+def _flipped(n: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``n / 4`` draws, each followed by its sign flips ``(-x, u)``, ``(x, -u)``, ``(-x, -u)``.
+
+    Each fold of ``n / 5`` transitions, a multiple of four, holds whole quadruples, so every fit
+    reads ``x1 u`` orthogonal to the linear columns, as in the .mac file's (1)."""
+    rng = np.random.default_rng(seed)
+    x, u = rng.standard_normal((n // 4, 2)), rng.standard_normal((n // 4, 1))
+    signs = [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)]
+    xs = np.stack([sx * x for sx, _ in signs], axis=1).reshape(n, 2)
+    us = np.stack([su * u for _, su in signs], axis=1).reshape(n, 1)
+    return xs, us, _bilinear_plant(xs, us)
+
+
+def _gaussian(n: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    x, u = rng.standard_normal((n, 2)), rng.standard_normal((n, 1))
+    return x, u, _bilinear_plant(x, u)
+
+
+def test_the_default_form_fits_as_the_linear_lift_did_bit_for_bit() -> None:
+    xs, us, x_next = _transitions()
+    model = KoopmanModel(degree=3).fit(xs, us, x_next)
+    phi = _lift(xs, 3)
+    design = np.column_stack([phi, us])
+    gram = design.T @ design + 1e-6 * np.diag(np.mean(design**2, axis=0))
+    coef = np.linalg.solve(gram, design.T @ _lift(x_next, 3))
+    np.testing.assert_array_equal(model._a, coef[: phi.shape[1]].T)
+    np.testing.assert_array_equal(model._b, coef[phi.shape[1] :].T)
+    assert model.form == "linear"
+    assert model._h is None
+
+
+def test_a_bilinear_lift_closes_on_a_bilinear_plant_where_a_linear_one_misses_x1_u() -> None:
+    """Without a ridge the fits are exact: the bilinear form's error is round-off, and the linear
+    form's is ``c x1 u`` at every transition, held out or not (the .mac file's (1) and (2))."""
+    xs, us, x_next = _flipped(400)
+    linear = KoopmanModel(degree=1, ridge=0.0).fit(xs, us, x_next)
+    bilinear = KoopmanModel(degree=1, ridge=0.0, form="bilinear").fit(xs, us, x_next)
+    scale = float(np.max(np.abs(x_next)))
+    missed = (xs[:, :1] * us) * BIL_C
+    np.testing.assert_allclose(
+        linear.residuals(xs, us, x_next), missed, rtol=0.0, atol=1e-14 * scale
+    )
+    held_out = np.sqrt(np.sum(missed**2, axis=0) / np.sum(x_next**2, axis=0))
+    assert linear.closure_residuals is not None
+    np.testing.assert_allclose(linear.closure_residuals, held_out, rtol=1e-12, atol=0.0)
+    assert np.max(np.abs(bilinear.residuals(xs, us, x_next))) <= 1e-14 * scale
+    assert bilinear.closure_residuals is not None
+    assert np.max(bilinear.closure_residuals) <= 1e-14
+    fresh, fresh_u, fresh_next = _gaussian(50, seed=1)
+    _assert_close(bilinear.predict(fresh, fresh_u), fresh_next, 1e-13)
+    _assert_close(
+        bilinear.rollout(fresh[0], fresh_u[:10])[-1], _plant_rollout(fresh[0], fresh_u[:10]), 1e-13
+    )
+
+
+def _plant_rollout(x0: np.ndarray, us: np.ndarray) -> np.ndarray:
+    x = x0[None, :]
+    for u in us:
+        x = _bilinear_plant(x, u[None, :])
+    return x[0]
+
+
+def test_the_closure_residuals_match_their_closed_form_on_gaussian_transitions() -> None:
+    """``rho_k = |c_k| / sqrt(|a_k|^2 + b_k^2 + c_k^2)`` (the .mac file's (3) and (4)); the
+    bilinear form reads the ridge's shrinkage alone."""
+    xs, us, x_next = _gaussian(20_000)
+    linear = KoopmanModel(degree=1).fit(xs, us, x_next)
+    bilinear = KoopmanModel(degree=1, form="bilinear").fit(xs, us, x_next)
+    assert linear.closure_residuals is not None
+    assert bilinear.closure_residuals is not None
+    np.testing.assert_allclose(linear.closure_residuals, BIL_RHO, rtol=0.03, atol=0.0)
+    assert np.max(bilinear.closure_residuals) <= 1e-5
+
+
+def test_every_closure_residual_is_round_off_on_a_linear_plant() -> None:
+    rng = np.random.default_rng(2)
+    xs, us = rng.standard_normal((200, 2)), rng.standard_normal((200, 1))
+    x_next = xs @ BIL_A.T + us * BIL_B
+    for form in ("linear", "bilinear"):
+        model = KoopmanModel(degree=1, ridge=0.0, form=form).fit(xs, us, x_next)
+        assert model.closure_residuals is not None
+        assert np.max(model.closure_residuals) <= 1e-14
+
+
+def test_the_lqr_gain_refuses_a_lift_that_does_not_close() -> None:
+    xs, us, x_next = _gaussian(400)
+    linear = KoopmanModel(degree=1).fit(xs, us, x_next)
+    q, r = np.eye(2), np.array([[1.0]])
+    with pytest.raises(ValueError, match=r"feature 1's held-out closure residual is 0\.7"):
+        koopman_lqr_gain(linear, q, r)
+    assert linear.closure_residuals is not None
+    worst = float(np.max(linear.closure_residuals))
+    koopman_lqr_gain(linear, q, r, max_residual=worst)
+    with pytest.raises(ValueError, match="does not close"):
+        koopman_lqr_gain(linear, q, r, max_residual=np.nextafter(worst, 0.0))
+    bilinear = KoopmanModel(degree=1, form="bilinear").fit(xs, us, x_next)
+    koopman_lqr_gain(bilinear, q, r, x_target=np.zeros(2))
+
+
+@pytest.mark.filterwarnings("error")
+def test_the_lqr_gain_refuses_a_lift_whose_closure_was_not_read() -> None:
+    """One transition leaves none to hold out: the closure is unread, and the gain refused."""
+    xs, us, x_next = _gaussian(1)
+    model = KoopmanModel(degree=1).fit(xs, us, x_next)
+    assert model.closure_residuals is not None
+    assert np.all(np.isnan(model.closure_residuals))
+    with pytest.raises(ValueError, match="closure residual is nan"):
+        koopman_lqr_gain(model, np.eye(2), np.array([[1.0]]), max_residual=np.inf)
+
+
+def test_a_bilinear_gain_is_the_lqr_of_the_plant_linearised_at_the_target() -> None:
+    """At ``x_t`` the plant's channel is ``b + c x1_t`` (the .mac file's (5))."""
+    xs, us, x_next = _flipped(400)
+    model = KoopmanModel(degree=1, ridge=0.0, form="bilinear").fit(xs, us, x_next)
+    q, r, target = np.diag([10.0, 1.0]), np.array([[0.1]]), np.array([1.5, -0.5])
+    channel = (BIL_B + BIL_C * target[0])[:, None]
+    _assert_close(model.channel(target), channel, 1e-13)
+    expected = dlqr(BIL_A, channel, q, r)[0]
+    _assert_close(koopman_lqr_gain(model, q, r, x_target=target), expected, 1e-10)
+    with pytest.raises(ValueError, match="pass x_target"):
+        koopman_lqr_gain(model, q, r)
+
+
+@pytest.mark.parametrize("form", ["linear", "bilinear"])
+@pytest.mark.parametrize("units", UNITS)
+def test_the_closure_residuals_read_the_same_in_any_units(form: str, units: float) -> None:
+    xs, us, x_next = _gaussian(400)
+    one = KoopmanModel(degree=2, form=form).fit(xs, us, x_next)
+    state = KoopmanModel(degree=2, form=form).fit(xs * units, us, x_next * units)
+    action = KoopmanModel(degree=2, form=form).fit(xs, us * units, x_next)
+    assert one.closure_residuals is not None
+    for other in (state, action):
+        assert other.closure_residuals is not None
+        np.testing.assert_allclose(
+            other.closure_residuals, one.closure_residuals, rtol=0.0, atol=1e-7
+        )
+    _assert_close(action.predict(xs[:50], us[:50] * units), one.predict(xs[:50], us[:50]), 1e-9)
+
+
+def test_an_unknown_form_is_refused() -> None:
+    with pytest.raises(ValueError, match="form must be one of"):
+        KoopmanModel(form="quadratic")
+
+
+def test_the_closure_residuals_are_read_across_five_contiguous_blocks() -> None:
+    xs, us, x_next = _transitions()
+    model = KoopmanModel(degree=3).fit(xs, us, x_next)
+    target = _lift(x_next, 3)
+    error = np.empty_like(target)
+    for block in np.array_split(np.arange(len(xs)), 5):
+        train = np.setdiff1d(np.arange(len(xs)), block)
+        fold = KoopmanModel(degree=3).fit(xs[train], us[train], x_next[train])
+        error[block] = fold.residuals(xs[block], us[block], x_next[block])
+    expected = np.sqrt(np.sum(error**2, axis=0) / np.sum(target**2, axis=0))
+    assert model.closure_residuals is not None
+    np.testing.assert_allclose(model.closure_residuals, expected, rtol=1e-12, atol=0.0)
+
+
+def test_the_closure_residuals_are_held_out_of_the_fit() -> None:
+    """Twenty transitions with no dynamics, ten coefficients per feature: the fit reads up to 0.87
+    of each feature's root mean square in-sample, and more than all of it held out."""
+    rng = np.random.default_rng(4)
+    xs, us, x_next = (rng.standard_normal((20, d)) for d in (2, 1, 2))
+    model = KoopmanModel(degree=3).fit(xs, us, x_next)
+    in_sample = np.sqrt(
+        np.sum(model.residuals(xs, us, x_next) ** 2, axis=0) / np.sum(_lift(x_next, 3) ** 2, axis=0)
+    )
+    assert model.closure_residuals is not None
+    assert np.max(in_sample) < 1.0 < np.min(model.closure_residuals)
+
+
+def test_a_bilinear_lift_closes_on_a_plant_with_two_actions() -> None:
+    """``x' = A x + B u + u1 C1 x + u2 C2 x``: each action's term read apart, to round-off."""
+    rng = np.random.default_rng(5)
+    xs, us = rng.standard_normal((200, 2)), rng.standard_normal((200, 2))
+    b = np.array([[0.5, 0.0], [0.1, -0.3]])
+    c1, c2 = np.array([[0.0, 0.2], [0.4, 0.0]]), np.array([[-0.1, 0.0], [0.3, 0.6]])
+    x_next = xs @ BIL_A.T + us @ b.T + us[:, :1] * (xs @ c1.T) + us[:, 1:] * (xs @ c2.T)
+    model = KoopmanModel(degree=1, ridge=0.0, form="bilinear").fit(xs, us, x_next)
+    assert model.closure_residuals is not None
+    assert np.max(model.closure_residuals) <= 1e-14
+    _assert_close(
+        model.channel(np.array([1.0, -2.0])),
+        b + np.column_stack([c1 @ [1.0, -2.0], c2 @ [1.0, -2.0]]),
+        1e-13,
+    )
+
+
+def test_a_state_the_log_never_moves_reads_a_closure_residual_of_zero() -> None:
+    xs, us, x_next = _gaussian(200)
+    xs, x_next = np.column_stack([xs, np.zeros(200)]), np.column_stack([x_next, np.zeros(200)])
+    model = KoopmanModel(degree=1).fit(xs, us, x_next)
+    assert model.closure_residuals is not None
+    assert model.closure_residuals[2] == 0.0
+    koopman_lqr_gain(model, np.eye(3), np.array([[1.0]]), max_residual=0.8)
