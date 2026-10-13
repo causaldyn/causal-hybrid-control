@@ -31,6 +31,7 @@ from chc.dynamics_id import (
     _clustered_squares,
     _less_below_nothing,
     _logged_relations,
+    _persistence,
     _ridge_inverse,
     _ridge_weight,
     _robust_spreads,
@@ -3139,6 +3140,110 @@ def test_the_persistence_check_of_pairs_in_one_period_reads_no_test() -> None:
     assert (check.pairs, check.units) == (50, 50)
     assert math.isfinite(check.correlation)
     assert math.isnan(check.p_value)
+
+
+def _paired_products(residual: np.ndarray, units: int, periods: int) -> np.ndarray:
+    """Rows period-major, unit ``i``'s transition in period ``t`` row ``units t + i``: each pair's
+    product of scaled residuals, in the order of the later transition's row, periods 1 on."""
+    scaled = residual / np.sqrt(np.mean(residual**2, axis=0))
+    return np.array(
+        [
+            scaled[units * t + i] @ scaled[units * (t - 1) + i]
+            for t in range(1, periods)
+            for i in range(units)
+        ]
+    )
+
+
+def test_the_persistence_check_of_a_fit_given_clusters_sums_the_products_within_them() -> None:
+    """A fit clustered by pairs of its 8 units says those units' noise moves together: the check
+    sums the pairs' products, each less the mean product, within the 4 clusters and tests their
+    total against ``t(3)`` with CR1's factor, as the fit reads its error. Rows in any order."""
+    data, units, periods = _persistent_log(0.0, units=8, periods=10)
+    clusters = units // 2
+    fit = fit_causal_residual(
+        _known, data, 0.1, adjust_for=("z",), channel_degree=0, clusters=clusters
+    )
+    residual = np.random.default_rng(3).normal(size=(80, 2)) * np.array([1.0, 1e6])
+    products = _paired_products(residual, 8, 10)
+    cluster = np.tile(np.arange(8) // 2, 9)
+    centred = products - products.mean()
+    sums = np.array([centred[cluster == c].sum() for c in range(4)])
+    statistic = products.sum() / math.sqrt(4.0 / 3.0 * np.sum(sums**2))
+    p_value = 2.0 * scipy.stats.t.sf(abs(statistic), 3)
+    for order in (np.arange(80), np.random.default_rng(4).permutation(80)):
+        moved = dataclasses.replace(
+            fit, moment_residual=jnp.asarray(residual[order]), clusters=fit.clusters[order]
+        )
+        check = persistence_check(moved, units[order], periods[order])
+        assert (check.pairs, check.units) == (72, 8)
+        assert check.p_value == pytest.approx(p_value, rel=1e-10, abs=0.0)
+
+
+def test_the_persistence_check_of_a_fit_clustered_two_ways_takes_the_largest_read() -> None:
+    """Clustered by unit and by period, the check reads the products' sums as the fit reads its
+    error, so a shock the units share each period is read: the two ways' sums less the cells',
+    and each way's alone at its own CR1 factor, the largest of the three at the smaller count's,
+    against ``t(G - 1)``: 8 units, 9 periods of pairs, ``G = 8``."""
+    data, units, periods = _persistent_log(0.0, units=8, periods=10)
+    fit = fit_causal_residual(
+        _known,
+        data,
+        0.1,
+        adjust_for=("z",),
+        channel_degree=0,
+        clusters=np.column_stack([units, periods]),
+    )
+    # a shock every unit shares each period, so the periods' read is the largest
+    rng = np.random.default_rng(5)
+    residual = (rng.normal(size=(10, 1)) + 0.3 * rng.normal(size=(10, 8))).reshape(-1, 1)
+    centred = _paired_products(residual, 8, 10)
+    total = centred.sum()
+    centred = (centred - centred.mean()).reshape(9, 8)  # (period of the later, unit)
+    by_unit = np.sum(centred.sum(axis=0) ** 2)
+    by_period = np.sum(centred.sum(axis=1) ** 2)
+    cells = np.sum(centred**2)
+    reads = (
+        max(by_unit + by_period - cells, 0.0),
+        by_unit,
+        by_period * (9.0 / 8.0) / (8.0 / 7.0),
+    )
+    assert max(reads) > 2.0 * by_unit  # summed within units alone, it read too little
+    statistic = total / math.sqrt(8.0 / 7.0 * max(reads))
+    moved = dataclasses.replace(fit, moment_residual=jnp.asarray(residual))
+    check = persistence_check(moved, units, periods)
+    assert check.p_value == pytest.approx(
+        2.0 * scipy.stats.t.sf(abs(statistic), 7), rel=1e-10, abs=0.0
+    )
+
+
+def test_the_persistence_check_reads_copies_in_one_cluster_as_one_unit() -> None:
+    """Four units whose residuals are copies of one another, declared one cluster, are one
+    unit's worth of evidence: the check reads them as it reads one copy of each cluster, where
+    summed within units it read each copy as a unit of its own."""
+    data, units, periods = _persistent_log(0.0, units=20, periods=10)
+    fit = fit_causal_residual(
+        _known, data, 0.1, adjust_for=("z",), channel_degree=0, clusters=units // 4
+    )
+    one = np.random.default_rng(6).normal(size=(10, 5))  # (period, cluster)
+    residual = np.repeat(one, 4, axis=1).reshape(-1, 1)  # unit i copies cluster i // 4
+    copies = persistence_check(
+        dataclasses.replace(fit, moment_residual=jnp.asarray(residual)), units, periods
+    )
+    alone = _persistence(
+        one.reshape(-1, 1), np.tile(np.arange(5), 10), np.repeat(np.arange(10), 5), False
+    )
+    assert copies.p_value == pytest.approx(alone.p_value, rel=1e-10, abs=0.0)
+
+
+def test_the_persistence_check_of_a_fit_clustered_by_unit_is_the_unit_read() -> None:
+    data, units, periods = _persistent_log(0.3, units=12, periods=10)
+    options = {"adjust_for": ("z",), "channel_degree": 0}
+    plain = fit_causal_residual(_known, data, 0.1, **options)
+    clustered = fit_causal_residual(_known, data, 0.1, **options, clusters=units)
+    assert persistence_check(clustered, units, periods).p_value == pytest.approx(
+        persistence_check(plain, units, periods).p_value, rel=1e-10, abs=0.0
+    )
 
 
 def test_the_persistence_check_refuses_what_it_cannot_pair() -> None:

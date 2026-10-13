@@ -7,6 +7,20 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`persistence_check` reads its p-value within the fit's clusters, as the fit reads its error.**
+  The check summed the pairs' products within units and read the units as independent, whatever
+  clusters the fit was given; where units share a cluster's noise, or every unit a period's shock,
+  their sums move together and the test rejected noise that does not persist too often: on panels
+  of 4 units a cluster over 10 periods whose noise and levers share a shock each period within a
+  cluster, a 5 % test rejected 12.5 % of 1000 panels at 5 clusters and 16.2 % at 30, and on 30
+  units over 20 periods that share each period's shock, clustered by unit and period, 51.5 %. A
+  fit given `clusters` now has the products, each less the mean product, summed within them, CR1,
+  two ways the largest of the three reads its error takes, against `t(G - 1)`: 4.9 %, 7.0 % and
+  3.8 %. A fit clustered by unit reads as before, to rounding. `prescribe`, which clusters its
+  fit by group and period, reads `noise_persistence_p` the same way. Since 0.15.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added
