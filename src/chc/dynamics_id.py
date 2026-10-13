@@ -137,6 +137,26 @@ class ConfoundedControlAffineSystem:
         return {"x": x, "z": z, "u": u, "w": w, "x_next": x + self.dt * rate + noise}
 
 
+@dataclass(frozen=True, eq=False)
+class _ChannelGram:
+    """The channel's least squares as :func:`channel_region` reads it: ``matrix``, ``(q, q)``,
+    is ``D'D + ridge P``, ``D`` the channel's design on the action residuals and ``P`` the ridge's
+    scale per coefficient, and ``ridge``, ``(q,)``, is ``ridge P``'s diagonal. Equal where both
+    arrays are, entry for entry."""
+
+    matrix: np.ndarray
+    ridge: np.ndarray
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, _ChannelGram)
+            and np.array_equal(self.matrix, other.matrix)
+            and np.array_equal(self.ridge, other.ridge)
+        )
+
+    __hash__ = None  # type: ignore[assignment]
+
+
 @dataclass(frozen=True)
 class CausalDynamicsFit:
     """A fitted causal residual next to what is and is not known about it.
@@ -282,6 +302,10 @@ class CausalDynamicsFit:
     # ``j``, where ``channel_error`` averages over levers in units of their own; with one lever it
     # is the covariance's read, bit for bit. The tube reads it at each lever's largest action.
     _lever_errors: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
+    # Set on an identified Euler fit whose channel is least squares on the action residuals (no
+    # instrument, no weight, every direction moved): the matrix its moment solved, which
+    # :func:`channel_region` reads.
+    _channel_gram: _ChannelGram | None = dataclasses.field(default=None, repr=False, compare=False)
 
     @property
     def error_cosines(self) -> int | None:
@@ -1669,10 +1693,17 @@ def fit_causal_residual(
             sensitivity[: channel.size], score, regressor.shape[1], codes, steps
         )
         channel_error, lever_errors = _channel_errors(spreads, channel.shape, phi_c)
+        least_squares = instrument_action is None and row_weight is None and split is None
         fit = dataclasses.replace(
             fit,
             channel_error=channel_error,
             _lever_errors=lever_errors,
+            _channel_gram=_ChannelGram(
+                matrix=np.asarray(regressor.T @ regressor + ridge * penalty, dtype=np.float64),
+                ridge=np.asarray(ridge * jnp.diag(penalty), dtype=np.float64),
+            )
+            if least_squares
+            else None,
             influence=_influence(
                 sensitivity,
                 score,
@@ -1917,6 +1948,222 @@ def omitted_confounder_bound(
         robustness_value=robustness,
         robustness_value_ci=robustness_ci,
     )
+
+
+@dataclass(frozen=True)
+class ChannelRegion:
+    """A region that holds the fitted channel's coefficients at a stated level, from one log.
+
+    *Experimental: it may change or be withdrawn in any release.* State ``s``'s coefficients
+    ``c_s`` (the channel's row ``s``, raveled lever by lever, each lever's features in turn) lie in
+    ``{c : ||c_hat_s - c||_V <= radius[s]}`` for every state at once with probability at least
+    ``level``. ``V = D'D + ridge P`` is the matrix the fit's least squares solved, ``D`` the
+    channel's design on the action residuals. :func:`channel_region` says where it holds.
+    """
+
+    level: float
+    channel: np.ndarray  # (n, m, k): the centre, the fit's channel
+    gram: np.ndarray  # (q, q): V
+    radius: np.ndarray  # (n,): each state's radius in V's norm, at the level
+    noise: np.ndarray  # (n,): each state's noise scale R, read off the moment's residual
+    prior: np.ndarray  # (n,): each state's bound on its true coefficients in the ridge's norm
+    log_det_ratio: float  # log det V - log det(ridge P)
+    channel_degree: int
+
+    def _radii(self, delta: float) -> np.ndarray:
+        """Each state's radius at ``1 - delta`` overall, ``delta / n`` a state: Abbasi-Yadkori,
+        Pal and Szepesvari's ``R sqrt(2 log(det(V)^(1/2) det(V0)^(-1/2) / delta)) + ||c||_V0``."""
+        share = delta / self.noise.size
+        return self.noise * math.sqrt(2.0 * math.log(1.0 / share) + self.log_det_ratio) + self.prior
+
+    def contains(self, channel: ArrayLike) -> bool:
+        """Whether every state's row of ``channel``, shaped as :attr:`channel`, lies in its
+        ellipsoid."""
+        found = np.asarray(channel, dtype=np.float64)
+        if found.shape != self.channel.shape:
+            raise ValueError(
+                f"a channel of shape {found.shape}; the region's is {self.channel.shape}"
+            )
+        gap = (np.asarray(self.channel, dtype=np.float64) - found).reshape(found.shape[0], -1)
+        return bool(np.all(np.einsum("sp,pq,sq->s", gap, self.gram, gap) <= self.radius**2))
+
+    def _metric(self, state: ArrayLike) -> np.ndarray:
+        """``Phi(x)' V^-1 Phi(x)``, ``(m, m)``: an action ``a``'s design row is ``Phi(x) a``."""
+        features = np.asarray(
+            control_affine_features(
+                jnp.asarray(state, dtype=jnp.result_type(float)), self.channel_degree
+            ),
+            dtype=np.float64,
+        )
+        levers = self.channel.shape[1]
+        lifted = np.kron(np.eye(levers), features[:, None])  # (m k, m)
+        return lifted.T @ np.linalg.solve(self.gram, lifted)
+
+    def operator_radius(self, state: ArrayLike) -> float:
+        """A bound, at the region's level, on ``||B_hat(x) - B(x)||_2`` at the state ``x``: the
+        largest move of the rate that the channel's error makes per unit action norm. It holds at
+        every state at once, since each is read off the same ellipsoids."""
+        largest = float(np.max(np.linalg.eigvalsh(self._metric(state))))
+        return float(np.linalg.norm(self.radius)) * math.sqrt(max(largest, 0.0))
+
+    def rate_error(self, states: ArrayLike, reach: ArrayLike) -> float:
+        """A bound, at the region's level, on ``||(B_hat(x) - B(x)) a||`` over the ``(N, n)``
+        ``states`` and every action deviation ``a`` with ``|a_j| <= reach[j]``: the rate error
+        that the plan's tube prices as one standard error (``chc.decision``'s ``_model_error``),
+        read here at a level. The largest of a convex form over a box is at a corner, so it reads
+        the ``2^m`` corners."""
+        rows = np.atleast_2d(np.asarray(states, dtype=np.float64))
+        sizes = np.asarray(reach, dtype=np.float64)
+        levers = self.channel.shape[1]
+        if sizes.shape != (levers,) or not np.all(sizes >= 0.0):
+            raise ValueError(f"reach must be {levers} non-negative numbers, one a lever")
+        corners = (
+            np.array(
+                [
+                    [(-1.0) ** ((index >> j) & 1) for j in range(levers)]
+                    for index in range(2**levers)
+                ]
+            )
+            * sizes
+        )
+        largest = max(
+            float(np.max(np.einsum("cj,jk,ck->c", corners, self._metric(row), corners)))
+            for row in rows
+        )
+        return float(np.linalg.norm(self.radius)) * math.sqrt(max(largest, 0.0))
+
+    def stability_level(self, rho: float, state: ArrayLike) -> float:
+        """The largest level at which :meth:`operator_radius` at ``state`` is within ``rho``: the
+        probability the region gives that the channel's error there is at most ``rho``, 0 where
+        no level reaches it.
+
+        A certainty-equivalent gain whose stability holds within a radius ``rho`` of the channel
+        (``chc.regret.ce_explicit_constant_certificate``) then stabilises the plant with at least
+        this probability. That certificate's ``rho`` is the true plant's, and its channel is the
+        discrete step's, ``dt`` times this one under Euler: pass its radius over ``dt``. Read at
+        the estimate, ``rho`` is the estimate's, which the region does not check.
+
+        Solves ``sum_s (R_s A + b_s)^2 = (rho / g)^2`` for ``A``, ``g`` the operator radius per
+        unit of the radii, and ``A^2 = 2 log(n / delta) + log_det_ratio`` for ``delta``
+        (``validation/tube_levels.mac``).
+        """
+        if not rho >= 0.0:
+            raise ValueError(f"rho={rho!r} must be a non-negative radius")
+        unit = math.sqrt(max(float(np.max(np.linalg.eigvalsh(self._metric(state)))), 0.0))
+        if unit == 0.0:
+            return 1.0
+        target = rho / unit
+        a2 = float(np.sum(self.noise**2))
+        a1 = float(np.sum(self.noise * self.prior))
+        a0 = float(np.sum(self.prior**2)) - target**2
+        if a0 >= 0.0:
+            return 0.0
+        if a2 == 0.0:
+            return 1.0
+        root = (-a1 + math.sqrt(a1 * a1 - a2 * a0)) / a2
+        delta = self.noise.size * math.exp((self.log_det_ratio - root * root) / 2.0)
+        return max(0.0, 1.0 - delta)
+
+
+def channel_region(
+    fit: CausalDynamicsFit, level: float = 0.95, *, bound: float | None = None
+) -> ChannelRegion:
+    """The self-normalised confidence ellipsoid of the fitted channel, at ``level``.
+
+    *Experimental: it may change or be withdrawn in any release.* Abbasi-Yadkori, Pal and
+    Szepesvari (NeurIPS 2011, Theorems 1 and 2): for ``y_t = <X_t, c> + eta_t`` with ``X_t``
+    predictable and ``eta_t`` conditionally ``R``-sub-Gaussian, the ridge estimate ``c_hat``
+    satisfies ``||c_hat - c||_V <= R sqrt(2 log(det(V)^(1/2) det(V0)^(-1/2) / delta)) +
+    ||c||_V0`` with probability at least ``1 - delta``, ``V = V0 + X'X``. The regressors need only
+    be predictable, so a log the plant was controlled in qualifies: a closed-loop policy's actions
+    move with the states and the noise before them. Here ``V0 = ridge P``, the fit's own ridge,
+    one ellipsoid a state at ``delta / n``.
+
+    It gives the plan's rate error a level (:meth:`ChannelRegion.rate_error`) and the
+    certainty-equivalent certificate a probability (:meth:`ChannelRegion.stability_level`),
+    beside the one-standard-error scales the tube carries, which it does not move.
+
+    Premises, and where they fail:
+
+    - **No hidden confounder.** The noise must be mean zero given the actions; a confounder the
+      fit does not adjust for pushes the rate with the action, and the ellipsoid misses the
+      channel, at any ``level``.
+    - **No persistent noise.** ``eta`` must be a martingale difference; AR noise is not, unless
+      its lags are in the fit (``persistence_check``).
+    - **R is read off the log**: each state's root mean square of the moment's residual, over
+      ``N - q`` rows, a plug-in for the theorem's known ``R``, which also counts the cross-fitted
+      nuisances' error. The action residuals use nuisances fitted on other rows, so the
+      regressors are predictable to the nuisance's first order only.
+    - **The prior term** ``||c||_V0`` is ``bound`` where given, else the estimate's own, a
+      plug-in; at the default ridge it is about 1e-3 of the coefficients' effect on the rate.
+
+    Under a hidden confounder an instrument's sign-perturbed sums (Szentpeteri and Csaji, 2023)
+    stay valid; they are not built here.
+
+    Args:
+        fit: an identified Euler fit by adjustment, unweighted, whose actions move every
+            direction of the channel.
+        level: the joint level over the states, in ``(0, 1)``.
+        bound: an upper bound, for every state, on the true coefficients' norm in the ridge's
+            metric, ``sqrt(sum_l ridge P_l c_l^2)``; None reads the estimate's.
+
+    Raises:
+        ValueError: on a fit that is not identified, read through an instrument, fitted under
+            ``rk4``, weighted, with a direction its actions never move, or with no ridge; a
+            ``level`` outside ``(0, 1)``; or a negative ``bound``.
+    """
+    if not 0.0 < level < 1.0:
+        raise ValueError(f"level={level!r} must be in (0, 1)")
+    if bound is not None and not 0.0 <= bound < math.inf:
+        raise ValueError(f"bound={bound!r} must be a finite non-negative number")
+    if not fit.identified:
+        raise ValueError("the fit does not identify the channel: there is no region to state")
+    if fit.method != "orthogonal":
+        raise ValueError(
+            f"the ellipsoid is least squares'; a {fit.method!r} fit solves an instrument's moment"
+        )
+    if fit.integrator != "euler":
+        raise ValueError(
+            f"the ellipsoid is least squares' on the Euler rates; an {fit.integrator!r} fit is a "
+            "fixed point of its own step, whose error the ellipsoid does not carry. Fit with "
+            "integrator='euler'"
+        )
+    if fit.weighted:
+        raise ValueError("the ellipsoid is unweighted least squares'; the fit weighed its moment")
+    if fit.unmoved is not None and fit.unmoved.shape[1] > 0:
+        raise ValueError(
+            "the log never moves some direction of the channel: the ellipsoid is unbounded there"
+        )
+    if fit._channel_gram is None or fit.moment_residual is None:
+        raise ValueError("the fit keeps no least-squares Gram of its channel to read")
+    ridge = np.asarray(fit._channel_gram.ridge, dtype=np.float64)
+    if not np.all(ridge > 0.0):
+        raise ValueError("the ridge is zero on some coefficient: V0 is singular, the region void")
+    gram = np.asarray(fit._channel_gram.matrix, dtype=np.float64)
+    channel = np.asarray(fit.residual.channel, dtype=np.float64)
+    residual = np.asarray(fit.moment_residual, dtype=np.float64)
+    rows, size = residual.shape[0], gram.shape[0]
+    noise = np.sqrt(np.sum(residual**2, axis=0) / max(rows - size, 1))
+    coefficients = channel.reshape(channel.shape[0], -1)
+    prior = (
+        np.sqrt(np.sum(ridge * coefficients**2, axis=1))
+        if bound is None
+        else np.full(channel.shape[0], float(bound))
+    )
+    sign, log_det = np.linalg.slogdet(gram)
+    if sign <= 0.0:
+        raise ValueError("the channel's Gram is not positive definite")
+    region = ChannelRegion(
+        level=float(level),
+        channel=channel,
+        gram=gram,
+        radius=np.zeros(channel.shape[0]),
+        noise=noise,
+        prior=prior,
+        log_det_ratio=float(log_det - np.sum(np.log(ridge))),
+        channel_degree=fit.residual.channel_degree,
+    )
+    return dataclasses.replace(region, radius=region._radii(1.0 - level))
 
 
 @dataclass(frozen=True)
