@@ -181,6 +181,38 @@ still change).
   positionally or by keyword from those three now raises `TypeError` and must pass the four
   (ADR 0095). Since 0.12.0.
 
+- **`prescribe`'s error tube is carried by the fitted field's slope at each planned action, at the
+  exact 0.95 radius of the plant's noise, and with the drift's own error beside the channel's.**
+  On a field affine in the state the tube grew at a bound on the norm of the field's slope over
+  the levers' box: on the quickstart 1.065 a week, where the field's own step matrix grows it by
+  1.027 at most. Its noise radius, `sqrt(chi2_n(0.95))` times the largest variance's root, held a
+  two-state plant at 0.986, not 0.95, up to `sqrt(chi2_n / chi2_1)` (1.249 on two states) too
+  wide. The two slacks hid a missing term: the tube's field error was the channel's alone, 0.016
+  on the quickstart, where the drift's own error at the log's mean action is 0.039. So the
+  quickstart's plan was trusted for 1 week where its plant stays within the tolerance for 3. Now,
+  where the tube's rate is `global`, the tube is carried through RK4's step matrix of the field's
+  slope at each planned action, the noise's radius is the exact 0.95 quantile of the gap's
+  distance under that covariance (Imhof's inversion), and the field's error adds
+  `CausalDynamicsFit.drift_error` to the channel's in quadrature. The quickstart's tube reads
+  0.290, 0.401, 0.482 for weeks 1 to 3, where it read 0.359, 0.528, 0.670, and ends at 0.881, not
+  2.372; it trusts 3 weeks, not 1. On 100 fresh quickstart logs the plant is inside the tube at
+  0.953 to 0.959 at weeks 1 to 6, where it was at 0.986 to 0.9995; the plan is trusted for 3 weeks
+  on 75 logs and 2 on 25, and on none past what its plant allows. Notebook 09's heater keeps its
+  eight certified hours and ends its tube at 0.434 C, not 0.641. On 600 one-unit logs shaped like
+  the BOPTEST case's, one state, the tube one step ahead is unchanged at 0.196 to 0.263 K, the
+  mean trusted steps move from 1.56 to 2.54 by cell to 1.59 to 2.71, and the logs trusted past
+  their own plant's horizon rise by one of 100 in one cell, 2 to 3, and by two in another, 0 to 2
+  (ADR 0096 reads the three). The media-mix report's prescription is still trusted for no week, its
+  tube 2.50, 2.96, 3.13 at weeks 1 to 3 against a tolerance of 1.0, where it read 3.88, 13.06,
+  41.90. A field whose slope moves with the state keeps the norm bound, `local`, and with it the
+  old radius past the first step: the pendulum demo's tube reads 0.052 one step ahead, not 0.063,
+  and is trusted for 1 step, as before. `causal_plan`'s tube on a state matrix takes the exact
+  radius too; its signature is unchanged. `DecisionCertificate.tube_mode` says which carriage
+  ran, `exact` or `bound`, and under `exact` `tube_state_noise` gives each state's own 0.95 radius
+  of the noise at each step, a report beside the one Euclidean tolerance, which is unchanged; both
+  are in the report and in `to_json()`. The report's tube line names the mode (ADR 0096). Since
+  0.5.0.
+
 ### Fixed
 
 - **`prescribe`'s barrier audit, `gamma*` and the held solve read the same in any units of each
@@ -286,37 +318,6 @@ still change).
   `causal_plan` and `RecedingHorizon` take it as `noise` and `noise_persistence`; both default
   to zero, which leaves every tube as it was. `CausalDynamicsFit.defect` keeps the defect row by
   row (ADR 0080). Since 0.5.0.
-- **`prescribe`'s error tube is carried by the fitted field's slope at each planned action, at the
-  exact 0.95 radius of the plant's noise, and with the drift's own error beside the channel's.**
-  On a field affine in the state the tube grew at a bound on the norm of the field's slope over
-  the levers' box: on the quickstart 1.065 a week, where the field's own step matrix grows it by
-  1.027 at most. Its noise radius, `sqrt(chi2_n(0.95))` times the largest variance's root, held a
-  two-state plant at 0.986, not 0.95, up to `sqrt(chi2_n / chi2_1)` (1.249 on two states) too
-  wide. The two slacks hid a missing term: the tube's field error was the channel's alone, 0.016
-  on the quickstart, where the drift's own error at the log's mean action is 0.039. So the
-  quickstart's plan was trusted for 1 week where its plant stays within the tolerance for 3. Now,
-  where the tube's rate is `global`, the tube is carried through RK4's step matrix of the field's
-  slope at each planned action, the noise's radius is the exact 0.95 quantile of the gap's
-  distance under that covariance (Imhof's inversion), and the field's error adds
-  `CausalDynamicsFit.drift_error` to the channel's in quadrature. The quickstart's tube reads
-  0.290, 0.401, 0.482 for weeks 1 to 3, where it read 0.359, 0.528, 0.670, and ends at 0.881, not
-  2.372; it trusts 3 weeks, not 1. On 100 fresh quickstart logs the plant is inside the tube at
-  0.953 to 0.959 at weeks 1 to 6, where it was at 0.986 to 0.9995; the plan is trusted for 3 weeks
-  on 75 logs and 2 on 25, and on none past what its plant allows. Notebook 09's heater keeps its
-  eight certified hours and ends its tube at 0.434 C, not 0.641. On 600 one-unit logs shaped like
-  the BOPTEST case's, one state, the tube one step ahead is unchanged at 0.196 to 0.263 K, the
-  mean trusted steps move from 1.56 to 2.54 by cell to 1.59 to 2.71, and the logs trusted past
-  their own plant's horizon rise by one of 100 in one cell, 2 to 3, and by two in another, 0 to 2
-  (ADR 0096 reads the three). The media-mix report's prescription is still trusted for no week, its
-  tube 2.50, 2.96, 3.13 at weeks 1 to 3 against a tolerance of 1.0, where it read 3.88, 13.06,
-  41.90. A field whose slope moves with the state keeps the norm bound, `local`, and with it the
-  old radius past the first step: the pendulum demo's tube reads 0.052 one step ahead, not 0.063,
-  and is trusted for 1 step, as before. `causal_plan`'s tube on a state matrix takes the exact
-  radius too; its signature is unchanged. `DecisionCertificate.tube_mode` says which carriage
-  ran, `exact` or `bound`, and under `exact` `tube_state_noise` gives each state's own 0.95 radius
-  of the noise at each step, a report beside the one Euclidean tolerance, which is unchanged; both
-  are in the report and in `to_json()`. The report's tube line names the mode (ADR 0096). Since
-  0.5.0.
 - **`optimal_fold_partition` certifies its design with the diagonally shifted Ky Fan bound.** The
   plain Ky Fan bound left a design loose by its own slack: on an 80-unit path at `x = 0.01` the
   spectral-plus-swap design's certified gap was 5.82 %, and on a 16-unit path, where enumeration
