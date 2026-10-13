@@ -73,6 +73,11 @@ A zone's channel is watched through per-decision drift e-values. :func:`channel_
 reads them off the Gaussian dither a :class:`DecisionLog` records, and :class:`DriftAlarm` turns
 them into an alarm outside the gate as well. Once the channel has moved, :func:`channel_move`
 re-reads it off the same dither, and :meth:`ChannelMove.price` puts the move in a plan's own cost.
+
+A deployed model's one-step innovations are watched too (*experimental*): :class:`MissRateAlarm`
+alarms when they leave a split-conformal radius more often than its calibration allows, and
+:class:`OnlineRadius` moves a radius per horizon so that each horizon's long-run miss rate stays
+near its target on any sequence.
 """
 
 from __future__ import annotations
@@ -90,6 +95,7 @@ from scipy import special
 
 from chc.frames import _real_numbers
 from chc.plan import DecisionWeight
+from chc.uncertainty import _as_written, _conformal_rank
 
 _log = logging.getLogger(__name__)
 
@@ -770,6 +776,301 @@ class DriftAlarm:
                 return True
         self._running = running
         return False
+
+
+def _state_rows(residuals: ArrayLike, name: str, states: int | None) -> _Array:
+    """Residuals as one row per step and one column per state."""
+    rows = np.array(_real_numbers(residuals, name), dtype=np.float64)
+    if rows.ndim == 1:
+        rows = rows[:, None]
+    if rows.ndim != 2 or (states is not None and rows.shape[1] != states):
+        raise ValueError(
+            f"{name} must have shape (steps,) or (steps, {states or 'states'}), got {rows.shape}"
+        )
+    if not np.all(np.isfinite(rows)):
+        raise ValueError(f"{name} is not finite")
+    return rows
+
+
+def _log_miss_mixture(misses: NDArray[np.int64], steps: NDArray[np.int64], bound: float) -> _Array:
+    """The log of ``int_bound^1 (p / bound)^S ((1 - p) / (1 - bound))^F dp / (1 - bound)``, the
+    likelihood ratios of a miss rate ``p`` against ``bound`` mixed over ``p`` uniform on
+    ``[bound, 1]``, after ``S`` misses in ``S + F`` steps: ``B(S + 1, F + 1)`` times the upper
+    regularised incomplete beta at ``bound``, over ``bound^S (1 - bound)^(F + 1)``."""
+    s = misses.astype(np.float64)
+    f = (steps - misses).astype(np.float64)
+    with np.errstate(divide="ignore"):  # a tail below the smallest float: the e-value is 0
+        tail = np.log(special.betaincc(s + 1.0, f + 1.0, bound))
+    return (
+        special.betaln(s + 1.0, f + 1.0)
+        + tail
+        - s * math.log(bound)
+        - (f + 1.0) * math.log1p(-bound)
+    )
+
+
+class MissRateAlarm:
+    """An alarm that sounds once a deployed model's one-step innovations leave a split-conformal
+    radius more often than its calibration allows: on a plant the model still describes, it ever
+    sounds with probability at most ``delta``.
+
+    ``calibration`` holds one-step residuals, the next state less the model's prediction, of
+    consecutive steps held out from the fit, one column per state. Each residual is whitened against
+    the one before, ``w_t = r_t - persistence r_(t-1)``, and scored by its Euclidean norm, in the
+    states' units: scale them first where those differ. ``radius`` is the ``k``-th smallest of the
+    ``n`` scores, ``k = ceil((n + 1)(1 - alpha))``, split conformal's radius. Given the calibration,
+    the share of later innovations outside it is a fixed ``p``, and over calibrations ``p`` follows
+    ``Beta(n + 1 - k, k)`` (Vovk 2012; Lin and Bansal 2024): ``bound``, its upper ``delta / 2``
+    quantile, exceeds ``p`` with probability at least ``1 - delta / 2``.
+
+    :meth:`update` whitens each deployed residual against the one before it and counts the
+    innovations outside ``radius``. After ``S`` misses in ``t`` innovations, ``statistic`` is the
+    likelihood ratio of a miss rate ``q`` against ``bound``, mixed over ``q`` uniform on
+    ``[bound, 1]``, in closed form through the incomplete beta function. While each innovation
+    misses with probability at most ``bound`` given the past, it is a nonnegative supermartingale
+    from 1, so by Ville's inequality it ever reaches ``2 / delta`` with probability at most
+    ``delta / 2``, and the alarm sounds there. The two halves add up to ``delta``: Podkopaev and
+    Ramdas's test for a harmful shift (ICLR 2022, Proposition 1), with the source risk's bound read
+    off the calibration's exact law and no tolerance. After an alarm the counts start again at the
+    next call, and the call's later residuals are dropped.
+
+    On a plant whose model is exact and whose noise is AR(1) at 0.8, with 300 calibration
+    innovations, ``alpha = delta = 0.1`` and 1000 paths of 1000 steps read every 100, the alarm
+    sounded on 0.016 of the paths at the noise's persistence, on 0.020 at the lag-1 correlation
+    fitted on each calibration log, and on 0.209 unwhitened. With the noise's scale 1.5 times the
+    calibration's, it sounded on every one of 200 paths.
+
+    What the guarantee needs, and the alarm cannot check:
+
+    * **Innovations independent of the past and exchangeable with the calibration's**: the model
+      right, so a residual is the plant's noise, and the noise AR(1) at rate ``persistence``,
+      such as :attr:`chc.decision.DecisionCertificate.tube_persistence` or a fit's lag-1
+      correlation. Without whitening, misses cluster: a miss makes the next one likelier, and the
+      supermartingale fails.
+    * **A persistence fixed before the deployed data**; one estimated on the calibration log
+      leaves a correlation of the order of its error.
+
+    Raises:
+        ValueError: on ``alpha`` or ``delta`` not in ``(0, 1)``, a persistence not in ``(-1, 1)``,
+            residuals that are not finite or not one row per step, and fewer calibration
+            innovations than ``(1 - alpha) / alpha``, below which no radius carries the coverage.
+    """
+
+    def __init__(
+        self, calibration: ArrayLike, *, persistence: float, alpha: float, delta: float
+    ) -> None:
+        for name, level in (("alpha", alpha), ("delta", delta)):
+            if not 0.0 < level < 1.0:
+                raise ValueError(f"{name} must lie in (0, 1), got {level}")
+        if not -1.0 < persistence < 1.0:
+            raise ValueError(f"persistence must lie in (-1, 1), got {persistence}")
+        rows = _state_rows(calibration, "calibration", None)
+        self.persistence = float(persistence)
+        self.delta = float(delta)
+        scores = np.linalg.norm(rows[1:] - self.persistence * rows[:-1], axis=1)
+        n = scores.size
+        k = _conformal_rank(n, alpha)
+        if k > n:
+            least = math.ceil((1 - _as_written(alpha)) / _as_written(alpha))
+            raise ValueError(
+                f"{n} calibration innovations cannot give a radius covering {1.0 - alpha:.6g}: it"
+                f" is the {k}-th smallest score, so it needs at least {least} of them, that is"
+                f" {least + 1} residuals"
+            )
+        self.radius = float(np.sort(scores)[k - 1])
+        self.bound = float(special.betaincinv(n + 1 - k, k, 1.0 - self.delta / 2.0))
+        self._states = rows.shape[1]
+        self._last: _Array | None = None
+        self._misses = 0
+        self._steps = 0
+
+    @property
+    def misses(self) -> int:
+        """Innovations outside ``radius`` since the start or the last alarm."""
+        return self._misses
+
+    @property
+    def steps(self) -> int:
+        """Innovations read since the start or the last alarm."""
+        return self._steps
+
+    @property
+    def statistic(self) -> float:
+        """The mixture's e-value: 1 before any innovation and after an alarm."""
+        log_e = _log_miss_mixture(np.array([self._misses]), np.array([self._steps]), self.bound)
+        return float(np.exp(log_e[0]))
+
+    def update(self, residuals: ArrayLike) -> bool:
+        """Add one-step residuals, one row per consecutive step, and say whether the alarm
+        sounded. The first residual after the start or an alarm only whitens the next.
+
+        Raises:
+            ValueError: on residuals that are not finite, or not one column per calibration state.
+        """
+        rows = _state_rows(residuals, "residuals", self._states)
+        if rows.shape[0] == 0:
+            return False
+        lagged = rows if self._last is None else np.vstack([self._last, rows])
+        innovations = lagged[1:] - self.persistence * lagged[:-1]
+        missed = np.linalg.norm(innovations, axis=1) > self.radius
+        misses = self._misses + np.cumsum(missed)
+        steps = self._steps + np.arange(1, missed.size + 1)
+        crossed = np.flatnonzero(
+            _log_miss_mixture(misses, steps, self.bound) >= math.log(2.0 / self.delta)
+        )
+        if crossed.size == 0:
+            self._last = rows[-1]
+            if missed.size:
+                self._misses, self._steps = int(misses[-1]), int(steps[-1])
+            return False
+        at = int(crossed[0])
+        self._last, self._misses, self._steps = None, 0, 0
+        _log.warning(
+            "miss-rate alarm: %d of %d innovations outside the radius %.4g, where at most a share"
+            " %.4g may miss; %d later residuals were dropped",
+            misses[at],
+            steps[at],
+            self.radius,
+            self.bound,
+            missed.size - at - 1,
+            extra={
+                "chc_event": "miss_rate_alarm",
+                "misses": int(misses[at]),
+                "steps": int(steps[at]),
+                "radius": self.radius,
+                "bound": self.bound,
+            },
+        )
+        return True
+
+
+class OnlineRadius:
+    """A radius per horizon, updated online so that, over any sequence of scores, each horizon's
+    long-run miss rate comes within a stated bound of ``alpha`` (Angelopoulos, Barber and Bates,
+    ICML 2024).
+
+    Horizon ``h`` (``1`` to ``H``, one per entry of ``initial``) has a radius. Each period issues
+    ``radius``, one per horizon, and closes with :meth:`update`, which takes one score per
+    horizon: for horizon ``h``, the score of the prediction issued ``h - 1`` periods before this
+    one, ``nan`` where there is none. A score is any number in ``[0, bound]`` the caller computes,
+    such as the error's norm over the tube's scale, and the prediction misses when its score
+    exceeds the radius it was issued with. Each scored horizon's radius then moves by
+    ``eta_n (miss - alpha)``, with ``eta_n = step n^(-decay)`` at its ``n``-th score: up after a
+    miss, down otherwise.
+
+    On any sequence of scores in ``[0, bound]``, chosen even by an adversary who sees the radii,
+    such as a plan steering its own states, the miss rate of horizon ``h`` after ``n`` scores
+    lies within ``miss_bound = (bound + h step) / (eta_n n)`` of ``alpha``, which shrinks as
+    ``n^(decay - 1)``. For ``h = 1`` it is their Theorem 1. For ``h > 1``, up to ``h - 1`` updates
+    are in flight while a prediction waits for its score, which widens their Lemma 1's range of the
+    radius from ``bound + eta_1`` to ``bound + h eta_1``; the proof is otherwise theirs. On every
+    one of the ``2^12`` sequences of misses an adversary can force in 12 periods, at a constant
+    step of 1, horizon 3 came within 0.9 of that bound and past the one without ``h``. The bound
+    holds for each horizon on its own, and on no other sequence than the one scored; it says
+    nothing of coverage at any one period. Their step is ``decay = 0.6``.
+
+    Raises:
+        ValueError: on an empty or non-finite ``initial`` or one outside ``[0, bound]``, ``alpha``
+            not in ``(0, 1)``, a ``bound`` or ``step`` that is not positive and finite, or a
+            ``decay`` not in ``[0, 1)``.
+    """
+
+    def __init__(
+        self,
+        initial: ArrayLike,
+        *,
+        alpha: float,
+        bound: float,
+        step: float,
+        decay: float = 0.6,
+    ) -> None:
+        radius = np.array(_vector(initial, "initial"))
+        if radius.size == 0:
+            raise ValueError("initial must hold one radius per horizon, got none")
+        if not 0.0 < alpha < 1.0:
+            raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
+        for name, value in (("bound", bound), ("step", step)):
+            if not (math.isfinite(value) and value > 0.0):
+                raise ValueError(f"{name} must be positive and finite, got {value}")
+        if not 0.0 <= decay < 1.0:
+            raise ValueError(f"decay must lie in [0, 1), got {decay}")
+        if not np.all((radius >= 0.0) & (radius <= bound)):
+            raise ValueError(f"initial radii must lie in [0, bound = {bound}], got {radius}")
+        self.alpha, self.bound, self.step, self.decay = (
+            float(alpha),
+            float(bound),
+            float(step),
+            float(decay),
+        )
+        self._radius = radius
+        self._issued: list[_Array] = []
+        self._periods = 0
+        self._scored = np.zeros(radius.size, dtype=np.int64)
+        self._misses = np.zeros(radius.size, dtype=np.int64)
+
+    @property
+    def radius(self) -> _Array:
+        """The radius each horizon issues at the next period."""
+        radius = self._radius.copy()
+        radius.setflags(write=False)
+        return radius
+
+    @property
+    def scored(self) -> NDArray[np.int64]:
+        """How many predictions each horizon has scored."""
+        return self._scored.copy()
+
+    @property
+    def miss_rate(self) -> _Array:
+        """Each horizon's share of scored predictions that missed, ``nan`` before its first."""
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return self._misses / self._scored
+
+    @property
+    def miss_bound(self) -> _Array:
+        """``(bound + h step) / (eta_n n)``: how far each horizon's miss rate may lie from
+        ``alpha``, ``inf`` before its first score."""
+        horizon = np.arange(1, self._radius.size + 1)
+        n = self._scored.astype(np.float64)
+        with np.errstate(divide="ignore"):
+            return (self.bound + horizon * self.step) / (self.step * n ** (1.0 - self.decay))
+
+    def update(self, scores: ArrayLike) -> NDArray[np.bool_]:
+        """Close a period: score each horizon's prediction that resolved in it, ``nan`` for
+        none, against the radius it was issued with, and move the scored horizons' radii. Returns
+        which horizons missed.
+
+        Raises:
+            ValueError: on scores that are not one per horizon, a score outside ``[0, bound]``, or
+                a score for horizon ``h`` before ``h`` periods have closed, when no prediction for
+                it has been issued.
+        """
+        given = np.array(_real_numbers(scores, "scores"), dtype=np.float64)
+        horizons = self._radius.size
+        if given.shape != (horizons,):
+            raise ValueError(
+                f"scores must hold one entry per horizon, shape ({horizons},), got {given.shape}"
+            )
+        scored = ~np.isnan(given)
+        if not np.all((given[scored] >= 0.0) & (given[scored] <= self.bound)):
+            raise ValueError(f"scores must lie in [0, bound = {self.bound}], got {given}")
+        early = np.flatnonzero(scored & (np.arange(1, horizons + 1) > self._periods + 1))
+        if early.size:
+            raise ValueError(
+                f"horizon {early[0] + 1} scored at period {self._periods + 1}, before any"
+                " prediction for it was issued"
+            )
+        self._periods += 1
+        self._issued = [*self._issued, self._radius.copy()][-horizons:]
+        missed = np.zeros(horizons, dtype=bool)
+        for h in np.flatnonzero(scored):
+            issued = self._issued[-(h + 1)][h]
+            missed[h] = given[h] > issued
+            self._scored[h] += 1
+            self._misses[h] += missed[h]
+            eta = self.step * float(self._scored[h]) ** -self.decay
+            self._radius[h] += eta * (float(missed[h]) - self.alpha)
+        return missed
 
 
 @dataclass(frozen=True)

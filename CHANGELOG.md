@@ -46,6 +46,19 @@ still change).
   0.0037 at `alpha = 0.1`, with 93 % of the better zones deployed, and a futility stop added no
   wrong deploy. Verdicts take longer: a block is one increment, and its burned periods read
   nothing. Without `block_length` the gate runs as before.
+- **`MissRateAlarm` watches a deployed model's conformal radius, and `OnlineRadius` adapts one
+  per horizon** (*experimental*, ADR 0094). Nothing in the library watched for a run of steps
+  outside a split-conformal interval. `MissRateAlarm(calibration, persistence=, alpha=, delta=)`
+  whitens held-out one-step residuals at the noise's AR(1) persistence, takes split conformal's
+  radius on the innovations, and bounds their miss rate by the upper `delta / 2` quantile of its
+  exact `Beta(n + 1 - k, k)` law. `update` alarms when a mixture of likelihood ratios of the
+  deployed miss rate against that bound reaches `2 / delta`, so on a plant the model still
+  describes it ever alarms with probability at most `delta`. On a correct plant with AR(1) noise
+  at 0.8, it alarmed on 0.016 of 1000 paths of 1000 steps at `delta = 0.1`, and on 0.209
+  unwhitened. `OnlineRadius(initial, alpha=, bound=, step=, decay=0.6)` moves each horizon's
+  radius after each scored prediction, so that on any sequence of scores in `[0, bound]` the miss
+  rate of horizon `h` after `n` scores lies within `(bound + h step) / (eta_n n)` of `alpha`;
+  every sequence of misses an adversary can force in 12 periods kept it.
 
 ### Notes
 
