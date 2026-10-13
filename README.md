@@ -84,8 +84,8 @@ out = prescribe(
     constraints=[Constraint("wait", hi=0.5)],
 )
 
-out.certificate.trustworthy_steps  # 1 -- identified, barrier met; the tube, which holds the
-# plant's own week-to-week noise at 95 %, passes the tolerance in week 2
+out.certificate.trustworthy_steps  # 3 -- identified, barrier met; the tube, which holds the
+# plant's own week-to-week noise at 95 %, passes the tolerance in week 4
 out.schedule.magnitudes  # (15, 1); raises instead, if the effect is not identified
 print(out.report())  # Markdown: decision, both certificate axes, provenance
 ```

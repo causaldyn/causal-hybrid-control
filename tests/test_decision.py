@@ -47,6 +47,7 @@ from chc.decision import (
     _panel_start,
     _rate,
     _show_start,
+    _slopes,
     _transitions,
     prescribe,
 )
@@ -64,7 +65,7 @@ from chc.mpc import PeriodBudget
 from chc.panel import Panel, PanelError
 from chc.plan import CausalPlan, causal_plan, certify_safety
 from chc.residual import ControlAffineResidual
-from chc.uncertainty import _noise_tube, _tube
+from chc.uncertainty import _linear_tube, _noise_tube
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
 # which jax 0.11 no longer has.
@@ -546,14 +547,16 @@ def test_the_schedule_respects_the_box_and_its_windows_agree_with_the_magnitudes
 def test_the_two_certificate_axes_are_reported_separately() -> None:
     """A plan certified over a channel nothing identifies must not read as a certified decision.
 
-    The identified plan is trusted for one step: demand, adjusted for and not forecast, moves supply
-    by 0.15 a period, and the tube that holds that noise passes the tolerance of 0.5 at the second
-    step (ADR 0080). Read off the channel's error alone, it trusted all 15."""
+    The identified plan is trusted for three steps: demand, adjusted for and not forecast, moves
+    supply by 0.15 a period, and the tube that holds that noise passes the tolerance of 0.5 at the
+    fourth step (ADR 0080), where the plant itself leaves it. Read off the channel's error alone, it
+    trusted all 15; carried by a bound on the norm of the field's slope, at a radius too wide on
+    two states, it trusted one (ADR 0096)."""
     identified = _prescribe(_panel(), CausalGraph.from_edges(EDGES))
     assert identified.certificate.certificate_status == "partial"
-    assert identified.certificate.certified_horizon == 1
+    assert identified.certificate.certified_horizon == 3
     assert identified.certificate.barrier_certified_steps is not None
-    assert identified.certificate.trustworthy_steps == 1
+    assert identified.certificate.trustworthy_steps == 3
 
     blocked = _prescribe(_panel(), CausalGraph.from_edges(EDGES, latent=("demand",)))
     assert blocked.certificate.certificate_status == "not_evaluated"
@@ -739,7 +742,8 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
     bit for bit: the function prices one lever's error at what it is given as before. Here the
     box's far side is below zero, 3 and the mean apart, and the plan's tube carries it; up to the
     fix it carried the largest action from zero, 3, which the drift's absorbing the channel at the
-    log's mean action does not read (ADR 0091)."""
+    log's mean action does not read (ADR 0091). The tube is carried by the field's slope at each
+    planned action, and the drift's own error joins the channel's in quadrature (ADR 0096)."""
     horizon, dt = 4, 1.0
     panel = _growing_panel()
     columns = panel.columns
@@ -769,9 +773,11 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
     noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
     assert noise is not None
     assert persistence is not None
-    rate, _ = _rate(problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi))
-    expected = _tube([rate] * horizon, [fit.channel_error * distance] * horizon, dt, "rk4")
-    expected += _noise_tube(np.asarray(rate), np.array([[noise**2]]), persistence, dt, horizon)
+    assert fit.drift_error is not None
+    slopes = _slopes(problem.model, problem.x0)(np.asarray(plan.actions, dtype=np.float64))
+    error = math.hypot(fit.channel_error * distance, fit.drift_error)
+    expected = _linear_tube(slopes, [error] * horizon, dt)
+    expected += _noise_tube(slopes, np.array([[noise**2]]), persistence, dt, horizon)
     np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
 
 
@@ -1418,7 +1424,7 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
         .endswith(", diagnostic")
     )
     steps = payload["certificate"]["trustworthy_steps"]
-    assert steps == result.certificate.trustworthy_steps == 1
+    assert steps == result.certificate.trustworthy_steps == 3
     assert f"Trustworthy prefix: {steps} steps" in report
     assert "- logger check: passed (p = " in report
     assert result.provenance.data_sha256[:16] in report

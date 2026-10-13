@@ -28,13 +28,13 @@ from dataclasses import dataclass
 import numpy as np
 from jax import Array
 from numpy.typing import NDArray
-from scipy import integrate
 
 from chc.cost import total_cost
 from chc.dynamics import HybridDynamics
 from chc.dynamics_id import CausalDynamicsFit, _clustered_squares
 from chc.plan import CausalPlan, _regret_curvature, _weighable
 from chc.residual import ControlAffineResidual
+from chc.uncertainty import _chi_square_mixture_survival
 
 
 @dataclass(frozen=True)
@@ -284,54 +284,3 @@ def _mixture_weights(
     values, vectors = np.linalg.eigh(covariance)
     root = (vectors * np.sqrt(np.clip(values, 0.0, None))) @ vectors.T
     return np.clip(np.linalg.eigvalsh(root @ weight @ root), 0.0, None)
-
-
-def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> float:
-    """``P(sum_k weights_k chi2_1 > q)``, by Imhof's inversion.
-
-    The integrand ``sin(theta(u)) / (u rho(u))`` decays like ``u^(-1 - k/2)`` and oscillates, and
-    with one or two terms a plain rule on ``[0, inf)`` misses the tail badly (0.0036 against 0.00053
-    for one term at ``q = 30`` times its weight). Past ``u = 20 / omega``, ``omega = q / 2``, the
-    phase is ``sum arctan(w u) / 2 - omega u``: a slowly moving amplitude times a pure oscillation,
-    which QUADPACK's Fourier rule integrates to the end.
-    """
-    largest = float(np.max(weights, initial=0.0))
-    if largest <= 0.0:
-        return 1.0 if q <= 0.0 else 0.0
-    weights = weights[weights > 1e-12 * largest]
-    if q <= 0.0:
-        return 1.0
-    omega = 0.5 * q
-
-    def amplitude(u: float) -> float:
-        return 1.0 / (u * float(np.prod((1.0 + (weights * u) ** 2) ** 0.25)))
-
-    def phase(u: float) -> float:
-        return 0.5 * float(np.sum(np.arctan(weights * u)))
-
-    cut = 20.0 / omega
-    head, _ = integrate.quad(
-        lambda u: math.sin(phase(u) - omega * u) * amplitude(u),
-        0.0,
-        cut,
-        limit=2000,
-        epsabs=1e-13,
-        epsrel=1e-12,
-    )
-    cosine, _ = integrate.quad(
-        lambda u: math.sin(phase(u)) * amplitude(u),
-        cut,
-        np.inf,
-        weight="cos",
-        wvar=omega,
-        limlst=200,
-    )
-    sine, _ = integrate.quad(
-        lambda u: math.cos(phase(u)) * amplitude(u),
-        cut,
-        np.inf,
-        weight="sin",
-        wvar=omega,
-        limlst=200,
-    )
-    return min(max(0.5 + (head + cosine - sine) / math.pi, 0.0), 1.0)

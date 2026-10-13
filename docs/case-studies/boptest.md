@@ -131,6 +131,12 @@ Where they disagree:
   tube reads 0.21 to 0.29 K and holds it at the first step on 97% to 99% of draws, cell by cell,
   and on 98.8% of the steps it trusts. Its certificate trusts 1 or 2 steps on nine logs in ten
   and 3 at most, and more than the log's own plant allows on 0 to 2% of the logs in a cell.
+  From 0.18.0 the tube is carried by the fitted field's slope at each planned action and adds the
+  drift's own error to the channel's
+  ([ADR 0096](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0096-the-tube-is-carried-by-the-field-s-step-matrices-at-its-exact-radius.md)).
+  Measured the same way before and after, the tube one step ahead does not move, the mean trusted
+  steps move from 1.56 to 2.54 by cell to 1.59 to 2.71, at most 4 where it was 3, and the logs
+  trusted past their own plant's horizon rise by one in one cell and by two in another, of 100.
 - The regret bound stayed small wherever it was finite, the runaway weeks included. It is a gap in
   the planning objective on the fitted model, not a statement about the plant. It was infinite, the
   objective not convex over the box, on 3.4% of the adjusted calls and 12.1% of the naive ones.

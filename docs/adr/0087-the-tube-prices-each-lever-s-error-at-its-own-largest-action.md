@@ -2,6 +2,7 @@
 
 **Status:** accepted, 2026-10-12. Amends the rate error of `prescribe`'s tube (ADR 0080). Amended by
 ADR 0091, 2026-10-13: each lever's error is priced from the log's mean action, not from its zero.
+Amended by ADR 0096, 2026-10-13: the rate error adds the drift's own error in quadrature.
 
 ## Context
 

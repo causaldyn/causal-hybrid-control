@@ -1,0 +1,99 @@
+/* The tube carried by the field's step matrices along the plan, and its exact 0.95 radius.
+
+   On a field affine in the state whose slope moves with the action, x' = A(u_k) x + g_k over step
+   k, RK4 steps the gap by M_k = R(dt A(u_k)), and the noise's part of it, e_{k+1} = M_k e_k + w_k,
+   Cov(w_i, w_j) = rho^|i - j| S, has the covariance the library carries with M_k in place of M:
+
+       P_{k+1} = M_k P_k M_k' + M_k C_k + C_k' M_k' + S,   C_{k+1} = rho (M_k C_k + S).
+
+   Checked here: (1) that recursion against the double sum
+   sum_{i,j<k} F(k, i) rho^|i-j| S F(k, j)', F(k, i) = M_{k-1} ... M_{i+1}, at k = 1..3 on three
+   distinct symbolic 2x2 matrices; (2) RK4's gap on a scalar field whose slope changes each step,
+   one rollout off by d at every stage, against the tube's sum of the gains
+   dt phi(z_j) R(z_{j+1}) ... R(z_{k-1}); (3) a state in other units, M_k -> D M_k D^-1 and
+   S -> D S D, moves P_k to D P_k D; (4) the radius: on one state and on equal eigenvalues the
+   quantile of sum_i lambda_i chi2_1 is lambda chi2_n's, in closed form at n = 2 and n = 3; at
+   three unequal pairs the library's radius holds the Gaussian with probability 0.95, by a
+   one-dimensional integral; and the old radius sqrt(chi2_n lambda_max) overstates by at most
+   sqrt(chi2_n / chi2_1), the factor at a rank-one covariance. */
+display2d : false$
+fpprec : 40$
+/* a check that fails stops the batch with "-- an error.", which validation/run_all.sh reads */
+vanishes(label, x) := if (if matrixp(x) then every(lambda([e], is(e = 0)), flatten(args(x)))
+                          else is(x = 0))
+  then print(label, "= 0") else error(label, "is not zero:", x)$
+near(label, x, y, tol) := if is(abs(x - y) <= tol) then print(label, x, "~", y)
+  else error(label, x, "is not within", tol, "of", y)$
+
+/* (1) the time-varying recursion = the double-sum covariance, 2x2, symbolic */
+Ms : [matrix([a11, a12], [a21, a22]), matrix([b11, b12], [b21, b22]),
+      matrix([c11, c12], [c21, c22])]$
+S : matrix([s11, s12], [s12, s22])$
+P : zeromatrix(2, 2)$ C : zeromatrix(2, 2)$
+recursion : []$
+for k : 1 thru 3 do (
+  [P, C] : [Ms[k] . P . transpose(Ms[k]) + Ms[k] . C + transpose(C) . transpose(Ms[k]) + S,
+            rho*(Ms[k] . C + S)],
+  recursion : endcons(P, recursion))$
+/* F(k, i): the product of the step matrices after step i up to step k - 1, 0-based steps */
+F(k, i) := block([m : ident(2)], for l : i + 1 thru k - 1 do m : Ms[l + 1] . m, m)$
+double(k) := sum(sum(F(k, i) . (rho^abs(i - j) * S) . transpose(F(k, j)), j, 0, k - 1),
+                 i, 0, k - 1)$
+for k : 1 thru 3 do
+  vanishes(sconcat("(1) k = ", k, ": time-varying recursion - double sum"),
+           ratsimp(expand(recursion[k] - double(k))))$
+
+/* (2) RK4 on x' = a_k x + b_k (+ d): the gap of the two rollouts is the tube's sum, the gains
+   all positive where the slopes are */
+R(z) := 1 + z + z^2/2 + z^3/6 + z^4/24$
+phi(z) := 1 + z/2 + z^2/6 + z^3/24$
+rk4(x, a, b, h) := block([k1, k2, k3, k4],
+  k1 : a*x + b, k2 : a*(x + h*k1/2) + b, k3 : a*(x + h*k2/2) + b, k4 : a*(x + h*k3) + b,
+  x + h*(k1 + 2*k2 + 2*k3 + k4)/6)$
+slopes : [s0, s1, s2]$ drifts : [g0, g1, g2]$
+x : x0$ y : x0$
+for k : 1 thru 3 do (
+  x : rk4(x, slopes[k], drifts[k], h),
+  y : rk4(y, slopes[k], drifts[k] + d, h),
+  tube : d*h*sum(phi(h*slopes[j + 1])*product(R(h*slopes[l + 1]), l, j + 1, k - 1), j, 0, k - 1),
+  vanishes(sconcat("(2) k = ", k, ": RK4 gap - the tube's sum of gains"),
+           ratsimp(expand((y - x) - tube))))$
+
+/* (3) units: D = diag(d1, d2) */
+D : matrix([d1, 0], [0, d2])$
+Dinv : matrix([1/d1, 0], [0, 1/d2])$
+P : zeromatrix(2, 2)$ C : zeromatrix(2, 2)$
+for k : 1 thru 3 do (
+  Mk : D . Ms[k] . Dinv,
+  [P, C] : [Mk . P . transpose(Mk) + Mk . C + transpose(C) . transpose(Mk) + D . S . D,
+            rho*(Mk . C + D . S . D)],
+  vanishes(sconcat("(3) k = ", k, ": P in the new units - D P D"),
+           ratsimp(expand(P - D . recursion[k] . D))))$
+
+/* (4) the radius. chi2_n(0.95) as the library reads it, scipy's: */
+c1 : 3.841458820694124b0$  c2 : 5.991464547107979b0$  c3 : 7.814727903251179b0$
+/* n = 2, equal eigenvalues: P(lambda chi2_2 <= q) = 1 - exp(-q / (2 lambda)), so the quantile is
+   2 lambda log 20, chi2_2's */
+near("(4) 2 log 20 = chi2_2(0.95):", bfloat(2*log(20)), c2, 1b-14)$
+/* n = 3: P(chi2_3 <= q) = erf(sqrt(q/2)) - sqrt(2 q / pi) exp(-q/2) */
+near("(4) P(chi2_3 <= chi2_3(0.95)):",
+     bfloat(erf(sqrt(c3/2)) - sqrt(2*c3/%pi)*exp(-c3/2)), 0.95b0, 1b-14)$
+/* n = 1: P(lambda chi2_1 <= c1 lambda) = erf(sqrt(c1 / 2)) */
+near("(4) P(chi2_1 <= chi2_1(0.95)):", bfloat(erf(sqrt(c1/2))), 0.95b0, 1b-14)$
+/* unequal pairs (l1 < l2), the library's squared radius r2 (tests/test_predictive_tube.py):
+   P(l1 z1^2 + l2 z2^2 <= r2) = int_{|t| <= sqrt(r2/l2)} phi(t) erf(sqrt((r2 - l2 t^2)/(2 l1))) dt */
+inside(l1, l2, r2) := block([a : sqrt(r2/l2)],
+  quad_qags(erf(sqrt(max(0, r2 - l2*t^2)/(2*l1)))*exp(-t^2/2)/sqrt(2*%pi), t, -a, a,
+            'epsrel = 1d-13, 'limit = 400)[1])$
+pairs : [[0.5d0, 1.0d0, 4.628283006555677d0],
+         [0.01d0, 1.0d0, 3.851522417726763d0],
+         [9.98697012d-5, 2.12624274d-2, 0.08177890584991816d0]]$
+for p in pairs do
+  near(sconcat("(4) l = ", p[1], ", ", p[2], ": P(inside the library's radius) ="),
+       inside(p[1], p[2], p[3]), 0.95d0, 1d-9)$
+/* the old radius chi2_2 lambda_max at the quickstart's first-step noise: what it held */
+print("(4) chi2_2 lambda_max held, at the quickstart's first step:",
+      inside(9.98697012d-5, 2.12624274d-2, float(c2)*2.12624274d-2))$
+/* the overstatement at rank one, sqrt(chi2_n / chi2_1) */
+print("(4) sqrt(chi2_n/chi2_1) at n = 2, 3:", bfloat(sqrt(c2/c1)), bfloat(sqrt(c3/c1)))$
+near("(4) n = 2 factor:", bfloat(sqrt(c2/c1)), 1.2488b0, 1b-4)$
