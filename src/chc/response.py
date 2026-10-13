@@ -401,7 +401,10 @@ class Saturation(Response):
         if rise(0.0) >= 0.0 or rise(bend) <= 0.0:
             return 0.0  # the convex stretch is within rounding of none
         peak = brentq(rise, 0.0, bend, xtol=1e-15 * bend)
-        return chord * peak - float(self.standard(_real(peak)))
+        # the excess is 0 at the origin, so its most is never below 0; at the peak it is the
+        # difference of two values equal to rounding where the convex stretch is that short, and
+        # it can round below 0 there
+        return max(chord * peak - float(self.standard(_real(peak))), 0.0)
 
 
 class Envelope(Saturation):

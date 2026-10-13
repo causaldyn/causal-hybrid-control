@@ -505,6 +505,15 @@ def test_a_convex_stretch_within_rounding_of_none_has_no_nonconvexity(curve: Sat
     assert curve.nonconvexity() == 0.0
 
 
+def test_a_nonconvexity_below_rounding_is_never_negative() -> None:
+    # the square law above puts it at 2 b/(b - 1) THRESHOLD eps^2 = 4.0e-31, where the chord and
+    # the curve at its peak agree to rounding: their difference read -3.8e-43
+    eps = 1.000000000000001 - 1.0
+    curve = BetaCDF(1.0, 1.0 + eps, 960.73802612457)
+    law = 2.0 * 960.73802612457 / 959.73802612457 * THRESHOLD * eps**2
+    assert 0.0 <= curve.nonconvexity() <= 2.0 * law
+
+
 def test_the_envelopes_slope_in_a_curve_parameter_is_exact_with_the_tangency_held() -> None:
     spend, n, step = 1.0, 3.0, 1e-6
     envelope = Envelope(Hill(2.0, n))

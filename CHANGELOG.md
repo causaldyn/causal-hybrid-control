@@ -282,6 +282,12 @@ still change).
   where it did on 97.2 % to 99.4 %, and the certificate trusts 1 to 3 steps. The tube is still one
   norm over the states: `tolerance` now says how to give each state its own scale (ADR 0091).
   Since 0.5.0.
+- **A saturation curve's `nonconvexity()` is never below 0.** It read the excess of the chord over
+  the curve at its peak as the difference of the two; where the convex stretch is shorter than
+  rounding resolves, the two agree to rounding and their difference can fall below 0:
+  `BetaCDF(1.0, 1.000000000000001, 960.73802612457)` read -3.8e-43, where its nonconvexity is
+  4.0e-31, below what the curve's values resolve. The excess is 0 at zero spend, so its largest
+  value now never reads below that; every other curve reads as before. Since 0.12.0.
 
 ### Notes
 
