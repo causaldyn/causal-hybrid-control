@@ -120,6 +120,20 @@ def test_time_varying_safe_step_is_the_last_step_whose_margin_holds() -> None:
         assert safe == steps or margins[safe + 1] > 0.0
 
 
+@pytest.mark.parametrize(
+    ("margins", "safe"),
+    [
+        ([-1.0, -1e-4, 0.0, 0.5, -1.0], 2),  # a margin of 0 holds; a later return does not count
+        ([-1.0, -0.5, -0.1], 2),  # every step holds: the horizon, not a step past it
+        ([0.1, -1.0], -1),  # step 0 is already past the constraint
+    ],
+)
+def test_last_safe_step_reads_the_prefix_that_holds(margins: list[float], safe: int) -> None:
+    from chc.uncertainty import _last_safe_step
+
+    assert _last_safe_step(jnp.asarray(margins)) == safe
+
+
 def test_bound_is_monotone_in_model_error_and_horizon() -> None:
     small = lipschitz_rollout_bound(1.0, 0.1, 0.05, 8)
     more_error = lipschitz_rollout_bound(1.0, 0.2, 0.05, 8)
