@@ -91,6 +91,16 @@ still change).
   channel `KoopmanModel.channel` is read at. The default `form="linear"` fits, predicts and
   returns its gain as before, bit for bit (ADR 0093).
 
+### Changed
+
+- **`koopman_lqr_gain` refuses a lift that does not close.** It returned the LQR gain of any
+  fitted lift, however little of the plant the lift carried: on the plant
+  `x' = A x + b u + c x1 u`, a linear lift leaves 0.73 of a feature's root mean square
+  unpredicted, and its gain came back as if the lift were exact. It now raises `ValueError`, naming the feature, where a
+  feature's held-out closure residual exceeds `max_residual` (0.5 by default) or could not be
+  read, as on a fit of one transition. A caller whose lift does not close gets an error where it
+  got a gain; `max_residual=np.inf` restores the old behaviour (ADR 0093). Since 0.2.0.
+
 ### Fixed
 
 - **`prescribe`'s barrier audit, `gamma*` and the held solve read the same in any units of each
