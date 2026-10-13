@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-13
+
 ### Added
 
 - **`CausalPlan.planned_cost_bias` states the planned cost's bias, with its sign, and the cost
@@ -6689,6 +6691,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.18.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.18.0
 [0.17.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.17.0
 [0.16.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.16.0
 [0.15.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.15.1
