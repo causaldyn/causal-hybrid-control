@@ -2,7 +2,9 @@
 
 **Status:** accepted, 2026-10-13. Amends the barrier's audit (ADR 0002, ADR 0085) and the rate
 error of `prescribe`'s tube (ADR 0087). Amended by ADR 0096, 2026-10-13: the tube's rate error
-adds the drift's own error, which part 2 left out.
+adds the drift's own error, which part 2 left out. Amended in 0.19.0: under `prescribe`
+`gamma*`'s best action is sought in the levers' box itself, not in the ellipsoid of part 1, which
+holds actions an asymmetric box forbids (the last section).
 
 ## Context
 
@@ -56,10 +58,12 @@ second audit of a held plan, which existed to replace the candidate box's `u_max
   in binary floating point, and the audit is the ball of radius `U`. The quickstart, notebook 09,
   the BOPTEST and pendulum case studies, and a plan whose levers share one box read as before, to
   the bit.
-- **The ellipsoid lies inside the box.** Its best action,
+- **The ellipsoid lies inside the box where the box is symmetric.** Its best action,
   `u_j = r_j^2 w_j / sqrt(sum_k (r_k w_k)^2)`, keeps each `|u_j| <= r_j`
   (`validation/barrier_lever_units.mac` (5)). The ball of radius `U` did not: in the tests'
-  two-force oscillator, boxes of 5 and 1, its best action pushed the second force to 2.2.
+  two-force oscillator, boxes of 5 and 1, its best action pushed the second force to 2.2. An
+  asymmetric box is another matter: `|u_j| <= r_j` holds `-r_j` where the box is `[0, r_j]`, and
+  the ellipsoid counted that action (amended below).
 - **Edges.** A lever whose number is 0 has no action in the set. The audit refuses a plan that moves
   it, and the held solve a box that lets it move. A free side, `inf`, leaves no units to read its
   lever by: the audit then reads the levers' own units with `U = inf`, as one number `inf` did.
@@ -193,3 +197,47 @@ the states moves the tube by its factor, and one state's scaling alone moves it 
 - **For the states, an additive `tolerance` vector.** Default-preserving, but the fit keeps no
   per-state lever errors and `_rate` bounds the field's slope in the caller's units; both would
   change for the vector alone, and the caller's rescaling already gives the reading.
+
+## Amendment, 0.19.0: `gamma*` seeks its best action in the box itself
+
+**Context.** Part 1 reads the action set as the ellipsoid `||D^+ u|| <= U` whose semi-axes are
+each lever's largest action `r_j = max(|lo_j|, |hi_j|)`. It lies inside a symmetric box, but an
+asymmetric one does not hold it: in `[0, 2]` the ellipsoid holds `-2`. On a log whose lever only
+pushes the state up, at a start where the drift already crosses the state's upper bound, no action
+of `[0, 2]` holds the first step at any level, and `gamma*` read 2.02, as it reads in `[-2, 2]`,
+where `-2` is admissible. A lever `prescribe` holds at its logged level `c` was read as
+`[-|c|, |c|]`. `gamma*` is the problem's ceiling over *admissible* actions; these were not.
+
+**Decision.** `certify_safety` and `BarrierConstraint` take `box=(lo, hi)`, one pair per lever,
+and `prescribe` passes its whole box, its held levers pinned at their levels. Given a box, a step's
+threshold is `d* = sup (<w, u> - D) / ||D^+ u||` over the box's nonzero actions, `D` the deficit
+the drift leaves and `w` the channel along the barrier, read in the coordinates `v = D^+ u` where
+the box is `[U lo / r, U hi / r]` and the channel `D w`; `inf` where the box holds zero and
+`D <= 0`, and `nan` where the supremum is negative, which certifies no level. The supremum lies on
+the path `clip(s w, lo, hi)`, `s >= 0`, since for each radius a best action of
+`<w, u> - d ||u||` is a best one of `<w, u>` within its own norm. On each linear piece of that path
+the ratio has one stationary point, `s = (alpha b - beta a) / (beta b - alpha c)`, so the answer is
+exact up to rounding (`chc.barrier._box_threshold`, `validation/barrier_box.mac`). `u_max` still
+sets each lever's units, so `gamma*` reads the same in any units of each lever, and defaults to
+each lever's largest action in the box. Without a box, `certify_safety` reads the ellipsoid as
+before.
+
+**Consequences.**
+
+- No forbidden action is counted. In `[0, 2]`, `[0.5, 2]`, or held at 1, the pushing lever's step
+  reads `nan` where the ellipsoid read 4.82, 4.82 and 1.91; the `prescribe` log above reads `nan`
+  where it read 2.02, held or not.
+- One lever in `[-U, U]` is the ball, and reads the closed form to rounding: the quickstart and
+  notebook 09 (whose heater's box is `[0, 3]`; it reads 33.49) do not move but in the last digits.
+- A symmetric box of several levers holds the ellipsoid and its corners: `gamma*` can only rise. On
+  the cross-module tests' `free` log bounded to `[0.8, 1.1]`, levers in `[-2, 2]`, it reads 11.00
+  where it read 10.88.
+- Where the box does not hold zero, a step the drift alone keeps is no longer `inf`: every
+  admissible action is moved by the effect's error, and the step's ceiling is finite.
+- The spread is still read from each lever's zero, as part 1 says; only the set changed.
+- Tests: `tests/test_held_barrier.py`.
+
+**Alternatives.** An ellipsoid inside the box, centred at its centre: it reads the box's units
+too, but it leaves the box's corners out, and its best action against a spread measured from zero
+has no closed form either. The box's corners alone: the supremum can lie inside a face, where the
+ratio's stationary point is.

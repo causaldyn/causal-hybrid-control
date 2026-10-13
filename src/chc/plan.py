@@ -57,7 +57,7 @@ from scipy.linalg import null_space
 from scipy.optimize import linprog, lsq_linear
 
 from chc.adjoint import control_gradient_adjoint
-from chc.barrier import barrier_gamma_star, identification_radius_threshold
+from chc.barrier import _box_threshold, barrier_gamma_star, identification_radius_threshold
 from chc.causal import _polynomial_features
 from chc.control import (
     Bound,
@@ -1156,12 +1156,17 @@ class BarrierConstraint:
     condition in units of each lever's own largest action, as :func:`certify_safety` does with the
     same numbers, and the audit after the solve reads them; ``None`` reads it in the levers' own
     units, one ball for all of them, as before. :func:`chc.prescribe` passes its box's. A lever
-    whose number is 0 must have a box that holds it at 0.
+    whose number is 0 must have a box that holds it at 0. ``box``, each lever's least and greatest
+    action, is the set the audit after the solve seeks ``gamma_star``'s best action in, as
+    :func:`certify_safety`'s ``box``; it does not bound the solve, whose box is
+    :func:`causal_plan`'s own. :func:`chc.prescribe` passes its whole box, which a candidate of its
+    lever selection narrows.
 
     Raises:
         ValueError: on a ``gamma`` below 1 or not finite, which is not a sensitivity level, a
             ``cvar_gap`` not positive or not finite, which scales no radius, a ``u_max`` with an
-            entry negative or nan, or none positive, which is no action's size, or an empty
+            entry negative or nan, or none positive, which is no action's size, a ``box`` not one
+            ``lo <= hi`` pair per lever, or with ``u_max`` one number, or an empty
             tuple of barriers, which holds nothing -- here, rather than after the solve that would
             have used them.
     """
@@ -1171,12 +1176,20 @@ class BarrierConstraint:
     gamma: float = 1.0
     cvar_gap: float = 1.0
     u_max: tuple[float, ...] | None = None
+    box: tuple[tuple[float, ...], tuple[float, ...]] | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.barrier, tuple) and not self.barrier:
             raise ValueError("an empty tuple of barriers holds no condition")
         if self.u_max is not None:
             object.__setattr__(self, "u_max", tuple(float(v) for v in _reach(self.u_max)))
+        if self.box is not None:
+            lo, hi = _box_sides(self.box, len(self.box[0]))
+            if self.u_max is not None and len(self.u_max) != lo.size:
+                raise ValueError(
+                    f"u_max has {len(self.u_max)} levers and box {lo.size}; both are one per lever"
+                )
+            object.__setattr__(self, "box", (tuple(lo.tolist()), tuple(hi.tolist())))
         if not 1.0 <= self.gamma < math.inf:
             raise ValueError(
                 "gamma is a marginal sensitivity model level and must be >= 1 and finite, got "
@@ -1566,7 +1579,8 @@ def _plan(
         alpha=barrier.alpha,
         gamma=barrier.gamma,
         cvar_gap=barrier.cvar_gap,
-        u_max=authority if barrier.u_max is None else barrier.u_max,
+        u_max=authority if barrier.u_max is None and barrier.box is None else barrier.u_max,
+        box=barrier.box,
     )
     return replace(plan, safety=audit), multipliers
 
@@ -1978,6 +1992,26 @@ def _reach(u_max: ArrayLike, levers: int | None = None) -> NDArray[np.float64]:
     return reach
 
 
+def _box_sides(
+    box: tuple[ArrayLike, ArrayLike], levers: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """``box`` as each lever's least and greatest action, checked: one ``lo <= hi`` pair per
+    lever, neither nan.
+
+    Raises:
+        ValueError: otherwise, since no set of actions is such a box.
+    """
+    lo, hi = (np.asarray(side, dtype=np.float64).reshape(-1) for side in box)
+    if lo.shape != (levers,) or hi.shape != (levers,):
+        raise ValueError(
+            f"box has sides of shapes {lo.shape} and {hi.shape}; each lever's least and greatest "
+            f"action are {levers}, one per lever"
+        )
+    if not np.all(lo <= hi):  # nan compares false
+        raise ValueError(f"box {lo.tolist()} to {hi.tolist()} holds a side above the other or nan")
+    return lo, hi
+
+
 def _act_within(reach: NDArray[np.float64], moved: NDArray[np.bool_], where: str) -> None:
     """Refuse a lever whose largest action is zero but which ``moved``: no action set holds it."""
     stuck = np.flatnonzero((reach == 0.0) & moved)
@@ -2021,6 +2055,7 @@ def certify_safety(
     gamma: float = 1.0,
     cvar_gap: float = 1.0,
     u_max: ArrayLike | None = None,
+    box: tuple[ArrayLike, ArrayLike] | None = None,
 ) -> SafetyCertificate:
     """Price a plan's barrier guarantee against a partially identified control effect (§40).
 
@@ -2068,6 +2103,18 @@ def certify_safety(
             number is 0 has no action in the set, and the plan must not move it. A number ``inf``,
             a free side's, leaves no units to read that lever by, and the audit reads the levers'
             own units, as ``u_max = inf`` does.
+        box: each lever's least and greatest action, ``(lo, hi)``, one of each per lever. Given,
+            ``gamma_star``'s best admissible action is sought in the box itself rather than in
+            ``u_max``'s ellipsoid, which holds actions an asymmetric box forbids: in ``[0, 2]`` it
+            holds ``-2``, and on a lever that can only push a state into its bound the ellipsoid's
+            ``-2`` read ``gamma_star`` 2.02 where no action of the box holds the step at any
+            level. ``u_max`` still sets each lever's units, and defaults to each lever's largest
+            action in the box, ``max(|lo|, |hi|)``; a lever whose number is 0 must be held at 0
+            by the box. A lever held at one level, ``lo == hi``, is read at that level. Where the
+            box holds zero and the drift alone clears a step, every level does, as with the
+            ellipsoid; where it does not hold zero, every admissible action is moved by the
+            effect's error and the step's ceiling is finite (:func:`chc.barrier._box_threshold`,
+            ``validation/barrier_box.mac``).
 
     Assumes the plant is control-affine and the uncertainty set isotropic (see :mod:`chc.barrier`;
     ``d*||u||`` is exact for a Euclidean ball, an outer bound otherwise), and audits the *model's*
@@ -2081,14 +2128,24 @@ def certify_safety(
             below 1 or not finite, which is not a sensitivity level; if the actuation budget
             backing ``gamma_star`` is non-positive, which asks how much confounding a controller
             with no authority tolerates; or if ``u_max`` per lever has an entry negative or nan,
-            none positive, not one per lever, or a 0 at a lever the plan moves.
+            none positive, not one per lever, or a 0 at a lever the plan moves; or if ``box`` is
+            not one ``lo <= hi`` pair per lever, comes with one number for ``u_max``, or lets a
+            lever whose number is 0 move.
     """
     if isinstance(barrier, tuple):
         if not barrier:
             raise ValueError("an empty tuple of barriers holds no condition")
         audits = [
             certify_safety(
-                plan, model, one, dt, alpha=alpha, gamma=gamma, cvar_gap=cvar_gap, u_max=u_max
+                plan,
+                model,
+                one,
+                dt,
+                alpha=alpha,
+                gamma=gamma,
+                cvar_gap=cvar_gap,
+                u_max=u_max,
+                box=box,
             )
             for one in barrier
         ]
@@ -2099,6 +2156,14 @@ def certify_safety(
         )
     states, actions = plan.trajectory[:-1], plan.actions
     shape, inverse = None, None
+    sides = None if box is None else _box_sides(box, actions.shape[1])
+    if sides is not None and u_max is not None and np.ndim(u_max) == 0:
+        raise ValueError(
+            "a box reads each lever's units from u_max per lever, or from itself; one number "
+            "reads the levers' units as one"
+        )
+    if sides is not None and u_max is None:
+        u_max = np.maximum(np.abs(sides[0]), np.abs(sides[1]))
     if u_max is None or np.ndim(u_max) == 0:
         authority = (
             float(np.asarray(u_max, dtype=np.float64))
@@ -2110,6 +2175,8 @@ def certify_safety(
         shape, inverse, authority = _action_shape(reach)
         if inverse is not None:
             _act_within(reach, np.any(np.asarray(actions) != 0.0, axis=0), "the plan moves it")
+        if sides is not None:
+            _act_within(reach, (sides[0] != 0.0) | (sides[1] != 0.0), "the box lets it move")
     size = _channel_size(model, states[0], actions.shape[1], shape)
     delta = confounding_robust_inflation(cvar_gap, 0.0, gamma) * size
     h_values, grad_norm, drift, channel = _barrier_terms(model, barrier, states, actions, dt)
@@ -2120,23 +2187,31 @@ def certify_safety(
     if not authority > 0.0:  # a nan passed `authority <= 0` and priced every step's threshold nan
         source = "u_max" if u_max is not None else "the plan's largest action (it never acts)"
         raise ValueError(f"gamma_star needs a positive actuation budget; {source} is {authority}")
-    per_step = tuple(
-        barrier_gamma_star(
+    shaped = np.asarray(channel if shape is None else channel * shape, dtype=np.float64)
+    if sides is None:
+        thresholds = [
             identification_radius_threshold(
                 drift=float(a), channel=float(c), u_max=authority, alpha_h=float(alpha * h)
-            ),
+            )
+            for a, c, h in zip(drift, np.linalg.norm(shaped, axis=1), h_values, strict=True)
+        ]
+    else:
+        # the box in the audit's coordinates, v = D^+ u, where the channel is D w: a lever with
+        # no action in the set is held at 0, and its column of D w is 0
+        lo, hi = (side if inverse is None else side * inverse for side in sides)
+        thresholds = [
+            _box_threshold(float(a), row, lo, hi, float(alpha * h))
+            for a, row, h in zip(drift, shaped, h_values, strict=True)
+        ]
+    per_step = tuple(
+        barrier_gamma_star(
+            threshold,
             cvar_gap,
             # the gap is a share of the channel's size: carried with the gradient, where a zero
             # channel reads as a flat barrier does, a radius of zero at every level
             size * float(n),
         )
-        for a, c, h, n in zip(
-            drift,
-            jnp.linalg.norm(channel if shape is None else channel * shape, axis=1),
-            h_values,
-            grad_norm,
-            strict=True,
-        )
+        for threshold, n in zip(thresholds, grad_norm, strict=True)
     )
     return SafetyCertificate(
         barrier_values=h_values,

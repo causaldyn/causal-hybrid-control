@@ -83,9 +83,9 @@ design record is
   state: `cvar_gap` is a share of the channel, 1 by default, so `Γ*` and the certified steps read
   the same in any units of the state or of the levers
   ([ADR 0085](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0085-gamma-star-s-gap-is-a-share-of-the-channel.md)).
-  Under `prescribe` the audit reads each lever in units of its own largest action: the action set
-  is the ellipsoid inside the box whose semi-axes those are, so `Γ*` and the certified steps read
-  the same in any units of each lever
+  Under `prescribe` the audit reads each lever in units of its own largest action, so `Γ*` and the
+  certified steps read the same in any units of each lever, and `Γ*` seeks its best action in the
+  levers' box itself, a lever held at its logged level at that level
   ([ADR 0091](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0091-the-barrier-reads-each-lever-in-units-of-its-own-largest-action.md)).
   Where two bounds tie, as at the midpoint of a two-sided one, `prescribe` audits each and reports
   the weaker `Γ*`: an upper bound on the joint ceiling, because each bound's is reached by its own

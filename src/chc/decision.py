@@ -2253,7 +2253,12 @@ def prescribe(
 
     margins = _margins(states, constraints)
     held = (
-        BarrierConstraint(margins, gamma=gamma, u_max=tuple(reach.tolist()))
+        BarrierConstraint(
+            margins,
+            gamma=gamma,
+            u_max=tuple(reach.tolist()),
+            box=(tuple(np.asarray(u_lo).tolist()), tuple(np.asarray(u_hi).tolist())),
+        )
         if hold_constraints
         else None
     )
@@ -2382,7 +2387,9 @@ def prescribe(
     if held is not None:
         safety = plan.safety  # solve() already audited it at the whole box's largest actions
     elif margins:
-        safety = certify_safety(plan, model, margins, dt, gamma=gamma, u_max=reach)
+        safety = certify_safety(
+            plan, model, margins, dt, gamma=gamma, u_max=reach, box=(u_lo, u_hi)
+        )
     else:
         safety = None
     gap = regret(plan)

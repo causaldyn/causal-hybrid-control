@@ -46,6 +46,20 @@ still change).
   working set is 41 columns, a tube moved by six columns left 6 of 61 of the grid out and read `ok`;
   it now does not. Since 0.4.0.
 
+- **`prescribe`'s `gamma_star` seeks its best admissible action in the levers' box.** It read the
+  action set as the ellipsoid whose semi-axes are each lever's largest action, `max(|lo|, |hi|)`,
+  which holds actions an asymmetric box forbids: in `[0, 2]` it holds `-2`. On a log whose lever
+  only pushes the state up, at a start where the drift already crosses the state's upper bound,
+  `gamma_star` read 2.02, as in `[-2, 2]`, though no action of `[0, 2]` holds the first step at
+  any level; it now reads nan, held in the solve or not. A lever held at one logged level is read
+  at that level, not as the interval of its size. `certify_safety` and `BarrierConstraint` take
+  the box as `box=(lo, hi)`; without it they read the ellipsoid as before, and a box that is the
+  ball, one lever in `[-U, U]`, reads its closed form to rounding. Where the box holds the
+  ellipsoid, a symmetric box of several levers, its corners are admissible too and `gamma_star`
+  can only rise: on the cross-module tests' `free` log bounded to `[0.8, 1.1]`, levers in
+  `[-2, 2]`, it reads 11.00 where it read 10.88. The quickstart's and notebook 09's certificates
+  do not move. Since 0.5.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added

@@ -49,7 +49,7 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from chc.uncertainty import confounding_robust_inflation
 
@@ -149,6 +149,65 @@ def identification_radius_threshold(
     if deficit > u_max * channel:
         return float("nan")
     return channel - deficit / u_max
+
+
+def _box_threshold(
+    drift: float, channel: ArrayLike, lo: ArrayLike, hi: ArrayLike, alpha_h: float
+) -> float:
+    """Largest radius ``d*`` whose certificate holds with the action in the box ``[lo, hi]``:
+    :func:`identification_radius_threshold` with the box in place of the ball ``||u|| <= U``.
+
+    A radius ``d`` is certified where some ``u`` in the box has ``<w, u> - d ||u|| >= D``,
+    ``w = channel``, ``D = -alpha_h - drift``. Where the box holds ``u = 0`` and ``D <= 0``, every
+    ``d`` is: ``inf``. Otherwise ``d* = sup (<w, u> - D) / ||u||`` over the box's nonzero actions,
+    and ``nan`` where that is negative, since then no action is certified even at ``d = 0``. Where
+    the box does not hold zero, a drift safe alone certifies no radius: every admissible action is
+    moved by the effect's error.
+
+    For each ``d``, a best action of ``<w, u> - d ||u||`` over the box is a best one of ``<w, u>``
+    over the box within its own norm, and that is ``clip(s w, lo, hi)`` for some ``s >= 0``. So the
+    supremum lies on that path, piecewise linear in ``s`` between the points where a coordinate
+    meets its bound. On each piece ``u = p + s q`` the ratio
+    ``(alpha + beta s) / sqrt(a + 2 b s + c s^2)`` has one stationary point,
+    ``s = (alpha b - beta a) / (beta b - alpha c)`` (``validation/barrier_box.mac``). The answer is
+    the largest ratio at the pieces' ends and those points; a piece without end adds the ratio's
+    limit along it, ``beta / sqrt(c)``.
+    """
+    deficit = -alpha_h - drift
+    channel = np.asarray(channel, dtype=np.float64)
+    lo = np.asarray(lo, dtype=np.float64)
+    hi = np.asarray(hi, dtype=np.float64)
+    if bool(np.all(lo <= 0.0) and np.all(hi >= 0.0)) and deficit <= 0.0:
+        return math.inf
+    with np.errstate(divide="ignore", invalid="ignore"):
+        meets = np.concatenate([lo / channel, hi / channel])
+    meets = np.unique(meets[np.isfinite(meets) & (meets > 0.0)])
+    starts = np.concatenate([[0.0], meets])
+
+    def ratio(action: NDArray[np.float64]) -> float:
+        size = float(np.linalg.norm(action))
+        return (float(channel @ action) - deficit) / size if size > 0.0 else -math.inf
+
+    best = -math.inf
+    for index, start in enumerate(starts):
+        stop = float(meets[index]) if index < meets.size else math.inf
+        best = max(best, ratio(np.clip(start * channel, lo, hi)))
+        inside = start + 1.0 if stop == math.inf else 0.5 * (start + stop)
+        free = (lo < inside * channel) & (inside * channel < hi)
+        if not free.any():
+            continue
+        q = np.where(free, channel, 0.0)
+        p = np.where(free, 0.0, np.clip(inside * channel, lo, hi))
+        alpha, beta = float(channel @ p) - deficit, float(channel @ q)
+        a, b, c = float(p @ p), float(p @ q), float(q @ q)
+        if stop == math.inf and c > 0.0:
+            best = max(best, beta / math.sqrt(c))
+        turn = beta * b - alpha * c
+        if turn != 0.0:
+            s = (alpha * b - beta * a) / turn
+            if start < s < stop:
+                best = max(best, ratio(p + s * q))
+    return best if best >= 0.0 else math.nan
 
 
 def barrier_gamma_star(threshold_radius: float, cvar_gap: float, grad_norm: float) -> float:

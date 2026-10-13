@@ -1,0 +1,42 @@
+/* The barrier's best action over the levers' box (chc.barrier._box_threshold, ADR 0091 as
+   amended).
+
+   A radius d is certified at a step where some action u of the box [lo, hi] has
+   <w, u> - d ||u|| >= D, D the deficit the drift leaves. So the largest is
+   d* = sup (<w, u> - D) / ||u|| over the box's nonzero actions. Its supremum lies on the path
+   u(s) = clip(s w, lo, hi), s >= 0, piecewise linear: on a piece u = p + s q, with
+   alpha = <w, p> - D, beta = <w, q>, a = <p, p>, b = <p, q>, c = <q, q>, the ratio is
+   rho(s) = (alpha + beta s) / sqrt(a + 2 b s + c s^2). */
+display2d : false$
+assume(c > 0, r > 0, a > 0)$
+
+rho(s) := (alpha + beta * s) / sqrt(a + 2 * b * s + c * s^2)$
+
+/* (1) rho's derivative times (a + 2 b s + c s^2)^(3/2) is linear in s, so a piece has one
+   stationary point, s = (alpha b - beta a) / (beta b - alpha c). */
+slope : ratsimp(diff(rho(s), s) * (a + 2 * b * s + c * s^2)^(3/2))$
+print("(1) rho' times the norm cubed:", expand(slope))$
+print("    its degree in s:", hipow(expand(slope), s), "  (=1)")$
+turn : (alpha * b - beta * a) / (beta * b - alpha * c)$
+print("    at s = (alpha b - beta a) / (beta b - alpha c):", ratsimp(subst(s = turn, slope)),
+      "  (=0)")$
+
+/* (2) A piece without end reads the limit beta / sqrt(c). */
+print("(2) limit of rho as s -> inf:", limit(rho(s), s, inf), "  (= beta/sqrt(c))")$
+
+/* (3) One lever in the symmetric box [-r, r] is the ball of radius r: the path ends at
+   u = r sign(w), and the ratio there is the closed form |w| - D / r of
+   chc.barrier.identification_radius_threshold. */
+ratio1(w, u) := (w * u - D) / abs(u)$
+print("(3) w > 0 at u = r, less |w| - D/r:",
+      ratsimp(subst(w = wp, ratio1(wp, r)) - (wp - D / r)), "  (=0)")$
+print("    w < 0 at u = -r, less |w| - D/r:",
+      ratsimp(ratio1(-wp, -r) - (wp - D / r)), "  (=0)")$
+
+/* (4) A worked box: one lever in [0, 2] whose channel along the barrier is w = -0.8 (the lever
+   pushes the state into the bound) and a deficit D = 0.5. Every action of the box reads
+   (-0.8 u - 0.5) / u < 0: no radius is certified, where the ellipsoid ||u|| <= 2 holds u = -2,
+   which reads (1.6 - 0.5) / 2 = 0.55. */
+print("(4) box [0, 2] at u = 2:", (-0.8 * 2 - 0.5) / 2, " at u = 0.01:", (-0.8 * 0.01 - 0.5) / 0.01,
+      "  (both < 0)")$
+print("    the ellipsoid's u = -2:", (-0.8 * (-2) - 0.5) / 2, "  (= 0.55)")$
