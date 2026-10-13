@@ -90,9 +90,11 @@ from chc.plan import (
     BarrierConstraint,
     CausalPlan,
     CertificateStatus,
+    DiagnosticStatus,
     PlanRegretBound,
     RegretStatus,
     RowPrice,
+    _diagnostic_status,
     _Rule,
     _Ruled,
     _RuledCost,
@@ -662,6 +664,31 @@ class DecisionCertificate:
     # along the plan.
     relations: tuple[LeverRelation, ...] = ()
     rule_levers: tuple[str, ...] = ()
+    # The plan's first-order check (:attr:`chc.plan.CausalPlan.stationarity_status`,
+    # :attr:`chc.plan.CausalPlan.violation_status`): its KKT residual and its largest breach of its
+    # box and rows, each beside its tolerance and read in the descent's own variables, so the same
+    # in any units of the levers, the states or the target. None where no plan was solved; the
+    # stationarity None too where the plan was held under the constraints' barrier.
+    stationarity: float | None = None
+    stationarity_tolerance: float | None = None
+    constraint_violation: float | None = None
+    violation_tolerance: float | None = None
+
+    @property
+    def stationarity_status(self) -> DiagnosticStatus | None:
+        """How ``stationarity`` reads against its tolerance (:data:`chc.plan.DiagnosticStatus`);
+        None where no plan was solved."""
+        if self.solver_status is None:
+            return None
+        return _diagnostic_status(self.stationarity, self.stationarity_tolerance)
+
+    @property
+    def violation_status(self) -> DiagnosticStatus | None:
+        """How ``constraint_violation`` reads against its tolerance; None where no plan was
+        solved."""
+        if self.solver_status is None:
+            return None
+        return _diagnostic_status(self.constraint_violation, self.violation_tolerance)
 
     @property
     def trustworthy_steps(self) -> int:
@@ -1289,6 +1316,7 @@ class Prescription:
             if certificate.solver_status is None
             else f"- solver: {certificate.solver_status} after "
             f"{certificate.solver_iterations} accepted steps",
+            *self._first_order_lines(),
             f"- regret bound on the fitted model: {_show(certificate.regret_bound)}"
             + ("" if certificate.regret_status is None else f", {certificate.regret_status}"),
             "",
@@ -1308,8 +1336,10 @@ class Prescription:
 
         No number is infinite or nan: one that is not finite is None (ADR 0055). Where None has
         more than one reading, a status beside it says which: ``regret_status`` ``refused`` for an
-        infinite ``regret_bound``, a selection step's own ``regret_status`` for its bound, and
-        ``gamma_star_status`` for ``gamma_star`` (:data:`GammaStarStatus`).
+        infinite ``regret_bound``, a selection step's own ``regret_status`` for its bound,
+        ``gamma_star_status`` for ``gamma_star`` (:data:`GammaStarStatus`), and
+        ``stationarity_status`` and ``violation_status`` for ``stationarity`` and
+        ``constraint_violation`` (:data:`chc.plan.DiagnosticStatus`).
         """
         certificate = self.certificate
         record = {
@@ -1343,6 +1373,12 @@ class Prescription:
                 "gamma_star_status": certificate.gamma_star_status,
                 "solver_status": certificate.solver_status,
                 "solver_iterations": certificate.solver_iterations,
+                "stationarity": certificate.stationarity,
+                "stationarity_tolerance": certificate.stationarity_tolerance,
+                "stationarity_status": certificate.stationarity_status,
+                "constraint_violation": certificate.constraint_violation,
+                "violation_tolerance": certificate.violation_tolerance,
+                "violation_status": certificate.violation_status,
                 "trustworthy_steps": certificate.trustworthy_steps,
                 "regret_bound": certificate.regret_bound,
                 "regret_status": certificate.regret_status,
@@ -1397,6 +1433,22 @@ class Prescription:
             "run": None if self.run is None else self.run.to_json(),
         }
         return _strict(record)
+
+    def _first_order_lines(self) -> list[str]:
+        certificate = self.certificate
+        if certificate.solver_status is None:
+            return []
+        stationarity = (
+            "not evaluated under the constraints' barrier"
+            if certificate.stationarity is None
+            else _show(certificate.stationarity)
+        )
+        return [
+            f"- first-order check: stationarity {stationarity} (tolerance "
+            f"{_show(certificate.stationarity_tolerance)}, {certificate.stationarity_status}), "
+            f"constraint violation {_show(certificate.constraint_violation)} (tolerance "
+            f"{_show(certificate.violation_tolerance)}, {certificate.violation_status})"
+        ]
 
     def _run_lines(self) -> list[str]:
         run = self.run
@@ -2303,6 +2355,10 @@ def prescribe(
         first_loaded_step=first_loaded,
         relations=kept.relations,
         rule_levers=rule_levers,
+        stationarity=plan.stationarity,
+        stationarity_tolerance=plan.stationarity_tolerance,
+        constraint_violation=plan.constraint_violation,
+        violation_tolerance=plan.violation_tolerance,
     )
     _log.info(
         "decision certified",
