@@ -298,6 +298,165 @@ class CausalPlan:
             residual=residual,
         )
 
+    def planned_cost_bias(
+        self,
+        covariance: ArrayLike,
+        *,
+        error_mean: ArrayLike | None = None,
+        tolerance: float | None = None,
+    ) -> PlannedCostBias:
+        """How far the plan's own cost reads from what it costs the plant, in expectation over the
+        estimate's error, and the cost corrected for it. *Experimental.*
+
+        The plan was made on an estimate of its one-step channel, off the plant's by ``e`` with
+        ``covariance = S = E[e e']``, ``e`` the estimate less the plant's channel, raveled as
+        :meth:`decision_weight` ravels it. Its planned cost, the task cost on the estimate, misses
+        what the plan pays on the plant by
+
+            E[J_true - J_model] = tr(W S) - tr(J_ee S) / 2 - J_e . E[e]
+
+        to second order (``validation/planned_cost_bias.mac``), with ``W`` the decision weight,
+        ``J_ee`` the task cost's Hessian in the channel at the fixed plan and ``J_e`` its gradient.
+        The first term is the optimiser's curse and is never negative: the plan fits its estimate's
+        error. The second is the curvature of the planned cost at the fixed plan, never positive
+        where that cost is convex in the channel. So the sum has no fixed sign. On one step of
+        ``x1 = a x0 + b u`` at the cost ``q x1^2 + r u^2`` it is ``a^2 q^2 x0^2 (2 r^2 - 5 b^2 q r
+        + b^4 q^2) / (r + b^2 q)^3`` per unit of ``S``, which is negative, a planned cost that
+        reads high, for ``q b^2 / r`` between ``(5 - sqrt 17)/2 = 0.438`` and ``(5 + sqrt 17)/2 =
+        4.562``, and positive outside. The third term is the estimate's own bias, ``error_mean``,
+        0 where it is not given; a cross-fitted channel's is of the order of ``S``.
+
+        Each term is read at the plan and the estimate, not at the plant's channel, which the
+        expansion is about: the difference is of higher order. It holds while the plan's active set
+        does not move with the error, so a plan that meets a bound or a row with a zero multiplier
+        is refused; and as far as ``W`` does, for an error small against the channel (see
+        :meth:`decision_weight`). ``residual`` is the stationarity miss along the free directions:
+        a solve stopped by its budget carries a first-order term that ``W`` does not.
+
+        :func:`chc.misspecification.planned_cost_bias` reads ``S`` off a fitted channel's
+        influence, over every parameter the fit holds, the drift's included.
+
+        Raises:
+            ValueError: on a ``covariance`` that is missing, not a finite ``(n m, n m)`` matrix, or
+                not symmetric positive semidefinite; an ``error_mean`` that is not a finite ``(n,
+                m)`` matrix; a plan that meets a bound or a row with a zero multiplier; and whatever
+                :meth:`decision_weight` refuses.
+        """
+        problem = _weighable(self._problem)
+        shape = self.actions.shape
+        states, actions = problem.x0.shape[0], shape[1]
+
+        def cost(u: Array, change: Array) -> Array:
+            return _perturbed_task_cost(problem, u.reshape(shape), change.reshape(states, actions))
+
+        matrix = _covariance(covariance, states * actions)
+        mean = None
+        if error_mean is not None:
+            mean = np.asarray(error_mean, dtype=np.float64)
+            if mean.shape != (states, actions) or not np.all(np.isfinite(mean)):
+                raise ValueError(
+                    f"error_mean must be a finite {(states, actions)} matrix, the one-step "
+                    f"channel's shape, got shape {mean.shape}"
+                )
+        terms = _bias_terms(problem, self.actions, cost, states * actions, tolerance)
+        return terms.bias(matrix, mean)
+
+
+def _covariance(covariance: ArrayLike | None, size: int) -> NDArray[np.float64]:
+    """``covariance`` as a symmetric ``(size, size)`` matrix, refused where it is missing, not
+    finite, not symmetric to rounding, or has an eigenvalue below rounding of its largest."""
+    if covariance is None:
+        raise ValueError(
+            "no covariance of the channel's error was given, so the bias has no S to read"
+        )
+    matrix = np.asarray(covariance, dtype=np.float64)
+    if matrix.shape != (size, size) or not np.all(np.isfinite(matrix)):
+        raise ValueError(
+            f"covariance must be a finite ({size}, {size}) matrix, got shape {matrix.shape}"
+        )
+    scale = float(np.abs(matrix).max(initial=0.0))
+    slack = 1e3 * np.finfo(np.float64).eps * scale
+    if float(np.abs(matrix - matrix.T).max(initial=0.0)) > slack:
+        raise ValueError("covariance must be symmetric, and it is not to rounding")
+    matrix = (matrix + matrix.T) / 2.0
+    if size and float(np.linalg.eigvalsh(matrix)[0]) < -slack:
+        raise ValueError(
+            "covariance must be positive semidefinite, and it has an eigenvalue below zero"
+        )
+    return matrix
+
+
+@dataclass(frozen=True)
+class _BiasTerms:
+    """What :class:`PlannedCostBias` reads off a plan, before ``S``: the decision weight, the task
+    cost's gradient and Hessian in the perturbation at the fixed plan, and the cost itself."""
+
+    weight: NDArray[np.float64]
+    gradient: NDArray[np.float64]
+    hessian: NDArray[np.float64]
+    planned_cost: float
+    free: int
+    residual: float
+
+    def optimism(self, covariance: NDArray[np.float64]) -> float:
+        return float(np.trace(self.weight @ covariance))
+
+    def bias(
+        self,
+        covariance: NDArray[np.float64],
+        mean: NDArray[np.float64] | None,
+        unseen: int | None = None,
+    ) -> PlannedCostBias:
+        return PlannedCostBias(
+            planned_cost=self.planned_cost,
+            optimism=self.optimism(covariance),
+            curvature=-0.5 * float(np.trace(self.hessian @ covariance)),
+            first_order=0.0 if mean is None else -float(self.gradient @ mean.ravel()),
+            free=self.free,
+            residual=self.residual,
+            unseen=unseen,
+        )
+
+
+def _bias_terms(
+    problem: _PlanProblem,
+    actions: Array,
+    cost: Callable[[Array, Array], Array],
+    size: int,
+    tolerance: float | None,
+) -> _BiasTerms:
+    """:class:`_BiasTerms` for a plan at ``actions`` whose task cost under a perturbation of
+    ``size`` entries is ``cost(actions.ravel(), change)``; refused where the plan meets a bound or a
+    row with a zero multiplier, whose regret is piecewise and whose bias is then not one
+    expansion."""
+    weight, free, weakly_active, residual = _regret_curvature(
+        problem, actions, cost, size, tolerance
+    )
+    if weakly_active:
+        raise ValueError(
+            f"the plan meets {weakly_active} bound(s) or row(s) with a zero multiplier, so its "
+            "active set moves with the channel's error, either way, and the planned cost's bias "
+            "is not one expansion"
+        )
+    flat = actions.ravel()
+    still = jnp.zeros(size, dtype=actions.dtype)
+    gradient = np.asarray(jax.grad(cost, argnums=1)(flat, still), dtype=np.float64)
+    hessian = np.asarray(jax.hessian(cost, argnums=1)(flat, still), dtype=np.float64)
+    planned = float(cost(flat, still))
+    if not (np.all(np.isfinite(gradient)) and np.all(np.isfinite(hessian))):
+        raise ValueError(
+            "the task cost's derivatives in the channel at the plan are not finite: the planned "
+            "cost has no bias to read"
+        )
+    return _BiasTerms(
+        weight=weight,
+        gradient=gradient,
+        hessian=(hessian + hessian.T) / 2.0,
+        planned_cost=planned,
+        free=free,
+        residual=residual,
+    )
+
 
 def _weighable(problem: _PlanProblem | None) -> _PlanProblem:
     """The plan's problem, refused where its regret in an error of the model is not quadratic."""
@@ -550,6 +709,52 @@ class DecisionWeight:
             )
         flat = entries.ravel()
         return float(flat @ self.matrix @ flat) / 2.0
+
+
+CostBiasDirection = Literal["optimistic", "pessimistic", "unbiased"]
+"""Which way a planned cost reads against what the plan pays the plant, in expectation:
+``optimistic`` where it reads low, a positive bias, and ``pessimistic`` where it reads high."""
+
+
+@dataclass(frozen=True)
+class PlannedCostBias:
+    """A plan's planned cost, its bias against what the plan pays the plant, with its sign, and the
+    cost corrected for it, to second order in the estimate's error. *Experimental.*
+
+    See :meth:`CausalPlan.planned_cost_bias`.
+    """
+
+    planned_cost: float  # the task cost the plan reads on the model it was made on
+    # tr(W S): the optimiser's curse, what the plan pays for fitting its estimate's error; >= 0
+    optimism: float
+    # -tr(J_ee S) / 2: the planned cost's curvature in the channel at the fixed plan; <= 0 where it
+    # is convex there
+    curvature: float
+    # -J_e . E[e]: the estimate's own bias carried at first order; 0 if not given
+    first_order: float
+    free: int  # the directions the plan may move in: actions off the box, less the binding rows
+    residual: float  # stationarity miss along the free directions, over max(1, |gradient there|)
+    # directions the log's actions never moved that the plan's regret weighs, where the error was
+    # read off a fit (:func:`chc.misspecification.planned_cost_bias`): the fit's covariance holds no
+    # error along them, so the bias leaves them out. None where no fit was read.
+    unseen: int | None = None
+
+    @property
+    def bias(self) -> float:
+        """``E[J_true - J_model]``: what the plan pays the plant less what it reads, in
+        expectation; positive where the planned cost reads low."""
+        return self.optimism + self.curvature + self.first_order
+
+    @property
+    def corrected_cost(self) -> float:
+        """The planned cost plus its bias: what the plan pays the plant, in expectation."""
+        return self.planned_cost + self.bias
+
+    @property
+    def direction(self) -> CostBiasDirection:
+        """Which way the planned cost reads (:data:`CostBiasDirection`)."""
+        bias = self.bias
+        return "optimistic" if bias > 0.0 else "pessimistic" if bias < 0.0 else "unbiased"
 
 
 @dataclass(frozen=True)

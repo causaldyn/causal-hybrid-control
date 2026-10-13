@@ -18,11 +18,15 @@ the log's projection of ``dB u`` on the drift's features: their models differ by
 actions averaged -1, 0 and +1 it read 0.14, 0.44 and 2.8 of the regret between the two fits'
 plans, where this module's quadratic read 0.49, 0.54 and 0.49
 (``scripts/bench_misspecification.py``, section ``metric``).
+
+:func:`planned_cost_bias` reads the same envelope with one fit's own covariance: how far a plan's
+cost on the fit reads from what it pays the plant, in expectation over the fit's error.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -33,7 +37,14 @@ from scipy import integrate
 from chc.cost import total_cost
 from chc.dynamics import HybridDynamics
 from chc.dynamics_id import CausalDynamicsFit, _clustered_squares
-from chc.plan import CausalPlan, _regret_curvature, _weighable
+from chc.plan import (
+    CausalPlan,
+    PlannedCostBias,
+    _bias_terms,
+    _PlanProblem,
+    _regret_curvature,
+    _weighable,
+)
 from chc.residual import ControlAffineResidual
 
 
@@ -193,19 +204,8 @@ def misspecification_cost(
         _clustered_squares(other - influence, clusters, periods),
         key=lambda square: float(np.trace(weight @ square)),
     )
-    # W vanishes along a direction the plan does not move to second order in rounding, so the
-    # square root of the precision separates it from one the plan weighs at all. Both are read at
-    # each parameter's scale on the log, on an orthonormal basis of unmoved's span there, where
-    # they read the same in any units of the state and of the actions. In raw units those set the
-    # parameters' sizes apart: with both states logged at 1e12 of their units, and the problem
-    # with them, the two directions a plan weighed read as weighing nothing.
     size = np.asarray(reference._parameter_size, dtype=np.float64)
     scaled = weight / np.outer(size, size)
-    weighed = np.zeros(0)
-    if unmoved.shape[1]:
-        basis = np.linalg.qr(unmoved * size[:, None])[0]
-        weighed = np.linalg.eigvalsh(basis.T @ scaled @ basis)
-    floor = math.sqrt(np.finfo(np.float64).eps) * float(np.linalg.norm(scaled, 2))
     ws = weight @ covariance
     trace, trace_squared = float(np.trace(ws)), float(np.trace(ws @ ws))
     leverage = max(float(d @ ws @ weight @ d) - trace_squared, 0.0)
@@ -220,8 +220,89 @@ def misspecification_cost(
         cost_error=math.sqrt(4.0 * leverage + 2.0 * trace_squared) / 2.0,
         noise=trace / 2.0,
         p_value=_chi_square_mixture_survival(quadratic, mixture),
-        unseen=int(np.sum(weighed > floor)),
+        unseen=_unseen(weight, unmoved, size),
     )
+
+
+def planned_cost_bias(
+    plan: CausalPlan, fit: CausalDynamicsFit, *, tolerance: float | None = None
+) -> PlannedCostBias:
+    """:meth:`chc.plan.CausalPlan.planned_cost_bias` with ``S`` the fit's own covariance: how far
+    ``plan``, made on ``fit``'s model, reads its cost from what it pays the plant, in expectation
+    over the fit's error, and the cost corrected for it. *Experimental.*
+
+    The error is over every parameter the fit holds, the channel's and the drift's, in the order of
+    :attr:`chc.dynamics_id.CausalDynamicsFit.influence`: the drift is fitted on what the channel
+    leaves of the rate, so it carries the channel's error, and the plan pays for both. ``W``,
+    ``J_ee`` and ``J_e`` are read with the model moved by a residual of the fit's class inside its
+    field, rolled out by RK4 as the plan is (:func:`misspecification_cost`'s envelope). ``S`` sums
+    the influence's outer products row by row and state by state, within each cluster for a fit
+    given ``clusters``, two-way the read of the three with the largest ``tr(W S)``, and across the
+    periods' cosines for one given ``periods``, as the channel's error is read. The fit's own
+    first-order bias is not known, so ``first_order`` is 0.
+
+    ``S`` holds no error along a direction of the channel the log's actions never moved
+    (:attr:`chc.dynamics_id.CausalDynamicsFit.unmoved`): the fit holds the channel there, it does
+    not estimate it, and the bias leaves those directions out. ``unseen`` counts the ones the
+    plan's regret weighs, as :func:`misspecification_cost` counts them; read the bias as covering
+    the rest only.
+
+    Raises:
+        ValueError: on a fit whose channel is not identified; one made without
+            ``influence=True``, whose covariance is missing; one without each parameter's scale
+            (made by hand, or kept from a release before 0.15.1); one that carries drivers; a plan
+            not made on the fit's model; and whatever
+            :meth:`chc.plan.CausalPlan.planned_cost_bias` refuses.
+    """
+    if not fit.identified:
+        raise ValueError(
+            "the fit's channel is not identified, so its error has no covariance to read"
+        )
+    if fit.influence is None or fit.unmoved is None:
+        raise ValueError(
+            "the fit carries no influence, so the covariance of its error is missing: fit it by "
+            "fit_causal_residual with influence=True"
+        )
+    if fit._parameter_size is None:
+        raise ValueError(
+            "the fit carries unmoved but not each parameter's scale on the log, which "
+            "fit_causal_residual keeps beside it since 0.15.1: refit it there"
+        )
+    if fit.drivers:
+        raise ValueError(
+            f"the fit carries drivers {list(fit.drivers)}: their gain's error enters through the "
+            "plan's forecast, which this does not read"
+        )
+    problem, cost, count = _parameter_cost(plan, fit.residual, "the fit")
+    terms = _bias_terms(problem, plan.actions, cost, count, tolerance)
+    covariance = max(
+        _clustered_squares(np.asarray(fit.influence), fit.clusters, fit.periods),
+        key=terms.optimism,
+    )
+    size = np.asarray(fit._parameter_size, dtype=np.float64)
+    unmoved = np.asarray(fit.unmoved, dtype=np.float64)
+    return terms.bias(covariance, None, _unseen(terms.weight, unmoved, size))
+
+
+def _unseen(
+    weight: NDArray[np.float64], unmoved: NDArray[np.float64], size: NDArray[np.float64]
+) -> int:
+    """How many of ``unmoved``'s directions the regret's curvature ``weight`` weighs.
+
+    W vanishes along a direction the plan does not move to second order in rounding, so the square
+    root of the precision separates it from one the plan weighs at all. Both are read at each
+    parameter's scale on the log, ``size``, on an orthonormal basis of unmoved's span there, where
+    they read the same in any units of the state and of the actions. In raw units those set the
+    parameters' sizes apart: with both states logged at 1e12 of their units, and the problem with
+    them, the two directions a plan weighed read as weighing nothing.
+    """
+    scaled = weight / np.outer(size, size)
+    weighed = np.zeros(0)
+    if unmoved.shape[1]:
+        basis = np.linalg.qr(unmoved * size[:, None])[0]
+        weighed = np.linalg.eigvalsh(basis.T @ scaled @ basis)
+    floor = math.sqrt(np.finfo(np.float64).eps) * float(np.linalg.norm(scaled, 2))
+    return int(np.sum(weighed > floor))
 
 
 def _parameter_weight(
@@ -229,6 +310,16 @@ def _parameter_weight(
 ) -> NDArray[np.float64]:
     """``W`` over :func:`_parameters`' order: the regret's curvature at ``plan``, made on
     ``residual``'s model, with the model moved by a residual of its class inside its field."""
+    problem, cost, size = _parameter_cost(plan, residual)
+    return _regret_curvature(problem, plan.actions, cost, size, tolerance)[0]
+
+
+def _parameter_cost(
+    plan: CausalPlan, residual: ControlAffineResidual, name: str = "the reference fit"
+) -> tuple[_PlanProblem, Callable[[Array, Array], Array], int]:
+    """The task cost of ``plan``, made on ``residual``'s model, with the model moved by a residual
+    of its class inside its field, as ``cost(actions.ravel(), change)`` over :func:`_parameters`'
+    order; with the plan's problem and the number of parameters."""
     problem = _weighable(plan._problem)
     model = problem.model
     if not (
@@ -238,8 +329,8 @@ def _parameter_weight(
         and np.array_equal(_parameters(model.residual), _parameters(residual))
     ):
         raise ValueError(
-            "the plan was not made on the reference fit's model: its model must be a "
-            "HybridDynamics whose residual is the reference fit's"
+            f"the plan was not made on {name}'s model: its model must be a HybridDynamics whose "
+            f"residual is {name}'s"
         )
     shape = plan.actions.shape
 
@@ -252,8 +343,7 @@ def _parameter_weight(
             problem.cost,
         )
 
-    size = _parameters(residual).size
-    return _regret_curvature(problem, plan.actions, cost, size, tolerance)[0]
+    return problem, cost, _parameters(residual).size
 
 
 def _parameters(residual: ControlAffineResidual) -> NDArray[np.float64]:

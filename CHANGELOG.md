@@ -7,6 +7,29 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`CausalPlan.planned_cost_bias` states the planned cost's bias, with its sign, and the cost
+  corrected for it.** *Experimental.* A plan made on an estimated channel reads its cost on the
+  estimate; in expectation over the estimate's error it pays `tr(W S) - tr(J_ee S) / 2 - J_e .
+  E[e]` more on the plant, `W` the decision weight and `S` the error's covariance. The first term
+  is never negative, the second never positive where the cost is convex in the channel, so the
+  sign is the plan's own: on one step it reads high for `q b^2 / r` between 0.438 and 4.562 and
+  low outside. On a Monte Carlo of 4000 least-squares refits of a two-lever plant the bias read
+  0.01274 where the gaps averaged 0.01290 +- 0.00027; the optimism alone read 0.01552.
+  `chc.misspecification.planned_cost_bias(plan, fit)` reads `S` off the fit's influence, the
+  drift's error included. Both refuse a plan whose active set moves with the error and a missing
+  covariance (ADR 0088).
+- **`chc.regret.minimax_regret_move` says how much of a move to make when confounding and the
+  estimate's noise both leave its sign open.** *Experimental.* With the move's value in
+  `[beta - k, beta + k]`, `k = (Gamma - 1)/(Gamma + 1) G`, and its estimate `N(beta, sigma^2)`, it
+  returns Montiel Olea, Qiu and Stoye's minimax-regret rule (Review of Economic Studies 2026): the
+  whole move on a positive estimate while `k <= sqrt(pi/2) sigma`, and past it the share
+  `clip((estimate + rho) / (2 rho), 0, 1)`, whose worst regret is `k / 2` where the sign rule's
+  is 1.051 at `k = 2 sigma` and 3.371 at `k = 5 sigma`. `full_move_gamma` is the largest `Gamma`
+  at which the estimate still makes the whole move; noise moves it past the noiseless flip
+  (ADR 0089).
+
 ### Notes
 
 - **Public statements that the 2024–26 literature refuted or dated are corrected.** Each changed

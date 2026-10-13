@@ -1,0 +1,79 @@
+/* The minimax-regret move behind chc.regret.minimax_regret_move (Montiel Olea, Qiu and Stoye,
+   Review of Economic Studies 2026, arXiv 2312.17623 v3, Section 4.2, eq. (4.3)).
+
+   A move's estimated value is b ~ N(beta, sigma^2), and its true value lies in [beta - k, beta + k].
+   A rule makes the move with probability d(b). At a value u its regret is u (1 - E d) for u > 0
+   and -u E d for u < 0; its worst case at beta is
+       R(beta) = max((beta + k)_+ (1 - E d), (k - beta)_+ E d).
+   For k <= sqrt(pi/2) sigma the sign rule d = 1{b >= 0} is minimax regret; past it the rule that
+   randomises least is d = clip((b + rho) / (2 rho), 0, 1), rho = k (1 - 2 Phi(-rho / sigma)), and
+   the minimax regret is k / 2.
+
+   STEP 1  the fixed point: g(rho) = rho - k erf(rho / (sigma sqrt 2)) has g(0) = 0, is convex, and
+           g'(0) < 0 exactly when k > sqrt(pi/2) sigma; its minimum is at
+           rho_m = sigma sqrt(2 log(k sqrt(2/pi) / sigma))
+   STEP 2  rho at k = 2 and k = 5, sigma = 1
+   STEP 3  E d of the linear rule in closed form, against quadrature
+   STEP 4  the linear rule's worst regret over beta is k / 2
+   STEP 5  the sign rule's worst regret, max over beta of (beta + k) Phi(-beta / sigma): 1.0509 at
+           k = 2 and 3.371 at k = 5; k / 2 at the threshold, where both rules meet
+   STEP 6  the largest half-width at which an estimate b still moves in full:
+           k_full = |b| / erf(|b| / (sigma sqrt 2)), whose fixed point is |b|
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/minimax_regret_move.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 12$
+
+Phi(z) := (1 + erf(z/sqrt(2)))/2$
+phi(z) := exp(-z^2/2)/sqrt(2*%pi)$
+
+print("=== STEP 1: the fixed point ===")$
+g(p) := p - k*erf(p/(sigma*sqrt(2)))$
+print("STEP 1a g(0) =", g(0), " g'(0) =", ratsimp(subst(p = 0, diff(g(p), p))),
+      " (negative iff k > sqrt(pi/2) sigma)")$
+print("STEP 1b g'' =", ratsimp(diff(g(p), p, 2)), " (>= 0 for p >= 0: convex)")$
+rhom : sigma*sqrt(2*log(k*sqrt(2/%pi)/sigma))$
+print("STEP 1c g'(rho_m) =", ratsimp(radcan(subst(p = rhom, diff(g(p), p)))), " (0)")$
+print("STEP 1d sqrt(pi/2) =", float(sqrt(%pi/2)))$
+
+print("=== STEP 2: rho at k = 2 and k = 5, sigma = 1 ===")$
+rho2 : find_root(subst([k = 2, sigma = 1], g(p)), p, 0.5, 2)$
+rho5 : find_root(subst([k = 5, sigma = 1], g(p)), p, 0.5, 5)$
+print("STEP 2 rho(k = 2) =", rho2, " rho(k = 5) =", rho5)$
+
+print("=== STEP 3: E d of the linear rule ===")$
+/* E (Y - c)_+ for Y ~ N(m, s^2) */
+plus(m, s, c) := (m - c)*Phi((m - c)/s) + s*phi((m - c)/s)$
+ed(m, s, r) := (plus(m, s, -r) - plus(m, s, r))/(2*r)$
+edq(m, s, r) := quad_qags(min(1, max(0, (y + r)/(2*r)))*exp(-(y - m)^2/(2*s^2))/(s*sqrt(2*%pi)),
+                          y, m - 14*s, m + 14*s)[1]$
+print("STEP 3 closed form - quadrature at beta = -1, 0.3, 2.5:",
+      map(lambda([m], float(ed(m, 1, rho2) - edq(m, 1, rho2))), [-1, 0.3, 2.5]), " (~0)")$
+
+print("=== STEP 4: the linear rule's worst regret ===")$
+worst(m, kk, e) := max(max(m + kk, 0)*(1 - e), max(kk - m, 0)*e)$
+grid : makelist(-8 + i/50, i, 0, 800)$
+print("STEP 4 max over beta, k = 2:", lmax(map(lambda([m], float(worst(m, 2, ed(m, 1, rho2)))), grid)),
+      " (1)")$
+print("STEP 4 max over beta, k = 5:", lmax(map(lambda([m], float(worst(m, 5, ed(m, 1, rho5)))), grid)),
+      " (2.5)")$
+
+print("=== STEP 5: the sign rule's worst regret ===")$
+/* E d = Phi(beta / sigma); by symmetry the worst case is (beta + k) Phi(-beta / sigma) */
+signworst(kk) := block([bstar],
+  bstar : find_root(Phi(-x) - (x + kk)*phi(x), x, -kk, 3),
+  float((bstar + kk)*Phi(-bstar)))$
+print("STEP 5 k = 2:", signworst(2), " (1.0509); k = 5:", signworst(5), " (3.371)")$
+print("STEP 5 the grid's max, k = 2:", lmax(map(lambda([m], float(worst(m, 2, Phi(m)))), grid)))$
+kt : sqrt(%pi/2)$
+print("STEP 5 at the threshold: d/dbeta at 0 =", ratsimp(subst(x = 0, diff((x + kt)*Phi(-x), x))),
+      " (0), value - k/2 =", ratsimp(subst(x = 0, (x + kt)*Phi(-x)) - kt/2), " (0)")$
+
+print("=== STEP 6: where an estimate still moves in full ===")$
+kfull(bb, s) := bb/erf(bb/(s*sqrt(2)))$
+print("STEP 6 g(|b|) at k = k_full:", ratsimp(subst([k = kfull(bb, sigma)], g(bb))), " (0)")$
+print("STEP 6 k_full(1.5, 1) =", float(kfull(1.5, 1)), " rho at that k:",
+      find_root(subst([k = kfull(1.5, 1), sigma = 1], g(p)), p, 0.5, 5), " (1.5)")$
+print("STEP 6 the limit b -> 0:", limit(kfull(bb, s), bb, 0, plus), " (sqrt(pi/2) s)")$

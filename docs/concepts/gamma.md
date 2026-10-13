@@ -135,6 +135,13 @@ can absorb. Past the flip the move's sign is not identified, and the robust crit
 estimate's way, hedged. `tests/test_reallocation_flip.py` holds all three, the first against a grid
 of `Γ`.
 
+The flip reads the estimate as the value's centre. `chc.regret.minimax_regret_move` carries the
+estimate's noise beside `Γ` (Montiel Olea, Qiu and Stoye, Review of Economic Studies 2026): while
+`k = (Γ-1)/(Γ+1)·G` is at most `√(π/2)` standard errors the whole move on a positive estimate is
+minimax regret; past it the rule makes a share of the move, and the worst regret is `k/2`. Its
+`full_move_gamma` is the largest `Γ` at which the estimate still makes the whole move, at or past
+the flip (ADR 0089).
+
 ## Spend it on performance
 
 The radius widens a pessimism radius (never optimistic, tight at `Γ = 1`, monotone). The

@@ -1,0 +1,94 @@
+/* The planned cost's bias behind chc.plan.CausalPlan.planned_cost_bias.
+
+   A plan u*(th) minimises J(u; th), the task cost on a channel th. Planned on an estimate
+   th_hat = th + d, the plan reads its cost as J(u*(th_hat); th_hat) and pays J(u*(th_hat); th) on
+   the plant. With S = E[d d'] the gap between the two has the expectation
+       E[J_true - J_model] = tr(W S) - tr(J_thth S) / 2 - J_th . E[d] + o(|S|),
+   W = J_thu J_uu^-1 J_uth the decision weight and J_thth the cost's Hessian in the channel at the
+   fixed plan. The first term is the optimiser's curse, >= 0; the second the plug-in's curvature,
+   <= 0 where J is convex in th; so no sign holds for the sum.
+
+   STEP 1  one step, J = q x1^2 + r u^2, x1 = a x0 + b u: the gap's Taylor coefficients in d, and
+           the second one equal to W - J_thth / 2 and to a^2 q^2 x0^2 (2 r^2 - 5 b^2 q r + b^4 q^2)
+           / (r + b^2 q)^3
+   STEP 2  its sign: the roots in rho = q b^2 / r are (5 -+ sqrt(17)) / 2
+   STEP 3  the library's convention (QuadraticCost's halves, RK4's one-step map, a target): the
+           same coefficient with y = phi x0 - s, q = qf / 2, r = r / 2
+   STEP 4  two levers on one step: the gap's Hessian in d is 2 W - J_thth, entry by entry
+   STEP 5  the numbers the unit test pins
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/planned_cost_bias.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 16$
+
+print("=== STEP 1: one step ===")$
+J(v, th) := q*(a*x0 + th*v)^2 + r*v^2$
+best(th) := -q*a*x0*th/(r + q*th^2)$
+print("STEP 1a the plan is stationary:", ratsimp(subst(v = best(th), diff(J(v, th), v))), " (0)")$
+gap(d) := J(best(b + d), b) - J(best(b + d), b + d)$
+c0 : ratsimp(gap(0))$
+c1 : ratsimp(subst(d = 0, diff(gap(d), d)))$
+c2 : ratsimp(subst(d = 0, diff(gap(d), d, 2))/2)$
+jth : subst([v = best(b), th = b], diff(J(v, th), th))$
+print("STEP 1b order 0:", c0, " (0); order 1 + J_th:", ratsimp(c1 + jth), " (0)")$
+claimed : a^2*q^2*x0^2*(2*r^2 - 5*b^2*q*r + b^4*q^2)/(r + b^2*q)^3$
+print("STEP 1c order 2 - claimed:", ratsimp(c2 - claimed), " (0)")$
+weight : subst([v = best(b), th = b], diff(J(v, th), v, 1, th, 1)^2/diff(J(v, th), v, 2))$
+curve : subst([v = best(b), th = b], diff(J(v, th), th, 2))$
+print("STEP 1d order 2 - (W - J_thth / 2):", ratsimp(c2 - (weight - curve/2)), " (0)")$
+print("STEP 1e W =", factor(ratsimp(weight)), " J_thth =", factor(ratsimp(curve)))$
+
+print("=== STEP 2: the sign ===")$
+roots : solve(rho^2 - 5*rho + 2 = 0, rho)$
+print("STEP 2a claimed / (a^2 q^2 x0^2 r^2 / (r + b^2 q)^3) at rho = q b^2 / r:",
+      ratsimp(subst(q = rho*r/b^2, claimed*(r + b^2*q)^3/(a^2*q^2*x0^2*r^2))), " (rho^2 - 5 rho + 2)")$
+print("STEP 2b roots:", roots, " =", float(map(rhs, roots)))$
+print("STEP 2c signs at rho = 0.2, 2, 8:",
+      map(lambda([p], sign(float(p^2 - 5*p + 2))), [0.2, 2.0, 8.0]), " (pos, neg, pos)")$
+
+print("=== STEP 3: the library's convention ===")$
+Jl(v, th) := qq*(x0 - s)^2/2 + rr*v^2/2 + qf*(phi*x0 + th*v - s)^2/2$
+bestl(th) := rhs(first(solve(diff(Jl(v, th), v) = 0, v)))$
+gapl(d) := Jl(bestl(g + d), g) - Jl(bestl(g + d), g + d)$
+c2l : ratsimp(subst(d = 0, diff(gapl(d), d, 2))/2)$
+libform : (phi*x0 - s)^2*qf^2*(2*rr^2 - 5*g^2*qf*rr + g^4*qf^2)/(2*(rr + g^2*qf)^3)$
+print("STEP 3a order 2 - the mapped claim:", ratsimp(c2l - subst(a = (phi*x0 - s)/x0, subst(
+      [q = qf/2, r = rr/2, b = g], claimed))), " (0)")$
+print("STEP 3b order 2 - y^2 qf^2 (2 r^2 - 5 g^2 qf r + g^4 qf^2) / (2 (r + g^2 qf)^3):",
+      ratsimp(c2l - libform), " (0)")$
+c1l : ratsimp(subst(d = 0, diff(gapl(d), d)))$
+jthl : ratsimp(subst([v = bestl(g), th = g], diff(Jl(v, th), th)))$
+print("STEP 3c order 1 + J_th:", ratsimp(c1l + jthl), " (0); J_th =", factor(jthl))$
+
+print("=== STEP 4: two levers on one step ===")$
+J2(v1, v2, t1, t2) := q*(y + t1*v1 + t2*v2)^2 + r1*v1^2 + r2*v2^2$
+best2(t1, t2) := block([sol],
+  sol : solve([diff(J2(v1, v2, t1, t2), v1) = 0, diff(J2(v1, v2, t1, t2), v2) = 0], [v1, v2]),
+  [rhs(first(first(sol))), rhs(second(first(sol)))])$
+gap2(d1, d2) := block([p], p : best2(b1 + d1, b2 + d2),
+  J2(p[1], p[2], b1, b2) - J2(p[1], p[2], b1 + d1, b2 + d2))$
+hgap : ratsimp(subst([d1 = 0, d2 = 0], matrix(
+  [diff(gap2(d1, d2), d1, 2), diff(gap2(d1, d2), d1, 1, d2, 1)],
+  [diff(gap2(d1, d2), d2, 1, d1, 1), diff(gap2(d1, d2), d2, 2)])))$
+p0 : best2(b1, b2)$
+at : [v1 = p0[1], v2 = p0[2], t1 = b1, t2 = b2]$
+juu : subst(at, matrix([diff(J2(v1, v2, t1, t2), v1, 2), diff(J2(v1, v2, t1, t2), v1, 1, v2, 1)],
+                       [diff(J2(v1, v2, t1, t2), v2, 1, v1, 1), diff(J2(v1, v2, t1, t2), v2, 2)]))$
+jut : subst(at, matrix([diff(J2(v1, v2, t1, t2), v1, 1, t1, 1), diff(J2(v1, v2, t1, t2), v1, 1, t2, 1)],
+                       [diff(J2(v1, v2, t1, t2), v2, 1, t1, 1), diff(J2(v1, v2, t1, t2), v2, 1, t2, 1)]))$
+jtt : subst(at, matrix([diff(J2(v1, v2, t1, t2), t1, 2), diff(J2(v1, v2, t1, t2), t1, 1, t2, 1)],
+                       [diff(J2(v1, v2, t1, t2), t2, 1, t1, 1), diff(J2(v1, v2, t1, t2), t2, 2)]))$
+w2 : transpose(jut) . invert(juu) . jut$
+print("STEP 4 gap Hessian - (2 W - J_thth):", ratsimp(hgap - (2*w2 - jtt)), " (zero matrix)")$
+
+print("=== STEP 5: the unit test's numbers ===")$
+/* a = -0.5, b = 1.2, dt = 0.1, x0 = 1, target 0, running q = 1, r = 0.1, qf = 2, one step */
+fpprec : 30$
+h : -1/2*1/10$
+phin : 1 + h + h^2/2 + h^3/6 + h^4/24$
+gamn : 6/5*1/10*(1 + h/2 + h^2/6 + h^3/24)$
+num : [phi = phin, g = gamn, x0 = 1, s = 0, qf = 2, rr = 1/10, qq = 1]$
+print("STEP 5 rho =", bfloat(subst(num, g^2*qf/rr)), " coefficient =", bfloat(subst(num, libform)),
+      " u* =", bfloat(subst(num, bestl(g))), " J_th =", bfloat(subst(num, jthl)))$
