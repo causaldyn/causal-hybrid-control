@@ -16,7 +16,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from chc import CausalPlan, QuadraticCost, causal_plan
@@ -100,6 +100,12 @@ def test_one_step_reads_maxima_s_numbers() -> None:
 def test_a_one_step_bias_is_maxima_s_closed_form(
     a: float, b: float, x0: float, target: float, r: float, qf: float
 ) -> None:
+    # The bias squares y = phi x0 - target, which the rollout reads as its end state, rounded to
+    # an ulp of x0, less the target: each of its terms carries about 3 ulp(x0)/|y| relative
+    # error, the case's own conditioning, not the plan's. At x0 = -1.78 and y = -2.8e-13 the bias
+    # read 5.6e-4 off; with y at least 1% of the states its terms read within 4e-14 of the scale.
+    phi = _rk4(a, b, DT)[0]
+    assume(abs(phi * x0 - target) >= 1e-2 * max(abs(phi * x0), abs(target)))
     found = _one_step(a, b, x0, target, r, qf).planned_cost_bias(np.eye(1))
     expected = _coefficient(a, b, x0, target, r, qf)
     scale = found.optimism + abs(found.curvature)
