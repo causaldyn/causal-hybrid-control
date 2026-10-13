@@ -23,6 +23,7 @@ import jax.numpy as jnp
 import jax.scipy.stats
 import numpy as np
 from jax import Array
+from scipy import stats
 
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
 from chc.control import lbfgs_box_control, projected_gradient_control
@@ -62,12 +63,12 @@ class TaskResult:
 
 @dataclass(frozen=True)
 class MultiSeedResult:
-    """One controller's regret aggregated across seeds, with a bootstrap confidence interval."""
+    """One controller's regret aggregated across seeds, with a confidence interval for its mean."""
 
     controller: str
     regret_mean: float
-    regret_lo: float  # 95% percentile-bootstrap CI lower bound
-    regret_hi: float  # 95% percentile-bootstrap CI upper bound
+    regret_lo: float  # 95% Student-t CI lower bound, over the seeds
+    regret_hi: float  # 95% Student-t CI upper bound, over the seeds
     regret_std: float  # across-seed standard deviation
     ood_mean: float  # mean out-of-support action rate (the safety signal)
     n_seeds: int
@@ -967,26 +968,31 @@ class BenchmarkTask(Protocol):
     def run(self, seed_data: int = ...) -> list[TaskResult]: ...
 
 
-def _bootstrap_ci(
-    values: np.ndarray, *, level: float = 0.95, n_boot: int = 10_000, seed: int = 0
-) -> tuple[float, float]:
-    """Percentile-bootstrap confidence interval for the mean of ``values`` (NumPy only)."""
+def _mean_interval(values: np.ndarray, *, level: float = 0.95) -> tuple[float, float]:
+    """Student-t confidence interval for the mean of ``values``.
+
+    Exact when the values are independent draws of one normal law, at any number of them. A
+    percentile bootstrap cannot reach past the few values it resamples: on normal regrets it held
+    the mean 0.75 of the time at three seeds, 0.83 at five and 0.91 at twelve.
+    """
     if values.size < 2:
         point = float(values.mean()) if values.size else float("nan")
         return point, point
-    rng = np.random.default_rng(seed)
-    resampled = values[rng.integers(0, values.size, size=(n_boot, values.size))]
-    alpha = (1.0 - level) / 2.0
-    lo, hi = np.quantile(resampled.mean(axis=1), [alpha, 1.0 - alpha])
-    return float(lo), float(hi)
+    mean = float(values.mean())
+    quantile = float(stats.t.ppf(0.5 + level / 2.0, values.size - 1))
+    half = quantile * float(values.std(ddof=1)) / math.sqrt(values.size)
+    return mean - half, mean + half
 
 
 def run_multiseed(task: BenchmarkTask, seeds: Sequence[int]) -> list[MultiSeedResult]:
-    """Aggregate ``task`` across seeds into per-controller regret with a bootstrap CI.
+    """Aggregate ``task`` across seeds into per-controller regret with a 95% confidence interval.
 
     ``task.run(seed_data=s)`` is called once per seed and the results grouped by controller. The
-    interval is a percentile bootstrap over the seeds -- honest error bars on "does this controller
-    actually win", replacing a single-seed point regret that could be luck of the draw.
+    interval is Student's t over the seeds -- error bars on "does this controller actually win",
+    replacing a single-seed point regret that could be luck of the draw. It holds the mean regret
+    with probability 0.95 when the seeds' regrets are normal. A skewed law falls short at few
+    seeds: chi-square regrets with one degree of freedom were held 0.83 of the time at five seeds
+    and 0.885 at twenty. One seed gives the point as both ends.
     """
     regrets: dict[str, list[float]] = {}
     oods: dict[str, list[float]] = {}
@@ -1001,7 +1007,7 @@ def run_multiseed(task: BenchmarkTask, seeds: Sequence[int]) -> list[MultiSeedRe
     summaries = []
     for controller in order:
         arr = np.asarray(regrets[controller], dtype=np.float64)
-        lo, hi = _bootstrap_ci(arr)
+        lo, hi = _mean_interval(arr)
         std = float(arr.std(ddof=1)) if arr.size > 1 else 0.0
         ood = float(np.mean(oods[controller]))
         summaries.append(MultiSeedResult(controller, float(arr.mean()), lo, hi, std, ood, arr.size))
@@ -1009,7 +1015,7 @@ def run_multiseed(task: BenchmarkTask, seeds: Sequence[int]) -> list[MultiSeedRe
 
 
 def leaderboard_multiseed(results: list[MultiSeedResult]) -> str:
-    """Format multi-seed results sorted by mean regret (best first), with 95% bootstrap CIs."""
+    """Format multi-seed results sorted by mean regret (best first), with their 95% CIs."""
     header = f"{'controller':<14}{'regret':>10}{'95% CI':>22}{'ood':>7}{'seeds':>7}"
     rows = [
         f"{r.controller:<14}{r.regret_mean:>10.2f}"

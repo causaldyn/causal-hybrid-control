@@ -96,6 +96,16 @@ still change).
 - **Benchmarks**: the pricing and inventory tasks add `predictive-all`, a regression on every
   logged column, which lands with `causal-CHC`; `run()` returns four results.
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
+- **`run_multiseed`'s 95% interval holds 95% at the seed counts the benchmark uses.** On normal
+  regrets, `MultiSeedResult.regret_lo` and `regret_hi`, a percentile bootstrap over the seeds that
+  cannot reach past the few regrets it resamples, held the mean 0.75 of the time at three seeds,
+  0.83 at five, 0.91 at twelve and 0.93 at twenty (2000 replicates each). The interval is now
+  Student's t over the seeds, exact for normal regrets at any number of seeds (0.944 to 0.965
+  measured from 2 to 20 seeds). A skewed law still falls short at few seeds: chi-square regrets
+  with one degree of freedom read 0.83 at five seeds and 0.885 at twenty, up from 0.75 and 0.88.
+  Every interval widens, about 1.6 times at five seeds and 1.2 times at twelve; the README's
+  12-seed pricing row now reads `13734.15 [13732.48, 13735.81]`, from `[13732.55, 13735.31]`.
+  Since 0.2.0.
 
 ## [0.18.0] — 2026-10-13
 

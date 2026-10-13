@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from chc.benchmark import (
     ConfoundingRobustTask,
     InventoryTask,
     MultiSeedResult,
+    TaskResult,
     leaderboard_multiseed,
     run_multiseed,
 )
@@ -60,3 +62,48 @@ def test_single_seed_gives_a_degenerate_interval() -> None:
     predictive = by_name["predictive"]
     assert predictive.n_seeds == 1
     assert predictive.regret_lo == predictive.regret_hi == predictive.regret_mean  # one point only
+
+
+class _Regrets:
+    """A task whose one controller's regret on each seed is read from a table, or drawn from a
+    normal law on its own stream when no table is given."""
+
+    def __init__(self, table: dict[int, float] | None = None, stream: int = 0) -> None:
+        self.table, self.stream = table, stream
+
+    def run(self, seed_data: int = 0) -> list[TaskResult]:
+        if self.table is not None:
+            regret = self.table[seed_data]
+        else:
+            regret = float(np.random.default_rng([self.stream, seed_data]).standard_normal())
+        return [TaskResult("controller", regret, regret, 0.0, 0.0)]
+
+
+@pytest.mark.parametrize(
+    ("regrets", "lo", "hi"),
+    [
+        # mean +- t(0.975, n - 1) sd / sqrt(n), the quantiles in closed form, evaluated in Maxima
+        # at 30 digits: tan(0.475 pi) at one degree of freedom, 0.95 / sqrt(0.04875) at two
+        ((0.0, 1.0), 0.5 - 12.706204736174705 * 0.5, 0.5 + 12.706204736174705 * 0.5),
+        ((1.0, 2.0, 3.0), 2.0 - 4.302652729749464 / 3**0.5, 2.0 + 4.302652729749464 / 3**0.5),
+    ],
+)
+def test_the_interval_is_students_over_the_seeds(regrets, lo, hi) -> None:
+    table = dict(enumerate(regrets))
+    (result,) = run_multiseed(_Regrets(table), list(table))
+    assert result.regret_lo == pytest.approx(lo, rel=1e-12, abs=0.0)
+    assert result.regret_hi == pytest.approx(hi, rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("n_seeds", [3, 5, 12])
+def test_the_interval_covers_the_mean_regret_at_its_level(n_seeds: int) -> None:
+    """On normal regrets the interval holds the mean 95% of the time at any number of seeds. The
+    percentile bootstrap it replaced covered 0.75 at three seeds, 0.83 at five and 0.91 at twelve:
+    resampling so few values cannot reach past them."""
+    replicates = 2000
+    covered = 0
+    for stream in range(replicates):
+        (result,) = run_multiseed(_Regrets(stream=stream), range(n_seeds))
+        covered += result.regret_lo <= 0.0 <= result.regret_hi
+    # four standard errors of a 0.95 coverage over 2000 replicates
+    assert covered / replicates == pytest.approx(0.95, abs=4 * (0.95 * 0.05 / replicates) ** 0.5)
