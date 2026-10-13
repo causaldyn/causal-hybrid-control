@@ -90,6 +90,31 @@ still change).
   0.156 at its worst feature), and takes a bilinear model's gain at `x_target`, the state its
   channel `KoopmanModel.channel` is read at. The default `form="linear"` fits, predicts and
   returns its gain as before, bit for bit (ADR 0093).
+- **`Prescription.evaluate`'s bootstrap over the units says how many draws its intervals read,
+  and when they read too few.** `PlanEvaluation.bootstrap` counted the draws the certificate
+  refused and nothing more, though the intervals read only the rest. A draw is refused where its
+  units start wider or weigh heavier than the panel's, so near the certificate's edge the draws
+  left are the narrow side of the spread: over 300 panels of 60 units, the half-width was at most
+  3.4 % narrower than the same panel's with no draw refused while a tenth of the draws or fewer
+  were, and 5 % to 13 % narrower past that; over 120 panels of 30 units the coverage fell from
+  0.925 to 0.908 at a tenth refused and to 0.858 at two fifths. `UnitBootstrap` now holds `accepted`, `accepted_share`,
+  `max_refused` and `reading`: `"complete"` with no draw refused, `"conditional"` on
+  certification with at most `max_refused` of them, `"inconclusive"` past it, which is logged as
+  a warning. `Prescription.evaluate(max_refused=0.05)` sets the share. Values and intervals do
+  not move (ADR 0095).
+
+- **`evaluate_plan` by `"pdis"` reports the bias of its normalised weights, and warns where it
+  passes 0.05 of the interval's half-width.** Each step's weights are normalised to mean one,
+  which makes the estimate a ratio, biased at order `1 / n`, and nothing said how much.
+  `PlanEvaluation.normalisation_bias` is that order's bias under the model, read off the
+  certificate's own recursion: it agrees with Maxima's integral over two steps to 3e-16 and with
+  the bias of 20 000 simulated logs of independent episodes within their error. On one unit whose
+  state and noise persist the estimate's bias was 2 to 9 times it: 0.03 to 0.12 of the
+  half-width at horizons of 5 and 10 steps, 0.30 to 0.40 at 20, where the interval covered 0.63.
+  The warning passed on 83 % to 94 % of those logs at 20 steps and on 0 % to 35 % at 5 and 10,
+  and the logs it passed on were covered 0.40 to 0.74 of the time, the others 0.86 to 1.00. The
+  bootstrap over the units and the reading of one unit warn against the interval they return. No
+  value moves: the bias is reported, not subtracted (ADR 0095).
 
 ### Changed
 

@@ -109,6 +109,10 @@ documented, and what is not built yet. Every name below is importable from `chc`
   the whole evaluation run again on each draw; on a panel of one unit, with none to resample, the
   windows' influences are read across their time by cosines, against Student's `t`
   ([ADR 0083](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0083-one-unit-s-windows-read-across-their-time-zeros.md)).
+  A draw the certificate refuses is left out; the record counts the draws read, and past 5 % of
+  them refused calls the intervals inconclusive. The estimate reports the first-order bias of its
+  normalised weights and warns where it passes 0.05 of the half-width
+  ([ADR 0095](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0095-the-draws-a-bootstrap-reads-and-the-bias-of-normalised-weights.md)).
   And the plan is set against the policy that logged the panel, the
   difference's interval read within each draw
   ([ADR 0049](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0049-a-prescription-evaluated-as-a-target-trial.md)).

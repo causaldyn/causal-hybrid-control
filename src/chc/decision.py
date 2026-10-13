@@ -966,6 +966,7 @@ class Prescription:
         time_zero: TimeZero = "calendar",
         n_resamples: int = 200,
         seed: int = 0,
+        max_refused: float = 0.05,
     ) -> PlanEvaluation:
         """The schedule's expected cost over its horizon, estimated from ``panel`` before it is
         deployed, beside the cost of the policy that logged the panel:
@@ -998,6 +999,14 @@ class Prescription:
         :func:`~chc.evaluation.evaluate_plan` widens its own; a draw the certificate refuses is
         left out and counted (:attr:`PlanEvaluation.bootstrap`). With few units the draws are
         few distinct panels and the intervals too narrow.
+
+        Near the certificate's edge a draw whose units start wider or weigh heavier than the
+        panel's is refused, so the draws read are the narrow side of the spread: the intervals
+        are then conditional on certification, and :attr:`~chc.evaluation.UnitBootstrap.reading`
+        says so, ``"conditional"``. Where more than ``max_refused`` of the draws are refused it
+        is ``"inconclusive"``, logged as a warning: the intervals are too narrow to read.
+        :attr:`~chc.evaluation.UnitBootstrap.accepted` and ``accepted_share`` count the draws
+        read.
 
         Windows of one unit leave nothing to resample, and they follow each other through its
         state and its noise. Each window's influence on the estimate, the delta method's, is read
@@ -1040,10 +1049,11 @@ class Prescription:
         Raises:
             NotIdentifiedError: if the effect is not identified, so there is no plan.
             DecisionError: on a ``time_zero`` other than ``"calendar"`` and ``"unit"``; fewer than
-                two resamples; a plan made against driver forecasts, whose plant changes with the
-                step; a plan with a lever that follows its logged rule of the state, which no
-                open-loop schedule carries; a plan whose levers were logged on a column outside its
-                state, or whose record does not say; or a panel with fewer than two windows.
+                two resamples; a ``max_refused`` outside ``[0, 1)``; a plan made against driver
+                forecasts, whose plant changes with the step; a plan with a lever that follows its
+                logged rule of the state, which no open-loop schedule carries; a plan whose levers
+                were logged on a column outside its state, or whose record does not say; or a
+                panel with fewer than two windows.
             InfeasibleEvaluation: when the evaluation's certificate refuses, on the panel or on
                 every draw but one.
             PanelError: when a state's or a lever's column of ``panel`` does not hold real
@@ -1055,6 +1065,11 @@ class Prescription:
             raise DecisionError(
                 f"n_resamples={n_resamples}: an interval read from draws of the units needs at "
                 "least two of them"
+            )
+        if not 0.0 <= max_refused < 1.0:
+            raise DecisionError(
+                f"max_refused={max_refused}: the share of refused draws above which the intervals "
+                "are inconclusive lies in [0, 1)"
             )
         plan = self.plan
         if plan is None:
@@ -1138,6 +1153,7 @@ class Prescription:
                 min_effective=min_effective,
                 resamples=n_resamples,
                 seed=seed,
+                max_refused=max_refused,
             )
         return replace(evaluation, logger_check=logger_check)
 

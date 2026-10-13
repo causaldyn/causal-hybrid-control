@@ -1,7 +1,9 @@
 # ADR 0049 — A prescription evaluated as a target trial
 
 **Status:** proposed, 2026-10-03. Amended by ADR 0083, 2026-10-12: windows of one unit are read
-across their time zeros by cosines, no longer deprecated, and not refused from 1.0.
+across their time zeros by cosines, no longer deprecated, and not refused from 1.0. Amended by
+ADR 0095, 2026-10-13: the bootstrap reports the draws it read, and its reading is inconclusive
+past a share of refused draws.
 
 ## Context
 
