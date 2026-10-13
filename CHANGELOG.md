@@ -118,13 +118,17 @@ still change).
 
 ### Changed
 
-- **`koopman_lqr_gain` refuses a lift that does not close.** It returned the LQR gain of any
-  fitted lift, however little of the plant the lift carried: on the plant
-  `x' = A x + b u + c x1 u`, a linear lift leaves 0.73 of a feature's root mean square
-  unpredicted, and its gain came back as if the lift were exact. It now raises `ValueError`, naming the feature, where a
-  feature's held-out closure residual exceeds `max_residual` (0.5 by default) or could not be
-  read, as on a fit of one transition. A caller whose lift does not close gets an error where it
-  got a gain; `max_residual=np.inf` restores the old behaviour (ADR 0093). Since 0.2.0.
+- **`koopman_lqr_gain` refuses a lift that does not close.** It returned the LQR gain of any fitted
+  lift, however little of the plant the lift carried: on the plant `x' = A x + b u + c x1 u`, a
+  linear lift leaves 0.73 of a feature's root mean square unpredicted, and its gain came back as if
+  the lift were exact. It now raises `ValueError`, naming the feature, where a feature's held-out
+  closure residual exceeds `max_residual` (0.5 by default) or could not be read, as on a fit of one
+  transition. A caller whose lift does not close gets an error where it got a gain;
+  `max_residual=np.inf` restores the old behaviour (ADR 0093). Since 0.2.0.
+- **`UnitBootstrap` holds four more fields, `accepted`, `accepted_share`, `max_refused` and
+  `reading`, with no defaults.** It held `units`, `resamples` and `refused`; code that builds one
+  positionally or by keyword from those three now raises `TypeError` and must pass the four
+  (ADR 0095). Since 0.12.0.
 
 ### Fixed
 
