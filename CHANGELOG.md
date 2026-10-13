@@ -29,6 +29,11 @@ still change).
   the posterior mean at `sigma = 1` alone: at `tau = sigma = 2` its Bayes risk read 1776 times
   the van Trees bound the posterior mean attains (`tight_ratio`), and 0.9985 now. The default,
   `sigma = 1`, reads as before. Since 0.2.0.
+- **`AdaptiveExplorationCurve.lower_bound` is the proved bound, `2 sqrt(A K T / eta) - A m0 /
+  eta`.** It read the leading term alone, which a schedule can beat: at the defaults one burst of
+  exploration in the first round costs 5.965 over 500 rounds, where `lower_bound` read 7.454. It
+  now reads 5.954, 0.857 to 22.07 over the default horizons where it read 2.357 to 23.57, and
+  `adaptive_over_bound` 1.506 where it read 1.410. Since 0.2.0.
 
 ## [0.18.0] — 2026-10-13
 

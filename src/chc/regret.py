@@ -4004,7 +4004,9 @@ class AdaptiveExplorationCurve:
     adaptive_regret: Vector  # cumulative regret of the tapering schedule (v_t ~ 1/sqrt(t)): sqrt(T)
     greedy_regret: Vector  # cumulative regret with no exploration: ~ T (linear)
     static_regret: Vector  # cumulative regret of a constant-v schedule (Result 11 static): ~ T
-    lower_bound: Vector  # 2*sqrt(A*K*T/eta), K = C*sigma^2: the proved sequence lower bound
+    # 2*sqrt(A*K*T/eta) - A*m0/eta, K = C*sigma^2: the proved sequence lower bound, which the
+    # information m0 held before the first round lowers
+    lower_bound: Vector
     adaptive_slope: float  # log-log slope of adaptive regret vs T (~0.5)
     greedy_slope: float  # log-log slope of greedy regret vs T (~1)
     schedule: Vector  # the tapering exploration schedule v_t (decreasing)
@@ -4068,7 +4070,9 @@ def adaptive_exploration_certificate(
         adaptive[i] = cumulative(horizon, kappa / np.sqrt(t))
         greedy[i] = cumulative(horizon, np.zeros(horizon))
         static[i] = cumulative(horizon, np.full(horizon, static_v))
-    lb = 2.0 * np.sqrt(a_curv * k_vt * hs / eta)  # 2*sqrt(A*K*T/eta): 1/sqrt(eta) causal factor
+    # 2*sqrt(A*K*T/eta) - A*m0/eta (Rocq reduced_objective_lower_bound): without the offset a
+    # single burst of exploration in round 1 beat it, by up to A*m0/eta
+    lb = 2.0 * np.sqrt(a_curv * k_vt * hs / eta) - a_curv * m0 / eta
     adaptive_slope = float(np.polyfit(np.log(hs), np.log(adaptive), 1)[0])
     greedy_slope = float(np.polyfit(np.log(hs), np.log(greedy), 1)[0])
     sched = kappa / np.sqrt(np.arange(1, schedule_horizon + 1, dtype=np.float64))
