@@ -362,7 +362,10 @@ class ExperimentDesign:
     Both are Monte Carlo's, over draws of the channels with the decision re-solved on every draw,
     and ``error`` is the 95% half-width of their difference. ``value`` is what the experiment
     removes less what it spends. ``regret_bound`` is the ``level`` quantile of the regret of acting
-    now: with that probability under the prior, deploying now loses at most this much.
+    now: with that probability under the prior, deploying now loses at most this much. It is the
+    draws' order statistic of rank ``ceil(level (draws + 1))``, which a fresh draw stays at or below
+    with probability at least ``level`` at any number of draws, and ``inf`` where ``draws`` is below
+    ``level / (1 - level)``, too few to show it.
     ``model_gap`` is the local model's largest relative miss against the two Monte Carlo regrets,
     and the allocation was optimised on that model. ``weights`` is the prior-averaged decision
     weight ``W``.
@@ -542,6 +545,15 @@ def _pinned_zone(pin: _Pin, prior: ChannelPrior, uses: float) -> PinnedZone:
     return PinnedZone(pin.zone, z, uses * _pin_regret(pin, variance))
 
 
+def _upper_quantile(values: _Array, level: float) -> float:
+    """The order statistic of rank ``ceil(level (n + 1))`` of ``n`` draws. A further draw of their
+    law lies at or below the rank-``k`` statistic with probability ``k / (n + 1)``, more where the
+    law has atoms, so this is the least rank that holds ``level``. The interpolated quantile fell
+    short: 0.941 at 100 draws."""
+    rank = math.ceil(level * (values.size + 1))
+    return float(np.sort(values)[rank - 1]) if rank <= values.size else math.inf
+
+
 def _relative_gap(model: float, measured: float) -> float:
     if measured == 0.0:
         return 0.0 if model == 0.0 else math.inf
@@ -609,7 +621,7 @@ def design_experiment(
     regret_now = uses * float(measured.now.mean())
     regret_after = uses * float(measured.after.mean())
     error = uses * 1.96 * float(np.std(measured.now - measured.after, ddof=1)) / math.sqrt(draws)
-    regret_bound = uses * float(np.quantile(measured.now, level))
+    regret_bound = uses * _upper_quantile(measured.now, level)
     value = regret_now - regret_after - spend
     model_gap = max(
         _relative_gap(risk(np.zeros(k)), regret_now),

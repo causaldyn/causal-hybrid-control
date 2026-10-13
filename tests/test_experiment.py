@@ -21,6 +21,7 @@ from chc.experiment import (
     ZoneDecision,
     ZoneExperiment,
     _local,
+    _monte_carlo,
     _second_partial_moment,
     _sigma_weight,
     _water_filling,
@@ -398,6 +399,45 @@ def test_a_deploy_verdict_meets_its_regret_bound_at_about_its_level():
         met.append(decision.regret(decision.solve(estimate), B_TRUE) <= design.regret_bound)
     # nominal 0.95; the 500-world campaign is scripts/bench_experiment.py
     assert np.mean(met) >= 0.85
+
+
+@pytest.mark.parametrize(
+    ("draws", "level", "rank"),
+    [(100, 0.95, 96), (150, 0.95, 144), (400, 0.95, 381), (100, 0.9, 91), (100, 0.99, 100)],
+)
+def test_the_regret_bound_is_the_order_statistic_that_holds_its_level(draws, level, rank):
+    """A further draw from the prior lies at or below the rank-``k`` regret of ``n`` draws with
+    probability ``k / (n + 1)``; ``ceil(level (n + 1))`` is the least rank that reaches ``level``.
+    The interpolated quantile it replaced held 0.941 at 100 draws and 0.948 at 400."""
+    decision = _market([-1.0, -0.4, -1.3, -0.6])
+    prior = ChannelPrior(B_TRUE, np.diag(np.full(K, 0.15**2)))
+    design = design_experiment(
+        decision, prior, DEMO_EXPERIMENT, 0.0, uses=3.0, level=level, draws=draws, seed=5
+    )
+    now = _monte_carlo(
+        decision,
+        prior,
+        _local(decision, prior.mean).action,
+        np.zeros(K, dtype=np.int64),
+        DEMO_EXPERIMENT.information,
+        draws,
+        5,
+    ).now
+    assert rank / (draws + 1) >= level > (rank - 1) / (draws + 1)
+    assert design.regret_bound == 3.0 * np.sort(now)[rank - 1]
+
+
+def test_a_regret_bound_needs_draws_enough_to_show_its_level():
+    design = design_experiment(
+        _market([-1.0, -0.4, -1.3, -0.6]),
+        ChannelPrior(B_TRUE, np.diag(np.full(K, 0.15**2))),
+        DEMO_EXPERIMENT,
+        0.0,
+        level=0.995,
+        draws=150,
+    )
+    # the rank ceil(0.995 * 151) = 151 is past the 150 draws: no draw holds the level
+    assert design.regret_bound == math.inf
 
 
 @pytest.mark.parametrize(

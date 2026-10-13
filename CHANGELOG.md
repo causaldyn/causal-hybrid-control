@@ -106,6 +106,13 @@ still change).
   Every interval widens, about 1.6 times at five seeds and 1.2 times at twelve; the README's
   12-seed pricing row now reads `13734.15 [13732.48, 13735.81]`, from `[13732.55, 13735.31]`.
   Since 0.2.0.
+- **`design_experiment`'s `regret_bound` holds its `level` at any number of draws.** It was the
+  interpolated `np.quantile` of the Monte Carlo regrets, and a fresh draw from the prior stayed
+  under it with probability 0.941 at 100 draws, 0.948 at 400 and 0.9499 at the default 10 000,
+  against a `level` of 0.95 (measured 0.939 to 0.943 at 100 draws on three priors). It is now the
+  order statistic of rank `ceil(level (draws + 1))`, measured 0.949 to 0.952 at 100 draws, and
+  `inf` where `draws` is below `level / (1 - level)`. At the default draws the bound moves up by at
+  most one order statistic. Since 0.8.0.
 
 ## [0.18.0] — 2026-10-13
 
