@@ -7,6 +7,16 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`lipschitz_rollout_bound` no longer reads 0 where the field's rate is below the precision.**
+  It formed `(1 + L dt)^H - 1` as written, so at `L dt` below the float precision the power
+  rounded to 1 and the certified radius read 0, which certified every step: at `L = 1e-16`,
+  `dt = 0.05` and `H = 100` it read 0 where the bound is 0.5, and at `L = 1e-14` it read 0.444.
+  It is now `expm1(H log1p(L dt))`, within 1e-13 of exact rational arithmetic on the same inputs
+  at every rate from 1e-20 to 3. `closed_loop_rollout_bound` and
+  `confounding_robust_closed_loop_bound` read through it. Since 0.2.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added

@@ -4,6 +4,7 @@ Ties the shipped LipschitzResidual's certified constant to a machine-checked pes
 """
 
 import math
+from fractions import Fraction
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -80,6 +81,24 @@ def test_bound_matches_the_gronwall_closed_form() -> None:
     lipschitz, model_error, dt, horizon = 1.5, 0.2, 0.05, 10
     expected = model_error * ((1.0 + lipschitz * dt) ** horizon - 1.0) / lipschitz
     assert lipschitz_rollout_bound(lipschitz, model_error, dt, horizon) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("lipschitz", [1e-20, 1e-16, 1e-14, 1e-12, 1e-9, 1e-6, 1e-3, 1.0, 3.0])
+@pytest.mark.parametrize(("model_error", "dt", "horizon"), [(0.1, 0.05, 100), (1.0, 1.0, 40)])
+def test_bound_holds_the_closed_form_where_the_rate_is_below_the_precision(
+    lipschitz: float, model_error: float, dt: float, horizon: int
+) -> None:
+    """``(1 + L dt)^H - 1`` was formed as written: at ``L dt`` below the precision the power
+    rounded to 1 and the bound read 0 where it is ``model_error dt H``, and at ``L = 1e-14`` it
+    read 0.444 of 0.5. Exact rational arithmetic on the same floats is the reference."""
+    exact = (
+        Fraction(model_error)
+        * ((1 + Fraction(lipschitz) * Fraction(dt)) ** horizon - 1)
+        / Fraction(lipschitz)
+    )
+    bound = lipschitz_rollout_bound(lipschitz, model_error, dt, horizon)
+    assert bound == pytest.approx(float(exact), rel=1e-13, abs=0.0)
+    assert bound >= model_error * dt * horizon * (1.0 - 1e-15)
 
 
 def test_bound_is_monotone_in_model_error_and_horizon() -> None:
