@@ -186,9 +186,13 @@ print(prescription.report())
 #   noise the logs show;
 # - *the tube's noise*: that noise, the part of each logged week the fitted model does not
 #   explain;
+# - *each state's own radius*: how far that noise alone can carry each state by the last trusted
+#   week, in the state's own units;
 # - *barrier*: for how many weeks the forecast keeps `wait` under its limit;
 # - *solver* and *regret bound*: whether the optimiser finished, and how far its plan can be from
 #   the best plan on the fitted model;
+# - *first-order check*: whether the returned plan is a minimum to the precision the solver
+#   can reach, and whether it keeps every limit;
 # - *trustworthy prefix*: the weeks that pass every check, the number to act on.
 #
 # **Provenance** pins the data and the version, so the numbers can be reproduced.
