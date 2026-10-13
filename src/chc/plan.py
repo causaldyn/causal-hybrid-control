@@ -1235,10 +1235,16 @@ def causal_plan(
             the model error's radius the one within which the noise's part of the gap stays at each
             step with probability 0.95, carried through the same ``lipschitz``: through ``R(dt A)``
             on a state matrix, exactly to first order, and on a norm bound ``L`` through
-            ``R(L dt)``, which bounds it (``validation/predictive_tube.mac``). On ``n`` states the
-            radius is ``sqrt(chi2_n(0.95))`` times the root of the largest variance along any
-            direction, so it holds with probability 0.95 on one state and more on several. Zero by
-            default, which leaves the tube the model error's alone, as before.
+            ``R(L dt)``, which bounds it (``validation/predictive_tube.mac``). On a state matrix
+            the gap's covariance is exact, and the radius is the exact 0.95 quantile of the gap's
+            distance from the plan, a sum of the covariance's eigenvalues times independent
+            ``chi2_1`` (Imhof 1961). On a norm bound it is that quantile at the first step, where
+            the covariance is ``noise`` itself, and past it ``sqrt(chi2_n(0.95))`` times the root
+            of the bound on the largest variance along any direction, which holds with
+            probability 0.95 on one state and more on several. Up to 0.17.0 that was the radius
+            on a state matrix too, up to ``sqrt(chi2_n(0.95) / chi2_1(0.95))`` too wide where one
+            direction's variance dominates, 1.249 times on two states. Zero by default, which
+            leaves the tube the model error's alone, as before.
         tolerance: tube radius above which the plan stops being certified.
         constraints: linear rows over the whole action sequence
             (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
@@ -1300,6 +1306,53 @@ def causal_plan(
         multipliers=None,
     )
     return plan
+
+
+def _error_tube(
+    carried: NDArray[np.float64],
+    model_error: float,
+    covariance: NDArray[np.float64],
+    persistence: float,
+    dt: float,
+    horizon: int,
+) -> NDArray[np.float64] | None:
+    """The plan's error tube carried by ``carried`` -- a norm bound, one state matrix, or one a step
+    -- or None where neither the model error nor the noise gives it a radius."""
+    if not (model_error > 0.0 or covariance.any()):
+        return None
+    errors = [model_error] * horizon
+    tube = (
+        _tube([float(carried)] * horizon, errors, dt, "rk4")
+        if carried.ndim == 0
+        else _linear_tube(carried, errors, dt)
+    )
+    if covariance.any():
+        tube = tube + _noise_tube(carried, covariance, persistence, dt, horizon)
+    return tube
+
+
+def _carried_along(
+    plan: CausalPlan,
+    state_matrices: NDArray[np.float64],
+    model_error: float,
+    noise: ArrayLike,
+    noise_persistence: float,
+    dt: float,
+    tolerance: float,
+) -> CausalPlan:
+    """``plan`` with its tube carried by the field's ``(horizon, n, n)`` state matrix at each of its
+    steps rather than by the one ``lipschitz`` it was solved with: a field affine in the state whose
+    slope moves with the action, as :func:`chc.prescribe`'s fitted one does. The tube is read off
+    the finished actions and moves no action."""
+    covariance = _noise_covariance(noise, state_matrices.shape[-1])
+    tube = _error_tube(
+        state_matrices, model_error, covariance, noise_persistence, dt, len(state_matrices)
+    )
+    if tube is None:
+        return plan
+    return replace(
+        plan, uncertainty_tube=jnp.asarray(tube), certified_horizon=_within(tube, tolerance)
+    )
 
 
 def _plan(
@@ -1466,16 +1519,7 @@ def _plan(
             # the answer is where the relaxed descent stopped, and it stopped for its own reason
             status = first.solver_status
 
-    tube = None
-    if model_error > 0.0 or covariance.any():
-        errors = [model_error] * horizon
-        tube = (
-            _tube([float(rate)] * horizon, errors, dt, "rk4")
-            if rate.ndim == 0
-            else _linear_tube(rate, errors, dt)
-        )
-        if covariance.any():
-            tube = tube + _noise_tube(rate, covariance, noise_persistence, dt, horizon)
+    tube = _error_tube(rate, model_error, covariance, noise_persistence, dt, horizon)
     problem = _PlanProblem(
         model=model,
         x0=x0,

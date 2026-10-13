@@ -33,6 +33,8 @@ import optax
 from jax import Array
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike, NDArray
+from scipy import integrate
+from scipy.optimize import brentq
 from scipy.stats import chi2
 
 from chc import _units
@@ -1024,20 +1026,59 @@ def linear_rollout_bound(state_matrix: ArrayLike, model_error: list[float], dt: 
         ValueError: if ``state_matrix`` is not a finite square matrix, an ``eps_k`` is negative,
             infinite or nan, or ``dt`` is not a finite positive step.
     """
+    if np.ndim(state_matrix) != 2:
+        raise ValueError(f"state_matrix of shape {np.shape(state_matrix)} is not square")
     return jnp.asarray(_linear_tube(state_matrix, model_error, dt))
 
 
 def _linear_tube(
     state_matrix: ArrayLike, model_error: Sequence[float], dt: float
 ) -> NDArray[np.float64]:
+    """:func:`linear_rollout_bound`'s tube, or, given an ``(H, n, n)`` sequence, the tube of a field
+    whose state matrix at step ``k`` is ``state_matrix[k]``: ``x' = A_k x + g_k(t)`` over step
+    ``k``, as a field affine in the state is under the plan's action at that step. Step ``j``'s
+    error then reaches step ``k`` through ``R(dt A_{k-1}) ... R(dt A_{j+1}) c_i(dt A_j)``, and the
+    tube sums those gains' norms. A sequence of one matrix repeated gives the one matrix's tube
+    to the bit."""
     a_matrix = np.asarray(state_matrix, dtype=float)
-    if a_matrix.ndim != 2 or a_matrix.shape[0] != a_matrix.shape[1]:
+    steps = a_matrix[None] if a_matrix.ndim == 2 else a_matrix
+    if steps.ndim != 3 or steps.shape[1] != steps.shape[2]:
         raise ValueError(f"state_matrix of shape {a_matrix.shape} is not square")
-    if not np.all(np.isfinite(a_matrix)):
+    if a_matrix.ndim == 3 and steps.shape[0] != len(model_error):
+        raise ValueError(
+            f"{steps.shape[0]} state matrices for {len(model_error)} steps: one a step is needed"
+        )
+    if not np.all(np.isfinite(steps)):
         raise ValueError("state_matrix holds a value that is not finite")
     _check_budget(model_error, dt)
-    eye = np.eye(a_matrix.shape[0])
-    z = dt * a_matrix
+    eye = np.eye(steps.shape[1])
+    parts = [_rk4_parts(dt * step, eye) for step in steps]
+    errors = np.asarray(model_error, dtype=float)
+    # gains[j][lag]: the norm of what step j's error adds to step j + 1 + lag
+    if a_matrix.ndim == 2:
+        gains = [_gains([parts[0][0]] * errors.size, parts[0][1], eye, dt, errors.size)]
+        gains *= errors.size
+    else:
+        gains = [
+            _gains([growth for growth, _ in parts[j + 1 :]], parts[j][1], eye, dt, errors.size - j)
+            for j in range(errors.size)
+        ]
+    # each step's gains in the order of their lags, reversed against the errors, as one matrix's
+    # tube reads its own: the same additions in the same order, so a repeated matrix keeps its bits
+    return np.array(
+        [0.0]
+        + [
+            float(np.array([gains[k - 1 - lag][lag] for lag in range(k)])[::-1] @ errors[:k])
+            for k in range(1, errors.size + 1)
+        ]
+    )
+
+
+def _rk4_parts(
+    z: NDArray[np.float64], eye: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], tuple[NDArray[np.float64], ...]]:
+    """RK4's step matrix ``R(z)`` of a field affine in the state, ``z = dt A``, and the weights
+    ``c_1(z) .. c_4(z)`` its four stages put on the field's errors."""
     z2 = z @ z
     z3 = z2 @ z
     growth = eye + z + z2 / 2.0 + z3 / 6.0 + z3 @ z / 24.0
@@ -1047,15 +1088,25 @@ def _linear_tube(
         (2.0 * eye + z) / 6.0,
         eye / 6.0,
     )
-    gains = np.empty(len(model_error))
+    return growth, weights
+
+
+def _gains(
+    growths: Sequence[NDArray[np.float64]],
+    weights: tuple[NDArray[np.float64], ...],
+    eye: NDArray[np.float64],
+    dt: float,
+    count: int,
+) -> NDArray[np.float64]:
+    """``dt sum_i ||G_lag ... G_1 c_i||_2`` for each lag below ``count``, ``G_l`` being
+    ``growths[l - 1]``: the norm of one step's error up to ``count - 1`` steps on."""
+    gains = np.empty(count)
     power = eye
-    for lag in range(gains.size):
+    for lag in range(count):
         gains[lag] = dt * sum(np.linalg.norm(power @ weight, 2) for weight in weights)
-        power = growth @ power
-    errors = np.asarray(model_error, dtype=float)
-    return np.array(
-        [0.0] + [float(gains[:k][::-1] @ errors[:k]) for k in range(1, errors.size + 1)]
-    )
+        if lag < count - 1:
+            power = growths[lag] @ power
+    return gains
 
 
 _TUBE_COVERAGE = 0.95
@@ -1102,39 +1153,157 @@ def _noise_tube(
     ``P_{k+1} = M P_k M' + M C_k + C_k' M' + S`` and ``C_{k+1} = rho (M C_k + S)``, ``C_k`` the
     gap's covariance with ``w_k`` (``validation/predictive_tube.mac``). On a state matrix ``A``,
     ``M = R(dt A)``, RK4's step of a field affine in the state, and the gap is that field's to first
-    order. On a norm-Lipschitz bound ``L``, ``g = R(L dt)`` bounds the norm of the step's slope in
-    the state, and ``p_{k+1} = g^2 p_k + 2 g c_k + q``, ``c_{k+1} = |rho| (g c_k + q)``, ``q`` the
+    order; on an ``(H, n, n)`` sequence of them, ``M_k = R(dt A_k)`` at step ``k``, as on a field
+    affine in the state whose slope moves with the plan's action, and the recursion is the same with
+    ``M_k`` in place of ``M``. There ``P_k`` is exact, and the radius is the exact 0.95 quantile of
+    ``||e_k||``, a sum of ``P_k``'s eigenvalues times independent ``chi2_1``
+    (:func:`_noise_radius`).
+    On a norm-Lipschitz bound ``L``, ``g = R(L dt)`` bounds the norm of the step's slope in the
+    state, and ``p_{k+1} = g^2 p_k + 2 g c_k + q``, ``c_{k+1} = |rho| (g c_k + q)``, ``q`` the
     largest eigenvalue of ``S``, bounds ``P_k``'s largest. A Gaussian of covariance ``P`` on ``n``
     states lies within ``sqrt(chi2_n(level) lambda_max(P))`` of its mean with probability at least
-    ``level``, and exactly ``level`` on one state.
+    ``level``, and exactly ``level`` on one state or where ``P`` is a multiple of the identity:
+    that radius is the bound's past the first step, where ``P_1 = S`` is exact and the radius is
+    its exact quantile.
     """
+    if rate.ndim != 0:
+        return np.array(
+            [
+                _noise_radius(covariance)
+                for covariance in _noise_covariances(rate, noise, persistence, dt, horizon)
+            ]
+        )
     variances = np.zeros(horizon + 1)
-    if rate.ndim == 0:
-        z = float(rate) * dt
-        growth = 1.0 + z * _rk4_phi(z)
-        largest, spread, cross = float(np.linalg.eigvalsh(noise)[-1]), 0.0, 0.0
-        for step in range(1, horizon + 1):
-            spread, cross = (
-                growth * growth * spread + 2.0 * growth * cross + largest,
-                abs(persistence) * (growth * cross + largest),
-            )
-            variances[step] = spread
-    else:
-        z = dt * rate
-        z2 = z @ z
-        step_matrix = np.eye(z.shape[0]) + z + z2 / 2.0 + z2 @ z / 6.0 + z2 @ z2 / 24.0
-        covariance, cross_matrix = np.zeros_like(noise), np.zeros_like(noise)
-        for step in range(1, horizon + 1):
-            covariance, cross_matrix = (
-                step_matrix @ covariance @ step_matrix.T
-                + step_matrix @ cross_matrix
-                + cross_matrix.T @ step_matrix.T
-                + noise,
-                persistence * (step_matrix @ cross_matrix + noise),
-            )
-            variances[step] = np.linalg.eigvalsh(covariance)[-1]
+    z = float(rate) * dt
+    growth = 1.0 + z * _rk4_phi(z)
+    largest, spread, cross = float(np.linalg.eigvalsh(noise)[-1]), 0.0, 0.0
+    for step in range(1, horizon + 1):
+        spread, cross = (
+            growth * growth * spread + 2.0 * growth * cross + largest,
+            abs(persistence) * (growth * cross + largest),
+        )
+        variances[step] = spread
     level = float(chi2.ppf(_TUBE_COVERAGE, noise.shape[0]))
-    return np.sqrt(level * np.maximum(variances, 0.0))
+    radii = np.sqrt(level * np.maximum(variances, 0.0))
+    if horizon >= 1:
+        radii[1] = _noise_radius(noise)
+    return radii
+
+
+def _noise_covariances(
+    rate: NDArray[np.float64],
+    noise: NDArray[np.float64],
+    persistence: float,
+    dt: float,
+    horizon: int,
+) -> list[NDArray[np.float64]]:
+    """``P_0 .. P_H``, the covariance of the noise's part of the gap at each step, carried by RK4's
+    step matrix of the state matrix ``rate``, or of ``rate[k]`` at step ``k`` given an
+    ``(H, n, n)`` sequence (:func:`_noise_tube`)."""
+    slopes = rate if rate.ndim == 3 else np.broadcast_to(rate, (horizon, *rate.shape))
+    eye = np.eye(noise.shape[0])
+    covariance, cross_matrix = np.zeros_like(noise), np.zeros_like(noise)
+    covariances = [covariance]
+    for slope in slopes[:horizon]:
+        z = dt * slope
+        z2 = z @ z
+        step_matrix = eye + z + z2 / 2.0 + z2 @ z / 6.0 + z2 @ z2 / 24.0
+        covariance, cross_matrix = (
+            step_matrix @ covariance @ step_matrix.T
+            + step_matrix @ cross_matrix
+            + cross_matrix.T @ step_matrix.T
+            + noise,
+            persistence * (step_matrix @ cross_matrix + noise),
+        )
+        covariances.append(covariance)
+    return covariances
+
+
+def _noise_radius(covariance: NDArray[np.float64]) -> float:
+    """The radius within which a Gaussian of covariance ``P`` lies around its mean with probability
+    :data:`_TUBE_COVERAGE`: the root of the quantile of ``sum_i lambda_i chi2_1``, ``lambda_i``
+    ``P``'s eigenvalues (Imhof 1961, :func:`_chi_square_mixture_survival`).
+
+    The quantile lies between ``chi2_1(level) lambda_max`` and ``chi2_n(level) lambda_max``: the
+    sum is at least its largest term and at most ``lambda_max chi2_n``. The second is the bound
+    the radius once was, exact on one state and where the eigenvalues are equal, and up to
+    ``sqrt(chi2_n / chi2_1)`` too wide where one dominates, 1.249 times on two states. On one
+    state and on equal eigenvalues the sum is ``lambda_max chi2_n``, and the radius is the bound's,
+    on one state ``sqrt(chi2_1(level) P)`` as before, to the bit. The search runs on the eigenvalues
+    over the largest, so it reads no unit of the state.
+    """
+    values = np.clip(np.linalg.eigvalsh(covariance), 0.0, None).astype(np.float64)
+    largest = float(values[-1])
+    high = float(chi2.ppf(_TUBE_COVERAGE, values.size)) * largest
+    if values[0] >= largest:
+        return math.sqrt(high)
+    low = float(chi2.ppf(_TUBE_COVERAGE, 1)) * largest
+    weights, tail = values / largest, 1.0 - _TUBE_COVERAGE
+
+    def excess(quantile: float) -> float:
+        return _chi_square_mixture_survival(quantile, weights) - tail
+
+    # the bracket's ends are the quantile itself where the sum is one term or its terms are equal,
+    # and the inversion's rounding can put the root a hair outside them there
+    top = high / largest
+    if excess(top) >= 0.0:
+        return math.sqrt(high)
+    bottom = low / largest
+    if excess(bottom) <= 0.0:
+        return math.sqrt(low)
+    root = brentq(excess, bottom, top, xtol=1e-14 * top, rtol=1e-12)
+    return math.sqrt(largest * float(root))
+
+
+def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> float:
+    """``P(sum_k weights_k chi2_1 > q)``, by Imhof's inversion.
+
+    The integrand ``sin(theta(u)) / (u rho(u))`` decays like ``u^(-1 - k/2)`` and oscillates, and
+    with one or two terms a plain rule on ``[0, inf)`` misses the tail badly (0.0036 against 0.00053
+    for one term at ``q = 30`` times its weight). Past ``u = 20 / omega``, ``omega = q / 2``, the
+    phase is ``sum arctan(w u) / 2 - omega u``: a slowly moving amplitude times a pure oscillation,
+    which QUADPACK's Fourier rule integrates to the end.
+    """
+    largest = float(np.max(weights, initial=0.0))
+    if largest <= 0.0:
+        return 1.0 if q <= 0.0 else 0.0
+    weights = weights[weights > 1e-12 * largest]
+    if q <= 0.0:
+        return 1.0
+    omega = 0.5 * q
+
+    def amplitude(u: float) -> float:
+        return 1.0 / (u * float(np.prod((1.0 + (weights * u) ** 2) ** 0.25)))
+
+    def phase(u: float) -> float:
+        return 0.5 * float(np.sum(np.arctan(weights * u)))
+
+    cut = 20.0 / omega
+    head, _ = integrate.quad(
+        lambda u: math.sin(phase(u) - omega * u) * amplitude(u),
+        0.0,
+        cut,
+        limit=2000,
+        epsabs=1e-13,
+        epsrel=1e-12,
+    )
+    cosine, _ = integrate.quad(
+        lambda u: math.sin(phase(u)) * amplitude(u),
+        cut,
+        np.inf,
+        weight="cos",
+        wvar=omega,
+        limlst=200,
+    )
+    sine, _ = integrate.quad(
+        lambda u: math.cos(phase(u)) * amplitude(u),
+        cut,
+        np.inf,
+        weight="sin",
+        wvar=omega,
+        limlst=200,
+    )
+    return min(max(0.5 + (head + cosine - sine) / math.pi, 0.0), 1.0)
 
 
 def closed_loop_rollout_bound(

@@ -17,6 +17,7 @@ from __future__ import annotations
 import functools
 import importlib
 import json
+import math
 from dataclasses import replace
 
 import jax
@@ -36,6 +37,7 @@ from chc.decision import (
     Prescription,
     Target,
     _rate,
+    _slopes,
     prescribe,
 )
 from chc.dynamics import LinearDynamics
@@ -52,7 +54,7 @@ from chc.response import (
     Tanh,
     WeibullAdstock,
 )
-from chc.uncertainty import _noise_tube, _tube
+from chc.uncertainty import _linear_tube, _noise_tube, _tube
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64.
 if hasattr(jax, "enable_x64"):
@@ -389,23 +391,38 @@ def _logged_mean(
     )
 
 
-def _tube_at(result: Prescription, reach: np.ndarray) -> np.ndarray:
-    """The tube the plan's own rate, noise and persistence carry, each lever's error read off each
-    covariance and priced at ``reach``, the largest read taken."""
+def _tube_at(
+    result: Prescription, reach: np.ndarray, actions: np.ndarray | None = None
+) -> np.ndarray:
+    """The tube the plan's noise and persistence and its carriage carry: under ``exact`` the
+    field's slope at each of ``actions``, the plan's own where omitted, under ``bound`` the plan's
+    own rate. Each lever's error is read off each covariance and priced at ``reach``, the largest
+    read taken, and the drift's own error added in quadrature (ADR 0096)."""
     plan = result.plan
     assert plan is not None
     problem = plan._problem
     assert problem is not None
     errors = result.model_fit._lever_errors
+    drift_error = result.model_fit.drift_error
     assert errors is not None
+    assert drift_error is not None
     rates = errors * reach
-    error = float(np.max(np.sqrt(np.mean(rates * rates, axis=1))))
+    error = math.hypot(float(np.max(np.sqrt(np.mean(rates * rates, axis=1)))), drift_error)
     noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
     assert noise is not None
     assert persistence is not None
-    rate, _ = _rate(problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi))
-    return _tube([rate] * HORIZON, [error] * HORIZON, DT, "rk4") + _noise_tube(
-        np.asarray(rate), np.array([[noise**2]]), persistence, DT, HORIZON
+    covariance = np.array([[noise**2]])
+    if result.certificate.tube_mode == "bound":
+        rate, _ = _rate(
+            problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi)
+        )
+        return _tube([rate] * HORIZON, [error] * HORIZON, DT, "rk4") + _noise_tube(
+            np.asarray(rate), covariance, persistence, DT, HORIZON
+        )
+    along = np.asarray(plan.actions if actions is None else actions, dtype=np.float64)
+    slopes = _slopes(problem.model, problem.x0)(along)
+    return _linear_tube(slopes, [error] * HORIZON, DT) + _noise_tube(
+        slopes, covariance, persistence, DT, HORIZON
     )
 
 
@@ -472,17 +489,34 @@ def test_the_tube_reads_the_same_wherever_a_lever_s_zero_is(
     error at each action. The tube priced each lever's error from its zero: ``free``'s ended at
     0.5431 with ``u1`` moved by 3, where it ends at 0.5384, and at 0.7126 moved by 100, where it
     certified one step where it certifies two. It now prices it from the log's mean action, which
-    moves with the zero."""
-    one = _decide(policy).plan
-    other = _decide(policy, levers_at=levers_at).plan
-    assert one is not None
-    assert other is not None
-    assert one.uncertainty_tube is not None
-    assert other.uncertainty_tube is not None
+    moves with the zero.
+
+    The tube is carried by the field's slope at each planned action (ADR 0096), and the plan
+    moves with a lever's zero, whose action cost is read from it: carried along one plan's actions,
+    moved with the zero, the two fits' tubes read the same."""
+    one, other = _decide(policy), _decide(policy, levers_at=levers_at)
+    assert one.plan is not None
+    assert other.plan is not None
+    reaches = []
+    for result, at in ((one, (0.0, 0.0)), (other, levers_at)):
+        problem = result.plan._problem  # type: ignore[union-attr]
+        assert problem is not None
+        mean = _logged_mean(policy, levers_at=at)
+        reaches.append(
+            np.maximum(
+                np.abs(np.asarray(problem.u_lo) - mean), np.abs(np.asarray(problem.u_hi) - mean)
+            )
+        )
+    assert one.plan.uncertainty_tube is not None
+    assert other.plan.uncertainty_tube is not None
+    actions = np.asarray(one.plan.actions, dtype=np.float64)
     np.testing.assert_allclose(
-        np.asarray(other.uncertainty_tube), np.asarray(one.uncertainty_tube), rtol=1e-4, atol=0.0
+        _tube_at(other, reaches[1], actions + np.asarray(levers_at)),
+        _tube_at(one, reaches[0], actions),
+        rtol=1e-4,
+        atol=0.0,
     )
-    assert other.certified_horizon == one.certified_horizon
+    assert other.plan.certified_horizon == one.plan.certified_horizon
 
 
 def test_a_plan_whose_every_box_is_pinned_has_no_regret() -> None:
@@ -566,14 +600,15 @@ def test_the_certificate_reads_the_same_in_any_units_of_each_lever(
     """Each lever logged in units of its own, its box with it and its price over their square. The
     tube read one lever's units: with ``u1`` in units 1e3 times its own, ``free``'s tube ended at
     3.89 and ``together``'s at 1.40, where both end near 0.54, and neither certified a step, where
-    both certify two; on ``state``'s log, whose ``u1`` the plan holds to the log's rule, with
-    ``u1`` in thousandths and ``u2`` in thousands it ended at 4.2e3. Every number now reads the
+    both certified two, and certify three carried by the field's slope at each planned action
+    (ADR 0096); on ``state``'s log, whose ``u1`` the plan holds to the log's rule, certifying two,
+    with ``u1`` in thousandths and ``u2`` in thousands it ended at 4.2e3. Every number now reads the
     same: the schedule in each lever's units, the cost, the regret bound, the decision weight, the
     tube and the certified horizon in the problem's own."""
     one = _certificate_in(_decide(policy), 1.0, 1.0)
     other = _certificate_in(_decide(policy, levers_in=levers_in), levers_in, 1.0)
     _same(other, one, _decide(policy).plan.task_cost)  # type: ignore[union-attr]
-    assert other["certified_horizon"] == 2
+    assert other["certified_horizon"] == (2 if policy == "state" else 3)
 
 
 @pytest.mark.parametrize("levers_in", [(1e3, 1.0), (1.0, 1e-3), (1e-3, 1e3)])

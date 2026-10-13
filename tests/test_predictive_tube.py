@@ -87,12 +87,15 @@ def test_carried_by_the_state_matrix_the_tube_holds_one_state_at_its_rate(
 
 
 @pytest.mark.parametrize("persistence", [0.0, 0.8])
-def test_carried_by_a_norm_bound_or_over_two_states_the_tube_holds_at_least_its_rate(
+def test_carried_by_a_norm_bound_the_tube_holds_at_least_its_rate_and_on_two_states_its_rate(
     persistence: float,
 ) -> None:
-    """A norm-Lipschitz rate bounds the step's slope, and on two states the radius reads the
-    largest variance along any direction: both hold the plant at least 0.95 of the time, the
-    norm bound exactly at the first step, where nothing has been carried yet."""
+    """A norm-Lipschitz rate bounds the step's slope: it holds the plant at least 0.95 of the
+    time, exactly at the first step, where nothing has been carried yet. Carried by the state
+    matrix on two states, the covariance is exact and so is the radius, the quantile of a sum of
+    two unequal chi-squares: it holds the plant at 0.95 within four Monte Carlo standard errors at
+    every step. Up to 0.17.0 the radius read the largest variance along any direction, and held it
+    at 0.979 to 0.986."""
     one = np.array([[-0.5]])
     model, plan = _plan(one, 0.5, noise=0.01, noise_persistence=persistence)
     tube = np.asarray(plan.uncertainty_tube)
@@ -105,17 +108,17 @@ def test_carried_by_a_norm_bound_or_over_two_states_the_tube_holds_at_least_its_
     model, plan = _plan(two, two, noise=noise, noise_persistence=persistence)
     tube = np.asarray(plan.uncertainty_tube)
     inside = np.mean(_realised(model, plan, noise, persistence, seed=3) <= tube[1:], axis=0)
-    assert np.all(inside >= _COVERAGE - 4.0 * _SE), inside
+    assert np.all(np.abs(inside - _COVERAGE) <= 4.0 * _SE), inside
 
 
 def test_the_noise_radius_is_the_derivations_covariance() -> None:
-    """``validation/predictive_tube.mac``'s values, to 40 digits there: the covariance carried by
-    RK4's step of a state matrix, and its bound carried by a norm-Lipschitz rate, which reads the
-    persistence's size whatever its sign."""
-    from chc.uncertainty import _noise_tube
+    """``validation/predictive_tube.mac``'s values, to 40 digits there: the largest eigenvalue of
+    the covariance carried by RK4's step of a state matrix, and its bound carried by a
+    norm-Lipschitz rate, which reads the persistence's size whatever its sign."""
+    from chc.uncertainty import _noise_covariances, _noise_tube
 
     matrix, noise = np.array([[-1.0, 0.5], [0.0, -2.0]]), np.array([[0.04, 0.01], [0.01, 0.02]])
-    exact = _noise_tube(matrix, noise, 0.5, 0.1, 4) ** 2 / chi2.ppf(_COVERAGE, 2)
+    exact = [np.linalg.eigvalsh(p)[-1] for p in _noise_covariances(matrix, noise, 0.5, 0.1, 4)]
     np.testing.assert_allclose(
         exact,
         [

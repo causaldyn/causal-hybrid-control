@@ -277,10 +277,10 @@ pd.DataFrame(
 # under the error of 0.5 the plan was allowed. A real week's demand does not sit there. In the
 # logs it moves supply by 0.15 a week, and the plan cannot see it coming. The certificate counts
 # that noise: its tube holds the noise with probability 0.95 each week and passes 0.5 in the
-# second week, so the plan is trusted for 1 week. Run 20,000 times with demand drawn as in the
-# logs, the true system stays within 0.5 of the forecast at 95 % for 3 weeks. The tube is
-# cautious: it gives each state the noise of the noisier one, and grows the noise at the field's
-# steepest rate.
+# fourth week, so the plan is trusted for 3 weeks. Run 20,000 times with demand drawn as in the
+# logs, the true system stays within 0.5 of the forecast at 95 % for 3 weeks, the same 3. The
+# tube carries the noise by the fitted field's slope at each planned week, and adds what the fit
+# may have wrong, in supply's own drift as in the incentive's effect.
 
 # %% [markdown]
 # ## 6 · When the logs cannot answer
