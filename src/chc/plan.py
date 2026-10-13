@@ -992,21 +992,31 @@ class BarrierConstraint:
     reading on each side that side's gradient, so a solve that ends on the tie cannot step off it,
     and the condition it holds asks nothing of a bound until that bound is the nearest.
 
+    ``u_max``, one number per lever, each lever's largest action in its own units, reads the
+    condition in units of each lever's own largest action, as :func:`certify_safety` does with the
+    same numbers, and the audit after the solve reads them; ``None`` reads it in the levers' own
+    units, one ball for all of them, as before. :func:`chc.prescribe` passes its box's. A lever
+    whose number is 0 must have a box that holds it at 0.
+
     Raises:
         ValueError: on a ``gamma`` below 1 or not finite, which is not a sensitivity level, a
-            ``cvar_gap`` not positive or not finite, which scales no radius, or an empty tuple of
-            barriers, which holds nothing -- here, rather than after the solve that would have
-            used them.
+            ``cvar_gap`` not positive or not finite, which scales no radius, a ``u_max`` with an
+            entry negative or nan, or none positive, which is no action's size, or an empty
+            tuple of barriers, which holds nothing -- here, rather than after the solve that would
+            have used them.
     """
 
     barrier: Barrier
     alpha: float = 1.0
     gamma: float = 1.0
     cvar_gap: float = 1.0
+    u_max: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.barrier, tuple) and not self.barrier:
             raise ValueError("an empty tuple of barriers holds no condition")
+        if self.u_max is not None:
+            object.__setattr__(self, "u_max", tuple(float(v) for v in _reach(self.u_max)))
         if not 1.0 <= self.gamma < math.inf:
             raise ValueError(
                 "gamma is a marginal sensitivity model level and must be >= 1 and finite, got "
@@ -1344,7 +1354,7 @@ def _plan(
         alpha=barrier.alpha,
         gamma=barrier.gamma,
         cvar_gap=barrier.cvar_gap,
-        u_max=authority,
+        u_max=authority if barrier.u_max is None else barrier.u_max,
     )
     return replace(plan, safety=audit), multipliers
 
@@ -1373,6 +1383,8 @@ class _HeldBarrier(eqx.Module):
     weight: Array
     backoff: Array
     factors: Array | None = None  # one per barrier of a tuple, None for one barrier
+    # per lever, what an action is multiplied by before its norm: see _action_shape; None, ones
+    inverse: Array | None = None
     rest: PenaltyModel | None = None
     rest_weight: float = eqx.field(static=True, default=0.0)
 
@@ -1389,7 +1401,9 @@ class _HeldBarrier(eqx.Module):
         h_values, grad_norm, drift, channel = _barrier_terms(
             self.model, barrier, states, actions, self.dt
         )
-        return -self.alpha * h_values - _guaranteed(drift, channel, grad_norm, actions, self.delta)
+        return -self.alpha * h_values - _guaranteed(
+            drift, channel, grad_norm, actions, self.delta, self.inverse
+        )
 
     def scale(self, states: Array, actions: Array) -> Array:
         """The largest term of the condition over the plan: what rounding in it is relative to.
@@ -1405,7 +1419,7 @@ class _HeldBarrier(eqx.Module):
             self.model, barrier, states, actions, self.dt
         )
         push = jnp.einsum("km,km->k", channel, actions)
-        spread = self.delta * grad_norm * _norm(actions)
+        spread = self.delta * grad_norm * _norm(_shaped(actions, self.inverse))
         return jnp.max(jnp.abs(self.alpha * h_values) + jnp.abs(drift) + jnp.abs(push) + spread)
 
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
@@ -1486,6 +1500,23 @@ def _hold_barrier(
     blocks = _constraint_blocks(constraints, lo, hi, actions.dtype)
     several = isinstance(barrier.barrier, tuple)
     columns = (len(barrier.barrier),) if several else ()
+    shape, inverse = None, None
+    if barrier.u_max is not None:
+        reach = _reach(barrier.u_max, actions.shape[1])
+        shape, inverse, _ = _action_shape(reach)
+        moved = np.max(np.maximum(np.abs(np.asarray(lo)), np.abs(np.asarray(hi))), axis=0)
+        if inverse is not None:
+            _act_within(reach, moved > 0.0, "the box lets it move")
+    # Where the levers' largest actions differ, the rounds step each lever in units of its own,
+    # ``v_j = u_j / r_j``, where the condition is a ball and the problem reads no lever's units: in
+    # the caller's, two forces of largest actions 5000 and 1 stopped the rounds short of holding
+    # any step, where now each units' rounds hold all of them at one cost to 4e-6. Where the
+    # largest actions are equal the rounds keep the caller's units, to the bit.
+    metric = (
+        None
+        if inverse is None or bool(np.all(inverse == 1.0))
+        else jnp.asarray(1.0 / np.where(reach > 0.0, reach, 1.0), actions.dtype)
+    )
     held = _HeldBarrier(
         model=model,
         barrier=barrier.barrier,
@@ -1493,9 +1524,10 @@ def _hold_barrier(
         alpha=barrier.alpha,
         delta=jnp.asarray(
             confounding_robust_inflation(barrier.cvar_gap, 0.0, barrier.gamma)
-            * _channel_size(model, x0, actions.shape[1]),
+            * _channel_size(model, x0, actions.shape[1], shape),
             actions.dtype,
         ),
+        inverse=None if inverse is None else jnp.asarray(inverse, actions.dtype),
         multipliers=jnp.zeros(actions.shape[:1] + columns, actions.dtype),
         weight=jnp.asarray(1.0, actions.dtype),
         backoff=jnp.asarray(0.0, actions.dtype),
@@ -1571,6 +1603,7 @@ def _hold_barrier(
             1.0,
             blocks,
             False,
+            metric,
         )
         iterations += int(taken)
         _, shortfall = _barrier_state(model, x0, actions, dt, held)
@@ -1672,15 +1705,20 @@ def _barrier_terms(
     return h_values, _norm(grad_h), drift, channel
 
 
-def _channel_size(model: Dynamics, x0: Array, levers: int) -> float:
-    """``||B_hat(x0)||_2``, the fitted channel's operator norm at the plan's first state: what
-    ``cvar_gap`` is a share of, so the identification radius is in the channel's own units and
-    ``gamma_star`` reads the same in any units of the state or of the levers.
+def _channel_size(
+    model: Dynamics, x0: Array, levers: int, shape: NDArray[np.float64] | None = None
+) -> float:
+    """``||B_hat(x0) D||_2``, the fitted channel's operator norm at the plan's first state, each
+    lever's column times its entry of ``shape`` (:func:`_action_shape`), ``D`` the identity where
+    it is None: what ``cvar_gap`` is a share of, so the identification radius is in the channel's
+    own units and ``gamma_star`` reads the same in any units of the state or of the levers.
 
     Raises:
         ValueError: if it is not a finite number, which scales no radius.
     """
     channel = jax.jacobian(model, argnums=2)(0.0, x0, jnp.zeros(levers, x0.dtype))
+    if shape is not None:
+        channel = channel * jnp.asarray(shape, channel.dtype)
     size = float(jnp.linalg.norm(channel, 2))
     if not math.isfinite(size):
         raise ValueError(
@@ -1690,10 +1728,75 @@ def _channel_size(model: Dynamics, x0: Array, levers: int) -> float:
 
 
 def _guaranteed(
-    drift: Array, channel: Array, grad_norm: Array, actions: Array, delta: float | Array
+    drift: Array,
+    channel: Array,
+    grad_norm: Array,
+    actions: Array,
+    delta: float | Array,
+    inverse: Array | NDArray[np.float64] | None = None,
 ) -> Array:
-    """``a + <w, u> - d ||u||``, ``d = delta ||grad h||``: the worst case at the planned action."""
-    return drift + jnp.einsum("km,km->k", channel, actions) - delta * grad_norm * _norm(actions)
+    """``a + <w, u> - d ||D^+ u||``, ``d = delta ||grad h||``: the worst case at the planned action,
+    ``D^+`` the levers' ``inverse`` (:func:`_action_shape`), the identity where it is None."""
+    spread = delta * grad_norm * _norm(_shaped(actions, inverse))
+    return drift + jnp.einsum("km,km->k", channel, actions) - spread
+
+
+def _shaped(actions: Array, inverse: Array | NDArray[np.float64] | None) -> Array:
+    return actions if inverse is None else actions * jnp.asarray(inverse, actions.dtype)
+
+
+def _reach(u_max: ArrayLike, levers: int | None = None) -> NDArray[np.float64]:
+    """Each lever's largest action, checked: none nan or negative, one positive at least, and one
+    per lever where ``levers`` is given. ``inf`` is a free side's.
+
+    Raises:
+        ValueError: otherwise, since no action has such a size.
+    """
+    reach = np.asarray(u_max, dtype=np.float64)
+    if reach.ndim != 1 or (levers is not None and reach.shape[0] != levers):
+        expected = "one per lever" if levers is None else f"{levers}, one per lever"
+        raise ValueError(
+            f"u_max has shape {reach.shape}; each lever's largest action is {expected}"
+        )
+    if not (np.all(reach >= 0.0) and np.any(reach > 0.0)):  # nan compares false
+        raise ValueError(
+            f"u_max={reach.tolist()} is no set of actions' sizes: each is a number not negative, "
+            "and one is positive at least"
+        )
+    return reach
+
+
+def _act_within(reach: NDArray[np.float64], moved: NDArray[np.bool_], where: str) -> None:
+    """Refuse a lever whose largest action is zero but which ``moved``: no action set holds it."""
+    stuck = np.flatnonzero((reach == 0.0) & moved)
+    if stuck.size:
+        raise ValueError(
+            f"lever {int(stuck[0])} has a largest action of 0 in u_max, but {where}; its actions "
+            "lie outside the set the radius is read on"
+        )
+
+
+def _action_shape(
+    reach: NDArray[np.float64],
+) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float]:
+    """The action set ``||D^+ u|| <= U`` whose semi-axes are each lever's largest action: ``D``,
+    each lever's ``reach`` over the largest ``U``, its inverse ``D^+``, zero where a lever has no
+    action, and ``U``. A free side has no largest action to read its lever's units by: ``D`` and
+    ``D^+`` are then None, the levers' own units read as one, and ``U`` is ``inf``, as before.
+
+    With lever ``j`` in units ``c_j`` times its own, its reach moves as ``c_j``, its column of the
+    channel as ``1 / c_j``, and ``U`` with whichever lever is the largest: the audit's every
+    product of the channel by ``D``, and of ``D^+`` by an action, then moves by ``U``'s factor
+    alone, which the audit reads none of (ADR 0085). One lever, or levers whose reaches are equal,
+    have ``D = D^+ = 1`` exactly, ``x / x`` being 1 in binary floating point, and the ball of
+    radius ``U`` they had.
+    """
+    largest = float(np.max(reach))
+    if largest == math.inf:
+        return None, None, largest
+    shape = reach / largest
+    inverse = np.divide(largest, reach, out=np.zeros_like(reach), where=reach > 0.0)
+    return shape, inverse, largest
 
 
 def certify_safety(
@@ -1705,7 +1808,7 @@ def certify_safety(
     alpha: float = 1.0,
     gamma: float = 1.0,
     cvar_gap: float = 1.0,
-    u_max: float | None = None,
+    u_max: ArrayLike | None = None,
 ) -> SafetyCertificate:
     """Price a plan's barrier guarantee against a partially identified control effect (§40).
 
@@ -1737,10 +1840,22 @@ def certify_safety(
             §32's scalar CVaR gap does not by itself establish one. The share is the caller's
             externally calibrated input, exactly as ``gamma`` is; an absolute radius ``r`` is the
             share ``r / ||B_hat(x0)||_2``.
-        u_max: actuation limit, used for ``gamma_star`` only -- that is the *best admissible action*
+        u_max: actuation limit, used for ``gamma_star`` -- that is the *best admissible action*
             question, which needs a budget the plan's own choice does not define. Defaults to the
             largest action norm the plan actually uses, answering the narrower "how much confounding
-            does this plan's own authority tolerate".
+            does this plan's own authority tolerate". One number per lever, each lever's largest
+            action in its own units, reads the whole audit in units of each lever's own largest
+            action: the action set is the ellipsoid ``||D^+ u|| <= U`` whose semi-axes are those
+            numbers, ``U`` the largest and ``D`` each over ``U``, the radius ``Delta`` is on
+            ``(B_hat - B) D`` and sized by ``||B_hat(x0) D||_2``, and an action's norm is
+            ``||D^+ u||``. That reads the same in any units of each lever, where one number reads
+            the levers' units as one: on a log of one state and two levers in ``[-2, 2]``, either
+            lever logged in units 1e3 or 1e-3 times its own, its box with it, the barrier's
+            certified steps fell from 3 to 0. One lever, or levers whose numbers are equal, read
+            the ball of radius ``U`` they read with ``u_max = U``, bit for bit. A lever whose
+            number is 0 has no action in the set, and the plan must not move it. A number ``inf``,
+            a free side's, leaves no units to read that lever by, and the audit reads the levers'
+            own units, as ``u_max = inf`` does.
 
     Assumes the plant is control-affine and the uncertainty set isotropic (see :mod:`chc.barrier`;
     ``d*||u||`` is exact for a Euclidean ball, an outer bound otherwise), and audits the *model's*
@@ -1751,9 +1866,10 @@ def certify_safety(
         ValueError: if ``cvar_gap`` is not positive or not finite, which would make the radius
             meaningless and :func:`chc.barrier.barrier_gamma_star` uninvertible, or the channel at
             the plan's first state is not a finite number; if ``gamma`` is
-            below 1 or not finite, which is not a sensitivity level; or if the actuation budget
+            below 1 or not finite, which is not a sensitivity level; if the actuation budget
             backing ``gamma_star`` is non-positive, which asks how much confounding a controller
-            with no authority tolerates.
+            with no authority tolerates; or if ``u_max`` per lever has an entry negative or nan,
+            none positive, not one per lever, or a 0 at a lever the plan moves.
     """
     if isinstance(barrier, tuple):
         if not barrier:
@@ -1770,14 +1886,25 @@ def certify_safety(
             f"cvar_gap must be positive and finite to scale a sensitivity radius, got {cvar_gap}"
         )
     states, actions = plan.trajectory[:-1], plan.actions
-    size = _channel_size(model, states[0], actions.shape[1])
+    shape, inverse = None, None
+    if u_max is None or np.ndim(u_max) == 0:
+        authority = (
+            float(np.asarray(u_max, dtype=np.float64))
+            if u_max is not None
+            else float(jnp.max(jnp.linalg.norm(actions, axis=1)))
+        )
+    else:
+        reach = _reach(u_max, actions.shape[1])
+        shape, inverse, authority = _action_shape(reach)
+        if inverse is not None:
+            _act_within(reach, np.any(np.asarray(actions) != 0.0, axis=0), "the plan moves it")
+    size = _channel_size(model, states[0], actions.shape[1], shape)
     delta = confounding_robust_inflation(cvar_gap, 0.0, gamma) * size
     h_values, grad_norm, drift, channel = _barrier_terms(model, barrier, states, actions, dt)
-    guaranteed = _guaranteed(drift, channel, grad_norm, actions, delta)
+    guaranteed = _guaranteed(drift, channel, grad_norm, actions, delta, inverse)
     required = -alpha * h_values
     certified = guaranteed >= required
 
-    authority = u_max if u_max is not None else float(jnp.max(jnp.linalg.norm(actions, axis=1)))
     if not authority > 0.0:  # a nan passed `authority <= 0` and priced every step's threshold nan
         source = "u_max" if u_max is not None else "the plan's largest action (it never acts)"
         raise ValueError(f"gamma_star needs a positive actuation budget; {source} is {authority}")
@@ -1792,7 +1919,11 @@ def certify_safety(
             size * float(n),
         )
         for a, c, h, n in zip(
-            drift, jnp.linalg.norm(channel, axis=1), h_values, grad_norm, strict=True
+            drift,
+            jnp.linalg.norm(channel if shape is None else channel * shape, axis=1),
+            h_values,
+            grad_norm,
+            strict=True,
         )
     )
     return SafetyCertificate(

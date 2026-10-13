@@ -1635,16 +1635,19 @@ def prescribe(
         dt: the time step one panel period represents.
         gamma: the marginal sensitivity model's level the barrier is priced at (§40), passed to
             :func:`chc.plan.certify_safety` with its default gap, the fitted channel's own size,
-            so ``gamma_star`` reads the same in any units of the state or of the levers. It
-            prices the plan, and changes it only under ``hold_constraints``.
+            and each lever's largest action as ``u_max``, so ``gamma_star`` and the barrier's
+            certified steps read the same in any units of the state or of each lever (ADR 0085,
+            ADR 0091). It prices the plan, and changes it only under ``hold_constraints``.
         tolerance: the trajectory error above which the plan stops being certified. **Omitting it
             switches the tube off** rather than setting it to infinity: this library cannot know
             how much error a caller accepts, and a certificate with an infinite tolerance passes
             over the whole horizon while proving nothing. The tube carries two errors over the
             plan's RK4 steps at the rate :attr:`DecisionCertificate.tube_rate` names: the channel's
-            standard error, each lever's share of it times the largest action that lever's box
-            allows, root mean over the channel's entries, which reads the same in any units of each
-            lever (ADR 0087), a scale and not a bound; and the plant's own noise, the plan's
+            standard error, each lever's share of it times the largest distance that lever's box
+            allows from the log's mean action, where the fit's drift absorbed the channel, root
+            mean over the channel's entries, which reads the same in any units of each lever
+            (ADR 0087) and wherever its zero is (ADR 0091), a scale and not a bound; and the
+            plant's own noise, the plan's
             one-step error on the log, read off the fit's defect with its lag-1 correlation within
             units, at the radius that holds it at each step with probability 0.95 where the noise
             is Gaussian and AR(1) (ADR 0080, :attr:`DecisionCertificate.tube_noise`). Up to 0.16.0
@@ -1654,7 +1657,12 @@ def prescribe(
             and trusted 6 to 13 steps on nine logs in ten. It now holds the plant at the first step
             on 97 % to 99 % of draws and trusts 1 or 2 steps, where the plant's error stays within
             the tolerance of 0.5 K at 95 % for 2 or 3. A tube whose rate, budget or noise comes out
-            other than a finite number is not evaluated, and a warning says so.
+            other than a finite number is not evaluated, and a warning says so. The tube is one
+            norm over the states, and ``tolerance`` one number in their units: states in units
+            unlike each other mix in it, as the levers' once did. To give each state its own
+            scale, log it in units of the error you accept on it, its target, its bounds and the
+            prices with it, which the plan reads the same (ADR 0059), and pass ``tolerance=1``
+            (ADR 0091).
         x0: the state to plan from, one finite value per state: the target's, then each
             constrained column's. Defaults to the mean over units of each unit's last observed
             state, the pooled "where we are now". :attr:`Prescription.start` records which, and
@@ -2117,8 +2125,9 @@ def prescribe(
     u_lo, u_hi = pin(
         jnp.array([lever.lo for lever in levers]), jnp.array([lever.hi for lever in levers])
     )
-    reach = jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi))  # each lever's largest action, in its units
-    u_max = float(jnp.max(reach))
+    # each lever's largest action, in its units: the barrier's audit reads each lever in units of
+    # its own (ADR 0091)
+    reach = np.asarray(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi)), dtype=np.float64)
     caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
     rate = LinearConstraint.rate_limit(horizon, caps)
     relation_rows = tuple(
@@ -2133,13 +2142,30 @@ def prescribe(
     )
 
     margins = _margins(states, constraints)
-    held = BarrierConstraint(margins, gamma=gamma) if hold_constraints else None
+    held = (
+        BarrierConstraint(margins, gamma=gamma, u_max=tuple(reach.tolist()))
+        if hold_constraints
+        else None
+    )
 
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target, horizon, rule)
     lipschitz, tube_rate = _rate(model, start, u_lo, u_hi)
+    # The drift absorbed the channel at the log's mean action, so the channel's error moves the
+    # field by the action's distance from it, not from the lever's zero (ADR 0091): each lever's
+    # largest distance from it the box allows, in its units. A lever held at its mean logged
+    # level is held at that action, read the way ``levels`` reads it, and adds no error.
+    centre = np.array([float(jnp.mean(data["u"][:, i])) for i in range(n_levers)])
     model_error = (
-        0.0 if tolerance is None else _model_error(fit, np.asarray(reach, dtype=np.float64))
+        0.0
+        if tolerance is None
+        else _model_error(
+            fit,
+            np.maximum(
+                np.abs(np.asarray(u_lo, dtype=np.float64) - centre),
+                np.abs(np.asarray(u_hi, dtype=np.float64) - centre),
+            ),
+        )
     )
     # with no channel error nothing bounds the field the plan rolls out, and the noise alone would
     # switch on a tube that trusts it
@@ -2171,7 +2197,10 @@ def prescribe(
 
     def solve(lo: Array, hi: Array) -> CausalPlan:
         lo, hi = pin(lo, hi)
-        solved = causal_plan(
+        # Held, the solve audits at the whole box's largest actions, which ``held`` carries, not at
+        # its own box's, which a candidate of the greedy selection narrows: greedy ranks candidates
+        # on, and the certificate reports, that one audit, so the two cannot disagree.
+        return causal_plan(
             model,
             start,
             planning_cost,
@@ -2189,13 +2218,6 @@ def prescribe(
             constraints=(rate, *relation_rows, *spend_rows),
             barrier=held,
         )
-        if held is None:
-            return solved
-        # The solve prices gamma_star at its own box's largest action, which a candidate of the
-        # greedy selection narrows. Greedy ranks candidates on, and the certificate reports, the
-        # audit at the whole box's, so the two cannot disagree.
-        audit = certify_safety(solved, model, margins, dt, gamma=gamma, u_max=u_max)
-        return replace(solved, safety=audit)
 
     def regret(solved: CausalPlan) -> PlanRegretBound:
         return plan_regret_bound(solved, model, start, planning_cost, dt, u_lo, u_hi, probes=4)
@@ -2233,9 +2255,9 @@ def prescribe(
     )
 
     if held is not None:
-        safety = plan.safety  # solve() already audited it at the whole box's u_max
+        safety = plan.safety  # solve() already audited it at the whole box's largest actions
     elif margins:
-        safety = certify_safety(plan, model, margins, dt, gamma=gamma, u_max=u_max)
+        safety = certify_safety(plan, model, margins, dt, gamma=gamma, u_max=reach)
     else:
         safety = None
     gap = regret(plan)
@@ -3182,18 +3204,25 @@ def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     """Turn the channel's standard error into the per-step rate error the Gronwall tube wants.
 
     ``channel_error`` is the scale of ``B_hat(x) - B(x)`` per entry at the log's states. Entry
-    ``(i, j)`` is in the states' units per unit of lever ``j``, and ``reach[j]``, the largest action
-    lever ``j``'s box allows, is in lever ``j``'s units: their product is the rate error that action
-    induces, in the states' units, whatever lever ``j``'s units are. This returns its root mean over
+    ``(i, j)`` is in the states' units per unit of lever ``j``, and ``reach[j]``, which
+    :func:`prescribe` passes as the largest distance lever ``j``'s box allows from the log's mean
+    action, is in lever ``j``'s units: their product is the rate error that action induces, in the
+    states' units, whatever lever ``j``'s units are. The distance, not the action: the fit's drift
+    absorbs the channel at the log's action, so its error moves the field by the action's distance
+    from there, and an origin of a lever moved with its log is the same field (ADR 0091). Up to
+    0.17.0 ``reach[j]`` was the largest action from the lever's zero: on a log of one state and two
+    levers in ``[-2, 2]``, ``u1``'s zero moved by 100, its log and box with it, ended the tube at
+    0.713 where it ends at 0.538, and certified one step where it certifies two. This returns its
+    root mean over
     the channel's entries, from each lever's read of each covariance ``channel_error`` is read off
     (``CausalDynamicsFit._lever_errors``), the largest read taken once the levers are priced
-    (ADR 0087). With one lever it is ``channel_error`` times the lever's largest action, bit for
-    bit; with levers in one unit whose boxes allow the same largest action, that to rounding. Up to
-    0.16.0 it was ``channel_error`` times the largest action of any lever, which mixed the levers'
-    units: on a log of one state and two levers in ``[-2, 2]``, either lever in units 1e3 or 1e-3
-    times its own, its box with it, ended the tube 7 times as wide and certified neither of the two
-    steps it certifies. A lever whose box allows no action but zero adds no error, though it counts
-    in the mean, and boxes that allow none but zero leave the channel nothing to move, and no tube.
+    (ADR 0087). With one lever it is ``channel_error`` times ``reach``, bit for bit; with levers in
+    one unit whose ``reach`` is one number, that to rounding. Up to 0.16.0 it was ``channel_error``
+    times the largest action of any lever, which mixed the levers' units: on a log of one state and
+    two levers in ``[-2, 2]``, either lever in units 1e3 or 1e-3 times its own, its box with it,
+    ended the tube 7 times as wide and certified neither of the two steps it certifies. A lever
+    whose ``reach`` is zero, held at the log's mean action, adds no error, though it counts in the
+    mean, and ``reach`` zero for every lever leaves the channel nothing to move, and no tube.
 
     It is a *scale*, not coverage: ``channel_error`` is the robust standard error, root-mean over
     the entries and the log's states, calibrated on average but scattering from one log to the

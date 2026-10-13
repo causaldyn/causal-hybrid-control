@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
+from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
@@ -573,3 +574,193 @@ def test_a_barrier_needs_a_box_that_admits_an_action() -> None:
         causal_plan(
             OSCILLATOR, X0, COST, DT, HORIZON, 0.0, 0.0, barrier=BarrierConstraint(_velocity_floor)
         )
+
+
+# ---- each lever read in units of its own largest action ----
+
+# the oscillator pushed by two forces, the second at half the first's gain, in boxes of 5 and 1
+TWO_DRIFT = jnp.array([[0.0, 1.0], [-(OMEGA**2), -2.0 * ZETA * OMEGA]])
+TWO_CHANNEL = jnp.array([[0.0, 0.0], [1.0, 0.5]])
+TWO_REACH = np.array([U_MAX, 1.0])
+
+
+def _two_forces(units: tuple[float, float] = (1.0, 1.0)) -> tuple[LinearDynamics, QuadraticCost]:
+    """The two-force oscillator with force ``j`` in ``units[j]`` times its own units, its price
+    with it."""
+    scale = jnp.asarray(units)
+    cost = QuadraticCost(
+        Q=COST.Q,
+        R=jnp.diag(jnp.array([0.01, 0.02]) / scale**2),
+        Qf=COST.Qf,
+        x_target=COST.x_target,
+    )
+    return LinearDynamics(TWO_DRIFT, TWO_CHANNEL / scale), cost
+
+
+def _same_audit(one: object, other: object) -> None:
+    """Every field of two audits, bit for bit, nan where both are."""
+    for name in ("barrier_values", "guaranteed_derivative", "required", "planned_certified"):
+        np.testing.assert_array_equal(
+            np.asarray(getattr(one, name)), np.asarray(getattr(other, name))
+        )
+    for name in ("certified_steps", "gamma_star", "step_gamma_star", "radius"):
+        np.testing.assert_array_equal(
+            np.asarray(getattr(one, name)), np.asarray(getattr(other, name))
+        )
+
+
+def test_one_lever_s_largest_action_reads_the_ball_it_read_bit_for_bit() -> None:
+    """One lever's largest action is the whole action set's: the audit and the held condition read
+    the ball of that radius they read before, to the bit, held or not; so do two levers whose
+    largest actions are equal, and a free side, which leaves no units to read."""
+    plan = causal_plan(OSCILLATOR, X0, COST, DT, HORIZON, -U_MAX, U_MAX)
+    kwargs = {"alpha": ALPHA, "gamma": 2.0}
+    ball = certify_safety(plan, OSCILLATOR, _velocity_floor, DT, u_max=U_MAX, **kwargs)
+    assert ball.certified_steps < HORIZON  # the free plan breaks the floor
+    _same_audit(
+        certify_safety(plan, OSCILLATOR, _velocity_floor, DT, u_max=(U_MAX,), **kwargs), ball
+    )
+
+    held = [
+        causal_plan(
+            OSCILLATOR,
+            X0,
+            COST,
+            DT,
+            HORIZON,
+            -U_MAX,
+            U_MAX,
+            barrier=BarrierConstraint(_velocity_floor, u_max=u_max, **kwargs),
+        )
+        for u_max in (None, (U_MAX,))
+    ]
+    np.testing.assert_array_equal(np.asarray(held[1].actions), np.asarray(held[0].actions))
+    _same_audit(held[1].safety, held[0].safety)
+
+    model, cost = _two_forces()
+    both = causal_plan(model, X0, cost, DT, HORIZON, -U_MAX, U_MAX)
+    ball = certify_safety(both, model, _velocity_floor, DT, u_max=U_MAX, **kwargs)
+    _same_audit(
+        certify_safety(both, model, _velocity_floor, DT, u_max=(U_MAX, U_MAX), **kwargs), ball
+    )
+    free = certify_safety(both, model, _velocity_floor, DT, u_max=math.inf, **kwargs)
+    _same_audit(
+        certify_safety(both, model, _velocity_floor, DT, u_max=(math.inf, 1.0), **kwargs), free
+    )
+
+
+@pytest.mark.parametrize("units", [(1e3, 1.0), (1.0, 1e-3), (1e-3, 1e3)])
+def test_the_audit_reads_the_same_in_any_units_of_each_lever(units: tuple[float, float]) -> None:
+    """Each force in units of its own, its box with it: the same plan, read in those units, clears
+    the same steps by the same guaranteed derivative, and every step's ceiling is the same. With
+    one number for both forces, the largest action of either, the ball and the radius read their
+    units as one: in ``(1e3, 1)`` the plan, which clears 14 steps of 20, cleared none, and
+    ``gamma*`` read 2779 where it reads 4.59. Held in the solve, whose rounds step each force in
+    units of its largest action, every step clears at one cost in every units; stepped in the
+    caller's, ``(1e3, 1)`` held none."""
+    kwargs = {"alpha": ALPHA, "gamma": 2.0}
+    model, cost = _two_forces()
+    plan = causal_plan(model, X0, cost, DT, HORIZON, -TWO_REACH, TWO_REACH)
+    one = certify_safety(plan, model, _velocity_floor, DT, u_max=TWO_REACH, **kwargs)
+    assert one.certified_steps < HORIZON  # the free plan breaks the floor
+    assert int(np.sum(np.asarray(one.planned_certified))) == 14
+    assert any(1.0 < value < math.inf for value in one.step_gamma_star)
+
+    scale = np.asarray(units)
+    other_model, _ = _two_forces(units)
+    moved = replace(plan, actions=plan.actions * jnp.asarray(scale))
+    other = certify_safety(
+        moved, other_model, _velocity_floor, DT, u_max=TWO_REACH * scale, **kwargs
+    )
+    assert other.certified_steps == one.certified_steps
+    np.testing.assert_array_equal(
+        np.asarray(other.planned_certified), np.asarray(one.planned_certified)
+    )
+    np.testing.assert_allclose(
+        np.asarray(other.guaranteed_derivative),
+        np.asarray(one.guaranteed_derivative),
+        rtol=1e-12,
+        atol=1e-15,
+    )
+    np.testing.assert_allclose(other.step_gamma_star, one.step_gamma_star, rtol=1e-9, atol=0.0)
+
+    held = [
+        causal_plan(
+            forces,
+            X0,
+            price,
+            DT,
+            HORIZON,
+            -TWO_REACH * s,
+            TWO_REACH * s,
+            barrier=BarrierConstraint(_velocity_floor, u_max=tuple(TWO_REACH * s), **kwargs),
+        )
+        for (forces, price), s in ((_two_forces(), np.ones(2)), (_two_forces(units), scale))
+    ]
+    for plan in held:
+        assert plan.safety is not None
+        assert plan.safety.certified_steps == HORIZON
+        assert plan.solver_status == "converged"
+    assert held[1].task_cost == pytest.approx(held[0].task_cost, rel=1e-5, abs=0.0)
+
+
+def test_gamma_star_is_where_the_best_action_inside_the_box_just_clears() -> None:
+    """At a step's ceiling the best action of the ellipsoid whose semi-axes are each lever's largest
+    action, ``U D (cos t, sin t)``, sought over 200 001 angles, meets the condition with no room,
+    against the radius on ``(B_hat - B) D`` sized by ``||B_hat D||_2``. The ball of radius 5 that
+    one number read had its best action push the second force to 2.2, past its box of 1."""
+    model, cost = _two_forces()
+    plan = causal_plan(model, X0, cost, DT, HORIZON, -TWO_REACH, TWO_REACH)
+    audit = certify_safety(
+        plan, model, _velocity_floor, DT, alpha=ALPHA, gamma=2.0, u_max=TWO_REACH
+    )
+    angles = np.linspace(0.0, 2.0 * np.pi, 200_001)
+    ellipse = TWO_REACH[:, None] * np.stack([np.cos(angles), np.sin(angles)])  # inside the box
+    channel = np.asarray(TWO_CHANNEL)
+    size = float(np.linalg.norm(channel * (TWO_REACH / U_MAX), 2))
+    checked = 0
+    for state, ceiling in zip(np.asarray(plan.trajectory[:-1]), audit.step_gamma_star, strict=True):
+        if not 1.0 < ceiling < math.inf:
+            continue
+        radius = (ceiling - 1.0) / (ceiling + 1.0) * size  # ||grad h|| = 1
+        drift = float((np.asarray(TWO_DRIFT) @ state)[1])
+        best = drift + float(np.max(channel[1] @ ellipse)) - radius * U_MAX
+        assert best == pytest.approx(-ALPHA * (state[1] + FLOOR), rel=1e-8, abs=1e-12)
+        checked += 1
+    assert checked > 0
+    w = channel[1]
+    assert abs(U_MAX * w[1] / np.linalg.norm(w)) > TWO_REACH[1]
+
+
+@pytest.mark.parametrize(
+    ("u_max", "message"),
+    [
+        ((-1.0, 1.0), "no set of actions' sizes"),
+        ((math.nan, 1.0), "no set of actions' sizes"),
+        ((0.0, 0.0), "no set of actions' sizes"),
+        ((U_MAX,), "one per lever"),
+        ((0.0, 1.0), "largest action of 0"),
+    ],
+)
+def test_each_lever_s_largest_action_must_be_one(u_max: tuple[float, ...], message: str) -> None:
+    """A negative or nan size, none positive, too few, or 0 at a lever the plan moves: no ellipsoid
+    holds the plan's actions, and the radius would read nothing."""
+    model, cost = _two_forces()
+    plan = causal_plan(model, X0, cost, DT, HORIZON, -TWO_REACH, TWO_REACH)
+    with pytest.raises(ValueError, match=message):
+        certify_safety(plan, model, _velocity_floor, DT, u_max=u_max)
+    if message != "one per lever" and message != "largest action of 0":
+        with pytest.raises(ValueError, match=message):
+            BarrierConstraint(_velocity_floor, u_max=u_max)
+    else:
+        with pytest.raises(ValueError, match=message):
+            causal_plan(
+                model,
+                X0,
+                cost,
+                DT,
+                HORIZON,
+                -TWO_REACH,
+                TWO_REACH,
+                barrier=BarrierConstraint(_velocity_floor, gamma=2.0, u_max=u_max),
+            )

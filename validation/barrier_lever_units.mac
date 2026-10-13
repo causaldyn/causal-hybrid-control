@@ -1,0 +1,64 @@
+/* The barrier's audit read the same in any units of each lever (ADR 0091).
+
+   Setting (chc.plan.certify_safety, _action_shape, _guaranteed, _channel_size). One state, so the
+   channel B is a row b of m entries and its operator norm is the row's Euclidean norm; the
+   barrier's gradient is the number n > 0, so the channel along it is w = n b. r[j] is lever j's
+   largest action, in its units, and U = max_j r[j]. The audit reads the action set
+   ||D^+ u|| <= U, D = diag(r / U), so each lever's semi-axis is r[j]:
+
+       size    s = ||b D||,                      the radius is delta = k s, k = (G-1)/(G+1) g,
+       spread  delta n ||D^+ u||,                 at the planned action u,
+       ceiling d* = ||D w|| - deficit / U,  c = d* / n,  Gamma* = (g s n + c) / (g s n - c).
+
+   Here m = 3, and m = 1 for one lever. U is kept a symbol: the statements hold for any U > 0,
+   which is why whichever lever is the largest does not matter. */
+display2d : false$
+assume(n > 0, U > 0, U2 > 0, g > 0, k > 0, r1 > 0, r2 > 0, r3 > 0, c1 > 0, c2 > 0, c3 > 0)$
+
+norm2(v) := sum(v[j]^2, j, 1, length(v))$
+b : [b1, b2, b3]$
+r : [r1, r2, r3]$
+u : [u1, u2, u3]$
+c : [c1, c2, c3]$
+
+/* the squares of s * U and of ||D^+ u|| / U, U-free, and of the spread */
+size2(b, r, U) := norm2(b * r / U)$
+inv2(u, r, U) := norm2(u * U / r)$
+spread2(b, r, u, U) := k^2 * n^2 * size2(b, r, U) * inv2(u, r, U)$
+
+/* (1) The spread reads no U, and none of each lever's units: lever j in c[j] times its own
+   moves b[j] as 1/c[j], r[j] and u[j] as c[j], and U to whatever the largest becomes. */
+print("(1) spread^2 at U over at U2 less 1:",
+      ratsimp(spread2(b, r, u, U) / spread2(b, r, u, U2) - 1), "  (=0)")$
+print("    spread^2 with each lever moved, less before:",
+      ratsimp(spread2(b / c, r * c, u * c, U2) - spread2(b, r, u, U)), "  (=0)")$
+
+/* (2) The ceiling reads no U and no lever's units: with S = s U and W = ||D w|| U, U-free,
+   Gamma* = (g S n + (W - deficit)/n) / (g S n - (W - deficit)/n) once both sides are multiplied
+   by U. Its square roots move as their arguments do, which (1) and this show do not. */
+w2(b, r, U) := norm2(n * b * r / U)$
+print("(2) ||D w||^2 U^2 with each lever moved, less before:",
+      ratsimp(w2(b / c, r * c, U2) * U2^2 - w2(b, r, U) * U^2), "  (=0)")$
+print("    ||b D||^2 U^2 with each lever moved, less before:",
+      ratsimp(size2(b / c, r * c, U2) * U2^2 - size2(b, r, U) * U^2), "  (=0)")$
+
+/* (3) The ball that one number read, s0 = ||b||, spread k n s0 ||u||, moves with one lever. */
+ball2(b, u) := k^2 * n^2 * norm2(b) * norm2(u)$
+print("(3) ball's spread^2 with lever 1 moved, less before:",
+      factor(ratsimp(ball2(b / [c1, 1, 1], u * [c1, 1, 1]) - ball2(b, u))),
+      "  (nonzero: it mixes the levers' units)")$
+
+/* (4) One lever, or equal largest actions: D = 1 and the spread is the ball's. */
+print("(4)", ratsimp(spread2([b1], [U], [u1], U) - ball2([b1], [u1])), "  (=0)  ",
+      ratsimp(spread2(b, [U, U, U], u, U) - ball2(b, u)), "  (=0)")$
+
+/* (5) The best action of the ellipsoid sum (u[j]/r[j])^2 <= 1, two levers, w = (w1, w2): by
+   Lagrange, u[j] = r[j]^2 w[j] / sqrt(sum (w r)^2), where w . u = sqrt(sum (w r)^2) = ||D w|| U,
+   and each |u[j]| <= r[j]. */
+best : [r1^2 * w1, r2^2 * w2] / sqrt((w1 * r1)^2 + (w2 * r2)^2)$
+print("(5) on the ellipse:", ratsimp(norm2(best / [r1, r2]) - 1), "  (=0)",
+      "  w . u less ||D w|| U:",
+      radcan(w1 * best[1] + w2 * best[2] - sqrt((w1 * r1)^2 + (w2 * r2)^2)), "  (=0)")$
+print("    gradient of w . u - mu (sum (u/r)^2 - 1) at it, mu = ||D w|| U / 2:",
+      radcan(ratsimp([w1, w2] - 2 * (sqrt((w1 * r1)^2 + (w2 * r2)^2) / 2) * best / [r1^2, r2^2])),
+      "  (=[0, 0])")$

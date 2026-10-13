@@ -60,6 +60,41 @@ still change).
   rate of horizon `h` after `n` scores lies within `(bound + h step) / (eta_n n)` of `alpha`;
   every sequence of misses an adversary can force in 12 periods kept it.
 
+### Fixed
+
+- **`prescribe`'s barrier audit, `gamma*` and the held solve read the same in any units of each
+  lever.** The audit read the levers through one number, the largest action of any lever's box,
+  and one ball in the levers' units: the action set, the identification radius's size and a
+  planned action's norm each added squares in the units of different levers. On a log of one state
+  and two levers in `[-2, 2]`, bounded to `[0.2, 1.1]` at `gamma = 1.5`, the barrier cleared three
+  steps of three, and none with `u1` logged in units 1e3 times its own or `u2` in thousandths, so
+  the trusted steps fell from two to none; on a log that set `u1` from the state, `gamma*` read 118
+  where it reads 6.17. `certify_safety` now takes `u_max` as one number per lever, each lever's
+  largest action, and reads the action set whose semi-axes those are: the radius on
+  `(B_hat - B) D` sized by `||B_hat(x_0) D||_2`, `D` each number over the largest, and an action's
+  norm `||D^+ u||`. `BarrierConstraint(u_max=...)` holds the same condition, its rounds stepping
+  each lever in units of its largest action; held, that log's plan cleared no step in those units
+  and now clears all three, at `gamma*` 6.509 in every units. One number, one lever, or levers
+  whose largest actions are equal read as before, bit for bit: the quickstart, notebook 09 and the
+  BOPTEST and pendulum case studies do not move. Where the levers' boxes differ in one unit, the
+  set now lies inside the box, which the ball did not: with boxes 0.5 and 2 on that log, bounded
+  to `[0.8, 1.1]`, `gamma*` reads 2.30 where it read 10.88, the ball's best action having pushed
+  `u1` nearly four times past its box (ADR 0091). Since 0.5.0.
+- **`prescribe`'s error tube prices each lever's channel error from the log's mean action, not
+  from the lever's zero, so it reads the same wherever a lever's zero is.** The fit's drift absorbs
+  the channel at the log's action, so the channel's error moves the field by an action's distance
+  from there; on 120 logs of a plant whose `u1` was logged about 3, the fitted rate's error was
+  least at `u1 = 3.19`. The tube priced the largest action from zero: with `u1`'s zero moved by
+  100, its log and box with it, a tube that ends at 0.538 ended at 0.713 and certified one step of
+  three where it certifies two. It now prices the largest distance the box allows from the log's
+  mean action, and a lever held at its logged level adds no error. Tubes move wherever a log's mean
+  action is not zero: notebook 09's ends at 0.641 where it ended at 0.784, its horizon unchanged;
+  the quickstart's moves by 8e-5 of itself. On the BOPTEST-shaped logs the tube one step ahead
+  narrows by 6 % to 9 %, the plant stays inside it at the first step on 96.1 % to 98.8 % of draws,
+  where it did on 97.2 % to 99.4 %, and the certificate trusts 1 to 3 steps. The tube is still one
+  norm over the states: `tolerance` now says how to give each state its own scale (ADR 0091).
+  Since 0.5.0.
+
 ### Notes
 
 - **Public statements that the 2024–26 literature refuted or dated are corrected.** Each changed

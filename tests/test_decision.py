@@ -733,13 +733,21 @@ def test_the_tube_s_rate_error_reads_each_lever_at_its_own_largest_action() -> N
     assert _model_error(_fit_reading(None), np.array([2.0, 5.0])) == 0.0
 
 
-def test_with_one_lever_the_tube_s_rate_error_is_as_it_was_to_the_bit() -> None:
+def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_distance() -> None:
     """One lever's error, read alone, is the channel's, so the tube's rate error is the channel's
-    standard error times the largest action the lever's box allows, as before, bit for bit. Here
-    that action is 3, below zero, and the plan's tube carries it."""
+    standard error times the largest distance the lever's box allows from the log's mean action,
+    bit for bit: the function prices one lever's error at what it is given as before. Here the
+    box's far side is below zero, 3 and the mean apart, and the plan's tube carries it; up to the
+    fix it carried the largest action from zero, 3, which the drift's absorbing the channel at the
+    log's mean action does not read (ADR 0091)."""
     horizon, dt = 4, 1.0
+    panel = _growing_panel()
+    columns = panel.columns
+    mean = float(np.mean(np.asarray(columns["u"])[np.asarray(columns["time"]) < 5]))
+    distance = max(abs(-3.0 - mean), abs(1.0 - mean))
+    assert abs(distance - 3.0) > 1e-6
     result = prescribe(
-        _growing_panel(),
+        panel,
         levers=[Lever("u", lo=-3.0, hi=1.0)],
         target=Target("x", value=0.5),
         adjustment=CausalGraph.from_edges([("w", "u"), ("w", "x"), ("u", "x")]),
@@ -762,7 +770,7 @@ def test_with_one_lever_the_tube_s_rate_error_is_as_it_was_to_the_bit() -> None:
     assert noise is not None
     assert persistence is not None
     rate, _ = _rate(problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi))
-    expected = _tube([rate] * horizon, [fit.channel_error * 3.0] * horizon, dt, "rk4")
+    expected = _tube([rate] * horizon, [fit.channel_error * distance] * horizon, dt, "rk4")
     expected += _noise_tube(np.asarray(rate), np.array([[noise**2]]), persistence, dt, horizon)
     np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
 

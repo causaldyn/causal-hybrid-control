@@ -1,7 +1,8 @@
 # ADR 0085 — Γ*'s gap is a share of the channel
 
 **Status:** accepted, 2026-10-12. Amends ADR 0002: the radius `delta` is now
-`(gamma - 1)/(gamma + 1) * cvar_gap * ||B_hat(x_0)||_2`.
+`(gamma - 1)/(gamma + 1) * cvar_gap * ||B_hat(x_0)||_2`. Amended by ADR 0091, 2026-10-13: under
+`prescribe` the radius and the action set read each lever in units of its own largest action.
 
 ## Context
 
