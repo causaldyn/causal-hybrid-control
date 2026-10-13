@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import math
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
@@ -21,10 +22,19 @@ import numpy as np
 import pytest
 from scipy.optimize import lsq_linear
 
-from chc.control import LinearConstraint
+from chc.control import (
+    LinearConstraint,
+    _backtrack,
+    _constraint_blocks,
+    _descend,
+    _first_order_residual,
+    _guess_units,
+    _no_duals,
+    _stationarity_tolerance,
+)
 from chc.cost import QuadraticCost, total_cost
-from chc.dynamics import LinearDynamics
-from chc.plan import BarrierConstraint, CausalPlan, _diagnostics, causal_plan
+from chc.dynamics import DampedOscillator, LinearDynamics
+from chc.plan import _DESCENT_TOL, BarrierConstraint, CausalPlan, _diagnostics, causal_plan
 from chc.support import SupportModel, _augmented
 from chc.uncertainty import ConfoundingRobustPenalty
 
@@ -409,3 +419,234 @@ def test_what_is_not_read_says_so() -> None:
         assert math.isinf(plan.task_cost)
         assert plan.stationarity_status == "not_finite"
         assert plan.violation_status == "within"
+
+
+def _logged(key: int, spread: float, centre: float = 0.0) -> SupportModel:
+    """A support model of 200 logged states and actions about ``centre``, ``spread`` wide."""
+    return SupportModel.fit(
+        spread * jax.random.normal(jax.random.key(key), (200, 2)),
+        centre + spread * jax.random.normal(jax.random.key(key + 1), (200, 1)),
+    )
+
+
+@pytest.mark.parametrize("penalties", ["support", "two supports on an oscillator"])
+def test_a_penalised_plan_the_descent_calls_converged_reads_within_its_tolerance(
+    penalties: str,
+) -> None:
+    """The penalised descent's variables read the task cost's curvature, and a support penalty is
+    hundreds to ten thousand times steeper. A step there buys ``r^2 / (2 c)`` of ``|J|``, so a
+    descent that stops where no step buys ``1e-14`` of it can leave a residual of
+    ``sqrt(2 c 1e-14)``, beyond the tolerance that reads ``c = 1``. It stops on the residual."""
+    if penalties == "support":
+        model, cost = _problem()
+        plan = causal_plan(
+            model, _X0, cost, _DT, _HORIZON, -5.0, 5.0, support=_logged(0, 0.05), lam_supp=1.0
+        )
+    else:
+        cost = QuadraticCost(
+            Q=jnp.diag(jnp.array([1.0, 0.0])),
+            R=jnp.array([[0.01]]),
+            Qf=jnp.diag(jnp.array([10.0, 1.0])),
+            x_target=jnp.zeros(2),
+        )
+        plan = causal_plan(
+            DampedOscillator(omega=1.0, zeta=0.1),
+            _X0,
+            cost,
+            0.1,
+            20,
+            -5.0,
+            5.0,
+            support=_logged(0, 0.3),
+            lam_supp=0.1,
+            uncertainty=_logged(2, 0.3, centre=0.5),
+            lam_unc=1.0,
+        )
+    assert plan.solver_status == "converged"
+    assert plan.stationarity is not None
+    assert plan.stationarity_tolerance is not None
+    assert plan.stationarity <= plan.stationarity_tolerance
+    assert plan.stationarity_status == "within"
+
+
+def _steep(curvature: float) -> tuple[np.ndarray, np.ndarray, float]:
+    """A quadratic ``J(u) = offset + u' H u / 2 - b' u`` on six actions, with its Hessian and its
+    linear term, and the factor ``sigma`` that reads ``curvature`` times too little of it."""
+    rng = np.random.default_rng(7)
+    root = rng.normal(size=(6, 6))
+    return root @ root.T + 6.0 * np.eye(6), rng.normal(size=6), curvature
+
+
+@pytest.mark.parametrize("norm", [0.0, 0.5], ids=["smooth", "a norm"])
+@pytest.mark.parametrize("check", [False, True])
+def test_the_descent_stops_on_the_residual_it_would_read_not_on_the_fall_alone(
+    check: bool, norm: float
+) -> None:
+    """In variables that read a ten-thousandth of the curvature, a step buys ``r^2 / (2 c)`` of
+    ``|J|`` with ``c = 1e4``. The fall alone stops near ``sqrt(2 c 1e-14) = 1.4e-5``; with the
+    check the descent goes on, its falls read off the gradients once they are below the values'
+    rounding, and stops at the first plan within ``10 sqrt(2e-14)``. With ``0.5 sum_t |u_t|``
+    added, taken by its proximal map, five of the six actions are held at zero and the residual is
+    that map's unit step, the weights read over ``|J|`` as the gradient is."""
+    hessian, linear, curvature = _steep(1e4)
+    offset = 1e3
+    h, b = jnp.asarray(hessian), jnp.asarray(linear)
+    weights = jnp.full(6, norm)
+
+    def value(us: jax.Array) -> jax.Array:
+        flat = us.ravel()
+        return offset + 0.5 * flat @ h @ flat - b @ flat + jnp.sum(weights * jnp.abs(flat))
+
+    def gradient(us: jax.Array) -> jax.Array:
+        return (h @ us.ravel() - b).reshape(us.shape)
+
+    start = jnp.zeros((6, 1))
+    lo, hi = jnp.full((6, 1), -1e3), jnp.full((6, 1), 1e3)
+    level = float(value(start))
+    sigma = jnp.asarray(np.sqrt(np.diag(hessian) / (curvature * level)).reshape(6, 1))
+    proximal = (weights / level, sigma) if norm else None
+
+    def residual(us: jax.Array, _: jax.Array) -> jax.Array:
+        scaled = gradient(us) / sigma / level
+        return _first_order_residual(us * sigma, scaled, lo * sigma, hi * sigma, (), proximal)
+
+    plan, readings, taken = _descend(
+        value,
+        gradient,
+        residual,
+        start,
+        lo,
+        hi,
+        (sigma, jnp.asarray(level), jnp.asarray(level)),
+        10_000,
+        1.0,
+        _DESCENT_TOL,
+        (),
+        scaled=True,
+        secant=False,
+        norms=weights if norm else None,
+        check=(sigma, jnp.asarray(level)) if check else None,
+    )
+    assert 0 < int(taken) < 10_000
+    readings = np.asarray(readings)[: int(taken) + 1]
+    tolerance = _stationarity_tolerance(_DESCENT_TOL, jnp.float64)
+    assert tolerance == pytest.approx(10.0 * math.sqrt(2e-14), rel=1e-15, abs=0.0)
+    if norm:
+        assert int(np.sum(np.asarray(plan) == 0.0)) == 5
+    else:
+        miss = np.asarray(plan).ravel() - np.linalg.solve(hessian, linear)
+        scaled = hessian @ miss / (np.asarray(sigma).ravel() * level)
+        assert float(np.linalg.norm(scaled)) == pytest.approx(readings[-1], rel=1e-6, abs=0.0)
+    if check:
+        assert readings[-1] <= tolerance < readings[-2]
+    else:
+        assert readings[-1] > 2.0 * tolerance
+
+
+def test_a_fall_below_the_values_rounding_is_read_off_the_gradients() -> None:
+    """``J(u) = 1e3 + u^2 / 2`` from ``u = 1e-8``: one step to zero falls by ``5e-17``, a
+    thousandth of ``J``'s last place, so the values cannot tell it from no fall. The trapezoid of
+    the gradients reads it exactly. Started at four Newton steps, the search halves past ``-3e-8``,
+    where ``J`` reads no rise but the gradients read one of ``4e-16``, and past ``-1e-8``, which
+    neither falls nor rises, to zero. Read by the values, no trial falls. Started at 1.5 Newton
+    steps, the first trial buys a quarter of its predicted fall, short of a third, and the search
+    takes the next, at 0.75, which buys five eighths."""
+
+    def search(
+        first: float, slope: Callable[[jax.Array], jax.Array] | None
+    ) -> tuple[float, float, bool]:
+        kept, kept_value, fell, _ = _backtrack(
+            jnp.array([[1e-8]]),
+            jnp.asarray(1e3 + 0.5e-16),
+            jnp.array([[1e-8]]),
+            jnp.array([[-1.0]]),
+            jnp.array([[1.0]]),
+            first,
+            0.0,
+            lambda us: 1e3 + 0.5 * us[0, 0] ** 2,
+            (),
+            _no_duals(1, (), jnp.float64),
+            None,
+            slope,
+        )
+        return float(kept[0, 0]), float(kept_value), bool(fell)
+
+    assert search(4.0, lambda us: us) == (0.0, 1e3, True)
+    assert search(4.0, None) == (1e-8, 1e3, False)
+    shorter, _, fell = search(1.5, lambda us: us)
+    assert fell
+    assert shorter == pytest.approx(2.5e-9, rel=1e-12, abs=0.0)
+
+
+def test_a_fall_the_values_contradict_is_not_taken() -> None:
+    """The gradients of ``u^2 / 2`` read a fall for a step from 1 to 0, but the values here rise
+    by one off the start: a trial whose value rises is not a step, whatever its gradients say."""
+    start = jnp.array([[1.0]])
+    kept, _, fell, _ = _backtrack(
+        start,
+        jnp.asarray(0.5),
+        start,
+        jnp.array([[-2.0]]),
+        jnp.array([[2.0]]),
+        1.0,
+        0.0,
+        lambda us: 1.5 + 0.5 * us[0, 0] ** 2,
+        (),
+        _no_duals(1, (), jnp.float64),
+        None,
+        lambda us: us,
+    )
+    assert (float(kept[0, 0]), bool(fell)) == (1.0, False)
+
+
+def test_the_first_order_residual_reads_what_binds_with_the_signs_it_allows() -> None:
+    """One unit step of the projected map, against closed forms: an action on a side its gradient
+    pushes it against reads nothing, and one its gradient pulls off it reads that gradient; a row
+    at its bound absorbs the gradient's part along it; an action on the kink of its norm reads
+    nothing while its gradient is within the norm's weight, and the excess past it."""
+    lo, hi = jnp.zeros((3, 1)), jnp.ones((3, 1))
+    at = jnp.array([[0.0], [1.0], [0.5]])
+    pushed = jnp.array([[0.3], [-0.2], [0.1]])
+    pulled = jnp.array([[-0.3], [0.2], [0.0]])
+    assert float(_first_order_residual(at, pushed, lo, hi, (), None)) == pytest.approx(0.1)
+    assert float(_first_order_residual(at, pulled, lo, hi, (), None)) == pytest.approx(
+        math.sqrt(0.13), rel=1e-15, abs=0.0
+    )
+
+    budget = LinearConstraint(np.ones((1, 2)), -np.inf, 1.0)
+    blocks = _constraint_blocks(
+        (budget,), jnp.full((2, 1), -5.0), jnp.full((2, 1), 5.0), jnp.float64
+    )
+    split = jnp.array([[0.25], [0.75]])
+    # minus the gradient pushes along the row's normal and across it: the row takes the first
+    across = jnp.array([[-0.1 + 0.02], [-0.1 - 0.02]])
+    residual = _first_order_residual(
+        split, across, jnp.full((2, 1), -5.0), jnp.full((2, 1), 5.0), blocks, None
+    )
+    assert float(residual) == pytest.approx(math.sqrt(2) * 0.02, rel=1e-12, abs=0.0)
+
+    # one step of two levers, whose norm couples them
+    kink = jnp.zeros((1, 2))
+    weights, sigma = jnp.array([0.5]), jnp.ones((1, 2))
+    small = jnp.array([[0.24, -0.32]])
+    large = jnp.array([[0.8, -0.6]])
+    box = (jnp.full((1, 2), -5.0), jnp.full((1, 2), 5.0))
+    assert float(_first_order_residual(kink, small, *box, (), (weights, sigma))) == 0.0
+    assert float(_first_order_residual(kink, large, *box, (), (weights, sigma))) == pytest.approx(
+        0.5, rel=1e-12, abs=0.0
+    )
+
+
+def test_a_warm_started_descent_reads_its_check_at_the_guess() -> None:
+    """The check reads the variables at the guess, zeros clipped to the box, as the plan's reading
+    does: a descent started there reuses its own, and one started elsewhere reads them anew."""
+    lo, hi = jnp.full((2, 1), 1.0), jnp.full((2, 1), 3.0)
+    units = (jnp.full((2, 1), 2.0), jnp.asarray(5.0), jnp.asarray(5.0))
+
+    def read(at: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+        return at + 10.0, jnp.asarray(7.0), jnp.asarray(7.0)
+
+    sigma, scale = _guess_units(jnp.ones((2, 1)), units, read, lo, hi)
+    assert (np.asarray(sigma).ravel().tolist(), float(scale)) == ([2.0, 2.0], 5.0)
+    sigma, scale = _guess_units(jnp.full((2, 1), 2.0), units, read, lo, hi)
+    assert (np.asarray(sigma).ravel().tolist(), float(scale)) == ([11.0, 11.0], 7.0)

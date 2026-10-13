@@ -1,0 +1,62 @@
+/* The descent stops on the residual its plan reads (ADR 0097, its amendment).
+
+   Setting (chc.control._descend, _backtrack, _first_order_residual). In the descent's variables v
+   the objective over |J| has gradient g and curvature c along it; the plan's first-order reading
+   is r = ||g|| off the constraints. A step of t along -g buys t r^2 - c t^2 r^2 / 2 of |J|. The
+   fall alone stops where no step buys tol of |J|; the reading's tolerance is 10 sqrt(2 tol).
+   Where values cannot resolve a fall, the search reads it off the gradients at both ends of the
+   move, (g(v) + g(v + d)) . (-d) / 2, which is exact on a quadratic. */
+display2d : false$
+assume(c > 0, r > 0, tol > 0, t > 0)$
+
+/* (1) The most a step along -g buys, and where: r^2 / (2 c) at t = 1 / c. */
+fall : t * r^2 - c * t^2 * r^2 / 2$
+best : solve(diff(fall, t) = 0, t)$
+print("(1) best step:", best, "  fall there less r^2/(2c):",
+      ratsimp(subst(best, fall) - r^2 / (2 * c)), "  (=0)")$
+
+/* (2) So the fall alone stops at a reading up to sqrt(2 c tol), and that is within
+   10 sqrt(2 tol) only while c <= 100: past it the reading is beyond. */
+left : sqrt(2 * c * tol)$
+print("(2) left^2 / tolerance^2:", ratsimp(left^2 / (10 * sqrt(2 * tol))^2), "  (= c/100)")$
+print("    at c = 1e4, tol = 1e-14:", float(subst([c = 1e4, tol = 1e-14], left)),
+      "  tolerance:", float(10 * sqrt(2 * 1e-14)))$
+
+/* (3) Reaching the tolerance needs a fall of tolerance^2 / (2 c) of |J|, below the values'
+   rounding 4 eps once c > tolerance^2 / (8 eps): about 1126 in float64. */
+eps64 : 2.0^-52$
+print("(3) c past which the last fall is below 4 eps:",
+      float((10 * sqrt(2 * 1e-14))^2 / (8 * eps64)))$
+
+/* (4) The trapezoid of the gradients is the fall exactly on a quadratic, in three variables. */
+H : matrix([h11, h12, h13], [h12, h22, h23], [h13, h23, h33])$
+b : matrix([b1], [b2], [b3])$
+v : matrix([v1], [v2], [v3])$
+d : matrix([d1], [d2], [d3])$
+J(x) := (transpose(x) . H . x) / 2 - transpose(b) . x$
+G(x) := H . x - b$
+trapezoid : -(transpose(G(v) + G(v + d)) . d) / 2$
+print("(4) J(v) - J(v + d) less the trapezoid:", expand(J(v) - J(v + d) - trapezoid), "  (=0)")$
+
+/* (5) The search the test runs: J = 1e3 + u^2 / 2 from u = 1e-8, first trial four Newton steps.
+   Trials u - lr u at lr = 4, 2, 1: the trapezoid's fall, and a third of the predicted g u lr. */
+u0 : 1e-8$
+for lr in [4, 2, 1] do block([u1 : u0 - lr * u0],
+  print("(5) lr =", lr, " trial", u1, " trapezoid", (u0 + u1) * (u0 - u1) / 2,
+        " third of predicted", u0 * (u0 - u1) / 3))$
+print("    exact fall at lr = 1:", (10^-8)^2 / 2, "  the last place of 1e3, 2^-43:", float(2^-43))$
+
+/* (6) The residual's closed forms. A box [0, 1]: actions at 0, 1, 0.5. */
+clip(x, lo, hi) := max(lo, min(hi, x))$
+res(at, gr) := sqrt(sum((at[i] - clip(at[i] - gr[i], 0, 1))^2, i, 1, 3))$
+print("(6) pushed:", res([0, 1, 0.5], [0.3, -0.2, 0.1]), "  (=0.1)",
+      "  pulled less sqrt(0.13):", res([0, 1, 0.5], [-0.3, 0.2, 0.0]) - sqrt(0.13), "  (=0)")$
+/* a row x1 + x2 <= 1 at (1/4, 3/4): v - g = (0.33, 0.87) projects to (0.23, 0.77) */
+y : [0.25 + 0.1 - 0.02, 0.75 + 0.1 + 0.02]$
+p : y - (y[1] + y[2] - 1) / 2$
+print("    row:", float(sqrt((0.25 - p[1])^2 + (0.75 - p[2])^2) - sqrt(2) * 0.02), "  (=0)")$
+/* a step of two levers on the norm's kink, weight 1/2: shrinks -g by the weight, or to zero */
+shrink(y, w) := if sqrt(y[1]^2 + y[2]^2) <= w then [0, 0]
+  else (1 - w / sqrt(y[1]^2 + y[2]^2)) * y$
+print("    kink, |g| = 0.4:", shrink(-[0.24, -0.32], 0.5), "  (=[0, 0])",
+      "  |g| = 1:", sqrt(apply("+", shrink(-[0.8, -0.6], 0.5)^2)), "  (=0.5)")$

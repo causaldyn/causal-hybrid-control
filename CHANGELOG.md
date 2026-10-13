@@ -231,6 +231,25 @@ still change).
 
 ### Fixed
 
+- **A descent that reports `converged` no longer stops beyond the stationarity its plan reads.**
+  The descent stopped where no step bought `1e-14` of the cost at the guess; the plan's
+  stationarity is a gradient, and its tolerance, 1.4e-6 in float64, reads a fall as a gradient at
+  a curvature of one along it, with a factor of ten. Where the objective is far steeper than the
+  descent's scale reads it, a step buys only `r^2 / (2c)`, and the fall alone stopped at a residual
+  of `sqrt(2c 1e-14)`: a support-penalised plan read 8.1e-6 after 16 steps (`c` = 1.0e4), a plan
+  with two support penalties on an oscillator 2.5e-6 after 37 (`c` = 396), and a harvest plan on a
+  singular arc 3.8e-6 after 16,281 (`c` = 663), each `converged` and `beyond`. Where the search
+  finds no such step, the descent now reads the plan's residual itself, in the variables at the
+  guess that the reading uses, and while it is beyond the tolerance searches again with each
+  trial's fall read off the gradients at its ends (Hager and Zhang's approximate Armijo
+  condition), since the values' rounding hides the last falls past `c` of about 1100. Those plans
+  now read 1.27e-6, 1.05e-6 and 1.412e-6 after 18, 42 and 20,369 steps, `within`; their task costs
+  move in the eighth digit. Over 998 plans that 81 test modules solve, all 801 that report
+  `converged` now read `within`. A plan whose descent stopped within its tolerance takes the same
+  steps as before: the quickstart, the notebooks and the scripts the docs quote print the same
+  numbers. The extra steps cost gradients: 51,435 in place of 16,282 on the harvest plan
+  (ADR 0097). Since 0.15.0.
+
 - **`prescribe`'s barrier audit, `gamma*` and the held solve read the same in any units of each
   lever.** The audit read the levers through one number, the largest action of any lever's box,
   and one ball in the levers' units: the action set, the identification radius's size and a

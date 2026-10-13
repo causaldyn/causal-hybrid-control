@@ -1,6 +1,8 @@
 # ADR 0097 — A plan reads its first-order check on its face
 
-**Status:** accepted, 2026-10-13.
+**Status:** accepted, 2026-10-13. Amended 2026-10-13, before any release: the descent reads the
+stationarity itself, and does not stop beyond its tolerance while a trial still falls by the
+gradients at its ends (the last bullet of the Decision).
 
 ## Context
 
@@ -67,6 +69,30 @@ units, so a budget in cents reads a hundred times one in euros.
 - **`prescribe` carries the plan's four numbers on `DecisionCertificate`, in its report and in
   `to_json`.** Each number has its status beside it. A number that is not finite is `null`, with
   the status `not_finite` (ADR 0055). With no plan, both numbers and both statuses are `null`.
+- **The descent stops on this reading (amendment).** The stopping rule tested a fall: no step buys
+  more than `1e-14` of `|J|`. The reading is a gradient, and its tolerance turns one into the other
+  at a curvature of one along the residual, with a factor of ten, so a curvature of up to 100.
+  Where the objective's curvature along the residual is `c` times the Gauss–Newton diagonal at
+  the guess, a step buys at most `r^2 / (2c)` of `|J|`, and the fall alone stopped at a residual
+  of up to `sqrt(2c 1e-14)`. On the four converged plans that read `beyond`, `c` along the
+  gradient was 1.0e4 (a support penalty, which the scale does not read), 396 (two supports on the
+  oscillator) and 663 (the harvest plan, whose curvature is not Gauss–Newton: its target is far
+  out of reach); the best fall over the halvings was 8.6e-12 against 3.2e-11, 2.1e-12 against
+  2.7e-12 and 5.0e-11 against 5.0e-11. Now, where the search finds no such step, the descent
+  reads the residual in the variables at the guess, as this record reads it
+  (`chc.control._first_order_residual`, one unit step of the projected or proximal map: for a
+  short step it is the least norm of the gradient plus the binding constraints' pushes, since the
+  projection onto a polyhedron then moves in the tangent cone, the polar of the normal cone). If
+  it is beyond the tolerance, the search runs again with the fall read off the gradients at both
+  ends of each trial, `(g + g') . (v - v') / 2`, Hager and Zhang's approximate Armijo condition
+  (SIAM J. Optim. 16, 2005), exact on a quadratic. A trial counts where that fall is positive, at
+  least a third of the predicted one, and the value does not rise. The descent stops where the
+  residual is within the tolerance, or where no trial falls by its gradients either. Values alone
+  could not finish: on the support-penalised plan, at a residual of 3.6e-6 the fall left was
+  2.4e-12, below the values' rounding `4 eps |J|` of 2.7e-12; past `c = 1126` the last fall to
+  the tolerance is always below it. A descent started at the guess reuses its own variables; one
+  started elsewhere reads them at the guess once more. The descent in the caller's units, as the
+  barrier rounds run it, has no check.
 - **`schema_version` stays 2.** ADR 0055 bumps it when a field changes meaning, not when a field
   is added. These fields are new, and no existing field changed.
 
@@ -82,20 +108,51 @@ units, so a budget in cents reads a hundred times one in euros.
   and the two levers in opposite units, the readings agree to 1e-9 relative. On the cross-module
   panels they agree to 1e-6 under a budget that binds, with the levers and the state in other
   units.
-- A descent that reports `converged` can stop short of the resolution. On `test_held_barrier`'s
-  pessimistic oscillator (a support penalty and a second support model as the uncertainty
-  penalty), the penalised descent reports `converged` after 37 steps and reads 2.5e-6, `beyond`
-  the tolerance of 1.4e-6. Restarted from that plan, it takes one more step and reads 9.8e-7.
-  Over 982 plans that 25 test modules solve, three more report `converged` and read `beyond`,
-  each within six times the tolerance: a support-penalised plan (8.1e-6), a harvest plan on a
-  singular arc after 16,281 steps (3.8e-6), and a budget split on a Kumaraswamy curve (1.42e-6).
-  The last one stops after 9 steps inside the suite and after 10 steps alone, where it reads
-  4.9e-8. Every other plan that reads `beyond` was stopped by a step budget. The reading reports
-  these; the descent is not changed here.
+- As first recorded, a descent that reported `converged` could stop short of the resolution. On
+  `test_held_barrier`'s pessimistic oscillator (a support penalty and a second support model as
+  the uncertainty penalty), the penalised descent reported `converged` after 37 steps and read
+  2.5e-6, `beyond` the tolerance of 1.4e-6. Over 982 plans that 25 test modules solve, three more
+  reported `converged` and read `beyond`: a support-penalised plan (8.1e-6 after 16 steps), a
+  harvest plan on a singular arc (3.8e-6 after 16,281 steps), and the concave-envelope plan that
+  `causal_plan` solves first for a budget split on a Kumaraswamy curve (1.42e-6 after 9 steps).
+  That last plan is logged beside the final one, which reads 4.9e-8 after 10 steps in all; the
+  two were first read as one plan inside the suite and alone.
+- With the amendment, those plans read 1.27e-6 after 18 steps, 1.05e-6 after 42, 1.412e-6 after
+  20,369 and 2.2e-7 after 10, each `within`. Over 998 plans that 81 test modules solve, all 801
+  that report `converged` read `within`, the highest at 0.999 of the tolerance; the plans that
+  read `beyond` were stopped by a step budget or took no step. The check stops a descent as soon
+  as the residual is within, so a plan it carries past the fall's stop can read just under the
+  tolerance, not at the 1e-7 of a descent the fall stopped. A plan whose descent the fall stopped
+  within the tolerance takes the same steps to the same actions: the quickstart, the notebooks
+  and the scripts the docs quote print the same numbers. The extra evaluations fall on the plans
+  that were beyond: objective values and gradients went from 225 and 56 to 308 and 61 on the
+  support-penalised plan, from 166 and 40 to 375 and 54 on the oscillator, and from 166,327 and
+  16,282 to 329,137 and 51,435 on the harvest plan, whose variables read 1/663 of its curvature
+  along the residual. Each failed search costs up to 40 values, and each trial of the gradients'
+  search a gradient. A warm-started descent pays one more Gauss–Newton pass, at the guess. The
+  task costs move in the eighth digit: 3.9481322188 to 3.9481322819, 5.3836706262 to
+  5.3836709556, and 4745.43490270 to 4745.43490253; the first two minimise their penalties as
+  well. `test_support`'s Python recursion, which the compiled penalised descent must match to 500
+  units in the last place, takes the same rule.
 - *Left:* a barrier-held plan's stationarity. It would need the rounds' multipliers and the
   Jacobian of the barrier's condition in the actions.
 
 ## Alternatives considered
+
+- **Loosen the tolerance's factor of ten** to cover `c` up to 1e4. Rejected: it reads every plan
+  more loosely to excuse four, and `c` has no bound.
+- **Restart the descent from a converged plan that reads `beyond`, in `causal_plan`.** Rejected: a
+  restart reads its variables and its stopping level at the plan, not at the guess, so it tests
+  another rule (the oscillator's took one step to 9.8e-7), and every caller of the descent but
+  `causal_plan` would keep the defect.
+- **Put the penalty's curvature in the descent's variables.** A penalty's curvature at the guess
+  is not one the guess can be relied on to show (ADR 0073), every penalised plan would take other
+  steps, and the harvest plan's curvature is the cost's own.
+- **Retry with values, a fall above `4 eps |J|`.** The support-penalised plan then stops at
+  3.6e-6, where rounding hides the fall that is left.
+- **Read the reading itself in the loop.** Its least squares with signs runs on the host. The
+  unit step of the projected map is the same number for a short step and runs inside the
+  compiled descent; on the four plans the two agree to every printed digit.
 
 - **Copy the solver's own two numbers.** Rejected: they are in the caller's units (Context).
 - **`_kkt`'s residual as it is, on the free actions.** Rejected: it reads zero at an action held

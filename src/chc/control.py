@@ -23,6 +23,7 @@ the gap rather than asserting it in prose.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -623,6 +624,7 @@ def _backtrack(
     blocks: Blocks,
     duals: Duals,
     norms: tuple[Array, Array] | None = None,
+    slope: Callable[[Array], Array] | None = None,
 ) -> tuple[Array, Array, Array, Duals]:
     """Halve the step until it buys a third of the fall the gradient predicts for it, and more than
     ``tol``; failing that at every halving, take the longest trial that fell by more than ``tol``.
@@ -658,6 +660,13 @@ def _backtrack(
     linear one plus the norm's own fall, the rule of Tseng & Yun (2009): a proximal step's
     prediction is at least its squared length over the step, so the rule holds for a short enough
     step from any point the proximal map moves, a kink included.
+
+    With ``slope``, the gradient of the smooth part in the units of ``grad``, the fall is read off
+    the gradients at both ends of the move, ``(grad + slope(trial)) . (us - trial) / 2``, plus the
+    norm's own fall, and a trial falls where that is positive and ``value_of`` does not rise: the
+    approximate Armijo condition of Hager & Zhang (2005), exact on a quadratic along the move. Near
+    a minimum the fall is below the rounding of the two values it is a difference of, while the
+    gradients still resolve it. ``tol`` is then not read.
     """
 
     State = tuple[Array, Array, Array, Array, Duals, Array, Array]
@@ -694,19 +703,23 @@ def _backtrack(
                 candidate = _shrink(stepped, reach, sigma, u_lo, u_hi).astype(us.dtype)
             trial_duals = duals
         value = value_of(candidate)
-        falls = value < current - tol
-        predicted = jnp.sum(grad * (us - candidate))
+        linear = jnp.sum(grad * (us - candidate))
+        predicted, shrunk = linear, jnp.zeros_like(linear)
         if norms is not None:
             # in the objective's precision, as value_of reads the norm: the fall the norm predicts
             # is a difference of two sums, and in a narrower dtype their rounding outweighs it
             weights, sigma = norms
             wide = jnp.result_type(current, predicted)
-            predicted = (
-                predicted
-                + _step_norms(us.astype(wide), weights, sigma.astype(wide))
-                - _step_norms(candidate.astype(wide), weights, sigma.astype(wide))
-            )
-        sufficient = falls & (current - value >= _SUFFICIENT_DECREASE * predicted)
+            before = _step_norms(us.astype(wide), weights, sigma.astype(wide))
+            after = _step_norms(candidate.astype(wide), weights, sigma.astype(wide))
+            predicted, shrunk = predicted + before - after, before - after
+        if slope is None:
+            fall = current - value
+            falls = value < current - tol
+        else:
+            fall = 0.5 * jnp.sum((grad + slope(candidate)) * (us - candidate)) + shrunk
+            falls = (fall > 0.0) & (value <= current)
+        sufficient = falls & (fall >= _SUFFICIENT_DECREASE * predicted)
         ended = trial + 1
         if blocks:
             tolerance = _projection_tolerance((us - lr * grad).astype(us.dtype))
@@ -736,6 +749,47 @@ def _backtrack(
         ),
     )
     return kept, kept_value, fell, kept_duals
+
+
+def _stationarity_tolerance(tol: float, dtype: Any) -> float:
+    """The largest first-order residual a stopped descent may leave, read in the variables of
+    :func:`_action_units` at the guess, zeros clipped to the box:
+    ``10 sqrt(2 max(tol, 4 eps))``, ``eps`` the actions' precision
+    (``docs/adr/0097-a-plan-reads-its-first-order-check-on-its-face.md``)."""
+    return 10.0 * math.sqrt(2.0 * max(tol, 4.0 * float(jnp.finfo(dtype).eps)))
+
+
+def _first_order_residual(
+    vs: Array,
+    gradient: Array,
+    lo: Array,
+    hi: Array,
+    blocks: Blocks,
+    norms: tuple[Array, Array] | None,
+) -> Array:
+    """``||v - P(v - g)||``: how far one unit step of the descent's map moves ``vs``, ``gradient``
+    being the objective's gradient in ``v`` over ``|J|`` and ``P`` the projection onto the box and
+    the ``blocks`` in ``v``, or, with ``norms = (weights, sigma)``, the proximal map of
+    ``sum_t weights_t ||v_t / sigma_t||`` with the box (:func:`_shrink`).
+
+    Zero exactly at a stationary point. Where the step is short against the distances to the
+    constraints that do not bind, it is the least norm of the gradient plus a push of the binding
+    ones with the signs their bounds allow, since the projection onto a polyhedron then moves along
+    the tangent cone, the polar of the normal cone (Moreau): the KKT residual that
+    :attr:`chc.plan.CausalPlan.stationarity` reads.
+    """
+    stepped = (vs - gradient).astype(vs.dtype)
+    if blocks:
+        flat, _ = _dykstra(
+            stepped.ravel(), lo.ravel(), hi.ravel(), blocks, _no_duals(vs.size, blocks, vs.dtype)
+        )
+        landed = flat.reshape(vs.shape)
+    elif norms is None:
+        landed = jnp.clip(stepped, lo, hi)
+    else:
+        weights, sigma = norms
+        landed = _shrink(stepped, weights.astype(vs.dtype), sigma, lo, hi)
+    return jnp.linalg.norm(vs - landed)
 
 
 def _action_units(
@@ -811,6 +865,20 @@ def _action_units(
     return sigma, scale, level
 
 
+def _guess_units(
+    start: Array,
+    units: tuple[Array, Array | float, Array | float],
+    read: Callable[[Array], tuple[Array, Array, Array]],
+    u_lo: Array,
+    u_hi: Array,
+) -> tuple[Array, Array | float]:
+    """``(sigma, scale)`` of :func:`_action_units` at the guess, zeros clipped to the box, which
+    the descent's check reads (:func:`_descend`): ``units``, read at ``start``, where the descent
+    starts there, and ``read(guess)`` where it is warm-started elsewhere."""
+    guess = project_box(jnp.zeros_like(start), u_lo, u_hi)
+    return jax.lax.cond(jnp.all(start == guess), lambda: units[:2], lambda: read(guess)[:2])
+
+
 def _secant_units(
     sigma: Array, floor: Array, scale: Array | float, step: Array, change: Array
 ) -> Array:
@@ -850,6 +918,7 @@ def _descend(
     scaled: bool,
     secant: bool,
     norms: Array | None = None,
+    check: tuple[Array, Array | float] | None = None,
 ) -> tuple[Array, Array, Array]:
     """The projected descent the planner and the penalised descent of :mod:`chc.support` share.
 
@@ -897,6 +966,20 @@ def _descend(
     backward step (Combettes & Wajs 2005) in ``v``. The norm's kink at each ``u_t = 0`` is then
     never differentiated, so a plan that holds an action there holds it at exactly zero, and the
     secant reads the smooth part's curvature alone. It takes no ``blocks``.
+
+    With ``check = (sigma, scale)``, the variables of :func:`_action_units` at the guess, zeros
+    clipped to the box, a search that finds no step buying ``tol * level`` does not stop the
+    descent while the plan's first-order residual there (:func:`_first_order_residual`) is beyond
+    :func:`_stationarity_tolerance`: the search is run again with the fall read off the gradients
+    at both ends of each trial (:func:`_backtrack`'s ``slope``), and a step counts where that fall
+    is positive, a third of the predicted one, and the objective does not rise. The fall a step can
+    buy is ``r^2 / (2 c)`` of ``level``, ``r`` the residual and ``c`` the objective's curvature
+    along it in ``v``, and ``c`` is one only where the Gauss-Newton diagonal at the start is the
+    curvature at the plan. A penalty the scale does not read, or a curvature that is not
+    Gauss-Newton, puts it in the hundreds or thousands, and the fall alone then stopped a descent
+    at a residual of ``sqrt(2 c tol)``, or at the rounding of the objective's values. The descent
+    stops where the residual is within the tolerance, or where no trial falls by its gradients
+    either (``docs/adr/0097-a-plan-reads-its-first-order-check-on-its-face.md``).
     """
     if norms is not None and blocks:
         raise ValueError("a proximal step for the norm takes the box alone, not linear rows")
@@ -915,6 +998,22 @@ def _descend(
 
     lo, hi, rows = into(floor)
     start = project_box(us0, u_lo, u_hi)
+    if check is not None:
+        check_sigma, check_scale = check
+        check_lo, check_hi, check_rows = into(check_sigma)
+        threshold = _stationarity_tolerance(tol, us0.dtype)
+        check_norms = None if norms is None else (norms / check_scale, check_sigma)
+
+    def beyond(us: Array, downhill: Array) -> Array:
+        """Whether ``us``, where the objective's gradient is ``downhill``, is beyond the check."""
+        if check is None:
+            return jnp.asarray(False)
+        gradient = (downhill / check_sigma / check_scale).astype(us.dtype)
+        residual = _first_order_residual(
+            us * check_sigma, gradient, check_lo, check_hi, check_rows, check_norms
+        )
+        return ~(residual <= threshold)
+
     duals = _no_duals(us0.size, rows, us0.dtype)
     if blocks:
         flat, duals = _dykstra((us0 * floor).ravel(), lo.ravel(), hi.ravel(), rows, duals)
@@ -937,19 +1036,40 @@ def _descend(
             downhill, (lo_v, hi_v, rows_v) = gradient, into(sigma)
         else:
             downhill, lo_v, hi_v, rows_v = gradient_of(us), lo, hi, rows
-        vs, current, accepted, duals = _backtrack(
-            us * sigma,
-            current,
-            downhill / sigma,
-            lo_v,
-            hi_v,
-            lr0 / scale,
-            tol * level,
-            lambda vs: value_of(_actions_of(vs, sigma, u_lo, u_hi)),
-            rows_v,
-            duals,
-            None if norms is None else (norms, sigma),
-        )
+
+        def search(
+            fall: Array | float, slope: Callable[[Array], Array] | None = None
+        ) -> tuple[Array, Array, Array, Duals]:
+            return _backtrack(
+                us * sigma,
+                current,
+                downhill / sigma,
+                lo_v,
+                hi_v,
+                lr0 / scale,
+                fall,
+                lambda vs: value_of(_actions_of(vs, sigma, u_lo, u_hi)),
+                rows_v,
+                duals,
+                None if norms is None else (norms, sigma),
+                slope,
+            )
+
+        found = search(tol * level)
+        if check is not None:
+            found = jax.lax.cond(
+                found[2],
+                lambda: found,
+                lambda: jax.lax.cond(
+                    beyond(us, downhill),
+                    lambda: search(
+                        tol * level,
+                        lambda vs: gradient_of(_actions_of(vs, sigma, u_lo, u_hi)) / sigma,
+                    ),
+                    lambda: found,
+                ),
+            )
+        vs, current, accepted, duals = found
         moved = jnp.where(accepted, _actions_of(vs, sigma, u_lo, u_hi), us)
         # On rejection ``taken`` does not advance and the write lands back on its own slot, so the
         # buffer holds exactly the accepted prefix whichever way the step went.
@@ -1004,6 +1124,13 @@ def _projected_gradient_loop(
         if scaled
         else (jnp.ones_like(start), 1.0, 1.0)
     )
+    check = (
+        _guess_units(
+            start, units, lambda at: _action_units(dyn, x0, at, dt, cost, u_lo, u_hi), u_lo, u_hi
+        )
+        if scaled
+        else None
+    )
     return _descend(
         lambda us: total_cost(dyn, x0, us, dt, cost),
         lambda us: control_gradient_adjoint(dyn, x0, us, dt, cost),
@@ -1018,6 +1145,7 @@ def _projected_gradient_loop(
         blocks,
         scaled=scaled,
         secant=False,
+        check=check,
     )
 
 
@@ -1028,8 +1156,11 @@ SolverStatus = Literal["converged", "max_iterations", "no_progress"]
 that lowered the objective by more than ``tol`` times its value at the guess clipped to the box --
 the cost in :func:`projected_gradient_solve`, the cost and its penalties in
 :func:`chc.support.pessimistic_solve`, which stops only where a step in the planner's own scale
-fails as well. Under linear constraints both also stop at a trial that moves the plan by the
-projection's error alone.
+fails as well -- and the plan's first-order residual, in the descent's variables at the guess of
+zeros clipped to the box, is within ``10 sqrt(2 max(tol, 4 eps))``, the
+:attr:`chc.plan.CausalPlan.stationarity_tolerance` of the default ``tol``, or no trial falls by the
+gradients at its ends either (:func:`_descend`). Under linear constraints both also stop at a trial
+that moves the plan by the projection's error alone.
 ``max_iterations`` means the budget ran out first, so the answer is wherever the descent happened to
 be. ``no_progress`` means not one step was accepted, so the result *is* the caller's initial guess
 -- which is either an already-optimal guess or a badly scaled problem, and
@@ -1164,7 +1295,7 @@ def projected_gradient_control(
     """Minimise ``J`` over the control sequence subject to box constraints.
 
     Uses the discrete adjoint (:func:`chc.adjoint.control_gradient_adjoint`) for the gradient and
-    backtracking line search, so every accepted step strictly decreases the cost. Returns the
+    backtracking line search, so no accepted step raises the cost. Returns the
     optimised controls and the cost history (length ``1 + accepted steps``).
 
     The step is scaled action by action, so a problem is planned the same in any units of each
@@ -1180,7 +1311,10 @@ def projected_gradient_control(
     * ``tol`` is relative: a step counts where it lowers the cost by more than ``tol`` times the
       cost at the clipped guess, and from a guess that costs nothing any decrease counts. A cost
       mostly out of a plan's reach -- a target no plan comes near -- stops further from its optimum
-      in what a plan can change, and may want a smaller ``tol``.
+      in what a plan can change, and may want a smaller ``tol``. Where no step counts but the
+      plan's first-order residual is beyond ``10 sqrt(2 max(tol, 4 eps))``, a step counts where
+      the gradients at its ends read a fall and the cost does not rise
+      (``docs/adr/0097-a-plan-reads-its-first-order-check-on-its-face.md``).
 
     Both used to be absolute: ``lr0`` a step of 0.2 action units per unit of gradient and ``tol`` a
     fall of ``1e-9`` in the cost's own units, so in units a thousand times a problem's own the
