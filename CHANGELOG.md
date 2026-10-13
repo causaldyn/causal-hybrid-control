@@ -13,9 +13,10 @@ still change).
   and when they read too few.** `PlanEvaluation.bootstrap` counted the draws the certificate
   refused and nothing more, though the intervals read only the rest. A draw is refused where its
   units start wider or weigh heavier than the panel's, so near the certificate's edge the draws
-  left are the narrow side of the spread: over 300 panels of 60 units, the half-width was within
-  3 % of the same panel's with no draw refused while a tenth of the draws or fewer were, and 6 %
-  to 12 % narrower past that. `UnitBootstrap` now holds `accepted`, `accepted_share`,
+  left are the narrow side of the spread: over 300 panels of 60 units, the half-width was at most
+  3.4 % narrower than the same panel's with no draw refused while a tenth of the draws or fewer
+  were, and 5 % to 13 % narrower past that; over 120 panels of 30 units the coverage fell from
+  0.925 to 0.908 at a tenth refused and to 0.858 at two fifths. `UnitBootstrap` now holds `accepted`, `accepted_share`,
   `max_refused` and `reading`: `"complete"` with no draw refused, `"conditional"` on
   certification with at most `max_refused` of them, `"inconclusive"` past it, which is logged as
   a warning. `Prescription.evaluate(max_refused=0.05)` sets the share. Values and intervals do

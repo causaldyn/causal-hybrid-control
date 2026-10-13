@@ -37,23 +37,27 @@ propagation. 300 panels, each from its own stream of a `SeedSequence`:
 
 | refused share | readings | covered | difference covered | half-width / the same panel's with none refused |
 |---|---|---|---|---|
-| 0 | 647 | 0.920 | 0.941 | 1.000 |
-| (0, 0.02] | 160 | 0.919 | 0.931 | 0.986 |
-| (0.02, 0.05] | 113 | 0.947 | 0.947 | 0.971 |
-| (0.05, 0.10] | 128 | 0.898 | 0.930 | 0.971 |
-| (0.10, 0.20] | 117 | 0.957 | 0.932 | 0.943 |
-| (0.20, 0.30] | 163 | 0.908 | 0.920 | 0.934 |
-| (0.30, 0.50] | 255 | 0.914 | 0.941 | 0.911 |
-| (0.50, 1] | 13 | 1.000 | 0.923 | 0.878 |
+| 0 | 838 | 0.926 | 0.939 | 1.000 |
+| (0, 0.02] | 217 | 0.931 | 0.926 | 0.987 |
+| (0.02, 0.05] | 149 | 0.960 | 0.946 | 0.972 |
+| (0.05, 0.10] | 163 | 0.914 | 0.920 | 0.966 |
+| (0.10, 0.20] | 165 | 0.952 | 0.909 | 0.945 |
+| (0.20, 0.30] | 207 | 0.918 | 0.918 | 0.933 |
+| (0.30, 0.50] | 346 | 0.928 | 0.913 | 0.910 |
+| (0.50, 1] | 15 | 1.000 | 0.933 | 0.868 |
 
-Moving `c` from 0.5 to 0.98 moved the mean refused share from 0 to 0.41 and the coverage from
-0.925 to 0.912. A coverage over a hundred readings has a Monte Carlo error of 0.02 to 0.03, too
-coarse to separate a bin from its neighbours. The half-width read against the same panel's is
-not: refusing draws narrows the interval, by at most 3 % while a tenth of the draws or fewer are
-refused, by 6 % to 9 % from a tenth to a half, and by 12 % past a half. An interval 3 % narrower
-covers about 0.007 less than the same one would; 9 % narrower, about 0.025 less. Panels of 30
-units of ten windows read the same: 0.986 and 0.972 up to 5 %, 0.964 to 0.10, 0.886 from 0.30 to
-0.50.
+A coverage over one or two hundred readings has a Monte Carlo error of 0.015 to 0.02, too coarse
+to separate a bin from its neighbours. The half-width read against the same panel's is not:
+refusing draws narrows the interval, by at most 3.4 % while a tenth of the draws or fewer are
+refused, by 5 % to 9 % from a tenth to a half, and by 13 % past a half. An interval 3.4 %
+narrower covers about 0.008 less than the same one would; 9 % narrower, about 0.025 less.
+
+120 panels of 30 units of ten windows, the windows of a unit more of them and more dependent,
+read the same way, a little narrower: 0.983, 0.969 and 0.958 of the half-width up to 2 %, 5 %
+and 10 % refused, 0.936 to 0.886 from a tenth to a half. There the coverage on the same panels,
+read at each `c`, fell with the share: 0.925 with none refused, 0.917 at a mean of 3 % refused,
+0.908 at 10 %, 0.892 at 27 % and 0.858 at 41 %. On the 60 units it fell from 0.933 to 0.930, 0.930,
+0.927 and 0.923 at the same shares.
 
 ### The bias of the normalised weights
 
@@ -119,7 +123,8 @@ What the table says:
   `unit_bootstrap` event logs them all, at `WARNING` where any draw was refused.
 - **`Prescription.evaluate(max_refused=0.05)`** sets the bound, a share in `[0, 1)`. 0.05 stays
   the default: up to it the intervals were at most 3 % narrower than the same panel's with no draw
-  refused. On these panels the same held to a tenth, and from a tenth the narrowing doubled.
+  refused, and on the smaller panels the coverage fell by 0.008. At a tenth it fell by 0.017
+  there, and from a tenth the narrowing doubled.
 - **An inconclusive reading is a label and a warning, not a refusal.** The intervals are still
   returned; the caller reads the label.
 - **`PlanEvaluation.normalisation_bias`** holds the first-order bias for `"pdis"`, read at the
@@ -151,17 +156,17 @@ What the table says:
 ## Alternatives considered
 
 - **Refusing past the bound**, as the bootstrap's first statement of this had it. Rejected: past
-  0.05 the intervals were 3 % to 12 % narrower, a coverage short by up to about 0.035, which is a
-  weaker reading and not none; a refusal would leave the caller nothing to weigh.
+  0.05 the intervals were 3 % to 13 % narrower and covered up to 0.067 less, which is a weaker
+  reading and not none; a refusal would leave the caller nothing to weigh.
 - **Unnormalised weights**, unbiased where the logger is known. Measured on the same logs, with
   the logger known: the mean errors were within 2.6 of their Monte Carlo errors of 0 and smaller
   than the normalised estimate's in eight cells of nine, and the root mean squared error was 1.30
   to 4.12 times the normalised estimate's.
 - **Subtracting the bias.** Estimated from the logs' own weights, as the ratio estimator's
   correction reads it, it removed 0.13 to 0.65 of the bias, 0.14 and 0.24 at twenty steps, and
-  raised the root mean squared error by 2 % to 13 %. Read off the model it is the first order alone, 2 to 9 times
-  smaller than the bias on one unit, and it would move every value by an amount the model's own
-  error makes uncertain.
+  raised the root mean squared error by 2 % to 13 %. Read off the model it is the first order
+  alone, 2 to 9 times smaller than the bias on one unit, and it would move every value by an
+  amount the model's own error makes uncertain.
 - **Clipping the weights** (truncated importance sampling) trades the ratio's bias for a clipping
   bias of its own, which has to be measured loop by loop; it corrects nothing.
 - **A doubly robust form over episodes** (Jiang and Li 2016), the model's value as a control

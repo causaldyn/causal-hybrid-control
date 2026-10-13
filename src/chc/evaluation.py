@@ -398,9 +398,10 @@ class UnitBootstrap:
     * ``"inconclusive"`` -- more were: the evaluation sits at the certificate's edge, the draws
       read are too few and too narrow, and the intervals cover less than they state.
 
-    Near the edge of panels of 60 units, the half-width was within 3 % of the same panel's with no
-    draw refused while at most a tenth of the draws were, and 6 % to 12 % narrower past that
-    (ADR 0095).
+    Near the edge of panels of 60 units, the half-width was at most 3.4 % narrower than the same
+    panel's with no draw refused while a tenth of the draws or fewer were, and 5 % to 13 % narrower
+    past that; on panels of 30 units the coverage fell from 0.925 to 0.908 at a tenth refused and
+    to 0.858 at two fifths (ADR 0095).
     """
 
     units: int  # the units that contributed an episode
