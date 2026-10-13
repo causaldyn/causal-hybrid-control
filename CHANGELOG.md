@@ -29,6 +29,23 @@ still change).
   is 1.051 at `k = 2 sigma` and 3.371 at `k = 5 sigma`. `full_move_gamma` is the largest `Gamma`
   at which the estimate still makes the whole move; noise moves it past the noiseless flip
   (ADR 0089).
+- **The deployment gate runs in blocks on a plant with memory** (*experimental*, ADR 0090).
+  Per-decision increments certify the myopic contrast: on the gate's own lab plant they deployed,
+  on every path, a candidate +0.029 better myopically and 0.0096 worse in the long run.
+  `GateConfig(block_length=L, burn_in=b)`, unset by default, randomises the policy per block of
+  `L` periods, the candidate with probability `rho`; a `BlockBatch` carries each zone's blocks,
+  and the gate reads the reward over each block's last `L - b` periods, weighted by the inverse of
+  the block's logged probability, as one increment of the same e-processes and e-BH. The
+  inference is design-based, so the dependence between one zone's blocks does not matter. With a
+  burn-in at least the carryover order, a DEPLOY certifies the sustained contrast; under geometric
+  memory at rate `a`, the read is biased by order `a^b`, and `delta` must cover it, as the
+  docstring states. On the lab plant, in blocks of 50 with 40 burned, the gate deployed that
+  candidate on 5 of 1000 paths of 20 000 periods. Under carryover of order 1, a candidate exactly
+  as good sustained and +0.45 better myopically was deployed on 2 of 300 paths with one period of
+  each block of 2 burned, and on 242 with none; across six zones the false-discovery rate was
+  0.0037 at `alpha = 0.1`, with 93 % of the better zones deployed, and a futility stop added no
+  wrong deploy. Verdicts take longer: a block is one increment, and its burned periods read
+  nothing. Without `block_length` the gate runs as before.
 
 ### Notes
 
