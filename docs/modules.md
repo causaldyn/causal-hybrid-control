@@ -274,11 +274,11 @@ moves with a disturbance that enters `omega'` exactly where the torque does, and
 sits on the control channel itself. Gravity goes in as `known=`, the actuator is what the log has
 to identify, and every schedule is run on the *true* pendulum. Adjusted for the wind (the graph
 derives `{wind}`), the torque channel is `+3.001` against a true `3.000`, and the schedule ends
-`0.004` rad from the target, with the speed held within `1.0` rad/s in the solve as the barrier.
+`0.006` rad from the target, with the speed held within `1.0` rad/s in the solve as the barrier.
 Asserting an empty adjustment set returns `-1.090` (the white-wind omitted-variable formula
-predicts `-1.052`), so the plan pushes the wrong way and ends `0.608` rad off, `2.0x` as far as
+predicts `-1.052`), so the plan pushes the wrong way and ends `0.607` rad off, `2.0x` as far as
 never acting; declared latent, the wind leaves no schedule. The certificate trusts the adjusted
-schedule for 9 steps of 40 and the asserted one for none. Printed in float32, the default, and the
+schedule for 1 step of 40 and the asserted one for none. Printed in float32, the default, and the
 script says which of its numbers float64 moves. `uv run python scripts/pendulum_demo.py`
 
 ## The causal frontier
