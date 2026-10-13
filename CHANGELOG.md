@@ -21,6 +21,17 @@ still change).
   3.8 %. A fit clustered by unit reads as before, to rounding. `prescribe`, which clusters its
   fit by group and period, reads `noise_persistence_p` the same way. Since 0.15.0.
 
+- **`dml_point_and_se` and `DoubleML` count the error the cross-fitted nuisances carry.** The
+  standard error was the moment's sandwich, `sqrt(sum u_res^2 eps^2) / sum u_res^2`, which reads
+  each row's weight on the effect as its own residual alone; but a row also trained the nuisance
+  that predicts every row of another fold, and that prediction error, shared by the rows it
+  predicts, went uncounted. At the defaults on 200 rows of a linear plant the 95 % interval missed
+  the effect in 13.0 % of 1000 logs, 15.1 % with heteroskedastic noise, and on 500 rows of a plant
+  confounded through `z^2` and `x z` 8.0 %, 8.2 % heteroskedastic. The error now weights each row
+  by the effect's derivative in its outcome, through the nuisances too: 2.8 %, 5.2 %, 4.2 % and
+  6.0 % on the same logs; `DoubleML` at its defaults moves from 8.2 % to 6.8 % on the
+  heteroskedastic linear logs. The effect is unchanged. Since 0.2.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added
