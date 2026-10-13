@@ -54,7 +54,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import null_space
-from scipy.optimize import linprog
+from scipy.optimize import linprog, lsq_linear
 
 from chc.adjoint import control_gradient_adjoint
 from chc.barrier import barrier_gamma_star, identification_radius_threshold
@@ -64,8 +64,10 @@ from chc.control import (
     LinearConstraint,
     SolverResult,
     SolverStatus,
+    _action_units,
     _constraint_blocks,
     _projected_gradient_solve,
+    _step_norms,
     broadcast_box,
     check_box,
     projected_gradient_solve,
@@ -85,8 +87,11 @@ from chc.response import relax
 from chc.support import (
     PenaltyModel,
     SupportModel,
+    _augmented,
     _penalised_gradient,
     _pessimistic_loop,
+    _radius_norms,
+    _smooth,
     pessimistic_solve,
 )
 from chc.uncertainty import (
@@ -101,11 +106,17 @@ from chc.uncertainty import (
 
 CertificateStatus = Literal["not_evaluated", "uncertified", "partial", "certified"]
 PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
+DiagnosticStatus = Literal["within", "beyond", "not_finite", "not_evaluated"]
+"""How a plan's stationarity or constraint violation reads against its tolerance: ``within`` it,
+``beyond`` it, ``not_finite`` where the number is nan or infinite, as where the rollout left the
+float range, and ``not_evaluated`` where it was not read: a plan built by hand, or the stationarity
+of a plan held under a barrier, whose condition's multipliers it would need."""
 
 _BARRIER_BACKOFF = 1e-6  # how far inside the condition the solve aims, relative to its terms
 _BARRIER_ROUNDS = 30  # augmented-Lagrangian rounds, each one descent of at most ``steps``
 _PENALTY_GROWTH = 10.0  # applied when a round fails to halve the shortfall
 _PENALTY_RANGE = 1e8  # how far the penalty may grow past its start before the rounds give up
+_DESCENT_TOL = 1e-14  # the share of the cost at the guess a step must buy: the descents' default
 
 _log = logging.getLogger(__name__)
 """Barrier rounds of :func:`causal_plan`, keyed by ``chc_event`` as in :mod:`chc.decision`."""
@@ -113,6 +124,8 @@ _log = logging.getLogger(__name__)
 # Compiled once here: an eager ``lax.scan`` is traced and compiled afresh on every call, which a
 # replanning loop would pay at every step.
 _trajectory = eqx.filter_jit(rollout)
+_descent_units = eqx.filter_jit(_action_units)
+_objective = eqx.filter_jit(_augmented)
 
 
 @dataclass(frozen=True)
@@ -155,6 +168,14 @@ class CausalPlan:
     # and the relaxed problem is convex -- a budget spread over curves of spend -- no plan costs
     # less, so ``task_cost - relaxed_cost`` bounds how far this plan is from the best one.
     relaxed_cost: float | None = None
+    # How near the plan is to a first-order optimum of the problem it was solved for, and how far
+    # it breaks that problem's box and rows, each read at the returned actions in the descent's own
+    # variables, so that each reads the same in any units of the levers, the states, the rows or the
+    # cost (:attr:`stationarity_status`, :attr:`violation_status`). None where not read.
+    stationarity: float | None = None
+    stationarity_tolerance: float | None = None
+    constraint_violation: float | None = None
+    violation_tolerance: float | None = None
     _problem: _PlanProblem | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -169,6 +190,44 @@ class CausalPlan:
         if self.certified_horizon == 0:
             return "uncertified"
         return "certified" if self.certified_horizon == self.actions.shape[0] else "partial"
+
+    @property
+    def stationarity_status(self) -> DiagnosticStatus:
+        """How :attr:`stationarity` reads against :attr:`stationarity_tolerance`.
+
+        :attr:`stationarity` is the plan's KKT residual (ADR 0097). The descent steps in
+        ``v = sigma * u`` (ADR 0059), where ``sigma_kj^2`` is the cost's curvature along lever ``j``
+        at step ``k`` over ``|J|`` at the guess, zeros clipped to the box: a pure number in any
+        units of the lever and the cost. There the gradient is read as a share of ``|J|``, each row
+        is divided by its norm, and the residual is the least norm of the gradient plus a push of
+        the binding rows and box sides with the signs their bounds allow, over
+        ``max(1, |gradient on the free actions|)``: zero exactly at a KKT point, positive where a
+        multiplier has the wrong sign. Off the constraints its square is about twice the share of
+        ``|J|`` that one more Newton step along each action alone would buy. What binds is
+        :meth:`shadow_prices`' rule, read in ``v``.
+
+        The tolerance is what the descent can see: it stops where no step buys more than
+        ``max(1e-14, 4 eps)`` of ``|J|``, ``eps`` the actions' precision, which leaves a residual of
+        about the root of twice that; ten times it allows for a curvature off one along the
+        residual. ``beyond`` it, the descent stopped on its budget or short of the optimum, and the
+        plan, its prices and its regret are a stopped solve's. Not read (``not_evaluated``) on a
+        plan held under a barrier, whose condition's multipliers the residual would need.
+        """
+        return _diagnostic_status(self.stationarity, self.stationarity_tolerance)
+
+    @property
+    def violation_status(self) -> DiagnosticStatus:
+        """How :attr:`constraint_violation` reads against :attr:`violation_tolerance`.
+
+        :attr:`constraint_violation` is the largest distance in ``v``, the variables of
+        :attr:`stationarity_status`, from the plan to a side of its box or to a bound of one of its
+        ``constraints`` rows that it is past: a row's excess over the row's norm in ``v``. Zero
+        where the plan meets every one. Its tolerance is the one the descent's projection holds
+        each side and row to, ``256 eps (1 + max|v|)``, times four for the plan's own rounding and
+        a projection started from another guess. The barrier's condition is not among them:
+        :attr:`safety` audits it.
+        """
+        return _diagnostic_status(self.constraint_violation, self.violation_tolerance)
 
     @property
     def certified_actions(self) -> Array:
@@ -795,6 +854,27 @@ class _PlanProblem:
             )
         return np.asarray(gradient, dtype=np.float64).ravel()
 
+    def value(self, actions: Array) -> Array:
+        """The solve's objective at ``actions``, as the penalised descent reads it: the confounding
+        radius' norm unsmoothed where it takes the norm by its proximal map."""
+        if self.support is None:
+            return total_cost(self.model, self.x0, actions, self.dt, self.cost)
+        rows = any(row.matrix.shape[0] for row in self.constraints)
+        norms = _radius_norms(self.uncertainty, self.lam_unc, actions, rows)
+        value = _objective(
+            self.model,
+            self.x0,
+            actions,
+            self.dt,
+            self.cost,
+            self.support,
+            self.lam_supp,
+            *_smooth(self.uncertainty, self.lam_unc, norms),
+        )
+        if norms is None:
+            return value
+        return value + _step_norms(actions.astype(value.dtype), norms, jnp.ones((), value.dtype))
+
 
 @dataclass(frozen=True)
 class _Kkt:
@@ -873,6 +953,82 @@ def _kkt(
         scale=scale,
         slack=1e3 * tolerance * size,
         remainder=gradient + columns @ multipliers,
+    )
+
+
+def _diagnostic_status(value: float | None, tolerance: float | None) -> DiagnosticStatus:
+    if value is None or tolerance is None:
+        return "not_evaluated"
+    if not math.isfinite(value):
+        return "not_finite"
+    return "within" if value <= tolerance else "beyond"
+
+
+def _diagnostics(problem: _PlanProblem, actions: Array) -> tuple[float | None, float, float, float]:
+    """``(stationarity, its tolerance, constraint violation, its tolerance)`` of ``actions`` on
+    ``problem``, as :attr:`CausalPlan.stationarity_status` and :attr:`CausalPlan.violation_status`
+    read them; the stationarity None where the plan was held under a barrier."""
+    shape, dtype = actions.shape, actions.dtype
+    eps = float(jnp.finfo(dtype).eps)
+    box_lo = broadcast_box(problem.u_lo, shape, "u_lo", dtype)
+    box_hi = broadcast_box(problem.u_hi, shape, "u_hi", dtype)
+    guess = _guess(box_lo, box_hi)
+    value = problem.value(guess)
+    sigma, scale, _ = _descent_units(
+        problem.model, problem.x0, guess, problem.dt, problem.cost, box_lo, box_hi, value
+    )
+    factor = np.asarray(sigma, dtype=np.float64).ravel()
+    size = factor.size
+    present = [row for row in problem.constraints if row.matrix.shape[0]]
+    matrix = np.vstack([row.matrix for row in present]) / factor if present else np.zeros((0, size))
+    norms = np.linalg.norm(matrix, axis=1)
+    lower = np.concatenate([row.lower for row in present]) / norms if present else np.zeros(0)
+    upper = np.concatenate([row.upper for row in present]) / norms if present else np.zeros(0)
+    matrix = matrix / norms[:, None]
+    point = factor * np.asarray(actions, dtype=np.float64).ravel()
+    lo = factor * np.asarray(box_lo, dtype=np.float64).ravel()
+    hi = factor * np.asarray(box_hi, dtype=np.float64).ravel()
+    level = matrix @ point
+    with np.errstate(invalid="ignore"):  # an absent side is infinite, and nan actions break all
+        excess = np.concatenate([lo - point, point - hi, lower - level, level - upper])
+    # np.max keeps a nan, where max() drops it
+    violation = float(np.max(np.maximum(excess, 0.0), initial=0.0))
+    violation_tolerance = 1024 * eps * (1.0 + float(np.max(np.abs(point), initial=0.0)))
+    stationarity_tolerance = 10.0 * math.sqrt(2.0 * max(_DESCENT_TOL, 4.0 * eps))
+    if problem.barrier:
+        return None, stationarity_tolerance, violation, violation_tolerance
+    share = factor * float(scale)
+    gradient = problem.gradient(actions) / share
+    kkt = _kkt(
+        gradient,
+        point,
+        matrix,
+        lower,
+        upper,
+        lo,
+        hi,
+        max(1e-6, 1e3 * eps),
+        problem.gradient(guess) / share,
+    )
+    capped, floored = np.flatnonzero(kkt.at_hi), np.flatnonzero(kkt.at_lo)
+    sides = np.zeros((size, capped.size + floored.size))
+    sides[capped, np.arange(capped.size)] = 1.0
+    sides[floored, capped.size + np.arange(floored.size)] = -1.0
+    pushes = np.hstack([kkt.columns, sides])
+    miss = gradient
+    if pushes.shape[1]:
+        # an equality row and a box of zero width, which fixes its action, push either way; an
+        # inequality row and a side of a wider box only outward
+        fixed = hi <= lo
+        either = np.concatenate([kkt.equality, fixed[capped], fixed[floored]])
+        least = np.where(either, -np.inf, 0.0)
+        fit = lsq_linear(pushes, -gradient, bounds=(least, np.inf), method="bvls")
+        miss = gradient + pushes @ fit.x
+    return (
+        float(np.linalg.norm(miss)) / kkt.scale,
+        stationarity_tolerance,
+        violation,
+        violation_tolerance,
     )
 
 
@@ -1320,6 +1476,23 @@ def _plan(
         )
         if covariance.any():
             tube = tube + _noise_tube(rate, covariance, noise_persistence, dt, horizon)
+    problem = _PlanProblem(
+        model=model,
+        x0=x0,
+        cost=cost,
+        dt=dt,
+        u_lo=u_lo,
+        u_hi=u_hi,
+        constraints=tuple(constraints),
+        support=support,
+        lam_supp=lam_supp,
+        uncertainty=uncertainty,
+        lam_unc=lam_unc,
+        barrier=barrier is not None,
+    )
+    stationarity, stationarity_tolerance, violation, violation_tolerance = _diagnostics(
+        problem, actions
+    )
     plan = CausalPlan(
         actions=actions,
         trajectory=_trajectory(model, x0, actions, dt),
@@ -1329,20 +1502,11 @@ def _plan(
         solver_status=status,
         solver_iterations=iterations,
         relaxed_cost=None if first is None else first.task_cost,
-        _problem=_PlanProblem(
-            model=model,
-            x0=x0,
-            cost=cost,
-            dt=dt,
-            u_lo=u_lo,
-            u_hi=u_hi,
-            constraints=tuple(constraints),
-            support=support,
-            lam_supp=lam_supp,
-            uncertainty=uncertainty,
-            lam_unc=lam_unc,
-            barrier=barrier is not None,
-        ),
+        stationarity=stationarity,
+        stationarity_tolerance=stationarity_tolerance,
+        constraint_violation=violation,
+        violation_tolerance=violation_tolerance,
+        _problem=problem,
     )
     if barrier is None:
         return plan, None

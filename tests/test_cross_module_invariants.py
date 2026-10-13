@@ -699,6 +699,43 @@ def test_a_held_barrier_clears_every_step_in_any_units_of_each_lever(
     assert other.barrier_certified_steps == HORIZON
 
 
+@pytest.mark.parametrize(("levers_in", "state_in"), [*OTHER_UNITS, ((1e-3, 1e3), 1e-3)])
+@pytest.mark.parametrize("policy", ["free", "together"])
+def test_the_plan_s_first_order_check_reads_the_same_in_any_units(
+    policy: str, levers_in: tuple[float, float], state_in: float
+) -> None:
+    """Under a budget that binds, the plan's stationarity and its largest breach of its box and
+    rows, each beside its tolerance, are read in the descent's own variables: each reads the same
+    with the levers and the state in any units, and the certificate and the record carry the
+    plan's."""
+    one = _decide(policy, budget=True)
+    other = _decide(policy, levers_in=levers_in, state_in=state_in, budget=True)
+    for result in (one, other):
+        plan, certificate = result.plan, result.certificate
+        assert plan is not None
+        assert (certificate.stationarity_status, certificate.violation_status) == ("within",) * 2
+        read = (
+            certificate.stationarity,
+            certificate.stationarity_tolerance,
+            certificate.constraint_violation,
+            certificate.violation_tolerance,
+        )
+        assert read == (
+            plan.stationarity,
+            plan.stationarity_tolerance,
+            plan.constraint_violation,
+            plan.violation_tolerance,
+        )
+        record = result.to_json()["certificate"]
+        assert (record["stationarity"], record["stationarity_status"]) == (read[0], "within")
+        assert (record["constraint_violation"], record["violation_status"]) == (read[2], "within")
+    first, second = one.certificate, other.certificate
+    # converged to the descent's own resolution, so equal to rounding where the plan is rounding
+    assert second.stationarity == pytest.approx(first.stationarity, rel=1e-6, abs=1e-13)
+    assert second.stationarity_tolerance == first.stationarity_tolerance
+    assert second.violation_tolerance == pytest.approx(first.violation_tolerance, rel=1e-9, abs=0.0)
+
+
 # ---- the allocation planner: currency, outcome units, and a channel no plan can buy ----
 
 PERIODS = 13

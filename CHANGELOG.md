@@ -116,6 +116,22 @@ still change).
   bootstrap over the units and the reading of one unit warn against the interval they return. No
   value moves: the bias is reported, not subtracted (ADR 0095).
 
+- **A plan reads its own first-order check: `CausalPlan.stationarity` and
+  `CausalPlan.constraint_violation`, each beside its tolerance and a status (`within`, `beyond`,
+  `not_finite`, `not_evaluated`).** The plan carried the solver's status alone. A descent stopped
+  by its budget read `max_iterations` both 0.065 off the optimum and 1.2e-6 off it. The solver's
+  own residual was in the caller's units: on one plan it read 5.8e-5 with the lever in
+  thousandths, 5.7e-11 in thousands and 0.058 with the cost in millions. Both numbers are now read
+  in the descent's scaled variables. They read the same in any units of the levers, the states,
+  the rows and the cost: 8.3e-8 on that plan in every case. The stationarity is the KKT residual
+  with the multipliers' signs, so an action held on a side that its gradient pulls it off reads
+  as not stationary. The violation is the distance to the nearest box side or row bound that the
+  plan is past. The stationarity's tolerance follows from the descent's stopping rule: 1.4e-6 in
+  float64 and 9.8e-3 in float32. The violation's tolerance follows from the projection's
+  rounding. A plan held under a barrier reads no stationarity. `prescribe`'s certificate, its
+  report and `to_json()` carry all four numbers and both statuses; a number that is not finite is
+  null, with `not_finite` beside it. `schema_version` stays 2: the fields are new (ADR 0097).
+
 ### Changed
 
 - **`koopman_lqr_gain` refuses a lift that does not close.** It returned the LQR gain of any fitted

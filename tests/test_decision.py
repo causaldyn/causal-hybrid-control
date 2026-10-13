@@ -1537,6 +1537,55 @@ def test_every_state_of_the_record_is_strict_json(build, reads: dict[str, object
     )
 
 
+def test_the_plan_s_first_order_check_is_in_the_record_with_a_status_for_each_null() -> None:
+    """The plan's stationarity and constraint violation go to the record and the report beside
+    their tolerances and statuses. A null reads three ways: no plan, where the statuses are null
+    too; a plan held under the constraints' barrier, whose stationarity is ``not_evaluated``; and
+    a number that is not finite, ``not_finite``."""
+    solved = _small()
+    record = json.loads(json.dumps(solved.to_json(), allow_nan=False))["certificate"]
+    certificate = solved.certificate
+    assert record["stationarity"] == certificate.stationarity > 0.0
+    assert record["stationarity_tolerance"] == certificate.stationarity_tolerance
+    assert record["constraint_violation"] == certificate.constraint_violation
+    assert record["violation_tolerance"] == certificate.violation_tolerance
+    assert (record["stationarity_status"], record["violation_status"]) == ("within", "within")
+    line = (
+        f"- first-order check: stationarity {certificate.stationarity:.4g} (tolerance "
+        f"{certificate.stationarity_tolerance:.4g}, within), constraint violation "
+        f"{certificate.constraint_violation:.4g} (tolerance {certificate.violation_tolerance:.4g}, "
+        "within)"
+    )
+    assert line in solved.report()
+
+    def read(result: Prescription) -> tuple[object, ...]:
+        record = json.loads(json.dumps(result.to_json(), allow_nan=False))["certificate"]
+        return tuple(
+            record[key]
+            for key in (
+                "stationarity",
+                "stationarity_status",
+                "constraint_violation",
+                "violation_status",
+            )
+        )
+
+    held = _small(hold_constraints=True)
+    assert read(held)[:2] == (None, "not_evaluated")
+    assert read(held)[3] == "within"
+    assert "stationarity not evaluated under the constraints' barrier" in held.report()
+    latent = _small(adjustment=CausalGraph.from_edges(EDGES, latent=("demand",)))
+    assert read(latent) == (None, None, None, None)
+    assert "first-order check" not in latent.report()
+    broken = dataclasses.replace(
+        solved,
+        certificate=dataclasses.replace(
+            certificate, stationarity=math.nan, constraint_violation=math.inf
+        ),
+    )
+    assert read(broken) == (None, "not_finite", None, "not_finite")
+
+
 def _recorded(real: Any, calls: list[tuple[inspect.BoundArguments, Any]]) -> Any:
     """``real``, keeping each call bound to its signature with the defaults filled in, beside what
     it returned."""
