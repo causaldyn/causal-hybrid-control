@@ -2,7 +2,9 @@
 
 **Status:** accepted, 2026-10-13. Amends ADR 0049, whose bootstrap counted the draws it refused
 and said nothing more, and ADR 0083, which put the shortfall of one unit's coverage at a horizon
-of ten steps down to the estimate's bias.
+of ten steps down to the estimate's bias. Corrected 2026-10-13: the coverage at ten steps of
+the most persistent unit is 0.83 to 0.85, not 0.86 to 0.87; see the note under *What the table
+says*.
 
 ## Context
 
@@ -107,6 +109,13 @@ What the table says:
   of the half-width costs a nominal 95 % interval about half a point, so the coverage of 0.86 to
   0.87 at ten steps is the spread's shortfall, not the bias's: the influences of heavy weights
   read a spread too small. ADR 0083's attribution does not hold.
+  *Note, 2026-10-13:* the 600 logs a cell above read high by chance. The same code reproduces
+  them to the bit on their own streams, and on 2000 fresh logs a cell it covers 0.830, 0.841 and
+  0.850 at 400, 800 and 1600 windows (each +- 0.008), as ADR 0083 measured (0.817 to 0.856). The
+  attribution stands: an interval centred on each estimate with the estimate's own spread
+  across logs covers 0.966 to 0.968, and the bias alone would leave 0.946 to 0.949. The misses
+  are one-sided, 0.15 to 0.17 where the estimate reads low against 0.001 to 0.003 where it reads
+  high: the estimate is skewed to the right and the spread it reads rises and falls with it.
 - At twenty steps the bias is 0.30 to 0.40 of the half-width and 0.27 to 0.59 of the estimate's
   standard deviation, and the interval covers 0.63.
 - The first order is 2 to 9 times smaller than the measured bias on one unit's windows, which are
@@ -145,7 +154,7 @@ What the table says:
   its draws refused logs that its intervals are inconclusive. The test at the edge in
   `tests/test_evaluation.py`, 40 draws, reads `inconclusive`.
 - The warning fires on the long horizons where the bias swamps the interval, and on few episodes.
-  It does not fire on most logs at ten steps, whose coverage of 0.86 is the spread's; that
+  It does not fire on most logs at ten steps, whose coverage of 0.83 to 0.85 is the spread's; that
   shortfall is still the docstring's to state.
 - `tests/test_evaluation.py` holds the bias against Maxima's two-step integral to `1e-12`, against
   20 000 simulated logs (mean error -0.097 +- 0.020, first order -0.111), the warning on both sides

@@ -113,6 +113,13 @@ still change).
   order statistic of rank `ceil(level (draws + 1))`, measured 0.949 to 0.952 at 100 draws, and
   `inf` where `draws` is below `level / (1 - level)`. At the default draws the bound moves up by at
   most one order statistic. Since 0.8.0.
+- **ADR 0095's coverage of one unit's windows at ten steps is 0.83 to 0.85, not 0.86 to 0.87.**
+  Its 600 logs a cell read high by chance: the code reproduces them to the bit, and 2000 fresh logs
+  a cell cover 0.830, 0.841 and 0.850 at 400, 800 and 1600 windows, as ADR 0083 measured. Its
+  attribution to the spread, not the bias, stands. `Prescription.evaluate` now states what the
+  unit bootstrap covers with no draw refused (0.925 and 0.902 on two plants, 60 units) and what
+  one unit's difference interval covers (0.74 to 0.88), both short through the estimate's right
+  skew, which the spread it reads follows. Docs only; no value moves. Since 0.18.0.
 
 ## [0.18.0] — 2026-10-13
 

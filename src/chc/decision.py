@@ -1051,7 +1051,11 @@ class Prescription:
         1.96 standard deviations of its draws, widened by the model's correction as
         :func:`~chc.evaluation.evaluate_plan` widens its own; a draw the certificate refuses is
         left out and counted (:attr:`PlanEvaluation.bootstrap`). With few units the draws are
-        few distinct panels and the intervals too narrow.
+        few distinct panels and the intervals too narrow. The estimate of a quadratic cost under
+        importance weights is skewed to the right, and the spread its draws read rises and falls
+        with it, so the misses fall where it reads low: on panels of 60 units of five windows,
+        no draw refused, the plan's interval covered 0.925 on a two-state market (800 panels) and
+        0.902 on one state (757 panels), the difference's 0.945 and 0.916.
 
         Near the certificate's edge a draw whose units start wider or weigh heavier than the
         panel's is refused, so the draws read are the narrow side of the spread: the intervals
@@ -1073,7 +1077,10 @@ class Prescription:
         AR(0.9), horizons 4 and 10, 25 to 1600 windows, 1000 logs a cell), the 95 % intervals
         covered 0.87 to 0.99, where the windows taken as independent covered 0.75 to 0.99; where
         the loop keeps 0.8 and the noise is AR(0.9), 0.82 to 0.95 against 0.64 to 0.85. They were
-        1.04 to 2.3 times as wide, 1.66 at 25 windows of fresh noise (ADR 0083).
+        1.04 to 2.3 times as wide, 1.66 at 25 windows of fresh noise (ADR 0083). The
+        difference's interval, :attr:`PlanEvaluation.versus_logger`, covered less, for the same
+        skew: 0.88 at 100 windows of four steps of fresh noise where the plan's covered 0.97, and
+        0.74 to 0.79 at ten steps where the loop keeps 0.8 and the noise is AR(0.9).
 
         :attr:`PlanEvaluation.versus_logger` holds the plan's value less the logged policy's, on
         the same windows, its interval read off the difference within each draw. The policy in
