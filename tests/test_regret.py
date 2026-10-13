@@ -261,6 +261,19 @@ def test_van_trees_inequality_is_tight_for_the_gaussian_conjugate() -> None:
     assert (np.diff(curve.empirical_mse) < 0).all()  # MSE falls with more observations
 
 
+@pytest.mark.parametrize(("tau", "sigma"), [(2.0, 2.0), (2.0, 0.5), (0.5, 3.0)])
+def test_van_trees_posterior_mean_hits_the_bound_at_any_noise_scale(
+    tau: float, sigma: float
+) -> None:
+    """The posterior mean is ``(sum x / sigma^2) / (1 / tau^2 + n / sigma^2)``; the sum was not
+    divided by ``sigma^2``, which is right at ``sigma = 1`` alone: at ``tau = sigma = 2`` the
+    Bayes MSE at 200 observations read 1776 times the bound it attains. 6000 trials put the mean squared error's
+    relative standard error near 0.018."""
+    curve = van_trees_certificate(tau=tau, sigma=sigma)
+    np.testing.assert_allclose(curve.empirical_mse, curve.van_trees_bound, rtol=0.08)
+    assert curve.tight_ratio == pytest.approx(1.0, rel=0.08, abs=0.0)
+
+
 def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     # Contribution 3 (proofs/adaptive_exploration.v): control with online effect learning.
     # A tapering schedule v_t ~ 1/sqrt(t) reaches cumulative regret Theta(sqrt(T)) -- matching the

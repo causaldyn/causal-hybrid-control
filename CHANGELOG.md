@@ -24,6 +24,11 @@ still change).
   plan does not have. At their defaults `time_varying_rollout_certificate` now reads 20 of 20
   steps where it read 21, and `confounding_robust_closed_loop_certificate` at `gamma = 3` reads
   25 and 20 of 25 where it read 26 and 21. Since 0.2.0.
+- **`van_trees_certificate` reads the posterior mean at any noise scale.** It divided the
+  observations' sum by the posterior precision without dividing it by `sigma^2` first, which is
+  the posterior mean at `sigma = 1` alone: at `tau = sigma = 2` its Bayes risk read 1776 times
+  the van Trees bound the posterior mean attains (`tight_ratio`), and 0.9985 now. The default,
+  `sigma = 1`, reads as before. Since 0.2.0.
 
 ## [0.18.0] — 2026-10-13
 
