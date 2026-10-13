@@ -88,6 +88,7 @@ _GRID = 9  # points of the prior's persistence interval every worst case is take
 _FEW_SWITCHES = 100
 _NEAR_UNIT_ROOT = 0.1  # sd(a_hat) / (1 - a) past which the steady state's delta method is ~8% low
 _IID = 5.0  # |lag-one autocorrelation| * sqrt(n) past which a lever is not i.i.d.
+_DESIGN_LAGS = 3.0  # lags of the impulse response a design variance reads, per log(T)
 _FIRST_ORDER_LEVEL = 0.01  # the p-value under which the data reject a first-order state
 _PILOT_BLOCKS = 10  # a block pilot's power at its restated MDE was 0.735 at five blocks a zone
 
@@ -903,19 +904,110 @@ def _projection_fit(u, y, h: int) -> tuple[np.ndarray, np.ndarray]:
     return theta[..., 0], cov[..., 0, 0]
 
 
-def _projection(u, y, h: int, z: float):
+def _iid_lever(u) -> None:
     lag_one = _lag_one(u)
     if abs(lag_one) * math.sqrt(u.size) > _IID:
         raise ValueError(
             f"the local projection needs an i.i.d. lever; this one's lag-one autocorrelation is "
             f"{lag_one:.3f}"
         )
+
+
+def _projection(u, y, h: int, z: float):
+    _iid_lever(u)
     estimate, variance = (float(v) for v in _projection_fit(u, y, h))
     _finite_variance(variance)
     if variance <= 0.0:
         raise ValueError(
             f"the scores' autocovariances to lag {h - 1} sum to a negative variance, which the "
             f"MA({h - 1}) error of the overlapping sums cannot produce"
+        )
+    se = math.sqrt(variance)
+    return estimate, se, (estimate - z * se, estimate + z * se)
+
+
+def _product_band(q: np.ndarray, g: np.ndarray, periods: int) -> np.ndarray:
+    """The entries ``M[i, i + d]`` of ``M = T_q' T_g``, ``T_v`` the lower-triangular Toeplitz
+    matrix of ``v`` over ``periods``, shaped ``(offsets, zones, periods)`` for ``d`` from
+    ``-(len(g) - 1)`` to ``len(q) - 1``, zero off the matrix. ``g`` is one row a zone. ``M`` is
+    banded, so this is ``O(T len(q) len(g))``, not ``O(T^3)``."""
+    lags = g.shape[1]
+    band = np.zeros((q.size + lags - 1, g.shape[0], periods))
+    for s in range(q.size):
+        for k in range(lags):
+            # M[i, i + d] = sum_s q_s g_(s - d) over the rows i <= T - 1 - s that reach lag s
+            band[s - k + lags - 1, :, max(0, k - s) : periods - s] += q[s] * g[:, k, None]
+    return band
+
+
+def _design_variance(q: np.ndarray, g: np.ndarray, g_long: np.ndarray, h: np.ndarray):
+    """Liang and Recht's (Biometrika 2025) eq. (2.5), each zone's ``T^2`` times the variance of
+    ``<T_q z, 2 y> / T`` over fair i.i.d. coins with the noise held fixed:
+    ``|M|_F^2 + tr(M M) - 2 sum_i M_ii^2 + |T_q' h|^2``, ``M = T_q' T_g`` and
+    ``h = T_g 1 + 2 e``. The plug-in reads ``tr(M M)`` off ``g_long``, twice ``g``'s lags, since
+    the products it sums reach that far."""
+    periods = h.shape[-1]
+    band = _product_band(q, g, periods)
+    centre = g.shape[1] - 1
+    quadratic = (band * band).sum(axis=(0, 2)) - 2.0 * (band[centre] ** 2).sum(axis=-1)
+    band = _product_band(q, g_long, periods)
+    centre = g_long.shape[1] - 1
+    reach = min(centre, q.size - 1)
+    for d in range(-reach, reach + 1):
+        # M[i, i + d] M[i + d, i]: the partner of offset d is -d, read d rows on
+        lo, hi = max(0, -d), periods - max(0, d)
+        quadratic += (band[centre + d, :, lo:hi] * band[centre - d, :, lo + d : hi + d]).sum(-1)
+    linear = np.zeros_like(h)
+    for s in range(q.size):
+        linear[:, : periods - s] += q[s] * h[:, s:]
+    return quadratic + (linear * linear).sum(axis=-1)
+
+
+def _design_projection(u, y, h: int, z: float):
+    """``tau_H`` by Liang and Recht's moment estimator, the local projection with the design's
+    moments in place of the sample's, and its standard error over the design's coins.
+
+    Each lag ``s < H`` is read over the ``T - s`` pairs that reach it,
+    ``g_s = 2 / (T - s) sum_i z_i y'_(i + s)``, with ``z = 2 u - 1`` and ``y'`` each zone's
+    readings after its first, which precedes the lever. That is their eq. (2.4) at
+    ``q_s = T / (T - s)``, whose target is ``tau_H`` itself, and it is unbiased over the coins
+    whatever the noise, as long as the noise does not depend on them. The variance is their
+    eq. (2.5), exact over the coins, with ``g`` read over ``K`` lags and the noise read off the
+    data, ``h = 2 y' - z * g``: their plug-in, consistent at ``K = Theta(log T)``."""
+    _iid_lever(u)
+    share = float(u.mean())
+    if abs(2.0 * share - 1.0) * math.sqrt(u.size) > _IID:
+        raise ValueError(
+            f"a design standard error needs a fair coin each period; the lever was on in "
+            f"{share:.3f} of them"
+        )
+    zones, periods = u.shape
+    lags = max(h, math.ceil(_DESIGN_LAGS * math.log(periods)))
+    if periods <= 2 * lags:
+        raise ValueError(
+            f"a design standard error reads {2 * lags} lags of the impulse response, and needs "
+            f"more periods a zone than that; got {periods}"
+        )
+    signs = 2.0 * u - 1.0
+    after = y[:, 1:] - y[:, :1]
+    g = np.stack(
+        [
+            2.0 / (periods - s) * (signs[:, : periods - s] * after[:, s:]).sum(axis=-1)
+            for s in range(2 * lags)
+        ],
+        axis=-1,
+    )
+    estimate = float(g[:, :h].sum(axis=-1).mean())
+    noise = 2.0 * after
+    for s in range(lags):
+        noise[:, s:] -= g[:, s, None] * signs[:, : periods - s]
+    q = periods / (periods - np.arange(h, dtype=np.float64))
+    variance = float(_design_variance(q, g[:, :lags], g, noise).sum()) / (periods * zones) ** 2
+    _finite_variance(variance)
+    if variance <= 0.0:
+        raise ValueError(
+            "the design variance's plug-in is not positive: the outcome does not move off its "
+            "first reading"
         )
     se = math.sqrt(variance)
     return estimate, se, (estimate - z * se, estimate + z * se)
@@ -998,6 +1090,7 @@ def read_switchback(
     *,
     blocks: BlockDesign | None = None,
     alpha: float = 0.05,
+    se: Literal["model", "design"] = "model",
 ) -> SwitchbackReading:
     """Read ``estimand`` off a switchback's data by ``analysis``.
 
@@ -1023,13 +1116,32 @@ def read_switchback(
       the zones are weighted alike, and the standard error sums the zones' scores block by block,
       so it keeps what a spillover or a shock common to the zones puts between them.
 
+    ``se`` is what the standard error is over. ``"model"`` reads it off the regression's errors as
+    above. ``"design"`` reads it over the lever's own randomisation, with the plant and its noise
+    held fixed (Liang and Recht, Biometrika 2025), for a local projection on a lever drawn by a
+    fair coin each period. The estimate is then the local projection with the design's moments in
+    place of the sample's, no intercept and no ``y_t``: ``tau_H = sum_(s<H) g_s``, with
+    ``g_s = 2 / (T - s) sum_t (2 u_t - 1) (y_(t+1+s) - y_0)``, each zone read from its first
+    reading, which precedes the lever, and the zones averaged. Over the coins it is unbiased for
+    ``tau_H`` on any linear time-invariant plant, whatever its noise does in time, as long as the
+    noise does not depend on the coins and no zone's lever moves another's outcome. Its variance
+    over the coins holds no product of the noise at two periods for the channel, and none more than
+    ``H - 1`` apart for ``tau_H``: the noise's autocorrelation does not enter it. The standard error
+    is their plug-in of that variance, over ``3 log T`` lags of the impulse response, and is
+    asymptotic in ``T``. It is wider than the model's where the model's holds, since it uses
+    neither the regression's intercept nor ``y_t``.
+
     Raises:
         ValueError: when the shapes disagree, the lever is not 0 or 1 or never switches, the
             outcome is not finite, ``alpha`` is outside ``(0, 1)``, ``blocks`` is given without
             ``"block_dim"`` or missing with it, the blocks do not read ``tau_H``, the lever changes
             inside a block, a local projection is asked of a steady state or of a lever that is not
             i.i.d., the steady state is read off a fit with ``a_hat >= 1``, or a variance with lags
-            comes out negative, which the working model's errors cannot produce.
+            comes out negative, which the working model's errors cannot produce; and when ``se``
+            is neither ``"model"`` nor ``"design"``, or ``"design"`` is asked of another analysis
+            than the local projection, of a lever that is not a fair coin each period, of a run no
+            longer than the ``6 log T`` lags the plug-in reads, or of an outcome that never moves
+            off its first reading.
     """
     u = np.atleast_2d(np.asarray(_real_numbers(lever, "lever"), dtype=np.float64))
     y = np.atleast_2d(np.asarray(_real_numbers(outcome, "outcome"), dtype=np.float64))
@@ -1046,6 +1158,12 @@ def read_switchback(
         raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
     if (analysis == "block_dim") != (blocks is not None):
         raise ValueError(f"blocks are read by block_dim and nothing else; got {analysis}, {blocks}")
+    if se not in ("model", "design"):
+        raise ValueError(f"se is 'model' or 'design', got {se!r}")
+    if se == "design" and analysis != "local_projection":
+        raise ValueError(
+            f"a design standard error reads the local projection of an i.i.d. lever, not {analysis}"
+        )
     h = estimand.periods
     z = NormalDist().inv_cdf(1.0 - alpha / 2.0)
     if blocks is not None:
@@ -1053,20 +1171,27 @@ def read_switchback(
             raise ValueError(
                 f"{estimand.name} is read by blocks of {int(h)} keeping the last, got {blocks}"
             )
-        estimate, se, interval = _block_difference(u, y, blocks, z)
+        estimate, error, interval = _block_difference(u, y, blocks, z)
     elif analysis == "local_projection":
         if math.isinf(h):
             raise ValueError("a local projection reads a finite horizon, not the steady state")
-        estimate, se, interval = _projection(u, y, int(h), z)
+        reader = _design_projection if se == "design" else _projection
+        estimate, error, interval = reader(u, y, int(h), z)
     else:
-        estimate, se, interval = _plant(u, y, estimand, analysis, z)
+        estimate, error, interval = _plant(u, y, estimand, analysis, z)
     _log.info(
-        "switchback reading: %s by %s",
+        "switchback reading: %s by %s, standard error over the %s",
         estimand.name,
         analysis,
-        extra={"chc_event": "switchback_reading", "estimate": estimate, "se": se},
+        se,
+        extra={
+            "chc_event": "switchback_reading",
+            "estimate": estimate,
+            "se": error,
+            "se_over": se,
+        },
     )
-    return SwitchbackReading(estimand, analysis, estimate, se, interval, zones, periods)
+    return SwitchbackReading(estimand, analysis, estimate, error, interval, zones, periods)
 
 
 # --- an internal pilot ----------------------------------------------------------------------------
