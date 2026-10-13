@@ -1,6 +1,7 @@
 """Pessimism gate: support penalty keeps control near the data; greedy control extrapolates."""
 
 import importlib
+import math
 import time
 
 import jax
@@ -114,7 +115,10 @@ def _naive_pessimistic(
     ``sigma`` is the secant of the augmented cost's curvature along it over the step, where that is
     above the floor, and a search that fails off the floor is tried again from it. A trial counts
     where it lowers the augmented cost by a third of the fall its gradient predicts, and by more
-    than ``tol``; where no halving does, the first one that fell by more than ``tol``.
+    than ``tol``; where no halving does, the first one that fell by more than ``tol``. A search
+    that fails at a plan whose residual, a unit projected step in the floor's variables at zeros
+    clipped to the box, is beyond ``10 sqrt(2 max(tol, 4 eps))`` is run again, a trial's fall then
+    read as the trapezoid of the gradients at its ends, with the cost not rising.
     """
 
     def task(us: jnp.ndarray) -> jnp.ndarray:
@@ -129,9 +133,14 @@ def _naive_pessimistic(
     floor = _floor(model, x0, us, cost, augmented, u_hi)
     current = augmented(us)
     level = abs(float(current))
+    zeros = jnp.zeros_like(us)
+    check_sigma = _floor(model, x0, zeros, cost, augmented, u_hi)
+    check_level = abs(float(augmented(zeros)))
+    tolerance = 10.0 * math.sqrt(2.0 * max(tol, 4.0 * float(jnp.finfo(us.dtype).eps)))
     history = [float(task(us))]
     sigma, grad = floor, grad_aug(us)
-    while len(history) <= steps:
+
+    def search(by_gradients: bool) -> tuple[jnp.ndarray, jnp.ndarray] | None:
         lo, hi, scaled = u_lo * sigma, u_hi * sigma, grad / sigma
         lr, chosen = lr0 / level, None
         for _ls in range(40):
@@ -140,13 +149,30 @@ def _naive_pessimistic(
                 trial <= lo, u_lo, jnp.where(trial >= hi, u_hi, jnp.clip(trial / sigma, u_lo, u_hi))
             )
             candidate_cost = augmented(candidate)
-            if candidate_cost < current - tol * level:
-                predicted = float(jnp.sum(scaled * (us * sigma - trial)))
-                if float(current - candidate_cost) >= (1.0 / 3.0) * predicted:
-                    chosen = candidate, candidate_cost
-                    break
+            predicted = float(jnp.sum(scaled * (us * sigma - trial)))
+            if by_gradients:
+                fall = 0.5 * float(jnp.sum((grad + grad_aug(candidate)) * (us - candidate)))
+                falls = fall > 0.0 and candidate_cost <= current
+            else:
+                fall = float(current - candidate_cost)
+                falls = bool(candidate_cost < current - tol * level)
+            if falls:
+                if fall >= (1.0 / 3.0) * predicted:
+                    return candidate, candidate_cost
                 chosen = (candidate, candidate_cost) if chosen is None else chosen
             lr *= 0.5
+        return chosen
+
+    def beyond() -> bool:
+        at = us * check_sigma
+        stepped = at - grad / check_sigma / check_level
+        landed = jnp.clip(stepped, u_lo * check_sigma, u_hi * check_sigma)
+        return float(jnp.linalg.norm(at - landed)) > tolerance
+
+    while len(history) <= steps:
+        chosen = search(by_gradients=False)
+        if chosen is None and beyond():
+            chosen = search(by_gradients=True)
         if chosen is None:
             if bool(jnp.all(sigma == floor)):
                 break

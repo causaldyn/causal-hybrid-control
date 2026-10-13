@@ -67,6 +67,7 @@ from chc.control import (
     _action_units,
     _constraint_blocks,
     _projected_gradient_solve,
+    _stationarity_tolerance,
     _step_norms,
     broadcast_box,
     check_box,
@@ -209,9 +210,12 @@ class CausalPlan:
         The tolerance is what the descent can see: it stops where no step buys more than
         ``max(1e-14, 4 eps)`` of ``|J|``, ``eps`` the actions' precision, which leaves a residual of
         about the root of twice that; ten times it allows for a curvature off one along the
-        residual. ``beyond`` it, the descent stopped on its budget or short of the optimum, and the
-        plan, its prices and its regret are a stopped solve's. Not read (``not_evaluated``) on a
-        plan held under a barrier, whose condition's multipliers the residual would need.
+        residual. Where the curvature is further off, as under a steep penalty, the descent reads
+        this residual itself and stops only within the tolerance, or where the gradients at the
+        ends of every trial read no fall either. ``beyond`` it, the descent stopped on its budget
+        or short of the optimum, and the plan, its prices and its regret are a stopped solve's.
+        Not read (``not_evaluated``) on a plan held under a barrier, whose condition's multipliers
+        the residual would need.
         """
         return _diagnostic_status(self.stationarity, self.stationarity_tolerance)
 
@@ -994,7 +998,7 @@ def _diagnostics(problem: _PlanProblem, actions: Array) -> tuple[float | None, f
     # np.max keeps a nan, where max() drops it
     violation = float(np.max(np.maximum(excess, 0.0), initial=0.0))
     violation_tolerance = 1024 * eps * (1.0 + float(np.max(np.abs(point), initial=0.0)))
-    stationarity_tolerance = 10.0 * math.sqrt(2.0 * max(_DESCENT_TOL, 4.0 * eps))
+    stationarity_tolerance = _stationarity_tolerance(_DESCENT_TOL, dtype)
     if problem.barrier:
         return None, stationarity_tolerance, violation, violation_tolerance
     share = factor * float(scale)

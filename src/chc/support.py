@@ -27,6 +27,7 @@ from chc.control import (
     _action_units,
     _constraint_blocks,
     _descend,
+    _guess_units,
     _history,
     _polytope_stationarity,
     _shrink,
@@ -288,8 +289,14 @@ def _pessimistic_loop(
         return value + _step_norms(us.astype(value.dtype), norms, jnp.ones((), value.dtype))
 
     start = project_box(us0, u_lo, u_hi)
+
+    def units_at(us: Array) -> tuple[Array, Array, Array]:
+        return _action_units(model, x0, us, dt, cost, u_lo, u_hi, augmented(us))
+
+    check = None
     if scaled:
-        units = _action_units(model, x0, start, dt, cost, u_lo, u_hi, augmented(start))
+        units = units_at(start)
+        check = _guess_units(start, units, units_at, u_lo, u_hi)
     elif metric is not None:
         units = (jnp.broadcast_to(metric, start.shape).astype(start.dtype), 1.0, 1.0)
     else:
@@ -309,6 +316,7 @@ def _pessimistic_loop(
         scaled=scaled or metric is not None,
         secant=scaled,
         norms=norms,
+        check=check,
     )
 
 
