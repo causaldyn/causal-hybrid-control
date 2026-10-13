@@ -179,8 +179,17 @@ documented, and what is not built yet. Every name below is importable from `chc`
 
 - **`SplitConformal`.** It calibrates an ensemble's next-state intervals on held-out logs. They
   cover while the logs and the loop are exchangeable, so a run of steps outside them says the
-  model no longer describes the plant. Nothing in the library watches for that run. See
-  [`chc.uncertainty`](api/uncertainty.md).
+  model no longer describes the plant. See [`chc.uncertainty`](api/uncertainty.md).
+- **`MissRateAlarm`** (*experimental*). It watches for that run. It calibrates a split-conformal
+  radius on held-out one-step innovations, whitened at the noise's AR(1) persistence, and bounds
+  their miss rate by its exact Beta law. It alarms once the deployed innovations miss more often
+  than that bound allows. On a plant the model still describes, it ever alarms with probability at
+  most `delta`. Unwhitened, AR(1) noise clusters the misses, and the alarm sounded on a correct
+  plant several times as often as `delta`. See [`chc.gate`](api/gate.md).
+- **`OnlineRadius`** (*experimental*). It keeps a radius per horizon and moves it after each
+  scored prediction: up after a miss, down otherwise. On any sequence of scores, also one the plan
+  steers through its own states, each horizon's long-run miss rate comes within a stated bound of
+  `alpha`. See [`chc.gate`](api/gate.md).
 - **`channel_drift_evalues` and `DriftAlarm`** (*experimental*). They watch a deployed plan's
   channel through the Gaussian dither its decisions log. Each decision gives e-values that every
   entry of the channel still lies within its identification radius of the model's. They hold

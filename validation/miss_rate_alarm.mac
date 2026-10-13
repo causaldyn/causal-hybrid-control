@@ -1,0 +1,97 @@
+/* The two laws behind chc.gate.MissRateAlarm (ADR 0094).
+
+   The radius is the k-th smallest of n calibration scores, k = ceil((n + 1)(1 - alpha)). For
+   continuous scores, F(radius) is the k-th smallest of n uniforms, Beta(k, n + 1 - k), and the
+   share p of later scores above it, 1 - F(radius), is Beta(n + 1 - k, k). The library's bound is
+   that law's upper delta/2 quantile, betaincinv(n + 1 - k, k, 1 - delta/2) in scipy.
+
+   STEP 1  P(p > e) = I_(1-e)(k, n + 1 - k) = sum_(i=0)^(n-k) C(n, i) e^i (1 - e)^(n - i):
+           at most n - k of n scores above the quantile 1 - e, for every 1 <= k <= n <= 8
+   STEP 2  the two Beta laws are mirror images: 1 - I_e(n + 1 - k, k) = I_(1-e)(k, n + 1 - k)
+   STEP 3  E[p] = (n + 1 - k)/(n + 1) <= alpha: split conformal's marginal guarantee
+   STEP 4  the bound at three sample points, in bfloat, against scipy's betaincinv
+   STEP 5  the mixture over q uniform on [e, 1] of (q/e)^S ((1-q)/(1-e))^F has the library's
+           closed form B(S + 1, F + 1) (1 - I_e(S + 1, F + 1)) / (e^S (1 - e)^(F + 1))
+   STEP 6  under misses Bernoulli(e) its expectation after t steps is exactly 1 (a martingale),
+           and under Bernoulli(p), p < e, below 1, at t = 1..6
+   STEP 7  two misses in two steps: (1 - e^3) / (3 e^2 (1 - e)), above 2/delta = 20 at the
+           Monte Carlo's bound e = 0.12946
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/miss_rate_alarm.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 12$
+assume(e > 0, e < 1)$
+
+betacdf(x, a, b) := integrate(c^(a - 1)*(1 - c)^(b - 1), c, 0, x)/beta(a, b)$
+
+print("=== STEP 1: the miss rate's tail is a binomial sum ===")$
+bad : []$
+for n : 1 thru 8 do
+  for k : 1 thru n do (
+    lhs : betacdf(1 - e, k, n + 1 - k),
+    rhs : sum(binomial(n, i)*e^i*(1 - e)^(n - i), i, 0, n - k),
+    if ratsimp(lhs - rhs) # 0 then bad : cons([n, k], bad))$
+print("STEP 1 failures over 1 <= k <= n <= 8:", bad, " ([])")$
+
+print("=== STEP 2: mirror images ===")$
+bad : []$
+for n : 1 thru 8 do
+  for k : 1 thru n do
+    if ratsimp(1 - betacdf(e, n + 1 - k, k) - betacdf(1 - e, k, n + 1 - k)) # 0 then
+      bad : cons([n, k], bad)$
+print("STEP 2 failures:", bad, " ([])")$
+
+print("=== STEP 3: the mean ===")$
+bad : []$
+for n : 1 thru 8 do
+  for k : 1 thru n do
+    if ratsimp(integrate(p*p^(n - k)*(1 - p)^(k - 1), p, 0, 1)/beta(n + 1 - k, k)
+               - (n + 1 - k)/(n + 1)) # 0 then bad : cons([n, k], bad)$
+print("STEP 3 failures of E[p] = (n + 1 - k)/(n + 1):", bad, " ([])")$
+for row in [[300, 1/10], [19, 1/10], [1000, 1/20]] do block([n, a, k],
+  [n, a] : row, k : ceiling((n + 1)*(1 - a)),
+  print("STEP 3 n =", n, " alpha =", a, " k =", k, " E[p] =", float((n + 1 - k)/(n + 1)),
+        " <= alpha:", is((n + 1 - k)/(n + 1) <= a)))$
+
+print("=== STEP 4: the bound at sample points ===")$
+fpprec : 40$
+tail(n, k, x) := sum(binomial(n, i)*x^i*(1 - x)^(n - i), i, 0, n - k)$
+for row in [[300, 1/10, 1/10, 0.129460694055819b0],
+            [19, 1/10, 1/5, 0.18976556332462935b0],
+            [1000, 1/20, 1/20, 0.06426605314016964b0]] do block([n, a, d, s, k, x],
+  [n, a, d, s] : row, k : ceiling((n + 1)*(1 - a)),
+  x : bfloat(find_root(tail(n, k, x) - d/2, x, 1/1000, 1/2)),
+  /* bisect in bfloat from find_root's start */
+  block([lo : x - 1b-6, hi : x + 1b-6, mid],
+    for i : 1 thru 120 do (mid : (lo + hi)/2,
+      if bfloat(tail(n, k, mid)) > bfloat(d/2) then lo : mid else hi : mid),
+    x : (lo + hi)/2),
+  print("STEP 4 n =", n, " k =", k, " delta/2 =", d/2, " bound =", x, " scipy:", s,
+        " relative gap:", abs(x - s)/x))$
+
+print("=== STEP 5: the mixture's closed form ===")$
+mixture(S, F) := integrate((q/e)^S*((1 - q)/(1 - e))^F, q, e, 1)/(1 - e)$
+closed(S, F) := beta(S + 1, F + 1)*(1 - betacdf(e, S + 1, F + 1))/(e^S*(1 - e)^(F + 1))$
+bad : []$
+for S : 0 thru 4 do
+  for F : 0 thru 4 do
+    if ratsimp(mixture(S, F) - closed(S, F)) # 0 then bad : cons([S, F], bad)$
+print("STEP 5 failures over 0 <= S, F <= 4:", bad, " ([])")$
+
+print("=== STEP 6: a martingale at the bound, a supermartingale below it ===")$
+bad : []$
+for t : 1 thru 6 do
+  if ratsimp(sum(binomial(t, S)*e^S*(1 - e)^(t - S)*closed(S, t - S), S, 0, t) - 1) # 0 then
+    bad : cons(t, bad)$
+print("STEP 6a failures of E = 1 under Bernoulli(e), t = 1..6:", bad, " ([])")$
+for t : 1 thru 6 do
+  print("STEP 6b t =", t, " E under Bernoulli(0.08) at e = 0.12946:",
+        float(subst(e = 0.12946, sum(binomial(t, S)*0.08^S*0.92^(t - S)*closed(S, t - S), S, 0, t))),
+        " (< 1)")$
+
+print("=== STEP 7: two misses in two steps ===")$
+print("STEP 7 closed(2, 0) - (1 - e^3)/(3 e^2 (1 - e)) =",
+      ratsimp(closed(2, 0) - (1 - e^3)/(3*e^2*(1 - e))), " (0); at e = 0.12946:",
+      float(subst(e = 0.12946, (1 - e^3)/(3*e^2*(1 - e)))), " (>= 20)")$
