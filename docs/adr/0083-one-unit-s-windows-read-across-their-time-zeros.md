@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-12. Amends ADR 0049, which deprecated `Prescription.evaluate` on
 windows of one unit and would have refused them from 1.0, and ADR 0075, which left that reading
-unmeasured.
+unmeasured. Amended by ADR 0095, 2026-10-13: the shortfall at a horizon of ten steps is the
+spread's, not the estimate's bias, which is 0.08 to 0.12 of the half-width there.
 
 ## Context
 

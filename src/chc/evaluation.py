@@ -397,6 +397,10 @@ class UnitBootstrap:
       certified draws alone, conditional on certification;
     * ``"inconclusive"`` -- more were: the evaluation sits at the certificate's edge, the draws
       read are too few and too narrow, and the intervals cover less than they state.
+
+    Near the edge of panels of 60 units, the half-width was within 3 % of the same panel's with no
+    draw refused while at most a tenth of the draws were, and 6 % to 12 % narrower past that
+    (ADR 0095).
     """
 
     units: int  # the units that contributed an episode

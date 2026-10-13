@@ -41,6 +41,7 @@ from chc.evaluation import (
     _episode_smoothing,
     _evaluate_across_time,
     _evaluate_by_unit,
+    _normalisation_bias,
     _smoothed_log_moments,
     _StageCost,
     certify_evaluation,
@@ -1194,6 +1195,162 @@ def test_the_bootstrap_counts_the_draws_it_read_and_says_whether_they_are_condit
         assert other.versus_logger == result.versus_logger
 
 
+# ------------------------------------------------------------------- the normalisation's bias
+
+
+def _iid_episodes(
+    plant: LinearGaussianPlant,
+    logger: AffinePolicy,
+    episodes: int,
+    horizon: int,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``episodes`` independent episodes of the logger, each from its stationary law."""
+    mean, covariance = _stationary_state(plant, logger)
+    root = np.linalg.cholesky(covariance)
+    starts = mean + rng.standard_normal((episodes, mean.shape[0])) @ root.T
+    return _rollouts(plant, logger, starts, horizon, rng)
+
+
+def test_the_normalisation_bias_is_the_ratio_estimators_first_order_term_in_closed_form() -> None:
+    """Two steps from a fixed start ``x0 = 1/2``, ``x1 = 0.7 x0 + u0 + w``, ``w ~ N(0, 1/5)``:
+    ``E_b[W_t^2 c_t]`` and ``E_b[W_t^2]`` integrated in Maxima over ``(u0, x1, u1)`` as Gaussians
+    in exact rationals, ``-sum_t (E_b[W_t^2 c_t] - J_t E_b[W_t^2]) / 50`` is
+    0.00612466700915665051027033354429. No recursion enters that route."""
+    plant = _scalar_plant(0.7, 1.0, 0.2)
+    logger = _scalar_policy(0.3, 0.1, 1.0)
+    plan = AffineSchedule(np.array([[[0.2]], [[0.4]]]), np.array([[-0.3], [0.2]]), [[0.64]])
+    cost = QuadraticCost(
+        Q=jnp.array([[2.0]]), R=jnp.array([[0.4]]), Qf=jnp.zeros((1, 1)), x_target=jnp.zeros(1)
+    )
+    start = InitialLaw(np.array([0.5]), np.zeros((1, 1)))
+
+    bias = _normalisation_bias(plant, logger, plan, _StageCost.steps(cost, 1, 1, 2), start, 50)
+
+    assert bias == pytest.approx(0.00612466700915665051027033354429, rel=1e-12, abs=0.0)
+
+
+def test_the_normalisation_bias_is_the_simulated_bias_of_independent_episodes() -> None:
+    """20 000 logs of 100 independent episodes of five steps, each read by per-decision weights
+    normalised to mean one at each step, by hand. Their mean error is the first-order bias within
+    three of its standard errors, and the bias is more than three of them from nothing: the
+    estimate reads the plan's cost low, by 0.097 +- 0.020 against the first order's 0.111."""
+    a, tau, logs, episodes, horizon = 0.9, 0.8, 20_000, 100, 5
+    plant = _scalar_plant(a, 1.0, 0.25)
+    logger = _scalar_policy(-0.1, 0.2, 1.0)
+    actions = (0.2 - 0.02 / (1.1 - a) + 0.3 * np.cos(0.7 * np.arange(horizon)))[:, None]
+    plan = AffineSchedule.open_loop(actions, 1, [[tau * tau]])
+    stages = _StageCost.steps(ONE_UNIT_COST, 1, 1, horizon)
+    start = InitialLaw(*_stationary_state(plant, logger))
+    mean, variance, truth = start.mean[0], start.covariance[0, 0], 0.0
+    for action in actions[:, 0]:
+        truth += 0.5 * (mean * mean + variance) + 0.05 * (action * action + tau * tau)
+        mean, variance = a * mean + action, a * a * variance + tau * tau + 0.25
+    x, u = _iid_episodes(plant, logger, logs * episodes, horizon, np.random.default_rng(97))
+    x, u = x.reshape(logs, episodes, horizon + 1, 1), u.reshape(logs, episodes, horizon, 1)
+
+    xs = x[..., :-1, :].reshape(-1, horizon, 1)
+    log_w = np.cumsum(
+        _log_density(plan, xs, u.reshape(-1, horizon, 1))
+        - _log_density(logger, xs, u.reshape(-1, horizon, 1)),
+        axis=1,
+    ).reshape(logs, episodes, horizon)
+    w = np.exp(log_w - log_w.max(axis=1, keepdims=True))
+    w /= w.mean(axis=1, keepdims=True)
+    cost = 0.5 * x[..., :-1, 0] ** 2 + 0.05 * u[..., 0] ** 2
+    errors = np.sum(np.mean(w * cost, axis=1), axis=1) - truth
+    error = float(errors.mean())
+    standard_error = float(errors.std(ddof=1)) / math.sqrt(logs)
+
+    bias = _normalisation_bias(plant, logger, plan, stages, start, episodes)
+
+    assert abs(error - bias) < 3.0 * standard_error
+    assert bias < -3.0 * standard_error
+
+
+def test_evaluate_plan_warns_where_the_bias_passes_a_twentieth_of_the_half_width(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bias is read at the smoothing the certificate chose, with the episodes' own starts and
+    count. Of 30 episodes it is above 0.05 of the half-width and is logged as a warning; of 400 it
+    is below it and is not. A stationary method carries none."""
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    stages = _StageCost.steps(COST, 2, 1, 5)
+    warned = []
+    for episodes in (30, 400):
+        x, u = _iid_episodes(MARKET, logger, episodes, 5, np.random.default_rng(0))
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="chc.evaluation"):
+            result = evaluate_plan(
+                {"x": x, "u": u},
+                RAMP,
+                "pdis",
+                plant=MARKET,
+                cost=COST,
+                logger=logger,
+                model_error=0.0,
+                min_effective=5.0,
+            )
+        tau = result.certificate.smoothing
+        smoothed = AffineSchedule(RAMP.gains, RAMP.offsets, np.array([[tau * tau]]))
+        starts = InitialLaw(x[:, 0].mean(axis=0), np.cov(x[:, 0], rowvar=False))
+        bias = _normalisation_bias(MARKET, logger, smoothed, stages, starts, episodes)
+        half = (result.interval[1] - result.interval[0]) / 2.0
+        records = [
+            (r.levelno, r.normalisation_bias, r.half_width)
+            for r in caplog.records
+            if getattr(r, "chc_event", "") == "pdis_bias"
+        ]
+        assert tau > 0.0
+        assert result.normalisation_bias == pytest.approx(bias, rel=1e-12, abs=0.0)
+        assert records == ([(logging.WARNING, result.normalisation_bias, half)] if records else [])
+        warned.append((abs(bias) > 0.05 * half, bool(records)))
+    x, u = _stationary_logs(MARKET, LOGGER, 4000, 1, seed=5)
+    stationary = evaluate_plan({"x": x[0], "u": u[0]}, PLAN, "mis", plant=MARKET, cost=COST)
+
+    assert warned == [(True, True), (False, False)]
+    assert stationary.normalisation_bias is None
+
+
+def test_each_reader_of_the_units_warns_of_the_bias_against_its_own_interval(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Resampling ten units of three episodes, the bias passes 0.05 of the bootstrap's half-width
+    on one panel and not on another, and the warning follows it, once, with that half-width."""
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    warned = []
+    for seed in (1, 0):
+        x, u, units = _unit_windows(MARKET, logger, 10, 3, 5, np.random.default_rng(seed))
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="chc.evaluation"):
+            result = _evaluate_by_unit(
+                x,
+                u,
+                units,
+                RAMP,
+                plant=lambda xs, us: MARKET,
+                cost=COST,
+                logger=logger,
+                smoothing=None,
+                model_error=0.0,
+                min_effective=5.0,
+                resamples=20,
+                seed=0,
+            )
+        bias = result.normalisation_bias
+        half = (result.interval[1] - result.interval[0]) / 2.0
+        records = [
+            (r.normalisation_bias, r.half_width)
+            for r in caplog.records
+            if getattr(r, "chc_event", "") == "pdis_bias"
+        ]
+        assert bias is not None
+        assert records == ([(bias, half)] if records else [])
+        warned.append((abs(bias) > 0.05 * half, bool(records)))
+
+    assert warned == [(True, True), (False, False)]
+
+
 # ------------------------------------------------------------------------- one unit's episodes
 
 # One unit whose noise persists: x' = a x + u + e_t, e AR(0.9) of spread 0.5, logged by
@@ -1492,3 +1649,42 @@ def test_an_infeasible_evaluation_carries_its_certificate() -> None:
         )
 
     assert caught.value.certificate.one_step_margin == pytest.approx(0.088, abs=1e-9)
+
+
+def test_one_unit_s_reading_warns_of_the_bias_against_its_own_interval(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One unit of 400 windows of ten steps, its state and its noise persistent: the bias passes
+    0.05 of the cosines' half-width on one log and not on another, and the warning follows it,
+    once, with that half-width."""
+    a, horizon, windows = 0.9, 10, 400
+    schedule = AffineSchedule.open_loop(_one_unit_actions(a, horizon), 1)
+    warned = []
+    for seed in (1, 3):
+        x, u = _one_unit_windows(a, horizon, windows, 1, np.random.default_rng(seed))
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="chc.evaluation"):
+            result = _evaluate_across_time(
+                x[0],
+                u[0],
+                _cosine_rows(np.arange(windows)),
+                schedule,
+                plant=_scalar_plant(a, 1.0, SPREAD**2),
+                cost=ONE_UNIT_COST,
+                logger=None,
+                smoothing=None,
+                model_error=0.0,
+                min_effective=10.0,
+            )
+        bias = result.normalisation_bias
+        half = (result.interval[1] - result.interval[0]) / 2.0
+        records = [
+            (r.normalisation_bias, r.half_width)
+            for r in caplog.records
+            if getattr(r, "chc_event", "") == "pdis_bias"
+        ]
+        assert bias is not None
+        assert records == ([(bias, half)] if records else [])
+        warned.append((abs(bias) > 0.05 * half, bool(records)))
+
+    assert warned == [(True, True), (False, False)]
