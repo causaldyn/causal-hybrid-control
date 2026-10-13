@@ -52,6 +52,57 @@ def test_the_shifted_bound_lies_between_ky_fan_and_the_optimum(m: int, k_folds: 
             )
 
 
+def _bisection_sdp(q: np.ndarray, gap: float = 1e-10) -> tuple[float, float]:
+    """``(low, high)`` around ``min tr(QX)`` over ``diag X = 1``, ``X1 = 0``, ``X`` psd.
+
+    A log-barrier Newton method on the dual, ``max sum(y)`` with ``V'(Q - diag(y))V`` psd, ``V``
+    an orthonormal basis of the mean-free subspace from a QR factorisation. Every iterate is dual
+    feasible, so ``sum(y)`` is a lower bound; on the central path the gap is ``mu (m - 1)``, and
+    ``high`` allows twice that. The path stops once ``mu (m - 1)`` is ``gap`` of ``max|Q|``.
+    """
+    m = q.shape[0]
+    basis = np.linalg.qr(np.column_stack([np.ones(m), np.eye(m)[:, : m - 1]]))[0][:, 1:]
+    compressed = basis.T @ q @ basis
+    y = np.full(m, np.linalg.eigvalsh(compressed)[0] - 1.0)
+    scale = float(np.abs(q).max())
+    mu = scale
+
+    def slack(dual: np.ndarray) -> np.ndarray:
+        return compressed - basis.T @ (dual[:, None] * basis)
+
+    while True:
+        for _ in range(100):
+            inverse = basis @ np.linalg.inv(slack(y)) @ basis.T
+            grad = 1.0 - mu * np.diag(inverse)
+            step = np.linalg.solve(mu * inverse * inverse, grad)
+            decrement = float(grad @ step) / mu
+            t = 1.0 if decrement <= 0.25 else 1.0 / (1.0 + np.sqrt(decrement))
+            while np.linalg.eigvalsh(slack(y + t * step))[0] <= 0.0:
+                t *= 0.5
+            y = y + t * step
+            if decrement < 1e-20:
+                break
+        if mu * (m - 1) <= gap * scale:
+            return float(y.sum()), float(y.sum()) + 2.0 * mu * (m - 1)
+        mu *= 0.2
+
+
+@pytest.mark.parametrize("m", [12, 16])
+def test_two_folds_certify_with_the_bisection_sdp(m: int) -> None:
+    # At K = 2 the maximised shifted bound is (1'Q1 + SDP)/2 (Poljak and Rendl 1995; STEP 5 of
+    # the .mac file). The library's smoothed search stops short of it by at most 1.55e-6 of the
+    # bound on these instances, measured on a 16-unit grid at x = 0.9.
+    for x in DECAYS:
+        for name, adjacency in _named_topologies(m).items():
+            shells = graph_shells(adjacency, 2)
+            q = _fold_weight_matrix(shells, GAMMAS, x)
+            low, high = (float(q.sum()) + side for side in _bisection_sdp(q))
+            low, high = low / 2.0, high / 2.0
+            design = optimal_fold_partition(shells, GAMMAS, x, lag=1)
+            assert design.route == "enumeration"
+            assert low - 2e-6 * abs(low) <= design.lower_bound <= high + 1e-9, (name, x)
+
+
 def test_on_a_circulant_the_shift_buys_nothing() -> None:
     # The bound is concave in the shift and blind to a uniform one, so averaging any shift over
     # a transitive automorphism group gives a uniform shift at least as good: the plain bound.

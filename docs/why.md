@@ -15,9 +15,12 @@ Each of the three obvious approaches solves a different problem and leaves the s
   treats these as *backends* (`chc.estimators`) rather than rivals.
 - **Offline RL / MPC on a learned model.** Fits the dynamics by residual MSE, which is not
   identification, and calibrates its pessimism to sampling noise rather than to unmeasured
-  confounding — so the uncertainty penalty shrinks with `N` while the bias does not. Delphic offline
-  RL (Pace et al., 2024) is the exception: it penalises the uncertainty that hidden confounding
-  leaves.
+  confounding — so the uncertainty penalty shrinks with `N` while the bias does not. A few methods
+  are the exception and penalise the uncertainty that hidden confounding leaves: Delphic offline RL
+  (Pace et al., 2024) measures it by the disagreement among world models compatible with the data,
+  robust fitted-Q iteration (Bruns-Smith and Zhou, arXiv 2302.00662) takes the worst case over a
+  sensitivity model, and confounding-robust DQN (Li, Zhang and Bareinboim, 2025) the worst case
+  over the environments compatible with the observations.
 
 What is here is the seam: identify the *interventional* control channel from confounded logs
 ([`chc.dynamics_id`](api/dynamics_id.md)), plan against it under constraints, and price what
@@ -35,7 +38,7 @@ in [the scopes](concepts/certificates.md#scopes).
 | | what it is for | identifies an interventional effect | produces a schedule | ships a certificate | licence |
 |---|---|---|---|---|---|
 | **`chc`** | decisions from a confounded log, over a plant | yes, the **control channel** of a control-affine residual (cross-fit Robinson DML), and it says `not_identified` rather than guessing | yes, projected gradient over a box and linear constraints (budgets, rate limits), with a confounding-robust barrier held in the solve | yes — identification status, trajectory tube, barrier `Γ*`, each with [its scope](concepts/certificates.md#scopes) | Apache-2.0 |
-| **DoWhy / DoWhy-GCM** 0.14 | identify and refute an effect on a DAG | yes — back-door, front-door, IV, and the Rotnitzky–Smucler **efficient** backdoor set, which minimises asymptotic variance among backdoor sets. CHC's `CausalGraph` answers the other question, Perković et al.'s canonical set, which is valid **iff any observed set is** | no | refutation tests, not a control guarantee | MIT |
+| **DoWhy / DoWhy-GCM** 0.14 | identify and refute an effect on a DAG | yes — back-door, front-door, IV, the Rotnitzky–Smucler **efficient** backdoor set, which minimises asymptotic variance among backdoor sets, and since 0.13 Perković et al.'s generalised adjustment criterion, which returns a minimal valid set whenever one exists. CHC's `CausalGraph` returns that criterion's canonical set instead, which is valid **iff any observed set is** | no | refutation tests, not a control guarantee | MIT |
 | **EconML** 0.17.0 | heterogeneous treatment effects, DML/DR/orthogonal forests | yes, static **and** sequential: its DML estimators return a matrix θ(X), and `DynamicDML` estimates each period's effect of an adaptively assigned treatment on the last period's outcome (sequential ignorability, a linear-Markov state, a balanced panel). CHC applies the same orthogonal moment one step at a time to a control-affine plant | no — it chooses no sequence | confidence intervals | MIT |
 | **DCBO**, last commit 2023-04 | sequential interventions in a time-varying SCM | yes, by GP emulation over an SCM | yes, a sequence of interventions | regret empirics, no feasibility guarantee | **ambiguous**: MIT in `LICENSE`, GPL-3.0-or-later in the README and `setup.py`; research code, not on PyPI |
 | **Google Meridian** 2.1.0 | Bayesian marketing-mix modelling | partially — priors and geo experiments calibrate it; the estimand is the media response | no — it splits a budget across channels and holds each channel's flighting over geos and time fixed; a flighting can be supplied, not optimised | posterior intervals, and a model review of five checks | Apache-2.0 |
@@ -46,10 +49,13 @@ in [the scopes](concepts/certificates.md#scopes).
 | **d3rlpy** 2.8.1 | offline deep RL from logged trajectories | no — conservatism bounds value error, not confounding | yes, a policy | pessimistic value bounds | MIT |
 | **causaLens `decisionOS`** | enterprise causal decision platform | yes, per its own account | yes | not publicly auditable | commercial, closed |
 
-Two rows that are **not** here, and the reason is the same. The 2024–25 literature on causal
+Two rows that are **not** here, and the reason is the same. The 2024–26 literature on causal
 Bayesian optimisation under safety constraints, and on causal optimal control ("COAST"-style), has no
-shipped, installable implementation this could be run against. That is the gap CHC is aimed at,
-and stating it as an absence is more honest than a row of dashes against a paper.
+shipped, installable implementation this could be run against. The nearest code is cCBO, for
+constrained causal Bayesian optimisation (Aglietti et al., ICML 2023): research code under
+Apache-2.0, not on PyPI, last changed 2024-06. COAST (arXiv 2605.29008) promises its code on
+publication. That is the gap CHC is aimed at, and stating it as an absence is more honest than a
+row of dashes against a paper.
 
 Where a row says *no* it is not a criticism: do-mpc solves control problems CHC cannot state, and
 EconML answers effect questions CHC does not ask. The EconML row's *yes* was run, not read:

@@ -7,6 +7,37 @@ still change).
 
 ## [Unreleased]
 
+### Notes
+
+- **Public statements that the 2024–26 literature refuted or dated are corrected.** Each changed
+  sentence was checked against its source.
+  - `docs/why.md` called Delphic offline RL the one method that penalises the uncertainty hidden
+    confounding leaves. Robust fitted-Q iteration (Bruns-Smith and Zhou) and confounding-robust
+    DQN (Li, Zhang and Bareinboim 2025) do too. Its DoWhy row now says that DoWhy has found a
+    minimal valid set by Perković et al.'s generalised adjustment criterion since 0.13. Its note
+    on causal Bayesian optimisation names the nearest code, cCBO, which is not on PyPI.
+  - `negative_control_gamma` and the Γ page read a known-null outcome's `Γ` as a lower bound on
+    the confounding present. That holds for the outcome of interest only when the control is
+    U-comparable to it. A control confounded by more overstates its `Γ`, and one confounded by
+    less understates it.
+  - `confounding_robust_inflation` and the Γ page now say that for a continuous lever the CVaR
+    form is the sharp bound at one dose level (Jesson et al. 2022; Frauen et al. 2023), not on a
+    slope.
+  - `chc.koopman` called its LQR exact: it is exact for the linear surrogate, not for the plant.
+  - `chc.evaluation` called SCOPE-RL maintained, but it has had no release since 2023-07.
+  - `chc.gate` now cites the journal version of Waudby-Smith et al.
+  - ADRs 0011, 0012, 0014 and 0027 cite the prior art they lacked: the model-task Hessian and
+    application-oriented input design; the 2026 switchback designs; Bright, Delarue and Lobel's
+    Theorem 8; and Abadie and Zhao on optimised designs.
+  - ADR 0050's bound before planning holds at any floors and caps (Udell and Boyd, Theorem 1).
+- **At two folds the shifted Ky Fan bound is the bisection SDP, so a semidefinite solver would buy
+  nothing there.** The maximised bound equals `(1'Q1 + SDP) / 2`, with `SDP` the basic relaxation
+  `min tr(QX)` over `diag X = 1`, `X1 = 0`, `X` psd (Poljak and Rendl 1995). The algebra is STEP 5 of
+  `validation/fold_shifted_bound.mac`. A test holds `optimal_fold_partition`'s `lower_bound` against
+  an independent barrier-Newton dual of that SDP on 54 enumerable instances of 12 and 16 units. It
+  falls short by at most 1.55e-6 of the bound, on a 16-unit grid at `x = 0.9`, and never exceeds
+  the SDP. What a design leaves past it at two folds is the relaxation's own gap. No number moves.
+
 ## [0.17.0] — 2026-10-13
 
 ### Added

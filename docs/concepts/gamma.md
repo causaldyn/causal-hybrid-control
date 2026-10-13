@@ -16,6 +16,14 @@ worst-case effect is then a CVaR mixture, and the gap over the point estimate in
 pessimism radius by `(Γ-1)/(Γ+1)·(CVaR gap)`. At `Γ = 1` the radius is zero, and the machinery
 reduces to the ordinary, fully identified case.
 
+Dorn and Guo's model is for a binary treatment. For a continuous lever the continuous MSM holds
+the dose's density given the covariates and the unobserved within a factor `Γ` of its density
+given the covariates alone (Jesson et al. 2022), and the same CVaR mixture is the sharp bound on
+the mean outcome at **one dose level** (Frauen, Melnychuk and Feuerriegel 2023, Thm 1), not on a
+slope. A contrast of two levels takes the upper bound at one less the lower bound at the other
+(their Lemma 3). A radius spent on the control channel as `radius·‖u‖` is a structural sensitivity
+model of its own, not the MSM's bound.
+
 `Γ` is the analyst's **unfalsifiable** input, and a single scalar aggregates over covariates. These
 methods robustify pessimism; they do **not** test for confounding.
 
@@ -61,8 +69,11 @@ Unfalsifiable is not the same as uncalibrated. Three functions price `Γ` agains
 - **`negative_control_gamma`** inverts a known-null outcome for the smallest `Γ` that reconciles
   it. On an outcome whose true effect is zero, any nonzero estimate is confounding, so that `Γ` is a
   **lower bound on the confounding actually present**: assuming less is refuted by the data. It
-  returns `inf` when no `Γ` reconciles the null — the negative control has then refuted the model
-  class instead of calibrating it.
+  bounds the outcome of interest only when the control is U-comparable, confounded by the same
+  unobserved causes (Lipsitch, Tchetgen Tchetgen and Cohen 2010): a control confounded by more
+  overstates the outcome's `Γ`, and one confounded by less understates it (Baitairian et al.,
+  arXiv 2510.16560). It returns `inf` when no `Γ` reconciles the null — the negative control has
+  then refuted the model class instead of calibrating it.
 - **`check_observational`** (*experimental*, `chc.lift`) reads a media-mix channel fitted to
   logged spend against the geo tests of it, and its `least_gamma(cvar_gap)` is the least `Γ` whose
   identified set, `1 ± (Γ-1)/(Γ+1)·cvar_gap` in units of the lift the channel predicts, reaches

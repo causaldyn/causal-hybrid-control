@@ -34,9 +34,12 @@ curve's largest excess under the envelope.
   leaves it. `validation/envelope_nonconvexity.mac` derives Hill's in reduced form and in closed
   form at slopes 2, 3 and 5, and the anchors for every S-shaped family. The `.gp` file checks them
   to 80 digits.
-- **The bound before planning is documented where it holds:** kernels of length one, floors at
-  zero, caps past the tangencies. There, `bound − worth ≤ max periods · coefficient · nonconvexity`,
-  and a property test holds it over random Hill and Weibull channels with ties.
+- **The bound before planning holds with kernels of length one, at any floors and caps:**
+  `bound − worth ≤ max periods · coefficient · nonconvexity`. Udell and Boyd's Theorem 1 (arXiv
+  1410.4158) folds each channel's floor and cap into its domain, and a curve's envelope on a part
+  of its domain stands above it by no more than its nonconvexity on the whole. A property test
+  holds the bound over random Hill and Weibull channels with ties, at floors at zero and caps past
+  the tangencies.
 
 ## Consequences
 
@@ -45,7 +48,8 @@ curve's largest excess under the envelope.
   last bracket's width, a few ulps of the price.
 - `allocate_geos` and `minimax_allocate` return a linear program's vertex already and were not
   changed: on the same ties they plan 1.26/0.34. Four equal cells in `allocate_geos` leave a gap of
-  0.1544 against the bound 0.1547, so the bound is tight.
+  0.1544 against the bound 0.1547, so the bound is tight, as Udell and Boyd's Example 1 shows it is
+  in general. The gap that matters is therefore the one left after the search, not this bound.
 - `cvar_allocate` keeps its reference split wherever no split beats it on the envelopes, which is
   its promise. A reference inside the chords therefore stays there: two equal Hill(3) channels
   referenced at 0.8/0.8 keep 0.8/0.8, though the vertex returns more on the curves. That gap is the

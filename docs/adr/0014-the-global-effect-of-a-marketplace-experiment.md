@@ -22,7 +22,10 @@ independent verifier checked it with a second solver, 60-digit Newton and FriCAS
   `-f''(p) = eps g' C^+ g` can be read off the experiment's own plan. The coefficient of `delta^k`
   is a polynomial in `p` of degree `k - 1` with mean zero on `[0, 1]`. So `p = 1/2` removes the
   second order, and the Gauss–Legendre pair `p = 1/2 -+ 1/(2 sqrt 3)` removes the second, third
-  and fourth. Not found in the literature.
+  and fourth. The antecedent is Bright, Delarue and Lobel's Theorem 8 (arXiv 2205.02274 v4): a
+  treated share drawn uniformly on `[0, 1]` makes their shadow-price estimator unbiased, and the
+  pair is the two-point Gauss–Legendre rule for that uniform average. The pair itself was not found
+  in the literature.
 - **SH4.** The naive difference misses at first order, by the displacement it prices:
   `(1/eps) sum_i a_i Cov_pi_i(beta, delta_i)`.
 - **SH5.** In the LP limit the bias saturates at first order instead of growing, and the prices'
@@ -30,6 +33,10 @@ independent verifier checked it with a second solver, 60-digit Newton and FriCAS
 - **The conventions matter.** Each copy's potential is converted with its own mass, and the
   entropy is taken relative to the split masses. Otherwise the arms differ by
   `eps log(p / (1 - p))` at zero effect.
+- **A price treatment needs one more premise.** When the treatment is a price, the standard
+  estimator's bias changes sign with whether the matching tells the arms apart by the revenue they
+  bring, and the shadow-price estimator reduces it, most where the matching ignores the price
+  difference (Delarue and Karakolios, arXiv 2502.18839).
 
 ## Decision
 
