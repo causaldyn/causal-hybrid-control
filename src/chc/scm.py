@@ -19,10 +19,16 @@ carries both and is the tests' oracle, but its placebo leaves the treated unit o
 placebo's donor pool, which gives up the test's exact level, and its weights come from a
 Frank-Wolfe solver that needed 200 000 steps to converge; over this module's exact weights each test
 is a few lines.
+
+Neither test holds when a design chose the treated unit, as a design that picks its test market
+does. :func:`blank_period_inference` gives such a test the reading Abadie and Zhao's design
+justifies: the weights fit on the earlier periods before treatment, the latest ones left blank,
+and the gaps after treatment ranked against every arrangement of the blank and post periods.
 """
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -293,3 +299,130 @@ def _hull(accepts: Callable[[float], bool], centre: float, scale: float) -> tupl
             middle = 0.5 * (inside + outside)
         ends.append(inside)
     return ends[0], ends[1]
+
+
+# Above this many arrangements, enumerating them costs more than a test of a design should.
+_MAX_ARRANGEMENTS = 1_000_000
+
+
+@dataclass(frozen=True)
+class BlankPeriodInference:
+    """A designed test's synthetic control fitted on the earlier periods before treatment, with a
+    permutation test and split-conformal intervals read from the periods it left blank.
+    *Experimental.*
+
+    ``estimate`` is the synthetic control fitted on the fitting periods alone: its ``pre_rmspe`` is
+    their error, and its ``att`` and ``overall`` are the gaps after treatment. ``blank_gaps`` are
+    the gaps, under the same weights, in the blank periods, which the weights never saw.
+
+    ``p_value`` is Abadie and Zhao's (arXiv 2108.02196 v5, eq. 19) for the null that the treatment
+    moved nothing: the share of the ``arrangements`` ways of choosing ``T_post`` of the blank and
+    post periods whose mean absolute gap is at least the post periods'. It moves in steps of
+    ``1 / arrangements``, ``C(T_blank + T_post, T_post)``, and is never below one step.
+
+    ``intervals[k]`` holds the effect in post period ``k`` with probability at least ``1 - alpha``:
+    the gap there, plus or minus the ``ceil((1 - alpha) (T_blank + 1))``-th smallest absolute
+    blank gap, which is infinite when that rank exceeds ``T_blank``, as it does for every ``alpha
+    < 1 / (T_blank + 1)``. That is split conformal prediction's finite-sample rank, one above Abadie
+    and Zhao's eq. 20, which reaches ``1 - alpha`` only as ``T_blank`` grows.
+
+    Measured on factor panels of 19 donors, 15 fitting, 5 blank and 5 post periods, the treated
+    unit the one its donors fit best on the fitting periods, 4000 a case
+    (``scripts/bench_scm_inference.py blank``). With white-noise factors and errors, the test
+    rejected a true null 4.4% of the time at 5%, where :func:`synthetic_control_inference`'s
+    placebo rejected 23.5% on 400 such panels. With AR(1) factors and errors of coefficient 0.5 it
+    rejected 8.7%, against that placebo's 27.8%: errors that persist break the exchangeability, and
+    the rate grew to 21.4% at 0.8. Factors that persist did not, 4.8% with white-noise errors. The
+    intervals at ``alpha = 0.2`` covered 83.6% and 79.6%; at 0.05 and 0.10 they were unbounded.
+    """
+
+    estimate: SyntheticControlResult
+    blank_gaps: Vector
+    p_value: float
+    intervals: NDArray[np.float64]  # (T_post, 2): each post period's lower and upper end
+    alpha: float
+    arrangements: int
+
+
+def blank_period_inference(
+    outcomes: Outcomes, treated_unit: int, n_pre: int, n_blank: int, *, alpha: float = 0.05
+) -> BlankPeriodInference:
+    """A designed geo test read as Abadie and Zhao read it: fit on the earlier periods before
+    treatment, hold out the last ``n_blank`` of them, permute over the blank and post periods.
+
+    Experimental: it may change or be withdrawn in any release.
+
+    ``outcomes``, ``treated_unit`` and ``n_pre`` are :func:`synthetic_control`'s. The weights fit
+    on periods ``0 .. n_pre - n_blank - 1``; periods ``n_pre - n_blank .. n_pre - 1`` are blank.
+    The treated unit may be any unit a design chose by its fit on the fitting periods, or on
+    anything else outside the blank and post periods.
+
+    Abadie and Zhao's Theorem 2 brackets the test's size, ``alpha - 1 / arrangements <= P(p <=
+    alpha) <= alpha``, when the factors over the blank and post periods are exchangeable and
+    independent of the noise, and each unit's noise is i.i.d. over time; then the gaps over those
+    periods are exchangeable, whatever the fit. The upper end needs only that exchangeability; the
+    lower one needs no ties. So:
+
+    - Noise that persists over time breaks it: the mean gap over adjacent post periods then varies
+      more than over scattered ones, and the test rejects too often, 8.7% at 5% with AR(1) errors
+      of coefficient 0.5. Factors that persist do not.
+    - The design must not look at the blank periods. A unit chosen for its fit there has blank gaps
+      selected small, and the test then rejects too often.
+    - The blank periods are the latest before treatment, so that a season or a trend moves them as
+      little apart from the post periods as the panel allows. Nothing in the data checks
+      exchangeability; a season that turns at treatment breaks it.
+    - The blank periods leave the fit: the weights see ``n_pre - n_blank`` periods, not
+      ``n_pre``.
+    - The p-value moves in steps of ``1 / C(n_blank + T_post, T_post)``: with 5 blank and 5 post
+      periods, of 1/252; with 1 blank period, of 1/6, so no test at 5% rejects.
+
+    ``intervals`` hold under the same exchangeability, the effect being additive and the noise
+    after treatment distributed as before it, one period at a time, not jointly.
+
+    Raises:
+        ValueError: on :func:`synthetic_control`'s refusals; when ``n_blank`` is not in ``[1,
+            n_pre - 1]``; when ``alpha`` is outside ``(0, 1)``; or when there are more than a
+            million arrangements to enumerate.
+    """
+    if not 0.0 < alpha < 1.0:
+        msg = f"alpha must lie in (0, 1), got {alpha}"
+        raise ValueError(msg)
+    donor_pre, donor_post, treated_pre, treated_post = _split(outcomes, treated_unit, n_pre)
+    if not 1 <= n_blank < n_pre:
+        msg = f"n_blank must be in [1, {n_pre - 1}], got {n_blank}"
+        raise ValueError(msg)
+    n_fit = n_pre - n_blank
+    weights = _scm_weights(donor_pre[:, :n_fit], treated_pre[:n_fit], 5000)
+    fit_rmspe = float(
+        np.sqrt(np.mean((treated_pre[:n_fit] - donor_pre[:, :n_fit].T @ weights) ** 2))
+    )
+    blank_gaps = treated_pre[n_fit:] - donor_pre[:, n_fit:].T @ weights
+    att = treated_post - donor_post.T @ weights
+    estimate = SyntheticControlResult(att, float(att.mean()), weights, fit_rmspe)
+
+    n_post = att.size
+    gaps = np.abs(np.concatenate([blank_gaps, att]))
+    arrangements = math.comb(gaps.size, n_post)
+    if arrangements > _MAX_ARRANGEMENTS:
+        msg = (
+            f"{arrangements} arrangements of {n_blank} blank and {n_post} post periods exceed "
+            f"{_MAX_ARRANGEMENTS}; leave fewer periods blank"
+        )
+        raise ValueError(msg)
+    chosen = np.fromiter(
+        itertools.chain.from_iterable(itertools.combinations(range(gaps.size), n_post)),
+        dtype=np.intp,
+        count=arrangements * n_post,
+    ).reshape(arrangements, n_post)
+    sums = gaps[chosen].sum(axis=1)
+    # the last combination in lexicographic order is the post periods; two sums of n_post
+    # non-negative terms that are equal in exact arithmetic differ by under n_post * eps of the
+    # larger, so a tie counts as one, as the p-value's definition has it
+    tolerance = n_post * np.finfo(np.float64).eps * float(sums.max())
+    p_value = float(np.mean(sums >= sums[-1] - tolerance))
+
+    # rounded first, so that (1 - alpha) (n_blank + 1) one ulp above a whole number takes its rank
+    rank = math.ceil(round((1.0 - alpha) * (n_blank + 1), 9))
+    radius = float(np.sort(np.abs(blank_gaps))[rank - 1]) if rank <= n_blank else math.inf
+    intervals = np.column_stack([att - radius, att + radius])
+    return BlankPeriodInference(estimate, blank_gaps, p_value, intervals, alpha, arrangements)
