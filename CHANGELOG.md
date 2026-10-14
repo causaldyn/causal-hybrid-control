@@ -60,6 +60,18 @@ still change).
   `[-2, 2]`, it reads 11.00 where it read 10.88. The quickstart's and notebook 09's certificates
   do not move. Since 0.5.0.
 
+- **A prescription fitted with `integrator="euler"` rolls out by forward Euler's map.**
+  `prescribe(integrator="euler")` fits the field so that `x + dt f` is the panel's one-step map,
+  for a panel that is genuinely discrete-time, but `causal_plan` rolled every field out by RK4:
+  the plan's path, its tube, its regret bound and its certificate read a map the fit was never
+  made consistent with. On a two-state discrete-time log of 400 half-hours the plan's path stood
+  up to 0.077 off the fitted map's. The plan now steps the fitted field by the fit's integrator,
+  and its tube is carried by forward Euler's step matrices, `1 + dt A_k`. On 100 one-unit logs of
+  960 half-hours of a discrete-time bilinear plant, 2,000 runs each, the tube under `"euler"` held
+  the plant at the first step on 0.948 ± 0.002 of runs and trusted one log in 100 a step past its
+  plant; it now holds 0.967 ± 0.001 and trusts none past it. The default, `"rk4"`, reads as before.
+  Since 0.5.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added

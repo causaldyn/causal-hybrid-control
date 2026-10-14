@@ -30,6 +30,18 @@ class _SetAtStep(eqx.Module):
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array: ...
 
 
+class _ForwardEuler(eqx.Module):
+    """A field whose one-step map is forward Euler's, ``x + dt f(t, x, u)``: a model fitted as that
+    map, by :func:`chc.dynamics_id.fit_causal_residual` with ``integrator="euler"``, where a
+    discrete-time panel's one-step map is the model. :func:`chc.integrate.rk4_step` takes Euler's
+    step for it, so every rollout of it is the map it was fitted as. A call reads the field."""
+
+    field: Dynamics
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.field(t, x, u)
+
+
 class DampedOscillator(eqx.Module):
     """Known 2-state linear system: a driven damped harmonic oscillator.
 

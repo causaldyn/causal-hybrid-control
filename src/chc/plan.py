@@ -80,8 +80,10 @@ from chc.dynamics import (
     Dynamics,
     HybridDynamics,
     LinearDynamics,
+    _ForwardEuler,
     _SetAtStep,
 )
+from chc.dynamics_id import Integrator
 from chc.integrate import rk4_step, rollout
 from chc.residual import ControlAffineResidual, ZeroResidual
 from chc.response import relax
@@ -1332,20 +1334,30 @@ def _error_tube(
     persistence: float,
     dt: float,
     horizon: int,
+    integrator: Integrator = "rk4",
 ) -> NDArray[np.float64] | None:
     """The plan's error tube carried by ``carried`` -- a norm bound, one state matrix, or one a step
-    -- or None where neither the model error nor the noise gives it a radius."""
+    -- through ``integrator``'s step, the one the plan rolls out by (:func:`_integrator`), or None
+    where neither the model error nor the noise gives it a radius."""
     if not (model_error > 0.0 or covariance.any()):
         return None
     errors = [model_error] * horizon
     tube = (
-        _tube([float(carried)] * horizon, errors, dt, "rk4")
+        _tube([float(carried)] * horizon, errors, dt, integrator)
         if carried.ndim == 0
-        else _linear_tube(carried, errors, dt)
+        else _linear_tube(carried, errors, dt, integrator)
     )
     if covariance.any():
-        tube = tube + _noise_tube(carried, covariance, persistence, dt, horizon)
+        tube = tube + _noise_tube(carried, covariance, persistence, dt, horizon, integrator)
     return tube
+
+
+def _integrator(model: Dynamics) -> Integrator:
+    """The one-step map a plan on ``model`` rolls out by, :func:`chc.integrate.rk4_step`'s: forward
+    Euler's for a field fitted as that map (:class:`chc.dynamics._ForwardEuler`), whose ruled levers
+    :class:`_Ruled` sets around it, and RK4's otherwise."""
+    inner = model.dynamics if isinstance(model, _Ruled) else model
+    return "euler" if isinstance(inner, _ForwardEuler) else "rk4"
 
 
 def _carried_along(
@@ -1356,14 +1368,22 @@ def _carried_along(
     noise_persistence: float,
     dt: float,
     tolerance: float,
+    integrator: Integrator = "rk4",
 ) -> CausalPlan:
     """``plan`` with its tube carried by the field's ``(horizon, n, n)`` state matrix at each of its
     steps rather than by the one ``lipschitz`` it was solved with: a field affine in the state whose
-    slope moves with the action, as :func:`chc.prescribe`'s fitted one does. The tube is read off
-    the finished actions and moves no action."""
+    slope moves with the action, as :func:`chc.prescribe`'s fitted one does, through
+    ``integrator``'s step, the one the plan rolled out by. The tube is read off the finished actions
+    and moves no action."""
     covariance = _noise_covariance(noise, state_matrices.shape[-1])
     tube = _error_tube(
-        state_matrices, model_error, covariance, noise_persistence, dt, len(state_matrices)
+        state_matrices,
+        model_error,
+        covariance,
+        noise_persistence,
+        dt,
+        len(state_matrices),
+        integrator,
     )
     if tube is None:
         return plan
@@ -1536,7 +1556,9 @@ def _plan(
             # the answer is where the relaxed descent stopped, and it stopped for its own reason
             status = first.solver_status
 
-    tube = _error_tube(rate, model_error, covariance, noise_persistence, dt, horizon)
+    tube = _error_tube(
+        rate, model_error, covariance, noise_persistence, dt, horizon, _integrator(model)
+    )
     problem = _PlanProblem(
         model=model,
         x0=x0,
@@ -2404,6 +2426,8 @@ def _quadratic(model: Dynamics) -> bool:
         return _quadratic(model.known) and _quadratic(model.residual)
     if isinstance(model, DrivenDynamics):
         return _quadratic(model.dynamics)
+    if isinstance(model, _ForwardEuler):  # Euler's step of an affine field is affine as well
+        return _quadratic(model.field)
     return False
 
 
