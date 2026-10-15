@@ -99,10 +99,22 @@ class SharedStateMarket:
 
 @dataclass(frozen=True)
 class ExposureResponse:
-    """A calibrated per-zone incentive response ``dY/du`` plus its influence-function SE."""
+    """A calibrated per-zone incentive response ``dY/du`` plus its influence-function SE.
+
+    ``se`` is each zone's HC0 sandwich, White's heteroskedasticity-robust standard error with no
+    small-sample correction: right as the log grows, short in a short one. On
+    ``SharedStateMarket(seed=0)`` read by :func:`calibrate_naive_causal`, ``marginal +- 1.96 se``
+    held the slope of three logs of 40,000 blocks in 91.3% of the twelve zones' reads over 300 logs
+    of 400 blocks (MC SE about 0.5%), 79% in the worst zone, whose slope spread 1.18 times its mean
+    ``se``; about the reads' own mean, 91.8%. HC3's leverage correction raised that to only 92.1%.
+    Over 150 logs of 4,000 blocks it held in 94.2%, and in 95.0% over another 150. A pessimism
+    ``radius`` in units of ``se`` (:func:`sutva_allocation`,
+    :func:`pessimistic_equilibrium_allocation`) discounts less than its normal quantile says in
+    logs that short.
+    """
 
     marginal: Array  # (n_zones,) estimated marginal completion response to an incentive
-    se: Array  # (n_zones,) heteroskedastic-robust SE of ``marginal``
+    se: Array  # (n_zones,) HC0 heteroskedasticity-robust SE of ``marginal``
 
 
 def _zone_slope(u: Array, y: Array, extra: Array) -> tuple[Array, Array]:

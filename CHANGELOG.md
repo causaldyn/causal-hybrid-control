@@ -47,6 +47,14 @@ still change).
   least worst regret is 0.015. `stopped` is now `cap` and `limit` the reading's whenever a reading's
   own search stopped at its cap, and the call logs it. Since 0.16.0.
 
+### Notes
+
+- **`ExposureResponse.se` says it is HC0 and short in short logs.** On `SharedStateMarket(seed=0)`
+  read by `calibrate_naive_causal`, `marginal +- 1.96 se` held the slope of three 40,000-block logs
+  in 91.3% of the twelve zones' reads over 300 logs of 400 blocks, 79% in the worst zone; HC3
+  raised that to 92.1%, and over 150 logs of 4,000 blocks it held in 94.2%, over another 150
+  in 95.0%. No number moves.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added
