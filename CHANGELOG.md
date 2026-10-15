@@ -69,6 +69,18 @@ still change).
   plant failed 5.4 % at 200 rows and 6.4 % at 1000, and with it entering through `z^2` too,
   adjusted for `z` alone, 6.0 % at 200 rows, as often as a right model. Since 0.1.0.
 
+- **`channel_region` reads its noise within the fit's clusters.** The region read each row's
+  noise alone, whatever clusters the fit was given, so a shock every unit shares in a period,
+  met by levers the units move together, added up across the period's rows beyond the region's
+  `R`: on 30 units over 20 periods the 0.95 region missed the channel on 6.9 % of 1000 logs. On a
+  fit given `clusters`, `R^2` is now the larger of each state's mean square and the most its
+  scores, summed within the clusters and squared at CR1's factor, two ways the largest of the
+  three reads, reach in `V`'s norm: the same logs clustered by unit and period, or by period, missed
+  0.0 %, and the region widened 2.5 times (median). Where the rows' read already held, on panels
+  clustered by unit or by groups of four units, the clustered region missed 0.0 % to 0.4 % of 300
+  to 500 logs and widened 1.0 to 1.9 times (median). The premises now name the shared shock.
+  Since 0.18.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added

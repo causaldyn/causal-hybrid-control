@@ -141,17 +141,20 @@ class ConfoundedControlAffineSystem:
 class _ChannelGram:
     """The channel's least squares as :func:`channel_region` reads it: ``matrix``, ``(q, q)``,
     is ``D'D + ridge P``, ``D`` the channel's design on the action residuals and ``P`` the ridge's
-    scale per coefficient, and ``ridge``, ``(q,)``, is ``ridge P``'s diagonal. Equal where both
-    arrays are, entry for entry."""
+    scale per coefficient, ``ridge``, ``(q,)``, is ``ridge P``'s diagonal, and ``design``,
+    ``(N, q)``, is ``D``, whose scores ``D_i e_i`` the region sums within the fit's ``clusters``.
+    None of the three reads the clusters. Equal where every array is, entry for entry."""
 
     matrix: np.ndarray
     ridge: np.ndarray
+    design: np.ndarray
 
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, _ChannelGram)
             and np.array_equal(self.matrix, other.matrix)
             and np.array_equal(self.ridge, other.ridge)
+            and np.array_equal(self.design, other.design)
         )
 
     __hash__ = None  # type: ignore[assignment]
@@ -1701,6 +1704,7 @@ def fit_causal_residual(
             _channel_gram=_ChannelGram(
                 matrix=np.asarray(regressor.T @ regressor + ridge * penalty, dtype=np.float64),
                 ridge=np.asarray(ridge * jnp.diag(penalty), dtype=np.float64),
+                design=np.asarray(regressor, dtype=np.float64),
             )
             if least_squares
             else None,
@@ -1965,7 +1969,8 @@ class ChannelRegion:
     channel: np.ndarray  # (n, m, k): the centre, the fit's channel
     gram: np.ndarray  # (q, q): V
     radius: np.ndarray  # (n,): each state's radius in V's norm, at the level
-    noise: np.ndarray  # (n,): each state's noise scale R, read off the moment's residual
+    noise: np.ndarray  # (n,): each state's noise scale R, read off the moment's residual, within
+    # the fit's clusters where it was given them
     prior: np.ndarray  # (n,): each state's bound on its true coefficients in the ridge's norm
     log_det_ratio: float  # log det V - log det(ridge P)
     channel_degree: int
@@ -2065,6 +2070,32 @@ class ChannelRegion:
         return max(0.0, 1.0 - delta)
 
 
+def _clustered_scores(
+    design: np.ndarray, residual: np.ndarray, clusters: np.ndarray
+) -> list[list[np.ndarray]]:
+    """Per state, the ``r`` reads of :func:`_clustered_squares`, each ``(q, q)``: the state's
+    scores ``D_i e_i``, ``D`` the channel's design ``(N, q)`` and ``e`` the moment's residual
+    ``(N, n)``, summed within ``clusters`` and squared at CR1's factor, as the channel's error
+    reads them, a state at a time: :func:`channel_region` reads each state's noise off its own."""
+    factor = _small_sample(design.shape[0], design.shape[1], _cluster_count(clusters))
+    return [
+        [
+            factor * square
+            for square in _clustered_squares(
+                (design * residual[:, state, None])[:, None, :], clusters
+            )
+        ]
+        for state in range(residual.shape[1])
+    ]
+
+
+def _whitened(square: np.ndarray, root: np.ndarray) -> np.ndarray:
+    """``L^-1 S L^-T`` for ``V = L L'``: ``S`` in ``V``'s norm, whose largest eigenvalue is the
+    most ``a' S a`` reaches over ``a' V a = 1``."""
+    half = np.linalg.solve(root, square)
+    return np.linalg.solve(root, half.T)
+
+
 def channel_region(
     fit: CausalDynamicsFit, level: float = 0.95, *, bound: float | None = None
 ) -> ChannelRegion:
@@ -2090,10 +2121,19 @@ def channel_region(
       channel, at any ``level``.
     - **No persistent noise.** ``eta`` must be a martingale difference; AR noise is not, unless
       its lags are in the fit (``persistence_check``).
+    - **No shared shock the fit was not told of.** Rows are read one at a time, so a shock every
+      unit shares in a period, met by levers the units move together, adds up across the
+      period's rows beyond each row's ``R``: on 30 units over 20 periods sharing each period's
+      shock, the 0.95 region missed the channel on 6.9 % of 1000 logs read row by row. A fit given
+      ``clusters`` says which rows share their noise, and ``R`` is then read within them, below.
     - **R is read off the log**: each state's root mean square of the moment's residual, over
       ``N - q`` rows, a plug-in for the theorem's known ``R``, which also counts the cross-fitted
       nuisances' error. The action residuals use nuisances fitted on other rows, so the
-      regressors are predictable to the nuisance's first order only.
+      regressors are predictable to the nuisance's first order only. Under the fit's
+      ``clusters``, ``R^2`` is the larger of that and the most the state's scores ``D_i e_i``,
+      summed within the clusters and squared at CR1's factor, two ways the largest of the three
+      reads the fit's error takes, reach in ``V``'s norm: the clusters' sums are then read as the
+      theorem's terms.
     - **The prior term** ``||c||_V0`` is ``bound`` where given, else the estimate's own, a
       plug-in; at the default ridge it is about 1e-3 of the coefficients' effect on the rate.
 
@@ -2144,6 +2184,25 @@ def channel_region(
     residual = np.asarray(fit.moment_residual, dtype=np.float64)
     rows, size = residual.shape[0], gram.shape[0]
     noise = np.sqrt(np.sum(residual**2, axis=0) / max(rows - size, 1))
+    if fit.clusters is not None:
+        # the fit's clusters share their noise, so a cluster's scores add up beyond the rows' own
+        # scale; in the direction they do so most, measured in V's norm, their spread is the R the
+        # sum carries. The rows' own R stays the floor: read from few clusters, the clustered
+        # spread is noisy, and each row's noise needs its own scale whatever the clusters say
+        root = np.linalg.cholesky(gram)
+        states = _clustered_scores(fit._channel_gram.design, residual, fit.clusters)
+        noise = np.sqrt(
+            np.maximum(
+                noise**2,
+                [
+                    max(
+                        float(np.max(np.linalg.eigvalsh(_whitened(square, root))))
+                        for square in reads
+                    )
+                    for reads in states
+                ],
+            )
+        )
     coefficients = channel.reshape(channel.shape[0], -1)
     prior = (
         np.sqrt(np.sum(ridge * coefficients**2, axis=1))

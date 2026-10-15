@@ -64,6 +64,21 @@ solved, `D` the channel's design on the action residuals.
   1e-3 of the coefficients' effect at the default ridge. The fit keeps `V` and the ridge's diagonal
   as the private fields `_channel_gram` and `_channel_ridge`, set on an identified Euler fit by
   adjustment, unweighted, whose actions move every direction; no other field moves.
+- **Under the fit's clusters (0.19.0).** Rows are the theorem's terms, so a shock every unit
+  shares in a period, met by levers the units move together, adds up across the period's rows
+  beyond each row's `R`: on 30 units over 20 periods sharing each period's shock the 0.95 region
+  missed the channel on 6.9 % of 1000 logs, and 0.18.0 read a fit given `clusters` the same way.
+  The fit now keeps the channel's design `D` beside `V`, and the region reads the fit's
+  `clusters`, as the persistence check does: it sums each state's scores `D_i e_i` within them
+  and squares them at CR1's factor (two ways, the three reads the fit's error takes), and `R_s^2`
+  is the larger of the rows' mean square and the largest generalised eigenvalue of that spread
+  against `V`: the clusters' sums are read as the theorem's terms, in the direction they add up
+  most. `V`, the ridge and `D` do not read the clusters; the region does. The rows' `R` stays the
+  floor, since a spread read from few clusters is noisy and each row's noise needs its own scale.
+  The same logs clustered by unit and period missed 0.0 %, the region 2.5 times as wide (median);
+  where the rows' read already held, the clustered region held too and widened 1.0 to 1.9 times.
+  This keeps the region's guarantee where the fit names its dependence; it does not make the
+  theorem's premise hold within a cluster, and a fit given `periods` is read row by row as before.
 - **What it gives.** `operator_radius(x)` bounds `||B_hat(x) - B(x)||_2` at the level, at every
   state at once. `rate_error(states, reach)` bounds `||(B_hat(x) - B(x)) a||` over the states and
   the box `|a_j| <= reach_j`, read at its `2^m` corners: the rate error the tube prices as one
