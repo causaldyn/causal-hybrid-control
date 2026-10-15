@@ -13,6 +13,7 @@
            form, R's Hessian against (h1 + h2) grad(u1) grad(u1)', and W at b1 = 900, K1 = 50,
            b2 = 600, K2 = 80, B = 150, the numbers the tests read
    STEP 2  two Michaelis-Menten channels, b u / (K + u): the same
+   STEP 3  a third exponential channel held at its floor: its margin and the rate errors use it up
 
    Run: timeout 300 maxima --very-quiet -b validation/allocation_decision_weight.mac */
 
@@ -62,3 +63,35 @@ print("STEP 2a  the split's slopes meet:",
 print("STEP 2b  R's Hessian less W:", radcan(Hm - Wm))$
 print("STEP 2c  W at the tests' point, rows b1 K1 b2 K2:")$
 print(float(subst(point, Wm)))$
+
+/* STEP 3  a third exponential channel held at its floor of 0, where it returns b3/K3 on a unit,
+           below the budget's price lambda = (b1/K1) exp(-u1/K1) the two free channels share; its
+           margin is lambda - b3/K3. An error uses up the margin at the gradient of b3/K3 less that
+           of lambda, and decision_weight reads lambda's as the free slopes' gradients g_c each
+           over h_c, summed, over sum(1/h_c) (the rates move to keep the budget spent):
+             3a  lambda's gradient in the planner's parameters less that formula
+             3b  the margin and its use at b1 = 900, K1 = 50, b2 = 600, K2 = 80, b3 = 100,
+                 K3 = 100, B = 150, rows b1 K1 b2 K2 b3 K3, the numbers the tests read */
+planner3 : [p1, q1, p2, q2, p3, q3]$
+truth3 : append(truth, [p3 = b3, q3 = k3])$
+point3 : append(point, [b3 = 100, k3 = 100])$
+lam : p1/q1*exp(-ue/q1)$
+slope(b, k, x) := b/k*exp(-x/k)$
+g1 : subst(x = ue, map(lambda([v], diff(slope(p1, q1, x), v)), planner3))$
+g2 : subst(x = B - ue, map(lambda([v], diff(slope(p2, q2, x), v)), planner3))$
+h1 : subst(x = ue, -diff(slope(p1, q1, x), x))$
+h2 : subst(x = B - ue, -diff(slope(p2, q2, x), x))$
+price_move : (g1/h1 + g2/h2) / (1/h1 + 1/h2)$
+/* lambda's exponent holds logs of the parameters to powers ratsimp leaves unsimplified, so 3a is
+   read at 40 digits at three points rather than simplified */
+fpprec : 40$
+gap3 : map(lambda([v], diff(lam, v)), planner3) - price_move$
+for at in [point3, [b1 = 3, k1 = 2, b2 = 5, k2 = 7, b3 = 1, k3 = 1, B = 4],
+           [b1 = 7/10, k1 = 3/10, b2 = 19/10, k2 = 4/5, b3 = 2, k3 = 9, B = 11/10]] do
+  print("STEP 3a  lambda's gradient less the free slopes' over their curvatures, largest:",
+        float(lmax(map(abs, bfloat(subst(at, subst(truth3, gap3)))))))$
+margin3 : lam - p3/q3$
+used3 : -map(lambda([v], diff(margin3, v)), planner3)$
+print("STEP 3b  the margin:", float(subst(point3, subst(truth3, margin3))))$
+print("STEP 3b  its use a unit error, rows b1 K1 b2 K2 b3 K3:")$
+print(float(subst(point3, subst(truth3, used3))))$
