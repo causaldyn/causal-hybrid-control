@@ -81,6 +81,14 @@ still change).
   to 500 logs and widened 1.0 to 1.9 times (median). The premises now name the shared shock.
   Since 0.18.0.
 
+### Notes
+
+- **`discover_lagged_parents`' `alpha` is each test's level, not the graph's.** The docstring now
+  says so: a candidate that is not a parent enters at about `alpha`, so on three states and one
+  control over three lags, 31 of whose 36 candidate edges are not parents, about 1 % of those 31
+  entered at `alpha=0.01`, and 22 % to 29 % of graphs of 300 to 1000 steps held at least one false
+  edge. Since 0.1.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added

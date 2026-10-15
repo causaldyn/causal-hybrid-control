@@ -112,6 +112,12 @@ def discover_lagged_parents(
 
     ``series`` is ``(T, d_state)``; ``controls`` an optional ``(T, d_control)``. ``max_parents``
     caps the forward selection per target (default: the candidate count). Returns a ``LaggedGraph``.
+
+    ``alpha`` is each test's level, not the graph's: a candidate that is not a parent enters at
+    about that rate, so a graph of many candidates holds a false edge far more often; on three
+    states and one control over three lags, 31 of whose 36 candidate edges are not parents, about
+    1 % of those 31 entered at ``alpha=0.01``, and 22 % to 29 % of graphs of 300 to 1000 steps
+    held at least one false edge.
     """
     series = np.asarray(_real_numbers(series, "series"), dtype=float)
     if series.ndim != 2:
