@@ -67,7 +67,7 @@ def run_flagship(
     ``estimator`` is the pluggable causal backend for the adjusted (causal) effect; the naive effect
     is always the fixed unadjusted fit. Default ``BackdoorOLS`` reproduces the linear adjustment.
     """
-    estimator = estimator or BackdoorOLS()
+    estimator = estimator or BackdoorOLS(robust=True)
     system = ConfoundedLinearSystem()
     data = system.sample(n_data, jax.random.key(seed_data))
     b_naive = float(estimate_control_effect(data, adjust_for=()))

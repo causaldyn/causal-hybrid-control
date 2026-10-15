@@ -50,7 +50,7 @@ def main() -> None:
     except (urllib.error.URLError, OSError) as exc:
         print(f"skipped (data unavailable offline): {exc}")
     else:
-        estimators = {"backdoor-OLS": BackdoorOLS(), "double-ML": DoubleML(degree=3)}
+        estimators = {"backdoor-OLS": BackdoorOLS(robust=True), "double-ML": DoubleML(degree=3)}
         print(lalonde_report(data, estimators))
 
 

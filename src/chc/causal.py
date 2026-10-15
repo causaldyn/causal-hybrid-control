@@ -15,6 +15,7 @@ recovers the effect under *nonlinear* confounding via cross-fitted residualisati
 from __future__ import annotations
 
 import math
+import warnings
 import zlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -202,8 +203,29 @@ def estimate_effect_iv(data: dict[str, Array], instrument: str = "w") -> Array:
     return _two_stage(data, instrument)[0]
 
 
-def _ols_with_se(features: Array, target: Array) -> tuple[Array, Array, int]:
-    """OLS with intercept; returns (coefficients, standard errors, residual degrees of freedom)."""
+_CLASSICAL_UNTIL_020 = (
+    "the OLS standard error is the classical one, which takes the noise's variance as one across "
+    "rows, until 0.20.0, which reads it heteroskedasticity-robust (HC3); pass robust=True to read "
+    "HC3 now, or robust=False to keep the classical error"
+)
+
+
+def _robust_or_classical(robust: bool | None) -> bool:
+    """``robust``, or, left at None, the classical error with a ``FutureWarning`` that 0.20.0
+    reads HC3."""
+    if robust is None:
+        warnings.warn(_CLASSICAL_UNTIL_020, FutureWarning, stacklevel=3)
+        return False
+    return robust
+
+
+def _ols_with_se(features: Array, target: Array, robust: bool = False) -> tuple[Array, Array, int]:
+    """OLS with intercept; returns (coefficients, standard errors, residual degrees of freedom).
+
+    The errors are the classical ``sigma^2 (X'X)^-1``, which take the noise's variance as one
+    across rows; ``robust`` reads them heteroskedasticity-robust instead, HC3's
+    ``(X'X)^-1 X' diag(e_i^2 / (1 - h_i)^2) X (X'X)^-1`` (MacKinnon and White 1985), ``h_i`` each
+    row's leverage."""
     design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
     n, p = design.shape
     scale = _units.power_of_two(_units.root_mean_square(design))
@@ -211,19 +233,43 @@ def _ols_with_se(features: Array, target: Array) -> tuple[Array, Array, int]:
     beta, *_ = jnp.linalg.lstsq(scaled, target, rcond=None)
     residual = target - scaled @ beta
     dof = n - p
-    sigma2 = (residual @ residual) / dof
-    cov = sigma2 * jnp.linalg.inv(scaled.T @ scaled)
+    inverse = jnp.linalg.inv(scaled.T @ scaled)
+    if robust:
+        leverage = jnp.einsum("ij,jk,ik->i", scaled, inverse, scaled)
+        weighted = scaled * (residual / (1.0 - leverage))[:, None]
+        cov = inverse @ (weighted.T @ weighted) @ inverse
+    else:
+        cov = (residual @ residual) / dof * inverse
     return scale * beta, scale * jnp.sqrt(jnp.diag(cov)), dof
 
 
 def sensitivity_analysis(
-    data: dict[str, Array], adjust_for: tuple[str, ...] = (), q: float = 1.0
+    data: dict[str, Array],
+    adjust_for: tuple[str, ...] = (),
+    q: float = 1.0,
+    *,
+    robust: bool | None = None,
 ) -> dict[str, float]:
     """Effect estimate plus its Cinelli-Hazlett robustness value.
 
     The robustness value is the ``R^2`` an unobserved confounder would need with *both* ``u`` and
     ``x_next`` to reduce the estimated effect by ``q*100%`` (toward zero). High RV = robust;
     a controller can ship this bound on how much hidden confounding its decision could tolerate.
+
+    ``std_error`` is, by default until 0.20.0, the classical OLS error, which takes the noise's
+    variance as one across rows, and ``e_value_ci`` reads its 95 % limit. Where the noise's
+    variance moves with the action the error is too small: on 4000 logs of 200 rows whose noise
+    grew with the action's own part, the 95 % interval missed the effect 22.5 % of the time.
+    ``robust=True`` reads the error HC3 instead (MacKinnon and White 1985), and ``e_value_ci``
+    reads that: 5.6 % there, and 4.8 %, 5.3 % and 4.8 % at 100, 200 and 1000 rows of noise whose
+    variance is one, where the classical error missed 5.0 %, 5.5 % and 4.9 %; where a few rows
+    carry high leverage HC3 is not exact, 8.1 % at 100 rows of a heavy-tailed action. Left at None,
+    ``robust`` reads the classical error and warns (``FutureWarning``) that 0.20.0 reads HC3,
+    which costs a right model nothing where the noise's variance is one and holds where it moves;
+    the warning is there because ``std_error`` and ``e_value_ci`` read at the default move.
+    The robustness value keeps the classical ``t`` either way: Cinelli and Hazlett's closed form
+    is the partial ``R^2`` of the action with the outcome, ``t^2 / (t^2 + dof)``, which holds for
+    the classical ``t`` alone.
 
     Raises:
         ValueError: if ``adjust_for`` names ``x``, ``u`` or ``x_next``, or a column twice. The
@@ -237,13 +283,16 @@ def sensitivity_analysis(
         raise ValueError(f"covariates named more than once: {twice}")
     data = _real_entries(data, ("x", "u", "x_next", *adjust_for))
     columns = [data["x"], data["u"], *[data[name] for name in adjust_for]]
-    beta, se, dof = _ols_with_se(jnp.stack(columns, axis=1), data["x_next"])
+    features = jnp.stack(columns, axis=1)
+    beta, se, dof = _ols_with_se(features, data["x_next"])
     t_stat = jnp.abs(beta[1] / se[1])
     f = q * t_stat / jnp.sqrt(float(dof))
     rv = 0.5 * (jnp.sqrt(f**4 + 4.0 * f**2) - f**2)
     # to standardised units, each spread taken relative to its column's largest entry
     spread_u = _units.spread_and_rounding(data["u"])[0]
     scale = float(spread_u / _units.spread(data["x_next"]))
+    if _robust_or_classical(robust):
+        se = _ols_with_se(features, data["x_next"], robust=True)[1]
     report = {
         "effect": float(beta[1]),
         "std_error": float(se[1]),

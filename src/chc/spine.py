@@ -109,7 +109,9 @@ def run_spine(
     data = system.sample(n_data, jax.random.key(seed))
     effects = {
         "naive": float(estimate_control_effect(data, adjust_for=())),
-        "causal": float((estimator or BackdoorOLS()).estimate(data, covariates=("x", "z")).effect),
+        "causal": float(
+            (estimator or BackdoorOLS(robust=True)).estimate(data, covariates=("x", "z")).effect
+        ),
     }
 
     truth = two_zone_market(system.b_true)

@@ -9,7 +9,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc.causal import ConfoundedLinearSystem, dml_point_and_se, estimate_effect_iv
+from chc.causal import (
+    ConfoundedLinearSystem,
+    dml_point_and_se,
+    estimate_effect_iv,
+    sensitivity_analysis,
+)
 from chc.estimators import (
     IV2SLS,
     BackdoorOLS,
@@ -295,3 +300,31 @@ def test_a_column_named_in_two_roles_is_refused(
     data = ConfoundedLinearSystem(gamma=1.0).sample(500, jax.random.key(0))
     with pytest.raises(ValueError, match=match):
         estimator.estimate(data, **names)
+
+
+def test_backdoor_ols_s_robust_interval_covers_where_the_noise_moves_with_the_treatment() -> None:
+    """The classical error takes the noise's variance as one across rows; where it grows with the
+    treatment's own part its 95 % interval misses far beyond 5 %. HC3 holds."""
+    rng = np.random.default_rng(7)
+    classical, robust = [], []
+    for _ in range(200):
+        x, z, a, e = rng.normal(size=(4, 200))
+        u = 0.5 * x + 0.8 * z + a
+        noise = e * (0.25 + np.abs(a))
+        data = {"x": x, "z": z, "u": u, "x_next": 0.9 * x + 0.8 * u + 0.7 * z + noise}
+        for estimator, misses in ((BackdoorOLS(), classical), (BackdoorOLS(robust=True), robust)):
+            result = estimator.estimate(data, covariates=("x", "z"))
+            assert result.std_error is not None
+            misses.append(abs(result.effect - 0.8) > 1.959964 * result.std_error)
+    assert np.mean(classical) >= 0.15
+    assert np.mean(robust) <= 0.09
+
+
+def test_backdoor_ols_and_the_sensitivity_warn_that_0_20_0_reads_hc3() -> None:
+    data = ConfoundedLinearSystem(noise_scale=1.0).sample(300, jax.random.key(2))
+    with pytest.warns(FutureWarning, match="until 0.20.0"):
+        default = BackdoorOLS().estimate(data, covariates=("x", "z"))
+    assert default == BackdoorOLS(robust=False).estimate(data, covariates=("x", "z"))
+    with pytest.warns(FutureWarning, match="until 0.20.0"):
+        report = sensitivity_analysis(data, adjust_for=("z",))
+    assert report == sensitivity_analysis(data, adjust_for=("z",), robust=False)

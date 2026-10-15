@@ -141,7 +141,7 @@ class PricingTask:
         adjustment); pass ``DoubleML()`` / ``EconMLDoubleML()`` to swap the causal backend. The
         predictive baseline stays the fixed naive (unadjusted) fit.
         """
-        estimator = estimator or BackdoorOLS()
+        estimator = estimator or BackdoorOLS(robust=True)
         system = ConfoundedLinearSystem(kappa=self.kappa)
         data = system.sample(self.n_data, jax.random.key(seed_data))
         u_support = (
@@ -199,7 +199,7 @@ class InventoryTask:
 
         ``estimator`` is the pluggable causal backend for the CHC order (default ``BackdoorOLS``).
         """
-        estimator = estimator or BackdoorOLS()
+        estimator = estimator or BackdoorOLS(robust=True)
         system = ConfoundedLinearSystem(a=0.0, b_true=1.0, c=2.0, kappa=self.kappa)
         data = system.sample(self.n_data, jax.random.key(seed_data))
         demand = (

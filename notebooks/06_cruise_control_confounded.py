@@ -104,8 +104,8 @@ estimates = pd.DataFrame(
         ],
         "robustness value": [
             np.nan,
-            sensitivity_analysis(logs, adjust_for=())["robustness_value"],
-            sensitivity_analysis(logs, adjust_for=("z",))["robustness_value"],
+            sensitivity_analysis(logs, adjust_for=(), robust=False)["robustness_value"],
+            sensitivity_analysis(logs, adjust_for=("z",), robust=False)["robustness_value"],
             np.nan,
         ],
     },

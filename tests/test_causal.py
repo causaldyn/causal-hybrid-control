@@ -745,3 +745,45 @@ def test_a_column_of_zeros_among_the_covariates_moves_no_estimate() -> None:
     assert float(estimate_control_effect(zeros, ("z", "zero"))) == pytest.approx(
         alone, rel=1e-12, abs=0.0
     )
+
+
+def _heteroskedastic(rng: np.random.Generator, rows: int) -> dict[str, jax.Array]:
+    """``x' = 0.9 x + 0.8 u + 0.7 z + e``, ``u = 0.5 x + 0.8 z + a``, the noise ``e`` scaled by
+    ``0.25 + |a|``: its variance moves with the action's own part."""
+    x, z, a, e = rng.normal(size=(4, rows))
+    u = 0.5 * x + 0.8 * z + a
+    e = e * (0.25 + np.abs(a)) / np.sqrt(0.0625 + 0.5 * np.sqrt(2 / np.pi) + 1)
+    return {
+        name: jnp.asarray(column)
+        for name, column in {
+            "x": x,
+            "z": z,
+            "u": u,
+            "x_next": 0.9 * x + 0.8 * u + 0.7 * z + e,
+        }.items()
+    }
+
+
+def test_the_robust_error_is_hc3_written_out_and_the_robustness_value_keeps_the_classical_t() -> (
+    None
+):
+    data = _heteroskedastic(np.random.default_rng(4), 150)
+    design = np.column_stack([data["x"], data["u"], data["z"], np.ones(150)])
+    outcome = np.asarray(data["x_next"])
+    inverse = np.linalg.inv(design.T @ design)
+    residual = outcome - design @ (inverse @ design.T @ outcome)
+    leverage = np.einsum("ij,jk,ik->i", design, inverse, design)
+    meat = (design * (residual / (1.0 - leverage))[:, None] ** 2).T @ design
+    hc3 = float(np.sqrt((inverse @ meat @ inverse)[1, 1]))
+    classical = float(np.sqrt(residual @ residual / (150 - 4) * inverse[1, 1]))
+    plain = sensitivity_analysis(data, ("z",))
+    robust = sensitivity_analysis(data, ("z",), robust=True)
+    assert plain["std_error"] == pytest.approx(classical, rel=1e-10, abs=0.0)
+    assert robust["std_error"] == pytest.approx(hc3, rel=1e-10, abs=0.0)
+    assert robust["std_error"] != pytest.approx(classical, rel=1e-2)
+    assert robust["effect"] == plain["effect"]
+    assert robust["robustness_value"] == plain["robustness_value"]
+    assert robust["e_value"] == plain["e_value"]
+    scale = float(_units.spread_and_rounding(data["u"])[0] / _units.spread(data["x_next"]))
+    expected = e_value(robust["effect"] * scale, hc3 * scale)["e_value_ci"]
+    assert robust["e_value_ci"] == pytest.approx(expected, rel=1e-9, abs=0.0)

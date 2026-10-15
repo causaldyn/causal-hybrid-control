@@ -7,6 +7,16 @@ still change).
 
 ## [Unreleased]
 
+### Deprecated
+
+- **`BackdoorOLS` and `sensitivity_analysis` read their standard error HC3 from 0.20.0.** Left at
+  its default, `robust=None`, each reads the classical error as before and emits a
+  `FutureWarning`; pass `robust=False` to keep it, or `robust=True` to read HC3 now. Where the
+  noise's variance is one HC3 missed as often as the classical error did (under Fixed), so the
+  change costs a right model nothing and holds where the variance moves. `benchmark`, `flagship`
+  and `spine`, which read only the effect, now pass `robust=True`, as does
+  `scripts/run_benchmark.py`.
+
 ### Fixed
 
 - **`persistence_check` reads its p-value within the fit's clusters, as the fit reads its error.**
@@ -31,6 +41,20 @@ still change).
   by the effect's derivative in its outcome, through the nuisances too: 2.8 %, 5.2 %, 4.2 % and
   6.0 % on the same logs; `DoubleML` at its defaults moves from 8.2 % to 6.8 % on the
   heteroskedastic linear logs. The effect is unchanged. Since 0.2.0.
+
+- **`BackdoorOLS` and `sensitivity_analysis` say their standard error takes the noise's variance
+  as one, and read it HC3 on `robust=True`.** The error is the classical `sigma^2 (X'X)^-1`, and
+  no doc said what it assumes: on 4000 logs of 200 rows whose noise grew with the action's own
+  part, its 95 % interval missed the effect 22.5 % of the time. The docstrings now state the
+  premise, and `robust=True` reads the error HC3 (MacKinnon and White 1985): 22.5 % -> 5.6 % on
+  those logs, and 5.8 % and 5.3 % at 100 and 1000 rows; where the noise's variance is one it
+  missed 4.8 %, 5.3 % and 4.8 % at 100, 200 and 1000 rows, against the classical 5.0 %, 5.5 % and
+  4.9 %. HC1 missed 7.2 %, 6.3 % and 5.4 % on the first logs, and 15.7 % at 100 rows where a
+  heavy-tailed action gave a few rows high leverage, against HC3's 8.1 %, which the docstrings
+  name as HC3's limit. `sensitivity_analysis`'s `e_value_ci` reads the robust error; its
+  robustness value keeps the classical `t`, since Cinelli and Hazlett's closed form, the partial
+  `R^2` `t^2 / (t^2 + dof)`, is defined on it. The effect does not move, nor, until 0.20.0, the
+  default error (under Deprecated). Since 0.1.0.
 
 ## [0.18.0] — 2026-10-13
 

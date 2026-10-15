@@ -33,6 +33,7 @@ from chc.causal import (
     _centred_ridge_predict,
     _ols_with_se,
     _polynomial_features,
+    _robust_or_classical,
     _stream_key,
     _two_stage,
     dml_point_and_se,
@@ -108,7 +109,23 @@ def _alias(data: Data, treatment: str, outcome: str, names: tuple[str, ...]) -> 
 
 @dataclass(frozen=True)
 class BackdoorOLS:
-    """Backdoor adjustment: OLS of ``outcome`` on ``[treatment, *covariates]`` and an intercept."""
+    """Backdoor adjustment: OLS of ``outcome`` on ``[treatment, *covariates]`` and an intercept.
+
+    ``std_error`` is, by default until 0.20.0, the classical OLS error, which takes the noise's
+    variance as one across rows. Where it moves with the treatment the error is too small: on 4000
+    logs of 200 rows whose noise grew with the treatment's own part, the 95 % interval missed the
+    effect 22.5 % of the time. ``robust=True`` reads it heteroskedasticity-robust, HC3 (MacKinnon
+    and White 1985): 5.6 % there, and 4.8 %, 5.3 % and 4.8 % at 100, 200 and 1000 rows of noise
+    whose variance is one, where the classical error missed 5.0 %, 5.5 % and 4.9 %. HC3 is not
+    exact where a few rows carry high leverage: at 100 rows of a heavy-tailed action whose noise
+    grew with it, it missed 8.1 %, and the classical error 47 %. Left at None, ``robust`` reads the
+    classical error and warns (``FutureWarning``) that 0.20.0 reads HC3: where the noise's variance
+    is one HC3 missed as often as the classical error, and where it moves HC3 held and the
+    classical error did not, so the change costs a right model nothing; the warning is there
+    because every ``std_error`` read at the default moves. The effect is the same either way.
+    """
+
+    robust: bool | None = None
 
     def estimate(
         self,
@@ -121,7 +138,9 @@ class BackdoorOLS:
         _check_roles(treatment, outcome, covariates)
         columns = _columns(data, (treatment, outcome, *covariates))
         design = [columns[treatment]] + [columns[c] for c in covariates]
-        beta, se, _ = _ols_with_se(jnp.stack(design, axis=1), columns[outcome])
+        beta, se, _ = _ols_with_se(
+            jnp.stack(design, axis=1), columns[outcome], _robust_or_classical(self.robust)
+        )
         effect, stderr = float(beta[0]), float(se[0])  # treatment is column 0
         return EffectEstimate(effect, stderr, diagnostics={"t_stat": effect / stderr})
 
