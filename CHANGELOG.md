@@ -7,6 +7,22 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`shadow_price_effect` can read its standard error for independent coins.** The standard error
+  is the spread of each arm's rows, conditional on the treated share the assignment dealt; under
+  independent coins the share moves too, and the effect, the slope `f'(p)`, moves with it by
+  `-f''(p)` a unit of share, a term the docs did not name. Post-stratified, on 80 rows of four
+  types against three zones at `p = 1/2` whose types left little noise inside them, the effect
+  spread 1.13 +- 0.02 and 1.08 +- 0.02 times its standard error, and its 95% interval held the
+  mean in 91.5% and 91.8% +- 0.8% of 1198 and 1149 assignments, where the docs stated 0.85--1.04.
+  `design="bernoulli"` adds `curvature**2 * Var(share)`, the share's variance under coins of one
+  probability read off the count of treated rows: there the spread is 1.04 and 1.01 times it, and
+  the interval holds in 93.2% and 94.0% +- 0.7%. On four more markets of that shape, the default read
+  0.93--1.02 and held in 93.2--95.1%, and `design="bernoulli"` 0.93--1.02 and 93.2--95.2%. The
+  default, `design="fixed_share"`, is unchanged, and the docs now say what it holds fixed and state
+  0.85--1.13 for it. Since 0.8.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added

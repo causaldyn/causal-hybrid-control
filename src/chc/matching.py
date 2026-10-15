@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -121,7 +122,9 @@ class ShadowPriceEffect:
 
     ``effect`` is the treated-minus-control difference of the rows' rents, and ``naive`` the same
     difference of the surplus each row's matches earn it, which is what an A/B test reads. Both are
-    totals over the randomised mass. ``standard_error`` is the effect's over the assignment.
+    totals over the randomised mass. ``standard_error`` is the effect's over the assignment,
+    conditional on the treated share it dealt unless :func:`shadow_price_effect` read it for
+    independent coins (``design="bernoulli"``).
 
     ``curvature`` estimates ``-f''(p)``, how concave welfare is in the treated share ``p``, from the
     same matching, less the noise the assignment puts into it; on a market of fixed types split into
@@ -209,6 +212,20 @@ def _contrast_covariance(
     return covariance
 
 
+def _share_variance(
+    supply: np.ndarray, blocks: list[tuple[float, float, np.ndarray, np.ndarray]]
+) -> float:
+    """The variance of the treated share of the randomised mass when each randomised row was
+    treated by its own coin of one probability: ``q (1 - q) sum(a_i^2) / (sum a_i)^2``, with
+    ``q (1 - q)`` estimated without bias from the count of treated rows."""
+    treated = sum(np.count_nonzero(on) for _, _, on, _ in blocks)
+    rows = treated + sum(np.count_nonzero(off) for _, _, _, off in blocks)
+    member = np.logical_or.reduce([(on > 0.0) | (off > 0.0) for _, _, on, off in blocks])
+    coin = treated / rows
+    spread = coin * (1.0 - coin) * rows / (rows - 1)
+    return spread * float(np.sum(supply[member] ** 2) / supply[member].sum() ** 2)
+
+
 def shadow_price_effect(
     cost: ArrayLike,
     supply: ArrayLike,
@@ -218,6 +235,7 @@ def shadow_price_effect(
     eps: float,
     randomised: ArrayLike | None = None,
     strata: ArrayLike | None = None,
+    design: Literal["fixed_share", "bernoulli"] = "fixed_share",
     iters: int = 1000,
     tol: float = 1e-6,
 ) -> ShadowPriceEffect:
@@ -237,6 +255,15 @@ def shadow_price_effect(
     effect, and the standard error, the curvature and ``nu_hat`` are read the same way. Every
     stratum needs two rows in each arm, and ``second_order_bias`` takes every row to have had the
     same chance of treatment.
+
+    ``design`` says what the standard error holds fixed. ``"fixed_share"``, the default, reads the
+    spread of each arm's rows, which is conditional on the treated share the assignment dealt: the
+    whole error of a design that fixes the share. Under independent coins the share moves too, and
+    the effect, the slope ``f'(p)``, moves with it by ``-f''(p)`` a unit of share. ``"bernoulli"``
+    adds ``curvature**2 * Var(share)``, the treated share's variance under coins of one
+    probability ``q``, ``q (1 - q) sum(a_i^2) / (sum a_i)^2`` over the randomised rows' masses
+    ``a_i``, with ``q (1 - q)`` read without bias off the count of treated rows. Post-stratified,
+    the effect's own spread is small, and that term can be a fair part of it.
 
     Each row's rent is the derivative of welfare in its own mass, so the treated-minus-control
     difference of rents is the derivative ``f'(p)`` of welfare in the treated share. By concavity
@@ -262,10 +289,20 @@ def shadow_price_effect(
 
     Post-stratified by the rows' four types, those too small for two rows an arm merged before the
     assignment, the effect's spread on the same markets was 0.52--0.78 of the plain effect's, and
-    0.85--1.04 of its standard error. Fix the strata before the assignment, each large enough that
-    an arm short of two of its rows is unlikely: merging the strata an assignment left short into
-    another after it moved the effect by up to a quarter of the global effect on average, and
-    falling back to the plain difference on such assignments moves it about as much.
+    0.85--1.04 of its standard error. Under independent coins on six more markets, 80 rows of four
+    types against three zones at ``p = 1/2``, the spread was 0.93--1.13 of the default standard
+    error, which held the effect's mean in 91.5--95.1% of the assignments at 95%, and 0.93--1.04 of
+    ``design="bernoulli"``'s, which held it in 93.2--95.2% (998--1198 assignments a market; Monte
+    Carlo standard errors about 0.02 and 0.8%). The default fell short where the types left little
+    noise inside them, so that post-stratifying cut the spread to 0.07 and 0.15 of the plain
+    effect's and the coins' share was a fair part of what was left: there it read 1.08 and 1.13 of
+    the default standard error and held the mean in 91.8% and 91.5%, and 1.01 and 1.04 of
+    ``design="bernoulli"``'s, held in 94.0% and 93.2%. So the post-stratified spread was 0.85--1.13
+    of the default standard error over the twelve markets. Fix the strata before the assignment,
+    each large enough that an arm short of two of its rows is unlikely: merging the strata an
+    assignment left short into another after it moved the effect by up to a quarter of the global
+    effect on average, and falling back to the plain difference on such assignments moves it about
+    as much.
 
     Near the LP limit the second-order law fails, and the bias saturates at the LP's first-order
     bias instead. Over twenty markets swept towards that limit, the law gave the bias to within 10%
@@ -284,14 +321,17 @@ def shadow_price_effect(
         ValueError: on an ``eps`` that is not positive and finite (see
             :func:`shadow_price_interval`), shapes that do not agree, masses that are not positive
             and finite or do not balance, a ``treated`` or ``randomised`` that is not one bool per
-            row, ``strata`` that are not one label per row, or fewer than two rows in either arm of
-            the experiment or of a stratum.
+            row, ``strata`` that are not one label per row, fewer than two rows in either arm of
+            the experiment or of a stratum, or a ``design`` other than ``"fixed_share"`` and
+            ``"bernoulli"``.
     """
     if not 0.0 < eps < np.inf:
         raise ValueError(
             "eps must be positive and finite; at eps = 0 the rents are not unique, see "
             f"shadow_price_interval. Got {eps}"
         )
+    if design not in ("fixed_share", "bernoulli"):
+        raise ValueError(f"design must be 'fixed_share' or 'bernoulli'; got {design!r}")
     costs, masses, capacities = (
         np.asarray(_real_numbers(v, name), dtype=float)
         for v, name in ((cost, "cost"), (supply, "supply"), (demand, "demand"))
@@ -352,9 +392,12 @@ def shadow_price_effect(
                 "eps": eps,
             },
         )
+    variance = float(_contrast_covariance(rent[:, None], blocks)[0, 0])
+    if design == "bernoulli":
+        variance += curvature**2 * _share_variance(masses, blocks)
     return ShadowPriceEffect(
         effect=float(contrast @ rent),
-        standard_error=float(np.sqrt(_contrast_covariance(rent[:, None], blocks)[0, 0])),
+        standard_error=float(np.sqrt(variance)),
         naive=float(contrast @ surplus),
         treated_share=share,
         curvature=curvature,
