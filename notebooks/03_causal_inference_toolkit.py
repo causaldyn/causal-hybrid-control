@@ -144,7 +144,9 @@ plt.show()
 #
 # Before trusting an effect, `chc` runs DoWhy-style refuters: permuting the treatment must collapse the
 # effect (**placebo → 0**), an irrelevant covariate must not change it (**random common cause**), and a
-# subsample must reproduce it (**subset**).
+# subsample must reproduce it (**subset**), each within its own sampling error (`*_std_error`). They
+# check the estimate's stability, not its identification: a confounder left out of `adjust_for`
+# passes them as often as a right model does.
 
 # %%
 report = refute_effect(data, adjust_for=("z",))

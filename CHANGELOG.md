@@ -56,6 +56,19 @@ still change).
   `R^2` `t^2 / (t^2 + dof)`, is defined on it. The effect does not move, nor, until 0.20.0, the
   default error (under Deprecated). Since 0.1.0.
 
+- **`refute_effect` reads each check against its own sampling error.** `passes` asked the
+  placebo to fall within 10 % of the effect and the other two checks to move it by less than 10 %
+  and 15 %, whatever the log's size: a right model failed on noise alone, 31.0 % of 1000 logs of
+  200 rows of a linear plant adjusted for its confounder, 44.2 % with heteroskedastic noise and
+  76.0 % at 50 rows, while at 1000 rows the shares say little (1.0 %). The placebo's estimate and
+  the other two's changes are each linear in the outcome, so each now has its standard error with
+  each row's own squared residual (HC1, `*_std_error` in the report), and `passes` asks all three
+  to lie within the `1 - alpha / 6` quantile of `t(N - k)` times their errors, `alpha=0.05` by
+  default: 4.4 %, 3.6 % and 4.9 % on the same logs, 6.0 % and 3.0 % at 1000 rows. The checks read
+  stability, not identification, which the docstring now says: with the confounder left out the
+  plant failed 5.4 % at 200 rows and 6.4 % at 1000, and with it entering through `z^2` too,
+  adjusted for `z` alone, 6.0 % at 200 rows, as often as a right model. Since 0.1.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added
