@@ -116,7 +116,7 @@ def test_the_tube_is_carried_by_euler_s_step_matrices(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(chc.plan, "_error_tube", spy)
     result = _prescribe(_bilinear_log(400, 3), "euler")
-    assert calls[-1][-1] == "euler"
+    assert calls[-1][6] == "euler"
     np.testing.assert_array_equal(np.asarray(result.plan.uncertainty_tube), carried(*calls[-1]))
     slopes, _, noise, persistence = calls[-1][:4]
     assert slopes.shape == (12, 2, 2)

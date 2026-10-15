@@ -72,6 +72,43 @@ still change).
   plant; it now holds 0.967 ± 0.001 and trusts none past it. The default, `"rk4"`, reads as before.
   Since 0.5.0.
 
+- **`prescribe`'s tube holds the 0.95 a step it states on short logs.** Each radius said it held
+  the plant at 0.95, but its field part, the channel's and the drift's error, was one standard
+  error added to the noise's 0.95 radius, a 68 % reading of an error that is Student's on a log
+  whose channel's error is read from three to six cosines; and it was read as a root mean over the
+  log's rows, where a plan heads to its target, away from them, and the fitted field's error grows
+  with that distance. The field's error is now read at the state each planned step starts from,
+  off the covariances the fit already reads at the rows, and the radius is the exact 0.95 radius of
+  the noise's covariance with that error, carried, added along its widest direction as a Gaussian
+  of `t_nu(0.975) / z(0.975)` standard errors, `nu` the channel's degrees of freedom
+  (ADR 0096's amendment, `validation/tube_level.mac`). Share of 2,000 runs inside the tube at the
+  plan's first and last step (8 steps; 12 on the bilinear plant), averaged over one-unit logs, its
+  largest Monte Carlo standard error over the steps beside it (`scripts/bench_short_log_tube.py`):
+  - AR(1), one lever: 30 transitions 0.960 to 0.835 ± 0.019 -> 0.969 to 0.943 ± 0.012 (296 logs);
+    60, 0.961 to 0.902 ± 0.013 -> 0.948 to 0.952 ± 0.010, at least 0.948 at every step (300); 120,
+    0.965 to 0.957 ± 0.006 -> 0.950 to 0.972 ± 0.005 (300); 1,500, 0.957 to 0.964 ± 0.001 -> 0.950
+    to 0.952 ± 0.001 (100).
+  - AR(1), two levers: 30, 0.948 to 0.799 ± 0.020 -> 0.969 to 0.937 ± 0.013 (297); 60, 0.955 to
+    0.870 ± 0.015 -> 0.940 to 0.937 ± 0.012, at least 0.937 (300); 120, 0.964 to 0.939 ± 0.007 ->
+    0.948 to 0.970 ± 0.004 (300); 1,500, 0.956 to 0.963 ± 0.001 -> 0.950 to 0.952 ± 0.001 (100).
+  - Two states, a bilinear channel, fitted as its Euler map: 30, 0.972 to 0.930 ± 0.017 -> 0.994
+    to 0.989 ± 0.007 (200); 60, 0.954 to 0.898 ± 0.020 -> 0.982 to 0.980 ± 0.010 (200); 120,
+    0.974 to 0.962 ± 0.011 -> 0.963 to 0.990 ± 0.006 (200); 1,500, 0.964 to 0.985 ± 0.001 -> 0.948 to 0.979 ± 0.002 (40).
+  Read where the plan goes, the field's error can read less at the plan's start than its root mean
+  over the rows: on the bilinear plant at 120 transitions the share of logs trusted a step past
+  their own plant's 95 % error, at a tolerance of 0.4, rises from 0.025 to 0.065, while the tube
+  holds 0.963 at that step over the logs; the level is a statement over logs (ADR 0080). From 120
+  transitions the late steps hold up to 2.2 points more than 0.95 on one state, and the bilinear
+  plant 3 to 5 points more past its first steps at every length: the channel's error is priced at
+  each lever's farthest action in its box (ADR 0091), where the plan's own actions lie nearer the
+  log's. Fitted under `rk4`, a model class that does not hold its Euler map, the bilinear plant
+  leaves the plan by 0.10 to 0.16 at the first step on logs of 1,500, and the tube holds 0.877
+  there where it held 0.917 (40 logs): a standard error carries no bias of the model class. Shipped numbers: the quickstart
+  still trusts 3 weeks, its tube at weeks 1 to 3 0.290, 0.401, 0.482 -> 0.286, 0.393, 0.469 and at
+  week 15 0.881 -> 0.837, and over 80 of its logs it holds 0.953 to 0.962 -> 0.948 to 0.953 a
+  week; notebook 00 the same plan; notebook 09 still trusts all 8 hours, its tube at 07:00
+  0.434 -> 0.622 °C, where its prose said 0.78. Since 0.17.0.
+
 ## [0.18.0] — 2026-10-13
 
 ### Added

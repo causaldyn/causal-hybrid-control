@@ -1,11 +1,12 @@
 """The tube's levels: one conformal scale for the whole horizon, and a region for the channel.
 
 The plan's tube holds the plant at 0.95 step by step (ADR 0080, ADR 0096), and every step of a
-horizon at once at less: on AR(1) noise two steps at 0.95 each hold together 0.915. The channel's
-error in it is a one-standard-error scale, with no level. ``HorizonConformal`` reads the tube's
-profile as the weights of one conformal score over the horizon, so the band ``scale * r_k`` holds
-every step at once at ``1 - delta`` on windows of the logging policy; ``channel_region`` states the
-self-normalised ellipsoid of the fitted channel (ADR 0099). Neither moves a number of the tube.
+horizon at once at less: on AR(1) noise two steps at 0.95 each hold together 0.915. The field's
+error in it is a standard error read at its studentised quantile. ``HorizonConformal`` reads the
+tube's profile as the weights of one conformal score over the horizon, so the band
+``scale * r_k`` holds every step at once at ``1 - delta`` on windows of the logging policy;
+``channel_region`` states the self-normalised ellipsoid of the fitted channel (ADR 0099). Neither
+moves a number of the tube.
 """
 
 from __future__ import annotations

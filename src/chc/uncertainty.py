@@ -1449,10 +1449,15 @@ def _noise_tube(
     dt: float,
     horizon: int,
     integrator: Integrator = "rk4",
+    field: NDArray[np.float64] | None = None,
 ) -> NDArray[np.float64]:
     """The radii ``r_0..r_H`` within which a plant off the plan's own step by ``w_k`` at each step
     stays at each step with probability :data:`_TUBE_COVERAGE`, ``w_k`` Gaussian of covariance
     ``noise = S`` and AR(1) at ``persistence = rho``: ``Cov(w_i, w_j) = rho^|i - j| S``.
+    ``field``, ``s_0..s_H``, adds at each step a Gaussian independent of the noise, of standard
+    deviation ``s_k`` along one direction, the noise's widest, where it widens the radius most:
+    the radius is that of ``P_k`` with ``s_k^2`` added to its largest eigenvalue, and under a norm
+    bound that of ``p_k I`` so widened past the first step.
 
     The gap ``e_{k+1} = M e_k + w_k`` from ``e_0 = 0`` has covariance ``P_k``, with
     ``P_{k+1} = M P_k M' + M C_k + C_k' M' + S`` and ``C_{k+1} = rho (M C_k + S)``, ``C_k`` the
@@ -1472,12 +1477,15 @@ def _noise_tube(
     its exact quantile. ``integrator="euler"`` carries both by forward Euler's step,
     ``M = 1 + dt A`` and ``g = 1 + L dt``.
     """
+    added = np.zeros(horizon + 1) if field is None else np.square(field)
     if rate.ndim != 0:
         return np.array(
             [
-                _noise_radius(covariance)
-                for covariance in _noise_covariances(
-                    rate, noise, persistence, dt, horizon, integrator
+                _noise_radius(covariance, extra)
+                for covariance, extra in zip(
+                    _noise_covariances(rate, noise, persistence, dt, horizon, integrator),
+                    added,
+                    strict=True,
                 )
             ]
         )
@@ -1493,8 +1501,16 @@ def _noise_tube(
         variances[step] = spread
     level = float(chi2.ppf(_TUBE_COVERAGE, noise.shape[0]))
     radii = np.sqrt(level * np.maximum(variances, 0.0))
+    if field is not None:
+        eye = np.eye(noise.shape[0])
+        radii = np.array(
+            [
+                _noise_radius(max(variance, 0.0) * eye, extra)
+                for variance, extra in zip(variances, added, strict=True)
+            ]
+        )
     if horizon >= 1:
-        radii[1] = _noise_radius(noise)
+        radii[1] = _noise_radius(noise, added[1])
     return radii
 
 
@@ -1532,10 +1548,11 @@ def _noise_covariances(
     return covariances
 
 
-def _noise_radius(covariance: NDArray[np.float64]) -> float:
+def _noise_radius(covariance: NDArray[np.float64], widest: float = 0.0) -> float:
     """The radius within which a Gaussian of covariance ``P`` lies around its mean with probability
     :data:`_TUBE_COVERAGE`: the root of the quantile of ``sum_i lambda_i chi2_1``, ``lambda_i``
-    ``P``'s eigenvalues (Imhof 1961, :func:`_chi_square_mixture_survival`).
+    ``P``'s eigenvalues (Imhof 1961, :func:`_chi_square_mixture_survival`). ``widest`` adds a
+    variance along ``P``'s widest direction, to its largest eigenvalue.
 
     The quantile lies between ``chi2_1(level) lambda_max`` and ``chi2_n(level) lambda_max``: the
     sum is at least its largest term and at most ``lambda_max chi2_n``. The second is the bound
@@ -1546,6 +1563,7 @@ def _noise_radius(covariance: NDArray[np.float64]) -> float:
     over the largest, so it reads no unit of the state.
     """
     values = np.clip(np.linalg.eigvalsh(covariance), 0.0, None).astype(np.float64)
+    values[-1] += widest
     largest = float(values[-1])
     high = float(chi2.ppf(_TUBE_COVERAGE, values.size)) * largest
     if values[0] >= largest:

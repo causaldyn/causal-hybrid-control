@@ -179,3 +179,141 @@ before, whatever its drift's error.
   public argument is a door hard to close; the one caller that needs it is `prescribe`.
 - **A tolerance per state.** The author kept the one Euclidean tolerance (ADR 0091 part 3); the
   states' own radii are reported beside it.
+
+## Amendment, 0.19.0 — the field's error is read where the plan goes, at its studentised quantile
+
+### Context
+
+The tube added the field's error, one standard error carried by the step matrices, `f_k`, to the
+radius `r_k` that holds the noise at 0.95, and said the sum held the plant at 0.95 a step. Two
+things in `f_k` read short.
+
+1. **Its level.** One standard error is a 68 % reading of a normal, and the error is not normal:
+   the channel's standard error is read from the terms its spread sums, six cosines on a log of 60
+   transitions, three on 30 (ADR 0075), and its scatter from log to log is Student's. One step
+   from a known start the gap is the noise plus `f T`, `T` Student's `t` at those degrees of
+   freedom, and `r + f` holds it at 0.758 where `nu = 3` and the field's error is four times the
+   noise's, 0.846 at `nu = 52` (`validation/tube_level.mac` (2)).
+2. **Where it is read.** The channel's error and the drift's were root means over the log's rows,
+   one number for every step (ADR 0091 part 2, this ADR's part 3, Not covered above). A plan goes
+   where its target is: on 100 one-unit logs of 60 transitions of an AR(1) plant whose state
+   spreads 0.52 about 0, a plan to 1 meets a drift's error 1.45 to 1.63 times its root mean over
+   the rows from its fourth step on, and a channel's 1.39 to 1.57 times. On 300 such logs the
+   noise-free plant left the plan at its eighth step by more than `t_6(0.975)` times the field's
+   error read over the rows and carried, on 10 % of logs, where that level asks 5 %.
+
+On one-unit logs of an AR(1) plant (`scripts/bench_tube_levels.py`'s, one state, closed loop, a
+plan of 8 steps to 1) the plant left the tube at its eighth step on 16.5 % of runs at 30
+transitions and 9.8 % at 60.
+
+### Decision
+
+- **Read where the plan goes.** The fit keeps the covariances `drift_error` and the channel's
+  errors are read off at the log's rows (`CausalDynamicsFit._drift_blocks`, `_channel_blocks`), and
+  `prescribe` reads them at the state each planned step starts from, the drivers at their forecast
+  as the fit reads a transition's: each lever's channel error priced at its farthest action from
+  the log's mean action as before (ADR 0091), the drift's beside it in quadrature. Their root mean
+  square over the log's rows is the field's error as it was read, bit for bit in the covariance's
+  reads, and the plan is still solved with that. A fit that keeps no covariances reads its root
+  means at every step.
+- **Read at its studentised quantile.** The field's carried error `f_k` is a scale of the error's
+  norm: the carriage sums each step's error times its gain's norm, a triangle inequality. Its
+  direction the fit does not give. The radius places it along the noise's widest direction, where
+  it widens the radius most, as a Gaussian of standard deviation `kappa f_k`,
+  `kappa = t_nu(0.975) / z(0.975)`, `nu` the degrees of freedom the channel's error is read with
+  (`chc.dynamics_id._degrees_of_freedom`: its cosines on one unit, its clusters less one on many):
+  the exact 0.95 radius of `P_k` with `(kappa f_k)^2` added to its largest eigenvalue. On one state
+  it is `sqrt(r_k^2 + t_nu(0.975)^2 f_k^2)`, and it holds `n + f T` at 0.9496 to 0.9523 over `nu` 3
+  to 52 and every `f` (`validation/tube_level.mac` (2)). On two states it holds the error along the
+  widest direction at 0.9500 to 0.9514, and along the least at 0.960 and 0.972 (`nu` 3 and 52,
+  (3)). Under a norm bound the noise past the first step is read as `p_k I`, its largest variance
+  bounded, and the field's variance joins one direction of it. `causal_plan`, given a
+  `model_error` with no level, adds it to the noise's radius as before.
+
+### Consequences
+
+Coverage, the share of 2,000 runs of the plant inside the tube, run on from the plan's start under
+its actions with the confounder and the noise drawn afresh, averaged over one-unit logs, at the
+first and the last step of the plan (8 steps; 12 on the bilinear plant, fitted under `rk4`), with
+the largest Monte Carlo standard error over the steps (`scripts/bench_short_log_tube.py`). Logs
+are seeded 0 on, their runs `10^6 + seed`. Before is 0.18.0's tube; the studentised level alone,
+read over the log's rows, is the middle column where it was measured.
+
+| plant, transitions (logs) | before | the level alone | now |
+|---|---|---|---|
+| AR(1), 30 (296) | 0.960 to 0.835 ± 0.019 | 0.976 to 0.896 ± 0.016 | 0.969 to 0.943 ± 0.012 |
+| AR(1), 60 (300) | 0.961 to 0.902 ± 0.013 | 0.948 to 0.914 ± 0.012 | 0.948 to 0.952 ± 0.010 |
+| AR(1), 120 (300) | 0.965 to 0.957 ± 0.006 | 0.950 to 0.948 ± 0.006 | 0.950 to 0.972 ± 0.005 |
+| AR(1), 1,500 (100) | 0.957 to 0.964 ± 0.001 | | 0.950 to 0.952 ± 0.001 |
+| one state, two levers, 30 (297) | 0.948 to 0.799 ± 0.020 | | 0.969 to 0.937 ± 0.013 |
+| one state, two levers, 60 (300) | 0.955 to 0.870 ± 0.015 | 0.940 to 0.882 ± 0.015 | 0.940 to 0.937 ± 0.012 |
+| one state, two levers, 120 (300) | 0.964 to 0.939 ± 0.007 | | 0.948 to 0.970 ± 0.004 |
+| one state, two levers, 1,500 (100) | 0.956 to 0.963 ± 0.001 | | 0.950 to 0.952 ± 0.001 |
+| two states, bilinear channel, 30 (200) | 0.972 to 0.930 ± 0.017 | | 0.994 to 0.989 ± 0.007 |
+| two states, bilinear channel, 60 (200) | 0.954 to 0.898 ± 0.020 | | 0.982 to 0.980 ± 0.010 |
+| two states, bilinear channel, 120 (200) | 0.974 to 0.962 ± 0.011 | | 0.963 to 0.990 ± 0.006 |
+| two states, bilinear channel, 1,500 (40) | 0.964 to 0.985 ± 0.001 | | 0.948 to 0.979 ± 0.002 |
+
+The two-lever plant is `x' = -0.5 x + u1 + 0.6 u2 + 0.8 z` under `u1 = -0.5 x + 0.8 z + 0.5 e1`,
+`u2 = 0.3 x - 0.4 z + 0.5 e2`; the bilinear plant is the benchmark's, fitted as the Euler map it
+is (`integrator="euler"`), the AR(1) plants under `rk4`, whose fixed point reads their Euler maps
+as fields. Where a step's coverage is short of 0.95 it is within 1.1 standard errors of it, the
+least 0.937 ± 0.013.
+
+- **Every step holds 0.95 within its Monte Carlo error from 30 transitions,** on one state and
+  two levers and on the bilinear plant, where the eighth step held 0.835 at 30 and 0.902 at 60.
+- **From 120 transitions the late steps hold more than they say,** up to 2.2 points on one state
+  and 4.8 on the bilinear plant, which holds 3 to 5 points more at every length past its first
+  steps. The channel's error is priced at each lever's farthest action in
+  its box (ADR 0091), and read at a planned state far from the log that price weighs most; the
+  plan's own actions lie nearer the log's mean. Priced at the plan's own action instead (below),
+  the short logs miss again: the fitted drift contracts more than the plant's on a short log, a
+  bias of order `1 / N` that no standard error carries (on 200 logs of 120 transitions the
+  drift's slope was off by -0.061 on average, 0.34 of its spread), and the box's price is what
+  covers it there.
+- **A tube that reads less at the plan's start trusts more logs past their plant.** Read at the
+  start, the field's error is less than its root mean over the rows when the start is near the
+  log's states: on the bilinear plant at 120 transitions the share of logs trusted a step past
+  their own plant's 95 % error, at a tolerance of 0.4, rises from 0.025 to 0.065, while the tube
+  holds 0.963 at that step over the logs. The level is a statement over logs (ADR 0080).
+- **A model class that does not hold the plant is not covered.** Fitted under `rk4`, as the
+  benchmark fits it, the bilinear plant's Euler map is no RK4 step of a field bilinear in the
+  state and the action: at 1,500 transitions the noise-free plant leaves the plan by 0.10 to 0.16
+  at the first step, where the field's standard error is 0.01 to 0.03, and over 40 logs the first
+  step holds 0.877 where 0.18.0's tube, which read the field's error over the rows, held 0.917.
+  At 60 and 120 transitions it holds 0.984 to 0.969 and 0.959 to 0.993 (189 and 197 logs of 200
+  whose fixed point converged), where it held 0.966 to 0.894 and 0.975 to 0.965. A standard error
+  carries no bias of the model class (ADR 0096, Not covered).
+- **One log is not the level.** The quickstart's own log holds 0.943 at its first week and the
+  predictive test's log 0.917 at its first step, its noise read 8 % under the push's and the
+  error's; over 80 logs of each, seeded 100 on, they hold 0.948 to 0.953 a week and 0.950 to 0.985
+  a step, where 0.18.0's tube held 0.953 to 0.962 and 0.965 to 0.983. The tests now pool ten logs.
+- **Shipped numbers.** The quickstart still trusts 3 weeks: its tube at weeks 1 to 3 reads 0.286,
+  0.393, 0.469 where it read 0.290, 0.401, 0.482, and at week 15 0.837 where it read 0.881;
+  notebook 00 shows the same plan. Notebook 09 still trusts all 8 hours, its tube at 07:00
+  0.622 °C where it read 0.434; its prose said 0.78, a number that 0.18.0's tube had already
+  moved.
+- Tests: `tests/test_studentised_tube.py`, the driver case in `tests/test_drivers.py`;
+  `validation/tube_level.mac`; `scripts/bench_short_log_tube.py`.
+
+### Alternatives
+
+- **One standard error, read over the rows, as before.** It reads short at small `nu` and wide at
+  large, as above.
+- **The level alone, read over the rows** (the middle column). It holds 0.95 from 120 transitions
+  on one state, but the eighth step at 0.896 and 0.914 at 30 and 60, and 0.882 on two levers at 60.
+- **The channel's error priced at the plan's own action,** its distance from the log's mean
+  action, read at the plan's states. Measured offline on the same logs, it held the eighth step
+  of the AR(1) plant at 0.920, 0.917 and 0.942 at 30, 60 and 120 transitions, and 0.874 on two
+  levers at 60: the finite-sample bias above.
+- **The delta method at the plan's own states and actions,** the fit's joint influence carried by
+  the step matrices, read at Student's `t`: offline, 0.924, 0.916 and 0.938 at the eighth step at
+  30, 60 and 120 transitions, for the same reason, and it needs the per-row influence `prescribe`
+  does not keep.
+- **The error on every state,** `(kappa f_k)^2 I` with Hotelling's `kappa`, `sqrt(n F_{n,nu}(0.95)
+  / chi2_n(0.95))`. It holds 0.95 for an error of standard deviation `f_k` on each state, which the
+  carriage, a sum of norms, does not give: on the bilinear plant, read over the rows and fitted
+  under Euler, it read 0.982 to 0.995 at 120 transitions.
+- **Welch--Satterthwaite's degrees of freedom,** the drift's at its residual count. The drift's
+  error is read from its regression's residuals as if each were independent, which a log whose
+  noise persists or clusters does not give, and it reads the tube shorter on short logs.
