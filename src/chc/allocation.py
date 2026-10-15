@@ -389,15 +389,18 @@ class MinimaxAllocation:
         spend: ``(channels,)`` spend a period, in the budget's currency.
         best: ``(readings,)`` each reading's best return at the budget on its curves: the
             ``worth`` of :func:`allocate`'s plan for it, exact on concave curves and the best to
-            that search's tolerance on S-shaped ones.
+            that search's tolerance on S-shaped ones where that search closed. A reading's search
+            that stopped at its cap may leave its best short, and every regret read against it
+            low; ``stopped`` is then ``cap``.
         regret: ``(readings,)`` each reading's best return over the split's, both on its curves,
             were it true.
         worst: the largest regret, the split's.
         bound: no split in the box at the budget has a worst regret below this, so
             ``worst - bound`` bounds how far the split is from the least worst regret. On S-shaped
             curves it is the least bound the search left.
-        stopped: whether ``worst - bound`` closed to the search's tolerance, or the search stopped
-            at its cap (:data:`SearchStatus`).
+        stopped: whether ``worst - bound`` closed to the search's tolerance with every reading's
+            own search closed, or a search, the split's or a reading's own, stopped at its cap
+            (:data:`SearchStatus`).
         boxes: how many boxes of the rates were searched: 1 where every curve is concave.
         gap: ``worst - bound``.
         relative_gap: ``gap`` as a share of the largest of ``best``, the scale ``rtol`` is a share
@@ -407,8 +410,9 @@ class MinimaxAllocation:
             that return.
         floored: whether that floor, the dtype's rounding, raised the tolerance above the
             caller's.
-        limit: what stopped the search with its gap open (:data:`SearchLimit`); ``None`` where
-            the gap closed.
+        limit: what stopped the search with its gap open, or else the first reading's own
+            search that stopped at its cap (:data:`SearchLimit`); ``None`` where every search
+            closed.
         unsolved: the iterations of each linear program HiGHS left unsolved, in the order they
             were solved; each left its box the bound of the programs before it.
         compile_seconds: the seconds JAX spent compiling during the call, each reading's plan
@@ -1595,7 +1599,12 @@ def minimax_allocate(
     from the least worst regret. A reading's own plan returns its best, so no worst regret is below
     nothing where each best is exact; on S-shaped curves, below the least of the readings' own
     searches' gaps, negated. A reading's own search that stops at its cap logs a warning as
-    :func:`allocate` does.
+    :func:`allocate` does, and leaves ``stopped`` at ``cap`` however the split's search ends: its
+    best may be short of the reading's, and every regret read against it low. Two readings of two
+    channels at a budget of 1.6, one concave and one two Hill curves of slope 3 at scales 1.01 and
+    1, under a cap of two boxes: the second reading's search stops at 0.705 of its best, 0.804,
+    and the split returned regrets nothing against 0.705 and 0.090 against 0.804, where the least
+    worst regret is 0.015.
 
     Args:
         readings: the readings, each with one channel a column; at least one.
@@ -1649,11 +1658,20 @@ def minimax_allocate(
     # nothing less a gain, not the gain negated: a regret of nothing reads 0.0, not -0.0
     regret = 0.0 - gains
     worst, least = float(regret.max()), 0.0 - top
+    gap_open = ending.stopped == "cap"
+    short = next((plan for plan in plans if plan.stopped == "cap"), None)
+    if short is not None and not gap_open:
+        # a best its own search left short reads every regret against it low, however closely
+        # the split's search closed on the least worst regret over such bests
+        ending = replace(ending, stopped="cap", limit=short.limit)
     if ending.stopped == "cap":
         _log.warning(
-            "minimax_allocate stopped at its cap with the gap open, after %d boxes: the split's "
-            "worst regret is %.6g, and no split in the box has less than %.6g",
+            "minimax_allocate stopped at a cap after %d boxes, %s: the split's worst regret is "
+            "%.6g, and no split in the box has less than %.6g",
             ending.boxes,
+            "with the gap open"
+            if gap_open
+            else "a reading's own search short of its best, so each regret may read low",
             worst,
             least,
             extra={

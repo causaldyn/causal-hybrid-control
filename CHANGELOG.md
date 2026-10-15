@@ -22,6 +22,14 @@ still change).
   0.93--1.02 and held in 93.2--95.1%, and `design="bernoulli"` 0.93--1.02 and 93.2--95.2%. The
   default, `design="fixed_share"`, is unchanged, and the docs now say what it holds fixed and state
   0.85--1.13 for it. Since 0.8.0.
+- **`minimax_allocate` no longer reports `closed` on a reading's best its own search left short.**
+  Each reading's best is the worth of `allocate`'s plan for it; where that search stopped at its
+  cap the best was short, every regret against it read low, and the split's search could still
+  close on them. Two readings at a budget of 1.6, one concave and one two Hill curves of slope 3,
+  under a cap of two boxes: the second reading's search stopped at 0.705 of its best, 0.804, and
+  the split, reported `closed` with a worst regret of 0, regrets 0.090 against 0.804, where the
+  least worst regret is 0.015. `stopped` is now `cap` and `limit` the reading's whenever a reading's
+  own search stopped at its cap, and the call logs it. Since 0.16.0.
 
 ## [0.18.0] — 2026-10-13
 
