@@ -604,6 +604,16 @@ def test_regret_band_holds_with_high_probability() -> None:
     assert curve.cr_floor > 0.0  # the Result 10 in-expectation floor exists
 
 
+def test_highprob_coverage_reads_the_exact_regret_not_its_quadratic_proxy() -> None:
+    """The band is second order in the effect error, so far from the defaults it misses the exact
+    regret ``(b^2+rr)(u*(b_hat)-u*(b))^2``. The coverage was read on the proxy ``C*(b_hat-b)^2``
+    and so read 0.996 at ``delta = 0.01`` here; on the exact regret it is 0.916, a Monte Carlo SD
+    of 0.006 over 2,000 trials."""
+    curve = highprob_regret_certificate(b=0.6, sigma=1.0, n=30, n_trials=2000)
+    assert curve.empirical_coverage[-1] == pytest.approx(0.916, abs=0.025)
+    assert curve.empirical_coverage[-1] < 1.0 - curve.deltas[-1]
+
+
 def test_confounded_controller_settles_at_the_wrong_turnpike() -> None:
     # confounded turnpike gap (proofs/confounded_turnpike.v): a confounded controller (biased effect
     # b_obs = b + beta) converges to the WRONG turnpike x_conf = b*xref/(b+beta) and pays the offset

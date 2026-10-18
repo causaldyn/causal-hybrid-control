@@ -797,7 +797,7 @@ class HighProbRegretCurve:
 
     deltas: Vector  # confidence levels delta (band holds with probability >= 1-delta)
     highprob_bands: Vector  # C*2*sigma^2*log(2/delta)/(n*V_exp): the finite-sample band
-    empirical_coverage: Vector  # MC fraction of trials with regret <= band (should be >= 1-delta)
+    empirical_coverage: Vector  # MC fraction of trials whose EXACT regret is <= band
     confounded_bands: Vector  # the (wider) band under confounding (residual V_conf < V_exp)
     band_over_floor: Vector  # band / CR-floor = 2*log(2/delta): the log(1/delta) confidence price
     cr_floor: float  # the Result 10 in-expectation floor C*sigma^2/(n*V_exp)
@@ -827,6 +827,13 @@ def highprob_regret_certificate(
     it. A fully rigorous upper bound replaces ``C`` by the Lipschitz constant of ``u*`` on the
     confidence region (``regret = (b^2+rr)(u*(b_hat)-u*(b))^2 <= (b^2+rr) L^2 r(delta)^2``); locally
     ``L^2 -> C``. Concentration checked by Monte-Carlo coverage; the implication proved in Rocq.
+
+    The band is that local, second-order one, so it bounds the realised regret only where ``C``
+    holds across the confidence region. ``empirical_coverage`` reads the EXACT regret
+    ``(b^2+rr)(u*(b_hat)-u*(b))^2`` against it; read on the quadratic proxy ``C*(b_hat-b)^2`` it
+    would only check the concentration. At the defaults the two agree; at ``b = 0.6``,
+    ``sigma = 1``, ``n = 30`` the band at ``delta = 0.01`` covers the exact regret in 0.916 of the
+    trials, where the proxy reads 0.996.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     ds = np.asarray(deltas, dtype=np.float64)
@@ -840,7 +847,8 @@ def highprob_regret_certificate(
         rng = np.random.default_rng(4241 * t + n)
         u = np.sqrt(v_exp) * rng.standard_normal(n)
         y = b * u + sigma * rng.standard_normal(n)
-        regrets[t] = coeff * (np.dot(u, y) / np.dot(u, u) - b) ** 2
+        b_hat = np.dot(u, y) / np.dot(u, u)
+        regrets[t] = (b**2 + rr) * (b_hat * xt / (b_hat**2 + rr) - b * xt / (b**2 + rr)) ** 2
     for i, band in enumerate(bands):
         coverage[i] = float(np.mean(regrets <= band))
     return HighProbRegretCurve(ds, bands, coverage, conf_bands, bands / floor, float(floor))
