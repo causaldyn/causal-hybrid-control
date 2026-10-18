@@ -8,7 +8,8 @@ from scipy.linalg import solve_continuous_are
 from chc import HybridDynamics, QuadraticCost
 from chc.control import projected_gradient_control
 from chc.cost import total_cost
-from chc.dynamics import DampedOscillator
+from chc.dynamics import DampedOscillator, DrivenDynamics
+from chc.integrate import rollout
 from chc.lqr import (
     continuous_lqr,
     dlqr_feedback_controls,
@@ -106,6 +107,22 @@ def test_continuous_lqr_solves_an_r_with_a_zero_entry_as_scipy_does() -> None:
     r = np.array([[0.0, 0.5], [0.5, 1.0]])
     p, _ = continuous_lqr(a, b, q, r)
     np.testing.assert_array_equal(np.asarray(p), solve_continuous_are(a, b, q, r))
+
+
+def test_dlqr_feedback_controls_step_on_the_plant_s_clock() -> None:
+    """Step ``k`` runs from ``t = k * dt``, as :func:`chc.integrate.rollout` steps it, so the
+    controls are the feedback on the states the rollout of those controls passes through. Every
+    step ran from ``t = 0``, and a plant driven by a path of its time read controls off by 2.9."""
+    q, r, qf = _weights()
+    horizon = 40
+    levels = 3.0 * jnp.sin(0.3 * jnp.arange(horizon + 1.0))[:, None]
+    dyn = DrivenDynamics(dynamics=_dyn(), gain=jnp.array([[0.0], [1.0]]), levels=levels, dt=DT)
+    a_d, b_d = linearize_discrete(_dyn(), jnp.zeros(2), jnp.zeros(1), DT)
+    gains, _ = finite_horizon_dlqr(a_d, b_d, q, r, qf, horizon)
+    x0 = jnp.array([1.0, 0.5])
+    us = dlqr_feedback_controls(dyn, x0, gains, DT)
+    xs = rollout(dyn, x0, us, DT)
+    np.testing.assert_allclose(us, -jnp.einsum("kij,kj->ki", gains, xs[:-1]), rtol=0, atol=1e-12)
 
 
 def test_continuous_care_residual_and_stability() -> None:

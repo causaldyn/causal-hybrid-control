@@ -65,13 +65,17 @@ def finite_horizon_dlqr(
 
 
 def dlqr_feedback_controls(dyn: Dynamics, x0: Array, gains: Array, dt: float) -> Array:
-    """Simulate ``u_k = -gains[k] x_k`` and return the realised control sequence ``(H, m)``."""
+    """Simulate ``u_k = -gains[k] x_k`` and return the realised control sequence ``(H, m)``.
+
+    Step ``k`` runs from ``t = k * dt``, the clock of :func:`chc.integrate.rollout`, so a plant that
+    reads the time sees each step at its own.
+    """
     x = x0
     controls = []
-    for gain in gains:
+    for k, gain in enumerate(gains):
         u = -gain @ x
         controls.append(u)
-        x = rk4_step(dyn, 0.0, x, u, dt)
+        x = rk4_step(dyn, k * dt, x, u, dt)
     return jnp.stack(controls)
 
 
