@@ -1758,9 +1758,10 @@ def prescribe(
             over the whole horizon while proving nothing. The tube carries two errors over the
             plan's RK4 steps at the rate :attr:`DecisionCertificate.tube_rate` names: the channel's
             standard error, each lever's share of it times the largest distance that lever's box
-            allows from the log's mean action, where the fit's drift absorbed the channel, root
-            mean over the channel's entries, which reads the same in any units of each lever
-            (ADR 0087) and wherever its zero is (ADR 0091), a scale and not a bound; and the
+            allows from the log's mean action, where the fit's drift absorbed the channel, as
+            the root mean square of the Euclidean norm over the states of the error it moves the
+            field by, which reads the same in any units of each lever (ADR 0087) and wherever its
+            zero is (ADR 0091), a scale and not a bound; and the
             plant's own noise, the plan's
             one-step error on the log, read off the fit's defect with its lag-1 correlation within
             units, at the radius that holds it at each step with probability 0.95 where the noise
@@ -3441,11 +3442,14 @@ def _field_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     channel's part alone: on the quickstart 0.016, where the drift's is 0.039, the demand the fit
     adjusts for and the plan does not forecast being in the drift's residual (ADR 0096). A fit with
     no channel error carries no tube, the drift's error with it.
+
+    The tube bounds the gap's Euclidean norm over the states, so each part is the scale of that
+    norm: ``drift_error``, a root mean over the states, times the root of their number.
     """
     channel = _model_error(fit, reach)
     if fit._lever_errors is None or fit.drift_error is None:
         return channel
-    return math.hypot(channel, fit.drift_error)
+    return math.hypot(channel, math.sqrt(fit.residual.channel.shape[0]) * fit.drift_error)
 
 
 def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
@@ -3460,17 +3464,25 @@ def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     from there, and an origin of a lever moved with its log is the same field (ADR 0091). Up to
     0.17.0 ``reach[j]`` was the largest action from the lever's zero: on a log of one state and two
     levers in ``[-2, 2]``, ``u1``'s zero moved by 100, its log and box with it, ended the tube at
-    0.713 where it ends at 0.538, and certified one step where it certifies two. This returns its
-    root mean over
-    the channel's entries, from each lever's read of each covariance ``channel_error`` is read off
-    (``CausalDynamicsFit._lever_errors``), the largest read taken once the levers are priced
-    (ADR 0087). With one lever it is ``channel_error`` times ``reach``, bit for bit; with levers in
-    one unit whose ``reach`` is one number, that to rounding. Up to 0.16.0 it was ``channel_error``
+    0.713 where it ends at 0.538, and certified one step where it certifies two.
+
+    The tube bounds the gap's Euclidean norm over the states, and the rate error at an action
+    ``d`` is the vector ``(B_hat - B) d``, whose mean square norm is the sum over the entries of
+    each one's mean square error times ``d_j^2``, where the entries' errors are uncorrelated. This
+    returns its root, ``sqrt(n sum_j (e_j reach_j)^2)`` for ``n`` states, ``e_j`` lever ``j``'s
+    read of a covariance ``channel_error`` is read off (``CausalDynamicsFit._lever_errors``), a
+    root mean over the states, the largest read taken once the levers are priced (ADR 0087).
+    Up to 0.18.0 it was the root mean over the entries, ``sqrt(n m)`` times smaller for ``m``
+    levers: over 200 logs of two states and two levers, the field error's root mean square norm
+    read 1.93 times its root mean square, where it reads 0.96 times this. With one state and one
+    lever it is ``channel_error`` times ``reach``, bit for
+    bit; with levers in one unit whose ``reach`` is one number, that times ``sqrt(n m)`` to
+    rounding. Up to 0.16.0 it was ``channel_error``
     times the largest action of any lever, which mixed the levers' units: on a log of one state and
     two levers in ``[-2, 2]``, either lever in units 1e3 or 1e-3 times its own, its box with it,
     ended the tube 7 times as wide and certified neither of the two steps it certifies. A lever
-    whose ``reach`` is zero, held at the log's mean action, adds no error, though it counts in the
-    mean, and ``reach`` zero for every lever leaves the channel nothing to move, and no tube.
+    whose ``reach`` is zero, held at the log's mean action, adds no error, and ``reach`` zero for
+    every lever leaves the channel nothing to move, and no tube.
 
     It is a *scale*, not coverage: ``channel_error`` is the robust standard error, root-mean over
     the entries and the log's states, calibrated on average but scattering from one log to the
@@ -3480,7 +3492,8 @@ def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     if fit._lever_errors is None:
         return 0.0
     rates = fit._lever_errors * reach
-    return float(np.max(np.sqrt(np.mean(rates * rates, axis=1))))
+    states = fit.residual.channel.shape[0]
+    return float(np.max(np.sqrt(states * np.sum(rates * rates, axis=1))))
 
 
 def _step_noise(

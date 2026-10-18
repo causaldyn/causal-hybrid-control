@@ -40,6 +40,7 @@ from chc.decision import (
     StartState,
     Target,
     _episodes,
+    _field_error,
     _json_label,
     _linearised,
     _margins,
@@ -64,7 +65,7 @@ from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel, PanelError
 from chc.plan import CausalPlan, causal_plan, certify_safety
-from chc.residual import ControlAffineResidual
+from chc.residual import ControlAffineResidual, control_affine_features
 from chc.uncertainty import _linear_tube, _noise_tube
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
@@ -714,26 +715,91 @@ def _fit_reading(errors: np.ndarray | None) -> CausalDynamicsFit:
 
 
 def test_the_tube_s_rate_error_reads_each_lever_at_its_own_largest_action() -> None:
-    """Off each covariance, the root mean over the levers of each lever's error times its own
-    largest action; then the largest read. The three reads here, as two ways give, each put the
-    error on other levers, so which read is the largest is for the boxes to say: at boxes of 2 and
-    5 the third, ``sqrt((2^2 + 10^2) / 2)``, at 5 and 2 the first, ``15 / sqrt(2)``, where the
-    first is also the read ``channel_error`` takes. A lever whose box allows no action but zero
-    adds no error, but counts in the mean; none that can act leaves none, a free side no finite
-    one, and a fit with no channel error none."""
+    """Off each covariance, the root sum over the levers of each lever's error times its own
+    largest action, the Euclidean norm of the error that action moves the one state by; then the
+    largest read. The three reads here, as two ways give, each put the error on other levers, so
+    which read is the largest is for the boxes to say: at boxes of 2 and 5 the third,
+    ``sqrt(2^2 + 10^2)``, at 5 and 2 the first, ``15``, where the first is also the read
+    ``channel_error`` takes. Up to 0.18.0 it was the root mean, ``sqrt(2)`` times smaller. A lever
+    whose box allows no action but zero adds no error; none that can act leaves none, a free side
+    no finite one, and a fit with no channel error none."""
     errors = np.array([[3.0, 0.0], [0.0, 1.0], [1.0, 2.0]])
     fit = _fit_reading(errors)
     assert fit.channel_error == pytest.approx(3.0 / math.sqrt(2.0), rel=1e-15, abs=0.0)
-    for reach, expected in (([2.0, 5.0], 52.0), ([5.0, 2.0], 112.5), ([2.0, 0.0], 18.0)):
+    for reach, expected in (([2.0, 5.0], 104.0), ([5.0, 2.0], 225.0), ([2.0, 0.0], 36.0)):
         error = _model_error(fit, np.array(reach))
         assert error == pytest.approx(math.sqrt(expected), rel=1e-15, abs=0.0), reach
     # each lever in units ``c`` times its own: its error over ``c``, its action times ``c``
     units = np.array([1e-3, 1e3])
     error = _model_error(_fit_reading(errors / units), np.array([2.0, 5.0]) * units)
-    assert error == pytest.approx(math.sqrt(52.0), rel=1e-15, abs=0.0)
+    assert error == pytest.approx(math.sqrt(104.0), rel=1e-15, abs=0.0)
     assert _model_error(fit, np.zeros(2)) == 0.0
     assert _model_error(_fit_reading(errors + 1.0), np.array([2.0, math.inf])) == math.inf
     assert _model_error(_fit_reading(None), np.array([2.0, 5.0])) == 0.0
+
+
+def test_the_tube_s_rate_error_is_the_euclidean_size_of_the_field_s_error_over_the_states() -> None:
+    """The tube bounds the gap's Euclidean norm over the states, so the rate error is the root mean
+    square norm of ``(B_hat - B) d`` at the levers' largest distances ``d``: each lever's read, a
+    root mean over the states, times the root of their number, summed in quadrature over the
+    levers. Up to 0.18.0 it was the root mean over the entries, ``sqrt(n m)`` times smaller, and the
+    drift's error a root mean over the states, ``sqrt(n)`` times smaller."""
+    errors = np.array([[0.3, 0.1]])
+    fit = dataclasses.replace(
+        _fit_reading(errors),
+        residual=ControlAffineResidual(drift=jnp.zeros((2, 3)), channel=jnp.zeros((2, 2, 3))),
+    )
+    reach = np.array([2.0, 5.0])
+    assert _model_error(fit, reach) == pytest.approx(
+        math.sqrt(2 * (0.6**2 + 0.5**2)), rel=1e-15, abs=0.0
+    )
+    drifting = dataclasses.replace(fit, drift_error=0.2)
+    assert _field_error(drifting, reach) == pytest.approx(
+        math.sqrt(2 * (0.6**2 + 0.5**2) + 2 * 0.2**2), rel=1e-15, abs=0.0
+    )
+
+
+def test_the_tube_s_rate_error_reads_the_field_s_error_at_its_size() -> None:
+    """Over 40 logs of two states and two levers, the fitted channel's error at the levers' largest
+    distances, ``|(B_hat - B) d|`` over the log's states, has a root mean square norm 0.93 times the
+    root mean square of the rate error read off each log, where up to 0.18.0's root mean over the
+    entries read 1.87 times smaller. Resampling 200 such logs, the ratio over 40 has a standard
+    deviation of 0.046; the band is four of them below and six above."""
+    a_matrix = np.array([[-0.5, 0.2], [0.1, -0.4]])
+    b_matrix = np.array([[0.8, -0.3], [0.5, 0.6]])
+    reach = np.array([2.0, 1.0])
+    base = LinearDynamics(jnp.zeros((2, 2)), jnp.zeros((2, 2)))
+    true_errors, read = [], []
+    for seed in range(40):
+        rng = np.random.default_rng(seed)
+        x = rng.normal(0.0, 0.3, (40, 2))
+        xs, us, nexts, ws = [], [], [], []
+        for _ in range(12):
+            w = rng.normal(size=40)
+            u = np.stack([0.7 * w, -0.5 * w], 1) + rng.normal(0.0, 0.5, (40, 2))
+            push = np.stack([w, -0.8 * w], 1)
+            step = (
+                x + DT * (x @ a_matrix.T + u @ b_matrix.T + push) + rng.normal(0.0, 0.02, (40, 2))
+            )
+            xs, us, nexts, ws = [*xs, x], [*us, u], [*nexts, step], [*ws, w]
+            x = step
+        data = {
+            "x": jnp.asarray(np.concatenate(xs)),
+            "u": jnp.asarray(np.concatenate(us)),
+            "x_next": jnp.asarray(np.concatenate(nexts)),
+            "w": jnp.asarray(np.concatenate(ws))[:, None],
+        }
+        fit = fit_causal_residual(
+            base, data, DT, adjust_for=("w",), clusters=np.tile(np.arange(40), 12)
+        )
+        features = jax.vmap(control_affine_features, in_axes=(0, None))(
+            data["x"], fit.residual.channel_degree
+        )
+        error = np.einsum("nmf,if->inm", np.asarray(fit.residual.channel), features) - b_matrix
+        true_errors.append(np.mean(np.sum((error @ reach) ** 2, axis=1)))
+        read.append(_model_error(fit, reach) ** 2)
+    ratio = math.sqrt(np.mean(true_errors) / np.mean(read))
+    assert 0.75 < ratio < 1.25, ratio
 
 
 def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_distance() -> None:
