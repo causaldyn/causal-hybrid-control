@@ -904,8 +904,9 @@ class ConfoundingRobustPenalty(eqx.Module):
 
         * **Second order, exact for LQ.** For a linear plant with a quadratic cost the objective is
           exactly quadratic along a perturbation direction, so the expansion closes and the only
-          slack left is Cauchy-Schwarz. Nonlinear plants keep an ``O(radius^3)`` remainder;
-          :func:`confounding_cost_bound_certificate` measures whether it matters.
+          slack left is Cauchy-Schwarz. A nonlinear plant adds the step's curvature, contracted
+          with the costate, at the same order, and keeps an ``O(radius^3)`` remainder that nothing
+          here bounds; :func:`confounding_cost_bound_certificate` measures whether it matters.
         * **At a reference.** The weights are frozen at ``us_reference``, which breaks the
           circularity of weights that depend on the plan that depends on the weights. Iterating
           (re-solve, re-weight) is available to the caller and is not done here, because a fixed
@@ -923,8 +924,9 @@ class ConfoundingRobustPenalty(eqx.Module):
         """Confounding pessimism ``radius * Sigma_t L_t ||u_t||`` (``xs`` unused).
 
         ``L_t`` is 1 when no weights were supplied -- the identification-radius regulariser -- and
-        :func:`chc.adjoint.perturbation_cost_weights` when they were, on which path the sum is a
-        certified upper bound on the cost gap rather than a scale-free direction.
+        :func:`chc.adjoint.perturbation_cost_weights` when they were, on which path the sum is an
+        upper bound on the cost gap rather than a scale-free direction: exact to its Cauchy-Schwarz
+        slack on a plant affine in the state, and to second order in the radius elsewhere.
         """
         del xs  # the confounded effect error scales with the ACTION magnitude (§34), not the state
         # smoothed L2 norm sqrt(||u||^2 + eps^2): ||u|| is non-differentiable at u=0 (NaN grad), and

@@ -160,3 +160,44 @@ def test_the_perturbation_weights_read_each_step_at_its_own_time() -> None:
     spread = second / (radius * float(jnp.sum(jnp.abs(us))))
     weights = perturbation_cost_weights(_forced, x0, us, DT, cost, radius)
     assert jnp.allclose(weights, first + spread, rtol=1e-10)
+
+
+def _bent(t: jax.Array, x: jax.Array, u: jax.Array) -> jax.Array:
+    """A scalar plant whose drift bends: its step's Hessian in the state is not zero."""
+    return -0.5 * x + 1.5 * x**2 + u
+
+
+def test_the_second_order_term_carries_the_step_s_curvature_on_a_bent_plant() -> None:
+    """The weights' second-order part must bound the objective's curvature along every admissible
+    field offset, ``|g_k| <= radius |u_k|``: ``J(e g) - J(0)`` has the coefficient
+    ``(1/2) d^2 J / de^2`` at ``e^2``, the cost's curvature along the deviation plus the costate
+    times the step's Hessian (``validation/perturbation_second_order.mac``). Read with the cost's
+    curvature alone, the part was 8.2e-4 where the worst sign pattern reaches 1.02e-3; with
+    the step's it is 3.96e-3."""
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=0.1 * jnp.eye(1), Qf=2.0 * jnp.eye(1), x_target=jnp.zeros(1)
+    )
+    x0 = jnp.array([0.5])
+    us = 0.3 * jax.random.normal(jax.random.key(4), (6, 1))
+    radius = 0.1
+    spread = perturbation_cost_weights(_bent, x0, us, DT, cost, radius) - perturbation_cost_weights(
+        _bent, x0, us, DT, cost, 0.0
+    )
+    second = float(spread[0]) * radius * float(jnp.sum(jnp.abs(us)))
+
+    def perturbed(e: jax.Array, offsets: jax.Array) -> jax.Array:
+        x, value = x0, 0.0
+        for k in range(us.shape[0]):
+            value = value + cost.running(x, us[k])
+            x = rk4_step(lambda t, y, a, g=offsets[k]: _bent(t, y, a) + e * g, k * DT, x, us[k], DT)
+        return value + cost.terminal(x)
+
+    curvature = jax.jit(jax.grad(jax.grad(perturbed)))
+    signs = jnp.array(
+        [[1.0 if (pattern >> k) & 1 else -1.0 for k in range(6)] for pattern in range(64)]
+    )
+    worst = max(
+        abs(float(curvature(jnp.asarray(0.0), (s * radius * jnp.abs(us[:, 0]))[:, None])))
+        for s in signs
+    )
+    assert 0.5 * worst <= second * (1.0 + 1e-9)
