@@ -1740,6 +1740,10 @@ def prescribe(
         adjustment: a :class:`~chc.graph.CausalGraph` to *derive* the adjustment set from, or a
             sequence of column names to *assert* it. Required, and deliberately so --- omitting it
             would default to adjusting for nothing, which is a causal claim, not an absence of one.
+            A graph's set is derived for the levers' effect on every state, the target and each
+            constrained column together, since one set reads the channel into all of them: where
+            no set does, the effect is ``not_identified``, and the reason names the states no set
+            identifies it on alone.
         known: physics kept fixed and not estimated. ``None`` means nothing is known and the whole
             vector field is the fitted residual.
         dt: the time step one panel period represents.
@@ -1819,7 +1823,8 @@ def prescribe(
             the one state, under which the transitions hold the levers, the states a period on
             and the states, or one named for a driver's level a period on, ``f"{driver}_next"``.
         KeyError: a lever, target, constraint, driver or asserted covariate names a column the
-            panel does not have. The message lists the panel's columns.
+            panel does not have. The message lists the panel's columns. Also a graph that has no
+            node for a lever, the target or a constrained column.
         PanelError: a column the fit reads as numbers --- a lever's, a state's, a covariate's or
             a driver's --- holds text, dates, times, durations, complex numbers or any other value
             that is not a real number, or a number finite in its own type that is an infinity in
@@ -1956,7 +1961,7 @@ def prescribe(
             extra={"chc_event": "precision", "x64": False, "rows": panel.provenance.n_rows},
         )
 
-    resolved = _resolve_adjustment(adjustment, panel=panel, target=target, levers=lever_names)
+    resolved = _resolve_adjustment(adjustment, panel=panel, states=states, levers=lever_names)
     if isinstance(adjustment, CausalGraph):
         parents = {p for lever in lever_names for p in adjustment.parents(lever)}
         logged_on = tuple(sorted(parents - {*lever_names}))
@@ -2817,13 +2822,36 @@ def _resolve_adjustment(
     adjustment: CausalGraph | Sequence[str],
     *,
     panel: Panel,
-    target: Target,
+    states: tuple[str, ...],
     levers: tuple[str, ...],
 ) -> AdjustmentSet:
-    """Derive the set from a graph, or take the caller's word and record that that is what it is."""
+    """Derive the set from a graph, or take the caller's word and record that that is what it is.
+
+    The fit reads the channel into every state off one set, so a graph's set is derived for the
+    levers' effect on all of them together: a set that identifies the effect on the target alone
+    leaves the channel into a constrained state confounded, and the barrier and the tube priced on
+    it."""
     if isinstance(adjustment, CausalGraph):
         adjustment.require_columns(panel.names)
-        return adjustment.adjustment_set(treatment=levers, outcome=target.name)
+        joint = adjustment.adjustment_set(treatment=levers, outcome=states)
+        if joint.status == "identified" or len(states) == 1:
+            return joint
+        confounded = [
+            state
+            for state in states
+            if adjustment.adjustment_set(treatment=levers, outcome=state).status != "identified"
+        ]
+        return AdjustmentSet(
+            (),
+            "not_identified",
+            f"{joint.reason}; the fit reads the channel into every state of {list(states)} off one "
+            "set, and "
+            + (
+                f"none identifies the levers' effect on {confounded}"
+                if confounded
+                else "no one set identifies the levers' effect on all of them"
+            ),
+        )
     named = tuple(str(name) for name in adjustment)
     missing = sorted(set(named) - set(panel.names))
     if missing:

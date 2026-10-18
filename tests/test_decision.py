@@ -2709,3 +2709,48 @@ def test_a_panel_of_one_unit_tests_the_noise_s_persistence_across_its_periods() 
         fresh, certificate=dataclasses.replace(fresh.certificate, noise_persistence_p=None)
     )
     assert "within units, not tested: its pairs leave no spread to read" in untested.report()
+
+
+def _constrained_logs(n_units: int = 60, n_periods: int = 8) -> Panel:
+    """A target ``y`` confounded with the lever by the logged ``w``, and a constrained ``c``
+    confounded with it by a latent ``L`` the panel does not hold."""
+    rng = np.random.default_rng(0)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "y", "c", "u", "w")}
+    for unit in range(n_units):
+        y, c = rng.normal(0.0, 0.2, 2)
+        for period in range(n_periods):
+            w, latent = rng.normal(size=2)
+            u = 0.9 * w + 0.9 * latent + rng.normal(0.0, 0.5)
+            for name, value in zip(rows, (unit, period, y, c, u, w), strict=True):
+                rows[name].append(value)
+            y, c = (
+                y + DT * (-0.6 * y + 0.8 * u + 1.5 * w) + rng.normal(0.0, 0.01),
+                c + DT * (-0.3 * c - 0.4 * u + 1.5 * latent) + rng.normal(0.0, 0.01),
+            )
+    return Panel.from_frame(
+        {name: np.asarray(values) for name, values in rows.items()}, unit="unit", time="time"
+    )
+
+
+def test_a_constrained_state_whose_channel_is_confounded_leaves_the_effect_unidentified() -> None:
+    """The fit reads the channel into every state off one set. ``w`` identifies the lever's effect
+    on the target alone; the latent parent of the lever and of ``c`` leaves the one into ``c``
+    confounded, which read off ``("w",)`` came back +0.877 where it is -0.40, and was certified
+    as identified."""
+    graph = CausalGraph.from_edges(
+        [("w", "u"), ("w", "y"), ("u", "y"), ("L", "u"), ("L", "c"), ("u", "c")], latent=("L",)
+    )
+    assert graph.adjustment_set(treatment="u", outcome="y").covariates == ("w",)
+    result = prescribe(
+        _constrained_logs(),
+        levers=[Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("y", value=1.0),
+        constraints=[Constraint("c", hi=0.5)],
+        adjustment=graph,
+        horizon=5,
+        dt=DT,
+        tolerance=0.5,
+    )
+    assert result.certificate.identification == "not_identified"
+    assert result.plan is None
+    assert "none identifies the levers' effect on ['c']" in result.certificate.adjustment.reason
