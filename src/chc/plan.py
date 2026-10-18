@@ -156,7 +156,9 @@ class CausalPlan:
     # noise was given, the radius holding the noise's part of the gap at each step with probability
     # 0.95; None if not evaluated
     uncertainty_tube: Array | None
-    certified_horizon: int | None  # last step inside ``tolerance``; None if not evaluated
+    # last step inside ``tolerance``, and before the predicted path's first state that is not a
+    # number; None if not evaluated
+    certified_horizon: int | None
     solver_status: SolverStatus  # why the descent stopped -- see :data:`chc.control.SolverStatus`
     solver_iterations: int  # accepted descent steps
     # :func:`certify_safety` run on this plan against the barrier it was solved under; None when no
@@ -1249,7 +1251,8 @@ def causal_plan(
             on a state matrix too, up to ``sqrt(chi2_n(0.95) / chi2_1(0.95))`` too wide where one
             direction's variance dominates, 1.249 times on two states. Zero by default, which
             leaves the tube the model error's alone, as before.
-        tolerance: tube radius above which the plan stops being certified.
+        tolerance: tube radius above which the plan stops being certified. A step whose predicted
+            state is not a finite number, an overflow's or a nan's, is certified at no tolerance.
         constraints: linear rows over the whole action sequence
             (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
             only by the answer.
@@ -1282,7 +1285,8 @@ def causal_plan(
             finite, not a number or a matrix of the state's size, or not a covariance, which is
             symmetric with no negative eigenvalue, or ``noise_persistence`` is not in ``[-1, 1]``;
             if ``tolerance`` is
-            negative or nan, or ``dt`` is not a finite positive step; if a barrier is given with
+            negative or nan, or ``dt`` is not a finite positive step; if ``x0`` has an entry that
+            is not a finite number, from which no step is predicted; if a barrier is given with
             a box that admits no action but zero, which leaves nothing to price it with; or if
             ``warm_start`` is not a finite ``(horizon, m)`` array.
     """
@@ -1355,8 +1359,18 @@ def _carried_along(
     if tube is None:
         return plan
     return replace(
-        plan, uncertainty_tube=jnp.asarray(tube), certified_horizon=_within(tube, tolerance)
+        plan,
+        uncertainty_tube=jnp.asarray(tube),
+        certified_horizon=_certified(tube, tolerance, plan.trajectory),
     )
+
+
+def _certified(tube: NDArray[np.float64], tolerance: float, trajectory: Array) -> int:
+    """The steps ``tube`` keeps within ``tolerance`` and whose predicted state is a number: a tube
+    around a nan or an overflowed state bounds its distance to nothing."""
+    finite = np.all(np.isfinite(np.asarray(trajectory[1:])), axis=-1)
+    reached = int(np.argmin(finite)) if not finite.all() else finite.size
+    return min(_within(tube, tolerance), reached)
 
 
 def _plan(
@@ -1400,6 +1414,8 @@ def _plan(
         )
     if not 0.0 < dt < math.inf:
         raise ValueError(f"dt={dt} is not a step, which is finite and positive")
+    if not np.all(np.isfinite(np.asarray(x0))):
+        raise ValueError(f"x0={np.asarray(x0).tolist()} is not a state: every entry is a number")
     _check_tolerance(tolerance)
     rate = np.asarray(lipschitz, dtype=float)
     if rate.ndim == 0 and not rate >= 0.0:
@@ -1541,12 +1557,13 @@ def _plan(
     stationarity, stationarity_tolerance, violation, violation_tolerance = _diagnostics(
         problem, actions
     )
+    trajectory = _trajectory(model, x0, actions, dt)
     plan = CausalPlan(
         actions=actions,
-        trajectory=_trajectory(model, x0, actions, dt),
+        trajectory=trajectory,
         task_cost=float(total_cost(model, x0, actions, dt, cost)),
         uncertainty_tube=None if tube is None else jnp.asarray(tube),
-        certified_horizon=None if tube is None else _within(tube, tolerance),
+        certified_horizon=None if tube is None else _certified(tube, tolerance, trajectory),
         solver_status=status,
         solver_iterations=iterations,
         relaxed_cost=None if first is None else first.task_cost,

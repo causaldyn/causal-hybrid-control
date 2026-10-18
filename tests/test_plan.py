@@ -413,6 +413,28 @@ def test_a_plan_that_never_acts_names_itself_rather_than_the_inner_threshold() -
         certify_safety(idle, _MODEL, _mixed, 0.1)
 
 
+# ---- what the audit reads, and where it refuses ----
+
+
+def test_a_start_that_is_not_a_state_is_refused() -> None:
+    """A nan start predicted a nan path, and its tube certified all ten steps."""
+    with pytest.raises(ValueError, match="is not a state"):
+        causal_plan(_MODEL, jnp.array([1.0, jnp.nan]), _COST, 0.1, 10, -5.0, 5.0, model_error=0.01)
+
+
+def test_a_tube_certifies_no_step_past_the_path_s_overflow() -> None:
+    """RK4 multiplies ``x' = 200 x`` by 8221 a step at ``dt = 0.1``, past float64's range after 78
+    steps of 100; a tube carried at no rate and at a tolerance of ``inf`` covered all of them."""
+    model = LinearDynamics(jnp.array([[200.0]]), jnp.array([[1.0]]))
+    plan = causal_plan(
+        model, jnp.array([1.0]), _COST_1, 0.1, 100, -1.0, 1.0, model_error=1e-300, steps=1
+    )
+    finite = np.isfinite(np.asarray(plan.trajectory[:, 0]))
+    assert not finite.all()
+    assert plan.certified_horizon == int(np.argmin(finite)) - 1
+    assert plan.certificate_status == "partial"
+
+
 def test_a_plan_says_whether_its_own_solve_finished() -> None:
     # The certificate is about the model; the solver status is about the optimisation. A fully
     # certified plan built on a truncated solve is a trustworthy tube around a suboptimal action,
