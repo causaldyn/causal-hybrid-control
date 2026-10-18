@@ -64,6 +64,16 @@ What it does not do, and what to watch:
   by ``1 / delta`` a step. ``Regression(hold_when_idle=True)`` discounts only the coordinates
   whose regressor is non-zero at the step, a coordinate-wise form of restricted forgetting
   (Kulhavy 1987); a long idle run without it is logged as a warning (``chc_event="dlm_windup"``).
+* **Blocks seen only through their sum wind up too.** A constant or near-constant regressor beside
+  a level leaves their difference unidentified. Component discounting inflates each block's own
+  variance every step, the two blocks are strongly negatively correlated, and the inflation leaks
+  into the one-step forecast through their sum. A level at 0.95 beside a constant regressor at
+  0.9, 200 series of 156 steps: the observational variance came back at a median 0.24 of the
+  truth, the forecast's variance at 10.9 times the squared errors, and 90% intervals covered
+  0.999; ``form="multiplicative"`` read 1.09, 1.08 and 0.909. Discounts that inflate the
+  forecast's variance more than 100 times what the most discounted block's own discount does, a
+  median over the last half of the steps, are logged as a warning (``chc_event="dlm_windup"``).
+  Directional forgetting, a discount only in the directions the data read, is not built.
 * **A coefficient that moves is not identified from a saturation that bends.** On observational
   marketing data a time-varying coefficient and a nonlinear response can explain the same series
   (Dew et al. 2024, arXiv:2408.07678); this module fits the first and cannot tell them apart.
@@ -154,6 +164,10 @@ ForecastEvolution = Literal["constant", "compounding"]
 
 # A regressor idle long enough to inflate its coefficient's variance this many times is logged.
 _WINDUP_WARN = 10.0
+# Blocks seen only through their sum, whose discounts inflate the one-step forecast's variance this
+# many times what the most discounted block's own discount does, are logged. An ordinary regressor
+# beside a level, a seasonal or a slope reads 1 to 15; a constant one beside a level 10^2 to 10^4.
+_LEAK_WARN = 100.0
 
 
 def _index(value: object) -> int | None:
@@ -587,9 +601,12 @@ def forward_filter(
     c = model.prior.covariance.copy()
     n, v = model.prior.dof, model.prior.scale
     eye = np.eye(p)
+    leak = np.full(horizon, np.nan)
     for t in range(horizon):
         a = s.evolution @ m
-        r = _sym(_evolve(s, model.form, s.evolution @ c @ s.evolution.T, active[t]))
+        evolved = s.evolution @ c @ s.evolution.T
+        r = _sym(_evolve(s, model.form, evolved, active[t]))
+        leak[t] = _leak(s, design[t : t + 1], evolved, r)
         if t in extra:
             r = r / extra[t]
             _log.info(
@@ -607,7 +624,7 @@ def forward_filter(
         f = float(f_row @ a)
         q = float(f_row @ rf) + v
         if not (math.isfinite(q) and q > 0.0):
-            raise FloatingPointError(f"step {t}: the one-step squared scale is {q}")
+            raise FloatingPointError(_unresolved(t, f"is {q}", r, v))
         nu = beta * n
         a_all[t], r_all[t], f_all[t], q_all[t], nu_all[t] = a, r, f, q, nu
         if math.isnan(ys[t]):
@@ -626,6 +643,7 @@ def forward_filter(
         m_all[t], c_all[t], n_all[t], s_all[t] = m, c, n, v
 
     _warn_windup(model, s, design)
+    _warn_leak(leak)
     return DLMFit(
         model,
         ys,
@@ -695,6 +713,51 @@ def _warn_windup(model: DynamicLinearModel, s: _Structure, design: _Array) -> No
             "; ".join(grown),
             extra={"chc_event": "dlm_windup", "coordinates": grown},
         )
+
+
+def _leak(s: _Structure, rows: _Array, evolved: _Array, prior: _Array) -> float:
+    """How many times the discount inflated a row's one-step variance ``F P F'`` to ``F R F'``
+    beyond what the most discounted block's own discount does, the largest over the rows: 1 under
+    one discount, and far above it where blocks are seen only through their sum, whose variances
+    the discount inflates block by block while the sum's stays small."""
+    rate = float(np.max(s.rates))
+    seen = np.einsum("ij,jk,ik->i", rows, evolved, rows)
+    inflated = np.einsum("ij,jk,ik->i", rows, prior, rows)
+    read = seen > 0.0
+    if rate == 0.0 or not read.any():
+        return math.nan
+    return float(np.max((inflated[read] / seen[read] - 1.0) / rate))
+
+
+def _warn_leak(leak: _Array) -> None:
+    late = leak[leak.size // 2 :]
+    if np.all(np.isnan(late)):
+        return
+    median = float(np.nanmedian(late))
+    if median > _LEAK_WARN:
+        _log.warning(
+            "dlm windup between blocks: over the last half of the steps the discounts inflated the"
+            " one-step forecast's variance a median %.3g times what the most discounted block's own"
+            " discount does. The blocks are seen only through their sum, as a constant or"
+            " near-constant regressor beside a level is, so the variance of their difference grows"
+            " every step and leaks into the forecast's, and the observational variance is"
+            " underestimated; merge the blocks, or use form='multiplicative' with one discount for"
+            " them",
+            median,
+            extra={"chc_event": "dlm_windup", "inflation": median},
+        )
+
+
+def _unresolved(t: int, what: str, prior: _Array, scale: float) -> str:
+    if not np.all(np.isfinite(prior)):
+        return f"step {t}: the one-step squared scale {what}; the prior covariance is not finite"
+    largest = float(np.linalg.eigvalsh(prior)[-1])
+    return (
+        f"step {t}: the one-step squared scale {what}; the prior covariance's largest eigenvalue is"
+        f" {largest / scale:.3g} times the observational scale, a direction the data never resolve"
+        " grown past what a float carries, as proportional columns or a constant one beside a level"
+        " grow it under a discount below 1"
+    )
 
 
 # ------------------------------------------------------------------------------------- smoothing
@@ -1765,10 +1828,13 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
     c = stacked.prior.covariance.copy()
     n, v = stacked.prior.dof, stacked.prior.scale
     eye = np.eye(p)
+    leak = np.full(horizon, np.nan)
     for t in range(horizon):
         a = s.evolution @ m
-        r = _sym(_evolve(s, stacked.form, s.evolution @ c @ s.evolution.T, active[t]))
+        evolved = s.evolution @ c @ s.evolution.T
+        r = _sym(_evolve(s, stacked.form, evolved, active[t]))
         rows = design[t]
+        leak[t] = _leak(s, rows, evolved, r)
         f = rows @ a
         q = _sym(rows @ r @ rows.T) + v * np.diag(weights)
         nu = beta * n
@@ -1785,9 +1851,7 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
             try:
                 root = linalg.cho_factor(q_seen, lower=True)
             except np.linalg.LinAlgError:
-                raise FloatingPointError(
-                    f"step {t}: the one-step squared scale is not positive definite"
-                ) from None
+                raise FloatingPointError(_unresolved(t, "is not positive definite", r, v)) from None
             e = ys[t, seen] - f[seen]
             gain = linalg.cho_solve(root, observed @ r).T
             quad = float(e @ linalg.cho_solve(root, e))
@@ -1803,6 +1867,7 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
         m_all[t], c_all[t], n_all[t], s_all[t] = m, c, n, v
 
     _warn_windup(stacked, s, active.astype(np.float64))
+    _warn_leak(leak)
     return GeoDLMFit(
         model,
         ys,

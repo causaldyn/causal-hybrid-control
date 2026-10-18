@@ -23,6 +23,7 @@ from chc.dlm import (
     decompose,
     forecast,
     forward_filter,
+    forward_filter_geos,
     monitor_evalues,
     smooth,
 )
@@ -159,6 +160,61 @@ def test_an_idle_regressor_winds_up_unless_held(caplog):
     assert any(getattr(r, "chc_event", None) == "dlm_windup" for r in caplog.records)
     held = DynamicLinearModel((Regression(1, delta, hold_when_idle=True),), _prior(1, spread=2.0))
     assert forward_filter(held, y, x).covariance[-1, 0, 0] == pytest.approx(2.0, rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("form", "regressor", "warned"),
+    [
+        ("additive", "constant", True),
+        ("additive", "drawn", False),
+        ("multiplicative", "constant", False),
+    ],
+)
+def test_blocks_seen_only_through_their_sum_are_logged_as_winding_up(
+    form: DiscountForm, regressor: str, warned: bool, caplog
+):
+    """A level beside a constant regressor: component discounting inflates each block's variance
+    every step while their sum's stays small, the inflation leaks into the one-step forecast, and
+    the observational variance is read low. Nothing was logged; the idle-run check sees a column
+    that is never zero."""
+    rng = np.random.default_rng(23)
+    horizon, variance = 156, 0.09
+    level = 10.0 + np.cumsum(0.05 * rng.standard_normal(horizon))
+    x = np.full(horizon, 2.0) if regressor == "constant" else rng.gamma(2.0, 1.0, horizon)
+    y = level + x + math.sqrt(variance) * rng.standard_normal(horizon)
+    prior = Prior(np.array([10.0, 0.0]), 4.0 * np.eye(2), 0.5, 2.0)
+    model = DynamicLinearModel((Polynomial(1, 0.95), Regression(1, 0.9)), prior, form)
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        fit = forward_filter(model, y, x)
+    records = [r for r in caplog.records if getattr(r, "chc_event", None) == "dlm_windup"]
+    assert len(records) == int(warned)
+    if warned:
+        assert records[0].inflation > 300.0
+        assert fit.scale[-1] < 0.5 * variance
+    else:
+        assert 0.5 * variance < fit.scale[-1] < 2.0 * variance
+
+
+def test_a_filter_over_geos_logs_blocks_seen_only_through_their_sum(caplog):
+    rng = np.random.default_rng(29)
+    horizon, geos = 260, 2
+    y = 10.0 + 2.0 + 0.3 * rng.standard_normal((horizon, geos))
+    x = np.full((horizon, geos, 1), 2.0)
+    model = GeoDLM((Polynomial(1, 0.95),), (Regression(1, 0.9),), geos, _prior(3, dof=2.0))
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        forward_filter_geos(model, y, x)
+    assert [r.chc_event for r in caplog.records if r.name == "chc.dlm"] == ["dlm_windup"]
+
+
+def test_a_scale_lost_to_an_unresolved_direction_names_it():
+    """Proportional columns in one block under a discount below 1: the direction they never
+    separate grows by ``1 / delta`` a step until the forecast's variance rounds below zero."""
+    rng = np.random.default_rng(0)
+    x1 = rng.gamma(2.0, 1.0, 600)
+    y = 10.0 + 0.5 * x1 + 0.3 * rng.standard_normal(600)
+    model = DynamicLinearModel((Polynomial(1, 0.95), Regression(2, 0.9)), _prior(3, dof=1.0))
+    with pytest.raises(FloatingPointError, match=r"largest eigenvalue is \S+ times the"):
+        forward_filter(model, y, np.column_stack([x1, 2.0 * x1]))
 
 
 def test_a_seasonal_block_rotates_once_a_period():
