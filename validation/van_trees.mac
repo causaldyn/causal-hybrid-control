@@ -36,3 +36,14 @@ Iconf : Vid/sigma^2$
 print("confounded per-obs info = Vid/sigma^2 (Vid<1) => floor 1/(J + n*Vid/sigma^2) HIGHER")$
 print("floor ratio confounded/experimental =",
       ratsimp((1/(J + n*Iconf))/(1/(J + n*Ipe))), " >= 1 for Vid <= 1")$
+
+/* The estimator that attains it: the posterior mean (prior mean 0) weighs the data by I = 1/sigma^2,
+   T = (S/sigma^2)/total with S = sum x_i = n*theta + E, E ~ N(0, n*sigma^2), theta ~ N(0, tau^2)
+   independent of E. T - theta = (E/sigma^2 - J*theta)/total, so its risk is
+   (n/sigma^2 + J^2*tau^2)/total^2 = 1/total. Dropping the 1/sigma^2 on S, T = S/total, leaves
+   T - theta = ((n - total)*theta + E)/total, whose risk is the bound only at sigma = 1. */
+bayesmse : (n*sigma^2/sigma^4 + J^2*tau^2)/total^2$
+print("posterior-mean risk - bound =", ratsimp(bayesmse - vtbound), " (0 => the estimator attains it)")$
+unweighted : ((n - total)^2*tau^2 + n*sigma^2)/total^2$
+print("unweighted S/total risk - bound at sigma=1:", ratsimp(subst(sigma=1, unweighted - vtbound)),
+      " at sigma=2, tau=2, n=200:", float(subst([sigma=2, tau=2, n=200], unweighted/vtbound)), "x the bound")$

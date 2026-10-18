@@ -154,3 +154,22 @@ print("STEP 6b the optimal alpha always sits inside that range, since",
       "coth(Pe) - 1/Pe > 1 - 1/Pe reduces to coth(Pe) > 1, true for every Pe > 0")$
 print("STEP 6c and for Pe <= 1 the boundary is <= 0: plain Bubnov-Galerkin (alpha = 0) is already",
       "non-oscillatory there, which is the threshold of STEP 3e seen from the other side")$
+
+/* ===== STEP 7: a flow the other way, s < 0 ===== */
+
+print("=== STEP 7: s < 0, Pe = -P with P > 0 ===")$
+
+/* Upstream is now to the right, so the test function weighs phi_i' by sign(s):
+   w_i = phi_i + alpha*(h/2)*sign(s)*phi_i', an added diffusion alpha*|s|*h/2, eps_t = eps*(1 + alpha*P).
+   The effective Peclet is then -P/(1 + alpha*P); it must give the exact amplification exp(-2*P). */
+Petn : -P/(1 + alpha*P)$
+alpha_neg : ratsimp( subst([Q = -tanh(P)], solve(Petn = Q, alpha)[1]) )$
+print("STEP 7a solving -P/(1 + alpha*P) = -tanh(P) gives", alpha_neg,
+      " -- the same coth(P) - 1/P as for s > 0: residual",
+      ratsimp( rhs(alpha_neg) - (1/tanh(P) - 1/P) ), " (0)")$
+print("STEP 7b its amplification, (1 - tanh(P))/(1 + tanh(P)) - exp(-2*P) =",
+      ratsimp( exponentialize( (1 - tanh(P))/(1 + tanh(P)) ) - exp(-2*P) ), " (0)")$
+Petw : ratsimp( subst([alpha = 1], -P/(1 - alpha*P)) )$
+print("STEP 7c without sign(s) the added diffusion is alpha*s*h/2 < 0, eps_t = eps*(1 - alpha*P):",
+      "full upwind's effective Peclet is", Petw, " and its amplification at P = 5/2 is",
+      float( subst([P = 5/2], (1 + Petw)/(1 - Petw)) ), " -- negative, the oscillation")$

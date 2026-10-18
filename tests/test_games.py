@@ -131,6 +131,20 @@ def test_stackelberg_allocation_improves_the_equilibrium_objective() -> None:
     assert float(objective(u)) > float(objective(jnp.full(3, 1 / 3)))
 
 
+def test_stackelberg_allocation_finds_a_local_maximum_not_the_global_one() -> None:
+    """The documented scope: from the even split the ascent ends at the first zone's vertex, worth
+    2.973, where the second zone's vertex is worth 3.184."""
+    attract = jnp.array([0.1, 0.5, 2.0])
+    weights = jnp.array([1.0, 1.0, 0.2])
+
+    def objective(u: jnp.ndarray) -> jnp.ndarray:
+        return jnp.dot(weights, softmax_congestion_equilibrium(attract, u, 1.5, 6.0).x)
+
+    u = stackelberg_allocation(objective, 3, budget=1.0, steps=300)
+    assert float(objective(u)) == pytest.approx(2.973, abs=2e-3)
+    assert float(objective(jnp.array([0.0, 1.0, 0.0]))) == pytest.approx(3.184, abs=2e-3)
+
+
 def test_contraction_certificate_holds_at_the_solved_equilibrium() -> None:
     certificate = congestion_contraction_certificate(beta=2.5, congestion=2.0)
     assert certificate.certified

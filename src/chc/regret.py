@@ -31,6 +31,7 @@ from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
 from scipy.optimize import brentq, minimize
 from scipy.special import erf, expit, ndtr, psi
 
+from chc._action_units import action_units
 from chc.network_causal import (
     ar1_innovations,
     cycle_shells,
@@ -58,21 +59,9 @@ class RegretCurve:
     # reported rather than dropped -- ce_explicit_constant_certificate prices the same event)
 
 
-def _action_units(r: Matrix) -> Vector:
-    """A power of two per action that brings ``r``'s diagonal to within a factor of 2 of 1.
-
-    SciPy's Riccati solvers read ``b`` and ``r`` apart, so one problem written in other units of
-    the actions read another gain: off by 1e-4 at a billionth of the units, and refused at 1e-12.
-    Solved in these units, every such problem is one problem to the bit, since a power of two
-    rescales exactly. An action whose diagonal entry is not positive keeps its units.
-    """
-    diagonal = np.diag(np.atleast_2d(r))
-    return np.exp2(-np.round(np.log2(np.where(diagonal > 0.0, diagonal, 1.0)) / 2.0))
-
-
 def dlqr(a: Matrix, b: Matrix, q: Matrix, r: Matrix) -> tuple[Matrix, Matrix]:
     """Infinite-horizon discrete LQR: optimal gain ``K`` and cost-to-go ``P`` (via the DARE)."""
-    scale = _action_units(r)
+    scale = action_units(r)
     b_unit, r_unit = b * scale, scale[:, None] * r * scale
     p = solve_discrete_are(a, b_unit, q, r_unit)
     k = scale[:, None] * np.linalg.solve(r_unit + b_unit.T @ p @ b_unit, b_unit.T @ p @ a)
@@ -419,7 +408,7 @@ class MultivariateActionFloor:
     does not depend on contributes exactly nothing however badly it is identified.
     """
 
-    floor: float  # tr(M Psi' G^-1 Psi'): the bound EVERY estimator of theta obeys
+    floor: float  # tr(M Psi' G^-1 Psi') at the plant supplied: a LOCAL floor (see the function)
     optimal_action: Vector  # u*(theta) at the plant supplied
     curvature: Matrix  # M = B'QB + R, the exact second derivative of the regret in action space
     sensitivity: Matrix  # Psi' = du*/dtheta, q x d
@@ -503,6 +492,15 @@ def multivariate_action_floor(
 
     which at ``p = q = 1`` is ``(b^2+rr) psi'(b)^2 / G`` -- Result 10's constant, unchanged
     (STEP 4c, residual 0).
+
+    The floor is LOCAL. Van Trees bounds the Bayes risk by ``E_lambda[Psi']``, the sensitivity
+    averaged over the prior, and the trace step needs one ``M`` for every plant; here both are read
+    at the plant supplied. It bounds every estimator only as far as ``Psi'`` and ``M`` hold still
+    over the prior. Where they move, a Bayes
+    estimator goes below it: a scalar plant at ``b = 0``, ``rr = 0.5``, ``x_t = 1``, a prior of SD 1
+    and five unit-information observations has a floor of 0.333, and the posterior's Bayes action a
+    regret of 0.075 (0.12 to 0.76 of the floor on six such priors near ``b = 0``).
+    :func:`multivariate_van_trees_certificate`'s ``bayes_floor`` averages ``Psi'`` over the prior.
 
     What the scalar model cannot express is in :attr:`alignment`. The floor splits over the
     eigendirections of the information as ``sum_i (Psi' v_i)' M (Psi' v_i) / lambda_i``, so
@@ -812,7 +810,7 @@ class HighProbRegretCurve:
 
     deltas: Vector  # confidence levels delta (band holds with probability >= 1-delta)
     highprob_bands: Vector  # C*2*sigma^2*log(2/delta)/(n*V_exp): the finite-sample band
-    empirical_coverage: Vector  # MC fraction of trials with regret <= band (should be >= 1-delta)
+    empirical_coverage: Vector  # MC fraction of trials whose EXACT regret is <= band
     confounded_bands: Vector  # the (wider) band under confounding (residual V_conf < V_exp)
     band_over_floor: Vector  # band / CR-floor = 2*log(2/delta): the log(1/delta) confidence price
     cr_floor: float  # the Result 10 in-expectation floor C*sigma^2/(n*V_exp)
@@ -844,6 +842,13 @@ def highprob_regret_certificate(
     it. A fully rigorous upper bound replaces ``C`` by the Lipschitz constant of ``u*`` on the
     confidence region (``regret = (b^2+rr)(u*(b_hat)-u*(b))^2 <= (b^2+rr) L^2 r(delta)^2``); locally
     ``L^2 -> C``. Concentration checked by Monte-Carlo coverage; the implication proved in Rocq.
+
+    The band is that local, second-order one, so it bounds the realised regret only where ``C``
+    holds across the confidence region. ``empirical_coverage`` reads the EXACT regret
+    ``(b^2+rr)(u*(b_hat)-u*(b))^2`` against it; read on the quadratic proxy ``C*(b_hat-b)^2`` it
+    would only check the concentration. At the defaults the two agree; at ``b = 0.6``,
+    ``sigma = 1``, ``n = 30`` the band at ``delta = 0.01`` covers the exact regret in 0.916 of the
+    trials, where the proxy reads 0.996.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     ds = np.asarray(deltas, dtype=np.float64)
@@ -857,7 +862,8 @@ def highprob_regret_certificate(
         rng = np.random.default_rng(4241 * t + n)
         u = np.sqrt(v_exp) * rng.standard_normal(n)
         y = b * u + sigma * rng.standard_normal(n)
-        regrets[t] = coeff * (np.dot(u, y) / np.dot(u, u) - b) ** 2
+        b_hat = np.dot(u, y) / np.dot(u, u)
+        regrets[t] = (b**2 + rr) * (b_hat * xt / (b_hat**2 + rr) - b * xt / (b**2 + rr)) ** 2
     for i, band in enumerate(bands):
         coverage[i] = float(np.mean(regrets <= band))
     return HighProbRegretCurve(ds, bands, coverage, conf_bands, bands / floor, float(floor))
@@ -4573,7 +4579,7 @@ def van_trees_certificate(
             rng = np.random.default_rng(8263 * t + n_obs)
             theta = tau * rng.standard_normal()  # draw from the prior
             x = theta + sigma * rng.standard_normal(n_obs)  # observations
-            post_mean = np.sum(x) / (1.0 / tau**2 + n_obs / sigma**2)  # Bayes estimator (mu0 = 0)
+            post_mean = (np.sum(x) / sigma**2) / (j_prior + n_obs * i_data)  # Bayes, mu0 = 0
             errs[t] = (post_mean - theta) ** 2
         mse[k] = float(np.mean(errs))
     return VanTreesCurve(ns, mse, bound, conf_bound, float(mse[-1] / bound[-1]))
@@ -5400,8 +5406,15 @@ def lq_regret_sensitivity(effect: float, effort: float, target: float) -> float:
 def confounding_robust_lq_regret(
     regret_sensitivity: float, stat_error: float, confounding_halfwidth: float
 ) -> float:
-    """Confounding-robust LQ regret bound ``L_reg*(eps_stat + Delta)^2`` (the formula is Rocq's
-    definition ``cr_regret``; that it bounds the LQ regret is the cited local quadratic bound).
+    """Second-order confounding-robust LQ regret ``L_reg*(eps + Delta)^2`` (the formula is Rocq's
+    definition ``cr_regret``).
+
+    It is the leading term of the worst regret over an effect error of ``eps + Delta``, ``eps`` the
+    ``stat_error``, not a bound on it: the terms of third order and up are left out. At the
+    certificate's defaults the exact worst regret over that interval exceeds it by 0.9% at
+    ``Gamma = 1`` and by 5% to 8% at ``Gamma`` from 1.5 to 5. Read it as a bound only where
+    ``eps + Delta`` is small against the distance from the effect to where ``u*`` turns,
+    ``sqrt(r)``.
 
     ``Delta`` is the confounding half-width on the effect estimate -- the §32 inflation
     (:func:`chc.uncertainty.confounding_robust_inflation`), an *irreducible* bias floor that does
@@ -5426,7 +5439,8 @@ def confounding_robust_lq_regret_matrix(
     matrix ``E``, the regret is the quadratic form ``tr(E^T H E) = O(||E||_F^2)``. The confounding
     floor (``stat = 0``) is ``tr(Delta^T H Delta)`` -- SECOND order in the Frobenius norm of the
     matrix confounding half-width, the same second-order robustness as the scalar §33. Reduces to
-    :func:`confounding_robust_lq_regret` in the ``1x1`` case.
+    :func:`confounding_robust_lq_regret` in the ``1x1`` case, and is a second-order term as that is,
+    not a bound on the worst regret.
     """
     e = np.asarray(stat_error, dtype=np.float64) + np.asarray(confounding, dtype=np.float64)
     h = np.asarray(curvature, dtype=np.float64)

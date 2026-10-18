@@ -69,6 +69,29 @@ def test_the_butterfly_needs_the_collider_it_also_forbids() -> None:
     assert observed.adjustment_set(treatment="x", outcome="y").status == "identified"
 
 
+def test_blaming_latents_checks_each_one_once_not_every_ordering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Six latent confounders, none of whose measurement alone identifies the effect. A graph
+    blamed its latents by asking each one-latent-fewer graph for its whole adjustment set, which
+    blamed that graph's latents in turn: 1,957 adjustment sets at six latents and 109,601 at eight,
+    where seven validity checks do."""
+    edges = [("x", "y")] + [(f"u{i}", end) for i in range(6) for end in ("x", "y")]
+    graph = CausalGraph.from_edges(edges, latent=[f"u{i}" for i in range(6)])
+    asked = []
+    original = CausalGraph.adjustment_set
+
+    def counted(self: CausalGraph, **roles: str) -> object:
+        asked.append(self.latent)
+        return original(self, **roles)
+
+    monkeypatch.setattr(CausalGraph, "adjustment_set", counted)
+    result = graph.adjustment_set(treatment="x", outcome="y")
+    assert result.status == "not_identified"
+    assert "latent [" not in result.reason  # no single latent identifies it, so none is blamed
+    assert len(asked) == 1
+
+
 def test_an_identified_effect_with_nothing_to_adjust_for_is_still_truthy() -> None:
     randomised = CausalGraph.from_edges([("x", "y")])
     result = randomised.adjustment_set(treatment="x", outcome="y")

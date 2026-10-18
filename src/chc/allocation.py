@@ -130,7 +130,10 @@ HONEST SCOPE:
   the adstock the tests covered reads the family's shape, not the experiment.
 * One rate a period for each channel, not a schedule: with a response that does not change with
   the period, only the history's carryover at the start and the tail at the end make periods
-  differ.
+  differ. On S-shaped curves "the best plan" everywhere here is the best of these flat plans, and a
+  schedule that spends in bursts can return more than any of them: one Hill curve of slope 3 and
+  scale 1, with no carryover, returns 0.105 on 1.2 spread over four periods and 0.633 on 1.2 spent
+  in one, six times more. No schedule is searched.
 * The tail is counted with nothing spent after the plan. Spend that continues after it would take
   the tail further up the curve, so a long kernel's tail is valued at its most.
 * :class:`chc.response.Ricker` is not monotone, and a negative coefficient turns a concave curve
@@ -138,7 +141,8 @@ HONEST SCOPE:
 * On an S-shaped curve the best plan's gain rises with the budget but need not be concave in it,
   so a goal is met over searched plans by Brent's method on the budget: a return target where the
   gain crosses it, the least budget to the search's tolerance, and a target return on ad spend
-  where the gain less the target a unit falls through nothing past its peak, not proved the most.
+  where the gain less the target a unit last falls through nothing past its peak on a grid of 16
+  budgets, not proved the most: a crossing and its return between two of them are not seen.
 * On S-shaped curves every plan and split here is the best only to the search's tolerance, a share
   ``1e-9`` of its scale by default and never finer than 64 epsilons of the dtype, or as near as
   ``max_boxes`` boxes come, 500 by default; a goal's, at each budget it tries. Sums of S-shaped
@@ -931,8 +935,10 @@ def allocate(
 ) -> Allocation:
     """Spend ``budget`` over ``periods`` at one rate a period for each channel, for the most return.
 
-    Exact where every curve is concave; on S-shaped curves the best to the tolerance ``rtol`` and
-    ``atol`` set, by branch and bound (see the module).
+    Exact where every curve is concave; on S-shaped curves the best plan of one rate a period to
+    the tolerance ``rtol`` and ``atol`` set, by branch and bound (see the module). There a schedule
+    that spends in bursts can return more, six times more for one Hill curve of slope 3 over four
+    periods, and none is searched.
 
     Args:
         channels: the channels, each read as given.
@@ -1404,9 +1410,13 @@ def budget_for(
     target is the budget of the best plan with the budget free and each currency unit charged
     ``per_unit``, searched in boxes as :func:`allocate` searches a budget: no budget gains more less
     its charge, so below it a unit returns more on average and past it less. A return on spend is
-    met where the searched gain less ``per_unit`` a unit falls through nothing past that peak, by
-    Brent's method; refused where the peak falls short, but past the peak the gain need not fall
-    all the way, and the budget is not proved the most.
+    met where the searched gain less ``per_unit`` a unit falls through nothing past that peak,
+    refused where the peak falls short. Past the peak the gain need not fall all the way: it can
+    cross the target, rise back over it on a curve that turns up later, and cross again. The
+    budgets on a grid of 16 steps from the peak to the caps are read down from the caps, and
+    Brent's method closes the last crossing the grid sees; Brent's method alone returns any of
+    the crossings. A crossing and its return between two steps are not seen, so the budget is not
+    proved the most.
 
     Args:
         channels, periods, lower, upper, history: as :func:`allocate` takes them.
@@ -1552,7 +1562,7 @@ def _sought(
                         f"gain less {per_unit} a unit peaks at {surplus(best):.6g}, at a budget "
                         f"of {best.budget:.6g}"
                     )
-                found = plan(_crossing(plan, lambda p: -surplus(p), best.budget, most))
+                found = plan(_last_crossing(plan, lambda p: -surplus(p), best.budget, most))
     compiling, searching = clock.read()
     return replace(found, compile_seconds=compiling, search_seconds=searching)
 
@@ -2428,8 +2438,9 @@ def budget_for_geos(
 
     On an S-shaped curve each plan is :func:`allocate_geos`' search at its budget, and the best
     plan's gain need not be concave in the budget: a return target and a return on spend are met
-    where that gain crosses them, by Brent's method between budgets either side, and neither is
-    proved the least or the most. The marginal target's plan is searched with its budget free.
+    where that gain crosses them, by Brent's method between budgets either side, a return on
+    spend at the last crossing a grid of 16 budgets past the peak sees, and neither is proved the
+    least or the most. The marginal target's plan is searched with its budget free.
 
     Args:
         cells, periods, lower, upper, geo_totals, channel_totals, national, history: as
@@ -2512,7 +2523,7 @@ def _meet(layout: _Layout, periods: int, goal: Goal) -> GeoAllocation:
                     f"the gain less {per_unit} a unit peaks at {surplus(peak):.6g}, at a budget "
                     f"of {peak.budget:.6g}"
                 )
-            return plan(_crossing(plan, lambda p: -surplus(p), peak.budget, most))
+            return plan(_last_crossing(plan, lambda p: -surplus(p), peak.budget, most))
 
 
 def _layout(
@@ -3160,6 +3171,30 @@ def _crossing(
     return brentq(
         lambda budget: excess(plan(budget)), short, past, xtol=4 * _EPS * past, rtol=4 * _EPS
     )
+
+
+_SCAN = 16
+"""The steps of the grid :func:`_last_crossing` reads before Brent's method closes a crossing."""
+
+
+def _last_crossing(
+    plan: Callable[[float], _Plan],
+    excess: Callable[[_Plan], float],
+    short: float,
+    past: float,
+) -> float:
+    """The last budget where ``excess`` crosses nothing between ``short``, where it is not above,
+    and ``past``, where it is: the grid of :data:`_SCAN` steps between them is read down from
+    ``past`` to its first budget not above, and Brent's method closes the crossing between it and
+    the step after. Brent's method on the whole interval returns any of the crossings there, and on
+    S-shaped curves the excess can cross nothing three times past its peak. A crossing and its
+    return inside one step are not seen."""
+    above = past
+    for budget in np.linspace(short, past, _SCAN + 1)[-2::-1]:
+        if excess(plan(float(budget))) <= 0.0:
+            return _crossing(plan, excess, float(budget), above)
+        above = float(budget)
+    return _crossing(plan, excess, short, above)
 
 
 def _outer(

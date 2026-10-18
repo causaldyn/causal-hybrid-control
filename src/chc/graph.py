@@ -293,13 +293,7 @@ class CausalGraph:
                 f"{latent_exposure} is latent, so no column carries it",
             )
 
-        candidate = tuple(
-            node
-            for node in self.nodes
-            if node in self.ancestors(exposure + response)
-            and node not in self.latent
-            and node not in self._forbidden(exposure, response)
-        )
+        candidate = self._canonical(exposure, response)
         if self.is_valid_adjustment_set(candidate, treatment=exposure, outcome=response):
             reason = (
                 "no adjustment needed: no unblocked non-causal path"
@@ -450,20 +444,34 @@ class CausalGraph:
         )
         return CausalGraph(nodes=self.nodes, edges=kept, latent=self.latent)
 
+    def _canonical(self, exposure: Sequence[str], response: Sequence[str]) -> tuple[str, ...]:
+        """``Adjust(X, Y, O)``: the observed ancestors of ``X u Y`` outside ``forb(X, Y)``."""
+        ancestors = self.ancestors(tuple(exposure) + tuple(response))
+        forbidden = self._forbidden(exposure, response)
+        return tuple(
+            node
+            for node in self.nodes
+            if node in ancestors and node not in self.latent and node not in forbidden
+        )
+
     def _open_confounders(self, exposure: Sequence[str], response: Sequence[str]) -> frozenset[str]:
         """Latent nodes whose measurement alone would identify the effect --- the actionable blame.
 
         Deliberately *not* "latents on some open path": that set contains nodes a caller can do
         nothing with, since measuring one of them need not close the others. This answers the
         question a caller can act on --- which single column, if it existed, would flip the status.
+
+        Each latent is tested by the canonical set's validity alone. Asked by
+        :meth:`adjustment_set`, a graph that still failed blamed its own latents in turn, so ``k``
+        latents cost about ``e * k!`` graphs: 109,601 at eight.
         """
-        return frozenset(
-            node
-            for node in self.latent
-            if CausalGraph(self.nodes, self.edges, self.latent - {node}).adjustment_set(
-                treatment=exposure, outcome=response
-            )
-        )
+        blamed: set[str] = set()
+        for node in self.latent:
+            measured = CausalGraph(self.nodes, self.edges, self.latent - {node})
+            candidate = measured._canonical(exposure, response)
+            if measured.is_valid_adjustment_set(candidate, treatment=exposure, outcome=response):
+                blamed.add(node)
+        return frozenset(blamed)
 
 
 def _as_tuple(names: str | Sequence[str]) -> tuple[str, ...]:

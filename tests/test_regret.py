@@ -261,6 +261,17 @@ def test_van_trees_inequality_is_tight_for_the_gaussian_conjugate() -> None:
     assert (np.diff(curve.empirical_mse) < 0).all()  # MSE falls with more observations
 
 
+@pytest.mark.parametrize("sigma", [0.5, 2.0])
+def test_van_trees_posterior_mean_weighs_the_data_by_its_noise(sigma: float) -> None:
+    """The posterior mean is ``(sum(x)/sigma^2) / (1/tau^2 + n/sigma^2)``. Without the ``1/sigma^2``
+    on the data it was the Bayes estimator only at ``sigma = 1``, and its risk read 1800 times the
+    bound at ``sigma`` 0.5 and 2 (``validation/van_trees.mac``: 1801 at n = 200). Each MSE is a mean
+    of 1500 squared Gaussian errors, a relative Monte Carlo SD of ``sqrt(2/1500) = 0.037``; the
+    tolerance is four of them."""
+    curve = van_trees_certificate(sigma=sigma, sample_sizes=(5, 50), n_trials=1500)
+    np.testing.assert_allclose(curve.empirical_mse, curve.van_trees_bound, rtol=0.15)
+
+
 def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     # Contribution 3 (proofs/adaptive_exploration.v): control with online effect learning.
     # A tapering schedule v_t ~ 1/sqrt(t) reaches cumulative regret Theta(sqrt(T)) -- matching the
@@ -591,6 +602,16 @@ def test_regret_band_holds_with_high_probability() -> None:
     assert (np.diff(curve.band_over_floor) > 0).all()  # smaller delta (more confidence) => wider
     assert (curve.confounded_bands > curve.highprob_bands).all()  # confounding widens the band
     assert curve.cr_floor > 0.0  # the Result 10 in-expectation floor exists
+
+
+def test_highprob_coverage_reads_the_exact_regret_not_its_quadratic_proxy() -> None:
+    """The band is second order in the effect error, so far from the defaults it misses the exact
+    regret ``(b^2+rr)(u*(b_hat)-u*(b))^2``. The coverage was read on the proxy ``C*(b_hat-b)^2``
+    and so read 0.996 at ``delta = 0.01`` here; on the exact regret it is 0.916, a Monte Carlo SD
+    of 0.006 over 2,000 trials."""
+    curve = highprob_regret_certificate(b=0.6, sigma=1.0, n=30, n_trials=2000)
+    assert curve.empirical_coverage[-1] == pytest.approx(0.916, abs=0.025)
+    assert curve.empirical_coverage[-1] < 1.0 - curve.deltas[-1]
 
 
 def test_confounded_controller_settles_at_the_wrong_turnpike() -> None:
@@ -1867,3 +1888,29 @@ def test_a_nan_cap_or_budget_is_refused() -> None:
         capped_exploration_policy(horizon=50, cap=float("nan"))
     with pytest.raises(ValueError, match="not nan"):
         capped_exploration_policy(horizon=50, cap=0.03, budget=float("nan"))
+
+
+def test_the_multivariate_action_floor_is_local_and_a_bayes_action_goes_below_it() -> None:
+    """The floor reads ``Psi'`` and ``M`` at the plant supplied, where van Trees averages ``Psi'``
+    over the prior. At ``b = 0``, where the optimal action is steepest in the effect, a prior of
+    SD 1 and five unit-information observations, the posterior's Bayes action regrets 0.075 against
+    a floor of 0.333; its documented scope, not a bound on every estimator. Over 200,000 draws the
+    regret's Monte Carlo SD is under 0.001."""
+    rr, prior_sd, n = 0.5, 1.0, 5
+    information = n + 1.0 / prior_sd**2
+    floor = multivariate_action_floor(
+        effect=np.zeros((1, 1)),
+        state_weight=np.eye(1),
+        action_weight=np.array([[rr]]),
+        target=np.ones(1),
+        information=np.array([[information]]),
+    ).floor
+    assert floor == pytest.approx(2.0 / information, rel=1e-12, abs=0.0)
+    rng = np.random.default_rng(0)
+    b = prior_sd * rng.standard_normal(200_000)
+    fitted = b + rng.standard_normal(b.size) / np.sqrt(n)
+    mean, var = n * fitted / information, 1.0 / information
+    bayes = -mean / (mean**2 + var + rr)  # argmin of the posterior's expected regret
+    regret = float(np.mean((b**2 + rr) * (bayes + b / (b**2 + rr)) ** 2))
+    assert regret == pytest.approx(0.075, abs=0.005)
+    assert regret < 0.3 * floor

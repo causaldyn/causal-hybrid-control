@@ -13,9 +13,10 @@ import numpy as np
 from jax import Array
 from scipy.linalg import solve_continuous_are
 
+from chc._action_units import action_units
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
-from chc.regret import _action_units, certainty_equivalence_gap
+from chc.regret import certainty_equivalence_gap
 
 
 def linearize_continuous(dyn: Dynamics, x: Array, u: Array) -> tuple[Array, Array]:
@@ -33,10 +34,22 @@ def linearize_discrete(dyn: Dynamics, x: Array, u: Array, dt: float) -> tuple[Ar
 
 
 def continuous_lqr(a: Array, b: Array, q: Array, r: Array) -> tuple[Array, Array]:
-    """Solve the continuous ARE; return ``(P, K)`` with the optimal feedback ``u = -K x``."""
+    """Solve the continuous ARE; return ``(P, K)`` with the optimal feedback ``u = -K x``.
+
+    Raises:
+        ValueError: if ``r`` is not positive definite. An action ``r`` charges nothing or less
+            for leaves the cost no least-cost feedback, and the ARE's root is no optimum; SciPy's
+            solver read an indefinite ``r`` and returned a gain.
+    """
     r_np = np.asarray(r)
-    scale = _action_units(r_np)
+    scale = action_units(r_np)
     b_unit, r_unit = np.asarray(b) * scale, scale[:, None] * r_np * scale
+    smallest = np.linalg.eigvalsh(0.5 * (r_unit + r_unit.T)).min()
+    if not smallest > 0.0:
+        raise ValueError(
+            f"r must be positive definite: in the actions' units its least eigenvalue is "
+            f"{smallest:.3g}, so the cost has no least action"
+        )
     p = solve_continuous_are(np.asarray(a), b_unit, np.asarray(q), r_unit)
     k = scale[:, None] * np.linalg.solve(r_unit, b_unit.T @ p)
     return jnp.asarray(p), jnp.asarray(k)
@@ -65,13 +78,17 @@ def finite_horizon_dlqr(
 
 
 def dlqr_feedback_controls(dyn: Dynamics, x0: Array, gains: Array, dt: float) -> Array:
-    """Simulate ``u_k = -gains[k] x_k`` and return the realised control sequence ``(H, m)``."""
+    """Simulate ``u_k = -gains[k] x_k`` and return the realised control sequence ``(H, m)``.
+
+    Step ``k`` runs from ``t = k * dt``, the clock of :func:`chc.integrate.rollout`, so a plant that
+    reads the time sees each step at its own.
+    """
     x = x0
     controls = []
-    for gain in gains:
+    for k, gain in enumerate(gains):
         u = -gain @ x
         controls.append(u)
-        x = rk4_step(dyn, 0.0, x, u, dt)
+        x = rk4_step(dyn, k * dt, x, u, dt)
     return jnp.stack(controls)
 
 

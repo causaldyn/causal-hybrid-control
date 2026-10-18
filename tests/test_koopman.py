@@ -327,7 +327,8 @@ def test_the_closure_residuals_are_read_across_five_contiguous_blocks() -> None:
         train = np.setdiff1d(np.arange(len(xs)), block)
         fold = KoopmanModel(degree=3).fit(xs[train], us[train], x_next[train])
         error[block] = fold.residuals(xs[block], us[block], x_next[block])
-    expected = np.sqrt(np.sum(error**2, axis=0) / np.sum(target**2, axis=0))
+    spread = np.sum((target - target.mean(axis=0)) ** 2, axis=0)
+    expected = np.sqrt(np.sum(error**2, axis=0) / spread)
     assert model.closure_residuals is not None
     np.testing.assert_allclose(model.closure_residuals, expected, rtol=1e-12, atol=0.0)
 
@@ -368,4 +369,34 @@ def test_a_state_the_log_never_moves_reads_a_closure_residual_of_zero() -> None:
     model = KoopmanModel(degree=1).fit(xs, us, x_next)
     assert model.closure_residuals is not None
     assert model.closure_residuals[2] == 0.0
+    koopman_lqr_gain(model, np.eye(3), np.array([[1.0]]), max_residual=0.8)
+
+
+@pytest.mark.parametrize("level", [0.0, 273.15])
+def test_a_lift_that_does_not_close_is_refused_at_any_level_of_the_state(level: float) -> None:
+    """``x' = 2x - x^3 + u/10`` on ``[-1.5, 1.5]`` leaves a degree-one lift with no cube. Read over
+    the feature's root mean square, the residual of the same plant logged 273.15 higher, as in
+    kelvin, fell from 0.71 to 0.0024 and the gain was granted; read over its spread about its
+    mean it is 0.85 there, and the gain refused."""
+    rng = np.random.default_rng(0)
+    xs, us = rng.uniform(-1.5, 1.5, (600, 1)), rng.uniform(-1.0, 1.0, (600, 1))
+    x_next = xs + (xs - xs**3) + 0.1 * us
+    model = KoopmanModel(degree=1).fit(xs + level, us, x_next + level)
+    assert model.closure_residuals is not None
+    assert float(model.closure_residuals[0]) > 0.6
+    with pytest.raises(ValueError, match="does not close"):
+        koopman_lqr_gain(model, np.eye(1), np.array([[0.1]]))
+
+
+@pytest.mark.parametrize("level", [0.1, 273.15])
+def test_a_state_the_log_holds_at_a_level_reads_a_closure_residual_near_zero(level: float) -> None:
+    """A state held at one value has no spread about its mean, and its mean need not round to the
+    value: read over that spread, its residual was the ridge's rounding over nothing, infinite or
+    far above 1, and the gain refused. It is read over its root mean square."""
+    xs, us, x_next = _gaussian(200)
+    held = np.full(200, level)
+    xs, x_next = np.column_stack([xs, held]), np.column_stack([x_next, held])
+    model = KoopmanModel(degree=1).fit(xs, us, x_next)
+    assert model.closure_residuals is not None
+    assert model.closure_residuals[2] < 1e-6
     koopman_lqr_gain(model, np.eye(3), np.array([[1.0]]), max_residual=0.8)

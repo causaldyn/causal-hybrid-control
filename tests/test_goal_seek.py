@@ -303,6 +303,19 @@ def test_an_s_curve_s_return_on_spend_is_met_where_allocate_s_plan_falls_through
     assert more.gain < 0.5 * more.budget
 
 
+def test_a_return_on_spend_is_met_at_the_last_budget_whose_surplus_falls_through_it():
+    """A concave channel and a steep Hill one: past the peak, the gain less 0.6 a unit falls
+    through nothing near 22.75, rises back over it as the Hill curve turns up near 33.25, and falls
+    through again near 42.75. Brent's method on the whole interval stopped at the first, 22.83."""
+    pair = (Channel(ONE, MichaelisMenten(0.5), 14.0), Channel(ONE, Hill(30.0, 8.0), 15.0))
+    box = {"lower": np.zeros(2), "upper": np.full(2, 40.0)}
+    plan = budget_for(pair, ReturnOnSpendTarget(0.6), 1, **box)
+    assert 41.0 < plan.budget < 44.0
+    assert plan.gain == pytest.approx(0.6 * plan.budget, rel=1e-9, abs=0.0)
+    more = allocate(pair, plan.budget + 0.25, 1, **box)
+    assert more.gain < 0.6 * more.budget
+
+
 @pytest.mark.parametrize(
     "goal",
     [ReturnTarget(10000.0), MarginalReturnTarget(3.5), ReturnOnSpendTarget(4.4)],

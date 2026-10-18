@@ -49,3 +49,11 @@ def test_settling_time_is_infinite_when_the_response_never_enters_the_band() -> 
 def test_steady_state_error_reads_the_final_offset() -> None:
     settled = np.concatenate([np.linspace(0.0, 0.9, 500), np.full(500, 0.9)])  # rests at 0.9
     assert steady_state_error(settled, 1.0, window=100) == pytest.approx(0.1, abs=1e-6)
+
+
+@pytest.mark.parametrize("peak", [0.05, 0.6])
+def test_rise_time_is_infinite_when_the_response_never_reaches_the_high_level(peak: float) -> None:
+    """A response that stops short of 90% of the step has not risen: ``argmax`` of a level never
+    reached is 0, so the time read 0.0 below the 10% level and minus one step past it."""
+    ramp = np.concatenate([np.linspace(0.0, peak, 50), np.full(50, peak)])
+    assert rise_time(ramp, 1.0, DT, initial=0.0) == float("inf")
