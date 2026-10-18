@@ -261,6 +261,17 @@ def test_van_trees_inequality_is_tight_for_the_gaussian_conjugate() -> None:
     assert (np.diff(curve.empirical_mse) < 0).all()  # MSE falls with more observations
 
 
+@pytest.mark.parametrize("sigma", [0.5, 2.0])
+def test_van_trees_posterior_mean_weighs_the_data_by_its_noise(sigma: float) -> None:
+    """The posterior mean is ``(sum(x)/sigma^2) / (1/tau^2 + n/sigma^2)``. Without the ``1/sigma^2``
+    on the data it was the Bayes estimator only at ``sigma = 1``, and its risk read 1800 times the
+    bound at ``sigma`` 0.5 and 2 (``validation/van_trees.mac``: 1801 at n = 200). Each MSE is a mean
+    of 1500 squared Gaussian errors, a relative Monte Carlo SD of ``sqrt(2/1500) = 0.037``; the
+    tolerance is four of them."""
+    curve = van_trees_certificate(sigma=sigma, sample_sizes=(5, 50), n_trials=1500)
+    np.testing.assert_allclose(curve.empirical_mse, curve.van_trees_bound, rtol=0.15)
+
+
 def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     # Contribution 3 (proofs/adaptive_exploration.v): control with online effect learning.
     # A tapering schedule v_t ~ 1/sqrt(t) reaches cumulative regret Theta(sqrt(T)) -- matching the

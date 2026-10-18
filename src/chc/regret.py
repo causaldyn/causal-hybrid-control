@@ -4558,7 +4558,7 @@ def van_trees_certificate(
             rng = np.random.default_rng(8263 * t + n_obs)
             theta = tau * rng.standard_normal()  # draw from the prior
             x = theta + sigma * rng.standard_normal(n_obs)  # observations
-            post_mean = np.sum(x) / (1.0 / tau**2 + n_obs / sigma**2)  # Bayes estimator (mu0 = 0)
+            post_mean = (np.sum(x) / sigma**2) / (j_prior + n_obs * i_data)  # Bayes, mu0 = 0
             errs[t] = (post_mean - theta) ** 2
         mse[k] = float(np.mean(errs))
     return VanTreesCurve(ns, mse, bound, conf_bound, float(mse[-1] / bound[-1]))
