@@ -1888,3 +1888,29 @@ def test_a_nan_cap_or_budget_is_refused() -> None:
         capped_exploration_policy(horizon=50, cap=float("nan"))
     with pytest.raises(ValueError, match="not nan"):
         capped_exploration_policy(horizon=50, cap=0.03, budget=float("nan"))
+
+
+def test_the_multivariate_action_floor_is_local_and_a_bayes_action_goes_below_it() -> None:
+    """The floor reads ``Psi'`` and ``M`` at the plant supplied, where van Trees averages ``Psi'``
+    over the prior. At ``b = 0``, where the optimal action is steepest in the effect, a prior of
+    SD 1 and five unit-information observations, the posterior's Bayes action regrets 0.075 against
+    a floor of 0.333; its documented scope, not a bound on every estimator. Over 200,000 draws the
+    regret's Monte Carlo SD is under 0.001."""
+    rr, prior_sd, n = 0.5, 1.0, 5
+    information = n + 1.0 / prior_sd**2
+    floor = multivariate_action_floor(
+        effect=np.zeros((1, 1)),
+        state_weight=np.eye(1),
+        action_weight=np.array([[rr]]),
+        target=np.ones(1),
+        information=np.array([[information]]),
+    ).floor
+    assert floor == pytest.approx(2.0 / information, rel=1e-12, abs=0.0)
+    rng = np.random.default_rng(0)
+    b = prior_sd * rng.standard_normal(200_000)
+    fitted = b + rng.standard_normal(b.size) / np.sqrt(n)
+    mean, var = n * fitted / information, 1.0 / information
+    bayes = -mean / (mean**2 + var + rr)  # argmin of the posterior's expected regret
+    regret = float(np.mean((b**2 + rr) * (bayes + b / (b**2 + rr)) ** 2))
+    assert regret == pytest.approx(0.075, abs=0.005)
+    assert regret < 0.3 * floor

@@ -404,7 +404,7 @@ class MultivariateActionFloor:
     does not depend on contributes exactly nothing however badly it is identified.
     """
 
-    floor: float  # tr(M Psi' G^-1 Psi'): the bound EVERY estimator of theta obeys
+    floor: float  # tr(M Psi' G^-1 Psi') at the plant supplied: a LOCAL floor (see the function)
     optimal_action: Vector  # u*(theta) at the plant supplied
     curvature: Matrix  # M = B'QB + R, the exact second derivative of the regret in action space
     sensitivity: Matrix  # Psi' = du*/dtheta, q x d
@@ -488,6 +488,15 @@ def multivariate_action_floor(
 
     which at ``p = q = 1`` is ``(b^2+rr) psi'(b)^2 / G`` -- Result 10's constant, unchanged
     (STEP 4c, residual 0).
+
+    The floor is LOCAL. Van Trees bounds the Bayes risk by ``E_lambda[Psi']``, the sensitivity
+    averaged over the prior, and the trace step needs one ``M`` for every plant; here both are read
+    at the plant supplied. It bounds every estimator only as far as ``Psi'`` and ``M`` hold still
+    over the prior. Where they move, a Bayes
+    estimator goes below it: a scalar plant at ``b = 0``, ``rr = 0.5``, ``x_t = 1``, a prior of SD 1
+    and five unit-information observations has a floor of 0.333, and the posterior's Bayes action a
+    regret of 0.075 (0.12 to 0.76 of the floor on six such priors near ``b = 0``).
+    :func:`multivariate_van_trees_certificate`'s ``bayes_floor`` averages ``Psi'`` over the prior.
 
     What the scalar model cannot express is in :attr:`alignment`. The floor splits over the
     eigendirections of the information as ``sum_i (Psi' v_i)' M (Psi' v_i) / lambda_i``, so
@@ -5374,7 +5383,14 @@ def lq_regret_sensitivity(effect: float, effort: float, target: float) -> float:
 def confounding_robust_lq_regret(
     regret_sensitivity: float, stat_error: float, confounding_halfwidth: float
 ) -> float:
-    """Confounding-robust LQ regret bound ``L_reg*(eps_stat + Delta)^2`` (Rocq ``cr_regret``).
+    """Second-order confounding-robust LQ regret ``L_reg*(eps + Delta)^2`` (Rocq ``cr_regret``).
+
+    It is the leading term of the worst regret over an effect error of ``eps + Delta``, ``eps`` the
+    ``stat_error``, not a bound on it: the terms of third order and up are left out. At the
+    certificate's defaults the exact worst regret over that interval exceeds it by 0.9% at
+    ``Gamma = 1`` and by 5% to 8% at ``Gamma`` from 1.5 to 5. Read it as a bound only where
+    ``eps + Delta`` is small against the distance from the effect to where ``u*`` turns,
+    ``sqrt(r)``.
 
     ``Delta`` is the confounding half-width on the effect estimate -- the §32 inflation
     (:func:`chc.uncertainty.confounding_robust_inflation`), an *irreducible* bias floor that does
@@ -5397,7 +5413,8 @@ def confounding_robust_lq_regret_matrix(
     matrix ``E``, the regret is the quadratic form ``tr(E^T H E) = O(||E||_F^2)``. The confounding
     floor (``stat = 0``) is ``tr(Delta^T H Delta)`` -- SECOND order in the Frobenius norm of the
     matrix confounding half-width, the same second-order robustness as the scalar §33. Reduces to
-    :func:`confounding_robust_lq_regret` in the ``1x1`` case.
+    :func:`confounding_robust_lq_regret` in the ``1x1`` case, and is a second-order term as that is,
+    not a bound on the worst regret.
     """
     e = np.asarray(stat_error, dtype=np.float64) + np.asarray(confounding, dtype=np.float64)
     h = np.asarray(curvature, dtype=np.float64)

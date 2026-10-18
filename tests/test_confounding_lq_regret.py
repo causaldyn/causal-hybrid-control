@@ -99,3 +99,25 @@ def test_matrix_regret_is_nonnegative_for_psd_curvature() -> None:
     h = a.T @ a  # PSD curvature
     e = rng.standard_normal((3, 3))
     assert confounding_robust_lq_regret_matrix(h, e, np.zeros((3, 3))) >= 0.0
+
+
+def test_the_second_order_term_is_not_a_bound_on_the_worst_regret() -> None:
+    """``L_reg*(eps + Delta)^2`` is the leading term of the worst regret over that effect error,
+    and the exact worst over the interval exceeds it: by 0.9% to 8.4% across the certificate's
+    sweep, which the docstring now says rather than calling it a bound."""
+    from chc.uncertainty import confounding_robust_inflation
+
+    def optimum(b: np.ndarray | float) -> np.ndarray | float:
+        return b * target / (b**2 + effort)
+
+    effect, effort, target, stat_error = 1.3, 0.4, 1.0, 0.02
+    l_reg = lq_regret_sensitivity(effect, effort, target)
+    ratios = []
+    for gamma in (1.0, 1.5, 2.0, 3.0, 5.0):
+        halfwidth = confounding_robust_inflation(0.5, 0.0, gamma)
+        width = stat_error + halfwidth
+        grid = np.linspace(effect - width, effect + width, 20_001)
+        moved = optimum(grid) - optimum(effect)
+        worst = float(np.max((effect**2 + effort) * moved**2))
+        ratios.append(worst / confounding_robust_lq_regret(l_reg, stat_error, halfwidth))
+    assert all(1.005 < ratio < 1.1 for ratio in ratios)
