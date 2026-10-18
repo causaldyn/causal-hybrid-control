@@ -986,6 +986,8 @@ class Prescription:
         A period's price is how much the planned cost falls per unit more it may spend, in the
         cost's units per unit of spend; zero where the period has room. Read as
         :meth:`chc.plan.CausalPlan.shadow_prices` reads every row, whose ``tolerance`` this is.
+        A period the horizon cuts short may spend its share of the budget's ``amount``, so a unit
+        more of ``amount`` is worth its price times that share, which :meth:`report` prints.
 
         Raises:
             NotIdentifiedError: if the effect is not identified, so no plan was made.
@@ -1312,12 +1314,22 @@ class Prescription:
             lines += ["", f"Planned task cost: {self.plan.task_cost:.6g}.", ""]
             # a plan held under the constraints' barrier carries no row prices
             priced = self.budget_prices() if self.budgets and self.plan.safety is None else None
+            horizon = int(self.plan.actions.shape[0])
             for index, budget in enumerate(self.budgets):
+                # a period the horizon cuts short holds its share of the amount, so a unit more of
+                # the amount raises its row by that share, and lowers the cost by its price times it
+                shares = [
+                    min(budget.period, horizon - first) / budget.period
+                    for first in range(0, horizon, budget.period)
+                ]
                 worth = (
                     "not priced, as the plan was held under the constraints' barrier"
                     if priced is None
                     else "a unit more in each period would lower the planned cost by "
-                    + ", ".join(_show_price(price) for price in priced[index])
+                    + ", ".join(
+                        _show_price(price, share)
+                        for price, share in zip(priced[index], shares, strict=True)
+                    )
                 )
                 lines += [f"Budget of {budget.amount:.6g} per {budget.period} steps: {worth}.", ""]
             if self.selection is not None:
@@ -3624,7 +3636,7 @@ def _show_relation(relation: LeverRelation, names: Sequence[str]) -> str:
     return f"{head}{terms[2:]} = {relation.level:.4g}"
 
 
-def _show_price(price: RowPrice) -> str:
+def _show_price(price: RowPrice, share: float = 1.0) -> str:
     if price.price is None:
-        return f"[{price.interval[0]:.4g}, {price.interval[1]:.4g}]"
-    return f"{price.price:.4g}"
+        return f"[{share * price.interval[0]:.4g}, {share * price.interval[1]:.4g}]"
+    return f"{share * price.price:.4g}"
