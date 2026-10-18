@@ -85,3 +85,30 @@ def test_a_series_reads_the_same_parents_in_any_units(scale: float) -> None:
     series[1:, 1] += 0.8 * series[:-1, 0]
     graph = discover_lagged_parents(scale * series, max_lag=2, max_parents=1)
     assert np.argwhere(np.asarray(graph.state_parents)).tolist() == [[1, 0, 0]]
+
+
+def _parent_and_child(seed: int, n: int = 2000) -> tuple[np.ndarray, np.ndarray]:
+    """``p`` persists; ``q_t = 0.9 p_{t-1}`` plus a little noise, so ``q``'s lag tracks ``p``'s."""
+    rng = np.random.default_rng(seed)
+    p, q = np.zeros(n), np.zeros(n)
+    noise = rng.standard_normal((n, 2))
+    for t in range(1, n):
+        p[t] = 0.95 * p[t - 1] + noise[t, 0]
+        q[t] = 0.9 * p[t - 1] + 0.1 * noise[t, 1]
+    return p, q
+
+
+@pytest.mark.parametrize("seed", range(3))
+@pytest.mark.parametrize("child_first", [True, False])
+def test_a_child_is_not_a_parent_of_its_parent_in_either_column_order(
+    seed: int, child_first: bool
+) -> None:
+    """``p_t`` on ``p_{t-1}`` and on ``q_{t-1} = 0.9 p_{t-2}`` both read p-values that underflow
+    to 0; the tie fell to the column order, so with the child first its lag became a parent of
+    ``p``, and nothing read it again once ``p_{t-1}`` was in."""
+    p, q = _parent_and_child(seed)
+    series = np.column_stack([q, p] if child_first else [p, q])
+    child, parent = (0, 1) if child_first else (1, 0)
+    edges = {(t, s) for t, s, _lag, _kind in discover_lagged_parents(series, max_lag=2).edges()}
+    assert (parent, child) not in edges
+    assert (child, parent) in edges

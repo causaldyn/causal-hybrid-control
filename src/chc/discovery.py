@@ -1,12 +1,24 @@
-"""Lagged causal-parent discovery for the dynamics -- a minimal, control-focused PC1 (not PCMCI).
+"""Lagged causal-parent discovery for the dynamics -- a minimal, control-focused grow-shrink
+selection (not PC, not PCMCI).
 
 For each next-state component ``x^j_t`` this finds which lagged variables
-``{x^i_{t-tau}, u^k_{t-tau}}`` are its direct parents, by greedy forward selection with the
-MCI-calibrated partial-correlation test (:func:`chc.independence.partial_corr_test`): at each step
-add the candidate with the strongest association *given the already-selected parents*, until none is
-significant. Conditioning on the selected parents (dominant autoregressive lags are picked first)
-removes indirect-path false positives -- ``x^i_{t-2} -> x^i_{t-1} -> x^j_t`` makes ``x^i_{t-2}``
-look like a parent to a naive test, but not once ``x^i_{t-1}`` is conditioned on.
+``{x^i_{t-tau}, u^k_{t-tau}}`` are its direct parents with the MCI-calibrated partial-correlation
+test (:func:`chc.independence.partial_corr_test`), in two phases (Margaritis and Thrun's
+grow-shrink; Tsamardinos et al. 2003's IAMB). **Grow**: add the candidate with the strongest
+association *given the already-selected parents*, until none is significant. Conditioning on the
+selected parents (dominant autoregressive lags are picked first) removes indirect-path false
+positives -- ``x^i_{t-2} -> x^i_{t-1} -> x^j_t`` makes ``x^i_{t-2}`` look like a parent to a naive
+test, but not once ``x^i_{t-1}`` is conditioned on. **Shrink**: drop, one at a time and weakest
+first, every selected parent that is not significant given the others. A candidate picked early as
+a proxy for a parent not yet selected -- a child's lag that tracks its parent's -- is read again
+once that parent is in, and leaves; without this phase it stayed for good. The strongest candidate
+is the one with the largest partial correlation, not the least p-value: on a long series both
+p-values underflow to 0, and the tie fell to the column order.
+
+``alpha`` is each test's level, with no correction for multiplicity: the step that stops tests
+every candidate left at ``alpha``, so a target with ``m`` of them gains a false parent with
+probability up to about ``m * alpha``. For a family-wise level, pass ``alpha`` over the candidates,
+``alpha / ((d_state + d_control) * max_lag)``.
 
 Deliberately minimal: lag-capped, next-state targets only, no contemporaneous-link search. The heavy
 algorithms (PCMCI+/LPCMCI) stay a lazy, opt-in tigramite adapter; the point here is to feed
@@ -81,23 +93,42 @@ def _lagged_design(
     return np.column_stack(columns), tags
 
 
+def _scored(
+    target: np.ndarray, candidates: np.ndarray, columns: list[int], given: list[int]
+) -> list[tuple[float, float, int]]:
+    """``(p_value, -|partial correlation|, column)`` for each column, given the ``given`` columns.
+
+    Every column is tested on the same conditioning set, so its p-value falls as its ``|partial
+    correlation|`` rises; the correlation breaks the ties of p-values that underflowed to 0.
+    """
+    conditioning = candidates[:, given] if given else None
+    scored = []
+    for c in columns:
+        rho, p_value = partial_corr_test(candidates[:, c], target, conditioning)
+        scored.append((float(p_value), -abs(float(rho)), c))
+    return scored
+
+
 def _select_parents(
     target: np.ndarray, candidates: np.ndarray, alpha: float, max_parents: int
 ) -> list[int]:
-    """Greedy forward selection: add the most-significant candidate given the current parents."""
+    """Grow-shrink selection: add the strongest candidate given the current parents while it is
+    significant, then drop the weakest parent given the rest while it is not."""
     selected: list[int] = []
     remaining = list(range(candidates.shape[1]))
     while remaining and len(selected) < max_parents:
-        conditioning = candidates[:, selected] if selected else None
-        scored = [
-            (float(partial_corr_test(candidates[:, c], target, conditioning)[1]), c)
-            for c in remaining
-        ]
-        best_p, best_c = min(scored)
+        best_p, _, best_c = min(_scored(target, candidates, remaining, selected))
         if not best_p < alpha:
             break  # nothing left is a significant parent given what we already have
         selected.append(best_c)
         remaining.remove(best_c)
+    while selected:
+        worst_p, _, worst_c = max(
+            _scored(target, candidates, [c], [s for s in selected if s != c])[0] for c in selected
+        )
+        if worst_p < alpha:
+            break  # every parent left is significant given the others
+        selected.remove(worst_c)
     return selected
 
 
@@ -157,9 +188,9 @@ class TigramiteDiscovery:
 
     A drop-in for :func:`discover_lagged_parents` returning the same :class:`LaggedGraph`, but with
     PCMCI + a tigramite conditional-independence test doing the work. Reach for it when the native
-    minimal PC1 is not enough -- dense coupling, or nonlinear dependencies via a nonparametric test
-    (``cond_ind_test=GPDC()``/``CMIknn()``). tigramite is GPL-3.0, so it stays bring-your-own-env
-    and is never a chc dependency.
+    minimal grow-shrink is not enough -- dense coupling, or nonlinear dependencies via a
+    nonparametric test (``cond_ind_test=GPDC()``/``CMIknn()``). tigramite is GPL-3.0, so it stays
+    bring-your-own-env and is never a chc dependency.
     """
 
     pc_alpha: float = 0.01
