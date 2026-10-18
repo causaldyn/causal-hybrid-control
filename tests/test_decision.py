@@ -1787,7 +1787,6 @@ def test_the_run_records_what_the_fit_and_the_solve_were_given(calls, x64: bool)
 CHANGES = {
     "folds": ({"folds": 3}, {}, {"folds": 3}),
     "a numpy seed": ({"seed": np.int64(1)}, {}, {"seed": 1}),
-    "integrator": ({"integrator": "euler"}, {}, {"integrator": "euler"}),
     "no tube": ({"tolerance": None}, {}, {"tolerance": None}),
     "held constraints": ({"hold_constraints": True}, {}, {"hold_constraints": True}),
     "max_levers": ({"max_levers": 1}, {}, {"max_levers": 1}),
@@ -2847,6 +2846,15 @@ def test_a_constrained_state_whose_channel_is_confounded_leaves_the_effect_unide
     assert result.certificate.identification == "not_identified"
     assert result.plan is None
     assert "none identifies the levers' effect on ['c']" in result.certificate.adjustment.reason
+
+
+def test_prescribe_refuses_a_fit_to_a_step_it_does_not_plan_by() -> None:
+    """The plan, its tube, its barrier's audit and its regret bound step the field by RK4; a field
+    fitted to the Euler step, planned so, missed a discrete-time plant by 0.27 at the first step
+    of six, outside a tube of 0.063 that certified all six, where the field fitted to the RK4 step
+    missed it by 0.0002."""
+    with pytest.raises(DecisionError, match=r"integrator='euler'.*RK4 steps"):
+        _prescribe(_panel(n_units=20), CausalGraph.from_edges(EDGES), integrator="euler")
 
 
 def test_aware_dates_held_as_objects_are_read_on_their_own_wall_clock() -> None:

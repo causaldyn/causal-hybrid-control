@@ -49,8 +49,9 @@ HONEST SCOPE, and it bounds what the numbers below mean:
   the residual quietly absorbed the gap between the two. It was not small and it was not noise: on
   the fastest-decaying channel (``theta*dt = 0.7``) the fitted decay came back ``-0.503`` against
   the ``-0.7`` handed over as known, and the control channel with it. :func:`chc.decision.prescribe`
-  now defaults to ``integrator="rk4"``, which closes the gap by defect correction; a test asserts
-  both halves --- that the known rows come back empty under RK4, and that the same log read with
+  now fits with ``integrator="rk4"``, which closes the gap by defect correction, and refuses
+  ``"euler"``; a test asserts both halves --- that the known rows come back empty under RK4, and
+  that the same log read by :func:`~chc.dynamics_id.fit_causal_residual` with
   ``integrator="euler"`` still leaves exactly the closed-form amplification difference. Every
   headline number here is audited on the true plant either way, so none of them ever depended on
   the gap; a schedule read off the *planner's own forecast* did.

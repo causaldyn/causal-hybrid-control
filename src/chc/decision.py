@@ -1783,14 +1783,17 @@ def prescribe(
             state, the pooled "where we are now". :attr:`Prescription.start` records which, and
             for the panel's, over how many units, at which periods and with what spread.
         integrator: the one-step map the fit is made consistent with, passed to
-            :func:`~chc.dynamics_id.fit_causal_residual`. Defaults to ``"rk4"`` here and to
-            ``"euler"`` there, deliberately: the low-level fit has no idea what will consume it and
-            keeps its contract, while this function *knows* the field goes straight to
-            :func:`chc.plan.causal_plan`, which rolls out with RK4. Fitting one integrator and
-            planning with another is a bias the caller never asked for --- on the plant in
-            :mod:`chc.mmm` it costs 28% of the control channel. Choose ``"euler"`` when the panel is
-            genuinely discrete-time (a weekly budget is not a sample of an ODE) and the one-step map
-            *is* the model.
+            :func:`~chc.dynamics_id.fit_causal_residual`: ``"rk4"``, and nothing else. It is
+            ``"euler"`` there by default, deliberately: the low-level fit has no idea what will
+            consume it and keeps its contract, while this function *knows* the field goes straight
+            to :func:`chc.plan.causal_plan`, which rolls out with RK4, as its tube, its barrier's
+            audit and its regret bound read it. Fitting one integrator and planning with another
+            is a bias the caller never asked for --- on the plant in :mod:`chc.mmm` it costs 28% of
+            the control channel --- so ``"euler"`` is refused. A panel that is genuinely
+            discrete-time (a weekly budget is not a sample of an ODE) is fitted by ``"rk4"`` as
+            well: its fit is the field whose RK4 step reproduces the log's one-step map. To read
+            that map itself, call :func:`~chc.dynamics_id.fit_causal_residual` with
+            ``integrator="euler"``.
         drivers: exogenous columns the plan can forecast but not move, each with its forecast over
             the horizon (:class:`Driver`). They are fitted into the drift jointly with the states
             (:func:`~chc.dynamics_id.fit_causal_residual`), and the plan is made against the
@@ -1813,7 +1816,8 @@ def prescribe(
             is also a lever or a state or is named twice, a forecast that is not ``horizon + 1``
             finite levels, a budget that does not weigh one spend per lever, starts its periods
             anywhere but the plan's first step, or allows less than the levers' boxes spend at
-            the least, a ``dt`` that is not a finite positive step, a ``tolerance`` that is
+            the least, a ``dt`` that is not a finite positive step, an ``integrator`` other than
+            ``"rk4"``, a ``tolerance`` that is
             negative or nan, a ``gamma`` below 1 or not finite, which is not a sensitivity level,
             a panel with no consecutive pair of periods to fit a transition on, a ``cap_per_step``
             on a lever that follows its logged rule or a budget that prices one,
@@ -1868,6 +1872,13 @@ def prescribe(
         raise DecisionError("hold_constraints was set, but no constraint was given to hold")
     if not 0.0 < dt < math.inf:
         raise DecisionError(f"dt={dt} is not a step, which is finite and positive")
+    if integrator != "rk4":
+        raise DecisionError(
+            f"integrator={integrator!r}: prescribe plans, prices and certifies by RK4 steps of the "
+            "fitted field, so it fits the field whose RK4 step reproduces the log, integrator="
+            "'rk4'; a field fitted to another step is planned by one it was not fitted to. Read a "
+            "discrete-time log's one-step map with fit_causal_residual(integrator='euler')"
+        )
     if tolerance is not None and not tolerance >= 0.0:
         raise DecisionError(
             f"tolerance={tolerance} is not a radius, which is never negative or nan; leave it "
