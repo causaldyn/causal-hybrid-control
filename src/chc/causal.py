@@ -247,7 +247,7 @@ def _hc1_errors(features: Array, residual: Array) -> Array:
 
 
 def _ols_with_hc1_se(features: Array, target: Array) -> tuple[Array, Array]:
-    """OLS with intercept; returns (coefficients, HC1 standard errors, :func:`_hc1_errors`)."""
+    """OLS with intercept; returns (coefficients, HC1 standard errors by :func:`_hc1_errors`)."""
     coeffs, fitted = _ols_fit(features, target)
     return coeffs, _hc1_errors(features, target - fitted)
 
