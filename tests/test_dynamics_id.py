@@ -3172,6 +3172,46 @@ def test_an_identified_fit_keeps_its_moment_residual_without_its_influence() -> 
     assert blind.moment_residual is None
 
 
+# ---- the rk4 drift's pushes, and what else the fit reads ----
+
+
+def _pushed_log(seed: int, n: int, correlation: float, noise: float = 0.01):
+    """``x' = -0.7 x + 0.8 u + z``, ``z`` held over the step and stepped by RK4 exactly, logged on
+    ``u = 0.9 z + 0.4 eta``: the confounder pushes the state as well as the action, and leans on
+    the state by ``correlation``."""
+    rng = np.random.default_rng(seed)
+    h = -0.7
+    growth = 1 + h + h**2 / 2 + h**3 / 6 + h**4 / 24
+    input_gain = 1 + h / 2 + h**2 / 6 + h**3 / 24
+    x = rng.normal(size=(n, 1))
+    z = correlation * x + math.sqrt(1 - correlation**2) * rng.normal(size=(n, 1))
+    u = 0.9 * z + 0.4 * rng.normal(size=(n, 1))
+    x_next = growth * x + input_gain * (0.8 * u + z) + noise * rng.normal(size=(n, 1))
+    data = {"x": x, "u": u, "z": z, "x_next": x_next}
+    return {key: jnp.asarray(value) for key, value in data.items()}
+
+
+_ZERO = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+
+
+def test_the_rk4_fit_converges_where_the_known_physics_leaves_the_residual_nothing() -> None:
+    """A noiseless log of the known plant: every parameter of the residual is 0, so a stop
+    relative to the parameters alone was never met, and the fit raised that no field reproduces
+    the log, its last step 5e-19."""
+    truth = LinearDynamics(jnp.array([[-0.7]]), jnp.array([[0.8]]))
+    for noise in (0.0, 1e-12):
+        data = _pushed_log(0, 500, 0.0, noise=noise)
+        data = dict(
+            data,
+            x_next=jax.vmap(lambda x, u: rk4_step(truth, 0.0, x, u, 1.0))(data["x"], data["u"])
+            + noise * jnp.asarray(np.random.default_rng(1).normal(size=(500, 1))),
+        )
+        fit = fit_causal_residual(truth, data, 1.0, adjust_for=("z",), integrator="rk4")
+        assert float(jnp.max(jnp.abs(fit.residual.channel))) < 1e-9
+        assert fit.integrator_defect is not None
+        assert fit.integrator_defect < 1e-9
+
+
 def test_without_clusters_a_transition_s_states_are_summed_before_squaring() -> None:
     """Two states share one noise draw a transition. Each transition its own cluster is the same
     count as no clusters, and CR1's factor at ``G = N`` is the rows' ``N / (N - k)``: the two read

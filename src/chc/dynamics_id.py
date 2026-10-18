@@ -1595,8 +1595,11 @@ def fit_causal_residual(
             gap = jnp.einsum("pis,is->p", fit_map, reading(theta)) - theta
             step = unit * jnp.linalg.solve(unitless(newton_matrix(theta)[0], unit), gap / unit)
             theta = theta + step
-            if float(jnp.max(jnp.abs(step / unit))) <= tolerance * float(
-                jnp.max(jnp.abs(theta / unit))
+            # relative to the parameters, or to their units, the size of one row's share of each,
+            # where the parameters are smaller: a known physics that leaves the residual nothing
+            # sets every parameter to 0, which no step is small beside
+            if float(jnp.max(jnp.abs(step / unit))) <= tolerance * max(
+                1.0, float(jnp.max(jnp.abs(theta / unit)))
             ):
                 break
         else:
