@@ -68,13 +68,16 @@ class KoopmanModel:
     ``form="linear"`` fits as before, bit for bit.
 
     ``fit`` reports ``closure_residuals``: for each feature of the lift, the root mean square of
-    its one-step error on transitions held out of the fit, over the root mean square of the
-    feature at the next state. The transitions are cut into five contiguous blocks, each predicted
+    its one-step error on transitions held out of the fit, over the feature's spread about its
+    mean at the next state. The transitions are cut into five contiguous blocks, each predicted
     by a model fit on the other four; the model kept is fit on all of them. A lift whose span the
     dynamics map into itself reads 0 on noise-free data (ResDMD's residual, Colbrook and
-    Townsend, on the whole dictionary); one whose span they leave reads the share of each feature
-    it does not predict. The ratio is read feature by feature, so it reads the same in any units of
-    the state and the action.
+    Townsend, on the whole dictionary); one whose span they leave reads the share of each feature's
+    variation it does not predict. The ratio is read feature by feature, so it reads the same in
+    any units of the state and the action. Over the feature's root mean square instead, a level far
+    from zero would pass for prediction: a state read 273.15 higher, as in kelvin, takes the
+    degree-one lift of ``x' = 2x - x^3 + u/10`` from 0.71, refused, to 0.0024, accepted. A feature
+    the log never moves has no spread, and is read over its root mean square.
     """
 
     degree: int = 3
@@ -118,7 +121,10 @@ class KoopmanModel:
             train[block] = False
             coef = _solve(design[train], phi_next[train], self.ridge)
             error[block] = phi_next[block] - design[block] @ coef
-        sse, size = np.sum(error**2, axis=0), np.sum(phi_next**2, axis=0)
+        sse = np.sum(error**2, axis=0)
+        spread = np.sum((phi_next - np.mean(phi_next, axis=0)) ** 2, axis=0)
+        # A feature the log never moves has no spread, and its mean need not round to its value.
+        size = np.where(np.ptp(phi_next, axis=0) > 0.0, spread, np.sum(phi_next**2, axis=0))
         ratio = np.divide(sse, size, out=np.where(sse > 0.0, np.inf, 0.0), where=size > 0.0)
         return np.sqrt(ratio)
 
@@ -177,7 +183,7 @@ def koopman_lqr_gain(
 
     The gain is the lifted model's, and it is refused where the lift does not close: where a
     feature's held-out closure residual exceeds ``max_residual``, or was not read. The default of
-    0.5 refuses a lift that predicts less than three quarters of some feature's mean square on
+    0.5 refuses a lift that predicts less than three quarters of some feature's variance on
     transitions it was not fit on. A bilinear model's channel depends on the state: its gain is
     the LQR of the model linearised at ``x_target``, which it then requires. A linear model's gain
     does not depend on ``x_target``.
