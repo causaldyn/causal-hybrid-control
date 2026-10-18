@@ -137,6 +137,17 @@ def test_the_myopic_arm_refuses_a_channel_whose_own_return_the_log_does_not_iden
         _myopic_spend(hidden, MarketingMixSystem(), 12, 1.0)
 
 
+@pytest.mark.parametrize("budget", [7.0, 0.05])
+def test_the_myopic_arm_refuses_a_budget_its_levers_cannot_spend(
+    report: MmmReport, budget: float
+) -> None:
+    """It spent 6.0 and 0.15 instead, silently, and the arms' matched budget with it."""
+    prescription = report.arm("adjusted").prescription
+    assert prescription is not None
+    with pytest.raises(ValueError, match=r"is outside \[0\.15\d*, 6\.0\], what the channels"):
+        _myopic_spend(prescription, MarketingMixSystem(), 12, budget)
+
+
 def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_integrator(
     report: MmmReport,
 ) -> None:

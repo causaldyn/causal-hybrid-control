@@ -367,6 +367,11 @@ def _myopic_spend(
     with the same answer every week. Ignoring the adstock state is the whole of the myopia -- and on
     this plant the two orderings genuinely disagree, because ``beta_c/theta_c`` ranks the channels
     in the opposite direction to ``gamma_c``.
+
+    Raises:
+        ValueError: on a channel whose own return the log does not identify, or a weekly budget
+            outside what the levers' boxes can spend, from every channel at its floor to every one
+            at its ceiling.
     """
     reach = {name: value for name, value in prescription.reach().items() if value is not None}
     unranked = [name for name in system.spend_columns if name not in reach]
@@ -375,7 +380,14 @@ def _myopic_spend(
             "the myopic arm ranks the channels by their own fitted return, which the log does not "
             f"identify for {unranked}"
         )
-    week = np.full(len(system.channels), system.spend_floor)
+    n_channels = len(system.channels)
+    least, most = n_channels * system.spend_floor, n_channels * system.spend_ceiling
+    if not least <= weekly_budget <= most:
+        raise ValueError(
+            f"a weekly budget of {weekly_budget} is outside [{least}, {most}], what the channels "
+            "spend at their floors and at their ceilings, so no myopic week spends it"
+        )
+    week = np.full(n_channels, system.spend_floor)
     remaining = weekly_budget - float(week.sum())
     index = {name: position for position, name in enumerate(system.spend_columns)}
     for name in sorted(system.spend_columns, key=lambda lever: -reach[lever]):
