@@ -16,8 +16,15 @@ from chc.barrier import robust_barrier_margin
 from chc.control import Bound, projected_gradient_control, projected_gradient_solve
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
-from chc.integrate import rollout
-from chc.plan import CausalPlan, _quadratic, causal_plan, certify_safety, plan_regret_bound
+from chc.integrate import rk4_step, rollout
+from chc.plan import (
+    BarrierConstraint,
+    CausalPlan,
+    _quadratic,
+    causal_plan,
+    certify_safety,
+    plan_regret_bound,
+)
 from chc.residual import ControlAffineResidual, MLPResidual, ZeroResidual
 from chc.support import SupportModel
 from chc.uncertainty import ConfoundingRobustPenalty, confounding_robust_inflation
@@ -414,6 +421,104 @@ def test_a_plan_that_never_acts_names_itself_rather_than_the_inner_threshold() -
 
 
 # ---- what the audit reads, and where it refuses ----
+
+
+def test_a_step_whose_path_leaves_the_set_is_not_certified() -> None:
+    """At ``dt = 1`` the condition read at each step's state holds at all twelve steps, with room,
+    while the RK4 step from the first state lands outside ``{h >= 0}``: ``x' = x/2 + u`` under the
+    ceiling ``h = 1 - x`` and ``u_k = 0.95 - 1.5 x_k`` reaches ``x_1 = 1.232``. The audit read the
+    condition alone and certified all twelve steps."""
+    model = LinearDynamics(jnp.array([[0.5]]), jnp.array([[1.0]]))
+    states, actions = [jnp.array([0.0])], []
+    for _ in range(12):
+        actions.append(0.95 - 1.5 * states[-1])
+        states.append(rk4_step(model, 0.0, states[-1], actions[-1], 1.0))
+    plan = replace(
+        causal_plan(model, jnp.array([0.0]), _COST_1, 1.0, 12, -5.0, 5.0),
+        actions=jnp.stack(actions),
+        trajectory=jnp.stack(states),
+    )
+
+    def ceiling(x: Array) -> Array:
+        return 1.0 - x[0]
+
+    cert = certify_safety(plan, model, ceiling, 1.0, alpha=1.0, u_max=5.0)
+    inside = 1.0 - np.asarray(plan.trajectory[:, 0]) >= 0.0
+    assert bool(jnp.all(cert.guaranteed_derivative >= cert.required))  # the condition alone holds
+    assert not inside[1]
+    np.testing.assert_array_equal(cert.planned_certified, inside[:-1] & inside[1:])
+    assert cert.certified_steps == 0
+
+
+class _Hill(eqx.Module):
+    """``x' = -x + 3 u^2 / (1 + u^2)``: a Hill curve of slope 2, no slope at zero action."""
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return -x + 3.0 * u**2 / (1.0 + u**2)
+
+
+class _Cubic(eqx.Module):
+    """``x' = -x + u + u^3``: a channel of 1 at zero action, of 13 at ``u = 2``."""
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return -x + u + u**3
+
+
+@pytest.mark.parametrize("model", [_Hill(), _Cubic()], ids=["hill", "cubic"])
+def test_a_field_not_affine_in_the_action_is_refused_rather_than_read_at_zero_action(
+    model: eqx.Module,
+) -> None:
+    """The condition reads the drift and the channel at ``u = 0``. On these fields the audit
+    certified the planned steps where the field at the planned action fails the condition at
+    every one: on ``u + u^3`` from ``x = 0.5`` at ``u = 1`` the path leaves ``{x <= 1}`` by the
+    third step."""
+    actions = jnp.ones((10, 1))
+    plan = replace(
+        causal_plan(_Cubic(), jnp.array([0.5]), _COST_1, 0.1, 10, -2.0, 2.0),
+        actions=actions,
+        trajectory=rollout(model, jnp.array([0.5]), actions, 0.1),
+    )
+    with pytest.raises(ValueError, match="not affine in the action at step 0"):
+        certify_safety(plan, model, lambda x: 1.0 - x[0], 0.1, u_max=2.0)
+
+
+def test_a_field_affine_in_the_action_whose_channel_moves_with_the_state_is_not_refused() -> None:
+    """``x' = -x + (1 + x) u`` is affine in the action at every state, though its channel moves
+    with the state: the check reads the field at each step's own state."""
+    plan = causal_plan(_Gain(), jnp.array([2.0]), _COST_1, 0.1, 12, -1.0, 1.0)
+    cert = certify_safety(plan, _Gain(), lambda x: x[0] + 1.0, 0.1, gamma=2.0, u_max=1.0)
+    assert len(cert.step_gamma_star) == 12
+
+
+def _one_sided(lo: float, hi: float) -> tuple[CausalPlan, Callable[[Array], Array]]:
+    """``x' = x + u`` from ``x = 1`` under the ceiling ``x <= 1.1``, which only a negative action
+    keeps, held in the solve on the box ``[lo, hi]``."""
+    model = LinearDynamics(jnp.array([[1.0]]), jnp.array([[1.0]]))
+
+    def ceiling(x: Array) -> Array:
+        return 1.1 - x[0]
+
+    cost = QuadraticCost(Q=jnp.eye(1), R=jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.array([1.0]))
+    barrier = BarrierConstraint(ceiling, alpha=1.0)
+    plan = causal_plan(model, jnp.array([1.0]), cost, 0.1, 10, lo, hi, barrier=barrier, steps=500)
+    return plan, ceiling
+
+
+def test_gamma_star_reads_the_box_not_the_largest_action_either_way() -> None:
+    """On the box ``[0, 5]`` no admissible action lowers ``x``, so no step's condition holds at
+    any level, where the audit read the box as ``[-5, 5]`` and found ceilings from 10.1 down to
+    1.04. On ``[-1, 5]`` the best action is ``-1``, and each step's ceiling is the one read with
+    ``u_max = 1``, exactly: one lever's best action in a box is at an end of it."""
+    plan, ceiling = _one_sided(0.0, 5.0)
+    assert plan.safety is not None
+    assert all(math.isnan(g) for g in plan.safety.step_gamma_star)
+
+    plan, ceiling = _one_sided(-1.0, 5.0)
+    assert plan.safety is not None
+    model = LinearDynamics(jnp.array([[1.0]]), jnp.array([[1.0]]))
+    one = certify_safety(plan, model, ceiling, 0.1, alpha=1.0, u_max=1.0)
+    assert plan.safety.step_gamma_star == one.step_gamma_star
+    assert any(math.isfinite(g) for g in one.step_gamma_star)
 
 
 def test_a_start_that_is_not_a_state_is_refused() -> None:

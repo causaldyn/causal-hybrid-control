@@ -95,13 +95,13 @@ from chc.plan import (
     PlanRegretBound,
     RegretStatus,
     RowPrice,
+    _audit,
     _carried_along,
     _diagnostic_status,
     _Rule,
     _Ruled,
     _RuledCost,
     causal_plan,
-    certify_safety,
     plan_regret_bound,
 )
 from chc.residual import ControlAffineResidual, ZeroResidual, control_affine_features
@@ -2382,7 +2382,7 @@ def prescribe(
     if held is not None:
         safety = plan.safety  # solve() already audited it at the whole box's largest actions
     elif margins:
-        safety = certify_safety(plan, model, margins, dt, gamma=gamma, u_max=reach)
+        safety = _audit(plan, model, margins, dt, 1.0, gamma, 1.0, reach, (u_lo, u_hi))
     else:
         safety = None
     gap = regret(plan)

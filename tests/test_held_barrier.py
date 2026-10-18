@@ -655,7 +655,7 @@ def test_the_audit_reads_the_same_in_any_units_of_each_lever(units: tuple[float,
     """Each force in units of its own, its box with it: the same plan, read in those units, clears
     the same steps by the same guaranteed derivative, and every step's ceiling is the same. With
     one number for both forces, the largest action of either, the ball and the radius read their
-    units as one: in ``(1e3, 1)`` the plan, which clears 14 steps of 20, cleared none, and
+    units as one: in ``(1e3, 1)`` the plan, which clears 12 steps of 20, cleared none, and
     ``gamma*`` read 2779 where it reads 4.59. Held in the solve, whose rounds step each force in
     units of its largest action, every step clears at one cost in every units; stepped in the
     caller's, ``(1e3, 1)`` held none."""
@@ -664,7 +664,8 @@ def test_the_audit_reads_the_same_in_any_units_of_each_lever(units: tuple[float,
     plan = causal_plan(model, X0, cost, DT, HORIZON, -TWO_REACH, TWO_REACH)
     one = certify_safety(plan, model, _velocity_floor, DT, u_max=TWO_REACH, **kwargs)
     assert one.certified_steps < HORIZON  # the free plan breaks the floor
-    assert int(np.sum(np.asarray(one.planned_certified))) == 14
+    # 12, not the 14 steps whose condition holds: two of those are outside the floor
+    assert int(np.sum(np.asarray(one.planned_certified))) == 12
     assert any(1.0 < value < math.inf for value in one.step_gamma_star)
 
     scale = np.asarray(units)
