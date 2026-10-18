@@ -102,11 +102,30 @@ def test_continuous_lqr_reads_one_gain_in_any_units_of_the_cost(cost_units: floa
 
 
 def test_continuous_lqr_solves_an_r_with_a_zero_entry_as_scipy_does() -> None:
-    """No unit rescales a zero cost, so that action keeps its units, and SciPy's solve."""
+    """An ``r`` with no cross-charge is solved in the actions' units as SciPy solves it in the
+    caller's, to rounding: the units move bits, not the answer."""
     a, b, q, _ = _two_levers()
-    r = np.array([[0.0, 0.5], [0.5, 1.0]])
+    r = np.array([[0.1, 0.0], [0.0, 0.3]])
     p, _ = continuous_lqr(a, b, q, r)
-    np.testing.assert_array_equal(np.asarray(p), solve_continuous_are(a, b, q, r))
+    np.testing.assert_allclose(np.asarray(p), solve_continuous_are(a, b, q, r), rtol=1e-10)
+
+
+@pytest.mark.parametrize(
+    "r",
+    [
+        np.array([[0.0, 0.5], [0.5, 1.0]]),  # indefinite, eigenvalues -0.21 and 1.21
+        np.array([[-1.0, 0.0], [0.0, 1.0]]),  # pays to push the first action
+        np.array([[0.0, 0.0], [0.0, 1.0]]),  # charges the first action nothing
+    ],
+    ids=["indefinite", "negative", "singular"],
+)
+def test_continuous_lqr_refuses_an_r_that_is_not_positive_definite(r: np.ndarray) -> None:
+    """The cost has no least action where ``r`` charges some action nothing or less. SciPy read
+    the first two and returned a gain, ``[[154.2, 18.2, -6.30], [-33.0, -3.55, 1.43]]`` for the
+    indefinite one."""
+    a, b, q, _ = _two_levers()
+    with pytest.raises(ValueError, match="positive definite"):
+        continuous_lqr(a, b, q, r)
 
 
 def test_dlqr_feedback_controls_step_on_the_plant_s_clock() -> None:
