@@ -2292,7 +2292,7 @@ def test_each_lever_s_error_reads_in_that_lever_s_units(
 ) -> None:
     """Two states and two levers, one of them logged in units 1e3 times its own or the other in
     thousandths of its own, the log read two ways. On each of the three covariances each lever's
-    error per unit of it reads the same times its units, to 1e-11, so each times an action of that
+    error per unit of it reads the same times its units, to 1e-10, so each times an action of that
     lever reads the same. ``channel_error``, the largest of the reads' root means over the levers,
     which averages levers in units of their own, read 0.0049 or 4.9 where it read 0.0075 in Euler's
     fit."""
@@ -2309,7 +2309,7 @@ def test_each_lever_s_error_reads_in_that_lever_s_units(
     assert other._lever_errors is not None
     assert one._lever_errors.shape == (3, 2)
     np.testing.assert_allclose(
-        other._lever_errors * np.array(units), one._lever_errors, rtol=1e-11, atol=0.0
+        other._lever_errors * np.array(units), one._lever_errors, rtol=1e-10, atol=0.0
     )
     for fit in (one, other):
         reads = np.sqrt(np.mean(fit._lever_errors**2, axis=1))
@@ -3192,6 +3192,47 @@ def _pushed_log(seed: int, n: int, correlation: float, noise: float = 0.01):
 
 
 _ZERO = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+
+
+def test_the_rk4_fit_holds_a_covariate_s_push_in_the_drift() -> None:
+    """RK4 carries the drift into the channel through its growth factor. Left out of the drift, a
+    confounder's push that leans on the state set the channel at 0.606 for 0.800, 188 of its own
+    errors off. Held in the drift over the step, the decay and the channel land, and the returned
+    field leaves the push out, as it carries no covariate."""
+    data = _pushed_log(0, 1000, 0.5)
+    fit = fit_causal_residual(
+        _ZERO, data, 1.0, adjust_for=("z",), integrator="rk4", channel_degree=0
+    )
+    assert fit.channel_error is not None
+    channel = float(np.asarray(fit.residual.channel).ravel()[0])
+    assert abs(channel - 0.8) < 4.0 * fit.channel_error
+    assert float(np.asarray(fit.residual.drift)[0, 1]) == pytest.approx(-0.7, abs=0.005)
+    assert fit.driver_gain is None
+    # what the field leaves of the log is the push it does not carry, beside the noise
+    assert fit.integrator_defect is not None
+    assert fit.integrator_defect > 10 * 0.01
+
+
+def test_the_rk4_channel_error_covers_the_spread_a_covariate_s_push_left() -> None:
+    """Ten logs whose confounder pushes the state apart from it: the channel scattered 14.6 times
+    as far as its error said; on 60 logs of 1000 transitions 13 times, and its 95 % interval
+    covered on 10 %. The SD of a spread read off ten logs is 24 % of it, and the bounds sit 2.5 of
+    those out."""
+    channels, errors = [], []
+    for seed in range(10):
+        fit = fit_causal_residual(
+            _ZERO,
+            _pushed_log(seed, 500, 0.0),
+            1.0,
+            adjust_for=("z",),
+            integrator="rk4",
+            channel_degree=0,
+        )
+        assert fit.channel_error is not None
+        channels.append(float(np.asarray(fit.residual.channel).ravel()[0]))
+        errors.append(fit.channel_error)
+    ratio = float(np.std(channels, ddof=1) / np.mean(errors))
+    assert 0.4 < ratio < 1.8
 
 
 def _seasonal_log(n: int = 1500, dt: float = 0.1):

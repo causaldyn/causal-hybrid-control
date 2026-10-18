@@ -17,16 +17,19 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from chc.decision import Constraint, Target, prescribe
 from chc.mmm import (
     SALES,
     MarketingMixSystem,
     MmmReport,
     _myopic_spend,
     _start_state,
+    adstock_dynamics,
     run_marketing_mix,
 )
 from chc.panel import Panel, PanelError
@@ -125,6 +128,29 @@ def test_the_channel_ordering_matches_the_true_incremental_returns(report: MmmRe
     assert reach["spend_search"] > reach["spend_video"] > reach["spend_social"]
     system = MarketingMixSystem()
     assert system.gamma[0] > system.gamma[2] > system.gamma[1]
+
+
+def test_the_rk4_fit_holds_the_season_s_push_and_reads_the_incremental_returns() -> None:
+    """A plant the fitted class contains, the Hill response far from saturation, its noise taken
+    out: the season is held in the sales row's drift over each week, so RK4 carries no push of its
+    into the channel, and the incremental returns come back to their truth. Left out of the drift,
+    the season's push read (0.478, 0.142, 0.412) on this seed for (0.5, 0.2, 0.35), with an error
+    of 6e-6; over three seeds they scattered by 0.10, 0.03 and 0.11."""
+    system = MarketingMixSystem(noise=1e-6, half=(1e4, 1e4, 1e4), beta=(0.9e4, 0.6e4, 0.4e4))
+    logs = system.sample(seed=0)
+    result = prescribe(
+        Panel.from_frame(logs, unit="region", time="week", seed=0),
+        levers=system.levers(),
+        target=Target(SALES, value=8.0),
+        constraints=[Constraint(name, lo=0.0) for name in system.adstock_columns],
+        adjustment=system.graph(),
+        known=adstock_dynamics(jnp.array(system.theta)),
+        horizon=2,
+        dt=DT,
+    )
+    states = np.stack([logs[SALES], *[logs[name] for name in system.adstock_columns]], axis=1)
+    channel = np.asarray(jax.vmap(result.model_fit.residual.control_channel)(jnp.asarray(states)))
+    np.testing.assert_allclose(channel[:, 0, :].mean(axis=0), system.gamma, rtol=0.0, atol=2e-3)
 
 
 def test_the_myopic_arm_refuses_a_channel_whose_own_return_the_log_does_not_identify(

@@ -27,7 +27,9 @@ HONEST SCOPE, four limits worth stating before the code:
   data this bites harder than it sounds: a confounder that trends *with* the state gets charged to
   positive feedback in ``x``, so the fitted drift can come back **unstable** even where the channel
   is clean -- and an MPC uses the drift too. Check the drift's spectrum, and give measured exogenous
-  drivers a place in the drift as regressors instead of leaving them only in ``adjust_for``.
+  drivers a place in the drift as regressors instead of leaving them only in ``adjust_for``. Under
+  ``integrator="rk4"`` the adjustment set joins the drift regression, since RK4 carries the drift
+  into the channel, so there ``a_θ`` is conditional on it, at its mean on the log.
 * The residual must be control-affine (:class:`chc.residual.ControlAffineResidual`). A general
   ``r_θ(x, u)`` has no partialling-out moment and gets no guarantee here.
 * With no adjustment set and no instrument nothing in the log identifies the channel, and an
@@ -231,12 +233,14 @@ class CausalDynamicsFit:
     effective_sample_size: float | None = None
     # (N, n, p), kept when the fit was asked for it: each transition's share, per state, of the
     # error in the fitted parameters when the whole log is drawn again -- the channel, raveled, then
-    # the drift regression's rows (the drift's transpose, then the drivers' gain's), raveled. A row
-    # moves the channel through the moment's residual, and the drift through the channel and through
-    # its own regression's residual, so the sum of psi psi' over both is their robust covariance,
-    # the drift's carrying the channel's error. Under Euler its channel block is
+    # the drift regression's rows (the drift's transpose, then the drivers' gain's), raveled; under
+    # ``rk4`` the gains of the adjustment set's held push are left out, as the field leaves them. A
+    # row moves the channel through the moment's residual, and the drift through the channel and
+    # through its own regression's residual, so the sum of psi psi' over both is their robust
+    # covariance, the drift's carrying the channel's error. Under Euler its channel block is
     # ``channel_error``'s; under ``rk4`` the RK4 map also carries the drift's residual into the
-    # channel, which ``channel_error``, read with the noise alone random, leaves out.
+    # channel, which ``channel_error`` reads as the noise: the drift regression holds the
+    # adjustment set's push there, so its residual is the noise where the push is linear.
     influence: Array | None = None
     # (p, r), in ``influence``'s order: the directions the log's actions never move. Each moves one
     # state's channel where the action residuals, scaled to the raw actions' size, fall below the
@@ -1115,6 +1119,17 @@ def fit_causal_residual(
         data: columns ``x (N,n)``, ``u (N,m)``, ``x_next (N,n)``, plus any named in ``adjust_for``
             and ``instrument``.
         adjust_for: observed confounders. Empty *and* no instrument => ``identified=False``.
+
+            Under ``integrator="rk4"`` each covariate that is not a driver also joins the drift
+            regression, held over the step at its value at the start, about its mean on the log.
+            RK4 carries the drift into the channel through its growth factor, so a push the drift
+            leaves out moves the channel where the moment cannot see it. On ``x' = -0.7 x + 0.8 u +
+            z`` at ``dt = 1``, a confounder ``z`` leaning on the state by 0.5 and left out of the
+            drift set the channel at 0.618 over 60 logs, its 95 % interval covering 0.800 on none;
+            drawn apart from the state, it scattered the channel 13 times as far as its error
+            said, which covered on 10 %. Held in the drift, both read 0.800 and covered on 97 %.
+            The returned field carries no covariate: its drift is the one at their mean, and its
+            ``defect`` keeps their push.
         instrument: name of an exogenous action shifter, for when the confounder is latent. It
             enters as the moment's instrument, not as the regressor, so this is real 2SLS. Expect a
             **variance premium**, not a free lunch: identification here rides on however much of
@@ -1358,6 +1373,23 @@ def fit_causal_residual(
     covariates, driver_start, driver_end, driver_read = _nuisance_inputs(
         data, adjust_for, drivers, integrator
     )
+    # Under ``rk4`` the drift reaches the channel through RK4's growth factor, so a push the drift
+    # regression leaves out moves the channel: each covariate that is not a driver joins the drift
+    # held over the step, about its mean on the log, and leaves the returned field afterwards.
+    pushes = (
+        _units.centred(
+            jnp.concatenate(
+                [x[:, :0], *[data[name] for name in adjust_for if name not in drivers]], axis=1
+            )
+        ).deviations
+        if integrator == "rk4"
+        else x[:, :0]
+    )
+    n_drivers = driver_start.shape[1]
+    driver_start, driver_end, driver_read = (
+        jnp.concatenate([column, pushes], axis=1)
+        for column in (driver_start, driver_end, driver_read)
+    )
 
     method = "orthogonal" if adjust_for else ("iv" if instrument else "observational")
     instrument_action: Array | None = None
@@ -1380,19 +1412,23 @@ def fit_causal_residual(
 
     row_weight = None if weights is None else _state_weights(weights, x)
     raw = _channel_design(u, x, channel_degree)
+    # the parameters the returned field carries, in influence's order: the channel, then the drift
+    # regression's rows but the pushes' gains, which leave the field with the pushes
+    carried = design.shape[1] - pushes.shape[1]
+    kept = x.shape[1] * (raw.shape[1] + carried)
     # each parameter's scale on the log, in influence's order: the channel's, state by state, then
     # the drift regression's, feature by feature
     state_size = _units.norms(x)
     parameter_size = jnp.concatenate(
         [
             (_units.norms(raw)[None, :] / state_size[:, None]).ravel(),
-            (_units.norms(design)[:, None] / state_size[None, :]).ravel(),
+            (_units.norms(design[:, :carried])[:, None] / state_size[None, :]).ravel(),
         ]
     )
     # the moment's ridge, scaled to the raw actions' size, as the unmoved directions are
     penalty = jnp.diag(_units.mean_squares(raw, row_weight))
     directions = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree)
-    unmoved = _unmoved_parameters(directions, phi_c, u, design, ridge, x.shape[1])
+    unmoved = _unmoved_parameters(directions, phi_c, u, design, ridge, x.shape[1])[:kept]
     # The moment has no data along these directions, and its ridge would set the channel there by
     # the ratio of two roundings, which grows as the square of the actions' units: the fit then
     # missed the log's own rates by ten times their noise in units a thousand times larger.
@@ -1494,7 +1530,7 @@ def fit_causal_residual(
         )
         coeffs = channel.reshape(x.shape[1], -1).T
         drift = remainder[: phi_x.shape[1]].T
-        gain = remainder[phi_x.shape[1] :].T
+        gain = remainder[phi_x.shape[1] : phi_x.shape[1] + n_drivers].T
 
         score = y_res - regressor @ coeffs
         weighted_moment = moment if row_weight is None else moment * row_weight[:, None]
@@ -1539,12 +1575,15 @@ def fit_causal_residual(
         return jax.vmap(step)(starts, x, u, driver_start, driver_end)
 
     def defect(fit: CausalDynamicsFit) -> Array:
-        """``(x_next - step(F, x, u, dt)) / dt`` -- what the fitted field leaves of the log."""
+        """``(x_next - step(F, x, u, dt)) / dt`` -- what the fitted field leaves of the log, the
+        covariates' held push with it, which the field does not carry."""
         gain = jnp.zeros((x.shape[1], 0)) if fit.driver_gain is None else fit.driver_gain
+        gain = jnp.concatenate([gain, jnp.zeros((x.shape[1], pushes.shape[1]))], axis=1)
         return (x_next - predicted(fit.residual, gain)) / dt
 
-    def rk4_fixed_point(start: CausalDynamicsFit) -> CausalDynamicsFit:
-        """The fit that is its own ``rk4`` reading of the log, by Newton's method from ``start``.
+    def rk4_fixed_point(start: Array) -> CausalDynamicsFit:
+        """The fit that is its own ``rk4`` reading of the log, by Newton's method from the fit to
+        the target ``start``.
 
         Coefficients ``theta`` read a rate off the log: their own fitted rate ``Phi theta`` plus
         what their RK4 step leaves over, ``y(theta) = Phi theta + (x_next - RK4_theta) / dt``.
@@ -1555,7 +1594,8 @@ def fit_causal_residual(
         the matrix Newton steps with, the identity under Euler. The drift's error stays conditional
         on the channel, as it is under Euler: its own regression, through the drift's block of K.
         """
-        shape, size = start.residual.channel.shape, start.residual.channel.size
+        shape = (x.shape[1], u.shape[1], phi_c.shape[1])
+        size = math.prod(shape)
 
         def unpack(theta: Array) -> tuple[ControlAffineResidual, Array, Array]:
             rows = theta[size:].reshape(-1, x.shape[1])  # the drift regression's: drift, then gain
@@ -1583,9 +1623,7 @@ def fit_causal_residual(
             return jnp.eye(theta.size) - gained, sensitivity
 
         fit_map = jax.jacrev(coefficients)(jnp.zeros_like(x_next))  # (p, N, n), exact: linear
-        gain = jnp.zeros((x.shape[1], 0)) if start.driver_gain is None else start.driver_gain
-        remainder = jnp.concatenate([start.residual.drift.T, gain.T])
-        theta = jnp.concatenate([start.residual.channel.ravel(), remainder.ravel()])
+        theta = coefficients(start)  # the Euler reading's, the pushes' gains with the rest
         # Each parameter in its own unit: the power of two nearest the size of the fit's weight on
         # the log's rates times theirs, which is in the parameter's units whichever state's rates
         # it reads. K's entries are ratios of the parameters' units, so in the caller's units LU
@@ -1625,8 +1663,10 @@ def fit_causal_residual(
             return fit
 
         # Only the noise is random given the log, and the channel reads it where its own sandwich
-        # does, after the adjustment set has taken out what it explains: a push the model leaves
-        # out but the adjustment set carries -- a season -- is in the defect and is not noise.
+        # does, after the adjustment set has taken out what it explains. The drift regression holds
+        # the adjustment set's push, a season's say, so its own residual is that noise too where
+        # the push is linear; left in the drift's residual, K carried it into the channel, which
+        # scattered 13 times as far as this error said.
         channel, _, (y_res, u_res, *_) = solve(target)
         regressor = _channel_design(u_res, x, channel_degree)
         score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
@@ -1645,7 +1685,8 @@ def fit_causal_residual(
             return (unit[:, None] * jnp.linalg.solve(newton, own)).reshape(rows.shape)
 
         # The drift keeps the defect, which is its own regression's residual, as under Euler.
-        noise = jnp.sum(defect(fit) ** 2, axis=0) / max(x.shape[0] - design.shape[1], 1)
+        own_defect = (x_next - predicted(*unpack(theta)[:2])) / dt
+        noise = jnp.sum(own_defect**2, axis=0) / max(x.shape[0] - design.shape[1], 1)
         gram = _ridge_inverse(design, ridge)
         drift_size = theta.size - size
         drift_gained = jnp.einsum(
@@ -1661,13 +1702,14 @@ def fit_causal_residual(
             * jnp.linalg.solve(drift_newton, jnp.linalg.solve(drift_newton, drift_spread).T)
             * drift_unit
         )
-        # the drift's rows are its features, then its drivers, each state's coefficient beside the
-        # others': state s's coefficients are every n-th, from s
+        # the drift's rows are its features, then its drivers, then the covariates' held pushes,
+        # each state's coefficient beside the others': state s's coefficients are every n-th, from
+        # s. The field carries the first two.
         rows, states = design.shape[1], x.shape[1]
         every_state = jnp.arange(states)
         drift_blocks = drift_covariance.reshape(rows, states, rows, states)[
             :, every_state, :, every_state
-        ]
+        ][:, :carried, :carried]
         channel_error, lever_errors = _channel_errors(
             [covariance[:size, :size] for covariance in covariances], channel.shape, phi_c
         )
@@ -1675,25 +1717,26 @@ def fit_causal_residual(
             fit,
             channel_error=channel_error,
             _lever_errors=lever_errors,
-            drift_error=_error_at_rows(drift_blocks, design),
+            drift_error=_error_at_rows(drift_blocks, design[:, :carried]),
             influence=_influence(
                 carry(fit_map),
                 score,
                 carry(drift_direct(size)),
-                defect(fit),
+                own_defect,
                 regressor.shape[1],
                 codes,
-            )
+            )[:, :, :kept]
             if influence
             else None,
             representer=_representer(carry(held(u_res))[:size]) if influence else None,
             moment_residual=score,
         )
 
-    fit = fit_to((x_next - x) / dt)
     if integrator == "rk4":
-        fit = rk4_fixed_point(fit)
-    elif identified:
+        fit = rk4_fixed_point((x_next - x) / dt - known_rate)
+    else:
+        fit = fit_to((x_next - x) / dt)
+    if integrator == "euler" and identified:
         y = (x_next - x) / dt - known_rate
         channel, remainder, (y_res, u_res, _, _, fitted) = solve(y)
         regressor = _channel_design(u_res, x, channel_degree)
