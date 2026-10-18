@@ -29,7 +29,9 @@ Proof.
   rewrite Hz in Hid. ring_simplify in Hid. lra.
 Qed.
 
-(* Causal control uses the interventional effect -> its action IS the optimum u0 -> zero regret. *)
+(* Causal control uses the interventional effect -> its action IS the optimum u0 -> zero regret.
+   A restatement, not a result: the cost of u0 less itself is 0. The content is that the causal
+   action is u0, which is the identification step, outside this file. *)
 Lemma causal_control_zero_regret : forall b u0 xt rr,
   cost b u0 xt rr - cost b u0 xt rr = 0.
 Proof. intros. ring. Qed.

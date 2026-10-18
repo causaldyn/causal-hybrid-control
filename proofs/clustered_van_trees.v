@@ -25,7 +25,9 @@
    HONEST SCOPE of the "no estimator beats it" claim: the NAIVE pointwise version
    (liminf_G G*E_{theta0}[(Bhat-B)^2] >= 1/Ic for ARBITRARY estimators) is FALSE -- Hodges superefficiency
    beats 1/Ic on a Lebesgue-null set. The correct forms are (a) the finite-G Bayes-average bound above
-   (exact, any estimator -- what we prove here); (b) the local-asymptotic-minimax bound with a sup over a
+   (exact, any estimator -- its algebraic composition is what we prove here: the van Trees floor and
+   the lower-Lipschitz regret map are the theorem's two PREMISES, so the statistical content is
+   cited, not proved, and the theorem shows only how the two combine into the 1/G floor); (b) the local-asymptotic-minimax bound with a sup over a
    shrinking c/sqrt(G) neighbourhood (any estimator; Hajek 1972; van der Vaart 1998 Thm 8.11;
    Gassiat-Stoltz 2024 Thm 16 handles the quadratic/bowl-shaped regret loss directly); (c) the pointwise
    bound for REGULAR estimators (Hajek convolution theorem). The regret composition needs regret

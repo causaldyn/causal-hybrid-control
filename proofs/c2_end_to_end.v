@@ -51,7 +51,10 @@ Definition ClusterRobustSampling (s r_s fG : R) : Prop := Rabs s <= r_s /\ r_s ^
    sufficiently small model error the suboptimality is LOCALLY QUADRATIC in that error,
    `R <= cc * ||Bhat - B||^2` with `cc` the LQ curvature. That bound is what licenses the shape of
    `c2_regret` below; the only thing the algebra needs from the citation is that the curvature
-   exists and is nonnegative on the stabilising set. *)
+   exists and is nonnegative on the stabilising set. The citation's content is NOT in this
+   predicate: `c2_regret` is DEFINED as the bound's right-hand side, so every theorem below bounds
+   that quantity, and that it bounds the controller's true regret is the cited result itself,
+   taken on trust and not formalised here. *)
 Definition LocalQuadraticRegret (cc : R) : Prop := 0 <= cc.
 
 Definition c2_regret (cc s e_d e_s : R) : R := cc * (s + e_d + e_s) ^ 2.

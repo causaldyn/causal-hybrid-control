@@ -4,7 +4,10 @@
    exposure / shared-state map -- plans pi_hat on the estimate, and deploys on the true plant. Under
    a kappa-smooth cost with minimiser pi_star and the certainty-equivalence controllability bound
    |pi_hat - pi_star| <= C*(eid + eint), the regret is QUADRATIC in the TOTAL error, with the
-   interference error entering additively inside the square. This extends the
+   interference error entering additively inside the square. The regret below is the descent-lemma
+   surrogate kappa/2 * d^2, DEFINED as such: that it bounds J(pi_hat) - J(pi_star) is the smoothness
+   assumption, and the controllability bound is a hypothesis; what is proved is the monotone
+   composition of the two. This extends the
    Dean-Mania-Tu-Recht-Matni LQ certainty-equivalence bound (which has the eid term only). See also
    proofs/box_projection.v (the feasibility invariant). *)
 

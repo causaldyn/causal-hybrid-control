@@ -15,6 +15,14 @@ shared-state DML, arXiv 2504.08836). Three failure modes, each a real baseline:
   offline-pessimism margin (a Wasserstein/DRO-style shrink by the estimate's influence-function SE),
   so cannibalisation is built in and extrapolation is not trusted.
 
+What the comparison measures: :func:`pessimistic_equilibrium_allocation` is handed the simulator's
+own base demand, attractiveness and equilibrium map, which no estimate from the logs supplies, and
+the logs reach it only through the pessimism tilt, at most ``radius`` standard errors per zone. Its
+gap to the oracle is therefore the value of knowing the equilibrium, not of de-confounding: on the
+default market the plan from a response of zero lands as close to the oracle as the plan from the
+de-confounded one. The SUTVA baselines get no such structure. Planning on an equilibrium estimated
+from the logs is not implemented.
+
 Everything is differentiable and reuses the equilibrium solver in :mod:`chc.games`.
 """
 
@@ -186,6 +194,10 @@ def pessimistic_equilibrium_allocation(
     driver-conservation (cannibalisation) channel the SUTVA baselines assume away is structural. The
     de-confounded response gates the plan through a W-DRO pessimism tilt (``radius * SE``): where
     the offline estimate is weak or unsupported, the incentive is discounted rather than trusted.
+
+    The equilibrium planned through is ``market``'s own: its base demand, its attractiveness and
+    its solver, the simulator's truth rather than anything estimated from the logs. ``response``
+    enters only through the tilt, so the plan is close to the oracle whatever the response says.
     """
     demand, attract = market._base()
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)

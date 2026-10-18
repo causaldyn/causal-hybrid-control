@@ -247,10 +247,11 @@ class SpectralResidual(eqx.Module):
     - **An operator norm that is ATTAINED.** :meth:`operator_norm` returns ``max_k |lambda_k|``,
       the exact spectral norm, with the maximising Fourier mode as an explicit witness. Compare
       :class:`LipschitzResidual`, whose constant comes from the Schur bound
-      ``sigma_max(W) <= sqrt(||W||_1 ||W||_inf)`` -- valid, but with no witness and, measured,
-      slack by more than an order of magnitude. Because gains multiply exactly under composition
-      (Brahmagupta-Fibonacci, ``proofs/spectral_circulant.v`` ``gain_multiplies``), the Result 28/30
-      rollout tube built on this constant is tight rather than merely valid.
+      ``sigma_max(W) <= sqrt(||W||_1 ||W||_inf)`` -- valid, but with no witness and, measured, slack
+      by more than an order of magnitude. Gains multiply exactly under composition
+      (Brahmagupta-Fibonacci, ``proofs/spectral_circulant.v`` ``gain_multiplies``, a one-mode
+      identity), so the constant loses no slack when maps compose; that the Result 28/30 rollout
+      tube built on it is tight is measured, not proved.
 
     The parameterisation is the kernel, not the symbol, deliberately: the map kernel -> circulant is
     a bijection, whereas a free half-spectrum carries two unidentified imaginary parts (at DC and,
@@ -548,7 +549,8 @@ class ContractiveResidual(eqx.Module):
     ``q = sqrt(1 + 2*mu*dt + L^2*dt^2)`` (NOT ``1+mu*dt``; ``L=lipschitz_constant()`` the full
     Lipschitz constant), so contraction needs the step ``dt < 2c/L^2`` (sufficient); under it the
     rollout radius stays bounded and tends to ``eps/c`` as ``dt -> 0`` (see
-    ``chc.uncertainty.contractive_rollout_bound``; Rocq ``contractive_euler.v``).
+    ``chc.uncertainty.contractive_rollout_bound``; Rocq ``contractive_euler.v`` proves only the
+    factor's sign facts).
     ``mu`` bounds only the residual's contribution; total-system contraction needs
     ``mu_2(J_known)+margin < 0`` (a gate to check offline). Pure matmuls; the L2/eigen bound is
     exact, general-n verification would use the L-inf (Gershgorin) variant.
