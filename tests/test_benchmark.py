@@ -52,6 +52,20 @@ def test_pricing_benchmark_ranks_causal_above_predictive() -> None:
     assert results["predictive"].ood_rate > results["causal-CHC"].ood_rate  # slams the actuator OOD
 
 
+@pytest.mark.parametrize("task", [PricingTask(), InventoryTask()], ids=["pricing", "inventory"])
+def test_a_predictive_fit_on_every_logged_column_lands_where_the_adjusted_one_does(task) -> None:
+    """The predictive row regressed on the state and the action alone, so the logged confounder
+    was left out and its push read as the action's; a predictive fit on every logged column is the
+    honest baseline. Here no logged column is a mediator or a collider, so it is the right
+    adjustment and its regret is the adjusted controller's, not the omitted-variable bias's."""
+    results = {r.controller: r for r in task.run()}
+    every, causal = results["predictive-all"], results["causal-CHC"]
+    assert every.regret == pytest.approx(causal.regret, rel=0.0, abs=1e-3)
+    assert every.constraint_violations == causal.constraint_violations
+    assert every.ood_rate == causal.ood_rate
+    assert results["predictive"].regret > 100.0 * max(abs(every.regret), 1e-3)
+
+
 def test_leaderboard_is_sorted_by_regret() -> None:
     lines = leaderboard(PricingTask().run()).splitlines()
     assert lines[0].startswith("controller")

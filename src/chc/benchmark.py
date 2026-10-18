@@ -43,6 +43,9 @@ from chc.uncertainty import (
     fit_ensemble,
 )
 
+# Every column ConfoundedLinearSystem logs besides the state, the action and the outcome.
+_LOGGED_COVARIATES = ("z", "w")
+
 
 @dataclass(frozen=True)
 class TaskResult:
@@ -82,6 +85,16 @@ class PricingTask:
     effect of 1.03, costs 0.029 less there and 0.018 more on average, and a plan that reads the
     path's noise 0.29 less; neither is open to a controller. A controller can therefore land a
     little below the oracle on one path.
+
+    Two predictive rows read the same log. ``predictive`` regresses the next state on the state and
+    the action alone, so the logged confounder ``z`` is left out and its push is read as the
+    action's: an omitted-variable bias that flips the effect's sign. ``predictive-all`` regresses on
+    every logged column, ``z`` and ``w`` included. Here that is the right adjustment, because the
+    one confounder is logged and no logged column is a mediator or a collider, so it lands where
+    ``causal-CHC`` does. The task prices leaving a logged confounder out; it does not separate
+    adjustment from a regression on every column. The predictive regret's size is set mostly by the
+    action box: its controller pushes the wrong way until the box stops it, and with the box at
+    ``[-2.5, 2.5]`` instead of ``[-10, 10]`` its regret is about a tenth.
     """
 
     x0: float = 0.0
@@ -139,7 +152,8 @@ class PricingTask:
 
         The CHC controller uses the pluggable ``estimator`` (default ``BackdoorOLS``, the linear
         adjustment); pass ``DoubleML()`` / ``EconMLDoubleML()`` to swap the causal backend. The
-        predictive baseline stays the fixed naive (unadjusted) fit.
+        predictive baselines stay fixed least-squares fits: ``predictive`` on the state and the
+        action alone, ``predictive-all`` on every logged column.
         """
         estimator = estimator or BackdoorOLS()
         system = ConfoundedLinearSystem(kappa=self.kappa)
@@ -154,6 +168,7 @@ class PricingTask:
             "oracle": system.b_true,
             "causal-CHC": float(estimator.estimate(data, covariates=("x", "z")).effect),
             "predictive": float(estimate_control_effect(data, adjust_for=())),
+            "predictive-all": float(estimate_control_effect(data, adjust_for=_LOGGED_COVARIATES)),
         }
         return [
             self._score(system, name, b_hat, oracle_cost, u_support, key)
@@ -173,6 +188,10 @@ class InventoryTask:
     and is scored on the same ``n_eval`` draws as every controller. On those 5 000 draws the order
     at their own fractile costs 5.7e-5 less in float64, an order that reads the draws it is scored
     on.
+
+    As in :class:`PricingTask`, ``predictive`` leaves the logged confounder out and
+    ``predictive-all`` regresses on every logged column, which here is the right adjustment and
+    lands where ``causal-CHC`` does.
     """
 
     d0: float = 5.0  # base demand
@@ -198,6 +217,7 @@ class InventoryTask:
         """Estimate demand response (oracle / causal / predictive) and score the induced order.
 
         ``estimator`` is the pluggable causal backend for the CHC order (default ``BackdoorOLS``).
+        ``predictive`` and ``predictive-all`` are the least-squares fits of :meth:`PricingTask.run`.
         """
         estimator = estimator or BackdoorOLS()
         system = ConfoundedLinearSystem(a=0.0, b_true=1.0, c=2.0, kappa=self.kappa)
@@ -218,6 +238,7 @@ class InventoryTask:
             "oracle": system.b_true,
             "causal-CHC": float(estimator.estimate(data, covariates=("x", "z")).effect),
             "predictive": float(estimate_control_effect(data, adjust_for=())),
+            "predictive-all": float(estimate_control_effect(data, adjust_for=_LOGGED_COVARIATES)),
         }
         results = []
         for name, b_hat in controllers.items():

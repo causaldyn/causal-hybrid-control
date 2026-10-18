@@ -17,7 +17,9 @@
 # The newsvendor orders stock once and pays for both leftovers and shortages. The CHC controller is
 # `causal-CHC` on pricing and inventory: it adjusts for the confounder. On support-shift it is
 # `pessimistic`: it penalises actions outside the logged support. The naive baseline is `predictive`
-# (an unadjusted fit) or `greedy` (it trusts the model everywhere).
+# (an unadjusted fit) or `greedy` (it trusts the model everywhere). On pricing and inventory a second
+# predictive row, `predictive-all`, regresses on every logged column; the one confounder is logged
+# and no column is a mediator or a collider, so it lands with `causal-CHC`.
 #
 # Metrics per controller: **cost**, **regret** (`cost − oracle_cost`, lower is better), **constraint
 # violations**, and **out-of-support action rate**.
