@@ -134,9 +134,10 @@ from __future__ import annotations
 
 import logging
 import math
+import operator
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Literal, Protocol
+from typing import Literal, Protocol, SupportsIndex
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -153,6 +154,27 @@ ForecastEvolution = Literal["constant", "compounding"]
 
 # A regressor idle long enough to inflate its coefficient's variance this many times is logged.
 _WINDUP_WARN = 10.0
+
+
+def _index(value: object) -> int | None:
+    """``value`` as an ``int`` where it is an integer, a NumPy one too, and not a boolean."""
+    if isinstance(value, bool | np.bool_) or not isinstance(value, SupportsIndex):
+        return None
+    try:
+        return operator.index(value)
+    except TypeError:  # an array of floats has the method and refuses
+        return None
+
+
+def _count(value: object, name: str, least: int = 1, why: str = "") -> int:
+    """``value`` as an ``int`` of at least ``least``, or a refusal naming ``name``."""
+    number = _index(value)
+    if number is None or number < least:
+        what = {0: "a non-negative integer", 1: "a positive integer"}.get(
+            least, f"an integer of at least {least}"
+        )
+        raise ValueError(f"{name} must be {what}{why}, got {value!r}")
+    return number
 
 
 def _discount(value: float, name: str = "discount") -> float:
@@ -176,8 +198,7 @@ class Polynomial:
     discount: float
 
     def __post_init__(self) -> None:
-        if isinstance(self.order, bool) or not isinstance(self.order, int) or self.order < 1:
-            raise ValueError(f"order must be a positive integer, got {self.order!r}")
+        object.__setattr__(self, "order", _count(self.order, "order"))
         object.__setattr__(self, "discount", _discount(self.discount))
 
     @property
@@ -213,16 +234,19 @@ class Seasonal:
         period = float(self.period)
         if not (math.isfinite(period) and period > 1.0):
             raise ValueError(f"period must be finite and above 1, got {self.period}")
-        harmonics = tuple(self.harmonics)
-        if not harmonics:
+        given = tuple(self.harmonics)
+        if not given:
             raise ValueError("harmonics must name at least one harmonic")
-        for j in harmonics:
-            if isinstance(j, bool) or not isinstance(j, int) or not 1 <= j <= period / 2.0:
+        harmonics: list[int] = []
+        for j in given:
+            number = _index(j)
+            if number is None or not 1 <= number <= period / 2.0:
                 raise ValueError(
                     f"harmonic {j!r} is not an integer in [1, period / 2 = {period / 2}]"
                 )
+            harmonics.append(number)
         if len(set(harmonics)) != len(harmonics):
-            raise ValueError(f"harmonics repeat: {harmonics}")
+            raise ValueError(f"harmonics repeat: {given}")
         object.__setattr__(self, "period", period)
         object.__setattr__(self, "harmonics", tuple(sorted(harmonics)))
         object.__setattr__(self, "discount", _discount(self.discount))
@@ -276,8 +300,7 @@ class Regression:
     hold_when_idle: bool = False
 
     def __post_init__(self) -> None:
-        if isinstance(self.width, bool) or not isinstance(self.width, int) or self.width < 1:
-            raise ValueError(f"width must be a positive integer, got {self.width!r}")
+        object.__setattr__(self, "width", _count(self.width, "width"))
         object.__setattr__(self, "discount", _discount(self.discount))
 
     @property
@@ -638,9 +661,12 @@ def _regressors(model: DynamicLinearModel, x: ArrayLike | None, horizon: int) ->
 
 def _interventions(interventions: Mapping[int, float] | None, horizon: int) -> dict[int, float]:
     out: dict[int, float] = {}
-    for step, delta in (interventions or {}).items():
-        if isinstance(step, bool) or not isinstance(step, int) or not 0 <= step < horizon:
-            raise ValueError(f"intervention step {step!r} is outside [0, {horizon})")
+    for given, delta in (interventions or {}).items():
+        step = _index(given)
+        if step is None:
+            raise ValueError(f"intervention step {given!r} is not an integer")
+        if not 0 <= step < horizon:
+            raise ValueError(f"intervention step {step} is outside [0, {horizon})")
         out[step] = _discount(delta, f"the intervention discount at step {step}")
     return out
 
@@ -848,8 +874,7 @@ def backward_sample(fit: DLMFit | GeoDLMFit, draws: int, seed: int) -> Posterior
     Raises:
         ValueError: on ``draws`` below 1.
     """
-    if isinstance(draws, bool) or not isinstance(draws, int) or draws < 1:
-        raise ValueError(f"draws must be a positive integer, got {draws!r}")
+    draws = _count(draws, "draws")
     path = _path(fit)
     rng = np.random.default_rng(seed)
     horizon, p = path.mean.shape
@@ -1174,18 +1199,15 @@ def constrained_sample(
         ValueError: on no signs, a column that is not one of ``x``'s or not in a width-one
             regression block, a sign that is neither, ``form="multiplicative"`` (whose evolution
             couples the blocks), a variance discount below 1, a fit with interventions, ``draws``
-            below 1, ``chains`` below 2 or a negative ``warmup``.
+            below 4, ``chains`` below 2 or a negative ``warmup``.
     """
     model = fit.model
     if not signs:
         raise ValueError("no sign to impose; backward_sample draws the unconstrained posterior")
-    if isinstance(draws, bool) or not isinstance(draws, int) or draws < 1:
-        raise ValueError(f"draws must be a positive integer, got {draws!r}")
-    if isinstance(chains, bool) or not isinstance(chains, int) or chains < 2:
-        raise ValueError(f"chains must be an integer of at least 2 for R-hat, got {chains!r}")
-    warmup = draws if warmup is None else warmup
-    if isinstance(warmup, bool) or not isinstance(warmup, int) or warmup < 0:
-        raise ValueError(f"warmup must be a non-negative integer, got {warmup!r}")
+    # split R-hat halves each chain, and a half's variance needs two draws
+    draws = _count(draws, "draws", 4, ", two a half for split R-hat")
+    chains = _count(chains, "chains", 2, " for R-hat")
+    warmup = _count(draws if warmup is None else warmup, "warmup", 0)
     if model.form != "additive":
         raise ValueError(
             "constrained sampling needs form='additive', whose evolution keeps the blocks apart"
@@ -1198,9 +1220,10 @@ def constrained_sample(
         for j in range(sl.start, sl.stop):
             block_of[j] = block
     constrained: dict[int, float] = {}
-    for column, sign in signs.items():
-        if isinstance(column, bool) or not isinstance(column, int):
-            raise ValueError(f"a sign's key is a column of x, got {column!r}")
+    for key, sign in signs.items():
+        column = _index(key)
+        if column is None:
+            raise ValueError(f"a sign's key is a column of x, got {key!r}")
         if not 0 <= column < s.regression.size:
             raise ValueError(f"column {column} is not one of x's {s.regression.size}")
         if sign not in ("positive", "negative"):
@@ -1403,8 +1426,7 @@ def forecast(
             ``(horizon, model.regressors)``, an unknown ``evolution``, or, with
             ``evolution="constant"``, an evolution variance with a negative eigenvalue.
     """
-    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1:
-        raise ValueError(f"horizon must be a positive integer, got {horizon!r}")
+    horizon = _count(horizon, "horizon")
     if evolution not in ("constant", "compounding"):
         raise ValueError(f"evolution must be 'constant' or 'compounding', got {evolution!r}")
     model = fit.model
@@ -1465,13 +1487,13 @@ def confidence_set(fits: Sequence[DLMFit], parameters: int, level: float = 0.95)
     there were 1.2 times as wide as at the true discounts.
 
     Raises:
-        ValueError: on no fits, fits of other observations than the first's, a ``parameters``
-            that is not a positive integer, or a ``level`` outside ``(0, 1)``.
+        ValueError: on no fits, fits of other observations than the first's or through another
+            design ``F_t``, other regressors or other blocks, a ``parameters`` that is not a
+            positive integer, or a ``level`` outside ``(0, 1)``.
     """
     if not fits:
         raise ValueError("confidence_set needs at least one fit")
-    if isinstance(parameters, bool) or not isinstance(parameters, int) or parameters < 1:
-        raise ValueError(f"parameters must be a positive integer, got {parameters!r}")
+    parameters = _count(parameters, "parameters")
     if not 0.0 < level < 1.0:
         raise ValueError(f"level must be in (0, 1), got {level}")
     for i, fit in enumerate(fits[1:], start=1):
@@ -1479,6 +1501,13 @@ def confidence_set(fits: Sequence[DLMFit], parameters: int, level: float = 0.95)
             raise ValueError(
                 f"fit {i} filtered other observations than fit 0; a likelihood ratio compares"
                 " fits of the same data"
+            )
+        if fit.design.shape != fits[0].design.shape or not np.array_equal(
+            fit.design, fits[0].design
+        ):
+            raise ValueError(
+                f"fit {i} read other regressors or other blocks than fit 0; a likelihood ratio"
+                " here compares discounts on the same data and the same design"
             )
     loglik = np.array([fit.log_likelihood for fit in fits])
     margin = float(special.chdtri(parameters, 1.0 - level)) / 2.0
@@ -1507,8 +1536,9 @@ def monitor_evalues(
     shifts: Sequence[float] = (2.0,),
     inflations: Sequence[float] = (2.0,),
 ) -> _Array:
-    """E-values for "the model's one-step forecasts hold", one row per observed step and one
-    column per alternative, for :class:`chc.gate.DriftAlarm`.
+    """E-values for "the model's one-step forecasts hold", one row per step and one column per
+    alternative, for :class:`chc.gate.DriftAlarm`. A missing step's row is 1, the e-value of no
+    evidence, so a row is the step it is read at, and an alarm's row the step to intervene at.
 
     The standardised error ``u_t = e_t / sqrt(Q_t)`` is Student ``t`` under the model. Each
     alternative is a density for it -- the same ``t`` shifted by ``+h`` and by ``-h`` for each
@@ -1540,7 +1570,9 @@ def monitor_evalues(
         columns.append(np.exp(_log_std_t(u - h, dof) - base))
         columns.append(np.exp(_log_std_t(u + h, dof) - base))
     columns.extend(np.exp(_log_std_t(u / k, dof) - math.log(k) - base) for k in ks)
-    return np.column_stack(columns)
+    rows = np.ones((fit.y.size, len(columns)))
+    rows[observed] = np.column_stack(columns)
+    return rows
 
 
 def _log_std_t(u: _Array, dof: _Array) -> _Array:
@@ -1588,8 +1620,7 @@ class GeoDLM:
     relative_variance: ArrayLike | None = None
 
     def __post_init__(self) -> None:
-        if isinstance(self.geos, bool) or not isinstance(self.geos, int) or self.geos < 1:
-            raise ValueError(f"geos must be a positive integer, got {self.geos!r}")
+        object.__setattr__(self, "geos", _count(self.geos, "geos"))
         weights = (
             np.ones(self.geos)
             if self.relative_variance is None
@@ -1637,8 +1668,7 @@ def stacked_prior(national: Prior | None, regional: Prior | None, geos: int) -> 
         ValueError: on two priors whose ``scale`` or ``dof`` differ, both ``None``, or a ``geos``
             that is not a positive integer.
     """
-    if isinstance(geos, bool) or not isinstance(geos, int) or geos < 1:
-        raise ValueError(f"geos must be a positive integer, got {geos!r}")
+    geos = _count(geos, "geos")
     if regional is None and national is None:
         raise ValueError("a stacked prior needs a national prior, a regional one, or both")
     parts = [] if national is None else [national]
@@ -1920,10 +1950,11 @@ def _vaguest(model: GeoDLM, pooled: Sequence[int]) -> tuple[tuple[int, ...], _Ar
     """The pooled coordinates, checked, and their prior variance in the model: the vaguest
     spread."""
     national, regional = _sizes(model.national), _sizes(model.regional)
-    coordinates = tuple(pooled)
+    indices = tuple(_index(i) for i in pooled)
+    coordinates = tuple(i for i in indices if i is not None)
     if (
         not coordinates
-        or any(isinstance(i, bool) or not isinstance(i, int) for i in coordinates)
+        or len(coordinates) < len(indices)
         or len(set(coordinates)) < len(coordinates)
         or not all(0 <= i < regional for i in coordinates)
     ):
@@ -1990,8 +2021,7 @@ def fit_geo_spread(
             prior covariance with another, ``draws`` below 1, a ``level`` outside ``(0, 1)``, and
             what :func:`forward_filter_geos` refuses.
     """
-    if isinstance(draws, bool) or not isinstance(draws, int) or draws < 1:
-        raise ValueError(f"draws must be a positive integer, got {draws!r}")
+    draws = _count(draws, "draws")
     if not 0.0 < level < 1.0:
         raise ValueError(f"level must be in (0, 1), got {level}")
     coordinates, vaguest = _vaguest(model, pooled)
