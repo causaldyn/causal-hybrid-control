@@ -95,13 +95,13 @@ from chc.plan import (
     PlanRegretBound,
     RegretStatus,
     RowPrice,
+    _audit,
     _carried_along,
     _diagnostic_status,
     _Rule,
     _Ruled,
     _RuledCost,
     causal_plan,
-    certify_safety,
     plan_regret_bound,
 )
 from chc.residual import ControlAffineResidual, ZeroResidual, control_affine_features
@@ -186,9 +186,10 @@ made."""
 
 GammaStarStatus = Literal["finite", "every_level", "no_level"]
 """What :attr:`DecisionCertificate.gamma_star` reads. ``finite``: the level past which some step's
-barrier no admissible action keeps. ``every_level``: ``inf``, every step's barrier is kept however
-strong the confounding. ``no_level``: nan, some step's barrier no admissible action keeps, not even
-at ``gamma = 1``."""
+barrier no admissible action keeps. ``every_level``: ``inf``, every step's barrier is kept at every
+level, the radius then the whole gap's share of the fitted channel: against every effect within
+that much of the estimate, not against any effect at all. ``no_level``: nan, some step's barrier no
+admissible action keeps, not even at ``gamma = 1``."""
 
 
 @dataclass(frozen=True)
@@ -1351,7 +1352,8 @@ class Prescription:
             *self._noise_lines(),
             f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}"
             + ("" if certificate.gamma is None else f" at gamma {certificate.gamma:.4g}")
-            + f", gamma* {_show(certificate.gamma_star)} (marginal sensitivity model)",
+            + f", gamma* {_show(certificate.gamma_star)} (marginal sensitivity model's factor on a "
+            "share of the fitted channel)",
             "- solver: not run"
             if certificate.solver_status is None
             else f"- solver: {certificate.solver_status} after "
@@ -1747,7 +1749,12 @@ def prescribe(
             :func:`chc.plan.certify_safety` with its default gap, the fitted channel's own size,
             and each lever's largest action as ``u_max``, so ``gamma_star`` and the barrier's
             certified steps read the same in any units of the state or of each lever (ADR 0085,
-            ADR 0091). It prices the plan, and changes it only under ``hold_constraints``.
+            ADR 0091), and the levers' box, which may be asymmetric. It prices the plan, and changes
+            it only under ``hold_constraints``. The radius is that factor times a share of the
+            fitted channel, so at every level the identified set stays within the channel's own
+            size of the estimate: ``gamma_star`` is ``inf`` where every step holds over that whole
+            set, which says nothing of a channel the fit has wrong by more than its size. The
+            channel's standard error does not enter it.
         tolerance: the trajectory error above which the plan stops being certified. **Omitting it
             switches the tube off** rather than setting it to infinity: this library cannot know
             how much error a caller accepts, and a certificate with an infinite tolerance passes
@@ -2382,7 +2389,7 @@ def prescribe(
     if held is not None:
         safety = plan.safety  # solve() already audited it at the whole box's largest actions
     elif margins:
-        safety = certify_safety(plan, model, margins, dt, gamma=gamma, u_max=reach)
+        safety = _audit(plan, model, margins, dt, 1.0, gamma, 1.0, reach, (u_lo, u_hi))
     else:
         safety = None
     gap = regret(plan)

@@ -1843,7 +1843,7 @@ def test_the_reported_gamma_names_its_sensitivity_model() -> None:
     """Rosenbaum's Gamma is another model's, and docs/concepts/gamma.md gives the bracket."""
     report = _prescribe(_panel(), CausalGraph.from_edges(EDGES)).report()
     (line,) = [line for line in report.splitlines() if "gamma*" in line]
-    assert line.endswith("(marginal sensitivity model)")
+    assert line.endswith("(marginal sensitivity model's factor on a share of the fitted channel)")
 
 
 def test_the_certificate_states_the_gamma_its_barrier_prefix_was_audited_at() -> None:
