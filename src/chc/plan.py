@@ -1709,7 +1709,6 @@ def _hold_barrier(
     lo = broadcast_box(u_lo, actions.shape, "u_lo", actions.dtype)
     hi = broadcast_box(u_hi, actions.shape, "u_hi", actions.dtype)
     check_box(lo, hi)
-    blocks = _constraint_blocks(constraints, lo, hi, actions.dtype)
     several = isinstance(barrier.barrier, tuple)
     columns = (len(barrier.barrier),) if several else ()
     shape, inverse = None, None
@@ -1729,6 +1728,9 @@ def _hold_barrier(
         if inverse is None or bool(np.all(inverse == 1.0))
         else jnp.asarray(1.0 / np.where(reach > 0.0, reach, 1.0), actions.dtype)
     )
+    # rows orthogonal in the caller's units need not be in the metric's, so under one a class
+    # holds only rows no action enters twice, which no rescaling of the actions makes overlap
+    blocks = _constraint_blocks(constraints, lo, hi, actions.dtype, disjoint=metric is not None)
     held = _HeldBarrier(
         model=model,
         barrier=barrier.barrier,

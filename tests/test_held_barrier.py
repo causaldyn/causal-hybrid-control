@@ -20,6 +20,7 @@ import pytest
 from jax import Array
 from scipy.optimize import nnls
 
+import chc.plan as plan_module
 from chc import (
     BarrierConstraint,
     CausalPlan,
@@ -764,3 +765,35 @@ def test_each_lever_s_largest_action_must_be_one(u_max: tuple[float, ...], messa
                 TWO_REACH,
                 barrier=BarrierConstraint(_velocity_floor, gamma=2.0, u_max=u_max),
             )
+
+
+def test_rounds_in_each_lever_s_units_colour_their_rows_in_those_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rows orthogonal in the caller's units need not be in the rounds' own: ``(1, 1)`` and
+    ``(1, -1)`` over two levers whose largest actions are 5 and 1 read ``(5, 1)`` and ``(5, -1)``
+    there, and a class projected at once as if they were orthogonal is not their projection. The
+    rounds coloured the rows for the caller's units."""
+    colourings: list[bool] = []
+    blocks = plan_module._constraint_blocks
+
+    def recorded(*args: object, disjoint: bool = False, **kwargs: object) -> object:
+        colourings.append(disjoint)
+        return blocks(*args, disjoint=disjoint, **kwargs)
+
+    monkeypatch.setattr(plan_module, "_constraint_blocks", recorded)
+    horizon = 4
+    rows = np.zeros((2 * horizon, 2 * horizon))
+    for k in range(horizon):
+        rows[2 * k, 2 * k : 2 * k + 2] = (1.0, 1.0)
+        rows[2 * k + 1, 2 * k : 2 * k + 2] = (1.0, -1.0)
+    bound = LinearConstraint(rows, np.full(2 * horizon, -np.inf), np.full(2 * horizon, 2.0))
+    model = LinearDynamics(-jnp.eye(1), jnp.array([[1.0, 1.0]]))
+    cost = QuadraticCost(Q=jnp.eye(1), R=0.01 * jnp.eye(2), Qf=jnp.eye(1), x_target=jnp.ones(1))
+    lo, hi = jnp.array([-5.0, -1.0]), jnp.array([5.0, 1.0])
+    barrier = BarrierConstraint(lambda x: 0.5 - x[0], u_max=(5.0, 1.0))
+    plan = causal_plan(
+        model, jnp.zeros(1), cost, 0.1, horizon, lo, hi, constraints=(bound,), barrier=barrier
+    )
+    assert colourings == [True]
+    assert float(np.max(rows @ np.asarray(plan.actions).ravel())) <= 2.0 + 1e-9
