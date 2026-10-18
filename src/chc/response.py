@@ -1113,7 +1113,10 @@ def roi(
     The channel's return over the whole series, less its return with the window's spend removed,
     over what the window spent. ``channel`` is any function of a ``(T,)`` spend series returning a
     ``(T,)`` series of returns. The carryover counted is what falls inside the series: to count all
-    of it, extend the series by the kernel's length with what is spent after.
+    of it, extend the series by the kernel's length with what is spent after. Near the series' end
+    the cut is most of the return: through a long unnormalised geometric kernel of retention ``r``
+    and a linear curve, a last period's spend is credited with ``1`` of the ``1 / (1 - r)`` it
+    returns, a tenth at ``r = 0.9``.
     ``revenue_per_kpi`` turns a KPI into revenue; at 1 the outcome is revenue.
     """
     series, inside, spent = _window(spend, window)
