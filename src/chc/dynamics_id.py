@@ -1183,6 +1183,15 @@ def fit_causal_residual(
             read it up to 0.12.
         nuisance_degree: flexibility of ``g`` and ``m``. Richer nuisances are the whole point of
             cross-fitting -- orthogonality is what makes their error enter only at second order.
+            Second order in an error that shrinks: the nuisances are polynomials of this fixed
+            degree, and a policy or a drift outside their span leaves an error that does not
+            shrink with the log, and a bias in the channel that does not either, which
+            ``channel_error`` does not cover. On a lever set by ``-1.5 tanh(2 x)`` and a drift
+            with ``sin(2 x)`` in it, at the default degree 2, the channel came back 0.61 below its
+            truth of 1 at 1000 rows and 0.62 at 4000, 26 and 57 of its errors, on none of twelve
+            logs within its 95 % interval. Refit at a higher degree and read how far the channel
+            moves in its errors: a move of more than one or two says the nuisances miss. There,
+            at 4000 rows, degree 3 moved it by 0.22, 20 of its errors, and degree 5 by 0.44.
         folds: cross-fitting folds. ``1`` fits the nuisances on the same rows it residualises.
             That is *not* biased for the default nuisances and should not be sold as such:
             residualising ``y`` and ``u`` by the same linear projection whose span contains the
