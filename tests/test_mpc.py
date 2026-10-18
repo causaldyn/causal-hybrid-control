@@ -1,5 +1,7 @@
 """MPC gate: closed-loop receding-horizon control regulates the plant and respects constraints."""
 
+import logging
+
 import equinox as eqx
 import jax.numpy as jnp
 import pytest
@@ -86,3 +88,22 @@ def test_mpc_plans_each_window_from_the_time_it_starts() -> None:
     assert abs(float(us[0, 0])) < 1e-3  # at t = 0 the push is a second away, past the window
     assert float(us[7, 0]) < -0.2  # at t = 0.7 the window reaches it, and the plan leans into it
     assert float(xs[8, 0]) < -0.02  # the state moves before the push, which is 0.002 at t = 0.8
+
+
+def test_a_loop_whose_replans_run_out_of_their_steps_says_how_many_did(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Each replan's solve says why it stopped; the loop counts the ones its budget stopped and
+    warns once, where it used to drop the status and return the truncated actions as answers."""
+    model = DampedOscillator(omega=1.0, zeta=0.1)
+    cost = QuadraticCost(Q=jnp.eye(2), R=jnp.array([[0.1]]), Qf=jnp.eye(2), x_target=jnp.zeros(2))
+    x0 = jnp.array([1.0, 0.0])
+    with caplog.at_level(logging.WARNING, logger="chc.mpc"):
+        mpc_control(model, x0, cost, DT, 20, -5.0, 5.0, n_steps=4, inner_steps=3)
+    [record] = [r for r in caplog.records if getattr(r, "chc_event", None) == "mpc_truncated"]
+    assert (getattr(record, "truncated", None), getattr(record, "replans", None)) == (4, 4)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="chc.mpc"):
+        mpc_control(model, x0, cost, DT, 20, -5.0, 5.0, n_steps=4, inner_steps=10_000)
+    assert not [r for r in caplog.records if getattr(r, "chc_event", None) == "mpc_truncated"]

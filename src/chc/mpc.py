@@ -24,7 +24,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 
-from chc.control import Bound, LinearConstraint, broadcast_box, projected_gradient_control
+from chc.control import Bound, LinearConstraint, broadcast_box, projected_gradient_solve
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
@@ -55,8 +55,12 @@ def mpc_control(
     so the truncation buys latency rather than hiding an unconverged answer. Priced rather than
     assumed -- against the same loop run to convergence over 25 replans of a damped oscillator, 40
     steps come within 0.001% of its closed-loop cost, on the known plant and with an MLP residual,
-    in 808 and 761 steps where the converged loops take 844 and 779. Raise it if the loop is
-    offline; the solve stops on its own once the line search fails.
+    in 808 and 761 steps where the converged loops take 844 and 779. That is one plant's price: on
+    three random linear plants of 3 states and 2 levers (normal entries, the drift's times 0.6),
+    25 replans of 20 steps under ``Q = Qf = I``, ``R = 0.1 I`` cost 0.005%, 4.6% and 9.1% more
+    than converged ones. Raise it if the loop is offline; the solve stops on its own once the
+    line search fails. A loop in which some replan ran out of ``inner_steps`` says so in one
+    warning on this module's logger (``chc_event = "mpc_truncated"``), with how many did.
 
     The loop keeps one clock: step ``k`` applies its action to the plant at ``t = k * dt``, and the
     plan it solves there reads the model from ``t = k * dt`` on. Autonomous plants never notice; a
@@ -76,12 +80,15 @@ def mpc_control(
     x = x0
     states = [x0]
     applied: list[Array] = []
+    truncated = 0
 
     for k in range(n_steps):
         t = k * dt
-        us_opt, _ = projected_gradient_control(
+        solve = projected_gradient_solve(
             _Shifted(model, jnp.asarray(t)), x, guess, dt, cost, u_lo, u_hi, steps=inner_steps
         )
+        us_opt = solve.actions
+        truncated += solve.status == "max_iterations"
         u0 = us_opt[0]
         applied.append(u0)
         x = rk4_step(plant, t, x, u0, dt)
@@ -92,6 +99,20 @@ def mpc_control(
             else jnp.zeros((horizon, control_dim))
         )
 
+    if truncated:
+        _log.warning(
+            "%d of %d replans ran out of their %d descent steps, so their actions are where the "
+            "descent stopped, not its answer; raise inner_steps if the loop can wait",
+            truncated,
+            n_steps,
+            inner_steps,
+            extra={
+                "chc_event": "mpc_truncated",
+                "truncated": truncated,
+                "replans": n_steps,
+                "inner_steps": inner_steps,
+            },
+        )
     return jnp.stack(states), jnp.stack(applied)
 
 
