@@ -2064,17 +2064,25 @@ def certify_safety(
             ceiling, since each is reached by its own best action and no one action need reach
             the least.
         alpha: the class-K gain in ``grad h . xdot >= -alpha*h``.
-        gamma, cvar_gap: the marginal sensitivity model's level and the gap it scales, combined into
-            ``Delta = (gamma-1)/(gamma+1) * cvar_gap * ||B_hat(x0)||_2``: ``cvar_gap`` is a
-            *share* of the model's channel, its operator norm at the plan's first state, so the
-            radius is in the channel's units and ``gamma_star`` reads the same in any units of the
-            state or of the levers. The default, 1, is the channel's own size, the calibration
-            ``cvar_gap := b_hat`` of :mod:`chc.sensitivity`. ``gamma = 1`` is exact identification
-            -- zero radius, and this degenerates to the ordinary CBF check. NOTE the calibration
-            burden: ``Delta`` is used here as an **operator-norm radius on the effect matrix**, and
-            §32's scalar CVaR gap does not by itself establish one. The share is the caller's
-            externally calibrated input, exactly as ``gamma`` is; an absolute radius ``r`` is the
-            share ``r / ||B_hat(x0)||_2``.
+        gamma, cvar_gap: the marginal sensitivity model's level and the gap its factor scales,
+            combined into ``Delta = (gamma-1)/(gamma+1) * cvar_gap * ||B_hat(x0)||_2``:
+            ``cvar_gap`` is a *share* of the model's channel, its operator norm at the plan's first
+            state, so the radius is in the channel's units and ``gamma_star`` reads the same in any
+            units of the state or of the levers. The default, 1, is the channel's own size, the
+            calibration ``cvar_gap := b_hat`` of :mod:`chc.sensitivity`. ``gamma = 1`` is exact
+            identification -- zero radius, and this degenerates to the ordinary CBF check. NOTE
+            the calibration burden: ``Delta`` is used here as an **operator-norm radius on the
+            effect matrix**, and §32's scalar CVaR gap does not by itself establish one. The share
+            is the caller's externally calibrated input, exactly as ``gamma`` is; an absolute
+            radius ``r`` is the share ``r / ||B_hat(x0)||_2``. The radius is a share of the
+            *fitted* channel, so at every ``gamma``, however large, it stays within
+            ``cvar_gap * ||B_hat(x0)||_2`` of the estimate: ``gamma_star = inf`` reads every level
+            of that set, and nothing of an effect further off. With the default share an estimate
+            of 0.004 for an effect of 1 is certified at every level along a plan the effect itself
+            takes out of the set. The factor ``(gamma-1)/(gamma+1)`` is the bounded-density-ratio
+            model's (:func:`chc.uncertainty.confounding_robust_inflation`), but a channel radius
+            spent as ``d*||u||`` is a structural sensitivity model of its own, not that model's
+            bound.
         u_max: actuation limit, used for ``gamma_star`` -- that is the *best admissible action*
             question, which needs a budget the plan's own choice does not define. Defaults to the
             largest action norm the plan actually uses, answering the narrower "how much confounding
