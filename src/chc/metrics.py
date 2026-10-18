@@ -67,11 +67,17 @@ def rise_time(
     low: float = 0.1,
     high: float = 0.9,
 ) -> float:
-    """Time to cross from ``low`` to ``high`` fraction of the step (10%-90% by convention)."""
+    """Time to cross from ``low`` to ``high`` fraction of the step (10%-90% by convention).
+
+    Returns ``inf`` if the signal never reaches the ``high`` level in the record (did not rise), as
+    :func:`settling_time` does for a signal that did not settle.
+    """
     s, x0 = _prepare(signal, initial)
     step = target - x0
     low_level, high_level = x0 + low * step, x0 + high * step
     reached = (s >= low_level, s >= high_level) if step > 0 else (s <= low_level, s <= high_level)
+    if not reached[1].any():
+        return float("inf")
     return float((int(np.argmax(reached[1])) - int(np.argmax(reached[0]))) * dt)
 
 
