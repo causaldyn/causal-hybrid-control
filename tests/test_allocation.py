@@ -229,6 +229,19 @@ def test_the_untied_example_is_planned_all_on_the_first_channel():
     assert envelope.worth == pytest.approx(0.705, abs=5e-4)
 
 
+def test_on_an_s_curve_the_best_flat_plan_is_not_the_best_schedule():
+    """The documented scope: one Hill curve of slope 3, no carryover, 1.2 over four periods. The
+    best plan of one rate a period returns 0.105, and 1.2 spent in one period returns 0.633."""
+    one = GeometricAdstock(0.0, length=1, normalized=False)
+    channel = Channel(one, Hill(1.0, 3.0), 1.0)
+    plan = allocate((channel,), 1.2, 4, lower=np.zeros(1), upper=np.full(1, 1.2))
+    np.testing.assert_allclose(plan.spend, [0.3], rtol=1e-12, atol=0.0)
+    assert plan.worth == pytest.approx(0.105, abs=5e-4)
+    burst = float(jnp.sum(channel(jnp.array([1.2, 0.0, 0.0, 0.0]))))
+    assert burst == pytest.approx(0.633, abs=5e-4)
+    assert burst > 6.0 * plan.worth
+
+
 def test_a_cap_short_of_the_tangency_is_bounded_on_its_own_interval():
     """Capped at 1, short of its tangency 2^(1/3), a Hill curve of slope 3 is bounded by the chord
     to its cap, not by the one from the origin to the tangency, which stands above the cap's value:

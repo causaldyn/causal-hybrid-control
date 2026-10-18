@@ -130,7 +130,10 @@ HONEST SCOPE:
   the adstock the tests covered reads the family's shape, not the experiment.
 * One rate a period for each channel, not a schedule: with a response that does not change with
   the period, only the history's carryover at the start and the tail at the end make periods
-  differ.
+  differ. On S-shaped curves "the best plan" everywhere here is the best of these flat plans, and a
+  schedule that spends in bursts can return more than any of them: one Hill curve of slope 3 and
+  scale 1, with no carryover, returns 0.105 on 1.2 spread over four periods and 0.633 on 1.2 spent
+  in one, six times more. No schedule is searched.
 * The tail is counted with nothing spent after the plan. Spend that continues after it would take
   the tail further up the curve, so a long kernel's tail is valued at its most.
 * :class:`chc.response.Ricker` is not monotone, and a negative coefficient turns a concave curve
@@ -931,8 +934,10 @@ def allocate(
 ) -> Allocation:
     """Spend ``budget`` over ``periods`` at one rate a period for each channel, for the most return.
 
-    Exact where every curve is concave; on S-shaped curves the best to the tolerance ``rtol`` and
-    ``atol`` set, by branch and bound (see the module).
+    Exact where every curve is concave; on S-shaped curves the best plan of one rate a period to
+    the tolerance ``rtol`` and ``atol`` set, by branch and bound (see the module). There a schedule
+    that spends in bursts can return more, six times more for one Hill curve of slope 3 over four
+    periods, and none is searched.
 
     Args:
         channels: the channels, each read as given.
