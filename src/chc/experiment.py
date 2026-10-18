@@ -33,6 +33,17 @@ The local model it optimises (the lab's value-of-information thread, independent
   ``noise_sd_k sqrt(W_kk / unit_cost_k) / probe_k``; on the lab's four-zone market classical Neyman,
   which ignores ``W``, left 1.5 times its regret.
 
+The action, before the experiment and after it, is the certainty-equivalent one: the best action
+for the mean channel. It is not the best action under the posterior. The expected cost under
+``b ~ N(m, S)`` is ``J(u; m) + u' ((coupling' Q coupling) o S) u / 2``, ``o`` the elementwise
+product (``validation/experiment_bayes_action.mac``), so the Bayes action is the
+certainty-equivalent one with the action weight raised by ``(coupling' Q coupling) o S``, and it
+holds back where the channel is uncertain. Where the prior is wide it can beat both: on one zone,
+``Q = 1``, ``R = 0.05``, a target 1 from a baseline 0 and ``b ~ N(1, 0.6^2)``, acting now on the
+mean lost 0.12 and the Bayes action 0.078, less than the 0.100 that the recommended experiment's
+regret after and spend came to. So ``"experiment"`` says experimenting beats acting on the mean,
+not that it beats acting well now.
+
 What the local model gets wrong, and what is done about it:
 
 * **A wide prior.** At a prior sd of 37-50% of ``b`` the lab's local model put the regret after the
@@ -347,8 +358,9 @@ class ExperimentDesign:
 
     The regrets are expectations over the prior, times ``uses``: ``regret_now`` of acting on the
     prior mean, ``regret_after`` of acting on the posterior mean once ``sample_sizes`` units have
-    run. Both are Monte Carlo's, over draws of the channels with the decision re-solved on every
-    draw, and ``error`` is the 95% half-width of their difference. ``value`` is what the experiment
+    run, each the certainty-equivalent action and not the Bayes one (see :mod:`chc.experiment`).
+    Both are Monte Carlo's, over draws of the channels with the decision re-solved on every draw,
+    and ``error`` is the 95% half-width of their difference. ``value`` is what the experiment
     removes less what it spends. ``regret_bound`` is the ``level`` quantile of the regret of acting
     now: with that probability under the prior, deploying now loses at most this much.
     ``model_gap`` is the local model's largest relative miss against the two Monte Carlo regrets,

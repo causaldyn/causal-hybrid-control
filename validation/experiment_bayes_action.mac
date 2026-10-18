@@ -1,0 +1,32 @@
+/* The expected cost of chc.experiment's decision under a Gaussian channel, and so its Bayes action.
+
+   x = x0 + C diag(b) u, J(u; b) = (x - x*)' Q (x - x*) / 2 + u' R u / 2, b ~ N(m, S). J is
+   quadratic in b, so its expectation needs only E[b] = m and E[b b'] = m m' + S:
+
+   STEP 1  E J(u; b) = J(u; m) + u' ((C' Q C) o S) u / 2, o the elementwise product, here for two
+           zones with every entry a symbol; the Bayes action is the certainty-equivalent one with
+           R raised by (C' Q C) o S, positive semidefinite by Schur's product theorem.
+
+   Run: timeout 120 maxima --very-quiet -b validation/experiment_bayes_action.mac */
+
+display2d : false$
+
+C : matrix([c11, c12], [c21, c22])$
+Q : matrix([q11, q12], [q12, q22])$
+R : matrix([r11, r12], [r12, r22])$
+u : matrix([u1], [u2])$
+d : matrix([d1], [d2])$  /* x0 - x* */
+J(b1, b2) := block([x], x : d + C . matrix([b1 * u1], [b2 * u2]),
+  (transpose(x) . Q . x + transpose(u) . R . u) / 2)$
+
+/* the expectation of a polynomial of degree at most 2 in b1, b2 */
+expected(p) := block([q],
+  q : ratsubst(B11, b1^2, p), q : ratsubst(B22, b2^2, q), q : ratsubst(B12, b1 * b2, q),
+  q : subst([B11 = m1^2 + s11, B22 = m2^2 + s22, B12 = m1 * m2 + s12], q),
+  expand(subst([b1 = m1, b2 = m2], q)))$
+
+H : transpose(C) . Q . C$
+step1 : ratsimp(expected(expand(J(b1, b2)))
+                - (J(m1, m2) + (transpose(u) . matrix([H[1, 1] * s11, H[1, 2] * s12],
+                                                      [H[2, 1] * s12, H[2, 2] * s22]) . u) / 2))$
+print("STEP 1 E J less J(u; m) + u'((C'QC) o S) u / 2 (expect 0):", step1)$
