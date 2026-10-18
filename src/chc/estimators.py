@@ -135,14 +135,20 @@ class BackdoorOLS:
 class IV2SLS:
     """Two-stage least squares using ``instrument`` for a latent confounder (built-in).
 
-    Both stages condition on the column ``x``, as :func:`chc.causal.estimate_effect_iv` does, and
-    ``covariates`` is not read, so the treatment, the outcome and the instrument must each be a
-    column other than ``x``. An instrument that does not move the treatment beyond what ``x``
-    explains leaves the effect not identified, and is refused with ``ValueError``.
+    Both stages condition on ``covariates``, by default the column ``x`` alone, as
+    :func:`chc.causal.estimate_effect_iv` does; the default is not the protocol's ``("x", "z")``,
+    since ``z`` is the confounder an instrument stands in for. ``covariates`` was not read before,
+    and the estimate conditioned on ``x`` whatever was passed. The instrument must be a column
+    other than ``x``, ``u`` and ``x_next``. An instrument that does not move the treatment beyond
+    what the covariates explain leaves the effect not identified, and is refused with
+    ``ValueError``.
+
+    ``std_error`` is the 2SLS HC1 sandwich, its residual the outcome less the fit on the treatment
+    itself. It is valid for a strong instrument; no inference here is robust to a weak one.
 
     ``diagnostics["instrument_relevance"]``, experimental, is the partial correlation of the
-    treatment and the instrument given ``x``, in absolute value: how far the instrument moves the
-    treatment, which grades a weak instrument and is not a test.
+    treatment and the instrument given the covariates, in absolute value: how far the instrument
+    moves the treatment, which grades a weak instrument and is not a test.
     """
 
     instrument: str = "w"
@@ -153,20 +159,26 @@ class IV2SLS:
         *,
         treatment: str = "u",
         outcome: str = "x_next",
-        covariates: tuple[str, ...] = ("x", "z"),
+        covariates: tuple[str, ...] = ("x",),
     ) -> EffectEstimate:
         _refuse_shared_names(
             {
-                "the state": ("x",),
                 "the treatment": (treatment,),
                 "the outcome": (outcome,),
                 "the instrument": (self.instrument,),
+                "a covariate": covariates,
             }
         )
-        effect, relevance = _two_stage(
-            _alias(data, treatment, outcome, ("x", self.instrument)), self.instrument
+        effect, relevance, stderr = _two_stage(
+            _alias(data, treatment, outcome, (*covariates, self.instrument)),
+            self.instrument,
+            covariates,
         )
-        return EffectEstimate(float(effect), diagnostics={"instrument_relevance": float(relevance)})
+        return EffectEstimate(
+            float(effect),
+            float(stderr),
+            diagnostics={"instrument_relevance": float(relevance)},
+        )
 
 
 @dataclass(frozen=True)

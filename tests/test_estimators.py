@@ -245,10 +245,20 @@ SECOND_ROLES = {
         {},
         "the column 'u' is read as the treatment and as the instrument",
     ),
-    "the state as the treatment of 2SLS": (
+    "2SLS's treatment as a covariate": (
         IV2SLS(),
         {"treatment": "x"},
-        "the column 'x' is read as the state and as the treatment",
+        "the column 'x' is read as the treatment and as a covariate",
+    ),
+    "2SLS's instrument as a covariate": (
+        IV2SLS(),
+        {"covariates": ("x", "w")},
+        "the column 'w' is read as the instrument and as a covariate",
+    ),
+    "2SLS's outcome as a covariate": (
+        IV2SLS(),
+        {"covariates": ("x", "x_next")},
+        "the column 'x_next' is read as the outcome and as a covariate",
     ),
     "DML's treatment as a covariate": (
         DoubleML(),
@@ -333,6 +343,54 @@ def test_backdoor_ols_error_covers_under_heteroskedastic_noise() -> None:
     covered = 0
     for _ in range(200):
         result = BackdoorOLS().estimate(_heteroskedastic(rng, 400), covariates=("x", "z"))
+        assert result.std_error is not None
+        covered += abs(result.effect - 1.0) <= 1.96 * result.std_error
+    assert covered >= 0.90 * 200
+
+
+def _instrumented(rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
+    """An instrument valid only given ``c``: ``w`` moves with ``c``, which drives the outcome, and
+    ``z`` confounds the treatment and the outcome unseen. The effect is 1."""
+    x, z, c = rng.standard_normal(n), rng.standard_normal(n), rng.standard_normal(n)
+    w = c + rng.standard_normal(n)
+    u = 0.8 * w - z + 0.7 * c + 0.5 * rng.standard_normal(n)
+    noise = rng.standard_normal(n) * (0.3 + 0.5 * np.abs(w))
+    y = 0.5 * x + u + 2.0 * z + 1.5 * c + noise
+    return {"x": x, "z": z, "c": c, "w": w, "u": u, "x_next": y}
+
+
+def test_iv_conditions_both_stages_on_the_covariates_it_is_given() -> None:
+    """``covariates`` was not read: both stages conditioned on ``x`` whatever was passed, so an
+    instrument valid only given ``c`` read 1.63 with ``c`` named, where the effect is 1."""
+    data = _instrumented(np.random.default_rng(4), 20_000)
+    adjusted = IV2SLS().estimate(data, covariates=("x", "c"))
+    assert adjusted.effect == pytest.approx(1.0, abs=0.05)
+    assert IV2SLS().estimate(data, covariates=("x",)).effect > 1.5  # c left out: biased
+
+
+def test_iv_reports_the_2sls_hc1_error() -> None:
+    """The error is the sandwich on the second stage's design, its residual the outcome less the
+    fit on the treatment itself, read against numpy's; IV2SLS reported none."""
+    data = _instrumented(np.random.default_rng(5), 1_000)
+    controls = np.column_stack([data["x"], data["c"]])
+    first = np.column_stack([controls, data["w"], np.ones(1_000)])
+    pushed = first @ np.linalg.lstsq(first, data["u"], rcond=None)[0]
+    second = np.column_stack([controls, pushed, np.ones(1_000)])
+    coeffs = np.linalg.lstsq(second, data["x_next"], rcond=None)[0]
+    structural = np.column_stack([controls, data["u"], np.ones(1_000)])
+    residual = data["x_next"] - structural @ coeffs
+    expected = _sandwich(np.column_stack([controls, pushed]), residual)[2]
+    result = IV2SLS().estimate(data, covariates=("x", "c"))
+    assert result.std_error == pytest.approx(expected, rel=1e-8, abs=0.0)
+
+
+def test_iv_error_covers_the_effect() -> None:
+    """Over 200 draws of 1,000 rows the 95% interval's coverage has a Monte Carlo SD of 0.015 at
+    0.95, so 0.90 is three of them below."""
+    rng = np.random.default_rng(6)
+    covered = 0
+    for _ in range(200):
+        result = IV2SLS().estimate(_instrumented(rng, 1_000), covariates=("x", "c"))
         assert result.std_error is not None
         covered += abs(result.effect - 1.0) <= 1.96 * result.std_error
     assert covered >= 0.90 * 200

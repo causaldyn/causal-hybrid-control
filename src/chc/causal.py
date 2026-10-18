@@ -124,7 +124,7 @@ def _instrument_relevance(state: Array, action: Array, instrument: Array) -> Arr
     canonical correlation between the first stage's push on the action and the action, each less
     its least-squares projection on a constant and the state. For one action and one instrument it
     is their partial correlation given the state, in absolute value: the root of the first stage's
-    partial ``R^2``.
+    partial ``R^2``. ``state`` is one column or a matrix of them, one a column, each read so.
 
     It reads 0 where 2SLS's moment has no rank: where the product of the instrument and the action,
     each beyond the state, is no more than their rounding could make of it. Each column is known
@@ -140,11 +140,12 @@ def _instrument_relevance(state: Array, action: Array, instrument: Array) -> Arr
         float(jnp.finfo(jnp.result_type(column, float)).eps)
         for column in (state, action, instrument)
     )
-    centred = state - jnp.mean(state)
-    spread = jnp.sqrt(jnp.mean(centred**2))
-    flat = spread <= rounding * jnp.sqrt(jnp.mean(state**2))
+    state = state.reshape(state.shape[0], -1)
+    centred = state - jnp.mean(state, axis=0)
+    spread = jnp.sqrt(jnp.mean(centred**2, axis=0))
+    flat = spread <= rounding * jnp.sqrt(jnp.mean(state**2, axis=0))
     scaled = jnp.where(flat, 0.0, centred / jnp.where(flat, 1.0, spread))
-    basis = jnp.stack([jnp.ones_like(scaled), scaled], axis=1)
+    basis = jnp.concatenate([jnp.ones((state.shape[0], 1), scaled.dtype), scaled], axis=1)
 
     def beyond_state(column: Array) -> Array:
         column = column - jnp.mean(column)
@@ -158,21 +159,35 @@ def _instrument_relevance(state: Array, action: Array, instrument: Array) -> Arr
     return overlap / size / swing
 
 
-def _two_stage(data: dict[str, Array], instrument: str) -> tuple[Array, Array]:
-    """:func:`estimate_effect_iv`'s estimate and its instrument's relevance
-    (:func:`_instrument_relevance`), refused where the relevance is 0."""
+def _two_stage(
+    data: dict[str, Array], instrument: str, controls: tuple[str, ...] = ("x",)
+) -> tuple[Array, Array, Array]:
+    """:func:`estimate_effect_iv`'s estimate, its instrument's relevance
+    (:func:`_instrument_relevance`) and the estimate's HC1 standard error, both stages conditioning
+    on ``controls`` (the state by default); refused where the relevance is 0.
+
+    The error is the 2SLS sandwich on the second stage's design, its residual the outcome less the
+    fit on the action itself, not on its first-stage prediction: that one's residual carries the
+    first stage's error times the effect, and its error is not the estimate's."""
     _refuse_reread("instrument", (instrument,), _TRANSITION)
-    data = _real_entries(data, ("x", "u", instrument, "x_next"))
-    x, u, w, y = data["x"], data["u"], data[instrument], data["x_next"]
-    relevance = _instrument_relevance(x, u, w)
+    _refuse_reread("covariate", controls, _ACTION_AND_OUTCOME)
+    data = _real_entries(data, (*controls, "u", instrument, "x_next"))
+    u, w, y = data["u"], data[instrument], data["x_next"]
+    held = [data[name] for name in controls]
+    state = jnp.stack(held, axis=1) if held else jnp.zeros((u.shape[0], 0), u.dtype)
+    relevance = _instrument_relevance(state, u, w)
     if relevance == 0.0:
         raise ValueError(
             f"the instrument {instrument!r} does not move the action beyond what the state "
             "explains: 2SLS's moment has no rank, so the effect is not identified"
         )
-    _, u_hat = _ols_fit(jnp.stack([x, w], axis=1), u)
-    coeffs, _ = _ols_fit(jnp.stack([x, u_hat], axis=1), y)
-    return coeffs[1], relevance  # coefficient on the fitted (exogenous) part of u
+    _, u_hat = _ols_fit(jnp.stack([*held, w], axis=1), u)
+    pushed = jnp.stack([*held, u_hat], axis=1)
+    coeffs, _ = _ols_fit(pushed, y)
+    residual = y - jnp.stack([*held, u], axis=1) @ coeffs[:-1] - coeffs[-1]
+    errors = _hc1_errors(pushed, residual)
+    effect = len(held)  # the coefficient on the fitted (exogenous) part of u
+    return coeffs[effect], relevance, errors[effect]
 
 
 def estimate_effect_iv(data: dict[str, Array], instrument: str = "w") -> Array:
