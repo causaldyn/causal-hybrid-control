@@ -282,8 +282,8 @@ def callaway_santanna_inference(
     )
     comparison = {"notyet": "not_yet_treated", "never": "never_treated"}[control]
     fit, study = _fit(diff_diff, frame, comparison, alpha, draws, seed)
-    # a bootstrapped event study carries no covariance, and HonestDiD then reads its errors as
-    # independent; the analytic fit's covariance is the one it needs
+    # HonestDiD reads the analytic fit's covariance, R's to 1e-3: the bootstrapped event study's
+    # moves with the seed, and before diff-diff 3.13 it carried none
     analytic_fit, analytic = _fit(diff_diff, frame, comparison, alpha, 0, seed)
     times = [int(e) for e in study.event_time]
     for fitted, container in ((fit, study), (analytic_fit, analytic)):

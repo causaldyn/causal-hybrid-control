@@ -99,6 +99,10 @@ effects that move with the cohort; AR(1) errors within a unit; comparisons with 
   That is why `robust_interval` fits twice, and raises if the analytic event study has no
   covariance. Reported upstream as
   [diff-diff#836](https://github.com/igerber/diff-diff/issues/836).
+  - diff-diff 3.13.0 fixed it (2026-10-17): the bootstrapped event study now carries the draws'
+    covariance. The analytic covariance stays. On one panel of 300 units, `Delta^SD(0)`'s interval
+    from the draws' covariance moved its ends by up to 0.02 over six seeds, at widths 0.80-0.82;
+    the analytic one is 0.83 wide, does not move with the seed, and is R's to `1e-3`.
 - **The relative-magnitudes restriction.** diff-diff 3.12's interval for `Delta^RM` is the
   estimated identified set widened by `z` standard errors; its own docstring says the paper's ARP
   hybrid is disabled pending calibration. In the exploration it covered every panel, at 3.4 to 6.3
@@ -147,5 +151,7 @@ effects that move with the cohort; AR(1) errors within a unit; comparisons with 
   maintained MIT implementation that reproduces the library's estimates to the last digit.
 - **Returning diff-diff's estimates instead of checking them.** Rejected: the check is the only
   place the two implementations meet, and a silent change of estimand is the failure it stops.
-- **HonestDiD on the bootstrapped event study.** Rejected on the 0.68 above.
+- **HonestDiD on the bootstrapped event study.** Rejected on the 0.68 above. From diff-diff 3.13
+  the coverage defect is gone, and it stays rejected: its interval moves with the seed, and it is
+  not R's.
 - **moderndid** (MIT), the fallback had diff-diff failed. Not needed: diff-diff held.

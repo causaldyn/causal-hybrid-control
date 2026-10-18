@@ -1,5 +1,5 @@
-"""synthetic_control_inference: the placebo test against the count that makes it exact, and the
-conformal test against diff-diff's."""
+"""synthetic_control_inference: the placebo test against the count that makes it exact, and both
+tests against diff-diff's."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def _panel(seed: int, units: int = 20, effect: float = 0.0) -> np.ndarray:
 
 def _diff_diff(outcomes: np.ndarray):
     """diff-diff's synthetic control for unit 0 on the same problem: the pre-period outcomes, alike
-    weighted and unscaled, with its Frank-Wolfe run to convergence."""
+    weighted and unscaled."""
     diff_diff = pytest.importorskip("diff_diff")
     pd = pytest.importorskip("pandas")
     n_units, n_periods = outcomes.shape
@@ -52,7 +52,6 @@ def _diff_diff(outcomes: np.ndarray):
         v_method="custom",
         custom_v=np.ones(N_PRE),
         standardize="none",
-        inner_max_iter=200_000,
         seed=0,
     )
     return model.fit(
@@ -76,7 +75,8 @@ def test_the_inference_is_about_synthetic_controls_own_estimate() -> None:
 def test_whichever_unit_is_treated_the_placebo_p_values_are_the_ranks() -> None:
     """Each unit in turn treated, the N p-values are 1/N, 2/N, ..., 1: so exactly k of them reach
     k/N, which makes the test exact when the treated unit is drawn at random. Leaving the treated
-    unit out of every placebo's donor pool, as diff-diff does, breaks this on this panel."""
+    unit out of every placebo's donor pool, as diff-diff did before 3.13, breaks this on this
+    panel."""
     outcomes = _panel(0, units=10)
     p = [synthetic_control_inference(outcomes, unit, N_PRE).placebo_p_value for unit in range(10)]
     np.testing.assert_allclose(np.sort(p), np.arange(1, 11) / 10, rtol=0, atol=1e-12)
@@ -113,6 +113,17 @@ def test_as_the_effect_grows_the_placebo_falls_to_its_floor_and_the_interval_mov
     assert moved.placebo_p_value == 1 / 20 < base.placebo_p_value
     np.testing.assert_allclose(np.subtract(moved.interval, 10.0), base.interval, atol=1e-6)
     assert moved.interval[0] > 0.0
+
+
+@pytest.mark.parametrize(("seed", "effect"), [(2, 0.0), (3, 1.0), (1, 3.0)])
+def test_the_placebo_p_value_is_diff_diffs(seed: int, effect: float) -> None:
+    """diff-diff's placebo puts the treated unit in every placebo's donor pool, from exact weights,
+    as ADH's does. On these panels diff-diff 3.12, which left it out, gave another p-value."""
+    outcomes = _panel(seed, effect=effect)
+    fit = _diff_diff(outcomes)
+    fit.in_space_placebo()
+    assert fit.n_failed == 0
+    assert synthetic_control_inference(outcomes, 0, N_PRE).placebo_p_value == fit.placebo_p_value
 
 
 def test_the_conformal_p_value_is_diff_diffs() -> None:

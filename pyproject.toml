@@ -88,8 +88,9 @@ dev = [
     "pandas>=2.2.2",
     "polars>=1.0",
     "pytest-xdist>=3.8.0",
-    # the did extra, so that CI runs chc.did's inference tests where diff-diff installs
-    "diff-diff>=3.12,<4 ; python_version < '3.15'",
+    # the did extra, so that CI runs chc.did's inference tests where diff-diff installs; 3.13 is
+    # the first whose placebo is ADH's, from exact weights, the oracle of chc.scm's
+    "diff-diff>=3.13,<4 ; python_version < '3.15'",
 ]
 viz = ["matplotlib>=3.8"]
 notebooks = [

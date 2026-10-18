@@ -1,7 +1,7 @@
 # ADR 0027 — Inference for a synthetic control, owned
 
 **Status:** proposed, 2026-09-30. ADR 0092, 2026-10-13, adds a reading for a design that chose
-its treated unit.
+its treated unit. Revisited 2026-10-18 for diff-diff 3.13.0, which fixed both defects below.
 
 ## Context
 
@@ -34,11 +34,12 @@ things.
   then has one donor fewer than the treated unit, so the ranks are no longer exchangeable, and
   the test gives up its exact level. The panels where only one construction rejected ran almost
   all one way (below). Reported upstream as
-  [diff-diff#837](https://github.com/igerber/diff-diff/issues/837).
+  [diff-diff#837](https://github.com/igerber/diff-diff/issues/837), fixed in 3.13.0.
 - **diff-diff's weights come from Frank-Wolfe.** At its default 10 000 inner steps it left the
   treated unit's fit, or a placebo's, short of convergence on 5 to 11 of 40 generic panels, and
   then refused the test. At 200 000 steps none failed, out of 120. Reported upstream as
-  [diff-diff#838](https://github.com/igerber/diff-diff/issues/838).
+  [diff-diff#838](https://github.com/igerber/diff-diff/issues/838); from 3.13.0 the weights are
+  one exact non-negative least squares.
 
 Over the exact weights, each test is a few lines. The adapter was longer than the methods: a data
 frame, a configuration that reproduces the problem, a check that diff-diff reached the optimum, a
@@ -66,7 +67,9 @@ Frank-Wolfe budget, and a refusal for each way it can fall short.
     it is `(nan, nan)`.
 - **Owned, with diff-diff as the tests' oracle.** A test holds the conformal p-value equal to
   diff-diff's `conformal_test` at 25 effects. Another puts the interval's ends where diff-diff's
-  test starts to reject. There is no `scm` extra; diff-diff stays in the `dev` group.
+  test starts to reject. From diff-diff 3.13 a third holds the placebo p-value equal to
+  `in_space_placebo`'s, on three panels where 3.12's differed; over 24 panels the two agreed on
+  every one. There is no `scm` extra; diff-diff stays in the `dev` group, from 3.13.
 
 ## Consequences
 
@@ -136,7 +139,11 @@ evidence is in `~/.cache/chc-scratch/2026-09-30/ca2/`.
 ## Alternatives considered
 
 - **An adapter over diff-diff.** Built first, then rejected: its placebo gives up the exact level,
-  its Frank-Wolfe needed 200 000 steps, and the adapter was longer than the tests.
+  its Frank-Wolfe needed 200 000 steps, and the adapter was longer than the tests. diff-diff 3.13
+  removes the first two reasons, and the adapter stays rejected: diff-diff declares Python below
+  3.15 and ships no free-threaded wheels, so the inference would leave those interpreters, and its
+  denominator's floor depends on the outcomes' units (below). The owned tests now match its
+  placebo exactly.
 - **pysyncon** (MIT, 1.7.0), the first backend planned. It brings matplotlib and carries nothing
   diff-diff lacks.
 - **diff-diff's construction as an option beside ADH's.** Rejected: under no effect it rejected
