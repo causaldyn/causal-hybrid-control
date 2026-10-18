@@ -647,8 +647,8 @@ def test_a_penalised_plan_that_starts_on_the_radius_kink_still_descends() -> Non
 
 def test_a_cost_infinite_at_every_plan_is_not_reported_converged() -> None:
     """``x' = 200 x`` grows by RK4's 8221 per step of 0.1, so 50 steps cost ``inf`` whatever the
-    actions. A trial at ``inf`` from a start at ``inf`` was read as a fall that did not rise, and the
-    solve took that step and reported ``converged``."""
+    actions. A trial at ``inf`` from a start at ``inf`` was read as a fall that did not rise, and
+    the solve took that step and reported ``converged``."""
     fast = LinearDynamics(jnp.array([[200.0]]), jnp.array([[1.0]]))
     cost = QuadraticCost(Q=jnp.eye(1), R=0.01 * jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.zeros(1))
     guess = jnp.zeros((50, 1))
