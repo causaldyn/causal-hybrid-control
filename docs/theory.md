@@ -1,9 +1,16 @@
 # Theory
 
 The papers that develop the results behind the library are not public yet, and this page will link
-them once they are. What is public, and ships in every source distribution, is the machinery that
-checks the claims the docstrings make: a docstring that rests on a proof or a derivation names its
-file, and the file is in one of the two directories below.
+them once they are. What is public, and ships in every source distribution, is the formal and
+symbolic layer behind them: Rocq proofs of their algebraic steps and Maxima derivations of their
+closed forms. A docstring that rests on a proof or a derivation names its file, and the file is in
+one of the two directories below.
+
+Neither directory is linked to the code. No test calls a proof, and a proof checks the algebra of a
+statement over the reals, not the Python that computes it. What a proof covers is its own
+statement, which can be narrower than the docstring that cites it: a scalar case of a vector
+claim, the first few horizons of a recursion, or a closed form at a quantity the code lets move.
+Each docstring that cites one says which.
 
 ## Formal proofs — [`proofs/`](https://github.com/causaldyn/causal-hybrid-control/tree/main/proofs)
 
@@ -31,7 +38,12 @@ behind which certificate. Two things bound what "proved" means here:
   stated over abstract fields instead, so for them "closed under the global context" is the gate.
 - **A published statistical result a proof relies on is an input, not a theorem.** It enters the
   theorem's type as a named predicate carrying its citation, rather than as an axiom, so
-  `Check <theorem>` shows the cited names and `Print <Name>` what was assumed under each.
+  `Check <theorem>` shows the cited names and `Print <Name>` what was assumed under each. The
+  predicate holds what the algebra takes from the citation, which can be much less than the
+  result. In `c2_end_to_end.v` the regret is defined as the right-hand side of Mania, Tu and
+  Recht's bound, so the cited predicate asks only that the curvature be nonnegative; in
+  `clustered_van_trees.v` the van Trees floor and the lower Lipschitz regret map are the premises
+  themselves. Such a theorem shows how the cited bounds combine, not that they hold.
 
 ```bash
 just proofs                # compile every proof (CI: every push, Rocq 9.2, then the audit below)

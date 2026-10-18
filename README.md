@@ -32,20 +32,28 @@ one.
 
 ## The one result
 
-On a confounded log, fitting the action's effect without adjusting for the confounder flips its
-sign (true `+1.0`, naive `-0.2`). Control the true system with each estimate:
+On a confounded log, fitting the action's effect without the logged confounder flips its sign (true
+`+1.0`, naive `-0.2`). Control the true system with each estimate:
 
 ```text
 controller            cost      regret    viol     ood
+predictive-all        4.59       -0.00    0.00    0.00
 causal-CHC            4.59       -0.00    0.00    0.00
 oracle                4.59        0.00    0.00    0.00
 predictive        13740.08    13735.49    0.97    1.00
 ```
 
-The causal controller matches the oracle. The predictive one drives the state the wrong way
-(`x → -20` for a target of `+2`), violates the constraint on 97 % of steps (`viol`) and acts
-entirely outside the logged actions (`ood`). That is one seed of the pricing task in notebook 5;
-over 12 seeds the predictive controller's regret is `13734.15 [13732.55, 13735.31]`
+The causal controller matches the oracle, and so does `predictive-all`, a least-squares fit on every
+logged column. Here that is the right adjustment: the one confounder is logged, and no logged column
+is a mediator or a collider. `predictive` leaves the confounder out, so its regret is
+omitted-variable bias. It drives the state the wrong way (`x → -20` for a target of `+2`), violates
+the constraint on 97 % of steps (`viol`) and acts entirely outside the logged actions (`ood`). The
+size of that regret is set mostly by the action box, `[-10, 10]`: with `[-2.5, 2.5]` it is 1388.50.
+What the comparison shows is the price of leaving a confounder out. Which columns to adjust for is
+what the causal graph you state decides, and a regression on every column is right only when, as
+here, none of them is a mediator or a collider. That is one seed of the pricing task in notebook 5;
+over 12 seeds the predictive controller's regret is `13734.15 [13732.55, 13735.31]` and
+`predictive-all`'s is `-0.00 [-0.00, 0.00]`
 ([benchmarks](https://causaldyn.github.io/causal-hybrid-control/benchmarks/)).
 
 ## Install
@@ -114,7 +122,7 @@ Start with notebook 0.
 | 5 | [The benchmark scoreboard](https://github.com/causaldyn/causal-hybrid-control/blob/main/notebooks/05_benchmark_scoreboard.ipynb) | regret against an oracle on pricing, inventory and support-shift tasks |
 | 5 | [Robust control under hidden confounding](https://github.com/causaldyn/causal-hybrid-control/blob/main/notebooks/05_confounding_robust_control.ipynb) | when no adjustment set exists: a sensitivity level `Γ`, a pessimism radius, a minimax action, and when it pays |
 | 6 | [Cruise control from fleet logs](https://github.com/causaldyn/causal-hybrid-control/blob/main/notebooks/06_cruise_control_confounded.ipynb) | Simpson's paradox in fleet logs; the effect by adjustment or IV; control with the adjusted effect |
-| 7 | [Real data: LaLonde](https://github.com/causaldyn/causal-hybrid-control/blob/main/notebooks/07_real_data_lalonde.ipynb) | the naive estimate flips sign; adjustment and double ML land inside the randomised experiment's 95% interval |
+| 7 | [Real data: LaLonde](https://github.com/causaldyn/causal-hybrid-control/blob/main/notebooks/07_real_data_lalonde.ipynb) | the naive estimate flips sign; on the Dehejia–Wahba subsample, adjustment and double ML land inside the randomised experiment's 95% interval |
 | 8 | [Splitting an advertising budget](https://github.com/causaldyn/causal-hybrid-control/blob/main/notebooks/08_splitting_a_budget.ipynb) | three channels, one budget: why the best split equalises the next euro's return, and when TV switches on |
 | 9 | [Heating a room on a winter night](https://github.com/causaldyn/causal-hybrid-control/blob/main/notebooks/09_heating_a_room.ipynb) | a thermostat's logs, the weather that confounds them, and a night plan that keeps the room warm |
 
@@ -147,19 +155,29 @@ Every module, with what it does and what was measured:
 ## How it is checked
 
 Symbolic results are derived in Maxima and cross-checked in PARI/GP and Octave
-([`validation/`](https://github.com/causaldyn/causal-hybrid-control/tree/main/validation)). The
-algebraic cores of the control and guarantee invariants are proved in Rocq
+([`validation/`](https://github.com/causaldyn/causal-hybrid-control/tree/main/validation)); CI
+checks that each derivation runs to completion, not what it prints. The algebraic cores of the
+control and guarantee invariants are proved in Rocq
 ([`proofs/`](https://github.com/causaldyn/causal-hybrid-control/tree/main/proofs)), with MathComp
-for the matrix statements. A published statistical result a proof relies on enters it as a named,
-cited premise, and each file's header says what it proves and what it assumes
-([theory](https://causaldyn.github.io/causal-hybrid-control/theory/)).
+for the matrix statements: identities and inequalities over the reals, often a scalar or a small
+case of the statement the code uses. No test links a proof to the code. A published statistical
+result a proof relies on enters it as a named, cited premise, which states only what the algebra
+takes from it, so the statistical content stays with the citation. Each file's header says what it
+proves and what it assumes ([theory](https://causaldyn.github.io/causal-hybrid-control/theory/)).
 
 ## Status
 
-Early, single-author research code, before 1.0. Both halves have been checked on real targets: the
-identification on the LaLonde data against its randomised experiment (notebook 7), and the control
-loop on a live BOPTEST building emulator, where it beat the tuned baseline controller on four KPIs
-of five and drew a 2.0 % higher peak demand
+Early, single-author research code, before 1.0. The identification has been checked on real data:
+on the Dehejia–Wahba subsample of LaLonde's job-training data with CPS controls, adjustment and
+double machine learning land inside the randomised experiment's 95 % interval (notebook 7). That
+rests on the subsample, as Smith and Todd (2005) found for matching. On LaLonde's original sample,
+which has no 1974 earnings, the same two estimators in `chc.lalonde` return the wrong sign, −469 to
+−4,038 dollars against the experiment's +886, with each of the CPS and PSID comparison groups. The
+control loop has no valid check on a real target yet. On a live BOPTEST building emulator, a
+forecast-driven MPC on a thermal model identified from a randomised exploration, not `prescribe`,
+beat the tuned baseline controller on four KPIs of five over one day and drew a 2.0 % higher peak
+demand. The two pre-registered `prescribe` runs on the same emulator, from a confounded log,
+returned verdicts that do not stand
 ([case study](https://causaldyn.github.io/causal-hybrid-control/case-studies/boptest/)).
 
 What each module promises before 1.0 (stable, evolving or experimental) and the roadmap are in the

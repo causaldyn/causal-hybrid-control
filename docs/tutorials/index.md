@@ -15,7 +15,7 @@ out of that run, not out of the outputs saved in the repository.
 | [5 · The benchmark scoreboard](05_benchmark_scoreboard.md) | regret vs oracle across three tasks — CHC matches the oracle under confounding and beats the greedy baseline on support-shift |
 | [5 · Robust control under hidden confounding](05_confounding_robust_control.md) | when **no adjustment set exists**: a sensitivity level `Γ` → pessimism radius → minimax action, and what it costs when there is no confounding or the bias runs the other way |
 | [6 · Adaptive cruise control from fleet logs](06_cruise_control_confounded.md) | relatable end-to-end: confounded fleet logs (Simpson's paradox → adjustment or IV → control) |
-| [7 · The LaLonde validation](07_real_data_lalonde.md) | **real data, experimental ground truth**: the naive estimate flips sign; adjustment and Double ML land inside the experiment's 95% interval |
+| [7 · The LaLonde validation](07_real_data_lalonde.md) | **real data, experimental ground truth**: the naive estimate flips sign; on the Dehejia–Wahba subsample, adjustment and Double ML land inside the experiment's 95% interval |
 | [8 · Splitting an advertising budget](08_splitting_a_budget.md) | three channels, one budget: why the best split equalises the next euro's return, and when TV switches on |
 | [9 · Heating a room on a winter night](09_heating_a_room.md) | a thermostat's logs, the weather that confounds them, and a night plan that keeps the room warm |
 
