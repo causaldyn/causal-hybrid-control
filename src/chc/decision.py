@@ -86,7 +86,7 @@ from chc.independence import gcm_test
 from chc.integrate import rk4_step
 from chc.lqr import linearize_continuous, linearize_discrete
 from chc.mpc import PeriodBudget, _period_rows
-from chc.panel import Panel, Provenance, _grid_steps, _ordinals, _x64_enabled
+from chc.panel import Panel, PanelError, Provenance, _grid_steps, _ordinals, _x64_enabled
 from chc.plan import (
     BarrierConstraint,
     CausalPlan,
@@ -2881,13 +2881,40 @@ def _period_steps(panel: Panel) -> NDArray[np.int64]:
     logged are the grid, and a period no unit logged is not seen. A number read as a grid point and
     not as a position, such as 202412 for a month, puts each year's turn 89 steps from the month
     before it, so no transition crosses it.
+
+    An inferred grid is refused where most of the periods a unit logs in a row are more than one of
+    its steps apart: the least spacing was then set by a period off the log's own step, one stray
+    row at 3.5 in a log of whole periods, and on its grid every other transition parts as a gap.
+
+    Raises:
+        PanelError: for such a grid, naming the two periods that set its step and a row of each.
     """
     column = np.asarray(panel[panel.time])
     frequency = panel.provenance.frequency
     if frequency is not None and frequency != "observed":
         return _ordinals(column, frequency)
     steps = None if frequency == "observed" else _grid_steps(column)
-    return panel.codes()[1] if steps is None else steps
+    if steps is None:
+        return panel.codes()[1]
+    units, _ = panel.codes()
+    order = np.lexsort((steps, units))
+    within = units[order][1:] == units[order][:-1]
+    gaps = np.diff(steps[order])[within]
+    apart = int(np.count_nonzero(gaps > 1))
+    if 2 * apart > gaps.size:
+        distinct = np.unique(steps)
+        least = int(np.flatnonzero(np.diff(distinct) == 1)[0])
+        rows = [int(np.flatnonzero(steps == distinct[least + k])[0]) for k in (0, 1)]
+        stamps, units_logged = column.tolist(), panel[panel.unit].tolist()
+        read = [f"{stamps[row]!r} (row {row}, unit {units_logged[row]!r})" for row in rows]
+        raise PanelError(
+            f"time column {panel.time!r} is read on the grid of its least spacing, set by "
+            f"{read[0]} and {read[1]}, and on that grid {apart} of the {gaps.size} periods units "
+            "log in a row are more than one step apart, so each would part its two rows as a gap; "
+            "declare the periods' step with frequency=, or frequency='observed' to read them in "
+            "their sorted order"
+        )
+    return steps
 
 
 def _transitions(

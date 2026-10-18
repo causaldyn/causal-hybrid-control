@@ -2711,6 +2711,33 @@ def test_a_panel_of_one_unit_tests_the_noise_s_persistence_across_its_periods() 
     assert "within units, not tested: its pairs leave no spread to read" in untested.report()
 
 
+def test_a_stray_period_off_the_log_s_step_is_refused_rather_than_read_as_its_grid() -> None:
+    """Fifty units logged at whole periods give 950 transitions; one more row at 3.5 set the grid
+    to half a period, on which every other pair of periods was two steps apart, and the panel gave
+    two transitions, each half a period long, read as a whole one. That grid is refused, naming
+    the row that set it; a declared step refuses the row itself."""
+    rng = np.random.default_rng(0)
+    frame = {
+        "unit": np.append(np.repeat(np.arange(50), 20), 0),
+        "time": np.append(np.tile(np.arange(20.0), 50), 3.5),
+        "x": rng.normal(size=1001),
+        "u": rng.normal(size=1001),
+    }
+    clean = {name: column[:-1] for name, column in frame.items()}
+    data, _ = _transitions(
+        Panel.from_frame(clean, unit="unit", time="time"),
+        states=("x",),
+        levers=("u",),
+        adjust_for=(),
+    )
+    assert data["x"].shape == (950, 1)
+    stray = Panel.from_frame(frame, unit="unit", time="time")
+    with pytest.raises(PanelError, match=r"3\.5 \(row 1000, unit 0\).* 949 of the 951 periods"):
+        _transitions(stray, states=("x",), levers=("u",), adjust_for=())
+    with pytest.raises(PanelError, match="no whole number of steps"):
+        Panel.from_frame(frame, unit="unit", time="time", frequency=1)
+
+
 def _constrained_logs(n_units: int = 60, n_periods: int = 8) -> Panel:
     """A target ``y`` confounded with the lever by the logged ``w``, and a constrained ``c``
     confounded with it by a latent ``L`` the panel does not hold."""
