@@ -88,14 +88,15 @@ def test_the_confounded_arm_overrates_every_channel_and_underinvests(report: Mmm
     # and the inflation is uneven, so the ORDER it would allocate by is distorted too: the true
     # social:search ratio of incremental returns is 0.4, and the confounded arm reads 0.67-0.81
     # over four seeds, 0.18-0.64 above the adjusted arm on each. The adjusted arm's own ratio
-    # is not pinned to 0.4, and never was: its sales row carries a saturating carryover and a
-    # seasonal push the model class leaves out, so where the channels land moves with how far the
-    # rk4 fit gets, and with the state the channel is read at -- 0.43 on seed 0 read as Euler,
-    # 0.33 after one pass of the old iteration, 0.20 at the fixed point, all at the zero state;
-    # 0.12 at the plan's start, where `reach` reads it since 0.13.0 -- and across seeds it spans
-    # 0.12-0.50. Up to 0.6.0 this line asserted 0.4 +- 0.1 on seed 0, where one pass happened to
-    # land; up to 0.12 the margin was 0.2, which four seeds read at the zero state cleared by
-    # 0.28-0.67 and which the plan's start leaves at 0.18 on seed 3.
+    # is not pinned to 0.4, and never was: where the channels land moves with how far the rk4 fit
+    # gets, and with the state the channel is read at -- 0.43 on seed 0 read as Euler, 0.33 after
+    # one pass of the old iteration, 0.20 at the fixed point, all at the zero state; 0.12 at the
+    # plan's start, where `reach` reads it since 0.13.0 -- and over seeds 0-11 it spans 0.12-0.82.
+    # The spread is not the saturating carryover's: with beta = 0, no carryover at all, seeds 0-5
+    # still span 0.14-0.83. What is left to move it is the season's push, which the model class
+    # leaves out of the sales row. Up to 0.6.0 this line asserted 0.4 +- 0.1 on seed 0, where one
+    # pass happened to land; up to 0.12 the margin was 0.2, which four seeds read at the zero
+    # state cleared by 0.28-0.67 and which the plan's start leaves at 0.18 on seed 3.
     def ratio(prescription) -> float:
         reach = prescription.reach()
         return reach["spend_social"] / reach["spend_search"]
@@ -120,11 +121,26 @@ def test_efficiency_per_unit_spend_rewards_underinvestment_under_diminishing_ret
     assert report.efficiency("confounded") > report.efficiency("adjusted")
 
 
-def test_the_channel_ordering_matches_the_true_incremental_returns(report: MmmReport) -> None:
-    reach = report.arm("adjusted").prescription.reach()  # type: ignore[union-attr]
-    assert reach["spend_search"] > reach["spend_video"] > reach["spend_social"]
+@pytest.fixture(scope="module")
+def turned() -> tuple[MmmReport, ...]:
+    """The two seeds of twelve on which the adjusted fit's channel order turns."""
+    return tuple(run_marketing_mix(seed=seed) for seed in (4, 8))
+
+
+def test_the_channel_ordering_is_read_across_seeds_not_off_one(
+    report: MmmReport, turned: tuple[MmmReport, ...]
+) -> None:
+    """Over seeds 0-11 the adjusted fit orders the three channels as their true incremental
+    returns on ten; on seeds 4 and 8 video's reach passes search's, 0.78 against 0.58 and 0.83
+    against 0.74. Up to 0.18.0 this asserted the full order on seed 0 alone. What held on all
+    twelve, the true best channel above the true worst and the adjusted arm's lift above the
+    confounded arm's, is asserted on seed 0 and on the two seeds where the order turns."""
     system = MarketingMixSystem()
     assert system.gamma[0] > system.gamma[2] > system.gamma[1]
+    for result in (report, *turned):
+        reach = result.arm("adjusted").prescription.reach()  # type: ignore[union-attr]
+        assert reach["spend_search"] > reach["spend_social"]
+        assert result.lift("adjusted") > result.lift("confounded")
 
 
 def test_the_myopic_arm_refuses_a_channel_whose_own_return_the_log_does_not_identify(
