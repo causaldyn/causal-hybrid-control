@@ -312,3 +312,17 @@ def test_a_column_of_spread_near_one_is_read_as_given() -> None:
     assert (scaled[:, 1] == np.ldexp(3.0 * y, -2)).all()
     assert (scaled[:, 2] == np.ldexp(1e-8 * z, 27)).all()
     assert (scaled[:, 3] == 1.0).all()
+
+
+def test_gcm_test_keeps_its_level_at_the_fewest_rows_it_accepts() -> None:
+    """Twice the terms, three columns of ``z`` at degree 2: the in-sample residuals' clusters'
+    sums are about half the noise's variance, and the flips, read without the shrink, rejected
+    12.2% of 400 nulls at 5%. The Monte Carlo sd of a 5% size over 400 trials is 0.011."""
+    rng = np.random.default_rng(3002)
+    rejected = 0
+    for trial in range(400):
+        z = rng.standard_normal((20, 3))
+        x = z[:, 0] + rng.standard_normal(20)
+        y = z[:, -1] + rng.standard_normal(20)
+        rejected += gcm_test(x, y, z, draws=399, seed=trial).p_value <= 0.05
+    assert rejected / 400 <= 0.085
