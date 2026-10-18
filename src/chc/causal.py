@@ -216,6 +216,27 @@ def _ols_with_se(features: Array, target: Array) -> tuple[Array, Array, int]:
     return scale * beta, scale * jnp.sqrt(jnp.diag(cov)), dof
 
 
+def _hc1_errors(features: Array, residual: Array) -> Array:
+    """HC1 standard errors of the coefficients on ``features`` and an intercept, given each row's
+    ``residual``: the sandwich ``n/(n - p) (X'X)^-1 X' diag(e^2) X (X'X)^-1`` of MacKinnon and
+    White (1985), which holds where the noise's variance moves with the regressors. The classical
+    ``sigma^2 (X'X)^-1`` of :func:`_ols_with_se` assumes it does not. The Gram is inverted in the
+    columns' own units, as there."""
+    design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
+    n, p = design.shape
+    scale = _units.power_of_two(_units.root_mean_square(design))
+    scaled = design * scale
+    bread = jnp.linalg.inv(scaled.T @ scaled)
+    meat = (scaled * residual[:, None] ** 2).T @ scaled
+    return scale * jnp.sqrt(jnp.diag(n / (n - p) * bread @ meat @ bread))
+
+
+def _ols_with_hc1_se(features: Array, target: Array) -> tuple[Array, Array]:
+    """OLS with intercept; returns (coefficients, HC1 standard errors, :func:`_hc1_errors`)."""
+    coeffs, fitted = _ols_fit(features, target)
+    return coeffs, _hc1_errors(features, target - fitted)
+
+
 def sensitivity_analysis(
     data: dict[str, Array], adjust_for: tuple[str, ...] = (), q: float = 1.0
 ) -> dict[str, float]:

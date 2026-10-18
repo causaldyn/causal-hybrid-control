@@ -295,3 +295,44 @@ def test_a_column_named_in_two_roles_is_refused(
     data = ConfoundedLinearSystem(gamma=1.0).sample(500, jax.random.key(0))
     with pytest.raises(ValueError, match=match):
         estimator.estimate(data, **names)
+
+
+def _heteroskedastic(rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
+    """A confounded log whose noise grows with the treatment: ``y = 0.5 x + u + 2 z + e``, the
+    noise's SD ``0.2 + 1.5 |u|``."""
+    x, z = rng.standard_normal(n), rng.standard_normal(n)
+    u = -z + rng.standard_normal(n)
+    y = 0.5 * x + u + 2.0 * z + rng.standard_normal(n) * (0.2 + 1.5 * np.abs(u))
+    return {"x": x, "z": z, "u": u, "x_next": y}
+
+
+def _sandwich(design: np.ndarray, residual: np.ndarray) -> np.ndarray:
+    """HC1 standard errors by numpy, an intercept appended to ``design``."""
+    full = np.column_stack([design, np.ones(design.shape[0])])
+    n, p = full.shape
+    bread = np.linalg.inv(full.T @ full)
+    meat = (full * residual[:, None] ** 2).T @ full
+    return np.sqrt(np.diag(n / (n - p) * bread @ meat @ bread))
+
+
+def test_backdoor_ols_reports_the_hc1_error() -> None:
+    """The error is the heteroskedasticity-robust sandwich, read against numpy's."""
+    data = _heteroskedastic(np.random.default_rng(3), 400)
+    design = np.column_stack([data["u"], data["x"], data["z"]])
+    full = np.column_stack([design, np.ones(400)])
+    residual = data["x_next"] - full @ np.linalg.lstsq(full, data["x_next"], rcond=None)[0]
+    result = BackdoorOLS().estimate(data, covariates=("x", "z"))
+    assert result.std_error == pytest.approx(_sandwich(design, residual)[0], rel=1e-10, abs=0.0)
+
+
+def test_backdoor_ols_error_covers_under_heteroskedastic_noise() -> None:
+    """Under noise that grows with the treatment the classical error read 0.114 against a Monte
+    Carlo spread of 0.164, and its 95% interval covered the effect in 82.5% of 400 draws. Over 200
+    draws the coverage's Monte Carlo SD is 0.015 at 0.95, so 0.90 is three of them below."""
+    rng = np.random.default_rng(1)
+    covered = 0
+    for _ in range(200):
+        result = BackdoorOLS().estimate(_heteroskedastic(rng, 400), covariates=("x", "z"))
+        assert result.std_error is not None
+        covered += abs(result.effect - 1.0) <= 1.96 * result.std_error
+    assert covered >= 0.90 * 200
