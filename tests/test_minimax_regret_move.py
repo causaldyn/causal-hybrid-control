@@ -200,6 +200,15 @@ def test_it_refuses_what_is_not_a_move(kwargs: dict[str, float], match: str) -> 
         minimax_regret_move(**arguments)
 
 
+def test_a_precise_estimate_holds_the_whole_move_at_least_to_the_flip() -> None:
+    """Ten standard errors out, erf rounds to 1 and the threshold is the estimate itself, which
+    ``sigma * (estimate / sigma)`` gave back an ulp low; near the gap that put the Gamma below the
+    noiseless flip."""
+    estimate, sigma, gap = 1.6433276978576248, 0.1583623723539506, 2.0
+    full = minimax_regret_move(estimate, sigma, gamma=1.0, cvar_gap=gap).full_move_gamma
+    assert full >= barrier_gamma_star(estimate, gap, 1.0)
+
+
 def test_a_fitted_move_reads_its_influence_error() -> None:
     """On the flip test's log, the move from lever a to lever b: its estimate and its influence
     standard error. The whole move holds at least to the noiseless flip, and past it the share

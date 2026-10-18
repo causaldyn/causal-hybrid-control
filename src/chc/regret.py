@@ -5796,7 +5796,9 @@ def _full_move_gamma(estimate: float, sigma: float, gap: float) -> float:
             return float("inf") if gap == 0.0 else 1.0
         reach = estimate
     else:
-        reach = sigma * _whole_move(estimate / sigma)
+        # the threshold is at least the estimate, t / erf >= t; once erf rounds to 1,
+        # sigma (estimate / sigma) can land an ulp below it, and the Gamma below the flip
+        reach = max(estimate, sigma * _whole_move(estimate / sigma))
     if reach >= gap:
         return float("inf")
     return float((gap + reach) / (gap - reach))
