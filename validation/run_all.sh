@@ -5,13 +5,17 @@
 # interactive question hits EOF -- it also still echoes the batch filename on the way out.
 # So neither the exit code nor the last line is a check; the output is. Before this runner
 # existed, three derivations had been dead since their first commit.
+#
+# A derivation that runs to the end can still print a failed check: "(FAIL)", "(INVALID)" or
+# "(NOT CONCAVE)". Maxima echoes each batch line, so the source's own `else "(FAIL)"` is in the
+# output too; a verdict is the marker not inside quotes.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
 outdir="${1:-$(mktemp -d)}"
 mkdir -p "$outdir"
 
-broken='incorrect syntax|-- an error\.|Lisp error|^MAXIMA>'
+broken='incorrect syntax|-- an error\.|Lisp error|^MAXIMA>|(^|[^"])\((FAIL|INVALID|NOT CONCAVE)\)'
 fail=0
 total=0
 
