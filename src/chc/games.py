@@ -199,8 +199,9 @@ def congestion_contraction_modulus(beta: float, congestion: float, damping: floa
     ``1-d`` branch is already 1. Sharp over the class, SUFFICIENT for a fixed game: the worst-case
     eigenvalue is attained only at a two-point uniform ``s``; measured, the default map still
     converges at ``beta*c = 7`` and 2-cycles from ``8``. Derived in
-    ``validation/congestion_contraction.mac``, cross-checked in ``.py``, proved in
-    ``proofs/congestion_contraction.v``.
+    ``validation/congestion_contraction.mac``, cross-checked in ``.py``;
+    ``proofs/congestion_contraction.v`` proves the ``d = 1/2`` case, ``beta*c < 6``, and the
+    general-``d`` interval is Maxima's.
 
     This is the SOLVER's rate, not the equilibrium's conditioning -- see
     :func:`equilibrium_transfer_certificate`, where using ``1/mu`` as a sensitivity constant is

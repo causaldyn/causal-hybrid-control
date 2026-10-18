@@ -191,7 +191,9 @@ def orthogonal_control_certificate(
     noise: float = 0.05,
 ) -> OrthogonalControlCurve:
     """The DOUBLE debiasing of orthogonal certainty-equivalence control -- a novel result derived in
-    ``validation/orthogonal_control.mac`` and proved in ``proofs/orthogonal_control.v``.
+    ``validation/orthogonal_control.mac``. ``proofs/orthogonal_control.v`` checks only the
+    composition: with the regret taken as ``kappa/2*d^2`` and the effect error as ``k*eps`` or
+    ``k*eps^2``, the regret is quadratic or quartic in ``eps``.
 
     A confounder ``z`` drives both the action (``u = alpha z + noise``) and the outcome
     (``y = b_true u + gamma z + noise``). A controller hits ``target`` using its estimate of the
@@ -257,8 +259,9 @@ def pessimism_variance_certificate(
     seed: int = 0,
 ) -> PessimismCurve:
     """Certificate that pessimism belongs in the optimality condition, calibrated to the uncertainty
-    (derived in ``validation/pessimistic_optimality.mac``, proved in
-    ``proofs/pessimistic_optimality.v``). The estimated effect is ``b0``; the true effect is
+    (derived in ``validation/pessimistic_optimality.mac``;
+    ``proofs/pessimistic_optimality.v`` proves the closed-form shrinkage and the sign of the
+    Maxima-derived gradient numerator). The estimated effect is ``b0``; the true effect is
     ``b0 + e`` with ``e`` of variance ``s^2``. The pessimistic control ``target b0/(b0^2+rr+rho)``
     adds an effective-effort ``rho`` (distrust) to the stationarity condition. Sweeping ``rho`` per
     ``s^2``, the expected-regret-minimising ``rho*`` tracks ``s^2`` (optimal pessimism = estimate
@@ -313,8 +316,9 @@ def information_lower_bound_certificate(
     n_seeds: int = 300,
 ) -> InformationLowerBoundCurve:
     """Information-theoretic lower bound for UNBIASED effect estimators (Cramer-Rao;
-    derived in ``validation/information_lower_bound.mac``, proved in
-    ``proofs/information_lower_bound.v``). The EXACT regret map is
+    derived in ``validation/information_lower_bound.mac``; ``proofs/information_lower_bound.v``
+    checks only that ``C*v >= C/(n*I)`` given ``v >= 1/(n*I)``, Cramer-Rao and the regret map taken
+    as given). The EXACT regret map is
     ``R = (b^2+rr)*(u*(bhat)-u*(b))^2`` (nonlinear in b); to first order in the effect error this is
     ``C*(bhat-b)^2``, and Cramer-Rao on the (unbiased) estimator gives the local floor
     ``E[regret] >= C*sigma^2/(n*V_id)``, ``V_id`` the identifying variance. The ``1/n`` rate
@@ -827,7 +831,9 @@ def highprob_regret_certificate(
     n_trials: int = 4000,
 ) -> HighProbRegretCurve:
     """Finite-sample high-probability UPPER bound on scalar CE regret (derived in
-    ``validation/highprob_regret.mac``, proved in ``proofs/highprob_regret.v``). NOTE: this is NOT a
+    ``validation/highprob_regret.mac``; ``proofs/highprob_regret.v`` proves the deterministic step
+    only: with the regret taken as ``C*e^2``, ``|e| <= r`` gives ``C*e^2 <= C*r^2``). NOTE: this is
+    NOT a
     "high-probability version" of the Result-10 Cramer-Rao bound -- CR is an *expected LOWER* bound
     on estimator variance (hence a regret floor), this is a *high-probability UPPER* bound on
     realised regret; the two point in opposite directions and are complementary. The effect
@@ -1312,7 +1318,8 @@ def end_to_end_c2_certificate(
 ) -> EndToEndC2Curve:
     """CONTRIBUTION 2, END-TO-END: ``multichannel causal estimation -> bottleneck rate -> dynamic
     control regret`` on a clustered network with a multivariate LQ plant (derived in
-    ``validation/c2_end_to_end.mac``, control-side reduction proved in ``proofs/c2_end_to_end.v``).
+    ``validation/c2_end_to_end.mac``, control-side algebra proved in ``proofs/c2_end_to_end.v``,
+    where the regret is defined as the cited Mania-Tu-Recht local quadratic bound).
     The cross-fit two-channel Robinson-DML total-effect error is ``||B_hat - B|| = O_p(G^{-1/2} +
     delta_d^{p_d} + delta_s^{p_s})`` (cluster sampling + two nuisance remainders); through the MTR
     local quadratic gap the regret is ``R = O_p[G^{-1} + (delta_d^{p_d} + delta_s^{p_s})^2]``. Two
@@ -1662,8 +1669,10 @@ def exposure_map_certificate(
     delta_hi: float = 0.15,
     n_delta: int = 10,
 ) -> ExposureMapCurve:
-    """CONTRIBUTION 2, exposure-map generalisation (derived in ``validation/exposure_map_c2.mac``,
-    proved in ``proofs/exposure_map_c2.v``). The marketplace network plant
+    """CONTRIBUTION 2, exposure-map generalisation (derived in ``validation/exposure_map_c2.mac``;
+    ``proofs/exposure_map_c2.v`` proves the fully orthogonal bound for the regret taken as
+    ``cc*(s+r_d+r_s+r_W)^2``; the plug-in ``W`` bottleneck is shown numerically). The marketplace
+    network plant
     ``x_{t+1} = A x_t + (B_d + B_s W) u_t + eps`` has effective effect ``B_eff(W) = B_d + B_s W``;
     estimating ``(B_d, B_s, W)`` gives THREE channels ``r_d, r_s, r_W`` (the last from the exposure
     map ``W``). Through the MTR gap, ``R = O_p[G^{-1} + (r_d + r_s + r_W)^2]``. Shown
@@ -4035,10 +4044,14 @@ def adaptive_exploration_certificate(
     it, so ``sigma`` moves both the bound and the schedule scale. The RATE-OPTIMAL schedule
     ``v_t = kappa/sqrt(t)`` achieves ``Theta(sqrt(T))``, matching the ``Theta(sqrt(T))`` sequence
     lower bound ``>= 2*sqrt(A*K*T/eta) - A*m0/eta`` (Rocq ``reduced_objective_lower_bound`` with
-    ``a=A/eta``, where the Rocq ``C`` is this ``K``), NOT a corollary of the per-round floor.
+    ``a=A/eta``, where the Rocq ``C`` is this ``K``, proves its one-variable core
+    ``a*x + C*T/x >= 2*sqrt(a*C*T)``; the reduction from the sequence is not in Rocq), NOT a
+    corollary of the per-round floor.
     The leading term scales as ``1/sqrt(eta)``, where ``eta`` is the INJECTED-EXPLORATION efficiency
     (information per unit exploration variance, distinct from an observational residual fraction):
-    smaller ``eta`` provably raises the floor (Rocq ``lower_efficiency_raises_sequence_floor``) --
+    smaller ``eta`` provably raises the leading term ``2*sqrt(A*K*T/eta)`` (Rocq
+    ``lower_efficiency_raises_sequence_floor``); the whole floor rises only while
+    ``eta > A*m0^2/(K*T)``, below which its ``-A*m0/eta`` term wins --
     this ``1/sqrt(eta)`` is identification-efficiency-specific (attenuation: noncompliance,
     dilution, partial observability, interference -- NOT necessarily confounding; ``eta=1`` for
     clean directly-observed randomisation), the causal content the generic bound lacked. Greedy is
@@ -4464,7 +4477,8 @@ def minimax_exploration_certificate(
     the crude step (every denominator at the total budget) is an equality exactly when information
     is raised immediately, so a front-loaded burst hits it and ``burst_over_floor -> 1`` -- the
     constant is sharp. And **tapering costs a constant factor**: the ``1/sqrt(t)`` schedule, even at
-    its own optimal scale, sits at ``sqrt(2)`` times the floor (Rocq ``taper_gap_is_sqrt_two``). The
+    its own optimal scale, sits at ``sqrt(2)`` times the floor (the two constants are Maxima's;
+    Rocq ``taper_gap_is_sqrt_two`` checks that their squared ratio is 2). The
     burst is optimal *in this model*, where exploration cost is linear in the injected variance and
     unbounded per round. A per-round action cap does NOT rescue the taper -- Result 56 shows the
     capped optimum is a cap-saturating BLOCK, still front-loaded, whose price over this floor is
@@ -4539,7 +4553,8 @@ def van_trees_certificate(
     n_trials: int = 6000,
 ) -> VanTreesCurve:
     """The FORMAL van Trees (Bayesian Cramer-Rao) inequality that Result 20 assumed (derived in
-    ``validation/van_trees.mac``, proved in ``proofs/van_trees.v``). For a Gaussian conjugate model
+    ``validation/van_trees.mac``; ``proofs/van_trees.v`` proves the Cauchy-Schwarz algebra from the
+    cited score identity and information additivity). For a Gaussian conjugate model
     (prior ``N(0,tau^2)``, ``n`` obs ``x = theta + N(0,sigma^2)``) Bayes risk of ANY estimator is
     at least ``1/(I_prior + n*I_data)``, ``I_prior = 1/tau^2``, ``I_data = 1/sigma^2`` -- and the
     posterior-mean estimator HITS it (van Trees is tight for the Gaussian). Confounding reduces the
@@ -4731,7 +4746,8 @@ def confounded_turnpike_certificate(
     horizon: int = 200,
 ) -> ConfoundedTurnpikeCurve:
     """The CONFOUNDED TURNPIKE GAP (Weber 2011, Sec 3.5: turnpike + current-value Hamiltonian).
-    Derived in ``validation/confounded_turnpike.mac``, proved in ``proofs/confounded_turnpike.v``. A
+    Derived in ``validation/confounded_turnpike.mac``; ``proofs/confounded_turnpike.v`` checks
+    the offset formula and the discounted-sum bound, not the convergence to the turnpike. A
     confounded controller using the biased effect ``b_obs = b + beta`` (OVB) converges to the WRONG
     turnpike ``x_conf = b*xref/(b+beta)`` and pays the offset every step. This upgrades Result 1d
     (dynamic horizon regret, previously hand-argued) to a proper turnpike argument, and adds a NEW
@@ -4861,8 +4877,9 @@ def doubly_robust_control_certificate(
     errors: Sequence[float] = (0.4, 0.2, 0.1, 0.05),
     seed: int = 0,
 ) -> DoublyRobustCurve:
-    """The doubly-robust version of result 0 (derived in ``validation/doubly_robust.mac``, proved in
-    ``proofs/doubly_robust.v``). For a binary intervention the AIPW estimator's bias is the PRODUCT
+    """The doubly-robust version of result 0 (derived in ``validation/doubly_robust.mac``;
+    ``proofs/doubly_robust.v`` takes the product form as given and proves that it vanishes if either
+    nuisance is correct). For a binary intervention the AIPW estimator's bias is the PRODUCT
     of the outcome-model error and the propensity error, ``dmu*de/(e+de)`` -- so the regret is
     ``O((dmu*de)^2)`` and vanishes if EITHER nuisance model is correct (double robustness), unlike
     outcome-regression (needs the outcome model) or IPW (needs the propensity model). Here the bias
@@ -4918,9 +4935,10 @@ def bandit_causal_certificate(
     n_seeds: int = 12,
     ridge: float = 1e-3,
 ) -> BanditCausalCurve:
-    """The bandit / adaptive-control version (derived in ``validation/bandit_causal.mac``, proved in
-    ``proofs/bandit_causal.v``): learn the causal effect ONLINE while controlling. Per round the
-    control regret is the certainty-equivalence coefficient ``C`` times the squared estimation err.
+    """The bandit / adaptive-control version (derived in ``validation/bandit_causal.mac``;
+    ``proofs/bandit_causal.v`` compares the per-round regrets only): learn the causal effect ONLINE
+    while controlling. Per round the control regret is the certainty-equivalence coefficient ``C``
+    times the squared estimation err.
     A **de-confounded** online estimator (backdoor on ``z``) is consistent, ``err^2 ~ sigma^2/t``,
     so cumulative regret grows like ``log T`` (sublinear); a **confounded** one has err^2 -> beta^2
     (systematic), a per-round floor, so cumulative regret is linear in ``T``. The doubling
@@ -5170,9 +5188,10 @@ def dynamic_causal_regret_certificate(
     q: float = 1.0,
     horizons: Sequence[int] = (10, 20, 40, 80, 160),
 ) -> DynamicCausalCurve:
-    """The DYNAMIC confounding theorem (proofs/dynamic_causal_mpc.v, derived in
-    ``validation/dynamic_causal_mpc.mac``): a tracking controller ``x' = a x + b u`` using a
-    confounded effect estimate ``b_obs = b + beta`` settles at a persistent steady-state offset and
+    """The DYNAMIC confounding theorem (derived in ``validation/dynamic_causal_mpc.mac``;
+    ``proofs/dynamic_causal_mpc.v`` proves the floor ``q*offset^2 > 0`` and that ``T`` times it
+    grows without bound): a tracking controller ``x' = a x + b u`` using a confounded effect
+    estimate ``b_obs = b + beta`` settles at a persistent steady-state offset and
     pays a per-step floor ``q*offset^2`` every step, so its cumulative regret grows *linearly in the
     horizon T* (unbounded), while the causal controller (effect ``b``) tracks exactly and its
     cumulative cost is bounded (the transient only). The fitted growth slope equals the per-step
@@ -5199,8 +5218,10 @@ def dynamic_causal_regret_certificate(
 def strong_convexity_regret_bound(grad_norm_sq: float, mu: float) -> float:
     """Self-certifying regret upper bound ``||grad J(u)||^2 / (2 mu)`` for a ``mu``-strongly-convex
     cost -- GLOBAL (beyond the local linearisation), computed from the achieved gradient alone,
-    without knowing the optimum. Proved in ``proofs/nonlinear_regret.v`` (the Polyak-Lojasiewicz /
-    strong-convexity bound, control-first): ``2*mu*(J(u) - J*) <= ||grad J(u)||^2``.
+    without knowing the optimum: ``2*mu*(J(u) - J*) <= ||grad J(u)||^2`` (the Polyak-Lojasiewicz /
+    strong-convexity bound). ``proofs/nonlinear_regret.v`` proves it for a scalar action, from the
+    strong-convexity inequality between ``u`` and the optimum taken as a hypothesis; the vector
+    case is the same completion of the square with an inner product, which is not formalised.
     """
     return grad_norm_sq / (2.0 * mu)
 
@@ -5253,7 +5274,8 @@ def causal_vs_predictive_certificate(
     noise: float = 0.3,
 ) -> CausalControlCurve:
     """Empirical proof that predictive control is asymptotically wrong under confounding, while the
-    causal controller is consistent (the theorem in ``proofs/causal_mpc.v``, derived in
+    causal controller is consistent (the regret identity and its positivity proved in
+    ``proofs/causal_mpc.v``; the non-vanishing omitted-variable bias derived in
     ``validation/causal_mpc.mac``; the hardened notebook-01 headline).
 
     A confounder ``z`` drives both action and outcome (``u = alpha z + noise``,
@@ -5314,7 +5336,8 @@ def interference_regret_certificate(
     and an interference / exposure-map error ``eint`` of the actuation channel (``dB``).
 
     This is the empirical twin of the machine-checked bound in ``proofs/interference_regret.v``
-    (``regret <= (kappa C^2 / 2) (eid + eint)^2``): the interference
+    (``regret <= (kappa C^2 / 2) (eid + eint)^2``, the regret taken as the smoothness surrogate
+    ``kappa/2*d^2`` and the plan error assumed at most ``C*(eid + eint)``): the interference
     error enters *additively* inside the square, so ignoring it under-states the regret. Sets
     ``eint = interference_ratio * eid``; the recorded error is the additive ``||dA|| + ||dB||`` (not
     the Euclidean norm), so the fitted slope tests the quadratic-in-total law directly (~2).
@@ -5377,7 +5400,8 @@ def lq_regret_sensitivity(effect: float, effort: float, target: float) -> float:
 def confounding_robust_lq_regret(
     regret_sensitivity: float, stat_error: float, confounding_halfwidth: float
 ) -> float:
-    """Confounding-robust LQ regret bound ``L_reg*(eps_stat + Delta)^2`` (Rocq ``cr_regret``).
+    """Confounding-robust LQ regret bound ``L_reg*(eps_stat + Delta)^2`` (the formula is Rocq's
+    definition ``cr_regret``; that it bounds the LQ regret is the cited local quadratic bound).
 
     ``Delta`` is the confounding half-width on the effect estimate -- the §32 inflation
     (:func:`chc.uncertainty.confounding_robust_inflation`), an *irreducible* bias floor that does
@@ -5395,8 +5419,10 @@ def confounding_robust_lq_regret_matrix(
 ) -> float:
     """Matrix confounding-robust LQ regret ``tr(E^T H E)``, ``E = stat + confounding``.
 
-    The Frobenius lift of the scalar bound via the §21 matrix order-doubling (Rocq
-    ``regret_order_2p``): for a positive-semidefinite LQ regret curvature ``H`` and effect-error
+    The Frobenius lift of the scalar bound via the §21 matrix order-doubling (the scalar
+    order-doubling is Rocq ``regret_order_2p``; the matrix step ``tr(E^T H E) <=
+    lambda_max(H)*||E||_F^2`` is standard and not in Rocq): for a positive-semidefinite LQ regret
+    curvature ``H`` and effect-error
     matrix ``E``, the regret is the quadratic form ``tr(E^T H E) = O(||E||_F^2)``. The confounding
     floor (``stat = 0``) is ``tr(Delta^T H Delta)`` -- SECOND order in the Frobenius norm of the
     matrix confounding half-width, the same second-order robustness as the scalar §33. Reduces to

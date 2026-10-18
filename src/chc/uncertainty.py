@@ -1065,8 +1065,10 @@ def contractive_rollout_bound(
 
     The discrete Euler contraction factor is ``q = sqrt(1+2*mu*dt+L^2*dt^2)`` (NOT ``1+mu*dt``;
     ``L`` = the full Lipschitz constant), since two Euler steps deviate by
-    ``|d+dt*(f(x)-f(y))|^2 <= (1+2*mu*dt+L^2*dt^2)|d|^2`` (Maxima ``contractive_euler.mac``; Rocq
-    ``contractive_euler.v``). Contraction (``q<1``) needs the step ``dt<2c/L^2`` (sufficient, from
+    ``|d+dt*(f(x)-f(y))|^2 <= (1+2*mu*dt+L^2*dt^2)|d|^2`` (expanded in Maxima
+    ``contractive_euler.mac``; Rocq ``contractive_euler.v`` proves only that the factor's square is
+    nonnegative and, under the step condition, below 1). Contraction (``q<1``) needs the step
+    ``dt<2c/L^2`` (sufficient, from
     the worst-case ``(mu,L)`` bounds); under it the discrete Gronwall bound
     ``e_H <= model_error*dt*(1 - q^H)/(1 - q)`` is capped at
     ``model_error*dt/(1-q)`` for ALL horizons -- no ``e^{L*T}`` blow-up -- tends to the continuous
@@ -1761,9 +1763,12 @@ def confounding_robust_radius(
 ) -> float:
     """Inflate a pessimism radius by the MSM confounding gap: ``rho0 + (worst_case - mean)``.
 
-    Rocq ``robust_radius_ge_nominal`` / ``robust_radius_monotone``: the returned radius is never
-    below ``nominal_radius`` (pessimism only grows under assumed confounding) and is monotone in
-    ``Gamma``. Feeds :func:`chc.support.pessimistic_control` as a widened uncertainty budget.
+    The returned radius is never below ``nominal_radius`` (pessimism only grows under assumed
+    confounding) and is monotone in ``Gamma``: the worst case is a maximum over the weight box
+    ``[1/Gamma, Gamma]``, which holds the unit weight and grows with ``Gamma``. Rocq
+    ``robust_radius_ge_nominal`` / ``robust_radius_monotone`` prove both for the closed form at a
+    fixed tail gap; here the tail, and so the gap, moves with ``Gamma``, which those lemmas do not
+    cover. Feeds :func:`chc.support.pessimistic_control` as a widened uncertainty budget.
     """
     outcomes = _real_numbers(outcomes, "outcomes")
     mu = float(np.mean(np.asarray(outcomes, dtype=np.float64)))

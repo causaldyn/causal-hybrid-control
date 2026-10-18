@@ -16,9 +16,11 @@ chains, sequentially drive a target over time -- and which are actionable levers
 4. **Rank + truncate**: order by cumulative ``|effect|`` over the horizon; a near-zero link caps a
    path (weakest-link, L3), and truncating at a finite horizon loses geometrically little (L2).
 
-The three laws behind steps 2-4 are machine-checked in ``proofs/causal_pathway.v`` and
-``validation/causal_pathway.mac``: L1 IRF walk-sum (Lutkepohl 2005 eq. 2.1.22), L2 geometric
-horizon-truncation (tail ``C*rho^{H+1}/(1-rho)``), L3 weakest-link multiplicative bottleneck.
+The three laws behind steps 2-4 are L1 IRF walk-sum (Lutkepohl 2005 eq. 2.1.22), L2 geometric
+horizon-truncation (tail ``C*rho^{H+1}/(1-rho)``) and L3 weakest-link multiplicative bottleneck,
+derived in ``validation/causal_pathway.mac``. ``proofs/causal_pathway.v`` checks their scalar
+instances only: L1 for a scalar AR(2) at horizons 2, 3 and 4, L2 as the scalar geometric sum and
+its tail, L3 as the product of three magnitudes. The general walk-sum is Lutkepohl's.
 
 HONESTY -- what the signs mean. This is regime (b) of the sign-credibility ladder: the sign is
 *estimated conditional on an explicit, untestable causal model*, between SVAR sign-restrictions

@@ -48,7 +48,7 @@ The pipeline, estimate -> sensitivity radius -> robust control -> validation:
    observational confounded marketplace and :func:`confounding_robust_tracking_benchmark` on a
    confounded dynamic plant in **closed loop**; :class:`ConfoundingRobustTask` carries the same
    radius into the main ``chc.benchmark`` leaderboard (regret vs oracle, multi-seed CIs) through
-   :class:`ConfoundingRobustPenalty`; the ``*_certificate`` functions are the machine-checked
+   :class:`ConfoundingRobustPenalty`; the ``*_certificate`` functions are the numerical
    evidence.
 
 Worked example (the calibration is explicit -- NOT baked in)::
