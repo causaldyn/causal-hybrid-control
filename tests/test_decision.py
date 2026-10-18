@@ -2878,3 +2878,39 @@ def test_aware_dates_held_as_objects_are_read_on_their_own_wall_clock() -> None:
             assert steps.tolist() == [1.0] * 10, (zone, frequency)
     firsts = [datetime.datetime(2024, month, 1, tzinfo=east) for month in (1, 2, 3)]
     assert taken(firsts, "M").tolist() == [31.0, 29.0]
+
+
+def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> None:
+    """Logged within 0.2 of zero, a lever whose push is ``2 tanh(u)`` was planned at 3 at the first
+    step, its box allowing 5: the plant left the planned path by 2.1 there, in a tube of 0.32 that
+    certified three steps, and nothing said the channel was read where the log never went."""
+    rng = np.random.default_rng(0)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "x", "u", "w")}
+    for unit in range(40):
+        x = rng.normal(0.0, 0.3)
+        for period in range(10):
+            w = rng.normal(0.0, 0.3)
+            u = float(np.clip(0.2 * w + rng.normal(0.0, 0.1), -0.2, 0.2))
+            for name, value in zip(rows, (unit, period, x, u, w), strict=True):
+                rows[name].append(value)
+            x += 0.5 * (-0.5 * x + 2.0 * math.tanh(u) + w) + rng.normal(0.0, 0.01)
+    panel = Panel.from_frame(
+        {name: np.asarray(values) for name, values in rows.items()}, unit="unit", time="time"
+    )
+    caplog.set_level(logging.WARNING, logger="chc.decision")
+    result = prescribe(
+        panel,
+        levers=[Lever("u", lo=-5.0, hi=5.0)],
+        target=Target("x", value=3.0),
+        adjustment=CausalGraph.from_edges([("w", "u"), ("w", "x"), ("u", "x")]),
+        horizon=4,
+        dt=0.5,
+        tolerance=0.5,
+        x0=jnp.zeros(1),
+    )
+    assert result.plan is not None
+    [record] = [r for r in caplog.records if getattr(r, "chc_event", "") == "lever_range"]
+    assert record.lever == "u"  # type: ignore[attr-defined]
+    assert record.logged == [-0.2, 0.2]  # type: ignore[attr-defined]
+    assert record.steps[0] == 0  # type: ignore[attr-defined]
+    assert "outside the range the panel logged, [-0.2, 0.2], first at step 0" in record.getMessage()

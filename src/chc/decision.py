@@ -143,7 +143,7 @@ _log = logging.getLogger(__name__)
 Every record carries a ``chc_event`` key in its ``extra`` payload naming the point it was emitted
 at --- ``precision``, ``adjustment``, ``logger_check``, ``fit``, ``abort``, ``unmoved``, ``rule``,
 ``relation``, ``tube``, ``selection`` (one per step under ``max_levers``), ``driver_range``,
-``plan``, ``estimability``, ``certificate``, and ``one_unit`` from
+``plan``, ``lever_range``, ``estimability``, ``certificate``, and ``one_unit`` from
 :meth:`Prescription.evaluate` --- so a JSON formatter downstream can route on one field rather than
 parse a sentence. The library installs no handler and sets no level: that is the application's
 call, and a library that reaches for ``basicConfig`` takes it away.
@@ -1853,8 +1853,8 @@ def prescribe(
     (see :data:`_log`). Nothing is configured here; a caller that wants them calls
     ``logging.basicConfig`` itself. An unidentified effect, a lever the log never moved, one on its
     logged rule, a combination kept at its logged level, a plan the log does not determine, a run
-    in single precision, a forecast outside the logged range and levers that read more than the
-    record says come through at ``WARNING``.
+    in single precision, a forecast outside the logged range, a planned action outside its lever's
+    logged range and levers that read more than the record says come through at ``WARNING``.
 
     Before fitting, the panel is asked whether the levers read anything but the states and their
     recorded parents: :attr:`Prescription.logger_check` (*experimental*). It reports; it changes
@@ -2385,6 +2385,9 @@ def prescribe(
         },
     )
 
+    _warn_actions_outside_logged_range(
+        panel, lever_names, np.asarray(plan.actions, dtype=np.float64), skip=rule_levers
+    )
     if held is not None:
         safety = plan.safety  # solve() already audited it at the whole box's largest actions
     elif margins:
@@ -3295,6 +3298,39 @@ def _warn_outside_logged_range(panel: Panel, drivers: Sequence[Driver]) -> None:
                     "driver": driver.name,
                     "logged": [low, high],
                     "forecast": [float(levels.min()), float(levels.max())],
+                },
+            )
+
+
+def _warn_actions_outside_logged_range(
+    panel: Panel, levers: tuple[str, ...], actions: NDArray[np.float64], *, skip: tuple[str, ...]
+) -> None:
+    """Warn of each lever the plan sets outside the range the panel logged it in: the fitted
+    channel is extrapolated there, and its standard error, read at the log's actions, does not
+    price that. A lever on its logged rule (``skip``) is set by the state, not by the plan."""
+    for index, name in enumerate(levers):
+        if name in skip:
+            continue
+        logged = panel._numbers(name)
+        low, high = float(logged.min()), float(logged.max())
+        planned = actions[:, index]
+        outside = np.flatnonzero((planned < low) | (planned > high))
+        if outside.size:
+            _log.warning(
+                "the plan sets %r outside the range the panel logged, [%.4g, %.4g], first at step "
+                "%d of %d; the fitted channel is extrapolated there, and the tube's error, read at "
+                "the log's actions, does not price that",
+                name,
+                low,
+                high,
+                int(outside[0]),
+                planned.size,
+                extra={
+                    "chc_event": "lever_range",
+                    "lever": name,
+                    "logged": [low, high],
+                    "planned": [float(planned.min()), float(planned.max())],
+                    "steps": outside.tolist(),
                 },
             )
 
