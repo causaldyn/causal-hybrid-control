@@ -1,6 +1,7 @@
 """Offline causal decision under equilibrium interference: the logging policy is confounded and
-SUTVA fails, so predictive (MOPO) and naive-causal planners underperform even no incentive, while
-the equilibrium-aware, de-confounded, pessimistic CHC allocation recovers the oracle.
+SUTVA fails, so the predictive (MOPO) and naive-causal planners capture little of the oracle's lift,
+while the CHC allocation, which plans through the simulator's own equilibrium, recovers the oracle
+whatever response it is given.
 """
 
 import jax
@@ -60,6 +61,21 @@ def test_chc_recovers_the_oracle_where_baselines_do_not(env: dict) -> None:
     assert oracle - market.value(chc) < 0.3  # equilibrium-aware + de-confounded ~ recovers oracle
     assert oracle - market.value(naive) > 0.8  # SUTVA leaves large regret on the table
     assert oracle - market.value(pred) > 0.8
+
+
+def test_the_chc_plan_owes_its_value_to_the_equilibrium_not_to_the_response(env: dict) -> None:
+    """The planner is handed the simulator's own equilibrium and reads the logs only through its
+    pessimism tilt, so a response of zero, or the confounded one, plans as close to the oracle as
+    the de-confounded one: the comparison measures knowing the equilibrium."""
+    market, oracle = env["market"], env["oracle"]
+    zero = jnp.zeros(market.n_zones)
+    for response in (
+        ExposureResponse(marginal=zero, se=zero),
+        calibrate_predictive(env["logs"]),
+        calibrate_shared_state(env["logs"]),
+    ):
+        plan = pessimistic_equilibrium_allocation(market, response, radius=1.0)
+        assert oracle - market.value(plan) < 0.3
 
 
 def test_naive_over_predicts_while_chc_delivers_more(env: dict) -> None:
