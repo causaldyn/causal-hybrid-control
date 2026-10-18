@@ -632,6 +632,12 @@ def stackelberg_allocation(
     ``objective`` is evaluated *through* the equilibrium (so ``jax.grad`` differentiates the bilevel
     problem). Adam handles the scale; the plan is projected onto the budget simplex each step, and
     the best feasible allocation seen is returned.
+
+    The ascent starts at the even split and finds a local maximum, not the global one: the
+    objective through an equilibrium need not be concave in ``u``. Three zones of attraction
+    ``(0.1, 0.5, 2.0)``, worth ``(1, 1, 0.2)`` a driver, at congestion 1.5 and mass 6, end with the
+    whole budget of 1 on the first zone, worth 2.973, where the whole budget on the second is worth
+    3.184. Compare the result with the vertices or other starts where the global plan matters.
     """
     u = jnp.full(n, budget / n)
     grad_fn = jax.jit(jax.grad(lambda u: -objective(u)))
