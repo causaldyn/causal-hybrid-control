@@ -348,18 +348,41 @@ class MeanFieldSolution:
             paths[:, step + 1] = x.mean(axis=1)
         return times, paths
 
-    def hjb_residual(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
-        """Residual of the backward HJB at the closed form. Zero up to the ``Z`` quadrature."""
-        g, p_bar = self.game, self.game.riccati_root
+    def _exact(self, t: np.ndarray) -> tuple[np.ndarray, ...]:
+        """``(m, S, v)`` and their time derivatives at ``t``, from the closed form itself: the
+        transition ``Phi(t) = exp(M t)`` and its derivative read off ``cosh`` and ``sinh``, and the
+        variance's formula differentiated. None of them is the right-hand side of its ODE, so a
+        residual built on them tests the closed form rather than restating its equations."""
+        g = self.game
+        t = np.atleast_1d(np.asarray(t, dtype=np.float64))
+        ch, sh = g._transition_scalars(t)
+        d_ch, d_sh = g.lambda_squared * sh, ch  # d cosh(lam t)/dt, d (sinh(lam t)/lam)/dt
         big_a = g.closed_loop_rate
-        s = self._interp(self.value_s, t)
-        m = self._interp(self.mean, t)
-        ds = -big_a * s + g.q * g.coupling * m
-        dz = (
-            g.b**2 / (2.0 * g.r) * s**2
-            - g.sigma**2 / 2.0 * p_bar
-            - g.q / 2.0 * g.coupling**2 * m**2
-        )
+        start = np.array([self.mean[0], self.value_s[0]])
+        phi, d_phi = g._transition(t), np.zeros((t.shape[0], 2, 2))
+        d_phi[:, 0, 0] = d_ch + d_sh * big_a
+        d_phi[:, 0, 1] = -d_sh * g.b**2 / g.r
+        d_phi[:, 1, 0] = d_sh * g.q * g.coupling
+        d_phi[:, 1, 1] = d_ch - d_sh * big_a
+        (m, s), (dm, ds) = (phi @ start).T, (d_phi @ start).T
+        decay = np.exp(2.0 * big_a * t)
+        v = decay * g.variance_initial + g.sigma**2 * (decay - 1.0) / (2.0 * big_a)
+        dv = decay * (2.0 * big_a * g.variance_initial + g.sigma**2)
+        return m, s, v, dm, ds, dv
+
+    def hjb_residual(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
+        """Residual of the backward HJB at the closed form, each derivative the solution's own.
+
+        ``S`` and ``m`` and their derivatives are the closed form's (:meth:`_exact`), so the terms
+        in ``x`` are zero to rounding exactly where the transition is ``exp(M t)``. ``Z`` has no
+        closed form: its derivative is read off the stored trapezoid sum by central differences,
+        so the term free of ``x`` is zero only to that quadrature's ``O(dt^2)``. Read as the
+        right-hand side of its own equation, a derivative would make the residual zero whatever
+        the solution.
+        """
+        g, p_bar = self.game, self.game.riccati_root
+        m, s, _, _, ds, _ = self._exact(t)
+        dz = np.interp(t, self.times, np.gradient(self.value_z, self.times, edge_order=2))
         v_x = p_bar * x + s
         return (
             ds * x
@@ -371,13 +394,14 @@ class MeanFieldSolution:
         )
 
     def fokker_planck_residual(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
-        """Residual of the forward Fokker-Planck at the Gaussian, in log form (divided by rho)."""
+        """Residual of the forward Fokker-Planck at the Gaussian, in log form (divided by rho).
+
+        The mean, the variance and the feedback's ``S`` and their derivatives are the closed
+        form's (:meth:`_exact`), not the right-hand sides of their ODEs, so the residual is zero to
+        rounding exactly where the closed form solves the equation.
+        """
         g, p_bar = self.game, self.game.riccati_root
-        big_a = g.closed_loop_rate
-        m, v = self._interp(self.mean, t), self._interp(self.variance, t)
-        s = self._interp(self.value_s, t)
-        dm = big_a * m - g.b**2 / g.r * s
-        dv = 2.0 * big_a * v + g.sigma**2
+        m, s, v, dm, _, dv = self._exact(t)
         z = x - m
         # d/dt log rho for a Gaussian, then the transport and diffusion terms.
         log_rho_t = -0.5 * dv / v + z * dm / v + 0.5 * z**2 * dv / v**2
@@ -853,7 +877,8 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
     """Measure the coupled DGM against the exact LQ mean-field equilibrium.
 
     Three arms. The first checks that the gate itself is exact -- the closed form annihilates both
-    PDE residuals, and the obstruction horizon bisected from the denominator matches the formula.
+    PDE residuals, read with its own time derivatives (the HJB's to its ``Z`` quadrature), and the
+    obstruction horizon bisected from the denominator matches the formula.
     The second checks that the neural solve reproduces it on a monotone instance. The third is the
     one that can fail loudly: on the anti-monotone branch, as the horizon approaches the
     obstruction, the DGM's error grows while its own residual *shrinks*, so a residual-based
@@ -921,7 +946,7 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
     )
 
     ok = bool(
-        hjb_residual < 1e-10
+        hjb_residual < 1e-5  # Z is a trapezoid sum on the grid: 6.4e-7 at 401 points
         and fp_residual < 1e-10
         and abs(bisected - predicted) / predicted < 1e-9
         and -1.05 < pole_exponent < -0.90

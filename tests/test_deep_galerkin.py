@@ -1,5 +1,6 @@
 """Deep Galerkin gates: the analytic 1-D Poisson solution, and the LQ mean-field equilibrium."""
 
+import dataclasses
 import math
 
 import jax
@@ -50,13 +51,50 @@ def test_lq_mean_field_closed_form_annihilates_both_pdes() -> None:
     rng = np.random.default_rng(0)
     t = rng.uniform(0.0, 1.0, 500)
     x = rng.uniform(-5.0, 5.0, 500)
-    assert np.abs(solution.hjb_residual(t, x)).max() < 1e-10
+    assert np.abs(solution.hjb_residual(t, x)).max() < 1e-5  # Z's trapezoid sum: 6.4e-7
     assert np.abs(solution.fokker_planck_residual(t, x)).max() < 1e-10
     assert solution.mean[0] == pytest.approx(game.mean_initial)
     assert solution.variance[0] == pytest.approx(game.variance_initial)
     # A(T) closes the loop even though a alone does not fix the sign.
     assert game.closed_loop_rate < 0.0
     assert game.closed_loop_rate**2 == pytest.approx(game.a**2 + game.q * game.b**2 / game.r)
+
+
+def test_the_closed_form_residuals_read_the_solution_not_its_equations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each residual took its time derivatives from the right-hand sides of the ODEs the closed
+    form is meant to solve, so it read 5e-15 for any solution: a ``Z`` moved by ``0.1 t`` and a
+    transition with the sign of its ``q c`` entry flipped alike. Read off the solution, they show:
+    0.11 and 5.9 in the HJB, 24 in the Fokker-Planck."""
+    game = LQMeanFieldGame(
+        a=-0.5,
+        b=1.0,
+        q=1.0,
+        r=1.0,
+        coupling=0.5,
+        terminal_coupling=0.5,
+        sigma=0.7,
+        horizon=1.0,
+        mean_initial=1.0,
+        variance_initial=0.25,
+    )
+    rng = np.random.default_rng(0)
+    t, x = rng.uniform(0.0, 1.0, 500), rng.uniform(-5.0, 5.0, 500)
+    solution = game.solve()
+    moved = dataclasses.replace(solution, value_z=solution.value_z + 0.1 * solution.times)
+    assert np.abs(moved.hjb_residual(t, x)).max() == pytest.approx(0.1, abs=0.02)
+    transition = LQMeanFieldGame._transition
+
+    def flipped(self: LQMeanFieldGame, times: np.ndarray) -> np.ndarray:
+        phi = transition(self, times)
+        phi[:, 1, 0] = -phi[:, 1, 0]
+        return phi
+
+    monkeypatch.setattr(LQMeanFieldGame, "_transition", flipped)
+    wrong = game.solve()
+    assert np.abs(wrong.hjb_residual(t, x)).max() > 1.0
+    assert np.abs(wrong.fokker_planck_residual(t, x)).max() > 1.0
 
 
 def test_obstruction_horizon_matches_the_bisected_denominator() -> None:
@@ -154,7 +192,7 @@ def test_lq_mean_field_certificate_holds() -> None:
     curve = lq_mean_field_certificate()
     assert curve.ok
     # The gate is exact, so any DGM error is the DGM's.
-    assert curve.closed_form_hjb_residual < 1e-10
+    assert curve.closed_form_hjb_residual < 1e-5
     assert curve.horizon_relative_error < 1e-9
     assert curve.pole_exponent == pytest.approx(-1.0, abs=0.05)
     # The neural solve reproduces the equilibrium on the monotone instance.
