@@ -23,7 +23,11 @@ Four methods:
 * ``"mis"`` -- marginalised importance sampling on the stationary state-action laws, for the
   average cost per step. Its weight has a finite second moment iff ``2 Sigma_b^z - Sigma_pi^z > 0``,
   which splits into a state part and an action part. The one-step gate is neither necessary nor
-  sufficient for it: a loop for each direction is in the tests.
+  sufficient for it: a loop for each direction is in the tests. **It is model-based**: the weight's
+  numerator is the plan's stationary law under the model, the logs give only its denominator, so
+  its error is first order in the model's and its interval does not carry it. On the tests'
+  market, with one entry of ``a`` off by 0.05, its 95% interval held the true value on 25 of 40
+  logs of 20 000 steps, and off by 0.1 on none; ``"dr"`` held it on 39 and 40.
 * ``"dr"`` -- ``"mis"`` with the model's relative value as a control variate, so that its error is
   the product of the weights' error and the model's.
 * ``"fqe"`` -- fitted Q evaluation with quadratic features, which is exact on this class. It is
@@ -1626,7 +1630,10 @@ def evaluate_plan(
     every state, or for ``"pdis"`` one for each of the episodes' ``H + 1`` states, the last of
     which no step reads. ``plant`` is the model: of the loop's law for every method but
     ``"fqe"``, of the relative value for ``"dr"``, and of the smoothing correction. ``logger`` is
-    the policy that logged, fitted by :func:`fit_logger` when omitted.
+    the policy that logged, fitted by :func:`fit_logger` when omitted. For ``"mis"`` the model is
+    the weights' numerator, the plan's stationary law, so its error moves the estimate to first
+    order and the interval does not widen for it. ``"dr"``'s error is the product of the weights'
+    and the model's, and ``"fqe"`` reads the model only for the smoothing correction.
 
     For a plan without a density, ``smoothing`` is the ``tau`` the weights use, by default the one
     that minimises the predicted mean squared error of the reported value, and ``model_error`` the
