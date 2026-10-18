@@ -267,8 +267,8 @@ def test_the_cost_is_the_quadratic_less_the_noise_s_share() -> None:
     reference, alternative, plan = _case(10_000, 0, 1.0, 0.0)
     weight = _parameter_weight(plan, reference.residual, None)
     d = _parameters(alternative.residual) - _parameters(reference.residual)
-    spread = np.asarray(alternative.influence) - np.asarray(reference.influence)
-    spread = spread.reshape(-1, d.size)
+    # each transition's states summed: they may share its noise
+    spread = (np.asarray(alternative.influence) - np.asarray(reference.influence)).sum(axis=1)
     gate = misspecification_cost(plan, reference, alternative)
     assert gate.noise == pytest.approx(float(np.trace(weight @ spread.T @ spread)) / 2, rel=1e-9)
     assert gate.cost == pytest.approx(float(d @ weight @ d) / 2 - gate.noise, rel=1e-9)

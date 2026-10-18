@@ -1985,9 +1985,9 @@ def test_clusters_are_refused_unless_they_label_every_transition_and_name_two() 
 
 def test_the_influence_s_square_is_its_rows_or_its_clusters_sums_squared() -> None:
     rows = np.arange(24.0).reshape(4, 2, 3)
-    flat = rows.reshape(8, 3)
     (independent,) = _clustered_squares(rows, None)
-    np.testing.assert_array_equal(independent, flat.T @ flat)
+    per_row = rows.sum(axis=1)
+    np.testing.assert_array_equal(independent, per_row.T @ per_row)
     summed = np.array([rows[0].sum(0) + rows[2].sum(0), rows[1].sum(0) + rows[3].sum(0)])
     (clustered,) = _clustered_squares(rows, np.array([0, 1, 0, 1]))
     np.testing.assert_array_equal(clustered, summed.T @ summed)
@@ -2855,7 +2855,7 @@ def test_a_weakening_instrument_reads_a_falling_relevance_and_stays_identified()
                 [1.0508991256123608, -0.029127363934056676, 0.10820857328551325],
                 [0.5222761403167667, -0.016414417710067162, 0.05087340795001539],
             ],
-            (0.08991264604299758, 0.06674476953031243),
+            (0.08977556577229462, 0.06674476953031243),
         ),
     ],
 )
@@ -2864,7 +2864,9 @@ def test_a_relevant_instrument_fits_as_it_did(
 ) -> None:
     """The positive control: an instrument that moves the lever, as on the reference plant, leaves
     the fit identified, near the truth, and as the fit read it before the rank check, pinned here
-    to 1e-9. The ridge read in each column's own units moved these by at most 9e-9 of each."""
+    to 1e-9. The ridge read in each column's own units moved these by at most 9e-9 of each, and
+    summing each transition's states before squaring moved the ``rk4`` channel's error, which its
+    fixed point mixes across the states, from 0.08991 to 0.08978."""
     fit = fit_causal_residual(
         _known, _iv_log(), IV_SYSTEM.dt, instrument="w", integrator=integrator
     )
@@ -3168,3 +3170,41 @@ def test_an_identified_fit_keeps_its_moment_residual_without_its_influence() -> 
     blind = fit_causal_residual(_known, data, 0.1, channel_degree=0)
     assert not blind.identified
     assert blind.moment_residual is None
+
+
+def test_without_clusters_a_transition_s_states_are_summed_before_squaring() -> None:
+    """Two states share one noise draw a transition. Each transition its own cluster is the same
+    count as no clusters, and CR1's factor at ``G = N`` is the rows' ``N / (N - k)``: the two read
+    one error. Squared state by state, the scores of one transition read as independent, and the
+    error of an ``rk4`` fit, whose fixed point mixes the states, came out 1.15 times the clustered
+    one."""
+    rng = np.random.default_rng(0)
+    drift, channel = np.array([[-0.5, 0.3], [0.2, -0.6]]), np.array([[1.0], [0.5]])
+    truth = LinearDynamics(jnp.asarray(drift), jnp.asarray(channel))
+    x, z = rng.normal(size=(800, 2)), rng.normal(size=(800, 1))
+    u = 0.9 * z + 0.4 * rng.normal(size=(800, 1))
+    stepped = jax.vmap(lambda xi, ui: rk4_step(truth, 0.0, xi, ui, 1.0))(
+        jnp.asarray(x), jnp.asarray(u)
+    )
+    data = {
+        "x": jnp.asarray(x),
+        "u": jnp.asarray(u),
+        "z": jnp.asarray(z),
+        "x_next": stepped + jnp.asarray(0.3 * rng.normal(size=(800, 1))),
+    }
+    zero = LinearDynamics(jnp.zeros((2, 2)), jnp.zeros((2, 1)))
+    options = {"adjust_for": ("z",), "channel_degree": 0, "integrator": "rk4"}
+    rows = fit_causal_residual(zero, data, 1.0, **options)
+    own = fit_causal_residual(zero, data, 1.0, clusters=np.arange(800), **options)
+    assert rows.channel_error == pytest.approx(own.channel_error, rel=1e-9, abs=0.0)
+
+    scores = np.ones((1, 50, 2))
+    shared = np.repeat(rng.normal(size=(50, 1)), 2, axis=1)
+    (spread,) = _robust_spreads(jnp.asarray(scores), jnp.asarray(shared), 1)
+    assert float(spread[0, 0]) == pytest.approx(
+        50 / 49 * float(np.sum((2 * shared[:, 0]) ** 2)), rel=1e-12, abs=0.0
+    )
+    (square,) = _clustered_squares(scores[0][:, :, None] * shared[:, :, None], None)
+    assert float(square[0, 0]) == pytest.approx(
+        float(np.sum((2 * shared[:, 0]) ** 2)), rel=1e-12, abs=0.0
+    )

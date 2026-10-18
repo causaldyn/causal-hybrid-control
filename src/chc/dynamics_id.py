@@ -265,7 +265,8 @@ class CausalDynamicsFit:
     # (N, 2) where it was given two, a code a dimension: the channel's covariance then sums each
     # cluster's scores over its transitions and states before squaring them (CR1), two-way the
     # largest read of the two ways and of each alone, and a reader of ``influence`` sums its rows
-    # the same way (:func:`_clustered_squares`). None where each transition's each state is its own.
+    # the same way (:func:`_clustered_squares`). None where each transition is its own, its states
+    # summed.
     clusters: np.ndarray | None = None
     # Experimental: it may change or be withdrawn in any release. Under ``instrument``, ``(p,)``:
     # how far the instrument moves each of the ``p`` directions a state of the channel the log's
@@ -477,9 +478,10 @@ def _robust_spreads(
     clusters: np.ndarray | None = None,
     periods: np.ndarray | None = None,
 ) -> tuple[Array, ...]:
-    """``sum_i J_i diag(e_i^2) J_i'`` for a fit linear in its target ``y``, ``J = d coeffs / d y``;
-    under ``clusters``, ``sum_g s_g s_g'`` with ``s_g = sum_{i in g} J_i e_i``. Two-way, the three
-    spreads of :func:`_clustered_squares`, and an error read off them is the largest of their reads.
+    """``sum_i s_i s_i'`` with ``s_i = J_i e_i``, the scores of transition ``i``'s states summed,
+    for a fit linear in its target ``y``, ``J = d coeffs / d y``; under ``clusters``,
+    ``sum_g s_g s_g'`` with ``s_g = sum_{i in g} J_i e_i``. Two-way, the three spreads of
+    :func:`_clustered_squares`, and an error read off them is the largest of their reads.
     Under ``periods``, one group's, ``sum_j c_j c_j'`` with ``c_j = sum_i w_ji J_i e_i`` over the
     weights ``w`` of :func:`_cosines`, at the rows' factor ``N / (N - k)``: each period's
     transitions share its weight, so their scores are summed before the cosines read across the
@@ -497,10 +499,10 @@ def _robust_spreads(
     if periods is not None:
         projected = jnp.asarray(_cosines(periods)) @ jnp.einsum("pis,is->ip", sensitivity, score)
         return (_small_sample(n, n_coeff, None) * projected.T @ projected,)
-    if clusters is None:
-        scale = _small_sample(n, n_coeff, None)
-        return (jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity),)
     scores = jnp.einsum("pis,is->ip", sensitivity, score)
+    if clusters is None:
+        # a transition's states may share its noise, so its scores are summed over them first
+        return (_small_sample(n, n_coeff, None) * scores.T @ scores,)
     factor = _small_sample(n, n_coeff, _cluster_count(clusters))
     if clusters.ndim == 1:
         summed = jax.ops.segment_sum(
@@ -572,10 +574,10 @@ def _clustered_squares(
 ) -> tuple[np.ndarray, ...]:
     """``rows``' covariance, ``(N, n, ...)`` per transition and state as
     :attr:`CausalDynamicsFit.influence` is: the sum of the outer products of its independent
-    terms, each a transition and state, or under ``clusters`` a cluster's transitions and states
-    summed. Under ``periods``, one group's, each transition's states summed and projected on the
-    cosines of :func:`_cosines`, which sums each period's transitions, as the channel's error is
-    read.
+    terms, each a transition's states summed, or under ``clusters`` a cluster's transitions and
+    states summed. Under ``periods``, one group's, each transition's states summed and projected on
+    the cosines of :func:`_cosines`, which sums each period's transitions, as the channel's error
+    is read.
 
     Two-way, three covariances, and a reader takes the one it reads largest (MacKinnon, Nielsen
     and Webb 2024): the two dimensions' sums less their intersection's, which both count (Cameron,
@@ -587,10 +589,9 @@ def _clustered_squares(
     if periods is not None:
         projected = np.tensordot(_cosines(periods), rows.sum(axis=1), axes=(1, 0))
         return (np.tensordot(projected, projected, axes=(0, 0)),)
-    if clusters is None:
-        terms = rows.reshape(-1, *rows.shape[2:])
-        return (np.tensordot(terms, terms, axes=(0, 0)),)
     per_row = rows.sum(axis=1)
+    if clusters is None:
+        return (np.tensordot(per_row, per_row, axes=(0, 0)),)
 
     def square(codes: np.ndarray) -> np.ndarray:
         summed = np.zeros((int(codes.max()) + 1, *per_row.shape[1:]))
@@ -1265,19 +1266,19 @@ def fit_causal_residual(
             and states before squaring them, CR1 with the factor ``G / (G - 1) (N - 1) / (N - k)``
             over ``G`` clusters and ``k`` coefficients a state, so it holds whatever the dependence
             within a cluster; and a reader of ``influence`` sums its rows the same way. ``None``
-            takes every transition's every state as independent of the rest, which a log of units
-            followed over time breaks wherever the model leaves out something that persists: the
-            transitions of one unit then share it. The estimate does not move; only its error does.
-            On panels of 5 to 80 units whose noise persists within each unit, a 5 % test of a zero
-            channel rejects 12.5 % to 35.5 % of the time row by row and 3.75 % to 14.75 % by
-            unit: CR1 still over-rejects with few clusters (ADR 0053). Two labels a transition,
-            shape ``(N, 2)``, cluster it two ways, by its unit and by its period say. The error is
-            then the largest of three (MacKinnon, Nielsen and Webb 2024): the two dimensions' sums
-            less their intersection's (Cameron, Gelbach and Miller 2011), at CR1's factor for the
-            smaller dimension's ``G`` and less any part that reads below nothing; and each
-            dimension's sums alone, at its own. A shock every unit shares in a period, met by
-            levers every unit moves together, makes one period's scores move together across
-            units, which a sum within units leaves out (ADR 0061).
+            takes every transition as independent of the rest, its states summed first since they
+            may share its noise, which a log of units followed over time breaks wherever the model
+            leaves out something that persists: the transitions of one unit then share it. The
+            estimate does not move; only its error does. On panels of 5 to 80 units whose noise
+            persists within each unit, a 5 % test of a zero channel rejects 12.5 % to 35.5 % of the
+            time row by row and 3.75 % to 14.75 % by unit: CR1 still over-rejects with few clusters
+            (ADR 0053). Two labels a transition, shape ``(N, 2)``, cluster it two ways, by its unit
+            and by its period say. The error is then the largest of three (MacKinnon, Nielsen and
+            Webb 2024): the two dimensions' sums less their intersection's (Cameron, Gelbach and
+            Miller 2011), at CR1's factor for the smaller dimension's ``G`` and less any part that
+            reads below nothing; and each dimension's sums alone, at its own. A shock every unit
+            shares in a period, met by levers every unit moves together, makes one period's scores
+            move together across units, which a sum within units leaves out (ADR 0061).
         periods: each transition's period, a whole number of steps, on a log whose transitions
             fall in one group, one unit's or the units' of one declared cluster, which leaves no
             second cluster to sum within: one label a transition, two periods at least. The
