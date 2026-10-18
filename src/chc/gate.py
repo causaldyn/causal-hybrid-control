@@ -36,6 +36,11 @@ What the guarantee needs, and the gate cannot check:
   On such a plant, run the gate in blocks (below), or estimate a plan's value with
   :func:`chc.evaluation.evaluate_plan`.
 * **Rewards in** ``[0, 1]``.
+* **A contrast that holds still.** A DEPLOY rejects the null that every decision's contrast, given
+  the past, is at most ``delta``: it says the candidate beat the baseline over the decisions read,
+  not that it still does. A candidate +0.06 better for its first 3000 decisions and -0.06 worse for
+  the next 3000, even on average, was deployed in the first half on 200 of 200 paths, and the
+  rollback e-process had caught the turn on 3 of them by the end.
 
 **Plants with memory: the gate in blocks** (*experimental*). With ``GateConfig(block_length=L,
 burn_in=b)``, a zone's evidence comes from an experiment on policies, not on decisions: each block
@@ -1340,7 +1345,8 @@ class DeploymentGate:
 
     * the expected share of wrong DEPLOY decisions among those made so far is at most ``alpha``,
       under any dependence across zones; a DEPLOY is wrong when the candidate does not beat the
-      baseline by more than ``delta``;
+      baseline by more than ``delta`` over the decisions read, which says nothing of a contrast that
+      turns after them;
     * each HOLD for harm, and each ROLLBACK on evidence, is wrong with probability at most
       ``alpha_harm``;
     * with drift e-values supplied, an unchanged channel alarms at most once per ``drift_arl``
