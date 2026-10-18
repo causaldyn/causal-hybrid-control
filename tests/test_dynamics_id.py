@@ -3194,6 +3194,44 @@ def _pushed_log(seed: int, n: int, correlation: float, noise: float = 0.01):
 _ZERO = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
 
 
+def _seasonal_log(n: int = 1500, dt: float = 0.1):
+    """``x' = sin(0.3 t) - 0.5 x + u``, the seasonal push known, logged by Euler on a policy that
+    follows the season, ``u = 0.8 sin(0.3 t) + z + 0.5 eta``."""
+    rng = np.random.default_rng(0)
+    t = dt * np.arange(n)
+    z = rng.normal(size=(n, 1))
+    u = 0.8 * np.sin(0.3 * t)[:, None] + z + 0.5 * rng.normal(size=(n, 1))
+    x = np.zeros((n + 1, 1))
+    for i in range(n):
+        x[i + 1] = x[i] + dt * (np.sin(0.3 * t[i]) - 0.5 * x[i] + u[i]) + 0.01 * rng.normal()
+    data = {"x": x[:-1], "u": u, "z": z, "x_next": x[1:]}
+    return {key: jnp.asarray(value) for key, value in data.items()}, jnp.asarray(t)
+
+
+def _seasonal_known(t, x, u):
+    return jnp.sin(0.3 * t) * jnp.ones_like(x)
+
+
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_the_known_physics_is_read_at_each_transition_s_start(integrator: str) -> None:
+    """Read at ``t = 0`` throughout, the season stays in the rate the residual explains, and the
+    policy that follows it confounds the channel: 1.35 where it is 1.0, 1.37 where RK4 reads 1.03.
+    Read at each transition's start, the channel lands within its error, of the Euler map the log
+    was stepped by or of its RK4 reading."""
+    data, times = _seasonal_log()
+    options = {"adjust_for": ("z",), "channel_degree": 0, "integrator": integrator}
+    fit = fit_causal_residual(_seasonal_known, data, 0.1, times=times, **options)
+    clockless = fit_causal_residual(_seasonal_known, data, 0.1, **options)
+    assert fit.channel_error is not None
+    # RK4's reading of an Euler log: the decay h whose growth factor is 0.95, and the channel
+    # over RK4's input gain 1 + h/2 + h^2/6 + h^3/24 there, both solved in Maxima
+    truth = 1.0 if integrator == "euler" else 1.0258659
+    assert abs(float(np.asarray(fit.residual.channel).ravel()[0]) - truth) < 4 * fit.channel_error
+    assert abs(float(np.asarray(clockless.residual.channel).ravel()[0]) - truth) > 0.25
+    with pytest.raises(ValueError, match="times gives each"):
+        fit_causal_residual(_seasonal_known, data, 0.1, times=times[1:], **options)
+
+
 def test_the_rk4_fit_converges_where_the_known_physics_leaves_the_residual_nothing() -> None:
     """A noiseless log of the known plant: every parameter of the residual is 0, so a stop
     relative to the parameters alone was never met, and the fit raised that no field reproduces

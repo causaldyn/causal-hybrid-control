@@ -1106,6 +1106,7 @@ def fit_causal_residual(
     influence: bool = False,
     clusters: np.ndarray | Array | None = None,
     periods: ArrayLike | None = None,
+    times: ArrayLike | None = None,
 ) -> CausalDynamicsFit:
     """Fit a :class:`ControlAffineResidual` whose channel is the *interventional* control response.
 
@@ -1298,6 +1299,13 @@ def fit_causal_residual(
             the noise is drawn afresh, the cosines' interval is 11 % wider. On three units of one
             cluster over 200 periods, which share a shock AR(0.9) and half their lever AR(0.7),
             it covered 0.692 row by row and 0.934 by the period sums (ADR 0075).
+        times: each transition's start time, ``N`` finite numbers, where ``known`` reads the time:
+            the known physics is called, and each step is taken, from there. ``None`` starts every
+            transition at ``t = 0``, which is right for a ``known`` that does not read the time and
+            nothing else: a seasonal known push read at ``t = 0`` throughout leaves the season in
+            the rate, and a logging policy that follows the season then confounds the channel with
+            it: on a log of 3000 Euler steps the channel came back 1.35 where it is 1.0, 37 of
+            its errors off.
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
@@ -1312,7 +1320,7 @@ def fit_causal_residual(
             ``x``, ``u`` or ``x_next``, a driver named twice, or an instrument that is also a
             covariate or a driver, at the step's start or its end. Each would read a column the fit
             reads in another role: adjusted for the action, the channel came back as the
-            confounded regression's.
+            confounded regression's. On ``times`` that are not one finite number a transition.
     """
     _refuse_reread("covariate", adjust_for, _ACTION_AND_OUTCOME)
     _refuse_reread("driver", drivers, _TRANSITION)
@@ -1343,7 +1351,8 @@ def fit_causal_residual(
         )
     codes = None if clusters is None else _cluster_codes(clusters, x.shape[0])
     steps = None if periods is None else _period_codes(periods, x.shape[0])
-    known_rate = jax.vmap(lambda xi, ui: known(0.0, xi, ui))(x, u)
+    starts = jnp.zeros(x.shape[0], dtype=x.dtype) if times is None else _start_times(times, x)
+    known_rate = jax.vmap(known)(starts, x, u)
 
     identified = bool(adjust_for) or instrument is not None
     covariates, driver_start, driver_end, driver_read = _nuisance_inputs(
@@ -1519,15 +1528,15 @@ def fit_causal_residual(
         """``step(F, x, u, dt)`` on every transition, under the integrator the fit is made for."""
         model = HybridDynamics(known=known, residual=residual)
 
-        def step(xi: Array, ui: Array, start: Array, end: Array) -> Array:
+        def step(ti: Array, xi: Array, ui: Array, start: Array, end: Array) -> Array:
             # The transition's own stretch of the drivers' path, held the way the planner holds a
             # forecast: one implementation of the hold, so the fit and the plan cannot drift apart.
-            field = DrivenDynamics(model, gain, jnp.stack([start, end]), dt)
+            field = DrivenDynamics(model, gain, jnp.stack([start, end]), dt, start=ti)
             if integrator == "euler":
-                return xi + dt * field(0.0, xi, ui)
-            return rk4_step(field, 0.0, xi, ui, dt)
+                return xi + dt * field(ti, xi, ui)
+            return rk4_step(field, ti, xi, ui, dt)
 
-        return jax.vmap(step)(x, u, driver_start, driver_end)
+        return jax.vmap(step)(starts, x, u, driver_start, driver_end)
 
     def defect(fit: CausalDynamicsFit) -> Array:
         """``(x_next - step(F, x, u, dt)) / dt`` -- what the fitted field leaves of the log."""
@@ -1731,6 +1740,19 @@ def fit_causal_residual(
         instrument_rank=rank,
         periods=steps,
     )
+
+
+def _start_times(times: ArrayLike, x: Array) -> Array:
+    """Each transition's start time, one finite number a transition, in the states' precision."""
+    starts = jnp.asarray(_real_numbers(times, "times"), dtype=x.dtype)
+    if starts.shape != (x.shape[0],):
+        raise ValueError(
+            f"times gives each of the {x.shape[0]} transitions its start, shape ({x.shape[0]},); "
+            f"got an array of shape {starts.shape}"
+        )
+    if not bool(jnp.all(jnp.isfinite(starts))):
+        raise ValueError("times holds a value that is not a finite number")
+    return starts
 
 
 def _period_codes(periods: ArrayLike, rows: int) -> np.ndarray:

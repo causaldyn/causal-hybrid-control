@@ -96,7 +96,7 @@ class DrivenDynamics(eqx.Module):
     gain: Array  # (n, d): how each driver pushes each state's rate
     levels: Array  # (K, d), K >= 2: the drivers at start, start + dt, ...
     dt: float
-    start: float = 0.0
+    start: float | Array = 0.0
 
     def __check_init__(self) -> None:
         if self.levels.ndim != 2 or self.levels.shape[0] < 2:

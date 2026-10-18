@@ -1741,7 +1741,10 @@ def prescribe(
             sequence of column names to *assert* it. Required, and deliberately so --- omitting it
             would default to adjusting for nothing, which is a causal claim, not an absence of one.
         known: physics kept fixed and not estimated. ``None`` means nothing is known and the whole
-            vector field is the fitted residual.
+            vector field is the fitted residual. The fit reads it at each transition's start, its
+            period's steps from the panel's first period times ``dt``; the plan reads it from
+            ``t = 0``, so a ``known`` that reads the time is planned on the clock of the panel's
+            first period, not of the start.
         dt: the time step one panel period represents.
         gamma: the marginal sensitivity model's level the barrier is priced at (§40), passed to
             :func:`chc.plan.certify_safety` with its default gap, the fitted channel's own size,
@@ -2012,6 +2015,7 @@ def prescribe(
         periods=labels[:, 1] if serial else None,
         nuisance_degree=_NUISANCE_DEGREE,
         ridge=_RIDGE,
+        times=labels[:, 1] * dt,
     )
     _log.info(
         "control channel fitted",
