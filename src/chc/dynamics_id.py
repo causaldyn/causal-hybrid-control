@@ -32,7 +32,8 @@ HONEST SCOPE, four limits worth stating before the code:
   into the channel, so there ``a_θ`` is conditional on it, at its mean on the log.
 * The residual must be control-affine (:class:`chc.residual.ControlAffineResidual`). A general
   ``r_θ(x, u)`` has no partialling-out moment and gets no guarantee here.
-* With no adjustment set and no instrument nothing in the log identifies the channel, and an
+* With no adjustment set and no instrument nothing in the log identifies the channel, unless the
+  caller knows the actions are unconfounded given the state (``unconfounded=True``), and an
   instrument identifies it only along the directions it moves the action. The estimator reports
   ``identified=False`` in both cases rather than returning a confident wrong answer -- that case
   belongs to :mod:`chc.sensitivity`, which prices the radius instead of pretending it away.
@@ -1098,6 +1099,7 @@ def fit_causal_residual(
     *,
     adjust_for: tuple[str, ...] = (),
     instrument: str | None = None,
+    unconfounded: bool = False,
     degree: int = 1,
     channel_degree: int | None = None,
     nuisance_degree: int = 2,
@@ -1118,7 +1120,9 @@ def fit_causal_residual(
         known: the physics kept fixed; its own control dependence is known, not estimated.
         data: columns ``x (N,n)``, ``u (N,m)``, ``x_next (N,n)``, plus any named in ``adjust_for``
             and ``instrument``.
-        adjust_for: observed confounders. Empty *and* no instrument => ``identified=False``.
+        adjust_for: observed confounders. Empty, with no instrument and ``unconfounded`` false,
+            => ``identified=False``. ``identified`` says what the fit was handed, not that the set
+            is enough: a column of noise adjusted for reads identified.
 
             Under ``integrator="rk4"`` each covariate that is not a driver also joins the drift
             regression, held over the step at its value at the start, about its mean on the log.
@@ -1157,6 +1161,13 @@ def fit_causal_residual(
             the reference plant such columns read 0.002 to 0.035, the medians of eight at 500,
             2000 and 8000 rows, of the order of ``1 / sqrt(N)``, where the plant's instrument read
             0.39 to 0.48. No inference here is robust to a weak instrument.
+        unconfounded: the caller's claim that the state and the drivers alone leave the actions
+            unconfounded -- a randomised lever, or one set by the state alone -- as a graph whose
+            adjustment set is empty proves. The fit is then the orthogonal one with the state and
+            the drivers as its only covariates, ``identified=True`` with its errors, as with an
+            adjustment set. Without it an empty set read ``"observational"``, with no error and no
+            moment residual, though its channel is the same number. Not with ``instrument``, which
+            says the actions are confounded.
         degree: the feature degree of the drift, and of the channel unless ``channel_degree``
             says otherwise. ``1`` fits an affine drift and, by default, a channel affine in the
             state, which contains the constant channel §18/§19 cover without being restricted to it.
@@ -1335,7 +1346,8 @@ def fit_causal_residual(
             ``x``, ``u`` or ``x_next``, a driver named twice, or an instrument that is also a
             covariate or a driver, at the step's start or its end. Each would read a column the fit
             reads in another role: adjusted for the action, the channel came back as the
-            confounded regression's. On ``times`` that are not one finite number a transition.
+            confounded regression's. On ``unconfounded=True`` with an instrument. On ``times``
+            that are not one finite number a transition.
     """
     _refuse_reread("covariate", adjust_for, _ACTION_AND_OUTCOME)
     _refuse_reread("driver", drivers, _TRANSITION)
@@ -1346,6 +1358,11 @@ def fit_causal_residual(
             "its two copies"
         )
     if instrument is not None:
+        if unconfounded:
+            raise ValueError(
+                "unconfounded=True with an instrument: an instrument is for actions a latent "
+                "confounder moves, and unconfounded says nothing does"
+            )
         _refuse_reread("instrument", (instrument,), _TRANSITION)
         if instrument in {*adjust_for, *drivers, *(f"{name}_next" for name in drivers)}:
             raise ValueError(
@@ -1369,7 +1386,7 @@ def fit_causal_residual(
     starts = jnp.zeros(x.shape[0], dtype=x.dtype) if times is None else _start_times(times, x)
     known_rate = jax.vmap(known)(starts, x, u)
 
-    identified = bool(adjust_for) or instrument is not None
+    identified = bool(adjust_for) or instrument is not None or unconfounded
     covariates, driver_start, driver_end, driver_read = _nuisance_inputs(
         data, adjust_for, drivers, integrator
     )
@@ -1391,7 +1408,9 @@ def fit_causal_residual(
         for column in (driver_start, driver_end, driver_read)
     )
 
-    method = "orthogonal" if adjust_for else ("iv" if instrument else "observational")
+    method = (
+        "orthogonal" if adjust_for or unconfounded else ("iv" if instrument else "observational")
+    )
     instrument_action: Array | None = None
     if instrument is not None:
         # 2SLS lifted to the matrix: the part of the action the exogenous shifter explains becomes

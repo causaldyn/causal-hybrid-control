@@ -3235,6 +3235,35 @@ def test_the_rk4_channel_error_covers_the_spread_a_covariate_s_push_left() -> No
     assert 0.4 < ratio < 1.8
 
 
+def test_an_unconfounded_empty_set_is_fitted_as_identified() -> None:
+    """A randomised lever needs no adjustment, and a graph proves it: the fit is the orthogonal
+    one on the state alone, with its error, where the observational fit read the same channel and
+    no error at all."""
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(2000, 1))
+    u = rng.normal(size=(2000, 1))
+    x_next = x + 0.1 * (-0.5 * x + 0.8 * u) + 0.01 * rng.normal(size=(2000, 1))
+    data = {"x": jnp.asarray(x), "u": jnp.asarray(u), "x_next": jnp.asarray(x_next)}
+    blind = fit_causal_residual(_ZERO, data, 0.1, channel_degree=0)
+    for integrator in ("euler", "rk4"):
+        fit = fit_causal_residual(
+            _ZERO, data, 0.1, unconfounded=True, channel_degree=0, integrator=integrator
+        )
+        assert (fit.identified, fit.method) == (True, "orthogonal")
+        assert fit.channel_error is not None
+        assert fit.moment_residual is not None
+        channel = float(np.asarray(fit.residual.channel).ravel()[0])
+        # RK4's reading of this Euler log: the channel over RK4's input gain where its growth
+        # factor is 0.95, solved in Maxima
+        truth = 0.8 if integrator == "euler" else 0.8 * 1.0258659
+        assert abs(channel - truth) < 4.0 * fit.channel_error
+    assert (blind.identified, blind.method, blind.channel_error) == (False, "observational", None)
+    euler = fit_causal_residual(_ZERO, data, 0.1, unconfounded=True, channel_degree=0)
+    np.testing.assert_array_equal(euler.residual.channel, blind.residual.channel)
+    with pytest.raises(ValueError, match="unconfounded=True with an instrument"):
+        fit_causal_residual(_ZERO, dict(data, w=data["u"]), 0.1, unconfounded=True, instrument="w")
+
+
 def _seasonal_log(n: int = 1500, dt: float = 0.1):
     """``x' = sin(0.3 t) - 0.5 x + u``, the seasonal push known, logged by Euler on a policy that
     follows the season, ``u = 0.8 sin(0.3 t) + z + 0.5 eta``."""

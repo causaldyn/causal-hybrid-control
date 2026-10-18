@@ -33,7 +33,9 @@ Three limits, stated before the code is:
   there the drift is conditional on the adjustment set at its mean on the log.
 - The residual must be **control-affine** (`ControlAffineResidual`). A general `r_θ(x, u)` has no
   partialling-out moment and gets no guarantee here.
-- With no adjustment set and no instrument nothing in the log identifies the channel. The estimator
+- With no adjustment set and no instrument nothing in the log identifies the channel, unless the
+  actions are unconfounded given the state, as for a randomised lever: `unconfounded=True`, which
+  `prescribe` passes where a graph finds the empty set enough. Otherwise the estimator
   reports `identified=False` rather than a confident wrong answer, and that case belongs to
   [`chc.sensitivity`](../api/sensitivity.md), which prices the radius instead of pretending it away.
 

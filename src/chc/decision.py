@@ -579,9 +579,9 @@ class DecisionCertificate:
     identification: IdentificationStatus
     # The adjustment set and how it was justified. Note this is a DIFFERENT question from
     # ``Prescription.model_fit.identified``, which is the estimator's own mechanical flag: "was I
-    # handed covariates, or an instrument whose moment has rank?". With an unconfounded lever a
-    # graph can prove the effect identified while that flag is False, because there was correctly
-    # nothing to adjust for.
+    # handed covariates, an instrument whose moment has rank, or the word that the levers are
+    # unconfounded?". A graph that proves the effect identified with nothing to adjust for passes
+    # that word on; an asserted empty set does not, and leaves the flag False.
     adjustment: AdjustmentSet
     identification_radius: float | None  # channel standard error; None when not identified
     overlap: float  # residualised action variance: 0 means the log has no variation to learn from
@@ -1545,6 +1545,11 @@ class Prescription:
         if correlation is None:
             if certificate.identification == "not_identified":
                 return "- noise persistence: not read, the channel is not identified"
+            if self.model_fit.moment_residual is None:
+                return (
+                    "- noise persistence: not read, the fit is the observational one, which keeps "
+                    "no moment residual"
+                )
             return "- noise persistence: not read, no unit has two consecutive transitions"
         head = f"lag-1 autocorrelation {correlation:+.2f} within units"
         if p_value is None:
@@ -1740,6 +1745,9 @@ def prescribe(
         adjustment: a :class:`~chc.graph.CausalGraph` to *derive* the adjustment set from, or a
             sequence of column names to *assert* it. Required, and deliberately so --- omitting it
             would default to adjusting for nothing, which is a causal claim, not an absence of one.
+            An empty set a graph derives, for a randomised lever or one set by the states alone,
+            is fitted as identified, with its errors and its tube; an asserted empty set is
+            fitted as the observational regression, with neither.
         known: physics kept fixed and not estimated. ``None`` means nothing is known and the whole
             vector field is the fitted residual. The fit reads it at each transition's start, its
             period's steps from the panel's first period times ``dt``; the plan reads it from
@@ -1770,9 +1778,10 @@ def prescribe(
             and trusted 6 to 13 steps on nine logs in ten. It now holds the plant at the first step
             on 97 % to 99 % of draws and trusts 1 or 2 steps, where the plant's error stays within
             the tolerance of 0.5 K at 95 % for 2 or 3. A tube whose rate, budget or noise comes out
-            other than a finite number is not evaluated, and a warning says so. The tube is one
-            norm over the states, and ``tolerance`` one number in their units: states in units
-            unlike each other mix in it, as the levers' once did. To give each state its own
+            other than a finite number is not evaluated, and a warning says so; as is one on an
+            asserted empty adjustment set, whose observational fit has no channel error. The tube
+            is one norm over the states, and ``tolerance`` one number in their units: states in
+            units unlike each other mix in it, as the levers' once did. To give each state its own
             scale, log it in units of the error you accept on it, its target, its bounds and the
             prices with it, which the plan reads the same (ADR 0059), and pass ``tolerance=1``
             (ADR 0091).
@@ -2016,6 +2025,9 @@ def prescribe(
         nuisance_degree=_NUISANCE_DEGREE,
         ridge=_RIDGE,
         times=labels[:, 1] * dt,
+        # a graph that finds the empty set enough proves the levers unconfounded; an asserted
+        # empty set stays the observational fit it always was
+        unconfounded=isinstance(adjustment, CausalGraph) and resolved.status == "identified",
     )
     _log.info(
         "control channel fitted",
@@ -2287,6 +2299,13 @@ def prescribe(
     )
     # with no channel error nothing bounds the field the plan rolls out, and the noise alone would
     # switch on a tube that trusts it
+    if tolerance is not None and fit.channel_error is None:
+        _log.warning(
+            "the error tube is not evaluated: the fit is the observational one, with no channel "
+            "error; derive the adjustment set from a graph, which passes on an empty set it proves "
+            "enough",
+            extra={"chc_event": "tube", "method": fit.method},
+        )
     step_noise, step_persistence = (
         _step_noise(fit, dt, labels)
         if tolerance is not None and fit.channel_error is not None
