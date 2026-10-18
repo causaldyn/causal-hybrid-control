@@ -38,11 +38,12 @@ HONEST SCOPE, and it bounds what the numbers below mean:
   ``causaldyn_bench.allocation`` (Track M) scores both over seeds: on the parameters below the two
   TIE (mean lift ``46.43`` against ``46.11`` over eight seeds, sign flipping ``3/5``), while the
   adjusted arm beats the equal split and the confounded arm at ``8/8`` each. Here
-  ``beta_c/theta_c`` ranks the channels ``(1.29, 1.50, 1.60)`` against ``gamma_c``'s ``(0.50, 0.20,
-  0.35)``: the two orderings disagree about the top channel but AGREE about which to drop. Move the
-  carryover until they contradict -- ``beta/theta`` of ``(0.10, 8.00, 1.60)`` at unchanged
-  ``gamma`` -- and the whole-horizon plan wins ``8/8``. So the headline of this case study is the
-  identification, and the horizon is a second, smaller and plant-dependent effect.
+  ``beta_c/theta_c`` reads ``(1.29, 1.50, 1.60)`` against ``gamma_c``'s ``(0.50, 0.20, 0.35)``:
+  video, social, search against search, video, social, so the two orderings disagree about the
+  top channel and about the last, and neither is the other reversed. Reverse it outright --
+  ``beta/theta`` of ``(0.10, 8.00, 1.60)``, social, video, search, at unchanged ``gamma`` -- and the
+  whole-horizon plan wins ``8/8``. So the headline of this case study is the identification, and
+  the horizon is a second, smaller and plant-dependent effect.
 * **``known=`` was exact only up to the integrator, and this module is where that was found.**
   :func:`chc.dynamics_id.fit_causal_residual` reads the state rate as a forward difference
   ``(x_next - x)/dt`` while :func:`chc.plan.causal_plan` rolls out with RK4, so at a coarse ``dt``
@@ -81,9 +82,10 @@ class MarketingMixPlant(eqx.Module):
     """The true continuous plant: saturating carryover plus an immediate incremental return.
 
     State is ``[sales, adstock_0, ..., adstock_{C-1}]`` and control is spend per channel. The
-    seasonality term is a *state* here rather than an exogenous input, so that the plant stays a
-    plain :class:`~chc.dynamics.Dynamics` that :func:`chc.integrate.rollout` can audit; the logging
-    simulation drives it week by week and records the season it drove with.
+    season is neither a state nor an exogenous input but a field, constant over a rollout, so that
+    the plant stays a plain :class:`~chc.dynamics.Dynamics` that :func:`chc.integrate.rollout` can
+    audit; the logging simulation builds the plant at each week's season and records the season it
+    drove with.
     """
 
     decay: float
@@ -365,8 +367,13 @@ def _myopic_spend(
     immediate increment ``gamma_c * spend_c`` is LINEAR in spend, so "re-optimise every week for
     this week's sales" fills the highest-``gamma`` channel to its ceiling and spills to the next,
     with the same answer every week. Ignoring the adstock state is the whole of the myopia -- and on
-    this plant the two orderings genuinely disagree, because ``beta_c/theta_c`` ranks the channels
-    in the opposite direction to ``gamma_c``.
+    this plant the two orderings disagree: ``beta_c/theta_c`` ranks video, social, search and
+    ``gamma_c`` search, video, social.
+
+    Raises:
+        ValueError: on a channel whose own return the log does not identify, or a weekly budget
+            outside what the levers' boxes can spend, from every channel at its floor to every one
+            at its ceiling.
     """
     reach = {name: value for name, value in prescription.reach().items() if value is not None}
     unranked = [name for name in system.spend_columns if name not in reach]
@@ -375,7 +382,14 @@ def _myopic_spend(
             "the myopic arm ranks the channels by their own fitted return, which the log does not "
             f"identify for {unranked}"
         )
-    week = np.full(len(system.channels), system.spend_floor)
+    n_channels = len(system.channels)
+    least, most = n_channels * system.spend_floor, n_channels * system.spend_ceiling
+    if not least <= weekly_budget <= most:
+        raise ValueError(
+            f"a weekly budget of {weekly_budget} is outside [{least}, {most}], what the channels "
+            "spend at their floors and at their ceilings, so no myopic week spends it"
+        )
+    week = np.full(n_channels, system.spend_floor)
     remaining = weekly_budget - float(week.sum())
     index = {name: position for position, name in enumerate(system.spend_columns)}
     for name in sorted(system.spend_columns, key=lambda lever: -reach[lever]):

@@ -974,6 +974,8 @@ class Adstock(eqx.Module):
         series = jnp.asarray(spend, dtype=float)
         if series.ndim not in (1, 2):
             raise ValueError(f"spend has shape {series.shape}; a kernel reads a (T,) or (T, C) one")
+        if series.shape[0] == 0:
+            raise ValueError("spend has no periods; a kernel reads at least one")
         weights = self.weights()
 
         def carry(column: Array) -> Array:
@@ -1060,6 +1062,17 @@ def _series(spend: ArrayLike) -> Array:
     series = jnp.asarray(_real_numbers(spend, "spend"), dtype=float)
     if series.ndim != 1:
         raise ValueError(f"spend has shape {series.shape}; a return is read one channel at a time")
+    finite = jnp.isfinite(series)
+    if not bool(jnp.all(finite)):
+        raise ValueError(
+            f"spend is {float(series[jnp.argmin(finite)])} in period {int(jnp.argmin(finite))}; a "
+            "period's spend is a finite number, and a period with none is 0"
+        )
+    if bool(jnp.any(series < 0.0)):
+        raise ValueError(
+            f"spend is {float(jnp.min(series))} in period {int(jnp.argmin(series))}; spend is "
+            "nonnegative"
+        )
     return series
 
 
@@ -1100,7 +1113,10 @@ def roi(
     The channel's return over the whole series, less its return with the window's spend removed,
     over what the window spent. ``channel`` is any function of a ``(T,)`` spend series returning a
     ``(T,)`` series of returns. The carryover counted is what falls inside the series: to count all
-    of it, extend the series by the kernel's length with what is spent after.
+    of it, extend the series by the kernel's length with what is spent after. Near the series' end
+    the cut is most of the return: through a long unnormalised geometric kernel of retention ``r``
+    and a linear curve, a last period's spend is credited with ``1`` of the ``1 / (1 - r)`` it
+    returns, a tenth at ``r = 0.9``.
     ``revenue_per_kpi`` turns a KPI into revenue; at 1 the outcome is revenue.
     """
     series, inside, spent = _window(spend, window)

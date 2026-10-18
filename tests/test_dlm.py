@@ -12,6 +12,7 @@ from scipy import integrate, special, stats
 from chc.dlm import (
     DiscountForm,
     DynamicLinearModel,
+    GeoDLM,
     Polynomial,
     Prior,
     Regression,
@@ -22,6 +23,7 @@ from chc.dlm import (
     decompose,
     forecast,
     forward_filter,
+    forward_filter_geos,
     monitor_evalues,
     smooth,
 )
@@ -158,6 +160,61 @@ def test_an_idle_regressor_winds_up_unless_held(caplog):
     assert any(getattr(r, "chc_event", None) == "dlm_windup" for r in caplog.records)
     held = DynamicLinearModel((Regression(1, delta, hold_when_idle=True),), _prior(1, spread=2.0))
     assert forward_filter(held, y, x).covariance[-1, 0, 0] == pytest.approx(2.0, rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("form", "regressor", "warned"),
+    [
+        ("additive", "constant", True),
+        ("additive", "drawn", False),
+        ("multiplicative", "constant", False),
+    ],
+)
+def test_blocks_seen_only_through_their_sum_are_logged_as_winding_up(
+    form: DiscountForm, regressor: str, warned: bool, caplog
+):
+    """A level beside a constant regressor: component discounting inflates each block's variance
+    every step while their sum's stays small, the inflation leaks into the one-step forecast, and
+    the observational variance is read low. Nothing was logged; the idle-run check sees a column
+    that is never zero."""
+    rng = np.random.default_rng(23)
+    horizon, variance = 156, 0.09
+    level = 10.0 + np.cumsum(0.05 * rng.standard_normal(horizon))
+    x = np.full(horizon, 2.0) if regressor == "constant" else rng.gamma(2.0, 1.0, horizon)
+    y = level + x + math.sqrt(variance) * rng.standard_normal(horizon)
+    prior = Prior(np.array([10.0, 0.0]), 4.0 * np.eye(2), 0.5, 2.0)
+    model = DynamicLinearModel((Polynomial(1, 0.95), Regression(1, 0.9)), prior, form)
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        fit = forward_filter(model, y, x)
+    records = [r for r in caplog.records if getattr(r, "chc_event", None) == "dlm_windup"]
+    assert len(records) == int(warned)
+    if warned:
+        assert records[0].inflation > 300.0
+        assert fit.scale[-1] < 0.5 * variance
+    else:
+        assert 0.5 * variance < fit.scale[-1] < 2.0 * variance
+
+
+def test_a_filter_over_geos_logs_blocks_seen_only_through_their_sum(caplog):
+    rng = np.random.default_rng(29)
+    horizon, geos = 260, 2
+    y = 10.0 + 2.0 + 0.3 * rng.standard_normal((horizon, geos))
+    x = np.full((horizon, geos, 1), 2.0)
+    model = GeoDLM((Polynomial(1, 0.95),), (Regression(1, 0.9),), geos, _prior(3, dof=2.0))
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        forward_filter_geos(model, y, x)
+    assert [r.chc_event for r in caplog.records if r.name == "chc.dlm"] == ["dlm_windup"]
+
+
+def test_a_scale_lost_to_an_unresolved_direction_names_it():
+    """Proportional columns in one block under a discount below 1: the direction they never
+    separate grows by ``1 / delta`` a step until the forecast's variance rounds below zero."""
+    rng = np.random.default_rng(0)
+    x1 = rng.gamma(2.0, 1.0, 600)
+    y = 10.0 + 0.5 * x1 + 0.3 * rng.standard_normal(600)
+    model = DynamicLinearModel((Polynomial(1, 0.95), Regression(2, 0.9)), _prior(3, dof=1.0))
+    with pytest.raises(FloatingPointError, match=r"largest eigenvalue is \S+ times the"):
+        forward_filter(model, y, np.column_stack([x1, 2.0 * x1]))
 
 
 def test_a_seasonal_block_rotates_once_a_period():
@@ -751,8 +808,10 @@ def _signed_fit(blocks=None, form: DiscountForm = "additive", beta: float = 1.0,
     ("fit", "signs", "options", "message"),
     [
         (None, {}, {}, "no sign to impose"),
-        (None, {0: "positive"}, {"draws": 0}, "draws must be a positive integer"),
-        (None, {0: "positive"}, {"draws": True}, "draws must be a positive integer"),
+        (None, {0: "positive"}, {"draws": 0}, "draws must be an integer of at least 4"),
+        (None, {0: "positive"}, {"draws": True}, "draws must be an integer of at least 4"),
+        # one draw failed on a division by zero after the whole run, two and three read R-hat nan
+        (None, {0: "positive"}, {"draws": 3}, "draws must be an integer of at least 4, two a half"),
         (None, {0: "positive"}, {"chains": 1}, "chains must be an integer of at least 2"),
         (None, {0: "positive"}, {"warmup": -1}, "warmup must be a non-negative integer"),
         (None, {1: "positive"}, {}, "column 1 is not one of x's 1"),
@@ -815,6 +874,19 @@ def test_a_confidence_set_refuses_fits_of_other_data():
     shifted, _ = _grid_fits(y=fits[0].y + 1.0)
     with pytest.raises(ValueError, match="fit 1 filtered other observations than fit 0"):
         confidence_set([fits[0], shifted[0]], 1)
+
+
+def test_a_confidence_set_refuses_fits_of_other_regressors_or_blocks():
+    """Only ``y`` was compared, so fits of the same series on other columns were ranked by a
+    likelihood ratio that does not compare them."""
+    fits, _ = _grid_fits()
+    x = np.random.default_rng(3).gamma(2.0, 1.0, (fits[0].y.size, 2))
+    other = forward_filter(fits[0].model, fits[0].y, x)
+    with pytest.raises(ValueError, match="fit 1 read other regressors or other blocks than fit 0"):
+        confidence_set([fits[0], other], 1)
+    level = forward_filter(DynamicLinearModel((Polynomial(1, 0.9),), _prior(1, dof=3.0)), other.y)
+    with pytest.raises(ValueError, match="fit 1 read other regressors or other blocks than fit 0"):
+        confidence_set([fits[0], level], 1)
 
 
 @pytest.mark.parametrize(
@@ -913,6 +985,25 @@ def test_an_alarm_on_a_break_is_the_step_to_intervene_at():
     assert np.abs(helped - level[after]).mean() < 0.3 * np.abs(plain - level[after]).mean()
 
 
+def test_the_monitor_s_rows_are_the_filter_s_steps_when_some_are_missing():
+    """With ten missing steps before a break, the alarm's row was the break's step less ten, and an
+    intervention there landed in the gap; a missing step's row is now the e-value of no evidence."""
+    model, level, y = _steady_level(19, 260, 0.9)
+    shift = 4.0 / math.sqrt(0.9)
+    level[200:] += shift
+    y[200:] += shift
+    y[190:200] = np.nan
+    rows = monitor_evalues(forward_filter(model, y))
+    assert rows.shape == (260, 3)
+    np.testing.assert_array_equal(rows[190:200], 1.0)
+    observed = np.isfinite(y)
+    full = monitor_evalues(forward_filter(model, np.where(observed, y, 0.0)))
+    np.testing.assert_array_equal(rows[:190], full[:190])
+    alarm = DriftAlarm(1_000.0)
+    first = next(step for step, row in enumerate(rows) if alarm.update(row[None, :]))
+    assert 200 <= first <= 205
+
+
 def test_an_intervention_lets_the_level_catch_a_break():
     y = np.concatenate([np.zeros(40), 5.0 * np.ones(10)]) + 0.1 * np.random.default_rng(
         13
@@ -991,6 +1082,25 @@ def test_invalid_data_raise():
         forward_filter(model, np.array([np.inf, 0.0]), np.ones((2, 2)))
     with pytest.raises(ValueError, match="outside"):
         forward_filter(model, np.zeros(2), np.ones((2, 2)), interventions={5: 0.5})
+    with pytest.raises(ValueError, match=r"intervention step 1\.0 is not an integer"):
+        forward_filter(model, np.zeros(2), np.ones((2, 2)), interventions={1.0: 0.5})
+
+
+def test_numpy_integers_are_integers_everywhere_a_count_is_taken():
+    """``np.int64(3)`` was refused as not a positive integer, and a step read off
+    ``np.flatnonzero`` as outside the series it is inside."""
+    three, model = np.int64(3), DynamicLinearModel((Regression(1, 0.95),), _prior(1, dof=3.0))
+    x, y = _world(4, width=1)
+    fit = forward_filter(model, y, x)
+    assert forward_filter(model, y, x, interventions={np.int64(10): 0.5}).y.size == y.size
+    assert forecast(fit, three, np.ones((3, 1))).mean.shape == (3,)
+    assert backward_sample(fit, three, 0).states.shape[0] == 3
+    assert confidence_set([fit], three) == (0,)
+    assert constrained_sample(fit, {np.int64(0): "positive"}, np.int64(4), 0).states.shape[1] == 4
+    assert Polynomial(three, 0.9).size == 3
+    assert Regression(three, 0.9).size == 3
+    assert Seasonal(12, (np.int64(1), np.int64(6)), 0.9).size == 3
+    assert GeoDLM((), (Regression(1, 0.9),), np.int64(2), _prior(2)).geos == 2
 
 
 @pytest.mark.parametrize("step", [29, 10])
