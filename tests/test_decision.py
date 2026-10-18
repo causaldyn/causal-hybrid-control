@@ -2781,3 +2781,34 @@ def test_a_constrained_state_whose_channel_is_confounded_leaves_the_effect_unide
     assert result.certificate.identification == "not_identified"
     assert result.plan is None
     assert "none identifies the levers' effect on ['c']" in result.certificate.adjustment.reason
+
+
+def test_aware_dates_held_as_objects_are_read_on_their_own_wall_clock() -> None:
+    """pandas hands over time-zone-aware stamps as objects. Read as labels, twelve days logged over
+    thirteen gave eleven transitions, one across the missing day, where the same days unzoned give
+    ten, and no calendar could be declared on them. Now they are dates on the wall clock they
+    were stamped on: a month's first midnight an hour east of UTC is that month, though in UTC it
+    is the month before."""
+    east = datetime.timezone(datetime.timedelta(hours=1))
+    days = [
+        datetime.datetime(2024, 3, 25) + datetime.timedelta(days=k) for k in range(13) if k != 5
+    ]
+
+    def taken(stamps: list[datetime.datetime], frequency: str | None = None) -> np.ndarray:
+        column = np.empty(len(stamps), dtype=object)
+        column[:] = stamps
+        frame = {
+            "home": np.zeros(len(stamps), dtype=int),
+            "day": column,
+            "temperature": np.array([stamp.toordinal() for stamp in stamps], dtype=float),
+            "heater": np.ones(len(stamps)),
+        }
+        return _steps_taken(Panel.from_frame(frame, unit="home", time="day", frequency=frequency))
+
+    assert taken(days).tolist() == [1.0] * 10
+    for zone in (datetime.UTC, east):
+        for frequency in (None, "D"):
+            steps = taken([day.replace(tzinfo=zone) for day in days], frequency)
+            assert steps.tolist() == [1.0] * 10, (zone, frequency)
+    firsts = [datetime.datetime(2024, month, 1, tzinfo=east) for month in (1, 2, 3)]
+    assert taken(firsts, "M").tolist() == [31.0, 29.0]
