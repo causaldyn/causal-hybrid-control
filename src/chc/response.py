@@ -974,6 +974,8 @@ class Adstock(eqx.Module):
         series = jnp.asarray(spend, dtype=float)
         if series.ndim not in (1, 2):
             raise ValueError(f"spend has shape {series.shape}; a kernel reads a (T,) or (T, C) one")
+        if series.shape[0] == 0:
+            raise ValueError("spend has no periods; a kernel reads at least one")
         weights = self.weights()
 
         def carry(column: Array) -> Array:
@@ -1060,6 +1062,17 @@ def _series(spend: ArrayLike) -> Array:
     series = jnp.asarray(_real_numbers(spend, "spend"), dtype=float)
     if series.ndim != 1:
         raise ValueError(f"spend has shape {series.shape}; a return is read one channel at a time")
+    finite = jnp.isfinite(series)
+    if not bool(jnp.all(finite)):
+        raise ValueError(
+            f"spend is {float(series[jnp.argmin(finite)])} in period {int(jnp.argmin(finite))}; a "
+            "period's spend is a finite number, and a period with none is 0"
+        )
+    if bool(jnp.any(series < 0.0)):
+        raise ValueError(
+            f"spend is {float(jnp.min(series))} in period {int(jnp.argmin(series))}; spend is "
+            "nonnegative"
+        )
     return series
 
 

@@ -1124,6 +1124,32 @@ def test_a_return_per_unit_is_refused_where_it_is_undefined() -> None:
 
 
 @pytest.mark.parametrize(
+    ("spend", "message"),
+    [
+        # a nan two periods before the window read as the window's spend, through nan * 0
+        (SPEND.at[2].set(jnp.nan), r"^spend is nan in period 2; a period's spend is a finite"),
+        (SPEND.at[50].set(jnp.inf), r"^spend is inf in period 50"),
+        # read as a spend of 30 over the window, through the curve's value below zero
+        (SPEND.at[11].set(-50.0), r"^spend is -50\.0 in period 11; spend is nonnegative"),
+    ],
+)
+def test_a_return_is_refused_on_spend_that_is_not_a_spend(spend: jax.Array, message: str) -> None:
+    channel = Channel(GeometricAdstock(0.5, length=6, normalized=True), Tanh(100.0), 1.5)
+    for reading in (roi, marginal_roi, contribution):
+        with pytest.raises(ValueError, match=message):
+            reading(channel, spend, slice(10, 15))
+
+
+def test_a_kernel_refuses_a_series_with_no_periods() -> None:
+    """``jnp.convolve`` refused it with its own message, naming no spend."""
+    channel = Channel(GeometricAdstock(0.5, length=6, normalized=True), Tanh(100.0), 1.5)
+    with pytest.raises(ValueError, match=r"^spend has no periods"):
+        channel.kernel(jnp.zeros(0))
+    with pytest.raises(ValueError, match=r"^spend has no periods"):
+        contribution(channel, jnp.zeros(0))
+
+
+@pytest.mark.parametrize(
     ("build", "field"),
     [
         (lambda: GeometricAdstock(0.6, length=0, normalized=True), "length"),
