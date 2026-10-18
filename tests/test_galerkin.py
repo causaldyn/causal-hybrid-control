@@ -122,6 +122,22 @@ def test_optimal_upwind_stays_inside_the_proved_stability_range() -> None:
         assert 1.0 - 1.0 / peclet < optimal_upwind(peclet)
 
 
+def test_upwinding_follows_the_flow_when_it_runs_the_other_way() -> None:
+    """With ``s < 0`` the layer sits at ``x = 0`` and upstream is to the right. The test space
+    weighted ``phi_i'`` without ``sign(s)``, so it added a negative diffusion: full upwind read a
+    least nodal value of -0.25 with 19 sign changes in its differences, and the parameter
+    ``optimal_upwind`` returned for ``Pe < 0`` and ``Pe > 0`` differed in sign."""
+    eps, n = 0.01, 20
+    peclet = -1.0 / (2.0 * eps * n)
+    assert optimal_upwind(peclet) == optimal_upwind(-peclet)
+    nodes, upwind = convection_diffusion_1d(eps, -1.0, n, alpha=1.0)
+    assert float(jnp.min(upwind)) >= -1e-12
+    assert bool(jnp.all(jnp.diff(upwind) >= -1e-12))  # monotone, as the exact solution is
+    _, supg = convection_diffusion_1d(eps, -1.0, n, alpha=optimal_upwind(peclet))
+    exact = convection_diffusion_exact(nodes, eps, -1.0)
+    assert float(jnp.max(jnp.abs(supg - exact))) < 1e-12  # nodally exact, as for s > 0
+
+
 def test_optimal_upwind_series_branch_agrees_with_the_closed_form() -> None:
     # coth(Pe) - 1/Pe subtracts two quantities that both diverge as Pe -> 0, so the closed form
     # loses every significant digit there. The two branches must agree where they meet.

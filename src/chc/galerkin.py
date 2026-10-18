@@ -105,7 +105,10 @@ def poisson_2d(f: Callable[[Array, Array], Array], n: int) -> tuple[Array, Array
 
 
 def optimal_upwind(peclet: float) -> float:
-    """The SUPG parameter ``coth(Pe) - 1/Pe`` that makes 1-D convection-diffusion nodally exact.
+    """The SUPG parameter ``coth(|Pe|) - 1/|Pe|`` that makes 1-D convection-diffusion nodally exact.
+
+    It is the share of full upwinding, in ``[0, 1)`` for either sign of the flow: the test space of
+    :func:`convection_diffusion_1d` carries the flow's direction.
 
     Derived in ``validation/convection_diffusion.mac`` STEP 4: demanding that the stabilised
     amplification factor equal the exact ``exp(2*Pe)`` forces the effective cell Peclet to be
@@ -116,7 +119,8 @@ def optimal_upwind(peclet: float) -> float:
     naive form loses every significant digit there. The series ``Pe/3 - Pe^3/45`` takes over below
     the crossover, where it is already accurate to well past double precision.
     """
-    if abs(peclet) < 1e-3:
+    peclet = abs(peclet)
+    if peclet < 1e-3:
         return peclet / 3.0 - peclet**3 / 45.0
     # At the other end, coth(Pe) - 1 = 2/(exp(2*Pe) - 1) drops below double precision around
     # Pe = 19, so this saturates at exactly 1 - 1/Pe: the boundary of the stability range, where
@@ -145,10 +149,12 @@ def convection_diffusion_1d(
     ``s integral(u' phi_i)`` assembles antisymmetrically to ``+-s/2``, so the stiffness matrix is
     not SPD and testing with the trial space is no longer the natural choice.
 
-    ``alpha`` selects the test space ``w_i = phi_i + alpha*(h/2)*phi_i'``. For piecewise-linear
-    elements the added piece contributes exactly an artificial diffusion ``alpha*s*h/2`` (the
-    ``phi_i''`` term vanishes inside every element), so the assembled scheme is the central one with
-    ``eps -> eps*(1 + alpha*Pe)``. That is the Petrov-Galerkin matrix, not a shortcut around it.
+    ``alpha`` selects the test space ``w_i = phi_i + alpha*(h/2)*sign(s)*phi_i'``, weighted upstream
+    whichever way the flow runs. For piecewise-linear elements the added piece contributes exactly
+    an artificial diffusion ``alpha*|s|*h/2`` (the ``phi_i''`` term vanishes inside every element),
+    so the assembled scheme is the central one with ``eps -> eps*(1 + alpha*|Pe|)``. That is the
+    Petrov-Galerkin matrix, not a shortcut around it. Without ``sign(s)`` a flow with ``s < 0`` was
+    weighted downstream: the added diffusion was negative, and full upwind oscillated.
 
     - ``alpha = 0`` -- Bubnov-Galerkin (test space = trial space), central differencing. Oscillates
       once the cell Peclet ``Pe = s*h/(2*eps)`` exceeds 1.
@@ -156,11 +162,13 @@ def convection_diffusion_1d(
       ``1 + 2*Pe``, the first two terms of ``exp(2*Pe)``, so it is only first-order accurate.
     - ``alpha = optimal_upwind(Pe)`` -- nodally exact.
 
+    The cell Peclet number above is ``|s|*h/(2*eps)`` where ``s`` may be negative.
+
     Returns the node coordinates (length ``n+1``) and the nodal solution including both boundaries.
     """
     h = 1.0 / n
     peclet = s * h / (2.0 * eps)
-    eps_eff = eps * (1.0 + alpha * peclet)
+    eps_eff = eps * (1.0 + alpha * abs(peclet))
     nodes = jnp.linspace(0.0, 1.0, n + 1)
     diag = jnp.full(n - 1, 2.0 * eps_eff / h)
     sub_val = -eps_eff / h - s / 2.0
