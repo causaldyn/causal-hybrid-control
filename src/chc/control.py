@@ -663,8 +663,8 @@ def _backtrack(
 
     With ``slope``, the gradient of the smooth part in the units of ``grad``, the fall is read off
     the gradients at both ends of the move, ``(grad + slope(trial)) . (us - trial) / 2``, plus the
-    norm's own fall, and a trial falls where that is positive and ``value_of`` does not rise: the
-    approximate Armijo condition of Hager & Zhang (2005), exact on a quadratic along the move. Near
+    norm's own fall, and a trial falls where that is positive and ``value_of`` does not rise and is
+    finite: the approximate Armijo condition of Hager & Zhang (2005), exact on a quadratic along the move. Near
     a minimum the fall is below the rounding of the two values it is a difference of, while the
     gradients still resolve it. ``tol`` is then not read.
     """
@@ -718,7 +718,8 @@ def _backtrack(
             falls = value < current - tol
         else:
             fall = 0.5 * jnp.sum((grad + slope(candidate)) * (us - candidate)) + shrunk
-            falls = (fall > 0.0) & (value <= current)
+            # an infinite value equals the infinite start it does not lower
+            falls = (fall > 0.0) & (value <= current) & jnp.isfinite(value)
         sufficient = falls & (fall >= _SUFFICIENT_DECREASE * predicted)
         ended = trial + 1
         if blocks:
@@ -972,9 +973,9 @@ def _descend(
     descent while the plan's first-order residual there (:func:`_first_order_residual`) is beyond
     :func:`_stationarity_tolerance`: the search is run again with the fall read off the gradients
     at both ends of each trial (:func:`_backtrack`'s ``slope``), and a step counts where that fall
-    is positive, a third of the predicted one, and the objective does not rise. The fall a step can
-    buy is ``r^2 / (2 c)`` of ``level``, ``r`` the residual and ``c`` the objective's curvature
-    along it in ``v``, and ``c`` is one only where the Gauss-Newton diagonal at the start is the
+    is positive, a third of the predicted one, and the objective does not rise and is finite. The
+    fall a step can buy is ``r^2 / (2 c)`` of ``level``, ``r`` the residual and ``c`` the
+    objective's curvature along it in ``v``, and ``c`` is one only where the Gauss-Newton diagonal at the start is the
     curvature at the plan. A penalty the scale does not read, or a curvature that is not
     Gauss-Newton, puts it in the hundreds or thousands, and the fall alone then stopped a descent
     at a residual of ``sqrt(2 c tol)``, or at the rounding of the objective's values. The descent
@@ -1313,7 +1314,7 @@ def projected_gradient_control(
       mostly out of a plan's reach -- a target no plan comes near -- stops further from its optimum
       in what a plan can change, and may want a smaller ``tol``. Where no step counts but the
       plan's first-order residual is beyond ``10 sqrt(2 max(tol, 4 eps))``, a step counts where
-      the gradients at its ends read a fall and the cost does not rise
+      the gradients at its ends read a fall and the cost does not rise and is finite
       (``docs/adr/0097-a-plan-reads-its-first-order-check-on-its-face.md``).
 
     Both used to be absolute: ``lr0`` a step of 0.2 action units per unit of gradient and ``tol`` a
