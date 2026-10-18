@@ -102,3 +102,21 @@ def test_returned_pathway_is_a_frozen_ranked_structure() -> None:
 def test_series_must_be_two_dimensional() -> None:
     with pytest.raises(ValueError, match="must be"):
         causal_pathway(np.zeros(100), target=0)
+
+
+def test_an_observed_confounder_does_not_flip_the_sign() -> None:
+    """``c`` drives both the source ``s`` and the target ``x``, and persists. Adjusted for the
+    target alone, ``s`` read ``c``'s push as its own and came back positive; its effect is -0.3."""
+    rng = np.random.default_rng(0)
+    n = 3000
+    c, s, x = np.zeros(n), np.zeros(n), np.zeros(n)
+    e = rng.standard_normal((n, 3))
+    for t in range(1, n):
+        c[t] = 0.9 * c[t - 1] + e[t, 0]
+        s[t] = 0.8 * c[t - 1] + 0.5 * e[t, 1]
+        x[t] = 0.5 * x[t - 1] - 0.3 * s[t - 1] + 1.0 * c[t - 1] + 0.5 * e[t, 2]
+    path = causal_pathway(np.column_stack([x, s, c]), target=0, horizon=6, max_lag=2)
+    source = {(edge.kind, edge.source): edge for edge in path.edges}[("state", 1)]
+    assert source.sign == -1
+    # g_1 = -0.3, g_2 = 0.5 * -0.3; the sd of each over seeds is about 0.01
+    np.testing.assert_allclose(source.irf[1:3], [-0.3, -0.15], atol=0.05)
