@@ -105,6 +105,14 @@ still change).
   the docs stated 0.85–1.04. `design="bernoulli"` adds `curvature**2 * Var(share)`: 1.04 and
   1.01, held in 93.2% and 94.0%. The default, `design="fixed_share"`, is unchanged, and its docs
   now say what it holds fixed and state 0.85–1.13.
+- **`minimax_allocate` no longer reports `closed` on a reading's best that its own search left
+  short.** Each reading's best is the worth of `allocate`'s plan for it; where that search stopped
+  at its cap the best was short, every regret against it read low, and the split's search could
+  still close on them. Two readings at a budget of 1.6, one concave and one two Hill curves of
+  slope 3, under a cap of two boxes: the second reading's search stopped at 0.705 of its best,
+  0.804, and the split, reported `closed` with a worst regret of 0, regrets 0.090 against 0.804,
+  where the least worst regret is 0.015. `stopped` is now `cap` and `limit` the reading's whenever
+  a reading's own search stopped at its cap, and the call logs it.
 
 ## [0.18.0] — 2026-10-13
 
