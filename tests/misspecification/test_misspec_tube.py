@@ -60,15 +60,19 @@ def test_a_response_that_saturates_beyond_the_logged_actions_is_warned_of(
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "demand that persists, AR(0.8) within a unit, recorded and adjusted for: the tube carries "
-        "the noise as a VAR(1) and holds 0.950 over steps 1-3, but 0.942 at step 5, below the "
-        "floor of 0.9427, and 0.944 to 0.948 past it, where the control case reads 0.944 at its "
-        "weakest (16 logs: 0.944 to 0.950). A tube warning on 1 of 4 logs; trustworthy step 1"
+        "demand that persists, AR(0.8) within a unit, recorded and adjusted for: over 16 logs the "
+        "tube carries the noise as a VAR(1) and holds 0.950 at step 1 but falls to 0.944 by step "
+        "13, below the floor of 0.9488, where the control case reads 0.948 to 0.952; a tube "
+        "warning on 1 of 16 logs"
     ),
 )
 def test_the_tube_holds_its_level_under_a_persistent_confounder() -> None:
-    held, _, warned = tube_coverage(World(demand_persistence=0.8), LOGS, RUNS)
-    assert _holds_or_says_so(held, warned), (np.round(held, 4), warned)
+    """Read over 16 logs, not 4: the shortfall, about 0.006, is a few of the 4 logs' standard
+    deviations, and a strict mark read on them would turn on a last digit."""
+    logs = range(16)
+    floor = 0.95 - 3.0 * np.sqrt(0.95 * 0.05 / (len(logs) * RUNS))
+    held, _, warned = tube_coverage(World(demand_persistence=0.8), logs, RUNS)
+    assert held.min() >= floor or np.mean(warned) >= 0.9, (np.round(held, 4), warned)
 
 
 def test_persistent_noise_is_held_or_warned_of() -> None:
