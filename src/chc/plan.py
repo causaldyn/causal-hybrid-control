@@ -1160,6 +1160,12 @@ class BarrierConstraint:
     units, one ball for all of them, as before. :func:`chc.prescribe` passes its box's. A lever
     whose number is 0 must have a box that holds it at 0.
 
+    ``u_box``, ``(u_lo, u_hi)`` with one number per lever, is the box the audit after the solve
+    reads ``gamma_star`` on; ``None`` reads it on the box the plan is solved in. A solve in a
+    narrower box than the levers have -- :func:`chc.prescribe`'s lever selection pins the levers it
+    leaves out at zero -- is then audited as if planned on all of them, with the same box as
+    ``u_max``.
+
     Raises:
         ValueError: on a ``gamma`` below 1 or not finite, which is not a sensitivity level, a
             ``cvar_gap`` not positive or not finite, which scales no radius, a ``u_max`` with an
@@ -1173,12 +1179,16 @@ class BarrierConstraint:
     gamma: float = 1.0
     cvar_gap: float = 1.0
     u_max: tuple[float, ...] | None = None
+    u_box: tuple[tuple[float, ...], tuple[float, ...]] | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.barrier, tuple) and not self.barrier:
             raise ValueError("an empty tuple of barriers holds no condition")
         if self.u_max is not None:
             object.__setattr__(self, "u_max", tuple(float(v) for v in _reach(self.u_max)))
+        if self.u_box is not None:
+            lo, hi = (tuple(float(v) for v in np.ravel(end)) for end in self.u_box)
+            object.__setattr__(self, "u_box", (lo, hi))
         if not 1.0 <= self.gamma < math.inf:
             raise ValueError(
                 "gamma is a marginal sensitivity model level and must be >= 1 and finite, got "
@@ -1585,7 +1595,7 @@ def _plan(
         barrier.gamma,
         barrier.cvar_gap,
         authority if barrier.u_max is None else barrier.u_max,
-        (u_lo, u_hi),
+        (u_lo, u_hi) if barrier.u_box is None else barrier.u_box,
     )
     return replace(plan, safety=audit), multipliers
 
