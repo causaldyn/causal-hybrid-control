@@ -65,6 +65,24 @@ jobs:
       - name: Tests
         run: uv run --no-sync pytest
 
+  # The certificates read on plants their models get wrong (ADR 0115): a persistent confounder,
+  # AR noise, dead time, nuisances outside the sieve, actions outside the logged support, a plant
+  # unlike the model. Each holds at its level or says so; a case that does neither is a strict
+  # xfail, so the fix that makes it hold turns this job red until the mark goes. Its Monte Carlo is
+  # too slow for every leg of `test`, whose default run deselects it, so it runs once, here.
+  misspecification:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          python-version: "3.14"
+      - name: Sync dependencies
+        run: uv sync --group dev
+      - name: Misspecification tests
+        run: uv run --no-sync pytest -m misspecification -n 2 --dist loadfile tests/misspecification
+
   # The floors in pyproject.toml are published: an installer pairs chc with any version they admit,
   # where every leg above runs the lockfile's. This one resolves each direct dependency to its
   # floor, the `trees` extra's included, on the oldest Python, and runs the tests there; it is the

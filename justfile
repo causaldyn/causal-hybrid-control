@@ -51,6 +51,12 @@ test workers="4":
 test-cpu workers="4":
     JAX_PLATFORMS=cpu uv run pytest -n {{workers}} --dist loadfile
 
+# The certificates read on plants their models get wrong (ADR 0115). pyproject.toml's addopts
+# deselects them from `test` and `test-cpu`; the `-m` here comes later and wins. CI runs them in a
+# job of their own, on two workers.
+misspecification workers="2":
+    JAX_PLATFORMS=cpu uv run pytest -m misspecification -n {{workers}} --dist loadfile tests/misspecification
+
 fix:
     uv run ruff check --fix .
     uv run ruff format .

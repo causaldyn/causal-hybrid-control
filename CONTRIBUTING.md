@@ -26,7 +26,13 @@ uv run ruff check .
 uv run ruff format --check .
 uv run ty check    # CI: --python-version of each leg; `just types-matrix` runs them all
 uv run pytest      # CI: on the CPU; `just test-cpu`
+uv run pytest -m misspecification tests/misspecification   # CI: its own job; `just misspecification`
 ```
+
+The plain `pytest` deselects `tests/misspecification/` (ADR 0115): each test there reads a
+certificate on a plant its model gets wrong, by Monte Carlo, and asserts that the certificate holds
+at its level or says so. A case that does neither is marked `xfail(strict=True)` with the numbers
+measured, so a change that makes it hold fails the job until the mark is removed.
 
 The formal proofs are gated too. `proofs/*.v` must compile under **Rocq 9.2** (pinned: the proofs use
 the post-rename `From Stdlib Require Import`, which does not exist before Rocq 9.0):
