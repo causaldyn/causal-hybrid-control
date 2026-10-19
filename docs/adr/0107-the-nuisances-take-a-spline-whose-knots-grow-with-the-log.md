@@ -1,8 +1,8 @@
 # ADR 0107 — The nuisances take a spline whose knots grow with the log
 
 **Status:** accepted, 2026-10-19. Opt-in; the default is unchanged. Amended 2026-10-19: the
-default fit refits once with `"auto"` and warns where that moves its channel by more than three
-errors.
+default fit reads what `"auto"`'s nuisances do to its channel, without a second fit, and warns
+where they move it by more than three errors.
 
 ## Context
 
@@ -52,9 +52,15 @@ its scatter. No degree held the 95 %.
   root mean square of `B_refit(x) − B_fit(x)` over the log's states and the channel's entries, in
   the fit's `channel_error`. A shift of more than one or two says the fit's nuisances miss.
 - **The default fit reads its own shift.** Left at `None`, an identified, unweighted fit without an
-  instrument refits the log once with `nuisance_knots="auto"` and reads `nuisance_shift` over the
-  log's states. Above three errors it warns (`FutureWarning`) that its nuisances miss the log's, and
-  that 0.20.0 reads `"auto"`. The fit it returns is the default's, bit for bit.
+  instrument builds `"auto"`'s nuisance basis, residualises its own target on it, solves the
+  channel's moment once more, and reads `nuisance_shift` over the log's states. Under `euler` the
+  target does not depend on the fit, so this is the channel a refit with `nuisance_knots="auto"`
+  reads. Under `rk4` the target is the fit's fixed point, and one Newton step through the fit's own
+  Newton matrix carries the move to the refit's: the refit's fixed point solves
+  `θ' = G'(y(θ'))`, the fit's `θ = G(y(θ))`, so `θ' − θ ≈ K⁻¹ (G' − G)(y(θ))`. Above three errors
+  it warns (`FutureWarning`) that its nuisances miss the log's, and that 0.20.0 reads `"auto"`. It
+  computes no error, influence or fixed point of the refit, and the fit it returns is the
+  default's, bit for bit.
 
 ## Consequences
 
@@ -87,8 +93,16 @@ its scatter. No degree held the 95 %.
   6 %, 2 % and 0.5 % of them. Where the noise grew as `exp(x)` it warned on 3 % of 40 logs; under a
   weight `exp(-x)` the shift passed three on 23 %, and under `exp(x)` on 5 %, where the fits covered
   at 1.00 and 0.93: a weight that loads a few rows moves the spline's own second-order error past
-  the channel's, so a weighted fit is not checked. The check costs one more fit of each such default
-  fit, and of each identified `prescribe`, which about doubles the time of either.
+  the channel's, so a weighted fit is not checked.
+- The check's shift is the refit's. Under `euler` it was the same number on all 200 logs of the
+  plant above and of the linear plants, the 600 serial logs and 20 of the quickstart's. Under `rk4`
+  it was within 0.0004 errors of the refit's on 120 logs of one-state linear plants, at `|A| dt` up
+  to 0.7, and within 0.006 on 20 of the quickstart's. On the curved plant of the tests, stepped by
+  RK4 at `dt` 0.1 and 1, the refit moved the channel by a median 24 and 14 errors, and the one
+  Newton step read at most 1.0 and 1.7 errors from the refit's own fixed point; all 40 logs warned.
+- The check costs a fraction of a fit: on that panel of 2000 rows it adds 12 to 19 % to a
+  default fit, 26 to 30 % to one of the quickstart's under `euler`, 10 to 14 % under `rk4`, and
+  at most 7 % to `prescribe`. A refit added 115 to 180 % to a fit, and about 50 % to `prescribe`.
 
 ## Alternatives
 
@@ -103,6 +117,15 @@ its scatter. No degree held the 95 %.
   error read the nuisances as a linear smoother through JAX, which a general learner is not. A
   pluggable feature map is the form that would fit, if a caller needs one.
 - **Tensor-product splines.** They hold interactions, but their columns grow as `K^d`.
+- **A refit with `nuisance_knots="auto"`.** The check's first form. It reads the same shift, and
+  costs a whole fit: its errors, its influence and, under `rk4`, its own Newton iterations, none of
+  which the shift reads.
+- **A score test: the moment's residuals, or the partialled-out rate and actions, regressed on the
+  spline's columns, with the fit's clustered errors.** Rejected. The moment is orthogonal, so a
+  miss in one nuisance alone leaves the channel unbiased, and a test of the partialled-out rate or
+  actions rejects there. A Wald statistic would need a level of its own, calibrated again against
+  the false alarms on every design above. The moment once more at the fit's target is one more
+  solve of the same size, and it reads the channel's own move, which is what the warning is about.
 - **A `FutureWarning` on every default call.** Rejected: it says nothing about the log in hand,
   and it would fire at about 210 calls of `fit_causal_residual` and 210 of `prescribe` in the
   tests, and at every call in the docs and notebooks. `prescribe` takes no `nuisance_knots`, so
