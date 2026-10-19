@@ -1595,7 +1595,9 @@ def _plan(
         barrier.gamma,
         barrier.cvar_gap,
         authority if barrier.u_max is None else barrier.u_max,
-        (u_lo, u_hi) if barrier.u_box is None else barrier.u_box,
+        (u_lo, u_hi)
+        if barrier.u_box is None
+        else (jnp.asarray(barrier.u_box[0]), jnp.asarray(barrier.u_box[1])),
     )
     return replace(plan, safety=audit), multipliers
 
