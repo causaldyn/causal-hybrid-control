@@ -71,6 +71,11 @@ still change).
 - **`multivariate_action_floor` refuses a curvature that is not positive definite.** With
   `M = B'QB + R` indefinite there is no optimal action and the trace bound does not hold, yet it
   returned a floor (−9.0 at `M = −1`); it now raises `ValueError`.
+- **`exact_ratio_moment` holds away from a unit regressor scale.** It integrated on the raw
+  scale, where quadrature on `[0, ∞)` missed the integrand's mass at `t ~ 1/d` and accepted the
+  miss under an absolute tolerance of 1.5e-8: at `Ω = 10⁴·I₇` it read −3.3e-10 against 2e-5, and
+  at unit scale it was good to about 1e-8. It now integrates in units of the largest eigenvalue to
+  a relative 1e-12.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They

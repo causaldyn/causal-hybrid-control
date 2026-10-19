@@ -672,15 +672,12 @@ def test_ratio_moment_refuses_divergent_moments():
     assert np.isfinite(R.exact_ratio_moment(rank_four, rank_four, np.eye(6)))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="B = C = I_7, Om = 1e4 I_7: returns -3.3e-10 against 1/(1e4 * 5) = 2e-5; quad on "
-    "[0, inf) misses the peak at t ~ 1/(2 s^2) and its default epsabs 1.5e-8 accepts that",
-)
 def test_ratio_moment_is_scale_equivariant():
-    """omega_jensen_gap.mac: E[X/Y^2] at Om = s^2 I is 1/(s^2 (k-2)) at every scale s."""
-    value = R.exact_ratio_moment(np.eye(7), np.eye(7), 1e4 * np.eye(7))
-    assert value == pytest.approx(1.0 / (1e4 * 5), rel=1e-7, abs=0.0)
+    """omega_jensen_gap.mac: E[X/Y^2] at Om = s^2 I is 1/(s^2 (k-2)) at every scale s. At
+    Om = 1e4 I_7 it read -3.3e-10 against 2e-5."""
+    for k, variance in ((7, 1e4), (7, 1e6), (5, 1e6), (3, 1e-6), (7, 1.1449)):
+        value = R.exact_ratio_moment(np.eye(k), np.eye(k), variance * np.eye(k))
+        assert value == pytest.approx(1.0 / (variance * (k - 2)), rel=1e-10, abs=0.0)
 
 
 # ---------------------------------------------------------------- the matrix (q-channel) moment

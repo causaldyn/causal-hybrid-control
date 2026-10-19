@@ -2056,17 +2056,22 @@ def exact_ratio_moment(
     d_live = eigenvalues[live]
     b_live = loadings[live]
     constant = null_mass if has_null_mass else 0.0
+    # integrated in t * scale: the mass sits at t ~ 1/d, which on the raw scale quad's map of
+    # [0, inf) misses once the regressor covariance is far from 1, and its default absolute
+    # tolerance of 1.5e-8 accepts the miss
+    scale = float(d_live.max())
+    d_unit = d_live / scale
 
     def integrand(t: float) -> float:
-        weights = 1.0 + 2.0 * t * d_live
+        weights = 1.0 + 2.0 * t * d_unit
         return (
             t
             * float(np.exp(-0.5 * np.log(weights).sum()))
             * (float((b_live / weights).sum()) + constant)
         )
 
-    value, _ = quad(integrand, 0.0, np.inf, limit=400)
-    return float(value)
+    value, _ = quad(integrand, 0.0, np.inf, limit=400, epsabs=0.0, epsrel=1e-12)
+    return float(value) / scale**2
 
 
 def _adjugate_terms(q: int) -> dict[tuple[int, int], list[tuple[int, tuple[tuple[int, int], ...]]]]:
