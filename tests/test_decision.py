@@ -1950,7 +1950,23 @@ def test_the_run_goes_to_json_as_plain_values(default_run: RunProvenance) -> Non
         "hold_constraints": False,
         "max_levers": None,
         "clusters": None,
+        "nuisance_knots": None,
     }
+
+
+def test_prescribe_hands_its_nuisance_knots_to_the_fit() -> None:
+    """``nuisance_knots`` reaches the fit and the run's record, and a count the fit refuses is
+    refused here; the default stays the polynomial's fit."""
+    default, spline = _small(), _small(nuisance_knots="auto")
+    assert default.run is not None
+    assert spline.run is not None
+    assert default.run.nuisance_knots is None
+    assert spline.run.nuisance_knots == "auto"
+    assert spline.run.to_json()["nuisance_knots"] == "auto"
+    fitted = (np.asarray(r.model_fit.residual.channel) for r in (spline, default))
+    assert not np.array_equal(*fitted)
+    with pytest.raises(ValueError, match="nuisance_knots"):
+        _small(nuisance_knots=2)
 
 
 def test_the_reported_gamma_names_its_sensitivity_model() -> None:

@@ -877,6 +877,7 @@ class RunProvenance:
     hold_constraints: bool  # whether the solve held the constraints, or only the audit priced them
     max_levers: int | None  # the greedy selection's cap; None where every lever was planned with
     clusters: str | None = None  # the column the units were grouped by; None where not grouped
+    nuisance_knots: int | str | None = None  # the nuisances' spline knots; None, polynomial alone
 
     def to_json(self) -> dict[str, Any]:
         """A plain dict, ready for ``json.dumps(..., allow_nan=False)``: the versions an object
@@ -903,6 +904,7 @@ class RunProvenance:
                 "hold_constraints": self.hold_constraints,
                 "max_levers": self.max_levers,
                 "clusters": self.clusters,
+                "nuisance_knots": self.nuisance_knots,
             }
         )
 
@@ -1758,6 +1760,7 @@ def prescribe(
     drivers: Sequence[Driver] = (),
     neighbours: Mapping[Any, Iterable[Any]] | str | None = None,
     clusters: str | None = None,
+    nuisance_knots: int | Literal["auto"] | None = None,
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -1921,6 +1924,12 @@ def prescribe(
             errors read the groups' spread, not the units'. The panel's declared ``cluster`` is
             kept where it holds one value over each group's rows, and dropped otherwise.
             :attr:`Prescription.provenance` is the grouped panel's.
+        nuisance_knots: experimental; the cross-fitted nuisances' spline, passed to
+            :func:`~chc.dynamics_id.fit_causal_residual`: ``"auto"`` adds a natural cubic spline
+            in each covariate at ``ceil(N^(1/3))`` of its quantiles beside the polynomial, an
+            integer that many knots, ``None``, the default, none. With ``None`` the fit warns
+            where the spline would move the channel by more than 3 of its errors; ``"auto"`` is
+            then the fit that warning names. :attr:`RunProvenance.nuisance_knots` records it.
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
@@ -2153,6 +2162,7 @@ def prescribe(
         clusters=None if groups == 1 else labels[:, :2] if two_way else labels[:, 0],
         periods=labels[:, 1] if serial else None,
         nuisance_degree=_NUISANCE_DEGREE,
+        nuisance_knots=nuisance_knots,
         ridge=_RIDGE,
         times=labels[:, 1] * dt,
         # a graph that finds the empty set enough proves the levers unconfounded; an asserted
@@ -2202,6 +2212,7 @@ def prescribe(
         hold_constraints=bool(hold_constraints),
         max_levers=None if max_levers is None else int(max_levers),
         clusters=clusters,
+        nuisance_knots=nuisance_knots,
     )
     persistence = (
         None
