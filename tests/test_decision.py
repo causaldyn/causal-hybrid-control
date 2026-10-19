@@ -94,9 +94,11 @@ def _logs(
     seed: int = 0,
     sticky: float = 0.0,
     persistent: float = 0.0,
+    chase: float = 0.9,
 ) -> dict[str, np.ndarray]:
-    """Two zones of a driver pool under one incentive, logged by a policy that chases demand, and
-    that keeps ``sticky`` of its last incentive; each state's noise is AR(``persistent``)."""
+    """Two zones of a driver pool under one incentive, logged by a policy that chases demand by
+    ``chase``, and that keeps ``sticky`` of its last incentive; each state's noise is
+    AR(``persistent``)."""
     rng = np.random.default_rng(seed)
     rows: dict[str, list[float]] = {
         name: [] for name in ("unit", "time", "supply", "wait", "incentive", "demand")
@@ -106,7 +108,7 @@ def _logs(
         incentive = noise_supply = noise_wait = 0.0
         for period in range(n_periods):
             demand = rng.normal(0.0, 1.0)
-            incentive = 0.9 * demand + sticky * incentive + rng.normal(0.0, 0.5)
+            incentive = chase * demand + sticky * incentive + rng.normal(0.0, 0.5)
             rows["unit"].append(unit)
             rows["time"].append(period)
             rows["supply"].append(supply)
@@ -160,6 +162,39 @@ def test_the_graph_derived_arm_recovers_the_channel_the_confounded_one_gets_wron
     assert asserted_empty.certificate.identification == "asserted"
     assert _channel(asserted_empty) > 2.0  # 2.6x the truth: the whole reason the graph is required
     assert "observational fit" in asserted_empty.certificate.adjustment.reason
+
+
+def test_an_empty_set_a_graph_proves_enough_fits_an_identified_channel_and_its_tube(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A randomised incentive: the graph finds nothing to adjust for, and the effect identified.
+    The fit read that as no adjustment at all, the observational fit, with no channel error: no
+    tube, no trusted step, and a report that blamed the panel for having no consecutive
+    transitions. Asserted, the same empty set is the caller's word, and stays the observational
+    fit, which a warning and the report now name."""
+    panel = Panel.from_frame(_logs(n_units=60, chase=0.0), unit="unit", time="time", seed=0)
+    # demand pushes supply apart from the incentive; a graph that names it adjusts for it as a
+    # parent of the outcome, so this one leaves it out, its push in the noise
+    graph = CausalGraph.from_edges([edge for edge in EDGES if "demand" not in edge])
+    proved = _prescribe(panel, graph)
+    assert proved.certificate.adjustment.covariates == ()
+    assert proved.certificate.identification == "identified"
+    assert (proved.model_fit.identified, proved.model_fit.method) == (True, "orthogonal")
+    assert proved.certificate.identification_radius is not None
+    assert proved.certificate.certified_horizon is not None
+    assert proved.certificate.certified_horizon > 0
+    # the push of demand left out is noise of SD 0.15 a step, where the incentive moves supply 0.04
+    assert proved.model_fit.channel_error is not None
+    assert abs(_channel(proved) - B_TRUE) < 4.0 * proved.model_fit.channel_error
+    assert "no unit has two consecutive transitions" not in proved.report()
+
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        asserted = _prescribe(panel, ())
+    assert asserted.model_fit.method == "observational"
+    assert asserted.certificate.identification_radius is None
+    assert any("the error tube is not evaluated" in record.message for record in caplog.records)
+    assert "the fit is the observational one" in asserted.report()
+    assert "no unit has two consecutive transitions" not in asserted.report()
 
 
 def test_a_latent_confounder_produces_no_schedule_at_all() -> None:

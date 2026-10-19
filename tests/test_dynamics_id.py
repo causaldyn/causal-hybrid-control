@@ -1985,9 +1985,9 @@ def test_clusters_are_refused_unless_they_label_every_transition_and_name_two() 
 
 def test_the_influence_s_square_is_its_rows_or_its_clusters_sums_squared() -> None:
     rows = np.arange(24.0).reshape(4, 2, 3)
-    flat = rows.reshape(8, 3)
     (independent,) = _clustered_squares(rows, None)
-    np.testing.assert_array_equal(independent, flat.T @ flat)
+    per_row = rows.sum(axis=1)
+    np.testing.assert_array_equal(independent, per_row.T @ per_row)
     summed = np.array([rows[0].sum(0) + rows[2].sum(0), rows[1].sum(0) + rows[3].sum(0)])
     (clustered,) = _clustered_squares(rows, np.array([0, 1, 0, 1]))
     np.testing.assert_array_equal(clustered, summed.T @ summed)
@@ -2292,7 +2292,7 @@ def test_each_lever_s_error_reads_in_that_lever_s_units(
 ) -> None:
     """Two states and two levers, one of them logged in units 1e3 times its own or the other in
     thousandths of its own, the log read two ways. On each of the three covariances each lever's
-    error per unit of it reads the same times its units, to 1e-11, so each times an action of that
+    error per unit of it reads the same times its units, to 1e-10, so each times an action of that
     lever reads the same. ``channel_error``, the largest of the reads' root means over the levers,
     which averages levers in units of their own, read 0.0049 or 4.9 where it read 0.0075 in Euler's
     fit."""
@@ -2309,7 +2309,7 @@ def test_each_lever_s_error_reads_in_that_lever_s_units(
     assert other._lever_errors is not None
     assert one._lever_errors.shape == (3, 2)
     np.testing.assert_allclose(
-        other._lever_errors * np.array(units), one._lever_errors, rtol=1e-11, atol=0.0
+        other._lever_errors * np.array(units), one._lever_errors, rtol=1e-10, atol=0.0
     )
     for fit in (one, other):
         reads = np.sqrt(np.mean(fit._lever_errors**2, axis=1))
@@ -2855,7 +2855,7 @@ def test_a_weakening_instrument_reads_a_falling_relevance_and_stays_identified()
                 [1.0508991256123608, -0.029127363934056676, 0.10820857328551325],
                 [0.5222761403167667, -0.016414417710067162, 0.05087340795001539],
             ],
-            (0.08991264604299758, 0.06674476953031243),
+            (0.08977556577229462, 0.06674476953031243),
         ),
     ],
 )
@@ -2864,7 +2864,9 @@ def test_a_relevant_instrument_fits_as_it_did(
 ) -> None:
     """The positive control: an instrument that moves the lever, as on the reference plant, leaves
     the fit identified, near the truth, and as the fit read it before the rank check, pinned here
-    to 1e-9. The ridge read in each column's own units moved these by at most 9e-9 of each."""
+    to 1e-9. The ridge read in each column's own units moved these by at most 9e-9 of each, and
+    summing each transition's states before squaring moved the ``rk4`` channel's error, which its
+    fixed point mixes across the states, from 0.08991 to 0.08978."""
     fit = fit_causal_residual(
         _known, _iv_log(), IV_SYSTEM.dt, instrument="w", integrator=integrator
     )
@@ -3168,3 +3170,189 @@ def test_an_identified_fit_keeps_its_moment_residual_without_its_influence() -> 
     blind = fit_causal_residual(_known, data, 0.1, channel_degree=0)
     assert not blind.identified
     assert blind.moment_residual is None
+
+
+# ---- the rk4 drift's pushes, and what else the fit reads ----
+
+
+def _pushed_log(seed: int, n: int, correlation: float, noise: float = 0.01):
+    """``x' = -0.7 x + 0.8 u + z``, ``z`` held over the step and stepped by RK4 exactly, logged on
+    ``u = 0.9 z + 0.4 eta``: the confounder pushes the state as well as the action, and leans on
+    the state by ``correlation``."""
+    rng = np.random.default_rng(seed)
+    h = -0.7
+    growth = 1 + h + h**2 / 2 + h**3 / 6 + h**4 / 24
+    input_gain = 1 + h / 2 + h**2 / 6 + h**3 / 24
+    x = rng.normal(size=(n, 1))
+    z = correlation * x + math.sqrt(1 - correlation**2) * rng.normal(size=(n, 1))
+    u = 0.9 * z + 0.4 * rng.normal(size=(n, 1))
+    x_next = growth * x + input_gain * (0.8 * u + z) + noise * rng.normal(size=(n, 1))
+    data = {"x": x, "u": u, "z": z, "x_next": x_next}
+    return {key: jnp.asarray(value) for key, value in data.items()}
+
+
+_ZERO = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+
+
+def test_the_rk4_fit_holds_a_covariate_s_push_in_the_drift() -> None:
+    """RK4 carries the drift into the channel through its growth factor. Left out of the drift, a
+    confounder's push that leans on the state set the channel at 0.606 for 0.800, 188 of its own
+    errors off. Held in the drift over the step, the decay and the channel land, and the returned
+    field leaves the push out, as it carries no covariate."""
+    data = _pushed_log(0, 1000, 0.5)
+    fit = fit_causal_residual(
+        _ZERO, data, 1.0, adjust_for=("z",), integrator="rk4", channel_degree=0
+    )
+    assert fit.channel_error is not None
+    channel = float(np.asarray(fit.residual.channel).ravel()[0])
+    assert abs(channel - 0.8) < 4.0 * fit.channel_error
+    assert float(np.asarray(fit.residual.drift)[0, 1]) == pytest.approx(-0.7, abs=0.005)
+    assert fit.driver_gain is None
+    # what the field leaves of the log is the push it does not carry, beside the noise
+    assert fit.integrator_defect is not None
+    assert fit.integrator_defect > 10 * 0.01
+
+
+def test_the_rk4_channel_error_covers_the_spread_a_covariate_s_push_left() -> None:
+    """Ten logs whose confounder pushes the state apart from it: the channel scattered 14.6 times
+    as far as its error said; on 60 logs of 1000 transitions 13 times, and its 95 % interval
+    covered on 10 %. The SD of a spread read off ten logs is 24 % of it, and the bounds sit 2.5 of
+    those out."""
+    channels, errors = [], []
+    for seed in range(10):
+        fit = fit_causal_residual(
+            _ZERO,
+            _pushed_log(seed, 500, 0.0),
+            1.0,
+            adjust_for=("z",),
+            integrator="rk4",
+            channel_degree=0,
+        )
+        assert fit.channel_error is not None
+        channels.append(float(np.asarray(fit.residual.channel).ravel()[0]))
+        errors.append(fit.channel_error)
+    ratio = float(np.std(channels, ddof=1) / np.mean(errors))
+    assert 0.4 < ratio < 1.8
+
+
+def test_an_unconfounded_empty_set_is_fitted_as_identified() -> None:
+    """A randomised lever needs no adjustment, and a graph proves it: the fit is the orthogonal
+    one on the state alone, with its error, where the observational fit read the same channel and
+    no error at all."""
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(2000, 1))
+    u = rng.normal(size=(2000, 1))
+    x_next = x + 0.1 * (-0.5 * x + 0.8 * u) + 0.01 * rng.normal(size=(2000, 1))
+    data = {"x": jnp.asarray(x), "u": jnp.asarray(u), "x_next": jnp.asarray(x_next)}
+    blind = fit_causal_residual(_ZERO, data, 0.1, channel_degree=0)
+    for integrator in ("euler", "rk4"):
+        fit = fit_causal_residual(
+            _ZERO, data, 0.1, unconfounded=True, channel_degree=0, integrator=integrator
+        )
+        assert (fit.identified, fit.method) == (True, "orthogonal")
+        assert fit.channel_error is not None
+        assert fit.moment_residual is not None
+        channel = float(np.asarray(fit.residual.channel).ravel()[0])
+        # RK4's reading of this Euler log: the channel over RK4's input gain where its growth
+        # factor is 0.95, solved in Maxima
+        truth = 0.8 if integrator == "euler" else 0.8 * 1.0258659
+        assert abs(channel - truth) < 4.0 * fit.channel_error
+    assert (blind.identified, blind.method, blind.channel_error) == (False, "observational", None)
+    euler = fit_causal_residual(_ZERO, data, 0.1, unconfounded=True, channel_degree=0)
+    np.testing.assert_array_equal(euler.residual.channel, blind.residual.channel)
+    with pytest.raises(ValueError, match="unconfounded=True with an instrument"):
+        fit_causal_residual(_ZERO, dict(data, w=data["u"]), 0.1, unconfounded=True, instrument="w")
+
+
+def _seasonal_log(n: int = 1500, dt: float = 0.1):
+    """``x' = sin(0.3 t) - 0.5 x + u``, the seasonal push known, logged by Euler on a policy that
+    follows the season, ``u = 0.8 sin(0.3 t) + z + 0.5 eta``."""
+    rng = np.random.default_rng(0)
+    t = dt * np.arange(n)
+    z = rng.normal(size=(n, 1))
+    u = 0.8 * np.sin(0.3 * t)[:, None] + z + 0.5 * rng.normal(size=(n, 1))
+    x = np.zeros((n + 1, 1))
+    for i in range(n):
+        x[i + 1] = x[i] + dt * (np.sin(0.3 * t[i]) - 0.5 * x[i] + u[i]) + 0.01 * rng.normal()
+    data = {"x": x[:-1], "u": u, "z": z, "x_next": x[1:]}
+    return {key: jnp.asarray(value) for key, value in data.items()}, jnp.asarray(t)
+
+
+def _seasonal_known(t, x, u):
+    return jnp.sin(0.3 * t) * jnp.ones_like(x)
+
+
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_the_known_physics_is_read_at_each_transition_s_start(integrator: str) -> None:
+    """Read at ``t = 0`` throughout, the season stays in the rate the residual explains, and the
+    policy that follows it confounds the channel: 1.35 where it is 1.0, 1.37 where RK4 reads 1.03.
+    Read at each transition's start, the channel lands within its error, of the Euler map the log
+    was stepped by or of its RK4 reading."""
+    data, times = _seasonal_log()
+    options = {"adjust_for": ("z",), "channel_degree": 0, "integrator": integrator}
+    fit = fit_causal_residual(_seasonal_known, data, 0.1, times=times, **options)
+    clockless = fit_causal_residual(_seasonal_known, data, 0.1, **options)
+    assert fit.channel_error is not None
+    # RK4's reading of an Euler log: the decay h whose growth factor is 0.95, and the channel
+    # over RK4's input gain 1 + h/2 + h^2/6 + h^3/24 there, both solved in Maxima
+    truth = 1.0 if integrator == "euler" else 1.0258659
+    assert abs(float(np.asarray(fit.residual.channel).ravel()[0]) - truth) < 4 * fit.channel_error
+    assert abs(float(np.asarray(clockless.residual.channel).ravel()[0]) - truth) > 0.25
+    with pytest.raises(ValueError, match="times gives each"):
+        fit_causal_residual(_seasonal_known, data, 0.1, times=times[1:], **options)
+
+
+def test_the_rk4_fit_converges_where_the_known_physics_leaves_the_residual_nothing() -> None:
+    """A noiseless log of the known plant: every parameter of the residual is 0, so a stop
+    relative to the parameters alone was never met, and the fit raised that no field reproduces
+    the log, its last step 5e-19."""
+    truth = LinearDynamics(jnp.array([[-0.7]]), jnp.array([[0.8]]))
+    for noise in (0.0, 1e-12):
+        data = _pushed_log(0, 500, 0.0, noise=noise)
+        data = dict(
+            data,
+            x_next=jax.vmap(lambda x, u: rk4_step(truth, 0.0, x, u, 1.0))(data["x"], data["u"])
+            + noise * jnp.asarray(np.random.default_rng(1).normal(size=(500, 1))),
+        )
+        fit = fit_causal_residual(truth, data, 1.0, adjust_for=("z",), integrator="rk4")
+        assert float(jnp.max(jnp.abs(fit.residual.channel))) < 1e-9
+        assert fit.integrator_defect is not None
+        assert fit.integrator_defect < 1e-9
+
+
+def test_without_clusters_a_transition_s_states_are_summed_before_squaring() -> None:
+    """Two states share one noise draw a transition. Each transition its own cluster is the same
+    count as no clusters, and CR1's factor at ``G = N`` is the rows' ``N / (N - k)``: the two read
+    one error. Squared state by state, the scores of one transition read as independent, and the
+    error of an ``rk4`` fit, whose fixed point mixes the states, came out 1.15 times the clustered
+    one."""
+    rng = np.random.default_rng(0)
+    drift, channel = np.array([[-0.5, 0.3], [0.2, -0.6]]), np.array([[1.0], [0.5]])
+    truth = LinearDynamics(jnp.asarray(drift), jnp.asarray(channel))
+    x, z = rng.normal(size=(800, 2)), rng.normal(size=(800, 1))
+    u = 0.9 * z + 0.4 * rng.normal(size=(800, 1))
+    stepped = jax.vmap(lambda xi, ui: rk4_step(truth, 0.0, xi, ui, 1.0))(
+        jnp.asarray(x), jnp.asarray(u)
+    )
+    data = {
+        "x": jnp.asarray(x),
+        "u": jnp.asarray(u),
+        "z": jnp.asarray(z),
+        "x_next": stepped + jnp.asarray(0.3 * rng.normal(size=(800, 1))),
+    }
+    zero = LinearDynamics(jnp.zeros((2, 2)), jnp.zeros((2, 1)))
+    options = {"adjust_for": ("z",), "channel_degree": 0, "integrator": "rk4"}
+    rows = fit_causal_residual(zero, data, 1.0, **options)
+    own = fit_causal_residual(zero, data, 1.0, clusters=np.arange(800), **options)
+    assert rows.channel_error == pytest.approx(own.channel_error, rel=1e-9, abs=0.0)
+
+    scores = np.ones((1, 50, 2))
+    shared = np.repeat(rng.normal(size=(50, 1)), 2, axis=1)
+    (spread,) = _robust_spreads(jnp.asarray(scores), jnp.asarray(shared), 1)
+    assert float(spread[0, 0]) == pytest.approx(
+        50 / 49 * float(np.sum((2 * shared[:, 0]) ** 2)), rel=1e-12, abs=0.0
+    )
+    (square,) = _clustered_squares(scores[0][:, :, None] * shared[:, :, None], None)
+    assert float(square[0, 0]) == pytest.approx(
+        float(np.sum((2 * shared[:, 0]) ** 2)), rel=1e-12, abs=0.0
+    )

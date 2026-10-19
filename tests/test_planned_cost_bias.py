@@ -322,7 +322,8 @@ def test_the_fit_s_channel_error_reads_as_the_one_step_channel_s(fitted) -> None
     influence[:, :, channel:] = 0.0
     alone = dataclasses.replace(fit, influence=jnp.asarray(influence))
     found = planned_cost_bias(plan, alone)
-    terms = influence.reshape(-1, influence.shape[2])[:, :channel]
+    # each transition's states summed: they may share its noise
+    terms = influence.sum(axis=1)[:, :channel]
     covariance = terms.T @ terms
 
     def one_step(c: jax.Array) -> jax.Array:

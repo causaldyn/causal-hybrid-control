@@ -1044,6 +1044,14 @@ ENTRIES = (
         _entries("data", "x", "u", "x_next", "z", "d", "d_next"),
     ),
     Entry(
+        "dynamics_id.fit_causal_residual-times",
+        lambda: {**_confounded(), "times": 0.05 * np.arange(400.0)},
+        lambda a: dynamics_id.fit_causal_residual(
+            _known, a["data"], a["dt"], adjust_for=("z",), times=a["times"]
+        ),
+        _named("times"),
+    ),
+    Entry(
         "dynamics_id.fit_causal_residual-instrument",
         _confounded,
         lambda a: dynamics_id.fit_causal_residual(_known, a["data"], a["dt"], instrument="w"),

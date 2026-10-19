@@ -27,10 +27,13 @@ HONEST SCOPE, four limits worth stating before the code:
   data this bites harder than it sounds: a confounder that trends *with* the state gets charged to
   positive feedback in ``x``, so the fitted drift can come back **unstable** even where the channel
   is clean -- and an MPC uses the drift too. Check the drift's spectrum, and give measured exogenous
-  drivers a place in the drift as regressors instead of leaving them only in ``adjust_for``.
+  drivers a place in the drift as regressors instead of leaving them only in ``adjust_for``. Under
+  ``integrator="rk4"`` the adjustment set joins the drift regression, since RK4 carries the drift
+  into the channel, so there ``a_θ`` is conditional on it, at its mean on the log.
 * The residual must be control-affine (:class:`chc.residual.ControlAffineResidual`). A general
   ``r_θ(x, u)`` has no partialling-out moment and gets no guarantee here.
-* With no adjustment set and no instrument nothing in the log identifies the channel, and an
+* With no adjustment set and no instrument nothing in the log identifies the channel, unless the
+  caller knows the actions are unconfounded given the state (``unconfounded=True``), and an
   instrument identifies it only along the directions it moves the action. The estimator reports
   ``identified=False`` in both cases rather than returning a confident wrong answer -- that case
   belongs to :mod:`chc.sensitivity`, which prices the radius instead of pretending it away.
@@ -231,12 +234,14 @@ class CausalDynamicsFit:
     effective_sample_size: float | None = None
     # (N, n, p), kept when the fit was asked for it: each transition's share, per state, of the
     # error in the fitted parameters when the whole log is drawn again -- the channel, raveled, then
-    # the drift regression's rows (the drift's transpose, then the drivers' gain's), raveled. A row
-    # moves the channel through the moment's residual, and the drift through the channel and through
-    # its own regression's residual, so the sum of psi psi' over both is their robust covariance,
-    # the drift's carrying the channel's error. Under Euler its channel block is
+    # the drift regression's rows (the drift's transpose, then the drivers' gain's), raveled; under
+    # ``rk4`` the gains of the adjustment set's held push are left out, as the field leaves them. A
+    # row moves the channel through the moment's residual, and the drift through the channel and
+    # through its own regression's residual, so the sum of psi psi' over both is their robust
+    # covariance, the drift's carrying the channel's error. Under Euler its channel block is
     # ``channel_error``'s; under ``rk4`` the RK4 map also carries the drift's residual into the
-    # channel, which ``channel_error``, read with the noise alone random, leaves out.
+    # channel, which ``channel_error`` reads as the noise: the drift regression holds the
+    # adjustment set's push there, so its residual is the noise where the push is linear.
     influence: Array | None = None
     # (p, r), in ``influence``'s order: the directions the log's actions never move. Each moves one
     # state's channel where the action residuals, scaled to the raw actions' size, fall below the
@@ -265,7 +270,8 @@ class CausalDynamicsFit:
     # (N, 2) where it was given two, a code a dimension: the channel's covariance then sums each
     # cluster's scores over its transitions and states before squaring them (CR1), two-way the
     # largest read of the two ways and of each alone, and a reader of ``influence`` sums its rows
-    # the same way (:func:`_clustered_squares`). None where each transition's each state is its own.
+    # the same way (:func:`_clustered_squares`). None where each transition is its own, its states
+    # summed.
     clusters: np.ndarray | None = None
     # Experimental: it may change or be withdrawn in any release. Under ``instrument``, ``(p,)``:
     # how far the instrument moves each of the ``p`` directions a state of the channel the log's
@@ -477,9 +483,10 @@ def _robust_spreads(
     clusters: np.ndarray | None = None,
     periods: np.ndarray | None = None,
 ) -> tuple[Array, ...]:
-    """``sum_i J_i diag(e_i^2) J_i'`` for a fit linear in its target ``y``, ``J = d coeffs / d y``;
-    under ``clusters``, ``sum_g s_g s_g'`` with ``s_g = sum_{i in g} J_i e_i``. Two-way, the three
-    spreads of :func:`_clustered_squares`, and an error read off them is the largest of their reads.
+    """``sum_i s_i s_i'`` with ``s_i = J_i e_i``, the scores of transition ``i``'s states summed,
+    for a fit linear in its target ``y``, ``J = d coeffs / d y``; under ``clusters``,
+    ``sum_g s_g s_g'`` with ``s_g = sum_{i in g} J_i e_i``. Two-way, the three spreads of
+    :func:`_clustered_squares`, and an error read off them is the largest of their reads.
     Under ``periods``, one group's, ``sum_j c_j c_j'`` with ``c_j = sum_i w_ji J_i e_i`` over the
     weights ``w`` of :func:`_cosines`, at the rows' factor ``N / (N - k)``: each period's
     transitions share its weight, so their scores are summed before the cosines read across the
@@ -497,10 +504,10 @@ def _robust_spreads(
     if periods is not None:
         projected = jnp.asarray(_cosines(periods)) @ jnp.einsum("pis,is->ip", sensitivity, score)
         return (_small_sample(n, n_coeff, None) * projected.T @ projected,)
-    if clusters is None:
-        scale = _small_sample(n, n_coeff, None)
-        return (jnp.einsum("pis,is,qis->pq", sensitivity, scale * score**2, sensitivity),)
     scores = jnp.einsum("pis,is->ip", sensitivity, score)
+    if clusters is None:
+        # a transition's states may share its noise, so its scores are summed over them first
+        return (_small_sample(n, n_coeff, None) * scores.T @ scores,)
     factor = _small_sample(n, n_coeff, _cluster_count(clusters))
     if clusters.ndim == 1:
         summed = jax.ops.segment_sum(
@@ -572,10 +579,10 @@ def _clustered_squares(
 ) -> tuple[np.ndarray, ...]:
     """``rows``' covariance, ``(N, n, ...)`` per transition and state as
     :attr:`CausalDynamicsFit.influence` is: the sum of the outer products of its independent
-    terms, each a transition and state, or under ``clusters`` a cluster's transitions and states
-    summed. Under ``periods``, one group's, each transition's states summed and projected on the
-    cosines of :func:`_cosines`, which sums each period's transitions, as the channel's error is
-    read.
+    terms, each a transition's states summed, or under ``clusters`` a cluster's transitions and
+    states summed. Under ``periods``, one group's, each transition's states summed and projected on
+    the cosines of :func:`_cosines`, which sums each period's transitions, as the channel's error
+    is read.
 
     Two-way, three covariances, and a reader takes the one it reads largest (MacKinnon, Nielsen
     and Webb 2024): the two dimensions' sums less their intersection's, which both count (Cameron,
@@ -587,10 +594,9 @@ def _clustered_squares(
     if periods is not None:
         projected = np.tensordot(_cosines(periods), rows.sum(axis=1), axes=(1, 0))
         return (np.tensordot(projected, projected, axes=(0, 0)),)
-    if clusters is None:
-        terms = rows.reshape(-1, *rows.shape[2:])
-        return (np.tensordot(terms, terms, axes=(0, 0)),)
     per_row = rows.sum(axis=1)
+    if clusters is None:
+        return (np.tensordot(per_row, per_row, axes=(0, 0)),)
 
     def square(codes: np.ndarray) -> np.ndarray:
         summed = np.zeros((int(codes.max()) + 1, *per_row.shape[1:]))
@@ -1093,6 +1099,7 @@ def fit_causal_residual(
     *,
     adjust_for: tuple[str, ...] = (),
     instrument: str | None = None,
+    unconfounded: bool = False,
     degree: int = 1,
     channel_degree: int | None = None,
     nuisance_degree: int = 2,
@@ -1105,6 +1112,7 @@ def fit_causal_residual(
     influence: bool = False,
     clusters: np.ndarray | Array | None = None,
     periods: ArrayLike | None = None,
+    times: ArrayLike | None = None,
 ) -> CausalDynamicsFit:
     """Fit a :class:`ControlAffineResidual` whose channel is the *interventional* control response.
 
@@ -1112,7 +1120,20 @@ def fit_causal_residual(
         known: the physics kept fixed; its own control dependence is known, not estimated.
         data: columns ``x (N,n)``, ``u (N,m)``, ``x_next (N,n)``, plus any named in ``adjust_for``
             and ``instrument``.
-        adjust_for: observed confounders. Empty *and* no instrument => ``identified=False``.
+        adjust_for: observed confounders. Empty, with no instrument and ``unconfounded`` false,
+            => ``identified=False``. ``identified`` says what the fit was handed, not that the set
+            is enough: a column of noise adjusted for reads identified.
+
+            Under ``integrator="rk4"`` each covariate that is not a driver also joins the drift
+            regression, held over the step at its value at the start, about its mean on the log.
+            RK4 carries the drift into the channel through its growth factor, so a push the drift
+            leaves out moves the channel where the moment cannot see it. On ``x' = -0.7 x + 0.8 u +
+            z`` at ``dt = 1``, a confounder ``z`` leaning on the state by 0.5 and left out of the
+            drift set the channel at 0.618 over 60 logs, its 95 % interval covering 0.800 on none;
+            drawn apart from the state, it scattered the channel 13 times as far as its error
+            said, which covered on 10 %. Held in the drift, both read 0.800 and covered on 97 %.
+            The returned field carries no covariate: its drift is the one at their mean, and its
+            ``defect`` keeps their push.
         instrument: name of an exogenous action shifter, for when the confounder is latent. It
             enters as the moment's instrument, not as the regressor, so this is real 2SLS. Expect a
             **variance premium**, not a free lunch: identification here rides on however much of
@@ -1140,6 +1161,13 @@ def fit_causal_residual(
             the reference plant such columns read 0.002 to 0.035, the medians of eight at 500,
             2000 and 8000 rows, of the order of ``1 / sqrt(N)``, where the plant's instrument read
             0.39 to 0.48. No inference here is robust to a weak instrument.
+        unconfounded: the caller's claim that the state and the drivers alone leave the actions
+            unconfounded -- a randomised lever, or one set by the state alone -- as a graph whose
+            adjustment set is empty proves. The fit is then the orthogonal one with the state and
+            the drivers as its only covariates, ``identified=True`` with its errors, as with an
+            adjustment set. Without it an empty set read ``"observational"``, with no error and no
+            moment residual, though its channel is the same number. Not with ``instrument``, which
+            says the actions are confounded.
         degree: the feature degree of the drift, and of the channel unless ``channel_degree``
             says otherwise. ``1`` fits an affine drift and, by default, a channel affine in the
             state, which contains the constant channel §18/§19 cover without being restricted to it.
@@ -1155,6 +1183,15 @@ def fit_causal_residual(
             read it up to 0.12.
         nuisance_degree: flexibility of ``g`` and ``m``. Richer nuisances are the whole point of
             cross-fitting -- orthogonality is what makes their error enter only at second order.
+            Second order in an error that shrinks: the nuisances are polynomials of this fixed
+            degree, and a policy or a drift outside their span leaves an error that does not
+            shrink with the log, and a bias in the channel that does not either, which
+            ``channel_error`` does not cover. On a lever set by ``-1.5 tanh(2 x)`` and a drift
+            with ``sin(2 x)`` in it, at the default degree 2, the channel came back 0.61 below its
+            truth of 1 at 1000 rows and 0.62 at 4000, 26 and 57 of its errors, on none of twelve
+            logs within its 95 % interval. Refit at a higher degree and read how far the channel
+            moves in its errors: a move of more than one or two says the nuisances miss. There,
+            at 4000 rows, degree 3 moved it by 0.22, 20 of its errors, and degree 5 by 0.44.
         folds: cross-fitting folds. ``1`` fits the nuisances on the same rows it residualises.
             That is *not* biased for the default nuisances and should not be sold as such:
             residualising ``y`` and ``u`` by the same linear projection whose span contains the
@@ -1265,19 +1302,19 @@ def fit_causal_residual(
             and states before squaring them, CR1 with the factor ``G / (G - 1) (N - 1) / (N - k)``
             over ``G`` clusters and ``k`` coefficients a state, so it holds whatever the dependence
             within a cluster; and a reader of ``influence`` sums its rows the same way. ``None``
-            takes every transition's every state as independent of the rest, which a log of units
-            followed over time breaks wherever the model leaves out something that persists: the
-            transitions of one unit then share it. The estimate does not move; only its error does.
-            On panels of 5 to 80 units whose noise persists within each unit, a 5 % test of a zero
-            channel rejects 12.5 % to 35.5 % of the time row by row and 3.75 % to 14.75 % by
-            unit: CR1 still over-rejects with few clusters (ADR 0053). Two labels a transition,
-            shape ``(N, 2)``, cluster it two ways, by its unit and by its period say. The error is
-            then the largest of three (MacKinnon, Nielsen and Webb 2024): the two dimensions' sums
-            less their intersection's (Cameron, Gelbach and Miller 2011), at CR1's factor for the
-            smaller dimension's ``G`` and less any part that reads below nothing; and each
-            dimension's sums alone, at its own. A shock every unit shares in a period, met by
-            levers every unit moves together, makes one period's scores move together across
-            units, which a sum within units leaves out (ADR 0061).
+            takes every transition as independent of the rest, its states summed first since they
+            may share its noise, which a log of units followed over time breaks wherever the model
+            leaves out something that persists: the transitions of one unit then share it. The
+            estimate does not move; only its error does. On panels of 5 to 80 units whose noise
+            persists within each unit, a 5 % test of a zero channel rejects 12.5 % to 35.5 % of the
+            time row by row and 3.75 % to 14.75 % by unit: CR1 still over-rejects with few clusters
+            (ADR 0053). Two labels a transition, shape ``(N, 2)``, cluster it two ways, by its unit
+            and by its period say. The error is then the largest of three (MacKinnon, Nielsen and
+            Webb 2024): the two dimensions' sums less their intersection's (Cameron, Gelbach and
+            Miller 2011), at CR1's factor for the smaller dimension's ``G`` and less any part that
+            reads below nothing; and each dimension's sums alone, at its own. A shock every unit
+            shares in a period, met by levers every unit moves together, makes one period's scores
+            move together across units, which a sum within units leaves out (ADR 0061).
         periods: each transition's period, a whole number of steps, on a log whose transitions
             fall in one group, one unit's or the units' of one declared cluster, which leaves no
             second cluster to sum within: one label a transition, two periods at least. The
@@ -1297,6 +1334,13 @@ def fit_causal_residual(
             the noise is drawn afresh, the cosines' interval is 11 % wider. On three units of one
             cluster over 200 periods, which share a shock AR(0.9) and half their lever AR(0.7),
             it covered 0.692 row by row and 0.934 by the period sums (ADR 0075).
+        times: each transition's start time, ``N`` finite numbers, where ``known`` reads the time:
+            the known physics is called, and each step is taken, from there. ``None`` starts every
+            transition at ``t = 0``, which is right for a ``known`` that does not read the time and
+            nothing else: a seasonal known push read at ``t = 0`` throughout leaves the season in
+            the rate, and a logging policy that follows the season then confounds the channel with
+            it: on a log of 3000 Euler steps the channel came back 1.35 where it is 1.0, 37 of
+            its errors off.
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
@@ -1311,7 +1355,8 @@ def fit_causal_residual(
             ``x``, ``u`` or ``x_next``, a driver named twice, or an instrument that is also a
             covariate or a driver, at the step's start or its end. Each would read a column the fit
             reads in another role: adjusted for the action, the channel came back as the
-            confounded regression's.
+            confounded regression's. On ``unconfounded=True`` with an instrument. On ``times``
+            that are not one finite number a transition.
     """
     _refuse_reread("covariate", adjust_for, _ACTION_AND_OUTCOME)
     _refuse_reread("driver", drivers, _TRANSITION)
@@ -1322,6 +1367,11 @@ def fit_causal_residual(
             "its two copies"
         )
     if instrument is not None:
+        if unconfounded:
+            raise ValueError(
+                "unconfounded=True with an instrument: an instrument is for actions a latent "
+                "confounder moves, and unconfounded says nothing does"
+            )
         _refuse_reread("instrument", (instrument,), _TRANSITION)
         if instrument in {*adjust_for, *drivers, *(f"{name}_next" for name in drivers)}:
             raise ValueError(
@@ -1342,14 +1392,34 @@ def fit_causal_residual(
         )
     codes = None if clusters is None else _cluster_codes(clusters, x.shape[0])
     steps = None if periods is None else _period_codes(periods, x.shape[0])
-    known_rate = jax.vmap(lambda xi, ui: known(0.0, xi, ui))(x, u)
+    starts = jnp.zeros(x.shape[0], dtype=x.dtype) if times is None else _start_times(times, x)
+    known_rate = jax.vmap(known)(starts, x, u)
 
-    identified = bool(adjust_for) or instrument is not None
+    identified = bool(adjust_for) or instrument is not None or unconfounded
     covariates, driver_start, driver_end, driver_read = _nuisance_inputs(
         data, adjust_for, drivers, integrator
     )
+    # Under ``rk4`` the drift reaches the channel through RK4's growth factor, so a push the drift
+    # regression leaves out moves the channel: each covariate that is not a driver joins the drift
+    # held over the step, about its mean on the log, and leaves the returned field afterwards.
+    pushes = (
+        _units.centred(
+            jnp.concatenate(
+                [x[:, :0], *[data[name] for name in adjust_for if name not in drivers]], axis=1
+            )
+        ).deviations
+        if integrator == "rk4"
+        else x[:, :0]
+    )
+    n_drivers = driver_start.shape[1]
+    driver_start, driver_end, driver_read = (
+        jnp.concatenate([column, pushes], axis=1)
+        for column in (driver_start, driver_end, driver_read)
+    )
 
-    method = "orthogonal" if adjust_for else ("iv" if instrument else "observational")
+    method = (
+        "orthogonal" if adjust_for or unconfounded else ("iv" if instrument else "observational")
+    )
     instrument_action: Array | None = None
     if instrument is not None:
         # 2SLS lifted to the matrix: the part of the action the exogenous shifter explains becomes
@@ -1370,19 +1440,23 @@ def fit_causal_residual(
 
     row_weight = None if weights is None else _state_weights(weights, x)
     raw = _channel_design(u, x, channel_degree)
+    # the parameters the returned field carries, in influence's order: the channel, then the drift
+    # regression's rows but the pushes' gains, which leave the field with the pushes
+    carried = design.shape[1] - pushes.shape[1]
+    kept = x.shape[1] * (raw.shape[1] + carried)
     # each parameter's scale on the log, in influence's order: the channel's, state by state, then
     # the drift regression's, feature by feature
     state_size = _units.norms(x)
     parameter_size = jnp.concatenate(
         [
             (_units.norms(raw)[None, :] / state_size[:, None]).ravel(),
-            (_units.norms(design)[:, None] / state_size[None, :]).ravel(),
+            (_units.norms(design[:, :carried])[:, None] / state_size[None, :]).ravel(),
         ]
     )
     # the moment's ridge, scaled to the raw actions' size, as the unmoved directions are
     penalty = jnp.diag(_units.mean_squares(raw, row_weight))
     directions = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree)
-    unmoved = _unmoved_parameters(directions, phi_c, u, design, ridge, x.shape[1])
+    unmoved = _unmoved_parameters(directions, phi_c, u, design, ridge, x.shape[1])[:kept]
     # The moment has no data along these directions, and its ridge would set the channel there by
     # the ratio of two roundings, which grows as the square of the actions' units: the fit then
     # missed the log's own rates by ten times their noise in units a thousand times larger.
@@ -1484,7 +1558,7 @@ def fit_causal_residual(
         )
         coeffs = channel.reshape(x.shape[1], -1).T
         drift = remainder[: phi_x.shape[1]].T
-        gain = remainder[phi_x.shape[1] :].T
+        gain = remainder[phi_x.shape[1] : phi_x.shape[1] + n_drivers].T
 
         score = y_res - regressor @ coeffs
         weighted_moment = moment if row_weight is None else moment * row_weight[:, None]
@@ -1518,23 +1592,26 @@ def fit_causal_residual(
         """``step(F, x, u, dt)`` on every transition, under the integrator the fit is made for."""
         model = HybridDynamics(known=known, residual=residual)
 
-        def step(xi: Array, ui: Array, start: Array, end: Array) -> Array:
+        def step(ti: Array, xi: Array, ui: Array, start: Array, end: Array) -> Array:
             # The transition's own stretch of the drivers' path, held the way the planner holds a
             # forecast: one implementation of the hold, so the fit and the plan cannot drift apart.
-            field = DrivenDynamics(model, gain, jnp.stack([start, end]), dt)
+            field = DrivenDynamics(model, gain, jnp.stack([start, end]), dt, start=ti)
             if integrator == "euler":
-                return xi + dt * field(0.0, xi, ui)
-            return rk4_step(field, 0.0, xi, ui, dt)
+                return xi + dt * field(ti, xi, ui)
+            return rk4_step(field, ti, xi, ui, dt)
 
-        return jax.vmap(step)(x, u, driver_start, driver_end)
+        return jax.vmap(step)(starts, x, u, driver_start, driver_end)
 
     def defect(fit: CausalDynamicsFit) -> Array:
-        """``(x_next - step(F, x, u, dt)) / dt`` -- what the fitted field leaves of the log."""
+        """``(x_next - step(F, x, u, dt)) / dt`` -- what the fitted field leaves of the log, the
+        covariates' held push with it, which the field does not carry."""
         gain = jnp.zeros((x.shape[1], 0)) if fit.driver_gain is None else fit.driver_gain
+        gain = jnp.concatenate([gain, jnp.zeros((x.shape[1], pushes.shape[1]))], axis=1)
         return (x_next - predicted(fit.residual, gain)) / dt
 
-    def rk4_fixed_point(start: CausalDynamicsFit) -> CausalDynamicsFit:
-        """The fit that is its own ``rk4`` reading of the log, by Newton's method from ``start``.
+    def rk4_fixed_point(start: Array) -> CausalDynamicsFit:
+        """The fit that is its own ``rk4`` reading of the log, by Newton's method from the fit to
+        the target ``start``.
 
         Coefficients ``theta`` read a rate off the log: their own fitted rate ``Phi theta`` plus
         what their RK4 step leaves over, ``y(theta) = Phi theta + (x_next - RK4_theta) / dt``.
@@ -1545,7 +1622,8 @@ def fit_causal_residual(
         the matrix Newton steps with, the identity under Euler. The drift's error stays conditional
         on the channel, as it is under Euler: its own regression, through the drift's block of K.
         """
-        shape, size = start.residual.channel.shape, start.residual.channel.size
+        shape = (x.shape[1], u.shape[1], phi_c.shape[1])
+        size = math.prod(shape)
 
         def unpack(theta: Array) -> tuple[ControlAffineResidual, Array, Array]:
             rows = theta[size:].reshape(-1, x.shape[1])  # the drift regression's: drift, then gain
@@ -1573,9 +1651,7 @@ def fit_causal_residual(
             return jnp.eye(theta.size) - gained, sensitivity
 
         fit_map = jax.jacrev(coefficients)(jnp.zeros_like(x_next))  # (p, N, n), exact: linear
-        gain = jnp.zeros((x.shape[1], 0)) if start.driver_gain is None else start.driver_gain
-        remainder = jnp.concatenate([start.residual.drift.T, gain.T])
-        theta = jnp.concatenate([start.residual.channel.ravel(), remainder.ravel()])
+        theta = coefficients(start)  # the Euler reading's, the pushes' gains with the rest
         # Each parameter in its own unit: the power of two nearest the size of the fit's weight on
         # the log's rates times theirs, which is in the parameter's units whichever state's rates
         # it reads. K's entries are ratios of the parameters' units, so in the caller's units LU
@@ -1594,8 +1670,11 @@ def fit_causal_residual(
             gap = jnp.einsum("pis,is->p", fit_map, reading(theta)) - theta
             step = unit * jnp.linalg.solve(unitless(newton_matrix(theta)[0], unit), gap / unit)
             theta = theta + step
-            if float(jnp.max(jnp.abs(step / unit))) <= tolerance * float(
-                jnp.max(jnp.abs(theta / unit))
+            # relative to the parameters, or to their units, the size of one row's share of each,
+            # where the parameters are smaller: a known physics that leaves the residual nothing
+            # sets every parameter to 0, which no step is small beside
+            if float(jnp.max(jnp.abs(step / unit))) <= tolerance * max(
+                1.0, float(jnp.max(jnp.abs(theta / unit)))
             ):
                 break
         else:
@@ -1612,8 +1691,10 @@ def fit_causal_residual(
             return fit
 
         # Only the noise is random given the log, and the channel reads it where its own sandwich
-        # does, after the adjustment set has taken out what it explains: a push the model leaves
-        # out but the adjustment set carries -- a season -- is in the defect and is not noise.
+        # does, after the adjustment set has taken out what it explains. The drift regression holds
+        # the adjustment set's push, a season's say, so its own residual is that noise too where
+        # the push is linear; left in the drift's residual, K carried it into the channel, which
+        # scattered 13 times as far as this error said.
         channel, _, (y_res, u_res, *_) = solve(target)
         regressor = _channel_design(u_res, x, channel_degree)
         score = y_res - regressor @ channel.reshape(x.shape[1], -1).T
@@ -1632,7 +1713,8 @@ def fit_causal_residual(
             return (unit[:, None] * jnp.linalg.solve(newton, own)).reshape(rows.shape)
 
         # The drift keeps the defect, which is its own regression's residual, as under Euler.
-        noise = jnp.sum(defect(fit) ** 2, axis=0) / max(x.shape[0] - design.shape[1], 1)
+        own_defect = (x_next - predicted(*unpack(theta)[:2])) / dt
+        noise = jnp.sum(own_defect**2, axis=0) / max(x.shape[0] - design.shape[1], 1)
         gram = _ridge_inverse(design, ridge)
         drift_size = theta.size - size
         drift_gained = jnp.einsum(
@@ -1648,13 +1730,14 @@ def fit_causal_residual(
             * jnp.linalg.solve(drift_newton, jnp.linalg.solve(drift_newton, drift_spread).T)
             * drift_unit
         )
-        # the drift's rows are its features, then its drivers, each state's coefficient beside the
-        # others': state s's coefficients are every n-th, from s
+        # the drift's rows are its features, then its drivers, then the covariates' held pushes,
+        # each state's coefficient beside the others': state s's coefficients are every n-th, from
+        # s. The field carries the first two.
         rows, states = design.shape[1], x.shape[1]
         every_state = jnp.arange(states)
         drift_blocks = drift_covariance.reshape(rows, states, rows, states)[
             :, every_state, :, every_state
-        ]
+        ][:, :carried, :carried]
         channel_error, lever_errors = _channel_errors(
             [covariance[:size, :size] for covariance in covariances], channel.shape, phi_c
         )
@@ -1662,25 +1745,26 @@ def fit_causal_residual(
             fit,
             channel_error=channel_error,
             _lever_errors=lever_errors,
-            drift_error=_error_at_rows(drift_blocks, design),
+            drift_error=_error_at_rows(drift_blocks, design[:, :carried]),
             influence=_influence(
                 carry(fit_map),
                 score,
                 carry(drift_direct(size)),
-                defect(fit),
+                own_defect,
                 regressor.shape[1],
                 codes,
-            )
+            )[:, :, :kept]
             if influence
             else None,
             representer=_representer(carry(held(u_res))[:size]) if influence else None,
             moment_residual=score,
         )
 
-    fit = fit_to((x_next - x) / dt)
     if integrator == "rk4":
-        fit = rk4_fixed_point(fit)
-    elif identified:
+        fit = rk4_fixed_point((x_next - x) / dt - known_rate)
+    else:
+        fit = fit_to((x_next - x) / dt)
+    if integrator == "euler" and identified:
         y = (x_next - x) / dt - known_rate
         channel, remainder, (y_res, u_res, _, _, fitted) = solve(y)
         regressor = _channel_design(u_res, x, channel_degree)
@@ -1727,6 +1811,19 @@ def fit_causal_residual(
         instrument_rank=rank,
         periods=steps,
     )
+
+
+def _start_times(times: ArrayLike, x: Array) -> Array:
+    """Each transition's start time, one finite number a transition, in the states' precision."""
+    starts = jnp.asarray(_real_numbers(times, "times"), dtype=x.dtype)
+    if starts.shape != (x.shape[0],):
+        raise ValueError(
+            f"times gives each of the {x.shape[0]} transitions its start, shape ({x.shape[0]},); "
+            f"got an array of shape {starts.shape}"
+        )
+    if not bool(jnp.all(jnp.isfinite(starts))):
+        raise ValueError("times holds a value that is not a finite number")
+    return starts
 
 
 def _period_codes(periods: ArrayLike, rows: int) -> np.ndarray:
