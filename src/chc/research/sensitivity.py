@@ -88,7 +88,6 @@ from chc.barrier import (
     robust_safety_filter,
     safety_filter_benchmark,
 )
-from chc.benchmark import ConfoundingRobustTask
 from chc.plan import SafetyCertificate, certify_safety
 from chc.reachability import BarrierReachabilityGap, barrier_reachability_gap
 from chc.regret import (
@@ -110,6 +109,7 @@ from chc.regret import (
     lq_regret_sensitivity,
     worst_case_asymmetric_loss,
 )
+from chc.research.benchmark import ConfoundingRobustTask
 from chc.uncertainty import (
     ConfoundingRobustCertificate,
     ConfoundingRobustClosedLoopCertificate,

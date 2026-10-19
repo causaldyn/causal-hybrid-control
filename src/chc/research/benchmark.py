@@ -32,9 +32,9 @@ from chc.delay import exact_delayed_rollout, robust_delay_design
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics
 from chc.dynamics_id import ConfoundedControlAffineSystem, fit_causal_residual
 from chc.estimators import BackdoorOLS, CausalEffectEstimator
-from chc.flagship import closed_loop
 from chc.integrate import rk4_step, rollout
 from chc.irf import delay_estimate
+from chc.research.flagship import closed_loop
 from chc.residual import ControlAffineResidual, ZeroResidual
 from chc.support import SupportModel, pessimistic_control
 from chc.uncertainty import (
