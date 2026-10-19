@@ -21,12 +21,15 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from chc.decision import _transitions
+from chc.dynamics_id import fit_causal_residual
 from chc.mmm import (
     SALES,
     MarketingMixSystem,
     MmmReport,
     _myopic_spend,
     _start_state,
+    adstock_dynamics,
     run_marketing_mix,
 )
 from chc.panel import Panel, PanelError
@@ -172,7 +175,8 @@ def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_
     Both halves are asserted, because "small" on its own would also pass if the row were being
     fitted right by accident: the same log read with ``integrator="euler"`` must still leave the
     *closed-form* difference between the two integrators, which is what every release up to 0.4.0
-    silently shipped.
+    silently shipped. ``prescribe`` refuses that integrator, since it plans by RK4, so the Euler
+    read is the fit's own, on the transitions and with the settings ``prescribe`` hands it.
 
     Not zero, and the residue is the log's noise, not the model class: on the same rows with the
     noise taken out, the rk4 fixed point sits at zero on every known row to 1e-6, and over 40 noise
@@ -180,10 +184,27 @@ def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_
     set on the measurement (0.004 / 0.22 / 0.08 of each row's gap, aggregating to 0.06) with room,
     not on the hope -- and the per-row ones are single draws of that noise.
     """
-    drift = np.asarray(report.arm("adjusted").prescription.model_fit.residual.drift)  # type: ignore[union-attr]
+    adjusted = report.arm("adjusted").prescription
+    assert adjusted is not None
+    drift = np.asarray(adjusted.model_fit.residual.drift)
     system = MarketingMixSystem()
-    euler = run_marketing_mix(integrator="euler")
-    euler_drift = np.asarray(euler.arm("adjusted").prescription.model_fit.residual.drift)  # type: ignore[union-attr]
+    logs = system.sample(n_regions=40, n_weeks=26, dt=DT, seed=0)
+    covariates = adjusted.certificate.adjustment.covariates
+    data, _ = _transitions(
+        Panel.from_frame(logs, unit="region", time="week", seed=0),
+        states=(SALES, *system.adstock_columns),
+        levers=system.spend_columns,
+        adjust_for=covariates,
+    )
+    euler = fit_causal_residual(
+        adstock_dynamics(jnp.array(system.theta)),
+        data,
+        DT,
+        adjust_for=covariates,
+        nuisance_degree=2,
+        integrator="euler",
+    )
+    euler_drift = np.asarray(euler.residual.drift)
 
     gaps, corrected, uncorrected = [], [], []
     for index, theta in enumerate(system.theta):

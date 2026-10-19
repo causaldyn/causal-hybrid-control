@@ -250,7 +250,8 @@ def test_the_field_s_error_adds_the_drift_s_own_to_the_channel_s_in_quadrature()
     errors = np.array([[3.0, 0.0], [0.0, 1.0], [1.0, 2.0]])
     reach = np.array([2.0, 5.0])
     channel = _model_error(_fit(errors, None), reach)
-    assert channel == pytest.approx(math.sqrt(52.0), rel=1e-15, abs=0.0)
+    # the third read, 1 * 2 and 2 * 5 summed in quadrature over the levers of the one state
+    assert channel == pytest.approx(math.sqrt(104.0), rel=1e-15, abs=0.0)
     assert _field_error(_fit(errors, None), reach) == channel
     assert _field_error(_fit(errors, 5.0), reach) == math.hypot(channel, 5.0)
     assert _field_error(_fit(errors, 5.0), np.zeros(2)) == 5.0

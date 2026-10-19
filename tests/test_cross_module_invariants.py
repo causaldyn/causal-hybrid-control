@@ -396,8 +396,9 @@ def _tube_at(
 ) -> np.ndarray:
     """The tube the plan's noise and persistence and its carriage carry: under ``exact`` the
     field's slope at each of ``actions``, the plan's own where omitted, under ``bound`` the plan's
-    own rate. Each lever's error is read off each covariance and priced at ``reach``, the largest
-    read taken, and the drift's own error added in quadrature (ADR 0096)."""
+    own rate. Each lever's error is read off each covariance and priced at ``reach``, summed in
+    quadrature over the levers and scaled to the Euclidean norm over the states, the largest read
+    taken, and the drift's own error, so scaled, added in quadrature (ADR 0096)."""
     plan = result.plan
     assert plan is not None
     problem = plan._problem
@@ -407,7 +408,11 @@ def _tube_at(
     assert errors is not None
     assert drift_error is not None
     rates = errors * reach
-    error = math.hypot(float(np.max(np.sqrt(np.mean(rates * rates, axis=1)))), drift_error)
+    states = result.model_fit.residual.channel.shape[0]
+    error = math.hypot(
+        float(np.max(np.sqrt(states * np.sum(rates * rates, axis=1)))),
+        math.sqrt(states) * drift_error,
+    )
     noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
     assert noise is not None
     assert persistence is not None
@@ -436,11 +441,12 @@ def test_the_tube_prices_each_lever_s_error_at_its_largest_distance_from_the_log
     """Each lever in units of its own, its box with it. Lever ``j``'s share of the channel's
     standard error, per unit of it, times the largest distance its box allows from the log's mean
     action, ``2 levers_in[j]`` give or take that mean, reads the same in any units of the lever,
-    and the tube's rate error is its root mean over the channel's entries, the largest read
-    taken. Before the fix, priced at the largest action of either box, ``u1`` in units 1e3 times
-    its own ended the tube at 3.89 where it ends at 0.538; in thousandths, at 4.04. Priced at each
-    lever's largest action from its zero, the reading ADR 0087 left, the drift's absorbing the
-    channel at the log's mean action went unread."""
+    and the tube's rate error is the root mean square norm over the states of the error those
+    distances move the field by, the largest read taken. Before the fix, priced at the largest
+    action of either box, ``u1`` in units 1e3 times its own ended the tube at 3.89 where it ends
+    at 0.538; in thousandths, at 4.04. Priced at each lever's largest action from its zero, the
+    reading ADR 0087 left, the drift's absorbing the channel at the log's mean action went
+    unread."""
     result = _decide("free", levers_in=levers_in)
     plan = result.plan
     assert plan is not None

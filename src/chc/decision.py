@@ -86,7 +86,7 @@ from chc.independence import gcm_test
 from chc.integrate import rk4_step
 from chc.lqr import linearize_continuous, linearize_discrete
 from chc.mpc import PeriodBudget, _period_rows
-from chc.panel import Panel, Provenance, _grid_steps, _ordinals, _x64_enabled
+from chc.panel import Panel, PanelError, Provenance, _grid_steps, _ordinals, _x64_enabled
 from chc.plan import (
     BarrierConstraint,
     CausalPlan,
@@ -143,7 +143,7 @@ _log = logging.getLogger(__name__)
 Every record carries a ``chc_event`` key in its ``extra`` payload naming the point it was emitted
 at --- ``precision``, ``adjustment``, ``logger_check``, ``fit``, ``abort``, ``unmoved``, ``rule``,
 ``relation``, ``tube``, ``selection`` (one per step under ``max_levers``), ``driver_range``,
-``plan``, ``estimability``, ``certificate``, and ``one_unit`` from
+``plan``, ``lever_range``, ``estimability``, ``certificate``, and ``one_unit`` from
 :meth:`Prescription.evaluate` --- so a JSON formatter downstream can route on one field rather than
 parse a sentence. The library installs no handler and sets no level: that is the application's
 call, and a library that reaches for ``basicConfig`` takes it away.
@@ -987,6 +987,8 @@ class Prescription:
         A period's price is how much the planned cost falls per unit more it may spend, in the
         cost's units per unit of spend; zero where the period has room. Read as
         :meth:`chc.plan.CausalPlan.shadow_prices` reads every row, whose ``tolerance`` this is.
+        A period the horizon cuts short may spend its share of the budget's ``amount``, so a unit
+        more of ``amount`` is worth its price times that share, which :meth:`report` prints.
 
         Raises:
             NotIdentifiedError: if the effect is not identified, so no plan was made.
@@ -1313,12 +1315,22 @@ class Prescription:
             lines += ["", f"Planned task cost: {self.plan.task_cost:.6g}.", ""]
             # a plan held under the constraints' barrier carries no row prices
             priced = self.budget_prices() if self.budgets and self.plan.safety is None else None
+            horizon = int(self.plan.actions.shape[0])
             for index, budget in enumerate(self.budgets):
+                # a period the horizon cuts short holds its share of the amount, so a unit more of
+                # the amount raises its row by that share, and lowers the cost by its price times it
+                shares = [
+                    min(budget.period, horizon - first) / budget.period
+                    for first in range(0, horizon, budget.period)
+                ]
                 worth = (
                     "not priced, as the plan was held under the constraints' barrier"
                     if priced is None
                     else "a unit more in each period would lower the planned cost by "
-                    + ", ".join(_show_price(price) for price in priced[index])
+                    + ", ".join(
+                        _show_price(price, share)
+                        for price, share in zip(priced[index], shares, strict=True)
+                    )
                 )
                 lines += [f"Budget of {budget.amount:.6g} per {budget.period} steps: {worth}.", ""]
             if self.selection is not None:
@@ -1742,6 +1754,10 @@ def prescribe(
         adjustment: a :class:`~chc.graph.CausalGraph` to *derive* the adjustment set from, or a
             sequence of column names to *assert* it. Required, and deliberately so --- omitting it
             would default to adjusting for nothing, which is a causal claim, not an absence of one.
+            A graph's set is derived for the levers' effect on every state, the target and each
+            constrained column together, since one set reads the channel into all of them: where
+            no set does, the effect is ``not_identified``, and the reason names the states no set
+            identifies it on alone.
         known: physics kept fixed and not estimated. ``None`` means nothing is known and the whole
             vector field is the fitted residual.
         dt: the time step one panel period represents.
@@ -1761,9 +1777,10 @@ def prescribe(
             over the whole horizon while proving nothing. The tube carries two errors over the
             plan's RK4 steps at the rate :attr:`DecisionCertificate.tube_rate` names: the channel's
             standard error, each lever's share of it times the largest distance that lever's box
-            allows from the log's mean action, where the fit's drift absorbed the channel, root
-            mean over the channel's entries, which reads the same in any units of each lever
-            (ADR 0087) and wherever its zero is (ADR 0091), a scale and not a bound; and the
+            allows from the log's mean action, where the fit's drift absorbed the channel, as
+            the root mean square of the Euclidean norm over the states of the error it moves the
+            field by, which reads the same in any units of each lever (ADR 0087) and wherever its
+            zero is (ADR 0091), a scale and not a bound; and the
             plant's own noise, the plan's
             one-step error on the log, read off the fit's defect with its lag-1 correlation within
             units, at the radius that holds it at each step with probability 0.95 where the noise
@@ -1785,14 +1802,17 @@ def prescribe(
             state, the pooled "where we are now". :attr:`Prescription.start` records which, and
             for the panel's, over how many units, at which periods and with what spread.
         integrator: the one-step map the fit is made consistent with, passed to
-            :func:`~chc.dynamics_id.fit_causal_residual`. Defaults to ``"rk4"`` here and to
-            ``"euler"`` there, deliberately: the low-level fit has no idea what will consume it and
-            keeps its contract, while this function *knows* the field goes straight to
-            :func:`chc.plan.causal_plan`, which rolls out with RK4. Fitting one integrator and
-            planning with another is a bias the caller never asked for --- on the plant in
-            :mod:`chc.mmm` it costs 28% of the control channel. Choose ``"euler"`` when the panel is
-            genuinely discrete-time (a weekly budget is not a sample of an ODE) and the one-step map
-            *is* the model.
+            :func:`~chc.dynamics_id.fit_causal_residual`: ``"rk4"``, and nothing else. It is
+            ``"euler"`` there by default, deliberately: the low-level fit has no idea what will
+            consume it and keeps its contract, while this function *knows* the field goes straight
+            to :func:`chc.plan.causal_plan`, which rolls out with RK4, as its tube, its barrier's
+            audit and its regret bound read it. Fitting one integrator and planning with another
+            is a bias the caller never asked for --- on the plant in :mod:`chc.mmm` it costs 28% of
+            the control channel --- so ``"euler"`` is refused. A panel that is genuinely
+            discrete-time (a weekly budget is not a sample of an ODE) is fitted by ``"rk4"`` as
+            well: its fit is the field whose RK4 step reproduces the log's one-step map. To read
+            that map itself, call :func:`~chc.dynamics_id.fit_causal_residual` with
+            ``integrator="euler"``.
         drivers: exogenous columns the plan can forecast but not move, each with its forecast over
             the horizon (:class:`Driver`). They are fitted into the drift jointly with the states
             (:func:`~chc.dynamics_id.fit_causal_residual`), and the plan is made against the
@@ -1815,7 +1835,8 @@ def prescribe(
             is also a lever or a state or is named twice, a forecast that is not ``horizon + 1``
             finite levels, a budget that does not weigh one spend per lever, starts its periods
             anywhere but the plan's first step, or allows less than the levers' boxes spend at
-            the least, a ``dt`` that is not a finite positive step, a ``tolerance`` that is
+            the least, a ``dt`` that is not a finite positive step, an ``integrator`` other than
+            ``"rk4"``, a ``tolerance`` that is
             negative or nan, a ``gamma`` below 1 or not finite, which is not a sensitivity level,
             a panel with no consecutive pair of periods to fit a transition on, a ``cap_per_step``
             on a lever that follows its logged rule or a budget that prices one,
@@ -1826,7 +1847,8 @@ def prescribe(
             the one state, under which the transitions hold the levers, the states a period on
             and the states, or one named for a driver's level a period on, ``f"{driver}_next"``.
         KeyError: a lever, target, constraint, driver or asserted covariate names a column the
-            panel does not have. The message lists the panel's columns.
+            panel does not have. The message lists the panel's columns. Also a graph that has no
+            node for a lever, the target or a constrained column.
         PanelError: a column the fit reads as numbers --- a lever's, a state's, a covariate's or
             a driver's --- holds text, dates, times, durations, complex numbers or any other value
             that is not a real number, or a number finite in its own type that is an infinity in
@@ -1854,8 +1876,8 @@ def prescribe(
     (see :data:`_log`). Nothing is configured here; a caller that wants them calls
     ``logging.basicConfig`` itself. An unidentified effect, a lever the log never moved, one on its
     logged rule, a combination kept at its logged level, a plan the log does not determine, a run
-    in single precision, a forecast outside the logged range and levers that read more than the
-    record says come through at ``WARNING``.
+    in single precision, a forecast outside the logged range, a planned action outside its lever's
+    logged range and levers that read more than the record says come through at ``WARNING``.
 
     Before fitting, the panel is asked whether the levers read anything but the states and their
     recorded parents: :attr:`Prescription.logger_check` (*experimental*). It reports; it changes
@@ -1869,6 +1891,13 @@ def prescribe(
         raise DecisionError("hold_constraints was set, but no constraint was given to hold")
     if not 0.0 < dt < math.inf:
         raise DecisionError(f"dt={dt} is not a step, which is finite and positive")
+    if integrator != "rk4":
+        raise DecisionError(
+            f"integrator={integrator!r}: prescribe plans, prices and certifies by RK4 steps of the "
+            "fitted field, so it fits the field whose RK4 step reproduces the log, integrator="
+            "'rk4'; a field fitted to another step is planned by one it was not fitted to. Read a "
+            "discrete-time log's one-step map with fit_causal_residual(integrator='euler')"
+        )
     if tolerance is not None and not tolerance >= 0.0:
         raise DecisionError(
             f"tolerance={tolerance} is not a radius, which is never negative or nan; leave it "
@@ -1963,7 +1992,7 @@ def prescribe(
             extra={"chc_event": "precision", "x64": False, "rows": panel.provenance.n_rows},
         )
 
-    resolved = _resolve_adjustment(adjustment, panel=panel, target=target, levers=lever_names)
+    resolved = _resolve_adjustment(adjustment, panel=panel, states=states, levers=lever_names)
     if isinstance(adjustment, CausalGraph):
         parents = {p for lever in lever_names for p in adjustment.parents(lever)}
         logged_on = tuple(sorted(parents - {*lever_names}))
@@ -2386,6 +2415,9 @@ def prescribe(
         },
     )
 
+    _warn_actions_outside_logged_range(
+        panel, lever_names, np.asarray(plan.actions, dtype=np.float64), skip=rule_levers
+    )
     if held is not None:
         safety = plan.safety  # solve() already audited it at the whole box's largest actions
     elif margins:
@@ -2824,13 +2856,36 @@ def _resolve_adjustment(
     adjustment: CausalGraph | Sequence[str],
     *,
     panel: Panel,
-    target: Target,
+    states: tuple[str, ...],
     levers: tuple[str, ...],
 ) -> AdjustmentSet:
-    """Derive the set from a graph, or take the caller's word and record that that is what it is."""
+    """Derive the set from a graph, or take the caller's word and record that that is what it is.
+
+    The fit reads the channel into every state off one set, so a graph's set is derived for the
+    levers' effect on all of them together: a set that identifies the effect on the target alone
+    leaves the channel into a constrained state confounded, and the barrier and the tube priced on
+    it."""
     if isinstance(adjustment, CausalGraph):
         adjustment.require_columns(panel.names)
-        return adjustment.adjustment_set(treatment=levers, outcome=target.name)
+        joint = adjustment.adjustment_set(treatment=levers, outcome=states)
+        if joint.status == "identified" or len(states) == 1:
+            return joint
+        confounded = [
+            state
+            for state in states
+            if adjustment.adjustment_set(treatment=levers, outcome=state).status != "identified"
+        ]
+        return AdjustmentSet(
+            (),
+            "not_identified",
+            f"{joint.reason}; the fit reads the channel into every state of {list(states)} off one "
+            "set, and "
+            + (
+                f"none identifies the levers' effect on {confounded}"
+                if confounded
+                else "no one set identifies the levers' effect on all of them"
+            ),
+        )
     named = tuple(str(name) for name in adjustment)
     missing = sorted(set(named) - set(panel.names))
     if missing:
@@ -2860,13 +2915,40 @@ def _period_steps(panel: Panel) -> NDArray[np.int64]:
     logged are the grid, and a period no unit logged is not seen. A number read as a grid point and
     not as a position, such as 202412 for a month, puts each year's turn 89 steps from the month
     before it, so no transition crosses it.
+
+    An inferred grid is refused where most of the periods a unit logs in a row are more than one of
+    its steps apart: the least spacing was then set by a period off the log's own step, one stray
+    row at 3.5 in a log of whole periods, and on its grid every other transition parts as a gap.
+
+    Raises:
+        PanelError: for such a grid, naming the two periods that set its step and a row of each.
     """
     column = np.asarray(panel[panel.time])
     frequency = panel.provenance.frequency
     if frequency is not None and frequency != "observed":
         return _ordinals(column, frequency)
     steps = None if frequency == "observed" else _grid_steps(column)
-    return panel.codes()[1] if steps is None else steps
+    if steps is None:
+        return panel.codes()[1]
+    units, _ = panel.codes()
+    order = np.lexsort((steps, units))
+    within = units[order][1:] == units[order][:-1]
+    gaps = np.diff(steps[order])[within]
+    apart = int(np.count_nonzero(gaps > 1))
+    if 2 * apart > gaps.size:
+        distinct = np.unique(steps)
+        least = int(np.flatnonzero(np.diff(distinct) == 1)[0])
+        rows = [int(np.flatnonzero(steps == distinct[least + k])[0]) for k in (0, 1)]
+        stamps, units_logged = column.tolist(), panel[panel.unit].tolist()
+        read = [f"{stamps[row]!r} (row {row}, unit {units_logged[row]!r})" for row in rows]
+        raise PanelError(
+            f"time column {panel.time!r} is read on the grid of its least spacing, set by "
+            f"{read[0]} and {read[1]}, and on that grid {apart} of the {gaps.size} periods units "
+            "log in a row are more than one step apart, so each would part its two rows as a gap; "
+            "declare the periods' step with frequency=, or frequency='observed' to read them in "
+            "their sorted order"
+        )
+    return steps
 
 
 def _transitions(
@@ -3250,6 +3332,39 @@ def _warn_outside_logged_range(panel: Panel, drivers: Sequence[Driver]) -> None:
             )
 
 
+def _warn_actions_outside_logged_range(
+    panel: Panel, levers: tuple[str, ...], actions: NDArray[np.float64], *, skip: tuple[str, ...]
+) -> None:
+    """Warn of each lever the plan sets outside the range the panel logged it in: the fitted
+    channel is extrapolated there, and its standard error, read at the log's actions, does not
+    price that. A lever on its logged rule (``skip``) is set by the state, not by the plan."""
+    for index, name in enumerate(levers):
+        if name in skip:
+            continue
+        logged = panel._numbers(name)
+        low, high = float(logged.min()), float(logged.max())
+        planned = actions[:, index]
+        outside = np.flatnonzero((planned < low) | (planned > high))
+        if outside.size:
+            _log.warning(
+                "the plan sets %r outside the range the panel logged, [%.4g, %.4g], first at step "
+                "%d of %d; the fitted channel is extrapolated there, and the tube's error, read at "
+                "the log's actions, does not price that",
+                name,
+                low,
+                high,
+                int(outside[0]),
+                planned.size,
+                extra={
+                    "chc_event": "lever_range",
+                    "lever": name,
+                    "logged": [low, high],
+                    "planned": [float(planned.min()), float(planned.max())],
+                    "steps": outside.tolist(),
+                },
+            )
+
+
 def _cost(
     states: tuple[str, ...],
     levers: Sequence[Lever],
@@ -3393,11 +3508,14 @@ def _field_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     channel's part alone: on the quickstart 0.016, where the drift's is 0.039, the demand the fit
     adjusts for and the plan does not forecast being in the drift's residual (ADR 0096). A fit with
     no channel error carries no tube, the drift's error with it.
+
+    The tube bounds the gap's Euclidean norm over the states, so each part is the scale of that
+    norm: ``drift_error``, a root mean over the states, times the root of their number.
     """
     channel = _model_error(fit, reach)
     if fit._lever_errors is None or fit.drift_error is None:
         return channel
-    return math.hypot(channel, fit.drift_error)
+    return math.hypot(channel, math.sqrt(fit.residual.channel.shape[0]) * fit.drift_error)
 
 
 def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
@@ -3412,17 +3530,25 @@ def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     from there, and an origin of a lever moved with its log is the same field (ADR 0091). Up to
     0.17.0 ``reach[j]`` was the largest action from the lever's zero: on a log of one state and two
     levers in ``[-2, 2]``, ``u1``'s zero moved by 100, its log and box with it, ended the tube at
-    0.713 where it ends at 0.538, and certified one step where it certifies two. This returns its
-    root mean over
-    the channel's entries, from each lever's read of each covariance ``channel_error`` is read off
-    (``CausalDynamicsFit._lever_errors``), the largest read taken once the levers are priced
-    (ADR 0087). With one lever it is ``channel_error`` times ``reach``, bit for bit; with levers in
-    one unit whose ``reach`` is one number, that to rounding. Up to 0.16.0 it was ``channel_error``
+    0.713 where it ends at 0.538, and certified one step where it certifies two.
+
+    The tube bounds the gap's Euclidean norm over the states, and the rate error at an action
+    ``d`` is the vector ``(B_hat - B) d``, whose mean square norm is the sum over the entries of
+    each one's mean square error times ``d_j^2``, where the entries' errors are uncorrelated. This
+    returns its root, ``sqrt(n sum_j (e_j reach_j)^2)`` for ``n`` states, ``e_j`` lever ``j``'s
+    read of a covariance ``channel_error`` is read off (``CausalDynamicsFit._lever_errors``), a
+    root mean over the states, the largest read taken once the levers are priced (ADR 0087).
+    Up to 0.18.0 it was the root mean over the entries, ``sqrt(n m)`` times smaller for ``m``
+    levers: over 200 logs of two states and two levers, the field error's root mean square norm
+    read 1.93 times its root mean square, where it reads 0.96 times this. With one state and one
+    lever it is ``channel_error`` times ``reach``, bit for
+    bit; with levers in one unit whose ``reach`` is one number, that times ``sqrt(n m)`` to
+    rounding. Up to 0.16.0 it was ``channel_error``
     times the largest action of any lever, which mixed the levers' units: on a log of one state and
     two levers in ``[-2, 2]``, either lever in units 1e3 or 1e-3 times its own, its box with it,
     ended the tube 7 times as wide and certified neither of the two steps it certifies. A lever
-    whose ``reach`` is zero, held at the log's mean action, adds no error, though it counts in the
-    mean, and ``reach`` zero for every lever leaves the channel nothing to move, and no tube.
+    whose ``reach`` is zero, held at the log's mean action, adds no error, and ``reach`` zero for
+    every lever leaves the channel nothing to move, and no tube.
 
     It is a *scale*, not coverage: ``channel_error`` is the robust standard error, root-mean over
     the entries and the log's states, calibrated on average but scattering from one log to the
@@ -3432,7 +3558,8 @@ def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     if fit._lever_errors is None:
         return 0.0
     rates = fit._lever_errors * reach
-    return float(np.max(np.sqrt(np.mean(rates * rates, axis=1))))
+    states = fit.residual.channel.shape[0]
+    return float(np.max(np.sqrt(states * np.sum(rates * rates, axis=1))))
 
 
 def _step_noise(
@@ -3516,7 +3643,7 @@ def _show_relation(relation: LeverRelation, names: Sequence[str]) -> str:
     return f"{head}{terms[2:]} = {relation.level:.4g}"
 
 
-def _show_price(price: RowPrice) -> str:
+def _show_price(price: RowPrice, share: float = 1.0) -> str:
     if price.price is None:
-        return f"[{price.interval[0]:.4g}, {price.interval[1]:.4g}]"
-    return f"{price.price:.4g}"
+        return f"[{share * price.interval[0]:.4g}, {share * price.interval[1]:.4g}]"
+    return f"{share * price.price:.4g}"

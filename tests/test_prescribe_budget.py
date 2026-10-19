@@ -136,3 +136,30 @@ def test_a_budget_the_decision_cannot_keep_is_refused(
 ) -> None:
     with pytest.raises(DecisionError, match=message):
         _prescribe(panel, (budget,))
+
+
+def test_the_report_prices_a_period_the_horizon_cuts_short_at_its_share_of_the_amount(
+    panel: Panel, budget: float
+) -> None:
+    """A budget per four horizons holds the plan to a quarter of its amount, so a unit more of the
+    amount raises the row by a quarter, and the cost falls by the row's price times a quarter. The
+    report printed the row's price, four times the slope of the cost in the amount."""
+    period = 4 * HORIZON
+
+    def run(amount: float) -> Prescription:
+        return _prescribe(panel, (PeriodBudget(np.ones(3), amount, period),))
+
+    amount = 4 * budget
+    prescription = run(amount)
+    [[price]] = prescription.budget_prices()
+    assert price.price is not None
+    line = (
+        f"Budget of {amount:.6g} per {period} steps: a unit more in each period would lower the "
+        f"planned cost by {price.price / 4:.4g}."
+    )
+    assert line in prescription.report()
+    step = 0.2  # a central difference in the amount, a twentieth of one in the row
+    costs = [run(amount + sign * step).plan for sign in (-1.0, 1.0)]
+    assert all(plan is not None for plan in costs)
+    slope = (costs[0].task_cost - costs[1].task_cost) / (2 * step)  # type: ignore[union-attr]
+    assert price.price / 4 == pytest.approx(slope, rel=1e-3)

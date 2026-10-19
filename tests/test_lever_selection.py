@@ -333,6 +333,7 @@ def test_each_selection_step_leaves_one_structured_record(caplog: pytest.LogCapt
         "selection",
         "selection",
         "plan",
+        "lever_range",  # the plan sets "boost" beyond the range the log moved it in
         "estimability",
         "certificate",
     ]

@@ -40,6 +40,7 @@ from chc.decision import (
     StartState,
     Target,
     _episodes,
+    _field_error,
     _json_label,
     _linearised,
     _margins,
@@ -64,7 +65,7 @@ from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel, PanelError
 from chc.plan import CausalPlan, causal_plan, certify_safety
-from chc.residual import ControlAffineResidual
+from chc.residual import ControlAffineResidual, control_affine_features
 from chc.uncertainty import _linear_tube, _noise_tube
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
@@ -714,26 +715,91 @@ def _fit_reading(errors: np.ndarray | None) -> CausalDynamicsFit:
 
 
 def test_the_tube_s_rate_error_reads_each_lever_at_its_own_largest_action() -> None:
-    """Off each covariance, the root mean over the levers of each lever's error times its own
-    largest action; then the largest read. The three reads here, as two ways give, each put the
-    error on other levers, so which read is the largest is for the boxes to say: at boxes of 2 and
-    5 the third, ``sqrt((2^2 + 10^2) / 2)``, at 5 and 2 the first, ``15 / sqrt(2)``, where the
-    first is also the read ``channel_error`` takes. A lever whose box allows no action but zero
-    adds no error, but counts in the mean; none that can act leaves none, a free side no finite
-    one, and a fit with no channel error none."""
+    """Off each covariance, the root sum over the levers of each lever's error times its own
+    largest action, the Euclidean norm of the error that action moves the one state by; then the
+    largest read. The three reads here, as two ways give, each put the error on other levers, so
+    which read is the largest is for the boxes to say: at boxes of 2 and 5 the third,
+    ``sqrt(2^2 + 10^2)``, at 5 and 2 the first, ``15``, where the first is also the read
+    ``channel_error`` takes. Up to 0.18.0 it was the root mean, ``sqrt(2)`` times smaller. A lever
+    whose box allows no action but zero adds no error; none that can act leaves none, a free side
+    no finite one, and a fit with no channel error none."""
     errors = np.array([[3.0, 0.0], [0.0, 1.0], [1.0, 2.0]])
     fit = _fit_reading(errors)
     assert fit.channel_error == pytest.approx(3.0 / math.sqrt(2.0), rel=1e-15, abs=0.0)
-    for reach, expected in (([2.0, 5.0], 52.0), ([5.0, 2.0], 112.5), ([2.0, 0.0], 18.0)):
+    for reach, expected in (([2.0, 5.0], 104.0), ([5.0, 2.0], 225.0), ([2.0, 0.0], 36.0)):
         error = _model_error(fit, np.array(reach))
         assert error == pytest.approx(math.sqrt(expected), rel=1e-15, abs=0.0), reach
     # each lever in units ``c`` times its own: its error over ``c``, its action times ``c``
     units = np.array([1e-3, 1e3])
     error = _model_error(_fit_reading(errors / units), np.array([2.0, 5.0]) * units)
-    assert error == pytest.approx(math.sqrt(52.0), rel=1e-15, abs=0.0)
+    assert error == pytest.approx(math.sqrt(104.0), rel=1e-15, abs=0.0)
     assert _model_error(fit, np.zeros(2)) == 0.0
     assert _model_error(_fit_reading(errors + 1.0), np.array([2.0, math.inf])) == math.inf
     assert _model_error(_fit_reading(None), np.array([2.0, 5.0])) == 0.0
+
+
+def test_the_tube_s_rate_error_is_the_euclidean_size_of_the_field_s_error_over_the_states() -> None:
+    """The tube bounds the gap's Euclidean norm over the states, so the rate error is the root mean
+    square norm of ``(B_hat - B) d`` at the levers' largest distances ``d``: each lever's read, a
+    root mean over the states, times the root of their number, summed in quadrature over the
+    levers. Up to 0.18.0 it was the root mean over the entries, ``sqrt(n m)`` times smaller, and the
+    drift's error a root mean over the states, ``sqrt(n)`` times smaller."""
+    errors = np.array([[0.3, 0.1]])
+    fit = dataclasses.replace(
+        _fit_reading(errors),
+        residual=ControlAffineResidual(drift=jnp.zeros((2, 3)), channel=jnp.zeros((2, 2, 3))),
+    )
+    reach = np.array([2.0, 5.0])
+    assert _model_error(fit, reach) == pytest.approx(
+        math.sqrt(2 * (0.6**2 + 0.5**2)), rel=1e-15, abs=0.0
+    )
+    drifting = dataclasses.replace(fit, drift_error=0.2)
+    assert _field_error(drifting, reach) == pytest.approx(
+        math.sqrt(2 * (0.6**2 + 0.5**2) + 2 * 0.2**2), rel=1e-15, abs=0.0
+    )
+
+
+def test_the_tube_s_rate_error_reads_the_field_s_error_at_its_size() -> None:
+    """Over 40 logs of two states and two levers, the fitted channel's error at the levers' largest
+    distances, ``|(B_hat - B) d|`` over the log's states, has a root mean square norm 0.93 times the
+    root mean square of the rate error read off each log, where up to 0.18.0's root mean over the
+    entries read 1.87 times smaller. Resampling 200 such logs, the ratio over 40 has a standard
+    deviation of 0.046; the band is four of them below and six above."""
+    a_matrix = np.array([[-0.5, 0.2], [0.1, -0.4]])
+    b_matrix = np.array([[0.8, -0.3], [0.5, 0.6]])
+    reach = np.array([2.0, 1.0])
+    base = LinearDynamics(jnp.zeros((2, 2)), jnp.zeros((2, 2)))
+    true_errors, read = [], []
+    for seed in range(40):
+        rng = np.random.default_rng(seed)
+        x = rng.normal(0.0, 0.3, (40, 2))
+        xs, us, nexts, ws = [], [], [], []
+        for _ in range(12):
+            w = rng.normal(size=40)
+            u = np.stack([0.7 * w, -0.5 * w], 1) + rng.normal(0.0, 0.5, (40, 2))
+            push = np.stack([w, -0.8 * w], 1)
+            step = (
+                x + DT * (x @ a_matrix.T + u @ b_matrix.T + push) + rng.normal(0.0, 0.02, (40, 2))
+            )
+            xs, us, nexts, ws = [*xs, x], [*us, u], [*nexts, step], [*ws, w]
+            x = step
+        data = {
+            "x": jnp.asarray(np.concatenate(xs)),
+            "u": jnp.asarray(np.concatenate(us)),
+            "x_next": jnp.asarray(np.concatenate(nexts)),
+            "w": jnp.asarray(np.concatenate(ws))[:, None],
+        }
+        fit = fit_causal_residual(
+            base, data, DT, adjust_for=("w",), clusters=np.tile(np.arange(40), 12)
+        )
+        features = jax.vmap(control_affine_features, in_axes=(0, None))(
+            data["x"], fit.residual.channel_degree
+        )
+        error = np.einsum("nmf,if->inm", np.asarray(fit.residual.channel), features) - b_matrix
+        true_errors.append(np.mean(np.sum((error @ reach) ** 2, axis=1)))
+        read.append(_model_error(fit, reach) ** 2)
+    ratio = math.sqrt(np.mean(true_errors) / np.mean(read))
+    assert 0.75 < ratio < 1.25, ratio
 
 
 def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_distance() -> None:
@@ -1721,7 +1787,6 @@ def test_the_run_records_what_the_fit_and_the_solve_were_given(calls, x64: bool)
 CHANGES = {
     "folds": ({"folds": 3}, {}, {"folds": 3}),
     "a numpy seed": ({"seed": np.int64(1)}, {}, {"seed": 1}),
-    "integrator": ({"integrator": "euler"}, {}, {"integrator": "euler"}),
     "no tube": ({"tolerance": None}, {}, {"tolerance": None}),
     "held constraints": ({"hold_constraints": True}, {}, {"hold_constraints": True}),
     "max_levers": ({"max_levers": 1}, {}, {"max_levers": 1}),
@@ -2709,3 +2774,151 @@ def test_a_panel_of_one_unit_tests_the_noise_s_persistence_across_its_periods() 
         fresh, certificate=dataclasses.replace(fresh.certificate, noise_persistence_p=None)
     )
     assert "within units, not tested: its pairs leave no spread to read" in untested.report()
+
+
+def test_a_stray_period_off_the_log_s_step_is_refused_rather_than_read_as_its_grid() -> None:
+    """Fifty units logged at whole periods give 950 transitions; one more row at 3.5 set the grid
+    to half a period, on which every other pair of periods was two steps apart, and the panel gave
+    two transitions, each half a period long, read as a whole one. That grid is refused, naming
+    the row that set it; a declared step refuses the row itself."""
+    rng = np.random.default_rng(0)
+    frame = {
+        "unit": np.append(np.repeat(np.arange(50), 20), 0),
+        "time": np.append(np.tile(np.arange(20.0), 50), 3.5),
+        "x": rng.normal(size=1001),
+        "u": rng.normal(size=1001),
+    }
+    clean = {name: column[:-1] for name, column in frame.items()}
+    data, _ = _transitions(
+        Panel.from_frame(clean, unit="unit", time="time"),
+        states=("x",),
+        levers=("u",),
+        adjust_for=(),
+    )
+    assert data["x"].shape == (950, 1)
+    stray = Panel.from_frame(frame, unit="unit", time="time")
+    with pytest.raises(PanelError, match=r"3\.5 \(row 1000, unit 0\).* 949 of the 951 periods"):
+        _transitions(stray, states=("x",), levers=("u",), adjust_for=())
+    with pytest.raises(PanelError, match="no whole number of steps"):
+        Panel.from_frame(frame, unit="unit", time="time", frequency=1)
+
+
+def _constrained_logs(n_units: int = 60, n_periods: int = 8) -> Panel:
+    """A target ``y`` confounded with the lever by the logged ``w``, and a constrained ``c``
+    confounded with it by a latent ``L`` the panel does not hold."""
+    rng = np.random.default_rng(0)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "y", "c", "u", "w")}
+    for unit in range(n_units):
+        y, c = rng.normal(0.0, 0.2, 2)
+        for period in range(n_periods):
+            w, latent = rng.normal(size=2)
+            u = 0.9 * w + 0.9 * latent + rng.normal(0.0, 0.5)
+            for name, value in zip(rows, (unit, period, y, c, u, w), strict=True):
+                rows[name].append(value)
+            y, c = (
+                y + DT * (-0.6 * y + 0.8 * u + 1.5 * w) + rng.normal(0.0, 0.01),
+                c + DT * (-0.3 * c - 0.4 * u + 1.5 * latent) + rng.normal(0.0, 0.01),
+            )
+    return Panel.from_frame(
+        {name: np.asarray(values) for name, values in rows.items()}, unit="unit", time="time"
+    )
+
+
+def test_a_constrained_state_whose_channel_is_confounded_leaves_the_effect_unidentified() -> None:
+    """The fit reads the channel into every state off one set. ``w`` identifies the lever's effect
+    on the target alone; the latent parent of the lever and of ``c`` leaves the one into ``c``
+    confounded, which read off ``("w",)`` came back +0.877 where it is -0.40, and was certified
+    as identified."""
+    graph = CausalGraph.from_edges(
+        [("w", "u"), ("w", "y"), ("u", "y"), ("L", "u"), ("L", "c"), ("u", "c")], latent=("L",)
+    )
+    assert graph.adjustment_set(treatment="u", outcome="y").covariates == ("w",)
+    result = prescribe(
+        _constrained_logs(),
+        levers=[Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("y", value=1.0),
+        constraints=[Constraint("c", hi=0.5)],
+        adjustment=graph,
+        horizon=5,
+        dt=DT,
+        tolerance=0.5,
+    )
+    assert result.certificate.identification == "not_identified"
+    assert result.plan is None
+    assert "none identifies the levers' effect on ['c']" in result.certificate.adjustment.reason
+
+
+def test_prescribe_refuses_a_fit_to_a_step_it_does_not_plan_by() -> None:
+    """The plan, its tube, its barrier's audit and its regret bound step the field by RK4; a field
+    fitted to the Euler step, planned so, missed a discrete-time plant by 0.27 at the first step
+    of six, outside a tube of 0.063 that certified all six, where the field fitted to the RK4 step
+    missed it by 0.0002."""
+    with pytest.raises(DecisionError, match=r"integrator='euler'.*RK4 steps"):
+        _prescribe(_panel(n_units=20), CausalGraph.from_edges(EDGES), integrator="euler")
+
+
+def test_aware_dates_held_as_objects_are_read_on_their_own_wall_clock() -> None:
+    """pandas hands over time-zone-aware stamps as objects. Read as labels, twelve days logged over
+    thirteen gave eleven transitions, one across the missing day, where the same days unzoned give
+    ten, and no calendar could be declared on them. Now they are dates on the wall clock they
+    were stamped on: a month's first midnight an hour east of UTC is that month, though in UTC it
+    is the month before."""
+    east = datetime.timezone(datetime.timedelta(hours=1))
+    days = [
+        datetime.datetime(2024, 3, 25) + datetime.timedelta(days=k) for k in range(13) if k != 5
+    ]
+
+    def taken(stamps: list[datetime.datetime], frequency: str | None = None) -> np.ndarray:
+        column = np.empty(len(stamps), dtype=object)
+        column[:] = stamps
+        frame = {
+            "home": np.zeros(len(stamps), dtype=int),
+            "day": column,
+            "temperature": np.array([stamp.toordinal() for stamp in stamps], dtype=float),
+            "heater": np.ones(len(stamps)),
+        }
+        return _steps_taken(Panel.from_frame(frame, unit="home", time="day", frequency=frequency))
+
+    assert taken(days).tolist() == [1.0] * 10
+    for zone in (datetime.UTC, east):
+        for frequency in (None, "D"):
+            steps = taken([day.replace(tzinfo=zone) for day in days], frequency)
+            assert steps.tolist() == [1.0] * 10, (zone, frequency)
+    firsts = [datetime.datetime(2024, month, 1, tzinfo=east) for month in (1, 2, 3)]
+    assert taken(firsts, "M").tolist() == [31.0, 29.0]
+
+
+def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> None:
+    """Logged within 0.2 of zero, a lever whose push is ``2 tanh(u)`` was planned at 3 at the first
+    step, its box allowing 5: the plant left the planned path by 2.1 there, in a tube of 0.32 that
+    certified three steps, and nothing said the channel was read where the log never went."""
+    rng = np.random.default_rng(0)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "x", "u", "w")}
+    for unit in range(40):
+        x = rng.normal(0.0, 0.3)
+        for period in range(10):
+            w = rng.normal(0.0, 0.3)
+            u = float(np.clip(0.2 * w + rng.normal(0.0, 0.1), -0.2, 0.2))
+            for name, value in zip(rows, (unit, period, x, u, w), strict=True):
+                rows[name].append(value)
+            x += 0.5 * (-0.5 * x + 2.0 * math.tanh(u) + w) + rng.normal(0.0, 0.01)
+    panel = Panel.from_frame(
+        {name: np.asarray(values) for name, values in rows.items()}, unit="unit", time="time"
+    )
+    caplog.set_level(logging.WARNING, logger="chc.decision")
+    result = prescribe(
+        panel,
+        levers=[Lever("u", lo=-5.0, hi=5.0)],
+        target=Target("x", value=3.0),
+        adjustment=CausalGraph.from_edges([("w", "u"), ("w", "x"), ("u", "x")]),
+        horizon=4,
+        dt=0.5,
+        tolerance=0.5,
+        x0=jnp.zeros(1),
+    )
+    assert result.plan is not None
+    [record] = [r for r in caplog.records if getattr(r, "chc_event", "") == "lever_range"]
+    assert record.lever == "u"  # type: ignore[attr-defined]
+    assert record.logged == [-0.2, 0.2]  # type: ignore[attr-defined]
+    assert record.steps[0] == 0  # type: ignore[attr-defined]
+    assert "outside the range the panel logged, [-0.2, 0.2], first at step 0" in record.getMessage()

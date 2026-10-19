@@ -28,8 +28,9 @@ value's type and text, each with its length.
 
 A panel reads its periods on a calendar only where the caller declares one, as ``frequency``:
 calendar months stamped as dates lie 28 to 31 days apart, on no grid a library could infer, and
-read in the order logged a month no unit logged is not seen. The declared frequency is part of
-the dataset's identity, so it enters the hash.
+read in their sorted order a month no unit logged is not seen. The declared frequency is part of
+the dataset's identity, so it enters the hash. Dates handed over as objects, as pandas hands over
+time-zone-aware stamps, are read on the wall clock they were logged on, as dates are.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ import datetime
 import hashlib
 import math
 import numbers
+import warnings
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -232,10 +234,15 @@ class Panel:
                 calendar units, a week running from a Thursday as 1970-01-01 did, a quarter being
                 three months from January. For numbers, a positive step: a period is a whole
                 number of steps from the first. Either way the rows of one period share one label,
-                the earliest stamp logged in it. ``"observed"`` reads the periods in the order
-                logged, as consecutive where no period lies between them. Undeclared, numbers and
-                dates on a uniform grid are read on it, other numbers and labels in the order
-                logged, and dates off a grid, calendar months among them, are refused.
+                the earliest stamp logged in it. ``"observed"`` reads the periods in their sorted
+                order, as consecutive where no period lies between them: text by its characters,
+                so ``"10"`` comes before ``"2"`` and ``"Apr"`` before ``"Jan"``. Undeclared,
+                numbers and dates on a uniform grid are read on it, other numbers in their sorted
+                order, and dates off a grid, calendar months among them, are refused; text is read
+                in its sorted order with a ``FutureWarning``, and a future release will refuse it.
+                Dates held as objects, ``datetime`` or ``date`` values, are read as dates on their
+                own wall clock, a time-zone-aware stamp in its zone: a month's first midnight in
+                Berlin is that month, though in UTC it falls in the month before.
             cluster: an optional column naming the group cluster-robust inference should use ---
                 declared here rather than at the call site, because it is a property of the sampling
                 design and not of the estimator.
@@ -351,7 +358,16 @@ class Panel:
                         "panel is indexed by (unit, period), so one of them would be lost"
                     )
                 first[key] = row
-        elif frequency is None and times.dtype.kind == "M" and _grid_steps(times) is None:
+        elif frequency is None and _text(times):
+            warnings.warn(
+                f"time column {time!r} holds text, whose sorted order need not be the periods' "
+                "order: '10' sorts before '2', and 'Apr' before 'Jan'. Convert the periods to "
+                "numbers or dates, or declare frequency='observed' to read them in their sorted "
+                "order; a future release will refuse undeclared text periods",
+                FutureWarning,
+                stacklevel=2,
+            )
+        elif frequency is None and _dates(times).dtype.kind == "M" and _grid_steps(times) is None:
             raise PanelError(
                 f"time column {time!r} holds dates on no uniform grid, so its stamps do not say "
                 "which periods are consecutive; declare their calendar with frequency='D', 'W', "
@@ -485,7 +501,7 @@ class Panel:
             return column.tolist()
         periods = _ordinals(column, frequency)
         _, inverse = np.unique(periods, return_inverse=True)
-        order = np.lexsort((column, periods))  # by period, then by stamp
+        order = np.lexsort((_dates(column), periods))  # by period, then by stamp
         earliest = order[np.unique(periods[order], return_index=True)[1]]
         return column[earliest][inverse].tolist()
 
@@ -505,6 +521,7 @@ def _frequency(column: NDArray[Any], frequency: object, name: str) -> str | floa
         return None
     if frequency == "observed":
         return "observed"
+    column = _dates(column)
     if isinstance(frequency, str):
         if frequency not in _CALENDAR:
             raise PanelError(
@@ -557,6 +574,7 @@ def _whole_steps(offsets: NDArray[Any], step: float) -> tuple[NDArray[np.int64],
 def _ordinals(column: NDArray[Any], frequency: str | float) -> NDArray[np.int64]:
     """Each row's period under a declared calendar or step: a date's count of days, weeks, months,
     quarters or years since 1970, a number's count of steps from the first period."""
+    column = _dates(column)
     if isinstance(frequency, str):
         unit = "M" if frequency == "Q" else frequency
         counted = column.astype(f"datetime64[{unit}]").astype(np.int64)
@@ -566,9 +584,28 @@ def _ordinals(column: NDArray[Any], frequency: str | float) -> NDArray[np.int64]
     return _whole_steps(column - column.min(), frequency)[0]
 
 
+def _text(column: NDArray[Any]) -> bool:
+    """Whether a time column holds text, NumPy's or Python's."""
+    if column.dtype.kind in "US":
+        return True
+    return column.dtype == object and column.size > 0 and isinstance(column[0], str | bytes)
+
+
+def _dates(column: NDArray[Any]) -> NDArray[Any]:
+    """An object column of ``datetime`` or ``date`` values as NumPy dates, each on the wall clock it
+    was stamped on; any other column as it is. pandas hands over time-zone-aware stamps as such
+    objects: read as labels, a day no unit logged went unseen and no calendar could be declared."""
+    if column.dtype != object or not column.size or not isinstance(column[0], datetime.date):
+        return column
+    if isinstance(column[0], datetime.datetime):
+        return np.array([value.replace(tzinfo=None) for value in column.tolist()], "datetime64[us]")
+    return np.array(column.tolist(), dtype="datetime64[D]")
+
+
 def _grid_steps(column: NDArray[Any]) -> NDArray[np.int64] | None:
     """Each row's period as a whole number of the least spacing between the periods logged, where
     every period is one; None for text and for periods off such a grid."""
+    column = _dates(column)
     if column.dtype.kind == "M":  # any resolution: `periods` holds ints at ns, datetimes above
         column = column.astype(np.int64)
     if column.dtype.kind not in "iuf":
