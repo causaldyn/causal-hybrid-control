@@ -45,7 +45,7 @@ every parameter of a scalar loop).
   user who sees a wide `"mis"` interval with a narrow `"dr"` one is reading the model's error.
 - The interval carries the model's error to first order only. `"dr"`'s own second-order
   remainder is not carried: with the offset off by 0.05 `"dr"` covered 0.475 and 0.843 for the
-  two plans. The stretched interval covered there because the truth lay between the two
+  two plans over 4000 steps, and 0.013 and 0.520 over 20 000. The stretched interval covered there because the truth lay between the two
   estimates; nothing makes that so.
 - An interval for `Jm` alone is gone. Under a model the caller trusts, `Jm` has a closed form and
   needs no logs.
