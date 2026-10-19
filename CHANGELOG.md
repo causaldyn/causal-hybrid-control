@@ -107,6 +107,9 @@ still change).
   (heteroskedastic) and 8.0 % (500 rows, nonlinear) of 1000 logs; each row is now weighed by the
   effect's derivative in its outcome, through the nuisances: 2.8 %, 5.2 % and 4.2 %. `DoubleML`
   on the heteroskedastic logs: 8.2 % → 6.8 %. The effect does not move.
+- **`discover_lagged_parents` says its `alpha` is each test's level, not the graph's**: on three
+  states and one control over three lags, 0.97 % of the null candidates entered at `alpha=0.01`,
+  and 26–27 % of graphs held at least one false edge.
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
 
 ## [0.18.0] — 2026-10-13
