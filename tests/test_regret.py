@@ -272,6 +272,28 @@ def test_van_trees_posterior_mean_weighs_the_data_by_its_noise(sigma: float) -> 
     np.testing.assert_allclose(curve.empirical_mse, curve.van_trees_bound, rtol=0.15)
 
 
+@pytest.mark.parametrize(("m0", "eta"), [(1.0, 1.0), (4.0, 0.5), (0.2, 0.3)])
+def test_adaptive_exploration_lower_bound_holds_for_a_single_burst(m0: float, eta: float) -> None:
+    """``lower_bound`` is the proved sequence bound ``2 sqrt(A K T / eta) - A m0 / eta``; it read
+    the leading term alone, which one burst of exploration in round 1, ``v_1 = V``, beats by up to
+    ``A m0 / eta``. Every schedule's cumulative regret ``sum A v_t + K / m_t`` lies above the bound,
+    the burst's at its best ``V`` included, and the tapering schedule's; the burst comes within
+    its first round's ``K / m0`` of it, so the bound is tight to that."""
+    b, rr, xt, sigma = 1.0, 0.5, 1.0, 0.5
+    a_curv = b * b + rr
+    k_vt = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3 * sigma**2
+    curve = adaptive_exploration_certificate(m0=m0, eta=eta)
+    for horizon, bound in zip(curve.horizons, curve.lower_bound, strict=True):
+        rounds = int(horizon)
+        best = math.sqrt((rounds - 1) * k_vt * eta / a_curv)  # m0 + eta V at the best burst
+        burst = max(best - m0, 0.0) / eta
+        regret = a_curv * burst + k_vt / m0 + (rounds - 1) * k_vt / (m0 + eta * burst)
+        assert regret >= bound
+        if best > m0:  # the burst then comes within its first round's floor of the bound
+            assert regret - bound <= k_vt / m0 + 1e-9
+    assert (curve.adaptive_regret >= curve.lower_bound).all()
+
+
 def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     # Contribution 3 (proofs/adaptive_exploration.v): control with online effect learning.
     # A tapering schedule v_t ~ 1/sqrt(t) reaches cumulative regret Theta(sqrt(T)) -- matching the
@@ -287,9 +309,11 @@ def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     assert 1.0 <= curve.adaptive_over_bound < 2.5  # matches the lower bound up to a constant
     # REGRESSION: the van-Trees numerator is K = C*sigma^2, so the bound is linear in sigma. The
     # certificate once computed C and used it as K, silently pinning sigma^2 = 1; this catches that.
+    # The bound's offset A*m0/eta does not read sigma; its leading term doubles with it.
+    offset = (1.0 + 0.5) * 1.0 / 1.0
     assert np.allclose(
-        adaptive_exploration_certificate(sigma=1.0).lower_bound,
-        2.0 * adaptive_exploration_certificate(sigma=0.5).lower_bound,
+        adaptive_exploration_certificate(sigma=1.0).lower_bound + offset,
+        2.0 * (adaptive_exploration_certificate(sigma=0.5).lower_bound + offset),
     )
 
 

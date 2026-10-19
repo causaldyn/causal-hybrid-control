@@ -111,6 +111,11 @@ still change).
   plan does not have. At their defaults `time_varying_rollout_certificate` now reads 20 of 20
   steps where it read 21, and `confounding_robust_closed_loop_certificate` at `gamma = 3` reads
   25 and 20 of 25 where it read 26 and 21. Since 0.2.0.
+- **`AdaptiveExplorationCurve.lower_bound` is the proved bound, `2 sqrt(A K T / eta) - A m0 /
+  eta`.** It read the leading term alone, which a schedule can beat: at the defaults one burst of
+  exploration in the first round costs 5.965 over 500 rounds, where `lower_bound` read 7.454. It
+  now reads 5.954, 0.857 to 22.07 over the default horizons where it read 2.357 to 23.57, and
+  `adaptive_over_bound` 1.506 where it read 1.410. Since 0.2.0.
 
 ## [0.18.0] — 2026-10-13
 
