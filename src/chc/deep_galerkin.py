@@ -796,10 +796,15 @@ def dual_weighted_error_estimate(
     than a rank the estimate is within ``12%`` of the true error under Adam and within ``80%``
     under L-BFGS: rank with it anywhere, quote it as a number only where it was measured.
 
-    Scope: the estimate is exact for this affine family up to quadrature and autodiff error
-    (measured within ``6%`` at a horizon where the error is ``72`` and the raw residual is at its
-    smallest). For a non-quadratic problem the same construction is the standard dual-weighted
-    residual and is first-order, not exact.
+    Scope: the estimate is exact for this affine family up to quadrature and autodiff error where
+    the model's curvature ``V_xx`` is the Riccati root ``P``, since the quotient's ``M`` is the true
+    one. Elsewhere it is the exact error against the problem solved at the model's own rate: on the
+    anti-monotone instance (coupling ``3``) at ``T = 0.7``, an affine path with ``V_xx = P + 0.05``
+    and ``S_hat`` off by ``0.13`` reads ``2.509``. A trained :class:`MeanFieldDGM` has ``V_xx = P``
+    only at ``t = T``, so the network's estimate carries its curvature error too (measured within
+    ``6%`` at a horizon where the error is ``72`` and the raw residual is at its smallest). For a
+    non-quadratic problem the same construction is the standard dual-weighted residual and is
+    first-order, not exact.
     """
     times, slope, mean, slope_rate, mean_rate, rate = _model_traces(game, model, n_time)
     b2r = game.b**2 / game.r

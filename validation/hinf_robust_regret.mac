@@ -49,15 +49,32 @@ stat : ratsimp(num(Vp))$                 /* numerator: 2 g2 (b u - xt)(b g2 - xt
 print("stationarity numerator (set = 0) =", stat)$
 /* certainty-equivalence optimum (gamma -> inf) for reference */
 uCE : xt*b/(b^2 + rr)$
-print("certainty-equivalence u_CE =", uCE, " ; robust u_rob(gamma) shrinks toward 0 as gamma decreases")$
+print("certainty-equivalence u_CE =", uCE, " ; robust u_rob(gamma) -> u_CE as gamma -> inf, from the side (F) gives")$
 
 /* (E) PESSIMISM CORRESPONDENCE (ties to result #2, optimal pessimism = variance rho*=s^2):
    first-order in 1/gamma^2, V(u) ~ nominal(u) + e^2 u^2/gamma^2, an EXTRA caution term ~ 1/gamma^2.
    So gamma^-2 plays the role of the pessimism level rho: gamma->inf (rho->0) is nominal; decreasing
-   gamma (rho up) shrinks the gain, exactly as adding pessimism rho does in result #2. The empirical
+   gamma (rho up) moves the gain -- DOWN only when rr >= b^2, see (F). The empirical
    certificate picks the gamma* that minimises expected robust regret under effect variance s^2 and
    shows its gain matches the pessimistic control at rho* = s^2. */
 /* V = e^2/(1 - u^2/g2) + rr u^2 = e^2*(1 + u^2/g2 + ...) + rr u^2; the O(1/g2) term is the caution. */
 extra : ratsimp((value - nominal) - e^2*u^2/g2)$   /* residual after subtracting the 1/g2 pessimism term */
 print("V - nominal - e^2 u^2/gamma^2 =", extra, " = O(1/gamma^4): the leading caution term is e^2 u^2/gamma^2")$
 print("=> gamma^-2 is the pessimism knob; unifies H-inf robustness with pessimism=variance (#2)")$
+
+/* (F) THE SIGN OF THE CAUTION. To first order in eps = 1/gamma^2 the robust minimiser of
+   nominal(u) + eps*e^2*u^2 moves from u_CE by -eps*d/du(e^2 u^2)/nominal''(u) at u_CE. The caution
+   term's slope there carries the factor (2 b u_CE - xt) = xt (b^2 - rr)/(b^2 + rr), so the gain
+   CONTRACTS only when rr > b^2; when b^2 > rr robustness RAISES the gain above u_CE at large gamma
+   (b = 1, rr = 1/2: 0.6797 against 0.6667 at gamma = 2), and the calibrated gamma* of (E) lives
+   near the feasibility edge gamma ~ |u|, where the gamma^2 - u^2 pole, not this term, pulls it down. */
+shift : ratsimp( -subst(u = uCE, diff(e^2*u^2, u)) / subst(u = uCE, diff(nominal, u, 2)) )$
+print("(F) du_rob/d(1/gamma^2) at gamma = inf =", factor(shift))$
+print("(F) residual against u_CE rr xt^2 (b^2 - rr)/(b^2 + rr)^3 =",
+      ratsimp(shift - uCE*rr*xt^2*(b^2 - rr)/(b^2 + rr)^3), " (0)")$
+for pt in [[b = 1, rr = 1/2, xt = 1], [b = 1, rr = 2, xt = 1], [b = 3/2, rr = 1/2, xt = 2]] do
+  print("(F) exact V'(u_CE + eps*shift)/eps as eps -> 0 at", pt, "=",
+        limit(ratsimp(subst(pt, subst([g2 = 1/eps, u = uCE + eps*shift], Vp))/eps), eps, 0),
+        " (0: the shift is the exact minimiser's first-order term)")$
+print("(F) at b = 1, rr = 1/2, xt = 1: shift =", float(subst([b = 1, rr = 1/2, xt = 1], shift)),
+      " (> 0: above u_CE) ; at b = 1, rr = 2:", float(subst([b = 1, rr = 2, xt = 1], shift)), " (< 0)")$

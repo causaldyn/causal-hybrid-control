@@ -170,3 +170,30 @@ print("STEP 7i the three terms also say WHEN Result 56 is safe: the O(1) correct
 print("        against the leading term exactly when kap >> K/(2 A c) / sqrt(K T/(A c)) =")$
 print("        sqrt(K/(4 A c T)), i.e. when one round's cap already moves the information by more")$
 print("        than the whole block does per unit horizon")$
+
+/* ===== STEP 8: the one round the exchange argument leaves unsaturated ===== */
+
+print("=== STEP 8: a saturated prefix, then ONE partial round: the optimum over the box ===")$
+/* The greedy fill of a mass M delivers the prefix sums S_t(M) = min(M, cap_1 + ... + cap_t), each
+   concave in M, and 1/(I0 + c S) is convex and decreasing in S, so F(M) = A M + K sum_t
+   1/(I0 + c S_(t-1)(M)) is CONVEX in M. Its minimum is therefore within one round of the best
+   whole block, and on the round n + 1 after n saturated rounds (information w = I0 + c S_n, m =
+   T - n - 1 rounds left) the mass x it adds enters only through A x + K m/(w + c x). */
+Fx : A*x + K*m/(w + c*x)$
+xs : solve(diff(Fx, x) = 0, x)$
+print("STEP 8a dF/dx = 0 at x =", xs)$
+xstar : sqrt(K*m/(A*c)) - w/c$
+print("STEP 8b residual of the positive root against sqrt(K m/(A c)) - w/c =",
+      map(lambda([e], ratsimp(radcan(rhs(e) - xstar))), xs), " (one of them 0)")$
+print("STEP 8c d2F/dx2 =", ratsimp(diff(Fx, x, 2)), " > 0: the stationary point is the minimum,",
+      "and clipped to [0, cap_(n+1)] it is the round's best amount")$
+print("STEP 8d the root is the balance A (w + c x)^2 = K c m of STEP 2 with the mass one round",
+      "short; at a whole round it is the block, so the whole-block search was a grid on F(M)")$
+/* defaults b = 1, rr = 1/2, xt = 1, sigma = 7/10, I0 = 1, eta = 3/5; T = 50, cap = 3/10 */
+dflt : [A = 3/2, K = 3/2*(2/9)^2, c = (3/5)/(49/100), I0 = 1]$
+xpart : float(subst(append([m = 48, w = I0 + c*3/10], dflt), subst([w = I0 + c*3/10], xstar)))$
+cost_part : float(subst(dflt, A*(3/10 + x) + K*(1/I0 + 1/(I0 + c*3/10)
+                                + 48/(I0 + c*(3/10 + x)))))$
+print("STEP 8e T = 50, cap = 0.3: one saturated round, then x =", xpart, " ; cost",
+      subst([x = xpart], cost_part), " against the whole block of two rounds",
+      float(subst(dflt, A*6/10 + K*(1/I0 + 1/(I0 + c*3/10) + 48/(I0 + c*6/10)))))$

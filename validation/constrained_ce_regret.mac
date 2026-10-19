@@ -33,10 +33,26 @@ Rin : (b^2+rr)*(ustar(bh) - ustar(b))^2$
 print("(i) both inactive: R =", Rin, "  -> O((bh-b)^2), curvature (b^2+rr)*(du*/db)^2 > 0")$
 /* (ii) both ACTIVE: u_opt(bh)=u_opt(b)=umax => R = 0 identically: the curvature COLLAPSES to 0 */
 print("(ii) both active: u_opt(bh)=u_opt(b)=umax => R = 0  (control frozen: curvature collapses to 0)")$
-/* (iii) STRADDLING (truth active, estimate inactive): R = (b^2+rr)*(u*(bh) - umax)^2, still quadratic in
-   (u*(bh)-umax) but measured to the CLIP, not to u*(b): a distinct branch with its own curvature. */
-Rstr : (b^2+rr)*(ustar(bh) - umax)^2$
-print("(iii) straddle (truth active): R =", Rstr, " = (b^2+rr)(u*(bh)-umax)^2 -- the active-set branch")$
+/* (iii) STRADDLING (truth active, estimate inactive): the comparator is the CLIP umax, not the
+   stationary point u*(b), so completing the square around u*(b) leaves a FIRST-order term:
+   J(u;b) - J(umax;b) = (b^2+rr)*[(u - u*(b))^2 - (umax - u*(b))^2]
+                      = (b^2+rr)*(umax - u)^2 + 2*(b^2+rr)*(umax - u)*(u*(b) - umax).
+   The second term is positive when u < umax < u*(b), so (b^2+rr)*(u*(bh) - umax)^2 understates it. */
+J(u, b) := (b*u - xt)^2 + rr*u^2$
+Rstr : (b^2+rr)*((ustar(bh) - ustar(b))^2 - (umax - ustar(b))^2)$
+print("(iii) straddle (truth active): R =", Rstr, " = J(u*(bh);b) - J(umax;b) -- the active-set branch")$
+print("STEP 3a J(u*(bh);b) - J(umax;b) - R =",
+      ratsimp(J(ustar(bh), b) - J(umax, b) - Rstr), " (0: R is the exact cost gap to the clip)")$
+print("STEP 3b R - (b^2+rr)(umax-u*(bh))^2 - 2(b^2+rr)(umax-u*(bh))(u*(b)-umax) =",
+      ratsimp(Rstr - (b^2+rr)*(umax - ustar(bh))^2
+              - 2*(b^2+rr)*(umax - ustar(bh))*(ustar(b) - umax)), " (0: the first-order term)")$
+str3 : [xt = 1, rr = 1, umax = 45/100]$
+bt3 : (1 - sqrt(1 - 4*45^2/100^2))/(2*45/100)$
+b03 : bt3 + 1/10$
+print("STEP 3c defaults xt=1, rr=1, umax=0.45, truth b_t+0.1, estimate b_t-0.15: R =",
+      float(subst(append([b = b03, bh = bt3 - 15/100], str3), Rstr)),
+      " against the curvature-only (b^2+rr)(u*(bh)-umax)^2 =",
+      float(subst(append([b = b03, bh = bt3 - 15/100], str3), (b^2+rr)*(ustar(bh) - umax)^2)))$
 
 /* NON-EXPANSIVE bound: clipping never increases the CE regret, since |min(a,c)-min(b,c)| <= |a-b|.
    So constrained regret <= unconstrained regret everywhere (the constraint can only help). */
@@ -47,7 +63,7 @@ print("=> constrained regret <= unconstrained regret (Rocq: constrained_regret_l
    an interval straddling b_t, a naive controller that assumes INACTIVE applies u*(bh) and pays up to
    Rstr if the truth is active; the conservative controller that assumes ACTIVE applies umax and pays 0
    when the truth is active. The pessimism budget to prefer the safe (active) branch is that regret gap. */
-print("pessimism budget lambda >= (b^2+rr)*(u*(bh) - umax)^2 : cover the active-set transition")$
+print("pessimism budget lambda >= J(u*(bh);b) - J(umax;b) = Rstr : cover the active-set transition")$
 
 /* THE ACTIVE SET IS AN INTERVAL, NOT A HALF-LINE. u*(b) = xt*b/(b^2+rr) is unimodal in b, so
    u*(b) = umax has TWO positive roots and the cap binds on the bounded interval between them.

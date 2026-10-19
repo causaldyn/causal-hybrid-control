@@ -93,6 +93,26 @@ for rr in [0.5, 0.8, 0.9, 0.95, 1.05, 1.1, 1.25, 1.6] do block(
     print("  ", rr, "  ", ee, "  ", ex, "  ", se, "  ", ex - se))$
 
 print("")$
+print("=== 5b. the next term: the two sides are matched to different orders ===")$
+/* One more order of the same inversion.  Over, w = sqrt(2 eps) is real and the w^3 term is
+   c3 (2 eps)^(3/2); under, w = i v and the w^3 term is imaginary, so the real part's error is the
+   w^4 term's, O(eps^2).  So at |eps| = 0.05 the over-estimate's two-term series is short by about
+   c3 (2 eps)^(3/2) and the under-estimate's by an order less. */
+uapprox3 : w - w^2/3 + c3*w^3 + c4*w^4$
+eqs3 : taylor(subst(u = uapprox3, h(u)) - w^2/2, w, 0, 5)$
+coefs3 : solve([coeff(eqs3, w, 4), coeff(eqs3, w, 5)], [c3, c4])$
+print("order-w^3, w^4 inversion coefficients:", coefs3)$
+c3val : subst(coefs3[1], c3)$
+print("over: Re u = sqrt(2 eps) - 2 eps/3 + c3 (2 eps)^(3/2), c3 (2 eps)^(3/2) =",
+      ratsimp(c3val*2^(3/2)), "eps^(3/2)", if c3val = 11/72 then "(PASS)" else "(FAIL)")$
+over_exact : 1 + float(lambert_w(-float(1/(%e*(1/(1 - 0.05))))))$
+print("eps = 0.05: exact", over_exact, ", two-term gap", over_exact - float(sqrt(0.1) - 0.1/3),
+      ", three-term gap", over_exact - float(sqrt(0.1) - 0.1/3 + c3val*0.1^(3/2)))$
+under_exact : 1 + complex_re(float(1/(%e*(1/(1 + 0.05)))))$
+print("eps = -0.05: exact", under_exact, ", two-term gap", under_exact - float(0.1/3),
+      " (the w^3 term is imaginary there)")$
+
+print("")$
 print("=== 6. the asymmetry in numbers: equal |delay error|, unequal cost ===")$
 loss_over(e)  := sqrt(2*e) - 2*e/3$
 loss_under(e) := 2*e/3$

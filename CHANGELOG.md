@@ -108,6 +108,14 @@ still change).
   the noise the tube reads is smaller than the plant's. Under an AR(0.9) disturbance of standard
   deviation 2, the tube held 0.918 at step 1. The report's persistence line says so too.
   `trustworthy_steps` does not change.
+- **Each docstring that cites a proof or a derivation is tied to a test of its code.** The 123
+  objects in `src/chc` that cite a file under `proofs/` or `validation/` each have property tests
+  of the cited statement on the float code (`tests/test_formal_*.py`), and
+  `tests/test_formal_links.py` fails on a citation without one. Of 22 statements the code did not
+  satisfy, 15 are fixed below and 7 docstrings are narrowed to what their lemmas prove; no
+  expected failure is left. The theory page lists them.
+- **`CappedExplorationPolicy.last_round`**: the amount the last exploring round spends, below the
+  cap where the optimum fills it partly.
 
 ### Changed
 
@@ -147,6 +155,58 @@ still change).
 - **A held barrier holds `h` at each step's next state.** At `dt = 1` a held plan's path left the
   set at 5 of 12 states and its own audit certified 3 steps; it now certifies 12. Plans whose path
   stayed in the set are unchanged to the last digit.
+- **`minimax_action` returns where a candidate action is huge.** An identified interval whose
+  midpoint is near zero (1.6e-189) made the equalising candidate overflow a float power, which
+  raised `OverflowError`; its cost now reads `inf` and it loses to the other candidates.
+- **`convection_diffusion_exact` holds for a reversed flow and a weak one, and `optimal_upwind`
+  keeps double precision past its series crossover.** A flow with `s/eps` below −709 read `nan`
+  everywhere; as `s/eps` went to 0 the solution lost digits (1e-4 relative at 1e-12) and read
+  `nan` at `s = 0`, where it is now `x`. `optimal_upwind` lost up to 2.8e-10 relative just
+  above `Pe = 1e-3`; its series now runs through `Pe^13` and takes over below `Pe = 0.2`.
+- **`delay_design_loss` returns just above the stabilising floor.** Within about 2e-12 of the
+  floor its root search raised `ValueError`, because the bracket stopped 1e-12 short of the root
+  near π/2; it now reads the loss, 1 to rounding.
+- **`multivariate_action_floor` refuses a curvature that is not positive definite.** With
+  `M = B'QB + R` indefinite there is no optimal action and the trace bound does not hold, yet it
+  returned a floor (−9.0 at `M = −1`); it now raises `ValueError`.
+- **`exact_ratio_moment` holds away from a unit regressor scale.** It integrated on the raw
+  scale, where quadrature on `[0, ∞)` missed the integrand's mass at `t ~ 1/d` and accepted the
+  miss under an absolute tolerance of 1.5e-8: at `Ω = 10⁴·I₇` it read −3.3e-10 against 2e-5, and
+  at unit scale it was good to about 1e-8. It now integrates in units of the largest eigenvalue to
+  a relative 1e-12.
+- **`capped_exploration_policy` solves its convex program exactly.** It searched whole blocks at
+  the cap from one round up, and a 64-round sweep around a geometric bracket. The optimum fills
+  its last round partly (3.07724 against 3.07792 at `T = 50`, cap 0.3), can explore not at all
+  (0.741 against 4.717 at `T = 10`, cap 3; 2.093 against 2.540 at `T = 30`, cap 1), and the sweep
+  missed the best block at long horizons (0.60 dearer at `T = 10⁶`, cap 0.002). The block length
+  is now found by bisection, the last round's amount in closed form.
+- **The capped exploration's stopping mass is found by bisection.** Iterating its map stopped on a
+  two-cycle at a tight cap or after rounds with no authority, and read a mass of 0 against 0.167
+  at `T = 41`, cap 0.01.
+- **`conjugate_time_certificate`'s definite arm holds above its upper equilibrium.** It wrote the
+  Riccati solution as a tanh only and read `nan` from a terminal weight of 3 on the defaults; it
+  takes the coth branch there. A cost with no conjugate point now raises `ValueError` instead of
+  returning `nan` everywhere.
+- **`information_lower_bound_certificate` returns at `rr = b²`.** Its floor is exactly zero there,
+  and the Hodges ratio raised `ZeroDivisionError`; the ratio and the rate fit, with nothing to
+  measure, now read `nan`.
+- **Four certificates take the edges of their inputs.** `fold_exactness_certificate` raised
+  `IndexError` on one decay and now reads its shift gates at the middle decay, the same 0.3 at the
+  defaults. `cluster_fold_leakage_certificate(n_seeds=1)` raised `ZeroDivisionError` and now
+  raises `ValueError`. `delayed_network_certificate` on an odd cluster built a sandwich that is
+  not the cross-fit residualiser's, its law derived for equal folds (`c_fold` 1.914 against
+  1.939 at 5 units), and now raises `ValueError`. `space_time_fold_certificate` priced one axis
+  below zero (−0.11 % at 4 restarts) when its free search stopped above the best time-constant
+  fold, which is a free fold too; the defaults do not move.
+- **Seven docstrings say what their derivations prove, with the numbers.** The H-inf robust gain
+  rises above the certainty-equivalent one where `b² > rr` (0.6797 against 0.6667 at `γ = 2`),
+  and the CE control can beat the calibrated minimum (8.486e-4 against 8.620e-4). The minimax
+  kink rule and its worst constant effect read the endpoint nearest zero, `b_hi` on a negative
+  interval. The delay loss series misses by 4.2e-3 above and 7.7e-4 below at `|ε| = 0.05`. The
+  dual-weighted estimate is exact where the model's curvature is the Riccati root, 2.509 against
+  an error of 0.13 off it by 0.05. The ensemble floor is quartic in the spread at `rr = b0²`. The
+  high-probability band covers 0.911 at its 4000 default trials, the doubly robust slope reads
+  3.20 at the default seed, and the Bayes action loses 0.079.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They

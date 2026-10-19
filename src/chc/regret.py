@@ -333,7 +333,8 @@ def information_lower_bound_certificate(
 
     The caveat that SURVIVES is the knife edge: at ``rr = b^2`` the optimal action is stationary
     in ``b``, so ``psi'`` and with it the leading floor vanish. That is a property of the problem,
-    not of the inequality used.
+    not of the inequality used. There the floors and the linearised regret are exactly zero, so
+    ``rate_slope`` and ``hodges_pointwise_ratio`` have nothing to measure and read ``nan``.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     v_exp = alpha**2 + 1.0  # total action variance (Var(alpha*z + nu), Vz = Vnu = 1)
@@ -351,7 +352,9 @@ def information_lower_bound_certificate(
         exp_regret[i] = coeff * float(np.mean(biases**2))
     cr_floor = coeff * sigma**2 / (ns * v_exp)
     conf_floor = coeff * sigma**2 / (ns * v_conf)
-    slope = float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
+    # at the knife edge rr = b^2 the coefficient is 0: no rate to fit, no floor to compare with
+    knife_edge = coeff == 0.0
+    slope = float("nan") if knife_edge else float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
 
     # Result 57's arm, in ACTION space, where the regret identity is exact.
     prior_width = 0.25
@@ -392,7 +395,7 @@ def information_lower_bound_certificate(
         slope,
         v_exp / v_conf,
         vt_floor,
-        hodges_pointwise / float(cr_floor[-1]),
+        float("nan") if knife_edge else hodges_pointwise / float(cr_floor[-1]),
         hodges_bayes / vt_floor,
         plugin_bayes / vt_floor,
     )
@@ -515,7 +518,8 @@ def multivariate_action_floor(
     ``p*q`` unit bumps, i.e. ``theta = vec(B)``, and a restricted family (two decoupled channels
     with known zero cross-effects, say) is supplied by giving its own basis. ``information`` is
     ``G`` in that basis and must be positive definite -- a singular ``G`` is an unidentified
-    direction, for which the floor is not a number.
+    direction, for which the floor is not a number. ``M`` must be positive definite too: the trace
+    step needs a PSD weight, and an indefinite ``M`` has no optimal action.
     """
     effect = np.asarray(effect, dtype=np.float64)
     state_weight = np.asarray(state_weight, dtype=np.float64)
@@ -563,6 +567,13 @@ def multivariate_action_floor(
         information=information,
         directions=basis,
     )
+    weight = effect.T @ state_weight @ effect + action_weight
+    lowest = float(np.linalg.eigvalsh(0.5 * (weight + weight.T)).min())
+    if lowest <= 0.0:
+        raise ValueError(
+            "the regret's curvature M = B'QB + R must be positive definite: otherwise u* is no "
+            f"minimiser and the trace bound does not hold (smallest eigenvalue {lowest:.3e})"
+        )
     action, curvature = _action_and_curvature(effect, state_weight, action_weight, target)
     sensitivity = _action_sensitivity(effect, state_weight, action_weight, target, basis)
     spectrum, rotation = np.linalg.eigh(0.5 * (information + information.T))
@@ -847,8 +858,8 @@ def highprob_regret_certificate(
     holds across the confidence region. ``empirical_coverage`` reads the EXACT regret
     ``(b^2+rr)(u*(b_hat)-u*(b))^2`` against it; read on the quadratic proxy ``C*(b_hat-b)^2`` it
     would only check the concentration. At the defaults the two agree; at ``b = 0.6``,
-    ``sigma = 1``, ``n = 30`` the band at ``delta = 0.01`` covers the exact regret in 0.916 of the
-    trials, where the proxy reads 0.996.
+    ``sigma = 1``, ``n = 30`` the band at ``delta = 0.01`` covers the exact regret in 0.911 of the
+    4000 default trials (Monte Carlo SD 0.0045), where the proxy reads 0.996.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     ds = np.asarray(deltas, dtype=np.float64)
@@ -961,7 +972,7 @@ class EnsembleControlCurve:
     spreads: Vector  # heterogeneity level (spread of the effect across the population)
     ensemble_floor: Vector  # R(u_ens): the irreducible regret of one control, ~ spread^2
     naive_mean_regret: Vector  # regret of the naive u*(mean effect) control: >= the ensemble floor
-    floor_slope: float  # log-log slope of the floor vs heterogeneity (~2: quadratic)
+    floor_slope: float  # log-log slope of the floor vs heterogeneity (~2; ~4 at rr = b0^2)
     homogeneous_floor: float  # floor at the smallest spread (~0: one control serves a uniform pop)
     naive_excess_max: float  # max(naive - ensemble): the value of curvature-weighting over the mean
 
@@ -981,10 +992,13 @@ def ensemble_control_certificate(
     proved in ``proofs/ensemble_control.v``). When the effect ``b`` varies across contexts (CATE
     heterogeneity), a single control ``u`` serves all. Even with perfect per-context knowledge, one
     control pays an irreducible regret = the curvature-weighted VARIANCE of the per-context optimal
-    actions, ``R(u_ens) = W*Var_w(u*)``, quadratic in the heterogeneity and zero for a homogeneous
-    population. The ensemble-optimal control is the curvature-weighted mean of per-context optima;
-    it WEAKLY beats the naive ``u*(mean effect)`` control (they coincide when curvature is uniform
-    across contexts), and strictly beats it under heterogeneous curvature.
+    actions, ``R(u_ens) = W*Var_w(u*)``, zero for a homogeneous population. With the effects spread
+    over ``[b0 - s, b0 + s]`` it is quadratic in ``s``, ``k(b0) u*'(b0)^2 s^2/3`` for a uniform
+    spread, except at ``rr = b0^2``: there ``u*'(b0) = 0`` and the floor is QUARTIC,
+    ``xt^2 s^4/(90 b0^4)`` (``floor_slope`` 4.05 on the default grid). The ensemble-optimal control
+    is the curvature-weighted mean of per-context optima; it WEAKLY beats the naive
+    ``u*(mean effect)`` control (they coincide when curvature is uniform across contexts), and
+    strictly beats it under heterogeneous curvature.
     """
     spreads = np.geomspace(spread_lo, spread_hi, n_spread)
     floor = np.zeros(n_spread)
@@ -1825,7 +1839,14 @@ def cluster_fold_leakage_certificate(
     conclusions survive (ARM 1) -- what does not survive is the claim that the code implements A8.
     The C2 certificates' own ``G_exp`` varies i.i.d. WITHIN cluster, which is not what a
     partial-interference exposure looks like, so they sit in the benign regime by accident.
+
+    Raises:
+        ValueError: if ``n_seeds < 2``: the variance law reads spreads over the seeds.
     """
+    if n_seeds < 2:
+        raise ValueError(
+            f"n_seeds must be at least 2, the law being a ratio of spreads; got {n_seeds}"
+        )
 
     def simulate(
         rng: np.random.Generator, gclust: int, m: int, tau: float, cluster_exposure: bool = False
@@ -2080,17 +2101,22 @@ def exact_ratio_moment(
     d_live = eigenvalues[live]
     b_live = loadings[live]
     constant = null_mass if has_null_mass else 0.0
+    # integrated in t * scale: the mass sits at t ~ 1/d, which on the raw scale quad's map of
+    # [0, inf) misses once the regressor covariance is far from 1, and its default absolute
+    # tolerance of 1.5e-8 accepts the miss
+    scale = float(d_live.max())
+    d_unit = d_live / scale
 
     def integrand(t: float) -> float:
-        weights = 1.0 + 2.0 * t * d_live
+        weights = 1.0 + 2.0 * t * d_unit
         return (
             t
             * float(np.exp(-0.5 * np.log(weights).sum()))
             * (float((b_live / weights).sum()) + constant)
         )
 
-    value, _ = quad(integrand, 0.0, np.inf, limit=400)
-    return float(value)
+    value, _ = quad(integrand, 0.0, np.inf, limit=400, epsabs=0.0, epsrel=1e-12)
+    return float(value) / scale**2
 
 
 def _adjugate_terms(q: int) -> dict[tuple[int, int], list[tuple[int, tuple[tuple[int, int], ...]]]]:
@@ -3354,7 +3380,7 @@ def fold_exactness_certificate(
 
     # the design sees neither a uniform off-diagonal shift nor a diagonal one
     m0 = int(small[-1])
-    q0 = _fold_weight_matrix(cycle_shells(m0, dmax), gammas, float(decays[1]))
+    q0 = _fold_weight_matrix(cycle_shells(m0, dmax), gammas, float(decays[len(decays) // 2]))
     off = q0 + shift * (np.ones((m0, m0)) - np.eye(m0))
     diagonal = q0 + shift * np.eye(m0)
     plain, moved, diag = [], [], []
@@ -3554,8 +3580,18 @@ def delayed_network_certificate(
     ``ConfoundedNetworkSystem`` is cross-sectional, so ``phi`` and ``delta`` are model parameters
     rather than fitted ones. What this gives the code today is a fold-assignment rule with a
     number attached.
+
+    Raises:
+        ValueError: if ``cluster_size`` is odd. The two folds are then unequal, ``(K/m) 1{same
+            fold}`` is no longer the fold-mean projector, and the closed-form ``A_u`` the law and
+            the simulation share is not the cross-fit residualiser's (``m = 5``: off by 0.35 in an
+            entry, ``c_fold`` 1.914 against the balanced law's 1.939).
     """
     m, p, k_folds = int(cluster_size), int(n_times), 2
+    if m % k_folds:
+        raise ValueError(
+            f"cluster_size must be even, the law being derived for two equal folds; got {m}"
+        )
     gam = np.asarray(gammas, dtype=float)
     dmax = gam.size - 1
     phis = np.asarray(phi_grid, dtype=float)
@@ -3989,7 +4025,12 @@ def conjugate_time_certificate(
 
     Flip the sign of ``q`` and ``tan`` becomes ``tanh``: the same one-line solution, bounded for
     every horizon. That is the whole dichotomy, and it is why the positive-definite arm here is a
-    control rather than a separate model.
+    control rather than a separate model. A terminal weight above that arm's upper equilibrium
+    ``(a + nu)/c``, ``nu = sqrt(a^2 + c|q|)``, takes the ``coth`` branch of the same solution
+    (STEP 7 of the derivation); up to 0.18.0 the arm read ``nan`` there (``s_t = 3`` on the
+    defaults). A negative weight at or below its lower equilibrium ``(a - nu)/c`` makes the
+    definite arm escape in finite time as well, and it reads ``nan``: there is no control to
+    compare with. A ``q`` with no conjugate point, ``a^2 + c q >= 0``, raises.
 
     THE COUNTER-INTUITIVE PART: ``mu`` GROWS with the control authority ``c``, so ``t_conj``
     SHRINKS. A stronger actuator brings the obstruction closer.
@@ -4009,6 +4050,11 @@ def conjugate_time_certificate(
     3.05 and 3.01 between successive margins from ``1e-1`` to ``1e-4``, on two step sizes ``db``.
     """
     c_auth = b * b / r
+    if not a * a + c_auth * q < 0.0:
+        raise ValueError(
+            f"no conjugate point: a^2 + (b^2/r) q = {a * a + c_auth * q} must be negative, so q "
+            "must be indefinite by more than the open-loop instability absorbs"
+        )
 
     def indefinite(horizon: float, bb: float) -> float:
         c = bb * bb / r
@@ -4019,8 +4065,13 @@ def conjugate_time_certificate(
     def definite(horizon: float, bb: float, qq: float) -> float:
         c = bb * bb / r
         nu = float(np.sqrt(a * a + c * qq))  # the SAME algebra with the sign flipped: tan -> tanh
-        psi0 = float(np.arctanh(c * (s_t - a / c) / nu))
-        return a / c + (nu / c) * float(np.tanh(nu * horizon + psi0))
+        z0 = c * (s_t - a / c) / nu
+        if z0 <= -1.0:
+            return float("nan")  # below the lower equilibrium the definite arm escapes too
+        if z0 < 1.0:
+            return a / c + (nu / c) * float(np.tanh(nu * horizon + np.arctanh(z0)))
+        # a weight at or above the upper equilibrium is the coth branch (conjugate_time.mac STEP 7)
+        return a / c + (nu / c) / float(np.tanh(nu * horizon + np.arctanh(1.0 / z0)))
 
     def escape(bb: float) -> float:
         c = bb * bb / r
@@ -4195,9 +4246,11 @@ class MinimaxExplorationCurve:
 class CappedExplorationPolicy:
     """The optimal exploration schedule under a per-round action cap -- Result 56, extended.
 
-    For a constant cap the policy is two numbers: explore at ``cap`` for ``block_rounds`` rounds,
-    then stop. It is not an approximation -- the objective is convex and depends on the schedule
-    only through its prefix sums, so front-loading as hard as the box allows is globally optimal.
+    For a constant cap the policy is three numbers: explore for ``block_rounds`` rounds, at ``cap``
+    in all but the last and at ``last_round`` in that one, then stop. It is not an approximation --
+    the objective is convex and depends on the schedule only through its prefix sums, so
+    front-loading as hard as the box allows is globally optimal, and the exchange argument leaves
+    at most one round below its cap.
 
     When the cap VARIES or a total ``budget`` is imposed, the invariant is not the block length but
     :attr:`exploration_mass`: the first-order condition sees the cap only through the mass already
@@ -4215,6 +4268,9 @@ class CappedExplorationPolicy:
     exploration_mass: float  # sum of the caps actually used -- what the stopping rule is about
     predicted_mass: float  # the self-consistent stopping mass; it does not know the cap SCHEDULE
     budget_binds: bool  # True when the budget, not the caps, is what stopped the block
+    # the exploration in the block's last round: its cap, or less where the optimum fills that
+    # round only partly -- the one unsaturated round the exchange argument allows
+    last_round: float
 
 
 def _capped_block_cost(
@@ -4280,9 +4336,13 @@ def _self_consistent_mass(
     cap the gap to it is not asymptotic at all but the exact constant ``K/(2 A c cap)``, derived
     in :func:`capped_exploration_policy`.
 
-    The integer map ``n -> S(n) -> n`` is iterated to a fixed point. It is monotone in ``n`` and
-    lands in a handful of steps, but a two-cycle across a round boundary is possible, so the loop
-    stops on the first repeat rather than on a tolerance.
+    The mass ``S(n)`` falls with ``n`` and the round that reaches it rises with the mass, so
+    ``reach(S(n)) - n`` is strictly decreasing: the balance round is the smallest ``n`` whose mass
+    the fill reaches by round ``n``, found by bisection. It is the fixed point where one exists and
+    otherwise the lower side of the round boundary the balance straddles. Iterating the map is not
+    enough: it converges only while its slope is below one, and a tight cap or a prefix of zero
+    caps makes the fixed point repelling (``T = 41`` at ``cap = 0.01`` read a mass of 0 against the
+    balance's ``0.167``).
     """
     prefix = np.cumsum(caps)
 
@@ -4290,13 +4350,14 @@ def _self_consistent_mass(
         reach = numerator * max(horizon - rounds, 0) / (curvature * info_rate)
         return max(float(np.sqrt(reach)) - prior_info / info_rate, 0.0)
 
-    rounds, seen = 0, set()
-    for _ in range(64):
-        if rounds in seen:
-            break
-        seen.add(rounds)
-        rounds = int(np.searchsorted(prefix, mass_for(rounds))) + 1
-    return mass_for(rounds)
+    lo, hi = 1, horizon  # at n = T the mass is 0, which round 1 reaches
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if int(np.searchsorted(prefix, mass_for(mid))) + 1 > mid:
+            lo = mid + 1
+        else:
+            hi = mid
+    return mass_for(lo)
 
 
 def _greedy_fill(caps: NDArray[np.float64], budget: float | None) -> NDArray[np.float64]:
@@ -4333,8 +4394,11 @@ def capped_exploration_policy(
     them, so moving exploration from a later round to an earlier one at equal budget STRICTLY
     lowers it (``proofs/capped_exploration.v``, ``earlier_is_strictly_cheaper``) -- an argument
     that never mentions the cap. The Hessian is a sum of rank-one PSD terms, so the objective is
-    convex and the exchange argument gives a GLOBAL optimum: saturate the cap on a prefix, then
-    stop. A clipped burst, not a taper.
+    convex and the exchange argument gives a GLOBAL optimum: saturate the cap on a prefix, fill at
+    most one more round partly, then stop. A clipped burst, not a taper. The partial round is
+    worth ``6.8e-4`` of ``3.078`` at ``T = 50``, ``cap = 0.3`` and ``3e-6`` at ``T = 1e5``,
+    ``cap = 0.03``; a whole block alone can be worth less than not exploring at all -- at
+    ``T = 10``, ``cap = 3`` one round at the cap costs ``4.72`` against ``0.74`` for none.
 
     The price of the cap is ADDITIVE and LOGARITHMIC, not a constant factor. The optimal block
     length is ``n* = sqrt(K T/(A c))/cap`` TO LEADING ORDER -- exactly it is ``S*/cap``, smaller
@@ -4346,8 +4410,9 @@ def capped_exploration_policy(
     LONGER, not more gently.
 
     ``block_rounds`` is found by an exact search over the convex block-cost curve, which digamma
-    makes O(1) per candidate; ``cost`` is the true cost of that schedule and agrees with a
-    projected-gradient solve of the full convex program to seven decimals. ``taper_cost`` is the
+    makes O(1) per candidate, and the last round's amount in closed form on the two rounds next to
+    the best whole block; ``cost`` is the true cost of that schedule, the convex program's minimum
+    to rounding. ``taper_cost`` is the
     clipped ``1/sqrt(t)`` schedule at its own optimal scale, for comparison -- at ``T = 1e5`` and
     ``cap = 0.03`` the block costs ``196.11`` against the taper's ``266.81``, a ``36%`` gap that
     does not close.
@@ -4463,15 +4528,24 @@ def capped_exploration_policy(
                 horizon=horizon,
             )
 
-        predicted = np.sqrt(numerator * horizon / (curvature * info_rate)) / level
-        # Convex in the block length, so a coarse geometric bracket plus a local sweep is exact.
-        coarse = np.unique(
-            np.clip(np.round(predicted * np.geomspace(0.05, 20.0, 61)), 1.0, float(horizon))
-        )
-        centre = float(coarse[int(np.argmin(cost_of(coarse)))])
-        window = np.unique(np.clip(np.arange(centre - 64.0, centre + 65.0), 1.0, float(horizon)))
-        best = int(window[int(np.argmin(cost_of(window)))])
-        cost = float(cost_of(np.array([float(best)]))[0])
+        def block(rounds: int) -> tuple[float, float]:
+            return level * rounds, float(cost_of(np.array([float(rounds)]))[0])
+
+        # Convex in the block length, so the first length whose next round no longer pays is the
+        # best, found by bisection on the sign of that step from zero rounds -- a cap above the
+        # whole optimal mass may not be worth one round. A geometric bracket with a sweep of 64
+        # rounds around it missed the minimum wherever the bracket's spacing was wider: 90932
+        # rounds against 95108 at T = 1e6, cap = 0.002, 0.60 dearer.
+        lo, hi = 0, horizon
+        while lo < hi:
+            mid = (lo + hi) // 2
+            step = cost_of(np.array([mid + 1.0, float(mid)]))
+            if step[0] < step[1]:
+                lo = mid + 1
+            else:
+                hi = mid
+        best = lo
+        crumb = 0.0
     else:
         curve = _scheduled_block_costs(
             fill,
@@ -4490,10 +4564,38 @@ def capped_exploration_policy(
         crumb = np.finfo(np.float64).eps * caps.size * float(np.sum(fill[:best]))
         used = np.flatnonzero(fill[:best] > crumb)
         best = int(used[-1]) + 1 if used.size else 0
-        cost = float(curve[best])
+        delivered = np.concatenate([[0.0], np.cumsum(fill)])
 
-    mass = float(np.sum(fill[:best]))
-    effective = mass / best if best > 0 else float(caps[0])
+        def block(rounds: int) -> tuple[float, float]:
+            return float(delivered[rounds]), float(curve[rounds])
+
+    # The objective is convex in the mass the greedy fill delivers (each prefix sum is concave in
+    # it), so its minimum lies within one exploring round of the best whole block, and on that
+    # round the amount to explore is a closed form: A x + K (T - n - 1)/(w + c x) is least at
+    # x = sqrt(K (T - n - 1)/(A c)) - w/c. A whole block alone missed this one partial round.
+    saturated, partial = best, 0.0
+    mass, cost = block(best)
+    ahead = np.flatnonzero(fill[best:] > crumb)  # the next round that can explore, past idle ones
+    for rounds in (best - 1, best + int(ahead[0]) if ahead.size else horizon):
+        if not 0 <= rounds < horizon:
+            continue
+        base, base_cost = block(rounds)
+        info = i0 + info_rate * base
+        rest = horizon - rounds - 1
+        reach = float(np.sqrt(numerator * rest / (curvature * info_rate))) - info / info_rate
+        amount = min(max(reach, 0.0), float(fill[rounds]))
+        if amount <= crumb:
+            continue
+        total = (
+            base_cost
+            + curvature * amount
+            + numerator * rest * (1.0 / (info + info_rate * amount) - 1.0 / info)
+        )
+        if total < cost:
+            saturated, partial, mass, cost = rounds, amount, base + amount, total
+    best = saturated + 1 if partial > 0.0 else saturated
+    last_round = partial if partial > 0.0 else float(fill[best - 1]) if best > 0 else 0.0
+    effective = mass / best if best > 0 and not constant else float(caps[0])
 
     scale = sigma * np.sqrt(numerator / (2.0 * curvature * eta))
     steps = np.arange(1, horizon + 1, dtype=np.float64)
@@ -4512,6 +4614,7 @@ def capped_exploration_policy(
         exploration_mass=mass,
         predicted_mass=predicted_mass,
         budget_binds=budget is not None and mass >= budget - 1e-9 * max(1.0, budget),
+        last_round=last_round,
     )
 
 
@@ -4655,7 +4758,7 @@ def van_trees_certificate(
 
 @dataclass(frozen=True)
 class HInfRobustCurve:
-    """H-inf robustness = pessimistic contraction, calibratable to ~ the variance-optimal action."""
+    """H-inf robustness moves the gain, calibratable to ~ the variance-optimal action."""
 
     gamma_grid: Vector  # adversary energy budget gamma (robustness level)
     robust_gain: Vector  # u_rob(gamma): the cautious control; -> u_ce as gamma -> inf
@@ -4667,7 +4770,11 @@ class HInfRobustCurve:
     gamma_star: float  # argmin of the expected regret
     gain_at_gamma_star: float  # robust gain at gamma*: ~ u_pess_star (approx, not an identity)
     expected_regret_min: float  # ~ 0: the robust optimum reaches the variance-pessimism optimum
-    ce_expected_regret: float  # regret of the (under-cautious) CE control; > expected_regret_min
+    # regret of the CE control. Not ordered against expected_regret_min in general: both are
+    # (b^2 + rr + s^2)(u - u_pess)^2, so the minimum is the lower one only where some grid gamma
+    # puts its gain nearer u_pess than u_ce is (b = 1.5, rr = 0.5, s = 0.3: CE 8.486e-4 against
+    # the minimum's 8.620e-4)
+    ce_expected_regret: float
 
 
 def hinf_robust_regret_certificate(
@@ -4687,10 +4794,14 @@ def hinf_robust_regret_certificate(
     ``gamma^2``; the robust controller solves ``min_u max_w``. This is a *correspondence*, not an
     identity: the worst-case objective ``gamma^2*e^2/(gamma^2-u^2)+rr*u^2`` and the expected
     quadratic objective ``(b*u-xt)^2+(rr+s^2)u^2`` (Result 2, optimum ``u_pess=b*xt/(b^2+rr+s^2)``)
-    are different functions. Robustness INDUCES a pessimistic contraction (``u_rob -> u_ce`` as
-    ``gamma`` grows), and the regret-optimal ``gamma*`` can be CALIBRATED so ``u_rob(gamma*)``
-    approximates ``u_pess`` (0.5415 vs 0.538) -- game-theoretic robustness and statistical pessimism
-    as two roads to a similar cautious control, not a proven equality.
+    are different functions. The robust gain tends to ``u_ce`` as ``gamma`` grows, but from BELOW
+    only when ``rr > b^2``: to first order in ``1/gamma^2`` it moves by
+    ``u_ce rr xt^2 (b^2 - rr)/(b^2 + rr)^3`` (step (F) of the derivation), so on the defaults,
+    ``b^2 > rr``, robustness RAISES the gain at large ``gamma`` (0.6797 against 0.6667 at
+    ``gamma = 2``) and contracts it only near the feasibility edge ``gamma ~ |u|``. That is where
+    the regret-optimal ``gamma*`` lies, and it can be CALIBRATED so ``u_rob(gamma*)`` approximates
+    ``u_pess`` (0.5415 vs 0.538) -- game-theoretic robustness and statistical pessimism as two roads
+    to a similar cautious control, not a proven equality.
     """
     s2 = s * s
     u_ce = b * xt / (b * b + rr)
@@ -4932,7 +5043,9 @@ class DoublyRobustCurve:
 
     errors: Vector  # delta grid (both nuisances misspecified by delta together)
     dr_regret_both: Vector  # AIPW control regret when both nuisances err (~ (delta^2)^2 = delta^4)
-    dr_slope: float  # log-log slope of dr_regret_both: 4 as delta -> 0, 3.33 on the default grid
+    # log-log slope of dr_regret_both: 4 as delta -> 0; on the default grid the population's is
+    # 3.33 and the seeded estimate scatters about it (3.20 at seed 0, 3.42 / 3.19 / 3.46 at 1-3)
+    dr_slope: float
     dr_outcome_ok: float  # AIPW regret with the outcome model correct, propensity wrong (-> 0)
     dr_propensity_ok: float  # AIPW regret with the propensity model correct, outcome wrong (-> 0)
     outcome_reg_fails: float  # outcome-regression regret when its outcome model is wrong (> 0)
@@ -4976,7 +5089,8 @@ def doubly_robust_control_certificate(
     ``O((dmu*de)^2)`` and vanishes if EITHER nuisance model is correct (double robustness), unlike
     outcome-regression (needs the outcome model) or IPW (needs the propensity model). Here the bias
     is ``dmu*de*E[(1/2-e)/e_hat]``: the propensity error moves the weight as well, so the slope is 4
-    only as the errors vanish, and 3.33 over the default grid. ``seed`` selects the draws.
+    only as the errors vanish, and 3.33 over the default grid, which the defaults read as 3.20 at
+    seed 0 (3.42, 3.19, 3.46 at seeds 1-3). ``seed`` selects the draws.
     """
 
     def regret(dmu: float, de: float, kind: str) -> float:
@@ -5653,8 +5767,12 @@ def minimax_action(
     A convex piecewise quadratic attains its minimum at a branch minimiser or at a kink, so
     evaluating the four candidates is exact, not a heuristic.
 
-    The choice is decided by ``curvature*b_lo*(b_hi - b_lo)/2 <= effort``: below it the answer is
-    the CE action for the *pessimistic* endpoint, above it the equalising action. And the correction
+    On an interval of one sign the choice is decided by ``curvature*|b_0|*(b_hi - b_lo)/2 <=
+    effort``, ``b_0`` the endpoint nearest zero -- ``b_lo`` on a positive interval, ``b_hi`` on a
+    negative one, for a target of either sign: below it the answer is the CE action for that
+    *pessimistic* endpoint, above it the equalising action. ``proofs/minimax_lq.v`` proves the rule
+    for ``0 <= u`` and ``b_hi u <= target``; the rest is the symmetry ``(b, u) -> (-b, -u)``, and an
+    interval containing zero is left to the enumeration. And the correction
     does NOT have a fixed sign -- the robust action is smaller than CE at ``b_hat`` only when
     ``curvature*b_lo*b_hat < effort``, and larger otherwise. "Be robust, act less" is a statement
     about expensive effort, not about pessimism.
@@ -5689,7 +5807,9 @@ def minimax_action(
         raise ValueError(f"criterion must be 'cost' or 'regret', got {criterion!r}")
 
     def branch(b: float, u: float) -> float:
-        return curvature * (b * u - target) ** 2 + effort * u**2
+        # products, not ``**``: a float power past the float range raises where these read inf
+        miss = b * u - target
+        return curvature * miss * miss + effort * u * u
 
     def worst(u: float) -> float:
         return max(branch(b_lo, u), branch(b_hi, u))
@@ -5721,7 +5841,8 @@ def _minimax_regret_action(
         return curvature * b * target / spread(b)
 
     def regret(u: float, b: float) -> float:
-        return spread(b) * (u - best(b)) ** 2
+        gap = u - best(b)
+        return spread(b) * gap * gap
 
     def turn(u: float) -> float | None:
         """Where ``sqrt(D) (u - u*)`` turns inside the interval; it turns at most once."""
@@ -5984,11 +6105,13 @@ def minimax_lq_policy(
 
     The adversary re-picks ``b`` at **every step**, which is what makes dynamic programming apply
     and is normally a strict relaxation of a constant unknown effect. Here it is not, and that is a
-    result rather than a caveat: identity (9) shows the robust action always leaves the *lower*
-    endpoint (weakly) worst, decided by the same ``curvature*b_lo*D <= effort`` that picked the
-    branch, so the per-step optimum is realised by the constant effect ``b_lo``. The value is the
-    constant-effect worst case rather than an upper bound on it, and
-    :func:`minimax_lq_certificate` measures that instead of assuming it.
+    result rather than a caveat: identity (9) shows the robust action always leaves the endpoint
+    nearest zero (weakly) worst, decided by the same kink rule that picked the branch, so the
+    per-step optimum is realised by that constant effect -- ``b_lo`` on a positive interval,
+    ``b_hi`` on a negative one (``a = 1``, ``b`` in ``[-2, -1]``, ``q = r = 1``, ``T = 2``: value
+    1.5, which ``b_hi`` costs and ``b_lo`` does not, 1.25), and both endpoints on an interval
+    containing zero. The value is the constant-effect worst case rather than an upper bound on it,
+    and :func:`minimax_lq_certificate` measures that instead of assuming it.
 
     HONEST SCOPE. Scalar state and scalar effect: the interval is the §32 sensitivity interval for
     one control channel, and the multivariate lift is not this function.
@@ -6802,7 +6925,9 @@ def space_time_fold_certificate(
             seed=seed,
         )
         space_only.append(float(best_constant))
-        space_time.append(float(free.objective))
+        # every time-constant fold is a free one, so the free optimum is never above the best of
+        # them; a search that stops above it has found a worse fold, not a negative price
+        space_time.append(min(float(free.objective), float(best_constant)))
     slice_arr = np.asarray(slice_design)
     space_only_arr = np.asarray(space_only)
     space_time_arr = np.asarray(space_time)

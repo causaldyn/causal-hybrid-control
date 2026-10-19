@@ -163,3 +163,14 @@ def test_fold_exactness_certificate() -> None:
     assert curve.gap_dominates_shortfall
     assert np.all(curve.certified_gap >= curve.heuristic_shortfall - 1e-12)
     assert np.all(curve.certified_gap > curve.bound_looseness - 1e-12)
+
+
+def test_fold_exactness_certificate_runs_on_one_decay() -> None:
+    """The shift gates read the middle decay, which is 0.3 for both calls; read as decays[1] it
+    raised IndexError on a single decay."""
+    one = fold_exactness_certificate(sizes=(24,), decays=(0.3,), small=(10,))
+    three = fold_exactness_certificate(sizes=(24,), decays=(0.01, 0.3, 0.9), small=(10,))
+    assert one.ok
+    assert one.shift_spread == three.shift_spread
+    assert one.shift_prediction == three.shift_prediction
+    assert one.diagonal_shift_moves_cut == three.diagonal_shift_moves_cut
