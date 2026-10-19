@@ -20,6 +20,14 @@ still change).
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
 - **A `lever_range` warning** when a prescription sets a lever outside the range the panel logged.
+- **Misspecification tests as a CI gate** (`tests/misspecification/`, ADR 0115). Each public
+  certificate is read on plants its model gets wrong: a persistent confounder, AR noise, dead time,
+  nuisances outside the sieve, actions outside the logged support, a plant unlike the model. Each
+  test asserts that the certificate holds at its level or says so. Cases that do neither are strict
+  xfails with their numbers: the tube under a persistent confounder (0.765 at step 15 where it
+  states 0.95), the channel's interval outside the sieve (0 of 40), the `"mis"` interval under a
+  model error (0 of 40), and five more. The default `pytest` deselects the suite; a CI job of its own
+  runs it, and so does `just misspecification`.
 
 ### Changed
 
