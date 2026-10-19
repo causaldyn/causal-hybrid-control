@@ -120,6 +120,13 @@ own, not with `sinkhorn`.
   markets:
   - the effect's spread was 0.52–0.78 of the plain effect's, and 0.85–1.04 of its standard error,
     which errs conservative;
+  - under independent coins on six more markets of 80 units of four types against three zones at
+    `1/2`, the spread was 0.93–1.13 of the standard error, which holds the treated share the coins
+    dealt fixed, and the 95% interval held the effect's mean in 91.5–95.1% of 998–1198
+    assignments. It fell short where the types left little noise inside them: the effect, the
+    slope `f'(p)`, moves by `-f''` a unit of the share, and post-stratifying had removed most of
+    the rest. `design="bernoulli"` adds `curvature² Var(share)`, and read 0.93–1.04 and
+    93.2–95.2%;
   - the curvature's mean was 0.83–1.11 of `-f''`;
   - the alarm withheld the claim in at most 1% of the experiments on 80 units against three zones,
     where plain it had in 3–7%, and nearly as often as plain on 80 units against 80 others: 75%

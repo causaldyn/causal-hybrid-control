@@ -96,6 +96,15 @@ still change).
 - **Benchmarks**: the pricing and inventory tasks add `predictive-all`, a regression on every
   logged column, which lands with `causal-CHC`; `run()` returns four results.
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
+- **`shadow_price_effect(design="bernoulli")` reads its standard error for independent coins.**
+  The standard error holds fixed the treated share the assignment dealt; under independent coins
+  the share moves too, and the effect, the slope `f'(p)`, moves with it by `-f''(p)` a unit of
+  share. Post-stratified, on 80 rows of four types against three zones at `p = 1/2` whose types
+  left little noise inside them, the effect spread 1.13 and 1.08 times its standard error and the
+  95% interval held the mean in 91.5% and 91.8% of 1198 and 1149 assignments (MC SE 0.8%), where
+  the docs stated 0.85–1.04. `design="bernoulli"` adds `curvature**2 * Var(share)`: 1.04 and
+  1.01, held in 93.2% and 94.0%. The default, `design="fixed_share"`, is unchanged, and its docs
+  now say what it holds fixed and state 0.85–1.13.
 
 ## [0.18.0] — 2026-10-13
 
