@@ -28,6 +28,7 @@ still change).
   in each covariate at `ceil(N^(1/3))` quantile knots: bias 0.18, 0.05 and 0.18 of the channel's
   error at 1000, 4000 and 16000 rows, coverage 0.955, 0.970 and 0.950. `nuisance_shift` reads
   how far a refit moves the channel, in its errors (53 to 61 there). The default is unchanged.
+  `prescribe(nuisance_knots=)` passes it to the fit, and `RunProvenance.nuisance_knots` records it.
 - **`fit_lift` tests its independent-noise premise.** With `serial="independent"` it reads the
   residuals' lag-1 correlation within each test (Breusch–Godfrey), keeps the p-value in
   `LiftFit.serial_p_value` and, below 0.05, logs a WARNING that names `serial="ar1"`: on 200
