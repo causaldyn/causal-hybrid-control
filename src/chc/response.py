@@ -82,8 +82,9 @@ HONEST SCOPE:
   and finite, not infinite. Every slope finite at zero spend is the curve's own.
 * In single precision the numeric tangencies are good to single precision.
 * The readings of the return take concrete numbers: they report on a fitted channel, not on one
-  inside a trace. The carryover they count is what falls inside the series; to count the rest,
-  extend the series with what is spent after it.
+  inside a trace. :func:`roi` and :func:`marginal_roi` count the carryover that falls inside the
+  series unless ``tail`` extends it with periods of no spend; to count spend after the series too,
+  extend it with that spend. Their default will count the kernel's whole tail.
 * Meridian's forms are not mapped yet, nor run beside these.
 """
 
@@ -92,6 +93,8 @@ from __future__ import annotations
 import abc
 import functools
 import math
+import numbers
+import warnings
 from collections.abc import Callable
 from typing import ClassVar, TypeVar
 
@@ -1078,13 +1081,46 @@ def _series(spend: ArrayLike) -> Array:
     return series
 
 
-def _window(spend: ArrayLike, window: slice) -> tuple[Array, Array, float]:
+def _window(
+    channel: Callable[[Array], Array],
+    spend: ArrayLike,
+    window: slice,
+    tail: bool | int | None,
+    reading: str,
+) -> tuple[Array, Array, float]:
+    """The series, the window's periods, what the window spent, each extended by ``tail``'s
+    periods of no spend."""
     series = _series(spend)
     inside = jnp.zeros_like(series).at[window].set(1.0)
     spent = float(jnp.sum(series * inside))
     if not spent > 0.0:
         raise ValueError(f"the window {window} spends {spent}; its return per unit is undefined")
-    return series, inside, spent
+    carried = channel.kernel.length - 1 if isinstance(channel, Channel) else None
+    if tail is None:
+        # the cut moves the number only where the window spends in the kernel's last reach
+        if carried and bool(jnp.any((series * inside)[-carried:] > 0.0)):
+            warnings.warn(
+                f"{reading} counts the carryover that falls inside the series, and the window "
+                f"spends in its last {carried} periods, whose carryover runs past its end. Pass "
+                "tail=True to count the kernel's whole tail, or tail=False to keep the cut; a "
+                "future release will count the tail by default",
+                FutureWarning,
+                stacklevel=3,
+            )
+        periods = 0
+    elif isinstance(tail, bool):
+        if tail and carried is None:
+            raise TypeError(
+                f"tail=True reads the kernel's length, and the channel is a "
+                f"{type(channel).__name__}, not a Channel; pass the periods to extend by"
+            )
+        periods = carried if tail and carried is not None else 0
+    elif isinstance(tail, numbers.Integral) and tail >= 0:
+        periods = int(tail)
+    else:
+        raise ValueError(f"tail={tail!r} is not True, False or a whole number of periods")
+    after = jnp.zeros(periods, dtype=series.dtype)
+    return jnp.concatenate([series, after]), jnp.concatenate([inside, after]), spent
 
 
 def contribution(
@@ -1109,19 +1145,32 @@ def roi(
     window: slice = slice(None),
     *,
     revenue_per_kpi: float = 1.0,
+    tail: bool | int | None = None,
 ) -> float:
     """The incremental return on the window's spend, per currency unit, carryover included.
 
     The channel's return over the whole series, less its return with the window's spend removed,
     over what the window spent. ``channel`` is any function of a ``(T,)`` spend series returning a
-    ``(T,)`` series of returns. The carryover counted is what falls inside the series: to count all
-    of it, extend the series by the kernel's length with what is spent after. Near the series' end
-    the cut is most of the return: through a long unnormalised geometric kernel of retention ``r``
-    and a linear curve, a last period's spend is credited with ``1`` of the ``1 / (1 - r)`` it
-    returns, a tenth at ``r = 0.9``.
-    ``revenue_per_kpi`` turns a KPI into revenue; at 1 the outcome is revenue.
+    ``(T,)`` series of returns. ``revenue_per_kpi`` turns a KPI into revenue; at 1 the outcome is
+    revenue.
+
+    ``tail`` extends the series with periods of no spend, so the carryover past its end is counted:
+    ``True`` by the kernel's length less one, all of a :class:`Channel`'s tail; a whole number by
+    that many periods, for a channel of another kind; ``False`` by none. Without it the carryover
+    counted is what falls inside the series, and near the series' end the cut is most of the
+    return: through a long unnormalised geometric kernel of retention ``r`` and a linear curve, a
+    last period's spend is credited with ``1`` of the ``1 / (1 - r)`` it returns, a tenth at
+    ``r = 0.9``; on a Michaelis--Menten curve at retention 0.9 and length 30, the last of 52 periods
+    reads 0.0003 where its whole tail reads 0.0165. Left unset on a :class:`Channel` whose window
+    spends in the kernel's last ``length - 1`` periods, it warns (``FutureWarning``): the default
+    will become ``True``. Spend after the series is not counted: extend the series with it.
+
+    Raises:
+        TypeError: ``tail=True`` on a channel that is not a :class:`Channel`.
+        ValueError: a spend that is not a nonnegative finite ``(T,)`` series, a window that spends
+            nothing, or a ``tail`` that is not ``True``, ``False`` or a whole number.
     """
-    series, inside, spent = _window(spend, window)
+    series, inside, spent = _window(channel, spend, window, tail, "roi")
     removed = series * (1.0 - inside)
     return revenue_per_kpi * float(jnp.sum(channel(series) - channel(removed))) / spent
 
@@ -1132,15 +1181,20 @@ def marginal_roi(
     window: slice = slice(None),
     *,
     revenue_per_kpi: float = 1.0,
+    tail: bool | int | None = None,
 ) -> float:
     """The return on one more currency unit, spread over the window in proportion to its spend.
 
     The derivative of the channel's return over the whole series along the window's spend, over
     what the window spent: the limit of scaling the window's spend by ``1 + e``, where a step of
     finite size would move the number on a curved response. Carryover is counted as in
-    :func:`roi`.
+    :func:`roi`, ``tail`` and its warning included: at retention 0.9 and length 30, the last of 52
+    periods reads 0.0003 where its whole tail reads 0.0156, 52 times more.
+
+    Raises:
+        TypeError, ValueError: as :func:`roi`.
     """
-    series, inside, spent = _window(spend, window)
+    series, inside, spent = _window(channel, spend, window, tail, "marginal_roi")
     _, slope = jax.jvp(lambda path: jnp.sum(channel(path)), (series,), (series * inside,))
     return revenue_per_kpi * float(slope) / spent
 

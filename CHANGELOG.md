@@ -72,6 +72,33 @@ still change).
   action paying 0.4 now and costing 0.6 three decisions on, deployed on every path, was warned of
   on every path at a median of 150 decisions; on four nulls the check warned on 0.020 to 0.050 of
   200 paths.
+- **`AllocationWeight.margin`, `margin_gradient` and `margin_sds` read how far `decision_weight`'s
+  second order reaches.** *Experimental.* A channel held at an end of its box carries no weight;
+  its `margin` is how far its return on a currency unit stands from the budget's price,
+  `margin_gradient` how much of it a unit error in each parameter uses up, and
+  `margin_sds(covariance)` the margin in standard deviations of what errors of that covariance use
+  up. On three instances of concave channels, one held at a floor, where the margin stood 2.7
+  standard deviations or more the plans' losses summed to their own `d' W d / 2` to 1.1%; at
+  1.2–1.4 standard deviations 8–13% of the plans moved the channel off its end and the losses were
+  1.15–1.20 times it, which the weight alone gave no way to see. On three exponential channels,
+  400 plans each: 1.002 ± 0.003 at 3 standard deviations, 1.27 ± 0.08 at 1.3 and 1.84 ± 0.13 at
+  0.3. `validation/allocation_decision_weight.mac` holds the margin and its gradient to their
+  closed form (STEP 3).
+- **`roi(tail=)` and `marginal_roi(tail=)` count the carryover past the series' end.** `True`
+  extends the series by the kernel's length less one periods of no spend, a whole number by that
+  many, `False` keeps the cut. Through a geometric kernel of retention 0.9 and length 30, the last
+  of 52 periods' `marginal_roi` read 0.0003 cut and reads 0.0156 with its tail, 52 times more;
+  over the last 12 periods 6–7 times, over the whole series 1.3–1.6 times. The default is
+  unchanged (ADR 0109).
+- **`allocate(schedule=True)` searches a spend for each period.** *Experimental.* On S-shaped
+  curves one rate a period is not the best schedule: one Hill curve of slope 3, 1.2 over four
+  periods, returns 0.105 flat and 0.633 spent in one period, which the schedule finds and closes
+  on. Where every kernel is one period long the schedule is searched in boxes over the periods and
+  channels, each channel's periods read in falling order so that their orders are not bounded
+  apart (three channels over six periods: 13–17 boxes, closed, where unordered the search took 499
+  without closing). Where a kernel is longer it is the best of local ascents, bounded by the
+  curves' concave envelopes, reported with `limit="local"` and a warning when that bound does not
+  close. `Allocation.schedule` holds it; `SearchLimit` gains `"local"` (ADR 0110).
 
 ### Changed
 
@@ -102,6 +129,9 @@ still change).
   `SupportModel`, fixed-degree nuisances, and `plan_regret_bound`'s unread rows.
 - **`prescribe` labels its `gamma*` a relative margin**: its radius is a share of the fitted
   channel, not a level of confounding, and its `rk4` fit has no absolute sensitivity model.
+- **`roi` and `marginal_roi` warn (`FutureWarning`) where an unset `tail` cuts the number**: on a
+  `Channel` whose window spends in the kernel's last `length - 1` periods. A future release will
+  count the tail by default; pass `tail=False` to keep the cut.
 
 ### Fixed
 
@@ -273,6 +303,34 @@ still change).
   error off the logs, stretched to hold the estimate: 0.978 and 0.993, 0.983 on a model fitted to
   a 300-step pilot (0.680 before), and 0.950 with the model right, at 1.2 times the width (1.4
   for a deterministic plan). The estimate does not move (ADR 0108). Since 0.8.0.
+- **`shadow_price_effect(design="bernoulli")` reads its standard error for independent coins.**
+  The standard error holds fixed the treated share the assignment dealt; under independent coins
+  the share moves too, and the effect, the slope `f'(p)`, moves with it by `-f''(p)` a unit of
+  share. Post-stratified, on 80 rows of four types against three zones at `p = 1/2` whose types
+  left little noise inside them, the effect spread 1.13 and 1.08 times its standard error and the
+  95% interval held the mean in 91.5% and 91.8% of 1198 and 1149 assignments (MC SE 0.8%), where
+  the docs stated 0.85–1.04. `design="bernoulli"` adds `curvature**2 * Var(share)`: 1.04 and
+  1.01, held in 93.2% and 94.0%. The default, `design="fixed_share"`, is unchanged, and its docs
+  now say what it holds fixed and state 0.85–1.13.
+- **`minimax_allocate` no longer reports `closed` on a reading's best that its own search left
+  short.** Each reading's best is the worth of `allocate`'s plan for it; where that search stopped
+  at its cap the best was short, every regret against it read low, and the split's search could
+  still close on them. Two readings at a budget of 1.6, one concave and one two Hill curves of
+  slope 3, under a cap of two boxes: the second reading's search stopped at 0.705 of its best,
+  0.804, and the split, reported `closed` with a worst regret of 0, regrets 0.090 against 0.804,
+  where the least worst regret is 0.015. `stopped` is now `cap` and `limit` the reading's whenever
+  a reading's own search stopped at its cap, and the call logs it.
+- **`ExposureResponse.se` says it is HC0 and short in short logs.** On `SharedStateMarket(seed=0)`
+  read by `calibrate_naive_causal`, `marginal ± 1.96 se` held the slope of three 40,000-block logs
+  in 91.3% of the twelve zones' reads over 300 logs of 400 blocks, 79% in the worst zone; HC3
+  raised that to 92.1%, and over 150 logs of 4,000 blocks it held in 94.2% and 95.0%. No number
+  moves.
+- **`budget_for` and `budget_for_geos` meet a return on spend at the most budget, proved.** Past
+  the peak a grid of 16 budgets was read down from the caps, and a window where the goal is met
+  inside one step was not seen: a concave channel and a Hill curve of slope 12 meet 0.6 a unit
+  between about 36.8 and 37.7, and the goal was met at 22.83. The stretch is now halved, each upper
+  half searched in boxes with its budget held in it, and its bound rules it out where no budget
+  meets the goal: 37.68. Under totals too, where the gain need not rise with the budget.
 
 ## [0.18.0] — 2026-10-13
 

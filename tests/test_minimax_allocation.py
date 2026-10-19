@@ -280,6 +280,43 @@ def test_a_minimax_search_its_cap_stops_says_so_and_logs_its_gap(caplog):
     assert plan.gap > 0.1
 
 
+def test_a_reading_s_own_search_its_cap_stops_leaves_the_minimax_search_at_its_cap(caplog):
+    """A concave reading, and two Hill curves of slope 3 at scales 1.01 and 1, whose best is all of
+    1.6 on the second channel, 512/637. Under a cap of two boxes the second reading's own search
+    stops at 0.705, and against that best the split's search closes on a worst regret of nothing:
+    the split regrets 0.090 against the reading's own best, where the least worst regret on a grid
+    is 0.015. The bests are short, so the search reports the reading's cap and logs it; with the cap
+    lifted it closes on the grid's least."""
+    concave = (Channel(ONE, MichaelisMenten(1.0), 1.0), Channel(ONE, MichaelisMenten(1.0), 0.3))
+    untied = (Channel(ONE, Hill(1.01, 3.0), 1.0), Channel(ONE, Hill(1.0, 3.0), 1.0))
+    box = {"lower": np.zeros(2), "upper": np.full(2, 1.6)}
+    s = np.linspace(0.0, 1.6, 160001)
+    h = lambda x, scale: (x / scale) ** 3 / (1.0 + (x / scale) ** 3)  # noqa: E731
+    returns = np.array([s / (1 + s) + 0.3 * (1.6 - s) / (2.6 - s), h(s, 1.01) + h(1.6 - s, 1.0)])
+    best = returns.max(axis=1)
+    assert best[1] == pytest.approx(512 / 637, rel=1e-12, abs=0.0)
+    least = float((best[:, None] - returns).max(axis=0).min())
+
+    own = allocate(untied, 1.6, 1, **box, max_boxes=2)
+    assert (own.stopped, own.limit) == ("cap", "max_boxes")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = minimax_allocate([concave, untied], 1.6, 1, **box, max_boxes=2)
+    assert plan.best[1] == own.worth < best[1] - 0.09
+    assert plan.worst - plan.bound <= plan.tolerance  # the split's own search closed
+    assert abs(plan.worst) <= plan.tolerance
+    at = np.interp(plan.spend[0], s, np.arange(s.size)).round().astype(int)
+    assert float((best - returns[:, at]).max()) > least + 0.07
+    assert (plan.stopped, plan.limit) == ("cap", "max_boxes")
+    records = [r for r in caplog.records if r.name == "chc.allocation"]
+    assert [r.planner for r in records] == ["allocate", "minimax_allocate"]
+    assert (records[-1].limit, records[-1].worst) == ("max_boxes", plan.worst)
+
+    lifted = minimax_allocate([concave, untied], 1.6, 1, **box)
+    assert (lifted.stopped, lifted.limit) == ("closed", None)
+    assert abs(lifted.worst - least) < 1e-5
+
+
 @pytest.mark.parametrize(
     ("setting", "match"),
     [({"rtol": -1.0}, "rtol"), ({"atol": np.inf}, "atol"), ({"max_boxes": 0}, "max_boxes")],

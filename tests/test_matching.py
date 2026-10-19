@@ -533,6 +533,58 @@ def test_over_assignments_the_error_matches_the_spread_and_the_curvature_its_val
     assert spreads["post"] < 0.7 * spreads["plain"]
 
 
+def test_under_bernoulli_coins_the_error_adds_the_curvature_times_the_share_s_spread() -> None:
+    """By default the standard error is the spread within each arm, conditional on the treated
+    share the coins dealt. Under independent coins the share moves too, and the effect, the slope
+    ``f'(p)``, moves with it by ``-curvature`` a unit of share: ``design="bernoulli"`` adds
+    ``curvature^2 Var(share)``, with ``Var(share) = q (1 - q) sum(a^2) / (sum a)^2`` over the
+    randomised rows and ``q (1 - q)`` read without bias off the count of treated rows. Unequal
+    masses, so the share is not the count's; the idle row is not counted. Nothing else moves."""
+    worth, lift, masses, capacities, kind = _zone_market(80)
+    masses = masses * np.append(np.random.default_rng(3).uniform(0.5, 1.5, 80), 1.0)
+    capacities = capacities * masses.sum() / capacities.sum()
+    treated = np.append(np.random.default_rng(4).random(80) < 0.4, False)
+    randomised = np.arange(81) < 80
+    for strata in (None, np.append(kind, -1)):
+
+        def read(strata=strata, **design):
+            return shadow_price_effect(
+                -(worth + lift * treated[:, None]),
+                masses,
+                capacities,
+                treated,
+                eps=0.3,
+                randomised=randomised,
+                strata=strata,
+                iters=5000,
+                tol=1e-12,
+                **design,
+            )
+
+        conditional, coins = read(), read(design="bernoulli")
+        assert read(design="fixed_share") == conditional
+        rows, count = 80, int(treated.sum())
+        q = count / rows
+        squares = np.sum(masses[:80] ** 2) / masses[:80].sum() ** 2
+        spread = q * (1.0 - q) * rows / (rows - 1) * squares
+        assert coins.standard_error**2 - conditional.standard_error**2 == pytest.approx(
+            conditional.curvature**2 * spread, rel=1e-9, abs=0.0
+        )
+        assert coins.standard_error > conditional.standard_error
+        for field in ("effect", "naive", "treated_share", "curvature", "nu_hat"):
+            assert getattr(coins, field) == getattr(conditional, field)
+    with pytest.raises(ValueError, match="design must be 'fixed_share' or 'bernoulli'"):
+        shadow_price_effect(
+            -worth,
+            masses,
+            capacities,
+            treated,
+            eps=0.3,
+            randomised=randomised,
+            design="coins",  # type: ignore[arg-type]
+        )
+
+
 def test_near_the_lp_limit_the_second_order_claim_is_refused(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

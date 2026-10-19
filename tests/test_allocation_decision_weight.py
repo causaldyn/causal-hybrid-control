@@ -164,6 +164,128 @@ def test_a_channel_at_an_end_of_its_box_carries_no_weight() -> None:
     assert weight.matrix[first, first] > 0.0
 
 
+# the exponential channel held at a cap of 25 a period, or a floor of 80, where it would run at 39
+PINNED = {"upper": 25.0, "lower": 80.0}
+
+
+def _pinned_weight(end: str):
+    box = {"lower": LOWER.copy(), "upper": UPPER.copy(), "history": HISTORY}
+    box[end][2] = PINNED[end]
+    return decision_weight(CHANNELS, BUDGET, PERIODS, **box), box
+
+
+def test_a_pinned_channel_s_margin_and_its_use_are_maxima_s() -> None:
+    """A third exponential channel at a floor of 0 returns ``b3/K3`` on a unit, below the price the
+    two free channels share, ``lambda = (b1/K1) exp(-u1/K1)``: its margin is the difference, and an
+    error uses it up at the gradient of ``b3/K3`` less that of ``lambda``
+    (``validation/allocation_decision_weight.mac``, STEP 3)."""
+    channels = (
+        Channel(ONE, Exponential(50.0), 900.0),
+        Channel(ONE, Exponential(80.0), 600.0),
+        Channel(ONE, Exponential(100.0), 100.0),
+    )
+    weight = decision_weight(channels, 150.0, 1, lower=[0.0] * 3, upper=[150.0] * 3)
+    assert weight.pinned == (2,)
+    assert weight.margin.tolist() == pytest.approx([2.312739901658918], rel=1e-8)
+    order = [f"{c}.{name}" for c in range(3) for name in ("coefficient", "curve.scale")]
+    used = [
+        -1.415700812674751e-3,
+        -1.764916068308613e-2,
+        -3.397681950419403e-3,
+        4.660071769892447e-3,
+        1e-2,
+        -1e-2,
+    ]
+    index = [weight.parameters.index(name) for name in order]
+    np.testing.assert_allclose(weight.margin_gradient[0, index], used, rtol=1e-8)
+    unused = [weight.parameters.index(f"{c}.kernel.retention") for c in range(3)]
+    assert not np.any(weight.margin_gradient[0, unused])
+
+
+@pytest.mark.parametrize("end", ["upper", "lower"])
+def test_a_pinned_channel_s_margin_is_its_return_on_a_unit_from_the_price(end: str) -> None:
+    """At its cap the exponential channel returns more on a currency unit than the budget's price,
+    at its floor less, which holds it there; its margin is the difference, the slope read by a
+    central difference of its worth over the history, the plan and the tail. Moving the
+    parameters along a direction uses up the margin at ``margin_gradient``'s rate, against the
+    margin of the weight on the moved channels."""
+    with enable_x64(True):
+        weight, box = _pinned_weight(end)
+        assert weight.pinned == (2,)
+        spend = weight.allocation.spend
+        assert spend[2] == PINNED[end]
+        step = 1e-3
+        ups = [_worth(CHANNELS, spend + k * step * np.eye(3)[2]) for k in (-1, 1)]
+        slope = (ups[1] - ups[0]) / (2.0 * step) / PERIODS
+        side = 1.0 if end == "upper" else -1.0
+        assert weight.margin.shape == (1,)
+        assert weight.margin[0] == pytest.approx(side * (slope - weight.allocation.price), rel=1e-6)
+        assert weight.margin[0] > 0.0
+        assert weight.margin_gradient.shape == (1, len(weight.parameters))
+        for direction in _directions()[1]:
+            h = 1e-5
+            moved = [
+                decision_weight(_moved(CHANNELS, direction, k * h), BUDGET, PERIODS, **box).margin
+                for k in (-1, 1)
+            ]
+            used = -(moved[1][0] - moved[0][0]) / (2.0 * h)
+            assert used == pytest.approx(float(weight.margin_gradient[0] @ direction), rel=1e-5)
+
+
+@pytest.mark.parametrize("end", ["upper", "lower"])
+@pytest.mark.parametrize(("share", "held"), [(0.99, True), (1.01, False)])
+def test_errors_that_use_up_the_margin_move_the_pinned_channel(
+    end: str, share: float, held: bool
+) -> None:
+    """The weight reads the loss while the errors leave the pinned channel at its end. An error in
+    the pinned channel's coefficient scales its slope and moves no price, so it uses up the margin
+    exactly at ``margin_gradient``'s rate: one that uses up 99% of it leaves the plan on the moved
+    channels at the end, one that uses up 101% moves it off, a loss the weight does not read."""
+    with enable_x64(True):
+        weight, box = _pinned_weight(end)
+        error = np.zeros(len(weight.parameters))
+        coefficient = weight.parameters.index("2.coefficient")
+        error[coefficient] = share * weight.margin[0] / weight.margin_gradient[0, coefficient]
+        plan = allocate(_moved(CHANNELS, error, 1.0), BUDGET, PERIODS, **box)
+        assert bool(plan.spend[2] == PINNED[end]) is held
+        assert abs(plan.spend[2] - PINNED[end]) < 1.0
+
+
+def test_the_margin_in_standard_deviations_reads_the_covariance() -> None:
+    """``margin / sqrt(g' S g)``; a channel whose box is a point, and a budget that fills every
+    box, hold their channels whatever the errors, so their margins are infinite; a plan that holds
+    one channel at its cap and the other at its floor with none inside prices the budget at an
+    interval, and its margins are nil."""
+    with enable_x64(True):
+        weight, box = _pinned_weight("upper")
+        covariance = np.diag(np.linspace(1.0, 2.0, len(weight.parameters))) * 1e-2
+        gradient = weight.margin_gradient[0]
+        np.testing.assert_allclose(
+            weight.margin_sds(covariance),
+            weight.margin / np.sqrt(gradient @ covariance @ gradient),
+            rtol=1e-12,
+        )
+        with pytest.raises(ValueError, match="covariance has shape"):
+            weight.margin_sds([[1.0]])
+        point = decision_weight(
+            CHANNELS, BUDGET, PERIODS, lower=[30.0, 20.0, 25.0], upper=box["upper"], history=HISTORY
+        )
+        assert point.pinned == (2,)
+        assert point.margin.tolist() == [np.inf]
+        assert not np.any(point.margin_gradient)
+        assert point.margin_sds(covariance).tolist() == [np.inf]
+        box = {"lower": LOWER, "upper": UPPER, "history": HISTORY}
+        full = decision_weight(CHANNELS, PERIODS * float(UPPER.sum()), PERIODS, **box)
+        assert full.pinned == (0, 1, 2)
+        assert full.margin.tolist() == [np.inf] * 3
+    channels = (Channel(ONE, Exponential(50.0), 900.0), Channel(ONE, Exponential(80.0), 10.0))
+    corner = decision_weight(channels, 10.0, 1, lower=[0.0, 0.0], upper=[10.0, 10.0])
+    assert corner.allocation.spend.tolist() == [10.0, 0.0]
+    assert corner.pinned == (0, 1)
+    assert corner.margin.tolist() == [0.0, 0.0]
+    assert corner.margin_sds(np.eye(len(corner.parameters))).tolist() == [0.0, 0.0]
+
+
 def test_the_expected_regret_is_half_the_weight_s_trace_against_the_covariance() -> None:
     channels = (Channel(ONE, Exponential(50.0), 900.0), Channel(ONE, Exponential(80.0), 600.0))
     weight = decision_weight(channels, 150.0, 1, lower=[0.0, 0.0], upper=[150.0, 150.0])

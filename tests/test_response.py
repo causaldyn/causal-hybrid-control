@@ -8,6 +8,7 @@ are its double-precision roots.
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Callable
 
 import equinox as eqx
@@ -1039,10 +1040,56 @@ def test_a_linear_channel_returns_its_coefficient_times_the_kernels_sum() -> Non
     assert steady_state_marginal_roi(channel, 40.0) == pytest.approx(whole, rel=1e-13, abs=0.0)
 
 
+@pytest.mark.parametrize("reading", [roi, marginal_roi])
+def test_a_tail_counts_the_carryover_past_the_series_end(reading) -> None:
+    """On a linear curve a unit spent in the last period returns the coefficient times the
+    kernel's sum: cut at the series' end it is credited with its own period's alone."""
+    kernel = GeometricAdstock(0.6, length=8, normalized=False)
+    channel = Channel(kernel, Power(1.0, 1.0), 2.0)
+    last = slice(59, 60)
+    whole = 2.0 * float(jnp.sum(kernel.weights()))
+    assert reading(channel, SPEND, last, tail=True) == pytest.approx(whole, rel=1e-13, abs=0.0)
+    assert reading(channel, SPEND, last, tail=False) == pytest.approx(2.0, rel=1e-13, abs=0.0)
+    # a whole number of periods extends any function of the series, a Channel or not
+    assert reading(channel.__call__, SPEND, last, tail=7) == pytest.approx(
+        whole, rel=1e-13, abs=0.0
+    )
+    assert reading(channel, SPEND, last, tail=3) == pytest.approx(
+        2.0 * float(jnp.sum(kernel.weights()[:4])), rel=1e-13, abs=0.0
+    )
+
+
+def test_a_tail_left_unset_warns_only_where_the_cut_moves_the_number() -> None:
+    channel = Channel(
+        GeometricAdstock(0.9, length=30, normalized=False), MichaelisMenten(100.0), 1.0
+    )
+    level = jnp.full(52, 50.0)
+    for reading in (roi, marginal_roi):
+        with pytest.warns(FutureWarning, match=r"last 29 periods.*tail=True"):
+            cut = reading(channel, level, slice(51, 52))
+        assert reading(channel, level, slice(51, 52), tail=False) == cut
+        assert reading(channel, level, slice(51, 52), tail=True) > 40.0 * cut
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            early = reading(channel, level, slice(0, 22))
+        assert reading(channel, level, slice(0, 22), tail=True) == pytest.approx(
+            early, rel=1e-14, abs=0.0
+        )
+
+
+def test_a_tail_is_refused_where_it_is_not_a_count_of_periods() -> None:
+    channel = Channel(GeometricAdstock(0.5, length=6, normalized=True), Tanh(100.0), 1.5)
+    with pytest.raises(TypeError, match="not a Channel"):
+        roi(channel.__call__, SPEND, tail=True)
+    for tail in (-1, 2.5, "kernel"):
+        with pytest.raises(ValueError, match="not True, False or a whole number"):
+            marginal_roi(channel, SPEND, tail=tail)
+
+
 def test_a_contribution_is_the_return_in_its_periods_from_all_the_spend_before() -> None:
     channel = Channel(DelayedAdstock(0.7, 1.5, length=10, normalized=True), Hill(80.0, 2.5), 3.0)
     # over the whole series it is the ROI times what was spent, since no spend returns nothing
-    whole = roi(channel, SPEND) * float(jnp.sum(SPEND))
+    whole = roi(channel, SPEND, tail=False) * float(jnp.sum(SPEND))
     assert contribution(channel, SPEND) == pytest.approx(whole, rel=1e-13)
     # a window that spends nothing still carries over what came before it
     quiet = SPEND.at[30:40].set(0.0)
@@ -1100,12 +1147,13 @@ def test_every_return_per_unit_is_invariant_to_the_currency(currency: float) -> 
 
 def test_revenue_per_kpi_turns_a_kpi_return_into_revenue() -> None:
     channel = Channel(GeometricAdstock(0.5, length=6, normalized=True), Tanh(100.0), 1.5)
-    assert roi(channel, SPEND, revenue_per_kpi=4.0) == pytest.approx(
-        4.0 * roi(channel, SPEND), rel=1e-15, abs=0.0
-    )
-    assert marginal_roi(channel, SPEND, revenue_per_kpi=4.0) == pytest.approx(
-        4.0 * marginal_roi(channel, SPEND), rel=1e-15, abs=0.0
-    )
+    for tail in (False, True):
+        assert roi(channel, SPEND, revenue_per_kpi=4.0, tail=tail) == pytest.approx(
+            4.0 * roi(channel, SPEND, tail=tail), rel=1e-15, abs=0.0
+        )
+        assert marginal_roi(channel, SPEND, revenue_per_kpi=4.0, tail=tail) == pytest.approx(
+            4.0 * marginal_roi(channel, SPEND, tail=tail), rel=1e-15, abs=0.0
+        )
     assert steady_state_marginal_roi(channel, 40.0, revenue_per_kpi=4.0) == pytest.approx(
         4.0 * steady_state_marginal_roi(channel, 40.0), rel=1e-15, abs=0.0
     )
