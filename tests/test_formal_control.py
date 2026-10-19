@@ -177,6 +177,7 @@ FORMAL_LINKS = {
         "cites": ("contractive_euler.mac", "contractive_euler.v", "lipschitz_rollout.v"),
         "tests": (
             "test_contractive_bound_is_attained_on_a_rotating_contraction",
+            "test_contractive_bound_is_exact_where_the_euler_step_annihilates_the_gap",
             "test_contractive_bound_is_infinite_past_the_step_condition",
             "test_contractive_radius_tends_to_the_continuous_one",
         ),
@@ -326,8 +327,17 @@ def test_contractive_bound_is_attained_on_a_rotating_contraction(
         gap = moved + dt * eps * (moved / size if size > 0 else np.array([1.0, 0.0]))
     bound = contractive_rollout_bound(rate, lipschitz, eps, dt, horizon)
     assert bound == pytest.approx(float(np.linalg.norm(gap)), rel=1e-9, abs=0.0)
-    q = math.sqrt(1.0 - 2.0 * rate * dt + lipschitz**2 * dt**2)
+    q = math.sqrt((1.0 - rate * dt) ** 2 + (spin * dt) ** 2)  # the step's norm, L^2 = c^2 + w^2
     assert bound <= eps * dt / (1.0 - q) * (1 + 1e-12)
+
+
+def test_contractive_bound_is_exact_where_the_euler_step_annihilates_the_gap() -> None:
+    """contractive_euler.mac (1): at ``dt = 1 / c`` with no spin the Euler step is 0, so ``q = 0``
+    and the gap is ``eps dt`` at every horizon. The expanded ``1 - 2 c dt + L^2 dt^2`` left 1e-16
+    there, whose root put 1.5e-8 into ``q`` and into the bound (1.600000024 for 1.6)."""
+    for horizon in (1, 2, 50):
+        bound = contractive_rollout_bound(0.625, 0.625, 1.0, 1.6, horizon)
+        assert bound == pytest.approx(1.6, rel=1e-15, abs=0.0)
 
 
 @settings(max_examples=40, deadline=None)

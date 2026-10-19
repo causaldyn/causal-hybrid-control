@@ -1100,8 +1100,11 @@ def contractive_rollout_bound(
     _check_horizon(horizon)
     c = contraction_rate
     # past the float range q^2 reads inf, or inf - inf, a nan: either way the step is too large
+    # (1 - c dt)^2 + (L^2 - c^2) dt^2 is the factor's square with nothing cancelled: the expanded
+    # 1 - 2 c dt + L^2 dt^2 left a rounding error of 1e-16 where q = 0, and its root, 1.5e-8, in q
     with np.errstate(over="ignore", invalid="ignore"):
-        q_squared = float(1.0 - 2.0 * c * dt + np.float64(lipschitz) ** 2 * np.float64(dt) ** 2)
+        lip, step = np.float64(lipschitz), np.float64(dt)
+        q_squared = float((1.0 - c * step) ** 2 + (lip - c) * (lip + c) * step**2)
     if c <= 0.0 or not 0.0 <= q_squared < 1.0:  # not contracting / step too large
         return float("inf")
     q = q_squared**0.5
