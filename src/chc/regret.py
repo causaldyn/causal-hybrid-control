@@ -4293,9 +4293,13 @@ def _self_consistent_mass(
     cap the gap to it is not asymptotic at all but the exact constant ``K/(2 A c cap)``, derived
     in :func:`capped_exploration_policy`.
 
-    The integer map ``n -> S(n) -> n`` is iterated to a fixed point. It is monotone in ``n`` and
-    lands in a handful of steps, but a two-cycle across a round boundary is possible, so the loop
-    stops on the first repeat rather than on a tolerance.
+    The mass ``S(n)`` falls with ``n`` and the round that reaches it rises with the mass, so
+    ``reach(S(n)) - n`` is strictly decreasing: the balance round is the smallest ``n`` whose mass
+    the fill reaches by round ``n``, found by bisection. It is the fixed point where one exists and
+    otherwise the lower side of the round boundary the balance straddles. Iterating the map is not
+    enough: it converges only while its slope is below one, and a tight cap or a prefix of zero
+    caps makes the fixed point repelling (``T = 41`` at ``cap = 0.01`` read a mass of 0 against the
+    balance's ``0.167``).
     """
     prefix = np.cumsum(caps)
 
@@ -4303,13 +4307,14 @@ def _self_consistent_mass(
         reach = numerator * max(horizon - rounds, 0) / (curvature * info_rate)
         return max(float(np.sqrt(reach)) - prior_info / info_rate, 0.0)
 
-    rounds, seen = 0, set()
-    for _ in range(64):
-        if rounds in seen:
-            break
-        seen.add(rounds)
-        rounds = int(np.searchsorted(prefix, mass_for(rounds))) + 1
-    return mass_for(rounds)
+    lo, hi = 1, horizon  # at n = T the mass is 0, which round 1 reaches
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if int(np.searchsorted(prefix, mass_for(mid))) + 1 > mid:
+            lo = mid + 1
+        else:
+            hi = mid
+    return mass_for(lo)
 
 
 def _greedy_fill(caps: NDArray[np.float64], budget: float | None) -> NDArray[np.float64]:

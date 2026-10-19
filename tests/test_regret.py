@@ -1113,7 +1113,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_
 
     constant = kk / (2.0 * aa * cc)  # the dropped term is this over the cap
 
-    # 1. the quadratic root is what _self_consistent_mass iterates to. Its fixed point is the
+    # 1. the quadratic root is what _self_consistent_mass finds. Its fixed point is the
     #    same balance discretised on integer rounds, so the two may differ by the mass one round
     #    delivers and by no more than that
     cap = 0.01

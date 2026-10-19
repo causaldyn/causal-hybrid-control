@@ -316,24 +316,18 @@ def test_self_consistent_mass_is_the_remaining_horizon_balance(
         assert any(mass == pytest.approx(s, rel=1e-12, abs=1e-15) for s in (balanced, previous))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T=41, cap=0.01: n=17 balances with S=0.16715; the iteration 2-cycles and returns S=0.0",
-)
 def test_self_consistent_mass_finds_the_balance_at_a_tight_cap() -> None:
-    """capped_exploration_schedule.mac STEP 2: the stopping mass is the balance's fixed point."""
+    """capped_exploration_schedule.mac STEP 2: the stopping mass is the balance's fixed point.
+    T=41, cap=0.01: n=17 balances with S=0.16715; iterating the map two-cycled and read 0.0."""
     caps = np.full(41, 0.01)
     n, balanced, _, exact = _balance_crossing(caps, 41)
     assert (n, exact) == (17, True)
     assert _scm(caps, 41) == pytest.approx(balanced, rel=1e-12, abs=0.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T=379, 332 zero caps then 0.1: n=337 balances with S=0.4848; the iteration returns 0.0",
-)
 def test_self_consistent_mass_of_a_dead_prefix_is_the_shifted_problems() -> None:
-    """capped_exploration_schedule.v an_idle_prefix_is_a_constant_plus_the_shifted_problem."""
+    """capped_exploration_schedule.v an_idle_prefix_is_a_constant_plus_the_shifted_problem.
+    Iterating the map from n=0 ran 0 -> 363 -> 1 -> 363 and read 0.0, not the balance 0.4848."""
     caps = np.r_[np.zeros(332), np.full(47, 0.1)]
     n, balanced, _, exact = _balance_crossing(caps, 379)
     assert (n, exact) == (337, True)
@@ -500,7 +494,7 @@ def test_adaptive_exploration_every_schedule_meets_the_sequence_floor(
 def test_adaptive_exploration_floor_numerator_is_the_decision_sensitivity(
     b: float, rr: float, sigma: float, eta: float
 ) -> None:
-    """adaptive_exploration.mac: K = A (du*/db)^2 sigma^2, so the leading term is 2 sqrt(A K T/eta)."""
+    """adaptive_exploration.mac: K = A (du*/db)^2 sigma^2; the leading term is 2 sqrt(A K T/eta)."""
     cert = adaptive_exploration_certificate(b=b, rr=rr, sigma=sigma, eta=eta, horizons=(10, 1000))
     a, k, _, _ = _exploration_constants(b=b, rr=rr, sigma=1.0, eta=1.0)
     m0 = 1.0  # greedy never explores, so every round pays the prior floor K/m0
