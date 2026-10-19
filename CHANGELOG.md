@@ -132,6 +132,15 @@ still change).
   labelled 95%, which held the mean with probability 0. One regret shows no spread, so the interval
   is now `(-inf, inf)`, and the leaderboard prints `[-inf, inf]`. From two seeds nothing moves.
   Since 0.2.0.
+- **`off_policy_value`'s `overlap_ok` reads False where the weights' variance is infinite.** It read
+  the ESS fraction alone, which falls to zero only slowly: at a target 1.5 times as spread as the
+  logger, `E_b[w^2 | x]` is infinite at every state, and the flag read True on 98% of 1000 logs of
+  500 and 5000 rows. A new `finite_variance` entry reads it off the two policies, exactly: every
+  action's target variance below twice the logger's. `overlap_ok` now needs it, and reads False on
+  every such log. It cannot see a variance made infinite by the states' own spread (`u ~ N(x, 1)`
+  against `N(0, 1)`, `x ~ N(0, 1)`: still True on 89% to 94% of logs); a Hill estimate of the
+  weights' tail index, which could, also flagged 67% to 100% of logs whose weights are lognormal
+  with a finite variance, so it is not used. Since 0.2.0.
 
 ## [0.18.0] — 2026-10-13
 
