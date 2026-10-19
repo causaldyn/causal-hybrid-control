@@ -20,6 +20,10 @@ still change).
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
 - **A `lever_range` warning** when a prescription sets a lever outside the range the panel logged.
+- **`marketplace.fit_equilibrium` estimates the congestion equilibrium from the logs**, and
+  `pessimistic_equilibrium_allocation(equilibrium=)` plans through it. On 400 blocks it wins 89–100 %
+  of the best plan's lift over no incentive on five markets, and a fit on incentives shuffled across
+  the blocks wins none (ADR 0114).
 
 ### Changed
 
@@ -34,6 +38,9 @@ still change).
 - **A held plan reports an augmented-Lagrangian stationarity**, where it reported `not_evaluated`;
   barrier rounds take a different number of descent steps (about 11× fewer on the receding-horizon
   oscillator, 2.5× more on the pendulum demo).
+- **`pessimistic_equilibrium_allocation` without `equilibrium=` raises a `FutureWarning`**: it plans
+  through the simulator's own equilibrium, which no log supplies; a future release will require
+  `equilibrium=`.
 - **`KoopmanModel` reads closure residuals over each feature's spread about its mean**, so some
   gains granted before are refused.
 - **Documentation states what results rest on.** The README ties the headline to a confounder the

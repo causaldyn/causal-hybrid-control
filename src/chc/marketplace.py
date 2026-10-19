@@ -20,23 +20,28 @@ own base demand, attractiveness and equilibrium map, which no estimate from the 
 the logs reach it only through the pessimism tilt, at most ``radius`` standard errors per zone. Its
 gap to the oracle is therefore the value of knowing the equilibrium, not of de-confounding: on the
 default market the plan from a response of zero lands as close to the oracle as the plan from the
-de-confounded one. The SUTVA baselines get no such structure. Planning on an equilibrium estimated
-from the logs is not implemented.
+de-confounded one. The SUTVA baselines get no such structure. :func:`fit_equilibrium` estimates
+the equilibrium from the logs instead, and the planner takes it as ``equilibrium=`` (ADR 0114).
 
 Everything is differentiable and reuses the equilibrium solver in :mod:`chc.games`.
 """
 
 from __future__ import annotations
 
+import math
+import warnings
 from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
+from numpy.typing import NDArray
+from scipy.optimize import minimize
 
 from chc import _units
 from chc.frames import _real_entries
-from chc.games import softmax_congestion_equilibrium, stackelberg_allocation
+from chc.games import fixed_point, softmax_congestion_equilibrium, stackelberg_allocation
 
 
 @dataclass(frozen=True)
@@ -187,27 +192,158 @@ def sutva_allocation(market: SharedStateMarket, response: ExposureResponse, radi
     return market.budget * pess / jnp.where(total > 0.0, total, 1.0)
 
 
+@dataclass(frozen=True)
+class FittedEquilibrium:
+    """A congestion equilibrium estimated from logs by :func:`fit_equilibrium`.
+
+    Drivers settle at ``x = mass * softmax(beta * (attract * demand + u - congestion * x / mass))``
+    and a zone completes ``min(demand, x)``, the model class :class:`SharedStateMarket` simulates,
+    with each zone's attractiveness proportional to its demand. The planning demand is each zone's
+    mean logged demand, the typical block's.
+    """
+
+    demand: Array  # (n_zones,) the demand planned at: each zone's mean over the logged blocks
+    attract: Array  # (n_zones,) attractiveness per unit of demand
+    beta: float  # drivers' sensitivity to value
+    congestion: float  # crowding penalty
+    mass: float  # total drivers
+    rmse: float  # root mean square of the fit's residual over the logged blocks and zones
+    converged: bool  # whether the least-squares solve met its tolerance
+
+    def drivers(self, u: Array) -> Array:
+        """The equilibrium driver distribution at the planning demand under incentive ``u``."""
+        return _fitted_drivers(self.attract * self.demand, u, self._parameters())
+
+    def completions(self, u: Array) -> Array:
+        """Total completions ``sum_i min(demand_i, x_i(u))`` at the planning demand."""
+        return jnp.sum(jnp.minimum(self.demand, self.drivers(u)))
+
+    def _parameters(self) -> tuple[Array, Array, Array]:
+        dtype = self.demand.dtype
+        return (
+            jnp.asarray(self.beta, dtype),
+            jnp.asarray(self.congestion, dtype),
+            jnp.asarray(self.mass, dtype),
+        )
+
+
+def _fitted_step(params: tuple[Array, ...], x: Array) -> Array:
+    """One damped logit best response, the damping ``4/(4 + beta*congestion)`` at which the map
+    contracts for every game (:func:`chc.games.congestion_damping`): a fit passes through values
+    of ``beta*congestion`` past the ceiling of 6 that the fixed damping of 1/2 needs."""
+    attract, u, beta, congestion, mass = params
+    damping = 4.0 / (4.0 + beta * congestion)
+    value = beta * (attract + u - congestion * x / mass)
+    return (1.0 - damping) * x + damping * mass * jax.nn.softmax(value)
+
+
+def _fitted_drivers(attract: Array, u: Array, parameters: tuple[Array, Array, Array]) -> Array:
+    beta, congestion, mass = parameters
+    start = jnp.full(attract.shape[0], 1.0 / attract.shape[0], dtype=attract.dtype) * mass
+    # every parameter goes in through the solve's params: its gradient is implicit in them alone
+    return fixed_point(_fitted_step, (attract, u, beta, congestion, mass), start).x
+
+
+def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEquilibrium:
+    """Estimate the congestion equilibrium the logs were generated under, by least squares.
+
+    The fitted model is :class:`FittedEquilibrium`'s: per zone, an attractiveness per unit of
+    demand, and for the market, the drivers' sensitivity, the crowding penalty and the drivers'
+    total, ``n_zones + 3`` parameters, fitted to each block's completions ``y`` through each
+    block's equilibrium under its logged incentive ``u`` and demand. The positive parameters are
+    fitted on their logarithms, by L-BFGS on gradients implicit in the equilibrium; the solve
+    starts from an attractiveness of 1, a sensitivity and a penalty of 1, and a total 1.2 times
+    the largest block's completions, since a block completes no more rides than it has drivers.
+
+    The demand is logged and enters the model, so the logging policy's chase of it does not
+    confound the fit. What is assumed and not tested: the model class, which is the simulator's
+    (a market whose drivers follow another law is fitted by the nearest logit equilibrium), and an
+    attractiveness that moves with the demand. The parameters' sampling error is not carried into
+    the plan; :attr:`FittedEquilibrium.rmse` against the logs' noise says how well the class fits.
+
+    Args:
+        logs: :meth:`SharedStateMarket.generate_logs`'s, or any with ``u``, ``demand`` and ``y``
+            of shape ``(n_blocks, n_zones)``.
+        max_iter: L-BFGS iterations at most.
+    """
+    read = _real_entries(logs, ("u", "demand", "y"), "logs")
+    u, demand, y = (jnp.asarray(read[name]) for name in ("u", "demand", "y"))
+    dtype = jnp.result_type(u, demand, y, float)
+    u, demand, y = (column.astype(dtype) for column in (u, demand, y))
+    n_zones = u.shape[1]
+
+    def unpack(p: Array) -> tuple[Array, tuple[Array, Array, Array]]:
+        return p[:n_zones], (jnp.exp(p[n_zones]), jnp.exp(p[n_zones + 1]), jnp.exp(p[n_zones + 2]))
+
+    def loss(p: Array) -> Array:
+        attract, parameters = unpack(p)
+        drivers = jax.vmap(lambda d, v: _fitted_drivers(attract * d, v, parameters))(demand, u)
+        return jnp.mean((y - jnp.minimum(demand, drivers)) ** 2)
+
+    value_and_grad = jax.jit(jax.value_and_grad(loss))
+
+    def objective(p: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
+        value, grad = value_and_grad(jnp.asarray(p, dtype=dtype))
+        return float(value), np.asarray(grad, dtype=np.float64)
+
+    mass = 1.2 * float(jnp.max(jnp.sum(y, axis=1)))
+    start = np.concatenate([np.ones(n_zones), [0.0, 0.0, math.log(mass)]])
+    result = minimize(objective, start, jac=True, method="L-BFGS-B", options={"maxiter": max_iter})
+    attract, (beta, congestion, total) = unpack(jnp.asarray(result.x, dtype=dtype))
+    return FittedEquilibrium(
+        demand=jnp.mean(demand, axis=0),
+        attract=attract,
+        beta=float(beta),
+        congestion=float(congestion),
+        mass=float(total),
+        rmse=math.sqrt(float(result.fun)),
+        converged=bool(result.success),
+    )
+
+
 def pessimistic_equilibrium_allocation(
-    market: SharedStateMarket, response: ExposureResponse, *, radius: float = 1.0, steps: int = 600
+    market: SharedStateMarket,
+    response: ExposureResponse,
+    *,
+    radius: float = 1.0,
+    steps: int = 600,
+    equilibrium: FittedEquilibrium | None = None,
 ) -> Array:
     """CHC allocation: plan the budget *through* the congestion equilibrium (``chc.games``) so the
     driver-conservation (cannibalisation) channel the SUTVA baselines assume away is structural. The
     de-confounded response gates the plan through a W-DRO pessimism tilt (``radius * SE``): where
     the offline estimate is weak or unsupported, the incentive is discounted rather than trusted.
 
-    The equilibrium planned through is ``market``'s own: its base demand, its attractiveness and
-    its solver, the simulator's truth rather than anything estimated from the logs. ``response``
-    enters only through the tilt, so the plan is close to the oracle whatever the response says.
+    ``equilibrium`` is the one planned through: :func:`fit_equilibrium`'s, estimated from the logs.
+    Without it the plan goes through ``market``'s own, its base demand, its attractiveness and its
+    solver, the simulator's truth that no log supplies, with a ``FutureWarning``: a future release
+    will require ``equilibrium``. ``market`` gives the budget and the zones either way.
+    ``response`` enters only through the tilt, so through the simulator's equilibrium the plan is
+    close to the oracle whatever the response says.
     """
-    demand, attract = market._base()
     # The worst response within radius SEs that is not negative, less the estimate projected onto
     # the same prior: -min(max(m, 0), radius * se), never a bonus (validation/marketplace_tilt.mac).
     # Read against the raw estimate, a negative one earned its zone a bonus of |m| per unit.
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)
     tilt = pess - jnp.maximum(response.marginal, 0.0)
+    if equilibrium is None:
+        warnings.warn(
+            "pessimistic_equilibrium_allocation plans through the simulator's own equilibrium, "
+            "which no log supplies; pass equilibrium=fit_equilibrium(logs) to plan on one "
+            "estimated from the logs. A future release will require it",
+            FutureWarning,
+            stacklevel=2,
+        )
+        demand, attract = market._base()
+
+        def completions(u: Array) -> Array:
+            return jnp.sum(jnp.minimum(demand, market._equilibrium(attract, u)))
+
+    else:
+        completions = equilibrium.completions
 
     def surrogate(u: Array) -> Array:
-        return jnp.sum(jnp.minimum(demand, market._equilibrium(attract, u))) + jnp.dot(tilt, u)
+        return completions(u) + jnp.dot(tilt, u)
 
     return stackelberg_allocation(surrogate, market.n_zones, market.budget, steps=steps)
 

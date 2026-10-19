@@ -1,7 +1,7 @@
 """Offline causal decision under equilibrium interference: the logging policy is confounded and
 SUTVA fails, so the predictive (MOPO) and naive-causal planners capture little of the oracle's lift,
-while the CHC allocation, which plans through the simulator's own equilibrium, recovers the oracle
-whatever response it is given.
+while the CHC allocation, which plans through an equilibrium fitted from the logs, recovers most of
+it. Through the simulator's own equilibrium it recovers the oracle whatever response it is given.
 """
 
 import jax
@@ -16,6 +16,7 @@ from chc.marketplace import (
     calibrate_naive_causal,
     calibrate_predictive,
     calibrate_shared_state,
+    fit_equilibrium,
     interference_bias,
     pessimistic_equilibrium_allocation,
     sutva_allocation,
@@ -29,7 +30,13 @@ def env() -> dict:
     zero = jnp.zeros(market.n_zones)
     oracle_value = market.value(market.oracle_allocation(steps=1200))
     base_value = market.value(zero)
-    return {"market": market, "logs": logs, "oracle": oracle_value, "base": base_value}
+    return {
+        "market": market,
+        "logs": logs,
+        "oracle": oracle_value,
+        "base": base_value,
+        "fitted": fit_equilibrium(logs),
+    }
 
 
 def test_confounded_calibration_biases_toward_demand(env: dict) -> None:
@@ -55,18 +62,20 @@ def test_sutva_planners_capture_almost_none_of_the_oracle_lift(env: dict) -> Non
 def test_chc_recovers_the_oracle_where_baselines_do_not(env: dict) -> None:
     market, oracle = env["market"], env["oracle"]
     shared = calibrate_shared_state(env["logs"])
-    chc = pessimistic_equilibrium_allocation(market, shared, radius=1.0)
+    chc = pessimistic_equilibrium_allocation(market, shared, radius=1.0, equilibrium=env["fitted"])
     naive = sutva_allocation(market, calibrate_naive_causal(env["logs"]), radius=1.0)
     pred = sutva_allocation(market, calibrate_predictive(env["logs"]), radius=1.0)
-    assert oracle - market.value(chc) < 0.3  # equilibrium-aware + de-confounded ~ recovers oracle
+    # through an equilibrium fitted from the logs: 0.083 short in float32, 0.106 in float64
+    assert oracle - market.value(chc) < 0.3
     assert oracle - market.value(naive) > 0.8  # SUTVA leaves large regret on the table
     assert oracle - market.value(pred) > 0.8
 
 
 def test_the_chc_plan_owes_its_value_to_the_equilibrium_not_to_the_response(env: dict) -> None:
-    """The planner is handed the simulator's own equilibrium and reads the logs only through its
-    pessimism tilt, so a response of zero, or the confounded one, plans as close to the oracle as
-    the de-confounded one: the comparison measures knowing the equilibrium."""
+    """Handed no equilibrium, the planner goes through the simulator's own and reads the logs only
+    through its pessimism tilt, so a response of zero, or the confounded one, plans as close to the
+    oracle as the de-confounded one: that comparison measures knowing the equilibrium, and a
+    ``FutureWarning`` says so."""
     market, oracle = env["market"], env["oracle"]
     zero = jnp.zeros(market.n_zones)
     for response in (
@@ -74,8 +83,40 @@ def test_the_chc_plan_owes_its_value_to_the_equilibrium_not_to_the_response(env:
         calibrate_predictive(env["logs"]),
         calibrate_shared_state(env["logs"]),
     ):
-        plan = pessimistic_equilibrium_allocation(market, response, radius=1.0)
+        with pytest.warns(FutureWarning, match="simulator's own equilibrium"):
+            plan = pessimistic_equilibrium_allocation(market, response, radius=1.0)
         assert oracle - market.value(plan) < 0.3
+
+
+def test_the_fitted_equilibrium_recovers_the_market_s_parameters(env: dict) -> None:
+    """Drivers' sensitivity 2.5, crowding 2 and 12 drivers, read off 400 blocks whose completions
+    carry noise of SD 0.02: the fit lands within 0.01, 0.003 and 0.04 of them in either precision,
+    and its residual is the noise's."""
+    fitted = env["fitted"]
+    assert fitted.converged
+    assert fitted.beta == pytest.approx(2.5, abs=0.05)
+    assert fitted.congestion == pytest.approx(2.0, abs=0.05)
+    assert fitted.mass == pytest.approx(12.0, abs=0.1)
+    assert fitted.rmse == pytest.approx(0.02, rel=0.1)
+
+
+def test_a_fit_on_logs_that_carry_no_response_plans_nothing_of_value(env: dict) -> None:
+    """The fitted equilibrium is the logs': with each zone's incentives shuffled across the blocks
+    they no longer move the completions they are logged beside, the fit reads drivers that do not
+    follow an incentive, and the plan through it wins none of the oracle's lift over doing
+    nothing, where the logs' own wins most."""
+    market, logs, base, oracle = env["market"], env["logs"], env["base"], env["oracle"]
+    shared = calibrate_shared_state(logs)
+    order = np.random.default_rng(0).permutation(logs["u"].shape[0])
+    scrambled = fit_equilibrium(logs | {"u": logs["u"][order]})
+    assert scrambled.beta < 0.1
+    lift = oracle - base
+    plans = {
+        name: pessimistic_equilibrium_allocation(market, shared, equilibrium=equilibrium)
+        for name, equilibrium in (("logs", env["fitted"]), ("scrambled", scrambled))
+    }
+    assert market.value(plans["logs"]) - base > 0.8 * lift
+    assert market.value(plans["scrambled"]) - base < 0.1 * lift
 
 
 def test_naive_over_predicts_while_chc_delivers_more(env: dict) -> None:
@@ -83,7 +124,7 @@ def test_naive_over_predicts_while_chc_delivers_more(env: dict) -> None:
     naive_resp = calibrate_naive_causal(env["logs"])
     naive_alloc = sutva_allocation(market, naive_resp, radius=1.0)
     chc_alloc = pessimistic_equilibrium_allocation(
-        market, calibrate_shared_state(env["logs"]), radius=1.0
+        market, calibrate_shared_state(env["logs"]), radius=1.0, equilibrium=env["fitted"]
     )
     # the naive per-zone (additive) model predicts a lift the equilibrium never realises...
     assert interference_bias(market, naive_resp, naive_alloc) > 1.0
@@ -99,8 +140,11 @@ def test_a_negative_response_earns_its_zone_no_bonus(env: dict) -> None:
     market = env["market"]
     zero = jnp.zeros(market.n_zones)
     negative = ExposureResponse(marginal=zero.at[0].set(-0.5), se=zero)
-    one = pessimistic_equilibrium_allocation(market, ExposureResponse(marginal=zero, se=zero))
-    other = pessimistic_equilibrium_allocation(market, negative)
+    fitted = env["fitted"]
+    one = pessimistic_equilibrium_allocation(
+        market, ExposureResponse(marginal=zero, se=zero), equilibrium=fitted
+    )
+    other = pessimistic_equilibrium_allocation(market, negative, equilibrium=fitted)
     _assert_close(other, one, 1e-6)
 
 

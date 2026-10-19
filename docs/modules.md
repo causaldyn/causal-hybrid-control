@@ -415,12 +415,14 @@ that lift exactly what the world's media lift, for `allocate_geos` to plan on.
 [`marketplace`](api/marketplace.md), [`zones`](api/zones.md)
 
 **Offline causal control under equilibrium interference** (`marketplace`): incentives learned from
-confounded switchback logs where SUTVA fails. The equilibrium-aware allocation plans through the
-simulator's own equilibrium, which no estimate from the logs supplies, and reads the logs only
-through a W-DRO pessimism tilt; it lands near the oracle whatever response it is given, a response
-of zero included. The SUTVA allocations, MOPO-style and naive causal, capture little of the
-oracle's lift, and on some markets less than no incentive at all. The comparison measures the value
-of knowing the equilibrium, not of de-confounding.
+confounded switchback logs where SUTVA fails. The equilibrium-aware allocation plans through a
+congestion equilibrium `fit_equilibrium` estimates from the logs, the drivers' sensitivity, the
+crowding and their total and each zone's attractiveness per unit of demand, and through a W-DRO
+pessimism tilt on the response (ADR 0114). On 400 blocks it wins 89–100 % of the best plan's lift
+over no incentive on five markets, 59–96 % on 50. The SUTVA allocations, MOPO-style and naive causal, capture little
+of it, and on some markets less than no incentive at all. Handed no fitted equilibrium, the planner
+goes through the simulator's own, with a `FutureWarning`: it then lands near the oracle whatever
+response it is given, which measures knowing the equilibrium, not de-confounding.
 
 **The zones × time plant the marketplace loop runs on** (`zones`), control-affine by construction:
 idle supply, open requests and an incentive stock per zone; an incentive and a price per zone as
