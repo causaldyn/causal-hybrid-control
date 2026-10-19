@@ -15,7 +15,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from chc.cost import QuadraticCost
-from chc.dynamics import Dynamics, _SetAtStep
+from chc.dynamics import Dynamics, _EulerStep, _SetAtStep
 from chc.integrate import rk4_step, rollout
 
 
@@ -105,10 +105,18 @@ class _Offset(eqx.Module):
 
 
 def _offset_step(dyn: Dynamics, t: Array, x: Array, u: Array, offset: Array, dt: float) -> Array:
-    """One RK4 step of the field plus a constant ``offset``, the action held as
-    :func:`chc.integrate.rk4_step` holds it."""
-    field, held = dyn.at_step(x, u) if isinstance(dyn, _SetAtStep) else (dyn, u)
+    """One step of the field plus a constant ``offset``, the action held and the field stepped as
+    :func:`chc.integrate.rk4_step` holds and steps it."""
+    field, held = _stepped_field(dyn, x, u)
+    if isinstance(field, _EulerStep):
+        return rk4_step(_EulerStep(_Offset(field.field, offset)), t, x, held, dt)
     return rk4_step(_Offset(field, offset), t, x, held, dt)
+
+
+def _stepped_field(dyn: Dynamics, x: Array, u: Array) -> tuple[Dynamics, Array]:
+    """The field a step from ``x`` steps, and the action it holds over the step
+    (:class:`chc.dynamics._SetAtStep`)."""
+    return dyn.at_step(x, u) if isinstance(dyn, _SetAtStep) else (dyn, u)
 
 
 @eqx.filter_jit
@@ -123,7 +131,8 @@ def perturbation_cost_weights(
 
     * **injection.** One RK4 step maps a field offset ``g`` into a state offset
       ``dt (I + dtJ/2 + (dtJ)^2/6 + (dtJ)^3/24) g`` with ``J = df/dx`` -- exact for an offset
-      constant over the step, which an unmodelled ``Delta_B u`` at fixed ``u`` is. The spectral
+      constant over the step, which an unmodelled ``Delta_B u`` at fixed ``u`` is. The Euler map
+      of a field fitted to it (:class:`chc.dynamics._EulerStep`) maps it into ``dt g``. The spectral
       norm of that polynomial falls either side of 1 depending on the plant -- 0.99990 on the
       certificate's oscillator, so a bare ``dt`` happens to be conservative there and need not be
       elsewhere -- which is reason enough to compute it rather than assume it.
@@ -164,7 +173,10 @@ def perturbation_cost_weights(
         m2 = m @ m
         return dt * jnp.linalg.norm(eye + m / 2.0 + m2 / 6.0 + m2 @ m / 24.0, ord=2)
 
-    gains = jax.vmap(injection_gain)(field_x)  # (H,)
+    if isinstance(_stepped_field(dyn, x0, jnp.zeros(us.shape[1:], us.dtype))[0], _EulerStep):
+        gains = jnp.full((horizon,), dt, dtype=xs.dtype)
+    else:
+        gains = jax.vmap(injection_gain)(field_x)  # (H,)
     action_norms = jnp.linalg.norm(us, axis=1)
     eps = radius * action_norms * gains
 

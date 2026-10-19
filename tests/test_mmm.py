@@ -199,8 +199,8 @@ def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_
     Both halves are asserted, because "small" on its own would also pass if the row were being
     fitted right by accident: the same log read with ``integrator="euler"`` must still leave the
     *closed-form* difference between the two integrators, which is what every release up to 0.4.0
-    silently shipped. ``prescribe`` refuses that integrator, since it plans by RK4, so the Euler
-    read is the fit's own, on the transitions and with the settings ``prescribe`` hands it.
+    silently shipped. The Euler read is the fit's own, on the transitions and with the settings
+    ``prescribe`` hands it.
 
     Not zero, and the residue is the log's noise, not the model class: on the same rows with the
     noise taken out, the rk4 fixed point sits at zero on every known row to 1e-6, and over 40 noise

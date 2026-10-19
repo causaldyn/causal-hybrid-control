@@ -1335,12 +1335,14 @@ def fit_causal_residual(
 
             ``"euler"`` (default, and what every release so far did) reads the rate off the log as
             ``(x_next - x)/dt``, which is exactly right if the caller treats the result as a
-            *discrete-time* model and steps it the same way. It is **not** right if the caller then
-            integrates with :func:`chc.integrate.rk4_step`, as :func:`chc.plan.causal_plan` and
-            :func:`chc.integrate.rollout` do: the two disagree by the RK4 amplification factor
-            ``1 + z + z^2/2 + z^3/6 + z^4/24`` at ``z = A dt``. On a linear plant at ``theta*dt =
-            0.7`` that is a decay fitted at ``-0.502`` against a true ``-0.700`` and, more to the
-            point, a control channel fitted at ``0.574`` against a true ``0.800``.
+            *discrete-time* model and steps it the same way, as :func:`chc.decision.prescribe`
+            does under ``integrator="euler"``. It is **not** right if the caller then integrates
+            the field with RK4, as :func:`chc.plan.causal_plan` and :func:`chc.integrate.rollout`
+            do with any field not marked as an Euler map: the two disagree by the RK4
+            amplification factor ``1 + z + z^2/2 + z^3/6 + z^4/24`` at ``z = A dt``. On a linear
+            plant at ``theta*dt = 0.7`` that is a decay fitted at ``-0.502`` against a true
+            ``-0.700`` and, more to the point, a control channel fitted at ``0.574`` against a true
+            ``0.800``.
 
             ``"rk4"`` makes the field consistent with RK4 instead, without inverting RK4 in closed
             form, which does not exist for a nonlinear field. Coefficients read a rate off the log:
@@ -1823,9 +1825,12 @@ def fit_causal_residual(
             raise ValueError(
                 f"the rk4 fixed point did not converge in {_MAX_NEWTON_STEPS} Newton steps (last "
                 f"step {float(jnp.max(jnp.abs(step))):.3g}): no field stepped by RK4 at dt={dt} "
-                "reproduces this log. On a linear mode that happens once |A|dt passes 1.31, where "
-                "the log decays by more in one step than any RK4 step can. Log at a finer dt, or "
-                "fit with integrator='euler' and treat the result as the discrete-time map it is."
+                "reproduces this log. On a linear mode that happens where the log keeps less "
+                "than 0.27 of it from one step to the next, the least any RK4 step keeps, as a "
+                "plant solved exactly does once |A|dt passes 1.31. Log at a finer dt; or, where "
+                "the panel is discrete-time and its one-step map is the model, fit with "
+                "integrator='euler' and treat the result as that map: prescribe(integrator="
+                "'euler') plans, prices and certifies by it."
             )
         target = reading(theta)
         fit = fit_to(known_rate + target)

@@ -38,8 +38,10 @@ from chc.dynamics import LinearDynamics
 from chc.plan import plan_regret_bound
 from chc.response import Channel, Exponential, GeometricAdstock
 from chc.uncertainty import (
+    _linear_tube,
     _noise_covariances,
     _noise_tube,
+    _tube,
     confounding_robust_closed_loop_bound,
     confounding_robust_inflation,
     confounding_robust_radius,
@@ -115,6 +117,13 @@ FORMAL_LINKS = {
             "test_sensitivity_margin_is_the_worst_case_over_the_operator_ball",
             "test_sensitivity_margin_is_the_worst_case_over_the_frobenius_ball",
             "test_sensitivity_filter_keeps_the_true_plant_safe",
+        ),
+    },
+    "chc.uncertainty._step_parts": {
+        "cites": ("euler_tube.mac",),
+        "tests": (
+            "test_euler_linear_tube_holds_on_euler_rollouts_with_field_errors",
+            "test_euler_noise_tube_is_the_double_sum_on_its_own_step_matrices",
         ),
     },
     "chc.uncertainty._noise_tube": {
@@ -665,6 +674,64 @@ def test_noise_tube_under_a_var_noise_on_a_norm_bound_bounds_the_largest_varianc
     for k in range(2, horizon + 1):
         assert radii[k] ** 2 / level >= np.linalg.eigvalsh(exact[k])[-1] * (1 - 1e-12)
     assert radii[1] == pytest.approx(_noise_tube(PLANT_A, s, VAR_PHI, DT, 1)[1], rel=1e-12, abs=0.0)
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    entries=st.lists(st.floats(-2.0, 2.0), min_size=4, max_size=4),
+    horizon=st.integers(1, 10),
+    dt=st.floats(0.01, 1.0),
+    seed=st.integers(0, 2**31 - 1),
+)
+def test_euler_linear_tube_holds_on_euler_rollouts_with_field_errors(
+    entries, horizon, dt, seed
+) -> None:
+    """euler_tube.mac (1), (2): Euler rollouts of x' = A x + c and of the field off by at most
+    eps_k over step k stay within e_k = sum_j dt ||(I + dt A)^(k-1-j)|| eps_j; on A = L >= 0 that
+    is the Euler Gronwall tube, which the gap meets with every error along +1."""
+    a = np.array(entries).reshape(2, 2)
+    rng = np.random.default_rng(seed)
+    budgets = rng.uniform(0.0, 1.0, horizon)
+    tube = _linear_tube(a, list(budgets), dt, integrator="euler")
+    drive = np.array([0.3, -0.2])
+    for _ in range(8):
+        x = y = np.array([0.5, -1.0])
+        for k in range(horizon):
+            error = rng.standard_normal(2)
+            error *= budgets[k] / np.linalg.norm(error)
+            x, y = x + dt * (a @ x + drive), y + dt * (a @ y + drive + error)
+            assert np.linalg.norm(x - y) <= tube[k + 1] * (1 + 1e-12) + 1e-15
+    rate = abs(entries[0])
+    scalar = _linear_tube([[rate]], list(budgets), dt, integrator="euler")
+    gronwall = _tube([rate] * horizon, list(budgets), dt, "euler")
+    np.testing.assert_allclose(scalar, gronwall, rtol=1e-12, atol=0.0)
+    x = y = 0.0
+    for k in range(horizon):
+        x, y = x + dt * rate * x, y + dt * (rate * y + budgets[k])
+        assert y - x == pytest.approx(gronwall[k + 1], rel=1e-12, abs=1e-15)
+
+
+def test_euler_noise_tube_is_the_double_sum_on_its_own_step_matrices() -> None:
+    """euler_tube.mac (5), var_noise_tube.mac (1b): under the Euler map the noise's covariance is
+    the double sum over the noise's lagged covariances carried by M_k = I + dt A_k; on a norm bound
+    the scalar recursion's growth is 1 + L dt, which on one state is the matrix tube's own."""
+    rng = np.random.default_rng(11)
+    rates = rng.uniform(-1.0, 1.0, (5, 2, 2)) - np.eye(2)
+    s = _var_covariance(VAR_PHI, NOISE)
+    dt = 0.9
+    covariances = _noise_covariances(rates, s, VAR_PHI, dt, 5, integrator="euler")
+    steps = [np.eye(2) + dt * rate for rate in rates]
+    for k in range(1, 6):
+        exact = _var_double_sum(steps, VAR_PHI, s, k)
+        np.testing.assert_allclose(covariances[k], exact, rtol=1e-12, atol=1e-15)
+    rk4 = _noise_covariances(rates, s, VAR_PHI, dt, 5)
+    assert not np.allclose(rk4[2], covariances[2], rtol=1e-3, atol=0.0)
+    one = np.array([[0.04]])
+    for rate in (0.0, 0.7):
+        bound = _noise_tube(np.asarray(rate), one, 0.5, dt, 6, integrator="euler")
+        matrix = _noise_tube(np.array([[rate]]), one, 0.5, dt, 6, integrator="euler")
+        np.testing.assert_allclose(bound, matrix, rtol=1e-12, atol=0.0)
+    assert _noise_tube(np.asarray(0.7), one, 0.5, dt, 6)[3] > bound[3]
 
 
 # ---- the MSM radius: confounding_robust_cvar.mac and .v ----

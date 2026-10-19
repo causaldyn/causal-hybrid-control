@@ -30,6 +30,19 @@ class _SetAtStep(eqx.Module):
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array: ...
 
 
+class _EulerStep(eqx.Module):
+    """``field``, stepped by the explicit Euler map ``x + dt field(t, x, u)``: the one-step map of a
+    discrete-time log, which :func:`chc.dynamics_id.fit_causal_residual` reads under
+    ``integrator="euler"``. :func:`chc.integrate.rk4_step` steps it so, and so does every rollout,
+    linearisation and gradient that steps through it. It sits inside a :class:`_SetAtStep`, which
+    sets its action at the step's start, where the Euler map reads it."""
+
+    field: Dynamics
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.field(t, x, u)
+
+
 class DampedOscillator(eqx.Module):
     """Known 2-state linear system: a driven damped harmonic oscillator.
 
