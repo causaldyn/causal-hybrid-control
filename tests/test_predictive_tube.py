@@ -256,27 +256,46 @@ def _prescribe(log: dict[str, np.ndarray], **kwargs: object):
 _PUSH = 0.5 * (1.0 - 0.1 + 0.04 / 6.0 - 0.008 / 24.0) * 0.2
 
 
-def test_prescribe_reads_the_noise_off_the_log_and_its_tube_holds_the_plant() -> None:
-    """The fitted field leaves the confounder's push and the error in its one-step defect, which
-    the certificate reports and the tube carries. Run on from the log's last state under the
-    plan's actions, the confounder drawn afresh and the error too, the plant stays inside the tube
-    at least 0.95 of the time at every step, within four Monte Carlo standard errors. The defect is
-    in-sample: the fitted channel, off the truth by its estimation error, explains a little of the
-    push, so the noise reads between the error's spread and the push's and error's together."""
-    log = _one_unit_log(0.0, seed=4)
-    decided = _prescribe(log, horizon=12, tolerance=10.0)
+def _inside(decided, seed: int, draws: int) -> np.ndarray:
+    """Each step's share of ``draws`` runs of the plant inside the tube, run on from the log's
+    last state under the plan's actions, the confounder drawn afresh and the error too."""
     assert decided.plan is not None
     tube = np.asarray(decided.plan.uncertainty_tube)
     predicted = np.asarray(decided.plan.trajectory)[:, 0]
-    rng = np.random.default_rng(5)
-    state = np.full(_DRAWS, predicted[0])
+    rng = np.random.default_rng(seed)
+    state = np.full(draws, predicted[0])
     inside = []
     for k, action in enumerate(np.asarray(decided.plan.actions)[:, 0]):
-        error = rng.normal(0.0, 0.1, _DRAWS)
-        state = _plant_step(state, float(action), rng.standard_normal(_DRAWS)) + error
+        error = rng.normal(0.0, 0.1, draws)
+        state = _plant_step(state, float(action), rng.standard_normal(draws)) + error
         inside.append(np.mean(np.abs(state - predicted[k + 1]) <= tube[k + 1]))
-    assert np.all(np.asarray(inside) >= _COVERAGE - 4.0 * _SE), inside
+    return np.asarray(inside)
 
+
+def test_prescribe_reads_the_noise_off_the_log_and_its_tube_holds_the_plant() -> None:
+    """The fitted field leaves the confounder's push and the error in its one-step defect, which
+    the certificate reports and the tube carries. Run on from a log's last state under the plan's
+    actions, the confounder drawn afresh and the error too, the plant stays inside the tube at
+    least 0.95 of the time at every step over logs, within four standard errors of the mean over
+    ten of them: the tube's level is a statement over logs (ADR 0080), and one log's defect reads
+    its noise a little off. This test's log reads it 8 % under the error's and the push's spread
+    together and holds 0.917 at the first step, where 80 logs hold 0.950 there. The defect is
+    in-sample: the fitted channel, off the truth by its estimation error, explains a little of the
+    push, so the noise reads between the error's spread and the push's and error's together."""
+    inside = np.array(
+        [
+            _inside(
+                _prescribe(_one_unit_log(0.0, seed=seed), horizon=12, tolerance=10.0), seed, 4000
+            )
+            for seed in range(10)
+        ]
+    )
+    error = inside.std(axis=0, ddof=1) / math.sqrt(inside.shape[0])
+    assert np.all(inside.mean(axis=0) >= _COVERAGE - 4.0 * error), inside.mean(axis=0)
+
+    log = _one_unit_log(0.0, seed=4)
+    decided = _prescribe(log, horizon=12, tolerance=10.0)
+    assert decided.plan is not None
     certificate, fit = decided.certificate, decided.model_fit
     assert fit.defect is not None
     one_step = 0.5 * np.asarray(fit.defect, dtype=np.float64)[:, 0]

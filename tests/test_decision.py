@@ -26,6 +26,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.stats import chi2
 
 from chc.cost import QuadraticCost
 from chc.decision import (
@@ -41,6 +42,8 @@ from chc.decision import (
     Target,
     _episodes,
     _field_error,
+    _field_errors,
+    _field_scale,
     _json_label,
     _linearised,
     _margins,
@@ -877,8 +880,16 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
     assert fit.drift_error is not None
     slopes = _slopes(problem.model, problem.x0)(np.asarray(plan.actions, dtype=np.float64))
     error = math.hypot(fit.channel_error * distance, fit.drift_error)
-    expected = _linear_tube(slopes, [error] * horizon, dt)
-    expected += _noise_tube(slopes, np.array([[noise**2]]), persistence, dt, horizon)
+    assert _field_error(fit, np.array([distance])) == pytest.approx(error, rel=1e-15, abs=0.0)
+    # read at the state each step starts from (ADR 0104)
+    errors = _field_errors(
+        fit, np.array([distance]), np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0))
+    )
+    field = _linear_tube(slopes, errors, dt)
+    noise_part = _noise_tube(slopes, np.array([[noise**2]]), persistence, dt, horizon)
+    # one state: the noise's radius and the field's error at its studentised quantile
+    scale = _field_scale(fit) * math.sqrt(chi2.ppf(0.95, 1))
+    expected = np.sqrt(noise_part**2 + (scale * field) ** 2)
     np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
 
 

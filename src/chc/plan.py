@@ -1420,22 +1420,36 @@ def causal_plan(
 
 def _error_tube(
     carried: NDArray[np.float64],
-    model_error: float,
+    model_error: float | NDArray[np.float64],
     covariance: NDArray[np.float64],
     persistence: float,
     dt: float,
     horizon: int,
+    field_scale: float | None = None,
 ) -> NDArray[np.float64] | None:
     """The plan's error tube carried by ``carried`` -- a norm bound, one state matrix, or one a step
-    -- or None where neither the model error nor the noise gives it a radius."""
-    if not (model_error > 0.0 or covariance.any()):
+    -- or None where neither the model error nor the noise gives it a radius.
+
+    ``model_error`` is a bound on the field's error at each step, one number for every step or one
+    a step, and the tube adds what it carries to the noise's radius, unless ``field_scale`` is
+    given: then ``model_error`` is a standard error, and what it carries, ``f_k``, the standard
+    deviation of the norm of an error independent of the noise, read at ``field_scale`` times
+    itself where its spread is estimated (:func:`chc.decision._field_scale`). Its direction is not
+    known, and it is placed along the noise's widest, where it widens the radius most: the radius
+    is that of the noise's covariance with ``(field_scale f_k)^2`` added to its largest
+    eigenvalue, on one state ``sqrt(r_k^2 + (field_scale z f_k)^2)``, ``z`` the normal's two-sided
+    quantile."""
+    reads = np.asarray(model_error, dtype=np.float64)
+    errors = [float(reads)] * horizon if reads.ndim == 0 else [float(error) for error in reads]
+    if not (max(errors, default=0.0) > 0.0 or covariance.any()):
         return None
-    errors = [model_error] * horizon
     tube = (
         _tube([float(carried)] * horizon, errors, dt, "rk4")
         if carried.ndim == 0
         else _linear_tube(carried, errors, dt)
     )
+    if field_scale is not None:
+        return _noise_tube(carried, covariance, persistence, dt, horizon, field_scale * tube)
     if covariance.any():
         tube = tube + _noise_tube(carried, covariance, persistence, dt, horizon)
     return tube
@@ -1444,19 +1458,29 @@ def _error_tube(
 def _carried_along(
     plan: CausalPlan,
     state_matrices: NDArray[np.float64],
-    model_error: float,
+    model_error: float | NDArray[np.float64],
     noise: ArrayLike,
     noise_persistence: float,
     dt: float,
     tolerance: float,
+    field_scale: float | None = None,
 ) -> CausalPlan:
     """``plan`` with its tube carried by the field's ``(horizon, n, n)`` state matrix at each of its
     steps rather than by the one ``lipschitz`` it was solved with: a field affine in the state whose
-    slope moves with the action, as :func:`chc.prescribe`'s fitted one does. The tube is read off
-    the finished actions and moves no action."""
-    covariance = _noise_covariance(noise, state_matrices.shape[-1])
+    slope moves with the action, as :func:`chc.prescribe`'s fitted one does; or, given one number,
+    by that norm bound as the plan was. ``model_error`` is one number for every step or one a step,
+    and ``field_scale`` reads it as a standard error (:func:`_error_tube`). The tube is read off the
+    finished actions and moves no action."""
+    horizon = len(plan.actions)
+    covariance = _noise_covariance(noise, plan.trajectory.shape[-1])
     tube = _error_tube(
-        state_matrices, model_error, covariance, noise_persistence, dt, len(state_matrices)
+        state_matrices,
+        model_error,
+        covariance,
+        noise_persistence,
+        dt,
+        horizon,
+        field_scale,
     )
     if tube is None:
         return plan

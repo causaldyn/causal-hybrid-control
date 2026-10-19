@@ -1,7 +1,10 @@
 # ADR 0099 — The tube's levels are measured beside it
 
 **Status:** accepted, 2026-10-13. Adds two readers beside the tube of `causal_plan` and `prescribe`
-(ADR 0080, ADR 0096); it moves none of the tube's numbers, defaults or verdicts.
+(ADR 0080, ADR 0096); it moves none of the tube's numbers, defaults or verdicts. Amended in 0.19.0
+by ADR 0104: `prescribe`'s tube reads the field's error at its studentised quantile, so part 2 of
+the context below holds for that error as `_model_error` returns it, not for the tube, and the
+table's columns that read the tube itself were measured with the tube of 0.18.0.
 
 ## Context
 

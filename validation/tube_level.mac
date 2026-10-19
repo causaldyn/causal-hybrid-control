@@ -1,0 +1,75 @@
+/* The level of prescribe's tube (chc.decision._field_scale, ADR 0096 as amended).
+
+   The gap between the plant and the plan at a step is the plant's noise n, Gaussian, plus the
+   fitted field's error carried to that step, f T u: f the standard error of its norm, read from
+   the log with nu degrees of freedom, T Student's t, and u a direction the fit does not give. The
+   two are independent: one is the log's, the other the plant's after it. The tube places the
+   error along the noise's widest direction, where it widens the radius most, as a Gaussian of
+   standard deviation kappa f, kappa = t_nu(0.975) / z: the radius is the 0.95 radius of the
+   noise's covariance with (kappa f)^2 added to its largest eigenvalue, on one state
+   R = sqrt(r^2 + t_nu(0.975)^2 f^2), r the noise's radius. The coverage is read by quadrature
+   over T. */
+load(distrib)$
+display2d : false$
+z : quantile_normal(0.975, 0, 1)$
+Phi(x) := (1 + erf(x / sqrt(2.0))) / 2$
+tdens(t, nu) := gamma((nu + 1) / 2) / (sqrt(nu * %pi) * gamma(nu / 2))
+                * (1 + t^2 / nu)^(-(nu + 1) / 2)$
+
+/* (1) On one state kappa is t_nu(0.975) / z: F_{1,nu} is t_nu squared. */
+for nu in [3, 9, 52] do block([gap],
+  gap : abs(sqrt(quantile_f(0.95, 1, nu) / quantile_chi2(0.95, 1))
+            - quantile_student_t(0.975, nu) / z),
+  print("(1) nu =", nu, " sqrt(F_{1,nu} / chi2_1) - t_nu / z:", gap),
+  if gap > 1e-12 then error("kappa on one state is not t / z"))$
+
+/* (2) One state: P(|n + f T| <= R) with R = sqrt(z^2 + t^2 f^2), and with the additive radius
+   z + f the tube read up to 0.18.0. */
+cover1(f, R, nu) := first(quad_qagi(float((Phi(R - f * t) - Phi(-R - f * t)) * tdens(t, nu)),
+                                    t, minf, inf, 'epsrel = 1e-12))$
+for nu in [3, 6, 9, 52] do
+  for f in [0.25, 0.5, 1.0, 2.0, 4.0, 16.0] do block([now, before],
+    now : cover1(f, sqrt(z^2 + quantile_student_t(0.975, nu)^2 * f^2), nu),
+    before : cover1(f, z + f, nu),
+    print("(2) nu =", nu, " f =", f, " studentised:", now, " added:", before),
+    if now < 0.9495 or now > 0.9525 then error("the one-state level is off 0.95"))$
+
+/* (3) Two states, P = diag(1, l2). The field's error, f T along a direction the fit does not
+   give, is placed along P's widest, e1: the radius^2 is the 0.95 quantile of
+   (1 + (kappa f)^2) chi2_1 + l2 chi2_1, kappa = t_nu / z as on one state. Along e1 it holds the
+   gap at 0.95; along e2, the least direction, at more. */
+/* Each inner integral runs over a disc's chord, y = edge sin(theta), so that its integrand is
+   smooth at the chord's ends. */
+mixcdf(r, a, b) := block([top : sqrt(r / b)],
+  first(quad_qags(exp(-(top * sin(th))^2 / 2) / sqrt(2 * %pi) * erf(sqrt(r / (2 * a)) * cos(th))
+                  * top * cos(th), th, -%pi / 2, %pi / 2, 'epsrel = 1e-10)))$
+mixgap(r) := mixcdf(r, ma, mb) - 0.95$
+radius2(a, b) := (ma : a, mb : b,
+  find_root(mixgap, quantile_chi2(0.95, 1) * max(a, b), quantile_chi2(0.95, 2) * max(a, b)))$
+hh(T) := if numberp(T) then block([edge : sqrt(hR2 / hl2), R : sqrt(hR2)],
+    first(quad_qags(exp(-(edge * sin(th))^2 / 2) / sqrt(2 * %pi)
+                    * (Phi(R * cos(th) - hf * T) - Phi(-R * cos(th) - hf * T)) * edge * cos(th),
+                    th, -%pi / 2, %pi / 2, 'epsrel = 1e-9, 'epsabs = 1e-13)))
+  else 'hh(T)$
+ll(T) := if numberp(T) then block([R : sqrt(hR2)],
+    first(quad_qags(exp(-(R * sin(th))^2 / 2) / sqrt(2 * %pi)
+                    * (Phi((R * cos(th) - hf * T) / sqrt(hl2))
+                       - Phi((-R * cos(th) - hf * T) / sqrt(hl2))) * R * cos(th),
+                    th, -%pi / 2, %pi / 2, 'epsrel = 1e-9, 'epsabs = 1e-13)))
+  else 'll(T)$
+onwidest(T) := if numberp(T) then float(hh(T) * tdens(T, hnu)) else 'onwidest(T)$
+onleast(T) := if numberp(T) then float(ll(T) * tdens(T, hnu)) else 'onleast(T)$
+cover2(f, nu, l2, along) := block([kappa : quantile_student_t(0.975, nu) / z],
+  hf : f, hl2 : l2, hnu : nu, hR2 : radius2(1 + (kappa * f)^2, l2),
+  first(if along = widest then quad_qagi(onwidest(t), t, minf, inf, 'epsrel = 1e-9)
+        else quad_qagi(onleast(t), t, minf, inf, 'epsrel = 1e-9)))$
+for nu in [3, 52] do
+  for l2 in [0.2, 1.0] do
+    for f in [0.5, 2.0] do block([now],
+      now : cover2(f, nu, l2, widest),
+      print("(3) nu =", nu, " l2 =", l2, " f =", f, " along the widest:", now),
+      if now < 0.9495 or now > 0.9525 then error("the two-state level is off 0.95"))$
+for nu in [3, 52] do block([least],
+  least : cover2(1.0, nu, 0.2, least),
+  print("(3) nu =", nu, " l2 = 0.2  f = 1.0  along the least:", least),
+  if least < 0.95 then error("the error along the least direction is held below 0.95"))$

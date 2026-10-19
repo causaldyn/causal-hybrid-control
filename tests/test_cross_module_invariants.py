@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from scipy.stats import chi2
 
 from chc.allocation import ReturnTarget, allocate, budget_for
 from chc.control import LinearConstraint
@@ -36,6 +37,9 @@ from chc.decision import (
     PrescribedPolicy,
     Prescription,
     Target,
+    _field_error,
+    _field_errors,
+    _field_scale,
     _rate,
     _slopes,
     prescribe,
@@ -408,26 +412,36 @@ def _tube_at(
     assert errors is not None
     assert drift_error is not None
     rates = errors * reach
-    states = result.model_fit.residual.channel.shape[0]
+    count = result.model_fit.residual.channel.shape[0]
     error = math.hypot(
-        float(np.max(np.sqrt(states * np.sum(rates * rates, axis=1)))),
-        math.sqrt(states) * drift_error,
+        float(np.max(np.sqrt(count * np.sum(rates * rates, axis=1)))),
+        math.sqrt(count) * drift_error,
     )
+    assert _field_error(result.model_fit, reach) == pytest.approx(error, rel=1e-12, abs=0.0)
+    # read at the state each step starts from, rolled out under ``actions`` (ADR 0104)
+    along = np.asarray(plan.actions if actions is None else actions, dtype=np.float64)
+    states = np.asarray(rollout(problem.model, problem.x0, jnp.asarray(along), DT))
+    if actions is None:
+        np.testing.assert_allclose(states, plan.trajectory, rtol=1e-12, atol=1e-12)
+    error = _field_errors(result.model_fit, reach, states[:-1], np.zeros((HORIZON, 0)))
     noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
     assert noise is not None
     assert persistence is not None
     covariance = np.array([[noise**2]])
+    # one state: the noise's radius and the field's error at its studentised quantile
+    scale = _field_scale(result.model_fit) * math.sqrt(chi2.ppf(0.95, 1))
     if result.certificate.tube_mode == "bound":
         rate, _ = _rate(
             problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi)
         )
-        return _tube([rate] * HORIZON, [error] * HORIZON, DT, "rk4") + _noise_tube(
-            np.asarray(rate), covariance, persistence, DT, HORIZON
+        return np.hypot(
+            _noise_tube(np.asarray(rate), covariance, persistence, DT, HORIZON),
+            scale * _tube([rate] * HORIZON, list(error), DT, "rk4"),
         )
-    along = np.asarray(plan.actions if actions is None else actions, dtype=np.float64)
     slopes = _slopes(problem.model, problem.x0)(along)
-    return _linear_tube(slopes, [error] * HORIZON, DT) + _noise_tube(
-        slopes, covariance, persistence, DT, HORIZON
+    return np.hypot(
+        _noise_tube(slopes, covariance, persistence, DT, HORIZON),
+        scale * _linear_tube(slopes, list(error), DT),
     )
 
 

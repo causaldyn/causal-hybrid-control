@@ -44,6 +44,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 from scipy.stats import chi2
+from scipy.stats import t as student_t
 
 from chc import _units
 from chc.causal import _polynomial_features
@@ -63,6 +64,7 @@ from chc.dynamics_id import (
     _absorbed,
     _channel_design,
     _cosines,
+    _degrees_of_freedom,
     _logged_relations,
     _LoggedRelations,
     _nuisance_inputs,
@@ -164,13 +166,14 @@ TubeRate = Literal["global", "local"]
 anywhere in their box, or at the plan's start alone."""
 
 TubeMode = Literal["exact", "bound"]
-"""What each radius of the error tube is. Both add a one-standard-error scale of the fitted
-field's error, the channel's and the drift's, to the radius within which the plant's own noise
-leaves the plan at that step with probability 0.95 (ADR 0080). ``exact``: on a field affine in the
-state, both carried through RK4's step matrix of the field's slope at each planned action, so the
-noise's radius is its exact 0.95 quantile at that step under the fitted field. ``bound``: both
-carried by a bound on the norm of the slope, so the noise's radius holds at least 0.95, exactly at
-the first step."""
+"""What each radius of the error tube is. Each holds, with probability 0.95, the plant's own noise
+(ADR 0080) and the fitted field's error, the channel's and the drift's, beside it: a standard
+error whose spread the log estimates, read at the state each of the plan's steps starts from and
+at its studentised quantile as an error independent of the noise (ADR 0104). ``exact``: on a field
+affine in the state, both carried through RK4's step matrix of the field's slope at each planned
+action, so the radius is the exact 0.95 quantile of the two at that step under the fitted field.
+``bound``: both carried by a bound on the norm of the slope, so the radius holds at least 0.95,
+exactly at the first step."""
 
 TimeZero = Literal["calendar", "unit"]
 """Where :meth:`Prescription.evaluate`'s windows start: on one calendar for every unit, or cut back
@@ -587,10 +590,11 @@ class DecisionCertificate:
     identification_radius: float | None  # channel standard error; None when not identified
     overlap: float  # residualised action variance: 0 means the log has no variation to learn from
     certificate_status: CertificateStatus
-    # steps the tube keeps inside ``tolerance``: the channel's error, each lever's at that lever's
-    # largest action, carried by the Gronwall recursion, plus the radius that holds the plan's
-    # one-step error on the log, carried the same way, with probability 0.95 at each step
-    # (``tube_noise``)
+    # steps the tube keeps inside ``tolerance``: the radius that holds, with probability 0.95 at
+    # each step, the plan's one-step error on the log (``tube_noise``) and the field's error, the
+    # channel's at each lever's largest distance from the log's mean action and the drift's, read
+    # at each planned state, both carried by the plan's steps, the field's read at its studentised
+    # quantile (:data:`TubeMode`)
     certified_horizon: int | None
     barrier_certified_steps: int | None  # leading prefix clearing the barrier; None if no bound
     # The weakest step's confounding ceiling; None if unconstrained. With several bounds a step's
@@ -1789,11 +1793,13 @@ def prescribe(
             allows from the log's mean action, where the fit's drift absorbed the channel, as
             the root mean square of the Euclidean norm over the states of the error it moves the
             field by, which reads the same in any units of each lever (ADR 0087) and wherever its
-            zero is (ADR 0091), a scale and not a bound; and the
-            plant's own noise, the plan's
-            one-step error on the log, read off the fit's defect with its lag-1 correlation within
-            units, at the radius that holds it at each step with probability 0.95 where the noise
-            is Gaussian and AR(1) (ADR 0080, :attr:`DecisionCertificate.tube_noise`). Up to 0.16.0
+            zero is (ADR 0091), with the drift's own in quadrature, both read at the state each
+            step of the plan starts from, a standard error and not a bound; and the plant's own
+            noise, the plan's one-step error on the log, read off the fit's defect with its lag-1
+            correlation within units (ADR 0080, :attr:`DecisionCertificate.tube_noise`). The
+            radius holds the two together at each step with probability 0.95 where the noise is
+            Gaussian and AR(1) and the field's error is its standard error times Student's ``t``
+            at the degrees of freedom its spread is read with (ADR 0104). Up to 0.16.0
             the tube carried the channel's error alone: on 600 one-unit logs shaped like the
             BOPTEST case's it read 0.051 K one step ahead, where the plant's error one step ahead
             reached 0.16 to 0.22 K at 95 %; it held the plant at the first step on 40 % of draws
@@ -2327,17 +2333,22 @@ def prescribe(
     # largest distance from it the box allows, in its units. A lever held at its mean logged
     # level is held at that action, read the way ``levels`` reads it, and adds no error.
     centre = np.array([float(jnp.mean(data["u"][:, i])) for i in range(n_levers)])
-    model_error = (
-        0.0
-        if tolerance is None
-        else _field_error(
-            fit,
-            np.maximum(
-                np.abs(np.asarray(u_lo, dtype=np.float64) - centre),
-                np.abs(np.asarray(u_hi, dtype=np.float64) - centre),
-            ),
-        )
+    distance = np.maximum(
+        np.abs(np.asarray(u_lo, dtype=np.float64) - centre),
+        np.abs(np.asarray(u_hi, dtype=np.float64) - centre),
     )
+    model_error = 0.0 if tolerance is None else _field_error(fit, distance)
+    # the drivers as the fit's drift reads them over each of the plan's steps: their forecast's
+    # mean over the step, as the ``rk4`` fit reads a transition's (``_nuisance_inputs``)
+    forecasts = (
+        np.zeros((horizon + 1, 0))
+        if driven is None
+        else np.stack([np.asarray(driver.forecast, dtype=np.float64) for driver in drivers], 1)
+    )
+    driver_reads = 0.5 * (forecasts[:-1] + forecasts[1:])
+    # the field's error is a standard error whose spread the log estimates: the tube reads it at
+    # its studentised quantile, beside the noise and independent of it
+    field_scale = None if tolerance is None else _field_scale(fit)
     # with no channel error nothing bounds the field the plan rolls out, and the noise alone would
     # switch on a tube that trusts it
     if tolerance is not None and fit.channel_error is None:
@@ -2396,16 +2407,22 @@ def prescribe(
             constraints=(rate, *relation_rows, *spend_rows),
             barrier=held,
         )
-        if slopes is None:
-            return solved
+        # the field's error read where the plan goes, at the state each of its steps starts from
         return _carried_along(
             solved,
-            slopes(np.asarray(solved.actions, dtype=np.float64)),
-            model_error,
+            np.asarray(lipschitz, dtype=np.float64)
+            if slopes is None
+            else slopes(np.asarray(solved.actions, dtype=np.float64)),
+            _field_errors(
+                fit, distance, np.asarray(solved.trajectory, dtype=np.float64)[:-1], driver_reads
+            )
+            if model_error > 0.0
+            else model_error,
             step_noise,
             step_persistence,
             dt,
             float("inf") if tolerance is None else tolerance,
+            field_scale,
         )
 
     def regret(solved: CausalPlan) -> PlanRegretBound:
@@ -3525,9 +3542,10 @@ def _state_noise(
 
 
 def _field_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
-    """The fitted field's error the tube carries at each step, a standard error: the channel's at
-    each lever's ``reach`` (:func:`_model_error`), and the drift's own at the log's states and
-    mean action, ``drift_error``, in quadrature.
+    """The fitted field's error over the log, a standard error: the channel's at each lever's
+    ``reach`` (:func:`_model_error`), and the drift's own at the log's states and mean action,
+    ``drift_error``, in quadrature. Its root mean square over the log's rows is what the tube
+    reads at each planned state (:func:`_field_errors`), and the plan is solved with it.
 
     The drift absorbed the channel at the log's mean action (ADR 0091), so the field's error at an
     action is the drift's error there plus the channel's times the action's distance from it.
@@ -3544,6 +3562,105 @@ def _field_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     if fit._lever_errors is None or fit.drift_error is None:
         return channel
     return math.hypot(channel, math.sqrt(fit.residual.channel.shape[0]) * fit.drift_error)
+
+
+def _field_errors(
+    fit: CausalDynamicsFit,
+    reach: NDArray[np.float64],
+    states: NDArray[np.float64],
+    drivers: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """:func:`_field_error` read at each of the plan's ``(H, n)`` states rather than over the log's
+    rows: at the state each step starts from, ``drivers`` ``(H, d)`` as the drift reads them over
+    that step. The channel's error is each lever's at that state priced at its ``reach``
+    (:func:`_model_errors`), the drift's the standard error of its fitted value there, from the
+    coefficients' covariance ``drift_error`` reads at the log's rows
+    (``CausalDynamicsFit._drift_blocks``), the two in quadrature as :func:`_field_error` adds them.
+
+    A fitted value's error grows with its distance from the log's states, and a plan goes where
+    its target is, not where the log was: on 100 one-unit logs of 60 transitions of an AR(1) plant
+    whose state spreads 0.52 about 0, a plan to 1 reads the drift's error 1.45 to 1.63 times its
+    root mean over the rows from its fourth step on, and the channel's 1.39 to 1.57 times. Read
+    over the rows, the field's error the tube carried fell short of the plant's own departure from
+    the plan at its late steps (ADR 0104). A fit that keeps no blocks reads its root means at
+    every step. Each part is the scale of the error's Euclidean norm over the states, as
+    :func:`_field_error` reads it (ADR 0100): the drift's mean variance over the states' blocks,
+    one every state shares under Euler, times their number.
+    """
+    channel = _model_errors(fit, reach, states)
+    if fit._lever_errors is None or fit.drift_error is None:
+        return channel
+    count = fit.residual.channel.shape[0]
+    if fit._drift_blocks is None:
+        return np.hypot(channel, math.sqrt(count) * fit.drift_error)
+    features = np.concatenate(
+        [_features(states, fit.residual.degree), np.asarray(drivers, dtype=np.float64)], axis=1
+    )
+    variances = np.einsum("kf,gfh,kh->kg", features, fit._drift_blocks, features)
+    return np.hypot(channel, np.sqrt(count * np.maximum(np.mean(variances, axis=1), 0.0)))
+
+
+def _model_errors(
+    fit: CausalDynamicsFit, reach: NDArray[np.float64], states: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """:func:`_model_error` read at each of ``states`` rather than over the log's rows: each lever's
+    error is the root mean over its column of the channel's entries of their standard errors at
+    the state, from the coefficients' covariances ``_lever_errors`` reads at the rows
+    (``CausalDynamicsFit._channel_blocks``), priced at its ``reach`` and summed as
+    :func:`_model_error` sums them, the scale of the Euclidean norm over the states. A fit that
+    keeps no blocks reads :func:`_model_error` at every state."""
+    rows = np.atleast_2d(np.asarray(states, dtype=np.float64))
+    if fit._lever_errors is None:
+        return np.zeros(rows.shape[0])
+    if fit._channel_blocks is None:
+        return np.full(rows.shape[0], _model_error(fit, reach))
+    levers = fit._lever_errors.shape[1]
+    features = _features(rows, fit.residual.channel_degree)
+    # (r, H, n m): each covariance's variance of each entry at each state, entry (i, j) at i m + j
+    variances = np.einsum("kf,refh,kh->rke", features, fit._channel_blocks, features)
+    by_lever = np.sqrt(
+        np.maximum(
+            np.stack([np.mean(variances[:, :, j::levers], axis=2) for j in range(levers)], 2), 0.0
+        )
+    )
+    rates = by_lever * reach
+    count = fit.residual.channel.shape[0]
+    return np.max(np.sqrt(count * np.sum(rates * rates, axis=2)), axis=0)
+
+
+def _features(states: NDArray[np.float64], degree: int) -> NDArray[np.float64]:
+    """``(H, F)``: :func:`chc.residual.control_affine_features` of each of ``states``."""
+    return np.asarray(
+        jax.vmap(control_affine_features, in_axes=(0, None))(jnp.asarray(states), degree),
+        dtype=np.float64,
+    )
+
+
+def _field_scale(fit: CausalDynamicsFit) -> float:
+    """How many of its standard errors the tube reads :func:`_field_error` at, in units of the
+    normal's: ``t_nu(0.975) / z(0.975)``, ``nu`` the degrees of freedom the channel's error is read
+    with, the independent terms its spread sums less one, its cosines or its clusters
+    (:func:`chc.dynamics_id._degrees_of_freedom`, the ``t`` its tests are sized against). The
+    drift's error is read from its regression's residuals as if each were independent, which on a
+    log whose noise persists or clusters they are not; the channel's count is the robust one, and
+    the tube reads the field's whole error at it. Welch--Satterthwaite's count of the two parts,
+    the drift's at its residual degrees of freedom, read the tube shorter on short logs and the
+    same on long ones (ADR 0104).
+
+    The field's error at a step is ``f`` times Student's ``t`` along a direction the fit does not
+    give. :func:`chc.plan._error_tube` places it along the noise's widest, where it widens the
+    radius most, as a Gaussian of standard deviation ``t / z`` times ``f``: beside the noise, that
+    radius holds it with probability 0.9496 to 0.9523 at ``nu`` 3 to 52 over every ratio of the two
+    on one state, 0.9500 to 0.9514 on two where it lies along the widest direction, and more where
+    it does not: 0.960 and 0.972 along the least, at ``nu`` 3 and 52
+    (``validation/tube_level.mac``). The noise's radius plus ``f``, as the tube read it up to
+    0.18.0, holds 0.758 at ``nu = 3`` and 0.846 at ``nu = 52`` where the field's error is four
+    times the noise's.
+    """
+    assert fit.defect is not None  # every fit keeps its defect
+    degrees = _degrees_of_freedom(int(np.asarray(fit.defect).shape[0]), fit.clusters, fit.periods)
+    t_level = float(student_t.ppf(0.5 + _TUBE_COVERAGE / 2.0, degrees))
+    return t_level / math.sqrt(float(chi2.ppf(_TUBE_COVERAGE, 1)))
 
 
 def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
@@ -3578,10 +3695,11 @@ def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     whose ``reach`` is zero, held at the log's mean action, adds no error, and ``reach`` zero for
     every lever leaves the channel nothing to move, and no tube.
 
-    It is a *scale*, not coverage: ``channel_error`` is the robust standard error, root-mean over
-    the entries and the log's states, calibrated on average but scattering from one log to the
-    next, so one fit's tube is as wide as that fit's reading. The docstring of
-    :class:`chc.dynamics_id.CausalDynamicsFit` says by how much.
+    It is a standard error, not coverage: ``channel_error`` is the robust standard error,
+    root-mean over the entries and the log's states, calibrated on average but scattering from one
+    log to the next, so one fit's tube is as wide as that fit's reading; the tube reads it at the
+    quantile of Student's ``t`` at the degrees of freedom it is read with (:func:`_field_scale`).
+    The docstring of :class:`chc.dynamics_id.CausalDynamicsFit` says by how much.
     """
     if fit._lever_errors is None:
         return 0.0

@@ -125,9 +125,11 @@ adjustment set asserted gives `2.15`; with the confounder latent there is no sch
 - A **Wasserstein-1 DRO** margin for distribution shift.
 - **Rollout error tubes**: RK4 recursions at a Lipschitz rate or a state matrix, or Euler's on
   request, giving a time-varying uncertainty tube, safety tightening, and the horizon the tube
-  trusts. The tube is a bound where the per-step error is one, and a scale where it is a standard
-  error; given the plant's one-step noise, it adds the radius that holds the noise at each step
-  with probability 0.95. Rocq proves that the recursions bound the error under those premises.
+  trusts. The tube is a bound where the per-step error is one; given the plant's one-step noise, it
+  adds the radius that holds the noise at each step with probability 0.95. Under `prescribe`,
+  whose per-step error is a standard error read at the state each planned step starts from, the
+  radius holds the noise and that error together at 0.95 a step, the error read at its studentised
+  quantile. Rocq proves that the recursions bound the error under those premises.
 
 The ensemble trains as one sharded program (`vmap` over a member axis, `lax.scan` over the Adam
 steps, `NamedSharding` over the device mesh) rather than K sequential fits: 3.6× on one device and
