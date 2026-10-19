@@ -402,13 +402,17 @@ def delay_design_loss(ratio: float) -> float:
         return 0.0  # the double root itself, where both branches meet
     if kappa < _OPTIMAL_GAIN_CONSTANT:  # real branch: two real roots, the rightmost is a Lambert W
         return float(1.0 + np.real(lambertw(-kappa, 0)))
+
     # complex branch: s = p + i q with p = -q cot(q) from the imaginary part, and the real part then
     # collapsing to kappa = exp(p) q / sin(q). Both exact; derived in validation/delay_ball.mac.
-    q = brentq(
-        lambda y: np.exp(-y * np.cos(y) / np.sin(y)) * y / np.sin(y) - kappa,
-        1e-12,
-        np.pi / 2 - 1e-12,
-    )
+    def gap(y: float) -> float:
+        return np.exp(-y * np.cos(y) / np.sin(y)) * y / np.sin(y) - kappa
+
+    # the root tends to pi/2 as the ratio falls to the floor, so the bracket ends at pi/2 itself,
+    # where the gap is pi/2 - kappa > 0 up to rounding
+    if gap(np.pi / 2) <= 0.0:
+        return 1.0  # within rounding of the floor, where the loss is 1
+    q = brentq(gap, 1e-12, np.pi / 2)
     return float(1.0 - q * np.cos(q) / np.sin(q))  # Re u = 1 + Re s, Re s = -q cot q
 
 

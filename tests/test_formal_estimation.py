@@ -246,16 +246,12 @@ def test_delay_design_loss_series_meets_the_over_estimate_to_1e_3() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason="ratio = floor (1 + 1e-12) raises brentq's 'f(a) and f(b) must have different "
-    "signs': the bracket stops at pi/2 - 1e-12, short of the root near pi/2",
-)
 def test_delay_design_loss_is_finite_just_above_the_stabilising_floor() -> None:
-    """delay_ball.mac section 2: every ratio above 2/(pi e) stabilises, with a loss in [0, 1]."""
-    loss = delay_design_loss(STABILISING_RATIO_FLOOR * (1.0 + 1e-12))
-    assert 0.0 <= loss <= 1.0
+    """delay_ball.mac section 2: every ratio above 2/(pi e) stabilises, with a loss in [0, 1].
+    brentq's bracket stopped at pi/2 - 1e-12, short of the root, and raised ValueError."""
+    for above in (1e-15, 1e-13, 1e-12, 2e-12):
+        loss = delay_design_loss(STABILISING_RATIO_FLOOR * (1.0 + above))
+        assert loss == pytest.approx(1.0, rel=0.0, abs=1e-9)
 
 
 def _rightmost_delay_root(pole: float, gain: float, tau: float) -> float:

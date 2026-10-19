@@ -65,6 +65,9 @@ still change).
   everywhere; as `s/eps` went to 0 the solution lost digits (1e-4 relative at 1e-12) and read
   `nan` at `s = 0`, where it is now `x`. `optimal_upwind` lost up to 2.8e-10 relative just
   above `Pe = 1e-3`; its series now runs through `Pe^13` and takes over below `Pe = 0.2`.
+- **`delay_design_loss` returns just above the stabilising floor.** Within about 2e-12 of the
+  floor its root search raised `ValueError`, because the bracket stopped 1e-12 short of the root
+  near π/2; it now reads the loss, 1 to rounding.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They
