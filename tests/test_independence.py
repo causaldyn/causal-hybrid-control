@@ -1,10 +1,12 @@
 """chc.independence: partial correlation removes a confounded path and stays calibrated on AR; the
 generalised covariance measure holds its level on a logged panel whose units share noise."""
 
+import math
+
 import numpy as np
 import pytest
 
-from chc.independence import _own_units, gcm_test, partial_corr_test
+from chc.independence import _in_sample_shrink, _own_units, gcm_test, partial_corr_test
 
 
 def _ar1(rng: np.random.Generator, n: int, phi: float) -> np.ndarray:
@@ -326,3 +328,13 @@ def test_gcm_test_keeps_its_level_at_the_fewest_rows_it_accepts() -> None:
         y = z[:, -1] + rng.standard_normal(20)
         rejected += gcm_test(x, y, z, draws=399, seed=trial).p_value <= 0.05
     assert rejected / 400 <= 0.085
+
+
+def test_the_in_sample_shrink_is_maxima_s_exact_ratio() -> None:
+    """validation/gcm_in_sample_shrink.mac: a design of 1, x, x^2 over x = 0..6 in clusters of 2, 3
+    and 2 rows leaves the flips ``(n - 2 r + sum_c |H_cc|^2) / (n - r)`` of the total's variance,
+    exactly ``1037 / 1176``."""
+    x = np.arange(7.0)
+    design = np.column_stack([np.ones(7), x, x**2])
+    shrink = _in_sample_shrink(design, np.array([0, 0, 1, 1, 1, 2, 2]))
+    assert shrink == pytest.approx(math.sqrt(1037 / 1176), rel=1e-14, abs=0.0)
