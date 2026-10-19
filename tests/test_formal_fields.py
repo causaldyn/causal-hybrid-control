@@ -86,7 +86,7 @@ FORMAL_LINKS = {
         "cites": ("mean_field_dwr.mac", "mean_field_dwr.v"),
         "tests": (
             "test_dual_weighted_estimate_is_the_exact_error_of_an_affine_path",
-            "test_dual_weighted_estimate_is_exact_for_an_affine_model_with_a_curvature_error",
+            "test_dual_weighted_estimate_off_the_riccati_root_is_the_model_rate_s_error",
         ),
     },
     "chc.deep_galerkin.finite_population_gap_certificate": {
@@ -666,20 +666,34 @@ def test_dual_weighted_estimate_is_the_exact_error_of_an_affine_path(
     assert estimate == pytest.approx(offset, rel=1e-5, abs=0.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="anti-monotone game at T = 0.7, model V_xx = P + 0.05, S_hat(0) - S(0) = 0.13: the "
-    "estimate is the error against the problem solved at the model's own closed-loop rate, not "
-    "the error; mean_field_dwr.v's exactness needs V_xx = P",
-)
-def test_dual_weighted_estimate_is_exact_for_an_affine_model_with_a_curvature_error() -> None:
-    """mean_field_dwr.v (error_is_defect_over_den) holds at the true rate; the docstring says
-    "exact for this affine family" of any affine model."""
+def _model_rate_slope(game, curvature: float) -> float:
+    """``S~(0)`` of the two-point problem at the model's own rate ``a - b^2 V_xx/r``: ``y' = M~ y``,
+    ``m(0) = m0``, ``P c m(T) + S(T) = 0``, by the matrix exponential."""
+    rate = game.a - game.b**2 * curvature / game.r
+    reduced = np.array([[rate, -(game.b**2) / game.r], [game.q * game.coupling, -rate]])
+    phi = expm(reduced * game.horizon)
+    functional = np.array([game.riccati_root * game.terminal_coupling, 1.0])
+    return -game.mean_initial * (functional @ phi[:, 0]) / (functional @ phi[:, 1])
+
+
+@pytest.mark.parametrize("curvature_error", [0.05, -0.1, 0.3])
+def test_dual_weighted_estimate_off_the_riccati_root_is_the_model_rate_s_error(
+    curvature_error: float,
+) -> None:
+    """mean_field_dwr.v (error_is_defect_over_den) read at the model's own rate: with V_xx = P + e
+    the estimate is |S_hat(0) - S~(0)|, S~ the problem solved at a - b^2 (P + e)/r, not the error.
+    On the anti-monotone game at T = 0.7 with e = 0.05 and S_hat off by 0.13 it reads 2.509."""
     game = replace(_ANTI_MONOTONE_GAME, horizon=0.7)
     truth = float(game.solve().value_s[0])
-    path = _QuadraticPath(game.riccati_root + 0.05, (game.mean_initial,), (truth + 0.13,))
+    curvature = game.riccati_root + curvature_error
+    path = _QuadraticPath(curvature, (game.mean_initial,), (truth + 0.13,))
     estimate = dual_weighted_error_estimate(game, cast("MeanFieldDGM", path))
-    assert estimate == pytest.approx(0.13, rel=1e-3, abs=0.0)
+    # RK4 transition and trapezoid quadrature at 401 nodes: 1.7e-5 relative at e = 0.05
+    assert estimate == pytest.approx(
+        abs(truth + 0.13 - _model_rate_slope(game, curvature)), rel=1e-4, abs=0.0
+    )
+    if curvature_error == 0.05:
+        assert estimate == pytest.approx(2.5094, rel=1e-4, abs=0.0)
 
 
 def _affine_problem(
