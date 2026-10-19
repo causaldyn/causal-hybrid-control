@@ -13,7 +13,7 @@ import warnings
 
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from scipy.integrate import quad
 from scipy.optimize import minimize_scalar
@@ -113,8 +113,9 @@ FORMAL_LINKS = {
             "test_hinf_robust_value_is_the_adversarys_maximum",
             "test_hinf_robust_gain_minimises_the_robust_value",
             "test_hinf_calibrated_gain_matches_the_documented_values",
-            "test_hinf_robust_gain_contracts_below_ce",
-            "test_hinf_ce_regret_exceeds_the_calibrated_minimum",
+            "test_hinf_robust_gain_moves_by_the_first_order_caution",
+            "test_hinf_ce_regret_against_the_calibrated_minimum_is_a_distance_to_u_pess",
+            "test_hinf_ce_control_can_beat_the_calibrated_minimum",
         ),
     },
     "chc.regret.information_lower_bound_certificate": {
@@ -153,7 +154,7 @@ FORMAL_LINKS = {
             "test_minimax_action_regret_matches_brute_force",
             "test_minimax_action_beats_ce_on_the_rocq_instance",
             "test_minimax_action_branch_is_decided_by_the_kink_test",
-            "test_minimax_action_kink_rule_on_a_negative_interval",
+            "test_minimax_action_kink_rule_at_the_endpoint_nearest_zero",
             "test_minimax_action_survives_a_tiny_midpoint",
         ),
     },
@@ -177,7 +178,7 @@ FORMAL_LINKS = {
         "cites": ("minimax_lq.mac",),
         "tests": (
             "test_minimax_lq_value_is_the_constant_effect_worst_case",
-            "test_minimax_lq_value_is_attained_at_b_lo_on_a_negative_interval",
+            "test_minimax_lq_value_is_attained_at_the_endpoint_nearest_zero",
             "test_minimax_lq_gains_beat_perturbed_gains",
         ),
     },
@@ -976,26 +977,56 @@ def test_hinf_calibrated_gain_matches_the_documented_values():
     assert curve.robust_gain[-1] == pytest.approx(curve.u_ce, abs=0.01)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="b=1, rr=0.5, xt=1, gamma=2: u_rob = 0.67969 > u_ce = 0.66667; robustness raises the "
-    "gain whenever b^2 > rr and gamma is large",
-)
-def test_hinf_robust_gain_contracts_below_ce():
-    """hinf_robust_regret.mac (D), (E): the docstring's pessimistic contraction u_rob <= u_ce."""
-    curve = R.hinf_robust_regret_certificate(gamma_lo=2.0, gamma_hi=2.0, n_gamma=1, n_u=200_001)
-    assert curve.robust_gain[0] <= curve.u_ce
+@pytest.mark.parametrize(("b", "rr"), [(1.0, 0.5), (1.0, 2.0), (1.5, 0.5), (0.5, 0.5)])
+def test_hinf_robust_gain_moves_by_the_first_order_caution(b, rr):
+    """hinf_robust_regret.mac (F): u_rob - u_ce ~ u_ce rr xt^2 (b^2 - rr)/((b^2 + rr)^3 gamma^2),
+    above u_ce when b^2 > rr. The docstring said robustness always contracts the gain; at the
+    defaults u_rob(2) = 0.67969 > u_ce = 0.66667."""
+    xt, gamma = 1.0, 8.0
+    curve = R.hinf_robust_regret_certificate(
+        b=b, rr=rr, xt=xt, gamma_lo=gamma, gamma_hi=gamma, n_gamma=1, n_u=2_000_001
+    )
+    u_ce = b * xt / (b * b + rr)
+    shift = u_ce * rr * xt**2 * (b * b - rr) / (b * b + rr) ** 3
+    moved = (curve.robust_gain[0] - curve.u_ce) * gamma**2
+    assert np.sign(moved) == np.sign(b * b - rr)
+    # O(1/gamma^2) of the next order (2.7% at b = rr = 0.5) and the grid's 4e-6 step (1.3%)
+    assert moved == pytest.approx(shift, rel=0.06, abs=0.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="b=1.5, rr=0.5, xt=1, s=0.3: CE regret 8.486e-4 < calibrated minimum 8.620e-4; no "
-    "gamma on the default grid takes the gain below u_ce",
+@FAST
+@given(
+    b=st.floats(0.2, 2.0),
+    rr=st.floats(0.05, 3.0),
+    xt=st.floats(0.3, 2.0),
+    s=st.floats(0.05, 1.0),
 )
-def test_hinf_ce_regret_exceeds_the_calibrated_minimum():
-    """hinf_robust_regret.mac (E): the CE control's regret exceeds the calibrated robust one."""
+def test_hinf_ce_regret_against_the_calibrated_minimum_is_a_distance_to_u_pess(b, rr, xt, s):
+    """hinf_robust_regret.mac (E): each regret is (b^2 + rr + s^2)(u - u_pess)^2, so the CE control
+    beats the calibrated minimum exactly when no grid gain is nearer u_pess. At b = 1.5, rr = 0.5,
+    s = 0.3 none is: 8.486e-4 for CE against 8.620e-4."""
+    curve = R.hinf_robust_regret_certificate(b=b, rr=rr, xt=xt, s=s, n_gamma=12, n_u=2000)
+    weight = b * b + rr + s * s
+    scale = weight * xt**2
+    assert curve.ce_expected_regret == pytest.approx(
+        weight * (curve.u_ce - curve.u_pess_star) ** 2, rel=1e-9, abs=1e-14 * scale
+    )
+    assert curve.expected_regret == pytest.approx(
+        weight * (curve.robust_gain - curve.u_pess_star) ** 2, rel=1e-9, abs=1e-14 * scale
+    )
+    nearest = np.min(np.abs(curve.robust_gain - curve.u_pess_star))
+    if abs(nearest - abs(curve.u_ce - curve.u_pess_star)) > 1e-9:
+        assert (curve.expected_regret_min < curve.ce_expected_regret) == (
+            nearest < abs(curve.u_ce - curve.u_pess_star)
+        )
+
+
+def test_hinf_ce_control_can_beat_the_calibrated_minimum():
+    """The counterexample to "CE regret > the calibrated minimum": b = 1.5, rr = 0.5, s = 0.3."""
     curve = R.hinf_robust_regret_certificate(b=1.5, rr=0.5, xt=1.0, s=0.3)
-    assert curve.ce_expected_regret > curve.expected_regret_min
+    assert curve.ce_expected_regret == pytest.approx(8.4856e-4, rel=1e-4, abs=0.0)
+    assert curve.expected_regret_min == pytest.approx(8.6195e-4, rel=1e-4, abs=0.0)
+    assert np.all(curve.robust_gain > curve.u_ce)
 
 
 # ---------------------------------------------------------- information lower bound / van Trees
@@ -1317,15 +1348,34 @@ def test_minimax_action_branch_is_decided_by_the_kink_test(target, b_lo, width, 
         assert (out.action < ce) == (curvature * b_lo * b_hat < effort)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="target=1, b in [-2, -1], r=curvature=1: the kink test passes (-1 <= 1) but the action "
-    "is -0.5 = CE(b_hi), not CE(b_lo) = -0.4; the rule holds for b_lo >= 0",
+@FAST
+@given(
+    target=st.floats(-2.0, 2.0).filter(_not_tiny),
+    near=st.floats(0.05, 2.0),
+    width=st.floats(0.01, 2.0),
+    effort=st.floats(0.1, 2.0),
+    curvature=st.floats(0.1, 2.0),
+    sign=st.sampled_from([1.0, -1.0]),
 )
-def test_minimax_action_kink_rule_on_a_negative_interval():
-    """minimax_lq.v (minimax_lower_branch): the docstring's kink rule, on an interval below zero."""
-    out = R.minimax_action(1.0, -2.0, -1.0, 1.0, 1.0)
-    assert out.action == pytest.approx(-2.0 / 5.0, rel=1e-12, abs=0.0)
+def test_minimax_action_kink_rule_at_the_endpoint_nearest_zero(
+    target, near, width, effort, curvature, sign
+):
+    """minimax_lq.v (minimax_lower_branch) with the symmetry (b, u) -> (-b, -u): on an interval of
+    one sign the pessimistic endpoint is the one nearest zero. Read literally at b_lo, the rule
+    gave CE(b_lo) = -0.4 at target 1, b in [-2, -1]; the action is CE(b_hi) = -0.5."""
+    b_lo, b_hi = (near, near + width) if sign > 0 else (-near - width, -near)
+    nearest = b_lo if sign > 0 else b_hi
+    margin = curvature * near * width / 2.0 - effort
+    assume(abs(margin) > 1e-6)
+    out = R.minimax_action(target, b_lo, b_hi, effort, curvature)
+    if margin < 0:
+        expected = curvature * nearest * target / (curvature * nearest**2 + effort)
+    else:
+        expected = target / (0.5 * (b_lo + b_hi))
+    assert out.action == pytest.approx(expected, rel=1e-12, abs=1e-15)
+    assert R.minimax_action(1.0, -2.0, -1.0, 1.0, 1.0).action == pytest.approx(
+        -0.5, rel=1e-12, abs=0.0
+    )
 
 
 def test_minimax_action_survives_a_tiny_midpoint():
@@ -1390,16 +1440,35 @@ def test_minimax_lq_value_is_the_constant_effect_worst_case(
         assert pol.value <= brute.fun * (1 + 1e-10)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a=1, b in [-2, -1], q=r=1, p_T=0, T=2: value 1.5 but the constant effect b_lo costs "
-    "1.25; on a negative interval b_hi, the endpoint nearest 0, attains it",
+@FAST
+@given(
+    state_gain=st.floats(-2.0, 2.0),
+    b_lo=st.floats(-2.0, 2.0).filter(_not_tiny),
+    width=st.floats(0.0, 2.0).filter(_not_tiny),
+    state_cost=st.floats(0.1, 2.0),
+    effort=st.floats(0.1, 2.0),
+    terminal=st.floats(0.0, 3.0),
+    horizon=st.integers(1, 6),
 )
-def test_minimax_lq_value_is_attained_at_b_lo_on_a_negative_interval():
-    """minimax_lq.mac (9): the docstring's constant effect b_lo, on an interval below zero."""
-    pol = R.minimax_lq_policy(1.0, -2.0, -1.0, 1.0, 1.0, 0.0, 2)
-    constant = _constant_effect_cost(pol.gains, 1.0, -2.0, 1.0, 1.0, 0.0)
-    assert pol.value == pytest.approx(constant, rel=1e-10, abs=0.0)
+def test_minimax_lq_value_is_attained_at_the_endpoint_nearest_zero(
+    state_gain, b_lo, width, state_cost, effort, terminal, horizon
+):
+    """minimax_lq.mac (9): the constant effect nearest zero realises the value -- b_lo on a
+    positive interval, b_hi on a negative one, both on one containing zero. Read as b_lo always,
+    a = 1, b in [-2, -1], q = r = 1, T = 2 gave 1.25 against the value 1.5."""
+    b_hi = b_lo + width
+    assume(min(abs(b_lo), abs(b_hi)) > 1e-3)
+    pol = R.minimax_lq_policy(state_gain, b_lo, b_hi, state_cost, effort, terminal, horizon)
+    args = (state_gain, state_cost, effort, terminal)
+    at_lo = _constant_effect_cost(pol.gains, args[0], b_lo, *args[1:])
+    at_hi = _constant_effect_cost(pol.gains, args[0], b_hi, *args[1:])
+    if b_lo > 0.0:
+        assert pol.value == pytest.approx(at_lo, rel=1e-10, abs=0.0)
+    elif b_hi < 0.0:
+        assert pol.value == pytest.approx(at_hi, rel=1e-10, abs=0.0)
+    else:
+        assert pol.value == pytest.approx(at_lo, rel=1e-10, abs=0.0)
+        assert pol.value == pytest.approx(at_hi, rel=1e-10, abs=0.0)
 
 
 @FAST

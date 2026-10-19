@@ -4738,7 +4738,7 @@ def van_trees_certificate(
 
 @dataclass(frozen=True)
 class HInfRobustCurve:
-    """H-inf robustness = pessimistic contraction, calibratable to ~ the variance-optimal action."""
+    """H-inf robustness moves the gain, calibratable to ~ the variance-optimal action."""
 
     gamma_grid: Vector  # adversary energy budget gamma (robustness level)
     robust_gain: Vector  # u_rob(gamma): the cautious control; -> u_ce as gamma -> inf
@@ -4750,7 +4750,11 @@ class HInfRobustCurve:
     gamma_star: float  # argmin of the expected regret
     gain_at_gamma_star: float  # robust gain at gamma*: ~ u_pess_star (approx, not an identity)
     expected_regret_min: float  # ~ 0: the robust optimum reaches the variance-pessimism optimum
-    ce_expected_regret: float  # regret of the (under-cautious) CE control; > expected_regret_min
+    # regret of the CE control. Not ordered against expected_regret_min in general: both are
+    # (b^2 + rr + s^2)(u - u_pess)^2, so the minimum is the lower one only where some grid gamma
+    # puts its gain nearer u_pess than u_ce is (b = 1.5, rr = 0.5, s = 0.3: CE 8.486e-4 against
+    # the minimum's 8.620e-4)
+    ce_expected_regret: float
 
 
 def hinf_robust_regret_certificate(
@@ -4770,10 +4774,14 @@ def hinf_robust_regret_certificate(
     ``gamma^2``; the robust controller solves ``min_u max_w``. This is a *correspondence*, not an
     identity: the worst-case objective ``gamma^2*e^2/(gamma^2-u^2)+rr*u^2`` and the expected
     quadratic objective ``(b*u-xt)^2+(rr+s^2)u^2`` (Result 2, optimum ``u_pess=b*xt/(b^2+rr+s^2)``)
-    are different functions. Robustness INDUCES a pessimistic contraction (``u_rob -> u_ce`` as
-    ``gamma`` grows), and the regret-optimal ``gamma*`` can be CALIBRATED so ``u_rob(gamma*)``
-    approximates ``u_pess`` (0.5415 vs 0.538) -- game-theoretic robustness and statistical pessimism
-    as two roads to a similar cautious control, not a proven equality.
+    are different functions. The robust gain tends to ``u_ce`` as ``gamma`` grows, but from BELOW
+    only when ``rr > b^2``: to first order in ``1/gamma^2`` it moves by
+    ``u_ce rr xt^2 (b^2 - rr)/(b^2 + rr)^3`` (step (F) of the derivation), so on the defaults,
+    ``b^2 > rr``, robustness RAISES the gain at large ``gamma`` (0.6797 against 0.6667 at
+    ``gamma = 2``) and contracts it only near the feasibility edge ``gamma ~ |u|``. That is where
+    the regret-optimal ``gamma*`` lies, and it can be CALIBRATED so ``u_rob(gamma*)`` approximates
+    ``u_pess`` (0.5415 vs 0.538) -- game-theoretic robustness and statistical pessimism as two roads
+    to a similar cautious control, not a proven equality.
     """
     s2 = s * s
     u_ce = b * xt / (b * b + rr)
@@ -5736,8 +5744,12 @@ def minimax_action(
     A convex piecewise quadratic attains its minimum at a branch minimiser or at a kink, so
     evaluating the four candidates is exact, not a heuristic.
 
-    The choice is decided by ``curvature*b_lo*(b_hi - b_lo)/2 <= effort``: below it the answer is
-    the CE action for the *pessimistic* endpoint, above it the equalising action. And the correction
+    On an interval of one sign the choice is decided by ``curvature*|b_0|*(b_hi - b_lo)/2 <=
+    effort``, ``b_0`` the endpoint nearest zero -- ``b_lo`` on a positive interval, ``b_hi`` on a
+    negative one, for a target of either sign: below it the answer is the CE action for that
+    *pessimistic* endpoint, above it the equalising action. ``proofs/minimax_lq.v`` proves the rule
+    for ``0 <= u`` and ``b_hi u <= target``; the rest is the symmetry ``(b, u) -> (-b, -u)``, and an
+    interval containing zero is left to the enumeration. And the correction
     does NOT have a fixed sign -- the robust action is smaller than CE at ``b_hat`` only when
     ``curvature*b_lo*b_hat < effort``, and larger otherwise. "Be robust, act less" is a statement
     about expensive effort, not about pessimism.
@@ -6070,11 +6082,13 @@ def minimax_lq_policy(
 
     The adversary re-picks ``b`` at **every step**, which is what makes dynamic programming apply
     and is normally a strict relaxation of a constant unknown effect. Here it is not, and that is a
-    result rather than a caveat: identity (9) shows the robust action always leaves the *lower*
-    endpoint (weakly) worst, decided by the same ``curvature*b_lo*D <= effort`` that picked the
-    branch, so the per-step optimum is realised by the constant effect ``b_lo``. The value is the
-    constant-effect worst case rather than an upper bound on it, and
-    :func:`minimax_lq_certificate` measures that instead of assuming it.
+    result rather than a caveat: identity (9) shows the robust action always leaves the endpoint
+    nearest zero (weakly) worst, decided by the same kink rule that picked the branch, so the
+    per-step optimum is realised by that constant effect -- ``b_lo`` on a positive interval,
+    ``b_hi`` on a negative one (``a = 1``, ``b`` in ``[-2, -1]``, ``q = r = 1``, ``T = 2``: value
+    1.5, which ``b_hi`` costs and ``b_lo`` does not, 1.25), and both endpoints on an interval
+    containing zero. The value is the constant-effect worst case rather than an upper bound on it,
+    and :func:`minimax_lq_certificate` measures that instead of assuming it.
 
     HONEST SCOPE. Scalar state and scalar effect: the interval is the §32 sensitivity interval for
     one control channel, and the multivariate lift is not this function.
