@@ -18,5 +18,5 @@ What it printed when this site was built:
 
 With matplotlib installed the script also writes `outputs/flagship.png`;
 [tutorial 1](../tutorials/01_causal_vs_predictive_control.md) draws the same comparison and scores
-it against an oracle. Code: [`chc.flagship`](../api/flagship.md), on
+it against an oracle. Code: [`chc.research.flagship`](../api/research/flagship.md), on
 [`chc.causal`](../api/causal.md).

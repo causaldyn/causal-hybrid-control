@@ -30,5 +30,6 @@ Pessimism is not free: near zero confounding the robust controller pays a premiu
 conservatism costs more than it saves.
 [The sensitivity level Γ](../concepts/gamma.md) explains the radius;
 [tutorial 5](../tutorials/05_confounding_robust_control.md) runs the static version step by step.
-Code: [`confounding_robust_tracking_benchmark`](../api/regret.md) in `chc.regret`, surfaced by
-[`chc.sensitivity`](../api/sensitivity.md).
+Code: [`confounding_robust_tracking_benchmark`](../api/research/regret.md) in `chc.research.regret`,
+surfaced by
+[`chc.research.sensitivity`](../api/research/sensitivity.md).

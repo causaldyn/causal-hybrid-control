@@ -1,5 +1,5 @@
-# chc.symbolic
+# chc.research.symbolic
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.symbolic
+::: chc.research.symbolic

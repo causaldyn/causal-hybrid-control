@@ -1,5 +1,5 @@
-# chc.causal_bench
+# chc.research.causal_bench
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.causal_bench
+::: chc.research.causal_bench

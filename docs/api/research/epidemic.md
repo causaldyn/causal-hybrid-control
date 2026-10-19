@@ -1,5 +1,5 @@
-# chc.epidemic
+# chc.research.epidemic
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.epidemic
+::: chc.research.epidemic

@@ -1,5 +1,5 @@
-# chc.sensitivity
+# chc.research.sensitivity
 
-**Stability tier: [evolving](index.md#evolving).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.sensitivity
+::: chc.research.sensitivity

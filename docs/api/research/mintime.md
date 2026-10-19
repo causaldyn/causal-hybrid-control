@@ -1,5 +1,5 @@
-# chc.mintime
+# chc.research.mintime
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.mintime
+::: chc.research.mintime

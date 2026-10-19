@@ -1,5 +1,5 @@
-# chc.surrogate
+# chc.research.surrogate
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.surrogate
+::: chc.research.surrogate

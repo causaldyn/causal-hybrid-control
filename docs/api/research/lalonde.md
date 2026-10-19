@@ -1,5 +1,5 @@
-# chc.lalonde
+# chc.research.lalonde
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.lalonde
+::: chc.research.lalonde

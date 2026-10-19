@@ -1,7 +1,9 @@
 # API reference
 
 One page per public module, rendered from the module's docstrings. Every name is importable from
-its module, which is where it stays. The top-level `chc` namespace holds the
+its module, which is where it stays; the modules that each carry one research result moved into
+[`chc.research`](research/index.md) in 0.19.0, and their old paths serve them with a
+`DeprecationWarning` until 0.20.0. The top-level `chc` namespace holds the
 [lifecycle's](../lifecycle.md) names, the classes a call to one of them takes and the errors they
 raise, and its `__all__` lists them. Any other name 0.7.0 bound there still imports from it until
 1.0, with a `DeprecationWarning` that names its module.
@@ -30,13 +32,14 @@ can plan against:
 
 ## The tiers
 
-Three tiers, by what a break costs you:
+Four tiers, by what a break costs you:
 
 | tier | modules | promise |
 |---|---|---|
 | **stable** | `dynamics` `integrate` `cost` `control` `plan` `barrier` `residual` `lqr` `mpc` `train` `adjoint` `decision` `panel` `graph` `dynamics_id` | the plant/control spine and the façade over it. Breaking changes wait for 1.0 and get a deprecation cycle |
-| **evolving** | the estimator, certificate and domain layers — `causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace` and their neighbours — and `mmm`, the media-budget case study's plant rather than a media-mix model | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
-| **experimental** | modules that exist to carry one research result — `deep_galerkin` `galerkin` `transport` `meanfield` `games` `epidemic` `discovery` `symbolic` `koopman` `surrogate` `flagship` `benchmark` `causal_bench` `lalonde` `mintime` — and modules built ahead of the release that verifies them — `experiment` `switchback` on a plant CHC did not write, `zones` in the pre-registered study it is the plant of, `dlm`, `lift` and `allocation` on an external media-mix generator, `misspecification` on the zone plant, `response` in the plans it warm-starts, `geo_world` in the geo models scored on it | may change or be withdrawn in any release. Pin an exact version if you depend on one |
+| **evolving** | the estimator, certificate and domain layers — `causal` `uncertainty` `regret` `irf` `did` `scm` `matching` `marketplace` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
+| **experimental** | modules that exist to carry one research result — `games` `discovery` — and modules built ahead of the release that verifies them — `experiment` `switchback` on a plant CHC did not write, `zones` in the pre-registered study it is the plant of, `dlm`, `lift` and `allocation` on an external media-mix generator, `misspecification` on the zone plant, `response` in the plans it warm-starts, `geo_world` in the geo models scored on it | may change or be withdrawn in any release. Pin an exact version if you depend on one |
+| **research** | [`chc.research`](research/index.md): the modules that each carry one research result — `benchmark` `causal_bench` `deep_galerkin` `epidemic` `flagship` `galerkin` `koopman` `lalonde` `meanfield` `mintime` `mmm` `sensitivity` `spine` `surrogate` `symbolic` `transport` — and the research halves of `regret`, `games` and `residual` | outside the surface 0.20.0 freezes: may change or be withdrawn in any release, and `import chc` imports none of it. Pin an exact version if you depend on one |
 
 ## Stable
 
@@ -49,10 +52,8 @@ The estimator, certificate and domain layers. They may gain keyword arguments in
 may change with a changelog entry arguing why.
 
 The table above names the stable and the experimental modules one by one, and this tier as
-"`causal` `sensitivity` `uncertainty` `regret` `spine` `irf` `did` `scm` `matching` `marketplace`
-and their neighbours", so every module it does not name is listed here as evolving. `mmm` is filed
-here as a case-study plant: the saturating-carryover plant of the media-budget case study, not a
-media-mix model.
+"`causal` `uncertainty` `regret` `irf` `did` `scm` `matching` `marketplace` and their neighbours",
+so every module of `chc` it does not name is listed here as evolving.
 
 ## Experimental
 
@@ -87,8 +88,25 @@ with the fields it keeps, its `nuisance_knots` argument and `nuisance_shift`, th
 `CausalPlan.decision_weight`, `DecisionWeight`, `CausalPlan.relaxed_cost`,
 `CausalPlan.planned_cost_bias`, `PlannedCostBias` and `CostBiasDirection` in `chc.plan`.
 
+## Research
+
+The modules of [`chc.research`](research/index.md): each carries one research result — a solver, a
+certificate, a benchmark or a case study's plant — rather than a stage of a decision taken from
+logs, and the research halves of `regret`, `games` and `residual` sit beside them. They are outside
+the surface 0.20.0 freezes: any of them may change or be withdrawn in any release, and `import chc`
+imports none of them. Until 0.20.0 each name still imports from the path it had before 0.19.0, with
+a `DeprecationWarning` naming its path in `chc.research`.
+
+The certificates that each back one research result inside modules of other tiers are on the same
+terms, and stay at their paths for now: the rollout, risk, ensemble and confounding certificates of
+`chc.uncertainty`, `barrier_confounding_certificate` and `safety_filter_benchmark` in
+`chc.barrier`, `delay_margin_certificate` and `delay_ball_certificate` in `chc.delay`,
+`barrier_reachability_gap` and `higher_order_barrier_gap` in `chc.reachability`, and
+`linearized_regret_certificate` in `chc.lqr`.
+
 ## Roadmap
 
-Next, the marketplace study, and the adaptation modules leave the experimental tier. Then 1.0.0:
+0.20.0 deletes the paths the research modules left in 0.19.0. Next, the marketplace study, and
+the adaptation modules leave the experimental tier. Then 1.0.0:
 the stable tier stops moving, and the top level holds only the lifecycle's names. The 421 names that
 warn since 0.8.0 leave it then.

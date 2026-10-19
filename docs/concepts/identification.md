@@ -37,7 +37,7 @@ Three limits, stated before the code is:
   actions are unconfounded given the state, as for a randomised lever: `unconfounded=True`, which
   `prescribe` passes where a graph finds the empty set enough. Otherwise the estimator
   reports `identified=False` rather than a confident wrong answer, and that case belongs to
-  [`chc.sensitivity`](../api/sensitivity.md), which prices the radius instead of pretending it away.
+  [`chc.research.sensitivity`](../api/research/sensitivity.md), which prices the radius instead of pretending it away.
 
 ## When the channel class misses the truth
 

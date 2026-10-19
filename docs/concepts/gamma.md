@@ -2,7 +2,7 @@
 
 Offline pessimism assumes the observed transitions *identify* the causal effect. Under hidden
 confounding they do not: the effect is only *partially* identified, in a sensitivity interval. `Γ`
-is how wide a caller assumes that interval to be, and [`chc.sensitivity`](../api/sensitivity.md) is
+is how wide a caller assumes that interval to be, and [`chc.research.sensitivity`](../api/research/sensitivity.md) is
 the one import that runs the whole line: calibrate `Γ`, turn it into a radius, control against the
 radius, and check the result.
 

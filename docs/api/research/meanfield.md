@@ -1,5 +1,5 @@
-# chc.meanfield
+# chc.research.meanfield
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.meanfield
+::: chc.research.meanfield

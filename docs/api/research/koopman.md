@@ -1,5 +1,5 @@
-# chc.koopman
+# chc.research.koopman
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.koopman
+::: chc.research.koopman

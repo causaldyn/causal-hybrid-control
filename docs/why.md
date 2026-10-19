@@ -24,7 +24,7 @@ Each of the three obvious approaches solves a different problem and leaves the s
 
 What is here is the seam: identify the *interventional* control channel from confounded logs
 ([`chc.dynamics_id`](api/dynamics_id.md)), plan against it under constraints, and price what
-unmeasured confounding can do to the plan's performance ([`chc.sensitivity`](api/sensitivity.md))
+unmeasured confounding can do to the plan's performance ([`chc.research.sensitivity`](api/research/sensitivity.md))
 and to its safety ([`chc.barrier`](api/barrier.md)).
 
 ## Where it sits
@@ -97,7 +97,7 @@ The same table, read the other way.
   cannot run from a log alone.
 - **Your residual is not control-affine.** `chc.dynamics_id` is the identified route, and it is
   restricted to control-affine residuals; outside that class this library offers a sensitivity
-  radius (`chc.sensitivity`), not an unbiased estimate.
+  radius (`chc.research.sensitivity`), not an unbiased estimate.
 - **Nothing in your log identifies the effect** — no adjustment set and no instrument. Then there is
   no schedule to be had: `prescribe` returns none, on purpose, and what remains is to price the
   radius ([the sensitivity level Γ](concepts/gamma.md)).
@@ -111,7 +111,7 @@ The same table, read the other way.
 (MOPO/MOReL/Delphic), sequential causal identification (g-methods / dynamic treatment regimes),
 differentiable control (Neuromancer). The contribution is the *integration behind one API* plus a
 benchmark with ground-truth interventional effects. KAN is **one interpretable residual backend**,
-not the identity of the framework — and `chc.symbolic` makes "interpretable" checkable rather than
+not the identity of the framework — and `chc.research.symbolic` makes "interpretable" checkable rather than
 asserted, including the two places where the interpretation stops being valid.
 
 Worth knowing before you rely on a fitted model: **a low residual MSE is not causal

@@ -2,12 +2,13 @@
 
 Every public module, grouped by what it is for. Each section names its modules, says what they do,
 and quotes what was measured. Each module's API page states its stability tier; the
-[API reference](api/index.md) says what each tier promises.
+[API reference](api/index.md) says what each tier promises. A module that carries one research
+result lives in [`chc.research`](api/research/index.md), and its page is filed there.
 
 ## Hybrid dynamics
 
 [`dynamics`](api/dynamics.md), [`residual`](api/residual.md), [`integrate`](api/integrate.md),
-[`symbolic`](api/symbolic.md)
+[`symbolic`](api/research/symbolic.md)
 
 The plant is `ẋ = f_known + r_θ`: a known mechanism plus a learned residual, rolled out with RK4.
 The residual is one of:
@@ -137,7 +138,7 @@ steps, `NamedSharding` over the device mesh) rather than K sequential fits: 3.6�
 
 ## Hidden confounding
 
-[`sensitivity`](api/sensitivity.md), a façade over `regret`, `uncertainty` and `barrier`
+[`sensitivity`](api/research/sensitivity.md), a façade over `regret`, `uncertainty` and `barrier`
 
 **Control under hidden confounding.** A bounded-density-ratio (MSM) CVaR worst case becomes an
 inflated pessimism radius. The confounding-regret floor is *second-order* in the effect bias. A
@@ -153,7 +154,7 @@ and the radius taken as inputs.
 confounding the observed covariates carry, as an exponent, `log Γ / log Γ_strongest`, because odds
 ratios compose. `negative_control_gamma` inverts a known-null outcome for the smallest `Γ` that
 reconciles it: a point estimate of a *lower bound* on the confounding present, a lower confidence
-bound on it with `level`, or `inf` when the model class is refuted instead. `chc.sensitivity` is the one-import surface: calibrate, then radius, then control.
+bound on it with `level`, or `inf` when the model class is refuted instead. `chc.research.sensitivity` is the one-import surface: calibrate, then radius, then control.
 
 ## Safety under partial identification
 
@@ -242,7 +243,7 @@ when the class holds — a Hausman test in the plan's metric.
 
 ## End to end
 
-[`spine`](api/spine.md)
+[`spine`](api/research/spine.md)
 
 All four layers on **one** decision: confounded logs → causal gain → constrained plan → `Gamma*`
 certificate → the same plan run on the *true* plant. Two zones of a mobile driver pool, one
@@ -254,7 +255,7 @@ crosses the floor at step 16. `uv run python scripts/spine_demo.py`
 
 ## Case studies in code
 
-[`mmm`](api/mmm.md), and a script over [`decision`](api/decision.md)
+[`mmm`](api/research/mmm.md), and a script over [`decision`](api/decision.md)
 
 **Media budgets** (`mmm`): marketing-mix budget scheduling on a saturating carryover plant, where
 the confounding is not hypothetical: spend is planned *against demand*, so a model fitted on the
@@ -321,8 +322,8 @@ weakest-link laws.
 
 ## Advanced control
 
-[`koopman`](api/koopman.md), [`meanfield`](api/meanfield.md), [`transport`](api/transport.md),
-[`matching`](api/matching.md), [`games`](api/games.md), [`mintime`](api/mintime.md)
+[`koopman`](api/research/koopman.md), [`meanfield`](api/research/meanfield.md), [`transport`](api/research/transport.md),
+[`matching`](api/matching.md), [`games`](api/games.md), [`mintime`](api/research/mintime.md)
 
 - Koopman-LQR.
 - Mean-field control.
@@ -436,9 +437,9 @@ bridges to `ZoneDecision` and `LinearGaussianPlant`, exact under linear matching
 
 ## Evaluation
 
-[`benchmark`](api/benchmark.md), [`causal_bench`](api/causal_bench.md),
-[`flagship`](api/flagship.md), [`lalonde`](api/lalonde.md), [`metrics`](api/metrics.md),
-[`surrogate`](api/surrogate.md)
+[`benchmark`](api/research/benchmark.md), [`causal_bench`](api/research/causal_bench.md),
+[`flagship`](api/research/flagship.md), [`lalonde`](api/research/lalonde.md), [`metrics`](api/metrics.md),
+[`surrogate`](api/research/surrogate.md)
 
 Oracle-regret tasks with a leaderboard and multi-seed confidence intervals: pricing,
 inventory, support shift, **model uncertainty**, **confounding-robust**, and **causal dynamics**,
@@ -450,8 +451,8 @@ The tables are on the [benchmarks](benchmarks.md) page.
 
 ## Scientific computing
 
-[`epidemic`](api/epidemic.md), [`galerkin`](api/galerkin.md),
-[`deep_galerkin`](api/deep_galerkin.md)
+[`epidemic`](api/research/epidemic.md), [`galerkin`](api/research/galerkin.md),
+[`deep_galerkin`](api/research/deep_galerkin.md)
 
 SIR epidemic control (flatten the curve). 1D and 2D Galerkin FEM (progonka), plus the non-symmetric
 **convection-diffusion** case with the cell-Péclet threshold and the optimal SUPG parameter.

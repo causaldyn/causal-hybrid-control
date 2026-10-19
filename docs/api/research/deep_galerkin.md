@@ -1,5 +1,5 @@
-# chc.deep_galerkin
+# chc.research.deep_galerkin
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.deep_galerkin
+::: chc.research.deep_galerkin

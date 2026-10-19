@@ -171,7 +171,7 @@ Early, single-author research code, before 1.0. The identification has been chec
 on the Dehejia–Wahba subsample of LaLonde's job-training data with CPS controls, adjustment and
 double machine learning land inside the randomised experiment's 95 % interval (notebook 7). That
 rests on the subsample, as Smith and Todd (2005) found for matching. On LaLonde's original sample,
-which has no 1974 earnings, the same two estimators in `chc.lalonde` return the wrong sign, −469 to
+which has no 1974 earnings, the same two estimators in `chc.research.lalonde` return the wrong sign, −469 to
 −4,038 dollars against the experiment's +886, with each of the CPS and PSID comparison groups. The
 control loop has no valid check on a real target yet. On a live BOPTEST building emulator, a
 forecast-driven MPC on a thermal model identified from a randomised exploration, not `prescribe`,

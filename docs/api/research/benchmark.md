@@ -1,5 +1,5 @@
-# chc.benchmark
+# chc.research.benchmark
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.benchmark
+::: chc.research.benchmark

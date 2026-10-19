@@ -1,5 +1,5 @@
-# chc.flagship
+# chc.research.flagship
 
-**Stability tier: [experimental](index.md#experimental).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.flagship
+::: chc.research.flagship

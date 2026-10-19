@@ -1,5 +1,5 @@
-# chc.spine
+# chc.research.spine
 
-**Stability tier: [evolving](index.md#evolving).**
+**Stability tier: [research](../index.md#research).**
 
-::: chc.spine
+::: chc.research.spine

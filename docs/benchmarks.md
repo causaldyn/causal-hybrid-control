@@ -1,8 +1,8 @@
 # Benchmarks
 
 Two leaderboards ship with the library as code: every task, every controller and every reference it
-is scored against live in [`chc.benchmark`](api/benchmark.md) and
-[`chc.causal_bench`](api/causal_bench.md). The tables on this page were printed by the command above
+is scored against live in [`chc.research.benchmark`](api/research/benchmark.md) and
+[`chc.research.causal_bench`](api/research/causal_bench.md). The tables on this page were printed by the command above
 each one while this site was built, at JAX's default precision, as the same command runs in a
 default environment (see [the dtype policy](concepts/dtype-policy.md)).
 

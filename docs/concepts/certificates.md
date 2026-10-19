@@ -16,7 +16,7 @@ pages point here rather than repeat the claims.
 | barrier audit and `Γ*`: `certify_safety`, `prescribe` | whether the barrier condition holds at each step under an identification radius, with the path's state and the next in the safe set; `Γ*`, the largest level at which every step still has an admissible action that meets it | the model's predicted path, pointwise: a filter, not a proof that the safe set is invariant | a control-affine plant, checked where the audit reads it; a barrier `h`; by default a relative margin, the factor `(Γ-1)/(Γ+1)` on a share of the fitted channel, so even `Γ* = ∞` speaks only for effects within that share of the estimate; with `sensitivity=`, an absolute radius under a sensitivity model of the channel, read at each step's state, for an Euler fit by adjustment | the algebraic core: Rocq `proofs/barrier_feasibility.v`, at any dimension in `proofs/mathcomp/`; what the pointwise check misses: [`chc.reachability`](../api/reachability.md) |
 | optimality gap: `plan_regret_bound` | how far the plan's objective is above the best plan its box allows | the planning model, not the plant | a curvature that holds over the whole box: supplied, or a linear model's (`certified`); sampled at the plan and a few points it is a `diagnostic`, and negative it is `refused` | Rocq `proofs/constrained_plan_regret.v`, Maxima `validation/constrained_plan_regret.mac` |
 | LQ regret: [`chc.regret`](../api/regret.md) | the certainty-equivalent controller's regret, quadratic in the model's error | a linear-quadratic plant | the model's error inside the ball the bound computes | the gain-gap identity, the ball and the constant: Rocq `proofs/ce_explicit_constants.v`, at any dimension in `proofs/mathcomp/` |
-| interference regret: `chc.regret` | regret quadratic in the identification and exposure-map errors together | a smooth cost and its minimiser | the planned policy within `C (e_id + e_int)` of the best one, assumed, not proved | the algebra from that premise: Rocq `proofs/interference_regret.v` |
+| interference regret: [`chc.research.regret`](../api/research/regret.md) | regret quadratic in the identification and exposure-map errors together | a smooth cost and its minimiser | the planned policy within `C (e_id + e_int)` of the best one, assumed, not proved | the algebra from that premise: Rocq `proofs/interference_regret.v` |
 | evaluation: `certify_evaluation` | whether logs of a given size can evaluate a plan: every weight's variance finite, and enough effective samples, before any cost is read | a linear-Gaussian plant and affine policies | the plant's model | closed forms in [`chc.evaluation`](../api/evaluation.md) |
 | conformal width: `SplitConformal` | marginal coverage of at least `1 − α` | data exchangeable with the calibration split | exchangeability; `n ≥ (1 − α)/α` calibration scores, which `calibrate` enforces | the split-conformal argument, cited; `coverage` measures it |
 | deployment gate: [`chc.gate`](../api/gate.md) | the expected share of wrong deploys across zones, at most `α` at every read | the zones' logs in shadow | logged propensities, no spillover, no carryover | e-processes and e-BH, cited |
@@ -123,8 +123,9 @@ design record is
   box and those rows when they are passed as `constraints=`: a plan at the optimum under a binding
   budget read 0.0885 against the box alone and 4e-13 against the box and the row.
 - **The regret guarantee** — [`chc.regret`](../api/regret.md) carries the LQ certainty-equivalence
-  bound, quadratic in model error (Dean–Mania–Tu–Recht–Matni), and its extensions. It holds on a
-  linear-quadratic plant whose model's error lies inside the ball the bound computes.
+  bound, quadratic in model error (Dean–Mania–Tu–Recht–Matni), and
+  [`chc.research.regret`](../api/research/regret.md) its extensions. It holds on a linear-quadratic
+  plant whose model's error lies inside the ball the bound computes.
 
 `prescribe` gathers the tube, the barrier and the optimality gap into a `DecisionCertificate`,
 beside the identification status. The two axes are never merged: a plan can be fully certified
