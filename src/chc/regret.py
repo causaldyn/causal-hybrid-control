@@ -1225,6 +1225,16 @@ def multichannel_control_certificate(
     Cluster-robust: with roughly balanced, weakly-dependent clusters the effective sample size is
     the number of clusters ``G``, so the total effect concentrates at ``1/sqrt(G)``; this depends
     on the cluster count/size/balance and cross-cluster independence, and is not a universal rate.
+
+    Every ``delta`` reads the same ``n_seeds`` draws, and each draw's error at ``delta = 0`` is
+    taken off: the sampling error cancels, and the regrets carry the bias the nuisance error
+    induces. Over the default window the population bias gives slopes 2.056 and 3.795 (its
+    ``0.49 + 2 delta^2`` denominator bends the order-4 line); this reads 2.056 and 3.761 at 20
+    draws, 2.055 and 3.746 at 60. Draws independent across ``delta`` left a sampling error of
+    0.0185 in the mean error at 20 draws, above the full fit's bias up to ``delta = 0.07``
+    (0.0118), and read the full slope 2.13 there. Over five other sets of draws they read it
+    1.90 +- 0.45 at 20 draws and 2.70 +- 0.37 at 60, where common draws read 3.79 +- 0.07 and
+    3.77 +- 0.06.
     """
     b_total = b_d + b_s
     coeff = xt**2 * (rr - b_total**2) ** 2 / (rr + b_total**2) ** 3
@@ -1242,18 +1252,16 @@ def multichannel_control_certificate(
         y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
         return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
 
-    for i, delta in enumerate(ds):
-        err_half = np.empty(n_seeds)
-        err_full = np.empty(n_seeds)
-        for s in range(n_seeds):
-            rng = np.random.default_rng(6151 * s + int(1e5 * delta))
-            z, u, g, y, fold = simulate(rng, n_clusters)
-            err_half[s] = _dml_two_channel(z, u, g, y, delta, False, fold) - b_total
-            err_full[s] = _dml_two_channel(z, u, g, y, delta, True, fold) - b_total
-        # systematic bias^2 (mean over seeds isolates the delta-order bias from the sampling
-        # variance, which is measured separately in the cluster-robustness arm below)
-        half[i] = coeff * float(np.mean(err_half)) ** 2
-        full[i] = coeff * float(np.mean(err_full)) ** 2
+    # the same draws at every delta, each less its own error at delta = 0: the sampling error is
+    # common to both and cancels, so the mean is the delta-induced bias, whose square the regret
+    # is. The sampling variance is measured in the cluster-robustness arm below
+    draws = [simulate(np.random.default_rng(6151 * s), n_clusters) for s in range(n_seeds)]
+    for orth, regret in ((False, half), (True, full)):
+        induced = np.empty((ds.size, n_seeds))
+        for s, (z, u, g, y, fold) in enumerate(draws):
+            base = _dml_two_channel(z, u, g, y, 0.0, orth, fold)
+            induced[:, s] = [_dml_two_channel(z, u, g, y, d, orth, fold) - base for d in ds]
+        regret[:] = coeff * induced.mean(axis=1) ** 2
     half_slope = float(np.polyfit(np.log(ds), np.log(half), 1)[0])
     full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
 
@@ -3748,6 +3756,14 @@ def optimal_exploration_certificate(
     optimum is interior -- pure exploitation is never optimal -- and confounding raises ``B``
     (here via a fraction ``kappa`` of identifying signal), lifting BOTH ``v*`` and the floor. The
     estimation term is Monte-Carlo; the ``A*v`` term is the proven CE cost of the injected variance.
+
+    SCOPE of ``B/v``: it is the large-``n`` form. The estimation arm fits least squares on ``n``
+    Gaussian rounds, whose mean squared error is ``sigma^2/((n-2)*v)`` exactly, an inverse
+    chi-square mean (``validation/optimal_exploration.mac``). So the simulated cost is
+    ``n/(n-2)`` times ``B/v``, 7% above it at the default ``n = 30``, and its optimum lies
+    ``sqrt(n/(n-2))`` times ``vstar_theory`` out, 1.035 at ``n = 30``, inside one step of the
+    default grid (a ratio of 1.43). The arm's mean is infinite for ``n <= 2`` and its variance for
+    ``n <= 4``: there its Monte Carlo average does not settle.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     a_curv = b**2 + rr
@@ -6281,6 +6297,16 @@ def certainty_equivalence_control(effect_estimate: float, target: float) -> floa
     return target / effect_estimate
 
 
+def _identified_sign(effect_estimate: float, halfwidth: float) -> None:
+    if not 0.0 <= halfwidth <= effect_estimate or effect_estimate <= 0.0:
+        raise ValueError(
+            f"the robust control needs an effect interval of one sign, 0 <= halfwidth <= "
+            f"effect_estimate with effect_estimate > 0; got effect_estimate = {effect_estimate}, "
+            f"halfwidth = {halfwidth}. Where the interval holds effects of both signs, the "
+            "minimax control is 0"
+        )
+
+
 def confounding_robust_control(
     effect_estimate: float,
     halfwidth: float,
@@ -6301,10 +6327,24 @@ def confounding_robust_control(
     symmetric (``a=b`` -> ``kappa=0``). Here ``a=overshoot_penalty``, ``b=undershoot_penalty``.
 
     SCOPE: a minimax STATIC tracking toy, not a general robust controller -- assumes
-    ``b_hat > halfwidth > 0`` (the effect interval has an identified sign, so the denominator is
-    positive), ``target > 0``, ``alpha, beta > 0``, and NO effort/control penalty (pure outcome
-    tracking). The dynamic/effort-penalised case is out of scope.
+    ``b_hat >= halfwidth >= 0`` (the effect interval has an identified sign, so the denominator is
+    positive), ``alpha, beta > 0``, and NO effort/control penalty (pure outcome tracking). The
+    dynamic/effort-penalised case is out of scope. A negative ``target`` is the mirror image: the
+    control is negative, the outcome is largest at ``b_hat - D``, and the two penalties trade
+    places, ``u = (alpha+beta)*target / (alpha*(b_hat-D) + beta*(b_hat+D))``.
+
+    Raises:
+        ValueError: where ``halfwidth`` is negative or above ``effect_estimate``. Past
+            ``b_hat`` the interval holds effects of both signs and the closed form is not the
+            minimax: at ``b_hat = 1``, ``D = 1.5``, ``target = 1``, ``alpha = 1``, ``beta = 3`` it
+            returns 4, whose worst-case loss is 9, where doing nothing, ``u = 0``, is the minimax
+            at ``beta*target = 3``.
     """
+    _identified_sign(effect_estimate, halfwidth)
+    if target < 0.0:
+        return -confounding_robust_control(
+            effect_estimate, halfwidth, -target, undershoot_penalty, overshoot_penalty
+        )
     return (
         (overshoot_penalty + undershoot_penalty)
         * target
@@ -6325,11 +6365,13 @@ def worst_case_asymmetric_loss(
 ) -> float:
     """Worst-case asymmetric loss of applying ``control`` over the §32 effect interval.
 
-    For ``u > 0`` the outcome is monotone in ``b``, so the worst overshoot is at ``b_hat+D`` and the
-    worst undershoot at ``b_hat-D``; the worst-case loss is the max of the two weighted tails.
+    The outcome ``b*u`` is linear in ``b``, so its worst overshoot and undershoot are at the
+    interval's ends: for ``u > 0`` the overshoot at ``b_hat+D`` and the undershoot at ``b_hat-D``,
+    for ``u < 0`` the other way round. The worst-case loss is the max of the two weighted tails.
     """
-    overshoot = max(0.0, (effect_estimate + halfwidth) * control - target)
-    undershoot = max(0.0, target - (effect_estimate - halfwidth) * control)
+    ends = ((effect_estimate - halfwidth) * control, (effect_estimate + halfwidth) * control)
+    overshoot = max(0.0, max(ends) - target)
+    undershoot = max(0.0, target - min(ends))
     return max(overshoot_penalty * overshoot, undershoot_penalty * undershoot)
 
 
@@ -6348,8 +6390,20 @@ def asymmetric_control_improvement(
     UNDERSHOOT-dominant branch ``b*target*D*(b-a)*(b_hat-D)/(b_hat*Q)`` for ``b >= a`` (Rocq
     ``rob_gap_*`` / ``rob_gap_under_*``). Both are ``>= 0`` for ``b_hat > D > 0`` and ``> 0`` iff
     ``a != b`` and ``D > 0`` -- the old single formula only covered ``a >= b`` (missing Result 37's
-    ``b = 4*a`` regime). Here ``a = overshoot_penalty``, ``b = undershoot_penalty``.
+    ``b = 4*a`` regime). Here ``a = overshoot_penalty``, ``b = undershoot_penalty``. A negative
+    ``target`` is the mirror image, with the two penalties trading places.
+
+    Raises:
+        ValueError: where ``halfwidth`` is negative or above ``effect_estimate``, as
+            :func:`confounding_robust_control`: there the robust control is not the minimax, and
+            at ``b_hat = 1``, ``D = 1.5``, ``target = 1``, ``alpha = 1``, ``beta = 2`` the
+            formula read -1 where doing nothing improves on CE by 1.
     """
+    _identified_sign(effect_estimate, halfwidth)
+    if target < 0.0:
+        return asymmetric_control_improvement(
+            effect_estimate, halfwidth, -target, undershoot_penalty, overshoot_penalty
+        )
     a, b, bhat, d = overshoot_penalty, undershoot_penalty, effect_estimate, halfwidth
     q = (a + b) * bhat + (a - b) * d
     if a >= b:

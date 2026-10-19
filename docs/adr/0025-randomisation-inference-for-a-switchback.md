@@ -1,6 +1,7 @@
 # ADR 0025 — Randomisation inference for a switchback
 
-**Status:** proposed, 2026-09-30.
+**Status:** proposed, 2026-09-30. Amended 2026-10-19: the interval is the hull of the accepted
+effects, its ends searched from outside in.
 
 ## Context
 
@@ -51,12 +52,14 @@ appeal to `T`. Two things stand in the way:
     at 21 memories spread evenly across the range.
   - Every null reads the same schedules: kept in memory up to 2^23 lever periods, drawn again past
     that.
-  - The ends are searched from the first effect accepted within eight standard errors of the
-    estimate. Steps double until the test rejects, then bisection runs to a thousandth of a
-    standard error, and each end is reported on its rejected side. An end past 1024 standard
-    errors is infinite.
-  - When every effect within eight standard errors is rejected at every memory, it raises: the data
-    are at odds with a first-order plant over the range, at least near the estimate.
+  - The interval is the hull of the accepted effects, gaps filled. Each end is searched from
+    outside in, over 128 effects a side spread evenly in the angle of `(tau_H - estimate) / se`
+    out to 1024 standard errors. The first accepted one is bisected against its rejected neighbour
+    to a thousandth of a standard error, and the end is reported on its rejected side. An end
+    whose outermost effect is accepted is infinite. An accepted part narrower than one step, 0.0123
+    standard errors at the estimate, can be missed.
+  - When every effect the search tries is rejected at every memory, it raises: the data are at
+    odds with a first-order plant over the range.
 - **`validation/switchback_randomisation.mac`** derives the imputation:
   - STEP 1: the kernel `F_a(u)` and the lever-off readings;
   - STEP 2: the block difference's carry `c_d = tau_H a^(dH)` from `d` blocks back;
@@ -106,6 +109,21 @@ the library; `JAX_PLATFORMS=cpu`, rates only, no timing. The evidence is in
     is what the data allow and not a failure. The range's median width was 1.35 to 1.9 times
     Wald's where both were finite. At the true memory, the steady state's interval was half as
     wide as Fieller's, which pays for not knowing `a`.
+- **The hull (amended 2026-10-19).** Up to then the ends were searched out from the first effect
+  accepted within eight standard errors of the estimate, steps doubling until the test rejected.
+  An accepted set with a gap lost the part past it. Seven blocks of three at `a = 0.6`, read with
+  noise, accept `[0.54, 3.02]` and `[3.22, 10.5]` on one schedule, with the estimate 3.07 in the
+  gap, and the search returned `(3.22, 10.53)`: it missed `tau_3 = 1.96`, which the test accepts.
+  Over all 128 schedules for 300 draws of the shocks, at the true memory, it missed 4.99% of the
+  readings, 153 of them on effects the test accepted; the hull misses 2.07%, none of them
+  accepted. The bench above, rerun (evidence in `~/.cache/chc-scratch/2026-10-19/tail/out/`),
+  moved where a part lay past a gap: at 8 blocks the true memory covers 0.969 (unbounded 37%)
+  and the range is unbounded in 81%; the steady state at 60 periods covers 1.000 over the range
+  at 1.41 times Fieller's width, and 0.950 at the true memory; the long memory covers 0.995 and
+  0.999 over the range and 0.987 and 0.983 at the true memory, its unbounded shares within a
+  point. The memoryless null no longer rejects every effect on the steady states, and still
+  covers none of them. Every other cell is unchanged. The price is tests: the search tests every
+  grid effect outside the hull at every memory, where the old one stopped at the first rejection.
 - **The memoryless null is not a substitute.** It names `tau_H` and nothing else. For the block
   difference it covered 0.950 to 0.966, but that is measured and not proved. For the plug-in it
   missed: 0.532 of `tau_3`, and none of the steady states. So `persistence` has no default.

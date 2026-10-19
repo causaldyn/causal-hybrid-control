@@ -295,6 +295,55 @@ def test_the_interval_covers_on_the_working_model():
     assert covered / runs >= 0.95 - 3.0 * math.sqrt(0.05 * 0.95 / runs)
 
 
+def _gapped_case(lever: np.ndarray) -> np.ndarray:
+    """Readings of seven blocks of three at ``a = 0.6`` and ``b = 1``, measured with noise, from
+    fixed shocks: the case where the effects the test accepts fall in two parts."""
+    rng = np.random.default_rng(8)
+    shocks, noise = 0.3 * rng.standard_normal(21), 0.2 * rng.standard_normal(22)
+    x = np.empty(22)
+    x[0] = 0.5
+    for t in range(21):
+        x[t + 1] = 0.6 * x[t] + lever[t] + shocks[t]
+    return x + noise
+
+
+def test_the_interval_keeps_an_accepted_part_past_a_rejected_gap():
+    """The test at the plant's memory accepts the effects in two parts, about [0.54, 3.02] and
+    [3.22, 10.5], and the estimate, 3.07, falls in the gap between them. The interval is their
+    hull, so it holds the true effect, 1.96, which the test accepts: a search out from the
+    estimate stopped at the gap's far side and returned (3.22, 10.53)."""
+    design, estimand, tau = BlockDesign(3, 2), Horizon(3), 1.0 + 0.6 + 0.36
+    lever = np.repeat([0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3)
+    # with the lever off, the readings are the ones the joint null imputes at the truth
+    accepted = randomisation_test(lever, _gapped_case(np.zeros(21)), estimand, "block_dim", design)
+    assert accepted.p_value > 0.05
+    lo, hi = randomisation_interval(
+        lever, _gapped_case(lever), estimand, "block_dim", design, (0.6, 0.6)
+    )
+    assert lo < 0.6
+    assert hi > 10.0
+    assert lo <= tau <= hi
+
+
+def test_the_interval_misses_on_at_most_alpha_of_the_schedules_where_its_parts_have_gaps():
+    """Every schedule of the gapped case: at the plant's memory the interval misses the truth
+    only where the exact test rejects it, at most alpha of the schedules read, 6 of 120."""
+    design, estimand, tau = BlockDesign(3, 2), Horizon(3), 1.0 + 0.6 + 0.36
+    read = missed = 0
+    for coins in itertools.product((0.0, 1.0), repeat=7):
+        lever = np.repeat(np.array(coins), 3)
+        try:
+            lo, hi = randomisation_interval(
+                lever, _gapped_case(lever), estimand, "block_dim", design, (0.6, 0.6)
+            )
+        except ValueError:
+            continue
+        read += 1
+        missed += not lo <= tau <= hi
+    assert read == 120
+    assert missed <= 0.05 * read
+
+
 def test_a_null_that_names_the_effect_without_the_memory_misses_a_horizon():
     """Under carryover, ``tau_3 = tau_0`` with no memory imputes the readings wrongly, and its
     interval misses ``tau_3``; the joint null at the plant's memory covers it."""

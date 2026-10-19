@@ -221,6 +221,39 @@ still change).
   an error of 0.13 off it by 0.05. The ensemble floor is quartic in the spread at `rr = b0²`. The
   high-probability band covers 0.911 at its 4000 default trials, the doubly robust slope reads
   3.20 at the default seed, and the Bayes action loses 0.079.
+- **`confounding_robust_control` and `asymmetric_control_improvement` refuse an effect interval of
+  both signs, and take a negative target.** Past `halfwidth = effect_estimate` the closed form is
+  not the minimax: at `b_hat = 1`, `D = 1.5`, `beta = 3` it returned 4, worst-case loss 9 where
+  `u = 0` holds it to 3, and at `beta = 2` the improvement read −1 where it is 1. Both now raise
+  `ValueError`. A negative target took the positive one's form, which shifts the gain the wrong
+  way (worst-case loss 0.789 against the minimax 0.319 at penalties 3 and 1); it is now the mirror
+  image, the two penalties trading places. `worst_case_asymmetric_loss` read 0 for every negative
+  control; it now reads the interval's ends for either sign. The benchmarks never reach either case
+  and do not move.
+- **`multichannel_control_certificate` reads its orders off the bias, not the sampling error.**
+  Each `delta` drew its own data, and the mean error carried a sampling error (0.0185 at 20
+  draws) above the full fit's bias up to `delta = 0.07`: the full slope read 2.13 at 20 draws, and
+  1.90 ± 0.45 and 2.70 ± 0.37 over other draws at 20 and 60, where the population bias gives 3.795
+  over the window. Every `delta` now reads the same draws, each less its own error at
+  `delta = 0`: 3.761 at 20 draws and 3.746 at the default 60 (3.815 before), 3.79 ± 0.07 and
+  3.77 ± 0.06 over other draws. The half slope reads 2.055 (2.016 before) and the regret fields
+  move with it; the cluster arm does not.
+- **`optimal_exploration_certificate` states the scope of its `B/v` law.** Its estimation arm's
+  mean squared error is `sigma²/((n−2)v)` exactly, an inverse chi-square mean
+  (`validation/optimal_exploration.mac`), so the arm costs `n/(n−2)` times `B/v`, 7 % more at
+  `n = 30`, and its optimum lies `sqrt(n/(n−2))` = 1.035 times `vstar_theory` out, inside one step
+  of the grid. For `n ≤ 2` the arm's mean is infinite and for `n ≤ 4` its variance. No number moves.
+- **`randomisation_interval` returns the hull of the effects its test accepts.** Its ends were
+  searched out from the first effect accepted near the estimate and stopped at the first
+  rejection, so an accepted part past a gap was cut off: on seven blocks of three at `a = 0.6`
+  one schedule accepts `[0.54, 3.02]` and `[3.22, 10.5]`, and the interval was `(3.22, 10.53)`,
+  missing the true 1.96 that the test accepts. Over all 128 schedules for 300 draws of the shocks
+  it missed 4.99 % of the readings at the true memory, 153 of them on accepted effects. Each end
+  is now searched from outside in, over 128 angles a side out to 1024 standard errors: it misses
+  2.07 %, none on an accepted effect. On the bench the true memory's coverage rises at 8 blocks
+  (0.956 to 0.969, unbounded 28 % to 37 %), on the steady state at 60 periods (0.938 to 0.950,
+  the range 0.993 to 1.000) and on the long memory (0.949 and 0.947 to 0.987 and 0.983), and the
+  memoryless null no longer raises on the steady states. ADR 0025 is amended.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They
