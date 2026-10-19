@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from chc import barrier
 from chc.barrier import (
     admissible_action_interval,
     barrier_confounding_certificate,
@@ -274,3 +275,19 @@ def test_a_nan_radius_buys_no_authority() -> None:
         robust_barrier_margin(0.0, 1.0, nan, 6.0)
     with pytest.raises(ValueError, match="grad_h must be numbers, not nan"):
         robust_safe_action(np.array([nan]), np.array([[1.0]]), 0.5, 6.0)
+
+
+def test_the_safety_slope_reads_the_margin_it_certifies(monkeypatch) -> None:
+    """The slope is read off :func:`robust_barrier_margin`, so a margin that lost its first order
+    would show it: up to 0.18.0 the loss was ``error * u_max``, the theory's answer, and the slope
+    read 1 whatever the margin did."""
+    curve = barrier_confounding_certificate()
+    assert curve.safety_slope == pytest.approx(1.0, abs=1e-9)
+
+    def second_order(drift: float, channel: float, radius: float, u_max: float) -> float:
+        return drift + (channel - radius**2) * u_max
+
+    monkeypatch.setattr(barrier, "robust_barrier_margin", second_order)
+    broken = barrier_confounding_certificate()
+    assert broken.safety_slope == pytest.approx(2.0, abs=1e-9)
+    assert not broken.ok

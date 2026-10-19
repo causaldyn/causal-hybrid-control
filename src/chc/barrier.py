@@ -253,8 +253,11 @@ class BarrierConfoundingCurve:
     actions: tuple[float, ...]  # norm of the robust-optimal action
     gamma_star: float  # the threshold, from the closed form
     last_certified_gamma: float  # the largest grid Gamma that actually certifies
-    safety_slope: float  # log-log slope of margin loss in the effect error (theory: 1)
-    regret_slope: float  # log-log slope of the §33 performance regret (theory: 2)
+    # log-log slope of the margin robust_barrier_margin loses in the effect error (theory: 1)
+    safety_slope: float
+    # log-log slope of the §33 regret L_reg * error^2: 2 by construction, the order the theory
+    # states, not a measurement of it
+    regret_slope: float
     ok: bool
 
 
@@ -289,7 +292,12 @@ def barrier_confounding_certificate(
     last_certified = max(certified_gammas) if certified_gammas else float("nan")
 
     errors = np.array([0.4, 0.2, 0.1, 0.05, 0.025])
-    safety_loss = errors * u_max  # nominal margin minus robust margin, on the identified side
+    # nominal margin minus robust margin, on the identified side, read off the margin itself: up
+    # to 0.18.0 it was errors * u_max, the theory's answer, a slope of 1 whatever the margin did
+    nominal = robust_barrier_margin(drift, channel, 0.0, u_max)
+    safety_loss = np.array(
+        [nominal - robust_barrier_margin(drift, channel, float(e), u_max) for e in errors]
+    )
     regret = l_reg * errors**2
     safety_slope = float(np.polyfit(np.log(errors), np.log(safety_loss), 1)[0])
     regret_slope = float(np.polyfit(np.log(errors), np.log(regret), 1)[0])

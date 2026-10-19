@@ -169,6 +169,42 @@ still change).
   `closed_loop_rollout_bound` and `confounding_robust_closed_loop_bound` bound explicit-Euler
   rollouts, not the RK4 rollouts every plan makes: `x' = x` against `x' = x + 0.1` at `dt = 1`
   reads `0.1, 0.3, 0.7` where the RK4 gaps are `0.1708, 0.6335, 1.8866`. Since 0.2.0.
+- **Five certificate gates that could not fail now read what they check.**
+  `delayed_network_certificate`'s `separable_spread` was the spread of one list copied across every
+  `phi`, 0 whatever the law did; it is now the `phi`-spread of the gain read off the full Kronecker
+  covariance at `delta = 0` (since 0.4.0). `barrier_confounding_certificate`'s `safety_slope` was
+  fitted to `error * u_max`, the theory's answer, so it read 1 whatever the margin did; it is now
+  fitted to the loss `robust_barrier_margin` reports, and a margin that lost its first order reads
+  slope 2 and `ok` false (since 0.2.0). `constrained_ce_regret_certificate`'s
+  `max_constrained_ratio` compared estimates on one side of the clip, so it read exactly 1; it now
+  compares a truth below the clip with an estimate above it and reads 0.411 at the defaults
+  (since 0.2.0). `space_time_fold_certificate` gated `exhaustive_ratio` from above only, which a
+  search beating the closed form passes; it now asks for 1 within 1e-9 (since 0.5.0).
+  `confounding_robust_control_certificate` asked for `u_robust < u_CE` and a strict gain whatever
+  the penalties, so a loss where undershoot costs more, a symmetric loss or an interval with no
+  width read `ok` false where the controller does what the theory says; it now checks the sign
+  dichotomy, and CE exactly where the loss is symmetric (since 0.2.0).
+- **`constrained_ce_regret_certificate`'s `pessimism_budget` is the regret it names.** It was the
+  unconstrained quadratic, `r (u_star(b) - umax)^2`, which understates the clipped controller's
+  regret on the cost it minimises: 0.005784 at the defaults, where the exact regret is 0.010594.
+  Since 0.2.0.
+- **`linearized_regret_certificate` reads from the deviation `x0 - x_star`.** It handed the
+  regulator `x0` itself, as if its origin were 0: about `x_star = (1, 0)` from `x0 = (1.5, 0.2)`, with
+  `Q = R = I`, it read 0.1034 where the gap about the operating point is 0.01669. Its docstring now
+  states that `(x_star, u_star)` should be an equilibrium of both models and that the cost has no
+  halves. Since 0.2.0.
+- **`delay_margin` returns `inf` on a loop stable at every delay.** For a stable pole the gain does
+  not outweigh, `pole < gain <= -pole`, it raised that the delay-free loop was unstable; no root of
+  such a loop reaches the imaginary axis, so the margin is infinite. `delay_margin_certificate`, which
+  sweeps across a finite margin, raises on such a loop and says why. Since 0.4.0.
+- **Gates that hold by construction say so.** `conjugate_time_certificate`'s
+  `regret_slope` is twice the sensitivity's slope by its formula, and the regret's realised order
+  near the conjugate time, measured by forward integration, is 3 (slopes 3.29, 3.05, 3.01), where
+  the docstring's fourth order is the coefficient's; `barrier_confounding_certificate`'s
+  `regret_slope`, `clustered_lower_bound_certificate`'s `floor_positive` and `c0_estimate`, and three of the
+  four gates of `confounding_robust_lq_regret_certificate` are algebraic identities. `panel_estimator_certificate`'s interval is a
+  bootstrap over independent draws, not a cluster bootstrap; `ce_explicit_constant_certificate`'s empirical
+  radius is a lower bound where the grid censors it. Documentation only.
 
 ## [0.18.0] — 2026-10-13
 
