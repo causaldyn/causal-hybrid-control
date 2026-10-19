@@ -2305,7 +2305,12 @@ def prescribe(
 
     margins = _margins(states, constraints)
     held = (
-        BarrierConstraint(margins, gamma=gamma, u_max=tuple(reach.tolist()))
+        BarrierConstraint(
+            margins,
+            gamma=gamma,
+            u_max=tuple(reach.tolist()),
+            u_box=(tuple(np.asarray(u_lo).tolist()), tuple(np.asarray(u_hi).tolist())),
+        )
         if hold_constraints
         else None
     )
