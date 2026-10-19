@@ -309,7 +309,7 @@ still change).
   plan's cost under the model, and the interval held only that: with one entry of `a` off by 0.1
   it covered the deployed value 0.645 of the time (400 logs of 4000 steps), with the noise doubled
   0.035. The interval is now `"dr"`'s on the same weights, which reads the model's first-order
-  error off the logs, stretched to hold the estimate: 0.978 and 0.993, 0.983 on a model fitted to
+  error off the logs, stretched to hold the estimate: 0.970 and 0.970, 0.963 on a model fitted to
   a 300-step pilot (0.680 before), and 0.950 with the model right, at 1.2 times the width (1.4
   for a deterministic plan). The estimate does not move (ADR 0108). Since 0.8.0.
 - **`evaluate_plan(method="dr")` weighs toward the plan's law under the logs' own loop.** Its
