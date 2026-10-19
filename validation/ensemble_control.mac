@@ -39,3 +39,24 @@ print("  = w1*w2*(u1-u2)^2/(w1+w2) ; check:", ratsimp(floor_val - w1*w2*(u1-u2)^
 /* HOMOGENEOUS population (b1 = b2 => u1 = u2): the floor VANISHES -- one control is perfect. */
 print("homogeneous (u1=u2): floor =", ratsimp(subst(b2=b1, floor_val)), " (0: one control serves all)")$
 print("=> heterogeneity, not estimation error, is what forces the ensemble floor (Var of u* across b)")$
+
+/* THE FLOOR'S ORDER IN THE SPREAD. Effects spread uniformly over [b0 - s, b0 + s] (b = b0 + s t,
+   t uniform on [-1, 1]): to leading order the floor is k(b0) u*'(b0)^2 Var(b), quadratic in s --
+   unless u*'(b0) = xt (rr - b0^2)/(rr + b0^2)^2 vanishes, at rr = b0^2, where u* is flat at b0 and
+   the floor is QUARTIC in s. */
+ser(f) := expand(ratdisrep(taylor(f, s, 0, 6)))$
+Et(f) := integrate(expand(f), t, -1, 1)/2$
+kb : ser(k(b0 + s*t))$
+ub : ser(us(b0 + s*t))$
+uensb : ser(Et(ser(kb*ub))/Et(kb))$
+floor_s : ser(Et(ser(kb*(uensb - ub)^2)))$
+f2 : ratsimp(coeff(floor_s, s, 2))$
+print("floor's s^2 coefficient =", factor(f2))$
+print("  minus k(b0) u*'(b0)^2 / 3 =",
+      ratsimp(f2 - k(b0)*subst(bb = b0, diff(us(bb), bb))^2/3),
+      if ratsimp(f2 - k(b0)*subst(bb = b0, diff(us(bb), bb))^2/3) = 0 then "(PASS)" else "(FAIL)")$
+f4 : factor(ratsimp(subst(rr = b0^2, coeff(floor_s, s, 4))))$
+print("at rr = b0^2 the s^2 coefficient is", ratsimp(subst(rr = b0^2, f2)),
+      "and the s^4 coefficient", f4,
+      if ratsimp(subst(rr = b0^2, f2)) = 0 and ratsimp(f4 - xt^2/(90*b0^4)) = 0 then "(PASS)" else "(FAIL)")$
+print("=> the floor is quadratic in the spread except at rr = b0^2, where it is quartic")$

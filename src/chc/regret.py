@@ -972,7 +972,7 @@ class EnsembleControlCurve:
     spreads: Vector  # heterogeneity level (spread of the effect across the population)
     ensemble_floor: Vector  # R(u_ens): the irreducible regret of one control, ~ spread^2
     naive_mean_regret: Vector  # regret of the naive u*(mean effect) control: >= the ensemble floor
-    floor_slope: float  # log-log slope of the floor vs heterogeneity (~2: quadratic)
+    floor_slope: float  # log-log slope of the floor vs heterogeneity (~2; ~4 at rr = b0^2)
     homogeneous_floor: float  # floor at the smallest spread (~0: one control serves a uniform pop)
     naive_excess_max: float  # max(naive - ensemble): the value of curvature-weighting over the mean
 
@@ -992,10 +992,13 @@ def ensemble_control_certificate(
     proved in ``proofs/ensemble_control.v``). When the effect ``b`` varies across contexts (CATE
     heterogeneity), a single control ``u`` serves all. Even with perfect per-context knowledge, one
     control pays an irreducible regret = the curvature-weighted VARIANCE of the per-context optimal
-    actions, ``R(u_ens) = W*Var_w(u*)``, quadratic in the heterogeneity and zero for a homogeneous
-    population. The ensemble-optimal control is the curvature-weighted mean of per-context optima;
-    it WEAKLY beats the naive ``u*(mean effect)`` control (they coincide when curvature is uniform
-    across contexts), and strictly beats it under heterogeneous curvature.
+    actions, ``R(u_ens) = W*Var_w(u*)``, zero for a homogeneous population. With the effects spread
+    over ``[b0 - s, b0 + s]`` it is quadratic in ``s``, ``k(b0) u*'(b0)^2 s^2/3`` for a uniform
+    spread, except at ``rr = b0^2``: there ``u*'(b0) = 0`` and the floor is QUARTIC,
+    ``xt^2 s^4/(90 b0^4)`` (``floor_slope`` 4.05 on the default grid). The ensemble-optimal control
+    is the curvature-weighted mean of per-context optima; it WEAKLY beats the naive
+    ``u*(mean effect)`` control (they coincide when curvature is uniform across contexts), and
+    strictly beats it under heterogeneous curvature.
     """
     spreads = np.geomspace(spread_lo, spread_hi, n_spread)
     floor = np.zeros(n_spread)

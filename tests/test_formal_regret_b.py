@@ -62,6 +62,8 @@ FORMAL_LINKS = {
         "tests": (
             "test_ensemble_floor_is_the_best_single_control_regret",
             "test_ensemble_two_context_floor_is_the_closed_form",
+            "test_ensemble_floor_is_quadratic_in_the_spread_but_quartic_at_rr_b0_squared",
+            "test_ensemble_floor_slope_at_rr_b0_squared_on_the_default_grid",
         ),
     },
     "chc.regret.exact_matrix_ratio_moment": {
@@ -594,6 +596,33 @@ def test_ensemble_floor_is_the_best_single_control_regret(b0, rr, xt, n_ctx, hi)
         assert floor <= brute + tol
         assert brute <= floor + tol
         assert naive >= floor - tol
+
+
+@pytest.mark.parametrize(("b0", "rr"), [(1.0, 0.5), (0.7, 1.5), (1.0, 1.0), (1.5, 2.25)])
+def test_ensemble_floor_is_quadratic_in_the_spread_but_quartic_at_rr_b0_squared(b0, rr):
+    """ensemble_control.mac, the floor's order: on a fine uniform spread the floor is
+    k(b0) u*'(b0)^2 s^2/3 to leading order, and xt^2 s^4/(90 b0^4) where rr = b0^2 makes u*' vanish;
+    the docstring called it quadratic everywhere."""
+    xt = 1.3
+    curve = R.ensemble_control_certificate(
+        b0=b0, rr=rr, xt=xt, n_ctx=20_001, spread_lo=1e-3, spread_hi=4e-3, n_spread=3
+    )
+    s = curve.spreads
+    slope = xt * (rr - b0**2) / (rr + b0**2) ** 2
+    if rr == b0**2:
+        leading = xt**2 * s**4 / (90.0 * b0**4)
+        assert curve.floor_slope == pytest.approx(4.0, rel=0.0, abs=1e-3)
+    else:
+        leading = (b0**2 + rr) * slope**2 * s**2 / 3.0
+        assert curve.floor_slope == pytest.approx(2.0, rel=0.0, abs=1e-3)
+    # next order is s^2 relative, 1.6e-5 at s = 4e-3, and the 20001-point grid's moments are 1e-4
+    np.testing.assert_allclose(curve.ensemble_floor, leading, rtol=3e-4, atol=0.0)
+
+
+def test_ensemble_floor_slope_at_rr_b0_squared_on_the_default_grid():
+    """The quartic floor read on the default grid of spreads, 0.02 to 0.5: slope 4.05."""
+    curve = R.ensemble_control_certificate(b0=1.0, rr=1.0, xt=1.0)
+    assert curve.floor_slope == pytest.approx(4.054, rel=0.0, abs=1e-3)
 
 
 @FAST
