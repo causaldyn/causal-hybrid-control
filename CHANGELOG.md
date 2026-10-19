@@ -20,6 +20,13 @@ still change).
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
 - **A `lever_range` warning** when a prescription sets a lever outside the range the panel logged.
+- **`ChannelSensitivity`, an absolute radius for the barrier audit**: `certify_safety(sensitivity=)`
+  and `BarrierConstraint(sensitivity=)` read the channel's sampling error plus the bias a hidden
+  confounder within `[1/Γ, Γ]` on the levers' density can put into a least-squares Euler channel,
+  at each step's predicted state. Over 200 confounded logs the default share certified a prefix the
+  true plant left the set within on 26–28 % of logs; the absolute radius on none.
+- **`plan_regret_bound(constraints=)`** prices a plan against the box and the linear rows it was
+  solved under: a plan at the optimum under a binding budget read 0.0885, now 4e-13.
 
 ### Changed
 
@@ -45,9 +52,14 @@ still change).
   simulator's equilibrium. Premises are stated for local projections under a persistent treatment,
   the "mis" estimate, the experiment's CE action, the gate's steady contrast, the single-Gaussian
   `SupportModel`, fixed-degree nuisances, and `plan_regret_bound`'s unread rows.
+- **`prescribe` labels its `gamma*` a relative margin**: its radius is a share of the fitted
+  channel, not a level of confounding, and its `rk4` fit has no absolute sensitivity model.
 
 ### Fixed
 
+- **A held barrier holds `h` at each step's next state.** At `dt = 1` a held plan's path left the
+  set at 5 of 12 states and its own audit certified 3 steps; it now certifies 12. Plans whose path
+  stayed in the set are unchanged to the last digit.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They
