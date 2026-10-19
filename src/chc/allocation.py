@@ -1116,32 +1116,67 @@ def _ascend(
 def _newton_face(
     schedule: _Schedule, flat: np.ndarray, low: np.ndarray, high: np.ndarray
 ) -> np.ndarray:
-    """``flat`` moved by Newton's method on the face of the box it lies on, the budget held: SLSQP
-    stops with the slopes of the cells inside their boxes equal only to its tolerance, which leaves
-    a Frank--Wolfe gap of about that share. Each step is to the stationary point of the worth's
-    quadratic on the face, and the steps stop at one that leaves the box or gains nothing."""
+    """``flat`` moved by Newton's method on the faces of the box, the budget held: SLSQP stops with
+    the slopes of the cells inside their boxes equal only to its tolerance, and on a cell inside its
+    box that belongs on a bound, which leaves a Frank--Wolfe gap of about that share. Each step is
+    to the stationary point of the worth's quadratic on the face, taken as far as the box allows; a
+    cell the step carries to a bound stays there, and a cell on a bound whose slope beats the face's
+    price leaves it. A step is halved until it gains, so the worth never falls."""
     cells = flat.size
     grid_shape = (cells // schedule.history.shape[1], schedule.history.shape[1])
     x = flat.copy()
     value, slope = _read_schedule(schedule, x.reshape(grid_shape))
-    for _ in range(20):
-        free = (x > low) & (x < high)
-        size = int(free.sum())
-        if size == 0:
-            break
+    span = np.maximum(high - low, 1.0)
+    for _ in range(4 * cells + 20):
+        g = slope.ravel()
+        floor, cap = x <= low + 1e-14 * span, x >= high - 1e-14 * span
+        free = ~(floor | cap)
+        price = (
+            float(np.mean(g[free]))
+            if free.any()
+            else 0.5
+            * (float(np.max(g[floor], initial=-np.inf)) + float(np.min(g[cap], initial=np.inf)))
+        )
+        moving = free | (floor & (g > price)) | (cap & (g < price))
         curvature = np.asarray(
             _schedule_curvature(schedule, jnp.asarray(x.reshape(grid_shape), dtype=float)),
             dtype=float,
-        ).reshape(cells, cells)[np.ix_(free, free)]
-        system = np.block([[curvature, np.ones((size, 1))], [np.ones((1, size)), np.zeros((1, 1))]])
-        rhs = np.concatenate([-slope.ravel()[free], [0.0]])
-        step = np.linalg.lstsq(system, rhs, rcond=None)[0][:size]
-        moved = x.copy()
-        moved[free] += step
-        if np.any(moved < low) or np.any(moved > high):
+        ).reshape(cells, cells)
+        step = np.zeros(cells)
+        while (size := int(moving.sum())) >= 2:
+            system = np.block(
+                [
+                    [curvature[np.ix_(moving, moving)], np.ones((size, 1))],
+                    [np.ones((1, size)), np.zeros((1, 1))],
+                ]
+            )
+            rhs = np.concatenate([-g[moving], [0.0]])
+            step = np.zeros(cells)
+            step[moving] = np.linalg.lstsq(system, rhs, rcond=None)[0][:size]
+            # a cell on a bound that the step would carry out of its box stays on the bound
+            outward = (floor & (step < 0.0)) | (cap & (step > 0.0))
+            if not outward.any():
+                break
+            moving &= ~outward
+        if size < 2:
             break
-        reached, rise = _read_schedule(schedule, moved.reshape(grid_shape))
-        if not reached > value:
+        if not g @ step > 0.0:
+            # not an ascent off a concave face: the slope's own direction on the budget's plane
+            step[moving] = g[moving] - float(np.mean(g[moving]))
+            if not g @ step > 0.0:
+                break
+        with np.errstate(divide="ignore", invalid="ignore"):
+            room = np.where(
+                step > 0.0, (high - x) / step, np.where(step < 0.0, (low - x) / step, np.inf)
+            )
+        reach = min(1.0, max(float(np.min(room)), 0.0))
+        for _ in range(60):
+            moved = np.clip(x + reach * step, low, high)
+            reached, rise = _read_schedule(schedule, moved.reshape(grid_shape))
+            if reached > value:
+                break
+            reach /= 2.0
+        else:
             break
         x, value, slope = moved, reached, rise
     return x

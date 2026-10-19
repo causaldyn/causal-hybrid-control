@@ -354,6 +354,23 @@ def test_a_schedule_on_concave_curves_with_carryover_closes_on_its_bound():
     assert np.all((plan.schedule >= LOWER - 1e-12) & (plan.schedule <= UPPER + 1e-12))
 
 
+def test_a_schedule_closes_on_its_bound_from_a_local_ascent_that_stopped_early(monkeypatch):
+    """The polish after SLSQP finishes the ascent: from SLSQP stopped at 15 iterations, with cells
+    inside their boxes that belong on a bound and slopes 0.5 apart, the active-set Newton steps
+    close the Frank--Wolfe gap. A runner whose SLSQP stopped a little short read 'cap' there."""
+    real = chc.allocation.minimize
+
+    def early(*args, **kwargs):
+        return real(*args, **{**kwargs, "options": {"maxiter": 15, "ftol": 1e-15}})
+
+    monkeypatch.setattr(chc.allocation, "minimize", early)
+    plan = allocate(
+        CHANNELS, BUDGET, PERIODS, lower=LOWER, upper=UPPER, history=HISTORY, schedule=True
+    )
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert plan.bound - plan.worth <= 1e-9 * plan.bound
+
+
 def test_a_cap_short_of_the_tangency_is_bounded_on_its_own_interval():
     """Capped at 1, short of its tangency 2^(1/3), a Hill curve of slope 3 is bounded by the chord
     to its cap, not by the one from the origin to the tangency, which stands above the cap's value:
