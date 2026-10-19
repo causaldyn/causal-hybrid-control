@@ -20,6 +20,11 @@ still change).
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
 - **A `lever_range` warning** when a prescription sets a lever outside the range the panel logged.
+- **Each docstring that cites a proof or a derivation is tied to a test of its code.** The 117
+  objects in `src/chc` that cite a file under `proofs/` or `validation/` each have property tests
+  of the cited statement on the float code (`tests/test_formal_*.py`), and
+  `tests/test_formal_links.py` fails on a citation without one. 22 statements the code does not
+  satisfy are strict expected failures with their counterexamples, listed on the theory page.
 
 ### Changed
 
