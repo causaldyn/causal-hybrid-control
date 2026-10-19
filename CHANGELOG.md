@@ -153,10 +153,6 @@ still change).
 - **A held barrier holds `h` at each step's next state.** At `dt = 1` a held plan's path left the
   set at 5 of 12 states and its own audit certified 3 steps; it now certifies 12. Plans whose path
   stayed in the set are unchanged to the last digit.
-- **`lipschitz_rollout_bound` keeps its value at a small rate times step.** It computed
-  `(1 + L·dt)^H − 1`, which cancels to 0 once `L·dt` is below a double's epsilon and certified
-  every step (L = 1e-14, a gap of 0.02 read 0.0); `confounding_robust_closed_loop_bound` and
-  `closed_loop_rollout_bound` inherited it. It is now one `expm1(H·log1p(L·dt))`.
 - **`minimax_action` returns where a candidate action is huge.** An identified interval whose
   midpoint is near zero (1.6e-189) made the equalising candidate overflow a float power, which
   raised `OverflowError`; its cost now reads `inf` and it loses to the other candidates.
