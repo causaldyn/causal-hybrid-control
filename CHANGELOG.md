@@ -57,6 +57,9 @@ still change).
   `(1 + L·dt)^H − 1`, which cancels to 0 once `L·dt` is below a double's epsilon and certified
   every step (L = 1e-14, a gap of 0.02 read 0.0); `confounding_robust_closed_loop_bound` and
   `closed_loop_rollout_bound` inherited it. It is now one `expm1(H·log1p(L·dt))`.
+- **`minimax_action` returns where a candidate action is huge.** An identified interval whose
+  midpoint is near zero (1.6e-189) made the equalising candidate overflow a float power, which
+  raised `OverflowError`; its cost now reads `inf` and it loses to the other candidates.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They

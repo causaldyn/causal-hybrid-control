@@ -5597,7 +5597,9 @@ def minimax_action(
         raise ValueError(f"criterion must be 'cost' or 'regret', got {criterion!r}")
 
     def branch(b: float, u: float) -> float:
-        return curvature * (b * u - target) ** 2 + effort * u**2
+        # products, not ``**``: a float power past the float range raises where these read inf
+        miss = b * u - target
+        return curvature * miss * miss + effort * u * u
 
     def worst(u: float) -> float:
         return max(branch(b_lo, u), branch(b_hi, u))
@@ -5629,7 +5631,8 @@ def _minimax_regret_action(
         return curvature * b * target / spread(b)
 
     def regret(u: float, b: float) -> float:
-        return spread(b) * (u - best(b)) ** 2
+        gap = u - best(b)
+        return spread(b) * gap * gap
 
     def turn(u: float) -> float | None:
         """Where ``sqrt(D) (u - u*)`` turns inside the interval; it turns at most once."""

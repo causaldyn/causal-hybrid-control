@@ -1323,16 +1323,13 @@ def test_minimax_action_kink_rule_on_a_negative_interval():
     assert out.action == pytest.approx(-2.0 / 5.0, rel=1e-12, abs=0.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=OverflowError,
-    reason="target=-1, b in [0, 1.56e-189], r=1, curvature=0: the equalising candidate u = "
-    "-1.3e189 overflows u**2 in branch() and raises instead of losing to u = 0",
-)
 def test_minimax_action_survives_a_tiny_midpoint():
-    """minimax_lq.v (stage): every candidate's worst stage cost is a real number or +inf."""
+    """minimax_lq.v (stage): every candidate's worst stage cost is a real number or +inf. The
+    equalising candidate u = -1.3e189 overflowed u**2 and raised OverflowError."""
     out = R.minimax_action(-1.0, 0.0, 1.5624508741048306e-189, 1.0, 0.0)
     assert out.action == 0.0
+    regret = R.minimax_action(-1.0, 0.0, 1.5624508741048306e-189, 1.0, 0.0, criterion="regret")
+    assert np.isfinite(regret.action)
 
 
 def _constant_effect_cost(gains, state_gain, effect, state_cost, effort, terminal):
