@@ -49,7 +49,9 @@ HONEST SCOPE:
 
 from __future__ import annotations
 
+import logging
 import math
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
@@ -68,6 +70,8 @@ from chc.frames import _real_numbers
 from chc.response import Channel
 
 _Array = NDArray[np.float64]
+
+_log = logging.getLogger(__name__)
 
 # where a parameter lives, by its name, and whether it is fitted as its log; every other parameter
 # of a curve or a kernel is a scale or a shape, positive, and is fitted as its log. A retention is
@@ -194,6 +198,10 @@ class LiftFit:
     # the AR(1) coefficient of each test's noise the fit read with serial="ar1", estimated; 0 with
     # serial="independent". noise_sd is then its innovations' sd
     ar_coefficient: float = 0.0
+    # with serial="independent", the two-sided p-value of the residuals' lag-1 correlation within
+    # each test (Breusch-Godfrey's t on the fit's Jacobian); below 0.05 the fit logged a WARNING
+    # that names serial="ar1". None with serial="ar1", and nan where nothing is left to read
+    serial_p_value: float | None = None
 
     def interval(self, parameter: str) -> tuple[float, float]:
         """``parameter``'s interval, by its name in :attr:`parameters`."""
@@ -474,7 +482,7 @@ def fit_lift(
     channel: Channel,
     *,
     level: float = 0.95,
-    serial: Literal["independent", "ar1"] = "independent",
+    serial: Literal["independent", "ar1"] | None = None,
 ) -> LiftFit:
     """Fit ``channel`` to the tests' gaps by least squares, each parameter with a profile-likelihood
     interval. *Experimental.*
@@ -503,6 +511,19 @@ def fit_lift(
     independent noise, 96.5% and 6.0%. Each test needs a run of periods for this to read anything:
     those tests had 16. :attr:`LiftFit.ar_coefficient` is the estimate and :attr:`LiftFit.noise_sd`
     the innovations'.
+
+    With ``"independent"`` the fit tests the premise it reads: the residuals' lag-1 correlation
+    within each test, by Breusch and Godfrey's regression of the residuals on the fit's Jacobian
+    and their own value a period earlier (Breusch 1978; Godfrey 1978), its ``t`` two-sided against
+    ``t(n - p - 1)``. :attr:`LiftFit.serial_p_value` holds the p-value, and below 0.05 the fit
+    logs a WARNING that names ``serial="ar1"``. On 200 worlds of four go-dark tests of 16 periods it
+    rejected 5.5 % of independent noise, and 51 %, 93.5 % and 100 % of AR(1) noise at 0.3, 0.5 and
+    0.8, where the independent reading's check rejected the true channel on 11 %, 17 % and 30 %.
+
+    ``serial`` left at None reads ``"independent"`` and warns (``FutureWarning``) that 0.20.0
+    reads ``"ar1"``: on those worlds' independent noise, ``"ar1"``'s check rejected the true
+    channel on 6.0 % and the coefficient's interval covered 96.5 %, so it holds where the noise
+    does not persist, at a degree of freedom. Pass ``serial`` to keep either reading quietly.
 
     Each interval holds the values whose profile, the least cost with that value held, lies within
     ``s^2 F_{1, n - p}(level)`` of the least cost, ``s^2`` the noise variance over ``n - p`` degrees
@@ -538,6 +559,14 @@ def fit_lift(
         raise ValueError("fit_lift needs at least one test")
     if not 0.0 < level < 1.0:
         raise ValueError(f"level must lie in (0, 1), got {level}")
+    if serial is None:
+        warnings.warn(
+            "fit_lift reads each test's noise as independent until 0.20.0, which reads it as an "
+            'AR(1) (serial="ar1"); pass serial="independent" to keep this reading, or "ar1" now',
+            FutureWarning,
+            stacklevel=2,
+        )
+        serial = "independent"
     if serial not in ("independent", "ar1"):
         raise ValueError(f"serial must be 'independent' or 'ar1', got {serial!r}")
     reach = channel.kernel.length - 1
@@ -601,6 +630,16 @@ def fit_lift(
     lower = layout.natural(np.array(ends[0::2]))
     upper = layout.natural(np.array(ends[1::2]))
     fitted = layout.channel(best)
+    serial_p = None
+    if serial == "independent":
+        serial_p = _serial_p_value(problem, best, tests)
+        if serial_p < 0.05:
+            _log.warning(
+                "fit_lift read each test's noise as independent, and its residuals are correlated "
+                "from one period to the next (p = %.3g): the intervals are too narrow and "
+                'check_observational rejects too often; refit with serial="ar1"',
+                serial_p,
+            )
     return LiftFit(
         channel=fitted,
         parameters=layout.names,
@@ -613,7 +652,30 @@ def fit_lift(
         tested_adstock=_tested_adstock(fitted, tests),
         tests=tests,
         ar_coefficient=rho,
+        serial_p_value=serial_p,
     )
+
+
+def _serial_p_value(problem: _Problem, best: _Array, tests: tuple[LiftTest, ...]) -> float:
+    """Breusch-Godfrey's test of the residuals' lag-1 correlation within each test: the ``t`` of
+    the lagged residual, 0 at a test's first period, in the least squares of the residuals on it
+    and the fit's Jacobian, two-sided against ``t(n - p - 1)``; nan where nothing is left to
+    read."""
+    residual = problem.residual(best)
+    lagged, at = np.zeros_like(residual), 0
+    for test in tests:
+        size = test.treated.outcome.size
+        lagged[at + 1 : at + size] = residual[at : at + size - 1]
+        at += size
+    design = np.column_stack([problem.jacobian(best), lagged])
+    inverse = np.linalg.pinv(design.T @ design)
+    slope = (inverse @ design.T @ residual)[-1]
+    left = residual - design @ (inverse @ design.T @ residual)
+    dof = residual.size - np.linalg.matrix_rank(design)
+    spread = float(left @ left) / dof * inverse[-1, -1] if dof > 0 else 0.0
+    if not spread > 0.0:
+        return math.nan
+    return float(2.0 * stats.t.sf(abs(slope) / math.sqrt(spread), dof))
 
 
 def _steps(problem: _Problem, best: _Array, variance: float) -> _Array:

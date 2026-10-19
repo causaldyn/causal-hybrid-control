@@ -28,6 +28,13 @@ still change).
   in each covariate at `ceil(N^(1/3))` quantile knots: bias 0.18, 0.05 and 0.18 of the channel's
   error at 1000, 4000 and 16000 rows, coverage 0.955, 0.970 and 0.950. `nuisance_shift` reads
   how far a refit moves the channel, in its errors (53 to 61 there). The default is unchanged.
+- **`fit_lift` tests its independent-noise premise.** With `serial="independent"` it reads the
+  residuals' lag-1 correlation within each test (Breusch–Godfrey), keeps the p-value in
+  `LiftFit.serial_p_value` and, below 0.05, logs a WARNING that names `serial="ar1"`: on 200
+  worlds it fired on 5.5 % of independent noise and on 51 %, 93.5 % and 100 % at AR(0.3), (0.5),
+  (0.8), where the check rejected the true channel 11 %, 17 % and 30 % of the time. Left at
+  `None`, `serial` reads `"independent"` and warns (`FutureWarning`) that 0.20.0 reads `"ar1"`,
+  which on independent noise rejected 6.0 % and covered 96.5 %.
 - **`SolverStatus` `infeasible`**: barrier rounds whose penalty reached its ceiling with a step
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
