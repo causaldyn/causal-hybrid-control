@@ -48,9 +48,16 @@ holds at its floor is worth nothing to the plan.
   three random directions and scored on the true ones: twice the loss over the step squared, one
   Richardson step taken, meets `d' W d` to `1e-4`, and with each parameter off by a tenth of its
   size the quadratic is within a tenth of the loss. A binding cap pins its channel, whose rows are
-  zero. Fourteen mutations caught.
+  zero. Fourteen mutations caught. Its STEP 3 adds a third exponential channel held at its floor:
+  the price's gradient in the parameters read by the free slopes over their curvatures, as the
+  library reads it, meets the closed form's to 40 digits at three points, and the tests hold the
+  library's `margin` and `margin_gradient` to its numbers to `1e-8`.
 - It is local. A channel pinned with a small multiplier leaves its end under an error the weight
   does not see, and the loss there is more than `W` says, as for `chc.experiment`'s pinned levers.
+  `AllocationWeight.margin` is that multiplier in the price's units, `margin_gradient` how fast an
+  error uses it up, and `margin_sds(covariance)` the margin in standard deviations of the errors:
+  from 2.7 up the plans' losses summed to their own `d' W d / 2` to 1.1% on three instances, and at
+  1.2--1.4 to 1.15--1.20 times it.
 - It prices a test's covariance; it does not choose the test. On causaldyn-bench's Track M v2 a
   choice of where to test read through it was pre-registered and scored on 500 geo panels
   (`results/track_m2_geo.md` there): choosing the tested geos by the regret `W` expects their test

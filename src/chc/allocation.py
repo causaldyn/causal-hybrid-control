@@ -505,12 +505,25 @@ class AllocationWeight:
             second order.
         allocation: the plan on the channels as given.
         pinned: the channels held at an end of their box, whose parameters carry no weight.
+        margin: ``(len(pinned),)`` how far each pinned channel's return on a currency unit at its
+            end stands from the budget's price, on the side that holds it there: below the price
+            at its floor, above it at its cap. The weight reads the loss of a plan made on errors
+            that leave every pinned channel at its end. An error ``d`` uses up
+            ``margin_gradient[k] @ d`` of channel ``k``'s margin, and past it the plan made on the
+            errors spends on a channel the true plan holds at its end, a loss the weight does not
+            read (:meth:`margin_sds`). ``inf`` for a channel whose box is a point, and where the
+            budget fills every box or none; ``0`` where no channel runs inside its box otherwise,
+            since the price is then an interval.
+        margin_gradient: ``(len(pinned), p)`` how much of each margin a unit error in each
+            parameter uses up: the pinned channel's slope's response to it, less the price's.
     """
 
     parameters: tuple[str, ...]
     matrix: np.ndarray
     allocation: Allocation
     pinned: tuple[int, ...]
+    margin: np.ndarray
+    margin_gradient: np.ndarray
 
     def expected_regret(self, covariance: ArrayLike) -> float:
         """``tr(W S) / 2`` at ``covariance = S``: what a plan made on estimates with that
@@ -524,6 +537,23 @@ class AllocationWeight:
         if spread.shape != (size, size):
             raise ValueError(f"covariance has shape {spread.shape}; the weight is {size} by {size}")
         return 0.5 * float(np.sum(self.matrix * spread))
+
+    def margin_sds(self, covariance: ArrayLike) -> np.ndarray:
+        """Each pinned channel's ``margin`` in standard deviations of what errors of covariance
+        ``S`` use up of it, ``margin / sqrt(g' S g)`` with ``g`` its ``margin_gradient``: the
+        radius of :meth:`expected_regret`'s second order. ``inf`` where the errors use none of it.
+
+        Raises:
+            ValueError: when ``covariance`` is not ``(p, p)``.
+        """
+        spread = np.asarray(covariance, dtype=float)
+        size = len(self.parameters)
+        if spread.shape != (size, size):
+            raise ValueError(f"covariance has shape {spread.shape}; the weight is {size} by {size}")
+        used = np.sqrt(np.einsum("kp,pq,kq->k", self.margin_gradient, spread, self.margin_gradient))
+        reach = np.where(self.margin > 0.0, np.inf, 0.0)
+        np.divide(self.margin, used, out=reach, where=used > 0.0)
+        return reach
 
 
 @dataclass(frozen=True)
@@ -2253,6 +2283,20 @@ def decision_weight(
     is ``d' W d / 2``. ``validation/allocation_decision_weight.mac`` holds it to the Hessian of the
     realised loss for two exponential and two Michaelis-Menten channels.
 
+    It is local. A channel at an end of its box carries no weight while the errors leave it there;
+    past its :attr:`AllocationWeight.margin` the plan made on the errors moves it off, a loss the
+    weight does not read, and :meth:`AllocationWeight.margin_sds` reads each margin in standard
+    deviations of the errors. On three instances of two or three concave channels, one held at a
+    floor of 0, under independent errors of 0.1--16% of each parameter: where the margin stood 2.7
+    standard deviations or more, 400 plans' losses summed to their own ``d' W d / 2`` to 1.1%, and
+    over 1600 plans the mean loss was 0.92--1.05 of ``tr(W S) / 2``, a miss the errors' sampling
+    explains. At 1.2--1.4 standard deviations 8--13% of the plans moved the channel off its end, and
+    the losses summed to 1.15--1.20 times their ``d' W d / 2``; at 0.3, 1.41 times. On the three
+    exponential channels of ``validation/allocation_decision_weight.mac``'s STEP 3 with the third's
+    coefficient raised to 320, 400 plans each (seed 11), the ratio read 1.002 +- 0.003 at a margin
+    of 3 standard deviations, 1.09 +- 0.05 at 2, 1.27 +- 0.08 at 1.3 and 1.84 +- 0.13 at 0.3, where
+    37% of the plans moved the channel off its floor.
+
     Raises:
         TypeError, ValueError: as :func:`allocate`; and ValueError on an S-shaped curve, where a
             small error can move the plan's spend from one channel to another at once, which no
@@ -2270,8 +2314,9 @@ def decision_weight(
     before = spent.shape[0]
     names: list[str] = []
     blocks: list[tuple[int, int]] = []
-    curvature, response = [], []
+    curvature, response, slopes = [], [], []
     free = []
+    held: dict[int, tuple[float, float, np.ndarray]] = {}  # side, slope and its gradient at the end
     for column, channel in enumerate(channels):
         parameters, static = eqx.partition(channel, eqx.is_inexact_array)
         flat, unravel = ravel_pytree(parameters)
@@ -2279,8 +2324,6 @@ def decision_weight(
         blocks.append((start, flat.size))
         names += [f"{column}.{name}" for name in _names(parameters)]
         rate = float(allocation.spend[column])
-        if not lower_rates[column] < rate < upper_rates[column]:
-            continue
         tail = channel.kernel.length - 1
         idle = jnp.asarray(np.concatenate([spent[:, column], np.zeros(periods + tail)]))
         unit = jnp.asarray(np.concatenate([np.zeros(before), np.ones(periods), np.zeros(tail)]))
@@ -2293,6 +2336,14 @@ def decision_weight(
 
         slope = jax.grad(worth)
         at = jnp.asarray(rate, dtype=flat.dtype)
+        if not lower_rates[column] < rate < upper_rates[column]:
+            if lower_rates[column] < upper_rates[column]:
+                held[column] = (
+                    1.0 if rate <= lower_rates[column] else -1.0,
+                    float(slope(at, flat)),
+                    np.asarray(jax.grad(slope, argnums=1)(at, flat), dtype=float),
+                )
+            continue
         bend = -float(jax.grad(slope)(at, flat))
         if not bend > 0.0:
             raise ValueError(
@@ -2301,21 +2352,45 @@ def decision_weight(
             )
         free.append(column)
         curvature.append(bend)
+        slopes.append(float(slope(at, flat)))
         response.append(np.asarray(jax.grad(slope, argnums=1)(at, flat), dtype=float) / bend)
     size = sum(width for _, width in blocks)
     moves = np.zeros((len(free), size))  # each free rate's move per unit error in each parameter
     for row, (column, gain) in enumerate(zip(free, response, strict=True)):
         start, width = blocks[column]
         moves[row, start : start + width] = gain
+    # the price's move per unit error: the free rates' moves, each its slope's response over its
+    # curvature, sum to nothing once the price moves by their sum over the sum of 1/curvature
+    price_move = moves.sum(axis=0) / np.sum(1.0 / np.array(curvature)) if free else None
     if free:
         share = (1.0 / np.array(curvature)) / np.sum(1.0 / np.array(curvature))
         moves -= np.outer(share, moves.sum(axis=0))
     weight = moves.T @ (np.array(curvature)[:, None] * moves) if free else np.zeros((size, size))
+    pinned = tuple(c for c in range(len(channels)) if c not in free)
+    margin = np.full(len(pinned), np.inf)
+    margin_gradient = np.zeros((len(pinned), size))
+    # with no rate inside its box the budget fills every box or none, or else the price is an
+    # interval between the channels held at their floors and those at their caps
+    one_side = len({side for side, _, _ in held.values()}) <= 1
+    for row, column in enumerate(pinned):
+        if column not in held:
+            continue  # a box of one point holds its channel whatever the errors
+        side, slope_at_end, gradient = held[column]
+        if price_move is None:
+            margin[row] = np.inf if one_side else 0.0
+            continue
+        start, width = blocks[column]
+        own = np.zeros(size)
+        own[start : start + width] = gradient
+        margin[row] = side * (float(np.mean(slopes)) - slope_at_end) / periods
+        margin_gradient[row] = side * (own - price_move) / periods
     return AllocationWeight(
         parameters=tuple(names),
         matrix=0.5 * (weight + weight.T),
         allocation=allocation,
-        pinned=tuple(c for c in range(len(channels)) if c not in free),
+        pinned=pinned,
+        margin=margin,
+        margin_gradient=margin_gradient,
     )
 
 

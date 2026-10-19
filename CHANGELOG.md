@@ -20,6 +20,18 @@ still change).
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
 - **A `lever_range` warning** when a prescription sets a lever outside the range the panel logged.
+- **`AllocationWeight.margin`, `margin_gradient` and `margin_sds` read how far `decision_weight`'s
+  second order reaches.** *Experimental.* A channel held at an end of its box carries no weight;
+  its `margin` is how far its return on a currency unit stands from the budget's price,
+  `margin_gradient` how much of it a unit error in each parameter uses up, and
+  `margin_sds(covariance)` the margin in standard deviations of what errors of that covariance use
+  up. On three instances of concave channels, one held at a floor, where the margin stood 2.7
+  standard deviations or more the plans' losses summed to their own `d' W d / 2` to 1.1%; at
+  1.2–1.4 standard deviations 8–13% of the plans moved the channel off its end and the losses were
+  1.15–1.20 times it, which the weight alone gave no way to see. On three exponential channels,
+  400 plans each: 1.002 ± 0.003 at 3 standard deviations, 1.27 ± 0.08 at 1.3 and 1.84 ± 0.13 at
+  0.3. `validation/allocation_decision_weight.mac` holds the margin and its gradient to their
+  closed form (STEP 3).
 
 ### Changed
 
