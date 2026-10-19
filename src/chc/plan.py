@@ -66,7 +66,6 @@ from chc.control import (
     SolverStatus,
     _action_units,
     _constraint_blocks,
-    _projected_gradient_solve,
     _stationarity_tolerance,
     _step_norms,
     broadcast_box,
@@ -110,14 +109,14 @@ PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
 DiagnosticStatus = Literal["within", "beyond", "not_finite", "not_evaluated"]
 """How a plan's stationarity or constraint violation reads against its tolerance: ``within`` it,
 ``beyond`` it, ``not_finite`` where the number is nan or infinite, as where the rollout left the
-float range, and ``not_evaluated`` where it was not read: a plan built by hand, or the stationarity
-of a plan held under a barrier, whose condition's multipliers it would need."""
+float range, and ``not_evaluated`` where it was not read: a plan built by hand."""
 
 _BARRIER_BACKOFF = 1e-6  # how far inside the condition the solve aims, relative to its terms
 _BARRIER_ROUNDS = 30  # augmented-Lagrangian rounds, each one descent of at most ``steps``
 _PENALTY_GROWTH = 10.0  # applied when a round fails to halve the shortfall
 _PENALTY_RANGE = 1e8  # how far the penalty may grow past its start before the rounds give up
 _DESCENT_TOL = 1e-14  # the share of the cost at the guess a step must buy: the descents' default
+_LOOSE_TOL = 1e-9  # a barrier round's ``tol`` while the last one ended short of the condition
 
 _log = logging.getLogger(__name__)
 """Barrier rounds of :func:`causal_plan`, keyed by ``chc_event`` as in :mod:`chc.decision`."""
@@ -214,8 +213,10 @@ class CausalPlan:
         this residual itself and stops only within the tolerance, or where the gradients at the
         ends of every trial read no fall either. ``beyond`` it, the descent stopped on its budget
         or short of the optimum, and the plan, its prices and its regret are a stopped solve's.
-        Not read (``not_evaluated``) on a plan held under a barrier, whose condition's multipliers
-        the residual would need.
+        On a plan held under a barrier, each step whose condition the rounds ended with a positive
+        multiplier on binds too, and pushes along the gradient of its shortfall in ``v``: the
+        residual is the augmented Lagrangian's, ``grad J + sum_k mu_k grad c_k`` with ``mu >= 0``,
+        read at the condition the rounds held, a relative 1e-6 inside the audit's.
         """
         return _diagnostic_status(self.stationarity, self.stationarity_tolerance)
 
@@ -836,6 +837,8 @@ class _PlanProblem:
     uncertainty: PenaltyModel | None
     lam_unc: float
     barrier: bool
+    # the condition the barrier rounds held, with their last multipliers; None without a barrier
+    held: _HeldBarrier | None = None
 
     def gradient(self, actions: Array) -> NDArray[np.float64]:
         """The solve's objective, differentiated at ``actions`` and flattened as the rows are: at a
@@ -971,7 +974,8 @@ def _diagnostic_status(value: float | None, tolerance: float | None) -> Diagnost
 def _diagnostics(problem: _PlanProblem, actions: Array) -> tuple[float | None, float, float, float]:
     """``(stationarity, its tolerance, constraint violation, its tolerance)`` of ``actions`` on
     ``problem``, as :attr:`CausalPlan.stationarity_status` and :attr:`CausalPlan.violation_status`
-    read them; the stationarity None where the plan was held under a barrier."""
+    read them. Under a barrier, each step whose condition the rounds ended with a positive
+    multiplier on binds, and pushes along the gradient of its shortfall."""
     shape, dtype = actions.shape, actions.dtype
     eps = float(jnp.finfo(dtype).eps)
     box_lo = broadcast_box(problem.u_lo, shape, "u_lo", dtype)
@@ -999,8 +1003,6 @@ def _diagnostics(problem: _PlanProblem, actions: Array) -> tuple[float | None, f
     violation = float(np.max(np.maximum(excess, 0.0), initial=0.0))
     violation_tolerance = 1024 * eps * (1.0 + float(np.max(np.abs(point), initial=0.0)))
     stationarity_tolerance = _stationarity_tolerance(_DESCENT_TOL, dtype)
-    if problem.barrier:
-        return None, stationarity_tolerance, violation, violation_tolerance
     share = factor * float(scale)
     gradient = problem.gradient(actions) / share
     kkt = _kkt(
@@ -1018,13 +1020,14 @@ def _diagnostics(problem: _PlanProblem, actions: Array) -> tuple[float | None, f
     sides = np.zeros((size, capped.size + floored.size))
     sides[capped, np.arange(capped.size)] = 1.0
     sides[floored, capped.size + np.arange(floored.size)] = -1.0
-    pushes = np.hstack([kkt.columns, sides])
+    pushes = np.hstack([kkt.columns, sides, _condition_pushes(problem, actions, factor)])
     miss = gradient
     if pushes.shape[1]:
         # an equality row and a box of zero width, which fixes its action, push either way; an
         # inequality row and a side of a wider box only outward
         fixed = hi <= lo
         either = np.concatenate([kkt.equality, fixed[capped], fixed[floored]])
+        either = np.concatenate([either, np.zeros(pushes.shape[1] - either.size, bool)])
         least = np.where(either, -np.inf, 0.0)
         fit = lsq_linear(pushes, -gradient, bounds=(least, np.inf), method="bvls")
         miss = gradient + pushes @ fit.x
@@ -1034,6 +1037,64 @@ def _diagnostics(problem: _PlanProblem, actions: Array) -> tuple[float | None, f
         violation,
         violation_tolerance,
     )
+
+
+@eqx.filter_jit
+def _shortfall_jacobian(
+    held: _HeldBarrier, model: Dynamics, x0: Array, actions: Array, dt: float
+) -> Array:
+    """The held condition's shortfall at each step, differentiated in the actions."""
+
+    def shortfall(us: Array) -> Array:
+        return held.shortfall(rollout(model, x0, us, dt)[:-1], us)
+
+    return jax.jacobian(shortfall)(actions)
+
+
+def _round_metric(
+    model: Dynamics,
+    x0: Array,
+    actions: Array,
+    dt: float,
+    cost: QuadraticCost,
+    lo: Array,
+    hi: Array,
+    held: _HeldBarrier,
+    excess: NDArray[np.float64],
+) -> Array:
+    """Per action, the square root of a barrier round's Gauss-Newton curvature along it at
+    ``actions``: the cost's (:func:`chc.control._action_units`) plus the penalty's, ``rho`` times
+    the squared slope in the action of each step's shortfall whose term is on there,
+    ``lam + rho (c + backoff) > 0``, ``excess`` being ``c + backoff``. A lever in other units, or
+    the cost, moves both alike, so the steps it scales read neither."""
+    sigma, size, _ = _descent_units(model, x0, actions, dt, cost, lo, hi)
+    slopes = np.asarray(_shortfall_jacobian(held, model, x0, actions, dt), dtype=np.float64)
+    weight = float(held.weight)
+    on = (np.asarray(held.multipliers, dtype=np.float64) + weight * excess).ravel() > 0.0
+    penalty = weight * np.sum(slopes.reshape(-1, *actions.shape)[on] ** 2, axis=0)
+    curvature = np.asarray(sigma, dtype=np.float64) ** 2 * float(size) + penalty
+    return jnp.asarray(np.sqrt(curvature), actions.dtype)
+
+
+def _condition_pushes(
+    problem: _PlanProblem, actions: Array, factor: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """``(actions, binding steps)``: the gradient in ``v`` of the shortfall of each step's barrier
+    condition the rounds ended with a positive multiplier on, each column of norm 1; no columns
+    without a barrier or with none binding."""
+    held = problem.held
+    if held is None:
+        return np.zeros((factor.size, 0))
+    binding = np.flatnonzero(np.asarray(held.multipliers, dtype=np.float64).ravel() > 0.0)
+    if not binding.size:
+        return np.zeros((factor.size, 0))
+
+    jacobian = np.asarray(
+        _shortfall_jacobian(held, problem.model, problem.x0, actions, problem.dt), dtype=np.float64
+    )
+    columns = jacobian.reshape(-1, factor.size)[binding].T / factor[:, None]
+    norms = np.linalg.norm(columns, axis=0)
+    return columns / np.where(norms > 0.0, norms, 1.0)
 
 
 def _row_prices(
@@ -1260,7 +1321,9 @@ def causal_plan(
             verdict to read. Its ``gamma_star`` is priced at the largest magnitude any lever may
             take, the budget :func:`chc.prescribe` uses. A barrier the unconstrained plan already
             clears changes no action, even when that solve stopped on its budget. ``steps`` then
-            caps each descent, of which there are at most ``1 + _BARRIER_ROUNDS``.
+            caps each descent, of which there are at most ``1 + _BARRIER_ROUNDS``. The solver
+            status reads ``infeasible`` where the rounds' penalty reached its ceiling with some
+            step still short of the condition.
         warm_start: the ``(horizon, m)`` actions the descent starts from, zeros when omitted --
             typically the last plan shifted one step, which :class:`chc.mpc.RecedingHorizon` passes
             along with the barrier's multipliers. It is projected onto the box and the rows before
@@ -1497,8 +1560,9 @@ def _plan(
             constraints=constraints,
         )
     actions, status, iterations = solve.actions, solve.status, solve.iterations
+    held = None
     if barrier is not None:
-        actions, status, iterations, multipliers = _hold_barrier(
+        actions, status, iterations, multipliers, held = _hold_barrier(
             model,
             x0,
             cost,
@@ -1508,7 +1572,6 @@ def _plan(
             constraints,
             barrier,
             solve,
-            guess=guess,
             support=support,
             lam_supp=lam_supp,
             uncertainty=uncertainty,
@@ -1537,6 +1600,7 @@ def _plan(
         uncertainty=uncertainty,
         lam_unc=lam_unc,
         barrier=barrier is not None,
+        held=held,
     )
     stationarity, stationarity_tolerance, violation, violation_tolerance = _diagnostics(
         problem, actions
@@ -1663,53 +1727,61 @@ def _hold_barrier(
     barrier: BarrierConstraint,
     start: SolverResult,
     *,
-    guess: Array,
     support: SupportModel | None,
     lam_supp: float,
     uncertainty: PenaltyModel | None,
     lam_unc: float,
     steps: int,
     multipliers: NDArray[np.float64] | None,
-) -> tuple[Array, SolverStatus, int, NDArray[np.float64]]:
+) -> tuple[Array, SolverStatus, int, NDArray[np.float64], _HeldBarrier]:
     """Hold ``barrier`` by augmented-Lagrangian rounds started from the unconstrained ``start``.
 
     Each round minimises the plan's own objective plus ``sum(max(0, lam + rho c)^2 - lam^2)/2 rho``
     over the same box and rows by the same descent, ``c`` being the per-step shortfall of the
     condition :func:`certify_safety` audits; then ``lam <- max(0, lam + rho c)``, and ``rho`` grows
     tenfold whenever a round fails to halve ``max |max(c, -lam/rho)|``, the measure of infeasibility
-    and complementarity together. Scheme and starting penalty are the safeguarded ones of Birgin &
-    Martinez (2014); rounds stop once the measure is within half the back-off and the round's
-    descent stopped on its own rule, or when ``rho`` would pass ``_PENALTY_RANGE`` times its start.
+    and complementarity together. The scheme is Birgin & Martinez's (2014), and so is the starting
+    penalty, ten times the cost at ``start`` over half the squared shortfall, less their floors of
+    1, which read the units of the cost and of the condition. Rounds stop once the measure is within
+    half the back-off and the round's descent stopped on its own rule, ``converged``; or, where
+    ``rho`` would pass ``_PENALTY_RANGE`` times its start, ``infeasible`` if some step still falls
+    short of the condition itself, the back-off aside, and ``max_iterations`` otherwise or once
+    ``_BARRIER_ROUNDS`` are spent.
 
     ``c`` carries a back-off of ``_BARRIER_BACKOFF`` times the condition's largest term at
     ``start``, so the rounds settle inside the condition: an active step solved exactly sits on it,
     and rounding alone would then fail the audit about half the time. A ``start`` that clears the
     shifted condition is returned untouched, which is what makes a slack barrier free.
 
-    The rounds descend in the caller's units, by the penalised descent of :mod:`chc.support` run
-    unscaled, while :func:`chc.control.projected_gradient_solve` and
-    :func:`chc.support.pessimistic_solve` descend in the problem's own. On the pendulum of
-    ``scripts/pendulum_demo.py``, four logs, the barrier its two speed bounds, scaled rounds hold
-    the barrier for all 40 steps at the same task cost, within 1.4e-5, but take 83 834 to 128 435
-    descent steps where these take 34 349 to 34 398, most of their rounds running out of their
-    steps. Where a barrier binds at the planner's scaled ``start``, the rounds start from ``guess``
-    descended in the caller's units, as they did before the planner was scaled; that descent's
-    steps are the ones counted, and the scaled one only said the barrier binds.
+    Each round is the penalised descent of :mod:`chc.support` in variables scaled action by action
+    by the round's own Gauss-Newton curvature (:func:`_round_metric`): the cost's, as the planner
+    reads it, plus the penalty's on the steps whose term is on, so a unit step is the Newton step
+    along each action alone however stiff the penalty has grown. Its stopping rule is the
+    planner's, a fall relative to the round's objective with the first-order check
+    (:func:`chc.control._descend`); a round that starts while the last one ended outside the
+    back-off stops at a relative fall of ``_LOOSE_TOL`` instead, the inexact early solves of
+    augmented-Lagrangian methods, and cannot end the rounds. The rounds start from ``start``
+    itself. So no number of theirs carries a unit, and a plan held in other units of a lever or of
+    the cost is the same plan to the rounds' tolerance. They used to run that descent in the
+    caller's units, from a descent in the caller's units, with a step of 0.2 and a fall of 1e-9
+    that read both: on the tests' oscillator under a velocity floor, the force in units 1e3 times
+    its own ran out of its 310 000 steps 14% above the optimum, and the cost in units 1e-3 times
+    its own stopped as converged 2.3% above it.
 
     ``multipliers`` seed the rounds in place of zeros -- a receding horizon's last, shifted. The
     penalty is chosen afresh all the same: one grown for the last state left the first round
     ill-conditioned, and cost more descent steps than warm multipliers saved.
 
     Returns:
-        The actions, the status -- ``converged`` for the rounds' own rule, ``max_iterations``
-        otherwise -- the accepted descent steps over every descent, ``start``'s included, and the
-        multipliers the rounds ended with: zeros when ``start`` came back untouched.
+        The actions, the status as above, the accepted descent steps over every descent,
+        ``start``'s included, the multipliers the rounds ended with, zeros when ``start`` came back
+        untouched, and the condition they held, with those multipliers.
     """
     actions = start.actions
     lo = broadcast_box(u_lo, actions.shape, "u_lo", actions.dtype)
     hi = broadcast_box(u_hi, actions.shape, "u_hi", actions.dtype)
     check_box(lo, hi)
-    blocks = _constraint_blocks(constraints, lo, hi, actions.dtype)
+    blocks = _constraint_blocks(constraints, lo, hi, actions.dtype, disjoint=True)
     several = isinstance(barrier.barrier, tuple)
     columns = (len(barrier.barrier),) if several else ()
     shape, inverse = None, None
@@ -1719,16 +1791,6 @@ def _hold_barrier(
         moved = np.max(np.maximum(np.abs(np.asarray(lo)), np.abs(np.asarray(hi))), axis=0)
         if inverse is not None:
             _act_within(reach, moved > 0.0, "the box lets it move")
-    # Where the levers' largest actions differ, the rounds step each lever in units of its own,
-    # ``v_j = u_j / r_j``, where the condition is a ball and the problem reads no lever's units: in
-    # the caller's, two forces of largest actions 5000 and 1 stopped the rounds short of holding
-    # any step, where now each units' rounds hold all of them at one cost to 4e-6. Where the
-    # largest actions are equal the rounds keep the caller's units, to the bit.
-    metric = (
-        None
-        if inverse is None or bool(np.all(inverse == 1.0))
-        else jnp.asarray(1.0 / np.where(reach > 0.0, reach, 1.0), actions.dtype)
-    )
     held = _HeldBarrier(
         model=model,
         barrier=barrier.barrier,
@@ -1763,25 +1825,16 @@ def _hold_barrier(
         return backoff, np.asarray(shortfall, dtype=np.float64) + backoff
 
     backoff, excess = excess_at(actions)
-    if float(np.max(excess)) > 0.0 and support is None:
-        start = _projected_gradient_solve(
-            model, x0, guess, dt, cost, u_lo, u_hi, steps, 0.2, 1e-9, constraints, scaled=False
-        )
-        actions = start.actions
-        backoff, excess = excess_at(actions)
     if float(np.max(excess)) <= 0.0:
-        return actions, start.status, start.iterations, np.zeros_like(excess)
+        return actions, start.status, start.iterations, np.zeros_like(excess), held
 
-    task = float(np.asarray(start.cost_history)[-1])  # on the host: indexing compiles per length
-    weight = float(
-        np.clip(
-            10.0
-            * max(1.0, abs(task))
-            / max(1.0, 0.5 * float(np.sum(np.maximum(excess, 0.0) ** 2))),
-            1e-8,
-            1e8,
-        )
-    )
+    # Birgin & Martinez's start, the penalty term as large as the cost, without their floors of 1
+    # on the cost and on the shortfall: a floor reads their units, and set the penalty of a cost in
+    # thousandths a thousand times too high. A cost of zero has no size to read, and keeps 1.
+    # on the host: indexing compiles per length
+    task = abs(float(np.asarray(start.cost_history)[-1]))
+    level = task if 0.0 < task < math.inf else 1.0
+    weight = 10.0 * level / (0.5 * float(np.sum(np.maximum(excess, 0.0) ** 2)))
     ceiling = weight * _PENALTY_RANGE
     multipliers = np.zeros_like(excess) if multipliers is None else multipliers
     status: SolverStatus = "max_iterations"
@@ -1797,7 +1850,7 @@ def _hold_barrier(
                 jnp.asarray(backoff, actions.dtype),
             ),
         )
-        # lr0 and tol in the caller's units, the same as the descent the rounds start from.
+        loose = measure > backoff
         actions, _, taken = _pessimistic_loop(
             model,
             x0,
@@ -1809,13 +1862,13 @@ def _hold_barrier(
             lo,
             hi,
             steps,
-            0.2,
-            1e-9,
+            1.0,
+            _LOOSE_TOL if loose else _DESCENT_TOL,
             held,
             1.0,
             blocks,
             False,
-            metric,
+            _round_metric(model, x0, actions, dt, cost, lo, hi, held, excess),
         )
         iterations += int(taken)
         _, shortfall = _barrier_state(model, x0, actions, dt, held)
@@ -1833,11 +1886,13 @@ def _hold_barrier(
                 "descent_steps": int(taken),
             },
         )
-        if measure <= 0.5 * backoff and int(taken) < steps:
+        if measure <= 0.5 * backoff and int(taken) < steps and not loose:
             status = "converged"
             break
         if measure > 0.5 * previous:
             if weight * _PENALTY_GROWTH > ceiling:
+                if float(np.max(excess)) > backoff:  # short of the audit's condition, not the aim
+                    status = "infeasible"
                 break
             weight *= _PENALTY_GROWTH
         previous = measure
@@ -1853,7 +1908,8 @@ def _hold_barrier(
             "active_steps": int(np.sum(np.any(multipliers.reshape(len(multipliers), -1) > 0.0, 1))),
         },
     )
-    return actions, status, iterations, multipliers
+    held = eqx.tree_at(lambda term: term.multipliers, held, jnp.asarray(multipliers, actions.dtype))
+    return actions, status, iterations, multipliers, held
 
 
 @dataclass(frozen=True)

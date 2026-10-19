@@ -690,8 +690,8 @@ class DecisionCertificate:
     # The plan's first-order check (:attr:`chc.plan.CausalPlan.stationarity_status`,
     # :attr:`chc.plan.CausalPlan.violation_status`): its KKT residual and its largest breach of its
     # box and rows, each beside its tolerance and read in the descent's own variables, so the same
-    # in any units of the levers, the states or the target. None where no plan was solved; the
-    # stationarity None too where the plan was held under the constraints' barrier.
+    # in any units of the levers, the states or the target; under the constraints' barrier, with
+    # its binding steps among the constraints. None where no plan was solved.
     stationarity: float | None = None
     stationarity_tolerance: float | None = None
     constraint_violation: float | None = None
@@ -1482,13 +1482,8 @@ class Prescription:
         certificate = self.certificate
         if certificate.solver_status is None:
             return []
-        stationarity = (
-            "not evaluated under the constraints' barrier"
-            if certificate.stationarity is None
-            else _show(certificate.stationarity)
-        )
         return [
-            f"- first-order check: stationarity {stationarity} (tolerance "
+            f"- first-order check: stationarity {_show(certificate.stationarity)} (tolerance "
             f"{_show(certificate.stationarity_tolerance)}, {certificate.stationarity_status}), "
             f"constraint violation {_show(certificate.constraint_violation)} (tolerance "
             f"{_show(certificate.violation_tolerance)}, {certificate.violation_status})"

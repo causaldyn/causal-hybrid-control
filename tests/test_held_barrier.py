@@ -33,6 +33,7 @@ from chc.cost import total_cost
 from chc.dynamics import DampedOscillator, HybridDynamics, LinearDynamics
 from chc.epidemic import SIRDynamics
 from chc.integrate import rollout
+from chc.plan import _diagnostics
 from chc.residual import ZeroResidual
 from chc.uncertainty import confounding_robust_inflation
 
@@ -410,7 +411,7 @@ def test_an_unreachable_barrier_is_reported_by_the_audit_rather_than_raised() ->
         barrier=BarrierConstraint(lambda x: x[0], alpha=0.2),
     )
     assert plan.safety is not None
-    assert plan.solver_status == "max_iterations"
+    assert plan.solver_status == "infeasible"  # the penalty's ceiling, not the steps, stopped it
     assert plan.safety.certified_steps == 0
     assert np.isnan(plan.safety.step_gamma_star[0])  # no radius and no action certifies step 0
 
@@ -447,7 +448,7 @@ def test_rounds_from_a_plan_the_rows_and_the_box_pin_to_one_point_stay_on_it(
         constraints=(tie,),
         barrier=BarrierConstraint(lambda x: x[0] - 2.0, alpha=1.0),
     )
-    assert plan.solver_status == "max_iterations"  # no plan clears it, and none is claimed to
+    assert plan.solver_status == "infeasible"  # no plan clears it, and none is claimed to
     assert np.asarray(plan.actions).tolist() == [[0.0, 0.0]] * horizon
 
 
@@ -655,8 +656,8 @@ def test_the_audit_reads_the_same_in_any_units_of_each_lever(units: tuple[float,
     the same steps by the same guaranteed derivative, and every step's ceiling is the same. With
     one number for both forces, the largest action of either, the ball and the radius read their
     units as one: in ``(1e3, 1)`` the plan, which clears 14 steps of 20, cleared none, and
-    ``gamma*`` read 2779 where it reads 4.59. Held in the solve, whose rounds step each force in
-    units of its largest action, every step clears at one cost in every units; stepped in the
+    ``gamma*`` read 2779 where it reads 4.59. Held in the solve, whose rounds step each action in
+    units of its own curvature, every step clears at one cost in every units; stepped in the
     caller's, ``(1e3, 1)`` held none."""
     kwargs = {"alpha": ALPHA, "gamma": 2.0}
     model, cost = _two_forces()
@@ -764,3 +765,60 @@ def test_each_lever_s_largest_action_must_be_one(u_max: tuple[float, ...], messa
                 TWO_REACH,
                 barrier=BarrierConstraint(_velocity_floor, gamma=2.0, u_max=u_max),
             )
+
+
+@pytest.mark.parametrize(("lever", "price"), [(1e3, 1.0), (1e-3, 1.0), (1.0, 1e3), (1.0, 1e-3)])
+def test_the_rounds_hold_one_plan_in_any_units_of_the_force_and_of_the_cost(
+    lever: float, price: float
+) -> None:
+    """The force in ``lever`` times its own units, its box and its price with it, and the cost in
+    ``price`` times its own: the rounds read neither. They stepped in the caller's units with a
+    step of 0.2 and a fall of 1e-9 and started from a penalty floored at 1, so the force in units
+    1e3 times its own ran out of its 310 000 steps 14% above the optimum, and the cost in units
+    1e-3 times its own stopped as converged 2.3% above it."""
+    barrier = BarrierConstraint(_velocity_floor, alpha=ALPHA, gamma=2.0)
+    reference = causal_plan(OSCILLATOR, X0, COST, DT, HORIZON, -U_MAX, U_MAX, barrier=barrier)
+    drift = jnp.array([[0.0, 1.0], [-(OMEGA**2), -2.0 * ZETA * OMEGA]])
+    model = LinearDynamics(drift, jnp.array([[0.0], [1.0 / lever]]))
+    cost = QuadraticCost(
+        Q=price * COST.Q, R=price * COST.R / lever**2, Qf=price * COST.Qf, x_target=COST.x_target
+    )
+    plan = causal_plan(model, X0, cost, DT, HORIZON, -U_MAX * lever, U_MAX * lever, barrier=barrier)
+    _, optimum = _exact_floor_optimum(2.0)
+
+    assert plan.solver_status == reference.solver_status == "converged"
+    assert plan.safety is not None
+    assert plan.safety.certified_steps == HORIZON
+    moved = np.max(np.abs(np.asarray(plan.actions) / lever - np.asarray(reference.actions)))
+    assert moved <= 1e-6 * U_MAX
+    assert plan.task_cost / price >= optimum * (1.0 - 1e-12)
+    assert (plan.task_cost / price - optimum) / optimum < GAP
+
+
+@pytest.mark.parametrize("gamma", [1.0, 2.0])
+def test_a_held_plan_reads_its_first_order_check_with_the_condition_it_holds(
+    gamma: float,
+) -> None:
+    """The stationarity of a held plan is the augmented Lagrangian's: the task's gradient plus a
+    push along each binding step's shortfall, read where it was not read at all. Without the
+    condition's pushes the same plan reads far from stationary, since the condition holds it off
+    the task's own optimum."""
+    plan = causal_plan(
+        OSCILLATOR,
+        X0,
+        COST,
+        DT,
+        HORIZON,
+        -U_MAX,
+        U_MAX,
+        barrier=BarrierConstraint(_velocity_floor, alpha=ALPHA, gamma=gamma),
+    )
+    assert plan.solver_status == "converged"
+    assert plan.stationarity_status == "within", plan.stationarity
+    problem = plan._problem
+    assert problem is not None
+    assert problem.held is not None
+    free = _diagnostics(replace(problem, held=None), plan.actions)[0]
+    assert free is not None
+    assert plan.stationarity_tolerance is not None
+    assert free > 1e3 * plan.stationarity_tolerance

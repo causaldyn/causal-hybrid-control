@@ -137,13 +137,15 @@ def test_each_step_is_the_plan_causal_plan_makes_from_that_state(loop: Loop) -> 
     assert all(plan.solver_status == "converged" for plan in loop.plans)
 
 
-def test_the_warm_start_saves_descent_steps_and_the_multipliers_save_most(loop: Loop) -> None:
-    """Measured at 32 083 steps warm, 48 286 from the warm actions alone, 48 240 cold."""
+def test_the_warm_start_takes_no_more_descent_steps_than_a_cold_one(loop: Loop) -> None:
+    """Measured at 4 271 steps warm, 4 362 from the warm actions alone, 4 396 cold. Rounds that
+    stepped in the caller's units took 32 083, 48 286 and 48 240, and the warm multipliers saved a
+    third; stepping in units of their own curvature, the rounds leave them little to save."""
     warm = sum(plan.solver_iterations for plan in loop.plans)
     actions_only = sum(plan.solver_iterations for plan in loop.actions_only)
     cold = sum(plan.solver_iterations for plan in loop.cold)
-    assert warm < 0.8 * cold
-    assert warm < 0.8 * actions_only
+    assert warm <= cold
+    assert warm <= actions_only
 
 
 def test_the_closed_loop_stays_safe_and_every_applied_action_is_certified(loop: Loop) -> None:
