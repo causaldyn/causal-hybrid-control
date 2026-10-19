@@ -316,6 +316,25 @@ def test_a_return_on_spend_is_met_at_the_last_budget_whose_surplus_falls_through
     assert more.gain < 0.6 * more.budget
 
 
+NARROW = (Channel(ONE, MichaelisMenten(0.5), 14.0), Channel(ONE, Hill(30.0, 12.0), 12.47))
+"""Past the peak, near 2.92, the gain less 0.6 a unit falls through nothing near 22.83, rises back
+over it only between about 36.8 and 37.7 as the Hill curve turns up, and falls through again:
+inside one step of a 16-step grid from the peak, 36.64 to 41.46."""
+
+
+def test_a_return_on_spend_is_met_past_a_window_narrower_than_any_grid_step():
+    """The grid read down from the caps saw no budget meet the goal past 22.83 and returned it.
+    Every plan's bound clears the smaller budgets whose target it does not reach, so the window
+    is found and the budget proved the last."""
+    box = {"lower": np.zeros(2), "upper": np.full(2, 40.0)}
+    plan = budget_for(NARROW, ReturnOnSpendTarget(0.6), 1, **box)
+    assert 37.5 < plan.budget < 37.75
+    assert plan.gain == pytest.approx(0.6 * plan.budget, rel=1e-9, abs=0.0)
+    for budget in np.linspace(plan.budget + 0.01, 80.0, 12):
+        more = allocate(NARROW, float(budget), 1, **box)
+        assert more.gain < 0.6 * more.budget
+
+
 @pytest.mark.parametrize(
     "goal",
     [ReturnTarget(10000.0), MarginalReturnTarget(3.5), ReturnOnSpendTarget(4.4)],

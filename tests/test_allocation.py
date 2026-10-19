@@ -242,6 +242,118 @@ def test_on_an_s_curve_the_best_flat_plan_is_not_the_best_schedule():
     assert burst > 6.0 * plan.worth
 
 
+def _schedule_worth(channels, grid, history) -> float:
+    """What a schedule returns, from each channel run over history, schedule and tail."""
+    total = 0.0
+    for column, channel in enumerate(channels):
+        tail = np.zeros(channel.kernel.length - 1)
+        series = np.concatenate([history[:, column], grid[:, column], tail])
+        total += float(np.sum(np.asarray(channel(series))[history.shape[0] :]))
+    return total
+
+
+def _best_of_ascents(channels, budget, periods, upper, history, starts, seed) -> float:
+    """The best of SLSQP ascents on the schedule's worth from random schedules, a reference the
+    library's search does not share."""
+    size = len(channels)
+    rng = np.random.default_rng(seed)
+    best = -np.inf
+    for _ in range(starts):
+        start = rng.dirichlet(np.full(periods * size, 0.3)) * budget
+
+        def loss(flat):
+            return -_schedule_worth(channels, flat.reshape(periods, size), history)
+
+        found = minimize(
+            loss,
+            np.minimum(start, np.tile(upper, periods)),
+            method="SLSQP",
+            bounds=[(0.0, cap) for cap in np.tile(upper, periods)],
+            constraints=[{"type": "eq", "fun": lambda x: x.sum() - budget}],
+            options={"maxiter": 300, "ftol": 1e-12},
+        )
+        if abs(found.x.sum() - budget) < 1e-6 and found.x.min() > -1e-9:
+            best = max(best, -found.fun)
+    return best
+
+
+def test_a_schedule_without_carryover_spends_the_budget_in_one_burst():
+    """The case above with ``schedule=True``: searched in boxes over the four periods, the best
+    schedule spends 1.2 in one period, ``1.2^3 / (1 + 1.2^3)``, closed."""
+    one = GeometricAdstock(0.0, length=1, normalized=False)
+    channel = Channel(one, Hill(1.0, 3.0), 1.0)
+    plan = allocate((channel,), 1.2, 4, lower=np.zeros(1), upper=np.full(1, 1.2), schedule=True)
+    assert plan.schedule is not None
+    assert plan.schedule.shape == (4, 1)
+    np.testing.assert_allclose(np.sort(plan.schedule[:, 0])[::-1], [1.2, 0.0, 0.0, 0.0], atol=1e-12)
+    assert plan.worth == pytest.approx(1.728 / 2.728, rel=1e-12, abs=0.0)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    np.testing.assert_allclose(plan.spend, [0.3], rtol=1e-12, atol=0.0)
+    assert plan.budget == 1.2
+    flat = allocate((channel,), 1.2, 4, lower=np.zeros(1), upper=np.full(1, 1.2))
+    assert flat.schedule is None
+
+
+def test_equal_periods_of_s_curves_are_searched_to_the_best_schedule():
+    """Two Hill curves and a concave one, no carryover, four periods: the search reads each
+    channel's periods in falling order, closes, and no ascent from 30 random schedules beats it."""
+    one = GeometricAdstock(0.0, length=1, normalized=False)
+    channels = (
+        Channel(one, Hill(1.0, 3.0), 1.0),
+        Channel(one, Hill(1.5, 4.0), 1.6),
+        Channel(one, MichaelisMenten(2.0), 0.6),
+    )
+    upper = np.full(3, 2.0)
+    plan = allocate(channels, 4.4, 4, lower=np.zeros(3), upper=upper, schedule=True)
+    flat = allocate(channels, 4.4, 4, lower=np.zeros(3), upper=upper)
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert plan.schedule.sum() == pytest.approx(4.4, rel=1e-12, abs=0.0)
+    assert np.all((plan.schedule >= 0.0) & (plan.schedule <= 2.0))
+    worth = _schedule_worth(channels, plan.schedule, np.zeros((0, 3)))
+    assert plan.worth == pytest.approx(worth, rel=1e-12, abs=0.0)
+    assert plan.worth > 1.1 * flat.worth
+    reference = _best_of_ascents(channels, 4.4, 4, upper, np.zeros((0, 3)), 30, 0)
+    assert reference <= plan.worth + plan.tolerance
+
+
+def test_a_schedule_with_carryover_is_the_best_of_local_ascents_and_says_so(caplog):
+    """With carryover the periods share their spend and no box search applies: the schedule
+    ascends from the best rate a period and from the envelopes' best schedule, and its bound is the
+    envelopes' schedule plus its Frank--Wolfe gap, above every ascent's."""
+    channels = (
+        Channel(GeometricAdstock(0.5, length=4, normalized=False), Hill(2.0, 3.0), 1.0),
+        Channel(GeometricAdstock(0.3, length=3, normalized=False), Hill(1.5, 2.5), 0.8),
+    )
+    history = np.array([[0.4, 0.2], [0.3, 0.1]])
+    box = {"lower": np.zeros(2), "upper": np.full(2, 3.0), "history": history}
+    flat = allocate(channels, 3.0, 6, **box)
+    with caplog.at_level(logging.WARNING, logger="chc.allocation"):
+        plan = allocate(channels, 3.0, 6, **box, schedule=True)
+    assert (plan.stopped, plan.limit) == ("cap", "local")
+    assert any(getattr(r, "chc_event", None) == "allocation_local" for r in caplog.records)
+    worth = _schedule_worth(channels, plan.schedule, history)
+    assert plan.worth == pytest.approx(worth, rel=1e-12, abs=0.0)
+    assert plan.worth > 1.5 * flat.worth
+    assert plan.schedule.sum() == pytest.approx(3.0, rel=1e-12, abs=0.0)
+    reference = _best_of_ascents(channels, 3.0, 6, np.full(2, 3.0), history, 20, 1)
+    assert plan.bound >= reference
+
+
+def test_a_schedule_on_concave_curves_with_carryover_closes_on_its_bound():
+    """Concave curves make the schedule's worth concave, so the ascent's Frank--Wolfe gap closes,
+    and the schedule returns no less than the best rate a period."""
+    flat = _plan()
+    plan = allocate(
+        CHANNELS, BUDGET, PERIODS, lower=LOWER, upper=UPPER, history=HISTORY, schedule=True
+    )
+    assert (plan.stopped, plan.limit) == ("closed", None)
+    assert plan.worth >= flat.worth
+    assert plan.worth == pytest.approx(
+        _schedule_worth(CHANNELS, plan.schedule, HISTORY), rel=1e-12, abs=0.0
+    )
+    assert np.all((plan.schedule >= LOWER - 1e-12) & (plan.schedule <= UPPER + 1e-12))
+
+
 def test_a_cap_short_of_the_tangency_is_bounded_on_its_own_interval():
     """Capped at 1, short of its tangency 2^(1/3), a Hill curve of slope 3 is bounded by the chord
     to its cap, not by the one from the origin to the tangency, which stands above the cap's value:

@@ -128,12 +128,14 @@ HONEST SCOPE:
 * The channels are read as given: a fitted channel's error goes straight into the plan. Where the
   channels come from an experiment (:func:`chc.lift.fit_lift`), a plan that runs a channel past
   the adstock the tests covered reads the family's shape, not the experiment.
-* One rate a period for each channel, not a schedule: with a response that does not change with
-  the period, only the history's carryover at the start and the tail at the end make periods
-  differ. On S-shaped curves "the best plan" everywhere here is the best of these flat plans, and a
-  schedule that spends in bursts can return more than any of them: one Hill curve of slope 3 and
-  scale 1, with no carryover, returns 0.105 on 1.2 spread over four periods and 0.633 on 1.2 spent
-  in one, six times more. No schedule is searched.
+* One rate a period for each channel unless :func:`allocate` is asked for a schedule: with a
+  response that does not change with the period, only the history's carryover at the start and the
+  tail at the end make periods differ. On S-shaped curves "the best plan" everywhere else here is
+  the best of these flat plans, and a schedule that spends in bursts can return more than any of
+  them: one Hill curve of slope 3 and scale 1, with no carryover, returns 0.105 on 1.2 spread over
+  four periods and 0.633 on 1.2 spent in one, six times more. ``allocate(schedule=True)`` finds
+  that schedule; where a kernel is longer than one period its schedule is the best of local
+  ascents, bounded but not proved the best.
 * The tail is counted with nothing spent after the plan. Spend that continues after it would take
   the tail further up the curve, so a long kernel's tail is valued at its most.
 * :class:`chc.response.Ricker` is not monotone, and a negative coefficient turns a concave curve
@@ -141,8 +143,9 @@ HONEST SCOPE:
 * On an S-shaped curve the best plan's gain rises with the budget but need not be concave in it,
   so a goal is met over searched plans by Brent's method on the budget: a return target where the
   gain crosses it, the least budget to the search's tolerance, and a target return on ad spend
-  where the gain less the target a unit last falls through nothing past its peak on a grid of 16
-  budgets, not proved the most: a crossing and its return between two of them are not seen.
+  where the gain less the target a unit last falls through nothing past its peak, the most budget
+  to the search's tolerance: each stretch of budgets is searched in boxes for a plan that meets the
+  target, whose bound rules the stretch out where none does.
 * On S-shaped curves every plan and split here is the best only to the search's tolerance, a share
   ``1e-9`` of its scale by default and never finer than 64 epsilons of the dtype, or as near as
   ``max_boxes`` boxes come, 500 by default; a goal's, at each budget it tries. Sums of S-shaped
@@ -185,8 +188,8 @@ HONEST SCOPE:
   cutting planes' plan comes back: its worth and bound are good to single precision, its rates
   only as near as the gap allows.
 * A goal over geos and channels on an S-shaped curve is met where the searched plans' gain crosses
-  it, not proved the least or the most budget: under totals the best plan's gain need not rise with
-  the budget.
+  it: a return target not proved the least budget, since under totals the best plan's gain need not
+  rise with the budget; a return on spend the most, as :func:`budget_for` proves it.
 * A national channel's shares are the caller's and held fixed: the plan chooses how much to buy,
   not where it lands. Its bound over a box of its spend, the sum of its cells' envelopes, can stand
   above the sum's own envelope, so on S-shaped cells it may take more boxes than one cell's.
@@ -216,7 +219,7 @@ from jax import Array
 from jax.flatten_util import ravel_pytree
 from jax.typing import ArrayLike
 from scipy import sparse
-from scipy.optimize import OptimizeResult, brentq, linprog
+from scipy.optimize import OptimizeResult, brentq, linprog, minimize
 
 from chc.frames import _real_numbers
 from chc.response import (
@@ -291,14 +294,15 @@ SearchStatus = Literal["closed", "cap"]
 """Why a plan's search for the best stopped: ``closed``, its bound within the search's tolerance of
 its worth; ``cap``, with the gap open at a limit (:data:`SearchLimit`)."""
 
-SearchLimit = Literal["max_boxes", "rounds", "unsolved"]
+SearchLimit = Literal["max_boxes", "rounds", "unsolved", "local"]
 """What stopped a search with its gap open: ``max_boxes``, the caller's cap, where the next box's
 split would plan past it; ``rounds``, the 500 rounds of a box's cutting planes where no cut of the
 box is left to close it: the one box of concave curves of :func:`cvar_allocate`,
 :func:`minimax_allocate` and :func:`allocate_geos`, or a box of :func:`allocate_geos`' whose plan
 holds every cell at an end of its interval; ``unsolved``, a linear program HiGHS left unsolved
 there, at its iteration limit or with its optimality conditions unmet, which ends that box's
-planes."""
+planes; ``local``, :func:`allocate`'s schedule over periods where a kernel is longer than one
+period, which is the best of local ascents and whose bound is the curves' concave envelopes'."""
 
 _log = logging.getLogger(__name__)
 
@@ -335,6 +339,9 @@ class Allocation:
         compile_seconds: the seconds JAX spent compiling during the call: tracing, lowering and
             the backend's compile, none where every program was compiled before.
         search_seconds: the rest of the call's seconds. Both are recorded, not promised.
+        schedule: ``(periods, channels)`` spend in each period, where :func:`allocate` searched a
+            schedule (``schedule=True``); ``spend`` is then each channel's mean over the periods.
+            ``None`` for one rate a period.
     """
 
     spend: np.ndarray
@@ -352,6 +359,7 @@ class Allocation:
     limit: SearchLimit | None
     compile_seconds: float
     search_seconds: float
+    schedule: np.ndarray | None = None
 
     @property
     def gain(self) -> float:
@@ -966,13 +974,31 @@ def allocate(
     rtol: float = 1e-9,
     atol: float = 0.0,
     max_boxes: int = 500,
+    schedule: bool = False,
 ) -> Allocation:
-    """Spend ``budget`` over ``periods`` at one rate a period for each channel, for the most return.
+    """Spend ``budget`` over ``periods`` at one rate a period for each channel, for the most return,
+    or with ``schedule=True`` at a spend of its own in each period.
 
     Exact where every curve is concave; on S-shaped curves the best plan of one rate a period to
     the tolerance ``rtol`` and ``atol`` set, by branch and bound (see the module). There a schedule
-    that spends in bursts can return more, six times more for one Hill curve of slope 3 over four
-    periods, and none is searched.
+    that spends in bursts can return more: one Hill curve of slope 3 and scale 1, 1.2 over four
+    periods, returns 0.105 at one rate a period and 0.633 spent in one.
+
+    ``schedule=True`` searches each period's spend, each in the channel's box, the periods together
+    spending the budget (:attr:`Allocation.schedule`). Where every kernel is one period long, each
+    period's spend returns in its own period alone, and the schedule is searched in boxes over the
+    periods and channels as the rates are: the best schedule to the same tolerance. Where a kernel
+    is longer, the periods' adstocks share their spend and no such search applies: the schedule is
+    the best of SLSQP ascents on the curves, each polished by Newton's method on the face of the box
+    it stops on, from the best rate a period, from the best schedule on the curves' concave
+    envelopes and from eight seeded random schedules that spend most of the budget in a few cells;
+    never less than the best rate a period, and not proved the best. Its bound is the envelopes'
+    schedule's worth plus its Frank--Wolfe gap, which no schedule's worth exceeds; where that bound
+    is not within the tolerance of the worth, ``stopped`` is ``cap`` and ``limit`` ``local``, and
+    the call logs a warning (``chc_event="allocation_local"``). On concave curves the envelopes are
+    the curves, one ascent from the best rate a period is the best schedule, and the gap closes. The
+    price is read on the curves at the schedule, as for one rate a period: the most one more unit
+    returns in a period and channel below its cap.
 
     Args:
         channels: the channels, each read as given.
@@ -989,6 +1015,7 @@ def allocate(
             the first box's bound: there the gap is rounding (:attr:`Allocation.floored`).
         max_boxes: the most boxes the search plans. A box is cut only where its halves fit
             within the count.
+        schedule: search a spend for each period rather than one rate a period.
 
     Raises:
         TypeError: a channel is not a :class:`chc.response.Channel`.
@@ -1004,13 +1031,217 @@ def allocate(
     given = tuple(channels)
     with _Stopwatch() as clock:
         if relax(given) is given:
-            return _on_envelopes(
+            plan = _on_envelopes(
                 given, budget, periods, lower_rates, upper_rates, spent, settings, clock
             )
-        worths = _worths(given, spent, periods)
-        plan = _searched(worths, budget, periods, lower_rates, upper_rates, settings, clock)
-    _capped("allocate", plan)
+        else:
+            worths = _worths(given, spent, periods)
+            plan = _searched(worths, budget, periods, lower_rates, upper_rates, settings, clock)
+        if schedule:
+            plan = _scheduled(
+                given, plan, periods, lower_rates, upper_rates, spent, settings, clock
+            )
+    if plan.limit == "local":
+        _log.warning(
+            "allocate's schedule is the best of local ascents: it returns %.6g on the curves, and "
+            "no schedule more than %.6g",
+            plan.worth,
+            plan.bound,
+            extra={"chc_event": "allocation_local", "worth": plan.worth, "bound": plan.bound},
+        )
+    else:
+        _capped("allocate", plan)
     return plan
+
+
+class _Schedule(eqx.Module):
+    """The channels' return on a schedule, a ``(periods, channels)`` spend: the history's adstock
+    runs into it, and its spend runs on for each kernel's length after it with nothing spent."""
+
+    channels: tuple[Channel, ...]
+    history: Array  # (T, channels) spend before the schedule
+
+    def __call__(self, grid: Array) -> Array:
+        before = self.history.shape[0]
+        total = jnp.zeros((), dtype=grid.dtype)
+        for column, channel in enumerate(self.channels):
+            after = jnp.zeros(channel.kernel.length - 1, dtype=grid.dtype)
+            series = jnp.concatenate([self.history[:, column], grid[:, column], after])
+            adstock = channel.kernel(series)[before:]
+            total = total + channel.coefficient * jnp.sum(channel.curve(adstock))
+        return total
+
+
+@eqx.filter_jit
+def _schedule_value_and_grad(schedule: _Schedule, grid: Array) -> tuple[Array, Array]:
+    return jax.value_and_grad(schedule)(grid)
+
+
+@eqx.filter_jit
+def _schedule_curvature(schedule: _Schedule, grid: Array) -> Array:
+    return jax.hessian(schedule)(grid)
+
+
+def _read_schedule(schedule: _Schedule, grid: np.ndarray) -> tuple[float, np.ndarray]:
+    value, slope = _schedule_value_and_grad(schedule, jnp.asarray(grid, dtype=float))
+    return float(value), np.asarray(slope, dtype=float)
+
+
+def _ascend(
+    schedule: _Schedule, start: np.ndarray, low: np.ndarray, high: np.ndarray, budget: float
+) -> np.ndarray:
+    """A local best schedule from ``start``: SLSQP on the worth in the box, the schedule spending
+    the budget, projected onto both after it stops."""
+    shape = start.shape
+    scale = abs(_read_schedule(schedule, start)[0]) or 1.0
+
+    def loss(flat: np.ndarray) -> tuple[float, np.ndarray]:
+        value, slope = _read_schedule(schedule, flat.reshape(shape))
+        return -value / scale, -slope.ravel() / scale
+
+    found = minimize(
+        loss,
+        start.ravel(),
+        jac=True,
+        method="SLSQP",
+        bounds=list(zip(low, high, strict=True)),
+        constraints=[{"type": "eq", "fun": lambda x: x.sum() - budget, "jac": np.ones_like}],
+        options={"maxiter": 500, "ftol": 1e-15},
+    )
+    return _newton_face(
+        schedule, _onto(np.asarray(found.x, dtype=float), low, high, budget), low, high
+    ).reshape(shape)
+
+
+def _newton_face(
+    schedule: _Schedule, flat: np.ndarray, low: np.ndarray, high: np.ndarray
+) -> np.ndarray:
+    """``flat`` moved by Newton's method on the face of the box it lies on, the budget held: SLSQP
+    stops with the slopes of the cells inside their boxes equal only to its tolerance, which leaves
+    a Frank--Wolfe gap of about that share. Each step is to the stationary point of the worth's
+    quadratic on the face, and the steps stop at one that leaves the box or gains nothing."""
+    cells = flat.size
+    grid_shape = (cells // schedule.history.shape[1], schedule.history.shape[1])
+    x = flat.copy()
+    value, slope = _read_schedule(schedule, x.reshape(grid_shape))
+    for _ in range(20):
+        free = (x > low) & (x < high)
+        size = int(free.sum())
+        if size == 0:
+            break
+        curvature = np.asarray(
+            _schedule_curvature(schedule, jnp.asarray(x.reshape(grid_shape), dtype=float)),
+            dtype=float,
+        ).reshape(cells, cells)[np.ix_(free, free)]
+        system = np.block([[curvature, np.ones((size, 1))], [np.ones((1, size)), np.zeros((1, 1))]])
+        rhs = np.concatenate([-slope.ravel()[free], [0.0]])
+        step = np.linalg.lstsq(system, rhs, rcond=None)[0][:size]
+        moved = x.copy()
+        moved[free] += step
+        if np.any(moved < low) or np.any(moved > high):
+            break
+        reached, rise = _read_schedule(schedule, moved.reshape(grid_shape))
+        if not reached > value:
+            break
+        x, value, slope = moved, reached, rise
+    return x
+
+
+def _frank_wolfe(
+    schedule: _Schedule, grid: np.ndarray, low: np.ndarray, high: np.ndarray, budget: float
+) -> float:
+    """No schedule in the box that spends the budget returns more on ``schedule``, concave, than
+    its worth at ``grid`` plus the most its slope there gains toward one: the schedule that gains
+    the most fills the cells of the steepest slopes from their floors to their caps."""
+    value, slope = _read_schedule(schedule, grid)
+    slope = slope.ravel()
+    best, left = low.copy(), budget - float(low.sum())
+    for cell in np.argsort(-slope, kind="stable"):
+        if left <= 0.0:
+            break
+        step = min(high[cell] - low[cell], left)
+        best[cell] += step
+        left -= step
+    return value + max(float(slope @ (best - grid.ravel())), 0.0)
+
+
+def _scheduled(
+    given: tuple[Channel, ...],
+    flat: Allocation,
+    periods: int,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    spent: np.ndarray,
+    settings: _Settings,
+    clock: _Stopwatch,
+) -> Allocation:
+    """:func:`allocate`'s schedule: searched in boxes over the periods and channels where every
+    kernel is one period long, otherwise the best of local ascents bounded on the envelopes;
+    ``flat`` is the best rate a period, its seconds read on ``clock``."""
+    size, budget = len(given), flat.budget
+    low, high = np.tile(lower, periods), np.tile(upper, periods)
+    curves = _Schedule(given, jnp.asarray(spent, dtype=float))
+    limit: SearchLimit | None
+    if all(channel.kernel.length == 1 for channel in given):
+        # each period's spend returns in its own period: a cell of every period and channel
+        cells = _worths(given, np.zeros((0, size)), 1) * periods
+        groups = tuple(tuple(range(column, size * periods, size)) for column in range(size))
+        spend, searched, bound, price, ending = _branch_and_bound(
+            cells, low, high, 1, budget, settings, groups=groups
+        )
+        grid = spend.reshape(periods, size)
+        worth = _read_schedule(curves, grid)[0]
+        bound += worth - searched
+        stopped, boxes, limit = ending.stopped, ending.boxes, ending.limit
+        tolerance, floored, scale = ending.tolerance, ending.floored, ending.scale
+    else:
+        enveloped = relax(given)
+        relaxed = _Schedule(enveloped, curves.history)
+        start = np.tile(flat.spend, (periods, 1))
+        envelope = _ascend(relaxed, start, low, high, budget)
+        grid, worth = start, flat.worth
+        if enveloped is given:
+            # concave: the envelopes are the curves, and their ascent is the curves' best
+            ascents = [envelope]
+        else:
+            # bursts: schedules that spend the budget in a few cells, seeded so the call repeats
+            draws = np.random.default_rng(_BURST_SEED).dirichlet(
+                np.full(low.size, 0.3), size=_BURSTS
+            )
+            bursts = [_onto(budget * d, low, high, budget).reshape(periods, size) for d in draws]
+            ascents = [
+                _ascend(curves, begin, low, high, budget) for begin in (start, envelope, *bursts)
+            ]
+        for ascended in ascents:
+            value = _read_schedule(curves, ascended)[0]
+            if value > worth:
+                grid, worth = ascended, value
+        bound = max(_frank_wolfe(relaxed, envelope, low, high, budget), worth)
+        slope = _read_schedule(curves, grid)[1].ravel()
+        price = float(np.max(slope[grid.ravel() < high], initial=0.0))
+        scale = abs(bound) or 1.0
+        tolerance, floored = settings.tolerance(scale, _rounding(given))
+        closed = bound - worth <= tolerance
+        stopped = "closed" if closed else "cap"
+        boxes, limit = flat.boxes, None if closed else "local"
+    compiling, searching = clock.read()
+    return replace(
+        flat,
+        spend=grid.mean(axis=0),
+        worth=worth,
+        bound=bound,
+        price=price,
+        stopped=stopped,
+        boxes=boxes,
+        gap=bound - worth,
+        relative_gap=(bound - worth) / scale,
+        tolerance=tolerance,
+        floored=floored,
+        limit=limit,
+        compile_seconds=compiling,
+        search_seconds=searching,
+        schedule=grid,
+    )
 
 
 def _searched(
@@ -1275,6 +1506,8 @@ def _branch_and_bound(
     target: float,
     settings: _Settings,
     charge: float | None = None,
+    groups: tuple[tuple[int, ...], ...] = (),
+    span: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, float, float, float, _Ending]:
     """The best split of ``target`` a period on the curves, its worth, a bound on every split's, its
     price, and how the search ended: Udell and Boyd's (2016) branch-and-bound for sums of S-shaped
@@ -1293,11 +1526,20 @@ def _branch_and_bound(
     With a ``charge`` the budget is free and every currency unit spent is charged ``charge`` of
     return: a node's split is each channel's rate at that price on its envelope over the box, the
     worth and the bounds are read less the charge, and ``target`` is not read. The scale of the
-    tolerance is still the first node's bound in worth.
+    tolerance is still the first node's bound in worth. A ``span`` holds that free budget, what
+    the rates spend over the periods, between its two ends: a box's split is then the rates at the
+    charge where they spend inside it, and otherwise the split of the end they pass, which is the
+    best in the box under the charge, since the envelopes' worth less the charge is concave in what
+    they spend.
 
     The price is ``charge``, or else the best plan's own (:func:`_marginal`), read on the curves
     in the caller's box: a box's envelopes and its cut ends price the plan differently in each box
     that holds it, and a cut at the plan's own rate puts it in two.
+
+    Each of ``groups`` holds rates whose worths and boxes are the same, so that any order of their
+    values is as good as another: the search reads them in falling order. A cut of one at a rate
+    holds the group's rates after it at most that rate in its lower half, and those before it at
+    least that rate in its upper half; without that every order of a split would be bounded apart.
     """
 
     def solve(low: np.ndarray, high: np.ndarray, bounded: tuple[_Worth, ...]):
@@ -1306,6 +1548,9 @@ def _branch_and_bound(
             spent = 0.0
         else:
             spend = _rates(bounded, low, high, periods, charge)
+            if span is not None and not span[0] <= periods * float(spend.sum()) <= span[1]:
+                end = span[0] if periods * float(spend.sum()) < span[0] else span[1]
+                spend = _split(bounded, low, high, periods, end / periods)[0]
             spent = charge * periods * float(spend.sum())
         tops = np.array([_value(b, rate) for b, rate in zip(bounded, spend, strict=True)])
         values = np.array([_value(w, rate) for w, rate in zip(worths, spend, strict=True)])
@@ -1328,15 +1573,30 @@ def _branch_and_bound(
         for floor, cap in ((a, cut), (cut, b)):
             child_low, child_high = low.copy(), high.copy()
             child_low[cut_at], child_high[cut_at] = floor, cap
-            # a split of the budget fits, or the budget is free
-            if charge is not None or float(child_low.sum()) <= target <= float(child_high.sum()):
+            for group in groups:
+                if cut_at in group:
+                    place = group.index(cut_at)
+                    before, after = list(group[:place]), list(group[place + 1 :])
+                    child_low[before] = np.maximum(child_low[before], floor)
+                    child_high[after] = np.minimum(child_high[after], cap)
+            # a split of the budget fits, or the budget is free, within its span
+            if charge is None:
+                fits = float(child_low.sum()) <= target <= float(child_high.sum())
+            else:
+                fits = span is None or (
+                    periods * float(child_low.sum()) <= span[1]
+                    and periods * float(child_high.sum()) >= span[0]
+                )
+            if fits and np.all(child_low <= child_high):
                 halves.append((floor, cap, child_low, child_high))
         if nodes + len(halves) > settings.max_boxes:
             break
         heapq.heappop(heap)
-        for floor, cap, child_low, child_high in halves:
+        for _, _, child_low, child_high in halves:
             child = list(bounded)
-            child[cut_at] = _bounded(worths[cut_at], floor, cap)
+            moved = (child_low != low) | (child_high != high)
+            for index in np.flatnonzero(moved):
+                child[index] = _bounded(worths[index], child_low[index], child_high[index])
             rates, top, value, excess = solve(child_low, child_high, tuple(child))
             nodes += 1
             if value > best[0]:
@@ -1446,11 +1706,13 @@ def budget_for(
     its charge, so below it a unit returns more on average and past it less. A return on spend is
     met where the searched gain less ``per_unit`` a unit falls through nothing past that peak,
     refused where the peak falls short. Past the peak the gain need not fall all the way: it can
-    cross the target, rise back over it on a curve that turns up later, and cross again. The
-    budgets on a grid of 16 steps from the peak to the caps are read down from the caps, and
-    Brent's method closes the last crossing the grid sees; Brent's method alone returns any of
-    the crossings. A crossing and its return between two steps are not seen, so the budget is not
-    proved the most.
+    cross the target, rise back over it on a curve that turns up later, and cross again, and
+    Brent's method returns any of the crossings. So the stretch from the peak to the caps is
+    halved: its upper half is searched in boxes for the plan that gains the most less ``per_unit``
+    a unit with its budget held in the half, as the marginal target is searched with it free. Where
+    that search's bound falls short of the target no budget in the half meets it, and the stretch
+    is the lower half; otherwise the stretch starts at that plan's budget. The budget returned is
+    the most that meets the target, to the search's tolerance.
 
     Args:
         channels, periods, lower, upper, history: as :func:`allocate` takes them.
@@ -1596,7 +1858,23 @@ def _sought(
                         f"gain less {per_unit} a unit peaks at {surplus(best):.6g}, at a budget "
                         f"of {best.budget:.6g}"
                     )
-                found = plan(_last_crossing(plan, lambda p: -surplus(p), best.budget, most))
+                idle = found.idle
+
+                def within(a: float, b: float) -> tuple[float, float]:
+                    spend, _, ceiling, _, _ = _branch_and_bound(
+                        worths, lower, upper, periods, 0.0, settings, per_unit, span=(a, b)
+                    )
+                    return ceiling - idle, periods * float(spend.sum())
+
+                found = plan(
+                    _last_crossing(
+                        within,
+                        lambda budget: -surplus(plan(budget)),
+                        best.budget,
+                        most,
+                        found.tolerance / per_unit,
+                    )
+                )
     compiling, searching = clock.read()
     return replace(found, compile_seconds=compiling, search_seconds=searching)
 
@@ -1676,10 +1954,19 @@ def minimax_allocate(
     budget = _spendable(budget, periods, lower_rates, upper_rates)
     for reading in readings[1:]:
         _check(reading, periods, lower_rates, upper_rates, spent)
-    box = {"lower": lower_rates, "upper": upper_rates, "history": spent}
     with _Stopwatch() as clock:
         plans = [
-            allocate(reading, budget, periods, **box, rtol=rtol, atol=atol, max_boxes=max_boxes)
+            allocate(
+                reading,
+                budget,
+                periods,
+                lower=lower_rates,
+                upper=upper_rates,
+                history=spent,
+                rtol=rtol,
+                atol=atol,
+                max_boxes=max_boxes,
+            )
             for reading in readings
         ]
         best = np.array([plan.worth for plan in plans])
@@ -2531,9 +2818,10 @@ def budget_for_geos(
 
     On an S-shaped curve each plan is :func:`allocate_geos`' search at its budget, and the best
     plan's gain need not be concave in the budget: a return target and a return on spend are met
-    where that gain crosses them, by Brent's method between budgets either side, a return on
-    spend at the last crossing a grid of 16 budgets past the peak sees, and neither is proved the
-    least or the most. The marginal target's plan is searched with its budget free.
+    where that gain crosses them, by Brent's method between budgets either side, and neither is
+    proved the least. A return on spend is met at the last crossing past the peak, proved the most
+    budget as :func:`budget_for` proves it: each half of the stretch is searched with the budget
+    held in it as one more total. The marginal target's plan is searched with its budget free.
 
     Args:
         cells, periods, lower, upper, geo_totals, channel_totals, national, history: as
@@ -2616,7 +2904,33 @@ def _meet(layout: _Layout, periods: int, goal: Goal) -> GeoAllocation:
                     f"the gain less {per_unit} a unit peaks at {surplus(peak):.6g}, at a budget "
                     f"of {peak.budget:.6g}"
                 )
-            return plan(_last_crossing(plan, lambda p: -surplus(p), peak.budget, most))
+            worths = _variables(layout, periods)
+            size = layout.lower.size
+
+            def within(a: float, b: float) -> tuple[float, float]:
+                spent = _Group(np.arange(size), a, b, np.ones(size))
+                found, bound, _ = _geo_search(
+                    worths,
+                    layout.lower,
+                    layout.upper,
+                    (spent, *layout.groups),
+                    periods,
+                    per_unit,
+                    layout.settings,
+                    False,
+                )
+                ceiling = bound - found.charged - end.idle
+                return ceiling, periods * float(found.rates.sum())
+
+            return plan(
+                _last_crossing(
+                    within,
+                    lambda budget: -surplus(plan(budget)),
+                    peak.budget,
+                    most,
+                    end.tolerance / per_unit,
+                )
+            )
 
 
 def _layout(
@@ -3266,28 +3580,46 @@ def _crossing(
     )
 
 
-_SCAN = 16
-"""The steps of the grid :func:`_last_crossing` reads before Brent's method closes a crossing."""
-
-
 def _last_crossing(
-    plan: Callable[[float], _Plan],
-    excess: Callable[[_Plan], float],
+    within: Callable[[float, float], tuple[float, float]],
+    excess: Callable[[float], float],
     short: float,
     past: float,
+    resolution: float,
 ) -> float:
-    """The last budget where ``excess`` crosses nothing between ``short``, where it is not above,
-    and ``past``, where it is: the grid of :data:`_SCAN` steps between them is read down from
-    ``past`` to its first budget not above, and Brent's method closes the crossing between it and
-    the step after. Brent's method on the whole interval returns any of the crossings there, and on
-    S-shaped curves the excess can cross nothing three times past its peak. A crossing and its
-    return inside one step are not seen."""
-    above = past
-    for budget in np.linspace(short, past, _SCAN + 1)[-2::-1]:
-        if excess(plan(float(budget))) <= 0.0:
-            return _crossing(plan, excess, float(budget), above)
-        above = float(budget)
-    return _crossing(plan, excess, short, above)
+    """The most budget between ``short``, whose best plan meets a goal, and ``past``, whose does
+    not, at which the best plan meets it, to ``resolution``.
+
+    ``within(a, b)`` searches every plan whose budget lies in ``[a, b]`` for the one that meets the
+    goal by the most, and returns a bound on how much any of them meets it by, below nothing where
+    none does, and that plan's budget. Every budget past ``high`` misses the goal and ``low``'s
+    best plan meets it; each round reads the upper half of the two, which either misses, lowering
+    ``high`` to halfway, or holds a plan that meets, or meets to the search's tolerance, raising
+    ``low`` to its budget, past halfway. No grid is read, so a crossing and its return inside any
+    stretch are found: on S-shaped curves the gain less a target a unit can cross nothing three
+    times past its peak. Once the two are within ``resolution``, Brent's method on ``excess``, the
+    best plan's at a budget, closes the crossing between them to rounding."""
+    low, high = short, past
+    xtol = 4 * _EPS * past
+    while high - low > max(xtol, resolution):
+        middle = 0.5 * (low + high)
+        ceiling, budget = within(middle, high)
+        if ceiling < 0.0:
+            high = middle
+        else:
+            low = max(budget, middle)
+    if high > low:
+        if excess(high) <= 0.0:
+            return high
+        if excess(low) <= 0.0:
+            return brentq(excess, low, high, xtol=xtol, rtol=4 * _EPS)
+    return low
+
+
+_BURSTS, _BURST_SEED = 8, 0
+"""How many random schedules :func:`allocate`'s local schedule also ascends from, drawn from a
+Dirichlet of concentration 0.3 over the cells, which spends most of the budget in a few, and the
+seed they are drawn from."""
 
 
 def _outer(

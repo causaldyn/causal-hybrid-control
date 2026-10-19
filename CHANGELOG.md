@@ -38,6 +38,15 @@ still change).
   of 52 periods' `marginal_roi` read 0.0003 cut and reads 0.0156 with its tail, 52 times more;
   over the last 12 periods 6–7 times, over the whole series 1.3–1.6 times. The default is
   unchanged (ADR 0109).
+- **`allocate(schedule=True)` searches a spend for each period.** *Experimental.* On S-shaped
+  curves one rate a period is not the best schedule: one Hill curve of slope 3, 1.2 over four
+  periods, returns 0.105 flat and 0.633 spent in one period, which the schedule finds and closes
+  on. Where every kernel is one period long the schedule is searched in boxes over the periods and
+  channels, each channel's periods read in falling order so that their orders are not bounded
+  apart (three channels over six periods: 13–17 boxes, closed, where unordered the search took 499
+  without closing). Where a kernel is longer it is the best of local ascents, bounded by the
+  curves' concave envelopes, reported with `limit="local"` and a warning when that bound does not
+  close. `Allocation.schedule` holds it; `SearchLimit` gains `"local"` (ADR 0110).
 
 ### Changed
 
@@ -139,6 +148,12 @@ still change).
   in 91.3% of the twelve zones' reads over 300 logs of 400 blocks, 79% in the worst zone; HC3
   raised that to 92.1%, and over 150 logs of 4,000 blocks it held in 94.2% and 95.0%. No number
   moves.
+- **`budget_for` and `budget_for_geos` meet a return on spend at the most budget, proved.** Past
+  the peak a grid of 16 budgets was read down from the caps, and a window where the goal is met
+  inside one step was not seen: a concave channel and a Hill curve of slope 12 meet 0.6 a unit
+  between about 36.8 and 37.7, and the goal was met at 22.83. The stretch is now halved, each upper
+  half searched in boxes with its budget held in it, and its bound rules it out where no budget
+  meets the goal: 37.68. Under totals too, where the gain need not rise with the budget.
 
 ## [0.18.0] — 2026-10-13
 

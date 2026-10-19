@@ -339,6 +339,17 @@ def test_where_totals_make_the_gain_fall_a_return_target_is_met_short_of_its_pea
         _falling(ReturnTarget(peak + 100.0), curve)
 
 
+def test_a_return_on_spend_over_geos_is_met_past_a_window_narrower_than_any_grid_step():
+    """``budget_for``'s narrow window in one geo of two cells: each half of the budgets is searched
+    with the budget held in it as one more total, and the window a 16-step grid missed is found."""
+    cells = [[Channel(ONE, MichaelisMenten(0.5), 14.0), Channel(ONE, Hill(30.0, 12.0), 12.47)]]
+    plan = budget_for_geos(
+        cells, ReturnOnSpendTarget(0.6), 1, lower=np.zeros((1, 2)), upper=np.full((1, 2), 40.0)
+    )
+    assert 37.5 < plan.budget < 37.75
+    assert plan.gain == pytest.approx(0.6 * plan.budget, rel=1e-9, abs=0.0)
+
+
 def test_past_the_peak_the_plans_meet_a_negative_marginal_return_and_a_return_on_spend():
     """Past 10 the first cell spends ``20 - B`` and the two others ``B - 10`` each, so the price
     is ``-10000 / (30 - B)^2 + 200 / B^2``, ``-29.475`` at 12."""
