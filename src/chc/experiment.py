@@ -13,7 +13,8 @@ mean costs regret: what the action loses against the one that knew ``b``. An exp
 precision of ``b_k``. :func:`design_experiment` chooses the ``n_k`` that minimise the regret left
 after the experiment, times the number of times the decision will be used, plus what the experiment
 spends, within a budget. Then it measures the regret before and after by Monte Carlo, re-solving the
-decision on every draw, and every number it reports is that measurement.
+decision on every draw: the regrets, the value, its ``error`` and ``regret_bound`` are that
+measurement. ``pinned`` and ``weights`` are not: they are the local model's, below.
 
 The local model it optimises (the lab's value-of-information thread, independently verified):
 
@@ -345,7 +346,12 @@ class ZoneExperiment:
 @dataclass(frozen=True)
 class PinnedZone:
     """A lever held at its bound at the prior mean: how far its multiplier is from releasing it, in
-    prior standard deviations, and the expected regret the pin costs now, times ``uses``."""
+    prior standard deviations, and the expected regret the pin costs now, times ``uses``.
+
+    ``regret`` is the local model's Gaussian-tail law, ``s G(z) / (2 S)``, not a measurement: on one
+    lever pinned at zero, ``x = -1 + b u`` with ``b ~ N(-0.3, s^2)``, it read 14% under the exact
+    regret at ``z = 3``, 6% under at ``z = 1.5``, 8% over at ``z = 1`` and 52% over at ``z = 0.6``.
+    """
 
     zone: int
     z: float

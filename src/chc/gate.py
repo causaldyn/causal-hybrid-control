@@ -152,10 +152,10 @@ class GateConfig:
 
     ``delta`` is the improvement margin: a DEPLOY claims ``V_new - V_base > delta``. ``delta_harm``
     is the harm margin: a HOLD for harm or a ROLLBACK claims ``V_base - V_new > delta_harm``.
-    ``alpha`` bounds the expected share of wrong DEPLOY decisions across zones, ``alpha_harm`` each
-    HOLD for harm and each ROLLBACK, and ``drift_arl`` is the average number of decisions between
-    false drift alarms on an unchanged channel. ``rho`` is the candidate's share of the logging
-    mixture in EXPERIMENT.
+    ``alpha`` bounds the expected share of wrong DEPLOY decisions across zones, a zone rolled back
+    since its DEPLOY still counted, ``alpha_harm`` each HOLD for harm and each ROLLBACK, and
+    ``drift_arl`` is the average number of decisions between false drift alarms on an unchanged
+    channel. ``rho`` is the candidate's share of the logging mixture in EXPERIMENT.
 
     ``min_effect``, the smallest improvement beyond ``delta`` worth deploying, and ``horizon``, the
     decisions per zone the gate may spend, decide when to switch to EXPERIMENT, and no guarantee
@@ -1346,7 +1346,9 @@ class DeploymentGate:
     * the expected share of wrong DEPLOY decisions among those made so far is at most ``alpha``,
       under any dependence across zones; a DEPLOY is wrong when the candidate does not beat the
       baseline by more than ``delta`` over the decisions read, which says nothing of a contrast that
-      turns after them;
+      turns after them. A zone deployed and later rolled back still counts among the DEPLOYs,
+      its evidence frozen at the DEPLOY: the share among the zones still deployed at a read is not
+      what is bounded;
     * each HOLD for harm, and each ROLLBACK on evidence, is wrong with probability at most
       ``alpha_harm``;
     * with drift e-values supplied, an unchanged channel alarms at most once per ``drift_arl``

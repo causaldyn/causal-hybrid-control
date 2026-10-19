@@ -152,6 +152,15 @@ still change).
   With `se="model"` it now logs `switchback_short_run` on a run of fewer than 400 periods a zone or
   where the bias's first-order bound passes 0.3 standard errors, and points to `se="design"`. No
   value moves. Since 0.8.0.
+- **`chc.experiment` says which of its numbers are measured.** Its module docstring said every
+  number `design_experiment` reports is the Monte Carlo measurement; `pinned` and `weights` are the
+  local model's, and `PinnedZone.regret`'s Gaussian-tail law read 14% under to 52% over the exact
+  regret of one lever pinned at zero. The docstrings now say so. Docs only; no value moves. Since
+  0.8.0.
+- **`DeploymentGate`'s bound on wrong deploys counts a zone rolled back since.** e-BH bounds the
+  expected share of wrong DEPLOY decisions among all made so far, a rolled-back zone's evidence
+  frozen at its DEPLOY. The docstrings did not say which deploys count; the share among the zones
+  still deployed is not what it bounds. They now say so. Docs only. Since 0.8.0.
 
 ## [0.18.0] — 2026-10-13
 
