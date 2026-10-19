@@ -312,6 +312,18 @@ still change).
   error off the logs, stretched to hold the estimate: 0.978 and 0.993, 0.983 on a model fitted to
   a 300-step pilot (0.680 before), and 0.950 with the model right, at 1.2 times the width (1.4
   for a deterministic plan). The estimate does not move (ADR 0108). Since 0.8.0.
+- **`evaluate_plan(method="dr")` weighs toward the plan's law under the logs' own loop.** Its
+  weights' numerator was the plan's stationary law under the model, so the weights and the
+  Bellman residual both carried the model's error, and their product is not small where an error
+  moves a slow loop's mean far: with the offset off by 0.05 the estimate was 0.0104 below the
+  deployed value, further than `"mis"`'s 0.0080 above it, and the interval covered 0.475 and
+  0.843 for a randomised and a deterministic plan (400 logs of 4000 steps), 0.013 and 0.520 over
+  20 000 steps. The numerator is now the law under the plant fitted to the logs by least squares,
+  and the error the product of that fit's and the model's: 0.963 and 0.978, and 0.940 to 0.963
+  over ten models for the randomised plan, at the same width with the model right. `"mis"`'s
+  estimate does not move; its interval, `"dr"`'s stretched, covers 0.943 to 0.978 over the ten
+  (0.943 to 0.993 before). Both refuse a plan whose loop under the fitted plant has no stationary
+  law (ADR 0108). Since 0.8.0.
 - **`shadow_price_effect(design="bernoulli")` reads its standard error for independent coins.**
   The standard error holds fixed the treated share the assignment dealt; under independent coins
   the share moves too, and the effect, the slope `f'(p)`, moves with it by `-f''(p)` a unit of

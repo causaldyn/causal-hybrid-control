@@ -1,0 +1,113 @@
+/* Why chc.evaluation's "dr" weighs toward the plan's law under the plant fitted to the logs.
+
+   True plant x' = a x + b u + c + w, w ~ N(0, v); the caller's model (am, bm, cm, vm). The plan is
+   u = k x + o + e, e ~ N(0, s), and the stage cost q x^2 + r u^2. "dr" is Jm plus the model's
+   Bellman residual h(x') - Em[h(x') | x, u] of the plan's relative value h under the model,
+   weighed toward a stationary law of (x, u). validation/mis_model_error.mac shows the result is
+   exact when that law is the plan's true one, d, and second order in the model's error when it is
+   the model's, dm.
+
+   STEP 1  Second order is not small. With the model wrong only in the offset, c = cm + delta,
+           weighing toward dm leaves J - dr = 2 p f delta^2 / (1 - f), f = a + b k the closed
+           loop, p the curvature of h: the stationary mean moves by delta / (1 - f), and a slow
+           loop moves it far.
+   STEP 2  Weighing toward the plan's law under a plant (a + eta ga, b + eta gb, c + eta gc,
+           v + eta gv) -- the logs' least-squares fit, eta its sampling error -- with the model
+           (a + eps ma, b + eps mb, c + eps mc, v + eps mv), the error is zero at eta = 0 for every
+           model and at eps = 0 for every fit: it is a product of the two, and the fit's error
+           shrinks with the logs.
+   STEP 3  On the tests' two-state market, the randomised plan (s = 0.04) and the offset off by
+           0.05 in both states: J = 0.12391, the model's Jm is 0.00805 above it, and "dr" weighed
+           toward dm is 0.01044 below it -- further off than "mis", as the Monte Carlo measured.
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/dr_logged_weights.mac */
+
+display2d : false$
+
+/* the stationary mean and variance of x under (a, b, c, v), and the moments of (x, u) */
+law(a, b, c, v) := block([f], f : a + b*k,
+  [(b*o + c)/(1 - f), (b^2*s + v)/(1 - f^2)])$
+cost(a, b, c, v) := block([m, S], [m, S] : law(a, b, c, v),
+  q*(S + m^2) + r*(k^2*S + s + (k*m + o)^2))$
+
+/* the plan's relative value under the model: h(x) = p x^2 + 2 l x, and Jm */
+fm : am + bm*k$
+dm : bm*o + cm$
+p : (q + r*k^2)/(1 - fm^2)$
+l : (r*k*o + p*fm*dm)/(1 - fm)$
+Jm : r*(o^2 + s) + p*(dm^2 + bm^2*s + vm) + 2*l*dm$
+if ratsimp(Jm - cost(am, bm, cm, vm)) # 0 then error("Jm is not the model's average cost")$
+
+nexth(a, b, c, v) := p*((a*X + b*U + c)^2 + v) + 2*l*(a*X + b*U + c)$
+residual : expand(nexth(a, b, c, v) - nexth(am, bm, cm, vm))$
+expect(poly, a, b, c, v) := block([m, S, e, EX2, EXU, EU2],
+  [m, S] : law(a, b, c, v),
+  EX2 : S + m^2, EU2 : k^2*S + s + (k*m + o)^2, EXU : k*S + m*(k*m + o),
+  e : ratsubst(EX2, X^2, poly), e : ratsubst(EU2, U^2, e), e : ratsubst(EXU, X*U, e),
+  subst([X = m, U = k*m + o], e))$
+
+/* STEP 1 */
+offset_only : [a = am, b = bm, v = vm, c = cm + delta]$
+old_err : subst(offset_only, cost(a, b, c, v) - Jm - expect(residual, am, bm, cm, vm))$
+step1 : ratsimp(old_err - 2*p*fm*delta^2/(1 - fm))$
+print("STEP 1 J - dr weighed toward dm, less 2 p f delta^2/(1 - f) (expect 0):", step1)$
+if step1 # 0 then error("STEP 1")$
+
+/* STEP 2 */
+truth : [am = a + eps*ma, bm = b + eps*mb, cm = c + eps*mc, vm = v + eps*mv]$
+fit : [a + eta*ga, b + eta*gb, c + eta*gc, v + eta*gv]$
+new_err : subst(truth, cost(a, b, c, v) - Jm - apply(expect, cons(residual, fit)))$
+at_fit_exact : ratsimp(subst(eta = 0, new_err))$
+at_model_right : ratsimp(subst(eps = 0, new_err))$
+print("STEP 2 dr's error with the fit exact, and with the model right (expect 0, 0):",
+      at_fit_exact, at_model_right)$
+if at_fit_exact # 0 or at_model_right # 0 then error("STEP 2: dr is not a product of errors")$
+cross : subst([a = 0.85, b = -0.6, c = 0, v = 0.05, k = 0.3, o = 0.05, s = 0.04, q = 2, r = 0.4,
+               ma = 0, mb = 0, mc = 1, mv = 0, ga = 1, gb = 0, gc = 0, gv = 0, eps = 0, eta = 0],
+              diff(new_err, eps, 1, eta, 1))$
+print("STEP 2 its mixed derivative at a scale like the tests' (expect not 0):", float(cross))$
+if abs(cross) < 1e-3 then error("STEP 2: the mixed term vanished")$
+
+/* STEP 3: the two-state market, every number as the tests write it; chc.cost halves x'Qx + u'Ru */
+A2 : matrix([0.85, 0.15], [0.25, 0.75])$
+B2 : matrix([-0.6], [-0.2])$
+V2 : matrix([0.05, 0], [0, 0.03])$
+Q2 : matrix([2, 0], [0, 1]) / 2$
+R2 : 0.4 / 2$
+K2 : matrix([1.014227864695487, 0.42425724125293984])$
+o2 : 0.05$
+s2 : 0.04$
+F2 : A2 + B2 . K2$
+sym(x1, x2, x3) := matrix([x1, x2], [x2, x3])$
+lyap(G, D) := block([X : sym(x1, x2, x3), e, sol],
+  e : X - G . X . transpose(G) - D,
+  sol : linsolve([e[1, 1], e[1, 2], e[2, 2]], [x1, x2, x3]),
+  subst(sol, X))$
+/* the law of (x, u) under offset c2: means and covariances of x and u */
+moments(cl) := block([Sx, mx],
+  Sx : lyap(F2, s2 * B2 . transpose(B2) + V2),
+  mx : invert(ident(2) - F2) . (B2 * o2 + cl),
+  [mx, Sx, K2 . mx + o2, K2 . Sx, K2 . Sx . transpose(K2) + s2])$
+J2(cl) := block([mx, Sx, mu, Sxu, Su], [mx, Sx, mu, Sxu, Su] : moments(cl),
+  mat_trace(Q2 . Sx) + (transpose(mx) . Q2 . mx) + R2*(Su + mu^2))$
+cm2 : matrix([0.05], [0.05])$
+c2 : matrix([0], [0])$
+/* h under the model: P = F' P F + Q + K' R K, l = (I - F')^-1 (K' R o + F' P (B o + cm)) */
+P2 : lyap(transpose(F2), Q2 + R2 * transpose(K2) . K2)$
+l2 : invert(ident(2) - transpose(F2)) . (transpose(K2) * R2 * o2 + transpose(F2) . P2 . (B2 * o2 + cm2))$
+/* E[h(a x + b u + off)] over the law of (x, u) under offset cl; the noise's term cancels */
+Eh(cl, off) := block([mx, Sx, mu, Sxu, Su, m, S],
+  [mx, Sx, mu, Sxu, Su] : moments(cl),
+  m : A2 . mx + B2 * mu + off,
+  S : A2 . Sx . transpose(A2) + A2 . transpose(Sxu) . transpose(B2)
+      + B2 . Sxu . transpose(A2) + Su * B2 . transpose(B2),
+  mat_trace(P2 . S) + (transpose(m) . P2 . m) + 2*(transpose(l2) . m))$
+J3 : J2(c2)$
+Jm3 : J2(cm2)$
+dr_old : Jm3 + Eh(cm2, c2) - Eh(cm2, cm2)$
+dr_new : Jm3 + Eh(c2, c2) - Eh(c2, cm2)$
+print("STEP 3 J, Jm - J, dr toward dm - J, dr toward d - J:", J3, Jm3 - J3, dr_old - J3,
+      dr_new - J3)$
+if not (abs(J3 - 0.12391) < 5e-6 and abs(Jm3 - J3 - 0.00805) < 5e-6
+        and abs(dr_old - J3 + 0.01044) < 5e-6 and abs(dr_new - J3) < 1e-12)
+  then error("STEP 3")$

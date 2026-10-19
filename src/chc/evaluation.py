@@ -32,8 +32,15 @@ Four methods:
   the estimate. An interval read off the weights alone held the true value on the tests' market
   0.96 of the time with the model right and 0.65 with one entry of ``a`` off by 0.1, over 400
   logs of 4000 steps; this one 0.95 and 0.98, at 1.2 times the width.
-* ``"dr"`` -- ``"mis"`` with the model's relative value as a control variate, so that its error is
-  the product of the weights' error and the model's.
+* ``"dr"`` -- the plan's cost under the model plus the model's Bellman residual of its relative
+  value, weighed toward the plan's stationary law under the plant fitted to the logs by least
+  squares, not under the model. Its error is the product of that fit's error and the model's, and
+  the fit's shrinks with the logs. Weighed toward the model's law, both factors were the model's
+  error, and a product of two first-order terms is not small: with the tests' market's offset off
+  by 0.05 that ``"dr"`` was 0.0104 off, more than ``"mis"``'s 0.0080, and its interval held the
+  true value on 0.475 of 400 logs of 4000 steps; this one 0.963
+  (``validation/dr_logged_weights.mac``). Where the plan's loop under that fit has no stationary
+  law, both methods refuse.
 * ``"fqe"`` -- fitted Q evaluation with quadratic features, which is exact on this class. It is
   certified by the restricted chi-square over those features, evaluates a deterministic plan
   directly, and works where every weight has infinite variance.
@@ -1364,10 +1371,30 @@ def _effective(w: _Array) -> float:
     return float(w.sum() ** 2 / (w * w).sum())
 
 
+def _logged_plant(x: _Array, u: _Array) -> LinearGaussianPlant:
+    """The plant the logs ``x`` (``T + 1`` states) and ``u`` (``T`` actions) were drawn from,
+    fitted by least squares of ``x'`` on ``(x, u, 1)``.
+
+    Raises:
+        ValueError: on no more transitions than coefficients per state.
+    """
+    n = x.shape[1]
+    design = np.hstack([x[:-1], u, np.ones((u.shape[0], 1))])
+    if u.shape[0] <= design.shape[1]:
+        raise ValueError(
+            f"{u.shape[0]} transitions cannot fit {design.shape[1]} coefficients per state"
+        )
+    coef, *_ = np.linalg.lstsq(design, x[1:], rcond=None)
+    residual = x[1:] - design @ coef
+    noise = _sym(residual.T @ residual / (u.shape[0] - design.shape[1]))
+    return LinearGaussianPlant(coef[:n].T, coef[n:-1].T, coef[-1], noise)
+
+
 def _stationary_estimate(
     x: _Array,
     u: _Array,
     plant: LinearGaussianPlant,
+    logged: LinearGaussianPlant,
     plan: AffinePolicy,
     target: AffinePolicy,
     cost: _StageCost,
@@ -1375,19 +1402,23 @@ def _stationary_estimate(
 ) -> tuple[float, float, float, float, float | None]:
     """The weighted estimate of ``target``'s average cost, its half-width, the weights' own
     effective sample size, the interval's degrees of freedom and, for ``"mis"``, the ``"dr"``
-    estimate on the same weights, whose half-width and degrees of freedom are then the ones
-    returned. The denominator is the logs' own law, fitted, not the model's."""
+    estimate, whose half-width and degrees of freedom are then the ones returned. The weights'
+    denominator is the logs' own law, fitted. ``"mis"``'s numerator is ``target``'s stationary law
+    under the model; ``"dr"``'s is that law under ``logged``, the plant fitted to the logs, so
+    that the model enters ``"dr"`` only through its relative value."""
     xs, xn = x[:-1], x[1:]
     z = np.hstack([xs, u])
-    mp, sp, _ = _stationary(plant, target)
     spread = np.atleast_2d(np.cov(z, rowvar=False))
-    w = _normalised(_log_normal(z, mp, sp) - _log_normal(z, z.mean(axis=0), spread))
+    log_b = _log_normal(z, z.mean(axis=0), spread)
+    mp, sp, _ = _stationary(plant, target)
+    w = _normalised(_log_normal(z, *_stationary(logged, target)[:2]) - log_b)
     h = _RelativeValue.of(plant, plan, cost)
     predicted = xs @ plant.a.T + u @ plant.b.T + plant.offset
     g = cost.mean(mp, sp) + h(xn) - h(predicted) - float(np.trace(h.p @ plant.noise))
     corrected = float(np.mean(w * g))
     half, dof = _batch_half_width(w * (g - corrected))
     if method == "mis":
+        w = _normalised(_log_normal(z, mp, sp) - log_b)
         return float(np.mean(w * cost(z))), half, _effective(w), dof, corrected
     return corrected, half, _effective(w), dof, None
 
@@ -1636,8 +1667,9 @@ def evaluate_plan(
     ``"fqe"``, of the relative value for ``"dr"``, and of the smoothing correction. ``logger`` is
     the policy that logged, fitted by :func:`fit_logger` when omitted. For ``"mis"`` the model is
     the weights' numerator, the plan's stationary law, so its error moves the estimate to first
-    order; the interval carries it, as the module says. ``"dr"``'s error is the product of the
-    weights' and the model's, and ``"fqe"`` reads the model only for the smoothing correction.
+    order; the interval carries it, as the module says. ``"dr"`` weighs toward the plan's law under
+    the plant fitted to the logs, so its error is the product of that fit's and the model's, and
+    ``"fqe"`` reads the model only for the smoothing correction.
 
     For a plan without a density, ``smoothing`` is the ``tau`` the weights use, by default the one
     that minimises the predicted mean squared error of the reported value, and ``model_error`` the
@@ -1651,11 +1683,14 @@ def evaluate_plan(
     half-width (:attr:`PlanEvaluation.normalisation_bias`).
 
     Raises:
-        InfeasibleEvaluation: when the certificate refuses; it carries the certificate.
+        InfeasibleEvaluation: when the certificate refuses, or for ``"mis"`` and ``"dr"`` when the
+            plan's loop under the plant fitted to the logs has spectral radius at least one; it
+            carries the certificate, refused.
         KeyError: on logs without ``"x"`` or ``"u"``.
         ValueError: on logs of the wrong shape, non-finite logs, a negative ``model_error``, a
             cost with a target per state for a stationary method or with other than ``H + 1`` of
-            them for ``"pdis"``, and every error :func:`certify_evaluation` raises.
+            them for ``"pdis"``, for ``"mis"`` and ``"dr"`` no more transitions than ``n + m + 1``,
+            and every error :func:`certify_evaluation` raises.
     """
     return _warn_of_bias(
         _evaluate_plan(
@@ -1744,8 +1779,20 @@ def _evaluate_plan(
             weighted, half = _fqe_estimate(x, u, held, stage)
             effective = None
         else:
+            target = _smoothed(held, tau) if tau > 0.0 else held
+            logged = _logged_plant(x, u)
+            radius = _spectral_radius(logged, target)
+            if radius >= 1.0:
+                raise InfeasibleEvaluation(
+                    replace(
+                        certificate,
+                        certified=False,
+                        reason=f"the plan's closed loop under the plant fitted to the logs has "
+                        f"spectral radius {radius:.4g}: the logs give it no average cost",
+                    )
+                )
             weighted, half, effective, dof, corrected = _stationary_estimate(
-                x, u, plant, held, _smoothed(held, tau) if tau > 0.0 else held, stage, method
+                x, u, plant, logged, held, target, stage, method
             )
     value = weighted - correction
     # A cost that is not positive semidefinite can have smoothing lower it, and the correction is
