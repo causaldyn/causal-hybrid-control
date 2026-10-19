@@ -68,6 +68,9 @@ still change).
 - **`delay_design_loss` returns just above the stabilising floor.** Within about 2e-12 of the
   floor its root search raised `ValueError`, because the bracket stopped 1e-12 short of the root
   near π/2; it now reads the loss, 1 to rounding.
+- **`multivariate_action_floor` refuses a curvature that is not positive definite.** With
+  `M = B'QB + R` indefinite there is no optimal action and the trace bound does not hold, yet it
+  returned a floor (−9.0 at `M = −1`); it now raises `ValueError`.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They

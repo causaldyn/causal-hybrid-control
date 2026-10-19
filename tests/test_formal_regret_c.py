@@ -538,12 +538,9 @@ def test_multivariate_action_floor_is_local_as_its_docstring_says() -> None:
     assert risk < out.floor
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="an indefinite action weight (M = B'QB + R = -1) returns floor -9.0 instead of raising",
-)
 def test_multivariate_action_floor_refuses_an_indefinite_curvature() -> None:
-    """multivariate_van_trees.v (B): the trace bound needs a PSD curvature M."""
+    """multivariate_van_trees.v (B): the trace bound needs a PSD curvature M. M = B'QB + R = -1
+    returned a floor of -9.0."""
     with pytest.raises(ValueError, match="definite"):
         multivariate_action_floor(
             effect=np.array([[1.0]]), state_weight=np.eye(1), action_weight=np.array([[-2.0]]),

@@ -515,7 +515,8 @@ def multivariate_action_floor(
     ``p*q`` unit bumps, i.e. ``theta = vec(B)``, and a restricted family (two decoupled channels
     with known zero cross-effects, say) is supplied by giving its own basis. ``information`` is
     ``G`` in that basis and must be positive definite -- a singular ``G`` is an unidentified
-    direction, for which the floor is not a number.
+    direction, for which the floor is not a number. ``M`` must be positive definite too: the trace
+    step needs a PSD weight, and an indefinite ``M`` has no optimal action.
     """
     effect = np.asarray(effect, dtype=np.float64)
     state_weight = np.asarray(state_weight, dtype=np.float64)
@@ -563,6 +564,13 @@ def multivariate_action_floor(
         information=information,
         directions=basis,
     )
+    weight = effect.T @ state_weight @ effect + action_weight
+    lowest = float(np.linalg.eigvalsh(0.5 * (weight + weight.T)).min())
+    if lowest <= 0.0:
+        raise ValueError(
+            "the regret's curvature M = B'QB + R must be positive definite: otherwise u* is no "
+            f"minimiser and the trace bound does not hold (smallest eigenvalue {lowest:.3e})"
+        )
     action, curvature = _action_and_curvature(effect, state_weight, action_weight, target)
     sensitivity = _action_sensitivity(effect, state_weight, action_weight, target, basis)
     spectrum, rotation = np.linalg.eigh(0.5 * (information + information.T))
