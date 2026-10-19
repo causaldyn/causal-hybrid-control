@@ -32,9 +32,12 @@ bound ``Gamma`` from below with a trial in the same way).
 
 HONEST SCOPE:
 
-* The noise is one scale, independent across periods and tests. A gap read through a synthetic
-  control or a regression carries an error common to its periods, which this does not model; the
-  intervals are then too narrow.
+* The noise is one scale, independent across tests, and by default across periods. A geo gap's
+  noise persists from week to week, and read as independent it makes the intervals too narrow and
+  the check reject too often: at an AR(1) coefficient of 0.8 the check rejected the true channel in
+  30% of 200 worlds at 5%. ``serial="ar1"`` reads each test's noise as an AR(1) instead, and
+  rejected 4.5% there. A gap read through a synthetic control or a regression carries an error
+  common to its periods, which neither models.
 * The groups spend alike on every other channel and answer alike, so a group's spend and outcome
   divided by its share of the market are the market's (Heusch's scaling).
 * The check's ``F`` is the region the intervals are profiles of: exact for a model linear in its
@@ -49,6 +52,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -85,6 +89,9 @@ _EVALUATIONS, _CONTINUATIONS = 2000, 5  # a solve's budget, and how often it may
 # a point cheaper than the fit by less than this share of the cutoff moves no interval's end
 # visibly, and is how a fit reads a least cost that lies on the way to a bound
 _SLACK = 1e-6
+# serial="ar1": the coefficient is re-read from the residuals and the gaps refitted until it moves
+# less than this, at most this many rounds; and kept this far inside 1, where the transform holds
+_AR_TOLERANCE, _AR_ROUNDS, _AR_BOUND = 1e-4, 20, 0.99
 
 
 def _series(value: ArrayLike, name: str) -> _Array:
@@ -184,6 +191,9 @@ class LiftFit:
     # identified; past it a plan reads the family's shape
     tested_adstock: tuple[float, float]
     tests: tuple[LiftTest, ...] = field(repr=False)  # the tests fitted, which a check reads again
+    # the AR(1) coefficient of each test's noise the fit read with serial="ar1", estimated; 0 with
+    # serial="independent". noise_sd is then its innovations' sd
+    ar_coefficient: float = 0.0
 
     def interval(self, parameter: str) -> tuple[float, float]:
         """``parameter``'s interval, by its name in :attr:`parameters`."""
@@ -262,15 +272,26 @@ def _shape_of(
     logged: tuple[bool, ...],
     readouts: Readouts,
     coefficient: int,
+    rho: Array,
 ) -> Array:
-    """The gaps a coefficient of 1 predicts, stacked over the tests."""
+    """The gaps a coefficient of 1 predicts, each test's whitened at ``rho``, stacked."""
     channel = _channel(z.at[coefficient].set(1.0), static, treedef, logged)
     return jnp.concatenate(
         [
-            (channel(treated) - channel(control))[treated.shape[0] - gap.shape[0] :]
+            _whitened((channel(treated) - channel(control))[treated.shape[0] - gap.shape[0] :], rho)
             for treated, control, gap in readouts
         ]
     )
+
+
+def _whitened(segment: Array, rho: Array) -> Array:
+    """One test's periods through the Prais-Winsten transform: an AR(1) of ``rho`` to its
+    innovations, the first period scaled to their variance. The identity at ``rho = 0``."""
+    return jnp.concatenate([jnp.sqrt(1.0 - rho**2) * segment[:1], segment[1:] - rho * segment[:-1]])
+
+
+def _gaps(readouts: Readouts, rho: Array) -> Array:
+    return jnp.concatenate([_whitened(gap, rho) for *_, gap in readouts])
 
 
 def _projected(shape: Array, gap: Array) -> Array:
@@ -287,11 +308,13 @@ def _residual_of(
     logged: tuple[bool, ...],
     readouts: Readouts,
     coefficient: int,
+    rho: Array,
     project: bool,
 ) -> Array:
-    """The gaps less the channel's, the coefficient at its least-squares value when ``project``."""
-    shape = _shape_of(z, static, treedef, logged, readouts, coefficient)
-    gap = jnp.concatenate([gap for *_, gap in readouts])
+    """The gaps less the channel's, whitened at ``rho``, the coefficient at its least-squares value
+    when ``project``."""
+    shape = _shape_of(z, static, treedef, logged, readouts, coefficient, rho)
+    gap = _gaps(readouts, rho)
     size = _projected(shape, gap) if project else z[coefficient]
     return gap - size * shape
 
@@ -303,9 +326,10 @@ def _coefficient_of(
     logged: tuple[bool, ...],
     readouts: Readouts,
     coefficient: int,
+    rho: Array,
 ) -> Array:
-    shape = _shape_of(z, static, treedef, logged, readouts, coefficient)
-    return _projected(shape, jnp.concatenate([gap for *_, gap in readouts]))
+    shape = _shape_of(z, static, treedef, logged, readouts, coefficient, rho)
+    return _projected(shape, _gaps(readouts, rho))
 
 
 _residual = eqx.filter_jit(_residual_of)
@@ -321,17 +345,27 @@ class _Problem:
     ridge, where scale and coefficient grow together, is no ridge in what is left.
     """
 
-    def __init__(self, layout: _Layout, readouts: Readouts, origin: _Array) -> None:
+    def __init__(
+        self, layout: _Layout, readouts: Readouts, origin: _Array, rho: float = 0.0
+    ) -> None:
         self.layout = layout
         self.readouts = readouts
+        self.rho = jnp.asarray(rho, dtype=readouts[0][2].dtype)
         self.tolerance = 1e3 * float(jnp.finfo(readouts[0][2].dtype).eps)
         logged = np.array(layout.logged)
         self.lower = np.where(logged, np.maximum(origin - 2.0 * _REACH, layout.lower), layout.lower)
         self.upper = np.where(logged, np.minimum(origin + 2.0 * _REACH, layout.upper), layout.upper)
 
-    def _arguments(self) -> tuple[Channel, PyTreeDef, tuple[bool, ...], Readouts, int]:
+    def _arguments(self) -> tuple[Channel, PyTreeDef, tuple[bool, ...], Readouts, int, Array]:
         layout = self.layout
-        return layout.static, layout.treedef, layout.logged, self.readouts, layout.coefficient
+        return (
+            layout.static,
+            layout.treedef,
+            layout.logged,
+            self.readouts,
+            layout.coefficient,
+            self.rho,
+        )
 
     def residual(self, z: _Array, project: bool = False) -> _Array:
         value = _residual(jnp.asarray(z), *self._arguments(), project)
@@ -435,7 +469,13 @@ def _end(
     return optimize.brentq(excess, inside, value, xtol=tolerance, rtol=tolerance), None
 
 
-def fit_lift(tests: Sequence[LiftTest], channel: Channel, *, level: float = 0.95) -> LiftFit:
+def fit_lift(
+    tests: Sequence[LiftTest],
+    channel: Channel,
+    *,
+    level: float = 0.95,
+    serial: Literal["independent", "ar1"] = "independent",
+) -> LiftFit:
     """Fit ``channel`` to the tests' gaps by least squares, each parameter with a profile-likelihood
     interval. *Experimental.*
 
@@ -447,6 +487,22 @@ def fit_lift(tests: Sequence[LiftTest], channel: Channel, *, level: float = 0.95
     so wherever the rest moves it takes its least-squares value there (variable projection, Golub
     and Pereyra 1973), and the template's own is ignored. The periods of every test are stacked,
     with one noise variance, estimated.
+
+    ``serial`` is how a test's noise runs over its periods. ``"independent"``, the default, reads
+    each period's alone. A geo gap's noise persists from week to week, and read as independent it
+    makes every interval too narrow: on go-dark tests whose noise was an AR(1) of coefficient 0.8,
+    the coefficient's 95% interval held the truth in 88.5% of 200 worlds, and
+    :func:`check_observational` rejected the true channel in 30% at 5%. ``"ar1"`` reads each test's
+    noise as ``nu_t = rho nu_{t-1} + e_t``, ``e`` i.i.d. and one ``rho`` for every test, and fits
+    the gaps through the Prais-Winsten transform, which at the true ``rho`` is the independent
+    problem above (generalised least squares; Prais and Winsten 1954). ``rho`` is the least-squares
+    AR(1) coefficient of the residuals, each test's periods on their previous one, read again after
+    each refit until it settles (iterated Cochrane-Orcutt); it costs a degree of freedom, and the
+    intervals and the check take it as known. On those worlds it read 0.78 at 0.8 (sd 0.08), the
+    interval held the truth in 95.5% and the check rejected 4.5%; at 0.5, 98.5% and 5.0%; on
+    independent noise, 96.5% and 6.0%. Each test needs a run of periods for this to read anything:
+    those tests had 16. :attr:`LiftFit.ar_coefficient` is the estimate and :attr:`LiftFit.noise_sd`
+    the innovations'.
 
     Each interval holds the values whose profile, the least cost with that value held, lies within
     ``s^2 F_{1, n - p}(level)`` of the least cost, ``s^2`` the noise variance over ``n - p`` degrees
@@ -465,7 +521,8 @@ def fit_lift(tests: Sequence[LiftTest], channel: Channel, *, level: float = 0.95
 
     Raises:
         TypeError: when ``channel`` is not a :class:`chc.response.Channel`.
-        ValueError: on no tests, ``level`` outside ``(0, 1)``, a test with fewer periods of spend
+        ValueError: on no tests, ``level`` outside ``(0, 1)``, ``serial`` neither
+            ``"independent"`` nor ``"ar1"``, a test with fewer periods of spend
             before its readout than the kernel reads, fewer periods than parameters, a template
             whose retention, scale or shape is not positive, or a gap whose slope in a parameter
             is not finite.
@@ -481,6 +538,8 @@ def fit_lift(tests: Sequence[LiftTest], channel: Channel, *, level: float = 0.95
         raise ValueError("fit_lift needs at least one test")
     if not 0.0 < level < 1.0:
         raise ValueError(f"level must lie in (0, 1), got {level}")
+    if serial not in ("independent", "ar1"):
+        raise ValueError(f"serial must be 'independent' or 'ar1', got {serial!r}")
     reach = channel.kernel.length - 1
     for position, test in enumerate(tests):
         if test.treated.history < reach:
@@ -501,12 +560,24 @@ def fit_lift(tests: Sequence[LiftTest], channel: Channel, *, level: float = 0.95
     start = np.clip(layout.coordinates(channel), layout.lower, layout.upper)
     problem = _Problem(layout, readouts, start)
     periods = sum(test.treated.outcome.size for test in tests)
-    dof = periods - len(layout.names)
+    dof = periods - len(layout.names) - (serial == "ar1")
     if dof < 1:
         raise ValueError(
             f"{periods} periods cannot fit {len(layout.names)} parameters and a noise variance"
+            + (" and an AR(1) coefficient" if serial == "ar1" else "")
         )
     best = problem.solve(start)
+    rho = 0.0
+    if serial == "ar1":
+        for _ in range(_AR_ROUNDS):
+            estimate = _ar_coefficient(layout.channel(best), tests)
+            if abs(estimate - rho) <= _AR_TOLERANCE:
+                break
+            rho = estimate
+            problem = _Problem(layout, readouts, start, rho)
+            # the last fit can sit on a ridge, a line's, that is a least cost of the independent
+            # gaps and not of the whitened ones, which a solve from it never leaves
+            best = min(problem.solve(start), problem.solve(best), key=problem.cost)
     for _ in range(8):
         variance = problem.cost(best) / dof
         cutoff = variance * float(stats.f.ppf(level, 1, dof))
@@ -541,6 +612,7 @@ def fit_lift(tests: Sequence[LiftTest], channel: Channel, *, level: float = 0.95
         dof=dof,
         tested_adstock=_tested_adstock(fitted, tests),
         tests=tests,
+        ar_coefficient=rho,
     )
 
 
@@ -560,6 +632,20 @@ def _steps(problem: _Problem, best: _Array, variance: float) -> _Array:
     fallback = np.where(np.isfinite(ceiling), 0.1 * ceiling, 0.1 * np.maximum(np.abs(best), 1.0))
     usable = np.isfinite(errors) & (errors > 0.0)
     return np.where(usable, np.minimum(errors, ceiling), fallback)
+
+
+def _ar_coefficient(channel: Channel, tests: tuple[LiftTest, ...]) -> float:
+    """The least-squares AR(1) coefficient of ``channel``'s residuals, each test's periods on their
+    previous one, pooled over the tests; kept within ``_AR_BOUND`` of 0."""
+    residuals = [
+        test.difference - segment
+        for test, segment in zip(tests, _predicted_by_test(channel, tests), strict=True)
+    ]
+    cross = sum(float(r[1:] @ r[:-1]) for r in residuals)
+    lagged = sum(float(r[:-1] @ r[:-1]) for r in residuals)
+    if not lagged > 0.0:
+        return 0.0
+    return min(max(cross / lagged, -_AR_BOUND), _AR_BOUND)
 
 
 def _tested_adstock(channel: Channel, tests: tuple[LiftTest, ...]) -> tuple[float, float]:
@@ -621,7 +707,9 @@ def check_observational(fit: LiftFit, observed: Channel) -> ObservationalCheck:
     *Experimental.*
 
     Two readings of the tests' gaps ``d``, at the fit's level and with its noise variance ``s^2``
-    over ``n - p`` degrees of freedom:
+    over ``n - p`` degrees of freedom; of a fit read with ``serial="ar1"``, the gaps, and the ones
+    ``observed`` predicts, through the fit's Prais-Winsten transform, at its
+    :attr:`LiftFit.ar_coefficient`:
 
     * **An ``F`` test** of ``observed`` as a point of the fit's model: the least squares of the gaps
       it predicts over the fit's, per parameter, over ``s^2``, against ``F_{p, n-p}`` (Bates and
@@ -658,11 +746,12 @@ def check_observational(fit: LiftFit, observed: Channel) -> ObservationalCheck:
             "the observed channel is not of the fit's families, kernel length and form; the check "
             "tests it as a point of the fit's model, so fit the tests from its template"
         )
-    gap = np.concatenate([test.difference for test in fit.tests])
-    predicted = _predicted(observed, fit.tests)
+    rho = fit.ar_coefficient
+    gap = np.concatenate([_whitened_numpy(test.difference, rho) for test in fit.tests])
+    predicted = _predicted(observed, fit.tests, rho)
     if not np.all(np.isfinite(predicted)):
         raise ValueError("the observed channel predicts a gap that is not finite on the tests")
-    least = float(np.sum((gap - _predicted(fit.channel, fit.tests)) ** 2))
+    least = float(np.sum((gap - _predicted(fit.channel, fit.tests, rho)) ** 2))
     cost = float(np.sum((gap - predicted) ** 2))
     parameter_count, dof = len(fit.parameters), fit.dof
     variance = least / dof
@@ -693,15 +782,25 @@ def check_observational(fit: LiftFit, observed: Channel) -> ObservationalCheck:
     )
 
 
-def _predicted(channel: Channel, tests: tuple[LiftTest, ...]) -> _Array:
-    """The gaps ``channel`` predicts, stacked over the tests, at the market's scale."""
+def _predicted_by_test(channel: Channel, tests: tuple[LiftTest, ...]) -> list[_Array]:
+    """The gaps ``channel`` predicts, test by test, at the market's scale."""
+    return [
+        np.asarray(
+            channel(test.treated.spend / test.treated.share)
+            - channel(test.control.spend / test.control.share),
+            dtype=np.float64,
+        )[test.treated.history :]
+        for test in tests
+    ]
+
+
+def _predicted(channel: Channel, tests: tuple[LiftTest, ...], rho: float = 0.0) -> _Array:
+    """The gaps ``channel`` predicts, each test's whitened at ``rho``, stacked over the tests."""
     return np.concatenate(
-        [
-            np.asarray(
-                channel(test.treated.spend / test.treated.share)
-                - channel(test.control.spend / test.control.share),
-                dtype=np.float64,
-            )[test.treated.history :]
-            for test in tests
-        ]
+        [_whitened_numpy(segment, rho) for segment in _predicted_by_test(channel, tests)]
     )
+
+
+def _whitened_numpy(segment: _Array, rho: float) -> _Array:
+    """:func:`_whitened` in NumPy, for the check's arithmetic."""
+    return np.concatenate([math.sqrt(1.0 - rho**2) * segment[:1], segment[1:] - rho * segment[:-1]])

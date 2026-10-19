@@ -815,6 +815,22 @@ def test_dr_removes_the_first_order_error_of_a_misspecified_model() -> None:
     assert abs(dr) < 0.25 * direct
 
 
+def test_the_mis_interval_does_not_carry_the_models_error() -> None:
+    """The documented premise: "mis" weighs the logs toward the model's stationary law, so with
+    a[0, 0] off by 0.1 its interval excluded the truth on 40 of 40 logs; "dr"'s held it on 40."""
+    dithered = AffinePolicy(PLAN.gain, PLAN.offset, np.array([[0.04]]))
+    truth = _stationary_value(MARKET, dithered)
+    wrong = LinearGaussianPlant(
+        MARKET.a + np.array([[0.1, 0.0], [0.0, 0.0]]), MARKET.b, MARKET.offset, MARKET.noise
+    )
+    x, u = _stationary_logs(MARKET, LOGGER, 20_000, 1, seed=100)
+    logs = {"x": x[0], "u": u[0]}
+    lo, hi = evaluate_plan(logs, dithered, "mis", plant=wrong, cost=COST).interval
+    assert not lo <= truth <= hi
+    lo, hi = evaluate_plan(logs, dithered, "dr", plant=wrong, cost=COST).interval
+    assert lo <= truth <= hi
+
+
 def test_a_randomised_plan_is_evaluated_as_it_is() -> None:
     dithered = AffinePolicy(PLAN.gain, PLAN.offset, np.array([[0.04]]))
     x, u = _stationary_logs(MARKET, LOGGER, 4000, 1, seed=9)

@@ -6,6 +6,7 @@ import jax
 import numpy as np
 import pytest
 
+from chc.benchmark import DelayOscillationTask
 from chc.irf import (
     _irf_from_rows,
     _projection_design,
@@ -185,6 +186,28 @@ def test_lag_augmentation_leaves_the_estimand_alone() -> None:
     assert np.max(np.abs(plain - augmented)) < 0.05  # own-lags buy inference, not a new estimand
 
 
+def test_a_persistent_treatment_needs_its_own_lag_or_the_pipeline_reads_as_the_effect() -> None:
+    """The documented premise: ``x_{t+1} = 0.5 x_t + u_{t-4} + e`` under an AR(0.9) treatment.
+    Without ``u_{t-1}`` the projections before the dead time read 0.27..1.27 where the effect is 0;
+    with it they are the total effect of setting ``u_t``, ``sum_j 0.9^j 0.5^(h-5-j)`` from h = 5."""
+    rng = np.random.default_rng(0)
+    n, u, x = 4000, np.zeros(4000), np.zeros(4000)
+    shocks = rng.standard_normal((n, 2))
+    for t in range(1, n):
+        u[t] = 0.9 * u[t - 1] + shocks[t, 0]
+    for t in range(4, n - 1):
+        x[t + 1] = 0.5 * x[t] + u[t - 4] + shocks[t, 1]
+    data = {"x": x, "u": u}
+    total = [sum(0.9**j * 0.5 ** (h - 5 - j) for j in range(h - 4)) for h in range(5, 9)]
+
+    plain = np.asarray(local_projection_irf(data, 8))
+    lagged = np.asarray(local_projection_irf(data, 8, lags=1))
+    assert np.all(plain[1:5] > 0.2)  # the pipeline read as an effect that has not arrived
+    # sd of each coefficient over seeds is 0.01-0.03
+    np.testing.assert_allclose(lagged[1:5], 0.0, atol=0.08)
+    np.testing.assert_allclose(lagged[5:], total, atol=0.1)
+
+
 def test_the_bootstrap_refits_the_estimator_it_reports() -> None:
     """The block bootstrap must resample the same regression, or its width prices nothing."""
     data = _delayed_arx(1200, seed=3)
@@ -212,6 +235,22 @@ def test_the_interval_covers_the_true_lag_across_seeds() -> None:
     ]
     covered = sum(est.lo <= _LAG <= est.hi for est in intervals)
     assert covered >= 17  # nominal 0.95; measured 1.00 over 40 replications
+
+
+def test_the_interval_carries_the_peaks_spread_not_its_bias_on_an_off_grid_delay() -> None:
+    """The documented premise: a delay of 3.33 steps is read at the bin of 3, and a sharp peak never
+    leaves it, so the interval is the point 0.9 beside the true 1.0, not around it."""
+    task = DelayOscillationTask()
+    coarse, observed = task._log(0)
+    est = delay_estimate(
+        {"x": np.diff(observed), "u": coarse[:-1]},
+        horizon=12,
+        dt=task.dt * task.observe_every,
+        adjust_for=(),
+        n_resamples=100,
+    )
+    assert est.lo == est.hi == pytest.approx(0.9, abs=1e-12)
+    assert not est.lo <= task.tau <= est.hi
 
 
 def test_a_flat_irf_widens_the_interval_instead_of_inventing_a_mode() -> None:

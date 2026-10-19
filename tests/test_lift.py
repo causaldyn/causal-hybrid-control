@@ -37,8 +37,10 @@ def _world(
     truth: Channel | None = None,
     levels: tuple[float, ...] = LEVELS,
     share: float = 1.0,
+    persistence: float = 0.0,
 ) -> tuple[LiftTest, ...]:
-    """Go-dark tests on a random spend path, read over 4 weeks before, 4 dark and 8 after."""
+    """Go-dark tests on a random spend path, read over 4 weeks before, 4 dark and 8 after; each
+    test's noise an AR(1) of coefficient ``persistence``, of the same marginal sd."""
     truth = truth or _channel(*TRUE.values())
     rng = np.random.default_rng(seed)
     spend = np.exp(np.log(75.0) + 0.35 * rng.standard_normal(156))
@@ -50,6 +52,8 @@ def _world(
         dark[start : start + 4] = 0.0
         window = slice(start - 4, start + 12)
         noisy = rng.normal(0.0, noise / 2.0, 16)
+        for t in range(1, 16):
+            noisy[t] = persistence * noisy[t - 1] + math.sqrt(1.0 - persistence**2) * noisy[t]
         tests.append(
             LiftTest(
                 treated=GeoArm(
@@ -245,6 +249,8 @@ def test_what_cannot_be_fitted_is_refused() -> None:
     )
     with pytest.raises(ValueError, match="cannot fit 3 parameters"):
         fit_lift((few,), START)
+    with pytest.raises(ValueError, match="serial"):
+        fit_lift(tests, START, serial="ar2")  # type: ignore[arg-type]
 
 
 def _oracle_gaps(
@@ -384,3 +390,73 @@ def test_a_channel_cheaper_than_the_fit_says_the_fit_is_not_the_least(fit) -> No
         )
     with pytest.raises(ValueError, match="no noise"):
         check_observational(dataclasses.replace(fit, tests=tuple(exact)), fit.channel)
+
+
+def _whitened(segment: np.ndarray, rho: float) -> np.ndarray:
+    return np.concatenate([math.sqrt(1.0 - rho**2) * segment[:1], segment[1:] - rho * segment[:-1]])
+
+
+@pytest.fixture(scope="module")
+def persistent():
+    return fit_lift(_world(0, persistence=0.8), START, serial="ar1")
+
+
+def test_serial_ar1_reads_its_coefficient_from_the_fit_s_own_residuals(persistent) -> None:
+    tests = _world(0, persistence=0.8)
+    residuals = [
+        test.difference - segment
+        for test, segment in zip(
+            tests, np.split(_oracle_gaps(tests, *persistent.estimate), len(tests)), strict=True
+        )
+    ]
+    rho = sum(r[1:] @ r[:-1] for r in residuals) / sum(r[:-1] @ r[:-1] for r in residuals)
+    assert 0.5 < persistent.ar_coefficient < 0.99
+    assert persistent.ar_coefficient == pytest.approx(rho, rel=0.0, abs=2e-4)
+    assert persistent.dof == 4 * 16 - 3 - 1
+    whitened = np.concatenate([_whitened(r, persistent.ar_coefficient) for r in residuals])
+    assert persistent.noise_sd**2 == pytest.approx(
+        whitened @ whitened / persistent.dof, rel=1e-8, abs=0.0
+    )
+
+
+def test_the_check_reads_a_persistent_fit_s_gaps_whitened(persistent) -> None:
+    tests = _world(0, persistence=0.8)
+    rho, dof = persistent.ar_coefficient, persistent.dof
+    observed = (0.35, 180.0, 900.0)
+    check = check_observational(persistent, _channel(*observed))
+
+    def stacked(gaps: np.ndarray) -> np.ndarray:
+        return np.concatenate([_whitened(g, rho) for g in np.split(gaps, len(tests))])
+
+    gap = stacked(np.concatenate([test.difference for test in tests]))
+    predicted = stacked(_oracle_gaps(tests, *observed))
+    least = stacked(_oracle_gaps(tests, *persistent.estimate))
+    variance = np.sum((gap - least) ** 2) / dof
+    statistic = (np.sum((gap - predicted) ** 2) - variance * dof) / 3 / variance
+    factor = (predicted @ gap) / (predicted @ predicted)
+    assert check.dof == (3, dof)
+    assert check.statistic == pytest.approx(statistic, rel=1e-6, abs=0.0)
+    assert check.factor == pytest.approx(factor, rel=1e-10, abs=0.0)
+
+
+def test_serial_independent_is_the_default_and_reads_no_coefficient(fit) -> None:
+    again = fit_lift(_world(0), START, serial="independent")
+    assert again.ar_coefficient == 0.0
+    np.testing.assert_array_equal(again.estimate, fit.estimate)
+    np.testing.assert_array_equal(again.lower, fit.lower)
+    assert again.dof == fit.dof
+
+
+def test_serial_ar1_keeps_the_check_s_level_where_the_noise_persists() -> None:
+    """At an AR(1) coefficient of 0.8 the independent reading inflates the true channel's ``F``,
+    whose mean under the null is about 1.03; over these eight worlds its mean was 2.50 read as
+    independent and 0.97 with ``serial="ar1"``. The mean of eight draws of ``F_{3, 60}`` has a sd
+    of 0.31, so 2 is three sds above the null's mean."""
+    truth = _channel(*TRUE.values())
+    independent, ar1 = [], []
+    for seed in range(8):
+        tests = _world(seed, persistence=0.8)
+        independent.append(check_observational(fit_lift(tests, START), truth).statistic)
+        ar1.append(check_observational(fit_lift(tests, START, serial="ar1"), truth).statistic)
+    assert np.mean(independent) > 2.0
+    assert np.mean(ar1) < 2.0

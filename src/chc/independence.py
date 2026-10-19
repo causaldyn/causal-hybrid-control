@@ -104,7 +104,8 @@ class GcmTest:
     See :func:`gcm_test`.
     """
 
-    # the largest pair's |sum of products| over the root sum of its clusters' squared sums
+    # the largest pair's |sum of products| over the root sum of its clusters' squared sums, times
+    # the in-sample residuals' shrink (see gcm_test)
     statistic: float
     p_value: float  # from sign changes over the clusters; nan when no pair is left to test
     # (p, q): each pair's residual correlation, which is the partial correlation when the regression
@@ -147,6 +148,16 @@ def gcm_test(
     ``y``, as the monomials up to ``degree`` can: otherwise each pair's sum drifts from zero by the
     product of the two misfits, a drift that grows with the rows (Shah and Peters 2020), and on
     enough rows the test rejects a pair that is independent.
+
+    The residuals are in-sample, so their clusters' sums are smaller than the noise's: with ``H``
+    the regression's hat matrix of rank ``r`` over ``n`` rows, independent rows of one variance
+    leave the flips an expected ``n - 2 r + sum_c |H_cc|_F^2`` where the total's variance is
+    ``n - r``. The statistic is multiplied by the square root of their ratio. Without it, at the
+    least rows the test accepts, twice the terms, it rejected 12-14% at 5% (400 trials, one and
+    three columns of ``z`` at degree 2, the noise of one variance or not), and 8.5-11% at three
+    times the terms. With it, over two to ten times the terms, it rejected at most 5.2% with one
+    variance, 6.8% without, and 5.0% in clusters of four; at the fewest rows on one column of ``z``
+    it is conservative, 0% at six rows.
 
     Why neither cross-fitting nor clusters by unit, as a panel usually has. On one geo or five, a
     fold's regression differs from the rest's and five units are too few clusters: over 500 panels
@@ -230,7 +241,8 @@ def gcm_test(
         return GcmTest(math.nan, math.nan, correlation, empty, blocks)
 
     sums, scale = sums[:, tested], scale[tested]
-    statistic = float(np.max(np.abs(sums.sum(axis=0)) / scale))
+    shrink = _in_sample_shrink(design, labels)
+    statistic = shrink * float(np.max(np.abs(sums.sum(axis=0)) / scale))
     rng = np.random.default_rng(seed)
     flipped = np.empty(draws)
     for start in range(0, draws, _DRAW_CHUNK):
@@ -241,7 +253,7 @@ def gcm_test(
     # The spread is centred: the scale above carries the dependence itself once there is any.
     critical = float(np.quantile(flipped, 1.0 - alpha, method="higher"))
     spread = np.sqrt(np.sum((sums - sums.mean(axis=0)) ** 2, axis=0))
-    reach = _reach(critical, blocks)
+    reach = _reach(critical / shrink, blocks) if shrink > 0.0 else math.inf
     detectable = np.full(live.size, np.nan)
     # too few clusters let no dependence reject, however little their sums spread: one cluster's
     # spread is nothing, and inf times nothing is no number
@@ -249,6 +261,25 @@ def gcm_test(
     with np.errstate(divide="ignore", invalid="ignore"):
         detectable = detectable.reshape(live.shape) / np.outer(size_x, size_y)
     return GcmTest(statistic, p_value, correlation, detectable, blocks)
+
+
+def _in_sample_shrink(design: NDArray[np.float64], labels: NDArray[np.intp]) -> float:
+    """The root of the clusters' expected sum of squared sums of in-sample residual products over
+    their total's variance, for independent rows of one variance: ``(n - 2 r + sum_c |H_cc|_F^2) /
+    (n - r)``, ``H = U U'`` the hat matrix of ``design``, ``r`` its rank, ``H_cc`` a cluster's
+    block, whose squared Frobenius norm is ``|U_c' U_c|_F^2``."""
+    rows = design.shape[0]
+    u, singular, _ = np.linalg.svd(design, full_matrices=False)
+    basis = u[:, singular > singular[0] * max(design.shape) * np.finfo(np.float64).eps]
+    rank = basis.shape[1]
+    order = np.argsort(labels, kind="stable")
+    ordered, grouped = basis[order], labels[order]
+    starts = np.flatnonzero(np.concatenate([[True], grouped[1:] != grouped[:-1]]))
+    within = sum(
+        float(np.sum(np.add.reduceat(ordered[:, [a]] * ordered, starts, axis=0) ** 2))
+        for a in range(rank)
+    )
+    return math.sqrt(max(rows - 2 * rank + within, 0.0) / (rows - rank))
 
 
 def _reach(critical: float, clusters: int) -> float:

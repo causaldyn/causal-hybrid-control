@@ -25,10 +25,14 @@ its tail, L3 as the product of three magnitudes. The general walk-sum is Lutkepo
 HONESTY -- what the signs mean. This is regime (b) of the sign-credibility ladder: the sign is
 *estimated conditional on an explicit, untestable causal model*, between SVAR sign-restrictions
 (sign imposed) and LP-IV (sign instrument-identified). Each effect is backdoor-adjusted for the
-target's own state only; that identifies the total effect of an exogenous / randomised lever and of
-direct parents (Jorda conditional exogeneity), but a hidden confounder, a contemporaneous common
-cause, or a discovery error that admits a collider can silently flip a sign -- add the confounder to
-the trajectory and it is picked up, omit it and it stays confounded. LP and a suitably-specified VAR
+target's state at ``t`` and for every series, states and levers, at lags ``1..max_lag``. With no
+contemporaneous links and no parent older than ``max_lag``, that past holds every parent of the
+source, so it blocks every backdoor path, whether or not discovery found the edge; a lever is read
+as set given that past. Adjusted for the target alone, an observed confounder that drives both the
+source and the target flipped the source's sign on 20 of 20 trajectories. A hidden confounder, a
+contemporaneous common cause, or a lever set in feedback on something the series do not hold can
+still silently flip a sign -- add the confounder to the trajectory and it is picked up, omit it and
+it stays confounded. LP and a suitably-specified VAR
 target the *same* population impulse responses (Plagborg-Moller & Wolf 2021); finite-lag
 implementations differ by truncation and finite-sample regularisation, so read horizons well beyond
 ``max_lag`` as increasingly variance-dominated extrapolation. A composed estimator -- no new
@@ -138,7 +142,8 @@ def causal_pathway(
 
     ``series`` is ``(T, d_state)``; ``controls`` an optional ``(T, d_control)`` of levers. Discovers
     the lagged graph, reaches every ancestor of ``target``, estimates each ancestor's signed total
-    dynamic effect over ``horizon`` steps, and returns them ranked by cumulative ``|effect|``.
+    dynamic effect over ``horizon`` steps, adjusted for the target's state and every series' past
+    ``max_lag`` steps, and returns them ranked by cumulative ``|effect|``.
     """
     series = np.asarray(_real_numbers(series, "series"), dtype=float)
     if series.ndim != 2:
@@ -150,17 +155,24 @@ def causal_pathway(
     graph = discover_lagged_parents(series, controls, max_lag=max_lag, alpha=alpha)
     onsets = _ancestor_onsets(graph.edges(), target)
 
-    data: dict[str, Array] = {
-        _name("state", i): jnp.asarray(series[:, i]) for i in range(series.shape[1])
-    }
+    columns = {_name("state", i): series[:, i] for i in range(series.shape[1])}
     if controls is not None:
-        data |= {_name("control", k): jnp.asarray(controls[:, k]) for k in range(controls.shape[1])}
+        columns |= {_name("control", k): controls[:, k] for k in range(controls.shape[1])}
+    # every series at t and at each lag up to max_lag, aligned from t = max_lag
+    total = series.shape[0]
+    data: dict[str, Array] = {name: jnp.asarray(v[max_lag:]) for name, v in columns.items()}
+    past = tuple(f"{name}@{k}" for name in columns for k in range(1, max_lag + 1))
+    data |= {
+        f"{name}@{k}": jnp.asarray(v[max_lag - k : total - k])
+        for name, v in columns.items()
+        for k in range(1, max_lag + 1)
+    }
 
     target_name = _name("state", target)
     found: list[PathwayEdge] = []
     for (kind, index), lag in onsets.items():
         source_name = _name(kind, index)
-        adjust = () if source_name == target_name else (target_name,)
+        adjust = past if source_name == target_name else (target_name, *past)
         irf = np.asarray(
             local_projection_irf(
                 data, horizon, treatment=source_name, outcome=target_name, adjust_for=adjust

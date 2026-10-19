@@ -1,0 +1,36 @@
+/* chc.independence.gcm_test's in-sample shrink: what the clusters' sums of residual products
+   spread when the residuals are fitted in the rows they are tested on.
+
+   e, f independent with i.i.d. rows of variance 1, H the hat matrix of the regression's design of
+   rank r over n rows, M = I - H, the residuals M e and M f, the products p_i = (M e)_i (M f)_i.
+
+   STEP 1  E[(M e)(M e)'] = M M' = M: M is symmetric and idempotent.
+   STEP 2  A cluster's sum S_c = sum_{i in c} p_i has E S_c^2 = sum_{i,j in c} M_ij^2 = |M_cc|_F^2,
+           and sum_c |M_cc|_F^2 = n - 2 r + sum_c |H_cc|_F^2 (the diagonal of H sums to r).
+   STEP 3  The total sum_i p_i has variance |M|_F^2 = n - r.
+   STEP 4  The shrink, sqrt of STEP 2 over STEP 3, at a design of 1, x, x^2 over x = 0..6 and
+           clusters {1,2}, {3,4,5}, {6,7}, exactly; the float is what _in_sample_shrink returns on
+           the same design and labels.
+
+   Run: timeout 120 maxima --very-quiet -Q -b validation/gcm_in_sample_shrink.mac */
+
+display2d : false$
+
+xs : makelist(k, k, 0, 6)$
+n : length(xs)$
+X : apply(matrix, makelist([1, x, x^2], x, xs))$
+H : X . invert(transpose(X) . X) . transpose(X)$
+M : ident(n) - H$
+r : 3$
+clusters : [[1, 2], [3, 4, 5], [6, 7]]$
+frob2(A, rows) := lsum(lsum(A[i, j]^2, j, rows), i, rows)$
+
+print("STEP 1 M M' - M (expect zero matrix):", ratsimp(M . transpose(M) - M))$
+print("STEP 1 trace of H less r (expect 0):", ratsimp(lsum(H[i, i], i, makelist(i, i, 1, n)) - r))$
+within_m : lsum(frob2(M, c), c, clusters)$
+within_h : lsum(frob2(H, c), c, clusters)$
+print("STEP 2 sum_c |M_cc|^2 less n - 2 r + sum_c |H_cc|^2 (expect 0):",
+      ratsimp(within_m - (n - 2 * r + within_h)))$
+print("STEP 3 |M|_F^2 less n - r (expect 0):", ratsimp(frob2(M, makelist(i, i, 1, n)) - (n - r)))$
+shrink : sqrt(ratsimp((n - 2 * r + within_h) / (n - r)))$
+print("STEP 4 shrink, exact:", shrink, " float:", float(shrink))$

@@ -318,6 +318,27 @@ def test_a_candidate_better_by_less_than_the_margin_is_neither_deployed_nor_held
     assert {gate.update({"z": batch})["z"] for _ in range(100)} == {"shadow"}
 
 
+def test_a_contrast_that_turns_is_deployed_on_its_first_half() -> None:
+    """The documented premise: +0.06 for 3000 decisions, then -0.06, deploys before the turn."""
+    pb, pc, batch = 0.5, 0.8, 50  # P(action 1); V_new - V_base = 0.3 (mu1 - mu0)
+    config = GateConfig(delta=0.0, delta_harm=0.0, min_effect=0.03, horizon=6000)
+    plan = ZonePlan(chi2=pc**2 / pb + (1 - pc) ** 2 / (1 - pb) - 1.0, tv=pc - pb)
+    for path in range(5):
+        rng = np.random.default_rng(path)
+        gate = DeploymentGate({"z": plan}, config)
+        for _ in range(3000 // batch):
+            mode = gate.mode("z")
+            p = {"shadow": pb, "experiment": (1 - config.rho) * pb + config.rho * pc}[mode]
+            a = rng.random(batch) < p
+            r = (rng.random(batch) < np.where(a, 0.6, 0.4)).astype(float)
+            logged = ZoneBatch(
+                r, np.where(a, pc, 1 - pc), np.where(a, pb, 1 - pb), np.where(a, p, 1 - p)
+            )
+            if gate.update({"z": logged})["z"] == "deploy":
+                break
+        assert gate.mode("z") == "deployed"  # before the contrast turns to -0.06
+
+
 def test_a_harmful_candidate_is_held_and_retired() -> None:
     harmful = _ones(BATCH, candidate=2.0, baseline=1.0, logged=1.0, reward=0.0)
     gate = DeploymentGate({"z": ZonePlan(0.1, 0.1)}, LONE)

@@ -56,7 +56,15 @@ class PenaltyModel(Protocol):
 
 
 class SupportModel(eqx.Module):
-    """Gaussian support of the offline ``(x, u)`` cloud; scores squared Mahalanobis distance."""
+    """Gaussian support of the offline ``(x, u)`` cloud; scores squared Mahalanobis distance.
+
+    One Gaussian, so the support is one ellipsoid about the log's mean, and the penalty is least
+    there. A log in two clusters, or on any region that is not convex, reads the empty space between
+    them as its centre, and pessimism pulls a plan into it: with the states logged in two clusters
+    at ``-3`` and ``+3`` (sd 0.3), the point midway, 2 from every logged row, scored ``D = 0.000``,
+    below every logged row's own (median 1.48). Score such a log with a :class:`PenaltyModel` that
+    holds its shape, such as the least distance to one of these per cluster.
+    """
 
     mean: Array
     precision: Array  # inverse covariance of concatenated (x, u)

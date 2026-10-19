@@ -1,10 +1,12 @@
 """chc.independence: partial correlation removes a confounded path and stays calibrated on AR; the
 generalised covariance measure holds its level on a logged panel whose units share noise."""
 
+import math
+
 import numpy as np
 import pytest
 
-from chc.independence import _own_units, gcm_test, partial_corr_test
+from chc.independence import _in_sample_shrink, _own_units, gcm_test, partial_corr_test
 
 
 def _ar1(rng: np.random.Generator, n: int, phi: float) -> np.ndarray:
@@ -312,3 +314,27 @@ def test_a_column_of_spread_near_one_is_read_as_given() -> None:
     assert (scaled[:, 1] == np.ldexp(3.0 * y, -2)).all()
     assert (scaled[:, 2] == np.ldexp(1e-8 * z, 27)).all()
     assert (scaled[:, 3] == 1.0).all()
+
+
+def test_gcm_test_keeps_its_level_at_the_fewest_rows_it_accepts() -> None:
+    """Twice the terms, three columns of ``z`` at degree 2: the in-sample residuals' clusters'
+    sums are about half the noise's variance, and the flips, read without the shrink, rejected
+    12.2% of 400 nulls at 5%. The Monte Carlo sd of a 5% size over 400 trials is 0.011."""
+    rng = np.random.default_rng(3002)
+    rejected = 0
+    for trial in range(400):
+        z = rng.standard_normal((20, 3))
+        x = z[:, 0] + rng.standard_normal(20)
+        y = z[:, -1] + rng.standard_normal(20)
+        rejected += gcm_test(x, y, z, draws=399, seed=trial).p_value <= 0.05
+    assert rejected / 400 <= 0.085
+
+
+def test_the_in_sample_shrink_is_maxima_s_exact_ratio() -> None:
+    """validation/gcm_in_sample_shrink.mac: a design of 1, x, x^2 over x = 0..6 in clusters of 2, 3
+    and 2 rows leaves the flips ``(n - 2 r + sum_c |H_cc|^2) / (n - r)`` of the total's variance,
+    exactly ``1037 / 1176``."""
+    x = np.arange(7.0)
+    design = np.column_stack([np.ones(7), x, x**2])
+    shrink = _in_sample_shrink(design, np.array([0, 0, 1, 1, 1, 2, 2]))
+    assert shrink == pytest.approx(math.sqrt(1037 / 1176), rel=1e-14, abs=0.0)

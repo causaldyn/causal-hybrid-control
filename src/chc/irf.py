@@ -88,10 +88,21 @@ def local_projection_irf(
     identified); omit the confounder and it stays confounded. Returns the length ``H + 1`` IRF.
 
     ``lags > 0`` adds ``lags`` own-lags of the outcome and of the treatment to every projection --
-    *lag augmentation* (Montiel Olea & Plagborg-Moller 2021). It leaves the estimand alone and buys
-    inference: without it, a coefficient's confidence interval loses coverage on persistent data
-    and at long horizons, and a plant with a delay is persistent by construction. The default stays
-    ``0`` so existing callers get the estimates they had.
+    *lag augmentation* (Montiel Olea & Plagborg-Moller 2021). It buys inference: without it, a
+    coefficient's confidence interval loses coverage on persistent data and at long horizons, and a
+    plant with a delay is persistent by construction.
+
+    **The premise: ``adjust_for`` and the lags hold every parent of** ``treatment_t`` **that also
+    reaches the outcome.** A persistent treatment's own past is one on a plant with dead time or
+    carryover: ``u_{t-1}`` is still in the pipeline the outcome has not seen, and it moves with
+    ``u_t``. Without its lag the projection reads that pipeline as the effect, and the lags change
+    the estimand, not just its interval. On ``x_{t+1} = 0.5 x_t + u_{t-4} + e`` with an AR(0.9)
+    treatment, ``beta_1..beta_4`` came back 0.27, 0.58, 0.92, 1.27 where the effect is 0, and with
+    ``lags=1`` within 0.01 of 0. With the lags in, ``beta_h`` is the total effect of setting
+    ``u_t``, which counts the treatment's own response to it, since ``u_{t+1}`` follows ``u_t``:
+    1.0, 1.41, 1.51 at ``h = 5, 6, 7``, where an impulse with the later treatment held is 1.0, 0.5,
+    0.25. So on a persistent treatment pass ``lags`` of at least its autoregressive order. The
+    default stays ``0`` so existing callers get the estimates they had.
 
     Raises:
         ValueError: on negative ``lags``, a series too short for the horizon, or a ``treatment``
@@ -107,9 +118,17 @@ def local_projection_irf(
 class DelayEstimate:
     """How long a causal effect takes to arrive, with an interval rather than a bare point.
 
-    ``lag`` is in steps and ``delay`` in the caller's time unit (``lag * dt``); ``lo`` and ``hi``
-    bound the *delay*, not the lag. ``peak_response`` keeps its sign, so an effect that arrives
-    negative is visible as such even though the peak is located on ``|beta|``.
+    ``lag`` is in steps, and ``delay``, ``lo`` and ``hi`` in the caller's time unit (``lag * dt``).
+    ``peak_response`` keeps its sign, so an effect that arrives negative is visible as such even
+    though the peak is located on ``|beta|``.
+
+    ``lo`` and ``hi`` are a bootstrap interval of the peak's location: they carry its sampling
+    spread and not its bias, so they bound the delay only to the resolution of the sampling grid. A
+    delay that falls between two samples is read at a bin -- up to half a step from it when the
+    effect splits across two bins -- or, refined, with :func:`peak_lag`'s bias, and a sharp peak
+    gives ``lo == hi`` beside the delay, not around it. On
+    :class:`chc.benchmark.DelayOscillationTask`'s log, a delay of 3.33 steps, the interval held the
+    true delay on none of 10 seeds: 0.9 of it at the integer peak, 0.94-0.95 refined.
 
     ``censored`` marks a peak sitting on an end of the horizon, where the delay is not identified:
     the true peak may lie anywhere beyond the window, so the number is a bound on the delay and must
@@ -202,15 +221,22 @@ def delay_estimate(
     :class:`chc.delay.DelayedDynamics` carries its delay on the state-feedback path instead, so its
     ``tau`` is a different quantity and this estimate does not identify it.
 
-    Set ``lags > 0`` if you intend to read coefficients off ``irf``; it does not change *this*
-    interval. Lag augmentation fixes the asymptotic variance of a single local-projection
-    coefficient under persistence (Montiel Olea & Plagborg-Moller 2021), and a delayed plant is
-    persistent by construction -- but the peak is a location statistic, invariant to a common
-    rescaling of the IRF, and the block bootstrap below already handles the serial dependence
-    non-parametrically. Measured over 40 replications at ``phi in {0.98, 0.999, 1.0}``, coverage of
-    a nominal 95% interval was 0.95-1.00 with and without augmentation and the widths agreed to 3%.
-    So the default matches :func:`local_projection_irf`, and the option is offered rather than
-    imposed.
+    The peak is the transport lag only under :func:`local_projection_irf`'s premise, and only for a
+    treatment that does not persist. A persistent treatment needs its own lag (``lags``), or the
+    response before the dead time reads its pipeline; and even with it, the total effect of setting
+    it keeps rising past the dead time as the treatment follows itself: an AR(0.9) treatment into a
+    dead time of 5 steps read its largest mean response at 6 steps without ``lags`` and at 7 with
+    ``lags=1``, where the total effect peaks.
+
+    On a treatment that does not persist, set ``lags > 0`` if you intend to read coefficients off
+    ``irf``; it does not change *this* interval. Lag augmentation fixes the asymptotic variance of a
+    single local-projection coefficient under persistence (Montiel Olea & Plagborg-Moller 2021), and
+    a delayed plant is persistent by construction -- but the peak is a location statistic, invariant
+    to a common rescaling of the IRF, and the block bootstrap below already handles the serial
+    dependence non-parametrically. Measured over 40 replications at ``phi in {0.98, 0.999, 1.0}``,
+    coverage of a nominal 95% interval was 0.95-1.00 with and without augmentation and the widths
+    agreed to 3%. So the default matches :func:`local_projection_irf`, and the option is offered
+    rather than imposed.
 
     The interval is a **moving-block** percentile bootstrap over the aligned projection rows, refit
     and re-peaked on every resample, with block length ``lags + horizon + 1``. Blocks, because a

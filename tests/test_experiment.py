@@ -8,6 +8,7 @@ neighbour, ``coupling = I - P``. The scalar decision is the lab's tracking plant
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 
@@ -455,3 +456,28 @@ def test_an_experiment_needs_positive_costs_and_a_prior_its_size():
             DEMO_EXPERIMENT,
             1e-3,
         )
+
+
+def test_the_bayes_action_can_beat_an_experiment_judged_against_acting_on_the_mean():
+    """The documented premise: both arms act on the mean. The Bayes action is the CE one with the
+    action weight raised by (C'QC) o S; on a wide prior it beats the experiment recommended."""
+    decision = ZoneDecision(
+        np.eye(1), np.zeros(1), np.ones(1), np.eye(1), 0.05 * np.eye(1), [-10.0], [10.0]
+    )
+    prior = ChannelPrior(np.ones(1), np.array([[0.6**2]]))
+    experiment = ZoneExperiment(unit_cost=np.array([0.004]), noise_sd=np.ones(1), probe=np.ones(1))
+    design = design_experiment(decision, prior, experiment, 1.0, draws=20_000, seed=0)
+    assert design.verdict == "experiment"
+
+    c, q = decision.coupling, decision.state_weight
+    raised = decision.action_weight + (c.T @ q @ c) * prior.covariance
+    cautious = dataclasses.replace(decision, action_weight=raised).solve(prior.mean)
+    b = 1.0 + 0.6 * np.random.default_rng(1).standard_normal(200_000)
+
+    def regret(u: float) -> float:
+        best = 0.5 * (1.0 - b**2 / (b**2 + 0.05))  # J at the action that knows b
+        return float(np.mean(0.5 * ((b * u - 1.0) ** 2 + 0.05 * u**2) - best))
+
+    # 0.078 against the mean's 0.119; the Monte Carlo sd of each is under 0.001
+    assert regret(float(cautious[0])) < regret(float(decision.solve(prior.mean)[0])) - 0.03
+    assert regret(float(cautious[0])) < design.regret_after + design.spend - 0.01
