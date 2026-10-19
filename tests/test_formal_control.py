@@ -20,6 +20,7 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from scipy import integrate
 from scipy.optimize import linprog, minimize
+from scipy.stats import chi2
 
 from chc import QuadraticCost, causal_plan
 from chc.allocation import decision_weight as allocation_decision_weight
@@ -32,10 +33,13 @@ from chc.barrier import (
     robust_safe_action,
     robust_safety_filter,
 )
+from chc.control import LinearConstraint
 from chc.dynamics import LinearDynamics
 from chc.plan import plan_regret_bound
 from chc.response import Channel, Exponential, GeometricAdstock
 from chc.uncertainty import (
+    _noise_covariances,
+    _noise_tube,
     confounding_robust_closed_loop_bound,
     confounding_robust_inflation,
     confounding_robust_radius,
@@ -93,9 +97,14 @@ FORMAL_LINKS = {
         ),
     },
     "chc.plan.plan_regret_bound": {
-        "cites": ("constrained_plan_regret.mac", "constrained_plan_regret.v"),
+        "cites": (
+            "constrained_plan_regret.mac",
+            "constrained_plan_regret.v",
+            "regret_bound_rows.mac",
+        ),
         "tests": (
             "test_plan_regret_bound_holds_against_the_box_optimum",
+            "test_plan_regret_bound_over_rows_holds_against_their_optimum",
             "test_plan_regret_bound_orders_its_three_numbers",
             "test_plan_regret_bound_vanishes_at_the_box_optimum",
         ),
@@ -109,10 +118,12 @@ FORMAL_LINKS = {
         ),
     },
     "chc.uncertainty._noise_tube": {
-        "cites": ("predictive_tube.mac",),
+        "cites": ("predictive_tube.mac", "var_noise_tube.mac"),
         "tests": (
             "test_noise_tube_on_a_state_matrix_covers_at_its_level",
             "test_noise_tube_on_a_norm_bound_covers_at_least_its_level",
+            "test_noise_tube_under_a_var_noise_is_the_double_sum",
+            "test_noise_tube_under_a_var_noise_on_a_norm_bound_bounds_the_largest_variance",
         ),
     },
     "chc.uncertainty.confounding_robust_closed_loop_bound": {
@@ -596,6 +607,64 @@ def test_noise_tube_on_a_norm_bound_covers_at_least_its_level(persistence) -> No
     sd = math.sqrt(0.95 * 0.05 / 20000)
     assert np.all(coverage >= 0.95 - 4.5 * sd)
     assert coverage[0] == pytest.approx(0.95, rel=0.0, abs=4.5 * sd)
+
+
+VAR_PHI = np.array([[0.7, 0.4], [-0.1, 0.25]])
+
+
+def _var_covariance(phi: np.ndarray, innovation: np.ndarray) -> np.ndarray:
+    """The stationary ``S`` of ``w_{k+1} = Phi w_k + eta``: ``S = Phi S Phi' + Cov(eta)``."""
+    n = phi.shape[0]
+    return np.linalg.solve(np.eye(n * n) - np.kron(phi, phi), innovation.ravel()).reshape(n, n)
+
+
+def _var_double_sum(steps: list[np.ndarray], phi: np.ndarray, s: np.ndarray, k: int) -> np.ndarray:
+    """``sum_{i,j<k} A_{k,i} Cov(w_i, w_j) A_{k,j}'``, ``A_{k,i} = M_{k-1} ... M_{i+1}``."""
+
+    def carry(i: int) -> np.ndarray:
+        out = np.eye(s.shape[0])
+        for step in steps[i + 1 : k]:
+            out = step @ out
+        return out
+
+    def cov(i: int, j: int) -> np.ndarray:
+        if i >= j:
+            return np.linalg.matrix_power(phi, i - j) @ s
+        return s @ np.linalg.matrix_power(phi.T, j - i)
+
+    return sum(carry(i) @ cov(i, j) @ carry(j).T for i in range(k) for j in range(k))
+
+
+def test_noise_tube_under_a_var_noise_is_the_double_sum() -> None:
+    """var_noise_tube.mac (1b), (2): under a non-normal VAR(1) noise and state matrices that move
+    each step, the recursion's covariance is the double sum over the noise's lagged covariances, and
+    at Phi = rho I it is the AR(1) recursion's to the bit's neighbourhood."""
+    rng = np.random.default_rng(7)
+    rates = rng.uniform(-1.0, 1.0, (5, 2, 2)) - np.eye(2)
+    s = _var_covariance(VAR_PHI, NOISE)
+    covariances = _noise_covariances(rates, s, VAR_PHI, DT, 5)
+    steps = [_rk4_maps(rate, DT)[0] for rate in rates]
+    for k in range(1, 6):
+        exact = _var_double_sum(steps, VAR_PHI, s, k)
+        np.testing.assert_allclose(covariances[k], exact, rtol=1e-12, atol=1e-15)
+    scalar = _noise_covariances(rates, s, 0.6, DT, 5)
+    matrix = _noise_covariances(rates, s, 0.6 * np.eye(2), DT, 5)
+    for a, b in zip(scalar, matrix, strict=True):
+        np.testing.assert_allclose(b, a, rtol=1e-13, atol=1e-17)
+
+
+def test_noise_tube_under_a_var_noise_on_a_norm_bound_bounds_the_largest_variance() -> None:
+    """var_noise_tube.mac (4): on a norm bound L >= ||A|| the scalar recursion with ||Phi|| bounds
+    the largest eigenvalue of the exact covariance, on a non-normal A and a non-normal Phi."""
+    s = _var_covariance(VAR_PHI, NOISE)
+    horizon = 8
+    bound = float(np.linalg.norm(PLANT_A, 2))
+    exact = _noise_covariances(PLANT_A, s, VAR_PHI, DT, horizon)
+    radii = _noise_tube(np.asarray(bound), s, VAR_PHI, DT, horizon)
+    level = float(chi2.ppf(0.95, 2))
+    for k in range(2, horizon + 1):
+        assert radii[k] ** 2 / level >= np.linalg.eigvalsh(exact[k])[-1] * (1 - 1e-12)
+    assert radii[1] == pytest.approx(_noise_tube(PLANT_A, s, VAR_PHI, DT, 1)[1], rel=1e-12, abs=0.0)
 
 
 # ---- the MSM radius: confounding_robust_cvar.mac and .v ----
@@ -1182,6 +1251,48 @@ def test_plan_regret_bound_orders_its_three_numbers(seed) -> None:
         )
         assert sum(found.per_lever) == pytest.approx(found.bound, rel=1e-12, abs=1e-15)
         assert all(term >= 0.0 for term in found.per_lever)
+
+
+def _row_optimum(problem, lo: float, hi: float, row: np.ndarray, budget: float) -> float:
+    hessian, linear, constant = _quadratic(problem, np.zeros((2, problem[1].shape[1])))
+    found = minimize(
+        lambda u: u @ hessian @ u / 2 + linear @ u,
+        np.zeros(linear.size),
+        jac=lambda u: hessian @ u + linear,
+        bounds=[(lo, hi)] * linear.size,
+        constraints=[{"type": "ineq", "fun": lambda u: budget - row @ u, "jac": lambda u: -row}],
+        method="SLSQP",
+        options={"ftol": 1e-15, "maxiter": 1000},
+    )
+    assert found.success
+    return float(found.fun) + constant
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_plan_regret_bound_over_rows_holds_against_their_optimum(seed) -> None:
+    """regret_bound_rows.mac STEP 1 (weak duality): with a budget row beside the box, J(U) less the
+    minimum over the box and the row is at most the bound read off the dual, which is never above
+    the box's own bound at the same plan."""
+    problem = _linear_problem(seed)
+    lo, hi = -0.3, 0.3
+    _, unconstrained = _box_optimum(problem, lo, hi)
+    row, budget = np.ones(6), 0.4
+    best = _row_optimum(problem, lo, hi, row, budget)
+    assert best >= unconstrained - 1e-12
+    plan, model, cost = _library_plan(problem, np.zeros(6), lo, hi)
+    rows = (LinearConstraint(row, -np.inf, budget),)
+    rng = np.random.default_rng(500 + seed)
+    for actions in rng.uniform(lo, hi, (12, 6)):
+        if row @ actions > budget:
+            continue
+        at = replace(plan, actions=jnp.asarray(actions.reshape(3, 2)))
+        x0 = jnp.asarray(problem[2])
+        found = plan_regret_bound(at, model, x0, cost, DT, lo, hi, constraints=rows)
+        box = plan_regret_bound(at, model, x0, cost, DT, lo, hi)
+        gap = _value(problem, np.zeros((2, 2)), actions) - best
+        assert found.status == "certified"
+        assert gap <= found.bound + 1e-10
+        assert found.bound <= box.bound * (1 + 1e-9) + 1e-12
 
 
 @pytest.mark.parametrize("seed", range(3))
