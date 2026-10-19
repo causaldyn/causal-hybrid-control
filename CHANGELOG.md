@@ -116,6 +116,10 @@ still change).
   exploration in the first round costs 5.965 over 500 rounds, where `lower_bound` read 7.454. It
   now reads 5.954, 0.857 to 22.07 over the default horizons where it read 2.357 to 23.57, and
   `adaptive_over_bound` 1.506 where it read 1.410. Since 0.2.0.
+- **`cross_cluster_mixing_certificate`'s docstring names the critical value of its own default.**
+  It read the slope's standard error against `t` with four degrees of freedom, 2.776, where the
+  default four replicate blocks leave three: an interval at 2.776 covers 0.931, and the 5% value is
+  3.182. Since 0.6.0.
 
 ## [0.18.0] — 2026-10-13
 

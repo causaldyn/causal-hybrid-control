@@ -1564,8 +1564,10 @@ def cross_cluster_mixing_certificate(
     ``G = 40`` reports ~``-0.35`` -- the pre-asymptotic regime, not the rate. The replicate blocks
     are genuinely independent -- the seed stream carries a replicate index -- so ``slope_errors``
     is a real s.e. rather than the nested-prefix reconstruction
-    :func:`end_to_end_c2_certificate` is forced into. With five blocks it has four degrees of
-    freedom, so it is a ``t`` and not a ``z``: the two-sided 5% critical value is ``2.776``.
+    :func:`end_to_end_c2_certificate` is forced into. With ``n_replicates`` blocks it has
+    ``n_replicates - 1`` degrees of freedom, so it is a ``t`` and not a ``z``: at the default four
+    blocks the two-sided 5% critical value is ``3.182``, not the ``2.776`` of four degrees of
+    freedom, which covers 0.931 at three.
     """
     if len(decays) < 4:
         raise ValueError(
