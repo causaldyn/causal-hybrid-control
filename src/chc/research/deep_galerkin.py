@@ -3,10 +3,10 @@ and coupled forward-backward into a mean-field game.
 
 The Deep Galerkin Method (Sirignano-Spiliopoulos) trains a network to satisfy a PDE by minimising
 its residual at random points -- a mesh-free Galerkin scheme. ``solve_poisson_dgm`` applies it to
-the same 1-D Poisson BVP ``-V''(x) = f(x)``, ``V(0)=V(1)=0`` that ``chc.galerkin`` solves with a
-variational-difference FEM (progonka), so the *neural* Galerkin can be checked against the analytic
-and the *classical* one. The bridge from classical Marchuk/Galerkin FEM to learning-based PDE
-solvers.
+the same 1-D Poisson BVP ``-V''(x) = f(x)``, ``V(0)=V(1)=0`` that ``chc.research.galerkin`` solves
+with a variational-difference FEM (progonka), so the *neural* Galerkin can be checked against the
+analytic and the *classical* one. The bridge from classical Marchuk/Galerkin FEM to learning-based
+PDE solvers.
 
 The second half is the mean-field game that Poisson solve was only a stepping stone to. A backward
 HJB for the value ``V`` and a forward Fokker-Planck for the density ``rho``, joined by the optimal

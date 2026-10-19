@@ -24,8 +24,8 @@ HONEST SCOPE, and it bounds what the numbers below mean:
 
 * ``hill`` is saturating and :class:`chc.residual.ControlAffineResidual`'s drift is a polynomial in
   the state, so the fitted plant is a **local surrogate** of the truth. Every arm is therefore
-  audited by rolling its schedule out on the true plant, as :mod:`chc.spine` does, and the reported
-  sales are the audited ones rather than the planner's own forecast.
+  audited by rolling its schedule out on the true plant, as :mod:`chc.research.spine` does, and the
+  reported sales are the audited ones rather than the planner's own forecast.
 * The arms are not held to a total budget. :func:`chc.prescribe` takes one (``budgets``, since
   0.10.0), but spend here is priced through ``Lever.unit_cost`` instead, and the arms are compared
   at matched total spend and by return per unit spent, which is the comparison that does not

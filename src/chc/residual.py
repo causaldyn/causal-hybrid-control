@@ -91,9 +91,9 @@ class ControlAffineResidual(eqx.Module):
 
     This is the plant class the rest of the library already speaks about:
     :func:`chc.plan.certify_safety` reads the control channel off the Jacobian at ``u = 0`` and
-    :mod:`chc.spine` requires a control-affine plant, so identifying a residual *in this class* puts
-    the identification layer and the safety layer on the same object rather than on two different
-    linearisations of it.
+    :mod:`chc.research.spine` requires a control-affine plant, so identifying a residual *in this
+    class* puts the identification layer and the safety layer on the same object rather than on two
+    different linearisations of it.
 
     It is also the class in which the control channel is a **parameter** rather than a derivative of
     a black box, which is what makes it estimable by a partialling-out moment: see
@@ -173,11 +173,11 @@ class RBFKANLayer(eqx.Module):
     fixed radial-basis grid; the output is ``bias_j + sum_i phi_{ji}(z_i)``. Each edge is an
     extractable 1D curve (interpretable) and cheap to evaluate.
 
-    ``chc.symbolic`` performs that extraction, and carries the two caveats it needs: an edge's
-    intercept is a gauge (a constant moves freely between an edge and the bias, so only the total is
-    identified), and this layer represents only additively separable functions -- for an interaction
-    it silently returns the best additive fit, whose error is bounded BELOW by ``r^2`` on
-    ``[-r, r]^2``.
+    ``chc.research.symbolic`` performs that extraction, and carries the two caveats it needs: an
+    edge's intercept is a gauge (a constant moves freely between an edge and the bias, so only the
+    total is identified), and this layer represents only additively separable functions -- for an
+    interaction it silently returns the best additive fit, whose error is bounded BELOW by ``r^2``
+    on ``[-r, r]^2``.
     """
 
     in_dim: int = eqx.field(static=True)
@@ -238,11 +238,12 @@ class KANResidual(eqx.Module):
 class SpectralResidual(eqx.Module):
     """Residual that IS a circulant operator on a periodic grid, parameterised by its kernel.
 
-    The justifying plant is :func:`chc.transport.advection_diffusion_field` -- a translation-
-    invariant vector field on a periodic domain. Every such linear operator is circulant, every
-    circulant is diagonalised exactly by the DFT, and its eigenvalues are the DFT of its first
-    column (``validation/spectral_circulant.mac`` STEP 1). So this backbone's hypothesis class is
-    *exactly* the class of translation-invariant linear maps -- ``n`` parameters, not ``n^2``.
+    The justifying plant is :func:`chc.research.transport.advection_diffusion_field` -- a
+    translation-invariant vector field on a periodic domain. Every such linear operator is
+    circulant, every circulant is diagonalised exactly by the DFT, and its eigenvalues are the DFT
+    of its first column (``validation/spectral_circulant.mac`` STEP 1). So this backbone's
+    hypothesis class is *exactly* the class of translation-invariant linear maps -- ``n``
+    parameters, not ``n^2``.
 
     Two properties no MLP backbone has, both structural rather than matters of fit quality:
 
@@ -260,7 +261,7 @@ class SpectralResidual(eqx.Module):
     The parameterisation is the kernel, not the symbol, deliberately: the map kernel -> circulant is
     a bijection, whereas a free half-spectrum carries two unidentified imaginary parts (at DC and,
     on an even grid, at Nyquist) that ``irfft`` silently discards -- the same gauge problem
-    ``chc.symbolic`` prices for KAN edges.
+    ``chc.research.symbolic`` prices for KAN edges.
 
     A circulant is square, so ``out_dim`` is not a free parameter here; and the control channel is
     a circulant too, which is what lets it represent a NONLOCAL actuator. ``control_dim`` must
@@ -979,8 +980,8 @@ def fit_spectral_residual(
     the design decouples completely and each bin ``k`` is its own two-parameter complex regression
     ``y_k = lambda_k x_k + mu_k u_k``. One 2x2 normal system per bin, solved exactly -- no learning
     rate, no step count, no seed. Same argument as the ordinary least squares behind
-    :func:`chc.symbolic.extract_symbolic`, and it stops being available the moment a nonlinearity
-    is stacked on top.
+    :func:`chc.research.symbolic.extract_symbolic`, and it stops being available the moment a
+    nonlinearity is stacked on top.
 
     That this matters is a MEASUREMENT, not a preference. The circulant kernel of a spectral
     diffusion operator has entries of order ``nu*n^2/L^2`` -- 134.8 at the certificate's settings --

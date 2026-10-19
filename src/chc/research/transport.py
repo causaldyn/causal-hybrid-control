@@ -1,8 +1,8 @@
 """Continuum mean-field control: the density transport PDE ``rho_t + (rho v)_x = s``.
 
-The continuous-space sibling of :class:`chc.meanfield.MeanFieldControl` (which lives on a finite
-zone graph). Agents are a density ``rho(x, t)`` on a periodic 1-D domain; a velocity field ``v``
-advects them and a source ``s`` injects/removes mass. Two pieces, both honest and validated:
+The continuous-space sibling of :class:`chc.research.meanfield.MeanFieldControl` (which lives on a
+finite zone graph). Agents are a density ``rho(x, t)`` on a periodic 1-D domain; a velocity field
+``v`` advects them and a source ``s`` injects/removes mass. Two pieces, both honest and validated:
 
 * a **conservative** finite-volume solver (upwind flux) that conserves total mass to machine
   precision -- the physical invariant of a continuity equation -- advanced by **Strang-Marchuk**

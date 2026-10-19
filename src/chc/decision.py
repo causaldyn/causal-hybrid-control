@@ -136,8 +136,8 @@ class NotIdentifiedError(DecisionError):
     """The effect is not identified by adjustment, so there is no schedule to hand back.
 
     Its own type because it is the one failure this library exists to produce. A caller may want to
-    fall back to :mod:`chc.sensitivity`'s partial-identification path on exactly this and on
-    nothing else; catching it by message would be catching it by accident.
+    fall back to :mod:`chc.research.sensitivity`'s partial-identification path on exactly this and
+    on nothing else; catching it by message would be catching it by accident.
     """
 
 
@@ -956,7 +956,7 @@ class Prescription:
                 failure this library exists to prevent: the numbers would look like every other
                 schedule and mean nothing. Read
                 :attr:`DecisionCertificate.adjustment` for why, and
-                :mod:`chc.sensitivity` for what to do about it.
+                :mod:`chc.research.sensitivity` for what to do about it.
         """
         if self.plan is None:
             raise NotIdentifiedError(
@@ -1888,11 +1888,11 @@ def prescribe(
             consume it and keeps its contract, while this function *knows* the field goes straight
             to :func:`chc.plan.causal_plan`, which rolls out with RK4, as its tube, its barrier's
             audit and its regret bound read it. Fitting one integrator and planning with another
-            is a bias the caller never asked for --- on the plant in :mod:`chc.mmm` it costs 28% of
-            the control channel --- so ``"euler"`` is refused. A panel that is genuinely
-            discrete-time (a weekly budget is not a sample of an ODE) is fitted by ``"rk4"`` as
-            well: its fit is the field whose RK4 step reproduces the log's one-step map. To read
-            that map itself, call :func:`~chc.dynamics_id.fit_causal_residual` with
+            is a bias the caller never asked for --- on the plant in :mod:`chc.research.mmm` it
+            costs 28% of the control channel --- so ``"euler"`` is refused. A panel that is
+            genuinely discrete-time (a weekly budget is not a sample of an ODE) is fitted by
+            ``"rk4"`` as well: its fit is the field whose RK4 step reproduces the log's one-step
+            map. To read that map itself, call :func:`~chc.dynamics_id.fit_causal_residual` with
             ``integrator="euler"``.
         drivers: exogenous columns the plan can forecast but not move, each with its forecast over
             the horizon (:class:`Driver`). They are fitted into the drift jointly with the states

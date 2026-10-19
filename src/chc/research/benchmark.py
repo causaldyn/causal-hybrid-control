@@ -578,7 +578,7 @@ class ConfoundingRobustTask:
     (3) With no confounding the robust controller pays a strict premium, and it only wins beyond a
     problem-dependent confounding threshold -- at half the default confounding it still loses.
     (4) This is an OPEN-LOOP plan scored on the plant; the closed-loop counterpart is
-    ``chc.sensitivity.confounding_robust_tracking_benchmark``.
+    ``chc.research.sensitivity.confounding_robust_tracking_benchmark``.
 
     The oracle is the planner's descent from zero on the true plant. The plant is linear, so the
     cost is a convex quadratic in the plan and the descent's plan is the best one: the exact

@@ -169,8 +169,8 @@ HONEST SCOPE:
   and a channel held at an end of its box carries no weight. One that would leave its end under a
   small error costs more than ``W`` says, as :mod:`chc.experiment`'s pinned levers do. It is read
   on concave curves only.
-* :func:`chc.mmm.prescribe` plans a budget over a continuous plant whose adstock is a state; this
-  plans discrete channels, which that plant does not describe.
+* :func:`chc.research.mmm.prescribe` plans a budget over a continuous plant whose adstock is a
+  state; this plans discrete channels, which that plant does not describe.
 * Over geos and channels, a plan with a cell inside its box on a straight stretch of its curve (a
   linear curve, or an envelope's chord in a box of a search) is the cutting planes', within the
   search's tolerance of the bound or as near as 500 rounds come; its rates are as near the best as

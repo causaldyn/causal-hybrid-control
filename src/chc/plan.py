@@ -2569,9 +2569,9 @@ def certify_safety(
             ``cvar_gap`` is a *share* of the model's channel, its operator norm at the plan's first
             state, so the radius is in the channel's units and ``gamma_star`` reads the same in any
             units of the state or of the levers. The default, 1, is the channel's own size, the
-            calibration ``cvar_gap := b_hat`` of :mod:`chc.sensitivity`. ``gamma = 1`` is exact
-            identification -- zero radius, and this degenerates to the ordinary CBF check. NOTE
-            the calibration burden: ``Delta`` is used here as an **operator-norm radius on the
+            calibration ``cvar_gap := b_hat`` of :mod:`chc.research.sensitivity`. ``gamma = 1`` is
+            exact identification -- zero radius, and this degenerates to the ordinary CBF check.
+            NOTE the calibration burden: ``Delta`` is used here as an **operator-norm radius on the
             effect matrix**, and §32's scalar CVaR gap does not by itself establish one. The share
             is the caller's externally calibrated input, exactly as ``gamma`` is; an absolute
             radius ``r`` is the share ``r / ||B_hat(x0)||_2``. The radius is a share of the

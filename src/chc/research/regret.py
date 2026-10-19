@@ -5449,9 +5449,9 @@ def confounding_robust_tracking_loop(
     Lifts the STATIC §35 minimax into a receding-horizon CLOSED LOOP (the reviewers' recurring
     critique): each step aims the one-step target ``tau_t = x_target - a*x_t`` with
     :func:`confounding_robust_control` trusting the biased offline ``b_hat`` while the TRUE plant
-    uses ``b_true`` (the model/plant split of :func:`chc.flagship.closed_loop`, in NumPy to keep
-    this module x64-flag-independent). ``halfwidth = 0`` recovers certainty-equivalence exactly (the
-    §35 formula collapses to ``tau/b_hat``); ``halfwidth > 0`` (the §32 radius) is the robust
+    uses ``b_true`` (the model/plant split of :func:`chc.research.flagship.closed_loop`, in NumPy to
+    keep this module x64-flag-independent). ``halfwidth = 0`` recovers certainty-equivalence exactly
+    (the §35 formula collapses to ``tau/b_hat``); ``halfwidth > 0`` (the §32 radius) is the robust
     controller. Returns the realised trajectory, the applied controls, and the accumulated
     ASYMMETRIC stage cost ``Sum_t [alpha*(x_t - x_target)_+ + beta*(x_target - x_t)_+]``.
     """

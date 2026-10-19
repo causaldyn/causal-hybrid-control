@@ -48,7 +48,7 @@ def graph_shells(adjacency: NDArray[np.float64], dmax: int) -> list[NDArray[np.f
     Result 52 needs before its design law can be *applied* to a real topology: the law itself is
     closed-form only on vertex-transitive graphs, but the objective it minimises --
     ``sum_f 1_f' Q(x) 1_f`` -- is defined for any shell decomposition, so
-    :func:`chc.regret.optimal_fold_partition` runs on whatever this returns.
+    :func:`chc.research.regret.optimal_fold_partition` runs on whatever this returns.
 
     Distances come from repeated boolean matrix products rather than a queue: ``dmax`` is the
     spillover truncation and is small, so ``dmax`` sparse-ish multiplies beat a Python BFS and keep
@@ -93,8 +93,8 @@ def torus_adjacency(rows: int, cols: int) -> tuple[tuple[int, ...], ...]:
     The torus is the second topology Result 52's design law is tested on and the first one where
     the law has no closed form: it is vertex-transitive, so every unit sees the same neighbourhood,
     but ``Q(x)`` is NOT circulant for ``rows, cols > 1``, so
-    :func:`chc.regret.optimal_fold_partition` cannot take the exact banded route and falls back to
-    the search whose price Result 61 measured.
+    :func:`chc.research.regret.optimal_fold_partition` cannot take the exact banded route and falls
+    back to the search whose price Result 61 measured.
 
     Raises:
         ValueError: if either side is below 3, where the wrap would create a double edge and the
@@ -127,8 +127,8 @@ def propagate_shells(
     ``span >= n_times + lag*(len(gammas)-1)``; the returned window is the LAST ``n_times`` columns
     reachable by every shell, so every lag indexes real history rather than the burn-in edge.
 
-    Shared by ``DelayedNetworkPanel`` and ``chc.regret.delayed_network_certificate`` on purpose: the
-    law and the design it is measured on must not drift apart.
+    Shared by ``DelayedNetworkPanel`` and ``chc.research.regret.delayed_network_certificate`` on
+    purpose: the law and the design it is measured on must not drift apart.
     """
     dmax = len(gammas) - 1
     base = innovations.shape[-1] - n_times
@@ -284,8 +284,8 @@ class DelayedNetworkPanel:
     SCORE's noise carries; with the default i.i.d. outcome noise the score is white, the fold
     operator cannot move the estimator's variance at all, and the two fold schemes measure equal
     variance whatever the law predicts. This is the delayed-network analogue of the cluster random
-    effect that carries the ICC in :func:`chc.regret.cluster_fold_leakage_certificate`. It defaults
-    to zero so the effect-recovery use of the panel is unchanged.
+    effect that carries the ICC in :func:`chc.research.regret.cluster_fold_leakage_certificate`. It
+    defaults to zero so the effect-recovery use of the panel is unchanged.
 
     Construction detail that decides whether the law applies. The exogenous part of the treatment,
     ``eta``, is i.i.d. ACROSS UNITS and AR(1) in time, while the confounder ``z`` carries the
@@ -303,13 +303,13 @@ class DelayedNetworkPanel:
     padded with a sentinel that every consumer would then have to know about. ``None`` keeps the
     cycle and the byte-identical draw. The topology matters to the *design*, not to the law: Result
     52's closed form needs vertex transitivity, and on a torus ``Q(x)`` is not even circulant, so
-    :func:`chc.regret.optimal_fold_partition` takes the search route Result 61 priced.
+    :func:`chc.research.regret.optimal_fold_partition` takes the search route Result 61 priced.
 
     ``sample`` takes a JAX key like its cross-sectional sibling and returns the same column-dict, so
     ``estimate_network_effects`` accepts a panel with no adapter. Internally the propagation runs
-    through the NumPy routine ``chc.regret.delayed_network_certificate`` is verified against; the
-    seed is derived from the key. One routine, one law -- a JAX re-implementation would be a second
-    copy of the exact thing the certificate checks.
+    through the NumPy routine ``chc.research.regret.delayed_network_certificate`` is verified
+    against; the seed is derived from the key. One routine, one law -- a JAX re-implementation would
+    be a second copy of the exact thing the certificate checks.
     """
 
     n_clusters: int = 40

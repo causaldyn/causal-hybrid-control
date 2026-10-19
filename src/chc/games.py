@@ -169,7 +169,7 @@ def softmax_congestion_equilibrium(
     *may* 2-cycle (the bound is sufficient, not necessary), which is why the result
     carries its own residual; the remedy is a smaller ``damping``, not a different game, since the
     equilibrium itself stays non-expansive to operator perturbations
-    (:func:`equilibrium_transfer_certificate`).
+    (:func:`~chc.research.games.equilibrium_transfer_certificate`).
     :func:`congestion_damping` returns the fastest contracting choice for a given game.
     """
 

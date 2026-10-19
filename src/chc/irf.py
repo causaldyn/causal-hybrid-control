@@ -127,8 +127,8 @@ class DelayEstimate:
     delay that falls between two samples is read at a bin -- up to half a step from it when the
     effect splits across two bins -- or, refined, with :func:`peak_lag`'s bias, and a sharp peak
     gives ``lo == hi`` beside the delay, not around it. On
-    :class:`chc.benchmark.DelayOscillationTask`'s log, a delay of 3.33 steps, the interval held the
-    true delay on none of 10 seeds: 0.9 of it at the integer peak, 0.94-0.95 refined.
+    :class:`chc.research.benchmark.DelayOscillationTask`'s log, a delay of 3.33 steps, the interval
+    held the true delay on none of 10 seeds: 0.9 of it at the integer peak, 0.94-0.95 refined.
 
     ``censored`` marks a peak sitting on an end of the horizon, where the delay is not identified:
     the true peak may lie anywhere beyond the window, so the number is a bound on the delay and must
