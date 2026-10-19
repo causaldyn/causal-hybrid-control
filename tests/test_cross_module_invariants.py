@@ -424,9 +424,11 @@ def _tube_at(
     if actions is None:
         np.testing.assert_allclose(states, plan.trajectory, rtol=1e-12, atol=1e-12)
     error = _field_errors(result.model_fit, reach, states[:-1], np.zeros((HORIZON, 0)))
-    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
+    noise, carried = result.certificate.tube_noise, result.certificate.tube_autoregression
     assert noise is not None
-    assert persistence is not None
+    assert carried is not None
+    # the noise as the tube carries it, a VAR(1) (ADR 0105)
+    persistence = np.asarray(carried)
     covariance = np.array([[noise**2]])
     # one state: the noise's radius and the field's error at its studentised quantile
     scale = _field_scale(result.model_fit) * math.sqrt(chi2.ppf(0.95, 1))

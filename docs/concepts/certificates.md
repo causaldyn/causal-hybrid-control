@@ -59,7 +59,11 @@ design record is
   error `prescribe` supplies is a standard error, so there that part is a scale. The
   plant's own noise is the other part: given as `noise`, the tube adds the radius that holds it at
   each step with probability 0.95, and `prescribe` reads it off the plan's one-step error on the
-  log (`tube_noise`, `tube_persistence`). Without the noise, on logs shaped like the BOPTEST
+  log (`tube_noise`, `tube_persistence`), carried from step to step as a VAR(1) whose coefficient
+  is `tube_autoregression`, so that each direction of the noise persists at its own rate
+  ([ADR 0105](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0105-the-tube-carries-the-noise-as-a-var1.md)).
+  Where the channel's residual persists within units (`noise_persistence_p` at most 0.05), the
+  noise the tube reads may not be the plant's, and a `tube` warning says so. Without the noise, on logs shaped like the BOPTEST
   case's, a tube of 0.05 K one step ahead trusted 6 to 13 steps, and the plant left it at the
   first step on 60% of draws; with it, the tube trusts 1 or 2 steps, where the plant's error
   allows 2 or 3

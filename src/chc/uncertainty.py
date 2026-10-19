@@ -1421,6 +1421,36 @@ _TUBE_COVERAGE = 0.95
 given the plant's one-step noise (:func:`chc.plan.causal_plan`'s ``noise``)."""
 
 
+def _noise_persistence(
+    persistence: float | ArrayLike, covariance: NDArray[np.float64]
+) -> float | NDArray[np.float64]:
+    """``persistence`` as the tube carries the noise of ``covariance`` by it: a lag-1 correlation,
+    in ``[-1, 1]``, or the ``(n, n)`` coefficient ``Phi`` of a VAR(1), refused where it is not
+    finite, not of the state's size, or not the coefficient of a stationary noise of that
+    covariance, whose innovation's covariance ``S - Phi S Phi'`` has no negative eigenvalue."""
+    matrix = np.asarray(persistence, dtype=np.float64)
+    if matrix.ndim == 0:
+        if not -1.0 <= float(matrix) <= 1.0:
+            raise ValueError(
+                f"noise_persistence={float(matrix)} is not a correlation, which lies in [-1, 1]"
+            )
+        return float(matrix)
+    states = covariance.shape[0]
+    if matrix.shape != (states, states) or not np.all(np.isfinite(matrix)):
+        raise ValueError(
+            "noise_persistence is a lag-1 correlation or a VAR(1) coefficient: an "
+            f"{(states, states)} matrix of numbers, not an array of shape {matrix.shape}"
+        )
+    remainder = covariance - matrix @ covariance @ matrix.T
+    scale = max(float(np.max(np.abs(np.linalg.eigvalsh(covariance)))), 1e-300)
+    if float(np.linalg.eigvalsh(0.5 * (remainder + remainder.T))[0]) < -1e-9 * scale:
+        raise ValueError(
+            "noise_persistence is not the VAR(1) coefficient of a stationary noise of this "
+            "covariance: noise - Phi noise Phi' has a negative eigenvalue"
+        )
+    return matrix
+
+
 def _noise_covariance(noise: ArrayLike, states: int) -> NDArray[np.float64]:
     """``noise`` as the ``(n, n)`` covariance of the plant's one-step error, a number being each
     state's variance with none shared; refused where it is not finite, not of the state's size, or
@@ -1448,14 +1478,16 @@ def _noise_covariance(noise: ArrayLike, states: int) -> NDArray[np.float64]:
 def _noise_tube(
     rate: NDArray[np.float64],
     noise: NDArray[np.float64],
-    persistence: float,
+    persistence: float | NDArray[np.float64],
     dt: float,
     horizon: int,
     field: NDArray[np.float64] | None = None,
 ) -> NDArray[np.float64]:
     """The radii ``r_0..r_H`` within which a plant off the plan's own step by ``w_k`` at each step
     stays at each step with probability :data:`_TUBE_COVERAGE`, ``w_k`` Gaussian of covariance
-    ``noise = S`` and AR(1) at ``persistence = rho``: ``Cov(w_i, w_j) = rho^|i - j| S``.
+    ``noise = S`` and AR(1) at ``persistence = rho``: ``Cov(w_i, w_j) = rho^|i - j| S``; or, given
+    an ``(n, n)`` ``persistence = Phi``, a VAR(1), ``w_{k+1} = Phi w_k + eta_{k+1}``, whose
+    ``Cov(w_{k+1}, w_k) = Phi S`` lets each direction of the noise persist at its own rate.
     ``field``, ``s_0..s_H``, adds at each step a Gaussian independent of the noise, of standard
     deviation ``s_k`` along one direction, the noise's widest, where it widens the radius most:
     the radius is that of ``P_k`` with ``s_k^2`` added to its largest eigenvalue, and under a norm
@@ -1463,7 +1495,8 @@ def _noise_tube(
 
     The gap ``e_{k+1} = M e_k + w_k`` from ``e_0 = 0`` has covariance ``P_k``, with
     ``P_{k+1} = M P_k M' + M C_k + C_k' M' + S`` and ``C_{k+1} = rho (M C_k + S)``, ``C_k`` the
-    gap's covariance with ``w_k`` (``validation/predictive_tube.mac``). On a state matrix ``A``,
+    gap's covariance with ``w_k`` (``validation/predictive_tube.mac``), and under the VAR(1)
+    ``C_{k+1} = (M C_k + S) Phi'`` (``validation/var_noise_tube.mac``). On a state matrix ``A``,
     ``M = R(dt A)``, RK4's step of a field affine in the state, and the gap is that field's to first
     order; on an ``(H, n, n)`` sequence of them, ``M_k = R(dt A_k)`` at step ``k``, as on a field
     affine in the state whose slope moves with the plan's action, and the recursion is the same with
@@ -1472,7 +1505,8 @@ def _noise_tube(
     (:func:`_noise_radius`).
     On a norm-Lipschitz bound ``L``, ``g = R(L dt)`` bounds the norm of the step's slope in the
     state, and ``p_{k+1} = g^2 p_k + 2 g c_k + q``, ``c_{k+1} = |rho| (g c_k + q)``, ``q`` the
-    largest eigenvalue of ``S``, bounds ``P_k``'s largest. A Gaussian of covariance ``P`` on ``n``
+    largest eigenvalue of ``S``, bounds ``P_k``'s largest, with ``||Phi||``, its largest singular
+    value, for ``|rho|`` under the VAR(1). A Gaussian of covariance ``P`` on ``n``
     states lies within ``sqrt(chi2_n(level) lambda_max(P))`` of its mean with probability at least
     ``level``, and exactly ``level`` on one state or where ``P`` is a multiple of the identity:
     that radius is the bound's past the first step, where ``P_1 = S`` is exact and the radius is
@@ -1494,10 +1528,15 @@ def _noise_tube(
     z = float(rate) * dt
     growth = 1.0 + z * _rk4_phi(z)
     largest, spread, cross = float(np.linalg.eigvalsh(noise)[-1]), 0.0, 0.0
+    carry = (
+        abs(float(persistence))
+        if np.ndim(persistence) == 0
+        else float(np.linalg.norm(np.asarray(persistence, dtype=np.float64), 2))
+    )
     for step in range(1, horizon + 1):
         spread, cross = (
             growth * growth * spread + 2.0 * growth * cross + largest,
-            abs(persistence) * (growth * cross + largest),
+            carry * (growth * cross + largest),
         )
         variances[step] = spread
     level = float(chi2.ppf(_TUBE_COVERAGE, noise.shape[0]))
@@ -1518,7 +1557,7 @@ def _noise_tube(
 def _noise_covariances(
     rate: NDArray[np.float64],
     noise: NDArray[np.float64],
-    persistence: float,
+    persistence: float | NDArray[np.float64],
     dt: float,
     horizon: int,
 ) -> list[NDArray[np.float64]]:
@@ -1529,16 +1568,19 @@ def _noise_covariances(
     eye = np.eye(noise.shape[0])
     covariance, cross_matrix = np.zeros_like(noise), np.zeros_like(noise)
     covariances = [covariance]
+    vector = np.ndim(persistence) != 0
+    carry = np.asarray(persistence, dtype=np.float64)
     for slope in slopes[:horizon]:
         z = dt * slope
         z2 = z @ z
         step_matrix = eye + z + z2 / 2.0 + z2 @ z / 6.0 + z2 @ z2 / 24.0
+        shared = step_matrix @ cross_matrix + noise
         covariance, cross_matrix = (
             step_matrix @ covariance @ step_matrix.T
             + step_matrix @ cross_matrix
             + cross_matrix.T @ step_matrix.T
             + noise,
-            persistence * (step_matrix @ cross_matrix + noise),
+            shared @ carry.T if vector else float(persistence) * shared,
         )
         covariances.append(covariance)
     return covariances

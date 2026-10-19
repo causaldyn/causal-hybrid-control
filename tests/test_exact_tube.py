@@ -323,7 +323,8 @@ def test_prescribe_carries_its_tube_by_the_slope_at_each_planned_action() -> Non
     error = _field_error(fit, distance)
     assert error > _model_error(fit, distance)
     noise = np.array([[certificate.tube_noise**2]])
-    persistence = certificate.tube_persistence
+    assert certificate.tube_autoregression is not None
+    persistence = np.asarray(certificate.tube_autoregression)  # the VAR(1) (ADR 0105)
     # one state: the noise's radius and the field's error at its studentised quantile
     scale = _field_scale(fit) * math.sqrt(chi2.ppf(0.95, 1))
     # read at the state each step starts from, the log's root mean square of it the fit's

@@ -99,6 +99,7 @@ from chc.uncertainty import (
     _check_tolerance,
     _linear_tube,
     _noise_covariance,
+    _noise_persistence,
     _noise_tube,
     _tube,
     _within,
@@ -1300,7 +1301,7 @@ def causal_plan(
     lipschitz: ArrayLike = 0.0,
     model_error: float = 0.0,
     noise: ArrayLike = 0.0,
-    noise_persistence: float = 0.0,
+    noise_persistence: float | ArrayLike = 0.0,
     tolerance: float | None = None,
     steps: int = 10_000,
     constraints: Sequence[LinearConstraint] = (),
@@ -1330,7 +1331,10 @@ def causal_plan(
             step of the model from the plant's state, Gaussian, AR(1) from one step to the next,
             ``Cov(w_i, w_j) = noise_persistence^|i - j| noise``. ``noise`` is its covariance in the
             state's units, a number for each state's variance with none shared, or an ``(n, n)``
-            matrix; ``noise_persistence`` its lag-1 correlation, in ``[-1, 1]``. The tube adds to
+            matrix; ``noise_persistence`` its lag-1 correlation, in ``[-1, 1]``, or the ``(n, n)``
+            coefficient ``Phi`` of a VAR(1), ``w_{k+1} = Phi w_k + eta``, where the states' noises
+            persist at rates of their own, ``Cov(w_{k+1}, w_k) = Phi noise``, a stationary noise's,
+            ``noise - Phi noise Phi'`` with no negative eigenvalue. The tube adds to
             the model error's radius the one within which the noise's part of the gap stays at each
             step with probability 0.95, carried through the same ``lipschitz``: through ``R(dt A)``
             on a state matrix, exactly to first order, and on a norm bound ``L`` through
@@ -1385,7 +1389,8 @@ def causal_plan(
             ``lipschitz`` is a negative, infinite or nan number, which no norm of a field's slope
             is, or neither a number nor a square matrix of the state's size; if ``noise`` is not
             finite, not a number or a matrix of the state's size, or not a covariance, which is
-            symmetric with no negative eigenvalue, or ``noise_persistence`` is not in ``[-1, 1]``;
+            symmetric with no negative eigenvalue, or ``noise_persistence`` is neither a
+            correlation in ``[-1, 1]`` nor such a VAR(1) coefficient;
             if ``tolerance`` is
             negative or nan, or ``dt`` is not a finite positive step; if ``x0`` has an entry that
             is not a finite number, from which no step is predicted; if a barrier is given with
@@ -1422,7 +1427,7 @@ def _error_tube(
     carried: NDArray[np.float64],
     model_error: float | NDArray[np.float64],
     covariance: NDArray[np.float64],
-    persistence: float,
+    persistence: float | NDArray[np.float64],
     dt: float,
     horizon: int,
     field_scale: float | None = None,
@@ -1460,7 +1465,7 @@ def _carried_along(
     state_matrices: NDArray[np.float64],
     model_error: float | NDArray[np.float64],
     noise: ArrayLike,
-    noise_persistence: float,
+    noise_persistence: float | NDArray[np.float64],
     dt: float,
     tolerance: float,
     field_scale: float | None = None,
@@ -1521,7 +1526,7 @@ def _plan(
     warm_start: Array | NDArray[np.float64] | None,
     multipliers: NDArray[np.float64] | None,
     noise: ArrayLike = 0.0,
-    noise_persistence: float = 0.0,
+    noise_persistence: float | ArrayLike = 0.0,
 ) -> tuple[CausalPlan, NDArray[np.float64] | None]:
     """:func:`causal_plan`, with the barrier's multipliers passed in and handed back.
 
@@ -1564,10 +1569,7 @@ def _plan(
             f"shape {rate.shape}"
         )
     covariance = _noise_covariance(noise, square[0])
-    if not -1.0 <= noise_persistence <= 1.0:
-        raise ValueError(
-            f"noise_persistence={noise_persistence} is not a correlation, which lies in [-1, 1]"
-        )
+    persistence = _noise_persistence(noise_persistence, covariance)
     authority = float(np.max(np.maximum(np.abs(np.asarray(u_lo)), np.abs(np.asarray(u_hi)))))
     if barrier is not None and not authority > 0.0:
         raise ValueError(
@@ -1668,7 +1670,7 @@ def _plan(
             # the answer is where the relaxed descent stopped, and it stopped for its own reason
             status = first.solver_status
 
-    tube = _error_tube(rate, model_error, covariance, noise_persistence, dt, horizon)
+    tube = _error_tube(rate, model_error, covariance, persistence, dt, horizon)
     problem = _PlanProblem(
         model=model,
         x0=x0,

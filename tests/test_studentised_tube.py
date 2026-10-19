@@ -162,7 +162,8 @@ def test_one_state_s_tube_is_the_noise_s_radius_and_t_times_the_field_s_in_quadr
     assert plan.uncertainty_tube is not None
     assert certificate.tube_mode == "exact"
     assert certificate.tube_noise is not None
-    assert certificate.tube_persistence is not None
+    assert certificate.tube_autoregression is not None
+    carried = np.asarray(certificate.tube_autoregression)  # the VAR(1) the tube carries (ADR 0105)
     assert fit.drift_error is not None
     problem = plan._problem
     assert problem is not None
@@ -173,9 +174,7 @@ def test_one_state_s_tube_is_the_noise_s_radius_and_t_times_the_field_s_in_quadr
     nu = 6.0
     errors = _field_errors(fit, reach, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)))
     field = _linear_tube(slopes, errors, dt)
-    noise = _noise_tube(
-        slopes, np.array([[certificate.tube_noise**2]]), certificate.tube_persistence, dt, horizon
-    )
+    noise = _noise_tube(slopes, np.array([[certificate.tube_noise**2]]), carried, dt, horizon)
     expected = np.sqrt(noise**2 + (t.ppf(0.975, nu) * field) ** 2)
     tube = np.asarray(plan.uncertainty_tube)
     np.testing.assert_allclose(tube, expected, rtol=1e-8, atol=0.0)
@@ -221,8 +220,9 @@ def test_two_states_place_the_field_s_error_along_the_noise_s_widest_direction()
     field = _linear_tube(slopes, errors, dt)
     error = dt * np.asarray(fit.defect, dtype=np.float64)
     covariance = error.T @ error / error.shape[0]
-    persistence = decided.certificate.tube_persistence
-    assert persistence is not None
+    carried = decided.certificate.tube_autoregression
+    assert carried is not None
+    persistence = np.asarray(carried)  # the VAR(1) the tube carries (ADR 0105)
     covariances = _noise_covariances(slopes, covariance, persistence, dt, horizon)
     expected, noise, everywhere = [], [], []
     for p, spread in zip(covariances, field, strict=True):
@@ -374,7 +374,8 @@ def test_rk4_steps_the_same_field_through_its_own_matrices() -> None:
     plan, fit, certificate = decided.plan, decided.model_fit, decided.certificate
     assert plan.uncertainty_tube is not None
     assert certificate.tube_noise is not None
-    assert certificate.tube_persistence is not None
+    assert certificate.tube_autoregression is not None
+    carried = np.asarray(certificate.tube_autoregression)  # the VAR(1) the tube carries (ADR 0105)
     known = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
     model = HybridDynamics(known=known, residual=fit.residual)
     x0 = jnp.asarray(decided.start.value)
@@ -392,9 +393,7 @@ def test_rk4_steps_the_same_field_through_its_own_matrices() -> None:
     errors = _field_errors(fit, reach, planned, np.zeros((6, 0)))
     assert np.all(errors[-2:] > _field_error(fit, reach))
     field = _linear_tube(slopes, errors, 0.5)
-    noise = _noise_tube(
-        slopes, np.array([[certificate.tube_noise**2]]), certificate.tube_persistence, 0.5, 6
-    )
+    noise = _noise_tube(slopes, np.array([[certificate.tube_noise**2]]), carried, 0.5, 6)
     scale = _field_scale(fit)
     np.testing.assert_allclose(
         np.asarray(plan.uncertainty_tube),

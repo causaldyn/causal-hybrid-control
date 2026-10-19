@@ -20,6 +20,15 @@ still change).
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
 - **A `lever_range` warning** when a prescription sets a lever outside the range the panel logged.
+- **`DecisionCertificate.tube_autoregression`**, the VAR(1) coefficient `Phi` that the tube
+  carries the plan's one-step error by. `causal_plan(noise_persistence=)` takes an `(n, n)`
+  coefficient beside a lag-1 correlation, and refuses one whose `noise - Phi noise Phi'` has a
+  negative eigenvalue.
+- **A `tube` warning where the channel's residual persists within units** (`noise_persistence_p`
+  at most 0.05). An unlogged disturbance that persists is read in part as the state's drift, so
+  the noise the tube reads is smaller than the plant's. Under an AR(0.9) disturbance of standard
+  deviation 2, the tube held 0.918 at step 1. The report's persistence line says so too.
+  `trustworthy_steps` does not change.
 
 ### Changed
 
@@ -205,6 +214,14 @@ still change).
   four gates of `confounding_robust_lq_regret_certificate` are algebraic identities. `panel_estimator_certificate`'s interval is a
   bootstrap over independent draws, not a cluster bootstrap; `ce_explicit_constant_certificate`'s empirical
   radius is a lower bound where the grid censors it. Documentation only.
+- **`prescribe`'s tube carries the noise as a VAR(1), each direction at its own persistence.** It
+  read one lag-1 correlation, pooled over the states with each counted alike. With the
+  quickstart's demand an AR(0.8), that read 0.41 where the supply's error persists at 0.80 and the
+  wait's at 0.02. The plant left the tube more often from week 2 on, 0.784 a week inside by
+  week 15. Yule-Walker's `Phi = Gamma_1 S^-1` carries `C_{k+1} = (M_k C_k + S) Phi'`
+  (`validation/var_noise_tube.mac`), and the tube holds 0.958–0.964 at every week. On a second
+  plant (16 logs) the AR(0.8) case holds 0.944–0.950 a step, where it held 0.765–0.952. White
+  noise moves within Monte Carlo error (ADR 0105).
 
 ## [0.18.0] — 2026-10-13
 

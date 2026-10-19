@@ -426,7 +426,7 @@ def test_the_tube_reads_the_drift_s_error_at_the_forecast_it_plans_against(panel
     assert plan is not None
     assert plan.uncertainty_tube is not None
     assert certificate.tube_noise is not None
-    assert certificate.tube_persistence is not None
+    assert certificate.tube_autoregression is not None
     problem = plan._problem
     assert problem is not None
     columns = panel.columns
@@ -440,7 +440,7 @@ def test_the_tube_reads_the_drift_s_error_at_the_forecast_it_plans_against(panel
     noise = _noise_tube(
         slopes,
         np.array([[certificate.tube_noise**2]]),
-        certificate.tube_persistence,
+        np.asarray(certificate.tube_autoregression),  # the VAR(1) the tube carries (ADR 0105)
         DT,
         HORIZON,
     )

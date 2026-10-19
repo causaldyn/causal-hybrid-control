@@ -1,0 +1,97 @@
+/* The tube's noise part under a VAR(1) noise: a plant off the plan's own step by w_k at each step,
+   e_{k+1} = M_k e_k + w_k from e_0 = 0, its one-step error w_{k+1} = Phi w_k + eta_{k+1}, eta
+   independent of the past, stationary at Cov(w_k) = S, so that Cov(w_i, w_j) = Phi^(i-j) S for
+   i >= j and S Phi'^(j-i) for j > i, and S - Phi S Phi' = Cov(eta) has no negative eigenvalue.
+
+   The recursion the library runs (chc.uncertainty._noise_covariances), C_k = Cov(e_k, w_k):
+
+       P_{k+1} = M_k P_k M_k' + M_k C_k + C_k' M_k' + S,   C_{k+1} = (M_k C_k + S) Phi',
+
+   P_0 = C_0 = 0. Checked here: (1) the recursion against the double sum
+   sum_{i,j<k} A_{k,i} Cov(w_i, w_j) A_{k,j}', A_{k,i} = M_{k-1} ... M_{i+1}, at k = 1..3 on a
+   symbolic 2x2 M, Phi and S, and at k = 1..5 on step matrices that move each step; (2) at
+   Phi = rho I it is the AR(1) recursion C_{k+1} = rho (M C_k + S) of predictive_tube.mac;
+   (3) Yule-Walker read in whitened coordinates, Phi = L W L^-1 with W = L^-1 Gamma_1 L^-T and
+   S = L L', is Gamma_1 S^-1 whatever the factor L, and S - Phi S Phi' = L (I - W W') L', so the
+   noise is stationary exactly where W is a contraction; (4) on a norm bound g >= ||M_k||, the
+   scalar recursion p_{k+1} = g^2 p_k + 2 g c_k + q, c_{k+1} = ||Phi|| (g c_k + q), q = ||S||,
+   bounds lambda_max(P_k) on a non-normal step and a non-normal Phi. */
+display2d : false$
+fpprec : 40$
+vanishes(label, x) := if (if matrixp(x) then every(lambda([e], is(e = 0)), flatten(args(x)))
+                          else is(x = 0))
+  then print(label, "= 0") else error(label, "is not zero:", x)$
+
+/* (1) symbolic: one step matrix every step */
+M : matrix([m11, m12], [m21, m22])$
+F : matrix([f11, f12], [f21, f22])$
+S : matrix([s11, s12], [s12, s22])$
+cov(i, j) := if i >= j then F^^(i - j) . S else S . transpose(F)^^(j - i)$
+mpow(n) := if n = 0 then ident(2) else M^^n$
+double(k) := sum(sum(mpow(k - 1 - i) . cov(i, j) . transpose(mpow(k - 1 - j)), j, 0, k - 1),
+                 i, 0, k - 1)$
+P : zeromatrix(2, 2)$ C : zeromatrix(2, 2)$
+for k : 1 thru 3 do (
+  [P, C] : [M . P . transpose(M) + M . C + transpose(C) . transpose(M) + S,
+            (M . C + S) . transpose(F)],
+  vanishes(sconcat("(1) k = ", k, ": recursion - double sum"), expand(P - double(k))))$
+
+/* (1b) step matrices that move each step, rational */
+steps : [matrix([1, 1/3], [-1/5, 1/2]), matrix([2/3, 0], [1/4, 1]), matrix([1, -1/2], [1/7, 1/3]),
+         matrix([1/2, 1/5], [1/5, 3/4]), matrix([5/4, 1/9], [-1/3, 2/3])]$
+nF : matrix([7/10, 1/5], [-1/10, 1/4])$
+nS : matrix([2, 1/2], [1/2, 1])$
+ncov(i, j) := if i >= j then nF^^(i - j) . nS else nS . transpose(nF)^^(j - i)$
+carry(k, i) := block([A : ident(2)], for l : i + 1 thru k - 1 do A : steps[l + 1] . A, A)$
+P : zeromatrix(2, 2)$ C : zeromatrix(2, 2)$
+for k : 1 thru 5 do (
+  Mk : steps[k],
+  [P, C] : [Mk . P . transpose(Mk) + Mk . C + transpose(C) . transpose(Mk) + nS,
+            (Mk . C + nS) . transpose(nF)],
+  vanishes(sconcat("(1b) k = ", k, ": moving steps, recursion - double sum"),
+           P - sum(sum(carry(k, i) . ncov(i, j) . transpose(carry(k, j)), j, 0, k - 1), i, 0,
+                   k - 1)))$
+
+/* (2) Phi = rho I is the AR(1) recursion */
+P1 : zeromatrix(2, 2)$ C1 : zeromatrix(2, 2)$ P2 : zeromatrix(2, 2)$ C2 : zeromatrix(2, 2)$
+for k : 1 thru 4 do (
+  [P1, C1] : [M . P1 . transpose(M) + M . C1 + transpose(C1) . transpose(M) + S,
+              (M . C1 + S) . transpose(rho*ident(2))],
+  [P2, C2] : [M . P2 . transpose(M) + M . C2 + transpose(C2) . transpose(M) + S, rho*(M . C2 + S)],
+  vanishes(sconcat("(2) k = ", k, ": VAR(1) at rho I - AR(1)"), expand(P1 - P2)))$
+
+/* (3) whitened Yule-Walker, any factor L of S */
+L : matrix([l11, 0], [l21, l22])$
+G : matrix([g11, g12], [g21, g22])$
+W : invert(L) . G . transpose(invert(L))$
+Phi : L . W . invert(L)$
+vanishes("(3) L W L^-1 - Gamma_1 (L L')^-1", ratsimp(Phi - G . invert(L . transpose(L))))$
+vanishes("(3) S - Phi S Phi' - L (I - W W') L'",
+         ratsimp(L . transpose(L) - Phi . L . transpose(L) . transpose(Phi)
+                 - L . (ident(2) - W . transpose(W)) . transpose(L)))$
+/* a rotated factor L Q gives the same Phi */
+Q : matrix([cos(t), -sin(t)], [sin(t), cos(t)])$
+LQ : L . Q$
+WQ : invert(LQ) . G . transpose(invert(LQ))$
+vanishes("(3) Phi from L Q - Phi from L",
+         trigsimp(ratsimp(LQ . WQ . invert(LQ) - Phi)))$
+
+/* (4) the norm bound on a non-normal step and a non-normal Phi */
+lmax(A) := block([t : A[1, 1] + A[2, 2], d : determinant(A)], (t + sqrt(t^2 - 4*d))/2)$
+nM : matrix([1, 1/2], [0, 9/10])$
+bF : matrix([1/2, 3/10], [0, 1/5])$
+g : sqrt(lmax(transpose(nM) . nM))$
+q : lmax(nS)$
+phinorm : sqrt(lmax(transpose(bF) . bF))$
+/* the stationary check of (3) holds for this Phi and S */
+print("(4) min eigenvalue of S - Phi S Phi':",
+      bfloat(block([D : nS - bF . nS . transpose(bF)],
+                   (D[1, 1] + D[2, 2] - sqrt((D[1, 1] + D[2, 2])^2 - 4*determinant(D)))/2)))$
+P : zeromatrix(2, 2)$ C : zeromatrix(2, 2)$ p : 0$ c : 0$
+for k : 1 thru 8 do (
+  [P, C] : [nM . P . transpose(nM) + nM . C + transpose(C) . transpose(nM) + nS,
+            (nM . C + nS) . transpose(bF)],
+  [p, c] : [g^2*p + 2*g*c + q, phinorm*(g*c + q)],
+  if is(bfloat(lmax(P)) <= bfloat(p)) then print("(4) k =", k, ": lambda_max(P) =",
+       bfloat(lmax(P)), "<= p =", bfloat(p))
+  else error("(4) the bound fails at k =", k))$

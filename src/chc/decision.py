@@ -634,11 +634,14 @@ class DecisionCertificate:
     # The plant's own noise the tube carries (ADR 0080): the plan's one-step error on the log, the
     # next state less the plan's step of the fitted field from the logged state and levers, which
     # the channel's error does not cover. ``tube_noise`` is the root of its covariance's largest
-    # eigenvalue, in the states' units, the error's standard deviation on one state; and
-    # ``tube_persistence`` its lag-1 correlation within units, which carries it AR(1) from step
-    # to step, 0 where no unit has two consecutive transitions. None where no tube was evaluated.
+    # eigenvalue, in the states' units, the error's standard deviation on one state;
+    # ``tube_persistence`` its lag-1 correlation within units, pooled over the states, each in its
+    # own units; and ``tube_autoregression`` the ``(n, n)`` coefficient ``Phi`` of the VAR(1) that
+    # carries it from step to step, ``Cov(w_{k+1}, w_k) = Phi S``, each direction of the noise
+    # persisting at its own rate (ADR 0105). None where no tube was evaluated.
     tube_noise: float | None = None
     tube_persistence: float | None = None
+    tube_autoregression: tuple[tuple[float, ...], ...] | None = None
     # What each radius of ``uncertainty_tube`` is (:data:`TubeMode`, ADR 0096): ``exact`` where the
     # tube is carried by the field's step matrices along the plan, ``bound`` where by a norm bound
     # on its slope. None where no tube was evaluated.
@@ -730,6 +733,10 @@ class DecisionCertificate:
         trajectory's error and it contributes zero rather than infinity --- a barrier cleared by an
         unbounded trajectory proves nothing. ``barrier_certified_steps is None`` means no state was
         bounded, so there is no safety prefix to respect and the tube alone decides.
+
+        Where the channel's residual persists within units (``noise_persistence_p`` at most 0.05)
+        the noise the tube reads may not be the plant's, and a ``tube`` warning says so; the
+        prefix still counts the tube's steps (ADR 0105).
         """
         if self.identification == "not_identified" or self.certified_horizon is None:
             return 0
@@ -1445,6 +1452,9 @@ class Prescription:
                 "tube_rate": certificate.tube_rate,
                 "tube_noise": certificate.tube_noise,
                 "tube_persistence": certificate.tube_persistence,
+                "tube_autoregression": None
+                if certificate.tube_autoregression is None
+                else [list(row) for row in certificate.tube_autoregression],
                 "tube_mode": certificate.tube_mode,
                 "tube_state_noise": None
                 if certificate.tube_state_noise is None
@@ -1573,8 +1583,8 @@ class Prescription:
         return (
             f"- noise persistence: **the noise persists within units** ({head}, "
             f"p = {p_value:.3g}): where a lever persists too, the channel is biased by an amount "
-            "its error does not cover; adjust for the states, the levers and the adjustment set "
-            "a period earlier"
+            "its error does not cover, and the noise the tube reads may not be the plant's; "
+            "adjust for the states, the levers and the adjustment set a period earlier"
         )
 
     def _noise_lines(self) -> list[str]:
@@ -1584,8 +1594,9 @@ class Prescription:
         return [
             f"- the tube's noise: the plan's one-step error on the log, standard deviation "
             f"{certificate.tube_noise:.4g}, lag-1 autocorrelation "
-            f"{certificate.tube_persistence:+.2f}; with the fitted field's error, the channel's "
-            "and the drift's, the tube holds the plant at each step with probability 0.95",
+            f"{certificate.tube_persistence:+.2f} pooled over the states, each state's carried at "
+            "its own rate; with the fitted field's error, the channel's and the drift's, the tube "
+            "holds the plant at each step with probability 0.95",
             *self._state_noise_lines(),
         ]
 
@@ -2358,16 +2369,17 @@ def prescribe(
             "enough",
             extra={"chc_event": "tube", "method": fit.method},
         )
-    step_noise, step_persistence = (
+    step_noise, step_carry, step_persistence = (
         _step_noise(fit, dt, labels)
         if tolerance is not None and fit.channel_error is not None
-        else (np.zeros((n_states, n_states)), 0.0)
+        else (np.zeros((n_states, n_states)), np.zeros((n_states, n_states)), 0.0)
     )
     if tolerance is not None and not (
         math.isfinite(lipschitz)
         and math.isfinite(model_error)
         and bool(np.all(np.isfinite(step_noise)))
         and math.isfinite(step_persistence)
+        and bool(np.all(np.isfinite(step_carry)))
     ):
         # a nan radius once read as within every tolerance; no tube is the answer that holds
         _log.warning(
@@ -2382,7 +2394,30 @@ def prescribe(
             },
         )
         lipschitz, model_error = 0.0, 0.0
-        step_noise, step_persistence = np.zeros_like(step_noise), 0.0
+        step_noise, step_carry, step_persistence = (
+            np.zeros_like(step_noise),
+            np.zeros_like(step_noise),
+            0.0,
+        )
+
+    if (
+        tolerance is not None
+        and persistence is not None
+        and math.isfinite(persistence.p_value)
+        and persistence.p_value <= _PERSISTENCE_ALPHA
+    ):
+        _log.warning(
+            "the error tube's noise may not be the plant's: the channel's residual persists "
+            "within units (p = %.3g), so a disturbance that persists may be read in part as the "
+            "drift, or the drift's form may miss the plant's; the tube's 0.95 a step is not "
+            "assured",
+            persistence.p_value,
+            extra={
+                "chc_event": "tube",
+                "noise_persistence": persistence.correlation,
+                "noise_persistence_p": persistence.p_value,
+            },
+        )
 
     def solve(lo: Array, hi: Array) -> CausalPlan:
         lo, hi = pin(lo, hi)
@@ -2400,7 +2435,7 @@ def prescribe(
             lipschitz=lipschitz,
             model_error=model_error,
             noise=step_noise,
-            noise_persistence=step_persistence,
+            noise_persistence=step_carry,
             tolerance=float("inf") if tolerance is None else tolerance,
             steps=_PLAN_STEPS,
             # the budgets' rows last: :meth:`Prescription.budget_prices` reads them there
@@ -2419,7 +2454,7 @@ def prescribe(
             if model_error > 0.0
             else model_error,
             step_noise,
-            step_persistence,
+            step_carry,
             dt,
             float("inf") if tolerance is None else tolerance,
             field_scale,
@@ -2522,6 +2557,9 @@ def prescribe(
         if plan.certified_horizon is None
         else math.sqrt(max(float(np.linalg.eigvalsh(step_noise)[-1]), 0.0)),
         tube_persistence=None if plan.certified_horizon is None else step_persistence,
+        tube_autoregression=None
+        if plan.certified_horizon is None
+        else tuple(tuple(float(value) for value in row) for row in step_carry),
         tube_mode=None
         if plan.certified_horizon is None
         else "bound"
@@ -2532,7 +2570,7 @@ def prescribe(
         else _state_noise(
             slopes(np.asarray(plan.actions, dtype=np.float64)),
             step_noise,
-            step_persistence,
+            step_carry,
             dt,
             horizon,
         ),
@@ -3528,7 +3566,7 @@ def _slopes(model: Dynamics, x0: Array) -> Callable[[NDArray[np.float64]], NDArr
 def _state_noise(
     slopes: NDArray[np.float64],
     noise: NDArray[np.float64],
-    persistence: float,
+    persistence: float | NDArray[np.float64],
     dt: float,
     horizon: int,
 ) -> tuple[tuple[float, ...], ...]:
@@ -3710,23 +3748,68 @@ def _model_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
 
 def _step_noise(
     fit: CausalDynamicsFit, dt: float, labels: NDArray[Any]
-) -> tuple[NDArray[np.float64], float]:
+) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
     """The plant's noise as the tube reads it: the plan's one-step error on the log, ``dt`` times
-    the fit's defect, its covariance in the states' units, the mean of its outer products, and its
+    the fit's defect, its covariance ``S`` in the states' units, the mean of its outer products;
+    the VAR(1) coefficient that carries it from step to step (:func:`_autoregression`); and its
     lag-1 correlation within units, pooled over the states as
-    :func:`~chc.dynamics_id.persistence_check` pools them. The correlation is nan, unknown, where
-    the log has noise and no unit has two consecutive transitions to read it from, and the tube is
-    then not evaluated: up to 0.18.0 it read 0, a tube holding white noise where the noise may
-    persist. Where the log has no noise it is 0, which moves nothing. ``labels`` are
-    :func:`_transitions`' group, period and unit of each transition. The defect is the fit's
-    integrator's, ``rk4`` by default, the step the plan rolls out by."""
+    :func:`~chc.dynamics_id.persistence_check` pools them, which the report prints. The two are
+    nan, unknown, where the log has noise and no unit has two consecutive transitions to read them
+    from, and the tube is then not evaluated: up to 0.18.0 it read 0, a tube holding white noise
+    where the noise may persist. Where the log has no noise they are 0, which moves nothing.
+    ``labels`` are :func:`_transitions`' group, period and unit of each transition. The defect is
+    the fit's integrator's, ``rk4`` by default, the step the plan rolls out by."""
     assert fit.defect is not None  # every fit keeps its defect
     error = dt * np.asarray(fit.defect, dtype=np.float64)
     covariance = error.T @ error / error.shape[0]
+    if not covariance.any():
+        return covariance, np.zeros_like(covariance), 0.0
     correlation = _persistence(
         error, labels[:, 2], labels[:, 1], fit.periods is not None
     ).correlation
-    return covariance, correlation if covariance.any() else 0.0
+    return covariance, _autoregression(error, covariance, labels[:, 2], labels[:, 1]), correlation
+
+
+def _autoregression(
+    error: NDArray[np.float64],
+    covariance: NDArray[np.float64],
+    units: NDArray[Any],
+    periods: NDArray[Any],
+) -> NDArray[np.float64]:
+    """``Phi``, the ``(n, n)`` coefficient of the VAR(1) the tube carries the one-step ``error`` by,
+    ``(N, n)`` rows of ``units`` at whole-number ``periods``: Yule--Walker's ``Gamma_1 S^-1``,
+    ``Gamma_1`` the mean of ``w_t w_{t-1}'`` over the pairs of one unit's consecutive periods and
+    ``S`` the ``covariance`` of every row, so that ``Cov(w_{k+1}, w_k) = Phi S`` as the log reads
+    it, in any units and any basis of the states. Directions ``S`` does not span carry no noise
+    and persist at 0. Where the pairs read a lag-1 covariance no stationary noise of covariance
+    ``S`` has, its whitened ``S^{-1/2} Gamma_1 S^{-1/2}`` past a contraction, it is scaled back to
+    one, the noise persisting fully along its most persistent direction. nan where no unit has two
+    consecutive periods.
+
+    A pooled correlation, one ``rho`` carrying ``Cov(w_i, w_j) = rho^|i - j| S``, reads a noise
+    persistent on one state and white on another as half as persistent on both: on the
+    quickstart's plant with its demand an AR(0.8), each state counted alike in its own units, it
+    read 0.41 where the supply's error persists at 0.80 and the wait's at 0.02, and the plant left
+    the tube from its second week on, 0.79 a week by the fifteenth (ADR 0105).
+    """
+    codes = np.unique(np.asarray(units).reshape(-1), return_inverse=True)[1].reshape(-1)
+    steps = np.asarray(periods).reshape(-1)
+    order = np.lexsort((steps, codes))
+    earlier, later = order[:-1], order[1:]
+    paired = (codes[earlier] == codes[later]) & (steps[later] - steps[earlier] == 1)
+    earlier, later = earlier[paired], later[paired]
+    states = covariance.shape[0]
+    if earlier.size == 0:
+        return np.full((states, states), math.nan)
+    lagged = error[later].T @ error[earlier] / earlier.size
+    values, vectors = np.linalg.eigh(covariance)
+    live = values > 1e-12 * float(values[-1])
+    basis, roots = vectors[:, live], np.sqrt(values[live])
+    whitened = (basis.T @ lagged @ basis) / np.outer(roots, roots)
+    norm = float(np.linalg.norm(whitened, 2))
+    if norm > 1.0:
+        whitened = whitened / norm
+    return basis @ (roots[:, None] * whitened / roots[None, :]) @ basis.T
 
 
 def _show(value: object) -> str:

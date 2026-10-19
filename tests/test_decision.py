@@ -874,9 +874,11 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
     assert plan.uncertainty_tube is not None
     problem = plan._problem
     assert problem is not None
-    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
+    noise, carried = result.certificate.tube_noise, result.certificate.tube_autoregression
     assert noise is not None
-    assert persistence is not None
+    assert carried is not None
+    # the noise as the tube carries it, a VAR(1) (ADR 0105)
+    persistence = np.asarray(carried)
     assert fit.drift_error is not None
     slopes = _slopes(problem.model, problem.x0)(np.asarray(plan.actions, dtype=np.float64))
     error = math.hypot(fit.channel_error * distance, fit.drift_error)
