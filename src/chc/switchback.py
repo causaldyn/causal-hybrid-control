@@ -1384,6 +1384,7 @@ _TIE = 1e-9  # a statistic within this share of the observed one's size ties wit
 _PERSISTENCE_POINTS = 21  # memories on the persistence range the interval is projected over
 _WIDEST = 1024.0  # standard errors from the estimate past which an interval's end is infinite
 _END = 1e-3  # standard errors an interval's end is found to, and may overshoot by
+_SCAN = 128  # angles a side an interval's ends are searched over, from outside in
 
 
 @dataclass(frozen=True)
@@ -1711,36 +1712,40 @@ def randomisation_interval(
 
     * the block difference of ``tau_5`` at ``a = 0.8`` over 8, 12 and 20 blocks. Wald covered
       0.886, 0.932 and 0.932. Over ``(0.6, 0.9)`` this covered 0.995, 0.980 and 0.973, unbounded
-      in 78%, 10% and none of the runs; at the true memory alone 0.956, 0.935 and 0.948, unbounded
-      in 28% of the runs over 8 blocks. At the truth the test rejected 4.0% and 4.9% of 4000 runs
+      in 81%, 10% and none of the runs; at the true memory alone 0.969, 0.935 and 0.948, unbounded
+      in 37% of the runs over 8 blocks. At the truth the test rejected 4.0% and 4.9% of 4000 runs
       over 8 and 12 blocks.
     * the plug-in's ``tau_3`` over 40 periods of ``MarkovDesign(0.3)``: Wald 0.925, the range
       0.990, the true memory 0.953, at 1.35 and 1.14 times Wald's median width.
     * the plug-in's steady state at ``a = 0.9`` over 60 and 120 periods: Fieller 0.890 and 0.918,
-      unbounded in 23% and 2% of the runs. Over ``(0.8, 0.95)`` this covered 0.993 and 1.000 at
-      1.37 and 1.57 times Fieller's median width, and at the true memory 0.938 and 0.940 at half
+      unbounded in 23% and 2% of the runs. Over ``(0.8, 0.95)`` this covered 1.000 both times at
+      1.41 and 1.57 times Fieller's median width, and at the true memory 0.950 and 0.940 at half
       of it.
     * ``tau_2`` at ``a = 0.95`` over 12 and 24 blocks of 2: Wald 0.919 and 0.934, the true memory
-      0.949 and 0.947, but unbounded in 94% and 84% of the runs.
+      0.987 and 0.983, but unbounded in 93% and 83% of the runs.
 
     A null without the memory, ``persistence = (0, 0)``, is not sharp under carryover. For the
     block difference it still covered 0.950 to 0.966 in every case above, and never unbounded; for
-    the plug-in it covered 0.53 of ``tau_3`` and none of the steady states, where it rejected every
-    effect in 41% and 48% of the runs.
+    the plug-in it covered 0.53 of ``tau_3`` and none of the steady states, at a sixth of the true
+    memory's median width.
 
     Every null is tested on the same ``draws`` schedules, or on all of a block design's when it has
     at most 2^14, at 21 memories spread evenly across ``persistence``; a memory between two of
-    them is covered by continuity, not exactly. The ends are found from the first effect accepted
-    near the estimate, by steps that double until the test rejects and then bisection to a
-    thousandth of a standard error, each end reported on its rejected side. An accepted set with
-    gaps may come back with a gap filled, or cut at the first rejection a step lands on. An end
-    past 1024 standard errors is infinite.
+    them is covered by continuity, not exactly. The interval is the hull of the accepted effects,
+    gaps filled: each end is searched from outside in over 128 effects a side, spread evenly in
+    the angle of ``(tau_H - estimate) / se`` out to 1024 standard errors, and the first accepted
+    one is bisected against its rejected neighbour to a thousandth of a standard error, the end
+    reported on its rejected side. An accepted part narrower than one step of that angle, 0.0123
+    radians or 0.0123 standard errors at the estimate, can still be missed. An end whose outermost
+    effect is accepted is infinite. Over all 128 schedules of seven blocks of three at
+    ``a = 0.6``, read with noise, for 300 draws of the shocks, the interval at the true memory
+    missed 2.1% of 35974 readings, each one where the exact test rejected the truth (4.9%).
 
     Raises:
         ValueError: when :func:`randomisation_test` would refuse, ``persistence`` is not
-            ``0 <= lo <= hi < 1``, or the test rejects every effect within eight standard errors
-            of the estimate at every memory in the range: the data are at odds with a first-order
-            plant there, at least near the estimate.
+            ``0 <= lo <= hi < 1``, or the test rejects every effect the search tries, out to 1024
+            standard errors of the estimate, at every memory in the range: the data are at odds
+            with a first-order plant over that range.
     """
     lo, hi = (float(v) for v in persistence)
     if not 0.0 <= lo <= hi < 1.0:
@@ -1762,32 +1767,31 @@ def randomisation_interval(
 
     # the search's unit; a reading without noise has no standard error to step by
     centre, scale = reading.estimate, reading.se or max(abs(reading.estimate), 1.0)
-    candidates = [centre] + [centre + s * k * scale for k in range(1, 9) for s in (1.0, -1.0)]
-    start = next((tau for tau in candidates if accepted(tau)), None)
-    if start is None:
-        raise ValueError(
-            f"the randomisation test rejects every {estimand.name} within eight standard errors of "
-            f"{centre:.4g} at every memory in [{lo}, {hi}]: the data are at odds with a "
-            "first-order plant over that range"
-        )
+    # even in the angle of tau - centre: the imputed readings' statistic turns with that angle, and
+    # tends to the channel's own as tau runs off either way
+    angles = math.atan(_WIDEST) * np.arange(-_SCAN, _SCAN + 1) / _SCAN
+    grid = centre + scale * np.tan(angles)
     ends = []
-    for direction in (-1.0, 1.0):
-        inside, step = start, scale
-        while accepted(start + direction * step):
-            inside = start + direction * step
-            step *= 2.0
-            if step > _WIDEST * scale:
-                ends.append(direction * math.inf)
-                break
-        else:
-            outside = start + direction * step
-            while abs(outside - inside) > _END * scale:
-                middle = 0.5 * (inside + outside)
-                if accepted(middle):
-                    inside = middle
-                else:
-                    outside = middle
-            ends.append(outside)
+    for direction, points in ((-1.0, grid), (1.0, grid[::-1])):
+        # from outside in, so that an accepted part past a rejected gap is not left out
+        first = next((k for k, tau in enumerate(points) if accepted(tau)), None)
+        if first is None:
+            raise ValueError(
+                f"the randomisation test rejects every {estimand.name} within {_WIDEST:.0f} "
+                f"standard errors of {centre:.4g} at every memory in [{lo}, {hi}]: the data are "
+                "at odds with a first-order plant over that range"
+            )
+        if first == 0:
+            ends.append(direction * math.inf)
+            continue
+        inside, outside = points[first], points[first - 1]
+        while abs(outside - inside) > _END * scale:
+            middle = 0.5 * (inside + outside)
+            if accepted(middle):
+                inside = middle
+            else:
+                outside = middle
+        ends.append(outside)
     interval = (ends[0], ends[1])
     _log.info(
         "switchback randomisation interval: %s by %s, [%.4g, %.4g]",

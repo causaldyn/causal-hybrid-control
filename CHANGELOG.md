@@ -229,6 +229,17 @@ still change).
   (`validation/optimal_exploration.mac`), so the arm costs `n/(n−2)` times `B/v`, 7 % more at
   `n = 30`, and its optimum lies `sqrt(n/(n−2))` = 1.035 times `vstar_theory` out, inside one step
   of the grid. For `n ≤ 2` the arm's mean is infinite and for `n ≤ 4` its variance. No number moves.
+- **`randomisation_interval` returns the hull of the effects its test accepts.** Its ends were
+  searched out from the first effect accepted near the estimate and stopped at the first
+  rejection, so an accepted part past a gap was cut off: on seven blocks of three at `a = 0.6`
+  one schedule accepts `[0.54, 3.02]` and `[3.22, 10.5]`, and the interval was `(3.22, 10.53)`,
+  missing the true 1.96 that the test accepts. Over all 128 schedules for 300 draws of the shocks
+  it missed 4.99 % of the readings at the true memory, 153 of them on accepted effects. Each end
+  is now searched from outside in, over 128 angles a side out to 1024 standard errors: it misses
+  2.07 %, none on an accepted effect. On the bench the true memory's coverage rises at 8 blocks
+  (0.956 to 0.969, unbounded 28 % to 37 %), on the steady state at 60 periods (0.938 to 0.950,
+  the range 0.993 to 1.000) and on the long memory (0.949 and 0.947 to 0.987 and 0.983), and the
+  memoryless null no longer raises on the steady states. ADR 0025 is amended.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They
