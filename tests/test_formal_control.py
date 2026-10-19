@@ -252,21 +252,19 @@ def test_lipschitz_bound_tends_to_the_linear_envelope(horizon) -> None:
     )
     near = lipschitz_rollout_bound(1e-3, eps, dt, horizon)
     assert near == pytest.approx(eps * dt * horizon, rel=1e-3 * horizon * dt, abs=0.0)
-    assert near >= eps * dt * horizon
+    # at H = 1 the two are equal in exact arithmetic, so only to rounding
+    assert near >= eps * dt * horizon * (1 - 4 * np.finfo(float).eps)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="(1 + L dt)^H - 1 cancels: L = 1e-14, eps = 0.2, dt = 0.01, H = 10 reads 0.0 where "
-    "the Euler gap is 0.02",
-)
 def test_lipschitz_bound_covers_the_gap_at_a_tiny_rate() -> None:
     """lipschitz_rollout.v rollout_error_bound at L = 1e-14: the bound is at least the Euler gap
-    of x' = L x against x' = L x + eps, which is eps dt H to 1e-15."""
+    of x' = L x against x' = L x + eps, which is eps dt H to 1e-15. (1 + L dt)^H - 1 read 0.0
+    there, and 6e-9 short of eps dt at L = 1e-7, H = 1."""
     gap = 0.0
     for _ in range(10):
         gap = (1.0 + 1e-14 * 0.01) * gap + 0.01 * 0.2
     assert lipschitz_rollout_bound(1e-14, 0.2, 0.01, 10) >= gap * (1 - 1e-12)
+    assert lipschitz_rollout_bound(1e-7, 0.2, 0.05, 1) == pytest.approx(0.01, rel=1e-15, abs=0.0)
 
 
 @settings(max_examples=40, deadline=None)
@@ -733,11 +731,6 @@ def test_closed_loop_confounding_bound_holds_on_a_confounded_loop(
         assert gap_k <= bound * (1 + 1e-9) + 1e-15
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the Gronwall closed form cancels at a tiny rate: L_x = 0, L_u = 1e-45, L_pi = 1 "
-    "reads 0.0 where one Euler step of the confounded loop is off by 0.01",
-)
 def test_closed_loop_confounding_bound_at_a_tiny_rate() -> None:
     """lipschitz_rollout.v rollout_error_bound at L_x + L_u L_pi = 1e-45: one Euler step of
     x' = 1e-45 u, u = x, against the plant whose effect is off by Delta(2) = 0.2 is 0.01 apart."""
