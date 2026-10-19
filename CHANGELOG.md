@@ -127,6 +127,11 @@ still change).
   with i.i.d. noise (0.873 to 0.930 with AR noise) and 0.942 from 200, and the block difference
   covered 0.885 over 8 blocks. The docstring now gives these and points short runs to
   `se="design"` or `randomisation_test`. Docs only; no value moves. Since 0.8.0.
+- **One seed's `run_multiseed` interval is unknown, `(-inf, inf)`, not the point twice.** With a
+  single seed, `MultiSeedResult.regret_lo` and `regret_hi` were both its regret: a width of zero
+  labelled 95%, which held the mean with probability 0. One regret shows no spread, so the interval
+  is now `(-inf, inf)`, and the leaderboard prints `[-inf, inf]`. From two seeds nothing moves.
+  Since 0.2.0.
 
 ## [0.18.0] — 2026-10-13
 

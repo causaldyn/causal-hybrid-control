@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -57,11 +59,15 @@ def test_confounding_robust_win_separates_across_seeds() -> None:
     assert by_name["robust"].regret_hi < by_name["greedy"].regret_lo
 
 
-def test_single_seed_gives_a_degenerate_interval() -> None:
-    by_name = {r.controller: r for r in run_multiseed(InventoryTask(), seeds=[0])}
-    predictive = by_name["predictive"]
-    assert predictive.n_seeds == 1
-    assert predictive.regret_lo == predictive.regret_hi == predictive.regret_mean  # one point only
+def test_a_single_seed_gives_no_interval() -> None:
+    """One regret shows no spread, so a 95% interval for the mean is unknown. It read
+    ``[mean, mean]``, a width of zero labelled 95%, which held the mean with probability 0."""
+    (result,) = run_multiseed(_Regrets({0: 1.5}), [0])
+    assert result.n_seeds == 1
+    assert result.regret_mean == 1.5
+    assert (result.regret_lo, result.regret_hi) == (-math.inf, math.inf)
+    row = leaderboard_multiseed([result]).splitlines()[1]
+    assert row.split()[1:4] == ["1.50", "[-inf,", "inf]"]
 
 
 class _Regrets:

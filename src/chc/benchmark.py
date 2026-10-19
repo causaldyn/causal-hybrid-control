@@ -973,11 +973,11 @@ def _mean_interval(values: np.ndarray, *, level: float = 0.95) -> tuple[float, f
 
     Exact when the values are independent draws of one normal law, at any number of them. A
     percentile bootstrap cannot reach past the few values it resamples: on normal regrets it held
-    the mean 0.75 of the time at three seeds, 0.83 at five and 0.91 at twelve.
+    the mean 0.75 of the time at three seeds, 0.83 at five and 0.91 at twelve. Fewer than two
+    values show no spread, so the interval is unknown: ``(-inf, inf)``.
     """
     if values.size < 2:
-        point = float(values.mean()) if values.size else float("nan")
-        return point, point
+        return -math.inf, math.inf
     mean = float(values.mean())
     quantile = float(stats.t.ppf(0.5 + level / 2.0, values.size - 1))
     half = quantile * float(values.std(ddof=1)) / math.sqrt(values.size)
@@ -992,7 +992,7 @@ def run_multiseed(task: BenchmarkTask, seeds: Sequence[int]) -> list[MultiSeedRe
     replacing a single-seed point regret that could be luck of the draw. It holds the mean regret
     with probability 0.95 when the seeds' regrets are normal. A skewed law falls short at few
     seeds: chi-square regrets with one degree of freedom were held 0.83 of the time at five seeds
-    and 0.885 at twenty. One seed gives the point as both ends.
+    and 0.885 at twenty. One seed shows no spread, and its interval is ``(-inf, inf)``: unknown.
     """
     regrets: dict[str, list[float]] = {}
     oods: dict[str, list[float]] = {}
