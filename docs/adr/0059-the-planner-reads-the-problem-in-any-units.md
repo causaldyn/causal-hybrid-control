@@ -7,6 +7,7 @@ the barrier's rounds keep their units. `lbfgs_box_control` minimises in the plan
 variables. Amended 2026-10-08: the line search asks a step for a third of the fall its gradient
 predicts, where in 0.15.0 it took any fall that beat `tol`; from the zero guess
 `SupportShiftTask`'s oracle had settled 0.459 above the plan 0.14.4 reached (Consequences).
+Amended by ADR 0102, 2026-10-19: the barrier rounds step in their own curvature's units.
 
 ## Context
 

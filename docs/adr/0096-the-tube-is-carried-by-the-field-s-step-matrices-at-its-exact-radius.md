@@ -2,6 +2,7 @@
 
 **Status:** accepted, 2026-10-13. Amends the tube of `prescribe` and `causal_plan` (ADR 0080) and
 its rate error (ADR 0087, ADR 0091).
+Amended by ADR 0100, 2026-10-19: the drift's error enters times √n.
 
 ## Context
 

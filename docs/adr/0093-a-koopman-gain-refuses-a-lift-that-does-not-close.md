@@ -1,6 +1,7 @@
 # ADR 0093 — A Koopman gain refuses a lift that does not close
 
 **Status:** accepted, 2026-10-13.
+Amended by ADR 0103, 2026-10-19: each feature's residual is read against its spread about its mean.
 
 ## Context
 

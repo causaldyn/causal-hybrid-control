@@ -7,6 +7,96 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`fit_lift(serial="ar1")` reads each geo test's noise as an AR(1).** Under AR(0.8) noise the
+  independent check rejected the true channel on 30 % of worlds at 5 %; with `serial="ar1"` its
+  size is 4.5–6.0 % and the coverage 95.5–98.5 % at persistence 0 to 0.8. `LiftFit.ar_coefficient`
+  holds the estimate. The default is unchanged.
+- **`fit_causal_residual(unconfounded=)` and `times=`.** An empty adjustment set that a graph
+  proves enough (a randomised lever) is fitted as identified, with its errors and its tube;
+  `prescribe` sets it from the graph. `times=` reads the known physics at each transition's start.
+- **`SolverStatus` `infeasible`**: barrier rounds whose penalty reached its ceiling with a step
+  still short of the condition.
+- **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
+- **A `lever_range` warning** when a prescription sets a lever outside the range the panel logged.
+
+### Changed
+
+- **`prescribe(integrator=...)` accepts only `"rk4"`**: an Euler fit was planned by RK4, and its
+  tube certified steps the plan left. `fit_causal_residual(integrator="euler")` stays.
+- **Undeclared text periods raise a `FutureWarning`**: they sort as text (`"10"` before `"2"`).
+  `frequency="observed"` keeps that reading without it.
+- **The tube's field error is the scale of the Euclidean norm over the states.** It was the root
+  mean over the n states and m levers, √(n·m) smaller; the drift's part grows by √n. Tubes widen,
+  and certified horizons can shorten where the model's error dominates the noise.
+- **`IV2SLS.estimate`'s default `covariates` is `("x",)`**; it was `("x", "z")` and ignored them.
+- **A held plan reports an augmented-Lagrangian stationarity**, where it reported `not_evaluated`;
+  barrier rounds take a different number of descent steps (about 11× fewer on the receding-horizon
+  oscillator, 2.5× more on the pendulum demo).
+- **`KoopmanModel` reads closure residuals over each feature's spread about its mean**, so some
+  gains granted before are refused.
+- **Documentation states what results rest on.** The README ties the headline to a confounder the
+  predictive baseline leaves out, the LaLonde result to the Dehejia–Wahba subsample, and the
+  BOPTEST run to a forecast MPC outside `prescribe`; the proofs are said to check algebra, and 26
+  docstrings name what their proof proves. `multivariate_action_floor` is labelled local;
+  `confounding_robust_lq_regret` a second-order term, not a bound; `allocate` on S-curves the best
+  flat plan; `stackelberg_allocation` a local maximum; the marketplace's planner is handed the
+  simulator's equilibrium. Premises are stated for local projections under a persistent treatment,
+  the "mis" estimate, the experiment's CE action, the gate's steady contrast, the single-Gaussian
+  `SupportModel`, fixed-degree nuisances, and `plan_regret_bound`'s unread rows.
+
+### Fixed
+
+- **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
+  over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
+  with an error 13× too small, and the MMM's incremental returns scattered with the season. They
+  are now exact on a linear plant.
+- **`prescribe` derives the adjustment set for the levers' effect on every modelled state.** A
+  constrained state confounded with a lever was fitted at +0.877 against −0.40 and certified; it
+  is now `not_identified`.
+- **The barrier audit certifies a step only where the path is in the safe set at the step and the
+  next**: a plan certified at all 12 steps ended at `h = -0.065`. `gamma_star` is read on the
+  levers' box (a box `[0, 5]` where only a negative action helps reported ceilings, now nan), and
+  a selected plan is audited on every lever's box. `certify_safety` refuses a model not affine in
+  the action, and `causal_plan` a non-finite `x0`; the tube certifies no step past a non-finite
+  predicted state.
+- **Barrier rounds read no units.** A force in units 1e3 its own ran out of steps 14 % above the
+  optimum, and a cost in units 1e-3 its own stopped as converged 2.3 % above it; every unit
+  choice now gives one plan within 4e-6 of it.
+- **`perturbation_cost_weights` and `ConfoundingRobustPenalty` add the step's curvature term**;
+  the bound had been exceeded 1.03–1.28× on nonlinear plants. Linear plants are unchanged.
+- **Panels**: one stray period that sets an inferred grid is refused, naming the row (950
+  transitions had become 2); time-zone-aware dates held as objects are read as dates.
+- **Fits**: with `clusters=None` a transition's states are summed before squaring; the rk4 Newton
+  stop is relative to the parameters' units, so an exact `known` converges; `BackdoorOLS` and
+  `IV2SLS` report HC1 errors, and `IV2SLS` conditions both stages on its covariates.
+- **`causal_pathway` adjusts each projection for every series' past** (an observed confounder
+  flipped a source's sign on 20 of 20 worlds); `discover_lagged_parents` drops a parent the others
+  explain and no longer ranks underflowed p-values by column order; `gcm_test`'s size at its
+  fewest rows goes from 12–14 % to at most 6.8 % at 5 %.
+- **Regret and certificates**: `van_trees_certificate` weighs the data by 1/σ² (its risk read
+  1800× the bound at σ = 2); `highprob_regret_certificate`'s coverage reads the exact regret (0.916
+  where the proxy read 0.996); the whole move's Γ holds at least to the flip when erf rounds to 1;
+  mean-field residuals read the solution, not its equations, and `MeanFieldControl.regrets` takes
+  a stronger oracle (planned regret 0.57 → 22.8).
+- **Media mix**: `contribution`, `roi` and `marginal_roi` refuse non-finite or negative spend; an
+  adstock kernel refuses an empty series; the myopic arm refuses a budget its levers cannot spend;
+  `budget_for` meets a return target at its last crossing (22.83 → 43.04).
+- **DLM**: filters log `dlm_windup` when blocks seen only through their sum leak the discount's
+  inflation (forecast variance 10.9× the squared errors, unwarned); `monitor_evalues` returns one
+  row per step; `constrained_sample` refuses fewer than 4 draws; `confidence_set` refuses fits of
+  another design; NumPy integers count as integers.
+- **Control and numerics**: `dlqr_feedback_controls` steps on the plant's clock (controls drifted
+  by up to 2.9); `continuous_lqr` refuses an `r` that is not positive definite; `mpc_control`
+  warns when replans run out of `inner_steps`; a descent infinite at every plan reports
+  `no_progress`; `rise_time` returns `inf` when the level is never reached; the convection-diffusion
+  Galerkin upwinds by the flow's sign; blaming latents in `adjustment_set` costs one check per
+  latent, not ≈ e·k! graphs; the report prices a budget period the horizon cuts short at its share.
+- **Benchmarks**: the pricing and inventory tasks add `predictive-all`, a regression on every
+  logged column, which lands with `causal-CHC`; `run()` returns four results.
+- `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
+
 ## [0.18.0] — 2026-10-13
 
 ### Added

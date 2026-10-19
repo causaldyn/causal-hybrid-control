@@ -10,6 +10,8 @@ map, so a plan under the radius no longer puts the kink's curvature in the secan
 the kink moves where zero is not stationary, and float32 converges as float64 does; the radius'
 numbers below, the float32 consequence and the residual of 0.69 at the box ±0.2 are superseded
 there.
+Amended by ADR 0102, 2026-10-19: the barrier rounds step in their own curvature's units and stop on
+a relative fall.
 
 ## Context
 

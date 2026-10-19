@@ -3,6 +3,8 @@
 **Status:** accepted, 2026-10-12. Amends ADR 0002: the radius `delta` is now
 `(gamma - 1)/(gamma + 1) * cvar_gap * ||B_hat(x_0)||_2`. Amended by ADR 0091, 2026-10-13: under
 `prescribe` the radius and the action set read each lever in units of its own largest action.
+Amended by ADR 0101, 2026-10-19: `gamma_star` is read on the levers' box, and a step is certified
+only where the path is in the safe set at it and the next.
 
 ## Context
 

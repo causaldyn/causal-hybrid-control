@@ -3,6 +3,8 @@
 **Status:** accepted, 2026-10-13. Amended 2026-10-13, before any release: the descent reads the
 stationarity itself, and does not stop beyond its tolerance while a trial still falls by the
 gradients at its ends (the last bullet of the Decision).
+Amended by ADR 0102, 2026-10-19: a plan held under a barrier reads the augmented Lagrangian's
+stationarity, where it read none.
 
 ## Context
 
