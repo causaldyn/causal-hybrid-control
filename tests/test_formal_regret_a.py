@@ -12,7 +12,7 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from scipy.integrate import solve_ivp
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
@@ -326,7 +326,9 @@ def test_capped_block_is_the_global_optimum_of_the_convex_program(horizon: int, 
 )
 def test_capped_schedule_is_the_box_optimum(seed: int, idle: float, budget: float | None) -> None:
     """capped_exploration.v earlier_is_strictly_cheaper: with caps that vary and rounds with no
-    authority, the policy's schedule is the box optimum, by L-BFGS-B over every round."""
+    authority, the policy's schedule is the box optimum, by L-BFGS-B over every round. L-BFGS-B
+    from one start stops on its relative-reduction test short of the optimum (2.61485 against
+    2.61394 from half the caps at seed 3551); the oracle is the best of three starts."""
     a, k, c, i0 = _exploration_constants()
     rng = np.random.default_rng(seed)
     horizon = 40
@@ -342,15 +344,18 @@ def test_capped_schedule_is_the_box_optimum(seed: int, idle: float, budget: floa
     grid = min(_schedule_cost(v, a, k, c, i0) for v in fills)
     assert pol.cost <= grid + 1e-12
     if budget is None:
-        free = minimize(
-            lambda v: _schedule_cost(v, a, k, c, i0),
-            caps / 2.0,
-            method="L-BFGS-B",
-            bounds=list(zip(np.zeros(horizon), caps, strict=True)),
-            options={"ftol": 1e-15, "gtol": 1e-12, "maxiter": 10_000},
+        free = min(
+            minimize(
+                lambda v: _schedule_cost(v, a, k, c, i0),
+                start,
+                method="L-BFGS-B",
+                bounds=list(zip(np.zeros(horizon), caps, strict=True)),
+                options={"ftol": 1e-15, "gtol": 1e-12, "maxiter": 10_000},
+            ).fun
+            for start in (np.zeros(horizon), caps / 2.0, caps)
         )
-        assert pol.cost <= free.fun + 1e-10
-        assert pol.cost == pytest.approx(free.fun, rel=1e-7, abs=0.0)
+        assert pol.cost <= free + 1e-10
+        assert pol.cost == pytest.approx(free, rel=1e-7, abs=0.0)
 
 
 def _balance_crossing(caps, horizon):
@@ -571,15 +576,19 @@ def test_adaptive_exploration_every_schedule_meets_the_sequence_floor(
 def test_adaptive_exploration_floor_numerator_is_the_decision_sensitivity(
     b: float, rr: float, sigma: float, eta: float
 ) -> None:
-    """adaptive_exploration.mac: K = A (du*/db)^2 sigma^2; the leading term is 2 sqrt(A K T/eta)."""
+    """adaptive_exploration.mac: K = A (du*/db)^2 sigma^2; the leading term is 2 sqrt(A K T/eta).
+    ``du*/db`` carries ``rr - b^2``, whose rounding is ``eps (rr + b^2) / |rr - b^2|`` of it, 4e-11
+    at ``rr = 0.99999``, ``b = 1``: the two routes to ``K`` agree to that, not to 1e-12."""
     cert = adaptive_exploration_certificate(b=b, rr=rr, sigma=sigma, eta=eta, horizons=(10, 1000))
     a, k, _, _ = _exploration_constants(b=b, rr=rr, sigma=1.0, eta=1.0)
+    assume(k > 0.0)
+    edge = 1e-12 + 8.0 * np.finfo(float).eps * a / abs(rr - b * b)
     m0 = 1.0  # greedy never explores, so every round pays the prior floor K/m0
     expected = 2.0 * np.sqrt(a * k * sigma**2 * cert.horizons / eta)
     leading = cert.lower_bound + a * m0 / eta
-    assert leading == pytest.approx(expected, rel=1e-12, abs=1e-12 * a * m0 / eta)
+    assert leading == pytest.approx(expected, rel=edge, abs=1e-12 * a * m0 / eta)
     greedy = cert.horizons * k * sigma**2 / m0
-    assert cert.greedy_regret == pytest.approx(greedy, rel=1e-12, abs=0.0)
+    assert cert.greedy_regret == pytest.approx(greedy, rel=edge, abs=0.0)
 
 
 @settings(max_examples=30, deadline=None)
