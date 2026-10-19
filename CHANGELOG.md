@@ -126,9 +126,13 @@ still change).
   Its 600 logs a cell read high by chance: the code reproduces them to the bit, and 2000 fresh logs
   a cell cover 0.830, 0.841 and 0.850 at 400, 800 and 1600 windows, as ADR 0083 measured. Its
   attribution to the spread, not the bias, stands. `Prescription.evaluate` now states what the
-  unit bootstrap covers with no draw refused (0.925 and 0.902 on two plants, 60 units) and what
+  unit bootstrap covers with no draw refused (0.925 and 0.902 on two plants, 60 units; 0.914 and
+  0.880 at 30 units, where the spread its draws read is 0.83 to 0.87 of the estimate's) and what
   one unit's difference interval covers (0.74 to 0.88), both short through the estimate's right
-  skew, which the spread it reads follows. Docs only; no value moves. Since 0.18.0.
+  skew, which the spread it reads follows. A BCa interval over units, a log or square-root
+  transform, Hall's correction and the logged policy's fitted influence term were each measured on
+  the same panels, and none restored 0.95 on both plants at 60 and 30 units, so none ships. Docs
+  only; no value moves. Since 0.18.0.
 - **`read_switchback` states that its `se="model"` interval is asymptotic in the run's length.**
   It read as a plain 1 - alpha interval, and ADR 0098 blamed its shortfall on a short run whose
   noise persists. The shortfall is the short run alone: on the working model the local
