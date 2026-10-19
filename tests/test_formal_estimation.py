@@ -609,7 +609,8 @@ def test_bayes_action_is_the_certainty_equivalent_one_with_a_raised_action_weigh
 
 
 def test_one_zone_example_regrets_match_the_module_docstring() -> None:
-    """chc.experiment: Q = 1, R = 0.05, target 1, b ~ N(1, 0.6^2): regret 0.12 and Bayes 0.078."""
+    """chc.experiment: Q = 1, R = 0.05, target 1, b ~ N(1, 0.6^2): regret 0.12 and Bayes 0.079.
+    The docstring said 0.078; the Bayes action's regret is 0.07858."""
     nodes, weights = np.polynomial.hermite_e.hermegauss(200)
     weights = weights / weights.sum()
     one = np.ones((1, 1))
@@ -625,8 +626,7 @@ def test_one_zone_example_regrets_match_the_module_docstring() -> None:
         )
 
     assert regret(decision.solve([1.0])) == pytest.approx(0.12, abs=0.005)
-    # quoted to three places as 0.078: the regret is 0.07858, which rounds to 0.079
-    assert regret(bayes.solve([1.0])) == pytest.approx(0.078, abs=1e-3)
+    assert regret(bayes.solve([1.0])) == pytest.approx(0.079, abs=5e-4)
     assert regret(bayes.solve([1.0])) < 0.100
 
 

@@ -41,7 +41,7 @@ product (``validation/experiment_bayes_action.mac``), so the Bayes action is the
 certainty-equivalent one with the action weight raised by ``(coupling' Q coupling) o S``, and it
 holds back where the channel is uncertain. Where the prior is wide it can beat both: on one zone,
 ``Q = 1``, ``R = 0.05``, a target 1 from a baseline 0 and ``b ~ N(1, 0.6^2)``, acting now on the
-mean lost 0.12 and the Bayes action 0.078, less than the 0.100 that the recommended experiment's
+mean lost 0.12 and the Bayes action 0.079, less than the 0.100 that the recommended experiment's
 regret after and spend came to. So ``"experiment"`` says experimenting beats acting on the mean,
 not that it beats acting well now.
 

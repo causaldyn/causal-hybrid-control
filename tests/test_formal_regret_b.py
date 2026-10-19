@@ -957,9 +957,10 @@ def test_highprob_band_covers_the_exact_regret_where_c_holds():
 
 def test_highprob_band_undercovers_outside_the_local_regime():
     """highprob_regret.v covers the quadratic proxy only: off the local regime it undercovers."""
-    curve = R.highprob_regret_certificate(b=0.6, sigma=1.0, n=30, deltas=(0.01,), n_trials=2000)
-    sd = math.sqrt(0.01 * 0.99 / 2000)
-    assert curve.empirical_coverage[0] == pytest.approx(0.916, abs=0.0005)
+    curve = R.highprob_regret_certificate(b=0.6, sigma=1.0, n=30, deltas=(0.01,))
+    sd = math.sqrt(0.01 * 0.99 / 4000)
+    # the docstring quoted 0.916, the reading at 2000 trials; the default 4000 read 0.911
+    assert curve.empirical_coverage[0] == pytest.approx(0.911, abs=0.0005)
     assert curve.empirical_coverage[0] < 0.99 - 4.0 * sd
 
 

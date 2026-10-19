@@ -858,8 +858,8 @@ def highprob_regret_certificate(
     holds across the confidence region. ``empirical_coverage`` reads the EXACT regret
     ``(b^2+rr)(u*(b_hat)-u*(b))^2`` against it; read on the quadratic proxy ``C*(b_hat-b)^2`` it
     would only check the concentration. At the defaults the two agree; at ``b = 0.6``,
-    ``sigma = 1``, ``n = 30`` the band at ``delta = 0.01`` covers the exact regret in 0.916 of the
-    trials, where the proxy reads 0.996.
+    ``sigma = 1``, ``n = 30`` the band at ``delta = 0.01`` covers the exact regret in 0.911 of the
+    4000 default trials (Monte Carlo SD 0.0045), where the proxy reads 0.996.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     ds = np.asarray(deltas, dtype=np.float64)
@@ -5043,7 +5043,9 @@ class DoublyRobustCurve:
 
     errors: Vector  # delta grid (both nuisances misspecified by delta together)
     dr_regret_both: Vector  # AIPW control regret when both nuisances err (~ (delta^2)^2 = delta^4)
-    dr_slope: float  # log-log slope of dr_regret_both: 4 as delta -> 0, 3.33 on the default grid
+    # log-log slope of dr_regret_both: 4 as delta -> 0; on the default grid the population's is
+    # 3.33 and the seeded estimate scatters about it (3.20 at seed 0, 3.42 / 3.19 / 3.46 at 1-3)
+    dr_slope: float
     dr_outcome_ok: float  # AIPW regret with the outcome model correct, propensity wrong (-> 0)
     dr_propensity_ok: float  # AIPW regret with the propensity model correct, outcome wrong (-> 0)
     outcome_reg_fails: float  # outcome-regression regret when its outcome model is wrong (> 0)
@@ -5087,7 +5089,8 @@ def doubly_robust_control_certificate(
     ``O((dmu*de)^2)`` and vanishes if EITHER nuisance model is correct (double robustness), unlike
     outcome-regression (needs the outcome model) or IPW (needs the propensity model). Here the bias
     is ``dmu*de*E[(1/2-e)/e_hat]``: the propensity error moves the weight as well, so the slope is 4
-    only as the errors vanish, and 3.33 over the default grid. ``seed`` selects the draws.
+    only as the errors vanish, and 3.33 over the default grid, which the defaults read as 3.20 at
+    seed 0 (3.42, 3.19, 3.46 at seeds 1-3). ``seed`` selects the draws.
     """
 
     def regret(dmu: float, de: float, kind: str) -> float:

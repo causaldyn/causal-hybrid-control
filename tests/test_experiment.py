@@ -571,6 +571,6 @@ def test_the_bayes_action_can_beat_an_experiment_judged_against_acting_on_the_me
         best = 0.5 * (1.0 - b**2 / (b**2 + 0.05))  # J at the action that knows b
         return float(np.mean(0.5 * ((b * u - 1.0) ** 2 + 0.05 * u**2) - best))
 
-    # 0.078 against the mean's 0.119; the Monte Carlo sd of each is under 0.001
+    # 0.079 against the mean's 0.119; the Monte Carlo sd of each is under 0.001
     assert regret(float(cautious[0])) < regret(float(decision.solve(prior.mean)[0])) - 0.03
     assert regret(float(cautious[0])) < design.regret_after + design.spend - 0.01
