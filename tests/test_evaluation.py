@@ -830,6 +830,66 @@ def test_dr_removes_the_first_order_error_of_a_misspecified_model() -> None:
     assert abs(dr) < 0.25 * direct
 
 
+def _off_in_offset(shift: float) -> LinearGaussianPlant:
+    return LinearGaussianPlant(MARKET.a, MARKET.b, MARKET.offset + shift, MARKET.noise)
+
+
+@pytest.mark.parametrize("smoothed", [False, True])
+def test_dr_is_not_moved_by_an_offset_error(smoothed: bool) -> None:
+    """Weighed toward the plan's law under the model, "dr" was off by the product of the weights'
+    error and the model's, and an offset error moves a slow loop's stationary mean far: off by
+    0.05, that product was 0.0104 below the truth, further than "mis"'s first-order 0.0080 above
+    it (validation/dr_logged_weights.mac). Weighed toward the law under the plant fitted to the
+    logs, it is left with sampling error."""
+    plan = PLAN if smoothed else AffinePolicy(PLAN.gain, PLAN.offset, np.array([[0.04]]))
+    truth = _stationary_value(MARKET, plan)
+    x, u = _stationary_logs(MARKET, LOGGER, 200_000, 1, seed=3)
+    logs = {"x": x[0], "u": u[0]}
+
+    direct = _stationary_value(_off_in_offset(0.05), plan) - truth
+    dr = evaluate_plan(logs, plan, "dr", plant=_off_in_offset(0.05), cost=COST).value - truth
+
+    assert direct > 0.007
+    # the estimate's sampling standard deviation is 0.0006 for both plans: 0.004 is 6.7 of them
+    assert abs(dr) < 0.5 * direct
+
+
+def test_the_dr_interval_covers_the_deployed_value_under_an_offset_error() -> None:
+    """With the offset off by 0.05, over 400 logs of 4000 steps, the interval of "dr" weighed
+    toward the model's law covered 0.475; weighed toward the logs' own loop, 0.963."""
+    dithered = AffinePolicy(PLAN.gain, PLAN.offset, np.array([[0.04]]))
+    truth = _stationary_value(MARKET, dithered)
+    x, u = _stationary_logs(MARKET, LOGGER, 4000, 100, seed=4100)
+    covered = [
+        lo <= truth <= hi
+        for lo, hi in (
+            evaluate_plan(
+                {"x": x[r], "u": u[r]}, dithered, "dr", plant=_off_in_offset(0.05), cost=COST
+            ).interval
+            for r in range(x.shape[0])
+        )
+    ]
+    # nominal 0.95, three binomial standard deviations (0.022) at 100 logs
+    assert np.mean(covered) >= 0.88
+
+
+@pytest.mark.parametrize("method", ["mis", "dr"])
+def test_a_plan_the_logs_loop_cannot_hold_is_refused(method: EvaluationMethod) -> None:
+    """The model's b has the wrong sign, so it holds a plan the true plant does not: the plan's
+    loop has spectral radius 1.05 and no average cost, which the logs' own fit says."""
+    cost = QuadraticCost(Q=jnp.eye(1), R=jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.zeros(1))
+    logger = AffinePolicy(np.zeros((1, 1)), np.zeros(1), np.array([[0.25]]))
+    plan = AffinePolicy(np.array([[0.15]]), np.zeros(1), np.array([[0.2]]))
+    x, u = _stationary_logs(_scalar_plant(0.9, 1.0, 0.1), logger, 4000, 1, seed=1)
+    model = _scalar_plant(0.9, -1.0, 0.1)
+    assert certify_evaluation(model, logger, plan, method, 4000).certified
+
+    with pytest.raises(InfeasibleEvaluation, match="plant fitted to the logs") as caught:
+        evaluate_plan({"x": x[0], "u": u[0]}, plan, method, plant=model, cost=cost)
+
+    assert not caught.value.certificate.certified
+
+
 def _off_in_a(shift: float) -> LinearGaussianPlant:
     return LinearGaussianPlant(
         MARKET.a + np.array([[shift, 0.0], [0.0, 0.0]]), MARKET.b, MARKET.offset, MARKET.noise
