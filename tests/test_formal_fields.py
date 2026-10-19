@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 from scipy.integrate import solve_ivp
 from scipy.linalg import circulant, expm
@@ -720,6 +720,7 @@ def _bump(times: np.ndarray, horizon: float) -> tuple[np.ndarray, np.ndarray]:
     row=st.tuples(st.floats(-2.0, 2.0), st.floats(0.5, 2.0)),
     size=st.floats(1e-3, 3.0),
 )
+@example(entries=(1.5, 1.0, 0.0, 0.0), row=(-0.234375, 0.75), size=0.00390625)
 def test_adjoint_weighted_error_is_exact_for_an_affine_field(
     entries: tuple[float, float, float, float], row: tuple[float, float], size: float
 ) -> None:
@@ -740,9 +741,12 @@ def test_adjoint_weighted_error_is_exact_for_an_affine_field(
             terminal_row,
         )
 
-    # no remainder: the estimate is linear in eta to rounding, quadrature error included
+    # no remainder: the estimate is linear in eta to rounding, quadrature error included. The
+    # defect y' - M y rounds at about 1e-15 of the path's scale per node, which is a relative
+    # 1e-13/eta of the estimate at the small eta: 2.6e-8 at eta = 3.9e-6
+    small = 1e-3 * size
     assert estimate(size) / size == pytest.approx(
-        estimate(1e-3 * size) / (1e-3 * size), rel=1e-9, abs=0.0
+        estimate(small) / small, rel=1e-9 + 1e-13 / small, abs=0.0
     )
     # and the quadrature floor of a 401-point trapezoid is O(h^2) ~ 1e-5 relative
     assert estimate(size) == pytest.approx(size * shape[0, 1], rel=1e-4, abs=0.0)

@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from scipy import optimize, stats
 from scipy.special import lambertw
@@ -390,6 +390,7 @@ def _radii_at(region: ChannelRegion, level: float) -> np.ndarray:
 
 @settings(max_examples=25, deadline=None)
 @given(seed=SEEDS, reach=st.floats(0.01, 50.0))
+@example(seed=42259, reach=23.75)
 def test_stability_level_is_the_largest_level_whose_operator_radius_is_rho(
     seed: int, reach: float
 ) -> None:
@@ -413,8 +414,10 @@ def test_stability_level_is_the_largest_level_whose_operator_radius_is_rho(
     # 1 - level carries the miss probability with an absolute error of a double's epsilon
     resolution = 1e-9 + 1e-15 / (1.0 - level)
     assert at.operator_radius(state) == pytest.approx(rho, rel=resolution, abs=0.0)
-    higher = dataclasses.replace(region, radius=_radii_at(region, 0.5 * (1.0 + level)))
-    assert higher.operator_radius(state) > rho
+    # within an ulp of 1 the midpoint rounds to 1, a level with no radius
+    if 0.5 * (1.0 + level) < 1.0:
+        higher = dataclasses.replace(region, radius=_radii_at(region, 0.5 * (1.0 + level)))
+        assert higher.operator_radius(state) > rho
 
 
 def _tracked(gain: float, setpoint: float, samples: int, rng: np.random.Generator, noise: float):
