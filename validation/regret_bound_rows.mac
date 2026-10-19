@@ -1,0 +1,100 @@
+/* The constrained regret bound when linear rows join the box: its Lagrange dual.
+
+   chc.plan.plan_regret_bound certifies J(U) - J* <= max { -g.d - sum_i c_i d_i^2 / 2 } over the
+   moves d the feasible set allows (constrained_plan_regret.mac, STEP 1).  On the box alone the
+   maximum is separable and closed.  With rows G d <= r (r = b - G U) it is a quadratic program
+   with no closed form, and an iterative maximiser stopped early UNDER-states it, which voids a
+   certificate.  The dual does not:
+
+       q(lam) = sum_i max_{a_i <= d_i <= b_i} ( -(g + G' lam)_i d_i - c_i d_i^2 / 2 ) + lam' r
+
+   is at least the primal maximum at EVERY lam >= 0 (weak duality), so a dual descent stopped
+   anywhere still bounds the regret from above, and at the dual optimum the two meet (strong
+   duality: a concave quadratic over a polyhedron).  Checked here:
+     STEP 1  the Lagrangian identity behind weak duality;
+     STEP 2  each term's maximiser is the clip of -t_i / c_i, and dq/dlam = r - G d(lam);
+     STEP 3  an exact two-lever, one-row example: primal by KKT enumeration, q at the optimal
+             multiplier equal to it, q at other multipliers above it, and the c = 0 linear
+             program's value equal to its dual's.
+
+   Consumed by chc.plan.plan_regret_bound (constraints=).
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/regret_bound_rows.mac */
+
+display2d : false$
+print("================================================================")$
+print("THE REGRET BOUND OVER A BOX AND LINEAR ROWS: ITS LAGRANGE DUAL")$
+print("================================================================")$
+
+/* ===== STEP 1: weak duality ===== */
+print("=== STEP 1: L(d, lam) = f(d) + lam (r - G d) >= f(d) wherever G d <= r and lam >= 0 ===")$
+f(d1, d2) := -g1*d1 - g2*d2 - c1*d1^2/2 - c2*d2^2/2$
+L(d1, d2, lam) := -(g1 + G1*lam)*d1 - (g2 + G2*lam)*d2 - c1*d1^2/2 - c2*d2^2/2 + lam*r$
+residual1 : ratsimp(L(d1, d2, lam) - f(d1, d2) - lam*(r - G1*d1 - G2*d2))$
+print("STEP 1a L - f - lam (r - G d) =", residual1)$
+print("STEP 1a", if residual1 = 0 then "(PASS)" else "(FAIL)")$
+print("STEP 1b so q(lam) = max over the box of L >= L(d*, lam) >= f(d*) at the primal's")$
+print("        maximiser d*, feasible for the rows: q(lam) bounds the primal at every lam >= 0")$
+
+/* ===== STEP 2: the separable maximiser and the dual's gradient ===== */
+print("=== STEP 2: each term's maximiser, and the gradient of q ===")$
+phi(t, c, d) := -t*d - c*d^2/2$
+stationary : rhs(solve(diff(phi(t, c, d), d) = 0, d)[1])$
+print("STEP 2a d phi / dd = 0 at d =", stationary, " (-t/c), and d2 phi / dd2 =",
+      diff(phi(t, c, d), d, 2), " < 0 for c > 0: a maximum, so on [a, b] the clip of -t/c")$
+print("STEP 2a", if ratsimp(stationary + t/c) = 0 then "(PASS)" else "(FAIL)")$
+/* interior piece: d_i = -t_i / c_i with t = g + G lam */
+qint(lam) := phi(g1 + G1*lam, c1, -(g1 + G1*lam)/c1) + phi(g2 + G2*lam, c2, -(g2 + G2*lam)/c2)
+             + lam*r$
+gradient_gap : ratsimp(diff(qint(lam), lam) - (r - G1*(-(g1 + G1*lam)/c1) - G2*(-(g2 + G2*lam)/c2)))$
+print("STEP 2b on a piece where both terms are interior, dq/dlam - (r - G d(lam)) =", gradient_gap)$
+print("STEP 2b", if gradient_gap = 0 then "(PASS)" else "(FAIL)")$
+/* a clipped piece: d1 = b1 fixed, the gradient is still r - G d */
+qclip(lam) := phi(g1 + G1*lam, c1, b1) + phi(g2 + G2*lam, c2, -(g2 + G2*lam)/c2) + lam*r$
+clip_gap : ratsimp(diff(qclip(lam), lam) - (r - G1*b1 - G2*(-(g2 + G2*lam)/c2)))$
+print("STEP 2c on a piece where d1 sits at its end b1, dq/dlam - (r - G d(lam)) =", clip_gap)$
+print("STEP 2c", if clip_gap = 0 then "(PASS)" else "(FAIL)")$
+
+/* ===== STEP 3: an exact example ===== */
+print("=== STEP 3: two levers, a box [-1, 1]^2, a budget row d1 + d2 <= 1/4 ===")$
+gv : [-2, -1]$  cv : [1, 3]$  box : [-1, 1]$  Gv : [1, 1]$  rv : 1/4$
+fval(d) := -gv[1]*d[1] - gv[2]*d[2] - cv[1]*d[1]^2/2 - cv[2]*d[2]^2/2$
+clip(x) := max(box[1], min(box[2], x))$
+dlam(lam) := [clip(-(gv[1] + Gv[1]*lam)/cv[1]), clip(-(gv[2] + Gv[2]*lam)/cv[2])]$
+q(lam) := block([d : dlam(lam)],
+  -(gv[1] + Gv[1]*lam)*d[1] - (gv[2] + Gv[2]*lam)*d[2] - cv[1]*d[1]^2/2 - cv[2]*d[2]^2/2 + lam*rv)$
+/* KKT with the row active and both moves interior: d_i = -(g_i + lam)/c_i, d1 + d2 = r */
+lamstar : rhs(solve(-(gv[1] + lam)/cv[1] - (gv[2] + lam)/cv[2] = rv, lam)[1])$
+dstar : dlam(lamstar)$
+print("STEP 3a lam* =", lamstar, " d* =", dstar, " row d1 + d2 =", dstar[1] + dstar[2],
+      " inside the box:", is(abs(dstar[1]) <= 1 and abs(dstar[2]) <= 1))$
+/* the unconstrained box maximiser, to show the row binds */
+free : dlam(0)$
+print("STEP 3b without the row the box maximiser is", free, " whose sum", free[1] + free[2],
+      " exceeds 1/4: the row binds")$
+primal : fval(dstar)$
+print("STEP 3c primal value f(d*) =", primal, " dual q(lam*) =", q(lamstar))$
+print("STEP 3c strong duality", if ratsimp(q(lamstar) - primal) = 0 and lamstar >= 0 then "(PASS)" else "(FAIL)")$
+above : makelist(ratsimp(q(l) - primal), l, [0, 1/10, 1/2, 1, 2, 5])$
+print("STEP 3d q(lam) - primal at lam = 0, 1/10, 1/2, 1, 2, 5:", above)$
+print("STEP 3d weak duality at every lam", if every(lambda([v], v >= 0), above) then "(PASS)" else "(FAIL)")$
+/* a grid search of the primal over the feasible set, which no point beats */
+grid : makelist(-1 + k/40, k, 0, 80)$
+best : lmax(flatten(makelist(makelist(
+  if a + b <= rv then fval([a, b]) else -inf, b, grid), a, grid)))$
+print("STEP 3e the largest f over a 1/40 grid of the feasible set =", best, " <= f(d*)")$
+print("STEP 3e", if best <= primal then "(PASS)" else "(FAIL)")$
+/* c = 0: the linear program max -g.d, box and row; its dual at the same multipliers */
+lp(lam) := block([t1 : gv[1] + Gv[1]*lam, t2 : gv[2] + Gv[2]*lam],
+  max(-t1*box[1], -t1*box[2]) + max(-t2*box[1], -t2*box[2]) + lam*rv)$
+lpbest : lmax(flatten(makelist(makelist(
+  if a + b <= rv then -gv[1]*a - gv[2]*b else -inf, b, grid), a, grid)))$
+/* vertices of {box, d1 + d2 <= 1/4}: the LP optimum is at one; lam = 1 makes t2 = 0 */
+lpvalue : lmax(map(lambda([d], -gv[1]*d[1] - gv[2]*d[2]),
+  sublist([[1, -3/4], [-3/4, 1], [1, -1], [-1, 1], [-1, -1]], lambda([d], d[1] + d[2] <= rv))))$
+print("STEP 3f linear program: vertex optimum", lpvalue, " grid", lpbest, " dual at lam = 1",
+      lp(1), " at lam = 2", lp(2))$
+print("STEP 3f", if lp(1) = lpvalue and lp(2) >= lpvalue and lpbest <= lpvalue then "(PASS)" else "(FAIL)")$
+print("================================================================")$
+print("SUMMARY: q(lam) bounds the box-and-rows gain at every lam >= 0 and meets it at the")$
+print("dual optimum; its gradient is r - G d(lam) on every piece")$

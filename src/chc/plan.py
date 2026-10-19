@@ -54,7 +54,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import null_space
-from scipy.optimize import linprog, lsq_linear
+from scipy.optimize import linprog, lsq_linear, minimize
 
 from chc.adjoint import control_gradient_adjoint
 from chc.barrier import barrier_gamma_star, identification_radius_threshold
@@ -2552,6 +2552,105 @@ def _quadratic(model: Dynamics) -> bool:
     return False
 
 
+def _stacked_rows(
+    constraints: Sequence[LinearConstraint], actions: Array
+) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
+    """``(G, b - G U)`` with ``G d <= b - G U`` every finite side of ``constraints`` over a move
+    ``d`` from the plan ``U``: an upper side as its row, a lower one as the row negated. None where
+    no side is finite.
+
+    Raises:
+        ValueError: on a row not as wide as the action sequence.
+    """
+    plan = np.asarray(actions, dtype=np.float64).reshape(-1)
+    matrices, rights = [], []
+    for constraint in constraints:
+        if constraint.matrix.shape[1] != plan.size:
+            raise ValueError(
+                f"a constraint row has {constraint.matrix.shape[1]} columns; the plan's action "
+                f"sequence has {plan.size} entries"
+            )
+        reached = constraint.matrix @ plan
+        upper, lower = np.isfinite(constraint.upper), np.isfinite(constraint.lower)
+        matrices += [constraint.matrix[upper], -constraint.matrix[lower]]
+        rights += [
+            constraint.upper[upper] - reached[upper],
+            reached[lower] - constraint.lower[lower],
+        ]
+    matrix = np.concatenate([np.zeros((0, plan.size)), *matrices])
+    if matrix.shape[0] == 0:
+        return None
+    return matrix, np.concatenate(rights)
+
+
+def _row_bound(
+    gradient: NDArray[np.float64],
+    curvature: NDArray[np.float64],
+    below: NDArray[np.float64],
+    above: NDArray[np.float64],
+    matrix: NDArray[np.float64],
+    right: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], float, float]:
+    """The largest certified gain ``-g d - sum_i c_i d_i^2 / 2`` over moves ``d`` in the box and
+    ``G d <= right``, bounded from above by its Lagrange dual, and the linear program's, ``c = 0``.
+
+    The dual function ``q(lam) = sum_i max_{d_i in [below_i, above_i]} (-t_i d_i - c_i d_i^2 / 2)
+    + lam' right``, ``t = g + G' lam``, is at least the primal's largest at every ``lam >= 0``
+    (``validation/regret_bound_rows.mac``). It is separable, each term's maximiser the clip of
+    ``-t_i / c_i`` to the box, or the box's end ``-t_i`` points to where ``c_i = 0``. The linear
+    program, solved by HiGHS, gives the ``c = 0`` multipliers; where ``c > 0`` they start
+    L-BFGS-B's descent of ``q``, whose gradient is ``right - G d(lam)``. Each bound is ``q`` at
+    the multipliers its solver ended on, so a solver stopped short loosens it and never voids it.
+
+    Returns:
+        Each action's gain at the dual's maximiser ``d(lam)``, the dual bound, and the linear
+        program's.
+
+    Raises:
+        ValueError: where no move in the box meets the rows.
+    """
+    flat_g, flat_c = gradient.reshape(-1), np.broadcast_to(curvature, gradient.shape).reshape(-1)
+    low, high = below.reshape(-1), above.reshape(-1)
+
+    def move(lam: NDArray[np.float64], c: NDArray[np.float64]) -> NDArray[np.float64]:
+        tilt = flat_g + matrix.T @ lam
+        bent = c > 0.0
+        flat = np.where(tilt > 0.0, low, np.where(tilt < 0.0, high, 0.0))
+        return np.where(bent, np.clip(-tilt / np.where(bent, c, 1.0), low, high), flat)
+
+    def dual(lam: NDArray[np.float64], c: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
+        d = move(lam, c)
+        value = float(np.sum(-(flat_g + matrix.T @ lam) * d - 0.5 * c * d**2) + lam @ right)
+        return value, right - matrix @ d
+
+    program = linprog(
+        flat_g, A_ub=matrix, b_ub=right, bounds=list(zip(low, high, strict=True)), method="highs"
+    )
+    if program.status == 2:
+        raise ValueError("no plan in the box meets the constraints: there is no optimum to compare")
+    start = (
+        np.maximum(-np.asarray(program.ineqlin.marginals, dtype=np.float64), 0.0)
+        if program.status == 0
+        else np.zeros(matrix.shape[0])
+    )
+    linear = dual(start, np.zeros_like(flat_c))[0]
+    lam = start
+    if np.any(flat_c > 0.0):
+        descent = minimize(
+            lambda value: dual(value, flat_c),
+            start,
+            jac=True,
+            method="L-BFGS-B",
+            bounds=[(0.0, None)] * matrix.shape[0],
+            options={"maxiter": 10_000, "ftol": 1e-15, "gtol": 1e-12},
+        )
+        lam = np.maximum(np.asarray(descent.x, dtype=np.float64), 0.0)
+    total = dual(lam, flat_c)[0]
+    d = move(lam, flat_c)
+    gains = (-flat_g * d - 0.5 * flat_c * d**2).reshape(gradient.shape)
+    return gains, total, linear
+
+
 def plan_regret_bound(
     plan: CausalPlan,
     model: Dynamics,
@@ -2564,6 +2663,7 @@ def plan_regret_bound(
     modulus: float | None = None,
     probes: int = 16,
     seed: int = 0,
+    constraints: Sequence[LinearConstraint] = (),
 ) -> PlanRegretBound:
     """RESULT 69 (L3.2) -- the optimality gap of a finished plan, certified from its own gradient.
 
@@ -2571,10 +2671,11 @@ def plan_regret_bound(
     ``proofs/constrained_plan_regret.v``. Reads the plan's actions, not the solver's internals, so
     it prices a plan that came from anywhere -- including one an operator edited by hand.
 
-    The feasible set is the box alone: linear rows the plan was solved under are not read. The
-    bound is then on the gap to the box's optimum, which is never below the gap to the optimum
-    under the rows, so it stays valid and is loose by what the rows cost: a plan at the exact
-    optimum under a budget row that binds reads a positive bound where its own gap is zero.
+    The feasible set is the box, and the linear rows passed as ``constraints``. Without them the
+    bound is on the gap to the box's optimum, which is never below the gap to the optimum under
+    the rows the plan was solved under, so it stays valid and is loose by what the rows cost: a
+    plan at the exact optimum under a budget row that binds read 0.0885 where its own gap is
+    zero. Passed the rows, it reads 4e-13 there.
 
     Args:
         modulus: the strong-convexity modulus of ``J`` over the box, which makes the bound a
@@ -2587,6 +2688,17 @@ def plan_regret_bound(
             A supplied modulus is the plain norm's, in the levers' own units, and the bound then
             reads those units; read off the Hessian, each lever's moves are in its own scale.
         probes: random feasible points added to the curvature sample when ``modulus`` is sampled.
+        constraints: linear rows over the whole action sequence
+            (:class:`~chc.control.LinearConstraint`) that bound the plans compared with this one,
+            beside the box. The certified gain over the box and the rows has no closed form; it is
+            read off its Lagrange dual, ``q(lam) = sum_i max_{d_i in box} (-(g + G'lam)_i d_i -
+            c_i d_i^2 / 2) + lam'(b - G U)``, at the multipliers a dual descent ends on, and any
+            multipliers bound it from above (weak duality, ``validation/regret_bound_rows.mac``),
+            so the descent's stopping point loosens the bound and never voids it. The modulus and
+            its sample still read the box alone. :attr:`~PlanRegretBound.frank_wolfe_gap` is the
+            linear program over the same set, read off its dual too, and
+            :attr:`~PlanRegretBound.per_lever` the gain of each lever's moves at the dual's
+            maximiser, which sums to ``bound`` less the multipliers' slack in the rows.
 
     The three numbers to read together: :attr:`~PlanRegretBound.bound` is what the box certifies,
     :attr:`~PlanRegretBound.unconstrained_bound` is what Result 6 would have reported at the same
@@ -2598,7 +2710,8 @@ def plan_regret_bound(
 
     Raises:
         ValueError: if a supplied ``modulus`` is negative, infinite or nan, which is not a
-            curvature.
+            curvature; or if no plan in the box meets ``constraints``, or a row is not as wide as
+            the action sequence.
     """
     if modulus is not None and not 0.0 <= modulus < math.inf:
         raise ValueError(
@@ -2623,18 +2736,28 @@ def plan_regret_bound(
         source = "measured"
 
     below, above = lo - actions, hi - actions  # the feasible moves, as offsets from the plan
-    # max{-g d : d in [below, above]}: a line on an interval is largest at an endpoint, and both
-    # candidates are >= 0 because 0 is feasible.
-    linear = jnp.maximum(-gradient * below, -gradient * above)
-    if mu > 0.0:
-        curvature = mu / scale**2  # the modulus read back in each lever's units (STEP 8b)
-        step = jnp.clip(-gradient / curvature, below, above)
-        certified = -gradient * step - 0.5 * curvature * step**2
+    rows = _stacked_rows(constraints, actions)
+    if rows is not None:
+        certified, total, fallback = _row_bound(
+            np.asarray(gradient, dtype=np.float64),
+            np.asarray(mu / scale**2 if mu > 0.0 else jnp.zeros_like(scale), dtype=np.float64),
+            np.asarray(below, dtype=np.float64),
+            np.asarray(above, dtype=np.float64),
+            *rows,
+        )
     else:
-        certified = linear
+        # max{-g d : d in [below, above]}: a line on an interval is largest at an endpoint, and
+        # both candidates are >= 0 because 0 is feasible.
+        linear = jnp.maximum(-gradient * below, -gradient * above)
+        if mu > 0.0:
+            curvature = mu / scale**2  # the modulus read back in each lever's units (STEP 8b)
+            step = jnp.clip(-gradient / curvature, below, above)
+            certified = -gradient * step - 0.5 * curvature * step**2
+        else:
+            certified = linear
+        total = float(jnp.sum(certified))
 
     per_lever = tuple(float(v) for v in jnp.sum(certified, axis=0))
-    total = float(jnp.sum(certified))
     # Refused unless every number the bound rests on is finite: a nan modulus read neither below 0
     # nor certifying nothing, and certified an infinite bound; a nan gradient certified a nan one.
     refused = not (0.0 <= mu < math.inf and math.isfinite(total))
@@ -2644,7 +2767,7 @@ def plan_regret_bound(
         unconstrained_bound=(
             float(jnp.sum((scale * gradient) ** 2)) / (2.0 * mu) if mu > 0.0 else math.inf
         ),
-        frank_wolfe_gap=float(jnp.sum(linear)),
+        frank_wolfe_gap=float(jnp.sum(linear)) if rows is None else fallback,
         modulus=mu,
         modulus_source=source,
         gradient_norm=float(jnp.linalg.norm(scale * gradient)),

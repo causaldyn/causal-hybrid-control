@@ -771,6 +771,109 @@ def test_the_regret_bound_reads_no_lever_s_units_and_holds_on_the_exact_optimum(
         )
 
 
+def test_the_regret_bound_reads_the_rows_the_plan_was_solved_under() -> None:
+    """Over the box alone, a plan at the optimum under a budget row that binds read 0.0885 where
+    its gap is zero. Passed the row, the bound is on the gap to the optimum under it: about zero
+    there, above the gap on plans short of it, never above the box's bound, and the linear
+    program's at a modulus of zero."""
+    from scipy.optimize import minimize
+
+    from chc.control import LinearConstraint
+
+    horizon, dt = 12, 0.1
+    plant = DampedOscillator(omega=1.0, zeta=0.1)
+    cost = QuadraticCost(
+        Q=jnp.diag(jnp.array([1.0, 0.0])),
+        R=jnp.array([[0.01]]),
+        Qf=jnp.diag(jnp.array([10.0, 1.0])),
+        x_target=jnp.zeros(2),
+    )
+    x0 = jnp.array([1.0, 0.0])
+    free = causal_plan(plant, x0, cost, dt, horizon, -5.0, 5.0)
+    spend = float(jnp.sum(free.actions))
+    budget = LinearConstraint(np.sign(spend) * np.ones((1, horizon)), -np.inf, 0.5 * abs(spend))
+    held = causal_plan(plant, x0, cost, dt, horizon, -5.0, 5.0, constraints=(budget,))
+
+    def objective(flat: np.ndarray) -> float:
+        return float(total_cost(plant, x0, jnp.asarray(flat).reshape(horizon, 1), dt, cost))
+
+    # the optimum under the row by a solver of its own: J is quadratic on this linear plant
+    hessian = np.asarray(
+        jax.hessian(lambda v: total_cost(plant, x0, v[:, None], dt, cost))(jnp.zeros(horizon))
+    )
+    linear = np.asarray(
+        jax.grad(lambda v: total_cost(plant, x0, v[:, None], dt, cost))(jnp.zeros(horizon))
+    )
+    best = minimize(
+        lambda v: 0.5 * v @ hessian @ v + linear @ v,
+        np.asarray(held.actions).ravel(),
+        jac=lambda v: hessian @ v + linear,
+        method="SLSQP",
+        bounds=[(-5.0, 5.0)] * horizon,
+        constraints=[{"type": "ineq", "fun": lambda v: budget.upper[0] - budget.matrix[0] @ v}],
+        options={"ftol": 1e-15, "maxiter": 1000},
+    )
+    optimum = objective(best.x)
+
+    def largest_gain(plan: Array, modulus: float) -> float:
+        gradient = np.asarray(jax.grad(lambda v: total_cost(plant, x0, v[:, None], dt, cost))(plan))
+        at = np.asarray(plan)
+        return -minimize(
+            lambda d: gradient @ d + 0.5 * modulus * d @ d,
+            np.zeros(horizon),
+            jac=lambda d: gradient + modulus * d,
+            method="SLSQP",
+            bounds=[(-5.0 - v, 5.0 - v) for v in at],
+            constraints=[
+                {"type": "ineq", "fun": lambda d: budget.upper[0] - budget.matrix[0] @ (at + d)}
+            ],
+            options={"ftol": 1e-15, "maxiter": 1000},
+        ).fun
+
+    box = plan_regret_bound(held, plant, x0, cost, dt, -5.0, 5.0)
+    rows = plan_regret_bound(held, plant, x0, cost, dt, -5.0, 5.0, constraints=(budget,))
+    assert box.bound > 0.05  # what the rows cost, charged to a plan at their optimum
+    assert rows.status == "certified"
+    assert held.task_cost - optimum >= -1e-9
+    assert held.task_cost - optimum - 1e-9 <= rows.bound <= 1e-9
+    for share in (0.0, 0.5, 0.9):  # plans short of the optimum, within the row
+        short = replace(held, actions=share * held.actions)
+        realised = objective(np.asarray(short.actions).ravel()) - optimum
+        found = plan_regret_bound(short, plant, x0, cost, dt, -5.0, 5.0, constraints=(budget,))
+        alone = plan_regret_bound(short, plant, x0, cost, dt, -5.0, 5.0)
+        assert realised > 1e-4
+        assert realised - 1e-9 <= found.bound <= alone.bound + 1e-12
+        assert found.bound <= found.frank_wolfe_gap + 1e-12
+        assert found.frank_wolfe_gap <= alone.frank_wolfe_gap + 1e-12
+        # the dual meets the primal: the certified gain maximised over the box and the row by a
+        # solver of its own, one lever, so its curvature is the modulus itself
+        primal = largest_gain(short.actions[:, 0], found.modulus)
+        assert primal - 1e-12 <= found.bound <= primal + 1e-8 * (1.0 + abs(primal))
+    flat = plan_regret_bound(
+        replace(held, actions=0.5 * held.actions),
+        plant,
+        x0,
+        cost,
+        dt,
+        -5.0,
+        5.0,
+        modulus=0.0,
+        constraints=(budget,),
+    )
+    assert flat.bound == pytest.approx(flat.frank_wolfe_gap, rel=1e-12, abs=0.0)
+    with pytest.raises(ValueError, match="no plan in the box meets"):
+        plan_regret_bound(
+            held,
+            plant,
+            x0,
+            cost,
+            dt,
+            -5.0,
+            5.0,
+            constraints=(LinearConstraint(np.ones((1, horizon)), 100.0, np.inf),),
+        )
+
+
 def test_one_lever_that_moves_has_the_plain_norm_s_regret_bound_to_the_bit() -> None:
     """One lever that moves has scale 1, beside a lever its box pins, however stiff: the measured
     modulus is the least eigenvalue of the moving lever's Hessian, and the bound is the one that
