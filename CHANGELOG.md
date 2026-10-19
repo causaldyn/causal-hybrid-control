@@ -20,6 +20,13 @@ still change).
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
 - **A `lever_range` warning** when a prescription sets a lever outside the range the panel logged.
+- **`DeploymentGate` warns of carryover when not in blocks** (`GateConfig.carryover_lags`, 5 by
+  default; 0 turns it off). The logged actions are randomised, so a reward that reads a decision
+  up to five back shows as a correlation with that decision's score; the gate logs
+  `gate_carryover` once per zone, naming the lag and the block design, and moves no verdict. An
+  action paying 0.4 now and costing 0.6 three decisions on, deployed on every path, was warned of
+  on every path at a median of 150 decisions; on four nulls the check warned on 0.020 to 0.050 of
+  200 paths.
 
 ### Changed
 

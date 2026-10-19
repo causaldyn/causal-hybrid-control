@@ -339,6 +339,79 @@ def test_a_contrast_that_turns_is_deployed_on_its_first_half() -> None:
         assert gate.mode("z") == "deployed"  # before the contrast turns to -0.06
 
 
+def _late_cost_path(
+    path: int, config: GateConfig, dead: int, gain: float, cost: float, decisions: int = 6000
+) -> list[str]:
+    """One zone's verdicts where an action pays ``gain`` now and costs ``cost`` ``dead`` decisions
+    on: with action 1 taken 0.5 of the time by the baseline and 0.8 by the candidate, myopically
+    ``0.3 gain`` better, sustained ``0.3 (gain - cost)``."""
+    pb, pc, batch = 0.5, 0.8, 50
+    plan = ZonePlan(chi2=pc**2 / pb + (1 - pc) ** 2 / (1 - pb) - 1.0, tv=pc - pb)
+    rng = np.random.default_rng(path)
+    gate = DeploymentGate({"z": plan}, config)
+    past = np.zeros(dead, dtype=bool)
+    verdicts = []
+    for _ in range(decisions // batch):
+        mode = gate.mode("z")
+        if mode == "retired":
+            break
+        p = {"shadow": pb, "deployed": pc, "experiment": (1 - config.rho) * pb + config.rho * pc}[
+            mode
+        ]
+        a = rng.random(batch) < p
+        r = np.empty(batch)
+        for t in range(batch):
+            r[t] = rng.random() < 0.6 + gain * a[t] - cost * past[0]
+            past = np.append(past[1:], a[t])
+        logged = ZoneBatch(
+            r, np.where(a, pc, 1 - pc), np.where(a, pb, 1 - pb), np.where(a, p, 1 - p)
+        )
+        verdicts.append(gate.update({"z": logged})["z"])
+    return verdicts
+
+
+def _carryover_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if getattr(r, "chc_event", None) == "gate_carryover"]
+
+
+def test_a_late_cost_is_warned_of_and_no_verdict_moves(caplog: pytest.LogCaptureFixture) -> None:
+    """Dead time 3: the candidate is +0.12 better myopically and -0.06 worse sustained, and the gate
+    without blocks deploys it. The carryover check reads the reward on the actions 1 to 5 decisions
+    back and warns, naming the lag and the block design; the verdicts are those of a gate without
+    the check."""
+    config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000)
+    for path in range(5):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="chc.gate"):
+            verdicts = _late_cost_path(path, config, dead=3, gain=0.4, cost=0.6)
+        (record,) = _carryover_warnings(caplog)
+        assert record.lag == 3
+        assert record.statistic < 0.0  # the action costs later
+        assert "block_length" in record.getMessage()
+        assert "deploy" in verdicts
+        unchecked = dataclasses.replace(config, carryover_lags=0)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="chc.gate"):
+            assert _late_cost_path(path, unchecked, dead=3, gain=0.4, cost=0.6) == verdicts
+        assert not _carryover_warnings(caplog)
+
+
+def test_a_reward_on_the_present_action_alone_is_not_warned_of(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same candidate without its late cost: an effect on the present decision only. Over 40
+    paths of 6000 decisions it warned on 2 (0.040 of 200 paths)."""
+    config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000)
+    warned = 0
+    for path in range(40):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="chc.gate"):
+            _late_cost_path(100 + path, config, dead=3, gain=0.4, cost=0.0)
+        warned += bool(_carryover_warnings(caplog))
+    # the check's level is 0.05 a zone over its run: 2 of 40 expected, 1.4 a binomial SD
+    assert warned <= 5
+
+
 def test_a_harmful_candidate_is_held_and_retired() -> None:
     harmful = _ones(BATCH, candidate=2.0, baseline=1.0, logged=1.0, reward=0.0)
     gate = DeploymentGate({"z": ZonePlan(0.1, 0.1)}, LONE)
@@ -491,7 +564,8 @@ def test_a_candidate_better_by_delta_is_deployed_although_it_is_not_worth_min_ef
     )
     with caplog.at_level(logging.INFO, logger="chc.gate"):
         assert unselectable.update({"z": batch}) == {"z": "shadow"}
-    assert [getattr(r, "futile", None) for r in caplog.records if r.name == "chc.gate"] == [True]
+    verdicts = [r for r in caplog.records if getattr(r, "chc_event", None) == "deployment_gate"]
+    assert [getattr(r, "futile", None) for r in verdicts] == [True]
     gate = DeploymentGate({"z": ZonePlan(0.2, 0.1)}, config)
     assert gate.update({"z": batch}) == {"z": "deploy"}
 
@@ -580,6 +654,8 @@ def test_a_refused_drift_batch_leaves_every_alarm_as_it_was() -> None:
 
 def test_inputs_outside_the_contract_are_refused() -> None:
     one = np.ones(3)
+    with pytest.raises(ValueError, match="carryover_lags must be at least 0"):
+        dataclasses.replace(LAB, carryover_lags=-1)
     with pytest.raises(ValueError, match="rewards must lie in"):
         ZoneBatch(reward=2 * one, candidate=one, baseline=one, logged=one)
     with pytest.raises(ValueError, match="entries for 3 rewards"):

@@ -34,7 +34,15 @@ What the guarantee needs, and the gate cannot check:
   memory, per-decision increments certify the myopic contrast; in the lab they deployed, with
   probability 1.000, a candidate that was +0.029 better myopically and -0.010 worse in the long run.
   On such a plant, run the gate in blocks (below), or estimate a plan's value with
-  :func:`chc.evaluation.evaluate_plan`.
+  :func:`chc.evaluation.evaluate_plan`. Without blocks the gate tests for carryover of order up to
+  ``GateConfig.carryover_lags``, 5 by default: the logged actions are randomised, so a reward that
+  correlates with the score ``(candidate - baseline) / logged`` of a decision ``k`` back reads that
+  decision. It logs one warning per zone, ``gate_carryover``, naming the lag and the block design,
+  and moves no verdict. Over 200 paths of 6000 decisions, an action that pays 0.4 now and costs
+  0.6 one, three or five decisions on was warned of on every path, at a median of 150 decisions,
+  and deployed on every path as before; with no late cost, or none at all, or a reward common to
+  both actions that persists as an AR(0.95), it warned on 0.020 to 0.050 of them. A carryover
+  past the lags read is not seen: at seven decisions on, 0.040.
 * **Rewards in** ``[0, 1]``.
 * **A contrast that holds still.** A DEPLOY rejects the null that every decision's contrast, given
   the past, is at most ``delta``: it says the candidate beat the baseline over the decisions read,
@@ -114,6 +122,8 @@ _LOG_BETS = math.log(_BETS.size)
 _MATCH = 1e-6  # relative gap allowed between a logged propensity and the mode's
 _DRIFT_BETS = 2.0 ** -np.arange(8)  # |theta|, in residual scales per dither scale
 _DITHER_LEVEL = 1e-9  # a dither this far from its stated scale is a slip, not a draw
+_CARRYOVER_FIRST = 100  # decisions before the carryover check first reads, then at every doubling
+_CARRYOVER_LEVEL = 0.05  # a zone's chance of a false carryover warning over its whole run
 
 
 def _vector(value: ArrayLike, name: str) -> _Array:
@@ -173,12 +183,17 @@ class GateConfig:
     ``rho`` is the probability that a block runs the candidate, and ``horizon`` and the zones'
     :class:`ZonePlan` are not read.
 
+    ``carryover_lags``, 5 by default, is how many lags the carryover check reads when the gate is
+    not in blocks (see :mod:`chc.gate`); 0 turns it off. The check logs a warning and changes no
+    verdict.
+
     Raises:
         ValueError: on a margin outside ``[0, 1)``, a level or ``rho`` outside ``(0, 1)``, a
             ``min_effect`` that is not positive, a ``horizon`` below 1, a ``drift_arl`` not above
             1, an ``alpha_futility`` with ``delta + min_effect`` not below 1, which no reward
-            in ``[0, 1]`` can beat, a ``block_length`` below 1, or a ``burn_in`` that is negative,
-            leaves no period of a block to read, or is set without a ``block_length``.
+            in ``[0, 1]`` can beat, a ``block_length`` below 1, a ``burn_in`` that is negative,
+            leaves no period of a block to read, or is set without a ``block_length``, or a
+            negative ``carryover_lags``.
     """
 
     delta: float
@@ -192,6 +207,7 @@ class GateConfig:
     alpha_futility: float | None = None
     block_length: int | None = None
     burn_in: int = 0
+    carryover_lags: int = 5
 
     def __post_init__(self) -> None:
         for name in ("delta", "delta_harm"):
@@ -216,6 +232,8 @@ class GateConfig:
             raise ValueError(f"horizon must be at least 1 decision, got {self.horizon}")
         if not self.drift_arl > 1.0:
             raise ValueError(f"drift_arl must exceed 1, got {self.drift_arl}")
+        if self.carryover_lags < 0:
+            raise ValueError(f"carryover_lags must be at least 0, got {self.carryover_lags}")
         if self.block_length is None:
             if self.burn_in != 0:
                 raise ValueError(
@@ -1324,6 +1342,59 @@ class _Evidence:
         )
 
 
+class _Carryover:
+    """A score test of a reward on the actions ``1 .. lags`` decisions back.
+
+    A decision's score ``s = (candidate - baseline) / logged`` has mean zero given the past, since
+    the action is drawn from the logged law. Where no reward depends on an earlier action, the
+    score of decision ``t - k`` is uncorrelated with the reward at ``t``, so each lag's sum of
+    ``s_(t-k) (r_t - r_bar)``, over its square root of summed squares, is near a standard normal.
+    The test reads after ``_CARRYOVER_FIRST`` decisions and at every doubling after, the ``m``-th
+    read at level ``_CARRYOVER_LEVEL / (m (m + 1))`` split over the lags, so a zone's false warnings
+    over its whole run stay within ``_CARRYOVER_LEVEL`` as far as the normal law holds. It warns
+    once."""
+
+    def __init__(self, lags: int) -> None:
+        self.lags = lags
+        self.scores = np.zeros(0)  # the last ``lags`` scores, oldest first
+        # per lag: pairs, sum r, sum s, sum s r, sum s^2, sum s^2 r, sum s^2 r^2
+        self.sums = np.zeros((7, lags))
+        self.next_read = _CARRYOVER_FIRST
+        self.reads = 0
+        self.warned = False
+
+    def add(self, scores: _Array, rewards: _Array) -> tuple[int, float, float] | None:
+        """Add a batch, and return the lag, the statistic and the p-value of the most significant
+        lag where this read rejects; ``None`` otherwise."""
+        joined = np.concatenate([self.scores, scores])
+        held = self.scores.size
+        for k in range(1, self.lags + 1):
+            first = max(0, k - held)
+            if first >= rewards.size:
+                continue
+            s, r = joined[held + first - k : held + rewards.size - k], rewards[first:]
+            ss = s * s
+            self.sums[:, k - 1] += (r.size, r.sum(), s.sum(), s @ r, ss.sum(), ss @ r, ss @ (r * r))
+        self.scores = joined[-self.lags :]
+        pairs = self.sums[0, 0]
+        if self.warned or pairs < self.next_read:
+            return None
+        while self.next_read <= pairs:
+            self.next_read *= 2
+        self.reads += 1
+        count, total, s_sum, sr, ss_sum, ssr, ssrr = self.sums
+        mean = total / count
+        variance = ssrr - 2.0 * mean * ssr + mean * mean * ss_sum
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z = np.where(variance > 0.0, (sr - mean * s_sum) / np.sqrt(variance), 0.0)
+        p = 2.0 * special.ndtr(-np.abs(z))
+        lag = int(np.argmin(p))
+        if p[lag] >= _CARRYOVER_LEVEL / (self.reads * (self.reads + 1) * self.lags):
+            return None
+        self.warned = True
+        return lag + 1, float(z[lag]), float(p[lag])
+
+
 @dataclass
 class _Zone:
     plan: ZonePlan
@@ -1335,6 +1406,7 @@ class _Zone:
     futility: _Evidence = field(default_factory=_Evidence)
     futile: bool = False  # the futility e-value crossed in this epoch; a crossing is a rejection
     decisions: int = 0
+    carryover: _Carryover | None = None
 
 
 class DeploymentGate:
@@ -1390,8 +1462,15 @@ class DeploymentGate:
             raise ValueError("the gate needs at least one zone")
         self.config = config
         start: GateMode = "shadow" if config.block_length is None else "experiment"
+        lags = config.carryover_lags if config.block_length is None else 0
         self._zones = {
-            name: _Zone(plan, DriftAlarm(config.drift_arl), start) for name, plan in plans.items()
+            name: _Zone(
+                plan,
+                DriftAlarm(config.drift_arl),
+                start,
+                carryover=_Carryover(lags) if lags else None,
+            )
+            for name, plan in plans.items()
         }
 
     def mode(self, zone: str) -> GateMode:
@@ -1428,6 +1507,8 @@ class DeploymentGate:
             zone = self._zones[z]
             zone.decisions += given[z].reward.size
             w_new, w_base, r = b.candidate / b.logged, b.baseline / b.logged, b.reward
+            if zone.carryover is not None:
+                self._check_carryover(z, zone, zone.carryover.add(w_new - w_base, r))
             if zone.mode == "deployed":
                 zone.rollback.add(((w_base - w_new) * r - cfg.delta_harm) / (1 + cfg.delta_harm))
                 continue
@@ -1473,6 +1554,31 @@ class DeploymentGate:
                     },
                 )
         return verdicts
+
+    def _check_carryover(
+        self, name: str, zone: _Zone, found: tuple[int, float, float] | None
+    ) -> None:
+        if found is None:
+            return
+        lag, statistic, p_value = found
+        _log.warning(
+            "zone %r: the reward reads the action %d decisions back (z = %.2f, p = %.2g), so the"
+            " gate's per-decision evidence certifies the myopic contrast, not that of running the"
+            " candidate for good; run the gate in blocks, GateConfig(block_length=L, burn_in=b),"
+            " with b at least the carryover's order",
+            name,
+            lag,
+            statistic,
+            p_value,
+            extra={
+                "chc_event": "gate_carryover",
+                "zone": name,
+                "lag": lag,
+                "statistic": statistic,
+                "p_value": p_value,
+                "decisions": zone.decisions,
+            },
+        )
 
     def _decisions(self, name: str, batch: ZoneBatch | BlockBatch) -> ZoneBatch:
         """The batch as decisions: as given, or, in blocks, one per block."""
