@@ -16,7 +16,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy.integrate import solve_ivp
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
-from scipy.optimize import minimize_scalar
+from scipy.optimize import minimize, minimize_scalar
 
 from chc.regret import (
     _self_consistent_mass,
@@ -46,6 +46,8 @@ FORMAL_LINKS = {
             "test_capped_block_length_beats_every_other_block",
             "test_capped_stopping_mass_is_free_of_the_cap_schedule",
             "test_capped_block_is_the_global_optimum_of_the_convex_program",
+            "test_capped_schedule_is_the_box_optimum",
+            "test_capped_block_search_finds_the_best_block_at_a_long_horizon",
         ),
     },
     "chc.regret._self_consistent_mass": {
@@ -224,17 +226,37 @@ def _schedule_cost(v, a, k, c, i0) -> float:
 # ---------------------------------------------------------------- capped exploration
 
 
-@pytest.mark.parametrize(("horizon", "cap"), [(50, 0.3), (400, 0.05), (3000, 0.01)])
+def _policy_schedule(pol, caps, budget=None) -> np.ndarray:
+    """The schedule the policy reports: the greedy fill up to its last round, which is partial."""
+    fill = caps if budget is None else np.diff(np.r_[0.0, np.minimum(np.cumsum(caps), budget)])
+    v = np.zeros(caps.size)
+    v[: pol.block_rounds] = fill[: pol.block_rounds]
+    if pol.block_rounds:
+        assert 0.0 < pol.last_round <= fill[pol.block_rounds - 1]
+        v[pol.block_rounds - 1] = pol.last_round
+    return v
+
+
+@pytest.mark.parametrize(
+    ("horizon", "cap"), [(50, 0.3), (400, 0.05), (3000, 0.01), (10, 3.0), (30, 1.0)]
+)
 def test_capped_block_length_beats_every_other_block(horizon: int, cap: float) -> None:
-    """capped_exploration_schedule.mac: the reported block is the best saturate-then-stop block."""
+    """capped_exploration_schedule.mac: the policy is no worse than the best saturate-then-stop
+    block, ends within one round of it, and costs what its schedule costs. At T=10, cap=3 the best
+    block is no exploration at all (0.741), which a search from one round (4.717) missed."""
     a, k, c, i0 = _exploration_constants()
     pol = capped_exploration_policy(horizon=horizon, cap=cap)
     costs = [
         _schedule_cost(np.r_[np.full(n, cap), np.zeros(horizon - n)], a, k, c, i0)
         for n in range(horizon + 1)
     ]
-    assert pol.block_rounds == int(np.argmin(costs))
-    assert pol.cost == pytest.approx(min(costs), rel=1e-12, abs=0.0)
+    best = int(np.argmin(costs))
+    assert pol.block_rounds in (best, best + 1)
+    assert pol.cost <= min(costs) * (1.0 + 1e-12)
+    caps = np.full(horizon, cap)
+    assert pol.cost == pytest.approx(
+        _schedule_cost(_policy_schedule(pol, caps), a, k, c, i0), rel=1e-12, abs=0.0
+    )
 
 
 @settings(max_examples=30, deadline=None)
@@ -254,14 +276,30 @@ def test_capped_stopping_mass_is_free_of_the_cap_schedule(
     assert abs(pol.exploration_mass - balanced) <= float(caps.max())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T=50, cap=0.3: the block [0.3, 0.3] costs 3.0779209; [0.3, 0.2747] costs 3.0772412",
-)
-def test_capped_block_is_the_global_optimum_of_the_convex_program() -> None:
-    """capped_exploration_schedule.mac: saturate-then-stop is the global optimum over the box."""
+@pytest.mark.parametrize(("horizon", "cap"), [(10_000, 0.01), (1_000_000, 0.002), (100_000, 0.03)])
+def test_capped_block_search_finds_the_best_block_at_a_long_horizon(
+    horizon: int, cap: float
+) -> None:
+    """capped_exploration.v: the block cost is convex in its length, so the best whole block is
+    the minimum over every length, here by materialised harmonic sums. A bracket with a 64-round
+    sweep picked 90932 rounds against 95108 at T = 1e6, cap = 0.002, 0.60 dearer."""
     a, k, c, i0 = _exploration_constants()
-    horizon, cap = 50, 0.3
+    pol = capped_exploration_policy(horizon=horizon, cap=cap)
+    rounds = np.arange(horizon + 1, dtype=np.float64)
+    info = i0 + c * cap * rounds
+    inside = np.r_[0.0, np.cumsum(k / info[:-1])]
+    costs = a * cap * rounds + inside + k * (horizon - rounds) / info
+    best = int(np.argmin(costs))
+    assert pol.block_rounds in (best, best + 1)
+    assert pol.cost <= float(costs[best]) * (1.0 + 1e-12)
+
+
+@pytest.mark.parametrize(("horizon", "cap"), [(50, 0.3), (30, 1.0), (400, 0.05), (10, 3.0)])
+def test_capped_block_is_the_global_optimum_of_the_convex_program(horizon: int, cap: float) -> None:
+    """capped_exploration_schedule.mac: a saturated prefix and one partial round is the global
+    optimum over the box. T=50, cap=0.3: the whole block [0.3, 0.3] cost 3.0779209 against the
+    optimum [0.3, 0.2747] at 3.0772412."""
+    a, k, c, i0 = _exploration_constants()
     pol = capped_exploration_policy(horizon=horizon, cap=cap)
     best = min(
         minimize_scalar(
@@ -275,6 +313,42 @@ def test_capped_block_is_the_global_optimum_of_the_convex_program() -> None:
         for n in range(horizon)
     )
     assert pol.cost <= best + 1e-12
+    assert pol.cost == pytest.approx(best, rel=1e-10, abs=0.0)
+
+
+@settings(max_examples=12, deadline=None)
+@given(
+    seed=st.integers(0, 2**32 - 1),
+    idle=st.floats(0.0, 0.6),
+    budget=st.one_of(st.none(), st.floats(0.05, 2.0)),
+)
+def test_capped_schedule_is_the_box_optimum(seed: int, idle: float, budget: float | None) -> None:
+    """capped_exploration.v earlier_is_strictly_cheaper: with caps that vary and rounds with no
+    authority, the policy's schedule is the box optimum, by L-BFGS-B over every round."""
+    a, k, c, i0 = _exploration_constants()
+    rng = np.random.default_rng(seed)
+    horizon = 40
+    caps = rng.uniform(0.0, 0.4, horizon) * (rng.uniform(size=horizon) >= idle)
+    caps[0] = max(caps[0], 1e-3)  # one round with authority, which the policy requires
+    pol = capped_exploration_policy(horizon=horizon, cap=caps, budget=budget)
+    schedule = _policy_schedule(pol, caps, budget)
+    assert pol.cost == pytest.approx(_schedule_cost(schedule, a, k, c, i0), rel=1e-12, abs=0.0)
+    total = np.inf if budget is None else budget
+    # the budget is a linear constraint; a penalty-free route is to minimise over the fill's mass
+    masses = np.linspace(0.0, min(float(caps.sum()), total), 2001)
+    fills = [np.diff(np.r_[0.0, np.minimum(np.cumsum(caps), m)]) for m in masses]
+    grid = min(_schedule_cost(v, a, k, c, i0) for v in fills)
+    assert pol.cost <= grid + 1e-12
+    if budget is None:
+        free = minimize(
+            lambda v: _schedule_cost(v, a, k, c, i0),
+            caps / 2.0,
+            method="L-BFGS-B",
+            bounds=list(zip(np.zeros(horizon), caps, strict=True)),
+            options={"ftol": 1e-15, "gtol": 1e-12, "maxiter": 10_000},
+        )
+        assert pol.cost <= free.fun + 1e-10
+        assert pol.cost == pytest.approx(free.fun, rel=1e-7, abs=0.0)
 
 
 def _balance_crossing(caps, horizon):
@@ -369,7 +443,7 @@ def test_capped_policy_cost_is_the_materialised_schedule_cost(
     """capped_exploration.v: the digamma block cost is F(v) of the saturate-then-stop schedule."""
     a, k, c, i0 = _exploration_constants(b=b, rr=rr, sigma=sigma, eta=eta)
     pol = capped_exploration_policy(horizon=horizon, cap=cap, b=b, rr=rr, sigma=sigma, eta=eta)
-    v = np.r_[np.full(pol.block_rounds, cap), np.zeros(horizon - pol.block_rounds)]
+    v = _policy_schedule(pol, np.full(horizon, cap))
     assert pol.cost == pytest.approx(_schedule_cost(v, a, k, c, i0), rel=1e-9, abs=0.0)
 
 

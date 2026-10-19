@@ -4226,9 +4226,11 @@ class MinimaxExplorationCurve:
 class CappedExplorationPolicy:
     """The optimal exploration schedule under a per-round action cap -- Result 56, extended.
 
-    For a constant cap the policy is two numbers: explore at ``cap`` for ``block_rounds`` rounds,
-    then stop. It is not an approximation -- the objective is convex and depends on the schedule
-    only through its prefix sums, so front-loading as hard as the box allows is globally optimal.
+    For a constant cap the policy is three numbers: explore for ``block_rounds`` rounds, at ``cap``
+    in all but the last and at ``last_round`` in that one, then stop. It is not an approximation --
+    the objective is convex and depends on the schedule only through its prefix sums, so
+    front-loading as hard as the box allows is globally optimal, and the exchange argument leaves
+    at most one round below its cap.
 
     When the cap VARIES or a total ``budget`` is imposed, the invariant is not the block length but
     :attr:`exploration_mass`: the first-order condition sees the cap only through the mass already
@@ -4246,6 +4248,9 @@ class CappedExplorationPolicy:
     exploration_mass: float  # sum of the caps actually used -- what the stopping rule is about
     predicted_mass: float  # the self-consistent stopping mass; it does not know the cap SCHEDULE
     budget_binds: bool  # True when the budget, not the caps, is what stopped the block
+    # the exploration in the block's last round: its cap, or less where the optimum fills that
+    # round only partly -- the one unsaturated round the exchange argument allows
+    last_round: float
 
 
 def _capped_block_cost(
@@ -4369,8 +4374,11 @@ def capped_exploration_policy(
     them, so moving exploration from a later round to an earlier one at equal budget STRICTLY
     lowers it (``proofs/capped_exploration.v``, ``earlier_is_strictly_cheaper``) -- an argument
     that never mentions the cap. The Hessian is a sum of rank-one PSD terms, so the objective is
-    convex and the exchange argument gives a GLOBAL optimum: saturate the cap on a prefix, then
-    stop. A clipped burst, not a taper.
+    convex and the exchange argument gives a GLOBAL optimum: saturate the cap on a prefix, fill at
+    most one more round partly, then stop. A clipped burst, not a taper. The partial round is
+    worth ``6.8e-4`` of ``3.078`` at ``T = 50``, ``cap = 0.3`` and ``3e-6`` at ``T = 1e5``,
+    ``cap = 0.03``; a whole block alone can be worth less than not exploring at all -- at
+    ``T = 10``, ``cap = 3`` one round at the cap costs ``4.72`` against ``0.74`` for none.
 
     The price of the cap is ADDITIVE and LOGARITHMIC, not a constant factor. The optimal block
     length is ``n* = sqrt(K T/(A c))/cap`` TO LEADING ORDER -- exactly it is ``S*/cap``, smaller
@@ -4382,8 +4390,9 @@ def capped_exploration_policy(
     LONGER, not more gently.
 
     ``block_rounds`` is found by an exact search over the convex block-cost curve, which digamma
-    makes O(1) per candidate; ``cost`` is the true cost of that schedule and agrees with a
-    projected-gradient solve of the full convex program to seven decimals. ``taper_cost`` is the
+    makes O(1) per candidate, and the last round's amount in closed form on the two rounds next to
+    the best whole block; ``cost`` is the true cost of that schedule, the convex program's minimum
+    to rounding. ``taper_cost`` is the
     clipped ``1/sqrt(t)`` schedule at its own optimal scale, for comparison -- at ``T = 1e5`` and
     ``cap = 0.03`` the block costs ``196.11`` against the taper's ``266.81``, a ``36%`` gap that
     does not close.
@@ -4499,15 +4508,24 @@ def capped_exploration_policy(
                 horizon=horizon,
             )
 
-        predicted = np.sqrt(numerator * horizon / (curvature * info_rate)) / level
-        # Convex in the block length, so a coarse geometric bracket plus a local sweep is exact.
-        coarse = np.unique(
-            np.clip(np.round(predicted * np.geomspace(0.05, 20.0, 61)), 1.0, float(horizon))
-        )
-        centre = float(coarse[int(np.argmin(cost_of(coarse)))])
-        window = np.unique(np.clip(np.arange(centre - 64.0, centre + 65.0), 1.0, float(horizon)))
-        best = int(window[int(np.argmin(cost_of(window)))])
-        cost = float(cost_of(np.array([float(best)]))[0])
+        def block(rounds: int) -> tuple[float, float]:
+            return level * rounds, float(cost_of(np.array([float(rounds)]))[0])
+
+        # Convex in the block length, so the first length whose next round no longer pays is the
+        # best, found by bisection on the sign of that step from zero rounds -- a cap above the
+        # whole optimal mass may not be worth one round. A geometric bracket with a sweep of 64
+        # rounds around it missed the minimum wherever the bracket's spacing was wider: 90932
+        # rounds against 95108 at T = 1e6, cap = 0.002, 0.60 dearer.
+        lo, hi = 0, horizon
+        while lo < hi:
+            mid = (lo + hi) // 2
+            step = cost_of(np.array([mid + 1.0, float(mid)]))
+            if step[0] < step[1]:
+                lo = mid + 1
+            else:
+                hi = mid
+        best = lo
+        crumb = 0.0
     else:
         curve = _scheduled_block_costs(
             fill,
@@ -4526,10 +4544,38 @@ def capped_exploration_policy(
         crumb = np.finfo(np.float64).eps * caps.size * float(np.sum(fill[:best]))
         used = np.flatnonzero(fill[:best] > crumb)
         best = int(used[-1]) + 1 if used.size else 0
-        cost = float(curve[best])
+        delivered = np.concatenate([[0.0], np.cumsum(fill)])
 
-    mass = float(np.sum(fill[:best]))
-    effective = mass / best if best > 0 else float(caps[0])
+        def block(rounds: int) -> tuple[float, float]:
+            return float(delivered[rounds]), float(curve[rounds])
+
+    # The objective is convex in the mass the greedy fill delivers (each prefix sum is concave in
+    # it), so its minimum lies within one exploring round of the best whole block, and on that
+    # round the amount to explore is a closed form: A x + K (T - n - 1)/(w + c x) is least at
+    # x = sqrt(K (T - n - 1)/(A c)) - w/c. A whole block alone missed this one partial round.
+    saturated, partial = best, 0.0
+    mass, cost = block(best)
+    ahead = np.flatnonzero(fill[best:] > crumb)  # the next round that can explore, past idle ones
+    for rounds in (best - 1, best + int(ahead[0]) if ahead.size else horizon):
+        if not 0 <= rounds < horizon:
+            continue
+        base, base_cost = block(rounds)
+        info = i0 + info_rate * base
+        rest = horizon - rounds - 1
+        reach = float(np.sqrt(numerator * rest / (curvature * info_rate))) - info / info_rate
+        amount = min(max(reach, 0.0), float(fill[rounds]))
+        if amount <= crumb:
+            continue
+        total = (
+            base_cost
+            + curvature * amount
+            + numerator * rest * (1.0 / (info + info_rate * amount) - 1.0 / info)
+        )
+        if total < cost:
+            saturated, partial, mass, cost = rounds, amount, base + amount, total
+    best = saturated + 1 if partial > 0.0 else saturated
+    last_round = partial if partial > 0.0 else float(fill[best - 1]) if best > 0 else 0.0
+    effective = mass / best if best > 0 and not constant else float(caps[0])
 
     scale = sigma * np.sqrt(numerator / (2.0 * curvature * eta))
     steps = np.arange(1, horizon + 1, dtype=np.float64)
@@ -4548,6 +4594,7 @@ def capped_exploration_policy(
         exploration_mass=mass,
         predicted_mass=predicted_mass,
         budget_binds=budget is not None and mass >= budget - 1e-9 * max(1.0, budget),
+        last_round=last_round,
     )
 
 
