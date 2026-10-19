@@ -163,7 +163,7 @@ def test_importing_the_library_loads_nothing_from_research_and_warns_nothing(
     statement: str,
 ) -> None:
     """A caller running with warnings as errors must be able to import the library, and the
-    lifecycle must not pay for the research periphery: `lqr` used to load all of `chc.regret`."""
+    lifecycle must not load the research periphery: `lqr` used to need all of `chc.regret`."""
     probe = (
         f"{statement}; import sys; "
         "print(sorted(m for m in sys.modules if m.startswith('chc.research')))"
