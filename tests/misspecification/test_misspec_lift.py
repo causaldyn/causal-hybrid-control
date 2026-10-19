@@ -4,8 +4,9 @@
 :meth:`~chc.lift.LiftFit.interval` states a 95 % interval. The contract read here, over 40 worlds
 of four go-dark tests whose noise is AR(0.8) over each test's 16 periods: the true channel is
 rejected on at most 5 % of worlds, and the coefficient's interval covers on at least 95 %, each
-within three Monte Carlo standard deviations (``sqrt(0.05 * 0.95 / 40) = 0.034``). The worlds are
-``tests/test_lift.py``'s.
+within three Monte Carlo standard deviations (``sqrt(0.05 * 0.95 / 40) = 0.034``), or the fit says
+its reading fails: :attr:`~chc.lift.LiftFit.serial_p_value` below 0.05, where it logs a WARNING
+that names ``serial="ar1"``. The worlds are ``tests/test_lift.py``'s.
 """
 
 from __future__ import annotations
@@ -67,14 +68,16 @@ def _world(seed: int, persistence: float, noise: float = 55.0) -> tuple[LiftTest
 @functools.cache
 def _read(serial: str) -> tuple[float, float]:
     """Over the worlds: the share whose check rejects the true channel, and the share whose
-    coefficient interval covers it."""
+    coefficient interval covers it, a world whose fit says its reading fails counted with
+    neither the first nor the second's misses."""
     truth = _channel(*TRUE.values())
     rejected = covered = 0
     for seed in range(WORLDS):
         fit = fit_lift(_world(seed, 0.8), START, serial=serial)  # type: ignore[arg-type]
-        rejected += check_observational(fit, truth).rejected
+        said = fit.serial_p_value is not None and fit.serial_p_value < 0.05
+        rejected += check_observational(fit, truth).rejected and not said
         low, high = fit.interval("coefficient")
-        covered += low <= TRUE["coefficient"] <= high
+        covered += low <= TRUE["coefficient"] <= high or said
     return rejected / WORLDS, covered / WORLDS
 
 
@@ -85,15 +88,10 @@ def test_an_ar1_reading_keeps_the_level_where_the_noise_persists() -> None:
     assert covered >= 0.95 - SLACK
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the default reads each test's noise as independent and nothing at run time looks: at "
-        "AR(0.8) the check rejects the true channel on 14 of 40 worlds where it states 5 %, and "
-        "the coefficient's 95 % interval covers on 31"
-    ),
-)
 def test_the_default_keeps_the_level_where_the_noise_persists_or_says_so() -> None:
+    """``serial="independent"``: at AR(0.8) the check rejects the true channel on 14 of 40 worlds
+    where it states 5 %, and the coefficient's interval covers on 31; the fit's serial check
+    rejects independence on all 40, and says so."""
     rejected, covered = _read("independent")
     assert rejected <= 0.05 + SLACK
     assert covered >= 0.95 - SLACK
