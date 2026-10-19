@@ -1475,6 +1475,42 @@ def _noise_covariance(noise: ArrayLike, states: int) -> NDArray[np.float64]:
     return matrix
 
 
+@dataclass(frozen=True)
+class _NoiseRead:
+    """The sampling error of a tube's noise read off a log (:func:`chc.decision._noise_read`).
+
+    ``covariances`` and ``carries``, ``(J, n, n)``: the noise's covariance ``S`` and its VAR(1)
+    coefficient ``Phi`` read with each of ``J`` groups of the log's units left out, a
+    delete-a-group jackknife. ``level``, ``(n, n)``: the covariance of the noise's mean over the
+    log, which the fitted drift absorbs and the plant's own noise does not share."""
+
+    covariances: NDArray[np.float64]
+    carries: NDArray[np.float64]
+    level: NDArray[np.float64]
+
+
+def _studentised(sizes: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Per step, the factor on the noise's part of the gap's standard deviation that carries the
+    read's own sampling error: ``t_nu(q) / t_inf(q)``, ``q`` the tube's two-sided quantile and
+    ``nu = 2 / v``, ``v`` the jackknife's variance of ``log`` of each size over the ``(J, ...)``
+    ``sizes`` its ``J`` replicates read. A variance read on ``nu`` degrees of freedom,
+    ``s^2 chi2_nu / nu``, has ``Var(log) = psi_1(nu / 2) = 2 / nu + O(nu^-2)``, and a Gaussian over
+    its read scale is Student's ``t_nu`` (``validation/noise_read_tube.mac``). A size every
+    replicate reads alike, or one they do not read as a number, gives 1. ``nu`` is at least 1: a
+    size its replicates scatter over by more than a factor ``e`` is one the log does not read, and
+    ``t_nu`` grows without bound below Cauchy's. A norm bound over a pendulum's 40 steps read
+    replicates 1e112 to 1e119 apart, and ``t_nu`` scaled the tube past the largest float."""
+    count = sizes.shape[0]
+    with np.errstate(divide="ignore", invalid="ignore"):  # a size read as no number reads nan
+        logs = np.log(sizes)
+        spread = (count - 1) / count * np.sum(np.square(logs - logs.mean(axis=0)), axis=0)
+    degrees = np.full(spread.shape, math.inf)
+    np.divide(2.0, spread, out=degrees, where=spread > 0.0)
+    degrees = np.maximum(degrees, 1.0)
+    level = 0.5 + _TUBE_COVERAGE / 2.0
+    return np.asarray(student_t.ppf(level, degrees) / student_t.ppf(level, math.inf))
+
+
 def _noise_tube(
     rate: NDArray[np.float64],
     noise: NDArray[np.float64],
@@ -1482,6 +1518,7 @@ def _noise_tube(
     dt: float,
     horizon: int,
     field: NDArray[np.float64] | None = None,
+    read: _NoiseRead | None = None,
 ) -> NDArray[np.float64]:
     """The radii ``r_0..r_H`` within which a plant off the plan's own step by ``w_k`` at each step
     stays at each step with probability :data:`_TUBE_COVERAGE`, ``w_k`` Gaussian of covariance
@@ -1511,6 +1548,12 @@ def _noise_tube(
     ``level``, and exactly ``level`` on one state or where ``P`` is a multiple of the identity:
     that radius is the bound's past the first step, where ``P_1 = S`` is exact and the radius is
     its exact quantile.
+
+    Given the ``read`` of ``noise`` and ``persistence`` off a log, the radius carries their own
+    error (:func:`_read_covariances`): the noise's part of each step's covariance at its
+    studentised scale, and the offset by which the plant's noise misses the mean the fitted drift
+    absorbed. Under a norm bound the offset reaches step ``k`` through ``d_k``, ``d_{k+1} = g d_k
+    + 1``, and adds ``d_k^2 lambda_max(V)`` to the bound.
     """
     added = np.zeros(horizon + 1) if field is None else np.square(field)
     if rate.ndim != 0:
@@ -1518,15 +1561,54 @@ def _noise_tube(
             [
                 _noise_radius(covariance, extra)
                 for covariance, extra in zip(
-                    _noise_covariances(rate, noise, persistence, dt, horizon),
+                    _read_covariances(rate, noise, persistence, dt, horizon, read),
                     added,
                     strict=True,
                 )
             ]
         )
-    variances = np.zeros(horizon + 1)
     z = float(rate) * dt
     growth = 1.0 + z * _rk4_phi(z)
+    variances = _bound_variances(growth, noise, persistence, horizon)
+    first = noise
+    if read is not None:
+        scales = _studentised(
+            np.array(
+                [
+                    _bound_variances(growth, np.asarray(covariance), carry, horizon)[1:]
+                    for covariance, carry in zip(read.covariances, read.carries, strict=True)
+                ]
+            )
+        )
+        variances[1:] = scales * scales * variances[1:]
+        widest = float(np.linalg.eigvalsh(read.level)[-1])
+        if widest > 0.0:
+            variances[1:] += np.square(np.cumsum(growth ** np.arange(horizon))) * widest
+        first = scales[0] * scales[0] * noise + read.level
+    level = float(chi2.ppf(_TUBE_COVERAGE, noise.shape[0]))
+    radii = np.sqrt(level * np.maximum(variances, 0.0))
+    if field is not None:
+        eye = np.eye(noise.shape[0])
+        radii = np.array(
+            [
+                _noise_radius(max(variance, 0.0) * eye, extra)
+                for variance, extra in zip(variances, added, strict=True)
+            ]
+        )
+    if horizon >= 1:
+        radii[1] = _noise_radius(first, added[1])
+    return radii
+
+
+def _bound_variances(
+    growth: float,
+    noise: NDArray[np.float64],
+    persistence: float | NDArray[np.float64],
+    horizon: int,
+) -> NDArray[np.float64]:
+    """``p_0 .. p_H``, the norm bound's ``lambda_max(P_k)`` at a step's growth ``g``
+    (:func:`_noise_tube`)."""
+    variances = np.zeros(horizon + 1)
     largest, spread, cross = float(np.linalg.eigvalsh(noise)[-1]), 0.0, 0.0
     carry = (
         abs(float(persistence))
@@ -1539,19 +1621,52 @@ def _noise_tube(
             carry * (growth * cross + largest),
         )
         variances[step] = spread
-    level = float(chi2.ppf(_TUBE_COVERAGE, noise.shape[0]))
-    radii = np.sqrt(level * np.maximum(variances, 0.0))
-    if field is not None:
-        eye = np.eye(noise.shape[0])
-        radii = np.array(
+    return variances
+
+
+def _read_covariances(
+    rate: NDArray[np.float64],
+    noise: NDArray[np.float64],
+    persistence: float | NDArray[np.float64],
+    dt: float,
+    horizon: int,
+    read: _NoiseRead | None,
+) -> list[NDArray[np.float64]]:
+    """:func:`_noise_covariances`, and, given the ``read`` of ``noise`` and ``persistence`` off a
+    log, the gap's covariance with their own error carried.
+
+    Each step's ``P_k`` is read at its studentised scale, ``s_k P_k s_k``, ``s_k`` diagonal, each
+    state's entry the :func:`_studentised` factor of its own variance ``P_k[i, i]`` over the
+    jackknife's replicates, each carried by the same step matrices: a state's scale moves with no
+    other state's units, and its radius with its own alone (ADR 0059). The fitted drift absorbs
+    the log's mean noise, so the plant's noise is off the plan by a constant ``mu`` beside
+    ``w_k``, of covariance ``V = read.level``, independent of the plant's own noise: ``e_{k+1} =
+    M_k e_k + w_k + mu`` adds ``D_k V D_k'``, ``D_{k+1} = M_k D_k + I`` from ``D_0 = 0``
+    (``validation/noise_read_tube.mac``). Plug-in, ``S`` and ``Phi`` taken for the plant's own,
+    the tube under a persistent recorded confounder held 0.944 a step over 16 logs of 2000 runs
+    where its premises hold (ADR 0105)."""
+    covariances = _noise_covariances(rate, noise, persistence, dt, horizon)
+    if read is None:
+        return covariances
+    scales = _studentised(
+        np.array(
             [
-                _noise_radius(max(variance, 0.0) * eye, extra)
-                for variance, extra in zip(variances, added, strict=True)
+                [np.diag(covariance) for covariance in replicate[1:]]
+                for replicate in (
+                    _noise_covariances(rate, np.asarray(covariance), carry, dt, horizon)
+                    for covariance, carry in zip(read.covariances, read.carries, strict=True)
+                )
             ]
         )
-    if horizon >= 1:
-        radii[1] = _noise_radius(noise, added[1])
-    return radii
+    )
+    slopes = rate if rate.ndim == 3 else np.broadcast_to(rate, (horizon, *rate.shape))
+    eye = np.eye(noise.shape[0])
+    offset, read_covariances = np.zeros_like(noise), [covariances[0]]
+    for slope, scale, covariance in zip(slopes[:horizon], scales, covariances[1:], strict=True):
+        offset = _rk4_parts(dt * np.asarray(slope), eye)[0] @ offset + eye
+        shifted = offset @ read.level @ offset.T if read.level.any() else 0.0
+        read_covariances.append(np.outer(scale, scale) * covariance + shifted)
+    return read_covariances
 
 
 def _noise_covariances(

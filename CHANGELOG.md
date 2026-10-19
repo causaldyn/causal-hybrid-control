@@ -166,6 +166,17 @@ still change).
 
 ### Fixed
 
+- **`prescribe`'s tube carries the error of the noise it reads off the log.** It took the log's
+  `S`, `Phi` and mean noise for the plant's own. A tube read off one log is narrow on some logs
+  and wide on others, and the plant's noise misses the mean the fitted drift absorbed. Under a
+  persistent demand, AR(0.8), recorded and adjusted, over 256 logs of 2000 runs the plant stayed
+  inside 0.9489 of the time at step 1 and 0.9464 at step 15. `S` and `Phi` are now read again with
+  each group of units left out, and each step's noise is read at its studentised scale. The
+  mean's error, clustered by unit, is carried as a constant offset
+  (`validation/noise_read_tube.mac`). The tube now holds 0.9497 at step 1 and 0.9484 at its
+  weakest step, with a standard error of 0.0008 over the logs. Of the 0.0016 left, 0.0009 is the
+  VAR(1)'s reading of an error that is AR plus white. Logs of one unit are unchanged. The
+  quickstart's supply radius widens 0.35 % at week 1 (ADR 0105).
 - **A held barrier holds `h` at each step's next state.** At `dt = 1` a held plan's path left the
   set at 5 of 12 states and its own audit certified 3 steps; it now certifies 12. Plans whose path
   stayed in the set are unchanged to the last digit.

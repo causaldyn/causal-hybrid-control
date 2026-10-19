@@ -1,6 +1,7 @@
 # ADR 0105 — The tube carries the noise as a VAR(1) and warns where the noise it reads is not the plant's
 
-**Status:** accepted, 2026-10-19. Amends the noise model of ADR 0080.
+**Status:** accepted, 2026-10-19. Amends the noise model of ADR 0080. Amended 2026-10-19: the tube
+carries the error of the noise it reads off the log.
 
 ## Context
 
@@ -42,6 +43,21 @@ state, so it persists along the plant's path. Under a sine drift fitted at degre
   noise of covariance `noise` has.
 - **The certificate reports `Phi`** as `tube_autoregression`. `tube_persistence` keeps the pooled
   correlation for the report.
+- **The tube carries the error of the noise it reads.** `S`, `Phi` and the noise's mean are read
+  off one log, and a tube that takes them for the plant's own is narrow on some logs and wide on
+  others. Coverage falls more where it is narrow than it rises where it is wide, so over logs it
+  sits under 0.95. `S` and `Phi` are read again with each of up to 50 groups of the log's units
+  left out, a delete-a-group jackknife. Each step's `P_k` is then read at its studentised scale,
+  `s_k P_k s_k`. `s_k` is diagonal, and state `i`'s entry is `t_nu(0.975) / z(0.975)` with
+  `nu = 2 / v`, where `v` is the jackknife's variance of `log P_k[i, i]`. So a state's scale moves
+  with its own units alone. Under a norm bound `v` is that of the bound's `p_k`. `nu` is at
+  least 1. The fitted drift absorbs the log's
+  mean noise, and so the plant's noise misses the plan by a constant `mu`. Its covariance `V` is
+  read clustered by unit, `G / (G - 1) sum_g s_g s_g' / N^2`, and it adds `D_k V D_k'` to `P_k`,
+  with `D_{k+1} = M_k D_k + I`. Under a norm bound it adds `d_k^2 lambda_max(V)`, with
+  `d_{k+1} = g d_k + 1`. `validation/noise_read_tube.mac` checks the offset's recursion against the
+  double sum, the norm bound, `Var(log chi2_nu) = psi_1(nu / 2)`, and the studentised radius's
+  exact level. A log of one unit reads no spread over units and keeps the plug-in tube.
 - **A warning where the channel's residual persists.** The channel's moment residual has the
   adjustment set regressed out. If its persistence check rejects at 0.05 (`noise_persistence_p`),
   the one-step error the tube reads may not be the plant's noise. A `tube` warning then gives the
@@ -53,7 +69,24 @@ state, so it persists along the plant's path. Under a sine drift fitted at degre
   15. The bar of four Monte Carlo standard errors is 0.936. On the second plant, over 16 logs of
   2000 runs, the AR(0.8) case holds 0.944 to 0.950 at each step, where it held 0.765 to 0.952.
   Its late steps stay about half a point under 0.95, more than the runs' Monte Carlo error of
-  0.0012. The source is not found.
+  0.0012. The cause is the read's own error, which the tube now carries. Over 16 logs `S` read
+  0.82 to 1.12 times its own and `Phi` 0.757 to 0.832 for 0.796. Each is unbiased, so a
+  small-sample correction has nothing to remove. The plan's mean departure from the plant
+  correlated -0.99 with the log's mean demand.
+- With the read's error carried, over 256 further logs of 2000 runs, the AR(0.8) case holds
+  0.9497 at step 1 and 0.9484 at its weakest, step 13. Without it, on the same logs, it holds
+  0.9489 and 0.9464 at step 15. The standard error over the logs is 0.0008, and the paired gain is
+  0.0008 to 0.0021 a step. The VAR(1) approximates this plant's AR-plus-white error, which is an
+  ARMA(1,1). With `S` and `Phi` exact, the VAR(1)'s gap variance at step 13 is 0.9924 of the
+  plant's, a coverage of 0.9491, so 0.0009 of the 0.0016 left is that approximation. On the 16
+  logs the suite reads, the tube holds 0.9463 to 0.9505 a step, where it held 0.9444 to 0.9497.
+  Those 16 logs drew their demand's variance and mean 1.2 to 1.3 times as spread as the plant's:
+  over 1000 logs the sample variance has a standard deviation of 0.059, and on these 16 of 0.073.
+- One log's coverage moves with its read. On this plant, at step 13, it has a standard deviation
+  of 0.0166 over logs, where 2000 runs alone give 0.0049. A floor that counts all the runs as
+  independent is too high for a share pooled over logs.
+- The quickstart's supply radius widens 0.35 % at week 1 under an AR(0.8) demand and 0.08 % under
+  a white one. Pooled over its logs, the coverage moves up 0.000 to 0.002.
 - Where the noise does not persist, `Phi` is near 0, and coverage stays within Monte Carlo
   error. On white demand, over 4 logs, the AR(1) tube held 0.943 to 0.952 at each step and the
   VAR(1) tube 0.944 to 0.952. Over 16 logs the VAR(1) tube holds 0.948 to 0.951.
@@ -80,6 +113,12 @@ state, so it persists along the plant's path. Under a sine drift fitted at degre
   log has already lost the persistence that the drift absorbed. The fitted autocorrelation
   decays to 0 by lag 4, so a longer memory model reads nothing more. `A = Gamma_2 Gamma_1^-1` is
   also unstable where `Gamma_1` is near 0, which is the white-noise case.
+- **A small-sample correction of `Phi` or a degrees-of-freedom correction of `S`.** Not taken:
+  over 16 logs `Phi` read 0.7955 for 0.7965 and `S` was 1 % low. The tube's shortfall is the
+  read's spread, not its bias. Kendall's bias, `-(1 + 3 phi) / T`, is for one series about its own
+  mean. The log centres its error once, over all its units.
+- **Refitting the drift on each jackknife replicate.** Not taken: it costs 50 fits. The fit adds
+  a standard deviation of 0.00013 to `S`, where the demand's own sample moment gives 0.00157.
 - **No trustworthy step where the check rejects.** Not taken as a default. The trustworthy
   prefix is what an operator acts on, and this rule takes it away where it held. On the
   BOPTEST-like zone behind a floor, 12 logs, the tube held 0.96 and 0.95 at the 2 trusted steps,

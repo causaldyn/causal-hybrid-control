@@ -109,7 +109,7 @@ from chc.plan import (
     plan_regret_bound,
 )
 from chc.residual import ControlAffineResidual, ZeroResidual, control_affine_features
-from chc.uncertainty import _TUBE_COVERAGE, _noise_covariances
+from chc.uncertainty import _TUBE_COVERAGE, _NoiseRead, _read_covariances
 
 SCHEMA_VERSION = 2
 """``to_json``'s schema version. Bumped when a field changes meaning, not when one is added: 2
@@ -2495,6 +2495,7 @@ def prescribe(
             np.zeros_like(step_noise),
             0.0,
         )
+    step_read = _noise_read(fit, dt, labels) if step_noise.any() else None
 
     if (
         tolerance is not None
@@ -2554,6 +2555,7 @@ def prescribe(
             dt,
             float("inf") if tolerance is None else tolerance,
             field_scale,
+            step_read,
         )
 
     def regret(solved: CausalPlan) -> PlanRegretBound:
@@ -2669,6 +2671,7 @@ def prescribe(
             step_carry,
             dt,
             horizon,
+            step_read,
         ),
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
@@ -3379,6 +3382,7 @@ _LOGGER_CHECK_DEGREE = 2
 _NUISANCE_DEGREE = 2
 _LOGGER_CHECK_ALPHA = 0.05  # the level at which a check is logged as a warning
 _PERSISTENCE_ALPHA = 0.05  # the level at which the report names the noise's persistence
+_JACKKNIFE_GROUPS = 50  # the most groups of units the tube's noise read is jackknifed over
 _INTERFERENCE_ALPHA = 0.05  # the level at which a spillover is logged and named in the report
 # The fit's ridge and each descent's budget of steps, the fit's and the planner's defaults, passed
 # by name so that the run's record holds what the calls were given (ADR 0063).
@@ -3801,13 +3805,15 @@ def _state_noise(
     persistence: float | NDArray[np.float64],
     dt: float,
     horizon: int,
+    read: _NoiseRead | None = None,
 ) -> tuple[tuple[float, ...], ...]:
     """:attr:`DecisionCertificate.tube_state_noise`: each state's 0.95 radius of the noise's part
-    of the gap at each step, ``sqrt(chi2_1(0.95) P_k[i, i])``."""
+    of the gap at each step, ``sqrt(chi2_1(0.95) P_k[i, i])``, with the ``read``'s own error
+    carried as the tube carries it."""
     level = float(chi2.ppf(_TUBE_COVERAGE, 1))
     return tuple(
         tuple(math.sqrt(level * max(float(variance), 0.0)) for variance in np.diag(covariance))
-        for covariance in _noise_covariances(slopes, noise, persistence, dt, horizon)
+        for covariance in _read_covariances(slopes, noise, persistence, dt, horizon, read)
     )
 
 
@@ -4002,6 +4008,50 @@ def _step_noise(
     return covariance, _autoregression(error, covariance, labels[:, 2], labels[:, 1]), correlation
 
 
+def _noise_read(fit: CausalDynamicsFit, dt: float, labels: NDArray[Any]) -> _NoiseRead | None:
+    """The sampling error of :func:`_step_noise`'s ``S`` and ``Phi``, which the tube carries
+    (:func:`chc.uncertainty._read_covariances`): both read again with each of up to
+    :data:`_JACKKNIFE_GROUPS` groups of the log's units left out, and the covariance of the
+    noise's mean over the log, ``G / (G - 1) sum_g s_g s_g' / N^2``, ``s_g`` unit ``g``'s sum of
+    its ``N`` rows' errors, robust to a noise that persists within units. The units are
+    independent, so the log's own spread over them is its error. None on a log of one unit, which
+    reads no spread over units, and where leaving a group out leaves no pair of consecutive
+    periods.
+
+    The fitted drift absorbs the noise's mean on the log, and with it the mean of a confounder the
+    fit adjusts for and the plan does not forecast: the plant's noise misses it by that mean's
+    error. On the quickstart's plant with its demand an AR(0.8), recorded and adjusted, the plan's
+    mean departure from the plant correlated -0.99 with the log's mean demand over 16 logs, 0.010
+    at the first step and 0.105 at the fifteenth, where the field's error the tube carries reads
+    0.002 and 0.065. Over 16 logs ``S`` read 0.82 to 1.12 times its own on the supply and ``Phi``
+    0.757 to 0.832 for 0.796, each unbiased, and a tube that takes them for the plant's held 0.944
+    a step. The drift's own error at the log's mean reads the part of the mean's error that is the
+    drift's residual, and that part is counted twice: on that plant its variance is 0.5 % of the
+    mean's (ADR 0105)."""
+    assert fit.defect is not None  # every fit keeps its defect
+    error = dt * np.asarray(fit.defect, dtype=np.float64)
+    units = np.unique(np.asarray(labels[:, 2]).reshape(-1), return_inverse=True)[1].reshape(-1)
+    count = int(units.max()) + 1
+    if count < 2:
+        return None
+    sums = np.zeros((count, error.shape[1]))
+    np.add.at(sums, units, error)
+    level = count / (count - 1) * (sums.T @ sums) / error.shape[0] ** 2
+    groups = units % min(count, _JACKKNIFE_GROUPS)
+    earlier, later = _consecutive(labels[:, 2], labels[:, 1])
+    covariances, carries = [], []
+    for group in range(int(groups.max()) + 1):
+        rows, pairs = groups != group, groups[earlier] != group
+        if not pairs.any():
+            return None
+        kept = error[rows]
+        covariance = kept.T @ kept / kept.shape[0]
+        lagged = error[later[pairs]].T @ error[earlier[pairs]] / int(pairs.sum())
+        covariances.append(covariance)
+        carries.append(_yule_walker(lagged, covariance))
+    return _NoiseRead(np.stack(covariances), np.stack(carries), level)
+
+
 def _autoregression(
     error: NDArray[np.float64],
     covariance: NDArray[np.float64],
@@ -4024,16 +4074,30 @@ def _autoregression(
     read 0.41 where the supply's error persists at 0.80 and the wait's at 0.02, and the plant left
     the tube from its second week on, 0.79 a week by the fifteenth (ADR 0105).
     """
+    earlier, later = _consecutive(units, periods)
+    states = covariance.shape[0]
+    if earlier.size == 0:
+        return np.full((states, states), math.nan)
+    return _yule_walker(error[later].T @ error[earlier] / earlier.size, covariance)
+
+
+def _consecutive(
+    units: NDArray[Any], periods: NDArray[Any]
+) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+    """The rows of each pair of one unit's consecutive periods, the earlier's and the later's."""
     codes = np.unique(np.asarray(units).reshape(-1), return_inverse=True)[1].reshape(-1)
     steps = np.asarray(periods).reshape(-1)
     order = np.lexsort((steps, codes))
     earlier, later = order[:-1], order[1:]
     paired = (codes[earlier] == codes[later]) & (steps[later] - steps[earlier] == 1)
-    earlier, later = earlier[paired], later[paired]
-    states = covariance.shape[0]
-    if earlier.size == 0:
-        return np.full((states, states), math.nan)
-    lagged = error[later].T @ error[earlier] / earlier.size
+    return earlier[paired], later[paired]
+
+
+def _yule_walker(
+    lagged: NDArray[np.float64], covariance: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """:func:`_autoregression`'s ``Gamma_1 S^-1`` from the lag-1 covariance ``lagged``, its
+    whitened form scaled back to a contraction."""
     values, vectors = np.linalg.eigh(covariance)
     live = values > 1e-12 * float(values[-1])
     basis, roots = vectors[:, live], np.sqrt(values[live])
