@@ -21,6 +21,13 @@ still change).
   200 rows, HC3's 5.6 %. Left at `None` it reads the classical error and warns (`FutureWarning`)
   that 0.20.0 reads HC3. The robustness value keeps the classical `t`, on which its closed form
   is defined.
+- **`fit_causal_residual(nuisance_knots=)` and `nuisance_shift`** (experimental). The nuisances
+  were polynomials of a fixed degree: a lever set by `tanh` and a drift with `sin` in it left a
+  channel 0.62 below its truth at 1000 and 4000 rows, covered on none of 200 logs, and a higher
+  degree ran off in the other fold's tails. `nuisance_knots="auto"` adds a natural cubic spline
+  in each covariate at `ceil(N^(1/3))` quantile knots: bias 0.18, 0.05 and 0.18 of the channel's
+  error at 1000, 4000 and 16000 rows, coverage 0.955, 0.970 and 0.950. `nuisance_shift` reads
+  how far a refit moves the channel, in its errors (53 to 61 there). The default is unchanged.
 - **`SolverStatus` `infeasible`**: barrier rounds whose penalty reached its ceiling with a step
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.

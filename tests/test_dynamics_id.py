@@ -19,7 +19,7 @@ import pytest
 import scipy.linalg
 import scipy.stats
 
-from chc import _units
+from chc import _units, causal
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
@@ -31,6 +31,7 @@ from chc.dynamics_id import (
     _clustered_squares,
     _less_below_nothing,
     _logged_relations,
+    _nuisance_sieve,
     _persistence,
     _ridge_inverse,
     _ridge_weight,
@@ -39,6 +40,7 @@ from chc.dynamics_id import (
     _unmoved_actions,
     _unmoved_directions,
     fit_causal_residual,
+    nuisance_shift,
     omitted_confounder_bound,
     persistence_check,
     solve_channel_moment,
@@ -3461,3 +3463,119 @@ def test_without_clusters_a_transition_s_states_are_summed_before_squaring() -> 
     assert float(square[0, 0]) == pytest.approx(
         float(np.sum((2 * shared[:, 0]) ** 2)), rel=1e-12, abs=0.0
     )
+
+
+def _outside_the_polynomial(rows: int, seed: int) -> dict[str, jax.Array]:
+    """A lever set by ``-1.5 tanh(2 x)`` and a drift with ``sin(2 x)`` in it, each outside a
+    polynomial's span: ``x' = x + 0.1 (sin(2 x) - 0.5 x + u + 0.5 z) + 0.01 e``,
+    ``u = -1.5 tanh(2 x) + 0.5 z + 0.5 a``, all draws N(0, 1). The channel is 1."""
+    rng = np.random.default_rng(seed)
+    x, z, a, e = rng.normal(size=(4, rows, 1))
+    u = -1.5 * np.tanh(2.0 * x) + 0.5 * z + 0.5 * a
+    rate = np.sin(2.0 * x) - 0.5 * x + u + 0.5 * z
+    return {
+        name: jnp.asarray(column)
+        for name, column in {"x": x, "z": z, "u": u, "x_next": x + 0.1 * rate + 0.01 * e}.items()
+    }
+
+
+def _fit_outside(data: dict[str, jax.Array], **options) -> CausalDynamicsFit:
+    return fit_causal_residual(
+        LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))),
+        data,
+        0.1,
+        adjust_for=("z",),
+        channel_degree=0,
+        **options,
+    )
+
+
+def test_a_spline_sieve_covers_a_channel_whose_nuisances_the_polynomial_misses() -> None:
+    """At the default degree 2 the channel came back 0.62 below its truth of 1 at 1000 and 4000
+    rows, its 95 % interval covering on none of 12 logs: second order in an error that does not
+    shrink. With ``nuisance_knots="auto"``, 10 knots at 1000 rows, the bias was 0.004 over 200 logs
+    and the interval covered on 0.955. Over 20 logs the coverage's Monte Carlo SD is 0.049 at 0.95,
+    so 16 of 20 is three of them below; the mean channel's is 0.005, so 0.02 is four."""
+    channels, covered = [], 0
+    for seed in range(20):
+        fit = _fit_outside(_outside_the_polynomial(1000, seed), nuisance_knots="auto")
+        assert fit.channel_error is not None
+        channel = float(fit.residual.channel.ravel()[0])
+        channels.append(channel)
+        covered += abs(channel - 1.0) <= 1.96 * fit.channel_error
+    assert covered >= 16
+    assert np.mean(channels) == pytest.approx(1.0, abs=0.02)
+
+
+def test_the_nuisance_shift_reads_a_sieve_that_misses_in_its_errors() -> None:
+    """The degree-2 fit reads tens of its errors from its refit on a spline; the spline fit reads
+    a fraction of one from its refit at twice the knots, where both nuisances hold the truth."""
+    data = _outside_the_polynomial(4000, 0)
+    plain = _fit_outside(data)
+    spline = _fit_outside(data, nuisance_knots="auto")
+    richer = _fit_outside(data, nuisance_knots=32)
+    assert nuisance_shift(plain, spline, data["x"]) > 20.0
+    assert nuisance_shift(spline, richer, data["x"]) < 1.0
+    assert plain.channel_error is not None
+    expected = abs(
+        float(spline.residual.channel.ravel()[0]) - float(plain.residual.channel.ravel()[0])
+    )
+    assert nuisance_shift(plain, spline, data["x"]) == pytest.approx(
+        expected / plain.channel_error, rel=1e-12, abs=0.0
+    )
+
+
+def test_the_nuisance_shift_refuses_what_it_cannot_read() -> None:
+    data = _outside_the_polynomial(400, 1)
+    fit = _fit_outside(data)
+    unidentified = fit_causal_residual(
+        LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))), data, 0.1, channel_degree=0
+    )
+    with pytest.raises(ValueError, match="not identified"):
+        nuisance_shift(unidentified, fit, data["x"])
+    affine = fit_causal_residual(
+        LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))), data, 0.1, adjust_for=("z",)
+    )
+    with pytest.raises(ValueError, match="differ in shape"):
+        nuisance_shift(fit, affine, data["x"])
+
+
+def test_the_spline_sieve_holds_the_polynomial_and_reads_orthonormal() -> None:
+    """The sieve's columns span the polynomial's, so a nuisance the polynomial holds the sieve
+    holds too, and they are orthonormal over the log at unit mean square: the spline's truncated
+    powers, near collinear, reach the ridge's Gram whitened. A flag adds no spline column."""
+    rng = np.random.default_rng(2)
+    covariates = jnp.asarray(
+        np.column_stack(
+            [rng.normal(size=500), rng.normal(size=500) * 1e3 + 5e3, rng.random(500) < 0.3]
+        )
+    )
+    sieve = np.asarray(_nuisance_sieve(covariates, 2, 8))
+    polynomial = np.asarray(causal._polynomial_features(_units.standardised(covariates), 2))
+    left = polynomial - sieve @ np.linalg.lstsq(sieve, polynomial, rcond=None)[0]
+    assert np.max(np.abs(left)) <= 1e-9 * np.max(np.abs(polynomial))
+    np.testing.assert_allclose(sieve.T @ sieve / 500, np.eye(sieve.shape[1]), atol=1e-10)
+    # 10 polynomial columns less the flag's square, its own twin, and two splines of 6 columns
+    assert sieve.shape[1] == 9 + 2 * 6
+
+
+def test_the_spline_sieve_on_a_linear_plant_reads_the_polynomial_s_channel() -> None:
+    """Where the polynomial holds the truth, the spline adds columns and nothing else: the two
+    fits read one channel, a fraction of an error apart."""
+    data = _outside_the_polynomial(2000, 3)
+    x, z = np.asarray(data["x"]), np.asarray(data["z"])
+    rng = np.random.default_rng(4)
+    u = 0.8 * x + 0.5 * z + 0.5 * rng.normal(size=x.shape)
+    linear = {
+        **data,
+        "u": jnp.asarray(u),
+        "x_next": jnp.asarray(x + 0.1 * (-0.5 * x + u + 0.5 * z) + 0.01 * rng.normal(size=x.shape)),
+    }
+    plain = _fit_outside(linear)
+    assert nuisance_shift(plain, _fit_outside(linear, nuisance_knots="auto"), linear["x"]) < 0.5
+
+
+@pytest.mark.parametrize("knots", [2, 0, -1, True, 3.0, "more"])
+def test_nuisance_knots_refuses_what_is_not_a_count_of_at_least_three(knots: object) -> None:
+    with pytest.raises(ValueError, match="nuisance_knots"):
+        _fit_outside(_outside_the_polynomial(200, 0), nuisance_knots=knots)
