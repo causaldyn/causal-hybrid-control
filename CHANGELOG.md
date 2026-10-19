@@ -32,6 +32,12 @@ still change).
   400 plans each: 1.002 ± 0.003 at 3 standard deviations, 1.27 ± 0.08 at 1.3 and 1.84 ± 0.13 at
   0.3. `validation/allocation_decision_weight.mac` holds the margin and its gradient to their
   closed form (STEP 3).
+- **`roi(tail=)` and `marginal_roi(tail=)` count the carryover past the series' end.** `True`
+  extends the series by the kernel's length less one periods of no spend, a whole number by that
+  many, `False` keeps the cut. Through a geometric kernel of retention 0.9 and length 30, the last
+  of 52 periods' `marginal_roi` read 0.0003 cut and reads 0.0156 with its tail, 52 times more;
+  over the last 12 periods 6–7 times, over the whole series 1.3–1.6 times. The default is
+  unchanged (ADR 0109).
 
 ### Changed
 
@@ -57,6 +63,9 @@ still change).
   simulator's equilibrium. Premises are stated for local projections under a persistent treatment,
   the "mis" estimate, the experiment's CE action, the gate's steady contrast, the single-Gaussian
   `SupportModel`, fixed-degree nuisances, and `plan_regret_bound`'s unread rows.
+- **`roi` and `marginal_roi` warn (`FutureWarning`) where an unset `tail` cuts the number**: on a
+  `Channel` whose window spends in the kernel's last `length - 1` periods. A future release will
+  count the tail by default; pass `tail=False` to keep the cut.
 
 ### Fixed
 
