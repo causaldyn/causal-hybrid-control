@@ -1,7 +1,7 @@
 # %% [markdown]
 # # 5 · Sensitivity-aware robust control under hidden confounding
 #
-# **`chc.sensitivity` in one pass: estimate → sensitivity radius → robust control.** Offline pessimism
+# **`chc.research.sensitivity` in one pass: estimate → sensitivity radius → robust control.** Offline pessimism
 # assumes the observed transitions *identify* the causal effect. Under **hidden confounding** they do
 # not — the effect is only partially identified in a sensitivity interval. This demo takes a confounded
 # marketplace log and shows that the naive effect estimate is biased. `confounding_robust_inflation`
@@ -19,7 +19,7 @@ import numpy as np
 
 jax.config.update("jax_platforms", "cpu")  # the outputs below were made on a CPU
 
-from chc.sensitivity import (
+from chc.research.sensitivity import (
     asymmetric_control_improvement,
     certainty_equivalence_control,
     confounding_robust_control,

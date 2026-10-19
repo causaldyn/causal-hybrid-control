@@ -15,9 +15,9 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 from jax import Array  # noqa: E402
 
-from chc.benchmark import CausalDynamicsTask, leaderboard  # noqa: E402
 from chc.dynamics import HybridDynamics  # noqa: E402
 from chc.dynamics_id import ConfoundedControlAffineSystem, fit_causal_residual  # noqa: E402
+from chc.research.benchmark import CausalDynamicsTask, leaderboard  # noqa: E402
 from chc.residual import ControlAffineResidual  # noqa: E402
 from chc.train import fit_residual  # noqa: E402
 

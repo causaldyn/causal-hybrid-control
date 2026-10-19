@@ -22,8 +22,8 @@ has to identify is the actuator. The design constants are the ones
 ``causaldyn_bench.pendulum_causal`` (Track J) logs Gymnasium's pendulum with.
 
 Three readings of one log by the same planner, each audited by running its schedule on the *true*
-pendulum at zero wind -- the plan is made for the expected disturbance, as :mod:`chc.mmm` audits at
-an average season:
+pendulum at zero wind -- the plan is made for the expected disturbance, as :mod:`chc.research.mmm`
+audits at an average season:
 
 * ``adjusted`` --- the graph derives the adjustment set ``{wind}``;
 * ``asserted`` --- an empty set asserted, which is what fitting the log as it stands amounts to;

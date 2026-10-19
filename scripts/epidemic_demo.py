@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from chc.epidemic import SIRDynamics, optimal_npi
 from chc.integrate import rollout
+from chc.research.epidemic import SIRDynamics, optimal_npi
 
 
 def main() -> None:

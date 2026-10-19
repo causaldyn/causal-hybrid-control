@@ -33,7 +33,7 @@ import pandas as pd
 jax.config.update("jax_platforms", "cpu")  # the outputs below were made on a CPU
 # %matplotlib inline
 
-from chc.benchmark import InventoryTask, PricingTask, SupportShiftTask
+from chc.research.benchmark import InventoryTask, PricingTask, SupportShiftTask
 
 TASKS = {
     "pricing": PricingTask(),

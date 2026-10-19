@@ -5,7 +5,7 @@ Run: uv run python scripts/spine_demo.py
 
 from __future__ import annotations
 
-from chc.spine import run_spine
+from chc.research.spine import run_spine
 
 
 def main() -> None:

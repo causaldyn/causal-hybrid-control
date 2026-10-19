@@ -5,7 +5,8 @@ Run: uv run python scripts/run_benchmark.py
 
 import urllib.error
 
-from chc.benchmark import (
+from chc.estimators import BackdoorOLS, DoubleML
+from chc.research.benchmark import (
     CausalDynamicsTask,
     ConfoundingRobustTask,
     DelayOscillationTask,
@@ -17,8 +18,7 @@ from chc.benchmark import (
     leaderboard_multiseed,
     run_multiseed,
 )
-from chc.estimators import BackdoorOLS, DoubleML
-from chc.lalonde import lalonde_report, load_lalonde
+from chc.research.lalonde import lalonde_report, load_lalonde
 
 FAST_SEEDS = range(12)
 SLOW_SEEDS = range(6)  # the ensemble-fitting task is ~12s/seed; keep it tractable

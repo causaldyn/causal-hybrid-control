@@ -39,8 +39,8 @@ from chc import LinearConstraint, QuadraticCost, RecedingHorizon, causal_plan  #
 from chc.cost import total_cost  # noqa: E402
 from chc.dynamics import Dynamics, HybridDynamics, LinearDynamics  # noqa: E402
 from chc.integrate import rk4_step  # noqa: E402
-from chc.mmm import MarketingMixSystem, adstock_dynamics, run_marketing_mix  # noqa: E402
 from chc.mpc import PeriodBudget  # noqa: E402
+from chc.research.mmm import MarketingMixSystem, adstock_dynamics, run_marketing_mix  # noqa: E402
 
 Step = Callable[[jax.Array, int, list[np.ndarray]], np.ndarray]
 

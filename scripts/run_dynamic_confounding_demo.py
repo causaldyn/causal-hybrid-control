@@ -10,7 +10,7 @@ Run: uv run python scripts/run_dynamic_confounding_demo.py
 
 from __future__ import annotations
 
-from chc.regret import confounding_robust_tracking_benchmark
+from chc.research.regret import confounding_robust_tracking_benchmark
 
 
 def main() -> None:
