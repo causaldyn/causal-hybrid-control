@@ -28,6 +28,17 @@ still change).
   states 0.95), the channel's interval outside the sieve (0 of 40), the `"mis"` interval under a
   model error (0 of 40), and five more. The default `pytest` deselects the suite; a CI job of its own
   runs it, and so does `just misspecification`.
+- **`prescribe(neighbours=)` checks for spillover, and `prescribe(clusters=)` fits on groups.**
+  With zones whose incentive moves their cluster-mates' supply, the zone-by-zone channel read the
+  incentive's own push, +0.414 off the effect a plan that moves every zone gets, and covered it on
+  no seed of 40; the check rejects on all of them (0.025 without spillover), and the fit on the
+  clusters lands +0.0035 off with coverage 1.00 (ADR 0113). `Prescription.interference`,
+  `interference_check` and `InterferenceCheck` are experimental; `RunProvenance.clusters` and the
+  certificate's `interference_p` go to JSON.
+- **`marketplace.fit_equilibrium` estimates the congestion equilibrium from the logs**, and
+  `pessimistic_equilibrium_allocation(equilibrium=)` plans through it. On 400 blocks it wins 89–100 %
+  of the best plan's lift over no incentive on five markets, and a fit on incentives shuffled across
+  the blocks wins none (ADR 0114).
 
 ### Changed
 
@@ -42,6 +53,9 @@ still change).
 - **A held plan reports an augmented-Lagrangian stationarity**, where it reported `not_evaluated`;
   barrier rounds take a different number of descent steps (about 11× fewer on the receding-horizon
   oscillator, 2.5× more on the pendulum demo).
+- **`pessimistic_equilibrium_allocation` without `equilibrium=` raises a `FutureWarning`**: it plans
+  through the simulator's own equilibrium, which no log supplies; a future release will require
+  `equilibrium=`.
 - **`KoopmanModel` reads closure residuals over each feature's spread about its mean**, so some
   gains granted before are refused.
 - **Documentation states what results rest on.** The README ties the headline to a confounder the
@@ -103,6 +117,10 @@ still change).
   latent, not ≈ e·k! graphs; the report prices a budget period the horizon cuts short at its share.
 - **Benchmarks**: the pricing and inventory tasks add `predictive-all`, a regression on every
   logged column, which lands with `causal-CHC`; `run()` returns four results.
+- **`pessimistic_equilibrium_allocation`'s tilt is never a bonus.** It was the pessimistic response
+  less the raw estimate, so a zone whose estimate was negative earned `|m|` per unit of incentive
+  (`+0.0054` on the default market's zone 8 in float64); the estimate is now projected onto the same
+  non-negative prior first, and the tilt is `-min(max(m, 0), r·se)`.
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
 
 ## [0.18.0] — 2026-10-13

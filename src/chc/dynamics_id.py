@@ -57,7 +57,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from scipy.optimize import brentq
 from scipy.stats import t as student_t
 
@@ -2374,6 +2374,117 @@ def _persistence(
         else math.nan
     )
     return PersistenceCheck(correlation, p_value, pairs, count)
+
+
+@dataclass(frozen=True)
+class InterferenceCheck:
+    """Whether a fit's transitions move with their neighbours' levers, read off its channel
+    moment's residual by :func:`interference_check`. *Experimental.*
+
+    The fit's premise is that a unit's transition depends on its own levers alone. Where a unit's
+    levers move its neighbours' states as well, drivers or customers moving between zones, the
+    residual carries the neighbours' push, and the channel is the effect of moving one unit with
+    its neighbours held, not of a plan that moves them all (ADR 0113).
+    """
+
+    # ``(n_states, n_levers)``: each state's residual's slope on the neighbours' mean of each
+    # lever, within periods, in the state's rate per unit of the lever; nan for a lever whose
+    # neighbours' mean never moves within a period
+    coefficient: NDArray[np.float64]
+    t: NDArray[np.float64]  # each slope over its CR1 error across the groups
+    # the smallest of the slopes' two-sided p-values against ``t(G - 1)``, times the number of
+    # slopes, at most 1 (Bonferroni); nan below two groups or with no slope to read
+    p_value: float
+    transitions: int  # the transitions with a neighbour logged in their period
+    groups: int  # ``G``: the groups among them
+
+
+def interference_check(
+    fit: CausalDynamicsFit, exposure: ArrayLike, groups: ArrayLike, periods: ArrayLike
+) -> InterferenceCheck:
+    """Regress ``fit``'s moment residual on its neighbours' levers, within periods. *Experimental.*
+
+    ``exposure`` is ``(N, m)``: for each of the fit's transitions, the mean of each lever over the
+    unit's neighbours in the period the transition starts in, nan where no neighbour is logged
+    then; such a transition is left out. ``groups`` and ``periods`` label the transitions, ``N``
+    each: the group the errors are summed within, a unit or a declared cluster, and the period.
+    The residual and the exposure are taken about their means within each period, so a shock every
+    unit shares in a period, which the neighbours' levers may chase, moves neither. Each state's
+    residual is regressed on the exposure; a slope's error is the CR1 sandwich over the groups'
+    sums of scores, against ``t(G - 1)``, and the check's p-value Bonferroni's over the slopes.
+
+    Under the fit's premise the residual has mean zero given the unit's own states, levers and
+    adjustment set, and a neighbour's lever is another unit's: its slope is zero. A rejection says
+    the premise fails, by spillover or by a nuisance the fit misses that the neighbours' levers
+    track; it does not say by how much the channel is off. Neighbours that are every other unit
+    leave an exposure that within a period is the unit's own lever mirrored, which the check cannot
+    tell from the unit's own effect.
+
+    Raises:
+        ValueError: the fit kept no moment residual, as where its channel is not identified; or
+            the exposure or the labels are not one row a transition.
+    """
+    if fit.moment_residual is None:
+        raise ValueError("the fit kept no moment residual: its channel is not identified")
+    return _interference(fit.moment_residual, exposure, groups, periods)
+
+
+def _interference(
+    residual: ArrayLike, exposure: ArrayLike, groups: ArrayLike, periods: ArrayLike
+) -> InterferenceCheck:
+    """:func:`interference_check` on a residual of the fit's transitions, ``(N, n)``."""
+    residual = np.asarray(residual, dtype=np.float64)
+    rows = residual.shape[0]
+    exposed = np.asarray(exposure, dtype=np.float64)
+    exposed = exposed[:, None] if exposed.ndim == 1 else exposed
+    labels, steps = np.asarray(groups).reshape(-1), np.asarray(periods).reshape(-1)
+    if exposed.shape[0] != rows or labels.size != rows or steps.size != rows:
+        raise ValueError(
+            f"the exposure and the labels are one row for each of the fit's {rows} transitions; "
+            f"got {exposed.shape[0]}, {labels.size} and {steps.size}"
+        )
+    n_states, n_levers = residual.shape[1], exposed.shape[1]
+    keep = np.all(np.isfinite(exposed), axis=1)
+    codes = np.unique(labels[keep], return_inverse=True)[1].reshape(-1)
+    count = int(codes.max()) + 1 if codes.size else 0
+    nan = np.full((n_states, n_levers), math.nan)
+    if count < 2:
+        return InterferenceCheck(nan, nan.copy(), math.nan, int(np.sum(keep)), count)
+    period = np.unique(steps[keep], return_inverse=True)[1].reshape(-1)
+
+    def within(values: NDArray[np.float64]) -> NDArray[np.float64]:
+        sums = np.zeros((int(period.max()) + 1, values.shape[1]))
+        np.add.at(sums, period, values)
+        return values - (sums / np.bincount(period)[:, None])[period]
+
+    outcome, design = within(residual[keep]), within(exposed[keep])
+    # a column whose spread is rounding of its size moves nothing within the periods
+    size = np.max(np.abs(exposed[keep]), axis=0)
+    live = np.sqrt(np.mean(design**2, axis=0)) > 64.0 * np.finfo(np.float64).eps * size
+    if not np.any(live):
+        return InterferenceCheck(nan, nan.copy(), math.nan, int(np.sum(keep)), count)
+    design = design[:, live]
+    scale = np.sqrt(np.mean(design**2, axis=0))
+    standard = design / scale
+    gram_inv = np.linalg.inv(standard.T @ standard)
+    slope = gram_inv @ standard.T @ outcome  # (live, n_states)
+    left = outcome - standard @ slope
+    coefficient, t = nan.copy(), nan.copy()
+    for state in range(n_states):
+        scores = np.zeros((count, standard.shape[1]))
+        np.add.at(scores, codes, standard * left[:, state : state + 1])
+        cov = count / (count - 1) * gram_inv @ (scores.T @ scores) @ gram_inv
+        error = np.sqrt(np.maximum(np.diag(cov), 0.0))
+        coefficient[state, live] = slope[:, state] / scale
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t[state, live] = slope[:, state] / error
+    finite = t[np.isfinite(t)]
+    p_value = (
+        min(1.0, finite.size * float(np.min(2.0 * student_t.sf(np.abs(finite), count - 1))))
+        if finite.size
+        else math.nan
+    )
+    return InterferenceCheck(coefficient, t, p_value, int(np.sum(keep)), count)
 
 
 # --- Result 41 (A7): what a tracked log identifies, and what it does not ---

@@ -1,0 +1,46 @@
+/* The pessimism tilt of chc.marketplace.pessimistic_equilibrium_allocation
+   (tests/test_marketplace.py).
+   A zone's incentive u >= 0 earns m' u, its response m' known to lie in the ball [m - r s, m + r s]
+   about the estimate m (s >= 0 its standard error, r >= 0 the radius) and, a priori, non-negative.
+   The worst case over the ball and the prior is its lower end, L = max(m - r s, 0); the estimate
+   the prior allows is its projection, P = max(m, 0). The tilt is the discount L - P, so
+       tilt = max(m - r s, 0) - max(m, 0) = -min(max(m, 0), r s),
+   never positive and never below -r s. Read against the raw estimate, L - m, it is a bonus of -m
+   wherever m < 0, which is the defect this file records.
+
+   STEP 1  the three regions of m against 0 and r s: L - P and -min(max(m, 0), r s) agree
+   STEP 2  the tilt lies in [-r s, 0] in every region
+   STEP 3  L - m on m < 0 is -m > 0: the bonus
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/marketplace_tilt.mac */
+
+linel : 110$
+display2d : false$
+
+L(m, w) := max(m - w, 0)$
+P(m) := max(m, 0)$
+tilt(m, w) := -min(max(m, 0), w)$
+verdict(e) := if is(e) then "(ok)" else "(FAIL)"$
+
+/* w = r s >= 0; each region is entered by a substitution that places m in it */
+region(name, msub) := block([m0, d, low, high],
+  m0 : msub,
+  d : ratsimp(L(m0, w) - P(m0) - tilt(m0, w)),
+  low : ratsimp(tilt(m0, w) + w),
+  high : ratsimp(-tilt(m0, w)),
+  print(name, " L - P less the closed form:", d, verdict(equal(d, 0))),
+  print(name, " tilt + r s >= 0:", low, verdict(low >= 0)),
+  print(name, " -tilt >= 0:", high, verdict(high >= 0)))$
+
+assume(w > 0, t > 0, a > 0, a < 1)$
+/* STEP 1-2: m = w + t above r s; m = a w inside [0, r s); m = -t below 0 */
+region("STEP 1-2  m >= r s:", w + t)$
+region("STEP 1-2  0 <= m < r s:", a*w)$
+region("STEP 1-2  m < 0:", -t)$
+/* the boundaries */
+region("STEP 1-2  m = 0:", 0)$
+region("STEP 1-2  m = r s:", w)$
+
+/* STEP 3 */
+bonus : ratsimp(L(-t, w) - (-t))$
+print("STEP 3  L - m at m = -t:", bonus, verdict(equal(bonus, t)))$
