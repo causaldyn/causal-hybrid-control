@@ -1936,6 +1936,7 @@ def test_the_run_goes_to_json_as_plain_values(default_run: RunProvenance) -> Non
         "tolerance": None,
         "hold_constraints": False,
         "max_levers": None,
+        "clusters": None,
     }
 
 

@@ -32,7 +32,7 @@ import datetime
 import logging
 import math
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib import metadata
 from typing import Any, Literal, get_args
@@ -60,6 +60,7 @@ from chc.dynamics import (
 from chc.dynamics_id import (
     CausalDynamicsFit,
     Integrator,
+    InterferenceCheck,
     _absorbed,
     _channel_design,
     _cosines,
@@ -69,6 +70,7 @@ from chc.dynamics_id import (
     _persistence,
     _unmoved_actions,
     fit_causal_residual,
+    interference_check,
     persistence_check,
 )
 from chc.evaluation import (
@@ -860,6 +862,7 @@ class RunProvenance:
     tolerance: float | None
     hold_constraints: bool  # whether the solve held the constraints, or only the audit priced them
     max_levers: int | None  # the greedy selection's cap; None where every lever was planned with
+    clusters: str | None = None  # the column the units were grouped by; None where not grouped
 
     def to_json(self) -> dict[str, Any]:
         """A plain dict, ready for ``json.dumps(..., allow_nan=False)``: the versions an object
@@ -885,6 +888,7 @@ class RunProvenance:
                 "tolerance": self.tolerance,
                 "hold_constraints": self.hold_constraints,
                 "max_levers": self.max_levers,
+                "clusters": self.clusters,
             }
         )
 
@@ -907,6 +911,9 @@ class Prescription:
     # is reported, not acted on; None when a lever's parent is not logged, or the panel has too few
     # rows for it. *Experimental.*
     logger_check: LoggerCheck | None = None
+    # Whether the units' transitions move with their neighbours' levers, where ``neighbours`` was
+    # given and the fit kept a moment residual; reported, not acted on. *Experimental.*
+    interference: InterferenceCheck | None = None
     budgets: tuple[PeriodBudget, ...] = ()  # what the plan was held to spend
     start: StartState | None = None  # where the plan starts, or would have; None if not recorded
     run: RunProvenance | None = None  # what the run used; None if not recorded
@@ -1357,6 +1364,7 @@ class Prescription:
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
             self._logger_line(),
             self._persistence_line(),
+            *self._interference_lines(),
             f"- error tube: **{certificate.certificate_status}**, "
             + ("" if certificate.tube_mode is None else f"{certificate.tube_mode} radii, ")
             + f"certified horizon {_show(certificate.certified_horizon)}"
@@ -1450,6 +1458,9 @@ class Prescription:
                 "error_cosines": certificate.error_cosines,
                 "noise_persistence": certificate.noise_persistence,
                 "noise_persistence_p": certificate.noise_persistence_p,
+                "interference_p": None
+                if self.interference is None
+                else _finite(self.interference.p_value),
                 "estimability": certificate.estimability,
                 "identification_rank": certificate.identification_rank,
                 "unmoved_directions": certificate.unmoved_directions,
@@ -1516,7 +1527,8 @@ class Prescription:
             f"- settings: folds={run.folds}, degree={run.degree}, "
             f"channel_degree={run.channel_degree}, nuisance_degree={run.nuisance_degree}, "
             f"ridge={run.ridge:g}, steps={run.steps}, tolerance={tolerance}, "
-            f"hold_constraints={run.hold_constraints}, max_levers={cap}",
+            f"hold_constraints={run.hold_constraints}, max_levers={cap}"
+            + ("" if run.clusters is None else f", clusters=`{run.clusters}`"),
             "- versions: " + ", ".join(f"{name} {version}" for name, version in run.versions),
         ]
 
@@ -1571,6 +1583,28 @@ class Prescription:
             "its error does not cover; adjust for the states, the levers and the adjustment set "
             "a period earlier"
         )
+
+    def _interference_lines(self) -> list[str]:
+        check = self.interference
+        if check is None:
+            return []
+        if math.isnan(check.p_value):
+            return [
+                "- interference: not tested, the neighbours' levers leave fewer than two groups or "
+                "never move within a period"
+            ]
+        head = f"p = {check.p_value:.3g} over {check.groups} groups"
+        if check.p_value > _INTERFERENCE_ALPHA:
+            return [f"- interference: none found ({head})"]
+        state, lever = np.unravel_index(np.nanargmax(np.abs(check.t)), check.t.shape)
+        name = "a state" if self._columns is None else f"`{self._columns.states[state]}`"
+        return [
+            f"- interference: **the units' transitions move with their neighbours' levers** "
+            f"({head}); strongest: `{self.lever_names[lever]}` on {name}, "
+            f"{check.coefficient[state, lever]:+.4g} per unit of the neighbours' mean: the channel "
+            "is the effect of moving one unit with its neighbours held; group the units with "
+            "`clusters` to estimate the effect of moving them together"
+        ]
 
     def _noise_lines(self) -> list[str]:
         certificate = self.certificate
@@ -1691,6 +1725,8 @@ def prescribe(
     seed: int = 0,
     integrator: Integrator = "rk4",
     drivers: Sequence[Driver] = (),
+    neighbours: Mapping[Any, Iterable[Any]] | str | None = None,
+    clusters: str | None = None,
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -1828,6 +1864,25 @@ def prescribe(
             priced: the forecast's own error, and the fitted gain's standard error, which the tube's
             model error leaves out as it leaves out the drift's. A forecast outside the range the
             panel logged is extrapolated by the fitted gain, and logged as a warning.
+        neighbours: the units whose levers may move a unit's states beside its own: a mapping from
+            a unit to its neighbours, or the name of a column grouping the units, each unit's
+            neighbours the others in its group. The fit takes each unit's transitions to depend on
+            its own levers alone; where they do not, as with drivers or customers moving between
+            zones, its channel is the effect of moving one unit with its neighbours held, and a
+            plan that moves them all gets another. Given, the fit's residual is regressed on the
+            neighbours' mean levers within periods (:func:`~chc.dynamics_id.interference_check`,
+            *experimental*): :attr:`Prescription.interference` holds the result, and a rejection
+            at 5 % is logged as a warning and named in the report. It reports; it changes nothing
+            else. Under ``clusters`` it names the clusters, not the units.
+        clusters: the name of a column grouping the units, each unit in one group throughout:
+            fit and plan on the groups instead of the units, each group's row in a period the mean
+            of its units' rows logged then (ADR 0113). A spillover between the units of one group
+            is then inside its rows, so the channel is the effect of moving the group's units
+            together, the effect a plan that moves them all gets. A spillover between groups is
+            not: check it with ``neighbours``. The fit has a row per group and period, so its
+            errors read the groups' spread, not the units'. The panel's declared ``cluster`` is
+            kept where it holds one value over each group's rows, and dropped otherwise.
+            :attr:`Prescription.provenance` is the grouped panel's.
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
@@ -1852,10 +1907,13 @@ def prescribe(
             a lever, or a covariate or a driver whose column
             would be read in a second role: one named ``u`` or ``x_next``, or ``x`` other than as
             the one state, under which the transitions hold the levers, the states a period on
-            and the states, or one named for a driver's level a period on, ``f"{driver}_next"``.
-        KeyError: a lever, target, constraint, driver or asserted covariate names a column the
-            panel does not have. The message lists the panel's columns. Also a graph that has no
-            node for a lever, the target or a constrained column.
+            and the states, or one named for a driver's level a period on, ``f"{driver}_next"``;
+            ``neighbours`` that name a unit the panel does not have, or a unit, under ``clusters``
+            a cluster, that ``clusters`` or a ``neighbours`` column puts in two groups.
+        KeyError: a lever, target, constraint, driver, asserted covariate, ``clusters`` or a
+            ``neighbours`` column names a column the panel does not have. The message lists the
+            panel's columns. Also a graph that has no node for a lever, the target or a
+            constrained column.
         PanelError: a column the fit reads as numbers --- a lever's, a state's, a covariate's or
             a driver's --- holds text, dates, times, durations, complex numbers or any other value
             that is not a real number, or a number finite in its own type that is an infinity in
@@ -1985,11 +2043,14 @@ def prescribe(
             )
         if not np.all(np.isfinite(given)):
             raise DecisionError(f"x0 is {given.tolist()}, and a start must be finite")
-    for name in (*states, *lever_names, *driver_names):
+    for name in (*states, *lever_names, *driver_names, *_named(clusters), *_named(neighbours)):
         if name not in panel.columns:
             raise KeyError(
                 f"column {name!r} is not in the panel; columns are {sorted(panel.names)}"
             )
+    if clusters is not None:
+        numbers = (*states, *lever_names, *driver_names)
+        panel = _cluster_panel(panel, clusters, numbers, _named(neighbours))
 
     # the run's precision; the panel's flag was read when the panel was built, and need not match
     x64 = _x64_enabled()
@@ -2102,12 +2163,30 @@ def prescribe(
         tolerance=None if tolerance is None else float(tolerance),
         hold_constraints=bool(hold_constraints),
         max_levers=None if max_levers is None else int(max_levers),
+        clusters=clusters,
     )
     persistence = (
         None
         if fit.moment_residual is None
         else persistence_check(fit, units=labels[:, 2], periods=labels[:, 1])
     )
+    interference = (
+        None
+        if neighbours is None or fit.moment_residual is None
+        else interference_check(
+            fit, _exposure(panel, lever_names, neighbours, labels), labels[:, 0], labels[:, 1]
+        )
+    )
+    if interference is not None and interference.p_value <= _INTERFERENCE_ALPHA:
+        _log.warning(
+            "the units' transitions move with their neighbours' levers",
+            extra={
+                "chc_event": "interference",
+                "p_value": interference.p_value,
+                "coefficient": interference.coefficient.tolist(),
+                "groups": interference.groups,
+            },
+        )
     identification: IdentificationStatus = (
         "not_identified"
         if resolved.status == "not_identified"
@@ -2178,6 +2257,7 @@ def prescribe(
             provenance=panel.provenance,
             drivers=tuple(drivers),
             logger_check=logger_check,
+            interference=interference,
             budgets=tuple(budgets),
             start=start_state,
             run=run,
@@ -2557,6 +2637,7 @@ def prescribe(
         selection=selection,
         drivers=tuple(drivers),
         logger_check=logger_check,
+        interference=interference,
         budgets=tuple(budgets),
         start=start_state,
         run=run,
@@ -3049,6 +3130,140 @@ def _transitions(
     ).astype(np.int64)
 
 
+def _named(argument: object) -> tuple[str, ...]:
+    """``argument`` as the column names it holds: itself where it names one, else none."""
+    return (argument,) if isinstance(argument, str) else ()
+
+
+def _group_of_each_unit(panel: Panel, column: str) -> NDArray[np.int64]:
+    """Each row's group code in ``column``, refused where a unit's rows are in two groups."""
+    units, _ = panel.codes()
+    groups = np.unique(np.asarray(panel[column]), return_inverse=True)[1].reshape(-1)
+    pairs = np.unique(np.column_stack([units, groups]), axis=0)
+    split = pairs[1:, 0][pairs[1:, 0] == pairs[:-1, 0]]
+    if split.size:
+        raise DecisionError(
+            f"unit {panel.units[int(split[0])]!r} is in more than one group of {column!r}; a "
+            "unit's group holds over all its rows"
+        )
+    return groups
+
+
+def _number_column(panel: Panel, name: str) -> bool:
+    """Whether ``name`` holds real numbers: a boolean, integer or floating column, or an object
+    column of numbers (:func:`chc.frames._not_numbers`)."""
+    column = panel[name]
+    kind = column.dtype.kind
+    return kind in "biuf" or (kind == "O" and _not_numbers(column) is None)
+
+
+def _one_value_per_group(panel: Panel, name: str, groups: NDArray[np.int64]) -> bool:
+    """Whether column ``name`` holds one value over each group's rows."""
+    codes = np.unique(np.asarray(panel[name]), return_inverse=True)[1].reshape(-1)
+    return np.unique(np.column_stack([groups, codes]), axis=0).shape[0] == np.unique(groups).size
+
+
+def _cluster_panel(
+    panel: Panel, column: str, numbers: tuple[str, ...], labels: tuple[str, ...] = ()
+) -> Panel:
+    """The panel with one row per group of ``column`` and period, each numeric column the mean of
+    the group's rows logged that period; ``numbers`` are read as numbers or refused, and
+    ``labels`` are carried as they are, refused where a group's rows hold two values.
+
+    The group's label is the unit, and the period label of the group's first row the time, which
+    the panel's ``frequency`` reads to the same period. The declared ``cluster`` is kept where it
+    holds one value over each group's rows."""
+    groups = _group_of_each_unit(panel, column)
+    _, periods = panel.codes()
+    key = groups * (int(periods.max()) + 1) + periods
+    _, first, inverse = np.unique(key, return_index=True, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    counts = np.bincount(inverse)
+    data: dict[str, NDArray[Any]] = {
+        column: np.asarray(panel[column])[first],
+        panel.time: np.asarray(panel[panel.time])[first],
+    }
+    for name in labels:
+        if name in data:
+            continue
+        if not _one_value_per_group(panel, name, groups):
+            raise DecisionError(
+                f"a group of {column!r} is in more than one group of {name!r}; a group's rows "
+                "are one unit, which is in one group throughout"
+            )
+        data[name] = np.asarray(panel[name])[first]
+    declared = panel.cluster if panel.cluster not in (None, column, *labels) else None
+    if declared is not None and _one_value_per_group(panel, declared, groups):
+        data[declared] = np.asarray(panel[declared])[first]
+    else:
+        declared = panel.cluster if panel.cluster in labels else None
+    for name in panel.names:
+        if name in data or name in (panel.unit, panel.cluster):
+            continue
+        if name in numbers or _number_column(panel, name):
+            data[name] = np.bincount(inverse, weights=panel._numbers(name)) / counts
+    return Panel.from_frame(
+        data,
+        unit=column,
+        time=panel.time,
+        frequency=panel.provenance.frequency,
+        cluster=declared,
+        seed=panel.provenance.seed,
+    )
+
+
+def _exposure(
+    panel: Panel,
+    levers: tuple[str, ...],
+    neighbours: Mapping[Any, Iterable[Any]] | str,
+    labels: NDArray[np.int64],
+) -> NDArray[np.float64]:
+    """For each transition :func:`_transitions` labels, each lever's mean over the unit's
+    neighbours logged in the period it starts in; nan where none is."""
+    unit_codes, _ = panel.codes()
+    if isinstance(neighbours, str):
+        groups = _group_of_each_unit(panel, neighbours)
+        group_of = dict(zip(unit_codes.tolist(), groups.tolist(), strict=True))
+        members: dict[int, list[int]] = {}
+        for unit, group in sorted(group_of.items()):
+            members.setdefault(group, []).append(unit)
+        adjacency = {
+            unit: [other for other in members[group] if other != unit]
+            for unit, group in group_of.items()
+        }
+    else:
+        index = {label: code for code, label in enumerate(panel.units)}
+        named = {unit: tuple(others) for unit, others in neighbours.items()}
+        unknown = [
+            label
+            for label in (*named, *(other for others in named.values() for other in others))
+            if label not in index
+        ]
+        if unknown:
+            raise DecisionError(
+                f"neighbours name {unknown[0]!r}, which is not a unit of the panel; units are "
+                f"{list(panel.units)[:10]}"
+            )
+        adjacency = {
+            index[unit]: sorted({index[other] for other in others} - {index[unit]})
+            for unit, others in named.items()
+        }
+    steps = _period_steps(panel)
+    row_of = {
+        (unit, step): row
+        for row, (unit, step) in enumerate(zip(unit_codes.tolist(), steps.tolist(), strict=True))
+    }
+    values = np.column_stack([panel._numbers(name) for name in levers])
+    exposure = np.full((labels.shape[0], len(levers)), np.nan)
+    for row, (step, unit) in enumerate(labels[:, 1:].tolist()):
+        rows = [
+            row_of[(other, step)] for other in adjacency.get(unit, ()) if (other, step) in row_of
+        ]
+        if rows:
+            exposure[row] = np.mean(values[rows], axis=0)
+    return exposure
+
+
 def _stacked(panel: Panel, names: tuple[str, ...], rows: NDArray[np.int64]) -> Array:
     """The columns ``names`` at ``rows``, one column each, as the fit reads them."""
     if not names:
@@ -3088,6 +3303,7 @@ _LOGGER_CHECK_DEGREE = 2
 _NUISANCE_DEGREE = 2
 _LOGGER_CHECK_ALPHA = 0.05  # the level at which a check is logged as a warning
 _PERSISTENCE_ALPHA = 0.05  # the level at which the report names the noise's persistence
+_INTERFERENCE_ALPHA = 0.05  # the level at which a spillover is logged and named in the report
 # The fit's ridge and each descent's budget of steps, the fit's and the planner's defaults, passed
 # by name so that the run's record holds what the calls were given (ADR 0063).
 _RIDGE = 1e-6

@@ -20,6 +20,13 @@ still change).
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
 - **A `lever_range` warning** when a prescription sets a lever outside the range the panel logged.
+- **`prescribe(neighbours=)` checks for spillover, and `prescribe(clusters=)` fits on groups.**
+  With zones whose incentive moves their cluster-mates' supply, the zone-by-zone channel read the
+  incentive's own push, +0.414 off the effect a plan that moves every zone gets, and covered it on
+  no seed of 40; the check rejects on all of them (0.025 without spillover), and the fit on the
+  clusters lands +0.0035 off with coverage 1.00 (ADR 0113). `Prescription.interference`,
+  `interference_check` and `InterferenceCheck` are experimental; `RunProvenance.clusters` and the
+  certificate's `interference_p` go to JSON.
 - **`marketplace.fit_equilibrium` estimates the congestion equilibrium from the logs**, and
   `pessimistic_equilibrium_allocation(equilibrium=)` plans through it. On 400 blocks it wins 89–100 %
   of the best plan's lift over no incentive on five markets, and a fit on incentives shuffled across
