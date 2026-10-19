@@ -20,6 +20,7 @@ from chc.experiment import (
     ChannelPrior,
     ZoneDecision,
     ZoneExperiment,
+    _half_width,
     _local,
     _monte_carlo,
     _second_partial_moment,
@@ -438,6 +439,58 @@ def test_a_regret_bound_needs_draws_enough_to_show_its_level():
     )
     # the rank ceil(0.995 * 151) = 151 is past the 150 draws: no draw holds the level
     assert design.regret_bound == math.inf
+
+
+def _hall_larger_side(values: np.ndarray) -> float:
+    """Hall's (1992) interval for a mean, ``g(t) = t + b t^2 + b^2 t^3 / 3 + b / 2`` inverted by
+    root-finding, not by its closed form: the larger of its two sides."""
+    n = values.size
+    se = np.std(values, ddof=1) / math.sqrt(n)
+    b = stats.skew(values) / (3.0 * math.sqrt(n))
+    z = stats.norm.ppf(0.975)
+
+    def inverse(y: float) -> float:
+        return optimize.brentq(lambda t: t + b * t**2 + b**2 * t**3 / 3 + b / 2 - y, -50.0, 50.0)
+
+    return se * max(inverse(z), -inverse(-z))
+
+
+@pytest.mark.parametrize("draws", [100, 400])
+def test_the_error_is_the_larger_side_of_halls_interval(draws):
+    """The difference of the two regrets is skewed to the right, and 1.96 standard errors held its
+    mean 0.915 to 0.926 of the time at 100 draws on three designs."""
+    decision = _market([-1.0, -0.4, -1.3, -0.6])
+    prior = ChannelPrior(B_TRUE, np.diag([0.3, 0.02, 0.25, 0.02]) ** 2)
+    design = design_experiment(
+        decision, prior, DEMO_EXPERIMENT, 5e-5, uses=3.0, draws=draws, seed=11
+    )
+    assert sum(design.sample_sizes) > 0
+    measured = _monte_carlo(
+        decision,
+        prior,
+        _local(decision, prior.mean).action,
+        np.array(design.sample_sizes, dtype=np.int64),
+        DEMO_EXPERIMENT.information,
+        draws,
+        11,
+    )
+    difference = measured.now - measured.after
+    normal = 1.96 * np.std(difference, ddof=1) / math.sqrt(draws)
+    assert stats.skew(difference) > 1.0
+    assert design.error == pytest.approx(3.0 * _hall_larger_side(difference), rel=1e-9, abs=0.0)
+    assert design.error > 3.0 * normal
+
+
+def test_the_error_holds_a_skewed_mean_at_95_percent():
+    # gamma(1/4) has the skew of 4 the regrets' difference reads; 4000 samples of 100, MC SE 0.0034
+    rng = np.random.default_rng(3)
+    samples = rng.gamma(0.25, 1.0, size=(4000, 100))
+    miss = np.abs(samples.mean(axis=1) - 0.25)
+    normal = 1.96 * samples.std(axis=1, ddof=1) / 10.0
+    hall = np.array([_half_width(sample) for sample in samples])
+    assert np.mean(miss <= normal) < 0.93  # 0.913
+    assert np.mean(miss <= hall) >= 0.95  # 0.958
+    assert np.all(hall >= normal)
 
 
 @pytest.mark.parametrize(

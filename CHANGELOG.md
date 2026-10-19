@@ -113,6 +113,15 @@ still change).
   order statistic of rank `ceil(level (draws + 1))`, measured 0.949 to 0.952 at 100 draws, and
   `inf` where `draws` is below `level / (1 - level)`. At the default draws the bound moves up by at
   most one order statistic. Since 0.8.0.
+- **`design_experiment`'s `error` holds the regret it removes at 95%.** It was 1.96 standard errors of
+  the Monte Carlo difference of the two regrets, which is skewed to the right (skew about 4) with
+  a spread that rises with it, so the misses fell on one side: on three designs it held the
+  expected difference 0.915 to 0.926 of the time at 100 draws, 0.933 to 0.934 at 200, 0.940 to
+  0.946 at 400 and 0.942 to 0.947 at 1000 (8000 replicates, MC SE 0.003), and 0.947 to 0.950 at the
+  default 10 000. It is now the larger side of Hall's (1992) skewness-corrected interval, which
+  held 0.950 to 0.964 at 100 draws and 0.954 to 0.969 from 200 to 10 000. It is 1.6 times as wide
+  at 100 draws, 1.3 at 200, 1.1 at 1000 and 1.03 at 10 000, so a design whose value cleared its
+  error by less than that now reads `"abstain"` or `"deploy"`, not `"experiment"`. Since 0.8.0.
 - **ADR 0095's coverage of one unit's windows at ten steps is 0.83 to 0.85, not 0.86 to 0.87.**
   Its 600 logs a cell read high by chance: the code reproduces them to the bit, and 2000 fresh logs
   a cell cover 0.830, 0.841 and 0.850 at 400, 800 and 1600 windows, as ADR 0083 measured. Its
