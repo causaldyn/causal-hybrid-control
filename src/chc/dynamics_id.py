@@ -1304,9 +1304,12 @@ def fit_causal_residual(
             confounder that enters through a nonlinear interaction of two covariates is still
             outside the span. Read :func:`nuisance_shift` against a fit with more knots or a higher
             degree. Left at None on an identified, unweighted fit without an instrument, the fit
-            refits the log once with ``"auto"`` and warns (``FutureWarning``) where that moves the
-            channel by more than three of its errors, that 0.20.0 reads ``"auto"``; the fit
-            returned is the default's. On the plant above, at 2000 rows, the refit moved the
+            solves its channel's moment once more on ``"auto"``'s nuisances, at its own target, and
+            warns (``FutureWarning``) where that moves the channel by more than three of its
+            errors, that 0.20.0 reads ``"auto"``; the fit returned is the default's. Under
+            ``euler`` that channel is a refit's; under ``rk4`` one Newton step through the fit's
+            own Newton matrix carries it to a refit's fixed point. It fits nothing more. On the
+            plant above, at 2000 rows, the refit moved the
             channel by 5.8 to 10.4 errors and the fit warned on 40 of 40 logs; on 140 logs of
             linear plants it moved it by 0.89 at most, and warned on none. Where the noise grows as
             ``exp(x)`` it warned on 3 % of a linear plant's logs; under a weight ``exp(-x)`` the
@@ -1607,25 +1610,25 @@ def fit_causal_residual(
             # zero. Where the log moves no direction, the instrument identifies none.
             identified, method, instrument_action = False, "observational", None
 
-    def moment(y_res: Array, u_res: Array) -> Array:
+    def moment(y_res: Array, u_res: Array, unmoved: _Unmoved | None = split) -> Array:
         regressor = _channel_design(u_res, x, channel_degree)
         instrument = (
             regressor
             if instrument_action is None
             else _channel_design(instrument_action, x, channel_degree)
         )
-        if split is None:
+        if unmoved is None:
             coeffs = _channel_coefficients(y_res, regressor, instrument, ridge, penalty, row_weight)
         else:
             # Only where the moment has data: an unmoved direction's regressor is what the
             # nuisance's ridge left of an action the covariates determine, and solved beside the
             # rest it moved them as far as the actions' units made it.
-            coeffs = split.free @ _channel_coefficients(
+            coeffs = unmoved.free @ _channel_coefficients(
                 y_res,
-                regressor @ split.free,
-                instrument @ split.free,
+                regressor @ unmoved.free,
+                instrument @ unmoved.free,
                 ridge,
-                split.free.T @ penalty @ split.free,
+                unmoved.free.T @ penalty @ unmoved.free,
                 row_weight,
             )
         return coeffs.T.reshape(y_res.shape[1], u_res.shape[1], -1)
@@ -1744,9 +1747,12 @@ def fit_causal_residual(
         gain = jnp.concatenate([gain, jnp.zeros((x.shape[1], pushes.shape[1]))], axis=1)
         return (x_next - predicted(fit.residual, gain)) / dt
 
-    def rk4_fixed_point(start: Array) -> CausalDynamicsFit:
+    def rk4_fixed_point(
+        start: Array,
+    ) -> tuple[CausalDynamicsFit, Array, Callable[[Array], Array] | None]:
         """The fit that is its own ``rk4`` reading of the log, by Newton's method from the fit to
-        the target ``start``.
+        the target ``start``, the target it reads, and, where it is identified, how a move of its
+        parameters ``(p, ...)`` at that target carries to the fixed point.
 
         Coefficients ``theta`` read a rate off the log: their own fitted rate ``Phi theta`` plus
         what their RK4 step leaves over, ``y(theta) = Phi theta + (x_next - RK4_theta) / dt``.
@@ -1823,7 +1829,7 @@ def fit_causal_residual(
         target = reading(theta)
         fit = fit_to(known_rate + target)
         if not identified:
-            return fit
+            return fit, target, None
 
         # Only the noise is random given the log, and the channel reads it where its own sandwich
         # does, after the adjustment set has taken out what it explains. The drift regression holds
@@ -1876,30 +1882,35 @@ def fit_causal_residual(
         channel_error, lever_errors, channel_blocks = _channel_errors(
             [covariance[:size, :size] for covariance in covariances], channel.shape, phi_c
         )
-        return dataclasses.replace(
-            fit,
-            channel_error=channel_error,
-            _lever_errors=lever_errors,
-            _channel_blocks=channel_blocks,
-            drift_error=_error_at_rows(drift_blocks, design[:, :carried]),
-            _drift_blocks=np.asarray(drift_blocks, dtype=np.float64),
-            influence=_influence(
-                carry(fit_map),
-                score,
-                carry(drift_direct(size)),
-                own_defect,
-                regressor.shape[1],
-                codes,
-            )[:, :, :kept]
-            if influence
-            else None,
-            representer=_representer(carry(held(u_res))[:size]) if influence else None,
-            moment_residual=score,
+        return (
+            dataclasses.replace(
+                fit,
+                channel_error=channel_error,
+                _lever_errors=lever_errors,
+                _channel_blocks=channel_blocks,
+                drift_error=_error_at_rows(drift_blocks, design[:, :carried]),
+                _drift_blocks=np.asarray(drift_blocks, dtype=np.float64),
+                influence=_influence(
+                    carry(fit_map),
+                    score,
+                    carry(drift_direct(size)),
+                    own_defect,
+                    regressor.shape[1],
+                    codes,
+                )[:, :, :kept]
+                if influence
+                else None,
+                representer=_representer(carry(held(u_res))[:size]) if influence else None,
+                moment_residual=score,
+            ),
+            target,
+            carry,
         )
 
     if integrator == "rk4":
-        fit = rk4_fixed_point((x_next - x) / dt - known_rate)
+        fit, target, to_fixed_point = rk4_fixed_point((x_next - x) / dt - known_rate)
     else:
+        target, to_fixed_point = (x_next - x) / dt - known_rate, None
         fit = fit_to((x_next - x) / dt)
     if integrator == "euler" and identified:
         y = (x_next - x) / dt - known_rate
@@ -1951,7 +1962,7 @@ def fit_causal_residual(
         periods=steps,
     )
     error = fit.channel_error
-    # under a weight the refit's own second-order error reaches past the channel's on a share of
+    # under a weight the spline's own second-order error reaches past the channel's on a share of
     # well-specified logs, so the shift no longer separates a miss from noise
     if (
         nuisance_knots is None
@@ -1960,29 +1971,37 @@ def fit_causal_residual(
         and error is not None
         and error > 0.0
     ):
-        refit = fit_causal_residual(
-            known,
-            data,
-            dt,
-            adjust_for=adjust_for,
-            unconfounded=unconfounded,
-            degree=degree,
-            channel_degree=channel_degree,
-            nuisance_degree=nuisance_degree,
-            nuisance_knots="auto",
+        # The refit's moment at this fit's own target, without its errors: under Euler the refit's
+        # channel; under rk4 its first Newton step, through this fit's own Newton matrix.
+        spline = _nuisance_sieve(covariates, nuisance_degree, _knot_count("auto", x.shape[0]))
+        found = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree, spline)
+        spline_split = _split_unmoved(found, raw, design) if found.shape[1] else None
+        y_spline, u_spline, _, _ = _cross_fit_residuals(
+            target,
+            u,
+            covariates,
+            degree=nuisance_degree,
             folds=folds,
             ridge=ridge,
             seed=seed,
-            integrator=integrator,
-            drivers=drivers,
-            clusters=clusters,
-            periods=periods,
-            times=times,
+            features=spline,
+        )
+        spline_channel = moment(y_spline, u_spline, spline_split)
+        if spline_split is not None:
+            spline_channel = spline_split.hold(spline_channel, target)
+        if to_fixed_point is not None:
+            move = spline_channel - fit.residual.channel
+            pushed = jax.vmap(lambda c, ui: (move @ c) @ ui)(phi_c, u)
+            step = jnp.concatenate([move.ravel(), -_solve_ridge(design, pushed, ridge).ravel()])
+            moved = to_fixed_point(step[:, None])[: move.size, 0]
+            spline_channel = fit.residual.channel + moved.reshape(move.shape)
+        refit = dataclasses.replace(
+            fit, residual=dataclasses.replace(fit.residual, channel=spline_channel)
         )
         shift = nuisance_shift(fit, refit, x)
         if shift > _NUISANCE_SHIFT_WARN:
             warnings.warn(
-                f"a refit with spline nuisances (nuisance_knots='auto') moves the channel by "
+                f"spline nuisances (nuisance_knots='auto') move the channel by "
                 f"{shift:.3g} of its errors, so the default polynomial nuisances miss this log's "
                 "and its channel_error does not cover the bias; 0.20.0 reads nuisance_knots='auto' "
                 "by default; pass it now to fit_causal_residual to read the channel so",

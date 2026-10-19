@@ -3601,10 +3601,10 @@ def test_the_spline_sieve_on_a_linear_plant_reads_the_polynomial_s_channel() -> 
 
 
 def test_a_default_fit_says_when_a_spline_refit_moves_its_channel() -> None:
-    """Left at ``nuisance_knots=None`` the fit refits once with ``"auto"``: on the plant above, at
-    1000 rows, the channel moves by tens of its errors and the fit warns that its nuisances miss
-    the log's. On a linear plant it moves by a fraction of one and the fit is silent, and a fit
-    that names its knots does not refit."""
+    """Left at ``nuisance_knots=None`` the fit reads what spline nuisances with ``"auto"`` knots
+    do to its channel: on the plant above, at 1000 rows, they move it by tens of its errors and
+    the fit warns that its nuisances miss the log's. On a linear plant they move it by a fraction
+    of one and the fit is silent, and a fit that names its knots does not check."""
     with pytest.warns(FutureWarning, match=r"nuisance_knots='auto'.*0\.20\.0"):
         _fit_outside(_outside_the_polynomial(1000, 0))
     data = _outside_the_polynomial(1000, 3)
@@ -3620,6 +3620,57 @@ def test_a_default_fit_says_when_a_spline_refit_moves_its_channel() -> None:
         warnings.simplefilter("error", FutureWarning)
         _fit_outside(linear)
         _fit_outside(_outside_the_polynomial(1000, 0), nuisance_knots="auto")
+
+
+def test_the_default_fit_reads_the_spline_shift_without_a_second_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check solves the spline's moment at the fit's own target and fits nothing else; under
+    Euler that is the refit's channel, so the shift it states is the refit's ``nuisance_shift``."""
+    data = _outside_the_polynomial(1000, 0)
+    refits: list[object] = []
+
+    def counted(*args: object, **options: object) -> CausalDynamicsFit:
+        refits.append(options.get("nuisance_knots"))
+        return fit_causal_residual(*args, **options)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("chc.dynamics_id.fit_causal_residual", counted)
+    with pytest.warns(FutureWarning, match="nuisance_knots='auto'") as records:
+        fit = _fit_outside(data)
+    monkeypatch.undo()
+    assert refits == []
+    stated = float(str(records[0].message).split(" move the channel by ")[1].split()[0])
+    refit = _fit_outside(data, nuisance_knots="auto")
+    assert stated == pytest.approx(nuisance_shift(fit, refit, data["x"]), rel=1e-2, abs=0.0)
+
+
+def test_under_rk4_the_default_fit_s_check_reads_the_refit_s_fixed_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under ``rk4`` the refit's channel is its own fixed point, not the moment at this fit's
+    target: on 500 rows of ``x' = -0.7 x + 0.8 u`` stepped at ``dt = 1``, the moment alone read the
+    shift 0.586 for the refit's 0.818, 28 % short. One Newton step through the fit's own Newton
+    matrix reads 0.81747, within 4e-5 of it."""
+    rng = np.random.default_rng(1)
+    x, z, v, e = rng.normal(size=(4, 500, 1))
+    u = 0.9 * z + 0.4 * v
+    truth = LinearDynamics(jnp.array([[-0.7]]), jnp.array([[0.8]]))
+    step = jax.vmap(lambda xi, ui: rk4_step(truth, 0.0, xi, ui, 1.0))
+    after = step(jnp.asarray(x), jnp.asarray(u)) + 0.01 * np.exp(x) * e
+    data = {"x": jnp.asarray(x), "u": jnp.asarray(u), "z": jnp.asarray(z), "x_next": after}
+    read: list[float] = []
+
+    def recorded(*args: CausalDynamicsFit) -> float:
+        read.append(nuisance_shift(*args))  # type: ignore[arg-type]
+        return read[-1]
+
+    known = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    options = {"adjust_for": ("z",), "integrator": "rk4", "channel_degree": 0}
+    monkeypatch.setattr("chc.dynamics_id.nuisance_shift", recorded)
+    fit = fit_causal_residual(known, data, 1.0, **options)  # type: ignore[arg-type]
+    monkeypatch.undo()
+    refit = fit_causal_residual(known, data, 1.0, nuisance_knots="auto", **options)  # type: ignore[arg-type]
+    assert read == [pytest.approx(nuisance_shift(fit, refit, data["x"]), rel=1e-3, abs=0.0)]
 
 
 @pytest.mark.parametrize("knots", [2, 0, -1, True, 3.0, "more"])
