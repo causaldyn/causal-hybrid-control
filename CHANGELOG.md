@@ -60,6 +60,11 @@ still change).
 - **`minimax_action` returns where a candidate action is huge.** An identified interval whose
   midpoint is near zero (1.6e-189) made the equalising candidate overflow a float power, which
   raised `OverflowError`; its cost now reads `inf` and it loses to the other candidates.
+- **`convection_diffusion_exact` holds for a reversed flow and a weak one, and `optimal_upwind`
+  keeps double precision past its series crossover.** A flow with `s/eps` below −709 read `nan`
+  everywhere; as `s/eps` went to 0 the solution lost digits (1e-4 relative at 1e-12) and read
+  `nan` at `s = 0`, where it is now `x`. `optimal_upwind` lost up to 2.8e-10 relative just
+  above `Pe = 1e-3`; its series now runs through `Pe^13` and takes over below `Pe = 0.2`.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They

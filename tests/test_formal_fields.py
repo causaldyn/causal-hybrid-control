@@ -346,11 +346,6 @@ def test_optimal_upwind_matches_high_precision_values(peclet: float, reference: 
     assert optimal_upwind(peclet) == pytest.approx(reference, rel=4 * _EPS, abs=0.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="above the Pe = 1e-3 series crossover coth(Pe) - 1/Pe cancels: rel. error 2.2e-11 "
-    "at Pe = 1e-3, 2.8e-10 at Pe = 1.08e-3",
-)
 def test_optimal_upwind_keeps_double_precision_above_the_series_crossover() -> None:
     """convection_diffusion.mac STEP 4f, just above the crossover, against PARI/GP values."""
     for peclet, reference in (
@@ -387,10 +382,6 @@ def test_convection_diffusion_exact_solves_the_boundary_value_problem(
         np.testing.assert_allclose(values, naive, rtol=0.0, atol=8 * _EPS)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="s < 0: the layer-at-x=1 form overflows past s/eps = -709; eps=1/720, s=-1 gives nan",
-)
 def test_convection_diffusion_exact_stays_bounded_for_a_reversed_flow() -> None:
     """convection_diffusion.mac STEP 1, reversed flow: u = expm1(rx)/expm1(r), bounded at r < 0."""
     xs = np.linspace(0.0, 1.0, 25)
@@ -398,17 +389,13 @@ def test_convection_diffusion_exact_stays_bounded_for_a_reversed_flow() -> None:
     np.testing.assert_allclose(values, _layer_solution(xs, -720.0), rtol=0.0, atol=8 * _EPS)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="s/eps -> 0: exp(-r) and exp(r(x-1)) both round near 1 and cancel; rel. error 2.5e-9 "
-    "at s/eps = 1e-8, 1.1e-4 at 1e-12",
-)
 def test_convection_diffusion_exact_keeps_its_digits_when_diffusion_dominates() -> None:
     """convection_diffusion.mac STEP 1d at s/eps = 1e-8, against 50-digit PARI/GP values."""
     xs = jnp.asarray([0.25, 0.5, 0.9])
     values = np.asarray(convection_diffusion_exact(xs, 1e8, 1.0))
     reference = [2.4999999906250000e-01, 4.9999999875000000e-01, 8.9999999955000000e-01]
     np.testing.assert_allclose(values, reference, rtol=1e-13, atol=0.0)
+    np.testing.assert_array_equal(np.asarray(convection_diffusion_exact(xs, 1.0, 0.0)), xs)
 
 
 # ---------------------------------------------------------------------------------------------

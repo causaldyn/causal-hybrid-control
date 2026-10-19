@@ -104,6 +104,10 @@ def poisson_2d(f: Callable[[Array, Array], Array], n: int) -> tuple[Array, Array
     return jnp.asarray(coords), jnp.asarray(u)
 
 
+# coth(Pe) - 1/Pe = Pe * sum_k c_k Pe^(2k) through Pe^13: validation/convection_diffusion.mac STEP 8
+_UPWIND_SERIES = (1 / 3, -1 / 45, 2 / 945, -1 / 4725, 2 / 93555, -1382 / 638512875, 4 / 18243225)
+
+
 def optimal_upwind(peclet: float) -> float:
     """The SUPG parameter ``coth(|Pe|) - 1/|Pe|`` that makes 1-D convection-diffusion nodally exact.
 
@@ -116,12 +120,13 @@ def optimal_upwind(peclet: float) -> float:
     Mitchell-Zienkiewicz (1976); Brooks-Hughes (1982).
 
     ``coth(Pe) - 1/Pe`` is a difference of two quantities that both blow up as ``Pe -> 0``, so the
-    naive form loses every significant digit there. The series ``Pe/3 - Pe^3/45`` takes over below
-    the crossover, where it is already accurate to well past double precision.
+    naive form loses about ``3*eps/Pe^2`` of its value there. The Laurent series through ``Pe^13``
+    takes over below ``Pe = 0.2``, where its first dropped term is ``1e-17`` of the value and the
+    difference's loss is ``2e-14``.
     """
     peclet = abs(peclet)
-    if peclet < 1e-3:
-        return peclet / 3.0 - peclet**3 / 45.0
+    if peclet < 0.2:
+        return peclet * float(np.polynomial.polynomial.polyval(peclet * peclet, _UPWIND_SERIES))
     # At the other end, coth(Pe) - 1 = 2/(exp(2*Pe) - 1) drops below double precision around
     # Pe = 19, so this saturates at exactly 1 - 1/Pe: the boundary of the stability range, where
     # the super-diagonal vanishes and the scheme degenerates to the exact upwind limit.
@@ -131,13 +136,20 @@ def optimal_upwind(peclet: float) -> float:
 def convection_diffusion_exact(x: Array, eps: float, s: float) -> Array:
     """Exact solution of ``-eps u'' + s u' = 0`` on ``[0,1]`` with ``u(0)=0``, ``u(1)=1``.
 
-    Written about the layer at ``x = 1`` (``validation/convection_diffusion.mac`` STEP 1d) rather
-    than as ``(exp(s x/eps) - 1)/(exp(s/eps) - 1)``: the two are equal, but the latter overflows
-    once ``s/eps`` passes ~700 while this form stays bounded, and the convection-dominated regime is
-    the whole point of the problem.
+    Written about the layer at ``x = 1`` (``validation/convection_diffusion.mac`` STEP 1d) for
+    ``s > 0`` and about the layer at ``x = 0`` for ``s < 0``, rather than as
+    ``(exp(s x/eps) - 1)/(exp(s/eps) - 1)``: the forms are equal, but that one overflows once
+    ``|s/eps|`` passes ~700 while these stay bounded, and the convection-dominated regime is the
+    whole point of the problem. Each is written in ``expm1``, so it keeps its digits as ``s/eps``
+    goes to 0, where the solution tends to ``x``; at ``s = 0`` it is ``x``.
     """
     ratio = s / eps
-    return (jnp.exp(ratio * (x - 1.0)) - jnp.exp(-ratio)) / (1.0 - jnp.exp(-ratio))
+    # both branches are evaluated, and a nan in the one not taken poisons the other's gradient:
+    # written in |s/eps|, each stays finite for every flow
+    size = jnp.where(ratio == 0.0, 1.0, jnp.abs(ratio))
+    forward = (jnp.expm1(size * (x - 1.0)) - jnp.expm1(-size)) / -jnp.expm1(-size)
+    reversed_flow = jnp.expm1(-size * x) / jnp.expm1(-size)
+    return jnp.where(ratio > 0.0, forward, jnp.where(ratio < 0.0, reversed_flow, x))
 
 
 def convection_diffusion_1d(
