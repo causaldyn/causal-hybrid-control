@@ -562,10 +562,19 @@ def test_a_start_that_is_not_a_state_is_refused() -> None:
 
 def test_a_tube_certifies_no_step_past_the_path_s_overflow() -> None:
     """RK4 multiplies ``x' = 200 x`` by 8221 a step at ``dt = 0.1``, past float64's range after 78
-    steps of 100; a tube carried at no rate and at a tolerance of ``inf`` covered all of them."""
+    steps of 100; a tube carried at no rate and at a tolerance of ``1e300`` covered all of them."""
     model = LinearDynamics(jnp.array([[200.0]]), jnp.array([[1.0]]))
     plan = causal_plan(
-        model, jnp.array([1.0]), _COST_1, 0.1, 100, -1.0, 1.0, model_error=1e-300, steps=1
+        model,
+        jnp.array([1.0]),
+        _COST_1,
+        0.1,
+        100,
+        -1.0,
+        1.0,
+        model_error=1e-300,
+        tolerance=1e300,
+        steps=1,
     )
     finite = np.isfinite(np.asarray(plan.trajectory[:, 0]))
     assert not finite.all()
