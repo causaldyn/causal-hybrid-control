@@ -616,6 +616,32 @@ def test_transportability_regret_is_quadratic_in_wasserstein_distance() -> None:
     assert (np.diff(curve.nontransport_regret) > 0).all()  # regret grows with the domain shift
 
 
+def test_the_wdro_radius_is_second_order_and_the_exact_bound_covers_the_regret() -> None:
+    # the exact regret is (u_src k - b xt)^2 / k, k = b^2 + rr (transportability_regret.mac (D));
+    # C Lip^2 eps^2 is its second-order term, which it passes at d = eps on the defaults
+    curve = transportability_regret_certificate()
+    assert curve.exact_regret[-1] / curve.wdro_bound == pytest.approx(
+        1.390946502057613, rel=1e-12, abs=0.0
+    )
+    assert curve.exact_wdro_bound == pytest.approx(0.002318244170096022, rel=1e-12, abs=0.0)
+    assert (curve.exact_regret <= curve.exact_wdro_bound).all()
+    for b_src, rr, xt, radius in (
+        (1.0, 0.5, 1.0, 0.45),
+        (0.6, 0.5, 1.0, 0.25),
+        (0.3, 1.0, 1.0, 0.25),
+        (-0.8, 0.3, 2.0, 0.6),
+        (0.0, 0.5, 1.0, 0.3),
+    ):
+        bound = transportability_regret_certificate(
+            b_src=b_src, rr=rr, xt=xt, wdro_radius=radius
+        ).exact_wdro_bound
+        targets = np.linspace(b_src - radius, b_src + radius, 20_001)
+        u_src = b_src * xt / (b_src**2 + rr)
+        regret = (u_src * (targets**2 + rr) - targets * xt) ** 2 / (targets**2 + rr)
+        assert regret.max() <= bound * (1.0 + 1e-12)
+        assert bound <= regret.max() * (1.0 + 1e-12)
+
+
 def test_regret_band_holds_with_high_probability() -> None:
     # high-prob regret bound (proofs/highprob_regret.v): the sub-Gaussian upgrade of Result 10 (in
     # expectation). With prob >= 1-delta, regret <= 2*log(2/delta) * the CR floor; confounding

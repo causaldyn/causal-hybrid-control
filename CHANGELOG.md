@@ -138,6 +138,13 @@ still change).
   of an unconfounded null at sizes 100 to 1600 and held the population's `Gamma` on at least 94.6 %
   of confounded ones, normal or skewed; at `n = 30` under skewed noise, 8.5 % and 91.1 % at worst.
   Since 0.5.0.
+- **`transportability_regret_certificate` carries a bound on the deployment's exact regret,
+  `exact_wdro_bound`.** Its `wdro_bound`, `C Lip^2 eps^2`, was said to cover every shift `d <=
+  eps`, but it is the regret's second-order term: the exact regret, `(u_src k - b_tgt xt)^2 / k`,
+  reached 1.39 times it at `d = eps` on the defaults. `exact_wdro_bound` is the exact regret's
+  largest value over every target effect within `Lip eps` of the source's, 0.002318 against
+  `wdro_bound`'s 0.001667 there; `wdro_bound` keeps its value and is described as the
+  approximation. Since 0.2.0.
 
 ## [0.18.0] — 2026-10-13
 

@@ -33,3 +33,24 @@ bound : C*Lip^2*eps^2$
 print("(C) W-DRO regret bound(eps) = C*Lip^2*eps^2 ; covers realized when d <= eps:")$
 print("    bound(eps) - R_nontransport =", ratsimp(bound - Rnt), " = C*Lip^2*(eps^2 - d^2) >= 0 for eps>=d")$
 print("    factor = C*Lip^2*(eps-d)*(eps+d) >= 0 : the robust radius is a transportability budget")$
+
+/* (D) C*Lip^2*eps^2 is the regret to SECOND order in db, not a bound on it. The exact regret of the
+   source control u_s = b_s*xt/(b_s^2 + rr) on a target with effect bt is its cost there less the
+   target-optimal one, (u_s*k - bt*xt)^2/k with k = bt^2 + rr. Its slope in bt factors into the
+   quadratic that vanishes where the regret does and a cubic, so its largest value over
+   |bt - b_s| <= Lip*eps sits at an end of that interval or at a real root of the cubic inside it:
+   chc.regret.transportability_regret_certificate's exact_wdro_bound. */
+us : bs*xt/(bs^2 + rr)$
+cost(bt, u) := (bt*u - xt)^2 + rr*u^2$
+exact_regret : cost(bt, us) - cost(bt, bt*xt/(bt^2 + rr))$
+print("(D) exact regret - (u_s*k - bt*xt)^2/k =",
+      ratsimp(exact_regret - (us*(bt^2 + rr) - bt*xt)^2/(bt^2 + rr)))$
+print("    its slope in bt, u_s free:",
+      factor(diff((u*(bt^2 + rr) - bt*xt)^2/(bt^2 + rr), bt)))$
+print("    its second-order term at bt = bs + db:",
+      ratsimp(subst(db = 0, diff(subst(bt = bs + db, exact_regret), db, 2))/2 - subst(b = bs, C)))$
+defaults : [bs = 1, rr = 1/2, xt = 1]$
+at_eps : float(ev(subst(bt = bs + 3/20, exact_regret), defaults))$
+print("    defaults, Lip*eps = 0.15: exact at d = eps", at_eps, "over C*Lip^2*eps^2",
+      at_eps/float(ev(subst(b = 1, C)*(3/20)^2, defaults)))$
+print("    exact at the other end:", float(ev(subst(bt = bs - 3/20, exact_regret), defaults)))$

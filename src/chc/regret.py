@@ -877,9 +877,15 @@ class TransportabilityCurve:
     transportable_regret: Vector  # regret when the effect is recoverable on target (b_tgt = b_src)
     nontransport_regret: Vector  # CE-quadratic regret C*Lip^2*d^2 when b_tgt = b_src + Lip*d
     exact_regret: Vector  # the simulated cost-gap (cross-checks the quadratic-in-W1 scaling)
-    wdro_bound: float  # C*Lip^2*eps^2 for the W-DRO radius eps: covers all d <= eps
+    # C*Lip^2*eps^2 for the W-DRO radius eps: the second-order approximation, which covers the
+    # CE-quadratic regret at every d <= eps but not the exact one, 1.39 times it at d = eps on the
+    # defaults
+    wdro_bound: float
     nontransport_slope: float  # log-log slope of the CE-quadratic regret vs W1 (= 2)
     exact_slope: float  # log-log slope of the simulated regret vs W1 (~ 2)
+    # the exact regret's largest value over every target with |b_tgt - b_src| <= Lip*eps: a bound
+    # on it at every d <= eps, either side
+    exact_wdro_bound: float
 
 
 def transportability_regret_certificate(
@@ -906,6 +912,15 @@ def transportability_regret_certificate(
     penalises; (C) a W-DRO controller for radius ``eps`` covers this residual when ``d <= eps`` --
     conditional on the DRO ambiguity set being the W1-ball over the law that ``b`` is Lipschitz in.
     The robust radius is a transportability budget.
+
+    ``wdro_bound``, ``C*Lip^2*eps^2``, is the second-order approximation of that budget and not a
+    bound on the regret the deployment pays: the exact regret is ``(u_src k - b_tgt xt)^2 / k``,
+    ``k = b_tgt^2 + rr``, and on the defaults it reaches 1.39 times ``wdro_bound`` at ``d = eps``.
+    ``exact_wdro_bound`` is the exact regret's largest value over every target effect within
+    ``Lip*eps`` of the source's, either side, which bounds it: read at the interval's ends and at
+    the real roots inside it of ``u_src b^3 + u_src rr b - rr xt``, where its slope is zero
+    (``validation/transportability_regret.mac`` (D) derives the regret, and the cubic is its
+    slope's other factor).
     """
     coeff = xt**2 * (rr - b_src**2) ** 2 / (rr + b_src**2) ** 3
     ds = np.geomspace(d_lo, d_hi, n_d)
@@ -922,6 +937,11 @@ def transportability_regret_certificate(
     exact_reg = np.array([exact(b_src + lip * d) for d in ds])
     slope = float(np.polyfit(np.log(ds), np.log(nontransport), 1)[0])
     exact_slope = float(np.polyfit(np.log(ds), np.log(exact_reg), 1)[0])
+    reach = lip * wdro_radius
+    u_src = b_src * xt / (b_src**2 + rr)
+    turns = np.roots([u_src, 0.0, u_src * rr, -rr * xt])
+    turns = turns.real[(np.abs(turns.imag) <= 1e-12 * (1.0 + np.abs(turns.real)))]
+    candidates = [b_src - reach, b_src + reach, *turns[np.abs(turns - b_src) <= reach]]
     return TransportabilityCurve(
         ds,
         transportable,
@@ -930,6 +950,7 @@ def transportability_regret_certificate(
         float(coeff * lip**2 * wdro_radius**2),
         slope,
         exact_slope,
+        max(exact(float(b)) for b in candidates),
     )
 
 
@@ -5438,7 +5459,7 @@ def confounding_robust_lq_regret_matrix(
 ) -> float:
     """Matrix confounding-robust LQ regret ``tr(E^T H E)``, ``E = stat + confounding``.
 
-    The Frobenius lift of the scalar bound via the §21 matrix order-doubling (the scalar
+    The Frobenius lift of the scalar approximation via the §21 matrix order-doubling (the scalar
     order-doubling is Rocq ``regret_order_2p``; the matrix step ``tr(E^T H E) <=
     lambda_max(H)*||E||_F^2`` is standard and not in Rocq): for a positive-semidefinite LQ regret
     curvature ``H`` and effect-error
@@ -5455,10 +5476,12 @@ def confounding_robust_lq_regret_matrix(
 
 @dataclass(frozen=True)
 class ConfoundingRobustLQRegretCurve:
-    """Evidence the confounding regret bound order-doubles effect error and floors at Delta^2."""
+    """Evidence the confounding regret order-doubles effect error and floors at Delta^2."""
 
     gammas: Vector  # swept §32 sensitivity levels Gamma
-    regret_bounds: Vector  # R(Gamma) = L_reg*(eps + Delta(Gamma))^2
+    # R(Gamma) = L_reg*(eps + Delta(Gamma))^2, the regret to second order: not a bound, the exact
+    # regret's worst over the effect interval exceeds it by up to 8.4 % on the defaults
+    regret_bounds: Vector
     statistical: float  # R(Gamma=1) = L_reg*eps^2 (no confounding penalty)
     floor_quadratic_ratio: float  # floor(2*Delta)/floor(Delta): ~4.0 => quadratic in the width
     order_doubling_ratio: float  # exact regret / (L_reg*delta^2) at small delta: ~1.0
@@ -5478,7 +5501,11 @@ def confounding_robust_lq_regret_certificate(
     Grounds the analytic ``lq_regret_sensitivity`` against the exact static-LQ regret
     ``kappa*(u*(b_hat) - u*(b))^2`` at a small perturbation (ratio -> 1 proves the coefficient),
     then maps each ``Gamma`` to its confounding half-width via the §32 inflation and checks the
-    bound is monotone, recovers the statistical regret at ``Gamma=1``, and floors at ``Delta^2``.
+    second-order regret is monotone, recovers the statistical regret at ``Gamma=1``, and floors at
+    ``Delta^2``. ``regret_bounds`` holds that second-order regret, which the exact one exceeds (see
+    :func:`confounding_robust_lq_regret`). Only the first of ``ok``'s four gates is a measurement:
+    the other three hold by the algebra of ``L_reg (eps + Delta)^2`` whatever the plant, its
+    ``floor_quadratic_ratio`` being ``(2 Delta)^2 / Delta^2``.
     """
     from chc.uncertainty import (
         confounding_robust_inflation,  # §32 half-width; local to keep JAX out
