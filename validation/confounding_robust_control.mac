@@ -55,3 +55,25 @@ print("(6b) undershoot symmetric no gain  subst(be=al, gap_u) =", ratsimp( subst
 print("(6c) W_ce is max-based: overshoot W_ce=al*tau*D/bhat, undershoot W_ce_under=be*tau*D/bhat;",
       "W_rob (branch-free) - 2*al*be*tau*D/Q =",
       ratsimp( W_rob - 2*al*be*tau*D/((al + be)*bhat + (al - be)*D) ), "  (=0)")$
+
+/* (7) a NEGATIVE target: the control is negative, so the outcome b*u is LARGEST at b = bhat-D and
+   smallest at bhat+D. Balancing al*(worst overshoot) = be*(worst undershoot) there gives u_neg; it
+   is the positive-target control with tau -> -tau, u -> -u and the two penalties trading places. */
+u_neg : (al + be)*tau / (al*(bhat - D) + be*(bhat + D))$
+print("(7a) negative-target balance  al*((bhat-D)u_neg - tau) - be*(tau - (bhat+D)u_neg) =",
+      ratsimp( al*((bhat - D)*u_neg - tau) - be*(tau - (bhat + D)*u_neg) ), "  (=0)")$
+print("(7b) mirror  u_neg + psubst([tau = -tau, al = be, be = al], u_rob) =",
+      ratsimp( u_neg + psubst([tau = -tau, al = be, be = al], u_rob) ), "  (=0)")$
+
+/* (8) the interval's edge D = bhat: the low end is b = 0, so any u >= 0 undershoots by tau there,
+   and the minimax value is be*tau; u_rob attains it. Past the edge (D > bhat) the low end is
+   negative: for u > 0 the undershoot tau - (bhat-D)*u exceeds tau, for u < 0 the undershoot
+   tau - (bhat+D)*u does, so u = 0 is the minimax and the closed form is not. */
+print("(8a) at D = bhat  subst(D = bhat, W_rob) - be*tau =",
+      ratsimp( subst(D = bhat, W_rob) - be*tau ), "  (=0)")$
+assume(bhat > 0, D > bhat, tau > 0, up > 0, un < 0)$
+print("(8b) D > bhat, u > 0: undershoot past tau  is(tau - (bhat-D)*up > tau) =",
+      is( tau - (bhat - D)*up > tau ), "  (=true)")$
+print("(8c) D > bhat, u < 0: undershoot past tau  is(tau - (bhat+D)*un > tau) =",
+      is( tau - (bhat + D)*un > tau ), "  (=true)")$
+forget(bhat > 0, D > bhat, tau > 0, up > 0, un < 0)$

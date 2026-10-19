@@ -177,3 +177,50 @@ def test_the_certificate_holds_on_both_sides_of_the_sign_dichotomy(
         assert cert.u_robust > cert.u_certainty_equivalence
     else:
         assert cert.u_robust == pytest.approx(cert.u_certainty_equivalence, rel=1e-12, abs=0.0)
+
+
+def _grid_minimax(bhat: float, d: float, tau: float, a: float, b: float) -> tuple[float, float]:
+    """The worst-case loss's minimum over a grid of controls of either sign, by brute force."""
+    controls = np.linspace(-4.0, 4.0, 800_001)
+    ends = np.stack([(bhat - d) * controls, (bhat + d) * controls])
+    worst = np.maximum(
+        a * np.maximum(ends.max(axis=0) - tau, 0.0), b * np.maximum(tau - ends.min(axis=0), 0.0)
+    )
+    k = int(np.argmin(worst))
+    return float(controls[k]), float(worst[k])
+
+
+@pytest.mark.parametrize(
+    ("overshoot", "undershoot", "halfwidth"), [(1.0, 2.0, 1.5), (1.0, 3.0, 1.5), (3.0, 1.0, 1.01)]
+)
+def test_an_interval_past_the_estimate_is_refused(
+    overshoot: float, undershoot: float, halfwidth: float
+) -> None:
+    """With ``D > b_hat`` the interval holds effects of both signs and the minimax control is 0:
+    at ``b_hat = 1``, ``D = 1.5``, ``beta = 3`` the closed form returned 4, worst-case loss 9
+    against the minimax 3, and the improvement over CE read -1 at ``beta = 2`` where it is 1."""
+    control, loss = _grid_minimax(1.0, 1.5, 1.0, 1.0, 3.0)
+    assert control == pytest.approx(0.0, abs=1e-5)
+    assert loss == pytest.approx(3.0, rel=1e-12, abs=0.0)
+    for function in (confounding_robust_control, asymmetric_control_improvement):
+        with pytest.raises(ValueError, match="one sign"):
+            function(1.0, halfwidth, 1.0, overshoot, undershoot)
+    with pytest.raises(ValueError, match="one sign"):
+        confounding_robust_control(1.0, -0.1, 1.0, overshoot, undershoot)
+
+
+@pytest.mark.parametrize(("overshoot", "undershoot"), [(3.0, 1.0), (1.0, 4.0)])
+def test_a_negative_target_is_the_mirror_minimax(overshoot: float, undershoot: float) -> None:
+    """A negative target needs a negative control, whose outcome is largest at ``b_hat - D``:
+    the penalties trade places. The closed form for a positive target returned -0.702 at
+    ``(3, 1)``, worst-case loss 0.789 where the minimax is 0.319, and the worst-case loss of any
+    negative control read 0."""
+    bhat, d, tau = 1.3, 0.25, -1.0
+    control, loss = _grid_minimax(bhat, d, tau, overshoot, undershoot)
+    robust = confounding_robust_control(bhat, d, tau, overshoot, undershoot)
+    assert robust == pytest.approx(control, abs=2e-5)
+    worst = worst_case_asymmetric_loss(robust, bhat, d, tau, overshoot, undershoot)
+    assert worst == pytest.approx(loss, rel=1e-4, abs=0.0)
+    assert asymmetric_control_improvement(bhat, d, tau, overshoot, undershoot) == pytest.approx(
+        _numeric_improvement(bhat, d, tau, overshoot, undershoot), rel=1e-12, abs=0.0
+    )

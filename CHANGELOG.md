@@ -207,6 +207,15 @@ still change).
   an error of 0.13 off it by 0.05. The ensemble floor is quartic in the spread at `rr = b0²`. The
   high-probability band covers 0.911 at its 4000 default trials, the doubly robust slope reads
   3.20 at the default seed, and the Bayes action loses 0.079.
+- **`confounding_robust_control` and `asymmetric_control_improvement` refuse an effect interval of
+  both signs, and take a negative target.** Past `halfwidth = effect_estimate` the closed form is
+  not the minimax: at `b_hat = 1`, `D = 1.5`, `beta = 3` it returned 4, worst-case loss 9 where
+  `u = 0` holds it to 3, and at `beta = 2` the improvement read −1 where it is 1. Both now raise
+  `ValueError`. A negative target took the positive one's form, which shifts the gain the wrong
+  way (worst-case loss 0.789 against the minimax 0.319 at penalties 3 and 1); it is now the mirror
+  image, the two penalties trading places. `worst_case_asymmetric_loss` read 0 for every negative
+  control; it now reads the interval's ends for either sign. The benchmarks never reach either case
+  and do not move.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They
