@@ -26,6 +26,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.stats import chi2
 
 from chc.cost import QuadraticCost
 from chc.decision import (
@@ -41,6 +42,8 @@ from chc.decision import (
     Target,
     _episodes,
     _field_error,
+    _field_errors,
+    _field_scale,
     _json_label,
     _linearised,
     _margins,
@@ -871,14 +874,24 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
     assert plan.uncertainty_tube is not None
     problem = plan._problem
     assert problem is not None
-    noise, persistence = result.certificate.tube_noise, result.certificate.tube_persistence
+    noise, carried = result.certificate.tube_noise, result.certificate.tube_autoregression
     assert noise is not None
-    assert persistence is not None
+    assert carried is not None
+    # the noise as the tube carries it, a VAR(1) (ADR 0105)
+    persistence = np.asarray(carried)
     assert fit.drift_error is not None
     slopes = _slopes(problem.model, problem.x0)(np.asarray(plan.actions, dtype=np.float64))
     error = math.hypot(fit.channel_error * distance, fit.drift_error)
-    expected = _linear_tube(slopes, [error] * horizon, dt)
-    expected += _noise_tube(slopes, np.array([[noise**2]]), persistence, dt, horizon)
+    assert _field_error(fit, np.array([distance])) == pytest.approx(error, rel=1e-15, abs=0.0)
+    # read at the state each step starts from (ADR 0104)
+    errors = _field_errors(
+        fit, np.array([distance]), np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0))
+    )
+    field = _linear_tube(slopes, errors, dt)
+    noise_part = _noise_tube(slopes, np.array([[noise**2]]), persistence, dt, horizon)
+    # one state: the noise's radius and the field's error at its studentised quantile
+    scale = _field_scale(fit) * math.sqrt(chi2.ppf(0.95, 1))
+    expected = np.sqrt(noise_part**2 + (scale * field) ** 2)
     np.testing.assert_allclose(np.asarray(plan.uncertainty_tube), expected, rtol=1e-12, atol=0.0)
 
 
@@ -1905,13 +1918,13 @@ def test_the_run_records_the_installed_versions_of_what_computed_it(
 def test_the_run_goes_to_json_as_plain_values(default_run: RunProvenance) -> None:
     """Under ``allow_nan=False``, as ADR 0055 holds the record to, inside the prescription's and on
     its own: the versions an object and an infinite tolerance null, as any number that is not
-    finite is; the certificate's status says a tube was evaluated, where no tolerance would have
-    evaluated none."""
+    finite is; the certificate's status says a tube was evaluated against no tolerance, where no
+    tolerance would have evaluated none."""
     result = _small(tolerance=math.inf)
     run = result.run
     assert run is not None
     assert run == dataclasses.replace(default_run, tolerance=math.inf)
-    assert result.certificate.certificate_status == "certified"
+    assert result.certificate.certificate_status == "no_tolerance"
     record = result.to_json()
     assert json.loads(json.dumps(record, allow_nan=False)) == record
     assert json.loads(json.dumps(run.to_json(), allow_nan=False)) == record["run"]
@@ -2962,3 +2975,18 @@ def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> No
     assert record.logged == [-0.2, 0.2]  # type: ignore[attr-defined]
     assert record.steps[0] == 0  # type: ignore[attr-defined]
     assert "outside the range the panel logged, [-0.2, 0.2], first at step 0" in record.getMessage()
+
+
+def test_a_noisy_log_whose_units_never_step_twice_leaves_the_tube_unevaluated(caplog) -> None:
+    """Each zone logged over two periods, so no unit has two consecutive transitions: the noise's
+    persistence is unread, which once read as 0, a tube holding white noise where the noise may
+    persist. It is unknown now, and no tube is the answer that holds."""
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        result = _prescribe(_panel(n_units=400, n_periods=2), CausalGraph.from_edges(EDGES))
+    certificate = result.certificate
+    assert certificate.noise_persistence is None
+    assert certificate.certificate_status == "not_evaluated"
+    assert (certificate.tube_noise, certificate.tube_persistence) == (None, None)
+    (event,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "tube"]
+    assert math.isnan(event.noise_persistence)
+    assert "no unit has two consecutive transitions" in event.getMessage()

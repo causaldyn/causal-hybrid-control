@@ -110,6 +110,13 @@ def linearized_regret_certificate(
     Exact on a linear plant; empirically tracks the nonlinear closed-loop suboptimality to ~1.1x in
     the small-model-error regime. Extends the LQ guarantee of :mod:`chc.regret` to nonlinear
     plants, locally.
+
+    It is the regulator's gap about ``(x_star, u_star)``, read from the deviation ``x0 - x_star``:
+    up to 0.18.0 it read from ``x0`` itself, as if the regulator's origin were 0, which moved it
+    wherever ``x_star`` is not 0. The linearisation drops the RK4 step's constant term, so
+    ``(x_star, u_star)`` should be an equilibrium of both models' steps. The cost is
+    ``sum_k x_k' q x_k + u_k' r u_k``, without the halves of :class:`chc.cost.QuadraticCost`, so
+    in that cost's units the gap is half what this returns.
     """
     a, b = linearize_discrete(dyn, x_star, u_star, dt)
     a_hat, b_hat = linearize_discrete(dyn_hat, x_star, u_star, dt)
@@ -120,5 +127,5 @@ def linearized_regret_certificate(
         np.asarray(r, dtype=float),
         np.asarray(a_hat, dtype=float),
         np.asarray(b_hat, dtype=float),
-        np.asarray(x0, dtype=float),
+        np.asarray(x0, dtype=float) - np.asarray(x_star, dtype=float),
     )

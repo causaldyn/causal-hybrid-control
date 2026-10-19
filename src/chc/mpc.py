@@ -245,8 +245,8 @@ class RecedingHorizon:
     lipschitz: float = 0.0
     model_error: float = 0.0
     noise: ArrayLike = 0.0
-    noise_persistence: float = 0.0
-    tolerance: float = float("inf")
+    noise_persistence: float | ArrayLike = 0.0
+    tolerance: float | None = None
     steps: int = 10_000
     constraints: Sequence[LinearConstraint] = ()
     barrier: BarrierConstraint | None = None

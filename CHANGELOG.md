@@ -99,6 +99,15 @@ still change).
   without closing). Where a kernel is longer it is the best of local ascents, bounded by the
   curves' concave envelopes, reported with `limit="local"` and a warning when that bound does not
   close. `Allocation.schedule` holds it; `SearchLimit` gains `"local"` (ADR 0110).
+- **`DecisionCertificate.tube_autoregression`**, the VAR(1) coefficient `Phi` that the tube
+  carries the plan's one-step error by. `causal_plan(noise_persistence=)` takes an `(n, n)`
+  coefficient beside a lag-1 correlation, and refuses one whose `noise - Phi noise Phi'` has a
+  negative eigenvalue.
+- **A `tube` warning where the channel's residual persists within units** (`noise_persistence_p`
+  at most 0.05). An unlogged disturbance that persists is read in part as the state's drift, so
+  the noise the tube reads is smaller than the plant's. Under an AR(0.9) disturbance of standard
+  deviation 2, the tube held 0.918 at step 1. The report's persistence line says so too.
+  `trustworthy_steps` does not change.
 
 ### Changed
 
@@ -331,6 +340,131 @@ still change).
   between about 36.8 and 37.7, and the goal was met at 22.83. The stretch is now halved, each upper
   half searched in boxes with its budget held in it, and its bound rules it out where no budget
   meets the goal: 37.68. Under totals too, where the gain need not rise with the budget.
+- **`lipschitz_rollout_bound` no longer reads 0 where the field's rate is below the precision.**
+  It formed `(1 + L dt)^H - 1` as written, so at `L dt` below the float precision the power
+  rounded to 1 and the certified radius read 0, which certified every step: at `L = 1e-16`,
+  `dt = 0.05` and `H = 100` it read 0 where the bound is 0.5, and at `L = 1e-14` it read 0.444.
+  It is now `expm1(H log1p(L dt))`, within 1e-13 of exact rational arithmetic on the same inputs
+  at every rate from 1e-20 to 3. `closed_loop_rollout_bound` and
+  `confounding_robust_closed_loop_bound` read through it. Since 0.2.0.
+- **The safe step of `time_varying_rollout_certificate` and
+  `confounding_robust_closed_loop_certificate` is the last step that holds, not the first that
+  does not.** `safe_until_step`, `nominal_safe_step` and `robust_safe_step` are each the largest
+  step whose tightened constraint holds up to it, but they read the first step past the
+  constraint, one step more than holds, and `horizon + 1` where every step held, a step the
+  plan does not have. At their defaults `time_varying_rollout_certificate` now reads 20 of 20
+  steps where it read 21, and `confounding_robust_closed_loop_certificate` at `gamma = 3` reads
+  25 and 20 of 25 where it read 26 and 21. Since 0.2.0.
+- **`AdaptiveExplorationCurve.lower_bound` is the proved bound, `2 sqrt(A K T / eta) - A m0 /
+  eta`.** It read the leading term alone, which a schedule can beat: at the defaults one burst of
+  exploration in the first round costs 5.965 over 500 rounds, where `lower_bound` read 7.454. It
+  now reads 5.954, 0.857 to 22.07 over the default horizons where it read 2.357 to 23.57, and
+  `adaptive_over_bound` 1.506 where it read 1.410. Since 0.2.0.
+- **`cross_cluster_mixing_certificate`'s docstring names the critical value of its own default.**
+  It read the slope's standard error against `t` with four degrees of freedom, 2.776, where the
+  default four replicate blocks leave three: an interval at 2.776 covers 0.931, and the 5% value is
+  3.182. Since 0.6.0.
+- **`HigherOrderBarrierGap.ok` reads whether the tube contains the working set.** Its docstring
+  says `ok` checks that where the second-order condition holds on the whole working set the tube
+  contains that set, but it compared the two sets' sizes, which a tube as large as the working set
+  and somewhere else passes. It now reads `certified_but_unreachable`, the share of the grid the
+  theorem says is safe and the tube leaves out, against `tolerance`: on a 61-column grid whose
+  working set is 41 columns, a tube moved by six columns left 6 of 61 of the grid out and read `ok`;
+  it now does not. Since 0.4.0.
+- **`negative_control_gamma` says it is a point estimate, and takes a `level` for the bound that
+  refutes.** Its docstring called the `Gamma` it reads off a sample a lower bound on the confounding
+  present that "assuming less than it is refuted by the data", but the sample's mean is never zero:
+  on an unconfounded null it read above 1 on 1000 of 1000 samples at every size from 30 to 1600,
+  and it held the population's `Gamma` on 38 % to 51 % of samples of a confounded one. Without
+  `level` it returns the same number, now called a point estimate. `level=0.95`, new and opt-in,
+  returns a one-sided lower confidence bound: the binding MSM endpoint widened by Student's `t` of
+  its influence-function standard error. On 1000 samples a cell it read above 1 on 4.8 % to 6.2 %
+  of an unconfounded null at sizes 100 to 1600 and held the population's `Gamma` on at least 94.6 %
+  of confounded ones, normal or skewed; at `n = 30` under skewed noise, 8.5 % and 91.1 % at worst.
+  Since 0.5.0.
+- **`transportability_regret_certificate` carries a bound on the deployment's exact regret,
+  `exact_wdro_bound`.** Its `wdro_bound`, `C Lip^2 eps^2`, was said to cover every shift `d <=
+  eps`, but it is the regret's second-order term: the exact regret, `(u_src k - b_tgt xt)^2 / k`,
+  reached 1.39 times it at `d = eps` on the defaults. `exact_wdro_bound` is the exact regret's
+  largest value over every target effect within `Lip eps` of the source's, 0.002318 against
+  `wdro_bound`'s 0.001667 there; `wdro_bound` keeps its value and is described as the
+  approximation. Since 0.2.0.
+- **A plan whose tube was read against no tolerance reads `no_tolerance`, not `certified`.**
+  `causal_plan` and `RecedingHorizon` default `tolerance` to infinity, which holds every finite
+  radius, so every plan with an error model read `certificate_status == "certified"` over its whole
+  horizon, a pass no tube could fail. The default is unchanged, and such a plan now reads
+  `no_tolerance` (a new `CertificateStatus`), keeps its `certified_horizon`, and records the
+  `tolerance` it was read against. Where an error model gives the plan a tube and no `tolerance`
+  was passed, a `FutureWarning` says that from 0.20.0 the default is 1.0, one unit of the state,
+  the radius ADR 0091 asks of a caller who logs each state in units of the error accepted on it.
+  `prescribe` with `tolerance=inf` reads `no_tolerance` too. Since 0.3.0.
+- **`prescribe` leaves the tube unevaluated where it cannot read the noise's persistence.** On a
+  noisy log in which no unit has two consecutive transitions, the lag-1 correlation is unknown, and
+  the tube read it as 0, a tube holding white noise where the noise may persist, and reported
+  `tube_persistence` 0. It is nan at its producer now, so the tube is not evaluated and a warning
+  says why; a log with no noise still reads 0, which moves nothing. Since 0.17.0.
+- **`PlannedCostBias.direction` reads `unknown` on a nan bias.** `nan > 0` and `nan < 0` are both
+  false, so a nan bias read `unbiased`. Since 0.18.0.
+- **The estimability line of a prescription's report counts its steps from 1.** It named
+  `first_loaded_step`, an index from 0, as the step another path starts at: a third step read
+  "from step 2". It now reads "predicts the plan's first 2 steps alike and another path from step
+  3 on". The field keeps its value. Since 0.14.0.
+- **The rollout bounds state their scope.** `lipschitz_rollout_bound`,
+  `closed_loop_rollout_bound` and `confounding_robust_closed_loop_bound` bound explicit-Euler
+  rollouts, not the RK4 rollouts every plan makes: `x' = x` against `x' = x + 0.1` at `dt = 1`
+  reads `0.1, 0.3, 0.7` where the RK4 gaps are `0.1708, 0.6335, 1.8866`. Since 0.2.0.
+- **Five certificate gates that could not fail now read what they check.**
+  `delayed_network_certificate`'s `separable_spread` was the spread of one list copied across every
+  `phi`, 0 whatever the law did; it is now the `phi`-spread of the gain read off the full Kronecker
+  covariance at `delta = 0` (since 0.4.0). `barrier_confounding_certificate`'s `safety_slope` was
+  fitted to `error * u_max`, the theory's answer, so it read 1 whatever the margin did; it is now
+  fitted to the loss `robust_barrier_margin` reports, and a margin that lost its first order reads
+  slope 2 and `ok` false (since 0.2.0). `constrained_ce_regret_certificate`'s
+  `max_constrained_ratio` compared estimates on one side of the clip, so it read exactly 1; it now
+  compares a truth below the clip with an estimate above it and reads 0.411 at the defaults
+  (since 0.2.0). `space_time_fold_certificate` gated `exhaustive_ratio` from above only, which a
+  search beating the closed form passes; it now asks for 1 within 1e-9 (since 0.5.0).
+  `confounding_robust_control_certificate` asked for `u_robust < u_CE` and a strict gain whatever
+  the penalties, so a loss where undershoot costs more, a symmetric loss or an interval with no
+  width read `ok` false where the controller does what the theory says; it now checks the sign
+  dichotomy, and CE exactly where the loss is symmetric (since 0.2.0).
+- **`constrained_ce_regret_certificate`'s `pessimism_budget` is the regret it names.** It was the
+  unconstrained quadratic, `r (u_star(b) - umax)^2`, which understates the clipped controller's
+  regret on the cost it minimises: 0.005784 at the defaults, where the exact regret is 0.010594.
+  Since 0.2.0.
+- **`linearized_regret_certificate` reads from the deviation `x0 - x_star`.** It handed the
+  regulator `x0` itself, as if its origin were 0: about `x_star = (1, 0)` from `x0 = (1.5, 0.2)`, with
+  `Q = R = I`, it read 0.1034 where the gap about the operating point is 0.01669. Its docstring now
+  states that `(x_star, u_star)` should be an equilibrium of both models and that the cost has no
+  halves. Since 0.2.0.
+- **`delay_margin` returns `inf` on a loop stable at every delay.** For a stable pole the gain does
+  not outweigh, `pole < gain <= -pole`, it raised that the delay-free loop was unstable; no root of
+  such a loop reaches the imaginary axis, so the margin is infinite. `delay_margin_certificate`, which
+  sweeps across a finite margin, raises on such a loop and says why. Since 0.4.0.
+- **Gates that hold by construction say so.** `conjugate_time_certificate`'s
+  `regret_slope` is twice the sensitivity's slope by its formula, and the regret's realised order
+  near the conjugate time, measured by forward integration, is 3 (slopes 3.29, 3.05, 3.01), where
+  the docstring's fourth order is the coefficient's; `barrier_confounding_certificate`'s
+  `regret_slope`, `clustered_lower_bound_certificate`'s `floor_positive` and `c0_estimate`, and three of the
+  four gates of `confounding_robust_lq_regret_certificate` are algebraic identities. `panel_estimator_certificate`'s interval is a
+  bootstrap over independent draws, not a cluster bootstrap; `ce_explicit_constant_certificate`'s empirical
+  radius is a lower bound where the grid censors it. Documentation only.
+- **`prescribe`'s tube carries the noise as a VAR(1), each direction at its own persistence.** It
+  read one lag-1 correlation, pooled over the states with each counted alike. With the
+  quickstart's demand an AR(0.8), that read 0.41 where the supply's error persists at 0.80 and the
+  wait's at 0.02. The plant left the tube more often from week 2 on, 0.784 a week inside by
+  week 15. Yule-Walker's `Phi = Gamma_1 S^-1` carries `C_{k+1} = (M_k C_k + S) Phi'`
+  (`validation/var_noise_tube.mac`), and the tube holds 0.958–0.964 at every week. On a second
+  plant (16 logs) the AR(0.8) case holds 0.944–0.950 a step, where it held 0.765–0.952. White
+  noise moves within Monte Carlo error (ADR 0105).
+- **`prescribe`'s tube reads the field's error where the plan goes, at its studentised quantile.**
+  The field's part was one standard error added to the noise's 0.95 radius, a 68 % reading of a
+  Student's error, and a root mean over the log's rows, where a plan heads away from them. On
+  AR(1) logs of 30 transitions the plant stayed inside 0.904 of the time at step 8. The fit now
+  keeps the covariances its errors are read from, `prescribe` reads them at each planned state,
+  and the radius adds `t_nu(0.975) / z` of that error along the noise's widest direction
+  (`validation/tube_level.mac`). Step 1 to step 8 now read 0.968–0.968 on 30 transitions,
+  0.947–0.976 on 60 and 0.949–0.973 on 120 (ADR 0104).
 
 ## [0.18.0] — 2026-10-13
 

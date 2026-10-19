@@ -1,6 +1,7 @@
 """The one-call spine: a plan that carries its own certificate."""
 
 import math
+import warnings
 from collections.abc import Callable
 from dataclasses import replace
 from itertools import pairwise, product
@@ -17,6 +18,7 @@ from chc.control import Bound, projected_gradient_control, projected_gradient_so
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import DampedOscillator, DrivenDynamics, Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step, rollout
+from chc.mpc import RecedingHorizon
 from chc.plan import (
     BarrierConstraint,
     CausalPlan,
@@ -84,6 +86,37 @@ def test_an_error_model_inside_tolerance_certifies_the_whole_plan() -> None:
     assert plan.certificate_status == "certified"
     assert plan.certified_horizon == 12
     assert plan.certified_actions.shape == (12, 1)
+
+
+def test_a_tube_read_against_no_tolerance_reads_no_tolerance_and_names_the_default() -> None:
+    """An infinite tolerance holds every finite tube, so it once read ``certified`` on every plan
+    with an error model: a pass no tube could fail."""
+    with pytest.warns(FutureWarning, match=r"0\.20\.0 the default tolerance is 1, one unit"):
+        plan = causal_plan(*_ARGS, lipschitz=0.8, model_error=0.05)
+    assert plan.certificate_status == "no_tolerance"
+    assert plan.certified_horizon == 12
+    assert plan.tolerance == math.inf
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        explicit = causal_plan(*_ARGS, lipschitz=0.8, model_error=0.05, tolerance=math.inf)
+        chosen = causal_plan(*_ARGS, lipschitz=0.8, model_error=0.05, tolerance=1.0)
+        untubed = causal_plan(*_ARGS)
+    assert explicit.certificate_status == "no_tolerance"
+    assert (chosen.certificate_status, chosen.tolerance) == ("certified", 1.0)
+    assert untubed.certificate_status == "not_evaluated"
+    assert replace(plan, tolerance=None).certificate_status == "certified"  # built by hand
+
+
+def test_a_receding_horizon_without_a_tolerance_warns_at_its_caller() -> None:
+    controller = RecedingHorizon(_MODEL, _COST, 0.1, 12, -5.0, 5.0, model_error=0.05)
+    with pytest.warns(FutureWarning, match="no_tolerance") as caught:
+        plan = controller.step(_X0)
+    assert caught[0].filename == __file__
+    assert plan.certificate_status == "no_tolerance"
+    held = RecedingHorizon(_MODEL, _COST, 0.1, 12, -5.0, 5.0, model_error=0.05, tolerance=0.5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert held.step(_X0).certificate_status in ("partial", "certified")
 
 
 def test_an_error_model_that_busts_tolerance_immediately_certifies_nothing() -> None:
@@ -529,10 +562,19 @@ def test_a_start_that_is_not_a_state_is_refused() -> None:
 
 def test_a_tube_certifies_no_step_past_the_path_s_overflow() -> None:
     """RK4 multiplies ``x' = 200 x`` by 8221 a step at ``dt = 0.1``, past float64's range after 78
-    steps of 100; a tube carried at no rate and at a tolerance of ``inf`` covered all of them."""
+    steps of 100; a tube carried at no rate and at a tolerance of ``1e300`` covered all of them."""
     model = LinearDynamics(jnp.array([[200.0]]), jnp.array([[1.0]]))
     plan = causal_plan(
-        model, jnp.array([1.0]), _COST_1, 0.1, 100, -1.0, 1.0, model_error=1e-300, steps=1
+        model,
+        jnp.array([1.0]),
+        _COST_1,
+        0.1,
+        100,
+        -1.0,
+        1.0,
+        model_error=1e-300,
+        tolerance=1e300,
+        steps=1,
     )
     finite = np.isfinite(np.asarray(plan.trajectory[:, 0]))
     assert not finite.all()

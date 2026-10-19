@@ -37,6 +37,7 @@ from scipy import integrate
 from scipy import linalg as scipy_linalg
 from scipy.optimize import brentq
 from scipy.stats import chi2
+from scipy.stats import t as student_t
 
 from chc import _units
 from chc.cost import QuadraticCost
@@ -968,6 +969,10 @@ def lipschitz_rollout_bound(lipschitz: float, model_error: float, dt: float, hor
     contraction metric (:class:`~chc.residual.ContractiveResidual`, log-norm ``mu<0``) removes the
     exponential; the open loop assumes a FIXED action sequence -- for re-planning use
     :func:`closed_loop_rollout_bound`; for per-step ``L_k`` use :func:`time_varying_rollout_bound`.
+    The recursion is explicit Euler's, so the bound holds for Euler rollouts only. Every plan of
+    :func:`chc.plan.causal_plan` rolls out by RK4, and there it is not a bound: ``x' = x`` against
+    ``x' = x + 0.1`` at ``dt = 1`` reads ``0.1, 0.3, 0.7`` where the RK4 gaps are ``0.1708, 0.6335,
+    1.8866``. :func:`time_varying_rollout_bound`'s ``"rk4"`` recursion is the RK4 bound.
 
     Raises:
         ValueError: if ``lipschitz`` or ``model_error`` is negative, infinite or nan, if ``dt`` is
@@ -978,14 +983,16 @@ def lipschitz_rollout_bound(lipschitz: float, model_error: float, dt: float, hor
     _check_rates([lipschitz])
     _check_budget([model_error], dt)
     _check_horizon(horizon)
-    growth = 1.0 + lipschitz * dt
     if lipschitz <= 0.0:  # L -> 0: the Gronwall closed form degrades to the linear envelope
         return model_error * dt * horizon
-    # a float power past the float range raises OverflowError; numpy's is the same pow, and reads
-    # inf. A zero budget keeps the two rollouts together however fast the field grows.
+    # ``(1 + L dt)^H - 1`` as ``expm1(H log1p(L dt))``: formed as written, the power rounds to 1
+    # where ``L dt`` is below the precision, and the difference cancels to 0, a radius that
+    # certified every step where the bound is ``model_error dt H``. Past the float range the
+    # bound reads inf, and a zero budget keeps the two rollouts together however fast the field
+    # grows.
     with np.errstate(over="ignore"):
-        power = float(np.float64(growth) ** horizon)
-    return model_error * (power - 1.0) / lipschitz if model_error > 0.0 else 0.0
+        growth = float(np.expm1(horizon * np.log1p(np.float64(lipschitz) * dt)))
+    return model_error * growth / lipschitz if model_error > 0.0 else 0.0
 
 
 class _PerturbedField(eqx.Module):
@@ -1414,6 +1421,36 @@ _TUBE_COVERAGE = 0.95
 given the plant's one-step noise (:func:`chc.plan.causal_plan`'s ``noise``)."""
 
 
+def _noise_persistence(
+    persistence: float | ArrayLike, covariance: NDArray[np.float64]
+) -> float | NDArray[np.float64]:
+    """``persistence`` as the tube carries the noise of ``covariance`` by it: a lag-1 correlation,
+    in ``[-1, 1]``, or the ``(n, n)`` coefficient ``Phi`` of a VAR(1), refused where it is not
+    finite, not of the state's size, or not the coefficient of a stationary noise of that
+    covariance, whose innovation's covariance ``S - Phi S Phi'`` has no negative eigenvalue."""
+    matrix = np.asarray(persistence, dtype=np.float64)
+    if matrix.ndim == 0:
+        if not -1.0 <= float(matrix) <= 1.0:
+            raise ValueError(
+                f"noise_persistence={float(matrix)} is not a correlation, which lies in [-1, 1]"
+            )
+        return float(matrix)
+    states = covariance.shape[0]
+    if matrix.shape != (states, states) or not np.all(np.isfinite(matrix)):
+        raise ValueError(
+            "noise_persistence is a lag-1 correlation or a VAR(1) coefficient: an "
+            f"{(states, states)} matrix of numbers, not an array of shape {matrix.shape}"
+        )
+    remainder = covariance - matrix @ covariance @ matrix.T
+    scale = max(float(np.max(np.abs(np.linalg.eigvalsh(covariance)))), 1e-300)
+    if float(np.linalg.eigvalsh(0.5 * (remainder + remainder.T))[0]) < -1e-9 * scale:
+        raise ValueError(
+            "noise_persistence is not the VAR(1) coefficient of a stationary noise of this "
+            "covariance: noise - Phi noise Phi' has a negative eigenvalue"
+        )
+    return matrix
+
+
 def _noise_covariance(noise: ArrayLike, states: int) -> NDArray[np.float64]:
     """``noise`` as the ``(n, n)`` covariance of the plant's one-step error, a number being each
     state's variance with none shared; refused where it is not finite, not of the state's size, or
@@ -1441,17 +1478,25 @@ def _noise_covariance(noise: ArrayLike, states: int) -> NDArray[np.float64]:
 def _noise_tube(
     rate: NDArray[np.float64],
     noise: NDArray[np.float64],
-    persistence: float,
+    persistence: float | NDArray[np.float64],
     dt: float,
     horizon: int,
+    field: NDArray[np.float64] | None = None,
 ) -> NDArray[np.float64]:
     """The radii ``r_0..r_H`` within which a plant off the plan's own step by ``w_k`` at each step
     stays at each step with probability :data:`_TUBE_COVERAGE`, ``w_k`` Gaussian of covariance
-    ``noise = S`` and AR(1) at ``persistence = rho``: ``Cov(w_i, w_j) = rho^|i - j| S``.
+    ``noise = S`` and AR(1) at ``persistence = rho``: ``Cov(w_i, w_j) = rho^|i - j| S``; or, given
+    an ``(n, n)`` ``persistence = Phi``, a VAR(1), ``w_{k+1} = Phi w_k + eta_{k+1}``, whose
+    ``Cov(w_{k+1}, w_k) = Phi S`` lets each direction of the noise persist at its own rate.
+    ``field``, ``s_0..s_H``, adds at each step a Gaussian independent of the noise, of standard
+    deviation ``s_k`` along one direction, the noise's widest, where it widens the radius most:
+    the radius is that of ``P_k`` with ``s_k^2`` added to its largest eigenvalue, and under a norm
+    bound that of ``p_k I`` so widened past the first step.
 
     The gap ``e_{k+1} = M e_k + w_k`` from ``e_0 = 0`` has covariance ``P_k``, with
     ``P_{k+1} = M P_k M' + M C_k + C_k' M' + S`` and ``C_{k+1} = rho (M C_k + S)``, ``C_k`` the
-    gap's covariance with ``w_k`` (``validation/predictive_tube.mac``). On a state matrix ``A``,
+    gap's covariance with ``w_k`` (``validation/predictive_tube.mac``), and under the VAR(1)
+    ``C_{k+1} = (M C_k + S) Phi'`` (``validation/var_noise_tube.mac``). On a state matrix ``A``,
     ``M = R(dt A)``, RK4's step of a field affine in the state, and the gap is that field's to first
     order; on an ``(H, n, n)`` sequence of them, ``M_k = R(dt A_k)`` at step ``k``, as on a field
     affine in the state whose slope moves with the plan's action, and the recursion is the same with
@@ -1460,40 +1505,59 @@ def _noise_tube(
     (:func:`_noise_radius`).
     On a norm-Lipschitz bound ``L``, ``g = R(L dt)`` bounds the norm of the step's slope in the
     state, and ``p_{k+1} = g^2 p_k + 2 g c_k + q``, ``c_{k+1} = |rho| (g c_k + q)``, ``q`` the
-    largest eigenvalue of ``S``, bounds ``P_k``'s largest. A Gaussian of covariance ``P`` on ``n``
+    largest eigenvalue of ``S``, bounds ``P_k``'s largest, with ``||Phi||``, its largest singular
+    value, for ``|rho|`` under the VAR(1). A Gaussian of covariance ``P`` on ``n``
     states lies within ``sqrt(chi2_n(level) lambda_max(P))`` of its mean with probability at least
     ``level``, and exactly ``level`` on one state or where ``P`` is a multiple of the identity:
     that radius is the bound's past the first step, where ``P_1 = S`` is exact and the radius is
     its exact quantile.
     """
+    added = np.zeros(horizon + 1) if field is None else np.square(field)
     if rate.ndim != 0:
         return np.array(
             [
-                _noise_radius(covariance)
-                for covariance in _noise_covariances(rate, noise, persistence, dt, horizon)
+                _noise_radius(covariance, extra)
+                for covariance, extra in zip(
+                    _noise_covariances(rate, noise, persistence, dt, horizon),
+                    added,
+                    strict=True,
+                )
             ]
         )
     variances = np.zeros(horizon + 1)
     z = float(rate) * dt
     growth = 1.0 + z * _rk4_phi(z)
     largest, spread, cross = float(np.linalg.eigvalsh(noise)[-1]), 0.0, 0.0
+    carry = (
+        abs(float(persistence))
+        if np.ndim(persistence) == 0
+        else float(np.linalg.norm(np.asarray(persistence, dtype=np.float64), 2))
+    )
     for step in range(1, horizon + 1):
         spread, cross = (
             growth * growth * spread + 2.0 * growth * cross + largest,
-            abs(persistence) * (growth * cross + largest),
+            carry * (growth * cross + largest),
         )
         variances[step] = spread
     level = float(chi2.ppf(_TUBE_COVERAGE, noise.shape[0]))
     radii = np.sqrt(level * np.maximum(variances, 0.0))
+    if field is not None:
+        eye = np.eye(noise.shape[0])
+        radii = np.array(
+            [
+                _noise_radius(max(variance, 0.0) * eye, extra)
+                for variance, extra in zip(variances, added, strict=True)
+            ]
+        )
     if horizon >= 1:
-        radii[1] = _noise_radius(noise)
+        radii[1] = _noise_radius(noise, added[1])
     return radii
 
 
 def _noise_covariances(
     rate: NDArray[np.float64],
     noise: NDArray[np.float64],
-    persistence: float,
+    persistence: float | NDArray[np.float64],
     dt: float,
     horizon: int,
 ) -> list[NDArray[np.float64]]:
@@ -1504,25 +1568,29 @@ def _noise_covariances(
     eye = np.eye(noise.shape[0])
     covariance, cross_matrix = np.zeros_like(noise), np.zeros_like(noise)
     covariances = [covariance]
+    vector = np.ndim(persistence) != 0
+    carry = np.asarray(persistence, dtype=np.float64)
     for slope in slopes[:horizon]:
         z = dt * slope
         z2 = z @ z
         step_matrix = eye + z + z2 / 2.0 + z2 @ z / 6.0 + z2 @ z2 / 24.0
+        shared = step_matrix @ cross_matrix + noise
         covariance, cross_matrix = (
             step_matrix @ covariance @ step_matrix.T
             + step_matrix @ cross_matrix
             + cross_matrix.T @ step_matrix.T
             + noise,
-            persistence * (step_matrix @ cross_matrix + noise),
+            shared @ carry.T if vector else float(persistence) * shared,
         )
         covariances.append(covariance)
     return covariances
 
 
-def _noise_radius(covariance: NDArray[np.float64]) -> float:
+def _noise_radius(covariance: NDArray[np.float64], widest: float = 0.0) -> float:
     """The radius within which a Gaussian of covariance ``P`` lies around its mean with probability
     :data:`_TUBE_COVERAGE`: the root of the quantile of ``sum_i lambda_i chi2_1``, ``lambda_i``
-    ``P``'s eigenvalues (Imhof 1961, :func:`_chi_square_mixture_survival`).
+    ``P``'s eigenvalues (Imhof 1961, :func:`_chi_square_mixture_survival`). ``widest`` adds a
+    variance along ``P``'s widest direction, to its largest eigenvalue.
 
     The quantile lies between ``chi2_1(level) lambda_max`` and ``chi2_n(level) lambda_max``: the
     sum is at least its largest term and at most ``lambda_max chi2_n``. The second is the bound
@@ -1533,6 +1601,7 @@ def _noise_radius(covariance: NDArray[np.float64]) -> float:
     over the largest, so it reads no unit of the state.
     """
     values = np.clip(np.linalg.eigvalsh(covariance), 0.0, None).astype(np.float64)
+    values[-1] += widest
     largest = float(values[-1])
     high = float(chi2.ppf(_TUBE_COVERAGE, values.size)) * largest
     if values[0] >= largest:
@@ -1618,7 +1687,9 @@ def closed_loop_rollout_bound(
 
     A state error perturbs the action, which perturbs the next state, so the growth rate is
     ``L_x + L_u*L_pi`` (not ``L_x`` alone): ``e_{k+1} <= (1 + dt(L_x + L_u*L_pi)) e_k + dt*eps``.
-    Reduces to :func:`lipschitz_rollout_bound` with the combined constant. CAVEAT: for a clipping /
+    Reduces to :func:`lipschitz_rollout_bound` with the combined constant, and so bounds Euler
+    rollouts only, not the RK4 rollouts every plan of :func:`chc.plan.causal_plan` and
+    :class:`chc.mpc.RecedingHorizon` makes, whose gap it can read below. CAVEAT: for a clipping /
     active-set / threshold MPC ``L_pi`` may be unbounded (not globally Lipschitz); use this only
     where the controller is Lipschitz (a fixed feedback gain, or a smooth relaxation).
 
@@ -1680,7 +1751,7 @@ def time_varying_rollout_certificate(
     until = certified_horizon(lipschitz, budget, dt, tolerance)
     nominal_g = -0.5 * jnp.ones(horizon + 1)  # a nominal margin of 0.5 to the constraint g <= 0
     margins = constraint_margin(nominal_g, 1.0, varying)  # L_g = 1
-    safe = int(jnp.argmax(margins > 0.0)) if bool(jnp.any(margins > 0.0)) else horizon + 1
+    safe = _last_safe_step(margins)
     _ = key
     return TimeVaryingRolloutCertificate(
         certified_until_step=until,
@@ -1689,6 +1760,15 @@ def time_varying_rollout_certificate(
         safe_until_step=safe,
         ok=float(varying[-1]) <= float(constant[-1]) + 1e-9 and until <= horizon,
     )
+
+
+def _last_safe_step(margins: Array) -> int:
+    """The largest ``k`` whose tightened margins ``0..k`` are all ``<= 0``: the step before the
+    first one past the constraint, the horizon where none is, -1 where step 0 already is. Up to
+    0.18.0 the certificates read the first step past it, one step more than holds, and
+    ``horizon + 1`` where every step held."""
+    past = np.asarray(margins) > 0.0
+    return int(np.argmax(past)) - 1 if past.any() else past.size - 1
 
 
 def _top_tail_mean(outcomes: NDArray[np.float64], tau: float) -> float:
@@ -1849,7 +1929,8 @@ def confounding_robust_closed_loop_bound(
     control_magnitude*Delta_B``, so the budget is ``eps_k = base_error + control_magnitude*Delta_B``
     (the action multiplier makes the units match -- effect error times control is a state error).
     ``gamma=1`` recovers the plain closed-loop tube. Rocq ``closed_loop_confounding_monotone``: the
-    tube is monotone in the confounding at every horizon.
+    tube is monotone in the confounding at every horizon. Like :func:`closed_loop_rollout_bound`, it
+    bounds Euler rollouts only, not a plan's RK4 one.
     """
     inflated = base_error + control_magnitude * confounding_robust_inflation(cvar_gap, 0.0, gamma)
     return closed_loop_rollout_bound(state_lip, control_lip, policy_lip, inflated, dt, horizon)
@@ -1886,8 +1967,7 @@ def confounding_robust_closed_loop_certificate(
         inflated = base_error + control_magnitude * confounding_robust_inflation(cvar_gap, 0.0, g)
         tube = time_varying_rollout_bound([l_cl] * horizon, [inflated] * horizon, dt)
         margins = constraint_margin(nominal_g * jnp.ones(horizon + 1), lipschitz_g, tube)
-        safe = int(jnp.argmax(margins > 0.0)) if bool(jnp.any(margins > 0.0)) else horizon + 1
-        return float(tube[-1]), safe
+        return float(tube[-1]), _last_safe_step(margins)
 
     nominal_radius, nominal_safe = tube_and_safe(1.0)
     robust_radius, robust_safe = tube_and_safe(gamma)
@@ -2179,23 +2259,51 @@ def benchmark_gamma(
 
 
 def negative_control_gamma(
-    outcomes: NDArray[np.float64], tol: float = 1e-9, gamma_max: float = 1e6
+    outcomes: NDArray[np.float64],
+    tol: float = 1e-9,
+    gamma_max: float = 1e6,
+    *,
+    level: float | None = None,
 ) -> float:
     """Smallest ``Gamma`` whose MSM interval covers zero on a KNOWN-NULL outcome.
 
     The other half of calibration, and the half that can refute. On an outcome whose true effect is
-    zero, any nonzero estimate is confounding, so the smallest ``Gamma`` that reconciles the two is
-    a **lower bound on the confounding actually present**: assuming less than it is refuted by the
-    data rather than merely unappealing. That transfers to the outcome of interest only when the
-    control is U-comparable, confounded by the same unobserved causes (Lipsitch, Tchetgen Tchetgen
-    and Cohen 2010). A control confounded by more than the outcome overstates the outcome's
-    ``Gamma``, and one confounded by less understates it (Baitairian et al., arXiv 2510.16560).
-    Monotonicity of the MSM inflation in ``Gamma`` makes the search a bisection, exact to ``tol``.
+    zero, any nonzero mean is confounding, so the smallest ``Gamma`` whose interval over the
+    population covers zero is a **lower bound on the confounding actually present**. That transfers
+    to the outcome of interest only when the control is U-comparable, confounded by the same
+    unobserved causes (Lipsitch, Tchetgen Tchetgen and Cohen 2010). A control confounded by more
+    than the outcome overstates the outcome's ``Gamma``, and one confounded by less understates it
+    (Baitairian et al., arXiv 2510.16560).
 
-    Returns ``inf`` when no ``Gamma`` reconciles the null -- the endpoint saturates at the extreme
-    order statistic as ``Gamma -> inf``, so a sample whose values all share the mean's sign cannot
-    be pulled across zero by a bounded density ratio at all, and the negative control has refuted
-    the model class instead of calibrating it.
+    Without ``level`` this returns that ``Gamma`` read off the sample: a **point estimate** of it,
+    not a refutation. The sample's mean is never exactly zero, so it reads above 1 on every sample
+    of an unconfounded null, 1000 of 1000 at each size from 30 to 1600, and it holds the
+    population's ``Gamma`` on about half of the samples of a confounded one. Monotonicity of the
+    MSM inflation in ``Gamma`` makes the search a bisection, exact to ``tol``.
+
+    With ``level`` it returns a one-sided lower confidence bound on it, and the bound is what
+    refutes: assuming less confounding than it is refuted by the data at ``level``. It is the
+    smallest ``Gamma`` at which the binding endpoint, widened by ``z`` of its standard errors,
+    reaches zero, ``z`` Student's ``t`` quantile of ``n - 1`` degrees of freedom at
+    ``(1 + level) / 2``: half the miss goes to each endpoint, since which one binds is read off the
+    sample's sign, and at ``Gamma = 1`` the bound leaves 1 exactly where the two-sided ``t`` test of
+    a zero mean rejects. The endpoint is the mean of
+    ``y / Gamma + (1 - 1/Gamma) (q + (Gamma + 1) (y - q)_+)`` at the sample's upper
+    ``1/(Gamma + 1)`` quantile ``q`` (Rockafellar and Uryasev 2000), so its standard error is that
+    term's over ``sqrt(n)``, the quantile's own error dropping out at first order. The same
+    bisection searches the widened endpoint. On 1000 samples a cell at ``level = 0.95``, of normal
+    noise and of exponential noise skewed either way, the bound read above 1 on 4.8 % to 6.2 % of
+    an unconfounded null at sizes 100 to 1600, and held the population's ``Gamma`` on at least
+    94.6 % under planted biases of 0.2 and 0.5 standard deviations. The level is asymptotic: at
+    ``n = 30`` under the exponential's skew the null read above 1 on 8.1 % and 8.5 %, and a bias's
+    ``Gamma`` held on 91.1 % at worst. Under Student-``t`` noise of 2 degrees of freedom, which has
+    no variance, the null read above 1 on 3.0 % to 4.9 %, and a bias's ``Gamma`` held on 93.5 % to
+    96.0 %.
+
+    Returns ``inf`` when no ``Gamma`` up to ``gamma_max`` reconciles the null -- the endpoint
+    saturates at the extreme order statistic as ``Gamma -> inf``, so a sample whose values all share
+    the mean's sign cannot be pulled across zero by a bounded density ratio at all, and the negative
+    control has refuted the model class instead of calibrating it (at ``level``, where given).
 
     The interval is NOT symmetric about the mean, and which endpoint has to travel depends on the
     sign of the estimate: a positive estimate is reconciled by the *lower* endpoint reaching zero, a
@@ -2211,22 +2319,52 @@ def negative_control_gamma(
         raise ValueError(
             f"tol must be positive and gamma_max at least 1 and finite, got {tol} and {gamma_max}"
         )
+    if level is not None and not 0.0 < level < 1.0:
+        raise ValueError(f"level must lie in (0, 1), got {level}")
+    if level is not None and y.size < 2:
+        raise ValueError("a confidence bound needs at least two outcomes to read a spread from")
     mu = float(np.mean(y))
     if mu == 0.0:
         return 1.0
     reflected = -np.sign(mu) * y  # mean is now -|mu| < 0; the binding endpoint is the upper one
-    if float(np.max(reflected)) < 0.0:
-        return float("inf")
+    if level is None:
+        if float(np.max(reflected)) < 0.0:
+            return float("inf")
+
+        def endpoint(gamma: float) -> float:
+            return msm_worst_case_mean(reflected, gamma)
+    else:
+        z = float(student_t.ppf(0.5 + 0.5 * level, y.size - 1))
+
+        def endpoint(gamma: float) -> float:
+            return msm_worst_case_mean(reflected, gamma) + z * _msm_endpoint_se(reflected, gamma)
+
+        if endpoint(1.0) >= 0.0:
+            return 1.0
     low, high = 1.0, gamma_max
-    if msm_worst_case_mean(reflected, gamma_max) < 0.0:
+    if endpoint(gamma_max) < 0.0:
         return float("inf")
     while high - low > tol * max(1.0, low):
         mid = 0.5 * (low + high)
-        if msm_worst_case_mean(reflected, mid) >= 0.0:
+        if endpoint(mid) >= 0.0:
             high = mid
         else:
             low = mid
     return high
+
+
+def _msm_endpoint_se(outcomes: NDArray[np.float64], gamma: float) -> float:
+    """Standard error of :func:`msm_worst_case_mean`: its influence term's spread over ``sqrt(n)``.
+
+    The endpoint is the mean of ``y / Gamma + (1 - 1/Gamma) (q + (y - q)_+ / tau)``, ``tau = 1 /
+    (Gamma + 1)``, at the point ``q`` that weighs the top ``tau`` of the sample, the one
+    :func:`_top_tail_mean` reads fractionally: that ``q`` minimises the mean over ``q``
+    (Rockafellar and Uryasev 2000), so its own error moves the endpoint at second order only."""
+    y = np.asarray(outcomes, dtype=np.float64)
+    tau = 1.0 / (gamma + 1.0)
+    q = float(np.sort(y)[::-1][min(int(tau * y.size), y.size - 1)])
+    term = y / gamma + (1.0 - 1.0 / gamma) * (q + np.maximum(y - q, 0.0) / tau)
+    return float(np.std(term, ddof=1) / math.sqrt(y.size))
 
 
 @dataclass(frozen=True)

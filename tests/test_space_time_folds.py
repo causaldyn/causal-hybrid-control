@@ -9,11 +9,13 @@ constant in time is a function of the delay -- small at ``lag = 1`` and not smal
 construction, so the law is not being checked against the implementation that produced it.
 """
 
+import dataclasses
 import itertools
 
 import numpy as np
 import pytest
 
+from chc import regret
 from chc.network_causal import (
     ar1_innovations,
     cycle_shells,
@@ -116,6 +118,25 @@ def test_the_panel_weight_is_not_the_single_slice_weight() -> None:
     assert w0 == pytest.approx(2 * phi**2 + 4 * phi + 3)
     assert w1 == pytest.approx(phi**3 + 2 * phi**2 + 4 * phi + 2)
     assert w1 / w0 > phi
+
+
+def test_a_heuristic_below_the_enumerated_optimum_fails_the_gate(monkeypatch) -> None:
+    """The heuristic's objective over the enumerated minimum is 1 on balanced folds; below 1 it
+    left them, so the gate is two-sided. Up to 0.18.0 it asked only for a ratio below 1 + 1e-9."""
+    honest = regret.optimal_fold_partition
+
+    def below(*args, **kwargs):
+        result = honest(*args, **kwargs)
+        if kwargs.get("exhaustive_limit") != 0:
+            return result
+        return dataclasses.replace(result, objective=0.5 * result.objective)
+
+    monkeypatch.setattr(regret, "optimal_fold_partition", below)
+    certificate = space_time_fold_certificate()
+    assert certificate.exhaustive_ratio == pytest.approx(0.5, rel=1e-12, abs=0.0)
+    assert certificate.weight_beats_axis_at_short_delay
+    assert certificate.axis_beats_weight_at_long_delay
+    assert not certificate.ok
 
 
 def test_the_certificate_passes_every_gate() -> None:

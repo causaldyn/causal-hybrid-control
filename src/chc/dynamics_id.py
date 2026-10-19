@@ -311,6 +311,15 @@ class CausalDynamicsFit:
     # ``j``, where ``channel_error`` averages over levers in units of their own; with one lever it
     # is the covariance's read, bit for bit. The tube reads it at each lever's largest action.
     _lever_errors: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
+    # (r, n m, F, F), set with ``_lever_errors``: the covariances of each channel entry's
+    # coefficients, entry ``(i, j)`` at ``i m + j``, that it and ``channel_error`` read at the log's
+    # rows. The tube reads them at the plan's own states (``chc.decision._field_errors``).
+    _channel_blocks: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
+    # (G, F, F), set with ``drift_error``: the covariance of the drift regression's coefficients,
+    # its features then its drivers, one block every state shares under Euler, one a state under
+    # ``rk4``, that ``drift_error`` reads at the log's rows as a root mean over the blocks. The tube
+    # reads it at the plan's own states (``chc.decision._field_errors``).
+    _drift_blocks: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
     # Set on an identified Euler fit whose channel is least squares on the action residuals (no
     # instrument, no weight, every direction moved): the matrix its moment solved, which
     # :func:`channel_region` reads.
@@ -728,17 +737,22 @@ def _channel_blocks(covariance: Array, channel_shape: tuple[int, ...]) -> Array:
 
 def _channel_errors(
     covariances: Sequence[Array], channel_shape: tuple[int, ...], features: Array
-) -> tuple[float, np.ndarray]:
+) -> tuple[float, np.ndarray, np.ndarray]:
     """``channel_error``, the largest of the covariances' reads by :func:`_error_at_rows` over the
     channel's entries, and ``(r, m)``: each covariance's read over each lever's column alone, whose
     entries are every ``m``-th of :func:`_channel_blocks`', from the lever's. With one lever the
-    column is the whole channel, and its read is the covariance's, bit for bit."""
+    column is the whole channel, and its read is the covariance's, bit for bit. Last, the ``(r, n m,
+    F, F)`` blocks both are read off, which :attr:`CausalDynamicsFit._channel_blocks` keeps."""
     levers = channel_shape[1]
     blocks = [_channel_blocks(covariance, channel_shape) for covariance in covariances]
     by_lever = np.array(
         [[_error_at_rows(block[j::levers], features) for j in range(levers)] for block in blocks]
     )
-    return max(_error_at_rows(block, features) for block in blocks), by_lever
+    return (
+        max(_error_at_rows(block, features) for block in blocks),
+        by_lever,
+        np.asarray(jnp.stack(blocks), dtype=np.float64),
+    )
 
 
 def _influence(
@@ -1094,9 +1108,10 @@ def _state_weights(weights: Callable[[Array], Array], states: Array) -> Array:
     return values / jnp.mean(values)
 
 
-def _ols_error(target: Array, design: Array, coeffs: Array, ridge: float) -> float:
-    """The fitted value's standard error at the log's rows under ``sigma^2 (X'X)^-1``, the plain
-    homoskedastic OLS covariance, root mean square over the rows (:func:`_error_at_rows`).
+def _ols_blocks(target: Array, design: Array, coeffs: Array, ridge: float) -> Array:
+    """``(1, F, F)``: the drift regression's coefficients' covariance under ``sigma^2 (X'X)^-1``,
+    the plain homoskedastic OLS covariance, its noise pooled over the rows and the states, one
+    block every state shares. :func:`_error_at_rows` reads it at the log's rows as ``drift_error``.
 
     Used for the drift stage, which is fitted by least squares on the remainder, so there is no
     instrument and no endogenous regressor to sandwich against. Unlike the channel's robust error it
@@ -1105,8 +1120,7 @@ def _ols_error(target: Array, design: Array, coeffs: Array, ridge: float) -> flo
     n, n_coeff = design.shape
     score = target - design @ coeffs
     sigma2 = jnp.sum(score**2) / (max(n - n_coeff, 1) * target.shape[1])
-    covariance = sigma2 * _ridge_inverse(design, ridge)
-    return _error_at_rows(covariance[None], design)
+    return (sigma2 * _ridge_inverse(design, ridge))[None]
 
 
 def solve_channel_moment(
@@ -1670,6 +1684,7 @@ def fit_causal_residual(
 
         score = y_res - regressor @ coeffs
         weighted_moment = moment if row_weight is None else moment * row_weight[:, None]
+        drift_blocks = _ols_blocks(y - fitted, design, remainder, ridge) if identified else None
         return CausalDynamicsFit(
             residual=ControlAffineResidual(
                 drift=drift, channel=channel, degree=degree, channel_degree=channel_degree
@@ -1680,7 +1695,8 @@ def fit_causal_residual(
             # the channel's comes from the fit's own sensitivity, which only the caller knows how
             # to take: through the cross-fit under Euler, through the fixed point under ``rk4``
             channel_error=None,
-            drift_error=_ols_error(y - fitted, design, remainder, ridge) if identified else None,
+            drift_error=_error_at_rows(drift_blocks, design) if drift_blocks is not None else None,
+            _drift_blocks=None if drift_blocks is None else np.asarray(drift_blocks, np.float64),
             action_residual_variance=float(jnp.mean(u_res**2)),
             nuisance_r2_state=_r_squared(y, y_hat),
             nuisance_r2_action=_r_squared(u, u_hat),
@@ -1846,14 +1862,16 @@ def fit_causal_residual(
         drift_blocks = drift_covariance.reshape(rows, states, rows, states)[
             :, every_state, :, every_state
         ][:, :carried, :carried]
-        channel_error, lever_errors = _channel_errors(
+        channel_error, lever_errors, channel_blocks = _channel_errors(
             [covariance[:size, :size] for covariance in covariances], channel.shape, phi_c
         )
         return dataclasses.replace(
             fit,
             channel_error=channel_error,
             _lever_errors=lever_errors,
+            _channel_blocks=channel_blocks,
             drift_error=_error_at_rows(drift_blocks, design[:, :carried]),
+            _drift_blocks=np.asarray(drift_blocks, dtype=np.float64),
             influence=_influence(
                 carry(fit_map),
                 score,
@@ -1884,12 +1902,13 @@ def fit_causal_residual(
         spreads = _robust_spreads(
             sensitivity[: channel.size], score, regressor.shape[1], codes, steps
         )
-        channel_error, lever_errors = _channel_errors(spreads, channel.shape, phi_c)
+        channel_error, lever_errors, channel_blocks = _channel_errors(spreads, channel.shape, phi_c)
         least_squares = instrument_action is None and row_weight is None and split is None
         fit = dataclasses.replace(
             fit,
             channel_error=channel_error,
             _lever_errors=lever_errors,
+            _channel_blocks=channel_blocks,
             _channel_gram=_ChannelGram(
                 matrix=np.asarray(regressor.T @ regressor + ridge * penalty, dtype=np.float64),
                 ridge=np.asarray(ridge * jnp.diag(penalty), dtype=np.float64),
@@ -2216,9 +2235,9 @@ class ChannelRegion:
     def rate_error(self, states: ArrayLike, reach: ArrayLike) -> float:
         """A bound, at the region's level, on ``||(B_hat(x) - B(x)) a||`` over the ``(N, n)``
         ``states`` and every action deviation ``a`` with ``|a_j| <= reach[j]``: the rate error
-        that the plan's tube prices as one standard error (``chc.decision``'s ``_model_error``),
-        read here at a level. The largest of a convex form over a box is at a corner, so it reads
-        the ``2^m`` corners."""
+        that the plan's tube reads as a standard error at its studentised quantile
+        (``chc.decision``'s ``_model_error`` and ``_field_scale``), read here at a level. The
+        largest of a convex form over a box is at a corner, so it reads the ``2^m`` corners."""
         rows = np.atleast_2d(np.asarray(states, dtype=np.float64))
         sizes = np.asarray(reach, dtype=np.float64)
         levers = self.channel.shape[1]
@@ -2314,7 +2333,8 @@ def channel_region(
 
     It gives the plan's rate error a level (:meth:`ChannelRegion.rate_error`) and the
     certainty-equivalent certificate a probability (:meth:`ChannelRegion.stability_level`),
-    beside the one-standard-error scales the tube carries, which it does not move.
+    beside the standard errors the tube carries at their studentised quantile, which it does not
+    move.
 
     Premises, and where they fail:
 

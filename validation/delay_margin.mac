@@ -68,3 +68,14 @@ for mm in [5, 10, 25, 50, 100, 400] do
   block([v : bfloat(subst(m = mm, m*kd))],
         print("   m =", mm, " K*tau at the discrete boundary =", v,
               " relative gap to %pi/2 =", bfloat((v - %pi/2)/(%pi/2))))$
+
+/* --- a stable pole the gain does not outweigh: no crossing at any delay ------------------------ */
+/* With a < 0 and a < K <= -a the loop is stable at tau = 0 (lambda = a - K < 0), and the crossing
+   frequency w^2 = K^2 - a^2 is <= 0: no lambda = %i w with w > 0 solves the characteristic
+   equation, so no root reaches the imaginary axis at any tau and chc.delay.delay_margin is inf.
+   At K = -a the crossing would sit at w = 0, where the equation reads -a + K = -2 a, not 0. */
+forget(a >= 0, K > a)$
+for pair in [[-1, 1/2], [-1, 1], [-1, -1/2], [-2, 1]] do block([aa : pair[1], KK : pair[2]],
+  print("  a =", aa, " K =", KK, " w^2 = K^2 - a^2 =", KK^2 - aa^2,
+        " root at tau = 0:", aa - KK))$
+print("  K = -a at w = 0: -a + K =", ratsimp(subst(K = -a, -a + K)), "(must be -2 a, not 0)")$

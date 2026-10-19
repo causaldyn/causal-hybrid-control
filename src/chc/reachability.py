@@ -428,15 +428,16 @@ def higher_order_barrier_gap(
     barrier_mask = working_mask & holds
     reachable_mask = tube.final >= 0.0
 
-    working = float(jnp.mean(working_mask))
-    reachable = tube.safe_fraction()
     valid_cbf = bool(jnp.all(~working_mask | holds))
+    # where the condition holds on the whole working set, the barrier mask is that set, so this is
+    # the share of the grid the theorem says is safe and the tube leaves out
+    certified_but_unreachable = float(jnp.mean(barrier_mask & ~reachable_mask))
     return HigherOrderBarrierGap(
         safe_fraction=float(jnp.mean(safe_mask)),
-        working_fraction=working,
+        working_fraction=float(jnp.mean(working_mask)),
         barrier_fraction=float(jnp.mean(barrier_mask)),
         valid_cbf=valid_cbf,
-        certified_but_unreachable=float(jnp.mean(barrier_mask & ~reachable_mask)),
+        certified_but_unreachable=certified_but_unreachable,
         radius=radius,
-        ok=(not valid_cbf) or reachable >= working - tolerance,
+        ok=(not valid_cbf) or certified_but_unreachable <= tolerance,
     )

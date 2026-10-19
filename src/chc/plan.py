@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import math
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
@@ -99,6 +100,7 @@ from chc.uncertainty import (
     _check_tolerance,
     _linear_tube,
     _noise_covariance,
+    _noise_persistence,
     _noise_tube,
     _tube,
     _within,
@@ -108,7 +110,16 @@ from chc.uncertainty import (
 if TYPE_CHECKING:
     from chc.dynamics_id import CausalDynamicsFit
 
-CertificateStatus = Literal["not_evaluated", "uncertified", "partial", "certified"]
+CertificateStatus = Literal["not_evaluated", "no_tolerance", "uncertified", "partial", "certified"]
+"""How far a plan's error tube trusts it: ``not_evaluated`` where no error model gave it a tube,
+``no_tolerance`` where the tube was read against an infinite tolerance, which holds every finite
+radius and so certifies nothing, and otherwise ``uncertified``, ``partial`` or ``certified`` as
+none, some or all of its steps keep the tube within the tolerance."""
+
+_TOLERANCE_DEFAULT = 1.0
+"""The ``tolerance`` :func:`causal_plan` and :class:`chc.mpc.RecedingHorizon` take from 0.20.0 when
+none is given: one unit of the state, the radius a caller who logs each state in units of the error
+accepted on it passes (ADR 0091)."""
 PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
 DiagnosticStatus = Literal["within", "beyond", "not_finite", "not_evaluated"]
 """How a plan's stationarity or constraint violation reads against its tolerance: ``within`` it,
@@ -182,17 +193,24 @@ class CausalPlan:
     stationarity_tolerance: float | None = None
     constraint_violation: float | None = None
     violation_tolerance: float | None = None
+    # the radius ``certified_horizon`` was read against; None on a plan built by hand
+    tolerance: float | None = None
     _problem: _PlanProblem | None = field(default=None, repr=False, compare=False)
 
     @property
     def certificate_status(self) -> CertificateStatus:
-        """Whether the tube was evaluated at all, and if so how much of the plan it covers.
+        """Whether the tube was evaluated at all, and if so how much of the plan it covers
+        (:data:`CertificateStatus`).
 
         Derived rather than stored: a status field that can disagree with the horizon it summarises
-        is a worse footgun than the one this replaces.
+        is a worse footgun than the one this replaces. An infinite :attr:`tolerance` reads
+        ``no_tolerance``: up to 0.18.0 it read ``certified`` on every plan whose tube stayed finite,
+        a pass no tube could fail.
         """
         if self.certified_horizon is None:
             return "not_evaluated"
+        if self.tolerance is not None and not math.isfinite(self.tolerance):
+            return "no_tolerance"
         if self.certified_horizon == 0:
             return "uncertified"
         return "certified" if self.certified_horizon == self.actions.shape[0] else "partial"
@@ -781,9 +799,10 @@ class DecisionWeight:
         return float(flat @ self.matrix @ flat) / 2.0
 
 
-CostBiasDirection = Literal["optimistic", "pessimistic", "unbiased"]
+CostBiasDirection = Literal["optimistic", "pessimistic", "unbiased", "unknown"]
 """Which way a planned cost reads against what the plan pays the plant, in expectation:
-``optimistic`` where it reads low, a positive bias, and ``pessimistic`` where it reads high."""
+``optimistic`` where it reads low, a positive bias, ``pessimistic`` where it reads high, and
+``unknown`` where the bias is nan."""
 
 
 @dataclass(frozen=True)
@@ -822,8 +841,12 @@ class PlannedCostBias:
 
     @property
     def direction(self) -> CostBiasDirection:
-        """Which way the planned cost reads (:data:`CostBiasDirection`)."""
+        """Which way the planned cost reads (:data:`CostBiasDirection`). A nan bias, as from a term
+        a plan that left the float range reads, is ``unknown``: up to 0.18.0 it read
+        ``unbiased``, failing both comparisons."""
         bias = self.bias
+        if math.isnan(bias):
+            return "unknown"
         return "optimistic" if bias > 0.0 else "pessimistic" if bias < 0.0 else "unbiased"
 
 
@@ -1480,8 +1503,8 @@ def causal_plan(
     lipschitz: ArrayLike = 0.0,
     model_error: float = 0.0,
     noise: ArrayLike = 0.0,
-    noise_persistence: float = 0.0,
-    tolerance: float = float("inf"),
+    noise_persistence: float | ArrayLike = 0.0,
+    tolerance: float | None = None,
     steps: int = 10_000,
     constraints: Sequence[LinearConstraint] = (),
     barrier: BarrierConstraint | None = None,
@@ -1510,7 +1533,10 @@ def causal_plan(
             step of the model from the plant's state, Gaussian, AR(1) from one step to the next,
             ``Cov(w_i, w_j) = noise_persistence^|i - j| noise``. ``noise`` is its covariance in the
             state's units, a number for each state's variance with none shared, or an ``(n, n)``
-            matrix; ``noise_persistence`` its lag-1 correlation, in ``[-1, 1]``. The tube adds to
+            matrix; ``noise_persistence`` its lag-1 correlation, in ``[-1, 1]``, or the ``(n, n)``
+            coefficient ``Phi`` of a VAR(1), ``w_{k+1} = Phi w_k + eta``, where the states' noises
+            persist at rates of their own, ``Cov(w_{k+1}, w_k) = Phi noise``, a stationary noise's,
+            ``noise - Phi noise Phi'`` with no negative eigenvalue. The tube adds to
             the model error's radius the one within which the noise's part of the gap stays at each
             step with probability 0.95, carried through the same ``lipschitz``: through ``R(dt A)``
             on a state matrix, exactly to first order, and on a norm bound ``L`` through
@@ -1524,8 +1550,14 @@ def causal_plan(
             on a state matrix too, up to ``sqrt(chi2_n(0.95) / chi2_1(0.95))`` too wide where one
             direction's variance dominates, 1.249 times on two states. Zero by default, which
             leaves the tube the model error's alone, as before.
-        tolerance: tube radius above which the plan stops being certified. A step whose predicted
-            state is not a finite number, an overflow's or a nan's, is certified at no tolerance.
+        tolerance: tube radius above which the plan stops being certified, in the state's units.
+            A step whose predicted state is not a finite number, an overflow's or a nan's, is
+            certified at no tolerance. Not given, it is infinite, which holds every finite radius:
+            the plan's :attr:`~CausalPlan.certificate_status` then reads ``no_tolerance`` rather
+            than ``certified``, and where an error model gives the plan a tube a ``FutureWarning``
+            says that from 0.20.0 the default is 1.0, one unit of the state, the radius ADR 0091
+            asks of a caller who logs each state in units of the error accepted on it. Pass it to
+            choose the radius; ``inf`` keeps today's reading without the warning.
         constraints: linear rows over the whole action sequence
             (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
             only by the answer.
@@ -1561,7 +1593,8 @@ def causal_plan(
             ``lipschitz`` is a negative, infinite or nan number, which no norm of a field's slope
             is, or neither a number nor a square matrix of the state's size; if ``noise`` is not
             finite, not a number or a matrix of the state's size, or not a covariance, which is
-            symmetric with no negative eigenvalue, or ``noise_persistence`` is not in ``[-1, 1]``;
+            symmetric with no negative eigenvalue, or ``noise_persistence`` is neither a
+            correlation in ``[-1, 1]`` nor such a VAR(1) coefficient;
             if ``tolerance`` is
             negative or nan, or ``dt`` is not a finite positive step; if ``x0`` has an entry that
             is not a finite number, from which no step is predicted; if a barrier is given with
@@ -1596,22 +1629,36 @@ def causal_plan(
 
 def _error_tube(
     carried: NDArray[np.float64],
-    model_error: float,
+    model_error: float | NDArray[np.float64],
     covariance: NDArray[np.float64],
-    persistence: float,
+    persistence: float | NDArray[np.float64],
     dt: float,
     horizon: int,
+    field_scale: float | None = None,
 ) -> NDArray[np.float64] | None:
     """The plan's error tube carried by ``carried`` -- a norm bound, one state matrix, or one a step
-    -- or None where neither the model error nor the noise gives it a radius."""
-    if not (model_error > 0.0 or covariance.any()):
+    -- or None where neither the model error nor the noise gives it a radius.
+
+    ``model_error`` is a bound on the field's error at each step, one number for every step or one
+    a step, and the tube adds what it carries to the noise's radius, unless ``field_scale`` is
+    given: then ``model_error`` is a standard error, and what it carries, ``f_k``, the standard
+    deviation of the norm of an error independent of the noise, read at ``field_scale`` times
+    itself where its spread is estimated (:func:`chc.decision._field_scale`). Its direction is not
+    known, and it is placed along the noise's widest, where it widens the radius most: the radius
+    is that of the noise's covariance with ``(field_scale f_k)^2`` added to its largest
+    eigenvalue, on one state ``sqrt(r_k^2 + (field_scale z f_k)^2)``, ``z`` the normal's two-sided
+    quantile."""
+    reads = np.asarray(model_error, dtype=np.float64)
+    errors = [float(reads)] * horizon if reads.ndim == 0 else [float(error) for error in reads]
+    if not (max(errors, default=0.0) > 0.0 or covariance.any()):
         return None
-    errors = [model_error] * horizon
     tube = (
         _tube([float(carried)] * horizon, errors, dt, "rk4")
         if carried.ndim == 0
         else _linear_tube(carried, errors, dt)
     )
+    if field_scale is not None:
+        return _noise_tube(carried, covariance, persistence, dt, horizon, field_scale * tube)
     if covariance.any():
         tube = tube + _noise_tube(carried, covariance, persistence, dt, horizon)
     return tube
@@ -1620,19 +1667,29 @@ def _error_tube(
 def _carried_along(
     plan: CausalPlan,
     state_matrices: NDArray[np.float64],
-    model_error: float,
+    model_error: float | NDArray[np.float64],
     noise: ArrayLike,
-    noise_persistence: float,
+    noise_persistence: float | NDArray[np.float64],
     dt: float,
     tolerance: float,
+    field_scale: float | None = None,
 ) -> CausalPlan:
     """``plan`` with its tube carried by the field's ``(horizon, n, n)`` state matrix at each of its
     steps rather than by the one ``lipschitz`` it was solved with: a field affine in the state whose
-    slope moves with the action, as :func:`chc.prescribe`'s fitted one does. The tube is read off
-    the finished actions and moves no action."""
-    covariance = _noise_covariance(noise, state_matrices.shape[-1])
+    slope moves with the action, as :func:`chc.prescribe`'s fitted one does; or, given one number,
+    by that norm bound as the plan was. ``model_error`` is one number for every step or one a step,
+    and ``field_scale`` reads it as a standard error (:func:`_error_tube`). The tube is read off the
+    finished actions and moves no action."""
+    horizon = len(plan.actions)
+    covariance = _noise_covariance(noise, plan.trajectory.shape[-1])
     tube = _error_tube(
-        state_matrices, model_error, covariance, noise_persistence, dt, len(state_matrices)
+        state_matrices,
+        model_error,
+        covariance,
+        noise_persistence,
+        dt,
+        horizon,
+        field_scale,
     )
     if tube is None:
         return plan
@@ -1666,21 +1723,22 @@ def _plan(
     lam_unc: float,
     lipschitz: ArrayLike,
     model_error: float,
-    tolerance: float,
+    tolerance: float | None,
     steps: int,
     constraints: Sequence[LinearConstraint],
     barrier: BarrierConstraint | None,
     warm_start: Array | NDArray[np.float64] | None,
     multipliers: NDArray[np.float64] | None,
     noise: ArrayLike = 0.0,
-    noise_persistence: float = 0.0,
+    noise_persistence: float | ArrayLike = 0.0,
 ) -> tuple[CausalPlan, NDArray[np.float64] | None]:
     """:func:`causal_plan`, with the barrier's multipliers passed in and handed back.
 
     What a receding horizon carries from one plan to the next besides the actions: ``multipliers``
     seed the barrier rounds in place of zeros, and the rounds' last come back -- zeros where the
     barrier was slack, ``None`` with no barrier. One row per step, two columns per barrier: its
-    condition's and its next state's.
+    condition's and its next state's. A ``tolerance`` of None is infinite, and warns where the
+    plan has a tube, at the caller of the caller's frame.
     """
     if uncertainty is not None and support is None:
         raise ValueError("uncertainty penalty requires a support model; it is unused without one")
@@ -1695,6 +1753,8 @@ def _plan(
         raise ValueError(f"dt={dt} is not a step, which is finite and positive")
     if not np.all(np.isfinite(np.asarray(x0))):
         raise ValueError(f"x0={np.asarray(x0).tolist()} is not a state: every entry is a number")
+    unset = tolerance is None
+    tolerance = math.inf if tolerance is None else tolerance
     _check_tolerance(tolerance)
     rate = np.asarray(lipschitz, dtype=float)
     if rate.ndim == 0 and not rate >= 0.0:
@@ -1714,10 +1774,7 @@ def _plan(
             f"shape {rate.shape}"
         )
     covariance = _noise_covariance(noise, square[0])
-    if not -1.0 <= noise_persistence <= 1.0:
-        raise ValueError(
-            f"noise_persistence={noise_persistence} is not a correlation, which lies in [-1, 1]"
-        )
+    persistence = _noise_persistence(noise_persistence, covariance)
     authority = float(np.max(np.maximum(np.abs(np.asarray(u_lo)), np.abs(np.asarray(u_hi)))))
     if barrier is not None and not authority > 0.0:
         raise ValueError(
@@ -1818,7 +1875,7 @@ def _plan(
             # the answer is where the relaxed descent stopped, and it stopped for its own reason
             status = first.solver_status
 
-    tube = _error_tube(rate, model_error, covariance, noise_persistence, dt, horizon)
+    tube = _error_tube(rate, model_error, covariance, persistence, dt, horizon)
     problem = _PlanProblem(
         model=model,
         x0=x0,
@@ -1851,8 +1908,18 @@ def _plan(
         stationarity_tolerance=stationarity_tolerance,
         constraint_violation=violation,
         violation_tolerance=violation_tolerance,
+        tolerance=tolerance,
         _problem=problem,
     )
+    if unset and tube is not None:
+        warnings.warn(
+            "the plan's error tube was read against no tolerance, which holds every finite radius, "
+            "so its certificate_status reads 'no_tolerance'; from 0.20.0 the default tolerance is "
+            f"{_TOLERANCE_DEFAULT:g}, one unit of the state (ADR 0091). Pass tolerance to choose "
+            "the radius, or inf to keep this reading.",
+            FutureWarning,
+            stacklevel=3,
+        )
     if barrier is None:
         return plan, None
     audit = _audit(

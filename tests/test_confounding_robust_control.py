@@ -155,3 +155,25 @@ def test_dynamic_benchmark_ce_cost_climbs_and_premium_is_bounded() -> None:
     assert all(ce[i] <= ce[i + 1] + 1e-9 for i in range(len(ce) - 1))
     zero_idx = list(curve.confounding_levels).index(0.0)
     assert curve.robust_costs[zero_idx] >= curve.ce_costs[zero_idx]  # honest premium at zero conf.
+
+
+@pytest.mark.parametrize(
+    ("overshoot", "undershoot", "halfwidth"),
+    [(3.0, 1.0, 0.25), (1.0, 3.0, 0.25), (1.0, 4.0, 0.4), (2.0, 2.0, 0.25), (3.0, 1.0, 0.0)],
+)
+def test_the_certificate_holds_on_both_sides_of_the_sign_dichotomy(
+    overshoot: float, undershoot: float, halfwidth: float
+) -> None:
+    """Overshoot costlier shifts the gain below CE, undershoot costlier above it, and a symmetric
+    loss or an interval with no width leaves it at CE with no gain: up to 0.18.0 ``ok`` asked for a
+    shift down and a strict gain whatever the penalties."""
+    cert = confounding_robust_control_certificate(
+        halfwidth=halfwidth, overshoot_penalty=overshoot, undershoot_penalty=undershoot
+    )
+    assert cert.ok
+    if overshoot > undershoot and halfwidth > 0.0:
+        assert cert.u_robust < cert.u_certainty_equivalence
+    elif undershoot > overshoot:
+        assert cert.u_robust > cert.u_certainty_equivalence
+    else:
+        assert cert.u_robust == pytest.approx(cert.u_certainty_equivalence, rel=1e-12, abs=0.0)

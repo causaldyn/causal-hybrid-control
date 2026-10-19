@@ -877,9 +877,15 @@ class TransportabilityCurve:
     transportable_regret: Vector  # regret when the effect is recoverable on target (b_tgt = b_src)
     nontransport_regret: Vector  # CE-quadratic regret C*Lip^2*d^2 when b_tgt = b_src + Lip*d
     exact_regret: Vector  # the simulated cost-gap (cross-checks the quadratic-in-W1 scaling)
-    wdro_bound: float  # C*Lip^2*eps^2 for the W-DRO radius eps: covers all d <= eps
+    # C*Lip^2*eps^2 for the W-DRO radius eps: the second-order approximation, which covers the
+    # CE-quadratic regret at every d <= eps but not the exact one, 1.39 times it at d = eps on the
+    # defaults
+    wdro_bound: float
     nontransport_slope: float  # log-log slope of the CE-quadratic regret vs W1 (= 2)
     exact_slope: float  # log-log slope of the simulated regret vs W1 (~ 2)
+    # the exact regret's largest value over every target with |b_tgt - b_src| <= Lip*eps: a bound
+    # on it at every d <= eps, either side
+    exact_wdro_bound: float
 
 
 def transportability_regret_certificate(
@@ -906,6 +912,15 @@ def transportability_regret_certificate(
     penalises; (C) a W-DRO controller for radius ``eps`` covers this residual when ``d <= eps`` --
     conditional on the DRO ambiguity set being the W1-ball over the law that ``b`` is Lipschitz in.
     The robust radius is a transportability budget.
+
+    ``wdro_bound``, ``C*Lip^2*eps^2``, is the second-order approximation of that budget and not a
+    bound on the regret the deployment pays: the exact regret is ``(u_src k - b_tgt xt)^2 / k``,
+    ``k = b_tgt^2 + rr``, and on the defaults it reaches 1.39 times ``wdro_bound`` at ``d = eps``.
+    ``exact_wdro_bound`` is the exact regret's largest value over every target effect within
+    ``Lip*eps`` of the source's, either side, which bounds it: read at the interval's ends and at
+    the real roots inside it of ``u_src b^3 + u_src rr b - rr xt``, where its slope is zero
+    (``validation/transportability_regret.mac`` (D) derives the regret, and the cubic is its
+    slope's other factor).
     """
     coeff = xt**2 * (rr - b_src**2) ** 2 / (rr + b_src**2) ** 3
     ds = np.geomspace(d_lo, d_hi, n_d)
@@ -922,6 +937,11 @@ def transportability_regret_certificate(
     exact_reg = np.array([exact(b_src + lip * d) for d in ds])
     slope = float(np.polyfit(np.log(ds), np.log(nontransport), 1)[0])
     exact_slope = float(np.polyfit(np.log(ds), np.log(exact_reg), 1)[0])
+    reach = lip * wdro_radius
+    u_src = b_src * xt / (b_src**2 + rr)
+    turns = np.roots([u_src, 0.0, u_src * rr, -rr * xt])
+    turns = turns.real[(np.abs(turns.imag) <= 1e-12 * (1.0 + np.abs(turns.real)))]
+    candidates = [b_src - reach, b_src + reach, *turns[np.abs(turns - b_src) <= reach]]
     return TransportabilityCurve(
         ds,
         transportable,
@@ -930,6 +950,7 @@ def transportability_regret_certificate(
         float(coeff * lip**2 * wdro_radius**2),
         slope,
         exact_slope,
+        max(exact(float(b)) for b in candidates),
     )
 
 
@@ -1404,8 +1425,11 @@ class ClusteredLowerBoundCurve:
     mean_regret: Vector  # mean multivariate-LQ regret from real cross-fit DML at tiny delta
     g_times_regret: Vector  # G * mean_regret: bounded below by a positive c0 (irreducible)
     plateau_slope: float  # log-log slope of G*regret vs G (~0: flat => regret ~ 1/G on BOTH sides)
-    c0_estimate: float  # largest-G plateau value (the kappa0/Ic constant)
-    floor_positive: float  # min over G of G*regret (> 0: the uniform positive lower bound)
+    # largest-G plateau value (the kappa0/Ic constant); positive whenever one estimate misses
+    c0_estimate: float
+    # min over G of G*regret: positive whenever every cell has one estimate that misses, which is
+    # every cell, so its sign is no evidence of the lower bound; plateau_slope is
+    floor_positive: float
 
 
 def clustered_lower_bound_certificate(
@@ -1430,6 +1454,11 @@ def clustered_lower_bound_certificate(
     ``delta``, sampling-dominated), ``G*regret`` is roughly CONSTANT and bounded below by a positive
     ``c0`` -- so regret ``~ 1/G`` on BOTH sides (tight rate), not ``o(1/G)``. Contrast
     ``end_to_end_c2_certificate``, whose G-sweep showed only the ``~1/G`` upper trend.
+
+    The evidence is ``plateau_slope``, a point estimate over ``n_seeds`` draws a cell with no
+    standard error. ``floor_positive`` and ``c0_estimate`` are positive whatever the rate, since a
+    mean regret over draws that miss is positive: they do not compare ``G*regret`` with the van
+    Trees constant ``kappa0/(I0 + Ic)``, which this routine does not compute.
     """
     b_total = b_d + b_s
     a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
@@ -1564,8 +1593,10 @@ def cross_cluster_mixing_certificate(
     ``G = 40`` reports ~``-0.35`` -- the pre-asymptotic regime, not the rate. The replicate blocks
     are genuinely independent -- the seed stream carries a replicate index -- so ``slope_errors``
     is a real s.e. rather than the nested-prefix reconstruction
-    :func:`end_to_end_c2_certificate` is forced into. With five blocks it has four degrees of
-    freedom, so it is a ``t`` and not a ``z``: the two-sided 5% critical value is ``2.776``.
+    :func:`end_to_end_c2_certificate` is forced into. With ``n_replicates`` blocks it has
+    ``n_replicates - 1`` degrees of freedom, so it is a ``t`` and not a ``z``: at the default four
+    blocks the two-sided 5% critical value is ``3.182``, not the ``2.776`` of four degrees of
+    freedom, which covers 0.931 at three.
     """
     if len(decays) < 4:
         raise ValueError(
@@ -1954,7 +1985,8 @@ class DelayedNetworkCurve:
     u1_nearest_parity: float  # u_1 with the far shells switched off: the theta* law's own regime
     u1_nearest_block: float  # ... POSITIVE here, because block folds sit above theta*
     u1_cross_block: float  # ... and the shell-1<->shell-2 term that flips it negative again
-    separable_spread: float  # at delta = 0 the law must lose phi entirely -- this must be ~0
+    # at delta = 0, the spread over the phi grid of Psi read on the whole Sigma_u (x) T(phi): ~0
+    separable_spread: float
     c_fold_measured: float  # exchangeable limit: m*tr(Au^2)/tr(Au)^2 read off the projector
     c_fold_predicted: float  # m(m+14)/(m+2)^2 at K=2 -- the same constant Result 43 uses
     crossover: float  # x = phi^delta where the two partitions swap ranking; nan if they never do
@@ -3510,8 +3542,10 @@ def delayed_network_certificate(
        LARGER in magnitude than ``u1_nearest_block`` and drags the block arm's ``u_1`` negative
        again. So the fold-alignment rule is a ``D = 1`` rule, and longer-range spillover can defeat
        it -- a limit measured here rather than asserted.
-    4. ``separable_spread`` re-derives STEP 7 from this side: at ``delta = 0`` the law must lose
-       ``phi`` entirely.
+    4. ``separable_spread`` re-derives STEP 7 from this side: at ``delta = 0`` the covariance is
+       ``Sigma_u (x) T(phi)``, and ``Psi`` read on it, its time kernel and all, must lose ``phi``
+       entirely. Up to 0.18.0 it read the law at one ``phi`` once per grid point, a spread of 0
+       whatever ``Psi`` did.
 
     HONEST SCOPE. ``Psi`` here is the sandwich functional
     ``N^2 tr(A Sigma A)/(tr(A)^2 tr(Sigma))`` that
@@ -3595,10 +3629,22 @@ def delayed_network_certificate(
     nn_parity, _ = u1_parts(partitions["parity"])
     nn_block, cross_block = u1_parts(partitions["block"])
 
-    # delta = 0: every band carries the same time kernel, so phi must drop out of the law entirely.
+    # delta = 0: every band carries the same time kernel T, Sigma = Sigma_u (x) T, so phi must drop
+    # out of Psi. Read on the whole (unit, time) covariance, T and all, rather than on the law, in
+    # which phi enters only through the delay and so drops out at delta = 0 by construction.
     au_parity = _fold_sandwich(m, k_folds, partitions["parity"])
-    u_par, v0_par = coefficients(au_parity)
-    flat = [float(m**2 * u_par.sum() / (np.trace(au_parity) ** 2 * v0_par)) for _ in phis]
+    sigma_u = sum(
+        gam[d] * gam[e] * shells[d] @ shells[e] for d in range(dmax + 1) for e in range(dmax + 1)
+    )
+    big_parity = np.kron(au_parity, np.eye(p))
+    gaps = np.abs(np.arange(p)[:, None] - np.arange(p)[None, :])
+    flat = []
+    for phi in phis:
+        sigma_full = np.kron(sigma_u, float(phi) ** gaps)
+        sandwich = float(np.trace(big_parity @ sigma_full @ big_parity))
+        flat.append(
+            (m * p) ** 2 * sandwich / (float(np.trace(big_parity)) ** 2 * np.trace(sigma_full))
+        )
     # the exchangeable limit is Result 43's fold-geometry constant, read off the same projector
     m_f = float(m)
     r = k_folds / (k_folds - 1)
@@ -3727,8 +3773,12 @@ class CeExplicitConstantCurve:
     worst_lyapunov: Vector  # worst ||P^(-1/2)(A-BKhat)'P(A-BKhat)P^(-1/2)||
     lyapunov_ceiling: float  # (1 - theta/2)^2: the certified ceiling inside the ball
     unstable_fraction: Vector  # fraction of draws whose CE controller destabilises the TRUE plant
-    empirical_radius: float  # smallest swept ||dB|| at which any draw destabilises
-    conservatism: float  # empirical_radius / rho: how much the certificate gives away
+    # smallest swept ||dB|| at which any draw destabilises; where none does, the largest swept, a
+    # lower bound on it
+    empirical_radius: float
+    # empirical_radius / rho: how much the certificate gives away; a lower bound where no draw
+    # destabilised
+    conservatism: float
 
 
 def ce_explicit_constant_certificate(
@@ -3777,6 +3827,9 @@ def ce_explicit_constant_certificate(
     SCOPE: one citation remains on the control side -- uniform validity of the gain map's Lipschitz
     constant on the ball (Konstantinov-Petkov-Christov-Angelova 1993; Sun 1998). It is not assumed
     away: ``l_k_ball`` measures it over the certified ball against the derivative ``l_k_local``.
+    The measurement is a maximum over sampled perturbations, which can only fall short of the
+    supremum, and ``rho`` then reads wide and ``C`` low by the same factor: on the defaults, a
+    grid of 2001 directions at 50 radii read no larger, to 4e-7.
     """
     a_mat = np.array([[1.0, 0.1], [0.0, 0.95]]) if a_mat is None else a_mat
     b_mat = np.array([[0.5], [1.0]]) if b_mat is None else b_mat
@@ -3888,10 +3941,14 @@ class ConjugateTimeCurve:
     value_residue: Vector  # eps*p(0) -> -r/b^2 (a SIMPLE pole; the residue is free of a, q, sT)
     sensitivity: Vector  # |dk/db| at t=0 -- the object every regret constant is built on
     sensitivity_residue: Vector  # eps^2*|dk/db| -> a nonzero constant (a DOUBLE pole)
-    regret_coefficient: Vector  # measured [J(khat) - J*]/(db)^2 at each horizon
+    # r (dk)^2 x0^2 / (db)^2: the gain error's cost at t = 0 alone, the square of the sensitivity's
+    # forward difference, not the regret integrated over the horizon
+    regret_coefficient: Vector
     value_slope: float  # log-log slope of |p(0)| against 1/eps: 1
     sensitivity_slope: float  # ... of |dk/db|: 2
-    regret_slope: float  # ... of the realised regret coefficient: 4 (Result 44 has C ~ L_K^2)
+    # ... of regret_coefficient: 4, twice sensitivity_slope by construction, up to the forward
+    # difference against the centred one
+    regret_slope: float
     authority_shrinks_horizon: (
         float  # t_conj(2b)/t_conj(b) < 1: more authority, EARLIER obstruction
     )
@@ -3941,8 +3998,15 @@ def conjugate_time_certificate(
     pole with residue ``-r/b^2`` (free of ``a``, ``q`` and the terminal weight); the SENSITIVITY
     ``dk/db`` -- which is Result 44's ``L_K`` and Results 18/20's ``du_star/db`` -- has a DOUBLE
     pole, because differentiating the closed form turns the tangent into a ``sec^2``; and since
-    Result 44 has ``C`` proportional to ``L_K^2``, the regret constant has a FOURTH-order pole. The
-    last is measured from realised certainty-equivalence regret, not inferred from the first two.
+    Result 44 has ``C`` proportional to ``L_K^2``, the regret constant has a FOURTH-order pole.
+
+    The last is not measured independently of the second. ``regret_coefficient`` is the gain
+    error's cost at ``t = 0``, ``r (dk)^2 x0^2 / (db)^2``, the square of the sensitivity's forward
+    difference, so ``regret_slope`` is twice ``sensitivity_slope`` by construction, up to that
+    forward difference against the centred one ``sensitivity`` takes. The regret the
+    certainty-equivalent controller realises over the horizon, ``int_0^T r (khat - k)^2 x^2 dt``
+    on the true plant, has a pole of order 3 on the defaults, not 4: its log-log slope is 3.29,
+    3.05 and 3.01 between successive margins from ``1e-1`` to ``1e-4``, on two step sizes ``db``.
     """
     c_auth = b * b / r
 
@@ -4019,7 +4083,9 @@ class AdaptiveExplorationCurve:
     adaptive_regret: Vector  # cumulative regret of the tapering schedule (v_t ~ 1/sqrt(t)): sqrt(T)
     greedy_regret: Vector  # cumulative regret with no exploration: ~ T (linear)
     static_regret: Vector  # cumulative regret of a constant-v schedule (Result 11 static): ~ T
-    lower_bound: Vector  # 2*sqrt(A*K*T/eta), K = C*sigma^2: the proved sequence lower bound
+    # 2*sqrt(A*K*T/eta) - A*m0/eta, K = C*sigma^2: the proved sequence lower bound, which the
+    # information m0 held before the first round lowers
+    lower_bound: Vector
     adaptive_slope: float  # log-log slope of adaptive regret vs T (~0.5)
     greedy_slope: float  # log-log slope of greedy regret vs T (~1)
     schedule: Vector  # the tapering exploration schedule v_t (decreasing)
@@ -4087,7 +4153,9 @@ def adaptive_exploration_certificate(
         adaptive[i] = cumulative(horizon, kappa / np.sqrt(t))
         greedy[i] = cumulative(horizon, np.zeros(horizon))
         static[i] = cumulative(horizon, np.full(horizon, static_v))
-    lb = 2.0 * np.sqrt(a_curv * k_vt * hs / eta)  # 2*sqrt(A*K*T/eta): 1/sqrt(eta) causal factor
+    # 2*sqrt(A*K*T/eta) - A*m0/eta (Rocq reduced_objective_lower_bound): without the offset a
+    # single burst of exploration in round 1 beat it, by up to A*m0/eta
+    lb = 2.0 * np.sqrt(a_curv * k_vt * hs / eta) - a_curv * m0 / eta
     adaptive_slope = float(np.polyfit(np.log(hs), np.log(adaptive), 1)[0])
     greedy_slope = float(np.polyfit(np.log(hs), np.log(greedy), 1)[0])
     sched = kappa / np.sqrt(np.arange(1, schedule_horizon + 1, dtype=np.float64))
@@ -4668,8 +4736,11 @@ class ConstrainedRegretCurve:
     threshold: float  # activation threshold b_t where u*(b_t) = umax
     inactive_slope: float  # log-log slope of regret vs delta on the inactive side (~2: quadratic)
     active_regret_max: float  # max regret on the active side (~0: curvature collapses)
-    max_constrained_ratio: float  # max(constrained / unconstrained) <= 1 (clipping non-expansive)
-    pessimism_budget: float  # regret a naive controller pays if truth active but underestimated
+    # max(constrained / unconstrained) over truths on the inactive side and estimates as far past
+    # the threshold, where the clip moves the action: <= 1 (clipping non-expansive)
+    max_constrained_ratio: float
+    # exact cost gap a naive controller pays if the truth is active but underestimated
+    pessimism_budget: float
 
 
 def constrained_ce_regret_certificate(
@@ -4712,9 +4783,24 @@ def constrained_ce_regret_certificate(
     reg_act = np.array([curv * (u_opt(b_t + d) - u_opt(b_t)) ** 2 for d in deltas])
     reg_unc = np.array([curv * (u_star(b_t - d) - u_star(b_t)) ** 2 for d in deltas])
     slope = float(np.polyfit(np.log(deltas), np.log(reg_in), 1)[0])
-    ratio_in = reg_in / np.where(reg_unc > 0, reg_unc, 1.0)
+    # Non-expansiveness is read where the clip acts: a truth at b_t - d on the inactive side, an
+    # estimate at b_t + d past the threshold. On the inactive side alone the two regrets are one
+    # number, and up to 0.18.0 the ratio read 1 there by construction.
+    across = [(b_t - d, b_t + d) for d in deltas]
+    ratio_across = np.array(
+        [
+            (u_opt(estimate) - u_opt(truth)) ** 2 / (u_star(estimate) - u_star(truth)) ** 2
+            for truth, estimate in across
+        ]
+    )
     b0 = b_t + active_offset  # true effect in the active region (optimal control = umax)
-    naive_regret = np.array([(b0 * b0 + rr) * (u_star(b_t - d) - umax) ** 2 for d in deltas])
+
+    def cost(u: float) -> float:
+        return (b0 * u - xt) ** 2 + rr * u * u
+
+    # The capped optimum sits on the cap, not at a stationary point, so the gap has a first-order
+    # term the curvature alone misses: up to 0.18.0 it read (b0^2 + rr)(u - umax)^2, 0.55 of this.
+    naive_regret = np.array([cost(u_star(b_t - d)) - cost(umax) for d in deltas])
     return ConstrainedRegretCurve(
         deltas,
         reg_in,
@@ -4723,7 +4809,7 @@ def constrained_ce_regret_certificate(
         float(b_t),
         slope,
         float(reg_act.max()),
-        float(ratio_in.max()),
+        float(ratio_across.max()),
         float(naive_regret.max()),
     )
 
@@ -5432,7 +5518,7 @@ def confounding_robust_lq_regret_matrix(
 ) -> float:
     """Matrix confounding-robust LQ regret ``tr(E^T H E)``, ``E = stat + confounding``.
 
-    The Frobenius lift of the scalar bound via the §21 matrix order-doubling (the scalar
+    The Frobenius lift of the scalar approximation via the §21 matrix order-doubling (the scalar
     order-doubling is Rocq ``regret_order_2p``; the matrix step ``tr(E^T H E) <=
     lambda_max(H)*||E||_F^2`` is standard and not in Rocq): for a positive-semidefinite LQ regret
     curvature ``H`` and effect-error
@@ -5449,10 +5535,12 @@ def confounding_robust_lq_regret_matrix(
 
 @dataclass(frozen=True)
 class ConfoundingRobustLQRegretCurve:
-    """Evidence the confounding regret bound order-doubles effect error and floors at Delta^2."""
+    """Evidence the confounding regret order-doubles effect error and floors at Delta^2."""
 
     gammas: Vector  # swept §32 sensitivity levels Gamma
-    regret_bounds: Vector  # R(Gamma) = L_reg*(eps + Delta(Gamma))^2
+    # R(Gamma) = L_reg*(eps + Delta(Gamma))^2, the regret to second order: not a bound, the exact
+    # regret's worst over the effect interval exceeds it by up to 8.4 % on the defaults
+    regret_bounds: Vector
     statistical: float  # R(Gamma=1) = L_reg*eps^2 (no confounding penalty)
     floor_quadratic_ratio: float  # floor(2*Delta)/floor(Delta): ~4.0 => quadratic in the width
     order_doubling_ratio: float  # exact regret / (L_reg*delta^2) at small delta: ~1.0
@@ -5472,7 +5560,11 @@ def confounding_robust_lq_regret_certificate(
     Grounds the analytic ``lq_regret_sensitivity`` against the exact static-LQ regret
     ``kappa*(u*(b_hat) - u*(b))^2`` at a small perturbation (ratio -> 1 proves the coefficient),
     then maps each ``Gamma`` to its confounding half-width via the §32 inflation and checks the
-    bound is monotone, recovers the statistical regret at ``Gamma=1``, and floors at ``Delta^2``.
+    second-order regret is monotone, recovers the statistical regret at ``Gamma=1``, and floors at
+    ``Delta^2``. ``regret_bounds`` holds that second-order regret, which the exact one exceeds (see
+    :func:`confounding_robust_lq_regret`). Only the first of ``ok``'s four gates is a measurement:
+    the other three hold by the algebra of ``L_reg (eps + Delta)^2`` whatever the plant, its
+    ``floor_quadratic_ratio`` being ``(2 Delta)^2 / Delta^2``.
     """
     from chc.uncertainty import (
         confounding_robust_inflation,  # §32 half-width; local to keep JAX out
@@ -6147,9 +6239,9 @@ class ConfoundingRobustControlCurve:
     """Evidence the pessimism radius shifts the gain and strictly beats CE under asymmetric loss."""
 
     u_certainty_equivalence: float
-    u_robust: float  # shifted by the pessimism radius (< u_CE when overshoot is costlier)
+    u_robust: float  # shifted by the pessimism radius: below u_CE where overshoot costs more
     worst_case_loss_ce: float
-    worst_case_loss_robust: float  # < CE: pessimism strictly helps under asymmetry
+    worst_case_loss_robust: float  # < CE under asymmetry, = CE without: pessimism helps
     numeric_argmin: float  # grid-search argmin of the worst-case loss (matches u_robust)
     symmetric_equals_ce: bool  # alpha=beta -> robust control == target/b_hat, THIS loss's CE action
     ok: bool
@@ -6165,8 +6257,12 @@ def confounding_robust_control_certificate(
     """Confirm the closed-form minimax control is the numeric argmin and strictly beats CE.
 
     Grid-searches the worst-case loss over ``u`` (the analytic ``u_robust`` should be its argmin),
-    then checks the robust control is shifted below CE and its worst-case loss is strictly smaller,
-    while a symmetric loss reproduces CE exactly.
+    then checks the robust control is shifted the way the sign dichotomy says -- below CE where
+    overshoot costs more, above it where undershoot does -- and its worst-case loss is strictly
+    smaller where the loss is asymmetric and the interval has width, while a symmetric loss
+    reproduces CE exactly. Up to 0.18.0 ``ok`` asked for ``u_robust < u_CE`` and a strict gain
+    whatever the penalties, so it failed every loss that weighs undershoot more, and every
+    symmetric one.
     """
     u_ce = certainty_equivalence_control(effect_estimate, target)
     u_rob = confounding_robust_control(
@@ -6191,10 +6287,19 @@ def confounding_robust_control_certificate(
     u_sym = confounding_robust_control(effect_estimate, halfwidth, target, 1.0, 1.0)
     symmetric_equals_ce = abs(u_sym - u_ce) < 1e-12
 
+    asymmetric = overshoot_penalty != undershoot_penalty and halfwidth > 0.0
+    if asymmetric:
+        # overshoot costlier -> shift the gain down; undershoot costlier -> up (Rocq); and
+        # pessimism strictly reduces the worst-case loss
+        shifted = np.sign(u_ce - u_rob) == np.sign(overshoot_penalty - undershoot_penalty)
+        gains = w_rob < w_ce
+    else:
+        shifted = abs(u_rob - u_ce) <= 1e-12 * u_ce
+        gains = abs(w_rob - w_ce) <= 1e-12 * max(1.0, w_ce)
     ok = (
         abs(u_rob - numeric_argmin) < 1e-3  # the closed form is the minimax control
-        and u_rob < u_ce  # overshoot costlier -> shift the gain down
-        and w_rob < w_ce  # pessimism strictly reduces the worst-case loss
+        and bool(shifted)
+        and gains
         and symmetric_equals_ce
     )
     return ConfoundingRobustControlCurve(
@@ -6744,7 +6849,8 @@ def space_time_fold_certificate(
         and np.all(np.diff(price) > 0.0)
         and bool(slice_penalty[0] > price[0])
         and bool(price[-1] > slice_penalty[-1])
-        and exhaustive_ratio < 1.0 + 1e-9
+        # two-sided: below 1 the heuristic would have left the balanced folds the enumeration spans
+        and abs(exhaustive_ratio - 1.0) < 1e-9
         and panel_weight > slice_weight
     )
     return SpaceTimeFoldCurve(
@@ -6782,7 +6888,8 @@ class PanelEstimatorGate:
     cluster_counts: tuple[int, ...]
     predicted: Vector  # Psi(parity)/Psi(block) from the functional
     measured: Vector  # Var(parity)/Var(block) of the actual estimator
-    ci_low: Vector  # cluster bootstrap over draws
+    # bootstrap over the independent draws of the panel, resampled in pairs: not a cluster bootstrap
+    ci_low: Vector
     ci_high: Vector
     covered: tuple[bool, ...]  # does the CI contain the prediction? counted, not gated
     n_covered: int
@@ -6874,9 +6981,11 @@ def panel_estimator_certificate(
     The gates are the three claims the functional makes: sign agreement in every cell, washout in
     both sequences, and conservatism. At ``phi = 0.9`` they hold on every stream tried. At
     ``phi = 0.3`` they compare point estimates against an effect smaller than the Monte-Carlo
-    error, so ``ok`` is False on two streams of the three -- the gate reporting that it cannot see,
-    which is what it should report. Coverage is counted and reported, never gated -- a certificate
-    that gated on it would have to be tuned until it passed, which is the opposite of a gate.
+    error, so ``ok`` is False on two streams of the three. A gate on point estimates reads False
+    alike where an effect is too small to resolve and where it is refuted, and True by chance where
+    it is unresolved: ``ci_low`` and ``ci_high`` tell the cases apart, and ``ok`` does not. Coverage
+    is counted and reported, never gated -- a certificate that gated on it would have to be tuned
+    until it passed, which is the opposite of a gate.
 
     TWO SAMPLING FACTS THIS DEPENDS ON. ``draws`` must not be small: a variance ratio from a few
     dozen paired draws is noisy, and the conservatism finding rests on the two-cluster cell. At

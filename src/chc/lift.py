@@ -747,7 +747,8 @@ class ObservationalCheck:
         that lift. The least ``Gamma`` whose set reaches :attr:`factor_interval` inverts the radius
         at the interval's distance from 1, as :func:`chc.barrier.barrier_gamma_star` does. Less
         confounding than this the tests refute at :attr:`level`, as a known-null outcome refutes it
-        in :func:`chc.uncertainty.negative_control_gamma`: a floor, not a ceiling.
+        in :func:`chc.uncertainty.negative_control_gamma` given a ``level``: a floor, not a
+        ceiling.
 
         ``1.0`` when the interval holds 1; ``inf`` when it lies ``cvar_gap`` or further from 1, so
         that no level reconciles the two and the tests refute the model rather than calibrate it;

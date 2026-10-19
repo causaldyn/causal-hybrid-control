@@ -23,7 +23,14 @@ from scipy.stats import chi2
 
 from chc import CausalGraph, Constraint, Lever, Panel, Target, prescribe
 from chc.cost import QuadraticCost
-from chc.decision import _field_error, _model_error, _slopes, _state_noise
+from chc.decision import (
+    _field_error,
+    _field_errors,
+    _field_scale,
+    _model_error,
+    _slopes,
+    _state_noise,
+)
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit
 from chc.integrate import rk4_step, rollout
@@ -316,16 +323,26 @@ def test_prescribe_carries_its_tube_by_the_slope_at_each_planned_action() -> Non
     error = _field_error(fit, distance)
     assert error > _model_error(fit, distance)
     noise = np.array([[certificate.tube_noise**2]])
-    persistence = certificate.tube_persistence
-    expected = _linear_tube(slopes, [error] * horizon, dt)
-    expected += _noise_tube(slopes, noise, persistence, dt, horizon)
+    assert certificate.tube_autoregression is not None
+    persistence = np.asarray(certificate.tube_autoregression)  # the VAR(1) (ADR 0105)
+    # one state: the noise's radius and the field's error at its studentised quantile
+    scale = _field_scale(fit) * math.sqrt(chi2.ppf(0.95, 1))
+    # read at the state each step starts from, the log's root mean square of it the fit's
+    errors = _field_errors(fit, distance, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)))
+    rows = log["x"][:-1, None]
+    at_rows = _field_errors(fit, distance, rows, np.zeros((rows.shape[0], 0)))
+    assert math.sqrt(np.mean(at_rows**2)) == pytest.approx(error, rel=1e-10, abs=0.0)
+    field = _linear_tube(slopes, errors, dt)
+    expected = np.hypot(_noise_tube(slopes, noise, persistence, dt, horizon), scale * field)
     tube = np.asarray(plan.uncertainty_tube)
     np.testing.assert_allclose(tube, expected, rtol=1e-12, atol=0.0)
     # the slope at the box's centre, the same at every step, is another tube: the action matters
     at_centre = np.asarray(jax.jacobian(lambda x: model(0.0, x, jnp.zeros(1)))(x0))
     centre = np.repeat(at_centre[None], horizon, axis=0)
-    held = _linear_tube(centre, [error] * horizon, dt)
-    held += _noise_tube(centre, noise, persistence, dt, horizon)
+    held = np.hypot(
+        _noise_tube(centre, noise, persistence, dt, horizon),
+        scale * _linear_tube(centre, errors, dt),
+    )
     assert np.max(np.abs(held - tube) / tube.clip(1e-300)) > 1e-3
 
     assert certificate.tube_mode == "exact"
@@ -423,37 +440,56 @@ def _quickstart(logs: dict[str, np.ndarray], wait_units: float = 1.0):
     )
 
 
-def test_the_quickstart_trusts_the_weeks_its_plant_allows_and_holds_it_over_them() -> None:
-    """Run on from the plan's start under its actions, demand drawn afresh each week as on the
-    log, the quickstart's plant stays within the tolerance of 0.5 at 95 % for 3 weeks: the
-    certificate trusts those 3, where the norm bound's tube trusted 1, and the plant is inside the
-    tube at each of them at least 0.95 of the time, within four Monte Carlo standard errors."""
-    decided = _quickstart(_quickstart_logs())
-    plan, certificate = decided.plan, decided.certificate
+def _quickstart_runs(decided, seed: int, draws: int) -> tuple[np.ndarray, np.ndarray]:
+    """Each week's share of ``draws`` runs of the quickstart's plant inside the tube, run on from
+    the plan's start under its actions with demand drawn afresh each week as on the log, and the
+    plant's 95 % distance from the plan."""
+    plan = decided.plan
     assert plan is not None
     assert plan.uncertainty_tube is not None
-    assert certificate.tube_mode == "exact"
-    assert certificate.trustworthy_steps == 3
     tube = np.asarray(plan.uncertainty_tube)
     planned = np.asarray(plan.trajectory)
-    rng = np.random.default_rng(12)
-    supply = np.full(_DRAWS, planned[0, 0])
-    wait = np.full(_DRAWS, planned[0, 1])
+    rng = np.random.default_rng(seed)
+    supply = np.full(draws, planned[0, 0])
+    wait = np.full(draws, planned[0, 1])
     inside, reach = [], []
     for k, action in enumerate(np.asarray(plan.actions)[:, 0]):
-        demand = rng.standard_normal(_DRAWS)
+        demand = rng.standard_normal(draws)
         supply, wait = (
             supply
             + _DT * (-0.6 * supply + 0.3 * wait + 0.8 * action + 1.5 * demand)
-            + rng.normal(0.0, 0.01, _DRAWS),
-            wait + _DT * (0.25 * wait - 0.4 * action) + rng.normal(0.0, 0.01, _DRAWS),
+            + rng.normal(0.0, 0.01, draws),
+            wait + _DT * (0.25 * wait - 0.4 * action) + rng.normal(0.0, 0.01, draws),
         )
         distance = np.hypot(supply - planned[k + 1, 0], wait - planned[k + 1, 1])
         inside.append(np.mean(distance <= tube[k + 1]))
         reach.append(np.quantile(distance, _COVERAGE))
-    allowed = int(np.argmax(np.asarray(reach) > 0.5))
+    return np.asarray(inside), np.asarray(reach)
+
+
+def test_the_quickstart_trusts_the_weeks_its_plant_allows_and_holds_it_over_them() -> None:
+    """Run on from the plan's start under its actions, demand drawn afresh each week as on the
+    log, the quickstart's plant stays within the tolerance of 0.5 at 95 % for 3 weeks: the
+    certificate trusts those 3, where the norm bound's tube trusted 1. The tube holds the plant at
+    0.95 a week over logs, not on each one (ADR 0080): over ten logs of the quickstart's plant the
+    share of runs inside it at each of those weeks is at least 0.95 within four standard errors of
+    that mean over the logs. The quickstart's own log holds 0.943 at the first week, one log's
+    reading of a level that 80 logs hold at 0.948 to 0.953 a week."""
+    decided = _quickstart(_quickstart_logs())
+    certificate = decided.certificate
+    assert certificate.tube_mode == "exact"
+    assert certificate.trustworthy_steps == 3
+    _, reach = _quickstart_runs(decided, 12, _DRAWS)
+    allowed = int(np.argmax(reach > 0.5))
     assert allowed == certificate.trustworthy_steps
-    assert np.all(np.asarray(inside[:allowed]) >= _COVERAGE - 4.0 * _SE), inside
+    inside = np.array(
+        [
+            _quickstart_runs(_quickstart(_quickstart_logs(seed)), 12 + seed, 4000)[0][:allowed]
+            for seed in range(10)
+        ]
+    )
+    error = inside.std(axis=0, ddof=1) / math.sqrt(inside.shape[0])
+    assert np.all(inside.mean(axis=0) >= _COVERAGE - 4.0 * error), inside.mean(axis=0)
 
 
 def test_each_state_s_own_radius_moves_with_that_state_s_units_alone() -> None:

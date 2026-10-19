@@ -86,7 +86,7 @@ state matrix you supply) and the horizon the tube trusts. Three modes are named 
 The tube never enters the *objective*, and a barrier does only when given one. Even then the
 verdict is the audit's, which the plan carries as `plan.safety`, because a solve stopped by its
 budget can come back short of the condition. With no error model supplied, the certificate reports
-`not_evaluated` rather than a vacuous full-horizon pass.
+`not_evaluated` rather than a vacuous full-horizon pass, and with no `tolerance`, `no_tolerance`.
 
 ## Decisions from a panel
 
@@ -125,9 +125,11 @@ adjustment set asserted gives `2.15`; with the confounder latent there is no sch
 - A **Wasserstein-1 DRO** margin for distribution shift.
 - **Rollout error tubes**: RK4 recursions at a Lipschitz rate or a state matrix, or Euler's on
   request, giving a time-varying uncertainty tube, safety tightening, and the horizon the tube
-  trusts. The tube is a bound where the per-step error is one, and a scale where it is a standard
-  error; given the plant's one-step noise, it adds the radius that holds the noise at each step
-  with probability 0.95. Rocq proves that the recursions bound the error under those premises.
+  trusts. The tube is a bound where the per-step error is one; given the plant's one-step noise, it
+  adds the radius that holds the noise at each step with probability 0.95. Under `prescribe`,
+  whose per-step error is a standard error read at the state each planned step starts from, the
+  radius holds the noise and that error together at 0.95 a step, the error read at its studentised
+  quantile. Rocq proves that the recursions bound the error under those premises.
 
 The ensemble trains as one sharded program (`vmap` over a member axis, `lax.scan` over the Adam
 steps, `NamedSharding` over the device mesh) rather than K sequential fits: 3.6× on one device and
@@ -150,8 +152,8 @@ and the radius taken as inputs.
 `Γ` itself is **calibrated before it is spent**. `benchmark_gamma` prices it in units of the
 confounding the observed covariates carry, as an exponent, `log Γ / log Γ_strongest`, because odds
 ratios compose. `negative_control_gamma` inverts a known-null outcome for the smallest `Γ` that
-reconciles it: a *lower bound* on the confounding present, or `inf` when the model class is refuted
-instead. `chc.sensitivity` is the one-import surface: calibrate, then radius, then control.
+reconciles it: a point estimate of a *lower bound* on the confounding present, a lower confidence
+bound on it with `level`, or `inf` when the model class is refuted instead. `chc.sensitivity` is the one-import surface: calibrate, then radius, then control.
 
 ## Safety under partial identification
 

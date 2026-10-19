@@ -371,3 +371,15 @@ def test_it_refuses_a_plan_made_on_another_model(fitted) -> None:
     )
     with pytest.raises(ValueError, match="not made on the fit's model"):
         planned_cost_bias(other, fit)
+
+
+def test_a_nan_bias_reads_unknown_not_unbiased() -> None:
+    """``nan > 0`` and ``nan < 0`` are both false, so a nan bias once read ``unbiased``."""
+    bias = PlannedCostBias(
+        planned_cost=1.0, optimism=math.nan, curvature=-0.1, first_order=0.0, free=2, residual=0.0
+    )
+    assert bias.direction == "unknown"
+    assert replace(bias, optimism=0.1).direction == "unbiased"
+    assert replace(bias, optimism=0.2).direction == "optimistic"
+    assert replace(bias, optimism=0.0).direction == "pessimistic"
+    assert replace(bias, optimism=math.inf).direction == "optimistic"

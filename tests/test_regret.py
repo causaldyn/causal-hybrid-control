@@ -14,7 +14,7 @@ import scipy.linalg
 from hypothesis import given
 from hypothesis import strategies as st
 
-from chc.dynamics import DampedOscillator
+from chc.dynamics import DampedOscillator, LinearDynamics
 from chc.lqr import linearize_discrete, linearized_regret_certificate
 from chc.network_causal import cycle_shells
 from chc.regret import (
@@ -272,6 +272,28 @@ def test_van_trees_posterior_mean_weighs_the_data_by_its_noise(sigma: float) -> 
     np.testing.assert_allclose(curve.empirical_mse, curve.van_trees_bound, rtol=0.15)
 
 
+@pytest.mark.parametrize(("m0", "eta"), [(1.0, 1.0), (4.0, 0.5), (0.2, 0.3)])
+def test_adaptive_exploration_lower_bound_holds_for_a_single_burst(m0: float, eta: float) -> None:
+    """``lower_bound`` is the proved sequence bound ``2 sqrt(A K T / eta) - A m0 / eta``; it read
+    the leading term alone, which one burst of exploration in round 1, ``v_1 = V``, beats by up to
+    ``A m0 / eta``. Every schedule's cumulative regret ``sum A v_t + K / m_t`` lies above the bound,
+    the burst's at its best ``V`` included, and the tapering schedule's; the burst comes within
+    its first round's ``K / m0`` of it, so the bound is tight to that."""
+    b, rr, xt, sigma = 1.0, 0.5, 1.0, 0.5
+    a_curv = b * b + rr
+    k_vt = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3 * sigma**2
+    curve = adaptive_exploration_certificate(m0=m0, eta=eta)
+    for horizon, bound in zip(curve.horizons, curve.lower_bound, strict=True):
+        rounds = int(horizon)
+        best = math.sqrt((rounds - 1) * k_vt * eta / a_curv)  # m0 + eta V at the best burst
+        burst = max(best - m0, 0.0) / eta
+        regret = a_curv * burst + k_vt / m0 + (rounds - 1) * k_vt / (m0 + eta * burst)
+        assert regret >= bound
+        if best > m0:  # the burst then comes within its first round's floor of the bound
+            assert regret - bound <= k_vt / m0 + 1e-9
+    assert (curve.adaptive_regret >= curve.lower_bound).all()
+
+
 def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     # Contribution 3 (proofs/adaptive_exploration.v): control with online effect learning.
     # A tapering schedule v_t ~ 1/sqrt(t) reaches cumulative regret Theta(sqrt(T)) -- matching the
@@ -287,9 +309,11 @@ def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
     assert 1.0 <= curve.adaptive_over_bound < 2.5  # matches the lower bound up to a constant
     # REGRESSION: the van-Trees numerator is K = C*sigma^2, so the bound is linear in sigma. The
     # certificate once computed C and used it as K, silently pinning sigma^2 = 1; this catches that.
+    # The bound's offset A*m0/eta does not read sigma; its leading term doubles with it.
+    offset = (1.0 + 0.5) * 1.0 / 1.0
     assert np.allclose(
-        adaptive_exploration_certificate(sigma=1.0).lower_bound,
-        2.0 * adaptive_exploration_certificate(sigma=0.5).lower_bound,
+        adaptive_exploration_certificate(sigma=1.0).lower_bound + offset,
+        2.0 * (adaptive_exploration_certificate(sigma=0.5).lower_bound + offset),
     )
 
 
@@ -401,7 +425,9 @@ def test_conjugate_time_bounds_the_horizon_every_regret_constant_lives_on() -> N
     assert abs(curve.sensitivity_slope - 2.0) < 0.05
     assert curve.sensitivity_slope > curve.value_slope + 0.5
     assert curve.sensitivity_residue[-1] > 0.1
-    # (4) Result 44 has C ~ L_K^2, so the realised regret coefficient must carry FOURTH order.
+    # (4) Result 44 has C ~ L_K^2, and the coefficient read at t = 0, the sensitivity squared,
+    # carries FOURTH order by construction; the regret realised over the horizon is third order
+    # (test_the_realised_conjugate_time_regret_has_a_third_order_pole).
     assert abs(curve.regret_slope - 4.0) < 0.1
     assert (np.diff(curve.regret_coefficient) > 0.0).all()
     # (5) THE COUNTER-INTUITIVE DIRECTION, and the reason this is an obstruction rather than a
@@ -590,6 +616,34 @@ def test_transportability_regret_is_quadratic_in_wasserstein_distance() -> None:
     assert 1.7 < curve.exact_slope < 2.4  # the simulated cost-gap is also quadratic in W1
     assert (curve.nontransport_regret <= curve.wdro_bound + 1e-12).all()  # W-DRO covers d<=eps
     assert (np.diff(curve.nontransport_regret) > 0).all()  # regret grows with the domain shift
+
+
+def test_the_wdro_radius_is_second_order_and_the_exact_bound_covers_the_regret() -> None:
+    # the exact regret is (u_src k - b xt)^2 / k, k = b^2 + rr (transportability_regret.mac (D));
+    # C Lip^2 eps^2 is its second-order term, which it passes at d = eps on the defaults
+    curve = transportability_regret_certificate()
+    assert curve.exact_regret[-1] / curve.wdro_bound == pytest.approx(
+        1.390946502057613, rel=1e-12, abs=0.0
+    )
+    assert curve.exact_wdro_bound == pytest.approx(0.002318244170096022, rel=1e-12, abs=0.0)
+    assert (curve.exact_regret <= curve.exact_wdro_bound).all()
+    for b_src, rr, xt, lip, radius in (
+        (1.0, 0.5, 1.0, 1.0, 0.45),
+        (0.6, 0.5, 1.0, 1.0, 0.25),
+        (0.3, 1.0, 1.0, 1.0, 0.25),
+        (-0.8, 0.3, 2.0, 1.0, 0.6),
+        (0.0, 0.5, 1.0, 1.0, 0.3),
+        (1.0, 0.5, 1.0, 2.0, 0.2),
+        (0.6, 0.5, 1.0, 0.5, 0.5),
+    ):
+        bound = transportability_regret_certificate(
+            b_src=b_src, rr=rr, xt=xt, lip=lip, wdro_radius=radius
+        ).exact_wdro_bound
+        targets = np.linspace(b_src - lip * radius, b_src + lip * radius, 20_001)
+        u_src = b_src * xt / (b_src**2 + rr)
+        regret = (u_src * (targets**2 + rr) - targets * xt) ** 2 / (targets**2 + rr)
+        assert regret.max() <= bound * (1.0 + 1e-12)
+        assert bound <= regret.max() * (1.0 + 1e-12)
 
 
 def test_regret_band_holds_with_high_probability() -> None:
@@ -1914,3 +1968,81 @@ def test_the_multivariate_action_floor_is_local_and_a_bayes_action_goes_below_it
     regret = float(np.mean((b**2 + rr) * (bayes + b / (b**2 + rr)) ** 2))
     assert regret == pytest.approx(0.075, abs=0.005)
     assert regret < 0.3 * floor
+
+
+def test_the_realised_conjugate_time_regret_has_a_third_order_pole() -> None:
+    """The certificate's regret coefficient is the gain error's cost at t = 0 alone; the regret the
+    certainty-equivalent gain realises is int_0^T r (khat - k)^2 x^2 dt on the true plant, the
+    exact LQ identity, whose pole near the conjugate time is of order 3."""
+    a, b, q, r, x0, delta = 0.3, 1.0, -4.0, 1.0, 1.0, 1e-6
+    curve = conjugate_time_certificate(a=a, b=b, q=q, r=r, x0=x0, delta_b=delta)
+
+    def cost_to_go(remaining: float, bb: float) -> float:
+        c = bb * bb / r
+        mu = math.sqrt(-(a * a + c * q))
+        return a / c + (mu / c) * math.tan(math.atan(-a / mu) - mu * remaining)
+
+    realised = []
+    for margin in (1e-2, 1e-3, 1e-4):
+        horizon = curve.t_conj - margin
+
+        def gap(t: float, y: np.ndarray, horizon: float = horizon) -> list[float]:
+            k = b * cost_to_go(horizon - t, b) / r
+            k_hat = (b + delta) * cost_to_go(horizon - t, b + delta) / r
+            return [(a - b * k_hat) * y[0], r * (k_hat - k) ** 2 * y[0] ** 2]
+
+        solved = scipy.integrate.solve_ivp(
+            gap, (0.0, horizon), [x0, 0.0], method="DOP853", rtol=1e-12, atol=1e-30
+        )
+        realised.append(float(solved.y[1, -1]) / delta**2)
+    slopes = np.diff(np.log(realised)) / math.log(10.0)
+    np.testing.assert_allclose(slopes, [3.05, 3.01], rtol=0.0, atol=0.02)
+    # twice the sensitivity's slope up to its forward difference against the centred one
+    assert curve.regret_slope == pytest.approx(2.0 * curve.sensitivity_slope, rel=0.0, abs=0.02)
+
+
+def test_clipping_is_non_expansive_where_the_clip_acts() -> None:
+    """A truth at b_t - d on the inactive side and an estimate at b_t + d past the threshold: the
+    clip moves the estimate's action, so the constrained regret is below the unconstrained one.
+    On the inactive side alone the two are one number, and the ratio read 1 by construction."""
+    xt, rr, umax, offset = 1.0, 1.0, 0.45, 0.1
+    curve = constrained_ce_regret_certificate(xt=xt, rr=rr, umax=umax, active_offset=offset)
+    b_t = curve.threshold
+
+    def u_star(b: float) -> float:
+        return b * xt / (b * b + rr)
+
+    clipped = [min(u_star(b_t + d), umax) - u_star(b_t - d) for d in curve.deltas]
+    free = [u_star(b_t + d) - u_star(b_t - d) for d in curve.deltas]
+    ratios = [(c / f) ** 2 for c, f in zip(clipped, free, strict=True)]
+    assert curve.max_constrained_ratio == pytest.approx(max(ratios), rel=1e-12, abs=0.0)
+    assert 0.0 < curve.max_constrained_ratio < 0.5
+    # the capped optimum is not stationary: the naive controller's gap has a first-order term
+    b0 = b_t + offset
+
+    def cost(u: float) -> float:
+        return (b0 * u - xt) ** 2 + rr * u * u
+
+    exact = max(cost(u_star(b_t - d)) - cost(umax) for d in curve.deltas)
+    assert curve.pessimism_budget == pytest.approx(exact, rel=1e-12, abs=0.0)
+    assert curve.pessimism_budget == pytest.approx(0.01059409951508039, rel=1e-9, abs=0.0)
+
+
+def test_the_linearised_certificate_reads_the_deviation_from_the_operating_point() -> None:
+    """A linear plant is its own linearisation everywhere, so the regulator's gap about an
+    equilibrium (x*, u*) from x0 is the gap about the origin from x0 - x*."""
+    stiffness, damping = 1.0, 0.3
+    true_plant = LinearDynamics(
+        jnp.array([[0.0, 1.0], [-stiffness, -damping]]), jnp.array([[0.0], [1.0]])
+    )
+    estimate = LinearDynamics(
+        jnp.array([[0.0, 1.0], [-1.2 * stiffness, -damping]]), jnp.array([[0.0], [0.9]])
+    )
+    x_star, u_star = jnp.array([1.0, 0.0]), jnp.array([stiffness])  # A x* + B u* = 0
+    x0 = np.array([1.5, 0.2])
+    offset = linearized_regret_certificate(true_plant, estimate, x_star, u_star, Q, R, x0, 0.1)
+    origin = linearized_regret_certificate(
+        true_plant, estimate, jnp.zeros(2), jnp.zeros(1), Q, R, x0 - np.asarray(x_star), 0.1
+    )
+    assert offset == pytest.approx(origin, rel=1e-12, abs=0.0)
+    assert offset > 0.0

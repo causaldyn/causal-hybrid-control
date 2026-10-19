@@ -40,9 +40,10 @@ from chc import (
 )
 from chc.adjoint import control_gradient_adjoint
 from chc.cost import total_cost
-from chc.decision import Prescription, _cost
+from chc.decision import Prescription, _cost, _field_errors, _field_scale, _slopes
 from chc.dynamics import DrivenDynamics, Dynamics, LinearDynamics
 from chc.plan import _barrier_terms
+from chc.uncertainty import _linear_tube, _noise_tube
 
 DT = 0.1
 DECAY, CHANNEL, PUSH = -0.5, 0.8, 1.2  # temp' = DECAY temp + CHANNEL heat + PUSH outdoor
@@ -413,6 +414,44 @@ def test_the_forecast_pays_on_the_true_plant(panel: Panel) -> None:
     assert driven.certificate.identification == "identified"
     assert regret(driven) < 1.02
     assert regret(_prescribe(panel)) > 1.5
+
+
+def test_the_tube_reads_the_drift_s_error_at_the_forecast_it_plans_against(panel: Panel) -> None:
+    """The drift's features hold the drivers, so its error at a planned step is read at the state
+    the step starts from and at the forecast as the fit reads a transition's, the mean of its two
+    ends; read at the forecast's start instead, the tube is another."""
+    forecast = _forecast()
+    driven = _prescribe(panel, drivers=[Driver("outdoor", forecast)], tolerance=10.0)
+    plan, fit, certificate = driven.plan, driven.model_fit, driven.certificate
+    assert plan is not None
+    assert plan.uncertainty_tube is not None
+    assert certificate.tube_noise is not None
+    assert certificate.tube_autoregression is not None
+    problem = plan._problem
+    assert problem is not None
+    columns = panel.columns
+    last = np.asarray(columns["time"]) == np.max(np.asarray(columns["time"]))
+    mean = float(np.mean(np.asarray(columns["heat"])[~last]))
+    reach = np.array([max(abs(-3.0 - mean), abs(3.0 - mean))])
+    reads = 0.5 * (forecast[:-1] + forecast[1:])
+    states = np.asarray(plan.trajectory, dtype=np.float64)[:-1]
+    errors = _field_errors(fit, reach, states, reads[:, None])
+    slopes = _slopes(problem.model, problem.x0)(np.asarray(plan.actions, dtype=np.float64))
+    noise = _noise_tube(
+        slopes,
+        np.array([[certificate.tube_noise**2]]),
+        np.asarray(certificate.tube_autoregression),  # the VAR(1) the tube carries (ADR 0105)
+        DT,
+        HORIZON,
+    )
+    scale = _field_scale(fit) * 1.959963984540054
+
+    def tube(errors: np.ndarray) -> np.ndarray:
+        return np.hypot(noise, scale * _linear_tube(slopes, errors, DT))
+
+    np.testing.assert_allclose(plan.uncertainty_tube, tube(errors), rtol=1e-10, atol=0.0)
+    elsewhere = tube(_field_errors(fit, reach, states, forecast[:-1, None]))
+    assert np.max(np.abs(elsewhere - tube(errors))[1:] / tube(errors)[1:]) > 1e-6
 
 
 def test_prescribe_states_all_three_things_l8_1_could_not(panel: Panel) -> None:

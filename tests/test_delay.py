@@ -1,6 +1,7 @@
 """Delay gate: the linear-chain delay line is a plain Dynamics, and the whole stack runs on it."""
 
 import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -368,3 +369,28 @@ def test_a_nan_decay_rate_fails_the_certificate(monkeypatch: pytest.MonkeyPatch)
     certificate = delay_ball_certificate(dt=0.004, horizon=40.0)
     assert math.isnan(certificate.worst_loss_error)
     assert not certificate.ok
+
+
+def test_a_stable_pole_the_gain_does_not_outweigh_has_no_delay_margin() -> None:
+    """``pole < gain <= -pole``: the crossing frequency is not real, so no root reaches the axis
+    at any delay. Up to 0.18.0 this raised, saying the delay-free loop was unstable."""
+    for pole, gain in ((-1.0, 0.5), (-1.0, 1.0), (-1.0, -0.5), (-2.0, 1.9)):
+        assert delay_margin(pole, gain) == math.inf
+    # at gain == -pole the boundary is read, not reached by dividing pi by a zero frequency
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert delay_margin(-1.0, 1.0) == math.inf
+    # past -pole the margin is finite again, from the same closed form
+    assert delay_margin(-1.0, 2.0) == pytest.approx(2.0 * math.pi / 3.0 / math.sqrt(3.0), rel=1e-12)
+    # at a delay ten times the margin the loop with a stronger gain would have, it still decays
+    lag = round(10.0 * delay_margin(-1.0, 2.0) / _DT)
+
+    def core(t, x, x_delayed, u):
+        return -1.0 * x - 0.5 * x_delayed
+
+    path = exact_delayed_rollout(core, jnp.array([1.0]), jnp.zeros((20_000, 1)), _DT, lag)
+    assert float(jnp.max(jnp.abs(path[-2000:]))) < 1e-3
+    with pytest.raises(ValueError, match="gain must exceed the pole"):
+        delay_margin(-1.0, -1.0)
+    with pytest.raises(ValueError, match="no margin to sweep"):
+        delay_margin_certificate(pole=-1.0, gain=0.5)

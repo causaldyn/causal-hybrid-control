@@ -11,7 +11,7 @@ pages point here rather than repeat the claims.
 
 | certificate | what it bounds | on what | its premises | proved or measured |
 |---|---|---|---|---|
-| error tube: `causal_plan`, `prescribe` | the gap between the plan's rollout on the model and on the plant, step by step, and the prefix that stays inside `tolerance` | the plan's own RK4 steps (Euler's on request), on the model and on a plant whose field is within `model_error` of it along the path, and, where `noise` is given, whose next state is off the plan's step by a noise of that covariance | a per-step bound on the field's error; a rate that bounds the field's slope in the state, or the state matrix of a field affine in it; a Gaussian noise, AR(1) from step to step, which the tube holds with probability 0.95 at each step. Under `prescribe` the field's error is the channel's standard error, each lever's at that lever's largest distance from the log's mean action, in any units of each lever and wherever its zero is, with the drift's own in quadrature, a scale and not a bound, and the noise is the plan's one-step error on the log; its rate holds at every state (`global`), where the fitted slope at each planned action carries the tube, or at the start alone (`local`) | the recursions bound the error under those premises: Rocq `proofs/lipschitz_rollout.v`, Maxima `validation/rk4_rollout.mac`, `validation/predictive_tube.mac` and `validation/exact_tube.mac`; `tests/test_predictive_tube.py` and `tests/test_exact_tube.py` measure the noise's coverage, and the pendulum and BOPTEST case studies the tube's |
+| error tube: `causal_plan`, `prescribe` | the gap between the plan's rollout on the model and on the plant, step by step, and the prefix that stays inside `tolerance` | the plan's own RK4 steps (Euler's on request), on the model and on a plant whose field is within `model_error` of it along the path, and, where `noise` is given, whose next state is off the plan's step by a noise of that covariance | a per-step bound on the field's error; a rate that bounds the field's slope in the state, or the state matrix of a field affine in it; a Gaussian noise, AR(1) from step to step, which the tube holds with probability 0.95 at each step. Under `prescribe` the field's error is the channel's standard error, each lever's at that lever's largest distance from the log's mean action, in any units of each lever and wherever its zero is, with the drift's own in quadrature, both read at the state each planned step starts from, a standard error read at Student's `t`, as an error independent of the noise and, on several states, along the noise's widest direction, with which the radius holds it at 0.95, and the noise is the plan's one-step error on the log; its rate holds at every state (`global`), where the fitted slope at each planned action carries the tube, or at the start alone (`local`) | the recursions bound the error under those premises: Rocq `proofs/lipschitz_rollout.v`, Maxima `validation/rk4_rollout.mac`, `validation/predictive_tube.mac`, `validation/exact_tube.mac` and `validation/tube_level.mac`; `tests/test_predictive_tube.py` and `tests/test_exact_tube.py` measure the noise's coverage, and the pendulum and BOPTEST case studies the tube's |
 | identification status: `prescribe` | whether the graph identifies the levers' channel: `identified`, `asserted` or `not_identified` | the panel and the graph passed as `adjustment` | the graph is right; a lever the log never moves is held at its logged level, not identified | the adjustment set is Perković et al.'s canonical one, fuzzed against the criterion |
 | barrier audit and `Γ*`: `certify_safety`, `prescribe` | whether the barrier condition holds at each step under an identification radius, with the path's state and the next in the safe set; `Γ*`, the largest level at which every step still has an admissible action that meets it | the model's predicted path, pointwise: a filter, not a proof that the safe set is invariant | a control-affine plant, checked where the audit reads it; a barrier `h`; by default a relative margin, the factor `(Γ-1)/(Γ+1)` on a share of the fitted channel, so even `Γ* = ∞` speaks only for effects within that share of the estimate; with `sensitivity=`, an absolute radius under a sensitivity model of the channel, read at each step's state, for an Euler fit by adjustment | the algebraic core: Rocq `proofs/barrier_feasibility.v`, at any dimension in `proofs/mathcomp/`; what the pointwise check misses: [`chc.reachability`](../api/reachability.md) |
 | optimality gap: `plan_regret_bound` | how far the plan's objective is above the best plan its box allows | the planning model, not the plant | a curvature that holds over the whole box: supplied, or a linear model's (`certified`); sampled at the plan and a few points it is a `diagnostic`, and negative it is `refused` | Rocq `proofs/constrained_plan_regret.v`, Maxima `validation/constrained_plan_regret.mac` |
@@ -54,11 +54,16 @@ design record is
   `prescribe` says where its rate holds: `global` on a field affine in the state, `local` where
   the slope was read at the plan's start alone. `plan.certified_actions` is that prefix and nothing
   more. With no error model supplied the certificate reports `not_evaluated` rather than a vacuous
-  full-horizon pass. The tube is a bound only where `model_error` bounds the field's error; the
+  full-horizon pass, and with no `tolerance`, which is infinite and holds every finite tube,
+  `no_tolerance`. The tube is a bound only where `model_error` bounds the field's error; the
   error `prescribe` supplies is a standard error, so there that part is a scale. The
   plant's own noise is the other part: given as `noise`, the tube adds the radius that holds it at
   each step with probability 0.95, and `prescribe` reads it off the plan's one-step error on the
-  log (`tube_noise`, `tube_persistence`). Without the noise, on logs shaped like the BOPTEST
+  log (`tube_noise`, `tube_persistence`), carried from step to step as a VAR(1) whose coefficient
+  is `tube_autoregression`, so that each direction of the noise persists at its own rate
+  ([ADR 0105](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0105-the-tube-carries-the-noise-as-a-var1.md)).
+  Where the channel's residual persists within units (`noise_persistence_p` at most 0.05), the
+  noise the tube reads may not be the plant's, and a `tube` warning says so. Without the noise, on logs shaped like the BOPTEST
   case's, a tube of 0.05 K one step ahead trusted 6 to 13 steps, and the plant left it at the
   first step on 60% of draws; with it, the tube trusts 1 or 2 steps, where the plant's error
   allows 2 or 3
@@ -68,8 +73,11 @@ design record is
   bound on the slope's norm carries them, and the radius holds at least 0.95. `tube_mode` says
   which (`exact` or `bound`), and under `exact` `tube_state_noise` gives each state's own radius
   of the noise, in that state's units. The field's error `prescribe` supplies is the channel's
-  and the drift's standard error together. The quickstart's plant stays within its tolerance for
-  3 weeks, and the certificate now trusts 3, where it trusted 1
+  and the drift's standard error together, read at the state each planned step starts from, where
+  a plan that heads away from the log's states meets more of it, at its studentised quantile
+  ([ADR 0104](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0104-the-tube-reads-the-field-s-error-where-the-plan-goes.md)).
+  The quickstart's plant stays within its tolerance for 3 weeks, and the certificate now trusts 3,
+  where it trusted 1
   ([ADR 0096](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0096-the-tube-is-carried-by-the-field-s-step-matrices-at-its-exact-radius.md)).
 - **The barrier** — for a control-affine plant and a safe set `{h >= 0}`, whether the barrier
   condition survives an identification radius on the effect, step by step, and `Γ*`: the largest

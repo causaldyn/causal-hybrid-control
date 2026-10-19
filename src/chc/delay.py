@@ -237,16 +237,21 @@ def delay_margin(pole: float, gain: float) -> float:
     :class:`DelayedDynamics`: the chain's own boundary sits **above** this one by ``pi^2/(8m)``,
     so reading a margin off the simulator would call a loop safe past the point where it is not.
 
-    ``gain <= pole`` raises: with ``pole > 0`` a gain that small does not stabilise the loop even
-    at zero delay, so "the largest tolerable delay" names nothing. The formula also carries its own
-    fundamental limit -- ``tau_c -> 1/pole`` as ``gain -> pole+``, and it *decreases* in ``gain``
-    from there, so an unstable pole admits **no** gain past ``tau = 1/pole``.
+    ``gain <= pole`` raises: a gain that small does not stabilise the loop even at zero delay, so
+    "the largest tolerable delay" names nothing. A stable pole the gain does not outweigh,
+    ``pole < gain <= -pole``, returns ``inf``: the crossing frequency ``sqrt(gain^2 - pole^2)``
+    is not real, no root ever reaches the imaginary axis, and the loop is stable at every delay.
+    Up to 0.18.0 that raised, saying the delay-free loop was unstable. The formula also carries
+    its own fundamental limit -- ``tau_c -> 1/pole`` as ``gain -> pole+``, and it *decreases* in
+    ``gain`` from there, so an unstable pole admits **no** gain past ``tau = 1/pole``.
     """
-    if not abs(pole) < gain < np.inf:
+    if not (np.isfinite(pole) and pole < gain < np.inf):
         raise ValueError(
-            f"gain must exceed |pole| for the delay-free loop to be stable, and both must be "
+            f"gain must exceed the pole for the delay-free loop to be stable, and both must be "
             f"finite; got gain={gain}, pole={pole}"
         )
+    if gain <= -pole:
+        return float("inf")
     return float(np.arccos(pole / gain) / np.sqrt(gain**2 - pole**2))
 
 
@@ -269,6 +274,11 @@ def delay_margin_certificate(
     plant, decides the verdict, so ``ratios`` deliberately steps over it rather than into it.
     """
     critical = delay_margin(pole, gain)
+    if not np.isfinite(critical):
+        raise ValueError(
+            f"a stable pole the gain does not outweigh is stable at every delay, so there is no "
+            f"margin to sweep across; got gain={gain}, pole={pole}"
+        )
 
     def core(t: float | Array, x: Array, x_delayed: Array, u: Array) -> Array:
         return pole * x - gain * x_delayed
