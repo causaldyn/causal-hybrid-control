@@ -4,8 +4,8 @@
 
 ## Context
 
-The 0.19.0 release pre-registers a marketplace study whose headline is that an off-policy estimate
-of a plan predicts the plan's realised lift. It was to be 0.10.0, until the media-mix release went
+A marketplace study, pre-registered apart from any release, has as its headline that an off-policy
+estimate of a plan predicts the plan's realised lift. It was to be 0.10.0, until the media-mix release went
 first; 0.11.0, until a planner over a posterior's draws shipped before it; 0.12.0, until a
 prescription's evaluation as a target trial (ADR 0049) did; 0.13.0, until S-curve plans
 searched by branch and bound (ADRs 0051 and 0052) did; 0.14.0, until a plan checked along
@@ -13,8 +13,8 @@ every direction its log never moved (ADR 0054) did; 0.15.0, until every fit and 
 read their columns in their own units (ADRs 0057 and 0059) did; 0.16.0, until the
 planner's penalised descent and every planner's S-curve search (ADRs 0073 and 0076) did;
 0.17.0, until a plan's tube carried the plant's own noise (ADR 0080) did; and 0.18.0, until
-the tube was carried exactly along the plan and measured at its levels (ADRs 0096 and 0099) did. The
-study needs a plant that every stage of the loop can run on:
+the tube was carried exactly along the plan and measured at its levels (ADRs 0096 and 0099) did.
+From 0.19.0 it waits on no release number, and no release waits on it. The study needs a plant that every stage of the loop can run on:
 
 - the causal fit and the planner, which need a control-affine plant;
 - `evaluate_plan`, which needs a `LinearGaussianPlant`;

@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-10-19
+
 ### Added
 
 - **`fit_lift(serial="ar1")` reads each geo test's noise as an AR(1).** Under AR(0.8) noise the
@@ -188,6 +190,10 @@ still change).
 
 ### Fixed
 
+- **`contractive_rollout_bound` reads its factor with nothing cancelled.** Where the Euler step
+  annihilates the gap, `q = 0`, the expanded `1 - 2 c dt + L^2 dt^2` left a rounding error of 1e-16,
+  whose root put 1.5e-8 into `q` and into the bound (1.600000024 for 1.6). It is now read as
+  `(1 - c dt)^2 + (L - c)(L + c) dt^2`, the same square.
 - **`prescribe(integrator="euler")` plans by the map it fits.** The fit read the log's one-step
   map, and the plan, its tube, the barrier's audit and the regret bound stepped the field by RK4:
   on a discrete-time plant the plan missed it by 0.27 at the first step of six, outside a tube of
@@ -7311,6 +7317,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.19.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.19.0
 [0.18.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.18.0
 [0.17.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.17.0
 [0.16.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.16.0
