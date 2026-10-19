@@ -224,6 +224,11 @@ still change).
   `delta = 0`: 3.761 at 20 draws and 3.746 at the default 60 (3.815 before), 3.79 ± 0.07 and
   3.77 ± 0.06 over other draws. The half slope reads 2.055 (2.016 before) and the regret fields
   move with it; the cluster arm does not.
+- **`optimal_exploration_certificate` states the scope of its `B/v` law.** Its estimation arm's
+  mean squared error is `sigma²/((n−2)v)` exactly, an inverse chi-square mean
+  (`validation/optimal_exploration.mac`), so the arm costs `n/(n−2)` times `B/v`, 7 % more at
+  `n = 30`, and its optimum lies `sqrt(n/(n−2))` = 1.035 times `vstar_theory` out, inside one step
+  of the grid. For `n ≤ 2` the arm's mean is infinite and for `n ≤ 4` its variance. No number moves.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They

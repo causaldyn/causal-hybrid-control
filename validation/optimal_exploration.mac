@@ -46,3 +46,25 @@ print("check A*(v-vs)^2/v - gap =", ratsimp(A*(v - vs)^2/v - gap), " (0 confirms
 print("dv*/dBsym =", diff(sqrt(Bsym/Asym), Bsym), " > 0 ;  d(2*sqrt(Asym*Bsym))/dBsym =",
       diff(2*sqrt(Asym*Bsym), Bsym), " > 0  => confounding (larger B) raises v* AND the floor")$
 print("floor(B) = 2*sqrt(A*B) = 2*A*v*  (since 2*sqrt(A*B)=2*sqrt(A*A*vs^2)=2*A*vs) -- linear in v*")$
+
+/* SCOPE of B = C*sigma^2/n: it is the large-n (Cramer-Rao) form. The certificate's estimation arm
+   fits OLS on n Gaussian rounds u ~ N(0, v), whose error given u is sigma^2/sum(u^2), and
+   sum(u^2)/v is chi-square on n degrees of freedom. With int_0^inf x^(s-1) exp(-x/2) dx =
+   2^s gamma(s), E[X^-k] = 2^(n/2-k) gamma(n/2-k)/(2^(n/2) gamma(n/2)), finite for n > 2k: */
+negmoment(nd, k) := 2^(nd/2 - k)*gamma(nd/2 - k)/(2^(nd/2)*gamma(nd/2))$
+print("check E[1/chi2(n)] - 1/(n-2) =",
+      ratsimp(minfactorial(makefact(negmoment(nd, 1))) - 1/(nd - 2)), "  (=0, finite for n > 2)")$
+print("check E[1/chi2(n)^2] - 1/((n-2)(n-4)) =",
+      ratsimp(minfactorial(makefact(negmoment(nd, 2))) - 1/((nd - 2)*(nd - 4))),
+      "  (=0, finite for n > 4)")$
+/* the integral itself at whole n, against the gamma form */
+chi2(x, nn) := x^(nn/2 - 1)*exp(-x/2)/(2^(nn/2)*gamma(nn/2))$
+for nn in [5, 6, 30] do
+  print("n =", nn, " int chi2/x - 1/(n-2) =", ratsimp(integrate(chi2(x, nn)/x, x, 0, inf) - 1/(nn - 2)),
+        "  (=0)")$
+/* so the simulated estimation cost is C*sigma^2/((n-2)*v): B*n/(n-2) in place of B, and the
+   simulated optimum is v* sqrt(n/(n-2)), 1.035 v* at n = 30, with the cost 7% above B/v there. */
+Bex : Cc*sigma^2/(nd - 2)$
+print("check exact optimum / v* - sqrt(n/(n-2)) =",
+      radcan(sqrt(Bex/A)/sqrt(subst(n = nd, B)/A) - sqrt(nd/(nd - 2))), "  (=0)")$
+print("at n = 30: optimum ratio", float(sqrt(30/28)), " cost ratio", float(30/28))$

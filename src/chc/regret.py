@@ -3756,6 +3756,14 @@ def optimal_exploration_certificate(
     optimum is interior -- pure exploitation is never optimal -- and confounding raises ``B``
     (here via a fraction ``kappa`` of identifying signal), lifting BOTH ``v*`` and the floor. The
     estimation term is Monte-Carlo; the ``A*v`` term is the proven CE cost of the injected variance.
+
+    SCOPE of ``B/v``: it is the large-``n`` form. The estimation arm fits least squares on ``n``
+    Gaussian rounds, whose mean squared error is ``sigma^2/((n-2)*v)`` exactly, an inverse
+    chi-square mean (``validation/optimal_exploration.mac``). So the simulated cost is
+    ``n/(n-2)`` times ``B/v``, 7% above it at the default ``n = 30``, and its optimum lies
+    ``sqrt(n/(n-2))`` times ``vstar_theory`` out, 1.035 at ``n = 30``, inside one step of the
+    default grid (a ratio of 1.43). The arm's mean is infinite for ``n <= 2`` and its variance for
+    ``n <= 4``: there its Monte Carlo average does not settle.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     a_curv = b**2 + rr
