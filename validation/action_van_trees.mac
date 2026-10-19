@@ -16,7 +16,7 @@
    to the estimand psi(b) = u*(b).  Van Trees holds for EVERY estimator, biased or not, which is
    exactly the hypothesis Result 10 had to assume away.
 
-   Certificate: chc.regret.information_lower_bound_certificate (van Trees arm);
+   Certificate: chc.research.regret.information_lower_bound_certificate (van Trees arm);
    proofs/action_van_trees.v. */
 
 linel : 110$

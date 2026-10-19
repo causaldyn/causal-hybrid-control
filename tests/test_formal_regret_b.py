@@ -19,10 +19,11 @@ from scipy.integrate import quad
 from scipy.optimize import minimize_scalar
 from scipy.special import expit, ndtr
 
-from chc import regret as R
+from chc import regret as core_regret
+from chc.research import regret as R
 
 FORMAL_LINKS = {
-    "chc.regret.delayed_network_certificate": {
+    "chc.research.regret.delayed_network_certificate": {
         "cites": (
             "delayed_exposure_gate.mac",
             "delayed_network_exposure.mac",
@@ -38,18 +39,18 @@ FORMAL_LINKS = {
             "test_delayed_network_refuses_unequal_folds",
         ),
     },
-    "chc.regret.doubly_robust_control_certificate": {
+    "chc.research.regret.doubly_robust_control_certificate": {
         "cites": ("doubly_robust.mac", "doubly_robust.v"),
         "tests": (
             "test_doubly_robust_bias_is_the_product_law",
             "test_doubly_robust_regret_vanishes_when_either_nuisance_is_correct",
         ),
     },
-    "chc.regret.dynamic_causal_regret_certificate": {
+    "chc.research.regret.dynamic_causal_regret_certificate": {
         "cites": ("dynamic_causal_mpc.mac", "dynamic_causal_mpc.v"),
         "tests": ("test_dynamic_causal_regret_grows_at_the_offset_floor",),
     },
-    "chc.regret.end_to_end_c2_certificate": {
+    "chc.research.regret.end_to_end_c2_certificate": {
         "cites": ("c2_end_to_end.mac", "c2_end_to_end.v"),
         "tests": (
             "test_c2_regret_is_the_true_plant_ce_gap",
@@ -57,7 +58,7 @@ FORMAL_LINKS = {
             "test_c2_sampling_regret_falls_like_one_over_g",
         ),
     },
-    "chc.regret.ensemble_control_certificate": {
+    "chc.research.regret.ensemble_control_certificate": {
         "cites": ("ensemble_control.mac", "ensemble_control.v"),
         "tests": (
             "test_ensemble_floor_is_the_best_single_control_regret",
@@ -66,7 +67,7 @@ FORMAL_LINKS = {
             "test_ensemble_floor_slope_at_rr_b0_squared_on_the_default_grid",
         ),
     },
-    "chc.regret.exact_matrix_ratio_moment": {
+    "chc.research.regret.exact_matrix_ratio_moment": {
         "cites": (
             "general_q_ratio_moment.mac",
             "general_q_ratio_moment.v",
@@ -80,7 +81,7 @@ FORMAL_LINKS = {
             "test_matrix_gamma_at_two_is_finite_iff_q_at_most_four",
         ),
     },
-    "chc.regret.exact_ratio_moment": {
+    "chc.research.regret.exact_ratio_moment": {
         "cites": ("omega_jensen_gap.mac", "omega_jensen_gap.v"),
         "tests": (
             "test_ratio_moment_matches_inverse_chi_square_means",
@@ -91,18 +92,18 @@ FORMAL_LINKS = {
             "test_ratio_moment_is_scale_equivariant",
         ),
     },
-    "chc.regret.exposure_map_certificate": {
+    "chc.research.regret.exposure_map_certificate": {
         "cites": ("exposure_map_c2.mac", "exposure_map_c2.v"),
         "tests": (
             "test_exposure_map_regret_is_the_true_plant_ce_gap",
             "test_exposure_map_regret_obeys_the_four_term_bound",
         ),
     },
-    "chc.regret.finite_horizon_pl_certificate": {
+    "chc.research.regret.finite_horizon_pl_certificate": {
         "cites": ("nonlinear_regret.v",),
         "tests": ("test_finite_horizon_pl_bound_holds_and_is_tight_on_the_soft_mode",),
     },
-    "chc.regret.highprob_regret_certificate": {
+    "chc.research.regret.highprob_regret_certificate": {
         "cites": ("highprob_regret.mac", "highprob_regret.v"),
         "tests": (
             "test_highprob_band_is_a_log_multiple_of_the_floor",
@@ -110,7 +111,7 @@ FORMAL_LINKS = {
             "test_highprob_band_undercovers_outside_the_local_regime",
         ),
     },
-    "chc.regret.hinf_robust_regret_certificate": {
+    "chc.research.regret.hinf_robust_regret_certificate": {
         "cites": ("hinf_robust_regret.mac", "hinf_robust_regret.v"),
         "tests": (
             "test_hinf_robust_value_is_the_adversarys_maximum",
@@ -121,7 +122,7 @@ FORMAL_LINKS = {
             "test_hinf_ce_control_can_beat_the_calibrated_minimum",
         ),
     },
-    "chc.regret.information_lower_bound_certificate": {
+    "chc.research.regret.information_lower_bound_certificate": {
         "cites": (
             "action_van_trees.mac",
             "information_lower_bound.mac",
@@ -134,19 +135,19 @@ FORMAL_LINKS = {
             "test_information_certificate_survives_the_knife_edge",
         ),
     },
-    "chc.regret.interference_convexity_certificate": {
+    "chc.research.regret.interference_convexity_certificate": {
         "cites": ("interference_convexity.mac", "interference_convexity.v"),
         "tests": ("test_interference_convexity_aware_bound_is_exact_and_tighter",),
     },
-    "chc.regret.interference_orthogonal_certificate": {
+    "chc.research.regret.interference_orthogonal_certificate": {
         "cites": ("interference_orthogonal.mac", "interference_regret.v", "orthogonal_control.v"),
         "tests": ("test_interference_orthogonal_slopes_match_the_population_bias_orders",),
     },
-    "chc.regret.interference_regret_certificate": {
+    "chc.research.regret.interference_regret_certificate": {
         "cites": ("interference_regret.v",),
         "tests": ("test_interference_regret_is_bounded_by_the_curvature_times_total_error",),
     },
-    "chc.regret.lq_regret_sensitivity": {
+    "chc.research.regret.lq_regret_sensitivity": {
         "cites": ("confounding_lq_regret.mac",),
         "tests": ("test_lq_regret_sensitivity_is_the_second_order_regret_coefficient",),
     },
@@ -169,7 +170,7 @@ FORMAL_LINKS = {
             "test_minimax_exploration_burst_attains_and_taper_pays_sqrt_two",
         ),
     },
-    "chc.regret._sandwich_plan": {
+    "chc.research.regret._sandwich_plan": {
         "cites": ("general_q_ratio_moment.mac",),
         "tests": (
             "test_sandwich_plan_reproduces_isserlis_at_q2",
@@ -263,7 +264,7 @@ def _input_curvature(plant):
     n = b.shape[0]
 
     def gap(e):
-        return R.certainty_equivalence_gap(a, b, q, r, a, b + e.reshape(n, 1), x0)
+        return core_regret.certainty_equivalence_gap(a, b, q, r, a, b + e.reshape(n, 1), x0)
 
     return float(np.linalg.eigvalsh(_hessian(gap, n))[-1]) / 2.0
 
@@ -1235,7 +1236,7 @@ def test_interference_regret_is_bounded_by_the_curvature_times_total_error():
     a, b, q, r, x0 = C2_PLANT
 
     def gap(v):
-        return R.certainty_equivalence_gap(
+        return core_regret.certainty_equivalence_gap(
             a, b, q, r, a + v[:4].reshape(2, 2), b + v[4:].reshape(2, 1), x0
         )
 
@@ -1295,7 +1296,7 @@ def _worst_over_effects(u, target, b_lo, b_hi, effort, curvature):
 def test_minimax_action_cost_matches_brute_force(target, b_lo, width, effort, curvature):
     """minimax_lq.v (minimax_lower_branch): the candidate enumeration attains min_u max_b cost."""
     b_hi = b_lo + width
-    out = R.minimax_action(target, b_lo, b_hi, effort, curvature)
+    out = core_regret.minimax_action(target, b_lo, b_hi, effort, curvature)
     bound = abs(target) * math.sqrt(curvature / effort) + 1.0
     brute = minimize_scalar(
         lambda u: _worst_over_effects(u, target, b_lo, b_hi, effort, curvature),
@@ -1348,7 +1349,7 @@ def _worst_regret(u, target, b_lo, b_hi, effort, curvature):
 def test_minimax_action_regret_matches_brute_force(target, b_lo, width, effort, curvature):
     """minimax_lq.mac: the regret criterion's action attains min_u max_b D(b)(u - u*(b))^2."""
     b_hi = b_lo + width
-    out = R.minimax_action(target, b_lo, b_hi, effort, curvature, criterion="regret")
+    out = core_regret.minimax_action(target, b_lo, b_hi, effort, curvature, criterion="regret")
     bound = abs(target) * math.sqrt(curvature / effort) + 1.0
     brute = minimize_scalar(
         lambda u: _worst_regret(u, target, b_lo, b_hi, effort, curvature),
@@ -1361,7 +1362,7 @@ def test_minimax_action_regret_matches_brute_force(target, b_lo, width, effort, 
 
 def test_minimax_action_beats_ce_on_the_rocq_instance():
     """minimax_lq.v (ce_not_minimax): on b in [1/2, 3/2], 2/5 costs 4/5 against CE's 13/16."""
-    out = R.minimax_action(1.0, 0.5, 1.5, 1.0, 1.0)
+    out = core_regret.minimax_action(1.0, 0.5, 1.5, 1.0, 1.0)
     assert out.action == pytest.approx(0.4, rel=1e-15, abs=0.0)
     assert out.worst_case == pytest.approx(0.8, rel=1e-15, abs=0.0)
     assert out.binding == "lower"
@@ -1383,7 +1384,7 @@ def test_minimax_action_branch_is_decided_by_the_kink_test(target, b_lo, width, 
     margin = curvature * b_lo * half - effort
     if abs(margin) <= 1e-9 * effort:
         return
-    out = R.minimax_action(target, b_lo, b_hi, effort, curvature)
+    out = core_regret.minimax_action(target, b_lo, b_hi, effort, curvature)
     if margin < 0:
         assert out.action == pytest.approx(
             curvature * b_lo * target / (curvature * b_lo**2 + effort), rel=1e-12, abs=0.0
@@ -1415,13 +1416,13 @@ def test_minimax_action_kink_rule_at_the_endpoint_nearest_zero(
     nearest = b_lo if sign > 0 else b_hi
     margin = curvature * near * width / 2.0 - effort
     assume(abs(margin) > 1e-6)
-    out = R.minimax_action(target, b_lo, b_hi, effort, curvature)
+    out = core_regret.minimax_action(target, b_lo, b_hi, effort, curvature)
     if margin < 0:
         expected = curvature * nearest * target / (curvature * nearest**2 + effort)
     else:
         expected = target / (0.5 * (b_lo + b_hi))
     assert out.action == pytest.approx(expected, rel=1e-12, abs=1e-15)
-    assert R.minimax_action(1.0, -2.0, -1.0, 1.0, 1.0).action == pytest.approx(
+    assert core_regret.minimax_action(1.0, -2.0, -1.0, 1.0, 1.0).action == pytest.approx(
         -0.5, rel=1e-12, abs=0.0
     )
 
@@ -1429,9 +1430,11 @@ def test_minimax_action_kink_rule_at_the_endpoint_nearest_zero(
 def test_minimax_action_survives_a_tiny_midpoint():
     """minimax_lq.v (stage): every candidate's worst stage cost is a real number or +inf. The
     equalising candidate u = -1.3e189 overflowed u**2 and raised OverflowError."""
-    out = R.minimax_action(-1.0, 0.0, 1.5624508741048306e-189, 1.0, 0.0)
+    out = core_regret.minimax_action(-1.0, 0.0, 1.5624508741048306e-189, 1.0, 0.0)
     assert out.action == 0.0
-    regret = R.minimax_action(-1.0, 0.0, 1.5624508741048306e-189, 1.0, 0.0, criterion="regret")
+    regret = core_regret.minimax_action(
+        -1.0, 0.0, 1.5624508741048306e-189, 1.0, 0.0, criterion="regret"
+    )
     assert np.isfinite(regret.action)
 
 
@@ -1467,7 +1470,9 @@ def test_minimax_lq_value_is_the_constant_effect_worst_case(
 ):
     """minimax_lq.mac (8), (9): the per-step robust value is attained by a constant effect."""
     b_hi = b_lo + width
-    pol = R.minimax_lq_policy(state_gain, b_lo, b_hi, state_cost, effort, terminal, horizon)
+    pol = core_regret.minimax_lq_policy(
+        state_gain, b_lo, b_hi, state_cost, effort, terminal, horizon
+    )
     per_step = _per_step_worst(pol.gains, state_gain, b_lo, b_hi, state_cost, effort, terminal)
     constant = [
         _constant_effect_cost(pol.gains, state_gain, b, state_cost, effort, terminal)
@@ -1506,7 +1511,9 @@ def test_minimax_lq_value_is_attained_at_the_endpoint_nearest_zero(
     a = 1, b in [-2, -1], q = r = 1, T = 2 gave 1.25 against the value 1.5."""
     b_hi = b_lo + width
     assume(min(abs(b_lo), abs(b_hi)) > 1e-3)
-    pol = R.minimax_lq_policy(state_gain, b_lo, b_hi, state_cost, effort, terminal, horizon)
+    pol = core_regret.minimax_lq_policy(
+        state_gain, b_lo, b_hi, state_cost, effort, terminal, horizon
+    )
     args = (state_gain, state_cost, effort, terminal)
     at_lo = _constant_effect_cost(pol.gains, args[0], b_lo, *args[1:])
     at_hi = _constant_effect_cost(pol.gains, args[0], b_hi, *args[1:])
@@ -1529,7 +1536,7 @@ def test_minimax_lq_value_is_attained_at_the_endpoint_nearest_zero(
 )
 def test_minimax_lq_gains_beat_perturbed_gains(state_gain, b_lo, width, horizon, seed):
     """minimax_lq.mac (8): dynamic programming over the per-step adversary is minimax."""
-    pol = R.minimax_lq_policy(state_gain, b_lo, b_lo + width, 1.0, 0.5, 2.0, horizon)
+    pol = core_regret.minimax_lq_policy(state_gain, b_lo, b_lo + width, 1.0, 0.5, 2.0, horizon)
     rng = np.random.default_rng(seed)
     for _ in range(10):
         other = pol.gains + 0.3 * rng.standard_normal(horizon)
@@ -1570,7 +1577,7 @@ def _move_worst_regret(rho, k, sigma):
 )
 def test_minimax_regret_move_worst_regret_matches_quadrature(sigma, gamma, gap, estimate):
     """minimax_regret_move.mac: the rule's worst regret is k/2 (linear) or max (b + k) Phi(-b/s)."""
-    out = R.minimax_regret_move(estimate, sigma, gamma, cvar_gap=gap)
+    out = core_regret.minimax_regret_move(estimate, sigma, gamma, cvar_gap=gap)
     k = out.halfwidth
     brute = _move_worst_regret(out.threshold, k, sigma)
     assert out.worst_regret == pytest.approx(brute, rel=1e-6, abs=1e-9 * sigma)
@@ -1580,8 +1587,8 @@ def test_minimax_regret_move_worst_regret_matches_quadrature(sigma, gamma, gap, 
 
 def test_minimax_regret_move_documented_regrets():
     """minimax_regret_move.mac: sign rule 1.0509 vs 1 at k = 2, 3.371 vs 2.5 at k = 5, sigma 1."""
-    two = R.minimax_regret_move(0.3, 1.0, 3.0, cvar_gap=4.0)
-    five = R.minimax_regret_move(0.3, 1.0, 3.0, cvar_gap=10.0)
+    two = core_regret.minimax_regret_move(0.3, 1.0, 3.0, cvar_gap=4.0)
+    five = core_regret.minimax_regret_move(0.3, 1.0, 3.0, cvar_gap=10.0)
     assert two.halfwidth == pytest.approx(2.0, rel=1e-15, abs=0.0)
     assert (two.rule, five.rule) == ("linear", "linear")
     assert two.sign_regret == pytest.approx(1.0509, abs=5e-5)
@@ -1597,7 +1604,7 @@ def test_minimax_regret_move_no_linear_rule_does_better(sigma, k_over_sigma):
     k = k_over_sigma * sigma
     gamma = (1 + k) / (1 - k) if k < 1 else 3.0
     gap = 1.0 if k < 1 else 2.0 * k
-    out = R.minimax_regret_move(0.0, sigma, gamma, cvar_gap=gap)
+    out = core_regret.minimax_regret_move(0.0, sigma, gamma, cvar_gap=gap)
     assert out.halfwidth == pytest.approx(k, rel=1e-12, abs=0.0)
     for rho in np.geomspace(0.05 * sigma, 3.0 * k + sigma, 5):
         rival = _move_worst_regret(float(rho), k, sigma)
@@ -1612,13 +1619,17 @@ def test_minimax_regret_move_no_linear_rule_does_better(sigma, k_over_sigma):
 )
 def test_minimax_regret_move_full_move_gamma_is_the_share_boundary(estimate, sigma, gap):
     """minimax_regret_move.mac: the move is whole up to full_move_gamma and partial past it."""
-    out = R.minimax_regret_move(estimate, sigma, 1.0, cvar_gap=gap)
+    out = core_regret.minimax_regret_move(estimate, sigma, 1.0, cvar_gap=gap)
     g = out.full_move_gamma
     if math.isinf(g):
-        assert R.minimax_regret_move(estimate, sigma, 1e6, cvar_gap=gap).share == 1.0
+        assert core_regret.minimax_regret_move(estimate, sigma, 1e6, cvar_gap=gap).share == 1.0
         return
-    assert R.minimax_regret_move(estimate, sigma, g * (1 - 1e-6), cvar_gap=gap).share == 1.0
-    assert R.minimax_regret_move(estimate, sigma, g * (1 + 1e-4), cvar_gap=gap).share < 1.0
+    assert (
+        core_regret.minimax_regret_move(estimate, sigma, g * (1 - 1e-6), cvar_gap=gap).share == 1.0
+    )
+    assert (
+        core_regret.minimax_regret_move(estimate, sigma, g * (1 + 1e-4), cvar_gap=gap).share < 1.0
+    )
 
 
 # ---------------------------------------------------------------------- minimax exploration floor
@@ -1637,7 +1648,7 @@ def test_minimax_exploration_floor_is_the_optimal_budget_value(b, rr, sigma, eta
     if abs(rr - b * b) < 0.05:
         return
     i0 = 1.0
-    curve = R.minimax_exploration_certificate(
+    curve = core_regret.minimax_exploration_certificate(
         b=b, rr=rr, sigma=sigma, i0=i0, eta=eta, horizons=(horizon,)
     )
     a_curv = b * b + rr
@@ -1667,7 +1678,7 @@ def test_minimax_exploration_floor_is_the_optimal_budget_value(b, rr, sigma, eta
 def test_minimax_exploration_no_schedule_beats_the_floor(shape, scale, rate, seed):
     """minimax_exploration.v (amgm_floor): every exploration schedule pays at least the floor."""
     b, rr, xt, sigma, i0, eta, horizon = 1.0, 0.5, 1.0, 0.7, 1.0, 0.6, 2000
-    curve = R.minimax_exploration_certificate(horizons=(horizon,))
+    curve = core_regret.minimax_exploration_certificate(horizons=(horizon,))
     a_curv = b * b + rr
     slope = (_optimal_action(b + 1e-6, xt, rr) - _optimal_action(b - 1e-6, xt, rr)) / 2e-6
     k_id = a_curv * slope**2
@@ -1685,7 +1696,7 @@ def test_minimax_exploration_no_schedule_beats_the_floor(shape, scale, rate, see
 
 def test_minimax_exploration_burst_attains_and_taper_pays_sqrt_two():
     """minimax_exploration.v (taper_gap_is_sqrt_two): burst/floor -> 1, taper/floor -> sqrt 2."""
-    curve = R.minimax_exploration_certificate()
+    curve = core_regret.minimax_exploration_certificate()
     a_curv = 1.0 + 0.5
     k_id = a_curv * ((0.5 - 1.0) / a_curv**2) ** 2
     assert np.all(curve.burst_regret - curve.floor <= k_id / 1.0)

@@ -15,7 +15,6 @@ import itertools
 import numpy as np
 import pytest
 
-from chc import regret
 from chc.network_causal import (
     ar1_innovations,
     cycle_shells,
@@ -24,7 +23,8 @@ from chc.network_causal import (
     panel_covariance,
     propagate_shells,
 )
-from chc.regret import optimal_fold_partition, space_time_fold_certificate
+from chc.research import regret
+from chc.research.regret import optimal_fold_partition, space_time_fold_certificate
 
 GAMMAS = (1.0, 0.7, 0.4)
 

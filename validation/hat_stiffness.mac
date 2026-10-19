@@ -1,4 +1,4 @@
-/* Maxima confirms the 1D hat-function stiffness stencil used by chc.galerkin.poisson_1d.
+/* Maxima confirms the 1D hat-function stiffness stencil used by chc.research.galerkin.poisson_1d.
    On a uniform mesh with step h, the hat basis derivative is +-1/h per element; the stiffness
    integrals give the tridiagonal stencil (1/h)[-1, 2, -1]. */
 

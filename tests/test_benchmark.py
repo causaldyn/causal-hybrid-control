@@ -10,8 +10,13 @@ import pytest
 from scipy.optimize import minimize
 from scipy.spatial import ConvexHull
 
-from chc import benchmark
-from chc.benchmark import (
+from chc.cost import QuadraticCost, total_cost
+from chc.delay import STABILISING_RATIO_FLOOR, delay_margin, robust_delay_design
+from chc.dynamics import LinearDynamics
+from chc.estimators import DoubleML
+from chc.irf import delay_estimate
+from chc.research import benchmark
+from chc.research.benchmark import (
     CausalDynamicsTask,
     ConfoundingRobustTask,
     DelayOscillationTask,
@@ -22,11 +27,6 @@ from chc.benchmark import (
     TaskResult,
     leaderboard,
 )
-from chc.cost import QuadraticCost, total_cost
-from chc.delay import STABILISING_RATIO_FLOOR, delay_margin, robust_delay_design
-from chc.dynamics import LinearDynamics
-from chc.estimators import DoubleML
-from chc.irf import delay_estimate
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
 # which jax 0.11 no longer has.

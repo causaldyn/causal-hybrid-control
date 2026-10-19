@@ -1,7 +1,7 @@
 # Independent (R, base only) cross-check of the C2 clustered cross-fit DML rate theorem (Result 26):
 #   ||B_hat - B|| = O_p(G^{-1/2} + nuisance products).  At tiny nuisance error the sampling term
 # dominates, so ||B_hat - B|| ~ G^{-1/2}: the log-log slope of RMSE vs G should be about -0.5.
-# This reproduces, in a separate language/stack, what chc.regret.clustered_lower_bound_certificate shows.
+# This reproduces, in a separate language/stack, what chc.research.regret.clustered_lower_bound_certificate shows.
 #
 # TWO SECTIONS, and the second one exists because the first one's number was read too generously.
 # Section 1 is the original single-window check: G in 20..320, one seed set, slope -0.541 against a

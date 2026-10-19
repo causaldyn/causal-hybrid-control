@@ -1,7 +1,7 @@
 /* THE LINEAR-QUADRATIC MEAN-FIELD GAME: the coupled HJB / Fokker-Planck system has a CLOSED FORM,
    the fixed point is AFFINE, and it can fail to have one at all.
 
-   chc.deep_galerkin solves a 1-D Poisson BVP; chc.transport carries a forward density with no
+   chc.research.deep_galerkin solves a 1-D Poisson BVP; chc.research.transport carries a forward density with no
    diffusion and no backward value equation.  Neither half is a mean-field game.  Coupling them
    gives the forward-backward system
 
@@ -14,7 +14,7 @@
    system, its EXACT solution, and the determinant whose vanishing is an obstruction of the same
    family as Result 45's conjugate time.
 
-   Certificate: chc.deep_galerkin.lq_mean_field_certificate; proofs/lq_mean_field.v. */
+   Certificate: chc.research.deep_galerkin.lq_mean_field_certificate; proofs/lq_mean_field.v. */
 
 linel : 110$
 display2d : false$   /* residuals must be readable inline, not as 2-D art */

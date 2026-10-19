@@ -1,7 +1,7 @@
 (* Rocq: THE CELL-PECLET THRESHOLD -- when a Galerkin scheme changes the sign structure of the
    solution, and what a Petrov-Galerkin test space buys back.
 
-   chc.galerkin solves the SYMMETRIC operator -u'' = f, where testing with the trial space
+   chc.research.galerkin solves the SYMMETRIC operator -u'' = f, where testing with the trial space
    (Bubnov-Galerkin) is the right choice and the stiffness matrix is symmetric positive definite.
    Adding advection, -eps u'' + s u' = 0, destroys the symmetry: the convection stencil is
    ANTISYMMETRIC (+-s/2), and above a threshold in the mesh the scheme stops being merely inaccurate
@@ -27,7 +27,7 @@
      upwind's, strictly less diffusive than full upwind (optimal_alpha_below_full_upwind).
 
    Derived in validation/convection_diffusion.mac; certified in
-   chc.galerkin.convection_diffusion_certificate. Honest scope: the OPTIMAL target is tanh(Pe), and
+   chc.research.galerkin.convection_diffusion_certificate. Honest scope: the OPTIMAL target is tanh(Pe), and
    "coth(Pe) - 1/Pe" is therefore transcendental -- that identity stays in Maxima. Rocq carries the
    algebra, so every theorem here is stated for an abstract target t and holds for tanh(Pe) as one
    instance among many. *)

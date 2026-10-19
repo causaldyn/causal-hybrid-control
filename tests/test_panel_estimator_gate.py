@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from chc.network_causal import cycle_shells, panel_covariance
-from chc.regret import _psi_ratio_closed_form, panel_estimator_certificate
+from chc.research.regret import _psi_ratio_closed_form, panel_estimator_certificate
 
 GAMMAS = (1.0, 0.7, 0.4)
 

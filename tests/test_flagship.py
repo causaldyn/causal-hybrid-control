@@ -1,6 +1,6 @@
 """Flagship gate: causal control reaches the target; confounded predictive control diverges."""
 
-from chc.flagship import run_flagship
+from chc.research.flagship import run_flagship
 
 
 def test_causal_control_reaches_target_naive_diverges() -> None:

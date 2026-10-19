@@ -24,7 +24,7 @@
 
    Scope: these are the SCALAR spectral facts. The step from equilibrium error to leader regret
    needs an interior optimum (implicit-function-theorem regularity) and is measured, not proved --
-   chc.games.equilibrium_transfer_certificate reports slope 1.97 there, and ~0.9 once a budget
+   chc.research.games.equilibrium_transfer_certificate reports slope 1.97 there, and ~0.9 once a budget
    constraint is active. *)
 
 From Stdlib Require Import Reals.

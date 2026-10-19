@@ -6,7 +6,6 @@ import jax
 import numpy as np
 import pytest
 
-from chc.benchmark import DelayOscillationTask
 from chc.irf import (
     _irf_from_rows,
     _projection_design,
@@ -17,6 +16,7 @@ from chc.irf import (
     peak_lag,
     structured_irf,
 )
+from chc.research.benchmark import DelayOscillationTask
 from chc.toeplitz import levinson_durbin, sample_autocorrelation
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,

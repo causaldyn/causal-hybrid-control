@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-from chc.mintime import bang_bang_control, bang_bang_rollout, double_integrator_min_time
+from chc.research.mintime import bang_bang_control, bang_bang_rollout, double_integrator_min_time
 
 STATES = [(-1.0, 0.0), (1.0, 0.0), (2.0, -1.0), (-0.5, 1.5), (0.0, 2.0), (3.0, 0.0)]
 

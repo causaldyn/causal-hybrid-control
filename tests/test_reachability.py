@@ -17,8 +17,8 @@ from chc.reachability import (
     robust_hamiltonian,
 )
 
-# The plant `chc.spine` plans on: two zones, one incentive column that moves drivers between them.
-# `h = x1 + 0.4` is a supply floor on the second zone.
+# The plant `chc.research.spine` plans on: two zones, one incentive column that moves drivers
+# between them. `h = x1 + 0.4` is a supply floor on the second zone.
 ZONE_A = jnp.array([[-0.6, 0.3], [0.3, 0.25]])
 ZONE_B = jnp.array([[1.0], [-1.0]])
 

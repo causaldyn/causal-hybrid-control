@@ -20,9 +20,9 @@ jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platforms", "cpu")  # the outputs below were made on a CPU
 # %matplotlib inline
 
-from chc.benchmark import PricingTask
+from chc.research.benchmark import PricingTask
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
-from chc.flagship import run_flagship
+from chc.research.flagship import run_flagship
 
 # %% [markdown]
 # ## The confounded log

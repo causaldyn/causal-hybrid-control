@@ -11,8 +11,8 @@ import pytest
 from chc import HybridDynamics
 from chc.dynamics import DampedOscillator
 from chc.integrate import rk4_step
-from chc.koopman import KoopmanModel, _lift, koopman_controller, koopman_lqr_gain
 from chc.regret import dlqr
+from chc.research.koopman import KoopmanModel, _lift, koopman_controller, koopman_lqr_gain
 
 DT = 0.05
 

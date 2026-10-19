@@ -19,8 +19,8 @@ jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platforms", "cpu")  # the outputs below were made on a CPU
 # %matplotlib inline
 
-from chc.benchmark import SupportShiftTask
-from chc.epidemic import SIRDynamics, optimal_npi
+from chc.research.benchmark import SupportShiftTask
+from chc.research.epidemic import SIRDynamics, optimal_npi
 from chc.integrate import rollout
 
 # %% [markdown]

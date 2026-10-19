@@ -40,9 +40,9 @@ HONEST SCOPE, and it bounds what a number read off this plant means:
 * **A switchback on one zone reads the zone's recruits, not the city's:** the zone gains ``recruit``
   and its neighbours lose ``spill * recruit`` between them.
 * **Under harmonic matching the drift is nonlinear**, and a fit whose drift is a polynomial in the
-  state is a local surrogate of it, as in :mod:`chc.mmm`: audit a plan on this plant, not on the
-  fit's forecast. Under linear matching every closed form here is exact.
-* ``theta`` is taken as known, as :mod:`chc.mmm` takes its adstock rates:
+  state is a local surrogate of it, as in :mod:`chc.research.mmm`: audit a plan on this plant, not
+  on the fit's forecast. Under linear matching every closed form here is exact.
+* ``theta`` is taken as known, as :mod:`chc.research.mmm` takes its adstock rates:
   :meth:`ZoneMarketSystem.stock_dynamics` hands the stock rows to a fit as ``known=``.
 * Nothing here is anyone's data. The parameters are generic, chosen to put the confounding in the
   levers' effects, which is the mechanism under study.

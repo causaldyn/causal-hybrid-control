@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from chc.causal_bench import CausalBenchRow, causal_bench_report, run_causal_bench
+from chc.research.causal_bench import CausalBenchRow, causal_bench_report, run_causal_bench
 
 
 @pytest.fixture(scope="module")

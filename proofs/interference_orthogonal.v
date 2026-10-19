@@ -5,7 +5,7 @@
    eps_spillover). Double ML makes a channel's error O(eps^2). Orthogonalising ONLY the direct channel
    leaves the spillover error at O(eps): the regret (eps^2 + eps)^2 stays O(eps^2) -- no better than
    plug-in. Orthogonalising BOTH gives (eps^2 + eps^2)^2 = 4 eps^4, and for eps in [0,1] that dominates
-   the half measure. Empirically confirmed by chc.regret.interference_orthogonal_certificate (slopes
+   the half measure. Empirically confirmed by chc.research.regret.interference_orthogonal_certificate (slopes
    ~2, ~2, ~4). *)
 
 From Stdlib Require Import Reals.

@@ -22,7 +22,11 @@ from chc.network_causal import (
     graph_shells,
     within_ar1,
 )
-from chc.regret import _fold_sandwich, delayed_network_certificate, fold_heuristic_certificate
+from chc.research.regret import (
+    _fold_sandwich,
+    delayed_network_certificate,
+    fold_heuristic_certificate,
+)
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
 # which jax 0.11 no longer has.

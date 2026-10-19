@@ -3,7 +3,7 @@
 import jax.numpy as jnp
 import pytest
 
-from chc.spine import run_spine, two_zone_market
+from chc.research.spine import run_spine, two_zone_market
 
 _REPORT = run_spine()
 _HORIZON = len(_REPORT.arm("causal").certificate.planned_certified)

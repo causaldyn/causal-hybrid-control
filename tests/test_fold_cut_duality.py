@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from chc.network_causal import cycle_shells
-from chc.regret import (
+from chc.research.regret import (
     _circulant_band,
     _exact_banded_bisection,
     _fold_weight_matrix,

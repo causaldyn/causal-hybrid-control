@@ -5,7 +5,7 @@ Run: uv run python scripts/run_causal_bench.py
 
 from __future__ import annotations
 
-from chc.causal_bench import causal_bench_report, run_causal_bench
+from chc.research.causal_bench import causal_bench_report, run_causal_bench
 
 
 def main() -> None:

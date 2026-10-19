@@ -71,7 +71,8 @@ class SharedStateMarket:
 
     def _equilibrium(self, attract: Array, u: Array) -> Array:
         """Solved driver distribution. ``beta*congestion = 5 < 6`` here, so the map is certified
-        contracting (:func:`chc.games.congestion_contraction_certificate`) and the solve converges.
+        contracting (:func:`chc.research.games.congestion_contraction_certificate`) and the solve
+        converges.
         """
         return softmax_congestion_equilibrium(attract, u, self.congestion, self.mass, self.beta).x
 

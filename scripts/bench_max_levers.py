@@ -54,7 +54,7 @@ from chc import (  # noqa: E402
 from chc.cost import total_cost  # noqa: E402
 from chc.decision import Prescription  # noqa: E402
 from chc.dynamics import LinearDynamics  # noqa: E402
-from chc.mmm import SALES, MarketingMixSystem, adstock_dynamics  # noqa: E402
+from chc.research.mmm import SALES, MarketingMixSystem, adstock_dynamics  # noqa: E402
 
 # ── instances ─────────────────────────────────────────────────────────────────────────────────
 
@@ -143,7 +143,7 @@ def driver_pool() -> Instance:
 
 
 def marketing_mix() -> Instance:
-    """chc.mmm's case study as ``run_marketing_mix`` plans it, but spend may fall to zero.
+    """chc.research.mmm's case study as ``run_marketing_mix`` plans it, but spend may fall to zero.
 
     Its own levers keep a spend floor above zero, which ``max_levers`` refuses: held there, a
     lever is still on.
@@ -151,7 +151,7 @@ def marketing_mix() -> Instance:
     system = MarketingMixSystem()
     logs = system.sample(seed=0)
     return Instance(
-        label="marketing mix (chc.mmm, spend floor 0), H=12",
+        label="marketing mix (chc.research.mmm, spend floor 0), H=12",
         panel=Panel.from_frame(logs, unit="region", time="week", seed=0),
         adjustment=system.graph(),
         levers=tuple(Lever(name, 0.0, system.spend_ceiling, 0.08) for name in system.spend_columns),

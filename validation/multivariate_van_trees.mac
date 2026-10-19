@@ -12,7 +12,7 @@
    information is lost in and the directions the optimal action actually depends on. A scalar model
    cannot express that, because with one direction the alignment is always 1.
 
-   Consumed by chc.regret.multivariate_action_floor and the multivariate arm of
+   Consumed by chc.research.regret.multivariate_action_floor and the multivariate arm of
    information_lower_bound_certificate; proved in proofs/multivariate_van_trees.v.
 
    Run: timeout 600 maxima --very-quiet -b validation/multivariate_van_trees.mac */

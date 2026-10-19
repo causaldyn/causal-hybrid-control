@@ -19,4 +19,4 @@ What it printed when this site was built:
 
 With matplotlib installed the script also writes `outputs/epidemic.png`;
 [tutorial 4](../tutorials/04_epidemic_and_pessimism.md) draws the curves. Code:
-[`chc.epidemic`](../api/epidemic.md).
+[`chc.research.epidemic`](../api/research/epidemic.md).

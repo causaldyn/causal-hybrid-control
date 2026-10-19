@@ -11,7 +11,7 @@ Run: uv run python scripts/run_confounding_control_demo.py
 
 from __future__ import annotations
 
-from chc.regret import confounding_robust_control_benchmark
+from chc.research.regret import confounding_robust_control_benchmark
 
 
 def main() -> None:

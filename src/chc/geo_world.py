@@ -25,8 +25,8 @@ every geo, plus each channel's lift, plus what its neighbours' media lift in it,
 * **Drift**, an option: each channel's lift moves with the weeks by a national factor
   ``D_{c,t} = exp(d_{c,t})``, ``d`` a random walk from 0 with steps of standard deviation
   ``drift`` a week.
-* **The log's spend** puts the confounding of :mod:`chc.mmm` in: a geo's spend per head on a
-  channel is the channel's mean times an intensity of the geo's, log-normal with log-SD
+* **The log's spend** puts the confounding of :mod:`chc.research.mmm` in: a geo's spend per head on
+  a channel is the channel's mean times an intensity of the geo's, log-normal with log-SD
   ``spend_spread``, times ``1 + policy sin(2 pi t / 52)``, a planner raising spend in the weeks the
   season raises the KPI, times a week's log-normal jitter of mean 1 and log-SD ``spend_noise``.
 * **Noise**: each head's KPI a week independent with standard deviation ``noise``, so a geo's is

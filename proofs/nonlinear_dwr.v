@@ -19,7 +19,7 @@
        error it returns is unique when that denominator survives;
    (4) an affine field has NO remainder at any perturbation size, while the cubic term leaves
        3 gam m h^2 + gam h^3 -- so the estimate is exact in the first case and second-order in the
-       second, which is what chc.deep_galerkin.nonlinear_dwr_certificate measures.
+       second, which is what chc.research.deep_galerkin.nonlinear_dwr_certificate measures.
 
    Stdlib Reals only.  Derivatives appear only as the scalars d/dt(.) that the caller supplies:
    the identity is an algebraic cancellation, not an analytic one, which is the reason it needs no

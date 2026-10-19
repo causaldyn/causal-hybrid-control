@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("lightgbm")
 
-from chc.surrogate import GradientBoostedDynamics
+from chc.research.surrogate import GradientBoostedDynamics
 
 A = np.array([[1.0, 0.1], [-0.2, 0.9]])
 B = np.array([[0.0], [0.5]])

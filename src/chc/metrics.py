@@ -1,9 +1,10 @@
 """Classical closed-loop step-response quality metrics.
 
-Cost and oracle-regret (:mod:`chc.benchmark`) say *how well* a controller did on the task objective;
-these say *how* it got there -- the transient-response vocabulary a control engineer reads first:
-overshoot, settling time, rise time, steady-state error. They apply to any tracking/regulation
-signal (one output component vs its target), independent of the controller that produced it.
+Cost and oracle-regret (:mod:`chc.research.benchmark`) say *how well* a controller did on the task
+objective; these say *how* it got there -- the transient-response vocabulary a control engineer
+reads first: overshoot, settling time, rise time, steady-state error. They apply to any
+tracking/regulation signal (one output component vs its target), independent of the controller that
+produced it.
 
 Post-hoc trajectory analysis, so NumPy float64 throughout (like :mod:`chc.did`), not part of the
 differentiable control core.

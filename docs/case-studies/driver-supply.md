@@ -32,4 +32,4 @@ certify.
 
 The plant is deliberately control-affine: `certify_safety` reads the channel off the Jacobian at
 `u = 0`, which is exact for an affine plant and only a linearisation otherwise. Code:
-[`chc.spine`](../api/spine.md).
+[`chc.research.spine`](../api/research/spine.md).

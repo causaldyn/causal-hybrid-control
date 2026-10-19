@@ -1,5 +1,5 @@
 (* Rocq: the interference-aware certainty-equivalence regret certificate behind
-   chc.regret.interference_regret_certificate. Offline control estimates a model with two error
+   chc.research.regret.interference_regret_certificate. Offline control estimates a model with two error
    sources -- identification error [eid] of the direct dynamics and interference error [eint] of the
    exposure / shared-state map -- plans pi_hat on the estimate, and deploys on the true plant. Under
    a kappa-smooth cost with minimiser pi_star and the certainty-equivalence controllability bound

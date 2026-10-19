@@ -1,6 +1,6 @@
 /* 1-D CONVECTION-DIFFUSION: the cell-Peclet threshold, and why a Petrov-Galerkin test space fixes it.
 
-   chc.galerkin solves -u'' = f, a SYMMETRIC operator, where Bubnov-Galerkin (test space = trial
+   chc.research.galerkin solves -u'' = f, a SYMMETRIC operator, where Bubnov-Galerkin (test space = trial
    space) is the right choice and the stiffness matrix is symmetric positive definite.  Add an
    advection term and the operator stops being symmetric:
 
@@ -13,7 +13,7 @@
 
    Everything below is derived, not quoted: the exact solution, the discrete amplification factor,
    the oscillation threshold, the optimal upwind parameter, and the reason full upwinding is only
-   first-order.  The certificate is chc.galerkin.convection_diffusion_certificate; the
+   first-order.  The certificate is chc.research.galerkin.convection_diffusion_certificate; the
    machine-checked algebraic core is proofs/convection_diffusion.v. */
 
 linel : 110$   /* long prose strings otherwise hit "failed to break up a long expression" */
@@ -176,7 +176,7 @@ print("STEP 7c without sign(s) the added diffusion is alpha*s*h/2 < 0, eps_t = e
 
 /* ===== STEP 8: the forms the float code evaluates ===== */
 
-print("=== STEP 8: the series and the expm1 forms chc.galerkin evaluates ===")$
+print("=== STEP 8: the series and the expm1 forms chc.research.galerkin evaluates ===")$
 
 /* coth(Pe) - 1/Pe cancels as Pe -> 0, losing about 3*eps/Pe^2 of its value in floating point, so
    below Pe = 0.2 the code sums its series through Pe^13 instead.  These are its coefficients. */

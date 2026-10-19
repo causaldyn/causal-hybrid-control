@@ -20,9 +20,9 @@ from hypothesis import strategies as st
 from jax import Array
 
 from chc import SplitConformal
-from chc.benchmark import ModelUncertaintyTask
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.integrate import rk4_step
+from chc.research.benchmark import ModelUncertaintyTask
 from chc.residual import MLPResidual, ZeroResidual
 from chc.uncertainty import (
     EnsembleResidual,

@@ -12,8 +12,9 @@ from jax import Array
 
 from chc.reachability import BarrierReachabilityGap, barrier_reachability_gap
 
-# The plant `chc.spine` plans on, with the same supply floor. Relative degree 1: the incentive
-# column moves the constrained zone directly, so `B^T grad h != 0` and the barrier can see it.
+# The plant `chc.research.spine` plans on, with the same supply floor. Relative degree 1: the
+# incentive column moves the constrained zone directly, so `B^T grad h != 0` and the barrier can see
+# it.
 ZONE_A = jnp.array([[-0.6, 0.3], [0.3, 0.25]])
 ZONE_B = jnp.array([[1.0], [-1.0]])
 DI_B = jnp.array([[0.0], [1.0]])

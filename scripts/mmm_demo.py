@@ -5,7 +5,7 @@ Run: uv run python scripts/mmm_demo.py
 
 from __future__ import annotations
 
-from chc.mmm import MarketingMixSystem, run_marketing_mix
+from chc.research.mmm import MarketingMixSystem, run_marketing_mix
 
 
 def main() -> None:

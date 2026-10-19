@@ -1,12 +1,13 @@
 """Kantorovich optimal transport for marketplace matching -- dispatch plan + dual surge prices.
 
-The discrete, marketplace-native sibling of the continuum :mod:`chc.transport`: driver->rider
-dispatch is Kantorovich's transportation problem (1939; Nobel 1975) -- move drivers/zone
-(``supply``) to riders/zone (``demand``) at least travel ``cost``. The **dual potentials are the
-market-clearing prices**: the demand dual ``g`` is the surge signal (higher where demand outstrips
-supply), free as the dual of the same optimisation -- which no dispatch heuristic gives. Solved by
-entropic (log-domain, differentiable) Sinkhorn so pricing is optimisable; ``eps -> 0`` recovers the
-exact LP (Octave `glpk` cross-check: Kantorovich-Rubinstein gap = 0). NumPy baselines, JAX OT core.
+The discrete, marketplace-native sibling of the continuum :mod:`chc.research.transport`:
+driver->rider dispatch is Kantorovich's transportation problem (1939; Nobel 1975) -- move
+drivers/zone (``supply``) to riders/zone (``demand``) at least travel ``cost``. The **dual
+potentials are the market-clearing prices**: the demand dual ``g`` is the surge signal (higher where
+demand outstrips supply), free as the dual of the same optimisation -- which no dispatch heuristic
+gives. Solved by entropic (log-domain, differentiable) Sinkhorn so pricing is optimisable;
+``eps -> 0`` recovers the exact LP (Octave `glpk` cross-check: Kantorovich-Rubinstein gap = 0).
+NumPy baselines, JAX OT core.
 
 An experiment that treats some of the rows moves the prices every row faces, so the treated-minus-
 control difference an A/B test reads is not what treating every row would do.

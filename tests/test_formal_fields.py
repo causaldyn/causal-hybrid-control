@@ -21,7 +21,8 @@ from scipy.integrate import solve_ivp
 from scipy.linalg import circulant, expm
 from scipy.optimize import brentq, minimize
 
-from chc.deep_galerkin import (
+from chc.games import congestion_contraction_modulus
+from chc.research.deep_galerkin import (
     _ANTI_MONOTONE_GAME,
     CongestedMeanFieldGame,
     LQMeanFieldGame,
@@ -31,8 +32,13 @@ from chc.deep_galerkin import (
     finite_population_gap_certificate,
     residual_blindness_sweep,
 )
-from chc.galerkin import convection_diffusion_1d, convection_diffusion_exact, optimal_upwind
-from chc.games import congestion_contraction_modulus, equilibrium_monotonicity_certificate
+from chc.research.galerkin import (
+    convection_diffusion_1d,
+    convection_diffusion_exact,
+    optimal_upwind,
+)
+from chc.research.games import equilibrium_monotonicity_certificate
+from chc.research.transport import advection_diffusion_field
 from chc.residual import (
     ContractiveResidual,
     PortHamiltonianResidual,
@@ -43,10 +49,9 @@ from chc.residual import (
     damping_injection_certificate,
 )
 from chc.toeplitz import circulant_operator_norm, circulant_symbol
-from chc.transport import advection_diffusion_field
 
 FORMAL_LINKS = {
-    "chc.deep_galerkin": {
+    "chc.research.deep_galerkin": {
         "cites": ("lq_mean_field.mac", "lq_mean_field.v"),
         "tests": (
             "test_lq_closed_form_solves_the_two_point_problem",
@@ -54,50 +59,50 @@ FORMAL_LINKS = {
             "test_no_obstruction_below_the_gain_threshold",
         ),
     },
-    "chc.deep_galerkin.CongestedMeanFieldGame": {
+    "chc.research.deep_galerkin.CongestedMeanFieldGame": {
         "cites": ("nonlinear_dwr.mac",),
         "tests": (
             "test_congested_solve_closes_the_terminal_row",
             "test_congested_game_at_zero_congestion_is_the_lq_game",
         ),
     },
-    "chc.deep_galerkin.LQMeanFieldGame.obstruction_horizon": {
+    "chc.research.deep_galerkin.LQMeanFieldGame.obstruction_horizon": {
         "cites": ("lq_mean_field.v",),
         "tests": (
             "test_obstruction_horizon_is_the_first_zero_of_the_denominator",
             "test_no_obstruction_below_the_gain_threshold",
         ),
     },
-    "chc.deep_galerkin.MeanFieldSolution.finite_population_rms": {
+    "chc.research.deep_galerkin.MeanFieldSolution.finite_population_rms": {
         "cites": ("finite_population_gap.mac",),
         "tests": (
             "test_finite_population_rms_is_the_closed_loop_variance_over_n",
             "test_finite_population_rms_prices_a_simulated_population",
         ),
     },
-    "chc.deep_galerkin.adjoint_weighted_error": {
+    "chc.research.deep_galerkin.adjoint_weighted_error": {
         "cites": ("nonlinear_dwr.mac",),
         "tests": (
             "test_adjoint_weighted_error_is_exact_for_an_affine_field",
             "test_adjoint_weighted_error_remainder_is_second_order",
         ),
     },
-    "chc.deep_galerkin.dual_weighted_error_estimate": {
+    "chc.research.deep_galerkin.dual_weighted_error_estimate": {
         "cites": ("mean_field_dwr.mac", "mean_field_dwr.v"),
         "tests": (
             "test_dual_weighted_estimate_is_the_exact_error_of_an_affine_path",
             "test_dual_weighted_estimate_off_the_riccati_root_is_the_model_rate_s_error",
         ),
     },
-    "chc.deep_galerkin.finite_population_gap_certificate": {
+    "chc.research.deep_galerkin.finite_population_gap_certificate": {
         "cites": ("finite_population_gap.mac",),
         "tests": ("test_finite_population_gap_constants_match_their_odes",),
     },
-    "chc.deep_galerkin.residual_blindness_sweep": {
+    "chc.research.deep_galerkin.residual_blindness_sweep": {
         "cites": ("mean_field_dwr.v",),
         "tests": ("test_blindness_sweep_error_outgrows_a_bounded_residual",),
     },
-    "chc.galerkin": {
+    "chc.research.galerkin": {
         "cites": ("convection_diffusion.mac", "convection_diffusion.v"),
         "tests": (
             "test_petrov_galerkin_nodes_are_the_discrete_mode",
@@ -106,7 +111,7 @@ FORMAL_LINKS = {
             "test_optimal_upwind_is_nodally_exact",
         ),
     },
-    "chc.galerkin.convection_diffusion_certificate": {
+    "chc.research.galerkin.convection_diffusion_certificate": {
         "cites": ("convection_diffusion.mac", "convection_diffusion.v"),
         "tests": (
             "test_petrov_galerkin_nodes_are_the_discrete_mode",
@@ -115,7 +120,7 @@ FORMAL_LINKS = {
             "test_optimal_upwind_is_nodally_exact",
         ),
     },
-    "chc.galerkin.convection_diffusion_exact": {
+    "chc.research.galerkin.convection_diffusion_exact": {
         "cites": ("convection_diffusion.mac",),
         "tests": (
             "test_convection_diffusion_exact_solves_the_boundary_value_problem",
@@ -123,7 +128,7 @@ FORMAL_LINKS = {
             "test_convection_diffusion_exact_keeps_its_digits_when_diffusion_dominates",
         ),
     },
-    "chc.galerkin.optimal_upwind": {
+    "chc.research.galerkin.optimal_upwind": {
         "cites": ("convection_diffusion.mac",),
         "tests": (
             "test_optimal_upwind_hits_the_tanh_target_inside_the_stable_range",
@@ -140,7 +145,7 @@ FORMAL_LINKS = {
             "test_congestion_map_contracts_pairs_at_the_certified_rate",
         ),
     },
-    "chc.games.equilibrium_monotonicity_certificate": {
+    "chc.research.games.equilibrium_monotonicity_certificate": {
         "cites": ("equilibrium_monotonicity.mac", "equilibrium_monotonicity.v"),
         "tests": (
             "test_congestion_residual_map_is_one_strongly_monotone_on_pairs",
@@ -204,7 +209,7 @@ FORMAL_LINKS = {
         "cites": ("spectral_circulant.mac",),
         "tests": ("test_circulant_symbol_holds_the_dense_eigenvalues",),
     },
-    "chc.transport.advection_diffusion_symbol": {
+    "chc.research.transport.advection_diffusion_symbol": {
         "cites": ("spectral_circulant.mac",),
         "tests": (
             "test_advection_diffusion_field_differentiates_trigonometric_fields",
@@ -216,7 +221,8 @@ FORMAL_LINKS = {
 _EPS = float(np.finfo(np.float64).eps)
 
 # ---------------------------------------------------------------------------------------------
-# chc.galerkin: the cell-Peclet threshold, full upwind and the optimal Petrov-Galerkin parameter.
+# chc.research.galerkin: the cell-Peclet threshold, full upwind and the optimal Petrov-Galerkin
+# parameter.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -399,7 +405,7 @@ def test_convection_diffusion_exact_keeps_its_digits_when_diffusion_dominates() 
 
 
 # ---------------------------------------------------------------------------------------------
-# chc.deep_galerkin: the LQ mean-field closed form and its obstruction.
+# chc.research.deep_galerkin: the LQ mean-field closed form and its obstruction.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -541,7 +547,7 @@ def test_no_obstruction_below_the_gain_threshold(below: float, gap: float, **pla
 
 
 # ---------------------------------------------------------------------------------------------
-# chc.deep_galerkin: the finite-population gap.
+# chc.research.deep_galerkin: the finite-population gap.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -616,7 +622,7 @@ def test_finite_population_gap_constants_match_their_odes() -> None:
 
 
 # ---------------------------------------------------------------------------------------------
-# chc.deep_galerkin: the dual-weighted estimators.
+# chc.research.deep_galerkin: the dual-weighted estimators.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -1196,7 +1202,7 @@ def test_damping_injection_certificate_rollout_loses_energy() -> None:
 
 
 # ---------------------------------------------------------------------------------------------
-# chc.residual.SpectralResidual, chc.toeplitz and chc.transport: circulant operators.
+# chc.residual.SpectralResidual, chc.toeplitz and chc.research.transport: circulant operators.
 # ---------------------------------------------------------------------------------------------
 
 _kernels = st.integers(2, 16).flatmap(

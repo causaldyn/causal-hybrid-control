@@ -122,7 +122,7 @@ for K in [2, 3] do for graph in [["path", path6], ["star", star6]] do for x in [
 
 print("=== STEP 4: valid where it is tight, at the shift the library's search finds ===")$
 
-/* The shifts chc.regret._shifted_kyfan_bound converges to at x = 1/100, rounded to rationals.
+/* The shifts chc.research.regret._shifted_kyfan_bound converges to at x = 1/100, rounded to rationals.
  * At K = 2 the bound reaches the optimum on both graphs, so a bound that were invalid near its
  * maximum would show a positive excess here; the random shifts of STEP 3 sit far below it. */
 tight : [[2, "path", path6, [-141647/824937, 326379/999037, -143827/927993, -143827/927993,

@@ -1,11 +1,11 @@
 """The control line's cited proofs and derivations, checked on the float code that implements them.
 
 Each test reads one statement of a Rocq lemma or a Maxima derivation that a docstring in
-``chc.uncertainty``, ``chc.plan``, ``chc.barrier``, ``chc.sensitivity`` or ``chc.allocation`` cites,
-and checks it on the library's output by another route: rollouts simulated in NumPy against the
-error tubes, a linear program against the MSM closed form, brute-force grids against the barrier
-margins, re-solved plans against the decision weights and the planned cost's bias, a Monte Carlo of
-the plant against the noise tube.
+``chc.uncertainty``, ``chc.plan``, ``chc.barrier``, ``chc.research.sensitivity`` or
+``chc.allocation`` cites, and checks it on the library's output by another route: rollouts simulated
+in NumPy against the error tubes, a linear program against the MSM closed form, brute-force grids
+against the barrier margins, re-solved plans against the decision weights and the planned cost's
+bias, a Monte Carlo of the plant against the noise tube.
 """
 
 from __future__ import annotations
@@ -109,7 +109,7 @@ FORMAL_LINKS = {
             "test_plan_regret_bound_vanishes_at_the_box_optimum",
         ),
     },
-    "chc.sensitivity": {
+    "chc.research.sensitivity": {
         "cites": ("barrier_feasibility_lift.v",),
         "tests": (
             "test_sensitivity_margin_is_the_worst_case_over_the_operator_ball",

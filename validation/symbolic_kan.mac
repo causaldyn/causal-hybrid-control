@@ -1,6 +1,6 @@
 /* SYMBOLIC EXTRACTION FROM A KOLMOGOROV-ARNOLD LAYER: what is identified, and what cannot be.
 
-   chc.residual.RBFKANLayer advertises each edge as "an extractable 1D curve".  chc.symbolic is the
+   chc.residual.RBFKANLayer advertises each edge as "an extractable 1D curve".  chc.research.symbolic is the
    extraction.  Two structural facts decide whether the extracted formula means anything, and both
    are derived here rather than asserted in a docstring.
 
@@ -14,7 +14,7 @@
        approximation.  The MIXED SECOND DIFFERENCE annihilates every additive function, which turns
        "cannot fit" into a quantitative floor: sup error >= |mixed difference| / 4.
 
-   The certificate is chc.symbolic.symbolic_extraction_certificate; the machine-checked core is
+   The certificate is chc.research.symbolic.symbolic_extraction_certificate; the machine-checked core is
    proofs/symbolic_kan.v.  Numbers quoted below in the STEP 6 arm come from that certificate. */
 
 /* ===== STEP 1: the layer is exactly additive in the edges ===== */
@@ -31,7 +31,7 @@ print("STEP 1a shifting edge j by k_j and the bias by -sum k_j, residual =",
 /* What IS identified: the total constant.  Evaluate at a reference point. */
 print("STEP 1b the identified combination is bias + phi0(a) + phi1(a) =",
       ratsimp(layer(a, a)),
-      " -- a single number, not a per-edge intercept.  chc.symbolic reports each edge's own",
+      " -- a single number, not a per-edge intercept.  chc.research.symbolic reports each edge's own",
       "offset AND checks their sum against the bias, which is the only part with content")$
 
 /* ===== STEP 2: the extracted formula against the true generating function ===== */
@@ -40,7 +40,7 @@ print("=== STEP 2: does the extracted formula reproduce the truth? ===")$
 
 truth(z0, z1) := 0.7 + 0.5*z0^2 - 1.2*sin(z1)$
 
-/* The certificate's measured extraction (chc.symbolic, seed 0, num_grid = 16, grid_range = 3):
+/* The certificate's measured extraction (chc.research.symbolic, seed 0, num_grid = 16, grid_range = 3):
    edge (0,0) -> 0.499995*z^2 - 5.824355, edge (0,1) -> -1.200015*sin(z) + 0.326296, and the fitted
    bias makes the three constants sum to 0.7 to within 2.74e-6.  The residual below is what the
    extracted formula is wrong by, symbolically, as a function of z0 and z1. */

@@ -13,7 +13,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from chc.sensitivity import (
+from chc.research.sensitivity import (
     asymmetric_control_improvement,
     certainty_equivalence_control,
     confounding_robust_control,

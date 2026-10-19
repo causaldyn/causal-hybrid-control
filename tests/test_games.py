@@ -5,18 +5,20 @@ import jax.numpy as jnp
 import pytest
 
 from chc.games import (
-    EquilibriumMonotonicityCertificate,
-    EquilibriumTransferCertificate,
-    congestion_contraction_certificate,
     congestion_contraction_modulus,
     congestion_damping,
-    equilibrium_monotonicity_certificate,
-    equilibrium_transfer_certificate,
     project_simplex,
     softmax_congestion_equilibrium,
     stackelberg_allocation,
 )
 from chc.marketplace import SharedStateMarket
+from chc.research.games import (
+    EquilibriumMonotonicityCertificate,
+    EquilibriumTransferCertificate,
+    congestion_contraction_certificate,
+    equilibrium_monotonicity_certificate,
+    equilibrium_transfer_certificate,
+)
 
 
 @pytest.fixture(scope="module")

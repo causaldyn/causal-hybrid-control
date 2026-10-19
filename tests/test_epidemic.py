@@ -2,8 +2,8 @@
 
 import jax.numpy as jnp
 
-from chc.epidemic import SIRDynamics, epidemic_cost, optimal_npi
 from chc.integrate import rollout
+from chc.research.epidemic import SIRDynamics, epidemic_cost, optimal_npi
 
 DT = 1.0
 I_MAX = 0.1

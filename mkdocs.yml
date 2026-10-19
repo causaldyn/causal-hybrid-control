@@ -128,44 +128,49 @@ nav:
           - api/marketplace.md
           - api/matching.md
           - api/metrics.md
-          - api/mmm.md
           - api/network_causal.md
           - api/offpolicy.md
           - api/pathway.md
           - api/reachability.md
           - api/regret.md
           - api/scm.md
-          - api/sensitivity.md
-          - api/spine.md
           - api/splitting.md
           - api/support.md
           - api/toeplitz.md
           - api/uncertainty.md
       - Experimental:
           - api/allocation.md
-          - api/benchmark.md
-          - api/causal_bench.md
-          - api/deep_galerkin.md
           - api/discovery.md
           - api/dlm.md
-          - api/epidemic.md
           - api/experiment.md
-          - api/flagship.md
-          - api/galerkin.md
           - api/games.md
           - api/geo_world.md
-          - api/koopman.md
-          - api/lalonde.md
           - api/lift.md
-          - api/meanfield.md
-          - api/mintime.md
           - api/misspecification.md
           - api/response.md
-          - api/surrogate.md
           - api/switchback.md
-          - api/symbolic.md
-          - api/transport.md
           - api/zones.md
+      - Research:
+          - api/research/index.md
+          - api/research/benchmark.md
+          - api/research/causal_bench.md
+          - api/research/deep_galerkin.md
+          - api/research/epidemic.md
+          - api/research/flagship.md
+          - api/research/galerkin.md
+          - api/research/games.md
+          - api/research/koopman.md
+          - api/research/lalonde.md
+          - api/research/meanfield.md
+          - api/research/mintime.md
+          - api/research/mmm.md
+          - api/research/regret.md
+          - api/research/residual.md
+          - api/research/sensitivity.md
+          - api/research/spine.md
+          - api/research/surrogate.md
+          - api/research/symbolic.md
+          - api/research/transport.md
   - Theory: theory.md
   - Benchmarks: benchmarks.md
   - Security: security.md

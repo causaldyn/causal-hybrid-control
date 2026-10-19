@@ -11,7 +11,7 @@ display2d : false$
    is  Sigma_{(i,t),(k,s)} = sum_{d,e} g_d g_e [S_d S_e]_{ik} ph^|(t-s) - delta*(d-e)|,
    i.e.  Sigma = sum_{q=-D}^{D} P_q (x) T_q  with  P_q = sum_{d-e=q} g_d g_e S_d S_e  and
    [T_q]_{ts} = ph^|(t-s) - delta*q|.  Verified against 2*10^5 simulated panels to 0.021 on a scale
-   of 2.3 (chc.regret.space_time_fold_certificate re-runs it). */
+   of 2.3 (chc.research.regret.space_time_fold_certificate re-runs it). */
 
 /* (1) THE INDEX PAIRING. P_{-q} = P_q^T and T_{-q} = T_q^T, because swapping (d,e) transposes the
    spatial factor and negates the temporal shift. Checked on the exponent, which is where it lives. */

@@ -36,7 +36,7 @@ HONEST SCOPE, four limits worth stating before the code:
   caller knows the actions are unconfounded given the state (``unconfounded=True``), and an
   instrument identifies it only along the directions it moves the action. The estimator reports
   ``identified=False`` in both cases rather than returning a confident wrong answer -- that case
-  belongs to :mod:`chc.sensitivity`, which prices the radius instead of pretending it away.
+  belongs to :mod:`chc.research.sensitivity`, which prices the radius instead of pretending it away.
 * The premise is Markov: given ``x``, ``z`` and ``u``, a transition's noise does not depend on the
   past. Where the noise persists within a unit and a lever persists too, the state is a common
   effect of the past lever and the past noise, so ``E[eps | x, z, u - m]`` is not 0 and the channel
@@ -88,7 +88,8 @@ before :func:`fit_causal_residual` warns that they miss the log's."""
 
 _NOT_IDENTIFIED = (
     "no adjustment set and no instrument: the control channel is not identified from this log. "
-    "Use chc.sensitivity to price the identification radius instead of trusting the estimate."
+    "Use chc.research.sensitivity to price the identification radius instead of trusting the "
+    "estimate."
 )
 
 
@@ -1361,10 +1362,10 @@ def fit_causal_residual(
             RK4's growth factor bottoms out at 0.2704, at ``z = -1.596``, and an exact linear mode
             falls below that past ``|A|dt = 1.308``. The fit raises there rather than return a field
             that is neither reading. A channel that reads the state can run out sooner: on the plant
-            in :mod:`chc.mmm` with its fastest channel decaying at ``theta*dt = 1.2``, one seed in
-            eight stalls in that channel's dependence on its own adstock, at a gap a damped Newton
-            cannot close either, at both precisions. ``integrator_defect`` floors at the noise under
-            both.
+            in :mod:`chc.research.mmm` with its fastest channel decaying at ``theta*dt = 1.2``, one
+            seed in eight stalls in that channel's dependence on its own adstock, at a gap a damped
+            Newton cannot close either, at both precisions. ``integrator_defect`` floors at the
+            noise under both.
 
             The default stays ``"euler"`` so no shipped fit changes meaning.
             :func:`chc.decision.prescribe` defaults the other way, because it *knows* the field goes
@@ -2334,9 +2335,9 @@ class ChannelRegion:
         no level reaches it.
 
         A certainty-equivalent gain whose stability holds within a radius ``rho`` of the channel
-        (``chc.regret.ce_explicit_constant_certificate``) then stabilises the plant with at least
-        this probability. That certificate's ``rho`` is the true plant's, and its channel is the
-        discrete step's, ``dt`` times this one under Euler: pass its radius over ``dt``. Read at
+        (``chc.research.regret.ce_explicit_constant_certificate``) then stabilises the plant with at
+        least this probability. That certificate's ``rho`` is the true plant's, and its channel is
+        the discrete step's, ``dt`` times this one under Euler: pass its radius over ``dt``. Read at
         the estimate, ``rho`` is the estimate's, which the region does not check.
 
         Solves ``sum_s (R_s A + b_s)^2 = (rho / g)^2`` for ``A``, ``g`` the operator radius per

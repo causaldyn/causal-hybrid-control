@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from chc.galerkin import (
+from chc.research.galerkin import (
     convection_diffusion_1d,
     convection_diffusion_certificate,
     convection_diffusion_exact,

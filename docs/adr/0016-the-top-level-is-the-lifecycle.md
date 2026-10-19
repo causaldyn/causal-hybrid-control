@@ -1,6 +1,8 @@
 # ADR 0016 — The top level is the lifecycle
 
-**Status:** proposed, 2026-09-28.
+**Status:** proposed, 2026-09-28. Superseded in part by ADR 0117, 2026-10-19: the modules that
+each carry one research result move into `chc.research`, so "Module paths do not move" no
+longer holds for them.
 
 ## Context
 

@@ -6,7 +6,7 @@ Run: uv run python scripts/flagship_demo.py                     (prints the summ
 
 from __future__ import annotations
 
-from chc.flagship import run_flagship
+from chc.research.flagship import run_flagship
 
 
 def main() -> None:

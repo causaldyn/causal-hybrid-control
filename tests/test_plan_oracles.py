@@ -28,8 +28,8 @@ from scipy.optimize import minimize
 from chc.control import LinearConstraint
 from chc.cost import QuadraticCost
 from chc.dynamics import LinearDynamics
-from chc.mmm import MarketingMixSystem
 from chc.plan import causal_plan
+from chc.research.mmm import MarketingMixSystem
 
 SYSTEM = MarketingMixSystem()
 PRICE, TARGET = 0.08, 8.0  # the spend's quadratic price, and the sales target at weight 1

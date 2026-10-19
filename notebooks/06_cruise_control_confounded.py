@@ -32,7 +32,7 @@ from chc.causal import (
     estimate_effect_iv,
     sensitivity_analysis,
 )
-from chc.flagship import closed_loop
+from chc.research.flagship import closed_loop
 
 # x = speed (relative to base), u = throttle, z = road grade (the confounder), w = randomised nudge.
 # True effect of throttle on next speed is +1.0; grade slows the car (c<0) and drivers gave more

@@ -166,6 +166,26 @@ still change).
 - **`roi` and `marginal_roi` warn (`FutureWarning`) where an unset `tail` cuts the number**: on a
   `Channel` whose window spends in the kernel's last `length - 1` periods. A future release will
   count the tail by default; pass `tail=False` to keep the cut.
+- **The research periphery moves into `chc.research`, outside the surface 0.20.0 freezes (ADR
+  0117).** Sixteen modules move whole: `benchmark`, `causal_bench`, `deep_galerkin`, `epidemic`,
+  `flagship`, `galerkin`, `koopman`, `lalonde`, `meanfield`, `mintime`, `mmm`, `sensitivity`,
+  `spine`, `surrogate`, `symbolic` and `transport`. The research halves of three more move beside
+  them: 103 certificates of `chc.regret`, three of `chc.games` and `spectral_residual_certificate`
+  of `chc.residual`. `chc.regret` keeps the LQ solve, the certainty-equivalence gap, the exploration
+  certificates and policy and the minimax-regret actions, and falls from 7,279 lines to 1,522, so
+  `import chc`, which `chc.lqr` and `prescribe` need, no longer loads the other 6,020; it loads
+  nothing from `chc.research`. Their API pages move under `api/research/`, in a research tier.
+- **The top level's 166 deprecated names that moved are served from `chc.research`**, and their
+  warning names the new path: `chc.van_trees_certificate leaves the top level in 1.0: import it
+  from chc.research.regret`.
+
+### Deprecated
+
+- **The paths the research modules left warn, and go in 0.20.0.** `chc.mmm`, the other fifteen old
+  module paths and the moved names of `chc.regret`, `chc.games` and `chc.residual` serve each name
+  from `chc.research` with a `DeprecationWarning`: `chc.mmm.run_marketing_mix leaves chc.mmm in
+  0.20.0: import it from chc.research.mmm`. Importing an old path does not warn, so `import chc`
+  stays silent under warnings-as-errors; type checkers see the moved names there until 0.20.0.
 
 ### Fixed
 

@@ -54,4 +54,4 @@ Scope, and it bounds what the numbers mean:
 - What the whole-horizon plan buys over the myopic one is a property of the plant's parameters,
   not of the method. The `myopic` arm is there to measure it rather than assume it.
 
-Code: [`chc.mmm`](../api/mmm.md), through [`prescribe`](../api/decision.md).
+Code: [`chc.research.mmm`](../api/research/mmm.md), through [`prescribe`](../api/decision.md).

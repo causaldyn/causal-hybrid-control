@@ -40,10 +40,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# gradient-boosted surrogate dynamics for Track A/B baselines (chc.surrogate). Optional: the core
-# library is pure-JAX. econml/dowhy are deliberately NOT here -- econml brings numba, sparse,
-# statsmodels, shap and lightgbm for one adapter, and dowhy declares Python <3.14 -- so their adapters
-# (chc.estimators) are lazy-import, bring-your-own-env instead.
+# gradient-boosted surrogate dynamics for Track A/B baselines (chc.research.surrogate). Optional:
+# the core library is pure-JAX. econml/dowhy are deliberately NOT here -- econml brings numba,
+# sparse, statsmodels, shap and lightgbm for one adapter, and dowhy declares Python <3.14 -- so
+# their adapters (chc.estimators) are lazy-import, bring-your-own-env instead.
 trees = [
     "lightgbm>=4",
     # 1.2.8 is the first catboost that loads beside numpy 2: 1.2.6 and 1.2.7 declare numpy<2, and
@@ -175,8 +175,12 @@ addopts = "-q -m 'not misspecification'"
 markers = [
     "misspecification: a certificate read on a plant its model gets wrong; holds, or says so",
 ]
-# a name the top level only serves with a warning is the library's own to stop using first
-filterwarnings = ["error:chc\\.\\w+ leaves the top level:DeprecationWarning"]
+# a name the top level, or a module's path from before 0.19.0, only serves with a warning is the
+# library's own to stop using first
+filterwarnings = [
+    "error:chc\\.\\w+ leaves the top level:DeprecationWarning",
+    "error:chc\\.\\w+\\.\\w+ leaves chc\\.\\w+ in 0\\.20\\.0:DeprecationWarning",
+]
 
 [tool.ty.environment]
 # The interpreter `.python-version` pins, not the floor: ty reads the environment's stubs at this

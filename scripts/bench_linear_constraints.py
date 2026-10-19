@@ -40,7 +40,7 @@ from chc.adjoint import control_gradient_adjoint  # noqa: E402
 from chc.control import projected_gradient_solve  # noqa: E402
 from chc.cost import total_cost  # noqa: E402
 from chc.dynamics import DampedOscillator, LinearDynamics  # noqa: E402
-from chc.mmm import MarketingMixSystem  # noqa: E402
+from chc.research.mmm import MarketingMixSystem  # noqa: E402
 
 STEPS, LR0, TOL = 10_000, 0.2, 1e-9  # projected_gradient_solve's defaults, used by both arms
 
