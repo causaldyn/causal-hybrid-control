@@ -169,7 +169,12 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PERF", "PIE", "PT", "PT
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# tests/misspecification/ runs in its own CI job (`just misspecification`): its Monte Carlo is too
+# slow to repeat on every leg of the matrix
+addopts = "-q -m 'not misspecification'"
+markers = [
+    "misspecification: a certificate read on a plant its model gets wrong; holds, or says so",
+]
 # a name the top level only serves with a warning is the library's own to stop using first
 filterwarnings = ["error:chc\\.\\w+ leaves the top level:DeprecationWarning"]
 
