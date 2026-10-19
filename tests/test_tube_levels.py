@@ -18,6 +18,7 @@ from fractions import Fraction
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import scipy.linalg
 
 from chc.dynamics import LinearDynamics
 from chc.dynamics_id import ChannelRegion, channel_region, fit_causal_residual
@@ -459,3 +460,172 @@ def test_two_states_share_the_level_and_add_their_radii_in_quadrature() -> None:
     assert region.stability_level(region.operator_radius(state), state) == pytest.approx(
         0.9, rel=1e-12
     )
+
+
+def _period_shock_panel(seed: int) -> tuple[dict[str, jnp.ndarray], np.ndarray, np.ndarray]:
+    """30 units over 20 periods, ``x' = x + 0.1 (-0.5 x + 0.8 u + 0.3 w + e)``, ``u = 0.5 w + a``:
+    each period a shock every unit shares moves the levers' ``a`` and the noise ``e``, each half
+    of its variance."""
+    rng = np.random.default_rng(seed)
+    units, periods = 30, 20
+    w = rng.normal(size=(units, periods))
+    lever_shock = np.repeat(rng.normal(size=(1, periods)), units, axis=0)
+    noise_shock = np.repeat(rng.normal(size=(1, periods)), units, axis=0)
+    a = math.sqrt(0.5) * (lever_shock + rng.normal(size=(units, periods)))
+    e = math.sqrt(0.5) * (noise_shock + rng.normal(size=(units, periods)))
+    x = np.empty((units, periods + 1))
+    x[:, 0] = rng.normal(size=units)
+    u = 0.5 * w + a
+    for t in range(periods):
+        x[:, t + 1] = x[:, t] + 0.1 * (-0.5 * x[:, t] + 0.8 * u[:, t] + 0.3 * w[:, t] + e[:, t])
+    data = {
+        "x": jnp.asarray(x[:, :-1].reshape(-1, 1)),
+        "u": jnp.asarray(u.reshape(-1, 1)),
+        "w": jnp.asarray(w.reshape(-1, 1)),
+        "x_next": jnp.asarray(x[:, 1:].reshape(-1, 1)),
+    }
+    return data, np.repeat(np.arange(units), periods), np.tile(np.arange(periods), units)
+
+
+_SHOCK_TRUTH = np.full((1, 1, 1), 0.8)
+
+
+@pytest.mark.parametrize("seed", [0, 25, 60])
+def test_a_fit_told_of_a_shared_shock_holds_the_channel_the_rows_region_misses(seed: int) -> None:
+    """Read row by row, a shock every unit shares in a period adds up across its rows beyond each
+    row's noise: on 1000 such logs the 0.95 region missed the channel on 6.9 %. On these three it
+    misses; the fit given the units and the periods reads the noise within them, and holds it."""
+    data, unit, period = _period_shock_panel(seed)
+    rows = fit_causal_residual(_KNOWN, data, 0.1, adjust_for=("w",), channel_degree=0)
+    assert not channel_region(rows).contains(_SHOCK_TRUTH)
+    told = fit_causal_residual(
+        _KNOWN,
+        data,
+        0.1,
+        adjust_for=("w",),
+        channel_degree=0,
+        clusters=np.column_stack([unit, period]),
+    )
+    assert channel_region(told).contains(_SHOCK_TRUTH)
+
+
+def _clustered_noise_by_hand(fit, labels: np.ndarray) -> float:
+    """``R^2`` of a one-coefficient channel under ``labels``, ``(N,)`` or ``(N, 2)``: the scores
+    ``d_i e_i`` summed within the clusters and squared at CR1's factor, two ways the largest of
+    the two ways' sums less their cells' and each way's alone at its own factor, over ``V``; the
+    channel's design ``d`` read off the representer, ``N V^-1 d_i``."""
+    gram = float(fit._channel_gram.matrix[0, 0])
+    rows = fit.moment_residual.shape[0]
+    design = np.asarray(fit.representer)[:, 0, 0] * gram / rows
+    scores = design * np.asarray(fit.moment_residual)[:, 0]
+
+    def summed(codes: np.ndarray) -> tuple[float, int]:
+        sums = np.bincount(np.unique(codes, return_inverse=True)[1], weights=scores)
+        return float(np.sum(sums**2)), sums.size
+
+    def factor(count: int) -> float:
+        return count / (count - 1) * (rows - 1) / (rows - 1)
+
+    if labels.ndim == 1:
+        square, count = summed(labels)
+        return factor(count) * square / gram
+    (first, g1), (second, g2) = summed(labels[:, 0]), summed(labels[:, 1])
+    cells, _ = summed(labels[:, 0] * 1000 + labels[:, 1])
+    smaller = min(g1, g2)
+    both = factor(smaller) * max(first + second - cells, 0.0)
+    return max(both, factor(g1) * first, factor(g2) * second) / gram
+
+
+@pytest.mark.parametrize("two_ways", [False, True])
+def test_a_clustered_fit_reads_the_region_s_noise_within_its_clusters(two_ways: bool) -> None:
+    """``R^2`` is the larger of the rows' mean square and the clustered scores' spread in ``V``'s
+    norm, written out here for one coefficient; a fit without clusters reads the rows' alone."""
+    data, unit, period = _period_shock_panel(3)
+    labels = np.column_stack([unit, period]) if two_ways else period
+    fit = fit_causal_residual(
+        _KNOWN, data, 0.1, adjust_for=("w",), channel_degree=0, clusters=labels, influence=True
+    )
+    rows = fit_causal_residual(_KNOWN, data, 0.1, adjust_for=("w",), channel_degree=0)
+    residual = np.asarray(fit.moment_residual)
+    own = float(np.sum(residual**2)) / (residual.shape[0] - 1)
+    shared = _clustered_noise_by_hand(fit, labels)
+    assert shared > 4.0 * own  # the shock adds up across a period's 30 units
+    assert channel_region(fit).noise[0] == pytest.approx(math.sqrt(shared), rel=1e-9)
+    assert channel_region(rows).noise[0] == pytest.approx(math.sqrt(own), rel=1e-12)
+    assert rows._channel_gram is not None
+    assert fit._channel_gram == rows._channel_gram  # the region reads the clusters, not the Gram
+
+
+def test_a_two_way_region_reads_the_same_whichever_dimension_comes_first() -> None:
+    """Two ways, the region reads the largest of the two ways' sums and each way's alone, as the
+    fit's error does: the order the fit was given its two dimensions in does not move it, and on a
+    panel whose shock is the period's it reads above the rows' noise either way."""
+    data, unit, period = _period_shock_panel(3)
+    rows = channel_region(
+        fit_causal_residual(_KNOWN, data, 0.1, adjust_for=("w",), channel_degree=0)
+    ).noise[0]
+    noise = [
+        channel_region(
+            fit_causal_residual(
+                _KNOWN,
+                data,
+                0.1,
+                adjust_for=("w",),
+                channel_degree=0,
+                clusters=np.column_stack(order),
+            )
+        ).noise[0]
+        for order in ((unit, period), (period, unit))
+    ]
+    assert noise[0] > 2.0 * rows
+    assert noise[1] == pytest.approx(noise[0], rel=1e-12)
+
+
+def test_few_clusters_never_read_the_region_s_noise_below_the_rows() -> None:
+    """Read from five clusters whose noise is independent, the clustered spread is noisy and can
+    fall below each row's own scale, which the theorem needs whatever the clusters say."""
+    data, unit, _ = _period_shock_panel(3)
+    rng = np.random.default_rng(1)
+    data = {
+        **data,
+        "x_next": data["x"]
+        + 0.1 * (-0.5 * data["x"] + 0.8 * data["u"])
+        + 0.1 * jnp.asarray(rng.normal(size=data["x"].shape)),
+    }
+    found = []
+    for groups in (5, 6, 7, 8):
+        labels = unit % groups
+        fit = fit_causal_residual(
+            _KNOWN, data, 0.1, adjust_for=("w",), channel_degree=0, clusters=labels, influence=True
+        )
+        residual = np.asarray(fit.moment_residual)
+        own = float(np.sum(residual**2)) / (residual.shape[0] - 1)
+        shared = _clustered_noise_by_hand(fit, labels)
+        found.append(shared < own)
+        expected = math.sqrt(max(own, shared))
+        assert channel_region(fit).noise[0] == pytest.approx(expected, rel=1e-9)
+    assert any(found)  # a clustering whose spread reads below the rows' is among them
+
+
+def test_a_channel_affine_in_the_state_reads_its_noise_where_the_clusters_add_up_most() -> None:
+    """Two coefficients a state: ``R^2`` is the largest generalised eigenvalue of the clustered
+    scores' spread ``M`` against ``V``, the most ``a' M a`` reaches over ``a' V a = 1``."""
+    data, _, period = _period_shock_panel(4)
+    fit = fit_causal_residual(
+        _KNOWN, data, 0.1, adjust_for=("w",), channel_degree=1, clusters=period, influence=True
+    )
+    assert fit._channel_gram is not None
+    gram = fit._channel_gram.matrix
+    rows = fit.moment_residual.shape[0]
+    design = np.asarray(fit.representer)[:, 0, :] @ gram / rows
+    scores = design * np.asarray(fit.moment_residual)[:, :1]
+    sums = np.zeros((20, 2))
+    np.add.at(sums, period, scores)
+    spread = 20 / 19 * (rows - 1) / (rows - 2) * sums.T @ sums
+    largest = float(scipy.linalg.eigh(spread, gram, eigvals_only=True)[-1])
+    residual = np.asarray(fit.moment_residual)
+    own = float(np.sum(residual**2)) / (rows - 2)
+    assert largest > own
+    smallest = float(scipy.linalg.eigh(spread, gram, eigvals_only=True)[0])
+    assert smallest < 0.5 * largest  # the direction matters
+    assert channel_region(fit).noise[0] == pytest.approx(math.sqrt(largest), rel=1e-9)

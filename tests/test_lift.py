@@ -460,3 +460,58 @@ def test_serial_ar1_keeps_the_check_s_level_where_the_noise_persists() -> None:
         ar1.append(check_observational(fit_lift(tests, START, serial="ar1"), truth).statistic)
     assert np.mean(independent) > 2.0
     assert np.mean(ar1) < 2.0
+
+
+def test_an_independent_fit_reads_its_residuals_lag_one_correlation_by_breusch_godfrey(
+    fit,
+) -> None:
+    """The residuals on the fit's Jacobian, by central differences of the gaps in each parameter,
+    and their own value a period earlier within each test; the lag's ``t`` against
+    ``t(n - p - 1)``. The Jacobian's span is the same in the solver's coordinates."""
+    tests = _world(0)
+    estimate = np.asarray(fit.estimate)
+    residual = np.concatenate([test.difference for test in tests]) - _oracle_gaps(tests, *estimate)
+    columns = []
+    for index in range(3):
+        step = np.zeros(3)
+        step[index] = 1e-6 * abs(estimate[index])
+        columns.append(
+            (_oracle_gaps(tests, *(estimate + step)) - _oracle_gaps(tests, *(estimate - step)))
+            / (2.0 * step[index])
+        )
+    lagged = np.concatenate([np.concatenate([[0.0], r[:-1]]) for r in np.split(residual, 4)])
+    design = np.column_stack([*columns, lagged])
+    slope, *_ = np.linalg.lstsq(design, residual, rcond=None)
+    left = residual - design @ slope
+    dof = residual.size - 4
+    error = math.sqrt(left @ left / dof * np.linalg.inv(design.T @ design)[-1, -1])
+    expected = 2.0 * stats.t.sf(abs(slope[-1]) / error, dof)
+    assert fit.serial_p_value == pytest.approx(expected, rel=1e-4, abs=0.0)
+    assert fit_lift(tests, START, serial="ar1").serial_p_value is None
+
+
+def test_an_independent_fit_warns_where_its_residuals_persist(caplog) -> None:
+    """Read as independent, AR(0.8) noise narrows the intervals and the check rejects the true
+    channel too often; the fit's own residuals say so, and the warning names the reading that
+    holds. Independent noise draws no warning."""
+    with caplog.at_level("WARNING", logger="chc.lift"):
+        quiet = fit_lift(_world(0), START)
+    assert quiet.serial_p_value is not None
+    assert quiet.serial_p_value > 0.05
+    assert not caplog.records
+    with caplog.at_level("WARNING", logger="chc.lift"):
+        persistent = fit_lift(_world(0, persistence=0.8), START)
+    assert persistent.serial_p_value is not None
+    assert persistent.serial_p_value < 1e-3
+    (record,) = caplog.records
+    assert record.levelname == "WARNING"
+    assert 'serial="ar1"' in record.getMessage()
+
+
+def test_fit_lift_warns_that_0_20_0_reads_the_noise_as_an_ar1() -> None:
+    tests = _world(0)
+    with pytest.warns(FutureWarning, match="until 0.20.0"):
+        default = fit_lift(tests, START)
+    explicit = fit_lift(tests, START, serial="independent")
+    np.testing.assert_array_equal(default.estimate, explicit.estimate)
+    np.testing.assert_array_equal(default.lower, explicit.lower)

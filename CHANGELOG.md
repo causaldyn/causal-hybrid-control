@@ -16,6 +16,25 @@ still change).
 - **`fit_causal_residual(unconfounded=)` and `times=`.** An empty adjustment set that a graph
   proves enough (a randomised lever) is fitted as identified, with its errors and its tube;
   `prescribe` sets it from the graph. `times=` reads the known physics at each transition's start.
+- **`sensitivity_analysis(robust=True)` reads its standard error HC3**, and `e_value_ci` with it:
+  where the noise grew with the action the classical 95 % interval missed 22.5 % of 4000 logs of
+  200 rows, HC3's 5.6 %. Left at `None` it reads the classical error and warns (`FutureWarning`)
+  that 0.20.0 reads HC3. The robustness value keeps the classical `t`, on which its closed form
+  is defined.
+- **`fit_causal_residual(nuisance_knots=)` and `nuisance_shift`** (experimental). The nuisances
+  were polynomials of a fixed degree: a lever set by `tanh` and a drift with `sin` in it left a
+  channel 0.62 below its truth at 1000 and 4000 rows, covered on none of 200 logs, and a higher
+  degree ran off in the other fold's tails. `nuisance_knots="auto"` adds a natural cubic spline
+  in each covariate at `ceil(N^(1/3))` quantile knots: bias 0.18, 0.05 and 0.18 of the channel's
+  error at 1000, 4000 and 16000 rows, coverage 0.955, 0.970 and 0.950. `nuisance_shift` reads
+  how far a refit moves the channel, in its errors (53 to 61 there). The default is unchanged.
+- **`fit_lift` tests its independent-noise premise.** With `serial="independent"` it reads the
+  residuals' lag-1 correlation within each test (Breusch–Godfrey), keeps the p-value in
+  `LiftFit.serial_p_value` and, below 0.05, logs a WARNING that names `serial="ar1"`: on 200
+  worlds it fired on 5.5 % of independent noise and on 51 %, 93.5 % and 100 % at AR(0.3), (0.5),
+  (0.8), where the check rejected the true channel 11 %, 17 % and 30 % of the time. Left at
+  `None`, `serial` reads `"independent"` and warns (`FutureWarning`) that 0.20.0 reads `"ar1"`,
+  which on independent noise rejected 6.0 % and covered 96.5 %.
 - **`SolverStatus` `infeasible`**: barrier rounds whose penalty reached its ceiling with a step
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
@@ -104,7 +123,9 @@ still change).
   transitions had become 2); time-zone-aware dates held as objects are read as dates.
 - **Fits**: with `clusters=None` a transition's states are summed before squaring; the rk4 Newton
   stop is relative to the parameters' units, so an exact `known` converges; `BackdoorOLS` and
-  `IV2SLS` report HC1 errors, and `IV2SLS` conditions both stages on its covariates.
+  `IV2SLS` report HC3 errors, and `IV2SLS` conditions both stages on its covariates. Where a
+  heavy-tailed treatment gives a few rows high leverage, HC1's 95 % interval missed 15.7 % of
+  4000 logs of 100 rows and HC3's 8.1 % (2SLS: 12.6 % and 7.0 %).
 - **`causal_pathway` adjusts each projection for every series' past** (an observed confounder
   flipped a source's sign on 20 of 20 worlds); `discover_lagged_parents` drops a parent the others
   explain and no longer ranks underflowed p-values by column order; `gcm_test`'s size at its
@@ -133,6 +154,32 @@ still change).
   less the raw estimate, so a zone whose estimate was negative earned `|m|` per unit of incentive
   (`+0.0054` on the default market's zone 8 in float64); the estimate is now projected onto the same
   non-negative prior first, and the tilt is `-min(max(m, 0), r·se)`.
+- **`persistence_check` reads its p-value within the fit's clusters, as the fit reads its error.**
+  It summed the pairs' products within units and read the units as independent: where units share
+  a cluster's noise or a period's shock, a 5 % test rejected noise that does not persist in 12.5 %
+  (5 clusters), 16.2 % (30) and 51.5 % (30 units × 20 periods, two ways) of 1000 panels; now
+  4.9 %, 7.0 % and 3.8 %. A fit clustered by unit reads as before; `prescribe`'s
+  `noise_persistence_p` reads the same way.
+- **`dml_point_and_se` and `DoubleML` count the cross-fitted nuisances' error in the standard
+  error.** The moment's sandwich weighed each row by its own residual alone, so a fold's shared
+  prediction error went uncounted: the 95 % interval missed 13.0 % (200 rows, linear), 15.1 %
+  (heteroskedastic) and 8.0 % (500 rows, nonlinear) of 1000 logs; each row is now weighed by the
+  effect's derivative in its outcome, through the nuisances: 2.8 %, 5.2 % and 4.2 %. `DoubleML`
+  on the heteroskedastic logs: 8.2 % → 6.8 %. The effect does not move.
+- **`discover_lagged_parents` says its `alpha` is each test's level, not the graph's**: on three
+  states and one control over three lags, 0.97 % of the null candidates entered at `alpha=0.01`,
+  and 26–27 % of graphs held at least one false edge.
+- **`refute_effect` reads each check against its own sampling error.** It passed a check that moved
+  the effect by less than 10 % or 15 % of itself, whatever the log's size: a right model failed
+  31.0 % of 1000 logs of 200 rows, 76.0 % at 50 rows. Each check now has its standard error
+  (`*_std_error`), and `passes` asks all three within the `1 - alpha / 6` quantile of `t(N - k)`
+  (`alpha=0.05`): 4.4 % and 4.9 %. The docstring says the checks read stability, not
+  identification: an omitted confounder failed as often (5.4 %).
+- **`channel_region` reads its noise within the fit's clusters.** It read each row's noise alone,
+  so a shock every unit shares in a period added up beyond the region's `R`: the 0.95 region
+  missed the channel on 6.9 % of 1000 logs of 30 units over 20 periods. A fit given `clusters` now
+  takes `R^2` as the larger of the rows' and the clusters' summed scores (CR1, two ways the
+  largest of three) in `V`'s norm: 0.0 %, the region 2.5 times wider (median).
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
 
 ## [0.18.0] — 2026-10-13

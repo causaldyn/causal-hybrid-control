@@ -317,16 +317,17 @@ def _heteroskedastic(rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
 
 
 def _sandwich(design: np.ndarray, residual: np.ndarray) -> np.ndarray:
-    """HC1 standard errors by numpy, an intercept appended to ``design``."""
+    """HC3 standard errors by numpy, an intercept appended to ``design``: each row's residual over
+    one less its leverage."""
     full = np.column_stack([design, np.ones(design.shape[0])])
-    n, p = full.shape
     bread = np.linalg.inv(full.T @ full)
-    meat = (full * residual[:, None] ** 2).T @ full
-    return np.sqrt(np.diag(n / (n - p) * bread @ meat @ bread))
+    leverage = np.einsum("ij,jk,ik->i", full, bread, full)
+    meat = (full * (residual / (1.0 - leverage))[:, None] ** 2).T @ full
+    return np.sqrt(np.diag(bread @ meat @ bread))
 
 
-def test_backdoor_ols_reports_the_hc1_error() -> None:
-    """The error is the heteroskedasticity-robust sandwich, read against numpy's."""
+def test_backdoor_ols_reports_the_hc3_error() -> None:
+    """The error is the heteroskedasticity-robust HC3 sandwich, read against numpy's."""
     data = _heteroskedastic(np.random.default_rng(3), 400)
     design = np.column_stack([data["u"], data["x"], data["z"]])
     full = np.column_stack([design, np.ones(400)])
@@ -368,9 +369,10 @@ def test_iv_conditions_both_stages_on_the_covariates_it_is_given() -> None:
     assert IV2SLS().estimate(data, covariates=("x",)).effect > 1.5  # c left out: biased
 
 
-def test_iv_reports_the_2sls_hc1_error() -> None:
-    """The error is the sandwich on the second stage's design, its residual the outcome less the
-    fit on the treatment itself, read against numpy's; IV2SLS reported none."""
+def test_iv_reports_the_2sls_hc3_error() -> None:
+    """The error is the HC3 sandwich on the second stage's design, its leverage read there and its
+    residual the outcome less the fit on the treatment itself, read against numpy's; IV2SLS
+    reported none."""
     data = _instrumented(np.random.default_rng(5), 1_000)
     controls = np.column_stack([data["x"], data["c"]])
     first = np.column_stack([controls, data["w"], np.ones(1_000)])
@@ -394,3 +396,26 @@ def test_iv_error_covers_the_effect() -> None:
         assert result.std_error is not None
         covered += abs(result.effect - 1.0) <= 1.96 * result.std_error
     assert covered >= 0.90 * 200
+
+
+def _leveraged(rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
+    """``y = 0.9 x + 0.8 u + 0.7 z + e`` with ``u = 0.5 x + 0.8 z + a``, ``a`` a t(3) draw over
+    its SD and the noise's SD ``|a|``: a few rows carry high leverage and the most noise."""
+    x, z, e = rng.standard_normal((3, n))
+    a = rng.standard_t(3, n) / np.sqrt(3.0)
+    u = 0.5 * x + 0.8 * z + a
+    return {"x": x, "z": z, "u": u, "x_next": 0.9 * x + 0.8 * u + 0.7 * z + e * np.abs(a)}
+
+
+def test_backdoor_ols_error_covers_where_a_few_rows_carry_high_leverage() -> None:
+    """A high-leverage row keeps a small residual whatever its noise, so HC1's interval missed the
+    effect 15.7 % of 4000 such logs of 100 rows; HC3's, which scales each residual by one less its
+    leverage, 8.1 %. Over 300 draws the miss rate's Monte Carlo SD is 0.016 at 0.081, so 0.12 is
+    about 2.4 of them above."""
+    rng = np.random.default_rng(8)
+    misses = 0
+    for _ in range(300):
+        result = BackdoorOLS().estimate(_leveraged(rng, 100), covariates=("x", "z"))
+        assert result.std_error is not None
+        misses += abs(result.effect - 0.8) > 1.959964 * result.std_error
+    assert misses <= 0.12 * 300

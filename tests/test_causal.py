@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.stats import t as student_t
 
 from chc import _units, causal
 from chc.causal import (
@@ -407,6 +408,58 @@ def test_the_dml_effect_reads_the_same_with_a_covariate_at_any_level(level: floa
     assert other == pytest.approx(one, rel=1e-9, abs=0.0)
 
 
+def _linear_plant(rng: np.random.Generator, n: int) -> dict[str, jax.Array]:
+    """``x_next = 0.9 x + 0.8 u + 0.7 z + e`` with ``u = 0.5 x + 0.8 z + a``, all draws N(0, 1)."""
+    x, z, a, e = rng.normal(size=(4, n))
+    u = 0.5 * x + 0.8 * z + a
+    return {
+        "x": jnp.asarray(x),
+        "z": jnp.asarray(z),
+        "u": jnp.asarray(u),
+        "x_next": jnp.asarray(0.9 * x + 0.8 * u + 0.7 * z + e),
+    }
+
+
+def test_the_dml_error_reads_each_row_through_the_nuisances_it_trained() -> None:
+    """The effect is linear in the outcome, ``theta = u_res' M y / sum u_res^2``, where column ``j``
+    of ``M`` is the outcome's residuals had it been 1 in row ``j`` and 0 elsewhere. Each row's
+    weight on the effect is so ``M' u_res / sum u_res^2``, and the error sums the weights' squares
+    times the residuals' squares; the moment's sandwich read the weight as ``u_res`` alone."""
+    data = _linear_plant(np.random.default_rng(3), 40)
+    n = data["u"].shape[0]
+    u_res = np.asarray(causal._dml_residuals(data, ("x", "z"), 3, 2, 1e-2, 0)[1])
+    m = np.column_stack(
+        [
+            np.asarray(
+                causal._dml_residuals({**data, "x_next": jnp.eye(n)[j]}, ("x", "z"), 3, 2, 1e-2, 0)[
+                    0
+                ]
+            )
+            for j in range(n)
+        ]
+    )
+    weight = m.T @ u_res / (u_res @ u_res)
+    y_res = m @ np.asarray(data["x_next"])
+    theta = weight @ np.asarray(data["x_next"])
+    eps = y_res - theta * u_res
+    effect, se = dml_point_and_se(data)
+    assert effect == pytest.approx(theta, rel=1e-12, abs=0.0)
+    assert se == pytest.approx(np.sqrt(np.sum(weight**2 * eps**2)), rel=1e-10, abs=0.0)
+
+
+def test_the_dml_interval_covers_the_effect_on_a_short_log() -> None:
+    """At the defaults on 200 rows the out-of-fold nuisances fit few rows, and the error their
+    predictions carry into every row they predict is shared: the moment's sandwich, which reads
+    each row as on its own, missed the effect with its 95% interval in 28 of 200 logs; read
+    through the nuisances, 2."""
+    rng = np.random.default_rng(11)
+    misses = 0
+    for draw in range(200):
+        effect, se = dml_point_and_se(_linear_plant(rng, 200), seed=draw)
+        misses += abs(effect - 0.8) > 1.96 * se
+    assert misses <= 16
+
+
 def _rounded(value: float, n: int) -> jax.Array:
     """``value`` in every row, its last bit flipped in every other one."""
     column = jnp.full(n, value)
@@ -620,13 +673,25 @@ def test_the_e_value_reads_the_same_with_the_outcome_in_any_units(units: float) 
 def test_the_refutation_reads_the_same_with_the_outcome_in_any_units(units: float) -> None:
     """Each check's tolerance was a share of the effect plus 1e-9 in the caller's units: with the
     outcome in billionths of its units, the effect, 1.2e-10 there, was an eighth of that floor, and
-    a refutation that fails, its subset's estimate 36% off the original, passed."""
-    data = ConfoundedLinearSystem(b_true=0.02, noise_scale=1.0).sample(400, jax.random.key(3))
-    one = refute_effect(data, adjust_for=("z",), seed=3)
+    a refutation that fails, its subset's estimate 36% off the original, passed. Each check now
+    reads against its own error, in the outcome's units too; this log's placebo lies 3.2 of its
+    errors from 0, a refutation that fails. (The log the test read before, at key 3, failed only
+    the shares of the effect the checks read until 0.19.0: they failed this right model for its
+    noise alone.)"""
+    data = ConfoundedLinearSystem(b_true=0.02, noise_scale=1.0).sample(400, jax.random.key(11))
+    one = refute_effect(data, adjust_for=("z",), seed=11)
     assert not one["passes"]  # a refutation the units could pass
-    other = refute_effect({**data, "x_next": data["x_next"] * units}, adjust_for=("z",), seed=3)
+    other = refute_effect({**data, "x_next": data["x_next"] * units}, adjust_for=("z",), seed=11)
     assert other["passes"] == one["passes"]
-    for name in ("original", "placebo", "random_common_cause", "subset"):
+    for name in (
+        "original",
+        "placebo",
+        "random_common_cause",
+        "subset",
+        "placebo_std_error",
+        "random_common_cause_std_error",
+        "subset_std_error",
+    ):
         assert other[name] / units == pytest.approx(one[name], rel=1e-9, abs=0.0), name
 
 
@@ -692,4 +757,135 @@ def test_a_column_of_zeros_among_the_covariates_moves_no_estimate() -> None:
     zeros = {**data, "zero": jnp.zeros_like(data["z"])}
     assert float(estimate_control_effect(zeros, ("z", "zero"))) == pytest.approx(
         alone, rel=1e-12, abs=0.0
+    )
+
+
+def _heteroskedastic(rng: np.random.Generator, rows: int) -> dict[str, jax.Array]:
+    """``x' = 0.9 x + 0.8 u + 0.7 z + e``, ``u = 0.5 x + 0.8 z + a``, the noise ``e`` scaled by
+    ``0.25 + |a|``: its variance moves with the action's own part."""
+    x, z, a, e = rng.normal(size=(4, rows))
+    u = 0.5 * x + 0.8 * z + a
+    e = e * (0.25 + np.abs(a)) / np.sqrt(0.0625 + 0.5 * np.sqrt(2 / np.pi) + 1)
+    return {
+        name: jnp.asarray(column)
+        for name, column in {
+            "x": x,
+            "z": z,
+            "u": u,
+            "x_next": 0.9 * x + 0.8 * u + 0.7 * z + e,
+        }.items()
+    }
+
+
+def test_the_robust_error_is_hc3_written_out_and_the_robustness_value_keeps_the_classical_t() -> (
+    None
+):
+    data = _heteroskedastic(np.random.default_rng(4), 150)
+    design = np.column_stack([data["x"], data["u"], data["z"], np.ones(150)])
+    outcome = np.asarray(data["x_next"])
+    inverse = np.linalg.inv(design.T @ design)
+    residual = outcome - design @ (inverse @ design.T @ outcome)
+    leverage = np.einsum("ij,jk,ik->i", design, inverse, design)
+    meat = (design * (residual / (1.0 - leverage))[:, None] ** 2).T @ design
+    hc3 = float(np.sqrt((inverse @ meat @ inverse)[1, 1]))
+    classical = float(np.sqrt(residual @ residual / (150 - 4) * inverse[1, 1]))
+    plain = sensitivity_analysis(data, ("z",))
+    robust = sensitivity_analysis(data, ("z",), robust=True)
+    assert plain["std_error"] == pytest.approx(classical, rel=1e-10, abs=0.0)
+    assert robust["std_error"] == pytest.approx(hc3, rel=1e-10, abs=0.0)
+    assert robust["std_error"] != pytest.approx(classical, rel=1e-2)
+    assert robust["effect"] == plain["effect"]
+    assert robust["robustness_value"] == plain["robustness_value"]
+    assert robust["e_value"] == plain["e_value"]
+    scale = float(_units.spread_and_rounding(data["u"])[0] / _units.spread(data["x_next"]))
+    expected = e_value(robust["effect"] * scale, hc3 * scale)["e_value_ci"]
+    assert robust["e_value_ci"] == pytest.approx(expected, rel=1e-9, abs=0.0)
+
+
+def test_the_sensitivity_warns_that_0_20_0_reads_hc3() -> None:
+    data = _heteroskedastic(np.random.default_rng(5), 200)
+    with pytest.warns(FutureWarning, match="until 0.20.0"):
+        default = sensitivity_analysis(data, adjust_for=("z",))
+    assert default == sensitivity_analysis(data, adjust_for=("z",), robust=False)
+
+
+def test_the_refutation_fails_a_right_model_at_about_its_alpha() -> None:
+    """Each check's change against its own sampling error, Bonferroni over the three: the shares
+    of the effect it read before, 10 % and 15 %, failed this right model 48.5 % of the time."""
+    rng = np.random.default_rng(11)
+    failed = [not refute_effect(_heteroskedastic(rng, 200), seed=i)["passes"] for i in range(200)]
+    assert np.mean(failed) <= 0.1
+
+
+def test_a_refutation_s_weights_are_its_least_squares_rows() -> None:
+    data = _heteroskedastic(np.random.default_rng(5), 80)
+    effect, weight = causal._effect_and_weight(data, ("z",))
+    design = np.column_stack([data["x"], data["u"], data["z"], np.ones(80)])
+    np.testing.assert_allclose(np.asarray(weight), np.linalg.pinv(design)[1], rtol=1e-9, atol=1e-12)
+    assert effect == float(estimate_control_effect(data, ("z",)))
+    residual = np.asarray(causal._residual(data, ("z",)))
+    spread = causal._spread(weight, jnp.asarray(residual), 4)
+    assert spread == pytest.approx(
+        np.sqrt(80 / 76 * np.sum(np.linalg.pinv(design)[1] ** 2 * residual**2)), rel=1e-12
+    )
+
+
+def test_the_refutation_reads_its_alpha() -> None:
+    data = _heteroskedastic(np.random.default_rng(6), 200)
+    report = refute_effect(data, alpha=0.05)
+    largest = max(
+        abs(report["placebo"]) / report["placebo_std_error"],
+        abs(report["random_common_cause"] - report["original"])
+        / report["random_common_cause_std_error"],
+        abs(report["subset"] - report["original"]) / report["subset_std_error"],
+    )
+    tail = 6.0 * float(student_t.sf(largest, 200 - 4))  # the alpha it just meets
+    assert 0.0 < tail < 0.9
+    assert refute_effect(data, alpha=tail * 0.999)["passes"]
+    assert not refute_effect(data, alpha=tail * 1.001)["passes"]
+    for alpha in (0.0, 1.0, -0.1, float("nan")):
+        with pytest.raises(ValueError, match="alpha"):
+            refute_effect(data, alpha=alpha)
+
+
+def test_each_check_s_error_is_its_change_s_least_squares_weights_written_out() -> None:
+    """The placebo's estimate, and the random cause's and the half's changes from the original,
+    each a sum of least-squares weights against the outcome; each error weights a row's squared
+    residual, the placebo's own regression's for the placebo, the original's for the changes."""
+    rows = 120
+    data = _heteroskedastic(np.random.default_rng(8), rows)
+    report = refute_effect(data, seed=4)
+    k_perm, k_rcc, k_sub = jax.random.split(causal._stream_key(4, "refute_effect"), 3)
+    columns = {name: np.asarray(column) for name, column in data.items()}
+    outcome = columns["x_next"]
+
+    def fit(*features: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        design = np.column_stack([*features, np.ones(features[0].size)])
+        weights = np.linalg.pinv(design)
+        return weights[1], outcome - design @ (weights @ outcome)
+
+    original, residual = fit(columns["x"], columns["u"], columns["z"])
+    shuffled = columns["u"][np.asarray(jax.random.permutation(k_perm, rows))]
+    placebo, placebo_residual = fit(columns["x"], shuffled, columns["z"])
+    common = np.asarray(jax.random.normal(k_rcc, (rows,)))
+    with_common, _ = fit(columns["x"], columns["u"], columns["z"], common)
+    half = np.asarray(jax.random.permutation(k_sub, rows))[: rows // 2]
+    design = np.column_stack(
+        [columns["x"][half], columns["u"][half], columns["z"][half], np.ones(half.size)]
+    )
+    subset = np.zeros(rows)
+    subset[half] = np.linalg.pinv(design)[1]
+
+    def error(weight: np.ndarray, noise: np.ndarray, coefficients: int) -> float:
+        return float(np.sqrt(rows / (rows - coefficients) * np.sum(weight**2 * noise**2)))
+
+    assert report["placebo"] == pytest.approx(float(placebo @ outcome), rel=1e-9)
+    assert report["placebo_std_error"] == pytest.approx(
+        error(placebo, placebo_residual, 4), rel=1e-9
+    )
+    assert report["random_common_cause_std_error"] == pytest.approx(
+        error(with_common - original, residual, 5), rel=1e-9
+    )
+    assert report["subset_std_error"] == pytest.approx(
+        error(subset - original, residual, 4), rel=1e-9
     )

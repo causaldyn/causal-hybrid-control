@@ -672,7 +672,9 @@ class DecisionCertificate:
     # channel is not identified or no unit has two consecutive transitions; the p-value is None
     # where the pairs leave no spread to read, as one pair does. Where the error is read across the
     # periods (``error_cosines``), the p-value reads the pairs' products the same way, summed
-    # within each period first (ADR 0075).
+    # within each period first (ADR 0075); where it is read within groups and periods
+    # (``error_clustered_by``, ``error_periods``), it reads them within those, the largest of the
+    # same three reads, against ``t(G - 1)``.
     noise_persistence: float | None = None
     noise_persistence_p: float | None = None
     # Whether the log determines the plan's predicted path (:data:`Estimability`, ADR 0054); None

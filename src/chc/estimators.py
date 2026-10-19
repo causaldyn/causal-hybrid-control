@@ -31,7 +31,7 @@ from jax import Array
 from chc import _units
 from chc.causal import (
     _centred_ridge_predict,
-    _ols_with_hc1_se,
+    _ols_with_hc3_se,
     _polynomial_features,
     _stream_key,
     _two_stage,
@@ -110,9 +110,13 @@ def _alias(data: Data, treatment: str, outcome: str, names: tuple[str, ...]) -> 
 class BackdoorOLS:
     """Backdoor adjustment: OLS of ``outcome`` on ``[treatment, *covariates]`` and an intercept.
 
-    ``std_error`` is the heteroskedasticity-robust HC1 sandwich. The classical error assumed one
+    ``std_error`` is the heteroskedasticity-robust HC3 sandwich. The classical error assumed one
     noise variance in every row: where it grew with the treatment, it read 0.114 against a Monte
-    Carlo spread of 0.164 and its 95% interval covered the effect in 82.5% of draws.
+    Carlo spread of 0.164 and its 95% interval covered the effect in 82.5% of draws. HC3 rather
+    than HC1: where a heavy-tailed treatment gives a few rows high leverage, HC1's interval missed
+    15.7 % of 4000 logs of 100 rows and HC3's 8.1 %, and where the noise's variance is one, HC3's
+    missed 4.8 % to 5.3 % at 100 to 1000 rows. HC3 is not exact under high leverage: that 8.1 %
+    falls to 6.1 % at 1000 rows.
     """
 
     def estimate(
@@ -126,7 +130,7 @@ class BackdoorOLS:
         _check_roles(treatment, outcome, covariates)
         columns = _columns(data, (treatment, outcome, *covariates))
         design = [columns[treatment]] + [columns[c] for c in covariates]
-        beta, se = _ols_with_hc1_se(jnp.stack(design, axis=1), columns[outcome])
+        beta, se = _ols_with_hc3_se(jnp.stack(design, axis=1), columns[outcome])
         effect, stderr = float(beta[0]), float(se[0])  # treatment is column 0
         return EffectEstimate(effect, stderr, diagnostics={"t_stat": effect / stderr})
 
@@ -143,8 +147,12 @@ class IV2SLS:
     what the covariates explain leaves the effect not identified, and is refused with
     ``ValueError``.
 
-    ``std_error`` is the 2SLS HC1 sandwich, its residual the outcome less the fit on the treatment
-    itself. It is valid for a strong instrument; no inference here is robust to a weak one.
+    ``std_error`` is the 2SLS HC3 sandwich, its residual the outcome less the fit on the treatment
+    itself, each row's leverage read on the second stage's design. It is valid for a strong
+    instrument; no inference here is robust to a weak one. On 4000 logs whose noise grew with a
+    heavy-tailed instrument, its 95 % interval missed the effect 7.0 % of the time at 100 rows and
+    5.8 % at 1000, where HC1's missed 12.6 % and 8.8 %; with a Gaussian instrument, 4.8 % and 4.7 %
+    against HC1's 5.6 % and 4.9 %.
 
     ``diagnostics["instrument_relevance"]``, experimental, is the partial correlation of the
     treatment and the instrument given the covariates, in absolute value: how far the instrument
@@ -187,7 +195,9 @@ class DoubleML:
 
     The nuisances are :func:`chc.causal.dml_point_and_se`'s, built on the centred and scaled
     covariates with the intercept free of the ridge, so ``ridge`` reads the same in any units of
-    the covariates and at any level of them, of the treatment and of the outcome.
+    the covariates and at any level of them, of the treatment and of the outcome. Its standard
+    error weights each row by the effect's derivative in that row's outcome, through the
+    nuisances the row trained as well as its own residual.
     """
 
     degree: int = 2

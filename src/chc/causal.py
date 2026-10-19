@@ -15,6 +15,7 @@ recovers the effect under *nonlinear* confounding via cross-fitted residualisati
 from __future__ import annotations
 
 import math
+import warnings
 import zlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from itertools import combinations_with_replacement
 import jax
 import jax.numpy as jnp
 from jax import Array
+from scipy.stats import t as student_t
 
 from chc import _units
 from chc.frames import _real_entries
@@ -163,12 +165,13 @@ def _two_stage(
     data: dict[str, Array], instrument: str, controls: tuple[str, ...] = ("x",)
 ) -> tuple[Array, Array, Array]:
     """:func:`estimate_effect_iv`'s estimate, its instrument's relevance
-    (:func:`_instrument_relevance`) and the estimate's HC1 standard error, both stages conditioning
+    (:func:`_instrument_relevance`) and the estimate's HC3 standard error, both stages conditioning
     on ``controls`` (the state by default); refused where the relevance is 0.
 
     The error is the 2SLS sandwich on the second stage's design, its residual the outcome less the
     fit on the action itself, not on its first-stage prediction: that one's residual carries the
-    first stage's error times the effect, and its error is not the estimate's."""
+    first stage's error times the effect, and its error is not the estimate's. Each row's leverage
+    is read on the second stage's design."""
     _refuse_reread("instrument", (instrument,), _TRANSITION)
     _refuse_reread("covariate", controls, _ACTION_AND_OUTCOME)
     data = _real_entries(data, (*controls, "u", instrument, "x_next"))
@@ -185,7 +188,7 @@ def _two_stage(
     pushed = jnp.stack([*held, u_hat], axis=1)
     coeffs, _ = _ols_fit(pushed, y)
     residual = y - jnp.stack([*held, u], axis=1) @ coeffs[:-1] - coeffs[-1]
-    errors = _hc1_errors(pushed, residual)
+    errors = _hc3_errors(pushed, residual)
     effect = len(held)  # the coefficient on the fitted (exogenous) part of u
     return coeffs[effect], relevance, errors[effect]
 
@@ -218,7 +221,10 @@ def estimate_effect_iv(data: dict[str, Array], instrument: str = "w") -> Array:
 
 
 def _ols_with_se(features: Array, target: Array) -> tuple[Array, Array, int]:
-    """OLS with intercept; returns (coefficients, standard errors, residual degrees of freedom)."""
+    """OLS with intercept; returns (coefficients, standard errors, residual degrees of freedom).
+
+    The errors are the classical ``sigma^2 (X'X)^-1``, which take the noise's variance as one
+    across rows; :func:`_hc3_errors` does not."""
     design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
     n, p = design.shape
     scale = _units.power_of_two(_units.root_mean_square(design))
@@ -231,35 +237,62 @@ def _ols_with_se(features: Array, target: Array) -> tuple[Array, Array, int]:
     return scale * beta, scale * jnp.sqrt(jnp.diag(cov)), dof
 
 
-def _hc1_errors(features: Array, residual: Array) -> Array:
-    """HC1 standard errors of the coefficients on ``features`` and an intercept, given each row's
-    ``residual``: the sandwich ``n/(n - p) (X'X)^-1 X' diag(e^2) X (X'X)^-1`` of MacKinnon and
-    White (1985), which holds where the noise's variance moves with the regressors. The classical
-    ``sigma^2 (X'X)^-1`` of :func:`_ols_with_se` assumes it does not. The Gram is inverted in the
+def _hc3_errors(features: Array, residual: Array) -> Array:
+    """HC3 standard errors of the coefficients on ``features`` and an intercept, given each row's
+    ``residual``: the sandwich ``(X'X)^-1 X' diag(e_i^2 / (1 - h_i)^2) X (X'X)^-1`` of MacKinnon
+    and White (1985), ``h_i`` the row's leverage, which holds where the noise's variance moves
+    with the regressors. The classical ``sigma^2 (X'X)^-1`` of :func:`_ols_with_se` assumes it
+    does not. HC3 rather than HC1's ``n / (n - p)``: a row of high leverage keeps a small residual
+    whatever its noise, and HC3 scales it back. On 4000 logs whose noise grew with a heavy-tailed
+    treatment, a 95 % interval missed the effect 8.1 %, 6.6 % and 6.1 % of the time at 100, 200
+    and 1000 rows, where HC1's missed 15.7 %, 11.9 % and 8.7 %; where the noise's variance is one,
+    4.8 %, 5.3 % and 4.8 %, where HC1's missed 5.8 %, 5.7 % and 4.8 %. The Gram is inverted in the
     columns' own units, as there."""
     design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
-    n, p = design.shape
     scale = _units.power_of_two(_units.root_mean_square(design))
     scaled = design * scale
     bread = jnp.linalg.inv(scaled.T @ scaled)
-    meat = (scaled * residual[:, None] ** 2).T @ scaled
-    return scale * jnp.sqrt(jnp.diag(n / (n - p) * bread @ meat @ bread))
+    leverage = jnp.einsum("ij,jk,ik->i", scaled, bread, scaled)
+    weighted = scaled * (residual / (1.0 - leverage))[:, None]
+    return scale * jnp.sqrt(jnp.diag(bread @ (weighted.T @ weighted) @ bread))
 
 
-def _ols_with_hc1_se(features: Array, target: Array) -> tuple[Array, Array]:
-    """OLS with intercept; returns (coefficients, HC1 standard errors by :func:`_hc1_errors`)."""
+def _ols_with_hc3_se(features: Array, target: Array) -> tuple[Array, Array]:
+    """OLS with intercept; returns (coefficients, HC3 standard errors by :func:`_hc3_errors`)."""
     coeffs, fitted = _ols_fit(features, target)
-    return coeffs, _hc1_errors(features, target - fitted)
+    return coeffs, _hc3_errors(features, target - fitted)
+
+
+_CLASSICAL_UNTIL_020 = (
+    "sensitivity_analysis's standard error is the classical one, which takes the noise's variance "
+    "as one across rows, until 0.20.0, which reads it heteroskedasticity-robust (HC3); pass "
+    "robust=True to read HC3 now, or robust=False to keep the classical error"
+)
 
 
 def sensitivity_analysis(
-    data: dict[str, Array], adjust_for: tuple[str, ...] = (), q: float = 1.0
+    data: dict[str, Array],
+    adjust_for: tuple[str, ...] = (),
+    q: float = 1.0,
+    *,
+    robust: bool | None = None,
 ) -> dict[str, float]:
     """Effect estimate plus its Cinelli-Hazlett robustness value.
 
     The robustness value is the ``R^2`` an unobserved confounder would need with *both* ``u`` and
     ``x_next`` to reduce the estimated effect by ``q*100%`` (toward zero). High RV = robust;
     a controller can ship this bound on how much hidden confounding its decision could tolerate.
+
+    ``std_error`` is, by default until 0.20.0, the classical OLS error, which takes the noise's
+    variance as one across rows, and ``e_value_ci`` reads its 95 % limit. Where the variance moves
+    with the action the error is too small: on 4000 logs of 200 rows whose noise grew with the
+    action's own part, the 95 % interval missed the effect 22.5 % of the time. ``robust=True``
+    reads it HC3 (:class:`chc.estimators.BackdoorOLS`'s error), and ``e_value_ci`` with it: 5.6 %
+    there, and 4.8 %, 5.3 % and 4.8 % at 100, 200 and 1000 rows of noise whose variance is one,
+    where the classical error missed 5.0 %, 5.5 % and 4.9 %. Left at None, ``robust`` reads the
+    classical error and warns (``FutureWarning``) that 0.20.0 reads HC3. The robustness value
+    keeps the classical ``t`` either way: Cinelli and Hazlett's closed form is the action's partial
+    ``R^2`` with the outcome, ``t^2 / (t^2 + dof)``, which holds for the classical ``t`` alone.
 
     Raises:
         ValueError: if ``adjust_for`` names ``x``, ``u`` or ``x_next``, or a column twice. The
@@ -272,14 +305,18 @@ def sensitivity_analysis(
     if twice:
         raise ValueError(f"covariates named more than once: {twice}")
     data = _real_entries(data, ("x", "u", "x_next", *adjust_for))
-    columns = [data["x"], data["u"], *[data[name] for name in adjust_for]]
-    beta, se, dof = _ols_with_se(jnp.stack(columns, axis=1), data["x_next"])
+    if robust is None:
+        warnings.warn(_CLASSICAL_UNTIL_020, FutureWarning, stacklevel=2)
+    columns = jnp.stack([data["x"], data["u"], *[data[name] for name in adjust_for]], axis=1)
+    beta, se, dof = _ols_with_se(columns, data["x_next"])
     t_stat = jnp.abs(beta[1] / se[1])
     f = q * t_stat / jnp.sqrt(float(dof))
     rv = 0.5 * (jnp.sqrt(f**4 + 4.0 * f**2) - f**2)
     # to standardised units, each spread taken relative to its column's largest entry
     spread_u = _units.spread_and_rounding(data["u"])[0]
     scale = float(spread_u / _units.spread(data["x_next"]))
+    if robust:
+        se = _ols_with_hc3_se(columns, data["x_next"])[1]
     report = {
         "effect": float(beta[1]),
         "std_error": float(se[1]),
@@ -450,25 +487,58 @@ def dml_point_and_se(
     ridge: float = 1e-2,
     seed: int = 0,
 ) -> tuple[float, float]:
-    """DML point estimate ``theta`` and its heteroskedastic influence-function standard error.
+    """DML point estimate ``theta`` and its heteroskedastic standard error.
 
     For the partially-linear score ``psi = u_res*(y_res - theta*u_res)`` the estimator is
-    ``theta = <u_res, y_res>/<u_res, u_res>`` and the (robust, HC-style) SE is
-    ``sqrt(sum u_res^2 * eps^2) / sum u_res^2`` with ``eps = y_res - theta*u_res`` -- the sandwich
-    variance of the Neyman-orthogonal moment. Ships EconML-grade uncertainty with the cross-fit
-    effect (a 95% CI is ``theta +/- 1.96*se``). The nuisances are those of
-    :func:`estimate_effect_dml`, so ``ridge`` reads the same in any units of the covariates and at
-    any level of them, of the action and of the outcome.
+    ``theta = <u_res, y_res>/<u_res, u_res>``, linear in the outcome ``y``. The (robust, HC-style)
+    SE is ``sqrt(sum a^2 * eps^2)`` with ``eps = y_res - theta*u_res`` and ``a = d theta / d y``,
+    each row's weight on ``theta``: through its own residual, ``u_res / sum u_res^2``, and through
+    the out-of-fold predictions of the nuisance it was a training row of. The moment's sandwich,
+    ``sqrt(sum u_res^2 * eps^2) / sum u_res^2``, reads the first alone, and a fold's prediction
+    error, shared by every row it predicts, went uncounted: at the defaults on 200 rows of a
+    linear plant its 95% interval missed the effect in 13.0% of 1000 logs, where this one misses
+    2.8%, and on 500 rows of a plant confounded through ``z^2`` and ``x z`` 8.0% where this one
+    misses 4.2%. A 95% CI is ``theta +/- 1.96*se``.
+    The nuisances are those of :func:`estimate_effect_dml`, so ``ridge`` reads the same in any
+    units of the covariates and at any level of them, of the action and of the outcome.
 
     Raises:
         ValueError: if ``covariates`` names ``u`` or ``x_next``, the action and the outcome.
     """
-    y_res, u_res = _dml_residuals(data, covariates, degree, folds, ridge, seed)
-    denom = jnp.sum(u_res * u_res)
-    theta = jnp.sum(y_res * u_res) / denom
+    data = _real_entries(data, ("x_next",))
+    outcome = jnp.asarray(data["x_next"], dtype=jnp.result_type(float))
+
+    def estimate(y: Array) -> tuple[Array, tuple[Array, Array]]:
+        y_res, u_res = _dml_residuals({**data, "x_next": y}, covariates, degree, folds, ridge, seed)
+        return jnp.sum(y_res * u_res) / jnp.sum(u_res * u_res), (y_res, u_res)
+
+    (theta, (y_res, u_res)), weight = jax.value_and_grad(estimate, has_aux=True)(outcome)
     eps = y_res - theta * u_res
-    se = jnp.sqrt(jnp.sum(u_res**2 * eps**2)) / denom
+    se = jnp.sqrt(jnp.sum(weight**2 * eps**2))
     return float(theta), float(se)
+
+
+def _effect_and_weight(data: dict[str, Array], adjust_for: tuple[str, ...]) -> tuple[float, Array]:
+    """:func:`estimate_control_effect` and each row's weight on it, its derivative in the row's
+    outcome: least squares is linear in the outcome, so the effect is the weights' sum against it,
+    exactly, and a change between two such effects has the difference of their weights."""
+    value, weight = jax.value_and_grad(
+        lambda outcome: estimate_control_effect({**data, "x_next": outcome}, adjust_for)
+    )(data["x_next"])
+    return float(value), weight
+
+
+def _residual(data: dict[str, Array], adjust_for: tuple[str, ...]) -> Array:
+    """The adjusted regression's residual, each row's outcome less its fitted value."""
+    columns = [data["x"], data["u"], *[data[name] for name in adjust_for]]
+    return data["x_next"] - _ols_fit(jnp.stack(columns, axis=1), data["x_next"])[1]
+
+
+def _spread(weight: Array, residual: Array, n_coeff: int) -> float:
+    """The standard error of ``weight @ y`` with each row's own squared residual for its noise's
+    variance, at the factor ``N / (N - k)`` (HC1): it holds where the noise differs across rows."""
+    rows = residual.shape[0]
+    return math.sqrt(rows / (rows - n_coeff) * float(jnp.sum(weight**2 * residual**2)))
 
 
 def refute_effect(
@@ -476,6 +546,7 @@ def refute_effect(
     adjust_for: tuple[str, ...] = ("z",),
     subset_fraction: float = 0.5,
     seed: int = 0,
+    alpha: float = 0.05,
 ) -> dict[str, float | bool]:
     """DoWhy-style refutation tests for the adjusted effect estimate (a robustness gate).
 
@@ -483,37 +554,70 @@ def refute_effect(
     - **random common cause**: add an irrelevant covariate — the effect must stay stable;
     - **subset**: re-estimate on a random subsample — the effect must stay stable.
 
-    Returns the estimates and ``passes`` (placebo near 0, the others near the original).
+    Each is read against its own sampling error: the placebo's estimate, and the other two's change
+    from the original, are each linear in the outcome, and their standard errors (``*_std_error``)
+    weight each row's own squared residual (HC1), so they hold where the noise differs across rows.
+    ``passes`` says all three lie within the ``1 - alpha / 6`` quantile of ``t(N - k)`` times
+    their errors (Bonferroni over the three), ``k`` the adjusted regression's coefficients, so an
+    estimate whose model is right fails with probability at most about ``alpha``. At
+    ``alpha=0.05``, on 1000 logs of 200 rows of a linear plant adjusted for its confounder, a right
+    model failed 4.4 % of the time, 3.6 % with heteroskedastic noise, and 4.9 % at 50 rows. The
+    shares of the effect the checks read until 0.19.0, 10 % and 15 %, ignored the sampling error:
+    they failed the same logs 31.0 %, 44.2 % and 76.0 % of the time, and at 1000 rows 1.0 %.
+
+    The three check the estimate's stability, not its identification: a permuted treatment, a
+    random column and a random half each read as the full log does whatever confounder the
+    adjustment set leaves out, so an estimate confounded by one passes as often as a right one:
+    the same plant with its confounder left out failed 5.4 % of 500 logs of 200 rows and 6.4 % of
+    500 of 1000. So does one the adjustment reads in the wrong form: with the confounder ``z``
+    moving the action and the outcome through ``z^2`` too, adjusted for ``z`` alone, it failed
+    6.0 % of 500 logs of 200 rows. ``passes`` says the estimate is stable, never that it is
+    identified.
+
+    Raises:
+        ValueError: on an ``alpha`` outside ``(0, 1)``.
     """
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha={alpha!r} must be in (0, 1)")
     data = _real_entries(data, ("x", "u", "x_next", *adjust_for))
     k_perm, k_rcc, k_sub = jax.random.split(_stream_key(seed, "refute_effect"), 3)
     n = data["x"].shape[0]
-    original = float(estimate_control_effect(data, adjust_for))
+    original, weight = _effect_and_weight(data, adjust_for)
+    residual = _residual(data, adjust_for)
+    n_coeff = 3 + len(adjust_for)
 
     placebo_data = {**data, "u": data["u"][jax.random.permutation(k_perm, n)]}
-    placebo = float(estimate_control_effect(placebo_data, adjust_for))
+    placebo, placebo_weight = _effect_and_weight(placebo_data, adjust_for)
+    placebo_error = _spread(placebo_weight, _residual(placebo_data, adjust_for), n_coeff)
 
     common = "_rcc"
     while common in data:  # a name of the caller's would be replaced by the random cause
         common = f"_{common}"
     rcc_data = {**data, common: jax.random.normal(k_rcc, (n,))}
-    rcc = float(estimate_control_effect(rcc_data, (*adjust_for, common)))
+    rcc, rcc_weight = _effect_and_weight(rcc_data, (*adjust_for, common))
+    rcc_error = _spread(rcc_weight - weight, residual, n_coeff + 1)
 
     idx = jax.random.permutation(k_sub, n)[: int(subset_fraction * n)]
-    subset = float(
-        estimate_control_effect({key: val[idx] for key, val in data.items()}, adjust_for)
+    subset, subset_weight = _effect_and_weight(
+        {key: val[idx] for key, val in data.items()}, adjust_for
+    )
+    subset_error = _spread(
+        jnp.zeros_like(weight).at[idx].set(subset_weight) - weight, residual, n_coeff
     )
 
-    scale = abs(original)  # no floor: one of 1e-9 passed failing refutations in small units
+    quantile = float(student_t.ppf(1.0 - alpha / 6.0, n - n_coeff))
     passes = (
-        abs(placebo) < 0.1 * scale
-        and abs(rcc - original) < 0.1 * scale
-        and abs(subset - original) < 0.15 * scale
+        abs(placebo) <= quantile * placebo_error
+        and abs(rcc - original) <= quantile * rcc_error
+        and abs(subset - original) <= quantile * subset_error
     )
     return {
         "original": original,
         "placebo": placebo,
         "random_common_cause": rcc,
         "subset": subset,
+        "placebo_std_error": placebo_error,
+        "random_common_cause_std_error": rcc_error,
+        "subset_std_error": subset_error,
         "passes": passes,
     }

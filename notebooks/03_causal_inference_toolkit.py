@@ -120,9 +120,9 @@ pd.DataFrame(
 same_way = ConfoundedLinearSystem(gamma=1.0, kappa=1.5).sample(40_000, jax.random.key(0))
 rv = pd.DataFrame(
     [
-        sensitivity_analysis(iv_data, adjust_for=("z",)),
-        sensitivity_analysis(iv_data, adjust_for=()),
-        sensitivity_analysis(same_way, adjust_for=()),
+        sensitivity_analysis(iv_data, adjust_for=("z",), robust=False),
+        sensitivity_analysis(iv_data, adjust_for=(), robust=False),
+        sensitivity_analysis(same_way, adjust_for=(), robust=False),
     ],
     index=["adjusts for z", "omits z", "omits z, kappa = +1.5"],
 )[["effect", "std_error", "robustness_value"]]
@@ -144,7 +144,9 @@ plt.show()
 #
 # Before trusting an effect, `chc` runs DoWhy-style refuters: permuting the treatment must collapse the
 # effect (**placebo → 0**), an irrelevant covariate must not change it (**random common cause**), and a
-# subsample must reproduce it (**subset**).
+# subsample must reproduce it (**subset**), each within its own sampling error (`*_std_error`). They
+# check the estimate's stability, not its identification: a confounder left out of `adjust_for`
+# passes them as often as a right model does.
 
 # %%
 report = refute_effect(data, adjust_for=("z",))
