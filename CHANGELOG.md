@@ -117,6 +117,12 @@ still change).
 - **`discover_lagged_parents` says its `alpha` is each test's level, not the graph's**: on three
   states and one control over three lags, 0.97 % of the null candidates entered at `alpha=0.01`,
   and 26–27 % of graphs held at least one false edge.
+- **`refute_effect` reads each check against its own sampling error.** It passed a check that moved
+  the effect by less than 10 % or 15 % of itself, whatever the log's size: a right model failed
+  31.0 % of 1000 logs of 200 rows, 76.0 % at 50 rows. Each check now has its standard error
+  (`*_std_error`), and `passes` asks all three within the `1 - alpha / 6` quantile of `t(N - k)`
+  (`alpha=0.05`): 4.4 % and 4.9 %. The docstring says the checks read stability, not
+  identification: an omitted confounder failed as often (5.4 %).
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
 
 ## [0.18.0] — 2026-10-13
