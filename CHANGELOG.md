@@ -222,6 +222,14 @@ still change).
   (`validation/var_noise_tube.mac`), and the tube holds 0.958–0.964 at every week. On a second
   plant (16 logs) the AR(0.8) case holds 0.944–0.950 a step, where it held 0.765–0.952. White
   noise moves within Monte Carlo error (ADR 0105).
+- **`prescribe`'s tube reads the field's error where the plan goes, at its studentised quantile.**
+  The field's part was one standard error added to the noise's 0.95 radius, a 68 % reading of a
+  Student's error, and a root mean over the log's rows, where a plan heads away from them. On
+  AR(1) logs of 30 transitions the plant stayed inside 0.904 of the time at step 8. The fit now
+  keeps the covariances its errors are read from, `prescribe` reads them at each planned state,
+  and the radius adds `t_nu(0.975) / z` of that error along the noise's widest direction
+  (`validation/tube_level.mac`). Step 1 to step 8 now read 0.968–0.968 on 30 transitions,
+  0.947–0.976 on 60 and 0.949–0.973 on 120 (ADR 0104).
 
 ## [0.18.0] — 2026-10-13
 
