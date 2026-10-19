@@ -10,6 +10,7 @@ import functools
 import importlib
 import itertools
 import math
+import warnings
 from collections.abc import Callable
 
 import jax
@@ -3597,6 +3598,28 @@ def test_the_spline_sieve_on_a_linear_plant_reads_the_polynomial_s_channel() -> 
     }
     plain = _fit_outside(linear)
     assert nuisance_shift(plain, _fit_outside(linear, nuisance_knots="auto"), linear["x"]) < 0.5
+
+
+def test_a_default_fit_says_when_a_spline_refit_moves_its_channel() -> None:
+    """Left at ``nuisance_knots=None`` the fit refits once with ``"auto"``: on the plant above, at
+    1000 rows, the channel moves by tens of its errors and the fit warns that its nuisances miss
+    the log's. On a linear plant it moves by a fraction of one and the fit is silent, and a fit
+    that names its knots does not refit."""
+    with pytest.warns(FutureWarning, match=r"nuisance_knots='auto'.*0\.20\.0"):
+        _fit_outside(_outside_the_polynomial(1000, 0))
+    data = _outside_the_polynomial(1000, 3)
+    x, z = np.asarray(data["x"]), np.asarray(data["z"])
+    rng = np.random.default_rng(4)
+    u = 0.8 * x + 0.5 * z + 0.5 * rng.normal(size=x.shape)
+    linear = {
+        **data,
+        "u": jnp.asarray(u),
+        "x_next": jnp.asarray(x + 0.1 * (-0.5 * x + u + 0.5 * z) + 0.01 * rng.normal(size=x.shape)),
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        _fit_outside(linear)
+        _fit_outside(_outside_the_polynomial(1000, 0), nuisance_knots="auto")
 
 
 @pytest.mark.parametrize("knots", [2, 0, -1, True, 3.0, "more"])

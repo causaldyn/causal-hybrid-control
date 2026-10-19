@@ -51,6 +51,15 @@ still change).
   share of the fitted channel, which at every level stays within the estimate's own size of it, or
   `"absolute"`, a `ChannelSensitivity`'s bound on the channel's error. A fitted channel of 0.004
   for a plant's 1 reads `gamma_star = inf` under the share, and now says the radius is relative.
+- **`fit_causal_residual` says when its default nuisances miss the log's.** Left at
+  `nuisance_knots=None`, an identified, unweighted fit without an instrument refits once with
+  `"auto"` and warns (`FutureWarning`) where the channel moves by more than three of its errors,
+  naming 0.20.0's default, `"auto"`. With a drift and a logging rule outside the polynomial it moved
+  by 5.8 to 10.4 errors and warned on 40 of 40 logs, whose intervals covered on none; on 120 logs of
+  linear plants and 20 of the quickstart's it moved by 0.89 at most and warned on none; on one
+  serial log of a linear plant it warned on 2 % of logs at 100 rows and on none at 200. The fit
+  returned is unchanged; the check costs one more fit, which about doubles the time of a default fit
+  and of `prescribe`.
 - **`prescribe(neighbours=)` checks for spillover, and `prescribe(clusters=)` fits on groups.**
   With zones whose incentive moves their cluster-mates' supply, the zone-by-zone channel read the
   incentive's own push, +0.414 off the effect a plan that moves every zone gets, and covered it on
