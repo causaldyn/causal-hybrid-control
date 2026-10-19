@@ -1836,7 +1836,14 @@ def cluster_fold_leakage_certificate(
     conclusions survive (ARM 1) -- what does not survive is the claim that the code implements A8.
     The C2 certificates' own ``G_exp`` varies i.i.d. WITHIN cluster, which is not what a
     partial-interference exposure looks like, so they sit in the benign regime by accident.
+
+    Raises:
+        ValueError: if ``n_seeds < 2``: the variance law reads spreads over the seeds.
     """
+    if n_seeds < 2:
+        raise ValueError(
+            f"n_seeds must be at least 2, the law being a ratio of spreads; got {n_seeds}"
+        )
 
     def simulate(
         rng: np.random.Generator, gclust: int, m: int, tau: float, cluster_exposure: bool = False
@@ -3370,7 +3377,7 @@ def fold_exactness_certificate(
 
     # the design sees neither a uniform off-diagonal shift nor a diagonal one
     m0 = int(small[-1])
-    q0 = _fold_weight_matrix(cycle_shells(m0, dmax), gammas, float(decays[1]))
+    q0 = _fold_weight_matrix(cycle_shells(m0, dmax), gammas, float(decays[len(decays) // 2]))
     off = q0 + shift * (np.ones((m0, m0)) - np.eye(m0))
     diagonal = q0 + shift * np.eye(m0)
     plain, moved, diag = [], [], []

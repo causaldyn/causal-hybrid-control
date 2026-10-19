@@ -882,6 +882,12 @@ def test_cluster_fold_row_folds_annihilate_a_cluster_measurable_exposure() -> No
     assert np.all(cert.resid_icc_row == 0.0)
 
 
+def test_cluster_fold_leakage_needs_two_seeds() -> None:
+    """The variance law is a ratio of spreads over the seeds; one seed raised ZeroDivisionError."""
+    with pytest.raises(ValueError, match="n_seeds must be at least 2"):
+        cluster_fold_leakage_certificate(n_seeds=1)
+
+
 def test_cluster_fold_row_folds_do_not_bias_the_estimate() -> None:
     """cluster_fold_leakage.v moment_unbiased_under_orthogonality: no bias for any folds."""
     kwargs = {"n_clusters": 20, "cluster_size": 6, "icc_grid": (0.6,), "lin_cluster_grid": (20,)}
