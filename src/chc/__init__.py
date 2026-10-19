@@ -128,7 +128,14 @@ from chc.mpc import PeriodBudget, RecedingHorizon
 from chc.offpolicy import GaussianPolicy, off_policy_value
 from chc.panel import Panel, PanelError, Provenance
 from chc.panel import installed_version as _installed_version
-from chc.plan import BarrierConstraint, CausalPlan, causal_plan, certify_safety, plan_regret_bound
+from chc.plan import (
+    BarrierConstraint,
+    CausalPlan,
+    ChannelSensitivity,
+    causal_plan,
+    certify_safety,
+    plan_regret_bound,
+)
 from chc.regret import (
     adaptive_exploration_certificate,
     capped_exploration_policy,
@@ -163,6 +170,7 @@ __all__ = [
     "CausalGraph",
     "CausalPlan",
     "ChannelPrior",
+    "ChannelSensitivity",
     "Constraint",
     "CyclicGraphError",
     "DecisionError",

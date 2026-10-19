@@ -261,10 +261,10 @@ def test_a_disturbance_that_persists_unlogged_is_warned_of(
 ) -> None:
     """An unlogged AR(0.9) disturbance of standard deviation 2 on supply's rate is read in part as
     supply's own drift, so the one-step error on the log is smaller than the plant's and the
-    noise the tube reads may not be the plant's. The channel's residual persists (p below 1e-20),
-    and a ``tube`` warning and the report say so. On the same log without the disturbance the
-    check reads p = 0.63 and nothing is warned of; on such logs it rejects at about its size, 3
-    of 40 at 0.05."""
+    noise the tube reads may not be the plant's. The channel's residual persists (p = 2.5e-5,
+    read within the fit's clusters), and a ``tube`` warning and the report say so. On the same
+    log without the disturbance the check reads p = 0.63 and nothing is warned of; on such logs it
+    rejects at about its size, 3 of 40 at 0.05."""
 
     def warned(records: list[logging.LogRecord]) -> list[logging.LogRecord]:
         return [
@@ -277,7 +277,7 @@ def test_a_disturbance_that_persists_unlogged_is_warned_of(
         decided = _decide(_quickstart_log(34, 0.0, disturbance=2.0, carry=0.9))
     certificate = decided.certificate
     assert certificate.noise_persistence_p is not None
-    assert certificate.noise_persistence_p < 1e-20
+    assert certificate.noise_persistence_p < 1e-3
     assert certificate.certified_horizon is not None
     assert len(warned(caplog.records)) == 1
     assert "the noise the tube reads may not be the plant's" in decided.report()
