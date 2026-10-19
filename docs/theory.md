@@ -89,29 +89,28 @@ exact enumeration, or a Monte Carlo risk within several of its standard errors. 
 hypotheses' region. It is not a proof about the code.
 
 Where the code does not satisfy the statement, the test is the counterexample, marked as an
-expected failure (`xfail(strict=True)`) with its numbers. These are the statements that do not
-hold as the code computes them (names relative to `chc`):
+expected failure (`xfail(strict=True)`) with its numbers, until the code or the docstring is
+corrected. No statement is in that state now. Eleven statements were, with thirteen expected
+failures, when the tests were first written (names relative to `chc`):
 
-- `regret._self_consistent_mass`: its fixed-point iteration can oscillate and return a mass that
-  does not balance, at a tight cap or after rounds with no authority.
-- `regret.capped_exploration_policy`: the block at the cap is the best whole block. The optimum of
-  the convex program has one partial last round and is lower.
-- `regret.conjugate_time_certificate`: the definite arm returns `nan` once the terminal weight
-  leaves the range of its inverse hyperbolic tangent.
-- `regret.constrained_ce_regret_certificate`: `pessimism_budget` is not the naive controller's
-  regret when the true optimum is past the bound; it is 45 % lower at the defaults.
-- `regret.hinf_robust_regret_certificate`: where b² > r, the robust gain lies above the
-  certainty-equivalent gain, not below it, and the certainty-equivalent regret can fall below the
-  calibrated minimum.
-- `regret.information_lower_bound_certificate`: raises at r = b², where its floor is zero.
-- `regret.minimax_action` and `regret.minimax_lq_policy`: the kink rule and the effect that
-  realises the value assume a nonnegative effect interval.
-- `regret.transportability_regret_certificate`: the W-DRO bound covers the quadratic proxy that
-  the proof bounds, not the exact regret, which is 39 % above it at the radius.
-- `delay.delay_design_loss`: the over-estimate's two-term series misses the exact root by
-  4·10⁻³, not 10⁻³, at ε = 0.05.
-- `deep_galerkin.dual_weighted_error_estimate`: exact for an affine model only where the model's
-  curvature is the Riccati root.
+- Fixed in the code: `regret._self_consistent_mass` iterated its fixed-point map, which can
+  oscillate, and now bisects; `regret.capped_exploration_policy` searched whole blocks only, and
+  now solves the convex program with its one partial last round, zero rounds included;
+  `regret.conjugate_time_certificate`'s definite arm returned `nan` past the range of its inverse
+  hyperbolic tangent, and now takes the coth branch there;
+  `regret.constrained_ce_regret_certificate`'s `pessimism_budget` was 45 % low at the defaults,
+  and is now the exact cost gap to the clip; `regret.information_lower_bound_certificate` raised
+  at r = b², where its floor is zero, and now returns it.
+- Docstrings narrowed to what the lemma proves, each with a test of the narrowed statement:
+  `regret.hinf_robust_regret_certificate` (where b² > r the robust gain lies above the
+  certainty-equivalent one, and the certainty-equivalent regret can fall below the calibrated
+  minimum); `regret.minimax_action` and `regret.minimax_lq_policy` (the pessimistic endpoint is
+  the one nearest zero, `b_hi` on a negative interval);
+  `regret.transportability_regret_certificate` (the W-DRO budget covers the quadratic proxy; the
+  exact regret is 1.39 times it at the radius, and the certificate carries the exact bound beside
+  it); `delay.delay_design_loss` (the two-term series misses by 4·10⁻³ above, 7.7·10⁻⁴ below, at
+  ε = 0.05); `deep_galerkin.dual_weighted_error_estimate` (exact where the model's curvature is
+  the Riccati root, otherwise the error of the problem at the model's own rate).
 
 | Proof or derivation | Code it is tested against | Tests |
 |---|---|---|
@@ -136,6 +135,7 @@ hold as the code computes them (names relative to `chc`):
 | `causal_pathway.v` | `pathway` | `test_formal_estimation.py` |
 | `ce_explicit_constants.mac` | `regret.ce_explicit_constant_certificate` | `test_formal_regret_a.py` |
 | `ce_explicit_constants.v` | `regret.ce_explicit_constant_certificate`, `regret.regret_scaling` | `test_formal_regret_a.py, test_formal_regret_c.py` |
+| `channel_bias_bound.mac` | `plan.ChannelSensitivity`, `plan._sensitivity_gamma_star` | `test_formal_seams.py` |
 | `closed_loop_attribution.v` | `dynamics_id.closed_loop_gain_attribution` | `test_formal_estimation.py` |
 | `cluster_fold_leakage.mac` | `regret.cluster_fold_leakage_certificate` | `test_formal_regret_a.py` |
 | `cluster_fold_leakage.v` | `regret.cluster_fold_leakage_certificate` | `test_formal_regret_a.py` |
@@ -206,6 +206,7 @@ hold as the code computes them (names relative to `chc`):
 | `interference_regret.v` | `regret.interference_orthogonal_certificate`, `regret.interference_regret_certificate` | `test_formal_regret_b.py` |
 | `lipschitz_rollout.mac` | `uncertainty.lipschitz_rollout_bound` | `test_formal_control.py` |
 | `lipschitz_rollout.v` | `uncertainty.confounding_robust_closed_loop_bound`, `uncertainty.constraint_margin`, `uncertainty.contractive_rollout_bound`, `uncertainty.lipschitz_rollout_bound`, `uncertainty.time_varying_rollout_bound` | `test_formal_control.py` |
+| `local_projection_bias.mac` | `switchback.read_switchback` | `test_formal_seams.py` |
 | `lq_mean_field.mac` | `deep_galerkin` | `test_formal_fields.py` |
 | `lq_mean_field.v` | `deep_galerkin`, `deep_galerkin.LQMeanFieldGame.obstruction_horizon` | `test_formal_fields.py` |
 | `matrix_ratio_moment.v` | `regret.exact_matrix_ratio_moment` | `test_formal_regret_b.py` |
@@ -216,6 +217,7 @@ hold as the code computes them (names relative to `chc`):
 | `minimax_lq.mac` | `regret.minimax_action`, `regret.minimax_lq_policy` | `test_formal_regret_b.py` |
 | `minimax_lq.v` | `regret.minimax_action` | `test_formal_regret_b.py` |
 | `minimax_regret_move.mac` | `regret.minimax_regret_move` | `test_formal_regret_b.py` |
+| `mis_model_error.mac` | `evaluation` | `test_formal_seams.py` |
 | `multichannel_control.mac` | `regret.multichannel_control_certificate` | `test_formal_regret_c.py` |
 | `multichannel_control.v` | `regret.multichannel_control_certificate`, `regret.multivariate_interference_certificate` | `test_formal_regret_c.py` |
 | `multivariate_van_trees.mac` | `regret.multivariate_action_floor`, `regret.multivariate_van_trees_certificate` | `test_formal_regret_c.py` |
@@ -241,6 +243,7 @@ hold as the code computes them (names relative to `chc`):
 | `planned_cost_bias.mac` | `plan.CausalPlan.planned_cost_bias` | `test_formal_control.py` |
 | `port_hamiltonian_lyapunov.v` | `residual.damping_injection_certificate` | `test_formal_fields.py` |
 | `predictive_tube.mac` | `plan.causal_plan`, `uncertainty._noise_tube` | `test_formal_control.py` |
+| `regret_bound_rows.mac` | `plan._row_bound`, `plan.plan_regret_bound` | `test_formal_control.py, test_formal_seams.py` |
 | `response_curves.mac` | `response` | `test_formal_estimation.py` |
 | `rk4_rollout.mac` | `uncertainty.linear_rollout_bound`, `uncertainty.time_varying_rollout_bound` | `test_formal_control.py` |
 | `space_time_folds.mac` | `regret.space_time_fold_certificate` | `test_formal_regret_c.py` |
@@ -250,9 +253,11 @@ hold as the code computes them (names relative to `chc`):
 | `switchback_randomisation.mac` | `switchback.randomisation_interval` | `test_formal_estimation.py` |
 | `transportability_regret.mac` | `regret.transportability_regret_certificate` | `test_formal_regret_c.py` |
 | `transportability_regret.v` | `regret.transportability_regret_certificate` | `test_formal_regret_c.py` |
+| `tube_level.mac` | `decision._field_scale` | `test_formal_seams.py` |
 | `tube_levels.mac` | `dynamics_id.ChannelRegion.stability_level`, `uncertainty.gaussian_mixing` | `test_formal_control.py, test_formal_estimation.py` |
 | `van_trees.mac` | `regret.van_trees_certificate` | `test_formal_regret_c.py` |
 | `van_trees.v` | `regret.adaptive_exploration_certificate`, `regret.van_trees_certificate` | `test_formal_regret_a.py, test_formal_regret_c.py` |
+| `var_noise_tube.mac` | `uncertainty._noise_tube` | `test_formal_control.py` |
 | `zone_market.mac` | `zones.ZoneMarketSystem.zone_decision` | `test_formal_estimation.py` |
 
 ## Result numbers in docstrings

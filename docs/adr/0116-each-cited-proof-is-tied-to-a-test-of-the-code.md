@@ -1,6 +1,7 @@
 # ADR 0116 — Each cited proof is tied to a test of the code
 
-**Status:** accepted, 2026-10-19.
+**Status:** accepted, 2026-10-19. Amended the same day, before any release: no expected failure
+is left, and a statement whose docstring claimed more than its lemma is narrowed, not marked.
 
 ## Context
 
@@ -26,6 +27,10 @@ nothing would fail. The theory page said so.
 - Where the code does not satisfy the statement inside the lemma's hypotheses, the test is an
   explicit counterexample marked `xfail(strict=True)` with the numbers. The test is not loosened.
   When the code is fixed, the strict mark fails and must be removed.
+- A strict mark is a state to leave, not to keep. Where the code computes the wrong number, the
+  code is fixed. Where the docstring claims more than the lemma proves, the docstring is narrowed
+  to the lemma's premise with the measured numbers, and the counterexample becomes a test of the
+  narrowed statement and of the number that broke the old one.
 - Closed forms are cross-checked in a second engine (Julia, PARI/GP or FriCAS) at sample points.
   These checks run by hand and are not part of CI.
 
@@ -33,7 +38,9 @@ nothing would fail. The theory page said so.
 
 - At the start, 117 objects cite 139 files. All 117 have tests; none needed a reason.
 - 22 cited statements failed on the code. Nine had a local fix and were fixed. The other 13
-  are strict expected failures, and the theory page lists them.
+  were strict expected failures, on eleven cited objects. By the amendment six of the 13 are fixed
+  in the code and seven are read as narrowed docstrings; the theory page lists both.
+- After the merges that followed, 123 objects cite 145 files, all with tests.
 - A docstring's citation can no longer outlive the code it describes without a red test.
 - The links name the tests, so the theory page can say which lemma is tied to which test.
 - The suite gains the formal tests' run time.
