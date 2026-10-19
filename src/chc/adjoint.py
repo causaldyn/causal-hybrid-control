@@ -15,7 +15,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from chc.cost import QuadraticCost
-from chc.dynamics import Dynamics
+from chc.dynamics import Dynamics, _SetAtStep
 from chc.integrate import rk4_step, rollout
 
 
@@ -67,6 +67,11 @@ def costate_norms(dyn: Dynamics, x0: Array, us: Array, dt: float, cost: Quadrati
     so the bound they license is a first-order one about a neighbourhood of it, not a global
     Lipschitz constant of ``J``.
     """
+    return jnp.linalg.norm(_costates(dyn, x0, us, dt, cost), axis=1)
+
+
+def _costates(dyn: Dynamics, x0: Array, us: Array, dt: float, cost: QuadraticCost) -> Array:
+    """``lambda_{k+1}`` for ``k = 0 .. H-1``, ``(H, n)``: :func:`costate_norms`' vectors."""
     xs = rollout(dyn, x0, us, dt)
     horizon = us.shape[0]
     targets = cost.targets(horizon)
@@ -82,11 +87,28 @@ def costate_norms(dyn: Dynamics, x0: Array, us: Array, dt: float, cost: Quadrati
     def body(lam: Array, k: Array) -> tuple[Array, Array]:
         # The costate reported at k is lambda_{k+1}: the one that multiplies a perturbation
         # ENTERING x_{k+1}, which is the step u_k acts on.
-        return l_x[k] + f_x[k].T @ lam, jnp.linalg.norm(lam)
+        return l_x[k] + f_x[k].T @ lam, lam
 
     ks = jnp.arange(horizon - 1, -1, -1)
-    _, norms_reversed = jax.lax.scan(body, lam_terminal, ks)
-    return norms_reversed[::-1]
+    _, reversed_costates = jax.lax.scan(body, lam_terminal, ks)
+    return reversed_costates[::-1]
+
+
+class _Offset(eqx.Module):
+    """``field(t, x, u) + offset``, the offset constant in the state, the time and the action."""
+
+    field: Dynamics
+    offset: Array
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.field(t, x, u) + self.offset
+
+
+def _offset_step(dyn: Dynamics, t: Array, x: Array, u: Array, offset: Array, dt: float) -> Array:
+    """One RK4 step of the field plus a constant ``offset``, the action held as
+    :func:`chc.integrate.rk4_step` holds it."""
+    field, held = dyn.at_step(x, u) if isinstance(dyn, _SetAtStep) else (dyn, u)
+    return rk4_step(_Offset(field, offset), t, x, held, dt)
 
 
 @eqx.filter_jit
@@ -109,9 +131,14 @@ def perturbation_cost_weights(
     * **second order.** The first-order term is *asymptotically tight*, so it is not an upper
       bound: the curvature term it drops is positive and O(radius^2). A deviation tube
       ``rho_{k+1} = ||dF/dx|| rho_k + eps_k`` carries the injections forward, and
-      ``1/2 sum ||d^2 L/dx^2|| rho^2`` closes the Taylor expansion. Exact for a linear plant with
-      a quadratic cost, where ``J`` is exactly quadratic along the perturbation; ``O(radius^3)``
-      otherwise.
+      ``1/2 sum ||d^2 L/dx^2|| rho^2`` adds the cost's curvature along it. The step's own
+      curvature enters at the same order: ``lambda_{k+1}`` contracted with the Hessian of the step
+      in the state and the field offset ``g_k`` together, ``K_k``, adds
+      ``1/2 sum ||K_k|| (rho_k^2 + ||g_k||^2)``, ``||g_k|| <= radius ||u_k||``. Without it a
+      cubic drift's bound read 0.97 of the worst case at radius 0.5. On a plant affine in the
+      state ``K_k`` is zero and ``J`` is exactly quadratic along the perturbation, so the sum is
+      an upper bound; otherwise it is one to second order, its ``O(radius^3)`` remainder not
+      bounded, and every derivative read at the reference.
 
     ``radius = 0`` is meaningful and is used: it zeroes the tube, so the weights collapse to
     exactly the first-order term, which is how the certificate reports both.
@@ -152,6 +179,20 @@ def perturbation_cost_weights(
     curvature = jax.vmap(lambda h: jnp.linalg.norm(h, ord=2))(hess_run)
     terminal_curvature = jnp.linalg.norm(jax.hessian(cost.terminal)(xs[-1], targets[-1]), ord=2)
     second = 0.5 * (jnp.sum(curvature[1:] * rho[:-1] ** 2) + terminal_curvature * rho[-1] ** 2)
+
+    def coupling(t: Array, x: Array, u: Array, lam: Array) -> Array:
+        """``||K_k||``: the step's Hessian in ``(x, g)`` at ``(x_k, 0)``, contracted with
+        ``lambda_{k+1}``."""
+        size = x.shape[0]
+
+        def reached(z: Array) -> Array:
+            return lam @ _offset_step(dyn, t, z[:size], u, z[size:], dt)
+
+        return jnp.linalg.norm(jax.hessian(reached)(jnp.concatenate([x, jnp.zeros_like(x)])), 2)
+
+    couplings = jax.vmap(coupling)(times, xs[:-1], us, _costates(dyn, x0, us, dt, cost))
+    deviation = jnp.concatenate([jnp.zeros((1,), rho.dtype), rho[:-1]])  # rho_k, rho_0 = 0
+    second = second + 0.5 * jnp.sum(couplings * (deviation**2 + (radius * action_norms) ** 2))
 
     first_order = costate_norms(dyn, x0, us, dt, cost) * gains
     denominator = radius * jnp.sum(action_norms)

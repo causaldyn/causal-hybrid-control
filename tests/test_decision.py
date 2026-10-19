@@ -1646,9 +1646,9 @@ def test_every_state_of_the_record_is_strict_json(build, reads: dict[str, object
 
 def test_the_plan_s_first_order_check_is_in_the_record_with_a_status_for_each_null() -> None:
     """The plan's stationarity and constraint violation go to the record and the report beside
-    their tolerances and statuses. A null reads three ways: no plan, where the statuses are null
-    too; a plan held under the constraints' barrier, whose stationarity is ``not_evaluated``; and
-    a number that is not finite, ``not_finite``."""
+    their tolerances and statuses. A plan held under the constraints' barrier reads its stationarity
+    with the barrier's binding steps among its constraints. A null reads two ways: no plan, where
+    the statuses are null too, and a number that is not finite, ``not_finite``."""
     solved = _small()
     record = json.loads(json.dumps(solved.to_json(), allow_nan=False))["certificate"]
     certificate = solved.certificate
@@ -1678,9 +1678,9 @@ def test_the_plan_s_first_order_check_is_in_the_record_with_a_status_for_each_nu
         )
 
     held = _small(hold_constraints=True)
-    assert read(held)[:2] == (None, "not_evaluated")
-    assert read(held)[3] == "within"
-    assert "stationarity not evaluated under the constraints' barrier" in held.report()
+    assert held.certificate.solver_status == "converged"
+    assert read(held)[1] == read(held)[3] == "within"
+    assert f"stationarity {held.certificate.stationarity:.4g} (tolerance" in held.report()
     latent = _small(adjustment=CausalGraph.from_edges(EDGES, latent=("demand",)))
     assert read(latent) == (None, None, None, None)
     assert "first-order check" not in latent.report()

@@ -268,11 +268,13 @@ def _pessimistic_loop(
     as it goes, by the secant along each action over each accepted step. Scaled, ``blocks`` must be
     coloured ``disjoint``.
 
-    ``metric``, with ``scaled=False``, is a fixed scale per action the steps are taken in instead of
-    the caller's units, ``v = metric * u``, the box and the rows carried into it as scaled ones
-    are: the barrier rounds pass one over each lever's largest action, so each lever steps in
-    units of it, where their condition is a ball (:func:`chc.plan._action_shape`). ``lr0`` is then
-    a step in those units per unit of gradient; ``tol`` keeps its meaning.
+    ``metric``, with ``scaled=False``, is a fixed scale per action the steps are taken in instead,
+    ``v = metric * u``, the box and the rows carried into it as scaled ones are, and ``blocks``
+    coloured ``disjoint`` as well: the barrier rounds pass the square root of their objective's
+    Gauss-Newton curvature along each action, so ``lr0 = 1`` is the Newton step along each action
+    alone. ``tol`` is relative, as scaled, to the augmented cost at the guess clipped to the box,
+    and the descent checks its first-order residual in the planner's variables, those of the task
+    cost at zeros clipped to the box, as :attr:`chc.plan.CausalPlan.stationarity` reads it.
 
     The confounding radius' norm is not differentiated: with no ``blocks`` the augmented cost holds
     it unsmoothed, and each step takes it, with the box, by its proximal map
@@ -306,7 +308,14 @@ def _pessimistic_loop(
         units = units_at(start)
         check = _guess_units(start, units, units_at, u_lo, u_hi)
     elif metric is not None:
-        units = (jnp.broadcast_to(metric, start.shape).astype(start.dtype), 1.0, 1.0)
+        value = augmented(start)
+        level = jnp.where(jnp.isfinite(value), jnp.abs(value), 0.0)
+        units = (jnp.broadcast_to(metric, start.shape).astype(start.dtype), 1.0, level)
+        # the task's own units at the guess, as the plan's first-order check reads them: the
+        # augmented cost there carries a penalty that grows round by round, and its size loosened
+        # the check as much
+        guess = project_box(jnp.zeros_like(start), u_lo, u_hi)
+        check = _action_units(model, x0, guess, dt, cost, u_lo, u_hi)[:2]
     else:
         units = (jnp.ones_like(start), 1.0, 1.0)
     return _descend(

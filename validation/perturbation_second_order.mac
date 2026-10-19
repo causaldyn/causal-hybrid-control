@@ -1,0 +1,63 @@
+/* The second-order term of chc.adjoint.perturbation_cost_weights: the step's curvature.
+
+   Setting. x_{k+1} = Phi(x_k, g_k), one RK4 step of the field f(x) + b u_k + g_k, the action held
+   over the step and g_k a constant field offset; J = sum_{k<H} q x_k^2 + p x_H^2. Along the
+   perturbation g_k = e gamma_k, the first-order deviation is d_0 = 0,
+   d_{k+1} = Phi_x d_k + Phi_g gamma_k, and the costate lambda_H = 2 p x_H,
+   lambda_k = 2 q x_k + Phi_x lambda_{k+1}. The claim the weights rest on:
+
+       J(e) - J(0) = e sum_k lambda_{k+1} Phi_g gamma_k
+                   + e^2/2 [ sum_{k<H} 2 q d_k^2 + 2 p d_H^2
+                             + sum_k lambda_{k+1} (d_k, gamma_k) Hess(Phi_k) (d_k, gamma_k)' ]
+                   + O(e^3),
+
+   Hess(Phi_k) the step's Hessian in (x, g) at (x_k, 0). The last sum is K_k's term; without it
+   the e^2 coefficient is wrong wherever f is not affine. One state, two steps, exact rationals. */
+display2d : false$
+
+dt : 1/10$  a : -1/2$  c : 3/2$  b : 1$  q : 1/3$  p : 2$  H : 2$
+x0 : 1$  us : [1/3, -1/4]$  gam : [7/5, -3/5]$
+
+field(x, u, g) := a * x + c * x^2 + b * u + g$
+rkstep(x, u, g) := block([k1, k2, k3, k4],
+  k1 : field(x, u, g),
+  k2 : field(x + dt/2 * k1, u, g),
+  k3 : field(x + dt/2 * k2, u, g),
+  k4 : field(x + dt * k3, u, g),
+  x + dt/6 * (k1 + 2*k2 + 2*k3 + k4))$
+
+cost(e) := block([x : x0, J : 0],
+  for k : 1 thru H do (J : J + q * x^2, x : rkstep(x, us[k], e * gam[k])),
+  J + p * x^2)$
+
+/* the reference rollout */
+xs : [x0]$
+for k : 1 thru H do xs : endcons(rkstep(last(xs), us[k], 0), xs)$
+
+dphi(x, u, g) := subst([X = x, G = g], diff(rkstep(X, u, G), X))$
+gphi(x, u, g) := subst([X = x, G = g], diff(rkstep(X, u, G), G))$
+hess(x, u) := subst([X = x, G = 0], hessian(rkstep(X, u, G), [X, G]))$
+
+lam : makelist(0, k, 1, H + 1)$
+lam[H + 1] : 2 * p * xs[H + 1]$
+for k : H step -1 thru 2 do lam[k] : 2 * q * xs[k] + dphi(xs[k], us[k], 0) * lam[k + 1]$
+
+d : [0]$
+for k : 1 thru H do
+  d : endcons(dphi(xs[k], us[k], 0) * d[k] + gphi(xs[k], us[k], 0) * gam[k], d)$
+
+firstord : sum(lam[k + 1] * gphi(xs[k], us[k], 0) * gam[k], k, 1, H)$
+cost_part : sum(2 * q * d[k]^2, k, 1, H) + 2 * p * d[H + 1]^2$
+step_part : sum(lam[k + 1] * ([d[k], gam[k]] . hess(xs[k], us[k]) . [d[k], gam[k]]), k, 1, H)$
+
+ser : taylor(cost(e) - cost(0), e, 0, 2)$
+print("first-order coefficient less the costate's:",
+      ratsimp(coeff(ser, e, 1) - firstord), "  (=0)")$
+print("second-order coefficient less the cost's and the step's halves:",
+      ratsimp(coeff(ser, e, 2) - (cost_part + step_part) / 2), "  (=0)")$
+print("the step's half alone, which the weights dropped:", float(step_part / 2),
+      "  (nonzero: c is not 0)")$
+
+/* On an affine field the step's Hessian is zero, and the cost's half is the whole coefficient. */
+c : 0$
+print("with c = 0, the step's Hessian:", ratsimp(hess(xs[1], us[1])), "  (=0)")$

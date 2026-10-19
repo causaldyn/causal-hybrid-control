@@ -96,13 +96,11 @@ def test_on_the_true_pendulum_the_adjusted_schedule_holds_and_the_asserted_one_g
     assert asserted.rms_error > 2.0 * adjusted.rms_error
 
 
-def test_the_held_barrier_is_planned_from_the_descent_in_the_callers_units(
-    case: PendulumCase,
-) -> None:
-    """The planner descends in variables scaled action by action, the barrier's rounds in the
-    caller's units. Started from the scaled plan, the rounds hold the barrier at a task cost of
-    0.620; started from the descent in the caller's units, as the planner does where a barrier
-    binds, they hold it at 0.435, the plan of the descent before it was scaled."""
+def test_the_held_barrier_is_planned_at_the_lower_task_cost(case: PendulumCase) -> None:
+    """Rounds stepping in the caller's units, started from the planner's scaled plan, held the
+    barrier at a task cost of 0.620, and 0.436 only from a descent in the caller's units. Stepping
+    in their own curvature's units, the rounds start from the scaled plan and hold it at 0.436 too.
+    """
     plan = case.reading("adjusted").prescription.plan
     assert plan is not None
     assert plan.task_cost < 0.5

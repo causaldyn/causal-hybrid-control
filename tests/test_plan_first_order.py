@@ -391,16 +391,16 @@ def test_a_pessimistic_plan_s_reading_is_a_share_of_its_objective_at_the_guess()
 
 
 def test_what_is_not_read_says_so() -> None:
-    """A plan held under a barrier has no stationarity to read, since the barrier's multipliers
-    would enter it, but its box and rows are read. A plan built by hand reads neither. One whose
-    rollout overflowed reads ``not_finite``, under rows as without. A reading on its tolerance
-    is within."""
+    """A plan held under a barrier reads its stationarity with the barrier's binding steps among
+    its constraints, where it read none, and its box and rows. A plan built by hand reads neither.
+    One whose rollout overflowed reads ``not_finite``, under rows as without. A reading on its
+    tolerance is within."""
     model, cost = _problem()
     held = causal_plan(
         model, _X0, cost, _DT, _HORIZON, -5.0, 5.0, barrier=BarrierConstraint(lambda x: x[0] + 0.5)
     )
-    assert held.stationarity is None
-    assert held.stationarity_status == "not_evaluated"
+    assert held.solver_status == "converged"
+    assert held.stationarity_status == "within"
     assert held.violation_status == "within"
     by_hand = CausalPlan(held.actions, held.trajectory, held.task_cost, None, None, "converged", 1)
     assert (by_hand.stationarity_status, by_hand.violation_status) == ("not_evaluated",) * 2
