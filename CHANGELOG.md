@@ -108,6 +108,12 @@ still change).
   the noise the tube reads is smaller than the plant's. Under an AR(0.9) disturbance of standard
   deviation 2, the tube held 0.918 at step 1. The report's persistence line says so too.
   `trustworthy_steps` does not change.
+- **Each docstring that cites a proof or a derivation is tied to a test of its code.** The 117
+  objects in `src/chc` that cite a file under `proofs/` or `validation/` each have property tests
+  of the cited statement on the float code (`tests/test_formal_*.py`), and
+  `tests/test_formal_links.py` fails on a citation without one. Of 22 statements the code did not
+  satisfy, 9 are fixed below; 13 are strict expected failures with their counterexamples, listed
+  on the theory page.
 
 ### Changed
 
@@ -147,6 +153,29 @@ still change).
 - **A held barrier holds `h` at each step's next state.** At `dt = 1` a held plan's path left the
   set at 5 of 12 states and its own audit certified 3 steps; it now certifies 12. Plans whose path
   stayed in the set are unchanged to the last digit.
+- **`lipschitz_rollout_bound` keeps its value at a small rate times step.** It computed
+  `(1 + L·dt)^H − 1`, which cancels to 0 once `L·dt` is below a double's epsilon and certified
+  every step (L = 1e-14, a gap of 0.02 read 0.0); `confounding_robust_closed_loop_bound` and
+  `closed_loop_rollout_bound` inherited it. It is now one `expm1(H·log1p(L·dt))`.
+- **`minimax_action` returns where a candidate action is huge.** An identified interval whose
+  midpoint is near zero (1.6e-189) made the equalising candidate overflow a float power, which
+  raised `OverflowError`; its cost now reads `inf` and it loses to the other candidates.
+- **`convection_diffusion_exact` holds for a reversed flow and a weak one, and `optimal_upwind`
+  keeps double precision past its series crossover.** A flow with `s/eps` below −709 read `nan`
+  everywhere; as `s/eps` went to 0 the solution lost digits (1e-4 relative at 1e-12) and read
+  `nan` at `s = 0`, where it is now `x`. `optimal_upwind` lost up to 2.8e-10 relative just
+  above `Pe = 1e-3`; its series now runs through `Pe^13` and takes over below `Pe = 0.2`.
+- **`delay_design_loss` returns just above the stabilising floor.** Within about 2e-12 of the
+  floor its root search raised `ValueError`, because the bracket stopped 1e-12 short of the root
+  near π/2; it now reads the loss, 1 to rounding.
+- **`multivariate_action_floor` refuses a curvature that is not positive definite.** With
+  `M = B'QB + R` indefinite there is no optimal action and the trace bound does not hold, yet it
+  returned a floor (−9.0 at `M = −1`); it now raises `ValueError`.
+- **`exact_ratio_moment` holds away from a unit regressor scale.** It integrated on the raw
+  scale, where quadrature on `[0, ∞)` missed the integrand's mass at `t ~ 1/d` and accepted the
+  miss under an absolute tolerance of 1.5e-8: at `Ω = 10⁴·I₇` it read −3.3e-10 against 2e-5, and
+  at unit scale it was good to about 1e-8. It now integrates in units of the largest eigenvalue to
+  a relative 1e-12.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They

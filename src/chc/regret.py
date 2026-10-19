@@ -515,7 +515,8 @@ def multivariate_action_floor(
     ``p*q`` unit bumps, i.e. ``theta = vec(B)``, and a restricted family (two decoupled channels
     with known zero cross-effects, say) is supplied by giving its own basis. ``information`` is
     ``G`` in that basis and must be positive definite -- a singular ``G`` is an unidentified
-    direction, for which the floor is not a number.
+    direction, for which the floor is not a number. ``M`` must be positive definite too: the trace
+    step needs a PSD weight, and an indefinite ``M`` has no optimal action.
     """
     effect = np.asarray(effect, dtype=np.float64)
     state_weight = np.asarray(state_weight, dtype=np.float64)
@@ -563,6 +564,13 @@ def multivariate_action_floor(
         information=information,
         directions=basis,
     )
+    weight = effect.T @ state_weight @ effect + action_weight
+    lowest = float(np.linalg.eigvalsh(0.5 * (weight + weight.T)).min())
+    if lowest <= 0.0:
+        raise ValueError(
+            "the regret's curvature M = B'QB + R must be positive definite: otherwise u* is no "
+            f"minimiser and the trace bound does not hold (smallest eigenvalue {lowest:.3e})"
+        )
     action, curvature = _action_and_curvature(effect, state_weight, action_weight, target)
     sensitivity = _action_sensitivity(effect, state_weight, action_weight, target, basis)
     spectrum, rotation = np.linalg.eigh(0.5 * (information + information.T))
@@ -2080,17 +2088,22 @@ def exact_ratio_moment(
     d_live = eigenvalues[live]
     b_live = loadings[live]
     constant = null_mass if has_null_mass else 0.0
+    # integrated in t * scale: the mass sits at t ~ 1/d, which on the raw scale quad's map of
+    # [0, inf) misses once the regressor covariance is far from 1, and its default absolute
+    # tolerance of 1.5e-8 accepts the miss
+    scale = float(d_live.max())
+    d_unit = d_live / scale
 
     def integrand(t: float) -> float:
-        weights = 1.0 + 2.0 * t * d_live
+        weights = 1.0 + 2.0 * t * d_unit
         return (
             t
             * float(np.exp(-0.5 * np.log(weights).sum()))
             * (float((b_live / weights).sum()) + constant)
         )
 
-    value, _ = quad(integrand, 0.0, np.inf, limit=400)
-    return float(value)
+    value, _ = quad(integrand, 0.0, np.inf, limit=400, epsabs=0.0, epsrel=1e-12)
+    return float(value) / scale**2
 
 
 def _adjugate_terms(q: int) -> dict[tuple[int, int], list[tuple[int, tuple[tuple[int, int], ...]]]]:
@@ -5689,7 +5702,9 @@ def minimax_action(
         raise ValueError(f"criterion must be 'cost' or 'regret', got {criterion!r}")
 
     def branch(b: float, u: float) -> float:
-        return curvature * (b * u - target) ** 2 + effort * u**2
+        # products, not ``**``: a float power past the float range raises where these read inf
+        miss = b * u - target
+        return curvature * miss * miss + effort * u * u
 
     def worst(u: float) -> float:
         return max(branch(b_lo, u), branch(b_hi, u))
@@ -5721,7 +5736,8 @@ def _minimax_regret_action(
         return curvature * b * target / spread(b)
 
     def regret(u: float, b: float) -> float:
-        return spread(b) * (u - best(b)) ** 2
+        gap = u - best(b)
+        return spread(b) * gap * gap
 
     def turn(u: float) -> float | None:
         """Where ``sqrt(D) (u - u*)`` turns inside the interval; it turns at most once."""
