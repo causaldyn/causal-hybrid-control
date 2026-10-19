@@ -682,6 +682,13 @@ def test_the_rk4_fit_reads_an_exact_log_as_rk4_does_and_refuses_one_rk4_cannot_r
         )
 
 
+def test_an_integrator_the_fit_does_not_know_is_refused_not_read_as_euler() -> None:
+    """``"RK4"`` read as ``"euler"`` up to 0.18.0, a fit to another map than the one asked for."""
+    base = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    with pytest.raises(ValueError, match=r"integrator='RK4' is neither 'euler' nor 'rk4'"):
+        fit_causal_residual(base, _exact_log(0.5, dt=0.1), 0.1, adjust_for=("z",), integrator="RK4")  # type: ignore[arg-type]
+
+
 # ---- ID1: which transitions the channel moment weighs ----
 
 DECISION_MEAN, DECISION_VARIANCE = -0.5, 0.25  # Q, the law of the states the decision is taken at

@@ -1471,7 +1471,9 @@ def fit_causal_residual(
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
 
     Raises:
-        ValueError: on a negative ``channel_degree``; on ``nuisance_knots`` other than ``"auto"``
+        ValueError: on an ``integrator`` that is neither ``"euler"`` nor ``"rk4"``, which up to
+            0.18.0 was read as ``"euler"``; on a negative ``channel_degree``; on ``nuisance_knots``
+            other than ``"auto"``
             or an integer of at least 3; on ``clusters`` that do not label every
             transition once or once in each of two dimensions, or name fewer than two clusters in
             a dimension; on ``periods`` that do not label every transition once with a whole
@@ -1484,6 +1486,8 @@ def fit_causal_residual(
             confounded regression's. On ``unconfounded=True`` with an instrument. On ``times``
             that are not one finite number a transition.
     """
+    if integrator not in ("euler", "rk4"):
+        raise ValueError(f"integrator={integrator!r} is neither 'euler' nor 'rk4'")
     _refuse_reread("covariate", adjust_for, _ACTION_AND_OUTCOME)
     _refuse_reread("driver", drivers, _TRANSITION)
     twice = sorted({name for name in drivers if drivers.count(name) > 1})

@@ -195,7 +195,8 @@ still change).
   `x + dt f(x, u)`, and the tube is carried by `I + dt A` (`validation/euler_tube.mac`). On a panel
   that keeps 0.1 of its state a period, which no field stepped by RK4 reproduces, the tube holds
   the plant 0.9499 to 0.9505 a step over 64 logs. `"rk4"` stays the default, and its fit's error
-  names `"euler"` as the remedy for a discrete-time panel (ADR 0118).
+  names `"euler"` as the remedy for a discrete-time panel (ADR 0118). `fit_causal_residual`
+  refuses an integrator other than the two, which it read as `"euler"`.
 - **`prescribe`'s tube carries the error of the noise it reads off the log.** It took the log's
   `S`, `Phi` and mean noise for the plant's own. A tube read off one log is narrow on some logs
   and wide on others, and the plant's noise misses the mean the fitted drift absorbed. Under a
