@@ -2769,14 +2769,16 @@ def test_the_episodes_read_a_column_as_numbers_only_where_it_holds_them() -> Non
 def test_the_certificate_names_noise_that_persists_within_units() -> None:
     """Each zone's noise AR(0.8) under an incentive that keeps 0.7 of its last value: the state is
     a common effect of the past incentive and the past noise, so the certificate reads the noise's
-    persistence off the moment's residual, and the report names it. Drawn afresh, it reads none."""
+    persistence off the moment's residual, and the report names it. Drawn afresh, it reads none.
+    The fit's error is read two ways, by zone and by period, so the p-value is too: its 11 periods
+    of pairs set ``t(10)``, where 200 zones read as independent set ``t(199)``."""
     graph = CausalGraph.from_edges(EDGES)
     persistent = _prescribe(_panel(sticky=0.7, persistent=0.8), graph)
     certificate = persistent.certificate
     assert certificate.noise_persistence is not None
     assert certificate.noise_persistence > 0.5
     assert certificate.noise_persistence_p is not None
-    assert certificate.noise_persistence_p < 1e-6
+    assert certificate.noise_persistence_p < 1e-4
     (line,) = [line for line in persistent.report().splitlines() if "noise persistence" in line]
     assert line.startswith("- noise persistence: **the noise persists within units** (lag-1")
     record = persistent.to_json()["certificate"]

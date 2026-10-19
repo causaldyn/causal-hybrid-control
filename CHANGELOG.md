@@ -95,6 +95,12 @@ still change).
   latent, not ≈ e·k! graphs; the report prices a budget period the horizon cuts short at its share.
 - **Benchmarks**: the pricing and inventory tasks add `predictive-all`, a regression on every
   logged column, which lands with `causal-CHC`; `run()` returns four results.
+- **`persistence_check` reads its p-value within the fit's clusters, as the fit reads its error.**
+  It summed the pairs' products within units and read the units as independent: where units share
+  a cluster's noise or a period's shock, a 5 % test rejected noise that does not persist in 12.5 %
+  (5 clusters), 16.2 % (30) and 51.5 % (30 units × 20 periods, two ways) of 1000 panels; now
+  4.9 %, 7.0 % and 3.8 %. A fit clustered by unit reads as before; `prescribe`'s
+  `noise_persistence_p` reads the same way.
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
 
 ## [0.18.0] — 2026-10-13

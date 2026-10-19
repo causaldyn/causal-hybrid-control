@@ -2276,9 +2276,10 @@ class PersistenceCheck:
     """
 
     correlation: float  # lag-1, pooled over the pairs and the states, each state in its own units
-    # two-sided against none, off ``t(G - 1)``, or on one group, one unit's or a fit's given
+    # two-sided against none, off ``t(G - 1)``, ``G`` the units, or the fit's clusters where it was
+    # given them, two ways the smaller count; or on one group, one unit's or a fit's given
     # ``periods``, off ``t(nu)`` across its periods (ADR 0075); nan where the pairs leave no spread
-    # to read, as below two pairs or two periods
+    # to read, as below two pairs, two periods or two clusters
     p_value: float
     pairs: int  # transitions whose unit's transition a period earlier is in the log
     units: int  # ``G``: the units with a pair
@@ -2295,7 +2296,14 @@ def persistence_check(
     divided by its root mean square, so each state counts alike in any units. The pairs' products,
     summed over the states, are summed within each unit before the test, since the transitions of
     one unit need not be independent; the statistic is their total over its CR1 spread, each
-    unit's sum less its pairs' share of the total, against ``t(G - 1)`` (ADR 0062). Pairs of one
+    unit's sum less its pairs' share of the total, against ``t(G - 1)`` (ADR 0062). A fit given
+    ``clusters`` says its units' noise moves together within them, several units' or one
+    period's, so the units' sums are not independent: the products are summed within the fit's
+    clusters instead, each less its pairs' share, two ways the largest of the three reads its
+    error takes, against ``t(G - 1)`` for ``G`` the clusters, two ways the smaller count. On panels
+    of 4 units a cluster over 10 periods, whose noise and levers share a shock each period within
+    a cluster and do not persist, the 5 % test summed within units rejected 12.5 % of 1000 at 5
+    clusters and 16.2 % at 30; within the clusters, 4.9 % and 7.0 %. Pairs of one
     unit alone, or of a fit given ``periods``, whose units share one group's noise, are read
     across their periods instead: the products summed within each period, and the total over the
     spread of their projections on ``nu`` cosines of the pairs' periods, against ``t(nu)``, as
@@ -2314,14 +2322,19 @@ def persistence_check(
     """
     if fit.moment_residual is None:
         raise ValueError("the fit kept no moment residual: its channel is not identified")
-    return _persistence(fit.moment_residual, units, periods, fit.periods is not None)
+    return _persistence(fit.moment_residual, units, periods, fit.periods is not None, fit.clusters)
 
 
 def _persistence(
-    residual: ArrayLike, units: ArrayLike, periods: ArrayLike, across_periods: bool
+    residual: ArrayLike,
+    units: ArrayLike,
+    periods: ArrayLike,
+    across_periods: bool,
+    clusters: np.ndarray | None = None,
 ) -> PersistenceCheck:
     """:func:`persistence_check` on a residual of the fit's transitions, ``(N, n)``, read across
-    the periods where ``across_periods`` says the fit was given them."""
+    the periods where ``across_periods`` says the fit was given them, and within the fit's
+    ``clusters``, its codes a transition, where it was given them."""
     residual = np.asarray(residual, dtype=np.float64)
     labels, steps = np.asarray(units).reshape(-1), np.asarray(periods).reshape(-1)
     if labels.size != residual.shape[0] or steps.size != residual.shape[0]:
@@ -2358,6 +2371,22 @@ def _persistence(
     centred = sums - np.bincount(codes[later])[present] * (float(np.sum(products)) / pairs)
     spread = math.sqrt(count / (count - 1) * float(np.sum(centred**2))) if count > 1 else 0.0
     freedom = count - 1
+    if clusters is not None:
+        # the fit's clusters hold transitions whose noise moves together, several units' or one
+        # period's: the units' sums are not independent there, and are read as the fit reads its
+        # error, the products summed within its clusters, CR1, two ways the largest of three reads
+        codes = np.asarray(clusters).reshape(residual.shape[0], -1)[later]
+        codes = np.column_stack(
+            [np.unique(column, return_inverse=True)[1].reshape(-1) for column in codes.T]
+        )
+        groups = _cluster_count(codes)
+        spread, freedom = 0.0, groups - 1
+        if groups > 1:
+            centred_products = (products - float(np.sum(products)) / pairs)[:, None]
+            reads = _clustered_squares(
+                centred_products[:, :, None], codes[:, 0] if codes.shape[1] == 1 else codes
+            )
+            spread = math.sqrt(groups / (groups - 1) * max(float(np.squeeze(r)) for r in reads))
     paired_periods = steps[later] - steps[later].min()
     if count == 1 or across_periods:
         # one unit leaves no second unit's sum to read a spread from, and a fit given periods says
