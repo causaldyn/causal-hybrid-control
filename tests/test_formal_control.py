@@ -20,7 +20,8 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from scipy import integrate
 from scipy.optimize import linprog, minimize
-from scipy.stats import chi2
+from scipy.special import polygamma
+from scipy.stats import chi2, norm, t
 
 from chc import QuadraticCost, causal_plan
 from chc.allocation import decision_weight as allocation_decision_weight
@@ -40,6 +41,9 @@ from chc.response import Channel, Exponential, GeometricAdstock
 from chc.uncertainty import (
     _noise_covariances,
     _noise_tube,
+    _NoiseRead,
+    _read_covariances,
+    _studentised,
     confounding_robust_closed_loop_bound,
     confounding_robust_inflation,
     confounding_robust_radius,
@@ -124,6 +128,17 @@ FORMAL_LINKS = {
             "test_noise_tube_on_a_norm_bound_covers_at_least_its_level",
             "test_noise_tube_under_a_var_noise_is_the_double_sum",
             "test_noise_tube_under_a_var_noise_on_a_norm_bound_bounds_the_largest_variance",
+        ),
+    },
+    "chc.uncertainty._read_covariances": {
+        "cites": ("noise_read_tube.mac",),
+        "tests": ("test_read_covariances_add_the_mean_s_error_by_the_sum_of_step_products",),
+    },
+    "chc.uncertainty._studentised": {
+        "cites": ("noise_read_tube.mac",),
+        "tests": (
+            "test_studentised_factor_is_student_s_t_on_two_over_the_jackknife_variance",
+            "test_studentised_radius_holds_its_level_on_a_variance_read_on_nu_degrees",
         ),
     },
     "chc.uncertainty.confounding_robust_closed_loop_bound": {
@@ -1375,3 +1390,84 @@ def test_allocation_weight_ignores_an_error_that_leaves_the_plan() -> None:
     coefficients, _, _, weight, _ = _allocation_case(3)
     d = np.ravel(np.column_stack([coefficients, np.zeros(3)]))
     assert abs(d @ weight @ d) <= 1e-10 * float(np.abs(weight).max()) * float(d @ d)
+
+
+def _rk4_step_matrix(z: np.ndarray) -> np.ndarray:
+    z2 = z @ z
+    return np.eye(z.shape[0]) + z + z2 / 2.0 + z2 @ z / 6.0 + z2 @ z2 / 24.0
+
+
+def test_read_covariances_add_the_mean_s_error_by_the_sum_of_step_products() -> None:
+    """noise_read_tube.mac (1): ``P_k = P_k(w) + D_k V D_k'``, ``D_k = sum_j A_{k,j}``, the
+    double sum over ``Cov(w_i + mu, w_j + mu) = Cov(w_i, w_j) + V``, on a step that moves. The
+    read's replicates agree, so the noise's part is studentised by 1 and the offset is all that is
+    added."""
+    rng = np.random.default_rng(11)
+    horizon, dt = 5, 0.2
+    rate = np.stack([np.array([[-0.8, 0.3], [-0.2, -0.5]]) * (1.0 + 0.1 * k) for k in range(5)])
+    noise = np.array([[0.04, 0.01], [0.01, 0.02]])
+    carry = np.array([[0.6, 0.1], [0.0, 0.3]])
+    root = rng.normal(size=(2, 2))
+    level = 0.01 * root @ root.T
+    read = _NoiseRead(np.stack([noise] * 6), np.stack([carry] * 6), level)
+    got = _read_covariances(rate, noise, carry, dt, horizon, read)
+    steps = [_rk4_step_matrix(dt * r) for r in rate]
+
+    def product(k: int, j: int) -> np.ndarray:
+        out = np.eye(2)
+        for m in range(j + 1, k):
+            out = steps[m] @ out
+        return out
+
+    def cov(i: int, j: int) -> np.ndarray:
+        if i >= j:
+            return np.linalg.matrix_power(carry, i - j) @ noise
+        return noise @ np.linalg.matrix_power(carry.T, j - i)
+
+    for k in range(1, horizon + 1):
+        expected = sum(
+            product(k, i) @ (cov(i, j) + level) @ product(k, j).T
+            for i in range(k)
+            for j in range(k)
+        )
+        np.testing.assert_allclose(got[k], expected, rtol=1e-12, atol=0.0)
+
+
+def _replicates(variance: float, count: int, base: float) -> np.ndarray:
+    """``count`` sizes about ``base`` whose jackknife variance of ``log`` is ``variance``."""
+    centred = np.linspace(-1.0, 1.0, count)
+    scale = math.sqrt(variance / ((count - 1) / count * np.sum(centred**2)))
+    return base * np.exp(scale * centred)
+
+
+def test_studentised_factor_is_student_s_t_on_two_over_the_jackknife_variance() -> None:
+    """noise_read_tube.mac: a variance read on ``nu`` degrees of freedom has ``Var(log) =
+    psi_1(nu / 2)``, about ``2 / nu``, so the factor is ``t_nu(q) / z(q)`` at ``nu = 2 / v``; and
+    ``psi_1(nu / 2)`` is ``Var(log chi2_nu)`` by Monte Carlo, at ``nu = 12``, within 3 SDs, and
+    ``2 / nu + 2 / nu^2 + 4 / (3 nu^3)`` to its next term."""
+    variances = (0.5, 0.1, 0.02)
+    sizes = np.stack([_replicates(v, 50, 3.0) for v in variances], 1)
+    level = 0.975
+    expected = [t.ppf(level, 2.0 / v) / norm.ppf(level) for v in variances]
+    np.testing.assert_allclose(_studentised(sizes), expected, rtol=1e-12)
+    draws = np.log(np.random.default_rng(3).chisquare(12, 400_000))
+    sd = draws.var() * math.sqrt(2.0 / draws.size) * 1.1  # kurtosis of log chi2_12 is near normal
+    assert draws.var() == pytest.approx(float(polygamma(1, 6.0)), abs=3.0 * sd)
+    series = 2.0 / 12 + 2.0 / 12**2 + 4.0 / (3.0 * 12**3)
+    assert float(polygamma(1, 6.0)) == pytest.approx(series, abs=1e-5)
+
+
+def test_studentised_radius_holds_its_level_on_a_variance_read_on_nu_degrees() -> None:
+    """noise_read_tube.mac (4): ``x / s`` is Student's ``t_nu`` for ``s^2 = chi2_nu / nu``, so
+    the studentised radius ``factor z(q) s`` holds ``x ~ N(0, 1)`` with probability 0.95 exactly,
+    and the plug-in radius ``z(q) s`` holds less. Monte Carlo at ``nu = 5``, 400000 draws, SD
+    0.00034."""
+    nu, count = 5.0, 400_000
+    factor = float(_studentised(_replicates(2.0 / nu, 50, 1.0)[:, None])[0])
+    rng = np.random.default_rng(17)
+    x, s = rng.normal(size=count), np.sqrt(rng.chisquare(nu, count) / nu)
+    z = norm.ppf(0.975)
+    held = np.mean(np.abs(x) <= factor * z * s)
+    sd = math.sqrt(0.95 * 0.05 / count)
+    assert held == pytest.approx(0.95, abs=3.0 * sd)
+    assert np.mean(np.abs(x) <= z * s) < 0.95 - 10.0 * sd

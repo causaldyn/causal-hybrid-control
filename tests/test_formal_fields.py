@@ -659,7 +659,10 @@ def test_dual_weighted_estimate_is_the_exact_error_of_an_affine_path(
     mean_shape: tuple[float, float],
     slope_shape: tuple[float, float],
 ) -> None:
-    """mean_field_dwr.v (error_is_defect_over_den): S_hat(0) - S(0) = d / den(T), exactly."""
+    """mean_field_dwr.v (error_is_defect_over_den): S_hat(0) - S(0) = d / den(T), exactly. The
+    float code integrates the defect on a grid, with an error second order in its step that grows
+    with the path's curvature (1.3e-6 on 401 points for an offset of 0.125 and a slope ``t^2``);
+    Richardson's extrapolation over 401 and 1601 points removes it, and leaves the identity."""
     game = _game(coupling=coupling, terminal_coupling=terminal_coupling, horizon=horizon)
     assume(abs(game.fixed_point_denominator()) > 0.05)
     truth = float(game.solve().value_s[0])
@@ -668,8 +671,11 @@ def test_dual_weighted_estimate_is_the_exact_error_of_an_affine_path(
         (game.mean_initial, *mean_shape),
         (truth + sign * offset, *slope_shape),
     )
-    estimate = dual_weighted_error_estimate(game, cast("MeanFieldDGM", path))
-    assert estimate == pytest.approx(offset, rel=1e-5, abs=0.0)
+    coarse, fine = (
+        dual_weighted_error_estimate(game, cast("MeanFieldDGM", path), n_time=n)
+        for n in (401, 1601)
+    )
+    assert (16.0 * fine - coarse) / 15.0 == pytest.approx(offset, rel=1e-7, abs=0.0)
 
 
 def _model_rate_slope(game, curvature: float) -> float:
