@@ -47,6 +47,10 @@ still change).
   states 0.95), the channel's interval outside the sieve (0 of 40), the `"mis"` interval under a
   model error (0 of 40), and five more. The default `pytest` deselects the suite; a CI job of its own
   runs it, and so does `just misspecification`.
+- **`SafetyCertificate.radius_model`** says which radius the audit read: `"relative"`, the default
+  share of the fitted channel, which at every level stays within the estimate's own size of it, or
+  `"absolute"`, a `ChannelSensitivity`'s bound on the channel's error. A fitted channel of 0.004
+  for a plant's 1 reads `gamma_star = inf` under the share, and now says the radius is relative.
 - **`prescribe(neighbours=)` checks for spillover, and `prescribe(clusters=)` fits on groups.**
   With zones whose incentive moves their cluster-mates' supply, the zone-by-zone channel read the
   incentive's own push, +0.414 off the effect a plan that moves every zone gets, and covered it on

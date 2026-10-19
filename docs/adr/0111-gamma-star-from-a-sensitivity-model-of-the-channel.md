@@ -49,7 +49,8 @@ with a channel linear in the state.
   nan where the sampling error alone exceeds what the step can absorb.
 - **Opt-in.** `certify_safety(sensitivity=)` and `BarrierConstraint(sensitivity=)` take it. A
   level at or past `(3 + √5)/2` raises. Without it the share of ADR 0085 stays, and the docs call
-  it a relative margin.
+  it a relative margin. `SafetyCertificate.radius_model` says at run time which radius an audit
+  read: `"relative"`, the share, or `"absolute"`, the sensitivity model's.
 - **`prescribe` keeps the relative margin**, and its summary now says so. Its fit is `rk4`, whose
   fixed point carries the drift's confounding into the channel through the step's inverse. No
   bound on the levers' density limits that, so no absolute radius is derived for it.

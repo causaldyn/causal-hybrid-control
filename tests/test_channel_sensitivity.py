@@ -109,10 +109,12 @@ def test_a_share_of_the_estimate_certified_what_the_effect_took_out_of_the_set()
 
     share = certify_safety(plan, model, _ceiling, _DT, gamma=1.5, u_max=5.0)
     assert share.certified_steps == 30  # what the share of the estimate read
+    assert share.radius_model == "relative"  # and says it read a margin, not a bound
     absolute = certify_safety(
         plan, model, _ceiling, _DT, gamma=1.5, u_max=5.0, sensitivity=sensitivity
     )
     assert absolute.certified_steps == 0
+    assert absolute.radius_model == "absolute"
     assert absolute.radius >= abs(_fitted_channel(model, x0) - _TRUE_CHANNEL)
     assert absolute.gamma_star == math.inf  # standing still is safe for every channel
 
@@ -128,6 +130,7 @@ def test_a_share_of_the_estimate_certified_what_the_effect_took_out_of_the_set()
     )
     assert held.safety is not None
     assert held.safety.certified_steps == 30
+    assert held.safety.radius_model == "absolute"
     held_h = 1.0 - np.asarray(rollout(truth, x0, held.actions, _DT)[:, 0])
     assert float(np.min(held_h)) > 0.0
 
