@@ -1,7 +1,8 @@
 # ADR 0102 — Barrier rounds step in their own curvature's units
 
 **Status:** accepted, 2026-10-19. Amends the barrier rounds of ADR 0059 and ADR 0073, and the
-stationarity of a held plan (ADR 0097).
+stationarity of a held plan (ADR 0097). Amended by ADR 0112, 2026-10-19: the rounds also hold
+`h` at each next state the path falls short at.
 
 ## Context
 

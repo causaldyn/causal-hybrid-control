@@ -1,0 +1,108 @@
+/* An absolute sensitivity radius for a fitted control channel under a marginal sensitivity model.
+
+   chc.plan.certify_safety prices a plan against a radius on the channel, ||B_hat - B||_op <= Delta.
+   Read as a share of the fitted channel, Delta = (Gamma-1)/(Gamma+1) * gap * ||B_hat||, it stays
+   within the estimate's own size of the estimate at every Gamma, so an estimate of 0.004 for an
+   effect of 1 reads Gamma* = inf.  Derived here instead: the bias a hidden confounder Z can put
+   into the least-squares channel on the action residuals, when the levers' density given Z moves
+   by a factor in [1/Gamma, Gamma] (the continuous marginal sensitivity model, Jesson et al. 2022).
+
+     STEP 1  a weight w in [1/Gamma, Gamma] with mean 1 moves a mean-zero, unit-variance X by at
+             most (Gamma-1)/sqrt(Gamma): delta = w - 1 has variance at most (Gamma-1)^2/Gamma
+             (Bhatia-Davis), so the share of X's variance Z explains is rho^2 <= (Gamma-1)^2/Gamma.
+     STEP 2  the omitted-variable algebra: the bias beta of the coefficients, with G the design's
+             second moment and r the fit's residual, has beta'G beta <= rho^2 (E r^2 + beta'G beta),
+             so beta'G beta <= kappa^2 E r^2, kappa^2 = rho^2/(1 - rho^2).
+     STEP 3  kappa(Gamma) = (Gamma-1)/sqrt(3 Gamma - Gamma^2 - 1), finite below Gamma_max =
+             (3 + sqrt 5)/2, and its inverse in closed form.
+     STEP 4  an exact discrete example: the bias of the least-squares slope against the bound.
+
+   Consumed by chc.plan.ChannelSensitivity.
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/channel_bias_bound.mac */
+
+display2d : false$
+print("================================================================")$
+print("AN ABSOLUTE RADIUS FOR THE CHANNEL UNDER A MARGINAL SENSITIVITY MODEL")$
+print("================================================================")$
+
+/* ===== STEP 1: Bhatia-Davis on the weight ===== */
+print("=== STEP 1: the largest variance of delta = w - 1 on [1/G - 1, G - 1] with mean 0 ===")$
+assume(G > 1)$
+lo1 : 1/G - 1$  hi1 : G - 1$
+/* the two-point law on the ends with mean 0 attains (hi - mean)(mean - lo) = -lo*hi */
+p_hi : -lo1/(hi1 - lo1)$
+two_point_mean : ratsimp(p_hi*hi1 + (1 - p_hi)*lo1)$
+two_point_var : ratsimp(p_hi*hi1^2 + (1 - p_hi)*lo1^2)$
+print("STEP 1a the two-point law on the ends: mean", two_point_mean, " variance", two_point_var)$
+print("STEP 1a", if two_point_mean = 0 and ratsimp(two_point_var - (G - 1)^2/G) = 0 then "(PASS)"
+      else "(FAIL)")$
+/* any law on [lo, hi] with mean 0: E[delta^2] <= E[(hi - delta)(delta - lo)] + E delta^2 ... the
+   Bhatia-Davis inequality Var <= (hi - m)(m - lo); here as the pointwise fact (hi-d)(d-lo) >= 0 */
+bd : expand((hi1 - d)*(d - lo1))$
+print("STEP 1b (hi - d)(d - lo) =", bd, " >= 0 on [lo, hi]; its mean, at E d = 0, is")$
+bd_mean : ratsimp(-lo1*hi1 - dd2)$
+print("        -lo*hi - E d^2 =", bd_mean, " >= 0, so E d^2 <= -lo*hi =", ratsimp(-lo1*hi1))$
+print("STEP 1b", if ratsimp(-lo1*hi1 - (G - 1)^2/G) = 0 then "(PASS)" else "(FAIL)")$
+print("STEP 1c so E[X | Z] = E[X delta_Z] <= sd(X) sd(delta_Z) <= sd(X) (G-1)/sqrt(G), and the")$
+print("        share of X's variance Z explains is rho^2 <= min(1, (G-1)^2/G)")$
+
+/* ===== STEP 2: the omitted-variable algebra ===== */
+print("=== STEP 2: beta'G beta <= rho^2 (E r^2 + beta'G beta) gives beta'G beta <= kappa^2 E r^2 ===")$
+/* b = beta'G beta, s = E r^2: b <= rho^2 (s + b)  <=>  b (1 - rho^2) <= rho^2 s */
+lhs2 : ratsimp((rho^2*(s + b) - b) - ((1 - rho^2)*(rho^2/(1 - rho^2)*s - b)))$
+print("STEP 2a rho^2 (s + b) - b - (1 - rho^2)(kappa^2 s - b) =", lhs2)$
+print("STEP 2a", if lhs2 = 0 then "(PASS)" else "(FAIL)")$
+print("        so with 1 - rho^2 > 0, b <= kappa^2 s exactly when b <= rho^2 (s + b)")$
+/* residual identity: E r^2 = E e^2 - beta'G beta for the least-squares residual r = e - psi'beta */
+print("STEP 2b the residual: r = e - psi'beta with beta = G^-1 E[psi e], so")$
+r2 : expand(e2 - 2*bt*c + bt*Gm*bt)$
+r2_at : ratsimp(subst(bt = c/Gm, r2))$
+print("        E r^2 = E e^2 - 2 beta E[psi e] + beta G beta at beta = E[psi e]/G:", r2_at)$
+print("STEP 2b", if ratsimp(r2_at - (e2 - (c/Gm)*Gm*(c/Gm))) = 0 then "(PASS)" else "(FAIL)")$
+
+/* ===== STEP 3: kappa(Gamma) and its inverse ===== */
+print("=== STEP 3: kappa^2 = rho^2/(1 - rho^2) at rho^2 = (G-1)^2/G ===")$
+rho2 : (G - 1)^2/G$
+kappa2 : ratsimp(rho2/(1 - rho2))$
+print("STEP 3a kappa^2 =", kappa2)$
+print("STEP 3a", if ratsimp(kappa2 - (G - 1)^2/(3*G - G^2 - 1)) = 0 then "(PASS)" else "(FAIL)")$
+roots : solve(3*G - G^2 - 1 = 0, G)$
+print("STEP 3b the denominator vanishes at", roots, "; rho^2 = 1 there:",
+      map(lambda([r], ratsimp(subst(r, rho2))), roots))$
+gmax : (3 + sqrt(5))/2$
+print("STEP 3b", if ratsimp(subst(G = gmax, (G - 1)^2 - G)) = 0 then "(PASS)" else "(FAIL)")$
+/* inverse: (1 + k^2) G^2 - (2 + 3 k^2) G + (1 + k^2) = 0, the root >= 1 */
+ginv : (2 + 3*k^2 + k*sqrt(4 + 5*k^2))/(2*(1 + k^2))$
+back : ratsimp(radcan(subst(G = ginv, (G - 1)^2/(3*G - G^2 - 1)) - k^2))$
+print("STEP 3c kappa^2 at G(k) less k^2 =", back)$
+print("STEP 3c", if back = 0 then "(PASS)" else "(FAIL)")$
+print("STEP 3d G(0) =", subst(k = 0, ginv), " and G(k) -> ", limit(ginv, k, inf), " as k -> inf")$
+print("STEP 3d", if subst(k = 0, ginv) = 1 and ratsimp(limit(ginv, k, inf) - gmax) = 0 then "(PASS)"
+      else "(FAIL)")$
+samples : makelist([g, float(sqrt(subst(G = g, kappa2)))], g, [1, 11/10, 3/2, 2, 5/2])$
+print("STEP 3e kappa at G = 1, 1.1, 1.5, 2, 2.5:", samples)$
+print("STEP 3e", if every(lambda([r], r[2] >= 0), samples) and subst(G = 2, kappa2) = 1 then "(PASS)"
+      else "(FAIL)")$
+
+/* ===== STEP 4: an exact discrete example ===== */
+print("=== STEP 4: Z = +-1, u | Z on {-1, +1} tilted by t, y = b u + c Z + eta ===")$
+/* p(u = s | Z = z) = (1 + t s z)/2: the density ratio to p(u) = 1/2 is 1 + t s z in [1 - t, 1 + t],
+   inside [1/G, G] at t = 1 - 1/G */
+tilt : 1 - 1/G$
+Eu_z : tilt$                       /* E[u | Z = +1] = t, E[u | Z = -1] = -t */
+cov_uz : tilt$                     /* E[u Z] = t, Var u = 1, Var Z = 1 */
+slope_bias : c*cov_uz$             /* least squares of y on u: b + c E[uZ]/E[u^2] */
+var_r : ratsimp(c^2 + s2 - (c*tilt)^2)$   /* E r^2 = Var(cZ + eta) - bias^2 Var u */
+bound4 : sqrt(subst(G = G, kappa2))*sqrt(var_r)$
+print("STEP 4a bias", slope_bias, "; residual variance", var_r)$
+/* the bound beats the bias iff bias^2 <= kappa^2 var_r; check on a grid of G, c, s2 */
+grid4 : flatten(makelist(makelist(makelist(
+  float(subst([G = g, c = cc, s2 = ss], kappa2*var_r - slope_bias^2)), ss, [0, 1/4, 1]),
+  cc, [1/2, 1, 3]), g, [11/10, 3/2, 2, 5/2]))$
+print("STEP 4b kappa^2 E r^2 - bias^2 over G in {1.1, 1.5, 2, 2.5}, c in {.5, 1, 3}, s2 in {0, .25, 1}:")$
+print("       least", lmin(grid4))$
+print("STEP 4b", if lmin(grid4) >= 0 then "(PASS)" else "(FAIL)")$
+print("================================================================")$
+print("SUMMARY: ||(B_hat - B) D||_op <= kappa(Gamma) sqrt(lmax(R'R)) sqrt(lmax(D Phi' V^-1 Phi D)),")$
+print("kappa = (G-1)/sqrt(3G - G^2 - 1) below (3 + sqrt 5)/2, unbounded from there")$

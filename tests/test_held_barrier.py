@@ -856,3 +856,45 @@ def test_a_held_plan_reads_its_first_order_check_with_the_condition_it_holds(
     assert free is not None
     assert plan.stationarity_tolerance is not None
     assert free > 1e3 * plan.stationarity_tolerance
+
+
+def test_a_held_plan_at_a_coarse_step_is_certified_by_its_own_audit() -> None:
+    """The audit certifies a step only where the path is in the set at its next state too. The
+    rounds held the condition alone, and at ``dt = 1`` a held plan's path left the set at 5 of 12
+    states (least ``h`` -0.050), so the audit certified 3 steps of the plan held for it. The next
+    states join the rounds where the path leaves the set; where it does not, none joins."""
+    plant = LinearDynamics(jnp.array([[0.5]]), jnp.array([[1.0]]))
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=0.01 * jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.array([2.0])
+    )
+
+    def ceiling(x: Array) -> Array:
+        return 1.0 - x[0]
+
+    def held(alpha: float) -> CausalPlan:
+        return causal_plan(
+            plant,
+            jnp.array([0.0]),
+            cost,
+            1.0,
+            12,
+            -5.0,
+            5.0,
+            barrier=BarrierConstraint(ceiling, alpha=alpha),
+        )
+
+    coarse = held(1.0)
+    assert coarse.safety is not None
+    assert coarse.safety.certified_steps == 12
+    assert float(jnp.min(1.0 - coarse.trajectory[1:, 0])) >= 0.0
+    assert coarse._problem is not None
+    assert coarse._problem.held is not None
+    assert coarse._problem.held.paths is not None
+    assert 0.0 < float(jnp.sum(coarse._problem.held.paths)) < 12.0  # some next states, not all
+
+    inside = held(0.2)  # the condition alone keeps this path in the set
+    assert inside.safety is not None
+    assert inside.safety.certified_steps == 12
+    assert inside._problem is not None
+    assert inside._problem.held is not None
+    assert float(jnp.sum(inside._problem.held.paths)) == 0.0

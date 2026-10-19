@@ -155,9 +155,12 @@ problem-dependent confounding threshold, and pays a bounded premium near zero co
 The same radius, spent on a constraint instead of the objective, is the barrier line of
 [certificates](certificates.md). There the question inverts: `Γ*` is the **largest** MSM level
 under which the barrier stays certified. It is a model parameter, not a
-measured amount of hidden confounding. The gap there is a share of the control channel, its
-operator norm where the plan starts, so `Γ*` does not move with the units of the state or of the
-levers. Once the radius swallows the control channel the
+measured amount of hidden confounding. By default the gap there is a share of the control channel,
+its operator norm where the plan starts, so `Γ*` does not move with the units of the state or of
+the levers, and it is a relative margin: the radius never leaves the estimate's own size. Given a
+`ChannelSensitivity`, the radius is absolute instead: the channel's sampling error plus the bias
+a confounder within `[1/Γ, Γ]` on the levers' density can put into a least-squares channel, which
+grows without limit as `Γ` reaches `(3 + √5)/2` ([ADR 0111](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0111-gamma-star-from-a-sensitivity-model-of-the-channel.md)). Once the radius swallows the control channel the
 robust-optimal action is exactly zero: with the sign of the channel unidentified, acting cannot
 improve the guarantee.
 

@@ -1,7 +1,9 @@
 # ADR 0101 — The barrier audit reads the path and the levers' box
 
 **Status:** accepted, 2026-10-19. Amends what a certified step means in `certify_safety` and a
-plan's `safety`, and the set `gamma_star` is read on (ADR 0085, ADR 0091).
+plan's `safety`, and the set `gamma_star` is read on (ADR 0085, ADR 0091). Amended by ADR 0112,
+2026-10-19: the held solve holds `h` at the next state too. Amended by ADR 0111, 2026-10-19: with
+a sensitivity model, the radius is read at each step's state.
 
 ## Context
 
@@ -37,7 +39,8 @@ cases escaped it:
 - An asymmetric box can turn a finite `gamma_star` into nan, "no level". That nan is the truth:
   no admissible action keeps the barrier.
 - The held solve still holds only the continuous condition. At coarse steps it can plan a path
-  that this audit does not certify. Holding `h` at the next state in the solve is open.
+  that this audit does not certify. Holding `h` at the next state in the solve is open. ADR 0112
+  closes it.
 
 ## Alternatives
 

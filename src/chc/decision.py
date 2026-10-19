@@ -1372,8 +1372,8 @@ class Prescription:
             *self._noise_lines(),
             f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}"
             + ("" if certificate.gamma is None else f" at gamma {certificate.gamma:.4g}")
-            + f", gamma* {_show(certificate.gamma_star)} (marginal sensitivity model's factor on a "
-            "share of the fitted channel)",
+            + f", gamma* {_show(certificate.gamma_star)} (a relative margin on a share of the "
+            "fitted channel, not a level of confounding)",
             "- solver: not run"
             if certificate.solver_status is None
             else f"- solver: {certificate.solver_status} after "
@@ -1812,7 +1812,10 @@ def prescribe(
             fitted channel, so at every level the identified set stays within the channel's own
             size of the estimate: ``gamma_star`` is ``inf`` where every step holds over that whole
             set, which says nothing of a channel the fit has wrong by more than its size. The
-            channel's standard error does not enter it.
+            channel's standard error does not enter it. Read so, ``gamma`` and ``gamma_star`` are
+            a relative margin, not a level of confounding: the absolute radius of
+            :class:`chc.plan.ChannelSensitivity` needs a least-squares Euler channel, and this fit
+            is ``rk4``.
         tolerance: the trajectory error above which the plan stops being certified. **Omitting it
             switches the tube off** rather than setting it to infinity: this library cannot know
             how much error a caller accepts, and a certificate with an infinite tolerance passes
