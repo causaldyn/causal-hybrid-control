@@ -5,7 +5,8 @@ units. The contract read here: the 95 % interval ``channel +- 1.96 error`` cover
 channel on 95 % of logs or more, less three Monte Carlo standard deviations
 (``sqrt(0.95 * 0.05 / 40) = 0.034``), or, on each log it misses, the fit's own persistence check
 (:func:`~chc.dynamics_id.persistence_check`) rejects its Markov premise at 5 %, which the
-certificate reports as ``noise_persistence_p``.
+certificate reports as ``noise_persistence_p``, or the fit warns that a refit with spline
+nuisances moves its channel by more than three of its errors.
 
 The plant is ``x' = -0.5 x + 0.8 u + 1.5 z`` stepped by Euler at ``dt = 0.1``, 100 units over 20
 periods, the lever set ``u = 0.9 z + 0.5 v`` from a recorded confounder ``z``; each test breaks one
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import math
+import warnings
 
 import jax.numpy as jnp
 import numpy as np
@@ -67,35 +69,49 @@ def _log(
 
 
 @functools.cache
-def _read(**premises: object) -> tuple[np.ndarray, np.ndarray]:
-    """Per log, whether the interval covers the channel and whether the persistence check
-    rejects at 5 %."""
-    covered, rejected = [], []
+def _read(
+    knots: str | None = None, **premises: object
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per log, whether the interval covers the channel, whether the persistence check rejects at
+    5 %, and whether the fit warned that its nuisances miss the log's (``FutureWarning``).
+    ``knots`` is the fit's ``nuisance_knots``."""
+    covered, rejected, warned = [], [], []
     for seed in range(LOGS):
         data, units, periods = _log(seed, **premises)  # type: ignore[arg-type]
-        fit = fit_causal_residual(
-            KNOWN, data, DT, adjust_for=("z",), channel_degree=0, clusters=units
-        )
+        with warnings.catch_warnings(record=True) as records:
+            warnings.simplefilter("always")
+            fit = fit_causal_residual(
+                KNOWN,
+                data,
+                DT,
+                adjust_for=("z",),
+                channel_degree=0,
+                clusters=units,
+                nuisance_knots=knots,  # type: ignore[arg-type]
+            )
         estimate = float(np.asarray(fit.residual.channel).ravel()[0])
         covered.append(abs(estimate - CHANNEL) <= 1.96 * fit.channel_error)
         rejected.append(persistence_check(fit, units, periods).p_value < 0.05)
-    return np.array(covered), np.array(rejected)
+        warned.append(any(r.category is FutureWarning for r in records))
+    return np.array(covered), np.array(rejected), np.array(warned)
 
 
-def _holds_or_says_so(covered: np.ndarray, rejected: np.ndarray) -> bool:
-    return bool(np.mean(covered | rejected) >= FLOOR)
+def _holds_or_says_so(covered: np.ndarray, rejected: np.ndarray, warned: np.ndarray) -> bool:
+    return bool(np.mean(covered | rejected | warned) >= FLOOR)
 
 
 def test_the_channel_error_covers_where_the_premises_hold() -> None:
-    """The control case: 38 of 40 covered, and the check rejects on none."""
-    covered, rejected = _read()
+    """The control case: 38 of 40 covered, the check rejects on none, and the spline refit moves
+    the channel by 0.89 of its errors at most, so the fit warns on none."""
+    covered, rejected, warned = _read()
     assert np.mean(covered) >= FLOOR
     assert np.mean(rejected) <= 0.05 + 3.0 * math.sqrt(0.05 * 0.95 / LOGS)
+    assert np.mean(warned) <= 0.05 + 3.0 * math.sqrt(0.05 * 0.95 / LOGS)
 
 
 def test_the_channel_error_covers_under_heteroskedastic_noise() -> None:
     """Noise whose sd grows with the lever, ``0.1 (1 + |u|)``: 38 of 40 covered."""
-    covered, _ = _read(heteroskedastic=True)
+    covered, _, _ = _read(heteroskedastic=True)
     assert np.mean(covered) >= FLOOR
 
 
@@ -112,13 +128,16 @@ def test_noise_and_a_lever_that_both_persist_are_flagged() -> None:
     assert _holds_or_says_so(*_read(noise_persistence=0.8, lever_persistence=0.8))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "nuisances outside the fixed polynomial sieve (degree 2): drift sin(2x) - 0.5x, the "
-        "lever's rule -1.5 tanh(2x). The channel reads 0.42 low (8 errors), covered on 0 of 40, "
-        "and the persistence check rejects on 26 of 40, so 14 logs miss with nothing said"
-    ),
-)
 def test_nuisances_outside_the_sieve_are_covered_or_flagged() -> None:
+    """Drift ``sin(2x) - 0.5x`` and the lever's rule ``-1.5 tanh(2x)``, outside the default
+    polynomial nuisances (degree 2): the channel reads 0.42 low (8 errors) and is covered on none
+    of 40, and the persistence check rejects on 26. A refit with spline nuisances moves it by
+    5.8 to 10.4 of its errors, and the fit's warning says so on all 40."""
     assert _holds_or_says_so(*_read(curved=True))
+
+
+def test_spline_nuisances_cover_a_channel_outside_the_polynomial() -> None:
+    """The same logs fitted with ``nuisance_knots="auto"``: the bias is 0.0001, and the interval
+    covers on 38 of 40."""
+    covered, _, _ = _read("auto", curved=True)
+    assert np.mean(covered) >= FLOOR

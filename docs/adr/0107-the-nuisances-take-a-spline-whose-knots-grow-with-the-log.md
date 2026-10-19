@@ -1,6 +1,8 @@
 # ADR 0107 — The nuisances take a spline whose knots grow with the log
 
-**Status:** accepted, 2026-10-19. Opt-in; the default is unchanged.
+**Status:** accepted, 2026-10-19. Opt-in; the default is unchanged. Amended 2026-10-19: the
+default fit refits once with `"auto"` and warns where that moves its channel by more than three
+errors.
 
 ## Context
 
@@ -49,6 +51,10 @@ its scatter. No degree held the 95 %.
 - **`nuisance_shift(fit, refit, states)`**, experimental: how far a refit moves the channel, the
   root mean square of `B_refit(x) − B_fit(x)` over the log's states and the channel's entries, in
   the fit's `channel_error`. A shift of more than one or two says the fit's nuisances miss.
+- **The default fit reads its own shift.** Left at `None`, an identified, unweighted fit without an
+  instrument refits the log once with `nuisance_knots="auto"` and reads `nuisance_shift` over the
+  log's states. Above three errors it warns (`FutureWarning`) that its nuisances miss the log's, and
+  that 0.20.0 reads `"auto"`. The fit it returns is the default's, bit for bit.
 
 ## Consequences
 
@@ -72,6 +78,17 @@ its scatter. No degree held the 95 %.
   vanish. `nuisance_shift` against a fit of higher degree reads it.
 - `prescribe` still fits at degree 2 with no spline. Its default, and the fit's, are the author's
   call for 0.20.0: moving either moves every channel a little.
+- The default's warning separates the two cases. On the plant above, 100 units of 20 periods, the
+  refit moved the channel by 5.8 to 10.4 errors and the fit warned on 40 of 40 logs, where it
+  covered on none. On 40 logs each of a linear plant with independent, heteroskedastic and AR(0.8)
+  noise, and 20 of the quickstart's panel, the shift was 0.89 errors at most, and it warned on none.
+  On one serial log of a linear plant, 200 logs at each length, the shift passed three errors on 2 %
+  of logs at 100 rows and on none at 200 or 500; at two, the threshold first tried, it warned on
+  6 %, 2 % and 0.5 % of them. Where the noise grew as `exp(x)` it warned on 3 % of 40 logs; under a
+  weight `exp(-x)` the shift passed three on 23 %, and under `exp(x)` on 5 %, where the fits covered
+  at 1.00 and 0.93: a weight that loads a few rows moves the spline's own second-order error past
+  the channel's, so a weighted fit is not checked. The check costs one more fit of each such default
+  fit, and of each identified `prescribe`, which about doubles the time of either.
 
 ## Alternatives
 
@@ -86,3 +103,7 @@ its scatter. No degree held the 95 %.
   error read the nuisances as a linear smoother through JAX, which a general learner is not. A
   pluggable feature map is the form that would fit, if a caller needs one.
 - **Tensor-product splines.** They hold interactions, but their columns grow as `K^d`.
+- **A `FutureWarning` on every default call.** Rejected: it says nothing about the log in hand,
+  and it would fire at about 210 calls of `fit_causal_residual` and 210 of `prescribe` in the
+  tests, and at every call in the docs and notebooks. `prescribe` takes no `nuisance_knots`, so
+  its callers could not silence it.

@@ -3,7 +3,8 @@
 A DEPLOY claims that the candidate beat the baseline by more than ``delta``, and across paths the
 gate keeps wrong ones to ``alpha = 0.05``. The contract read here: on a zone whose candidate does
 not beat the baseline, the gate deploys on at most ``alpha`` of the paths, within three Monte
-Carlo standard deviations, or it says it cannot read the case.
+Carlo standard deviations, or it says it cannot read the case: a ``gate_carryover`` warning on the
+path, over its whole run.
 
 Every zone logs as its mode asks: the baseline takes action 1 with probability 0.5, the candidate
 with 0.8, an experiment mixes the two, and the reward is Bernoulli.
@@ -11,6 +12,7 @@ with 0.8, an experiment mixes the two, and the reward is Bernoulli.
 
 from __future__ import annotations
 
+import logging
 import math
 
 import numpy as np
@@ -32,15 +34,33 @@ def _slack(paths: int) -> float:
     return ALPHA + 3.0 * math.sqrt(ALPHA * (1.0 - ALPHA) / paths)
 
 
-def _per_decision(paths: int, decisions: int, reward, batch: int = 50) -> float:
-    """The share of paths on which the gate, read after every ``batch`` decisions, deploys.
-    ``reward(rng, action, state)`` returns the reward and the next state."""
+class _Carryover(logging.Handler):
+    """Counts the gate's ``gate_carryover`` warnings."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.count += getattr(record, "chc_event", None) == "gate_carryover"
+
+
+def _per_decision(
+    paths: int, decisions: int, reward, batch: int = 50, *, whole_run: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per path, whether the gate, read after every ``batch`` decisions, deploys, and whether it
+    logged a ``gate_carryover`` warning. ``reward(rng, action, state)`` returns the reward and the
+    next state. A path stops at its deploy, or with ``whole_run`` runs all its decisions."""
     config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=decisions)
-    deployed = 0
+    deployed = np.zeros(paths, dtype=bool)
+    warned = np.zeros(paths, dtype=bool)
+    logger = logging.getLogger("chc.gate")
     for path in range(paths):
         rng = np.random.default_rng(path)
         gate = DeploymentGate({"z": PLAN}, config)
         state = None
+        handler = _Carryover()
+        logger.addHandler(handler)
         for _ in range(decisions // batch):
             mode = gate.mode("z")
             if mode == "retired":
@@ -65,9 +85,12 @@ def _per_decision(paths: int, decisions: int, reward, batch: int = 50) -> float:
                 }
             )["z"]
             if verdict == "deploy":
-                deployed += 1
-                break
-    return deployed / paths
+                deployed[path] = True
+                if not whole_run:
+                    break
+        logger.removeHandler(handler)
+        warned[path] = handler.count > 0
+    return deployed, warned
 
 
 def _persistent_null(rng: np.random.Generator, action: bool, level: float | None):
@@ -123,7 +146,8 @@ def _blocks(paths: int, blocks: int, cost: float = COST, per_read: int = 5) -> f
 def test_rewards_that_persist_deploy_no_candidate_that_is_no_better() -> None:
     """A reward whose mean wanders with an AR(0.95) common to both actions: no deploy on 100
     paths of 6000 decisions."""
-    assert _per_decision(100, 6000, _persistent_null) <= _slack(100)
+    deployed, _ = _per_decision(100, 6000, _persistent_null)
+    assert np.mean(deployed) <= _slack(100)
 
 
 def test_in_blocks_a_late_cost_is_read_and_not_deployed() -> None:
@@ -134,14 +158,10 @@ def test_in_blocks_a_late_cost_is_read_and_not_deployed() -> None:
     assert _blocks(200, 1500, cost=0.0) >= 0.2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "without blocks the gate reads each decision's myopic contrast, and a cost three periods "
-        "on is not in it: the candidate, -0.06 worse sustained, is deployed on 40 of 40 paths. "
-        "The module's docstring names the premise; nothing at run time looks for it, though the "
-        "logged randomised actions would let a lagged-action term in the reward be tested"
-    ),
-)
 def test_a_late_cost_is_not_deployed_or_is_said_to_be_unread() -> None:
-    assert _per_decision(40, 6000, _late) <= _slack(40)
+    """Without blocks the gate reads each decision's myopic contrast, and a cost three periods on
+    is not in it: the candidate, -0.06 worse sustained, is deployed on 40 of 40 paths. The
+    carryover check reads the reward on the logged actions a few decisions back and warns on all
+    40 over the run."""
+    deployed, warned = _per_decision(40, 6000, _late, whole_run=True)
+    assert np.mean(deployed & ~warned) <= _slack(40), (deployed.sum(), warned.sum())

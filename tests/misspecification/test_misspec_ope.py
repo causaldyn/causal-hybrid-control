@@ -113,15 +113,10 @@ def test_the_interval_covers_under_a_wrong_model(method: str) -> None:
     assert _held_or_refused(method, _plan(0.05), _wrong(0.1)) >= FLOOR
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "'mis' weighs by the model's stationary law, so the model's error moves the estimate to "
-        "first order and the interval does not widen for it: coverage 0.975, 0.625 and 0.0 at an "
-        "A[0, 0] error of 0, 0.05 and 0.1. The docstring says so; nothing at run time does"
-    ),
-)
 def test_the_mis_interval_covers_under_a_wrong_model() -> None:
+    """``"mis"`` weighs by the model's stationary law, so the model's error moves its estimate to
+    first order; its interval reaches to ``"dr"``'s, which reads that error off the log. It covers
+    on 40 of 40 at an ``A[0, 0]`` error of 0.1 (0.95 and 0.975 at 0 and 0.05)."""
     assert _held_or_refused("mis", _plan(0.05), _wrong(0.1)) >= FLOOR
 
 

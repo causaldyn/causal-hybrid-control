@@ -42,11 +42,25 @@ still change).
 - **Misspecification tests as a CI gate** (`tests/misspecification/`, ADR 0115). Each public
   certificate is read on plants its model gets wrong: a persistent confounder, AR noise, dead time,
   nuisances outside the sieve, actions outside the logged support, a plant unlike the model. Each
-  test asserts that the certificate holds at its level or says so. Cases that do neither are strict
-  xfails with their numbers: the tube under a persistent confounder (0.765 at step 15 where it
-  states 0.95), the channel's interval outside the sieve (0 of 40), the `"mis"` interval under a
-  model error (0 of 40), and five more. The default `pytest` deselects the suite; a CI job of its own
-  runs it, and so does `just misspecification`.
+  test asserts that the certificate holds at its level or says so: 33 pass. One case does neither
+  and is a strict xfail with its numbers: the tube under a persistent confounder, 0.942 at step 5
+  where it states 0.95 (0.765 at step 15 before its noise was carried as a VAR(1)). Seven more were
+  strict xfails before this release's fixes, among them the channel's interval outside the sieve
+  and the `"mis"` interval under a model error, each covered on 0 of 40 logs. The default `pytest`
+  deselects the suite; a CI job of its own runs it, and so does `just misspecification`.
+- **`SafetyCertificate.radius_model`** says which radius the audit read: `"relative"`, the default
+  share of the fitted channel, which at every level stays within the estimate's own size of it, or
+  `"absolute"`, a `ChannelSensitivity`'s bound on the channel's error. A fitted channel of 0.004
+  for a plant's 1 reads `gamma_star = inf` under the share, and now says the radius is relative.
+- **`fit_causal_residual` says when its default nuisances miss the log's.** Left at
+  `nuisance_knots=None`, an identified, unweighted fit without an instrument refits once with
+  `"auto"` and warns (`FutureWarning`) where the channel moves by more than three of its errors,
+  naming 0.20.0's default, `"auto"`. With a drift and a logging rule outside the polynomial it moved
+  by 5.8 to 10.4 errors and warned on 40 of 40 logs, whose intervals covered on none; on 120 logs of
+  linear plants and 20 of the quickstart's it moved by 0.89 at most and warned on none; on one
+  serial log of a linear plant it warned on 2 % of logs at 100 rows and on none at 200. The fit
+  returned is unchanged; the check costs one more fit, which about doubles the time of a default fit
+  and of `prescribe`.
 - **`prescribe(neighbours=)` checks for spillover, and `prescribe(clusters=)` fits on groups.**
   With zones whose incentive moves their cluster-mates' supply, the zone-by-zone channel read the
   incentive's own push, +0.414 off the effect a plan that moves every zone gets, and covered it on

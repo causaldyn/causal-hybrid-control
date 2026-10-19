@@ -2399,6 +2399,10 @@ class SafetyCertificate:
     step_gamma_star: tuple[float, ...]  # per-step ceilings, so the weak link is locatable
     # largest d_k = Delta(Gamma)*||grad h(x_k)|| along the plan, Delta in the channel's units
     radius: float
+    # what the radius is: ``relative``, a share of the fitted channel's own size, which no level
+    # takes past the estimate's size from it; ``absolute``, a sensitivity model's bound on the
+    # channel's error (``sensitivity=``), which can hold a channel far from its estimate
+    radius_model: Literal["relative", "absolute"]
 
 
 def _norm(vectors: Array) -> Array:
@@ -2609,7 +2613,8 @@ def certify_safety(
             below ``(3 + sqrt 5)/2``, or ``inf`` where the drift alone keeps the step. On a log
             whose levers follow a confounder at ``gamma = 1.5``, a plan certified at
             ``gamma <= gamma_star`` kept the true plant in the set (ADR 0111). ``gamma`` must be
-            below ``(3 + sqrt 5)/2``.
+            below ``(3 + sqrt 5)/2``. The certificate's ``radius_model`` reads ``"absolute"``
+            with a ``sensitivity`` and ``"relative"`` without one.
 
     Assumes the plant is control-affine, and checks it: the condition reads the drift and the
     channel at zero action, so a model whose field, seen through ``grad h``, is not affine in the
@@ -2753,6 +2758,7 @@ def _audit(
         gamma_star=float("nan") if any(np.isnan(per_step)) else min(per_step),
         step_gamma_star=per_step,
         radius=float(jnp.max(delta * grad_norm)),
+        radius_model="relative" if sensitivity is None else "absolute",
     )
 
 
@@ -2882,6 +2888,7 @@ def _every_barrier(audits: Sequence[SafetyCertificate]) -> SafetyCertificate:
         ),
         step_gamma_star=step_gamma_star,
         radius=max(audit.radius for audit in audits),
+        radius_model=audits[0].radius_model,  # one sensitivity audits every barrier
     )
 
 

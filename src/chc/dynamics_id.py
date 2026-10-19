@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -81,6 +82,9 @@ Integrator = Literal["euler", "rk4"]
 _MAX_NEWTON_STEPS = 20
 """Cap on Newton's method for the ``rk4`` fixed point. From the Euler fit it converges in three to
 six steps up to ``|A|dt = 1.2``, so reaching the cap means there is no fixed point to reach."""
+_NUISANCE_SHIFT_WARN = 3.0
+"""How far, in the channel's errors, a spline refit may move a fit with the default nuisances
+before :func:`fit_causal_residual` warns that they miss the log's."""
 
 _NOT_IDENTIFIED = (
     "no adjustment set and no instrument: the control channel is not identified from this log. "
@@ -1299,7 +1303,14 @@ def fit_causal_residual(
             The spline is additive: the covariates' joint shape beyond it is the polynomial's, so a
             confounder that enters through a nonlinear interaction of two covariates is still
             outside the span. Read :func:`nuisance_shift` against a fit with more knots or a higher
-            degree.
+            degree. Left at None on an identified, unweighted fit without an instrument, the fit
+            refits the log once with ``"auto"`` and warns (``FutureWarning``) where that moves the
+            channel by more than three of its errors, that 0.20.0 reads ``"auto"``; the fit
+            returned is the default's. On the plant above, at 2000 rows, the refit moved the
+            channel by 5.8 to 10.4 errors and the fit warned on 40 of 40 logs; on 140 logs of
+            linear plants it moved it by 0.89 at most, and warned on none. Where the noise grows as
+            ``exp(x)`` it warned on 3 % of a linear plant's logs; under a weight ``exp(-x)`` the
+            shift passed three on 23 %, so a weighted fit is not checked.
         folds: cross-fitting folds. ``1`` fits the nuisances on the same rows it residualises.
             That is *not* biased for the default nuisances and should not be sold as such:
             residualising ``y`` and ``u`` by the same linear projection whose span contains the
@@ -1930,7 +1941,7 @@ def fit_causal_residual(
             moment_residual=score,
         )
     left = defect(fit)
-    return dataclasses.replace(
+    fit = dataclasses.replace(
         fit,
         integrator_defect=float(jnp.sqrt(jnp.mean(left**2))),
         defect=left,
@@ -1939,6 +1950,46 @@ def fit_causal_residual(
         instrument_rank=rank,
         periods=steps,
     )
+    error = fit.channel_error
+    # under a weight the refit's own second-order error reaches past the channel's on a share of
+    # well-specified logs, so the shift no longer separates a miss from noise
+    if (
+        nuisance_knots is None
+        and method == "orthogonal"
+        and weights is None
+        and error is not None
+        and error > 0.0
+    ):
+        refit = fit_causal_residual(
+            known,
+            data,
+            dt,
+            adjust_for=adjust_for,
+            unconfounded=unconfounded,
+            degree=degree,
+            channel_degree=channel_degree,
+            nuisance_degree=nuisance_degree,
+            nuisance_knots="auto",
+            folds=folds,
+            ridge=ridge,
+            seed=seed,
+            integrator=integrator,
+            drivers=drivers,
+            clusters=clusters,
+            periods=periods,
+            times=times,
+        )
+        shift = nuisance_shift(fit, refit, x)
+        if shift > _NUISANCE_SHIFT_WARN:
+            warnings.warn(
+                f"a refit with spline nuisances (nuisance_knots='auto') moves the channel by "
+                f"{shift:.3g} of its errors, so the default polynomial nuisances miss this log's "
+                "and its channel_error does not cover the bias; 0.20.0 reads nuisance_knots='auto' "
+                "by default; pass it now to fit_causal_residual to read the channel so",
+                FutureWarning,
+                stacklevel=2,
+            )
+    return fit
 
 
 def _start_times(times: ArrayLike, x: Array) -> Array:

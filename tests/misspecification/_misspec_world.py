@@ -15,6 +15,7 @@ its defaults every premise holds.
 from __future__ import annotations
 
 import functools
+import logging
 import math
 from dataclasses import dataclass
 
@@ -174,13 +175,34 @@ def ask(
     )
 
 
+class _TubeWarnings(logging.Handler):
+    """Counts the ``WARNING`` records that say the tube's premise fails (``chc_event="tube"``)."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.count += getattr(record, "chc_event", None) == "tube"
+
+
 @functools.cache
-def tube_coverage(world: World, seeds: range, episodes: int) -> tuple[np.ndarray, tuple[int, ...]]:
+def tube_coverage(
+    world: World, seeds: range, episodes: int
+) -> tuple[np.ndarray, tuple[int, ...], tuple[bool, ...]]:
     """Per step, the share of the plant's paths the plan's tube holds, pooled over one log per
-    seed, steps 1 to H; and each log's trustworthy steps. Cached: two tests read one run."""
-    held, trusted = [], []
+    seed, steps 1 to H; each log's trustworthy steps; and whether a ``tube`` warning was logged on
+    each. Cached: two tests read one run, and the warnings are counted here for that reason."""
+    held, trusted, warned = [], [], []
+    logger = logging.getLogger("chc.decision")
     for seed in seeds:
-        result = ask(world, seed)
+        handler = _TubeWarnings()
+        logger.addHandler(handler)
+        try:
+            result = ask(world, seed)
+        finally:
+            logger.removeHandler(handler)
+        warned.append(handler.count > 0)
         assert result.plan is not None
         assert result.plan.uncertainty_tube is not None
         tube = np.asarray(result.plan.uncertainty_tube, dtype=float)[1:]
@@ -191,4 +213,4 @@ def tube_coverage(world: World, seeds: range, episodes: int) -> tuple[np.ndarray
         gaps = np.linalg.norm(paths[:, 1:] - planned[None, 1:], axis=2)
         held.append(np.mean(gaps <= tube, axis=0))
         trusted.append(result.certificate.trustworthy_steps)
-    return np.mean(held, axis=0), tuple(trusted)
+    return np.mean(held, axis=0), tuple(trusted), tuple(warned)
