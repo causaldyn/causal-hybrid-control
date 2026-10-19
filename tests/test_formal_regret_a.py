@@ -483,9 +483,11 @@ def test_adaptive_exploration_every_schedule_meets_the_sequence_floor(
         b=b, rr=rr, sigma=sigma, m0=m0, eta=eta, static_v=static_v, horizons=(10, 100, 1000)
     )
     a = b * b + rr
-    floor = cert.lower_bound - a * m0 / eta
+    _, k, _, _ = _exploration_constants(b=b, rr=rr, sigma=sigma, eta=eta)
+    floor = 2.0 * np.sqrt(a * k * sigma**2 * cert.horizons / eta) - a * m0 / eta
+    assert cert.lower_bound == pytest.approx(floor, rel=1e-12, abs=1e-12 * a * m0 / eta)
     for regret in (cert.adaptive_regret, cert.greedy_regret, cert.static_regret):
-        assert np.all(regret >= floor * (1.0 - 1e-12) - 1e-12)
+        assert np.all(regret >= floor - 1e-12 * np.abs(floor) - 1e-12)
 
 
 @settings(max_examples=30, deadline=None)
@@ -498,12 +500,13 @@ def test_adaptive_exploration_every_schedule_meets_the_sequence_floor(
 def test_adaptive_exploration_floor_numerator_is_the_decision_sensitivity(
     b: float, rr: float, sigma: float, eta: float
 ) -> None:
-    """adaptive_exploration.mac: K = A (du*/db)^2 sigma^2, so the floor is 2 sqrt(A K T/eta)."""
+    """adaptive_exploration.mac: K = A (du*/db)^2 sigma^2, so the leading term is 2 sqrt(A K T/eta)."""
     cert = adaptive_exploration_certificate(b=b, rr=rr, sigma=sigma, eta=eta, horizons=(10, 1000))
     a, k, _, _ = _exploration_constants(b=b, rr=rr, sigma=1.0, eta=1.0)
-    expected = 2.0 * np.sqrt(a * k * sigma**2 * cert.horizons / eta)
-    assert cert.lower_bound == pytest.approx(expected, rel=1e-12, abs=0.0)
     m0 = 1.0  # greedy never explores, so every round pays the prior floor K/m0
+    expected = 2.0 * np.sqrt(a * k * sigma**2 * cert.horizons / eta)
+    leading = cert.lower_bound + a * m0 / eta
+    assert leading == pytest.approx(expected, rel=1e-12, abs=1e-12 * a * m0 / eta)
     greedy = cert.horizons * k * sigma**2 / m0
     assert cert.greedy_regret == pytest.approx(greedy, rel=1e-12, abs=0.0)
 
@@ -515,8 +518,9 @@ def test_adaptive_exploration_lower_efficiency_raises_the_leading_term(
 ) -> None:
     """adaptive_exploration.v lower_efficiency_raises_sequence_floor: antitone in eta."""
     lo, hi = sorted((eta1, eta2))
-    b_lo = adaptive_exploration_certificate(eta=lo, horizons=(100, 1000)).lower_bound
-    b_hi = adaptive_exploration_certificate(eta=hi, horizons=(100, 1000)).lower_bound
+    a = _exploration_constants()[0]  # the leading term drops the floor's -A m0/eta, m0 = 1
+    b_lo = adaptive_exploration_certificate(eta=lo, horizons=(100, 1000)).lower_bound + a / lo
+    b_hi = adaptive_exploration_certificate(eta=hi, horizons=(100, 1000)).lower_bound + a / hi
     assert np.all(b_hi <= b_lo)
     assert b_lo / b_hi == pytest.approx(np.full(2, math.sqrt(hi / lo)), rel=1e-12, abs=0.0)
 
@@ -1239,12 +1243,9 @@ def test_constrained_threshold_is_the_lower_root(xt: float, rr: float, frac: flo
     assert _u_star(upper, xt, rr) == pytest.approx(umax, rel=1e-9, abs=0.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="defaults: (b0^2+rr)(u*(bh)-umax)^2 = 0.005784; J(u*(bh); b0) - J(umax; b0) = 0.010594",
-)
 def test_constrained_pessimism_budget_is_the_naive_controllers_regret() -> None:
-    """constrained_ce_regret.mac (iii): a naive controller pays (b^2+rr)(u*(bh) - umax)^2."""
+    """constrained_ce_regret.mac (iii): a naive controller pays J(u*(bh); b) - J(umax; b), which
+    is (b^2+rr)[(u*(bh) - u*(b))^2 - (umax - u*(b))^2]; it was 0.005784 at the defaults, 45% low."""
     xt, rr, umax = 1.0, 1.0, 0.45
     cert = constrained_ce_regret_certificate()
     b0 = cert.threshold + 0.1

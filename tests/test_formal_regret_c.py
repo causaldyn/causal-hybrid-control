@@ -931,9 +931,10 @@ def test_strong_convexity_bound_holds_on_random_vector_costs(mu: float, seed: in
 
 
 @SETTINGS
-@given(st.floats(0.01, 10.0), st.floats(-10.0, 10.0))
+@given(st.floats(0.01, 10.0), st.floats(-10.0, 10.0).filter(lambda d: d == 0.0 or abs(d) > 1e-100))
 def test_strong_convexity_bound_is_tight_on_a_quadratic(mu: float, d: float) -> None:
-    """nonlinear_regret.v quadratic_bound_is_tight: 2 mu (mu/2 d^2) = (mu d)^2."""
+    """nonlinear_regret.v quadratic_bound_is_tight: 2 mu (mu/2 d^2) = (mu d)^2. A subnormal
+    (mu d)^2 carries fewer than 53 bits, so the identity is read on normal numbers only."""
     assert strong_convexity_regret_bound((mu * d) ** 2, mu) == pytest.approx(
         mu / 2 * d**2, rel=1e-14, abs=0.0
     )
