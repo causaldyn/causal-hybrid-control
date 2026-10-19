@@ -403,7 +403,10 @@ def test_a_rule_that_leaves_its_box_leaves_the_log_from_that_step(caplog) -> Non
     assert held[2] == -0.27
     assert (certificate.estimability, certificate.first_loaded_step) == ("not_estimable", 2)
     assert certificate.trustworthy_steps <= 2
-    assert "a fit the log cannot tell apart predicts another path from step 2" in result.report()
+    assert (
+        "a fit the log cannot tell apart predicts the plan's first 2 steps alike and another path "
+        "from step 3 on" in result.report()
+    )
     (event,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "estimability"]
     assert event.first_loaded_step == 2
 

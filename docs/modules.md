@@ -86,7 +86,7 @@ state matrix you supply) and the horizon the tube trusts. Three modes are named 
 The tube never enters the *objective*, and a barrier does only when given one. Even then the
 verdict is the audit's, which the plan carries as `plan.safety`, because a solve stopped by its
 budget can come back short of the condition. With no error model supplied, the certificate reports
-`not_evaluated` rather than a vacuous full-horizon pass.
+`not_evaluated` rather than a vacuous full-horizon pass, and with no `tolerance`, `no_tolerance`.
 
 ## Decisions from a panel
 

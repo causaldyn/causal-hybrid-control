@@ -145,6 +145,30 @@ still change).
   largest value over every target effect within `Lip eps` of the source's, 0.002318 against
   `wdro_bound`'s 0.001667 there; `wdro_bound` keeps its value and is described as the
   approximation. Since 0.2.0.
+- **A plan whose tube was read against no tolerance reads `no_tolerance`, not `certified`.**
+  `causal_plan` and `RecedingHorizon` default `tolerance` to infinity, which holds every finite
+  radius, so every plan with an error model read `certificate_status == "certified"` over its whole
+  horizon, a pass no tube could fail. The default is unchanged, and such a plan now reads
+  `no_tolerance` (a new `CertificateStatus`), keeps its `certified_horizon`, and records the
+  `tolerance` it was read against. Where an error model gives the plan a tube and no `tolerance`
+  was passed, a `FutureWarning` says that from 0.20.0 the default is 1.0, one unit of the state,
+  the radius ADR 0091 asks of a caller who logs each state in units of the error accepted on it.
+  `prescribe` with `tolerance=inf` reads `no_tolerance` too. Since 0.3.0.
+- **`prescribe` leaves the tube unevaluated where it cannot read the noise's persistence.** On a
+  noisy log in which no unit has two consecutive transitions, the lag-1 correlation is unknown, and
+  the tube read it as 0, a tube holding white noise where the noise may persist, and reported
+  `tube_persistence` 0. It is nan at its producer now, so the tube is not evaluated and a warning
+  says why; a log with no noise still reads 0, which moves nothing. Since 0.17.0.
+- **`PlannedCostBias.direction` reads `unknown` on a nan bias.** `nan > 0` and `nan < 0` are both
+  false, so a nan bias read `unbiased`. Since 0.18.0.
+- **The estimability line of a prescription's report counts its steps from 1.** It named
+  `first_loaded_step`, an index from 0, as the step another path starts at: a third step read
+  "from step 2". It now reads "predicts the plan's first 2 steps alike and another path from step
+  3 on". The field keeps its value. Since 0.14.0.
+- **The rollout bounds state their scope.** `lipschitz_rollout_bound`,
+  `closed_loop_rollout_bound` and `confounding_robust_closed_loop_bound` bound explicit-Euler
+  rollouts, not the RK4 rollouts every plan makes: `x' = x` against `x' = x + 0.1` at `dt = 1`
+  reads `0.1, 0.3, 0.7` where the RK4 gaps are `0.1708, 0.6335, 1.8866`. Since 0.2.0.
 
 ## [0.18.0] — 2026-10-13
 

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import math
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -104,7 +105,16 @@ from chc.uncertainty import (
     confounding_robust_inflation,
 )
 
-CertificateStatus = Literal["not_evaluated", "uncertified", "partial", "certified"]
+CertificateStatus = Literal["not_evaluated", "no_tolerance", "uncertified", "partial", "certified"]
+"""How far a plan's error tube trusts it: ``not_evaluated`` where no error model gave it a tube,
+``no_tolerance`` where the tube was read against an infinite tolerance, which holds every finite
+radius and so certifies nothing, and otherwise ``uncertified``, ``partial`` or ``certified`` as
+none, some or all of its steps keep the tube within the tolerance."""
+
+_TOLERANCE_DEFAULT = 1.0
+"""The ``tolerance`` :func:`causal_plan` and :class:`chc.mpc.RecedingHorizon` take from 0.20.0 when
+none is given: one unit of the state, the radius a caller who logs each state in units of the error
+accepted on it passes (ADR 0091)."""
 PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
 DiagnosticStatus = Literal["within", "beyond", "not_finite", "not_evaluated"]
 """How a plan's stationarity or constraint violation reads against its tolerance: ``within`` it,
@@ -178,17 +188,24 @@ class CausalPlan:
     stationarity_tolerance: float | None = None
     constraint_violation: float | None = None
     violation_tolerance: float | None = None
+    # the radius ``certified_horizon`` was read against; None on a plan built by hand
+    tolerance: float | None = None
     _problem: _PlanProblem | None = field(default=None, repr=False, compare=False)
 
     @property
     def certificate_status(self) -> CertificateStatus:
-        """Whether the tube was evaluated at all, and if so how much of the plan it covers.
+        """Whether the tube was evaluated at all, and if so how much of the plan it covers
+        (:data:`CertificateStatus`).
 
         Derived rather than stored: a status field that can disagree with the horizon it summarises
-        is a worse footgun than the one this replaces.
+        is a worse footgun than the one this replaces. An infinite :attr:`tolerance` reads
+        ``no_tolerance``: up to 0.18.0 it read ``certified`` on every plan whose tube stayed finite,
+        a pass no tube could fail.
         """
         if self.certified_horizon is None:
             return "not_evaluated"
+        if self.tolerance is not None and not math.isfinite(self.tolerance):
+            return "no_tolerance"
         if self.certified_horizon == 0:
             return "uncertified"
         return "certified" if self.certified_horizon == self.actions.shape[0] else "partial"
@@ -777,9 +794,10 @@ class DecisionWeight:
         return float(flat @ self.matrix @ flat) / 2.0
 
 
-CostBiasDirection = Literal["optimistic", "pessimistic", "unbiased"]
+CostBiasDirection = Literal["optimistic", "pessimistic", "unbiased", "unknown"]
 """Which way a planned cost reads against what the plan pays the plant, in expectation:
-``optimistic`` where it reads low, a positive bias, and ``pessimistic`` where it reads high."""
+``optimistic`` where it reads low, a positive bias, ``pessimistic`` where it reads high, and
+``unknown`` where the bias is nan."""
 
 
 @dataclass(frozen=True)
@@ -818,8 +836,12 @@ class PlannedCostBias:
 
     @property
     def direction(self) -> CostBiasDirection:
-        """Which way the planned cost reads (:data:`CostBiasDirection`)."""
+        """Which way the planned cost reads (:data:`CostBiasDirection`). A nan bias, as from a term
+        a plan that left the float range reads, is ``unknown``: up to 0.18.0 it read
+        ``unbiased``, failing both comparisons."""
         bias = self.bias
+        if math.isnan(bias):
+            return "unknown"
         return "optimistic" if bias > 0.0 else "pessimistic" if bias < 0.0 else "unbiased"
 
 
@@ -1279,7 +1301,7 @@ def causal_plan(
     model_error: float = 0.0,
     noise: ArrayLike = 0.0,
     noise_persistence: float = 0.0,
-    tolerance: float = float("inf"),
+    tolerance: float | None = None,
     steps: int = 10_000,
     constraints: Sequence[LinearConstraint] = (),
     barrier: BarrierConstraint | None = None,
@@ -1322,8 +1344,14 @@ def causal_plan(
             on a state matrix too, up to ``sqrt(chi2_n(0.95) / chi2_1(0.95))`` too wide where one
             direction's variance dominates, 1.249 times on two states. Zero by default, which
             leaves the tube the model error's alone, as before.
-        tolerance: tube radius above which the plan stops being certified. A step whose predicted
-            state is not a finite number, an overflow's or a nan's, is certified at no tolerance.
+        tolerance: tube radius above which the plan stops being certified, in the state's units.
+            A step whose predicted state is not a finite number, an overflow's or a nan's, is
+            certified at no tolerance. Not given, it is infinite, which holds every finite radius:
+            the plan's :attr:`~CausalPlan.certificate_status` then reads ``no_tolerance`` rather
+            than ``certified``, and where an error model gives the plan a tube a ``FutureWarning``
+            says that from 0.20.0 the default is 1.0, one unit of the state, the radius ADR 0091
+            asks of a caller who logs each state in units of the error accepted on it. Pass it to
+            choose the radius; ``inf`` keeps today's reading without the warning.
         constraints: linear rows over the whole action sequence
             (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
             only by the answer.
@@ -1462,7 +1490,7 @@ def _plan(
     lam_unc: float,
     lipschitz: ArrayLike,
     model_error: float,
-    tolerance: float,
+    tolerance: float | None,
     steps: int,
     constraints: Sequence[LinearConstraint],
     barrier: BarrierConstraint | None,
@@ -1475,7 +1503,8 @@ def _plan(
 
     What a receding horizon carries from one plan to the next besides the actions: ``multipliers``
     seed the barrier rounds in place of zeros, and the rounds' last come back -- zeros where the
-    barrier was slack, ``None`` with no barrier.
+    barrier was slack, ``None`` with no barrier. A ``tolerance`` of None is infinite, and warns
+    where the plan has a tube, at the caller of the caller's frame.
     """
     if uncertainty is not None and support is None:
         raise ValueError("uncertainty penalty requires a support model; it is unused without one")
@@ -1490,6 +1519,8 @@ def _plan(
         raise ValueError(f"dt={dt} is not a step, which is finite and positive")
     if not np.all(np.isfinite(np.asarray(x0))):
         raise ValueError(f"x0={np.asarray(x0).tolist()} is not a state: every entry is a number")
+    unset = tolerance is None
+    tolerance = math.inf if tolerance is None else tolerance
     _check_tolerance(tolerance)
     rate = np.asarray(lipschitz, dtype=float)
     if rate.ndim == 0 and not rate >= 0.0:
@@ -1646,8 +1677,18 @@ def _plan(
         stationarity_tolerance=stationarity_tolerance,
         constraint_violation=violation,
         violation_tolerance=violation_tolerance,
+        tolerance=tolerance,
         _problem=problem,
     )
+    if unset and tube is not None:
+        warnings.warn(
+            "the plan's error tube was read against no tolerance, which holds every finite radius, "
+            "so its certificate_status reads 'no_tolerance'; from 0.20.0 the default tolerance is "
+            f"{_TOLERANCE_DEFAULT:g}, one unit of the state (ADR 0091). Pass tolerance to choose "
+            "the radius, or inf to keep this reading.",
+            FutureWarning,
+            stacklevel=3,
+        )
     if barrier is None:
         return plan, None
     audit = _audit(

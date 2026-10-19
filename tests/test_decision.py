@@ -1905,13 +1905,13 @@ def test_the_run_records_the_installed_versions_of_what_computed_it(
 def test_the_run_goes_to_json_as_plain_values(default_run: RunProvenance) -> None:
     """Under ``allow_nan=False``, as ADR 0055 holds the record to, inside the prescription's and on
     its own: the versions an object and an infinite tolerance null, as any number that is not
-    finite is; the certificate's status says a tube was evaluated, where no tolerance would have
-    evaluated none."""
+    finite is; the certificate's status says a tube was evaluated against no tolerance, where no
+    tolerance would have evaluated none."""
     result = _small(tolerance=math.inf)
     run = result.run
     assert run is not None
     assert run == dataclasses.replace(default_run, tolerance=math.inf)
-    assert result.certificate.certificate_status == "certified"
+    assert result.certificate.certificate_status == "no_tolerance"
     record = result.to_json()
     assert json.loads(json.dumps(record, allow_nan=False)) == record
     assert json.loads(json.dumps(run.to_json(), allow_nan=False)) == record["run"]
@@ -2957,3 +2957,18 @@ def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> No
     assert record.logged == [-0.2, 0.2]  # type: ignore[attr-defined]
     assert record.steps[0] == 0  # type: ignore[attr-defined]
     assert "outside the range the panel logged, [-0.2, 0.2], first at step 0" in record.getMessage()
+
+
+def test_a_noisy_log_whose_units_never_step_twice_leaves_the_tube_unevaluated(caplog) -> None:
+    """Each zone logged over two periods, so no unit has two consecutive transitions: the noise's
+    persistence is unread, which once read as 0, a tube holding white noise where the noise may
+    persist. It is unknown now, and no tube is the answer that holds."""
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        result = _prescribe(_panel(n_units=400, n_periods=2), CausalGraph.from_edges(EDGES))
+    certificate = result.certificate
+    assert certificate.noise_persistence is None
+    assert certificate.certificate_status == "not_evaluated"
+    assert (certificate.tube_noise, certificate.tube_persistence) == (None, None)
+    (event,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "tube"]
+    assert math.isnan(event.noise_persistence)
+    assert "no unit has two consecutive transitions" in event.getMessage()

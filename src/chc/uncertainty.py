@@ -969,6 +969,10 @@ def lipschitz_rollout_bound(lipschitz: float, model_error: float, dt: float, hor
     contraction metric (:class:`~chc.residual.ContractiveResidual`, log-norm ``mu<0``) removes the
     exponential; the open loop assumes a FIXED action sequence -- for re-planning use
     :func:`closed_loop_rollout_bound`; for per-step ``L_k`` use :func:`time_varying_rollout_bound`.
+    The recursion is explicit Euler's, so the bound holds for Euler rollouts only. Every plan of
+    :func:`chc.plan.causal_plan` rolls out by RK4, and there it is not a bound: ``x' = x`` against
+    ``x' = x + 0.1`` at ``dt = 1`` reads ``0.1, 0.3, 0.7`` where the RK4 gaps are ``0.1708, 0.6335,
+    1.8866``. :func:`time_varying_rollout_bound`'s ``"rk4"`` recursion is the RK4 bound.
 
     Raises:
         ValueError: if ``lipschitz`` or ``model_error`` is negative, infinite or nan, if ``dt`` is
@@ -1621,7 +1625,9 @@ def closed_loop_rollout_bound(
 
     A state error perturbs the action, which perturbs the next state, so the growth rate is
     ``L_x + L_u*L_pi`` (not ``L_x`` alone): ``e_{k+1} <= (1 + dt(L_x + L_u*L_pi)) e_k + dt*eps``.
-    Reduces to :func:`lipschitz_rollout_bound` with the combined constant. CAVEAT: for a clipping /
+    Reduces to :func:`lipschitz_rollout_bound` with the combined constant, and so bounds Euler
+    rollouts only, not the RK4 rollouts every plan of :func:`chc.plan.causal_plan` and
+    :class:`chc.mpc.RecedingHorizon` makes, whose gap it can read below. CAVEAT: for a clipping /
     active-set / threshold MPC ``L_pi`` may be unbounded (not globally Lipschitz); use this only
     where the controller is Lipschitz (a fixed feedback gain, or a smooth relaxation).
 
@@ -1861,7 +1867,8 @@ def confounding_robust_closed_loop_bound(
     control_magnitude*Delta_B``, so the budget is ``eps_k = base_error + control_magnitude*Delta_B``
     (the action multiplier makes the units match -- effect error times control is a state error).
     ``gamma=1`` recovers the plain closed-loop tube. Rocq ``closed_loop_confounding_monotone``: the
-    tube is monotone in the confounding at every horizon.
+    tube is monotone in the confounding at every horizon. Like :func:`closed_loop_rollout_bound`, it
+    bounds Euler rollouts only, not a plan's RK4 one.
     """
     inflated = base_error + control_magnitude * confounding_robust_inflation(cvar_gap, 0.0, gamma)
     return closed_loop_rollout_bound(state_lip, control_lip, policy_lip, inflated, dt, horizon)

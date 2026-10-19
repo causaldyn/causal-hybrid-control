@@ -680,7 +680,8 @@ class DecisionCertificate:
     # many they did not (:attr:`CausalDynamicsFit.unmoved`).
     identification_rank: int | None = None
     unmoved_directions: int | None = None
-    # The first step at which a fit the log cannot tell from the fitted one predicts another path;
+    # The first step at which a fit the log cannot tell from the fitted one predicts another path,
+    # counted from 0, so also the number of steps before it, which every such fit predicts alike;
     # None where none does. ``trustworthy_steps`` ends there.
     first_loaded_step: int | None = None
     # The combinations of the levers the log kept at one level, which the plan keeps by an equality
@@ -1653,9 +1654,11 @@ class Prescription:
                     "directions a state"
                 )
             if certificate.first_loaded_step is not None:
+                agree = certificate.first_loaded_step
+                steps = "step" if agree == 1 else "steps"
                 line += (
-                    "; a fit the log cannot tell apart predicts another path from step "
-                    f"{certificate.first_loaded_step}"
+                    f"; a fit the log cannot tell apart predicts the plan's first {agree} {steps} "
+                    f"alike and another path from step {agree + 1} on"
                 )
             lines.append(line)
         return lines
@@ -1798,7 +1801,9 @@ def prescribe(
             on 97 % to 99 % of draws and trusts 1 or 2 steps, where the plant's error stays within
             the tolerance of 0.5 K at 95 % for 2 or 3. A tube whose rate, budget or noise comes out
             other than a finite number is not evaluated, and a warning says so; as is one on an
-            asserted empty adjustment set, whose observational fit has no channel error. The tube
+            asserted empty adjustment set, whose observational fit has no channel error, and one
+            over a noisy log in which no unit has two consecutive transitions, which leaves the
+            noise's persistence unread. The tube
             is one norm over the states, and ``tolerance`` one number in their units: states in
             units unlike each other mix in it, as the levers' once did. To give each state its own
             scale, log it in units of the error you accept on it, its target, its bounds and the
@@ -2356,7 +2361,7 @@ def prescribe(
         # a nan radius once read as within every tolerance; no tube is the answer that holds
         _log.warning(
             "the error tube is not evaluated: its rate, its budget or its noise is not a finite "
-            "number",
+            "number, or no unit has two consecutive transitions to read the noise's persistence",
             extra={
                 "chc_event": "tube",
                 "rate": lipschitz,
@@ -3591,16 +3596,19 @@ def _step_noise(
     """The plant's noise as the tube reads it: the plan's one-step error on the log, ``dt`` times
     the fit's defect, its covariance in the states' units, the mean of its outer products, and its
     lag-1 correlation within units, pooled over the states as
-    :func:`~chc.dynamics_id.persistence_check` pools them, 0 where no unit has two consecutive
-    transitions. ``labels`` are :func:`_transitions`' group, period and unit of each transition.
-    The defect is the fit's integrator's, ``rk4`` by default, the step the plan rolls out by."""
+    :func:`~chc.dynamics_id.persistence_check` pools them. The correlation is nan, unknown, where
+    the log has noise and no unit has two consecutive transitions to read it from, and the tube is
+    then not evaluated: up to 0.18.0 it read 0, a tube holding white noise where the noise may
+    persist. Where the log has no noise it is 0, which moves nothing. ``labels`` are
+    :func:`_transitions`' group, period and unit of each transition. The defect is the fit's
+    integrator's, ``rk4`` by default, the step the plan rolls out by."""
     assert fit.defect is not None  # every fit keeps its defect
     error = dt * np.asarray(fit.defect, dtype=np.float64)
     covariance = error.T @ error / error.shape[0]
     correlation = _persistence(
         error, labels[:, 2], labels[:, 1], fit.periods is not None
     ).correlation
-    return covariance, 0.0 if math.isnan(correlation) else correlation
+    return covariance, correlation if covariance.any() else 0.0
 
 
 def _show(value: object) -> str:

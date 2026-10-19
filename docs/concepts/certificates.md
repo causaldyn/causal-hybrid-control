@@ -54,7 +54,8 @@ design record is
   `prescribe` says where its rate holds: `global` on a field affine in the state, `local` where
   the slope was read at the plan's start alone. `plan.certified_actions` is that prefix and nothing
   more. With no error model supplied the certificate reports `not_evaluated` rather than a vacuous
-  full-horizon pass. The tube is a bound only where `model_error` bounds the field's error; the
+  full-horizon pass, and with no `tolerance`, which is infinite and holds every finite tube,
+  `no_tolerance`. The tube is a bound only where `model_error` bounds the field's error; the
   error `prescribe` supplies is a standard error, so there that part is a scale. The
   plant's own noise is the other part: given as `noise`, the tube adds the radius that holds it at
   each step with probability 0.95, and `prescribe` reads it off the plan's one-step error on the
