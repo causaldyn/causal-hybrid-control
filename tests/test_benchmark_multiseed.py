@@ -95,10 +95,12 @@ class _Regrets:
     ],
 )
 def test_the_interval_is_students_over_the_seeds(regrets, lo, hi) -> None:
+    """To SciPy's quantile: 1.13, the oldest release supported, reads ``t(0.975, 1)`` 2e-11 off the
+    closed form."""
     table = dict(enumerate(regrets))
     (result,) = run_multiseed(_Regrets(table), list(table))
-    assert result.regret_lo == pytest.approx(lo, rel=1e-12, abs=0.0)
-    assert result.regret_hi == pytest.approx(hi, rel=1e-12, abs=0.0)
+    assert result.regret_lo == pytest.approx(lo, rel=1e-10, abs=0.0)
+    assert result.regret_hi == pytest.approx(hi, rel=1e-10, abs=0.0)
 
 
 @pytest.mark.parametrize("n_seeds", [3, 5, 12])
