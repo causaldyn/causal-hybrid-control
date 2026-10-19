@@ -40,7 +40,7 @@ from chc import (
 )
 from chc.adjoint import control_gradient_adjoint
 from chc.cost import total_cost
-from chc.decision import Prescription, _cost, _field_errors, _field_scale, _slopes
+from chc.decision import Prescription, _cost, _field_errors, _field_scale, _noise_read, _slopes
 from chc.dynamics import DrivenDynamics, Dynamics, LinearDynamics
 from chc.plan import _barrier_terms
 from chc.uncertainty import _linear_tube, _noise_tube
@@ -437,12 +437,16 @@ def test_the_tube_reads_the_drift_s_error_at_the_forecast_it_plans_against(panel
     states = np.asarray(plan.trajectory, dtype=np.float64)[:-1]
     errors = _field_errors(fit, reach, states, reads[:, None])
     slopes = _slopes(problem.model, problem.x0)(np.asarray(plan.actions, dtype=np.float64))
+    units, times = np.asarray(columns["unit"]), np.asarray(columns["time"])
+    read = _noise_read(fit, DT, np.stack([units[~last], times[~last], units[~last]], 1))
+    assert read is not None
     noise = _noise_tube(
         slopes,
         np.array([[certificate.tube_noise**2]]),
         np.asarray(certificate.tube_autoregression),  # the VAR(1) the tube carries (ADR 0105)
         DT,
         HORIZON,
+        read=read,  # with its read's own error
     )
     scale = _field_scale(fit) * 1.959963984540054
 

@@ -40,6 +40,7 @@ from chc.decision import (
     _field_error,
     _field_errors,
     _field_scale,
+    _noise_read,
     _rate,
     _slopes,
     prescribe,
@@ -402,7 +403,8 @@ def _tube_at(
     field's slope at each of ``actions``, the plan's own where omitted, under ``bound`` the plan's
     own rate. Each lever's error is read off each covariance and priced at ``reach``, summed in
     quadrature over the levers and scaled to the Euclidean norm over the states, the largest read
-    taken, and the drift's own error, so scaled, added in quadrature (ADR 0096)."""
+    taken, and the drift's own error, so scaled, added in quadrature (ADR 0096). The noise
+    carries its read's own error over the log's hundred units of fourteen transitions (ADR 0105)."""
     plan = result.plan
     assert plan is not None
     problem = plan._problem
@@ -430,6 +432,9 @@ def _tube_at(
     # the noise as the tube carries it, a VAR(1) (ADR 0105)
     persistence = np.asarray(carried)
     covariance = np.array([[noise**2]])
+    units, periods = np.divmod(np.arange(100 * 14), 14)
+    read = _noise_read(result.model_fit, DT, np.stack([units, periods, units], 1))
+    assert read is not None
     # one state: the noise's radius and the field's error at its studentised quantile
     scale = _field_scale(result.model_fit) * math.sqrt(chi2.ppf(0.95, 1))
     if result.certificate.tube_mode == "bound":
@@ -437,12 +442,12 @@ def _tube_at(
             problem.model, problem.x0, jnp.asarray(problem.u_lo), jnp.asarray(problem.u_hi)
         )
         return np.hypot(
-            _noise_tube(np.asarray(rate), covariance, persistence, DT, HORIZON),
+            _noise_tube(np.asarray(rate), covariance, persistence, DT, HORIZON, read=read),
             scale * _tube([rate] * HORIZON, list(error), DT, "rk4"),
         )
     slopes = _slopes(problem.model, problem.x0)(along)
     return np.hypot(
-        _noise_tube(slopes, covariance, persistence, DT, HORIZON),
+        _noise_tube(slopes, covariance, persistence, DT, HORIZON, read=read),
         scale * _linear_tube(slopes, list(error), DT),
     )
 

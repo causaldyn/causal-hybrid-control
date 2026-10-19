@@ -17,6 +17,7 @@ import math
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.stats import chi2
 
 from chc import CausalGraph, Constraint, Lever, Panel, Target, prescribe
 from chc.cost import QuadraticCost
@@ -324,3 +325,18 @@ def test_the_quickstart_s_tube_holds_a_persistent_demand_at_each_week() -> None:
         demand = 0.8 * demand + 0.6 * rng.standard_normal(draws)
     error = math.sqrt(0.95 * 0.05 / draws)
     assert min(inside) >= 0.95 - 4.0 * error, inside
+
+
+def test_the_quickstart_s_tube_carries_the_error_of_the_noise_it_reads() -> None:
+    """The tube's first step holds one step's noise, read off the log, and the error of that read:
+    its spread over the log's units and the error of the noise's mean, which the fitted drift
+    absorbs. With the demand an AR(0.8) the supply's radius there is 1.0035 times the plug-in's,
+    ``sqrt(chi2_1(0.95))`` times the noise's own scale, and 1.0008 times on white demand: the
+    demand's mean over 2400 rows that persist within regions is read less well (ADR 0105)."""
+    level = math.sqrt(float(chi2.ppf(0.95, 1)))
+    for phi, low, high in ((0.8, 1.002, 1.006), (0.0, 1.0003, 1.002)):
+        certificate = _decide(_quickstart_log(0, phi)).certificate
+        assert certificate.tube_state_noise is not None
+        assert certificate.tube_noise is not None
+        ratio = certificate.tube_state_noise[1][0] / (level * certificate.tube_noise)
+        assert low <= ratio <= high, (phi, ratio)

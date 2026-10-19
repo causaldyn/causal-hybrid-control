@@ -44,8 +44,9 @@ still change).
   certificate is read on plants its model gets wrong: a persistent confounder, AR noise, dead time,
   nuisances outside the sieve, actions outside the logged support, a plant unlike the model. Each
   test asserts that the certificate holds at its level or says so: 33 pass. One case does neither
-  and is a strict xfail with its numbers: the tube under a persistent confounder, 0.944 by step 13
-  where it states 0.95 (0.765 at step 15 before its noise was carried as a VAR(1)). Seven more were
+  and is an xfail with its numbers: the tube under a persistent confounder, 0.9463 by step 13
+  over 16 logs, 6e-5 under its floor (0.765 at step 15 before its noise was carried as a VAR(1),
+  0.944 before it carried its read's error). Seven more were
   strict xfails before this release's fixes, among them the channel's interval outside the sieve
   and the `"mis"` interval under a model error, each covered on 0 of 40 logs. The default `pytest`
   deselects the suite; a CI job of its own runs it, and so does `just misspecification`.
@@ -189,6 +190,17 @@ still change).
 
 ### Fixed
 
+- **`prescribe`'s tube carries the error of the noise it reads off the log.** It took the log's
+  `S`, `Phi` and mean noise for the plant's own. A tube read off one log is narrow on some logs
+  and wide on others, and the plant's noise misses the mean the fitted drift absorbed. Under a
+  persistent demand, AR(0.8), recorded and adjusted, over 256 logs of 2000 runs the plant stayed
+  inside 0.9489 of the time at step 1 and 0.9464 at step 15. `S` and `Phi` are now read again with
+  each group of units left out, and each step's noise is read at its studentised scale. The
+  mean's error, clustered by unit, is carried as a constant offset
+  (`validation/noise_read_tube.mac`). The tube now holds 0.9497 at step 1 and 0.9484 at its
+  weakest step, with a standard error of 0.0008 over the logs. Of the 0.0016 left, 0.0009 is the
+  VAR(1)'s reading of an error that is AR plus white. Logs of one unit are unchanged. The
+  quickstart's supply radius widens 0.35 % at week 1 (ADR 0105).
 - **A held barrier holds `h` at each step's next state.** At `dt = 1` a held plan's path left the
   set at 5 of 12 states and its own audit certified 3 steps; it now certifies 12. Plans whose path
   stayed in the set are unchanged to the last digit.

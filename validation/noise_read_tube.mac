@@ -1,0 +1,91 @@
+/* The tube's noise read off a log, with the read's own error carried (chc.uncertainty
+   _read_covariances, _studentised; chc.decision._noise_read).
+
+   The fitted drift absorbs the log's mean noise, so the plant's one-step error is w_k + mu: w_k the
+   noise the log reads, a VAR(1) of covariance S, and mu a constant, the error of that mean,
+   independent of w and of covariance V. The gap e_{k+1} = M_k e_k + w_k + mu from e_0 = 0 has
+
+       P_k = P_k(w) + D_k V D_k',   D_{k+1} = M_k D_k + I,   D_0 = 0,
+
+   P_k(w) the recursion of var_noise_tube.mac. Under a norm bound g >= ||M_k||, ||D_k|| <= d_k =
+   1 + g + ... + g^(k-1). The noise's part is read at its studentised scale: a variance read on nu
+   degrees of freedom, s^2 = sigma^2 chi2_nu / nu, has Var(log s^2) = psi_1(nu / 2), which is
+   2 / nu + 2 / nu^2 + O(nu^-3), and x / s with x ~ N(0, sigma^2) independent of s is Student's
+   t_nu, so that |x| <= t_nu(q) s with probability q exactly.
+
+   Checked here: (1) D_k against the sum of the step products sum_j A_{k,j}, A_{k,j} = M_{k-1} ...
+   M_{j+1}, and P_k against the double sum over Cov(w_i + mu, w_j + mu) = Cov(w_i, w_j) + V, on
+   symbolic 2x2 step matrices that move each step, k = 1..4; (2) the norm bound on D_k and on the
+   whole covariance, lambda_max(s^2 P_k(w) + D_k V D_k') <= s^2 p_k + d_k^2 lambda_max(V), on a
+   non-normal step; (3) psi_1(nu / 2)'s expansion, and Var(log chi2_nu) = psi_1(nu / 2) by
+   quadrature at nu = 7 and 40; (4) the studentised radius holds probability 0.95 exactly at
+   nu = 5, 12 and 60, by quadrature over the chi-square. */
+display2d : false$
+fpprec : 40$
+vanishes(label, x) := if (if matrixp(x) then every(lambda([e], is(e = 0)), flatten(args(x)))
+                          else is(x = 0))
+  then print(label, "= 0") else error(label, "is not zero:", x)$
+close(label, x, y, tol) := if is(abs(bfloat(x - y)) <= tol)
+  then print(label, ":", bfloat(x), "vs", bfloat(y))
+  else error(label, "differs:", bfloat(x), "vs", bfloat(y))$
+
+/* (1) moving symbolic step matrices, a VAR(1) noise and a constant offset */
+Ms : makelist(matrix([concat(a, k), concat(b, k)], [concat(c, k), concat(d, k)]), k, 1, 4)$
+F : matrix([f11, f12], [f21, f22])$
+S : matrix([s11, s12], [s12, s22])$
+V : matrix([v11, v12], [v12, v22])$
+cov(i, j) := if i >= j then F^^(i - j) . S else S . transpose(F)^^(j - i)$
+carry(k, j) := block([A : ident(2)], for l : j + 1 thru k - 1 do A : Ms[l + 1] . A, A)$
+P : zeromatrix(2, 2)$ C : zeromatrix(2, 2)$ D : zeromatrix(2, 2)$
+for k : 1 thru 4 do (
+  Mk : Ms[k],
+  [P, C, D] : [Mk . P . transpose(Mk) + Mk . C + transpose(C) . transpose(Mk) + S,
+               (Mk . C + S) . transpose(F), Mk . D + ident(2)],
+  vanishes(sconcat("(1) k = ", k, ": D_k - sum_j A_{k,j}"),
+           expand(D - sum(carry(k, j), j, 0, k - 1))),
+  vanishes(sconcat("(1) k = ", k, ": P_k + D_k V D_k' - double sum with the offset"),
+           expand(P + D . V . transpose(D)
+                  - sum(sum(carry(k, i) . (cov(i, j) + V) . transpose(carry(k, j)), j, 0, k - 1),
+                        i, 0, k - 1))))$
+
+/* (2) the norm bound, a non-normal step and a non-normal Phi, studentised at s = 21/20 */
+lmax(A) := block([t : A[1, 1] + A[2, 2], d : determinant(A)], (t + sqrt(t^2 - 4*d))/2)$
+nM : matrix([1, 1/2], [0, 9/10])$
+bF : matrix([1/2, 3/10], [0, 1/5])$
+nS : matrix([2, 1/2], [1/2, 1])$
+nV : matrix([1/10, 1/20], [1/20, 1/5])$
+g : sqrt(lmax(transpose(nM) . nM))$
+q : lmax(nS)$
+phinorm : sqrt(lmax(transpose(bF) . bF))$
+s : 21/20$
+P : zeromatrix(2, 2)$ C : zeromatrix(2, 2)$ D : zeromatrix(2, 2)$ p : 0$ c : 0$ d : 0$
+for k : 1 thru 8 do (
+  [P, C, D] : [nM . P . transpose(nM) + nM . C + transpose(C) . transpose(nM) + nS,
+               (nM . C + nS) . transpose(bF), nM . D + ident(2)],
+  [p, c, d] : [g^2*p + 2*g*c + q, phinorm*(g*c + q), g*d + 1],
+  if is(bfloat(sqrt(lmax(transpose(D) . D))) <= bfloat(d))
+     and is(bfloat(lmax(s^2*P + D . nV . transpose(D))) <= bfloat(s^2*p + d^2*lmax(nV)))
+  then print("(2) k =", k, ": ||D|| =", bfloat(sqrt(lmax(transpose(D) . D))), "<= d =", bfloat(d),
+             "; lambda_max =", bfloat(lmax(s^2*P + D . nV . transpose(D))), "<=",
+             bfloat(s^2*p + d^2*lmax(nV)))
+  else error("(2) the bound fails at k =", k))$
+
+/* (3) Var(log chi2_nu) = psi_1(nu / 2) = 2 / nu + 2 / nu^2 + O(nu^-3) */
+/* psi_1(x) = 1/x + 1/(2 x^2) + 1/(6 x^3) - ..., so at x = nu / 2 the two leading terms */
+lead(nu) := 2/nu + 2/nu^2$
+for nu in [50, 200, 1000] do
+  close(sconcat("(3) nu = ", nu, ": psi_1(nu/2) vs 2/nu + 2/nu^2, to 2/nu^3"),
+        bfloat(psi[1](bfloat(nu/2))), lead(nu), 2.0b0/nu^3)$
+chidensity(x, nu) := x^(nu/2 - 1)*exp(-x/2)/(2^(nu/2)*gamma(nu/2))$
+for nu in [7, 40] do block([m1, m2],
+  m1 : quad_qagi(log(x)*chidensity(x, nu), x, 0, inf, 'epsrel = 1d-12)[1],
+  m2 : quad_qagi(log(x)^2*chidensity(x, nu), x, 0, inf, 'epsrel = 1d-12)[1],
+  close(sconcat("(3) nu = ", nu, ": Var(log chi2_nu) by quadrature vs psi_1(nu/2)"),
+        m2 - m1^2, psi[1](bfloat(nu/2)), 1d-9))$
+
+/* (4) x / s ~ t_nu: P(|x| <= t_nu(0.975) s) = 0.95, over the chi-square of s^2 */
+/* t_nu(0.975), from scipy.stats.t.ppf, checked here by the coverage it gives */
+tq : [[5, 2.5705818356363146], [12, 2.1788128296672284], [60, 2.0002978220142604]]$
+for pair in tq do block([nu : pair[1], t : pair[2], held],
+  held : quad_qagi(erf(t*sqrt(x/nu)/sqrt(2))*chidensity(x, nu), x, 0, inf, 'epsrel = 1d-12)[1],
+  close(sconcat("(4) nu = ", nu, ": studentised radius holds"), held, 0.95, 1d-9))$

@@ -102,6 +102,7 @@ from chc.uncertainty import (
     _noise_covariance,
     _noise_persistence,
     _noise_tube,
+    _NoiseRead,
     _tube,
     _within,
     confounding_robust_inflation,
@@ -1635,6 +1636,7 @@ def _error_tube(
     dt: float,
     horizon: int,
     field_scale: float | None = None,
+    read: _NoiseRead | None = None,
 ) -> NDArray[np.float64] | None:
     """The plan's error tube carried by ``carried`` -- a norm bound, one state matrix, or one a step
     -- or None where neither the model error nor the noise gives it a radius.
@@ -1647,7 +1649,8 @@ def _error_tube(
     known, and it is placed along the noise's widest, where it widens the radius most: the radius
     is that of the noise's covariance with ``(field_scale f_k)^2`` added to its largest
     eigenvalue, on one state ``sqrt(r_k^2 + (field_scale z f_k)^2)``, ``z`` the normal's two-sided
-    quantile."""
+    quantile. ``read`` carries the noise's own error where it was read off a log
+    (:func:`chc.uncertainty._read_covariances`)."""
     reads = np.asarray(model_error, dtype=np.float64)
     errors = [float(reads)] * horizon if reads.ndim == 0 else [float(error) for error in reads]
     if not (max(errors, default=0.0) > 0.0 or covariance.any()):
@@ -1658,9 +1661,9 @@ def _error_tube(
         else _linear_tube(carried, errors, dt)
     )
     if field_scale is not None:
-        return _noise_tube(carried, covariance, persistence, dt, horizon, field_scale * tube)
+        return _noise_tube(carried, covariance, persistence, dt, horizon, field_scale * tube, read)
     if covariance.any():
-        tube = tube + _noise_tube(carried, covariance, persistence, dt, horizon)
+        tube = tube + _noise_tube(carried, covariance, persistence, dt, horizon, read=read)
     return tube
 
 
@@ -1673,13 +1676,14 @@ def _carried_along(
     dt: float,
     tolerance: float,
     field_scale: float | None = None,
+    read: _NoiseRead | None = None,
 ) -> CausalPlan:
     """``plan`` with its tube carried by the field's ``(horizon, n, n)`` state matrix at each of its
     steps rather than by the one ``lipschitz`` it was solved with: a field affine in the state whose
     slope moves with the action, as :func:`chc.prescribe`'s fitted one does; or, given one number,
     by that norm bound as the plan was. ``model_error`` is one number for every step or one a step,
-    and ``field_scale`` reads it as a standard error (:func:`_error_tube`). The tube is read off the
-    finished actions and moves no action."""
+    and ``field_scale`` reads it as a standard error, and ``read`` carries the noise's own error
+    (:func:`_error_tube`). The tube is read off the finished actions and moves no action."""
     horizon = len(plan.actions)
     covariance = _noise_covariance(noise, plan.trajectory.shape[-1])
     tube = _error_tube(
@@ -1690,6 +1694,7 @@ def _carried_along(
         dt,
         horizon,
         field_scale,
+        read,
     )
     if tube is None:
         return plan

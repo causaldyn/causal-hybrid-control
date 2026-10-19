@@ -48,6 +48,7 @@ from chc.decision import (
     _linearised,
     _margins,
     _model_error,
+    _noise_read,
     _panel_start,
     _rate,
     _show_start,
@@ -888,7 +889,12 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
         fit, np.array([distance]), np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0))
     )
     field = _linear_tube(slopes, errors, dt)
-    noise_part = _noise_tube(slopes, np.array([[noise**2]]), persistence, dt, horizon)
+    # the noise with its read's own error, the units' spread and the mean's (ADR 0105)
+    units, times = np.asarray(columns["unit"]), np.asarray(columns["time"])
+    starts = times < times.max()
+    read = _noise_read(fit, dt, np.stack([units[starts], times[starts], units[starts]], 1))
+    assert read is not None
+    noise_part = _noise_tube(slopes, np.array([[noise**2]]), persistence, dt, horizon, read=read)
     # one state: the noise's radius and the field's error at its studentised quantile
     scale = _field_scale(fit) * math.sqrt(chi2.ppf(0.95, 1))
     expected = np.sqrt(noise_part**2 + (scale * field) ** 2)
