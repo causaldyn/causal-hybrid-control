@@ -13,6 +13,11 @@ and the run is long. Two cases break it:
 - **A short run whose noise persists.** On the working model, `x' = 0.8 x + 2 u + eps` with `eps`
   AR(0.8), the local projection's interval for `tau_3` covered 0.903 of 1000 runs over 60
   periods, 0.881 over 40 and 0.905 over 100, where it should cover 0.95.
+  *Note, 2026-10-13:* the shortfall is the run's length, not the noise's persistence. With
+  i.i.d. `eps` the same interval covered 0.849, 0.878 and 0.910 over 40, 60 and 100 periods, and
+  0.942 over 200 (1000 runs each). The regression fits its intercept and `y_t` on the same few
+  dozen periods, which biases `tau_3` by about `-12 / T` and reads its variance 8 % to 17 % low;
+  more HAC lags make it worse (0.835, 0.809 and 0.734 at 5, 10 and 20 lags over 60 periods).
 - **A noise that trends.** With one trending noise path held fixed and only the coins redrawn, its
   interval for the channel covered 0.919 of 1000 runs over 200 periods. The trend is in its
   residuals, and its estimate sat 0.42 of its own spread off the channel.

@@ -1117,9 +1117,16 @@ def read_switchback(
       so it keeps what a spillover or a shock common to the zones puts between them.
 
     ``se`` is what the standard error is over. ``"model"`` reads it off the regression's errors as
-    above. ``"design"`` reads it over the lever's own randomisation, with the plant and its noise
-    held fixed (Liang and Recht, Biometrika 2025), for a local projection on a lever drawn by a
-    fair coin each period. The estimate is then the local projection with the design's moments in
+    above, and is asymptotic in ``T``: the regression fits its intercept and ``y_t`` on the same
+    periods, which on a short run biases the effect, by about ``-12 / T`` for ``tau_3`` on the
+    working model, and reads its variance 8 % to 17 % low. On ``x' = 0.8 x + 2 u + eps`` its 95 %
+    interval for ``tau_3`` covered 0.85 over 40 periods, 0.88 over 60 and 0.91 over 100 with
+    i.i.d. ``eps``, 0.94 from 200 periods, and as much with ``eps`` AR(0.5) or AR(0.8); on a run
+    of fewer than about 200 periods read ``"design"`` or :func:`randomisation_test`. A block
+    difference over few blocks is short too: 0.885 over 8 blocks, 0.94 from 20. ``"design"``
+    reads it over the lever's own randomisation, with the plant and its noise held fixed (Liang
+    and Recht, Biometrika 2025), for a local projection on a lever drawn by a fair coin each
+    period. The estimate is then the local projection with the design's moments in
     place of the sample's, no intercept and no ``y_t``: ``tau_H = sum_(s<H) g_s``, with
     ``g_s = 2 / (T - s) sum_t (2 u_t - 1) (y_(t+1+s) - y_0)``, each zone read from its first
     reading, which precedes the lever, and the zones averaged. Over the coins it is unbiased for

@@ -120,6 +120,13 @@ still change).
   unit bootstrap covers with no draw refused (0.925 and 0.902 on two plants, 60 units) and what
   one unit's difference interval covers (0.74 to 0.88), both short through the estimate's right
   skew, which the spread it reads follows. Docs only; no value moves. Since 0.18.0.
+- **`read_switchback` states that its `se="model"` interval is asymptotic in the run's length.**
+  It read as a plain 1 - alpha interval, and ADR 0098 blamed its shortfall on a short run whose
+  noise persists. The shortfall is the short run alone: on the working model the local
+  projection's 95% interval for `tau_3` covered 0.849, 0.878 and 0.910 over 40, 60 and 100 periods
+  with i.i.d. noise (0.873 to 0.930 with AR noise) and 0.942 from 200, and the block difference
+  covered 0.885 over 8 blocks. The docstring now gives these and points short runs to
+  `se="design"` or `randomisation_test`. Docs only; no value moves. Since 0.8.0.
 
 ## [0.18.0] — 2026-10-13
 
