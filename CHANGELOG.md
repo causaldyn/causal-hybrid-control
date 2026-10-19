@@ -120,6 +120,13 @@ still change).
   It read the slope's standard error against `t` with four degrees of freedom, 2.776, where the
   default four replicate blocks leave three: an interval at 2.776 covers 0.931, and the 5% value is
   3.182. Since 0.6.0.
+- **`HigherOrderBarrierGap.ok` reads whether the tube contains the working set.** Its docstring
+  says `ok` checks that where the second-order condition holds on the whole working set the tube
+  contains that set, but it compared the two sets' sizes, which a tube as large as the working set
+  and somewhere else passes. It now reads `certified_but_unreachable`, the share of the grid the
+  theorem says is safe and the tube leaves out, against `tolerance`: on a 61-column grid whose
+  working set is 41 columns, a tube moved by six columns left 6 of 61 of the grid out and read `ok`;
+  it now does not. Since 0.4.0.
 
 ## [0.18.0] — 2026-10-13
 

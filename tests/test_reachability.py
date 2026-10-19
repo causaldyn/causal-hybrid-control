@@ -7,8 +7,10 @@ import numpy as np
 import pytest
 from jax import Array
 
+import chc.reachability as reachability
 from chc.barrier import robust_barrier_margin
 from chc.reachability import (
+    ReachableTube,
     backward_reachable_tube,
     barrier_reachability_gap,
     higher_order_barrier_gap,
@@ -368,3 +370,80 @@ def test_higher_order_condition_sees_the_radius_the_first_order_one_cannot() -> 
         assert gap.working_fraction <= gap.safe_fraction + 1e-12
         assert gap.barrier_fraction <= gap.working_fraction + 1e-12
         assert gap.certified_but_unreachable >= 0.0
+
+
+# A relative-degree-2 barrier the higher-order condition holds on everywhere: no drift, so
+# ``psi1 = alpha1 h`` and the working set is the safe set ``x0^2 <= 1.02``, 41 of the grid's 61
+# columns, its edge between two of them.
+_STILL_BOX = {"lower": (-1.5, -1.2), "upper": (1.5, 1.2), "resolution": (61, 61)}
+
+
+def _still_gap(monkeypatch: pytest.MonkeyPatch, final: str, tolerance: float):
+    real = reachability.backward_reachable_tube
+
+    def tube(*args: object, **kwargs: object) -> ReachableTube:
+        honest = real(*args, **kwargs)
+        safe = honest.initial
+        moved = {
+            "true": honest.final,
+            # the safe set moved one column up x0, or six: as many points, not the same ones
+            "rolled 1": jnp.roll(safe, 1, axis=0),
+            "rolled 6": jnp.roll(safe, 6, axis=0),
+            # the safe set less its six highest columns, 45 to 50: a subset, smaller
+            "shrunk 6": safe.at[45:51].set(-1.0),
+        }[final]
+        return ReachableTube(honest.axes, honest.times, honest.values.at[-1].set(moved))
+
+    monkeypatch.setattr(reachability, "backward_reachable_tube", tube)
+    return higher_order_barrier_gap(
+        lambda x: 1.02 - x[0] ** 2,
+        lambda x: jnp.zeros(2),
+        jnp.array([[0.0], [1.0]]),
+        u_max=2.0,
+        horizon=0.2,
+        steps=20,
+        tolerance=tolerance,
+        **_STILL_BOX,
+    )
+
+
+@pytest.mark.parametrize(
+    ("final", "tolerance", "outside", "ok"),
+    [
+        ("true", 0.0, 0, True),
+        ("rolled 1", 0.02, 1, True),
+        ("rolled 1", 0.01, 1, False),
+        ("rolled 6", 0.02, 6, False),
+        ("shrunk 6", 0.02, 6, False),
+    ],
+)
+def test_higher_order_ok_reads_whether_the_tube_contains_the_working_set(
+    monkeypatch: pytest.MonkeyPatch, final: str, tolerance: float, outside: int, ok: bool
+) -> None:
+    """``ok`` says the tube contains the working set, to ``tolerance`` of the grid: a tube as large
+    as the working set and somewhere else does not, and one that leaves out a column of 61 does
+    at 0.02 and not at 0.01."""
+    gap = _still_gap(monkeypatch, final, tolerance)
+    assert gap.valid_cbf
+    assert gap.working_fraction == pytest.approx(41 / 61, rel=0.0, abs=1e-6)
+    assert gap.certified_but_unreachable == pytest.approx(outside / 61, rel=0.0, abs=1e-6)
+    assert gap.ok is ok
+
+
+def test_higher_order_ok_holds_where_the_condition_fails_somewhere() -> None:
+    """Where the condition fails at a working point the theorem says nothing, so ``ok`` holds
+    whatever the tube leaves out."""
+    gap = higher_order_barrier_gap(
+        lambda x: 1.0 - x[0] ** 2,
+        lambda x: jnp.array([x[1], 0.0]),
+        jnp.array([[0.0], [1.0]]),
+        u_max=2.0,
+        radius=0.8,
+        horizon=0.6,
+        steps=150,
+        tolerance=0.0,
+        **_STILL_BOX,
+    )
+    assert not gap.valid_cbf
+    assert gap.certified_but_unreachable > 0.0
+    assert gap.ok
