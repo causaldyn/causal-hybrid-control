@@ -1,0 +1,67 @@
+/* The first-order bias of chc.switchback's local projection with the model standard error.
+
+   Working model, zone z: y(t+1) = a y(t) + b u(t) + eps(t), the lever a fair coin each period
+   (centred cu = u - 1/2, variance 1/4), eps i.i.d. and independent of the coins. The projection
+   regresses Y(t) = y(t+1) + ... + y(t+H) on (u(t), y(t)) with an intercept per zone over the R =
+   T - H + 1 periods whose sums the run holds, and reads tau_H = b S_H(a), S_m = 1 + a + ... +
+   a^(m-1), as the coefficient on u(t).
+
+   STEP 1  Y(t) = c y(t) + tau_H u(t) + e(t): the error holds the later coins and shocks,
+           e(t) = sum_(k=0..H-1) gamma_k eps(t+k) + sum_(k=1..H-1) beta_k cu(t+k), with
+           gamma_k = S_(H-k) and beta_k = b gamma_k (checked for H = 2..6).
+   STEP 2  With D = cu~'M cu~ ~ Z R / 4 (M removes y and the intercepts), the estimate's error is
+           (A - B) / D, A = sum cu~ e~, B = (sum cu~ y~)(sum y~ e~) / sum y~^2, both O(1):
+           * a zone's coins enter its own later errors, and demeaning within the zone leaves
+             E[A] = -(Z / 4) sum_k beta_k;
+           * cu(t) is independent of y(t) and enters y(s) only for s > t, where e(s) is independent
+             of y(t), so the one covariance left is Cov(cu(t), e(s)) Cov(y(t), y(s)) at t = s + k:
+             E[B] = (1 / 4) sum_k beta_k a^k, the same at any number of zones, since the pooled
+             slope on y(t) has the zones' variance in its denominator.
+           The remainders are O(1 / R) of these, so the bias is 4 (E[A] - E[B]) / (Z R) + O(R^-2).
+   STEP 3  On one zone the two sums close: R bias = -(H - 1) b S_H = -(H - 1) tau_H, with no a or b
+           left in the relative bias -(H - 1) / R. On Z zones R bias = -b (sum_k S_(H-k) +
+           sum_k (S_H - S_k) / Z), which depends on a: no correction of the estimate is exact.
+           Monte Carlo of 200 000 runs read relative biases of -0.0106, -0.0052, -0.0021 over 200,
+           400 and 1000 periods at a = 0.8, b = 2, H = 3 on one zone, against -0.0101, -0.0050,
+           -0.0020 here, and -0.0073 against -0.0069 on four zones over 200.
+
+   Run: timeout 300 maxima --very-quiet -b validation/local_projection_bias.mac */
+
+display2d : false$
+S(m) := sum(a^i, i, 0, m - 1)$
+
+/* STEP 1: Y(t) built from y(t) forward; Y0 = y(t), cu[k] = cu(t+k), ep[k] = eps(t+k) */
+errterms(H) := block([y, Y, e, c, tau],
+  y[0] : Y0,
+  for j : 1 thru H do y[j] : a*y[j - 1] + b*cu[j - 1] + ep[j - 1],
+  Y : expand(sum(y[j], j, 1, H)),
+  c : coeff(Y, Y0),
+  tau : coeff(Y, cu[0]),
+  e : expand(Y - c*Y0 - tau*cu[0]),
+  [tau, makelist(coeff(e, cu[k]), k, 1, H - 1), makelist(coeff(e, ep[k]), k, 0, H - 1)])$
+
+for H : 2 thru 6 do block([r, tau, beta, gam, EA, EB, one, many],
+  r : errterms(H),
+  [tau, beta, gam] : r,
+  if ratsimp(tau - b*S(H)) # 0 then error("tau_H is not b S_H at H =", H),
+  if ratsimp(gam - makelist(S(H - k), k, 0, H - 1)) # makelist(0, k, 1, H)
+    then error("gamma_k is not S_(H-k) at H =", H),
+  if ratsimp(beta - b*rest(gam, 1)) # makelist(0, k, 1, H - 1)
+    then error("beta_k is not b gamma_k at H =", H),
+  /* STEP 2, per zone and pooled over Z zones */
+  EA : -(Z/4)*sum(beta[k], k, 1, H - 1),
+  EB : (1/4)*sum(beta[k]*a^k, k, 1, H - 1),
+  many : ratsimp(4*(EA - EB)/Z),
+  /* STEP 3 */
+  one : ratsimp(subst(Z = 1, many)),
+  if ratsimp(one + (H - 1)*b*S(H)) # 0 then error("one zone's R bias is not -(H-1) tau_H at H =", H),
+  if ratsimp(many + b*(sum(S(H - k), k, 1, H - 1) + sum(S(H) - S(k), k, 1, H - 1)/Z)) # 0
+    then error("the pooled R bias is not as stated at H =", H),
+  print("H =", H, " one zone: R bias =", factor(one), "; Z zones:", many))$
+
+/* the numbers STEP 3 quotes: a = 0.8, b = 2, H = 3 */
+relative(T, Zn) := float(subst([a = 0.8, b = 2, Z = Zn],
+  -b*(sum(S(3 - k), k, 1, 2) + sum(S(3) - S(k), k, 1, 2)/Z) / ((T - 2) * b * S(3))))$
+print("relative bias, one zone, T = 200, 400, 1000:", relative(200, 1), relative(400, 1),
+      relative(1000, 1), "; four zones, T = 200:", relative(200, 4))$
+if abs(relative(200, 1) + 2/198) > 1e-12 then error("relative bias at T = 200")$

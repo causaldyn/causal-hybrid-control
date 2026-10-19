@@ -13,7 +13,8 @@ mean costs regret: what the action loses against the one that knew ``b``. An exp
 precision of ``b_k``. :func:`design_experiment` chooses the ``n_k`` that minimise the regret left
 after the experiment, times the number of times the decision will be used, plus what the experiment
 spends, within a budget. Then it measures the regret before and after by Monte Carlo, re-solving the
-decision on every draw, and every number it reports is that measurement.
+decision on every draw: the regrets, the value, its ``error`` and ``regret_bound`` are that
+measurement. ``pinned`` and ``weights`` are not: they are the local model's, below.
 
 The local model it optimises (the lab's value-of-information thread, independently verified):
 
@@ -85,6 +86,7 @@ _SIGNED = 2.0  # a channel's sign is known once its mean is this many posterior 
 _RELEVANT = 1e-3  # a zone matters when its decision weight is this share of the largest
 _GAP_WARNING = 0.25
 _MIN_DRAWS = 100
+_Z95 = 1.959963984540054
 
 
 def _vector(value: ArrayLike, name: str, size: int | None = None) -> _Array:
@@ -345,7 +347,12 @@ class ZoneExperiment:
 @dataclass(frozen=True)
 class PinnedZone:
     """A lever held at its bound at the prior mean: how far its multiplier is from releasing it, in
-    prior standard deviations, and the expected regret the pin costs now, times ``uses``."""
+    prior standard deviations, and the expected regret the pin costs now, times ``uses``.
+
+    ``regret`` is the local model's Gaussian-tail law, ``s G(z) / (2 S)``, not a measurement: on one
+    lever pinned at zero, ``x = -1 + b u`` with ``b ~ N(-0.3, s^2)``, it read 14% under the exact
+    regret at ``z = 3``, 6% under at ``z = 1.5``, 8% over at ``z = 1`` and 52% over at ``z = 0.6``.
+    """
 
     zone: int
     z: float
@@ -360,9 +367,14 @@ class ExperimentDesign:
     prior mean, ``regret_after`` of acting on the posterior mean once ``sample_sizes`` units have
     run, each the certainty-equivalent action and not the Bayes one (see :mod:`chc.experiment`).
     Both are Monte Carlo's, over draws of the channels with the decision re-solved on every draw,
-    and ``error`` is the 95% half-width of their difference. ``value`` is what the experiment
-    removes less what it spends. ``regret_bound`` is the ``level`` quantile of the regret of acting
-    now: with that probability under the prior, deploying now loses at most this much.
+    and ``error`` is a half-width that holds their expected difference with probability at least
+    0.95: the larger side of Hall's (1992) skewness-corrected interval, since the difference is
+    skewed to the right. ``value`` is what the experiment removes less what it spends.
+    ``regret_bound`` is the ``level`` quantile of the regret of acting now: with that probability
+    under the prior, deploying now loses at most this much. It is the draws' order statistic of
+    rank ``ceil(level (draws + 1))``, which a fresh draw stays at or below with probability at
+    least ``level`` at any number of draws, and ``inf`` where ``draws`` is below
+    ``level / (1 - level)``, too few to show it.
     ``model_gap`` is the local model's largest relative miss against the two Monte Carlo regrets,
     and the allocation was optimised on that model. ``weights`` is the prior-averaged decision
     weight ``W``.
@@ -542,6 +554,38 @@ def _pinned_zone(pin: _Pin, prior: ChannelPrior, uses: float) -> PinnedZone:
     return PinnedZone(pin.zone, z, uses * _pin_regret(pin, variance))
 
 
+def _upper_quantile(values: _Array, level: float) -> float:
+    """The order statistic of rank ``ceil(level (n + 1))`` of ``n`` draws. A further draw of their
+    law lies at or below the rank-``k`` statistic with probability ``k / (n + 1)``, more where the
+    law has atoms, so this is the least rank that holds ``level``. The interpolated quantile fell
+    short: 0.941 at 100 draws."""
+    rank = math.ceil(level * (values.size + 1))
+    return float(np.sort(values)[rank - 1]) if rank <= values.size else math.inf
+
+
+def _half_width(values: _Array) -> float:
+    """The larger side of Hall's (1992) skewness-corrected 95% interval for the mean of ``values``,
+    as a half-width on either side of it. A regret is skewed to the right and its spread rises with
+    it, so where the mean reads low the spread does too, and 1.96 standard errors held the mean
+    0.915 to 0.926 of the time at 100 draws on three designs. Hall's transformation
+    ``g(t) = t + b t^2 + b^2 t^3 / 3 + b / 2``, ``b = skew / (3 sqrt(n))``, removes the
+    studentised mean's skew to first order, and its larger side held 0.950 to 0.969 from 100 to
+    1000 draws: at least 95%, at 1.6 times the normal width at 100 draws and 1.1 times at 1000."""
+    n = values.size
+    se = float(np.std(values, ddof=1)) / math.sqrt(n)
+    if se == 0.0:
+        return 0.0
+    centred = values - values.mean()
+    b = float(np.mean(centred**3) / np.mean(centred**2) ** 1.5) / (3.0 * math.sqrt(n))
+
+    def inverse(y: float) -> float:
+        # g^-1(y) = (c - 1) / b with c^3 = 1 + 3 b (y - b / 2), written without the cancellation
+        c = float(np.cbrt(1.0 + 3.0 * b * (y - 0.5 * b)))
+        return 3.0 * (y - 0.5 * b) / (c * c + c + 1.0)
+
+    return se * max(inverse(_Z95), -inverse(-_Z95))
+
+
 def _relative_gap(model: float, measured: float) -> float:
     if measured == 0.0:
         return 0.0 if model == 0.0 else math.inf
@@ -608,8 +652,8 @@ def design_experiment(
     measured = _monte_carlo(decision, prior, local.action, units, information, draws, seed)
     regret_now = uses * float(measured.now.mean())
     regret_after = uses * float(measured.after.mean())
-    error = uses * 1.96 * float(np.std(measured.now - measured.after, ddof=1)) / math.sqrt(draws)
-    regret_bound = uses * float(np.quantile(measured.now, level))
+    error = uses * _half_width(measured.now - measured.after)
+    regret_bound = uses * _upper_quantile(measured.now, level)
     value = regret_now - regret_after - spend
     model_gap = max(
         _relative_gap(risk(np.zeros(k)), regret_now),

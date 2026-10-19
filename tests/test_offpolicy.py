@@ -1,6 +1,7 @@
 """Off-policy gate: accurate value under overlap; flag when the target leaves the support."""
 
 import importlib
+import math
 
 import jax
 import jax.numpy as jnp
@@ -92,6 +93,47 @@ def test_the_one_step_estimand_is_not_the_deployed_value() -> None:
     assert result["overlap_ok"]  # the flag cannot see it
     assert abs(result["snips_value"] - one_step) < 0.15
     assert abs(result["snips_value"] - deployed) > 0.4 * abs(deployed)
+
+
+def _spread_target(*spreads: float) -> GaussianPolicy:
+    k = len(spreads)
+    return GaussianPolicy(
+        weight=jnp.zeros((k, 1)), bias=jnp.zeros(k), log_std=jnp.log(jnp.asarray(spreads))
+    )
+
+
+def test_weights_of_infinite_variance_have_no_overlap() -> None:
+    """A target 1.5 times as spread as the logger gives weights whose variance is infinite at every
+    state, ``E_b[w^2] = r^2 / sqrt(2 r^2 - 1)`` diverging at ``r^2 = 2``, and the ESS cannot see it:
+    on these 5000 rows its fraction reads 0.54, and the flag read True on 98% of 1000 logs."""
+    logger = _spread_target(1.0)
+    us = jax.random.normal(jax.random.key(4), (5000, 1))
+    data = {"x": jnp.zeros((5000, 1)), "u": us, "r": jnp.zeros(5000)}
+    wide = off_policy_value(data, _spread_target(1.5), logger)
+    assert wide["ess_fraction"] > 0.1
+    assert not wide["overlap_ok"]
+    assert not wide["finite_variance"]
+    # at r^2 = 2, either side of it, and below it the flag is the ESS's as before
+    at_two = GaussianPolicy(
+        weight=jnp.zeros((1, 1)), bias=jnp.zeros(1), log_std=jnp.array([0.5 * math.log(2.0)])
+    )
+    assert not off_policy_value(data, at_two, logger)["finite_variance"]
+    assert not off_policy_value(data, _spread_target(1.415), logger)["finite_variance"]
+    near = off_policy_value(data, _spread_target(1.414), logger)
+    assert near["finite_variance"]
+    assert near["overlap_ok"] == (near["ess_fraction"] >= 0.1)
+    assert off_policy_value(data, _spread_target(1.3), logger)["overlap_ok"]
+
+
+def test_one_action_of_infinite_variance_is_enough() -> None:
+    """The weights are a product over the actions, and so is ``E_b[w^2 | x]``: one factor past
+    ``r^2 = 2`` makes it infinite whatever the others do."""
+    us = jax.random.normal(jax.random.key(5), (4000, 2))
+    data = {"x": jnp.zeros((4000, 1)), "u": us, "r": jnp.zeros(4000)}
+    result = off_policy_value(data, _spread_target(0.9, 1.5), _spread_target(1.0, 1.0))
+    assert not result["overlap_ok"]
+    assert not result["finite_variance"]
+    assert off_policy_value(data, _spread_target(0.9, 1.3), _spread_target(1.0, 1.0))["overlap_ok"]
 
 
 # --- the logger's fit reads the same in whatever units the actions and the states were logged in --

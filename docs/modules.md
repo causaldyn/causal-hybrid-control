@@ -438,7 +438,7 @@ bridges to `ZoneDecision` and `LinearGaussianPlant`, exact under linear matching
 [`flagship`](api/flagship.md), [`lalonde`](api/lalonde.md), [`metrics`](api/metrics.md),
 [`surrogate`](api/surrogate.md)
 
-Oracle-regret tasks with a leaderboard and multi-seed bootstrap confidence intervals: pricing,
+Oracle-regret tasks with a leaderboard and multi-seed confidence intervals: pricing,
 inventory, support shift, **model uncertainty**, **confounding-robust**, and **causal dynamics**,
 where the confounding is in the plant's own channel and the failure is invisible to the constraint
 and support columns. A causal-methods table scores every frontier estimator against the naive

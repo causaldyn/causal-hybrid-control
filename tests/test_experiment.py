@@ -20,7 +20,9 @@ from chc.experiment import (
     ChannelPrior,
     ZoneDecision,
     ZoneExperiment,
+    _half_width,
     _local,
+    _monte_carlo,
     _second_partial_moment,
     _sigma_weight,
     _water_filling,
@@ -398,6 +400,97 @@ def test_a_deploy_verdict_meets_its_regret_bound_at_about_its_level():
         met.append(decision.regret(decision.solve(estimate), B_TRUE) <= design.regret_bound)
     # nominal 0.95; the 500-world campaign is scripts/bench_experiment.py
     assert np.mean(met) >= 0.85
+
+
+@pytest.mark.parametrize(
+    ("draws", "level", "rank"),
+    [(100, 0.95, 96), (150, 0.95, 144), (400, 0.95, 381), (100, 0.9, 91), (100, 0.99, 100)],
+)
+def test_the_regret_bound_is_the_order_statistic_that_holds_its_level(draws, level, rank):
+    """A further draw from the prior lies at or below the rank-``k`` regret of ``n`` draws with
+    probability ``k / (n + 1)``; ``ceil(level (n + 1))`` is the least rank that reaches ``level``.
+    The interpolated quantile it replaced held 0.941 at 100 draws and 0.948 at 400."""
+    decision = _market([-1.0, -0.4, -1.3, -0.6])
+    prior = ChannelPrior(B_TRUE, np.diag(np.full(K, 0.15**2)))
+    design = design_experiment(
+        decision, prior, DEMO_EXPERIMENT, 0.0, uses=3.0, level=level, draws=draws, seed=5
+    )
+    now = _monte_carlo(
+        decision,
+        prior,
+        _local(decision, prior.mean).action,
+        np.zeros(K, dtype=np.int64),
+        DEMO_EXPERIMENT.information,
+        draws,
+        5,
+    ).now
+    assert rank / (draws + 1) >= level > (rank - 1) / (draws + 1)
+    assert design.regret_bound == 3.0 * np.sort(now)[rank - 1]
+
+
+def test_a_regret_bound_needs_draws_enough_to_show_its_level():
+    design = design_experiment(
+        _market([-1.0, -0.4, -1.3, -0.6]),
+        ChannelPrior(B_TRUE, np.diag(np.full(K, 0.15**2))),
+        DEMO_EXPERIMENT,
+        0.0,
+        level=0.995,
+        draws=150,
+    )
+    # the rank ceil(0.995 * 151) = 151 is past the 150 draws: no draw holds the level
+    assert design.regret_bound == math.inf
+
+
+def _hall_larger_side(values: np.ndarray) -> float:
+    """Hall's (1992) interval for a mean, ``g(t) = t + b t^2 + b^2 t^3 / 3 + b / 2`` inverted by
+    root-finding, not by its closed form: the larger of its two sides."""
+    n = values.size
+    se = np.std(values, ddof=1) / math.sqrt(n)
+    b = stats.skew(values) / (3.0 * math.sqrt(n))
+    z = stats.norm.ppf(0.975)
+
+    def inverse(y: float) -> float:
+        return optimize.brentq(lambda t: t + b * t**2 + b**2 * t**3 / 3 + b / 2 - y, -50.0, 50.0)
+
+    return se * max(inverse(z), -inverse(-z))
+
+
+@pytest.mark.parametrize("draws", [100, 400])
+def test_the_error_is_the_larger_side_of_halls_interval(draws):
+    """The difference of the two regrets is skewed to the right, and 1.96 standard errors held its
+    mean 0.915 to 0.926 of the time at 100 draws on three designs."""
+    decision = _market([-1.0, -0.4, -1.3, -0.6])
+    prior = ChannelPrior(B_TRUE, np.diag([0.3, 0.02, 0.25, 0.02]) ** 2)
+    design = design_experiment(
+        decision, prior, DEMO_EXPERIMENT, 5e-5, uses=3.0, draws=draws, seed=11
+    )
+    assert sum(design.sample_sizes) > 0
+    measured = _monte_carlo(
+        decision,
+        prior,
+        _local(decision, prior.mean).action,
+        np.array(design.sample_sizes, dtype=np.int64),
+        DEMO_EXPERIMENT.information,
+        draws,
+        11,
+    )
+    difference = measured.now - measured.after
+    normal = 1.96 * np.std(difference, ddof=1) / math.sqrt(draws)
+    assert stats.skew(difference) > 1.0
+    assert design.error == pytest.approx(3.0 * _hall_larger_side(difference), rel=1e-9, abs=0.0)
+    assert design.error > 3.0 * normal
+
+
+def test_the_error_holds_a_skewed_mean_at_95_percent():
+    # gamma(1/4) has the skew of 4 the regrets' difference reads; 4000 samples of 100, MC SE 0.0034
+    rng = np.random.default_rng(3)
+    samples = rng.gamma(0.25, 1.0, size=(4000, 100))
+    miss = np.abs(samples.mean(axis=1) - 0.25)
+    normal = 1.96 * samples.std(axis=1, ddof=1) / 10.0
+    hall = np.array([_half_width(sample) for sample in samples])
+    assert np.mean(miss <= normal) < 0.93  # 0.913
+    assert np.mean(miss <= hall) >= 0.95  # 0.958
+    assert np.all(hall >= normal)
 
 
 @pytest.mark.parametrize(

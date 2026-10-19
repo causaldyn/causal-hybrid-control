@@ -23,11 +23,15 @@ Four methods:
 * ``"mis"`` -- marginalised importance sampling on the stationary state-action laws, for the
   average cost per step. Its weight has a finite second moment iff ``2 Sigma_b^z - Sigma_pi^z > 0``,
   which splits into a state part and an action part. The one-step gate is neither necessary nor
-  sufficient for it: a loop for each direction is in the tests. **It is model-based**: the weight's
-  numerator is the plan's stationary law under the model, the logs give only its denominator, so
-  its error is first order in the model's and its interval does not carry it. On the tests'
-  market, with one entry of ``a`` off by 0.05, its 95% interval held the true value on 25 of 40
-  logs of 20 000 steps, and off by 0.1 on none; ``"dr"`` held it on 39 and 40.
+  sufficient for it: a loop for each direction is in the tests. **Its estimate is model-based**:
+  the weight's numerator is the plan's stationary law under the model, the logs give only its
+  denominator, so it estimates the plan's cost under the model, whose error is first order in the
+  model's. The logs read that first-order term: the model's Bellman residual of the plan's
+  relative value, weighed toward the same law, which is what ``"dr"`` adds
+  (``validation/mis_model_error.mac``). The interval is therefore ``"dr"``'s, stretched to hold
+  the estimate. An interval read off the weights alone held the true value on the tests' market
+  0.96 of the time with the model right and 0.65 with one entry of ``a`` off by 0.1, over 400
+  logs of 4000 steps; this one 0.95 and 0.98, at 1.2 times the width.
 * ``"dr"`` -- ``"mis"`` with the model's relative value as a control variate, so that its error is
   the product of the weights' error and the model's.
 * ``"fqe"`` -- fitted Q evaluation with quadratic features, which is exact on this class. It is
@@ -1368,24 +1372,24 @@ def _stationary_estimate(
     target: AffinePolicy,
     cost: _StageCost,
     method: EvaluationMethod,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, float | None]:
     """The weighted estimate of ``target``'s average cost, its half-width, the weights' own
-    effective sample size and the interval's degrees of freedom. The denominator is the logs' own
-    law, fitted, not the model's."""
+    effective sample size, the interval's degrees of freedom and, for ``"mis"``, the ``"dr"``
+    estimate on the same weights, whose half-width and degrees of freedom are then the ones
+    returned. The denominator is the logs' own law, fitted, not the model's."""
     xs, xn = x[:-1], x[1:]
     z = np.hstack([xs, u])
     mp, sp, _ = _stationary(plant, target)
     spread = np.atleast_2d(np.cov(z, rowvar=False))
     w = _normalised(_log_normal(z, mp, sp) - _log_normal(z, z.mean(axis=0), spread))
+    h = _RelativeValue.of(plant, plan, cost)
+    predicted = xs @ plant.a.T + u @ plant.b.T + plant.offset
+    g = cost.mean(mp, sp) + h(xn) - h(predicted) - float(np.trace(h.p @ plant.noise))
+    corrected = float(np.mean(w * g))
+    half, dof = _batch_half_width(w * (g - corrected))
     if method == "mis":
-        g = cost(z)
-    else:
-        h = _RelativeValue.of(plant, plan, cost)
-        predicted = xs @ plant.a.T + u @ plant.b.T + plant.offset
-        g = cost.mean(mp, sp) + h(xn) - h(predicted) - float(np.trace(h.p @ plant.noise))
-    value = float(np.mean(w * g))
-    half, dof = _batch_half_width(w * (g - value))
-    return value, half, _effective(w), dof
+        return float(np.mean(w * cost(z))), half, _effective(w), dof, corrected
+    return corrected, half, _effective(w), dof, None
 
 
 def _fqe_estimate(
@@ -1632,8 +1636,8 @@ def evaluate_plan(
     ``"fqe"``, of the relative value for ``"dr"``, and of the smoothing correction. ``logger`` is
     the policy that logged, fitted by :func:`fit_logger` when omitted. For ``"mis"`` the model is
     the weights' numerator, the plan's stationary law, so its error moves the estimate to first
-    order and the interval does not widen for it. ``"dr"``'s error is the product of the weights'
-    and the model's, and ``"fqe"`` reads the model only for the smoothing correction.
+    order; the interval carries it, as the module says. ``"dr"``'s error is the product of the
+    weights' and the model's, and ``"fqe"`` reads the model only for the smoothing correction.
 
     For a plan without a density, ``smoothing`` is the ``tau`` the weights use, by default the one
     that minimises the predicted mean squared error of the reported value, and ``model_error`` the
@@ -1641,10 +1645,10 @@ def evaluate_plan(
     carries: 1, the default, counts all of it.
 
     The interval is a nominal 95 % one: from 40 contiguous batch means and Student's ``t`` with
-    Satterthwaite's degrees of freedom for ``"mis"`` and ``"dr"``, a sandwich for ``"fqe"``, and
-    the delta method over episodes for ``"pdis"``. For ``"pdis"`` a warning is logged where the
-    normalisation's first-order bias exceeds 0.05 of the half-width
-    (:attr:`PlanEvaluation.normalisation_bias`).
+    Satterthwaite's degrees of freedom for ``"dr"``, the same stretched to hold the estimate for
+    ``"mis"``, a sandwich for ``"fqe"``, and the delta method over episodes for ``"pdis"``. For
+    ``"pdis"`` a warning is logged where the normalisation's first-order bias exceeds 0.05 of the
+    half-width (:attr:`PlanEvaluation.normalisation_bias`).
 
     Raises:
         InfeasibleEvaluation: when the certificate refuses; it carries the certificate.
@@ -1696,6 +1700,7 @@ def _evaluate_plan(
     effective: float | None
     dof: float | None = None
     bias: float | None = None
+    corrected: float | None = None
     if held is None:
         schedule = _schedule(plan, u.shape[1])
         stages = _StageCost.steps(cost, n, m, schedule.horizon)
@@ -1739,17 +1744,23 @@ def _evaluate_plan(
             weighted, half = _fqe_estimate(x, u, held, stage)
             effective = None
         else:
-            weighted, half, effective, dof = _stationary_estimate(
+            weighted, half, effective, dof, corrected = _stationary_estimate(
                 x, u, plant, held, _smoothed(held, tau) if tau > 0.0 else held, stage, method
             )
     value = weighted - correction
     # A cost that is not positive semidefinite can have smoothing lower it, and the correction is
     # then negative; its error is no smaller for that.
     half += model_error * abs(correction)
+    interval = (value - half, value + half)
+    if corrected is not None:
+        # "mis": the model's error moves the estimate to first order, and the logs read that term
+        # as "dr" reads it, so the interval is "dr"'s, stretched to hold the estimate
+        corrected -= correction
+        interval = (min(value, corrected - half), max(value, corrected + half))
     share = abs(correction) / abs(weighted) if correction != 0.0 else 0.0
     return PlanEvaluation(
         value,
-        (value - half, value + half),
+        interval,
         certificate,
         correction,
         share,

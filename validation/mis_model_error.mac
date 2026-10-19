@@ -1,0 +1,76 @@
+/* What a model's error does to chc.evaluation's "mis" and "dr" estimates, on a scalar loop.
+
+   True plant x' = a x + b u + c + w, w ~ N(0, v); the model (am, bm, cm, vm). The plan is
+   u = k x + o + e, e ~ N(0, s), and the stage cost q x^2 + r u^2. "mis" weighs the logs toward the
+   plan's stationary law under the model, so it estimates Jm, the plan's average cost under the
+   model. "dr" adds the model's Bellman residual h(x') - Em[h(x') | x, u] of the plan's relative
+   value h under the model, weighed the same way.
+
+   STEP 1  The performance difference is exact: J - Jm = E_d[ E[h(x') | x, u] - Em[h(x') | x, u] ],
+           d the plan's true stationary law of (x, u), with every symbol free.
+   STEP 2  So "mis" is off by the model's error to first order, and "dr", which reads that residual
+           under the model's law dm in place of d, only to second order: along a = am + eps da,
+           b = bm + eps db, c = cm + eps dc, v = vm + eps dv, d/d eps of J - Jm at 0 is not 0,
+           and of J - (Jm + E_dm[...]) it is.
+   STEP 3  On the tests' market's scale (a = 0.85, b = -0.6, k = 0.3, s = 0.04, v = 0.05), an
+           error of 0.1 in a moves "mis" by its whole first-order term, while "dr" is left with a
+           remainder under a tenth of it.
+
+   Run: timeout 300 maxima --very-quiet -b validation/mis_model_error.mac */
+
+display2d : false$
+
+/* the stationary mean and variance of x under (a, b, c, v), and the moments of (x, u) */
+law(a, b, c, v) := block([f], f : a + b*k,
+  [(b*o + c)/(1 - f), (b^2*s + v)/(1 - f^2)])$
+cost(a, b, c, v) := block([m, S], [m, S] : law(a, b, c, v),
+  q*(S + m^2) + r*(k^2*S + s + (k*m + o)^2))$
+
+/* the plan's relative value under the model: h(x) = p x^2 + 2 l x */
+fm : am + bm*k$
+dm : bm*o + cm$
+p : (q + r*k^2)/(1 - fm^2)$
+l : (r*k*o + p*fm*dm)/(1 - fm)$
+h(x) := p*x^2 + 2*l*x$
+Jm : r*(o^2 + s) + p*(dm^2 + bm^2*s + vm) + 2*l*dm$
+
+/* the model's Jm is its cost(): the Poisson equation is solved right */
+if ratsimp(Jm - cost(am, bm, cm, vm)) # 0 then error("Jm is not the model's average cost")$
+
+/* E[h(x') | x, u] under (a, b, c, v), and the residual against the model's */
+nexth(a, b, c, v) := p*((a*X + b*U + c)^2 + v) + 2*l*(a*X + b*U + c)$
+residual : expand(nexth(a, b, c, v) - nexth(am, bm, cm, vm))$
+/* its expectation over (x, u) with u = k x + o + e: degree 2 in X, U */
+expect(poly, a, b, c, v) := block([m, S, e, EX2, EXU, EU2],
+  [m, S] : law(a, b, c, v),
+  EX2 : S + m^2, EU2 : k^2*S + s + (k*m + o)^2, EXU : k*S + m*(k*m + o),
+  e : ratsubst(EX2, X^2, poly), e : ratsubst(EU2, U^2, e), e : ratsubst(EXU, X*U, e),
+  subst([X = m, U = k*m + o], e))$
+
+step1 : ratsimp(cost(a, b, c, v) - Jm - expect(residual, a, b, c, v))$
+print("STEP 1 J - Jm - E_d[residual] (expect 0):", step1)$
+if step1 # 0 then error("STEP 1")$
+
+/* STEP 2 */
+path : [a = am + eps*da, b = bm + eps*db, c = cm + eps*dc, v = vm + eps*dv]$
+mis_err : subst(path, cost(a, b, c, v) - Jm)$
+dr_err : subst(path, cost(a, b, c, v) - Jm - expect(residual, am, bm, cm, vm))$
+mis1 : ratsimp(subst(eps = 0, diff(mis_err, eps)))$
+dr0 : ratsimp(subst(eps = 0, dr_err))$
+dr1 : ratsimp(subst(eps = 0, diff(dr_err, eps)))$
+print("STEP 2 dr's error and its first derivative at eps = 0 (expect 0, 0):", dr0, dr1)$
+if dr0 # 0 or dr1 # 0 then error("STEP 2: dr is not second order")$
+mis1_num : subst([am = 0.85, bm = -0.6, cm = 0, vm = 0.05, k = 0.3, o = 0.05, s = 0.04, q = 2,
+                  r = 0.4, da = 1, db = 0, dc = 0, dv = 0], mis1)$
+print("STEP 2 mis's first-order term per unit of a's error at the scale below:", float(mis1_num))$
+if abs(mis1_num) < 1e-3 then error("STEP 2: mis is not first order")$
+
+/* STEP 3 */
+at(e) := [am = 0.85, bm = -0.6, cm = 0, vm = 0.05, k = 0.3, o = 0.05, s = 0.04, q = 2, r = 0.4,
+          da = 1, db = 0, dc = 0, dv = 0, eps = e]$
+m3 : makelist(float(subst(at(e), mis_err)), e, [0.1, 0.01, 0.005])$
+d3 : makelist(float(subst(at(e), dr_err)), e, [0.1, 0.01, 0.005])$
+print("STEP 3 an error of 0.1, 0.01 and 0.005 in a: mis off by", m3, ", dr by", d3)$
+print("STEP 3 from 0.01 to 0.005 mis's error is divided by", m3[2]/m3[3], "and dr's by", d3[2]/d3[3])$
+if not (abs(m3[2]/m3[3] - 2) < 0.1 and abs(d3[2]/d3[3] - 4) < 0.2 and abs(d3[1]) < abs(m3[1]))
+  then error("STEP 3")$

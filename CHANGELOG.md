@@ -65,6 +65,13 @@ still change).
   true plant left the set within on 26–28 % of logs; the absolute radius on none.
 - **`plan_regret_bound(constraints=)`** prices a plan against the box and the linear rows it was
   solved under: a plan at the optimum under a binding budget read 0.0885, now 4e-13.
+- **`DeploymentGate` warns of carryover when not in blocks** (`GateConfig.carryover_lags`, 5 by
+  default; 0 turns it off). The logged actions are randomised, so a reward that reads a decision
+  up to five back shows as a correlation with that decision's score; the gate logs
+  `gate_carryover` once per zone, naming the lag and the block design, and moves no verdict. An
+  action paying 0.4 now and costing 0.6 three decisions on, deployed on every path, was warned of
+  on every path at a median of 150 decisions; on four nulls the check warned on 0.020 to 0.050 of
+  200 paths.
 
 ### Changed
 
@@ -181,6 +188,91 @@ still change).
   takes `R^2` as the larger of the rows' and the clusters' summed scores (CR1, two ways the
   largest of three) in `V`'s norm: 0.0 %, the region 2.5 times wider (median).
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
+- **`run_multiseed`'s 95% interval holds 95% at the seed counts the benchmark uses.** On normal
+  regrets, `MultiSeedResult.regret_lo` and `regret_hi`, a percentile bootstrap over the seeds that
+  cannot reach past the few regrets it resamples, held the mean 0.75 of the time at three seeds,
+  0.83 at five, 0.91 at twelve and 0.93 at twenty (2000 replicates each). The interval is now
+  Student's t over the seeds, exact for normal regrets at any number of seeds (0.944 to 0.965
+  measured from 2 to 20 seeds). A skewed law still falls short at few seeds: chi-square regrets
+  with one degree of freedom read 0.83 at five seeds and 0.885 at twenty, up from 0.75 and 0.88.
+  Every interval widens, about 1.6 times at five seeds and 1.2 times at twelve; the README's
+  12-seed pricing row now reads `13734.15 [13732.48, 13735.81]`, from `[13732.55, 13735.31]`.
+  Since 0.2.0.
+- **`design_experiment`'s `regret_bound` holds its `level` at any number of draws.** It was the
+  interpolated `np.quantile` of the Monte Carlo regrets, and a fresh draw from the prior stayed
+  under it with probability 0.941 at 100 draws, 0.948 at 400 and 0.9499 at the default 10 000,
+  against a `level` of 0.95 (measured 0.939 to 0.943 at 100 draws on three priors). It is now the
+  order statistic of rank `ceil(level (draws + 1))`, measured 0.949 to 0.952 at 100 draws, and
+  `inf` where `draws` is below `level / (1 - level)`. At the default draws the bound moves up by at
+  most one order statistic. Since 0.8.0.
+- **`design_experiment`'s `error` holds the regret it removes at 95%.** It was 1.96 standard errors of
+  the Monte Carlo difference of the two regrets, which is skewed to the right (skew about 4) with
+  a spread that rises with it, so the misses fell on one side: on three designs it held the
+  expected difference 0.915 to 0.926 of the time at 100 draws, 0.933 to 0.934 at 200, 0.940 to
+  0.946 at 400 and 0.942 to 0.947 at 1000 (8000 replicates, MC SE 0.003), and 0.947 to 0.950 at the
+  default 10 000. It is now the larger side of Hall's (1992) skewness-corrected interval, which
+  held 0.950 to 0.964 at 100 draws and 0.954 to 0.969 from 200 to 10 000. It is 1.6 times as wide
+  at 100 draws, 1.3 at 200, 1.1 at 1000 and 1.03 at 10 000, so a design whose value cleared its
+  error by less than that now reads `"abstain"` or `"deploy"`, not `"experiment"`. Since 0.8.0.
+- **ADR 0095's coverage of one unit's windows at ten steps is 0.83 to 0.85, not 0.86 to 0.87.**
+  Its 600 logs a cell read high by chance: the code reproduces them to the bit, and 2000 fresh logs
+  a cell cover 0.830, 0.841 and 0.850 at 400, 800 and 1600 windows, as ADR 0083 measured. Its
+  attribution to the spread, not the bias, stands. `Prescription.evaluate` now states what the
+  unit bootstrap covers with no draw refused (0.925 and 0.902 on two plants, 60 units; 0.914 and
+  0.880 at 30 units, where the spread its draws read is 0.83 to 0.87 of the estimate's) and what
+  one unit's difference interval covers (0.74 to 0.88), both short through the estimate's right
+  skew, which the spread it reads follows. A BCa interval over units, a log or square-root
+  transform, Hall's correction and the logged policy's fitted influence term were each measured on
+  the same panels, and none restored 0.95 on both plants at 60 and 30 units, so none ships. Docs
+  only; no value moves. Since 0.18.0.
+- **`read_switchback` states that its `se="model"` interval is asymptotic in the run's length.**
+  It read as a plain 1 - alpha interval, and ADR 0098 blamed its shortfall on a short run whose
+  noise persists. The shortfall is the short run alone: on the working model the local
+  projection's 95% interval for `tau_3` covered 0.849, 0.878 and 0.910 over 40, 60 and 100 periods
+  with i.i.d. noise (0.873 to 0.930 with AR noise), 0.929 over 200 and 0.940 over 400, and the
+  block difference covered 0.885 over 8 blocks. The docstring now gives these and points short
+  runs to `se="design"` or `randomisation_test`. Docs only; no value moves. Since 0.8.0.
+- **One seed's `run_multiseed` interval is unknown, `(-inf, inf)`, not the point twice.** With a
+  single seed, `MultiSeedResult.regret_lo` and `regret_hi` were both its regret: a width of zero
+  labelled 95%, which held the mean with probability 0. One regret shows no spread, so the interval
+  is now `(-inf, inf)`, and the leaderboard prints `[-inf, inf]`. From two seeds nothing moves.
+  Since 0.2.0.
+- **`off_policy_value`'s `overlap_ok` reads False where the weights' variance is infinite.** It read
+  the ESS fraction alone, which falls to zero only slowly: at a target 1.5 times as spread as the
+  logger, `E_b[w^2 | x]` is infinite at every state, and the flag read True on 98% of 1000 logs of
+  500 and 5000 rows. A new `finite_variance` entry reads it off the two policies, exactly: every
+  action's target variance below twice the logger's. `overlap_ok` now needs it, and reads False on
+  every such log. It cannot see a variance made infinite by the states' own spread (`u ~ N(x, 1)`
+  against `N(0, 1)`, `x ~ N(0, 1)`: still True on 89% to 94% of logs); a Hill estimate of the
+  weights' tail index, which could, also flagged 67% to 100% of logs whose weights are lognormal
+  with a finite variance, so it is not used. Since 0.2.0.
+- **`read_switchback`'s local projection warns where its model interval covers less than 0.94.**
+  The regression fits its intercept and `y_t` on the periods its sums read, which biases the
+  estimate by `-(H - 1) tau_H / (T - H + 1)` to first order on one zone (Maxima,
+  `validation/local_projection_bias.mac`; 200 000 runs read -0.0106, -0.0052 and -0.0021 of `tau_3`
+  over 200, 400 and 1000 periods against -0.0101, -0.0050 and -0.0020) and reads its variance low.
+  Neither has an exact correction, since on more zones the bias depends on the persistence. On one
+  zone its 95% interval for `tau_3` covered 0.929 over 200 periods and 0.940 over 400; on 64 zones,
+  where the bias weighs more against the pooled standard error, 0.926 over 300 and 0.944 over 600.
+  With `se="model"` it now logs `switchback_short_run` on a run of fewer than 400 periods a zone or
+  where the bias's first-order bound passes 0.3 standard errors, and points to `se="design"`. No
+  value moves. Since 0.8.0.
+- **`chc.experiment` says which of its numbers are measured.** Its module docstring said every
+  number `design_experiment` reports is the Monte Carlo measurement; `pinned` and `weights` are the
+  local model's, and `PinnedZone.regret`'s Gaussian-tail law read 14% under to 52% over the exact
+  regret of one lever pinned at zero. The docstrings now say so. Docs only; no value moves. Since
+  0.8.0.
+- **`DeploymentGate`'s bound on wrong deploys counts a zone rolled back since.** e-BH bounds the
+  expected share of wrong DEPLOY decisions among all made so far, a rolled-back zone's evidence
+  frozen at its DEPLOY. The docstrings did not say which deploys count; the share among the zones
+  still deployed is not what it bounds. They now say so. Docs only. Since 0.8.0.
+- **`evaluate_plan(method="mis")`'s interval carries the model's error.** Its estimate is the
+  plan's cost under the model, and the interval held only that: with one entry of `a` off by 0.1
+  it covered the deployed value 0.645 of the time (400 logs of 4000 steps), with the noise doubled
+  0.035. The interval is now `"dr"`'s on the same weights, which reads the model's first-order
+  error off the logs, stretched to hold the estimate: 0.978 and 0.993, 0.983 on a model fitted to
+  a 300-step pilot (0.680 before), and 0.950 with the model right, at 1.2 times the width (1.4
+  for a deterministic plan). The estimate does not move (ADR 0108). Since 0.8.0.
 
 ## [0.18.0] — 2026-10-13
 

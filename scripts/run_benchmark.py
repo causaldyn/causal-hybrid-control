@@ -1,4 +1,4 @@
-"""Run the CHC benchmark v0 and print the leaderboard with multi-seed bootstrap CIs.
+"""Run the CHC benchmark v0 and print the leaderboard with multi-seed CIs.
 
 Run: uv run python scripts/run_benchmark.py
 """

@@ -52,7 +52,7 @@ size of that regret is set mostly by the action box, `[-10, 10]`: with `[-2.5, 2
 What the comparison shows is the price of leaving a confounder out. Which columns to adjust for is
 what the causal graph you state decides, and a regression on every column is right only when, as
 here, none of them is a mediator or a collider. That is one seed of the pricing task in notebook 5;
-over 12 seeds the predictive controller's regret is `13734.15 [13732.55, 13735.31]` and
+over 12 seeds the predictive controller's regret is `13734.15 [13732.48, 13735.81]` and
 `predictive-all`'s is `-0.00 [-0.00, 0.00]`
 ([benchmarks](https://causaldyn.github.io/causal-hybrid-control/benchmarks/)).
 

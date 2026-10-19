@@ -41,9 +41,13 @@ from chc.evaluation import (
     _episode_smoothing,
     _evaluate_across_time,
     _evaluate_by_unit,
+    _log_normal,
     _normalisation_bias,
+    _normalised,
+    _smoothed,
     _smoothed_log_moments,
     _StageCost,
+    _stationary,
     certify_evaluation,
     evaluate_plan,
     fit_logger,
@@ -635,7 +639,9 @@ def test_weights_spent_in_a_few_of_the_loggers_excursions_leave_the_interval_few
     # lightly damped operator, evaluated for a tight LQR plan whose states are ten times narrower
     # than the logs': the weight sits in the logger's rare passes through the floor. On 40 logs
     # the degrees of freedom never exceeded 13.4, and a fixed t_39 covered 0.91 of 500 replicates.
-    # The market's weights spread over every batch; its lowest of 40 logs was 31.6.
+    # The market's weights spread over every batch: its cost read through them alone had 31.6
+    # at the lowest of 40 logs. "dr"'s Bellman residual concentrates even there (11.5 to 35), and
+    # "mis"'s interval is "dr"'s.
     a, b = np.array([[0.9925, 1.0], [-0.0075, 1.0]]), np.array([[0.0015], [0.0015]])
     plant = LinearGaussianPlant(a, b, np.zeros(2), 0.04 * b @ b.T)
     logger = AffinePolicy(np.array([[0.0, -20.0]]), np.zeros(1), np.array([[0.09]]))
@@ -657,14 +663,23 @@ def test_weights_spent_in_a_few_of_the_loggers_excursions_leave_the_interval_few
     xm, um = _stationary_logs(MARKET, LOGGER, 4000, 1, seed=2026)
 
     spiky = evaluate_plan({"x": x, "u": u}, plan, "dr", plant=plant, cost=cost, model_error=0.0)
-    spread = evaluate_plan(
+    market = evaluate_plan(
         {"x": xm[0], "u": um[0]}, PLAN, "mis", plant=MARKET, cost=COST, model_error=0.0
     )
+    z = np.hstack([xm[0, :-1], um[0]])
+    mean, covariance, _ = _stationary(MARKET, _smoothed(PLAN, market.certificate.smoothing))
+    w = _normalised(
+        _log_normal(z, mean, covariance) - _log_normal(z, z.mean(axis=0), np.cov(z, rowvar=False))
+    )
+    c = _StageCost.of(COST, 2, 1)(z)
+    _, spread = _batch_half_width(w * (c - np.mean(w * c)))
 
     assert spiky.degrees_of_freedom is not None
     assert spiky.degrees_of_freedom < 15.0
-    assert spread.degrees_of_freedom is not None
-    assert spread.degrees_of_freedom > 25.0
+    assert np.mean(w * c) == pytest.approx(
+        market.value + market.model_correction, rel=1e-12, abs=0.0
+    )
+    assert spread > 25.0
 
 
 def test_the_episodic_interval_covers_the_deployed_value() -> None:
@@ -815,20 +830,47 @@ def test_dr_removes_the_first_order_error_of_a_misspecified_model() -> None:
     assert abs(dr) < 0.25 * direct
 
 
-def test_the_mis_interval_does_not_carry_the_models_error() -> None:
-    """The documented premise: "mis" weighs the logs toward the model's stationary law, so with
-    a[0, 0] off by 0.1 its interval excluded the truth on 40 of 40 logs; "dr"'s held it on 40."""
+def _off_in_a(shift: float) -> LinearGaussianPlant:
+    return LinearGaussianPlant(
+        MARKET.a + np.array([[shift, 0.0], [0.0, 0.0]]), MARKET.b, MARKET.offset, MARKET.noise
+    )
+
+
+def test_the_mis_interval_carries_the_models_error() -> None:
+    """ "mis" weighs the logs toward the model's stationary law, so a model error moves its
+    estimate to first order. Its interval is "dr"'s, which reads that term off the logs, stretched
+    to hold the estimate. With a[0, 0] off by 0.1 the interval read off the weights alone excluded
+    the truth on 40 of 40 logs."""
     dithered = AffinePolicy(PLAN.gain, PLAN.offset, np.array([[0.04]]))
     truth = _stationary_value(MARKET, dithered)
-    wrong = LinearGaussianPlant(
-        MARKET.a + np.array([[0.1, 0.0], [0.0, 0.0]]), MARKET.b, MARKET.offset, MARKET.noise
-    )
     x, u = _stationary_logs(MARKET, LOGGER, 20_000, 1, seed=100)
     logs = {"x": x[0], "u": u[0]}
-    lo, hi = evaluate_plan(logs, dithered, "mis", plant=wrong, cost=COST).interval
-    assert not lo <= truth <= hi
-    lo, hi = evaluate_plan(logs, dithered, "dr", plant=wrong, cost=COST).interval
-    assert lo <= truth <= hi
+    mis = evaluate_plan(logs, dithered, "mis", plant=_off_in_a(0.1), cost=COST)
+    dr = evaluate_plan(logs, dithered, "dr", plant=_off_in_a(0.1), cost=COST)
+    assert not dr.interval[0] <= mis.value <= dr.interval[1]  # the estimate's first-order error
+    assert mis.interval == (min(mis.value, dr.interval[0]), max(mis.value, dr.interval[1]))
+    assert mis.interval[0] <= truth <= mis.interval[1]
+    assert mis.degrees_of_freedom == dr.degrees_of_freedom
+
+
+@pytest.mark.parametrize("shift", [0.0, 0.1])
+def test_the_mis_interval_covers_the_deployed_value_under_a_model_error(shift: float) -> None:
+    """Over 100 logs of 4000 steps the interval read off the weights alone covered 0.96 with the
+    model right and 0.65 with a[0, 0] off by 0.1 (400 logs); this one 0.95 and 0.98."""
+    dithered = AffinePolicy(PLAN.gain, PLAN.offset, np.array([[0.04]]))
+    truth = _stationary_value(MARKET, dithered)
+    x, u = _stationary_logs(MARKET, LOGGER, 4000, 100, seed=4100)
+    covered = [
+        lo <= truth <= hi
+        for lo, hi in (
+            evaluate_plan(
+                {"x": x[r], "u": u[r]}, dithered, "mis", plant=_off_in_a(shift), cost=COST
+            ).interval
+            for r in range(x.shape[0])
+        )
+    ]
+    # nominal 0.95, three binomial standard deviations (0.022) at 100 logs
+    assert np.mean(covered) >= 0.88
 
 
 def test_a_randomised_plan_is_evaluated_as_it_is() -> None:

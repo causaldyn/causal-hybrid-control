@@ -9,13 +9,16 @@ against a deployed value of -5.76, with the overlap flag set
 (``test_the_one_step_estimand_is_not_the_deployed_value``).
 
 Overlap is summarised by the effective sample size of the one-step weights, and ``overlap_ok``
-reports whether its fraction clears a threshold. Nothing here refuses: the flag is the caller's to
-read, and it sees one-step overlap only -- the stationary state-action ratio a deployed plan needs
-can have infinite variance while it reads True. :func:`chc.evaluation.evaluate_plan` estimates the
-deployed value, and refuses by name when the logs cannot give it.
+reports whether its fraction clears a threshold and the weights have a finite variance at every
+state. Nothing here refuses: the flag is the caller's to read, and it sees one-step overlap only --
+the stationary state-action ratio a deployed plan needs can have infinite variance while it reads
+True. :func:`chc.evaluation.evaluate_plan` estimates the deployed value, and refuses by name when
+the logs cannot give it.
 """
 
 from __future__ import annotations
+
+import math
 
 import equinox as eqx
 import jax
@@ -85,8 +88,20 @@ def off_policy_value(
     ``data`` has keys ``x`` (N, n), ``u`` (N, m), ``r`` (N,). Returns IPS and self-normalised
     (SNIPS) estimates of ``E_{x ~ d_b} E_{u ~ pi}[r]`` (the module docstring says why that is not a
     deployed plan's value), the effective sample size and its fraction, ``max_weight`` -- the
-    largest normalised weight, ``max w / sum w``, a share of the total rather than a weight -- and
-    ``overlap_ok``, whether the ESS fraction clears ``ess_fraction_threshold``.
+    largest normalised weight, ``max w / sum w``, a share of the total rather than a weight --
+    ``finite_variance``, and ``overlap_ok``, whether the ESS fraction clears
+    ``ess_fraction_threshold`` and the variance is finite.
+
+    ``finite_variance`` is whether every action's target variance is below twice the logger's. At
+    or past it ``E_b[w^2 | x]``, ``r^2 / sqrt(2 r^2 - 1)`` on one action with ``r`` the ratio of
+    the standard deviations, is infinite at every state, and the ESS cannot show it: its fraction
+    falls to zero only slowly, and at a target 1.5 times as spread as the logger it read above 0.1
+    in 98% of 1000 logs of 500 and 5000 rows. The check reads the two policies, not the weights, so
+    it cannot see a variance made infinite by the states' own spread: with ``u ~ N(x, 1)`` against
+    ``u ~ N(0, 1)`` and ``x ~ N(0, 1)``, ``overlap_ok`` reads True on 94% of 400 logs of 500 rows
+    and 89% of 5000. A Hill estimate of the weights' tail index, which could, flagged 67% to 100%
+    of logs whose weights are lognormal with an ESS fraction of 0.2 and 0.05, and 25% to 36% of
+    those whose tail index is 1.8.
     """
     data = _real_entries(data, ("x", "u", "r"))
     xs, us, rs = data["x"], data["u"], data["r"]
@@ -97,11 +112,13 @@ def off_policy_value(
     stable_w = jnp.exp(log_w - jnp.max(log_w))
     ess = (jnp.sum(stable_w) ** 2) / jnp.sum(stable_w**2)
     ess_fraction = ess / xs.shape[0]
+    finite = bool(jnp.all(2.0 * (target.log_std - behavior.log_std) < math.log(2.0)))
     return {
         "ips_value": float(jnp.mean(raw_w * rs)),
         "snips_value": float(jnp.sum(stable_w * rs) / jnp.sum(stable_w)),
         "ess": float(ess),
         "ess_fraction": float(ess_fraction),
         "max_weight": float(jnp.max(stable_w) / jnp.sum(stable_w)),
-        "overlap_ok": bool(ess_fraction >= ess_fraction_threshold),
+        "finite_variance": finite,
+        "overlap_ok": bool(ess_fraction >= ess_fraction_threshold) and finite,
     }
