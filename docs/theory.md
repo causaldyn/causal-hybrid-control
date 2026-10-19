@@ -92,9 +92,6 @@ Where the code does not satisfy the statement, the test is the counterexample, m
 expected failure (`xfail(strict=True)`) with its numbers. These are the statements that do not
 hold as the code computes them (names relative to `chc`):
 
-- `uncertainty.lipschitz_rollout_bound`, and through it
-  `uncertainty.confounding_robust_closed_loop_bound`: below a rate times step of about 1e-16 the
-  bound cancels to 0 and certifies every step.
 - `regret._self_consistent_mass`: its fixed-point iteration can oscillate and return a mass that
   does not balance, at a tight cap or after rounds with no authority.
 - `regret.capped_exploration_policy`: the block at the cap is the best whole block. The optimum of
@@ -103,22 +100,16 @@ hold as the code computes them (names relative to `chc`):
   leaves the range of its inverse hyperbolic tangent.
 - `regret.constrained_ce_regret_certificate`: `pessimism_budget` is not the naive controller's
   regret when the true optimum is past the bound; it is 45 % lower at the defaults.
-- `regret.exact_ratio_moment`: the quadrature loses the integral far from unit scale (at
-  Ω = 10⁴·I it returns about 0 against 2·10⁻⁵).
 - `regret.hinf_robust_regret_certificate`: where b² > r, the robust gain lies above the
   certainty-equivalent gain, not below it, and the certainty-equivalent regret can fall below the
   calibrated minimum.
 - `regret.information_lower_bound_certificate`: raises at r = b², where its floor is zero.
 - `regret.minimax_action` and `regret.minimax_lq_policy`: the kink rule and the effect that
-  realises the value assume a nonnegative effect interval; an extreme midpoint overflows.
-- `regret.multivariate_action_floor`: accepts an indefinite curvature and returns a negative floor.
+  realises the value assume a nonnegative effect interval.
 - `regret.transportability_regret_certificate`: the W-DRO bound covers the quadratic proxy that
   the proof bounds, not the exact regret, which is 39 % above it at the radius.
-- `delay.delay_design_loss`: raises within about 2·10⁻¹² of the stabilising floor, and the
-  over-estimate's two-term series misses the exact root by 4·10⁻³, not 10⁻³, at ε = 0.05.
-- `galerkin.optimal_upwind`: a relative error up to 3·10⁻¹⁰ just above its series crossover.
-- `galerkin.convection_diffusion_exact`: `nan` for a reversed flow past s/ε = −709, and lost
-  digits as s/ε approaches 0.
+- `delay.delay_design_loss`: the over-estimate's two-term series misses the exact root by
+  4·10⁻³, not 10⁻³, at ε = 0.05.
 - `deep_galerkin.dual_weighted_error_estimate`: exact for an affine model only where the model's
   curvature is the Riccati root.
 

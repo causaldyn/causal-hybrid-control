@@ -32,8 +32,8 @@ nothing would fail. The theory page said so.
 ## Consequences
 
 - At the start, 117 objects cite 139 files. All 117 have tests; none needed a reason.
-- 22 cited statements fail on the code. They are strict expected failures, and the theory page
-  lists them. Their fixes are separate changes.
+- 22 cited statements failed on the code. Nine had a local fix and were fixed. The other 13
+  are strict expected failures, and the theory page lists them.
 - A docstring's citation can no longer outlive the code it describes without a red test.
 - The links name the tests, so the theory page can say which lemma is tied to which test.
 - The suite gains the formal tests' run time.
