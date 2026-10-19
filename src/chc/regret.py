@@ -4002,7 +4002,12 @@ def conjugate_time_certificate(
 
     Flip the sign of ``q`` and ``tan`` becomes ``tanh``: the same one-line solution, bounded for
     every horizon. That is the whole dichotomy, and it is why the positive-definite arm here is a
-    control rather than a separate model.
+    control rather than a separate model. A terminal weight above that arm's upper equilibrium
+    ``(a + nu)/c``, ``nu = sqrt(a^2 + c|q|)``, takes the ``coth`` branch of the same solution
+    (STEP 7 of the derivation); up to 0.18.0 the arm read ``nan`` there (``s_t = 3`` on the
+    defaults). A negative weight at or below its lower equilibrium ``(a - nu)/c`` makes the
+    definite arm escape in finite time as well, and it reads ``nan``: there is no control to
+    compare with. A ``q`` with no conjugate point, ``a^2 + c q >= 0``, raises.
 
     THE COUNTER-INTUITIVE PART: ``mu`` GROWS with the control authority ``c``, so ``t_conj``
     SHRINKS. A stronger actuator brings the obstruction closer.
@@ -4022,6 +4027,11 @@ def conjugate_time_certificate(
     3.05 and 3.01 between successive margins from ``1e-1`` to ``1e-4``, on two step sizes ``db``.
     """
     c_auth = b * b / r
+    if not a * a + c_auth * q < 0.0:
+        raise ValueError(
+            f"no conjugate point: a^2 + (b^2/r) q = {a * a + c_auth * q} must be negative, so q "
+            "must be indefinite by more than the open-loop instability absorbs"
+        )
 
     def indefinite(horizon: float, bb: float) -> float:
         c = bb * bb / r
@@ -4032,8 +4042,13 @@ def conjugate_time_certificate(
     def definite(horizon: float, bb: float, qq: float) -> float:
         c = bb * bb / r
         nu = float(np.sqrt(a * a + c * qq))  # the SAME algebra with the sign flipped: tan -> tanh
-        psi0 = float(np.arctanh(c * (s_t - a / c) / nu))
-        return a / c + (nu / c) * float(np.tanh(nu * horizon + psi0))
+        z0 = c * (s_t - a / c) / nu
+        if z0 <= -1.0:
+            return float("nan")  # below the lower equilibrium the definite arm escapes too
+        if z0 < 1.0:
+            return a / c + (nu / c) * float(np.tanh(nu * horizon + np.arctanh(z0)))
+        # a weight at or above the upper equilibrium is the coth branch (conjugate_time.mac STEP 7)
+        return a / c + (nu / c) / float(np.tanh(nu * horizon + np.arctanh(1.0 / z0)))
 
     def escape(bb: float) -> float:
         c = bb * bb / r

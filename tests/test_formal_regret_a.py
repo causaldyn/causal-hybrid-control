@@ -174,7 +174,8 @@ FORMAL_LINKS = {
             "test_conjugate_time_value_matches_the_integrated_riccati",
             "test_conjugate_time_pole_orders_are_one_two_four",
             "test_conjugate_time_more_authority_brings_the_escape_closer",
-            "test_conjugate_time_definite_arm_stays_finite_for_a_large_terminal_weight",
+            "test_conjugate_time_definite_arm_is_the_integrated_riccati",
+            "test_conjugate_time_refuses_a_cost_with_no_conjugate_point",
         ),
     },
     "chc.regret.constrained_ce_regret_certificate": {
@@ -1166,17 +1167,24 @@ def test_conjugate_time_more_authority_brings_the_escape_closer(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="s_t=3: |c s_t - a| = 2.7 > nu = 2.02, so arctanh is nan and so is definite_sensitivity",
-)
-def test_conjugate_time_definite_arm_stays_finite_for_a_large_terminal_weight() -> None:
-    """conjugate_time.mac: under a positive-definite cost the Riccati solution stays bounded."""
-    sol = _riccati_reverse(0.3, 1.0, 4.0, 1.0, 3.0, 50.0)
-    assert np.isfinite(sol.y[0, -1])
-    with np.errstate(invalid="ignore"):
-        cert = conjugate_time_certificate(s_t=3.0)
-    assert np.isfinite(cert.definite_sensitivity)
+@pytest.mark.parametrize("s_t", [0.0, 1.0, 3.0, 8.0])
+def test_conjugate_time_definite_arm_is_the_integrated_riccati(s_t: float) -> None:
+    """conjugate_time.mac STEP 7: under a positive-definite cost the Riccati solution stays
+    bounded, on the tanh branch below the upper equilibrium (a + nu)/c = 2.32 and the coth branch
+    above it. With arctanh alone s_t = 3 read nan."""
+    a, b, q, r, delta = 0.3, 1.0, 4.0, 1.0, 1e-4
+    cert = conjugate_time_certificate(a=a, b=b, q=-q, r=r, s_t=s_t, delta_b=delta)
+    horizon = 10.0 * cert.t_conj
+    ends = [_riccati_reverse(a, bb, q, r, s_t, horizon).y[0, -1] for bb in (b + delta, b - delta)]
+    integrated = abs(ends[0] - ends[1]) * b / (r * 2.0 * delta)
+    # LSODA at rtol 1e-12 over a central difference of step 1e-4: ~1e-8 relative
+    assert cert.definite_sensitivity == pytest.approx(integrated, rel=1e-6, abs=1e-9)
+
+
+def test_conjugate_time_refuses_a_cost_with_no_conjugate_point() -> None:
+    """conjugate_time.v mu_sq_pos_iff: a conjugate point exists iff a^2 + (b^2/r) q < 0."""
+    with pytest.raises(ValueError, match="no conjugate point"):
+        conjugate_time_certificate(q=-0.05)
 
 
 # ---------------------------------------------------------------- constrained CE regret

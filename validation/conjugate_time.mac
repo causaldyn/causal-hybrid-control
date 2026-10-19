@@ -106,3 +106,32 @@ print("STEP 6c CONTRAST WITH RESULT 14. The turnpike says a long horizon is beni
       "cost is indefinite and the horizon is BOUNDED: sup{T : the constant exists} = t_conj < inf.",
       "The two are not in conflict -- they are the two sides of the definiteness hypothesis, and",
       "only one of them was written down before")$
+
+print("=== STEP 7: the positive-definite arm, and the branch its terminal weight picks ===")$
+/* Flip the sign of the discriminant: nu^2 := a^2 + c q > 0. Completing the square now gives
+   dp/dtau = -c (p - a/c)^2 + nu^2/c, two real equilibria a/c -+ nu/c, and the solution through a
+   terminal weight between them is a tanh, through one above the upper equilibrium a coth. tanh
+   alone (the certificate up to 0.18.0) needs |c sT - a| < nu, and read nan above it. */
+nu_sq  : ratsimp( a^2 + c*q )$
+print("STEP 7a completing the square, residual =",
+      ratsimp( rhs_p - ( -c*(p - a/c)^2 + nu_sq/c ) ), " (0)")$
+z0     : (c*sT - a)/nu$
+p_tanh : a/c + (nu/c)*tanh(nu*tau + atanh(z0))$
+p_coth : a/c + (nu/c)/tanh(nu*tau + atanh(1/z0))$
+for sol in [p_tanh, p_coth] do
+  print("STEP 7b Riccati residual =",
+        ratsimp( ratsubst(nu_sq, nu^2,
+                 trigsimp( exponentialize( diff(sol, tau) - subst([p = sol], q + 2*a*p - c*p^2) ) ) ) ),
+        " ; terminal check p(0) - sT =",
+        ratsimp( logcontract( exponentialize( subst([tau = 0], sol) ) ) - sT ), " (0, 0)")$
+/* each branch has a terminal weight it can reach: tanh(x) in (-1, 1), coth(x) in |.| > 1. At
+   z0 = 1 the weight is the upper equilibrium and p stays there; below z0 = -1 the coth's argument
+   crosses zero at a finite tau and p escapes -- a negative terminal weight, outside the arm. */
+print("STEP 7c a weight sT >= 0 has z0 = (c sT - a)/nu >= -a/nu > -1, since nu > |a| for q > 0:",
+      "every nonnegative weight is on the tanh branch (|z0| < 1), the equilibrium (z0 = 1) or the",
+      "coth branch (z0 > 1), and both stay bounded for every horizon, tending to a/c + nu/c")$
+pd : [a = 3/10, b = 1, r = 1, q = 4, c = 1, nu = sqrt(409/100), sT = 3]$
+print("STEP 7d at a = 0.3, b = r = 1, q = 4, sT = 3: z0 =", float(subst(pd, z0)),
+      " (> 1: coth); p(tau) at tau = 0, 0.5, 12.7 =",
+      map(lambda([t], float(subst(append([tau = t], pd), p_coth))), [0, 1/2, 127/10]),
+      " ; the limit a/c + nu/c =", float(subst(pd, a/c + nu/c)))$
