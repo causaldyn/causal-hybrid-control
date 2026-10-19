@@ -95,6 +95,10 @@ still change).
   latent, not ≈ e·k! graphs; the report prices a budget period the horizon cuts short at its share.
 - **Benchmarks**: the pricing and inventory tasks add `predictive-all`, a regression on every
   logged column, which lands with `causal-CHC`; `run()` returns four results.
+- **`pessimistic_equilibrium_allocation`'s tilt is never a bonus.** It was the pessimistic response
+  less the raw estimate, so a zone whose estimate was negative earned `|m|` per unit of incentive
+  (`+0.0054` on the default market's zone 8 in float64); the estimate is now projected onto the same
+  non-negative prior first, and the tilt is `-min(max(m, 0), r·se)`.
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
 
 ## [0.18.0] — 2026-10-13

@@ -200,8 +200,11 @@ def pessimistic_equilibrium_allocation(
     enters only through the tilt, so the plan is close to the oracle whatever the response says.
     """
     demand, attract = market._base()
+    # The worst response within radius SEs that is not negative, less the estimate projected onto
+    # the same prior: -min(max(m, 0), radius * se), never a bonus (validation/marketplace_tilt.mac).
+    # Read against the raw estimate, a negative one earned its zone a bonus of |m| per unit.
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)
-    tilt = pess - response.marginal  # <= 0: pessimistic discount where the response is uncertain
+    tilt = pess - jnp.maximum(response.marginal, 0.0)
 
     def surrogate(u: Array) -> Array:
         return jnp.sum(jnp.minimum(demand, market._equilibrium(attract, u))) + jnp.dot(tilt, u)

@@ -91,6 +91,19 @@ def test_naive_over_predicts_while_chc_delivers_more(env: dict) -> None:
     assert market.value(chc_alloc) > market.value(naive_alloc) + 1.0
 
 
+def test_a_negative_response_earns_its_zone_no_bonus(env: dict) -> None:
+    """The tilt was the pessimistic response less the raw estimate, ``max(m - r se, 0) - m``, so a
+    zone whose estimate is negative earned ``|m|`` per unit of incentive. Against the estimate
+    projected onto the same non-negative prior, a negative estimate tilts nothing, and the plan is
+    the zero response's."""
+    market = env["market"]
+    zero = jnp.zeros(market.n_zones)
+    negative = ExposureResponse(marginal=zero.at[0].set(-0.5), se=zero)
+    one = pessimistic_equilibrium_allocation(market, ExposureResponse(marginal=zero, se=zero))
+    other = pessimistic_equilibrium_allocation(market, negative)
+    _assert_close(other, one, 1e-6)
+
+
 UNITS = [1e-9, 1e-6, 1e-3, 1e3, 1e6]
 CALIBRATIONS = [calibrate_predictive, calibrate_naive_causal, calibrate_shared_state]
 
