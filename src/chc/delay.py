@@ -393,10 +393,12 @@ def delay_design_loss(ratio: float) -> float:
 
     **The two sides are not the same order.** Writing ``eps = (ratio - 1)/ratio``, the root's real
     part near the optimum is ``sqrt(2 eps) - 2 eps/3`` for an over-estimate and ``-2 eps/3`` for an
-    under-estimate (``validation/delay_ball.mac``, matched to the exact root to ``1e-3`` at
-    ``|eps| = 0.05``). Over-estimating opens as a **square root**, under-estimating only linearly,
-    so at ``|eps| = 0.05`` -- the same absolute error either way -- an over-estimate costs ``0.287``
-    against an under-estimate's ``0.033``, 8.8 times as much. No symmetric radius can describe both,
+    under-estimate (``validation/delay_ball.mac``). At ``|eps| = 0.05`` the series misses the
+    exact root by ``7.7e-4`` below and ``4.2e-3`` above: the over-estimate's next term is
+    ``11 eps^(3/2)/(9 2^(3/2))``, the under-estimate's of order ``eps^2``. Over-estimating opens
+    as a **square root**, under-estimating only linearly, so at ``|eps| = 0.05`` -- the same
+    absolute error either way -- an over-estimate costs ``0.287`` against an under-estimate's
+    ``0.033``, 8.8 times as much. No symmetric radius can describe both,
     which is why :class:`DelayBall` carries a floor and no ceiling and this is not a norm of
     ``eps``.
 

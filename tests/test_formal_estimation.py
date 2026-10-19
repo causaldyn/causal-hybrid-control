@@ -65,7 +65,7 @@ FORMAL_LINKS = {
             "test_delay_design_loss_is_one_plus_the_rightmost_characteristic_root",
             "test_delay_design_loss_runs_from_zero_at_the_truth_to_one_at_the_floor",
             "test_delay_design_loss_opens_as_a_square_root_above_and_linearly_below",
-            "test_delay_design_loss_series_meets_the_over_estimate_to_1e_3",
+            "test_delay_design_loss_series_is_short_by_its_next_term",
             "test_delay_design_loss_is_finite_just_above_the_stabilising_floor",
         ),
     },
@@ -236,17 +236,21 @@ def test_delay_design_loss_opens_as_a_square_root_above_and_linearly_below() -> 
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="docstring: series matched to the exact root to 1e-3 at |eps| = 0.05; on the "
-    "over-estimate side exact 0.28705 vs series 0.28289, a gap of 4.2e-3",
-)
-def test_delay_design_loss_series_meets_the_over_estimate_to_1e_3() -> None:
-    """delay_ball.mac section 5: over, the loss is sqrt(2 eps) - 2 eps/3 to 1e-3 at 0.05."""
-    eps = 0.05
-    assert delay_design_loss(1.0 / (1.0 - eps)) == pytest.approx(
-        math.sqrt(2.0 * eps) - 2.0 * eps / 3.0, abs=1e-3
+def test_delay_design_loss_series_is_short_by_its_next_term() -> None:
+    """delay_ball.mac section 5b: at |eps| = 0.05 the two-term series misses by 4.2e-3 over and
+    7.7e-4 under; over, the gap is the eps^(3/2) term 11/(9 2^(3/2)) to order eps^2, under it is
+    of order eps^2. The docstring said 1e-3 on both sides."""
+    third = 11.0 / (9.0 * 2.0**1.5)
+    for eps in (0.05, 0.01, 0.002):
+        over = delay_design_loss(1.0 / (1.0 - eps)) - (math.sqrt(2.0 * eps) - 2.0 * eps / 3.0)
+        under = delay_design_loss(1.0 / (1.0 + eps)) - 2.0 * eps / 3.0
+        # the w^4 term, -43/540 (2 eps)^2, bounds what the eps^(3/2) term leaves
+        assert abs(over - third * eps**1.5) <= 4.0 * 43.0 / 540.0 * eps**2
+        assert abs(under) <= 0.35 * eps**2
+    assert delay_design_loss(1.0 / 0.95) - (math.sqrt(0.1) - 0.1 / 3.0) == pytest.approx(
+        4.154e-3, rel=1e-3, abs=0.0
     )
+    assert delay_design_loss(1.0 / 1.05) - 0.1 / 3.0 == pytest.approx(-7.712e-4, rel=1e-3, abs=0.0)
 
 
 def test_delay_design_loss_is_finite_just_above_the_stabilising_floor() -> None:
