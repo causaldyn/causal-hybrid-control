@@ -1,0 +1,6020 @@
+"""The research half of :mod:`chc.regret`: certificates that each back one research result.
+
+Each prices a closed form, or a Monte Carlo curve on a plant it builds: the certainty-equivalence
+scaling and its explicit constant, orthogonal, multi-channel and transfer control, the information
+and Van Trees lower bounds, interference, delayed-network and fold designs, the exact ratio moments,
+and the confounding-robust controllers. They build on the LQ primitives of :mod:`chc.regret` --
+:func:`~chc.regret.dlqr`, :func:`~chc.regret.closed_loop_cost` and
+:func:`~chc.regret.certainty_equivalence_gap` -- and sit outside the surface 0.20.0 freezes
+(:mod:`chc.research`).
+
+A NumPy/SciPy analysis module like :mod:`chc.regret`, independent of the JAX ``x64`` flag; only
+:func:`panel_estimator_certificate` imports the JAX estimator of :mod:`chc.network_causal`, when
+it is called.
+"""
+
+from __future__ import annotations
+
+import itertools
+from collections.abc import Sequence
+from dataclasses import dataclass
+from functools import cache
+from math import comb, lgamma
+from typing import Literal, cast
+
+import numpy as np
+from numpy.typing import NDArray
+from scipy.integrate import quad
+from scipy.optimize import minimize
+from scipy.special import expit
+
+from chc.network_causal import (
+    ar1_innovations,
+    cycle_shells,
+    graph_shells,
+    kronecker_spectrum,
+    panel_covariance,
+    propagate_shells,
+)
+from chc.regret import (
+    Matrix,
+    Vector,
+    certainty_equivalence_gap,
+    closed_loop_cost,
+    dlqr,
+)
+
+_DEFAULT_ERRORS = (0.04, 0.02, 0.01, 0.005, 0.0025)
+
+
+@dataclass(frozen=True)
+class RegretCurve:
+    """Empirical certificate: median CE suboptimality vs model error, and its log-log slope."""
+
+    errors: Vector  # median realised model-error magnitude ||[dA, dB]|| at each swept level
+    gaps: Vector  # median certainty-equivalence suboptimality gap at each level
+    exponent: float  # fitted log-log slope of gap vs error (~2.0 => quadratic suboptimality)
+    infinite_fraction: Vector  # share of draws with UNBOUNDED regret at each level (see the
+    # docstring: the exponent is conditional on the complement of this event, which is why it is
+    # reported rather than dropped -- ce_explicit_constant_certificate prices the same event)
+
+
+def regret_scaling(
+    a: Matrix,
+    b: Matrix,
+    q: Matrix,
+    r: Matrix,
+    x0: Vector,
+    *,
+    errors: Sequence[float] = _DEFAULT_ERRORS,
+    n_samples: int = 400,
+    seed: int = 0,
+) -> RegretCurve:
+    """Certificate that CE suboptimality is quadratic in model error (slope ~2 in the small limit).
+
+    At each target magnitude ``eps`` draws ``n_samples`` Gaussian model perturbations ``(dA, dB)``
+    scaled by ``eps``, records the :func:`certainty_equivalence_gap`, and fits the log-log slope of
+    gap vs realised error over all samples. Theory predicts exponent 2 -- and by
+    ``proofs/ce_explicit_constants.v`` that is now an EXACT identity in the gain error rather than
+    Mania-Tu-Recht's local bound, which stays only as a comparison point.
+
+    TWO WAYS A DRAW HAS UNBOUNDED REGRET, and both are reported rather than silently dropped: the
+    perturbed model can be unstabilisable (no certainty-equivalent gain exists), or its gain can
+    fail to stabilise the TRUE plant (cost ``+inf``). There ``E[R]`` does not exist at all, so the
+    ``exponent`` here is a quantity CONDITIONAL on its complement -- ``infinite_fraction`` is what
+    makes that visible. It shrinks to 0 as ``eps`` does; ``ce_explicit_constant_certificate`` gives
+    the explicit radius ``rho`` inside which it is 0 by construction, and a safeguarded policy
+    (fall back to a known stabilising gain when the checkable Lyapunov test fails) is what restores
+    an unconditional finite expectation.
+    """
+    rng = np.random.default_rng(seed)
+    median_errors: list[float] = []
+    median_gaps: list[float] = []
+    log_err: list[float] = []
+    log_gap: list[float] = []
+    inf_frac: list[float] = []
+    for eps in errors:
+        errs, gaps = [], []
+        unbounded = 0
+        for _ in range(n_samples):
+            d_a, d_b = eps * rng.normal(size=a.shape), eps * rng.normal(size=b.shape)
+            try:
+                gap = certainty_equivalence_gap(a, b, q, r, a + d_a, b + d_b, x0)
+            except (np.linalg.LinAlgError, ValueError):
+                unbounded += 1  # estimate not stabilisable: no certainty-equivalent gain exists
+                continue
+            err = float(np.sqrt(np.sum(d_a**2) + np.sum(d_b**2)))
+            if not np.isfinite(gap):
+                unbounded += 1  # the CE gain does not stabilise the TRUE plant: regret is +inf
+                continue
+            if gap > 0.0:
+                errs.append(err)
+                gaps.append(gap)
+        inf_frac.append(unbounded / n_samples)
+        if errs:
+            median_errors.append(float(np.median(errs)))
+            median_gaps.append(float(np.median(gaps)))
+            log_err.extend(np.log(errs))
+            log_gap.extend(np.log(gaps))
+    exponent = float(np.polyfit(log_err, log_gap, 1)[0]) if log_err else float("nan")
+    return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent, np.array(inf_frac))
+
+
+@dataclass(frozen=True)
+class OrthogonalControlCurve:
+    """Double-debiasing certificate: control regret vs nuisance error, plug-in vs orthogonal."""
+
+    errors: Vector  # nuisance-estimation error levels eps
+    single_regret: Vector  # median control regret from a single-residualisation (plug-in) effect
+    orthogonal_regret: Vector  # median control regret from the Neyman-orthogonal (DML) effect
+    single_exponent: float  # fitted log-log slope ~2 (plug-in regret ~ eps^2)
+    orthogonal_exponent: float  # fitted log-log slope ~4 (orthogonal regret ~ eps^4)
+
+
+def orthogonal_control_certificate(
+    *,
+    b_true: float = 2.0,
+    alpha: float = 1.0,
+    gamma: float = 1.5,
+    target: float = 1.0,
+    effort: float = 0.5,
+    errors: Sequence[float] = (0.2, 0.1, 0.05, 0.025, 0.0125),
+    n: int = 400_000,
+    n_seeds: int = 6,
+    noise: float = 0.05,
+) -> OrthogonalControlCurve:
+    """The DOUBLE debiasing of orthogonal certainty-equivalence control -- a novel result derived in
+    ``validation/orthogonal_control.mac``. ``proofs/orthogonal_control.v`` checks only the
+    composition: with the regret taken as ``kappa/2*d^2`` and the effect error as ``k*eps`` or
+    ``k*eps^2``, the regret is quadratic or quartic in ``eps``.
+
+    A confounder ``z`` drives both the action (``u = alpha z + noise``) and the outcome
+    (``y = b_true u + gamma z + noise``). A controller hits ``target`` using its estimate of the
+    causal effect ``b = dy/du``, scored by regret on the true plant. Under nuisance error ``eps``,
+    a **single-residualisation** (non-orthogonal) effect is ``O(eps)``-biased, so its control regret
+    is ``O(eps^2)``; the **orthogonal Double ML** effect is ``O(eps^2)``-biased, so -- through the
+    same certainty-equivalence quadraticity -- its regret is ``O(eps^4)``. The estimator's
+    orthogonality compounds with the quadratic regret map: two debiasings, statistics and control.
+    Fits the two log-log slopes (~2 vs ~4).
+    """
+    opt = target * b_true / (b_true**2 + effort)
+    opt_cost = (b_true * opt - target) ** 2 + effort * opt**2
+
+    def regret(b_hat: float) -> float:
+        u = target * b_hat / (b_hat**2 + effort)  # action optimal for the estimated effect
+        return (b_true * u - target) ** 2 + effort * u**2 - opt_cost
+
+    err = np.asarray(errors, dtype=np.float64)
+    single = np.zeros((n_seeds, err.size))
+    orth = np.zeros((n_seeds, err.size))
+    for s in range(n_seeds):
+        rng = np.random.default_rng(s)
+        for j, eps in enumerate(err):
+            z = rng.standard_normal(n)
+            u = alpha * z + rng.standard_normal(n)
+            y = b_true * u + gamma * z + noise * rng.standard_normal(n)
+            m_y = (b_true * alpha + gamma) * z + eps * z  # misspecified outcome nuisance
+            m_u = alpha * z + eps * z  # misspecified treatment nuisance
+            u_res = u - m_u
+            b_single = float(np.dot(u_res, y) / np.dot(u_res, u))  # single residualisation
+            b_orth = float(np.dot(u_res, y - m_y) / np.dot(u_res, u_res))  # orthogonal DML
+            single[s, j], orth[s, j] = regret(b_single), regret(b_orth)
+    single_med, orth_med = np.median(single, axis=0), np.median(orth, axis=0)
+    log_e = np.log(err)
+    return OrthogonalControlCurve(
+        err,
+        single_med,
+        orth_med,
+        float(np.polyfit(log_e, np.log(np.abs(single_med)), 1)[0]),
+        float(np.polyfit(log_e, np.log(np.abs(orth_med)), 1)[0]),
+    )
+
+
+@dataclass(frozen=True)
+class PessimismCurve:
+    """Scalar one-step: uncertainty regularizer equals the effect variance (not general)."""
+
+    variances: Vector  # effect-estimate variance s^2 grid
+    optimal_rho: Vector  # empirical expected-regret-minimising pessimism (~ s^2)
+    ce_regret: Vector  # expected regret of the certainty-equivalent control (rho = 0)
+    pessimistic_regret: Vector  # expected regret of the pessimistic control at rho = s^2
+
+
+def pessimism_variance_certificate(
+    *,
+    b0: float = 1.0,
+    rr: float = 1.0,
+    target: float = 1.0,
+    variances: Sequence[float] = (0.05, 0.1, 0.2, 0.4),
+    n: int = 200_000,
+    rho_max: float = 1.2,
+    rho_points: int = 61,
+    seed: int = 0,
+) -> PessimismCurve:
+    """Certificate that pessimism belongs in the optimality condition, calibrated to the uncertainty
+    (derived in ``validation/pessimistic_optimality.mac``;
+    ``proofs/pessimistic_optimality.v`` proves the closed-form shrinkage and the sign of the
+    Maxima-derived gradient numerator). The estimated effect is ``b0``; the true effect is
+    ``b0 + e`` with ``e`` of variance ``s^2``. The pessimistic control ``target b0/(b0^2+rr+rho)``
+    adds an effective-effort ``rho`` (distrust) to the stationarity condition. Sweeping ``rho`` per
+    ``s^2``, the expected-regret-minimising ``rho*`` tracks ``s^2`` (optimal pessimism = estimate
+    variance -- no tuning), and the pessimistic control's expected regret is below the
+    certainty-equivalent (``rho = 0``) one.
+    """
+    rng = np.random.default_rng(seed)
+    rho_grid = np.linspace(0.0, rho_max, rho_points)
+    s2 = np.asarray(variances, dtype=np.float64)
+    opt_rho = np.zeros(s2.size)
+    ce_reg = np.zeros(s2.size)
+    pess_reg = np.zeros(s2.size)
+    for i, var in enumerate(s2):
+        b = b0 + np.sqrt(var) * rng.standard_normal(n)  # true effect = estimate + uncertainty
+        u_opt = target * b / (b**2 + rr)  # oracle action for the realised true effect
+
+        def exp_regret(rho: float, b: Vector = b, u_opt: Vector = u_opt) -> float:
+            return float(np.mean((b**2 + rr) * (target * b0 / (b0**2 + rr + rho) - u_opt) ** 2))
+
+        expected = np.array([exp_regret(rho) for rho in rho_grid])
+        opt_rho[i] = float(rho_grid[int(np.argmin(expected))])
+        ce_reg[i] = float(expected[0])  # rho = 0 (certainty equivalence)
+        u_pess = target * b0 / (b0**2 + rr + var)  # rho = s^2 (the theorem's optimum)
+        pess_reg[i] = float(np.mean((b**2 + rr) * (u_pess - u_opt) ** 2))
+    return PessimismCurve(s2, opt_rho, ce_reg, pess_reg)
+
+
+@dataclass(frozen=True)
+class InformationLowerBoundCurve:
+    """CR lower bound on control regret; confounding lowers information, raising the floor."""
+
+    sample_sizes: Vector  # n grid
+    experimental_regret: Vector  # realised regret of the efficient (full-information) controller
+    cramer_rao_floor: Vector  # the CR lower bound C*sigma^2/(n*V_exp)
+    confounded_floor: Vector  # the (higher) CR floor under confounding, C*sigma^2/(n*V_conf)
+    rate_slope: float  # log-log slope of experimental_regret vs n (~ -1: the optimal 1/n rate)
+    floor_ratio: float  # confounded / experimental floor (> 1: confounding costs information)
+    van_trees_action_floor: float  # (E_lambda psi')^2/(n I1 + I(lambda)): holds for ANY estimator
+    hodges_pointwise_ratio: float  # superefficient estimator vs the UNBIASED CR floor at b: << 1
+    hodges_bayes_ratio: float  # the same estimator against the van Trees floor: >> 1
+    plugin_bayes_ratio: float  # the efficient plug-in against it: > 1, and far below Hodges
+
+
+def information_lower_bound_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    sigma: float = 0.5,
+    alpha: float = 1.0,
+    sample_sizes: Sequence[int] = (200, 500, 1000, 2000, 4000),
+    n_seeds: int = 300,
+) -> InformationLowerBoundCurve:
+    """Information-theoretic lower bound for UNBIASED effect estimators (Cramer-Rao;
+    derived in ``validation/information_lower_bound.mac``; ``proofs/information_lower_bound.v``
+    checks only that ``C*v >= C/(n*I)`` given ``v >= 1/(n*I)``, Cramer-Rao and the regret map taken
+    as given). The EXACT regret map is
+    ``R = (b^2+rr)*(u*(bhat)-u*(b))^2`` (nonlinear in b); to first order in the effect error this is
+    ``C*(bhat-b)^2``, and Cramer-Rao on the (unbiased) estimator gives the local floor
+    ``E[regret] >= C*sigma^2/(n*V_id)``, ``V_id`` the identifying variance. The ``1/n`` rate
+    matches the online upper bound (Result 7) in this scalar model; confounding reduces ``V_id``
+    (``V_exp`` -> residual ``V_conf``), raising the floor.
+
+    RESULT 57 -- the van Trees arm, which removes two of the three scope caveats. The one-step LQ
+    regret is EXACTLY ``(b^2+rr)(u - u*(b))^2``, a squared error in the ACTION with no
+    linearisation (``validation/action_van_trees.mac`` STEP 1), so applying van Trees to the
+    estimand ``psi(b) = u*(b)`` -- an inequality that holds for EVERY estimator, biased or not --
+    and multiplying by that exact curvature gives
+
+        ``n E[regret] >= n (b^2+rr) (E_lambda psi')^2 / (n V_id/sigma^2 + I(lambda))``
+
+    whose limit is ``C sigma^2/V_id``: the SAME constant, with the unbiasedness hypothesis and the
+    delta method both deleted. The arm that can fail uses a HODGES estimator, which snaps to ``b``
+    whenever the fit lands within ``n^(-1/4)``. It drives the regret at ``b`` to exactly zero --
+    ``hodges_pointwise_ratio = 0``, infinitely below the unbiased Cramer-Rao floor, which is the
+    concrete reason that floor was never a minimax statement -- while its Bayes action error sits
+    ``~146x`` ABOVE the van Trees floor, the price superefficiency pays off-centre. The efficient
+    plug-in clears the same floor by ``~2.8x``, so the bound separates the two rather than being
+    vacuous for both.
+
+    The caveat that SURVIVES is the knife edge: at ``rr = b^2`` the optimal action is stationary
+    in ``b``, so ``psi'`` and with it the leading floor vanish. That is a property of the problem,
+    not of the inequality used. There the floors and the linearised regret are exactly zero, so
+    ``rate_slope`` and ``hodges_pointwise_ratio`` have nothing to measure and read ``nan``.
+    """
+    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
+    v_exp = alpha**2 + 1.0  # total action variance (Var(alpha*z + nu), Vz = Vnu = 1)
+    v_conf = 1.0  # residual identifying variance Var(u|z) = Var(nu) under confounding
+    ns = np.asarray(sample_sizes, dtype=np.float64)
+    exp_regret = np.zeros(ns.size)
+    for i, nf in enumerate(sample_sizes):
+        n = int(nf)
+        biases = np.empty(n_seeds)
+        for s in range(n_seeds):
+            rng = np.random.default_rng(1000 * s + n)
+            u = np.sqrt(v_exp) * rng.standard_normal(n)  # randomised: all variance identifies
+            y = b * u + sigma * rng.standard_normal(n)
+            biases[s] = np.dot(u, y) / np.dot(u, u) - b
+        exp_regret[i] = coeff * float(np.mean(biases**2))
+    cr_floor = coeff * sigma**2 / (ns * v_exp)
+    conf_floor = coeff * sigma**2 / (ns * v_conf)
+    # at the knife edge rr = b^2 the coefficient is 0: no rate to fit, no floor to compare with
+    knife_edge = coeff == 0.0
+    slope = float("nan") if knife_edge else float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
+
+    # Result 57's arm, in ACTION space, where the regret identity is exact.
+    prior_width = 0.25
+    prior_info = 1.0 / prior_width**2
+    n_probe = int(sample_sizes[-1])
+    standard_error = sigma / np.sqrt(n_probe * v_exp)
+
+    def optimal_action(effect: NDArray[np.float64] | float) -> NDArray[np.float64]:
+        return -np.asarray(effect) * xt / (np.asarray(effect) ** 2 + rr)
+
+    def sensitivity(effect: NDArray[np.float64]) -> NDArray[np.float64]:
+        return -xt * (rr - effect**2) / (rr + effect**2) ** 2
+
+    def hodges(fitted: NDArray[np.float64]) -> NDArray[np.float64]:
+        # snaps to b whenever the estimate is within n^(-1/4): superefficient AT b, bad near it
+        return np.where(np.abs(fitted - b) <= n_probe**-0.25, b, fitted)
+
+    rng = np.random.default_rng(7_000_003)
+    draws = 40 * n_seeds
+    # 1. superefficiency: the UNBIASED floor is beatable at a point, so it was never minimax
+    at_b = b + standard_error * rng.standard_normal(draws)
+    hodges_pointwise = float(
+        np.mean((b**2 + rr) * (optimal_action(hodges(at_b)) - optimal_action(b)) ** 2)
+    )
+    # 2. and the van Trees floor, which is not
+    drawn = b + prior_width * rng.standard_normal(draws)
+    fitted_drawn = drawn + standard_error * rng.standard_normal(draws)
+    vt_floor = float(np.mean(sensitivity(drawn))) ** 2 / (n_probe * v_exp / sigma**2 + prior_info)
+    hodges_bayes = float(
+        np.mean((optimal_action(hodges(fitted_drawn)) - optimal_action(drawn)) ** 2)
+    )
+    plugin_bayes = float(np.mean((optimal_action(fitted_drawn) - optimal_action(drawn)) ** 2))
+    return InformationLowerBoundCurve(
+        ns,
+        exp_regret,
+        cr_floor,
+        conf_floor,
+        slope,
+        v_exp / v_conf,
+        vt_floor,
+        float("nan") if knife_edge else hodges_pointwise / float(cr_floor[-1]),
+        hodges_bayes / vt_floor,
+        plugin_bayes / vt_floor,
+    )
+
+
+@dataclass(frozen=True)
+class MultivariateActionFloor:
+    """The van Trees floor on control regret when the effect is a MATRIX -- Result 67.
+
+    Result 57's scalar floor is a PRODUCT, curvature times information. This one is a TRACE,
+    ``tr(M Psi' G^-1 Psi')``, which interleaves them -- so it decomposes over the eigendirections
+    of the information rather than collapsing to a single ratio, and a direction the optimal action
+    does not depend on contributes exactly nothing however badly it is identified.
+    """
+
+    floor: float  # tr(M Psi' G^-1 Psi') at the plant supplied: a LOCAL floor (see the function)
+    optimal_action: Vector  # u*(theta) at the plant supplied
+    curvature: Matrix  # M = B'QB + R, the exact second derivative of the regret in action space
+    sensitivity: Matrix  # Psi' = du*/dtheta, q x d
+    information_spectrum: Vector  # eigenvalues of G, ASCENDING -- eigh's order, not the caller's
+    direction_floors: Vector  # each eigendirection's share of the floor; they sum to it
+    spectral_alignment: Vector  # (Psi' v)' M (Psi' v) per eigendirection, in that same order
+    direction_alignment: Vector  # the same weight per SUPPLIED direction: diag(Psi' M Psi')
+
+
+def _finite(**arrays: NDArray[np.float64]) -> None:
+    """Refuse a nan or an inf at entry: numpy's ``eigh`` returns finite eigenvalues for a nan
+    matrix and ``cholesky`` a nan factor, so the definiteness checks after this let either pass."""
+    for name, array in arrays.items():
+        if not np.isfinite(array).all():
+            raise ValueError(f"{name} must be finite: it has a nan or an inf entry")
+
+
+def _action_and_curvature(
+    effect: Matrix, state_weight: Matrix, action_weight: Matrix, target: Vector
+) -> tuple[Vector, Matrix]:
+    curvature = effect.T @ state_weight @ effect + action_weight
+    # astype, not a cast: numpy's stub for solve on float input is floating[Any] before 2.5, so the
+    # float64 promise has to be made true of the value rather than rest on one interpreter's stub.
+    action = np.linalg.solve(curvature, effect.T @ state_weight @ target).astype(
+        np.float64, copy=False
+    )
+    return -action, curvature
+
+
+def _action_sensitivity(
+    effect: Matrix,
+    state_weight: Matrix,
+    action_weight: Matrix,
+    target: Vector,
+    directions: Matrix,
+) -> Matrix:
+    """``du*/dtheta`` along each supplied direction in effect space.
+
+    Differentiating ``M u* = -B'Q x`` gives ``du* = -M^-1[(dM) u* + (dB)'Q x]`` with
+    ``dM = (dB)'QB + B'Q(dB)`` -- a solve per direction against the factorisation already formed,
+    rather than an autodiff pass. ``chc.regret`` is numpy/scipy only and a ``jax`` import here
+    would pull the accelerator stack into a module that never needs it; the price is that the
+    derivative has to be checked, which is what the finite-difference gate in the certificate does.
+    """
+    action, curvature = _action_and_curvature(effect, state_weight, action_weight, target)
+    columns = np.empty((effect.shape[1], directions.shape[0]))
+    for index, bump in enumerate(directions):
+        moved = bump.T @ state_weight @ effect + effect.T @ state_weight @ bump
+        columns[:, index] = -np.linalg.solve(
+            curvature, moved @ action + bump.T @ state_weight @ target
+        )
+    return columns
+
+
+def multivariate_action_floor(
+    *,
+    effect: Matrix,
+    state_weight: Matrix,
+    action_weight: Matrix,
+    target: Vector,
+    information: Matrix,
+    directions: Matrix | None = None,
+) -> MultivariateActionFloor:
+    """RESULT 67 (A18) -- van Trees on the ACTION when the effect is a matrix.
+
+    Derived in ``validation/multivariate_van_trees.mac``, proved in
+    ``proofs/multivariate_van_trees.v``. Result 57 closed with "the multivariate case has the same
+    structure with ``psi'`` a Jacobian and the floor a trace"; the structure is the same and the
+    CONCLUSION is not, which is why this is a separate result rather than a generalisation.
+
+    The regret is an exact quadratic form in the action at any dimension,
+
+        ``J(u,B) - J(u*(B),B) = (u - u*)' M (u - u*)``,  ``M = B'QB + R``
+
+    (STEP 1b, residual 0), so ``E[regret] = tr(M Sigma)`` with ``Sigma`` the action-error
+    covariance, and trace against a PSD weight is monotone in the PSD order (STEP 3; Rocq
+    ``the_psd_order_transfers_to_the_regret``). Feeding the matrix van Trees inequality
+    ``Sigma >= Psi' G^-1 Psi'`` through that gives
+
+        ``E[regret] >= tr( M Psi' G^-1 Psi' )``,  ``G = n I_data + I(prior)``
+
+    which at ``p = q = 1`` is ``(b^2+rr) psi'(b)^2 / G`` -- Result 10's constant, unchanged
+    (STEP 4c, residual 0).
+
+    The floor is LOCAL. Van Trees bounds the Bayes risk by ``E_lambda[Psi']``, the sensitivity
+    averaged over the prior, and the trace step needs one ``M`` for every plant; here both are read
+    at the plant supplied. It bounds every estimator only as far as ``Psi'`` and ``M`` hold still
+    over the prior. Where they move, a Bayes
+    estimator goes below it: a scalar plant at ``b = 0``, ``rr = 0.5``, ``x_t = 1``, a prior of SD 1
+    and five unit-information observations has a floor of 0.333, and the posterior's Bayes action a
+    regret of 0.075 (0.12 to 0.76 of the floor on six such priors near ``b = 0``).
+    :func:`multivariate_van_trees_certificate`'s ``bayes_floor`` averages ``Psi'`` over the prior.
+
+    What the scalar model cannot express is in :attr:`alignment`. The floor splits over the
+    eigendirections of the information as ``sum_i (Psi' v_i)' M (Psi' v_i) / lambda_i``, so
+    confounding -- which lowers ``lambda_i`` anisotropically -- is paid only in proportion to how
+    much the optimal action leans on the directions it damages. Its price is therefore a
+    ``Psi'``-weighted mean of the per-direction factors, equal to the full factor only when the
+    damaged direction carries all the weight and exactly ``1`` at the other corner (STEP 6b). A
+    scalar plant has one direction, so it always sits at the first corner and reports
+    ``V_exp/V_conf``.
+
+    ``directions`` is a ``(d, p, q)`` stack spanning the parameter family: the default is the
+    ``p*q`` unit bumps, i.e. ``theta = vec(B)``, and a restricted family (two decoupled channels
+    with known zero cross-effects, say) is supplied by giving its own basis. ``information`` is
+    ``G`` in that basis and must be positive definite -- a singular ``G`` is an unidentified
+    direction, for which the floor is not a number. ``M`` must be positive definite too: the trace
+    step needs a PSD weight, and an indefinite ``M`` has no optimal action.
+    """
+    effect = np.asarray(effect, dtype=np.float64)
+    state_weight = np.asarray(state_weight, dtype=np.float64)
+    action_weight = np.asarray(action_weight, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    information = np.asarray(information, dtype=np.float64)
+    if effect.ndim != 2:
+        raise ValueError(f"the effect is a p-by-q matrix: got shape {effect.shape}")
+    states, actions = effect.shape
+    if state_weight.shape != (states, states):
+        raise ValueError(
+            f"the state weight must be {states}-by-{states} to match the effect: "
+            f"got {state_weight.shape}"
+        )
+    if action_weight.shape != (actions, actions):
+        raise ValueError(
+            f"the action weight must be {actions}-by-{actions} to match the effect: "
+            f"got {action_weight.shape}"
+        )
+    if target.shape != (states,):
+        raise ValueError(
+            f"the target lives in state space: expected ({states},), got {target.shape}"
+        )
+    if directions is None:
+        basis = np.zeros((states * actions, states, actions))
+        for index in range(states * actions):
+            basis.reshape(states * actions, -1)[index, index] = 1.0
+    else:
+        basis = np.asarray(directions, dtype=np.float64)
+        if basis.ndim != 3 or basis.shape[1:] != (states, actions):
+            raise ValueError(
+                f"directions is a (d, {states}, {actions}) stack of effect-space bumps: "
+                f"got shape {basis.shape}"
+            )
+    if information.shape != (basis.shape[0], basis.shape[0]):
+        raise ValueError(
+            f"the information matrix is d-by-d in the direction basis: "
+            f"expected {(basis.shape[0], basis.shape[0])}, got {information.shape}"
+        )
+    _finite(
+        effect=effect,
+        state_weight=state_weight,
+        action_weight=action_weight,
+        target=target,
+        information=information,
+        directions=basis,
+    )
+    weight = effect.T @ state_weight @ effect + action_weight
+    lowest = float(np.linalg.eigvalsh(0.5 * (weight + weight.T)).min())
+    if lowest <= 0.0:
+        raise ValueError(
+            "the regret's curvature M = B'QB + R must be positive definite: otherwise u* is no "
+            f"minimiser and the trace bound does not hold (smallest eigenvalue {lowest:.3e})"
+        )
+    action, curvature = _action_and_curvature(effect, state_weight, action_weight, target)
+    sensitivity = _action_sensitivity(effect, state_weight, action_weight, target, basis)
+    spectrum, rotation = np.linalg.eigh(0.5 * (information + information.T))
+    if spectrum.min() <= 0.0:
+        raise ValueError(
+            "the information matrix must be positive definite: a null direction is unidentified, "
+            f"and the floor is not a number there (smallest eigenvalue {spectrum.min():.3e})"
+        )
+    mapped = sensitivity @ rotation
+    alignment = np.einsum("ij,ik,kj->j", mapped, curvature, mapped)
+    shares = alignment / spectrum
+    named = np.einsum("ij,ik,kj->j", sensitivity, curvature, sensitivity)
+    return MultivariateActionFloor(
+        float(shares.sum()),
+        action,
+        curvature,
+        sensitivity,
+        spectrum,
+        shares,
+        alignment,
+        named,
+    )
+
+
+@dataclass(frozen=True)
+class MultivariateVanTreesCurve:
+    """Result 67 -- the matrix-effect van Trees floor, and the alignment a scalar plant hides."""
+
+    floor: float  # tr(M Psi' G^-1 Psi') at the reference plant
+    scalar_agreement: float  # relative gap between the 1x1 floor and Result 10's closed form
+    channel_sum_agreement: float  # ... and between the 2x2 floor and h1 C1 + h2 C2 (STEP 7c)
+    sensitivity_residual: float  # closed-form Psi' against a central finite difference
+    bayes_floor: float  # tr(E_lambda[Psi'] G^-1 E_lambda[Psi']): the estimand-level floor
+    plugin_ratio: float  # the efficient plug-in's Bayes action error over that floor (> 1)
+    hodges_pointwise_ratio: float  # a superefficient estimator against the UNBIASED floor (~ 0)
+    hodges_bayes_ratio: float  # the same estimator against the van Trees floor (>> 1)
+    information_loss: float  # the factor k by which ONE direction's information is cut
+    aligned_ratio: float  # k applied to the direction u* leans on most
+    orthogonal_ratio: float  # k applied to a direction in the kernel of Psi' (== 1 exactly)
+    worst_single_direction: float  # 1 + (k-1) a_max/sum(a): the most one direction can ever cost
+    knife_edge_weight: float  # the weight a channel at rr = b^2 carries (== 0)
+    live_channel_weight: float  # ... against the other channel's, which is not zero
+
+
+def multivariate_van_trees_certificate(
+    *,
+    rr: float = 0.5,
+    gains: tuple[float, float] = (1.0, 0.4),
+    target: tuple[float, float] = (1.0, 0.8),
+    sigma: float = 0.5,
+    prior_width: float = 0.25,
+    n_probe: int = 4000,
+    information_loss: float = 4.0,
+    draws: int = 40_000,
+    seed: int = 11,
+) -> MultivariateVanTreesCurve:
+    """RESULT 67 (A18) -- the multivariate van Trees floor, and what it says that Result 57 cannot.
+
+    Derived in ``validation/multivariate_van_trees.mac``, proved in
+    ``proofs/multivariate_van_trees.v``. Four things are measured, each able to fail.
+
+    1. The floor REDUCES correctly. At ``p = q = 1`` it is Result 10's ``C sigma^2/(n V)``, and on
+       two decoupled channels it is ``h1 C(b1,x1) + h2 C(b2,x2)`` -- the per-channel scalar
+       constants weighted by the information in each direction (STEP 7c). Both are exact
+       identities, so the gate is at machine precision, and the hand-derived ``Psi'`` is checked
+       against a central finite difference rather than trusted.
+
+    2. The bound BINDS and is not beatable. A Hodges estimator, which snaps to the prior mean
+       whenever the fit lands within ``n^(-1/4)``, drives the pointwise action error to essentially
+       zero against the unbiased Cramer-Rao floor -- the same demonstration as Result 57(c), now in
+       two dimensions -- while sitting far above the van Trees floor, which assumes nothing about
+       bias. The efficient plug-in clears the same floor by a modest factor.
+
+    3. The price of confounding is an ALIGNMENT, not a ratio. Cutting the information along ONE
+       direction by ``information_loss`` raises the floor by ``1 + (k-1) a_w/sum(a)`` with
+       ``a_w = (Psi' w)' M (Psi' w)``: full price only if that direction carries all the weight.
+       Two arms with the SAME ``k`` bracket it -- the direction the optimal action leans on most,
+       and a direction in the kernel of ``Psi'``, which costs exactly nothing. A scalar plant has
+       one direction and therefore always reports ``k``; that is the whole of Result 10's
+       ``V_exp/V_conf``.
+
+    4. The knife edge becomes a WEIGHT. At ``rr = b^2`` Result 57(d)'s sensitivity vanishes, so
+       that channel contributes zero to the floor -- and confounding it is free. In the scalar
+       model this is a measure-zero curiosity; here it is one entry of a vector that a real plant
+       can sit near without anything else degenerating.
+    """
+    for name, value in (("rr", rr), ("sigma", sigma)):
+        if not 0.0 < value < np.inf:
+            raise ValueError(f"{name} must be positive and finite, got {value}")
+    if not 0.0 < prior_width < np.inf:
+        raise ValueError(
+            f"the prior width is a standard deviation, positive and finite: got {prior_width}"
+        )
+    if not 1.0 <= information_loss < np.inf:
+        raise ValueError(
+            "information_loss is a factor by which information is CUT: it is >= 1 and finite, "
+            f"got {information_loss}"
+        )
+    b1, b2 = gains
+    x = np.asarray(target, dtype=np.float64)
+    weight = np.eye(2)
+    control_weight = rr * np.eye(2)
+    channels = np.array([[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [0.0, 1.0]]])
+
+    def constant(gain: float, entry: float) -> float:
+        return entry**2 * (rr - gain**2) ** 2 / (rr + gain**2) ** 3
+
+    # 1a. the two decoupled channels, against the sum of scalar constants
+    spectrum = np.array([37.0, 23.0])
+    diagonal = multivariate_action_floor(
+        effect=np.diag([b1, b2]),
+        state_weight=weight,
+        action_weight=control_weight,
+        target=x,
+        information=np.diag(spectrum),
+        directions=channels,
+    )
+    channel_sum = constant(b1, x[0]) / spectrum[0] + constant(b2, x[1]) / spectrum[1]
+    channel_agreement = abs(diagonal.floor / channel_sum - 1.0)
+
+    # 1b. and the 1x1 case, against Result 10's closed form
+    scalar = multivariate_action_floor(
+        effect=np.array([[b1]]),
+        state_weight=np.eye(1),
+        action_weight=np.array([[rr]]),
+        target=x[:1],
+        information=np.array([[spectrum[0]]]),
+    )
+    scalar_agreement = abs(scalar.floor / (constant(b1, x[0]) / spectrum[0]) - 1.0)
+
+    # 1c. the hand-derived Jacobian, against a finite difference on the FULL vec(B) family
+    rng = np.random.default_rng(seed)
+    dense = rng.normal(size=(2, 2))
+    full = multivariate_action_floor(
+        effect=dense,
+        state_weight=weight,
+        action_weight=control_weight,
+        target=x,
+        information=np.diag(np.array([31.0, 19.0, 27.0, 13.0])),
+    )
+
+    def action_at(flat: NDArray[np.float64]) -> NDArray[np.float64]:
+        moved = flat.reshape(2, 2)
+        return -np.linalg.solve(moved.T @ weight @ moved + control_weight, moved.T @ weight @ x)
+
+    step = 1e-6
+    base = dense.ravel()
+    difference = np.stack(
+        [
+            (action_at(base + step * unit) - action_at(base - step * unit)) / (2.0 * step)
+            for unit in np.eye(4)
+        ],
+        axis=1,
+    )
+    sensitivity_residual = float(np.abs(difference - full.sensitivity).max())
+
+    # 2. the estimand-level floor, and two estimators against it
+    prior_info = 1.0 / prior_width**2
+    gram = (n_probe / sigma**2 + prior_info) * np.eye(2)
+    centre = np.array([b1, b2])
+    drawn = centre + prior_width * rng.standard_normal((draws, 2))
+    standard_error = sigma / np.sqrt(n_probe)
+    fitted = drawn + standard_error * rng.standard_normal((draws, 2))
+
+    def optimal(gain: NDArray[np.float64]) -> NDArray[np.float64]:
+        return -gain * x / (gain**2 + rr)
+
+    def jacobian(gain: NDArray[np.float64]) -> NDArray[np.float64]:
+        return -x * (rr - gain**2) / (rr + gain**2) ** 2
+
+    # E_lambda[Psi'] is diagonal because the channels are decoupled, so the trace is a sum
+    mean_jacobian = jacobian(drawn).mean(axis=0)
+    bayes_floor = float(np.sum(mean_jacobian**2 / np.diag(gram)))
+    plugin_error = float(np.sum((optimal(fitted) - optimal(drawn)) ** 2, axis=1).mean())
+
+    snapped = np.where(np.abs(fitted - centre) <= n_probe**-0.25, centre, fitted)
+    hodges_error = float(np.sum((optimal(snapped) - optimal(drawn)) ** 2, axis=1).mean())
+
+    at_centre = centre + standard_error * rng.standard_normal((draws, 2))
+    snapped_at_centre = np.where(np.abs(at_centre - centre) <= n_probe**-0.25, centre, at_centre)
+    unbiased_floor = float(np.sum(jacobian(centre) ** 2 * sigma**2 / n_probe))
+    hodges_pointwise = float(
+        np.sum((optimal(snapped_at_centre) - optimal(centre)) ** 2, axis=1).mean()
+    )
+
+    # 3. the same information loss in two different directions of the FULL family
+    isotropic = 25.0 * np.eye(4)
+
+    def damaged(direction: NDArray[np.float64]) -> float:
+        unit = direction / np.linalg.norm(direction)
+        cut = isotropic - 25.0 * (1.0 - 1.0 / information_loss) * np.outer(unit, unit)
+        return multivariate_action_floor(
+            effect=dense,
+            state_weight=weight,
+            action_weight=control_weight,
+            target=x,
+            information=cut,
+        ).floor
+
+    reference = multivariate_action_floor(
+        effect=dense,
+        state_weight=weight,
+        action_weight=control_weight,
+        target=x,
+        information=isotropic,
+    ).floor
+    # eigh sorts ASCENDING, so the last column is the direction the action leans on most and the
+    # first spans the kernel of Psi' -- the two arms are read off the ends, never off an index.
+    weighted = full.sensitivity.T @ full.curvature @ full.sensitivity
+    order, basis = np.linalg.eigh(weighted)
+    aligned_ratio = damaged(basis[:, -1]) / reference
+    orthogonal_ratio = damaged(basis[:, 0]) / reference
+    worst = 1.0 + (information_loss - 1.0) * order[-1] / order.sum()
+
+    # 4. the knife edge, as one entry of a vector
+    edge = multivariate_action_floor(
+        effect=np.diag([b1, float(np.sqrt(rr))]),
+        state_weight=weight,
+        action_weight=control_weight,
+        target=x,
+        information=np.diag(spectrum),
+        directions=channels,
+    )
+    return MultivariateVanTreesCurve(
+        diagonal.floor,
+        scalar_agreement,
+        channel_agreement,
+        sensitivity_residual,
+        bayes_floor,
+        plugin_error / bayes_floor,
+        hodges_pointwise / unbiased_floor,
+        hodges_error / bayes_floor,
+        information_loss,
+        float(aligned_ratio),
+        float(orthogonal_ratio),
+        float(worst),
+        float(edge.direction_alignment[1]),
+        float(edge.direction_alignment[0]),
+    )
+
+
+@dataclass(frozen=True)
+class HighProbRegretCurve:
+    """Finite-sample high-probability UPPER bound on scalar CE regret (w.p. >= 1-delta)."""
+
+    deltas: Vector  # confidence levels delta (band holds with probability >= 1-delta)
+    highprob_bands: Vector  # C*2*sigma^2*log(2/delta)/(n*V_exp): the finite-sample band
+    empirical_coverage: Vector  # MC fraction of trials whose EXACT regret is <= band
+    confounded_bands: Vector  # the (wider) band under confounding (residual V_conf < V_exp)
+    band_over_floor: Vector  # band / CR-floor = 2*log(2/delta): the log(1/delta) confidence price
+    cr_floor: float  # the Result 10 in-expectation floor C*sigma^2/(n*V_exp)
+
+
+def highprob_regret_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    sigma: float = 0.5,
+    n: int = 500,
+    v_exp: float = 2.0,
+    v_conf: float = 1.0,
+    deltas: Sequence[float] = (0.5, 0.25, 0.1, 0.05, 0.01),
+    n_trials: int = 4000,
+) -> HighProbRegretCurve:
+    """Finite-sample high-probability UPPER bound on scalar CE regret (derived in
+    ``validation/highprob_regret.mac``; ``proofs/highprob_regret.v`` proves the deterministic step
+    only: with the regret taken as ``C*e^2``, ``|e| <= r`` gives ``C*e^2 <= C*r^2``). NOTE: this is
+    NOT a
+    "high-probability version" of the Result-10 Cramer-Rao bound -- CR is an *expected LOWER* bound
+    on estimator variance (hence a regret floor), this is a *high-probability UPPER* bound on
+    realised regret; the two point in opposite directions and are complementary. The effect
+    estimator concentrates (sub-Gaussian): ``|b_hat-b| <= r(delta)`` w.p. ``>= 1-delta``,
+    ``r(delta)^2 = 2*sigma^2*log(2/delta)/(n*V_id)``. Composing with the LOCAL quadratic
+    ``regret = C*(b_hat-b)^2`` gives, w.p. ``>= 1-delta``, ``regret <= 2*log(2/delta) * band-scale``
+    -- a ``log(1/delta)`` multiple of ``C*sigma^2/(n*V_id)``; confounding (smaller ``V_id``) widens
+    it. A fully rigorous upper bound replaces ``C`` by the Lipschitz constant of ``u*`` on the
+    confidence region (``regret = (b^2+rr)(u*(b_hat)-u*(b))^2 <= (b^2+rr) L^2 r(delta)^2``); locally
+    ``L^2 -> C``. Concentration checked by Monte-Carlo coverage; the implication proved in Rocq.
+
+    The band is that local, second-order one, so it bounds the realised regret only where ``C``
+    holds across the confidence region. ``empirical_coverage`` reads the EXACT regret
+    ``(b^2+rr)(u*(b_hat)-u*(b))^2`` against it; read on the quadratic proxy ``C*(b_hat-b)^2`` it
+    would only check the concentration. At the defaults the two agree; at ``b = 0.6``,
+    ``sigma = 1``, ``n = 30`` the band at ``delta = 0.01`` covers the exact regret in 0.911 of the
+    4000 default trials (Monte Carlo SD 0.0045), where the proxy reads 0.996.
+    """
+    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
+    ds = np.asarray(deltas, dtype=np.float64)
+    logs = np.log(2.0 / ds)
+    floor = coeff * sigma**2 / (n * v_exp)
+    bands = coeff * 2.0 * sigma**2 * logs / (n * v_exp)
+    conf_bands = coeff * 2.0 * sigma**2 * logs / (n * v_conf)
+    coverage = np.zeros(ds.size)
+    regrets = np.empty(n_trials)
+    for t in range(n_trials):
+        rng = np.random.default_rng(4241 * t + n)
+        u = np.sqrt(v_exp) * rng.standard_normal(n)
+        y = b * u + sigma * rng.standard_normal(n)
+        b_hat = np.dot(u, y) / np.dot(u, u)
+        regrets[t] = (b**2 + rr) * (b_hat * xt / (b_hat**2 + rr) - b * xt / (b**2 + rr)) ** 2
+    for i, band in enumerate(bands):
+        coverage[i] = float(np.mean(regrets <= band))
+    return HighProbRegretCurve(ds, bands, coverage, conf_bands, bands / floor, float(floor))
+
+
+@dataclass(frozen=True)
+class TransportabilityCurve:
+    """Deployment regret = transportable part (zero) + W1 residual (quadratic in W1)."""
+
+    w1_distances: Vector  # W1(P, P') distance between source and target domains
+    transportable_regret: Vector  # regret when the effect is recoverable on target (b_tgt = b_src)
+    nontransport_regret: Vector  # CE-quadratic regret C*Lip^2*d^2 when b_tgt = b_src + Lip*d
+    exact_regret: Vector  # the simulated cost-gap (cross-checks the quadratic-in-W1 scaling)
+    # C*Lip^2*eps^2 for the W-DRO radius eps: the second-order approximation, which covers the
+    # CE-quadratic regret at every d <= eps but not the exact one, 1.39 times it at d = eps on the
+    # defaults
+    wdro_bound: float
+    nontransport_slope: float  # log-log slope of the CE-quadratic regret vs W1 (= 2)
+    exact_slope: float  # log-log slope of the simulated regret vs W1 (~ 2)
+    # the exact regret's largest value over every target with |b_tgt - b_src| <= Lip*eps: a bound
+    # on it at every d <= eps, either side
+    exact_wdro_bound: float
+
+
+def transportability_regret_certificate(
+    *,
+    b_src: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    lip: float = 1.0,
+    d_lo: float = 0.005,
+    d_hi: float = 0.15,
+    n_d: int = 12,
+    wdro_radius: float = 0.15,
+) -> TransportabilityCurve:
+    """Transportability regret -- a controller trained on source domain P, deployed on target P'
+    (Bareinboim, Causal AI, Ch 9). CONCEPTUAL proposition (not a self-contained theorem): the bounds
+    below hold UNDER the stated assumption, they do not follow from Kantorovich-Rubinstein alone.
+    Derived in ``validation/transportability_regret.mac``, proved in
+    ``proofs/transportability_regret.v``. Deployment regret ``C*(b_src-b_tgt)^2`` splits into: (A) a
+    TRANSPORTABLE part -- if the effect is recoverable on target (``b_tgt=b_src``) regret is ZERO
+    at ANY distributional distance; (B) a non-transportable residual ``C*Lip^2*d^2`` -- this
+    REQUIRES the identified effect functional ``b(.)`` to admit a Lipschitz representation
+    (e.g. ``b(P)=E_P[phi]``, ``phi`` Lipschitz), so ``|b(P')-b(P)| <= Lip*W1(P,P')``; then the
+    regret is quadratic in ``d = W1(P,P')``, the distance ``chc.uncertainty.WassersteinPenalty``
+    penalises; (C) a W-DRO controller for radius ``eps`` covers this residual when ``d <= eps`` --
+    conditional on the DRO ambiguity set being the W1-ball over the law that ``b`` is Lipschitz in.
+    The robust radius is a transportability budget.
+
+    ``wdro_bound``, ``C*Lip^2*eps^2``, is the second-order approximation of that budget and not a
+    bound on the regret the deployment pays: the exact regret is ``(u_src k - b_tgt xt)^2 / k``,
+    ``k = b_tgt^2 + rr``, and on the defaults it reaches 1.39 times ``wdro_bound`` at ``d = eps``.
+    ``exact_wdro_bound`` is the exact regret's largest value over every target effect within
+    ``Lip*eps`` of the source's, either side, which bounds it: read at the interval's ends and at
+    the real roots inside it of ``u_src b^3 + u_src rr b - rr xt``, where its slope is zero
+    (``validation/transportability_regret.mac`` (D) derives the regret, and the cubic is its
+    slope's other factor).
+    """
+    coeff = xt**2 * (rr - b_src**2) ** 2 / (rr + b_src**2) ** 3
+    ds = np.geomspace(d_lo, d_hi, n_d)
+    transportable = np.zeros(n_d)  # b_tgt = b_src: recoverable, zero regret at any distance
+    nontransport = coeff * lip**2 * ds**2  # b_tgt = b_src + Lip*d: CE-quadratic regret
+
+    def exact(b_tgt: float) -> float:
+        u_src = b_src * xt / (b_src**2 + rr)  # source-optimal control
+        u_tgt = b_tgt * xt / (b_tgt**2 + rr)  # target-optimal control
+        c_src = (b_tgt * u_src - xt) ** 2 + rr * u_src**2  # deploy source control on target
+        c_tgt = (b_tgt * u_tgt - xt) ** 2 + rr * u_tgt**2  # target-optimal cost
+        return c_src - c_tgt
+
+    exact_reg = np.array([exact(b_src + lip * d) for d in ds])
+    slope = float(np.polyfit(np.log(ds), np.log(nontransport), 1)[0])
+    exact_slope = float(np.polyfit(np.log(ds), np.log(exact_reg), 1)[0])
+    reach = lip * wdro_radius
+    u_src = b_src * xt / (b_src**2 + rr)
+    turns = np.roots([u_src, 0.0, u_src * rr, -rr * xt])
+    turns = turns.real[(np.abs(turns.imag) <= 1e-12 * (1.0 + np.abs(turns.real)))]
+    candidates = [b_src - reach, b_src + reach, *turns[np.abs(turns - b_src) <= reach]]
+    return TransportabilityCurve(
+        ds,
+        transportable,
+        nontransport,
+        exact_reg,
+        float(coeff * lip**2 * wdro_radius**2),
+        slope,
+        exact_slope,
+        max(exact(float(b)) for b in candidates),
+    )
+
+
+@dataclass(frozen=True)
+class EnsembleControlCurve:
+    """One control over a heterogeneous population pays a curvature-weighted Var(u*) floor."""
+
+    spreads: Vector  # heterogeneity level (spread of the effect across the population)
+    ensemble_floor: Vector  # R(u_ens): the irreducible regret of one control, ~ spread^2
+    naive_mean_regret: Vector  # regret of the naive u*(mean effect) control: >= the ensemble floor
+    floor_slope: float  # log-log slope of the floor vs heterogeneity (~2; ~4 at rr = b0^2)
+    homogeneous_floor: float  # floor at the smallest spread (~0: one control serves a uniform pop)
+    naive_excess_max: float  # max(naive - ensemble): the value of curvature-weighting over the mean
+
+
+def ensemble_control_certificate(
+    *,
+    b0: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    n_ctx: int = 21,
+    spread_lo: float = 0.02,
+    spread_hi: float = 0.5,
+    n_spread: int = 12,
+) -> EnsembleControlCurve:
+    """The ENSEMBLE (heterogeneity) control regret floor -- one control over a heterogeneous causal
+    population (Li & Khaneja 2006 ensemble control; derived in ``validation/ensemble_control.mac``,
+    proved in ``proofs/ensemble_control.v``). When the effect ``b`` varies across contexts (CATE
+    heterogeneity), a single control ``u`` serves all. Even with perfect per-context knowledge, one
+    control pays an irreducible regret = the curvature-weighted VARIANCE of the per-context optimal
+    actions, ``R(u_ens) = W*Var_w(u*)``, zero for a homogeneous population. With the effects spread
+    over ``[b0 - s, b0 + s]`` it is quadratic in ``s``, ``k(b0) u*'(b0)^2 s^2/3`` for a uniform
+    spread, except at ``rr = b0^2``: there ``u*'(b0) = 0`` and the floor is QUARTIC,
+    ``xt^2 s^4/(90 b0^4)`` (``floor_slope`` 4.05 on the default grid). The ensemble-optimal control
+    is the curvature-weighted mean of per-context optima; it WEAKLY beats the naive
+    ``u*(mean effect)`` control (they coincide when curvature is uniform across contexts), and
+    strictly beats it under heterogeneous curvature.
+    """
+    spreads = np.geomspace(spread_lo, spread_hi, n_spread)
+    floor = np.zeros(n_spread)
+    naive = np.zeros(n_spread)
+    for i, s in enumerate(spreads):
+        bs = np.linspace(b0 - s, b0 + s, n_ctx)  # heterogeneous effects across the population
+        ks = bs**2 + rr  # per-context curvature
+        us = bs * xt / ks  # per-context optimal action
+        w = ks / n_ctx  # curvature weight (uniform population weight 1/n)
+        u_ens = float(np.sum(w * us) / np.sum(w))  # ensemble-optimal: curvature-weighted mean
+        floor[i] = float(np.sum(w * (u_ens - us) ** 2))
+        u_naive = b0 * xt / (b0**2 + rr)  # naive: optimal for the mean effect b0
+        naive[i] = float(np.sum(w * (u_naive - us) ** 2))
+    slope = float(np.polyfit(np.log(spreads), np.log(floor), 1)[0])
+    return EnsembleControlCurve(
+        spreads,
+        floor,
+        naive,
+        slope,
+        float(floor[0]),
+        float(np.max(naive - floor)),
+    )
+
+
+@dataclass(frozen=True)
+class CompositionTransferCurve:
+    """Order-p effect estimator -> order-2p control regret: the control map doubles the order."""
+
+    deltas: Vector  # nuisance error delta
+    orders: Vector  # estimator orders p (1 = plug-in, 2 = orthogonal/DML, 3 = higher-order)
+    regrets: Vector  # exact regret per (order, delta): shape (len(orders), len(deltas))
+    slopes: Vector  # measured log-log slope of regret vs delta, per order (~ 2p)
+    expected_slopes: Vector  # 2*p: the predicted order-doubling
+
+
+def composition_transfer_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    orders: Sequence[int] = (1, 2, 3),
+    delta_lo: float = 0.01,
+    delta_hi: float = 0.2,
+    n_delta: int = 12,
+) -> CompositionTransferCurve:
+    """The general orthogonal-to-control order-transfer LEMMA -- the general form of Result 0 (which
+    only stated p=1 and p=2). Derived in ``validation/composition_transfer.mac``, proved in
+    ``proofs/composition_transfer.v``. If the effect estimator has error of order ``delta^p`` (``p``
+    the orthogonality order: 1 plug-in, 2 Neyman-orthogonal/DML, higher for higher-order), the
+    certainty-equivalence control regret is order ``delta^(2p)`` -- the control map DOUBLES the
+    estimator's order for EVERY ``p``, because regret is quadratic in the ACTION error (exact map
+    ``(b^2+rr)*(u*(bhat)-u*(b))^2``, not a linearisation) and ``u*`` is Lipschitz in the effect.
+    HONEST SCOPE: an immediate COMPOSITION (Lipschitz action-map + quadratic regret), not a deep
+    theorem -- the p->2p arithmetic restates known facts (4th-order-under-orthogonality:
+    Foster-Syrgkanis Orthogonal Statistical Learning; quadratic LQR CE gap: Mania-Tu-Recht). Its
+    value is unifying them for control. The END-TO-END statement this left open -- cross-fit causal
+    estimator -> dynamics-error rate -> stabilising controller -> finite-sample control regret with
+    explicit constants -- is closed by ``ce_explicit_constant_certificate``, which computes both the
+    stabilising ball and the constant. Plug-in (``p=1 -> 2``) and DML (``p=2 -> 4``) are instances.
+
+    ``slopes`` IS NOT ``expected_slopes``, AND THE DIFFERENCE IS NOT NOISE. At the default window
+    the fit returns ``2.048478 / 4.012425 / 6.002273`` against ``2 / 4 / 6``, and that excess is a
+    deterministic property of the *window*, not evidence of agreement-up-to-sampling -- there is no
+    sampling here at all. Writing ``e = delta^p`` and ``t = log(delta)``,
+    ``log R = const + 2 p t + lam e + 2 c2 e^2 + O(e^3)``, so an ordinary least-squares fit reports
+
+        ``slope = 2 p + lam cov(t, e^(p t))/var(t) + 2 c2 cov(t, e^(2 p t))/var(t) + O(e^3)``
+
+    with ``lam = u*''(b)/u*'(b) = (2 b^3 - 6 b rr)/(rr^2 - b^4)`` and
+    ``c2 = (b^6 - 8 b^4 rr + 5 b^2 rr^2 - 2 rr^3)/(2 (rr^2 - b^4)^2)`` -- derived in
+    ``validation/order_transfer_window.mac`` and cross-checked in giac. Those two terms carry
+    ``4.09e-2`` of the ``4.85e-2`` excess at ``p = 1``; what is left is one more power of ``delta``.
+
+    SHRINKING THE WINDOW DOES NOT MAKE THE READING BETTER INDEFINITELY. The slope is bracketed from
+    below by double precision: ``u*(b + e) - u*(b)`` is a cancellation, so the regret's relative
+    error is about ``4 eps |u*(b)| / (|u*'(b)| delta_lo^p)``, which GROWS as the window drops. At
+    ``delta in [1e-5, 2e-4]`` the ``p = 3`` slope reads ``6.035``, and the same fit at 60 digits
+    reproduces the two-term prediction to ``4.3e-25``. A window has to clear both ends;
+    ``causaldyn_bench.paper_one`` Table 1 prints them side by side and names which one binds.
+    """
+
+    def u_star(bv: float) -> float:
+        return bv * xt / (bv * bv + rr)
+
+    curv = b * b + rr
+    deltas = np.geomspace(delta_lo, delta_hi, n_delta)
+    ps = np.asarray(orders, dtype=np.float64)
+    regrets = np.zeros((len(orders), n_delta))
+    slopes = np.zeros(len(orders))
+    for i, p in enumerate(orders):
+        # an order-p estimator: effect error delta^p; use the EXACT regret map (not C*(bhat-b)^2)
+        regrets[i] = np.array([curv * (u_star(b + d**p) - u_star(b)) ** 2 for d in deltas])
+        slopes[i] = float(np.polyfit(np.log(deltas), np.log(regrets[i]), 1)[0])
+    return CompositionTransferCurve(deltas, ps, regrets, slopes, 2.0 * ps)
+
+
+@dataclass(frozen=True)
+class MultivariateTransferCurve:
+    """Transfer theorem in MULTIVARIATE LQ: effect-matrix error delta^p -> LQ regret delta^(2p)."""
+
+    deltas: Vector  # effect-matrix (input matrix B) error scale delta
+    regret_order1: Vector  # LQ regret with ||dB|| ~ delta^1 (plug-in): ~ delta^2
+    regret_order2: Vector  # LQ regret with ||dB|| ~ delta^2 (orthogonal/DML): ~ delta^4
+    slope_order1: float  # log-log slope of regret_order1 vs delta (~2)
+    slope_order2: float  # log-log slope of regret_order2 vs delta (~4)
+
+
+def multivariate_transfer_certificate(
+    *,
+    delta_lo: float = 0.005,
+    delta_hi: float = 0.1,
+    n_delta: int = 10,
+) -> MultivariateTransferCurve:
+    """The transfer theorem (Result 18 / Contribution 1) in the MULTIVARIATE, DYNAMIC LQ setting --
+    addressing the "needs multivariate/dynamic" gap. On a stable 2-state/1-input LQ plant the LOCAL
+    quadratic certainty-equivalence suboptimality (Mania, Tu & Recht 2019, small-error/stabilising;
+    ``certainty_equivalence_gap``) is quadratic in the effect-matrix (input matrix ``B``) error;
+    composing an order-``p`` estimator (``||dB|| ~ delta^p``) gives regret ``~ delta^(2p)`` -- the
+    SAME order-doubling as scalar Result 18, now for matrices. Rocq core shared (``regret_order_2p``
+    is abstract in the error norm). This lifts the order-transfer to matrices; it is NOT the full
+    finite-sample end-to-end theorem (which additionally needs nuisance rates + a stability margin).
+    """
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
+    b_mat = np.array([[0.5], [1.0]])
+    q_mat = np.eye(2)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5])
+    db_dir = np.array([[1.0], [-0.5]])
+    db_dir = db_dir / np.linalg.norm(db_dir)  # unit-norm effect-matrix perturbation direction
+    ds = np.geomspace(delta_lo, delta_hi, n_delta)
+    reg1 = np.array(
+        [
+            certainty_equivalence_gap(a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d * db_dir, x0)
+            for d in ds
+        ]
+    )
+    reg2 = np.array(
+        [
+            certainty_equivalence_gap(a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * db_dir, x0)
+            for d in ds
+        ]
+    )
+    slope1 = float(np.polyfit(np.log(ds), np.log(reg1), 1)[0])
+    slope2 = float(np.polyfit(np.log(ds), np.log(reg2), 1)[0])
+    return MultivariateTransferCurve(ds, reg1, reg2, slope1, slope2)
+
+
+@dataclass(frozen=True)
+class MultiChannelControlCurve:
+    """Debias EVERY interference channel: regret order set by the least-orthogonalised one."""
+
+    deltas: Vector  # nuisance error delta
+    half_orth_regret: Vector  # direct debiased, spillover plug-in: regret ~ delta^2 (bottleneck)
+    full_orth_regret: Vector  # both channels debiased: regret ~ delta^4
+    half_slope: float  # log-log slope of half-orth regret vs delta (~2)
+    full_slope: float  # log-log slope of full-orth regret vs delta (~4)
+    cluster_counts: Vector  # number of network clusters G swept (cluster-robustness arm)
+    estimation_sd: Vector  # sd of the total-effect estimate across seeds, per G (~ 1/sqrt(G))
+    cluster_se_slope: float  # log-log slope of estimation_sd vs G (~ -0.5: effective n = clusters)
+
+
+def _dml_two_channel(
+    z: np.ndarray,
+    u: np.ndarray,
+    g: np.ndarray,
+    y: np.ndarray,
+    delta: float,
+    orth_spillover: bool,
+    fold: np.ndarray,
+) -> float:
+    """Cross-fit Robinson (partially-linear) DML for two channels (direct u, spillover g). Nuisances
+    E[.|z] are fit by OLS on the held-out fold with an added ``delta*z`` systematic error. The
+    spillover uses the ORTHOGONAL moment (residualise BOTH treatment & outcome -> O(delta^2) bias)
+    when ``orth_spillover``, else PLUG-IN (residualise treatment but NOT outcome -> O(delta)
+    bias). The direct channel is always orthogonal. Returns b_d + b_s.
+    """
+
+    def resid(t: np.ndarray) -> np.ndarray:
+        r = t.astype(np.float64).copy()
+        for f in (0, 1):
+            tr, te = fold != f, fold == f
+            slope, intercept = np.polyfit(z[tr], t[tr], 1)  # cross-fit nuisance E[t|z]
+            r[te] = t[te] - ((slope + delta) * z[te] + intercept)  # + delta*z nuisance error
+        return r
+
+    u_t, g_t, y_t = resid(u), resid(g), resid(y)
+    beta, *_ = np.linalg.lstsq(np.column_stack([u_t, g_t]), y_t, rcond=None)  # joint Robinson
+    b_d_hat = float(beta[0])  # direct: always orthogonal, O(delta^2)
+    if orth_spillover:
+        b_s_hat = float(beta[1])  # spillover orthogonal (outcome residualised): O(delta^2)
+    else:
+        y1 = y - b_d_hat * u  # direct-adjusted RAW outcome (NOT residualised on z)
+        b_s_hat = float(np.dot(g_t, y1) / np.dot(g_t, g_t))  # plug-in: O(delta) bias
+    return b_d_hat + b_s_hat
+
+
+def multichannel_control_certificate(
+    *,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    alpha_u: float = 1.0,
+    alpha_g: float = 0.8,
+    gamma: float = 1.0,
+    n_clusters: int = 40,
+    cluster_size: int = 10,
+    tau: float = 0.5,
+    noise: float = 0.5,
+    deltas: Sequence[float] = (0.02, 0.04, 0.07, 0.12, 0.2, 0.3),
+    cluster_grid: Sequence[int] = (10, 20, 40, 80, 160),
+    n_seeds: int = 60,
+) -> MultiChannelControlCurve:
+    """CONTRIBUTION 2 -- MULTI-CHANNEL orthogonal control on a network (the serious form of 4x0;
+    derived in ``validation/multichannel_control.mac``; proved: ``multichannel_control.v``).
+    The control-relevant total effect of a uniform action is ``B = b_d + b_s`` (direct + spillover):
+    two interference channels, each with its own Neyman-orthogonal moment. The NOVELTY is the
+    downstream control-regret consequence of incomplete orthogonalisation (DML *under interference*
+    is not itself new -- Munro-Xu-Wager, Wager-Xu): orthogonalising ONLY the direct channel caps
+    the control regret at ``O(delta^2)`` (the un-orthogonalised spillover bottleneck), while
+    orthogonalising BOTH reaches ``O(delta^4)`` -- regret order is ``2*min`` over channel orders.
+    ONLY this order-bottleneck is proved in Rocq; the per-channel cross-fit RATES that would make
+    ``||b_j-b_j hat|| ~ delta^{p_j}`` rigorous are demonstrated EMPIRICALLY here, not proved.
+    Cluster-robust: with roughly balanced, weakly-dependent clusters the effective sample size is
+    the number of clusters ``G``, so the total effect concentrates at ``1/sqrt(G)``; this depends
+    on the cluster count/size/balance and cross-cluster independence, and is not a universal rate.
+
+    Every ``delta`` reads the same ``n_seeds`` draws, and each draw's error at ``delta = 0`` is
+    taken off: the sampling error cancels, and the regrets carry the bias the nuisance error
+    induces. Over the default window the population bias gives slopes 2.056 and 3.795 (its
+    ``0.49 + 2 delta^2`` denominator bends the order-4 line); this reads 2.056 and 3.761 at 20
+    draws, 2.055 and 3.746 at 60. Draws independent across ``delta`` left a sampling error of
+    0.0185 in the mean error at 20 draws, above the full fit's bias up to ``delta = 0.07``
+    (0.0118), and read the full slope 2.13 there. Over five other sets of draws they read it
+    1.90 +- 0.45 at 20 draws and 2.70 +- 0.37 at 60, where common draws read 3.79 +- 0.07 and
+    3.77 +- 0.06.
+    """
+    b_total = b_d + b_s
+    coeff = xt**2 * (rr - b_total**2) ** 2 / (rr + b_total**2) ** 3
+    ds = np.asarray(deltas, dtype=np.float64)
+    half = np.zeros(ds.size)
+    full = np.zeros(ds.size)
+
+    def simulate(rng: np.random.Generator, gclust: int) -> tuple[np.ndarray, ...]:
+        cid = np.repeat(np.arange(gclust), cluster_size)
+        n = cid.size
+        z = rng.standard_normal(n)
+        a = (tau * rng.standard_normal(gclust))[cid]  # cluster random effect (within-cluster dep.)
+        u = alpha_u * z + 0.7 * rng.standard_normal(n)
+        g = alpha_g * z + 0.7 * rng.standard_normal(n)  # confounded spillover exposure
+        y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
+        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
+
+    # the same draws at every delta, each less its own error at delta = 0: the sampling error is
+    # common to both and cancels, so the mean is the delta-induced bias, whose square the regret
+    # is. The sampling variance is measured in the cluster-robustness arm below
+    draws = [simulate(np.random.default_rng(6151 * s), n_clusters) for s in range(n_seeds)]
+    for orth, regret in ((False, half), (True, full)):
+        induced = np.empty((ds.size, n_seeds))
+        for s, (z, u, g, y, fold) in enumerate(draws):
+            base = _dml_two_channel(z, u, g, y, 0.0, orth, fold)
+            induced[:, s] = [_dml_two_channel(z, u, g, y, d, orth, fold) - base for d in ds]
+        regret[:] = coeff * induced.mean(axis=1) ** 2
+    half_slope = float(np.polyfit(np.log(ds), np.log(half), 1)[0])
+    full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
+
+    gs = np.asarray(cluster_grid, dtype=np.float64)
+    est_sd = np.zeros(gs.size)
+    for i, gclust in enumerate(cluster_grid):
+        ests = np.empty(n_seeds)
+        for s in range(n_seeds):
+            rng = np.random.default_rng(9377 * s + gclust)
+            z, u, g, y, fold = simulate(rng, gclust)
+            ests[s] = _dml_two_channel(z, u, g, y, 0.05, True, fold)
+        est_sd[i] = float(np.std(ests))
+    se_slope = float(np.polyfit(np.log(gs), np.log(est_sd), 1)[0])
+    return MultiChannelControlCurve(ds, half, full, half_slope, full_slope, gs, est_sd, se_slope)
+
+
+@dataclass(frozen=True)
+class MultivariateInterferenceCurve:
+    """Multi-channel bottleneck in MULTIVARIATE LQ: debias every channel or lose the order."""
+
+    deltas: Vector  # nuisance error delta
+    half_orth_regret: Vector  # direct channel debiased, spillover plug-in: LQ regret ~ delta^2
+    full_orth_regret: Vector  # both channels debiased: LQ regret ~ delta^4
+    half_slope: float  # log-log slope of the half-orth LQ regret (~2)
+    full_slope: float  # log-log slope of the full-orth LQ regret (~4)
+
+
+def multivariate_interference_certificate(
+    *,
+    delta_lo: float = 0.01,
+    delta_hi: float = 0.15,
+    n_delta: int = 10,
+) -> MultivariateInterferenceCurve:
+    """Contribution 2 in the MULTIVARIATE, DYNAMIC LQ setting -- composing multi-channel bottleneck
+    (Result 19) with the multivariate LQ gap (Result 21). The total effect is an input MATRIX
+    ``B = B_d + B_s`` (two interference channels, each a direction of ``B``). Using the LOCAL
+    quadratic LQ suboptimality (Mania, Tu & Recht 2019, small-error + stabilising;
+    ``certainty_equivalence_gap``), quadratic in the total input-matrix error: orthogonalising ONLY
+    direct (spillover plug-in, ``O(delta)``) caps LQ regret at ``O(delta^2)`` -- spillover is the
+    bottleneck; orthogonalising BOTH (each ``O(delta^2)``) reaches ``O(delta^4)``. The scalar
+    order-composition is proved in ``proofs/multichannel_control.v``; shown numerically here in
+    the multivariate LQ regret. The network cross-fit estimator rates that would make
+    ``||dB_j|| ~ delta^{p_j}`` rigorous are NOT proved.
+    """
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
+    b_mat = np.array([[0.5], [1.0]])
+    q_mat = np.eye(2)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5])
+    dir_d = np.array([[1.0], [0.0]])  # direct-channel direction of the input matrix B
+    dir_s = np.array([[0.0], [1.0]])  # spillover-channel direction
+    ds = np.geomspace(delta_lo, delta_hi, n_delta)
+    half = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * dir_d + d * dir_s, x0
+            )
+            for d in ds
+        ]
+    )  # direct O(delta^2), spillover plug-in O(delta)
+    full = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * (dir_d + dir_s), x0
+            )
+            for d in ds
+        ]
+    )  # both channels O(delta^2)
+    half_slope = float(np.polyfit(np.log(ds), np.log(half), 1)[0])
+    full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
+    return MultivariateInterferenceCurve(ds, half, full, half_slope, full_slope)
+
+
+@dataclass(frozen=True)
+class EndToEndC2Curve:
+    """C2 END-TO-END on a clustered LQ network: regret ~ 1/G (sampling floor) + (sum delta^p)^2."""
+
+    g_grid: Vector  # cluster counts G (delta-sweep held at delta_small)
+    regret_vs_g: Vector  # mean multivariate-LQ regret from REAL cross-fit DML: ~ 1/G
+    g_slope: float  # log-log slope of regret vs G (~ -1: the statistical 1/G floor)
+    deltas: Vector  # nuisance error delta (deterministic bias-order sweep, sampling fixed)
+    half_regret: Vector  # half-orth (spillover plug-in) LQ regret: ~ delta^2 (bottleneck)
+    full_regret: Vector  # full-orth LQ regret: ~ delta^4
+    half_slope: float  # ~ 2
+    full_slope: float  # ~ 4
+    floor_g: float  # regret at the largest G (small delta): the irreducible sampling floor
+
+
+def end_to_end_c2_certificate(
+    *,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    alpha_u: float = 1.0,
+    alpha_g: float = 0.8,
+    gamma: float = 1.0,
+    cluster_size: int = 10,
+    tau: float = 0.5,
+    noise: float = 0.5,
+    delta_small: float = 0.002,
+    g_grid: Sequence[int] = (10, 20, 40, 80, 160),
+    deltas: Sequence[float] = (0.02, 0.04, 0.07, 0.12, 0.2),
+    n_seeds: int = 60,
+) -> EndToEndC2Curve:
+    """CONTRIBUTION 2, END-TO-END: ``multichannel causal estimation -> bottleneck rate -> dynamic
+    control regret`` on a clustered network with a multivariate LQ plant (derived in
+    ``validation/c2_end_to_end.mac``, control-side algebra proved in ``proofs/c2_end_to_end.v``,
+    where the regret is defined as the cited Mania-Tu-Recht local quadratic bound).
+    The cross-fit two-channel Robinson-DML total-effect error is ``||B_hat - B|| = O_p(G^{-1/2} +
+    delta_d^{p_d} + delta_s^{p_s})`` (cluster sampling + two nuisance remainders); through the MTR
+    local quadratic gap the regret is ``R = O_p[G^{-1} + (delta_d^{p_d} + delta_s^{p_s})^2]``. Two
+    regimes are shown:
+    (1) a **G-sweep** with REAL cross-fit DML at tiny ``delta`` (sampling-dominated, ``R ~ 1/G``);
+    (2) a deterministic **delta-sweep** (half-orth ``~ delta^2``, full-orth ``~ delta^4``).
+    Rocq proves the composition (the ``s + e_d + e_s`` reduction); the per-channel cluster cross-fit
+    RATES are statistical assumptions (Chernozhukov; Robinson; Hays & Raghavan), not proved.
+    """
+    b_total = b_d + b_s
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
+    b_mat = np.array([[0.5], [1.0]])
+    q_mat = np.eye(2)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5])
+    dir_d = np.array([[1.0], [0.0]])  # direct-channel direction of the input matrix B
+    dir_s = np.array([[0.0], [1.0]])  # spillover-channel direction
+    unit = (dir_d - 0.5 * dir_s) / np.linalg.norm(dir_d - 0.5 * dir_s)  # scalar-error -> matrix map
+
+    def simulate(rng: np.random.Generator, gclust: int) -> tuple[np.ndarray, ...]:
+        cid = np.repeat(np.arange(gclust), cluster_size)
+        n = cid.size
+        z = rng.standard_normal(n)
+        a = (tau * rng.standard_normal(gclust))[cid]  # within-cluster dependence
+        u = alpha_u * z + 0.7 * rng.standard_normal(n)
+        g = alpha_g * z + 0.7 * rng.standard_normal(n)
+        y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
+        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
+
+    def lq_regret(effect_err: float) -> float:
+        return certainty_equivalence_gap(
+            a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + effect_err * unit, x0
+        )
+
+    # (1) G-sweep: real cross-fit DML (full-orth, tiny delta) -> sampling-dominated regret ~ 1/G
+    gs = np.asarray(g_grid, dtype=np.float64)
+    reg_g = np.zeros(gs.size)
+    for i, gc in enumerate(g_grid):
+        errs = np.empty(n_seeds)
+        for s in range(n_seeds):
+            z, u, g, y, fold = simulate(np.random.default_rng(9001 * s + gc), gc)
+            errs[s] = _dml_two_channel(z, u, g, y, delta_small, True, fold) - b_total
+        reg_g[i] = float(np.mean([lq_regret(e) for e in errs]))  # mean regret ~ Var(err) ~ 1/G
+    g_slope = float(np.polyfit(np.log(gs), np.log(reg_g), 1)[0])
+
+    # (2) delta-sweep: deterministic bias order (sampling fixed) -> half ~ delta^2, full ~ delta^4
+    ds = np.asarray(deltas, dtype=np.float64)
+    half = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * dir_d + d * dir_s, x0
+            )
+            for d in ds
+        ]
+    )
+    full = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * (dir_d + dir_s), x0
+            )
+            for d in ds
+        ]
+    )
+    half_slope = float(np.polyfit(np.log(ds), np.log(half), 1)[0])
+    full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
+    return EndToEndC2Curve(
+        gs, reg_g, g_slope, ds, half, full, half_slope, full_slope, float(reg_g[-1])
+    )
+
+
+@dataclass(frozen=True)
+class ClusteredLowerBoundCurve:
+    """Clustered van-Trees LOWER bound: G*regret -> c0 > 0, so the 1/G rate is TIGHT (two-sided)."""
+
+    g_grid: Vector  # cluster counts G
+    mean_regret: Vector  # mean multivariate-LQ regret from real cross-fit DML at tiny delta
+    g_times_regret: Vector  # G * mean_regret: bounded below by a positive c0 (irreducible)
+    plateau_slope: float  # log-log slope of G*regret vs G (~0: flat => regret ~ 1/G on BOTH sides)
+    # largest-G plateau value (the kappa0/Ic constant); positive whenever one estimate misses
+    c0_estimate: float
+    # min over G of G*regret: positive whenever every cell has one estimate that misses, which is
+    # every cell, so its sign is no evidence of the lower bound; plateau_slope is
+    floor_positive: float
+
+
+def clustered_lower_bound_certificate(
+    *,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    alpha_u: float = 1.0,
+    alpha_g: float = 0.8,
+    gamma: float = 1.0,
+    cluster_size: int = 10,
+    tau: float = 0.5,
+    noise: float = 0.5,
+    delta_small: float = 0.002,
+    g_grid: Sequence[int] = (20, 40, 80, 160, 320),
+    n_seeds: int = 80,
+) -> ClusteredLowerBoundCurve:
+    """CONTRIBUTION 2, the LOWER bound (proofs/clustered_van_trees.v): the ``1/G`` sampling regret
+    is IRREDUCIBLE, not just an upper bound. By clustered van Trees the effective Fisher info is
+    ``I0 + G*Ic``, so ``E[(Bhat-B)^2] >= 1/(I0+G*Ic)``; composing with the lower-Lipschitz regret
+    map ``R >= kappa0*(Bhat-B)^2`` gives ``G*E[R] >= kappa0/(I0+Ic) > 0`` for all ``G``, increasing
+    toward ``kappa0/Ic`` (Maxima limit). This certificate confirms it: with REAL cross-fit DML (tiny
+    ``delta``, sampling-dominated), ``G*regret`` is roughly CONSTANT and bounded below by a positive
+    ``c0`` -- so regret ``~ 1/G`` on BOTH sides (tight rate), not ``o(1/G)``. Contrast
+    ``end_to_end_c2_certificate``, whose G-sweep showed only the ``~1/G`` upper trend.
+
+    The evidence is ``plateau_slope``, a point estimate over ``n_seeds`` draws a cell with no
+    standard error. ``floor_positive`` and ``c0_estimate`` are positive whatever the rate, since a
+    mean regret over draws that miss is positive: they do not compare ``G*regret`` with the van
+    Trees constant ``kappa0/(I0 + Ic)``, which this routine does not compute.
+    """
+    b_total = b_d + b_s
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
+    b_mat = np.array([[0.5], [1.0]])
+    q_mat = np.eye(2)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5])
+    unit = np.array([[1.0], [-0.5]])
+    unit = unit / np.linalg.norm(unit)
+
+    def simulate(rng: np.random.Generator, gclust: int) -> tuple[np.ndarray, ...]:
+        cid = np.repeat(np.arange(gclust), cluster_size)
+        n = cid.size
+        z = rng.standard_normal(n)
+        a = (tau * rng.standard_normal(gclust))[cid]
+        u = alpha_u * z + 0.7 * rng.standard_normal(n)
+        g = alpha_g * z + 0.7 * rng.standard_normal(n)
+        y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
+        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
+
+    def lq_regret(err: float) -> float:
+        return certainty_equivalence_gap(a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + err * unit, x0)
+
+    gs = np.asarray(g_grid, dtype=np.float64)
+    reg = np.zeros(gs.size)
+    for i, gc in enumerate(g_grid):
+        errs = np.empty(n_seeds)
+        for s in range(n_seeds):
+            z, u, g, y, fold = simulate(np.random.default_rng(4127 * s + gc), gc)
+            errs[s] = _dml_two_channel(z, u, g, y, delta_small, True, fold) - b_total
+        reg[i] = float(np.mean([lq_regret(e) for e in errs]))
+    g_times = gs * reg
+    plateau_slope = float(np.polyfit(np.log(gs), np.log(g_times), 1)[0])
+    return ClusteredLowerBoundCurve(
+        gs, reg, g_times, plateau_slope, float(g_times[-1]), float(np.min(g_times))
+    )
+
+
+@dataclass(frozen=True)
+class CrossClusterMixingCurve:
+    """A3': the ``1/sqrt(G)`` rate under cross-cluster psi-dependence, and the constant it moves."""
+
+    g_grid: Vector  # cluster counts G
+    decays: Vector  # per-arm cross-cluster decay rho of the latent fields; psi(d) = rho^(2d)
+    rmse: Matrix  # (arm, G) root-mean-square error of the total effect, pooled over replicates
+    slopes: Vector  # per-arm log-log slope of rmse vs G (-1/2 for every summable arm)
+    slope_errors: Vector  # s.e. of each slope over INDEPENDENT replicate blocks
+    hac_scale: Vector  # G*MSE at the largest G: the network-HAC variance CONSTANT, not the rate
+    hac_predictor: Vector  # sum_{d != 0} psi(d) = 2 rho^2/(1 - rho^2), the cross-cluster HAC term
+    hac_intercept: float  # fitted `a` in G*MSE = a + b*sum psi: the own-cluster variance
+    hac_slope: float  # fitted `b`: what one unit of cross-cluster dependence costs
+    hac_r_squared: float  # R^2 of that affine fit (-> 1 iff the HAC form describes the constant)
+    blocked_slope: float  # falsification arm: a FIXED super-block count, so psi never decays
+    blocked_error: float  # s.e. of it over the same replicate blocks
+    worst_mean_error: float  # max |mean signed error| over arms and G: the NO-CONFOUNDING gate
+
+
+def _cluster_field_pair(
+    rng: np.random.Generator, n_clusters: int, decay: float, blocks: int | None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The two INDEPENDENT unit-variance cluster fields a mixing arm needs.
+
+    One enters the spillover regressor and one the outcome error, which is what gives the SCORE a
+    cross-cluster covariance ``psi(d) = rho^(2d)`` without making either field an omitted
+    confounder -- reusing a single field for both would bias ``b_s`` instead, a different failure
+    mode that also flattens the error curve. ``blocks`` replaces the decay with a fixed number of
+    super-blocks: correlation that stays at 1 however far apart two clusters are.
+    """
+    if blocks is not None:
+        label = np.arange(n_clusters) * blocks // n_clusters
+        return rng.standard_normal(blocks)[label], rng.standard_normal(blocks)[label]
+    return (
+        ar1_innovations(rng, (), n_clusters, decay),
+        ar1_innovations(rng, (), n_clusters, decay),
+    )
+
+
+def cross_cluster_mixing_certificate(
+    *,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    alpha_u: float = 1.0,
+    alpha_g: float = 0.8,
+    gamma: float = 1.0,
+    cluster_size: int = 10,
+    leak: float = 1.0,
+    tau: float = 0.5,
+    noise: float = 0.5,
+    delta_small: float = 0.002,
+    decays: Sequence[float] = (0.0, 0.3, 0.5, 0.7, 0.85),
+    blocked_arm: int = 4,
+    g_grid: Sequence[int] = (80, 160, 320, 640),
+    n_seeds: int = 100,
+    n_replicates: int = 4,
+    seed: int = 0,
+) -> CrossClusterMixingCurve:
+    """ASSUMPTION A3' -- Contribution 2's cluster rate does NOT need independent clusters.
+
+    A1 as stated assumes partial interference with INDEPENDENT clusters (Hudgens & Halloran 2008),
+    which is the assumption a marketplace violates: adjacent cities share drivers, weather and
+    campaigns. A3' weakens it to ``psi``-dependence in the sense of Kojevnikov, Marmer & Song
+    (2021, Definition 2.2) -- the cluster scores may correlate across clusters provided the
+    dependence coefficients ``theta_s``, defined by
+    ``|Cov(f(s_A), g(s_B) | C)| <= psi_{a,b}(f, g) * theta_s`` for cluster sets at distance
+    ``s > 0``, decay fast enough for their Condition ND -- which is the same regime as Leung's
+    (2022) approximate neighbourhood interference. Under A3' the CLT is the network-HAC one rather
+    than the i.i.d.-cluster one: the ``G^{-1/2}`` rate survives and only the variance CONSTANT
+    changes, by the HAC sum. A3' is not free -- the KMS CLT wants ``p > 4`` moments where A7 asks
+    only for ``q > 2``.
+
+    Both halves are measured here, because "the rate survives" alone is not falsifiable:
+
+    * Each arm draws two independent AR(1)-across-cluster fields with decay ``rho``, one entering
+      the spillover regressor and one the outcome error, so the score inherits
+      ``Cov(psi_g, psi_h) ~ rho^(2|g-h|)`` -- summable for every ``rho < 1``. ``rho = 0`` reduces
+      exactly to the independent-cluster plant of :func:`multichannel_control_certificate`. Reusing
+      ONE field for both would instead make it an omitted confounder -- and measured, that design
+      flattens the slopes to ``-0.001 .. +0.027``, which is INDISTINGUISHABLE from the non-summable
+      arm below on the slope alone. ``worst_mean_error`` is the only thing that separates them
+      (``0.0138`` against ``0.3377``), which is why it is reported rather than assumed away.
+    * The CONSTANT is predicted, not just observed: with the bread free of ``rho`` (the field is
+      unit variance whatever its correlation length) the meat is affine in the HAC sum, so
+      ``G*MSE = a + b*2 rho^2/(1 - rho^2)`` with ``a, b`` free of ``rho``. ``hac_r_squared`` is
+      that fit; a value below ~0.95 falsifies the HAC form rather than the rate.
+    * ``blocked_arm`` is the falsification: a FIXED number of super-blocks, so ``psi(d)`` never
+      decays, ``sum_d psi(d) = Theta(G)`` and A3' fails. Its slope must be ~0 -- the effective
+      sample size is the block count, not ``G``. Without this arm a flat ``-1/2`` would be
+      evidence of nothing, since it is also what an arm with no dependence at all reports.
+
+    ``g_grid`` starts at 80 deliberately. Result 70: a fitted exponent is a WINDOW measurement,
+    and at ``rho = 0.9`` the field's correlation length is ~9 clusters, so a window opening at
+    ``G = 40`` reports ~``-0.35`` -- the pre-asymptotic regime, not the rate. The replicate blocks
+    are genuinely independent -- the seed stream carries a replicate index -- so ``slope_errors``
+    is a real s.e. rather than the nested-prefix reconstruction
+    :func:`end_to_end_c2_certificate` is forced into. With ``n_replicates`` blocks it has
+    ``n_replicates - 1`` degrees of freedom, so it is a ``t`` and not a ``z``: at the default four
+    blocks the two-sided 5% critical value is ``3.182``, not the ``2.776`` of four degrees of
+    freedom, which covers 0.931 at three.
+    """
+    if len(decays) < 4:
+        raise ValueError(
+            f"the HAC fit needs at least 4 decay arms to be a fit rather than an interpolation: "
+            f"below that `hac_r_squared` is 1.0 by construction and says nothing. "
+            f"Got {len(decays)}."
+        )
+    if any(not 0.0 <= d < 1.0 for d in decays):
+        raise ValueError(
+            f"every decay must lie in [0, 1): psi(d) = rho^(2d) is summable only there, and at "
+            f"rho = 1 the AR(1) field degenerates to a CONSTANT, which the cross-fit nuisance "
+            f"intercept absorbs -- the arm would read LESS dependence, not more. Got {decays}."
+        )
+    b_total = b_d + b_s
+    gs = np.asarray(g_grid, dtype=np.float64)
+    log_g = np.log(gs)
+    arms: list[tuple[float, int | None]] = [(float(r), None) for r in decays]
+    arms.append((0.0, blocked_arm))
+
+    def simulate(
+        rng: np.random.Generator, gclust: int, decay: float, blocks: int | None
+    ) -> tuple[NDArray[np.float64], ...]:
+        cid = np.repeat(np.arange(gclust), cluster_size)
+        n = cid.size
+        exposure_field, error_field = _cluster_field_pair(rng, gclust, decay, blocks)
+        z = rng.standard_normal(n)
+        u = alpha_u * z + 0.7 * rng.standard_normal(n)
+        g = alpha_g * z + leak * exposure_field[cid] + 0.7 * rng.standard_normal(n)
+        y = (
+            b_d * u
+            + b_s * g
+            + gamma * z
+            + tau * error_field[cid]  # A3': the cluster effect now CORRELATES across clusters
+            + noise * rng.standard_normal(n)
+        )
+        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
+
+    mse = np.zeros((len(arms), gs.size, n_replicates))
+    bias = np.zeros_like(mse)
+    for a, (decay, blocks) in enumerate(arms):
+        for j, gclust in enumerate(g_grid):
+            for rep in range(n_replicates):
+                errs = np.empty(n_seeds)
+                for s in range(n_seeds):
+                    rng = np.random.default_rng((seed, a, j, rep, s))
+                    z, u, g, y, fold = simulate(rng, gclust, decay, blocks)
+                    errs[s] = _dml_two_channel(z, u, g, y, delta_small, True, fold) - b_total
+                mse[a, j, rep] = float(np.mean(errs**2))
+                bias[a, j, rep] = float(np.mean(errs))
+
+    per_rep = np.array(
+        [
+            [
+                float(np.polyfit(log_g, 0.5 * np.log(mse[a, :, rep]), 1)[0])
+                for rep in range(n_replicates)
+            ]
+            for a in range(len(arms))
+        ]
+    )
+    slopes = per_rep.mean(axis=1)
+    errors = (
+        per_rep.std(axis=1, ddof=1) / np.sqrt(n_replicates)
+        if n_replicates > 1
+        else np.zeros(len(arms))
+    )
+
+    rhos = np.asarray(decays, dtype=np.float64)
+    predictor = 2.0 * rhos**2 / (1.0 - rhos**2)
+    hac = gs[-1] * mse[: rhos.size, -1, :].mean(axis=1)
+    slope_hac, intercept = np.polyfit(predictor, hac, 1)
+    residual = hac - (intercept + slope_hac * predictor)
+    spread = float(np.sum((hac - hac.mean()) ** 2))
+    r_squared = 1.0 - float(residual @ residual) / spread if spread > 0.0 else 1.0
+    return CrossClusterMixingCurve(
+        gs,
+        rhos,
+        np.sqrt(mse[: rhos.size].mean(axis=2)),
+        slopes[: rhos.size],
+        errors[: rhos.size],
+        hac,
+        predictor,
+        float(intercept),
+        float(slope_hac),
+        r_squared,
+        float(slopes[-1]),
+        float(errors[-1]),
+        float(np.max(np.abs(bias.mean(axis=2)))),
+    )
+
+
+@dataclass(frozen=True)
+class ExposureMapCurve:
+    """Exposure-map C2: three channels (direct, spillover, exposure-map W); r_W squared iff orth."""
+
+    deltas: Vector  # nuisance error delta
+    full_regret: Vector  # all three channels orthogonalised (each O(delta^2)): LQ regret ~ delta^4
+    wbottleneck_regret: (
+        Vector  # exposure map W left plug-in (r_W ~ delta): the bottleneck ~ delta^2
+    )
+    full_slope: float  # ~ 4
+    wbottleneck_slope: float  # ~ 2 (an un-orthogonalised W dominates the regret order)
+
+
+def exposure_map_certificate(
+    *,
+    delta_lo: float = 0.01,
+    delta_hi: float = 0.15,
+    n_delta: int = 10,
+) -> ExposureMapCurve:
+    """CONTRIBUTION 2, exposure-map generalisation (derived in ``validation/exposure_map_c2.mac``;
+    ``proofs/exposure_map_c2.v`` proves the fully orthogonal bound for the regret taken as
+    ``cc*(s+r_d+r_s+r_W)^2``; the plug-in ``W`` bottleneck is shown numerically). The marketplace
+    network plant
+    ``x_{t+1} = A x_t + (B_d + B_s W) u_t + eps`` has effective effect ``B_eff(W) = B_d + B_s W``;
+    estimating ``(B_d, B_s, W)`` gives THREE channels ``r_d, r_s, r_W`` (the last from the exposure
+    map ``W``). Through the MTR gap, ``R = O_p[G^{-1} + (r_d + r_s + r_W)^2]``. Shown
+    deterministically on a 3-state/1-input LQ plant (three orthogonal input-matrix directions):
+    orthogonalising ALL three (each ``O(delta^2)``) gives ``~ delta^4``; leaving the exposure map
+    ``W`` plug-in (``r_W ~ delta``) makes it the **bottleneck**, ``~ delta^2`` -- the load-bearing
+    point (Hays & Raghavan) that ``r_W`` enters squared only if ``W`` is orthogonalised/cross-fit.
+    """
+    a_mat = np.array([[1.0, 0.1, 0.0], [0.0, 0.95, 0.1], [0.0, 0.0, 0.9]])
+    b_mat = np.array([[0.5], [1.0], [0.7]])
+    q_mat = np.eye(3)
+    r_mat = np.array([[0.5]])
+    x0 = np.array([1.0, 0.5, 0.3])
+    dir_d = np.array([[1.0], [0.0], [0.0]])  # direct-effect channel
+    dir_s = np.array([[0.0], [1.0], [0.0]])  # spillover-coefficient channel
+    dir_w = np.array([[0.0], [0.0], [1.0]])  # exposure-map (W) channel
+    ds = np.geomspace(delta_lo, delta_hi, n_delta)
+    full = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * (dir_d + dir_s + dir_w), x0
+            )
+            for d in ds
+        ]
+    )  # all three channels O(delta^2)
+    wbn = np.array(
+        [
+            certainty_equivalence_gap(
+                a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + d**2 * (dir_d + dir_s) + d * dir_w, x0
+            )
+            for d in ds
+        ]
+    )  # exposure map W plug-in: r_W ~ delta is the bottleneck
+    full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
+    wbn_slope = float(np.polyfit(np.log(ds), np.log(wbn), 1)[0])
+    return ExposureMapCurve(ds, full, wbn, full_slope, wbn_slope)
+
+
+@dataclass(frozen=True)
+class ClusterFoldLeakageCurve:
+    """What row-level cross-fitting costs on a clustered design: no bias, a different estimator."""
+
+    icc_grid: Vector  # intra-cluster correlation rho_ICC = tau^2/(tau^2+sigma^2) swept
+    # ARM 1 -- the library's own LINEAR-in-z nuisance. Must show the fold scheme is asymptotically
+    # irrelevant here, which is what licenses the previously published C2 numbers.
+    lin_cluster_grid: Vector  # cluster counts G
+    lin_bias_row: Vector  # bias under row-parity folds (~0)
+    lin_bias_cluster: Vector  # bias under whole-cluster folds (~0)
+    lin_sd_ratio: Vector  # sd_row/sd_cluster -> 1 as G grows (the O(1/G) leak)
+    # ARM 2 -- a CLUSTER-AWARE nuisance. This is the arm that actually tests A8.
+    aware_bias_row: Vector  # still ~0: the leak does NOT bias (Result 43(a))
+    aware_bias_cluster: Vector
+    resid_icc_row: Vector  # ~0: row folds ANNIHILATE the residual ICC
+    resid_icc_cluster: Vector  # ~rho_ICC: whole-cluster folds preserve it
+    psi: Vector  # Var_row/Var_cluster
+    psi_normalised: Vector  # psi / psi(rho=0) -- must equal 1 - rho_ICC (Result 43(b))
+    c_fold_measured: float  # psi at rho_ICC = 0, the fold-geometry constant
+    c_fold_predicted: float  # m*(m+14)/(m+2)^2 at K=2, from the projector algebra
+    law_maxdev: float  # max |psi_normalised - (1 - rho_ICC)| at n_clusters
+    law_maxdev_half_g: float  # ... and at half as many clusters: must be LARGER (the O(1/G) term)
+    # ARM 3 -- a genuine cluster-measurable exposure (a spillover really is cluster-level).
+    # This is the regime where the leak stops being a variance question: the channel is ANNIHILATED,
+    # and the total-effect estimate loses exactly the coefficient it carried.
+    exposure_resid_var_row: float  # ~0: nothing of the exposure survives residualisation
+    exposure_resid_var_cluster: float
+    annihilated_bias_row: float  # ~ -b_s: the whole spillover coefficient goes missing
+    annihilated_bias_cluster: float  # ~0
+    annihilated_bias_predicted: float  # -b_s, the exact prediction
+
+
+def cluster_fold_leakage_certificate(
+    *,
+    n_clusters: int = 60,
+    cluster_size: int = 8,
+    noise: float = 0.5,
+    b_d: float = 1.0,
+    b_s: float = 0.6,
+    icc_grid: Sequence[float] = (0.0, 0.3, 0.6, 0.9),
+    lin_cluster_grid: Sequence[int] = (20, 80, 320),
+    n_seeds: int = 240,
+) -> ClusterFoldLeakageCurve:
+    """CONTRIBUTION 2 -- the price of violating assumption A8 (derived in
+    ``validation/cluster_fold_leakage.mac``, proved in ``proofs/cluster_fold_leakage.v``).
+
+    A8 asks for ``K >= 2`` folds of WHOLE CLUSTERS. Splitting folds by row instead leaves every
+    cluster in both folds, so the nuisance is fit on rows of the very cluster it must then predict.
+    None of the cited theorems prices that: CCDDHNR assume i.i.d. rows (folds are then automatically
+    valid), Hansen-Lee assume independent cluster scores as a PRIMITIVE, Chiang-Kato-Ma-Sasaki
+    assume folds are already cluster-level.
+
+    The finding is NOT a bias. The cross-fold hat reproduces the design it is applied to, so
+    ``f(Z)`` cancels identically and the moment stays exactly orthogonal for ANY fold assignment
+    (ARM 1 and the ``aware_bias_*`` fields). The damage is a change of ESTIMATOR, visible only in
+    the second moment: with a cluster-aware nuisance, row folds estimate each cluster's own effect
+    from its own training rows and subtract it, so the residual ICC is annihilated
+    (``resid_icc_row -> 0`` against ``resid_icc_cluster -> rho_ICC``) and a within-cluster estimator
+    is silently substituted for the cluster-robust one. Its variance obeys
+    ``psi = c(m,K)*(1 - rho_ICC)`` with ``c(m,2) = m*(m+14)/(m+2)^2`` from the projector algebra, so
+    the NORMALISED law ``psi/c = 1 - rho_ICC`` is exact in ``m`` and ``K`` rather than asymptotic.
+    Everything derived from the cluster-robust variance -- interval width, the ``c0`` plateau of
+    Result 25, the regret constant -- then belongs to a different estimator, and a sandwich computed
+    after row folds is too SMALL, so intervals under-cover.
+
+    The one regime where it is NOT merely a variance question is a cluster-measurable regressor
+    (ARM 3). A partial-interference exposure is cluster-measurable by construction, and a
+    cluster-aware nuisance can then reproduce it exactly from the held-out row's own cluster: the
+    channel is annihilated (``exposure_resid_var_row -> 0``) and the total-effect estimate loses
+    exactly the coefficient that channel carried, ``annihilated_bias_row -> -b_s``. That is
+    unidentification, not a broken moment -- ``validation/cluster_fold_leakage.mac`` STEP 9 with
+    ``h -> 1`` gives ``Dtil = 0`` -- but it is a bias in the reported number.
+
+    SCOPE: for a fixed correctly-specified linear span the leak is ``O(1/G)`` and the published C2
+    conclusions survive (ARM 1) -- what does not survive is the claim that the code implements A8.
+    The C2 certificates' own ``G_exp`` varies i.i.d. WITHIN cluster, which is not what a
+    partial-interference exposure looks like, so they sit in the benign regime by accident.
+
+    Raises:
+        ValueError: if ``n_seeds < 2``: the variance law reads spreads over the seeds.
+    """
+    if n_seeds < 2:
+        raise ValueError(
+            f"n_seeds must be at least 2, the law being a ratio of spreads; got {n_seeds}"
+        )
+
+    def simulate(
+        rng: np.random.Generator, gclust: int, m: int, tau: float, cluster_exposure: bool = False
+    ) -> tuple[np.ndarray, ...]:
+        cid = np.repeat(np.arange(gclust), m)
+        n = cid.size
+        z = rng.standard_normal(n)
+        a = (tau * rng.standard_normal(gclust))[cid]
+        u = z + 0.7 * rng.standard_normal(n)
+        if cluster_exposure:  # a spillover is cluster-MEASURABLE by construction
+            g = 0.8 * z.reshape(gclust, m).mean(1)[cid] + 0.5 * (rng.standard_normal(gclust))[cid]
+        else:
+            g = 0.8 * z + 0.7 * rng.standard_normal(n)
+        y = b_d * u + b_s * g + z + a + noise * rng.standard_normal(n)
+        return cid, z, u, g, y
+
+    def robinson(
+        design: np.ndarray, z: np.ndarray, cols: Sequence[np.ndarray], fold: np.ndarray
+    ) -> tuple[np.ndarray, ...]:
+        out = []
+        for col in cols:
+            r = col.astype(np.float64).copy()
+            for f in (0, 1):
+                tr, te = fold != f, fold == f
+                coef, *_ = np.linalg.lstsq(design[tr], col[tr], rcond=None)
+                r[te] = col[te] - design[te] @ coef
+            out.append(r)
+        return tuple(out)
+
+    def fit(design: np.ndarray, cid: np.ndarray, z, u, g, y, fold) -> tuple[float, np.ndarray]:
+        ut, gt, yt = robinson(design, z, (u, g, y), fold)
+        v = np.column_stack([ut, gt])
+        beta, *_ = np.linalg.lstsq(v, yt, rcond=None)
+        return float(beta[0] + beta[1]), yt - v @ beta
+
+    def residual_icc(e: np.ndarray, gclust: int, m: int) -> float:
+        blocks = e.reshape(gclust, m)
+        grand = blocks.mean()
+        msb = m * float(((blocks.mean(1) - grand) ** 2).sum()) / (gclust - 1)
+        msw = float(((blocks - blocks.mean(1, keepdims=True)) ** 2).sum()) / (gclust * (m - 1))
+        return max(0.0, (msb - msw) / (msb + (m - 1) * msw))
+
+    def linear_design(z: np.ndarray, cid: np.ndarray, gclust: int) -> np.ndarray:
+        return np.column_stack([np.ones_like(z), z])
+
+    def aware_design(z: np.ndarray, cid: np.ndarray, gclust: int) -> np.ndarray:
+        dummies = np.zeros((z.size, gclust))
+        dummies[np.arange(z.size), cid] = 1.0
+        return np.column_stack([np.ones_like(z), z, dummies])
+
+    b_total = b_d + b_s
+    row_fold = lambda cid: np.mod(np.arange(cid.size), 2)  # noqa: E731 -- paired with cl_fold
+    cl_fold = lambda cid: np.mod(cid, 2)  # noqa: E731
+
+    # ARM 1: the library's own linear nuisance -- the fold scheme must wash out as G grows.
+    gs = np.asarray(lin_cluster_grid, dtype=np.float64)
+    lin_b_row, lin_b_cl, lin_ratio = (np.zeros(gs.size) for _ in range(3))
+    for i, gclust in enumerate(lin_cluster_grid):
+        er, ec = np.empty(n_seeds), np.empty(n_seeds)
+        for s in range(n_seeds):
+            cid, z, u, g, y = simulate(np.random.default_rng(6151 * s + gclust), gclust, 10, 0.5)
+            d = linear_design(z, cid, gclust)
+            er[s] = fit(d, cid, z, u, g, y, row_fold(cid))[0] - b_total
+            ec[s] = fit(d, cid, z, u, g, y, cl_fold(cid))[0] - b_total
+        lin_b_row[i], lin_b_cl[i] = float(er.mean()), float(ec.mean())
+        lin_ratio[i] = float(er.std() / ec.std())
+
+    # ARM 2: a cluster-aware nuisance -- the arm that actually tests A8.
+    iccs = np.asarray(icc_grid, dtype=np.float64)
+
+    def aware_arm(gclust: int, seeds: int) -> tuple[np.ndarray, ...]:
+        ab_r, ab_c, ic_r, ic_c, ps = (np.zeros(iccs.size) for _ in range(5))
+        for i, rho in enumerate(iccs):
+            tau = noise * np.sqrt(rho / (1.0 - rho)) if rho < 1.0 else 0.0
+            stats = {}
+            for name, mk in (("row", row_fold), ("cluster", cl_fold)):
+                errs, ii = np.empty(seeds), np.empty(seeds)
+                for s in range(seeds):
+                    rng = np.random.default_rng(4242 * s + int(1000 * rho) + 7 * gclust)
+                    cid, z, u, g, y = simulate(rng, gclust, cluster_size, tau)
+                    b, e = fit(aware_design(z, cid, gclust), cid, z, u, g, y, mk(cid))
+                    errs[s], ii[s] = b - b_total, residual_icc(e, gclust, cluster_size)
+                stats[name] = (float(errs.mean()), float(errs.std()), float(ii.mean()))
+            ab_r[i], ic_r[i] = stats["row"][0], stats["row"][2]
+            ab_c[i], ic_c[i] = stats["cluster"][0], stats["cluster"][2]
+            ps[i] = (stats["row"][1] / stats["cluster"][1]) ** 2
+        return ab_r, ab_c, ic_r, ic_c, ps
+
+    ab_row, ab_cl, ic_row, ic_cl, psi = aware_arm(n_clusters, n_seeds)
+    c_measured = float(psi[0])
+    m_f = float(cluster_size)
+    c_predicted = m_f * (m_f + 14.0) / (m_f + 2.0) ** 2
+
+    # The law is EXACT; what a finite sample adds is the O(1/G) coupling through the shared global
+    # nuisance coefficients (the same term that breaks the Hansen-Lee independence hypothesis). So
+    # the deviation from 1 - rho_ICC must SHRINK with G -- measured at half the clusters to check.
+    dev = float(np.abs(psi / psi[0] - (1.0 - iccs)).max())
+    psi_half = aware_arm(max(4, n_clusters // 2), n_seeds)[4]
+    dev_half = float(np.abs(psi_half / psi_half[0] - (1.0 - iccs)).max())
+
+    # ARM 3: a cluster-measurable exposure. A cluster-aware nuisance reproduces it exactly from the
+    # held-out row's own cluster, so under row folds the channel is annihilated and the total effect
+    # loses precisely the coefficient it carried. Under whole-cluster folds the nuisance never sees
+    # the held-out cluster and the channel survives.
+    ex_row, ex_cl = np.empty(n_seeds), np.empty(n_seeds)
+    an_row, an_cl = np.empty(n_seeds), np.empty(n_seeds)
+    for s in range(n_seeds):
+        rng = np.random.default_rng(777 * s + 3)
+        cid, z, u, g, y = simulate(rng, n_clusters, cluster_size, 0.5, cluster_exposure=True)
+        d = aware_design(z, cid, n_clusters)
+        ex_row[s] = float(np.var(robinson(d, z, (g,), row_fold(cid))[0]))
+        ex_cl[s] = float(np.var(robinson(d, z, (g,), cl_fold(cid))[0]))
+        an_row[s] = fit(d, cid, z, u, g, y, row_fold(cid))[0] - b_total
+        an_cl[s] = fit(d, cid, z, u, g, y, cl_fold(cid))[0] - b_total
+
+    return ClusterFoldLeakageCurve(
+        iccs,
+        gs,
+        lin_b_row,
+        lin_b_cl,
+        lin_ratio,
+        ab_row,
+        ab_cl,
+        ic_row,
+        ic_cl,
+        psi,
+        psi / psi[0],
+        c_measured,
+        c_predicted,
+        dev,
+        dev_half,
+        float(ex_row.mean()),
+        float(ex_cl.mean()),
+        float(an_row.mean()),
+        float(an_cl.mean()),
+        -b_s,
+    )
+
+
+@dataclass(frozen=True)
+class DelayedNetworkCurve:
+    """Result 51: what a delay PROPAGATING THROUGH THE NETWORK does to row-level cross-fitting."""
+
+    phi_grid: Vector  # serial correlation of the innovations
+    psi_law_parity: Vector  # the polynomial in phi^delta, folds ALTERNATING around the cycle
+    psi_sim_parity: Vector  # the same quantity measured on simulated trajectories
+    psi_law_block: Vector  # ... and with CONTIGUOUS-BLOCK folds, which align with the graph
+    psi_sim_block: Vector
+    sim_stderr: Vector  # the LARGER of the two arms' Monte-Carlo standard errors at each phi
+    swing_parity: float  # psi(phi=0)/psi(phi=max): how far the delay moves the misaligned arm
+    swing_block: float  # ... and the aligned one. The gap IS the design law
+    u_parity: Vector  # polynomial coefficients; u_1 < 0 is the direction of the leak
+    u_block: Vector
+    theta_parity: float  # same-fold edge fraction of each partition
+    theta_block: float
+    theta_star: float  # K^3/(4K^3-6K^2+4K-1): where u_1 would vanish at D = 1. Always above 1/K
+    u1_nearest_parity: float  # u_1 with the far shells switched off: the theta* law's own regime
+    u1_nearest_block: float  # ... POSITIVE here, because block folds sit above theta*
+    u1_cross_block: float  # ... and the shell-1<->shell-2 term that flips it negative again
+    # at delta = 0, the spread over the phi grid of Psi read on the whole Sigma_u (x) T(phi): ~0
+    separable_spread: float
+    c_fold_measured: float  # exchangeable limit: m*tr(Au^2)/tr(Au)^2 read off the projector
+    c_fold_predicted: float  # m(m+14)/(m+2)^2 at K=2 -- the same constant Result 43 uses
+    crossover: float  # x = phi^delta where the two partitions swap ranking; nan if they never do
+    trace_gap: float  # tr(Au) is partition-free, which is what makes `crossover` well defined
+
+
+def _fold_sandwich(m: int, k_folds: int, fold: NDArray[np.int_]) -> NDArray[np.float64]:
+    """A_u = M'M for the cross-fit residualiser M = I - F_opp, in closed form.
+
+    E^2 = E, F^2 = F and EF = FE = E, so <I,E,F> is closed and A_u = I - r^2 E + (r^2-1) F with
+    r = K/(K-1). Its eigenvalues are 0 on span(1), r^2 on the K-1 fold contrasts and 1 within folds:
+    row-level cross-fitting over-weights the fold-contrast subspace by exactly r^2, and by r^4 once
+    squared inside the sandwich. That factor is the whole of Result 51.
+    """
+    grand = np.full((m, m), 1.0 / m)
+    within = (fold[:, None] == fold[None, :]) * (k_folds / m)
+    r = k_folds / (k_folds - 1)
+    return np.eye(m) - r**2 * grand + (r**2 - 1) * within
+
+
+def _design_crossover(difference: NDArray[np.float64]) -> float:
+    """Where two fold partitions swap ranking, as a root of their coefficient difference.
+
+    ``Psi = m^2 (u . x^l) / (tr(Au)^2 v0)`` and BOTH normalisers are partition-free: ``v0`` never
+    sees the fold operator, and ``tr(Au) = r^2 (K-1) + (m-K)`` counts eigenvalue multiplicities, so
+    it depends on how many folds there are and not on which unit went where. Equal ``Psi`` therefore
+    reduces to a root of ``sum_l (u1_l - u2_l) x^l`` with no normalisation left in it -- a degree-D
+    polynomial in ``x = phi^delta``, whose coefficients carry no ``delta`` at all.
+
+    Returns the unique root in ``(0, 1)``, or NaN when the partitions never swap over that range.
+    """
+    roots = np.roots(difference[::-1])
+    inside = [float(z.real) for z in roots if abs(z.imag) < 1e-12 and 0.0 < z.real < 1.0]
+    return inside[0] if len(inside) == 1 else float("nan")
+
+
+def exact_ratio_moment(
+    numerator: NDArray[np.float64],
+    denominator: NDArray[np.float64],
+    regressor_cov: NDArray[np.float64],
+) -> float:
+    """``E[(R'BR) / (R'CR)^2]`` for ``R ~ N(0, Omega)``, exactly -- Result 51 (l) and (m).
+
+    The variance of the scalar cross-fit estimator ``theta_hat = u'A eps / u'A u`` with a
+    correlated regressor ``u`` is ``E[u'(A Sigma A)u / (u'Au)^2]``: call with
+    ``numerator = A Sigma A`` and ``denominator = A``. The plug-in law ``tr(B Om)/tr(C Om)^2``
+    mis-prices that expectation by the expectation-of-a-ratio gap -- ``+10.7% / +6.7%`` on the
+    panel geometries of Result 51 (i), enough to move the fold-design crossover and open a
+    wrong-partition band at ``Om != I`` (Result 51 (m)). This is the exact replacement: with
+    ``1/Y^2 = int_0^inf t e^{-tY} dt`` and the tilted-Gaussian moment, the expectation is one
+    resolvent quadrature (Magnus 1986)::
+
+        E[X/Y^2] = int_0^inf t det(I + 2t Om C)^(-1/2) tr(B (I + 2t Om C)^(-1) Om) dt
+
+    -- an ``eigh`` plus ``scipy.integrate.quad``. Both identities are verified, not cited, in
+    ``validation/omega_jensen_gap.mac`` (residual 0 at ``n = 1, 2``); the design consequences --
+    the ``Om = I`` crossover is exact and sign-safe, the ``Om != I`` one is not -- are proved in
+    ``proofs/omega_jensen_gap.v``.
+
+    Scope. Exact for GAUSSIAN ``R``. Scale mixtures ``R = sqrt(nu/W) G`` (multivariate t) rescale
+    the moment by ``E[W/nu]`` -- equal to 1 for ``t_nu`` at a fixed SCALE matrix, so heavy tails
+    per se change nothing here, while parameterising by the variance instead of the scale silently
+    costs ``-2/nu``. Existence is a tail condition, checked rather than assumed: with ``k`` nonzero
+    eigenvalues of ``Om^(1/2) C Om^(1/2)`` the integrand decays like ``t^(-k/2)`` when the
+    numerator carries no mass on the denominator's null space (finite iff ``k >= 3``) and like
+    ``t^(1-k/2)`` when it does (``k >= 5``) -- the plug-in number exists at every ``k``, which is
+    exactly how a truncation gets quoted where the moment it approximates does not.
+    """
+    b = np.asarray(numerator, dtype=np.float64)
+    c = np.asarray(denominator, dtype=np.float64)
+    om = np.asarray(regressor_cov, dtype=np.float64)
+    n = om.shape[0]
+    if b.shape != (n, n) or c.shape != (n, n) or om.shape != (n, n):
+        raise ValueError("numerator, denominator and regressor_cov must be square, same shape")
+    _finite(numerator=b, denominator=c, regressor_cov=om)
+    root = np.linalg.cholesky(om)  # not PD -> LinAlgError at the boundary, not deep in quad
+    eigenvalues, vectors = np.linalg.eigh(root.T @ c @ root)
+    tol = n * float(np.finfo(np.float64).eps) * max(float(eigenvalues[-1]), 1.0)
+    if float(eigenvalues[0]) < -tol:
+        raise ValueError("denominator must be PSD on the regressor support: R'CR changes sign")
+    loadings = np.diag(vectors.T @ (root.T @ b @ root) @ vectors).copy()
+    live = eigenvalues > tol
+    k = int(np.count_nonzero(live))
+    null_mass = float(loadings[~live].sum())
+    has_null_mass = abs(null_mass) > tol * max(float(np.abs(loadings).max()), 1.0)
+    if k < (5 if has_null_mass else 3):
+        raise ValueError(
+            f"E[X/Y^2] diverges: {k} nonzero denominator eigenvalue(s), and the tail exponent "
+            f"needs {'5 (numerator loads on the null space)' if has_null_mass else '3'}"
+        )
+    d_live = eigenvalues[live]
+    b_live = loadings[live]
+    constant = null_mass if has_null_mass else 0.0
+    # integrated in t * scale: the mass sits at t ~ 1/d, which on the raw scale quad's map of
+    # [0, inf) misses once the regressor covariance is far from 1, and its default absolute
+    # tolerance of 1.5e-8 accepts the miss
+    scale = float(d_live.max())
+    d_unit = d_live / scale
+
+    def integrand(t: float) -> float:
+        weights = 1.0 + 2.0 * t * d_unit
+        return (
+            t
+            * float(np.exp(-0.5 * np.log(weights).sum()))
+            * (float((b_live / weights).sum()) + constant)
+        )
+
+    value, _ = quad(integrand, 0.0, np.inf, limit=400, epsabs=0.0, epsrel=1e-12)
+    return float(value) / scale**2
+
+
+def _adjugate_terms(q: int) -> dict[tuple[int, int], list[tuple[int, tuple[tuple[int, int], ...]]]]:
+    """``adj(M)[i][j]`` as signed products of ``q - 1`` entries of ``M`` -- the cofactor Leibniz
+    sum, with the ``(-1)^(i+j)`` and the minor's own permutation parity folded into one sign."""
+    out: dict[tuple[int, int], list[tuple[int, tuple[tuple[int, int], ...]]]] = {}
+    for i in range(q):
+        for j in range(q):
+            rows = [r for r in range(q) if r != j]
+            cols = [c for c in range(q) if c != i]
+            terms = []
+            for perm in itertools.permutations(range(q - 1)):
+                sign, seen = 1, [False] * (q - 1)
+                for a in range(q - 1):
+                    if seen[a]:
+                        continue
+                    length, b = 0, a
+                    while not seen[b]:
+                        seen[b] = True
+                        b = perm[b]
+                        length += 1
+                    if length % 2 == 0:
+                        sign = -sign
+                terms.append(
+                    (
+                        sign * (-1) ** (i + j),
+                        tuple((rows[a], cols[perm[a]]) for a in range(q - 1)),
+                    )
+                )
+            out[(i, j)] = terms
+    return out
+
+
+def _permutation_cycles(m: int) -> list[tuple[tuple[int, ...], ...]]:
+    """Every permutation of ``m`` letters, as its cycle decomposition."""
+    out = []
+    for perm in itertools.permutations(range(m)):
+        seen, cycles = [False] * m, []
+        for i in range(m):
+            if seen[i]:
+                continue
+            cyc, j = [], i
+            while not seen[j]:
+                seen[j] = True
+                cyc.append(j)
+                j = perm[j]
+            cycles.append(tuple(cyc))
+        out.append(tuple(cycles))
+    return out
+
+
+def _rotate_min(word: tuple[int, ...]) -> tuple[int, ...]:
+    return min(word[r:] + word[:r] for r in range(len(word)))
+
+
+@cache
+def _sandwich_plan(q: int) -> dict[str, object]:
+    """Node-independent index tables for ``E[adj(M) N adj(M)]`` entrywise, ``q`` channels.
+
+    ``adj(M)`` has degree ``q - 1``, so each entry of the sandwich is a signed sum of products of
+    ``m = 2q - 1`` quadratic forms. The Gaussian moment of such a product is a sum over the
+    SYMMETRIC GROUP (``validation/general_q_ratio_moment.mac`` STEP 1),
+
+        ``E[prod_i z' K_i z] = sum_{sigma in S_m} 2^(m - c(sigma)) prod_{cycles} tr(prod K_j S)``,
+
+    which at ``q = 2`` reproduces Isserlis' 15 pairings and at any ``q`` is mechanical. The plan
+    caches what does not depend on the quadrature node: which cycle words appear (deduplicated up
+    to rotation, since a trace is), and which products of them each entry sums.
+    """
+    m = 2 * q - 1
+    adj = _adjugate_terms(q)
+    forms: list[tuple[int, int, int]] = []
+    form_id: dict[tuple[int, int, int], int] = {}
+
+    def form(side: int, a: int, b: int) -> int:
+        key = (side, min(a, b), max(a, b))
+        if key not in form_id:
+            form_id[key] = len(forms)
+            forms.append(key)
+        return form_id[key]
+
+    products = []
+    for i in range(q):
+        for j in range(i, q):
+            for k in range(q):
+                for ell in range(q):
+                    nid = form(1, k, ell)
+                    for s1, idx1 in adj[(i, k)]:
+                        for s2, idx2 in adj[(ell, j)]:
+                            products.append(
+                                (
+                                    (i, j),
+                                    s1 * s2,
+                                    tuple(
+                                        [form(0, a, b) for a, b in idx1]
+                                        + [nid]
+                                        + [form(0, a, b) for a, b in idx2]
+                                    ),
+                                )
+                            )
+
+    word_id: dict[tuple[int, ...], int] = {}
+    words: list[tuple[int, ...]] = []
+
+    def cycle(fids: tuple[int, ...]) -> int:
+        key = _rotate_min(fids)
+        if key not in word_id:
+            word_id[key] = len(words)
+            words.append(key)
+        return word_id[key]
+
+    cycle_sets = _permutation_cycles(m)
+    terms = [
+        (
+            entry,
+            coefficient * 2.0 ** (m - len(cyc)),
+            tuple(cycle(tuple(fids[t] for t in c)) for c in cyc),
+        )
+        for entry, coefficient, fids in products
+        for cyc in cycle_sets
+    ]
+
+    entries = sorted({e for e, _, _ in terms})
+    pad = len(words)  # a constant-one row, so every term has exactly m factors
+    idx = np.full((len(terms), m), pad, dtype=np.int32)
+    weight = np.empty(len(terms))
+    seg = np.empty(len(terms), dtype=np.int32)
+    for t, (entry, w, ids) in enumerate(terms):
+        idx[t, : len(ids)] = ids
+        weight[t] = w
+        seg[t] = entries.index(entry)
+    order = np.argsort(seg, kind="stable")
+    return {
+        "forms": forms,
+        "words": tuple(words),
+        "idx": idx[order],
+        "weight": weight[order],
+        "seg": seg[order],
+        "entries": entries,
+    }
+
+
+@cache
+def _word_levels(
+    words: tuple[tuple[int, ...], ...],
+) -> tuple[tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.int32]], ...]:
+    """The cycle words as a prefix trie, flattened one level at a time.
+
+    Every word is a product of kernels and every prefix is shared by many words, so the traces
+    cost one batched matmul PER LEVEL rather than one per word: at ``q = 3`` that is 3336 gemms
+    instead of 25920 word evaluations.
+    """
+    depth = max(len(w) for w in words)
+    levels: list[tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.int32]]] = []
+    prev_ids: dict[tuple[int, ...], int] = {(): 0}
+    for k in range(1, depth + 1):
+        cur_ids: dict[tuple[int, ...], int] = {}
+        parent: list[int] = []
+        letter: list[int] = []
+        emit: list[tuple[int, int]] = []
+        for i, w in enumerate(words):
+            if len(w) < k:
+                continue
+            pre = w[:k]
+            if pre not in cur_ids:
+                cur_ids[pre] = len(parent)
+                parent.append(prev_ids[pre[:-1]])
+                letter.append(pre[-1])
+            if len(w) == k:
+                emit.append((cur_ids[pre], i))
+        levels.append(
+            (
+                np.array(parent, np.int32),
+                np.array(letter, np.int32),
+                np.array(emit, np.int32).reshape(-1, 2),
+            )
+        )
+        prev_ids = cur_ids
+    return tuple(levels)
+
+
+def _word_traces(
+    levels: tuple[tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.int32]], ...],
+    kernels: NDArray[np.float64],
+    n_words: int,
+    batch: int,
+) -> NDArray[np.float64]:
+    out = np.empty((n_words, batch))
+    prev = None
+    for parent, letter, emit in levels:
+        stack = kernels[letter]
+        cur = stack if prev is None else prev[parent] @ stack
+        if emit.size:
+            out[emit[:, 1]] = np.einsum("pbii->pb", cur[emit[:, 0]])
+        prev = cur
+    return out
+
+
+def _matrix_gamma(q: int, s: float) -> float:
+    """``Gamma_q(s) = pi^(q(q-1)/4) prod_j Gamma(s - (j-1)/2)``, the multivariate gamma.
+
+    Returns ``inf`` outside the convergence half-plane ``s > (q-1)/2``. That bound -- not the
+    poles of the individual gamma factors -- is what governs: the Ingham--Siegel integral over
+    the positive-definite cone diverges there whether or not the product happens to be finite.
+    """
+    if s <= 0.5 * (q - 1):
+        return float("inf")
+    return float(
+        np.exp(0.25 * q * (q - 1) * np.log(np.pi) + sum(lgamma(s - 0.5 * j) for j in range(q)))
+    )
+
+
+def exact_matrix_ratio_moment(
+    numerator: NDArray[np.float64],
+    denominator: NDArray[np.float64],
+    regressor_cov: NDArray[np.float64],
+    nodes: int | None = None,
+) -> NDArray[np.float64]:
+    """``E[(X'CX)^-1 (X'BX) (X'CX)^-1]`` for a Gaussian ``n``-by-``q`` block ``X``, exactly.
+
+    The matrix companion of :func:`exact_ratio_moment`: the exact sampling covariance of a
+    ``q``-CHANNEL cross-fit estimate is ``E[(X'AX)^-1 X'A Sigma A X (X'AX)^-1]`` -- call with
+    ``numerator = A Sigma A``, ``denominator = A``, and ``regressor_cov`` the ``qn``-by-``qn``
+    covariance of ``vec(X)``. The channel count is read off that shape, not passed: ``q =
+    regressor_cov.shape[0] // n``. ``regressor_cov`` may be SINGULAR -- a spillover column that
+    is deterministic given the own column is the normal case, and nothing here inverts it.
+
+    Route (derived, not cited, in ``validation/general_q_ratio_moment.mac``): ``M^-1 =
+    adj(M)/det(M)`` turns each entry into a signed sum of products of ``m = 2q - 1`` quadratic
+    forms, since the adjugate has degree ``q - 1``; the Ingham--Siegel identity ``det(M)^-s =
+    Gamma_q(s)^-1 int_{T>0} det(T)^(s-(q+1)/2) etr(-TM) dT`` at ``s = 2`` replaces the
+    determinant by a Gaussian tilt; the tilted law has covariance ``(I + 2 Om (T (x) C))^-1 Om``;
+    and the ``m``-form Gaussian moment is a sum over the SYMMETRIC GROUP,
+    ``sum_{sigma in S_m} 2^(m - c(sigma)) prod_{cycles} tr(...)``, which at ``q = 2`` is
+    Isserlis' 15 pairings and at ``q = 3`` is 120 terms. The cone integral runs in Cholesky
+    coordinates (which cannot leave the cone -- ``proofs/matrix_ratio_moment.v``) on a tensor
+    Gauss--Legendre grid of dimension ``q(q+1)/2``.
+
+    Scope, both halves measured rather than assumed:
+
+    * ``Gamma_q(2)`` is finite iff ``2 > (q-1)/2``, so the ROUTE is valid exactly for ``q <= 4``
+      (``proofs/general_q_ratio_moment.v``, ``ingham_siegel_valid_iff_q_le_four``).
+    * The IMPLEMENTATION stops at ``q = 3``: ``q = 4`` needs ``7! = 5040`` permutations on each
+      of 5760 products, i.e. 29 million plan terms, which is not a table worth building.
+    * Cost is the cone dimension, not the algebra, and at ``q = 3`` the cone wins. At ``q = 2``
+      the cone is 3-dimensional and on exchangeable channels what governs the accuracy is the
+      MARGIN from the existence boundary ``n >= q + 2``, not the shape of ``B``. Relative max-entry
+      error against ``I/(n-q-1)``, at ``nodes = 20, 40, 80, 120``:
+
+      == ====== ======== ======== ======== ========
+      n  margin 20       40       80       120
+      == ====== ======== ======== ======== ========
+      5  1      1.14e-4  7.34e-6  4.68e-7  9.32e-8
+      6  2      2.81e-6  4.59e-8  7.37e-10 6.54e-11
+      8  4      2.16e-7  3.35e-11 3.08e-14 2.46e-14
+      12 8      4.90e-6  4.23e-13 1.25e-15 2.37e-14
+      == ====== ======== ======== ======== ========
+
+      So "machine precision at ``q = 2``" holds from ``n = q + 4`` outwards and not near the
+      boundary. An anisotropic ``B`` changes nothing: at ``n = 6`` it gives 2.81e-6, 4.59e-8,
+      4.10e-9 -- the same numbers as ``B = I`` -- and at ``nodes = 40`` its error over the
+      exchangeable one is 1.00 at margins 1, 2, 4 and 8. Correlated channels are NOT a constant.
+      With ``rho = 0.5`` the factor over the exchangeable error is flat at small margins -- 4.1 and
+      4.2 at margin 1, 11.2 and 11.7 at margin 2 (``nodes = 20`` and ``40``; 3.14e-5, 5.38e-7,
+      4.84e-8 at ``n = 6``) -- but 10.9 against 128 at margin 4 and 15.9 against 202 at margin 8:
+      past margin two the correlated rule also converges more slowly. Earlier drafts attributed
+      the loss of machine precision first to an anisotropic numerator (withdrawn) and then to
+      correlated channels, withdrawn in turn as "a flat factor of about 11", which holds only up
+      to margin 2. ``q = 3`` is 6-dimensional and **is a percent-accuracy tool, not a high-precision
+      one.** Measured on the exchangeable anchor, taking the grid as far as it will go:
+
+      ===== ========= ================== ==================
+      nodes points    abs err, ``n = 5`` abs err, ``n = 7``
+      ===== ========= ================== ==================
+      4     4 096     2.92e-1            9.55e-2
+      5     15 625    4.68e-2            5.67e-2
+      6     46 656    8.66e-2            1.87e-2
+      7     117 649   6.69e-2            1.12e-2
+      8     262 144   4.64e-2            6.33e-3
+      9     531 441   2.76e-2            2.04e-3
+      ===== ========= ================== ==================
+
+      That is **1.6 digits for 531 441 points** on the boundary, 2.2 at ``n = 7``. At the
+      geometric-mean rates over ``nodes = 4..9`` (1.60 per node at ``n = 5``, 2.16 at ``n = 7``),
+      six digits would need 31 and 21 nodes, i.e. 9e8 and 9e7 points. Six digits at ``q = 3`` is
+      not reachable with this quadrature -- not "expensive", unreachable. Note also that
+      ``nodes = 8`` at ``n = 5`` evaluates 17x the points of ``nodes = 5`` and is no more accurate
+      (4.64e-2 against 4.68e-2), which is why the ``q = 3`` default is 6. Wall-clock figures are
+      deliberately absent: the same cell measured 3218 s and 1499 s on this machine depending on
+      what else was running, while the accuracy column is bit-identical across those runs.
+
+      Convergence is monotone only with margin from the existence boundary: at ``n = q + 2`` the
+      sequence goes 4.68e-2, 8.66e-2, 6.69e-2, 4.64e-2, 2.76e-2, while at ``n = q + 4`` it
+      decreases throughout.
+
+      **The column above is the ABSOLUTE max-entry error.** At ``n = 5`` the exact answer is ``I``
+      so absolute and relative coincide; at ``n = 7`` it is ``I/3`` and the relative error is 3x
+      the column -- 2.87e-1, 1.70e-1, 5.59e-2, 3.36e-2, 1.90e-2, 6.13e-3 at ``nodes = 4..9``.
+      Quoting the two
+      columns against each other, or against a relative number, is the mistake this note exists
+      to prevent.
+
+      **Every anchor above also has ``regressor_cov = I``,** and there is one with correlated
+      channels: for ``numerator = denominator = I`` and ``regressor_cov = kron(R, I_n)`` the
+      sandwich is ``E[(X'X)^-1]`` with ``X'X ~ Wishart_q(n, R)``, so the exact answer is
+      ``R^-1/(n-q-1)`` (Result 63 (i)). Measured in one convention (max entry, relative) at
+      ``q = 3, n = 7``, correlated against exchangeable: 4.71e-1 / 2.87e-1, 2.39e-1 / 1.70e-1,
+      3.52e-2 / 5.59e-2, 4.29e-2 / 3.36e-2 at ``nodes = 4..7`` -- 1.6x and 1.4x worse on the two
+      coarse grids, 0.63x on the third, 1.3x on the fourth, and non-monotone on both sides. A
+      correlated ``Om`` is not systematically harder; it is a different cell of the same
+      percent-scale tool.
+
+      Seven ways out were measured and all seven lost. Four rules -- a Smolyak sparse grid on
+      nested open Fejer-2 (the tail is algebraic, not Gaussian), per-axis Cholesky scaling, Aitken
+      extrapolation (Gauss-Legendre beats geometric, so a fixed-ratio model over-corrects), and
+      whitening the cone by ``E[M]^-1/2``. Three mechanisms that would have been fixable were
+      ruled out by measurement: ill-conditioning (``cond(tilt) <= 1038`` over the whole grid),
+      a peak the grid straddles (the top node carries under 1.6% of the mass, and 90% of it needs
+      thousands of nodes), and a truncated tail (enlarging the domain strictly hurts: 4.7e-2 ->
+      7.8e-2 -> 3.1e-1 -> 5.7 at 1x, 2x, 5x, 10x the probe scale). What is left is ordinary slow
+      convergence in six dimensions, with no lever attached.
+
+      **At q = 3 use :func:`matrix_ratio_certificate` instead of this function**: it returns the
+      same value with a grid-refinement error estimate, since nothing in the array itself reveals
+      that the grid is not converged.
+
+    Accuracy is self-certifying where it matters: on an EXCHANGEABLE problem the exact answer is
+    isotropic, so the observed spread of the diagonal lower-bounds twice the largest entry error
+    with no reference value in hand (``half_spread_bounds_the_max_error``). The converse fails --
+    a grid can be isotropic and uniformly wrong -- so a small spread is a necessary condition,
+    not a certificate (``zero_spread_does_not_certify``).
+
+    Anchors: the Ingham--Siegel constant to 8 digits and Wishart ``E[W^-1] = I/(n-q-1)`` to 6 at
+    ``q = 2``; at ``q = 3`` the same Wishart anchor plus the matrix-beta law
+    ``E[M^-1 X'PX M^-1] = (r/n) I/(n-q-1)`` for a rank-``r`` projection ``P``. Existence is the
+    inverse-Wishart threshold, enforced: per-channel effective rank at least ``q + 2``, below
+    which the integral diverges while a plug-in sandwich still quotes a number.
+    """
+    b = np.asarray(numerator, dtype=np.float64)
+    c = np.asarray(denominator, dtype=np.float64)
+    om = np.asarray(regressor_cov, dtype=np.float64)
+    n = c.shape[0]
+    if b.shape != (n, n) or c.shape != (n, n):
+        raise ValueError("numerator and denominator must be square and of the same shape")
+    if om.ndim != 2 or om.shape[0] != om.shape[1] or om.shape[0] % n:
+        raise ValueError("regressor_cov must be qn-by-qn: the covariance of vec(X), X n-by-q")
+    _finite(numerator=b, denominator=c, regressor_cov=om)
+    q = om.shape[0] // n
+    if not 2 <= q <= 3:
+        raise ValueError(
+            f"q = {q} channels: this is the matrix route, q >= 2 (use exact_ratio_moment for the "
+            "scalar case), and the plan stops at q = 3 -- q = 4 costs 29 million terms"
+        )
+    if nodes is None:
+        nodes = 40 if q == 2 else 6
+    om_values, om_vectors = np.linalg.eigh(om)
+    tol = q * n * float(np.finfo(np.float64).eps) * max(float(om_values[-1]), 1.0)
+    if float(om_values[0]) < -tol:
+        raise ValueError("regressor_cov must be PSD")
+    root = om_vectors * np.sqrt(np.clip(om_values, 0.0, None))
+    big_c = np.kron(np.eye(q), c)
+    support = np.linalg.eigvalsh(root.T @ big_c @ root)
+    if float(support[0]) < -tol:
+        raise ValueError("denominator must be PSD on the regressor support: X'CX changes sign")
+    k_eff = int(np.count_nonzero(support > tol))
+    if k_eff < q * (q + 2):
+        raise ValueError(
+            f"E[(X'CX)^-1 ...] diverges: per-channel effective rank {k_eff / q:g} < {q + 2}, the "
+            "inverse-Wishart existence threshold n >= q + 2"
+        )
+    big_b = np.kron(np.eye(q), b)
+    eye = np.eye(q * n)
+
+    # Deterministic probe for the integrand's own scale: the mass of a divergence-free cone
+    # integral concentrates where the tilted determinant and the traces balance, and a grid that
+    # misses that shoulder converges to a wrong answer with a straight face. One GLOBAL scale,
+    # not one per axis: giving each Cholesky axis its own analytic peak was measured and is
+    # worse -- better at nodes = 4, but 1.8x per node against 4.2x, so worse by nodes = 5.
+    best, scale = -np.inf, 1.0
+    for probe in np.geomspace(1e-3, 1e3, 61):
+        tilt = eye + 2.0 * probe**2 * om @ big_c
+        sign, logdet = np.linalg.slogdet(tilt)
+        if sign <= 0:
+            continue
+        tilted = np.linalg.solve(tilt, om)
+        magnitude = (
+            probe ** (2 * q + 1)
+            * float(np.exp(-0.5 * logdet))
+            * abs(float(np.trace(c @ tilted[:n, :n]))) ** q
+        )
+        if magnitude > best:
+            best, scale = magnitude, probe
+
+    plan = _sandwich_plan(q)
+    words = cast(tuple[tuple[int, ...], ...], plan["words"])
+    forms = cast(list[tuple[int, int, int]], plan["forms"])
+    entries = cast(list[tuple[int, int]], plan["entries"])
+    idx = cast(NDArray[np.int32], plan["idx"])
+    weight = cast(NDArray[np.float64], plan["weight"])
+    seg = cast(NDArray[np.int32], plan["seg"])
+    levels = _word_levels(words)
+    tri = [(i, j) for i in range(q) for j in range(i + 1)]
+    dim = len(tri)
+
+    points, weights = np.polynomial.legendre.leggauss(nodes)
+    half_points = scale * (0.5 * (points + 1)) / (1 - 0.5 * (points + 1))
+    half_jacobian = scale * 0.5 / (1 - 0.5 * (points + 1)) ** 2 * weights
+    full_points = scale * points / (1 - points**2)
+    full_jacobian = scale * (1 + points**2) / (1 - points**2) ** 2 * weights
+    grid = np.meshgrid(*[half_points if i == j else full_points for i, j in tri], indexing="ij")
+    coords = np.stack([axis.ravel() for axis in grid], axis=1)
+    quad_weight = np.ones(coords.shape[0])
+    for ax, (i, j) in enumerate(tri):
+        shape = [1] * dim
+        shape[ax] = nodes
+        quad_weight = (
+            quad_weight
+            * np.broadcast_to(
+                (half_jacobian if i == j else full_jacobian).reshape(shape), grid[0].shape
+            ).ravel()
+        )
+
+    bounds = np.searchsorted(seg, np.arange(len(entries) + 1))
+    constant = 2.0**q / _matrix_gamma(q, 2.0)
+    det_exponent = 2.0 * (2.0 - 0.5 * (q + 1))
+    widest = max(len(parent) for parent, _, _ in levels)
+    chunk = max(4, min(256, int(4.0e8 // (2 * widest * (q * n) ** 2 * 8))))
+    total = np.zeros(len(entries))
+    for start in range(0, coords.shape[0], chunk):
+        sl = slice(start, start + chunk)
+        cholesky, node_weight = coords[sl], quad_weight[sl]
+        size = cholesky.shape[0]
+        low = np.zeros((size, q, q))
+        for t, (i, j) in enumerate(tri):
+            low[:, i, j] = cholesky[:, t]
+        t_mat = low @ np.swapaxes(low, 1, 2)
+        diagonal = cholesky[:, [t for t, (i, j) in enumerate(tri) if i == j]]
+        w_op = np.einsum("bij,kl->bikjl", t_mat, c).reshape(size, q * n, q * n)
+        tilt = eye[None] + 2.0 * om[None] @ w_op
+        sign, logdet = np.linalg.slogdet(tilt)
+        tilted = np.linalg.solve(tilt, np.broadcast_to(om, tilt.shape))
+        jacobian = np.prod(diagonal ** np.arange(q, 0, -1)[None], axis=1)
+        prefactor = (
+            constant
+            * np.where(sign > 0, np.exp(-0.5 * logdet), 0.0)
+            * np.prod(diagonal, axis=1) ** det_exponent
+            * jacobian
+            * node_weight
+        )
+        kernels = np.zeros((len(forms), size, q * n, q * n))
+        rows = {side: (big_c if side == 0 else big_b)[None] @ tilted for side in (0, 1)}
+        for fid, (side, u, v) in enumerate(forms):
+            block = rows[side]
+            kernels[fid, :, u * n : (u + 1) * n] = block[:, v * n : (v + 1) * n]
+            if u != v:
+                kernels[fid, :, v * n : (v + 1) * n] = block[:, u * n : (u + 1) * n]
+                kernels[fid] *= 0.5
+        traces = np.concatenate(
+            [_word_traces(levels, kernels, len(words), size), np.ones((1, size))], axis=0
+        )
+        total += np.add.reduceat(
+            (weight[:, None] * np.prod(traces[idx], axis=1)) @ prefactor, bounds[:-1]
+        )
+    out = np.zeros((q, q))
+    for value, (i, j) in zip(total, entries, strict=True):
+        out[i, j] = out[j, i] = value
+    return out
+
+
+MatrixRatioStatus = Literal["convicted", "not_convicted"]
+"""What :class:`MatrixRatioAccuracy` can say about its grid: a conviction, or the absence of one.
+
+``convicted`` means the refinement residual, or the isotropy bar where the channels are
+exchangeable, exceeds the tolerance. ``not_convicted`` means neither does, and that is evidence,
+not a certificate. There is deliberately no ``certified``: what guarantees that the residual bounds
+the error is a per-node convergence rate of at least 2 (``residual_bounds_iff_rate_reaches_two``),
+and nothing the certificate evaluates measures that rate -- at ``q = 3`` or at ``q = 2``.
+"""
+
+
+@dataclass(frozen=True)
+class MatrixRatioAccuracy:
+    """What :func:`exact_matrix_ratio_moment` is worth on the grid it was given -- Result 63 (d).
+
+    At ``q = 3`` the cone is 6-dimensional and the value carries a percent-scale error that nothing
+    in the returned array reveals. At ``q = 2`` it is 3-dimensional, and how close the default grid
+    comes depends on the margin from the existence boundary and on the channel correlation
+    (:func:`exact_matrix_ratio_moment`). This is the grid-refinement residual: the same integral on
+    the next grid down, and the gap between them.
+
+    **It is an estimate, not a bound, and exactly when it fails is known.** A refinement residual
+    measures the STEP, not the remainder: for a monotone same-signed error sequence it is
+    identically ``e(k-1) - e(k)``, verified against the measured ``q = 3`` sweep to 5e-5 relative.
+    So ``residual / true error = r - 1`` where ``r = e(k-1)/e(k)`` is the per-node decay, and the
+    residual majorises the error **iff r >= 2** (``residual_bounds_iff_rate_reaches_two``). Below
+    that threshold it under-states, by construction rather than by accident -- under that premise.
+    Without it the residual can only be larger, being at least ``|e(k-1) - e(k)|`` by the reverse
+    triangle inequality: ``r >= 2`` always suffices, and below 2 the residual majorises only where
+    the error changes sign or moves its largest entry, as at ``q = 3, n = 7`` with 5 and 8 nodes
+    (rates 1.68 and 1.77, ratios 2.06 and 1.04).
+
+    That is the whole story of the ``q = 3`` failures. The measured rates on the boundary are 1.30,
+    1.44, 1.68 -- all under 2 -- and the corresponding measured ratios are 0.30, 0.44, 0.68, i.e.
+    ``r - 1`` to two decimals. Over 15 cells the ratio ranges ``0.30x`` to ``5.26x`` and falls
+    below 1 in five, every one of them a cell whose rate is under 2.
+
+    **Those 13 cells are all exchangeable; the first correlated one sits at the conservative end
+    and slightly past it.** On the correlated-channel anchor of Result 63 (i)
+    (``regressor_cov = kron(R, I_n)``, exact answer ``R^-1/(n-q-1)``) at ``q = 3, n = 7``,
+    residual / true error is 2.42, 5.80 and 1.44 at
+    ``nodes = 5, 6, 7`` -- conservative at all three, and in fact more conservative than the
+    exchangeable cell at the same nodes (2.06, 3.64, 0.78). An earlier draft of this docstring
+    claimed the residual understated by 41x there; that came from dividing a single entry's step
+    by a different entry's relative error, and is withdrawn. What the correlated cell does show is
+    that the ratio is no more predictable off the exchangeable cells than on them: it still swings
+    by 4x across three consecutive grids, and its 5.80 widens the measured range to 0.30x-5.80x.
+    That range remains a description of the cells it was measured on rather than a calibration.
+
+    A three-grid rate estimator does not rescue this and was not shipped: under geometric decay
+    ``residual(k-1)/residual(k)`` would equal ``r``, but the measured residual ratios are flat
+    (0.96, 1.09) while the error ratios are 1.44 and 1.68. The error sequence is not geometric, so
+    there is nothing for a Richardson-type correction to extrapolate.
+
+    So :attr:`status` is one-sided. A bar over ``tolerance`` convicts the grid; nothing here
+    certifies it. What guarantees that the residual majorises the error is a per-node rate of at
+    least 2, and a rate is a ratio of two errors, while the certificate holds one difference between
+    two grids and no reference value; a third grid would add a ratio of residuals, which is not the
+    rate (above). Nor does the rate follow the channel count. It passes 2 on some ``q = 3`` grids
+    (``test_matrix_ratio_certificate_reports_what_the_grid_is_worth`` has one), and on a correlated
+    ``q = 2`` anchor one step from the existence boundary the default grid's rate is below 2 and the
+    residual understates the error (``test_the_ratio_status_can_convict_and_cannot_certify``).
+
+    **The second bar, where it exists.** On an exchangeable problem the exact answer has a constant
+    diagonal, so half the observed diagonal spread is a PROVED lower bound on the largest entry
+    error (``half_spread_bounds_the_max_error``) -- no reference value needed, and no extra
+    quadrature, since it is a function of ``value`` alone. ``exchangeable`` says whether the
+    precondition actually holds, decided rather than assumed: ``Omega`` must be invariant under
+    permuting the ``q`` channels of ``vec(X)``, which ``q - 1`` transposition checks settle.
+
+    Measured at ``q = 3, n = 5`` against the exact anchor, the bar recovers a far STEADIER share of
+    the true error than the residual does:
+
+    ===== ================== ===============
+    nodes residual / true    bar / true
+    ===== ================== ===============
+    5     5.26               0.99
+    6     0.86               0.55
+    7     0.30               0.45
+    8     0.44               0.46
+    9     0.68               0.48
+    ===== ================== ===============
+
+    The residual's ratio swings by 17x; the bar sits at 0.45-0.55 once past the coarsest grid. But
+    it does not rescue the cells the residual missed -- at a 1% tolerance both convict every one of
+    these cells, so the bar is a safety net rather than a fix, and either bar convicts on its own.
+    Do not read the steadiness as a calibration: five cells of one problem family is exactly the
+    evidence base that produced the retracted rate claim in :func:`exact_matrix_ratio_moment`.
+    """
+
+    value: NDArray[np.float64]  # the fine-grid estimate: identical to exact_matrix_ratio_moment
+    coarse: NDArray[np.float64]
+    nodes: int
+    coarse_nodes: int
+    residual: float  # max |fine - coarse|, entrywise
+    relative_residual: float  # residual / max |fine|
+    exchangeable: bool  # the q channels are exchangeable, so the exact answer has constant diagonal
+    isotropy_bar: float  # half the diagonal spread: a PROVED lower bound on the error, else nan
+    relative_isotropy_bar: float
+    tolerance: float
+
+    @property
+    def status(self) -> MatrixRatioStatus:
+        """``convicted`` iff a bar exceeds ``tolerance`` -- see :data:`MatrixRatioStatus`.
+
+        Derived rather than stored, so the verdict cannot disagree with the bars it summarises.
+        """
+        within = self.relative_residual <= self.tolerance and not (
+            self.exchangeable and self.relative_isotropy_bar > self.tolerance
+        )
+        return "not_convicted" if within else "convicted"
+
+
+def _channels_are_exchangeable(om: NDArray[np.float64], q: int, n: int) -> bool:
+    """Is ``Omega`` invariant under permuting the ``q`` channels of ``vec(X)``?
+
+    ``vec`` is column-major, so a channel permutation acts as ``P kron I_n``. Transpositions
+    ``(0, j)`` generate ``S_q``, so ``q - 1`` checks decide it. When this holds, ``X P`` has the
+    same law as ``X`` for every ``P``, hence the sandwich satisfies ``S = P' S P`` and is compound
+    symmetric -- constant diagonal -- whatever the numerator and denominator are.
+    """
+    eye_n = np.eye(n)
+    for j in range(1, q):
+        perm = np.eye(q)
+        perm[[0, j]] = perm[[j, 0]]
+        big = np.kron(perm, eye_n)
+        if not np.allclose(big.T @ om @ big, om, rtol=1e-10, atol=1e-12):
+            return False
+    return True
+
+
+def matrix_ratio_certificate(
+    numerator: NDArray[np.float64],
+    denominator: NDArray[np.float64],
+    regressor_cov: NDArray[np.float64],
+    nodes: int | None = None,
+    tolerance: float = 0.01,
+) -> MatrixRatioAccuracy:
+    """:func:`exact_matrix_ratio_moment` with a quadrature-error estimate attached.
+
+    Same arguments and same value; the extra cost is one coarser grid, which at ``q = 3`` is
+    ``(nodes-1)^6 / nodes^6`` -- about 26% at ``nodes = 5``. Use this rather than the bare value
+    whenever ``q = 3``, where the default grid is not converged and the array alone says nothing
+    about that. The refinement residual works on ANY problem, including the anisotropic ones where
+    the isotropy bar does not apply; the isotropy bar is free but only valid when the channels are
+    exchangeable. Either bar over ``tolerance`` makes :attr:`MatrixRatioAccuracy.status`
+    ``convicted``, so adding the second can only tighten the verdict; neither can certify it
+    (:data:`MatrixRatioStatus`).
+    """
+    if not 0.0 < tolerance < np.inf:
+        raise ValueError(f"tolerance must be positive and finite, got {tolerance}")
+    om = np.asarray(regressor_cov, dtype=np.float64)
+    n = np.asarray(denominator, dtype=np.float64).shape[0]
+    if om.ndim != 2 or om.shape[0] != om.shape[1] or om.shape[0] % n:
+        raise ValueError("regressor_cov must be qn-by-qn: the covariance of vec(X), X n-by-q")
+    q = om.shape[0] // n
+    if nodes is None:
+        nodes = 40 if q == 2 else 8
+    if nodes < 4:
+        raise ValueError("nodes must be at least 4: the residual needs a coarser grid to compare")
+    coarse_nodes = nodes - 1
+    fine = exact_matrix_ratio_moment(numerator, denominator, regressor_cov, nodes=nodes)
+    coarse = exact_matrix_ratio_moment(numerator, denominator, regressor_cov, nodes=coarse_nodes)
+    residual = float(np.max(np.abs(fine - coarse)))
+    scale = float(np.max(np.abs(fine)))
+    relative = residual / scale if scale > 0.0 else residual
+    exchangeable = _channels_are_exchangeable(om, q, n)
+    if exchangeable:
+        diag = np.diag(fine)
+        bar = 0.5 * float(diag.max() - diag.min())
+        relative_bar = bar / scale if scale > 0.0 else bar
+    else:
+        bar = float("nan")
+        relative_bar = float("nan")
+    return MatrixRatioAccuracy(
+        value=fine,
+        coarse=coarse,
+        nodes=nodes,
+        coarse_nodes=coarse_nodes,
+        residual=residual,
+        relative_residual=relative,
+        exchangeable=exchangeable,
+        isotropy_bar=bar,
+        relative_isotropy_bar=relative_bar,
+        tolerance=tolerance,
+    )
+
+
+def _fold_weight_matrix(
+    shells: Sequence[NDArray[np.float64]], gammas: Sequence[float], x: float
+) -> NDArray[np.float64]:
+    """``Q(x) = sum_{d,e} g_d g_e x^|d-e| S_d S_e`` -- the 2-walk graph the fold design cuts."""
+    gam = np.asarray(gammas, dtype=np.float64)
+    mats = [np.asarray(sh, dtype=np.float64) for sh in shells]
+    m = mats[0].shape[0]
+    q = np.zeros((m, m))
+    for d in range(gam.size):
+        for e in range(gam.size):
+            q += gam[d] * gam[e] * x ** abs(d - e) * (mats[d] @ mats[e])
+    return q
+
+
+def _shifted_kyfan_bound(
+    q: NDArray[np.float64],
+    k_folds: int,
+    levels: Sequence[float] = (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7),
+) -> tuple[float, float]:
+    """``(shifted, plain)``: lower bounds on ``sum_f 1_f' Q 1_f`` over balanced ``K``-partitions.
+
+    ``plain`` is the Ky Fan bound (Donath-Hoffman 1973), ``(m/K)(1'Q1/m + sum_{j<K} lambda_j)``
+    with ``lambda`` the ascending eigenvalues of ``V'QV`` and ``V`` an orthonormal basis of the
+    mean-free subspace. ``shifted`` is the same bound on ``Q - D``, ``D = diag(u)``, plus
+    ``sum(u)``, maximised over ``u`` -- Boppana's (1987) diagonal shift, among the bisection
+    relaxations Poljak and Rendl (1995) compare. Each unit sits in exactly one fold, so the
+    same-fold matrix has unit diagonal and ``tr(QF) = tr((Q - D)F) + sum(u)`` for EVERY ``u``:
+    each shift gives a valid bound, and ``u = 0`` is the plain one
+    (``validation/fold_shifted_bound.mac``). The bound is concave in ``u`` and blind to a uniform
+    shift, so on a vertex-transitive ``Q`` -- a cycle, any circulant -- averaging over the
+    automorphisms shows the best shift is uniform, and the shifted bound IS the plain one.
+
+    At ``K = 2`` the maximised shifted bound is exactly ``(1'Q1 + SDP) / 2``, with ``SDP`` the basic
+    bisection relaxation ``min tr(QX)`` over ``diag X = 1``, ``X1 = 0``, ``X`` psd. A balanced
+    bisection ``x`` in ``{-1, 1}^m`` has ``sum_f 1_f' Q 1_f = (1'Q1 + x'Qx) / 2``, and the shifted
+    bound is half that SDP's dual plus ``1'Q1 / 2``, with no duality gap since both sides are
+    strictly feasible. That is Poljak and Rendl's (1995) equality of Boppana's bound and the
+    semidefinite one; the algebra is the ``.mac`` file's STEP 5. The smoothed search below stops
+    short of that maximum by less than 2e-6 of it on the enumerable instances the tests hold.
+
+    The eigenvalue sum is ``max_nu (K-1) nu - sum_j (nu - lambda_j)_+``, nonsmooth wherever the
+    ``(K-1)``-th and ``K``-th smallest eigenvalues coincide -- at ``u = 0`` on a star or a barbell,
+    where L-BFGS on the exact bound stops at its first step. Replacing ``(.)_+`` by
+    ``t log(1 + exp(./t))`` makes it a smooth trace function of ``nu I - V'(Q - D)V``, jointly
+    concave in ``(u, nu)``, so one start is enough: the smoothing temperature is continued down
+    ``max|Q| * levels``. The smoothed value only steers ``u``; what is returned is the EXACT bound
+    at the final ``u``, and never less than ``plain``.
+    """
+    m = q.shape[0]
+    ones = np.ones(m)
+    basis = np.linalg.svd(np.ones((1, m)))[2][1:].T
+    rank = k_folds - 1
+
+    def exact(u: NDArray[np.float64]) -> float:
+        moved = q - np.diag(u)
+        low = np.linalg.eigvalsh(basis.T @ moved @ basis)[:rank]
+        return float(u.sum()) + (m / k_folds) * (float(ones @ moved @ ones) / m + float(low.sum()))
+
+    plain = exact(np.zeros(m))
+    if not 0 < rank < m - 1:
+        # one fold or singleton folds: the bound is the objective itself and no shift moves it
+        return plain, plain
+
+    def smoothed(z: NDArray[np.float64], t: float) -> tuple[float, NDArray[np.float64]]:
+        u, nu = z[:-1], z[-1]
+        moved = q - np.diag(u)
+        lam, vec = np.linalg.eigh(basis.T @ moved @ basis)
+        arg = (nu - lam) / t
+        value = float(u.sum()) + (m / k_folds) * (
+            float(ones @ moved @ ones) / m + rank * nu - t * float(np.logaddexp(0.0, arg).sum())
+        )
+        weight = expit(arg)
+        grad_u = 1.0 - (m / k_folds) * (1.0 / m + ((basis @ vec) ** 2) @ weight)
+        grad_nu = (m / k_folds) * (rank - float(weight.sum()))
+        return -value, -np.append(grad_u, grad_nu)
+
+    lam0 = np.linalg.eigvalsh(basis.T @ q @ basis)
+    z = np.append(np.zeros(m), 0.5 * (lam0[rank - 1] + lam0[rank]))
+    scale = float(np.abs(q).max()) or 1.0
+    for level in levels:
+        z = minimize(
+            smoothed,
+            z,
+            args=(scale * float(level),),
+            jac=True,
+            method="L-BFGS-B",
+            options={"maxiter": 3000, "gtol": 1e-10},
+        ).x
+    return max(exact(z[:-1]), plain), plain
+
+
+def _circulant_band(
+    weights: NDArray[np.float64], tol: float = 1e-10
+) -> tuple[NDArray[np.float64], int] | None:
+    """``(q_0..q_B, B)`` if ``weights`` is circulant with circular bandwidth ``B``, else ``None``.
+
+    On a vertex-transitive cycle ``Q(x) = sum_{d,e} g_d g_e x^|d-e| S_d S_e`` is circulant, and
+    ``S_d S_e`` reaches circular distance at most ``d+e``, so the bandwidth is ``2*dmax`` -- set by
+    the spillover truncation, not by ``m``. That is what makes the exact dynamic program below
+    possible at any ``m``: only ``B`` neighbours of a position can still interact with it.
+    """
+    m = weights.shape[0]
+    row = weights[0]
+    shifts = np.arange(m)
+    rebuilt = row[(shifts[:, None] - shifts[None, :]) % m]
+    if not np.allclose(weights, rebuilt, atol=tol, rtol=0.0):
+        return None
+    circular = np.minimum(shifts, m - shifts)
+    reached = circular[np.abs(row) > tol]
+    band = int(reached.max()) if reached.size else 0
+    return row[: band + 1].copy(), band
+
+
+def _exact_banded_bisection(
+    profile: NDArray[np.float64], band: int, m: int
+) -> tuple[float, NDArray[np.int_]]:
+    """Global minimum same-fold mass over balanced bisections of a BANDED CIRCULANT, by DP.
+
+    Enumeration costs ``C(m-1, m/2-1)`` and dies around ``m = 20``; this is ``O(4^B m^2)`` and does
+    not care about ``m`` at all. Two facts make it work. On a circulant the objective collapses to
+    the offset counts, ``sum_f 1_f' Q 1_f = m q_0 + 2 sum_b q_b #{i : l_i = l_{i+b}}``, so only the
+    last ``B`` labels matter for the next decision; and the balance constraint is a running count,
+    so it fits in the state. The wrap is closed by fixing the first ``B`` labels and paying the
+    wrap-around pairs once at the end.
+
+    Requires ``m > 2*band``: at ``m = 2B`` the offsets ``b`` and ``m-b`` name the SAME pair and the
+    doubling above counts it twice. Enumeration is cheap in that regime anyway.
+    """
+    if m <= 2 * band:
+        raise ValueError(f"the banded DP needs m > 2*band; got m={m}, band={band}")
+    windows = list(itertools.product((0, 1), repeat=band))
+    index = {window: i for i, window in enumerate(windows)}
+    n_windows, counts = len(windows), m // 2 + 1
+    # gain[wi, v]: what appending label v to window wi costs, from the b-step-back pairs
+    gain = np.array(
+        [
+            [
+                2.0 * sum(profile[b] for b in range(1, band + 1) if window[band - b] == v)
+                for v in (0, 1)
+            ]
+            for window in windows
+        ]
+    )
+    successor = np.array([[index[(*window[1:], v)] for v in (0, 1)] for window in windows])
+
+    best_value, best_fold = np.inf, None
+    for prefix in windows:
+        inside = sum(
+            2.0 * profile[b]
+            for b in range(1, band + 1)
+            for i in range(band - b)
+            if prefix[i] == prefix[i + b]
+        )
+        cost = np.full((n_windows, counts), np.inf)
+        cost[index[prefix], sum(prefix)] = inside
+        parent = np.zeros((m, n_windows, counts), dtype=np.int16)
+        for step in range(band, m):
+            nxt = np.full_like(cost, np.inf)
+            moves = np.zeros((n_windows, counts), dtype=np.int16)
+            for wi in range(n_windows):
+                column = cost[wi]
+                if not np.isfinite(column).any():
+                    continue
+                for v in (0, 1):
+                    shifted = np.full(counts, np.inf)
+                    if v:
+                        shifted[1:] = column[:-1] + gain[wi, 1]
+                    else:
+                        shifted[:] = column + gain[wi, 0]
+                    target = successor[wi, v]
+                    better = shifted < nxt[target]
+                    nxt[target] = np.where(better, shifted, nxt[target])
+                    moves[target] = np.where(better, wi * 2 + v, moves[target])
+            parent[step] = moves
+            cost = nxt
+
+        for wi, window in enumerate(windows):
+            value = cost[wi, m // 2]
+            if not np.isfinite(value):
+                continue
+            wrap = sum(
+                2.0 * profile[b]
+                for b in range(1, band + 1)
+                for t in range(b)
+                if window[band - b + t] == prefix[t]
+            )
+            total = value + wrap + m * profile[0]
+            if total >= best_value:
+                continue
+            labels = np.empty(m, dtype=np.int_)
+            labels[:band] = prefix
+            here, remaining = wi, m // 2
+            for step in range(m - 1, band - 1, -1):
+                move = int(parent[step, here, remaining])
+                previous, label = move // 2, move % 2
+                labels[step] = label
+                remaining -= label
+                here = previous
+            best_value, best_fold = total, labels
+    assert best_fold is not None
+    return float(best_value), best_fold
+
+
+@dataclass(frozen=True)
+class FoldDesign:
+    """A fold partition with its Result 52 objective and an optimality certificate.
+
+    ``objective`` is the partition-dependent part of the sandwich, the same-fold weighted 2-walk
+    count ``sum_f 1_f' Q(x) 1_f`` -- ``Psi`` is affine in it with positive weight, so smaller is
+    better. ``lower_bound`` is the diagonally shifted Ky Fan bound and ``kyfan_bound`` the plain one
+    it never falls below (both an exact eigensolve, no relaxation error on the bound side), and
+    ``gap = (objective - lower_bound) / max(|lower_bound|, 1)``. When ``exhaustive`` is True the
+    returned fold is the global optimum regardless of the gap -- the gap then measures the
+    looseness of the spectral bound, not of the design.
+    """
+
+    fold: NDArray[np.int_]
+    objective: float
+    lower_bound: float
+    kyfan_bound: float
+    gap: float
+    exhaustive: bool
+    route: Literal["enumeration", "banded-dp", "spectral-swap"] = "spectral-swap"
+
+
+def optimal_fold_partition(
+    shells: Sequence[NDArray[np.float64]],
+    gammas: Sequence[float],
+    phi: float,
+    lag: int = 1,
+    k_folds: int = 2,
+    time_axis: int | None = None,
+    exhaustive_limit: int = 20000,
+    banded_exact: bool = True,
+    restarts: int = 8,
+    seed: int = 0,
+) -> FoldDesign:
+    """Variance-optimal balanced fold partition under delayed network interference -- Result 52.
+
+    The fold partition enters the cross-fit sandwich only through the same-fold weighted 2-walk
+    count with positive weight ``r^4 - 1`` (``validation/fold_spectrum_law.mac``,
+    ``proofs/fold_spectrum_law.v``), so the design problem is to MINIMISE that mass over balanced
+    ``k_folds``-partitions of the graph weighted by ``Q(x) = sum_{d,e} g_d g_e x^|d-e| S_d S_e``,
+    which -- since the mass is ``1'Q1 - 2*cut`` with ``1'Q1`` partition-free -- is the
+    MAXIMUM-weight balanced cut of that graph and not the minimum-weight one (Result 61),
+    ``x = phi**lag``. On a cycle with ONE spillover shell the answer is proved over all labellings:
+    width-2 stripes below ``x = g1/g0`` and alternating folds above it. With two shells it depends
+    on ``gammas``, not only on ``x``: at ``(1, 0.7, 0.4)`` stripes win on ``[0, 7/10]`` and
+    ``[7/8, 1]`` and alternation between (every other periodic pattern is a de Bruijn cycle whose
+    mean cost is at least ``9/1600`` higher), but at ``g2 = 0.6`` the period-8 pattern
+    ``00101101`` wins below ``x ~ 0.818`` and alternation never does. What does not change is that
+    the contiguous blocks ``delayed_network_certificate`` compares are never optimal on the
+    cycles certified (``8 <= m <= 14``, one and two shells); they cost up to +55% of ``Psi`` at
+    small ``x``.
+
+    Three routes, and ``route`` says which one ran. Small problems (``k_folds = 2`` and at most
+    ``exhaustive_limit`` balanced bisections) are ENUMERATED. Past that, a **circulant** weight
+    matrix with circular bandwidth ``B < m/2`` -- which is what a cycle with spillover truncation
+    ``dmax`` gives, ``B = 2*dmax`` -- is solved EXACTLY by :func:`_exact_banded_bisection`, an
+    ``O(4^B m^2)`` dynamic program that does not care about ``m``: 1 second at ``m = 240``, where
+    enumeration would need ``C(239, 119) ~ 1e70`` evaluations. Only when neither applies does the
+    Fiedler-style spectral rounding plus balanced-swap local search run from ``restarts`` starts;
+    ``banded_exact=False`` forces that path so the search can be PRICED against the exact answer
+    (:func:`fold_exactness_certificate` does exactly this). The certificate is then the Ky Fan bound
+    ``(m/K) (1'Q1/m + sum of the K-1 smallest eigenvalues of Q on the mean-free subspace)``
+    (Donath-Hoffman 1973), which every balanced partition obeys, tightened by the diagonal shift
+    of Boppana (1987): ``sum(u)`` plus the same bound on ``Q - diag(u)``, maximised over ``u``
+    (:func:`_shifted_kyfan_bound`). ``lower_bound`` is the shifted bound, ``kyfan_bound`` the
+    plain one. On a cycle they are equal. Off it the shift can close most of the bound's
+    looseness: on the 16-unit path at ``x = 0.01`` from ``4.40%`` to ``0.34%``, on the 80-unit
+    path the search's certified gap from ``5.82%`` to ``1.31%``, and on a star to zero within
+    ``1e-8``. It can also close little: ``3.31%`` to ``2.95%`` on the 16-unit path at ``x = 0.6``.
+    A large gap on the local-search path is an honest "could not certify", not a silent success.
+
+    ``time_axis`` opts into the TWO-AXIS problem (Result 59). Left at ``None`` the design set is the
+    ``m`` units and nothing changes. Given the panel length ``p`` it becomes the ``m*p``
+    (unit, time) cells, ordered as ``kron(space, time)``, and the weight becomes the panel
+    covariance ``Sigma = sum_q P_q (x) T_q``, ``[T_q]_{ts} = phi**|(t-s) - lag*q|``: a sum of
+    at most ``2*dmax`` Kronecker terms -- set by the SPILLOVER TRUNCATION, never by the diameter
+    or by ``p`` -- and of exactly ``dmax+1`` when the shell operators commute, which every
+    vertex-transitive graph gives.
+
+    **Cutting the time axis is not free, and its price is a function of the delay.** Measured on a
+    cycle (``m=8``, ``p=4``, ``K=2``) against the best time-constant fold: ``0.0-1.2%`` of the
+    objective at ``lag=1``, ``1.5-4.3%`` at ``lag=2``, ``12.9-19.2%`` at ``lag=4``. The reason is
+    exact: once ``lag*q`` passes the panel's longest lag ``p-1``, every entry of ``T_q`` is bounded
+    by ``phi**(lag*q - (p-1))`` and the design has almost no reason to keep those pairs together.
+    One axis at a time is a defensible scope at ``lag=1`` and an expensive one beyond it.
+
+    The objective is the PLUG-IN law's. Near a design boundary the exact moment shifts thresholds
+    (Result 52 (e)); rank the shortlisted designs with :func:`exact_ratio_moment` when it matters.
+    """
+    gam = np.asarray(gammas, dtype=np.float64)
+    mats = [np.asarray(sh, dtype=np.float64) for sh in shells]
+    if len(mats) != gam.size:
+        raise ValueError("shells and gammas must have the same length")
+    if time_axis is None:
+        q = _fold_weight_matrix(mats, gammas, float(phi) ** int(lag))
+    else:
+        q = panel_covariance(mats, gam, float(phi), int(lag), int(time_axis))
+    m = q.shape[0]
+    if m % k_folds != 0:
+        raise ValueError("m must be divisible by k_folds: the law is derived for equal fold sizes")
+
+    def objective(fold: NDArray[np.int_]) -> float:
+        same = fold[:, None] == fold[None, :]
+        return float(q[same].sum())
+
+    # Ky Fan lower bound: sum_f 1_f' Q 1_f = (m/K) tr(U'QU) over an orthonormal K-frame whose
+    # span contains the all-ones direction -- on Q - diag(u), at the best shift u found.
+    lower, kyfan = _shifted_kyfan_bound(q, k_folds)
+
+    size = m // k_folds
+    best: NDArray[np.int_] | None = None
+    best_val = np.inf
+    n_bisections = comb(m - 1, size - 1)
+    exhaustive = k_folds == 2 and n_bisections <= exhaustive_limit
+    route: Literal["enumeration", "banded-dp", "spectral-swap"] = (
+        "enumeration" if exhaustive else "spectral-swap"
+    )
+    banded = None
+    if banded_exact and not exhaustive and k_folds == 2:
+        profile = _circulant_band(q)
+        if profile is not None and m > 2 * profile[1]:
+            banded = _exact_banded_bisection(profile[0], profile[1], m)
+    if banded is not None:
+        best_val, best = banded
+        exhaustive, route = True, "banded-dp"
+    elif exhaustive:
+        for chosen in itertools.combinations(range(1, m), size - 1):
+            fold = np.ones(m, dtype=np.int_)
+            fold[0] = 0
+            fold[list(chosen)] = 0
+            val = objective(fold)
+            if val < best_val:
+                best, best_val = fold, val
+    else:
+        rng = np.random.default_rng(seed)
+        basis = np.linalg.svd(np.ones((1, m)))[2][1:].T
+        fiedler = np.argsort(basis @ np.linalg.eigh(basis.T @ q @ basis)[1][:, 0])
+        for trial in range(restarts):
+            order = fiedler if trial == 0 else rng.permutation(m)
+            fold = np.empty(m, dtype=np.int_)
+            fold[order] = np.arange(m) % k_folds if trial % 2 == 0 else np.arange(m) // size
+            val = objective(fold)
+            improved = True
+            while improved:
+                improved = False
+                for i in range(m):
+                    for j in range(i + 1, m):
+                        if fold[i] == fold[j]:
+                            continue
+                        fold[i], fold[j] = fold[j], fold[i]
+                        trial_val = objective(fold)
+                        if trial_val < val - 1e-12:
+                            val, improved = trial_val, True
+                        else:
+                            fold[i], fold[j] = fold[j], fold[i]
+            if val < best_val:
+                best, best_val = fold.copy(), val
+    assert best is not None
+    gap = (best_val - lower) / max(abs(lower), 1.0)
+    return FoldDesign(
+        fold=best,
+        objective=best_val,
+        lower_bound=lower,
+        kyfan_bound=kyfan,
+        gap=float(gap),
+        exhaustive=exhaustive,
+        route=route,
+    )
+
+
+@dataclass(frozen=True)
+class FoldHeuristicCurve:
+    """How far the fold-design heuristic falls short of the exact optimum, off the cycle.
+
+    Result 52's closed form is a statement about *vertex-transitive* graphs: it reads the optimal
+    partition off the spectrum of ``Q(x)`` because every vertex sees the same neighbourhood. On a
+    path, a star, a grid or a barbell that symmetry is gone and there is no closed form, so
+    :func:`optimal_fold_partition` falls back to spectral rounding plus balanced swaps. This
+    measures what that fallback costs, by running the exact enumeration beside it on graphs small
+    enough to enumerate -- the regime where "the heuristic is fine" can still be checked rather
+    than assumed.
+    """
+
+    names: tuple[str, ...]
+    exact: Vector  # global optimum of sum_f 1_f' Q 1_f over balanced bisections
+    heuristic: Vector  # the same objective at the spectral-plus-swap design
+    ratio: Vector  # heuristic / exact; 1.0 means the fallback found the optimum
+    kyfan_gap: Vector  # (exact - Ky Fan bound) / |bound| -- the bound's own looseness
+    shifted_gap: Vector  # the same for the diagonally shifted bound the design reports
+    worst_ratio: float
+    ok: bool
+
+
+def _named_topologies(m: int, n_random: int = 4, seed: int = 7) -> dict[str, NDArray[np.float64]]:
+    """Non-vertex-transitive graphs on ``m`` vertices, plus the cycle as the transitive control.
+
+    The random Erdos-Renyi graphs at the end are the adversarial arm: the structured ones all have
+    a cut a human can see, which is exactly the case a spectral relaxation is built for, so on
+    their own they would flatter the heuristic.
+    """
+    adj: dict[str, NDArray[np.float64]] = {}
+
+    cycle = np.zeros((m, m))
+    idx = np.arange(m)
+    cycle[idx, (idx + 1) % m] = cycle[(idx + 1) % m, idx] = 1.0
+    adj["cycle"] = cycle
+
+    path = cycle.copy()
+    path[0, m - 1] = path[m - 1, 0] = 0.0
+    adj["path"] = path
+
+    star = np.zeros((m, m))
+    star[0, 1:] = star[1:, 0] = 1.0
+    adj["star"] = star
+
+    # Two cliques joined by a single edge: the balanced cut is obvious to a human and is exactly
+    # the case a spectral relaxation is supposed to find, so a failure here would be damning.
+    half = m // 2
+    barbell = np.zeros((m, m))
+    barbell[:half, :half] = 1.0 - np.eye(half)
+    barbell[half:, half:] = 1.0 - np.eye(m - half)
+    barbell[half - 1, half] = barbell[half, half - 1] = 1.0
+    adj["barbell"] = barbell
+
+    rows = 2 if m % 2 == 0 else 1
+    cols = m // rows
+    grid = np.zeros((m, m))
+    for r in range(rows):
+        for c in range(cols):
+            v = r * cols + c
+            if c + 1 < cols:
+                grid[v, v + 1] = grid[v + 1, v] = 1.0
+            if r + 1 < rows:
+                grid[v, v + cols] = grid[v + cols, v] = 1.0
+    adj["grid"] = grid
+
+    rng = np.random.default_rng(seed)
+    for k in range(n_random):
+        upper = np.triu((rng.random((m, m)) < 0.25).astype(float), 1)
+        adj[f"random{k}"] = upper + upper.T
+    return adj
+
+
+@dataclass(frozen=True)
+class FoldExactnessCurve:
+    """Heuristic shortfall and bound looseness, finally separated -- Result 61.
+
+    :func:`fold_heuristic_certificate` could only compare the fallback with the truth where
+    enumeration runs, and it stopped at ``m = 16``. On a **circulant** the truth is reachable at
+    any ``m``: the objective collapses to circular-offset counts, so a dynamic program over the
+    last ``B = 2*dmax`` labels and the running balance returns the global optimum in ``O(4^B m^2)``.
+    That turns one number into three -- ``exact``, ``heuristic``, ``kyfan`` -- and the two gaps
+    that were previously conflated into one become separately measurable.
+
+    ``duality_residual``, ``cut_is_maximal`` and the two shift fields are the structural checks:
+    the same-fold mass is ``1'Q1 - 2*cut``, so the design is the MAXIMUM-weight balanced cut of
+    ``Q(x)``, and it is blind to both a uniform off-diagonal shift (every design moves by
+    ``c*m^2/4``) and a diagonal one (the cut does not move at all).
+    """
+
+    sizes: tuple[int, ...]
+    decays: tuple[float, ...]
+    exact: Vector  # global optimum from the banded dynamic program
+    heuristic: Vector  # spectral rounding plus balanced swaps, forced with banded_exact=False
+    kyfan: Vector  # the spectral lower bound
+    shifted: Vector  # the diagonally shifted bound; equal to kyfan on a circulant
+    heuristic_shortfall: Vector  # (heuristic - exact) / exact -- how good the design is
+    bound_looseness: Vector  # (exact - kyfan) / exact -- how loose the bound is at the optimum
+    certified_gap: Vector  # (heuristic - kyfan) / |kyfan| -- what the fallback actually reports
+    enumeration_match: float  # max |dp - enumeration| where both can run
+    max_shortfall: float
+    max_looseness: float
+    shift_gain: float  # max (shifted - kyfan) / kyfan: what the diagonal shift buys on a cycle
+    gap_dominates_shortfall: bool  # the reported gap never under-states the true shortfall
+    duality_residual: float  # max |internal - (1'Q1 - 2*cut)|
+    cut_is_maximal: bool  # the min-internal design attains the MAX cut, on the enumerable grid
+    shift_spread: float  # spread of the displacement a uniform off-diagonal shift causes
+    shift_prediction: float  # |displacement - c*m^2/4|
+    diagonal_shift_moves_cut: float
+    antipodal_guard: bool  # the dynamic program refuses m <= 2*band instead of over-counting
+    ok: bool
+
+
+def fold_exactness_certificate(
+    sizes: Sequence[int] = (24, 60, 120),
+    decays: Sequence[float] = (0.01, 0.3, 0.9),
+    dmax: int = 2,
+    gammas: Sequence[float] = (1.0, 0.7, 0.4),
+    small: Sequence[int] = (10, 12, 14, 16, 18),
+    shift: float = 0.37,
+    restarts: int = 8,
+    seed: int = 0,
+) -> FoldExactnessCurve:
+    """Price the fold heuristic where it is actually used, and name the problem correctly.
+
+    Two things this settles that :func:`fold_heuristic_certificate` could not.
+
+    **The fallback is not exact past the enumeration limit.** That certificate reported ratio
+    ``1.0`` on all eighteen instances at ``m = 12, 16`` and said nothing about larger ``m``, which
+    is where a design is used. Measured here on ``C_m``, ``gammas = (1, 0.7, 0.4)``, over
+    ``m in {24, 60, 120, 240} x x in {0.01, 0.3, 0.9}``: the shortfall runs ``0.00-2.06%``, and it
+    is ``0.00%`` in exactly one cell (``m = 24, x = 0.9``). It does not grow cleanly with ``m``
+    either -- at ``x = 0.01`` it is ``2.06, 0.86, 1.06, 1.36%`` across the four sizes. The fallback
+    is good and it is not optimal; the earlier "it finds the optimum" was a small-``m`` statement
+    being read as a general one.
+
+    **The Ky Fan gap was never the shortfall.** Its looseness at the *optimum* is ``0.58-2.61%``
+    and does NOT shrink with ``m``, so at ``m = 24, x = 0.9`` the certificate reports ``1.49%`` for
+    a design that is exactly optimal. What a caller sees is ``certified_gap``, which is the two
+    stacked: ``heur - kyfan = (heur - exact) + (exact - kyfan)``, so it always dominates the true
+    shortfall and never equals it. The guarantee is one-sided and that is all it is (Rocq
+    ``certified_epsilon_implies_epsilon_optimal``, and its counterexample
+    ``a_large_certified_gap_does_not_convict_the_design``).
+
+    The structural gates are the reason the objective can be named at all. ``internal = 1'Q1 -
+    2*cut`` with ``1'Q1`` partition-free, so **minimising the same-fold 2-walk mass is MAXIMISING
+    the cut of** ``Q(x)`` -- a max-bisection, not the "minimum-weight balanced cut" Result 52 (a)
+    called it, and the distinction is not cosmetic. Max-bisection has a 0.8776-approximation by
+    semidefinite programming (Austrin, Benabbas and Georgiou 2013), and under the Unique Games
+    Conjecture no polynomial-time algorithm approximates it beyond ``alpha_GW ~ 0.8786`` (Khot,
+    Kindler, Mossel and O'Donnell 2007 prove it for max-cut; two disjoint copies of a graph have a
+    maximum bisection of twice its maximum cut). For min-bisection no constant-factor
+    approximation is known: the best is ``O(log n)`` (Räcke 2008). These are statements about
+    the general problems; ``Q(x)`` is a restricted family of weights, and nothing here is a
+    hardness result for the fold design. The bound :func:`optimal_fold_partition` computes is the
+    eigenvalue bound of Donath and Hoffman (1973) with Boppana's (1987) diagonal shift, one of the
+    bisection relaxations Poljak and Rendl (1995) compare.
+
+    The design still keeps *adjacent* units together (adjacency cut 6 of 12 on ``C_12``, against
+    parity's 12), which is what made the min-cut reading feel right: ``Q``'s edges are 2-walks,
+    not edges.
+
+    Cross-checked outside Python: polymake 4.15 maximises the same objective by exact rational LP
+    over the convex hull of the 35 balanced cut vectors at ``m = 8`` and returns ``188/25``, so
+    ``internal = 5256/125 - 376/25 = 3376/125 = 27.008`` -- the value this function computes to
+    ``1e-12``. polymake also reports ``DIM = 20 = C(8,2) - 8``, the geometric form of the degree
+    identity that makes the shift laws true. Normaliz 3.11.1 counts the lattice points of the
+    hypersimplex at ``m = 8, 10, 12, 14`` and gets ``70, 252, 924, 3432`` -- exactly ``C(m, m/2)``,
+    every one of them 0/1, so the enumeration's feasible set is complete.
+    """
+    exact, heuristic, kyfan, shifted, reported = [], [], [], [], []
+    for m in sizes:
+        shells = cycle_shells(int(m), dmax)
+        for x in decays:
+            best = optimal_fold_partition(shells, gammas, float(x), lag=1, seed=seed)
+            if best.route != "banded-dp":
+                raise ValueError(f"m={m} did not reach the banded route; got {best.route}")
+            fallback = optimal_fold_partition(
+                shells,
+                gammas,
+                float(x),
+                lag=1,
+                exhaustive_limit=0,
+                banded_exact=False,
+                restarts=restarts,
+                seed=seed,
+            )
+            exact.append(best.objective)
+            heuristic.append(fallback.objective)
+            kyfan.append(best.kyfan_bound)
+            shifted.append(best.lower_bound)
+            reported.append(fallback.gap)
+
+    exact_arr = np.asarray(exact)
+    heuristic_arr = np.asarray(heuristic)
+    kyfan_arr = np.asarray(kyfan)
+    shifted_arr = np.asarray(shifted)
+    gain = float(((shifted_arr - kyfan_arr) / kyfan_arr).max())
+    shortfall = (heuristic_arr - exact_arr) / exact_arr
+    looseness = (exact_arr - kyfan_arr) / exact_arr
+    certified = np.asarray(reported)
+
+    # where enumeration still runs, the dynamic program must reproduce it exactly, and the
+    # min-internal design must be the MAX-cut design.
+    mismatch, duality, maximal = 0.0, 0.0, True
+    for m in small:
+        shells = cycle_shells(int(m), dmax)
+        for x in decays:
+            enumerated = optimal_fold_partition(
+                shells, gammas, float(x), lag=1, exhaustive_limit=10**6, seed=seed
+            )
+            dp = optimal_fold_partition(
+                shells, gammas, float(x), lag=1, exhaustive_limit=0, seed=seed
+            )
+            if enumerated.route != "enumeration" or dp.route != "banded-dp":
+                raise ValueError(f"m={m} did not exercise both routes")
+            mismatch = max(mismatch, abs(dp.objective - enumerated.objective))
+            q = _fold_weight_matrix(shells, gammas, float(x))
+            total = float(np.ones(m) @ q @ np.ones(m))
+            values = []
+            for chosen in itertools.combinations(range(1, m), m // 2 - 1):
+                fold = np.ones(m, dtype=np.int_)
+                fold[0] = 0
+                fold[list(chosen)] = 0
+                same = fold[:, None] == fold[None, :]
+                internal, cut = float(q[same].sum()), float(q[~same].sum()) / 2.0
+                duality = max(duality, abs(internal - (total - 2.0 * cut)))
+                values.append((internal, cut))
+            best_cut = min(values)[1]
+            maximal = maximal and abs(best_cut - max(v[1] for v in values)) < 1e-9
+
+    # the design sees neither a uniform off-diagonal shift nor a diagonal one
+    m0 = int(small[-1])
+    q0 = _fold_weight_matrix(cycle_shells(m0, dmax), gammas, float(decays[len(decays) // 2]))
+    off = q0 + shift * (np.ones((m0, m0)) - np.eye(m0))
+    diagonal = q0 + shift * np.eye(m0)
+    plain, moved, diag = [], [], []
+    for chosen in itertools.combinations(range(1, m0), m0 // 2 - 1):
+        fold = np.ones(m0, dtype=np.int_)
+        fold[0] = 0
+        fold[list(chosen)] = 0
+        cross = fold[:, None] != fold[None, :]
+        plain.append(float(q0[cross].sum()) / 2.0)
+        moved.append(float(off[cross].sum()) / 2.0)
+        diag.append(float(diagonal[cross].sum()) / 2.0)
+    displacement = np.asarray(moved) - np.asarray(plain)
+    spread = float(displacement.max() - displacement.min())
+    predicted = shift * m0 * m0 / 4.0
+    diagonal_move = float(np.abs(np.asarray(diag) - np.asarray(plain)).max())
+
+    band = 2 * dmax
+    try:
+        _exact_banded_bisection(np.ones(band + 1), band, 2 * band)
+        guard = False
+    except ValueError:
+        guard = True
+
+    return FoldExactnessCurve(
+        sizes=tuple(int(m) for m in sizes),
+        decays=tuple(float(x) for x in decays),
+        exact=exact_arr,
+        heuristic=heuristic_arr,
+        kyfan=kyfan_arr,
+        shifted=shifted_arr,
+        heuristic_shortfall=shortfall,
+        bound_looseness=looseness,
+        certified_gap=certified,
+        enumeration_match=float(mismatch),
+        max_shortfall=float(shortfall.max()),
+        max_looseness=float(looseness.max()),
+        shift_gain=gain,
+        gap_dominates_shortfall=bool(np.all(certified >= shortfall - 1e-12)),
+        duality_residual=float(duality),
+        cut_is_maximal=bool(maximal),
+        shift_spread=spread,
+        shift_prediction=float(abs(float(displacement.mean()) - predicted)),
+        diagonal_shift_moves_cut=diagonal_move,
+        antipodal_guard=guard,
+        ok=bool(
+            mismatch < 1e-9
+            and float(shortfall.min()) > -1e-9
+            and float(looseness.min()) > -1e-9
+            and gain < 1e-9
+            and float(shortfall.max()) < 0.05
+            and bool(np.all(certified >= shortfall - 1e-12))
+            and maximal
+            and duality < 1e-9
+            and spread < 1e-9
+            and abs(float(displacement.mean()) - predicted) < 1e-9
+            and diagonal_move < 1e-9
+            and guard
+        ),
+    )
+
+
+def fold_heuristic_certificate(
+    m: int = 12,
+    dmax: int = 2,
+    gammas: Sequence[float] = (1.0, 0.7, 0.4),
+    phi: float = 0.6,
+    lag: int = 1,
+    restarts: int = 8,
+    n_random: int = 4,
+    seed: int = 0,
+) -> FoldHeuristicCurve:
+    """Price the fold heuristic against exact enumeration on graphs Result 52 does NOT cover.
+
+    Result 52's honest-scope note says the design law is closed-form only on vertex-transitive
+    graphs and that beyond them the problem "degrades to combinatorial search". This is the
+    measurement that note asks for: on nine topologies -- eight of them non-transitive, four of
+    them random -- run the exact balanced bisection and the spectral-plus-swap fallback on the
+    *same* ``Q(x)`` and report the ratio.
+
+    **Measured, and it is the opposite of what the note feared:** at ``m = 12`` and ``m = 16`` the
+    fallback returns the *exact* optimum on every one of the eighteen instances, ratio ``1.0`` to
+    machine precision. Losing vertex transitivity costs the closed *form*, not the answer -- the
+    search the note called combinatorial is, at these sizes, not where the difficulty lies. What it
+    does not say is anything about ``m`` large enough that the exact arm cannot run, which is
+    exactly where a design would be used and exactly where this comparison stops being available.
+
+    Both arms use :func:`chc.network_causal.graph_shells`, so the exact arm is not a special case
+    of the cycle: it is the same objective the heuristic minimises, enumerated. ``ok`` asks that
+    the fallback never *beats* the enumeration (which would mean one of them is wrong), that it
+    stays within 1% of it -- a larger shortfall is the finding, not a failure of the test -- and
+    that the shifted bound stays under the optimum and over the plain one.
+
+    The Ky Fan gap is reported beside it because the two are different quantities and conflating
+    them is the easy mistake: ``ratio`` is how good the design is, ``kyfan_gap`` is how loose the
+    *bound* is at the true optimum. A large Ky Fan gap with ``ratio == 1`` says the certificate is
+    weak, not the design. ``shifted_gap`` is the same looseness for the diagonally shifted bound
+    :func:`optimal_fold_partition` reports: at ``m = 12``, ``phi = 0.6`` it is zero to ``1e-8`` on
+    the star, which the plain bound misses by ``0.77%``, and equal to it on the cycle.
+    """
+    names, exact, heuristic, gaps, shifted = [], [], [], [], []
+    for name, adjacency in _named_topologies(m, n_random=n_random).items():
+        shells = graph_shells(adjacency, dmax)
+        best = optimal_fold_partition(shells, gammas, phi, lag=lag, seed=seed)
+        if not best.exhaustive:
+            raise ValueError(f"m={m} is too large to enumerate exactly; the comparison needs both")
+        fallback = optimal_fold_partition(
+            shells,
+            gammas,
+            phi,
+            lag=lag,
+            exhaustive_limit=0,
+            banded_exact=False,
+            restarts=restarts,
+            seed=seed,
+        )
+        names.append(name)
+        exact.append(best.objective)
+        heuristic.append(fallback.objective)
+        gaps.append((best.objective - best.kyfan_bound) / max(abs(best.kyfan_bound), 1.0))
+        shifted.append(best.gap)
+
+    exact_arr = np.asarray(exact)
+    heuristic_arr = np.asarray(heuristic)
+    ratio = heuristic_arr / exact_arr
+    worst = float(ratio.max())
+    kyfan_gap, shifted_gap = np.asarray(gaps), np.asarray(shifted)
+    return FoldHeuristicCurve(
+        names=tuple(names),
+        exact=exact_arr,
+        heuristic=heuristic_arr,
+        ratio=ratio,
+        kyfan_gap=kyfan_gap,
+        shifted_gap=shifted_gap,
+        worst_ratio=worst,
+        ok=bool(
+            np.all(ratio >= 1.0 - 1e-9)
+            and worst <= 1.01
+            and np.all(shifted_gap >= -1e-12)
+            and np.all(shifted_gap <= kyfan_gap)
+        ),
+    )
+
+
+def delayed_network_certificate(
+    *,
+    cluster_size: int = 6,
+    n_times: int = 5,
+    lag: int = 1,
+    gammas: Sequence[float] = (1.0, 0.7, 0.4),
+    phi_grid: Sequence[float] = (0.0, 0.3, 0.6, 0.9),
+    n_draws: int = 40_000,
+    burn_in: int = 40,
+    seed: int = 20260830,
+) -> DelayedNetworkCurve:
+    """RESULT 51 -- the non-separable half of the delayed-exposure gate (derived in
+    ``validation/delayed_network_exposure.mac``, proved in ``proofs/delayed_network_exposure.v``).
+
+    ``validation/delayed_exposure_gate.mac`` STEP 7 showed that a delay costs NOTHING under a
+    separable covariance ``Sigma = Sigma_u (x) T`` with unit-level folds: ``tr(T)`` cancels between
+    numerator and denominator and Result 43 transfers verbatim, with ``dPsi/dphi = 0``. The only
+    remaining route is a delay that INTERACTS WITH THE NETWORK -- a shell-``d`` neighbour's
+    influence arriving at lag ``delta*d``::
+
+        x_i(t) = sum_d g_d sum_{j : dist(i,j)=d} z_j(t - delta d)
+        Cov(z_j(t), z_k(s)) = 1{j=k} phi^|t-s|
+
+    so ``Sigma = sum_{d,e} g_d g_e (S_d S_e) (x) T_{d-e}``, separable only at ``delta = 0``. Because
+    ``tr(S_d S_e) = 0`` for ``d != e`` -- a vertex cannot sit at two distinct distances from
+    ``i`` -- the DENOMINATOR of the sandwich is delay-blind, and ``Psi`` is a POLYNOMIAL in
+    ``x = phi^delta`` of degree the spillover truncation, NOT of degree the graph diameter.
+
+    What this certificate can fail on, in the order it would matter:
+
+    1. ``psi_sim_*`` is measured on trajectories drawn from the GENERATIVE definition, never from
+       the Kronecker formula, so a wrong covariance model shows up as a mismatch with ``psi_law_*``.
+    2. The two fold partitions differ only in how they ALIGN with the cycle -- alternating folds put
+       every neighbour across the fold boundary, contiguous blocks keep most of them inside. If the
+       delay's damage were a sample-size question rather than a design question, the two swings
+       would agree; they do not.
+    3. The ``theta*`` design law and ITS LIMIT, in the same run. With only nearest-neighbour
+       spillover, ``u_1`` is exactly affine in the same-fold edge fraction with root
+       ``theta*(K) = K^3/(4K^3-6K^2+4K-1)``, so ``u1_nearest_parity < 0 < u1_nearest_block``:
+       alternating folds sit at ``theta = 0`` and contiguous blocks at ``2/3``, on opposite sides of
+       ``theta* = 8/15``. Switching the second shell back on adds ``u1_cross_block``, which is
+       LARGER in magnitude than ``u1_nearest_block`` and drags the block arm's ``u_1`` negative
+       again. So the fold-alignment rule is a ``D = 1`` rule, and longer-range spillover can defeat
+       it -- a limit measured here rather than asserted.
+    4. ``separable_spread`` re-derives STEP 7 from this side: at ``delta = 0`` the covariance is
+       ``Sigma_u (x) T(phi)``, and ``Psi`` read on it, its time kernel and all, must lose ``phi``
+       entirely. Up to 0.18.0 it read the law at one ``phi`` once per grid point, a spread of 0
+       whatever ``Psi`` did.
+
+    HONEST SCOPE. ``Psi`` here is the sandwich functional
+    ``N^2 tr(A Sigma A)/(tr(A)^2 tr(Sigma))`` that
+    ``validation/delayed_exposure_gate.mac`` STEP 6 forced, evaluated with the fold operator
+    held fixed while ``Sigma`` varies. It is not a re-derived estimator, and
+    ``ConfoundedNetworkSystem`` is cross-sectional, so ``phi`` and ``delta`` are model parameters
+    rather than fitted ones. What this gives the code today is a fold-assignment rule with a
+    number attached.
+
+    Raises:
+        ValueError: if ``cluster_size`` is odd. The two folds are then unequal, ``(K/m) 1{same
+            fold}`` is no longer the fold-mean projector, and the closed-form ``A_u`` the law and
+            the simulation share is not the cross-fit residualiser's (``m = 5``: off by 0.35 in an
+            entry, ``c_fold`` 1.914 against the balanced law's 1.939).
+    """
+    m, p, k_folds = int(cluster_size), int(n_times), 2
+    if m % k_folds:
+        raise ValueError(
+            f"cluster_size must be even, the law being derived for two equal folds; got {m}"
+        )
+    gam = np.asarray(gammas, dtype=float)
+    dmax = gam.size - 1
+    phis = np.asarray(phi_grid, dtype=float)
+    shells = cycle_shells(m, dmax)
+    adjacency = shells[1]
+
+    def coefficients(au: NDArray[np.float64]) -> tuple[NDArray[np.float64], float]:
+        u = np.zeros(dmax + 1)
+        v0 = 0.0
+        for d in range(dmax + 1):
+            for e in range(dmax + 1):
+                u[abs(d - e)] += gam[d] * gam[e] * float(np.trace(au @ shells[d] @ shells[e] @ au))
+            v0 += gam[d] ** 2 * float(np.trace(shells[d] @ shells[d]))
+        return u, v0
+
+    def law(au: NDArray[np.float64], u: NDArray[np.float64], v0: float, phi: float) -> float:
+        powers = phi ** (lag * np.arange(dmax + 1))
+        return float(m**2 * (u * powers).sum() / (np.trace(au) ** 2 * v0))
+
+    def simulate(rng: np.random.Generator, phi: float) -> NDArray[np.float64]:
+        span = burn_in + p + lag * dmax
+        z = ar1_innovations(rng, (n_draws, m), span, phi)
+        return propagate_shells(z, shells, gam, lag, p).reshape(n_draws, m * p)
+
+    partitions = {
+        "parity": np.arange(m) % k_folds,
+        "block": (np.arange(m) >= m // k_folds).astype(int),
+    }
+    laws: dict[str, NDArray[np.float64]] = {}
+    sims: dict[str, NDArray[np.float64]] = {}
+    coefs: dict[str, NDArray[np.float64]] = {}
+    thetas: dict[str, float] = {}
+    errs: list[float] = []
+    for name, fold in partitions.items():
+        au = _fold_sandwich(m, k_folds, fold)
+        big = np.kron(au, np.eye(p))
+        gram = big @ big
+        u, v0 = coefficients(au)
+        coefs[name] = u
+        same = (fold[:, None] == fold[None, :]).astype(float)
+        thetas[name] = float((same * adjacency).sum() / adjacency.sum())
+        laws[name] = np.array([law(au, u, v0, float(phi)) for phi in phis])
+        measured = np.empty(phis.size)
+        for i, phi in enumerate(phis):
+            x = simulate(np.random.default_rng(seed + 101 * i), float(phi))
+            num = np.einsum("ni,ij,nj->n", x, gram, x) / np.trace(big) ** 2
+            den = np.einsum("ni,ni->n", x, x) / (m * p) ** 2
+            ratio = float(num.mean() / den.mean())
+            measured[i] = ratio
+            cov = float(np.cov(num, den)[0, 1])
+            rel = (
+                num.var(ddof=1) / num.mean() ** 2
+                + den.var(ddof=1) / den.mean() ** 2
+                - 2.0 * cov / (num.mean() * den.mean())
+            )
+            errs.append(abs(ratio) * float(np.sqrt(max(rel, 0.0)) / np.sqrt(n_draws)))
+        sims[name] = measured
+
+    # The theta* design law lives at D = 1; isolate it by switching the far shells off, and keep
+    # the shell-1<->shell-2 term that overturns it on the aligned partition.
+    def u1_parts(fold: NDArray[np.int_]) -> tuple[float, float]:
+        au = _fold_sandwich(m, k_folds, fold)
+        nearest = 2.0 * gam[0] * gam[1] * float(np.trace(au @ shells[0] @ shells[1] @ au))
+        cross = (
+            2.0 * gam[1] * gam[2] * float(np.trace(au @ shells[1] @ shells[2] @ au))
+            if dmax >= 2
+            else 0.0
+        )
+        return nearest, cross
+
+    nn_parity, _ = u1_parts(partitions["parity"])
+    nn_block, cross_block = u1_parts(partitions["block"])
+
+    # delta = 0: every band carries the same time kernel T, Sigma = Sigma_u (x) T, so phi must drop
+    # out of Psi. Read on the whole (unit, time) covariance, T and all, rather than on the law, in
+    # which phi enters only through the delay and so drops out at delta = 0 by construction.
+    au_parity = _fold_sandwich(m, k_folds, partitions["parity"])
+    sigma_u = sum(
+        gam[d] * gam[e] * shells[d] @ shells[e] for d in range(dmax + 1) for e in range(dmax + 1)
+    )
+    big_parity = np.kron(au_parity, np.eye(p))
+    gaps = np.abs(np.arange(p)[:, None] - np.arange(p)[None, :])
+    flat = []
+    for phi in phis:
+        sigma_full = np.kron(sigma_u, float(phi) ** gaps)
+        sandwich = float(np.trace(big_parity @ sigma_full @ big_parity))
+        flat.append(
+            (m * p) ** 2 * sandwich / (float(np.trace(big_parity)) ** 2 * np.trace(sigma_full))
+        )
+    # the exchangeable limit is Result 43's fold-geometry constant, read off the same projector
+    m_f = float(m)
+    r = k_folds / (k_folds - 1)
+    c_measured = m_f * float(np.trace(au_parity @ au_parity)) / float(np.trace(au_parity)) ** 2
+    return DelayedNetworkCurve(
+        phis,
+        laws["parity"],
+        sims["parity"],
+        laws["block"],
+        sims["block"],
+        np.maximum(np.array(errs[: phis.size]), np.array(errs[phis.size :])),
+        float(laws["parity"][0] / laws["parity"][-1]),
+        float(laws["block"][0] / laws["block"][-1]),
+        coefs["parity"],
+        coefs["block"],
+        thetas["parity"],
+        thetas["block"],
+        float(k_folds**3 / (4 * k_folds**3 - 6 * k_folds**2 + 4 * k_folds - 1)),
+        nn_parity,
+        nn_block,
+        cross_block,
+        float(np.ptp(flat)),
+        c_measured,
+        m_f * (m_f + 14.0) / (m_f + 2.0) ** 2 if r == 2.0 else float("nan"),
+        _design_crossover(coefs["parity"] - coefs["block"]),
+        abs(float(np.trace(au_parity) - np.trace(_fold_sandwich(m, k_folds, partitions["block"])))),
+    )
+
+
+@dataclass(frozen=True)
+class CeExplicitConstantCurve:
+    """C1 END-TO-END: the certified ball, the explicit constant, and how conservative both are."""
+
+    eta: float  # lmin(Q + K'RK)/lmax(P): the nominal loop's decay rate in the P metric
+    theta: float  # 1 - sqrt(1 - eta): the contraction MARGIN the whole result is written in
+    beta_b: float  # ||P^(1/2) B||/sqrt(lmin(P)): how hard the input channel pushes on that metric
+    kappa_p: float  # lmax(P)/lmin(P): the P-metric-to-Euclidean conversion in the state energy
+    rk_norm: float  # ||R + B'PB||: the curvature of the exact gain-gap quadratic form
+    l_k_local: float  # ||dK/dB|| measured at the plant (the derivative)
+    l_k_ball: (
+        float  # sup of ||dK||/||dB|| over the CERTIFIED ball -- the cited hypothesis, measured
+    )
+    rho: float  # theta/(2 beta_B L_K): the radius on which stabilisation is GUARANTEED
+    c_const: float  # 2 kappa_P ||R_K|| L_K^2 ||x0||^2 / theta: the explicit constant
+    identity_residual: float  # max |LHS - RHS| of the exact gain-gap identity over random gains
+    radius_multiples: Vector  # ||dB|| swept as multiples of rho
+    worst_gap: Vector  # worst realised J(Khat) - J* at each level
+    bound: Vector  # C ||dB||^2 at each level
+    worst_lyapunov: Vector  # worst ||P^(-1/2)(A-BKhat)'P(A-BKhat)P^(-1/2)||
+    lyapunov_ceiling: float  # (1 - theta/2)^2: the certified ceiling inside the ball
+    unstable_fraction: Vector  # fraction of draws whose CE controller destabilises the TRUE plant
+    # smallest swept ||dB|| at which any draw destabilises; where none does, the largest swept, a
+    # lower bound on it
+    empirical_radius: float
+    # empirical_radius / rho: how much the certificate gives away; a lower bound where no draw
+    # destabilised
+    conservatism: float
+
+
+def ce_explicit_constant_certificate(
+    *,
+    a_mat: Matrix | None = None,
+    b_mat: Matrix | None = None,
+    q_mat: Matrix | None = None,
+    r_mat: Matrix | None = None,
+    x0: Vector | None = None,
+    multiples: Sequence[float] = (0.25, 1.0, 4.0, 10.0, 20.0, 40.0, 80.0),
+    n_dirs: int = 240,
+    seed: int = 11,
+) -> CeExplicitConstantCurve:
+    """CONTRIBUTION 1 -- the finite-sample end-to-end constants (derived in
+    ``validation/ce_explicit_constants.mac``, proved in ``proofs/ce_explicit_constants.v``).
+
+    Every C1 statement so far took ``regret <= cc*||dB||^2`` as a HYPOTHESIS -- ``c2_end_to_end.v``
+    quantifies over an arbitrary ``0 <= cc`` -- and cited Mania-Tu-Recht's LOCAL quadratic bound.
+    Nothing computed the ball on which it holds, and nothing computed ``cc``. Both are here.
+
+    The lever is that the Lyapunov increment is an EXACT perfect square in the gain error,
+
+        Q + K'`RK' + (A - BK')`P(A - BK') - P = (K' - K)'R_K(K' - K),   R_K := R + B'PB,
+
+    with no smallness assumed, so "quadratic in the gain error" is an algebraic identity rather than
+    a local approximation and the Mania-Tu-Recht citation leaves the regret half entirely. Summing
+    it along the perturbed loop turns the suboptimality into a state-energy sum, and the P-metric
+    triangle inequality bounds that: ``||P^(1/2)(A - B Khat)P^(-1/2)|| <= sqrt(1 - eta) + beta_B
+    ||dK||``, so spending half the margin gives the certified ball
+
+        rho = theta/(2 beta_B L_K),   C = 2 kappa_P ||R_K|| L_K^2 ||x0||^2 / theta,
+
+    with ``eta = lmin(Q + K'RK)/lmax(P)``, ``theta = 1 - sqrt(1 - eta)``. Inside ``rho`` the
+    certainty-equivalent gain provably stabilises the TRUE plant with the checkable Lyapunov
+    certificate ``(A - B Khat)'P(A - B Khat) <= (1 - theta/2)^2 P``, and the regret is at most
+    ``C ||dB||^2``. Composed with Result 26's ``||B_hat - B|| = O_p(a_G)`` that is the end-to-end
+    statement the C1 line recorded as open.
+
+    The sweep runs past the ball on purpose: the certificate must be able to exhibit the failure it
+    protects against, so ``unstable_fraction`` has to become positive at large multiples of ``rho``
+    or the ball is not doing any work. ``conservatism`` records the price of the guarantee. Note
+    that ``worst_gap`` beyond the ball is a maximum over the FINITE draws only -- once
+    ``unstable_fraction > 0`` the true worst case is ``+inf`` and the comparison against ``bound``
+    there is vacuous, which is exactly why the guarantee is stated on ``rho`` and not on the sweep.
+
+    SCOPE: one citation remains on the control side -- uniform validity of the gain map's Lipschitz
+    constant on the ball (Konstantinov-Petkov-Christov-Angelova 1993; Sun 1998). It is not assumed
+    away: ``l_k_ball`` measures it over the certified ball against the derivative ``l_k_local``.
+    The measurement is a maximum over sampled perturbations, which can only fall short of the
+    supremum, and ``rho`` then reads wide and ``C`` low by the same factor: on the defaults, a
+    grid of 2001 directions at 50 radii read no larger, to 4e-7.
+    """
+    a_mat = np.array([[1.0, 0.1], [0.0, 0.95]]) if a_mat is None else a_mat
+    b_mat = np.array([[0.5], [1.0]]) if b_mat is None else b_mat
+    q_mat = np.eye(a_mat.shape[0]) if q_mat is None else q_mat
+    r_mat = np.array([[0.5]]) if r_mat is None else r_mat
+    x0 = np.array([1.0, 0.5]) if x0 is None else x0
+
+    k_star, p_mat = dlqr(a_mat, b_mat, q_mat, r_mat)
+    rk_mat = r_mat + b_mat.T @ p_mat @ b_mat
+    ev_p = np.linalg.eigvalsh(p_mat)
+    lmin_p, lmax_p = float(np.min(ev_p)), float(np.max(ev_p))
+    eta = float(np.min(np.linalg.eigvalsh(q_mat + k_star.T @ r_mat @ k_star))) / lmax_p
+    theta = 1.0 - float(np.sqrt(1.0 - eta))
+    kappa_p = lmax_p / lmin_p
+    rk_norm = float(np.linalg.norm(rk_mat, 2))
+    p_half = np.linalg.cholesky(p_mat).T  # P = p_half' p_half
+    p_half_inv = np.linalg.inv(p_half)
+    beta_b = float(np.linalg.norm(p_half @ b_mat, 2)) / float(np.sqrt(lmin_p))
+
+    rng = np.random.default_rng(seed)
+
+    def gain(db: np.ndarray) -> Matrix:
+        return dlqr(a_mat, b_mat + db, q_mat, r_mat)[0]
+
+    def sup_ratio(radius: float, n: int) -> float:
+        out = 0.0
+        for _ in range(n):
+            d = rng.normal(size=b_mat.shape)
+            d *= radius / float(np.linalg.norm(d))
+            try:
+                out = max(out, float(np.linalg.norm(gain(d) - k_star, 2)) / radius)
+            except (np.linalg.LinAlgError, ValueError):
+                continue  # (A, B + dB) unstabilisable: no CE gain exists to be Lipschitz about
+        return out
+
+    # The derivative, then the SUP over the ball rho_0 it induces: the cited uniform-Lipschitz
+    # hypothesis, measured rather than assumed. rho_0 breaks the circularity (rho needs L_K).
+    l_k_local = max(sup_ratio(s, 60) for s in (1e-7, 1e-6, 1e-5))
+    rho0 = theta / (2.0 * beta_b * l_k_local)
+    l_k_ball = max(sup_ratio(rho0 * f, 120) for f in (0.25, 0.5, 1.0))
+    rho = theta / (2.0 * beta_b * max(l_k_local, l_k_ball))
+    c_const = 2.0 * kappa_p * rk_norm * max(l_k_local, l_k_ball) ** 2 * float(x0 @ x0) / theta
+
+    # The identity is EXACT -- check it on gains far from optimal, not on a small neighbourhood.
+    ident = 0.0
+    for _ in range(200):
+        kp = k_star + rng.normal(size=k_star.shape)
+        lhs = q_mat + kp.T @ r_mat @ kp + (a_mat - b_mat @ kp).T @ p_mat @ (a_mat - b_mat @ kp)
+        ident = max(
+            ident, float(np.abs(lhs - p_mat - (kp - k_star).T @ rk_mat @ (kp - k_star)).max())
+        )
+
+    mults = np.asarray(multiples, dtype=np.float64)
+    j_star = closed_loop_cost(a_mat, b_mat, k_star, q_mat, r_mat, x0)
+    gaps, lyaps, unst = (np.zeros(mults.size) for _ in range(3))
+    for i, mult in enumerate(mults):
+        d = rho * mult
+        bad = 0
+        for _ in range(n_dirs):
+            u = rng.normal(size=b_mat.shape)
+            u *= d / float(np.linalg.norm(u))
+            try:
+                k_hat = gain(u)
+            except (np.linalg.LinAlgError, ValueError):
+                bad += 1  # DEFECT 3: an unstabilisable draw is a failure, not a sample to drop
+                continue
+            a_cl = a_mat - b_mat @ k_hat
+            m = p_half_inv.T @ (a_cl.T @ p_mat @ a_cl) @ p_half_inv
+            lyaps[i] = max(lyaps[i], float(np.linalg.norm(m, 2)))
+            gap = closed_loop_cost(a_mat, b_mat, k_hat, q_mat, r_mat, x0) - j_star
+            if not np.isfinite(gap):
+                bad += 1
+                continue
+            gaps[i] = max(gaps[i], gap)
+        unst[i] = bad / n_dirs
+
+    hit = np.flatnonzero(unst > 0.0)
+    empirical = float(mults[hit[0]] * rho) if hit.size else float(mults[-1] * rho)
+    return CeExplicitConstantCurve(
+        eta,
+        theta,
+        beta_b,
+        kappa_p,
+        rk_norm,
+        l_k_local,
+        l_k_ball,
+        rho,
+        c_const,
+        ident,
+        mults,
+        gaps,
+        c_const * (rho * mults) ** 2,
+        lyaps,
+        (1.0 - theta / 2.0) ** 2,
+        unst,
+        empirical,
+        empirical / rho,
+    )
+
+
+@dataclass(frozen=True)
+class ConjugateTimeCurve:
+    """The horizon past which every chc.regret constant ceases to exist, and how it diverges."""
+
+    t_conj: float  # (pi/2 + phi0)/mu: the finite escape time of the backward Riccati solution
+    mu: float  # sqrt(-(a^2 + (b^2/r) q)): the rotation speed of the Riccati phase
+    margins: Vector  # eps = t_conj - T, swept toward 0
+    value: Vector  # p(0) at each horizon: the cost-to-go coefficient
+    value_residue: Vector  # eps*p(0) -> -r/b^2 (a SIMPLE pole; the residue is free of a, q, sT)
+    sensitivity: Vector  # |dk/db| at t=0 -- the object every regret constant is built on
+    sensitivity_residue: Vector  # eps^2*|dk/db| -> a nonzero constant (a DOUBLE pole)
+    # r (dk)^2 x0^2 / (db)^2: the gain error's cost at t = 0 alone, the square of the sensitivity's
+    # forward difference, not the regret integrated over the horizon
+    regret_coefficient: Vector
+    value_slope: float  # log-log slope of |p(0)| against 1/eps: 1
+    sensitivity_slope: float  # ... of |dk/db|: 2
+    # ... of regret_coefficient: 4, twice sensitivity_slope by construction, up to the forward
+    # difference against the centred one
+    regret_slope: float
+    authority_shrinks_horizon: (
+        float  # t_conj(2b)/t_conj(b) < 1: more authority, EARLIER obstruction
+    )
+    definite_sensitivity: float  # the POSITIVE-DEFINITE control arm at 10*t_conj: finite
+    definite_sensitivity_growth: (
+        float  # its ratio from 10*t_conj to 100*t_conj: ~1 (tanh saturates)
+    )
+
+
+def conjugate_time_certificate(
+    *,
+    a: float = 0.3,
+    b: float = 1.0,
+    q: float = -4.0,
+    r: float = 1.0,
+    s_t: float = 0.0,
+    x0: float = 1.0,
+    margins: Sequence[float] = (1e-1, 1e-2, 1e-3, 1e-4, 1e-5),
+    delta_b: float = 1e-6,
+) -> ConjugateTimeCurve:
+    """THE CONJUGATE-TIME OBSTRUCTION (derived in ``validation/conjugate_time.mac``, proved in
+    ``proofs/conjugate_time.v``): the third member of the family of Result 13 (the active-set kink)
+    and Result 14 (the confounded turnpike gap) -- places where the smooth machinery every regret
+    bound assumes quietly stops applying.
+
+    Result 14 says a long horizon is BENIGN: the discounted confounded gap stays finite. That
+    holds for a POSITIVE-DEFINITE stage cost. For an INDEFINITE one -- a state that is rewarded
+    rather than penalised, as in a growth or market-share objective -- the second-order sufficient
+    fails at a FINITE horizon, and past it no constant in ``chc.regret`` exists at all. The two are
+    the two sides of the definiteness hypothesis; only one of them had been written down.
+
+    Continuous-time scalar LQ ``x' = a x + b u``, ``J = int_0^T (q x^2 + r u^2) dt + sT x(T)^2``.
+    With ``c := b^2/r`` the reverse-time Riccati flow is a UNIFORM ROTATION of the phase
+    ``arctan(c(p - a/c)/mu)`` at speed ``mu := sqrt(-(a^2 + c q))``, real exactly when
+    ``a^2 + c q < 0``. The phase falls from ``phi0`` to ``-pi/2`` in finite time:
+
+        ``t_conj = (pi/2 + phi0)/mu``,   ``phi0 = arctan(c(sT - a/c)/mu)``.
+
+    Flip the sign of ``q`` and ``tan`` becomes ``tanh``: the same one-line solution, bounded for
+    every horizon. That is the whole dichotomy, and it is why the positive-definite arm here is a
+    control rather than a separate model. A terminal weight above that arm's upper equilibrium
+    ``(a + nu)/c``, ``nu = sqrt(a^2 + c|q|)``, takes the ``coth`` branch of the same solution
+    (STEP 7 of the derivation); up to 0.18.0 the arm read ``nan`` there (``s_t = 3`` on the
+    defaults). A negative weight at or below its lower equilibrium ``(a - nu)/c`` makes the
+    definite arm escape in finite time as well, and it reads ``nan``: there is no control to
+    compare with. A ``q`` with no conjugate point, ``a^2 + c q >= 0``, raises.
+
+    THE COUNTER-INTUITIVE PART: ``mu`` GROWS with the control authority ``c``, so ``t_conj``
+    SHRINKS. A stronger actuator brings the obstruction closer.
+
+    Three orders, measured separately because they are three claims: the cost-to-go has a SIMPLE
+    pole with residue ``-r/b^2`` (free of ``a``, ``q`` and the terminal weight); the SENSITIVITY
+    ``dk/db`` -- which is Result 44's ``L_K`` and Results 18/20's ``du_star/db`` -- has a DOUBLE
+    pole, because differentiating the closed form turns the tangent into a ``sec^2``; and since
+    Result 44 has ``C`` proportional to ``L_K^2``, the regret constant has a FOURTH-order pole.
+
+    The last is not measured independently of the second. ``regret_coefficient`` is the gain
+    error's cost at ``t = 0``, ``r (dk)^2 x0^2 / (db)^2``, the square of the sensitivity's forward
+    difference, so ``regret_slope`` is twice ``sensitivity_slope`` by construction, up to that
+    forward difference against the centred one ``sensitivity`` takes. The regret the
+    certainty-equivalent controller realises over the horizon, ``int_0^T r (khat - k)^2 x^2 dt``
+    on the true plant, has a pole of order 3 on the defaults, not 4: its log-log slope is 3.29,
+    3.05 and 3.01 between successive margins from ``1e-1`` to ``1e-4``, on two step sizes ``db``.
+    """
+    c_auth = b * b / r
+    if not a * a + c_auth * q < 0.0:
+        raise ValueError(
+            f"no conjugate point: a^2 + (b^2/r) q = {a * a + c_auth * q} must be negative, so q "
+            "must be indefinite by more than the open-loop instability absorbs"
+        )
+
+    def indefinite(horizon: float, bb: float) -> float:
+        c = bb * bb / r
+        mu = float(np.sqrt(-(a * a + c * q)))
+        phi0 = float(np.arctan(c * (s_t - a / c) / mu))
+        return a / c + (mu / c) * float(np.tan(phi0 - mu * horizon))
+
+    def definite(horizon: float, bb: float, qq: float) -> float:
+        c = bb * bb / r
+        nu = float(np.sqrt(a * a + c * qq))  # the SAME algebra with the sign flipped: tan -> tanh
+        z0 = c * (s_t - a / c) / nu
+        if z0 <= -1.0:
+            return float("nan")  # below the lower equilibrium the definite arm escapes too
+        if z0 < 1.0:
+            return a / c + (nu / c) * float(np.tanh(nu * horizon + np.arctanh(z0)))
+        # a weight at or above the upper equilibrium is the coth branch (conjugate_time.mac STEP 7)
+        return a / c + (nu / c) / float(np.tanh(nu * horizon + np.arctanh(1.0 / z0)))
+
+    def escape(bb: float) -> float:
+        c = bb * bb / r
+        mu = float(np.sqrt(-(a * a + c * q)))
+        return (np.pi / 2.0 + float(np.arctan(c * (s_t - a / c) / mu))) / mu
+
+    mu = float(np.sqrt(-(a * a + c_auth * q)))
+    tc = escape(b)
+    eps = np.asarray(margins, dtype=np.float64)
+    val, sens, regc = (np.zeros(eps.size) for _ in range(3))
+    for i, e in enumerate(eps):
+        horizon = tc - e
+        val[i] = indefinite(horizon, b)
+
+        def gain(bb: float, h: float = horizon) -> float:
+            return bb * indefinite(h, bb) / r
+
+        sens[i] = abs(gain(b + delta_b) - gain(b - delta_b)) / (2.0 * delta_b)
+        # The realised CE regret coefficient, through the exact quadratic form of Result 44's
+        # identity: the gain fitted for b + delta_b, on the true plant, costs r*(dk)^2*x0^2.
+        dk = gain(b + delta_b) - gain(b)
+        regc[i] = r * dk * dk * x0 * x0 / (delta_b * delta_b)
+
+    inv = np.log(1.0 / eps)
+
+    def slope(y: np.ndarray) -> float:
+        return float(np.polyfit(inv, np.log(np.abs(y)), 1)[0])
+
+    def def_sens(h: float) -> float:
+        qq = abs(q)
+        return (
+            abs(definite(h, b + delta_b, qq) - definite(h, b - delta_b, qq))
+            * b
+            / (r * 2.0 * delta_b)
+        )
+
+    return ConjugateTimeCurve(
+        tc,
+        mu,
+        eps,
+        val,
+        eps * val,
+        sens,
+        eps * eps * sens,
+        regc,
+        slope(val),
+        slope(sens),
+        slope(regc),
+        escape(2.0 * b) / tc,
+        def_sens(10.0 * tc),
+        def_sens(100.0 * tc) / def_sens(10.0 * tc),
+    )
+
+
+@dataclass(frozen=True)
+class VanTreesCurve:
+    """Van Trees: Bayes MSE hits the floor 1/(I_prior+n*I_data); confounding lifts the floor."""
+
+    sample_sizes: Vector  # number of observations n
+    empirical_mse: Vector  # Monte-Carlo Bayes risk of the posterior-mean estimator
+    van_trees_bound: Vector  # 1/(I_prior + n*I_data): the van-Trees lower bound
+    confounded_bound: Vector  # 1/(I_prior + n*Vid*I_data): the (higher) floor under confounding
+    tight_ratio: float  # empirical MSE / van-Trees bound at the largest n (~1: tight for Gaussian)
+
+
+def van_trees_certificate(
+    *,
+    tau: float = 2.0,
+    sigma: float = 1.0,
+    v_id: float = 0.4,
+    sample_sizes: Sequence[int] = (5, 10, 20, 50, 100, 200),
+    n_trials: int = 6000,
+) -> VanTreesCurve:
+    """The FORMAL van Trees (Bayesian Cramer-Rao) inequality that Result 20 assumed (derived in
+    ``validation/van_trees.mac``; ``proofs/van_trees.v`` proves the Cauchy-Schwarz algebra from the
+    cited score identity and information additivity). For a Gaussian conjugate model
+    (prior ``N(0,tau^2)``, ``n`` obs ``x = theta + N(0,sigma^2)``) Bayes risk of ANY estimator is
+    at least ``1/(I_prior + n*I_data)``, ``I_prior = 1/tau^2``, ``I_data = 1/sigma^2`` -- and the
+    posterior-mean estimator HITS it (van Trees is tight for the Gaussian). Confounding reduces the
+    per-obs identifying information (fraction ``v_id < 1``), lifting the floor -- the Bayesian /
+    sequential analogue of the CR floor of Results 10/12 and the ``C/m_t`` term of Result 20.
+    """
+    j_prior = 1.0 / tau**2
+    i_data = 1.0 / sigma**2
+    ns = np.asarray(sample_sizes, dtype=np.float64)
+    bound = 1.0 / (j_prior + ns * i_data)
+    conf_bound = 1.0 / (j_prior + ns * v_id * i_data)
+    mse = np.zeros(ns.size)
+    for k, n_obs in enumerate(sample_sizes):
+        errs = np.empty(n_trials)
+        for t in range(n_trials):
+            rng = np.random.default_rng(8263 * t + n_obs)
+            theta = tau * rng.standard_normal()  # draw from the prior
+            x = theta + sigma * rng.standard_normal(n_obs)  # observations
+            post_mean = (np.sum(x) / sigma**2) / (j_prior + n_obs * i_data)  # Bayes, mu0 = 0
+            errs[t] = (post_mean - theta) ** 2
+        mse[k] = float(np.mean(errs))
+    return VanTreesCurve(ns, mse, bound, conf_bound, float(mse[-1] / bound[-1]))
+
+
+@dataclass(frozen=True)
+class HInfRobustCurve:
+    """H-inf robustness moves the gain, calibratable to ~ the variance-optimal action."""
+
+    gamma_grid: Vector  # adversary energy budget gamma (robustness level)
+    robust_gain: Vector  # u_rob(gamma): the cautious control; -> u_ce as gamma -> inf
+    inflation_at_uce: Vector  # robust value at fixed u_ce: >= nominal, antitone in gamma (Rocq B,C)
+    expected_regret: Vector  # regret of u_rob(gamma) under effect variance s^2 (U-shaped in gamma)
+    u_ce: float  # certainty-equivalence gain b*xt/(b^2+rr)
+    u_pess_star: float  # variance-optimal gain b*xt/(b^2+rr+s^2) (Result 2, scalar one-step)
+    nominal_at_uce: float  # nominal cost at u_ce (the gamma -> inf limit of inflation_at_uce)
+    gamma_star: float  # argmin of the expected regret
+    gain_at_gamma_star: float  # robust gain at gamma*: ~ u_pess_star (approx, not an identity)
+    expected_regret_min: float  # ~ 0: the robust optimum reaches the variance-pessimism optimum
+    # regret of the CE control. Not ordered against expected_regret_min in general: both are
+    # (b^2 + rr + s^2)(u - u_pess)^2, so the minimum is the lower one only where some grid gamma
+    # puts its gain nearer u_pess than u_ce is (b = 1.5, rr = 0.5, s = 0.3: CE 8.486e-4 against
+    # the minimum's 8.620e-4)
+    ce_expected_regret: float
+
+
+def hinf_robust_regret_certificate(
+    *,
+    b: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    s: float = 0.6,
+    gamma_lo: float = 0.72,
+    gamma_hi: float = 8.0,
+    n_gamma: int = 40,
+    n_u: int = 4000,
+) -> HInfRobustCurve:
+    """H-infinity / differential-game robust control (Geering 2007, Ch 4). Derived in
+    ``validation/hinf_robust_regret.mac``, proved in ``proofs/hinf_robust_regret.v``. Confounding
+    uncertainty in the effect ``b`` is an adversary perturbing the gain, penalised by budget
+    ``gamma^2``; the robust controller solves ``min_u max_w``. This is a *correspondence*, not an
+    identity: the worst-case objective ``gamma^2*e^2/(gamma^2-u^2)+rr*u^2`` and the expected
+    quadratic objective ``(b*u-xt)^2+(rr+s^2)u^2`` (Result 2, optimum ``u_pess=b*xt/(b^2+rr+s^2)``)
+    are different functions. The robust gain tends to ``u_ce`` as ``gamma`` grows, but from BELOW
+    only when ``rr > b^2``: to first order in ``1/gamma^2`` it moves by
+    ``u_ce rr xt^2 (b^2 - rr)/(b^2 + rr)^3`` (step (F) of the derivation), so on the defaults,
+    ``b^2 > rr``, robustness RAISES the gain at large ``gamma`` (0.6797 against 0.6667 at
+    ``gamma = 2``) and contracts it only near the feasibility edge ``gamma ~ |u|``. That is where
+    the regret-optimal ``gamma*`` lies, and it can be CALIBRATED so ``u_rob(gamma*)`` approximates
+    ``u_pess`` (0.5415 vs 0.538) -- game-theoretic robustness and statistical pessimism as two roads
+    to a similar cautious control, not a proven equality.
+    """
+    s2 = s * s
+    u_ce = b * xt / (b * b + rr)
+    u_pess = b * xt / (b * b + rr + s2)  # variance-optimal control (Result 2)
+    nominal_uce = (b * u_ce - xt) ** 2 + rr * u_ce * u_ce
+    oracle = (b * u_pess - xt) ** 2 + (rr + s2) * u_pess * u_pess  # min expected cost, Var(b)=s^2
+    gammas = np.geomspace(gamma_lo, gamma_hi, n_gamma)
+    robust_gain = np.zeros(n_gamma)
+    inflation = np.zeros(n_gamma)
+    exp_regret = np.zeros(n_gamma)
+    for i, g in enumerate(gammas):
+        g2 = g * g
+        us = np.linspace(0.0, 0.999 * g, n_u)  # feasible region |u| < gamma
+        j_rob = g2 * (b * us - xt) ** 2 / (g2 - us * us) + rr * us * us
+        u_r = float(us[int(np.argmin(j_rob))])
+        robust_gain[i] = u_r
+        inflation[i] = g2 * (b * u_ce - xt) ** 2 / (g2 - u_ce * u_ce) + rr * u_ce * u_ce
+        exp_regret[i] = (b * u_r - xt) ** 2 + (rr + s2) * u_r * u_r - oracle
+    k = int(np.argmin(exp_regret))
+    return HInfRobustCurve(
+        gammas,
+        robust_gain,
+        inflation,
+        exp_regret,
+        float(u_ce),
+        float(u_pess),
+        float(nominal_uce),
+        float(gammas[k]),
+        float(robust_gain[k]),
+        float(exp_regret[k]),
+        float((b * u_ce - xt) ** 2 + (rr + s2) * u_ce * u_ce - oracle),
+    )
+
+
+@dataclass(frozen=True)
+class ConstrainedRegretCurve:
+    """Constrained CE regret is piecewise-quadratic; frozen (zero) on the active side."""
+
+    deltas: Vector  # |effect-estimate error| from the activation threshold
+    regret_inactive: Vector  # regret when the estimate is inactive-side: quadratic in delta
+    regret_active: Vector  # regret when the estimate is active-side: ~0 (control frozen at umax)
+    regret_unconstrained: Vector  # unconstrained regret at the same estimates (for the <= check)
+    threshold: float  # activation threshold b_t where u*(b_t) = umax
+    inactive_slope: float  # log-log slope of regret vs delta on the inactive side (~2: quadratic)
+    active_regret_max: float  # max regret on the active side (~0: curvature collapses)
+    # max(constrained / unconstrained) over truths on the inactive side and estimates as far past
+    # the threshold, where the clip moves the action: <= 1 (clipping non-expansive)
+    max_constrained_ratio: float
+    # exact cost gap a naive controller pays if the truth is active but underestimated
+    pessimism_budget: float
+
+
+def constrained_ce_regret_certificate(
+    *,
+    xt: float = 1.0,
+    rr: float = 1.0,
+    umax: float = 0.45,
+    delta_lo: float = 0.005,
+    delta_hi: float = 0.15,
+    n_delta: int = 12,
+    active_offset: float = 0.1,
+) -> ConstrainedRegretCurve:
+    """Constrained certainty-equivalence regret is PIECEWISE-QUADRATIC (Gros & Diehl 2022, Ch 16).
+    Derived: ``validation/constrained_ce_regret.mac``; proved: ``proofs/constrained_ce_regret.v``.
+    A budget/safety cap ``u <= umax`` clips the control to ``u_opt(b) = min(u*(b), umax)``. With the
+    true effect at an activation threshold (``u*(b_t) = umax``): on the INACTIVE side the
+    regret is quadratic in the effect-estimate error; on the ACTIVE side the control freezes at
+    ``umax`` so the regret is ZERO -- the curvature collapses, the source of the kink. Clipping is
+    non-expansive: constrained regret never exceeds unconstrained. Consequence (ties to Result 9
+    partial-ID and the marketplace budget): when the effect interval straddles a threshold the
+    pessimism budget must cover the active-set transition -- a naive controller that assumes the
+    constraint inactive pays that gap.
+
+    ``u*`` is unimodal in ``b`` (peak ``xt/(2*sqrt(rr))`` at ``b = sqrt(rr)``), so ``u*(b) = umax``
+    has TWO roots and the cap binds on the bounded interval between them, with ``b_lo*b_hi = rr``;
+    the cap never binds at all when ``umax > xt/(2*sqrt(rr))``. This certificate probes the lower
+    root, and its ``delta_hi`` sweep stays inside the active interval, so ``reg_act`` is exactly 0.
+    """
+
+    def u_star(bv: float) -> float:
+        return bv * xt / (bv * bv + rr)
+
+    def u_opt(bv: float) -> float:
+        return min(u_star(bv), umax)
+
+    b_t = (xt - np.sqrt(xt * xt - 4.0 * rr * umax * umax)) / (2.0 * umax)  # lower activation root
+    curv = b_t * b_t + rr  # (b^2+rr): the CE-regret curvature prefactor
+    deltas = np.geomspace(delta_lo, delta_hi, n_delta)
+    reg_in = np.array([curv * (u_opt(b_t - d) - u_opt(b_t)) ** 2 for d in deltas])
+    reg_act = np.array([curv * (u_opt(b_t + d) - u_opt(b_t)) ** 2 for d in deltas])
+    reg_unc = np.array([curv * (u_star(b_t - d) - u_star(b_t)) ** 2 for d in deltas])
+    slope = float(np.polyfit(np.log(deltas), np.log(reg_in), 1)[0])
+    # Non-expansiveness is read where the clip acts: a truth at b_t - d on the inactive side, an
+    # estimate at b_t + d past the threshold. On the inactive side alone the two regrets are one
+    # number, and up to 0.18.0 the ratio read 1 there by construction.
+    across = [(b_t - d, b_t + d) for d in deltas]
+    ratio_across = np.array(
+        [
+            (u_opt(estimate) - u_opt(truth)) ** 2 / (u_star(estimate) - u_star(truth)) ** 2
+            for truth, estimate in across
+        ]
+    )
+    b0 = b_t + active_offset  # true effect in the active region (optimal control = umax)
+
+    def cost(u: float) -> float:
+        return (b0 * u - xt) ** 2 + rr * u * u
+
+    # The capped optimum sits on the cap, not at a stationary point, so the gap has a first-order
+    # term the curvature alone misses: up to 0.18.0 it read (b0^2 + rr)(u - umax)^2, 0.55 of this.
+    naive_regret = np.array([cost(u_star(b_t - d)) - cost(umax) for d in deltas])
+    return ConstrainedRegretCurve(
+        deltas,
+        reg_in,
+        reg_act,
+        reg_unc,
+        float(b_t),
+        slope,
+        float(reg_act.max()),
+        float(ratio_across.max()),
+        float(naive_regret.max()),
+    )
+
+
+@dataclass(frozen=True)
+class ConfoundedTurnpikeCurve:
+    """Confounded control converges to the wrong turnpike; discounted regret stays finite."""
+
+    horizons: Vector  # horizon T
+    undiscounted_regret: Vector  # T * per_step: linear, unbounded (sharpens Result 1d)
+    discounted_regret: Vector  # sum g^t * per_step = per_step*(1-g^T)/(1-g): bounded
+    discounted_bound: float  # per_step/(1-g): the finite discounted-regret cap
+    turnpike_offset_formula: float  # xref*beta/(b+beta): the analytic turnpike gap
+    turnpike_offset_simulated: float  # xref - x_conf from the loop (matches the formula)
+    per_step_regret: float  # q*offset^2: paid every step forever by the confounded controller
+    undiscounted_slope: float  # slope of undiscounted regret vs horizon (~ per_step)
+
+
+def confounded_turnpike_certificate(
+    *,
+    b: float = 1.0,
+    beta: float = 0.3,
+    xref: float = 1.0,
+    q: float = 1.0,
+    g: float = 0.9,
+    horizon: int = 200,
+) -> ConfoundedTurnpikeCurve:
+    """The CONFOUNDED TURNPIKE GAP (Weber 2011, Sec 3.5: turnpike + current-value Hamiltonian).
+    Derived in ``validation/confounded_turnpike.mac``; ``proofs/confounded_turnpike.v`` checks
+    the offset formula and the discounted-sum bound, not the convergence to the turnpike. A
+    confounded controller using the biased effect ``b_obs = b + beta`` (OVB) converges to the WRONG
+    turnpike ``x_conf = b*xref/(b+beta)`` and pays the offset every step. This upgrades Result 1d
+    (dynamic horizon regret, previously hand-argued) to a proper turnpike argument, and adds a NEW
+    discounted-regret certificate: the undiscounted cumulative regret ``T*c`` is unbounded, but the
+    discounted sum ``sum g^t c = c*(1-g^T)/(1-g)`` stays below ``c/(1-g)`` -- finite.
+
+    That "a long horizon is benign" holds because ``q > 0``. Under an INDEFINITE stage cost the
+    horizon is bounded outright and no constant survives past the first conjugate point -- see
+    ``conjugate_time_certificate``, the other side of the same definiteness hypothesis.
+    """
+    b_obs = b + beta
+    u_conf = xref / b_obs  # confounded control (believes the effect is b_obs)
+    x_conf = b * u_conf  # the biased turnpike the loop settles at
+    offset_sim = xref - x_conf
+    offset_formula = xref * beta / b_obs
+    per_step = q * offset_sim**2  # tracking cost paid every step at the biased turnpike
+    horizons = np.arange(1, horizon + 1, dtype=np.float64)
+    per_step_costs = np.full(horizon, per_step)  # constant control => constant per-step cost
+    undiscounted = np.cumsum(per_step_costs)  # = T * per_step (linear)
+    disc_weights = g ** np.arange(horizon)
+    discounted = np.cumsum(disc_weights * per_step_costs)  # = per_step*(1-g^T)/(1-g)
+    slope = float(np.polyfit(horizons, undiscounted, 1)[0])
+    return ConfoundedTurnpikeCurve(
+        horizons,
+        undiscounted,
+        discounted,
+        float(per_step / (1.0 - g)),
+        float(offset_formula),
+        float(offset_sim),
+        float(per_step),
+        slope,
+    )
+
+
+@dataclass(frozen=True)
+class PartialIdControlCurve:
+    """Partial-ID control: worst-case regret ~ Delta^2; action sign robust iff Delta < |b|."""
+
+    half_widths: Vector  # partial-ID / confounding-budget interval half-widths Delta
+    ce_worst_regret: Vector  # worst-case regret of the certainty-equivalent action
+    robust_worst_regret: Vector  # worst-case regret of the minimax-robust action (<= the CE one)
+    sign_id_threshold: float  # = |b_hat|: the sign-identification threshold (interval excludes 0)
+    sign_identified: Vector  # per-Delta: is the action direction robust (interval excludes 0)?
+
+
+def partial_id_control_certificate(
+    *,
+    b_hat: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    half_widths: Sequence[float] = (0.2, 0.5, 0.8, 1.0, 1.5),
+    u_points: int = 401,
+    b_points: int = 101,
+) -> PartialIdControlCurve:
+    """Control under PARTIAL IDENTIFICATION: the sign-identification threshold (derived in
+    ``validation/partial_id_control.mac``, proved in ``proofs/partial_id_control.v``; grounded in
+    Manski partial-ID / Rosenbaum-VanderWeele-Ding sensitivity). When the effect is only interval-
+    identified, ``b in [b_hat - Delta, b_hat + Delta]``: (1) the certainty-equivalent action's
+    worst-case regret grows like ``Delta^2``, and the minimax action reduces it; (2) the optimal
+    action has the sign of ``b``, so its **direction** is identified iff the interval excludes 0 --
+    iff ``Delta < |b_hat|``. The critical width ``Delta* = |b_hat|`` is the **sign-identification
+    threshold** (a directional identification margin; NOT the sensitivity E-value, whose name it
+    deliberately avoids).
+    """
+
+    def u_star(b: np.ndarray) -> np.ndarray:
+        return xt * b / (b**2 + rr)
+
+    u_ce = float(u_star(np.array(b_hat)))
+    span = abs(u_ce) + 0.5
+    u_grid = np.linspace(u_ce - span, u_ce + span, u_points)
+    widths = np.asarray(half_widths, dtype=np.float64)
+    ce_wc = np.zeros(widths.size)
+    robust_wc = np.zeros(widths.size)
+    sign_ok = np.zeros(widths.size, dtype=bool)
+    for i, delta in enumerate(widths):
+        b_grid = np.linspace(b_hat - delta, b_hat + delta, b_points)
+        u_opt_b = u_star(b_grid)  # per-effect optimum
+        curv = b_grid**2 + rr  # regret(u, b) = curv * (u - u_opt(b))^2
+        ce_wc[i] = float(np.max(curv * (u_ce - u_opt_b) ** 2))  # CE action's worst case
+        reg = curv[None, :] * (u_grid[:, None] - u_opt_b[None, :]) ** 2  # (u, b)
+        robust_wc[i] = float(np.min(np.max(reg, axis=1)))  # minimax over the action
+        sign_ok[i] = bool((b_grid > 0).all() if b_hat > 0 else (b_grid < 0).all())
+    return PartialIdControlCurve(widths, ce_wc, robust_wc, abs(b_hat), sign_ok)
+
+
+@dataclass(frozen=True)
+class DoublyRobustCurve:
+    """The AIPW control effect is doubly robust: regret vanishes if either model is correct."""
+
+    errors: Vector  # delta grid (both nuisances misspecified by delta together)
+    dr_regret_both: Vector  # AIPW control regret when both nuisances err (~ (delta^2)^2 = delta^4)
+    # log-log slope of dr_regret_both: 4 as delta -> 0; on the default grid the population's is
+    # 3.33 and the seeded estimate scatters about it (3.20 at seed 0, 3.42 / 3.19 / 3.46 at 1-3)
+    dr_slope: float
+    dr_outcome_ok: float  # AIPW regret with the outcome model correct, propensity wrong (-> 0)
+    dr_propensity_ok: float  # AIPW regret with the propensity model correct, outcome wrong (-> 0)
+    outcome_reg_fails: float  # outcome-regression regret when its outcome model is wrong (> 0)
+    ipw_fails: float  # IPW regret when its propensity model is wrong (> 0)
+
+
+def _aipw_effect(
+    rng: np.random.Generator, n: int, theta: float, dmu: float, de: float, kind: str
+) -> float:
+    """Estimate a binary-intervention effect from n samples with outcome error ``dmu`` and
+    propensity error ``de``; ``kind`` is outcome-regression, IPW, or the doubly-robust AIPW.
+    """
+    x = rng.standard_normal(n)
+    e = 1.0 / (1.0 + np.exp(-0.8 * x))  # true propensity
+    d = (rng.random(n) < e).astype(float)
+    mu0 = 0.5 * x
+    mu1 = mu0 + theta  # true outcome means; ATE = theta
+    y = np.where(d > 0.5, mu1, mu0) + 0.3 * rng.standard_normal(n)
+    mu1_hat = mu1 + dmu  # misspecified outcome model
+    e_hat = e + de * (0.5 - e)  # misspecified propensity (shrink toward 0.5; bounded in (0,1))
+    if kind == "outcome":
+        return float(np.mean(mu1_hat - mu0))
+    if kind == "ipw":
+        return float(np.mean(d * y / e_hat - (1.0 - d) * y / (1.0 - e_hat)))
+    aug = d * (y - mu1_hat) / e_hat - (1.0 - d) * (y - mu0) / (1.0 - e_hat)
+    return float(np.mean((mu1_hat - mu0) + aug))  # AIPW / doubly robust
+
+
+def doubly_robust_control_certificate(
+    *,
+    theta: float = 1.0,
+    n: int = 100_000,
+    n_seeds: int = 8,
+    errors: Sequence[float] = (0.4, 0.2, 0.1, 0.05),
+    seed: int = 0,
+) -> DoublyRobustCurve:
+    """The doubly-robust version of result 0 (derived in ``validation/doubly_robust.mac``;
+    ``proofs/doubly_robust.v`` takes the product form as given and proves that it vanishes if either
+    nuisance is correct). For a binary intervention the AIPW estimator's bias is the PRODUCT
+    of the outcome-model error and the propensity error, ``dmu*de/(e+de)`` -- so the regret is
+    ``O((dmu*de)^2)`` and vanishes if EITHER nuisance model is correct (double robustness), unlike
+    outcome-regression (needs the outcome model) or IPW (needs the propensity model). Here the bias
+    is ``dmu*de*E[(1/2-e)/e_hat]``: the propensity error moves the weight as well, so the slope is 4
+    only as the errors vanish, and 3.33 over the default grid, which the defaults read as 3.20 at
+    seed 0 (3.42, 3.19, 3.46 at seeds 1-3). ``seed`` selects the draws.
+    """
+
+    def regret(dmu: float, de: float, kind: str) -> float:
+        # systematic bias isolated from sampling noise: each draw's estimate less the same
+        # estimator's on the same draws with both nuisances correct, which is unbiased, averaged
+        # over seeds; control regret = kappa*(bias)^2, kappa = 1
+        biases = [
+            _aipw_effect(np.random.default_rng((seed, s)), n, theta, dmu, de, kind)
+            - _aipw_effect(np.random.default_rng((seed, s)), n, theta, 0.0, 0.0, kind)
+            for s in range(n_seeds)
+        ]
+        return float(np.mean(biases)) ** 2
+
+    err = np.asarray(errors, dtype=np.float64)
+    both = np.array([regret(d, d, "aipw") for d in err])  # both nuisances err by delta
+    slope = float(np.polyfit(np.log(err), np.log(both), 1)[0])
+    return DoublyRobustCurve(
+        err,
+        both,
+        slope,
+        regret(0.0, 0.4, "aipw"),  # outcome correct -> AIPW ~ 0
+        regret(0.4, 0.0, "aipw"),  # propensity correct -> AIPW ~ 0
+        regret(0.4, 0.0, "outcome"),  # outcome model wrong -> outcome-regression fails
+        regret(0.0, 0.4, "ipw"),  # propensity model wrong -> IPW fails
+    )
+
+
+@dataclass(frozen=True)
+class BanditCausalCurve:
+    """Scalar persistently-identified model: deconfounded O(log T) vs confounded Theta(T) regret."""
+
+    rounds: Vector  # cumulative-horizon checkpoints T
+    deconfounded_regret: Vector  # cumulative online regret, de-confounded estimator (~ log T)
+    confounded_regret: Vector  # cumulative online regret, confounded estimator (~ linear T)
+    deconfounded_doubling: float  # cum(T)/cum(T/2) for de-confounded (-> 1: sublinear)
+    confounded_doubling: float  # cum(T)/cum(T/2) for confounded (-> 2: linear)
+
+
+def bandit_causal_certificate(
+    *,
+    b_true: float = 1.0,
+    rr: float = 0.5,
+    xt: float = 1.0,
+    alpha: float = 1.0,
+    gamma: float = 1.0,
+    noise: float = 0.5,
+    n_rounds: int = 1500,
+    n_seeds: int = 12,
+    ridge: float = 1e-3,
+) -> BanditCausalCurve:
+    """The bandit / adaptive-control version (derived in ``validation/bandit_causal.mac``;
+    ``proofs/bandit_causal.v`` compares the per-round regrets only): learn the causal effect ONLINE
+    while controlling. Per round the control regret is the certainty-equivalence coefficient ``C``
+    times the squared estimation err.
+    A **de-confounded** online estimator (backdoor on ``z``) is consistent, ``err^2 ~ sigma^2/t``,
+    so cumulative regret grows like ``log T`` (sublinear); a **confounded** one has err^2 -> beta^2
+    (systematic), a per-round floor, so cumulative regret is linear in ``T``. The doubling
+    ratio ``cum(T)/cum(T/2)`` separates them: ``-> 1`` (log) vs ``-> 2`` (linear). Scope: the
+    ``O(log T)`` rate is specific to this scalar, persistently-identified setting -- NOT universal
+    for adaptive control, where uninformative systems admit ``sqrt(T)`` lower bounds
+    (Simchowitz-Foster; Ziemann et al.). The content is the deconfounded-vs-confounded separation.
+    """
+    coeff = xt**2 * (rr - b_true**2) ** 2 / (rr + b_true**2) ** 3  # per-round regret / error^2
+    half = n_rounds // 2  # last two checkpoints are T/2 and T, an exact horizon doubling
+    grid = np.geomspace(20, half, 10).astype(int)
+    checkpoints = np.unique(np.concatenate([grid, [half, n_rounds]]))
+    deconf = np.zeros((n_seeds, checkpoints.size))
+    conf = np.zeros((n_seeds, checkpoints.size))
+    for s in range(n_seeds):
+        rng = np.random.default_rng(s)
+        gram = ridge * np.eye(3)  # running Gram of features [1, u, z]
+        xy = np.zeros(3)  # running [1,u,z] . y
+        cum_d, cum_c, j = 0.0, 0.0, 0
+        for t in range(1, n_rounds + 1):
+            z = rng.standard_normal()
+            u = alpha * z + rng.standard_normal()  # confounded excitation
+            y = b_true * u + gamma * z + noise * rng.standard_normal()
+            feat = np.array([1.0, u, z])
+            gram += np.outer(feat, feat)
+            xy += feat * y
+            b_deconf = np.linalg.solve(gram, xy)[1]  # controls z (backdoor): consistent
+            b_conf = np.linalg.solve(gram[:2, :2], xy[:2])[1]  # ignores z: confounded
+            cum_d += coeff * (b_deconf - b_true) ** 2
+            cum_c += coeff * (b_conf - b_true) ** 2
+            if j < checkpoints.size and t == checkpoints[j]:
+                deconf[s, j], conf[s, j] = cum_d, cum_c
+                j += 1
+    d_med, c_med = np.median(deconf, axis=0), np.median(conf, axis=0)
+    d_double = float(d_med[-1] / d_med[-2])
+    c_double = float(c_med[-1] / c_med[-2])
+    return BanditCausalCurve(checkpoints.astype(float), d_med, c_med, d_double, c_double)
+
+
+@dataclass(frozen=True)
+class FiniteHorizonPLCurve:
+    """PL self-certifying bound valid over a full finite horizon at mu = lambda_min(Hessian)."""
+
+    horizons: Vector  # horizon lengths T
+    mu_min: Vector  # lambda_min of the horizon-objective Hessian (the strong-convexity constant)
+    bound_slack: Vector  # min over samples of (PL bound - true regret) -- non-negative = valid
+    worst_mode_ratio: Vector  # PL bound / regret along the min-curvature eigenvector (~1, tight)
+
+
+def finite_horizon_pl_certificate(
+    *,
+    a: float = 0.9,
+    b: float = 1.0,
+    q: float = 1.0,
+    r: float = 0.5,
+    qf: float = 5.0,
+    x0: float = 1.0,
+    horizons: Sequence[int] = (3, 5, 8, 13, 21),
+    n_samples: int = 200,
+    seed: int = 0,
+) -> FiniteHorizonPLCurve:
+    """Finite-horizon (multivariate) version of the PL self-certifying regret bound (result #3),
+    without the steady-state / setpoint simplification of the dynamic result 1d. For the *full*
+    finite-horizon LQ objective ``J(U)``, ``U = (u_0,...,u_{T-1})``, the regret admits the bound
+    ``grad^2 / (2*lambda_min(H))`` (``H`` the Hessian) -- self-certified from the achieved gradient
+    over the whole trajectory, no optimum needed. Justified per-eigenmode by
+    ``proofs/nonlinear_regret.v`` (`pl_mode_bound`): the min-curvature mode is tight, stiffer modes
+    slack. Verifies the bound is valid (upper-bounds the true regret) for random controls and tight
+    along the min-curvature eigenvector, across horizons.
+    """
+    rng = np.random.default_rng(seed)
+    hs = np.asarray(horizons, dtype=np.float64)
+    mu_min = np.zeros(hs.size)
+    slack = np.zeros(hs.size)
+    wmr = np.zeros(hs.size)
+    for i, tf in enumerate(horizons):
+        t = int(tf)
+        idx = np.arange(t)
+        lag = idx[:, None] - idx[None, :]  # row - col
+        g_map = b * np.where(lag >= 0, a ** np.abs(lag), 0.0)  # controllability map (lower-tri)
+        free = a ** (idx + 1) * x0  # free response of x_{row+1}
+        q_bar = np.diag([q] * (t - 1) + [qf])
+        hess = 2 * (g_map.T @ q_bar @ g_map + r * np.eye(t))
+        lin = 2 * g_map.T @ q_bar @ free
+        u_star = np.linalg.solve(hess, -lin)
+        evals, evecs = np.linalg.eigh(hess)
+        mu = float(evals[0])
+        mu_min[i] = mu
+
+        def cost(
+            u: np.ndarray, gm: np.ndarray = g_map, fr: np.ndarray = free, qb: np.ndarray = q_bar
+        ) -> float:
+            x = fr + gm @ u
+            return float(x @ qb @ x + r * (u @ u))
+
+        j_star = cost(u_star)
+        worst = np.inf
+        for _ in range(n_samples):
+            u = u_star + rng.standard_normal(t)
+            grad = hess @ (u - u_star)
+            worst = min(worst, grad @ grad / (2 * mu) - (cost(u) - j_star))
+        slack[i] = float(worst)
+        u = u_star + 0.3 * evecs[:, 0]  # perturb along the min-curvature eigenvector
+        grad = hess @ (u - u_star)
+        wmr[i] = float((grad @ grad / (2 * mu)) / (cost(u) - j_star))
+    return FiniteHorizonPLCurve(hs, mu_min, slack, wmr)
+
+
+@dataclass(frozen=True)
+class InterferenceConvexityCurve:
+    """Cannibalising interference raises the convexity, so the self-certifying PL bound tightens."""
+
+    cannibalisation: Vector  # kappa_int grid (interference / congestion curvature)
+    mu_eff: Vector  # effective strong-convexity mu + kappa_int
+    aware_bound: Vector  # interference-aware PL bound grad^2/(2*mu_eff) -- exact for the quadratic
+    blind_bound: Vector  # interference-blind PL bound grad^2/(2*mu) -- over-states, loose
+    true_regret: Vector  # actual J(u) - J*
+
+
+def interference_convexity_certificate(
+    *,
+    mu: float = 1.0,
+    a: float = 1.0,
+    u_eval: float = 1.5,
+    cannibalisations: Sequence[float] = (0.0, 0.5, 1.0, 2.0, 4.0),
+) -> InterferenceConvexityCurve:
+    """Strong convexity under interference (combines the PL bound of ``nonlinear_regret`` with the
+    interference of §A; derived in ``validation/interference_convexity.mac``, proved in
+    ``proofs/interference_convexity.v``). Marketplace interference cannibalises: the benefit of
+    incentivising saturates, adding convexity, so the effective strong-convexity rises to
+    ``mu + kappa_int``. Since the PL self-certifying bound ``grad^2/(2 mu)`` is antitone in the
+    convexity, cannibalising interference makes the certificate **tighter** -- a curse-and-blessing
+    duality (interference hurts identification but helps the control certificate). The
+    interference-aware bound (using ``mu + kappa_int``) is exact for the quadratic; the blind one
+    (using ``mu``) over-states the regret by the growing ratio ``(mu + kappa_int)/mu``.
+    """
+    k = np.asarray(cannibalisations, dtype=np.float64)
+    mu_eff = mu + k
+    d = u_eval - a / mu_eff  # deviation of the fixed action from the (interference-shifted) optimum
+    grad = mu_eff * d
+    aware = grad**2 / (2 * mu_eff)  # interference-aware bound (exact for the quadratic)
+    blind = grad**2 / (2 * mu)  # interference-blind bound (over-states, loosens with kappa)
+    return InterferenceConvexityCurve(k, mu_eff, aware, blind, 0.5 * mu_eff * d**2)
+
+
+@dataclass(frozen=True)
+class InterferenceOrthogonalCurve:
+    """Under interference you must debias BOTH channels: a half measure stays O(eps^2)."""
+
+    errors: Vector  # nuisance-estimation error levels eps
+    plugin_exponent: float  # ~2: plug-in both the direct and the spillover effect
+    half_orthogonal_exponent: float  # ~2: orthogonalise the direct channel only (spillover wins)
+    full_orthogonal_exponent: float  # ~4: orthogonalise both direct and spillover channels
+
+
+def _channel_effect(
+    rng: np.random.Generator,
+    n: int,
+    eps: float,
+    b: float,
+    alpha: float,
+    gamma: float,
+    noise: float,
+    *,
+    orthogonal: bool,
+) -> float:
+    """Estimate one confounded channel's effect; single residualisation is O(eps)-biased in the
+    nuisance error, double residualisation (orthogonal DML) is O(eps^2)-biased.
+    """
+    z = rng.standard_normal(n)
+    u = alpha * z + rng.standard_normal(n)
+    y = b * u + gamma * z + noise * rng.standard_normal(n)
+    m_y = (b * alpha + gamma) * z + eps * z
+    m_u = alpha * z + eps * z
+    u_res = u - m_u
+    if orthogonal:
+        return float(np.dot(u_res, y - m_y) / np.dot(u_res, u_res))
+    return float(np.dot(u_res, y) / np.dot(u_res, u))
+
+
+def interference_orthogonal_certificate(
+    *,
+    b_direct: float = 2.0,
+    b_int: float = 1.5,
+    rr: float = 0.5,
+    target: float = 1.0,
+    errors: Sequence[float] = (0.2, 0.1, 0.05, 0.025, 0.0125),
+    n: int = 300_000,
+    n_seeds: int = 6,
+    alpha: float = 1.0,
+    gamma: float = 1.5,
+    noise: float = 0.05,
+) -> InterferenceOrthogonalCurve:
+    """Interference x orthogonality (combines ``proofs/interference_regret.v`` and
+    ``proofs/orthogonal_control.v``; derived in ``validation/interference_orthogonal.mac``). Under
+    interference the control effect is ``B = b_direct + b_interference`` (direct + spillover), so
+    control regret is quadratic in the total estimation error. Double ML makes a channel's error
+    ``O(eps^2)``. The non-obvious consequence: you must orthogonalise **both** channels -- debiasing
+    only the direct effect leaves the spillover error at ``O(eps)``, which then dominates the regret
+    at ``O(eps^2)``; only double orthogonalisation reaches ``O(eps^4)``. Fits the three slopes
+    (~2, ~2, ~4).
+    """
+    b_total = b_direct + b_int
+
+    def cost(u: float) -> float:
+        return (b_total * u - target) ** 2 + rr * u**2
+
+    opt_cost = cost(target * b_total / (b_total**2 + rr))
+
+    def regret(b_hat: float) -> float:
+        return cost(target * b_hat / (b_hat**2 + rr)) - opt_cost
+
+    err = np.asarray(errors, dtype=np.float64)
+    arms = {"plugin": (False, False), "half": (True, False), "full": (True, True)}
+    slopes: dict[str, float] = {}
+    for name, (orth_d, orth_i) in arms.items():
+        med = np.zeros(err.size)
+        for j, eps in enumerate(err):
+            regs = []
+            for s in range(n_seeds):
+                rng = np.random.default_rng(1000 * s + j)
+                bd = _channel_effect(rng, n, eps, b_direct, alpha, gamma, noise, orthogonal=orth_d)
+                bi = _channel_effect(rng, n, eps, b_int, alpha, gamma, noise, orthogonal=orth_i)
+                regs.append(regret(bd + bi))
+            med[j] = float(np.median(regs))
+        slopes[name] = float(np.polyfit(np.log(err), np.log(np.abs(med)), 1)[0])
+    return InterferenceOrthogonalCurve(err, slopes["plugin"], slopes["half"], slopes["full"])
+
+
+@dataclass(frozen=True)
+class DynamicCausalCurve:
+    """Confounded tracking regret grows linearly with the horizon; causal control plateaus."""
+
+    horizons: Vector  # swept horizon lengths T
+    predictive_regret: Vector  # cumulative predictive-vs-causal tracking regret (grows ~ linearly)
+    causal_cost: Vector  # cumulative causal tracking cost (bounded: transient only)
+    growth_slope: float  # fitted linear slope of predictive_regret vs T (= per-step floor)
+
+
+def dynamic_causal_regret_certificate(
+    *,
+    a: float = 0.7,
+    b: float = 1.0,
+    beta: float = 0.5,
+    x_ref: float = 1.0,
+    x0: float = 0.0,
+    q: float = 1.0,
+    horizons: Sequence[int] = (10, 20, 40, 80, 160),
+) -> DynamicCausalCurve:
+    """The DYNAMIC confounding theorem (derived in ``validation/dynamic_causal_mpc.mac``;
+    ``proofs/dynamic_causal_mpc.v`` proves the floor ``q*offset^2 > 0`` and that ``T`` times it
+    grows without bound): a tracking controller ``x' = a x + b u`` using a confounded effect
+    estimate ``b_obs = b + beta`` settles at a persistent steady-state offset and
+    pays a per-step floor ``q*offset^2`` every step, so its cumulative regret grows *linearly in the
+    horizon T* (unbounded), while the causal controller (effect ``b``) tracks exactly and its
+    cumulative cost is bounded (the transient only). The fitted growth slope equals the per-step
+    floor ``q*(x_ref*beta/b_obs)^2``.
+    """
+    b_obs = b + beta
+
+    def cumulative_cost(b_hat: float, horizon: int) -> float:
+        u_ss = (1.0 - a) * x_ref / b_hat  # feedforward to hold x_ref if the effect were b_hat
+        x, cost = x0, 0.0
+        for _ in range(horizon):
+            cost += q * (x - x_ref) ** 2
+            x = a * x + b * u_ss  # true plant
+        return cost
+
+    hs = np.asarray(horizons, dtype=np.float64)
+    predictive = np.array([cumulative_cost(b_obs, int(t)) for t in hs])
+    causal = np.array([cumulative_cost(b, int(t)) for t in hs])
+    regret = predictive - causal
+    slope = float(np.polyfit(hs, regret, 1)[0])
+    return DynamicCausalCurve(hs, regret, causal, slope)
+
+
+def strong_convexity_regret_bound(grad_norm_sq: float, mu: float) -> float:
+    """Self-certifying regret upper bound ``||grad J(u)||^2 / (2 mu)`` for a ``mu``-strongly-convex
+    cost -- GLOBAL (beyond the local linearisation), computed from the achieved gradient alone,
+    without knowing the optimum: ``2*mu*(J(u) - J*) <= ||grad J(u)||^2`` (the Polyak-Lojasiewicz /
+    strong-convexity bound). ``proofs/nonlinear_regret.v`` proves it for a scalar action, from the
+    strong-convexity inequality between ``u`` and the optimum taken as a hypothesis; the vector
+    case is the same completion of the square with an inner product, which is not formalised.
+    """
+    return grad_norm_sq / (2.0 * mu)
+
+
+@dataclass(frozen=True)
+class NonlinearRegretCurve:
+    """A strong-convexity bound stays valid globally where a linearised estimate under-states."""
+
+    control: Vector  # action grid u (distance from the optimum at 0)
+    true_regret: Vector  # J(u) - J*
+    pl_bound: Vector  # the self-certifying strong-convexity bound grad^2/(2 mu)
+    linearized_estimate: Vector  # a fixed-Hessian local estimate -- under-states away from optimum
+
+
+def nonlinear_regret_certificate(
+    *, mu: float = 1.0, kappa: float = 0.5, u_max: float = 2.0, points: int = 25
+) -> NonlinearRegretCurve:
+    """On the genuinely nonlinear cost ``J(u) = mu/2 u^2 + kappa u^4`` (minimum at ``u = 0``) the
+    strong-convexity bound ``grad^2/(2 mu)`` upper-bounds the true regret *everywhere* (beyond the
+    linearisation), while the fixed-Hessian local estimate ``mu/2 u^2`` under-states it away from
+    the optimum -- an unsafe certificate exactly where a valid one is needed. This is a control
+    specialization of the STANDARD strong-convexity / Polyak-Lojasiewicz certificate, not a new PL
+    result. Verifies ``proofs/nonlinear_regret.v`` and ``validation/nonlinear_regret.mac``.
+    """
+    u = np.linspace(0.0, u_max, points)
+    true_regret = mu / 2 * u**2 + kappa * u**4
+    grad = mu * u + 4 * kappa * u**3
+    return NonlinearRegretCurve(u, true_regret, grad**2 / (2 * mu), mu / 2 * u**2)
+
+
+@dataclass(frozen=True)
+class CausalControlCurve:
+    """Predictive control plateaus at a confounding floor; causal control reaches the oracle."""
+
+    sample_sizes: Vector  # swept dataset sizes n
+    predictive_regret: Vector  # median regret of the observational (confounded) controller
+    causal_regret: Vector  # median regret of the interventional (de-confounded) controller
+    predictive_floor: float  # analytic confounding floor (b^2+rr)*(u*(b+beta)-u*(b))^2, fixed in n
+
+
+def causal_vs_predictive_certificate(
+    *,
+    b_true: float = 1.0,
+    alpha: float = 1.0,
+    gamma: float = 1.0,
+    target: float = 1.0,
+    effort: float = 0.5,
+    sample_sizes: Sequence[int] = (500, 2000, 8000, 32000, 128000),
+    n_seeds: int = 8,
+    noise: float = 0.3,
+) -> CausalControlCurve:
+    """Empirical proof that predictive control is asymptotically wrong under confounding, while the
+    causal controller is consistent (the regret identity and its positivity proved in
+    ``proofs/causal_mpc.v``; the non-vanishing omitted-variable bias derived in
+    ``validation/causal_mpc.mac``; the hardened notebook-01 headline).
+
+    A confounder ``z`` drives both action and outcome (``u = alpha z + noise``,
+    ``y = b_true u + gamma z + noise``). The controller hits ``target`` from its estimate of the
+    control effect ``b``. The **predictive** controller regresses ``y`` on ``u`` (observational, so
+    confounded): as ``n -> inf`` it converges to ``b + beta`` (a fixed omitted-variable bias),
+    and its control regret converges to a positive floor that does **not** vanish. The
+    **causal** controller partials ``z`` out (backdoor), so its estimate converges to ``b_true`` and
+    its regret ``-> 0``. Only causal identification closes the gap.
+    """
+
+    def u_star(b: float) -> float:
+        return target * b / (b**2 + effort)
+
+    def cost(u: float, b: float) -> float:
+        return (b * u - target) ** 2 + effort * u**2
+
+    u_opt = u_star(b_true)
+
+    def regret(b_hat: float) -> float:
+        return cost(u_star(b_hat), b_true) - cost(u_opt, b_true)
+
+    beta = gamma * alpha / (alpha**2 + 1.0)  # population OVB with Var(z)=Var(noise_u)=1
+    floor = regret(b_true + beta)
+
+    sizes = np.asarray(sample_sizes)
+    pred = np.zeros((n_seeds, sizes.size))
+    caus = np.zeros((n_seeds, sizes.size))
+    for s in range(n_seeds):
+        rng = np.random.default_rng(s)
+        for j, n in enumerate(sizes):
+            z = rng.standard_normal(n)
+            u = alpha * z + rng.standard_normal(n)
+            y = b_true * u + gamma * z + noise * rng.standard_normal(n)
+            b_pred = float(np.dot(u, y) / np.dot(u, u))  # observational: confounded
+            zc = z - z.mean()
+            u_res = u - (np.dot(u, zc) / np.dot(zc, zc)) * zc  # partial z out of u (backdoor)
+            y_res = y - (np.dot(y, zc) / np.dot(zc, zc)) * zc
+            b_caus = float(np.dot(u_res, y_res) / np.dot(u_res, u_res))
+            pred[s, j], caus[s, j] = regret(b_pred), regret(b_caus)
+    return CausalControlCurve(sizes, np.median(pred, axis=0), np.median(caus, axis=0), float(floor))
+
+
+def interference_regret_certificate(
+    a: Matrix,
+    b: Matrix,
+    q: Matrix,
+    r: Matrix,
+    x0: Vector,
+    *,
+    interference_ratio: float = 1.0,
+    errors: Sequence[float] = _DEFAULT_ERRORS,
+    n_samples: int = 400,
+    seed: int = 0,
+) -> RegretCurve:
+    """Interference-aware regret certificate: CE suboptimality is quadratic in the *total* error
+    ``eid + eint`` -- the sum of an identification error ``eid`` of the autonomous dynamics (``dA``)
+    and an interference / exposure-map error ``eint`` of the actuation channel (``dB``).
+
+    This is the empirical twin of the machine-checked bound in ``proofs/interference_regret.v``
+    (``regret <= (kappa C^2 / 2) (eid + eint)^2``, the regret taken as the smoothness surrogate
+    ``kappa/2*d^2`` and the plan error assumed at most ``C*(eid + eint)``): the interference
+    error enters *additively* inside the square, so ignoring it under-states the regret. Sets
+    ``eint = interference_ratio * eid``; the recorded error is the additive ``||dA|| + ||dB||`` (not
+    the Euclidean norm), so the fitted slope tests the quadratic-in-total law directly (~2).
+    """
+    rng = np.random.default_rng(seed)
+    median_errors: list[float] = []
+    median_gaps: list[float] = []
+    log_err: list[float] = []
+    log_gap: list[float] = []
+    inf_frac: list[float] = []
+    for eps in errors:
+        eid, eint = eps, interference_ratio * eps
+        errs, gaps = [], []
+        unbounded = 0
+        for _ in range(n_samples):
+            d_a = eid * rng.normal(size=a.shape)  # identification error (autonomous dynamics)
+            d_b = eint * rng.normal(size=b.shape)  # interference / exposure-map error (actuation)
+            try:
+                gap = certainty_equivalence_gap(a, b, q, r, a + d_a, b + d_b, x0)
+            except (np.linalg.LinAlgError, ValueError):
+                unbounded += 1
+                continue
+            total = float(np.sqrt(np.sum(d_a**2)) + np.sqrt(np.sum(d_b**2)))  # additive eid + eint
+            if not np.isfinite(gap):
+                unbounded += 1
+                continue
+            if gap > 0.0 and total > 0.0:
+                errs.append(total)
+                gaps.append(gap)
+        inf_frac.append(unbounded / n_samples)
+        if errs:
+            median_errors.append(float(np.median(errs)))
+            median_gaps.append(float(np.median(gaps)))
+            log_err.extend(np.log(errs))
+            log_gap.extend(np.log(gaps))
+    exponent = float(np.polyfit(log_err, log_gap, 1)[0]) if log_err else float("nan")
+    return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent, np.array(inf_frac))
+
+
+# --- Result 33: confounding-robust LQ regret (bounded density ratio -> CVaR radius -> floor) ---
+
+
+def _lq_static_optimum(effect: float, effort: float, target: float) -> float:
+    """Optimal static control ``u*(b) = b*target/(b^2 + r)`` for ``(b*u - target)^2 + r*u^2``."""
+    return effect * target / (effect**2 + effort)
+
+
+def lq_regret_sensitivity(effect: float, effort: float, target: float) -> float:
+    """Second-order regret sensitivity ``L_reg = target^2*(r-b^2)^2/(b^2+r)^3`` of the LQ toy.
+
+    The leading coefficient of the certainty-equivalence regret in the effect error: applying the
+    optimum for a wrong effect ``b_hat = b + delta`` costs ``L_reg*delta^2 + O(delta^3)`` on the
+    true plant (order-doubling -- linear effect error, quadratic control regret). Verified against
+    the exact regret in ``validation/confounding_lq_regret.mac`` / the certificate below.
+    Nonnegative; zero at the degenerate ``r = b^2`` (where ``u*`` is locally flat in the effect).
+    """
+    return target**2 * (effort - effect**2) ** 2 / (effect**2 + effort) ** 3
+
+
+def confounding_robust_lq_regret(
+    regret_sensitivity: float, stat_error: float, confounding_halfwidth: float
+) -> float:
+    """Second-order confounding-robust LQ regret ``L_reg*(eps + Delta)^2`` (the formula is Rocq's
+    definition ``cr_regret``).
+
+    It is the leading term of the worst regret over an effect error of ``eps + Delta``, ``eps`` the
+    ``stat_error``, not a bound on it: the terms of third order and up are left out. At the
+    certificate's defaults the exact worst regret over that interval exceeds it by 0.9% at
+    ``Gamma = 1`` and by 5% to 8% at ``Gamma`` from 1.5 to 5. Read it as a bound only where
+    ``eps + Delta`` is small against the distance from the effect to where ``u*`` turns,
+    ``sqrt(r)``.
+
+    ``Delta`` is the confounding half-width on the effect estimate -- the §32 inflation
+    (:func:`chc.uncertainty.confounding_robust_inflation`), an *irreducible* bias floor that does
+    not vanish with sample size. Pushed through the order-doubling regret map it becomes a
+    control-regret floor ``L_reg*Delta^2``: the LOCAL LQ control regret is SECOND-order in the
+    confounding-induced effect bias (Rocq ``floor_below_linear``: ``L_reg*Delta^2<=L_reg*Delta`` on
+    ``[0,1]``) -- a local-toy statement, not a general robustness claim. ``Delta=0`` (``Gamma=1``,
+    point identification) recovers the statistical regret ``L_reg*eps^2``.
+    """
+    return regret_sensitivity * (stat_error + confounding_halfwidth) ** 2
+
+
+def confounding_robust_lq_regret_matrix(
+    curvature: Matrix, stat_error: Matrix, confounding: Matrix
+) -> float:
+    """Matrix confounding-robust LQ regret ``tr(E^T H E)``, ``E = stat + confounding``.
+
+    The Frobenius lift of the scalar approximation via the §21 matrix order-doubling (the scalar
+    order-doubling is Rocq ``regret_order_2p``; the matrix step ``tr(E^T H E) <=
+    lambda_max(H)*||E||_F^2`` is standard and not in Rocq): for a positive-semidefinite LQ regret
+    curvature ``H`` and effect-error
+    matrix ``E``, the regret is the quadratic form ``tr(E^T H E) = O(||E||_F^2)``. The confounding
+    floor (``stat = 0``) is ``tr(Delta^T H Delta)`` -- SECOND order in the Frobenius norm of the
+    matrix confounding half-width, the same second-order robustness as the scalar §33. Reduces to
+    :func:`confounding_robust_lq_regret` in the ``1x1`` case, and is a second-order term as that is,
+    not a bound on the worst regret.
+    """
+    e = np.asarray(stat_error, dtype=np.float64) + np.asarray(confounding, dtype=np.float64)
+    h = np.asarray(curvature, dtype=np.float64)
+    return float(np.trace(e.T @ h @ e))
+
+
+@dataclass(frozen=True)
+class ConfoundingRobustLQRegretCurve:
+    """Evidence the confounding regret order-doubles effect error and floors at Delta^2."""
+
+    gammas: Vector  # swept §32 sensitivity levels Gamma
+    # R(Gamma) = L_reg*(eps + Delta(Gamma))^2, the regret to second order: not a bound, the exact
+    # regret's worst over the effect interval exceeds it by up to 8.4 % on the defaults
+    regret_bounds: Vector
+    statistical: float  # R(Gamma=1) = L_reg*eps^2 (no confounding penalty)
+    floor_quadratic_ratio: float  # floor(2*Delta)/floor(Delta): ~4.0 => quadratic in the width
+    order_doubling_ratio: float  # exact regret / (L_reg*delta^2) at small delta: ~1.0
+    ok: bool
+
+
+def confounding_robust_lq_regret_certificate(
+    effect: float = 1.3,
+    effort: float = 0.4,
+    target: float = 1.0,
+    stat_error: float = 0.02,
+    cvar_gap: float = 0.5,
+    gammas: Sequence[float] = (1.0, 1.5, 2.0, 3.0, 5.0),
+) -> ConfoundingRobustLQRegretCurve:
+    """Confirm ``L_reg`` matches the exact toy regret and the Gamma sweep floors quadratically.
+
+    Grounds the analytic ``lq_regret_sensitivity`` against the exact static-LQ regret
+    ``kappa*(u*(b_hat) - u*(b))^2`` at a small perturbation (ratio -> 1 proves the coefficient),
+    then maps each ``Gamma`` to its confounding half-width via the §32 inflation and checks the
+    second-order regret is monotone, recovers the statistical regret at ``Gamma=1``, and floors at
+    ``Delta^2``. ``regret_bounds`` holds that second-order regret, which the exact one exceeds (see
+    :func:`confounding_robust_lq_regret`). Only the first of ``ok``'s four gates is a measurement:
+    the other three hold by the algebra of ``L_reg (eps + Delta)^2`` whatever the plant, its
+    ``floor_quadratic_ratio`` being ``(2 Delta)^2 / Delta^2``.
+    """
+    from chc.uncertainty import (
+        confounding_robust_inflation,  # §32 half-width; local to keep JAX out
+    )
+
+    l_reg = lq_regret_sensitivity(effect, effort, target)
+
+    # order-doubling: exact regret vs the quadratic coefficient at a small effect perturbation
+    delta = 1e-4
+    kappa = effect**2 + effort
+    u_hat = _lq_static_optimum(effect + delta, effort, target)
+    u_star = _lq_static_optimum(effect, effort, target)
+    exact = kappa * (u_hat - u_star) ** 2
+    order_doubling_ratio = exact / (l_reg * delta**2)
+
+    halfwidths = [confounding_robust_inflation(cvar_gap, 0.0, g) for g in gammas]
+    bounds = [confounding_robust_lq_regret(l_reg, stat_error, d) for d in halfwidths]
+    statistical = confounding_robust_lq_regret(l_reg, stat_error, 0.0)
+
+    base = confounding_robust_lq_regret(l_reg, 0.0, cvar_gap)  # pure-confounding floor at width=gap
+    doubled = confounding_robust_lq_regret(l_reg, 0.0, 2.0 * cvar_gap)
+    floor_ratio = doubled / base
+
+    monotone = all(bounds[i] <= bounds[i + 1] + 1e-15 for i in range(len(bounds) - 1))
+    ok = (
+        abs(order_doubling_ratio - 1.0) < 1e-3  # L_reg is the true leading coefficient
+        and abs(bounds[0] - statistical) < 1e-15  # Gamma=1 recovers the statistical regret
+        and monotone
+        and abs(floor_ratio - 4.0) < 1e-9  # floor is quadratic in the confounding half-width
+    )
+    return ConfoundingRobustLQRegretCurve(
+        gammas=np.array(gammas),
+        regret_bounds=np.array(bounds),
+        statistical=statistical,
+        floor_quadratic_ratio=float(floor_ratio),
+        order_doubling_ratio=float(order_doubling_ratio),
+        ok=ok,
+    )
+
+
+# --- Result 35: minimax confounding-robust controller under asymmetric loss ---
+
+
+def certainty_equivalence_control(effect_estimate: float, target: float) -> float:
+    """CE control ``u = target/b_hat`` -- centres the outcome ``b*u`` at target under ``b_hat``."""
+    return target / effect_estimate
+
+
+def _identified_sign(effect_estimate: float, halfwidth: float) -> None:
+    if not 0.0 <= halfwidth <= effect_estimate or effect_estimate <= 0.0:
+        raise ValueError(
+            f"the robust control needs an effect interval of one sign, 0 <= halfwidth <= "
+            f"effect_estimate with effect_estimate > 0; got effect_estimate = {effect_estimate}, "
+            f"halfwidth = {halfwidth}. Where the interval holds effects of both signs, the "
+            "minimax control is 0"
+        )
+
+
+def confounding_robust_control(
+    effect_estimate: float,
+    halfwidth: float,
+    target: float,
+    overshoot_penalty: float,
+    undershoot_penalty: float,
+) -> float:
+    """Minimax control over the §32 effect interval ``[b_hat +/- halfwidth]`` under asymmetric loss.
+
+    Loss ``alpha*(y-target)_+ + beta*(target-y)_+`` on the outcome ``y = b*u``; the controller does
+    not know ``b`` in the confounding interval. The minimax ``u`` balances the two weighted worst
+    tails (``validation/confounding_robust_control.mac``): ``u = (alpha+beta)*target /
+    (alpha*(b_hat+D) + beta*(b_hat-D))``. Equals ``u_CE/(1 + kappa*D)`` with
+    ``kappa = (alpha-beta)/((alpha+beta)*b_hat)`` -- the pessimism radius ``D`` SHIFTS the gain, a
+    sign DICHOTOMY (Rocq): ``a>=b`` -> ``kappa>=0`` -> ``u_rob<=u_CE``, conservative
+    (``shift_factor_nonneg`` / ``robust_gain_conservative``); ``a<=b`` -> ``kappa<=0`` ->
+    ``u_rob>=u_CE``, aggressive (``shift_factor_nonpos`` / ``robust_gain_aggressive``). CE when
+    symmetric (``a=b`` -> ``kappa=0``). Here ``a=overshoot_penalty``, ``b=undershoot_penalty``.
+
+    SCOPE: a minimax STATIC tracking toy, not a general robust controller -- assumes
+    ``b_hat >= halfwidth >= 0`` (the effect interval has an identified sign, so the denominator is
+    positive), ``alpha, beta > 0``, and NO effort/control penalty (pure outcome tracking). The
+    dynamic/effort-penalised case is out of scope. A negative ``target`` is the mirror image: the
+    control is negative, the outcome is largest at ``b_hat - D``, and the two penalties trade
+    places, ``u = (alpha+beta)*target / (alpha*(b_hat-D) + beta*(b_hat+D))``.
+
+    Raises:
+        ValueError: where ``halfwidth`` is negative or above ``effect_estimate``. Past
+            ``b_hat`` the interval holds effects of both signs and the closed form is not the
+            minimax: at ``b_hat = 1``, ``D = 1.5``, ``target = 1``, ``alpha = 1``, ``beta = 3`` it
+            returns 4, whose worst-case loss is 9, where doing nothing, ``u = 0``, is the minimax
+            at ``beta*target = 3``.
+    """
+    _identified_sign(effect_estimate, halfwidth)
+    if target < 0.0:
+        return -confounding_robust_control(
+            effect_estimate, halfwidth, -target, undershoot_penalty, overshoot_penalty
+        )
+    return (
+        (overshoot_penalty + undershoot_penalty)
+        * target
+        / (
+            overshoot_penalty * (effect_estimate + halfwidth)
+            + undershoot_penalty * (effect_estimate - halfwidth)
+        )
+    )
+
+
+def worst_case_asymmetric_loss(
+    control: float,
+    effect_estimate: float,
+    halfwidth: float,
+    target: float,
+    overshoot_penalty: float,
+    undershoot_penalty: float,
+) -> float:
+    """Worst-case asymmetric loss of applying ``control`` over the §32 effect interval.
+
+    The outcome ``b*u`` is linear in ``b``, so its worst overshoot and undershoot are at the
+    interval's ends: for ``u > 0`` the overshoot at ``b_hat+D`` and the undershoot at ``b_hat-D``,
+    for ``u < 0`` the other way round. The worst-case loss is the max of the two weighted tails.
+    """
+    ends = ((effect_estimate - halfwidth) * control, (effect_estimate + halfwidth) * control)
+    overshoot = max(0.0, max(ends) - target)
+    undershoot = max(0.0, target - min(ends))
+    return max(overshoot_penalty * overshoot, undershoot_penalty * undershoot)
+
+
+def asymmetric_control_improvement(
+    effect_estimate: float,
+    halfwidth: float,
+    target: float,
+    overshoot_penalty: float,
+    undershoot_penalty: float,
+) -> float:
+    """Piecewise worst-case-loss improvement ``W_CE - W_rob`` of the §35 robust controller over CE.
+
+    ``W_rob = 2*a*b*target*D/Q`` (branch-free, ``Q = (a+b)*b_hat + (a-b)*D``), but
+    ``W_CE = max(a,b)*target*D/b_hat``, so the improvement is PIECEWISE (reviewer-8): the
+    OVERSHOOT-dominant branch ``a*target*D*(a-b)*(b_hat+D)/(b_hat*Q)`` for ``a >= b`` and the
+    UNDERSHOOT-dominant branch ``b*target*D*(b-a)*(b_hat-D)/(b_hat*Q)`` for ``b >= a`` (Rocq
+    ``rob_gap_*`` / ``rob_gap_under_*``). Both are ``>= 0`` for ``b_hat > D > 0`` and ``> 0`` iff
+    ``a != b`` and ``D > 0`` -- the old single formula only covered ``a >= b`` (missing Result 37's
+    ``b = 4*a`` regime). Here ``a = overshoot_penalty``, ``b = undershoot_penalty``. A negative
+    ``target`` is the mirror image, with the two penalties trading places.
+
+    Raises:
+        ValueError: where ``halfwidth`` is negative or above ``effect_estimate``, as
+            :func:`confounding_robust_control`: there the robust control is not the minimax, and
+            at ``b_hat = 1``, ``D = 1.5``, ``target = 1``, ``alpha = 1``, ``beta = 2`` the
+            formula read -1 where doing nothing improves on CE by 1.
+    """
+    _identified_sign(effect_estimate, halfwidth)
+    if target < 0.0:
+        return asymmetric_control_improvement(
+            effect_estimate, halfwidth, -target, undershoot_penalty, overshoot_penalty
+        )
+    a, b, bhat, d = overshoot_penalty, undershoot_penalty, effect_estimate, halfwidth
+    q = (a + b) * bhat + (a - b) * d
+    if a >= b:
+        return a * target * d * (a - b) * (bhat + d) / (bhat * q)
+    return b * target * d * (b - a) * (bhat - d) / (bhat * q)
+
+
+@dataclass(frozen=True)
+class ConfoundingRobustControlCurve:
+    """Evidence the pessimism radius shifts the gain and strictly beats CE under asymmetric loss."""
+
+    u_certainty_equivalence: float
+    u_robust: float  # shifted by the pessimism radius: below u_CE where overshoot costs more
+    worst_case_loss_ce: float
+    worst_case_loss_robust: float  # < CE under asymmetry, = CE without: pessimism helps
+    numeric_argmin: float  # grid-search argmin of the worst-case loss (matches u_robust)
+    symmetric_equals_ce: bool  # alpha=beta -> robust control == target/b_hat, THIS loss's CE action
+    ok: bool
+
+
+def confounding_robust_control_certificate(
+    effect_estimate: float = 1.3,
+    halfwidth: float = 0.25,
+    target: float = 1.0,
+    overshoot_penalty: float = 3.0,
+    undershoot_penalty: float = 1.0,
+) -> ConfoundingRobustControlCurve:
+    """Confirm the closed-form minimax control is the numeric argmin and strictly beats CE.
+
+    Grid-searches the worst-case loss over ``u`` (the analytic ``u_robust`` should be its argmin),
+    then checks the robust control is shifted the way the sign dichotomy says -- below CE where
+    overshoot costs more, above it where undershoot does -- and its worst-case loss is strictly
+    smaller where the loss is asymmetric and the interval has width, while a symmetric loss
+    reproduces CE exactly. Up to 0.18.0 ``ok`` asked for ``u_robust < u_CE`` and a strict gain
+    whatever the penalties, so it failed every loss that weighs undershoot more, and every
+    symmetric one.
+    """
+    u_ce = certainty_equivalence_control(effect_estimate, target)
+    u_rob = confounding_robust_control(
+        effect_estimate, halfwidth, target, overshoot_penalty, undershoot_penalty
+    )
+    w_ce = worst_case_asymmetric_loss(
+        u_ce, effect_estimate, halfwidth, target, overshoot_penalty, undershoot_penalty
+    )
+    w_rob = worst_case_asymmetric_loss(
+        u_rob, effect_estimate, halfwidth, target, overshoot_penalty, undershoot_penalty
+    )
+
+    grid = np.linspace(0.5 * u_rob, 1.5 * u_ce, 40_001)
+    losses = [
+        worst_case_asymmetric_loss(
+            float(u), effect_estimate, halfwidth, target, overshoot_penalty, undershoot_penalty
+        )
+        for u in grid
+    ]
+    numeric_argmin = float(grid[int(np.argmin(losses))])
+
+    u_sym = confounding_robust_control(effect_estimate, halfwidth, target, 1.0, 1.0)
+    symmetric_equals_ce = abs(u_sym - u_ce) < 1e-12
+
+    asymmetric = overshoot_penalty != undershoot_penalty and halfwidth > 0.0
+    if asymmetric:
+        # overshoot costlier -> shift the gain down; undershoot costlier -> up (Rocq); and
+        # pessimism strictly reduces the worst-case loss
+        shifted = np.sign(u_ce - u_rob) == np.sign(overshoot_penalty - undershoot_penalty)
+        gains = w_rob < w_ce
+    else:
+        shifted = abs(u_rob - u_ce) <= 1e-12 * u_ce
+        gains = abs(w_rob - w_ce) <= 1e-12 * max(1.0, w_ce)
+    ok = (
+        abs(u_rob - numeric_argmin) < 1e-3  # the closed form is the minimax control
+        and bool(shifted)
+        and gains
+        and symmetric_equals_ce
+    )
+    return ConfoundingRobustControlCurve(
+        u_certainty_equivalence=u_ce,
+        u_robust=u_rob,
+        worst_case_loss_ce=w_ce,
+        worst_case_loss_robust=w_rob,
+        numeric_argmin=numeric_argmin,
+        symmetric_equals_ce=symmetric_equals_ce,
+        ok=ok,
+    )
+
+
+# --- Result 36: empirical confounding-regret floor (the §33 Delta^2 floor on synthetic data) ---
+
+
+@dataclass(frozen=True)
+class ConfoundingRegretFloorCurve:
+    """Empirical certificate: control regret vs confounding bias, and its log-log slope (~2)."""
+
+    biases: Vector  # realised confounding bias |b_hat - b_true| at each confounding level
+    regrets: Vector  # realised control regret of the CE controller on the true plant
+    exponent: float  # fitted log-log slope of regret vs bias (~2.0 => the Delta^2 floor)
+    analytic_ratio: float  # empirical regret / (L_reg * bias^2) at the cleanest level (~1.0)
+    ok: bool
+
+
+def confounding_regret_floor_certificate(
+    b_true: float = 1.3,
+    effort: float = 0.4,
+    target: float = 1.0,
+    confounding_levels: Sequence[float] = (0.02, 0.04, 0.06, 0.08, 0.10),
+    action_noise: float = 0.6,
+    n: int = 200_000,
+    seed: int = 0,
+) -> ConfoundingRegretFloorCurve:
+    """Show the §33 ``Delta^2`` regret floor emerges from real confounded data, not just algebra.
+
+    A confounder ``z`` drives both the action (``u = z + noise``) and the outcome
+    (``y = b_true*u + gamma*z + noise``). Naive OLS of ``y`` on ``u`` returns an effect biased by
+    the confounding ``gamma`` -- an *irreducible* ``Delta`` that does NOT vanish with ``n``. The CE
+    controller uses that biased effect on the true plant, and its measured regret scales as
+    ``Delta^2`` (log-log slope ~2), matching the analytic ``L_reg*Delta^2`` -- the floor.
+    """
+    rng = np.random.default_rng(seed)
+    kappa = b_true**2 + effort
+    l_reg = lq_regret_sensitivity(b_true, effort, target)
+    biases: list[float] = []
+    regrets: list[float] = []
+    for gamma in confounding_levels:
+        z = rng.standard_normal(n)
+        u = z + action_noise * rng.standard_normal(n)  # confounder drives the action
+        y = b_true * u + gamma * z + action_noise * rng.standard_normal(n)  # ...and the outcome
+        # naive OLS slope: biased by the confounding
+        b_hat = float(np.cov(u, y)[0, 1] / np.var(u, ddof=1))
+        bias = abs(b_hat - b_true)
+        regret = (
+            kappa
+            * (
+                _lq_static_optimum(b_hat, effort, target)
+                - _lq_static_optimum(b_true, effort, target)
+            )
+            ** 2
+        )
+        biases.append(bias)
+        regrets.append(regret)
+
+    exponent = float(np.polyfit(np.log(biases), np.log(regrets), 1)[0])
+    analytic_ratio = regrets[-1] / (
+        l_reg * biases[-1] ** 2
+    )  # cleanest (largest, least relative noise)
+    ok = abs(exponent - 2.0) < 0.15 and abs(analytic_ratio - 1.0) < 0.1
+    return ConfoundingRegretFloorCurve(
+        biases=np.array(biases),
+        regrets=np.array(regrets),
+        exponent=exponent,
+        analytic_ratio=float(analytic_ratio),
+        ok=ok,
+    )
+
+
+# --- Result 37: grounding §35 on a synthetic marketplace task (estimate -> control pipeline) ---
+
+
+def _asymmetric_cost(
+    outcome: float, target: float, overshoot_penalty: float, undershoot_penalty: float
+) -> float:
+    """Realised asymmetric business cost of a completion ``outcome`` vs the service ``target``."""
+    return overshoot_penalty * max(0.0, outcome - target) + undershoot_penalty * max(
+        0.0, target - outcome
+    )
+
+
+def _confounded_effect_estimate(
+    b_true: float,
+    confounding: float,
+    incentive_demand_corr: float,
+    action_noise: float,
+    n: int,
+    rng: np.random.Generator,
+) -> float:
+    """Naive OLS incentive->completions slope on confounded observational logs (biased by demand).
+
+    A demand shock ``z`` drives the historical incentive (``u = corr*z + noise``, past policy raises
+    incentive on busy periods) AND completions (``y = b_true*u + confounding*z + noise``).
+    Regressing ``y`` on ``u`` ignoring ``z`` returns an effect biased upward by the confounding.
+    """
+    z = rng.standard_normal(n)
+    u = incentive_demand_corr * z + action_noise * rng.standard_normal(n)
+    y = b_true * u + confounding * z + action_noise * rng.standard_normal(n)
+    return float(np.cov(u, y)[0, 1] / np.var(u, ddof=1))
+
+
+@dataclass(frozen=True)
+class MarketplaceControlCurve:
+    """§35 robust controller vs CE on realised marketplace cost across a confounding grid."""
+
+    confounding_levels: Vector  # swept true (unknown) confounding strengths
+    ce_costs: Vector  # mean realised asymmetric cost of the CE controller at each level
+    robust_costs: Vector  # ...of the §35 confounding-robust controller
+    ce_worst_case: float  # max CE cost over the sweep (its downside)
+    robust_worst_case: (
+        float  # max robust cost over the sweep (<< CE: pessimism bounds the downside)
+    )
+    savings_at_target_pct: float  # cost reduction at the realistic target confounding level
+    unconfounded_premium_pct: float  # extra cost at zero confounding, normalised by the CE
+    # DOWNSIDE (ce_worst_case), not by the unconfounded CE cost -- against that near-zero
+    # baseline the same gap is an order of magnitude larger. Both fields are here; divide
+    # by whichever the claim needs and say which.
+    ok: bool
+
+
+def confounding_robust_control_benchmark(
+    b_true: float = 2.0,
+    target: float = 1.0,
+    overshoot_penalty: float = 1.0,
+    undershoot_penalty: float = 4.0,
+    sensitivity_gamma: float = 2.5,
+    target_confounding: float = 0.8,
+    confounding_levels: Sequence[float] = (0.0, 0.4, 0.8, 1.2),
+    incentive_demand_corr: float = 1.0,
+    action_noise: float = 0.6,
+    n_markets: int = 300,
+    n_periods: int = 400,
+    seed: int = 0,
+) -> MarketplaceControlCurve:
+    """Ground §35: does the confounding-robust controller beat CE on a full marketplace pipeline?
+
+    Synthetic OBSERVATIONAL confounded marketplace (not a randomised switchback -- the action
+    follows the demand confounder z, so this is confounded logging, not an experiment): the naive
+    effect estimate is biased, so the
+    CE controller (trusting it) under-incentivises and misses completions -- expensive when churn
+    (``undershoot_penalty``) dominates budget waste (``overshoot_penalty``). The §35 controller uses
+    an assumed sensitivity ``Gamma`` and a half-width ``D``. **Calibration (named):** §32 gives
+    ``D = (Gamma-1)/(Gamma+1)*(CVaR_up - CVaR_lo)``; for THIS synthetic benchmark we calibrate the
+    sensitivity gap to the estimate, ``CVaR_up - CVaR_lo := b_hat``, so ``D = (Gamma-1)/(Gamma+1)*
+    b_hat`` -- a benchmark assumption, not a general consequence of §32.
+
+    Reports realised cost across a confounding sweep: the robust controller bounds the WORST-CASE
+    cost (pessimism) and wins **beyond a problem-dependent confounding threshold**, while paying a
+    measurable premium **near zero confounding** (its conservatism then costs more than it saves) --
+    the honest robustness trade-off, not a universal win.
+    """
+    from chc.uncertainty import (
+        confounding_robust_inflation,  # §32 half-width; local to keep JAX out
+    )
+
+    rng = np.random.default_rng(seed)
+    ce_costs: list[float] = []
+    robust_costs: list[float] = []
+    for conf in confounding_levels:
+        ce_acc: list[float] = []
+        rob_acc: list[float] = []
+        for _ in range(n_markets):
+            b_hat = _confounded_effect_estimate(
+                b_true, conf, incentive_demand_corr, action_noise, n_periods, rng
+            )
+            halfwidth = confounding_robust_inflation(b_hat, 0.0, sensitivity_gamma)
+            u_ce = certainty_equivalence_control(b_hat, target)
+            u_rob = confounding_robust_control(
+                b_hat, halfwidth, target, overshoot_penalty, undershoot_penalty
+            )
+            ce_acc.append(
+                _asymmetric_cost(b_true * u_ce, target, overshoot_penalty, undershoot_penalty)
+            )
+            rob_acc.append(
+                _asymmetric_cost(b_true * u_rob, target, overshoot_penalty, undershoot_penalty)
+            )
+        ce_costs.append(float(np.mean(ce_acc)))
+        robust_costs.append(float(np.mean(rob_acc)))
+
+    levels = list(confounding_levels)
+    ce_worst = max(ce_costs)
+    robust_worst = max(robust_costs)
+    ti = levels.index(target_confounding)
+    savings = 100.0 * (1.0 - robust_costs[ti] / ce_costs[ti]) if ce_costs[ti] > 0 else 0.0
+    zi = levels.index(0.0)
+    premium = 100.0 * (robust_costs[zi] - ce_costs[zi]) / ce_worst if ce_worst > 0 else 0.0
+    return MarketplaceControlCurve(
+        confounding_levels=np.array(levels),
+        ce_costs=np.array(ce_costs),
+        robust_costs=np.array(robust_costs),
+        ce_worst_case=ce_worst,
+        robust_worst_case=robust_worst,
+        savings_at_target_pct=savings,
+        unconfounded_premium_pct=premium,
+        ok=(robust_worst < ce_worst and savings > 0.0),
+    )
+
+
+# --- Result 38: DYNAMIC grounding of §35 -- a real closed-loop controller on a confounded plant ---
+
+
+def confounding_robust_tracking_loop(
+    a: float,
+    b_true: float,
+    b_hat: float,
+    halfwidth: float,
+    x_target: float,
+    overshoot_penalty: float,
+    undershoot_penalty: float,
+    x0: float = 0.0,
+    n_steps: int = 30,
+    noise_scale: float = 0.05,
+    seed: int = 0,
+) -> tuple[Vector, Vector, float]:
+    """Roll the confounded scalar plant ``x' = a*x + b_true*u + noise`` under the §35 controller.
+
+    Lifts the STATIC §35 minimax into a receding-horizon CLOSED LOOP (the reviewers' recurring
+    critique): each step aims the one-step target ``tau_t = x_target - a*x_t`` with
+    :func:`confounding_robust_control` trusting the biased offline ``b_hat`` while the TRUE plant
+    uses ``b_true`` (the model/plant split of :func:`chc.flagship.closed_loop`, in NumPy to keep
+    this module x64-flag-independent). ``halfwidth = 0`` recovers certainty-equivalence exactly (the
+    §35 formula collapses to ``tau/b_hat``); ``halfwidth > 0`` (the §32 radius) is the robust
+    controller. Returns the realised trajectory, the applied controls, and the accumulated
+    ASYMMETRIC stage cost ``Sum_t [alpha*(x_t - x_target)_+ + beta*(x_target - x_t)_+]``.
+    """
+    rng = np.random.default_rng(seed)
+    x = x0
+    xs = [x0]
+    us: list[float] = []
+    cost = 0.0
+    for _ in range(n_steps):
+        tau = x_target - a * x  # the one-step target change the controller must produce via b*u
+        u = confounding_robust_control(b_hat, halfwidth, tau, overshoot_penalty, undershoot_penalty)
+        x = a * x + b_true * u + noise_scale * float(rng.standard_normal())
+        cost += _asymmetric_cost(x, x_target, overshoot_penalty, undershoot_penalty)
+        xs.append(x)
+        us.append(u)
+    return np.array(xs), np.array(us), cost
+
+
+@dataclass(frozen=True)
+class DynamicConfoundingCurve:
+    """§35 robust vs CE on realised CLOSED-LOOP cost across a confounding grid (the dynamic §37)."""
+
+    confounding_levels: Vector  # swept true (unknown) confounding strengths
+    ce_costs: Vector  # mean realised closed-loop asymmetric cost of the CE controller
+    robust_costs: Vector  # ...of the §35 confounding-robust controller
+    ce_worst_case: float  # max CE cost over the sweep
+    robust_worst_case: float  # max robust cost over the sweep (<= CE: pessimism bounds downside)
+    savings_at_target_pct: float  # closed-loop cost reduction at the realistic confounding level
+    unconfounded_premium_pct: float  # extra cost at zero confounding, normalised by the CE
+    # DOWNSIDE (ce_worst_case), not by the unconfounded CE cost -- against that near-zero
+    # baseline the same gap is an order of magnitude larger. Both fields are here; divide
+    # by whichever the claim needs and say which.
+    ok: bool
+
+
+def confounding_robust_tracking_benchmark(
+    a: float = 0.6,
+    b_true: float = 2.0,
+    x_target: float = 1.0,
+    overshoot_penalty: float = 1.0,
+    undershoot_penalty: float = 4.0,
+    sensitivity_gamma: float = 2.5,
+    target_confounding: float = 0.8,
+    confounding_levels: Sequence[float] = (0.0, 0.4, 0.8, 1.2),
+    incentive_demand_corr: float = 1.0,
+    action_noise: float = 0.6,
+    n_steps: int = 30,
+    noise_scale: float = 0.05,
+    n_markets: int = 200,
+    n_periods: int = 400,
+    seed: int = 0,
+) -> DynamicConfoundingCurve:
+    """The DYNAMIC §37: does the confounding-robust controller beat CE in CLOSED LOOP over time?
+
+    Same honest story as :func:`confounding_robust_control_benchmark`, now closed-loop over
+    ``n_steps`` on the confounded plant ``x' = a*x + b_true*u + noise``: a demand confounder biases
+    the offline ``b_hat``, the CE controller under-actuates and undershoots ``x_target`` (expensive
+    when churn = ``undershoot_penalty`` dominates budget waste), the §35 controller uses the §32
+    radius (calibrated ``D = (Gamma-1)/(Gamma+1)*b_hat``, a benchmark assumption) to hedge. Reports
+    mean realised closed-loop cost across a confounding sweep: robust bounds the worst case and wins
+    beyond a problem-dependent threshold, paying a bounded premium near zero confounding.
+    """
+    from chc.uncertainty import (
+        confounding_robust_inflation,  # §32 half-width; local to keep JAX out
+    )
+
+    rng = np.random.default_rng(seed)
+    ce_costs: list[float] = []
+    robust_costs: list[float] = []
+    for conf in confounding_levels:
+        ce_acc: list[float] = []
+        rob_acc: list[float] = []
+        for market in range(n_markets):
+            b_hat = _confounded_effect_estimate(
+                b_true, conf, incentive_demand_corr, action_noise, n_periods, rng
+            )
+            halfwidth = confounding_robust_inflation(b_hat, 0.0, sensitivity_gamma)
+            # same plant-noise seed for CE and robust so the comparison is paired
+            _, _, ce_cost = confounding_robust_tracking_loop(
+                a,
+                b_true,
+                b_hat,
+                0.0,
+                x_target,
+                overshoot_penalty,
+                undershoot_penalty,
+                n_steps=n_steps,
+                noise_scale=noise_scale,
+                seed=market,
+            )
+            _, _, rob_cost = confounding_robust_tracking_loop(
+                a,
+                b_true,
+                b_hat,
+                halfwidth,
+                x_target,
+                overshoot_penalty,
+                undershoot_penalty,
+                n_steps=n_steps,
+                noise_scale=noise_scale,
+                seed=market,
+            )
+            ce_acc.append(ce_cost)
+            rob_acc.append(rob_cost)
+        ce_costs.append(float(np.mean(ce_acc)))
+        robust_costs.append(float(np.mean(rob_acc)))
+
+    levels = list(confounding_levels)
+    ce_worst = max(ce_costs)
+    robust_worst = max(robust_costs)
+    ti = levels.index(target_confounding)
+    savings = 100.0 * (1.0 - robust_costs[ti] / ce_costs[ti]) if ce_costs[ti] > 0 else 0.0
+    zi = levels.index(0.0)
+    premium = 100.0 * (robust_costs[zi] - ce_costs[zi]) / ce_worst if ce_worst > 0 else 0.0
+    return DynamicConfoundingCurve(
+        confounding_levels=np.array(levels),
+        ce_costs=np.array(ce_costs),
+        robust_costs=np.array(robust_costs),
+        ce_worst_case=ce_worst,
+        robust_worst_case=robust_worst,
+        savings_at_target_pct=savings,
+        unconfounded_premium_pct=premium,
+        ok=(robust_worst < ce_worst and savings > 0.0),
+    )
+
+
+# --- Result 59 (A15): the space-time fold problem, and what one axis at a time costs ---
+
+
+@dataclass(frozen=True)
+class SpaceTimeFoldCurve:
+    """Result 59: the two-axis fold problem -- its Kronecker rank, and the price of one axis."""
+
+    covariance_error: float  # max |simulated - panel_covariance|, on the scale below
+    covariance_scale: float
+    commuting_rank: tuple[int, ...]  # cycle: rank should be dmax+1 at each dmax swept
+    generic_rank: tuple[int, ...]  # a non-commuting graph: 2*dmax
+    dmax_grid: tuple[int, ...]
+    rank_times: int  # panel long enough to RESOLVE every shift: p-1 >= lag*dmax
+    separable_rank: int  # at lag = 0 the covariance must collapse to ONE Kronecker term
+    saturated_times: int  # ... and a panel too short to resolve the largest shift
+    saturated_rank: tuple[int, ...]  # where the rank drops below the law, commuting / generic
+    lags: tuple[int, ...]
+    slice_design: Vector  # Result 52's CROSS-SECTIONAL design, held constant in time
+    space_only: Vector  # best time-constant fold for the PANEL objective
+    space_time: Vector  # best free (unit, time) fold
+    slice_design_penalty: Vector  # (slice_design - space_only) / space_only: wrong WEIGHT
+    price_of_one_axis: Vector  # (space_only - space_time) / space_only: wrong AXIS
+    weight_beats_axis_at_short_delay: bool
+    axis_beats_weight_at_long_delay: bool
+    exhaustive_ratio: float  # heuristic / exact optimum on a product set small enough to enumerate
+    panel_weight: float  # w_1/w_0 at p=3, lag=1 -- what a time-constant fold really carries
+    slice_weight: float  # phi**lag -- what Result 52 scores it with
+    ok: bool
+
+
+def _panel_objective(sigma: NDArray[np.float64], fold: NDArray[np.int_]) -> float:
+    return float(sigma[fold[:, None] == fold[None, :]].sum())
+
+
+def space_time_fold_certificate(
+    m: int = 8,
+    n_times: int = 4,
+    gammas: Sequence[float] = (1.0, 0.7, 0.4),
+    phi: float = 0.6,
+    lags: Sequence[int] = (1, 2, 3, 4),
+    dmax_grid: Sequence[int] = (1, 2, 3, 4),
+    k_folds: int = 2,
+    n_draws: int = 200_000,
+    restarts: int = 30,
+    seed: int = 20260904,
+) -> SpaceTimeFoldCurve:
+    """RESULT 59 -- folds on BOTH axes (derived in ``validation/space_time_folds.mac``, proved in
+    ``proofs/space_time_folds.v``).
+
+    Result 51 showed the delayed-network covariance is separable only at ``lag = 0``; Result 52
+    designed folds on the space axis alone and said so. Plan 24's P2.5 asks what the restriction
+    costs. Four gates, each able to fail:
+
+    1. **The covariance formula is the simulator's.** ``panel_covariance`` is compared against
+       trajectories drawn from the generative definition, never from the Kronecker form, so a wrong
+       model shows up as a mismatch rather than as agreement with itself.
+    2. **The Kronecker rank obeys the commutation law.** ``dmax+1`` when the shell operators commute
+       (the cycle), ``2*dmax`` when they do not (a path) -- and never ``2*dmax+1``, because the
+       ``q = 0`` and ``q = dmax`` spatial factors are symmetric on every graph. At ``lag = 0`` the
+       rank must be exactly 1, which is Result 51's STEP 7 read from the Kronecker side. Both
+       statements need a panel long enough to RESOLVE the shifts: once ``lag*q`` passes ``p-1``
+       every remaining temporal factor is a multiple of the same matrix, so the rank SATURATES
+       strictly below the law -- measured 4 against 5 (cycle) and 7 against 8 (path) at
+       ``p = 4, dmax = 4``. A short panel cannot see the coupling it is being asked to design for.
+    3. **Two different mistakes, and they cross.** Holding a fold constant in time is one error;
+       scoring it with Result 52's SINGLE-SLICE weight instead of the panel's is another, and they
+       are not the same. Measured on a cycle (``m=8``, ``p=4``, ``K=2``, ``phi=0.6``) the slice
+       weight costs ``3.3, 8.7, 2.8, 0.3%`` over ``lag = 1..4`` while the frozen time axis costs
+       ``0.3, 3.3, 13.3, 19.2%``. **At short delay the mistake to fix is the weight; at long delay
+       it is the axis.** The gate is that crossing, not either number alone.
+    4. **The heuristic is exact where exactness is checkable.** On a product set small enough to
+       enumerate, spectral rounding plus balanced swaps must return the global optimum.
+
+    The last field pair is the quieter finding: a fold held constant in time is scored by Result 52
+    with the SINGLE-SLICE weight ``phi**lag``, but on a panel it really carries ``w_1/w_0``, the
+    ratio of shifted-Toeplitz masses. Those differ everywhere strictly inside ``(0,1)``
+    (``proofs/space_time_folds.v``, ``panel_weight_exceeds_the_slice_weight``), so even the one-axis
+    panel design is not the cross-sectional one.
+    """
+    gam = np.asarray(gammas, dtype=np.float64)
+    dmax = gam.size - 1
+    shells = cycle_shells(m, dmax)
+    rng = np.random.default_rng(seed)
+
+    span = 40 + n_times + max(lags) * dmax
+    innovations = ar1_innovations(rng, (n_draws, m), span, float(phi))
+    drawn = propagate_shells(innovations, shells, gam, int(lags[0]), n_times)
+    empirical = np.cov(drawn.reshape(n_draws, m * n_times), rowvar=False)
+    predicted = panel_covariance(shells, gam, float(phi), int(lags[0]), n_times)
+    covariance_error = float(np.abs(empirical - predicted).max())
+    covariance_scale = float(np.abs(predicted).max())
+
+    path = np.diag(np.ones(m - 1), 1) + np.diag(np.ones(m - 1), -1)
+    rank_times = max(dmax_grid) + 2  # p-1 >= dmax: every shift lands inside the window
+
+    def kron_rank(
+        shell_set: list[NDArray[np.float64]], weights: NDArray[np.float64], p: int
+    ) -> int:
+        spectrum = kronecker_spectrum(panel_covariance(shell_set, weights, float(phi), 1, p), m, p)
+        return int((spectrum > 1e-9 * spectrum[0]).sum())
+
+    commuting, generic = [], []
+    for d in dmax_grid:
+        weights = np.array([0.9**k for k in range(d + 1)])
+        commuting.append(kron_rank(cycle_shells(m, d), weights, rank_times))
+        generic.append(kron_rank(graph_shells(path, d), weights, rank_times))
+    saturated_times = max(dmax_grid)
+    short_weights = np.array([0.9**k for k in range(max(dmax_grid) + 1)])
+    saturated_rank = (
+        kron_rank(cycle_shells(m, max(dmax_grid)), short_weights, saturated_times),
+        kron_rank(graph_shells(path, max(dmax_grid)), short_weights, saturated_times),
+    )
+    flat = panel_covariance(shells, gam, float(phi), 0, n_times)
+    flat_spectrum = kronecker_spectrum(flat, m, n_times)
+    separable_rank = int((flat_spectrum > 1e-9 * flat_spectrum[0]).sum())
+
+    slice_design, space_only, space_time = [], [], []
+    for lag in lags:
+        sigma = panel_covariance(shells, gam, float(phi), int(lag), n_times)
+        cross_section = optimal_fold_partition(
+            shells, gammas, float(phi), lag=int(lag), k_folds=k_folds
+        ).fold
+        slice_design.append(_panel_objective(sigma, np.repeat(cross_section, n_times)))
+        best_constant = np.inf
+        for chosen in itertools.combinations(range(1, m), m // k_folds - 1):
+            unit_fold = np.ones(m, dtype=np.int_)
+            unit_fold[0] = 0
+            unit_fold[list(chosen)] = 0
+            best_constant = min(
+                best_constant, _panel_objective(sigma, np.repeat(unit_fold, n_times))
+            )
+        free = optimal_fold_partition(
+            shells,
+            gammas,
+            float(phi),
+            lag=int(lag),
+            k_folds=k_folds,
+            time_axis=n_times,
+            restarts=restarts,
+            seed=seed,
+        )
+        space_only.append(float(best_constant))
+        # every time-constant fold is a free one, so the free optimum is never above the best of
+        # them; a search that stops above it has found a worse fold, not a negative price
+        space_time.append(min(float(free.objective), float(best_constant)))
+    slice_arr = np.asarray(slice_design)
+    space_only_arr = np.asarray(space_only)
+    space_time_arr = np.asarray(space_time)
+    price = (space_only_arr - space_time_arr) / space_only_arr
+    slice_penalty = (slice_arr - space_only_arr) / space_only_arr
+
+    small_units, small_times = 4, 3
+    small_shells = cycle_shells(small_units, dmax)
+    small = panel_covariance(small_shells, gam, float(phi), int(lags[0]), small_times)
+    cells = small_units * small_times
+    exact = min(
+        _panel_objective(
+            small, np.array([0 if i in (0, *chosen) else 1 for i in range(cells)], dtype=np.int_)
+        )
+        for chosen in itertools.combinations(range(1, cells), cells // 2 - 1)
+    )
+    heuristic = optimal_fold_partition(
+        small_shells,
+        gammas,
+        float(phi),
+        lag=int(lags[0]),
+        k_folds=2,
+        time_axis=small_times,
+        exhaustive_limit=0,
+        restarts=restarts,
+        seed=seed,
+    ).objective
+    exhaustive_ratio = float(heuristic / exact)
+
+    def toeplitz_mass(shift: int, periods: int) -> float:
+        gaps = np.arange(periods)[:, None] - np.arange(periods)[None, :]
+        return float((float(phi) ** np.abs(gaps - shift)).sum())
+
+    panel_weight = toeplitz_mass(1, 3) / toeplitz_mass(0, 3)
+    slice_weight = float(phi)
+
+    ok = bool(
+        covariance_error < 0.05 * covariance_scale
+        and commuting == [d + 1 for d in dmax_grid]
+        and generic == [max(2 * d, 2) for d in dmax_grid]
+        and separable_rank == 1
+        and saturated_rank[0] < commuting[-1]
+        and saturated_rank[1] < generic[-1]
+        and np.all(np.diff(price) > 0.0)
+        and bool(slice_penalty[0] > price[0])
+        and bool(price[-1] > slice_penalty[-1])
+        # two-sided: below 1 the heuristic would have left the balanced folds the enumeration spans
+        and abs(exhaustive_ratio - 1.0) < 1e-9
+        and panel_weight > slice_weight
+    )
+    return SpaceTimeFoldCurve(
+        covariance_error=covariance_error,
+        covariance_scale=covariance_scale,
+        commuting_rank=tuple(commuting),
+        generic_rank=tuple(generic),
+        dmax_grid=tuple(int(d) for d in dmax_grid),
+        rank_times=rank_times,
+        separable_rank=separable_rank,
+        saturated_times=saturated_times,
+        saturated_rank=saturated_rank,
+        lags=tuple(int(v) for v in lags),
+        slice_design=slice_arr,
+        space_only=space_only_arr,
+        space_time=space_time_arr,
+        slice_design_penalty=slice_penalty,
+        price_of_one_axis=price,
+        weight_beats_axis_at_short_delay=bool(slice_penalty[0] > price[0]),
+        axis_beats_weight_at_long_delay=bool(price[-1] > slice_penalty[-1]),
+        exhaustive_ratio=exhaustive_ratio,
+        panel_weight=panel_weight,
+        slice_weight=slice_weight,
+        ok=ok,
+    )
+
+
+# --- Result 60 (P2.6): does Psi describe an ESTIMATOR, or only a process? ---
+
+
+@dataclass(frozen=True)
+class PanelEstimatorGate:
+    """Result 60: Result 51's functional put against a real cross-fitted DML fit on a panel."""
+
+    cluster_counts: tuple[int, ...]
+    predicted: Vector  # Psi(parity)/Psi(block) from the functional
+    measured: Vector  # Var(parity)/Var(block) of the actual estimator
+    # bootstrap over the independent draws of the panel, resampled in pairs: not a cluster bootstrap
+    ci_low: Vector
+    ci_high: Vector
+    covered: tuple[bool, ...]  # does the CI contain the prediction? counted, not gated
+    n_covered: int
+    closed_form_error: float  # Maxima (4) against the direct Psi computation
+    signs_agree: bool  # both call the same partition better, in every cell
+    predicted_washout: bool  # the functional's ratio rises toward 1 with the cluster count
+    measured_washout: bool  # ... and so does the estimator's
+    functional_is_conservative: bool  # measured <= predicted everywhere: it UNDERSTATES the gain
+    worst_shortfall: float  # largest (predicted - measured) / predicted
+    ok: bool
+
+
+def _psi_ratio_closed_form(
+    sigma: NDArray[np.float64], first: NDArray[np.int_], second: NDArray[np.int_], g: int, k: int
+) -> float:
+    """``Psi(first)/Psi(second)`` from ``validation/panel_estimator_gate.mac`` (4).
+
+    Every partition-free factor cancels, leaving a Mobius function of the cluster count whose limit
+    is 1: the design effect on a cross-fit variance decays like ``1/g`` in the number of INDEPENDENT
+    correlated blocks. More data as more clusters erases the design; more data as longer panels or
+    larger clusters does not.
+    """
+    r = k / (k - 1)
+    cells = sigma.shape[0]
+    total = float(sigma.sum())
+    weight = k * (1.0 - r**4)
+
+    def branch(fold: NDArray[np.int_]) -> float:
+        same = float(sigma[fold[:, None] == fold[None, :]].sum())
+        return r**4 * total - g * cells * float(np.trace(sigma)) + weight * same
+
+    return branch(first) / branch(second)
+
+
+def panel_estimator_certificate(
+    cluster_counts: Sequence[int] = (2, 6, 20),
+    cluster_size: int = 12,
+    n_times: int = 12,
+    phi: float = 0.9,
+    lag: int = 1,
+    k_folds: int = 2,
+    draws: int = 300,
+    bootstrap: int = 2000,
+    disturbance_scale: float = 2.0,
+    seed: int = 20260904,
+) -> PanelEstimatorGate:
+    """RESULT 60 -- Result 51's ``Psi`` against a real cross-fitted DML fit.
+
+    Result 51 says in its own scope note that ``Psi`` is a functional of the process, evaluated with
+    the fold operator held fixed, and "not a re-derived estimator". This runs the comparison that
+    can settle it: two fold partitions of the same panel -- parity around each cycle against
+    contiguous blocks -- fitted by :func:`chc.network_causal.estimate_network_effects`, with the
+    realised variance ratio bootstrapped over draws and put against the functional's prediction.
+
+    The algebra says what order to expect before the experiment (``panel_estimator_gate.mac``): the
+    partition enters ``Psi`` exactly once, linearly, with positive weight, and with a block-diagonal
+    covariance over ``g`` independent clusters the whole effect is ``O(1/g)``. So the design law is
+    a FINITE-CLUSTER statement; it washes out in the number of clusters, not in the number of rows.
+
+    **The measured answer, and it is not the flattering one.** At ``m = 12``, ``p = 12``, ``K = 2``,
+    300 draws per cell, this routine at its defaults under float32::
+
+        g   phi  predicted  measured           95% CI   covers
+        2   0.3     0.8241    0.7521  [0.6501, 0.8811]   yes
+        6   0.3     0.9343    1.0087  [0.8921, 1.1267]   yes
+        20  0.3     0.9794    0.9702  [0.9072, 1.0420]   yes
+        2   0.9     0.4689    0.3566  [0.2743, 0.4671]   no
+        6   0.9     0.7396    0.5781  [0.4668, 0.7126]   no
+        20  0.9     0.9064    0.7556  [0.6467, 0.8912]   no
+
+    Where the effect is large enough to resolve, the verdict is sharp. At ``phi = 0.9`` every
+    interval excludes 1 on the predicted side, the ratio washes out toward 1 with ``g`` exactly as
+    the algebra says, and the functional is CONSERVATIVE in every cell -- the real estimator gains
+    more from the good partition than ``Psi`` predicts, by 17% to 24% -- with the interval excluding
+    the prediction each time. ``seed=20000``, and the default seeds under ``jax_enable_x64``, repeat
+    the conservatism in every cell, by 14% to 26%, and every interval there excludes 1, but three of
+    their six intervals cover the prediction: at ``g = 2`` on both streams, and at ``g = 20`` on
+    ``seed=20000``. **As a ranking rule the functional holds; as a point
+    predictor of an estimator's variance ratio it does not**, and Result 51's scope note is now
+    specific rather than cautious. The likely reason is in plain sight: ``Psi`` models the
+    nuisance step as an exact projection onto fold indicators, while the estimator uses a ridge
+    polynomial and then a second OLS stage whose own sandwich the functional does not carry.
+
+    At ``phi = 0.3`` the predicted reduction is 18% at ``g = 2`` -- resolved from 1 on all three
+    streams, and covered -- and 2% to 7% at ``g >= 6``, below what 300 draws can see: the six
+    estimates there, across the three streams, span 0.80 to 1.04, on both sides of the prediction
+    and of 1, and one of their six intervals, ``seed=20000``'s at ``g = 6``, excludes both.
+
+    The gates are the three claims the functional makes: sign agreement in every cell, washout in
+    both sequences, and conservatism. At ``phi = 0.9`` they hold on every stream tried. At
+    ``phi = 0.3`` they compare point estimates against an effect smaller than the Monte-Carlo
+    error, so ``ok`` is False on two streams of the three. A gate on point estimates reads False
+    alike where an effect is too small to resolve and where it is refuted, and True by chance where
+    it is unresolved: ``ci_low`` and ``ci_high`` tell the cases apart, and ``ok`` does not. Coverage
+    is counted and reported, never gated -- a certificate that gated on it would have to be tuned
+    until it passed, which is the opposite of a gate.
+
+    TWO SAMPLING FACTS THIS DEPENDS ON. ``draws`` must not be small: a variance ratio from a few
+    dozen paired draws is noisy, and the conservatism finding rests on the two-cluster cell. At
+    ``phi = 0.9`` on the default seeds it holds under float32 at 40, 80, 120 and 300 draws; under
+    ``jax_enable_x64`` it fails at 40, 80 and 120, where the two-cluster ratio reads 0.544, 0.537
+    and 0.484 against the prediction 0.469, and holds at 300, the default, where the table and the
+    claims above were measured. And
+    :meth:`chc.network_causal.DelayedNetworkPanel.sample` derives its NumPy seed from a JAX key, so
+    the panel DRAWN AT A GIVEN SEED DIFFERS between ``jax_enable_x64`` settings -- ``randint`` on
+    the same key returns 1563838340 at x32 and 358276949 at x64 -- which is why the x64 run above
+    is a third stream and not a check on rounding.
+    """
+    # chc.regret is NumPy/SciPy by design; the panel and its estimator are the JAX half of the
+    # library, so they are imported here rather than at module scope.
+    import jax
+    import jax.numpy as jnp
+
+    from chc.network_causal import DelayedNetworkPanel, estimate_network_effects
+
+    counts = tuple(int(g) for g in cluster_counts)
+    m, p = int(cluster_size), int(n_times)
+    unit = np.repeat(np.arange(m), p)
+    partitions = {
+        "parity": (unit % k_folds).astype(np.int_),
+        "block": (unit * k_folds // m).astype(np.int_),
+    }
+    sigma = panel_covariance(cycle_shells(m, 2), (1.0, 0.7, 0.4), float(phi), int(lag), p)
+
+    def psi_direct(fold: NDArray[np.int_], g: int) -> float:
+        r = k_folds / (k_folds - 1)
+        rows = g * m * p
+        trace = g * float(np.trace(sigma))
+        total = g * float(sigma.sum())
+        same = g * float(sigma[fold[:, None] == fold[None, :]].sum())
+        trace_a = rows - r**2 + (r**2 - 1) * k_folds
+        sandwich = trace - r**4 * total / rows + (r**4 - 1) * (k_folds / rows) * same
+        return rows**2 * sandwich / (trace_a**2 * trace)
+
+    predicted, measured, ci_low, ci_high, covered = [], [], [], [], []
+    closed_form_error = 0.0
+    rng = np.random.default_rng(seed)
+    for g in counts:
+        direct = psi_direct(partitions["parity"], g) / psi_direct(partitions["block"], g)
+        closed = _psi_ratio_closed_form(
+            sigma, partitions["parity"], partitions["block"], g, k_folds
+        )
+        closed_form_error = max(closed_form_error, abs(direct - closed))
+        predicted.append(direct)
+
+        panel = DelayedNetworkPanel(
+            n_clusters=g,
+            cluster_size=m,
+            n_times=p,
+            lag=int(lag),
+            phi=float(phi),
+            disturbance_scale=float(disturbance_scale),
+            noise_scale=0.05,
+        )
+        # With exactly k_folds distinct labels the fold assignment IS the label partition: the
+        # permutation inside `_fold_chunks` only renames folds, so the realised design is the
+        # intended one and the prediction is not being compared against a different partition.
+        labels = {name: jnp.asarray(np.tile(fold, g)) for name, fold in partitions.items()}
+        fits: dict[str, list[float]] = {name: [] for name in partitions}
+        for draw in range(draws):
+            data = panel.sample(jax.random.key(seed + draw))
+            for name, groups in labels.items():
+                fits[name].append(
+                    estimate_network_effects(data, folds=k_folds, seed=draw, fold_groups=groups)[
+                        "direct"
+                    ]
+                )
+        parity = np.asarray(fits["parity"])
+        block = np.asarray(fits["block"])
+        measured.append(float(parity.var(ddof=1) / block.var(ddof=1)))
+        resampled = [
+            float(parity[idx].var(ddof=1) / block[idx].var(ddof=1))
+            for idx in (rng.integers(0, draws, draws) for _ in range(bootstrap))
+        ]
+        low, high = (float(v) for v in np.percentile(resampled, [2.5, 97.5]))
+        ci_low.append(low)
+        ci_high.append(high)
+        covered.append(bool(low <= direct <= high))
+
+    predicted_arr = np.asarray(predicted)
+    measured_arr = np.asarray(measured)
+    shortfall = (predicted_arr - measured_arr) / predicted_arr
+    signs_agree = bool(np.all(np.sign(predicted_arr - 1.0) == np.sign(measured_arr - 1.0)))
+    predicted_washout = bool(np.all(np.diff(predicted_arr) > 0.0))
+    measured_washout = bool(np.all(np.diff(measured_arr) > 0.0))
+    conservative = bool(np.all(measured_arr <= predicted_arr))
+    return PanelEstimatorGate(
+        cluster_counts=counts,
+        predicted=predicted_arr,
+        measured=measured_arr,
+        ci_low=np.asarray(ci_low),
+        ci_high=np.asarray(ci_high),
+        covered=tuple(covered),
+        n_covered=int(sum(covered)),
+        closed_form_error=closed_form_error,
+        signs_agree=signs_agree,
+        predicted_washout=predicted_washout,
+        measured_washout=measured_washout,
+        functional_is_conservative=conservative,
+        worst_shortfall=float(shortfall.max()),
+        ok=bool(
+            signs_agree
+            and predicted_washout
+            and measured_washout
+            and conservative
+            and closed_form_error < 1e-10
+        ),
+    )
