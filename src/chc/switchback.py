@@ -91,6 +91,8 @@ _IID = 5.0  # |lag-one autocorrelation| * sqrt(n) past which a lever is not i.i.
 _DESIGN_LAGS = 3.0  # lags of the impulse response a design variance reads, per log(T)
 _FIRST_ORDER_LEVEL = 0.01  # the p-value under which the data reject a first-order state
 _PILOT_BLOCKS = 10  # a block pilot's power at its restated MDE was 0.735 at five blocks a zone
+_SHORT_RUN = 400  # periods a zone below which a local projection's model interval covers < 0.94
+_PROJECTION_BIAS = 0.3  # standard errors of bias at which a normal 95% interval covers 0.94
 
 
 @dataclass(frozen=True)
@@ -923,6 +925,26 @@ def _projection(u, y, h: int, z: float):
             f"MA({h - 1}) error of the overlapping sums cannot produce"
         )
     se = math.sqrt(variance)
+    # The intercept and y_t are fitted on the periods the sums read, which biases the estimate by
+    # -(H - 1) tau_H / (T - H + 1) to first order on one zone, less on more
+    # (validation/local_projection_bias.mac), and reads its variance low on a short run.
+    periods = u.shape[-1]
+    bias = (h - 1) * abs(estimate) / (periods - h + 1)
+    if periods < _SHORT_RUN or bias > _PROJECTION_BIAS * se:
+        _log.warning(
+            "a local projection's model standard error is asymptotic in the run's length: over "
+            "%d periods a zone its estimate may be biased by %.3g, %.2f standard errors, and its "
+            "interval covers less than it says; read se='design' or randomisation_test",
+            periods,
+            bias,
+            bias / se,
+            extra={
+                "chc_event": "switchback_short_run",
+                "periods": periods,
+                "bias_bound": bias,
+                "bias_in_se": bias / se,
+            },
+        )
     return estimate, se, (estimate - z * se, estimate + z * se)
 
 
@@ -1118,12 +1140,18 @@ def read_switchback(
 
     ``se`` is what the standard error is over. ``"model"`` reads it off the regression's errors as
     above, and is asymptotic in ``T``: the regression fits its intercept and ``y_t`` on the same
-    periods, which on a short run biases the effect, by about ``-12 / T`` for ``tau_3`` on the
-    working model, and reads its variance 8 % to 17 % low. On ``x' = 0.8 x + 2 u + eps`` its 95 %
-    interval for ``tau_3`` covered 0.85 over 40 periods, 0.88 over 60 and 0.91 over 100 with
-    i.i.d. ``eps``, 0.94 from 200 periods, and as much with ``eps`` AR(0.5) or AR(0.8); on a run
-    of fewer than about 200 periods read ``"design"`` or :func:`randomisation_test`. A block
-    difference over few blocks is short too: 0.885 over 8 blocks, 0.94 from 20. ``"design"``
+    periods, which biases the local projection by ``-(H - 1) tau_H / (T - H + 1)`` to first order
+    on one zone on the working model, less on more zones, and reads its variance low on a short
+    run. Neither has an exact correction: on more zones the bias depends on ``a``
+    (``validation/local_projection_bias.mac``). On ``x' = 0.8 x + 2 u + eps`` with i.i.d. ``eps``
+    its 95 % interval for ``tau_3`` on one zone covered 0.880 over 60 periods, 0.901 over 100,
+    0.929 over 200, 0.940 over 400 and 0.947 over 1000, and as much with ``eps`` AR(0.5); on 64
+    zones, where the bias weighs more against the pooled standard error, 0.926 over 300 periods
+    and 0.944 over 600. The local projection therefore logs a warning, ``switchback_short_run``, on
+    a run of fewer than 400 periods a zone, or where the bias's first-order bound
+    ``(H - 1) |estimate| / (T - H + 1)`` passes 0.3 standard errors: read ``"design"`` or
+    :func:`randomisation_test` there. A block difference over few blocks is short too: 0.885 over
+    8 blocks, 0.94 from 20. ``"design"``
     reads it over the lever's own randomisation, with the plant and its noise held fixed (Liang
     and Recht, Biometrika 2025), for a local projection on a lever drawn by a fair coin each
     period. The estimate is then the local projection with the design's moments in

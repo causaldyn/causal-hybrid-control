@@ -146,9 +146,10 @@ def _coverage(u, y, h: int, se: str) -> tuple[float, np.ndarray, np.ndarray]:
 
 
 def test_the_design_interval_holds_its_level_on_a_short_run_with_persistent_noise():
-    # AR(0.8) shocks over 60 periods: the local projection's interval for tau_3 covered 0.903 of
-    # the 995 runs it read; the design's covered 0.969, at 0.95 +- 0.028 four standard errors. It
-    # pays in width: 23.5 against 6.2
+    # AR(0.8) shocks over 60 periods: the design's interval for tau_3 covered 0.969, at 0.95 +-
+    # 0.028 four standard errors, and pays in width: 23.5 against 6.2. The local projection's
+    # covered 0.903 of the 995 runs it read, short through the run's length, not the noise's
+    # persistence: with i.i.d. shocks it covered 0.880 over 60 periods
     rng = np.random.default_rng(60)
     reps, periods, h = 1000, 60, 3
     u = _coins(rng, (reps, periods + BURN))
@@ -166,6 +167,43 @@ def test_the_design_interval_holds_its_level_on_a_short_run_with_persistent_nois
             continue
         model.append(reading.interval[0] <= _tau(h) <= reading.interval[1])
     assert np.mean(model) < 0.92
+
+
+def _short_run_warnings(caplog, u, y, se: str = "model") -> list:
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="chc.switchback"):
+        read_switchback(u, y, Horizon(3), "local_projection", se=se)
+    return [r for r in caplog.records if getattr(r, "chc_event", None) == "switchback_short_run"]
+
+
+def test_a_model_interval_on_a_short_run_warns_and_points_to_the_design(caplog):
+    """The regression fits its intercept and ``y_t`` on the periods its sums read, which biases
+    ``tau_H`` by ``-(H - 1) tau_H / (T - H + 1)`` to first order on one zone and reads its variance
+    low: its 95% interval for ``tau_3`` covered 0.929 over 200 periods and 0.940 over 400 (200 000
+    runs each), on i.i.d. noise."""
+    u, y = _run(399)
+    (record,) = _short_run_warnings(caplog, u, y)
+    estimate = read_switchback(u, y, Horizon(3), "local_projection").estimate
+    assert record.periods == 399
+    assert record.bias_bound == pytest.approx(2 * abs(estimate) / 397, rel=1e-12, abs=0.0)
+    assert "se='design'" in record.getMessage()
+    assert not _short_run_warnings(caplog, u, y, se="design")
+    u, y = _run(400)
+    assert not _short_run_warnings(caplog, u, y)
+
+
+def test_many_zones_warn_of_the_bias_a_long_run_still_carries(caplog):
+    """The bias does not shrink with the zones, and the pooled standard error does: on 64 zones it
+    weighs 0.42 standard errors over 600 periods, and the interval covered 0.926 over 300 periods
+    and 0.944 over 600 (4000 runs each)."""
+    rng = np.random.default_rng(64)
+    u = _coins(rng, (64, 600 + BURN))
+    y = _plant(u, rng.standard_normal(u.shape))
+    u, y = u[:, BURN:], y[:, BURN:]
+    (record,) = _short_run_warnings(caplog, u, y)
+    assert record.periods == 600
+    assert record.bias_in_se > 0.3
+    assert not _short_run_warnings(caplog, u[:1], y[:1])
 
 
 def test_the_design_interval_holds_its_level_given_the_noise():

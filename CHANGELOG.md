@@ -124,9 +124,9 @@ still change).
   It read as a plain 1 - alpha interval, and ADR 0098 blamed its shortfall on a short run whose
   noise persists. The shortfall is the short run alone: on the working model the local
   projection's 95% interval for `tau_3` covered 0.849, 0.878 and 0.910 over 40, 60 and 100 periods
-  with i.i.d. noise (0.873 to 0.930 with AR noise) and 0.942 from 200, and the block difference
-  covered 0.885 over 8 blocks. The docstring now gives these and points short runs to
-  `se="design"` or `randomisation_test`. Docs only; no value moves. Since 0.8.0.
+  with i.i.d. noise (0.873 to 0.930 with AR noise), 0.929 over 200 and 0.940 over 400, and the
+  block difference covered 0.885 over 8 blocks. The docstring now gives these and points short
+  runs to `se="design"` or `randomisation_test`. Docs only; no value moves. Since 0.8.0.
 - **One seed's `run_multiseed` interval is unknown, `(-inf, inf)`, not the point twice.** With a
   single seed, `MultiSeedResult.regret_lo` and `regret_hi` were both its regret: a width of zero
   labelled 95%, which held the mean with probability 0. One regret shows no spread, so the interval
@@ -141,6 +141,17 @@ still change).
   against `N(0, 1)`, `x ~ N(0, 1)`: still True on 89% to 94% of logs); a Hill estimate of the
   weights' tail index, which could, also flagged 67% to 100% of logs whose weights are lognormal
   with a finite variance, so it is not used. Since 0.2.0.
+- **`read_switchback`'s local projection warns where its model interval covers less than 0.94.**
+  The regression fits its intercept and `y_t` on the periods its sums read, which biases the
+  estimate by `-(H - 1) tau_H / (T - H + 1)` to first order on one zone (Maxima,
+  `validation/local_projection_bias.mac`; 200 000 runs read -0.0106, -0.0052 and -0.0021 of `tau_3`
+  over 200, 400 and 1000 periods against -0.0101, -0.0050 and -0.0020) and reads its variance low.
+  Neither has an exact correction, since on more zones the bias depends on the persistence. On one
+  zone its 95% interval for `tau_3` covered 0.929 over 200 periods and 0.940 over 400; on 64 zones,
+  where the bias weighs more against the pooled standard error, 0.926 over 300 and 0.944 over 600.
+  With `se="model"` it now logs `switchback_short_run` on a run of fewer than 400 periods a zone or
+  where the bias's first-order bound passes 0.3 standard errors, and points to `se="design"`. No
+  value moves. Since 0.8.0.
 
 ## [0.18.0] — 2026-10-13
 
