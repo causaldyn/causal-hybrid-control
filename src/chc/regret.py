@@ -3577,8 +3577,18 @@ def delayed_network_certificate(
     ``ConfoundedNetworkSystem`` is cross-sectional, so ``phi`` and ``delta`` are model parameters
     rather than fitted ones. What this gives the code today is a fold-assignment rule with a
     number attached.
+
+    Raises:
+        ValueError: if ``cluster_size`` is odd. The two folds are then unequal, ``(K/m) 1{same
+            fold}`` is no longer the fold-mean projector, and the closed-form ``A_u`` the law and
+            the simulation share is not the cross-fit residualiser's (``m = 5``: off by 0.35 in an
+            entry, ``c_fold`` 1.914 against the balanced law's 1.939).
     """
     m, p, k_folds = int(cluster_size), int(n_times), 2
+    if m % k_folds:
+        raise ValueError(
+            f"cluster_size must be even, the law being derived for two equal folds; got {m}"
+        )
     gam = np.asarray(gammas, dtype=float)
     dmax = gam.size - 1
     phis = np.asarray(phi_grid, dtype=float)

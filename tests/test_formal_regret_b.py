@@ -35,6 +35,7 @@ FORMAL_LINKS = {
             "test_delayed_network_crossover_is_the_closed_form_root",
             "test_delayed_network_separable_limit_loses_phi",
             "test_delayed_network_c_fold_matches_the_k2_closed_form",
+            "test_delayed_network_refuses_unequal_folds",
         ),
     },
     "chc.regret.doubly_robust_control_certificate": {
@@ -382,6 +383,23 @@ def test_delayed_network_c_fold_matches_the_k2_closed_form(m):
     measured = m * np.trace(au @ au) / np.trace(au) ** 2
     assert curve.c_fold_measured == pytest.approx(measured, rel=1e-13, abs=0.0)
     assert measured == pytest.approx(m * (m + 14) / (m + 2) ** 2, rel=1e-13, abs=0.0)
+
+
+@pytest.mark.parametrize("m", [5, 7])
+def test_delayed_network_refuses_unequal_folds(m):
+    """delayed_network_exposure.mac STEP 1 needs F = (K/m) 1{same fold} to be the fold-mean
+    projector, which takes equal folds. On an odd cluster the closed-form A_u is not the cross-fit
+    residualiser's, and the certificate returned c_fold 1.914 against the balanced law's 1.939 at
+    m = 5; it now refuses the size."""
+    au = _cross_fit_sandwich(_folds(m)["parity"])
+    closed = (
+        np.eye(m)
+        - 4.0 * np.full((m, m), 1.0 / m)
+        + 3.0 * (2.0 / m) * (_folds(m)["parity"][:, None] == _folds(m)["parity"][None, :])
+    )
+    assert np.abs(au - closed).max() > 0.1
+    with pytest.raises(ValueError, match="cluster_size must be even"):
+        R.delayed_network_certificate(cluster_size=m, n_draws=50)
 
 
 # --------------------------------------------------------------------------- doubly robust AIPW
