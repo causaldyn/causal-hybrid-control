@@ -195,6 +195,9 @@ SEEDS = st.integers(0, 2**32 - 1)
 
 def _rightmost_root(kappa: float) -> float:
     """Real part of the rightmost root of ``s e^s = -kappa``, over the Lambert W branches."""
+    principal = lambertw(-kappa, 0)
+    if np.isnan(principal):  # -kappa rounded past the branch point -1/e: the double root s = -1
+        return -1.0
     return max(float(np.real(lambertw(-kappa, k))) for k in range(-6, 7))
 
 
