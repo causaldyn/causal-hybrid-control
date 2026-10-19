@@ -653,9 +653,10 @@ def test_multivariate_interference_orders_follow_the_least_debiased_channel() ->
 
 
 def _multichannel_errors(delta, seeds, cluster_size=10, clusters=40):
+    """Each draw's error at ``delta`` less its own at ``delta = 0``, as the certificate takes it."""
     errors = {False: [], True: []}
     for s in range(seeds):
-        rng = np.random.default_rng(6151 * s + int(1e5 * delta))
+        rng = np.random.default_rng(6151 * s)
         cid = np.repeat(np.arange(clusters), cluster_size)
         n = cid.size
         z = rng.standard_normal(n)
@@ -664,8 +665,20 @@ def _multichannel_errors(delta, seeds, cluster_size=10, clusters=40):
         g = 0.8 * z + 0.7 * rng.standard_normal(n)
         y = u + 0.6 * g + z + a + 0.5 * rng.standard_normal(n)
         for orth in (False, True):
-            errors[orth].append(_dml_two_channel(z, u, g, y, delta, orth, np.mod(cid, 2)) - 1.6)
+            fold = np.mod(cid, 2)
+            base = _dml_two_channel(z, u, g, y, 0.0, orth, fold)
+            errors[orth].append(_dml_two_channel(z, u, g, y, delta, orth, fold) - base)
     return {k: np.asarray(v) for k, v in errors.items()}
+
+
+def _multichannel_population_bias(delta, b_d=1.0, b_s=0.6, alpha_u=1.0, alpha_g=0.8, gamma=1.0):
+    """Population limits of the cross-fit Robinson fit with nuisance slopes off by ``delta``: the
+    spillover plug-in's total error and the full orthogonal fit's."""
+    e_d = -(delta**2) * (b_d + b_s - 1.0) / (0.49 + 2.0 * delta**2)
+    e_s = (-b_s * delta * alpha_g - gamma * delta + e_d * delta * alpha_u - b_s * delta**2) / (
+        0.49 + delta**2
+    )
+    return e_d + e_s, 2.0 * e_d
 
 
 def test_multichannel_regrets_meet_the_population_bias() -> None:
@@ -677,19 +690,29 @@ def test_multichannel_regrets_meet_the_population_bias() -> None:
     constant = _scalar_constant(total, 0.5, 1.0)
     for i in (4, 5):
         delta = float(curve.deltas[i])
-        # population limits of the cross-fit Robinson fit with nuisance slopes off by delta
-        e_d = -(delta**2) * (total - 1.0) / (0.49 + 2.0 * delta**2)
-        e_s = (-b_s * delta * alpha_g - gamma * delta + e_d * delta * alpha_u - b_s * delta**2) / (
-            0.49 + delta**2
+        half_limit, full_limit = _multichannel_population_bias(
+            delta, b_d, b_s, alpha_u, alpha_g, gamma
         )
         draws = _multichannel_errors(delta, seeds)
         for orth, limit, measured in (
-            (False, e_d + e_s, curve.half_orth_regret[i]),
-            (True, 2.0 * e_d, curve.full_orth_regret[i]),
+            (False, half_limit, curve.half_orth_regret[i]),
+            (True, full_limit, curve.full_orth_regret[i]),
         ):
             assert measured == pytest.approx(constant * draws[orth].mean() ** 2, rel=1e-12, abs=0.0)
             se = draws[orth].std(ddof=1) / np.sqrt(seeds)
             assert abs(np.sqrt(measured / constant) - abs(limit)) <= 4.0 * se
+
+
+def test_multichannel_slopes_are_resolved_at_twenty_draws() -> None:
+    """The slopes the population bias gives over the default window, 2.056 and 3.795, read at 20
+    draws. Draws independent across delta read the full slope 2.13 there: their sampling error,
+    0.0185 in the mean error, was above the full fit's bias up to delta = 0.07. Across five other
+    sets of 20 draws the full slope spread with an SD of 0.07; the tolerance is 0.25."""
+    curve = multichannel_control_certificate(n_seeds=20)
+    population = np.array([_multichannel_population_bias(d) for d in curve.deltas])
+    logs = np.log(curve.deltas)
+    for slope, bias in ((curve.half_slope, population[:, 0]), (curve.full_slope, population[:, 1])):
+        assert slope == pytest.approx(np.polyfit(logs, np.log(bias**2), 1)[0], abs=0.25)
 
 
 def test_multichannel_full_orthogonal_regret_never_exceeds_the_half_one() -> None:

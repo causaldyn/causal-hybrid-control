@@ -1225,6 +1225,16 @@ def multichannel_control_certificate(
     Cluster-robust: with roughly balanced, weakly-dependent clusters the effective sample size is
     the number of clusters ``G``, so the total effect concentrates at ``1/sqrt(G)``; this depends
     on the cluster count/size/balance and cross-cluster independence, and is not a universal rate.
+
+    Every ``delta`` reads the same ``n_seeds`` draws, and each draw's error at ``delta = 0`` is
+    taken off: the sampling error cancels, and the regrets carry the bias the nuisance error
+    induces. Over the default window the population bias gives slopes 2.056 and 3.795 (its
+    ``0.49 + 2 delta^2`` denominator bends the order-4 line); this reads 2.056 and 3.761 at 20
+    draws, 2.055 and 3.746 at 60. Draws independent across ``delta`` left a sampling error of
+    0.0185 in the mean error at 20 draws, above the full fit's bias up to ``delta = 0.07``
+    (0.0118), and read the full slope 2.13 there. Over five other sets of draws they read it
+    1.90 +- 0.45 at 20 draws and 2.70 +- 0.37 at 60, where common draws read 3.79 +- 0.07 and
+    3.77 +- 0.06.
     """
     b_total = b_d + b_s
     coeff = xt**2 * (rr - b_total**2) ** 2 / (rr + b_total**2) ** 3
@@ -1242,18 +1252,16 @@ def multichannel_control_certificate(
         y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
         return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
 
-    for i, delta in enumerate(ds):
-        err_half = np.empty(n_seeds)
-        err_full = np.empty(n_seeds)
-        for s in range(n_seeds):
-            rng = np.random.default_rng(6151 * s + int(1e5 * delta))
-            z, u, g, y, fold = simulate(rng, n_clusters)
-            err_half[s] = _dml_two_channel(z, u, g, y, delta, False, fold) - b_total
-            err_full[s] = _dml_two_channel(z, u, g, y, delta, True, fold) - b_total
-        # systematic bias^2 (mean over seeds isolates the delta-order bias from the sampling
-        # variance, which is measured separately in the cluster-robustness arm below)
-        half[i] = coeff * float(np.mean(err_half)) ** 2
-        full[i] = coeff * float(np.mean(err_full)) ** 2
+    # the same draws at every delta, each less its own error at delta = 0: the sampling error is
+    # common to both and cancels, so the mean is the delta-induced bias, whose square the regret
+    # is. The sampling variance is measured in the cluster-robustness arm below
+    draws = [simulate(np.random.default_rng(6151 * s), n_clusters) for s in range(n_seeds)]
+    for orth, regret in ((False, half), (True, full)):
+        induced = np.empty((ds.size, n_seeds))
+        for s, (z, u, g, y, fold) in enumerate(draws):
+            base = _dml_two_channel(z, u, g, y, 0.0, orth, fold)
+            induced[:, s] = [_dml_two_channel(z, u, g, y, d, orth, fold) - base for d in ds]
+        regret[:] = coeff * induced.mean(axis=1) ** 2
     half_slope = float(np.polyfit(np.log(ds), np.log(half), 1)[0])
     full_slope = float(np.polyfit(np.log(ds), np.log(full), 1)[0])
 

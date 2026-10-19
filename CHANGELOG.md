@@ -216,6 +216,14 @@ still change).
   image, the two penalties trading places. `worst_case_asymmetric_loss` read 0 for every negative
   control; it now reads the interval's ends for either sign. The benchmarks never reach either case
   and do not move.
+- **`multichannel_control_certificate` reads its orders off the bias, not the sampling error.**
+  Each `delta` drew its own data, and the mean error carried a sampling error (0.0185 at 20
+  draws) above the full fit's bias up to `delta = 0.07`: the full slope read 2.13 at 20 draws, and
+  1.90 ± 0.45 and 2.70 ± 0.37 over other draws at 20 and 60, where the population bias gives 3.795
+  over the window. Every `delta` now reads the same draws, each less its own error at
+  `delta = 0`: 3.761 at 20 draws and 3.746 at the default 60 (3.815 before), 3.79 ± 0.07 and
+  3.77 ± 0.06 over other draws. The half slope reads 2.055 (2.016 before) and the regret fields
+  move with it; the cluster arm does not.
 - **`fit_causal_residual(integrator="rk4")` holds each non-driver covariate's push in the drift
   over the step.** The channel absorbed a confounder's or a season's push: 0.618 against 0.800
   with an error 13× too small, and the MMM's incremental returns scattered with the season. They
