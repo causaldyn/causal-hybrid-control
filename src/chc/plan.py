@@ -2351,6 +2351,11 @@ def plan_regret_bound(
     ``proofs/constrained_plan_regret.v``. Reads the plan's actions, not the solver's internals, so
     it prices a plan that came from anywhere -- including one an operator edited by hand.
 
+    The feasible set is the box alone: linear rows the plan was solved under are not read. The
+    bound is then on the gap to the box's optimum, which is never below the gap to the optimum
+    under the rows, so it stays valid and is loose by what the rows cost: a plan at the exact
+    optimum under a budget row that binds reads a positive bound where its own gap is zero.
+
     Args:
         modulus: the strong-convexity modulus of ``J`` over the box, which makes the bound a
             certificate. ``None`` reads it off ``J``'s Hessian (see :func:`_objective_modulus`):
