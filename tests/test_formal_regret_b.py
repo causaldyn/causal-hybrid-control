@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -1016,7 +1017,7 @@ def _optimal_action(effect, xt, rr):
 def test_information_floor_constant_is_the_exact_action_curvature(b, rr, xt, sigma, alpha):
     """action_van_trees.mac STEP 2: the floor's C is (b^2 + rr) psi'(b)^2; confounding raises it."""
     if abs(rr - b * b) < 1e-3:
-        return  # the knife edge crashes; see the xfail below
+        return  # the floor is zero at the knife edge; see the test below
     curve = R.information_lower_bound_certificate(
         b=b, rr=rr, xt=xt, sigma=sigma, alpha=alpha, sample_sizes=(50, 100), n_seeds=2
     )
@@ -1032,16 +1033,23 @@ def test_information_floor_constant_is_the_exact_action_curvature(b, rr, xt, sig
     assert curve.floor_ratio >= 1.0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ZeroDivisionError,
-    reason="b = rr = 1: the floor C sigma^2/(n V) is 0 at the knife edge the docstring names, "
-    "and hodges_pointwise / cr_floor[-1] raises ZeroDivisionError",
-)
-def test_information_certificate_survives_the_knife_edge():
-    """action_van_trees.mac STEP 5: at rr = b^2 the floor vanishes and the certificate returns."""
-    curve = R.information_lower_bound_certificate(b=1.0, rr=1.0, sample_sizes=(50, 100), n_seeds=2)
+@pytest.mark.parametrize("b", [0.5, 1.0, 1.7])
+def test_information_certificate_survives_the_knife_edge(b):
+    """action_van_trees.mac STEP 5: at rr = b^2 the floor vanishes and the certificate returns.
+    hodges_pointwise / cr_floor[-1] raised ZeroDivisionError there; the ratio and the rate have
+    nothing to measure, so they read nan."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        curve = R.information_lower_bound_certificate(
+            b=b, rr=b * b, sample_sizes=(50, 100), n_seeds=2
+        )
     assert np.all(curve.cramer_rao_floor == 0.0)
+    assert np.all(curve.confounded_floor == 0.0)
+    assert np.all(curve.experimental_regret == 0.0)
+    assert math.isnan(curve.rate_slope)
+    assert math.isnan(curve.hodges_pointwise_ratio)
+    assert np.isfinite(curve.van_trees_action_floor)
+    assert curve.van_trees_action_floor > 0.0
 
 
 def test_information_unbiased_arm_sits_on_the_exact_ols_risk():

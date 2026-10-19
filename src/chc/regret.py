@@ -333,7 +333,8 @@ def information_lower_bound_certificate(
 
     The caveat that SURVIVES is the knife edge: at ``rr = b^2`` the optimal action is stationary
     in ``b``, so ``psi'`` and with it the leading floor vanish. That is a property of the problem,
-    not of the inequality used.
+    not of the inequality used. There the floors and the linearised regret are exactly zero, so
+    ``rate_slope`` and ``hodges_pointwise_ratio`` have nothing to measure and read ``nan``.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     v_exp = alpha**2 + 1.0  # total action variance (Var(alpha*z + nu), Vz = Vnu = 1)
@@ -351,7 +352,9 @@ def information_lower_bound_certificate(
         exp_regret[i] = coeff * float(np.mean(biases**2))
     cr_floor = coeff * sigma**2 / (ns * v_exp)
     conf_floor = coeff * sigma**2 / (ns * v_conf)
-    slope = float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
+    # at the knife edge rr = b^2 the coefficient is 0: no rate to fit, no floor to compare with
+    knife_edge = coeff == 0.0
+    slope = float("nan") if knife_edge else float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
 
     # Result 57's arm, in ACTION space, where the regret identity is exact.
     prior_width = 0.25
@@ -392,7 +395,7 @@ def information_lower_bound_certificate(
         slope,
         v_exp / v_conf,
         vt_floor,
-        hodges_pointwise / float(cr_floor[-1]),
+        float("nan") if knife_edge else hodges_pointwise / float(cr_floor[-1]),
         hodges_bayes / vt_floor,
         plugin_bayes / vt_floor,
     )
