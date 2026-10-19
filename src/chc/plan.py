@@ -81,6 +81,7 @@ from chc.dynamics import (
     Dynamics,
     HybridDynamics,
     LinearDynamics,
+    _EulerStep,
     _SetAtStep,
 )
 from chc.integrate import rk4_step, rollout
@@ -109,7 +110,7 @@ from chc.uncertainty import (
 )
 
 if TYPE_CHECKING:
-    from chc.dynamics_id import CausalDynamicsFit
+    from chc.dynamics_id import CausalDynamicsFit, Integrator
 
 CertificateStatus = Literal["not_evaluated", "no_tolerance", "uncertified", "partial", "certified"]
 """How far a plan's error tube trusts it: ``not_evaluated`` where no error model gave it a tube,
@@ -707,6 +708,14 @@ class _RuledCost(QuadraticCost):
 def _taken(model: Dynamics, x: Array, u: Array) -> Array:
     """The action ``model``'s field takes at ``x`` for the plan's ``u``."""
     return model.read(x, u) if isinstance(model, _Ruled) else u
+
+
+def _integrator(model: Dynamics) -> Integrator:
+    """The one-step map :func:`chc.integrate.rk4_step` steps ``model`` by: the Euler map's where
+    the field is fitted to it (:class:`~chc.dynamics._EulerStep`), RK4's elsewhere. The tube reads
+    it here, so it is carried by the step the plan rolls out by."""
+    inner = model.dynamics if isinstance(model, _Ruled) else model
+    return "euler" if isinstance(inner, _EulerStep) else "rk4"
 
 
 def _perturbed_task_cost(problem: _PlanProblem, actions: Array, change: Array) -> Array:
@@ -1637,9 +1646,12 @@ def _error_tube(
     horizon: int,
     field_scale: float | None = None,
     read: _NoiseRead | None = None,
+    *,
+    integrator: Integrator = "rk4",
 ) -> NDArray[np.float64] | None:
     """The plan's error tube carried by ``carried`` -- a norm bound, one state matrix, or one a step
-    -- or None where neither the model error nor the noise gives it a radius.
+    -- or None where neither the model error nor the noise gives it a radius, of rollouts by
+    ``integrator``, the step the plan's model is stepped by (:func:`_integrator`).
 
     ``model_error`` is a bound on the field's error at each step, one number for every step or one
     a step, and the tube adds what it carries to the noise's radius, unless ``field_scale`` is
@@ -1656,14 +1668,25 @@ def _error_tube(
     if not (max(errors, default=0.0) > 0.0 or covariance.any()):
         return None
     tube = (
-        _tube([float(carried)] * horizon, errors, dt, "rk4")
+        _tube([float(carried)] * horizon, errors, dt, integrator)
         if carried.ndim == 0
-        else _linear_tube(carried, errors, dt)
+        else _linear_tube(carried, errors, dt, integrator=integrator)
     )
     if field_scale is not None:
-        return _noise_tube(carried, covariance, persistence, dt, horizon, field_scale * tube, read)
+        return _noise_tube(
+            carried,
+            covariance,
+            persistence,
+            dt,
+            horizon,
+            field_scale * tube,
+            read,
+            integrator=integrator,
+        )
     if covariance.any():
-        tube = tube + _noise_tube(carried, covariance, persistence, dt, horizon, read=read)
+        tube = tube + _noise_tube(
+            carried, covariance, persistence, dt, horizon, read=read, integrator=integrator
+        )
     return tube
 
 
@@ -1683,7 +1706,8 @@ def _carried_along(
     slope moves with the action, as :func:`chc.prescribe`'s fitted one does; or, given one number,
     by that norm bound as the plan was. ``model_error`` is one number for every step or one a step,
     and ``field_scale`` reads it as a standard error, and ``read`` carries the noise's own error
-    (:func:`_error_tube`). The tube is read off the finished actions and moves no action."""
+    (:func:`_error_tube`). The tube is read off the finished actions and moves no action, and is
+    carried by the step the plan's model is stepped by."""
     horizon = len(plan.actions)
     covariance = _noise_covariance(noise, plan.trajectory.shape[-1])
     tube = _error_tube(
@@ -1695,6 +1719,7 @@ def _carried_along(
         horizon,
         field_scale,
         read,
+        integrator="rk4" if plan._problem is None else _integrator(plan._problem.model),
     )
     if tube is None:
         return plan
@@ -1880,7 +1905,9 @@ def _plan(
             # the answer is where the relaxed descent stopped, and it stopped for its own reason
             status = first.solver_status
 
-    tube = _error_tube(rate, model_error, covariance, persistence, dt, horizon)
+    tube = _error_tube(
+        rate, model_error, covariance, persistence, dt, horizon, integrator=_integrator(model)
+    )
     problem = _PlanProblem(
         model=model,
         x0=x0,
@@ -3045,6 +3072,8 @@ def _quadratic(model: Dynamics) -> bool:
         return _quadratic(model.known) and _quadratic(model.residual)
     if isinstance(model, DrivenDynamics):
         return _quadratic(model.dynamics)
+    if isinstance(model, _EulerStep):
+        return _quadratic(model.field)
     return False
 
 

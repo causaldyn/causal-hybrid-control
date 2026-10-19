@@ -1,0 +1,87 @@
+/* The plan's tube when the field is stepped by the Euler map x + dt f(x, u), the one-step map a
+   discrete-time log is read by (chc.uncertainty._step_parts).
+
+   A field affine in the state, f = A x + g, stepped by the Euler map, and the same field off by
+   delta over the step, start a step a gap e apart. The step leaves them
+
+       e' = (I + dt A) e + dt delta,
+
+   exactly: the step matrix is M = I + z, z = dt A, and the one stage puts the weight I on the
+   field's error, where RK4's four put c_1(z) .. c_4(z) and step by R(z) = 1 + z + z^2/2 + z^3/6 +
+   z^4/24 (rk4_rollout.mac). The noise's part of the gap is carried by the recursion of
+   var_noise_tube.mac and predictive_tube.mac, which hold for any step matrix M_k; the read's
+   offset by D_{k+1} = M_k D_k + I of noise_read_tube.mac, for any M_k too.
+
+   Checked here: (1) the Euler step's gap on a symbolic 2x2 field; (2) the tube's one-state sum
+   sum_j dt (1 + L dt)^(k-1-j) eps_j is the scalar recursion e_{k+1} = (1 + L dt) e_k + dt eps_k
+   (lipschitz_rollout.mac's) at k = 1..5; (3) the Euler parts are RK4's to first order in z;
+   (4) R has one real critical point, z = -1.5961, where it is least, 0.2704: no RK4 step of a
+   linear mode keeps less of it, while the Euler map keeps any rho at z = rho - 1, -0.9 for 0.1;
+   (5) the AR(1) noise recursion with M = 1 + z is the double sum at k = 1..4; (6) on an affine
+   margin h, the Euler step moves h by exactly dt grad h . f, so the barrier condition grad h . f
+   >= -alpha h at a step's start gives h after it >= (1 - alpha dt) h, which keeps h >= 0 at
+   alpha dt <= 1. */
+display2d : false$
+fpprec : 40$
+/* a check that fails stops the batch with "-- an error.", which validation/run_all.sh reads */
+vanishes(label, x) := if (if matrixp(x) then every(lambda([e], is(e = 0)), flatten(args(x)))
+                          else is(x = 0))
+  then print(label, "= 0") else error(label, "is not zero:", x)$
+
+/* (1) the Euler step's gap, 2x2, symbolic */
+A : matrix([a11, a12], [a21, a22])$
+x : matrix([x1], [x2])$ y : matrix([y1], [y2])$
+g : matrix([g1], [g2])$ d : matrix([d1], [d2])$
+stepped(v, offset) := v + dt * (A . v + g + offset)$
+gap : stepped(x, d) - stepped(y, zeromatrix(2, 1))$
+vanishes("(1) Euler gap - ((I + dt A)(x - y) + dt delta)",
+         expand(gap - ((ident(2) + dt * A) . (x - y) + dt * d)))$
+
+/* (2) the one-state tube's sum is the scalar recursion */
+e : 0$
+for k : 1 thru 5 do (
+  e : (1 + L * dt) * e + dt * eps[k - 1],
+  vanishes(sconcat("(2) k = ", k, ": recursion - sum"),
+           expand(e - sum(dt * (1 + L * dt)^(k - 1 - j) * eps[j], j, 0, k - 1))))$
+
+/* (3) the Euler parts are RK4's to first order: R(z) = 1 + z + O(z^2), sum c_i = 1 + O(z) */
+R(z) := 1 + z + z^2/2 + z^3/6 + z^4/24$
+weights : [(1 + z + z^2/2 + z^3/4)/6, (2 + z + z^2/2)/6, (2 + z)/6, 1/6]$
+vanishes("(3) R - (1 + z) to first order", taylor(R(z), z, 0, 1) - (1 + z))$
+vanishes("(3) sum c_i - 1 at order 0", taylor(apply("+", weights), z, 0, 0) - 1)$
+vanishes("(3) 1 + z sum c_i - R", expand(1 + z * apply("+", weights) - R(z)))$
+
+/* (4) RK4's least growth: R'(z) = 1 + z + z^2/2 + z^3/6 has one real root, R'' > 0 there */
+critical : realroots(diff(R(z), z), 1e-30)$
+if length(critical) # 1 then error("(4) R' has", length(critical), "real roots, not one")$
+zstar : rhs(critical[1])$
+if not (bfloat(subst(z = zstar, diff(R(z), z, 2))) > 0) then error("(4) R'' <= 0 at the root")$
+least : bfloat(R(zstar))$
+print("(4) R least at z =", bfloat(zstar), ":", least)$
+if not (abs(least - 0.27039476520518b0) < 1b-12 and abs(bfloat(zstar) + 1.59607163798332b0) < 1b-12)
+  then error("(4) the least growth moved:", least, zstar)$
+/* R tends to +inf both ways, so its one critical point is its least: R(z) >= 0.2704 everywhere */
+if not (least > 0.27b0) then error("(4) the floor is below 0.27")$
+print("(4) the Euler map keeps 1/10 at z =", 1/10 - 1, ", 1 + z =", 1 + (1/10 - 1))$
+print("(4) a plant solved exactly reaches the floor at |A| dt = -log(R least) =",
+      bfloat(-log(least)))$
+
+/* (5) AR(1) noise, M = 1 + z: recursion = double sum, k = 1..4 */
+m : 1 + z$
+p : 0$ c : 0$
+for k : 1 thru 4 do (
+  [p, c] : [m^2 * p + 2 * m * c + s, rho * (m * c + s)],
+  vanishes(sconcat("(5) k = ", k, ": recursion - double sum"),
+           expand(p - sum(sum(m^(k - 1 - i) * rho^abs(i - j) * s * m^(k - 1 - j),
+                              j, 0, k - 1), i, 0, k - 1))))$
+
+/* (6) the barrier on an affine margin h(x) = w . x + b under the Euler step */
+w : matrix([w1, w2])$
+h(v) := w . v + b$
+f : matrix([f1], [f2])$
+vanishes("(6) h(x + dt f) - (h(x) + dt w . f)", expand(h(x + dt * f) - (h(x) + dt * (w . f))))$
+/* with w . f = -alpha h + slack, slack >= 0: h' = (1 - alpha dt) h + dt slack */
+vanishes("(6) h' at w.f = -alpha h + slack",
+         expand(subst(w . f = -alpha * h(x) + slack, h(x) + dt * (w . f))
+                - ((1 - alpha * dt) * h(x) + dt * slack)))$
+print("euler_tube: every check passed")$

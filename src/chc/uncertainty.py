@@ -1339,14 +1339,18 @@ def linear_rollout_bound(state_matrix: ArrayLike, model_error: list[float], dt: 
 
 
 def _linear_tube(
-    state_matrix: ArrayLike, model_error: Sequence[float], dt: float
+    state_matrix: ArrayLike,
+    model_error: Sequence[float],
+    dt: float,
+    *,
+    integrator: Integrator = "rk4",
 ) -> NDArray[np.float64]:
     """:func:`linear_rollout_bound`'s tube, or, given an ``(H, n, n)`` sequence, the tube of a field
     whose state matrix at step ``k`` is ``state_matrix[k]``: ``x' = A_k x + g_k(t)`` over step
     ``k``, as a field affine in the state is under the plan's action at that step. Step ``j``'s
     error then reaches step ``k`` through ``R(dt A_{k-1}) ... R(dt A_{j+1}) c_i(dt A_j)``, and the
     tube sums those gains' norms. A sequence of one matrix repeated gives the one matrix's tube
-    to the bit."""
+    to the bit. Under ``integrator="euler"`` the rollouts are Euler's (:func:`_step_parts`)."""
     a_matrix = np.asarray(state_matrix, dtype=float)
     steps = a_matrix[None] if a_matrix.ndim == 2 else a_matrix
     if steps.ndim != 3 or steps.shape[1] != steps.shape[2]:
@@ -1359,7 +1363,7 @@ def _linear_tube(
         raise ValueError("state_matrix holds a value that is not finite")
     _check_budget(model_error, dt)
     eye = np.eye(steps.shape[1])
-    parts = [_rk4_parts(dt * step, eye) for step in steps]
+    parts = [_step_parts(dt * step, eye, integrator) for step in steps]
     errors = np.asarray(model_error, dtype=float)
     # gains[j][lag]: the norm of what step j's error adds to step j + 1 + lag
     if a_matrix.ndim == 2:
@@ -1396,6 +1400,18 @@ def _rk4_parts(
         eye / 6.0,
     )
     return growth, weights
+
+
+def _step_parts(
+    z: NDArray[np.float64], eye: NDArray[np.float64], integrator: Integrator
+) -> tuple[NDArray[np.float64], tuple[NDArray[np.float64], ...]]:
+    """The step matrix of a field affine in the state, ``z = dt A``, and the weights its stages
+    put on the field's errors, under ``integrator``: RK4's (:func:`_rk4_parts`), or the Euler
+    map's, ``I + z`` and its one stage's ``I``: ``x + dt (A x + g + delta)`` is off the step of
+    ``A x + g`` by ``dt delta`` exactly (``validation/euler_tube.mac``)."""
+    if integrator == "euler":
+        return eye + z, (eye,)
+    return _rk4_parts(z, eye)
 
 
 def _gains(
@@ -1519,6 +1535,8 @@ def _noise_tube(
     horizon: int,
     field: NDArray[np.float64] | None = None,
     read: _NoiseRead | None = None,
+    *,
+    integrator: Integrator = "rk4",
 ) -> NDArray[np.float64]:
     """The radii ``r_0..r_H`` within which a plant off the plan's own step by ``w_k`` at each step
     stays at each step with probability :data:`_TUBE_COVERAGE`, ``w_k`` Gaussian of covariance
@@ -1537,9 +1555,10 @@ def _noise_tube(
     ``M = R(dt A)``, RK4's step of a field affine in the state, and the gap is that field's to first
     order; on an ``(H, n, n)`` sequence of them, ``M_k = R(dt A_k)`` at step ``k``, as on a field
     affine in the state whose slope moves with the plan's action, and the recursion is the same with
-    ``M_k`` in place of ``M``. There ``P_k`` is exact, and the radius is the exact 0.95 quantile of
-    ``||e_k||``, a sum of ``P_k``'s eigenvalues times independent ``chi2_1``
-    (:func:`_noise_radius`).
+    ``M_k`` in place of ``M``. Under ``integrator="euler"`` the plan steps by the Euler map, and
+    ``R(z) = 1 + z`` in all of it (:func:`_step_parts`). There ``P_k`` is exact, and the radius
+    is the exact 0.95 quantile of ``||e_k||``, a sum of ``P_k``'s eigenvalues times independent
+    ``chi2_1`` (:func:`_noise_radius`).
     On a norm-Lipschitz bound ``L``, ``g = R(L dt)`` bounds the norm of the step's slope in the
     state, and ``p_{k+1} = g^2 p_k + 2 g c_k + q``, ``c_{k+1} = |rho| (g c_k + q)``, ``q`` the
     largest eigenvalue of ``S``, bounds ``P_k``'s largest, with ``||Phi||``, its largest singular
@@ -1561,14 +1580,16 @@ def _noise_tube(
             [
                 _noise_radius(covariance, extra)
                 for covariance, extra in zip(
-                    _read_covariances(rate, noise, persistence, dt, horizon, read),
+                    _read_covariances(
+                        rate, noise, persistence, dt, horizon, read, integrator=integrator
+                    ),
                     added,
                     strict=True,
                 )
             ]
         )
     z = float(rate) * dt
-    growth = 1.0 + z * _rk4_phi(z)
+    growth = 1.0 + z if integrator == "euler" else 1.0 + z * _rk4_phi(z)
     variances = _bound_variances(growth, noise, persistence, horizon)
     first = noise
     if read is not None:
@@ -1631,6 +1652,8 @@ def _read_covariances(
     dt: float,
     horizon: int,
     read: _NoiseRead | None,
+    *,
+    integrator: Integrator = "rk4",
 ) -> list[NDArray[np.float64]]:
     """:func:`_noise_covariances`, and, given the ``read`` of ``noise`` and ``persistence`` off a
     log, the gap's covariance with their own error carried.
@@ -1645,7 +1668,7 @@ def _read_covariances(
     (``validation/noise_read_tube.mac``). Plug-in, ``S`` and ``Phi`` taken for the plant's own,
     the tube under a persistent recorded confounder held 0.944 a step over 16 logs of 2000 runs
     where its premises hold (ADR 0105)."""
-    covariances = _noise_covariances(rate, noise, persistence, dt, horizon)
+    covariances = _noise_covariances(rate, noise, persistence, dt, horizon, integrator=integrator)
     if read is None:
         return covariances
     scales = _studentised(
@@ -1653,7 +1676,9 @@ def _read_covariances(
             [
                 [np.diag(covariance) for covariance in replicate[1:]]
                 for replicate in (
-                    _noise_covariances(rate, np.asarray(covariance), carry, dt, horizon)
+                    _noise_covariances(
+                        rate, np.asarray(covariance), carry, dt, horizon, integrator=integrator
+                    )
                     for covariance, carry in zip(read.covariances, read.carries, strict=True)
                 )
             ]
@@ -1663,7 +1688,7 @@ def _read_covariances(
     eye = np.eye(noise.shape[0])
     offset, read_covariances = np.zeros_like(noise), [covariances[0]]
     for slope, scale, covariance in zip(slopes[:horizon], scales, covariances[1:], strict=True):
-        offset = _rk4_parts(dt * np.asarray(slope), eye)[0] @ offset + eye
+        offset = _step_parts(dt * np.asarray(slope), eye, integrator)[0] @ offset + eye
         shifted = offset @ read.level @ offset.T if read.level.any() else 0.0
         read_covariances.append(np.outer(scale, scale) * covariance + shifted)
     return read_covariances
@@ -1675,10 +1700,13 @@ def _noise_covariances(
     persistence: float | NDArray[np.float64],
     dt: float,
     horizon: int,
+    *,
+    integrator: Integrator = "rk4",
 ) -> list[NDArray[np.float64]]:
     """``P_0 .. P_H``, the covariance of the noise's part of the gap at each step, carried by RK4's
     step matrix of the state matrix ``rate``, or of ``rate[k]`` at step ``k`` given an
-    ``(H, n, n)`` sequence (:func:`_noise_tube`)."""
+    ``(H, n, n)`` sequence (:func:`_noise_tube`); by the Euler map's, ``I + dt A``, under
+    ``integrator="euler"``."""
     slopes = rate if rate.ndim == 3 else np.broadcast_to(rate, (horizon, *rate.shape))
     eye = np.eye(noise.shape[0])
     covariance, cross_matrix = np.zeros_like(noise), np.zeros_like(noise)
@@ -1688,7 +1716,9 @@ def _noise_covariances(
     for slope in slopes[:horizon]:
         z = dt * slope
         z2 = z @ z
-        step_matrix = eye + z + z2 / 2.0 + z2 @ z / 6.0 + z2 @ z2 / 24.0
+        step_matrix = (
+            eye + z if integrator == "euler" else eye + z + z2 / 2.0 + z2 @ z / 6.0 + z2 @ z2 / 24.0
+        )
         shared = step_matrix @ cross_matrix + noise
         covariance, cross_matrix = (
             step_matrix @ covariance @ step_matrix.T

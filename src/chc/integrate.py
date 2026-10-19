@@ -5,14 +5,18 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jax import Array, lax
 
-from chc.dynamics import Dynamics, _SetAtStep
+from chc.dynamics import Dynamics, _EulerStep, _SetAtStep
 
 
 def rk4_step(dyn: Dynamics, t: float | Array, x: Array, u: Array, dt: float) -> Array:
     """One classical Runge-Kutta 4 step with the control held constant over the step. A field
-    that sets part of the action from the state sets it at ``x``."""
+    that sets part of the action from the state sets it at ``x``. A field fitted to a
+    discrete-time log's one-step map (:class:`~chc.dynamics._EulerStep`) is stepped by that map,
+    ``x + dt f(t, x, u)``."""
     if isinstance(dyn, _SetAtStep):
         dyn, u = dyn.at_step(x, u)
+    if isinstance(dyn, _EulerStep):
+        return x + dt * dyn(t, x, u)
     k1 = dyn(t, x, u)
     k2 = dyn(t + 0.5 * dt, x + 0.5 * dt * k1, u)
     k3 = dyn(t + 0.5 * dt, x + 0.5 * dt * k2, u)

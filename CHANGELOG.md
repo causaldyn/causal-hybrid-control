@@ -137,8 +137,6 @@ still change).
 
 ### Changed
 
-- **`prescribe(integrator=...)` accepts only `"rk4"`**: an Euler fit was planned by RK4, and its
-  tube certified steps the plan left. `fit_causal_residual(integrator="euler")` stays.
 - **Undeclared text periods raise a `FutureWarning`**: they sort as text (`"10"` before `"2"`).
   `frequency="observed"` keeps that reading without it.
 - **The tube's field error is the scale of the Euclidean norm over the states.** It was the root
@@ -190,6 +188,15 @@ still change).
 
 ### Fixed
 
+- **`prescribe(integrator="euler")` plans by the map it fits.** The fit read the log's one-step
+  map, and the plan, its tube, the barrier's audit and the regret bound stepped the field by RK4:
+  on a discrete-time plant the plan missed it by 0.27 at the first step of six, outside a tube of
+  0.063 that certified all six. Every step of the plan, its audits and its rollouts is now
+  `x + dt f(x, u)`, and the tube is carried by `I + dt A` (`validation/euler_tube.mac`). On a panel
+  that keeps 0.1 of its state a period, which no field stepped by RK4 reproduces, the tube holds
+  the plant 0.9499 to 0.9505 a step over 64 logs. `"rk4"` stays the default, and its fit's error
+  names `"euler"` as the remedy for a discrete-time panel (ADR 0118). `fit_causal_residual`
+  refuses an integrator other than the two, which it read as `"euler"`.
 - **`prescribe`'s tube carries the error of the noise it reads off the log.** It took the log's
   `S`, `Phi` and mean noise for the plant's own. A tube read off one log is narrow on some logs
   and wide on others, and the plant's noise misses the mean the fitted drift absorbed. Under a

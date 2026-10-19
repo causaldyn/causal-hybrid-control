@@ -27,7 +27,8 @@ def linearize_continuous(dyn: Dynamics, x: Array, u: Array) -> tuple[Array, Arra
 
 
 def linearize_discrete(dyn: Dynamics, x: Array, u: Array, dt: float) -> tuple[Array, Array]:
-    """Jacobians ``(A_d, B_d)`` of one RK4 step at ``(x, u)``."""
+    """Jacobians ``(A_d, B_d)`` of one step of :func:`chc.integrate.rk4_step` at ``(x, u)``: RK4's,
+    or the Euler map of a field fitted to it."""
     a = jax.jacobian(lambda z: rk4_step(dyn, 0.0, z, u, dt))(x)
     b = jax.jacobian(lambda w: rk4_step(dyn, 0.0, x, w, dt))(u)
     return a, b

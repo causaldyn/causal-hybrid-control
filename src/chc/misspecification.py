@@ -34,7 +34,7 @@ from jax import Array
 from numpy.typing import NDArray
 
 from chc.cost import total_cost
-from chc.dynamics import HybridDynamics
+from chc.dynamics import HybridDynamics, _EulerStep
 from chc.dynamics_id import CausalDynamicsFit, _clustered_squares
 from chc.plan import (
     CausalPlan,
@@ -83,7 +83,7 @@ def misspecification_cost(
     the parameters at the plan, planning on ``reference`` when ``alternative``'s model holds loses
     ``d' W d / 2`` to second order. ``W`` comes from :meth:`chc.plan.CausalPlan.decision_weight`'s
     envelope, with the model perturbed by a residual of the fits' class inside its field, rolled
-    out by RK4 as the plan is. Since ``E[dh' W dh] = d' W d + tr(W S)``, the cost is read as
+    out by the step the plan is. Since ``E[dh' W dh] = d' W d + tr(W S)``, the cost is read as
     ``(dh' W dh - tr(W S)) / 2``, with :meth:`chc.gate.ChannelMove.price`'s standard error. When
     the class holds the truth, ``d = 0`` and ``dh' W dh`` is a sum of chi-squares weighted by the
     eigenvalues of ``W S``, whose tail Imhof's inversion gives: that is ``p_value``.
@@ -235,7 +235,7 @@ def planned_cost_bias(
     :attr:`chc.dynamics_id.CausalDynamicsFit.influence`: the drift is fitted on what the channel
     leaves of the rate, so it carries the channel's error, and the plan pays for both. ``W``,
     ``J_ee`` and ``J_e`` are read with the model moved by a residual of the fit's class inside its
-    field, rolled out by RK4 as the plan is (:func:`misspecification_cost`'s envelope). ``S`` sums
+    field, rolled out by the step the plan is (:func:`misspecification_cost`'s envelope). ``S`` sums
     the influence's outer products row by row and state by state, within each cluster for a fit
     given ``clusters``, two-way the read of the three with the largest ``tr(W S)``, and across the
     periods' cosines for one given ``periods``, as the channel's error is read. The fit's own
@@ -321,7 +321,9 @@ def _parameter_cost(
     of its class inside its field, as ``cost(actions.ravel(), change)`` over :func:`_parameters`'
     order; with the plan's problem and the number of parameters."""
     problem = _weighable(plan._problem)
-    model = problem.model
+    # a field fitted to the Euler map is stepped by it, and so is the moved one
+    euler = isinstance(problem.model, _EulerStep)
+    model = problem.model.field if euler else problem.model
     if not (
         isinstance(model, HybridDynamics)
         and isinstance(model.residual, ControlAffineResidual)
@@ -335,8 +337,9 @@ def _parameter_cost(
     shape = plan.actions.shape
 
     def cost(u: Array, change: Array) -> Array:
+        moved = HybridDynamics(known=model, residual=_residual(change, residual))
         return total_cost(
-            HybridDynamics(known=model, residual=_residual(change, residual)),
+            _EulerStep(moved) if euler else moved,
             problem.x0,
             u.reshape(shape),
             problem.dt,

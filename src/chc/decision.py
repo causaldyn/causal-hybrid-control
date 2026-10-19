@@ -56,6 +56,7 @@ from chc.dynamics import (
     Dynamics,
     HybridDynamics,
     LinearDynamics,
+    _EulerStep,
     _SetAtStep,
 )
 from chc.dynamics_id import (
@@ -1849,13 +1850,14 @@ def prescribe(
             channel's standard error does not enter it. Read so, ``gamma`` and ``gamma_star`` are
             a relative margin, not a level of confounding: the absolute radius of
             :class:`chc.plan.ChannelSensitivity` needs a least-squares Euler channel, and this fit
-            is ``rk4``.
+            is ``rk4`` by default.
         tolerance: the trajectory error above which the plan stops being certified. **Omitting it
             switches the tube off** rather than setting it to infinity: this library cannot know
             how much error a caller accepts, and a certificate with an infinite tolerance passes
             over the whole horizon while proving nothing. The tube carries two errors over the
-            plan's RK4 steps at the rate :attr:`DecisionCertificate.tube_rate` names: the channel's
-            standard error, each lever's share of it times the largest distance that lever's box
+            plan's steps, by the ``integrator``'s map, at the rate
+            :attr:`DecisionCertificate.tube_rate` names: the channel's standard error, each lever's
+            share of it times the largest distance that lever's box
             allows from the log's mean action, where the fit's drift absorbed the channel, as
             the root mean square of the Euclidean norm over the states of the error it moves the
             field by, which reads the same in any units of each lever (ADR 0087) and wherever its
@@ -1885,18 +1887,21 @@ def prescribe(
             constrained column's. Defaults to the mean over units of each unit's last observed
             state, the pooled "where we are now". :attr:`Prescription.start` records which, and
             for the panel's, over how many units, at which periods and with what spread.
-        integrator: the one-step map the fit is made consistent with, passed to
-            :func:`~chc.dynamics_id.fit_causal_residual`: ``"rk4"``, and nothing else. It is
-            ``"euler"`` there by default, deliberately: the low-level fit has no idea what will
-            consume it and keeps its contract, while this function *knows* the field goes straight
-            to :func:`chc.plan.causal_plan`, which rolls out with RK4, as its tube, its barrier's
-            audit and its regret bound read it. Fitting one integrator and planning with another
-            is a bias the caller never asked for --- on the plant in :mod:`chc.research.mmm` it
-            costs 28% of the control channel --- so ``"euler"`` is refused. A panel that is
-            genuinely discrete-time (a weekly budget is not a sample of an ODE) is fitted by
-            ``"rk4"`` as well: its fit is the field whose RK4 step reproduces the log's one-step
-            map. To read that map itself, call :func:`~chc.dynamics_id.fit_causal_residual` with
-            ``integrator="euler"``.
+        integrator: the one-step map the field is fitted to and planned by, ``"rk4"`` or
+            ``"euler"``, passed to :func:`~chc.dynamics_id.fit_causal_residual`. It is ``"euler"``
+            there by default, deliberately: the low-level fit has no idea what will consume it and
+            keeps its contract, while here the field goes straight to
+            :func:`chc.plan.causal_plan`, and the plan, its tube, its barrier's audit, its regret
+            bound and every rollout the prescription carries step it by the map it was fitted to:
+            RK4's under ``"rk4"``, ``x + dt f(x, u)`` under ``"euler"`` (ADR 0118). Fitting one map
+            and planning by another is a bias the caller never asked for --- on the plant in
+            :mod:`chc.research.mmm` an Euler fit planned by RK4 costs 28% of the control channel.
+            ``"rk4"`` reads a log sampled from a plant in continuous time: its fit is the field
+            whose RK4 step reproduces the log's one-step map. Choose ``"euler"`` when the panel is
+            genuinely discrete-time (a weekly budget is not a sample of an ODE) and the one-step
+            map *is* the model. Where the log keeps less than 0.27 of a mode from one step to the
+            next, no field stepped by RK4 reproduces it, RK4's growth factor being never smaller,
+            and the ``"rk4"`` fit raises.
         drivers: exogenous columns the plan can forecast but not move, each with its forecast over
             the horizon (:class:`Driver`). They are fitted into the drift jointly with the states
             (:func:`~chc.dynamics_id.fit_causal_residual`), and the plan is made against the
@@ -1944,8 +1949,8 @@ def prescribe(
             is also a lever or a state or is named twice, a forecast that is not ``horizon + 1``
             finite levels, a budget that does not weigh one spend per lever, starts its periods
             anywhere but the plan's first step, or allows less than the levers' boxes spend at
-            the least, a ``dt`` that is not a finite positive step, an ``integrator`` other than
-            ``"rk4"``, a ``tolerance`` that is
+            the least, a ``dt`` that is not a finite positive step, an ``integrator`` that is
+            neither ``"rk4"`` nor ``"euler"``, a ``tolerance`` that is
             negative or nan, a ``gamma`` below 1 or not finite, which is not a sensitivity level,
             a panel with no consecutive pair of periods to fit a transition on, a ``cap_per_step``
             on a lever that follows its logged rule or a budget that prices one,
@@ -1980,7 +1985,7 @@ def prescribe(
     moves no lever: the identification is then ``not_identified``, its reason naming the levers and
     the columns they were set from. The plan is checked exactly: the fits the log cannot tell apart
     differ along directions in which the field is linear, and
-    :attr:`~DecisionCertificate.first_loaded_step` is the first step at one of whose RK4 stages any
+    :attr:`~DecisionCertificate.first_loaded_step` is the first step at one of whose stages any
     of them moves the field, where the trustworthy prefix ends.
     :attr:`~DecisionCertificate.estimability` says which case holds.
 
@@ -2003,12 +2008,11 @@ def prescribe(
         raise DecisionError("hold_constraints was set, but no constraint was given to hold")
     if not 0.0 < dt < math.inf:
         raise DecisionError(f"dt={dt} is not a step, which is finite and positive")
-    if integrator != "rk4":
+    if integrator not in ("rk4", "euler"):
         raise DecisionError(
-            f"integrator={integrator!r}: prescribe plans, prices and certifies by RK4 steps of the "
-            "fitted field, so it fits the field whose RK4 step reproduces the log, integrator="
-            "'rk4'; a field fitted to another step is planned by one it was not fitted to. Read a "
-            "discrete-time log's one-step map with fit_causal_residual(integrator='euler')"
+            f"integrator={integrator!r} is neither 'rk4', for a log sampled from a plant in "
+            "continuous time, nor 'euler', for a discrete-time panel whose one-step map is the "
+            "model"
         )
     if tolerance is not None and not tolerance >= 0.0:
         raise DecisionError(
@@ -2358,6 +2362,9 @@ def prescribe(
         _warn_outside_logged_range(panel, drivers)
         forecast = jnp.stack([jnp.asarray(driver.forecast, dtype=float) for driver in drivers], 1)
         model = driven = DrivenDynamics(model, fit.driver_gain, forecast, dt)
+    if integrator == "euler":
+        # every step of the plan, its audits and its rollouts is the map the field was fitted to
+        model = _EulerStep(model)
     rule: _Rule | None = None
     if kept.logged is not None and kept.rules:
         rule = _Rule(
@@ -2457,13 +2464,16 @@ def prescribe(
     )
     model_error = 0.0 if tolerance is None else _field_error(fit, distance)
     # the drivers as the fit's drift reads them over each of the plan's steps: their forecast's
-    # mean over the step, as the ``rk4`` fit reads a transition's (``_nuisance_inputs``)
+    # mean over the step, as the ``rk4`` fit reads a transition's, or its level at the step's
+    # start, all the Euler map reads (``_nuisance_inputs``)
     forecasts = (
         np.zeros((horizon + 1, 0))
         if driven is None
         else np.stack([np.asarray(driver.forecast, dtype=np.float64) for driver in drivers], 1)
     )
-    driver_reads = 0.5 * (forecasts[:-1] + forecasts[1:])
+    driver_reads = (
+        forecasts[:-1] if integrator == "euler" else 0.5 * (forecasts[:-1] + forecasts[1:])
+    )
     # the field's error is a standard error whose spread the log estimates: the tube reads it at
     # its studentised quantile, beside the noise and independent of it
     field_scale = None if tolerance is None else _field_scale(fit)
@@ -2683,6 +2693,7 @@ def prescribe(
             dt,
             horizon,
             step_read,
+            integrator=integrator,
         ),
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
@@ -3007,9 +3018,10 @@ def _first_loaded(
 
     Each such fit is the fitted one moved along a column of ``directions`` with the drift
     regression's ``response`` (:func:`chc.dynamics_id._absorbed`), by any amount. The field is
-    linear in the parameters, so where a move leaves the field as it was at every point RK4 reads
-    it at in a step, the step lands where it did whatever the amount, and the path is the same,
-    not only to first order. A step that sets ruled levers holds them over the step at their level
+    linear in the parameters, so where a move leaves the field as it was at every point the step
+    reads it at, RK4's four or the Euler map's one, the step lands where it did whatever the
+    amount, and the path is the same, not only to first order. A step that sets ruled levers holds
+    them over the step at their level
     at its start, as the log held them over a period, so inside the step the move does not cancel,
     in the log's own steps either: such a step is one of the log's own where the move cancels at
     the state it starts from and the action it holds. The move counts as zero where the terms that
@@ -3030,6 +3042,8 @@ def _first_loaded(
     def step(t: Array, x: Array, u: Array) -> Array:
         if isinstance(model, _SetAtStep):
             return clear(t, x, model.at_step(x, u)[1])
+        if isinstance(model, _EulerStep):
+            return clear(t, x, u)
         k1 = model(t, x, u)
         k2 = model(t + 0.5 * dt, x + 0.5 * dt * k1, u)
         k3 = model(t + 0.5 * dt, x + 0.5 * dt * k2, u)
@@ -3590,8 +3604,8 @@ def _episodes(
 
 @eqx.filter_jit
 def _one_step(model: Dynamics, x: Array, u: Array, dt: float) -> tuple[Array, Array, Array]:
-    """``model``'s RK4 step over ``dt`` from ``(x, u)`` and its Jacobians there, compiled: an
-    evaluation linearises once for every draw of its bootstrap."""
+    """``model``'s step over ``dt`` from ``(x, u)`` (:func:`chc.integrate.rk4_step`) and its
+    Jacobians there, compiled: an evaluation linearises once for every draw of its bootstrap."""
     a, b = linearize_discrete(model, x, u, dt)
     return a, b, rk4_step(model, 0.0, x, u, dt)
 
@@ -3793,6 +3807,8 @@ def _slope_free_of_state(model: Dynamics) -> bool:
         return _slope_free_of_state(model.known) and _slope_free_of_state(model.residual)
     if isinstance(model, DrivenDynamics):
         return _slope_free_of_state(model.dynamics)
+    if isinstance(model, _EulerStep):
+        return _slope_free_of_state(model.field)
     return False
 
 
@@ -3817,14 +3833,18 @@ def _state_noise(
     dt: float,
     horizon: int,
     read: _NoiseRead | None = None,
+    *,
+    integrator: Integrator = "rk4",
 ) -> tuple[tuple[float, ...], ...]:
     """:attr:`DecisionCertificate.tube_state_noise`: each state's 0.95 radius of the noise's part
     of the gap at each step, ``sqrt(chi2_1(0.95) P_k[i, i])``, with the ``read``'s own error
-    carried as the tube carries it."""
+    carried as the tube carries it, by the steps of ``integrator``."""
     level = float(chi2.ppf(_TUBE_COVERAGE, 1))
     return tuple(
         tuple(math.sqrt(level * max(float(variance), 0.0)) for variance in np.diag(covariance))
-        for covariance in _read_covariances(slopes, noise, persistence, dt, horizon, read)
+        for covariance in _read_covariances(
+            slopes, noise, persistence, dt, horizon, read, integrator=integrator
+        )
     )
 
 
