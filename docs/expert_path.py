@@ -14,7 +14,7 @@ from chc import BarrierConstraint, HybridDynamics, QuadraticCost, RecedingHorizo
 from chc.dynamics import DampedOscillator
 from chc.integrate import rk4_step
 from chc.mpc import mpc_control
-from chc.residual import KANResidual
+from chc.residual import ControlAffineResidual
 from chc.train import fit_residual
 
 DT = 0.1
@@ -31,13 +31,18 @@ known = DampedOscillator(omega=1.0, zeta=0.1)
 plant = HybridDynamics(known=known, residual=Stiffening())  # the system itself, unknown to us
 
 # logged transitions (x, u, x_next) from the plant, under actions drawn at random
-k_x, k_u, k_r = jax.random.split(jax.random.key(0), 3)
+k_x, k_u, _ = jax.random.split(jax.random.key(0), 3)
 xs = jax.random.normal(k_x, (2000, 2))
 us = 0.5 * jax.random.normal(k_u, (2000, 1))
 x_next = jax.vmap(lambda x, u: rk4_step(plant, 0.0, x, u, DT))(xs, us)
 
-# the known oscillator plus a learnable (KAN) residual, swappable for an MLP or a linear term
-model = HybridDynamics(known=known, residual=KANResidual(2, 1, 2, grid_range=4.0, key=k_r))
+# the known oscillator plus a learnable residual, cubic in the state and affine in the action: the
+# barrier below reads the channel at zero action, so it refuses a residual curved in the action
+# (a KAN or an MLP one fits the same log for `mpc_control`, which reads no barrier)
+residual = ControlAffineResidual(
+    jnp.zeros((2, 10)), jnp.zeros((2, 1, 1)), degree=3, channel_degree=0
+)
+model = HybridDynamics(known=known, residual=residual)
 model, _ = fit_residual(model, {"x": xs, "u": us, "x_next": x_next}, DT, steps=2000)
 # --8<-- [end:fit]
 
