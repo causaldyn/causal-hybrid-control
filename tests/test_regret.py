@@ -627,17 +627,19 @@ def test_the_wdro_radius_is_second_order_and_the_exact_bound_covers_the_regret()
     )
     assert curve.exact_wdro_bound == pytest.approx(0.002318244170096022, rel=1e-12, abs=0.0)
     assert (curve.exact_regret <= curve.exact_wdro_bound).all()
-    for b_src, rr, xt, radius in (
-        (1.0, 0.5, 1.0, 0.45),
-        (0.6, 0.5, 1.0, 0.25),
-        (0.3, 1.0, 1.0, 0.25),
-        (-0.8, 0.3, 2.0, 0.6),
-        (0.0, 0.5, 1.0, 0.3),
+    for b_src, rr, xt, lip, radius in (
+        (1.0, 0.5, 1.0, 1.0, 0.45),
+        (0.6, 0.5, 1.0, 1.0, 0.25),
+        (0.3, 1.0, 1.0, 1.0, 0.25),
+        (-0.8, 0.3, 2.0, 1.0, 0.6),
+        (0.0, 0.5, 1.0, 1.0, 0.3),
+        (1.0, 0.5, 1.0, 2.0, 0.2),
+        (0.6, 0.5, 1.0, 0.5, 0.5),
     ):
         bound = transportability_regret_certificate(
-            b_src=b_src, rr=rr, xt=xt, wdro_radius=radius
+            b_src=b_src, rr=rr, xt=xt, lip=lip, wdro_radius=radius
         ).exact_wdro_bound
-        targets = np.linspace(b_src - radius, b_src + radius, 20_001)
+        targets = np.linspace(b_src - lip * radius, b_src + lip * radius, 20_001)
         u_src = b_src * xt / (b_src**2 + rr)
         regret = (u_src * (targets**2 + rr) - targets * xt) ** 2 / (targets**2 + rr)
         assert regret.max() <= bound * (1.0 + 1e-12)

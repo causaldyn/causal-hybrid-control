@@ -1,6 +1,7 @@
 """Delay gate: the linear-chain delay line is a plain Dynamics, and the whole stack runs on it."""
 
 import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -375,6 +376,10 @@ def test_a_stable_pole_the_gain_does_not_outweigh_has_no_delay_margin() -> None:
     at any delay. Up to 0.18.0 this raised, saying the delay-free loop was unstable."""
     for pole, gain in ((-1.0, 0.5), (-1.0, 1.0), (-1.0, -0.5), (-2.0, 1.9)):
         assert delay_margin(pole, gain) == math.inf
+    # at gain == -pole the boundary is read, not reached by dividing pi by a zero frequency
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert delay_margin(-1.0, 1.0) == math.inf
     # past -pole the margin is finite again, from the same closed form
     assert delay_margin(-1.0, 2.0) == pytest.approx(2.0 * math.pi / 3.0 / math.sqrt(3.0), rel=1e-12)
     # at a delay ten times the margin the loop with a stronger gain would have, it still decays
