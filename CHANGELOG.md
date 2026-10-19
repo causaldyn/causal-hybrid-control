@@ -130,6 +130,11 @@ still change).
   (`*_std_error`), and `passes` asks all three within the `1 - alpha / 6` quantile of `t(N - k)`
   (`alpha=0.05`): 4.4 % and 4.9 %. The docstring says the checks read stability, not
   identification: an omitted confounder failed as often (5.4 %).
+- **`channel_region` reads its noise within the fit's clusters.** It read each row's noise alone,
+  so a shock every unit shares in a period added up beyond the region's `R`: the 0.95 region
+  missed the channel on 6.9 % of 1000 logs of 30 units over 20 periods. A fit given `clusters` now
+  takes `R^2` as the larger of the rows' and the clusters' summed scores (CR1, two ways the
+  largest of three) in `V`'s norm: 0.0 %, the region 2.5 times wider (median).
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
 
 ## [0.18.0] — 2026-10-13
