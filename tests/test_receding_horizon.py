@@ -246,12 +246,12 @@ def test_a_slack_barrier_hands_on_no_multipliers() -> None:
         -U_MAX,
         U_MAX,
         warm_start=None,
-        multipliers=np.ones(HORIZON),
+        multipliers=np.ones((HORIZON, 2)),
         **arguments,
     )
     assert plan.safety is not None
     assert plan.safety.certified_steps == HORIZON
-    np.testing.assert_array_equal(multipliers, np.zeros(HORIZON))
+    np.testing.assert_array_equal(multipliers, np.zeros((HORIZON, 2)))
 
 
 def test_a_warm_start_moves_the_start_not_the_answer() -> None:
