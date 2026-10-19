@@ -174,6 +174,13 @@ still change).
   expected share of wrong DEPLOY decisions among all made so far, a rolled-back zone's evidence
   frozen at its DEPLOY. The docstrings did not say which deploys count; the share among the zones
   still deployed is not what it bounds. They now say so. Docs only. Since 0.8.0.
+- **`evaluate_plan(method="mis")`'s interval carries the model's error.** Its estimate is the
+  plan's cost under the model, and the interval held only that: with one entry of `a` off by 0.1
+  it covered the deployed value 0.645 of the time (400 logs of 4000 steps), with the noise doubled
+  0.035. The interval is now `"dr"`'s on the same weights, which reads the model's first-order
+  error off the logs, stretched to hold the estimate: 0.978 and 0.993, 0.983 on a model fitted to
+  a 300-step pilot (0.680 before), and 0.950 with the model right, at 1.2 times the width (1.4
+  for a deterministic plan). The estimate does not move (ADR 0108). Since 0.8.0.
 
 ## [0.18.0] — 2026-10-13
 
