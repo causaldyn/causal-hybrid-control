@@ -44,7 +44,7 @@ FORMAL_LINKS = {
         ),
     },
     "chc.evaluation": {
-        "cites": ("mis_model_error.mac",),
+        "cites": ("dr_logged_weights.mac", "mis_model_error.mac"),
         "tests": ("test_mis_reads_the_model_s_cost_and_dr_removes_its_first_order_error",),
     },
     "chc.plan.ChannelSensitivity": {
@@ -209,32 +209,14 @@ def _scalar_cost(a: float, b: float = -0.6, c: float = 0.0, v: float = 0.05) -> 
     return 0.5 * (_Q * (s + m * m) + _R * (_K * _K * s + _S + (_K * m + _O) ** 2))
 
 
-def _dr_limit(a: float, am: float, b: float = -0.6, c: float = 0.0, v: float = 0.05) -> float:
-    """``Jm + E_dm[E h(x') - Em h(x')]``: the model's cost plus its Bellman residual of the plan's
-    relative value ``h = p x^2 + 2 l x`` under the model, averaged over the model's law."""
-    fm = am + b * _K
-    p = 0.5 * (_Q + _R * _K * _K) / (1.0 - fm * fm)
-    linear = (0.5 * _R * _K * _O + p * fm * (b * _O + c)) / (1.0 - fm)
-    mean, var = _scalar_law(am, b, c, v)
-
-    def moments(alpha: float) -> tuple[float, float]:
-        slope, shift = alpha + b * _K, b * _O + c
-        return slope * mean + shift, slope**2 * (var + mean**2) + 2 * slope * shift * mean + (
-            shift**2 + b * b * _S
-        )
-
-    (m1, s1), (m0, s0) = moments(a), moments(am)
-    return _scalar_cost(am) + p * (s1 - s0) + 2.0 * linear * (m1 - m0)
-
-
 def test_mis_reads_the_model_s_cost_and_dr_removes_its_first_order_error() -> None:
-    """mis_model_error.mac STEP 1-3 on the scalar loop a = 0.95, b = -0.6, the plan
-    u = 0.3 x + 0.05 + N(0, 0.04), one log of 400 000 steps of the true plant, the model's a off
-    by 0.05 and 0.1 on the same log. "mis" moves by the model's own cost less the true one,
-    -0.0304 and -0.0507, its whole first-order error; "dr" by the closed form's second-order
-    remainder, -0.0052 and -0.0146. Over 8 logs the moves' SDs were 1.0e-4 and 1.7e-4 for
-    "mis", 2.7e-4 and 4.4e-4 for "dr"; the tolerances are 4 SDs. At an error of 0.1 the
-    remainder is 0.29 of "mis"'s error, not under a tenth: that holds from about 0.01."""
+    """mis_model_error.mac STEP 1-3 and dr_logged_weights.mac STEP 2 on the scalar loop a = 0.95,
+    b = -0.6, the plan u = 0.3 x + 0.05 + N(0, 0.04), one log of 400 000 steps of the true plant,
+    the model's a off by 0.05 and 0.1 on the same log. "mis" moves by the model's own cost less
+    the true one, -0.0304 and -0.0507, its whole first-order error. "dr" weighs toward the plan's
+    law under the plant fitted to the log, so its remainder is the fit's error times the model's,
+    and on this log it does not move: over 8 logs its moves were 0 within SDs of 2.5e-4 and
+    4.1e-4 (1.0e-4 and 1.7e-4 for "mis"); the tolerances are 4 SDs."""
     a = 0.95
     rng = np.random.default_rng(20261019)
     steps, logger_gain, logger_sd, noise = 400_000, 0.1, 0.5, 0.05
@@ -260,15 +242,13 @@ def test_mis_reads_the_model_s_cost_and_dr_removes_its_first_order_error() -> No
     assert mis0 == pytest.approx(truth, abs=4 * 5.3e-4)
     assert dr0 == pytest.approx(truth, abs=4 * 9.9e-4)
     moves = {}
-    for shift, sd_mis, sd_dr in ((0.05, 1.0e-4, 2.7e-4), (0.1, 1.7e-4, 4.4e-4)):
+    for shift, sd_mis, sd_dr in ((0.05, 1.0e-4, 2.5e-4), (0.1, 1.7e-4, 4.1e-4)):
         mis, dr = read(shift, "mis") - mis0, read(shift, "dr") - dr0
         assert mis == pytest.approx(_scalar_cost(a - shift) - truth, abs=4 * sd_mis)
-        assert dr == pytest.approx(_dr_limit(a, a - shift) - truth, abs=4 * sd_dr)
-        assert abs(dr) < 0.35 * abs(mis)
-        moves[shift] = (mis, dr)
-    # halving the error halves "mis"'s move to first order and quarters "dr"'s
-    assert moves[0.1][0] / moves[0.05][0] < 1.8
-    assert moves[0.1][1] / moves[0.05][1] > 2.3
+        assert dr == pytest.approx(0.0, abs=4 * sd_dr)
+        moves[shift] = mis
+    # halving the error halves "mis"'s move, to first order
+    assert moves[0.1] / moves[0.05] < 1.8
 
 
 # ---- the channel's sensitivity radius: channel_bias_bound.mac ----

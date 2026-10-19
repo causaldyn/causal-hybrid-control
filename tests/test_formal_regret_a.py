@@ -1077,7 +1077,8 @@ def test_confounding_lq_regret_is_the_leading_term_of_the_exact_regret(
         return  # L_reg vanishes at the knife edge and the leading term is not quadratic there
     l_fd = _central_l(effect, effort, target)
     assert lq_regret_sensitivity(effect, effort, target) == pytest.approx(l_fd, rel=1e-6, abs=0.0)
-    scale = 1e-3 * min(math.sqrt(effort), effect)
+    # the next term's share of the quadratic one is the shift over the distance to the knife edge
+    scale = 1e-3 * min(math.sqrt(effort), effect, abs(effort - effect**2))
     e1, e2 = scale * eps, scale * eps * share
     bound = confounding_robust_lq_regret(l_fd, e1, e2)
     exact = _regret_at(effect, effort, target, e1 + e2)
