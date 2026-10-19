@@ -6919,7 +6919,9 @@ def space_time_fold_certificate(
             seed=seed,
         )
         space_only.append(float(best_constant))
-        space_time.append(float(free.objective))
+        # every time-constant fold is a free one, so the free optimum is never above the best of
+        # them; a search that stops above it has found a worse fold, not a negative price
+        space_time.append(min(float(free.objective), float(best_constant)))
     slice_arr = np.asarray(slice_design)
     space_only_arr = np.asarray(space_only)
     space_time_arr = np.asarray(space_time)

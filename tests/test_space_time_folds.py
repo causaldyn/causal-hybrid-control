@@ -147,3 +147,11 @@ def test_the_certificate_passes_every_gate() -> None:
     assert certificate.separable_rank == 1
     assert certificate.exhaustive_ratio == pytest.approx(1.0)
     assert np.all(np.diff(certificate.price_of_one_axis) > 0.0)
+
+
+def test_the_price_of_one_axis_is_never_negative() -> None:
+    """Every time-constant fold is a free one, so the free optimum cannot cost more than the best
+    of them. At 4 restarts the free search stopped above it and the price read -0.11% at lag 1."""
+    certificate = space_time_fold_certificate(restarts=4, n_draws=2000)
+    assert np.all(certificate.price_of_one_axis >= 0.0)
+    assert np.all(certificate.space_time <= certificate.space_only)
