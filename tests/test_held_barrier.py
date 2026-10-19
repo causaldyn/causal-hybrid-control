@@ -898,3 +898,27 @@ def test_a_held_plan_at_a_coarse_step_is_certified_by_its_own_audit() -> None:
     assert inside._problem is not None
     assert inside._problem.held is not None
     assert float(jnp.sum(inside._problem.held.paths)) == 0.0
+
+
+def test_rounds_that_stop_short_of_the_condition_are_projected_onto_it() -> None:
+    """Rounds of ten descent steps each stop with the penalty at its ceiling and the condition
+    failing: the plan's audit certified 3 steps of 20, and its status read ``infeasible`` on a
+    problem a full descent holds at every step. The held columns are projected onto at the end,
+    in the planner's variables, so the plan holds what its audit checks however far the rounds
+    got, and its status says they stopped short, not that no plan holds."""
+    plan = causal_plan(
+        OSCILLATOR,
+        X0,
+        COST,
+        DT,
+        HORIZON,
+        -U_MAX,
+        U_MAX,
+        steps=10,
+        barrier=BarrierConstraint(_velocity_floor, alpha=ALPHA),
+    )
+    assert plan.safety is not None
+    assert plan.safety.certified_steps == HORIZON
+    margin = plan.safety.guaranteed_derivative - plan.safety.required
+    assert float(jnp.min(margin)) >= 0.0
+    assert plan.solver_status == "max_iterations"

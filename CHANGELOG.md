@@ -217,6 +217,15 @@ still change).
 - **A held barrier holds `h` at each step's next state.** At `dt = 1` a held plan's path left the
   set at 5 of 12 states and its own audit certified 3 steps; it now certifies 12. Plans whose path
   stayed in the set are unchanged to the last digit.
+- **A held plan whose barrier rounds stop short of the condition is projected onto it.** Rounds that
+  each run out of descent steps end where rounding leaves them, and one such end fell short of the
+  condition by 5e-5 at a step: on the oldest supported JAX a plan at `dt = 1` under `alpha = 0.2`
+  certified 1 step of 12, and on an oscillator under a velocity floor with 10 descent steps a plan
+  certified 3 of 20 and read `infeasible`. Where the rounds end short of the audit's condition,
+  the plan is now moved least, in the planner's variables, onto the held columns, the box and the
+  rows; both certify every step, and the status reads `max_iterations`. Their task costs rise
+  0.3 % and 0.003 %. Plans whose rounds end inside the condition are unchanged to the last digit
+  (ADR 0112).
 - **`minimax_action` returns where a candidate action is huge.** An identified interval whose
   midpoint is near zero (1.6e-189) made the equalising candidate overflow a float power, which
   raised `OverflowError`; its cost now reads `inf` and it loses to the other candidates.

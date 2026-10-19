@@ -134,6 +134,7 @@ _PENALTY_GROWTH = 10.0  # applied when a round fails to halve the shortfall
 _PENALTY_RANGE = 1e8  # how far the penalty may grow past its start before the rounds give up
 _DESCENT_TOL = 1e-14  # the share of the cost at the guess a step must buy: the descents' default
 _LOOSE_TOL = 1e-9  # a barrier round's ``tol`` while the last one ended short of the condition
+_RESTORE_STEPS = 20  # Gauss-Newton projections onto the held condition before it is given up
 
 _log = logging.getLogger(__name__)
 """Barrier rounds of :func:`causal_plan`, keyed by ``chc_event`` as in :mod:`chc.decision`."""
@@ -2146,6 +2147,14 @@ def _hold_barrier(
     at ``dt = 1`` and ``alpha = 0.2`` a plan whose path never leaves the set stopped as converged
     38% above the one the conditions alone give.
 
+    A diagonal metric does not solve an ill-conditioned round, and rounds that each run out of
+    descent steps end where rounding leaves them: on an unstable plant at ``dt = 1`` a warm start
+    moved by 1e-15 moved the task cost from 12.20 to 14.16, against an optimum of 11.39, and one
+    such end fell short of the condition by 5e-5 at a step, so the audit certified 1 step of 12.
+    Where the rounds end with a held column short of the audit's condition itself, the plan is
+    projected onto the held columns at the back-off (:func:`_restore`), and its status reads
+    ``max_iterations``; ``infeasible`` where no projection holds them.
+
     ``multipliers`` seed the rounds in place of zeros -- a receding horizon's last, shifted. The
     penalty is chosen afresh all the same: one grown for the last state left the first round
     ill-conditioned, and cost more descent steps than warm multipliers saved.
@@ -2276,6 +2285,20 @@ def _hold_barrier(
         excess = np.asarray(shortfall, dtype=np.float64) + backoff
     if math.isnan(weight):
         return actions, start.status, start.iterations, np.zeros_like(excess), held
+    _, shortfall = _barrier_state(model, x0, actions, dt, held)
+    restored = False
+    if float(np.max(shortfall)) > 0.0:  # short of the audit's condition, not only of the aim
+        while (
+            moved := _restore(model, x0, dt, cost, lo, hi, blocks, actions, held, backoff)
+        ) is not None:
+            actions, restored = moved, True
+            left = _left_set(model, x0, actions, dt, held, backoff)
+            if not left.any():
+                break
+            held = _held_paths(held, left)
+        _, shortfall = _barrier_state(model, x0, actions, dt, held)
+        if restored and float(np.max(shortfall)) <= 0.0:
+            status = "max_iterations"
     _log.info(
         "barrier held" if status == "converged" else "barrier rounds stopped short",
         extra={
@@ -2285,6 +2308,7 @@ def _hold_barrier(
             "penalty": weight,
             "measure": measure,
             "backoff": backoff,
+            "restored": restored,
             "active_steps": int(np.sum(np.any(multipliers.reshape(len(multipliers), -1) > 0.0, 1))),
         },
     )
@@ -2307,6 +2331,66 @@ def _left_set(
     _, shortfall = _barrier_state(model, x0, actions, dt, every)
     reached = np.asarray(shortfall, dtype=np.float64)[:, 1::2] + backoff
     return (reached > 0.0) & (np.asarray(held.paths) <= 0.0)
+
+
+def _restore(
+    model: Dynamics,
+    x0: Array,
+    dt: float,
+    cost: QuadraticCost,
+    lo: Array,
+    hi: Array,
+    blocks: Blocks,
+    actions: Array,
+    held: _HeldBarrier,
+    backoff: float,
+) -> Array | None:
+    """``actions`` moved least, in the planner's variables ``v = sigma * u`` read there
+    (:func:`chc.control._action_units`), to where every column ``held`` holds is within the
+    back-off, the box and the rows kept; None where no move holds them.
+
+    Each step is the projection onto the columns linearised at the last one, a least-distance
+    program solved exactly by Lawson & Hanson's reduction to one bounded least squares (1974,
+    ch. 23); on a plant affine in the state and the action with an affine barrier and no radius
+    the columns are affine, and one step is the answer. Steps stop once every column is within
+    half the back-off, or after ``_RESTORE_STEPS``, where the audit's condition decides.
+    """
+    shape, dtype = actions.shape, actions.dtype
+    sigma = np.asarray(_descent_units(model, x0, actions, dt, cost, lo, hi)[0], np.float64).ravel()
+    low, high = np.asarray(lo, np.float64).ravel(), np.asarray(hi, np.float64).ravel()
+    eye = np.eye(sigma.size)
+    current = actions
+    for _ in range(_RESTORE_STEPS):
+        _, shortfall = _barrier_state(model, x0, current, dt, held)
+        excess = np.asarray(shortfall, np.float64).ravel() + backoff
+        if float(np.max(excess)) <= 0.5 * backoff:
+            return current
+        flat = np.asarray(current, np.float64).ravel()
+        on = np.isfinite(excess)
+        slopes = np.asarray(_shortfall_jacobian(held, model, x0, current, dt), np.float64)
+        # the move d holds G d >= g, row by row: the columns, the box's finite sides, the rows'
+        rows = [-slopes.reshape(excess.size, -1)[on]]
+        sides = [excess[on]]
+        rows += [eye[np.isfinite(low)], -eye[np.isfinite(high)]]
+        sides += [(low - flat)[np.isfinite(low)], (flat - high)[np.isfinite(high)]]
+        for matrix, lower, upper, _ in blocks:
+            matrix = np.asarray(matrix, np.float64)
+            lower, upper = np.asarray(lower, np.float64), np.asarray(upper, np.float64)
+            rows += [matrix[np.isfinite(lower)], -matrix[np.isfinite(upper)]]
+            sides += [(lower - matrix @ flat)[np.isfinite(lower)]]
+            sides += [(matrix @ flat - upper)[np.isfinite(upper)]]
+        scaled = np.vstack(rows) / sigma  # in w = sigma * d, the program is argmin |w|
+        stacked = np.vstack([scaled.T, np.concatenate(sides)[None, :]])
+        target = np.zeros(sigma.size + 1)
+        target[-1] = 1.0
+        weights = lsq_linear(stacked, target, bounds=(0.0, np.inf), method="bvls").x
+        residual = stacked @ weights - target
+        if not abs(residual[-1]) > 1e-12:  # the linearised columns, box and rows have no point
+            return None
+        moved = np.clip(flat - residual[:-1] / residual[-1] / sigma, low, high)
+        current = jnp.asarray(moved.reshape(shape), dtype)
+    _, shortfall = _barrier_state(model, x0, current, dt, held)
+    return current if float(np.max(shortfall)) <= 0.0 else None
 
 
 def _rounds(
