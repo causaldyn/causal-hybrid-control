@@ -150,8 +150,8 @@ and the radius taken as inputs.
 `Γ` itself is **calibrated before it is spent**. `benchmark_gamma` prices it in units of the
 confounding the observed covariates carry, as an exponent, `log Γ / log Γ_strongest`, because odds
 ratios compose. `negative_control_gamma` inverts a known-null outcome for the smallest `Γ` that
-reconciles it: a *lower bound* on the confounding present, or `inf` when the model class is refuted
-instead. `chc.sensitivity` is the one-import surface: calibrate, then radius, then control.
+reconciles it: a point estimate of a *lower bound* on the confounding present, a lower confidence
+bound on it with `level`, or `inf` when the model class is refuted instead. `chc.sensitivity` is the one-import surface: calibrate, then radius, then control.
 
 ## Safety under partial identification
 

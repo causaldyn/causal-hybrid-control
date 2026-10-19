@@ -14,8 +14,9 @@ The pipeline, estimate -> sensitivity radius -> robust control -> validation:
    pair of propensities the MSM bounds -- and reports the EXPONENT
    ``log(Gamma)/log(Gamma_strongest)``, because odds ratios compose multiplicatively.
    :func:`negative_control_gamma` inverts a known-null outcome for the smallest ``Gamma`` that
-   reconciles it, a *lower bound* on the confounding present: assuming less is refuted by the data,
-   and ``inf`` says the model class is refuted instead.
+   reconciles it, a point estimate of a *lower bound* on the confounding present; with ``level`` it
+   is a lower confidence bound, and assuming less than that is refuted by the data at the level.
+   ``inf`` says the model class is refuted instead.
 1. **Sensitivity radius (§32, bounded density-ratio / MSM).** Given a treated-outcome sample and a
    sensitivity ``Gamma >= 1`` (the analyst's unfalsifiable input, ``[1/Gamma, Gamma]`` density-ratio
    box), the sharp worst-case effect is a CVaR mixture; :func:`confounding_robust_inflation` /

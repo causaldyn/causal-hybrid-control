@@ -67,8 +67,11 @@ Unfalsifiable is not the same as uncalibrated. Three functions price `Γ` agains
   forces at most `Γ_j`, and less if it moves the outcome less. And nothing formal ties an unobserved confounder to an
   observed covariate (Ding 2024, p. 242), so a benchmark sets a scale for `Γ`, not a bound on it.
 - **`negative_control_gamma`** inverts a known-null outcome for the smallest `Γ` that reconciles
-  it. On an outcome whose true effect is zero, any nonzero estimate is confounding, so that `Γ` is a
-  **lower bound on the confounding actually present**: assuming less is refuted by the data. It
+  it. On an outcome whose true effect is zero, any nonzero mean is confounding, so that `Γ` in the
+  population is a **lower bound on the confounding actually present**. Read off the sample it is a
+  point estimate of that bound, above 1 on every sample of an unconfounded null; with `level` it is
+  a one-sided lower confidence bound, above 1 on about 5 % of them at `level=0.95`, and assuming
+  less than that is refuted by the data at the level. It
   bounds the outcome of interest only when the control is U-comparable, confounded by the same
   unobserved causes (Lipsitch, Tchetgen Tchetgen and Cohen 2010): a control confounded by more
   overstates the outcome's `Γ`, and one confounded by less understates it (Baitairian et al.,

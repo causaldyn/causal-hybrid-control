@@ -3,7 +3,8 @@
 Two calibrations, and both can fail here. ``benchmark_gamma`` prices Gamma in units of the
 confounding the OBSERVED covariates carry -- which forces a logarithmic scale, because odds ratios
 compose multiplicatively. ``negative_control_gamma`` inverts a known-null outcome for the smallest
-Gamma that reconciles it, which is a LOWER bound on the confounding actually present.
+Gamma that reconciles it, which estimates a LOWER bound on the confounding actually present; with a
+``level`` it is a lower confidence bound on it, the reading that can refute.
 
 The load-bearing test is ``test_the_two_endpoints_read_opposite_tails``: the MSM interval is not
 symmetric about the mean, so a positive estimate is reconciled by the lower endpoint and a negative
@@ -20,9 +21,13 @@ import math
 
 import numpy as np
 import pytest
+from scipy.optimize import brentq
+from scipy.stats import norm
+from scipy.stats import t as student_t
 
 from chc.uncertainty import (
     _logistic_fit,
+    _msm_endpoint_se,
     _top_tail_mean,
     benchmark_gamma,
     gamma_benchmark_certificate,
@@ -378,3 +383,75 @@ def test_a_covariate_that_never_moves_counts_as_constant_at_a_million_rows() -> 
     reference = _logistic_fit(np.column_stack([ones, x, np.zeros(1_000_000)]), treated)
     assert beta[3] == 0.0
     np.testing.assert_allclose(beta[:3], reference[:3], rtol=0.0, atol=1e-12)
+
+
+def _normal_null_gamma(bias: float) -> float:
+    """The population's negative-control Gamma for ``N(bias, 1)``: where the lower endpoint
+    ``bias - (1 - 1/Gamma) pdf(z) / tau`` reaches 0, ``z`` the upper ``tau = 1/(Gamma + 1)``
+    quantile."""
+
+    def endpoint(gamma: float) -> float:
+        tau = 1.0 / (gamma + 1.0)
+        return bias - (1.0 - 1.0 / gamma) * float(norm.pdf(norm.ppf(1.0 - tau))) / tau
+
+    return float(brentq(endpoint, 1.0 + 1e-12, 1e6, xtol=1e-12))
+
+
+def test_the_point_estimate_reads_confounding_on_every_unconfounded_null() -> None:
+    rng = np.random.default_rng(23)
+    points, bounds = [], []
+    for _ in range(400):
+        outcomes = rng.standard_normal(200)
+        points.append(negative_control_gamma(outcomes))
+        bounds.append(negative_control_gamma(outcomes, level=0.95))
+    # the sample's mean is never zero, so the point estimate reads confounding on every sample
+    assert min(points) > 1.0
+    # the bound reads it on 5 % at level 0.95; 400 draws put the share within 0.011 of that
+    assert 0.02 <= float(np.mean(np.array(bounds) > 1.0)) <= 0.09
+    assert all(b <= p for b, p in zip(bounds, points, strict=True))
+
+
+def test_the_bound_leaves_one_exactly_where_the_t_test_rejects() -> None:
+    rng = np.random.default_rng(29)
+    for _ in range(300):
+        size = int(rng.integers(5, 80))
+        outcomes = rng.standard_normal(size) + float(rng.uniform(-0.6, 0.6))
+        statistic = abs(outcomes.mean()) / (outcomes.std(ddof=1) / math.sqrt(size))
+        rejects = statistic > float(student_t.ppf(0.975, size - 1))
+        assert (negative_control_gamma(outcomes, level=0.95) > 1.0) == rejects
+
+
+def test_the_bound_holds_the_population_gamma_the_point_estimate_does_not() -> None:
+    truth = _normal_null_gamma(0.5)
+    assert truth == pytest.approx(1.885197603378841, rel=1e-9, abs=0.0)
+    rng = np.random.default_rng(31)
+    bounds, points = [], []
+    for _ in range(300):
+        outcomes = 0.5 + rng.standard_normal(100)
+        bounds.append(negative_control_gamma(outcomes, level=0.95))
+        points.append(negative_control_gamma(outcomes))
+    # at least 0.95 of the bounds hold it, to 300 draws' error; the point estimate, about half
+    assert float(np.mean(np.array(bounds) <= truth)) >= 0.92
+    assert float(np.mean(np.array(points) <= truth)) <= 0.65
+    assert float(np.mean(np.array(bounds) > 1.0)) > 0.9
+
+
+def test_the_endpoint_standard_error_is_its_spread_across_samples() -> None:
+    rng = np.random.default_rng(37)
+    for gamma in (1.0, 3.0, 9.0):
+        samples = [rng.standard_exponential(400) for _ in range(1500)]
+        endpoints = [msm_worst_case_mean(sample, gamma) for sample in samples]
+        errors = [_msm_endpoint_se(sample, gamma) for sample in samples]
+        assert float(np.std(endpoints) / np.mean(errors)) == pytest.approx(1.0, abs=0.08)
+
+
+def test_the_bound_refuses_a_level_it_cannot_read() -> None:
+    outcomes = np.random.default_rng(41).standard_normal(50)
+    for level in (0.0, 1.0, float("nan"), -0.5):
+        with pytest.raises(ValueError, match="level"):
+            negative_control_gamma(outcomes, level=level)
+    with pytest.raises(ValueError, match="two outcomes"):
+        negative_control_gamma(np.array([0.3]), level=0.95)
+    # a null no density ratio pulls across zero refutes the model class at the level too
+    rng = np.random.default_rng(2)
+    assert np.isinf(negative_control_gamma(np.abs(rng.standard_normal(500)) + 1.0, level=0.95))

@@ -127,6 +127,17 @@ still change).
   theorem says is safe and the tube leaves out, against `tolerance`: on a 61-column grid whose
   working set is 41 columns, a tube moved by six columns left 6 of 61 of the grid out and read `ok`;
   it now does not. Since 0.4.0.
+- **`negative_control_gamma` says it is a point estimate, and takes a `level` for the bound that
+  refutes.** Its docstring called the `Gamma` it reads off a sample a lower bound on the confounding
+  present that "assuming less than it is refuted by the data", but the sample's mean is never zero:
+  on an unconfounded null it read above 1 on 1000 of 1000 samples at every size from 30 to 1600,
+  and it held the population's `Gamma` on 38 % to 51 % of samples of a confounded one. Without
+  `level` it returns the same number, now called a point estimate. `level=0.95`, new and opt-in,
+  returns a one-sided lower confidence bound: the binding MSM endpoint widened by Student's `t` of
+  its influence-function standard error. On 1000 samples a cell it read above 1 on 4.8 % to 6.2 %
+  of an unconfounded null at sizes 100 to 1600 and held the population's `Gamma` on at least 94.6 %
+  of confounded ones, normal or skewed; at `n = 30` under skewed noise, 8.5 % and 91.1 % at worst.
+  Since 0.5.0.
 
 ## [0.18.0] — 2026-10-13
 
