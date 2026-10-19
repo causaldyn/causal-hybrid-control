@@ -15,6 +15,7 @@ recovers the effect under *nonlinear* confounding via cross-fitted residualisati
 from __future__ import annotations
 
 import math
+import warnings
 import zlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -163,12 +164,13 @@ def _two_stage(
     data: dict[str, Array], instrument: str, controls: tuple[str, ...] = ("x",)
 ) -> tuple[Array, Array, Array]:
     """:func:`estimate_effect_iv`'s estimate, its instrument's relevance
-    (:func:`_instrument_relevance`) and the estimate's HC1 standard error, both stages conditioning
+    (:func:`_instrument_relevance`) and the estimate's HC3 standard error, both stages conditioning
     on ``controls`` (the state by default); refused where the relevance is 0.
 
     The error is the 2SLS sandwich on the second stage's design, its residual the outcome less the
     fit on the action itself, not on its first-stage prediction: that one's residual carries the
-    first stage's error times the effect, and its error is not the estimate's."""
+    first stage's error times the effect, and its error is not the estimate's. Each row's leverage
+    is read on the second stage's design."""
     _refuse_reread("instrument", (instrument,), _TRANSITION)
     _refuse_reread("covariate", controls, _ACTION_AND_OUTCOME)
     data = _real_entries(data, (*controls, "u", instrument, "x_next"))
@@ -185,7 +187,7 @@ def _two_stage(
     pushed = jnp.stack([*held, u_hat], axis=1)
     coeffs, _ = _ols_fit(pushed, y)
     residual = y - jnp.stack([*held, u], axis=1) @ coeffs[:-1] - coeffs[-1]
-    errors = _hc1_errors(pushed, residual)
+    errors = _hc3_errors(pushed, residual)
     effect = len(held)  # the coefficient on the fitted (exogenous) part of u
     return coeffs[effect], relevance, errors[effect]
 
@@ -218,7 +220,10 @@ def estimate_effect_iv(data: dict[str, Array], instrument: str = "w") -> Array:
 
 
 def _ols_with_se(features: Array, target: Array) -> tuple[Array, Array, int]:
-    """OLS with intercept; returns (coefficients, standard errors, residual degrees of freedom)."""
+    """OLS with intercept; returns (coefficients, standard errors, residual degrees of freedom).
+
+    The errors are the classical ``sigma^2 (X'X)^-1``, which take the noise's variance as one
+    across rows; :func:`_hc3_errors` does not."""
     design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
     n, p = design.shape
     scale = _units.power_of_two(_units.root_mean_square(design))
@@ -231,35 +236,62 @@ def _ols_with_se(features: Array, target: Array) -> tuple[Array, Array, int]:
     return scale * beta, scale * jnp.sqrt(jnp.diag(cov)), dof
 
 
-def _hc1_errors(features: Array, residual: Array) -> Array:
-    """HC1 standard errors of the coefficients on ``features`` and an intercept, given each row's
-    ``residual``: the sandwich ``n/(n - p) (X'X)^-1 X' diag(e^2) X (X'X)^-1`` of MacKinnon and
-    White (1985), which holds where the noise's variance moves with the regressors. The classical
-    ``sigma^2 (X'X)^-1`` of :func:`_ols_with_se` assumes it does not. The Gram is inverted in the
+def _hc3_errors(features: Array, residual: Array) -> Array:
+    """HC3 standard errors of the coefficients on ``features`` and an intercept, given each row's
+    ``residual``: the sandwich ``(X'X)^-1 X' diag(e_i^2 / (1 - h_i)^2) X (X'X)^-1`` of MacKinnon
+    and White (1985), ``h_i`` the row's leverage, which holds where the noise's variance moves
+    with the regressors. The classical ``sigma^2 (X'X)^-1`` of :func:`_ols_with_se` assumes it
+    does not. HC3 rather than HC1's ``n / (n - p)``: a row of high leverage keeps a small residual
+    whatever its noise, and HC3 scales it back. On 4000 logs whose noise grew with a heavy-tailed
+    treatment, a 95 % interval missed the effect 8.1 %, 6.6 % and 6.1 % of the time at 100, 200
+    and 1000 rows, where HC1's missed 15.7 %, 11.9 % and 8.7 %; where the noise's variance is one,
+    4.8 %, 5.3 % and 4.8 %, where HC1's missed 5.8 %, 5.7 % and 4.8 %. The Gram is inverted in the
     columns' own units, as there."""
     design = jnp.concatenate([features, jnp.ones((features.shape[0], 1))], axis=1)
-    n, p = design.shape
     scale = _units.power_of_two(_units.root_mean_square(design))
     scaled = design * scale
     bread = jnp.linalg.inv(scaled.T @ scaled)
-    meat = (scaled * residual[:, None] ** 2).T @ scaled
-    return scale * jnp.sqrt(jnp.diag(n / (n - p) * bread @ meat @ bread))
+    leverage = jnp.einsum("ij,jk,ik->i", scaled, bread, scaled)
+    weighted = scaled * (residual / (1.0 - leverage))[:, None]
+    return scale * jnp.sqrt(jnp.diag(bread @ (weighted.T @ weighted) @ bread))
 
 
-def _ols_with_hc1_se(features: Array, target: Array) -> tuple[Array, Array]:
-    """OLS with intercept; returns (coefficients, HC1 standard errors by :func:`_hc1_errors`)."""
+def _ols_with_hc3_se(features: Array, target: Array) -> tuple[Array, Array]:
+    """OLS with intercept; returns (coefficients, HC3 standard errors by :func:`_hc3_errors`)."""
     coeffs, fitted = _ols_fit(features, target)
-    return coeffs, _hc1_errors(features, target - fitted)
+    return coeffs, _hc3_errors(features, target - fitted)
+
+
+_CLASSICAL_UNTIL_020 = (
+    "sensitivity_analysis's standard error is the classical one, which takes the noise's variance "
+    "as one across rows, until 0.20.0, which reads it heteroskedasticity-robust (HC3); pass "
+    "robust=True to read HC3 now, or robust=False to keep the classical error"
+)
 
 
 def sensitivity_analysis(
-    data: dict[str, Array], adjust_for: tuple[str, ...] = (), q: float = 1.0
+    data: dict[str, Array],
+    adjust_for: tuple[str, ...] = (),
+    q: float = 1.0,
+    *,
+    robust: bool | None = None,
 ) -> dict[str, float]:
     """Effect estimate plus its Cinelli-Hazlett robustness value.
 
     The robustness value is the ``R^2`` an unobserved confounder would need with *both* ``u`` and
     ``x_next`` to reduce the estimated effect by ``q*100%`` (toward zero). High RV = robust;
     a controller can ship this bound on how much hidden confounding its decision could tolerate.
+
+    ``std_error`` is, by default until 0.20.0, the classical OLS error, which takes the noise's
+    variance as one across rows, and ``e_value_ci`` reads its 95 % limit. Where the variance moves
+    with the action the error is too small: on 4000 logs of 200 rows whose noise grew with the
+    action's own part, the 95 % interval missed the effect 22.5 % of the time. ``robust=True``
+    reads it HC3 (:class:`chc.estimators.BackdoorOLS`'s error), and ``e_value_ci`` with it: 5.6 %
+    there, and 4.8 %, 5.3 % and 4.8 % at 100, 200 and 1000 rows of noise whose variance is one,
+    where the classical error missed 5.0 %, 5.5 % and 4.9 %. Left at None, ``robust`` reads the
+    classical error and warns (``FutureWarning``) that 0.20.0 reads HC3. The robustness value
+    keeps the classical ``t`` either way: Cinelli and Hazlett's closed form is the action's partial
+    ``R^2`` with the outcome, ``t^2 / (t^2 + dof)``, which holds for the classical ``t`` alone.
 
     Raises:
         ValueError: if ``adjust_for`` names ``x``, ``u`` or ``x_next``, or a column twice. The
@@ -272,14 +304,18 @@ def sensitivity_analysis(
     if twice:
         raise ValueError(f"covariates named more than once: {twice}")
     data = _real_entries(data, ("x", "u", "x_next", *adjust_for))
-    columns = [data["x"], data["u"], *[data[name] for name in adjust_for]]
-    beta, se, dof = _ols_with_se(jnp.stack(columns, axis=1), data["x_next"])
+    if robust is None:
+        warnings.warn(_CLASSICAL_UNTIL_020, FutureWarning, stacklevel=2)
+    columns = jnp.stack([data["x"], data["u"], *[data[name] for name in adjust_for]], axis=1)
+    beta, se, dof = _ols_with_se(columns, data["x_next"])
     t_stat = jnp.abs(beta[1] / se[1])
     f = q * t_stat / jnp.sqrt(float(dof))
     rv = 0.5 * (jnp.sqrt(f**4 + 4.0 * f**2) - f**2)
     # to standardised units, each spread taken relative to its column's largest entry
     spread_u = _units.spread_and_rounding(data["u"])[0]
     scale = float(spread_u / _units.spread(data["x_next"]))
+    if robust:
+        se = _ols_with_hc3_se(columns, data["x_next"])[1]
     report = {
         "effect": float(beta[1]),
         "std_error": float(se[1]),

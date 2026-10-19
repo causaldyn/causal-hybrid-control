@@ -16,6 +16,11 @@ still change).
 - **`fit_causal_residual(unconfounded=)` and `times=`.** An empty adjustment set that a graph
   proves enough (a randomised lever) is fitted as identified, with its errors and its tube;
   `prescribe` sets it from the graph. `times=` reads the known physics at each transition's start.
+- **`sensitivity_analysis(robust=True)` reads its standard error HC3**, and `e_value_ci` with it:
+  where the noise grew with the action the classical 95 % interval missed 22.5 % of 4000 logs of
+  200 rows, HC3's 5.6 %. Left at `None` it reads the classical error and warns (`FutureWarning`)
+  that 0.20.0 reads HC3. The robustness value keeps the classical `t`, on which its closed form
+  is defined.
 - **`SolverStatus` `infeasible`**: barrier rounds whose penalty reached its ceiling with a step
   still short of the condition.
 - **`BarrierConstraint(u_box=)`**, the box the audit after the solve reads `gamma_star` on.
@@ -70,7 +75,9 @@ still change).
   transitions had become 2); time-zone-aware dates held as objects are read as dates.
 - **Fits**: with `clusters=None` a transition's states are summed before squaring; the rk4 Newton
   stop is relative to the parameters' units, so an exact `known` converges; `BackdoorOLS` and
-  `IV2SLS` report HC1 errors, and `IV2SLS` conditions both stages on its covariates.
+  `IV2SLS` report HC3 errors, and `IV2SLS` conditions both stages on its covariates. Where a
+  heavy-tailed treatment gives a few rows high leverage, HC1's 95 % interval missed 15.7 % of
+  4000 logs of 100 rows and HC3's 8.1 % (2SLS: 12.6 % and 7.0 %).
 - **`causal_pathway` adjusts each projection for every series' past** (an observed confounder
   flipped a source's sign on 20 of 20 worlds); `discover_lagged_parents` drops a parent the others
   explain and no longer ranks underflowed p-values by column order; `gcm_test`'s size at its
