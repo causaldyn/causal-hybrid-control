@@ -187,7 +187,9 @@ class DoubleML:
 
     The nuisances are :func:`chc.causal.dml_point_and_se`'s, built on the centred and scaled
     covariates with the intercept free of the ridge, so ``ridge`` reads the same in any units of
-    the covariates and at any level of them, of the treatment and of the outcome.
+    the covariates and at any level of them, of the treatment and of the outcome. Its standard
+    error weights each row by the effect's derivative in that row's outcome, through the
+    nuisances the row trained as well as its own residual.
     """
 
     degree: int = 2

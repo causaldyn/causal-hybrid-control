@@ -101,6 +101,12 @@ still change).
   (5 clusters), 16.2 % (30) and 51.5 % (30 units × 20 periods, two ways) of 1000 panels; now
   4.9 %, 7.0 % and 3.8 %. A fit clustered by unit reads as before; `prescribe`'s
   `noise_persistence_p` reads the same way.
+- **`dml_point_and_se` and `DoubleML` count the cross-fitted nuisances' error in the standard
+  error.** The moment's sandwich weighed each row by its own residual alone, so a fold's shared
+  prediction error went uncounted: the 95 % interval missed 13.0 % (200 rows, linear), 15.1 %
+  (heteroskedastic) and 8.0 % (500 rows, nonlinear) of 1000 logs; each row is now weighed by the
+  effect's derivative in its outcome, through the nuisances: 2.8 %, 5.2 % and 4.2 %. `DoubleML`
+  on the heteroskedastic logs: 8.2 % → 6.8 %. The effect does not move.
 - `validation/run_all.sh` fails on a printed "(FAIL)", "(INVALID)" or "(NOT CONCAVE)".
 
 ## [0.18.0] — 2026-10-13

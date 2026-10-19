@@ -407,6 +407,58 @@ def test_the_dml_effect_reads_the_same_with_a_covariate_at_any_level(level: floa
     assert other == pytest.approx(one, rel=1e-9, abs=0.0)
 
 
+def _linear_plant(rng: np.random.Generator, n: int) -> dict[str, jax.Array]:
+    """``x_next = 0.9 x + 0.8 u + 0.7 z + e`` with ``u = 0.5 x + 0.8 z + a``, all draws N(0, 1)."""
+    x, z, a, e = rng.normal(size=(4, n))
+    u = 0.5 * x + 0.8 * z + a
+    return {
+        "x": jnp.asarray(x),
+        "z": jnp.asarray(z),
+        "u": jnp.asarray(u),
+        "x_next": jnp.asarray(0.9 * x + 0.8 * u + 0.7 * z + e),
+    }
+
+
+def test_the_dml_error_reads_each_row_through_the_nuisances_it_trained() -> None:
+    """The effect is linear in the outcome, ``theta = u_res' M y / sum u_res^2``, where column ``j``
+    of ``M`` is the outcome's residuals had it been 1 in row ``j`` and 0 elsewhere. Each row's
+    weight on the effect is so ``M' u_res / sum u_res^2``, and the error sums the weights' squares
+    times the residuals' squares; the moment's sandwich read the weight as ``u_res`` alone."""
+    data = _linear_plant(np.random.default_rng(3), 40)
+    n = data["u"].shape[0]
+    u_res = np.asarray(causal._dml_residuals(data, ("x", "z"), 3, 2, 1e-2, 0)[1])
+    m = np.column_stack(
+        [
+            np.asarray(
+                causal._dml_residuals({**data, "x_next": jnp.eye(n)[j]}, ("x", "z"), 3, 2, 1e-2, 0)[
+                    0
+                ]
+            )
+            for j in range(n)
+        ]
+    )
+    weight = m.T @ u_res / (u_res @ u_res)
+    y_res = m @ np.asarray(data["x_next"])
+    theta = weight @ np.asarray(data["x_next"])
+    eps = y_res - theta * u_res
+    effect, se = dml_point_and_se(data)
+    assert effect == pytest.approx(theta, rel=1e-12, abs=0.0)
+    assert se == pytest.approx(np.sqrt(np.sum(weight**2 * eps**2)), rel=1e-10, abs=0.0)
+
+
+def test_the_dml_interval_covers_the_effect_on_a_short_log() -> None:
+    """At the defaults on 200 rows the out-of-fold nuisances fit few rows, and the error their
+    predictions carry into every row they predict is shared: the moment's sandwich, which reads
+    each row as on its own, missed the effect with its 95% interval in 28 of 200 logs; read
+    through the nuisances, 2."""
+    rng = np.random.default_rng(11)
+    misses = 0
+    for draw in range(200):
+        effect, se = dml_point_and_se(_linear_plant(rng, 200), seed=draw)
+        misses += abs(effect - 0.8) > 1.96 * se
+    assert misses <= 16
+
+
 def _rounded(value: float, n: int) -> jax.Array:
     """``value`` in every row, its last bit flipped in every other one."""
     column = jnp.full(n, value)
