@@ -19,7 +19,7 @@
    is why a finite-N Nash correction never overturns the exponent.
 
    Stdlib Reals only.  Nothing here is about probability: the reduction to these scalars is done
-   in Maxima and measured by chc.deep_galerkin.finite_population_gap_certificate. *)
+   in Maxima and measured by chc.research.deep_galerkin.finite_population_gap_certificate. *)
 
 From Stdlib Require Import Reals Lra.
 Open Scope R_scope.

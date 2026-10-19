@@ -39,7 +39,7 @@ print("    factor = C*Lip^2*(eps-d)*(eps+d) >= 0 : the robust radius is a transp
    target-optimal one, (u_s*k - bt*xt)^2/k with k = bt^2 + rr. Its slope in bt factors into the
    quadratic that vanishes where the regret does and a cubic, so its largest value over
    |bt - b_s| <= Lip*eps sits at an end of that interval or at a real root of the cubic inside it:
-   chc.regret.transportability_regret_certificate's exact_wdro_bound. */
+   chc.research.regret.transportability_regret_certificate's exact_wdro_bound. */
 us : bs*xt/(bs^2 + rr)$
 cost(bt, u) := (bt*u - xt)^2 + rr*u^2$
 exact_regret : cost(bt, us) - cost(bt, bt*xt/(bt^2 + rr))$

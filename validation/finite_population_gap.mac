@@ -2,7 +2,7 @@
 
    Result 49 solved a mean-field game as a coupled HJB/Fokker-Planck pair and left one modelling
    gap open: the FP density is the N -> infinity limit, and nobody deploys to infinity.  This file
-   prices the gap for the scalar LQ mean-field game of chc.deep_galerkin.LQMeanFieldGame, and the
+   prices the gap for the scalar LQ mean-field game of chc.research.deep_galerkin.LQMeanFieldGame, and the
    answer is EXACT rather than fitted -- which is the whole point, because "we fitted an exponent
    of -0.5" is a much weaker claim than "the constant is v(t) and here is the identity".
 
@@ -19,7 +19,7 @@
    The 1/sqrt(N) is therefore not an asymptotic rate but an identity, and the constant is the
    closed-loop variance, which has its own closed form.
 
-   Certificate: chc.deep_galerkin.finite_population_gap_certificate; proofs/finite_population_gap.v. */
+   Certificate: chc.research.deep_galerkin.finite_population_gap_certificate; proofs/finite_population_gap.v. */
 
 linel : 110$
 display2d : false$

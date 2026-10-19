@@ -4,7 +4,7 @@
    chc.residual.LipschitzResidual gets its constant from a Schur upper bound,
    sigma_max(W) <= sqrt(||W||_1 * ||W||_inf).  That is an inequality with no witness:
    lipschitz_certificate can confirm the bound is not violated and can never confirm it is tight.
-   On a PERIODIC, translation-invariant plant -- chc.transport's advection-diffusion field -- the
+   On a PERIODIC, translation-invariant plant -- chc.research.transport's advection-diffusion field -- the
    operator is circulant, the DFT diagonalises it exactly, and the picture changes.
 
    This file carries the algebra of that claim in the reals.  A circulant acts on each real Fourier
@@ -122,7 +122,7 @@ Qed.
 
 (* THE PART A SCHUR BOUND CANNOT HAVE.  Put the whole input on the maximising mode and the bound is
    an equality: the operator norm is not merely an upper bound, it is realised by an explicit
-   input.  This is what chc.residual.spectral_residual_certificate measures. *)
+   input.  This is what chc.research.residual.spectral_residual_certificate measures. *)
 Theorem two_mode_norm_attained : forall p0 q0 p1 q1 a0 b0,
   gain p1 q1 <= gain p0 q0 ->
   two_mode_out p0 q0 p1 q1 a0 b0 0 0

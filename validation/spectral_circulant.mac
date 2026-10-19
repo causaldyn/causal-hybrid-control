@@ -11,7 +11,7 @@
    the exact gain, the composition law, the advection-diffusion dispersion relation, and the reason
    a product of circulants is STRICTLY tighter than the product of their norms.
 
-   Certificate: chc.residual.spectral_residual_certificate; proofs/spectral_circulant.v. */
+   Certificate: chc.research.residual.spectral_residual_certificate; proofs/spectral_circulant.v. */
 
 linel : 110$
 

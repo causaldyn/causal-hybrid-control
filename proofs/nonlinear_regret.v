@@ -42,7 +42,7 @@ Proof. intros mu d. field. Qed.
    eigenmode with curvature h >= mu, the mu-PL bound upper-bounds that mode's regret. In cleared
    (division-free) form: mu*(h*d^2) <= (h*d)^2 (i.e. the mode regret (h/2)d^2 <= (h*d)^2/(2 mu)). The
    min-curvature mode is tight; every stiffer mode is slack. Summing over eigenmodes gives the full
-   finite-horizon regret bound, verified numerically by chc.regret.finite_horizon_pl_certificate. *)
+   finite-horizon regret bound, verified numerically by chc.research.regret.finite_horizon_pl_certificate. *)
 Lemma pl_mode_bound : forall h mu d,
   0 < mu -> mu <= h -> mu * (h * d ^ 2) <= (h * d) ^ 2.
 Proof.

@@ -4,7 +4,7 @@
            Jacobians are T4(h f_x) and h S4(h f_x) f_u, so the discrete costate ratio
            F_u (I - F_x)^-1 is the continuous -f_u f_x^-1 whatever the step: the undiscounted
            turnpike of a plan with actions held over steps is the continuous golden rule
-   STEP 2  the golden rule of chc.mmm's plant: the steady state's Lagrange condition in the spend
+   STEP 2  the golden rule of chc.research.mmm's plant: the steady state's Lagrange condition in the spend
            is Nerlove and Arrow's, k u = w (S* - S) / d (g + beta h'(A) / th), and the current-value
            Hamiltonian's steady state is the same with d and th raised by the discount r
    STEP 3  harvesting a logistic stock for (a x - c) u, undiscounted (Anita, Arnautu and Capasso

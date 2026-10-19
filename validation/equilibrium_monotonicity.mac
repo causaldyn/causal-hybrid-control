@@ -67,5 +67,5 @@ print("(6) J.1 under sum(s)=1  residual =",
    ||x - y|| <= ||F(x) - F(y)||/mu for ALL x,y -- the finite-perturbation statement §39 (b) could
    not make. With mu = 1 the equilibrium displacement is bounded by the operator perturbation
    one-for-one, globally. Verified numerically over a box, not just at a point, by
-   chc.games.equilibrium_monotonicity_certificate. */
+   chc.research.games.equilibrium_monotonicity_certificate. */
 print("(7) inverse-Lipschitz constant 1/mu at mu=1 is", 1/1, " (one-for-one, globally)")$

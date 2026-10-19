@@ -21,7 +21,7 @@
    The last step derives what Result 49 could only measure: den has a SIMPLE zero at T*, so the
    pole is exactly of order 1 -- the -0.998 exponent it fitted.
 
-   Certificate: chc.deep_galerkin.lq_mean_field_certificate; proofs/mean_field_dwr.v. */
+   Certificate: chc.research.deep_galerkin.lq_mean_field_certificate; proofs/mean_field_dwr.v. */
 
 linel : 110$
 display2d : false$

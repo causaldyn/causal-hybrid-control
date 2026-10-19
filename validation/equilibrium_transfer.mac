@@ -31,7 +31,7 @@
          NOTHING asymptotically, because the equilibrium map is perfectly conditioned.
 
    Cross-checked in validation/equilibrium_transfer.py; proofs/equilibrium_transfer.v proves the
-   spectral facts; chc.games.equilibrium_transfer_certificate is the measured evidence. */
+   spectral facts; chc.research.games.equilibrium_transfer_certificate is the measured evidence. */
 display2d : false$
 assume(mu > 0, n > 0, delta > 0, C > 0, Lpi > 0, kappa > 0, lam >= 0, theta > 0)$
 

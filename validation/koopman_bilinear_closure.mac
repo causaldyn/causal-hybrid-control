@@ -1,6 +1,6 @@
 /* A linear Koopman lift of a bilinear plant does not close, and a bilinear one does (ADR 0093).
 
-   Setting (chc.koopman.KoopmanModel, degree 1, so the lift is the state). Two states, one action:
+   Setting (chc.research.koopman.KoopmanModel, degree 1, so the lift is the state). Two states, one action:
 
        x'[k] = a[k,1] x1 + a[k,2] x2 + b[k] u + c[k] x1 u,     k = 1, 2.
 

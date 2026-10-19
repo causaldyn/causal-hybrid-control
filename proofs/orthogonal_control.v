@@ -1,6 +1,6 @@
 (* Rocq: the DOUBLE debiasing of orthogonal certainty-equivalence control -- a novel result of CHC
    (derived symbolically in validation/orthogonal_control.mac, empirically certified by
-   chc.regret.orthogonal_control_certificate). Certainty-equivalence control regret is quadratic in
+   chc.research.regret.orthogonal_control_certificate). Certainty-equivalence control regret is quadratic in
    the causal-effect error d (the descent bound kappa/2 * d^2, cf. proofs/interference_regret.v). A
    plug-in (single-residualisation) effect estimate is O(eps)-biased in the nuisance error eps, so its
    regret is quadratic in eps; the Neyman-orthogonal Double ML effect is O(eps^2)-biased, so through

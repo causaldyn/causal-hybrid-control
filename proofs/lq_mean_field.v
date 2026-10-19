@@ -1,6 +1,6 @@
 (* THE LINEAR-QUADRATIC MEAN-FIELD GAME: the algebraic core of Result 49.
 
-   Coupling chc.deep_galerkin's backward HJB to chc.transport's forward Fokker-Planck gives a
+   Coupling chc.research.deep_galerkin's backward HJB to chc.research.transport's forward Fokker-Planck gives a
    forward-backward system.  Under the quadratic ansatz V = P x^2/2 + S x + Z and a Gaussian
    density, validation/lq_mean_field.mac reduces it to a 2x2 linear two-point boundary value
    problem for the pair (m, S) whose transition matrix is trace-free.  Imposing the terminal
@@ -16,7 +16,7 @@
    rather than the single-agent second variation.
 
    Stdlib Reals only.  Nothing here is about probability: the reduction to these scalars is done
-   in Maxima and measured by chc.deep_galerkin.lq_mean_field_certificate. *)
+   in Maxima and measured by chc.research.deep_galerkin.lq_mean_field_certificate. *)
 
 From Stdlib Require Import Reals Lra.
 Open Scope R_scope.

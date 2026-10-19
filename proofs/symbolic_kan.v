@@ -1,7 +1,7 @@
 (* Rocq: SYMBOLIC EXTRACTION FROM A KOLMOGOROV-ARNOLD LAYER -- what is identified, and the price of
    what cannot be represented.
 
-   chc.residual.RBFKANLayer advertises each input-output edge as "an extractable 1D curve"; chc.symbolic
+   chc.residual.RBFKANLayer advertises each input-output edge as "an extractable 1D curve"; chc.research.symbolic
    is the extraction, and this file is its algebraic core. A single KAN layer computes
    bias + sum_i phi_i(z_i), so two questions decide whether an extracted per-edge formula means
    anything at all, and neither is a matter of fit quality:
@@ -9,7 +9,7 @@
    IDENTIFIABILITY. Adding a constant to one edge and subtracting it from the bias leaves the layer
    pointwise unchanged, so an edge's intercept is a convention, not a measurement. Only the TOTAL
    constant is pinned down (gauge_total_identified), and fixing a reference point -- each edge zero
-   at 0 -- makes the whole decomposition unique (centred_gauge_unique). chc.symbolic therefore
+   at 0 -- makes the whole decomposition unique (centred_gauge_unique). chc.research.symbolic therefore
    reports each edge's own offset AND checks their sum against the bias, which is the part with
    content.
 
@@ -19,7 +19,7 @@
    floor: the operator has four terms, so |mixed F| <= 4 * sup|F - A| for every additive A at once,
    and hence sup|F - A| >= |mixed F| / 4. On the bilinear target x*y over [-r, r]^2 the floor is
    exactly r^2 (bilinear_floor_on_box) -- a bound no additive model, KAN or otherwise, can beat.
-   chc.symbolic's certificate measures 9.72 against the proved floor 9.00 at r = 3.
+   chc.research.symbolic's certificate measures 9.72 against the proved floor 9.00 at r = 3.
 
    Derived in validation/symbolic_kan.mac. Honest scope: the extrapolation boundary -- outside the
    grid every Gaussian has decayed and the layer degenerates to its silu term -- is transcendental
