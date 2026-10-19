@@ -4,6 +4,7 @@ On a GPU, two more defaults hold the suite to what it asserts on the CPU: withou
 the pytest-xdist workers share the card rather than the first claiming 75% of it, and float32
 matmuls run in float32 rather than TF32, whose 10-bit mantissa no tolerance here was set for."""
 
+import gc
 import os
 
 import pytest
@@ -19,6 +20,17 @@ jax.config.update("jax_default_matmul_precision", "highest")
 # jax 0.5.0 made this the default, and a key draws other numbers without it: the leg on the
 # dependency floors would otherwise test other data than every leg on the lockfile does
 jax.config.update("jax_threefry_partitionable", True)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _release_compiled_programs():
+    """Drop JAX's compiled programs after each test file. One process runs the whole suite on a
+    leg without workers, and on the dependency floors (jax 0.4.30) the programs it kept reached
+    10.7 GB over the first 1470 tests and killed a 16 GB runner past four fifths of the suite;
+    dropped per file, 5.6 GB, for 13 % more time."""
+    yield
+    jax.clear_caches()
+    gc.collect()
 
 
 @pytest.fixture
