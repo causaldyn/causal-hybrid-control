@@ -16,9 +16,9 @@ import numpy as np
 import pytest
 from scipy.stats import norm
 
+from chc.barrier import barrier_gamma_star
 from chc.dynamics_id import fit_causal_residual, omitted_confounder_bound
 from chc.regret import minimax_regret_move
-from chc.sensitivity import barrier_gamma_star
 
 ROOT_HALF_PI = math.sqrt(math.pi / 2.0)
 

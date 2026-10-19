@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from chc.network_causal import cycle_shells, graph_shells
-from chc.regret import (
+from chc.research.regret import (
     _fold_weight_matrix,
     _named_topologies,
     fold_exactness_certificate,
@@ -106,7 +106,7 @@ def test_two_folds_certify_with_the_bisection_sdp(m: int) -> None:
 def test_on_a_circulant_the_shift_buys_nothing() -> None:
     # The bound is concave in the shift and blind to a uniform one, so averaging any shift over
     # a transitive automorphism group gives a uniform shift at least as good: the plain bound.
-    from chc.regret import _shifted_kyfan_bound
+    from chc.research.regret import _shifted_kyfan_bound
 
     rng = np.random.default_rng(3)
     row = rng.random(16)
@@ -157,7 +157,7 @@ def test_a_degenerate_spectrum_does_not_stall_the_shift() -> None:
 
 
 def test_the_shifted_bound_is_deterministic() -> None:
-    from chc.regret import _shifted_kyfan_bound
+    from chc.research.regret import _shifted_kyfan_bound
 
     for name in ("path", "random3"):
         q = _fold_weight_matrix(graph_shells(_named_topologies(16)[name], 2), GAMMAS, 0.6)

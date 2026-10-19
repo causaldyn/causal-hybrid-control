@@ -1,8 +1,8 @@
-"""chc.sensitivity: the confounding-robust control facade -- re-exports + a runnable pipeline."""
+"""chc.research.sensitivity: the confounding-robust control facade -- re-exports + a runnable
+pipeline."""
 
-import chc.regret as regret
 import chc.uncertainty as uncertainty
-from chc import sensitivity
+from chc.research import regret, sensitivity
 
 
 def test_facade_reexports_are_the_same_objects_not_reimplementations() -> None:

@@ -17,7 +17,7 @@ import pytest
 
 from chc import minimax_action
 from chc.dynamics_id import fit_causal_residual, omitted_confounder_bound
-from chc.sensitivity import barrier_gamma_star, confounding_robust_inflation
+from chc.research.sensitivity import barrier_gamma_star, confounding_robust_inflation
 
 MOVE = np.array([-1.0, 1.0]).reshape(1, 2, 1)  # lever a's spend moved to lever b
 GAP = 2.0  # the analyst's CVaR gap, on the move's scale

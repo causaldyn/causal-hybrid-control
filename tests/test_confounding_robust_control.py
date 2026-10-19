@@ -7,7 +7,7 @@ pessimism radius shifts the gain and strictly beats CE (Rocq ``confounding_robus
 import numpy as np
 import pytest
 
-from chc.regret import (
+from chc.research.regret import (
     _confounded_effect_estimate,
     asymmetric_control_improvement,
     certainty_equivalence_control,

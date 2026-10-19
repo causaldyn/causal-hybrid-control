@@ -1,13 +1,12 @@
-"""chc.transport: mass is conserved, Strang-Marchuk is 2nd-order, and control steers the density."""
+"""chc.research.transport: mass is conserved, Strang-Marchuk is 2nd-order, and control steers the
+density."""
 
 import math
 
 import jax
 import jax.numpy as jnp
 
-from chc.splitting import lie_trotter_step
-from chc.toeplitz import circulant_matvec
-from chc.transport import (
+from chc.research.transport import (
     MeanFieldTransport,
     _advect_flow,
     _react_flow,
@@ -18,6 +17,8 @@ from chc.transport import (
     periodic_smoothing_kernel,
     solve_transport,
 )
+from chc.splitting import lie_trotter_step
+from chc.toeplitz import circulant_matvec
 
 
 def test_advection_conserves_total_mass() -> None:

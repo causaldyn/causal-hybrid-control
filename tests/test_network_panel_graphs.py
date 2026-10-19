@@ -139,7 +139,7 @@ def test_neighbour_exclusion_refuses_a_graph_it_cannot_survive() -> None:
 
 
 def test_the_designed_fold_is_expressible_as_fold_groups() -> None:
-    from chc.regret import optimal_fold_partition
+    from chc.research.regret import optimal_fold_partition
 
     m = 12
     design = optimal_fold_partition(cycle_shells(m, 2), (1.0, 0.7, 0.4), 0.6, lag=1)

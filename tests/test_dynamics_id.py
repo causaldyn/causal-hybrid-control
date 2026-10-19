@@ -450,11 +450,11 @@ def test_the_reported_channel_error_is_calibrated_on_both_identified_paths(
     This is the test that catches the defect it was written for: reporting the ordinary
     least-squares SE of a regression on the *projected* action, with sigma^2 taken from that same
     regression's residual, understated the IV path by ~5x -- worse than reporting nothing, because
-    ``chc.sensitivity`` consumes exactly this number as a radius. The robust sandwich on the
-    structural residual brings both paths into band: over 200 logs it came to 1.08 and 1.05 of the
-    channel's error against the truth, where the homoskedastic one ran optimistic on the IV path.
-    Both are read where the error is, at the log's states: the channel's value there against the
-    truth's.
+    ``chc.research.sensitivity`` consumes exactly this number as a radius. The robust sandwich on
+    the structural residual brings both paths into band: over 200 logs it came to 1.08 and 1.05 of
+    the channel's error against the truth, where the homoskedastic one ran optimistic on the IV
+    path. Both are read where the error is, at the log's states: the channel's value there against
+    the truth's.
     """
     system = _system(instrument_to_action=jnp.array([[0.8]]))
     for keywords in ({"adjust_for": ("z",)}, {"instrument": "w"}):

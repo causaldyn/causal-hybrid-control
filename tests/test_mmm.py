@@ -24,7 +24,8 @@ import pytest
 
 from chc.decision import Constraint, Target, _transitions, prescribe
 from chc.dynamics_id import fit_causal_residual
-from chc.mmm import (
+from chc.panel import Panel, PanelError
+from chc.research.mmm import (
     SALES,
     MarketingMixSystem,
     MmmReport,
@@ -33,7 +34,6 @@ from chc.mmm import (
     adstock_dynamics,
     run_marketing_mix,
 )
-from chc.panel import Panel, PanelError
 
 DT = 1.0
 

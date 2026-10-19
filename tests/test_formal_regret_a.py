@@ -21,9 +21,11 @@ from scipy.optimize import minimize, minimize_scalar
 from chc.regret import (
     _self_consistent_mass,
     adaptive_exploration_certificate,
+    capped_exploration_policy,
+)
+from chc.research.regret import (
     asymmetric_control_improvement,
     bandit_causal_certificate,
-    capped_exploration_policy,
     causal_vs_predictive_certificate,
     ce_explicit_constant_certificate,
     cluster_fold_leakage_certificate,
@@ -68,14 +70,14 @@ FORMAL_LINKS = {
             "test_adaptive_exploration_taper_is_sqrt_t_and_greedy_is_linear",
         ),
     },
-    "chc.regret.asymmetric_control_improvement": {
+    "chc.research.regret.asymmetric_control_improvement": {
         "cites": ("confounding_robust_control.v",),
         "tests": (
             "test_asymmetric_improvement_is_the_brute_force_worst_case_gap",
             "test_asymmetric_improvement_is_positive_iff_the_loss_is_asymmetric",
         ),
     },
-    "chc.regret.bandit_causal_certificate": {
+    "chc.research.regret.bandit_causal_certificate": {
         "cites": ("bandit_causal.mac", "bandit_causal.v"),
         "tests": (
             "test_bandit_confounded_per_round_regret_is_the_bias_floor",
@@ -98,7 +100,7 @@ FORMAL_LINKS = {
             "test_capped_policy_cap_free_mass_overstates_by_at_most_the_cap_term",
         ),
     },
-    "chc.regret.causal_vs_predictive_certificate": {
+    "chc.research.regret.causal_vs_predictive_certificate": {
         "cites": ("causal_mpc.mac", "causal_mpc.v"),
         "tests": (
             "test_predictive_floor_is_the_completed_square_cost_gap",
@@ -106,14 +108,14 @@ FORMAL_LINKS = {
             "test_predictive_regret_plateaus_and_causal_regret_vanishes",
         ),
     },
-    "chc.regret.ce_explicit_constant_certificate": {
+    "chc.research.regret.ce_explicit_constant_certificate": {
         "cites": ("c2_end_to_end.v", "ce_explicit_constants.mac", "ce_explicit_constants.v"),
         "tests": (
             "test_ce_constants_are_the_ones_the_riccati_solution_defines",
             "test_ce_controller_inside_the_ball_contracts_and_obeys_the_constant",
         ),
     },
-    "chc.regret.cluster_fold_leakage_certificate": {
+    "chc.research.regret.cluster_fold_leakage_certificate": {
         "cites": ("cluster_fold_leakage.mac", "cluster_fold_leakage.v"),
         "tests": (
             "test_cluster_fold_constant_is_the_explicit_projector_trace_ratio",
@@ -121,14 +123,14 @@ FORMAL_LINKS = {
             "test_cluster_fold_row_folds_do_not_bias_the_estimate",
         ),
     },
-    "chc.regret.clustered_lower_bound_certificate": {
+    "chc.research.regret.clustered_lower_bound_certificate": {
         "cites": ("clustered_van_trees.v",),
         "tests": (
             "test_clustered_regret_map_is_lower_lipschitz",
             "test_clustered_g_times_regret_stays_above_a_positive_floor",
         ),
     },
-    "chc.regret.composition_transfer_certificate": {
+    "chc.research.regret.composition_transfer_certificate": {
         "cites": (
             "composition_transfer.mac",
             "composition_transfer.v",
@@ -140,21 +142,21 @@ FORMAL_LINKS = {
             "test_composition_transfer_slope_excess_is_the_window_prediction",
         ),
     },
-    "chc.regret.confounded_turnpike_certificate": {
+    "chc.research.regret.confounded_turnpike_certificate": {
         "cites": ("confounded_turnpike.mac", "confounded_turnpike.v"),
         "tests": (
             "test_confounded_turnpike_offset_is_the_settled_tracking_error",
             "test_confounded_turnpike_discounted_regret_is_a_bounded_geometric_sum",
         ),
     },
-    "chc.regret.confounding_robust_control": {
+    "chc.research.regret.confounding_robust_control": {
         "cites": ("confounding_robust_control.mac", "confounding_robust_control.v"),
         "tests": (
             "test_confounding_robust_control_minimises_the_brute_force_worst_case",
             "test_confounding_robust_control_shift_has_the_sign_of_the_asymmetry",
         ),
     },
-    "chc.regret.confounding_robust_lq_regret": {
+    "chc.research.regret.confounding_robust_lq_regret": {
         "cites": ("confounding_lq_regret.v",),
         "tests": (
             "test_confounding_lq_regret_is_the_leading_term_of_the_exact_regret",
@@ -162,14 +164,14 @@ FORMAL_LINKS = {
             "test_confounding_lq_regret_third_order_excess_is_as_documented",
         ),
     },
-    "chc.regret.confounding_robust_lq_regret_matrix": {
+    "chc.research.regret.confounding_robust_lq_regret_matrix": {
         "cites": ("composition_transfer.v",),
         "tests": (
             "test_matrix_lq_regret_order_doubles_and_is_bracketed_by_the_curvature",
             "test_matrix_lq_regret_reduces_to_the_scalar_one",
         ),
     },
-    "chc.regret.conjugate_time_certificate": {
+    "chc.research.regret.conjugate_time_certificate": {
         "cites": ("conjugate_time.mac", "conjugate_time.v"),
         "tests": (
             "test_conjugate_time_is_the_escape_time_of_the_integrated_riccati",
@@ -180,7 +182,7 @@ FORMAL_LINKS = {
             "test_conjugate_time_refuses_a_cost_with_no_conjugate_point",
         ),
     },
-    "chc.regret.constrained_ce_regret_certificate": {
+    "chc.research.regret.constrained_ce_regret_certificate": {
         "cites": ("constrained_ce_regret.mac", "constrained_ce_regret.v"),
         "tests": (
             "test_constrained_regret_is_the_exact_cost_gap_at_the_threshold",

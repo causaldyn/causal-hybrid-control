@@ -11,7 +11,6 @@ import pytest
 
 from chc import HybridDynamics, QuadraticCost, SupportModel
 from chc.adjoint import control_gradient_adjoint
-from chc.benchmark import SupportShiftTask, _BumpActuator
 from chc.control import (
     box_stationarity,
     lbfgs_box_control,
@@ -23,6 +22,7 @@ from chc.cost import total_cost
 from chc.dynamics import DampedOscillator, DrivenDynamics, LinearDynamics
 from chc.games import fixed_point
 from chc.integrate import rollout
+from chc.research.benchmark import SupportShiftTask, _BumpActuator
 from chc.residual import (
     ContractiveResidual,
     ControlAffineResidual,

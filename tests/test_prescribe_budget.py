@@ -1,8 +1,9 @@
 """A spend budget for ``prescribe``: the plan keeps to it, and says what a unit more would buy.
 
-The plant is :mod:`chc.mmm`'s, three channels of spend on a saturating carryover, planned from a
-confounded log with the season adjusted for. Unbudgeted, the plan spends where the sales target
-pays for it; the budgets here allow 60% of that, so every row binds and every price is a real one.
+The plant is :mod:`chc.research.mmm`'s, three channels of spend on a saturating carryover, planned
+from a confounded log with the season adjusted for. Unbudgeted, the plan spends where the sales
+target pays for it; the budgets here allow 60% of that, so every row binds and every price is a real
+one.
 """
 
 from __future__ import annotations
@@ -14,9 +15,9 @@ import numpy as np
 import pytest
 
 from chc.decision import Constraint, DecisionError, Prescription, Target, prescribe
-from chc.mmm import SALES, MarketingMixSystem, adstock_dynamics
 from chc.mpc import PeriodBudget
 from chc.panel import Panel
+from chc.research.mmm import SALES, MarketingMixSystem, adstock_dynamics
 
 SYSTEM = MarketingMixSystem()
 HORIZON = 12

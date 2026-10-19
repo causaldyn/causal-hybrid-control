@@ -1,4 +1,5 @@
-"""Symbolic extraction from a Kolmogorov-Arnold layer (chc.symbolic, proofs/symbolic_kan.v)."""
+"""Symbolic extraction from a Kolmogorov-Arnold layer (chc.research.symbolic,
+proofs/symbolic_kan.v)."""
 
 from __future__ import annotations
 
@@ -7,13 +8,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from chc.residual import RBFKANLayer
-from chc.symbolic import (
+from chc.research.symbolic import (
     extract_symbolic,
     extract_symbolic_edge,
     kan_edge,
     symbolic_extraction_certificate,
 )
+from chc.residual import RBFKANLayer
 
 
 def test_edges_and_bias_reconstruct_the_layer_exactly() -> None:

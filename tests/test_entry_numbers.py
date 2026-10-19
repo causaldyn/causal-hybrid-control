@@ -38,8 +38,6 @@ from chc import (
     gate,
     independence,
     irf,
-    koopman,
-    lalonde,
     lift,
     marketplace,
     matching,
@@ -51,7 +49,6 @@ from chc import (
     response,
     scm,
     support,
-    surrogate,
     switchback,
     toeplitz,
     train,
@@ -61,6 +58,7 @@ from chc.cost import QuadraticCost
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.graph import CausalGraph
 from chc.panel import Panel
+from chc.research import koopman, lalonde, surrogate
 from chc.residual import ControlAffineResidual, MLPResidual, SpectralResidual
 from chc.response import Channel, GeometricAdstock, Hill, Tanh
 from chc.uncertainty import EnsembleResidual, SplitConformal

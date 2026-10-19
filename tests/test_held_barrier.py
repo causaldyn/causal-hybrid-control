@@ -32,9 +32,9 @@ from chc import (
 from chc.control import LinearConstraint
 from chc.cost import total_cost
 from chc.dynamics import DampedOscillator, HybridDynamics, LinearDynamics
-from chc.epidemic import SIRDynamics
 from chc.integrate import rollout
 from chc.plan import _diagnostics
+from chc.research.epidemic import SIRDynamics
 from chc.residual import ZeroResidual
 from chc.uncertainty import confounding_robust_inflation
 

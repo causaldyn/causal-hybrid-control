@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc.deep_galerkin import (
+from chc.research.deep_galerkin import (
     CongestedMeanFieldGame,
     LQMeanFieldGame,
     adjoint_weighted_error,

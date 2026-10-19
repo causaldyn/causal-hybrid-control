@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import minimize
 
-from chc.meanfield import MeanFieldControl
+from chc.research.meanfield import MeanFieldControl
 
 
 def test_meanfield_planning_beats_myopic_under_migration_lag() -> None:

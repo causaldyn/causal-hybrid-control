@@ -8,7 +8,7 @@ estimation.
 import numpy as np
 import pytest
 
-from chc.regret import (
+from chc.research.regret import (
     confounding_regret_floor_certificate,
     confounding_robust_lq_regret,
     confounding_robust_lq_regret_certificate,

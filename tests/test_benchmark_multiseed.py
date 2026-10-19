@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-from chc.benchmark import (
+from chc.research.benchmark import (
     ConfoundingRobustTask,
     InventoryTask,
     MultiSeedResult,

@@ -19,7 +19,8 @@ from numpy.polynomial.hermite_e import hermegauss
 from scipy.optimize import minimize, minimize_scalar
 
 from chc.network_causal import cycle_shells
-from chc.regret import (
+from chc.regret import optimal_exploration_certificate
+from chc.research.regret import (
     _dml_two_channel,
     _psi_ratio_closed_form,
     _shifted_kyfan_bound,
@@ -30,7 +31,6 @@ from chc.regret import (
     multivariate_transfer_certificate,
     multivariate_van_trees_certificate,
     nonlinear_regret_certificate,
-    optimal_exploration_certificate,
     optimal_fold_partition,
     orthogonal_control_certificate,
     panel_estimator_certificate,
@@ -44,7 +44,7 @@ from chc.regret import (
 )
 
 FORMAL_LINKS = {
-    "chc.regret.regret_scaling": {
+    "chc.research.regret.regret_scaling": {
         "cites": ("ce_explicit_constants.v",),
         "tests": (
             "test_regret_scaling_gaps_are_the_gain_gap_identity",
@@ -52,21 +52,21 @@ FORMAL_LINKS = {
             "test_regret_scaling_reports_unbounded_draws_that_vanish_with_the_error",
         ),
     },
-    "chc.regret.orthogonal_control_certificate": {
+    "chc.research.regret.orthogonal_control_certificate": {
         "cites": ("orthogonal_control.mac", "orthogonal_control.v"),
         "tests": (
             "test_orthogonal_control_regrets_meet_their_population_limits",
             "test_orthogonal_control_orthogonal_regret_never_exceeds_the_plugin_one",
         ),
     },
-    "chc.regret.pessimism_variance_certificate": {
+    "chc.research.regret.pessimism_variance_certificate": {
         "cites": ("pessimistic_optimality.mac", "pessimistic_optimality.v"),
         "tests": (
             "test_pessimism_optimal_rho_is_the_effect_variance",
             "test_pessimism_regret_gain_is_the_completed_square",
         ),
     },
-    "chc.regret.multivariate_action_floor": {
+    "chc.research.regret.multivariate_action_floor": {
         "cites": (
             "multivariate_van_trees.mac",
             "multivariate_van_trees.v",
@@ -81,29 +81,29 @@ FORMAL_LINKS = {
             "test_multivariate_action_floor_refuses_an_indefinite_curvature",
         ),
     },
-    "chc.regret.multivariate_van_trees_certificate": {
+    "chc.research.regret.multivariate_van_trees_certificate": {
         "cites": ("multivariate_van_trees.mac", "multivariate_van_trees.v"),
         "tests": (
             "test_multivariate_van_trees_bayes_floor_is_below_the_bayes_risk",
             "test_multivariate_van_trees_confounding_price_is_a_convex_combination",
         ),
     },
-    "chc.regret.multivariate_transfer_certificate": {
+    "chc.research.regret.multivariate_transfer_certificate": {
         "cites": ("composition_transfer.v",),
         "tests": ("test_multivariate_transfer_regret_is_order_two_p_with_the_lq_constant",),
     },
-    "chc.regret.multichannel_control_certificate": {
+    "chc.research.regret.multichannel_control_certificate": {
         "cites": ("multichannel_control.mac", "multichannel_control.v"),
         "tests": (
             "test_multichannel_regrets_meet_the_population_bias",
             "test_multichannel_full_orthogonal_regret_never_exceeds_the_half_one",
         ),
     },
-    "chc.regret.multivariate_interference_certificate": {
+    "chc.research.regret.multivariate_interference_certificate": {
         "cites": ("multichannel_control.v",),
         "tests": ("test_multivariate_interference_orders_follow_the_least_debiased_channel",),
     },
-    "chc.regret.transportability_regret_certificate": {
+    "chc.research.regret.transportability_regret_certificate": {
         "cites": ("transportability_regret.mac", "transportability_regret.v"),
         "tests": (
             "test_transportability_exact_regret_is_the_curvature_identity",
@@ -113,14 +113,14 @@ FORMAL_LINKS = {
             "test_transportability_exact_wdro_bound_is_the_largest_regret_in_the_ball",
         ),
     },
-    "chc.regret.van_trees_certificate": {
+    "chc.research.regret.van_trees_certificate": {
         "cites": ("van_trees.mac", "van_trees.v"),
         "tests": (
             "test_van_trees_posterior_mean_attains_the_floor",
             "test_van_trees_confounding_raises_the_floor",
         ),
     },
-    "chc.regret.partial_id_control_certificate": {
+    "chc.research.regret.partial_id_control_certificate": {
         "cites": ("partial_id_control.mac", "partial_id_control.v"),
         "tests": (
             "test_partial_id_sign_is_identified_iff_the_width_is_below_the_estimate",
@@ -136,11 +136,11 @@ FORMAL_LINKS = {
             "test_optimal_exploration_confounding_raises_the_optimum_and_the_floor",
         ),
     },
-    "chc.regret.nonlinear_regret_certificate": {
+    "chc.research.regret.nonlinear_regret_certificate": {
         "cites": ("nonlinear_regret.mac", "nonlinear_regret.v"),
         "tests": ("test_nonlinear_regret_bound_gap_is_the_maxima_factor",),
     },
-    "chc.regret.strong_convexity_regret_bound": {
+    "chc.research.regret.strong_convexity_regret_bound": {
         "cites": ("nonlinear_regret.v",),
         "tests": (
             "test_strong_convexity_bound_holds_on_random_scalar_costs",
@@ -148,7 +148,7 @@ FORMAL_LINKS = {
             "test_strong_convexity_bound_is_tight_on_a_quadratic",
         ),
     },
-    "chc.regret.optimal_fold_partition": {
+    "chc.research.regret.optimal_fold_partition": {
         "cites": ("fold_spectrum_law.mac", "fold_spectrum_law.v"),
         "tests": (
             "test_fold_partition_on_c8_follows_the_two_threshold_law",
@@ -156,7 +156,7 @@ FORMAL_LINKS = {
             "test_fold_partition_never_picks_contiguous_blocks",
         ),
     },
-    "chc.regret._shifted_kyfan_bound": {
+    "chc.research.regret._shifted_kyfan_bound": {
         "cites": ("fold_shifted_bound.mac",),
         "tests": (
             "test_shifted_kyfan_bound_lies_between_ky_fan_and_the_optimum",
@@ -165,14 +165,14 @@ FORMAL_LINKS = {
             "test_shifted_kyfan_bound_moves_by_c_m_under_a_diagonal_shift",
         ),
     },
-    "chc.regret.fold_exactness_certificate": {
+    "chc.research.regret.fold_exactness_certificate": {
         "cites": ("fold_cut_duality.v",),
         "tests": (
             "test_fold_exactness_structural_gates_hold",
             "test_fold_exactness_dynamic_program_is_the_max_cut_optimum",
         ),
     },
-    "chc.regret.space_time_fold_certificate": {
+    "chc.research.regret.space_time_fold_certificate": {
         "cites": ("space_time_folds.mac", "space_time_folds.v"),
         "tests": (
             "test_space_time_panel_weight_is_the_toeplitz_ratio",
@@ -180,14 +180,14 @@ FORMAL_LINKS = {
             "test_space_time_one_axis_optimum_is_the_enumerated_one",
         ),
     },
-    "chc.regret._psi_ratio_closed_form": {
+    "chc.research.regret._psi_ratio_closed_form": {
         "cites": ("panel_estimator_gate.mac",),
         "tests": (
             "test_psi_ratio_closed_form_is_the_explicit_sandwich_ratio",
             "test_psi_ratio_washes_out_monotonically_in_the_cluster_count",
         ),
     },
-    "chc.regret.panel_estimator_certificate": {
+    "chc.research.regret.panel_estimator_certificate": {
         "cites": ("panel_estimator_gate.mac",),
         "tests": ("test_panel_estimator_prediction_is_the_explicit_sandwich_ratio",),
     },

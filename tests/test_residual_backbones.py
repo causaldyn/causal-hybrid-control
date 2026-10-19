@@ -10,6 +10,8 @@ from jax import Array
 
 from chc.dynamics import DampedOscillator, HybridDynamics
 from chc.integrate import rollout
+from chc.research.residual import spectral_residual_certificate
+from chc.research.transport import advection_diffusion_field, advection_diffusion_symbol
 from chc.residual import (
     LipschitzResidual,
     PortHamiltonianResidual,
@@ -20,9 +22,7 @@ from chc.residual import (
     fit_spectral_residual,
     lipschitz_certificate,
     port_hamiltonian_certificate,
-    spectral_residual_certificate,
 )
-from chc.transport import advection_diffusion_field, advection_diffusion_symbol
 
 
 def test_port_hamiltonian_certificate_confirms_passivity() -> None:
@@ -263,8 +263,8 @@ def test_closed_form_fit_recovers_the_advection_diffusion_operator() -> None:
 
 def test_spectral_certificate_beats_the_mlp_and_records_where_it_does_not() -> None:
     # Result 48. The spectral backbone was skipped under a kill-criterion whose reopening condition
-    # was tying a learned spectral operator into chc.transport; both halves exist now, so the
-    # criterion is live and every block below can fail on its own.
+    # was tying a learned spectral operator into chc.research.transport; both halves exist now, so
+    # the criterion is live and every block below can fail on its own.
     curve = spectral_residual_certificate()
     # (1) THE OPERATOR IS RECOVERED. Relative, because the symbol's own scale is nu*n^2/L^2.
     assert curve.symbol_error < 1e-5

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from chc.estimators import BackdoorOLS, DoubleML, EffectEstimate
-from chc.lalonde import LalondeData, lalonde_ate, load_lalonde
+from chc.research.lalonde import LalondeData, lalonde_ate, load_lalonde
 
 
 @pytest.fixture(scope="module")
