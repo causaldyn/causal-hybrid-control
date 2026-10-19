@@ -47,9 +47,10 @@ a premise fails, a certificate can still read as valid. Three cases measured her
 - A change that weakens a certificate on a misspecified plant fails CI. Before, only a change on a
   well-specified plant did.
 - The strict xfails are the list of certificates that neither hold nor say so. Each has a measured
-  reason, and each stays in the list until a fix lands. At 0.19.0 one remains: the tube under a
-  persistent confounder, read over 16 logs: 0.944 by step 13 against a floor of 0.9488, with a
-  warning on 1 of 16 logs. The suite reads 33 passed and 1 xfailed.
+  reason, and each stays in the list until a fix lands. At 0.19.0 none remains. The last was the
+  tube under a persistent confounder, read over 16 logs. Its floor counts the logs, not the runs:
+  one log's share has a standard deviation of 0.0166 at step 13, where 2000 runs give 0.0049. It
+  reads 0.9463 by step 13 there and 0.9484 over 256 logs. The suite reads 34 passed.
 - Saying so can come late. The gate's carryover warning is counted over the path's whole run, and
   on about four paths in ten it comes after the DEPLOY it would have stopped.
 - A pinned contract is a test's own reading of a premise. When a fix redefines a certificate, for

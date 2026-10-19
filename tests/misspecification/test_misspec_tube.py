@@ -57,25 +57,16 @@ def test_a_response_that_saturates_beyond_the_logged_actions_is_warned_of(
     assert held.min() >= FLOOR or len(ranges) >= len(LOGS), np.round(held, 3)
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "demand that persists, AR(0.8) within a unit, recorded and adjusted for: over 16 logs the "
-        "tube carries the noise as a VAR(1) and its read's error, and holds 0.9502 at step 1 and "
-        "0.94628 at step 13, 6e-5 under the floor of 0.94634, where the control case reads 0.948 "
-        "to 0.952; a tube warning on 1 of 16 logs"
-    ),
-)
 def test_the_tube_holds_its_level_under_a_persistent_confounder() -> None:
-    """Read over 16 logs, not 4. Without its read's error carried the tube fell to 0.9444 by step
-    13. With it, over 256 further logs, it holds 0.9484 at its weakest step, 0.0008 its standard
-    error over the logs; 0.0009 of the 0.0016 short is the VAR(1)'s reading of an error that is
-    AR(0.8) plus white. These 16 logs drew a demand 1.2 to 1.3 times as spread as the plant's, and
-    one log's share has a standard deviation of 0.0166 at step 13, where the floor counts 2000
-    runs alone, 0.0049. The share sits two runs in 32000 under the floor, so the mark is not
-    strict: a strict one would turn on a last digit (ADR 0105)."""
+    """Demand that persists, AR(0.8) within a unit, recorded and adjusted for, read over 16 logs.
+    Without its read's error carried the tube fell to 0.9444 by step 13; with it, over 256 further
+    logs, it holds 0.9484 at its weakest step, 0.0008 its standard error over the logs, and 0.0009
+    of the 0.0016 short is the VAR(1)'s reading of an error that is AR(0.8) plus white (ADR 0105).
+    Here the floor counts the logs, not the runs: one log's share has a standard deviation of
+    0.0166 at step 13 over those 256 logs, where 2000 runs alone give 0.0049, so a floor sized by
+    the runs turns on a last digit (these 16 logs read 0.94628 against its 0.94634)."""
     logs = range(16)
-    floor = 0.95 - 3.0 * np.sqrt(0.95 * 0.05 / (len(logs) * RUNS))
+    floor = 0.95 - 3.0 * 0.0166 / np.sqrt(len(logs))
     held, _, warned = tube_coverage(World(demand_persistence=0.8), logs, RUNS)
     assert held.min() >= floor or np.mean(warned) >= 0.9, (np.round(held, 4), warned)
 

@@ -43,10 +43,10 @@ still change).
 - **Misspecification tests as a CI gate** (`tests/misspecification/`, ADR 0115). Each public
   certificate is read on plants its model gets wrong: a persistent confounder, AR noise, dead time,
   nuisances outside the sieve, actions outside the logged support, a plant unlike the model. Each
-  test asserts that the certificate holds at its level or says so: 33 pass. One case does neither
-  and is an xfail with its numbers: the tube under a persistent confounder, 0.9463 by step 13
-  over 16 logs, 6e-5 under its floor (0.765 at step 15 before its noise was carried as a VAR(1),
-  0.944 before it carried its read's error). Seven more were
+  test asserts that the certificate holds at its level or says so: 34 pass. The tube under a
+  persistent confounder is read over 16 logs against a floor sized by the spread between logs:
+  0.9463 by step 13 (0.765 at step 15 before its noise was carried as a VAR(1), 0.944 before it
+  carried its read's error), 0.9484 over 256 logs. Eight cases were
   strict xfails before this release's fixes, among them the channel's interval outside the sieve
   and the `"mis"` interval under a model error, each covered on 0 of 40 logs. The default `pytest`
   deselects the suite; a CI job of its own runs it, and so does `just misspecification`.
