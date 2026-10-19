@@ -109,7 +109,8 @@ FORMAL_LINKS = {
             "test_transportability_exact_regret_is_the_curvature_identity",
             "test_transportability_exact_regret_follows_the_maxima_expansion",
             "test_transportability_wdro_bound_covers_the_quadratic_residual",
-            "test_transportability_wdro_bound_covers_the_exact_regret",
+            "test_transportability_exact_regret_exceeds_the_second_order_budget",
+            "test_transportability_exact_wdro_bound_is_the_largest_regret_in_the_ball",
         ),
     },
     "chc.regret.van_trees_certificate": {
@@ -732,14 +733,36 @@ def test_transportability_wdro_bound_covers_the_quadratic_residual() -> None:
     assert np.all(curve.nontransport_regret <= curve.wdro_bound * (1.0 + 1e-12))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="at d = eps = 0.15 the exact deployment regret 2.318e-3 exceeds the bound 1.667e-3",
-)
-def test_transportability_wdro_bound_covers_the_exact_regret() -> None:
-    """transportability_regret.v covers the quadratic proxy only, not the exact cost gap."""
+def test_transportability_exact_regret_exceeds_the_second_order_budget() -> None:
+    """transportability_regret.v covers the quadratic proxy only: at d = eps = 0.15 on the defaults
+    the exact cost gap is 2.318e-3, 1.39 times wdro_bound = 1.667e-3, as the docstring says."""
     curve = transportability_regret_certificate(wdro_radius=0.15, d_hi=0.15)
-    assert np.all(curve.exact_regret <= curve.wdro_bound)
+    assert curve.exact_regret[-1] / curve.wdro_bound == pytest.approx(1.39, rel=0.0, abs=0.005)
+
+
+@SETTINGS
+@given(
+    st.floats(0.2, 2.0),
+    st.floats(0.05, 2.0),
+    st.floats(0.3, 2.0),
+    st.floats(0.2, 2.0),
+    st.floats(0.01, 0.5),
+)
+def test_transportability_exact_wdro_bound_is_the_largest_regret_in_the_ball(
+    b_src: float, rr: float, xt: float, lip: float, eps: float
+) -> None:
+    """transportability_regret.mac (D): exact_wdro_bound is the largest exact regret over every
+    target effect within Lip*eps of the source, either side; a 20001-point grid of the ball never
+    exceeds it and comes within the grid's second-order step of it."""
+    curve = transportability_regret_certificate(
+        b_src=b_src, rr=rr, xt=xt, lip=lip, wdro_radius=eps, d_hi=eps
+    )
+    reach = lip * eps
+    grid = _scalar_regret(b_src, b_src + np.linspace(-reach, reach, 20001), rr, xt)
+    scale = (b_src**2 + rr) * xt**2
+    assert grid.max() <= curve.exact_wdro_bound * (1 + 1e-10) + 1e-15 * scale
+    assert curve.exact_wdro_bound <= grid.max() * (1 + 1e-6) + 1e-15 * scale
+    assert np.all(curve.exact_regret <= curve.exact_wdro_bound * (1 + 1e-10) + 1e-15 * scale)
 
 
 # ---------------------------------------------------------------- van_trees_certificate
