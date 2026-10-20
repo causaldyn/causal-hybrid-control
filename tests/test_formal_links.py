@@ -15,8 +15,11 @@ import fnmatch
 import re
 from pathlib import Path
 
+import chc
+
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src" / "chc"
+# The package under test: the source tree in a checkout, site-packages where a wheel is tested.
+SRC = Path(chc.__file__).resolve().parent
 CITED_FILE = re.compile(
     r"(?:proofs/(?:mathcomp/)?|validation/)([A-Za-z0-9_]+\.(?:v|mac|gp|smt2|m|py|input|R))"
     r"|``([A-Za-z0-9_]+\.(?:v|mac|gp|smt2))``"

@@ -16,7 +16,11 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
+import chc
+
 ROOT = Path(__file__).resolve().parent.parent
+# The package under test: the source tree in a checkout, site-packages where a wheel is tested.
+LIBRARY = Path(chc.__file__).resolve().parent
 # The scan of tests/ reads this file too. `[/]` keeps the pattern's own text from matching it;
 # `plans/[0-9]` and a task's number need no such help, since a bracket is not a digit.
 PRIVATE_PATH = re.compile(rb"plans/[0-9]|discoveries[/]|plan [0-9]+'s P[0-9]")
@@ -27,10 +31,10 @@ def _files(directory: Path) -> list[Path]:
     return [p for p in directory.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
 
 
-def _pointers(paths: Iterable[Path]) -> list[str]:
+def _pointers(paths: Iterable[Path], base: Path = ROOT) -> list[str]:
     """``file:line`` of every line naming a private path; bytes, since a built page has images."""
     return [
-        f"{path.relative_to(ROOT)}:{number}"
+        f"{path.relative_to(base)}:{number}"
         for path in sorted(paths)
         for number, line in enumerate(path.read_bytes().splitlines(), start=1)
         if PRIVATE_PATH.search(line)
@@ -38,7 +42,7 @@ def _pointers(paths: Iterable[Path]) -> list[str]:
 
 
 def test_no_library_file_points_into_the_research_repository() -> None:
-    assert _pointers(_files(ROOT / "src" / "chc")) == []
+    assert _pointers(_files(LIBRARY), LIBRARY.parent) == []
 
 
 def test_no_docs_page_points_into_the_research_repository() -> None:
