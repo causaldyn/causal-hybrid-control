@@ -456,12 +456,13 @@ def test_linear_tube_holds_on_rk4_rollouts_with_stage_errors(entries, horizon, d
 @settings(max_examples=40, deadline=None)
 @given(
     lipschitz=st.floats(0.0, 3.0),
-    budgets=st.lists(st.floats(0.0, 1.0), min_size=1, max_size=12),
+    budgets=st.lists(st.floats(0.0, 1.0, allow_subnormal=False), min_size=1, max_size=12),
     dt=st.floats(0.01, 0.5),
 )
 def test_linear_tube_on_a_scalar_rate_is_the_lipschitz_tube(lipschitz, budgets, dt) -> None:
     """rk4_rollout.mac (3): every stage weight is nonnegative at z >= 0, so on A = L >= 0 the
-    matrix tube is the norm-Lipschitz RK4 tube; a contracting A gives a narrower one."""
+    matrix tube is the norm-Lipschitz RK4 tube; a contracting A gives a narrower one.
+    Subnormal budgets are left out: one unit in their last place is a relative 1e-11."""
     linear = np.asarray(linear_rollout_bound([[lipschitz]], budgets, dt))
     lipschitz_tube = np.asarray(time_varying_rollout_bound([lipschitz] * len(budgets), budgets, dt))
     np.testing.assert_allclose(linear, lipschitz_tube, rtol=1e-12, atol=0.0)

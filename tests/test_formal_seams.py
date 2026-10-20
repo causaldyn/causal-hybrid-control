@@ -267,15 +267,19 @@ def test_channel_factor_is_the_bhatia_davis_share(gamma) -> None:
     w in [1/Gamma, Gamma] with mean 1, a linear program over a grid holding both ends, is
     rho^2 = (Gamma - 1)^2 / Gamma; the factor is kappa^2 = rho^2 / (1 - rho^2)."""
     grid = np.unique(np.concatenate([np.linspace(1.0 / gamma, gamma, 401), [1.0]]))
+    spread = (grid - 1.0) ** 2
+    # HiGHS stops at a vertex whose reduced costs clear its 1e-7 tolerance: costs of 1e-7 at
+    # Gamma near 1 leave rho^2 a fifth short unless the largest is scaled to one.
+    scale = float(spread.max()) or 1.0
     program = linprog(
-        -((grid - 1.0) ** 2),
+        -spread / scale,
         A_eq=np.vstack([np.ones_like(grid), grid]),
         b_eq=[1.0, 1.0],
         bounds=[(0.0, None)] * grid.size,
         method="highs",
     )
     assert program.status == 0
-    rho2 = -float(program.fun)
+    rho2 = -float(program.fun) * scale
     assert rho2 == pytest.approx((gamma - 1.0) ** 2 / gamma, rel=1e-9, abs=1e-15)
     if rho2 < 1.0:
         assert ChannelSensitivity.factor(gamma) == pytest.approx(
