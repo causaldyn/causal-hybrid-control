@@ -24,9 +24,55 @@ still change).
   treatment's own past predicts it beyond the controls (Ljung–Box at 1e-3): on 200 seeds it fired
   on every AR(0.9) and AR(0.2) treatment and on 0.5 % of white ones.
 - **A `transitions` warning** where most units give no transition on the panel's step.
+- **`RunProvenance.radius`**, also in its JSON: the radius the barrier read, `"absolute"` or
+  `"relative"`, and None where no barrier was audited.
+- **A scan for private labels.** A test fails on any result or section number from an unpublished
+  research log in the library, its docs, `validation/`, `proofs/`, `scripts/`, `tests/` and
+  `fuzz/`; cited sections of published sources still pass.
 
 ### Changed
 
+- **The defaults 0.19.0 announced are the defaults** (ADRs 0125–0128). Each one's
+  `FutureWarning` is gone.
+- **`prescribe` reads its fit's own absolute radius on the channel** (`radius="auto"`, ADR 0125):
+  `ChannelSensitivity.from_fit` at 0.95, at each planned step's predicted state, in the held solve
+  and the audit alike. On logs with an unrecorded confounder held at γ = 2, the plant's least
+  margin went from −0.19/−0.02/−0.14/+0.09 to +0.37/+0.43/+0.38/+0.44, with all 15 steps certified
+  under both radii. Where the fit gives no absolute radius, the default `rk4` fit's among them, the
+  barrier reads the relative one and an `INFO` record (`chc_event="radius"`) names why; `rk4`
+  stays the default integrator. `radius="absolute"` raises on a fit that gives none;
+  `radius="relative"` asks for the share. Under the absolute radius a γ of (3+√5)/2 or more is
+  refused.
+- **`causal_plan` and `RecedingHorizon` read the tube against `tolerance=1.0`**, one unit of the
+  state. Up to 0.19 the default was `inf`, which read `no_tolerance`.
+- **`fit_causal_residual` and `prescribe` read spline nuisances** (`nuisance_knots="auto"`,
+  ADR 0127), the sieve chosen out of fold. On the misspecification gate's curved plant the channel's
+  interval now covers on 39 of 40 logs, where the polynomial covered on none with a bias of 8.2
+  errors. `nuisance_knots=None` keeps the polynomial, and the spline check still warns there.
+  `RunProvenance.nuisance_knots` records `"auto"`.
+- **`sensitivity_analysis` reads `std_error` and `e_value_ci` HC3** (`robust=True`, ADR 0127). On
+  heteroskedastic logs the classical error's interval missed 22.5 % of the time, HC3's 5.6 %.
+  `robust=False` keeps the classical error; the robustness value keeps the classical t.
+- **`fit_lift` reads its errors as AR(1) by default** (`serial="ar1"`, ADR 0126). Over 200 worlds
+  at persistence 0, 0.3, 0.5 and 0.8 its 5 % test rejects 7.0, 5.0, 7.0 and 3.5 % of true nulls,
+  where `serial="independent"` rejected 4.0, 11.5, 16.0 and 29.5 %; 95 % intervals cover
+  0.950–0.980.
+- **`roi` and `marginal_roi` count the carryover past the window** (`tail=True`). The return of
+  the last of 52 periods at retention 0.9 and length 30 reads 0.0165, not 0.000327. A response
+  that is not a `Channel` raises `TypeError` unless `tail` is given, since its tail is unknown.
+- **`pessimistic_equilibrium_allocation` requires `equilibrium=`**, a `FittedEquilibrium`; a call
+  without it raises `TypeError` naming `fit_equilibrium`.
+- **Undeclared text periods are refused** with a `PanelError` (ADR 0128), as the 0.19.0 warning
+  said they would be. `frequency="observed"` reads them in sorted order.
+- **Four names say what they hold.** `DecisionCertificate.identification_radius` is
+  `channel_error`, `ConfoundingRobustLQRegretCurve.regret_bounds` is `second_order_regrets`,
+  `highprob_regret_certificate` is `local_highprob_regret_certificate`, and
+  `NonlinearDwrCurve.denominator_against_result_55` is `denominator_against_closed_form`.
+  `DecisionCertificate.to_json` writes `channel_error` and still writes `identification_radius`.
+- **Docstrings, comments, derivations and proof comments state the results they cite**, or name
+  the public function, derivation or proof that holds them, instead of numbers from an
+  unpublished research log. Four Rocq lemmas in `constrained_plan_regret.v`,
+  `multivariate_van_trees.v` and `greedy_fill.v` are renamed to say what they state.
 - **`DynamicLinearModel` and `GeoDLM` default to `form="directional"`** (ADR 0121): they discount
   only the directions the last `p` steps of `F` read. Component discounting inflated each block's
   variance apart from the blocks' correlation, so where the data resolve a sum better than its
@@ -73,8 +119,32 @@ still change).
   calendar is declared: hourly stamps were refused across the autumn change ("appears twice") and
   lost a transition in spring. `panel["time"]` holds UTC for such columns.
 
+### Deprecated
+
+- The old names of the four renamed attributes and functions above warn with a
+  `DeprecationWarning` and leave in 1.0.
+
+### Removed
+
+- **The paths the research modules left in 0.19.0** (ADR 0128): `chc.benchmark`,
+  `chc.causal_bench`, `chc.deep_galerkin`, `chc.epidemic`, `chc.flagship`, `chc.galerkin`,
+  `chc.koopman`, `chc.lalonde`, `chc.meanfield`, `chc.mintime`, `chc.mmm`, `chc.sensitivity`,
+  `chc.spine`, `chc.surrogate`, `chc.symbolic` and `chc.transport` no longer import, and the
+  research halves of `chc.regret`, `chc.games` and `chc.residual` are no longer served there.
+  Import each from `chc.research.<module>`. The top level's deprecated names stay until 1.0.
+- The `FutureWarning`s that announced the defaults above.
+
 ### Fixed
 
+- **An instrument's first stage reads the state in the nuisances' own basis.** It was the
+  polynomial in the state and the instrument, which a spline sieve without powers does not span,
+  so a zero instrument read relevances 0.15, 0.10 and 0.055 and an identified channel. With no
+  knots the first stage is the polynomial, bit for bit.
+- **A held plan compiled its rounds' descent twice** whenever the rounds used both stopping
+  tolerances: the tolerance was a Python number, and the compiled program was keyed on it. Each
+  held problem now compiles the descent once; on the quickstart's held plan the compiled held
+  programs fall from 14,531 to 8,370 HLO instructions. Plans are unchanged bit for bit in float64
+  and float32.
 - **`certify_safety` certifies a barrier step only where the plant's deviation tube keeps it in
   the set** (ADR 0119): `h - ||grad h|| e >= 0` at the step and the next state, `e` the tube of a
   plant whose channel is within the radius, read off the map the plan is rolled out by. The
@@ -128,8 +198,6 @@ still change).
   under the multiplicative form), an observation past the float range is refused without a
   `RuntimeWarning` first, and a boolean, text or subnormal discount, period, scale or dof is
   refused.
-- **The old module paths serve only moved public names**, and `from chc.<old path> import *`
-  imports them: `chc.mmm.np` was served with a warning, and a star import gave nothing.
 - **`refute_effect` refuses a `subset_fraction` outside (0, 1) or too small to fit.**
 - **The research certificates' edges**: the information certificate reads its knife edge
   `rr = b²` by a tolerance (it read a slope of -0.964 for `nan` there),
