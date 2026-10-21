@@ -120,9 +120,9 @@ pd.DataFrame(
 same_way = ConfoundedLinearSystem(gamma=1.0, kappa=1.5).sample(40_000, jax.random.key(0))
 rv = pd.DataFrame(
     [
-        sensitivity_analysis(iv_data, adjust_for=("z",), robust=False),
-        sensitivity_analysis(iv_data, adjust_for=(), robust=False),
-        sensitivity_analysis(same_way, adjust_for=(), robust=False),
+        sensitivity_analysis(iv_data, adjust_for=("z",)),
+        sensitivity_analysis(iv_data, adjust_for=()),
+        sensitivity_analysis(same_way, adjust_for=()),
     ],
     index=["adjusts for z", "omits z", "omits z, kappa = +1.5"],
 )[["effect", "std_error", "robustness_value"]]

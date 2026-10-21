@@ -1,6 +1,7 @@
 # ADR 0106 — An effect's error is HC3, and a refutation reads its own
 
-**Status:** accepted, 2026-10-19.
+**Status:** accepted, 2026-10-19. Amended 2026-10-21 by ADR 0127: from 0.20.0
+`sensitivity_analysis` reads HC3 by default, and `robust=False` keeps the classical error.
 
 ## Context
 
