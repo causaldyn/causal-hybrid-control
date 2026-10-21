@@ -13,7 +13,7 @@ import warnings
 
 import numpy as np
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 from scipy.integrate import quad
 from scipy.optimize import minimize_scalar
@@ -1614,6 +1614,8 @@ def test_minimax_regret_move_no_linear_rule_does_better(sigma, k_over_sigma):
     sigma=st.floats(0.05, 2.0),
     gap=st.floats(0.5, 20.0),
 )
+@example(estimate=0.5, sigma=0.0546875, gap=0.5000000000002274)
+@example(estimate=0.5, sigma=0.0625, gap=0.5000000000002274)
 def test_minimax_regret_move_full_move_gamma_is_the_share_boundary(estimate, sigma, gap):
     """minimax_regret_move.mac: the move is whole up to full_move_gamma and partial past it."""
     out = core_regret.minimax_regret_move(estimate, sigma, 1.0, cvar_gap=gap)
@@ -1621,6 +1623,10 @@ def test_minimax_regret_move_full_move_gamma_is_the_share_boundary(estimate, sig
     if math.isinf(g):
         assert core_regret.minimax_regret_move(estimate, sigma, 1e6, cvar_gap=gap).share == 1.0
         return
+    # (g - 1)/(g + 1) moves by 2 dg / g^2: past g = 1e6 a step of 1e-6 g moves the half-width by
+    # less than 2e-12 of itself, and the boundary rides in rounding (a gap within 1e-12 of the
+    # whole-move half-width put it at 4.4e12)
+    assume(g < 1e6)
     assert (
         core_regret.minimax_regret_move(estimate, sigma, g * (1 - 1e-6), cvar_gap=gap).share == 1.0
     )
