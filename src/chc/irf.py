@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.core import Tracer
 from numpy.typing import ArrayLike
 from scipy.stats import chi2
 
@@ -78,8 +79,11 @@ def _warn_on_a_persistent_treatment(features: Array, horizon: int) -> None:
     and its residual tested for autocorrelation at lags ``1..max(horizon, 1)`` by Ljung and Box
     (1978), at level 0.001. A residual that is autocorrelated means a parent of ``treatment_t`` --
     its own past -- is outside the controls, and on a plant with dead time or carryover the
-    projections then read that pipeline as the effect.
+    projections then read that pipeline as the effect. Under ``jax.jit`` the design is traced and
+    holds no numbers to test, so nothing is logged there.
     """
+    if isinstance(features, Tracer):
+        return
     rows = np.asarray(features, dtype=np.float64)
     controls = np.column_stack([np.ones(rows.shape[0]), rows[:, 1:]])
     coefficients, *_ = np.linalg.lstsq(controls, rows[:, 0], rcond=None)

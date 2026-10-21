@@ -361,3 +361,14 @@ def test_a_persistent_treatment_without_its_lag_is_warned_of(
             local_projection_irf(_persistent_world(seed, 0.9), 8, lags=1)
             local_projection_irf(_persistent_world(seed, 0.0), 8)
     assert _persistence_warnings(caplog) == []
+
+
+def test_a_traced_design_is_not_tested_for_persistence(caplog: pytest.LogCaptureFixture) -> None:
+    """Under ``jax.jit`` the design holds no numbers, so the projections run and nothing is
+    logged."""
+    world = _persistent_world(0, 0.9)
+    response = jax.jit(lambda data: local_projection_irf(data, 8))
+    with caplog.at_level(logging.WARNING, logger="chc.irf"):
+        traced = response(world)
+    assert _persistence_warnings(caplog) == []
+    np.testing.assert_allclose(traced, local_projection_irf(world, 8), rtol=1e-12, atol=0.0)
