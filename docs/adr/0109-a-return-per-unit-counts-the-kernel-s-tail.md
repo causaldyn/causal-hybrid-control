@@ -1,6 +1,7 @@
 # ADR 0109 — A return per unit counts the kernel's tail
 
 **Status:** accepted, 2026-10-19. Amends the carryover `roi` and `marginal_roi` count in ADR 0030.
+Amended by ADR 0126, 2026-10-21: `tail=True` is the default, and the warning is gone.
 
 ## Context
 

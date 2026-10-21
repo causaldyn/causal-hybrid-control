@@ -1059,52 +1059,24 @@ def test_a_tail_counts_the_carryover_past_the_series_end(reading) -> None:
     )
 
 
-def test_a_tail_left_unset_warns_only_where_the_cut_moves_the_number() -> None:
+def test_the_default_counts_the_kernel_s_whole_tail() -> None:
+    """Unset, ``tail`` reads a Channel's whole tail, without a warning: the last of 52 periods,
+    through a kernel of retention 0.9 and length 30, reads more than 40 times its cut. A window
+    whose carryover ends inside the series reads the same either way."""
     channel = Channel(
         GeometricAdstock(0.9, length=30, normalized=False), MichaelisMenten(100.0), 1.0
     )
     level = jnp.full(52, 50.0)
     for reading in (roi, marginal_roi):
-        with pytest.warns(FutureWarning, match=r"last 29 periods.*tail=True"):
-            cut = reading(channel, level, slice(51, 52))
-        assert reading(channel, level, slice(51, 52), tail=False) == cut
-        assert reading(channel, level, slice(51, 52), tail=True) > 40.0 * cut
         with warnings.catch_warnings():
             warnings.simplefilter("error")
+            whole = reading(channel, level, slice(51, 52))
             early = reading(channel, level, slice(0, 22))
-        assert reading(channel, level, slice(0, 22), tail=True) == pytest.approx(
+        assert whole == reading(channel, level, slice(51, 52), tail=True)
+        assert whole > 40.0 * reading(channel, level, slice(51, 52), tail=False)
+        assert reading(channel, level, slice(0, 22), tail=False) == pytest.approx(
             early, rel=1e-14, abs=0.0
         )
-
-
-def test_a_tail_left_unset_is_silent_where_the_kernel_carries_nothing_past_the_end() -> None:
-    """A kernel of length 30 that keeps nothing past its first period: the window spends in its
-    last 29 periods, but the tail adds nothing to the number, so the default changes nothing."""
-    channel = Channel(
-        GeometricAdstock(0.0, length=30, normalized=False), MichaelisMenten(100.0), 1.0
-    )
-    level = jnp.full(52, 50.0)
-    for reading in (roi, marginal_roi):
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            cut = reading(channel, level, slice(51, 52))
-        assert reading(channel, level, slice(51, 52), tail=True) == pytest.approx(
-            cut, rel=1e-12, abs=0.0
-        )
-
-
-def test_a_tail_warning_quotes_both_readings() -> None:
-    channel = Channel(
-        GeometricAdstock(0.9, length=30, normalized=False), MichaelisMenten(100.0), 1.0
-    )
-    level = jnp.full(52, 50.0)
-    whole = roi(channel, level, slice(51, 52), tail=True)
-    cut = roi(channel, level, slice(51, 52), tail=False)
-    with pytest.warns(FutureWarning) as caught:
-        roi(channel, level, slice(51, 52))
-    assert f"reads {cut:.6g}, and {whole:.6g} with the kernel's whole tail" in str(
-        caught[0].message
-    )
 
 
 def test_a_numpy_bool_is_a_tail_as_a_bool_is() -> None:
@@ -1117,6 +1089,9 @@ def test_a_numpy_bool_is_a_tail_as_a_bool_is() -> None:
 
 def test_a_tail_is_refused_where_it_is_not_a_count_of_periods() -> None:
     channel = Channel(GeometricAdstock(0.5, length=6, normalized=True), Tanh(100.0), 1.5)
+    for reading in (roi, marginal_roi):
+        with pytest.raises(TypeError, match=r"not a Channel.*tail=False"):
+            reading(channel.__call__, SPEND)
     with pytest.raises(TypeError, match="not a Channel"):
         roi(channel.__call__, SPEND, tail=True)
     for tail in (-1, 2.5, "kernel"):
