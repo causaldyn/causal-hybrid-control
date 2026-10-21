@@ -335,3 +335,65 @@ def test_unrolled_rejects_what_it_cannot_mean() -> None:
 def test_lags_zero_keeps_only_the_contemporaneous_structure() -> None:
     graph = CausalGraph.unrolled([("x", "y", 0), ("x", "y", 1)], lags=0)
     assert set(graph.edges) == {("x[t]", "y[t]")}  # the lag-1 edge has no slice to live in
+
+
+# ---- a set that must hold given nodes: the estimator conditions on them whatever it adjusts for --
+
+
+def test_the_canonical_set_holding_given_nodes_is_valid_exactly_when_some_such_set_is() -> None:
+    """The constrained construction, ``(an(X u Y u I) n O) \\ forb(X, Y)``, checked by brute force
+    over every observed set that holds ``I``."""
+    rng = random.Random(41)
+    identified = unidentified = refused_given = 0
+    for _ in range(400):
+        edges = _random_dag(rng.randint(4, 7), 0.5, rng)
+        if not edges:
+            continue
+        nodes = list(CausalGraph.from_edges(edges).nodes)
+        if len(nodes) < 3:
+            continue
+        x, y = rng.sample(nodes, 2)
+        rest = [node for node in nodes if node not in (x, y)]
+        latent = tuple(node for node in rest if rng.random() < 0.3)
+        graph = CausalGraph.from_edges(edges, latent=latent)
+        candidates = [node for node in graph.observed if node not in (x, y)]
+        held = tuple(node for node in candidates if rng.random() < 0.3)
+        result = graph.adjustment_set(treatment=x, outcome=y, given=held)
+        free = [node for node in candidates if node not in held]
+        exhaustive = any(
+            graph.is_valid_adjustment_set((*held, *subset), treatment=x, outcome=y)
+            for size in range(len(free) + 1)
+            for subset in itertools.combinations(free, size)
+        )
+        assert bool(result) == exhaustive, (edges, latent, x, y, held, result)
+        if result:
+            assert set(held) <= set(result.covariates)
+            assert graph.is_valid_adjustment_set(result.covariates, treatment=x, outcome=y)
+            identified += 1
+        else:
+            unidentified += 1
+            refused_given += held != () and "is given and lies" in result.reason
+    assert identified > 0
+    assert unidentified > 0
+    assert refused_given > 0
+
+
+def test_a_given_node_on_the_causal_path_leaves_the_effect_unidentified() -> None:
+    result = CausalGraph.from_edges(MEDIATOR).adjustment_set(treatment="x", outcome="y", given="m")
+    assert result.status == "not_identified"
+    assert "['m'] is given and lies on or below a causal path" in result.reason
+
+
+def test_given_refuses_what_no_estimator_conditions_on() -> None:
+    graph = CausalGraph.from_edges([*CONFOUNDER, ("u", "z")], latent=("u",))
+    with pytest.raises(ValueError, match="is given and latent"):
+        graph.adjustment_set(treatment="x", outcome="y", given="u")
+    with pytest.raises(ValueError, match="is given and a treatment or an outcome"):
+        graph.adjustment_set(treatment="x", outcome="y", given="y")
+    with pytest.raises(KeyError, match="not nodes of this graph"):
+        graph.adjustment_set(treatment="x", outcome="y", given="w")
+
+
+def test_an_unrolled_graph_records_its_lags() -> None:
+    assert CausalGraph.unrolled([("x", "y", 1)], lags=2).lags == 2
+    assert CausalGraph.from_edges([("x", "y")]).lags is None

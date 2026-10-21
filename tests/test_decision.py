@@ -64,7 +64,7 @@ from chc.dynamics import (
     LinearDynamics,
 )
 from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual, persistence_check
-from chc.graph import AdjustmentSet, CausalGraph
+from chc.graph import AdjustmentSet, CausalGraph, CyclicGraphError
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel, PanelError
@@ -2922,6 +2922,124 @@ def test_a_constrained_state_whose_channel_is_confounded_leaves_the_effect_unide
     assert result.certificate.identification == "not_identified"
     assert result.plan is None
     assert "none identifies the levers' effect on ['c']" in result.certificate.adjustment.reason
+
+
+def _feedback_logs(reads: str, n_units: int = 100, n_periods: int = 10, seed: int = 0) -> Panel:
+    """A lever ``u`` its logger sets from the logged ``w`` and from a state: the constrained ``c``,
+    which ``u`` does not move and which moves the target ``y`` (``reads="c"``), or the target
+    itself, beside ``u`` moving ``c`` (``reads="y"``). An Euler plant, so the channel into ``y``
+    is 0.8 and the one into ``c`` is 0 for the first and -0.4 for the second."""
+    rng = np.random.default_rng(seed)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "y", "c", "u", "w")}
+    for unit in range(n_units):
+        y, c = rng.normal(0.0, 0.2, 2)
+        for period in range(n_periods):
+            w = rng.normal()
+            u = 0.9 * w + 2.0 * (c if reads == "c" else y) + rng.normal(0.0, 0.5)
+            for name, value in zip(rows, (unit, period, y, c, u, w), strict=True):
+                rows[name].append(value)
+            if reads == "c":
+                y, c = (
+                    y + DT * (-0.6 * y + 0.8 * u + 1.5 * w + 0.5 * c) + rng.normal(0.0, 0.01),
+                    c + DT * (-0.3 * c) + rng.normal(0.0, 0.05),
+                )
+            else:
+                y, c = (
+                    y + DT * (-0.6 * y + 0.8 * u + 1.5 * w) + rng.normal(0.0, 0.01),
+                    c + DT * (0.25 * c - 0.4 * u) + rng.normal(0.0, 0.01),
+                )
+    return Panel.from_frame(
+        {name: np.asarray(values) for name, values in rows.items()}, unit="unit", time="time"
+    )
+
+
+def _feedback_prescribe(panel: Panel, graph: CausalGraph):
+    return prescribe(
+        panel,
+        levers=[Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("y", value=1.0),
+        constraints=[Constraint("c", hi=0.5)],
+        adjustment=graph,
+        horizon=5,
+        dt=DT,
+        tolerance=0.5,
+        integrator="euler",
+    )
+
+
+def test_a_logger_that_reads_a_constrained_state_leaves_the_effect_identified() -> None:
+    """The fit conditions on the states at a transition's start, so a logger that reads one is a
+    back-door path that state blocks. Read on the columns alone, the constrained state was an
+    outcome that is its own lever's parent, and 0.19.0 refused the effect that 0.18.0 had
+    identified. Read over the period, the set is ``("w",)``, and the edge from ``c`` to the lever
+    changes nothing the fit reads: the channel is the one the graph without it gives, 0.8 into
+    ``y`` and 0 into ``c`` within four of its errors."""
+    edges = [("w", "u"), ("w", "y"), ("u", "y"), ("c", "y")]
+    panel = _feedback_logs("c")
+    read = _feedback_prescribe(panel, CausalGraph.from_edges([*edges, ("c", "u")]))
+    unread = _feedback_prescribe(panel, CausalGraph.from_edges(edges))
+    assert read.certificate.identification == "identified"
+    assert read.certificate.adjustment.covariates == ("w",)
+    channel = np.asarray(read.model_fit.residual.channel)[:, 0, 0]
+    np.testing.assert_allclose(
+        channel, np.asarray(unread.model_fit.residual.channel)[:, 0, 0], rtol=1e-12, atol=0.0
+    )
+    error = read.model_fit.channel_error
+    assert error is not None
+    assert np.all(np.abs(channel - np.array([0.8, 0.0])) <= 4.0 * error), (channel, error)
+
+
+def test_a_logger_that_reads_the_state_its_lever_moves_is_drawn_unrolled() -> None:
+    """``y -> u`` beside ``u -> y`` is a cycle over the columns and no graph. Unrolled over one lag,
+    the logger's edges at lag 0 and each move at lag 1, it is one: the transition runs from the
+    slice ``t-1`` to ``t``, the set is ``("w",)``, and the channel is 0.8 into ``y`` and -0.4 into
+    ``c`` within four of its errors. A latent that confounds the lever with ``c`` still leaves the
+    effect not identified."""
+    with pytest.raises(CyclicGraphError):
+        CausalGraph.from_edges([("w", "u"), ("w", "y"), ("u", "y"), ("u", "c"), ("y", "u")])
+    persistence = [("y", "y", 1), ("c", "c", 1)]
+    graph = CausalGraph.unrolled(
+        [("w", "u", 0), ("y", "u", 0), ("w", "y", 1), ("u", "y", 1), ("u", "c", 1), *persistence],
+        lags=1,
+    )
+    result = _feedback_prescribe(_feedback_logs("y"), graph)
+    assert result.certificate.identification == "identified"
+    assert result.certificate.adjustment.covariates == ("w",)
+    channel = np.asarray(result.model_fit.residual.channel)[:, 0, 0]
+    error = result.model_fit.channel_error
+    assert error is not None
+    assert np.all(np.abs(channel - np.array([0.8, -0.4])) <= 4.0 * error), (channel, error)
+    assert result.logger_check is not None
+    assert result.logger_check.given == ("y", "c", "w")
+
+    confounded = CausalGraph.unrolled(
+        [
+            ("w", "u", 0),
+            ("w", "y", 1),
+            ("u", "y", 1),
+            ("u", "c", 1),
+            ("L", "u", 0),
+            ("L", "c", 1),
+            *persistence,
+        ],
+        lags=1,
+        latent=("L",),
+    )
+    refused = _feedback_prescribe(_feedback_logs("y"), confounded)
+    assert refused.certificate.identification == "not_identified"
+    assert "none identifies the levers' effect on ['c']" in refused.certificate.adjustment.reason
+
+
+def test_an_unrolled_graph_names_what_a_transition_cannot_read() -> None:
+    panel = _feedback_logs("y", n_units=4, n_periods=4)
+    with pytest.raises(DecisionError, match="unrolled over no lag"):
+        _feedback_prescribe(panel, CausalGraph.unrolled([("u", "y", 0)], lags=0))
+    with pytest.raises(KeyError, match=r"\['c\[t\]'\] are not nodes of this graph"):
+        _feedback_prescribe(panel, CausalGraph.unrolled([("u", "y", 1), ("y", "y", 1)], lags=1))
+    with pytest.raises(KeyError, match=r"no column: \['v\[t-1\]'\]"):
+        _feedback_prescribe(
+            panel, CausalGraph.unrolled([("u", "y", 1), ("u", "c", 1), ("v", "y", 1)], lags=1)
+        )
 
 
 @pytest.mark.parametrize("integrator", ["rk4", "euler"])

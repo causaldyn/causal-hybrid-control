@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 AdjustmentStatus = Literal["identified", "not_identified"]
@@ -75,6 +75,8 @@ class CausalGraph:
     nodes: tuple[str, ...]
     edges: tuple[tuple[str, str], ...]  # (parent, child)
     latent: frozenset[str]
+    # the slices t - lags ... t a graph from :meth:`unrolled` spans; None for one over plain names
+    lags: int | None = None
 
     @classmethod
     def from_edges(
@@ -153,8 +155,9 @@ class CausalGraph:
                 of a slice, so a latent name is latent at every lag.
 
         Returns:
-            A :class:`CausalGraph` over ``lagged_name``-formatted nodes. Everything on the class
-            works on it unchanged.
+            A :class:`CausalGraph` over ``lagged_name``-formatted nodes, its ``lags`` recorded.
+            Everything on the class works on it unchanged; :func:`chc.decision.prescribe` reads it
+            from its slice ``t-1`` to its slice ``t``, the period a transition spans.
 
         Raises:
             ValueError: on a negative ``lags`` or ``lag``, or on a contemporaneous self-edge.
@@ -184,7 +187,7 @@ class CausalGraph:
                 f"latent variables {unknown} do not appear in any edge; a latent variable that "
                 "causes nothing and is caused by nothing cannot confound anything"
             )
-        return cls.from_edges(
+        graph = cls.from_edges(
             pairs,
             latent=[
                 cls.lagged_name(name, step)
@@ -194,6 +197,7 @@ class CausalGraph:
                 if cls.lagged_name(name, step) in {end for pair in pairs for end in pair}
             ],
         )
+        return replace(graph, lags=lags)
 
     # ---- structure ------------------------------------------------------------------------
 
@@ -271,7 +275,11 @@ class CausalGraph:
         return self._proper_backdoor(treatment, outcome).d_separated(treatment, outcome, given)
 
     def adjustment_set(
-        self, *, treatment: str | Sequence[str], outcome: str | Sequence[str]
+        self,
+        *,
+        treatment: str | Sequence[str],
+        outcome: str | Sequence[str],
+        given: str | Sequence[str] = (),
     ) -> AdjustmentSet:
         """The canonical adjustment set over the observed nodes, or why there is none.
 
@@ -279,12 +287,30 @@ class CausalGraph:
         observed nodes is** (Perkovic et al. 2018, Theorem 3.4 and the ``O``-restricted corollary),
         so one construction answers both questions: build it, check it, and a failed check is a
         proof that nothing else would have worked either.
+
+        ``given`` names nodes every set holds, as an estimator that conditions on them whatever
+        else it adjusts for. The construction is then ``(an(X u Y u I) n O) \\ forb(X, Y)``, which
+        holds ``I``, and is valid iff some observed set holding ``I`` is (van der Zander,
+        Liskiewicz and Textor 2019, the adjustment sets ``I <= Z <= O``). A node of ``given``
+        in ``forb(X, Y)`` leaves the effect not identified: every set holding it blocks part of the
+        effect or opens a path through a descendant of it.
+
+        Raises:
+            KeyError: for a treatment, an outcome or a ``given`` node not in the graph.
+            ValueError: for a node named as two of treatment, outcome and ``given``, or a latent
+                node in ``given``, which no estimator conditions on.
         """
-        exposure, response = _as_tuple(treatment), _as_tuple(outcome)
-        self._require_nodes(exposure + response)
+        exposure, response, held = _as_tuple(treatment), _as_tuple(outcome), _as_tuple(given)
+        self._require_nodes(exposure + response + held)
         overlap = set(exposure) & set(response)
         if overlap:
             raise ValueError(f"{sorted(overlap)} is both treatment and outcome")
+        overlap = set(held) & (set(exposure) | set(response))
+        if overlap:
+            raise ValueError(f"{sorted(overlap)} is given and a treatment or an outcome")
+        if set(held) & self.latent:
+            unseen = sorted(set(held) & self.latent)
+            raise ValueError(f"{unseen} is given and latent, so nothing conditions on it")
         latent_exposure = sorted((set(exposure) | set(response)) & self.latent)
         if latent_exposure:
             return AdjustmentSet(
@@ -292,8 +318,16 @@ class CausalGraph:
                 "not_identified",
                 f"{latent_exposure} is latent, so no column carries it",
             )
+        below = sorted(set(held) & self._forbidden(exposure, response))
+        if below:
+            return AdjustmentSet(
+                (),
+                "not_identified",
+                f"{below} is given and lies on or below a causal path from {list(exposure)} to "
+                f"{list(response)}, so every set holding it adjusts part of the effect away",
+            )
 
-        candidate = self._canonical(exposure, response)
+        candidate = self._canonical(exposure, response, held)
         if self.is_valid_adjustment_set(candidate, treatment=exposure, outcome=response):
             reason = (
                 "no adjustment needed: no unblocked non-causal path"
@@ -302,7 +336,7 @@ class CausalGraph:
             )
             return AdjustmentSet(candidate, "identified", reason)
 
-        blame = sorted(self._open_confounders(exposure, response))
+        blame = sorted(self._open_confounders(exposure, response, held))
         return AdjustmentSet(
             (),
             "not_identified",
@@ -444,9 +478,11 @@ class CausalGraph:
         )
         return CausalGraph(nodes=self.nodes, edges=kept, latent=self.latent)
 
-    def _canonical(self, exposure: Sequence[str], response: Sequence[str]) -> tuple[str, ...]:
-        """``Adjust(X, Y, O)``: the observed ancestors of ``X u Y`` outside ``forb(X, Y)``."""
-        ancestors = self.ancestors(tuple(exposure) + tuple(response))
+    def _canonical(
+        self, exposure: Sequence[str], response: Sequence[str], held: Sequence[str] = ()
+    ) -> tuple[str, ...]:
+        """``Adjust(X, Y, O)``: the observed ancestors of ``X u Y u I`` outside ``forb(X, Y)``."""
+        ancestors = self.ancestors(tuple(exposure) + tuple(response) + tuple(held))
         forbidden = self._forbidden(exposure, response)
         return tuple(
             node
@@ -454,7 +490,9 @@ class CausalGraph:
             if node in ancestors and node not in self.latent and node not in forbidden
         )
 
-    def _open_confounders(self, exposure: Sequence[str], response: Sequence[str]) -> frozenset[str]:
+    def _open_confounders(
+        self, exposure: Sequence[str], response: Sequence[str], held: Sequence[str] = ()
+    ) -> frozenset[str]:
         """Latent nodes whose measurement alone would identify the effect --- the actionable blame.
 
         Deliberately *not* "latents on some open path": that set contains nodes a caller can do
@@ -468,7 +506,7 @@ class CausalGraph:
         blamed: set[str] = set()
         for node in self.latent:
             measured = CausalGraph(self.nodes, self.edges, self.latent - {node})
-            candidate = measured._canonical(exposure, response)
+            candidate = measured._canonical(exposure, response, held)
             if measured.is_valid_adjustment_set(candidate, treatment=exposure, outcome=response):
                 blamed.add(node)
         return frozenset(blamed)
