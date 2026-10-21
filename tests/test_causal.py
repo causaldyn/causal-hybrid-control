@@ -68,8 +68,12 @@ def test_iv_recovers_effect_with_latent_confounder() -> None:
 
 def test_sensitivity_robustness_value() -> None:
     data = ConfoundedLinearSystem(gamma=1.0).sample(40_000, jax.random.key(0))
-    robust = sensitivity_analysis(data, adjust_for=("z",))  # correctly adjusted -> strong effect
-    fragile = sensitivity_analysis(data, adjust_for=())  # confounded -> fragile estimate
+    robust = sensitivity_analysis(
+        data, adjust_for=("z",), robust=False
+    )  # correctly adjusted -> strong effect
+    fragile = sensitivity_analysis(
+        data, adjust_for=(), robust=False
+    )  # confounded -> fragile estimate
     for report in (robust, fragile):
         assert 0.0 <= report["robustness_value"] <= 1.0
     assert robust["robustness_value"] > 0.8  # the true effect is hard to explain away
@@ -91,7 +95,7 @@ def test_e_value_ci_is_one_when_the_interval_covers_the_null() -> None:
 
 def test_sensitivity_analysis_reports_the_e_value() -> None:
     data = ConfoundedLinearSystem(gamma=1.0).sample(40_000, jax.random.key(0))
-    robust = sensitivity_analysis(data, adjust_for=("z",))
+    robust = sensitivity_analysis(data, adjust_for=("z",), robust=False)
     assert robust["e_value"] > 1.0  # the adjusted effect resists confounding (risk-ratio scale)
     assert robust["e_value_ci"] >= 1.0  # confidence-limit E-value is always defined
 
@@ -660,8 +664,10 @@ def test_the_e_value_reads_the_same_with_the_outcome_in_any_units(units: float) 
     """The outcome's spread took 1e-12 in the caller's units before it standardised the effect: in
     billionths of its units, the outcome read an E-value of 6.666 where it reads 6.673."""
     data = ConfoundedLinearSystem(gamma=1.0).sample(40_000, jax.random.key(0))
-    one = sensitivity_analysis(data, adjust_for=("z",))
-    other = sensitivity_analysis({**data, "x_next": data["x_next"] * units}, adjust_for=("z",))
+    one = sensitivity_analysis(data, adjust_for=("z",), robust=False)
+    other = sensitivity_analysis(
+        {**data, "x_next": data["x_next"] * units}, adjust_for=("z",), robust=False
+    )
     per_unit = {"effect": units, "std_error": units}
     for name, value in one.items():
         assert other[name] / per_unit.get(name, 1.0) == pytest.approx(value, rel=1e-9, abs=0.0), (
@@ -712,8 +718,8 @@ def test_the_adjusted_effect_reads_the_same_with_the_action_in_any_units_in_floa
         one = float(estimate_control_effect(data, ("z",)))
         other = float(estimate_control_effect(moved, ("z",)))
         assert other * units == pytest.approx(one, rel=1e-4, abs=0.0)
-        one_report = sensitivity_analysis(data, ("z",))
-        other_report = sensitivity_analysis(moved, ("z",))
+        one_report = sensitivity_analysis(data, ("z",), robust=False)
+        other_report = sensitivity_analysis(moved, ("z",), robust=False)
     per_unit = {"effect": 1.0 / units, "std_error": 1.0 / units}
     for name, value in one_report.items():
         assert other_report[name] / per_unit.get(name, 1.0) == pytest.approx(
@@ -789,7 +795,7 @@ def test_the_robust_error_is_hc3_written_out_and_the_robustness_value_keeps_the_
     meat = (design * (residual / (1.0 - leverage))[:, None] ** 2).T @ design
     hc3 = float(np.sqrt((inverse @ meat @ inverse)[1, 1]))
     classical = float(np.sqrt(residual @ residual / (150 - 4) * inverse[1, 1]))
-    plain = sensitivity_analysis(data, ("z",))
+    plain = sensitivity_analysis(data, ("z",), robust=False)
     robust = sensitivity_analysis(data, ("z",), robust=True)
     assert plain["std_error"] == pytest.approx(classical, rel=1e-10, abs=0.0)
     assert robust["std_error"] == pytest.approx(hc3, rel=1e-10, abs=0.0)
