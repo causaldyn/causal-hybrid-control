@@ -101,6 +101,7 @@ from typing import ClassVar, TypeVar
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jax.core import Tracer
 from jax.custom_derivatives import SymbolicZero
@@ -947,6 +948,34 @@ class Ricker(Response):
         return z * jnp.exp(1.0 - z)
 
 
+def _check_spend(series: Array) -> None:
+    """Refuse a spend series with a period that is not a finite nonnegative number. A traced series
+    is a plan's or a fit's own variable, which its constraints keep in range, and is not read."""
+    if isinstance(series, Tracer):
+        return
+    # read in NumPy: inside a trace, JAX operations on a concrete series are traced too
+    flat = np.asarray(series).reshape(-1)
+    finite = np.isfinite(flat)
+    if not finite.all():
+        at = int(np.argmin(finite))
+        raise ValueError(
+            f"spend is {float(flat[at])} in period {_period(series, at)}; a period's spend is a"
+            " finite number, and a period with none is 0"
+        )
+    if (flat < 0.0).any():
+        at = int(np.argmin(flat))
+        raise ValueError(
+            f"spend is {float(flat[at])} in period {_period(series, at)}; spend is nonnegative"
+        )
+
+
+def _period(series: Array, at: int) -> str:
+    if series.ndim == 1:
+        return str(at)
+    period, column = divmod(at, series.shape[1])
+    return f"{period} of column {column}"
+
+
 def _length(length: int) -> None:
     if not (isinstance(length, int) and length >= 1):
         raise ValueError(f"length={length!r} is not a whole number of periods, at least 1")
@@ -975,12 +1004,18 @@ class Adstock(eqx.Module):
         return weights / jnp.sum(weights) if self.normalized else weights
 
     def __call__(self, spend: ArrayLike) -> Array:
-        """The adstock of a ``(T,)`` spend series, or of each column of a ``(T, C)`` one."""
+        """The adstock of a ``(T,)`` spend series, or of each column of a ``(T, C)`` one.
+
+        Raises:
+            ValueError: on a series of another shape, with no periods, or with a period whose spend
+                is negative or not finite; a traced series is not read.
+        """
         series = jnp.asarray(spend, dtype=float)
         if series.ndim not in (1, 2):
             raise ValueError(f"spend has shape {series.shape}; a kernel reads a (T,) or (T, C) one")
         if series.shape[0] == 0:
             raise ValueError("spend has no periods; a kernel reads at least one")
+        _check_spend(series)
         weights = self.weights()
 
         def carry(column: Array) -> Array:
@@ -1067,48 +1102,52 @@ def _series(spend: ArrayLike) -> Array:
     series = jnp.asarray(_real_numbers(spend, "spend"), dtype=float)
     if series.ndim != 1:
         raise ValueError(f"spend has shape {series.shape}; a return is read one channel at a time")
-    finite = jnp.isfinite(series)
-    if not bool(jnp.all(finite)):
-        raise ValueError(
-            f"spend is {float(series[jnp.argmin(finite)])} in period {int(jnp.argmin(finite))}; a "
-            "period's spend is a finite number, and a period with none is 0"
-        )
-    if bool(jnp.any(series < 0.0)):
-        raise ValueError(
-            f"spend is {float(jnp.min(series))} in period {int(jnp.argmin(series))}; spend is "
-            "nonnegative"
-        )
+    _check_spend(series)
     return series
 
 
-def _window(
+def _read(
     channel: Callable[[Array], Array],
     spend: ArrayLike,
     window: slice,
     tail: bool | int | None,
-    reading: str,
-) -> tuple[Array, Array, float]:
-    """The series, the window's periods, what the window spent, each extended by ``tail``'s
-    periods of no spend."""
+    reading: Callable[[Array, Array, float], float],
+    name: str,
+) -> float:
+    """``reading`` of the series, the window's periods and what the window spent, each extended by
+    ``tail``'s periods of no spend.
+
+    Left unset, ``tail`` cuts the carryover at the series' end, and the reading warns only where
+    the kernel's whole tail moves the number by more than a part in a billion: where the window
+    spends in the kernel's last reach, through a kernel whose weights past that spend are not all
+    zero."""
     series = _series(spend)
     inside = jnp.zeros_like(series).at[window].set(1.0)
     spent = float(jnp.sum(series * inside))
     if not spent > 0.0:
         raise ValueError(f"the window {window} spends {spent}; its return per unit is undefined")
     carried = channel.kernel.length - 1 if isinstance(channel, Channel) else None
+
+    def extended(periods: int) -> float:
+        after = jnp.zeros(periods, dtype=series.dtype)
+        return reading(jnp.concatenate([series, after]), jnp.concatenate([inside, after]), spent)
+
     if tail is None:
-        # the cut moves the number only where the window spends in the kernel's last reach
+        cut = extended(0)
         if carried and bool(jnp.any((series * inside)[-carried:] > 0.0)):
-            warnings.warn(
-                f"{reading} counts the carryover that falls inside the series, and the window "
-                f"spends in its last {carried} periods, whose carryover runs past its end. Pass "
-                "tail=True to count the kernel's whole tail, or tail=False to keep the cut; a "
-                "future release will count the tail by default",
-                FutureWarning,
-                stacklevel=3,
-            )
-        periods = 0
-    elif isinstance(tail, bool):
+            whole = extended(carried)
+            if not math.isclose(whole, cut, rel_tol=1e-9, abs_tol=0.0):
+                warnings.warn(
+                    f"{name} counts the carryover that falls inside the series, and the window "
+                    f"spends in its last {carried} periods, whose carryover runs past its end: it "
+                    f"reads {cut:.6g}, and {whole:.6g} with the kernel's whole tail. Pass "
+                    "tail=True to count the tail, or tail=False to keep the cut; a future release "
+                    "will count the tail by default",
+                    FutureWarning,
+                    stacklevel=3,
+                )
+        return cut
+    if isinstance(tail, bool | np.bool_):
         if tail and carried is None:
             raise TypeError(
                 f"tail=True reads the kernel's length, and the channel is a "
@@ -1119,8 +1158,7 @@ def _window(
         periods = int(tail)
     else:
         raise ValueError(f"tail={tail!r} is not True, False or a whole number of periods")
-    after = jnp.zeros(periods, dtype=series.dtype)
-    return jnp.concatenate([series, after]), jnp.concatenate([inside, after]), spent
+    return extended(periods)
 
 
 def contribution(
@@ -1162,17 +1200,21 @@ def roi(
     last period's spend is credited with ``1`` of the ``1 / (1 - r)`` it returns, a tenth at
     ``r = 0.9``; on a Michaelis--Menten curve at retention 0.9 and length 30, the last of 52 periods
     reads 0.0003 where its whole tail reads 0.0165. Left unset on a :class:`Channel` whose window
-    spends in the kernel's last ``length - 1`` periods, it warns (``FutureWarning``): the default
-    will become ``True``. Spend after the series is not counted: extend the series with it.
+    spends in the kernel's last ``length - 1`` periods, where the kernel's whole tail moves the
+    number, it warns (``FutureWarning``) with both readings: the default will become ``True``.
+    Spend after the series is not counted: extend the series with it.
 
     Raises:
         TypeError: ``tail=True`` on a channel that is not a :class:`Channel`.
         ValueError: a spend that is not a nonnegative finite ``(T,)`` series, a window that spends
             nothing, or a ``tail`` that is not ``True``, ``False`` or a whole number.
     """
-    series, inside, spent = _window(channel, spend, window, tail, "roi")
-    removed = series * (1.0 - inside)
-    return revenue_per_kpi * float(jnp.sum(channel(series) - channel(removed))) / spent
+
+    def read(series: Array, inside: Array, spent: float) -> float:
+        removed = series * (1.0 - inside)
+        return revenue_per_kpi * float(jnp.sum(channel(series) - channel(removed))) / spent
+
+    return _read(channel, spend, window, tail, read, "roi")
 
 
 def marginal_roi(
@@ -1194,9 +1236,12 @@ def marginal_roi(
     Raises:
         TypeError, ValueError: as :func:`roi`.
     """
-    series, inside, spent = _window(channel, spend, window, tail, "marginal_roi")
-    _, slope = jax.jvp(lambda path: jnp.sum(channel(path)), (series,), (series * inside,))
-    return revenue_per_kpi * float(slope) / spent
+
+    def read(series: Array, inside: Array, spent: float) -> float:
+        _, slope = jax.jvp(lambda path: jnp.sum(channel(path)), (series,), (series * inside,))
+        return revenue_per_kpi * float(slope) / spent
+
+    return _read(channel, spend, window, tail, read, "marginal_roi")
 
 
 def steady_state_marginal_roi(
