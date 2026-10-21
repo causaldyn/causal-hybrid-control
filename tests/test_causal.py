@@ -854,6 +854,23 @@ def test_the_refutation_reads_its_alpha() -> None:
             refute_effect(data, alpha=alpha)
 
 
+def test_the_refutation_refuses_a_subset_that_is_not_one() -> None:
+    """The whole log's subset is the log: its change from the original, 1e-15, read against an
+    error of 8e-17 failed a right model on 48 of 50 logs. A fraction above one read as one, one
+    below zero as a slice from the end, zero as an empty regression, and 0.01 of 200 rows fitted
+    four coefficients on two rows. A subset one row larger than the coefficients is read."""
+    data = _heteroskedastic(np.random.default_rng(6), 200)
+    for fraction in (1.0, 1.5, 0.0, -0.5, float("nan")):
+        with pytest.raises(ValueError, match=r"must be in \(0, 1\)"):
+            refute_effect(data, subset_fraction=fraction)
+    for fraction in (0.01, 0.02):
+        with pytest.raises(ValueError, match="more rows than that"):
+            refute_effect(data, subset_fraction=fraction)
+    report = refute_effect(data, subset_fraction=0.025)
+    assert np.isfinite(report["subset"])
+    assert report["subset_std_error"] > 0.0
+
+
 def test_each_check_s_error_is_its_change_s_least_squares_weights_written_out() -> None:
     """The placebo's estimate, and the random cause's and the half's changes from the original,
     each a sum of least-squares weights against the outcome; each error weights a row's squared

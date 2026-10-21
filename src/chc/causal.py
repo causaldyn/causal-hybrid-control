@@ -575,16 +575,30 @@ def refute_effect(
     identified.
 
     Raises:
-        ValueError: on an ``alpha`` outside ``(0, 1)``.
+        ValueError: on an ``alpha`` outside ``(0, 1)``; on a ``subset_fraction`` outside
+            ``(0, 1)``, or one that keeps no more rows than the adjusted regression has
+            coefficients.
     """
     if not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha={alpha!r} must be in (0, 1)")
+    if not 0.0 < subset_fraction < 1.0:
+        raise ValueError(
+            f"subset_fraction={subset_fraction!r} must be in (0, 1): a subset of the whole log "
+            "is the log, and its change from the original is rounding, which the check read "
+            "against an error of rounding"
+        )
     data = _real_entries(data, ("x", "u", "x_next", *adjust_for))
     k_perm, k_rcc, k_sub = jax.random.split(_stream_key(seed, "refute_effect"), 3)
     n = data["x"].shape[0]
+    n_coeff = 3 + len(adjust_for)
+    rows = int(subset_fraction * n)
+    if rows <= n_coeff:
+        raise ValueError(
+            f"subset_fraction={subset_fraction!r} keeps {rows} of the {n} rows, and the adjusted "
+            f"regression has {n_coeff} coefficients: the subset needs more rows than that"
+        )
     original, weight = _effect_and_weight(data, adjust_for)
     residual = _residual(data, adjust_for)
-    n_coeff = 3 + len(adjust_for)
 
     placebo_data = {**data, "u": data["u"][jax.random.permutation(k_perm, n)]}
     placebo, placebo_weight = _effect_and_weight(placebo_data, adjust_for)
@@ -597,7 +611,7 @@ def refute_effect(
     rcc, rcc_weight = _effect_and_weight(rcc_data, (*adjust_for, common))
     rcc_error = _spread(rcc_weight - weight, residual, n_coeff + 1)
 
-    idx = jax.random.permutation(k_sub, n)[: int(subset_fraction * n)]
+    idx = jax.random.permutation(k_sub, n)[:rows]
     subset, subset_weight = _effect_and_weight(
         {key: val[idx] for key, val in data.items()}, adjust_for
     )
