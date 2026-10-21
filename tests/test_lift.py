@@ -9,6 +9,7 @@ channel, and the fit's least squares as the fit recorded it.
 
 import dataclasses
 import math
+import warnings
 
 import equinox as eqx
 import numpy as np
@@ -439,7 +440,7 @@ def test_the_check_reads_a_persistent_fit_s_gaps_whitened(persistent) -> None:
     assert check.factor == pytest.approx(factor, rel=1e-10, abs=0.0)
 
 
-def test_serial_independent_is_the_default_and_reads_no_coefficient(fit) -> None:
+def test_serial_independent_reads_no_coefficient(fit) -> None:
     again = fit_lift(_world(0), START, serial="independent")
     assert again.ar_coefficient == 0.0
     np.testing.assert_array_equal(again.estimate, fit.estimate)
@@ -510,10 +511,15 @@ def test_an_independent_fit_warns_where_its_residuals_persist(caplog) -> None:
     assert 'serial="ar1"' in record.getMessage()
 
 
-def test_fit_lift_warns_that_0_20_0_reads_the_noise_as_an_ar1() -> None:
-    tests = _world(0)
-    with pytest.warns(FutureWarning, match="until 0.20.0"):
-        default = fit_lift(tests, START)
-    explicit = fit_lift(tests, START, serial="independent")
-    np.testing.assert_array_equal(default.estimate, explicit.estimate)
-    np.testing.assert_array_equal(default.lower, explicit.lower)
+def test_fit_lift_reads_the_noise_as_an_ar1_by_default(persistent) -> None:
+    """Unset, ``serial`` is ``"ar1"``, without a warning: the fit estimates the coefficient and
+    spends its degree of freedom, and runs no test of independence."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        default = fit_lift(_world(0, persistence=0.8), START)
+    assert default.ar_coefficient == persistent.ar_coefficient
+    assert default.dof == persistent.dof
+    assert default.serial_p_value is None
+    np.testing.assert_array_equal(default.estimate, persistent.estimate)
+    np.testing.assert_array_equal(default.lower, persistent.lower)
+    np.testing.assert_array_equal(default.upper, persistent.upper)

@@ -32,12 +32,12 @@ bound ``Gamma`` from below with a trial in the same way).
 
 HONEST SCOPE:
 
-* The noise is one scale, independent across tests, and by default across periods. A geo gap's
-  noise persists from week to week, and read as independent it makes the intervals too narrow and
-  the check reject too often: at an AR(1) coefficient of 0.8 the check rejected the true channel in
-  30% of 200 worlds at 5%. ``serial="ar1"`` reads each test's noise as an AR(1) instead, and
-  rejected 4.5% there. A gap read through a synthetic control or a regression carries an error
-  common to its periods, which neither models.
+* The noise is one scale, independent across tests, and by default an AR(1) over each test's
+  periods (``serial="ar1"``). A geo gap's noise persists from week to week, and read as
+  independent (``serial="independent"``) it makes the intervals too narrow and the check reject
+  too often: at an AR(1) coefficient of 0.8 the check rejected the true channel in 30% of 200
+  worlds at 5%, where the AR(1) reading rejected 4.5%. A gap read through a synthetic control or a
+  regression carries an error common to its periods, which neither models.
 * The groups spend alike on every other channel and answer alike, so a group's spend and outcome
   divided by its share of the market are the market's (Heusch's scaling).
 * The check's ``F`` is the region the intervals are profiles of: exact for a model linear in its
@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import logging
 import math
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
@@ -482,7 +481,7 @@ def fit_lift(
     channel: Channel,
     *,
     level: float = 0.95,
-    serial: Literal["independent", "ar1"] | None = None,
+    serial: Literal["independent", "ar1"] = "ar1",
 ) -> LiftFit:
     """Fit ``channel`` to the tests' gaps by least squares, each parameter with a profile-likelihood
     interval. *Experimental.*
@@ -496,39 +495,36 @@ def fit_lift(
     and Pereyra 1973), and the template's own is ignored. The periods of every test are stacked,
     with one noise variance, estimated.
 
-    ``serial`` is how a test's noise runs over its periods. ``"independent"``, the default, reads
-    each period's alone. A geo gap's noise persists from week to week, and read as independent it
-    makes every interval too narrow: on go-dark tests whose noise was an AR(1) of coefficient 0.8,
-    the coefficient's 95% interval held the truth in 88.5% of 200 worlds, and
-    :func:`check_observational` rejected the true channel in 30% at 5%. ``"ar1"`` reads each test's
-    noise as ``nu_t = rho nu_{t-1} + e_t``, ``e`` i.i.d. and one ``rho`` for every test, and fits
-    the gaps through the Prais-Winsten transform, which at the true ``rho`` is the independent
-    problem above (generalised least squares; Prais and Winsten 1954). ``rho`` is the least-squares
-    AR(1) coefficient of the residuals, each test's periods on their previous one, read again after
-    each refit until it settles (iterated Cochrane-Orcutt); it costs a degree of freedom, and the
-    intervals and the check take it as known. On those worlds it read 0.78 at 0.8 (sd 0.08), the
-    interval held the truth in 95.5% and the check rejected 4.5%; at 0.5, 98.5% and 5.0%; on
-    independent noise, 96.5% and 6.0%. The estimate reads low, as a residual's lag-1 correlation
-    does: the fit has spent degrees of freedom on the residuals, and a test's run is short. Over
-    another 200 such worlds it read -0.046, 0.286, 0.475 and 0.777 at 0, 0.3, 0.5 and 0.8 (Monte
-    Carlo SE 0.006 to 0.010), and the coefficient's interval held the truth in 95.0 to 98.0%. It
-    is not corrected: Kendall's ``(1 + 3 rho) / T`` for a series' own mean would add 0.21 at 0.8
-    where it reads 0.023 low, and the intervals above already carry the bias. Each test needs a
-    run of periods for this to read anything: those tests had 16. :attr:`LiftFit.ar_coefficient`
-    is the estimate and :attr:`LiftFit.noise_sd` the innovations'.
+    ``serial`` is how a test's noise runs over its periods. ``"ar1"``, the default, reads each
+    test's noise as ``nu_t = rho nu_{t-1} + e_t``, ``e`` i.i.d. and one ``rho`` for every test, and
+    fits the gaps through the Prais-Winsten transform, which at the true ``rho`` is the independent
+    problem above (generalised least squares; Prais and Winsten 1954). A geo gap's noise persists
+    from week to week, and read as independent it makes every interval too narrow: on go-dark tests
+    whose noise was an AR(1) of coefficient 0.8, the coefficient's 95% interval held the truth in
+    88.5% of 200 worlds, and :func:`check_observational` rejected the true channel in 30% at 5%.
+    ``rho`` is the least-squares AR(1) coefficient of the residuals, each test's periods on their
+    previous one, read again after each refit until it settles (iterated Cochrane-Orcutt); it costs
+    a degree of freedom, and the intervals and the check take it as known. On those worlds it read
+    0.78 at 0.8 (sd 0.08), the interval held the truth in 95.5% and the check rejected 4.5%; at
+    0.5, 98.5% and 5.0%; on independent noise, 96.5% and 6.0%. The estimate reads low, as a
+    residual's lag-1 correlation does: the fit has spent degrees of freedom on the residuals, and a
+    test's run is short. Over another 200 such worlds it read -0.046, 0.286, 0.475 and 0.777 at 0,
+    0.3, 0.5 and 0.8 (Monte Carlo SE 0.006 to 0.010); the check rejected the true channel on 7.0,
+    5.0, 7.0 and 3.5% and the coefficient's interval held the truth in 95.0, 96.5, 98.0 and 97.0%
+    (Monte Carlo SE 1.5%). It is not corrected: Kendall's ``(1 + 3 rho) / T`` for a series' own
+    mean would add 0.21 at 0.8 where it reads 0.023 low, and the intervals above already carry the
+    bias. So the reading holds where the noise does not persist, at a degree of freedom. Each test
+    needs a run of periods for this to read anything: those tests had 16.
+    :attr:`LiftFit.ar_coefficient` is the estimate and :attr:`LiftFit.noise_sd` the innovations'.
 
-    With ``"independent"`` the fit tests the premise it reads: the residuals' lag-1 correlation
-    within each test, by Breusch and Godfrey's regression of the residuals on the fit's Jacobian
-    and their own value a period earlier (Breusch 1978; Godfrey 1978), its ``t`` two-sided against
-    ``t(n - p - 1)``. :attr:`LiftFit.serial_p_value` holds the p-value, and below 0.05 the fit
-    logs a WARNING that names ``serial="ar1"``. On 200 worlds of four go-dark tests of 16 periods it
-    rejected 5.5 % of independent noise, and 51 %, 93.5 % and 100 % of AR(1) noise at 0.3, 0.5 and
-    0.8, where the independent reading's check rejected the true channel on 11 %, 17 % and 30 %.
-
-    ``serial`` left at None reads ``"independent"`` and warns (``FutureWarning``) that 0.20.0
-    reads ``"ar1"``: on those worlds' independent noise, ``"ar1"``'s check rejected the true
-    channel on 6.0 % and the coefficient's interval covered 96.5 %, so it holds where the noise
-    does not persist, at a degree of freedom. Pass ``serial`` to keep either reading quietly.
+    ``"independent"`` reads each period's noise alone, and the fit tests the premise it reads: the
+    residuals' lag-1 correlation within each test, by Breusch and Godfrey's regression of the
+    residuals on the fit's Jacobian and their own value a period earlier (Breusch 1978; Godfrey
+    1978), its ``t`` two-sided against ``t(n - p - 1)``. :attr:`LiftFit.serial_p_value` holds the
+    p-value, and below 0.05 the fit logs a WARNING that names ``serial="ar1"``. On 200 worlds of
+    four go-dark tests of 16 periods it rejected 5.5 % of independent noise, and 51 %, 93.5 % and
+    100 % of AR(1) noise at 0.3, 0.5 and 0.8, where the independent reading's check rejected the
+    true channel on 11 %, 17 % and 30 %.
 
     Each interval holds the values whose profile, the least cost with that value held, lies within
     ``s^2 F_{1, n - p}(level)`` of the least cost, ``s^2`` the noise variance over ``n - p`` degrees
@@ -564,14 +560,6 @@ def fit_lift(
         raise ValueError("fit_lift needs at least one test")
     if not 0.0 < level < 1.0:
         raise ValueError(f"level must lie in (0, 1), got {level}")
-    if serial is None:
-        warnings.warn(
-            "fit_lift reads each test's noise as independent until 0.20.0, which reads it as an "
-            'AR(1) (serial="ar1"); pass serial="independent" to keep this reading, or "ar1" now',
-            FutureWarning,
-            stacklevel=2,
-        )
-        serial = "independent"
     if serial not in ("independent", "ar1"):
         raise ValueError(f"serial must be 'independent' or 'ar1', got {serial!r}")
     reach = channel.kernel.length - 1

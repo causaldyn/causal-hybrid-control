@@ -82,13 +82,14 @@ def _read(serial: str) -> tuple[float, float]:
 
 
 def test_an_ar1_reading_keeps_the_level_where_the_noise_persists() -> None:
-    """``serial="ar1"``: the check rejects on none of the 40, and the interval covers on all."""
+    """``serial="ar1"``, the default: the check rejects on none of the 40, and the interval covers
+    on all."""
     rejected, covered = _read("ar1")
     assert rejected <= 0.05 + SLACK
     assert covered >= 0.95 - SLACK
 
 
-def test_the_default_keeps_the_level_where_the_noise_persists_or_says_so() -> None:
+def test_an_independent_reading_keeps_the_level_where_the_noise_persists_or_says_so() -> None:
     """``serial="independent"``: at AR(0.8) the check rejects the true channel on 14 of 40 worlds
     where it states 5 %, and the coefficient's interval covers on 31; the fit's serial check
     rejects independence on all 40, and says so."""

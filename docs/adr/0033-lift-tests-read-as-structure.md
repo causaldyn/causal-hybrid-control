@@ -1,6 +1,7 @@
 # ADR 0033 — Lift tests read as structure
 
-**Status:** proposed, 2026-09-30.
+**Status:** proposed, 2026-09-30. Amended by ADR 0126, 2026-10-21: each test's noise is read as
+an AR(1) over its periods by default.
 
 ## Context
 
