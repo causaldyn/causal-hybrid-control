@@ -15,14 +15,12 @@ shared-state DML, arXiv 2504.08836). Three failure modes, each a real baseline:
   offline-pessimism margin (a Wasserstein/DRO-style shrink by the estimate's influence-function SE),
   so cannibalisation is built in and extrapolation is not trusted.
 
-What the comparison measures: :func:`pessimistic_equilibrium_allocation` is handed the simulator's
-own base demand, attractiveness and equilibrium map, which no estimate from the logs supplies, and
-the logs reach it only through the pessimism tilt, at most ``radius`` standard errors per zone. Its
-gap to the oracle is therefore the value of knowing the equilibrium, not of de-confounding: on the
-default market the plan from a response of zero lands as close to the oracle as the plan from the
-de-confounded one. The SUTVA baselines get no such structure. :func:`fit_equilibrium` estimates
-the equilibrium from the logs instead, and the planner takes it as ``equilibrium=`` (ADR 0114).
-Through it the plan's value is the fitted equilibrium's too: on five markets the de-confounded
+What the comparison measures: :func:`pessimistic_equilibrium_allocation` plans through the
+equilibrium :func:`fit_equilibrium` estimates from the logs, passed as ``equilibrium=`` (ADR 0114),
+never through the simulator's own base demand, attractiveness and equilibrium map, which no log
+supplies: through those, a response of zero planned as close to the oracle as the de-confounded
+one, so the comparison measured knowing the equilibrium. The SUTVA baselines get no such
+structure. The plan's value is the fitted equilibrium's: on five markets the de-confounded
 response's tilt moved the share of the best plan's lift by -0.006 +- 0.013 on 400 blocks against
 a response of zero, and by -0.114 +- 0.028 on 50. Only where the market lies outside the fitted
 class, its attractiveness fixed while the demand moves, did the tilt carry value: 0.77 of the
@@ -461,14 +459,13 @@ def pessimistic_equilibrium_allocation(
     de-confounded response gates the plan through a W-DRO pessimism tilt (``radius * SE``): where
     the offline estimate is weak or unsupported, the incentive is discounted rather than trusted.
 
-    ``equilibrium`` is the one planned through: :func:`fit_equilibrium`'s, estimated from the logs.
-    Without it the plan goes through ``market``'s own, its base demand, its attractiveness and its
-    solver, the simulator's truth that no log supplies, with a ``FutureWarning``: a future release
-    will require ``equilibrium``. ``market`` gives the budget and the zones either way.
-    ``response`` enters only through the tilt, so through the simulator's equilibrium the plan is
-    close to the oracle whatever the response says.
+    ``equilibrium`` is the one planned through, and is required: :func:`fit_equilibrium`'s,
+    estimated from the logs. ``market`` gives only the budget and the zones; its own base demand,
+    attractiveness and solver are the simulator's truth, which no log supplies, and the planner does
+    not read them. ``response`` enters only through the tilt.
 
     Raises:
+        TypeError: when ``equilibrium`` is not given.
         ValueError: on a response or an equilibrium whose zones are not ``market``'s, or an
             equilibrium whose drivers do not tell an incentive from none
             (:attr:`FittedEquilibrium.incentive_z`): every plan through it reads the same.
@@ -479,39 +476,30 @@ def pessimistic_equilibrium_allocation(
                 f"response.{name} has shape {jnp.shape(part)}; the market has {market.n_zones}"
                 " zones"
             )
-    if equilibrium is not None:
-        if equilibrium.demand.shape != (market.n_zones,):
-            raise ValueError(
-                f"the equilibrium has {equilibrium.demand.shape[0]} zones and the market"
-                f" {market.n_zones}"
-            )
-        if not equilibrium.incentive_z >= _INCENTIVE_Z:
-            raise ValueError(
-                f"the fitted equilibrium's drivers do not tell an incentive from none (z ="
-                f" {equilibrium.incentive_z:.2f}, under {_INCENTIVE_Z:.3f}): the logged"
-                " incentives explain no more of the completions than none, so no plan through it"
-                " is better than another"
-            )
+    if equilibrium is None:
+        raise TypeError(
+            "pessimistic_equilibrium_allocation plans through an equilibrium estimated from the"
+            " logs: pass equilibrium=fit_equilibrium(logs). The market's own equilibrium is the"
+            " simulator's truth, which no log supplies"
+        )
+    if equilibrium.demand.shape != (market.n_zones,):
+        raise ValueError(
+            f"the equilibrium has {equilibrium.demand.shape[0]} zones and the market"
+            f" {market.n_zones}"
+        )
+    if not equilibrium.incentive_z >= _INCENTIVE_Z:
+        raise ValueError(
+            f"the fitted equilibrium's drivers do not tell an incentive from none (z ="
+            f" {equilibrium.incentive_z:.2f}, under {_INCENTIVE_Z:.3f}): the logged"
+            " incentives explain no more of the completions than none, so no plan through it"
+            " is better than another"
+        )
     # The worst response within radius SEs that is not negative, less the estimate projected onto
     # the same prior: -min(max(m, 0), radius * se), never a bonus (validation/marketplace_tilt.mac).
     # Read against the raw estimate, a negative one earned its zone a bonus of |m| per unit.
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)
     tilt = pess - jnp.maximum(response.marginal, 0.0)
-    if equilibrium is None:
-        warnings.warn(
-            "pessimistic_equilibrium_allocation plans through the simulator's own equilibrium, "
-            "which no log supplies; pass equilibrium=fit_equilibrium(logs) to plan on one "
-            "estimated from the logs. A future release will require it",
-            FutureWarning,
-            stacklevel=2,
-        )
-        demand, attract = market._base()
-
-        def completions(u: Array) -> Array:
-            return jnp.sum(jnp.minimum(demand, market._equilibrium(attract, u)))
-
-    else:
-        completions = equilibrium.completions
+    completions = equilibrium.completions
 
     def surrogate(u: Array) -> Array:
         return completions(u) + jnp.dot(tilt, u)

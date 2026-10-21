@@ -1,7 +1,7 @@
 """Offline causal decision under equilibrium interference: the logging policy is confounded and
 SUTVA fails, so the predictive (MOPO) and naive-causal planners capture little of the oracle's lift,
 while the CHC allocation, which plans through an equilibrium fitted from the logs, recovers most of
-it. Through the simulator's own equilibrium it recovers the oracle whatever response it is given.
+it.
 """
 
 import jax
@@ -71,21 +71,13 @@ def test_chc_recovers_the_oracle_where_baselines_do_not(env: dict) -> None:
     assert oracle - market.value(pred) > 0.8
 
 
-def test_the_chc_plan_owes_its_value_to_the_equilibrium_not_to_the_response(env: dict) -> None:
-    """Handed no equilibrium, the planner goes through the simulator's own and reads the logs only
-    through its pessimism tilt, so a response of zero, or the confounded one, plans as close to the
-    oracle as the de-confounded one: that comparison measures knowing the equilibrium, and a
-    ``FutureWarning`` says so."""
-    market, oracle = env["market"], env["oracle"]
-    zero = jnp.zeros(market.n_zones)
-    for response in (
-        ExposureResponse(marginal=zero, se=zero),
-        calibrate_predictive(env["logs"]),
-        calibrate_shared_state(env["logs"]),
-    ):
-        with pytest.warns(FutureWarning, match="simulator's own equilibrium"):
-            plan = pessimistic_equilibrium_allocation(market, response, radius=1.0)
-        assert oracle - market.value(plan) < 0.3
+def test_the_planner_refuses_to_plan_without_a_fitted_equilibrium(env: dict) -> None:
+    """Handed no equilibrium, the planner went through the simulator's own, which no log supplies,
+    and planned as close to the oracle from a response of zero as from the de-confounded one: the
+    comparison measured knowing the equilibrium. It now refuses, and names the fit."""
+    market = env["market"]
+    with pytest.raises(TypeError, match=r"equilibrium=fit_equilibrium\(logs\)"):
+        pessimistic_equilibrium_allocation(market, calibrate_shared_state(env["logs"]))
 
 
 def test_the_fitted_equilibrium_recovers_the_market_s_parameters(env: dict) -> None:

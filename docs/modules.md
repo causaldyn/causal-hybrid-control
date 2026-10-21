@@ -429,9 +429,8 @@ attractiveness stays put while the demand moves, the tilt carried value: 0.77 of
 0.41 with a response of zero, over 100 logs of 400 blocks, and the fit warns there (ADR 0123). A fit
 on logs whose incentives do not move the completions is refused. The SUTVA allocations, MOPO-style
 and naive causal, capture little of the lift, and on some markets less than no incentive at all.
-Handed no fitted equilibrium, the planner goes through the simulator's own, with a `FutureWarning`:
-it then lands near the oracle whatever response it is given, which measures knowing the equilibrium,
-not de-confounding.
+The planner requires the fitted equilibrium: through the simulator's own it landed near the oracle
+whatever response it was given, which measures knowing the equilibrium, not de-confounding.
 
 **The zones × time plant the marketplace loop runs on** (`zones`), control-affine by construction:
 idle supply, open requests and an incentive stock per zone; an incentive and a price per zone as

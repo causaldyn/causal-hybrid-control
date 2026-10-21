@@ -1,6 +1,8 @@
 # ADR 0114 — The marketplace plans on an equilibrium fitted from its logs
 
 **Status:** accepted, 2026-10-19. Amends what `pessimistic_equilibrium_allocation` plans through.
+Amended by ADR 0126, 2026-10-21: `equilibrium=` is required, and the simulator's own is not
+planned through.
 
 ## Context
 
