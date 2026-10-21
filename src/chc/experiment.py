@@ -586,8 +586,8 @@ def _regret_after(
     readings = worlds.b[:, observed] + worlds.shocks[:, observed] * noise
     means = prior.mean + (readings - prior.mean[observed]) @ gain.T
     after = np.empty(worlds.b.shape[0])
-    for i, (b, mean) in enumerate(zip(worlds.b, means, strict=True)):
-        after[i] = _cost(d, _solve(cautious, mean).action, b) - worlds.best[i]
+    for i in range(after.size):
+        after[i] = _cost(d, _solve(cautious, means[i]).action, worlds.b[i]) - worlds.best[i]
     return after
 
 
