@@ -3042,6 +3042,119 @@ def test_an_unrolled_graph_names_what_a_transition_cannot_read() -> None:
         )
 
 
+def test_a_declared_calendar_reads_known_physics_from_the_panel_s_first_period() -> None:
+    """The fit reads ``known`` at a transition's steps from the panel's first period times ``dt``.
+    Declared daily, those steps counted days since 1970, so a weekly season was read 20,458 days
+    late, four days of its week off, and the channel came back +3.48 where it is 1. Every reading of
+    the same days now gives the same fit."""
+    week = 2.0 * np.pi / 7.0
+    rng = np.random.default_rng(0)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "day", "x", "u", "z")}
+    for unit in range(30):
+        x = rng.normal()
+        for day in range(30):
+            z = rng.normal()
+            u = np.sin(week * day) + 0.5 * z + 0.5 * rng.normal()
+            for name, value in zip(rows, (unit, day, x, u, z), strict=True):
+                rows[name].append(value)
+            x = x + DT * (-0.5 * x + u + 2.0 * np.sin(week * day) + z) + 1e-3 * rng.normal()
+    logs = {name: np.asarray(values) for name, values in rows.items()}
+    dates = np.datetime64("2026-01-05") + logs["day"].astype("timedelta64[D]")
+
+    def known(t: jax.Array, state: jax.Array, action: jax.Array) -> jax.Array:
+        return 2.0 * jnp.sin(week * jnp.asarray(t) / DT) * jnp.ones_like(state)
+
+    def channel(day: np.ndarray, frequency: str | float | None) -> float:
+        panel = Panel.from_frame({**logs, "day": day}, unit="unit", time="day", frequency=frequency)
+        result = prescribe(
+            panel,
+            levers=[Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05)],
+            target=Target("x", value=1.0),
+            adjustment=["z"],
+            horizon=5,
+            dt=DT,
+            known=known,
+            integrator="euler",
+        )
+        return float(result.model_fit.residual.channel[0, 0, 0])
+
+    undeclared = channel(dates, None)
+    assert undeclared == pytest.approx(1.0, abs=0.01)
+    for day, frequency in ((dates, "D"), (dates, "observed"), (logs["day"] + 100.0, 1)):
+        assert channel(day, frequency) == pytest.approx(undeclared, rel=1e-12, abs=0.0), frequency
+
+
+@pytest.mark.parametrize("stamp", [3.3, 3.0000001])
+def test_a_period_off_every_grid_is_refused_rather_than_ranked(stamp: float) -> None:
+    """Fifty units logged at whole periods give 950 transitions. One more row at 3.3, or at
+    3.0000001 where a float jittered, put the periods on no grid, and ranked, it lay between 3 and
+    4 in the 49 units that did not log it: each lost that transition, 902 in all, and nothing said
+    so. Undeclared numbers on no grid are refused, naming the row; ``"observed"`` still ranks
+    them."""
+    rng = np.random.default_rng(0)
+    frame = {
+        "unit": np.append(np.repeat(np.arange(50), 20), 0),
+        "time": np.append(np.tile(np.arange(20.0), 50), stamp),
+        "x": rng.normal(size=1001),
+        "u": rng.normal(size=1001),
+    }
+    stray = Panel.from_frame(frame, unit="unit", time="time")
+    with pytest.raises(PanelError, match=rf"{stamp!r} \(row 1000, unit 0\) is no whole number"):
+        _transitions(stray, states=("x",), levers=("u",), adjust_for=())
+    observed = Panel.from_frame(frame, unit="unit", time="time", frequency="observed")
+    data, _ = _transitions(observed, states=("x",), levers=("u",), adjust_for=())
+    assert data["x"].shape == (902, 1)
+
+
+@pytest.mark.parametrize("day", ["2026-03-29", "2026-10-25"])
+def test_hourly_stamps_across_a_summer_time_change_are_read_on_their_instants(day: str) -> None:
+    """Six hours in a row stamped in Berlin, where the clock goes forward an hour in March and back
+    an hour in October. On the wall clock, autumn's 02:00 came twice and was refused as a duplicate,
+    and spring's skipped hour parted the log, which gave four transitions; on their instants both
+    give five."""
+    from zoneinfo import ZoneInfo
+
+    berlin = ZoneInfo("Europe/Berlin")
+    start = datetime.datetime.fromisoformat(day).replace(tzinfo=datetime.UTC)
+    column = np.empty(6, dtype=object)
+    column[:] = [(start + datetime.timedelta(hours=k)).astimezone(berlin) for k in range(6)]
+    frame = {"home": np.zeros(6, dtype=int), "hour": column, "x": np.arange(6.0), "u": np.ones(6)}
+    panel = Panel.from_frame(frame, unit="home", time="hour")
+    data, _ = _transitions(panel, states=("x",), levers=("u",), adjust_for=())
+    assert np.asarray(data["x_next"] - data["x"])[:, 0].tolist() == [1.0] * 5
+
+
+def test_most_units_with_no_transition_on_the_declared_step_are_named(caplog) -> None:
+    """Forty of fifty units logged every second period on a declared step of one have no two
+    periods in a row, and were dropped from the fit without a word."""
+    rng = np.random.default_rng(0)
+    unit, time = np.repeat(np.arange(50), 20), np.tile(np.arange(20.0), 50)
+    kept = (unit >= 40) | (time % 2 == 0)
+    frame = {
+        "unit": unit[kept],
+        "time": time[kept],
+        "x": rng.normal(size=int(kept.sum())),
+        "u": rng.normal(size=int(kept.sum())),
+    }
+    panel = Panel.from_frame(frame, unit="unit", time="time", frequency=1)
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        data, _ = _transitions(panel, states=("x",), levers=("u",), adjust_for=())
+    assert data["x"].shape == (190, 1)
+    (record,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "transitions"]
+    assert record.getMessage().startswith("40 of 50 units, 0 among them")
+    caplog.clear()
+    full = {**frame, "unit": unit, "time": time, "x": np.zeros(unit.size), "u": np.zeros(unit.size)}
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        data, _ = _transitions(
+            Panel.from_frame(full, unit="unit", time="time", frequency=1),
+            states=("x",),
+            levers=("u",),
+            adjust_for=(),
+        )
+    assert data["x"].shape == (950, 1)
+    assert not [r for r in caplog.records if getattr(r, "chc_event", None) == "transitions"]
+
+
 @pytest.mark.parametrize("integrator", ["rk4", "euler"])
 def test_prescribe_plans_by_the_step_it_fits(integrator: str) -> None:
     """The plan is the fitted field's rollout by the map it was fitted to: RK4's under ``"rk4"``,

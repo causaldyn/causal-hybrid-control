@@ -3226,28 +3226,40 @@ def _period_steps(panel: Panel) -> NDArray[np.int64]:
     """Each row's period as a step on the panel's time grid: two periods are one step apart only
     where no period lies between them.
 
+    The steps count from the panel's first period, which is step 0, whatever the grid: the fit
+    reads ``known`` physics at a transition's steps times ``dt``, and a calendar's count from 1970
+    would read it on that clock.
+
     The grid is the panel's declared ``frequency``, a calendar's or a step's, where it has one, so
     a period no unit logged still parts the two on either side of it; ``"observed"`` ranks the
     periods as :meth:`chc.panel.Panel.codes` ranks them. Undeclared, periods that are numbers or
-    dates sit on the grid of their smallest spacing where every period falls on it. Periods off
-    such a grid, calendar months stamped as dates among them, and text are ranked: the periods
-    logged are the grid, and a period no unit logged is not seen. A number read as a grid point and
-    not as a position, such as 202412 for a month, puts each year's turn 89 steps from the month
-    before it, so no transition crosses it.
+    dates sit on the grid of their smallest spacing where every period falls on it. Text is ranked:
+    the periods logged are the grid, and a period no unit logged is not seen. A number read as a
+    grid point and not as a position, such as 202412 for a month, puts each year's turn 89 steps
+    from the month before it, so no transition crosses it.
+
+    Undeclared numbers on no such grid are refused, not ranked: ranked, one row at 3.3, or at
+    3.0000001, in one unit's log of whole periods lies between 3 and 4 in every other unit's, and
+    each of them loses that transition: 49 of 950 in a panel of 50 units.
 
     An inferred grid is refused where most of the periods a unit logs in a row are more than one of
     its steps apart: the least spacing was then set by a period off the log's own step, one stray
     row at 3.5 in a log of whole periods, and on its grid every other transition parts as a gap.
 
     Raises:
-        PanelError: for such a grid, naming the two periods that set its step and a row of each.
+        PanelError: for numbers on no grid, naming the row furthest off the grid of their most
+            common spacing; for such a grid, naming the two periods that set its step and a row of
+            each.
     """
     column = np.asarray(panel[panel.time])
     frequency = panel.provenance.frequency
     if frequency is not None and frequency != "observed":
-        return _ordinals(column, frequency)
+        steps = _ordinals(column, frequency)
+        return steps - steps.min() if steps.size else steps
     steps = None if frequency == "observed" else _grid_steps(column)
     if steps is None:
+        if frequency is None and column.dtype.kind in "iuf":
+            raise _off_grid(panel, column)
         return panel.codes()[1]
     units, _ = panel.codes()
     order = np.lexsort((steps, units))
@@ -3270,6 +3282,25 @@ def _period_steps(panel: Panel) -> NDArray[np.int64]:
     return steps
 
 
+def _off_grid(panel: Panel, column: NDArray[Any]) -> PanelError:
+    """The refusal of numbered periods on no uniform grid, naming the row furthest off the grid of
+    their most common spacing."""
+    distinct = np.unique(column)
+    spacings, counts = np.unique(np.diff(distinct), return_counts=True)
+    spacing = float(spacings[np.argmax(counts)])
+    ratio = (column - distinct[0]) / spacing
+    row = int(np.argmax(np.abs(ratio - np.rint(ratio))))
+    return PanelError(
+        f"time column {panel.time!r} holds numbers on no uniform grid: {column.tolist()[row]!r} "
+        f"(row {row}, unit {panel[panel.unit].tolist()[row]!r}) is no whole number of their most "
+        f"common spacing, {spacing:g}, from the first period, {distinct[0].item()!r}. Read in "
+        "their sorted order, a period some units log would part the two on either side of it in "
+        "every unit that does not log it, and lose that transition; declare the periods' step "
+        "with frequency=, which names each row off it, or frequency='observed' to read them in "
+        "their sorted order"
+    )
+
+
 def _transitions(
     panel: Panel,
     *,
@@ -3288,7 +3319,8 @@ def _transitions(
     either side of the hole and nothing across it, and so does a period no unit logged, where the
     periods are numbers (:func:`_period_steps`). That is why an unbalanced panel is allowed here
     while :meth:`chc.panel.Panel.wide` refuses one --- a transition needs two adjacent rows, not a
-    rectangle.
+    rectangle. Where most units give no transition, as where they log every second period on a
+    declared step of one, a warning names how many: the fit then reads the few that do.
     """
     unit_codes, _ = panel.codes()
     time_codes = _period_steps(panel)
@@ -3303,6 +3335,16 @@ def _transitions(
     if current.size == 0:
         raise DecisionError(
             "no unit has two consecutive periods, so there is not a single transition to fit on"
+        )
+    logged = np.unique(unit_codes)
+    idle = np.setdiff1d(logged, unit_codes[current])
+    if 2 * idle.size > logged.size:
+        _log.warning(
+            f"{idle.size} of {logged.size} units, {panel.units[int(idle[0])]!r} among them, log no "
+            "two periods one step apart on the panel's grid, so none of their rows enters the fit: "
+            "a unit that logs every second period on a grid of one has no transition; declare the "
+            "step the units log on",
+            extra={"chc_event": "transitions", "units": int(logged.size), "idle": int(idle.size)},
         )
     following = np.array(
         [row_of[(int(unit_codes[row]), int(time_codes[row]) + 1)] for row in current],

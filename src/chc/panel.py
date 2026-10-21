@@ -238,11 +238,16 @@ class Panel:
                 order, as consecutive where no period lies between them: text by its characters,
                 so ``"10"`` comes before ``"2"`` and ``"Apr"`` before ``"Jan"``. Undeclared,
                 numbers and dates on a uniform grid are read on it, other numbers in their sorted
-                order, and dates off a grid, calendar months among them, are refused; text is read
-                in its sorted order with a ``FutureWarning``, and a future release will refuse it.
+                order, which :func:`chc.decision.prescribe` refuses, as a period some units log
+                would part the others' transitions, and dates off a grid, calendar months among
+                them, are refused; text is read in its sorted order with a ``FutureWarning``, and
+                a future release will refuse it.
                 Dates held as objects, ``datetime`` or ``date`` values, are read as dates on their
                 own wall clock, a time-zone-aware stamp in its zone: a month's first midnight in
-                Berlin is that month, though in UTC it falls in the month before.
+                Berlin is that month, though in UTC it falls in the month before. Undeclared or
+                ``"observed"``, aware stamps at more than one time of day, an hourly log, are held
+                as the same instants in UTC: a wall clock with summer time logs one hour twice each
+                autumn and skips one each spring.
             cluster: an optional column naming the group cluster-robust inference should use ---
                 declared here rather than at the call site, because it is a property of the sampling
                 design and not of the estimator.
@@ -337,6 +342,8 @@ class Panel:
                     f"{times[row]!r} ({bad.size} of {n_rows} rows are not finite)"
                 )
 
+        if frequency is None or frequency == "observed":
+            times = columns[time] = _sub_daily_in_utc(times)
         seen: dict[tuple[Any, Any], int] = {}
         for row, key in enumerate(zip(units.tolist(), times.tolist(), strict=True)):
             if key in seen:
@@ -600,6 +607,26 @@ def _dates(column: NDArray[Any]) -> NDArray[Any]:
     if isinstance(column[0], datetime.datetime):
         return np.array([value.replace(tzinfo=None) for value in column.tolist()], "datetime64[us]")
     return np.array(column.tolist(), dtype="datetime64[D]")
+
+
+def _sub_daily_in_utc(column: NDArray[Any]) -> NDArray[Any]:
+    """Time-zone-aware stamps at more than one time of day as the same instants in UTC; any other
+    column as it is.
+
+    A wall clock that keeps summer time logs one hour twice each autumn, as two stamps that compare
+    equal in their zone, and skips one each spring, so an hourly log read on it has a duplicate
+    and a gap that its instants do not. Stamps at one time of day are a log of days, which stay on
+    the wall clock they were stamped on."""
+    if column.dtype != object or not column.size:
+        return column
+    stamps = column.tolist()
+    if not isinstance(stamps[0], datetime.datetime) or any(
+        stamp.utcoffset() is None for stamp in stamps
+    ):
+        return column
+    if len({(stamp.hour, stamp.minute, stamp.second, stamp.microsecond) for stamp in stamps}) < 2:
+        return column
+    return np.array([stamp.astimezone(datetime.UTC) for stamp in stamps], dtype=object)
 
 
 def _grid_steps(column: NDArray[Any]) -> NDArray[np.int64] | None:
