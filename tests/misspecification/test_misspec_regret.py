@@ -69,3 +69,24 @@ def test_the_certified_bound_covers_a_plan_made_on_a_wrong_model(omega: float) -
     assert bound.status == "certified"
     assert gap >= -1e-9
     assert bound.bound >= gap, (bound.bound, gap)
+
+
+@pytest.mark.parametrize("omega", [0.6, 1.0, 1.6])
+def test_the_bound_read_under_the_rows_is_still_valid_and_no_looser(omega: float) -> None:
+    """The same plans priced against the box and the budget row they were solved under. The bound
+    still covers the gap (1.83, 4e-13 and 6.45 for 0.195, 0 and 0.617) and is never above the
+    box's alone but by rounding: at 1.6 the row does not bind, and the two differ in the last bit.
+    Where the model is the plant it is the optimum's zero, not the row's 0.088."""
+    free = causal_plan(PLANT, START, COST, DT, HORIZON, -BOX, BOX)
+    spend = float(np.sum(np.asarray(free.actions)))
+    budget = LinearConstraint(np.sign(spend) * np.ones((1, HORIZON)), -np.inf, 0.5 * abs(spend))
+    model = DampedOscillator(omega=omega, zeta=0.1)
+    plan = causal_plan(model, START, COST, DT, HORIZON, -BOX, BOX, constraints=(budget,))
+    box = plan_regret_bound(plan, PLANT, START, COST, DT, -BOX, BOX)
+    rows = plan_regret_bound(plan, PLANT, START, COST, DT, -BOX, BOX, constraints=(budget,))
+    gap = float(total_cost(PLANT, START, plan.actions, DT, COST)) - _best(budget)
+    assert rows.status == "certified"
+    assert rows.bound >= gap, (rows.bound, gap)
+    assert rows.bound <= box.bound + 4.0 * np.spacing(box.bound), (rows.bound, box.bound)
+    if omega == 1.0:
+        assert rows.bound <= 1e-9 < box.bound, (rows.bound, box.bound)
