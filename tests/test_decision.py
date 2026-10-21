@@ -1888,7 +1888,8 @@ def test_the_run_records_what_the_fit_and_the_solve_were_given(calls, x64: bool)
 CHANGES = {
     "folds": ({"folds": 3}, {}, {"folds": 3}),
     "a numpy seed": ({"seed": np.int64(1)}, {}, {"seed": 1}),
-    "integrator": ({"integrator": "euler"}, {}, {"integrator": "euler"}),
+    # an Euler fit gives an absolute radius, which the default reads: the record says it read it
+    "integrator": ({"integrator": "euler"}, {}, {"integrator": "euler", "radius": "absolute"}),
     "no tube": ({"tolerance": None}, {}, {"tolerance": None}),
     "held constraints": ({"hold_constraints": True}, {}, {"hold_constraints": True}),
     "max_levers": ({"max_levers": 1}, {}, {"max_levers": 1}),
@@ -2005,6 +2006,7 @@ def test_the_run_goes_to_json_as_plain_values(default_run: RunProvenance) -> Non
         "max_levers": None,
         "clusters": None,
         "nuisance_knots": None,
+        "radius": "relative",  # an rk4 fit gives no absolute radius
     }
 
 
@@ -2418,6 +2420,7 @@ def test_every_decision_point_leaves_a_structured_record(caplog: pytest.LogCaptu
         "adjustment",
         "logger_check",
         "fit",
+        "radius",  # an rk4 fit gives no absolute radius, and the barrier reads the relative one
         "plan",
         "estimability",
         "certificate",
