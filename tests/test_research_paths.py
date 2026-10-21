@@ -18,7 +18,6 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
@@ -49,12 +48,8 @@ def _defined(module: str) -> set[str]:
 
 
 def _served_names(new: str) -> list[str]:
-    module = importlib.import_module(new)
-    return sorted(
-        name
-        for name, value in vars(module).items()
-        if not name.startswith("_") and not isinstance(value, ModuleType)
-    )
+    """A moved module's public names: its ``__all__``, or the names its own top level defines."""
+    return sorted(getattr(importlib.import_module(new), "__all__", None) or _defined(new))
 
 
 def test_the_research_package_holds_the_modules_that_moved_whole_and_the_three_halves() -> None:
@@ -132,6 +127,12 @@ def test_type_checkers_see_a_whole_module_at_its_old_path(old: str) -> None:
 def test_an_old_path_serves_no_private_and_no_unknown_name() -> None:
     with pytest.raises(AttributeError, match=r"module 'chc\.mmm' has no attribute 'no_such_name'"):
         _ = chc.mmm.no_such_name
+    # what the new module imports is not a name that moved: it served `chc.mmm.np`, warning
+    for imported in ("np", "jax", "dataclass", "annotations", "LinearDynamics"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(AttributeError, match=f"has no attribute '{imported}'"):
+                getattr(chc.mmm, imported)
     with pytest.raises(AttributeError, match="has no attribute '_DEFAULT_ERRORS'"):
         _ = chc.regret._DEFAULT_ERRORS
     with pytest.raises(ImportError):

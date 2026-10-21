@@ -508,9 +508,14 @@ def fit_lift(
     each refit until it settles (iterated Cochrane-Orcutt); it costs a degree of freedom, and the
     intervals and the check take it as known. On those worlds it read 0.78 at 0.8 (sd 0.08), the
     interval held the truth in 95.5% and the check rejected 4.5%; at 0.5, 98.5% and 5.0%; on
-    independent noise, 96.5% and 6.0%. Each test needs a run of periods for this to read anything:
-    those tests had 16. :attr:`LiftFit.ar_coefficient` is the estimate and :attr:`LiftFit.noise_sd`
-    the innovations'.
+    independent noise, 96.5% and 6.0%. The estimate reads low, as a residual's lag-1 correlation
+    does: the fit has spent degrees of freedom on the residuals, and a test's run is short. Over
+    another 200 such worlds it read -0.046, 0.286, 0.475 and 0.777 at 0, 0.3, 0.5 and 0.8 (Monte
+    Carlo SE 0.006 to 0.010), and the coefficient's interval held the truth in 95.0 to 98.0%. It
+    is not corrected: Kendall's ``(1 + 3 rho) / T`` for a series' own mean would add 0.21 at 0.8
+    where it reads 0.023 low, and the intervals above already carry the bias. Each test needs a
+    run of periods for this to read anything: those tests had 16. :attr:`LiftFit.ar_coefficient`
+    is the estimate and :attr:`LiftFit.noise_sd` the innovations'.
 
     With ``"independent"`` the fit tests the premise it reads: the residuals' lag-1 correlation
     within each test, by Breusch and Godfrey's regression of the residuals on the fit's Jacobian

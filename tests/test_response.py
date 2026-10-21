@@ -1077,6 +1077,44 @@ def test_a_tail_left_unset_warns_only_where_the_cut_moves_the_number() -> None:
         )
 
 
+def test_a_tail_left_unset_is_silent_where_the_kernel_carries_nothing_past_the_end() -> None:
+    """A kernel of length 30 that keeps nothing past its first period: the window spends in its
+    last 29 periods, but the tail adds nothing to the number, so the default changes nothing."""
+    channel = Channel(
+        GeometricAdstock(0.0, length=30, normalized=False), MichaelisMenten(100.0), 1.0
+    )
+    level = jnp.full(52, 50.0)
+    for reading in (roi, marginal_roi):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            cut = reading(channel, level, slice(51, 52))
+        assert reading(channel, level, slice(51, 52), tail=True) == pytest.approx(
+            cut, rel=1e-12, abs=0.0
+        )
+
+
+def test_a_tail_warning_quotes_both_readings() -> None:
+    channel = Channel(
+        GeometricAdstock(0.9, length=30, normalized=False), MichaelisMenten(100.0), 1.0
+    )
+    level = jnp.full(52, 50.0)
+    whole = roi(channel, level, slice(51, 52), tail=True)
+    cut = roi(channel, level, slice(51, 52), tail=False)
+    with pytest.warns(FutureWarning) as caught:
+        roi(channel, level, slice(51, 52))
+    assert f"reads {cut:.6g}, and {whole:.6g} with the kernel's whole tail" in str(
+        caught[0].message
+    )
+
+
+def test_a_numpy_bool_is_a_tail_as_a_bool_is() -> None:
+    channel = Channel(GeometricAdstock(0.6, length=8, normalized=False), Power(1.0, 1.0), 2.0)
+    for flag in (True, False):
+        assert roi(channel, SPEND, slice(59, 60), tail=np.bool_(flag)) == roi(
+            channel, SPEND, slice(59, 60), tail=flag
+        )
+
+
 def test_a_tail_is_refused_where_it_is_not_a_count_of_periods() -> None:
     channel = Channel(GeometricAdstock(0.5, length=6, normalized=True), Tanh(100.0), 1.5)
     with pytest.raises(TypeError, match="not a Channel"):
@@ -1186,6 +1224,31 @@ def test_a_return_is_refused_on_spend_that_is_not_a_spend(spend: jax.Array, mess
     for reading in (roi, marginal_roi, contribution):
         with pytest.raises(ValueError, match=message):
             reading(channel, spend, slice(10, 15))
+
+
+@pytest.mark.parametrize(
+    ("spend", "message"),
+    [
+        # Hill read 0.1 off [1, -1, 2] and Michaelis-Menten -0.0002: a return below zero spend
+        (jnp.array([1.0, -1.0, 2.0]), r"^spend is -1\.0 in period 1; spend is nonnegative"),
+        (jnp.array([1.0, jnp.nan]), r"^spend is nan in period 1; a period's spend is a finite"),
+    ],
+)
+def test_a_channel_and_its_kernel_refuse_spend_that_is_not_a_spend(
+    spend: jax.Array, message: str
+) -> None:
+    for curve in (Hill(10.0, 2.0), MichaelisMenten(500.0)):
+        channel = Channel(GeometricAdstock(0.5, length=3, normalized=False), curve, 1.0)
+        with pytest.raises(ValueError, match=message):
+            channel(spend)
+    with pytest.raises(ValueError, match=message):
+        GeometricAdstock(0.5, length=3, normalized=False)(spend)
+    columns = jnp.stack([jnp.ones(3), jnp.array([1.0, -1.0, 2.0])], 1)
+    with pytest.raises(ValueError, match=r"^spend is -1\.0 in period 1 of column 1"):
+        GeometricAdstock(0.5, length=3, normalized=False)(columns)
+    # a traced series is a plan's own variable, and is not read
+    kernel = GeometricAdstock(0.5, length=3, normalized=False)
+    assert jax.jit(lambda s: kernel(s))(jnp.array([-2.0, 0.0, 0.0])).tolist() == [-2.0, -1.0, -0.5]
 
 
 def test_a_kernel_refuses_a_series_with_no_periods() -> None:

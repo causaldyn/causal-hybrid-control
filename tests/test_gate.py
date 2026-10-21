@@ -340,12 +340,21 @@ def test_a_contrast_that_turns_is_deployed_on_its_first_half() -> None:
 
 
 def _late_cost_path(
-    path: int, config: GateConfig, dead: int, gain: float, cost: float, decisions: int = 6000
+    path: int,
+    config: GateConfig,
+    dead: int,
+    gain: float,
+    cost: float,
+    decisions: int = 6000,
+    *,
+    candidate: float = 0.8,
+    base: float = 0.6,
 ) -> list[str]:
     """One zone's verdicts where an action pays ``gain`` now and costs ``cost`` ``dead`` decisions
-    on: with action 1 taken 0.5 of the time by the baseline and 0.8 by the candidate, myopically
-    ``0.3 gain`` better, sustained ``0.3 (gain - cost)``."""
-    pb, pc, batch = 0.5, 0.8, 50
+    on, over a reward of ``base``: with action 1 taken 0.5 of the time by the baseline and
+    ``candidate`` by the candidate, myopically ``(candidate - 0.5) gain`` better, sustained
+    ``(candidate - 0.5) (gain - cost)``."""
+    pb, pc, batch = 0.5, candidate, 50
     plan = ZonePlan(chi2=pc**2 / pb + (1 - pc) ** 2 / (1 - pb) - 1.0, tv=pc - pb)
     rng = np.random.default_rng(path)
     gate = DeploymentGate({"z": plan}, config)
@@ -361,7 +370,7 @@ def _late_cost_path(
         a = rng.random(batch) < p
         r = np.empty(batch)
         for t in range(batch):
-            r[t] = rng.random() < 0.6 + gain * a[t] - cost * past[0]
+            r[t] = rng.random() < base + gain * a[t] - cost * past[0]
             past = np.append(past[1:], a[t])
         logged = ZoneBatch(
             r, np.where(a, pc, 1 - pc), np.where(a, pb, 1 - pb), np.where(a, p, 1 - p)
@@ -374,33 +383,59 @@ def _carryover_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRec
     return [r for r in caplog.records if getattr(r, "chc_event", None) == "gate_carryover"]
 
 
-def test_a_late_cost_is_warned_of_and_no_verdict_moves(caplog: pytest.LogCaptureFixture) -> None:
-    """Dead time 3: the candidate is +0.12 better myopically and -0.06 worse sustained, and the gate
-    without blocks deploys it. The carryover check reads the reward on the actions 1 to 5 decisions
-    back and warns, naming the lag and the block design; the verdicts are those of a gate without
-    the check."""
+@pytest.mark.parametrize("dead", [1, 3])
+def test_a_late_cost_is_warned_of_and_no_verdict_moves(
+    caplog: pytest.LogCaptureFixture, dead: int
+) -> None:
+    """Dead time 1 or 3: the candidate is +0.12 better myopically and -0.06 worse sustained, and
+    the gate without blocks deploys it. The carryover check reads the reward on the actions 1 to 5
+    decisions back and warns, naming the lag and the block design; the verdicts are those of a gate
+    without the check."""
     config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000)
     for path in range(5):
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="chc.gate"):
-            verdicts = _late_cost_path(path, config, dead=3, gain=0.4, cost=0.6)
+            verdicts = _late_cost_path(path, config, dead=dead, gain=0.4, cost=0.6)
         (record,) = _carryover_warnings(caplog)
-        assert record.lag == 3
+        assert record.lag == dead
         assert record.statistic < 0.0  # the action costs later
         assert "block_length" in record.getMessage()
         assert "deploy" in verdicts
         unchecked = dataclasses.replace(config, carryover_lags=0)
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="chc.gate"):
-            assert _late_cost_path(path, unchecked, dead=3, gain=0.4, cost=0.6) == verdicts
+            assert _late_cost_path(path, unchecked, dead=dead, gain=0.4, cost=0.6) == verdicts
         assert not _carryover_warnings(caplog)
+
+
+@pytest.mark.parametrize("base", [0.4, 0.6])
+def test_a_deterministic_candidate_deployed_is_not_read_as_carryover(
+    caplog: pytest.LogCaptureFixture, base: float
+) -> None:
+    """A candidate that always takes the action, +0.2 better on the present decision and with no
+    carryover. Once deployed, its score ``1 - baseline`` is the same on every decision and its
+    rewards have their own mean; a covariance pooled across the switch from shadow read the
+    switch as carryover, worst where shadow and deployed decisions were as many, and warned on 26
+    and 123 of these 200 paths at base 0.4 and 0.6. Read within each mode, after each batch as the
+    gate reads it, the check stays near its level of 0.05 a zone: 9 and 4 of 200."""
+    config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000)
+    warned = 0
+    for path in range(200):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="chc.gate"):
+            verdicts = _late_cost_path(
+                1000 + path, config, dead=3, gain=0.4, cost=0.0, candidate=1.0, base=base
+            )
+        assert "deploy" in verdicts
+        warned += bool(_carryover_warnings(caplog))
+    assert warned <= 0.06 * 200
 
 
 def test_a_reward_on_the_present_action_alone_is_not_warned_of(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The same candidate without its late cost: an effect on the present decision only. Over 40
-    paths of 6000 decisions it warned on 2 (0.040 of 200 paths)."""
+    paths of 6000 decisions it warned on 3 (0.070 of 200 paths)."""
     config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000)
     warned = 0
     for path in range(40):
@@ -656,6 +691,17 @@ def test_inputs_outside_the_contract_are_refused() -> None:
     one = np.ones(3)
     with pytest.raises(ValueError, match="carryover_lags must be at least 0"):
         dataclasses.replace(LAB, carryover_lags=-1)
+    for name, value in [
+        ("carryover_lags", 2.5),
+        ("carryover_lags", True),
+        ("horizon", 2.5),
+        ("horizon", np.True_),
+        ("block_length", 2.5),
+        ("burn_in", 1.0),
+    ]:
+        with pytest.raises(TypeError, match=f"{name} must be a whole number"):
+            dataclasses.replace(LAB, **{name: value})
+    assert dataclasses.replace(LAB, horizon=np.int64(10), carryover_lags=np.int32(2)).horizon == 10
     with pytest.raises(ValueError, match="rewards must lie in"):
         ZoneBatch(reward=2 * one, candidate=one, baseline=one, logged=one)
     with pytest.raises(ValueError, match="entries for 3 rewards"):
