@@ -43,11 +43,11 @@ What the guarantee needs, and the gate cannot check:
   pays 0.4 now and costs 0.6 one, three or five decisions on was warned of on every path, at a
   median of 150 decisions, and deployed on every path as before; with no late cost, or none at
   all, or a reward common to both actions that persists as an AR(0.95), it warned on 0.040 to
-  0.055 of them, and on 0.020 with a candidate that always takes the action and is deployed. A
-  carryover past the lags read is not seen: at seven decisions on, 0.035. A candidate that
-  takes one action for certain logs no randomised action once deployed, so the check reads only
-  the decisions before: a cost of 0.3 one or three decisions on was warned of on 0.67 and 0.70 of
-  100 paths.
+  0.070 of them, and on 0.020 to 0.045 with a candidate that always takes the action and is
+  deployed. A carryover past the lags read is not seen: at seven decisions on, 0.035. A
+  candidate that takes one action for certain logs no randomised action once deployed, so the
+  check reads only the decisions before: a cost of 0.3 one or three decisions on was warned of
+  on 0.67 and 0.70 of 100 paths.
 * **Rewards in** ``[0, 1]``.
 * **A contrast that holds still.** A DEPLOY rejects the null that every decision's contrast, given
   the past, is at most ``delta``: it says the candidate beat the baseline over the decisions read,

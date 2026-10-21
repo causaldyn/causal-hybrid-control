@@ -435,7 +435,7 @@ def test_a_reward_on_the_present_action_alone_is_not_warned_of(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The same candidate without its late cost: an effect on the present decision only. Over 40
-    paths of 6000 decisions it warned on 2 (0.040 of 200 paths)."""
+    paths of 6000 decisions it warned on 3 (0.070 of 200 paths)."""
     config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000)
     warned = 0
     for path in range(40):
