@@ -47,7 +47,15 @@ def _plan(state_matrix: np.ndarray, lipschitz: object, **noise: object):
         Q=jnp.eye(states), R=0.1 * jnp.eye(1), Qf=jnp.eye(states), x_target=jnp.zeros(states)
     )
     plan = causal_plan(
-        model, jnp.ones(states), cost, 0.2, 12, -1.0, 1.0, lipschitz=lipschitz, **noise
+        model,
+        jnp.ones(states),
+        cost,
+        0.2,
+        12,
+        -1.0,
+        1.0,
+        lipschitz=lipschitz,
+        **{"tolerance": math.inf, **noise},
     )
     return model, plan
 
@@ -183,6 +191,7 @@ def test_the_receding_horizon_controller_plans_with_the_noise() -> None:
         lipschitz=0.5,
         noise=0.01,
         noise_persistence=0.6,
+        tolerance=math.inf,
     )
     stepped = controller.step(jnp.ones(1))
     assert stepped.uncertainty_tube is not None

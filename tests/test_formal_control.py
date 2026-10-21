@@ -602,6 +602,7 @@ def _plan_with_noise(lipschitz, persistence: float):
         noise=NOISE,
         noise_persistence=persistence,
         steps=20,
+        tolerance=math.inf,
     )
 
 
