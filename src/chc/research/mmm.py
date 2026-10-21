@@ -33,8 +33,9 @@ HONEST SCOPE, and it bounds what the numbers below mean:
   confounding: with the noise taken down to ``1e-6`` they read ``(0.473, 0.178, 0.332)``, while
   the fit's channel error fell from about 0.023 to 0.003. It is the saturation: with the Hill
   response made linear over the logged range, or the carried-over return removed, the seeds'
-  mean reads within 1.1% of the truth. Within a step the spend moves the adstock and, through ``hill``, the
-  sales; a polynomial drift reads that slope wrong, and the control channel takes up the rest.
+  mean reads within 1.1% of the truth. Within a step the spend moves the adstock and, through
+  ``hill``, the sales; a polynomial drift reads that slope wrong, and the control channel takes
+  up the rest.
   An interval of the channel's own error covers the truth here only while the noise makes that
   error wide.
 * The arms are not held to a total budget. :func:`chc.prescribe` takes one (``budgets``, since
