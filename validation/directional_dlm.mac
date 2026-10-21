@@ -1,0 +1,100 @@
+/* The directional discount behind chc.dlm's form="directional": the identities its docstring states.
+
+   With P = G C G' the evolved covariance and A the functionals the recent rows of F read, the read
+   part of P is P_r = K A P, K = P A' (A P A')^-1, and the prior covariance is R = P + W with the
+   nested core
+       W = sum_g r_g E_g,
+   the coordinates grouped by their rate r_g = 1/delta_g - 1, slowest first, and E_g the part of
+   P_r that group g explains beyond the slower groups:
+       E_g = L[:, g] L[g, g]^-1 L[g, :],   L the part of P_r the slower groups leave (L = P_r first).
+
+   STEP 1  any R = P - K A P A' K' + K M K' leaves theta's distribution given A theta as P had it,
+           and A R A' = M: a direction the rows do not read keeps its variance given the ones they do
+   STEP 2  for such an R, R^-1 = P^-1 - A' ((A P A')^-1 - M^-1) A: the information on a direction u
+           with A u = 0, u' R^-1 u, is P's
+   STEP 3  the nested parts add up to the covariance they split, a group's part has zero rows on
+           the slower groups, so a group at rate 0 (delta = 1) keeps its rows of P; with one read
+           functional short of the state the parts still add up to P_r
+   STEP 4  W = K (A W A') K': the nested core is of STEP 1's form with M = A P A' + A W A', so
+           STEPS 1-2 hold for it
+   STEP 5  one discount delta for every block: W = (1/delta - 1) P_r, R = P + (1/delta - 1) K A P,
+           and R^-1 = P^-1 - (1 - delta) A' (A P A')^-1 A, Kulhavy and Karny's directional
+           forgetting
+
+   Each E_g is the covariance of a regression residual, so W is a variance, and for a row f the
+   inflation f W f' is an average of the rates weighted by f E_g f' >= 0, which add up to f P_r f'.
+
+   Run: timeout 600 maxima --very-quiet -Q -b validation/directional_dlm.mac */
+
+linel : 110$
+display2d : false$
+scalarmatrixp : false$  /* a 1 x 1 product stays a matrix */
+
+zero(x) := is(ratdisrep(ratsimp(rat(x))) = 0)$
+allzero(m) := block([ok : true],
+  for i thru length(m) do for j thru length(transpose(m)) do
+    if not zero(m[i, j]) then ok : false,
+  ok)$
+/* run_all.sh reads only whether a file completed, so an identity that fails stops it */
+require(label, holds) := if holds then print(label, true) else error(label, "does not hold")$
+
+/* a three-coordinate evolved covariance and one functional the rows read */
+P : matrix([p11, p12, p13], [p12, p22, p23], [p13, p23, p33])$
+A : matrix([a1, a2, a3])$
+m : matrix([mu])$   /* any positive variance for A theta */
+APA : A . P . transpose(A)$
+K : P . transpose(A) . invert(APA)$
+R : P - K . APA . transpose(K) + K . m . transpose(K)$
+
+print("=== STEP 1: theta given A theta is as P had it; A R A' = M ===")$
+ARA : A . R . transpose(A)$
+require("A R A' = M:", zero(ARA[1, 1] - mu))$
+condR : R - R . transpose(A) . invert(ARA) . A . R$
+condP : P - K . APA . transpose(K)$
+require("theta given A theta, R = P:", allzero(condR - condP))$
+
+print("=== STEP 2: R^-1 = P^-1 - A' ((A P A')^-1 - M^-1) A ===")$
+Rinv : invert(P) - transpose(A) . (invert(APA) - invert(m)) . A$
+require("R . R^-1 = I:", allzero(R . Rinv - ident(3)))$
+/* u = (a2, -a1, 0) is not read: A u = 0 */
+u : matrix([a2], [-a1], [0])$
+require("A u = 0:", zero((A . u)[1, 1]))$
+require("u' R^-1 u = u' P^-1 u:", zero((transpose(u) . Rinv . u)[1, 1]
+                                      - (transpose(u) . invert(P) . u)[1, 1]))$
+
+print("=== STEP 3: the nested parts add up; a slower group's rows stay zero ===")$
+/* L[g, g]^-1 written for one coordinate a group: part(L, i) is E_i, L its remainder */
+part(L, i) := col(L, i) . row(L, i) / L[i, i]$
+C : matrix([c11, c12, c13], [c12, c22, c23], [c13, c23, c33])$
+E1 : part(C, 1)$
+L1 : C - E1$
+E2 : part(L1, 2)$
+L2 : L1 - E2$
+E3 : part(L2, 3)$
+require("E1 + E2 + E3 = C:", allzero(E1 + E2 + E3 - C))$
+require("E2's row 1 is zero:", allzero(row(E2, 1)))$
+require("E3's rows 1 and 2 are zero:", allzero(row(E3, 1)) and allzero(row(E3, 2)))$
+W3 : r1 * E1 + r2 * E2 + r3 * E3$
+require("a group at rate 0 keeps its row:", allzero(row(subst(r1 = 0, W3), 1)))$
+/* groups {1} and {2, 3}: the second group's block inverted whole */
+G23 : submatrix(1, L1, 1)$
+E23 : submatrix(L1, 1) . invert(G23) . transpose(submatrix(L1, 1))$
+require("E1 + E{2,3} = C:", allzero(E1 + E23 - C))$
+/* two read functionals of three coordinates: P_r has rank 2, and the groups {1}, {2} take it all */
+A2 : matrix([1, 0, b1], [0, 1, b2])$
+K2 : P . transpose(A2) . invert(A2 . P . transpose(A2))$
+Pr : K2 . A2 . P$
+F1 : part(Pr, 1)$
+F2 : part(Pr - F1, 2)$
+require("E1 + E2 = P_r:", allzero(F1 + F2 - Pr))$
+require("nothing left for group 3:", zero((Pr - F1 - F2)[3, 3]))$
+
+print("=== STEP 4: W = K (A W A') K' ===")$
+Wr : r1 * F1 + r2 * F2$
+require("W = K A W A' K':", allzero(Wr - K2 . A2 . Wr . transpose(A2) . transpose(K2)))$
+
+print("=== STEP 5: one discount: Kulhavy and Karny's directional forgetting ===")$
+Rd : P - K . APA . transpose(K) + K . (APA / delta) . transpose(K)$
+require("R = P + (1/delta - 1) K A P:", allzero(Rd - (P + (1/delta - 1) * K . A . P)))$
+Rdinv : invert(P) - (1 - delta) * transpose(A) . invert(APA) . A$
+require("R^-1 = P^-1 - (1 - delta) A' (A P A')^-1 A:", allzero(Rd . Rdinv - ident(3)))$

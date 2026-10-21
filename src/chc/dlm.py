@@ -11,17 +11,36 @@ blocks, each with its own discount ``delta`` in ``(0, 1]``:
 * :class:`Seasonal`: Fourier harmonics of a period, which need not be an integer;
 * :class:`Regression`: coefficients on columns of ``x``, which follow random walks.
 
-With ``P_t = G C_(t-1) G'`` the evolved posterior covariance, the prior covariance is
+With ``P_t = G C_(t-1) G'`` the evolved posterior covariance and ``D = diag(delta_i^(-1/2))``,
+the prior covariance is
 
-* ``form="additive"`` (the default, West and Harrison's component discounting):
+* ``form="directional"`` (the default): a discount of only the directions the data read. The
+  rows of ``F`` of the last ``p`` steps (``p`` the state's size), carried into the current state's
+  coordinates, read the functionals ``A theta_t``. A direction goes unread where the regression
+  columns are, over those steps, combinations of each other and of the other blocks' entries: a
+  constant column beside a level, proportional columns, a price held for ``p`` steps, a column at
+  zero. With ``P_r = P_t A' (A P_t A')^-1 A P_t`` the part of ``P_t`` they read,
+  ``R_t = P_t + sum_g r_g E_g``: the coordinates grouped by their block's rate
+  ``r_g = (1 - delta_g) / delta_g``, slowest first, and ``E_g`` the part of ``P_r`` group ``g``
+  explains beyond the slower groups. The parts add up to ``P_r``, so a row's variance is inflated
+  by an average of the rates, never by more than the most discounted block's; a block at
+  ``delta = 1`` keeps its rows of ``P_t``; and an unread direction keeps its information instead
+  of losing ``1 - delta`` of it a step (``validation/directional_dlm.mac``). With one discount for
+  every block it is Kulhavy and Karny's (1984) directional forgetting,
+  ``R_t^-1 = P_t^-1 - (1 - delta) A' (A P_t A')^-1 A``, and ``P_t / delta`` where the rows read
+  every direction;
+* ``form="additive"`` (West and Harrison's component discounting, formerly the default):
   ``R_t = P_t + blockdiag_i(P_t,ii (1 - delta_i) / delta_i)``, which inflates each block's own
   covariance and leaves the covariance between blocks as it was;
-* ``form="multiplicative"``: ``R_t = D P_t D``, ``D = diag(delta_i^(-1/2))``, which also inflates
-  the covariance between blocks.
+* ``form="multiplicative"``: ``R_t = D P_t D``, which also inflates the covariance between
+  blocks, and every direction, read or not.
 
 With one discount for every block the multiplicative form is the single discount,
 ``R_t = P_t / delta``; the additive form is not, since it still leaves the covariance between
-blocks uninflated. No third form is offered.
+blocks uninflated. A model of one block is the same model under the additive and the
+multiplicative form. ``R_t - P_t`` is a variance under the directional and the additive form;
+under the multiplicative form with discounts that differ it is not, and :func:`smooth`,
+:func:`backward_sample` and :func:`forecast` refuse such a step.
 
 The observational variance is learned (Normal-Gamma): ``Prior.dof`` is ``n_0`` and
 ``Prior.scale`` is ``S_0``, the prior point estimate of the variance; an infinite ``dof`` means
@@ -57,32 +76,59 @@ What is exact and what is not:
 
 What it does not do, and what to watch:
 
-* **Discounting is forgetting.** With ``G = I`` and a single discount the posterior mean is
-  weighted least squares with weights ``delta^(T - t)`` (Ameen and Harrison 1984), so the
-  effective sample is ``(1 + delta) / (1 - delta)`` observations.
-* **A regressor that is zero carries no information, and its coefficient's variance still grows**
-  by ``1 / delta`` a step. ``Regression(hold_when_idle=True)`` discounts only the coordinates
-  whose regressor is non-zero at the step, a coordinate-wise form of restricted forgetting
-  (Kulhavy 1987); a long idle run without it is logged as a warning (``chc_event="dlm_windup"``).
-* **Blocks seen only through their sum wind up too.** A constant or near-constant regressor beside
-  a level leaves their difference unidentified. Component discounting inflates each block's own
-  variance every step, the two blocks are strongly negatively correlated, and the inflation leaks
-  into the one-step forecast through their sum. A level at 0.95 beside a constant regressor at
-  0.9, 200 series of 156 steps: the observational variance came back at a median 0.24 of the
-  truth, the forecast's variance at 10.9 times the squared errors, and 90% intervals covered
-  0.999; ``form="multiplicative"`` read 1.09, 1.08 and 0.909. Discounts that inflate the
-  forecast's variance more than 100 times what the most discounted block's own discount does, a
-  median over the last half of the steps, are logged as a warning (``chc_event="dlm_windup"``).
-  Directional forgetting, a discount only in the directions the data read, is not built.
+* **Discounting is forgetting.** With ``G = I`` and a single discount the posterior mean under
+  the additive or the multiplicative form is weighted least squares with weights
+  ``delta^(T - t)`` (Ameen and Harrison 1984), so the effective sample is
+  ``(1 + delta) / (1 - delta)`` observations. The directional form forgets the same way once the
+  rows read every direction; in the first steps, before they do, it forgets less.
+* **A regressor that is zero carries no information.** Under the additive and the multiplicative
+  form its coefficient's variance still grows by ``1 / delta`` a step;
+  ``Regression(hold_when_idle=True)`` discounts only the coordinates whose regressor is non-zero
+  at the step, a coordinate-wise form of restricted forgetting (Kulhavy 1987), and a long idle run
+  without it is logged as a warning (``chc_event="dlm_windup"``). The directional form stops the
+  growth once the column has been zero over its whole window of ``p`` steps.
+* **Blocks seen only through their sum wind up too, under the additive form.** A regressor that
+  moves little against a level leaves their difference poorly resolved: a constant, a price held
+  for months, a trend beside a level's random walk. Component discounting inflates each block's
+  own variance every step, the two blocks are strongly negatively correlated, and the inflation
+  leaks into the one-step forecast through their sum; the observational variance is then read
+  low. A level at 0.95 beside a regressor at 0.9 with coefficient 0.5, 200 series of 156 steps,
+  ``V = 0.09``, the level a random walk from 2 with steps of sd 0.02, prior ``N(0, 10 I)``,
+  ``S_0 = 0.1``, ``n_0 = 3``: with the regressor constant at 3 the additive form read ``S_T`` at
+  a median 0.042 of ``V``, ``Q_t`` at 49 times the true one-step variance (the mean over steps
+  52-155), and 90% intervals covered 1.000; with prices held 26 steps 0.047, 26 and 0.999; with a
+  trend from 1 to 5, 0.110, 11 and 0.994. The directional form read 0.99, 1.05 and 0.897; 0.99,
+  1.06 and 0.894; 0.95, 1.10 and 0.899; the multiplicative form 0.90, 1.04 and 0.894; 1.01, 1.17
+  and 0.884; 0.93, 1.08 and 0.898. Beside a seasonal the additive form also leaks with an
+  ordinary regressor (lognormal, CV 0.35: covered 0.83; directional 0.90). Over the same grid of
+  23 regressors and models, 200 series each, the directional form covered 0.891-0.902 on every
+  one and the additive form 0.824-1.000. Additive discounts
+  that inflate the forecast's variance more than 100 times what the most discounted block's own
+  discount does, a median over the last half of the steps, are logged as a warning
+  (``chc_event="dlm_windup"``); the warning misses the milder leaks.
+* **An unresolved direction is refused, not carried.** Under the additive and the
+  multiplicative form a direction the data never resolve, as proportional columns or a constant
+  beside a level leave one, grows by ``1 / delta`` a step until the directions they do resolve
+  are lost to rounding. A posterior whose correlation matrix's eigenvalues span more than
+  ``10^13`` raises ``FloatingPointError`` naming that direction: in this module's tests, a
+  constant beside a level at step 684 of 1500 and proportional columns at step 215 of 600, where
+  the additive form ran on before or failed later. The directional form holds the direction at
+  its prior variance, so only a prior that wide against what the data resolve meets the check.
+* **The directional form does not inflate what the data do not read.** Where the truth moves in
+  a direction the rows leave unread, nothing widens the intervals for it: a coefficient that
+  drifts (a random walk of sd 0.05) on a price held 26 steps, at the discounts above, covered
+  0.82 over 200 series, where the additive form's leak covered 0.999 by accident. A step of the
+  directional form costs more than an additive one: two singular value decompositions
+  of the window and an eigendecomposition a rate.
 * **A coefficient that moves is not identified from a saturation that bends.** On observational
   marketing data a time-varying coefficient and a nonlinear response can explain the same series
   (Dew et al. 2024, arXiv:2408.07678); this module fits the first and cannot tell them apart.
 * **A discount picked by one-step likelihood can be too high for the coefficients' intervals.**
-  On the random-walk world of ``scripts/bench_dlm.py``, 500 series, the likelihood picked the
-  coefficients' discount at 0.95 or above in 450 and below 0.9 in none, and the 90% intervals of a
-  channel's contribution over 13 weeks covered 0.78 and 0.77; fixed at 0.85 or 0.9 they covered
-  0.88-0.90. An interval reported from the likelihood's pick alone is too narrow; the union over
-  :func:`confidence_set`'s fits covered 0.94 there.
+  On the random-walk world of ``scripts/bench_dlm.py``, under the additive form, 500 series, the
+  likelihood picked the coefficients' discount at 0.95 or above in 450 and below 0.9 in none, and
+  the 90% intervals of a channel's contribution over 13 weeks covered 0.78 and 0.77; fixed at
+  0.85 or 0.9 they covered 0.88-0.90. An interval reported from the likelihood's pick alone is too
+  narrow; the union over :func:`confidence_set`'s fits covered 0.94 there.
 * **A monitor has until the filter absorbs a change.** Once the discount has taken a shift into
   the level, the one-step errors are white again. On ``scripts/bench_dlm_monitor.py``'s local
   level at ``delta = 0.9``, 300 series, :class:`chc.gate.DriftAlarm` at an average run length of
@@ -121,8 +167,10 @@ them, and its density the product of theirs (``validation/geo_dlm.mac``, steps 1
   ``O(p^3)`` and the fit holds ``2 T`` covariances of ``p^2`` entries. An observation of one geo
   adds nothing to the posterior precision between two others, and the multiplicative form, a
   diagonal scaling of the covariance, keeps that zero through the evolution while component
-  discounting does not (step 3): a filter linear in the number of geos exists for the first form
-  and is not built.
+  discounting and the directional form do not (step 3): a filter linear in the number of geos
+  exists for the first form and is not built. The directional form reads its window over the
+  last steps of every geo's rows, as many steps as the national and one geo's regional
+  coordinates.
 * :func:`smooth` and :func:`backward_sample` take a filter over geos and run back over its stacked
   state. They read the filter's moments, the evolution and the variance discount, and the
   variance's backward step reads ``n_t`` and ``S_t``, not how many geos a step observed. Over
@@ -144,6 +192,7 @@ from __future__ import annotations
 
 import logging
 import math
+import numbers
 import operator
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -159,15 +208,21 @@ _log = logging.getLogger(__name__)
 
 _Array = NDArray[np.float64]
 
-DiscountForm = Literal["additive", "multiplicative"]
+DiscountForm = Literal["directional", "additive", "multiplicative"]
 ForecastEvolution = Literal["constant", "compounding"]
 
 # A regressor idle long enough to inflate its coefficient's variance this many times is logged.
 _WINDUP_WARN = 10.0
 # Blocks seen only through their sum, whose discounts inflate the one-step forecast's variance this
-# many times what the most discounted block's own discount does, are logged. An ordinary regressor
-# beside a level, a seasonal or a slope reads 1 to 15; a constant one beside a level 10^2 to 10^4.
+# many times what the most discounted block's own discount does, are logged. Under the additive form
+# an ordinary regressor beside a level, a seasonal or a slope reads 1 to 15; a constant one, a price
+# held for months or a trend beside a level 10^2 to 10^4. The directional form reads at most 1.
 _LEAK_WARN = 100.0
+# A regression direction whose scaled residual over the window is below this is not read.
+_UNREAD = 1e-6
+# A posterior correlation matrix whose eigenvalues span more than this ratio keeps about three of
+# float64's sixteen digits in its smallest: what the data resolve is being lost to rounding.
+_CONDITION_LIMIT = 1e13
 
 
 def _index(value: object) -> int | None:
@@ -191,10 +246,24 @@ def _count(value: object, name: str, least: int = 1, why: str = "") -> int:
     return number
 
 
-def _discount(value: float, name: str = "discount") -> float:
-    delta = float(value)
-    if not 0.0 < delta <= 1.0:
-        raise ValueError(f"{name} must be in (0, 1], got {value}")
+def _real(value: object, name: str) -> float:
+    """``value`` as a ``float`` where it is a real number, a NumPy one or a 0-d array of one too,
+    and not a boolean or text."""
+    kind = getattr(getattr(value, "dtype", None), "kind", None)
+    real = isinstance(value, numbers.Real) or (
+        kind in ("i", "u", "f") and getattr(value, "ndim", None) == 0
+    )
+    if isinstance(value, bool) or kind == "b" or not real:
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    return float(value)  # ty: ignore[invalid-argument-type]
+
+
+def _discount(value: object, name: str = "discount") -> float:
+    """A discount in ``(0, 1]`` whose rate ``(1 - delta) / delta`` is finite: below about
+    ``5.6e-309`` the rate overflows and the evolution reads ``inf * 0``."""
+    delta = _real(value, name)
+    if not (0.0 < delta <= 1.0 and math.isfinite((1.0 - delta) / delta)):
+        raise ValueError(f"{name} must be in (0, 1] with (1 - {name}) / {name} finite, got {value}")
     return delta
 
 
@@ -245,7 +314,7 @@ class Seasonal:
     discount: float
 
     def __post_init__(self) -> None:
-        period = float(self.period)
+        period = _real(self.period, "period")
         if not (math.isfinite(period) and period > 1.0):
             raise ValueError(f"period must be finite and above 1, got {self.period}")
         given = tuple(self.harmonics)
@@ -365,7 +434,7 @@ class Prior:
             np.linalg.cholesky(_sym(cov))
         except np.linalg.LinAlgError:
             raise ValueError("covariance is not positive definite") from None
-        scale, dof = float(self.scale), float(self.dof)
+        scale, dof = _real(self.scale, "scale"), _real(self.dof, "dof")
         if not (math.isfinite(scale) and scale > 0.0):
             raise ValueError(f"scale must be positive and finite, got {self.scale}")
         if not dof > 0.0:
@@ -394,7 +463,7 @@ class DynamicLinearModel:
 
     blocks: tuple[Block, ...]
     prior: Prior
-    form: DiscountForm = "additive"
+    form: DiscountForm = "directional"
     variance_discount: float = 1.0
 
     def __post_init__(self) -> None:
@@ -409,8 +478,10 @@ class DynamicLinearModel:
             raise ValueError(
                 f"the prior has {self.prior.mean.shape[0]} coordinates, the blocks {size}"
             )
-        if self.form not in ("additive", "multiplicative"):
-            raise ValueError(f"form must be 'additive' or 'multiplicative', got {self.form!r}")
+        if self.form not in ("directional", "additive", "multiplicative"):
+            raise ValueError(
+                f"form must be 'directional', 'additive' or 'multiplicative', got {self.form!r}"
+            )
         beta = _discount(self.variance_discount, "variance_discount")
         if beta < 1.0 and math.isinf(self.prior.dof):
             raise ValueError(
@@ -441,6 +512,7 @@ class _Structure:
     rates: _Array  # (1 - delta) / delta per block
     inv_sqrt: _Array  # delta^(-1/2) per coordinate
     hold: _Array  # per coordinate: its discount is skipped while its regressor is zero
+    inverse: _Array  # G^-1, which maps a past step's row of F into the current state's coordinates
 
 
 def _structure(model: DynamicLinearModel) -> _Structure:
@@ -473,11 +545,56 @@ def _structure(model: DynamicLinearModel) -> _Structure:
         np.array(rates),
         inv_sqrt,
         hold,
+        np.linalg.inv(g).astype(np.float64),
     )
 
 
 def _sym(m: _Array) -> _Array:
     return 0.5 * (m + m.T)
+
+
+def _resolved(t: int, covariance: _Array, form: DiscountForm) -> None:
+    """Refuse a posterior covariance whose correlation matrix's eigenvalues span more than
+    ``_CONDITION_LIMIT``: the data resolve a combination of coordinates so much better than the
+    coordinates themselves that the combination's variance is a cancellation of entries past
+    float64's digits, and the forecast's variance and the state's intervals no longer mean what
+    they say. The correlations, not the covariance, are read, so a prior tight on one coordinate,
+    which float64 holds exactly, is not refused."""
+    root = np.sqrt(np.diag(covariance))
+    correlation = covariance / np.outer(root, root)
+    # A symmetric matrix's 2-norm condition is at most its 1-norm one, which LAPACK estimates
+    # from a Cholesky factor at a sixth of the eigenvalues' cost; the estimate is a lower bound
+    # rarely off by more than a few times, so the eigenvalues are read only where it is above a
+    # tenth of the limit, or where the factor fails.
+    potrf, pocon = linalg.get_lapack_funcs(("potrf", "pocon"), (correlation,))
+    factor, info = potrf(correlation, lower=1)
+    if info == 0:
+        norm = float(np.abs(correlation).sum(axis=0).max())
+        rcond, _ = pocon(factor, norm, uplo="L")
+        if _CONDITION_LIMIT * rcond > 10.0:
+            return
+    values = np.linalg.eigvalsh(correlation)
+    smallest, largest = float(values[0]), float(values[-1])
+    if largest <= _CONDITION_LIMIT * smallest:
+        return
+    ratio = f"{largest / smallest:.3g} times" if smallest > 0.0 else "infinitely many times"
+    direction = np.array2string(
+        np.linalg.eigh(covariance)[1][:, -1], precision=3, suppress_small=True
+    )
+    cause = (
+        "a direction the data do not resolve, as a constant column beside a level or proportional"
+        " columns leave one, grown under a discount below 1; form='directional' holds such a"
+        " direction"
+        if form != "directional"
+        else "a direction the data do not resolve, held at a prior variance that far past what"
+        " they resolve; a tighter prior on it, or dropping the columns that leave it, keeps it"
+        " in range"
+    )
+    raise FloatingPointError(
+        f"step {t}: the posterior correlation matrix's largest eigenvalue is {ratio} its"
+        f" smallest, past what float64 keeps apart: the state's widest direction {direction} is"
+        f" {cause}"
+    )
 
 
 def _finite_update(t: int, scale: float, mean: _Array, covariance: _Array) -> None:
@@ -487,9 +604,17 @@ def _finite_update(t: int, scale: float, mean: _Array, covariance: _Array) -> No
         raise FloatingPointError(f"step {t}: the update is not finite, its scale {scale}")
 
 
-def _evolve(s: _Structure, form: DiscountForm, p: _Array, active: _Array) -> _Array:
-    """``R`` from ``P = G C G'``: each block's discount, skipped on idle held coordinates."""
+def _evolve(
+    s: _Structure, form: DiscountForm, p: _Array, active: _Array, window: _Array | None = None
+) -> _Array:
+    """``R`` from ``P = G C G'``: each block's discount, skipped on idle held coordinates.
+    ``window`` holds the rows of ``F`` of the last steps in the current state's coordinates,
+    which the directional form reads."""
     live = np.where(s.hold, active, True)
+    if form == "directional":
+        if window is None:
+            raise ValueError("the directional form needs the window of recent rows of F")
+        return _directional(s, p, live, window)
     if form == "multiplicative":
         d = np.where(live, s.inv_sqrt, 1.0)
         return d[:, None] * p * d[None, :]
@@ -498,6 +623,99 @@ def _evolve(s: _Structure, form: DiscountForm, p: _Array, active: _Array) -> _Ar
         on = live[sl].astype(np.float64)
         r[sl, sl] += rate * p[sl, sl] * np.outer(on, on)
     return r
+
+
+def _reads(s: _Structure, form: DiscountForm) -> bool:
+    """Whether the evolution reads the window: the directional form with a discount below 1."""
+    return form == "directional" and bool(np.any(s.rates > 0.0))
+
+
+def _slide(window: _Array, rows: _Array, s: _Structure, steps: int) -> _Array:
+    """The window one step on: this step's ``rows`` first, the earlier ones carried into this
+    step's coordinates by ``G^-1``, and no more than ``steps`` steps of them."""
+    return np.vstack([rows, window @ s.inverse])[: steps * rows.shape[0]]
+
+
+def _unread(s: _Structure, window: _Array) -> _Array:
+    """The directions of the state that the rows in ``window`` do not read, ``(p, m)``.
+
+    The blocks other than regressions are observable by construction, so a direction goes unread
+    only where the regression columns are, over the window, combinations of each other and of
+    the rows' other entries: a constant beside a level, proportional columns, a price held
+    for the whole window, a column that stays zero. The columns are scaled to a largest entry of
+    1 and freed of what the other entries explain; a direction whose residual is below
+    ``_UNREAD`` is not read. The other entries' span keeps only its singular values above
+    ``_UNREAD`` of the largest: over a short window a slow seasonal is close to a polynomial, and a
+    span held to rounding would read noise as a direction.
+    """
+    p = window.shape[1]
+    reg = s.regression
+    if reg.size == 0:
+        return np.zeros((p, 0))
+    det = np.setdiff1d(np.arange(p), reg)
+    fixed, columns = window[:, det], window[:, reg]
+    largest = np.abs(columns).max(axis=0)
+    scale = np.where(largest > 0.0, largest, 1.0)
+    scaled = columns / scale
+    basis = np.zeros((window.shape[0], 0))
+    if det.size:
+        u, sv, vt = np.linalg.svd(fixed, full_matrices=False)
+        keep = sv > _UNREAD * sv[0]
+        basis, sv, vt = u[:, keep], sv[keep], vt[keep]
+    _, rs, rvt = np.linalg.svd(scaled - basis @ (basis.T @ scaled), full_matrices=True)
+    read = np.zeros(reg.size)
+    read[: rs.size] = rs
+    null = rvt[read < _UNREAD].T / scale[:, None]
+    out = np.zeros((p, null.shape[1]))
+    out[reg] = null
+    if det.size and null.shape[1]:
+        # each unread combination of the columns is one of the other entries': x v = F_det w
+        out[det] = -vt.T @ ((basis.T @ (columns @ null)) / sv[:, None])
+    return out
+
+
+def _directional(s: _Structure, p: _Array, live: _Array, window: _Array) -> _Array:
+    """The directional form: ``P`` plus the nested discount of the part of ``P`` the window reads,
+    ``validation/directional_dlm.mac``."""
+    rates = np.zeros(p.shape[0])
+    for sl, rate in zip(s.slices, s.rates, strict=True):
+        rates[sl] = rate
+    rates = np.where(live, rates, 0.0)
+    if not rates.any():
+        return p.copy()
+    unread = _unread(s, window)
+    if unread.shape[1] == p.shape[0]:
+        return p.copy()
+    if unread.shape[1] == 0:
+        read = p
+    else:
+        scale = np.ones(p.shape[0])
+        scale[s.regression] = np.abs(window[:, s.regression]).max(axis=0)
+        scale = np.where(scale > 0.0, scale, 1.0)
+        q, _ = np.linalg.qr(unread * scale[:, None], mode="complete")
+        a = q[:, unread.shape[1] :].T * scale[None, :]  # the functionals the window reads
+        pa = p @ a.T
+        read = _sym(pa @ np.linalg.solve(_sym(a @ pa), pa.T))
+    return p + _nested(read, rates)
+
+
+def _nested(covariance: _Array, rates: _Array) -> _Array:
+    """``sum_g r_g E_g``: the coordinates grouped by their rate, slowest first, and ``E_g`` the
+    part of ``covariance`` group ``g`` explains beyond the slower groups. The parts add up to
+    ``covariance``, so one rate gives ``r covariance``, a group at rate 0 keeps its rows, and a
+    row of ``F`` has its variance inflated by an average of the rates."""
+    out = np.zeros_like(covariance)
+    left = covariance.copy()
+    floor = 1e-13 * float(np.max(np.abs(np.diag(covariance)), initial=0.0))
+    for rate in np.unique(rates):
+        group = np.flatnonzero(rates == rate)
+        values, vectors = np.linalg.eigh(left[np.ix_(group, group)])
+        keep = values > floor
+        lift = left[:, group] @ vectors[:, keep]
+        part = _sym((lift / values[keep]) @ lift.T)
+        out += rate * part
+        left = _sym(left - part)
+    return out
 
 
 def _log_t(e: float, dof: float, q: float) -> float:
@@ -602,10 +820,13 @@ def forward_filter(
     n, v = model.prior.dof, model.prior.scale
     eye = np.eye(p)
     leak = np.full(horizon, np.nan)
+    window, reads = np.zeros((0, p)), _reads(s, model.form)
     for t in range(horizon):
         a = s.evolution @ m
         evolved = s.evolution @ c @ s.evolution.T
-        r = _sym(_evolve(s, model.form, evolved, active[t]))
+        if reads:
+            window = _slide(window, design[t : t + 1], s, p)
+        r = _sym(_evolve(s, model.form, evolved, active[t], window))
         leak[t] = _leak(s, design[t : t + 1], evolved, r)
         if t in extra:
             r = r / extra[t]
@@ -630,19 +851,24 @@ def forward_filter(
         if math.isnan(ys[t]):
             m, c, n = a, r, beta * n
         else:
-            e = float(ys[t] - f)
+            e = float(ys[t]) - f  # Python floats: an error past the range is inf, not a warning
+            if not math.isfinite(e):
+                raise FloatingPointError(f"step {t}: the update is not finite, its error {e}")
             gain = rf / q
             n_new = beta * n + 1.0
             v_new = v if math.isinf(n_new) else v * (beta * n + e * e / q) / n_new
             shrink = eye - np.outer(gain, f_row)
-            c = _sym((v_new / v) * (shrink @ r @ shrink.T + np.outer(gain, gain) * v))
-            m = a + gain * e
+            # an update past the float range is refused below, at its step, not warned of here
+            with np.errstate(over="ignore", invalid="ignore"):
+                c = _sym((v_new / v) * (shrink @ r @ shrink.T + np.outer(gain, gain) * v))
+                m = a + gain * e
             _finite_update(t, v_new, m, c)
+            _resolved(t, c, model.form)
             score[t] = _log_t(e, nu, q)
             n, v = n_new, v_new
         m_all[t], c_all[t], n_all[t], s_all[t] = m, c, n, v
 
-    _warn_windup(model, s, design)
+    _warn_windup(model, s, design, p)
     _warn_leak(leak)
     return DLMFit(
         model,
@@ -689,7 +915,10 @@ def _interventions(interventions: Mapping[int, float] | None, horizon: int) -> d
     return out
 
 
-def _warn_windup(model: DynamicLinearModel, s: _Structure, design: _Array) -> None:
+def _warn_windup(model: DynamicLinearModel, s: _Structure, design: _Array, window: int) -> None:
+    """Log regressors idle long enough to grow their coefficients' variance ``_WINDUP_WARN``
+    times. The directional form discounts an idle column only while the ``window`` steps it reads
+    still hold a non-zero entry of it, so its growth stops after ``window - 1`` idle steps."""
     grown: list[str] = []
     i = 0
     for b in model.blocks:
@@ -700,6 +929,8 @@ def _warn_windup(model: DynamicLinearModel, s: _Structure, design: _Array) -> No
                 for flag in idle:
                     run = run + 1 if flag else 0
                     longest = max(longest, run)
+                if model.form == "directional":
+                    longest = min(longest, window - 1)
                 growth = b.discount ** (-longest)
                 if growth > _WINDUP_WARN:
                     grown.append(f"coordinate {i + j}: {longest} idle steps, x{growth:.3g}")
@@ -739,10 +970,10 @@ def _warn_leak(leak: _Array) -> None:
             "dlm windup between blocks: over the last half of the steps the discounts inflated the"
             " one-step forecast's variance a median %.3g times what the most discounted block's own"
             " discount does. The blocks are seen only through their sum, as a constant or"
-            " near-constant regressor beside a level is, so the variance of their difference grows"
-            " every step and leaks into the forecast's, and the observational variance is"
-            " underestimated; merge the blocks, or use form='multiplicative' with one discount for"
-            " them",
+            " near-constant regressor, a price held for months or a trend beside a level are, so"
+            " the variance of their difference grows every step and leaks into the forecast's, and"
+            " the observational variance is underestimated; form='directional', the default,"
+            " discounts only the directions the data read",
             median,
             extra={"chc_event": "dlm_windup", "inflation": median},
         )
@@ -818,6 +1049,16 @@ def _gains(fit: _Path) -> _Array:
     horizon, p = fit.mean.shape
     out = np.empty((max(horizon - 1, 0), p, p))
     for t in range(horizon - 1):
+        evolved = g @ fit.covariance[t] @ g.T
+        lowest = float(np.linalg.eigvalsh(_sym(fit.prior_covariance[t + 1] - evolved))[0])
+        if lowest < -1e-9 * float(np.abs(fit.prior_covariance[t + 1]).max()):
+            raise ValueError(
+                f"step {t + 1}: the filter's evolution variance R - G C G' has an eigenvalue"
+                f" {lowest:.3g}, so it is not a variance and the steps are no state-space model:"
+                " smoothed covariances would come out negative. form='multiplicative' with blocks"
+                " whose discounts differ does this once they correlate; form='directional' keeps"
+                " the evolution a variance"
+            )
         out[t] = np.linalg.solve(fit.prior_covariance[t + 1], g @ fit.covariance[t]).T
     return out
 
@@ -887,7 +1128,8 @@ def smooth(fit: DLMFit | GeoDLMFit) -> SmoothedStates:
 
     Raises:
         ValueError: when the final degrees of freedom ``n_T`` is not above 2, so the covariances
-            are infinite.
+            are infinite, or when a step's evolution variance ``R_(t+1) - G C_t G'`` is not a
+            variance, as the multiplicative form's can be.
     """
     path = _path(fit)
     horizon, _ = path.mean.shape
@@ -935,7 +1177,8 @@ def backward_sample(fit: DLMFit | GeoDLMFit, draws: int, seed: int) -> Posterior
     appendix A.2). A filter over geos is sampled over its stacked state.
 
     Raises:
-        ValueError: on ``draws`` below 1.
+        ValueError: on ``draws`` below 1, or when a step's evolution variance
+            ``R_(t+1) - G C_t G'`` is not a variance, as the multiplicative form's can be.
     """
     draws = _count(draws, "draws")
     path = _path(fit)
@@ -1260,9 +1503,9 @@ def constrained_sample(
 
     Raises:
         ValueError: on no signs, a column that is not one of ``x``'s or not in a width-one
-            regression block, a sign that is neither, ``form="multiplicative"`` (whose evolution
-            couples the blocks), a variance discount below 1, a fit with interventions, ``draws``
-            below 4, ``chains`` below 2 or a negative ``warmup``.
+            regression block, a sign that is neither, a form other than ``"additive"`` (the
+            others' evolution couples the blocks), a variance discount below 1, a fit with
+            interventions, ``draws`` below 4, ``chains`` below 2 or a negative ``warmup``.
     """
     model = fit.model
     if not signs:
@@ -1482,7 +1725,7 @@ def forecast(
 
     Under ``form="multiplicative"`` with blocks whose discounts differ, ``W = D P D - P`` is not a
     variance once the blocks are correlated enough, and holding it would drive the state variance
-    indefinite; ``"constant"`` refuses such a ``W``.
+    indefinite; ``"constant"`` refuses such a ``W``. The other forms' ``W`` is always a variance.
 
     Raises:
         ValueError: on a ``horizon`` below 1, an ``x`` whose shape is not
@@ -1508,18 +1751,23 @@ def forecast(
     means, scales, dofs = np.empty(horizon), np.empty(horizon), np.empty(horizon)
     state_mean = np.empty((horizon, model.size))
     state_scale = np.empty((horizon, model.size, model.size))
+    window, reads = np.zeros((0, model.size)), _reads(s, model.form)
+    for row in fit.design[-(model.size - 1) :] if reads and model.size > 1 else ():
+        window = _slide(window, row[None, :], s, model.size - 1)
     for k in range(horizon):
         a = g @ a
+        if reads:
+            window = _slide(window, design[k : k + 1], s, model.size)
         if evolution == "compounding":
-            r = _sym(_evolve(s, model.form, g @ r @ g.T, active[k]))
+            r = _sym(_evolve(s, model.form, g @ r @ g.T, active[k], window))
         else:
-            w = _sym(_evolve(s, model.form, p_next, active[k]) - p_next)
+            w = _sym(_evolve(s, model.form, p_next, active[k], window) - p_next)
             lowest = float(np.linalg.eigvalsh(w)[0])
             if lowest < -1e-12 * float(np.abs(p_next).max()):
                 raise ValueError(
                     f"step {k + 1} ahead: the evolution variance W = D P D - P has an eigenvalue"
                     f" {lowest:.3g}; blocks with different discounts are correlated, so W is not"
-                    " a variance. Use evolution='compounding' or form='additive'"
+                    " a variance. Use evolution='compounding' or form='directional'"
                 )
             r = _sym(g @ r @ g.T + w)
         n = beta * n
@@ -1678,7 +1926,7 @@ class GeoDLM:
     regional: tuple[Block, ...]
     geos: int
     prior: Prior
-    form: DiscountForm = "additive"
+    form: DiscountForm = "directional"
     variance_discount: float = 1.0
     relative_variance: ArrayLike | None = None
 
@@ -1829,10 +2077,15 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
     n, v = stacked.prior.dof, stacked.prior.scale
     eye = np.eye(p)
     leak = np.full(horizon, np.nan)
+    # a geo's row reads the national coordinates and its own: as many steps as those
+    steps = sum(b.size for b in model.national + model.regional)
+    window, reads = np.zeros((0, p)), _reads(s, stacked.form)
     for t in range(horizon):
         a = s.evolution @ m
         evolved = s.evolution @ c @ s.evolution.T
-        r = _sym(_evolve(s, stacked.form, evolved, active[t]))
+        if reads:
+            window = _slide(window, design[t], s, steps)
+        r = _sym(_evolve(s, stacked.form, evolved, active[t], window))
         rows = design[t]
         leak[t] = _leak(s, rows, evolved, r)
         f = rows @ a
@@ -1852,21 +2105,29 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
                 root = linalg.cho_factor(q_seen, lower=True)
             except np.linalg.LinAlgError:
                 raise FloatingPointError(_unresolved(t, "is not positive definite", r, v)) from None
-            e = ys[t, seen] - f[seen]
+            with np.errstate(over="ignore", invalid="ignore"):
+                e = ys[t, seen] - f[seen]
+            if not np.all(np.isfinite(e)):
+                raise FloatingPointError(f"step {t}: the update is not finite, its errors {e}")
             gain = linalg.cho_solve(root, observed @ r).T
-            quad = float(e @ linalg.cho_solve(root, e))
-            n_new = beta * n + k
-            v_new = v if math.isinf(n_new) else v * (beta * n + quad) / n_new
             shrink = eye - gain @ observed
-            c = _sym((v_new / v) * (shrink @ r @ shrink.T + (gain * (v * weights[seen])) @ gain.T))
-            m = a + gain @ e
+            # an update past the float range is refused below, at its step, not warned of here
+            with np.errstate(over="ignore", invalid="ignore"):
+                quad = float(e @ linalg.cho_solve(root, e))
+                n_new = beta * n + k
+                v_new = v if math.isinf(n_new) else v * (beta * n + quad) / n_new
+                c = _sym(
+                    (v_new / v) * (shrink @ r @ shrink.T + (gain * (v * weights[seen])) @ gain.T)
+                )
+                m = a + gain @ e
             _finite_update(t, v_new, m, c)
+            _resolved(t, c, stacked.form)
             log_det = 2.0 * float(np.sum(np.log(np.diag(root[0]))))
             score[t] = _log_multivariate_t(quad, log_det, k, nu)
             n, v = n_new, v_new
         m_all[t], c_all[t], n_all[t], s_all[t] = m, c, n, v
 
-    _warn_windup(stacked, s, active.astype(np.float64))
+    _warn_windup(stacked, s, active.astype(np.float64), steps)
     _warn_leak(leak)
     return GeoDLMFit(
         model,
