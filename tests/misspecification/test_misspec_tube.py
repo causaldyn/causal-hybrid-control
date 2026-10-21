@@ -16,7 +16,9 @@ import logging
 
 import numpy as np
 import pytest
-from _misspec_world import HORIZON, World, tube_coverage
+from _misspec_world import HORIZON, World, ask, tube_coverage
+
+from chc import decision
 
 pytestmark = pytest.mark.misspecification
 
@@ -49,12 +51,17 @@ def test_a_response_that_saturates_beyond_the_logged_actions_is_warned_of(
 ) -> None:
     """The log moves the incentive within about +-0.9, the box allows +-2, and the plant's
     response is ``0.5 tanh(u / 0.5)``. The tube falls to 0.57 at step 9; the plan sets the lever
-    outside its logged range, and a ``lever_range`` warning says so on every log."""
+    outside its logged range, and a ``lever_range`` warning says so on every log, each log read
+    on its own."""
     world = World(saturation=0.5, logged_gain=0.2, logged_spread=0.1)
-    with caplog.at_level(logging.WARNING, logger="chc.decision"):
-        held, _, _ = tube_coverage(world, LOGS, RUNS)
-    ranges = [r for r in caplog.records if getattr(r, "chc_event", None) == "lever_range"]
-    assert held.min() >= FLOOR or len(ranges) >= len(LOGS), np.round(held, 3)
+    held, _, _ = tube_coverage(world, LOGS, RUNS)
+    ranged = []
+    for seed in LOGS:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="chc.decision"):
+            ask(world, seed)
+        ranged.append(any(getattr(r, "chc_event", None) == "lever_range" for r in caplog.records))
+    assert held.min() >= FLOOR or all(ranged), (np.round(held, 3), ranged)
 
 
 def test_the_tube_holds_its_level_under_a_persistent_confounder() -> None:
@@ -69,6 +76,22 @@ def test_the_tube_holds_its_level_under_a_persistent_confounder() -> None:
     floor = 0.95 - 3.0 * 0.0166 / np.sqrt(len(logs))
     held, _, warned = tube_coverage(World(demand_persistence=0.8), logs, RUNS)
     assert held.min() >= floor or np.mean(warned) >= 0.9, (np.round(held, 4), warned)
+
+
+def test_the_noise_read_s_error_is_what_holds_the_tube_under_a_persistent_confounder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The floor above cannot tell the tube from one that drops its noise read's error: that tube
+    held 0.9444 at its weakest step, inside the floor's three errors of 0.0166 over 16 logs. So the
+    same 16 logs and the same runs are read again with the read's error left out, and the two
+    tubes are compared run for run: the read's error widens the tube at every step, by 0.0007 to
+    0.0023 of coverage here, and lifts the weakest step from 0.9444 to 0.9463."""
+    world, logs = World(demand_persistence=0.8), range(16)
+    held, _, _ = tube_coverage(world, logs, RUNS)
+    monkeypatch.setattr(decision, "_noise_read", lambda *args, **kwargs: None)
+    without, _, _ = tube_coverage.__wrapped__(world, logs, RUNS)
+    assert np.all(held - without > 0.0), np.round(held - without, 4)
+    assert held.min() - without.min() >= 0.001, (held.min(), without.min())
 
 
 def test_persistent_noise_is_held_or_warned_of() -> None:

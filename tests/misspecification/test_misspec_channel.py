@@ -92,7 +92,12 @@ def _read(
         estimate = float(np.asarray(fit.residual.channel).ravel()[0])
         covered.append(abs(estimate - CHANNEL) <= 1.96 * fit.channel_error)
         rejected.append(persistence_check(fit, units, periods).p_value < 0.05)
-        warned.append(any(r.category is FutureWarning for r in records))
+        warned.append(
+            any(
+                r.category is FutureWarning and "spline nuisances" in str(r.message)
+                for r in records
+            )
+        )
     return np.array(covered), np.array(rejected), np.array(warned)
 
 

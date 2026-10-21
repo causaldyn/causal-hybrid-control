@@ -1275,11 +1275,6 @@ def test_lq_regret_sensitivity_is_the_second_order_regret_coefficient(b, effort,
 # ------------------------------------------------------------------------------------ minimax LQ
 
 
-def _not_tiny(value):
-    # a midpoint below ~1e-154 overflows minimax_action's equalising candidate; see the xfail below
-    return value == 0.0 or abs(value) > 1e-6
-
-
 def _worst_over_effects(u, target, b_lo, b_hi, effort, curvature):
     bs = np.linspace(b_lo, b_hi, 201)
     return float(np.max(curvature * (bs * u - target) ** 2 + effort * u * u))
@@ -1288,8 +1283,8 @@ def _worst_over_effects(u, target, b_lo, b_hi, effort, curvature):
 @FAST
 @given(
     target=st.floats(-3.0, 3.0),
-    b_lo=st.floats(-3.0, 3.0).filter(_not_tiny),
-    width=st.floats(0.0, 3.0).filter(_not_tiny),
+    b_lo=st.floats(-3.0, 3.0),
+    width=st.floats(0.0, 3.0),
     effort=st.floats(0.05, 4.0),
     curvature=st.floats(0.0, 4.0),
 )
@@ -1399,7 +1394,7 @@ def test_minimax_action_branch_is_decided_by_the_kink_test(target, b_lo, width, 
 
 @FAST
 @given(
-    target=st.floats(-2.0, 2.0).filter(_not_tiny),
+    target=st.floats(-2.0, 2.0),
     near=st.floats(0.05, 2.0),
     width=st.floats(0.01, 2.0),
     effort=st.floats(0.1, 2.0),
@@ -1458,8 +1453,8 @@ def _per_step_worst(gains, state_gain, b_lo, b_hi, state_cost, effort, terminal)
 @FAST
 @given(
     state_gain=st.floats(-2.0, 2.0),
-    b_lo=st.floats(-2.0, 2.0).filter(_not_tiny),
-    width=st.floats(0.0, 2.0).filter(_not_tiny),
+    b_lo=st.floats(-2.0, 2.0),
+    width=st.floats(0.0, 2.0),
     state_cost=st.floats(0.1, 2.0),
     effort=st.floats(0.1, 2.0),
     terminal=st.floats(0.0, 3.0),
@@ -1496,8 +1491,8 @@ def test_minimax_lq_value_is_the_constant_effect_worst_case(
 @FAST
 @given(
     state_gain=st.floats(-2.0, 2.0),
-    b_lo=st.floats(-2.0, 2.0).filter(_not_tiny),
-    width=st.floats(0.0, 2.0).filter(_not_tiny),
+    b_lo=st.floats(-2.0, 2.0),
+    width=st.floats(0.0, 2.0),
     state_cost=st.floats(0.1, 2.0),
     effort=st.floats(0.1, 2.0),
     terminal=st.floats(0.0, 3.0),
@@ -1529,8 +1524,8 @@ def test_minimax_lq_value_is_attained_at_the_endpoint_nearest_zero(
 @FAST
 @given(
     state_gain=st.floats(-2.0, 2.0),
-    b_lo=st.floats(-2.0, 2.0).filter(_not_tiny),
-    width=st.floats(0.0, 2.0).filter(_not_tiny),
+    b_lo=st.floats(-2.0, 2.0),
+    width=st.floats(0.0, 2.0),
     horizon=st.integers(1, 5),
     seed=st.integers(0, 10_000),
 )
