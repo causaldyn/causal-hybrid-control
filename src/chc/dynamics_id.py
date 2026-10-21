@@ -84,8 +84,8 @@ _MAX_NEWTON_STEPS = 20
 """Cap on Newton's method for the ``rk4`` fixed point. From the Euler fit it converges in three to
 six steps up to ``|A|dt = 1.2``, so reaching the cap means there is no fixed point to reach."""
 _NUISANCE_SHIFT_WARN = 3.0
-"""How far, in the channel's errors, a spline refit may move a fit with the default nuisances
-before :func:`fit_causal_residual` warns that they miss the log's."""
+"""How far, in the errors of the move, a spline refit may move a fit with the polynomial
+nuisances alone before :func:`fit_causal_residual` warns that they miss the log's."""
 
 _NOT_IDENTIFIED = (
     "no adjustment set and no instrument: the control channel is not identified from this log. "
@@ -1287,7 +1287,7 @@ def solve_channel_moment(
 
     The Robinson moment on its own, separated from the nuisance estimation
     :func:`fit_causal_residual` wraps around it. Public for two reasons: cross-fitted
-    ridge-polynomial nuisances are a default rather than a commitment, and the point of a debiased
+    ridge-sieve nuisances are a default rather than a commitment, and the point of a debiased
     score is that ``g`` and ``m`` may come from any learner -- gradient boosting, a neural net, a
     model the caller already had -- so the caller needs a way in that does not go through ours.
 
@@ -1343,7 +1343,7 @@ def fit_causal_residual(
     degree: int = 1,
     channel_degree: int | None = None,
     nuisance_degree: int = 2,
-    nuisance_knots: int | Literal["auto"] | None = None,
+    nuisance_knots: int | Literal["auto"] | None = "auto",
     folds: int = 2,
     ridge: float = 1e-6,
     seed: int = 0,
@@ -1383,11 +1383,15 @@ def fit_causal_residual(
             is not one a step holds, and is not held. The returned field carries no covariate:
             its drift is the one at their mean, and its ``defect`` keeps their push.
 
-            A push outside the nuisances' span, ``3 tanh(2 z)`` on that plant, is in neither, and
-            ``channel_error`` reads it in the moment's residual as if it were noise: there the
-            channel scattered 0.73 as far as its error said under ``"euler"`` and 0.75 under
-            ``"rk4"``, and its interval covered on 98 % of 60 logs. Conservative, not wrong; a
-            push the nuisances miss is a sign they miss the policy too (:func:`nuisance_shift`).
+            A push outside the polynomial's span, ``3 tanh(2 z)`` on that plant, is in neither
+            with the polynomial alone (``nuisance_knots=None``), and ``channel_error`` reads it in
+            the moment's residual as if it were noise: there the channel scattered 0.73 as far as
+            its error said under ``"euler"`` and 0.75 under ``"rk4"``, and its interval covered on
+            98 % of 60 logs. Conservative, not wrong; a push the nuisances miss is a sign they
+            miss the policy too (:func:`nuisance_shift`). At the default the spline was read on
+            28 of those 60 logs, and there it holds the push: under ``"euler"`` the channel's
+            error came out 40 to 62 times smaller on the four of the first twelve logs that read
+            it, and over the 60 the interval covered on 97 % under either integrator.
         instrument: name of an exogenous action shifter, for when the confounder is latent. It
             enters as the moment's instrument, not as the regressor, so this is real 2SLS. Expect a
             **variance premium**, not a free lunch: identification here rides on however much of
@@ -1441,19 +1445,21 @@ def fit_causal_residual(
             degree, and a policy or a drift outside their span leaves an error that does not
             shrink with the log, and a bias in the channel that does not either, which
             ``channel_error`` does not cover. On a lever set by ``-1.5 tanh(2 x)`` and a drift
-            with ``sin(2 x)`` in it, at the default degree 2, the channel came back 0.61 below its
-            truth of 1 at 1000 rows and 0.62 at 4000, 26 and 57 of its errors, on none of twelve
-            logs within its 95 % interval. Refit at a higher degree, or with ``nuisance_knots``,
-            and read how far the channel moves in its errors (:func:`nuisance_shift`): a move of
-            more than one or two says the nuisances miss. There, at 4000 rows, degree 3 moved it
-            by 0.22, 20 of its errors, and degree 5 by 0.44. A higher degree is no cure: a
-            polynomial of high degree fitted on one fold runs off in the other's tails, and at
-            degrees 5 to 11 the channel scattered up to 2.3 times as far as its error said.
-        nuisance_knots: experimental; a natural cubic spline in each covariate, at this many of
-            its quantiles, beside the polynomial of ``nuisance_degree``; ``"auto"`` takes
-            ``ceil(N^(1/3))`` knots, which grow with the log; ``None``, the default, adds none.
-            The spline's error at a smooth nuisance shrinks as its knots grow, so the moment's
-            second-order bias shrinks faster than its error. The spline with a covariate's powers
+            with ``sin(2 x)`` in it, with the polynomial alone (``nuisance_knots=None``) at the
+            default degree 2, the channel came back 0.61 below its truth of 1 at 1000 rows and
+            0.62 at 4000, 26 and 57 of its errors, on none of twelve logs within its 95 %
+            interval. Refit at a higher degree, or with more knots, and read how far the channel
+            moves in its errors (:func:`nuisance_shift`): a move of more than one or two says the
+            nuisances miss. There, at 4000 rows, degree 3 moved the polynomial's by 0.22, 20 of
+            its errors, and degree 5 by 0.44. A higher degree is no cure: a polynomial of high
+            degree fitted on one fold runs off in the other's tails, and at degrees 5 to 11 the
+            channel scattered up to 2.3 times as far as its error said.
+        nuisance_knots: a natural cubic spline in each covariate, at this many of its quantiles,
+            beside the polynomial of ``nuisance_degree``; ``"auto"``, the default, takes
+            ``ceil(N^(1/3))`` knots, which grow with the log; ``None`` adds none, and the
+            nuisances are the polynomial alone, the default up to 0.19.0. The spline's error at a
+            smooth nuisance shrinks as its knots grow, so the moment's second-order bias shrinks
+            faster than its error. The spline with a covariate's powers
             past the first, the spline without them, or the polynomial alone is read, whichever
             predicts the other fold the better (:func:`_chosen_sieve`): beside a spline the powers
             are read off the rows past the outer knots alone, and on heavy tails a row of the
@@ -1468,24 +1474,23 @@ def fit_causal_residual(
             in a normal or ``t(5)`` confounder at 1000 and 4000 rows, each over 100 logs.
             The spline is additive: the covariates' joint shape beyond it is the polynomial's, so a
             confounder that enters through a nonlinear interaction of two covariates is still
-            outside the span. Read
-            :func:`nuisance_shift` against a fit with more knots or a higher degree. Left at None
-            on an identified, unweighted fit without an instrument, the fit solves its channel's
-            moment once more on ``"auto"``'s nuisances, at its own target, and warns
-            (``FutureWarning``) where that moves the channel by more than three errors of the
-            move, or as far into a ``t``'s tail where the error is read off few clusters or
-            periods, ``t(9)``'s 4.1, that 0.20.0 reads ``"auto"``; the fit returned is the
-            default's. Under
-            ``euler`` that channel is a refit's; under ``rk4`` one Newton step through the fit's
-            own Newton matrix carries it to a refit's fixed point. The move's error pairs the two
-            fits' scores row by row, so it holds whichever fit is the more efficient. It fits
-            nothing more. On the plant above, at 2000 rows, the move read 31 to 44 of its errors
-            and the fit warned on 40 of 40 logs; on 200 logs of the linear plant it read 0.90 at
-            most, and 1.6 where the noise grows as ``exp(x)``, and warned on none. Read in the
-            fit's own errors, as up to 0.19.0, a spline that scatters more than the polynomial
-            moved it past three on 12.5 % of linear logs with ``t(3)`` covariates, and a log the
-            known physics solves exactly read a ratio of two roundings. Under a weight
-            ``exp(-x)`` that reading passed three on 23 %, so a weighted fit is not checked.
+            outside the span. Read :func:`nuisance_shift` against a fit with more knots or a
+            higher degree. At ``None``, an identified, unweighted fit without an instrument solves
+            its channel's moment once more on ``"auto"``'s nuisances, at its own target, and warns
+            where that moves the channel by more than three errors of the move, or as far into a
+            ``t``'s tail where the error is read off few clusters or periods, ``t(9)``'s 4.1: the
+            polynomial then misses the log's nuisances, and ``channel_error`` does not cover the
+            bias. The fit returned is the polynomial's. Under ``euler`` that channel is a refit's;
+            under ``rk4`` one Newton step through the fit's own Newton matrix carries it to a
+            refit's fixed point. The move's error pairs the two fits' scores row by row, so it
+            holds whichever fit is the more efficient. It fits nothing more. On the plant above,
+            at 2000 rows, the move read 31 to 44 of its errors and the fit warned on 40 of 40
+            logs; on 200 logs of the linear plant it read 0.90 at most, and 1.6 where the noise
+            grows as ``exp(x)``, and warned on none. Read in the fit's own errors, as up to
+            0.19.0, a spline that scatters more than the polynomial moved it past three on 12.5 %
+            of linear logs with ``t(3)`` covariates, and a log the known physics solves exactly
+            read a ratio of two roundings. Under a weight ``exp(-x)`` that reading passed three
+            on 23 %, so a weighted fit is not checked.
         folds: cross-fitting folds. ``1`` fits the nuisances on the same rows it residualises.
             That is *not* biased for the default nuisances and should not be sold as such:
             residualising ``y`` and ``u`` by the same linear projection whose span contains the
@@ -1494,6 +1499,8 @@ def fit_causal_residual(
             Cross-fitting earns its keep against learners whose fit is adaptive to the sample
             (feature selection, trees, early stopping) or saturated enough to memorise it, where
             own-sample residuals collapse; ``folds>=2`` is the safe default for that reason.
+            With one fold the sieve's choice (``nuisance_knots``) reads its own rows, where the
+            spline with the powers, the larger basis, always predicts better and is read.
         ridge: the Tikhonov term of the nuisances, the channel's moment, the drift regression and
             the instrument's first stage. The nuisances read standardised covariates. The drift
             regression and the first stage scale each slope's term by its column's variance,
@@ -1602,8 +1609,8 @@ def fit_causal_residual(
             may share its noise, which a log of units followed over time breaks wherever the model
             leaves out something that persists: the transitions of one unit then share it. The
             estimate does not move; only its error does. On panels of 5 to 80 units whose noise
-            persists within each unit, a 5 % test of a zero channel rejects 12.5 % to 35.5 % of the
-            time row by row and 3.75 % to 14.75 % by unit: CR1 still over-rejects with few clusters
+            persists within each unit, a 5 % test of a zero channel rejects 12.25 % to 35 % of the
+            time row by row and 4 % to 14 % by unit: CR1 still over-rejects with few clusters
             (ADR 0053). Two labels a transition, shape ``(N, 2)``, cluster it two ways, by its unit
             and by its period say. The error is then the largest of three (MacKinnon, Nielsen and
             Webb 2024): the two dimensions' sums less their intersection's (Cameron, Gelbach and
@@ -1626,8 +1633,10 @@ def fit_causal_residual(
             independent, which a unit's persistent noise met by a lever that persists breaks: the
             scores, each the lever's residual times the noise, then persist too. On one unit of
             200 transitions whose noise is AR(0.9) and whose lever is AR(0.7), a 95 % interval
-            covered the channel on 0.703 of 1000 logs row by row and on 0.925 by cosines; where
-            the noise is drawn afresh, the cosines' interval is 11 % wider. On three units of one
+            covered the channel on 0.740 of 1000 logs row by row and on 0.938 by cosines, and with
+            the polynomial nuisances alone on 0.724 and 0.941 of the same logs (0.703 and 0.925
+            on ADR 0075's draws); where the noise is drawn afresh, the cosines' interval is 11 %
+            wider. On three units of one
             cluster over 200 periods, which share a shock AR(0.9) and half their lever AR(0.7),
             it covered 0.692 row by row and 0.934 by the period sums (ADR 0075).
         times: each transition's start time, ``N`` finite numbers, where ``known`` reads the time:
@@ -1701,7 +1710,7 @@ def fit_causal_residual(
         data, adjust_for, drivers, integrator
     )
     # the Euler reading of the log's rate less the known physics, whichever the integrator: the
-    # target the nuisances' sieve is chosen on, here and in the default fit's check
+    # target the nuisances' sieve is chosen on, here and in the polynomial fit's check
     euler_target = (x_next - x) / dt - known_rate
     knot_count, powers = (
         (None, True)
@@ -2216,12 +2225,11 @@ def fit_causal_residual(
         limit = float(student_t.ppf(student_t.cdf(_NUISANCE_SHIFT_WARN, math.inf), freedom))
         if shift > limit:
             warnings.warn(
-                f"spline nuisances (nuisance_knots='auto') move the channel by "
-                f"{shift:.3g} errors of the move, so the default polynomial nuisances miss this "
-                "log's and its channel_error does not cover the bias; 0.20.0 reads "
-                "nuisance_knots='auto' by default; pass it now to fit_causal_residual to read the "
-                "channel so",
-                FutureWarning,
+                f"spline nuisances (nuisance_knots='auto', the default) move the channel by "
+                f"{shift:.3g} errors of the move, so the polynomial nuisances "
+                "(nuisance_knots=None) miss this log's and its channel_error does not cover the "
+                "bias; leave nuisance_knots at its default to read the channel on the spline",
+                UserWarning,
                 stacklevel=2,
             )
     return fit
@@ -2915,9 +2923,9 @@ def nuisance_shift(fit: CausalDynamicsFit, refit: CausalDynamicsFit, states: Arr
     higher ``nuisance_degree``, and read the shift: within the span, both fits estimate one channel
     and the shift is a fraction of an error; a shift of more than one or two says the fit's
     nuisances miss. On a lever set by ``-1.5 tanh(2 x)`` and a drift with ``sin(2 x)`` in it, at
-    4000 rows, the default degree-2 fit read 53 to 61 errors from its refit with
-    ``nuisance_knots="auto"`` on five logs, and that refit 0.02 to 1.9 from its own at twice the
-    knots.
+    4000 rows, the degree-2 polynomial fit (``nuisance_knots=None``) read 53 to 61 errors from its
+    refit with ``nuisance_knots="auto"`` on five logs, and that refit 0.02 to 1.9 from its own at
+    twice the knots.
 
     Raises:
         ValueError: if ``fit`` is not identified, so has no error, or the two channels differ in

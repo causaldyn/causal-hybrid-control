@@ -1,7 +1,7 @@
 # ADR 0120 — The nuisances' sieve is chosen out of fold, and the check reads the move in its own error
 
 **Status:** accepted, 2026-10-21. Amends ADR 0107. The default, `nuisance_knots=None`, is
-unchanged.
+unchanged. Amended 2026-10-21 by ADR 0127: from 0.20.0 the default is `"auto"`.
 
 ## Context
 

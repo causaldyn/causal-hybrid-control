@@ -275,13 +275,16 @@ def test_the_bound_refuses_what_it_is_not_derived_for() -> None:
 
 def test_repeated_rows_clustered_by_their_original_bound_as_the_original_does() -> None:
     """A log of 400 rows each repeated 16 times: summed within each row's copies, both influences
-    are the original's, so the confidence bounds are; summed row by row they narrow fourfold."""
+    are the original's, so the confidence bounds are; summed row by row they narrow fourfold. The
+    nuisances are the polynomial alone: the default spline's knots grow with the rows, so the
+    copies would read more of them than the original."""
     channel, to_action, to_rate = np.array([1.0]), np.array([[0.5]]), np.array([0.5])
     data = _log(channel, to_action, to_rate, dt=0.05, scheme="euler", n=400, seed=3)
     options = {
         "adjust_for": ("observed",),
         "channel_degree": 0,
         "nuisance_degree": 1,
+        "nuisance_knots": None,
         "folds": 1,
         "influence": True,
     }

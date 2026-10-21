@@ -2,7 +2,9 @@
 
 **Status:** accepted, 2026-10-19. Opt-in; the default is unchanged. Amended 2026-10-19: the
 default fit reads what `"auto"`'s nuisances do to its channel, without a second fit, and warns
-where they move it by more than three errors.
+where they move it by more than three errors. Amended 2026-10-21 by ADR 0127: from 0.20.0
+`nuisance_knots="auto"` is the default of `fit_causal_residual` and `prescribe`, `None` reads the
+polynomial alone, and only that fit runs the check, which warns with a `UserWarning`.
 
 ## Context
 

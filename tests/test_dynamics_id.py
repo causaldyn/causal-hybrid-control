@@ -785,8 +785,15 @@ def _replicated_decision_fits() -> dict[str, tuple[np.ndarray, np.ndarray, np.nd
 
 
 def _decision_fit(data: dict[str, jax.Array], weights) -> CausalDynamicsFit:
+    """The fits these tests compare read the polynomial sieve alone, whose class they are about."""
     return fit_causal_residual(
-        _known, data, 1.0, adjust_for=("z",), nuisance_degree=4, weights=weights
+        _known,
+        data,
+        1.0,
+        adjust_for=("z",),
+        nuisance_degree=4,
+        nuisance_knots=None,
+        weights=weights,
     )
 
 
@@ -892,7 +899,7 @@ def test_the_decision_weight_takes_the_regret_to_the_floor_of_its_class(nuisance
     floor = curvature**2 * DECISION_VARIANCE**2
     decision = _decision_regret(_line(_decision_fit(data, _decision_weight)), curvature)
     with warnings.catch_warnings(record=True) as records:
-        warnings.simplefilter("always", FutureWarning)
+        warnings.simplefilter("always", UserWarning)
         unweighted = _decision_regret(_line(_decision_fit(data, None)), curvature)
     warned = [record for record in records if "nuisance_knots='auto'" in str(record.message)]
     assert len(warned) == (nuisances == "trigonometric")
@@ -1868,7 +1875,15 @@ def test_the_public_moment_reads_the_same_in_any_units() -> None:
 
 # ---- a channel error summed within clusters ----
 
-CLUSTERED = {"adjust_for": ("z",), "channel_degree": 0, "nuisance_degree": 1, "folds": 1}
+# The polynomial alone: the hand computations partial out its linear basis, and with one fold a
+# spline, which predicts its own rows better, would always be read.
+CLUSTERED = {
+    "adjust_for": ("z",),
+    "channel_degree": 0,
+    "nuisance_degree": 1,
+    "folds": 1,
+    "nuisance_knots": None,
+}
 
 
 def _clustered_log(rows: int = 100, seed: int = 23) -> dict[str, jax.Array]:
@@ -2745,7 +2760,7 @@ def test_a_zero_instrument_identifies_nothing_beside_a_sieve_without_the_powers(
     beside a spline sieve without the state's powers past its first, its push of zeros held those
     powers, which the nuisances leave in the action's residual: on 200 rows at degree 3 the
     relevances read 0.15, 0.10 and 0.055, and the channel identified by the functional form
-    alone."""
+    alone. The default read that sieve on this log."""
     monkeypatch.setattr(
         "chc.dynamics_id._chosen_sieve", lambda *args, knots, **options: (knots, False)
     )
@@ -3214,8 +3229,16 @@ def test_the_nuisance_check_of_a_fit_given_few_periods_warns_against_their_t() -
     none, 0.5 % and none. This log's moved 4.4."""
     data, _, periods = _persistent_log(0.0, units=50, periods=2)
     with warnings.catch_warnings():
-        warnings.simplefilter("error", FutureWarning)
-        fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0, periods=periods)
+        warnings.simplefilter("error", UserWarning)
+        fit_causal_residual(
+            _known,
+            data,
+            0.1,
+            adjust_for=("z",),
+            channel_degree=0,
+            periods=periods,
+            nuisance_knots=None,
+        )
 
 
 def _paired_products(residual: np.ndarray, units: int, periods: int) -> np.ndarray:
@@ -3526,12 +3549,15 @@ def test_the_rk4_fit_converges_where_the_known_physics_leaves_the_residual_nothi
             + noise * jnp.asarray(np.random.default_rng(1).normal(size=(500, 1))),
         )
         # the spline's move and its error are rounding there: on one machine their ratio read 13
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", FutureWarning)
-            fit = fit_causal_residual(truth, data, 1.0, adjust_for=("z",), integrator="rk4")
-        assert float(jnp.max(jnp.abs(fit.residual.channel))) < 1e-9
-        assert fit.integrator_defect is not None
-        assert fit.integrator_defect < 1e-9
+        for knots in ("auto", None):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", UserWarning)
+                fit = fit_causal_residual(
+                    truth, data, 1.0, adjust_for=("z",), integrator="rk4", nuisance_knots=knots
+                )
+            assert float(jnp.max(jnp.abs(fit.residual.channel))) < 1e-9
+            assert fit.integrator_defect is not None
+            assert fit.integrator_defect < 1e-9
 
 
 def test_a_log_the_known_physics_solves_exactly_raises_no_nuisance_warning() -> None:
@@ -3549,9 +3575,15 @@ def test_a_log_the_known_physics_solves_exactly_raises_no_nuisance_warning() -> 
         x = rng.normal(size=(2000, 1))
         data = {"x": x, "u": u, "z": z, "x_next": step(jnp.asarray(x), jnp.asarray(u))}
         with warnings.catch_warnings():
-            warnings.simplefilter("error", FutureWarning)
+            warnings.simplefilter("error", UserWarning)
             fit = fit_causal_residual(
-                truth, data, 0.1, adjust_for=("z",), channel_degree=0, integrator="rk4"
+                truth,
+                data,
+                0.1,
+                adjust_for=("z",),
+                channel_degree=0,
+                integrator="rk4",
+                nuisance_knots=None,
             )
         assert fit.channel_error is not None
         assert fit.channel_error < 1e-15
@@ -3641,9 +3673,9 @@ def test_the_nuisance_shift_reads_a_sieve_that_misses_in_its_errors() -> None:
     """The degree-2 fit reads tens of its errors from its refit on a spline; the spline fit reads
     a fraction of one from its refit at twice the knots, where both nuisances hold the truth."""
     data = _outside_the_polynomial(4000, 0)
-    with pytest.warns(FutureWarning, match="nuisance_knots='auto'"):
-        plain = _fit_outside(data)
-    spline = _fit_outside(data, nuisance_knots="auto")
+    with pytest.warns(UserWarning, match="nuisance_knots='auto'"):
+        plain = _fit_outside(data, nuisance_knots=None)
+    spline = _fit_outside(data)
     richer = _fit_outside(data, nuisance_knots=32)
     assert nuisance_shift(plain, spline, data["x"]) > 20.0
     assert nuisance_shift(spline, richer, data["x"]) < 1.0
@@ -3658,17 +3690,15 @@ def test_the_nuisance_shift_reads_a_sieve_that_misses_in_its_errors() -> None:
 
 def test_the_nuisance_shift_refuses_what_it_cannot_read() -> None:
     data = _outside_the_polynomial(400, 1)
-    with pytest.warns(FutureWarning, match="nuisance_knots='auto'"):
-        fit = _fit_outside(data)
+    fit = _fit_outside(data)
     unidentified = fit_causal_residual(
         LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))), data, 0.1, channel_degree=0
     )
     with pytest.raises(ValueError, match="not identified"):
         nuisance_shift(unidentified, fit, data["x"])
-    with pytest.warns(FutureWarning, match="nuisance_knots='auto'"):
-        affine = fit_causal_residual(
-            LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))), data, 0.1, adjust_for=("z",)
-        )
+    affine = fit_causal_residual(
+        LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))), data, 0.1, adjust_for=("z",)
+    )
     with pytest.raises(ValueError, match="differ in shape"):
         nuisance_shift(fit, affine, data["x"])
 
@@ -3730,8 +3760,8 @@ def test_a_spline_sieve_does_not_extrapolate_a_power_into_a_heavy_tail() -> None
     assert _chosen_sieve(covariates, rate, data["u"], **options) != (8, True)
     options = {"adjust_for": ("z0", "z1"), "channel_degree": 0}
     with warnings.catch_warnings():
-        warnings.simplefilter("error", FutureWarning)
-        plain = fit_causal_residual(_ZERO, data, 0.1, **options)
+        warnings.simplefilter("error", UserWarning)
+        plain = fit_causal_residual(_ZERO, data, 0.1, nuisance_knots=None, **options)
     spline = fit_causal_residual(_ZERO, data, 0.1, nuisance_knots="auto", **options)
     assert plain.channel_error is not None
     assert spline.channel_error is not None
@@ -3771,7 +3801,7 @@ def test_the_sieve_falls_back_to_the_polynomial_a_quadratic_nuisance_needs(tails
     euler_rate = (data["x_next"] - data["x"]) / 0.1
     assert _chosen_sieve(covariates, euler_rate, data["u"], **options) == (None, True)
     options = {"adjust_for": ("z",), "channel_degree": 0}
-    plain = fit_causal_residual(_ZERO, data, 0.1, **options)
+    plain = fit_causal_residual(_ZERO, data, 0.1, nuisance_knots=None, **options)
     spline = fit_causal_residual(_ZERO, data, 0.1, nuisance_knots="auto", **options)
     assert spline.channel_error is not None
     assert plain.channel_error is not None
@@ -3817,17 +3847,17 @@ def test_the_spline_sieve_on_a_linear_plant_reads_the_polynomial_s_channel() -> 
         "u": jnp.asarray(u),
         "x_next": jnp.asarray(x + 0.1 * (-0.5 * x + u + 0.5 * z) + 0.01 * rng.normal(size=x.shape)),
     }
-    plain = _fit_outside(linear)
-    assert nuisance_shift(plain, _fit_outside(linear, nuisance_knots="auto"), linear["x"]) < 0.5
+    plain = _fit_outside(linear, nuisance_knots=None)
+    assert nuisance_shift(plain, _fit_outside(linear), linear["x"]) < 0.5
 
 
-def test_a_default_fit_says_when_a_spline_refit_moves_its_channel() -> None:
-    """Left at ``nuisance_knots=None`` the fit reads what spline nuisances with ``"auto"`` knots
-    do to its channel: on the plant above, at 1000 rows, they move it by tens of its errors and
-    the fit warns that its nuisances miss the log's. On a linear plant they move it by a fraction
-    of one and the fit is silent, and a fit that names its knots does not check."""
-    with pytest.warns(FutureWarning, match=r"nuisance_knots='auto'.*0\.20\.0"):
-        _fit_outside(_outside_the_polynomial(1000, 0))
+def test_a_polynomial_fit_says_when_a_spline_refit_moves_its_channel() -> None:
+    """At ``nuisance_knots=None`` the fit reads what spline nuisances with ``"auto"`` knots do to
+    its channel: on the plant above, at 1000 rows, they move it by tens of its errors and the fit
+    warns that its nuisances miss the log's. On a linear plant they move it by a fraction of one
+    and the fit is silent, and a fit with knots, the default's among them, does not check."""
+    with pytest.warns(UserWarning, match=r"nuisance_knots='auto', the default\) move"):
+        _fit_outside(_outside_the_polynomial(1000, 0), nuisance_knots=None)
     data = _outside_the_polynomial(1000, 3)
     x, z = np.asarray(data["x"]), np.asarray(data["z"])
     rng = np.random.default_rng(4)
@@ -3838,15 +3868,36 @@ def test_a_default_fit_says_when_a_spline_refit_moves_its_channel() -> None:
         "x_next": jnp.asarray(x + 0.1 * (-0.5 * x + u + 0.5 * z) + 0.01 * rng.normal(size=x.shape)),
     }
     with warnings.catch_warnings():
-        warnings.simplefilter("error", FutureWarning)
-        _fit_outside(linear)
-        _fit_outside(_outside_the_polynomial(1000, 0), nuisance_knots="auto")
+        warnings.simplefilter("error")
+        _fit_outside(linear, nuisance_knots=None)
+        _fit_outside(_outside_the_polynomial(1000, 0))
+        _fit_outside(_outside_the_polynomial(1000, 0), nuisance_knots=16)
+
+
+def test_the_fit_reads_spline_nuisances_by_default() -> None:
+    """The default is ``nuisance_knots="auto"``: on the plant above, which the polynomial misses,
+    the default fit is the spline's to the bit and covers the channel, and it warns of nothing.
+    Up to 0.19.0 the default was the polynomial alone, which read the channel tens of its errors
+    off and warned that a later release reads the spline."""
+    data = _outside_the_polynomial(1000, 0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        default = _fit_outside(data)
+    spline = _fit_outside(data, nuisance_knots="auto")
+    with pytest.warns(UserWarning, match="nuisance_knots=None"):
+        plain = _fit_outside(data, nuisance_knots=None)
+    assert np.array_equal(np.asarray(default.residual.channel), np.asarray(spline.residual.channel))
+    assert default.channel_error == spline.channel_error
+    assert default.channel_error is not None
+    assert plain.channel_error is not None
+    assert abs(float(default.residual.channel.ravel()[0]) - 1.0) < 3.0 * default.channel_error
+    assert abs(float(plain.residual.channel.ravel()[0]) - 1.0) > 10.0 * plain.channel_error
 
 
 def _recording_spline_shift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[tuple[float, float]]:
-    """Every move and error the default fit's check reads, in order."""
+    """Every move and error the polynomial fit's check reads, in order."""
     read: list[tuple[float, float]] = []
     original = dynamics_id._spline_shift
 
@@ -3858,7 +3909,7 @@ def _recording_spline_shift(
     return read
 
 
-def test_the_default_fit_reads_the_spline_shift_without_a_second_fit(
+def test_the_polynomial_fit_reads_the_spline_shift_without_a_second_fit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The check solves the spline's moment at the fit's own target and fits nothing else; under
@@ -3872,8 +3923,8 @@ def test_the_default_fit_reads_the_spline_shift_without_a_second_fit(
 
     read = _recording_spline_shift(monkeypatch)
     monkeypatch.setattr("chc.dynamics_id.fit_causal_residual", counted)
-    with pytest.warns(FutureWarning, match="nuisance_knots='auto'") as records:
-        fit = _fit_outside(data)
+    with pytest.warns(UserWarning, match="nuisance_knots='auto'") as records:
+        fit = _fit_outside(data, nuisance_knots=None)
     monkeypatch.undo()
     assert refits == []
     ((moved, spread),) = read
@@ -3886,7 +3937,7 @@ def test_the_default_fit_reads_the_spline_shift_without_a_second_fit(
     )
 
 
-def test_under_rk4_the_default_fit_s_check_reads_the_refit_s_fixed_point(
+def test_under_rk4_the_polynomial_fit_s_check_reads_the_refit_s_fixed_point(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Under ``rk4`` the refit's channel is its own fixed point, not the moment at this fit's
@@ -3905,7 +3956,7 @@ def test_under_rk4_the_default_fit_s_check_reads_the_refit_s_fixed_point(
     known = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
     options = {"adjust_for": ("z",), "integrator": "rk4", "channel_degree": 0}
     read = _recording_spline_shift(monkeypatch)
-    fit = fit_causal_residual(known, data, 1.0, **options)  # type: ignore[arg-type]
+    fit = fit_causal_residual(known, data, 1.0, nuisance_knots=None, **options)  # type: ignore[arg-type]
     monkeypatch.undo()
     refit = fit_causal_residual(known, data, 1.0, nuisance_knots="auto", **options)  # type: ignore[arg-type]
     assert fit.channel_error is not None
