@@ -248,6 +248,7 @@ def _pessimistic_loop(
     blocks: Blocks = (),
     scaled: bool = True,
     metric: Array | None = None,
+    limit: Array | None = None,
 ) -> tuple[Array, Array, Array]:
     """The penalised descent as one XLA program: the planner's (:func:`chc.control._descend`) on the
     task cost plus the penalties, in variables scaled action by action.
@@ -278,7 +279,8 @@ def _pessimistic_loop(
 
     The confounding radius' norm is not differentiated: with no ``blocks`` the augmented cost holds
     it unsmoothed, and each step takes it, with the box, by its proximal map
-    (:func:`_radius_norms`, :func:`chc.control._descend`).
+    (:func:`_radius_norms`, :func:`chc.control._descend`). ``limit`` is
+    :func:`chc.control._descend`'s.
     """
 
     def task(us: Array) -> Array:
@@ -334,6 +336,7 @@ def _pessimistic_loop(
         secant=scaled,
         norms=norms,
         check=check,
+        limit=limit,
     )
 
 

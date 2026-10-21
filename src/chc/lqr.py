@@ -63,15 +63,32 @@ def finite_horizon_dlqr(
 
     Returns time-varying gains ``gains`` of shape ``(H, m, n)`` (``u_k = -gains[k] x_k``) and the
     initial cost-to-go ``P_0`` (optimal cost ``0.5 x0ᵀ P_0 x0``).
+
+    Raises:
+        ValueError: if ``r + bᵀ P_{k+1} b``, the cost's curvature in the action at some step with
+            the later steps' feedback in place, is not positive definite. The cost then has no
+            least action sequence: the cost less its optimum is the sum over the steps of that
+            curvature's quadratic form in each action's departure from its feedback, so a
+            direction it does not charge lowers the cost, or leaves it flat. The recursion read an
+            ``r`` of ``-1`` and returned the gains of a saddle. Where it holds, as wherever ``r`` is
+            positive definite and ``q`` and ``qf`` are not negative, the gains are the minimiser's.
     """
     a_np = np.asarray(a)
     b_np = np.asarray(b)
     q_np = np.asarray(q)
     r_np = np.asarray(r)
+    scale = action_units(r_np)
     p = np.asarray(qf, dtype=float).copy()
     gains: list[np.ndarray] = [np.zeros((b_np.shape[1], a_np.shape[0]))] * horizon
     for k in range(horizon - 1, -1, -1):
         s = r_np + b_np.T @ p @ b_np
+        unit = scale[:, None] * s * scale  # the actions' units, as continuous_lqr reads r
+        smallest = np.linalg.eigvalsh(0.5 * (unit + unit.T)).min()
+        if not smallest > 0.0:
+            raise ValueError(
+                f"r + b' P b must be positive definite at every step: at step {k}, in the actions' "
+                f"units, its least eigenvalue is {smallest:.3g}, so the cost has no least action"
+            )
         gain = np.linalg.solve(s, b_np.T @ p @ a_np)
         gains[k] = gain
         p = q_np + a_np.T @ p @ a_np - a_np.T @ p @ b_np @ gain

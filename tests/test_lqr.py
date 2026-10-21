@@ -154,3 +154,58 @@ def test_continuous_care_residual_and_stability() -> None:
     assert jnp.allclose(residual, jnp.zeros((2, 2)), atol=1e-8)
     closed_loop_eigs = jnp.linalg.eigvals(a - b @ k)
     assert bool((closed_loop_eigs.real < 0).all())
+
+
+@pytest.mark.parametrize(
+    ("r", "qf"),
+    [
+        (np.array([[-1.0]]), np.diag([2.0, 1.0])),  # pays to push: a saddle's gains came back
+        (np.array([[0.0]]), np.zeros((2, 2))),  # charges the last action nothing: singular
+    ],
+    ids=["negative", "singular"],
+)
+def test_finite_horizon_dlqr_refuses_a_cost_with_no_least_action(
+    r: np.ndarray, qf: np.ndarray
+) -> None:
+    """The cost less its optimum is the sum over the steps of ``r + b' P b`` in each action's
+    departure from its feedback: where that curvature is not positive definite at some step, no
+    action sequence costs least. The recursion returned gains for ``r = -1``."""
+    q, _, _ = _weights()
+    a_d, b_d = linearize_discrete(_dyn(), jnp.zeros(2), jnp.zeros(1), DT)
+    with pytest.raises(ValueError, match="positive definite"):
+        finite_horizon_dlqr(a_d, b_d, q, r, qf, 10)
+
+
+def test_finite_horizon_dlqr_solves_a_free_action_the_later_cost_charges() -> None:
+    """``r = 0`` with a terminal cost that charges every state: each step's curvature in its action
+    is ``b' P b > 0``, the cost has one least sequence, and the gains reach it. Read off the
+    cost's own quadratic form in the actions by least squares, the plan agrees to 1e-9."""
+    q, _, qf = _weights()
+    horizon = 10
+    a_d, b_d = linearize_discrete(_dyn(), jnp.zeros(2), jnp.zeros(1), DT)
+    a_d, b_d = np.asarray(a_d), np.asarray(b_d)
+    r = np.zeros((1, 1))
+    gains, p0 = finite_horizon_dlqr(a_d, b_d, q, r, qf, horizon)
+    x0 = np.array([1.0, 0.5])
+    # x_k = A^k x0 + sum_j A^(k-1-j) B u_j: each state is affine in the actions
+    powers = [np.linalg.matrix_power(a_d, k) for k in range(horizon + 1)]
+    pushes = [
+        np.hstack(
+            [powers[k - 1 - j] @ b_d if j < k else np.zeros_like(b_d) for j in range(horizon)]
+        )
+        for k in range(horizon + 1)
+    ]
+    weights = [np.asarray(q)] * horizon + [np.asarray(qf)]
+    root = [np.linalg.cholesky(w) for w in weights]
+    rows = np.vstack([c.T @ pushes[k] for k, c in enumerate(root)])
+    sides = np.concatenate([-(c.T @ powers[k] @ x0) for k, c in enumerate(root)])
+    best = np.linalg.lstsq(rows, sides, rcond=None)[0]
+    x, plan = x0, []
+    for gain in np.asarray(gains):
+        u = -gain @ x
+        plan.append(u[0])
+        x = a_d @ x + b_d @ u
+    np.testing.assert_allclose(plan, best, rtol=0.0, atol=1e-9)
+    assert float(x0 @ np.asarray(p0) @ x0) == pytest.approx(
+        float(np.sum((rows @ best - sides) ** 2)), rel=1e-9, abs=0.0
+    )

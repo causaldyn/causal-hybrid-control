@@ -920,6 +920,7 @@ def _descend(
     secant: bool,
     norms: Array | None = None,
     check: tuple[Array, Array | float] | None = None,
+    limit: Array | None = None,
 ) -> tuple[Array, Array, Array]:
     """The projected descent the planner and the penalised descent of :mod:`chc.support` share.
 
@@ -981,6 +982,11 @@ def _descend(
     a descent at a residual of ``sqrt(2 c tol)``, or at the rounding of the objective's values. The
     descent stops where the residual is within the tolerance, or where no trial falls by its
     gradients either (``docs/adr/0097-a-plan-reads-its-first-order-check-on-its-face.md``).
+
+    ``limit``, a traced count, stops the descent after that many accepted steps where it is below
+    ``steps``, which sizes the history and compiles: the barrier rounds of
+    :func:`chc.plan.causal_plan` share one budget, and each round gets what the last ones left
+    without a compilation of its own.
     """
     if norms is not None and blocks:
         raise ValueError("a proximal step for the norm takes the box alone, not linear rows")
@@ -1029,7 +1035,8 @@ def _descend(
 
     def descending(carry: Carry) -> Array:
         taken, _, _, _, _, _, alive, _ = carry
-        return jnp.logical_and(taken < steps, alive)
+        within = taken < steps if limit is None else (taken < steps) & (taken < limit)
+        return jnp.logical_and(within, alive)
 
     def descend(carry: Carry) -> Carry:
         taken, us, current, gradient, sigma, values, _, duals = carry

@@ -926,8 +926,17 @@ class ConfoundingRobustPenalty(eqx.Module):
 
         ``L_t`` is 1 when no weights were supplied -- the identification-radius regulariser -- and
         :func:`chc.adjoint.perturbation_cost_weights` when they were, on which path the sum is an
-        upper bound on the cost gap rather than a scale-free direction: exact to its Cauchy-Schwarz
-        slack on a plant affine in the state, and to second order in the radius elsewhere.
+        upper bound on the cost gap rather than a scale-free direction, exact to its Cauchy-Schwarz
+        slack, on a plant affine in the state. Elsewhere it is a bound to second order in the
+        radius only: the ``O(radius^3)`` remainder is not bounded, and it takes over once the
+        radius is not small against the field's curvature. On the field
+        ``(x_2, -x_1 - 0.2 x_2 + k x_1^2) + u``, two levers, ``dt = 0.05``, 20 steps from
+        ``(1, -0.5)``, the worst gap an adversary reached stayed below the sum while
+        ``k * radius < 0.8``, met it at 0.8 (``k = 4``, radius 0.2), and passed it from
+        ``k * radius = 1.2``: 1.30 times the sum at ``k = 4``, radius 0.3, 2.34 times at radius
+        0.5, and 83 times at ``k = 8``, radius 0.5. Read it as a bound at a radius that large only
+        after an adversary, as :func:`confounding_cost_bound_certificate` runs on an oscillator,
+        has failed to pass it.
         """
         del xs  # the confounded effect error scales with the ACTION magnitude (§34), not the state
         # smoothed L2 norm sqrt(||u||^2 + eps^2): ||u|| is non-differentiable at u=0 (NaN grad), and

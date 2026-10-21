@@ -555,8 +555,9 @@ def test_gamma_star_reads_the_box_not_the_largest_action_either_way() -> None:
 
 
 def test_a_start_that_is_not_a_state_is_refused() -> None:
-    """A nan start predicted a nan path, and its tube certified all ten steps."""
-    with pytest.raises(ValueError, match="is not a state"):
+    """A nan start predicted a nan path, and its tube certified all ten steps. The refusal says
+    what a state must be: "every entry is a number" read as though the start met it."""
+    with pytest.raises(ValueError, match="is not a state: every entry must be a number"):
         causal_plan(_MODEL, jnp.array([1.0, jnp.nan]), _COST, 0.1, 10, -5.0, 5.0, model_error=0.01)
 
 

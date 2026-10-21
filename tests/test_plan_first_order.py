@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import math
+import warnings
 from collections.abc import Callable
 
 import jax
@@ -43,7 +44,9 @@ if hasattr(jax, "enable_x64"):
 else:  # pragma: no cover - the dependency floor's spelling
     enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
-_A = jnp.array([[-0.5, 1.0], [0.0, -0.3]])
+# built per call, in the precision of the leg that calls: an array built here at import is
+# float64, and the float32 leg mixed it into its float32 plan, which JAX truncates with a warning
+_DRIFT = ((-0.5, 1.0), (0.0, -0.3))
 _X0 = jnp.array([1.0, 0.0])
 _DT, _HORIZON = 0.1, 12
 _STEP = 3  # the action a perturbation moves
@@ -63,7 +66,7 @@ def _problem(
         Qf=scale * jnp.diag(jnp.array([5.0, 1.0])),
         x_target=jnp.zeros(2),
     )
-    return LinearDynamics(_A, channel / size), cost
+    return LinearDynamics(jnp.array(_DRIFT), channel / size), cost
 
 
 def _quadratic(model: LinearDynamics, cost: QuadraticCost, levers: int = 1):
@@ -313,6 +316,30 @@ def test_a_converged_plan_reads_within_tolerances_set_by_the_descent_s_precision
     )
     assert single.solver_status == "converged"
     assert plan.stationarity_tolerance < single.stationarity < single.stationarity_tolerance
+
+
+def test_a_float32_plan_from_numpy_float64_inputs_asks_for_no_float64_array() -> None:
+    """A start, a model and a cost given as NumPy float64 arrays, as a caller's logs are, planned
+    with JAX in float32, held under a barrier: the barrier read the start's dtype for an array of
+    its own, and JAX truncated that float64 request with a warning on every such plan."""
+    with enable_x64(False), warnings.catch_warnings():
+        warnings.simplefilter("error")
+        model = LinearDynamics(np.array(_DRIFT), np.array([[0.0, 0.5], [1.0, 0.0]]))
+        cost = QuadraticCost(
+            Q=np.eye(2), R=np.diag([0.05, 0.02]), Qf=np.eye(2), x_target=np.zeros(2)
+        )
+        plan = causal_plan(
+            model,
+            np.array([1.0, 0.0]),
+            cost,
+            _DT,
+            _HORIZON,
+            np.array([-5.0, -0.3]),
+            np.array([5.0, 0.3]),
+            barrier=BarrierConstraint(lambda x: 0.9 - x[0]),
+        )
+    assert plan.actions.dtype == np.float32
+    assert plan.safety is not None
 
 
 def test_a_pessimistic_plan_is_read_on_the_objective_it_minimised() -> None:
